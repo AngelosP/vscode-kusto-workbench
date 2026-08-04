@@ -6,6 +6,7 @@ vi.mock('../../src/webview/shared/webview-messages.js', () => ({ postMessageToHo
 
 import { pState } from '../../src/webview/shared/persistence-state.js';
 import {
+	acknowledgeHostOwnedDocumentOrder,
 	adoptHostOwnedMarkdownDocument,
 	handleHostOwnedMarkdownCommandResult,
 	requestHostOwnedChartPatch,
@@ -14,6 +15,8 @@ import {
 	requestHostOwnedMarkdownRemove,
 	requestHostOwnedPythonPatch,
 	requestHostOwnedPythonRemove,
+	requestHostOwnedTransformationPatch,
+	requestHostOwnedTransformationRemove,
 	requestHostOwnedUrlPatch,
 	requestHostOwnedUrlRemove,
 	resetHostOwnedMarkdownDocument,
@@ -368,6 +371,123 @@ describe('host-owned Markdown command client', () => {
 			expectedDocumentRevision: 1,
 			command: { type: 'remove', sectionId: 'chart_1', expectedSectionRevision: 1 },
 		});
+	});
+
+	it('sequences Transformation configuration through the same full-projection ledger', async () => {
+		adoptHostOwnedMarkdownDocument({
+			documentRevision: 0,
+			sourceGeneration: 16,
+			sectionRevisions: { markdown_1: 0, 'transform-any-id': 0 },
+			markdownSectionRevisions: { markdown_1: 0 },
+		}, {
+			sections: [
+				{ id: 'markdown_1', type: 'markdown', text: 'before' },
+				{
+					id: 'transform-any-id', type: 'transformation', name: 'Before', mode: 'edit',
+					expanded: true, editorHeightPx: 300, dataSourceId: 'query_left',
+					transformationType: 'join', joinRightDataSourceId: 'query_right',
+					joinKind: 'inner', joinKeys: [{ left: 'CustomerId', right: 'CustomerId' }],
+					joinOmitDuplicateColumns: false,
+				},
+			],
+		});
+		postMessageToHost.mockClear();
+
+		const afterState = {
+			id: 'transform-any-id', type: 'transformation', name: 'After', mode: 'preview',
+			expanded: false, editorHeightPx: 460, dataSourceId: 'query_left',
+			transformationType: 'join', joinRightDataSourceId: 'query_right',
+			joinKind: 'fullouter', joinKeys: [{ left: 'CustomerId', right: 'AccountId' }],
+			joinOmitDuplicateColumns: true,
+		} as const;
+		expect(requestHostOwnedTransformationPatch(afterState)).toBe(true);
+		const patch = await waitForPostedMessage(1);
+		expect(requestHostOwnedTransformationPatch(afterState)).toBe(true);
+		await Promise.resolve();
+		expect(postMessageToHost).toHaveBeenCalledTimes(1);
+		expect(patch).toMatchObject({
+			type: 'markdownDocumentCommand', sourceGeneration: 16, expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'transform-any-id', expectedSectionRevision: 0,
+				patch: {
+					name: 'After', mode: 'preview', expanded: false, editorHeightPx: 460,
+					dataSourceId: 'query_left', transformationType: 'join',
+					joinRightDataSourceId: 'query_right', joinKind: 'fullouter',
+					joinKeys: [{ left: 'CustomerId', right: 'AccountId' }],
+					joinOmitDuplicateColumns: true,
+				},
+			},
+		});
+		const handled = handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: patch.commandId, ok: true,
+			sourceGeneration: 16,
+			projection: {
+				documentRevision: 1,
+				sectionRevisions: { markdown_1: 0, 'transform-any-id': 1 },
+				markdownSectionRevisions: { markdown_1: 0 },
+				chartSections: [],
+				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'before' }],
+				pythonSections: [],
+				transformationSections: [afterState],
+				urlSections: [],
+				orderedSectionIds: ['markdown_1', 'transform-any-id'],
+			},
+		});
+		expect(handled).toMatchObject({ handled: true, accepted: true });
+		expect(pState.hostOwnedTransformationSections['transform-any-id']).toEqual(afterState);
+
+		expect(requestHostOwnedTransformationRemove('transform-any-id')).toBe(true);
+		const remove = await waitForPostedMessage(2);
+		expect(remove).toMatchObject({
+			expectedDocumentRevision: 1,
+			command: { type: 'remove', sectionId: 'transform-any-id', expectedSectionRevision: 1 },
+		});
+	});
+
+	it('rebases an in-flight Transformation terminal to acknowledged section order', async () => {
+		adoptHostOwnedMarkdownDocument({
+			documentRevision: 0,
+			sourceGeneration: 17,
+			sectionRevisions: { markdown_1: 0, transform_reorder: 0 },
+			markdownSectionRevisions: { markdown_1: 0 },
+		}, {
+			sections: [
+				{ id: 'markdown_1', type: 'markdown', text: 'before' },
+				{
+					id: 'transform_reorder', type: 'transformation', name: 'Before',
+					dataSourceId: 'query_1', transformationType: 'select',
+				},
+				{ id: 'future_reorder', type: 'future-section', payload: { keep: true } },
+				{ id: 'query_1', type: 'query', query: 'print Value=1' },
+			],
+		});
+		postMessageToHost.mockClear();
+		const after = {
+			id: 'transform_reorder', type: 'transformation', name: 'After',
+			dataSourceId: 'query_1', transformationType: 'select',
+		} as const;
+		expect(requestHostOwnedTransformationPatch(after)).toBe(true);
+		const command = await waitForPostedMessage(1);
+
+		expect(acknowledgeHostOwnedDocumentOrder([
+			'transform_reorder', 'future_reorder', 'query_1', 'markdown_1',
+		])).toBe(true);
+		const handled = handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: command.commandId, ok: true,
+			sourceGeneration: 17,
+			projection: {
+				documentRevision: 1,
+				sectionRevisions: { markdown_1: 0, transform_reorder: 1 },
+				markdownSectionRevisions: { markdown_1: 0 },
+				chartSections: [],
+				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'before' }],
+				pythonSections: [], transformationSections: [after], urlSections: [],
+				orderedSectionIds: ['transform_reorder', 'future_reorder', 'query_1', 'markdown_1'],
+			},
+		});
+
+		expect(handled).toMatchObject({ handled: true, accepted: true });
+		expect(postMessageToHost).not.toHaveBeenCalledWith({ type: 'requestDocument' });
 	});
 
 	it('accepts a Chart terminal that omits an undefined validation field', async () => {

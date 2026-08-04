@@ -3128,8 +3128,7 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
-	test('native Save rejects an ambiguous future-field overlay conflict', async () => {
-		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
+	test('host-owned Transformation command rejects an ambiguous future-field overlay conflict', async () => {
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kqlx-ambiguous-save-'));
 		const filePath = path.join(tmpDir, 'ambiguous-save.kqlx');
 		const baseState = { sections: [{
@@ -3146,17 +3145,11 @@ suite('Sidecar .kql.json strategy', () => {
 		}] };
 		const text = JSON.stringify({ kind: 'kqlx', version: 1, state: baseState }, null, 2);
 		let receiveHandler: ((message: any) => unknown) | undefined;
-		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
-		let sourceGeneration = 0;
+		let projection: any;
+		let commandResult: any;
 
 		try {
 			fs.writeFileSync(filePath, text, 'utf8');
-			(vscode.workspace as any).onWillSaveTextDocument = (
-				handler: (event: vscode.TextDocumentWillSaveEvent) => unknown,
-			) => {
-				willSaveHandler = handler;
-				return { dispose() {} };
-			};
 			const provider = new (KqlxEditorProvider as any)(
 				{
 					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
@@ -3173,18 +3166,12 @@ suite('Sidecar .kql.json strategy', () => {
 				webview: {
 					options: {},
 					postMessage: async (message: any) => {
-						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
+						if (message?.type === 'documentData') projection = message;
+						if (message?.type === 'markdownDocumentCommandResult') commandResult = message;
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
 								type: 'documentReloadResult', requestId: message.reloadRequestId,
 								applied: true, editRevision: Number(message.editRevision || 0),
-							}));
-						}
-						if (message?.type === 'requestFinalPersist') {
-							void Promise.resolve().then(() => receiveHandler?.({
-								type: 'persistDocument', state: editedState, sourceGeneration,
-								flush: true, reason: 'save', editRevision: 1,
-								snapshotId: 'ambiguous-save', flushRequestId: message.requestId,
 							}));
 						}
 						return true;
@@ -3199,28 +3186,24 @@ suite('Sidecar .kql.json strategy', () => {
 
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
-			assert.ok(willSaveHandler);
-			let saveBarrier: Promise<vscode.TextEdit[]> | undefined;
-			willSaveHandler!({
-				document,
-				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { saveBarrier = Promise.resolve(thenable); },
-			} as any);
-
-			const saveOutcome = await saveBarrier!.then(
-				value => ({ value }),
-				error => ({ error }),
-			);
-			assert.ok(
-				'error' in saveOutcome,
-				`Expected an ambiguous overlay rejection, received ${JSON.stringify(saveOutcome)}`,
-			);
+			assert.ok(projection);
+			await Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommand', commandId: 'ambiguous-transformation-patch',
+				sourceGeneration: projection.sourceGeneration,
+				expectedDocumentRevision: projection.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'transformation_1', expectedSectionRevision: 0,
+					patch: editedState.sections[0],
+				},
+			}));
+			await waitForCondition(() => !!commandResult, 'ambiguous Transformation command should settle');
+			assert.strictEqual(commandResult.ok, false);
 			assert.match(
-				String((saveOutcome as { error: unknown }).error),
+				String(commandResult.error?.message || ''),
 				/Cannot safely preserve future fields for an ambiguously edited nested array/,
 			);
 			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), text);
 		} finally {
-			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});
@@ -3243,6 +3226,7 @@ suite('Sidecar .kql.json strategy', () => {
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
 		let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
+		const changeHandlers: Array<(event: vscode.TextDocumentChangeEvent) => unknown> = [];
 		let saveCalls = 0;
 		let pausePersist = false;
 		let markPersistStarted!: () => void;
@@ -3252,6 +3236,10 @@ suite('Sidecar .kql.json strategy', () => {
 
 		try {
 			fs.writeFileSync(filePath, currentText, 'utf8');
+			(vscode.workspace as any).onDidChangeTextDocument = (handler: any) => {
+				changeHandlers.push(handler);
+				return { dispose() {} };
+			};
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceState = (value: unknown) => value;
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (value: unknown) => {
 				if (pausePersist) {
@@ -3347,6 +3335,11 @@ suite('Sidecar .kql.json strategy', () => {
 			]);
 			releasePersist();
 			await activePersist;
+			await waitForCondition(
+				() => !dirty,
+				'canonical result restoration should finish its controlled Save',
+				2_000,
+			);
 
 			assert.ok(saveCalls >= 1 && saveCalls <= 2, `expected one native save plus at most one canonical restore, got ${saveCalls}`);
 			assert.strictEqual(JSON.parse(currentText).state.sections[0].query, 'print value = 1');
@@ -3730,7 +3723,7 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
-	test('KQLX retries one rejected persistence edit before acknowledging the snapshot', async () => {
+	test('KQLX retries one rejected persistence edit before acknowledging canonical opaque order', async () => {
 		const originalApplyEdit = vscode.workspace.applyEdit;
 		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
 		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
@@ -3739,11 +3732,20 @@ suite('Sidecar .kql.json strategy', () => {
 		let currentText = JSON.stringify({
 			kind: 'kqlx', version: 1, state: { sections: [
 				{ id: 'query_1', type: 'query', query: 'print initial = 0' },
+				{ id: 'future_1', type: 'future-section', payload: { keep: true } },
+				{
+					id: 'transform_1', type: 'transformation', dataSourceId: 'query_1',
+					transformationType: 'select',
+				},
 			] },
 		});
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		const posted: any[] = [];
 		let applyCalls = 0;
+		let driftAfterApply = false;
+		let driftCandidateApplied = false;
+		let acceptedCandidateReads = 0;
+		let directText = '';
 
 		try {
 			fs.writeFileSync(filePath, currentText, 'utf8');
@@ -3757,6 +3759,10 @@ suite('Sidecar .kql.json strategy', () => {
 				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
 				if (typeof replacement !== 'string') return false;
 				currentText = replacement;
+				if (driftAfterApply) {
+					driftCandidateApplied = true;
+					acceptedCandidateReads = 0;
+				}
 				return true;
 			};
 			const provider = new (KqlxEditorProvider as any)(
@@ -3768,7 +3774,14 @@ suite('Sidecar .kql.json strategy', () => {
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
 			) as KqlxEditorProvider;
 			const document = {
-				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				uri: vscode.Uri.file(filePath), getText: () => {
+					if (driftCandidateApplied && ++acceptedCandidateReads === 2) {
+						currentText = directText;
+						driftAfterApply = false;
+						driftCandidateApplied = false;
+					}
+					return currentText;
+				}, eol: vscode.EndOfLine.LF,
 				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
 			} as any;
 			const panel = {
@@ -3786,7 +3799,13 @@ suite('Sidecar .kql.json strategy', () => {
 
 			await Promise.resolve(receiveHandler!({
 				type: 'persistDocument', snapshotId: 'rich-retry-1', editRevision: 1,
-				state: { sections: [{ id: 'query_1', type: 'query', query: 'print accepted = 1' }] },
+				state: { sections: [
+					{
+						id: 'transform_1', type: 'transformation', dataSourceId: 'query_1',
+						transformationType: 'select',
+					},
+					{ id: 'query_1', type: 'query', query: 'print accepted = 1' },
+				] },
 			}));
 			try {
 				await waitForCondition(
@@ -3802,11 +3821,44 @@ suite('Sidecar .kql.json strategy', () => {
 			}
 
 			assert.strictEqual(applyCalls, 2);
-			assert.strictEqual(JSON.parse(currentText).state.sections[0].query, 'print accepted = 1');
+			const acceptedSections = JSON.parse(currentText).state.sections;
+			assert.strictEqual(
+				acceptedSections.find((section: any) => section.id === 'query_1')?.query,
+				'print accepted = 1',
+			);
+			assert.deepStrictEqual(
+				acceptedSections.find((section: any) => section.id === 'future_1')?.payload,
+				{ keep: true },
+			);
 			assert.deepStrictEqual(
 				posted.filter(message => message?.type === 'persistDocumentAck'),
-				[{ type: 'persistDocumentAck', snapshotId: 'rich-retry-1', editRevision: 1 }],
+				[{
+					type: 'persistDocumentAck', snapshotId: 'rich-retry-1', editRevision: 1,
+					orderedSectionIds: acceptedSections.map((section: any) => section.id),
+				}],
 			);
+
+			posted.length = 0;
+			const directFile = JSON.parse(currentText);
+			const directTransformation = directFile.state.sections.find((section: any) => section.id === 'transform_1');
+			directTransformation.name = 'DIRECT EDIT';
+			directText = JSON.stringify(directFile);
+			driftAfterApply = true;
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', snapshotId: 'rich-drift-2', editRevision: 2,
+				state: { sections: [
+					{
+						id: 'transform_1', type: 'transformation', dataSourceId: 'query_1',
+						transformationType: 'select',
+					},
+					{ id: 'query_1', type: 'query', query: 'print candidate = 2' },
+				] },
+			}));
+			await new Promise<void>(resolve => setImmediate(resolve));
+
+			assert.strictEqual(currentText, directText);
+			assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'rich-drift-2'));
 		} finally {
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
@@ -3901,6 +3953,206 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('pending external projection rejects an old rich snapshot before reload acknowledgement', async () => {
+		const invalidation = interceptSqlPersistenceInvalidation();
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalOnDidChange = vscode.workspace.onDidChangeTextDocument;
+		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kqlx-pending-reload-fence-'));
+		const filePath = path.join(tmpDir, 'pending-reload.kqlx');
+		const initialText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', query: 'print initial = 1' },
+				{ id: 'future_1', type: 'future-section', payload: { keep: true } },
+				{
+					id: 'transform_1', type: 'transformation', name: 'Initial',
+					dataSourceId: 'query_1', transformationType: 'select',
+				},
+			] },
+		});
+		const externalText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{
+					id: 'transform_1', type: 'transformation', name: 'Initial',
+					dataSourceId: 'query_1', transformationType: 'select',
+				},
+				{ id: 'future_1', type: 'future-section', payload: { keep: true } },
+				{ id: 'query_1', type: 'query', query: 'print external = 2' },
+				{ id: 'sql_protected', type: 'sql', query: 'SELECT 1', resultJson: 'PROTECTED' },
+			] },
+		});
+		let currentText = initialText;
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let changeHandler: ((event: vscode.TextDocumentChangeEvent) => unknown) | undefined;
+		let holdReload = false;
+		let pendingReload: any;
+		let applyCalls = 0;
+		let delayCommandApply = false;
+		let markCommandApplyStarted!: () => void;
+		let releaseCommandApply!: () => void;
+		const commandApplyStarted = new Promise<void>(resolve => { markCommandApplyStarted = resolve; });
+		const commandApplyGate = new Promise<void>(resolve => { releaseCommandApply = resolve; });
+		const posted: any[] = [];
+
+		try {
+			fs.writeFileSync(filePath, initialText, 'utf8');
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => state;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
+				state: any, publish: (value: any) => Promise<unknown>,
+			) => publish({
+				...state,
+				sections: state.sections.map((section: any) => {
+					const next = { ...section };
+					if (next.type === 'sql') delete next.resultJson;
+					return next;
+				}),
+			});
+			(vscode.workspace as any).onDidChangeTextDocument = (handler: any) => {
+				changeHandler = handler;
+				return { dispose() {} };
+			};
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+				if (typeof replacement !== 'string') return false;
+				if (delayCommandApply && replacement.includes('"name": "Command"')) {
+					delayCommandApply = false;
+					markCommandApplyStarted();
+					await commandApplyGate;
+				}
+				applyCalls++;
+				currentText = replacement;
+				return true;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					extensionMode: vscode.ExtensionMode.Production,
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+			} as any;
+			const panel = {
+				webview: {
+					options: {}, postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.reloadRequestId) {
+							if (holdReload) pendingReload = message;
+							else await Promise.resolve(receiveHandler?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: Number(message.editRevision || 0),
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+				},
+				onDidDispose: () => ({ dispose() {} }),
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const initialProjection = posted.find(message => message?.type === 'documentData' && message?.ok === true);
+			assert.ok(initialProjection);
+			posted.length = 0;
+			applyCalls = 0;
+			delayCommandApply = true;
+			const command = Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommand', commandId: 'command-before-reload-ack',
+				sourceGeneration: initialProjection.sourceGeneration,
+				expectedDocumentRevision: initialProjection.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'transform_1',
+					expectedSectionRevision: initialProjection.sectionRevisions.transform_1,
+					patch: { name: 'Command' },
+				},
+			}));
+			await commandApplyStarted;
+
+			holdReload = true;
+			currentText = externalText;
+			await Promise.resolve(changeHandler!({ document, contentChanges: [{}] } as any));
+			await waitForCondition(() => !!pendingReload, 'external projection should wait for acknowledgement');
+			assert.ok(invalidation.isSubscribed());
+			invalidation.fire();
+			releaseCommandApply();
+			await command;
+			assert.strictEqual(currentText, externalText);
+			assert.strictEqual(
+				posted.find(message => message?.commandId === 'command-before-reload-ack')?.ok,
+				false,
+			);
+			applyCalls = 0;
+
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', snapshotId: 'old-before-reload-ack', editRevision: 1,
+				sourceGeneration: initialProjection.sourceGeneration,
+				state: { sections: [
+					{ id: 'query_1', type: 'query', query: 'print stale = 3' },
+					{
+						id: 'transform_1', type: 'transformation', name: 'Stale',
+						dataSourceId: 'query_1', transformationType: 'select',
+					},
+				] },
+			}));
+
+			assert.strictEqual(currentText, externalText);
+			assert.strictEqual(applyCalls, 0);
+			assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'old-before-reload-ack'));
+
+			const rejectedRequestId = pendingReload.reloadRequestId;
+			pendingReload = undefined;
+			await Promise.resolve(receiveHandler!({
+				type: 'documentReloadResult', requestId: rejectedRequestId,
+				applied: false, editRevision: 1,
+			}));
+			await waitForCondition(
+				() => !!pendingReload && pendingReload.reloadRequestId !== rejectedRequestId,
+				'rejected direct projection should retry automatically',
+			);
+			const retryProjection = [...posted].reverse().find(message =>
+				message?.type === 'documentData' && message?.reloadRequestId === pendingReload.reloadRequestId,
+			);
+			assert.ok(retryProjection);
+			await Promise.resolve(receiveHandler!({
+				type: 'documentReloadResult', requestId: pendingReload.reloadRequestId,
+				applied: true, editRevision: 1,
+			}));
+			await waitForCondition(
+				() => JSON.parse(currentText).state.sections
+					.find((section: any) => section.id === 'sql_protected')?.resultJson === undefined,
+				'accepted pending projection should immediately consume its privacy obligation',
+			);
+			posted.length = 0;
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', snapshotId: 'current-after-reload-retry', editRevision: 2,
+				sourceGeneration: retryProjection.sourceGeneration,
+				state: { sections: [
+					{
+						id: 'transform_1', type: 'transformation', name: 'Direct',
+						dataSourceId: 'query_1', transformationType: 'select',
+					},
+					{ id: 'query_1', type: 'query', query: 'print external = 2' },
+				] },
+			}));
+			assert.ok(posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'current-after-reload-retry'));
+		} finally {
+			invalidation.restore();
+			releaseCommandApply?.();
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChange;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('rich privacy repair rebases after a newer source event during sanitation', async () => {
 		const invalidation = interceptSqlPersistenceInvalidation();
 		const originalOnDidChange = vscode.workspace.onDidChangeTextDocument;
@@ -3918,14 +4170,13 @@ suite('Sidecar .kql.json strategy', () => {
 		let changeHandler: ((event: vscode.TextDocumentChangeEvent) => unknown) | undefined;
 		let gateRepair = false;
 		let stalePublicationCalls = 0;
-		let markSecondStalePublication!: () => void;
+		let stalePublicationStarted = false;
+		let newerPublicationStarted = false;
 		let releaseSecondStalePublication!: () => void;
-		let markNewerPublication!: () => void;
-		const secondStalePublication = new Promise<void>(resolve => { markSecondStalePublication = resolve; });
 		const stalePublicationGate = new Promise<void>(resolve => { releaseSecondStalePublication = resolve; });
-		const newerPublication = new Promise<void>(resolve => { markNewerPublication = resolve; });
 		let applyCalls = 0;
 		let saveCalls = 0;
+		let supersedeFirstDirectRepair = false;
 		try {
 			fs.writeFileSync(sourcePath, currentText, 'utf8');
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
@@ -3934,12 +4185,19 @@ suite('Sidecar .kql.json strategy', () => {
 				const query = String(state?.sections?.[0]?.query || '');
 				if (gateRepair && query === 'STALE_REPAIR') {
 					stalePublicationCalls++;
-					if (stalePublicationCalls === 2) {
-						markSecondStalePublication();
+					if (stalePublicationCalls === 1) {
+						stalePublicationStarted = true;
 						await stalePublicationGate;
 					}
 				}
-				if (gateRepair && query === 'DIRECT_NEWER') markNewerPublication();
+				if (gateRepair && query === 'DIRECT_NEWER') {
+					newerPublicationStarted = true;
+					if (supersedeFirstDirectRepair) {
+						supersedeFirstDirectRepair = false;
+						currentText = wrap('DIRECT_LATEST', '{"rows":[[3]]}');
+						void Promise.resolve(changeHandler?.({ document, contentChanges: [{}] } as any));
+					}
+				}
 				return publish({
 					...state,
 					sections: state.sections.map((section: any) => {
@@ -3987,14 +4245,20 @@ suite('Sidecar .kql.json strategy', () => {
 			currentText = wrap('STALE_REPAIR', '{"rows":[[1]]}');
 			gateRepair = true;
 			invalidation.fire();
-			await secondStalePublication;
+			await waitForCondition(() => stalePublicationStarted, 'queued stale repair sanitation should start');
 
 			currentText = wrap('DIRECT_NEWER');
+			supersedeFirstDirectRepair = true;
 			await Promise.resolve(changeHandler!({ document, contentChanges: [{}] } as any));
 			releaseSecondStalePublication();
-			await newerPublication;
-			await waitForCondition(() => JSON.parse(currentText).state.sections[0].query === 'DIRECT_NEWER', 'newer source should survive repair');
-			assert.strictEqual(applyCalls, 0, 'stale privacy repair must not edit the newer source');
+			await waitForCondition(() => newerPublicationStarted, 'newer direct projection sanitation should start');
+			await waitForCondition(
+				() => JSON.parse(currentText).state.sections[0].query === 'DIRECT_LATEST'
+					&& JSON.parse(currentText).state.sections[0].resultJson === undefined,
+				'latest rapid direct source should survive and be privacy repaired',
+			);
+			assert.strictEqual(applyCalls, 1, 'only the latest-authority privacy repair may edit');
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].query, 'DIRECT_LATEST');
 			assert.strictEqual(saveCalls, 0, 'stale privacy repair must not autosave the newer source');
 		} finally {
 			releaseSecondStalePublication();
@@ -4026,19 +4290,25 @@ suite('Sidecar .kql.json strategy', () => {
 		const repairApplyStarted = new Promise<void>(resolve => { markRepairApplyStarted = resolve; });
 		const repairApplyGate = new Promise<void>(resolve => { releaseRepairApply = resolve; });
 		let delayRepair = false;
+		let externalRepairPublished = false;
 		let saveCalls = 0;
 		try {
 			fs.writeFileSync(sourcePath, currentText, 'utf8');
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
 				state: any, publish: (value: any) => Promise<unknown>,
-			) => publish({
-				...state,
-				sections: state.sections.map((section: any) => {
-					const next = { ...section };
-					delete next.resultJson;
-					return next;
-				}),
-			});
+			) => {
+				if (String(state?.sections?.[0]?.query || '') === 'EXTERNAL_AUTHORITY') {
+					externalRepairPublished = true;
+				}
+				return publish({
+					...state,
+					sections: state.sections.map((section: any) => {
+						const next = { ...section };
+						delete next.resultJson;
+						return next;
+					}),
+				});
+			};
 			(vscode.workspace as any).onDidChangeTextDocument = (handler: any) => {
 				changeHandler = handler;
 				return { dispose() {} };
@@ -4088,12 +4358,465 @@ suite('Sidecar .kql.json strategy', () => {
 				() => JSON.parse(currentText).state.sections[0].query === 'EXTERNAL_AUTHORITY',
 				'external source should be restored after stale repair apply',
 			);
+			await waitForCondition(() => externalRepairPublished, 'newer-source privacy retry should publish');
+			const queue = [...(provider as any).markdownDocumentQueues.values()][0];
+			await queue.tail;
 			assert.strictEqual(saveCalls, 0);
 		} finally {
 			releaseRepairApply();
 			invalidation.restore();
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
 			(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChange;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('privacy repair queues a Transformation command and preserves both mutations', async () => {
+		const invalidation = interceptSqlPersistenceInvalidation();
+		const originalOnDidChange = vscode.workspace.onDidChangeTextDocument;
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-privacy-transform-queue-'));
+		const filePath = path.join(tmpDir, 'privacy-transform.kqlx');
+		let currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'sql_1', type: 'sql', query: 'SELECT 1', resultJson: 'PROTECTED_SQL_RESULT' },
+				{
+					id: 'transform_1', type: 'transformation', name: 'Before',
+					dataSourceId: 'sql_1', transformationType: 'select',
+				},
+			] },
+		});
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let projection: any;
+		let repairEnabled = false;
+		let markRepairStarted!: () => void;
+		let releaseRepair!: () => void;
+		const repairStarted = new Promise<void>(resolve => { markRepairStarted = resolve; });
+		const repairGate = new Promise<void>(resolve => { releaseRepair = resolve; });
+		let gateRepair = true;
+		let diskText = currentText;
+		let dirty = false;
+		let saveCalls = 0;
+		let commandSettledBeforeDurability = false;
+		let replaceSourceAfterFirstSave = true;
+		const changeHandlers: Array<(event: vscode.TextDocumentChangeEvent) => unknown> = [];
+		const posted: any[] = [];
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(vscode.workspace as any).onDidChangeTextDocument = (handler: any) => {
+				changeHandlers.push(handler);
+				return { dispose() {} };
+			};
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
+				state: any, publish: (value: any) => Promise<unknown>,
+			) => {
+				if (!repairEnabled) return publish(state);
+				if (gateRepair) {
+					gateRepair = false;
+					markRepairStarted();
+					await repairGate;
+				}
+				return publish({
+					...state,
+					sections: state.sections.map((section: any) => {
+						const next = { ...section };
+						if (next.type === 'sql') delete next.resultJson;
+						return next;
+					}),
+				});
+			};
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+				if (typeof replacement !== 'string') return false;
+				currentText = replacement;
+				dirty = currentText !== diskText;
+				return true;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0),
+				get isDirty() { return dirty; },
+				save: async () => {
+					saveCalls++;
+					if (saveCalls === 1) {
+						if (replaceSourceAfterFirstSave) {
+							replaceSourceAfterFirstSave = false;
+							const replacement = JSON.parse(currentText);
+							replacement.state.sections.find((section: any) => section.id === 'sql_1').resultJson = 'NEW_PROTECTED';
+							currentText = JSON.stringify(replacement);
+							dirty = true;
+							for (const changeHandler of changeHandlers) {
+								await Promise.resolve(changeHandler({ document, contentChanges: [{}] } as any));
+							}
+						}
+						return false;
+					}
+					diskText = currentText;
+					dirty = false;
+					return true;
+				},
+			} as any;
+			const panel = {
+				webview: {
+					options: {}, postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') projection = message;
+						if (message?.reloadRequestId) await Promise.resolve(receiveHandler?.({
+							type: 'documentReloadResult', requestId: message.reloadRequestId,
+							applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+						}));
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+				},
+				onDidDispose: () => ({ dispose() {} }),
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			assert.ok(projection && invalidation.isSubscribed());
+
+			diskText = currentText;
+			dirty = false;
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), currentText);
+			repairEnabled = true;
+			invalidation.fire();
+			await repairStarted;
+			let commandSettled = false;
+			const command = Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommand', commandId: 'transform-during-privacy-repair',
+				sourceGeneration: projection.sourceGeneration,
+				expectedDocumentRevision: projection.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'transform_1',
+					expectedSectionRevision: projection.sectionRevisions.transform_1,
+					patch: { name: 'After' },
+				},
+			})).then(() => {
+				commandSettledBeforeDurability = JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections
+					.find((section: any) => section.id === 'sql_1').resultJson !== undefined;
+				commandSettled = true;
+			});
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(commandSettled, false, 'Transformation command must queue behind privacy repair');
+			releaseRepair();
+			await command;
+
+			const finalSections = JSON.parse(currentText).state.sections;
+			assert.strictEqual(finalSections.find((section: any) => section.id === 'sql_1').resultJson, undefined);
+			const commandResult = posted.find(message => message?.commandId === 'transform-during-privacy-repair');
+			const queue = [...(provider as any).markdownDocumentQueues.values()][0];
+			try {
+				await waitForCondition(
+					() => saveCalls === 1
+						&& JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections
+							.find((section: any) => section.id === 'sql_1').resultJson === undefined,
+					'failed privacy save should sanitize disk before queue release',
+				);
+			} catch {
+				assert.fail(JSON.stringify({
+					saveCalls, commandSettled, dirty,
+					pendingPrivacySave: !!queue?.pendingPrivacySave,
+					privacyRepairNeeded: queue?.privacyRepairNeeded,
+					latestMatchesCurrent: queue?.latestAuthority?.sourceText === currentText,
+					currentResult: JSON.parse(currentText).state.sections.find((section: any) => section.id === 'sql_1').resultJson,
+					diskResult: JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections.find((section: any) => section.id === 'sql_1').resultJson,
+				}));
+			}
+			assert.strictEqual(commandSettledBeforeDurability, false);
+			assert.strictEqual(JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections
+				.find((section: any) => section.id === 'sql_1').resultJson, undefined);
+			if (commandResult?.ok !== true) {
+				await Promise.resolve(receiveHandler!({
+					type: 'markdownDocumentCommand', commandId: 'transform-after-privacy-replacement',
+					sourceGeneration: projection.sourceGeneration,
+					expectedDocumentRevision: projection.documentRevision,
+					command: {
+						type: 'patch', sectionId: 'transform_1',
+						expectedSectionRevision: projection.sectionRevisions.transform_1,
+						patch: { name: 'After' },
+					},
+				}));
+				assert.strictEqual(
+					posted.find(message => message?.commandId === 'transform-after-privacy-replacement')?.ok,
+					true,
+				);
+			}
+			assert.strictEqual(JSON.parse(currentText).state.sections
+				.find((section: any) => section.id === 'transform_1').name, 'After');
+		} finally {
+			releaseRepair?.();
+			invalidation.restore();
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+			(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChange;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('failed privacy save sanitizes disk without auto-saving a safe replacement edit', async () => {
+		const invalidation = interceptSqlPersistenceInvalidation();
+		const originalOnDidChange = vscode.workspace.onDidChangeTextDocument;
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-privacy-safe-replacement-'));
+		const filePath = path.join(tmpDir, 'privacy-safe.kqlx');
+		let currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'sql_1', type: 'sql', query: 'SELECT 1', resultJson: 'PROTECTED' },
+				{
+					id: 'transform_1', type: 'transformation', name: 'Before',
+					dataSourceId: 'sql_1', transformationType: 'select',
+				},
+			] },
+		});
+		let diskText = currentText;
+		let dirty = false;
+		let saveCalls = 0;
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let projection: any;
+		const changeHandlers: Array<(event: vscode.TextDocumentChangeEvent) => unknown> = [];
+		const posted: any[] = [];
+		const disposeHandlers: Array<() => void> = [];
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(vscode.workspace as any).onDidChangeTextDocument = (handler: any) => {
+				changeHandlers.push(handler);
+				return { dispose() {} };
+			};
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
+				state: any, publish: (value: any) => Promise<unknown>,
+			) => publish({
+				...state,
+				sections: state.sections.map((section: any) => {
+					const next = { ...section };
+					if (next.type === 'sql') delete next.resultJson;
+					return next;
+				}),
+			});
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+				if (typeof replacement !== 'string') return false;
+				currentText = replacement;
+				dirty = currentText !== diskText;
+				return true;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0),
+				get isDirty() { return dirty; },
+				save: async () => {
+					saveCalls++;
+					if (saveCalls === 1) {
+						const replacement = JSON.parse(currentText);
+						const sql = replacement.state.sections.find((section: any) => section.id === 'sql_1');
+						delete sql.resultJson;
+						sql.query = 'SELECT 2 AS safe_edit';
+						currentText = JSON.stringify(replacement);
+						dirty = true;
+						for (const changeHandler of changeHandlers) {
+							await Promise.resolve(changeHandler({ document, contentChanges: [{}] } as any));
+						}
+						return false;
+					}
+					diskText = currentText;
+					dirty = false;
+					return true;
+				},
+			} as any;
+			const panel = {
+				webview: {
+					options: {}, postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') projection = message;
+						if (message?.reloadRequestId) await Promise.resolve(receiveHandler?.({
+							type: 'documentReloadResult', requestId: message.reloadRequestId,
+							applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+						}));
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+				},
+				onDidDispose: (handler: () => void) => {
+					disposeHandlers.push(handler);
+					return { dispose() {} };
+				},
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			assert.ok(invalidation.isSubscribed());
+			diskText = currentText;
+			dirty = false;
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), currentText);
+			invalidation.fire();
+			const queue = [...(provider as any).markdownDocumentQueues.values()][0];
+			try {
+				await waitForCondition(
+					() => saveCalls === 1 && dirty
+						&& !JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections
+							.find((section: any) => section.id === 'sql_1').resultJson,
+					'safe replacement should stay dirty while disk is sanitized independently',
+				);
+			} catch {
+				assert.fail(JSON.stringify({
+					saveCalls, dirty,
+					pendingPrivacySave: !!queue?.pendingPrivacySave,
+					privacyRepairNeeded: queue?.privacyRepairNeeded,
+					latestMatchesCurrent: queue?.latestAuthority?.sourceText === currentText,
+					currentResult: JSON.parse(currentText).state.sections.find((section: any) => section.id === 'sql_1').resultJson,
+					diskResult: JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections.find((section: any) => section.id === 'sql_1').resultJson,
+				}));
+			}
+			assert.strictEqual(saveCalls, 1);
+			assert.strictEqual(JSON.parse(currentText).state.sections
+				.find((section: any) => section.id === 'sql_1').query, 'SELECT 2 AS safe_edit');
+			await queue.pendingPrivacySave;
+			await queue.tail;
+		} finally {
+			for (const dispose of disposeHandlers) dispose();
+			await KqlxEditorProvider.waitForOpenEditorsClosed(vscode.Uri.file(filePath), 1_000);
+			invalidation.restore();
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+			(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChange;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('privacy repair during a held applied projection triggers a fresh projection before commands', async () => {
+		const invalidation = interceptSqlPersistenceInvalidation();
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-privacy-held-projection-'));
+		const filePath = path.join(tmpDir, 'privacy-held.kqlx');
+		let currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'sql_1', type: 'sql', query: 'SELECT 1', resultJson: 'PROTECTED' },
+				{
+					id: 'transform_1', type: 'transformation', name: 'Before',
+					dataSourceId: 'sql_1', transformationType: 'select',
+				},
+			] },
+		});
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let projection: any;
+		let holdNextReload = false;
+		let heldReload: any;
+		let repairEnabled = false;
+		const posted: any[] = [];
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
+				state: any, publish: (value: any) => Promise<unknown>,
+			) => publish(repairEnabled ? {
+				...state,
+				sections: state.sections.map((section: any) => {
+					const next = { ...section };
+					if (next.type === 'sql') delete next.resultJson;
+					return next;
+				}),
+			} : state);
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+				if (typeof replacement !== 'string') return false;
+				currentText = replacement;
+				return true;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+				save: async () => {
+					fs.writeFileSync(filePath, currentText, 'utf8');
+					return true;
+				},
+			} as any;
+			const panel = {
+				webview: {
+					options: {}, postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') projection = message;
+						if (message?.reloadRequestId) {
+							if (holdNextReload) {
+								holdNextReload = false;
+								heldReload = message;
+							} else await Promise.resolve(receiveHandler?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+				},
+				onDidDispose: () => ({ dispose() {} }),
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			assert.ok(projection && invalidation.isSubscribed());
+			holdNextReload = true;
+			const heldRequest = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await waitForCondition(() => !!heldReload, 'same-source projection should wait for acknowledgement');
+
+			repairEnabled = true;
+			invalidation.fire();
+			await waitForCondition(() => !currentText.includes('PROTECTED'), 'privacy repair should change source bytes');
+			const oldRequestId = heldReload.reloadRequestId;
+			await Promise.resolve(receiveHandler!({
+				type: 'documentReloadResult', requestId: oldRequestId,
+				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+			}));
+			await heldRequest;
+			await waitForCondition(
+				() => projection?.reloadRequestId !== oldRequestId
+					&& !projection?.state?.sections?.some((section: any) => section.resultJson === 'PROTECTED'),
+				'stale applied projection should be replaced with repaired bytes',
+			);
+
+			await Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommand', commandId: 'after-held-privacy-repair',
+				sourceGeneration: projection.sourceGeneration,
+				expectedDocumentRevision: projection.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'transform_1',
+					expectedSectionRevision: projection.sectionRevisions.transform_1,
+					patch: { name: 'After' },
+				},
+			}));
+			const commandResult = posted.find(message => message?.commandId === 'after-held-privacy-repair');
+			assert.strictEqual(commandResult?.ok, true, JSON.stringify(commandResult));
+			assert.strictEqual(JSON.parse(currentText).state.sections
+				.find((section: any) => section.id === 'transform_1').name, 'After');
+		} finally {
+			invalidation.restore();
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
 			(vscode.workspace as any).applyEdit = originalApplyEdit;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
@@ -4987,6 +5710,7 @@ suite('Sidecar .kql.json strategy', () => {
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		let ackSawLinkedText = '';
 		let conflictAcknowledged = false;
+		const disposeHandlers: Array<() => void> = [];
 		try {
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => state;
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (state: any, publish: (value: any) => Promise<unknown>) => publish(state);
@@ -5019,7 +5743,10 @@ suite('Sidecar .kql.json strategy', () => {
 						return true;
 					},
 					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
-				}, onDidDispose: () => ({ dispose() {} }),
+				}, onDidDispose: (handler: () => void) => {
+					disposeHandlers.push(handler);
+					return { dispose() {} };
+				},
 			} as any;
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
@@ -5046,9 +5773,10 @@ suite('Sidecar .kql.json strategy', () => {
 			assert.strictEqual(fs.readFileSync(linkedPath, 'utf8'), 'DURABLE_LINKED');
 			assert.strictEqual(fs.readFileSync(sessionPath, 'utf8'), externalSession);
 		} finally {
+			for (const dispose of disposeHandlers) dispose();
+			await KqlxEditorProvider.waitForOpenEditorsClosed(vscode.Uri.file(sessionPath), 1_000);
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
-			await new Promise<void>(resolve => setTimeout(resolve, 200));
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});
@@ -5845,6 +6573,243 @@ suite('Sidecar .kql.json strategy', () => {
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
 			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSaveTextDocument;
 			(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSaveTextDocument;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('canonical public-row restoration keeps a Transformation command queued until restore completes', async () => {
+		const originalOnWillSaveTextDocument = vscode.workspace.onWillSaveTextDocument;
+		const originalOnDidSaveTextDocument = vscode.workspace.onDidSaveTextDocument;
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalFailClosed = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFailClosed;
+		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-canonical-transform-queue-'));
+		const filePath = path.join(tmpDir, 'canonical-transform.kqlx');
+		const state = { sections: [
+			{
+				id: 'query_1', type: 'query', query: 'print value=1',
+				clusterUrl: 'https://cluster.kusto.windows.net', connectionIdHint: 'kusto-1', database: 'Db',
+				resultJson: 'PUBLIC_RESULT',
+			},
+			{
+				id: 'transform_1', type: 'transformation', name: 'Before',
+				dataSourceId: 'query_1', transformationType: 'select',
+			},
+		] };
+		let currentText = JSON.stringify({ kind: 'kqlx', version: 1, state }, null, 2);
+		let diskText = currentText;
+		let dirty = true;
+		let version = 1;
+		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+		let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
+		const canonicalChangeHandlers: Array<(event: vscode.TextDocumentChangeEvent) => unknown> = [];
+		const canonicalWillSaveHandlers: Array<(event: vscode.TextDocumentWillSaveEvent) => unknown> = [];
+		const canonicalDidSaveHandlers: Array<(document: vscode.TextDocument) => unknown> = [];
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let projection: any;
+		let gateCanonicalRestore = false;
+		let markCanonicalRestoreStarted!: () => void;
+		let releaseCanonicalRestore!: () => void;
+		const canonicalRestoreStarted = new Promise<void>(resolve => { markCanonicalRestoreStarted = resolve; });
+		const canonicalRestoreGate = new Promise<void>(resolve => { releaseCanonicalRestore = resolve; });
+		const posted: any[] = [];
+		const savingDisposeHandlers: Array<() => void> = [];
+		let survivorReceive: ((message: any) => unknown) | undefined;
+		let survivorProjection: any;
+		const survivorPosted: any[] = [];
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(vscode.workspace as any).onDidChangeTextDocument = (handler: any) => {
+				canonicalChangeHandlers.push(handler);
+				return { dispose() {} };
+			};
+			(vscode.workspace as any).onWillSaveTextDocument = (handler: any) => {
+				willSaveHandler = handler;
+				canonicalWillSaveHandlers.push(handler);
+				return { dispose() {} };
+			};
+			(vscode.workspace as any).onDidSaveTextDocument = (handler: any) => {
+				didSaveHandler = handler;
+				canonicalDidSaveHandlers.push(handler);
+				return { dispose() {} };
+			};
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+				if (typeof replacement !== 'string') return false;
+				currentText = replacement;
+				version++;
+				dirty = currentText !== diskText;
+				for (const changeHandler of canonicalChangeHandlers) {
+					await Promise.resolve(changeHandler({ document, contentChanges: [{}] } as any));
+				}
+				return true;
+			};
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFailClosed = (value: any) => ({
+				...value,
+				sections: value.sections.map((section: any) => {
+					const next = { ...section };
+					delete next.resultJson;
+					return next;
+				}),
+			});
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
+				value: unknown, publish: (next: unknown) => Promise<unknown>,
+			) => {
+				if (gateCanonicalRestore) {
+					gateCanonicalRestore = false;
+					markCanonicalRestoreStarted();
+					await canonicalRestoreGate;
+				}
+				return publish(value);
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(tmpDir),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText,
+				get version() { return version; },
+				get isDirty() { return dirty; },
+				eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0),
+				save: async () => {
+					const nestedBarriers: Promise<vscode.TextEdit[]>[] = [];
+					for (const handler of canonicalWillSaveHandlers) {
+						handler({
+							document,
+							waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => {
+								nestedBarriers.push(Promise.resolve(thenable));
+							},
+						} as any);
+					}
+					await Promise.all(nestedBarriers);
+					diskText = currentText;
+					dirty = false;
+					for (const handler of canonicalDidSaveHandlers) await Promise.resolve(handler(document));
+					return true;
+				},
+			} as any;
+			const panel = {
+				webview: {
+					options: {}, postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') projection = message;
+						if (message?.reloadRequestId) await Promise.resolve(receiveHandler?.({
+							type: 'documentReloadResult', requestId: message.reloadRequestId,
+							applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+						}));
+						if (message?.type === 'requestMarkdownCommandBarrier') await Promise.resolve(receiveHandler?.({
+							type: 'markdownDocumentCommandBarrierResult', requestId: message.requestId,
+							sourceGeneration: message.sourceGeneration,
+							documentRevision: projection.documentRevision, accepted: true,
+						}));
+						if (message?.type === 'requestFinalPersist') void Promise.resolve().then(() => receiveHandler?.({
+							type: 'persistDocument', state, flush: true, reason: 'save', editRevision: 0,
+							snapshotId: 'canonical-transform-save', flushRequestId: message.requestId,
+							sourceGeneration: projection.sourceGeneration,
+						}));
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+				},
+				onDidDispose: (handler: () => void) => {
+					savingDisposeHandlers.push(handler);
+					return { dispose() {} };
+				},
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			assert.ok(projection && willSaveHandler && didSaveHandler);
+			const savingWillSaveHandler = willSaveHandler;
+			const savingDidSaveHandler = didSaveHandler;
+			const survivorPanel = {
+				webview: {
+					options: {}, postMessage: async (message: any) => {
+						survivorPosted.push(message);
+						if (message?.type === 'documentData') survivorProjection = message;
+						if (message?.reloadRequestId) await Promise.resolve(survivorReceive?.({
+							type: 'documentReloadResult', requestId: message.reloadRequestId,
+							applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+						}));
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => { survivorReceive = handler; return { dispose() {} }; },
+				},
+				onDidDispose: () => ({ dispose() {} }),
+			} as any;
+			await provider.resolveCustomTextEditor(document, survivorPanel, {} as any);
+			await Promise.resolve(survivorReceive!({ type: 'requestDocument' }));
+			assert.ok(survivorProjection);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			assert.ok(projection);
+
+			let barrier: Promise<vscode.TextEdit[]> | undefined;
+			savingWillSaveHandler({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { barrier = Promise.resolve(thenable); },
+			} as any);
+			const edits = await barrier!;
+			assert.strictEqual(edits.length, 1);
+			currentText = edits[0].newText;
+			version++;
+			for (const changeHandler of canonicalChangeHandlers) {
+				await Promise.resolve(changeHandler({ document, contentChanges: [{}] } as any));
+			}
+			diskText = currentText;
+			dirty = false;
+			gateCanonicalRestore = true;
+			await Promise.resolve(savingDidSaveHandler(document));
+			await canonicalRestoreStarted;
+			for (const dispose of savingDisposeHandlers) dispose();
+			const priorSurvivorGeneration = survivorProjection.sourceGeneration;
+			await waitForCondition(
+				() => survivorProjection.sourceGeneration !== priorSurvivorGeneration,
+				'survivor should acknowledge replacement ownership after saving-panel disposal',
+			);
+
+			let commandSettled = false;
+			const command = Promise.resolve(survivorReceive!({
+				type: 'markdownDocumentCommand', commandId: 'transform-during-canonical-restore',
+				sourceGeneration: survivorProjection.sourceGeneration,
+				expectedDocumentRevision: survivorProjection.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'transform_1',
+					expectedSectionRevision: survivorProjection.sectionRevisions.transform_1,
+					patch: { name: 'After' },
+				},
+			})).then(() => { commandSettled = true; });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(commandSettled, false, 'Transformation command must wait for canonical restoration');
+			releaseCanonicalRestore();
+			await waitForCondition(
+				() => diskText.includes('PUBLIC_RESULT') || commandSettled,
+				'canonical restoration should durably restore rows before releasing the survivor command',
+			);
+			assert.ok(currentText.includes('PUBLIC_RESULT'), 'rows must be restored before survivor command settlement');
+			assert.ok(diskText.includes('PUBLIC_RESULT'), 'rows must be durable before survivor command settlement');
+			await command;
+
+			const finalSections = JSON.parse(currentText).state.sections;
+			assert.strictEqual(finalSections.find((section: any) => section.id === 'query_1').resultJson, 'PUBLIC_RESULT');
+			assert.strictEqual(finalSections.find((section: any) => section.id === 'transform_1').name, 'After');
+			assert.strictEqual(
+				survivorPosted.find(message => message?.commandId === 'transform-during-canonical-restore')?.ok,
+				true,
+			);
+			assert.ok(diskText.includes('PUBLIC_RESULT'));
+		} finally {
+			releaseCanonicalRestore?.();
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFailClosed = originalFailClosed;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSaveTextDocument;
+			(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSaveTextDocument;
+			(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChangeTextDocument;
 			(vscode.workspace as any).applyEdit = originalApplyEdit;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}

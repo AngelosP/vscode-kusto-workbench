@@ -129,6 +129,7 @@ const mocks = {
 	reconcileHostOwnedChartProjection: vi.fn(),
 	reconcileHostOwnedMarkdownProjection: vi.fn(),
 	reconcileHostOwnedPythonProjection: vi.fn(),
+	reconcileHostOwnedTransformationProjection: vi.fn(),
 	reconcileHostOwnedUrlProjection: vi.fn(),
 	detachSqlComparisonForAdmissionRollback: vi.fn((boxId: string, sourceBoxId: string) => {
 		const metadata = handlerState.optimizationMetadataByBoxId[boxId];
@@ -253,6 +254,8 @@ vi.mock('../../src/webview/sections/kw-chart-section.js', () => ({
 vi.mock('../../src/webview/sections/kw-transformation-section.js', () => ({
 	addTransformationBox: vi.fn(() => 'transformation_1'),
 	removeTransformationBox: vi.fn(),
+	commitTransformationDocumentState: vi.fn(() => true),
+	reconcileHostOwnedTransformationProjection: mocks.reconcileHostOwnedTransformationProjection,
 }));
 
 
@@ -716,7 +719,7 @@ describe('message-handler dispatch', () => {
 		dispatchHostMessage({ type: 'persistDocumentAck', snapshotId: 'snapshot-1', editRevision: 7 });
 		await vi.waitFor(() => {
 			expect(mocks.flushCompatibilityPersist).toHaveBeenCalledWith('flush-1', 'save');
-			expect(mocks.acknowledgePersistDocument).toHaveBeenCalledWith('snapshot-1', 7);
+			expect(mocks.acknowledgePersistDocument).toHaveBeenCalledWith('snapshot-1', 7, undefined);
 		});
 	});
 
@@ -736,10 +739,12 @@ describe('message-handler dispatch', () => {
 				documentRevision: 4,
 				sectionRevisions: { url_1: 1, python_1: 2, url_2: 0 },
 				markdownSectionRevisions: {},
+				chartSections: [],
 				markdownSections: [],
 				pythonSections: [{
 					id: 'python_1', type: 'python', code: 'print(1)', output: 'one', expanded: true,
 				}],
+				transformationSections: [],
 				urlSections: [
 					{ id: 'url_1', type: 'url', url: 'https://example.com/one.png', expanded: true },
 					{ id: 'url_2', type: 'url', url: 'https://example.com/two.png', expanded: true },
@@ -756,6 +761,7 @@ describe('message-handler dispatch', () => {
 		expect(mocks.reconcileHostOwnedMarkdownProjection).toHaveBeenCalledOnce();
 		expect(mocks.reconcileHostOwnedChartProjection).toHaveBeenCalledOnce();
 		expect(mocks.reconcileHostOwnedPythonProjection).toHaveBeenCalledOnce();
+		expect(mocks.reconcileHostOwnedTransformationProjection).toHaveBeenCalledOnce();
 		expect(mocks.reconcileHostOwnedUrlProjection).toHaveBeenCalledOnce();
 	});
 
@@ -6480,13 +6486,23 @@ describe('tool section name persistence', () => {
 	});
 
 	it('toolConfigureTransformation calls __kustoSetSectionName', async () => {
-		dispatchHostMessage({
-			type: 'toolConfigureTransformation',
-			requestId: 'r4',
-			input: { sectionId: 'transformation_1', name: 'Pivot Data' },
+		const transformation = document.createElement('div');
+		Object.defineProperty(transformation, 'tagName', {
+			value: 'KW-TRANSFORMATION-SECTION', configurable: true,
 		});
-		await new Promise(r => setTimeout(r, 50));
-		expect(setSectionNameSpy).toHaveBeenCalledWith('transformation_1', 'Pivot Data');
+		transformation.id = 'transformation_1';
+		document.body.appendChild(transformation);
+		try {
+			dispatchHostMessage({
+				type: 'toolConfigureTransformation',
+				requestId: 'r4',
+				input: { sectionId: 'transformation_1', name: 'Pivot Data' },
+			});
+			await new Promise(r => setTimeout(r, 50));
+			expect(setSectionNameSpy).toHaveBeenCalledWith('transformation_1', 'Pivot Data');
+		} finally {
+			transformation.remove();
+		}
 	});
 
 	it('toolConfigureSqlSection schedules persistence after a name update', async () => {

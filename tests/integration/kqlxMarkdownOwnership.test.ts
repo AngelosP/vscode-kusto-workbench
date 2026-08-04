@@ -713,10 +713,24 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				},
 			}));
 			await firstApplyStarted;
-			await Promise.resolve(second.receive({
-				type: 'documentReloadResult', requestId: second.reloadRequestId,
-				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
-			}));
+			let secondRequestSettled = false;
+			void secondRequest.then(() => { secondRequestSettled = true; });
+			const acknowledgedSecondRequests = new Set<string>();
+			for (let attempt = 0; attempt < 8; attempt++) {
+				await waitForCondition(
+					() => !!second.reloadRequestId && !acknowledgedSecondRequests.has(second.reloadRequestId),
+					'second cold-start panel should post a current projection candidate',
+					1_000,
+				);
+				const requestId = second.reloadRequestId;
+				acknowledgedSecondRequests.add(requestId);
+				await Promise.resolve(second.receive({
+					type: 'documentReloadResult', requestId,
+					applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+				}));
+				await new Promise<void>(resolve => setImmediate(resolve));
+				if (secondRequestSettled && acknowledgedSecondRequests.has(second.reloadRequestId)) break;
+			}
 			await secondRequest;
 			let secondCommandSettled = false;
 			const secondCommand = Promise.resolve(second.receive({
@@ -812,7 +826,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
-	test('Chart, Python, URL, and Markdown host commands survive stale DOM state, view recreation, and lossless save', async () => {
+	test('Transformation, Chart, Python, URL, and Markdown host commands survive stale DOM state, view recreation, and lossless save', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalOnDidChange = vscode.workspace.onDidChangeTextDocument;
 		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
@@ -869,6 +883,30 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						},
 						chartTitle: 'Before chart', chartSubtitle: 'Before subtitle', chartTitleAlign: 'left',
 						validation: { status: 'before' }, futureChart: { producer: 'future-chart' },
+					},
+					{
+						id: 'transformation_original', type: 'transformation', name: 'Original Transformation',
+						mode: 'edit', expanded: true, editorHeightPx: 300,
+						dataSourceId: 'query_left', transformationType: 'join', distinctColumn: 'Country',
+						groupByColumns: ['Region'], aggregations: [{
+							name: 'RevenueTotal', column: 'Revenue', function: 'sum',
+							futureAggregation: { keep: true },
+						}],
+						deriveColumns: [{
+							name: 'Margin', expression: 'Revenue - Cost', futureDerive: { keep: true },
+						}],
+						deriveColumnName: 'LegacyMargin', deriveExpression: 'Revenue - Cost',
+						pivotRowKeyColumn: 'Region', pivotColumnKeyColumn: 'Quarter',
+						pivotValueColumn: 'Revenue', pivotAggregation: 'sum', pivotMaxColumns: 12,
+						joinRightDataSourceId: 'query_right', joinKind: 'inner',
+						joinKeys: [{
+							left: 'CustomerId', right: 'CustomerId', futureJoinKey: { keep: true },
+						}],
+						joinOmitDuplicateColumns: false,
+						futureTransformation: {
+							inputBindings: ['query_left@7', 'query_right@4'],
+							derivedLineage: ['query_left@7', 'query_right@4'],
+						},
 					},
 					{
 						id: 'future_opaque', type: 'future-section',
@@ -949,6 +987,13 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 									{
 										id: 'chart_temporary', type: 'chart', name: 'Stale removed Chart',
 										expanded: true, dataSourceId: 'stale_removed_source', chartType: 'line',
+									},
+									{
+										id: 'transformation_original', type: 'transformation',
+										name: 'Stale Transformation DOM', mode: 'edit', expanded: true,
+										dataSourceId: 'stale_left', transformationType: 'join',
+										joinRightDataSourceId: 'stale_right', joinKind: 'leftouter',
+										joinKeys: [{ left: 'StaleLeft', right: 'StaleRight' }],
 									},
 									{ id: 'devnotes_owner', type: 'devnotes', entries: [{
 										id: 'note_saved', created: '2026-08-02T00:00:00.000Z',
@@ -1046,6 +1091,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.deepStrictEqual(initialProjection.markdownSectionRevisions, { markdown_original: 0 });
 			assert.deepStrictEqual(initialProjection.sectionRevisions, {
 				markdown_original: 0, url_original: 0, python_original: 0, chart_original: 0,
+				transformation_original: 0,
 			});
 
 			const sendCommand = async (message: any) => {
@@ -1325,6 +1371,50 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				{ ok: true, documentRevision: 12 },
 			);
 
+			const staleTransformation = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'transformation-stale-patch',
+				expectedDocumentRevision: 12,
+				command: {
+					type: 'patch', sectionId: 'transformation_original', expectedSectionRevision: 1,
+					patch: {
+						dataSourceId: 'stale_left', joinRightDataSourceId: 'stale_right',
+						joinKind: 'leftouter',
+					},
+				},
+			});
+			assert.strictEqual(staleTransformation.ok, false);
+			assert.strictEqual(staleTransformation.error?.code, 'stale-section-revision');
+			assert.strictEqual(staleTransformation.documentRevision, 12);
+			assert.strictEqual(
+				JSON.parse(currentText).state.sections.find(
+					(section: any) => section.id === 'transformation_original',
+				).dataSourceId,
+				'query_left',
+				'a stale Transformation command must not change its primary input binding',
+			);
+
+			const transformationPatched = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'transformation-patch',
+				expectedDocumentRevision: 12,
+				command: {
+					type: 'patch', sectionId: 'transformation_original', expectedSectionRevision: 0,
+					patch: {
+						name: 'Host owned Transformation', mode: 'preview', expanded: false,
+						editorHeightPx: 460, joinKind: 'fullouter',
+						joinKeys: [{ left: 'CustomerId', right: 'AccountId' }],
+						joinOmitDuplicateColumns: true,
+					},
+				},
+			});
+			assert.deepStrictEqual(
+				{
+					ok: transformationPatched.ok, documentRevision: transformationPatched.documentRevision,
+					sectionRevision: transformationPatched.sectionRevision,
+				},
+				{ ok: true, documentRevision: 13, sectionRevision: 1 },
+				JSON.stringify(transformationPatched),
+			);
+
 			await firstView.dispose();
 
 			const recreatedView = createPanel();
@@ -1332,10 +1422,11 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			await recreatedView.receive({ type: 'requestDocument' });
 			const recreatedProjection = recreatedView.posted.find(message => message?.type === 'documentData' && message.ok === true);
 			assert.ok(recreatedProjection, 'recreated view must receive a projection');
-			assert.strictEqual(recreatedProjection.documentRevision, 12);
+			assert.strictEqual(recreatedProjection.documentRevision, 13);
 			assert.deepStrictEqual(recreatedProjection.markdownSectionRevisions, { markdown_original: 1 });
 			assert.deepStrictEqual(recreatedProjection.sectionRevisions, {
 				markdown_original: 1, url_original: 1, python_original: 1, chart_original: 1,
+				transformation_original: 1,
 			});
 			assert.strictEqual(recreatedProjection.state.sections[0].text, 'after');
 			assert.strictEqual(recreatedProjection.state.sections[0].title, 'Host owned');
@@ -1376,6 +1467,20 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				chartTitle: 'Host chart', chartSubtitle: 'After subtitle', chartTitleAlign: 'center',
 				validation: { status: 'after' },
 			});
+			assert.deepStrictEqual(recreatedProjection.state.sections[4], {
+				id: 'transformation_original', type: 'transformation', name: 'Host owned Transformation',
+				mode: 'preview', expanded: false, editorHeightPx: 460,
+				dataSourceId: 'query_left', transformationType: 'join', distinctColumn: 'Country',
+				groupByColumns: ['Region'],
+				aggregations: [{ name: 'RevenueTotal', column: 'Revenue', function: 'sum' }],
+				deriveColumns: [{ name: 'Margin', expression: 'Revenue - Cost' }],
+				deriveColumnName: 'LegacyMargin', deriveExpression: 'Revenue - Cost',
+				pivotRowKeyColumn: 'Region', pivotColumnKeyColumn: 'Quarter',
+				pivotValueColumn: 'Revenue', pivotAggregation: 'sum', pivotMaxColumns: 12,
+				joinRightDataSourceId: 'query_right', joinKind: 'fullouter',
+				joinKeys: [{ left: 'CustomerId', right: 'AccountId' }],
+				joinOmitDuplicateColumns: true,
+			});
 
 			const owningSaveHandler = willSaveHandlers.at(-1);
 			assert.ok(owningSaveHandler, 'native Save handler must be installed for the recreated view');
@@ -1395,7 +1500,8 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.deepStrictEqual(saved.futureRoot, fixture.futureRoot);
 			assert.deepStrictEqual(saved.state.futureState, fixture.state.futureState);
 			assert.deepStrictEqual(saved.state.sections.map((section: any) => section.id), [
-				'markdown_original', 'url_original', 'python_original', 'chart_original', 'future_opaque', 'devnotes_owner',
+				'markdown_original', 'url_original', 'python_original', 'chart_original', 'transformation_original',
+				'future_opaque', 'devnotes_owner',
 			]);
 			assert.deepStrictEqual(saved.state.sections[0], {
 				id: 'markdown_original', type: 'markdown', title: 'Host owned', text: 'after',
@@ -1441,8 +1547,32 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				chartTitle: 'Host chart', chartSubtitle: 'After subtitle', chartTitleAlign: 'center',
 				validation: { status: 'after' }, futureChart: { producer: 'future-chart' },
 			});
-			assert.deepStrictEqual(saved.state.sections[4], fixture.state.sections[4]);
-			assert.strictEqual(saved.state.sections[5].entries[0].content, 'adapter-owned note');
+			assert.deepStrictEqual(saved.state.sections[4], {
+				id: 'transformation_original', type: 'transformation', name: 'Host owned Transformation',
+				mode: 'preview', expanded: false, editorHeightPx: 460,
+				dataSourceId: 'query_left', transformationType: 'join', distinctColumn: 'Country',
+				groupByColumns: ['Region'], aggregations: [{
+					name: 'RevenueTotal', column: 'Revenue', function: 'sum',
+					futureAggregation: { keep: true },
+				}],
+				deriveColumns: [{
+					name: 'Margin', expression: 'Revenue - Cost', futureDerive: { keep: true },
+				}],
+				deriveColumnName: 'LegacyMargin', deriveExpression: 'Revenue - Cost',
+				pivotRowKeyColumn: 'Region', pivotColumnKeyColumn: 'Quarter',
+				pivotValueColumn: 'Revenue', pivotAggregation: 'sum', pivotMaxColumns: 12,
+				joinRightDataSourceId: 'query_right', joinKind: 'fullouter',
+				joinKeys: [{
+					left: 'CustomerId', right: 'AccountId', futureJoinKey: { keep: true },
+				}],
+				joinOmitDuplicateColumns: true,
+				futureTransformation: {
+					inputBindings: ['query_left@7', 'query_right@4'],
+					derivedLineage: ['query_left@7', 'query_right@4'],
+				},
+			});
+			assert.deepStrictEqual(saved.state.sections[5], fixture.state.sections[5]);
+			assert.strictEqual(saved.state.sections[6].entries[0].content, 'adapter-owned note');
 			await recreatedView.dispose();
 		} finally {
 			for (const subscription of workspaceSubscriptions) subscription.dispose();
@@ -1650,6 +1780,542 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
+	test('newer low-generation panel authority wins a delayed high-generation Transformation command', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-uri-authority-order-'));
+		const filePath = path.join(tmpDir, 'authority.kqlx');
+		const notebook = (query: string, order: 'source-first' | 'transform-first') => JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: order === 'source-first' ? [
+				{ id: 'query_1', type: 'query', query },
+				{
+					id: 'transform_1', type: 'transformation', name: 'Initial',
+					dataSourceId: 'query_1', transformationType: 'select',
+				},
+			] : [
+				{
+					id: 'transform_1', type: 'transformation', name: 'Initial',
+					dataSourceId: 'query_1', transformationType: 'select',
+				},
+				{ id: 'query_1', type: 'query', query },
+			] },
+		}, null, 2) + '\n';
+		let currentText = notebook('print initial = 1', 'source-first');
+		let markCommandApplyStarted!: () => void;
+		let releaseCommandApply!: () => void;
+		const commandApplyStarted = new Promise<void>(resolve => { markCommandApplyStarted = resolve; });
+		const commandApplyGate = new Promise<void>(resolve => { releaseCommandApply = resolve; });
+		let delayCommandApply = false;
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+				if (typeof replacement !== 'string') return false;
+				if (delayCommandApply && replacement.includes('"name": "Stale command"')) {
+					delayCommandApply = false;
+					markCommandApplyStarted();
+					await commandApplyGate;
+				}
+				currentText = replacement;
+				return true;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+			} as any;
+			const createPanel = () => {
+				let receive: ((message: any) => unknown) | undefined;
+				let projection: any;
+				let holdReload = false;
+				let pendingReload: any;
+				const posted: any[] = [];
+				const panel = {
+					webview: {
+						options: {}, postMessage: async (message: any) => {
+							posted.push(message);
+							if (message?.type === 'documentData') projection = message;
+							if (message?.reloadRequestId) {
+								if (holdReload) pendingReload = message;
+								else await Promise.resolve(receive?.({
+									type: 'documentReloadResult', requestId: message.reloadRequestId,
+									applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+								}));
+							}
+							return true;
+						},
+						onDidReceiveMessage: (handler: any) => {
+							receive = wrapDocumentViewTestReceiver(handler, () => projection);
+							return { dispose() {} };
+						},
+					},
+					onDidDispose: () => ({ dispose() {} }),
+				} as any;
+				return {
+					panel, posted,
+					receive: (message: any) => receive!(message),
+					get projection() { return projection; },
+					get pendingReload() { return pendingReload; },
+					holdNextReload() { holdReload = true; pendingReload = undefined; },
+				};
+			};
+			const high = createPanel();
+			const low = createPanel();
+			await provider.resolveCustomTextEditor(document, high.panel, {} as any);
+			await provider.resolveCustomTextEditor(document, low.panel, {} as any);
+			await Promise.resolve(high.receive({ type: 'requestDocument' }));
+			await Promise.resolve(low.receive({ type: 'requestDocument' }));
+			for (let index = 0; index < 3; index++) {
+				await Promise.resolve(high.receive({ type: 'requestDocument' }));
+			}
+			const owner = [...(provider as any).markdownDocuments.values()][0];
+			const registrations = [...(provider as any).markdownPanelOwners.values()][0];
+			const commandPanel = registrations?.get(high.panel)?.owner === owner ? high : low;
+			const authorityPanel = commandPanel === high ? low : high;
+			for (let index = 0; index < 3; index++) {
+				await Promise.resolve(commandPanel.receive({ type: 'requestDocument' }));
+			}
+			assert.ok(commandPanel.projection.sourceGeneration > authorityPanel.projection.sourceGeneration);
+
+			delayCommandApply = true;
+			let commandId = '';
+			let command!: Promise<unknown>;
+			let sourceGeneration = commandPanel.projection.sourceGeneration;
+			let expectedDocumentRevision = commandPanel.projection.documentRevision;
+			let expectedSectionRevision = commandPanel.projection.sectionRevisions.transform_1;
+			for (let attempt = 0; attempt < 3; attempt++) {
+				commandId = `high-generation-stale-command-${attempt}`;
+				command = Promise.resolve(commandPanel.receive({
+					type: 'markdownDocumentCommand', commandId,
+					sourceGeneration,
+					expectedDocumentRevision,
+					command: {
+						type: 'patch', sectionId: 'transform_1', expectedSectionRevision,
+						patch: { name: 'Stale command' },
+					},
+				}));
+				const phase = await Promise.race([
+					commandApplyStarted.then(() => 'started' as const),
+					command.then(() => 'settled' as const),
+				]);
+				if (phase === 'started') break;
+				const result = commandPanel.posted.find(message => message?.commandId === commandId);
+				assert.strictEqual(result?.ok, false);
+				sourceGeneration = result.sourceGeneration;
+				expectedDocumentRevision = result.documentRevision;
+				expectedSectionRevision = result.projection.sectionRevisions.transform_1;
+			}
+			await commandApplyStarted;
+
+			const directText = notebook('print direct = 2', 'transform-first');
+			currentText = directText;
+			authorityPanel.holdNextReload();
+			const lowReload = Promise.resolve(authorityPanel.receive({ type: 'requestDocument' }));
+			await waitForCondition(() => !!authorityPanel.pendingReload, 'low-generation panel should capture direct authority');
+			assert.ok(commandPanel.projection.sourceGeneration > authorityPanel.pendingReload.sourceGeneration);
+			releaseCommandApply();
+			await command;
+
+			assert.strictEqual(currentText, directText);
+			assert.strictEqual(
+				commandPanel.posted.find(message => message?.commandId === commandId)?.ok,
+				false,
+			);
+			await Promise.resolve(authorityPanel.receive({
+				type: 'documentReloadResult', requestId: authorityPanel.pendingReload.reloadRequestId,
+				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+			}));
+			await lowReload;
+		} finally {
+			releaseCommandApply?.();
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('a delayed stale panel source observation cannot replace newer URI authority', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalReadProjectionSourceText = (KqlxEditorProvider as any).prototype.readProjectionSourceTextForDocument;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-source-observation-order-'));
+		const filePath = path.join(tmpDir, 'observation.kqlx');
+		const notebook = (query: string) => JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', query },
+				{
+					id: 'transform_1', type: 'transformation', dataSourceId: 'query_1',
+					transformationType: 'select',
+				},
+			] },
+		});
+		const sourceA = notebook('print A = 1');
+		const sourceB = notebook('print B = 2');
+		let currentText = sourceA;
+		let delayNextRead = false;
+		let markDelayedRead!: () => void;
+		let releaseDelayedRead!: () => void;
+		const delayedRead = new Promise<void>(resolve => { markDelayedRead = resolve; });
+		const delayedReadGate = new Promise<void>(resolve => { releaseDelayedRead = resolve; });
+
+		try {
+			fs.writeFileSync(filePath, sourceA, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(KqlxEditorProvider as any).prototype.readProjectionSourceTextForDocument = async function () {
+				const observed = currentText;
+				if (delayNextRead) {
+					delayNextRead = false;
+					markDelayedRead();
+					await delayedReadGate;
+				}
+				return observed;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+			} as any;
+			const createPanel = () => {
+				let receive: ((message: any) => unknown) | undefined;
+				let projection: any;
+				const panel = {
+					webview: {
+						options: {}, postMessage: async (message: any) => {
+							if (message?.type === 'documentData') projection = message;
+							if (message?.reloadRequestId) await Promise.resolve(receive?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+							}));
+							return true;
+						},
+						onDidReceiveMessage: (handler: any) => {
+							receive = wrapDocumentViewTestReceiver(handler, () => projection);
+							return { dispose() {} };
+						},
+					},
+					onDidDispose: () => ({ dispose() {} }),
+				} as any;
+				return {
+					panel,
+					receive: (message: any) => receive!(message),
+					get projection() { return projection; },
+				};
+			};
+			const stalePanel = createPanel();
+			const freshPanel = createPanel();
+			await provider.resolveCustomTextEditor(document, stalePanel.panel, {} as any);
+			await provider.resolveCustomTextEditor(document, freshPanel.panel, {} as any);
+			await Promise.resolve(stalePanel.receive({ type: 'requestDocument' }));
+			await Promise.resolve(freshPanel.receive({ type: 'requestDocument' }));
+
+			delayNextRead = true;
+			const staleRequest = Promise.resolve(stalePanel.receive({ type: 'requestDocument' }));
+			await delayedRead;
+			currentText = sourceB;
+			await Promise.resolve(freshPanel.receive({ type: 'requestDocument' }));
+			releaseDelayedRead();
+			await staleRequest;
+
+			const queue = [...(provider as any).markdownDocumentQueues.values()][0];
+			assert.strictEqual(queue.latestAuthority.sourceText, sourceB);
+			await Promise.resolve(stalePanel.receive({ type: 'requestDocument' }));
+			assert.strictEqual(
+				freshPanel.projection.state.sections.find((section: any) => section.id === 'query_1').query,
+				'print B = 2',
+			);
+
+			currentText = sourceA;
+			await Promise.all([
+				Promise.resolve(stalePanel.receive({ type: 'requestDocument' })),
+				Promise.resolve(freshPanel.receive({ type: 'requestDocument' })),
+			]);
+			assert.strictEqual(
+				stalePanel.projection.state.sections.find((section: any) => section.id === 'query_1').query,
+				'print A = 1',
+			);
+			assert.strictEqual(
+				freshPanel.projection.state.sections.find((section: any) => section.id === 'query_1').query,
+				'print A = 1',
+			);
+
+			currentText = sourceB;
+			await Promise.all([
+				Promise.resolve(stalePanel.receive({ type: 'requestDocument' })),
+				Promise.resolve(freshPanel.receive({ type: 'requestDocument' })),
+			]);
+			assert.strictEqual(
+				stalePanel.projection.state.sections.find((section: any) => section.id === 'query_1').query,
+				'print B = 2',
+			);
+			assert.strictEqual(
+				freshPanel.projection.state.sections.find((section: any) => section.id === 'query_1').query,
+				'print B = 2',
+			);
+		} finally {
+			releaseDelayedRead?.();
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(KqlxEditorProvider as any).prototype.readProjectionSourceTextForDocument = originalReadProjectionSourceText;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('direct A fences a delayed command after admitted persistence advances A to B', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-authority-a-b-a-'));
+		const filePath = path.join(tmpDir, 'aba.kqlx');
+		const notebook = (query: string, name: string) => JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', query },
+				{
+					id: 'transform_1', type: 'transformation', name,
+					dataSourceId: 'query_1', transformationType: 'select',
+				},
+			] },
+		}, null, 2) + '\n';
+		const sourceA = notebook('print A = 1', 'Initial');
+		let currentText = sourceA;
+		let receive: ((message: any) => unknown) | undefined;
+		let projection: any;
+		let holdReload = false;
+		let pendingReload: any;
+		let delayCommand = false;
+		let markCommandStarted!: () => void;
+		let releaseCommand!: () => void;
+		const commandStarted = new Promise<void>(resolve => { markCommandStarted = resolve; });
+		const commandGate = new Promise<void>(resolve => { releaseCommand = resolve; });
+		const posted: any[] = [];
+
+		try {
+			fs.writeFileSync(filePath, sourceA, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+				if (typeof replacement !== 'string') return false;
+				if (delayCommand && replacement.includes('"name": "Stale command"')) {
+					delayCommand = false;
+					markCommandStarted();
+					await commandGate;
+				}
+				currentText = replacement;
+				return true;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+			} as any;
+			const panel = {
+				webview: {
+					options: {}, postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') projection = message;
+						if (message?.reloadRequestId) {
+							if (holdReload) pendingReload = message;
+							else await Promise.resolve(receive?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receive = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: () => ({ dispose() {} }),
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receive!({ type: 'requestDocument' }));
+			await Promise.resolve(receive!({
+				type: 'persistDocument', snapshotId: 'advance-to-b', editRevision: 1,
+				sourceGeneration: projection.sourceGeneration,
+				state: { sections: [
+					{ id: 'query_1', type: 'query', query: 'print B = 2' },
+					{
+						id: 'transform_1', type: 'transformation', name: 'Initial',
+						dataSourceId: 'query_1', transformationType: 'select',
+					},
+				] },
+			}));
+			assert.ok(posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'advance-to-b'));
+			assert.ok(currentText.includes('print B = 2'));
+
+			delayCommand = true;
+			const command = Promise.resolve(receive!({
+				type: 'markdownDocumentCommand', commandId: 'aba-stale-command',
+				sourceGeneration: projection.sourceGeneration,
+				expectedDocumentRevision: projection.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'transform_1',
+					expectedSectionRevision: projection.sectionRevisions.transform_1,
+					patch: { name: 'Stale command' },
+				},
+			}));
+			await commandStarted;
+			currentText = sourceA;
+			holdReload = true;
+			const reload = Promise.resolve(receive!({ type: 'requestDocument' }));
+			await waitForCondition(() => !!pendingReload, 'direct A should start a new projection');
+			releaseCommand();
+			await command;
+
+			assert.strictEqual(currentText, sourceA);
+			assert.strictEqual(posted.find(message => message?.commandId === 'aba-stale-command')?.ok, false);
+			await Promise.resolve(receive!({
+				type: 'documentReloadResult', requestId: pendingReload.reloadRequestId,
+				applied: true, editRevision: 1, markdownCommandBarrierSupported: true,
+			}));
+			await reload;
+		} finally {
+			releaseCommand?.();
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('held same-token projection cannot roll aggregate revision back after Transformation ABA', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-projection-aba-epoch-'));
+		const filePath = path.join(tmpDir, 'projection-aba.kqlx');
+		let currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [{
+				id: 'transform_1', type: 'transformation', name: 'A',
+				dataSourceId: 'query_1', transformationType: 'select',
+			}] },
+		}, null, 2) + '\n';
+		let receive: ((message: any) => unknown) | undefined;
+		let projection: any;
+		let holdNextReload = false;
+		let heldReload: any;
+		const posted: any[] = [];
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+				if (typeof replacement !== 'string') return false;
+				currentText = replacement;
+				return true;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+			} as any;
+			const panel = {
+				webview: {
+					options: {}, postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') projection = message;
+						if (message?.reloadRequestId) {
+							if (holdNextReload) {
+								holdNextReload = false;
+								heldReload = message;
+							} else {
+								await Promise.resolve(receive?.({
+									type: 'documentReloadResult', requestId: message.reloadRequestId,
+									applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+								}));
+							}
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receive = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: () => ({ dispose() {} }),
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receive!({ type: 'requestDocument' }));
+			const initialProjection = projection;
+			holdNextReload = true;
+			const heldRequest = Promise.resolve(receive!({ type: 'requestDocument' }));
+			await waitForCondition(() => !!heldReload, 'same-token projection should wait for acknowledgement');
+
+			const sendPatch = async (
+				commandId: string,
+				name: string,
+				expectedDocumentRevision: number,
+				expectedSectionRevision: number,
+				sourceGeneration = initialProjection.sourceGeneration,
+			) => {
+				await Promise.resolve(receive!({
+					type: 'markdownDocumentCommand', commandId,
+					sourceGeneration,
+					expectedDocumentRevision,
+					command: {
+						type: 'patch', sectionId: 'transform_1', expectedSectionRevision,
+						patch: { name },
+					},
+				}));
+				const result = posted.find(message => message?.commandId === commandId);
+				assert.strictEqual(result?.ok, true, `${commandId}: ${JSON.stringify(result)}`);
+				return result;
+			};
+			const toB = await sendPatch('aba-to-b', 'B', 0, 0);
+			const toA = await sendPatch('aba-to-a', 'A', toB.documentRevision, toB.sectionRevision);
+			assert.strictEqual(toA.documentRevision, 2);
+
+			await Promise.resolve(receive!({
+				type: 'documentReloadResult', requestId: heldReload.reloadRequestId,
+				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+			}));
+			await heldRequest;
+			await waitForCondition(
+				() => projection?.documentRevision === 2 && projection?.reloadRequestId !== heldReload.reloadRequestId,
+				'stale ABA activation should retry at the current aggregate revision',
+			);
+
+			const afterRetry = await sendPatch(
+				'aba-after-retry', 'C', projection.documentRevision, projection.sectionRevisions.transform_1,
+				projection.sourceGeneration,
+			);
+			assert.strictEqual(afterRetry.documentRevision, 3);
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].name, 'C');
+		} finally {
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('reload retires stale adapter sanitation before a new Markdown command', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalApplyEdit = vscode.workspace.applyEdit;
@@ -1736,17 +2402,25 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			} as any;
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			let survivingPersistSettled = false;
 			const survivingPersist = Promise.resolve(receiveHandler!({
 				type: 'persistDocument', state: { sections: [
 					{ id: 'query_1', type: 'query', query: 'print survives rejection = 1' },
 					{ id: 'markdown_1', type: 'markdown', text: 'adapter markdown' },
 				] },
-			}));
+			})).finally(() => { survivingPersistSettled = true; });
 			await survivingAdapterStarted;
 			rejectNextReload = true;
-			const rejectedReload = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			let rejectedReloadSettled = false;
+			const rejectedReload = Promise.resolve(receiveHandler!({ type: 'requestDocument' }))
+				.finally(() => { rejectedReloadSettled = true; });
 			await waitForCondition(() => !rejectNextReload, 'projection rejection should be delivered', 1_000);
 			releaseSurvivingAdapter();
+			await waitForCondition(
+				() => survivingPersistSettled && rejectedReloadSettled,
+				'rejected same-source reload and surviving persistence should both settle',
+				1_000,
+			);
 			await Promise.all([survivingPersist, rejectedReload]);
 			assert.strictEqual(JSON.parse(currentText).state.sections[0].query, 'print survives rejection = 1');
 			const stalePersist = Promise.resolve(receiveHandler!({
@@ -1756,7 +2430,15 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				] },
 			}));
 			await adapterStarted;
-			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			let acceptedReloadSettled = false;
+			const acceptedReload = Promise.resolve(receiveHandler!({ type: 'requestDocument' }))
+				.finally(() => { acceptedReloadSettled = true; });
+			await waitForCondition(
+				() => acceptedReloadSettled,
+				'accepted reload should settle before the post-reload command',
+				1_000,
+			);
+			await acceptedReload;
 			let commandSettled = false;
 			const command = Promise.resolve(receiveHandler!({
 				type: 'markdownDocumentCommand', commandId: 'post-reload-command',
@@ -1771,6 +2453,15 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			await new Promise<void>(resolve => setImmediate(resolve));
 			assert.strictEqual(commandSettled, false, 'Markdown command must wait for stale adapter physical settlement');
 			releaseAdapter();
+			let stalePersistSettled = false;
+			let commandPromiseSettled = false;
+			void stalePersist.finally(() => { stalePersistSettled = true; });
+			void command.finally(() => { commandPromiseSettled = true; });
+			await waitForCondition(
+				() => stalePersistSettled && commandPromiseSettled,
+				'stale persistence and queued command should settle after reload',
+				1_000,
+			);
 			await Promise.all([stalePersist, command]);
 			assert.strictEqual(commandSettled, true);
 			const finalFile = JSON.parse(currentText);
@@ -1787,7 +2478,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
-	test('projection activation retires an adapter lease acquired after reload starts', async () => {
+	test('pending projection rejects stale adapter persistence before lease acquisition', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalApplyEdit = vscode.workspace.applyEdit;
 		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
@@ -1808,11 +2499,31 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		let holdReloadAcknowledgement = false;
 		let pendingReloadRequestId = '';
 		let markCandidatePosted!: () => void;
-		let markStaleApplyStarted!: () => void;
-		let releaseStaleApply!: () => void;
 		const candidatePosted = new Promise<void>(resolve => { markCandidatePosted = resolve; });
-		const staleApplyStarted = new Promise<void>(resolve => { markStaleApplyStarted = resolve; });
-		const staleApplyGate = new Promise<void>(resolve => { releaseStaleApply = resolve; });
+		let staleApplyCalls = 0;
+		const acknowledgeCurrentProjection = async (
+			request: Promise<unknown>,
+			previousRequestId: string,
+		): Promise<void> => {
+			let settled = false;
+			void request.then(() => { settled = true; });
+			let acknowledgedRequestId = previousRequestId;
+			for (let attempt = 0; attempt < 8; attempt++) {
+				await waitForCondition(
+					() => !!pendingReloadRequestId && pendingReloadRequestId !== acknowledgedRequestId,
+					'current projection candidate should be posted',
+					1_000,
+				);
+				acknowledgedRequestId = pendingReloadRequestId;
+				await Promise.resolve(receiveHandler!({
+					type: 'documentReloadResult', requestId: acknowledgedRequestId,
+					applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+				}));
+				await new Promise<void>(resolve => setImmediate(resolve));
+				if (settled) break;
+			}
+			await request;
+		};
 
 		try {
 			fs.writeFileSync(filePath, currentText, 'utf8');
@@ -1825,8 +2536,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
 				if (typeof replacement !== 'string') return false;
 				if (replacement.includes('print stale adapter = 1')) {
-					markStaleApplyStarted();
-					await staleApplyGate;
+					staleApplyCalls++;
 				}
 				currentText = replacement;
 				return true;
@@ -1887,13 +2597,16 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 					{ id: 'markdown_1', type: 'markdown', text: 'stale adapter markdown' },
 				] },
 			}));
-			await staleApplyStarted;
+			await stalePersist;
+			assert.strictEqual(staleApplyCalls, 0, 'pending source authority must reject stale persistence before applyEdit');
+			const ownerBeforeActivation = [...((provider as any).markdownDocuments.values())][0];
+			assert.strictEqual(ownerBeforeActivation.queue.activePersistenceLeases.size, 0);
 			await Promise.resolve(receiveHandler!({
 				type: 'documentReloadResult', requestId: pendingReloadRequestId,
 				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
 			}));
-			let commandSettled = false;
-			const command = Promise.resolve(receiveHandler!({
+			await reload;
+			await Promise.resolve(receiveHandler!({
 				type: 'markdownDocumentCommand', commandId: 'late-lease-command',
 				sourceGeneration: latestProjection.sourceGeneration,
 				expectedDocumentRevision: latestProjection.documentRevision,
@@ -1902,12 +2615,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 					expectedSectionRevision: latestProjection.markdownSectionRevisions.markdown_1,
 					patch: { text: 'after reload' },
 				},
-			})).then(() => { commandSettled = true; });
-			await new Promise<void>(resolve => setImmediate(resolve));
-			assert.strictEqual(commandSettled, false, 'late stale adapter must physically settle before the command runs');
-			releaseStaleApply();
-			await Promise.all([stalePersist, command, reload]);
-			assert.strictEqual(commandSettled, true);
+			}));
 			const finalFile = JSON.parse(currentText);
 			assert.strictEqual(finalFile.state.sections[0].query, 'print reload = 2');
 			assert.strictEqual(finalFile.state.sections[1].text, 'after reload');
@@ -1925,20 +2633,35 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				'obsolete projection candidate should be posted',
 				1_000,
 			);
+			const obsoleteRequestId = pendingReloadRequestId;
 			currentText = notebook('print source drift = 4', 'after reload');
 			await Promise.resolve(receiveHandler!({
-				type: 'documentReloadResult', requestId: pendingReloadRequestId,
+				type: 'documentReloadResult', requestId: obsoleteRequestId,
 				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
 			}));
 			await driftReload;
 			assert.strictEqual([...((provider as any).markdownDocuments.values())][0], activeOwner);
 			await Promise.resolve(receiveHandler!({
-				type: 'markdownDocumentCommand', commandId: 'post-drift-command',
+				type: 'markdownDocumentCommand', commandId: 'post-drift-stale-command',
 				sourceGeneration: activeCommandResult.sourceGeneration,
 				expectedDocumentRevision: activeCommandResult.documentRevision,
 				command: {
 					type: 'patch', sectionId: 'markdown_1',
 					expectedSectionRevision: activeCommandResult.projection.markdownSectionRevisions.markdown_1,
+					patch: { text: 'after source drift' },
+				},
+			}));
+			assert.ok(posted.some(message => message?.type === 'markdownDocumentCommandResult'
+				&& message.commandId === 'post-drift-stale-command' && message.ok === false));
+			const currentDriftReload = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await acknowledgeCurrentProjection(currentDriftReload, obsoleteRequestId);
+			await Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommand', commandId: 'post-drift-command',
+				sourceGeneration: latestProjection.sourceGeneration,
+				expectedDocumentRevision: latestProjection.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'markdown_1',
+					expectedSectionRevision: latestProjection.markdownSectionRevisions.markdown_1,
 					patch: { text: 'after source drift' },
 				},
 			}));
@@ -1970,7 +2693,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			}));
 			assert.strictEqual([...((provider as any).markdownDocuments.values())][0], ownerBeforeExpiredAck);
 			await Promise.resolve(receiveHandler!({
-				type: 'markdownDocumentCommand', commandId: 'post-expired-ack-command',
+				type: 'markdownDocumentCommand', commandId: 'post-expired-stale-command',
 				sourceGeneration: postDriftResult.sourceGeneration,
 				expectedDocumentRevision: postDriftResult.documentRevision,
 				command: {
@@ -1980,9 +2703,24 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				},
 			}));
 			assert.ok(posted.some(message => message?.type === 'markdownDocumentCommandResult'
+				&& message.commandId === 'post-expired-stale-command' && message.ok === false));
+			CompatSidecarSession.prototype.createReloadRequest = originalCreateReloadRequest;
+			const recoveryRequestId = pendingReloadRequestId;
+			const recoveryReload = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await acknowledgeCurrentProjection(recoveryReload, recoveryRequestId);
+			await Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommand', commandId: 'post-expired-ack-command',
+				sourceGeneration: latestProjection.sourceGeneration,
+				expectedDocumentRevision: latestProjection.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'markdown_1',
+					expectedSectionRevision: latestProjection.markdownSectionRevisions.markdown_1,
+					patch: { text: 'after expired acknowledgement' },
+				},
+			}));
+			assert.ok(posted.some(message => message?.type === 'markdownDocumentCommandResult'
 				&& message.commandId === 'post-expired-ack-command' && message.ok === true));
 		} finally {
-			releaseStaleApply?.();
 			CompatSidecarSession.prototype.createReloadRequest = originalCreateReloadRequest;
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
@@ -2462,14 +3200,15 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			await pendingSourceSave;
 			assert.strictEqual([...((provider as any).markdownDocuments.values())][0], activeOwner);
 			await Promise.resolve(didSaveHandler!(document));
+			holdReloadAcknowledgement = false;
 			await Promise.resolve(receiveHandler!({
 				type: 'documentReloadResult', requestId: pendingReloadRequestId,
 				applied: false, editRevision: 0, markdownCommandBarrierSupported: true,
 			}));
 			await pendingReload;
 
-			holdReloadAcknowledgement = false;
 			currentText = activeOwner.sourceText;
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 			holdFinalPersist = true;
 			let disposedSave: Promise<vscode.TextEdit[]> | undefined;
 			willSaveHandler!({

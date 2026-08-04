@@ -59,7 +59,11 @@ import {
 	reconcileHostOwnedMarkdownProjection,
 } from '../sections/kw-markdown-section';
 import { reconcileHostOwnedChartProjection, removeChartBox } from '../sections/kw-chart-section';
-import { removeTransformationBox } from '../sections/kw-transformation-section';
+import {
+	commitTransformationDocumentState,
+	reconcileHostOwnedTransformationProjection,
+	removeTransformationBox,
+} from '../sections/kw-transformation-section';
 
 import { setRunMode } from '../sections/kw-query-toolbar';
 import { applyEditingPreferencesData } from './editing-preferences.js';
@@ -1835,7 +1839,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			flushCompatibilityPersist(String(message.requestId || ''), String(message.reason || 'host-flush'));
 			break;
 		case 'persistDocumentAck':
-			acknowledgePersistDocument(message.snapshotId, message.editRevision);
+			acknowledgePersistDocument(message.snapshotId, message.editRevision, message.orderedSectionIds);
 			break;
 		case 'markdownDocumentCommandResult': {
 			const result = handleHostOwnedMarkdownCommandResult(message);
@@ -1850,6 +1854,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				);
 				reconcileHostOwnedPythonProjection(
 					result.projection.pythonSections ?? [],
+					result.projection.orderedSectionIds,
+				);
+				reconcileHostOwnedTransformationProjection(
+					result.projection.transformationSections ?? [],
 					result.projection.orderedSectionIds,
 				);
 				reconcileHostOwnedUrlProjection(
@@ -3814,6 +3822,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 								...(input.dataSourceId !== undefined ? { dataSourceId: String(input.dataSourceId) } : {}),
 								...(input.chartType !== undefined ? { chartType: String(input.chartType) } : {}),
 							}
+						: sectionType === 'transformation'
+							? {
+								...(input.name !== undefined ? { name: String(input.name) } : {}),
+								...(input.dataSourceId !== undefined ? { dataSourceId: String(input.dataSourceId) } : {}),
+							}
 						: sectionType === 'markdown'
 							? { ...(textValue !== undefined ? { text: String(textValue) } : {}) }
 							: sectionType === 'python'
@@ -3841,7 +3854,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				
 				if (success && sectionId) { markSectionAgentTouched(sectionId); }
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
-				if (success && (sectionType === 'chart' || sectionType === 'markdown'
+				if (success && (sectionType === 'chart' || sectionType === 'transformation' || sectionType === 'markdown'
 					|| sectionType === 'python' || sectionType === 'url')
 					&& isHostOwnedMarkdownDocument()) {
 					success = await waitForHostOwnedMarkdownCommands();
@@ -3923,7 +3936,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				if (success) {
 					try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				}
-				if (success && (removedSectionType === 'chart' || removedSectionType === 'markdown' || removedSectionType === 'python'
+				if (success && (removedSectionType === 'chart' || removedSectionType === 'transformation'
+					|| removedSectionType === 'markdown' || removedSectionType === 'python'
 					|| removedSectionType === 'url') && isHostOwnedMarkdownDocument()) {
 					success = await waitForHostOwnedMarkdownCommands();
 					if (!success) removalError = 'The host rejected the document section command.';
@@ -3953,6 +3967,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							success = commitUrlDocumentState(sectionId)
 								&& await waitForHostOwnedMarkdownCommands();
 						} else if (sectionTag === 'kw-chart-section' && isHostOwnedMarkdownDocument()) {
+							success = await waitForHostOwnedMarkdownCommands();
+						} else if (sectionTag === 'kw-transformation-section' && isHostOwnedMarkdownDocument()) {
 							success = await waitForHostOwnedMarkdownCommands();
 						} else if (sectionTag === 'kw-python-section' && isHostOwnedMarkdownDocument()) {
 							success = await waitForHostOwnedMarkdownCommands();
@@ -4328,6 +4344,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				let success = false;
 				
 				try {
+					const transformationEl = document.getElementById(sectionId);
+					if (!transformationEl || transformationEl.tagName !== 'KW-TRANSFORMATION-SECTION') {
+						postMessageToHost({
+							type: 'toolResponse', requestId,
+							result: { success: false },
+							error: `Section '${sectionId}' is not a transformation section.`,
+						});
+						break;
+					}
 					// Update section name if provided
 					if (input.name !== undefined) {
 						__kustoSetSectionName(sectionId, input.name);
@@ -4336,8 +4361,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					
 					// Apply transformation configuration
 					if (typeof window.__kustoConfigureTransformation === 'function') {
-						window.__kustoConfigureTransformation(sectionId, input);
-						success = true;
+						success = window.__kustoConfigureTransformation(sectionId, input) === true;
 					} else {
 						// Fallback: store in pending state
 						window.__kustoPendingTransformationConfig = window.__kustoPendingTransformationConfig || {};
@@ -4349,6 +4373,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 				
 				if (success) { markSectionAgentTouched(sectionId, beforeSignature); }
+				if (success && isHostOwnedMarkdownDocument()) {
+					success = commitTransformationDocumentState(sectionId)
+						&& await waitForHostOwnedMarkdownCommands();
+				}
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to configure transformation' });
 			} catch (err: any) {

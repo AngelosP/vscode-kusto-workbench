@@ -5843,6 +5843,98 @@ async function e2eTransformationAssertArtifactPinRebindAndRevoke(): Promise<stri
 	return `transformation pinned ${sourceA.artifactId}, rebound ${sourceB.artifactId}, then revoked`;
 }
 
+function e2eTransformationDocumentOwnershipSnapshot(sectionId: string): unknown {
+	const id = String(sectionId || '').trim();
+	const section = document.getElementById(id) as any;
+	if (!id || !section || typeof section.createDocumentState !== 'function') {
+		throw new Error(`Transformation ownership section is unavailable: ${id || '(empty)'}`);
+	}
+	const config = section.createDocumentState();
+	const primarySourceId = String(config.dataSourceId || '');
+	const joinRightSourceId = config.transformationType === 'join'
+		? String(config.joinRightDataSourceId || '')
+		: '';
+	const primaryBound = primarySourceId
+		? getBoundResultArtifact(`${id}:input:primary`, primarySourceId)
+		: null;
+	const joinRightBound = joinRightSourceId
+		? getBoundResultArtifact(`${id}:input:join-right`, joinRightSourceId)
+		: null;
+	const output = getCurrentResultArtifact(id);
+	return {
+		config,
+		primary: {
+			sourceId: primarySourceId,
+			currentArtifactId: primarySourceId ? getCurrentResultArtifact(primarySourceId)?.artifactId ?? null : null,
+			boundArtifactId: primaryBound?.artifactId ?? null,
+		},
+		joinRight: {
+			sourceId: joinRightSourceId,
+			currentArtifactId: joinRightSourceId ? getCurrentResultArtifact(joinRightSourceId)?.artifactId ?? null : null,
+			boundArtifactId: joinRightBound?.artifactId ?? null,
+		},
+		output: output ? {
+			artifactId: output.artifactId,
+			lineage: output.lineage.map(entry => ({
+				sourceArtifactId: entry.sourceArtifactId,
+				role: entry.role,
+			})),
+		} : null,
+	};
+}
+
+let e2eDeferTransformationDependentRefresh = false;
+let e2eDeferredTransformationRefreshCallbacks: Array<() => void> = [];
+
+function e2eTransformationDeferDependentRefresh(): void {
+	e2eDeferTransformationDependentRefresh = true;
+	e2eDeferredTransformationRefreshCallbacks = [];
+}
+
+function e2eTransformationReleaseDependentRefresh(): number {
+	e2eDeferTransformationDependentRefresh = false;
+	const callbacks = e2eDeferredTransformationRefreshCallbacks;
+	e2eDeferredTransformationRefreshCallbacks = [];
+	for (const callback of callbacks) callback();
+	return callbacks.length;
+}
+
+function e2eTransformationPublishSourceResult(
+	sourceId: string,
+	columns: readonly string[],
+	rows: readonly unknown[][],
+): string {
+	const id = String(sourceId || '').trim();
+	if (!id || !document.getElementById(id)) throw new Error(`Transformation source is unavailable: ${id || '(empty)'}`);
+	const nativeSetTimeout = window.setTimeout.bind(window);
+	if (e2eDeferTransformationDependentRefresh) {
+		window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+			if (Number(timeout ?? 0) === 0) {
+				const callback = typeof handler === 'function'
+					? () => handler(...args)
+					: () => window.eval(String(handler));
+				e2eDeferredTransformationRefreshCallbacks.push(callback);
+				return -e2eDeferredTransformationRefreshCallbacks.length;
+			}
+			return nativeSetTimeout(handler, timeout, ...args);
+		}) as typeof window.setTimeout;
+	}
+	let accepted = false;
+	try {
+		accepted = displayResultForBox({
+			columns: columns.map(name => ({ name, type: 'string' })),
+			rows: rows.map(row => [...row]),
+			metadata: {},
+		}, id, { label: 'Results' });
+	} finally {
+		window.setTimeout = nativeSetTimeout as typeof window.setTimeout;
+	}
+	if (!accepted) throw new Error(`Transformation source rejected E2E artifact publication: ${id}`);
+	const artifact = getCurrentResultArtifact(id);
+	if (!artifact) throw new Error(`Transformation source did not publish an artifact: ${id}`);
+	return artifact.artifactId;
+}
+
 async function e2eComparisonAssertExactArtifactLineage(): Promise<string> {
 	const sourceId = e2eLayoutAddSection('addQueryBox', {
 		id: 'query_e2e_comparison_source', initialQuery: 'print Value="source"',
@@ -6796,6 +6888,10 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 	},
 	transformation: {
 		assertArtifactPinRebindAndRevoke: e2eTransformationAssertArtifactPinRebindAndRevoke,
+		deferDependentRefresh: e2eTransformationDeferDependentRefresh,
+		documentOwnershipSnapshot: e2eTransformationDocumentOwnershipSnapshot,
+		publishSourceResult: e2eTransformationPublishSourceResult,
+		releaseDependentRefresh: e2eTransformationReleaseDependentRefresh,
 	},
 	comparison: {
 		assertExactArtifactLineage: e2eComparisonAssertExactArtifactLineage,

@@ -23,14 +23,26 @@ import {
 	patchUrlSection,
 	type UrlSectionState,
 } from './urlSectionDefinition';
+import {
+	parseTransformationSection,
+	parseTransformationSectionPatch,
+	patchTransformationSection,
+	type TransformationSectionState,
+} from './transformationSectionDefinition';
 
 type SectionRecord = Record<string, unknown>;
-type OwnedSectionState = ChartSectionState | MarkdownSectionState | PythonSectionState | UrlSectionState;
+type OwnedSectionState =
+	| ChartSectionState
+	| MarkdownSectionState
+	| PythonSectionState
+	| TransformationSectionState
+	| UrlSectionState;
 type OwnedSectionKind = OwnedSectionState['type'];
 
 export function isMarkdownDocumentOwnedSectionKind(value: unknown): value is OwnedSectionKind {
 	const kind = canonicalSectionKind(String(value ?? ''));
-	return kind === 'chart' || kind === 'markdown' || kind === 'python' || kind === 'url';
+	return kind === 'chart' || kind === 'markdown' || kind === 'python'
+		|| kind === 'transformation' || kind === 'url';
 }
 
 export interface MarkdownDocumentState {
@@ -76,6 +88,7 @@ export interface MarkdownDocumentProjection {
 	chartSections: readonly ChartSectionState[];
 	markdownSections: readonly MarkdownSectionState[];
 	pythonSections: readonly PythonSectionState[];
+	transformationSections: readonly TransformationSectionState[];
 	urlSections: readonly UrlSectionState[];
 	orderedSectionIds: readonly string[];
 }
@@ -141,8 +154,12 @@ function parseOwnedSection(input: unknown):
 	if (kind === 'chart') return parseChartSection(input);
 	if (kind === 'markdown') return parseMarkdownSection(input);
 	if (kind === 'python') return parsePythonSection(input);
+	if (kind === 'transformation') return parseTransformationSection(input);
 	if (kind === 'url') return parseUrlSection(input);
-	return { ok: false, error: 'Host-owned section must have type "chart", "markdown", "python", or "url".' };
+	return {
+		ok: false,
+		error: 'Host-owned section must have type "chart", "markdown", "python", "transformation", or "url".',
+	};
 }
 
 function commandFailure(
@@ -211,6 +228,9 @@ export class MarkdownDocumentAggregate {
 		const pythonSections = ownedSections.filter(
 			(section): section is PythonSectionState => section.type === 'python',
 		);
+		const transformationSections = ownedSections.filter(
+			(section): section is TransformationSectionState => section.type === 'transformation',
+		);
 		const urlSections = ownedSections.filter(
 			(section): section is UrlSectionState => section.type === 'url',
 		);
@@ -224,6 +244,7 @@ export class MarkdownDocumentAggregate {
 			chartSections,
 			markdownSections,
 			pythonSections,
+			transformationSections,
 			urlSections,
 			orderedSectionIds: this.state.sections.map(sectionId),
 		};
@@ -326,7 +347,9 @@ export class MarkdownDocumentAggregate {
 				? 'Chart'
 				: currentKind === 'markdown'
 					? 'Markdown'
-					: currentKind === 'python' ? 'Python' : 'URL';
+					: currentKind === 'python'
+						? 'Python'
+						: currentKind === 'transformation' ? 'Transformation' : 'URL';
 			return commandFailure(
 				this,
 				'stale-section-revision',
@@ -362,6 +385,15 @@ export class MarkdownDocumentAggregate {
 			if (!parsedCurrent.ok) return commandFailure(this, 'invalid-command', parsedCurrent.error);
 			if (!parsedPatch.ok) return commandFailure(this, 'invalid-command', parsedPatch.error);
 			sections[sectionIndex] = patchPythonSection(parsedCurrent.value, parsedPatch.value) as unknown as SectionRecord;
+		} else if (currentKind === 'transformation') {
+			const parsedCurrent = parseTransformationSection(sections[sectionIndex]);
+			const parsedPatch = parseTransformationSectionPatch(command.patch);
+			if (!parsedCurrent.ok) return commandFailure(this, 'invalid-command', parsedCurrent.error);
+			if (!parsedPatch.ok) return commandFailure(this, 'invalid-command', parsedPatch.error);
+			sections[sectionIndex] = patchTransformationSection(
+				parsedCurrent.value,
+				parsedPatch.value,
+			) as unknown as SectionRecord;
 		} else {
 			const parsedCurrent = parseUrlSection(sections[sectionIndex]);
 			const parsedPatch = parseUrlSectionPatch(command.patch);

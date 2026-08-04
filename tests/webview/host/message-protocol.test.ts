@@ -286,9 +286,9 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 
 const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kqlCompatEditorProvider.ts::requestFinalPersist::postMessage::620:57',
-	'src/host/kqlxEditorProvider.ts::deliverWebviewMessage::postMessage::1215:34',
-	'src/host/kqlxEditorProvider.ts::postWebviewMessage::postMessage::1204:10',
-	'src/host/kqlxEditorProvider.ts::resolveCustomTextEditor::postMessage::3016:19',
+	'src/host/kqlxEditorProvider.ts::deliverWebviewMessage::postMessage::1233:34',
+	'src/host/kqlxEditorProvider.ts::postWebviewMessage::postMessage::1222:10',
+	'src/host/kqlxEditorProvider.ts::resolveCustomTextEditor::postMessage::3578:19',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::376:27',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::610:29',
 	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::745:26',

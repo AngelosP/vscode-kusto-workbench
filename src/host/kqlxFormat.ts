@@ -23,6 +23,10 @@ import {
 	validatePersistedChartSection,
 	type PersistedChartSectionState,
 } from '../shared/chartSectionDefinition';
+import {
+	validatePersistedTransformationSection,
+	type PersistedTransformationSectionState,
+} from '../shared/transformationSectionDefinition';
 
 export { overlayKqlxFileState } from './kqlxOverlay';
 
@@ -114,38 +118,7 @@ export type KqlxSectionV1 =
 	| PersistedPythonSectionState
 	| PersistedUrlSectionState
 	| PersistedChartSectionState
-	| {
-			id?: string;
-			type: 'transformation';
-			name?: string;
-			mode?: 'edit' | 'preview';
-			expanded?: boolean;
-			editorHeightPx?: number;
-			// Transformation configuration.
-			dataSourceId?: string;
-			transformationType?: 'derive' | 'summarize' | 'distinct' | 'pivot' | 'join';
-			// Distinct transformation: select a single column and return unique values.
-			distinctColumn?: string;
-			// Summarize transformation: group by columns + aggregations
-			groupByColumns?: string[];
-			aggregations?: Array<{ name?: string; column?: string; function: 'sum' | 'avg' | 'count' | 'min' | 'max' | 'distinct' }>;
-			// Calculated columns (derive): multiple columns, applied in order.
-			deriveColumns?: Array<{ name: string; expression: string }>;
-			// Back-compat for older files: single calculated column.
-			deriveColumnName?: string;
-			deriveExpression?: string;
-			// Pivot transformation: row key + column key + values
-			pivotRowKeyColumn?: string;
-			pivotColumnKeyColumn?: string;
-			pivotValueColumn?: string;
-			pivotAggregation?: 'sum' | 'avg' | 'count' | 'first';
-			pivotMaxColumns?: number;
-			// Join transformation: join two data sources on key columns
-			joinRightDataSourceId?: string;
-			joinKind?: 'inner' | 'leftouter' | 'rightouter' | 'fullouter' | 'leftanti' | 'rightanti' | 'leftsemi' | 'rightsemi';
-			joinKeys?: Array<{ left: string; right: string }>;
-			joinOmitDuplicateColumns?: boolean;
-		}
+	| PersistedTransformationSectionState
 	| {
 			id?: string;
 			type: 'html';
@@ -343,11 +316,13 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 				? validatePersistedUrlSection(section)
 			: canonicalKind === 'chart'
 				? validatePersistedChartSection(section)
+			: canonicalKind === 'transformation'
+				? validatePersistedTransformationSection(section)
 				: getInvalidKqlxKnownFieldShape(section);
 		if (invalidKnownShape) {
 			return { ok: false, error: canonicalKind === 'markdown' || canonicalKind === 'python' || canonicalKind === 'url'
 				? `Invalid .kqlx: section ${index} ${invalidKnownShape}`
-				: canonicalKind === 'chart'
+				: canonicalKind === 'chart' || canonicalKind === 'transformation'
 					? `Invalid .kqlx: section ${index} invalid known field shape: ${invalidKnownShape}`
 					: `Invalid .kqlx: section ${index} invalid known field shape at "${invalidKnownShape}".` };
 		}

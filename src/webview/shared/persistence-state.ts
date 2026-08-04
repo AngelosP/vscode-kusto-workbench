@@ -14,6 +14,7 @@ import type { ChartSectionState } from '../../shared/chartSectionDefinition.js';
 import type { MarkdownSectionState } from '../../shared/markdownSectionDefinition.js';
 import type { PythonSectionState } from '../../shared/pythonSectionDefinition.js';
 import type { UrlSectionState } from '../../shared/urlSectionDefinition.js';
+import type { TransformationSectionState } from '../../shared/transformationSectionDefinition.js';
 import { addableSectionKindsForDocument, defaultSectionKindForDocument } from '../../shared/documentSectionCapabilities.js';
 
 export const pState = {
@@ -45,6 +46,8 @@ export const pState = {
 	hostOwnedPythonSections: {} as Record<string, PythonSectionState>,
 	/** Last acknowledged host projection used instead of URL DOM serialization. */
 	hostOwnedUrlSections: {} as Record<string, UrlSectionState>,
+	/** Last acknowledged host projection used instead of Transformation DOM serialization. */
+	hostOwnedTransformationSections: {} as Record<string, TransformationSectionState>,
 	/** Suppresses command emission while reconciling a rejected stale view. */
 	applyingHostMarkdownProjection: false,
 

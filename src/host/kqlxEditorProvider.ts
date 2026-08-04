@@ -669,10 +669,15 @@ type MarkdownPersistenceLease = {
 	generation: number;
 	baseText: string;
 	revoked: boolean;
-	revocationAuthority?: Readonly<{ generation: number; sourceText: string }>;
-	revoke(authority: Readonly<{ generation: number; sourceText: string }>): void;
+	revocationAuthority?: MarkdownSourceAuthority;
+	revoke(authority: MarkdownSourceAuthority): void;
 	settle(): void;
 };
+
+type MarkdownSourceAuthority = Readonly<{
+	token: number;
+	sourceText: string;
+}>;
 
 type MarkdownDocumentOwnerEntry = {
 	document: MarkdownDocumentAggregate;
@@ -684,6 +689,18 @@ type MarkdownDocumentOwnerQueue = {
 	tail: Promise<void>;
 	pendingCommands: number;
 	activePersistenceLeases: Set<MarkdownPersistenceLease>;
+	sourceObservationSequence: number;
+	authoritySequence: number;
+	latestAuthority?: MarkdownSourceAuthority;
+	privacyRepairNeeded: boolean;
+	privacyDurableText?: string;
+	pendingPrivacySave?: Promise<void>;
+	pendingOwnedMutation?: {
+		token: number;
+		text: string;
+		remainingPanels: Set<vscode.WebviewPanel>;
+	};
+	canonicalSaveText?: string;
 };
 
 type MarkdownPanelOwnerRegistration = {
@@ -694,6 +711,7 @@ type MarkdownPanelOwnerRegistration = {
 type MarkdownSaveLease = {
 	owner?: MarkdownDocumentOwnerEntry;
 	sourceGeneration: number;
+	sourceAuthorityToken: number;
 	settle(): void;
 };
 
@@ -1361,7 +1379,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		let linkedQuerySectionIdentity: LinkedQuerySectionIdentity | undefined;
 		let linkedQueryLoadGeneration = 0;
 		let postDocumentGeneration = 0;
+		let panelSourceObservationSequence = 0;
 		let activeProjectionGeneration = 0;
+		let activeProjectionAuthorityToken = 0;
 		let activeProjectionSourceText = document.getText();
 		let linkedQueryDocument: vscode.TextDocument | undefined;
 		let lastSavedLinkedQueryText = '';
@@ -1448,6 +1468,16 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			} catch {
 				return undefined;
 			}
+		};
+		const hasDirtyOpenPhysicalAlias = async (
+			identity: LocalFileIdentity,
+			owner: vscode.TextDocument,
+		): Promise<boolean> => {
+			for (const candidate of vscode.workspace.textDocuments) {
+				if (candidate === owner || !candidate.isDirty || candidate.uri.scheme !== 'file') continue;
+				if (localFileIdentityEquals(identity, await getLocalFileIdentity(candidate.uri))) return true;
+			}
+			return false;
 		};
 		const withOwnedFileLock = async <T>(
 			uri: vscode.Uri,
@@ -1647,6 +1677,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				|| !localFileIdentityEquals(linkedQueryPhysicalIdentity, targetIdentity)
 				|| await samePhysicalLocalFile(document.uri, targetUri)
 				|| !localFileIdentityEquals(targetIdentity, await getLocalFileIdentity(targetUri))) return false;
+			if (await hasDirtyOpenPhysicalAlias(targetIdentity, targetDocument)) return false;
 			const expectedText = targetDocument.getText();
 			const durableBeforeSave = await tryReadTextFile(targetUri);
 			if (durableBeforeSave === undefined || durableBeforeSave !== lastSavedLinkedQueryText) return false;
@@ -1724,7 +1755,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 		type LinkedSaveAttempt =
 			| { ok: true; transaction: Omit<LinkedSaveTransaction, 'notebookCandidateText' | 'notebookPriorDurableText'> }
-			| { ok: false; reason: 'owner-changed' | 'durable-changed' | 'update-failed' | 'save-failed' };
+				| { ok: false; reason: 'owner-changed' | 'durable-changed' | 'dirty-alias' | 'update-failed' | 'save-failed' };
 		const captureLinkedContentOwner = (): LinkedContentOwner | undefined => {
 			if (!linkedQueryUri || !linkedQueryPhysicalIdentity || !linkedQueryDocument
 				|| hydratedLinkedQueryText === undefined) return undefined;
@@ -1801,6 +1832,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						|| !localFileIdentityEquals(owner.identity, await getLocalFileIdentity(owner.uri))) {
 						return { ok: false, reason: 'save-failed' };
 					}
+					if (await hasDirtyOpenPhysicalAlias(owner.identity, owner.document)) {
+						return { ok: false, reason: 'dirty-alias' };
+					}
 					priorDurableText = await tryReadTextFile(owner.uri);
 					if (priorDurableText === undefined || priorDurableText !== owner.lastSavedText
 						|| lastSavedLinkedQueryText !== owner.lastSavedText) {
@@ -1827,6 +1861,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						return { ok: false, reason: 'owner-changed' };
 					}
 					if (priorDurableText !== candidateText) {
+						if (await hasDirtyOpenPhysicalAlias(owner.identity, owner.document)) {
+							await rollback();
+							return { ok: false, reason: 'dirty-alias' };
+						}
 						await writeOwnedLocalFileText(owner.uri, owner.identity, priorDurableText, candidateText);
 					}
 					if (!candidateIsCurrent()) {
@@ -1959,8 +1997,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			isRequestCurrent: () => boolean,
 			allowDisposed = false,
 			getStaleAuthorityText: () => string | undefined = () => undefined,
-		): Promise<boolean> => {
-			if (linkedQueryUri && !await saveCurrentLinkedQueryDocument()) return false;
+		): Promise<string | undefined> => {
+			if (linkedQueryUri && !await saveCurrentLinkedQueryDocument()) return undefined;
 			return saveSessionFileToDisk(notebookText, isRequestCurrent, allowDisposed, getStaleAuthorityText);
 		};
 
@@ -2105,10 +2143,47 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				tail: Promise.resolve(),
 				pendingCommands: 0,
 				activePersistenceLeases: new Set(),
+				sourceObservationSequence: 0,
+				authoritySequence: 0,
+				privacyRepairNeeded: false,
 			};
 			this.markdownDocumentQueues.set(markdownDocumentKey, created);
 			return created;
 		})();
+		if (!markdownDocumentQueue.latestAuthority) {
+			markdownDocumentQueue.latestAuthority = {
+				token: ++markdownDocumentQueue.authoritySequence,
+				sourceText: document.getText(),
+			};
+		}
+		activeProjectionAuthorityToken = markdownDocumentQueue.latestAuthority.token;
+		activeProjectionSourceText = markdownDocumentQueue.latestAuthority.sourceText;
+		let ownedMutationSequence = 0;
+		const claimSharedOwnedMutation = (text: string): number => {
+			const token = ++ownedMutationSequence;
+			markdownDocumentQueue.pendingOwnedMutation = {
+				token,
+				text,
+				remainingPanels: new Set(this.markdownPanelOwners.get(markdownDocumentKey)?.keys() ?? [webviewPanel]),
+			};
+			return token;
+		};
+		const clearSharedOwnedMutation = (token: number): void => {
+			if (markdownDocumentQueue.pendingOwnedMutation?.token === token) {
+				markdownDocumentQueue.pendingOwnedMutation = undefined;
+			}
+		};
+		const observeSharedOwnedMutation = (text: string): boolean => {
+			const pending = markdownDocumentQueue.pendingOwnedMutation;
+			if (!pending) return false;
+			if (pending.text !== text) {
+				markdownDocumentQueue.pendingOwnedMutation = undefined;
+				return false;
+			}
+			if (!pending.remainingPanels.delete(webviewPanel)) return false;
+			if (pending.remainingPanels.size === 0) markdownDocumentQueue.pendingOwnedMutation = undefined;
+			return true;
+		};
 		const ensureMarkdownDocumentOwner = (
 			sourceText: string,
 			state: KqlxStateV1,
@@ -2167,7 +2242,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				revoke: authority => {
 					lease.revoked = true;
 					if (!lease.revocationAuthority
-						|| authority.generation >= lease.revocationAuthority.generation) {
+						|| authority.token >= lease.revocationAuthority.token) {
 						lease.revocationAuthority = authority;
 					}
 				},
@@ -2181,22 +2256,84 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			entry.queue.activePersistenceLeases.add(lease);
 			entry.queue.tail = previousMarkdownWork.catch(() => undefined).then(() => persistenceLease);
 			await previousMarkdownWork.catch(() => undefined);
+			await entry.queue.pendingPrivacySave;
 			return lease;
 		};
 		let invalidateMarkdownBarriersForGeneration: (generation: number) => void = () => undefined;
+		const commitCurrentAuthorityText = (authorityToken: number, sourceText: string): boolean => {
+			const authority = markdownDocumentQueue.latestAuthority;
+			if (!authority || authority.token !== authorityToken) return false;
+			markdownDocumentQueue.latestAuthority = { token: authorityToken, sourceText };
+			markdownDocumentQueue.sourceObservationSequence++;
+			if (activeProjectionAuthorityToken === authorityToken) activeProjectionSourceText = sourceText;
+			return true;
+		};
+		const commitCurrentAdapterText = (
+			authorityToken: number,
+			owner: MarkdownDocumentOwnerEntry | undefined,
+			sourceText: string,
+		): boolean => {
+			let nextDocument: MarkdownDocumentAggregate | undefined;
+			if (owner) {
+				const parsed = parseKqlxText(sourceText, {
+					allowedKinds: [documentKind], defaultKind: documentKind,
+				});
+				if (!parsed.ok) return false;
+				nextDocument = owner.document.withAdapterState(
+					ensureProjectedSectionIds(parsed.file.state, sourceText),
+				);
+			}
+			if (!commitCurrentAuthorityText(authorityToken, sourceText)) return false;
+			if (owner && nextDocument) {
+				owner.document = nextDocument;
+				owner.sourceText = sourceText;
+			}
+			return true;
+		};
+		const fencePersistenceForProjection = (generation: number, sourceText: string): number => {
+			let authority = markdownDocumentQueue.latestAuthority;
+			if (!authority || authority.sourceText !== sourceText) {
+				authority = {
+					token: ++markdownDocumentQueue.authoritySequence,
+					sourceText,
+				};
+				markdownDocumentQueue.latestAuthority = authority;
+			}
+			if (authority.token !== activeProjectionAuthorityToken) {
+				persistRequestGeneration++;
+				const reloadEpoch = ++sourceReloadEpoch;
+				sourceReloadAuthority = { epoch: reloadEpoch, text: sourceText };
+				invalidateMarkdownBarriersForGeneration(generation);
+				const entry = activeMarkdownOwnerEntry ?? this.markdownDocuments.get(markdownDocumentKey);
+				for (const lease of [...(entry?.queue.activePersistenceLeases ?? [])]) {
+					lease.revoke(authority);
+				}
+			}
+			return authority.token;
+		};
 		const activateProjection = (
 			generation: number,
 			sourceText: string,
 			owner: MarkdownDocumentOwnerEntry | undefined,
+			authorityToken: number,
 		): void => {
-			persistRequestGeneration++;
-			const reloadEpoch = ++sourceReloadEpoch;
-			sourceReloadAuthority = { epoch: reloadEpoch, text: sourceText };
+			if (generation !== activeProjectionGeneration) {
+				persistRequestGeneration++;
+				invalidateMarkdownBarriersForGeneration(generation);
+				const authority = markdownDocumentQueue.latestAuthority;
+				const entry = activeMarkdownOwnerEntry ?? this.markdownDocuments.get(markdownDocumentKey);
+				if (authority?.token === authorityToken) {
+					for (const lease of [...(entry?.queue.activePersistenceLeases ?? [])]) {
+						lease.revoke(authority);
+					}
+				}
+			}
 			if (sourceRollbackFailedCandidate === undefined || sourceText !== sourceRollbackFailedCandidate) {
 				sourceRollbackFailed = false;
 				sourceRollbackFailedCandidate = undefined;
 			}
 			activeProjectionGeneration = generation;
+			activeProjectionAuthorityToken = authorityToken;
 			activeProjectionSourceText = sourceText;
 			const previousPanelOwner = panelOwnerRegistration.owner;
 			activeMarkdownOwnerEntry = owner;
@@ -2204,11 +2341,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (owner) this.markdownDocuments.set(markdownDocumentKey, owner);
 			else if (this.markdownDocuments.get(markdownDocumentKey) === previousPanelOwner) {
 				this.markdownDocuments.delete(markdownDocumentKey);
-			}
-			invalidateMarkdownBarriersForGeneration(generation);
-			const entry = owner ?? this.markdownDocuments.get(markdownDocumentKey);
-			for (const lease of [...(entry?.queue.activePersistenceLeases ?? [])]) {
-				if (lease.generation !== generation) lease.revoke({ generation, sourceText });
 			}
 		};
 		const overlayOwnedMarkdownState = (
@@ -2323,9 +2455,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const applyOwnedSourceEdit = async (edit: vscode.WorkspaceEdit, expectedText: string): Promise<boolean> => {
 			activeSourceMutations++;
 			ownedDocumentEdits.begin(expectedText);
+			const sharedMutationToken = claimSharedOwnedMutation(expectedText);
 			try {
 				const applied = await vscode.workspace.applyEdit(edit);
-				if (!applied) ownedDocumentEdits.cancel(expectedText);
+				if (!applied) {
+					ownedDocumentEdits.cancel(expectedText);
+					clearSharedOwnedMutation(sharedMutationToken);
+				}
 				return applied;
 			} finally {
 				activeSourceMutations--;
@@ -2399,9 +2535,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			isRequestCurrent: () => boolean = () => true,
 			allowDisposed = false,
 			getStaleAuthorityText: () => string | undefined = () => undefined,
-		): Promise<boolean> => {
+		): Promise<string | undefined> => {
 			if (!isSessionFile || (outerDisposed && !allowDisposed) || !isRequestCurrent()) {
-				return false;
+				return undefined;
 			}
 			try {
 				return await serializeSqlSaveRepair(async () => {
@@ -2420,7 +2556,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					};
 					if ((outerDisposed && !allowDisposed) || !isRequestCurrent()) {
 						await restoreStaleCandidate(text);
-						return false;
+						return undefined;
 					}
 					text = await publishSerializedNotebookTextFresh(text, async sanitizedText => {
 						if ((outerDisposed && !allowDisposed) || !isRequestCurrent()) return sanitizedText;
@@ -2439,88 +2575,384 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					});
 					if ((outerDisposed && !allowDisposed) || !isRequestCurrent()) {
 						await restoreStaleCandidate(text);
-						return false;
+						return undefined;
 					}
 					lastSavedText = text;
 					lastSavedEol = document.eol;
-					return true;
+					return text;
 				});
 			} catch {
-				return false;
+				return undefined;
 			}
 		};
 
-		const repairPersistedSqlState = (allowDisposed = false): Promise<void> => serializeSqlSaveRepair(async () => {
-			if (closeFinalizationAbandoned || (outerDisposed && !allowDisposed)) return;
+		const runInMarkdownDocumentQueue = async <T>(work: () => Promise<T>): Promise<T> => {
+			const previousWork = markdownDocumentQueue.tail;
+			let release!: () => void;
+			const queueLease = new Promise<void>(resolve => { release = resolve; });
+			markdownDocumentQueue.tail = previousWork.catch(() => undefined).then(() => queueLease);
+			await previousWork.catch(() => undefined);
+			await markdownDocumentQueue.pendingPrivacySave;
+			try {
+				return await work();
+			} finally {
+				release();
+			}
+		};
+
+		let privacyRepairRetryScheduled = false;
+		const schedulePrivacyRepairRetry = (allowDisposed = false): void => {
+			if (privacyRepairRetryScheduled || closeFinalizationAbandoned || (outerDisposed && !allowDisposed)) return;
+			privacyRepairRetryScheduled = true;
+			const latestAuthority = markdownDocumentQueue.latestAuthority;
+			if (latestAuthority
+				&& activeProjectionAuthorityToken === latestAuthority.token
+				&& activeProjectionSourceText === latestAuthority.sourceText
+				&& document.getText() === latestAuthority.sourceText) {
+				queueMicrotask(() => {
+					privacyRepairRetryScheduled = false;
+					if (markdownDocumentQueue.privacyRepairNeeded) {
+						void repairPersistedSqlState(allowDisposed).catch(() => undefined);
+					}
+				});
+				return;
+			}
+			void postDocument({ forceReload: true }).then(() => {
+				privacyRepairRetryScheduled = false;
+				if (markdownDocumentQueue.privacyRepairNeeded) {
+					void repairPersistedSqlState(allowDisposed).catch(() => undefined);
+				}
+			}, () => { privacyRepairRetryScheduled = false; });
+		};
+		const sourceMayNeedPrivacyRepair = (): boolean => {
+			if (markdownDocumentQueue.privacyRepairNeeded || markdownDocumentQueue.privacyDurableText) return true;
+			const parsed = parseKqlxText(document.getText(), {
+				allowedKinds: [documentKind], defaultKind: documentKind,
+			});
+			return parsed.ok && parsed.file.state.sections.some(section => {
+				const record = section as Record<string, unknown>;
+				return Object.prototype.hasOwnProperty.call(record, 'resultJson')
+					|| Object.prototype.hasOwnProperty.call(record, 'resultArtifact');
+			});
+		};
+
+		const repairPersistedSqlState = (allowDisposed = false): Promise<void> => {
+			if (!sourceMayNeedPrivacyRepair()) return Promise.resolve();
+			markdownDocumentQueue.privacyRepairNeeded = true;
+			return runInMarkdownDocumentQueue(() => serializeSqlSaveRepair(async (): Promise<{
+				autoSaveText?: string;
+				authorityToken?: number;
+				completeAutoSave?: () => void;
+			}> => {
+			let retryRequested = false;
+			const requestRetry = (): void => {
+				retryRequested = true;
+				schedulePrivacyRepairRetry(allowDisposed);
+			};
+			if (closeFinalizationAbandoned || (outerDisposed && !allowDisposed)) return {};
+			const repairAuthority = markdownDocumentQueue.latestAuthority;
+			const repairProjectionGeneration = activeProjectionGeneration;
+			const repairOwner = activeMarkdownOwnerEntry;
+			if (!repairAuthority || activeProjectionAuthorityToken !== repairAuthority.token) return {};
+			const isRepairCurrent = (expectedText?: string): boolean => (
+				!closeFinalizationAbandoned
+				&& (allowDisposed || !outerDisposed)
+				&& activeProjectionGeneration === repairProjectionGeneration
+				&& activeProjectionAuthorityToken === repairAuthority.token
+				&& markdownDocumentQueue.latestAuthority?.token === repairAuthority.token
+				&& activeMarkdownOwnerEntry === repairOwner
+				&& (expectedText === undefined || document.getText() === expectedText)
+			);
 			const startingText = document.getText();
+			if (!isRepairCurrent(startingText)) return {};
 			const startedDirty = document.isDirty;
+			let startedFromDurableText = false;
+			if (!startedDirty && !isSessionFile) {
+				try {
+					startedFromDurableText = new TextDecoder().decode(
+						await vscode.workspace.fs.readFile(document.uri),
+					) === startingText;
+				} catch {
+					startedFromDurableText = false;
+				}
+			}
 			if (isSessionFile) {
-				const diskText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
+				let diskText: string;
+				try {
+					diskText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
+				} catch {
+					return {};
+				}
+				if (!isRepairCurrent(startingText) || diskText !== repairAuthority.sourceText) {
+					requestRetry();
+					return {};
+				}
 				const repairedText = await publishSerializedNotebookTextFresh(diskText, async sanitizedText => {
-					if (closeFinalizationAbandoned) return sanitizedText;
+					if (!isRepairCurrent(startingText)) return sanitizedText;
 					if (sanitizedText !== diskText) await writeOwnedSessionText(sanitizedText, allowDisposed);
 					return sanitizedText;
 				});
+				if (!isRepairCurrent(startingText)) {
+					requestRetry();
+					return {};
+				}
+				let publishedText: string;
+				try {
+					publishedText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
+				} catch {
+					return {};
+				}
+				if (publishedText !== repairedText
+					|| !commitCurrentAuthorityText(repairAuthority.token, repairedText)) return {};
 				lastSavedText = repairedText;
-				return;
+				markdownDocumentQueue.privacyRepairNeeded = false;
+				return {};
 			}
 			const currentFile = parseKqlxText(startingText, {
 				allowedKinds: [documentKind],
 				defaultKind: documentKind,
 			});
-			if (!currentFile.ok) return;
+			if (!currentFile.ok) return {};
+			const isSemanticNoop = (candidateText: string, sanitizedText: string): boolean => {
+				const candidate = parseKqlxText(candidateText, {
+					allowedKinds: [documentKind], defaultKind: documentKind,
+				});
+				const sanitized = parseKqlxText(sanitizedText, {
+					allowedKinds: [documentKind], defaultKind: documentKind,
+				});
+				return candidate.ok && sanitized.ok && deepEqual(
+					normalizeKqlxFileForPersistenceComparison(candidate.file),
+					normalizeKqlxFileForPersistenceComparison(sanitized.file),
+				);
+			};
+			const sanitizeDurableNotebook = async (): Promise<boolean> => {
+				let durableText: string;
+				try {
+					durableText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
+				} catch {
+					return false;
+				}
+				const sanitizedDurable = await sanitizeSerializedNotebookTextFresh(durableText);
+				if (sanitizedDurable === durableText) return true;
+				const identity = lastSavedIdentity ?? await getLocalFileIdentity(document.uri);
+				if (!identity || !await writeOwnedLocalFileText(
+					document.uri, identity, durableText, sanitizedDurable,
+				)) return false;
+				lastSavedText = sanitizedDurable;
+				return true;
+			};
 			const repairedText = await sanitizeSerializedNotebookTextFresh(startingText);
-			if (closeFinalizationAbandoned) return;
-			if (repairedText === startingText) return;
+			if (closeFinalizationAbandoned) return {};
+			if (!isRepairCurrent(startingText)) {
+				requestRetry();
+				return {};
+			}
+			if (repairedText === startingText || isSemanticNoop(startingText, repairedText)) {
+				if (!await sanitizeDurableNotebook()) {
+					requestRetry();
+					return {};
+				}
+				markdownDocumentQueue.privacyDurableText = undefined;
+				markdownDocumentQueue.privacyRepairNeeded = false;
+				return {};
+			}
 			let repairedBufferText = '';
-			let mayAutoSaveRepair = false;
 			await (_persistChain = _persistChain.catch(() => undefined).then(async () => {
 				for (let attempt = 0; attempt < 3; attempt++) {
 					if (closeFinalizationAbandoned) return;
 					const latestText = document.getText();
-					const latestReloadEpoch = sourceReloadEpoch;
+					if (!isRepairCurrent(latestText)) {
+						requestRetry();
+						return;
+					}
 					const latestRepair = await sanitizeSerializedNotebookTextFresh(latestText);
-					if (closeFinalizationAbandoned) return;
-					if (document.getText() !== latestText || sourceReloadEpoch !== latestReloadEpoch) continue;
-					if (latestRepair === latestText) return;
-					mayAutoSaveRepair = !startedDirty && !document.isDirty && latestText === startingText;
+					if (!isRepairCurrent(latestText)) {
+						requestRetry();
+						return;
+					}
+					if (latestRepair === latestText || isSemanticNoop(latestText, latestRepair)) {
+						markdownDocumentQueue.privacyRepairNeeded = false;
+						return;
+					}
 					const edit = new vscode.WorkspaceEdit();
 					edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(latestText.length)), latestRepair);
 					lastWebviewPersistAt = Date.now();
 					if (!await applyOwnedSourceEdit(edit, latestRepair)) {
 						throw new Error('VS Code rejected the SQL privacy repair edit.');
 					}
-					if (sourceReloadEpoch !== latestReloadEpoch || document.getText() !== latestRepair) {
-						mayAutoSaveRepair = false;
-						const authority = sourceReloadAuthority;
-						if (authority && authority.epoch > latestReloadEpoch && document.getText() === latestRepair) {
+					if (!isRepairCurrent(latestRepair)) {
+						const authority = markdownDocumentQueue.latestAuthority;
+						if (authority && authority.token > repairAuthority.token && document.getText() === latestRepair) {
 							sourceRollbackFailed = true;
 							sourceRollbackFailedCandidate = latestRepair;
 							for (let rollbackAttempt = 0; rollbackAttempt < 3; rollbackAttempt++) {
-								if (sourceReloadAuthority !== authority || document.getText() !== latestRepair) break;
+								const latestAuthority = markdownDocumentQueue.latestAuthority;
+								if (!latestAuthority || latestAuthority.token < authority.token
+									|| document.getText() !== latestRepair) break;
+								const rollbackBase = document.getText();
 								const rollback = new vscode.WorkspaceEdit();
-								rollback.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(latestRepair.length)), authority.text);
+								rollback.replace(
+									document.uri,
+									new vscode.Range(document.positionAt(0), document.positionAt(rollbackBase.length)),
+									latestAuthority.sourceText,
+								);
 								lastWebviewPersistAt = Date.now();
-								await applyOwnedSourceEdit(rollback, authority.text);
-								if (document.getText() === authority.text) break;
+								await applyOwnedSourceEdit(rollback, latestAuthority.sourceText);
+								if (markdownDocumentQueue.latestAuthority?.token === latestAuthority.token
+									&& document.getText() === latestAuthority.sourceText) break;
+								if (document.getText() !== latestAuthority.sourceText) break;
 							}
 							if (document.getText() !== latestRepair) {
 								sourceRollbackFailed = false;
 								sourceRollbackFailedCandidate = undefined;
 							}
 						}
-						void postDocument({ forceReload: true });
+						requestRetry();
 						return;
 					}
+					if (!commitCurrentAuthorityText(repairAuthority.token, latestRepair)) {
+						requestRetry();
+						return;
+					}
+					if (repairOwner) {
+						const repairedFile = parseKqlxText(latestRepair, {
+							allowedKinds: [documentKind], defaultKind: documentKind,
+						});
+						if (repairedFile.ok) {
+							repairOwner.document = repairOwner.document.withAdapterState(
+								ensureProjectedSectionIds(repairedFile.file.state, latestRepair),
+							);
+							repairOwner.sourceText = latestRepair;
+						}
+					}
 					repairedBufferText = latestRepair;
+					markdownDocumentQueue.privacyDurableText = latestRepair;
+					markdownDocumentQueue.privacyRepairNeeded = false;
 					return;
 				}
 			}));
-			if (mayAutoSaveRepair && repairedBufferText
-				&& document.isDirty && document.getText() === repairedBufferText) {
-				await document.save();
+			if (retryRequested) return {};
+			if (repairedBufferText && !await sanitizeDurableNotebook()) {
+				markdownDocumentQueue.privacyRepairNeeded = true;
+				requestRetry();
+				return {};
 			}
-		});
+			if (startedFromDurableText && repairedBufferText
+				&& markdownDocumentQueue.latestAuthority?.token === repairAuthority.token
+				&& markdownDocumentQueue.latestAuthority.sourceText === repairedBufferText
+				&& document.isDirty && document.getText() === repairedBufferText) {
+				let completeAutoSave!: () => void;
+				const pendingPrivacySave = new Promise<void>(resolve => { completeAutoSave = resolve; });
+				markdownDocumentQueue.pendingPrivacySave = pendingPrivacySave;
+				return {
+					autoSaveText: repairedBufferText,
+					authorityToken: repairAuthority.token,
+					completeAutoSave: () => {
+						if (markdownDocumentQueue.pendingPrivacySave === pendingPrivacySave) {
+							markdownDocumentQueue.pendingPrivacySave = undefined;
+						}
+						completeAutoSave();
+					},
+				};
+			}
+			if (!repairedBufferText) markdownDocumentQueue.privacyRepairNeeded = false;
+			return {};
+			})).then(deferred => {
+				if (!deferred.autoSaveText || deferred.authorityToken === undefined) return;
+				queueMicrotask(() => {
+					void (async () => {
+						let targetText = deferred.autoSaveText!;
+						let targetAuthorityToken = deferred.authorityToken!;
+						markdownDocumentQueue.canonicalSaveText = targetText;
+						try {
+							for (let attempt = 0; attempt < 2; attempt++) {
+								const latestAuthority = markdownDocumentQueue.latestAuthority;
+								if (!latestAuthority
+									|| latestAuthority.token !== targetAuthorityToken
+									|| latestAuthority.sourceText !== targetText
+									|| document.getText() !== targetText) {
+									const replacementAuthority = markdownDocumentQueue.latestAuthority;
+									const replacementText = document.getText();
+									if (!replacementAuthority || replacementAuthority.sourceText !== replacementText) {
+										markdownDocumentQueue.privacyRepairNeeded = true;
+										schedulePrivacyRepairRetry(allowDisposed);
+										return;
+									}
+									const sanitizedReplacement = await sanitizeSerializedNotebookTextFresh(replacementText);
+									if (markdownDocumentQueue.latestAuthority?.token !== replacementAuthority.token
+										|| document.getText() !== replacementText) {
+										markdownDocumentQueue.privacyRepairNeeded = true;
+										schedulePrivacyRepairRetry(allowDisposed);
+										return;
+									}
+									if (sanitizedReplacement !== replacementText) {
+										const edit = new vscode.WorkspaceEdit();
+										edit.replace(
+											document.uri,
+											new vscode.Range(document.positionAt(0), document.positionAt(replacementText.length)),
+											sanitizedReplacement,
+										);
+										lastWebviewPersistAt = Date.now();
+										if (!await applyOwnedSourceEdit(edit, sanitizedReplacement)) return;
+										if (markdownDocumentQueue.latestAuthority?.token !== replacementAuthority.token
+											|| document.getText() !== sanitizedReplacement
+											|| !commitCurrentAdapterText(
+												replacementAuthority.token,
+												this.markdownDocuments.get(markdownDocumentKey),
+												sanitizedReplacement,
+											)) return;
+									}
+									let durableText: string | undefined;
+									try {
+										durableText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
+									} catch {
+										durableText = undefined;
+									}
+									if (durableText === undefined) return;
+									const sanitizedDurable = await sanitizeSerializedNotebookTextFresh(durableText);
+									if (sanitizedDurable !== durableText) {
+										const identity = lastSavedIdentity ?? await getLocalFileIdentity(document.uri);
+										if (!identity || !await writeOwnedLocalFileText(
+											document.uri, identity, durableText, sanitizedDurable,
+										)) {
+											markdownDocumentQueue.privacyRepairNeeded = true;
+											schedulePrivacyRepairRetry(allowDisposed);
+											return;
+										}
+										lastSavedText = sanitizedDurable;
+									}
+									markdownDocumentQueue.privacyDurableText = undefined;
+									markdownDocumentQueue.privacyRepairNeeded = false;
+									return;
+								}
+								let saved = false;
+								try { saved = await document.save(); } catch { saved = false; }
+								let durableText: string | undefined;
+								try {
+									durableText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
+								} catch {
+									durableText = undefined;
+								}
+								if (saved && durableText === targetText) {
+									if (markdownDocumentQueue.privacyDurableText === targetText) {
+										markdownDocumentQueue.privacyDurableText = undefined;
+									}
+									markdownDocumentQueue.privacyRepairNeeded = false;
+									return;
+								}
+								markdownDocumentQueue.privacyRepairNeeded = true;
+							}
+							schedulePrivacyRepairRetry(allowDisposed);
+						} finally {
+							if (markdownDocumentQueue.canonicalSaveText === targetText) {
+								markdownDocumentQueue.canonicalSaveText = undefined;
+							}
+							deferred.completeAutoSave?.();
+						}
+					})();
+				});
+			});
+		};
 
 		const scheduleSave = () => {
 			// Only auto-save the persistent session file.
@@ -2611,6 +3043,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			generation: number;
 			sourceText: string;
 			owner?: MarkdownDocumentOwnerEntry;
+			authorityToken: number;
+			authorityEpoch: number;
 		}>();
 		let projectionActivationTail: Promise<void> = Promise.resolve();
 		let markdownCommandBarrierSupported = false;
@@ -2618,9 +3052,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			generation: number,
 			sourceText: string,
 			owner?: MarkdownDocumentOwnerEntry,
+			authorityToken = activeProjectionAuthorityToken,
+			authorityEpoch = markdownDocumentQueue.sourceObservationSequence,
 		) => {
 			const reload = projectionSession.createReloadRequest();
-			const activation = { generation, sourceText, owner };
+			const activation = { generation, sourceText, owner, authorityToken, authorityEpoch };
 			pendingProjectionActivations.set(reload.requestId, activation);
 			void reload.result.then(() => {
 				if (pendingProjectionActivations.get(reload.requestId) === activation) {
@@ -2629,9 +3065,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			});
 			return reload;
 		};
-		const postDocument = async (options?: { forceReload?: boolean }): Promise<boolean> => {
+		const postDocument = async (options?: { forceReload?: boolean; retryCount?: number }): Promise<boolean> => {
 			if (outerDisposed) return false;
 			const generation = ++postDocumentGeneration;
+			const sourceObservation = ++panelSourceObservationSequence;
 			const forceReload = options?.forceReload ?? false;
 			const suppressPersistenceForTest = this.context.extensionMode !== vscode.ExtensionMode.Production
 				&& process.env.KUSTO_WORKBENCH_E2E_SUPPRESS_PERSISTENCE === '1';
@@ -2639,6 +3076,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			fileOpenTrace.mark('postDocument.start', { forceReload });
 			const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
 			const rawText = await readProjectionSourceText();
+			if (outerDisposed || generation !== postDocumentGeneration
+				|| sourceObservation !== panelSourceObservationSequence) return false;
+			if (!await isProjectionSourceCurrent(rawText)
+				|| outerDisposed || generation !== postDocumentGeneration
+				|| sourceObservation !== panelSourceObservationSequence) return false;
+			const authorityToken = fencePersistenceForProjection(generation, rawText);
+			const authorityEpoch = markdownDocumentQueue.sourceObservationSequence;
 			perfMark('host.kqlx.documentText.read', { length: rawText.length });
 			fileOpenTrace.mark('postDocument.documentText.read', { length: rawText.length });
 			const parsed = parseKqlxText(rawText, {
@@ -2648,7 +3092,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			perfMark('host.kqlx.parse.done', { ok: parsed.ok });
 			fileOpenTrace.mark('postDocument.parse.done', { ok: parsed.ok });
 			if (!parsed.ok) {
-				const reload = createProjectionReload(generation, rawText);
+				const reload = createProjectionReload(
+					generation, rawText, undefined, authorityToken, authorityEpoch,
+				);
 				const delivered = await deliverWebviewMessage({
 					type: 'documentData',
 					ok: false,
@@ -2668,7 +3114,16 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				const applied = await reload.result;
 				const accepted = applied && !outerDisposed
 					&& generation === postDocumentGeneration
+					&& markdownDocumentQueue.latestAuthority?.token === authorityToken
+					&& markdownDocumentQueue.sourceObservationSequence === authorityEpoch
 					&& await isProjectionSourceCurrent(rawText);
+				if (!accepted && (options?.retryCount ?? 0) < 1
+					&& authorityToken !== activeProjectionAuthorityToken
+					&& generation === postDocumentGeneration
+					&& markdownDocumentQueue.latestAuthority?.token === authorityToken
+					&& await isProjectionSourceCurrent(rawText)) {
+					return postDocument({ forceReload: true, retryCount: (options?.retryCount ?? 0) + 1 });
+				}
 				return accepted;
 			}
 			const unsafeReason = await getUnsafeLinkedQueryReasonFresh(document.uri, parsed.file.state);
@@ -2680,7 +3135,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				linkedQueryDocument = undefined;
 				linkedQueryLoadGeneration = generation;
 				linkedQueryPhysicalIdentity = undefined;
-				const reload = createProjectionReload(generation, rawText);
+				const reload = createProjectionReload(
+					generation, rawText, undefined, authorityToken, authorityEpoch,
+				);
 				const delivered = await deliverWebviewMessage({
 					type: 'documentData', ok: false, forceReload, sourceGeneration: generation,
 					reloadRequestId: reload.requestId,
@@ -2694,7 +3151,16 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				const applied = await reload.result;
 				const accepted = applied && !outerDisposed
 					&& generation === postDocumentGeneration
+					&& markdownDocumentQueue.latestAuthority?.token === authorityToken
+					&& markdownDocumentQueue.sourceObservationSequence === authorityEpoch
 					&& await isProjectionSourceCurrent(rawText);
+				if (!accepted && (options?.retryCount ?? 0) < 1
+					&& authorityToken !== activeProjectionAuthorityToken
+					&& generation === postDocumentGeneration
+					&& markdownDocumentQueue.latestAuthority?.token === authorityToken
+					&& await isProjectionSourceCurrent(rawText)) {
+					return postDocument({ forceReload: true, retryCount: (options?.retryCount ?? 0) + 1 });
+				}
 				return accepted;
 			}
 
@@ -2714,7 +3180,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			const outboundState = overlayOwnedMarkdownState(sanitizedOutboundState, markdownOwner.document);
 			const markdownProjection = markdownOwner.document.projection();
 
-			const reload = createProjectionReload(generation, rawText, markdownOwner);
+			const reload = createProjectionReload(
+				generation, rawText, markdownOwner, authorityToken, authorityEpoch,
+			);
 			const delivered = await deliverWebviewMessage({
 				type: 'documentData',
 				ok: true,
@@ -2759,10 +3227,19 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			const applied = await reload.result;
 			const accepted = applied && !outerDisposed
 				&& generation === postDocumentGeneration
+				&& markdownDocumentQueue.latestAuthority?.token === authorityToken
+				&& markdownDocumentQueue.sourceObservationSequence === authorityEpoch
 				&& await isProjectionSourceCurrent(rawText);
 			if (!accepted && this.markdownDocuments.get(markdownDocumentKey) === markdownOwner
 				&& activeMarkdownOwnerEntry && activeMarkdownOwnerEntry !== markdownOwner) {
 				this.markdownDocuments.set(markdownDocumentKey, activeMarkdownOwnerEntry);
+			}
+			if (!accepted && (options?.retryCount ?? 0) < 1
+				&& authorityToken !== activeProjectionAuthorityToken
+				&& generation === postDocumentGeneration
+				&& markdownDocumentQueue.latestAuthority?.token === authorityToken
+				&& await isProjectionSourceCurrent(rawText)) {
+				return postDocument({ forceReload: true, retryCount: (options?.retryCount ?? 0) + 1 });
 			}
 			return accepted;
 		};
@@ -2783,7 +3260,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			owner: MarkdownDocumentOwnerEntry | undefined,
 			sourceGeneration: number,
 		): MarkdownSaveLease => {
-			if (!owner) return { sourceGeneration, settle: () => undefined };
+			const sourceAuthorityToken = activeProjectionAuthorityToken;
+			if (!owner) return { sourceGeneration, sourceAuthorityToken, settle: () => undefined };
 			const previousWork = owner.queue.tail;
 			let release!: () => void;
 			const leaseDone = new Promise<void>(resolve => { release = resolve; });
@@ -2792,6 +3270,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			return {
 				owner,
 				sourceGeneration,
+				sourceAuthorityToken,
 				settle: () => {
 					if (settled) return;
 					settled = true;
@@ -2837,7 +3316,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			});
 		};
 		let nativeSaveGeneration = 0;
-		let pendingNativeResultRestore: { rowFreeText: string; candidateText: string; generation: number } | undefined;
+		let pendingNativeResultRestore: {
+			rowFreeText: string;
+			candidateText: string;
+			generation: number;
+			sourceAuthorityToken: number;
+			owner?: MarkdownDocumentOwnerEntry;
+		} | undefined;
 		let canonicalResultRestoreSaveInProgress = false;
 		let canonicalResultRestoreTail: Promise<void> = Promise.resolve();
 		const nativeSavePreparations = new Set<Promise<void>>();
@@ -2847,6 +3332,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			timer: NodeJS.Timeout;
 		};
 		const activeNativeMarkdownSaveLeases = new Set<MarkdownSaveLease>();
+		const transferredNativeMarkdownSaveLeases = new Set<MarkdownSaveLease>();
 		const nativeMarkdownSaveLeases: NativeMarkdownSaveLeaseRecord[] = [];
 		const settleActiveNativeMarkdownSaveLease = (lease: MarkdownSaveLease) => {
 			activeNativeMarkdownSaveLeases.delete(lease);
@@ -2862,6 +3348,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			const index = nativeMarkdownSaveLeases.findIndex(record => record.expectedText === savedText);
 			settleNativeMarkdownSaveLeaseRecord(index);
 		};
+		const takeNativeMarkdownSaveLease = (savedText: string): MarkdownSaveLease | undefined => {
+			const index = nativeMarkdownSaveLeases.findIndex(record => record.expectedText === savedText);
+			if (index < 0) return undefined;
+			const record = nativeMarkdownSaveLeases.splice(index, 1)[0];
+			clearTimeout(record.timer);
+			return record.lease;
+		};
 		const retainNativeMarkdownSaveLease = (lease: MarkdownSaveLease, expectedText: string): boolean => {
 			if (outerDisposed || !activeNativeMarkdownSaveLeases.has(lease)) return false;
 			const record = { lease, expectedText } as NativeMarkdownSaveLeaseRecord;
@@ -2874,7 +3367,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 		const settleAllNativeMarkdownSaveLeases = () => {
 			while (nativeMarkdownSaveLeases.length > 0) settleNativeMarkdownSaveLeaseRecord(0);
-			for (const lease of [...activeNativeMarkdownSaveLeases]) settleActiveNativeMarkdownSaveLease(lease);
+			for (const lease of [...activeNativeMarkdownSaveLeases]) {
+				if (!transferredNativeMarkdownSaveLeases.has(lease)) settleActiveNativeMarkdownSaveLease(lease);
+			}
 		};
 		const linkedSaveTasks = new Set<Promise<void>>();
 		let nativeSaveStateVersion = 0;
@@ -2891,46 +3386,109 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const prepareAtomicSqlSaveText = async (currentText: string): Promise<string> => {
 			return sanitizeSerializedNotebookTextFailClosed(currentText);
 		};
-		const restoreCanonicalNativeResults = async (pending: { rowFreeText: string; candidateText: string; generation: number }): Promise<void> => {
-			if (closeFinalizationAbandoned || pending.generation !== nativeSaveGeneration || document.isDirty || document.getText() !== pending.rowFreeText) return;
-			const rowFreeVersion = document.version;
-			try {
-			await publishSerializedNotebookTextFresh(pending.candidateText, async admittedText => {
-				if (closeFinalizationAbandoned || pending.generation !== nativeSaveGeneration || document.version !== rowFreeVersion
-					|| document.isDirty || document.getText() !== pending.rowFreeText || admittedText === pending.rowFreeText) return false;
-				canonicalResultRestoreSaveInProgress = true;
-				try {
-					const currentText = document.getText();
-					const edit = new vscode.WorkspaceEdit();
-					edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(currentText.length)), admittedText);
-					lastWebviewPersistAt = Date.now();
-					if (!await vscode.workspace.applyEdit(edit)) return false;
-					const admittedVersion = document.version;
-					if (pending.generation !== nativeSaveGeneration || document.getText() !== admittedText) return false;
-					if (await document.save()) return true;
-					if (pending.generation !== nativeSaveGeneration || document.version !== admittedVersion || document.getText() !== admittedText) return false;
-					const rollbackText = document.getText();
-					const rollback = new vscode.WorkspaceEdit();
-					rollback.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(rollbackText.length)), pending.rowFreeText);
-					lastWebviewPersistAt = Date.now();
-					await vscode.workspace.applyEdit(rollback);
-					return false;
-				} catch {
-					const rollbackText = document.getText();
-					if (pending.generation === nativeSaveGeneration && document.version === rowFreeVersion + 1
-						&& rollbackText !== pending.rowFreeText) {
-						const rollback = new vscode.WorkspaceEdit();
-						rollback.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(rollbackText.length)), pending.rowFreeText);
+		const restoreCanonicalNativeResults = async (
+			pending: NonNullable<typeof pendingNativeResultRestore>,
+			markdownSaveLease?: MarkdownSaveLease,
+		): Promise<void> => {
+			const restore = async (): Promise<void> => {
+				const allowDisposedRestore = !!markdownSaveLease
+					&& transferredNativeMarkdownSaveLeases.has(markdownSaveLease);
+				const currentRestoreOwner = (): MarkdownDocumentOwnerEntry | undefined =>
+					this.markdownDocuments.get(markdownDocumentKey) ?? pending.owner;
+				const isAuthorityCurrent = (expectedText: string): boolean => (
+					(!closeFinalizationAbandoned || allowDisposedRestore)
+					&& pending.generation === nativeSaveGeneration
+					&& markdownDocumentQueue.latestAuthority?.token === pending.sourceAuthorityToken
+					&& document.getText() === expectedText
+				);
+				if (document.isDirty || !isAuthorityCurrent(pending.rowFreeText)
+					|| !commitCurrentAdapterText(
+						pending.sourceAuthorityToken, currentRestoreOwner(), pending.rowFreeText,
+					)) return;
+				const rowFreeVersion = document.version;
+				const rollback = async (fromText: string): Promise<void> => {
+					let rollbackBase = fromText;
+					for (let attempt = 0; attempt < 3; attempt++) {
+						if (document.getText() !== rollbackBase) return;
+						const authority = markdownDocumentQueue.latestAuthority;
+						const rollbackText = authority && authority.token > pending.sourceAuthorityToken
+							? authority.sourceText
+							: pending.rowFreeText;
+						const edit = new vscode.WorkspaceEdit();
+						edit.replace(
+							document.uri,
+							new vscode.Range(document.positionAt(0), document.positionAt(rollbackBase.length)),
+							rollbackText,
+						);
 						lastWebviewPersistAt = Date.now();
-						await vscode.workspace.applyEdit(rollback);
+						await applyOwnedSourceEdit(edit, rollbackText);
+						rollbackBase = rollbackText;
+						const latestAuthority = markdownDocumentQueue.latestAuthority;
+						if (latestAuthority?.token === authority?.token && document.getText() === rollbackText) {
+							if (authority?.token === pending.sourceAuthorityToken) {
+								commitCurrentAdapterText(
+									pending.sourceAuthorityToken, currentRestoreOwner(), rollbackText,
+								);
+							}
+							return;
+						}
+						if (document.getText() !== rollbackText) return;
 					}
-					return false;
-				} finally {
-					canonicalResultRestoreSaveInProgress = false;
+				};
+				try {
+					await publishSerializedNotebookTextFresh(pending.candidateText, async admittedText => {
+						if (document.version !== rowFreeVersion || document.isDirty
+							|| !isAuthorityCurrent(pending.rowFreeText)
+							|| admittedText === pending.rowFreeText) return false;
+						canonicalResultRestoreSaveInProgress = true;
+						try {
+							const edit = new vscode.WorkspaceEdit();
+							edit.replace(
+								document.uri,
+								new vscode.Range(document.positionAt(0), document.positionAt(pending.rowFreeText.length)),
+								admittedText,
+							);
+							lastWebviewPersistAt = Date.now();
+							if (!await applyOwnedSourceEdit(edit, admittedText)) return false;
+							if (!isAuthorityCurrent(admittedText)
+								|| !commitCurrentAdapterText(
+									pending.sourceAuthorityToken, currentRestoreOwner(), admittedText,
+								)) {
+								await rollback(admittedText);
+								return false;
+							}
+							const admittedVersion = document.version;
+							markdownDocumentQueue.canonicalSaveText = admittedText;
+							try {
+								if (await document.save() && isAuthorityCurrent(admittedText)) return true;
+							} finally {
+								if (markdownDocumentQueue.canonicalSaveText === admittedText) {
+									markdownDocumentQueue.canonicalSaveText = undefined;
+								}
+							}
+							if (document.version === admittedVersion && document.getText() === admittedText) {
+								await rollback(admittedText);
+							}
+							return false;
+						} catch {
+							await rollback(admittedText);
+							return false;
+						} finally {
+							canonicalResultRestoreSaveInProgress = false;
+						}
+					});
+				} catch {
+					// The native save already committed the row-free snapshot.
 				}
-			});
-			} catch {
-				// The native save already committed the row-free snapshot.
+			};
+			try {
+				if (markdownSaveLease) await restore();
+				else await runInMarkdownDocumentQueue(restore);
+			} finally {
+				if (markdownSaveLease) {
+					transferredNativeMarkdownSaveLeases.delete(markdownSaveLease);
+					settleActiveNativeMarkdownSaveLease(markdownSaveLease);
+				}
 			}
 		};
 		subscriptions.push(queryEditor.onDidInvalidateSqlPersistence(() => {
@@ -2943,7 +3501,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			subscriptions.push(vscode.workspace.onWillSaveTextDocument(event => {
 				if (event.document.uri.toString() !== document.uri.toString()) return;
 				if (!isLocalNativeSaveCoordinator()) return;
-				if (canonicalResultRestoreSaveInProgress) {
+				if (canonicalResultRestoreSaveInProgress
+					|| markdownDocumentQueue.canonicalSaveText === event.document.getText()) {
 					event.waitUntil(Promise.resolve([]));
 					return;
 				}
@@ -2979,6 +3538,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					}
 					const currentText = document.getText();
 					const saveProjectionGeneration = markdownSaveLease?.sourceGeneration ?? activeProjectionGeneration;
+					const saveAuthorityToken = markdownSaveLease?.sourceAuthorityToken ?? activeProjectionAuthorityToken;
 					const saveMarkdownOwner = markdownSaveLease
 						? markdownSaveLease.owner
 						: activeMarkdownOwnerEntry;
@@ -2986,6 +3546,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const saveLinkedGeneration = linkedQueryLoadGeneration;
 					const saveLinkedIdentity = linkedQueryPhysicalIdentity;
 					const saveOwnerIsCurrent = () => activeProjectionGeneration === saveProjectionGeneration
+						&& activeProjectionAuthorityToken === saveAuthorityToken
+						&& markdownDocumentQueue.latestAuthority?.token === saveAuthorityToken
 						&& (saveMarkdownOwner
 							? activeMarkdownOwnerEntry === saveMarkdownOwner
 								&& this.markdownDocuments.get(markdownDocumentKey) === saveMarkdownOwner
@@ -3045,6 +3607,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 									? 'The linked-query target changed during durable Save.'
 									: attempt.reason === 'durable-changed'
 										? 'The linked query file changed on disk before Save.'
+										: attempt.reason === 'dirty-alias'
+											? 'The linked query file could not be updated because a dirty physical alias is open.'
 										: attempt.reason === 'update-failed'
 											? 'The linked query file could not be updated.'
 											: 'The linked query file could not be saved.';
@@ -3057,7 +3621,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							);
 							if (!saveOwnerIsCurrent()) throw Object.assign(new Error('The linked-query target changed during Save.'), { linkedQueryWriteFailed: true });
 						}
-						pendingNativeResultRestore = { rowFreeText: sanitizedText, candidateText, generation: ++nativeSaveGeneration };
+						pendingNativeResultRestore = {
+							rowFreeText: sanitizedText,
+							candidateText,
+							generation: ++nativeSaveGeneration,
+							sourceAuthorityToken: saveAuthorityToken,
+							owner: saveMarkdownOwner,
+						};
 						notifyNativeSaveStateChanged();
 					} catch (error) {
 						if (error instanceof KqlxOverlayConflictError
@@ -3080,6 +3650,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							new vscode.Range(document.positionAt(0), document.positionAt(freshText.length)),
 							sanitizedText,
 						)];
+					if (edits.length > 0) {
+						ownedDocumentEdits.begin(sanitizedText);
+						claimSharedOwnedMutation(sanitizedText);
+					}
 					if (markdownSaveLease) {
 						retainedMarkdownSaveLease = retainNativeMarkdownSaveLease(markdownSaveLease, sanitizedText);
 						if (!retainedMarkdownSaveLease) {
@@ -3113,8 +3687,29 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						}
 						return;
 					}
-					const canonicalSave = canonicalResultRestoreSaveInProgress;
-					if (!canonicalSave) settleNativeMarkdownSaveLease(saved.getText());
+					const canonicalSave = canonicalResultRestoreSaveInProgress
+						|| markdownDocumentQueue.canonicalSaveText === saved.getText();
+					if (markdownDocumentQueue.pendingOwnedMutation?.text === saved.getText()) {
+						markdownDocumentQueue.pendingOwnedMutation = undefined;
+					}
+					const pending = canonicalSave ? undefined : pendingNativeResultRestore;
+					const shouldRestoreCanonicalResults = !!pending && saved.getText() === pending.rowFreeText;
+					const canonicalRestoreLease = !canonicalSave && shouldRestoreCanonicalResults
+						? takeNativeMarkdownSaveLease(saved.getText())
+						: undefined;
+					if (pending && shouldRestoreCanonicalResults
+						&& !commitCurrentAdapterText(
+							pending.sourceAuthorityToken, pending.owner, pending.rowFreeText,
+						)) {
+						pendingNativeResultRestore = undefined;
+						if (canonicalRestoreLease) settleActiveNativeMarkdownSaveLease(canonicalRestoreLease);
+						notifyNativeSaveStateChanged();
+						return;
+					}
+					if (canonicalRestoreLease) transferredNativeMarkdownSaveLeases.add(canonicalRestoreLease);
+					if (!canonicalSave && !shouldRestoreCanonicalResults) {
+						settleNativeMarkdownSaveLease(saved.getText());
+					}
 					let linkedNativeSaveHandled = false;
 					const pendingLinkedSave = pendingLinkedNativeSave;
 					if (pendingLinkedSave) {
@@ -3159,11 +3754,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						// ignore
 					}
 					if (canonicalSave) return;
-					const pending = pendingNativeResultRestore;
 					pendingNativeResultRestore = undefined;
-					if (pending && saved.getText() === pending.rowFreeText) {
+					if (pending && shouldRestoreCanonicalResults) {
 						canonicalResultRestoreTail = canonicalResultRestoreTail
-							.then(() => restoreCanonicalNativeResults(pending), () => restoreCanonicalNativeResults(pending));
+							.then(
+								() => restoreCanonicalNativeResults(pending, canonicalRestoreLease),
+								() => restoreCanonicalNativeResults(pending, canonicalRestoreLease),
+							);
 					} else {
 						void repairPersistedSqlState().catch(() => undefined);
 					}
@@ -3222,7 +3819,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						return;
 					}
 					const currentText = e.document.getText();
-					const matchesOwnedDocumentEdit = ownedDocumentEdits.observe(currentText);
+					const matchesSharedOwnedMutation = observeSharedOwnedMutation(currentText);
+					const matchesLocalOwnedMutation = ownedDocumentEdits.observe(currentText);
+					const matchesOwnedDocumentEdit = matchesSharedOwnedMutation || matchesLocalOwnedMutation;
 					if (!webviewInitialized && e.contentChanges.length > 0) {
 						if (initialProjectionRecovery) initialProjectionRestartRequested = true;
 						else void ensureInitialDocument();
@@ -3235,6 +3834,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						webviewInitialized,
 						contentChangeCount: e.contentChanges.length,
 					})) return;
+					fencePersistenceForProjection(postDocumentGeneration + 1, currentText);
 					// Notify the webview that the document changed externally.
 					// Use forceReload to ensure the webview updates even if already initialized.
 					void postDocument({ forceReload: true });
@@ -3337,6 +3937,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							const accepted = applied
 								&& !outerDisposed
 								&& activation.generation === postDocumentGeneration
+								&& markdownDocumentQueue.latestAuthority?.token === activation.authorityToken
+								&& markdownDocumentQueue.sourceObservationSequence === activation.authorityEpoch
 								&& await isProjectionSourceCurrent(activation.sourceText)
 								&& pendingProjectionActivations.get(requestId) === activation
 								&& projectionSession.hasPendingReloadRequest(requestId);
@@ -3351,7 +3953,19 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								markdownCommandBarrierSupported = true;
 							}
 							if (accepted) {
-								activateProjection(activation.generation, activation.sourceText, activation.owner);
+								activateProjection(
+									activation.generation,
+									activation.sourceText,
+									activation.owner,
+									activation.authorityToken,
+								);
+								if (markdownDocumentQueue.privacyRepairNeeded) {
+									void repairPersistedSqlState().catch(() => undefined);
+								}
+							} else if (applied
+								&& activation.generation === postDocumentGeneration
+								&& markdownDocumentQueue.latestAuthority?.token === activation.authorityToken) {
+								void postDocument({ forceReload: true });
 							}
 						});
 						projectionActivationTail = activationOperation.then(() => undefined, () => undefined);
@@ -3369,7 +3983,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						: await ensureInitialDocument();
 					if (outerDisposed) return;
 					webviewInitialized = delivered;
-					await repairPersistedSqlState();
+					void repairPersistedSqlState().catch(() => undefined);
 					perfMark('host.kqlx.requestDocument.completed');
 					fileOpenTrace.mark('requestDocument.completed');
 
@@ -3435,6 +4049,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const commandId = String((message as any).commandId || '').trim();
 					if (!commandId) return;
 					const commandGeneration = Number((message as any).sourceGeneration);
+					const commandAuthorityToken = activeProjectionAuthorityToken;
 					const entry = activeMarkdownOwnerEntry;
 					let commandResult: Record<string, unknown> | undefined;
 					const rejectCommand = (code: string, messageText: string) => {
@@ -3460,6 +4075,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const isCommandCurrent = () => !!entry
 						&& Number.isSafeInteger(commandGeneration)
 						&& commandGeneration === activeProjectionGeneration
+						&& commandAuthorityToken === activeProjectionAuthorityToken
+						&& entry.queue.latestAuthority?.token === commandAuthorityToken
 						&& activeMarkdownOwnerEntry === entry
 						&& this.markdownDocuments.get(markdownDocumentKey) === entry
 						&& (!outerDisposed || isSessionFile)
@@ -3473,6 +4090,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const previousCommandTail = entry.queue.tail;
 					entry.queue.pendingCommands++;
 					const operation = previousCommandTail.catch(() => undefined).then(async () => {
+						await entry.queue.pendingPrivacySave;
 						const currentText = await readProjectionSourceText();
 						const currentFile = parseKqlxText(currentText, {
 							allowedKinds: [documentKind], defaultKind: documentKind,
@@ -3510,19 +4128,21 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							};
 							return;
 						}
-						const candidateText = serializeDocumentState(transition.document.snapshot() as KqlxStateV1, currentText);
+						let candidateText = serializeDocumentState(transition.document.snapshot() as KqlxStateV1, currentText);
 						if (!isCommandCurrent()) {
 							rejectStaleCommand();
 							return;
 						}
 						let applied = false;
 						if (isSessionFile) {
-							applied = await saveSessionFileToDisk(
+							const admittedText = await saveSessionFileToDisk(
 								candidateText,
 								isCommandCurrent,
 								allowDisposedSessionCommand,
-								() => activeProjectionSourceText,
+								() => entry.queue.latestAuthority?.sourceText ?? activeProjectionSourceText,
 							);
+							applied = admittedText !== undefined;
+							if (admittedText !== undefined) candidateText = admittedText;
 						} else if (document.getText() === currentText) {
 							const edit = new vscode.WorkspaceEdit();
 							edit.replace(
@@ -3535,22 +4155,29 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								&& document.getText() === candidateText;
 							if (applied && !isCommandCurrent()) {
 								applied = false;
-								const rollbackText = commandGeneration === activeProjectionGeneration
-									? currentText
-									: activeProjectionSourceText;
-								if (document.getText() === candidateText && rollbackText !== candidateText) {
+								let rollbackBase = candidateText;
+								for (let attempt = 0; attempt < 3; attempt++) {
+									const authority = entry.queue.latestAuthority;
+									const rollbackText = authority && authority.token > commandAuthorityToken
+										? authority.sourceText
+										: (attempt === 0 ? currentText : undefined);
+									if (rollbackText === undefined || document.getText() !== rollbackBase) break;
 									const rollback = new vscode.WorkspaceEdit();
 									rollback.replace(
 										document.uri,
-										new vscode.Range(document.positionAt(0), document.positionAt(candidateText.length)),
+										new vscode.Range(document.positionAt(0), document.positionAt(rollbackBase.length)),
 										rollbackText,
 									);
 									lastWebviewPersistAt = Date.now();
 									await applyOwnedSourceEdit(rollback, rollbackText);
-									if (document.getText() === candidateText) {
-										sourceRollbackFailed = true;
-										sourceRollbackFailedCandidate = candidateText;
-									}
+									rollbackBase = rollbackText;
+									if ((!authority || entry.queue.latestAuthority?.token === authority.token)
+										&& document.getText() === rollbackText) break;
+								}
+								const latestAuthority = entry.queue.latestAuthority;
+								if (latestAuthority && document.getText() !== latestAuthority.sourceText) {
+									sourceRollbackFailed = true;
+									sourceRollbackFailedCandidate = candidateText;
 								}
 							}
 						}
@@ -3562,6 +4189,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								error: { code: 'document-write-failed', message: 'The Markdown command could not update the document.' },
 								projection: entry.document.projection(),
 							};
+							return;
+						}
+						if (!commitCurrentAuthorityText(commandAuthorityToken, candidateText)) {
+							rejectStaleCommand();
 							return;
 						}
 						entry.document = transition.document;
@@ -3594,6 +4225,16 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const snapshotId = String((message as any).snapshotId || '').trim();
 					const incomingSourceGeneration = Number((message as any).sourceGeneration);
 					const sourceGenerationMissing = !Number.isSafeInteger(incomingSourceGeneration);
+					const persistAuthorityToken = activeProjectionAuthorityToken;
+					if (markdownDocumentQueue.latestAuthority?.token !== persistAuthorityToken) {
+						if (flushRequestId) {
+							finalPersistSession.completeFinalPersist(
+								flushRequestId,
+								new Error('The final document snapshot was superseded by a pending source projection.'),
+							);
+						}
+						return;
+					}
 					if ((snapshotId || flushRequestId) && ((sourceGenerationMissing && this.context.extensionMode === vscode.ExtensionMode.Production)
 						|| (!sourceGenerationMissing && incomingSourceGeneration !== activeProjectionGeneration))) {
 						if (flushRequestId) {
@@ -3643,6 +4284,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						if (activeMarkdownOwnerEntry !== markdownOwner
 							|| this.markdownDocuments.get(markdownDocumentKey) !== markdownOwner
 							|| markdownPersistenceLease.revoked
+							|| markdownOwner.queue.latestAuthority?.token !== persistAuthorityToken
+							|| activeProjectionAuthorityToken !== persistAuthorityToken
 							|| leaseGeneration !== activeProjectionGeneration) {
 							markdownPersistenceLease.settle();
 							return;
@@ -3675,12 +4318,16 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						return;
 					}
 					const persistGeneration = ++persistRequestGeneration;
+					const persistProjectionGeneration = activeProjectionGeneration;
 					const reloadEpochAtAdmission = sourceReloadEpoch;
 					const persistReason = String((message as any).reason || '');
 					const allowDisposedPersist = isSessionFile && persistReason === 'beforeunload';
 					const isPersistCurrent = () => (allowDisposedPersist || !outerDisposed)
 						&& !closeFinalizationAbandoned
 						&& persistRequestGeneration === persistGeneration
+						&& activeProjectionGeneration === persistProjectionGeneration
+						&& activeProjectionAuthorityToken === persistAuthorityToken
+						&& markdownDocumentQueue.latestAuthority?.token === persistAuthorityToken
 						&& (!markdownPersistenceLease || (
 							markdownOwner?.queue.activePersistenceLeases.has(markdownPersistenceLease) === true
 							&& !markdownPersistenceLease.revoked
@@ -3693,6 +4340,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					await previousPersistDecision.catch(() => undefined);
 					let saveDocumentAfterDecision = false;
 					let persistAccepted = false;
+					let acceptedSourceText: string | undefined;
+					let acceptedOrderedSectionIds: string[] | undefined;
 					let linkedSessionRollback: {
 						uri: vscode.Uri;
 						identity: LocalFileIdentity;
@@ -3746,8 +4395,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							}
 						}
 					if (!isPersistCurrent()) return;
-					const persistSessionWithRollback = async (sessionText: string): Promise<boolean> => {
-						const saved = await saveSessionSnapshot(
+					const persistSessionWithRollback = async (sessionText: string): Promise<string | undefined> => {
+						const admittedText = await saveSessionSnapshot(
 							sessionText,
 							isPersistCurrent,
 							allowDisposedPersist,
@@ -3755,7 +4404,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								?? markdownPersistenceLease?.baseText
 								?? persistenceBaseText,
 						);
-						if (saved || !linkedSessionRollback) return saved;
+						if (admittedText !== undefined || !linkedSessionRollback) return admittedText;
 						const rollback = linkedSessionRollback;
 						linkedSessionRollback = undefined;
 						const restored = await restoreLinkedSaveSnapshot(
@@ -3763,7 +4412,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							rollback.priorBufferText, rollback.priorDurableText,
 						);
 						if (!restored) linkedRollbackFailed = true;
-						return false;
+						return undefined;
 					};
 
 					const currentText = isSessionFile ? persistenceBaseText : document.getText();
@@ -3912,9 +4561,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 									// This handles cases where the in-memory state matches what we want,
 									// but the disk content might be stale (e.g., results just added).
 									if (isSessionFile) {
-										persistAccepted = await persistSessionWithRollback(currentText);
+										acceptedSourceText = await persistSessionWithRollback(currentText);
+										persistAccepted = acceptedSourceText !== undefined;
 									} else {
 										persistAccepted = true;
+										acceptedSourceText = currentText;
 									}
 									return;
 								}
@@ -3949,9 +4600,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							}
 							// For session files, ensure the current content is written to disk.
 							if (isSessionFile) {
-								persistAccepted = await persistSessionWithRollback(currentText);
+								acceptedSourceText = await persistSessionWithRollback(currentText);
+								persistAccepted = acceptedSourceText !== undefined;
 							} else {
 								persistAccepted = true;
+								acceptedSourceText = currentText;
 							}
 							return;
 						}
@@ -3963,7 +4616,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					// edit cycle. This avoids the dirty indicator flickering that happens with
 					// applyEdit→save and ensures results are always persisted.
 					if (isSessionFile) {
-						persistAccepted = await persistSessionWithRollback(nextText);
+						acceptedSourceText = await persistSessionWithRollback(nextText);
+						persistAccepted = acceptedSourceText !== undefined;
 						return;
 					}
 					if (!isPersistCurrent()) return;
@@ -4046,6 +4700,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						const editApplied = await editAttempt;
 						if (!editApplied) return;
 						persistAccepted = true;
+						acceptedSourceText = nextText;
 
 					// If we just restored the file back to the exact on-disk content due to a reorder undo,
 					// force a save to ensure VS Code clears the dirty flag.
@@ -4064,6 +4719,32 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					return;
 					} finally {
 						try {
+							const acceptedOwnerIsCurrent = () => isPersistCurrent()
+								&& (!markdownOwner || (
+									activeMarkdownOwnerEntry === markdownOwner
+									&& this.markdownDocuments.get(markdownDocumentKey) === markdownOwner
+								));
+							let acceptedSourceDrifted = false;
+							if (persistAccepted) {
+								if (acceptedSourceText === undefined || !acceptedOwnerIsCurrent()) {
+									persistAccepted = false;
+									acceptedSourceDrifted = true;
+								} else {
+									let observedText: string | undefined;
+									try {
+										observedText = isSessionFile
+											? new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri))
+											: document.getText();
+									} catch {
+										observedText = undefined;
+									}
+									if (!acceptedOwnerIsCurrent() || observedText === undefined
+										|| observedText !== acceptedSourceText) {
+										persistAccepted = false;
+										acceptedSourceDrifted = true;
+									}
+								}
+							}
 							if (!persistAccepted && linkedSessionRollback) {
 								const rollback = linkedSessionRollback;
 								linkedSessionRollback = undefined;
@@ -4080,26 +4761,41 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							}
 							if (persistAccepted && markdownOwner
 								&& activeMarkdownOwnerEntry === markdownOwner
-								&& this.markdownDocuments.get(markdownDocumentKey) === markdownOwner) {
+								&& this.markdownDocuments.get(markdownDocumentKey) === markdownOwner
+								&& acceptedSourceText !== undefined) {
+								let adopted = false;
 								try {
-									const acceptedText = await readProjectionSourceText();
-									const acceptedFile = parseKqlxText(acceptedText, {
+									const acceptedFile = parseKqlxText(acceptedSourceText, {
 										allowedKinds: [documentKind], defaultKind: documentKind,
 									});
 									if (acceptedFile.ok) {
-										markdownOwner.document = markdownOwner.document.withAdapterState(
-											ensureProjectedSectionIds(acceptedFile.file.state, acceptedText),
+										const adoptedDocument = markdownOwner.document.withAdapterState(
+											ensureProjectedSectionIds(acceptedFile.file.state, acceptedSourceText),
 										);
-										markdownOwner.sourceText = acceptedText;
+										if (commitCurrentAuthorityText(persistAuthorityToken, acceptedSourceText)) {
+											markdownOwner.document = adoptedDocument;
+											markdownOwner.sourceText = acceptedSourceText;
+											acceptedOrderedSectionIds = [
+												...markdownOwner.document.projection().orderedSectionIds,
+											];
+											adopted = true;
+										} else {
+											persistAccepted = false;
+										}
 									}
 								} catch {
 									// A later source event will rematerialize the adapter state.
 								}
+								if (!adopted) persistAccepted = false;
+							}
+							if (acceptedSourceDrifted && !outerDisposed) {
+								void postDocument({ forceReload: true });
 							}
 							if (persistAccepted && snapshotId && Number.isSafeInteger(incomingEditRevision) && !outerDisposed) {
 								try {
 									await webviewPanel.webview.postMessage({
 										type: 'persistDocumentAck', snapshotId, editRevision: incomingEditRevision,
+										...(acceptedOrderedSectionIds ? { orderedSectionIds: acceptedOrderedSectionIds } : {}),
 									});
 								} catch {
 									// A lost acknowledgement keeps the webview snapshot pending and retryable.

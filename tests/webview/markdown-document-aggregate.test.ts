@@ -334,4 +334,88 @@ describe('MarkdownDocumentAggregate', () => {
 		]);
 		expect(rebased.projection().chartSections[0]).toEqual(patchedChart);
 	});
+
+	it('owns Transformation configuration and deeply isolates nested arrays', () => {
+		const aggregations = [{ name: 'Total', column: 'Revenue', function: 'sum' as const }];
+		const deriveColumns = [{ name: 'Margin', expression: 'Revenue - Cost' }];
+		const joinKeys = [{ left: 'CustomerId', right: 'CustomerId' }];
+		const created = MarkdownDocumentAggregate.create({
+			sections: [
+				{
+					id: 'transform-any-id', type: 'transformation', name: 'Before', mode: 'edit',
+					expanded: true, editorHeightPx: 300, dataSourceId: 'query_left',
+					transformationType: 'join', aggregations, deriveColumns,
+					joinRightDataSourceId: 'query_right', joinKind: 'inner', joinKeys,
+					joinOmitDuplicateColumns: false,
+				},
+				{ id: 'future_1', type: 'future-section', payload: { keep: true } },
+			],
+		});
+		if (!created.ok) throw new Error(created.error);
+		aggregations[0].column = 'Mutated';
+		deriveColumns[0].expression = 'Mutated';
+		joinKeys[0].right = 'Mutated';
+		expect(created.document.projection()).toMatchObject({
+			sectionRevisions: { 'transform-any-id': 0 },
+			transformationSections: [{
+				id: 'transform-any-id', type: 'transformation', dataSourceId: 'query_left',
+				aggregations: [{ name: 'Total', column: 'Revenue', function: 'sum' }],
+				deriveColumns: [{ name: 'Margin', expression: 'Revenue - Cost' }],
+				joinRightDataSourceId: 'query_right',
+				joinKeys: [{ left: 'CustomerId', right: 'CustomerId' }],
+			}],
+		});
+
+		const stale = created.document.transition({
+			expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'transform-any-id', expectedSectionRevision: 1,
+				patch: { joinKind: 'leftouter' },
+			},
+		});
+		expect(stale.ok).toBe(false);
+		if (!stale.ok) expect(stale.error.code).toBe('stale-section-revision');
+
+		const patched = created.document.transition({
+			expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'transform-any-id', expectedSectionRevision: 0,
+				patch: {
+					name: 'After', editorHeightPx: null, joinKind: 'fullouter',
+					joinKeys: [{ left: 'CustomerId', right: 'AccountId' }],
+					joinOmitDuplicateColumns: true,
+				},
+			},
+		});
+		expect(patched.ok).toBe(true);
+		if (!patched.ok) return;
+		const transformed = patched.document.projection().transformationSections[0];
+		expect(transformed).toMatchObject({
+			name: 'After', dataSourceId: 'query_left', joinRightDataSourceId: 'query_right',
+			joinKind: 'fullouter', joinKeys: [{ left: 'CustomerId', right: 'AccountId' }],
+			joinOmitDuplicateColumns: true,
+		});
+		expect(transformed).not.toHaveProperty('editorHeightPx');
+
+		const rebased = patched.document.withAdapterState({ sections: [
+			{
+				id: 'transform-any-id', type: 'transformation', dataSourceId: 'stale_left',
+				joinRightDataSourceId: 'stale_right', joinKind: 'leftouter',
+			},
+			{ id: 'future_1', type: 'future-section', payload: { keep: 'adapter' } },
+		] });
+		expect(rebased.projection().transformationSections[0]).toEqual(transformed);
+		expect(rebased.snapshot().sections[1]).toEqual({
+			id: 'future_1', type: 'future-section', payload: { keep: 'adapter' },
+		});
+
+		const malformed = MarkdownDocumentAggregate.create({
+			sections: [{
+				id: 'transformation_bad', type: 'transformation',
+				joinKeys: [{ left: 'CustomerId' }],
+			}],
+		});
+		expect(malformed.ok).toBe(false);
+		if (!malformed.ok) expect(malformed.error).toContain('joinKeys[0]');
+	});
 });

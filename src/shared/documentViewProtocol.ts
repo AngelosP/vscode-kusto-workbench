@@ -19,6 +19,10 @@ import {
 	parseUrlSection,
 	type UrlSectionState,
 } from './urlSectionDefinition';
+import {
+	parseTransformationSection,
+	type TransformationSectionState,
+} from './transformationSectionDefinition';
 
 export const DOCUMENT_VIEW_PROTOCOL_VERSION = 1 as const;
 export const DOCUMENT_VIEW_CHANNEL = 'document-view' as const;
@@ -181,11 +185,14 @@ function parseRevisionRecord(
 
 function parseOwnedSection(
 	input: unknown,
-): DocumentViewParseResult<ChartSectionState | MarkdownSectionState | PythonSectionState | UrlSectionState> {
+): DocumentViewParseResult<
+	ChartSectionState | MarkdownSectionState | PythonSectionState | TransformationSectionState | UrlSectionState
+> {
 	if (!isRecord(input)) return failure('Host-owned section must be an object.');
 	if (input.type === 'chart') return parseChartSection(input);
 	if (input.type === 'markdown') return parseMarkdownSection(input);
 	if (input.type === 'python') return parsePythonSection(input);
+	if (input.type === 'transformation') return parseTransformationSection(input);
 	if (input.type === 'url') return parseUrlSection(input);
 	return failure('Host-owned section type is invalid.');
 }
@@ -226,9 +233,11 @@ export function parseDocumentViewProjection(input: unknown): DocumentViewParseRe
 	}
 	const chartInput = input.chartSections ?? [];
 	const pythonInput = input.pythonSections ?? [];
+	const transformationInput = input.transformationSections ?? [];
 	if (!Array.isArray(chartInput)
 		|| !Array.isArray(input.markdownSections)
 		|| !Array.isArray(pythonInput)
+		|| !Array.isArray(transformationInput)
 		|| !Array.isArray(input.urlSections)
 		|| !Array.isArray(input.orderedSectionIds)) {
 		return failure('Document-view projection section collections must be arrays.');
@@ -251,6 +260,12 @@ export function parseDocumentViewProjection(input: unknown): DocumentViewParseRe
 		if (!parsed.ok) return parsed;
 		pythonSections.push(parsed.value);
 	}
+	const transformationSections: TransformationSectionState[] = [];
+	for (const section of transformationInput) {
+		const parsed = parseTransformationSection(section);
+		if (!parsed.ok) return parsed;
+		transformationSections.push(parsed.value);
+	}
 	const urlSections: UrlSectionState[] = [];
 	for (const section of input.urlSections) {
 		const parsed = parseUrlSection(section);
@@ -261,6 +276,7 @@ export function parseDocumentViewProjection(input: unknown): DocumentViewParseRe
 		...chartSections.map(section => section.id),
 		...markdownSections.map(section => section.id),
 		...pythonSections.map(section => section.id),
+		...transformationSections.map(section => section.id),
 		...urlSections.map(section => section.id),
 	];
 	if (new Set(ownedIds).size !== ownedIds.length) {
@@ -292,6 +308,7 @@ export function parseDocumentViewProjection(input: unknown): DocumentViewParseRe
 			chartSections,
 			markdownSections,
 			pythonSections,
+			transformationSections,
 			urlSections,
 			orderedSectionIds: normalizedOrder,
 		},

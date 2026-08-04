@@ -26,6 +26,7 @@ const projection = {
 	chartSections: [],
 	markdownSections: [markdownSection],
 	pythonSections: [],
+	transformationSections: [],
 	urlSections: [],
 	orderedSectionIds: ['markdown_1'],
 } as const;
@@ -86,6 +87,34 @@ describe('document-view protocol', () => {
 			expect(parsed.ok).toBe(true);
 			if (parsed.ok) expect(parsed.value.type).toBe(message.type);
 		}
+	});
+
+	it('validates Transformation configuration and nested identities', () => {
+		const transformation = {
+			id: 'transform-any-id', type: 'transformation', name: 'Joined', mode: 'preview',
+			expanded: false, editorHeightPx: 420, dataSourceId: 'query_left',
+			transformationType: 'join', joinRightDataSourceId: 'query_right',
+			joinKind: 'fullouter', joinKeys: [{ left: 'CustomerId', right: 'AccountId' }],
+			joinOmitDuplicateColumns: true,
+		} as const;
+		const valid = parseDocumentViewHostMessage({
+			...envelope,
+			type: 'documentData', ok: true, reloadRequestId: 'reload-transformation',
+			sourceGeneration: 4, forceReload: false, documentUri: 'file:///tmp/transformation.kqlx',
+			state: { sections: [transformation] }, documentRevision: 2,
+			sectionRevisions: { 'transform-any-id': 1 }, markdownSectionRevisions: {},
+		});
+		expect(valid.ok).toBe(true);
+
+		const malformed = parseDocumentViewHostMessage({
+			...envelope,
+			type: 'documentData', ok: true, reloadRequestId: 'reload-malformed-transformation',
+			sourceGeneration: 4, forceReload: false, documentUri: 'file:///tmp/transformation.kqlx',
+			state: { sections: [{ ...transformation, joinKeys: [{ left: 'CustomerId' }] }] },
+			documentRevision: 2, sectionRevisions: { 'transform-any-id': 1 }, markdownSectionRevisions: {},
+		});
+		expect(malformed.ok).toBe(false);
+		if (!malformed.ok) expect(malformed.error).toContain('joinKeys[0]');
 	});
 
 	it('rejects malformed envelopes and internally inconsistent payloads', () => {

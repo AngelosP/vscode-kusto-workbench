@@ -26,6 +26,17 @@ import {
 	saveArtifactCsv,
 } from '../shared/artifact-csv-export.js';
 import { schedulePersist } from '../core/persistence.js';
+import { pState } from '../shared/persistence-state.js';
+import type {
+	PersistedTransformationSectionState,
+	TransformationSectionState,
+} from '../../shared/transformationSectionDefinition.js';
+import {
+	isHostOwnedTransformationDocument,
+	requestHostOwnedTransformationAdd,
+	requestHostOwnedTransformationPatch,
+	requestHostOwnedTransformationRemove,
+} from '../core/markdown-document-client.js';
 import { __kustoGetChartDatasetsInDomOrder, __kustoCleanupSectionModeResizeObserver, __kustoRefreshAllDataSourceDropdowns } from '../core/section-factory.js';
 import { renderChart as __kustoRenderChart } from '../shared/chart-renderer.js';
 import {
@@ -62,28 +73,11 @@ export interface Aggregation {
 }
 
 /** Serialized shape for .kqlx persistence — must match KqlxSectionV1 transformation variant. */
-export interface TransformationSectionData {
+export interface TransformationSectionData extends PersistedTransformationSectionState {
 	id: string;
-	type: 'transformation';
 	name: string;
 	mode: TransformationMode;
 	expanded: boolean;
-	dataSourceId?: string;
-	transformationType?: string;
-	distinctColumn?: string;
-	deriveColumns?: DeriveColumn[];
-	groupByColumns?: string[];
-	aggregations?: Aggregation[];
-	pivotRowKeyColumn?: string;
-	pivotColumnKeyColumn?: string;
-	pivotValueColumn?: string;
-	pivotAggregation?: string;
-	pivotMaxColumns?: number;
-	joinRightDataSourceId?: string;
-	joinKind?: string;
-	joinKeys?: JoinKey[];
-	joinOmitDuplicateColumns?: boolean;
-	editorHeightPx?: number;
 }
 
 /** Data source entry from queries-container. */
@@ -148,6 +142,23 @@ function esc(s: unknown): string {
 		.replace(/>/g, '&gt;')
 		.replace(/"/g, '&quot;')
 		.replace(/'/g, '&#39;');
+}
+
+function transformationValuesEqual(left: unknown, right: unknown): boolean {
+	if (Object.is(left, right)) return true;
+	if (Array.isArray(left) || Array.isArray(right)) {
+		return Array.isArray(left) && Array.isArray(right)
+			&& left.length === right.length
+			&& left.every((value, index) => transformationValuesEqual(value, right[index]));
+	}
+	if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+	const leftRecord = left as Record<string, unknown>;
+	const rightRecord = right as Record<string, unknown>;
+	const leftKeys = Object.keys(leftRecord).filter(key => leftRecord[key] !== undefined).sort();
+	const rightKeys = Object.keys(rightRecord).filter(key => rightRecord[key] !== undefined).sort();
+	return leftKeys.length === rightKeys.length
+		&& leftKeys.every((key, index) => key === rightKeys[index]
+			&& transformationValuesEqual(leftRecord[key], rightRecord[key]));
 }
 
 window.transformationStateByBoxId = window.transformationStateByBoxId || {};
@@ -228,8 +239,12 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		transformationBoxes.push(id);
 		const st = __kustoGetTransformationState(id) as any;
 
+		st.name = typeof options.name === 'string' ? String(options.name) : (st.name || '');
 		st.mode = (typeof options.mode === 'string' && String(options.mode).toLowerCase() === 'preview') ? 'preview' : 'edit';
 		st.expanded = typeof options.expanded === 'boolean' ? !!options.expanded : true;
+		st.editorHeightPx = typeof options.editorHeightPx === 'number' && options.editorHeightPx > 0
+			? Math.round(options.editorHeightPx)
+			: st.editorHeightPx;
 		st.dataSourceId = typeof options.dataSourceId === 'string' ? String(options.dataSourceId) : (st.dataSourceId || '');
 		st.transformationType = typeof options.transformationType === 'string' ? String(options.transformationType) : (st.transformationType || 'derive');
 		st.distinctColumn = typeof options.distinctColumn === 'string' ? String(options.distinctColumn) : (st.distinctColumn || '');
@@ -272,13 +287,14 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		const litEl = document.createElement('kw-transformation-section') as KwTransformationSection;
 		litEl.id = id;
 		litEl.setAttribute('box-id', id);
-		litEl.applyOptions(options);
+		litEl.applyOptions(st);
 
 		litEl.addEventListener('section-remove', (e: any) => {
 			try {
 				const detail = e && e.detail ? e.detail : {};
 				const removeId = detail.boxId || id;
-				removeTransformationBox(removeId);
+				if (String(removeId) !== id || !litEl.isConnected || document.getElementById(id) !== litEl) return;
+				removeTransformationBox(removeId, litEl);
 			} catch (err) { console.error('[kusto]', err); }
 		});
 
@@ -289,7 +305,13 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		} else {
 			container.insertAdjacentElement('beforeend', litEl);
 		}
-		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try {
+			if (isHostOwnedTransformationDocument()) {
+				requestHostOwnedTransformationAdd(litEl.createDocumentState(), afterBoxId);
+			} else {
+				schedulePersist();
+			}
+		} catch (e) { console.error('[kusto]', e); }
 		if (afterBoxId) {
 			try {
 				const newEl = document.getElementById(id);
@@ -350,6 +372,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	// Wrapper height (tracked as state so data-table gets explicit pixel height)
 	@state() private _wrapperHeight = 300;
+	private _wrapperHeightExplicit = false;
 
 	// UI sub-state
 	@state() private _openDropdownId = '';
@@ -362,7 +385,18 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	private _closeDropdownBound = this._closeDropdownOnClickOutside.bind(this);
 	private _removePageScrollListener: (() => void) | null = null;
+	private _applyingHostDocumentState = false;
+	private _hostDocumentApplyGeneration = 0;
+	private _autoFitGeneration = 0;
+
+	private _ownsLiveState(): boolean {
+		const current = document.getElementById(this.boxId);
+		if (this.isConnected) return current === this || (!this.id && current === null);
+		return !this.id && current === null;
+	}
+
 	private readonly _onArtifactConsumersRevoked = (event: Event): void => {
+		if (!this._ownsLiveState()) return;
 		const consumerIds = (event as CustomEvent<{ consumerIds?: unknown }>).detail?.consumerIds;
 		if (!Array.isArray(consumerIds) || ![
 			this._inputConsumerId('primary'),
@@ -424,6 +458,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	override firstUpdated(_changedProperties: PropertyValues): void {
 		super.firstUpdated(_changedProperties);
+		if (!this._ownsLiveState()) return;
 
 		this._rebindInputArtifacts();
 		this._forceRefreshDatasets();
@@ -441,6 +476,11 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	override updated(changed: PropertyValues): void {
 		super.updated(changed);
+		if (!this._ownsLiveState()) return;
+		if (this._applyingHostDocumentState) {
+			this._syncPopupScrollDismiss(changed);
+			return;
+		}
 
 		if (changed.has('_expanded')) {
 			this._updateHostClasses();
@@ -1070,14 +1110,19 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	private _onFitToContents(): void {
 		this._wrapperHeight = this._computeFitHeight();
+		this._wrapperHeightExplicit = true;
 		this._schedulePersist();
 	}
 
 	/** Schedule auto-fit after Lit render + browser layout pass. */
 	private _autoFitAfterLayout(): void {
+		if (this._wrapperHeightExplicit) return;
+		const generation = ++this._autoFitGeneration;
 		const fit = () => {
+			if (generation !== this._autoFitGeneration || !this._ownsLiveState()
+				|| this._applyingHostDocumentState) return;
 			this._wrapperHeight = this._computeFitHeight();
-			this._schedulePersist();
+			if (!isHostOwnedTransformationDocument()) this._schedulePersist();
 		};
 		this.updateComplete.then(() => {
 			requestAnimationFrame(() => {
@@ -1186,6 +1231,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 			resizer.classList.remove('is-dragging');
 			document.body.style.cursor = prevCursor;
 			document.body.style.userSelect = prevSelect;
+			this._wrapperHeightExplicit = true;
 			this._schedulePersist();
 		};
 
@@ -1406,7 +1452,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 				}
 
 				// Downstream transformations that reference this transformation.
-				if (id.startsWith('transformation_')) {
+				if (String(el.tagName || '').toLowerCase() === 'kw-transformation-section') {
 					const w = window;
 					const stMap = w.transformationStateByBoxId;
 					const st = stMap ? stMap[id] : null;
@@ -1434,6 +1480,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 						}
 						try { w.__kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
 						try { w.__kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
+						try { el.commitDocumentState?.(); } catch (e) { console.error('[kusto]', e); }
 					}
 				}
 			}
@@ -1745,6 +1792,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	 * Public so column rename propagation can push updated names into this component.
 	 */
 	public syncFromGlobalState(): void {
+		if (!this._ownsLiveState()) return;
 		this._syncGlobalState();
 	}
 
@@ -1814,6 +1862,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	}
 
 	private _rebindInput(role: 'primary' | 'join-right', sourceBoxId: string): void {
+		if (!this._ownsLiveState()) return;
 		const consumerId = this._inputConsumerId(role);
 		if (sourceBoxId) rebindResultArtifactConsumer(consumerId, sourceBoxId);
 		else unbindResultArtifactConsumer(consumerId);
@@ -1927,6 +1976,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	}
 
 	private _syncResultsToGlobal(): void {
+		if (!this._ownsLiveState()) return;
 		try {
 			const primaryArtifact = this._boundInputArtifact('primary', this._dataSourceId);
 			const rightArtifact = this._transformationType === 'join'
@@ -2506,7 +2556,12 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	private _schedulePersist(): void {
 		try {
-			schedulePersist();
+			if (!this._ownsLiveState() || this._applyingHostDocumentState) return;
+			if (isHostOwnedTransformationDocument()) {
+				requestHostOwnedTransformationPatch(this.createDocumentState());
+			} else {
+				schedulePersist();
+			}
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -2515,6 +2570,14 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	 * Output is identical to the original persistence.js transformation section shape.
 	 */
 	public serialize(): TransformationSectionData {
+		return this._createDocumentState(true);
+	}
+
+	public createDocumentState(): TransformationSectionData {
+		return this._createDocumentState(this._wrapperHeightExplicit);
+	}
+
+	private _createDocumentState(includeAutomaticHeight: boolean): TransformationSectionData {
 		const data: TransformationSectionData = {
 			id: this.boxId,
 			type: 'transformation',
@@ -2550,13 +2613,17 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		const aggregations = this._aggregations
 			.filter(a => a && typeof a === 'object')
 			.map(a => ({ name: String(a.name || ''), function: String(a.function || ''), column: String(a.column || '') }));
-		if (aggregations.length) data.aggregations = aggregations;
+		if (aggregations.length) {
+			data.aggregations = aggregations as TransformationSectionData['aggregations'];
+		}
 
 		// Pivot
 		if (this._pivotRowKeyColumn) data.pivotRowKeyColumn = this._pivotRowKeyColumn;
 		if (this._pivotColumnKeyColumn) data.pivotColumnKeyColumn = this._pivotColumnKeyColumn;
 		if (this._pivotValueColumn) data.pivotValueColumn = this._pivotValueColumn;
-		if (this._pivotAggregation) data.pivotAggregation = this._pivotAggregation;
+		if (this._pivotAggregation) {
+			data.pivotAggregation = this._pivotAggregation as NonNullable<TransformationSectionData['pivotAggregation']>;
+		}
 		if (typeof this._pivotMaxColumns === 'number') data.pivotMaxColumns = this._pivotMaxColumns;
 
 		// Join
@@ -2567,11 +2634,169 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		data.joinOmitDuplicateColumns = this._joinOmitDuplicateColumns;
 
 		// Wrapper height
-		if (this._wrapperHeight > 0) {
+		if (includeAutomaticHeight && this._wrapperHeight > 0) {
 			data.editorHeightPx = this._wrapperHeight;
 		}
 
 		return data;
+	}
+
+	public commitDocumentState(): void {
+		this._schedulePersist();
+	}
+
+	public applyHostDocumentState(section: TransformationSectionState): void {
+		const generation = ++this._hostDocumentApplyGeneration;
+		this._autoFitGeneration++;
+		const previousProjectionState = pState.applyingHostMarkdownProjection;
+		pState.applyingHostMarkdownProjection = true;
+		this._applyingHostDocumentState = true;
+		let keepApplyingThroughUpdate = false;
+		let anyChanged = false;
+		let computationChanged = false;
+		let primaryInputChanged = false;
+		let rightInputChanged = false;
+		const assign = <T>(
+			current: T,
+			next: T,
+			apply: (value: T) => void,
+			affectsComputation = false,
+		): boolean => {
+			if (transformationValuesEqual(current, next)) return false;
+			apply(next);
+			anyChanged = true;
+			if (affectsComputation) computationChanged = true;
+			return true;
+		};
+		try {
+			const nextMode: TransformationMode = section.mode === 'preview' ? 'preview' : 'edit';
+			const nextExpanded = section.expanded !== false;
+			const nextType = (section.transformationType ?? 'derive') as TransformationType;
+			const nextDeriveColumns = Array.isArray(section.deriveColumns)
+				? section.deriveColumns.map(column => ({ name: column.name, expression: column.expression }))
+				: (section.deriveColumnName || section.deriveExpression)
+					? [{ name: section.deriveColumnName ?? 'derived', expression: section.deriveExpression ?? '' }]
+					: [{ name: '', expression: '' }];
+			const nextGroupByColumns = section.groupByColumns?.length ? [...section.groupByColumns] : [''];
+			const nextAggregations: Aggregation[] = Array.isArray(section.aggregations)
+				? section.aggregations.map(aggregation => ({
+					name: aggregation.name ?? '',
+					function: aggregation.function,
+					column: aggregation.column ?? '',
+				}))
+				: [{ name: '', function: 'count', column: '' }];
+			const nextJoinKeys = Array.isArray(section.joinKeys)
+				? section.joinKeys.map(key => ({ left: key.left, right: key.right }))
+				: [{ left: '', right: '' }];
+
+			assign(this._name, section.name ?? '', value => { this._name = value; });
+			assign(this._mode, nextMode, value => { this._mode = value; });
+			const expandedChanged = assign(
+				this._expanded,
+				nextExpanded,
+				value => { this._expanded = value; },
+			);
+			const typeChanged = assign(
+				this._transformationType,
+				nextType,
+				value => { this._transformationType = value; },
+				true,
+			);
+			primaryInputChanged = assign(
+				this._dataSourceId,
+				section.dataSourceId ?? '',
+				value => { this._dataSourceId = value; },
+				true,
+			);
+			assign(this._deriveColumns, nextDeriveColumns, value => { this._deriveColumns = value; }, true);
+			assign(this._distinctColumn, section.distinctColumn ?? '', value => { this._distinctColumn = value; }, true);
+			assign(this._groupByColumns, nextGroupByColumns, value => { this._groupByColumns = value; }, true);
+			assign(this._aggregations, nextAggregations, value => { this._aggregations = value; }, true);
+			assign(
+				this._pivotRowKeyColumn,
+				section.pivotRowKeyColumn ?? '',
+				value => { this._pivotRowKeyColumn = value; },
+				true,
+			);
+			assign(
+				this._pivotColumnKeyColumn,
+				section.pivotColumnKeyColumn ?? '',
+				value => { this._pivotColumnKeyColumn = value; },
+				true,
+			);
+			assign(
+				this._pivotValueColumn,
+				section.pivotValueColumn ?? '',
+				value => { this._pivotValueColumn = value; },
+				true,
+			);
+			assign(
+				this._pivotAggregation,
+				section.pivotAggregation ?? 'sum',
+				value => { this._pivotAggregation = value; },
+				true,
+			);
+			assign(
+				this._pivotMaxColumns,
+				section.pivotMaxColumns ?? 100,
+				value => { this._pivotMaxColumns = value; },
+				true,
+			);
+			rightInputChanged = assign(
+				this._joinRightDataSourceId,
+				section.joinRightDataSourceId ?? '',
+				value => { this._joinRightDataSourceId = value; },
+				true,
+			);
+			assign(
+				this._joinKind,
+				(section.joinKind ?? 'inner') as JoinKind,
+				value => { this._joinKind = value; },
+				true,
+			);
+			assign(this._joinKeys, nextJoinKeys, value => { this._joinKeys = value; }, true);
+			assign(
+				this._joinOmitDuplicateColumns,
+				section.joinOmitDuplicateColumns ?? true,
+				value => { this._joinOmitDuplicateColumns = value; },
+				true,
+			);
+			const hadExplicitHeight = this._wrapperHeightExplicit;
+			const nextExplicitHeight = section.editorHeightPx !== undefined && section.editorHeightPx > 0;
+			if (nextExplicitHeight) {
+				assign(
+					this._wrapperHeight,
+					Math.round(section.editorHeightPx!),
+					value => { this._wrapperHeight = value; },
+				);
+			}
+			this._wrapperHeightExplicit = nextExplicitHeight;
+			const shouldAutoFitHeight = hadExplicitHeight && !nextExplicitHeight;
+			if (shouldAutoFitHeight) anyChanged = true;
+
+			if (!anyChanged) return;
+			this._updateHostClasses();
+			this._writeToGlobalState();
+			if (primaryInputChanged) this._rebindInput('primary', this._dataSourceId);
+			if (rightInputChanged || typeChanged) {
+				this._rebindInput('join-right', nextType === 'join' ? this._joinRightDataSourceId : '');
+			}
+			if (primaryInputChanged || rightInputChanged || typeChanged) this._forceRefreshDatasets();
+			if (computationChanged || (expandedChanged && nextExpanded)) {
+				this._computeTransformationImpl();
+				this._syncResultsToGlobal();
+			}
+			keepApplyingThroughUpdate = true;
+			this.requestUpdate();
+			void this.updateComplete.then(() => {
+				if (generation !== this._hostDocumentApplyGeneration) return;
+				this._applyingHostDocumentState = false;
+				if (shouldAutoFitHeight) this._autoFitAfterLayout();
+			});
+		} finally {
+			pState.applyingHostMarkdownProjection = previousProjectionState;
+			if (!keepApplyingThroughUpdate) this._applyingHostDocumentState = false;
+		}
 	}
 
 	/** Set initial state from options passed by addTransformationBox. */
@@ -2615,6 +2840,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		if (typeof options.joinOmitDuplicateColumns === 'boolean') this._joinOmitDuplicateColumns = options.joinOmitDuplicateColumns;
 		if (typeof options.editorHeightPx === 'number' && options.editorHeightPx > 0) {
 			this._wrapperHeight = Math.round(options.editorHeightPx as number);
+			this._wrapperHeightExplicit = true;
 		}
 	}
 
@@ -2641,6 +2867,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	/** Public refresh — called by cross-section dependency refresh loops. */
 	public refresh(): void {
+		if (!this._ownsLiveState()) return;
 		this._rebindInputArtifacts();
 		this._forceRefreshDatasets();
 		if (this._expanded) {
@@ -2659,6 +2886,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	/** Configure from agent tool. */
 	public configure(config: Record<string, unknown>): boolean {
 		try {
+			if (!this._ownsLiveState()) return false;
 			const previousDataSourceId = this._dataSourceId;
 			const previousJoinRightDataSourceId = this._joinRightDataSourceId;
 			const previousTransformationType = this._transformationType;
@@ -2711,7 +2939,12 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 			if (primaryInputChanged || rightInputChanged) {
 				this._forceRefreshDatasets();
 			}
-			this._computeTransformation();
+			if (this._expanded) {
+				this._computeTransformation();
+			} else {
+				this._computeTransformationImpl();
+				this._syncResultsToGlobal();
+			}
 			this._schedulePersist();
 			return true;
 		} catch {
@@ -2724,9 +2957,13 @@ export function addTransformationBox(options: Record<string, unknown> = {}): str
 	return KwTransformationSection.addTransformationBox(options);
 }
 
-export function removeTransformationBox(boxId: unknown): void {
+export function removeTransformationBox(boxId: unknown, expectedElement?: KwTransformationSection): void {
 	const id = String(boxId || '');
 	if (!id) return;
+	const currentElement = document.getElementById(id);
+	if (expectedElement && (!expectedElement.isConnected || currentElement !== expectedElement)) return;
+	const hostOwnedDocument = isHostOwnedTransformationDocument();
+	if (hostOwnedDocument) requestHostOwnedTransformationRemove(id);
 	try { __kustoCleanupSectionModeResizeObserver(id); } catch (e) { console.error('[kusto]', e); }
 	try { releaseArtifactCsvTable(id); } catch (e) { console.error('[kusto]', e); }
 	try { unbindResultArtifactConsumer(transformationInputConsumerId(id, 'primary')); } catch (e) { console.error('[kusto]', e); }
@@ -2745,7 +2982,38 @@ export function removeTransformationBox(boxId: unknown): void {
 			delete transformationStateByBoxId[id];
 		}
 	} catch (e) { console.error('[kusto]', e); }
-	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { if (!hostOwnedDocument) schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+}
+
+export function reconcileHostOwnedTransformationProjection(
+	sections: readonly TransformationSectionState[],
+	_orderedSectionIds: readonly string[],
+): void {
+	const previousProjectionState = pState.applyingHostMarkdownProjection;
+	pState.applyingHostMarkdownProjection = true;
+	try {
+		const sectionsById = new Map(sections.map(section => [section.id, section]));
+		for (const id of [...transformationBoxes]) {
+			if (!sectionsById.has(id)) removeTransformationBox(id);
+		}
+		for (const section of sections) {
+			let element = document.getElementById(section.id) as KwTransformationSection | null;
+			if (!element || element.tagName.toLowerCase() !== 'kw-transformation-section') {
+				KwTransformationSection.addTransformationBox({ ...section });
+				element = document.getElementById(section.id) as KwTransformationSection | null;
+			}
+			element?.applyHostDocumentState(section);
+		}
+	} finally {
+		pState.applyingHostMarkdownProjection = previousProjectionState;
+	}
+}
+
+export function commitTransformationDocumentState(boxId: unknown): boolean {
+	const element = document.getElementById(String(boxId || '')) as KwTransformationSection | null;
+	if (!element || element.tagName.toLowerCase() !== 'kw-transformation-section') return false;
+	element.commitDocumentState();
+	return true;
 }
 
 export function __kustoConfigureTransformationFromTool(boxId: unknown, config: unknown): boolean {

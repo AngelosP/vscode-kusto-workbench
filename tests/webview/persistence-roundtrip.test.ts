@@ -323,8 +323,11 @@ vi.mock('../../src/webview/sections/kw-transformation-section.js', () => ({
 	addTransformationBox: vi.fn((options?: { id?: string }) => {
 		const id = String(options?.id || `transformation_restored_${testState.transformationBoxes.length + 1}`);
 		testState.transformationBoxes.push(id);
-		const element = document.createElement('kw-transformation-section');
+		const element = document.createElement('kw-transformation-section') as HTMLElement & {
+			applyHostDocumentState?: ReturnType<typeof vi.fn>;
+		};
 		element.id = id;
+		element.applyHostDocumentState = vi.fn();
 		(document.getElementById('queries-container') || document.body).appendChild(element);
 		return id;
 	}),
@@ -817,6 +820,38 @@ describe('persistence round-trip', () => {
 
 		expect(getKqlxState().sections).toEqual([pState.hostOwnedChartSections.chart_host_owned]);
 		expect(chart.serialize).not.toHaveBeenCalled();
+	});
+
+	it('uses host-owned Transformation projection when component serialize() throws', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const transformation = document.createElement('kw-transformation-section') as HTMLElement & {
+			serialize: ReturnType<typeof vi.fn>;
+		};
+		transformation.id = 'transform-any-id';
+		transformation.serialize = vi.fn(() => { throw new Error('poisoned Transformation DOM serializer'); });
+		container.appendChild(transformation);
+		pState.documentKind = 'kqlx';
+		pState.documentRuntimeActive = true;
+		pState.hostOwnedMarkdownActive = true;
+		pState.markdownDocumentRevision = 7;
+		pState.documentSectionRevisions = { 'transform-any-id': 2 };
+		pState.hostOwnedTransformationSections = {
+			'transform-any-id': {
+				id: 'transform-any-id', type: 'transformation', name: 'Host Transformation',
+				mode: 'preview', expanded: false, editorHeightPx: 440,
+				dataSourceId: 'query_left', transformationType: 'join',
+				joinRightDataSourceId: 'query_right', joinKind: 'fullouter',
+				joinKeys: [{ left: 'CustomerId', right: 'AccountId' }],
+				joinOmitDuplicateColumns: true,
+			},
+		};
+
+		expect(getKqlxState().sections).toEqual([
+			pState.hostOwnedTransformationSections['transform-any-id'],
+		]);
+		expect(transformation.serialize).not.toHaveBeenCalled();
 	});
 
 	it('uses host-owned URL projection when component serialize() throws', () => {
@@ -3504,6 +3539,432 @@ describe('persistence round-trip', () => {
 		expect(element.applyHostDocumentState).toHaveBeenCalledWith(expect.objectContaining({
 			id: 'python_handoff', code: 'print(1)', output: 'one',
 		}));
+	});
+
+	it('retains unchanged query and SQL runtime sources for a host-owned Transformation handoff', async () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const documentUri = 'file:///tmp/transformation-source-handoff.kqlx';
+		const state = { sections: [
+			{ id: 'query_source_handoff', type: 'query', query: 'print Key=1, LeftValue="a"' },
+			{ id: 'sql_source_handoff', type: 'sql', query: "select 1 as [Key], 'b' as RightValue" },
+			{
+				id: 'transform_source_handoff', type: 'transformation', expanded: false,
+				dataSourceId: 'query_source_handoff', transformationType: 'join',
+				joinRightDataSourceId: 'sql_source_handoff', joinKind: 'inner',
+				joinKeys: [{ left: 'Key', right: 'Key' }],
+			},
+		] };
+		const projection = (sourceGeneration: number, nextState = state) => ({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri, sourceGeneration, documentRevision: 0,
+			sectionRevisions: { transform_source_handoff: 0 }, markdownSectionRevisions: {}, state: nextState,
+		});
+
+		expect(handleDocumentDataMessage(projection(1))).toBe(true);
+		const query = document.getElementById('query_source_handoff') as HTMLElement & { runtimeArtifactId?: string };
+		const sql = document.getElementById('sql_source_handoff') as HTMLElement & { runtimeArtifactId?: string };
+		const transformation = document.getElementById('transform_source_handoff') as HTMLElement & {
+			inputBindings?: { primary: string; joinRight: string };
+			outputLineage?: string[];
+		};
+		query.runtimeArtifactId = 'query-artifact-a';
+		sql.runtimeArtifactId = 'sql-artifact-a';
+		transformation.inputBindings = { primary: 'query-artifact-a', joinRight: 'sql-artifact-a' };
+		transformation.outputLineage = ['query-artifact-a', 'sql-artifact-a'];
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		vi.mocked(sectionFactory.removeQueryBox).mockClear();
+		vi.mocked(sectionFactory.removeSqlBox).mockClear();
+		const queryAddCount = testState.addQueryBox.mock.calls.length;
+		const sqlAddCount = testState.addSqlBox.mock.calls.length;
+
+		expect(handleDocumentDataMessage(projection(2))).toBe(true);
+
+		expect(document.getElementById('query_source_handoff')).toBe(query);
+		expect(document.getElementById('sql_source_handoff')).toBe(sql);
+		expect(document.getElementById('transform_source_handoff')).toBe(transformation);
+		expect(query.runtimeArtifactId).toBe('query-artifact-a');
+		expect(sql.runtimeArtifactId).toBe('sql-artifact-a');
+		expect(transformation.inputBindings).toEqual({
+			primary: 'query-artifact-a', joinRight: 'sql-artifact-a',
+		});
+		expect(transformation.outputLineage).toEqual(['query-artifact-a', 'sql-artifact-a']);
+		expect(sectionFactory.removeQueryBox).not.toHaveBeenCalledWith('query_source_handoff');
+		expect(sectionFactory.removeSqlBox).not.toHaveBeenCalledWith('sql_source_handoff');
+		expect(testState.addQueryBox).toHaveBeenCalledTimes(queryAddCount);
+		expect(testState.addSqlBox).toHaveBeenCalledTimes(sqlAddCount);
+
+		const reorderedState = { sections: [state.sections[2], state.sections[1], state.sections[0]] };
+		expect(handleDocumentDataMessage(projection(3, reorderedState))).toBe(true);
+		expect(document.getElementById('query_source_handoff')).toBe(query);
+		expect(document.getElementById('sql_source_handoff')).toBe(sql);
+		expect(document.getElementById('transform_source_handoff')).toBe(transformation);
+		expect(transformation.inputBindings).toEqual({
+			primary: 'query-artifact-a', joinRight: 'sql-artifact-a',
+		});
+		expect(transformation.outputLineage).toEqual(['query-artifact-a', 'sql-artifact-a']);
+		expect(Array.from(container.children, element => element.id)).toEqual([
+			'transform_source_handoff', 'sql_source_handoff', 'query_source_handoff',
+		]);
+		expect(getKqlxState().sections.map((section: any) => section.id)).toEqual([
+			'transform_source_handoff', 'sql_source_handoff', 'query_source_handoff',
+		]);
+
+		const changedState = { sections: reorderedState.sections.map(section =>
+			section.id === 'query_source_handoff'
+				? { ...section, query: 'print Key=2, LeftValue="changed"' }
+				: section,
+		) };
+		expect(handleDocumentDataMessage(projection(4, changedState))).toBe(true);
+		expect(document.getElementById('query_source_handoff')).not.toBe(query);
+		expect(sectionFactory.removeQueryBox).toHaveBeenCalledWith('query_source_handoff');
+	});
+
+	it('accepts a Transformation command after an acknowledged full-snapshot reorder', async () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const documentUri = 'file:///tmp/transformation-reorder-command.kqlx';
+		const before = {
+			id: 'transform_reorder_command', type: 'transformation', name: 'Before', expanded: false,
+			dataSourceId: 'query_reorder_command', transformationType: 'select',
+		} as const;
+		expect(handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri, sourceGeneration: 21, editRevision: 0,
+			documentRevision: 0, sectionRevisions: { [before.id]: 0 }, markdownSectionRevisions: {},
+			state: { sections: [
+				{ id: 'query_reorder_command', type: 'query', query: 'print Value=1' },
+				{ id: 'future_reorder_command', type: 'future-section', payload: { keep: true } },
+				before,
+			] },
+		})).toBe(true);
+		const query = document.getElementById('query_reorder_command')!;
+		const transformation = document.getElementById(before.id)!;
+		container.insertBefore(transformation, query);
+		vi.mocked(postMessageToHost).mockClear();
+
+		schedulePersist('reorder', true);
+		const persist = vi.mocked(postMessageToHost).mock.calls
+			.map(call => call[0] as any)
+			.find(message => message.type === 'persistDocument');
+		expect(persist).toBeTruthy();
+		(acknowledgePersistDocument as any)(persist.snapshotId, persist.editRevision, [
+			before.id, 'future_reorder_command', 'query_reorder_command',
+		]);
+
+		const client = await import('../../src/webview/core/markdown-document-client.js');
+		const after = { ...before, name: 'After' };
+		expect(client.requestHostOwnedTransformationPatch(after)).toBe(true);
+		const command = vi.mocked(postMessageToHost).mock.calls
+			.map(call => call[0] as any)
+			.find(message => message.type === 'markdownDocumentCommand');
+		expect(command).toBeTruthy();
+		const handled = client.handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: command.commandId, ok: true,
+			sourceGeneration: 21,
+			projection: {
+				documentRevision: 1,
+				sectionRevisions: { [before.id]: 1 }, markdownSectionRevisions: {},
+				chartSections: [], markdownSections: [], pythonSections: [],
+				transformationSections: [after], urlSections: [],
+				orderedSectionIds: [before.id, 'future_reorder_command', 'query_reorder_command'],
+			},
+		});
+
+		expect(handled).toMatchObject({ handled: true, accepted: true });
+		expect(postMessageToHost).not.toHaveBeenCalledWith({ type: 'requestDocument' });
+	});
+
+	it('retains a Transformation source after its query edit is acknowledged before host handoff', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const documentUri = 'file:///tmp/transformation-acknowledged-source.kqlx';
+		const transformation = {
+			id: 'transform_ack_source', type: 'transformation', expanded: false,
+			dataSourceId: 'query_ack_source', transformationType: 'select',
+		};
+		const projection = (sourceGeneration: number, query: string) => ({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri, sourceGeneration, documentRevision: 0,
+			sectionRevisions: { transform_ack_source: 0 }, markdownSectionRevisions: {},
+			state: { sections: [
+				{ id: 'query_ack_source', type: 'query', query },
+				transformation,
+			] },
+		});
+
+		expect(handleDocumentDataMessage(projection(1, 'print Value=1'))).toBe(true);
+		const query = document.getElementById('query_ack_source') as HTMLElement & {
+			serialize: () => unknown;
+			runtimeArtifactId?: string;
+		};
+		const transformElement = document.getElementById('transform_ack_source') as HTMLElement & {
+			inputBinding?: string;
+			outputLineage?: string[];
+		};
+		query.runtimeArtifactId = 'query-artifact-ack';
+		transformElement.inputBinding = 'query-artifact-ack';
+		transformElement.outputLineage = ['query-artifact-ack'];
+		query.serialize = () => ({ id: 'query_ack_source', type: 'query', query: 'print Value=2' });
+		vi.mocked(postMessageToHost).mockClear();
+
+		schedulePersist('query-edit', true);
+		const persist = vi.mocked(postMessageToHost).mock.calls
+			.map(call => call[0] as any)
+			.find(message => message.type === 'persistDocument');
+		expect(persist).toBeTruthy();
+		acknowledgePersistDocument(persist.snapshotId, persist.editRevision, [
+			'query_ack_source', 'transform_ack_source',
+		]);
+
+		expect(handleDocumentDataMessage(projection(2, 'print Value=2'))).toBe(true);
+		expect(document.getElementById('query_ack_source')).toBe(query);
+		expect(document.getElementById('transform_ack_source')).toBe(transformElement);
+		expect(query.runtimeArtifactId).toBe('query-artifact-ack');
+		expect(transformElement.inputBinding).toBe('query-artifact-ack');
+		expect(transformElement.outputLineage).toEqual(['query-artifact-ack']);
+	});
+
+	it('recreates a linked query when a host-owned Transformation handoff makes it inline', async () => {
+		const documentUri = 'file:///tmp/transformation-linked-source-handoff.kqlx';
+		const linkedState = { sections: [
+			{
+				id: 'query_linked_handoff', type: 'query', query: 'print Value=1',
+				linkedQueryPath: 'queries/source.kql',
+			},
+			{
+				id: 'transform_linked_handoff', type: 'transformation', expanded: false,
+				dataSourceId: 'query_linked_handoff', transformationType: 'select',
+			},
+		] };
+		const inlineState = { sections: linkedState.sections.map(section => {
+			if (section.id !== 'query_linked_handoff') return section;
+			const { linkedQueryPath: _linkedQueryPath, ...inlineSection } = section;
+			return inlineSection;
+		}) };
+		const projection = (sourceGeneration: number, state: typeof linkedState) => ({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri, sourceGeneration, documentRevision: 0,
+			sectionRevisions: { transform_linked_handoff: 0 }, markdownSectionRevisions: {}, state,
+		});
+
+		expect(handleDocumentDataMessage(projection(1, linkedState))).toBe(true);
+		const linkedQuery = document.getElementById('query_linked_handoff');
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		vi.mocked(sectionFactory.removeQueryBox).mockClear();
+
+		expect(handleDocumentDataMessage(projection(2, inlineState))).toBe(true);
+
+		expect(document.getElementById('query_linked_handoff')).not.toBe(linkedQuery);
+		expect(sectionFactory.removeQueryBox).toHaveBeenCalledWith('query_linked_handoff');
+	});
+
+	it('carries pending Kusto result admission across a retained Transformation handoff', () => {
+		vi.useFakeTimers();
+		try {
+			const documentUri = 'file:///tmp/transformation-pending-kusto-handoff.kqlx';
+			const resultJson = JSON.stringify({ columns: ['Value'], rows: [['late-kusto']], metadata: {} });
+			const querySection = {
+				id: 'query_pending_kusto_handoff', type: 'query', query: 'print Value="late-kusto"',
+				clusterUrl: 'https://late-handoff.kusto.windows.net', connectionIdHint: 'late-handoff',
+				database: 'Db', resultJson, ...kustoResultOwner,
+			};
+			const state = { sections: [
+				querySection,
+				{
+					id: 'transform_pending_kusto_handoff', type: 'transformation', expanded: false,
+					dataSourceId: querySection.id, transformationType: 'select',
+				},
+			] };
+			const projection = (sourceGeneration: number) => ({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind: 'kqlx', documentUri, sourceGeneration, documentRevision: 0,
+				sectionRevisions: { transform_pending_kusto_handoff: 0 }, markdownSectionRevisions: {}, state,
+			});
+
+			expect(handleDocumentDataMessage(projection(1))).toBe(true);
+			const query = document.getElementById(querySection.id) as HTMLElement & {
+				serialize: () => unknown;
+				getConnectionId: () => string;
+			};
+			query.serialize = () => ({ ...querySection });
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
+
+			expect(handleDocumentDataMessage(projection(2))).toBe(true);
+			expect(document.getElementById(querySection.id)).toBe(query);
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
+
+			testState.kustoConnections.push(ownedKustoConnection({
+				id: 'late-handoff', clusterUrl: querySection.clusterUrl,
+			}));
+			query.getConnectionId = () => 'late-handoff';
+			applyKustoLeaveNoTracePolicy([], false);
+			resolvePendingKustoResultRestores();
+			flushDeferredRestoreTimers();
+
+			expect(pState.queryResultJsonByBoxId[querySection.id]).toBe(resultJson);
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				{ ...JSON.parse(resultJson), metadata: { executionTime: '' } },
+				querySection.id,
+				{ label: 'Results', showExecutionTime: true },
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('carries pending SQL owner admission across a retained Transformation handoff', () => {
+		vi.useFakeTimers();
+		try {
+			const documentUri = 'file:///tmp/transformation-pending-sql-handoff.kqlx';
+			const connection = {
+				id: 'sql-late-handoff', name: 'Late', dialect: 'mssql', serverUrl: 'late-handoff.example',
+				database: 'Db', authType: 'sql-login', username: 'LateUser',
+			};
+			const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['late-sql']], metadata: {} });
+			const sqlSection = {
+				id: 'sql_pending_handoff', type: 'sql', query: 'SELECT \'late-sql\' AS Value',
+				serverUrl: connection.serverUrl, connectionIdHint: connection.id,
+				targetSignature: sqlConnectionTargetSignature(connection), database: connection.database, resultJson,
+			};
+			const state = { sections: [
+				sqlSection,
+				{
+					id: 'transform_pending_sql_handoff', type: 'transformation', expanded: false,
+					dataSourceId: sqlSection.id, transformationType: 'select',
+				},
+			] };
+			const projection = (sourceGeneration: number) => ({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind: 'kqlx', documentUri, sourceGeneration, documentRevision: 0,
+				sectionRevisions: { transform_pending_sql_handoff: 0 }, markdownSectionRevisions: {}, state,
+			});
+
+			expect(handleDocumentDataMessage(projection(1))).toBe(true);
+			const sql = document.getElementById(sqlSection.id) as HTMLElement & {
+				serialize: () => unknown;
+				getConnectionId: () => string;
+				getSqlConnectionId: () => string;
+			};
+			sql.serialize = () => ({ ...sqlSection, expanded: true });
+
+			expect(handleDocumentDataMessage(projection(2))).toBe(true);
+			expect(document.getElementById(sqlSection.id)).toBe(sql);
+
+			testState.sqlConnections.push(connection);
+			sql.getConnectionId = () => connection.id;
+			sql.getSqlConnectionId = () => connection.id;
+			resolvePendingSqlResultRestores();
+			flushDeferredRestoreTimers();
+
+			expect(pState.queryResultJsonByBoxId[sqlSection.id]).toBe(resultJson);
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				{ ...JSON.parse(resultJson), metadata: { executionTime: '' } },
+				sqlSection.id,
+				expect.objectContaining({ label: 'Results', showExecutionTime: true }),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('drops a pending SQL comparison job when only its retained owner survives the handoff', () => {
+		vi.useFakeTimers();
+		try {
+			const documentUri = 'file:///tmp/transformation-pending-comparison-handoff.kqlx';
+			const connection = {
+				id: 'sql-comparison-owner', name: 'Owner', dialect: 'mssql', serverUrl: 'comparison.example',
+				database: 'Db', authType: 'sql-login', username: 'OwnerUser',
+			};
+			const owner = {
+				id: 'sql_comparison_owner', type: 'sql', query: 'SELECT 1 AS Value',
+				serverUrl: connection.serverUrl, connectionIdHint: connection.id,
+				targetSignature: sqlConnectionTargetSignature(connection), database: connection.database,
+			};
+			const oldResultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['old']], metadata: {} });
+			const newResultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['new']], metadata: {} });
+			const state = (resultJson: string) => ({ sections: [
+				owner,
+				{
+					id: 'query_pending_comparison', type: 'query', query: 'SELECT 2 AS Value',
+					comparisonSourceBoxId: owner.id, resultJson,
+				},
+				{
+					id: 'transform_comparison_owner', type: 'transformation', expanded: false,
+					dataSourceId: owner.id, transformationType: 'select',
+				},
+			] });
+			const projection = (sourceGeneration: number, resultJson: string) => ({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind: 'kqlx', documentUri, sourceGeneration, documentRevision: 0,
+				sectionRevisions: { transform_comparison_owner: 0 }, markdownSectionRevisions: {},
+				state: state(resultJson),
+			});
+
+			expect(handleDocumentDataMessage(projection(1, oldResultJson))).toBe(true);
+			const sql = document.getElementById(owner.id) as HTMLElement & {
+				serialize: () => unknown;
+				getConnectionId: () => string;
+				getSqlConnectionId: () => string;
+			};
+			sql.serialize = () => ({ ...owner, expanded: true });
+
+			expect(handleDocumentDataMessage(projection(2, newResultJson))).toBe(true);
+			expect(document.getElementById(owner.id)).toBe(sql);
+
+			testState.sqlConnections.push(connection);
+			sql.getConnectionId = () => connection.id;
+			sql.getSqlConnectionId = () => connection.id;
+			resolvePendingSqlResultRestores();
+
+			expect(pState.queryResultJsonByBoxId.query_pending_comparison).toBe(newResultJson);
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
+			expect(displayResultForBox).not.toHaveBeenCalled();
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it('recreates invalidated query and SQL sources after a failed same-document projection is repaired', () => {
+		const documentUri = 'file:///tmp/transformation-failed-handoff.kqlx';
+		const stableState = { sections: [
+			{ id: 'query_failed_handoff', type: 'query', query: 'print Key=1' },
+			{ id: 'sql_failed_handoff', type: 'sql', query: 'SELECT 1 AS [Key]' },
+			{
+				id: 'transform_failed_handoff', type: 'transformation', expanded: false,
+				dataSourceId: 'query_failed_handoff', transformationType: 'join',
+				joinRightDataSourceId: 'sql_failed_handoff', joinKind: 'inner',
+				joinKeys: [{ left: 'Key', right: 'Key' }],
+			},
+		] };
+		const projection = (sourceGeneration: number, state: any, sectionRevisions: Record<string, number>) => ({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri, sourceGeneration, documentRevision: sourceGeneration - 1,
+			sectionRevisions, markdownSectionRevisions: {}, state,
+		});
+
+		expect(handleDocumentDataMessage(projection(1, stableState, { transform_failed_handoff: 0 }))).toBe(true);
+		const query = document.getElementById('query_failed_handoff');
+		const sql = document.getElementById('sql_failed_handoff');
+		vi.mocked(addChartBox).mockImplementationOnce(() => { throw new Error('injected handoff failure'); });
+		const failedState = { sections: [
+			...stableState.sections,
+			{ id: 'chart_failed_handoff', type: 'chart', chartType: 'bar', dataSourceId: 'query_failed_handoff' },
+		] };
+
+		expect(handleDocumentDataMessage(projection(2, failedState, {
+			transform_failed_handoff: 0, chart_failed_handoff: 0,
+		}))).toBe(false);
+		expect(pState.documentRuntimeActive).toBe(false);
+
+		expect(handleDocumentDataMessage(projection(3, stableState, { transform_failed_handoff: 0 }))).toBe(true);
+		expect(document.getElementById('query_failed_handoff')).not.toBe(query);
+		expect(document.getElementById('sql_failed_handoff')).not.toBe(sql);
+		expect(pState.documentRuntimeActive).toBe(true);
 	});
 
 	it('restores legacy copilotQuery content and serializes it canonically as query', () => {
