@@ -58,9 +58,6 @@ import {
 	CacheUnit,
 	IncomingWebviewMessage,
 	SaveImportedCsvMessage,
-	RequestArtifactCsvSaveMessage,
-	ArtifactCsvSaveDataMessage,
-	CancelArtifactCsvSaveIntentMessage,
 	findPreferredDefaultCopilotModel
 } from './queryEditorTypes';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
@@ -80,6 +77,10 @@ import {
 	HostDashboardApplicationHandler,
 	type DashboardApplicationHandler,
 } from './dashboardApplicationHandler';
+import {
+	HostArtifactCsvSaveApplicationHandler,
+	type ArtifactCsvSaveApplicationHandler,
+} from './artifactCsvSaveApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -108,19 +109,7 @@ type PendingComparisonEnsure = {
 	};
 };
 
-type PendingArtifactCsvSave = {
-	exportId: string;
-	boxId: string;
-	artifactId: string;
-	targetUri: vscode.Uri;
-	timer: ReturnType<typeof setTimeout>;
-};
-
 const SQL_COPILOT_PREFLIGHT_EXECUTION_ID = 'sql-copilot-owner-preflight';
-const ARTIFACT_CSV_TRANSFER_TIMEOUT_MS = 60_000;
-const ARTIFACT_CSV_INTENT_TOMBSTONE_MS = 10 * 60_000;
-const ARTIFACT_CSV_MAX_ACTIVE_INTENTS = 8;
-const ARTIFACT_CSV_MAX_COMPLETED_INTENTS = 256;
 
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
@@ -180,10 +169,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		resolve: (accepted: boolean) => void;
 		timer?: ReturnType<typeof setTimeout>;
 	}>();
-	private readonly pendingArtifactCsvIntentIds = new Set<string>();
-	private readonly pendingArtifactCsvSaves = new Map<string, PendingArtifactCsvSave>();
-	private readonly completedArtifactCsvIntentIds = new Map<string, ReturnType<typeof setTimeout>>();
 	readonly dashboardApplication: DashboardApplicationHandler;
+	readonly artifactCsvSaveApplication: ArtifactCsvSaveApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -589,6 +576,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		private readonly sqlWorkbench: SqlWorkbenchService,
 		private readonly editorCursorStatusBar?: EditorCursorStatusBar,
 		dashboardApplication?: DashboardApplicationHandler,
+		artifactCsvSaveApplication?: ArtifactCsvSaveApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -596,6 +584,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			isDisposed: () => this._panelDisposed,
 			output: this.output,
 			connectionManager: this.connectionManager,
+		});
+		this.artifactCsvSaveApplication = artifactCsvSaveApplication ?? new HostArtifactCsvSaveApplicationHandler({
+			postMessage: message => this.postMessage(message),
+			isDisposed: () => this._panelDisposed,
 		});
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
 			this.handleKustoAuthPreferenceChange(change);
@@ -954,6 +946,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const dashboardApplicationMessage = this.dashboardApplication?.handleMessage(message);
 		if (dashboardApplicationMessage) {
 			await dashboardApplicationMessage;
+			return;
+		}
+		const artifactCsvSaveApplicationMessage = this.artifactCsvSaveApplication?.handleMessage(message);
+		if (artifactCsvSaveApplicationMessage) {
+			await artifactCsvSaveApplicationMessage;
 			return;
 		}
 		switch (message.type) {
@@ -1360,15 +1357,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'saveImportedCsv':
 				await this.saveImportedCsvFromWebview(message);
-				return;
-			case 'requestArtifactCsvSave':
-				await this.requestArtifactCsvSaveFromWebview(message);
-				return;
-			case 'artifactCsvSaveData':
-				await this.acceptArtifactCsvSaveData(message);
-				return;
-			case 'cancelArtifactCsvSaveIntent':
-				this.cancelArtifactCsvSaveIntent(message);
 				return;
 			case 'checkCopilotAvailability':
 				await this.copilot.checkCopilotAvailability(message.boxId);
@@ -1872,121 +1860,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		} catch {
 			vscode.window.showErrorMessage('Failed to save results to CSV file.');
 		}
-	}
-
-	private async requestArtifactCsvSaveFromWebview(message: RequestArtifactCsvSaveMessage): Promise<void> {
-		const exportId = String(message.requestId || '').trim();
-		const boxId = String(message.boxId || '').trim();
-		const artifactId = String(message.artifactId || '').trim();
-		if (!exportId || !boxId || !artifactId || this.pendingArtifactCsvIntentIds.has(exportId)
-			|| this.completedArtifactCsvIntentIds.has(exportId)) return;
-		if (this.pendingArtifactCsvIntentIds.size >= ARTIFACT_CSV_MAX_ACTIVE_INTENTS) {
-			this.completeArtifactCsvIntent(exportId);
-			await this.postMessage({ type: 'cancelArtifactCsvSave', exportId });
-			return;
-		}
-
-		this.pendingArtifactCsvIntentIds.add(exportId);
-		try {
-			const suggestedFileName = String(message.suggestedFileName || 'kusto-results.csv') || 'kusto-results.csv';
-			const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(os.homedir());
-			const picked = await vscode.window.showSaveDialog({
-				defaultUri: vscode.Uri.joinPath(baseDir, suggestedFileName),
-				filters: { CSV: ['csv'] },
-			});
-			if (!this.pendingArtifactCsvIntentIds.has(exportId)) return;
-			if (!picked) {
-				this.completeArtifactCsvIntent(exportId);
-				await this.postMessage({ type: 'cancelArtifactCsvSave', exportId });
-				return;
-			}
-			if (this._panelDisposed) {
-				this.completeArtifactCsvIntent(exportId);
-				return;
-			}
-
-			let targetUri = picked;
-			try { targetUri = withCsvExtension(picked); } catch { /* ignore */ }
-			const requestId = `artifact-csv-${crypto.randomUUID()}`;
-			const timer = setTimeout(() => {
-				const pending = this.pendingArtifactCsvSaves.get(requestId);
-				if (!pending) return;
-				this.pendingArtifactCsvSaves.delete(requestId);
-				this.completeArtifactCsvIntent(pending.exportId);
-				void this.postMessage({ type: 'cancelArtifactCsvSave', exportId: pending.exportId });
-				if (!this._panelDisposed) {
-					void vscode.window.showErrorMessage('Timed out preparing results for CSV export.');
-				}
-			}, ARTIFACT_CSV_TRANSFER_TIMEOUT_MS);
-			this.pendingArtifactCsvSaves.set(requestId, { exportId, boxId, artifactId, targetUri, timer });
-			const posted = await this.postMessage({
-				type: 'requestArtifactCsvSaveData', requestId, exportId, boxId, artifactId,
-			});
-			if (!posted) {
-				const pending = this.pendingArtifactCsvSaves.get(requestId);
-				if (pending) {
-					this.pendingArtifactCsvSaves.delete(requestId);
-					clearTimeout(pending.timer);
-				}
-				this.completeArtifactCsvIntent(exportId);
-				await this.postMessage({ type: 'cancelArtifactCsvSave', exportId });
-			}
-		} catch {
-			this.completeArtifactCsvIntent(exportId);
-			await this.postMessage({ type: 'cancelArtifactCsvSave', exportId });
-			vscode.window.showErrorMessage('Failed to save results to CSV file.');
-		}
-	}
-
-	private async acceptArtifactCsvSaveData(message: ArtifactCsvSaveDataMessage): Promise<void> {
-		const requestId = String(message.requestId || '').trim();
-		const pending = this.pendingArtifactCsvSaves.get(requestId);
-		if (!pending
-			|| pending.boxId !== String(message.boxId || '').trim()
-			|| pending.artifactId !== String(message.artifactId || '').trim()) return;
-
-		this.pendingArtifactCsvSaves.delete(requestId);
-		clearTimeout(pending.timer);
-		this.completeArtifactCsvIntent(pending.exportId);
-		const csv = typeof message.csv === 'string' ? message.csv : '';
-		if (message.accepted !== true || !csv.trim()) {
-			vscode.window.showInformationMessage('Results are no longer available for CSV export.');
-			return;
-		}
-		try {
-			await vscode.workspace.fs.writeFile(pending.targetUri, Buffer.from(csv, 'utf8'));
-			await notifySavedFile(pending.targetUri, `Saved results to ${pending.targetUri.fsPath}`);
-		} catch {
-			vscode.window.showErrorMessage('Failed to save results to CSV file.');
-		}
-	}
-
-	private cancelArtifactCsvSaveIntent(message: CancelArtifactCsvSaveIntentMessage): void {
-		const exportId = String(message.requestId || '').trim();
-		if (!exportId) return;
-		let knownIntent = this.pendingArtifactCsvIntentIds.has(exportId);
-		for (const [requestId, pending] of [...this.pendingArtifactCsvSaves]) {
-			if (pending.exportId !== exportId) continue;
-			knownIntent = true;
-			this.pendingArtifactCsvSaves.delete(requestId);
-			clearTimeout(pending.timer);
-		}
-		if (knownIntent) this.completeArtifactCsvIntent(exportId);
-	}
-
-	private completeArtifactCsvIntent(exportId: string): void {
-		this.pendingArtifactCsvIntentIds.delete(exportId);
-		const previous = this.completedArtifactCsvIntentIds.get(exportId);
-		if (previous) clearTimeout(previous);
-		if (!previous && this.completedArtifactCsvIntentIds.size >= ARTIFACT_CSV_MAX_COMPLETED_INTENTS) {
-			const oldest = this.completedArtifactCsvIntentIds.entries().next().value as [string, ReturnType<typeof setTimeout>] | undefined;
-			if (oldest) {
-				clearTimeout(oldest[1]);
-				this.completedArtifactCsvIntentIds.delete(oldest[0]);
-			}
-		}
-		const timer = setTimeout(() => this.completedArtifactCsvIntentIds.delete(exportId), ARTIFACT_CSV_INTENT_TOMBSTONE_MS);
-		this.completedArtifactCsvIntentIds.set(exportId, timer);
 	}
 
 	private decodeHtmlEntities(text: string): string {
@@ -2857,14 +2730,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				if (pending.timer) clearTimeout(pending.timer);
 				pending.resolve(false);
 			}
-			this.pendingArtifactCsvIntentIds.clear();
-			for (const [requestId, pending] of [...this.pendingArtifactCsvSaves]) {
-				this.pendingArtifactCsvSaves.delete(requestId);
-				clearTimeout(pending.timer);
-			}
-			for (const timer of this.completedArtifactCsvIntentIds.values()) clearTimeout(timer);
-			this.completedArtifactCsvIntentIds.clear();
 			this.dashboardApplication.dispose();
+			this.artifactCsvSaveApplication.dispose();
 			for (const [requestId, pending] of [...this.pendingComparisonEnsureByRequestId]) {
 				this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
 			}

@@ -43,6 +43,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | SQL Leave No Trace policy | Cross-window policy, revocation generations, protected one-shot runtime, and guarded admission | Strong but SQL-specific |
 | Dashboard domain semantics | Shared provenance upgrade/validation concepts and extensive Power BI golden tests | Good domain core, mixed with adapters |
 | Dashboard application workflow | [`HostDashboardApplicationHandler`](src/host/dashboardApplicationHandler.ts) owns all dashboard requests, cancellation, first-commit admission, publish application/compensation leases, and cleanup; `QueryEditorProvider` only composes transport | Strong initial host-application boundary |
+| Artifact CSV save workflow | [`HostArtifactCsvSaveApplicationHandler`](src/host/artifactCsvSaveApplicationHandler.ts) owns picker admission, nonce challenges, cancellation, deadlines, replay tombstones, exact correlation, and file publication; `QueryEditorProvider` only composes transport | Strong bounded host-application boundary |
 | Editing preferences and first launch | Revisioned application preferences and transactional profile setup | Good explicit ownership |
 | Native document-view lifecycle protocol | [`documentViewProtocol.ts`](src/shared/documentViewProtocol.ts), one host-created panel UUID, runtime parsing, exactly-once initial projection, and session-fenced commands/results/Save barriers | Strong initial protocol slice |
 | Unmigrated section serialization | Kusto/SQL and remaining adapter-heavy kinds still participate in broad restore/persistence switches; Markdown, URL, Python, Chart, Transformation, and HTML native state no longer comes from component `serialize()` | Useful transitional boundary |
@@ -76,7 +77,7 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | ---: | --- | --- | --- | ---: | --- |
 | - | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Closed through EXA-2; transport-neutral coordinator convergence remains deferred |
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
-| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/4/5/4/4/5 | 47 | HST-1 closed; HST-2 selected |
+| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/4/5/4/4/5 | 47 | HST-1 and HST-2 closed; HST-3 selected |
 | 2 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/4/3/4 | 45 | PRO-1 closed; broader protocol/startup work remains open |
 | 3 | `DOC` | Document actor and section-definition registry | 4/4/4/4/2/5 | 43 | DOC-1 through DOC-6 closed; Kusto/SQL deferred |
 | 4 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | Open, depends on document/projection contracts |
@@ -224,7 +225,8 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 **Current divergence:**
 
 - HST-1 moved dashboard prompts, export, workspace/existence lookup, publish request lifetimes, first-external-commit admission, document metadata application/compensation leases, and cleanup into one injected `HostDashboardApplicationHandler`. The provider has no dashboard workflow maps, Fabric/export imports, discriminator switch, or publish transition authority.
-- [`QueryEditorProvider`](src/host/queryEditorProvider.ts) still combines panel transport with Kusto execution, SQL adapters, Python/URL execution, persistence UX, comparisons, artifact CSV save orchestration, and cross-language coordination.
+- HST-2 moved governed result-table CSV picker admission, one-use nonce challenges, cancellation, deadlines, replay tombstones, exact correlation, and file publication into one injected `HostArtifactCsvSaveApplicationHandler`. The provider has no artifact CSV maps, discriminator cases, deadlines, tombstones, or write transitions.
+- [`QueryEditorProvider`](src/host/queryEditorProvider.ts) still combines panel transport with Kusto execution, SQL adapters, Python/URL execution, persistence UX, comparisons, imported-CSV UX, and cross-language coordination.
 - Focused tests often construct or patch the provider without a real composition root, indicating that use cases do not have narrow injectable boundaries.
 
 **Migration theme:** do not split the class by file category first. Move routes behind the execution, document, protocol, and dashboard contracts as those owners are introduced. The provider shrinks as a consequence.
@@ -560,21 +562,33 @@ The component and renderer remain adapters. Equal projections retain the exact e
 
 **Qualification:** the final focused ring passed 10 files and 466 tests. Complete sequential Vitest and the official coverage gate passed 221 files and 5,708 tests; statement coverage is 48.18% against the unchanged 27.67% threshold. The complete VS Code 1.131.0 extension-host suite passed 201/201 with `--timeout 5000`, and the provider lifecycle passed 21/21. Host/webview/browser typechecks, integration compilation, production extension and strict browser builds, ESLint with zero errors and five pre-existing warnings, and both bundle gates passed. Final sizes are 1,905.8 KB for `extension.js` and 2,801.9 KB for `webview.bundle.js`, within unchanged limits. No live authenticated Fabric tenant run was performed.
 
+### Iteration `HST-2`: Artifact CSV Save Application Handler
+
+**Status:** closed on 2026-08-05. The definitive blocker-only review returned `VERDICT: NO HST-2 BLOCKER`.
+
+**Boundary:** `HostArtifactCsvSaveApplicationHandler` is the injected owner for `requestArtifactCsvSave`, `artifactCsvSaveData`, and `cancelArtifactCsvSaveIntent`. It owns native picker admission, eight active intents, one-use UUID nonce challenges, intent and transfer cancellation, 60-second deadlines, bounded 10-minute replay tombstones, exact box/artifact correlation, URI-preserving `.csv` publication, saved-file notifications, and disposal. `QueryEditorProvider` only constructs or accepts the handler, offers typed messages synchronously, supplies panel transport, and disposes it.
+
+**Displaced authority:** `QueryEditorProvider` no longer owns artifact CSV intent/save/completed maps, timeout/tombstone constants, discriminator cases, picker transitions, nonce issuance/admission, or governed CSV file writes. `artifact-csv-export.ts`, immutable result-artifact bindings, table-generation tokens, `kw-data-table`, browser shim/download behavior, message shapes, imported CSV, and Connection Manager preview export remain unchanged.
+
+**Guards:** the requested real-provider injection/forwarding test was written red first and failed with zero handler calls, then passed for all three exact typed messages. A static displaced-authority guard prevents maps, methods, and discriminator cases from returning to the provider. Direct handler tests cover synchronous decline, exact UTF-8 bytes, active/completed bounds, concurrent reverse delivery, mismatched and replayed nonces, picker cancellation, cancellation during picker and transfer, deadlines, disposal, and remote URI authority. Protocol extraction includes the handler and explicitly requires both outbound CSV messages.
+
+**Qualification:** the final focused ring passed 11 files and 310 tests. Complete sequential Vitest and the official coverage gate passed 223 files and 5,713 tests; statement coverage is 48.18% against the unchanged 27.67% threshold. The complete VS Code 1.131.0 extension-host suite passed 201/201 with `--timeout 5000`. Host/webview/browser typechecks, integration compilation, production extension and strict browser builds, ESLint with zero errors and five pre-existing warnings, diagnostics, `git diff --check`, and both bundle gates passed. Final production sizes are 1,906.3 KB for `extension.js` and 2,801.9 KB for `webview.bundle.js`; the synchronized extension baseline moved from 1,856 to 1,857 KB with the 50 KB buffer unchanged. Native run `20260805-164304` exercised denied/allowed Save admission, the real Windows picker, exact intent/export/nonce/box/artifact correlation, zero cancellation, host write completion, and the exact 26-byte file `Name,Score\nalpha,1\nbravo,2`. The permanent scenario's fresh screenshots were blocked before picker execution by the framework's foreground-HWND validation; previously reviewed clean screenshots remain the visual baseline.
+
 ## Next Iteration
 
-### Iteration `HST-2`: Artifact CSV Save Application Handler
+### Iteration `HST-3`: Python Execution Application Handler
 
 **Status:** selected, not started.
 
-**Why next:** HST remains the highest eligible gap. The native artifact CSV save workflow is the next bounded, mature provider-owned state machine: picker admission, one-use nonce issuance, intent/transfer cancellation, replay tombstones, exact box/artifact correlation, timeout cleanup, and file publication are concentrated in `QueryEditorProvider` and already have adversarial artifact contracts.
+**Why next:** HST remains the highest eligible gap. Python execution is the smallest remaining provider-owned host workflow: one `executePython` route owns interpreter fallback, child-process/stdin/stdout/stderr lifecycle, a 15-second bounded terminal, 200 KB output caps, and `pythonResult` / `pythonError` publication.
 
-**Boundary:** extract `requestArtifactCsvSave`, `artifactCsvSaveData`, and `cancelArtifactCsvSaveIntent` orchestration into one injected host application handler. Keep `artifact-csv-export.ts`, immutable artifact bindings, webview table generation tokens, browser shim/download behavior, native picker UX, message shapes, and file bytes unchanged.
+**Boundary:** extract only host Python process execution and terminal orchestration into one injected application handler. Keep `kw-python-section`, `python-execution-admission.ts`, host-owned Python persisted state, local-code policy, Monaco/runtime rendering, message shapes, and document-view protocol unchanged.
 
-**Falsifiable hypothesis:** if one artifact CSV save handler owns intent IDs, nonce challenges, transfer deadlines, replay tombstones, and write admission, then `QueryEditorProvider` can synchronously offer those three routes without retaining CSV intent/save maps or transitions while concurrent, canceled, timed-out, replayed, mismatched, and disposed requests preserve their current outcomes.
+**Falsifiable hypothesis:** if one Python execution handler owns process creation, interpreter fallback, output bounds, timeout/kill, and terminal publication, `QueryEditorProvider` can synchronously offer `executePython` without retaining Python process or terminal transitions while timeout, late close/error, missing interpreters, disposal, and successful output preserve current behavior.
 
-**Cheapest discriminating check:** construct the real provider with a fake artifact CSV handler, send all three routes through `handleWebviewMessage`, and prove exact forwarding while a focused handler test opens two concurrent saves, reverses projection delivery, replays a consumed nonce, cancels one request, and proves only the exact live request writes bytes.
+**Cheapest discriminating check:** construct the real provider with a fake Python handler and prove exact `executePython` forwarding; then drive a fake child that ignores termination and emits late close/error events, proving the handler publishes exactly one bounded timeout terminal and declines unrelated Kusto/SQL traffic synchronously.
 
-**Exclusions:** no artifact-store redesign, CSV format/UI change, browser composition migration, generic application framework, Kusto/SQL ownership, protocol expansion, dashboard/compiler work, or deferred `ACT` work.
+**Exclusions:** no Python protocol identity expansion, process sandbox redesign, local-code trust/ACT work, Python UI/Monaco changes, document persistence changes, Kusto/SQL ownership, or generic handler framework.
 
 ## Convergence Loop
 
@@ -723,6 +737,7 @@ These are not full golden-outcome iterations retroactively, but they materially 
 | `DOC-5` | Existing aggregate/client/URI queue + `transformationSectionDefinition.ts` | Native Transformation DOM serialization authority and adapter-owned persisted Transformation configuration | Full optimistic projection, retained input pins/lineage, exact source rebind, runtime-height isolation, stale instance fencing, lossless Save, privacy/physical-alias guards, and native lifecycle gate | Focused 729, full/coverage Vitest 5,657, extension-host 200, native 4/4, production/browser, bundle gates, and definitive blocker review complete | 2026-08-04 |
 | `DOC-6` | Existing aggregate/client/URI queue + `htmlSectionDefinition.ts` | Native HTML DOM serialization authority and adapter-owned persisted HTML configuration | Full optimistic projection, exact Monaco/iframe/artifact retention, stale-instance/workflow fencing, one-field publish metadata CAS/rollback, queue-stable external cleanup, lossless Save, and native lifecycle gate | Focused 661, full/coverage Vitest 5,703, extension-host 201, native 5/5, production/browser, bundle gates, post-fix blocker reviews, and documented closure decision complete | 2026-08-05 |
 | `HST-1` | `HostDashboardApplicationHandler` | Provider-owned dashboard workflow/ack maps, Fabric/export imports, discriminator branches, native publish lease methods, and cleanup transitions | Real-provider injection/forwarding, static displaced-authority, synchronous-decline, direct workflow/race, protocol-sender, and native same-ID cleanup guards | Focused 466, full/coverage Vitest 5,708, extension-host 201, provider lifecycle 21, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
+| `HST-2` | `HostArtifactCsvSaveApplicationHandler` | Provider-owned artifact CSV maps, picker/nonce/cancel/deadline/tombstone transitions, discriminator cases, and governed file publication | Real-provider injection/forwarding, static displaced-authority, direct concurrency/replay/cancel/deadline/disposal tests, protocol-sender inventory, browser compatibility, and native exact-byte gate | Focused 310, full/coverage Vitest 5,713, extension-host 201, native exact 26 bytes, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
 
 ## Decision Discipline
 

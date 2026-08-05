@@ -37,6 +37,8 @@
     "onCommand:kustoWorkbench.test.runRenameOpenFilesScenario",
     "onCommand:kustoWorkbench.test.resetFirstLaunchSetup",
     "onCommand:kustoWorkbench.test.closeQueryEditorSession",
+    "onCommand:kustoWorkbench.test.setIsolatedKustoConnections",
+    "onCommand:kustoWorkbench.test.clearIsolatedKustoConnections",
     "onCommand:kustoWorkbench.test.setSqlLeaveNoTrace",
     "onCommand:kustoWorkbench.test.assertSqlLeaveNoTrace"
   ],
