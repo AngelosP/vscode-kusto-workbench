@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 
 import * as path from 'path';
-import * as zlib from 'zlib';
 import * as crypto from 'crypto';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
@@ -37,7 +36,7 @@ import { toolOrchestrator } from './extension';
 import { CopilotService, CopilotServiceHost, SQL_COPILOT_OWNER_CHANGED_MESSAGE } from './queryEditorCopilot';
 import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 import { ConnectionService, ConnectionServiceHost } from './queryEditorConnection';
-import { exportAzureDataExplorerClusterPath, kustoClusterKey } from '../shared/kustoClusterUrls';
+import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { canonicalSectionKind } from '../shared/documentSectionCapabilities';
 import { sqlConnectionTargetSignatureMatches } from '../shared/sqlConnectionIdentity';
 import { SchemaService, SchemaServiceHost } from './queryEditorSchema';
@@ -85,6 +84,10 @@ import {
 	HostImportedCsvSaveApplicationHandler,
 	type ImportedCsvSaveApplicationHandler,
 } from './importedCsvSaveApplicationHandler';
+import {
+	HostQuerySharingApplicationHandler,
+	type QuerySharingApplicationHandler,
+} from './querySharingApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -177,6 +180,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly artifactCsvSaveApplication: ArtifactCsvSaveApplicationHandler;
 	readonly pythonExecutionApplication: PythonExecutionApplicationHandler;
 	readonly importedCsvSaveApplication: ImportedCsvSaveApplicationHandler;
+	readonly querySharingApplication: QuerySharingApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -585,6 +589,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		artifactCsvSaveApplication?: ArtifactCsvSaveApplicationHandler,
 		pythonExecutionApplication?: PythonExecutionApplicationHandler,
 		importedCsvSaveApplication?: ImportedCsvSaveApplicationHandler,
+		querySharingApplication?: QuerySharingApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -601,6 +606,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			postMessage: message => this.postMessage(message),
 		});
 		this.importedCsvSaveApplication = importedCsvSaveApplication ?? new HostImportedCsvSaveApplicationHandler();
+		this.querySharingApplication = querySharingApplication ?? new HostQuerySharingApplicationHandler({
+			findConnection: connectionId => this.connection.findConnection(connectionId),
+			postMessage: message => this.postMessage(message),
+		});
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
 			this.handleKustoAuthPreferenceChange(change);
 		});
@@ -973,6 +982,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const importedCsvSaveApplicationMessage = this.importedCsvSaveApplication?.handleMessage(message);
 		if (importedCsvSaveApplicationMessage) {
 			await importedCsvSaveApplicationMessage;
+			return;
+		}
+		const querySharingApplicationMessage = this.querySharingApplication?.handleMessage(message);
+		if (querySharingApplicationMessage) {
+			await querySharingApplicationMessage;
 			return;
 		}
 		switch (message.type) {
@@ -1584,12 +1598,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					message.targetGeneration, message.expectedOwner,
 				);
 				return;
-			case 'copyAdeLink':
-				await this.copyAdeLinkFromWebview(message);
-				return;
-			case 'shareToClipboard':
-				await this.shareToClipboardFromWebview(message);
-				return;
 			case 'cancelQuery':
 				this.kustoExecutionCoordinator.cancelExpected({
 					boxId: message.boxId,
@@ -1665,185 +1673,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			default:
 				return;
-		}
-	}
-
-	private async copyAdeLinkFromWebview(
-		message: Extract<IncomingWebviewMessage, { type: 'copyAdeLink' }>
-	): Promise<void> {
-		try {
-			const boxId = String(message.boxId || '').trim();
-			const query = String(message.query || '').trim();
-			const database = String(message.database || '').trim();
-			const connectionId = String(message.connectionId || '').trim();
-			if (!query) {
-				vscode.window.showInformationMessage('No query text to share.');
-				return;
-			}
-			if (!connectionId) {
-				vscode.window.showInformationMessage('Select a cluster connection first.');
-				return;
-			}
-			if (!database) {
-				vscode.window.showInformationMessage('Select a database first.');
-				return;
-			}
-
-			const connection = this.connection.findConnection(connectionId);
-			if (!connection) {
-				vscode.window.showErrorMessage('Connection not found.');
-				return;
-			}
-			const adxClusterPath = exportAzureDataExplorerClusterPath(String(connection.clusterUrl || '').trim());
-			if (!adxClusterPath) {
-				vscode.window.showErrorMessage('Could not determine cluster name for the selected connection.');
-				return;
-			}
-
-			// Azure Data Explorer uses a gzip+base64 payload in the query string.
-			let encoded = '';
-			try {
-				const gz = zlib.gzipSync(Buffer.from(query, 'utf8'));
-				encoded = gz.toString('base64').replace(/=+$/g, '');
-			} catch {
-				vscode.window.showErrorMessage('Failed to encode the query for Azure Data Explorer.');
-				return;
-			}
-
-			const url =
-				`https://dataexplorer.azure.com/clusters/${encodeURIComponent(adxClusterPath)}` +
-				`/databases/${encodeURIComponent(database)}` +
-				`?query=${encodeURIComponent(encoded)}`;
-
-			await vscode.env.clipboard.writeText(url);
-			vscode.window.showInformationMessage('Azure Data Explorer link copied to clipboard.');
-			try {
-				if (boxId) {
-					this.postMessage({ type: 'showInfo', message: 'Azure Data Explorer link copied to clipboard.' });
-				}
-			} catch {
-				// ignore
-			}
-		} catch {
-			vscode.window.showErrorMessage('Failed to copy Azure Data Explorer link.');
-		}
-	}
-
-	private async shareToClipboardFromWebview(
-		message: Extract<IncomingWebviewMessage, { type: 'shareToClipboard' }>
-	): Promise<void> {
-		try {
-			const {
-				engine, includeTitle, includeQuery, includeResults,
-				sectionName, queryText, connectionId, database,
-				columns, rowsData, totalRows
-			} = message;
-
-			if (!includeTitle && !includeQuery && !includeResults) {
-				vscode.window.showInformationMessage('Select at least one section to share.');
-				return;
-			}
-
-			const htmlParts: string[] = [];
-			const textParts: string[] = [];
-
-			// Build the ADE link URL (shared between title HTML and plain text).
-			let adeUrl = '';
-			try {
-				const trimmedQuery = String(queryText || '').trim();
-				const trimmedConnectionId = String(connectionId || '').trim();
-				const trimmedDatabase = String(database || '').trim();
-				if (engine !== 'sql' && trimmedQuery && trimmedConnectionId && trimmedDatabase) {
-					const connection = this.connection.findConnection(trimmedConnectionId);
-					if (connection) {
-						const adxClusterPath = exportAzureDataExplorerClusterPath(String(connection.clusterUrl || '').trim());
-						if (adxClusterPath) {
-							const gz = zlib.gzipSync(Buffer.from(trimmedQuery, 'utf8'));
-							const encoded = gz.toString('base64').replace(/=+$/g, '');
-							adeUrl =
-								`https://dataexplorer.azure.com/clusters/${encodeURIComponent(adxClusterPath)}` +
-								`/databases/${encodeURIComponent(trimmedDatabase)}` +
-								`?query=${encodeURIComponent(encoded)}`;
-						}
-					}
-				}
-			} catch {
-				// If URL generation fails, just skip the link.
-			}
-
-			const escHtml = (s: string) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
-			// 1. Title
-			if (includeTitle) {
-				const title = sectionName || (engine === 'sql' ? 'SQL Query' : 'Kusto Query');
-				if (adeUrl) {
-					htmlParts.push(`<b>${escHtml(title)}</b><br><a href="${escHtml(adeUrl)}">Direct link to query</a>`);
-					textParts.push(`${title}\nDirect link to query: ${adeUrl}`);
-				} else {
-					htmlParts.push(`<b>${escHtml(title)}</b>`);
-					textParts.push(title);
-				}
-			}
-
-			// 2. Query â€” as a styled code block with a "Query" header.
-			if (includeQuery) {
-				const q = String(queryText || '').trim();
-				if (q) {
-					htmlParts.push(
-						`<b style="font-size:13px">Query</b>` +
-						`<pre style="background:#1e1e1e;color:#d4d4d4;padding:12px 16px;border-radius:6px;font-family:'Cascadia Code','Consolas','Courier New',monospace;font-size:13px;overflow-x:auto;white-space:pre;border:1px solid #333;margin-top:4px"><code class="${engine === 'sql' ? 'sql' : 'kql'}">${escHtml(q)}</code></pre>`
-					);
-					textParts.push('Query\n' + q);
-				}
-			}
-
-			// 3. Results â€” as an HTML table with a "Results" header.
-			if (includeResults && Array.isArray(columns) && columns.length > 0 && Array.isArray(rowsData) && rowsData.length > 0) {
-				const thCells = columns.map(c => `<th align="left" style="border:1px solid #555;padding:6px 10px;background:#2d2d2d;color:#e0e0e0;text-align:left;font-weight:600;font-size:12px;white-space:nowrap">${escHtml(c)}</th>`).join('');
-				const bodyRows = rowsData.map((row, ri) => {
-					const bg = ri % 2 === 0 ? '#1e1e1e' : '#252526';
-					const cells = row.map(v => `<td align="left" style="border:1px solid #444;padding:4px 10px;color:#d4d4d4;font-size:12px;white-space:nowrap;text-align:left">${escHtml(v)}</td>`).join('');
-					return `<tr style="background:${bg}">${cells}</tr>`;
-				}).join('');
-
-				// Plain-text fallback table.
-				const escCell = (v: string) => String(v ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
-				const headerRow = '| ' + columns.map(escCell).join(' | ') + ' |';
-				const separator = '| ' + columns.map(() => '---').join(' | ') + ' |';
-				const dataRows = rowsData.map(row =>
-					'| ' + row.map(escCell).join(' | ') + ' |'
-				).join('\n');
-
-				// Add a summary line when not all rows are included.
-				const shownRows = rowsData.length;
-				const total = typeof totalRows === 'number' && totalRows > 0 ? totalRows : shownRows;
-				const summaryLine = total > shownRows
-					? `Showing ${shownRows.toLocaleString()} of ${total.toLocaleString()} rows`
-					: `${shownRows.toLocaleString()} rows`;
-
-				htmlParts.push(
-					`<b style="font-size:13px">Results</b><br>` +
-					`<span style="font-size:11px;color:#888;font-style:italic">${escHtml(summaryLine)}</span>` +
-					`<table style="border-collapse:collapse;font-family:'Segoe UI',sans-serif;margin:4px 0"><thead><tr>${thCells}</tr></thead><tbody>${bodyRows}</tbody></table>`
-				);
-
-				textParts.push('Results\n' + summaryLine + '\n' + headerRow + '\n' + separator + '\n' + dataRows);
-			}
-
-			if (htmlParts.length === 0) {
-				vscode.window.showInformationMessage('Nothing to share â€” the selected sections are empty.');
-				return;
-			}
-
-			const html = htmlParts.join('<br><br>');
-			const text = textParts.join('\n\n');
-
-			// Send the formatted content back to the webview so it can write
-			// both text/html and text/plain to the clipboard via the browser API.
-			this.postMessage({ type: 'shareContentReady', html, text });
-			vscode.window.showInformationMessage('Copied to clipboard and ready to paste into Teams.');
-		} catch {
-			vscode.window.showErrorMessage('Failed to copy share content to clipboard.');
 		}
 	}
 
@@ -2606,6 +2435,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.artifactCsvSaveApplication.dispose();
 			this.pythonExecutionApplication.dispose();
 			this.importedCsvSaveApplication.dispose();
+			this.querySharingApplication.dispose();
 			for (const [requestId, pending] of [...this.pendingComparisonEnsureByRequestId]) {
 				this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
 			}

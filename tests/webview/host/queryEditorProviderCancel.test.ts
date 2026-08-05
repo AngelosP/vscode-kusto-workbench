@@ -1030,6 +1030,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.artifactCsvSaveApplication = { dispose: vi.fn() };
 		provider.pythonExecutionApplication = { dispose: vi.fn() };
 		provider.importedCsvSaveApplication = { dispose: vi.fn() };
+		provider.querySharingApplication = { dispose: vi.fn() };
 		provider.clearCursorStatusForProvider = vi.fn();
 		provider.cancelAllRunningQueries = vi.fn();
 		provider.kustoClient = { dispose: vi.fn() };
@@ -1065,6 +1066,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.artifactCsvSaveApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.pythonExecutionApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.importedCsvSaveApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider.querySharingApplication.dispose).toHaveBeenCalledOnce();
 	});
 
 	it('ignores policy messages after the panel webview getter is disposed', () => {
@@ -2253,26 +2255,6 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		}));
 		expect(provider.postMessage.mock.invocationCallOrder[0])
 			.toBeLessThan(provider.kustoClient.executeQueryCancelable.mock.invocationCallOrder[0]);
-	});
-
-	it('formats SQL share content without an Azure Data Explorer link promise', async () => {
-		const provider = createProviderHarness();
-
-		await (provider as any).shareToClipboardFromWebview({
-			type: 'shareToClipboard', engine: 'sql', boxId: 'sql_1',
-			includeTitle: true, includeQuery: true, includeResults: false,
-			sectionName: '', queryText: 'select 1 as Value',
-			connectionId: TEST_CONNECTION.id, database: 'SqlDb',
-			columns: [], rowsData: [], totalRows: 0,
-		});
-
-		const ready = provider.postMessage.mock.calls
-			.map(([message]) => message as any)
-			.find(message => message.type === 'shareContentReady');
-		expect(ready?.html).toContain('<b>SQL Query</b>');
-		expect(ready?.html).toContain('<code class="sql">select 1 as Value</code>');
-		expect(ready?.html).not.toContain('Direct link to query');
-		expect(ready?.text).toContain('SQL Query');
 	});
 
 	it('does not request a second start claim for a webview-preclaimed comparison run', async () => {
