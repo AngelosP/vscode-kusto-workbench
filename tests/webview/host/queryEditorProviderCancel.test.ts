@@ -1028,6 +1028,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.pendingKustoPublicationAcks = new Map();
 		provider.dashboardApplication = { dispose: vi.fn() };
 		provider.artifactCsvSaveApplication = { dispose: vi.fn() };
+		provider.pythonExecutionApplication = { dispose: vi.fn() };
 		provider.clearCursorStatusForProvider = vi.fn();
 		provider.cancelAllRunningQueries = vi.fn();
 		provider.kustoClient = { dispose: vi.fn() };
@@ -1061,6 +1062,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.pendingComparisonEnsureByRequestId.size).toBe(0);
 		expect(provider.dashboardApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.artifactCsvSaveApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider.pythonExecutionApplication.dispose).toHaveBeenCalledOnce();
 	});
 
 	it('ignores policy messages after the panel webview getter is disposed', () => {

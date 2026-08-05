@@ -26,7 +26,7 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 Assessment date: 2026-08-05
 
-The comparison was refreshed against the current working tree after HST-1 dashboard workflow application-handler convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
+The comparison was refreshed against the current working tree after HST-3 Python execution application-handler convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
 The current architecture is not uniformly legacy. Several high-risk contexts already provide good models for the rest of the application.
 
@@ -77,7 +77,7 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | ---: | --- | --- | --- | ---: | --- |
 | - | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Closed through EXA-2; transport-neutral coordinator convergence remains deferred |
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
-| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/4/5/4/4/5 | 47 | HST-1 and HST-2 closed; HST-3 selected |
+| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/4/5/4/4/5 | 47 | HST-1 through HST-3 closed; HST-4 selected |
 | 2 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/4/3/4 | 45 | PRO-1 closed; broader protocol/startup work remains open |
 | 3 | `DOC` | Document actor and section-definition registry | 4/4/4/4/2/5 | 43 | DOC-1 through DOC-6 closed; Kusto/SQL deferred |
 | 4 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | Open, depends on document/projection contracts |
@@ -226,7 +226,8 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 
 - HST-1 moved dashboard prompts, export, workspace/existence lookup, publish request lifetimes, first-external-commit admission, document metadata application/compensation leases, and cleanup into one injected `HostDashboardApplicationHandler`. The provider has no dashboard workflow maps, Fabric/export imports, discriminator switch, or publish transition authority.
 - HST-2 moved governed result-table CSV picker admission, one-use nonce challenges, cancellation, deadlines, replay tombstones, exact correlation, and file publication into one injected `HostArtifactCsvSaveApplicationHandler`. The provider has no artifact CSV maps, discriminator cases, deadlines, tombstones, or write transitions.
-- [`QueryEditorProvider`](src/host/queryEditorProvider.ts) still combines panel transport with Kusto execution, SQL adapters, Python/URL execution, persistence UX, comparisons, imported-CSV UX, and cross-language coordination.
+- HST-3 moved Python interpreter fallback, process/stdin/stdout/stderr lifecycle, independent 200 KB UTF-8 output caps, 15-second timeout/kill behavior, exactly-once terminal publication, and disposal into one injected `HostPythonExecutionApplicationHandler`. The provider has no Python process creation, discriminator case, output accumulation, timeout transition, or terminal construction.
+- [`QueryEditorProvider`](src/host/queryEditorProvider.ts) still combines panel transport with Kusto execution, SQL adapters, URL execution, persistence UX, comparisons, imported-CSV UX, and cross-language coordination.
 - Focused tests often construct or patch the provider without a real composition root, indicating that use cases do not have narrow injectable boundaries.
 
 **Migration theme:** do not split the class by file category first. Move routes behind the execution, document, protocol, and dashboard contracts as those owners are introduced. The provider shrinks as a consequence.
@@ -574,21 +575,33 @@ The component and renderer remain adapters. Equal projections retain the exact e
 
 **Qualification:** the final focused ring passed 11 files and 310 tests. Complete sequential Vitest and the official coverage gate passed 223 files and 5,713 tests; statement coverage is 48.18% against the unchanged 27.67% threshold. The complete VS Code 1.131.0 extension-host suite passed 201/201 with `--timeout 5000`. Host/webview/browser typechecks, integration compilation, production extension and strict browser builds, ESLint with zero errors and five pre-existing warnings, diagnostics, `git diff --check`, and both bundle gates passed. Final production sizes are 1,906.3 KB for `extension.js` and 2,801.9 KB for `webview.bundle.js`; the synchronized extension baseline moved from 1,856 to 1,857 KB with the 50 KB buffer unchanged. Native run `20260805-164304` exercised denied/allowed Save admission, the real Windows picker, exact intent/export/nonce/box/artifact correlation, zero cancellation, host write completion, and the exact 26-byte file `Name,Score\nalpha,1\nbravo,2`. The permanent scenario's fresh screenshots were blocked before picker execution by the framework's foreground-HWND validation; previously reviewed clean screenshots remain the visual baseline.
 
+### Iteration `HST-3`: Python Execution Application Handler
+
+**Status:** closed on 2026-08-05. The definitive blocker-only review returned `VERDICT: NO HST-3 BLOCKER`.
+
+**Boundary:** `HostPythonExecutionApplicationHandler` is the injected owner for `executePython`, interpreter fallback (`python`, `python3`, `py`), child-process/stdin/stdout/stderr lifecycle, independent 200 KB UTF-8 output caps, the 15-second timeout/kill terminal, `pythonResult` / `pythonError` publication, and disposal. Timeout/disposal establish terminal authority before process termination; expected teardown stream errors remain non-terminal, unexpected stream errors settle once and kill best-effort, and late child/stdio events are consumed. `QueryEditorProvider` only constructs or accepts the handler, offers typed messages synchronously, supplies panel transport, and disposes it.
+
+**Displaced authority:** `QueryEditorProvider` no longer imports `spawn`, creates Python processes, owns the `executePython` discriminator branch, accumulates stdout/stderr, schedules Python deadlines, or constructs Python terminals. `kw-python-section`, `python-execution-admission.ts`, host-owned Python persisted state, local-code policy, Monaco/runtime rendering, message shapes, and the document-view protocol remain unchanged.
+
+**Guards:** the requested real-provider injection test was written red first and failed with zero fake-handler calls, then passed with exact unchanged forwarding. A static displaced-authority guard prevents Python process/terminal code from returning to the provider. Direct handler tests cover synchronous decline, success, synchronous and event-based fallback, all interpreters missing, non-ENOENT failure, expected and unexpected stdio errors, synchronous/late close/error races, timeout, 200 KB UTF-8 boundaries, and disposal. Protocol extraction inventories both handler terminals.
+
+**Qualification:** the final focused ring passed 10 files and 502 tests. Complete sequential Vitest and the official coverage gate passed 224 files and 5,728 tests; statement coverage is 48.18% against the unchanged 27.67% threshold. The complete VS Code 1.132.0 extension-host suite passed 201/201 with `--timeout 5000`. Host/webview/browser typechecks, integration compilation, production extension and strict browser builds, ESLint with zero errors and five pre-existing warnings, diagnostics, `git diff --check`, and both bundle gates passed. Final production sizes are 1,908.2 KB for `extension.js` and 2,801.9 KB for `webview.bundle.js`; the synchronized extension baseline moved from 1,857 to 1,859 KB with the 50 KB buffer unchanged. Final isolated native run `20260805-194937` passed first attempt against the reviewed build: the real Run button executed built-in Python, rendered exact `HST3:24`, saved, closed/reopened, and restored raw Windows stdout `HST3:24\r\n` with normalized output `HST3:24` and `dirty:false`. Its foreground-valid `1280x1000` screenshot and two JSON artifacts were reviewed clean; logs contained only existing Git, missing-CSP, and Mermaid proposed-API noise.
+
 ## Next Iteration
 
-### Iteration `HST-3`: Python Execution Application Handler
+### Iteration `HST-4`: Imported CSV Save Application Handler
 
 **Status:** selected, not started.
 
-**Why next:** HST remains the highest eligible gap. Python execution is the smallest remaining provider-owned host workflow: one `executePython` route owns interpreter fallback, child-process/stdin/stdout/stderr lifecycle, a 15-second bounded terminal, 200 KB output caps, and `pythonResult` / `pythonError` publication.
+**Why next:** HST remains the highest eligible gap. Imported URL-section CSV saving is the smallest remaining provider-owned host workflow: one `saveImportedCsv` route owns empty-data UX, native picker admission, `.csv` extension handling, UTF-8 publication, saved-file actions, and failure messaging.
 
-**Boundary:** extract only host Python process execution and terminal orchestration into one injected application handler. Keep `kw-python-section`, `python-execution-admission.ts`, host-owned Python persisted state, local-code policy, Monaco/runtime rendering, message shapes, and document-view protocol unchanged.
+**Boundary:** extract only imported-CSV picker/write/notification orchestration into one injected application handler. Keep URL fetch identity/content acquisition, `kw-url-section`, browser download behavior, Connection Manager preview export, governed artifact CSV saving, message shapes, and network/trust policy unchanged.
 
-**Falsifiable hypothesis:** if one Python execution handler owns process creation, interpreter fallback, output bounds, timeout/kill, and terminal publication, `QueryEditorProvider` can synchronously offer `executePython` without retaining Python process or terminal transitions while timeout, late close/error, missing interpreters, disposal, and successful output preserve current behavior.
+**Falsifiable hypothesis:** if one imported-CSV save handler owns picker admission, exact bytes, URI handling, notification actions, and failures, `QueryEditorProvider` can synchronously offer `saveImportedCsv` without retaining file-publication transitions while local/remote URI and post-save action behavior remain unchanged.
 
-**Cheapest discriminating check:** construct the real provider with a fake Python handler and prove exact `executePython` forwarding; then drive a fake child that ignores termination and emits late close/error events, proving the handler publishes exactly one bounded timeout terminal and declines unrelated Kusto/SQL traffic synchronously.
+**Cheapest discriminating check:** construct the real provider with a fake imported-CSV handler and prove exact `saveImportedCsv` forwarding; then drive the handler through empty data, picker cancellation, local/remote URI publication, exact UTF-8 bytes, Open File / Show in Folder actions, notification failure, and write failure while unrelated Kusto/SQL traffic is declined synchronously.
 
-**Exclusions:** no Python protocol identity expansion, process sandbox redesign, local-code trust/ACT work, Python UI/Monaco changes, document persistence changes, Kusto/SQL ownership, or generic handler framework.
+**Exclusions:** no URL fetch/network redesign, deferred ACT work, browser download redesign, governed artifact CSV changes, Connection Manager ownership, protocol redesign, or generic handler framework.
 
 ## Convergence Loop
 
@@ -738,6 +751,7 @@ These are not full golden-outcome iterations retroactively, but they materially 
 | `DOC-6` | Existing aggregate/client/URI queue + `htmlSectionDefinition.ts` | Native HTML DOM serialization authority and adapter-owned persisted HTML configuration | Full optimistic projection, exact Monaco/iframe/artifact retention, stale-instance/workflow fencing, one-field publish metadata CAS/rollback, queue-stable external cleanup, lossless Save, and native lifecycle gate | Focused 661, full/coverage Vitest 5,703, extension-host 201, native 5/5, production/browser, bundle gates, post-fix blocker reviews, and documented closure decision complete | 2026-08-05 |
 | `HST-1` | `HostDashboardApplicationHandler` | Provider-owned dashboard workflow/ack maps, Fabric/export imports, discriminator branches, native publish lease methods, and cleanup transitions | Real-provider injection/forwarding, static displaced-authority, synchronous-decline, direct workflow/race, protocol-sender, and native same-ID cleanup guards | Focused 466, full/coverage Vitest 5,708, extension-host 201, provider lifecycle 21, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
 | `HST-2` | `HostArtifactCsvSaveApplicationHandler` | Provider-owned artifact CSV maps, picker/nonce/cancel/deadline/tombstone transitions, discriminator cases, and governed file publication | Real-provider injection/forwarding, static displaced-authority, direct concurrency/replay/cancel/deadline/disposal tests, protocol-sender inventory, browser compatibility, and native exact-byte gate | Focused 310, full/coverage Vitest 5,713, extension-host 201, native exact 26 bytes, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
+| `HST-3` | `HostPythonExecutionApplicationHandler` | Provider-owned Python process creation, discriminator branch, stdio accumulation, timeout transitions, and terminal publication | Real-provider injection/forwarding, static displaced-authority, direct fallback/stdio/timeout/cap/disposal tests, protocol-sender inventory, and isolated native execution/persistence gate | Focused 502, full/coverage Vitest 5,728, extension-host 201, native exact output, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
 
 ## Decision Discipline
 

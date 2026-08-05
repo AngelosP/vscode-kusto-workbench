@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 
-import { spawn } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import * as zlib from 'zlib';
@@ -81,6 +80,10 @@ import {
 	HostArtifactCsvSaveApplicationHandler,
 	type ArtifactCsvSaveApplicationHandler,
 } from './artifactCsvSaveApplicationHandler';
+import {
+	HostPythonExecutionApplicationHandler,
+	type PythonExecutionApplicationHandler,
+} from './pythonExecutionApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -171,6 +174,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}>();
 	readonly dashboardApplication: DashboardApplicationHandler;
 	readonly artifactCsvSaveApplication: ArtifactCsvSaveApplicationHandler;
+	readonly pythonExecutionApplication: PythonExecutionApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -577,6 +581,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		private readonly editorCursorStatusBar?: EditorCursorStatusBar,
 		dashboardApplication?: DashboardApplicationHandler,
 		artifactCsvSaveApplication?: ArtifactCsvSaveApplicationHandler,
+		pythonExecutionApplication?: PythonExecutionApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -588,6 +593,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.artifactCsvSaveApplication = artifactCsvSaveApplication ?? new HostArtifactCsvSaveApplicationHandler({
 			postMessage: message => this.postMessage(message),
 			isDisposed: () => this._panelDisposed,
+		});
+		this.pythonExecutionApplication = pythonExecutionApplication ?? new HostPythonExecutionApplicationHandler({
+			postMessage: message => this.postMessage(message),
 		});
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
 			this.handleKustoAuthPreferenceChange(change);
@@ -951,6 +959,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const artifactCsvSaveApplicationMessage = this.artifactCsvSaveApplication?.handleMessage(message);
 		if (artifactCsvSaveApplicationMessage) {
 			await artifactCsvSaveApplicationMessage;
+			return;
+		}
+		const pythonExecutionApplicationMessage = this.pythonExecutionApplication?.handleMessage(message);
+		if (pythonExecutionApplicationMessage) {
+			await pythonExecutionApplicationMessage;
 			return;
 		}
 		switch (message.type) {
@@ -1578,9 +1591,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					sectionInstanceId: message.sectionInstanceId,
 					targetGeneration: message.targetGeneration,
 				});
-				return;
-			case 'executePython':
-				await this.executePythonFromWebview(message);
 				return;
 			case 'fetchUrl':
 				await this.fetchUrlFromWebview(message);
@@ -2435,119 +2445,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.queryRuns.cancelAll();
 	}
 
-	private createPythonProcess(cmd: string, args: string[], cwd: string | undefined) {
-		return spawn(cmd, args, {
-			cwd,
-			shell: false,
-			stdio: ['pipe', 'pipe', 'pipe'],
-		});
-	}
-
-	private async executePythonFromWebview(
-		message: Extract<IncomingWebviewMessage, { type: 'executePython' }>
-	): Promise<void> {
-		const boxId = String(message.boxId || '').trim();
-		const code = String(message.code || '');
-		if (!boxId) {
-			return;
-		}
-
-		const timeoutMs = 15000;
-		const maxBytes = 200 * 1024;
-		const cwd = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
-
-		const runOnce = (cmd: string, args: string[]) => {
-			return new Promise<{ stdout: string; stderr: string; exitCode: number | null }>((resolve, reject) => {
-				let stdout = '';
-				let stderr = '';
-				let done = false;
-				const child = this.createPythonProcess(cmd, args, cwd);
-				let timer: ReturnType<typeof setTimeout> | undefined;
-				const settle = (result: { stdout: string; stderr: string; exitCode: number | null }) => {
-					if (done) return;
-					done = true;
-					if (timer) clearTimeout(timer);
-					resolve(result);
-				};
-				const fail = (error: unknown) => {
-					if (done) return;
-					done = true;
-					if (timer) clearTimeout(timer);
-					reject(error);
-				};
-
-				timer = setTimeout(() => {
-					if (done) return;
-					done = true;
-					stderr = (stderr ? stderr + '\n' : '') + `Timed out after ${Math.round(timeoutMs / 1000)}s.`;
-					try {
-						child.kill();
-					} catch {
-						// ignore
-					}
-					resolve({ stdout, stderr, exitCode: -1 });
-				}, timeoutMs);
-
-				const append = (current: string, chunk: Buffer) => {
-					if (current.length >= maxBytes) {
-						return current;
-					}
-					const toAdd = chunk.toString('utf8');
-					const next = current + toAdd;
-					return next.length > maxBytes ? next.slice(0, maxBytes) : next;
-				};
-
-				child.stdout?.on('data', (d: Buffer) => {
-					stdout = append(stdout, d);
-				});
-				child.stderr?.on('data', (d: Buffer) => {
-					stderr = append(stderr, d);
-				});
-				child.on('error', (err) => {
-					fail(err);
-				});
-				child.on('close', (exitCode) => {
-					settle({ stdout, stderr, exitCode: typeof exitCode === 'number' ? exitCode : -1 });
-				});
-
-				try {
-					child.stdin?.write(code);
-					child.stdin?.end();
-				} catch {
-					// ignore
-				}
-			});
-		};
-
-		const candidates: Array<{ cmd: string; args: string[] }> = [
-			{ cmd: 'python', args: ['-'] },
-			{ cmd: 'python3', args: ['-'] },
-			{ cmd: 'py', args: ['-'] }
-		];
-
-		let lastError: unknown = undefined;
-		for (const c of candidates) {
-			try {
-				const result = await runOnce(c.cmd, c.args);
-				this.postMessage({ type: 'pythonResult', boxId, ...result });
-				return;
-			} catch (e: any) {
-				lastError = e;
-				// Command not found: try the next candidate.
-				if (e && (e.code === 'ENOENT' || String(e.message || '').includes('ENOENT'))) {
-					continue;
-				}
-				// Other errors: stop early.
-				break;
-			}
-		}
-
-		const errMsg = lastError && typeof (lastError as any).message === 'string'
-			? (lastError as any).message
-			: 'Python execution failed (python not found?).';
-		this.postMessage({ type: 'pythonError', boxId, error: errMsg });
-	}
-
 	private async fetchUrlFromWebview(message: Extract<IncomingWebviewMessage, { type: 'fetchUrl' }>): Promise<void> {
 		const boxId = String(message.boxId || '').trim();
 		const rawUrl = String(message.url || '').trim();
@@ -2732,6 +2629,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 			this.dashboardApplication.dispose();
 			this.artifactCsvSaveApplication.dispose();
+			this.pythonExecutionApplication.dispose();
 			for (const [requestId, pending] of [...this.pendingComparisonEnsureByRequestId]) {
 				this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
 			}
