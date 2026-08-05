@@ -173,7 +173,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 			assert.ok(queryEditor!, 'native provider must create its query editor adapter');
 			const timer = setTimeout(() => undefined, 60_000);
-			queryEditor!.pendingPowerBiPublishAcks.set('publish-cas', {
+			queryEditor!.dashboardApplication.pendingPowerBiPublishAcks.set('publish-cas', {
 				cleanup, timer, boxId: 'html_publish', publishInfo: Object.freeze({ ...publishInfo }),
 				applicationState: 'idle', cleanupRequested: false, finalizationInProgress: false,
 			});
@@ -248,7 +248,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.strictEqual(finalSection.type, 'html');
 			assert.strictEqual(finalSection.code, '<main>replacement</main>');
 			assert.strictEqual(finalSection.pbiPublishInfo, undefined);
-			assert.strictEqual(queryEditor!.pendingPowerBiPublishAcks.has('publish-cas'), false);
+			assert.strictEqual(queryEditor!.dashboardApplication.pendingPowerBiPublishAcks.has('publish-cas'), false);
 		} finally {
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
 			(vscode.workspace as any).applyEdit = originalApplyEdit;

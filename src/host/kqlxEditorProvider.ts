@@ -2599,7 +2599,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				release();
 			}
 		};
-		queryEditor.setPowerBiPublishCleanupAdmission(async (
+		queryEditor.dashboardApplication.setPowerBiPublishCleanupAdmission(async (
 			publishInfo, cleanup, waitForPendingDocumentApplications,
 		) => {
 			if (waitForPendingDocumentApplications) {
@@ -2616,11 +2616,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				const currentState = ensureProjectedSectionIds(currentFile.file.state, currentText);
 				const currentDocument = MarkdownDocumentAggregate.create(currentState);
 				if (!currentDocument.ok) return false;
-				const referenced = currentDocument.document.projection().htmlSections.some(section =>
-					section.pbiPublishInfo?.workspaceId === publishInfo.workspaceId
-					&& section.pbiPublishInfo.semanticModelId === publishInfo.semanticModelId
-					&& section.pbiPublishInfo.reportId === publishInfo.reportId,
-				);
+				const referenced = currentDocument.document.projection().htmlSections.some(section => {
+					if (section.pbiPublishInfo === undefined) return false;
+					const { workspaceId, semanticModelId, reportId } = section.pbiPublishInfo;
+					return workspaceId === publishInfo.workspaceId
+						&& semanticModelId === publishInfo.semanticModelId
+						&& reportId === publishInfo.reportId;
+				});
 				if (referenced) return true;
 				if (markdownDocumentQueue.latestAuthority !== authority
 					|| await readProjectionSourceText() !== currentText) return false;
@@ -4147,7 +4149,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							return;
 						}
 						if (publishRequestId) {
-							publishApplicationAdmitted = queryEditor.beginPowerBiPublishDocumentApplication(
+							publishApplicationAdmitted = queryEditor.dashboardApplication.beginPowerBiPublishDocumentApplication(
 								publishRequestId,
 								publishApplicationPhase,
 								(message as any).command,
@@ -4261,7 +4263,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					await operation;
 					if (!commandResult) rejectCommand('markdown-command-not-applied', 'The Markdown command completed without updating the document.');
 					if (publishRequestId && publishApplicationAdmitted) {
-						await queryEditor.settlePowerBiPublishDocumentApplication(
+						await queryEditor.dashboardApplication.settlePowerBiPublishDocumentApplication(
 							publishRequestId, publishApplicationPhase, commandResult,
 						);
 					}

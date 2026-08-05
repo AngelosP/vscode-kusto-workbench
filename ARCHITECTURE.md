@@ -19,7 +19,8 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | File | Purpose |
 | ---- | ------- |
 | `extension.ts` | Entry point. Registers providers, commands, and diagnostics |
-| `queryEditorProvider.ts` | Main webview adapter. Routes host↔webview messages and retains cross-language query, Copilot, persistence, connection UX, and dashboard export/publish orchestration |
+| `queryEditorProvider.ts` | Main webview transport/composition adapter. Routes host↔webview messages and retains cross-language query, Copilot, persistence, connection UX, Python/URL, comparison, and result-export adapters |
+| `dashboardApplicationHandler.ts` | Injected host application owner for dashboard prompts, export, Fabric workspace/item lookup, publish request identity/cancellation, first-commit admission, document metadata application/compensation leases, and cleanup decisions |
 | `queryEditorCopilot.ts` | Copilot integration (extracted from provider) |
 | `queryEditorConnection.ts` | Connection management (extracted from provider) |
 | `queryEditorSchema.ts` | Schema handling (extracted from provider) |
@@ -225,14 +226,14 @@ When a Lit component has distinct behavioral concerns, each concern is extracted
 
 Extension host and webview communicate via `postMessage`:
 
-* **Host → Webview:** `this.postMessage({ type: '...', ... })` in `QueryEditorProvider`
+* **Host → Webview:** `QueryEditorProvider` owns panel transport; injected application handlers such as `HostDashboardApplicationHandler` send through that transport callback.
 * **Webview → Host:** `vscode.postMessage({ type: '...', ... })` via `postMessageToHost()` in `webview-messages.ts`
 
 On the host side, incoming messages match the `IncomingWebviewMessage` union type exported from `queryEditorTypes.ts`. On the webview side, the message dispatcher lives in `core/message-handler.ts` (a large `switch` statement) and is wired by `core/main.ts`.
 
 The native notebook document lifecycle has one narrower runtime-validated channel in `src/shared/documentViewProtocol.ts`. Protocol version 1 and channel `document-view` cover only `documentData`, `documentReloadResult`, host-owned section commands/results, and the Markdown command Save barrier. `KqlxEditorProvider` creates a UUID for each concrete panel incarnation, stamps every in-scope host message, and rejects malformed or mismatched webview envelopes before projection activation, command queue admission, or barrier settlement. The webview adopts the session only from its first valid native `documentData`, permanently tombstones that initial reload request, retains a bounded recent-reload ledger, and rejects malformed, duplicate, or cross-session host traffic before client or DOM adoption. Source generations, command IDs, document/section revisions, the per-URI physical queue, and Save leases remain independent inner fences. Metadata-free compatibility editors and browser/legacy viewers retain their existing behavior.
 
-Dashboard workflows remain outside the six-kind document-view discriminator set. HTML sections send request-correlated `exportDashboard`, `getPbiWorkspaces`, `checkPbiItemExists`, and `publishToPowerBI` messages; cancellation and every host response carry the exact request ID and concrete HTML owner. The host replies with `openPublishPbiDialog`, `pbiWorkspacesResult`, `pbiItemExistsResult`, and `publishToPowerBIResult`, which route only to the originating `kw-html-section`/`kw-publish-pbi-dialog` incarnation.
+Dashboard workflows remain outside the six-kind document-view discriminator set. `QueryEditorProvider` offers each typed inbound message to its injected `DashboardApplicationHandler`; the handler synchronously declines unrelated traffic so Kusto/SQL admission timing is unchanged, and it is the sole dashboard discriminator/workflow owner. HTML sections send request-correlated `exportDashboard`, `getPbiWorkspaces`, `checkPbiItemExists`, and `publishToPowerBI` messages; cancellation and every host response carry the exact request ID and concrete HTML owner. The host replies with `openPublishPbiDialog`, `pbiWorkspacesResult`, `pbiItemExistsResult`, and `publishToPowerBIResult`, which route only to the originating `kw-html-section`/`kw-publish-pbi-dialog` incarnation.
 
 ## Window Bridges (Legacy)
 
@@ -400,6 +401,10 @@ HTML dashboards can be saved as standalone HTML or exported as a folder-based Po
 Exported data sources are generated from referenced Kusto query sections. The semantic model uses `AzureDataExplorer.Contents`, maps Kusto column types to TMDL types, and can generate Kusto tables in Import or DirectQuery mode. Local `.pbip` export and new Power BI service publishing default to Import mode, while legacy republish preserves DirectQuery compatibility unless a mode is selected explicitly. Provenance slicers are emitted as native Power BI visuals bound directly to fact-table columns so filter context reaches DAX measures without generated dimension-table joins. Scalar/table/repeatedTable/pivot/chart dashboard values are generated from the provenance binding definitions, including table visual-cell helpers such as stacked `cellBar` columns and numeric-threshold `cellFormat` styles. Custom JavaScript table bodies produced with `bindHtml()` are preview-only unless the same cells are represented in the table or repeated-table provenance spec.
 
 Power BI service publishing is implemented in `powerBiPublish.ts` using Fabric REST APIs. Publishing creates or updates SemanticModel and Report items in a selected workspace, supports republishing to existing stored IDs, can detect whether the stored report still exists, and persists returned workspace/model/report metadata in `pbiPublishInfo`. Refresh schedule configuration is attempted after publish and treated as non-fatal if it fails.
+
+`HostDashboardApplicationHandler` composes these unchanged export/publish adapters. It owns all ten dashboard request/cancel/ack routes, exact request abort controllers, successful publish application leases, first-external-commit Leave No Trace admission, stale publish retirement, and cleanup finalization. `KqlxEditorProvider` supplies three explicit native-document hooks for publish apply/compensate admission, terminal settlement, and queue-stable cleanup. `QueryEditorProvider` retains only handler construction/injection, transport offering, and disposal; it has no dashboard workflow map, Fabric adapter import, or publish state transition.
+
+HST-1 qualification passed the final 10-file focused ring (466 tests), complete sequential Vitest and coverage (221 files, 5,708 tests, 48.18% statements), host/webview/browser typechecks, integration compilation, and the complete VS Code 1.131.0 extension-host suite (201/201 with `--timeout 5000`). Production extension and strict browser builds passed; ESLint reported zero errors and five pre-existing warnings. Final production sizes are 1,905.8 KB for `extension.js` and 2,801.9 KB for `webview.bundle.js`, within the unchanged synchronized limits. The real provider lifecycle passed 21/21, including publish apply, same-ID HTML replacement, stale compensation rejection, exact prior-metadata restoration, and queue-stable cleanup. The definitive documentation-aware reviewer returned `VERDICT: CLOSE HST-1`. No live authenticated Fabric tenant run was performed.
 
 ## Schema Caching
 
@@ -804,6 +809,8 @@ Tests are organized under `tests/`:
 | `schemaIndexUtils.test.ts` | Schema formatting, column counting, token-budget pruning |
 | `kqlDiagnostics.test.ts` | KQL error detection, pipe operator validation, statement splitting |
 | `message-protocol.test.ts` | Host↔webview message type alignment, payload shape contracts, including dashboard export/publish messages |
+| `queryEditorProviderDashboardHandler.test.ts` | Real-provider dashboard handler injection/forwarding and static displaced-authority guard |
+| `queryEditorProviderPowerBiPublishHelp.test.ts` | Dashboard application handler prompts, cancellation, workspace/item responses, publish leases, compensation, exact metadata restoration, and cleanup admission |
 | `powerBiExport.test.ts` | HTML dashboard provenance parsing, DAX generation, PBIR/TMDL output, native slicers, Import/DirectQuery model generation, and CSS patching |
 | `mssqlDialect.test.ts` | MSSQL persisted/UI dialect metadata |
 | `mssqlSchema.test.ts` | MSSQL schema catalog query and parser compatibility |

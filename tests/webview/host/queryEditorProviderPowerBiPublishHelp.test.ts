@@ -3,29 +3,38 @@ import * as vscode from 'vscode';
 
 const powerBiPublishMocks = vi.hoisted(() => ({
 	publishToPowerBIService: vi.fn(),
+	listFabricWorkspaces: vi.fn(),
+	checkFabricItemExists: vi.fn(),
 }));
 
 vi.mock('../../../src/host/powerBiPublish', async importOriginal => ({
 	...await importOriginal<typeof import('../../../src/host/powerBiPublish')>(),
 	publishToPowerBIService: powerBiPublishMocks.publishToPowerBIService,
+	listFabricWorkspaces: powerBiPublishMocks.listFabricWorkspaces,
+	checkFabricItemExists: powerBiPublishMocks.checkFabricItemExists,
 }));
 
-import { QueryEditorProvider } from '../../../src/host/queryEditorProvider';
+import { HostDashboardApplicationHandler } from '../../../src/host/dashboardApplicationHandler';
 
 function createProviderHarness() {
-	const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
-	provider._panelDisposed = false;
-	provider.dashboardWorkflowAbortControllers = new Map();
-	provider.pendingPowerBiPublishAcks = new Map();
-	provider.connectionManager = {
+	const postMessage = vi.fn(() => Promise.resolve(true));
+	const output = { error: vi.fn(), warn: vi.fn() };
+	const connectionManager = {
 		isLeaveNoTrace: () => false,
 		runWithLeaveNoTraceSnapshotLock: async (run: (snapshot: unknown) => unknown) => run({
 			clusterKeys: [], globallyBlocked: false, version: 0, revocationGenerations: {},
 		}),
 	};
-	provider.output = { error: vi.fn(), warn: vi.fn() };
+	const provider = new HostDashboardApplicationHandler({
+		postMessage,
+		isDisposed: () => provider._panelDisposed,
+		output: output as never,
+		connectionManager: connectionManager as never,
+	}) as HostDashboardApplicationHandler & Record<string, any>;
+	provider._panelDisposed = false;
+	provider.output = output;
 	provider.requestHtmlDashboardUpgradeWithCopilot = vi.fn(async () => undefined);
-	provider.postMessage = vi.fn();
+	provider.postMessage = postMessage;
 	return provider;
 }
 
@@ -114,10 +123,74 @@ const restoredPreviousTerminal = {
 	projection: publishProjection(2, 2, previousPublishInfo),
 };
 
-describe('QueryEditorProvider Power BI publish help notification', () => {
+describe('HostDashboardApplicationHandler Power BI workflows', () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		powerBiPublishMocks.publishToPowerBIService.mockReset();
+		powerBiPublishMocks.listFabricWorkspaces.mockReset();
+		powerBiPublishMocks.checkFabricItemExists.mockReset();
+	});
+
+	it('declines unrelated provider messages synchronously', () => {
+		const provider = createProviderHarness();
+
+		expect(provider.handleMessage({ type: 'showInfo', message: 'Unrelated' })).toBeUndefined();
+		expect(provider.postMessage).not.toHaveBeenCalled();
+	});
+
+	it('returns correlated workspace and item-existence responses', async () => {
+		const provider = createProviderHarness();
+		powerBiPublishMocks.listFabricWorkspaces.mockResolvedValue([
+			{ id: 'workspace-1', name: 'Analytics', isPersonal: false },
+		]);
+		powerBiPublishMocks.checkFabricItemExists.mockResolvedValue(true);
+
+		await provider.handleMessage({
+			type: 'getPbiWorkspaces', requestId: 'workspaces-1', boxId: 'html_publish',
+		});
+		await provider.handleMessage({
+			type: 'checkPbiItemExists', requestId: 'exists-1', boxId: 'html_publish',
+			workspaceId: 'workspace-1', reportId: 'report-1',
+		});
+
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'pbiWorkspacesResult', requestId: 'workspaces-1', boxId: 'html_publish',
+			ok: true, workspaces: [{ id: 'workspace-1', name: 'Analytics', isPersonal: false }],
+		});
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'pbiItemExistsResult', requestId: 'exists-1', boxId: 'html_publish', exists: true,
+		});
+	});
+
+	it('returns the unchanged successful publish response and retains its application lease until ack', async () => {
+		const provider = createProviderHarness();
+		powerBiPublishMocks.publishToPowerBIService.mockResolvedValue({
+			reportUrl: 'https://app.powerbi.com/report', scheduleConfigured: true,
+			initialRefreshTriggered: false, dataMode: 'import',
+			semanticModelId: 'model-created', reportId: 'report-created', createdNewItems: false,
+		});
+		const message = {
+			type: 'publishToPowerBI' as const, requestId: 'publish-success', boxId: 'html_publish',
+			workspaceId: 'workspace-1', workspaceName: 'Analytics', reportName: 'Dashboard',
+			pageWidth: 1280, pageHeight: 720, htmlCode: '<main></main>', dataSources: [],
+			dataMode: 'import' as const,
+		};
+
+		await provider.handleMessage(message);
+
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'publishToPowerBIResult', requestId: 'publish-success', boxId: 'html_publish', ok: true,
+			reportUrl: 'https://app.powerbi.com/report', scheduleConfigured: true,
+			initialRefreshTriggered: false, dataMode: 'import',
+			semanticModelId: 'model-created', reportId: 'report-created',
+			workspaceId: 'workspace-1', reportName: 'Dashboard', workspaceName: 'Analytics',
+		});
+		expect(provider.pendingPowerBiPublishAcks.has('publish-success')).toBe(true);
+
+		await provider.handleMessage({
+			type: 'publishToPowerBIAck', requestId: 'publish-success', accepted: true,
+		});
+		expect(provider.pendingPowerBiPublishAcks.has('publish-success')).toBe(false);
 	});
 
 	it('opens the Kusto Workbench fix prompt when the notification action is selected', async () => {
@@ -148,15 +221,15 @@ describe('QueryEditorProvider Power BI publish help notification', () => {
 
 	it('aborts and retires only the exact dashboard workflow request', () => {
 		const provider = createProviderHarness();
-		const first = provider.beginDashboardWorkflow('dashboard-request-1') as AbortController;
-		const second = provider.beginDashboardWorkflow('dashboard-request-2') as AbortController;
+		const first = provider.beginWorkflow('dashboard-request-1') as AbortController;
+		const second = provider.beginWorkflow('dashboard-request-2') as AbortController;
 
-		provider.cancelDashboardWorkflow('dashboard-request-1');
+		provider.cancelWorkflow('dashboard-request-1');
 
 		expect(first.signal.aborted).toBe(true);
 		expect(second.signal.aborted).toBe(false);
 		expect(provider.dashboardWorkflowAbortControllers.has('dashboard-request-1')).toBe(false);
-		expect(provider.isDashboardWorkflowCurrent('dashboard-request-2', second)).toBe(true);
+		expect(provider.isWorkflowCurrent('dashboard-request-2', second)).toBe(true);
 	});
 
 	it('cleans up newly created Fabric items when the workflow retires after commit', async () => {
@@ -172,9 +245,9 @@ describe('QueryEditorProvider Power BI publish help notification', () => {
 			htmlCode: '<main></main>', dataSources: [], dataMode: 'import',
 		};
 
-		const publishing = provider.publishToPowerBIFromWebview(message);
+		const publishing = provider.publishToPowerBI(message);
 		await Promise.resolve();
-		provider.cancelDashboardWorkflow(message.requestId);
+		provider.cancelWorkflow(message.requestId);
 		resolvePublish({
 			reportUrl: 'https://app.powerbi.com/report', scheduleConfigured: true,
 			dataMode: 'import', semanticModelId: 'model-created', reportId: 'report-created',
@@ -378,7 +451,7 @@ describe('QueryEditorProvider Power BI publish help notification', () => {
 			sectionId: 'html_publish_help',
 		});
 		await Promise.resolve();
-		provider.cancelDashboardWorkflow('publish-help-cancel');
+		provider.cancelWorkflow('publish-help-cancel');
 		resolveSelection('Fix it using Kusto Workbench');
 		await prompt;
 
@@ -397,7 +470,7 @@ describe('QueryEditorProvider Power BI publish help notification', () => {
 			sectionId: 'html_partial',
 		});
 		await Promise.resolve();
-		provider.cancelDashboardWorkflow('partial-publish-cancel');
+		provider.cancelWorkflow('partial-publish-cancel');
 		resolveSelection('Publish anyway');
 		await prompt;
 
@@ -547,7 +620,7 @@ describe('QueryEditorProvider Power BI publish help notification', () => {
 			message: 'Unsupported visual',
 		});
 		await Promise.resolve();
-		provider.cancelDashboardWorkflow('unsupported-help-cancel');
+		provider.cancelWorkflow('unsupported-help-cancel');
 		resolveSelection('Ask for it');
 		await prompt;
 

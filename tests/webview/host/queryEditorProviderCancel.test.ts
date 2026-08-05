@@ -1029,8 +1029,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.pendingArtifactCsvIntentIds = new Set();
 		provider.pendingArtifactCsvSaves = new Map();
 		provider.completedArtifactCsvIntentIds = new Map();
-		provider.dashboardWorkflowAbortControllers = new Map();
-		provider.pendingPowerBiPublishAcks = new Map();
+		provider.dashboardApplication = { dispose: vi.fn() };
 		const csvTransferTimer = setTimeout(() => undefined, 30_000);
 		const csvTombstoneTimer = setTimeout(() => undefined, 30_000);
 		provider.pendingArtifactCsvIntentIds.add('csv-intent');
@@ -1073,6 +1072,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.pendingArtifactCsvIntentIds.size).toBe(0);
 		expect(provider.pendingArtifactCsvSaves.size).toBe(0);
 		expect(provider.completedArtifactCsvIntentIds.size).toBe(0);
+		expect(provider.dashboardApplication.dispose).toHaveBeenCalledOnce();
 	});
 
 	it('ignores policy messages after the panel webview getter is disposed', () => {
