@@ -26,7 +26,7 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 Assessment date: 2026-08-05
 
-The comparison was refreshed against the current working tree after HST-3 Python execution application-handler convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
+The comparison was refreshed against the current working tree after HST-4 imported CSV save application-handler convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
 The current architecture is not uniformly legacy. Several high-risk contexts already provide good models for the rest of the application.
 
@@ -44,6 +44,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | Dashboard domain semantics | Shared provenance upgrade/validation concepts and extensive Power BI golden tests | Good domain core, mixed with adapters |
 | Dashboard application workflow | [`HostDashboardApplicationHandler`](src/host/dashboardApplicationHandler.ts) owns all dashboard requests, cancellation, first-commit admission, publish application/compensation leases, and cleanup; `QueryEditorProvider` only composes transport | Strong initial host-application boundary |
 | Artifact CSV save workflow | [`HostArtifactCsvSaveApplicationHandler`](src/host/artifactCsvSaveApplicationHandler.ts) owns picker admission, nonce challenges, cancellation, deadlines, replay tombstones, exact correlation, and file publication; `QueryEditorProvider` only composes transport | Strong bounded host-application boundary |
+| Imported CSV save workflow | [`HostImportedCsvSaveApplicationHandler`](src/host/importedCsvSaveApplicationHandler.ts) owns empty-data UX, picker admission, URI-preserving extension handling, exact UTF-8 publication, saved-file actions, failures, and disposal; `QueryEditorProvider` only composes routing | Strong bounded host-application boundary |
 | Editing preferences and first launch | Revisioned application preferences and transactional profile setup | Good explicit ownership |
 | Native document-view lifecycle protocol | [`documentViewProtocol.ts`](src/shared/documentViewProtocol.ts), one host-created panel UUID, runtime parsing, exactly-once initial projection, and session-fenced commands/results/Save barriers | Strong initial protocol slice |
 | Unmigrated section serialization | Kusto/SQL and remaining adapter-heavy kinds still participate in broad restore/persistence switches; Markdown, URL, Python, Chart, Transformation, and HTML native state no longer comes from component `serialize()` | Useful transitional boundary |
@@ -77,7 +78,7 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | ---: | --- | --- | --- | ---: | --- |
 | - | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Closed through EXA-2; transport-neutral coordinator convergence remains deferred |
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
-| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/4/5/4/4/5 | 47 | HST-1 through HST-3 closed; HST-4 selected |
+| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/4/5/4/4/5 | 47 | HST-1 through HST-4 closed; HST-5 selected |
 | 2 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/4/3/4 | 45 | PRO-1 closed; broader protocol/startup work remains open |
 | 3 | `DOC` | Document actor and section-definition registry | 4/4/4/4/2/5 | 43 | DOC-1 through DOC-6 closed; Kusto/SQL deferred |
 | 4 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | Open, depends on document/projection contracts |
@@ -227,7 +228,8 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 - HST-1 moved dashboard prompts, export, workspace/existence lookup, publish request lifetimes, first-external-commit admission, document metadata application/compensation leases, and cleanup into one injected `HostDashboardApplicationHandler`. The provider has no dashboard workflow maps, Fabric/export imports, discriminator switch, or publish transition authority.
 - HST-2 moved governed result-table CSV picker admission, one-use nonce challenges, cancellation, deadlines, replay tombstones, exact correlation, and file publication into one injected `HostArtifactCsvSaveApplicationHandler`. The provider has no artifact CSV maps, discriminator cases, deadlines, tombstones, or write transitions.
 - HST-3 moved Python interpreter fallback, process/stdin/stdout/stderr lifecycle, independent 200 KB UTF-8 output caps, 15-second timeout/kill behavior, exactly-once terminal publication, and disposal into one injected `HostPythonExecutionApplicationHandler`. The provider has no Python process creation, discriminator case, output accumulation, timeout transition, or terminal construction.
-- [`QueryEditorProvider`](src/host/queryEditorProvider.ts) still combines panel transport with Kusto execution, SQL adapters, URL execution, persistence UX, comparisons, imported-CSV UX, and cross-language coordination.
+- HST-4 moved imported URL-section CSV empty-data UX, native picker admission, URI-preserving extension handling, exact UTF-8 publication, saved-file actions, failures, and disposal into one injected `HostImportedCsvSaveApplicationHandler`. The provider has no imported CSV picker/write/notification code or discriminator case.
+- [`QueryEditorProvider`](src/host/queryEditorProvider.ts) still combines panel transport with Kusto execution, SQL adapters, URL acquisition, persistence UX, comparisons, query sharing, and cross-language coordination.
 - Focused tests often construct or patch the provider without a real composition root, indicating that use cases do not have narrow injectable boundaries.
 
 **Migration theme:** do not split the class by file category first. Move routes behind the execution, document, protocol, and dashboard contracts as those owners are introduced. The provider shrinks as a consequence.
@@ -549,7 +551,7 @@ The component and renderer remain adapters. Equal projections retain the exact e
 
 **Qualification:** final focused ring passed 20 files and 661 tests. Complete sequential Vitest and coverage passed 220 files and 5,703 tests; statement coverage is 48.18% against the unchanged 27.67% threshold. Provider lifecycle passed 21/21, compatibility sidecars passed 124/124, and the complete VS Code 1.131.0 extension-host suite passed 201/201 with `--timeout 5000`. Host/webview/browser typechecks, integration compilation, production extension and strict browser builds, ESLint with zero errors and five pre-existing warnings, and both synchronized bundle gates passed. Final sizes are 1,905.5 KB for `extension.js` and 2,801.9 KB for `webview.bundle.js`; baselines are 1,856 KB and 2,752 KB with the 50 KB buffer unchanged. Definitive native run `20260805-043534` passed all five `host-owned-markdown-lifecycle` scenarios after one harness file-not-found rerun. Five reviewed foreground `1280x1000` screenshots and eight DOC-6 JSON artifacts proved exact successful/stale terminals, accepted Save, zero serializer/equal-projection commands, exact editor/iframe/binding retention, clean recreation, exact mixed order, nested future publish/notice metadata, and opaque preservation. Logs contained only existing Git/CSP/Mermaid noise. No live authenticated Fabric tenant run was performed.
 
-## Completed Host Iteration
+## Completed Host Iterations
 
 ### Iteration `HST-1`: Dashboard Workflow Application Handler
 
@@ -587,21 +589,33 @@ The component and renderer remain adapters. Equal projections retain the exact e
 
 **Qualification:** the final focused ring passed 10 files and 502 tests. Complete sequential Vitest and the official coverage gate passed 224 files and 5,728 tests; statement coverage is 48.18% against the unchanged 27.67% threshold. The complete VS Code 1.132.0 extension-host suite passed 201/201 with `--timeout 5000`. Host/webview/browser typechecks, integration compilation, production extension and strict browser builds, ESLint with zero errors and five pre-existing warnings, diagnostics, `git diff --check`, and both bundle gates passed. Final production sizes are 1,908.2 KB for `extension.js` and 2,801.9 KB for `webview.bundle.js`; the synchronized extension baseline moved from 1,857 to 1,859 KB with the 50 KB buffer unchanged. Final isolated native run `20260805-194937` passed first attempt against the reviewed build: the real Run button executed built-in Python, rendered exact `HST3:24`, saved, closed/reopened, and restored raw Windows stdout `HST3:24\r\n` with normalized output `HST3:24` and `dirty:false`. Its foreground-valid `1280x1000` screenshot and two JSON artifacts were reviewed clean; logs contained only existing Git, missing-CSP, and Mermaid proposed-API noise.
 
+### Iteration `HST-4`: Imported CSV Save Application Handler
+
+**Status:** closed on 2026-08-05. The definitive blocker-only review returned `VERDICT: NO HST-4 BLOCKER`.
+
+**Boundary:** `HostImportedCsvSaveApplicationHandler` is the injected owner for `saveImportedCsv`, empty-data UX, native picker admission, workspace/home default selection, URI-preserving `.csv` extension handling, exact UTF-8 publication, Open File / Show in Folder actions, notification failure containment, write-failure messaging, and disposal. `QueryEditorProvider` only constructs or accepts the handler, offers typed inbound messages synchronously, and disposes it.
+
+**Displaced authority:** `QueryEditorProvider` no longer imports imported-CSV file helpers, owns `saveImportedCsvFromWebview`, handles the discriminator case, opens the picker, writes bytes, or publishes save notifications. URL fetch identity/content acquisition, `kw-url-section`, browser download behavior, governed artifact CSV saving, Connection Manager preview export, message shapes, and network/trust policy remain unchanged.
+
+**Guards:** the requested real-provider injection test was written red first and failed with zero fake-handler calls, then passed unchanged. A static displaced-authority guard prevents the provider method, discriminator case, and file helpers from returning. Direct handler coverage proves synchronous decline, empty-data UX, picker cancellation, exact local/remote URI publication, UTF-8 bytes, extension handling, Open File / Show in Folder actions, notification/action failure containment, write-failure messaging, and disposal while the picker is open. The provider lifecycle test proves panel disposal retires the handler.
+
+**Qualification:** the focused eight-file HST ring passed 128 tests and the provider lifecycle suite passed 101 tests. Complete sequential Vitest and the official coverage gate passed 225 files and 5,736 tests; statement coverage is 48.18% against the unchanged 27.67% threshold. The complete VS Code 1.132.0 extension-host suite passed 201/201 with `--timeout 5000`; a preceding npm-wrapper attempt passed the timeout as a positional argument and hit the known two-second close-bound test at 200/201. Host/webview/browser typechecks, integration compilation, production extension and strict browser builds, ESLint with zero errors and five pre-existing warnings, diagnostics, and both bundle gates passed. Final production sizes are 1,908.5 KB for `extension.js` and 2,801.9 KB for `webview.bundle.js`; synchronized baselines and the 50 KB buffer are unchanged. Native run `20260805-211100` passed 1/1 against the reviewed build with the real imported-table Save button and Windows picker, an exact 36-byte UTF-8 artifact, and a foreground-valid `1280x1000` screenshot showing the saved notification plus Open File / Show in Folder. Two earlier harness attempts produced correct product output but failed on literal Unicode-escape matching and the documented controller notification-capture limitation; the final scenario uses exact bytes plus visual evidence. Logs contain only existing Git/CSP/Mermaid/Node noise.
+
 ## Next Iteration
 
-### Iteration `HST-4`: Imported CSV Save Application Handler
+### Iteration `HST-5`: Query Sharing Application Handler
 
 **Status:** selected, not started.
 
-**Why next:** HST remains the highest eligible gap. Imported URL-section CSV saving is the smallest remaining provider-owned host workflow: one `saveImportedCsv` route owns empty-data UX, native picker admission, `.csv` extension handling, UTF-8 publication, saved-file actions, and failure messaging.
+**Why next:** HST remains the highest eligible gap. `copyAdeLink` and `shareToClipboard` are one cohesive remaining provider-owned application workflow: validation, Kusto ADX-link encoding, Kusto/SQL-specific rich and plain-text formatting, host clipboard use, `shareContentReady` publication, and user notifications. The webview already admits result rows through the proven immutable artifact share binding before this host boundary.
 
-**Boundary:** extract only imported-CSV picker/write/notification orchestration into one injected application handler. Keep URL fetch identity/content acquisition, `kw-url-section`, browser download behavior, Connection Manager preview export, governed artifact CSV saving, message shapes, and network/trust policy unchanged.
+**Boundary:** extract only `copyAdeLink` and `shareToClipboard` orchestration into one injected application handler. Keep the webview share modal, immutable `share:clipboard:result` binding and policy admission, browser clipboard write, Kusto/SQL execution, connection ownership, row caps, message shapes, and protocol unchanged.
 
-**Falsifiable hypothesis:** if one imported-CSV save handler owns picker admission, exact bytes, URI handling, notification actions, and failures, `QueryEditorProvider` can synchronously offer `saveImportedCsv` without retaining file-publication transitions while local/remote URI and post-save action behavior remain unchanged.
+**Falsifiable hypothesis:** if one query-sharing handler owns link generation, formatting, host clipboard effects, response publication, and notifications, `QueryEditorProvider` can synchronously offer both typed share messages without retaining sharing decisions while Kusto direct links, SQL no-link behavior, HTML/text output, and admitted artifact rows remain unchanged.
 
-**Cheapest discriminating check:** construct the real provider with a fake imported-CSV handler and prove exact `saveImportedCsv` forwarding; then drive the handler through empty data, picker cancellation, local/remote URI publication, exact UTF-8 bytes, Open File / Show in Folder actions, notification failure, and write failure while unrelated Kusto/SQL traffic is declined synchronously.
+**Cheapest discriminating check:** construct the real provider with a fake query-sharing handler and prove exact forwarding of `copyAdeLink` and `shareToClipboard`; then drive the handler through missing query/connection/database, Kusto gzip/base64 ADX links, SQL shares without ADX links, HTML escaping, empty selections/results, clipboard failure, response publication, notifications, unrelated-message decline, and disposal.
 
-**Exclusions:** no URL fetch/network redesign, deferred ACT work, browser download redesign, governed artifact CSV changes, Connection Manager ownership, protocol redesign, or generic handler framework.
+**Exclusions:** no artifact binding or share-modal redesign, no clipboard protocol redesign, no Kusto/SQL execution or connection ownership migration, no URL acquisition/network policy, no deferred ACT work, and no generic handler framework.
 
 ## Convergence Loop
 
@@ -752,6 +766,7 @@ These are not full golden-outcome iterations retroactively, but they materially 
 | `HST-1` | `HostDashboardApplicationHandler` | Provider-owned dashboard workflow/ack maps, Fabric/export imports, discriminator branches, native publish lease methods, and cleanup transitions | Real-provider injection/forwarding, static displaced-authority, synchronous-decline, direct workflow/race, protocol-sender, and native same-ID cleanup guards | Focused 466, full/coverage Vitest 5,708, extension-host 201, provider lifecycle 21, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
 | `HST-2` | `HostArtifactCsvSaveApplicationHandler` | Provider-owned artifact CSV maps, picker/nonce/cancel/deadline/tombstone transitions, discriminator cases, and governed file publication | Real-provider injection/forwarding, static displaced-authority, direct concurrency/replay/cancel/deadline/disposal tests, protocol-sender inventory, browser compatibility, and native exact-byte gate | Focused 310, full/coverage Vitest 5,713, extension-host 201, native exact 26 bytes, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
 | `HST-3` | `HostPythonExecutionApplicationHandler` | Provider-owned Python process creation, discriminator branch, stdio accumulation, timeout transitions, and terminal publication | Real-provider injection/forwarding, static displaced-authority, direct fallback/stdio/timeout/cap/disposal tests, protocol-sender inventory, and isolated native execution/persistence gate | Focused 502, full/coverage Vitest 5,728, extension-host 201, native exact output, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
+| `HST-4` | `HostImportedCsvSaveApplicationHandler` | Provider-owned imported CSV method, discriminator case, picker/write helpers, notification transitions, and late-picker authority | Real-provider injection/forwarding, static displaced-authority, direct UX/URI/bytes/failure/disposal tests, provider lifecycle disposal, and isolated native exact-byte/picker gate | Focused 128 plus provider lifecycle 101, full/coverage Vitest 5,736, extension-host 201, native exact 36 bytes, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
 
 ## Decision Discipline
 

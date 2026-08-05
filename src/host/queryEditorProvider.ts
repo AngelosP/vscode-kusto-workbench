@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 
-import * as os from 'os';
 import * as path from 'path';
 import * as zlib from 'zlib';
 import * as crypto from 'crypto';
@@ -56,7 +55,6 @@ import {
 	CachedSchemaEntry,
 	CacheUnit,
 	IncomingWebviewMessage,
-	SaveImportedCsvMessage,
 	findPreferredDefaultCopilotModel
 } from './queryEditorTypes';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
@@ -64,7 +62,6 @@ import { KustoAuthPreferenceService, type KustoAuthPreferenceChange } from './ku
 import type { KustoLeaveNoTracePolicySnapshot } from './kustoLeaveNoTracePolicyStore';
 import { getKustoConnectionIdentityKey, resolveKustoConnection, resolveStrictKustoConnection } from '../shared/kustoAuth';
 import { EmbeddedTutorialWebviewHost, EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWebviewHost';
-import { notifySavedFile, withCsvExtension } from './savedFileNotification';
 import { perfMark } from './perfTrace';
 import { getWorkbenchLogger, type WorkbenchLogger } from './workbenchLogger';
 import type { FileOpenTrace } from './fileOpenTrace';
@@ -84,6 +81,10 @@ import {
 	HostPythonExecutionApplicationHandler,
 	type PythonExecutionApplicationHandler,
 } from './pythonExecutionApplicationHandler';
+import {
+	HostImportedCsvSaveApplicationHandler,
+	type ImportedCsvSaveApplicationHandler,
+} from './importedCsvSaveApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -175,6 +176,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly dashboardApplication: DashboardApplicationHandler;
 	readonly artifactCsvSaveApplication: ArtifactCsvSaveApplicationHandler;
 	readonly pythonExecutionApplication: PythonExecutionApplicationHandler;
+	readonly importedCsvSaveApplication: ImportedCsvSaveApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -582,6 +584,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		dashboardApplication?: DashboardApplicationHandler,
 		artifactCsvSaveApplication?: ArtifactCsvSaveApplicationHandler,
 		pythonExecutionApplication?: PythonExecutionApplicationHandler,
+		importedCsvSaveApplication?: ImportedCsvSaveApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -597,6 +600,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.pythonExecutionApplication = pythonExecutionApplication ?? new HostPythonExecutionApplicationHandler({
 			postMessage: message => this.postMessage(message),
 		});
+		this.importedCsvSaveApplication = importedCsvSaveApplication ?? new HostImportedCsvSaveApplicationHandler();
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
 			this.handleKustoAuthPreferenceChange(change);
 		});
@@ -964,6 +968,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const pythonExecutionApplicationMessage = this.pythonExecutionApplication?.handleMessage(message);
 		if (pythonExecutionApplicationMessage) {
 			await pythonExecutionApplicationMessage;
+			return;
+		}
+		const importedCsvSaveApplicationMessage = this.importedCsvSaveApplication?.handleMessage(message);
+		if (importedCsvSaveApplicationMessage) {
+			await importedCsvSaveApplicationMessage;
 			return;
 		}
 		switch (message.type) {
@@ -1367,9 +1376,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'showInfo':
 				vscode.window.showInformationMessage(message.message);
-				return;
-			case 'saveImportedCsv':
-				await this.saveImportedCsvFromWebview(message);
 				return;
 			case 'checkCopilotAvailability':
 				await this.copilot.checkCopilotAvailability(message.boxId);
@@ -1838,37 +1844,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			vscode.window.showInformationMessage('Copied to clipboard and ready to paste into Teams.');
 		} catch {
 			vscode.window.showErrorMessage('Failed to copy share content to clipboard.');
-		}
-	}
-
-	private async saveImportedCsvFromWebview(message: SaveImportedCsvMessage): Promise<void> {
-		try {
-			const csv = String(message.csv || '');
-			if (!csv.trim()) {
-				vscode.window.showInformationMessage('No results to save.');
-				return;
-			}
-
-			const suggestedFileName = String(message.suggestedFileName || 'kusto-results.csv') || 'kusto-results.csv';
-			const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(os.homedir());
-			const defaultUri = vscode.Uri.joinPath(baseDir, suggestedFileName);
-
-			const picked = await vscode.window.showSaveDialog({
-				defaultUri,
-				filters: { CSV: ['csv'] }
-			});
-
-			if (!picked) {
-				return;
-			}
-
-			let targetUri = picked;
-			try { targetUri = withCsvExtension(picked); } catch { /* ignore */ }
-
-			await vscode.workspace.fs.writeFile(targetUri, Buffer.from(csv, 'utf8'));
-			await notifySavedFile(targetUri, `Saved results to ${targetUri.fsPath}`);
-		} catch {
-			vscode.window.showErrorMessage('Failed to save results to CSV file.');
 		}
 	}
 
@@ -2630,6 +2605,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.dashboardApplication.dispose();
 			this.artifactCsvSaveApplication.dispose();
 			this.pythonExecutionApplication.dispose();
+			this.importedCsvSaveApplication.dispose();
 			for (const [requestId, pending] of [...this.pendingComparisonEnsureByRequestId]) {
 				this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
 			}

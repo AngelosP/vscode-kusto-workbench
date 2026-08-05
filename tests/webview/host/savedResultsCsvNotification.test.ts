@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { QueryEditorProvider } from '../../../src/host/queryEditorProvider';
 import { ConnectionManagerViewerV2 } from '../../../src/host/connectionManagerViewer';
+import { HostImportedCsvSaveApplicationHandler } from '../../../src/host/importedCsvSaveApplicationHandler';
+
+const liveImportedCsvHandlers = new Set<HostImportedCsvSaveApplicationHandler>();
 
 function resetCommandCalls(): void {
 	((vscode as any).__mockCommandCalls ?? []).length = 0;
@@ -12,6 +15,12 @@ function createQueryEditorProviderHarness(): QueryEditorProvider & Record<string
 	provider._panelDisposed = false;
 	provider.postMessage = vi.fn().mockResolvedValue(true);
 	return provider;
+}
+
+function createImportedCsvSaveHandler(): HostImportedCsvSaveApplicationHandler {
+	const handler = new HostImportedCsvSaveApplicationHandler();
+	liveImportedCsvHandlers.add(handler);
+	return handler;
 }
 
 function createConnectionManagerViewerHarness(): ConnectionManagerViewerV2 & Record<string, any> {
@@ -30,10 +39,62 @@ function expectCommandUri(command: string, expectedUri: vscode.Uri): void {
 
 describe('saved results CSV notifications', () => {
 	afterEach(() => {
+		for (const handler of liveImportedCsvHandlers) handler.dispose();
+		liveImportedCsvHandlers.clear();
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 		resetCommandCalls();
 		(vscode as any).__mockFileSystem?.clear?.();
+	});
+
+	it('declines unrelated messages synchronously', () => {
+		const handler = createImportedCsvSaveHandler();
+
+		expect(handler.handleMessage({
+			type: 'kustoSectionOpen', boxId: 'query-1', sectionInstanceId: 'instance-1',
+		})).toBeUndefined();
+	});
+
+	it('reports empty imported CSV data without opening the picker', async () => {
+		const handler = createImportedCsvSaveHandler();
+		const dialogSpy = vi.spyOn(vscode.window, 'showSaveDialog');
+		const writeSpy = vi.spyOn(vscode.workspace.fs, 'writeFile');
+		const infoSpy = vi.spyOn(vscode.window, 'showInformationMessage');
+
+		await handler.handleMessage({ type: 'saveImportedCsv', csv: '  \r\n  ' });
+
+		expect(infoSpy).toHaveBeenCalledWith('No results to save.');
+		expect(dialogSpy).not.toHaveBeenCalled();
+		expect(writeSpy).not.toHaveBeenCalled();
+	});
+
+	it('does nothing when the imported CSV picker is canceled', async () => {
+		const handler = createImportedCsvSaveHandler();
+		vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue(undefined);
+		const writeSpy = vi.spyOn(vscode.workspace.fs, 'writeFile');
+		const errorSpy = vi.spyOn(vscode.window, 'showErrorMessage');
+
+		await handler.handleMessage({ type: 'saveImportedCsv', csv: 'name\nalpha' });
+
+		expect(writeSpy).not.toHaveBeenCalled();
+		expect(errorSpy).not.toHaveBeenCalled();
+	});
+
+	it('appends the CSV extension and writes exact UTF-8 bytes locally', async () => {
+		const handler = createImportedCsvSaveHandler();
+		const pickedUri = vscode.Uri.file('C:/Users/test/Downloads/imported');
+		const savedUri = vscode.Uri.file('C:/Users/test/Downloads/imported.csv');
+		const csv = 'Name,City\nJos\u00e9,\u6771\u4eac';
+		vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue(pickedUri as any);
+		vi.spyOn(vscode.window, 'showInformationMessage').mockResolvedValue(undefined as any);
+		const writeSpy = vi.spyOn(vscode.workspace.fs, 'writeFile');
+
+		await handler.handleMessage({
+			type: 'saveImportedCsv', csv, suggestedFileName: 'imported.csv',
+		});
+
+		expect(writeSpy).toHaveBeenCalledOnce();
+		expect(writeSpy).toHaveBeenCalledWith(savedUri, Buffer.from(csv, 'utf8'));
 	});
 
 	it('ignores the retired uncorrelated result-byte message', async () => {
@@ -49,12 +110,12 @@ describe('saved results CSV notifications', () => {
 	});
 
 	it('offers an Open File action after query editor results are saved', async () => {
-		const provider = createQueryEditorProviderHarness();
+		const handler = createImportedCsvSaveHandler();
 		const savedUri = vscode.Uri.file('C:/Users/test/Downloads/results.csv');
 		vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue(savedUri as any);
 		vi.spyOn(vscode.window, 'showInformationMessage').mockResolvedValue('Open File' as any);
 
-		await provider.saveImportedCsvFromWebview({
+		await handler.handleMessage({
 			type: 'saveImportedCsv',
 			csv: 'name,count\nalpha,1',
 			suggestedFileName: 'results.csv',
@@ -69,12 +130,12 @@ describe('saved results CSV notifications', () => {
 	});
 
 	it('offers a Show in Folder action after query editor results are saved', async () => {
-		const provider = createQueryEditorProviderHarness();
+		const handler = createImportedCsvSaveHandler();
 		const savedUri = vscode.Uri.file('C:/Users/test/Downloads/results.csv');
 		vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue(savedUri as any);
 		vi.spyOn(vscode.window, 'showInformationMessage').mockResolvedValue('Show in Folder' as any);
 
-		await provider.saveImportedCsvFromWebview({
+		await handler.handleMessage({
 			type: 'saveImportedCsv',
 			csv: 'name,count\nalpha,1',
 			suggestedFileName: 'results.csv',
@@ -84,7 +145,7 @@ describe('saved results CSV notifications', () => {
 	});
 
 	it('does not report a CSV save failure when a post-save action fails', async () => {
-		const provider = createQueryEditorProviderHarness();
+		const handler = createImportedCsvSaveHandler();
 		const savedUri = vscode.Uri.file('C:/Users/test/Downloads/results.csv');
 		vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue(savedUri as any);
 		vi.spyOn(vscode.window, 'showInformationMessage').mockResolvedValue('Open File' as any);
@@ -92,7 +153,7 @@ describe('saved results CSV notifications', () => {
 		const warningSpy = vi.spyOn(vscode.window, 'showWarningMessage');
 		const errorSpy = vi.spyOn(vscode.window, 'showErrorMessage');
 
-		await provider.saveImportedCsvFromWebview({
+		await handler.handleMessage({
 			type: 'saveImportedCsv',
 			csv: 'name,count\nalpha,1',
 			suggestedFileName: 'results.csv',
@@ -103,14 +164,14 @@ describe('saved results CSV notifications', () => {
 	});
 
 	it('does not report a CSV save failure when the saved notification cannot be shown', async () => {
-		const provider = createQueryEditorProviderHarness();
+		const handler = createImportedCsvSaveHandler();
 		const savedUri = vscode.Uri.file('C:/Users/test/Downloads/results.csv');
 		vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue(savedUri as any);
 		vi.spyOn(vscode.window, 'showInformationMessage').mockRejectedValueOnce(new Error('Notification failed'));
 		const warningSpy = vi.spyOn(vscode.window, 'showWarningMessage');
 		const errorSpy = vi.spyOn(vscode.window, 'showErrorMessage');
 
-		await provider.saveImportedCsvFromWebview({
+		await handler.handleMessage({
 			type: 'saveImportedCsv',
 			csv: 'name,count\nalpha,1',
 			suggestedFileName: 'results.csv',
@@ -165,14 +226,32 @@ describe('saved results CSV notifications', () => {
 		);
 	});
 
+	it('reports an actual imported CSV write failure', async () => {
+		const handler = createImportedCsvSaveHandler();
+		const pickedUri = vscode.Uri.file('C:/Users/test/Downloads/imported.csv');
+		vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue(pickedUri as any);
+		vi.spyOn(vscode.workspace.fs, 'writeFile').mockRejectedValueOnce(new Error('Disk full'));
+		const errorSpy = vi.spyOn(vscode.window, 'showErrorMessage');
+		const infoSpy = vi.spyOn(vscode.window, 'showInformationMessage');
+
+		await handler.handleMessage({ type: 'saveImportedCsv', csv: 'name\nalpha' });
+
+		expect(errorSpy).toHaveBeenCalledWith('Failed to save results to CSV file.');
+		expect(infoSpy).not.toHaveBeenCalledWith(
+			expect.stringContaining('Saved results to'),
+			expect.anything(),
+			expect.anything(),
+		);
+	});
+
 	it('preserves the picked URI authority when appending the CSV extension', async () => {
-		const provider = createQueryEditorProviderHarness();
+		const handler = createImportedCsvSaveHandler();
 		const pickedUri = vscode.Uri.parse('vscode-remote://ssh-remote+host/remote/workspace/results');
 		const savedUri = pickedUri.with({ path: '/remote/workspace/results.csv' });
 		vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue(pickedUri as any);
 		vi.spyOn(vscode.window, 'showInformationMessage').mockResolvedValue('Open File' as any);
 
-		await provider.saveImportedCsvFromWebview({
+		await handler.handleMessage({
 			type: 'saveImportedCsv',
 			csv: 'name,count\nalpha,1',
 			suggestedFileName: 'results.csv',
@@ -184,5 +263,22 @@ describe('saved results CSV notifications', () => {
 		);
 		expectCommandUri('vscode.open', savedUri);
 		expect(savedUri.toString()).toBe('vscode-remote://ssh-remote+host/remote/workspace/results.csv');
+	});
+
+	it('does not publish a picker result after disposal', async () => {
+		const handler = createImportedCsvSaveHandler();
+		let resolvePicker!: (uri: vscode.Uri | undefined) => void;
+		vi.spyOn(vscode.window, 'showSaveDialog').mockImplementation(() => new Promise(resolve => {
+			resolvePicker = resolve as (uri: vscode.Uri | undefined) => void;
+		}) as any);
+		const writeSpy = vi.spyOn(vscode.workspace.fs, 'writeFile');
+		const request = handler.handleMessage({ type: 'saveImportedCsv', csv: 'name\nalpha' });
+		await Promise.resolve();
+
+		handler.dispose();
+		resolvePicker(vscode.Uri.file('C:/Users/test/Downloads/imported.csv'));
+		await request;
+
+		expect(writeSpy).not.toHaveBeenCalled();
 	});
 });
