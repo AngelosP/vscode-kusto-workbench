@@ -23,6 +23,10 @@ import {
 	parseTransformationSection,
 	type TransformationSectionState,
 } from './transformationSectionDefinition';
+import {
+	parseHtmlSection,
+	type HtmlSectionState,
+} from './htmlSectionDefinition';
 
 export const DOCUMENT_VIEW_PROTOCOL_VERSION = 1 as const;
 export const DOCUMENT_VIEW_CHANNEL = 'document-view' as const;
@@ -101,6 +105,8 @@ export type DocumentViewReloadResult = DocumentViewEnvelope & Readonly<{
 export type DocumentViewMarkdownCommand = DocumentViewEnvelope & Readonly<{
 	type: 'markdownDocumentCommand';
 	commandId: string;
+	publishRequestId?: string;
+	publishApplicationPhase?: 'apply' | 'compensate';
 	sourceGeneration: number;
 	expectedDocumentRevision: number;
 	command: MarkdownDocumentCommand;
@@ -187,9 +193,11 @@ function parseOwnedSection(
 	input: unknown,
 ): DocumentViewParseResult<
 	ChartSectionState | MarkdownSectionState | PythonSectionState | TransformationSectionState | UrlSectionState
+	| HtmlSectionState
 > {
 	if (!isRecord(input)) return failure('Host-owned section must be an object.');
 	if (input.type === 'chart') return parseChartSection(input);
+	if (input.type === 'html') return parseHtmlSection(input);
 	if (input.type === 'markdown') return parseMarkdownSection(input);
 	if (input.type === 'python') return parsePythonSection(input);
 	if (input.type === 'transformation') return parseTransformationSection(input);
@@ -232,9 +240,11 @@ export function parseDocumentViewProjection(input: unknown): DocumentViewParseRe
 		return failure('Document-view projection revision must be a non-negative safe integer.');
 	}
 	const chartInput = input.chartSections ?? [];
+	const htmlInput = input.htmlSections ?? [];
 	const pythonInput = input.pythonSections ?? [];
 	const transformationInput = input.transformationSections ?? [];
 	if (!Array.isArray(chartInput)
+		|| !Array.isArray(htmlInput)
 		|| !Array.isArray(input.markdownSections)
 		|| !Array.isArray(pythonInput)
 		|| !Array.isArray(transformationInput)
@@ -247,6 +257,12 @@ export function parseDocumentViewProjection(input: unknown): DocumentViewParseRe
 		const parsed = parseChartSection(section);
 		if (!parsed.ok) return parsed;
 		chartSections.push(parsed.value);
+	}
+	const htmlSections: HtmlSectionState[] = [];
+	for (const section of htmlInput) {
+		const parsed = parseHtmlSection(section);
+		if (!parsed.ok) return parsed;
+		htmlSections.push(parsed.value);
 	}
 	const markdownSections: MarkdownSectionState[] = [];
 	for (const section of input.markdownSections) {
@@ -274,6 +290,7 @@ export function parseDocumentViewProjection(input: unknown): DocumentViewParseRe
 	}
 	const ownedIds = [
 		...chartSections.map(section => section.id),
+		...htmlSections.map(section => section.id),
 		...markdownSections.map(section => section.id),
 		...pythonSections.map(section => section.id),
 		...transformationSections.map(section => section.id),
@@ -306,6 +323,7 @@ export function parseDocumentViewProjection(input: unknown): DocumentViewParseRe
 			sectionRevisions: sectionRevisions.value,
 			markdownSectionRevisions: markdownSectionRevisions.value,
 			chartSections,
+			htmlSections,
 			markdownSections,
 			pythonSections,
 			transformationSections,
@@ -454,12 +472,39 @@ export function parseDocumentViewWebviewMessage(input: unknown): DocumentViewPar
 	}
 	if (input.type === 'markdownDocumentCommand') {
 		if (!nonEmptyString(input.commandId)) return failure('Markdown commandId must be a non-empty string.');
+		if (input.publishRequestId !== undefined && !nonEmptyString(input.publishRequestId)) {
+			return failure('Markdown command publishRequestId must be a non-empty string when present.');
+		}
+		if (input.publishApplicationPhase !== undefined
+			&& input.publishApplicationPhase !== 'apply'
+			&& input.publishApplicationPhase !== 'compensate') {
+			return failure('Markdown command publishApplicationPhase must be "apply" or "compensate" when present.');
+		}
+		if (input.publishApplicationPhase !== undefined && input.publishRequestId === undefined) {
+			return failure('Markdown command publishApplicationPhase requires publishRequestId.');
+		}
+		if (input.publishRequestId !== undefined && input.publishApplicationPhase === undefined) {
+			return failure('Markdown command publishRequestId requires publishApplicationPhase.');
+		}
 		if (!isRevision(input.sourceGeneration)) return failure('Markdown command sourceGeneration must be a non-negative safe integer.');
 		if (!isRevision(input.expectedDocumentRevision)) {
 			return failure('Markdown command expectedDocumentRevision must be a non-negative safe integer.');
 		}
 		const command = parseCommand(input.command);
 		if (!command.ok) return command;
+		if (input.publishRequestId !== undefined) {
+			if (command.value.type !== 'patch' || !isRecord(command.value.patch)
+				|| Object.keys(command.value.patch).length !== 1
+				|| !Object.prototype.hasOwnProperty.call(command.value.patch, 'pbiPublishInfo')) {
+				return failure('Correlated publish commands must patch only pbiPublishInfo.');
+			}
+			const publishInfo = command.value.patch.pbiPublishInfo;
+			if (input.publishApplicationPhase === 'compensate'
+				? publishInfo !== null && !isRecord(publishInfo)
+				: !isRecord(publishInfo)) {
+				return failure('Correlated publish command metadata does not match its application phase.');
+			}
+		}
 		return { ok: true, value: input as unknown as DocumentViewMarkdownCommand };
 	}
 	if (input.type === 'markdownDocumentCommandBarrierResult') {

@@ -1,4 +1,3 @@
-import type { PowerBiUpgradeNoticeState } from '../shared/htmlDashboardUpgrade';
 import type { PersistedResultArtifactV1 } from '../shared/resultArtifact';
 import {
 	findIncompatibleKnownSection,
@@ -27,21 +26,17 @@ import {
 	validatePersistedTransformationSection,
 	type PersistedTransformationSectionState,
 } from '../shared/transformationSectionDefinition';
+import {
+	validatePersistedHtmlSection,
+	type PersistedHtmlSectionState,
+	type PbiPublishInfo,
+} from '../shared/htmlSectionDefinition';
 
 export { overlayKqlxFileState } from './kqlxOverlay';
 
 export type KqlxVersion = 1;
 
-/** Power BI publish metadata stored per HTML section after first publish. */
-export interface PbiPublishInfo {
-	workspaceId: string;
-	workspaceName?: string;
-	semanticModelId: string;
-	reportId: string;
-	reportName: string;
-	reportUrl: string;
-	dataMode?: 'import' | 'directQuery';
-}
+export type { PbiPublishInfo } from '../shared/htmlSectionDefinition';
 
 export type KqlxSectionV1 =
 	| {
@@ -119,24 +114,7 @@ export type KqlxSectionV1 =
 	| PersistedUrlSectionState
 	| PersistedChartSectionState
 	| PersistedTransformationSectionState
-	| {
-			id?: string;
-			type: 'html';
-			name?: string;
-			/** HTML + JS source code. */
-			code?: string;
-			mode?: 'code' | 'preview';
-			expanded?: boolean;
-			editorHeightPx?: number;
-			previewHeightPx?: number;
-			previewHeightUserSet?: boolean;
-			/** IDs of query/transformation sections this HTML section reads data from. */
-			dataSourceIds?: string[];
-			/** Power BI publish metadata — present after first successful publish. */
-			pbiPublishInfo?: PbiPublishInfo;
-			/** Per-section user dismissal state for Power BI export compatibility notices. */
-			powerBiUpgradeNotice?: PowerBiUpgradeNoticeState;
-		}
+	| PersistedHtmlSectionState
 	| {
 			id?: string;
 			type: 'sql';
@@ -318,11 +296,13 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 				? validatePersistedChartSection(section)
 			: canonicalKind === 'transformation'
 				? validatePersistedTransformationSection(section)
+			: canonicalKind === 'html'
+				? validatePersistedHtmlSection(section)
 				: getInvalidKqlxKnownFieldShape(section);
 		if (invalidKnownShape) {
 			return { ok: false, error: canonicalKind === 'markdown' || canonicalKind === 'python' || canonicalKind === 'url'
 				? `Invalid .kqlx: section ${index} ${invalidKnownShape}`
-				: canonicalKind === 'chart' || canonicalKind === 'transformation'
+				: canonicalKind === 'chart' || canonicalKind === 'transformation' || canonicalKind === 'html'
 					? `Invalid .kqlx: section ${index} invalid known field shape: ${invalidKnownShape}`
 					: `Invalid .kqlx: section ${index} invalid known field shape at "${invalidKnownShape}".` };
 		}

@@ -24,6 +24,7 @@ const projection = {
 	sectionRevisions: { markdown_1: 1 },
 	markdownSectionRevisions: { markdown_1: 1 },
 	chartSections: [],
+	htmlSections: [],
 	markdownSections: [markdownSection],
 	pythonSections: [],
 	transformationSections: [],
@@ -89,6 +90,75 @@ describe('document-view protocol', () => {
 		}
 	});
 
+	it('accepts a non-empty publish correlation only on a document command', () => {
+		const valid = parseDocumentViewWebviewMessage({
+			...envelope,
+			type: 'markdownDocumentCommand', commandId: 'publish-command',
+			publishRequestId: 'publish-request-1', sourceGeneration: 3,
+			publishApplicationPhase: 'apply',
+			expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'html_1', expectedSectionRevision: 0,
+				patch: { pbiPublishInfo: {
+					workspaceId: 'workspace', semanticModelId: 'model', reportId: 'report',
+					reportName: 'Report', reportUrl: 'https://app.powerbi.com/report',
+				} },
+			},
+		});
+		expect(valid.ok).toBe(true);
+		expect(parseDocumentViewWebviewMessage({
+			...envelope,
+			type: 'markdownDocumentCommand', commandId: 'publish-command-phase-only',
+			publishApplicationPhase: 'apply', sourceGeneration: 3, expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'markdown_1', expectedSectionRevision: 0,
+				patch: { text: 'after' },
+			},
+		}).ok).toBe(false);
+		expect(parseDocumentViewWebviewMessage({
+			...envelope,
+			type: 'markdownDocumentCommand', commandId: 'publish-command-extra-field',
+			publishRequestId: 'publish-request-1', publishApplicationPhase: 'apply',
+			sourceGeneration: 3, expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'html_1', expectedSectionRevision: 0,
+				patch: { pbiPublishInfo: {}, code: '<main>wrong</main>' },
+			},
+		}).ok).toBe(false);
+		expect(parseDocumentViewWebviewMessage({
+			...envelope,
+			type: 'markdownDocumentCommand', commandId: 'publish-command-restore',
+			publishRequestId: 'publish-request-1', publishApplicationPhase: 'compensate',
+			sourceGeneration: 3, expectedDocumentRevision: 1,
+			command: {
+				type: 'patch', sectionId: 'html_1', expectedSectionRevision: 1,
+				patch: { pbiPublishInfo: {
+					workspaceId: 'old-workspace', semanticModelId: 'old-model', reportId: 'old-report',
+					reportName: 'Old report', reportUrl: 'https://app.powerbi.com/old',
+				} },
+			},
+		}).ok).toBe(true);
+		expect(parseDocumentViewWebviewMessage({
+			...envelope,
+			type: 'markdownDocumentCommand', commandId: 'publish-command-bad-restore',
+			publishRequestId: 'publish-request-1', publishApplicationPhase: 'compensate',
+			sourceGeneration: 3, expectedDocumentRevision: 1,
+			command: {
+				type: 'patch', sectionId: 'html_1', expectedSectionRevision: 1,
+				patch: { pbiPublishInfo: 'old-report' },
+			},
+		}).ok).toBe(false);
+		expect(parseDocumentViewWebviewMessage({
+			...envelope,
+			type: 'markdownDocumentCommand', commandId: 'publish-command-empty',
+			publishRequestId: '', sourceGeneration: 3, expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'markdown_1', expectedSectionRevision: 0,
+				patch: { text: 'after' },
+			},
+		}).ok).toBe(false);
+	});
+
 	it('validates Transformation configuration and nested identities', () => {
 		const transformation = {
 			id: 'transform-any-id', type: 'transformation', name: 'Joined', mode: 'preview',
@@ -115,6 +185,39 @@ describe('document-view protocol', () => {
 		});
 		expect(malformed.ok).toBe(false);
 		if (!malformed.ok) expect(malformed.error).toContain('joinKeys[0]');
+	});
+
+	it('validates HTML configuration and nested publish metadata', () => {
+		const htmlSection = {
+			id: 'dashboard-any-id', type: 'html', name: 'Dashboard', code: '<main>dashboard</main>',
+			mode: 'preview', expanded: false, editorHeightPx: 320, previewHeightPx: 640,
+			previewHeightUserSet: true, dataSourceIds: ['query_fact'],
+			pbiPublishInfo: {
+				workspaceId: 'workspace', semanticModelId: 'model', reportId: 'report',
+				reportName: 'Report', reportUrl: 'https://app.powerbi.com/report', dataMode: 'import',
+			},
+			powerBiUpgradeNotice: {
+				dismissedForSection: true, dismissedForVersion: 1,
+				dismissedForSignature: 'signature', dismissedAt: '2026-08-04T00:00:00.000Z',
+			},
+		} as const;
+		const valid = parseDocumentViewHostMessage({
+			...envelope,
+			type: 'documentData', ok: true, reloadRequestId: 'reload-html', sourceGeneration: 5,
+			forceReload: false, documentUri: 'file:///tmp/html.kqlx', state: { sections: [htmlSection] },
+			documentRevision: 2, sectionRevisions: { 'dashboard-any-id': 1 }, markdownSectionRevisions: {},
+		});
+		expect(valid.ok).toBe(true);
+
+		const malformed = parseDocumentViewHostMessage({
+			...envelope,
+			type: 'documentData', ok: true, reloadRequestId: 'reload-malformed-html', sourceGeneration: 5,
+			forceReload: false, documentUri: 'file:///tmp/html.kqlx',
+			state: { sections: [{ ...htmlSection, pbiPublishInfo: { workspaceId: 'workspace' } }] },
+			documentRevision: 2, sectionRevisions: { 'dashboard-any-id': 1 }, markdownSectionRevisions: {},
+		});
+		expect(malformed.ok).toBe(false);
+		if (!malformed.ok) expect(malformed.error).toContain('semanticModelId');
 	});
 
 	it('rejects malformed envelopes and internally inconsistent payloads', () => {

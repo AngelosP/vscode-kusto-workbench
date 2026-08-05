@@ -70,7 +70,11 @@ import {
 	findPreferredDefaultCopilotModel
 } from './queryEditorTypes';
 import { exportHtmlToPowerBI, findUnsupportedPowerBiBindings, normalizePowerBiDataMode, type PowerBiDataMode } from './powerBiExport';
-import { listFabricWorkspaces, publishToPowerBIService, checkFabricItemExists } from './powerBiPublish';
+import {
+	checkFabricItemExists,
+	listFabricWorkspaces,
+	publishToPowerBIService,
+} from './powerBiPublish';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { KustoAuthPreferenceService, type KustoAuthPreferenceChange } from './kustoAuthPreferenceService';
 import type { KustoLeaveNoTracePolicySnapshot } from './kustoLeaveNoTracePolicyStore';
@@ -84,6 +88,8 @@ import { getEditingPreferencesData, setEditingPreference } from './editingPrefer
 import { QueryRunCoordinator } from './queryRunCoordinator';
 import { KustoExecutionCoordinator, type KustoExecutionLease } from './kustoExecutionCoordinator';
 import { hasKustoCopilotRequestIdentity, kustoCopilotRequestIdentityEquals, type KustoComparisonRunIdentity, type KustoCopilotRequestIdentity, type KustoDispatchIdentity, type KustoExecutionProducer, type KustoExecutionRequestIdentity, type KustoExecutionStarted, type KustoSectionExecutionOutcome, type KustoSectionExecutionTarget, type PreparedComparisonSection } from '../shared/kustoExecution';
+import type { PbiPublishInfo } from '../shared/htmlSectionDefinition';
+import type { MarkdownDocumentProjection } from '../shared/markdownDocumentAggregate';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -188,6 +194,24 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private readonly pendingArtifactCsvIntentIds = new Set<string>();
 	private readonly pendingArtifactCsvSaves = new Map<string, PendingArtifactCsvSave>();
 	private readonly completedArtifactCsvIntentIds = new Map<string, ReturnType<typeof setTimeout>>();
+	private readonly dashboardWorkflowAbortControllers = new Map<string, AbortController>();
+	private readonly pendingPowerBiPublishAcks = new Map<string, {
+		cleanup?: () => Promise<boolean>;
+		timer: ReturnType<typeof setTimeout>;
+		boxId: string;
+		publishInfo: Readonly<PbiPublishInfo>;
+		applicationState: 'idle' | 'apply-in-flight' | 'applied' | 'compensate-in-flight' | 'compensated' | 'rejected';
+		cleanupRequested: boolean;
+		previousPublishInfo?: Readonly<PbiPublishInfo>;
+		appliedDocumentRevision?: number;
+		appliedSectionRevision?: number;
+		finalizationInProgress: boolean;
+	}>();
+	private powerBiPublishCleanupAdmission?: (
+		publishInfo: Readonly<PbiPublishInfo>,
+		cleanup: () => Promise<boolean>,
+		waitForPendingDocumentApplications: boolean,
+	) => Promise<boolean>;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -1371,6 +1395,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'cancelArtifactCsvSaveIntent':
 				this.cancelArtifactCsvSaveIntent(message);
 				return;
+			case 'cancelDashboardWorkflow':
+				this.cancelDashboardWorkflow(message.requestId);
+				return;
+			case 'publishToPowerBIAck':
+				await this.acceptPowerBiPublishAck(message.requestId, message.accepted === true);
+				return;
 			case 'exportDashboard':
 				await this.exportDashboardFromWebview(message as ExportDashboardMessage);
 				return;
@@ -1860,38 +1890,44 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	private async showPowerBiPublishHelp(message: ShowPowerBiPublishHelpMessage): Promise<void> {
+		const requestId = String(message.requestId || '').trim();
+		const workflow = this.beginDashboardWorkflow(requestId);
+		if (!workflow) return;
 		const sectionId = String(message.sectionId || '').trim();
 		const sectionName = String(message.sectionName || '').trim();
 		const sectionLabel = sectionName || sectionId || 'this HTML section';
 		const fixAction = 'Fix it using Kusto Workbench';
-		const selection = await vscode.window.showWarningMessage(
-			`Power BI publish needs query-backed data bindings for ${sectionLabel}. Ask Kusto Workbench to add or fix the provenance block, connect it to query results, and then try publishing again.`,
-			fixAction,
-		);
-		if (selection !== fixAction || !sectionId) return;
-		await this.requestHtmlDashboardUpgradeWithCopilot({
-			type: 'requestHtmlDashboardUpgradeWithCopilot',
-			sectionId,
-			sectionName: sectionName || undefined,
-			targetVersion: Number.isFinite(message.targetVersion) ? Number(message.targetVersion) : 1,
-			reasons: Array.isArray(message.reasons) ? message.reasons : undefined,
-		});
+		try {
+			const selection = await vscode.window.showWarningMessage(
+				`Power BI publish needs query-backed data bindings for ${sectionLabel}. Ask Kusto Workbench to add or fix the provenance block, connect it to query results, and then try publishing again.`,
+				fixAction,
+			);
+			if (!sectionId || !this.isDashboardWorkflowCurrent(requestId, workflow)) return;
+			this.postMessage({
+				type: 'powerBiPublishHelpResult', requestId, boxId: sectionId,
+				action: selection === fixAction ? 'fixWithKustoWorkbench' : 'dismissed',
+			});
+		} finally {
+			this.finishDashboardWorkflow(requestId, workflow);
+		}
 	}
 
 	private async showPowerBiPartialPublishWarning(message: ShowPowerBiPartialPublishWarningMessage): Promise<void> {
 		const requestId = String(message.requestId || '').trim();
+		const workflow = this.beginDashboardWorkflow(requestId);
+		if (!workflow) return;
 		const sectionId = String(message.sectionId || '').trim();
 		const sectionName = String(message.sectionName || '').trim();
 		const sectionLabel = sectionName || sectionId || 'this HTML section';
-		const targetVersion = Number.isFinite(message.targetVersion) ? Number(message.targetVersion) : 1;
-		const reasons = Array.isArray(message.reasons) ? message.reasons : undefined;
 		const publishAnywayAction = 'Publish anyway';
 		const fixAction = 'Fix with Kusto Workbench';
-		const selection = await vscode.window.showWarningMessage(
-			`Power BI can publish ${sectionLabel}, but Kusto Workbench found visuals or interactions that Power BI export cannot fully reproduce. Publish anyway to continue with the exportable parts, or ask Kusto Workbench to make the section 100% compatible with Power BI exporting first.`,
-			publishAnywayAction,
-			fixAction,
-		);
+		try {
+			const selection = await vscode.window.showWarningMessage(
+				`Power BI can publish ${sectionLabel}, but Kusto Workbench found visuals or interactions that Power BI export cannot fully reproduce. Publish anyway to continue with the exportable parts, or ask Kusto Workbench to make the section 100% compatible with Power BI exporting first.`,
+				publishAnywayAction,
+				fixAction,
+			);
+			if (!this.isDashboardWorkflowCurrent(requestId, workflow)) return;
 
 		const postResult = (action: 'publishAnyway' | 'fixWithKustoWorkbench' | 'dismissed'): void => {
 			if (!sectionId || !requestId) return;
@@ -1903,33 +1939,35 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			});
 		};
 
-		if (selection === publishAnywayAction) {
-			postResult('publishAnyway');
-			return;
-		}
+			if (selection === publishAnywayAction) {
+				postResult('publishAnyway');
+				return;
+			}
 
-		if (selection === fixAction) {
-			postResult('fixWithKustoWorkbench');
-			if (!sectionId) return;
-			await this.requestHtmlDashboardUpgradeWithCopilot({
-				type: 'requestHtmlDashboardUpgradeWithCopilot',
-				sectionId,
-				sectionName: sectionName || undefined,
-				targetVersion,
-				reasons,
-			});
-			return;
-		}
+			if (selection === fixAction) {
+				postResult('fixWithKustoWorkbench');
+				return;
+			}
 
-		postResult('dismissed');
+			postResult('dismissed');
+		} finally {
+			this.finishDashboardWorkflow(requestId, workflow);
+		}
 	}
 
 	private async showPowerBiUnsupportedVisualHelp(message: ShowPowerBiUnsupportedVisualHelpMessage): Promise<void> {
+		const requestId = String(message.requestId || '').trim();
+		const workflow = this.beginDashboardWorkflow(requestId);
+		if (!workflow) return;
 		const openIssuesAction = 'Ask for it';
 		const text = String(message.message || '').trim() || 'Power BI export does not support this chart type yet.';
-		const selection = await vscode.window.showInformationMessage(text, openIssuesAction);
-		if (selection === openIssuesAction) {
-			await vscode.env.openExternal(vscode.Uri.parse(GITHUB_ISSUES_URL));
+		try {
+			const selection = await vscode.window.showInformationMessage(text, openIssuesAction);
+			if (selection === openIssuesAction && this.isDashboardWorkflowCurrent(requestId, workflow)) {
+				await vscode.env.openExternal(vscode.Uri.parse(GITHUB_ISSUES_URL));
+			}
+		} finally {
+			this.finishDashboardWorkflow(requestId, workflow);
 		}
 	}
 
@@ -1971,6 +2009,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	private async exportDashboardFromWebview(message: ExportDashboardMessage): Promise<void> {
+		const workflow = this.beginDashboardWorkflow(message.requestId);
+		if (!workflow) return;
 		try {
 			const htmlContent = String(message.html || '');
 			if (!htmlContent.trim()) {
@@ -1993,7 +2033,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				},
 			});
 
-			if (!picked) return;
+			if (!picked || workflow.signal.aborted) return;
 
 			const lower = picked.fsPath.toLowerCase();
 
@@ -2017,18 +2057,23 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				await exportHtmlToPowerBI(
 					{ htmlCode: htmlContent, sectionName, projectName, dataSources: message.dataSources, dataMode: 'import', previewHeight: message.previewHeight },
 					folderUri,
+					{ signal: workflow.signal },
 				);
+				if (!this.isDashboardWorkflowCurrent(message.requestId, workflow)) return;
 
 				const action = await vscode.window.showInformationMessage(
 					`Power BI project exported to ${folderUri.fsPath}. Open the .pbip file in Power BI Desktop.`,
 					'Open Folder',
 					'Upload to Power BI',
 				);
+				if (!this.isDashboardWorkflowCurrent(message.requestId, workflow)) return;
 				if (action === 'Open Folder') {
 					await vscode.commands.executeCommand('revealFileInOS', folderUri);
-				} else if (action === 'Upload to Power BI') {
+				} else if (action === 'Upload to Power BI'
+					&& this.isDashboardWorkflowCurrent(message.requestId, workflow)) {
 					this.postMessage({
 						type: 'openPublishPbiDialog',
+						requestId: message.requestId,
 						boxId: message.boxId,
 						htmlCode: htmlContent,
 						dataSources: message.dataSources,
@@ -2044,32 +2089,54 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				}
 
 				await vscode.workspace.fs.writeFile(targetUri, Buffer.from(htmlContent, 'utf8'));
-				vscode.window.showInformationMessage(`Saved HTML to ${targetUri.fsPath}`);
+				if (this.isDashboardWorkflowCurrent(message.requestId, workflow)) {
+					vscode.window.showInformationMessage(`Saved HTML to ${targetUri.fsPath}`);
+				}
 			}
 		} catch (e) {
+			if (workflow.signal.aborted) return;
 			this.output.error('[kusto] Dashboard export error:', e instanceof Error ? e : String(e));
 			vscode.window.showErrorMessage('Failed to export dashboard: ' + (e instanceof Error ? e.message : String(e)));
+		} finally {
+			this.finishDashboardWorkflow(message.requestId, workflow);
 		}
 	}
 
-	private async getPbiWorkspacesFromWebview(message: { boxId: string }): Promise<void> {
+	private async getPbiWorkspacesFromWebview(message: { requestId: string; boxId: string }): Promise<void> {
+		const workflow = this.beginDashboardWorkflow(message.requestId);
+		if (!workflow) return;
 		try {
-			const workspaces = await listFabricWorkspaces();
-			this.postMessage({ type: 'pbiWorkspacesResult', boxId: message.boxId, ok: true, workspaces });
+			const workspaces = await listFabricWorkspaces(workflow.signal);
+			if (!this.isDashboardWorkflowCurrent(message.requestId, workflow)) return;
+			this.postMessage({
+				type: 'pbiWorkspacesResult', requestId: message.requestId,
+				boxId: message.boxId, ok: true, workspaces,
+			});
 		} catch (e) {
+			if (!this.isDashboardWorkflowCurrent(message.requestId, workflow)) return;
 			const msg = e instanceof Error ? e.message : String(e);
 			this.output.error('[kusto] Power BI workspaces error:', e instanceof Error ? e : String(e));
-			this.postMessage({ type: 'pbiWorkspacesResult', boxId: message.boxId, ok: false, error: msg });
+			this.postMessage({
+				type: 'pbiWorkspacesResult', requestId: message.requestId,
+				boxId: message.boxId, ok: false, error: msg,
+			});
+		} finally {
+			this.finishDashboardWorkflow(message.requestId, workflow);
 		}
 	}
 
 	private async publishToPowerBIFromWebview(message: PublishToPowerBIMessage): Promise<void> {
+		const workflow = this.beginDashboardWorkflow(message.requestId);
+		if (!workflow) return;
 		try {
 			const unsupportedBindings = findUnsupportedPowerBiBindings(message.htmlCode);
 			if (unsupportedBindings.length > 0) {
 				const msg = `Power BI publish supports scalar, table, repeatedTable, pivot, bar, pie, and line bindings. Unsupported bindings: ${unsupportedBindings.join(', ')}.`;
 				vscode.window.showWarningMessage(msg);
-				this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: false, error: msg });
+				this.postMessage({
+					type: 'publishToPowerBIResult', requestId: message.requestId,
+					boxId: message.boxId, ok: false, error: msg,
+				});
 				return;
 			}
 
@@ -2078,7 +2145,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			if (dataMode === 'import' && message.dataSources.some(ds => this.connectionManager.isLeaveNoTrace(ds.clusterUrl))) {
 				const msg = 'Import mode cannot be used with Leave No Trace clusters because it stores query results in Power BI. Select DirectQuery to keep data in Kusto.';
 				vscode.window.showWarningMessage(msg);
-				this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: false, error: msg });
+				this.postMessage({
+					type: 'publishToPowerBIResult', requestId: message.requestId,
+					boxId: message.boxId, ok: false, error: msg,
+				});
 				return;
 			}
 
@@ -2094,28 +2164,337 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				reportId: message.reportId,
 				existingReportName: message.existingReportName,
 				isPersonalWorkspace: message.isPersonalWorkspace,
+				signal: workflow.signal,
+				firstCommitAdmission: async (_context, dispatch) => this.connectionManager.runWithLeaveNoTraceSnapshotLock(
+					async policy => {
+						const protectedClusters = new Set(policy.clusterKeys);
+						if (dataMode === 'import' && (policy.globallyBlocked || message.dataSources.some(
+							dataSource => protectedClusters.has(kustoClusterKey(dataSource.clusterUrl)),
+						))) {
+							throw new Error('Import mode was canceled because a source cluster is now Leave No Trace.');
+						}
+						return dispatch();
+					},
+				),
 			});
-			this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: true,
+			if (!this.isDashboardWorkflowCurrent(message.requestId, workflow)) {
+				if (result.createdNewItems && result.cleanupCreatedItems) {
+					const cleaned = await result.cleanupCreatedItems();
+					if (!cleaned && !this._panelDisposed) {
+						void vscode.window.showWarningMessage(
+							'Power BI finished publishing after the dashboard changed, and Kusto Workbench could not fully clean up the retired items. Review the target workspace before publishing again.',
+						);
+					}
+				} else if (!this._panelDisposed) {
+					void vscode.window.showInformationMessage(
+						`Power BI finished updating ${message.reportName}, but the dashboard changed before completion. The current section was not linked to that update.`,
+					);
+				}
+				return;
+			}
+			const timer = setTimeout(() => {
+				void this.acceptPowerBiPublishAck(message.requestId, false);
+			}, 15_000);
+			const publishInfo: PbiPublishInfo = {
+				workspaceId: message.workspaceId,
+				semanticModelId: result.semanticModelId,
+				reportId: result.reportId,
+				reportName: message.reportName,
+				reportUrl: result.reportUrl,
+				dataMode: result.dataMode,
+			};
+			if (message.workspaceName !== undefined) publishInfo.workspaceName = message.workspaceName;
+			this.pendingPowerBiPublishAcks.set(message.requestId, {
+				cleanup: result.createdNewItems ? result.cleanupCreatedItems : undefined,
+				timer,
+				boxId: message.boxId,
+				publishInfo: Object.freeze(publishInfo),
+				applicationState: 'idle',
+				cleanupRequested: false,
+				finalizationInProgress: false,
+			});
+			const delivered = await this.postMessage({
+				type: 'publishToPowerBIResult', requestId: message.requestId, boxId: message.boxId, ok: true,
 				reportUrl: result.reportUrl, scheduleConfigured: result.scheduleConfigured,
 				initialRefreshTriggered: result.initialRefreshTriggered, dataMode: result.dataMode,
 				semanticModelId: result.semanticModelId, reportId: result.reportId,
 				workspaceId: message.workspaceId, reportName: message.reportName,
-				workspaceName: message.workspaceName });
+				workspaceName: message.workspaceName,
+			});
+			if (!delivered) {
+				await this.acceptPowerBiPublishAck(message.requestId, false);
+				return;
+			}
 		} catch (e) {
+			if (!this.isDashboardWorkflowCurrent(message.requestId, workflow)) return;
 			const msg = e instanceof Error ? e.message : String(e);
 			this.output.error('[kusto] Power BI publish error:', e instanceof Error ? e : String(e));
-			this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: false, error: msg });
+			this.postMessage({
+				type: 'publishToPowerBIResult', requestId: message.requestId,
+				boxId: message.boxId, ok: false, error: msg,
+			});
+		} finally {
+			this.finishDashboardWorkflow(message.requestId, workflow);
 		}
 	}
 
-	private async checkPbiItemExistsFromWebview(message: { boxId: string; workspaceId: string; reportId: string }): Promise<void> {
+	private async checkPbiItemExistsFromWebview(
+		message: { requestId: string; boxId: string; workspaceId: string; reportId: string },
+	): Promise<void> {
+		const workflow = this.beginDashboardWorkflow(message.requestId);
+		if (!workflow) return;
 		try {
-			const exists = await checkFabricItemExists(message.workspaceId, message.reportId);
-			this.postMessage({ type: 'pbiItemExistsResult', boxId: message.boxId, exists });
+			const exists = await checkFabricItemExists(message.workspaceId, message.reportId, workflow.signal);
+			if (!this.isDashboardWorkflowCurrent(message.requestId, workflow)) return;
+			this.postMessage({
+				type: 'pbiItemExistsResult', requestId: message.requestId, boxId: message.boxId, exists,
+			});
 		} catch (e) {
+			if (!this.isDashboardWorkflowCurrent(message.requestId, workflow)) return;
 			this.output.warn('[kusto] PBI item existence check failed:', e);
-			this.postMessage({ type: 'pbiItemExistsResult', boxId: message.boxId, exists: false });
+			this.postMessage({
+				type: 'pbiItemExistsResult', requestId: message.requestId, boxId: message.boxId, exists: false,
+			});
+		} finally {
+			this.finishDashboardWorkflow(message.requestId, workflow);
 		}
+	}
+
+	private beginDashboardWorkflow(requestIdInput: unknown): AbortController | undefined {
+		const requestId = String(requestIdInput || '').trim();
+		if (!requestId || this._panelDisposed) return undefined;
+		this.cancelDashboardWorkflow(requestId);
+		const controller = new AbortController();
+		this.dashboardWorkflowAbortControllers.set(requestId, controller);
+		return controller;
+	}
+
+	private isDashboardWorkflowCurrent(requestId: string, controller: AbortController): boolean {
+		return !this._panelDisposed && !controller.signal.aborted
+			&& this.dashboardWorkflowAbortControllers.get(requestId) === controller;
+	}
+
+	private finishDashboardWorkflow(requestId: string, controller: AbortController): void {
+		if (this.dashboardWorkflowAbortControllers.get(requestId) === controller) {
+			this.dashboardWorkflowAbortControllers.delete(requestId);
+		}
+	}
+
+	private cancelDashboardWorkflow(requestIdInput: unknown): void {
+		const requestId = String(requestIdInput || '').trim();
+		if (!requestId) return;
+		const controller = this.dashboardWorkflowAbortControllers.get(requestId);
+		if (controller) {
+			this.dashboardWorkflowAbortControllers.delete(requestId);
+			controller.abort();
+		}
+	}
+
+	private async acceptPowerBiPublishAck(requestIdInput: unknown, accepted: boolean): Promise<void> {
+		const requestId = String(requestIdInput || '').trim();
+		const pending = this.pendingPowerBiPublishAcks.get(requestId);
+		if (!pending) return;
+		if (accepted) {
+			await this.finalizePowerBiPublishAckLease(requestId, pending, false, true);
+			return;
+		}
+		pending.cleanupRequested = true;
+		if (pending.applicationState === 'apply-in-flight'
+			|| pending.applicationState === 'compensate-in-flight') return;
+		if (pending.applicationState === 'applied') {
+			if (this._panelDisposed) {
+				await this.finalizePowerBiPublishAckLease(requestId, pending, false, true);
+				return;
+			}
+			this.rearmPowerBiPublishAckLease(requestId, pending);
+			return;
+		}
+		const cleanup = pending.applicationState === 'idle'
+			|| pending.applicationState === 'rejected'
+			|| pending.applicationState === 'compensated';
+		await this.finalizePowerBiPublishAckLease(requestId, pending, cleanup, true);
+	}
+
+	beginPowerBiPublishDocumentApplication(
+		requestIdInput: unknown,
+		phaseInput: unknown,
+		commandInput: unknown,
+		expectedDocumentRevisionInput: unknown,
+		currentProjection: MarkdownDocumentProjection,
+	): boolean {
+		const requestId = String(requestIdInput || '').trim();
+		if (phaseInput !== 'apply' && phaseInput !== 'compensate') return false;
+		const phase = phaseInput;
+		const pending = this.pendingPowerBiPublishAcks.get(requestId);
+		if (!pending) return false;
+		if (!commandInput || typeof commandInput !== 'object' || Array.isArray(commandInput)) return false;
+		const command = commandInput as Record<string, unknown>;
+		if (command.type !== 'patch' || String(command.sectionId || '').trim() !== pending.boxId
+			|| !command.patch || typeof command.patch !== 'object' || Array.isArray(command.patch)) return false;
+		const patch = command.patch as Record<string, unknown>;
+		if (Object.keys(patch).length !== 1 || !Object.prototype.hasOwnProperty.call(patch, 'pbiPublishInfo')) return false;
+		if (!currentProjection || !Array.isArray(currentProjection.htmlSections)
+			|| !currentProjection.sectionRevisions) return false;
+		const expectedDocumentRevision = Number(expectedDocumentRevisionInput);
+		const expectedSectionRevision = Number(command.expectedSectionRevision);
+		const currentSection = currentProjection.htmlSections.find(section => section.id === pending.boxId);
+		if (!currentSection
+			|| expectedDocumentRevision !== currentProjection.documentRevision
+			|| expectedSectionRevision !== currentProjection.sectionRevisions[pending.boxId]) return false;
+		if (phase === 'apply') {
+			const publishInfo = patch.pbiPublishInfo;
+			if (!publishInfo || typeof publishInfo !== 'object' || Array.isArray(publishInfo)) return false;
+			const expected = pending.publishInfo;
+			if (!this.powerBiPublishInfoEquals(publishInfo as PbiPublishInfo, expected)) return false;
+		} else {
+			const restoreInfo = patch.pbiPublishInfo;
+			if (pending.previousPublishInfo
+				? !restoreInfo || typeof restoreInfo !== 'object' || Array.isArray(restoreInfo)
+					|| !this.powerBiPublishInfoEquals(restoreInfo as PbiPublishInfo, pending.previousPublishInfo)
+				: restoreInfo !== null) return false;
+		}
+		if (phase === 'apply' && pending.applicationState !== 'idle') return false;
+		if (phase === 'compensate' && (pending.applicationState !== 'applied'
+			|| pending.appliedDocumentRevision !== expectedDocumentRevision
+			|| pending.appliedSectionRevision !== expectedSectionRevision
+			|| !this.powerBiPublishInfoEquals(currentSection.pbiPublishInfo, pending.publishInfo))) return false;
+		if (phase === 'apply') {
+			pending.previousPublishInfo = currentSection.pbiPublishInfo
+				? Object.freeze({ ...currentSection.pbiPublishInfo })
+				: undefined;
+		}
+		pending.applicationState = phase === 'apply' ? 'apply-in-flight' : 'compensate-in-flight';
+		return true;
+	}
+
+	async settlePowerBiPublishDocumentApplication(
+		requestIdInput: unknown,
+		phaseInput: unknown,
+		commandResultInput: unknown,
+	): Promise<void> {
+		const requestId = String(requestIdInput || '').trim();
+		if (phaseInput !== 'apply' && phaseInput !== 'compensate') return;
+		const phase = phaseInput;
+		const pending = this.pendingPowerBiPublishAcks.get(requestId);
+		if (!pending) return;
+		if (phase === 'apply' && pending.applicationState !== 'apply-in-flight') return;
+		if (phase === 'compensate' && pending.applicationState !== 'compensate-in-flight') return;
+		const commandResult = commandResultInput && typeof commandResultInput === 'object'
+			? commandResultInput as Record<string, unknown> : undefined;
+		const projection = commandResult?.projection as MarkdownDocumentProjection | undefined;
+		const section = projection?.htmlSections?.find(candidate => candidate.id === pending.boxId);
+		const committed = commandResult?.ok === true && !!projection
+			&& Number(commandResult.documentRevision) === projection.documentRevision
+			&& (phase === 'apply'
+				? !!section && this.powerBiPublishInfoEquals(section.pbiPublishInfo, pending.publishInfo)
+					&& Number(commandResult.sectionRevision) === projection.sectionRevisions[pending.boxId]
+				: !!section && (pending.previousPublishInfo
+					? this.powerBiPublishInfoEquals(section.pbiPublishInfo, pending.previousPublishInfo)
+					: section.pbiPublishInfo === undefined));
+		pending.applicationState = phase === 'apply'
+			? committed ? 'applied' : 'rejected'
+			: committed ? 'compensated' : 'applied';
+		if (phase === 'apply' && committed) {
+			pending.appliedDocumentRevision = projection!.documentRevision;
+			pending.appliedSectionRevision = projection!.sectionRevisions[pending.boxId];
+		}
+		if (pending.finalizationInProgress) return;
+		if (!pending.cleanupRequested) return;
+		if (pending.applicationState === 'applied') {
+			if (this._panelDisposed) await this.finalizePowerBiPublishAckLease(requestId, pending, false, false);
+			else this.rearmPowerBiPublishAckLease(requestId, pending);
+			return;
+		}
+		const cleanup = pending.applicationState === 'rejected'
+			|| pending.applicationState === 'compensated';
+		await this.finalizePowerBiPublishAckLease(requestId, pending, cleanup, false);
+	}
+
+	private async finalizePowerBiPublishAckLease(
+		requestId: string,
+		pending: {
+			cleanup?: () => Promise<boolean>;
+			timer: ReturnType<typeof setTimeout>;
+			publishInfo: Readonly<PbiPublishInfo>;
+			finalizationInProgress: boolean;
+		},
+		cleanupWithoutAdmission: boolean,
+		waitForPendingDocumentApplications: boolean,
+	): Promise<void> {
+		if (this.pendingPowerBiPublishAcks.get(requestId) !== pending || pending.finalizationInProgress) return;
+		pending.finalizationInProgress = true;
+		clearTimeout(pending.timer);
+		try {
+			if (pending.cleanup) {
+				if (this.powerBiPublishCleanupAdmission) {
+					const finalized = await this.powerBiPublishCleanupAdmission(
+						pending.publishInfo, pending.cleanup, waitForPendingDocumentApplications,
+					);
+					if (!finalized) {
+						this.output.warn('[kusto] Power BI cleanup could not be authorized; retaining published items.');
+					}
+				} else if (cleanupWithoutAdmission) {
+					await pending.cleanup();
+				}
+			}
+		} catch (error) {
+			this.output.warn('[kusto] Power BI cleanup admission failed; retaining published items.', error);
+		} finally {
+			this.finishPowerBiPublishAckLease(requestId, pending);
+		}
+	}
+
+	setPowerBiPublishCleanupAdmission(
+		admission: (
+			publishInfo: Readonly<PbiPublishInfo>,
+			cleanup: () => Promise<boolean>,
+			waitForPendingDocumentApplications: boolean,
+		) => Promise<boolean>,
+	): void {
+		this.powerBiPublishCleanupAdmission = admission;
+	}
+
+	private powerBiPublishInfoEquals(left: PbiPublishInfo | undefined, right: Readonly<PbiPublishInfo>): boolean {
+		if (!left) return false;
+		const leftRecord = left as unknown as Record<string, unknown>;
+		const rightRecord = right as unknown as Record<string, unknown>;
+		const leftKeys = Object.keys(leftRecord).filter(key => leftRecord[key] !== undefined).sort();
+		const rightKeys = Object.keys(rightRecord).filter(key => rightRecord[key] !== undefined).sort();
+		return leftKeys.length === rightKeys.length
+			&& leftKeys.every((key, index) => key === rightKeys[index])
+			&& left.workspaceId === right.workspaceId
+			&& left.workspaceName === right.workspaceName
+			&& left.semanticModelId === right.semanticModelId
+			&& left.reportId === right.reportId
+			&& left.reportName === right.reportName
+			&& left.reportUrl === right.reportUrl
+			&& left.dataMode === right.dataMode;
+	}
+
+	private finishPowerBiPublishAckLease(
+		requestId: string,
+		pending: { timer: ReturnType<typeof setTimeout> },
+	): void {
+		if (this.pendingPowerBiPublishAcks.get(requestId) !== pending) return;
+		this.pendingPowerBiPublishAcks.delete(requestId);
+		clearTimeout(pending.timer);
+	}
+
+	private rearmPowerBiPublishAckLease(
+		requestId: string,
+		pending: {
+			cleanup?: () => Promise<boolean>;
+			timer: ReturnType<typeof setTimeout>;
+			publishInfo: Readonly<PbiPublishInfo>;
+			finalizationInProgress: boolean;
+		},
+	): void {
+		clearTimeout(pending.timer);
+		pending.timer = setTimeout(() => {
+			const current = this.pendingPowerBiPublishAcks.get(requestId);
+			if (current !== pending) return;
+			void this.finalizePowerBiPublishAckLease(requestId, pending, false, true);
+		}, 5_000);
 	}
 
 	private async saveImportedCsvFromWebview(message: SaveImportedCsvMessage): Promise<void> {
@@ -3139,6 +3518,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 			for (const timer of this.completedArtifactCsvIntentIds.values()) clearTimeout(timer);
 			this.completedArtifactCsvIntentIds.clear();
+			for (const controller of this.dashboardWorkflowAbortControllers.values()) controller.abort();
+			this.dashboardWorkflowAbortControllers.clear();
+			for (const requestId of [...this.pendingPowerBiPublishAcks.keys()]) {
+				void this.acceptPowerBiPublishAck(requestId, false);
+			}
 			for (const [requestId, pending] of [...this.pendingComparisonEnsureByRequestId]) {
 				this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
 			}

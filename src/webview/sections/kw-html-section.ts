@@ -22,6 +22,13 @@ import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { requestOverlayScrollbarUpdate } from '../core/overlay-scrollbars.js';
 import { schedulePersist } from '../core/persistence.js';
 import {
+	getHostOwnedHtmlSection,
+	isHostOwnedHtmlDocument,
+	requestHostOwnedHtmlPatch,
+	requestHostOwnedHtmlPublishInfoPatch,
+	waitForHostOwnedMarkdownCommands,
+} from '../core/markdown-document-client.js';
+import {
 	getBoundResultArtifact,
 	getRawCellValue,
 	rebindResultArtifactConsumer,
@@ -49,21 +56,12 @@ import {
 	type PowerBiUpgradeNoticeState,
 } from '../../shared/htmlDashboardUpgrade.js';
 import { createMonacoCursorStatusPublisher, type EditorCursorStatusPublisher } from '../shared/editor-cursor-status.js';
+import type { HtmlSectionState, PbiPublishInfo } from '../../shared/htmlSectionDefinition.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type HtmlSectionMode = 'code' | 'preview';
-
-/** Power BI publish metadata — mirrors the host-side PbiPublishInfo in kqlxFormat.ts. */
-export interface PbiPublishInfo {
-	workspaceId: string;
-	workspaceName?: string;
-	semanticModelId: string;
-	reportId: string;
-	reportName: string;
-	reportUrl: string;
-	dataMode?: 'import' | 'directQuery';
-}
+export type { PbiPublishInfo } from '../../shared/htmlSectionDefinition.js';
 
 /** Serialized shape for .kqlx persistence — must match KqlxSectionV1 html variant. */
 export interface HtmlSectionData {
@@ -85,10 +83,37 @@ type PowerBiPublishDataSource = { name: string; sectionId: string; clusterUrl: s
 
 type PendingPowerBiPartialPublish = {
 	requestId: string;
+	workflowGeneration: number;
 	code: string;
 	dataSources: PowerBiPublishDataSource[];
 	suggestedName: string;
 };
+
+type PendingPowerBiPublishHelp = {
+	requestId: string;
+	workflowGeneration: number;
+	code: string;
+	sectionName?: string;
+	targetVersion: number;
+	reasons: string[];
+};
+
+function htmlValuesEqual(left: unknown, right: unknown): boolean {
+	if (Object.is(left, right)) return true;
+	if (Array.isArray(left) || Array.isArray(right)) {
+		return Array.isArray(left) && Array.isArray(right)
+			&& left.length === right.length
+			&& left.every((value, index) => htmlValuesEqual(value, right[index]));
+	}
+	if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+	const leftRecord = left as Record<string, unknown>;
+	const rightRecord = right as Record<string, unknown>;
+	const leftKeys = Object.keys(leftRecord).filter(key => leftRecord[key] !== undefined).sort();
+	const rightKeys = Object.keys(rightRecord).filter(key => rightRecord[key] !== undefined).sort();
+	return leftKeys.length === rightKeys.length
+		&& leftKeys.every((key, index) => key === rightKeys[index]
+			&& htmlValuesEqual(leftRecord[key], rightRecord[key]));
+}
 
 export { parseKwProvenance };
 export type { KwModelDimension, KwModelFact, KwProvenance, PowerBiUpgradeNoticeState };
@@ -186,6 +211,16 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _powerBiCompatibilityRefreshTimer: any = null;
 	/** Pending publish context while the native partial-publish warning is awaiting a choice. */
 	private _pendingPowerBiPartialPublish: PendingPowerBiPartialPublish | undefined;
+	private _pendingPowerBiPublishHelp: PendingPowerBiPublishHelp | undefined;
+	private _pendingPowerBiUnsupportedHelpRequestId: string | undefined;
+	private _dashboardWorkflowGeneration = 0;
+	private _pendingExportWorkflow: { requestId: string; generation: number } | undefined;
+	private _pendingDashboardMeasurementCancel: (() => void) | undefined;
+	private _wasConnected = false;
+	private _persistedDataSourceIds: string[] | undefined;
+	private _applyingHostDocumentState = false;
+	private _hostDocumentApplyGeneration = 0;
+	private _disconnectGeneration = 0;
 
 	private _editor: MonacoEditor | null = null;
 	private _cursorStatus: EditorCursorStatusPublisher | null = null;
@@ -220,22 +255,60 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _themeFingerprint: string | null = null;
 	/** Provenance fact source currently owned by the immutable artifact binding. */
 	private _boundFactSourceId = '';
+	private _ownsLiveState(): boolean {
+		const current = document.getElementById(this.boxId);
+		if (this.isConnected) return current === this || (!this.id && current === null);
+		return !this.id && current === null;
+	}
+
 	private readonly _onArtifactConsumersRevoked = (event: Event) => {
+		if (!this._ownsLiveState()) return;
 		const consumerIds = (event as CustomEvent<{ consumerIds?: unknown }>).detail?.consumerIds;
 		if (!Array.isArray(consumerIds)
 			|| !consumerIds.includes(htmlDashboardFactArtifactConsumerId(this.boxId))) return;
+		this._retireDashboardWorkflows();
 		this._revokePreviewDataBridge();
 	};
+
+	private _retireDashboardWorkflows(): void {
+		const requestIds = new Set([
+			this._pendingExportWorkflow?.requestId,
+			this._pendingPowerBiPartialPublish?.requestId,
+			this._pendingPowerBiPublishHelp?.requestId,
+			this._pendingPowerBiUnsupportedHelpRequestId,
+		].filter((requestId): requestId is string => !!requestId));
+		const cancelMeasurement = this._pendingDashboardMeasurementCancel;
+		this._pendingDashboardMeasurementCancel = undefined;
+		this._dashboardWorkflowGeneration++;
+		this._pendingExportWorkflow = undefined;
+		this._pendingPowerBiPartialPublish = undefined;
+		this._pendingPowerBiPublishHelp = undefined;
+		this._pendingPowerBiUnsupportedHelpRequestId = undefined;
+		const dialog = this.shadowRoot?.querySelector<any>('kw-publish-pbi-dialog');
+		try { dialog?.hide?.(); } catch (e) { console.error('[kusto]', e); }
+		try { cancelMeasurement?.(); } catch (e) { console.error('[kusto]', e); }
+		if (this._pendingPreviewHeightResolve) {
+			const resolve = this._pendingPreviewHeightResolve;
+			this._pendingPreviewHeightResolve = null;
+			resolve(undefined);
+		}
+		for (const requestId of requestIds) {
+			postMessageToHost({ type: 'cancelDashboardWorkflow', requestId });
+		}
+	}
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
 	override connectedCallback(): void {
 		super.connectedCallback();
+		this._wasConnected = true;
+		this._disconnectGeneration++;
 		window.addEventListener('message', this._onMessage);
 		window.addEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, this._onArtifactConsumersRevoked);
 		if (this._boundFactSourceId && !getBoundResultArtifact(
 			htmlDashboardFactArtifactConsumerId(this.boxId), this._boundFactSourceId,
 		)) {
+			this._retireDashboardWorkflows();
 			this._revokePreviewDataBridge();
 			this._boundFactSourceId = '';
 		}
@@ -248,22 +321,33 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
+		const disconnectGeneration = ++this._disconnectGeneration;
 		window.removeEventListener('message', this._onMessage);
 		window.removeEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, this._onArtifactConsumersRevoked);
 		this._themeObserver?.disconnect();
 		this._themeObserver = null;
-		if (this._powerBiCompatibilityRefreshTimer) {
-			clearTimeout(this._powerBiCompatibilityRefreshTimer);
-			this._powerBiCompatibilityRefreshTimer = null;
-		}
-		// Save content before destroying so it can be restored on reconnect.
+		// Save content immediately, but defer teardown so synchronous DOM moves retain Monaco and preview state.
 		if (this._editor) {
 			try {
 				const model = this._editor.getModel();
 				if (model) this._savedCode = model.getValue();
 			} catch (e) { console.error('[kusto]', e); }
 		}
-		this._disposeEditor();
+		queueMicrotask(() => {
+			if (disconnectGeneration !== this._disconnectGeneration || this.isConnected) return;
+			this._retireDashboardWorkflows();
+			if (this._powerBiCompatibilityRefreshTimer) {
+				clearTimeout(this._powerBiCompatibilityRefreshTimer);
+				this._powerBiCompatibilityRefreshTimer = null;
+			}
+			this._revokePreviewDataBridge();
+			const current = document.getElementById(this.boxId);
+			if (!current) {
+				unbindResultArtifactConsumer(htmlDashboardFactArtifactConsumerId(this.boxId));
+				this._boundFactSourceId = '';
+			}
+			this._disposeEditor();
+		});
 	}
 
 	override firstUpdated(_changedProperties: PropertyValues): void {
@@ -304,6 +388,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	override updated(changed: PropertyValues): void {
 		super.updated(changed);
+		if (this._applyingHostDocumentState) return;
 		if (changed.has('_mode')) {
 			if (this._mode === 'preview') {
 				this._updatePreview();
@@ -463,6 +548,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	}
 
 	private _requestPowerBiUpgradeWithCopilot(): void {
+		if (!this._ownsLiveState()) return;
 		const status = this._powerBiCompatibilityStatus;
 		if (!status || !status.needsUpgrade) return;
 		try {
@@ -486,7 +572,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			dismissedAt: new Date().toISOString(),
 		};
 		this.requestUpdate();
-		try { schedulePersist('html-power-bi-upgrade-dismissed', true); } catch (e) { console.error('[kusto]', e); }
+		this._schedulePersist('html-power-bi-upgrade-dismissed', true);
 	}
 
 	private _closePowerBiUpgradeNotice(): void {
@@ -499,15 +585,18 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	// ── Provenance detection ──────────────────────────────────────────────────
 
 	/** Re-parse provenance from the current HTML code. Called on content change. */
-	private _refreshProvenance(): void {
+	private _refreshProvenance(updatePersistedDataSourceIds = false): void {
 		const code = this._getCodeText();
 		this._provenance = parseKwProvenance(code);
+		if (updatePersistedDataSourceIds) this._persistedDataSourceIds = this._getProvenanceSectionIds();
 		this._syncFactArtifactBinding();
 	}
 
 	private _syncFactArtifactBinding(force = false): void {
-		if (!this.boxId) return;
+		if (!this.boxId || !this._ownsLiveState()) return;
 		const sourceId = String(this._provenance?.model?.fact?.sectionId || '').trim();
+		const sourceChanged = this._boundFactSourceId !== sourceId;
+		if (force || sourceChanged) this._retireDashboardWorkflows();
 		if (!sourceId) {
 			if (this._boundFactSourceId) this._revokePreviewDataBridge();
 			unbindResultArtifactConsumer(htmlDashboardFactArtifactConsumerId(this.boxId));
@@ -655,8 +744,14 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				if (settled) return;
 				settled = true;
 				cleanup();
+				if (this._pendingDashboardMeasurementCancel === cancel) {
+					this._pendingDashboardMeasurementCancel = undefined;
+				}
 				resolve(height ?? this._measurePreviewHeight());
 			};
+			const cancel = () => finish(undefined);
+			this._pendingDashboardMeasurementCancel?.();
+			this._pendingDashboardMeasurementCancel = cancel;
 
 			const queueStableFinish = () => {
 				if (idleTimer) window.clearTimeout(idleTimer);
@@ -685,15 +780,23 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	}
 
 	private async _exportDashboard(): Promise<void> {
+		if (!this._ownsLiveState()) return;
+		this._retireDashboardWorkflows();
+		const workflowGeneration = this._dashboardWorkflowGeneration;
+		const requestId = this._createDashboardWorkflowRequestId('export');
 		const code = this._getCodeText();
 		if (!code.trim()) {
 			try { postMessageToHost({ type: 'showInfo', message: 'There is no HTML content to export.' }); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 		const previewHeight = await this._measureCurrentHtmlHeight(code);
+		if (!this._ownsLiveState() || workflowGeneration !== this._dashboardWorkflowGeneration
+			|| this._getCodeText() !== code) return;
+		this._pendingExportWorkflow = { requestId, generation: workflowGeneration };
 		try {
 			postMessageToHost({
 				type: 'exportDashboard',
+				requestId,
 				boxId: this.boxId,
 				html: code,
 				suggestedFileName: this._name || '',
@@ -704,6 +807,9 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	}
 
 	private async _publishToPowerBI(): Promise<void> {
+		if (!this._ownsLiveState()) return;
+		this._retireDashboardWorkflows();
+		const workflowGeneration = this._dashboardWorkflowGeneration;
 		const code = this._getCodeText();
 		if (!code.trim()) {
 			try { postMessageToHost({ type: 'showInfo', message: 'Write some HTML content before publishing to Power BI.' }); } catch (e) { console.error('[kusto]', e); }
@@ -715,34 +821,65 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		const dataSources = this._collectDataSourcesForPBI();
 		if (dataSources.length === 0) {
 			if (unsupportedReasons.length > 0) {
-				try { postMessageToHost({ type: 'showPowerBiUnsupportedVisualHelp', message: this._getPowerBiUnsupportedBlockerMessage(unsupportedReasons) }); } catch (e) { console.error('[kusto]', e); }
+				try {
+					const requestId = this._createDashboardWorkflowRequestId('unsupported-help');
+					this._pendingPowerBiUnsupportedHelpRequestId = requestId;
+					postMessageToHost({
+						type: 'showPowerBiUnsupportedVisualHelp', requestId,
+						message: this._getPowerBiUnsupportedBlockerMessage(unsupportedReasons),
+					});
+				} catch (e) { console.error('[kusto]', e); }
 				return;
 			}
 			try {
+				const requestId = this._createDashboardWorkflowRequestId('publish-help');
+				const reasons = this._getPowerBiPublishBlockerReasons(code);
+				this._pendingPowerBiPublishHelp = {
+					requestId,
+					workflowGeneration,
+					code,
+					sectionName: this._name || undefined,
+					targetVersion: CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
+					reasons,
+				};
 				postMessageToHost({
 					type: 'showPowerBiPublishHelp',
+					requestId,
 					sectionId: this.boxId,
 					sectionName: this._name || undefined,
 					targetVersion: CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
-					reasons: this._getPowerBiPublishBlockerReasons(code),
+					reasons,
 				});
 			} catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
 		if (compatibilityStatus.needsUpgrade && compatibilityStatus.reasons.length > 0) {
-			this._requestPowerBiPartialPublishWarning(code, dataSources, compatibilityStatus.reasons);
+			this._requestPowerBiPartialPublishWarning(
+				code, dataSources, compatibilityStatus.reasons, workflowGeneration,
+			);
 			return;
 		}
 
 		const previewHeight = await this._measureCurrentHtmlHeight(code);
-		this._openPublishDialog(code, dataSources, previewHeight, this._name || 'KustoHtmlDashboard');
+		if (!this._ownsLiveState() || workflowGeneration !== this._dashboardWorkflowGeneration
+			|| this._getCodeText() !== code) return;
+		this._openPublishDialog(
+			code, dataSources, previewHeight, this._name || 'KustoHtmlDashboard', workflowGeneration,
+		);
 	}
 
-	private _requestPowerBiPartialPublishWarning(code: string, dataSources: PowerBiPublishDataSource[], reasons: string[]): void {
-		const requestId = `${this.boxId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+	private _requestPowerBiPartialPublishWarning(
+		code: string,
+		dataSources: PowerBiPublishDataSource[],
+		reasons: string[],
+		workflowGeneration: number,
+	): void {
+		if (!this._ownsLiveState() || workflowGeneration !== this._dashboardWorkflowGeneration) return;
+		const requestId = this._createDashboardWorkflowRequestId('partial-publish');
 		this._pendingPowerBiPartialPublish = {
 			requestId,
+			workflowGeneration,
 			code,
 			dataSources,
 			suggestedName: this._name || 'KustoHtmlDashboard',
@@ -760,25 +897,75 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	}
 
 	private async _handlePowerBiPartialPublishWarningResult(message: { requestId?: unknown; action?: unknown }): Promise<void> {
+		if (!this._ownsLiveState()) return;
 		const requestId = String(message.requestId || '').trim();
 		const action = String(message.action || '').trim();
 		const pending = this._pendingPowerBiPartialPublish;
 		if (!pending || !requestId || pending.requestId !== requestId) return;
 		this._pendingPowerBiPartialPublish = undefined;
+		if (pending.workflowGeneration !== this._dashboardWorkflowGeneration
+			|| this._getCodeText() !== pending.code) return;
+		if (action === 'fixWithKustoWorkbench') {
+			postMessageToHost({
+				type: 'requestHtmlDashboardUpgradeWithCopilot',
+				sectionId: this.boxId,
+				sectionName: pending.suggestedName || undefined,
+				targetVersion: CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
+				reasons: analyzeHtmlDashboardPowerBiCompatibility(pending.code).reasons,
+			});
+			return;
+		}
 		if (action !== 'publishAnyway') return;
 		if (this._getCodeText() !== pending.code) {
 			try { postMessageToHost({ type: 'showInfo', message: 'The HTML changed before publishing. Click Publish to Power BI service again so Kusto Workbench can re-check compatibility.' }); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 		const previewHeight = await this._measureCurrentHtmlHeight(pending.code);
-		this._openPublishDialog(pending.code, pending.dataSources, previewHeight, pending.suggestedName);
+		if (!this._ownsLiveState() || pending.workflowGeneration !== this._dashboardWorkflowGeneration
+			|| this._getCodeText() !== pending.code) return;
+		this._openPublishDialog(
+			pending.code, pending.dataSources, previewHeight, pending.suggestedName,
+			pending.workflowGeneration,
+		);
 	}
 
-	private _openPublishDialog(htmlCode: string, dataSources: PowerBiPublishDataSource[], previewHeight: number | undefined, suggestedName: string): void {
+	private _handlePowerBiPublishHelpResult(message: { requestId?: unknown; action?: unknown }): void {
+		if (!this._ownsLiveState()) return;
+		const requestId = String(message.requestId || '').trim();
+		const pending = this._pendingPowerBiPublishHelp;
+		if (!pending || !requestId || pending.requestId !== requestId) return;
+		this._pendingPowerBiPublishHelp = undefined;
+		if (message.action !== 'fixWithKustoWorkbench'
+			|| pending.workflowGeneration !== this._dashboardWorkflowGeneration
+			|| this._getCodeText() !== pending.code) return;
+		postMessageToHost({
+			type: 'requestHtmlDashboardUpgradeWithCopilot',
+			sectionId: this.boxId,
+			sectionName: pending.sectionName,
+			targetVersion: pending.targetVersion,
+			reasons: pending.reasons,
+		});
+	}
+
+	private _openPublishDialog(
+		htmlCode: string,
+		dataSources: PowerBiPublishDataSource[],
+		previewHeight: number | undefined,
+		suggestedName: string,
+		expectedWorkflowGeneration?: number,
+	): void {
+		if (!this._ownsLiveState()
+			|| (expectedWorkflowGeneration !== undefined
+				&& expectedWorkflowGeneration !== this._dashboardWorkflowGeneration)) return;
 		const dialog = this.shadowRoot?.querySelector<any>('kw-publish-pbi-dialog');
 		if (dialog) {
 			dialog.show(dataSources, htmlCode, suggestedName, previewHeight, this.boxId, this._pbiPublishInfo);
 		}
+	}
+
+	private _createDashboardWorkflowRequestId(kind: string): string {
+		return `${this.boxId}:${kind}:${globalThis.crypto?.randomUUID?.()
+			?? `${Date.now()}:${Math.random().toString(16).slice(2)}`}`;
 	}
 
 	private _getPowerBiPublishBlockerReasons(code: string): string[] {
@@ -874,7 +1061,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		}
 
 		ensureMonaco().then((monaco: any) => {
-			if (!slotted || !slotted.isConnected) return;
+			if (!slotted || !slotted.isConnected || !this._ownsLiveState()) return;
 
 			if (this._editor) {
 				try {
@@ -950,11 +1137,12 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			// Persist on content change.
 			try {
 				editor.onDidChangeModelContent(() => {
+					this._retireDashboardWorkflows();
 					this._invalidatePreviewContentHeight();
-					this._schedulePersist();
 					this._updatePlaceholder();
-					this._refreshProvenance();
+					this._refreshProvenance(true);
 					this._refreshPowerBiCompatibilityNoticeAfterCodeChange();
+					this._schedulePersist();
 				});
 			} catch (e) { console.error('[kusto]', e); }
 
@@ -1054,6 +1242,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	private _updatePreview(): void {
 		this.updateComplete.then(() => {
+			if (!this._ownsLiveState()) return;
 			const iframe = this.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
 			if (!iframe) return;
 			if (iframe.style) iframe.style.visibility = '';
@@ -1724,7 +1913,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 <\/script>`;
 
 	/** Handle height reports from the sandboxed preview iframe. */
-	private _handleIframeMessage(e: MessageEvent): void {
+	private async _handleIframeMessage(e: MessageEvent): Promise<void> {
 		try {
 			if (!e.data) return;
 
@@ -1752,8 +1941,17 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			}
 
 			// Host→webview messages (e.source is null for VS Code postMessage)
+			if (!this._ownsLiveState()) return;
 			if (e.data.type === 'openPublishPbiDialog' && e.data.boxId === this.boxId) {
-				this._openPublishDialog(e.data.htmlCode, e.data.dataSources, e.data.previewHeight, e.data.suggestedName);
+				const requestId = String(e.data.requestId || '');
+				const pending = this._pendingExportWorkflow;
+				if (!pending || requestId !== pending.requestId
+					|| pending.generation !== this._dashboardWorkflowGeneration) return;
+				this._pendingExportWorkflow = undefined;
+				this._openPublishDialog(
+					e.data.htmlCode, e.data.dataSources, e.data.previewHeight, e.data.suggestedName,
+					pending.generation,
+				);
 				return;
 			}
 
@@ -1762,10 +1960,18 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				return;
 			}
 
+			if (e.data.type === 'powerBiPublishHelpResult' && e.data.boxId === this.boxId) {
+				this._handlePowerBiPublishHelpResult(e.data);
+				return;
+			}
+
 			if ((e.data.type === 'pbiWorkspacesResult' || e.data.type === 'publishToPowerBIResult' || e.data.type === 'pbiItemExistsResult') && e.data.boxId === this.boxId) {
+				const dialog = this.shadowRoot?.querySelector<any>('kw-publish-pbi-dialog');
+				if (!dialog?.acceptsHostMessage?.(e.data)) return;
 				// Capture publish GUIDs BEFORE forwarding to dialog so they persist even if the dialog throws.
 				if (e.data.type === 'publishToPowerBIResult' && e.data.ok && e.data.semanticModelId && e.data.reportId) {
-					this._pbiPublishInfo = {
+					const previousPublishInfo = this._pbiPublishInfo ? { ...this._pbiPublishInfo } : undefined;
+					const nextPublishInfo: PbiPublishInfo = {
 						workspaceId: e.data.workspaceId,
 						workspaceName: e.data.workspaceName,
 						semanticModelId: e.data.semanticModelId,
@@ -1774,9 +1980,45 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 						reportUrl: e.data.reportUrl || '',
 						dataMode: e.data.dataMode === 'import' || e.data.dataMode === 'directQuery' ? e.data.dataMode : undefined,
 					};
-					schedulePersist(undefined, true); // Immediate flush — losing publish GUIDs is costly
+					const workflowGeneration = this._dashboardWorkflowGeneration;
+					let accepted = true;
+					if (isHostOwnedHtmlDocument()) {
+						const publishRequestId = String(e.data.requestId || '');
+						this._pbiPublishInfo = nextPublishInfo;
+						accepted = requestHostOwnedHtmlPublishInfoPatch(
+							this.boxId, nextPublishInfo, publishRequestId, 'apply',
+						)
+							&& await waitForHostOwnedMarkdownCommands();
+						if (!accepted) {
+							const authoritative = getHostOwnedHtmlSection(this.boxId)?.pbiPublishInfo;
+							this._pbiPublishInfo = authoritative ? { ...authoritative } : undefined;
+						}
+						const stillCurrent = this._ownsLiveState()
+							&& workflowGeneration === this._dashboardWorkflowGeneration
+							&& dialog.acceptsHostMessage?.(e.data) === true;
+						if (accepted && !stillCurrent) {
+							this._pbiPublishInfo = previousPublishInfo ? { ...previousPublishInfo } : undefined;
+							const compensated = requestHostOwnedHtmlPublishInfoPatch(
+								this.boxId, previousPublishInfo ?? null, publishRequestId, 'compensate',
+							)
+								&& await waitForHostOwnedMarkdownCommands();
+							if (compensated) {
+								accepted = false;
+							} else {
+								const authoritative = getHostOwnedHtmlSection(this.boxId)?.pbiPublishInfo;
+								this._pbiPublishInfo = authoritative ? { ...authoritative } : undefined;
+								accepted = htmlValuesEqual(authoritative, nextPublishInfo);
+							}
+						}
+					} else {
+						this._pbiPublishInfo = nextPublishInfo;
+						this._schedulePersist(undefined, true);
+					}
+					postMessageToHost({
+						type: 'publishToPowerBIAck', requestId: String(e.data.requestId || ''), accepted,
+					});
+					if (!accepted) return;
 				}
-				const dialog = this.shadowRoot?.querySelector<any>('kw-publish-pbi-dialog');
 				if (dialog) dialog.handleHostMessage(e.data);
 				return;
 			}
@@ -2053,6 +2295,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			// Clear user-resize so auto-fit re-engages.
 			this._userResizedEditor = false;
 			this._savedEditorHeightPx = undefined;
+			this.editorHeightPx = undefined;
 			// Force recalculation by resetting cached fit height.
 			this._lastFitHeight = 0;
 			this._autoFitToContent();
@@ -2061,6 +2304,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			this._userResizedPreview = false;
 			this.previewHeightUserSet = false;
 			this._savedPreviewHeightPx = undefined;
+			this.previewHeightPx = undefined;
 			this._invalidatePreviewContentHeight();
 			this._resetAutoPreviewHeightForFreshFit();
 			this.requestUpdate();
@@ -2152,8 +2396,12 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	// ── Persistence ───────────────────────────────────────────────────────────
 
-	private _schedulePersist(): void {
-		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	private _schedulePersist(reason?: string, immediate = false): void {
+		try {
+			if (!this._ownsLiveState() || this._applyingHostDocumentState) return;
+			if (isHostOwnedHtmlDocument()) requestHostOwnedHtmlPatch(this.createDocumentState());
+			else schedulePersist(reason, immediate);
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _getCodeText(): string {
@@ -2163,8 +2411,9 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		}
 		// Fallback: check pending code buffer (Monaco may not be ready yet).
 		try {
+			const mayReadPending = !this._wasConnected || this._ownsLiveState();
 			const pending = pState.pendingHtmlCodeByBoxId;
-			if (pending && typeof pending[this.boxId] === 'string') {
+			if (mayReadPending && pending && typeof pending[this.boxId] === 'string') {
 				return pending[this.boxId];
 			}
 		} catch (e) { console.error('[kusto]', e); }
@@ -2200,8 +2449,134 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 		if (this._pbiPublishInfo) data.pbiPublishInfo = this._pbiPublishInfo;
 		if (this._powerBiUpgradeNotice) data.powerBiUpgradeNotice = this._powerBiUpgradeNotice;
+		if (this._persistedDataSourceIds !== undefined) data.dataSourceIds = [...this._persistedDataSourceIds];
 
 		return data;
+	}
+
+	public createDocumentState(): HtmlSectionState {
+		const data: HtmlSectionState = {
+			id: this.boxId,
+			type: 'html',
+			name: this._name,
+			code: this._getCodeText(),
+			mode: this._mode,
+			expanded: this._expanded,
+		};
+		const editorH = this._savedEditorHeightPx
+			?? this._getWrapperHeightPx('editor-wrapper', this._userResizedEditor)
+			?? this.editorHeightPx;
+		if (editorH !== undefined) data.editorHeightPx = editorH;
+		const previewH = this._savedPreviewHeightPx ?? this.previewHeightPx;
+		if (previewH !== undefined) data.previewHeightPx = previewH;
+		if (this.previewHeightUserSet) data.previewHeightUserSet = true;
+		if (this._persistedDataSourceIds !== undefined) data.dataSourceIds = [...this._persistedDataSourceIds];
+		if (this._pbiPublishInfo) data.pbiPublishInfo = { ...this._pbiPublishInfo };
+		if (this._powerBiUpgradeNotice) data.powerBiUpgradeNotice = { ...this._powerBiUpgradeNotice };
+		return data;
+	}
+
+	public commitDocumentState(): void {
+		this._schedulePersist();
+	}
+
+	public applyHostDocumentState(section: HtmlSectionState): void {
+		if (section.id !== this.boxId || !this._ownsLiveState()) return;
+		const generation = ++this._hostDocumentApplyGeneration;
+		const previousProjectionState = pState.applyingHostMarkdownProjection;
+		pState.applyingHostMarkdownProjection = true;
+		this._applyingHostDocumentState = true;
+		let keepApplyingThroughUpdate = false;
+		let anyChanged = false;
+		let codeChanged = false;
+		let modeChanged = false;
+		let expandedChanged = false;
+		try {
+			const nextName = section.name ?? '';
+			const nextCode = section.code ?? '';
+			const nextMode: HtmlSectionMode = section.mode === 'preview' ? 'preview' : 'code';
+			const nextExpanded = section.expanded !== false;
+			if (this._name !== nextName) { this._name = nextName; anyChanged = true; }
+			if (this._getCodeText() !== nextCode) {
+				codeChanged = true;
+				anyChanged = true;
+				this._retireDashboardWorkflows();
+				if (this._editor) this._editor.setValue(nextCode);
+				else {
+					this._savedCode = nextCode;
+					this.initialCode = nextCode;
+					pState.pendingHtmlCodeByBoxId[this.boxId] = nextCode;
+				}
+				this._invalidatePreviewContentHeight();
+				this._refreshProvenance();
+				this._refreshPowerBiCompatibilityNoticeAfterCodeChange();
+			}
+			if (this._mode !== nextMode) {
+				this._captureCurrentHeight();
+				this._mode = nextMode;
+				modeChanged = true;
+				anyChanged = true;
+			}
+			if (this._expanded !== nextExpanded) {
+				this._expanded = nextExpanded;
+				expandedChanged = true;
+				anyChanged = true;
+			}
+			const nextEditorHeight = section.editorHeightPx;
+			if (this._savedEditorHeightPx !== nextEditorHeight
+				|| this._userResizedEditor !== (nextEditorHeight !== undefined)) {
+				this._savedEditorHeightPx = nextEditorHeight;
+				this.editorHeightPx = nextEditorHeight;
+				this._userResizedEditor = nextEditorHeight !== undefined;
+				anyChanged = true;
+			}
+			const nextPreviewHeight = section.previewHeightPx;
+			const nextPreviewUserSet = section.previewHeightUserSet === true;
+			if (this._savedPreviewHeightPx !== nextPreviewHeight
+				|| this._userResizedPreview !== nextPreviewUserSet
+				|| this.previewHeightUserSet !== nextPreviewUserSet) {
+				this._savedPreviewHeightPx = nextPreviewHeight;
+				this.previewHeightPx = nextPreviewHeight;
+				this.previewHeightUserSet = nextPreviewUserSet;
+				this._userResizedPreview = nextPreviewUserSet;
+				anyChanged = true;
+			}
+			const nextDataSourceIds = section.dataSourceIds ? [...section.dataSourceIds] : undefined;
+			if (!htmlValuesEqual(this._persistedDataSourceIds, nextDataSourceIds)) {
+				this._persistedDataSourceIds = nextDataSourceIds;
+				anyChanged = true;
+			}
+			const nextPublishInfo = section.pbiPublishInfo ? { ...section.pbiPublishInfo } : undefined;
+			if (!htmlValuesEqual(this._pbiPublishInfo, nextPublishInfo)) {
+				this._retireDashboardWorkflows();
+				this._pbiPublishInfo = nextPublishInfo;
+				anyChanged = true;
+			}
+			const nextNotice = section.powerBiUpgradeNotice ? { ...section.powerBiUpgradeNotice } : undefined;
+			if (!htmlValuesEqual(this._powerBiUpgradeNotice, nextNotice)) {
+				this._powerBiUpgradeNotice = nextNotice;
+				anyChanged = true;
+			}
+			if (!anyChanged) return;
+			this.classList.toggle('is-collapsed', !this._expanded);
+			keepApplyingThroughUpdate = true;
+			this.requestUpdate();
+			void this.updateComplete.then(() => {
+				if (generation !== this._hostDocumentApplyGeneration || !this._ownsLiveState()) return;
+				this._applyingHostDocumentState = false;
+				if (this._mode === 'preview'
+					&& this._expanded && (codeChanged || modeChanged || expandedChanged)) this._updatePreview();
+				if (this._mode === 'code') {
+					if (this._userResizedEditor && this._savedEditorHeightPx !== undefined) this._restoreEditorHeight();
+					else this._autoFitToContent();
+				} else if (this._userResizedPreview && this._savedPreviewHeightPx !== undefined) {
+					this._restorePreviewHeight();
+				}
+			}).catch(e => console.error('[kusto]', e));
+		} finally {
+			pState.applyingHostMarkdownProjection = previousProjectionState;
+			if (!keepApplyingThroughUpdate) this._applyingHostDocumentState = false;
+		}
 	}
 
 	private _getWrapperHeightPx(wrapperId: string, userResized: boolean): number | undefined {
@@ -2225,6 +2600,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	public getCode(): string { return this._getCodeText(); }
 	public setCode(code: string): void {
+		if (this._wasConnected && !this._ownsLiveState()) return;
+		if (this._getCodeText() !== code) this._retireDashboardWorkflows();
 		if (this._editor) {
 			this._editor.setValue(code);
 		} else {
@@ -2235,7 +2612,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			pState.pendingHtmlCodeByBoxId[this.boxId] = code;
 		}
 		this._invalidatePreviewContentHeight();
-		this._refreshProvenance();
+		this._refreshProvenance(true);
 		this._refreshPowerBiCompatibilityNoticeAfterCodeChange();
 		// Refresh the preview iframe when content is updated while in preview mode.
 		// requestUpdate() triggers a Lit re-render so the iframe is created if it
@@ -2250,10 +2627,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	public setMode(mode: HtmlSectionMode): void { this._setMode(mode); }
 
 	public getDataSourceIds(): string[] { return this._getProvenanceSectionIds(); }
-	public setDataSourceIds(_ids: string[]): void {
-		// No-op: data sources are now declared via provenance in the HTML code.
-		// Kept for backward compatibility with addHtmlBox() restore path.
-	}
+	public setDataSourceIds(ids: string[]): void { this._persistedDataSourceIds = [...ids]; }
 
 	public getPbiPublishInfo(): PbiPublishInfo | undefined { return this._pbiPublishInfo; }
 	public setPbiPublishInfo(info: PbiPublishInfo | undefined): void { this._pbiPublishInfo = info; }
@@ -2322,6 +2696,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	/** Called by the cascade system when a referenced data source's results change. */
 	public refreshDataBridge(): void {
+		this._retireDashboardWorkflows();
 		this._syncFactArtifactBinding(true);
 		if (this._mode === 'preview') this._updatePreview();
 	}
@@ -2339,6 +2714,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				this.updateComplete.then(() => this._restorePreviewHeight());
 			}
 		}
+		this._schedulePersist();
 	}
 }
 

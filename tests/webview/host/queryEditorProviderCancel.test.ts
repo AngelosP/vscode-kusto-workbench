@@ -1029,6 +1029,8 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.pendingArtifactCsvIntentIds = new Set();
 		provider.pendingArtifactCsvSaves = new Map();
 		provider.completedArtifactCsvIntentIds = new Map();
+		provider.dashboardWorkflowAbortControllers = new Map();
+		provider.pendingPowerBiPublishAcks = new Map();
 		const csvTransferTimer = setTimeout(() => undefined, 30_000);
 		const csvTombstoneTimer = setTimeout(() => undefined, 30_000);
 		provider.pendingArtifactCsvIntentIds.add('csv-intent');

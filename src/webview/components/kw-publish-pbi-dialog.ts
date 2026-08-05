@@ -48,6 +48,9 @@ export class KwPublishPbiDialog extends LitElement {
 	private _boxId = '';
 	private _pbiPublishInfo: PbiPublishInfo | undefined;
 	private _dataModeExplicit = false;
+	private _workspaceRequestId = '';
+	private _itemExistsRequestId = '';
+	private _publishRequestId = '';
 	private _dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> = [];
 	private _dismiss = () => this._cancel();
 
@@ -86,24 +89,54 @@ export class KwPublishPbiDialog extends LitElement {
 		this._visible = true;
 		pushDismissable(this._dismiss);
 
-		postMessageToHost({ type: 'getPbiWorkspaces', boxId: this._boxId });
+		this._workspaceRequestId = this._createRequestId('workspaces');
+		postMessageToHost({
+			type: 'getPbiWorkspaces', requestId: this._workspaceRequestId, boxId: this._boxId,
+		});
 
 		// Fire existence check in parallel if we have stored publish info
 		if (pbiPublishInfo?.reportId && pbiPublishInfo?.workspaceId) {
 			this._checkingExistence = true;
-			postMessageToHost({ type: 'checkPbiItemExists', boxId: this._boxId, workspaceId: pbiPublishInfo.workspaceId, reportId: pbiPublishInfo.reportId });
+			this._itemExistsRequestId = this._createRequestId('exists');
+			postMessageToHost({
+				type: 'checkPbiItemExists', requestId: this._itemExistsRequestId,
+				boxId: this._boxId, workspaceId: pbiPublishInfo.workspaceId, reportId: pbiPublishInfo.reportId,
+			});
 		}
 	}
 
 	hide(): void {
+		const requestIds = [this._workspaceRequestId, this._itemExistsRequestId, this._publishRequestId]
+			.filter((requestId): requestId is string => !!requestId);
 		this._visible = false;
 		this._state = 'idle';
+		this._workspaceRequestId = '';
+		this._itemExistsRequestId = '';
+		this._publishRequestId = '';
 		removeDismissable(this._dismiss);
+		for (const requestId of requestIds) {
+			postMessageToHost({ type: 'cancelDashboardWorkflow', requestId });
+		}
+	}
+
+	private _createRequestId(kind: string): string {
+		return `${this._boxId}:${kind}:${globalThis.crypto?.randomUUID?.()
+			?? `${Date.now()}:${Math.random().toString(16).slice(2)}`}`;
+	}
+
+	public acceptsHostMessage(message: { type?: unknown; requestId?: unknown }): boolean {
+		const requestId = String(message.requestId || '');
+		if (message.type === 'pbiWorkspacesResult') return !!requestId && requestId === this._workspaceRequestId;
+		if (message.type === 'pbiItemExistsResult') return !!requestId && requestId === this._itemExistsRequestId;
+		if (message.type === 'publishToPowerBIResult') return !!requestId && requestId === this._publishRequestId;
+		return false;
 	}
 
 	/** Called by the parent HTML section to forward host→webview messages. */
 	handleHostMessage(message: any): void {
+		if (!this.acceptsHostMessage(message)) return;
 		if (message.type === 'pbiWorkspacesResult') {
+			this._workspaceRequestId = '';
 			if (message.ok && message.workspaces) {
 				this._workspaces = message.workspaces;
 				// If we have stored PBI info, select that workspace; otherwise restore last-used
@@ -129,6 +162,7 @@ export class KwPublishPbiDialog extends LitElement {
 				this._state = 'error';
 			}
 		} else if (message.type === 'pbiItemExistsResult') {
+			this._itemExistsRequestId = '';
 			if (!this._checkingExistence) return;
 			this._checkingExistence = false;
 			if (message.exists) {
@@ -139,6 +173,7 @@ export class KwPublishPbiDialog extends LitElement {
 			}
 			this._applyImplicitDataMode();
 		} else if (message.type === 'publishToPowerBIResult') {
+			this._publishRequestId = '';
 			if (message.ok && message.reportUrl) {
 				const previousReportId = this._pbiPublishInfo?.reportId;
 				const returnedReportId = typeof message.reportId === 'string' ? message.reportId : '';
@@ -230,8 +265,10 @@ export class KwPublishPbiDialog extends LitElement {
 		this._checkingExistence = false;
 		const selectedWorkspace = this._workspaces.find(w => w.id === this._selectedWorkspaceId);
 
+		this._publishRequestId = this._createRequestId('publish');
 		postMessageToHost({
 			type: 'publishToPowerBI',
+			requestId: this._publishRequestId,
 			boxId: this._boxId,
 			workspaceId: this._selectedWorkspaceId,
 			reportName: this._reportName.trim(),

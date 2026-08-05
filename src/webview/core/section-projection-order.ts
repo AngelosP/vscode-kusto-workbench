@@ -14,7 +14,8 @@ export function reconcileProjectedSectionOrder(orderedSectionIds: readonly strin
 	}
 	let anchor: ChildNode | null = null;
 	for (let index = orderedElements.length - 1; index >= 0; index--) {
-		container.insertBefore(orderedElements[index], anchor);
-		anchor = orderedElements[index];
+		const element = orderedElements[index];
+		if (element.nextSibling !== anchor) container.insertBefore(element, anchor);
+		anchor = element;
 	}
 }

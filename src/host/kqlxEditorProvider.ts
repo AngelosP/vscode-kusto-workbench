@@ -2599,6 +2599,34 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				release();
 			}
 		};
+		queryEditor.setPowerBiPublishCleanupAdmission(async (
+			publishInfo, cleanup, waitForPendingDocumentApplications,
+		) => {
+			if (waitForPendingDocumentApplications) {
+				await Promise.allSettled([...admittedPersistenceHandlers]);
+			}
+			return runInMarkdownDocumentQueue(async () => {
+				const currentText = await readProjectionSourceText();
+				const authority = markdownDocumentQueue.latestAuthority;
+				if (!authority || authority.sourceText !== currentText) return false;
+				const currentFile = parseKqlxText(currentText, {
+					allowedKinds: [documentKind], defaultKind: documentKind,
+				});
+				if (!currentFile.ok) return false;
+				const currentState = ensureProjectedSectionIds(currentFile.file.state, currentText);
+				const currentDocument = MarkdownDocumentAggregate.create(currentState);
+				if (!currentDocument.ok) return false;
+				const referenced = currentDocument.document.projection().htmlSections.some(section =>
+					section.pbiPublishInfo?.workspaceId === publishInfo.workspaceId
+					&& section.pbiPublishInfo.semanticModelId === publishInfo.semanticModelId
+					&& section.pbiPublishInfo.reportId === publishInfo.reportId,
+				);
+				if (referenced) return true;
+				if (markdownDocumentQueue.latestAuthority !== authority
+					|| await readProjectionSourceText() !== currentText) return false;
+				return cleanup();
+			});
+		});
 
 		let privacyRepairRetryScheduled = false;
 		const schedulePrivacyRepairRetry = (allowDisposed = false): void => {
@@ -4049,6 +4077,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const commandId = String((message as any).commandId || '').trim();
 					if (!commandId) return;
 					const commandGeneration = Number((message as any).sourceGeneration);
+					const publishRequestId = String((message as any).publishRequestId || '').trim();
+					const publishApplicationPhase = (message as any).publishApplicationPhase === 'compensate'
+						? 'compensate' : 'apply';
 					const commandAuthorityToken = activeProjectionAuthorityToken;
 					const entry = activeMarkdownOwnerEntry;
 					let commandResult: Record<string, unknown> | undefined;
@@ -4088,6 +4119,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					}
 					const allowDisposedSessionCommand = isSessionFile;
 					const previousCommandTail = entry.queue.tail;
+					let publishApplicationAdmitted = false;
 					entry.queue.pendingCommands++;
 					const operation = previousCommandTail.catch(() => undefined).then(async () => {
 						await entry.queue.pendingPrivacySave;
@@ -4113,6 +4145,19 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								projection: entry.document.projection(),
 							};
 							return;
+						}
+						if (publishRequestId) {
+							publishApplicationAdmitted = queryEditor.beginPowerBiPublishDocumentApplication(
+								publishRequestId,
+								publishApplicationPhase,
+								(message as any).command,
+								(message as any).expectedDocumentRevision,
+								entry.document.projection(),
+							);
+							if (!publishApplicationAdmitted) {
+								rejectCommand('publish-workflow-retired', 'The Power BI publish workflow is no longer current.');
+								return;
+							}
 						}
 						const transition = entry.document.transition({
 							expectedDocumentRevision: Number((message as any).expectedDocumentRevision),
@@ -4215,6 +4260,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					entry.queue.tail = operation.then(() => undefined, () => undefined);
 					await operation;
 					if (!commandResult) rejectCommand('markdown-command-not-applied', 'The Markdown command completed without updating the document.');
+					if (publishRequestId && publishApplicationAdmitted) {
+						await queryEditor.settlePowerBiPublishDocumentApplication(
+							publishRequestId, publishApplicationPhase, commandResult,
+						);
+					}
 					await deliverCommandResult();
 					return;
 				}

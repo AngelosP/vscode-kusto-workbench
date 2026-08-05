@@ -1,6 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import { KwHtmlSection } from '../../src/webview/sections/kw-html-section';
-import { clearResultsState, getCurrentResultArtifact, setResultsState } from '../../src/webview/core/results-state';
+import {
+	clearResultsState,
+	getBoundResultArtifact,
+	getCurrentResultArtifact,
+	setResultsState,
+} from '../../src/webview/core/results-state';
+import { htmlDashboardFactArtifactConsumerId } from '../../src/shared/resultArtifact';
+import { pState } from '../../src/webview/shared/persistence-state';
 
 type BridgeSection = KwHtmlSection & { _buildDataBridgeScript(): string; refreshDataBridge(): void };
 type HeightSection = KwHtmlSection & {
@@ -20,6 +27,7 @@ type HeightSection = KwHtmlSection & {
 	_getPowerBiMeasurementWidth(): number;
 	_requestFreshPreviewHeight(): Promise<number | undefined>;
 	_measureCurrentHtmlHeight(code: string): Promise<number | undefined>;
+	_retireDashboardWorkflows(): void;
 	_handleIframeMessage(e: MessageEvent): void;
 	_collectDataSourcesForPBI(): Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>;
 	_openPublishDialog(
@@ -186,6 +194,232 @@ describe('generated slicer layout', () => {
 });
 
 describe('HTML dashboard artifact bridge ownership', () => {
+	it('cancels hidden iframe measurement when the dashboard workflow retires', async () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		section.id = 'html_measurement_cancel';
+		section.boxId = section.id;
+		document.body.appendChild(section);
+		await section.updateComplete;
+
+		const measurement = section._measureCurrentHtmlHeight('<main style="height:1200px">Measure</main>');
+		expect(section.shadowRoot?.querySelector('iframe[style*="-10000px"]')).toBeTruthy();
+		section._retireDashboardWorkflows();
+
+		await expect(measurement).resolves.toBeUndefined();
+		expect(section.shadowRoot?.querySelector('iframe[style*="-10000px"]')).toBeNull();
+		section.remove();
+		await Promise.resolve();
+	});
+
+	it('retires an open publish dialog when HTML code changes', async () => {
+		const section = new KwHtmlSection();
+		section.id = 'html_publish_code_retire';
+		section.boxId = section.id;
+		section.setCode('<main>before</main>');
+		document.body.appendChild(section);
+		await section.updateComplete;
+		const dialog = section.shadowRoot?.querySelector<any>('kw-publish-pbi-dialog');
+		const hide = vi.spyOn(dialog, 'hide');
+		(section as any)._openPublishDialog('<main>before</main>', [], 720, 'Before');
+		dialog._publishRequestId = 'publish-before-code-change';
+		hide.mockClear();
+
+		section.setCode('<main>after</main>');
+
+		expect(hide).toHaveBeenCalledOnce();
+		expect(dialog.acceptsHostMessage({
+			type: 'publishToPowerBIResult', requestId: 'publish-before-code-change',
+		})).toBe(false);
+		section.remove();
+		await Promise.resolve();
+	});
+
+	it('retires an open publish dialog when its fact artifact is revoked', async () => {
+		const sourceId = 'query_html_publish_revoke';
+		setResultsState(sourceId, { columns: ['Value'], rows: [['before']] }, {
+			policy: { exposeToActiveContent: true },
+		});
+		const section = new KwHtmlSection();
+		section.id = 'html_publish_artifact_retire';
+		section.boxId = section.id;
+		document.body.appendChild(section);
+		section.setCode(makeFactHtml(sourceId));
+		await section.updateComplete;
+		const dialog = section.shadowRoot?.querySelector<any>('kw-publish-pbi-dialog');
+		const hide = vi.spyOn(dialog, 'hide');
+		(section as any)._openPublishDialog(makeFactHtml(sourceId), [], 720, 'Before');
+		dialog._publishRequestId = 'publish-before-artifact-revoke';
+		hide.mockClear();
+
+		clearResultsState(sourceId);
+
+		expect(hide).toHaveBeenCalledOnce();
+		expect(dialog.acceptsHostMessage({
+			type: 'publishToPowerBIResult', requestId: 'publish-before-artifact-revoke',
+		})).toBe(false);
+		section.remove();
+		await Promise.resolve();
+	});
+
+	it('does not let a removed instance repopulate a cleared pending-code slot before replacement', async () => {
+		const section = new KwHtmlSection();
+		section.id = 'html_retired_pending_code';
+		section.boxId = section.id;
+		document.body.appendChild(section);
+		section.setCode('<main>before removal</main>');
+		section.remove();
+		delete pState.pendingHtmlCodeByBoxId[section.boxId];
+
+		section.setCode('<main>stale after removal</main>');
+
+		expect(pState.pendingHtmlCodeByBoxId[section.boxId]).toBeUndefined();
+		await Promise.resolve();
+	});
+
+	it('retains explicit dataSourceIds in metadata-free serialization', () => {
+		const section = new KwHtmlSection();
+		section.boxId = 'html_legacy_data_sources';
+		section.setDataSourceIds(['query_1', 'transformation_1']);
+
+		expect(section.serialize().dataSourceIds).toEqual(['query_1', 'transformation_1']);
+	});
+
+	it('drops a publish workflow whose measurement resolves after same-ID replacement', async () => {
+		const oldSection = new KwHtmlSection() as unknown as HeightSection;
+		oldSection.id = 'html_publish_workflow_owner';
+		oldSection.boxId = oldSection.id;
+		oldSection.setCode(`<script type="application/kw-provenance">${JSON.stringify({
+			version: 1,
+			model: { fact: { sectionId: 'query_fact', sectionName: 'Fact Events' } },
+			bindings: { total: { display: { type: 'scalar', agg: 'COUNT' } } },
+		})}</script><main><span data-kw-bind="total">0</span></main>`);
+		document.body.appendChild(oldSection);
+		let resolveMeasurement!: (height: number | undefined) => void;
+		oldSection._collectDataSourcesForPBI = () => [{
+			name: 'Fact Events', sectionId: 'query_fact', clusterUrl: 'https://cluster.example',
+			database: 'db', query: 'FactEvents', columns: [{ name: 'Day', type: 'datetime' }],
+		}];
+		oldSection._measureCurrentHtmlHeight = () => new Promise(resolve => { resolveMeasurement = resolve; });
+		const openPublishDialog = vi.fn();
+		oldSection._openPublishDialog = openPublishDialog;
+
+		const publishing = oldSection._publishToPowerBI();
+		oldSection.remove();
+		const replacement = new KwHtmlSection();
+		replacement.id = oldSection.id;
+		replacement.boxId = oldSection.boxId;
+		document.body.appendChild(replacement);
+		resolveMeasurement(720);
+		await publishing;
+
+		expect(openPublishDialog).not.toHaveBeenCalled();
+		replacement.remove();
+		await Promise.resolve();
+	});
+
+	it('rejects an export-upload dialog response owned by a predecessor section', async () => {
+		const replacement = new KwHtmlSection() as unknown as HeightSection;
+		replacement.id = 'html_export_workflow_owner';
+		replacement.boxId = replacement.id;
+		document.body.appendChild(replacement);
+		const openPublishDialog = vi.fn();
+		replacement._openPublishDialog = openPublishDialog;
+
+		replacement._handleIframeMessage({
+			data: {
+				type: 'openPublishPbiDialog', requestId: 'predecessor-export-request',
+				boxId: replacement.boxId, htmlCode: '<main>stale</main>', dataSources: [],
+				previewHeight: 720, suggestedName: 'Stale dashboard',
+			},
+			source: null,
+		} as unknown as MessageEvent);
+
+		expect(openPublishDialog).not.toHaveBeenCalled();
+		replacement.remove();
+		await Promise.resolve();
+	});
+
+	it('keeps the exact editor, iframe, and fact binding for an equal host projection', async () => {
+		const sourceId = 'query_html_equal_projection';
+		setResultsState(sourceId, { columns: ['Value'], rows: [['revision-a']] }, {
+			policy: { exposeToActiveContent: true },
+		});
+		const section = new KwHtmlSection();
+		section.id = 'html_equal_projection';
+		section.boxId = section.id;
+		document.body.appendChild(section);
+		section.setCode(makeFactHtml(sourceId));
+		section.setMode('preview');
+		await section.updateComplete;
+		const iframe = section.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
+		await vi.waitFor(() => expect(iframe?.srcdoc).toContain('revision-a'));
+		const editor = {
+			getValue: () => makeFactHtml(sourceId),
+			setValue: vi.fn(), getModel: () => ({ getValue: () => makeFactHtml(sourceId) }),
+			getContentHeight: () => 200, getDomNode: () => null, layout: vi.fn(), dispose: vi.fn(), focus: vi.fn(),
+			onDidFocusEditorText: () => ({ dispose() {} }), onDidFocusEditorWidget: () => ({ dispose() {} }),
+			onDidChangeModelContent: () => ({ dispose() {} }), onDidContentSizeChange: () => ({ dispose() {} }),
+			updateOptions: vi.fn(), addCommand: vi.fn(),
+		};
+		(section as any)._editor = editor;
+		const previewSpy = vi.spyOn(section as any, '_updatePreview');
+		const bindingBefore = getBoundResultArtifact(
+			htmlDashboardFactArtifactConsumerId(section.boxId), sourceId,
+		);
+
+		section.applyHostDocumentState(section.createDocumentState());
+		await Promise.resolve();
+
+		expect((section as any)._editor).toBe(editor);
+		expect(editor.setValue).not.toHaveBeenCalled();
+		expect(section.shadowRoot?.getElementById('preview-iframe')).toBe(iframe);
+		expect(previewSpy).not.toHaveBeenCalled();
+		expect(getBoundResultArtifact(
+			htmlDashboardFactArtifactConsumerId(section.boxId), sourceId,
+		)?.artifactId).toBe(bindingBefore?.artifactId);
+		section.remove();
+		await Promise.resolve();
+		clearResultsState(sourceId);
+	});
+
+	it('prevents a detached same-ID instance from rebinding a replacement fact source', async () => {
+		for (const [sourceId, value] of [
+			['query_html_stale_a', 'source-a'], ['query_html_stale_b', 'source-b'],
+		] as const) {
+			setResultsState(sourceId, { columns: ['Value'], rows: [[value]] }, {
+				policy: { exposeToActiveContent: true },
+			});
+		}
+		const oldSection = new KwHtmlSection();
+		oldSection.id = 'html_same_id_owner';
+		oldSection.boxId = oldSection.id;
+		document.body.appendChild(oldSection);
+		oldSection.setCode(makeFactHtml('query_html_stale_a'));
+		oldSection.remove();
+
+		const replacement = new KwHtmlSection();
+		replacement.id = oldSection.id;
+		replacement.boxId = oldSection.boxId;
+		document.body.appendChild(replacement);
+		replacement.setCode(makeFactHtml('query_html_stale_b'));
+		await Promise.resolve();
+		const replacementCode = replacement.getCode();
+		oldSection.setCode('<main>stale detached code</main>');
+
+		expect(replacement.getCode()).toBe(replacementCode);
+		expect(replacement.createDocumentState().code).toBe(replacementCode);
+		expect(getBoundResultArtifact(
+			htmlDashboardFactArtifactConsumerId(replacement.boxId), 'query_html_stale_b',
+		)?.rows).toEqual([['source-b']]);
+		expect(getBoundResultArtifact(
+			htmlDashboardFactArtifactConsumerId(replacement.boxId), 'query_html_stale_a',
+		)).toBeNull();
+		replacement.remove();
+		await Promise.resolve();
+		clearResultsState('query_html_stale_a');
+		clearResultsState('query_html_stale_b');
+	});
+
 	it('pins source A until explicit refresh rebinds to B', () => {
 		const sourceId = 'query_html_artifact_source';
 		setResultsState(sourceId, { columns: ['Value'], rows: [['revision-a']] }, {

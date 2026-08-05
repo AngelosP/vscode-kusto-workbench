@@ -24,9 +24,9 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 ## Baseline
 
-Assessment date: 2026-08-04
+Assessment date: 2026-08-05
 
-The comparison was refreshed against the current working tree after DOC-5 host-owned Transformation configuration convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
+The comparison was refreshed against the current working tree after DOC-6 host-owned HTML configuration convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
 The current architecture is not uniformly legacy. Several high-risk contexts already provide good models for the rest of the application.
 
@@ -44,7 +44,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | Dashboard domain semantics | Shared provenance upgrade/validation concepts and extensive Power BI golden tests | Good domain core, mixed with adapters |
 | Editing preferences and first launch | Revisioned application preferences and transactional profile setup | Good explicit ownership |
 | Native document-view lifecycle protocol | [`documentViewProtocol.ts`](src/shared/documentViewProtocol.ts), one host-created panel UUID, runtime parsing, exactly-once initial projection, and session-fenced commands/results/Save barriers | Strong initial protocol slice |
-| Unmigrated section serialization | Section kinds other than Markdown, URL, Python, Chart, and Transformation implement `serialize()` and persistence iterates their DOM order without ID-prefix ownership | Useful transitional boundary |
+| Unmigrated section serialization | Kusto/SQL and remaining adapter-heavy kinds still participate in broad restore/persistence switches; Markdown, URL, Python, Chart, Transformation, and HTML native state no longer comes from component `serialize()` | Useful transitional boundary |
 
 These parts should normally be wrapped behind golden-outcome ports, not rewritten. Their adversarial lifecycle tests are migration assets.
 
@@ -75,9 +75,9 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | ---: | --- | --- | --- | ---: | --- |
 | - | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Closed through EXA-2; transport-neutral coordinator convergence remains deferred |
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
-| 1 | `DOC` | Document actor and section-definition registry | 4/5/4/5/3/5 | 48 | DOC-6 selected |
-| 2 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/5/5/4/2/5 | 47 | Open, depends on contracts above |
-| 3 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/4/3/4 | 45 | PRO-1 closed; broader protocol/startup work remains open |
+| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/5/5/4/3/5 | 48 | HST-1 selected |
+| 2 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/4/3/4 | 45 | PRO-1 closed; broader protocol/startup work remains open |
+| 3 | `DOC` | Document actor and section-definition registry | 4/4/4/4/2/5 | 41 | DOC-1 through DOC-6 closed; Kusto/SQL deferred |
 | 4 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | Open, depends on document/projection contracts |
 | 5 | `CMP` | Compatibility-provider composition around the shared sidecar core | 4/4/3/3/3/4 | 39 | Open |
 | 6 | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 3/3/3/3/4/4 | 35 | Open |
@@ -190,14 +190,14 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 
 **Current divergence:**
 
-- Native Markdown, URL, Python, Chart, and Transformation persisted state are migrated: one host aggregate, one command client, one URI queue, and per-kind definitions own ordered state and revisions; all five Lit components are views, and native Save does not consult their DOM serialization.
+- Native Markdown, URL, Python, Chart, Transformation, and HTML persisted state are migrated: one host aggregate, one command client, one URI queue, and per-kind definitions own ordered state and revisions; all six Lit components are views, and native Save does not consult their DOM serialization.
 - [`persistence.ts`](src/webview/core/persistence.ts) imports section construction/removal and centrally hydrates every section type.
 - [`section-factory.ts`](src/webview/core/section-factory.ts) imports persistence, creating a cycle between mutation and storage.
-- Creation, restoration, removal, tool configuration, dependency refresh, and privacy sanitation for the remaining section kinds are distributed across large switches and per-type arrays.
+- Creation, restoration, removal, tool configuration, dependency refresh, and privacy sanitation for Kusto/SQL and remaining adapter-heavy paths are distributed across large switches and per-type arrays.
 - Unmigrated components still supply serialization without being canonical domain state. Restore behavior still knows component-private methods and timing.
 - Adding a section requires edits across format, component, factory, persistence, tool removal, startup imports, and privacy handling.
 
-**Migration theme:** DOC-1 through DOC-5 proved the transport-neutral aggregate/definition pattern with Markdown, URL, Python, Chart, and Transformation while preserving runtime-heavy adapters. HTML configuration is the next bounded persisted-state slice; its Monaco/iframe runtime, provenance/data bridge, artifact bindings, slicers, export, and publishing remain adapter-owned. Kusto/SQL remain materially higher-risk later candidates.
+**Migration theme:** DOC-1 through DOC-6 proved the transport-neutral aggregate/definition pattern with Markdown, URL, Python, Chart, Transformation, and HTML while preserving runtime-heavy adapters. Kusto/SQL remain materially higher-risk and are deferred until separately selected. The next eligible work is host composition behind the contracts now proven.
 
 ### `PRO` - Protocol, View Sessions, And Startup
 
@@ -520,13 +520,13 @@ The component and renderer remain adapters. Equal projections retain the exact e
 
 **Qualification:** the finalized focused ring passed 7 files and 375 tests. Complete sequential Vitest and sequential coverage passed 217 files and 5,635 tests; statement coverage is 47.78% against the unchanged 27.67% threshold. Provider lifecycle passed 16/16, compatibility sidecars passed 117/117, and the complete VS Code 1.131.0 extension-host suite passed 191/191 with `--timeout 5000`. Host/webview/browser typechecks, production extension and browser builds, ESLint with zero errors and five pre-existing warnings, and both synchronized bundle gates passed. Native run `20260803-213448` passed all three `host-owned-markdown-lifecycle` scenarios. Three reviewed `1280x1000` screenshots were clean and correctly foreground-captured; reviewed JSON proved distinct session UUIDs, one initial request per session, exactly one stamped command/result per session, no terminal or mutation from the predecessor command, accepted stamped Save barriers, and `dirty:false` persisted state. Inherited DOC-3/DOC-4 artifacts and logs remained clean; logs contained only existing VS Code Git/CSP warnings and the unrelated Mermaid proposed-API error. Final production sizes are 1,872.6 KB for `extension.js` and 2,752.8 KB for `webview.bundle.js`; intentional PRO-1 growth moved synchronized baselines from 1,814 to 1,823 KB and from 2,695 to 2,703 KB with the 50 KB buffer unchanged.
 
-## Next Iteration
+## Completed Document Iteration
 
 ### Iteration `DOC-6`: Host-Owned HTML Configuration State
 
-**Status:** selected, not started.
+**Status:** closed on 2026-08-05. Post-fix blocker reviews returned `VERDICT: NO DOC-6 BLOCKER`; the closure decision is `VERDICT: CLOSE DOC-6`.
 
-**Why next:** DOC remains the highest eligible gap at 48. HTML is the next bounded persisted-configuration section after Transformation. Its durable shape is already explicit in `kqlxFormat.ts` and the lossless overlay, while Monaco, preview iframe, provenance/data bridge, immutable artifact binding, slicers, validation, export, and publishing can remain adapter-owned. Kusto and SQL still combine primary text, target, language, execution, privacy, and result ownership and are materially riskier candidates.
+**Selection rationale:** DOC was the highest eligible gap at 48. HTML was the next bounded persisted-configuration section after Transformation. Its durable shape was already explicit in `kqlxFormat.ts` and the lossless overlay, while Monaco, preview iframe, provenance/data bridge, immutable artifact binding, slicers, validation, export, and publishing could remain adapter-owned. Kusto and SQL combined primary text, target, language, execution, privacy, and result ownership and were materially riskier candidates.
 
 **Boundary:** add one HTML section definition and route existing persisted `name`, `code`, `mode`, `expanded`, editor/preview heights, `previewHeightUserSet`, `dataSourceIds`, `pbiPublishInfo`, and `powerBiUpgradeNotice` through the existing aggregate, optimistic client, document-view channel, and URI queue. Keep Monaco instances, preview iframe/scripts, provenance parsing, data bridge, immutable artifact binding, slicers, renderer state, validation, Power BI export, and Fabric publishing in existing adapters. Do not migrate Kusto, SQL, dashboard compiler ownership, or another section kind.
 
@@ -535,6 +535,30 @@ The component and renderer remain adapters. Equal projections retain the exact e
 **Cheapest discriminating check:** load native Markdown/URL/Python/Chart/Transformation plus one HTML section bound to an immutable fact artifact, nested future publish/notice metadata, and an opaque section. Apply one HTML configuration edit and reject one stale edit through the host command path, recreate the view, poison `kw-html-section.serialize()`, then Save and prove exact configuration/order/future data while an equal projection retains the same Monaco, preview iframe, and fact binding without rerender or command emission.
 
 **Exclusions:** no active-content/origin/trust policy work, dashboard compiler or provenance redesign, artifact-store redesign, iframe/network policy, Power BI/Fabric workflow migration, Kusto/SQL ownership, protocol expansion beyond the existing document-view channel, deferred `ACT`, or seventh section kind.
+
+**Boundary:** `htmlSectionDefinition.ts` owns persisted HTML validation, cloning, nested publish/notice metadata, and null-delete patches. HTML joins the existing aggregate, optimistic full-projection ledger, runtime-validated document-view channel, physical URI queue, Save lease, handoff, and lossless overlay. Native Save substitutes acknowledged HTML and never calls `kw-html-section.serialize()`; metadata-free browser/legacy behavior retains serialization.
+
+**Adapter boundary:** Monaco, sandboxed iframe/scripts, provenance parsing, data bridge, immutable fact binding, slicers, validation, Power BI export, and Fabric publishing remain adapter-owned. Equal projection retains the exact element/editor/iframe/binding without rerender or commands. Same-ID/detached instances, delayed measurement, stale responses, and no-op DOM ordering cannot mutate or reload the current runtime.
+
+**Publish transaction hardening:** dashboard requests carry exact identities and cancellation. Fabric mutation uses one account and final Leave No Trace admission, UUID staging, exact paginated recovery, and partial-create compensation. Returned IDs enter the document through one-field correlated HTML commands. Apply/compensate binds exact section, complete metadata, document/section revisions, and authoritative previous value. Concurrent ordinary HTML patches carry a provisional new tuple; failures reconcile from host projection. Queue-stable cleanup retains referenced or uncertain items and deletes only an absent exact tuple.
+
+**Qualification:** final focused ring passed 20 files and 661 tests. Complete sequential Vitest and coverage passed 220 files and 5,703 tests; statement coverage is 48.18% against the unchanged 27.67% threshold. Provider lifecycle passed 21/21, compatibility sidecars passed 124/124, and the complete VS Code 1.131.0 extension-host suite passed 201/201 with `--timeout 5000`. Host/webview/browser typechecks, integration compilation, production extension and strict browser builds, ESLint with zero errors and five pre-existing warnings, and both synchronized bundle gates passed. Final sizes are 1,905.5 KB for `extension.js` and 2,801.9 KB for `webview.bundle.js`; baselines are 1,856 KB and 2,752 KB with the 50 KB buffer unchanged. Definitive native run `20260805-043534` passed all five `host-owned-markdown-lifecycle` scenarios after one harness file-not-found rerun. Five reviewed foreground `1280x1000` screenshots and eight DOC-6 JSON artifacts proved exact successful/stale terminals, accepted Save, zero serializer/equal-projection commands, exact editor/iframe/binding retention, clean recreation, exact mixed order, nested future publish/notice metadata, and opaque preservation. Logs contained only existing Git/CSP/Mermaid noise. No live authenticated Fabric tenant run was performed.
+
+## Next Iteration
+
+### Iteration `HST-1`: Dashboard Workflow Application Handler
+
+**Status:** selected, not started.
+
+**Why next:** DOC-6 completed the last bounded presentation-section migration while exposing a concentrated host application workflow still owned directly by `QueryEditorProvider`: dashboard prompts, export, workspace/existence lookup, publish request lifetimes, external commit admission, document metadata application leases, and cleanup. Those contracts are now explicit and testable, making a narrow composition extraction feasible without touching Kusto/SQL or dashboard compilation.
+
+**Boundary:** extract the existing dashboard request/Power BI orchestration into one injected host application handler. `QueryEditorProvider` remains panel transport/composition and forwards typed messages. Keep `powerBiExport.ts`, `powerBiPublish.ts`, the document aggregate/URI queue, `kw-html-section`, provenance v1, generated PBIR/TMDL/DAX, and all user behavior unchanged.
+
+**Falsifiable hypothesis:** if one dashboard application handler owns request identity, cancellation, first-commit admission, publish application/compensation leases, and cleanup decisions, then the provider can forward all dashboard routes without retaining dashboard workflow maps or state transitions, while every current cancellation/privacy/principal/replacement race remains deterministic.
+
+**Cheapest discriminating check:** construct the real provider with a fake dashboard handler, send each existing dashboard message through `handleWebviewMessage`, and prove exact typed forwarding and response delivery while a focused handler test runs publish-as-new with a concurrent HTML rename, stale retirement, exact old-metadata restoration, and cleanup. Before extraction, the provider itself owns those maps/transitions; after extraction, the provider contains no dashboard workflow authority.
+
+**Exclusions:** no Kusto/SQL ownership, no document-view protocol expansion, no provenance/dashboard compiler redesign, no Fabric API behavior change, no new section kind, no browser composition, and no deferred `ACT` work.
 
 ## Convergence Loop
 
@@ -681,6 +705,7 @@ These are not full golden-outcome iterations retroactively, but they materially 
 | `DOC-4` | Existing aggregate/client/URI queue + `chartSectionDefinition.ts` | Native Chart DOM serialization authority and adapter-owned persisted Chart configuration | Full optimistic projection, retained ECharts/artifact identity, exact source rebind, detached-instance fencing, lossless Save, arbitrary-ID propagation, and native lifecycle gate | Focused 744, full Vitest 5,626, extension-host 190, native 2/2, production/browser, bundle gates, and definitive post-fix review complete | 2026-08-03 |
 | `PRO-1` | `documentViewProtocol.ts` + host-created panel session UUID | Unchecked/duplicated native document lifecycle envelopes and sessionless panel admission | Runtime schema inventory, exactly-once initial projection, stale-session acknowledgement/command/result/barrier fences, provider race test, and native recreation gate | Focused 375, full/coverage Vitest 5,635, extension-host 191, native 3/3, production/browser, bundle gates, and definitive blocker review complete | 2026-08-03 |
 | `DOC-5` | Existing aggregate/client/URI queue + `transformationSectionDefinition.ts` | Native Transformation DOM serialization authority and adapter-owned persisted Transformation configuration | Full optimistic projection, retained input pins/lineage, exact source rebind, runtime-height isolation, stale instance fencing, lossless Save, privacy/physical-alias guards, and native lifecycle gate | Focused 729, full/coverage Vitest 5,657, extension-host 200, native 4/4, production/browser, bundle gates, and definitive blocker review complete | 2026-08-04 |
+| `DOC-6` | Existing aggregate/client/URI queue + `htmlSectionDefinition.ts` | Native HTML DOM serialization authority and adapter-owned persisted HTML configuration | Full optimistic projection, exact Monaco/iframe/artifact retention, stale-instance/workflow fencing, one-field publish metadata CAS/rollback, queue-stable external cleanup, lossless Save, and native lifecycle gate | Focused 661, full/coverage Vitest 5,703, extension-host 201, native 5/5, production/browser, bundle gates, post-fix blocker reviews, and documented closure decision complete | 2026-08-05 |
 
 ## Decision Discipline
 

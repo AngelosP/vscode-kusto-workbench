@@ -288,17 +288,17 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kqlCompatEditorProvider.ts::requestFinalPersist::postMessage::620:57',
 	'src/host/kqlxEditorProvider.ts::deliverWebviewMessage::postMessage::1233:34',
 	'src/host/kqlxEditorProvider.ts::postWebviewMessage::postMessage::1222:10',
-	'src/host/kqlxEditorProvider.ts::resolveCustomTextEditor::postMessage::3578:19',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::376:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::610:29',
-	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::745:26',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::3109:21',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::2769:21',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::2788:22',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::2741:21',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::2753:21',
-	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::2801:10',
-	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::524:25',
+	'src/host/kqlxEditorProvider.ts::resolveCustomTextEditor::postMessage::3606:19',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::400:27',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::634:29',
+	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::769:26',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::3488:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::3148:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::3167:22',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::3120:21',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::3132:21',
+	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::3180:10',
+	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::548:25',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1741:13',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1745:10',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageContained::postMessageRequiredContained::2013:8',
@@ -361,6 +361,8 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'requestArtifactCsvSave',
 	'artifactCsvSaveData',
 	'cancelArtifactCsvSaveIntent',
+	'cancelDashboardWorkflow',
+	'publishToPowerBIAck',
 	'setCaretDocsEnabled',
 	'setAutoTriggerAutocompleteEnabled',
 	'setCopilotInlineCompletionsEnabled',
@@ -471,6 +473,8 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	'requestArtifactCsvSave',
 	'artifactCsvSaveData',
 	'cancelArtifactCsvSaveIntent',
+	'cancelDashboardWorkflow',
+	'publishToPowerBIAck',
 	'exportDashboard',
 	'getPbiWorkspaces',
 	'checkPbiItemExists',
@@ -830,6 +834,7 @@ const HOST_TO_WEBVIEW_TYPES = [
 /** Host→webview messages handled directly by a Lit component instead of message-handler.ts. */
 const COMPONENT_HANDLED_HOST_TO_WEBVIEW_TYPES = [
 	'openPublishPbiDialog',
+	'powerBiPublishHelpResult',
 	'pbiWorkspacesResult',
 	'pbiItemExistsResult',
 	'publishToPowerBIResult',
@@ -943,6 +948,7 @@ describe('Message Protocol Contract', () => {
 	describe('Webview → Host (OutgoingWebviewMessage ↔ IncomingWebviewMessage)', () => {
 		it('publishToPowerBI carries the selected data mode in both directions', () => {
 			const basePayload = {
+				requestId: 'publish-request-1',
 				boxId: 'html_1',
 				workspaceId: 'workspace-1',
 				reportName: 'Ops Dashboard',
@@ -1047,6 +1053,7 @@ describe('Message Protocol Contract', () => {
 				if (!providerMessages.has(t)) missingSenders.push(t);
 				if (!htmlSectionMessages.has(t)) missingHandlers.push(t);
 				if (t !== 'openPublishPbiDialog'
+					&& t !== 'powerBiPublishHelpResult'
 					&& t !== 'powerBiPartialPublishWarningResult'
 					&& !publishDialogMessages.has(t)) missingDialogHandlers.push(t);
 			}

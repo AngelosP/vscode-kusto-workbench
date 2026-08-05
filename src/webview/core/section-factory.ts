@@ -6,13 +6,17 @@ import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
 import { schedulePersist } from './persistence';
 import {
+	isHostOwnedHtmlDocument,
 	isHostOwnedPythonDocument,
 	isHostOwnedUrlDocument,
+	requestHostOwnedHtmlAdd,
+	requestHostOwnedHtmlRemove,
 	requestHostOwnedPythonAdd,
 	requestHostOwnedPythonRemove,
 	requestHostOwnedUrlAdd,
 	requestHostOwnedUrlRemove,
 } from './markdown-document-client.js';
+import type { HtmlSectionState } from '../../shared/htmlSectionDefinition.js';
 import type { PythonSectionState } from '../../shared/pythonSectionDefinition.js';
 import type { UrlSectionState } from '../../shared/urlSectionDefinition.js';
 import { consumePythonExecutionTerminal } from './python-execution-admission.js';
@@ -219,6 +223,8 @@ export function __kustoSetSectionName( boxId: any, name: any) {
 			el.setName(String(name || ''));
 			if (String(el.tagName || '').toLowerCase() === 'kw-url-section' && isHostOwnedUrlDocument()) {
 				commitUrlDocumentState(boxId);
+			} else if (String(el.tagName || '').toLowerCase() === 'kw-html-section' && isHostOwnedHtmlDocument()) {
+				commitHtmlDocumentState(boxId);
 			}
 			return;
 		}
@@ -2832,7 +2838,7 @@ window.removeUrlBox = removeUrlBox;
 export let htmlBoxes: any[] = [];
 try { (window as any).__kustoHtmlBoxes = htmlBoxes; } catch (e) { console.error('[kusto]', e); }
 
-export function addHtmlBox(options?: any) {
+function createHtmlBox(options?: any) {
 	const id = (options && options.id) ? String(options.id) : ('html_' + Date.now());
 	htmlBoxes.push(id);
 
@@ -2860,7 +2866,11 @@ export function addHtmlBox(options?: any) {
 
 	// Handle remove event from the Lit component.
 	litEl.addEventListener('section-remove', function (e: any) {
-		try { removeHtmlBox(e.detail.boxId); } catch (e) { console.error('[kusto]', e); }
+		try {
+			const removeId = String(e?.detail?.boxId || id);
+			if (removeId !== id || !litEl.isConnected || document.getElementById(id) !== litEl) return;
+			removeHtmlBox(removeId, litEl);
+		} catch (e) { console.error('[kusto]', e); }
 	});
 
 	if (options && typeof options.name === 'string') {
@@ -2871,6 +2881,7 @@ export function addHtmlBox(options?: any) {
 		// when Monaco creates the editor. setCode() alone only buffers to
 		// pendingHtmlCodeByBoxId which is never consumed during editor init.
 		litEl.setAttribute('initial-code', options.code);
+		pState.pendingHtmlCodeByBoxId[id] = options.code;
 	}
 	if (options && typeof options.mode === 'string') {
 		litEl.setMode(options.mode);
@@ -2905,7 +2916,10 @@ export function addHtmlBox(options?: any) {
 		container.appendChild(litEl);
 	}
 
-	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try {
+		if (isHostOwnedHtmlDocument()) requestHostOwnedHtmlAdd(litEl.createDocumentState(), afterBoxId);
+		else schedulePersist();
+	} catch (e) { console.error('[kusto]', e); }
 	if (afterBoxId) {
 		try {
 			const newEl = document.getElementById(id);
@@ -2917,14 +2931,55 @@ export function addHtmlBox(options?: any) {
 	return id;
 }
 
-export function removeHtmlBox(boxId: any) {
-	try { unbindResultArtifactConsumer(htmlDashboardFactArtifactConsumerId(boxId)); } catch (e) { console.error('[kusto]', e); }
-	htmlBoxes = htmlBoxes.filter((id: any) => id !== boxId);
-	const box = document.getElementById(boxId) as any;
+export function addHtmlBox(options?: any) {
+	return createHtmlBox(options);
+}
+
+export function removeHtmlBox(boxId: any, expectedElement?: HTMLElementTagNameMap['kw-html-section']) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const box = document.getElementById(id) as HTMLElementTagNameMap['kw-html-section'] | null;
+	if (expectedElement && (!expectedElement.isConnected || box !== expectedElement)) return;
+	const hostOwnedDocument = isHostOwnedHtmlDocument();
+	if (hostOwnedDocument) requestHostOwnedHtmlRemove(id);
+	delete pState.pendingHtmlCodeByBoxId[id];
+	try { unbindResultArtifactConsumer(htmlDashboardFactArtifactConsumerId(id)); } catch (e) { console.error('[kusto]', e); }
+	htmlBoxes = htmlBoxes.filter((candidateId: any) => String(candidateId) !== id);
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
-	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { if (!hostOwnedDocument) schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+}
+
+export function reconcileHostOwnedHtmlProjection(
+	sections: readonly HtmlSectionState[],
+	_orderedSectionIds: readonly string[],
+): void {
+	const previousProjectionState = pState.applyingHostMarkdownProjection;
+	pState.applyingHostMarkdownProjection = true;
+	try {
+		const sectionsById = new Map(sections.map(section => [section.id, section]));
+		for (const id of [...htmlBoxes]) {
+			if (!sectionsById.has(String(id))) removeHtmlBox(id);
+		}
+		for (const section of sections) {
+			let element = document.getElementById(section.id) as HTMLElementTagNameMap['kw-html-section'] | null;
+			if (!element || element.tagName.toLowerCase() !== 'kw-html-section') {
+				createHtmlBox({ ...section });
+				element = document.getElementById(section.id) as HTMLElementTagNameMap['kw-html-section'] | null;
+			}
+			element?.applyHostDocumentState(section);
+		}
+	} finally {
+		pState.applyingHostMarkdownProjection = previousProjectionState;
+	}
+}
+
+export function commitHtmlDocumentState(boxId: unknown): boolean {
+	const element = document.getElementById(String(boxId || '')) as HTMLElementTagNameMap['kw-html-section'] | null;
+	if (!element || element.tagName.toLowerCase() !== 'kw-html-section') return false;
+	element.commitDocumentState();
+	return true;
 }
 
 window.removeHtmlBox = removeHtmlBox;

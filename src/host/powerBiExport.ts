@@ -2880,6 +2880,7 @@ function generateCultureTmdl(): string {
 export async function exportHtmlToPowerBI(
 	input: PowerBiExportInput,
 	folderUri: vscode.Uri,
+	options?: Readonly<{ signal?: AbortSignal; commitOnFirstWrite?: boolean }>,
 ): Promise<void> {
 	validatePowerBiHtmlBindings(input.htmlCode, input.dataSources);
 
@@ -2936,7 +2937,22 @@ export async function exportHtmlToPowerBI(
 	// ── Patch body selectors → .kw-pbi-root wrapper for PBI visual ──
 	const pbiHtml = patchCssForPbiVisual(resolvedHtml);
 
+	let externalWriteCommitted = false;
 	const write = async (relativePath: string, content: string | Buffer) => {
+		if (options?.commitOnFirstWrite === false) {
+			if (options.signal?.aborted) {
+				const error = new Error('Power BI export preparation canceled.');
+				error.name = 'AbortError';
+				throw error;
+			}
+		} else if (!externalWriteCommitted) {
+			if (options?.signal?.aborted) {
+				const error = new Error('Power BI export canceled before external commit.');
+				error.name = 'AbortError';
+				throw error;
+			}
+			externalWriteCommitted = true;
+		}
 		const uri = vscode.Uri.joinPath(folderUri, relativePath);
 		const data = typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
 		await vscode.workspace.fs.writeFile(uri, data);

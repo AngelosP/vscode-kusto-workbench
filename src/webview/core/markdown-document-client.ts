@@ -36,6 +36,12 @@ import {
 	parseTransformationSectionPatch,
 	patchTransformationSection,
 } from '../../shared/transformationSectionDefinition.js';
+import type { HtmlSectionPatch, HtmlSectionState, PbiPublishInfo } from '../../shared/htmlSectionDefinition.js';
+import {
+	parseHtmlSection,
+	parseHtmlSectionPatch,
+	patchHtmlSection,
+} from '../../shared/htmlSectionDefinition.js';
 import { pState } from '../shared/persistence-state.js';
 import { postMessageToHost } from '../shared/webview-messages.js';
 
@@ -57,6 +63,7 @@ let optimisticProjection: MarkdownDocumentProjection = {
 	sectionRevisions: {},
 	markdownSectionRevisions: {},
 	chartSections: [],
+	htmlSections: [],
 	markdownSections: [],
 	pythonSections: [],
 	transformationSections: [],
@@ -68,6 +75,7 @@ let authoritativeProjection: MarkdownDocumentProjection = {
 	sectionRevisions: {},
 	markdownSectionRevisions: {},
 	chartSections: [],
+	htmlSections: [],
 	markdownSections: [],
 	pythonSections: [],
 	transformationSections: [],
@@ -85,6 +93,10 @@ function cloneMarkdownSection(section: MarkdownSectionState): MarkdownSectionSta
 
 function cloneChartSection(section: ChartSectionState): ChartSectionState {
 	return patchChartSection(section, {});
+}
+
+function cloneHtmlSection(section: HtmlSectionState): HtmlSectionState {
+	return patchHtmlSection(section, {});
 }
 
 function clonePythonSection(section: PythonSectionState): PythonSectionState {
@@ -110,6 +122,7 @@ function parseHostOwnedProjection(input: unknown): MarkdownDocumentProjection | 
 
 function commandSection(input: unknown):
 	| ChartSectionState
+	| HtmlSectionState
 	| MarkdownSectionState
 	| PythonSectionState
 	| TransformationSectionState
@@ -117,6 +130,8 @@ function commandSection(input: unknown):
 	| undefined {
 	const chart = parseChartSection(input);
 	if (chart.ok) return chart.value;
+	const html = parseHtmlSection(input);
+	if (html.ok) return html.value;
 	const markdown = parseMarkdownSection(input);
 	if (markdown.ok) return markdown.value;
 	const python = parsePythonSection(input);
@@ -133,6 +148,7 @@ function cloneProjection(projection: MarkdownDocumentProjection): MarkdownDocume
 		sectionRevisions: { ...projection.sectionRevisions },
 		markdownSectionRevisions: { ...projection.markdownSectionRevisions },
 		chartSections: projection.chartSections.map(cloneChartSection),
+		htmlSections: projection.htmlSections.map(cloneHtmlSection),
 		markdownSections: projection.markdownSections.map(cloneMarkdownSection),
 		pythonSections: projection.pythonSections.map(clonePythonSection),
 		transformationSections: projection.transformationSections.map(cloneTransformationSection),
@@ -151,6 +167,7 @@ function projectionWithAcknowledgedOrder(
 		.filter(id => !!id && !seen.has(id) && !!seen.add(id));
 	const ownedIds = new Set([
 		...projection.chartSections.map(section => section.id),
+		...projection.htmlSections.map(section => section.id),
 		...projection.markdownSections.map(section => section.id),
 		...projection.pythonSections.map(section => section.id),
 		...projection.transformationSections.map(section => section.id),
@@ -172,9 +189,11 @@ function projectionWithAcknowledgedOrder(
 	}
 	const sectionsById = new Map<
 		string,
-		ChartSectionState | MarkdownSectionState | PythonSectionState | TransformationSectionState | UrlSectionState
+		ChartSectionState | HtmlSectionState | MarkdownSectionState | PythonSectionState
+			| TransformationSectionState | UrlSectionState
 	>([
 		...projection.chartSections.map(section => [section.id, cloneChartSection(section)] as const),
+		...projection.htmlSections.map(section => [section.id, cloneHtmlSection(section)] as const),
 		...projection.markdownSections.map(section => [section.id, cloneMarkdownSection(section)] as const),
 		...projection.pythonSections.map(section => [section.id, clonePythonSection(section)] as const),
 		...projection.transformationSections.map(section => [section.id, cloneTransformationSection(section)] as const),
@@ -187,6 +206,7 @@ function projectionWithAcknowledgedOrder(
 	return {
 		...cloneProjection(projection),
 		chartSections: ownedInOrder.filter((section): section is ChartSectionState => section.type === 'chart'),
+		htmlSections: ownedInOrder.filter((section): section is HtmlSectionState => section.type === 'html'),
 		markdownSections: ownedInOrder.filter((section): section is MarkdownSectionState => section.type === 'markdown'),
 		pythonSections: ownedInOrder.filter((section): section is PythonSectionState => section.type === 'python'),
 		transformationSections: ownedInOrder.filter(
@@ -203,9 +223,11 @@ function transitionProjection(
 ): MarkdownDocumentProjection | undefined {
 	const sectionsById = new Map<
 		string,
-		ChartSectionState | MarkdownSectionState | PythonSectionState | TransformationSectionState | UrlSectionState
+		ChartSectionState | HtmlSectionState | MarkdownSectionState | PythonSectionState
+			| TransformationSectionState | UrlSectionState
 	>([
 		...projection.chartSections.map(section => [section.id, cloneChartSection(section)] as const),
+		...projection.htmlSections.map(section => [section.id, cloneHtmlSection(section)] as const),
 		...projection.markdownSections.map(section => [section.id, cloneMarkdownSection(section)] as const),
 		...projection.pythonSections.map(section => [section.id, clonePythonSection(section)] as const),
 		...projection.transformationSections.map(
@@ -242,6 +264,11 @@ function transitionProjection(
 			if (!patch.ok) return undefined;
 			sectionsById.set(section.id, patchChartSection(section, patch.value));
 			sectionRevisions[section.id] = command.expectedSectionRevision + 1;
+		} else if (section.type === 'html') {
+			const patch = parseHtmlSectionPatch(command.patch);
+			if (!patch.ok) return undefined;
+			sectionsById.set(section.id, patchHtmlSection(section, patch.value));
+			sectionRevisions[section.id] = command.expectedSectionRevision + 1;
 		} else if (section.type === 'markdown') {
 			const patch = parseMarkdownSectionPatch(command.patch);
 			if (!patch.ok) return undefined;
@@ -272,6 +299,9 @@ function transitionProjection(
 	const chartSections = ownedInOrder.filter(
 		(section): section is ChartSectionState => section.type === 'chart',
 	);
+	const htmlSections = ownedInOrder.filter(
+		(section): section is HtmlSectionState => section.type === 'html',
+	);
 	const markdownSections = ownedInOrder.filter(
 		(section): section is MarkdownSectionState => section.type === 'markdown',
 	);
@@ -286,6 +316,7 @@ function transitionProjection(
 	);
 	const canonicalSectionRevisions = Object.fromEntries([
 		...chartSections.map(section => [section.id, sectionRevisions[section.id]] as const),
+		...htmlSections.map(section => [section.id, sectionRevisions[section.id]] as const),
 		...markdownSections.map(section => [section.id, sectionRevisions[section.id]] as const),
 		...pythonSections.map(section => [section.id, sectionRevisions[section.id]] as const),
 		...transformationSections.map(section => [section.id, sectionRevisions[section.id]] as const),
@@ -298,6 +329,7 @@ function transitionProjection(
 			markdownSections.map(section => [section.id, sectionRevisions[section.id]]),
 		),
 		chartSections,
+		htmlSections,
 		markdownSections,
 		pythonSections,
 		transformationSections,
@@ -342,6 +374,10 @@ export function isHostOwnedChartDocument(): boolean {
 	return isHostOwnedMarkdownDocument();
 }
 
+export function isHostOwnedHtmlDocument(): boolean {
+	return isHostOwnedMarkdownDocument();
+}
+
 export function isHostOwnedUrlDocument(): boolean {
 	return isHostOwnedMarkdownDocument();
 }
@@ -378,6 +414,9 @@ function adoptProjection(projection: MarkdownDocumentProjection, synchronizeOpti
 	);
 	pState.hostOwnedChartSections = Object.fromEntries(
 		projection.chartSections.map(section => [section.id, cloneChartSection(section)]),
+	);
+	pState.hostOwnedHtmlSections = Object.fromEntries(
+		projection.htmlSections.map(section => [section.id, cloneHtmlSection(section)]),
 	);
 	pState.hostOwnedPythonSections = Object.fromEntries(
 		projection.pythonSections.map(section => [section.id, clonePythonSection(section)]),
@@ -421,6 +460,7 @@ export function adoptHostOwnedMarkdownDocument(message: unknown, state: unknown)
 		sectionRevisions: envelope.sectionRevisions,
 		markdownSectionRevisions: envelope.markdownSectionRevisions,
 		chartSections: sections.filter(section => isRecord(section) && section.type === 'chart'),
+		htmlSections: sections.filter(section => isRecord(section) && section.type === 'html'),
 		markdownSections: sections.filter(section => isRecord(section) && section.type === 'markdown'),
 		pythonSections: sections.filter(section => isRecord(section) && section.type === 'python'),
 		transformationSections: sections.filter(
@@ -451,6 +491,7 @@ export function resetHostOwnedMarkdownDocument(): void {
 	pState.documentSectionRevisions = {};
 	pState.hostOwnedMarkdownSections = {};
 	pState.hostOwnedChartSections = {};
+	pState.hostOwnedHtmlSections = {};
 	pState.hostOwnedPythonSections = {};
 	pState.hostOwnedTransformationSections = {};
 	pState.hostOwnedUrlSections = {};
@@ -465,6 +506,7 @@ export function resetHostOwnedMarkdownDocument(): void {
 		sectionRevisions: {},
 		markdownSectionRevisions: {},
 		chartSections: [],
+		htmlSections: [],
 		markdownSections: [],
 		pythonSections: [],
 		transformationSections: [],
@@ -526,7 +568,11 @@ export function getHostOwnedUrlSection(sectionId: string): UrlSectionState | und
 	return section ? cloneUrlSection(section) : undefined;
 }
 
-function dispatchCommand(command: MarkdownDocumentCommand): boolean {
+function dispatchCommand(
+	command: MarkdownDocumentCommand,
+	publishRequestId?: string,
+	publishApplicationPhase?: 'apply' | 'compensate',
+): boolean {
 	if (queueBlocked) return false;
 	const commandId = `markdown-command-${Date.now()}-${++commandSequence}`;
 	const epoch = projectionEpoch;
@@ -547,6 +593,8 @@ function dispatchCommand(command: MarkdownDocumentCommand): boolean {
 	postMessageToHost({
 		type: 'markdownDocumentCommand',
 		commandId,
+		...(publishRequestId ? { publishRequestId } : {}),
+		...(publishRequestId && publishApplicationPhase ? { publishApplicationPhase } : {}),
 		sourceGeneration,
 		expectedDocumentRevision,
 		command,
@@ -819,6 +867,72 @@ export function requestHostOwnedTransformationPatch(section: TransformationSecti
 
 export function requestHostOwnedTransformationRemove(sectionId: string): boolean {
 	if (!isHostOwnedTransformationDocument()
+		|| pState.restoreInProgress || pState.applyingHostMarkdownProjection || queueBlocked) return false;
+	const expectedSectionRevision = optimisticSectionRevisions[sectionId];
+	if (!Number.isSafeInteger(expectedSectionRevision)) return false;
+	return dispatchCommand({ type: 'remove', sectionId, expectedSectionRevision });
+}
+
+export function getHostOwnedHtmlSection(sectionId: string): HtmlSectionState | undefined {
+	const section = pState.hostOwnedHtmlSections[String(sectionId || '')];
+	return section ? cloneHtmlSection(section) : undefined;
+}
+
+export function requestHostOwnedHtmlAdd(section: HtmlSectionState, afterSectionId?: string): boolean {
+	if (!isHostOwnedHtmlDocument()
+		|| pState.restoreInProgress || pState.applyingHostMarkdownProjection || queueBlocked) return false;
+	if (Number.isSafeInteger(optimisticSectionRevisions[section.id])) return true;
+	return dispatchCommand({
+		type: 'add', section: cloneHtmlSection(section), ...(afterSectionId ? { afterSectionId } : {}),
+	});
+}
+
+function createHtmlPatch(section: HtmlSectionState): HtmlSectionPatch {
+	const snapshot = cloneHtmlSection(section);
+	const patch: HtmlSectionPatch = {};
+	const patchRecord = patch as unknown as Record<string, unknown>;
+	for (const key of [
+		'name', 'code', 'mode', 'expanded', 'editorHeightPx', 'previewHeightPx',
+		'previewHeightUserSet', 'dataSourceIds', 'pbiPublishInfo', 'powerBiUpgradeNotice',
+	] as const) {
+		patchRecord[key] = snapshot[key] === undefined ? null : snapshot[key];
+	}
+	return patch;
+}
+
+export function requestHostOwnedHtmlPatch(
+	section: HtmlSectionState,
+): boolean {
+	if (!isHostOwnedHtmlDocument()
+		|| pState.restoreInProgress || pState.applyingHostMarkdownProjection || queueBlocked) return false;
+	const expectedSectionRevision = optimisticSectionRevisions[section.id];
+	if (!Number.isSafeInteger(expectedSectionRevision)) return false;
+	const patch = createHtmlPatch(section);
+	const current = optimisticProjection.htmlSections.find(candidate => candidate.id === section.id);
+	if (current && jsonSemanticallyEqual(patchHtmlSection(current, patch), current)) return true;
+	return dispatchCommand({ type: 'patch', sectionId: section.id, expectedSectionRevision, patch });
+}
+
+export function requestHostOwnedHtmlPublishInfoPatch(
+	sectionId: string,
+	publishInfo: PbiPublishInfo | null,
+	publishRequestId: string,
+	publishApplicationPhase: 'apply' | 'compensate',
+): boolean {
+	if (!isHostOwnedHtmlDocument()
+		|| pState.restoreInProgress || pState.applyingHostMarkdownProjection || queueBlocked) return false;
+	const expectedSectionRevision = optimisticSectionRevisions[sectionId];
+	if (!Number.isSafeInteger(expectedSectionRevision)
+		|| !optimisticProjection.htmlSections.some(section => section.id === sectionId)) return false;
+	return dispatchCommand(
+		{ type: 'patch', sectionId, expectedSectionRevision, patch: { pbiPublishInfo: publishInfo } },
+		publishRequestId,
+		publishApplicationPhase,
+	);
+}
+
+export function requestHostOwnedHtmlRemove(sectionId: string): boolean {
+	if (!isHostOwnedHtmlDocument()
 		|| pState.restoreInProgress || pState.applyingHostMarkdownProjection || queueBlocked) return false;
 	const expectedSectionRevision = optimisticSectionRevisions[sectionId];
 	if (!Number.isSafeInteger(expectedSectionRevision)) return false;

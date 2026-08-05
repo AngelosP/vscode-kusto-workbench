@@ -1,4 +1,5 @@
 import type { PowerBiUpgradeNoticeState } from '../shared/htmlDashboardUpgrade';
+import type { PbiPublishInfo } from '../shared/htmlSectionDefinition';
 import type {
 	PersistedResultArtifactV1,
 	ResultArtifactLineage,
@@ -12,7 +13,6 @@ import type {
 	KqlxFileV1,
 	KqlxSectionV1,
 	KqlxStateV1,
-	PbiPublishInfo,
 } from './kqlxFormat';
 import {
 	canonicalSectionKind as canonicalKnownSectionKind,
@@ -321,7 +321,7 @@ const powerBiUpgradeNoticeField = objectField({
 	dismissedForSection: booleanField(),
 	dismissedForVersion: numberField(),
 	dismissedForSignature: stringField(),
-	dismissedAt: numberField(),
+	dismissedAt: stringField(),
 } satisfies CompleteFieldSchema<PowerBiUpgradeNoticeState>);
 const htmlSectionSchema = {
 	id: stringField(),

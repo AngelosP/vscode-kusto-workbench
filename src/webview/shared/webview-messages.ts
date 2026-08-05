@@ -139,6 +139,7 @@ export type OutgoingHtmlDashboardUpgradeWithCopilotMessage = {
 
 export type OutgoingPowerBiPublishHelpMessage = {
 	type: 'showPowerBiPublishHelp';
+	requestId: string;
 	sectionId: string;
 	sectionName?: string;
 	targetVersion?: number;
@@ -156,6 +157,7 @@ export type OutgoingPowerBiPartialPublishWarningMessage = {
 
 export type OutgoingPowerBiUnsupportedVisualHelpMessage = {
 	type: 'showPowerBiUnsupportedVisualHelp';
+	requestId: string;
 	message: string;
 };
 
@@ -202,11 +204,13 @@ export type OutgoingWebviewMessage =
 	| { type: 'requestArtifactCsvSave'; requestId: string; boxId: string; artifactId: string; suggestedFileName?: string }
 	| { type: 'artifactCsvSaveData'; requestId: string; boxId: string; artifactId: string; accepted: boolean; csv?: string }
 	| { type: 'cancelArtifactCsvSaveIntent'; requestId: string }
-	| { type: 'exportDashboard'; boxId: string; html: string; suggestedFileName?: string; previewHeight?: number; dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> }
+	| { type: 'cancelDashboardWorkflow'; requestId: string }
+	| { type: 'publishToPowerBIAck'; requestId: string; accepted: boolean }
+	| { type: 'exportDashboard'; requestId: string; boxId: string; html: string; suggestedFileName?: string; previewHeight?: number; dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> }
 	| OutgoingHtmlDashboardUpgradeWithCopilotMessage
-	| { type: 'getPbiWorkspaces'; boxId: string }
-	| { type: 'checkPbiItemExists'; boxId: string; workspaceId: string; reportId: string }
-	| { type: 'publishToPowerBI'; boxId: string; workspaceId: string; reportName: string; pageWidth: number; pageHeight: number; htmlCode: string; dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>; dataMode?: 'import' | 'directQuery'; semanticModelId?: string; reportId?: string; existingReportName?: string; workspaceName?: string; isPersonalWorkspace?: boolean }
+	| { type: 'getPbiWorkspaces'; requestId: string; boxId: string }
+	| { type: 'checkPbiItemExists'; requestId: string; boxId: string; workspaceId: string; reportId: string }
+	| { type: 'publishToPowerBI'; requestId: string; boxId: string; workspaceId: string; reportName: string; pageWidth: number; pageHeight: number; htmlCode: string; dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>; dataMode?: 'import' | 'directQuery'; semanticModelId?: string; reportId?: string; existingReportName?: string; workspaceName?: string; isPersonalWorkspace?: boolean }
 
 	// Settings
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }

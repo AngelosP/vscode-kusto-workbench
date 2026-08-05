@@ -3541,6 +3541,67 @@ describe('persistence round-trip', () => {
 		}));
 	});
 
+	it('retains an HTML iframe and unchanged fact source across an equal forced projection', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const documentUri = 'file:///tmp/html-handoff.kqlx';
+		const htmlCode = `<script type="application/kw-provenance">${JSON.stringify({
+			version: 1,
+			model: { fact: { sectionId: 'query_html_handoff', sectionName: 'Fact Events' } },
+			bindings: {},
+		})}</script><main>Dashboard</main>`;
+		const state = { sections: [
+			{ id: 'query_html_handoff', type: 'query', query: 'print Value=1' },
+			{ id: 'python_html_handoff', type: 'python', code: 'print(1)', expanded: true },
+			{
+				id: 'html_handoff', type: 'html', name: 'Stable dashboard', code: htmlCode,
+				mode: 'preview', expanded: true, dataSourceIds: ['query_html_handoff'],
+			},
+			{ id: 'url_html_handoff', type: 'url', url: 'https://example.com/data.csv', expanded: false },
+		] };
+		const projection = (sourceGeneration: number) => ({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri, sourceGeneration, documentRevision: 0,
+			sectionRevisions: { html_handoff: 0, python_html_handoff: 0, url_html_handoff: 0 },
+			markdownSectionRevisions: {}, state,
+		});
+
+		expect(handleDocumentDataMessage(projection(1))).toBe(true);
+		const query = document.getElementById('query_html_handoff')!;
+		const python = document.getElementById('python_html_handoff')!;
+		const url = document.getElementById('url_html_handoff')!;
+		const htmlSection = document.getElementById('html_handoff') as HTMLElement & {
+			applyHostDocumentState?: ReturnType<typeof vi.fn>;
+			runtimeBinding?: { artifactId: string };
+		};
+		expect(htmlSection).toBeTruthy();
+		htmlSection.applyHostDocumentState = vi.fn();
+		htmlSection.runtimeBinding = { artifactId: 'fact-artifact-a' };
+		const shadow = htmlSection.attachShadow({ mode: 'open' });
+		const iframe = document.createElement('iframe');
+		iframe.dataset.runtimeSentinel = 'iframe-a';
+		shadow.appendChild(iframe);
+		const insertBefore = vi.spyOn(container, 'insertBefore');
+
+		expect(handleDocumentDataMessage(projection(2))).toBe(true);
+
+		expect(document.getElementById('query_html_handoff')).toBe(query);
+		expect(document.getElementById('python_html_handoff')).toBe(python);
+		expect(document.getElementById('html_handoff')).toBe(htmlSection);
+		expect(document.getElementById('url_html_handoff')).toBe(url);
+		expect(htmlSection.shadowRoot?.querySelector('iframe')).toBe(iframe);
+		expect(iframe.dataset.runtimeSentinel).toBe('iframe-a');
+		expect(htmlSection.runtimeBinding).toEqual({ artifactId: 'fact-artifact-a' });
+		expect(htmlSection.applyHostDocumentState).toHaveBeenCalledWith(expect.objectContaining({
+			id: 'html_handoff', code: htmlCode, dataSourceIds: ['query_html_handoff'],
+		}));
+		expect(insertBefore).not.toHaveBeenCalled();
+		expect(Array.from(container.children, element => element.id)).toEqual([
+			'query_html_handoff', 'python_html_handoff', 'html_handoff', 'url_html_handoff',
+		]);
+	});
+
 	it('retains unchanged query and SQL runtime sources for a host-owned Transformation handoff', async () => {
 		const container = document.createElement('div');
 		container.id = 'queries-container';

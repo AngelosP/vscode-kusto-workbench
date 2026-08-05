@@ -11,6 +11,9 @@ import {
 	handleHostOwnedMarkdownCommandResult,
 	requestHostOwnedChartPatch,
 	requestHostOwnedChartRemove,
+	requestHostOwnedHtmlPatch,
+	requestHostOwnedHtmlPublishInfoPatch,
+	requestHostOwnedHtmlRemove,
 	requestHostOwnedMarkdownPatch,
 	requestHostOwnedMarkdownRemove,
 	requestHostOwnedPythonPatch,
@@ -441,6 +444,107 @@ describe('host-owned Markdown command client', () => {
 		expect(remove).toMatchObject({
 			expectedDocumentRevision: 1,
 			command: { type: 'remove', sectionId: 'transform-any-id', expectedSectionRevision: 1 },
+		});
+	});
+
+	it('sequences HTML configuration through the same full-projection ledger', async () => {
+		adoptHostOwnedMarkdownDocument({
+			documentRevision: 0,
+			sourceGeneration: 18,
+			sectionRevisions: { markdown_1: 0, 'dashboard-any-id': 0 },
+			markdownSectionRevisions: { markdown_1: 0 },
+		}, {
+			sections: [
+				{ id: 'markdown_1', type: 'markdown', text: 'before' },
+				{
+					id: 'dashboard-any-id', type: 'html', name: 'Before', code: '<main>before</main>',
+					mode: 'code', expanded: true, dataSourceIds: ['query_before'],
+				},
+			],
+		});
+		postMessageToHost.mockClear();
+
+		const afterState = {
+			id: 'dashboard-any-id', type: 'html', name: 'After', code: '<main>after</main>',
+			mode: 'preview', expanded: false, editorHeightPx: 420, previewHeightPx: 640,
+			previewHeightUserSet: true, dataSourceIds: ['query_after'],
+			pbiPublishInfo: {
+				workspaceId: 'workspace', semanticModelId: 'model', reportId: 'report',
+				reportName: 'Report', reportUrl: 'https://app.powerbi.com/report', dataMode: 'import',
+			},
+			powerBiUpgradeNotice: {
+				dismissedForSection: true, dismissedForVersion: 1,
+				dismissedForSignature: 'signature', dismissedAt: '2026-08-04T00:00:00.000Z',
+			},
+		} as const;
+		expect(requestHostOwnedHtmlPatch(afterState)).toBe(true);
+		const patch = await waitForPostedMessage(1);
+		expect(requestHostOwnedHtmlPatch(afterState)).toBe(true);
+		await Promise.resolve();
+		expect(postMessageToHost).toHaveBeenCalledTimes(1);
+		expect(patch).toMatchObject({
+			type: 'markdownDocumentCommand', sourceGeneration: 18, expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'dashboard-any-id', expectedSectionRevision: 0,
+				patch: {
+					name: 'After', code: '<main>after</main>', mode: 'preview', expanded: false,
+					editorHeightPx: 420, previewHeightPx: 640, previewHeightUserSet: true,
+					dataSourceIds: ['query_after'],
+				},
+			},
+		});
+		const handled = handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: patch.commandId, ok: true,
+			sourceGeneration: 18,
+			projection: {
+				documentRevision: 1,
+				sectionRevisions: { markdown_1: 0, 'dashboard-any-id': 1 },
+				markdownSectionRevisions: { markdown_1: 0 },
+				chartSections: [], htmlSections: [afterState],
+				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'before' }],
+				pythonSections: [], transformationSections: [], urlSections: [],
+				orderedSectionIds: ['markdown_1', 'dashboard-any-id'],
+			},
+		});
+		expect(handled).toMatchObject({ handled: true, accepted: true });
+		expect(pState.hostOwnedHtmlSections['dashboard-any-id']).toEqual(afterState);
+
+		expect(requestHostOwnedHtmlRemove('dashboard-any-id')).toBe(true);
+		const remove = await waitForPostedMessage(2);
+		expect(remove).toMatchObject({
+			expectedDocumentRevision: 1,
+			command: { type: 'remove', sectionId: 'dashboard-any-id', expectedSectionRevision: 1 },
+		});
+	});
+
+	it('carries publish correlation only on the exact HTML metadata patch', async () => {
+		adoptHostOwnedMarkdownDocument({
+			documentRevision: 0, sourceGeneration: 19,
+			sectionRevisions: { 'dashboard-publish': 0 }, markdownSectionRevisions: {},
+		}, {
+			sections: [{ id: 'dashboard-publish', type: 'html', code: '<main></main>' }],
+		});
+		postMessageToHost.mockClear();
+		const state = {
+			id: 'dashboard-publish', type: 'html', code: '<main></main>',
+			pbiPublishInfo: {
+				workspaceId: 'workspace', semanticModelId: 'model', reportId: 'report',
+				reportName: 'Report', reportUrl: 'https://app.powerbi.com/report',
+			},
+		} as const;
+
+		expect(requestHostOwnedHtmlPublishInfoPatch(
+			state.id, state.pbiPublishInfo, 'publish-request-1', 'apply',
+		)).toBe(true);
+		const command = await waitForPostedMessage(1);
+
+		expect(command).toMatchObject({
+			type: 'markdownDocumentCommand', publishRequestId: 'publish-request-1',
+			publishApplicationPhase: 'apply',
+			command: {
+				type: 'patch', sectionId: 'dashboard-publish',
+				patch: { pbiPublishInfo: state.pbiPublishInfo },
+			},
 		});
 	});
 

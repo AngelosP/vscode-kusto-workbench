@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { reconcileProjectedSectionOrder } from '../../src/webview/core/section-projection-order.js';
 
@@ -39,5 +39,21 @@ describe('authoritative section projection order', () => {
 		expect(Array.from(container.children, element => element.id)).toEqual([
 			'transient', 'url_1', 'query_1',
 		]);
+	});
+
+	it('does not move elements that already match the projected order', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		for (const id of ['query_1', 'html_1', 'url_1']) {
+			const element = document.createElement('div');
+			element.id = id;
+			container.appendChild(element);
+		}
+		document.body.appendChild(container);
+		const insertBefore = vi.spyOn(container, 'insertBefore');
+
+		reconcileProjectedSectionOrder(['query_1', 'html_1', 'url_1']);
+
+		expect(insertBefore).not.toHaveBeenCalled();
 	});
 });

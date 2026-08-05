@@ -418,4 +418,82 @@ describe('MarkdownDocumentAggregate', () => {
 		expect(malformed.ok).toBe(false);
 		if (!malformed.ok) expect(malformed.error).toContain('joinKeys[0]');
 	});
+
+	it('owns HTML configuration, stale rejection, nested metadata, and adapter overlay state', () => {
+		const dataSourceIds = ['query_fact'];
+		const publishInfo = {
+			workspaceId: 'workspace-before', semanticModelId: 'model-before', reportId: 'report-before',
+			reportName: 'Before', reportUrl: 'https://app.powerbi.com/before', dataMode: 'directQuery' as const,
+		};
+		const created = MarkdownDocumentAggregate.create({
+			sections: [
+				{
+					id: 'dashboard-any-id', type: 'html', name: 'Before', code: '<main>before</main>',
+					mode: 'code', expanded: true, editorHeightPx: 300, previewHeightPx: 500,
+					previewHeightUserSet: true, dataSourceIds, pbiPublishInfo: publishInfo,
+					powerBiUpgradeNotice: { dismissedForSignature: 'before', dismissedAt: '2026-08-01T00:00:00.000Z' },
+				},
+				{ id: 'future_1', type: 'future-section', payload: { keep: true } },
+			],
+		});
+		if (!created.ok) throw new Error(created.error);
+		dataSourceIds[0] = 'mutated';
+		publishInfo.reportName = 'Mutated';
+		expect(created.document.projection()).toMatchObject({
+			sectionRevisions: { 'dashboard-any-id': 0 },
+			htmlSections: [{
+				id: 'dashboard-any-id', dataSourceIds: ['query_fact'],
+				pbiPublishInfo: { reportName: 'Before' },
+			}],
+		});
+
+		const stale = created.document.transition({
+			expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'dashboard-any-id', expectedSectionRevision: 1,
+				patch: { code: '<main>stale</main>' },
+			},
+		});
+		expect(stale.ok).toBe(false);
+		if (!stale.ok) expect(stale.error.code).toBe('stale-section-revision');
+
+		const patched = created.document.transition({
+			expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'dashboard-any-id', expectedSectionRevision: 0,
+				patch: {
+					name: 'After', code: '<main>after</main>', mode: 'preview', expanded: false,
+					editorHeightPx: null, previewHeightPx: 640, previewHeightUserSet: true,
+					dataSourceIds: ['query_after'],
+					pbiPublishInfo: {
+						workspaceId: 'workspace-after', semanticModelId: 'model-after', reportId: 'report-after',
+						reportName: 'After', reportUrl: 'https://app.powerbi.com/after', dataMode: 'import',
+					},
+					powerBiUpgradeNotice: {
+						dismissedForSection: true, dismissedForVersion: 1,
+						dismissedForSignature: 'after', dismissedAt: '2026-08-04T00:00:00.000Z',
+					},
+				},
+			},
+		});
+		expect(patched.ok).toBe(true);
+		if (!patched.ok) return;
+		const htmlSection = patched.document.projection().htmlSections[0];
+		expect(htmlSection).toMatchObject({
+			name: 'After', code: '<main>after</main>', mode: 'preview', expanded: false,
+			previewHeightPx: 640, previewHeightUserSet: true, dataSourceIds: ['query_after'],
+			pbiPublishInfo: { reportName: 'After', dataMode: 'import' },
+			powerBiUpgradeNotice: { dismissedForSignature: 'after' },
+		});
+		expect(htmlSection).not.toHaveProperty('editorHeightPx');
+
+		const rebased = patched.document.withAdapterState({ sections: [
+			{ id: 'dashboard-any-id', type: 'html', code: '<main>stale adapter</main>' },
+			{ id: 'future_1', type: 'future-section', payload: { keep: 'adapter' } },
+		] });
+		expect(rebased.projection().htmlSections[0]).toEqual(htmlSection);
+		expect(rebased.snapshot().sections[1]).toEqual({
+			id: 'future_1', type: 'future-section', payload: { keep: 'adapter' },
+		});
+	});
 });

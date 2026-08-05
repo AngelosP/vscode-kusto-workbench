@@ -26,10 +26,10 @@ import {
 	getResultArtifact,
 	getResultsState,
 } from './results-state.js';
-import { shareClipboardArtifactConsumerId } from '../../shared/resultArtifact.js';
+import { htmlDashboardFactArtifactConsumerId, shareClipboardArtifactConsumerId } from '../../shared/resultArtifact.js';
 import { displayComparisonSummary } from '../sections/query-execution.controller.js';
 import { __kustoCloseShareModal, __kustoOpenShareModal, __kustoShareCopyToClipboard } from '../sections/kw-query-toolbar.js';
-import { adoptCurrentStateAsCleanForTest, isPersistenceSuppressedForTest, suppressPersistenceForTest } from './persistence.js';
+import { adoptCurrentStateAsCleanForTest, isPersistenceSuppressedForTest, schedulePersist, suppressPersistenceForTest } from './persistence.js';
 
 type MonacoLike = {
 	getDomNode?: () => HTMLElement | null;
@@ -6063,6 +6063,370 @@ async function e2eHtmlAssertArtifactBridgeOwnership(): Promise<string> {
 	return `HTML bridge pinned ${sourceA.artifactId}, rebound ${sourceB.artifactId}, then revoked`;
 }
 
+type E2eHtmlOwnershipBaseline = {
+	section: HTMLElement;
+	editor: unknown;
+	iframe: HTMLIFrameElement | null;
+	binding: unknown;
+	previewRenderCount: number;
+	serializeCalls: number;
+};
+
+const e2eHtmlOwnershipBaselines = new Map<string, E2eHtmlOwnershipBaseline>();
+const e2eHtmlSaveBarrierCaptures = new Map<string, {
+	previousCapture: unknown;
+	barriers: any[];
+}>();
+
+function e2eHtmlPublishLocalArtifact(
+	sourceId: string,
+	columns: readonly string[],
+	rows: readonly unknown[][],
+	executionId: string,
+): string {
+	const id = String(sourceId || '').trim();
+	if (!id || !document.getElementById(id)) throw new Error(`HTML source is unavailable: ${id || '(empty)'}`);
+	const accepted = displayResultForBox({
+		columns: columns.map(name => ({ name, type: 'string' })),
+		rows: rows.map(row => [...row]),
+		metadata: {},
+	}, id, {
+		label: 'Results',
+		artifactPublication: {
+			producer: { engine: 'kusto', boxId: id, executionId },
+			policy: { exposeToActiveContent: true },
+		},
+	});
+	if (!accepted) throw new Error(`HTML source rejected E2E artifact publication: ${id}`);
+	const artifact = getCurrentResultArtifact(id);
+	if (!artifact) throw new Error(`HTML source did not publish an artifact: ${id}`);
+	return artifact.artifactId;
+}
+
+function e2eHtmlDocumentOwnershipSnapshot(sectionId: string, captureBaseline = false): unknown {
+	const id = String(sectionId || '').trim();
+	const section = document.getElementById(id) as any;
+	if (!section || section.tagName !== 'KW-HTML-SECTION' || typeof section.createDocumentState !== 'function') {
+		throw new Error(`HTML section is unavailable: ${id || '(empty)'}`);
+	}
+	const config = section.createDocumentState();
+	const sourceId = String(config.dataSourceIds?.[0] || section.getDataSourceIds?.()?.[0] || '').trim();
+	const iframe = section.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
+	const binding = sourceId
+		? getBoundResultArtifact(htmlDashboardFactArtifactConsumerId(id), sourceId)
+		: null;
+	if (captureBaseline) {
+		const baseline: E2eHtmlOwnershipBaseline = {
+			section,
+			editor: section._editor ?? null,
+			iframe,
+			binding,
+			previewRenderCount: 0,
+			serializeCalls: 0,
+		};
+		const updatePreview = section._updatePreview?.bind(section);
+		if (typeof updatePreview === 'function') {
+			section._updatePreview = (...args: unknown[]) => {
+				baseline.previewRenderCount++;
+				return updatePreview(...args);
+			};
+		}
+		e2eHtmlOwnershipBaselines.set(id, baseline);
+	}
+	const baseline = e2eHtmlOwnershipBaselines.get(id);
+	return {
+		config,
+		sourceId: sourceId || null,
+		currentArtifactId: sourceId ? getCurrentResultArtifact(sourceId)?.artifactId ?? null : null,
+		boundArtifactId: binding?.artifactId ?? null,
+		iframeHasSourceData: !!iframe?.srcdoc && String(iframe.srcdoc).includes('doc6-revision-a'),
+		hasEditor: !!section._editor,
+		hasIframe: !!iframe,
+		sectionRetained: baseline ? baseline.section === section : null,
+		editorRetained: baseline ? baseline.editor === (section._editor ?? null) : null,
+		iframeRetained: baseline ? baseline.iframe === iframe : null,
+		bindingRetained: baseline ? baseline.binding === binding : null,
+		previewRenderCount: baseline?.previewRenderCount ?? null,
+		serializeCalls: baseline?.serializeCalls ?? null,
+	};
+}
+
+async function e2eHtmlPrepareDocumentOwnershipScenario(sectionId: string, sourceId: string): Promise<unknown> {
+	const section = document.getElementById(sectionId) as any;
+	if (!section || section.tagName !== 'KW-HTML-SECTION') {
+		throw new Error(`DOC-6 HTML section is unavailable: ${sectionId}`);
+	}
+	await section.updateComplete;
+	const artifactId = e2eHtmlPublishLocalArtifact(
+		sourceId, ['Value'], [['doc6-revision-a']], 'doc6-source-a',
+	);
+	section.refreshDataBridge();
+	await e2eLayoutWaitFor(() => {
+		const snapshot = e2eHtmlDocumentOwnershipSnapshot(sectionId) as Record<string, unknown>;
+		return snapshot.currentArtifactId === artifactId
+			&& snapshot.boundArtifactId === artifactId
+			&& snapshot.iframeHasSourceData === true
+			&& snapshot.hasEditor === true
+			&& snapshot.hasIframe === true;
+	}, 'DOC-6 artifact/editor/iframe initialization', 10000);
+
+	const outgoing: any[] = [];
+	const results: any[] = [];
+	const previousCapture = _win.__e2eCaptureHostMessage;
+	const capture = (message: any): boolean => {
+		const type = String(message?.type || '');
+		if ([
+			'markdownDocumentCommand', 'exportDashboard', 'getPbiWorkspaces',
+			'checkPbiItemExists', 'publishToPowerBI',
+		].includes(type)) {
+			outgoing.push(JSON.parse(JSON.stringify(message)));
+		}
+		return typeof previousCapture === 'function' ? previousCapture(message) !== false : true;
+	};
+	_win.__e2eCaptureHostMessage = capture;
+	const onMessage = (event: MessageEvent) => {
+		const message = event?.data;
+		if (message?.type === 'markdownDocumentCommandResult') {
+			results.push(JSON.parse(JSON.stringify(message)));
+		}
+	};
+	window.addEventListener('message', onMessage);
+
+	const finalCode = `<script type="application/kw-provenance">${JSON.stringify({
+		version: 1,
+		model: { fact: { sectionId: sourceId, sectionName: 'Fact Events' } },
+		bindings: {},
+	})}</script><main id="doc6-dashboard"><h2>Host owned dashboard</h2><p>doc6-revision-a</p></main>`;
+	let result: any;
+	try {
+		section.applyHostDocumentState({
+			id: sectionId,
+			type: 'html',
+			name: 'Host owned HTML',
+			code: finalCode,
+			mode: 'preview',
+			expanded: true,
+			editorHeightPx: 520,
+			previewHeightPx: 420,
+			previewHeightUserSet: true,
+			dataSourceIds: [sourceId],
+			pbiPublishInfo: {
+				workspaceId: 'workspace-after',
+				workspaceName: 'After workspace',
+				semanticModelId: 'model-after',
+				reportId: 'report-after',
+				reportName: 'After report',
+				reportUrl: 'https://app.powerbi.com/after',
+				dataMode: 'import',
+			},
+			powerBiUpgradeNotice: {
+				dismissedForSection: true,
+				dismissedForVersion: 2,
+				dismissedForSignature: 'after-signature',
+				dismissedAt: '2026-08-05T00:00:00.000Z',
+			},
+		});
+		await section.updateComplete;
+		await Promise.resolve();
+		section.commitDocumentState();
+		await e2eLayoutWaitFor(() => {
+			result = results.find((candidate: any) => candidate.ok === true
+				&& candidate.projection?.htmlSections?.some((item: any) =>
+					item.id === sectionId && item.name === 'Host owned HTML'));
+			return !!result;
+		}, 'DOC-6 HTML command terminal', 10000);
+	} finally {
+		window.removeEventListener('message', onMessage);
+		if (typeof previousCapture === 'function') _win.__e2eCaptureHostMessage = previousCapture;
+		else delete _win.__e2eCaptureHostMessage;
+	}
+	await e2eLayoutWaitFor(() => {
+		const snapshot = e2eHtmlDocumentOwnershipSnapshot(sectionId) as Record<string, unknown>;
+		return snapshot.boundArtifactId === artifactId && snapshot.iframeHasSourceData === true;
+	}, 'DOC-6 preview stabilization', 10000);
+	const baseline = e2eHtmlDocumentOwnershipSnapshot(sectionId, true);
+	const runtimeBaseline = e2eHtmlOwnershipBaselines.get(sectionId);
+	if (!runtimeBaseline) throw new Error('DOC-6 HTML ownership baseline was not captured');
+	section.serialize = () => {
+		runtimeBaseline.serializeCalls++;
+		throw new Error('stale HTML DOM serializer');
+	};
+	const commands = outgoing.filter(message => message.type === 'markdownDocumentCommand'
+		&& message.command?.type === 'patch'
+		&& message.command?.sectionId === sectionId
+		&& message.command?.patch?.name === 'Host owned HTML');
+	const forbidden = outgoing.filter(message => [
+		'exportDashboard', 'getPbiWorkspaces', 'checkPbiItemExists', 'publishToPowerBI',
+	].includes(message.type));
+	const command = commands[0];
+	const matchingResults = results.filter(candidate => candidate.commandId === command?.commandId);
+	result = matchingResults[0];
+	if (commands.length !== 1 || matchingResults.length !== 1 || result?.ok !== true
+		|| result.documentRevision !== command.expectedDocumentRevision + 1
+		|| result.projection?.documentRevision !== result.documentRevision
+		|| result.sectionRevision !== command.command?.expectedSectionRevision + 1
+		|| result.projection?.sectionRevisions?.[sectionId] !== result.sectionRevision
+		|| command?.command?.sectionId !== sectionId
+		|| command?.command?.patch?.name !== 'Host owned HTML'
+		|| command?.command?.patch?.mode !== 'preview'
+		|| command?.command?.patch?.editorHeightPx !== 520
+		|| command?.command?.patch?.previewHeightPx !== 420
+		|| command?.command?.patch?.pbiPublishInfo?.reportId !== 'report-after'
+		|| forbidden.length !== 0) {
+		throw new Error(`DOC-6 command terminal is not exact: ${JSON.stringify({
+			commands, matchingResults, allResults: results, forbidden,
+		})}`);
+	}
+	return { artifactId, baseline, command, result, forbidden, serializeCalls: runtimeBaseline.serializeCalls };
+}
+
+async function e2eHtmlRejectStaleDocumentCommand(sectionId: string): Promise<unknown> {
+	const vscodeBridge = window.vscode;
+	if (!vscodeBridge?.postMessage) throw new Error('DOC-6 VS Code webview bridge is unavailable');
+	const commandId = `doc6-native-stale-html-${Date.now()}`;
+	let result: any;
+	const onMessage = (event: MessageEvent) => {
+		if (event.data?.type === 'markdownDocumentCommandResult' && event.data.commandId === commandId) {
+			result = JSON.parse(JSON.stringify(event.data));
+		}
+	};
+	window.addEventListener('message', onMessage);
+	try {
+		vscodeBridge.postMessage({
+			protocolVersion: DOCUMENT_VIEW_PROTOCOL_VERSION,
+			channel: DOCUMENT_VIEW_CHANNEL,
+			viewSessionId: pState.documentViewSessionId,
+			type: 'markdownDocumentCommand',
+			commandId,
+			sourceGeneration: pState.markdownSourceGeneration,
+			expectedDocumentRevision: pState.markdownDocumentRevision,
+			command: {
+				type: 'patch', sectionId, expectedSectionRevision: 0,
+				patch: { code: '<main>stale overwrite</main>', name: 'Stale HTML' },
+			},
+		});
+		await e2eLayoutWaitFor(() => !!result, 'DOC-6 stale command terminal', 10000);
+	} finally {
+		window.removeEventListener('message', onMessage);
+	}
+	const state = (document.getElementById(sectionId) as any)?.createDocumentState?.();
+	if (result.ok !== false || result.error?.code !== 'stale-section-revision'
+		|| state?.name !== 'Host owned HTML' || String(state?.code || '').includes('stale overwrite')) {
+		throw new Error(`DOC-6 stale command was not rejected exactly: ${JSON.stringify({ result, state })}`);
+	}
+	return { result, state };
+}
+
+async function e2eHtmlAssertEqualDocumentProjection(sectionId: string): Promise<unknown> {
+	const baseline = e2eHtmlDocumentOwnershipSnapshot(sectionId) as Record<string, unknown>;
+	const outgoing: any[] = [];
+	const deliveries: any[] = [];
+	const previousCapture = _win.__e2eCaptureHostMessage;
+	_win.__e2eCaptureHostMessage = (message: any) => {
+		if (message?.type === 'markdownDocumentCommand' || message?.type === 'documentReloadResult') {
+			outgoing.push(JSON.parse(JSON.stringify(message)));
+		}
+		return typeof previousCapture === 'function' ? previousCapture(message) !== false : true;
+	};
+	const onMessage = (event: MessageEvent) => {
+		if (event.data?.type === 'documentData') deliveries.push(JSON.parse(JSON.stringify(event.data)));
+	};
+	window.addEventListener('message', onMessage);
+	try {
+		postMessageToHost({ type: 'requestDocument' });
+		await e2eLayoutWaitFor(() => deliveries.some(delivery => outgoing.some(message =>
+			message.type === 'documentReloadResult' && message.requestId === delivery.reloadRequestId)),
+		'DOC-6 equal projection acknowledgement', 10000);
+	} finally {
+		window.removeEventListener('message', onMessage);
+		if (typeof previousCapture === 'function') _win.__e2eCaptureHostMessage = previousCapture;
+		else delete _win.__e2eCaptureHostMessage;
+	}
+	const delivery = deliveries.find(candidate => candidate.state?.sections?.some((section: any) =>
+		section.id === sectionId));
+	const acknowledgement = delivery && outgoing.find(message =>
+		message.type === 'documentReloadResult' && message.requestId === delivery.reloadRequestId);
+	const snapshot = e2eHtmlDocumentOwnershipSnapshot(sectionId) as Record<string, unknown>;
+	const commands = outgoing.filter(message => message.type === 'markdownDocumentCommand');
+	if (!delivery || !acknowledgement || acknowledgement.applied !== true
+		|| snapshot.sectionRetained !== true || snapshot.editorRetained !== true
+		|| snapshot.iframeRetained !== true || snapshot.bindingRetained !== true
+		|| snapshot.previewRenderCount !== 0 || snapshot.boundArtifactId !== baseline.boundArtifactId
+		|| commands.length !== 0) {
+		throw new Error(`DOC-6 equal projection changed runtime identity: ${JSON.stringify({
+			delivery, acknowledgement, baseline, snapshot, commands,
+		})}`);
+	}
+	return {
+		delivery: {
+			reloadRequestId: delivery.reloadRequestId,
+			sourceGeneration: delivery.sourceGeneration,
+			documentRevision: delivery.documentRevision,
+		},
+		acknowledgement,
+		snapshot,
+	};
+}
+
+function e2eHtmlBeginSaveBarrierCapture(sectionId: string): void {
+	const id = String(sectionId || '').trim();
+	if (!id) throw new Error('DOC-6 Save barrier capture requires a section ID');
+	const previousCapture = _win.__e2eCaptureHostMessage;
+	const barriers: any[] = [];
+	e2eHtmlSaveBarrierCaptures.set(id, { previousCapture, barriers });
+	_win.__e2eCaptureHostMessage = (message: any) => {
+		if (message?.type === 'markdownDocumentCommandBarrierResult') {
+			barriers.push(JSON.parse(JSON.stringify(message)));
+		}
+		return typeof previousCapture === 'function' ? previousCapture(message) !== false : true;
+	};
+}
+
+function e2eHtmlAssertSaveBarrier(sectionId: string): unknown {
+	const id = String(sectionId || '').trim();
+	const capture = e2eHtmlSaveBarrierCaptures.get(id);
+	if (!capture) throw new Error(`DOC-6 Save barrier capture is unavailable: ${id}`);
+	e2eHtmlSaveBarrierCaptures.delete(id);
+	if (typeof capture.previousCapture === 'function') _win.__e2eCaptureHostMessage = capture.previousCapture;
+	else delete _win.__e2eCaptureHostMessage;
+	const result = capture.barriers.at(-1);
+	if (!result || result.accepted !== true
+		|| result.viewSessionId !== pState.documentViewSessionId
+		|| result.documentRevision !== pState.markdownDocumentRevision) {
+		throw new Error(`DOC-6 Save barrier was not accepted: ${JSON.stringify({
+			expectedDocumentRevision: pState.markdownDocumentRevision,
+			sessionId: pState.documentViewSessionId,
+			barriers: capture.barriers,
+		})}`);
+	}
+	return result;
+}
+
+async function e2eHtmlAssertNativeSerializerGuard(sectionId: string): Promise<unknown> {
+	const id = String(sectionId || '').trim();
+	const baseline = e2eHtmlOwnershipBaselines.get(id);
+	if (!baseline) throw new Error(`DOC-6 serializer baseline is unavailable: ${id}`);
+	const commands: any[] = [];
+	const previousCapture = _win.__e2eCaptureHostMessage;
+	_win.__e2eCaptureHostMessage = (message: any) => {
+		if (message?.type === 'markdownDocumentCommand') commands.push(JSON.parse(JSON.stringify(message)));
+		return typeof previousCapture === 'function' ? previousCapture(message) !== false : true;
+	};
+	try {
+		schedulePersist('doc6-native-poison', true);
+		await e2eLayoutDelay(500);
+	} finally {
+		if (typeof previousCapture === 'function') _win.__e2eCaptureHostMessage = previousCapture;
+		else delete _win.__e2eCaptureHostMessage;
+	}
+	if (baseline.serializeCalls !== 0 || commands.length !== 0) {
+		throw new Error(`DOC-6 native persistence consulted HTML serialize or emitted a command: ${JSON.stringify({
+			serializeCalls: baseline.serializeCalls, commands,
+		})}`);
+	}
+	return { htmlSerializeCalls: baseline.serializeCalls, commands };
+}
+
 async function e2eShareAssertArtifactClipboard(): Promise<string> {
 	const sourceId = e2eLayoutAddSection('addQueryBox', {
 		id: 'query_e2e_share_artifact', initialQuery: 'print Value="editor-initial"',
@@ -6898,6 +7262,14 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 	},
 	html: {
 		assertArtifactBridgeOwnership: e2eHtmlAssertArtifactBridgeOwnership,
+		assertEqualDocumentProjection: e2eHtmlAssertEqualDocumentProjection,
+		assertNativeSerializerGuard: e2eHtmlAssertNativeSerializerGuard,
+		assertSaveBarrier: e2eHtmlAssertSaveBarrier,
+		beginSaveBarrierCapture: e2eHtmlBeginSaveBarrierCapture,
+		documentOwnershipSnapshot: e2eHtmlDocumentOwnershipSnapshot,
+		prepareDocumentOwnershipScenario: e2eHtmlPrepareDocumentOwnershipScenario,
+		publishLocalArtifact: e2eHtmlPublishLocalArtifact,
+		rejectStaleDocumentCommand: e2eHtmlRejectStaleDocumentCommand,
 	},
 	share: {
 		assertArtifactClipboard: e2eShareAssertArtifactClipboard,

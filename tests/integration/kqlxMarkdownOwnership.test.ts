@@ -97,6 +97,165 @@ function sqlWorkbenchStub(): any {
 }
 
 suite('KQLX host-owned Markdown lifecycle', () => {
+	test('Power BI compensation cannot mutate a same-ID HTML replacement and cleanup follows host projection', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-html-publish-cas-'));
+		const filePath = path.join(tmpDir, 'publish-cas.kqlx');
+		let currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'html_publish', type: 'html', code: '<main>original</main>' },
+			] },
+		}, null, 2) + '\n';
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let projection: any;
+		let queryEditor: any;
+		const posted: any[] = [];
+		const cleanup = async () => { cleanupCalls++; return true; };
+		let cleanupCalls = 0;
+		const publishInfo = {
+			workspaceId: 'workspace-created', semanticModelId: 'model-created', reportId: 'report-created',
+			reportName: 'Created report', reportUrl: 'https://app.powerbi.com/created', dataMode: 'import',
+		} as const;
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async function (panel: vscode.WebviewPanel) {
+				queryEditor = this;
+				queryEditor.panel = panel;
+				queryEditor._panelDisposed = false;
+			};
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+				if (typeof replacement !== 'string') return false;
+				currentText = replacement;
+				return true;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+					extensionMode: vscode.ExtensionMode.Test,
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: true,
+			} as any;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData' || message?.type === 'markdownDocumentCommandResult') {
+							projection = message;
+						}
+						if (message?.reloadRequestId) {
+							await Promise.resolve(receiveHandler?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(
+							handler, () => latestDocumentViewHostMessage(posted),
+						);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: () => ({ dispose() {} }),
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			assert.ok(queryEditor!, 'native provider must create its query editor adapter');
+			const timer = setTimeout(() => undefined, 60_000);
+			queryEditor!.pendingPowerBiPublishAcks.set('publish-cas', {
+				cleanup, timer, boxId: 'html_publish', publishInfo: Object.freeze({ ...publishInfo }),
+				applicationState: 'idle', cleanupRequested: false, finalizationInProgress: false,
+			});
+
+			const sendCommand = async (message: any) => {
+				const beforeCount = posted.length;
+				await Promise.resolve(receiveHandler!(message));
+				const result = posted.slice(beforeCount).find(candidate =>
+					candidate?.type === 'markdownDocumentCommandResult'
+					&& candidate.commandId === message.commandId,
+				);
+				assert.ok(result, `host must settle ${message.commandId}`);
+				projection = result;
+				return result;
+			};
+			const applied = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'publish-apply',
+				publishRequestId: 'publish-cas', publishApplicationPhase: 'apply',
+				sourceGeneration: projection.sourceGeneration,
+				expectedDocumentRevision: projection.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'html_publish',
+					expectedSectionRevision: projection.sectionRevisions.html_publish,
+					patch: { pbiPublishInfo: publishInfo },
+				},
+			});
+			assert.strictEqual(applied.ok, true);
+
+			const removed = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'remove-published-html',
+				sourceGeneration: applied.sourceGeneration,
+				expectedDocumentRevision: applied.documentRevision,
+				command: {
+					type: 'remove', sectionId: 'html_publish',
+					expectedSectionRevision: applied.projection.sectionRevisions.html_publish,
+				},
+			});
+			assert.strictEqual(removed.ok, true);
+			const replacement = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'recreate-published-html',
+				sourceGeneration: removed.sourceGeneration,
+				expectedDocumentRevision: removed.documentRevision,
+				command: {
+					type: 'add', section: {
+						id: 'html_publish', type: 'html', code: '<main>replacement</main>',
+					},
+				},
+			});
+			assert.strictEqual(replacement.ok, true);
+
+			const compensation = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'stale-publish-compensation',
+				publishRequestId: 'publish-cas', publishApplicationPhase: 'compensate',
+				sourceGeneration: replacement.sourceGeneration,
+				expectedDocumentRevision: replacement.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'html_publish',
+					expectedSectionRevision: replacement.projection.sectionRevisions.html_publish,
+					patch: { pbiPublishInfo: null },
+				},
+			});
+			assert.strictEqual(compensation.ok, false);
+			assert.strictEqual(compensation.error?.code, 'publish-workflow-retired');
+			await Promise.resolve(receiveHandler!({
+				type: 'publishToPowerBIAck', requestId: 'publish-cas', accepted: true,
+			}));
+
+			assert.strictEqual(cleanupCalls, 1, 'cleanup must run once after the old tuple is absent');
+			const finalSection = JSON.parse(currentText).state.sections.find(
+				(section: any) => section.id === 'html_publish',
+			);
+			assert.strictEqual(finalSection.type, 'html');
+			assert.strictEqual(finalSection.code, '<main>replacement</main>');
+			assert.strictEqual(finalSection.pbiPublishInfo, undefined);
+			assert.strictEqual(queryEditor!.pendingPowerBiPublishAcks.has('publish-cas'), false);
+		} finally {
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('same-URI reopen during close cleanup preserves owner and queue identity', async () => {
 		const originalOnDidClose = vscode.workspace.onDidCloseTextDocument;
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-reopen-cleanup-'));
@@ -826,7 +985,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
-	test('Transformation, Chart, Python, URL, and Markdown host commands survive stale DOM state, view recreation, and lossless save', async () => {
+	test('HTML, Transformation, Chart, Python, URL, and Markdown host commands survive stale DOM state, view recreation, and lossless save', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalOnDidChange = vscode.workspace.onDidChangeTextDocument;
 		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
@@ -907,6 +1066,24 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 							inputBindings: ['query_left@7', 'query_right@4'],
 							derivedLineage: ['query_left@7', 'query_right@4'],
 						},
+					},
+					{
+						id: 'html_original', type: 'html', name: 'Original HTML',
+						code: '<main>before</main>', mode: 'code', expanded: true,
+						editorHeightPx: 320, previewHeightPx: 480, previewHeightUserSet: true,
+						dataSourceIds: ['query_left'],
+						pbiPublishInfo: {
+							workspaceId: 'workspace-before', workspaceName: 'Before workspace',
+							semanticModelId: 'model-before', reportId: 'report-before',
+							reportName: 'Before report', reportUrl: 'https://app.powerbi.com/before',
+							dataMode: 'directQuery', futurePublish: { keep: true },
+						},
+						powerBiUpgradeNotice: {
+							dismissedForSection: false, dismissedForVersion: 1,
+							dismissedForSignature: 'before-signature', dismissedAt: '2026-08-01T00:00:00.000Z',
+							futureNotice: { keep: true },
+						},
+						futureHtml: { producer: 'future-html' },
 					},
 					{
 						id: 'future_opaque', type: 'future-section',
@@ -994,6 +1171,17 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 										dataSourceId: 'stale_left', transformationType: 'join',
 										joinRightDataSourceId: 'stale_right', joinKind: 'leftouter',
 										joinKeys: [{ left: 'StaleLeft', right: 'StaleRight' }],
+									},
+									{
+										id: 'html_original', type: 'html', name: 'Stale HTML DOM',
+										code: '<main>stale serializer</main>', mode: 'code', expanded: true,
+										editorHeightPx: 999, previewHeightPx: 998, previewHeightUserSet: true,
+										dataSourceIds: ['stale_source'],
+										pbiPublishInfo: {
+											workspaceId: 'stale-workspace', semanticModelId: 'stale-model',
+											reportId: 'stale-report', reportName: 'Stale report',
+											reportUrl: 'https://stale.invalid/report',
+										},
 									},
 									{ id: 'devnotes_owner', type: 'devnotes', entries: [{
 										id: 'note_saved', created: '2026-08-02T00:00:00.000Z',
@@ -1091,7 +1279,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.deepStrictEqual(initialProjection.markdownSectionRevisions, { markdown_original: 0 });
 			assert.deepStrictEqual(initialProjection.sectionRevisions, {
 				markdown_original: 0, url_original: 0, python_original: 0, chart_original: 0,
-				transformation_original: 0,
+				transformation_original: 0, html_original: 0,
 			});
 
 			const sendCommand = async (message: any) => {
@@ -1415,6 +1603,54 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				JSON.stringify(transformationPatched),
 			);
 
+			const staleHtml = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'html-stale-patch',
+				expectedDocumentRevision: 13,
+				command: {
+					type: 'patch', sectionId: 'html_original', expectedSectionRevision: 1,
+					patch: { code: '<main>stale overwrite</main>', dataSourceIds: ['stale_source'] },
+				},
+			});
+			assert.strictEqual(staleHtml.ok, false);
+			assert.strictEqual(staleHtml.error?.code, 'stale-section-revision');
+			assert.strictEqual(staleHtml.documentRevision, 13);
+			assert.strictEqual(
+				JSON.parse(currentText).state.sections.find((section: any) => section.id === 'html_original').code,
+				'<main>before</main>',
+				'a stale HTML command must not mutate authored code',
+			);
+
+			const htmlPatched = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'html-patch',
+				expectedDocumentRevision: 13,
+				command: {
+					type: 'patch', sectionId: 'html_original', expectedSectionRevision: 0,
+					patch: {
+						name: 'Host owned HTML', code: '<main>after</main>', mode: 'preview', expanded: false,
+						editorHeightPx: 520, previewHeightPx: 640, previewHeightUserSet: true,
+						dataSourceIds: ['query_right', 'transformation_original'],
+						pbiPublishInfo: {
+							workspaceId: 'workspace-after', workspaceName: 'After workspace',
+							semanticModelId: 'model-after', reportId: 'report-after',
+							reportName: 'After report', reportUrl: 'https://app.powerbi.com/after',
+							dataMode: 'import',
+						},
+						powerBiUpgradeNotice: {
+							dismissedForSection: true, dismissedForVersion: 1,
+							dismissedForSignature: 'after-signature', dismissedAt: '2026-08-04T00:00:00.000Z',
+						},
+					},
+				},
+			});
+			assert.deepStrictEqual(
+				{
+					ok: htmlPatched.ok, documentRevision: htmlPatched.documentRevision,
+					sectionRevision: htmlPatched.sectionRevision,
+				},
+				{ ok: true, documentRevision: 14, sectionRevision: 1 },
+				JSON.stringify(htmlPatched),
+			);
+
 			await firstView.dispose();
 
 			const recreatedView = createPanel();
@@ -1422,11 +1658,11 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			await recreatedView.receive({ type: 'requestDocument' });
 			const recreatedProjection = recreatedView.posted.find(message => message?.type === 'documentData' && message.ok === true);
 			assert.ok(recreatedProjection, 'recreated view must receive a projection');
-			assert.strictEqual(recreatedProjection.documentRevision, 13);
+			assert.strictEqual(recreatedProjection.documentRevision, 14);
 			assert.deepStrictEqual(recreatedProjection.markdownSectionRevisions, { markdown_original: 1 });
 			assert.deepStrictEqual(recreatedProjection.sectionRevisions, {
 				markdown_original: 1, url_original: 1, python_original: 1, chart_original: 1,
-				transformation_original: 1,
+				transformation_original: 1, html_original: 1,
 			});
 			assert.strictEqual(recreatedProjection.state.sections[0].text, 'after');
 			assert.strictEqual(recreatedProjection.state.sections[0].title, 'Host owned');
@@ -1481,6 +1717,22 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				joinKeys: [{ left: 'CustomerId', right: 'AccountId' }],
 				joinOmitDuplicateColumns: true,
 			});
+			assert.deepStrictEqual(recreatedProjection.state.sections[5], {
+				id: 'html_original', type: 'html', name: 'Host owned HTML',
+				code: '<main>after</main>', mode: 'preview', expanded: false,
+				editorHeightPx: 520, previewHeightPx: 640, previewHeightUserSet: true,
+				dataSourceIds: ['query_right', 'transformation_original'],
+				pbiPublishInfo: {
+					workspaceId: 'workspace-after', workspaceName: 'After workspace',
+					semanticModelId: 'model-after', reportId: 'report-after',
+					reportName: 'After report', reportUrl: 'https://app.powerbi.com/after',
+					dataMode: 'import',
+				},
+				powerBiUpgradeNotice: {
+					dismissedForSection: true, dismissedForVersion: 1,
+					dismissedForSignature: 'after-signature', dismissedAt: '2026-08-04T00:00:00.000Z',
+				},
+			});
 
 			const owningSaveHandler = willSaveHandlers.at(-1);
 			assert.ok(owningSaveHandler, 'native Save handler must be installed for the recreated view');
@@ -1501,7 +1753,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.deepStrictEqual(saved.state.futureState, fixture.state.futureState);
 			assert.deepStrictEqual(saved.state.sections.map((section: any) => section.id), [
 				'markdown_original', 'url_original', 'python_original', 'chart_original', 'transformation_original',
-				'future_opaque', 'devnotes_owner',
+				'html_original', 'future_opaque', 'devnotes_owner',
 			]);
 			assert.deepStrictEqual(saved.state.sections[0], {
 				id: 'markdown_original', type: 'markdown', title: 'Host owned', text: 'after',
@@ -1571,8 +1823,26 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 					derivedLineage: ['query_left@7', 'query_right@4'],
 				},
 			});
-			assert.deepStrictEqual(saved.state.sections[5], fixture.state.sections[5]);
-			assert.strictEqual(saved.state.sections[6].entries[0].content, 'adapter-owned note');
+			assert.deepStrictEqual(saved.state.sections[5], {
+				id: 'html_original', type: 'html', name: 'Host owned HTML',
+				code: '<main>after</main>', mode: 'preview', expanded: false,
+				editorHeightPx: 520, previewHeightPx: 640, previewHeightUserSet: true,
+				dataSourceIds: ['query_right', 'transformation_original'],
+				pbiPublishInfo: {
+					workspaceId: 'workspace-after', workspaceName: 'After workspace',
+					semanticModelId: 'model-after', reportId: 'report-after',
+					reportName: 'After report', reportUrl: 'https://app.powerbi.com/after',
+					dataMode: 'import', futurePublish: { keep: true },
+				},
+				powerBiUpgradeNotice: {
+					dismissedForSection: true, dismissedForVersion: 1,
+					dismissedForSignature: 'after-signature', dismissedAt: '2026-08-04T00:00:00.000Z',
+					futureNotice: { keep: true },
+				},
+				futureHtml: { producer: 'future-html' },
+			});
+			assert.deepStrictEqual(saved.state.sections[6], fixture.state.sections[6]);
+			assert.strictEqual(saved.state.sections[7].entries[0].content, 'adapter-owned note');
 			await recreatedView.dispose();
 		} finally {
 			for (const subscription of workspaceSubscriptions) subscription.dispose();

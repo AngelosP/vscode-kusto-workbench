@@ -175,6 +175,27 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 		});
 	});
 
+	it('does not let a detached predecessor launch a Power BI upgrade for a replacement', async () => {
+		const oldSection = new KwHtmlSection();
+		oldSection.id = 'html_upgrade_owner';
+		oldSection.boxId = oldSection.id;
+		oldSection.setCode(fixableTableTargetHtml());
+		document.body.appendChild(oldSection);
+		oldSection.evaluatePowerBiCompatibilityNotice();
+		oldSection.remove();
+		const replacement = new KwHtmlSection();
+		replacement.id = oldSection.id;
+		replacement.boxId = oldSection.boxId;
+		document.body.appendChild(replacement);
+		capturedMessages.length = 0;
+
+		(oldSection as unknown as { _requestPowerBiUpgradeWithCopilot(): void })._requestPowerBiUpgradeWithCopilot();
+
+		expect(capturedMessages).toHaveLength(0);
+		replacement.remove();
+		await Promise.resolve();
+	});
+
 	it('suppresses and clears Power BI notices when the global compatibility check is disabled', () => {
 		const section = new KwHtmlSection();
 		section.boxId = 'html_globally_disabled';
@@ -236,6 +257,7 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 		expect(capturedMessages).toHaveLength(1);
 		expect(capturedMessages[0]).toMatchObject({
 			type: 'showPowerBiUnsupportedVisualHelp',
+			requestId: expect.any(String),
 		});
 		expect(JSON.stringify(capturedMessages[0])).toContain('does not support heatmap visuals yet');
 		expect(JSON.stringify(capturedMessages[0])).toContain('Ask for support for this chart type');
@@ -253,6 +275,7 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 		expect(capturedMessages).toHaveLength(1);
 		expect(capturedMessages[0]).toMatchObject({
 			type: 'showPowerBiPublishHelp',
+			requestId: expect.any(String),
 			sectionId: 'html_publish_help',
 			sectionName: 'Publish Help Dashboard',
 			targetVersion: CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
@@ -261,6 +284,36 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 				'No query-backed data sources were available for Power BI publish.',
 			],
 		});
+	});
+
+	it('starts Copilot only for the exact live publish-help request', async () => {
+		const section = new KwHtmlSection();
+		section.id = 'html_publish_help_owner';
+		section.boxId = section.id;
+		section.setCode('<main>Manual dashboard without provenance</main>');
+		document.body.appendChild(section);
+		try {
+			await (section as unknown as { _publishToPowerBI(): Promise<void> })._publishToPowerBI();
+			const help = capturedMessages.find(message => message.type === 'showPowerBiPublishHelp') as {
+				requestId: string;
+			};
+			expect(help.requestId).toBeTruthy();
+
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'powerBiPublishHelpResult', boxId: section.boxId,
+				requestId: 'stale-request', action: 'fixWithKustoWorkbench',
+			} }));
+			expect(capturedMessages.filter(message => message.type === 'requestHtmlDashboardUpgradeWithCopilot')).toHaveLength(0);
+
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'powerBiPublishHelpResult', boxId: section.boxId,
+				requestId: help.requestId, action: 'fixWithKustoWorkbench',
+			} }));
+			expect(capturedMessages.filter(message => message.type === 'requestHtmlDashboardUpgradeWithCopilot')).toHaveLength(1);
+		} finally {
+			section.remove();
+			await Promise.resolve();
+		}
 	});
 
 	it('includes section compatibility reasons in publish help when query-backed data is missing', async () => {
@@ -337,7 +390,8 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 
 	it('opens the publish dialog after the host returns Publish anyway for a partial dashboard', async () => {
 		const section = new KwHtmlSection();
-		section.boxId = 'html_partial_publish_continue';
+		section.id = 'html_partial_publish_continue';
+		section.boxId = section.id;
 		section.setName('Partial Publish Dashboard');
 		section.setCode(provenanceHtml(
 			{ total: { display: { type: 'scalar', agg: 'COUNT' } } },
@@ -367,10 +421,14 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 			_openPublishDialog: openPublishDialog,
 		});
 
-		section.connectedCallback();
+		document.body.appendChild(section);
 		try {
+			await section.updateComplete;
 			await (section as unknown as { _publishToPowerBI(): Promise<void> })._publishToPowerBI();
-			const message = capturedMessages[0] as { requestId: string };
+			const message = capturedMessages.find(candidate =>
+				(candidate as { type?: unknown }).type === 'showPowerBiPartialPublishWarning',
+			) as { requestId: string };
+			expect(message?.requestId).toBeTruthy();
 			window.dispatchEvent(new MessageEvent('message', {
 				data: {
 					type: 'powerBiPartialPublishWarningResult',
@@ -381,9 +439,12 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 			}));
 			await new Promise(resolve => setTimeout(resolve, 0));
 
-			expect(openPublishDialog).toHaveBeenCalledWith(expect.any(String), dataSources, 512, 'Partial Publish Dashboard');
+			expect(openPublishDialog).toHaveBeenCalledWith(
+				expect.any(String), dataSources, 512, 'Partial Publish Dashboard', expect.any(Number),
+			);
 		} finally {
-			section.disconnectedCallback();
+			section.remove();
+			await Promise.resolve();
 		}
 	});
 

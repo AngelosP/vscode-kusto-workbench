@@ -127,6 +127,7 @@ const mocks = {
 	waitForHostOwnedMarkdownCommands: vi.fn(async () => true),
 	handleHostOwnedMarkdownCommandResult: vi.fn(() => ({ handled: false, accepted: false })),
 	reconcileHostOwnedChartProjection: vi.fn(),
+	reconcileHostOwnedHtmlProjection: vi.fn(),
 	reconcileHostOwnedMarkdownProjection: vi.fn(),
 	reconcileHostOwnedPythonProjection: vi.fn(),
 	reconcileHostOwnedTransformationProjection: vi.fn(),
@@ -219,6 +220,8 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 	reconcileHostOwnedUrlProjection: mocks.reconcileHostOwnedUrlProjection,
 	addHtmlBox: vi.fn(() => 'html_1'),
 	removeHtmlBox: vi.fn(),
+	commitHtmlDocumentState: vi.fn(() => true),
+	reconcileHostOwnedHtmlProjection: mocks.reconcileHostOwnedHtmlProjection,
 	addSqlBox: vi.fn(() => 'sql_1'),
 	removeSqlBox: vi.fn(),
 	detachSqlComparisonForAdmissionRollback: mocks.detachSqlComparisonForAdmissionRollback,
@@ -487,7 +490,7 @@ function createFakeSqlSection(): FakeSqlSection {
 }
 
 function createFakeHtmlSection(id: string): FakeHtmlSection {
-	const el = document.createElement('div') as FakeHtmlSection;
+	const el = document.createElement('kw-html-section') as FakeHtmlSection;
 	el.id = id;
 	el.getCode = vi.fn(() => '');
 	el.setCode = vi.fn();
@@ -760,6 +763,7 @@ describe('message-handler dispatch', () => {
 		]));
 		expect(mocks.reconcileHostOwnedMarkdownProjection).toHaveBeenCalledOnce();
 		expect(mocks.reconcileHostOwnedChartProjection).toHaveBeenCalledOnce();
+		expect(mocks.reconcileHostOwnedHtmlProjection).toHaveBeenCalledOnce();
 		expect(mocks.reconcileHostOwnedPythonProjection).toHaveBeenCalledOnce();
 		expect(mocks.reconcileHostOwnedTransformationProjection).toHaveBeenCalledOnce();
 		expect(mocks.reconcileHostOwnedUrlProjection).toHaveBeenCalledOnce();
@@ -6567,6 +6571,35 @@ describe('tool section name persistence', () => {
 
 		expect(htmlEl.setCode).toHaveBeenCalledWith('<main>Dashboard</main>');
 		expect(htmlEl.fitToContents).toHaveBeenCalled();
+	});
+
+	it('toolConfigureHtmlSection rejects a Python section before invoking its mutators', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		vi.mocked(persistence.schedulePersist).mockClear();
+		const python = document.createElement('kw-python-section') as HTMLElement & {
+			getCode: ReturnType<typeof vi.fn>;
+			setCode: ReturnType<typeof vi.fn>;
+			setMode: ReturnType<typeof vi.fn>;
+		};
+		python.id = 'python_not_html';
+		python.getCode = vi.fn(() => 'print(1)');
+		python.setCode = vi.fn();
+		python.setMode = vi.fn();
+		document.body.appendChild(python);
+
+		dispatchHostMessage({
+			type: 'toolConfigureHtmlSection', requestId: 'html-tool-on-python',
+			sectionId: python.id, code: '<main>wrong kind</main>', mode: 'preview',
+		});
+		await new Promise(resolve => setTimeout(resolve, 50));
+
+		expect(python.setCode).not.toHaveBeenCalled();
+		expect(python.setMode).not.toHaveBeenCalled();
+		expect(persistence.schedulePersist).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'html-tool-on-python',
+			result: { success: false, sectionId: 'python_not_html' },
+		}));
 	});
 
 	it('toolConfigureHtmlSection preserves manual preview height when code changes', async () => {

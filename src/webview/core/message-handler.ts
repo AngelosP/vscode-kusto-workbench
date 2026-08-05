@@ -43,7 +43,7 @@ import {
 	removePythonBox, reconcileHostOwnedPythonProjection,
 	removeUrlBox, commitUrlDocumentState, reconcileHostOwnedUrlProjection,
 	onPythonResult, onPythonError,
-	removeHtmlBox,
+	removeHtmlBox, commitHtmlDocumentState, reconcileHostOwnedHtmlProjection,
 	removeSqlBox, isPinnedFirstSection,
 	detachSqlComparisonForAdmissionRollback,
 	updateSqlConnectionSelects, updateSqlDatabaseSelect, onSqlDatabasesError,
@@ -1850,6 +1850,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				);
 				reconcileHostOwnedMarkdownProjection(
 					result.projection.markdownSections,
+					result.projection.orderedSectionIds,
+				);
+				reconcileHostOwnedHtmlProjection(
+					result.projection.htmlSections ?? [],
 					result.projection.orderedSectionIds,
 				);
 				reconcileHostOwnedPythonProjection(
@@ -3854,7 +3858,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				
 				if (success && sectionId) { markSectionAgentTouched(sectionId); }
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
-				if (success && (sectionType === 'chart' || sectionType === 'transformation' || sectionType === 'markdown'
+				if (success && (sectionType === 'chart' || sectionType === 'html'
+					|| sectionType === 'transformation' || sectionType === 'markdown'
 					|| sectionType === 'python' || sectionType === 'url')
 					&& isHostOwnedMarkdownDocument()) {
 					success = await waitForHostOwnedMarkdownCommands();
@@ -3936,7 +3941,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				if (success) {
 					try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				}
-				if (success && (removedSectionType === 'chart' || removedSectionType === 'transformation'
+				if (success && (removedSectionType === 'chart' || removedSectionType === 'html'
+					|| removedSectionType === 'transformation'
 					|| removedSectionType === 'markdown' || removedSectionType === 'python'
 					|| removedSectionType === 'url') && isHostOwnedMarkdownDocument()) {
 					success = await waitForHostOwnedMarkdownCommands();
@@ -3968,6 +3974,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 								&& await waitForHostOwnedMarkdownCommands();
 						} else if (sectionTag === 'kw-chart-section' && isHostOwnedMarkdownDocument()) {
 							success = await waitForHostOwnedMarkdownCommands();
+						} else if (sectionTag === 'kw-html-section' && isHostOwnedMarkdownDocument()) {
+							success = commitHtmlDocumentState(sectionId)
+								&& await waitForHostOwnedMarkdownCommands();
 						} else if (sectionTag === 'kw-transformation-section' && isHostOwnedMarkdownDocument()) {
 							success = await waitForHostOwnedMarkdownCommands();
 						} else if (sectionTag === 'kw-python-section' && isHostOwnedMarkdownDocument()) {
@@ -4388,13 +4397,14 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			try {
 				const requestId = String(message.requestId || '');
 				const sectionId = String(message.sectionId || '');
-				const beforeSignature = getSectionSerializedSignature(sectionId);
 				let success = false;
 				let shouldAutoFit = false;
+				let beforeSignature = '';
 				
 				try {
 					const el = document.getElementById(sectionId) as any;
-					if (el && typeof el.setCode === 'function') {
+					if (el?.tagName === 'KW-HTML-SECTION' && typeof el.setCode === 'function') {
+						beforeSignature = getSectionSerializedSignature(sectionId);
 						if (typeof message.name === 'string') {
 							__kustoSetSectionName(sectionId, message.name);
 						}
@@ -4429,9 +4439,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 				
 				if (success) { markSectionAgentTouched(sectionId, beforeSignature); }
+				if (success && isHostOwnedMarkdownDocument()) {
+					success = commitHtmlDocumentState(sectionId)
+						&& await waitForHostOwnedMarkdownCommands();
+				}
 				// Immediate persist (no 400ms debounce) — the tool response is sent right
 				// after this, and the host may save/close before a debounced persist fires.
-				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
+				if (success) {
+					try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
+				}
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success, sectionId }, error: success ? undefined : 'Failed to configure HTML section' });
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });

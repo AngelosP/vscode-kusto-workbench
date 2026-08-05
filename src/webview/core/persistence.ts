@@ -60,6 +60,7 @@ import { reconcileProjectedSectionOrder } from './section-projection-order.js';
 import { shouldStartKustoSchemaPrewarm } from '../shared/schema-utils.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
 import { canonicalSectionKind } from '../../shared/documentSectionCapabilities.js';
+import { parseKwProvenance } from '../../shared/htmlDashboardUpgrade.js';
 import {
 	applyDocumentCapabilityProjection,
 	assertProjectedSectionsAllowed,
@@ -71,11 +72,13 @@ import {
 import {
 	adoptHostOwnedMarkdownDocument,
 	getHostOwnedChartSection,
+	getHostOwnedHtmlSection,
 	getHostOwnedMarkdownSection,
 	getHostOwnedPythonSection,
 	getHostOwnedTransformationSection,
 	getHostOwnedUrlSection,
 	isHostOwnedChartDocument,
+	isHostOwnedHtmlDocument,
 	isHostOwnedMarkdownDocument,
 	isHostOwnedPythonDocument,
 	isHostOwnedTransformationDocument,
@@ -1761,6 +1764,11 @@ export function getKqlxState() {
 			if (owned) sections.push(owned);
 			continue;
 		}
+		if (isHostOwnedHtmlDocument() && el?.tagName.toLowerCase() === 'kw-html-section') {
+			const owned = getHostOwnedHtmlSection(id);
+			if (owned) sections.push(owned);
+			continue;
+		}
 		if (isHostOwnedMarkdownDocument() && el?.tagName.toLowerCase() === 'kw-markdown-section') {
 			const owned = getHostOwnedMarkdownSection(id);
 			if (owned) sections.push(owned);
@@ -2253,6 +2261,7 @@ function __kustoClearAllSections(preserveOwnedIds: ReadonlySet<string> = new Set
 	} catch (e) { console.error('[kusto]', e); }
 	try {
 		for (const id of (htmlBoxes || []).slice()) {
+			if (preserveOwnedIds.has(String(id))) continue;
 			try { removeHtmlBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
@@ -2330,7 +2339,8 @@ function applyKqlxState(
 			]);
 			for (const section of s.sections) {
 				const kind = canonicalSectionKind(String(section?.type || ''));
-				if (kind !== 'chart' && kind !== 'python' && kind !== 'transformation' && kind !== 'url') continue;
+				if (kind !== 'chart' && kind !== 'html' && kind !== 'python'
+					&& kind !== 'transformation' && kind !== 'url') continue;
 				const id = String(section?.id || '').trim();
 				const element = id ? document.getElementById(id) : null;
 				if (element?.tagName.toLowerCase() === `kw-${kind}-section`) preserveOwnedIds.add(id);
@@ -2353,6 +2363,17 @@ function applyKqlxState(
 					if (source && __kustoCanPreserveTransformationSource(source, previousSource)) {
 						preserveOwnedIds.add(sourceId);
 					}
+				}
+			}
+			for (const section of s.sections) {
+				if (canonicalSectionKind(String(section?.type || '')) !== 'html') continue;
+				const htmlId = String(section?.id || '').trim();
+				if (!preserveOwnedIds.has(htmlId)) continue;
+				const sourceId = String(parseKwProvenance(String(section.code || ''))?.model?.fact?.sectionId || '').trim();
+				const source = sourceId ? sectionsById.get(sourceId) : undefined;
+				const previousSource = sourceId ? previousSectionsById.get(sourceId) : undefined;
+				if (source && __kustoCanPreserveTransformationSource(source, previousSource)) {
+					preserveOwnedIds.add(sourceId);
 				}
 			}
 		}
@@ -2921,8 +2942,6 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					element = document.getElementById(boxId) as HTMLElementTagNameMap['kw-python-section'] | null;
 				}
 				element?.applyHostDocumentState?.(projected);
-				const container = document.getElementById('queries-container');
-				if (container && element && container.lastElementChild !== element) container.appendChild(element);
 				continue;
 			}
 
@@ -2944,8 +2963,6 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 				const boxId = element ? projected.id : addUrlBox(projected);
 				if (!element) element = document.getElementById(boxId) as HTMLElementTagNameMap['kw-url-section'] | null;
 				element?.applyHostDocumentState?.(projected, { fetchIfMissing: created });
-				const container = document.getElementById('queries-container');
-				if (container && element) container.appendChild(element);
 				// Legacy factories do not apply host state, so retain their explicit fetch hook.
 				try {
 					if (created && element && typeof element.applyHostDocumentState !== 'function'
@@ -2958,24 +2975,45 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 
 			if (t === 'html') {
 				const pendingId = section.id ? String(section.id) : ('html_' + Date.now());
+				const projected = {
+					id: pendingId, type: 'html' as const,
+					name: String(section.name || ''), code: String(section.code || ''),
+					mode: section.mode === 'preview' ? 'preview' as const : 'code' as const,
+					expanded: section.expanded !== false,
+					...(typeof section.editorHeightPx === 'number' ? { editorHeightPx: section.editorHeightPx } : {}),
+					...(typeof section.previewHeightPx === 'number' ? { previewHeightPx: section.previewHeightPx } : {}),
+					...(typeof section.previewHeightUserSet === 'boolean'
+						? { previewHeightUserSet: section.previewHeightUserSet } : {}),
+					...(Array.isArray(section.dataSourceIds) ? { dataSourceIds: [...section.dataSourceIds] } : {}),
+					...(section.pbiPublishInfo && typeof section.pbiPublishInfo === 'object'
+						? { pbiPublishInfo: section.pbiPublishInfo } : {}),
+					...(section.powerBiUpgradeNotice && typeof section.powerBiUpgradeNotice === 'object'
+						? { powerBiUpgradeNotice: section.powerBiUpgradeNotice } : {}),
+				};
+				let element = preserveOwnedIds.has(pendingId)
+					? document.getElementById(pendingId) as HTMLElementTagNameMap['kw-html-section'] | null
+					: null;
 				// Store pending code so the Lit component can pick it up during Monaco init.
 				try {
 					pState.pendingHtmlCodeByBoxId = pState.pendingHtmlCodeByBoxId || {};
-					pState.pendingHtmlCodeByBoxId[pendingId] = String(section.code || '');
+					if (!element) pState.pendingHtmlCodeByBoxId[pendingId] = projected.code;
 				} catch (e) { console.error('[kusto]', e); }
-				const htmlOptions: any = {
-					id: pendingId,
-					name: String(section.name || ''),
-					mode: section.mode || 'code',
-					expanded: (typeof section.expanded === 'boolean') ? section.expanded : true,
-					editorHeightPx: section.editorHeightPx,
-					previewHeightPx: section.previewHeightPx,
-					dataSourceIds: Array.isArray(section.dataSourceIds) ? section.dataSourceIds : undefined,
-					pbiPublishInfo: section.pbiPublishInfo,
-					powerBiUpgradeNotice: section.powerBiUpgradeNotice,
-				};
-				if (section.previewHeightUserSet === true) htmlOptions.previewHeightUserSet = true;
-				addHtmlBox(htmlOptions);
+				if (!element) {
+					addHtmlBox({
+						id: projected.id,
+						name: projected.name,
+						mode: projected.mode,
+						expanded: projected.expanded,
+						editorHeightPx: projected.editorHeightPx,
+						previewHeightPx: projected.previewHeightPx,
+						dataSourceIds: projected.dataSourceIds,
+						pbiPublishInfo: projected.pbiPublishInfo,
+						powerBiUpgradeNotice: projected.powerBiUpgradeNotice,
+						...(projected.previewHeightUserSet === true ? { previewHeightUserSet: true } : {}),
+					});
+					element = document.getElementById(pendingId) as HTMLElementTagNameMap['kw-html-section'] | null;
+				}
+				element?.applyHostDocumentState?.(projected);
 				continue;
 			}
 

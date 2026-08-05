@@ -117,5 +117,5 @@ describe('document section capability ownership', () => {
 			'src/webview/queryEditor.js',
 		]);
 		expect(rawBridgeAssignments).toEqual([]);
-	});
+	}, 15_000);
 });

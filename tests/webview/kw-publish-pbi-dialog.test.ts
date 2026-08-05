@@ -62,12 +62,14 @@ async function showDialog(dialog: KwPublishPbiDialog, pbiPublishInfo?: StoredPub
 }
 
 async function sendWorkspaces(dialog: KwPublishPbiDialog): Promise<void> {
-	dialog.handleHostMessage({ type: 'pbiWorkspacesResult', boxId, ok: true, workspaces });
+	const requestId = String(postedMessages('getPbiWorkspaces').at(-1)?.requestId || 'stale-workspaces');
+	dialog.handleHostMessage({ type: 'pbiWorkspacesResult', requestId, boxId, ok: true, workspaces });
 	await waitForUpdate(dialog);
 }
 
 async function sendExists(dialog: KwPublishPbiDialog, exists: boolean): Promise<void> {
-	dialog.handleHostMessage({ type: 'pbiItemExistsResult', boxId, exists });
+	const requestId = String(postedMessages('checkPbiItemExists').at(-1)?.requestId || 'stale-exists');
+	dialog.handleHostMessage({ type: 'pbiItemExistsResult', requestId, boxId, exists });
 	await waitForUpdate(dialog);
 }
 
@@ -75,8 +77,10 @@ async function sendPublishSuccess(
 	dialog: KwPublishPbiDialog,
 	overrides: Partial<PostedMessage> = {},
 ): Promise<void> {
+	const requestId = String(postedMessages('publishToPowerBI').at(-1)?.requestId || 'stale-publish');
 	dialog.handleHostMessage({
 		type: 'publishToPowerBIResult',
+		requestId,
 		boxId,
 		ok: true,
 		reportUrl: 'https://app.powerbi.com/groups/workspace-1/reports/report-new',
@@ -132,6 +136,57 @@ afterEach(() => {
 });
 
 describe('kw-publish-pbi-dialog', () => {
+	it('cancels every active dashboard request when hidden', async () => {
+		const dialog = createDialog();
+		await showDialog(dialog, storedPublishInfo);
+		const workspacesRequestId = String(postedMessages('getPbiWorkspaces').at(-1)?.requestId || '');
+		const existsRequestId = String(postedMessages('checkPbiItemExists').at(-1)?.requestId || '');
+		(dialog as any)._publishRequestId = 'publish-active';
+		testState.postMessageToHost.mockClear();
+
+		dialog.hide();
+
+		expect(postedMessages('cancelDashboardWorkflow')).toEqual(expect.arrayContaining([
+			expect.objectContaining({ requestId: workspacesRequestId }),
+			expect.objectContaining({ requestId: existsRequestId }),
+			expect.objectContaining({ requestId: 'publish-active' }),
+		]));
+	});
+
+	it('ignores workspace, existence, and publish responses from a prior dialog incarnation', async () => {
+		const dialog = createDialog();
+		await showDialog(dialog, storedPublishInfo);
+		const staleWorkspaceRequestId = String(postedMessages('getPbiWorkspaces').at(-1)?.requestId || '');
+		const staleExistsRequestId = String(postedMessages('checkPbiItemExists').at(-1)?.requestId || '');
+		dialog.hide();
+		await showDialog(dialog, storedPublishInfo);
+		const currentWorkspaceRequestId = String(postedMessages('getPbiWorkspaces').at(-1)?.requestId || '');
+		expect(currentWorkspaceRequestId).not.toBe(staleWorkspaceRequestId);
+
+		dialog.handleHostMessage({
+			type: 'pbiWorkspacesResult', requestId: staleWorkspaceRequestId, boxId, ok: true, workspaces,
+		});
+		dialog.handleHostMessage({
+			type: 'pbiItemExistsResult', requestId: staleExistsRequestId, boxId, exists: true,
+		});
+		await waitForUpdate(dialog);
+		expect(primaryButton(dialog).disabled).toBe(true);
+
+		await sendWorkspaces(dialog);
+		await sendExists(dialog, true);
+		primaryButton(dialog).click();
+		const stalePublishRequestId = String(lastPublishMessage().requestId || '');
+		dialog.hide();
+		await showDialog(dialog);
+		dialog.handleHostMessage({
+			type: 'publishToPowerBIResult', requestId: stalePublishRequestId, boxId, ok: true,
+			reportUrl: 'https://app.powerbi.com/stale', semanticModelId: 'stale-model',
+			reportId: 'stale-report', workspaceId: 'workspace-1', reportName: 'Stale report',
+		});
+		await waitForUpdate(dialog);
+		expect(dialog.shadowRoot?.querySelector('.ppd-success-text')).toBeNull();
+	});
+
 	it('defaults first-time publishes to Import and posts the selected data mode', async () => {
 		localStorage.setItem('kw.publishPbi.lastWorkspaceId', 'workspace-1');
 		localStorage.setItem('kw.publishPbi.lastWorkspaceName', 'Analytics');

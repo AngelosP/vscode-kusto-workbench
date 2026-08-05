@@ -29,10 +29,17 @@ import {
 	patchTransformationSection,
 	type TransformationSectionState,
 } from './transformationSectionDefinition';
+import {
+	parseHtmlSection,
+	parseHtmlSectionPatch,
+	patchHtmlSection,
+	type HtmlSectionState,
+} from './htmlSectionDefinition';
 
 type SectionRecord = Record<string, unknown>;
 type OwnedSectionState =
 	| ChartSectionState
+	| HtmlSectionState
 	| MarkdownSectionState
 	| PythonSectionState
 	| TransformationSectionState
@@ -41,7 +48,7 @@ type OwnedSectionKind = OwnedSectionState['type'];
 
 export function isMarkdownDocumentOwnedSectionKind(value: unknown): value is OwnedSectionKind {
 	const kind = canonicalSectionKind(String(value ?? ''));
-	return kind === 'chart' || kind === 'markdown' || kind === 'python'
+	return kind === 'chart' || kind === 'html' || kind === 'markdown' || kind === 'python'
 		|| kind === 'transformation' || kind === 'url';
 }
 
@@ -86,6 +93,7 @@ export interface MarkdownDocumentProjection {
 	sectionRevisions: Readonly<Record<string, number>>;
 	markdownSectionRevisions: Readonly<Record<string, number>>;
 	chartSections: readonly ChartSectionState[];
+	htmlSections: readonly HtmlSectionState[];
 	markdownSections: readonly MarkdownSectionState[];
 	pythonSections: readonly PythonSectionState[];
 	transformationSections: readonly TransformationSectionState[];
@@ -152,13 +160,14 @@ function parseOwnedSection(input: unknown):
 	if (!isRecord(input)) return { ok: false, error: 'Host-owned section must be an object.' };
 	const kind = ownedSectionKind(input);
 	if (kind === 'chart') return parseChartSection(input);
+	if (kind === 'html') return parseHtmlSection(input);
 	if (kind === 'markdown') return parseMarkdownSection(input);
 	if (kind === 'python') return parsePythonSection(input);
 	if (kind === 'transformation') return parseTransformationSection(input);
 	if (kind === 'url') return parseUrlSection(input);
 	return {
 		ok: false,
-		error: 'Host-owned section must have type "chart", "markdown", "python", "transformation", or "url".',
+		error: 'Host-owned section must have type "chart", "html", "markdown", "python", "transformation", or "url".',
 	};
 }
 
@@ -222,6 +231,9 @@ export class MarkdownDocumentAggregate {
 		const chartSections = ownedSections.filter(
 			(section): section is ChartSectionState => section.type === 'chart',
 		);
+		const htmlSections = ownedSections.filter(
+			(section): section is HtmlSectionState => section.type === 'html',
+		);
 		const markdownSections = ownedSections.filter(
 			(section): section is MarkdownSectionState => section.type === 'markdown',
 		);
@@ -242,6 +254,7 @@ export class MarkdownDocumentAggregate {
 				[...this.sectionRevisions].filter(([id]) => markdownIds.has(id)),
 			),
 			chartSections,
+			htmlSections,
 			markdownSections,
 			pythonSections,
 			transformationSections,
@@ -345,11 +358,13 @@ export class MarkdownDocumentAggregate {
 			|| command.expectedSectionRevision !== currentSectionRevision) {
 			const sectionLabel = currentKind === 'chart'
 				? 'Chart'
+				: currentKind === 'html'
+					? 'HTML'
 				: currentKind === 'markdown'
-					? 'Markdown'
-					: currentKind === 'python'
-						? 'Python'
-						: currentKind === 'transformation' ? 'Transformation' : 'URL';
+						? 'Markdown'
+						: currentKind === 'python'
+							? 'Python'
+							: currentKind === 'transformation' ? 'Transformation' : 'URL';
 			return commandFailure(
 				this,
 				'stale-section-revision',
@@ -373,6 +388,12 @@ export class MarkdownDocumentAggregate {
 			if (!parsedCurrent.ok) return commandFailure(this, 'invalid-command', parsedCurrent.error);
 			if (!parsedPatch.ok) return commandFailure(this, 'invalid-command', parsedPatch.error);
 			sections[sectionIndex] = patchChartSection(parsedCurrent.value, parsedPatch.value) as unknown as SectionRecord;
+		} else if (currentKind === 'html') {
+			const parsedCurrent = parseHtmlSection(sections[sectionIndex]);
+			const parsedPatch = parseHtmlSectionPatch(command.patch);
+			if (!parsedCurrent.ok) return commandFailure(this, 'invalid-command', parsedCurrent.error);
+			if (!parsedPatch.ok) return commandFailure(this, 'invalid-command', parsedPatch.error);
+			sections[sectionIndex] = patchHtmlSection(parsedCurrent.value, parsedPatch.value) as unknown as SectionRecord;
 		} else if (currentKind === 'markdown') {
 			const parsedCurrent = parseMarkdownSection(sections[sectionIndex]);
 			const parsedPatch = parseMarkdownSectionPatch(command.patch);

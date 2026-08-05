@@ -169,16 +169,29 @@ export type ArtifactCsvSaveDataMessage = {
 	type: 'artifactCsvSaveData'; requestId: string; boxId: string; artifactId: string; accepted: boolean; csv?: string;
 };
 export type CancelArtifactCsvSaveIntentMessage = { type: 'cancelArtifactCsvSaveIntent'; requestId: string };
+export type CancelDashboardWorkflowMessage = { type: 'cancelDashboardWorkflow'; requestId: string };
+export type PublishToPowerBIAckMessage = {
+	type: 'publishToPowerBIAck';
+	requestId: string;
+	accepted: boolean;
+};
 export type ExportDashboardMessage = {
 	type: 'exportDashboard';
+	requestId: string;
 	boxId: string;
 	html: string;
 	suggestedFileName?: string;
 	previewHeight?: number;
 	dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>;
 };
-export type GetPbiWorkspacesMessage = { type: 'getPbiWorkspaces'; boxId: string };
-export type CheckPbiItemExistsMessage = { type: 'checkPbiItemExists'; boxId: string; workspaceId: string; reportId: string };
+export type GetPbiWorkspacesMessage = { type: 'getPbiWorkspaces'; requestId: string; boxId: string };
+export type CheckPbiItemExistsMessage = {
+	type: 'checkPbiItemExists';
+	requestId: string;
+	boxId: string;
+	workspaceId: string;
+	reportId: string;
+};
 export type RequestHtmlDashboardUpgradeWithCopilotMessage = {
 	type: 'requestHtmlDashboardUpgradeWithCopilot';
 	sectionId: string;
@@ -188,6 +201,7 @@ export type RequestHtmlDashboardUpgradeWithCopilotMessage = {
 };
 export type ShowPowerBiPublishHelpMessage = {
 	type: 'showPowerBiPublishHelp';
+	requestId: string;
 	sectionId: string;
 	sectionName?: string;
 	targetVersion?: number;
@@ -203,10 +217,12 @@ export type ShowPowerBiPartialPublishWarningMessage = {
 };
 export type ShowPowerBiUnsupportedVisualHelpMessage = {
 	type: 'showPowerBiUnsupportedVisualHelp';
+	requestId: string;
 	message: string;
 };
 export type PublishToPowerBIMessage = {
 	type: 'publishToPowerBI';
+	requestId: string;
 	boxId: string;
 	workspaceId: string;
 	reportName: string;
@@ -262,6 +278,8 @@ export type IncomingWebviewMessage =
 	| RequestArtifactCsvSaveMessage
 	| ArtifactCsvSaveDataMessage
 	| CancelArtifactCsvSaveIntentMessage
+	| CancelDashboardWorkflowMessage
+	| PublishToPowerBIAckMessage
 	| ExportDashboardMessage
 	| RequestHtmlDashboardUpgradeWithCopilotMessage
 	| GetPbiWorkspacesMessage
