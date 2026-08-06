@@ -33,7 +33,6 @@ import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { getQueryEditorHtml } from './queryEditorHtml';
 import { toolOrchestrator } from './extension';
 import { CopilotService, CopilotServiceHost, SQL_COPILOT_OWNER_CHANGED_MESSAGE } from './queryEditorCopilot';
-import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 import { ConnectionService, ConnectionServiceHost } from './queryEditorConnection';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { canonicalSectionKind } from '../shared/documentSectionCapabilities';
@@ -111,6 +110,10 @@ import {
 	HostCachedValuesOpenApplicationHandler,
 	type CachedValuesOpenApplicationHandler,
 } from './cachedValuesOpenApplicationHandler';
+import {
+	HostCopilotAgentOpenApplicationHandler,
+	type CopilotAgentOpenApplicationHandler,
+} from './copilotAgentOpenApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -210,6 +213,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly copilotContentOpenApplication: CopilotContentOpenApplicationHandler;
 	readonly informationNotificationApplication: InformationNotificationApplicationHandler;
 	readonly cachedValuesOpenApplication: CachedValuesOpenApplicationHandler;
+	readonly copilotAgentOpenApplication: CopilotAgentOpenApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -622,6 +626,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		copilotContentOpenApplication?: CopilotContentOpenApplicationHandler,
 		informationNotificationApplication?: InformationNotificationApplicationHandler,
 		cachedValuesOpenApplication?: CachedValuesOpenApplicationHandler,
+		copilotAgentOpenApplication?: CopilotAgentOpenApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -658,6 +663,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			?? new HostInformationNotificationApplicationHandler();
 		this.cachedValuesOpenApplication = cachedValuesOpenApplication
 			?? new HostCachedValuesOpenApplicationHandler();
+		this.copilotAgentOpenApplication = copilotAgentOpenApplication
+			?? new HostCopilotAgentOpenApplicationHandler();
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
 			this.handleKustoAuthPreferenceChange(change);
 		});
@@ -1055,6 +1062,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const cachedValuesOpenApplicationMessage = this.cachedValuesOpenApplication?.handleMessage(message);
 		if (cachedValuesOpenApplicationMessage) {
 			await cachedValuesOpenApplicationMessage;
+			return;
+		}
+		const copilotAgentOpenApplicationMessage = this.copilotAgentOpenApplication?.handleMessage(message);
+		if (copilotAgentOpenApplicationMessage) {
+			await copilotAgentOpenApplicationMessage;
 			return;
 		}
 		const copilotContentOpenApplicationMessage = this.copilotContentOpenApplication?.handleMessage(message);
@@ -1512,9 +1524,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'clearComparisonSummary':
 				this.deleteComparisonSummary(`${String(message.sourceBoxId || '')}::${String(message.comparisonBoxId || '')}`);
-				return;
-			case 'openCopilotAgent':
-				await openKustoWorkbenchAgentChat();
 				return;
 			case 'copilotChatFirstTimeCheck':
 				await this.copilot.handleCopilotChatFirstTimeCheck(message.boxId);
@@ -2086,6 +2095,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.copilotContentOpenApplication.dispose();
 			this.informationNotificationApplication.dispose();
 			this.cachedValuesOpenApplication.dispose();
+			this.copilotAgentOpenApplication.dispose();
 			for (const [requestId, pending] of [...this.pendingComparisonEnsureByRequestId]) {
 				this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
 			}
