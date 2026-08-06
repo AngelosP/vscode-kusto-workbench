@@ -280,6 +280,7 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 		extractPostMessageTypes('src/host/resourceUriApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/copilotContentOpenApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/informationNotificationApplicationHandler.ts'),
+		extractPostMessageTypes('src/host/cachedValuesOpenApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/kustoExecutionCoordinator.ts'),
 		extractPostMessageTypes('src/host/sql/sqlEditorLifecycleCoordinator.ts'),
 		extractPostMessageTypes('src/host/kqlxEditorProvider.ts'),
@@ -298,23 +299,23 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kqlxEditorProvider.ts::deliverWebviewMessage::postMessage::1233:34',
 	'src/host/kqlxEditorProvider.ts::postWebviewMessage::postMessage::1222:10',
 	'src/host/kqlxEditorProvider.ts::resolveCustomTextEditor::postMessage::3608:19',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::393:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::622:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::398:27',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::628:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::632:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::637:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::640:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::634:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::638:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::643:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::646:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::666:29',
-	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::801:26',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::2042:21',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::1966:21',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::1985:22',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1938:21',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::1950:21',
-	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::1998:10',
-	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::541:25',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::649:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::652:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::674:29',
+	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::809:26',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::2052:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::1976:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::1995:22',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1948:21',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::1960:21',
+	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::2008:10',
+	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::546:25',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1741:13',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1745:10',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageContained::postMessageRequiredContained::2013:8',
@@ -1096,6 +1097,11 @@ describe('Message Protocol Contract', () => {
 
 		it('keeps information notifications response-free', () => {
 			const extraction = extractPostMessageTypes('src/host/informationNotificationApplicationHandler.ts');
+			expect(extraction).toEqual({ types: [], dynamicSites: [] });
+		});
+
+		it('keeps cached-values opening response-free', () => {
+			const extraction = extractPostMessageTypes('src/host/cachedValuesOpenApplicationHandler.ts');
 			expect(extraction).toEqual({ types: [], dynamicSites: [] });
 		});
 

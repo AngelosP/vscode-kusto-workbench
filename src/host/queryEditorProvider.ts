@@ -107,6 +107,10 @@ import {
 	HostInformationNotificationApplicationHandler,
 	type InformationNotificationApplicationHandler,
 } from './informationNotificationApplicationHandler';
+import {
+	HostCachedValuesOpenApplicationHandler,
+	type CachedValuesOpenApplicationHandler,
+} from './cachedValuesOpenApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -205,6 +209,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly resourceUriApplication: ResourceUriApplicationHandler;
 	readonly copilotContentOpenApplication: CopilotContentOpenApplicationHandler;
 	readonly informationNotificationApplication: InformationNotificationApplicationHandler;
+	readonly cachedValuesOpenApplication: CachedValuesOpenApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -616,6 +621,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		resourceUriApplication?: ResourceUriApplicationHandler,
 		copilotContentOpenApplication?: CopilotContentOpenApplicationHandler,
 		informationNotificationApplication?: InformationNotificationApplicationHandler,
+		cachedValuesOpenApplication?: CachedValuesOpenApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -650,6 +656,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			?? new HostCopilotContentOpenApplicationHandler();
 		this.informationNotificationApplication = informationNotificationApplication
 			?? new HostInformationNotificationApplicationHandler();
+		this.cachedValuesOpenApplication = cachedValuesOpenApplication
+			?? new HostCachedValuesOpenApplicationHandler();
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
 			this.handleKustoAuthPreferenceChange(change);
 		});
@@ -1044,6 +1052,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await resourceUriApplicationMessage;
 			return;
 		}
+		const cachedValuesOpenApplicationMessage = this.cachedValuesOpenApplication?.handleMessage(message);
+		if (cachedValuesOpenApplicationMessage) {
+			await cachedValuesOpenApplicationMessage;
+			return;
+		}
 		const copilotContentOpenApplicationMessage = this.copilotContentOpenApplication?.handleMessage(message);
 		if (copilotContentOpenApplicationMessage) {
 			await copilotContentOpenApplicationMessage;
@@ -1363,9 +1376,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'getConnections':
 				await this.sendConnectionsData(message.policyRequestId);
-				return;
-			case 'seeCachedValues':
-				await vscode.commands.executeCommand('kusto.seeCachedValues');
 				return;
 			case 'requestAddFavorite':
 				await this.connection.promptAddFavorite(message);
@@ -2075,6 +2085,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.resourceUriApplication.dispose();
 			this.copilotContentOpenApplication.dispose();
 			this.informationNotificationApplication.dispose();
+			this.cachedValuesOpenApplication.dispose();
 			for (const [requestId, pending] of [...this.pendingComparisonEnsureByRequestId]) {
 				this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
 			}
