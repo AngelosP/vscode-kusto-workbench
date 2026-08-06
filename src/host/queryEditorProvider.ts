@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 
-import * as path from 'path';
 import * as crypto from 'crypto';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
@@ -96,6 +95,10 @@ import {
 	HostControlCommandSyntaxApplicationHandler,
 	type ControlCommandSyntaxApplicationHandler,
 } from './controlCommandSyntaxApplicationHandler';
+import {
+	HostResourceUriApplicationHandler,
+	type ResourceUriApplicationHandler,
+} from './resourceUriApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -191,6 +194,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly querySharingApplication: QuerySharingApplicationHandler;
 	readonly urlContentApplication: UrlContentApplicationHandler;
 	readonly controlCommandSyntaxApplication: ControlCommandSyntaxApplicationHandler;
+	readonly resourceUriApplication: ResourceUriApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -550,7 +554,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		}>
 	>();
 	private readonly kqlLanguageHost: KqlLanguageServiceHost;
-	private readonly resolvedResourceUriCache = new Map<string, string>();
 	private readonly copilot: CopilotService;
 	private configSubscription?: vscode.Disposable;
 	private authPreferenceSubscription?: vscode.Disposable;
@@ -600,6 +603,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		querySharingApplication?: QuerySharingApplicationHandler,
 		urlContentApplication?: UrlContentApplicationHandler,
 		controlCommandSyntaxApplication?: ControlCommandSyntaxApplicationHandler,
+		resourceUriApplication?: ResourceUriApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -625,6 +629,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		});
 		this.controlCommandSyntaxApplication = controlCommandSyntaxApplication ?? new HostControlCommandSyntaxApplicationHandler({
 			postMessage: message => this.postMessage(message),
+		});
+		this.resourceUriApplication = resourceUriApplication ?? new HostResourceUriApplicationHandler({
+			postMessage: message => this.postMessage(message),
+			asWebviewUri: uri => this.panel?.webview.asWebviewUri(uri),
 		});
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
 			this.handleKustoAuthPreferenceChange(change);
@@ -1015,6 +1023,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await controlCommandSyntaxApplicationMessage;
 			return;
 		}
+		const resourceUriApplicationMessage = this.resourceUriApplication?.handleMessage(message);
+		if (resourceUriApplicationMessage) {
+			await resourceUriApplicationMessage;
+			return;
+		}
 		switch (message.type) {
 			case 'kustoSectionOpen':
 				this.kustoExecutionCoordinator.openSection(message.boxId, message.sectionInstanceId);
@@ -1323,9 +1336,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				} catch {
 					// ignore
 				}
-				return;
-			case 'resolveResourceUri':
-				await this.resolveResourceUri(message);
 				return;
 			case 'getConnections':
 				await this.sendConnectionsData(message.policyRequestId);
@@ -1881,116 +1891,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 
 
-	private async resolveResourceUri(message: Extract<IncomingWebviewMessage, { type: 'resolveResourceUri' }>): Promise<void> {
-		const requestId = String(message.requestId || '');
-		const rawPath = String(message.path || '');
-		const rawBase = typeof message.baseUri === 'string' ? String(message.baseUri || '') : '';
-
-		const reply = (payload: { ok: boolean; uri?: string; error?: string }) => {
-			try {
-				this.postMessage({ type: 'resolveResourceUriResult', requestId, ...payload });
-			} catch {
-				// ignore
-			}
-		};
-
-		if (!requestId) {
-			return;
-		}
-		if (!rawPath.trim()) {
-			reply({ ok: false, error: 'Empty path.' });
-			return;
-		}
-
-		// Do not rewrite/serve remote URLs. ToastUI can load those directly (subject to CSP).
-		const lower = rawPath.trim().toLowerCase();
-		if (
-			lower.startsWith('http://') ||
-			lower.startsWith('https://') ||
-			lower.startsWith('data:') ||
-			lower.startsWith('blob:') ||
-			lower.startsWith('vscode-webview://') ||
-			lower.startsWith('vscode-resource:')
-		) {
-			reply({ ok: true, uri: rawPath.trim() });
-			return;
-		}
-
-		// We only support resolving file-based documents for now.
-		let baseUri: vscode.Uri | null = null;
-		try {
-			if (rawBase) {
-				baseUri = vscode.Uri.parse(rawBase);
-			}
-		} catch {
-			baseUri = null;
-		}
-		if (!baseUri || baseUri.scheme !== 'file') {
-			reply({ ok: false, error: 'Missing or unsupported baseUri. Only local files are supported.' });
-			return;
-		}
-
-		let targetUri: vscode.Uri;
-		try {
-			// Normalize markdown-style paths (always forward slashes).
-			const normalized = rawPath.replace(/\\/g, '/');
-
-			// Markdown sometimes uses leading-slash paths to mean "workspace root".
-			// On Windows, path.isAbsolute('/foo') is true but it is not a meaningful local path.
-			if (normalized.startsWith('/')) {
-				const wf = vscode.workspace.getWorkspaceFolder(baseUri);
-				const rel = normalized.replace(/^\/+/, '');
-				if (wf && rel) {
-					targetUri = vscode.Uri.joinPath(wf.uri, ...rel.split('/'));
-				} else {
-					const baseDir = path.dirname(baseUri.fsPath);
-					const resolvedFsPath = path.resolve(baseDir, rel);
-					targetUri = vscode.Uri.file(resolvedFsPath);
-				}
-			} else {
-				const isWindowsAbsolute = /^[a-zA-Z]:\//.test(normalized) || normalized.startsWith('//');
-				const isPosixAbsolute = !isWindowsAbsolute && path.posix.isAbsolute(normalized);
-				if (isWindowsAbsolute || (isPosixAbsolute && process.platform !== 'win32')) {
-					targetUri = vscode.Uri.file(normalized);
-				} else {
-					const baseDir = path.dirname(baseUri.fsPath);
-					const resolvedFsPath = path.resolve(baseDir, normalized);
-					targetUri = vscode.Uri.file(resolvedFsPath);
-				}
-			}
-		} catch (e) {
-			reply({ ok: false, error: `Failed to resolve path: ${this.getErrorMessage(e)}` });
-			return;
-		}
-
-		const cacheKey = `${baseUri.toString()}::${rawPath}`;
-		const cached = this.resolvedResourceUriCache.get(cacheKey);
-		if (cached) {
-			reply({ ok: true, uri: cached });
-			return;
-		}
-
-		try {
-			await vscode.workspace.fs.stat(targetUri);
-		} catch {
-			reply({ ok: false, error: 'File not found.' });
-			return;
-		}
-
-		if (!this.panel) {
-			reply({ ok: false, error: 'Webview panel is not available.' });
-			return;
-		}
-
-		try {
-			const webviewUri = this.panel.webview.asWebviewUri(targetUri).toString();
-			this.resolvedResourceUriCache.set(cacheKey, webviewUri);
-			reply({ ok: true, uri: webviewUri });
-		} catch (e) {
-			reply({ ok: false, error: `Failed to create webview URI: ${this.getErrorMessage(e)}` });
-		}
-	}
-
 	private async handleKqlLanguageRequest(
 		message: Extract<IncomingWebviewMessage, { type: 'kqlLanguageRequest' }>
 	): Promise<void> {
@@ -2196,6 +2096,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.querySharingApplication.dispose();
 			this.urlContentApplication.dispose();
 			this.controlCommandSyntaxApplication.dispose();
+			this.resourceUriApplication.dispose();
 			for (const [requestId, pending] of [...this.pendingComparisonEnsureByRequestId]) {
 				this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
 			}

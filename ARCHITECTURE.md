@@ -27,6 +27,7 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `querySharingApplicationHandler.ts` | Injected host application owner for Kusto ADX-link generation, Kusto/SQL rich and plain-text share formatting, host clipboard effects, response publication, notifications, and disposal |
 | `urlContentApplicationHandler.ts` | Injected host application owner for URL validation, redirect-following fetch, timeout/abort, text/image byte caps, content classification/sniffing, truncation, response shaping, and disposal |
 | `controlCommandSyntaxApplicationHandler.ts` | Injected host application owner for Microsoft Learn control-command syntax lookup, 24-hour caching, HTML/entity extraction, `with(...)` argument parsing, response shaping, and disposal |
+| `resourceUriApplicationHandler.ts` | Injected host application owner for local Markdown resource URI normalization, passthrough and base decisions, file existence/cache checks, webview URI conversion, response shaping, and disposal |
 | `queryEditorCopilot.ts` | Copilot integration (extracted from provider) |
 | `queryEditorConnection.ts` | Connection management (extracted from provider) |
 | `queryEditorSchema.ts` | Schema handling (extracted from provider) |
@@ -232,7 +233,7 @@ When a Lit component has distinct behavioral concerns, each concern is extracted
 
 Extension host and webview communicate via `postMessage`:
 
-* **Host → Webview:** `QueryEditorProvider` owns panel transport; injected application handlers such as `HostDashboardApplicationHandler`, `HostArtifactCsvSaveApplicationHandler`, `HostPythonExecutionApplicationHandler`, `HostQuerySharingApplicationHandler`, `HostUrlContentApplicationHandler`, and `HostControlCommandSyntaxApplicationHandler` send through that transport callback.
+* **Host → Webview:** `QueryEditorProvider` owns panel transport; injected application handlers such as `HostDashboardApplicationHandler`, `HostArtifactCsvSaveApplicationHandler`, `HostPythonExecutionApplicationHandler`, `HostQuerySharingApplicationHandler`, `HostUrlContentApplicationHandler`, `HostControlCommandSyntaxApplicationHandler`, and `HostResourceUriApplicationHandler` send through that transport callback.
 * **Webview → Host:** `vscode.postMessage({ type: '...', ... })` via `postMessageToHost()` in `webview-messages.ts`
 
 On the host side, incoming messages match the `IncomingWebviewMessage` union type exported from `queryEditorTypes.ts`. On the webview side, the message dispatcher lives in `core/message-handler.ts` (a large `switch` statement) and is wired by `core/main.ts`.
@@ -252,6 +253,8 @@ Query sharing remains outside the document-view protocol. `HostQuerySharingAppli
 URL content acquisition remains outside the document-view protocol. `HostUrlContentApplicationHandler` is the sole native owner of `fetchUrl`, including HTTP/HTTPS validation, redirect-following fetch, the 15-second timeout and abort lifecycle, 100 MB text/CSV and 5 MB image caps, 200,000-character truncation, CSV/HTML/text/image classification and HTML body sniffing, exact original/resolved URL identity, `urlContent` / `urlError` publication, and disposal. `QueryEditorProvider` only constructs or accepts the handler, synchronously offers typed messages, supplies panel transport, and disposes it. `kw-url-section` request identity, stale rejection, rendering, immutable URL CSV artifact publication, debounce, autosizing, teardown, imported CSV saving, browser behavior, `resolveResourceUri`, and network/origin/trust policy remain unchanged adapters.
 
 Control-command syntax lookup remains outside the document-view protocol. `HostControlCommandSyntaxApplicationHandler` is the sole native owner of `fetchControlCommandSyntax`, including the 24-hour command cache, Microsoft Learn URL normalization and fetch, Syntax-section/first-`pre` HTML extraction, entity decoding, case-insensitive `with(...)` argument de-duplication, existing failure-cache behavior, exact request/command identity, `controlCommandSyntaxResult` publication, and disposal. `QueryEditorProvider` only constructs or accepts the handler, synchronously offers typed messages, supplies panel transport, and disposes it. Caret-documentation request de-duplication, presentation caching, rendering, Kusto control-command grammar/detection/execution, generated command data, browser behavior, `resolveResourceUri`, message shapes, and network/origin/trust policy remain unchanged adapters.
+
+Local Markdown resource resolution remains outside the document-view protocol. `HostResourceUriApplicationHandler` is the sole native owner of `resolveResourceUri`, including exact request shaping, HTTP/HTTPS/data/blob/webview passthrough, local-file base validation, workspace-root and relative/absolute path normalization, file stat and exact base/path caching, live-panel webview URI conversion, `resolveResourceUriResult` publication, and disposal/late-publication suppression. `QueryEditorProvider` only constructs or accepts the handler, synchronously offers typed messages, supplies panel transport plus the live `asWebviewUri` capability, and disposes it. Markdown request de-duplication, timeout, rendering, browser behavior, URL acquisition, navigation, linked queries, message shapes, and network/origin/trust/file policy remain unchanged adapters.
 
 ## Window Bridges (Legacy)
 
@@ -846,6 +849,8 @@ Tests are organized under `tests/`:
 | `urlContentApplicationHandler.test.ts` | URL validation, redirect identity, HTTP/fetch errors, classification/sniffing, truncation, byte caps, timeout/abort, synchronous decline, and disposal |
 | `queryEditorProviderControlCommandSyntaxHandler.test.ts` | Real-provider control-command syntax injection/forwarding and static displaced-authority guard |
 | `controlCommandSyntaxApplicationHandler.test.ts` | Learn URL normalization, syntax/entity extraction, `with(...)` parsing, exact cache expiry/failure behavior, synchronous decline, and disposal/late-settlement suppression |
+| `queryEditorProviderResourceUriHandler.test.ts` | Real-provider resource URI injection/forwarding and static displaced-authority guard |
+| `resourceUriApplicationHandler.test.ts` | Passthrough schemes, local-base validation, Windows/POSIX/workspace path behavior, exact cache/stat/panel ordering, failures, transport containment, and disposal/late-settlement suppression |
 | `queryEditorProviderPowerBiPublishHelp.test.ts` | Dashboard application handler prompts, cancellation, workspace/item responses, publish leases, compensation, exact metadata restoration, and cleanup admission |
 | `powerBiExport.test.ts` | HTML dashboard provenance parsing, DAX generation, PBIR/TMDL output, native slicers, Import/DirectQuery model generation, and CSS patching |
 | `mssqlDialect.test.ts` | MSSQL persisted/UI dialect metadata |

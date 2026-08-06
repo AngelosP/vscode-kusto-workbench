@@ -277,6 +277,7 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 		extractPostMessageTypes('src/host/querySharingApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/urlContentApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/controlCommandSyntaxApplicationHandler.ts'),
+		extractPostMessageTypes('src/host/resourceUriApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/kustoExecutionCoordinator.ts'),
 		extractPostMessageTypes('src/host/sql/sqlEditorLifecycleCoordinator.ts'),
 		extractPostMessageTypes('src/host/kqlxEditorProvider.ts'),
@@ -295,22 +296,23 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kqlxEditorProvider.ts::deliverWebviewMessage::postMessage::1233:34',
 	'src/host/kqlxEditorProvider.ts::postWebviewMessage::postMessage::1222:10',
 	'src/host/kqlxEditorProvider.ts::resolveCustomTextEditor::postMessage::3608:19',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::379:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::606:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::612:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::383:27',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::610:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::616:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::621:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::624:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::627:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::642:29',
-	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::777:26',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::2166:21',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::2090:21',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::2109:22',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::2062:21',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::2074:21',
-	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::2122:10',
-	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::527:25',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::620:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::625:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::628:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::631:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::634:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::650:29',
+	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::785:26',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::2066:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::1990:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::2009:22',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1962:21',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::1974:21',
+	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::2022:10',
+	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::531:25',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1741:13',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1745:10',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageContained::postMessageRequiredContained::2013:8',
@@ -1078,6 +1080,11 @@ describe('Message Protocol Contract', () => {
 		it('extracts the control-command syntax handler result', () => {
 			const extraction = extractPostMessageTypes('src/host/controlCommandSyntaxApplicationHandler.ts');
 			expect(extraction.types).toContain('controlCommandSyntaxResult');
+		});
+
+		it('extracts the resource URI handler result', () => {
+			const extraction = extractPostMessageTypes('src/host/resourceUriApplicationHandler.ts');
+			expect(extraction.types).toContain('resolveResourceUriResult');
 		});
 
 		it('every host→webview type has a handler case (or is known-unhandled)', () => {
