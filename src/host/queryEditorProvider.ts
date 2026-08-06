@@ -88,6 +88,10 @@ import {
 	HostQuerySharingApplicationHandler,
 	type QuerySharingApplicationHandler,
 } from './querySharingApplicationHandler';
+import {
+	HostUrlContentApplicationHandler,
+	type UrlContentApplicationHandler,
+} from './urlContentApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -181,6 +185,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly pythonExecutionApplication: PythonExecutionApplicationHandler;
 	readonly importedCsvSaveApplication: ImportedCsvSaveApplicationHandler;
 	readonly querySharingApplication: QuerySharingApplicationHandler;
+	readonly urlContentApplication: UrlContentApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -590,6 +595,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		pythonExecutionApplication?: PythonExecutionApplicationHandler,
 		importedCsvSaveApplication?: ImportedCsvSaveApplicationHandler,
 		querySharingApplication?: QuerySharingApplicationHandler,
+		urlContentApplication?: UrlContentApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -608,6 +614,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.importedCsvSaveApplication = importedCsvSaveApplication ?? new HostImportedCsvSaveApplicationHandler();
 		this.querySharingApplication = querySharingApplication ?? new HostQuerySharingApplicationHandler({
 			findConnection: connectionId => this.connection.findConnection(connectionId),
+			postMessage: message => this.postMessage(message),
+		});
+		this.urlContentApplication = urlContentApplication ?? new HostUrlContentApplicationHandler({
 			postMessage: message => this.postMessage(message),
 		});
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
@@ -987,6 +996,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const querySharingApplicationMessage = this.querySharingApplication?.handleMessage(message);
 		if (querySharingApplicationMessage) {
 			await querySharingApplicationMessage;
+			return;
+		}
+		const urlContentApplicationMessage = this.urlContentApplication?.handleMessage(message);
+		if (urlContentApplicationMessage) {
+			await urlContentApplicationMessage;
 			return;
 		}
 		switch (message.type) {
@@ -1605,9 +1619,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					sectionInstanceId: message.sectionInstanceId,
 					targetGeneration: message.targetGeneration,
 				});
-				return;
-			case 'fetchUrl':
-				await this.fetchUrlFromWebview(message);
 				return;
 			case 'prefetchSchema':
 				await this.schema.prefetchSchema(message.connectionId, message.database, message.boxId, !!message.forceRefresh, message.requestToken, {
@@ -2249,157 +2260,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.queryRuns.cancelAll();
 	}
 
-	private async fetchUrlFromWebview(message: Extract<IncomingWebviewMessage, { type: 'fetchUrl' }>): Promise<void> {
-		const boxId = String(message.boxId || '').trim();
-		const rawUrl = String(message.url || '').trim();
-		const requestId = String(message.requestId || '').trim();
-		if (!boxId) {
-			return;
-		}
-		const responseIdentity = { boxId, requestId, requestedUrl: rawUrl };
-
-		const formatBytes = (n: number): string => {
-			if (!Number.isFinite(n) || n < 0) {
-				return '0 B';
-			}
-			if (n >= 1024 * 1024) {
-				return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-			}
-			if (n >= 1024) {
-				return `${Math.round(n / 1024)} KB`;
-			}
-			return `${n} B`;
-		};
-
-		let url: URL;
-		try {
-			url = new URL(rawUrl);
-		} catch {
-			this.postMessage({ type: 'urlError', ...responseIdentity, error: 'Invalid URL.' });
-			return;
-		}
-		if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-			this.postMessage({ type: 'urlError', ...responseIdentity, error: 'Only http/https URLs are supported.' });
-			return;
-		}
-
-		const timeoutMs = 15000;
-		const maxChars = 200000;
-		const maxBytesForTextLike = 100 * 1024 * 1024; // 100MB cap for URL/CSV content.
-		const maxBytesForImages = 5 * 1024 * 1024; // Keep images smaller since they're sent to the webview as a data URI.
-		const ac = new AbortController();
-		const timer = setTimeout(() => ac.abort(), timeoutMs);
-		try {
-			const resp = await fetch(url.toString(), {
-				redirect: 'follow',
-				signal: ac.signal
-			});
-			const contentType = resp.headers.get('content-type') || '';
-			const ctLower = contentType.toLowerCase();
-			const finalUrl = resp.url || url.toString();
-
-			const pathLower = (() => {
-				try {
-					return new URL(finalUrl).pathname.toLowerCase();
-				} catch {
-					return '';
-				}
-			})();
-
-			const looksLikeCsv = ctLower.includes('text/csv') || ctLower.includes('application/csv') || pathLower.endsWith('.csv');
-			const looksLikeHtml = ctLower.includes('text/html') || pathLower.endsWith('.html') || pathLower.endsWith('.htm');
-			const looksLikeImage = ctLower.startsWith('image/');
-			const looksLikeText = ctLower.startsWith('text/') || ctLower.includes('json') || ctLower.includes('xml') || ctLower.includes('yaml');
-
-			const maxBytes = looksLikeImage ? maxBytesForImages : maxBytesForTextLike;
-
-			// Read as bytes so we can support images and other non-text content.
-			const ab = await resp.arrayBuffer();
-			const bytes = Buffer.from(ab);
-			if (bytes.byteLength > maxBytes) {
-				this.postMessage({
-					type: 'urlError',
-					...responseIdentity,
-					error: `Response too large (${formatBytes(bytes.byteLength)}). Max is ${formatBytes(maxBytes)}.`
-				});
-				return;
-			}
-
-			if (!resp.ok) {
-				const status = resp.status;
-				const statusText = (resp.statusText || '').trim();
-				const hint = (() => {
-					if (ctLower.includes('text/html') && pathLower.endsWith('.csv')) {
-						return ' The server returned HTML, not CSV. Try using a raw download link.';
-					}
-					return '';
-				})();
-				this.postMessage({
-					type: 'urlError',
-					...responseIdentity,
-					error: `HTTP ${status}${statusText ? ' ' + statusText : ''}.${hint}`
-				});
-				return;
-			}
-
-			if (looksLikeImage) {
-				const mime = contentType.split(';')[0].trim() || 'image/*';
-				const base64 = bytes.toString('base64');
-				const dataUri = `data:${mime};base64,${base64}`;
-				this.postMessage({
-					type: 'urlContent',
-					...responseIdentity,
-					url: finalUrl,
-					contentType,
-					status: resp.status,
-					kind: 'image',
-					dataUri,
-					byteLength: bytes.byteLength
-				});
-				return;
-			}
-
-			// Decode as UTF-8 text for sniffing and rendering.
-			let body = bytes.toString('utf8');
-			let truncated = false;
-			if (body.length > maxChars) {
-				body = body.slice(0, maxChars);
-				truncated = true;
-			}
-
-			const sniff = body.slice(0, 4096).trimStart().toLowerCase();
-			const looksLikeHtmlByBody = sniff.startsWith('<!doctype html') || sniff.startsWith('<html') || sniff.startsWith('<head');
-
-			const isCsvByType = ctLower.includes('text/csv') || ctLower.includes('application/csv');
-			const isHtmlByType = ctLower.includes('text/html');
-			const isCsvByExt = pathLower.endsWith('.csv') && !isHtmlByType && !looksLikeHtmlByBody;
-			const kind = (isCsvByType || isCsvByExt)
-				? 'csv'
-				: ((looksLikeHtml || isHtmlByType || looksLikeHtmlByBody)
-					? 'html'
-					: (looksLikeText ? 'text' : 'text'));
-
-			this.postMessage({
-				type: 'urlContent',
-				...responseIdentity,
-				url: finalUrl,
-				contentType,
-				status: resp.status,
-				kind,
-				body,
-				truncated,
-				byteLength: bytes.byteLength
-			});
-		} catch (e: any) {
-			const msg = e?.name === 'AbortError'
-				? `Timed out after ${Math.round(timeoutMs / 1000)}s.`
-				: (typeof e?.message === 'string' ? e.message : 'Failed to fetch URL.');
-			this.postMessage({ type: 'urlError', ...responseIdentity, error: msg });
-		} finally {
-			clearTimeout(timer);
-		}
-	}
-
 	postMessage(message: unknown): Thenable<boolean> {
 		if (this._panelDisposed) return Promise.resolve(false);
 		try {
@@ -2436,6 +2296,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.pythonExecutionApplication.dispose();
 			this.importedCsvSaveApplication.dispose();
 			this.querySharingApplication.dispose();
+			this.urlContentApplication.dispose();
 			for (const [requestId, pending] of [...this.pendingComparisonEnsureByRequestId]) {
 				this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
 			}

@@ -26,7 +26,7 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 Assessment date: 2026-08-05
 
-The comparison was refreshed against the current working tree after HST-5 query-sharing application-handler convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
+The comparison was refreshed against the current working tree after HST-6 URL-content application-handler convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
 The current architecture is not uniformly legacy. Several high-risk contexts already provide good models for the rest of the application.
 
@@ -46,6 +46,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | Artifact CSV save workflow | [`HostArtifactCsvSaveApplicationHandler`](src/host/artifactCsvSaveApplicationHandler.ts) owns picker admission, nonce challenges, cancellation, deadlines, replay tombstones, exact correlation, and file publication; `QueryEditorProvider` only composes transport | Strong bounded host-application boundary |
 | Imported CSV save workflow | [`HostImportedCsvSaveApplicationHandler`](src/host/importedCsvSaveApplicationHandler.ts) owns empty-data UX, picker admission, URI-preserving extension handling, exact UTF-8 publication, saved-file actions, failures, and disposal; `QueryEditorProvider` only composes routing | Strong bounded host-application boundary |
 | Query-sharing workflow | [`HostQuerySharingApplicationHandler`](src/host/querySharingApplicationHandler.ts) owns ADX-link encoding, Kusto/SQL rich and plain formatting, host clipboard effects, response publication, notifications, and disposal; `QueryEditorProvider` only composes lookup and transport | Strong bounded host-application boundary |
+| URL-content acquisition workflow | [`HostUrlContentApplicationHandler`](src/host/urlContentApplicationHandler.ts) owns URL validation, redirect-following fetch, timeout/abort, byte caps, classification/sniffing, truncation, response publication, and disposal; `QueryEditorProvider` only composes transport | Strong bounded host-application boundary |
 | Editing preferences and first launch | Revisioned application preferences and transactional profile setup | Good explicit ownership |
 | Native document-view lifecycle protocol | [`documentViewProtocol.ts`](src/shared/documentViewProtocol.ts), one host-created panel UUID, runtime parsing, exactly-once initial projection, and session-fenced commands/results/Save barriers | Strong initial protocol slice |
 | Unmigrated section serialization | Kusto/SQL and remaining adapter-heavy kinds still participate in broad restore/persistence switches; Markdown, URL, Python, Chart, Transformation, and HTML native state no longer comes from component `serialize()` | Useful transitional boundary |
@@ -79,7 +80,7 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | ---: | --- | --- | --- | ---: | --- |
 | - | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Closed through EXA-2; transport-neutral coordinator convergence remains deferred |
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
-| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/4/5/4/4/5 | 47 | HST-1 through HST-5 closed; HST-6 selected |
+| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/4/5/4/4/5 | 47 | HST-1 through HST-6 closed; HST-7 selected |
 | 2 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/4/3/4 | 45 | PRO-1 closed; broader protocol/startup work remains open |
 | 3 | `DOC` | Document actor and section-definition registry | 4/4/4/4/2/5 | 43 | DOC-1 through DOC-6 closed; Kusto/SQL deferred |
 | 4 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | Open, depends on document/projection contracts |
@@ -231,7 +232,8 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 - HST-3 moved Python interpreter fallback, process/stdin/stdout/stderr lifecycle, independent 200 KB UTF-8 output caps, 15-second timeout/kill behavior, exactly-once terminal publication, and disposal into one injected `HostPythonExecutionApplicationHandler`. The provider has no Python process creation, discriminator case, output accumulation, timeout transition, or terminal construction.
 - HST-4 moved imported URL-section CSV empty-data UX, native picker admission, URI-preserving extension handling, exact UTF-8 publication, saved-file actions, failures, and disposal into one injected `HostImportedCsvSaveApplicationHandler`. The provider has no imported CSV picker/write/notification code or discriminator case.
 - HST-5 moved Kusto ADX-link generation, Kusto/SQL rich and plain-text share formatting, host clipboard effects, `shareContentReady`, notifications, and disposal into one injected `HostQuerySharingApplicationHandler`. The provider has no sharing discriminator cases, zlib/link generation, formatting, clipboard effects, or sharing publication.
-- [`QueryEditorProvider`](src/host/queryEditorProvider.ts) still combines panel transport with Kusto execution, SQL adapters, URL acquisition, persistence UX, comparisons, and cross-language coordination.
+- HST-6 moved URL validation, redirect-following fetch, timeout/abort, text/image byte caps, truncation, content classification/sniffing, response shaping, and disposal into one injected `HostUrlContentApplicationHandler`. The provider has no URL acquisition discriminator case, fetch/abort transition, cap/classification decision, or URL terminal construction.
+- [`QueryEditorProvider`](src/host/queryEditorProvider.ts) still combines panel transport with Kusto execution, SQL adapters, persistence UX, comparisons, and cross-language coordination.
 - Focused tests often construct or patch the provider without a real composition root, indicating that use cases do not have narrow injectable boundaries.
 
 **Migration theme:** do not split the class by file category first. Move routes behind the execution, document, protocol, and dashboard contracts as those owners are introduced. The provider shrinks as a consequence.
@@ -615,11 +617,9 @@ The component and renderer remain adapters. Equal projections retain the exact e
 
 **Qualification:** the expanded focused ring passed 12 files and 454 tests. Complete sequential Vitest and the official coverage gate passed 227 files and 5,749 tests; statement coverage is 48.18% against the unchanged 27.67% threshold. The complete VS Code 1.132.0 extension-host suite passed 201/201 with `--timeout 5000` on unchanged rerun; the first run had one unrelated sidecar repair timeout plus a cascading setup failure, and both cases passed alone before the clean rerun. Host/webview/browser typechecks, integration compilation, production extension and strict browser builds, ESLint with zero errors and five pre-existing warnings, diagnostics, and both bundle gates passed. Final sizes are 1,909.1 KB for `extension.js` and 2,801.9 KB for `webview.bundle.js`; only the synchronized extension baseline moved 1,859 -> 1,860 KB and the 50 KB buffer is unchanged. Definitive native run `20260805-231107` passed 2/2 `share-result-artifacts` scenarios: exact rich clipboard JSON retained B and excluded denied/revoked rows, the real host clipboard contained the expected ADX prefix, and a reviewed foreground-valid `1280x1000` screenshot showed the exact success toast. A preceding identity-checklist attempt stopped before clipboard on unrelated Connection Manager behavior; a later controller notification assertion missed the visibly present toast after exact clipboard success.
 
-## Next Iteration
-
 ### Iteration `HST-6`: URL Content Acquisition Application Handler
 
-**Status:** selected, not started.
+**Status:** closed on 2026-08-05. The definitive blocker-only review returned `VERDICT: NO HST-6 BLOCKER`.
 
 **Why next:** HST remains the highest eligible gap. `fetchUrl` is one cohesive provider-owned acquisition workflow: URL validation, redirect-following fetch, timeout/abort, byte limits, content classification, UTF-8/image shaping, and exact `urlContent` / `urlError` publication. The URL component already owns request identity, stale-response rejection, rendering, CSV artifact publication, debounce, and teardown.
 
@@ -630,6 +630,30 @@ The component and renderer remain adapters. Equal projections retain the exact e
 **Cheapest discriminating check:** construct the real provider with a fake URL-content handler and prove exact forwarding of `fetchUrl`; then drive the handler through invalid/non-HTTP URLs, redirects, HTTP failures, CSV/HTML/text/image classification, body sniffing, truncation, byte caps, timeout/abort, fetch failure, unrelated-message decline, and disposal/late completion.
 
 **Exclusions:** no URL-section or artifact redesign, no imported CSV changes, no browser-host changes, no `resolveResourceUri` or control-command migration, no network/origin/trust policy or deferred ACT work, and no generic handler framework.
+
+**Boundary:** `HostUrlContentApplicationHandler` is the injected owner for `fetchUrl`, including HTTP/HTTPS validation, redirect-following fetch, the 15-second timeout and abort lifecycle, 100 MB text/CSV and 5 MB image caps, 200,000-character truncation, CSV/HTML/text/image classification and HTML body sniffing, exact original/resolved URL identity, `urlContent` / `urlError` publication, and disposal. `QueryEditorProvider` only constructs or accepts the handler, synchronously offers typed messages, supplies panel transport, and disposes it.
+
+**Displaced authority:** `QueryEditorProvider` no longer owns the `fetchUrl` discriminator case or method, creates URL fetch abort controllers, applies byte/truncation limits, classifies content, or constructs URL terminals. `kw-url-section` request identity, stale rejection, rendering, immutable CSV artifacts, debounce, autosizing, teardown, imported CSV saving, browser behavior, `resolveResourceUri`, control-command syntax lookup, message shapes, and network/origin/trust policy remain unchanged.
+
+**Guards:** the requested real-provider forwarding test was written red first and failed with zero fake-handler calls, then passed unchanged after injection. A static guard prevents URL fetch, abort, cap, classification, and terminal authority from returning to the provider. Direct tests cover synchronous decline, invalid/non-HTTP input, exact original/resolved identity, redirects, HTTP and transport failures, CSV/HTML/text/image classification, HTML body sniffing, image data URIs, truncation, both caps, timeout/abort, disposal with signal-ignoring fetch, disposal abort rejection, and late-publication suppression. Protocol extraction attributes both URL terminals to the handler.
+
+**Qualification:** the definitive seven-file URL ring passed 223 tests. Complete sequential Vitest passed 229 files and 5,767 tests before the review-added disposal regression; the official sequential coverage gate passed the final 229 files and 5,768 tests at 48.18% statements against the unchanged 27.67% threshold. The complete VS Code 1.132.0 extension-host suite passed 201/201 with `--timeout 5000`. Host/webview/browser typechecks, integration compilation, production extension and strict browser builds, ESLint with zero errors and five pre-existing warnings, diagnostics, and both bundle gates passed. Final production sizes are 1,910.3 KB for `extension.js` and 2,801.9 KB for `webview.bundle.js`; only the synchronized extension baseline moved 1,860 -> 1,861 KB and the 50 KB buffer is unchanged. Native E2E was not required for this host-only extraction because the webview runtime and message shapes did not change. The blocker-only reviewer returned `VERDICT: NO HST-6 BLOCKER`; both non-blocking follow-ups were addressed.
+
+## Next Iteration
+
+### Iteration `HST-7`: Control-Command Syntax Lookup Application Handler
+
+**Status:** selected, not started.
+
+**Why next:** HST remains the highest eligible gap. Control-command syntax lookup is one cohesive provider-owned workflow: 24-hour cache state, Microsoft Learn URL normalization/fetch, HTML entity decoding and syntax extraction, `with(...)` argument parsing, failure shaping, and correlated `controlCommandSyntaxResult` publication. The webview already owns caret-documentation request deduplication, presentation caching, and rendering.
+
+**Boundary:** extract only `fetchControlCommandSyntax` orchestration into one injected application handler. Preserve the current 24-hour cache, Learn URL behavior, HTML parsing, syntax and `withArgs` shaping, failure behavior, exact request identity, and message shape. Keep Kusto control-command detection/execution, generated command data, caret-docs presentation, browser behavior, `resolveResourceUri`, URL content acquisition, and network/origin/trust policy unchanged.
+
+**Falsifiable hypothesis:** if one syntax-lookup handler owns cache, documentation acquisition/parsing, and response publication, `QueryEditorProvider` can synchronously offer `fetchControlCommandSyntax` without retaining syntax-lookup decisions while current caret-documentation behavior remains unchanged.
+
+**Cheapest discriminating check:** construct the real provider with a fake syntax-lookup handler and prove exact unchanged forwarding of `fetchControlCommandSyntax`; then drive the handler through cache hit/expiry, Learn URL normalization, representative HTML extraction, `with(...)` parsing, fetch failure, unrelated-message decline, and disposal/late completion.
+
+**Exclusions:** no HST-1 through HST-6 changes, no `resolveResourceUri` migration, no control-command grammar/detection/execution or generated-data changes, no caret-docs redesign, no browser changes, no network/origin/trust policy or deferred ACT work, and no generic handler framework.
 
 ## Convergence Loop
 
@@ -782,6 +806,7 @@ These are not full golden-outcome iterations retroactively, but they materially 
 | `HST-3` | `HostPythonExecutionApplicationHandler` | Provider-owned Python process creation, discriminator branch, stdio accumulation, timeout transitions, and terminal publication | Real-provider injection/forwarding, static displaced-authority, direct fallback/stdio/timeout/cap/disposal tests, protocol-sender inventory, and isolated native execution/persistence gate | Focused 502, full/coverage Vitest 5,728, extension-host 201, native exact output, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
 | `HST-4` | `HostImportedCsvSaveApplicationHandler` | Provider-owned imported CSV method, discriminator case, picker/write helpers, notification transitions, and late-picker authority | Real-provider injection/forwarding, static displaced-authority, direct UX/URI/bytes/failure/disposal tests, provider lifecycle disposal, and isolated native exact-byte/picker gate | Focused 128 plus provider lifecycle 101, full/coverage Vitest 5,736, extension-host 201, native exact 36 bytes, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
 | `HST-5` | `HostQuerySharingApplicationHandler` | Provider-owned sharing cases/methods, zlib/ADX-link generation, Kusto/SQL formatting, host clipboard effects, response publication, and notifications | Red-first real-provider forwarding, static displaced-authority, direct validation/encoding/formatting/failure/disposal tests, protocol-sender inventory, and native rich/ADX clipboard gate | Focused 454, full/coverage Vitest 5,749, extension-host 201 on rerun, native 2/2 with exact clipboard artifact/screenshot, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
+| `HST-6` | `HostUrlContentApplicationHandler` | Provider-owned URL validation, fetch/abort lifecycle, limits, classification/sniffing, response shaping, discriminator case, and URL terminals | Red-first real-provider forwarding, static displaced-authority, direct identity/redirect/classification/cap/timeout/disposal tests, protocol-sender inventory, and unchanged URL component ring | Focused 223, final coverage Vitest 5,768, extension-host 201, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
 
 ## Decision Discipline
 

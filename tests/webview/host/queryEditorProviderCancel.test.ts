@@ -1031,6 +1031,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.pythonExecutionApplication = { dispose: vi.fn() };
 		provider.importedCsvSaveApplication = { dispose: vi.fn() };
 		provider.querySharingApplication = { dispose: vi.fn() };
+		provider.urlContentApplication = { dispose: vi.fn() };
 		provider.clearCursorStatusForProvider = vi.fn();
 		provider.cancelAllRunningQueries = vi.fn();
 		provider.kustoClient = { dispose: vi.fn() };
@@ -1067,6 +1068,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.pythonExecutionApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.importedCsvSaveApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.querySharingApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider.urlContentApplication.dispose).toHaveBeenCalledOnce();
 	});
 
 	it('ignores policy messages after the panel webview getter is disposed', () => {
