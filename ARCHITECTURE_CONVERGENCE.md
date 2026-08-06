@@ -24,9 +24,9 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 ## Baseline
 
-Assessment date: 2026-08-05
+Assessment date: 2026-08-06
 
-The comparison was refreshed against the current working tree after HST-6 URL-content application-handler convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
+The comparison was refreshed against the current working tree after HST-7 control-command syntax application-handler convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
 The current architecture is not uniformly legacy. Several high-risk contexts already provide good models for the rest of the application.
 
@@ -47,6 +47,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | Imported CSV save workflow | [`HostImportedCsvSaveApplicationHandler`](src/host/importedCsvSaveApplicationHandler.ts) owns empty-data UX, picker admission, URI-preserving extension handling, exact UTF-8 publication, saved-file actions, failures, and disposal; `QueryEditorProvider` only composes routing | Strong bounded host-application boundary |
 | Query-sharing workflow | [`HostQuerySharingApplicationHandler`](src/host/querySharingApplicationHandler.ts) owns ADX-link encoding, Kusto/SQL rich and plain formatting, host clipboard effects, response publication, notifications, and disposal; `QueryEditorProvider` only composes lookup and transport | Strong bounded host-application boundary |
 | URL-content acquisition workflow | [`HostUrlContentApplicationHandler`](src/host/urlContentApplicationHandler.ts) owns URL validation, redirect-following fetch, timeout/abort, byte caps, classification/sniffing, truncation, response publication, and disposal; `QueryEditorProvider` only composes transport | Strong bounded host-application boundary |
+| Control-command syntax lookup | [`HostControlCommandSyntaxApplicationHandler`](src/host/controlCommandSyntaxApplicationHandler.ts) owns the 24-hour cache, Microsoft Learn fetch/normalization, syntax/entity extraction, `with(...)` parsing, response publication, and disposal; `QueryEditorProvider` only composes transport | Strong bounded host-application boundary |
 | Editing preferences and first launch | Revisioned application preferences and transactional profile setup | Good explicit ownership |
 | Native document-view lifecycle protocol | [`documentViewProtocol.ts`](src/shared/documentViewProtocol.ts), one host-created panel UUID, runtime parsing, exactly-once initial projection, and session-fenced commands/results/Save barriers | Strong initial protocol slice |
 | Unmigrated section serialization | Kusto/SQL and remaining adapter-heavy kinds still participate in broad restore/persistence switches; Markdown, URL, Python, Chart, Transformation, and HTML native state no longer comes from component `serialize()` | Useful transitional boundary |
@@ -80,7 +81,7 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | ---: | --- | --- | --- | ---: | --- |
 | - | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Closed through EXA-2; transport-neutral coordinator convergence remains deferred |
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
-| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/4/5/4/4/5 | 47 | HST-1 through HST-6 closed; HST-7 selected |
+| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/4/5/4/4/5 | 47 | HST-1 through HST-7 closed; HST-8 selected |
 | 2 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/4/3/4 | 45 | PRO-1 closed; broader protocol/startup work remains open |
 | 3 | `DOC` | Document actor and section-definition registry | 4/4/4/4/2/5 | 43 | DOC-1 through DOC-6 closed; Kusto/SQL deferred |
 | 4 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | Open, depends on document/projection contracts |
@@ -233,6 +234,7 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 - HST-4 moved imported URL-section CSV empty-data UX, native picker admission, URI-preserving extension handling, exact UTF-8 publication, saved-file actions, failures, and disposal into one injected `HostImportedCsvSaveApplicationHandler`. The provider has no imported CSV picker/write/notification code or discriminator case.
 - HST-5 moved Kusto ADX-link generation, Kusto/SQL rich and plain-text share formatting, host clipboard effects, `shareContentReady`, notifications, and disposal into one injected `HostQuerySharingApplicationHandler`. The provider has no sharing discriminator cases, zlib/link generation, formatting, clipboard effects, or sharing publication.
 - HST-6 moved URL validation, redirect-following fetch, timeout/abort, text/image byte caps, truncation, content classification/sniffing, response shaping, and disposal into one injected `HostUrlContentApplicationHandler`. The provider has no URL acquisition discriminator case, fetch/abort transition, cap/classification decision, or URL terminal construction.
+- HST-7 moved the 24-hour control-command syntax cache, Microsoft Learn URL normalization/fetch, HTML/entity syntax extraction, `with(...)` argument parsing, failure shaping, `controlCommandSyntaxResult` publication, and disposal into one injected `HostControlCommandSyntaxApplicationHandler`. The provider has no syntax cache, parsing helper, Learn fetch, discriminator case, or syntax-result construction.
 - [`QueryEditorProvider`](src/host/queryEditorProvider.ts) still combines panel transport with Kusto execution, SQL adapters, persistence UX, comparisons, and cross-language coordination.
 - Focused tests often construct or patch the provider without a real composition root, indicating that use cases do not have narrow injectable boundaries.
 
@@ -639,21 +641,33 @@ The component and renderer remain adapters. Equal projections retain the exact e
 
 **Qualification:** the definitive seven-file URL ring passed 223 tests. Complete sequential Vitest passed 229 files and 5,767 tests before the review-added disposal regression; the official sequential coverage gate passed the final 229 files and 5,768 tests at 48.18% statements against the unchanged 27.67% threshold. The complete VS Code 1.132.0 extension-host suite passed 201/201 with `--timeout 5000`. Host/webview/browser typechecks, integration compilation, production extension and strict browser builds, ESLint with zero errors and five pre-existing warnings, diagnostics, and both bundle gates passed. Final production sizes are 1,910.3 KB for `extension.js` and 2,801.9 KB for `webview.bundle.js`; only the synchronized extension baseline moved 1,860 -> 1,861 KB and the 50 KB buffer is unchanged. Native E2E was not required for this host-only extraction because the webview runtime and message shapes did not change. The blocker-only reviewer returned `VERDICT: NO HST-6 BLOCKER`; both non-blocking follow-ups were addressed.
 
+### Iteration `HST-7`: Control-Command Syntax Lookup Application Handler
+
+**Status:** closed on 2026-08-06. The definitive blocker-only review returned `VERDICT: NO HST-7 BLOCKER`.
+
+**Boundary:** `HostControlCommandSyntaxApplicationHandler` is the injected owner for `fetchControlCommandSyntax`, including the exact 24-hour cache boundary, Microsoft Learn URL normalization/fetch, Syntax-section and first-`pre` fallback extraction, HTML entity decoding, case-insensitive `with(...)` argument de-duplication, existing failure-cache behavior, exact request/command identity, `controlCommandSyntaxResult` publication, and disposal/late-settlement suppression. `QueryEditorProvider` only constructs or accepts the handler, synchronously offers typed messages, supplies panel transport, and disposes it.
+
+**Displaced authority:** `QueryEditorProvider` no longer owns `controlCommandSyntaxCache`, `CONTROL_COMMAND_SYNTAX_CACHE_TTL_MS`, the `fetchControlCommandSyntax` discriminator case, parsing helpers, Learn fetch, failure shaping, or syntax-result construction. Caret-docs request de-duplication, presentation caching/rendering, Kusto control-command grammar/detection/execution, generated command data, browser behavior, `resolveResourceUri`, URL content acquisition, message shapes, and network/origin/trust policy remain unchanged.
+
+**Guards:** the requested real-provider forwarding test was written red first, failed with zero fake-handler calls while the old provider attempted a Learn fetch, and passed unchanged after injection. A static source guard prevents every displaced cache/parser/fetch/result authority from returning. Direct tests cover synchronous decline, invalid request shaping, relative and absolute Learn URL normalization, existing `view` replacement, Syntax-section preference, first-`pre` fallback, entity decoding, `with(...)` parsing/de-duplication, exact cache hit/expiry and failure-cache behavior, fetch failure, disposal, and late fetch/text resolve/reject suppression. Protocol extraction attributes `controlCommandSyntaxResult` to the handler, and provider lifecycle coverage requires disposal.
+
+**Qualification:** the definitive five-file HST-7 ring passed 321 tests, and the expanded 17-file host-application ring passed 424 tests. Complete sequential Vitest and the official coverage gate passed 231 files and 5,782 tests; statement coverage is 48.18% against the unchanged 27.67% threshold. The complete VS Code 1.132.0 extension-host suite passed 201/201 with `--timeout 5000`. Host/webview/browser typechecks, integration compilation, production extension and strict browser builds, ESLint with zero errors and five pre-existing warnings, diagnostics, `git diff --check`, and the bundle gate passed. Final production sizes are 1,910.9 KB for `extension.js` and 2,801.9 KB for `webview.bundle.js`, within the existing 1,911/2,802 KB limits and unchanged 50 KB buffer. Native E2E was not required because this was a host-only ownership extraction and the caret-docs runtime/message shapes remained unchanged.
+
 ## Next Iteration
 
-### Iteration `HST-7`: Control-Command Syntax Lookup Application Handler
+### Iteration `HST-8`: Local Resource URI Resolution Application Handler
 
 **Status:** selected, not started.
 
-**Why next:** HST remains the highest eligible gap. Control-command syntax lookup is one cohesive provider-owned workflow: 24-hour cache state, Microsoft Learn URL normalization/fetch, HTML entity decoding and syntax extraction, `with(...)` argument parsing, failure shaping, and correlated `controlCommandSyntaxResult` publication. The webview already owns caret-documentation request deduplication, presentation caching, and rendering.
+**Why next:** HST remains the highest eligible gap. `resolveResourceUri` is one bounded provider-owned workflow: exact request shaping, remote/data/blob/webview passthrough, local-base validation, Markdown path normalization, workspace-root and relative/absolute resolution, existence checks, per-base/path webview-URI caching, response publication, and panel/disposal behavior. Markdown callers already own request de-duplication and resource rendering.
 
-**Boundary:** extract only `fetchControlCommandSyntax` orchestration into one injected application handler. Preserve the current 24-hour cache, Learn URL behavior, HTML parsing, syntax and `withArgs` shaping, failure behavior, exact request identity, and message shape. Keep Kusto control-command detection/execution, generated command data, caret-docs presentation, browser behavior, `resolveResourceUri`, URL content acquisition, and network/origin/trust policy unchanged.
+**Boundary:** extract only `resolveResourceUri` orchestration into one injected application handler. Preserve current request identity, passthrough schemes, local-file-only base behavior, Windows/POSIX/workspace path normalization, stat checks, cache keys, webview URI conversion, failure strings, and `resolveResourceUriResult` shape. Keep Markdown presentation/callers, browser behavior, URL content acquisition, navigation, document origin/trust admission, linked queries, and network/file policy unchanged.
 
-**Falsifiable hypothesis:** if one syntax-lookup handler owns cache, documentation acquisition/parsing, and response publication, `QueryEditorProvider` can synchronously offer `fetchControlCommandSyntax` without retaining syntax-lookup decisions while current caret-documentation behavior remains unchanged.
+**Falsifiable hypothesis:** if one resource-resolution handler owns path normalization, file existence/cache decisions, and response publication, `QueryEditorProvider` can synchronously offer `resolveResourceUri` without retaining resource-resolution decisions while current Markdown rendering behavior remains unchanged.
 
-**Cheapest discriminating check:** construct the real provider with a fake syntax-lookup handler and prove exact unchanged forwarding of `fetchControlCommandSyntax`; then drive the handler through cache hit/expiry, Learn URL normalization, representative HTML extraction, `with(...)` parsing, fetch failure, unrelated-message decline, and disposal/late completion.
+**Cheapest discriminating check:** construct the real provider with a fake resource-resolution handler and prove exact unchanged forwarding of `resolveResourceUri`; then drive the handler through passthrough schemes, missing/unsupported bases, workspace-root and relative paths, Windows/POSIX absolute paths, file-not-found, cache hit, webview-URI failure, unrelated-message decline, and disposal/late completion.
 
-**Exclusions:** no HST-1 through HST-6 changes, no `resolveResourceUri` migration, no control-command grammar/detection/execution or generated-data changes, no caret-docs redesign, no browser changes, no network/origin/trust policy or deferred ACT work, and no generic handler framework.
+**Exclusions:** no HST-1 through HST-7 changes, no Markdown/caret-docs redesign, no browser changes, no URL acquisition, navigation, linked-query, origin/trust/network/file policy or deferred ACT work, and no generic handler framework.
 
 ## Convergence Loop
 
@@ -807,6 +821,7 @@ These are not full golden-outcome iterations retroactively, but they materially 
 | `HST-4` | `HostImportedCsvSaveApplicationHandler` | Provider-owned imported CSV method, discriminator case, picker/write helpers, notification transitions, and late-picker authority | Real-provider injection/forwarding, static displaced-authority, direct UX/URI/bytes/failure/disposal tests, provider lifecycle disposal, and isolated native exact-byte/picker gate | Focused 128 plus provider lifecycle 101, full/coverage Vitest 5,736, extension-host 201, native exact 36 bytes, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
 | `HST-5` | `HostQuerySharingApplicationHandler` | Provider-owned sharing cases/methods, zlib/ADX-link generation, Kusto/SQL formatting, host clipboard effects, response publication, and notifications | Red-first real-provider forwarding, static displaced-authority, direct validation/encoding/formatting/failure/disposal tests, protocol-sender inventory, and native rich/ADX clipboard gate | Focused 454, full/coverage Vitest 5,749, extension-host 201 on rerun, native 2/2 with exact clipboard artifact/screenshot, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
 | `HST-6` | `HostUrlContentApplicationHandler` | Provider-owned URL validation, fetch/abort lifecycle, limits, classification/sniffing, response shaping, discriminator case, and URL terminals | Red-first real-provider forwarding, static displaced-authority, direct identity/redirect/classification/cap/timeout/disposal tests, protocol-sender inventory, and unchanged URL component ring | Focused 223, final coverage Vitest 5,768, extension-host 201, production/browser, bundle gates, and definitive blocker review complete | 2026-08-05 |
+| `HST-7` | `HostControlCommandSyntaxApplicationHandler` | Provider-owned syntax cache/TTL, Learn fetch/normalization, HTML/entity/`with(...)` parsing, failure shaping, discriminator case, and syntax-result publication | Red-first real-provider forwarding, static displaced-authority, exact cache/URL/parser/failure/disposal tests, protocol-sender inventory, provider lifecycle disposal, and unchanged caret-docs ring | Focused 321, host-handler ring 424, full/coverage Vitest 5,782, extension-host 201, production/browser, bundle gate, and definitive blocker review complete | 2026-08-06 |
 
 ## Decision Discipline
 
