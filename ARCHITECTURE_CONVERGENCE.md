@@ -26,7 +26,7 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 Assessment date: 2026-08-06
 
-The comparison was refreshed against the current working tree after HST-9 Copilot content-open application-handler closure. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
+The comparison was refreshed against the current working tree after HST-10 host information-notification application-handler closure. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
 The current architecture is not uniformly legacy. Several high-risk contexts already provide good models for the rest of the application.
 
@@ -50,6 +50,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | Control-command syntax lookup | [`HostControlCommandSyntaxApplicationHandler`](src/host/controlCommandSyntaxApplicationHandler.ts) owns the 24-hour cache, Microsoft Learn fetch/normalization, syntax/entity extraction, `with(...)` parsing, response publication, and disposal; `QueryEditorProvider` only composes transport | Strong bounded host-application boundary |
 | Local resource URI resolution | [`HostResourceUriApplicationHandler`](src/host/resourceUriApplicationHandler.ts) owns passthrough and local-base decisions, Windows/POSIX/workspace path normalization, stat/cache behavior, webview URI conversion, response publication, and disposal; `QueryEditorProvider` only composes transport and the live conversion capability | Strong bounded host-application boundary |
 | Copilot content opening | [`HostCopilotContentOpenApplicationHandler`](src/host/copilotContentOpenApplicationHandler.ts) owns untitled plaintext tool-result display, beside-column presentation, local Markdown preview dispatch, exact failures, and disposal; `QueryEditorProvider` only composes routing | Strong bounded host-application boundary |
+| Host information notifications | [`HostInformationNotificationApplicationHandler`](src/host/informationNotificationApplicationHandler.ts) owns exact `showInfo` text forwarding, fire-and-forget native invocation, synchronous failures, and disposal; `QueryEditorProvider` only composes routing | Strong bounded host-application boundary |
 | Editing preferences and first launch | Revisioned application preferences and transactional profile setup | Good explicit ownership |
 | Native document-view lifecycle protocol | [`documentViewProtocol.ts`](src/shared/documentViewProtocol.ts), one host-created panel UUID, runtime parsing, exactly-once initial projection, and session-fenced commands/results/Save barriers | Strong initial protocol slice |
 | Unmigrated section serialization | Kusto/SQL and remaining adapter-heavy kinds still participate in broad restore/persistence switches; Markdown, URL, Python, Chart, Transformation, and HTML native state no longer comes from component `serialize()` | Useful transitional boundary |
@@ -83,7 +84,7 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | ---: | --- | --- | --- | ---: | --- |
 | - | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Closed through EXA-2; transport-neutral coordinator convergence remains deferred |
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
-| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/4/5/4/4/5 | 47 | HST-1 through HST-9 closed; HST-10 selected |
+| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/4/5/4/4/5 | 47 | HST-1 through HST-10 closed; HST-11 selected |
 | 2 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/4/3/4 | 45 | PRO-1 closed; broader protocol/startup work remains open |
 | 3 | `DOC` | Document actor and section-definition registry | 4/4/4/4/2/5 | 43 | DOC-1 through DOC-6 closed; Kusto/SQL deferred |
 | 4 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | Open, depends on document/projection contracts |
@@ -239,6 +240,7 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 - HST-7 moved the 24-hour control-command syntax cache, Microsoft Learn URL normalization/fetch, HTML/entity syntax extraction, `with(...)` argument parsing, failure shaping, `controlCommandSyntaxResult` publication, and disposal into one injected `HostControlCommandSyntaxApplicationHandler`. The provider has no syntax cache, parsing helper, Learn fetch, discriminator case, or syntax-result construction.
 - HST-8 moved local resource request shaping, passthrough/local-base decisions, Windows/POSIX/workspace path normalization, stat and exact base/path caching, webview URI conversion, failure shaping, `resolveResourceUriResult` publication, and disposal into one injected `HostResourceUriApplicationHandler`. The provider has no resource cache, path import/normalization, stat, discriminator case, failure strings, or result construction.
 - HST-9 moved exact `openToolResultInEditor` and `openMarkdownPreview` native presentation effects, content coercion, untitled plaintext/beside display, local Markdown preview dispatch, failure notifications, and disposal into one injected `HostCopilotContentOpenApplicationHandler`. The provider has neither discriminator case, method, nor native content-open decision.
+- HST-10 moved exact `showInfo` native information-message invocation, fire-and-forget return handling, synchronous failure propagation, and disposal into one injected `HostInformationNotificationApplicationHandler`. The provider has neither the discriminator case nor a direct information-notification call.
 - [`QueryEditorProvider`](src/host/queryEditorProvider.ts) still combines panel transport with Kusto execution, SQL adapters, persistence UX, comparisons, and cross-language coordination.
 - Focused tests often construct or patch the provider without a real composition root, indicating that use cases do not have narrow injectable boundaries.
 
@@ -681,21 +683,33 @@ The component and renderer remain adapters. Equal projections retain the exact e
 
 **Qualification:** the final five-file HST-9 ring passed 154 tests. Complete sequential Vitest and the official coverage gate passed 235 files and 5,834 tests; statement coverage is 48.19% against the unchanged 27.67% threshold. The complete VS Code 1.132.0 extension-host suite passed 201/201 with `--timeout 5000`. Host/webview/browser typechecks, integration compilation, production extension and strict browser builds, ESLint with zero errors and five existing warnings, diagnostics, and both bundle gates passed. Final production sizes are 1,912.3 KB for `extension.js` and 2,801.9 KB for `webview.bundle.js`; only the synchronized extension baseline moved 1,862 -> 1,863 KB and the 50 KB buffer is unchanged. Native E2E was not required because this was a host-only ownership extraction and both message shapes plus controller emitters remained unchanged. The definitive documentation-aware reviewer returned `VERDICT: NO HST-9 BLOCKER`.
 
+### Iteration `HST-10`: Host Information Notification Application Handler
+
+**Status:** closed on 2026-08-06. The implementation blocker review returned `VERDICT: NO HST-10 IMPLEMENTATION BLOCKER`.
+
+**Boundary:** `HostInformationNotificationApplicationHandler` is the injected response-free owner for `showInfo`. It receives the original typed message, calls `vscode.window.showInformationMessage(message.message)` exactly once with exact whitespace, discards the returned thenable, preserves synchronous native throws, declines unrelated traffic synchronously, and owns idempotent disposal. `QueryEditorProvider` only constructs or accepts the handler, synchronously offers the original object, and disposes it.
+
+**Displaced authority:** `QueryEditorProvider` no longer owns the `showInfo` discriminator case or directly invokes `showInformationMessage`. Cached Values, Agent Chat, every notification emitter, message shapes, browser behavior, origin/trust policy, and Kusto/SQL lifecycle remain unchanged.
+
+**Guards:** the requested real-provider test was written red first and failed with zero fake-handler calls, then passed unchanged after injection and proves reference-identical forwarding while the provider-native notification API remains untouched. Direct tests cover synchronous Kusto/SQL decline, exact whitespace, exactly-once invocation, a never-settling returned thenable, synchronous native throws, accepted notification behavior across disposal, idempotent disposal, and suppression of later requests. Static displaced-authority, response-free protocol inventory, and provider lifecycle disposal are explicit guards.
+
+**Qualification:** the final four-file HST-10 ring passed 146 tests. Complete sequential Vitest and the official coverage gate passed 237 files and 5,844 tests; statement coverage is 48.19% against the unchanged 27.67% threshold. The first full run had one unrelated `proper-lockfile` release race in Kusto Leave No Trace recovery; that file passed unchanged at 8/8 before the clean complete rerun. The complete VS Code 1.132.0 extension-host suite passed 201/201 with `--timeout 5000`. Host/webview/browser typechecks, integration compilation, production extension and strict browser builds, ESLint with zero errors and five existing warnings, diagnostics, and both bundle gates passed. Final production sizes are 1,912.6 KB for `extension.js` and 2,801.9 KB for `webview.bundle.js`; existing synchronized baselines and the 50 KB buffer remain unchanged. Native E2E was not required because this was a host-only ownership extraction with unchanged emitters and message shapes.
+
 ## Next Iteration
 
-### Iteration `HST-10`: Host Information Notification Application Handler
+### Iteration `HST-11`: Cached Values Open Application Handler
 
 **Status:** selected, not started.
 
-**Why next:** HST remains the highest eligible gap. `showInfo` is one broadly used but behaviorally tiny provider-owned presentation route: it forwards the exact message text to `vscode.window.showInformationMessage` and has no response, request identity, or workflow state. Cached Values and Agent Chat have distinct command owners and are explicitly excluded rather than folded into a generic navigation/presentation handler.
+**Why next:** HST remains the highest eligible gap. `seeCachedValues` is the smallest coherent provider-owned route remaining: one payload-free message awaits exactly one existing `kusto.seeCachedValues` command. The command registration remains the first-launch composition owner and `CachedValuesViewerV2` remains the viewer lifecycle owner. Agent Chat, editing preferences, Kusto/SQL workflows, and generic presentation behavior are materially broader.
 
-**Boundary:** extract only `showInfo` into one injected, response-free `HostInformationNotificationApplicationHandler`. Preserve the exact message object, exact text value, fire-and-forget `showInformationMessage` behavior, synchronous decline of unrelated messages, accepted notification behavior across panel disposal, and handler disposal. Keep every message emitter and protocol shape unchanged.
+**Boundary:** extract only `seeCachedValues` command dispatch into one injected, response-free `HostCachedValuesOpenApplicationHandler`. Preserve the original message object, exact zero-argument command ID, awaited completion, exact rejection, synchronous decline of unrelated traffic, accepted command settlement across disposal, suppression after idempotent disposal, and every existing message/protocol shape.
 
-**Falsifiable hypothesis:** if one notification handler owns `showInfo`, `QueryEditorProvider` can synchronously offer the exact message without retaining notification decisions while every current webview caller observes unchanged native information-message behavior.
+**Falsifiable hypothesis:** if one cached-values-open handler owns `seeCachedValues`, `QueryEditorProvider` can offer the exact message without knowing the command ID while first-launch admission, command completion/failure, and viewer singleton behavior remain unchanged.
 
-**Cheapest discriminating check:** construct the real provider with one final fake notification handler, send an exact `showInfo` object, and prove the original object is forwarded while `vscode.window.showInformationMessage` remains untouched. Before injection the fake receives zero calls and the provider invokes the native notification directly.
+**Cheapest discriminating check:** construct the real provider with one final fake cached-values handler, send one exact `{ type: 'seeCachedValues' }` object, and prove reference-identical forwarding while `vscode.commands.executeCommand` remains untouched. Before injection the fake receives zero calls and the provider directly executes `kusto.seeCachedValues`.
 
-**Exclusions:** no HST-1 through HST-9 changes, no Cached Values or Agent Chat migration, no generic notification/navigation framework, no emitter or message-shape changes, no browser work, no origin/trust policy, and no Kusto/SQL execution/lifecycle work.
+**Exclusions:** no HST-1 through HST-10 changes; no Cached Values viewer, cache/schema/auth/privacy, command registration, Agent Chat, editing preferences, Kusto/SQL lifecycle, generic presentation framework, emitter, protocol, browser, document, or deferred ACT changes.
 
 ## Convergence Loop
 
@@ -852,6 +866,7 @@ These are not full golden-outcome iterations retroactively, but they materially 
 | `HST-7` | `HostControlCommandSyntaxApplicationHandler` | Provider-owned syntax cache/TTL, Learn fetch/normalization, HTML/entity/`with(...)` parsing, failure shaping, discriminator case, and syntax-result publication | Red-first real-provider forwarding, static displaced-authority, exact cache/URL/parser/failure/disposal tests, protocol-sender inventory, provider lifecycle disposal, and unchanged caret-docs ring | Focused 321, host-handler ring 424, full/coverage Vitest 5,782, extension-host 201, production/browser, bundle gate, and definitive blocker review complete | 2026-08-06 |
 | `HST-8` | `HostResourceUriApplicationHandler` | Provider-owned resource cache, path import/normalization, passthrough/base/stat/conversion decisions, discriminator case, failure shaping, and URI-result publication | Red-first real-provider forwarding, static displaced-authority, direct path/cache/order/failure/disposal tests, protocol-sender inventory, provider lifecycle disposal, and unchanged Markdown caller ring | Focused 378, full/coverage Vitest 5,816, extension-host 201, production/browser, bundle gates, and definitive blocker review complete | 2026-08-06 |
 | `HST-9` | `HostCopilotContentOpenApplicationHandler` | Provider-owned tool-result document creation/display, Markdown preview URI/command dispatch, failure notifications, discriminator cases, and methods | Red-first exact-object provider forwarding, static displaced-authority, exact coercion/options/failure/disposal tests, response-free protocol inventory, unchanged controller emitters, and provider lifecycle disposal | Focused 154, full/coverage Vitest 5,834, extension-host 201, production/browser, bundle gates, and definitive blocker review complete | 2026-08-06 |
+| `HST-10` | `HostInformationNotificationApplicationHandler` | Provider-owned `showInfo` discriminator and direct native information-notification invocation | Red-first exact-object provider forwarding, static displaced-authority, exact text/thenable/throw/disposal tests, response-free protocol inventory, and provider lifecycle disposal | Focused 146, full/coverage Vitest 5,844, extension-host 201, production/browser, bundle gates, and blocker review complete | 2026-08-06 |
 
 ## Decision Discipline
 

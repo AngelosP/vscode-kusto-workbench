@@ -103,6 +103,10 @@ import {
 	HostCopilotContentOpenApplicationHandler,
 	type CopilotContentOpenApplicationHandler,
 } from './copilotContentOpenApplicationHandler';
+import {
+	HostInformationNotificationApplicationHandler,
+	type InformationNotificationApplicationHandler,
+} from './informationNotificationApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -200,6 +204,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly controlCommandSyntaxApplication: ControlCommandSyntaxApplicationHandler;
 	readonly resourceUriApplication: ResourceUriApplicationHandler;
 	readonly copilotContentOpenApplication: CopilotContentOpenApplicationHandler;
+	readonly informationNotificationApplication: InformationNotificationApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -610,6 +615,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		controlCommandSyntaxApplication?: ControlCommandSyntaxApplicationHandler,
 		resourceUriApplication?: ResourceUriApplicationHandler,
 		copilotContentOpenApplication?: CopilotContentOpenApplicationHandler,
+		informationNotificationApplication?: InformationNotificationApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -642,6 +648,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		});
 		this.copilotContentOpenApplication = copilotContentOpenApplication
 			?? new HostCopilotContentOpenApplicationHandler();
+		this.informationNotificationApplication = informationNotificationApplication
+			?? new HostInformationNotificationApplicationHandler();
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
 			this.handleKustoAuthPreferenceChange(change);
 		});
@@ -1041,6 +1049,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await copilotContentOpenApplicationMessage;
 			return;
 		}
+		if (this.informationNotificationApplication?.handleMessage(message)) {
+			return;
+		}
 		switch (message.type) {
 			case 'kustoSectionOpen':
 				this.kustoExecutionCoordinator.openSection(message.boxId, message.sectionInstanceId);
@@ -1433,9 +1444,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				} catch {
 					// ignore
 				}
-				return;
-			case 'showInfo':
-				vscode.window.showInformationMessage(message.message);
 				return;
 			case 'checkCopilotAvailability':
 				await this.copilot.checkCopilotAvailability(message.boxId);
@@ -2066,6 +2074,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.controlCommandSyntaxApplication.dispose();
 			this.resourceUriApplication.dispose();
 			this.copilotContentOpenApplication.dispose();
+			this.informationNotificationApplication.dispose();
 			for (const [requestId, pending] of [...this.pendingComparisonEnsureByRequestId]) {
 				this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
 			}
