@@ -278,6 +278,7 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 		extractPostMessageTypes('src/host/urlContentApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/controlCommandSyntaxApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/resourceUriApplicationHandler.ts'),
+		extractPostMessageTypes('src/host/copilotContentOpenApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/kustoExecutionCoordinator.ts'),
 		extractPostMessageTypes('src/host/sql/sqlEditorLifecycleCoordinator.ts'),
 		extractPostMessageTypes('src/host/kqlxEditorProvider.ts'),
@@ -296,23 +297,23 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kqlxEditorProvider.ts::deliverWebviewMessage::postMessage::1233:34',
 	'src/host/kqlxEditorProvider.ts::postWebviewMessage::postMessage::1222:10',
 	'src/host/kqlxEditorProvider.ts::resolveCustomTextEditor::postMessage::3608:19',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::383:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::610:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::388:27',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::616:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::620:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::625:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::628:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::622:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::626:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::631:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::634:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::650:29',
-	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::785:26',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::2066:21',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::1990:21',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::2009:22',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1962:21',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::1974:21',
-	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::2022:10',
-	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::531:25',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::637:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::640:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::658:29',
+	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::793:26',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::2034:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::1958:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::1977:22',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1930:21',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::1942:21',
+	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::1990:10',
+	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::536:25',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1741:13',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1745:10',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageContained::postMessageRequiredContained::2013:8',
@@ -1085,6 +1086,11 @@ describe('Message Protocol Contract', () => {
 		it('extracts the resource URI handler result', () => {
 			const extraction = extractPostMessageTypes('src/host/resourceUriApplicationHandler.ts');
 			expect(extraction.types).toContain('resolveResourceUriResult');
+		});
+
+		it('keeps Copilot content opening response-free', () => {
+			const extraction = extractPostMessageTypes('src/host/copilotContentOpenApplicationHandler.ts');
+			expect(extraction).toEqual({ types: [], dynamicSites: [] });
 		});
 
 		it('every host→webview type has a handler case (or is known-unhandled)', () => {

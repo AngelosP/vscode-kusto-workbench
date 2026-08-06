@@ -84,4 +84,44 @@ describe('CopilotChatManagerController document capabilities', () => {
 		});
 		expect(mocks.setSectionName).not.toHaveBeenCalled();
 	});
+
+	it('emits exact tool-result and Markdown-preview open messages', () => {
+		const host = document.createElement('div') as HTMLElement & CopilotChatManagerHost;
+		host.boxId = 'query_source';
+		host.addController = vi.fn();
+		host.getCopilotConnectionId = () => 'connection-1';
+		host.getCopilotServerUrl = () => 'https://cluster.example';
+		host.getDatabase = () => 'Db';
+		host.getCopilotEditorValue = () => 'print source = 1';
+		host.layoutCopilotEditor = vi.fn();
+		const wrapper = document.createElement('div');
+		wrapper.className = 'query-editor-wrapper';
+		host.appendChild(wrapper);
+		document.body.appendChild(host);
+		const controller = new CopilotChatManagerController(host, kustoWebviewFlavor);
+		controller.installCopilotChat();
+		const chat = host.querySelector('kw-copilot-chat');
+		expect(chat).not.toBeNull();
+		mocks.postMessageToHost.mockClear();
+		const toolDetail = {
+			tool: '  get_schema  ',
+			label: 'Schema result',
+			content: '  exact content\r\nwith spacing  ',
+		};
+		const previewDetail = { filePath: 'C:\\workspace\\copilot-result.md' };
+
+		chat!.dispatchEvent(new CustomEvent('copilot-view-tool', { detail: toolDetail }));
+		chat!.dispatchEvent(new CustomEvent('copilot-open-preview', { detail: previewDetail }));
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledTimes(2);
+		expect(mocks.postMessageToHost).toHaveBeenNthCalledWith(1, {
+			type: 'openToolResultInEditor',
+			boxId: 'query_source',
+			...toolDetail,
+		});
+		expect(mocks.postMessageToHost).toHaveBeenNthCalledWith(2, {
+			type: 'openMarkdownPreview',
+			...previewDetail,
+		});
+	});
 });

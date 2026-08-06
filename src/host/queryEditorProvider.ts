@@ -99,6 +99,10 @@ import {
 	HostResourceUriApplicationHandler,
 	type ResourceUriApplicationHandler,
 } from './resourceUriApplicationHandler';
+import {
+	HostCopilotContentOpenApplicationHandler,
+	type CopilotContentOpenApplicationHandler,
+} from './copilotContentOpenApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -195,6 +199,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly urlContentApplication: UrlContentApplicationHandler;
 	readonly controlCommandSyntaxApplication: ControlCommandSyntaxApplicationHandler;
 	readonly resourceUriApplication: ResourceUriApplicationHandler;
+	readonly copilotContentOpenApplication: CopilotContentOpenApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -604,6 +609,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		urlContentApplication?: UrlContentApplicationHandler,
 		controlCommandSyntaxApplication?: ControlCommandSyntaxApplicationHandler,
 		resourceUriApplication?: ResourceUriApplicationHandler,
+		copilotContentOpenApplication?: CopilotContentOpenApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -634,6 +640,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			postMessage: message => this.postMessage(message),
 			asWebviewUri: uri => this.panel?.webview.asWebviewUri(uri),
 		});
+		this.copilotContentOpenApplication = copilotContentOpenApplication
+			?? new HostCopilotContentOpenApplicationHandler();
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
 			this.handleKustoAuthPreferenceChange(change);
 		});
@@ -1026,6 +1034,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const resourceUriApplicationMessage = this.resourceUriApplication?.handleMessage(message);
 		if (resourceUriApplicationMessage) {
 			await resourceUriApplicationMessage;
+			return;
+		}
+		const copilotContentOpenApplicationMessage = this.copilotContentOpenApplication?.handleMessage(message);
+		if (copilotContentOpenApplicationMessage) {
+			await copilotContentOpenApplicationMessage;
 			return;
 		}
 		switch (message.type) {
@@ -1491,12 +1504,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'removeFromCopilotHistory':
 				this.copilot.removeFromCopilotHistory(message.boxId, message.entryId);
 				return;
-			case 'openToolResultInEditor':
-				await this.openToolResultInEditor(message);
-				return;
-			case 'openMarkdownPreview':
-				await this.openMarkdownPreview(message.filePath);
-				return;
 			case 'prepareOptimizeQuery':
 				await this.copilot.prepareOptimizeQuery(message);
 				return;
@@ -1852,45 +1859,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		});
 	}
 
-	/**
-	 * Opens tool result content in a new VS Code editor tab.
-	 */
-	private async openToolResultInEditor(
-		message: Extract<IncomingWebviewMessage, { type: 'openToolResultInEditor' }>
-	): Promise<void> {
-		try {
-			const tool = String(message.tool || 'tool_result').trim();
-			const content = String(message.content || '');
-
-			// Create an untitled document with the content
-			const doc = await vscode.workspace.openTextDocument({
-				content,
-				language: 'plaintext'
-			});
-
-			await vscode.window.showTextDocument(doc, {
-				preview: true,
-				viewColumn: vscode.ViewColumn.Beside
-			});
-		} catch (error) {
-			vscode.window.showErrorMessage(`Failed to open tool result: ${this.getErrorMessage(error)}`);
-		}
-	}
-
-	/**
-	 * Opens a markdown file in VS Code's built-in markdown preview.
-	 */
-	private async openMarkdownPreview(filePath: string): Promise<void> {
-		try {
-			const uri = vscode.Uri.file(filePath);
-			await vscode.commands.executeCommand('markdown.showPreview', uri);
-		} catch (error) {
-			vscode.window.showErrorMessage(`Failed to open markdown preview: ${this.getErrorMessage(error)}`);
-		}
-	}
-
-
-
 	private async handleKqlLanguageRequest(
 		message: Extract<IncomingWebviewMessage, { type: 'kqlLanguageRequest' }>
 	): Promise<void> {
@@ -2097,6 +2065,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.urlContentApplication.dispose();
 			this.controlCommandSyntaxApplication.dispose();
 			this.resourceUriApplication.dispose();
+			this.copilotContentOpenApplication.dispose();
 			for (const [requestId, pending] of [...this.pendingComparisonEnsureByRequestId]) {
 				this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
 			}
