@@ -134,6 +134,10 @@ import {
 	HostSqlConnectionOnboardingApplicationHandler,
 	type SqlConnectionOnboardingApplicationHandler,
 } from './sqlConnectionOnboardingApplicationHandler';
+import {
+	HostSqlFavoritesApplicationHandler,
+	type SqlFavoritesApplicationHandler,
+} from './sqlFavoritesApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -237,6 +241,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly kustoConnectionIntakeApplication: KustoConnectionIntakeApplicationHandler;
 	readonly kustoConnectionOnboardingApplication: KustoConnectionOnboardingApplicationHandler;
 	readonly sqlConnectionOnboardingApplication: SqlConnectionOnboardingApplicationHandler;
+	readonly sqlFavoritesApplication: SqlFavoritesApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -655,6 +660,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		kustoConnectionIntakeApplication?: KustoConnectionIntakeApplicationHandler,
 		kustoConnectionOnboardingApplication?: KustoConnectionOnboardingApplicationHandler,
 		sqlConnectionOnboardingApplication?: SqlConnectionOnboardingApplicationHandler,
+		sqlFavoritesApplication?: SqlFavoritesApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -735,6 +741,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				connectionManager: this.sqlConnectionManager,
 				globalState: this.context.globalState,
 				postMessage: message => this.postMessage(message),
+			});
+		this.sqlFavoritesApplication = sqlFavoritesApplication
+			?? new HostSqlFavoritesApplicationHandler({
+				connectionManager: this.sqlConnectionManager,
+				globalState: this.context.globalState,
+				postMessage: message => this.postMessage(message),
+				output: this.output,
 			});
 		this.schema = new SchemaService(this);
 		this.sqlLifecycle = new SqlEditorLifecycleCoordinator({
@@ -1142,6 +1155,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await sqlConnectionOnboardingApplicationMessage;
 			return;
 		}
+		const sqlFavoritesApplicationMessage = this.sqlFavoritesApplication?.handleMessage(message);
+		if (sqlFavoritesApplicationMessage) {
+			await sqlFavoritesApplicationMessage;
+			return;
+		}
 		switch (message.type) {
 			case 'kustoSectionOpen':
 				this.kustoExecutionCoordinator.openSection(message.boxId, message.sectionInstanceId);
@@ -1456,12 +1474,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'confirmRemoveFavorite':
 				await this.connection.confirmRemoveFavorite(message);
-				return;
-			case 'requestAddSqlFavorite':
-				await this.connection.promptAddSqlFavorite(message);
-				return;
-			case 'removeSqlFavorite':
-				await this.connection.removeSqlFavorite(message.connectionId, message.database);
 				return;
 			case 'requestCopilotInlineCompletion':
 				if (message.flavor === 'sql') {
@@ -2131,6 +2143,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.kustoConnectionIntakeApplication.dispose();
 			this.kustoConnectionOnboardingApplication.dispose();
 			this.sqlConnectionOnboardingApplication.dispose();
+			this.sqlFavoritesApplication.dispose();
 			this.kustoExecutionCoordinator.dispose();
 			this.cancelAllRunningQueries();
 			this.kustoClient.dispose();
@@ -2409,7 +2422,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				lastConnectionId: lastSqlConnectionId,
 				lastDatabase: lastSqlDatabase,
 				cachedDatabases,
-				sqlFavorites: this.connection.getSqlFavorites()
+				sqlFavorites: this.sqlFavoritesApplication.getFavorites()
 					.filter(favorite => !canonicalProtectedIds.has(favorite.connectionId)),
 				sqlLeaveNoTrace: [...canonicalProtectedIds],
 			});

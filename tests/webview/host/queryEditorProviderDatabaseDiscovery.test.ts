@@ -67,7 +67,11 @@ function createSqlDiscoveryHarness(options: { accountId?: string; authType?: 'aa
 		getLeaveNoTraceConnectionIds: vi.fn(() => []),
 		getStateVersions: vi.fn(() => ({ policy: 1, principals: 1, connections: 1 })),
 	};
-	provider.connection.getSqlFavorites = vi.fn(() => []);
+	provider.sqlFavoritesApplication = {
+		handleMessage: vi.fn(),
+		getFavorites: vi.fn(() => []),
+		dispose: vi.fn(),
+	};
 	provider.output = { error: vi.fn(), warn: vi.fn() };
 	provider.postMessage = vi.fn();
 	provider.sqlConnectionsSnapshotTail = Promise.resolve(true);

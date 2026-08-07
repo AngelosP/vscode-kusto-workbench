@@ -12,7 +12,6 @@ import { filterKustoFavoritesForActivePrincipals, mergeKustoFavoritesForActivePr
 import {
 	STORAGE_KEYS,
 	KustoFavorite,
-	SqlFavorite,
 	CachedSchemaEntry,
 	IncomingWebviewMessage
 } from './queryEditorTypes';
@@ -135,7 +134,6 @@ export function normalizeFavoriteClusterUrl(clusterUrl: string): string {
 
 export interface ConnectionServiceHost {
 	readonly connectionManager: ConnectionManager;
-	readonly sqlConnectionManager?: { getConnection(id: string): { name?: string; serverUrl?: string } | undefined };
 	readonly context: vscode.ExtensionContext;
 	readonly kustoClient: KustoQueryClient;
 	readonly output: WorkbenchLogger;
@@ -430,114 +428,6 @@ export class ConnectionService {
 			database,
 			boxId: message.boxId
 		});
-	}
-
-	// ── SQL Favorites ──
-
-	getSqlFavorites(): SqlFavorite[] {
-		const raw = this.host.context.globalState.get<unknown>(STORAGE_KEYS.sqlFavorites);
-		if (!Array.isArray(raw)) {
-			return [];
-		}
-		const out: SqlFavorite[] = [];
-		for (const item of raw) {
-			if (!item || typeof item !== 'object') {
-				continue;
-			}
-			const maybe = item as Partial<SqlFavorite>;
-			const name = String(maybe.name || '').trim();
-			const connectionId = String(maybe.connectionId || '').trim();
-			const database = String(maybe.database || '').trim();
-			if (!name || !connectionId || !database) {
-				continue;
-			}
-			out.push({ name, connectionId, database });
-		}
-		return out;
-	}
-
-	private sqlFavoriteKey(connectionId: string, database: string): string {
-		const c = String(connectionId || '').trim();
-		const d = String(database || '').trim().toLowerCase();
-		return `${c}|${d}`;
-	}
-
-	private async setSqlFavorites(favorites: SqlFavorite[], boxId?: string): Promise<void> {
-		await this.host.context.globalState.update(STORAGE_KEYS.sqlFavorites, favorites);
-		try {
-			await this.sendSqlFavoritesData(boxId);
-		} catch (error) {
-			try { this.host.output.warn(`[favorites] Failed to send sqlFavoritesData: ${error instanceof Error ? error.message : String(error)}`); } catch {
-				// ignore logging failures
-			}
-		}
-	}
-
-	private async sendSqlFavoritesData(boxId?: string): Promise<void> {
-		const payload: any = { type: 'sqlFavoritesData', favorites: this.getSqlFavorites() };
-		if (boxId) {
-			payload.boxId = boxId;
-		};
-		await Promise.resolve(this.host.postMessage(payload));
-	}
-
-	async promptAddSqlFavorite(
-		message: Extract<IncomingWebviewMessage, { type: 'requestAddSqlFavorite' }>
-	): Promise<void> {
-		const connectionId = String(message.connectionId || '').trim();
-		const databaseRaw = String(message.database || '').trim();
-		if (!connectionId || !databaseRaw) return;
-		const database = databaseRaw;
-		const conn = this.host.sqlConnectionManager?.getConnection(connectionId);
-		const serverName = conn ? (conn.name || conn.serverUrl || connectionId) : connectionId;
-		const defaultName = String(message.defaultName || '').trim() || `${serverName}.${database}`;
-		const picked = await vscode.window.showInputBox({
-			title: 'Add to favorites',
-			prompt: 'Enter a friendly name for this server + database',
-			value: defaultName,
-			ignoreFocusOut: true,
-		});
-		const name = typeof picked === 'string' ? picked.trim() : '';
-		if (!name) return;
-		await this.addOrUpdateSqlFavorite({ name, connectionId, database }, message.boxId);
-	}
-
-	private async addOrUpdateSqlFavorite(favorite: SqlFavorite, boxId?: string): Promise<void> {
-		const name = String(favorite.name || '').trim();
-		const connectionId = String(favorite.connectionId || '').trim();
-		const database = String(favorite.database || '').trim();
-		if (!name || !connectionId || !database) {
-			return;
-		}
-		const key = this.sqlFavoriteKey(connectionId, database);
-		const current = this.getSqlFavorites();
-		const next: SqlFavorite[] = [];
-		let replaced = false;
-		for (const f of current) {
-			const fk = this.sqlFavoriteKey(f.connectionId, f.database);
-			if (fk === key) {
-				next.push({ name, connectionId, database });
-				replaced = true;
-			} else {
-				next.push(f);
-			}
-		}
-		if (!replaced) {
-			next.push({ name, connectionId, database });
-		}
-		await this.setSqlFavorites(next, boxId);
-	}
-
-	async removeSqlFavorite(connectionIdRaw: string, databaseRaw: string): Promise<void> {
-		const connectionId = String(connectionIdRaw || '').trim();
-		const database = String(databaseRaw || '').trim();
-		if (!connectionId || !database) {
-			return;
-		}
-		const key = this.sqlFavoriteKey(connectionId, database);
-		const current = this.getSqlFavorites();
-		const next = current.filter((f) => this.sqlFavoriteKey(f.connectionId, f.database) !== key);
-		await this.setSqlFavorites(next);
 	}
 
 	// ── Cached databases ──
