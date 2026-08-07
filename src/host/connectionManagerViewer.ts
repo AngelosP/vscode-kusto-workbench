@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
 import { ConnectionManager, KustoConnection } from './connectionManager';
-import { ConnectionService } from './queryEditorConnection';
+import { HostKustoFavoritesApplicationHandler } from './kustoFavoritesApplicationHandler';
 import { KustoQueryClient, DatabaseSchemaIndex } from './kustoClient';
 import { createEmptyKqlxOrMdxFile } from './kqlxFormat';
 import { captureSchemaCacheGeneration, deleteCachedSchemasForConnections, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, CachedSchemaEntry, searchCachedSchemas, readAllCachedSchemasFromDisk, type SchemaSearchMatch, schemaCacheKey, schemaPrincipalIdentity, type SchemaCacheGeneration } from './schemaCache';
@@ -266,7 +266,7 @@ export class ConnectionManagerViewerV2 {
 		this.panel.iconPath = vscode.Uri.joinPath(this.extensionUri, 'media', 'images', 'kusto-workbench-logo.png');
 
 		this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
-		this.disposables.push(ConnectionService.onKustoFavoritesChanged((context) => {
+		this.disposables.push(HostKustoFavoritesApplicationHandler.onKustoFavoritesChanged((context) => {
 			if (context === this.context) {
 				return this.sendSnapshotToWebview();
 			}
@@ -405,7 +405,7 @@ export class ConnectionManagerViewerV2 {
 		if (expectedOwner && partitions.get(expectedOwner.connectionId) !== expectedOwner.accountPartition) return;
 		const allFavorites = migrateKustoFavoritesWithStatus(raw, this.connectionManager.getConnections(), partitions).favorites;
 		await this.context.globalState.update(STORAGE_KEYS.favorites, mergeKustoFavoritesForActivePrincipals(allFavorites, favorites, partitions));
-		ConnectionService.broadcastKustoFavoritesData(this.context);
+		HostKustoFavoritesApplicationHandler.broadcastKustoFavoritesData(this.context);
 	}
 
 	private getExpandedClusters(): string[] {
@@ -1234,7 +1234,7 @@ export class ConnectionManagerViewerV2 {
 						const allFavorites = migrateKustoFavorites(raw, connections, this.getFavoriteAccountPartitions())
 							.filter(favorite => favorite.connectionId !== conn.id);
 						await this.context.globalState.update(STORAGE_KEYS.favorites, allFavorites);
-						ConnectionService.broadcastKustoFavoritesData(this.context);
+						HostKustoFavoritesApplicationHandler.broadcastKustoFavoritesData(this.context);
 					}
 					await this.connectionCache.clearConnection(id);
 					await deleteCachedSchemasForConnections(this.context.globalStorageUri, new Set([id]));

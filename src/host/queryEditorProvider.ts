@@ -138,6 +138,10 @@ import {
 	HostSqlFavoritesApplicationHandler,
 	type SqlFavoritesApplicationHandler,
 } from './sqlFavoritesApplicationHandler';
+import {
+	HostKustoFavoritesApplicationHandler,
+	type KustoFavoritesApplicationHandler,
+} from './kustoFavoritesApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -242,6 +246,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly kustoConnectionOnboardingApplication: KustoConnectionOnboardingApplicationHandler;
 	readonly sqlConnectionOnboardingApplication: SqlConnectionOnboardingApplicationHandler;
 	readonly sqlFavoritesApplication: SqlFavoritesApplicationHandler;
+	readonly kustoFavoritesApplication: KustoFavoritesApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -661,6 +666,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		kustoConnectionOnboardingApplication?: KustoConnectionOnboardingApplicationHandler,
 		sqlConnectionOnboardingApplication?: SqlConnectionOnboardingApplicationHandler,
 		sqlFavoritesApplication?: SqlFavoritesApplicationHandler,
+		kustoFavoritesApplication?: KustoFavoritesApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -749,6 +755,15 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				postMessage: message => this.postMessage(message),
 				output: this.output,
 			});
+		this.kustoFavoritesApplication = kustoFavoritesApplication
+			?? new HostKustoFavoritesApplicationHandler({
+				context: this.context,
+				connectionManager: this.connectionManager,
+				kustoClient: this.kustoClient,
+				authPreferences: KustoAuthPreferenceService.getInstance(this.context),
+				postMessage: message => this.postMessage(message),
+				output: this.output,
+			});
 		this.schema = new SchemaService(this);
 		this.sqlLifecycle = new SqlEditorLifecycleCoordinator({
 			context: this.context,
@@ -822,7 +837,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this._panelDisposed = false;
 		perfMark('host.queryEditorProvider.initialize.start', { initialDocumentLoading: !!options?.initialDocumentLoading });
 		this.fileOpenTrace?.mark('queryEditorProvider.initialize.start', { visible: panel.visible, active: panel.active, viewType: panel.viewType, documentUri: this.documentUri });
-		this.connection.activate();
+		this.kustoFavoritesApplication.activate();
 		this.fileOpenTrace?.mark('queryEditorProvider.connection.activate.done');
 		this.panel = panel;
 		this.editorCursorStatusApplication.setPanelVisible(panel.visible);
@@ -1010,7 +1025,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.panel.reveal(vscode.ViewColumn.One);
 			return;
 		}
-		this.connection.activate();
+		this.kustoFavoritesApplication.activate();
 		this.sqlLifecycle.startSession();
 		this._panelDisposed = false;
 
@@ -1158,6 +1173,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const sqlFavoritesApplicationMessage = this.sqlFavoritesApplication?.handleMessage(message);
 		if (sqlFavoritesApplicationMessage) {
 			await sqlFavoritesApplicationMessage;
+			return;
+		}
+		const kustoFavoritesApplicationMessage = this.kustoFavoritesApplication?.handleMessage(message);
+		if (kustoFavoritesApplicationMessage) {
+			await kustoFavoritesApplicationMessage;
 			return;
 		}
 		switch (message.type) {
@@ -1465,15 +1485,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'getConnections':
 				await this.sendConnectionsData(message.policyRequestId);
-				return;
-			case 'requestAddFavorite':
-				await this.connection.promptAddFavorite(message);
-				return;
-			case 'removeFavorite':
-				await this.connection.removeFavorite(message.connectionId, message.database);
-				return;
-			case 'confirmRemoveFavorite':
-				await this.connection.confirmRemoveFavorite(message);
 				return;
 			case 'requestCopilotInlineCompletion':
 				if (message.flavor === 'sql') {
@@ -2048,6 +2059,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		return this.connection.inferClusterDatabaseForKqlQuery(queryText);
 	}
 
+	public getKustoFavorites() {
+		return this.kustoFavoritesApplication.getFavorites();
+	}
+
 	private async sendConnectionsData(policyRequestId?: string): Promise<void> {
 		const revision = ++this.connectionsDataRevision;
 		const send = async () => {
@@ -2144,11 +2159,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.kustoConnectionOnboardingApplication.dispose();
 			this.sqlConnectionOnboardingApplication.dispose();
 			this.sqlFavoritesApplication.dispose();
+			this.kustoFavoritesApplication.dispose();
 			this.kustoExecutionCoordinator.dispose();
 			this.cancelAllRunningQueries();
 			this.kustoClient.dispose();
 			this.disconnectToolOrchestrator();
-			this.connection.dispose();
 			this.embeddedTutorialRegistration?.dispose();
 			this.embeddedTutorialRegistration = undefined;
 			this.embeddedTutorialHost = undefined;

@@ -8,14 +8,12 @@ import { schemaCacheKey } from './schemaCache';
 import { KustoConnectionCache } from './kustoConnectionCache';
 import { KustoAuthPreferenceService } from './kustoAuthPreferenceService';
 import { getKustoConnectionIdentityKey, normalizeKustoAuthorityId } from '../shared/kustoAuth';
-import { filterKustoFavoritesForActivePrincipals, mergeKustoFavoritesForActivePrincipals, migrateKustoFavoritesWithStatus } from './connectionManagerFavorites';
+import { getKustoFavoriteKey, type KustoFavorite } from './connectionManagerFavorites';
 import {
 	STORAGE_KEYS,
-	KustoFavorite,
-	CachedSchemaEntry,
-	IncomingWebviewMessage
+	CachedSchemaEntry
 } from './queryEditorTypes';
-import { getWorkbenchLogger, type WorkbenchLogger } from './workbenchLogger';
+import type { WorkbenchLogger } from './workbenchLogger';
 import {
 	createDatabaseListTraceId,
 	getDatabaseListErrorDetails,
@@ -124,12 +122,6 @@ export function getClusterCacheKey(clusterUrlRaw: string): string {
 	return kustoClusterKey(clusterUrlRaw);
 }
 
-export function normalizeFavoriteClusterUrl(clusterUrl: string): string {
-	const normalized = ensureHttpsUrl(String(clusterUrl || '').trim());
-	return normalized.replace(/\/+$/g, '');
-}
-
-
 // ── ConnectionServiceHost interface ──
 
 export interface ConnectionServiceHost {
@@ -142,14 +134,13 @@ export interface ConnectionServiceHost {
 	formatQueryExecutionErrorForUser(error: unknown, connection: KustoConnection, database?: string): string;
 	normalizeClusterUrlKey(url: string): string;
 	getCachedSchemaFromDisk(cacheKey: string): Promise<CachedSchemaEntry | undefined>;
+	getKustoFavorites(): KustoFavorite[];
 }
 
 
 // ── ConnectionService class ──
 
 export class ConnectionService {
-	private static readonly liveServices = new Set<ConnectionService>();
-	private static readonly kustoFavoritesListeners = new Set<(context: vscode.ExtensionContext) => void | PromiseLike<void>>();
 	private static readonly zeroResultRecoveryByCluster = new Map<string, Promise<ZeroResultRecoveryOutcome>>();
 	private static readonly databaseCacheSettlementByCluster = new Map<string, Promise<void>>();
 
@@ -157,7 +148,6 @@ export class ConnectionService {
 	private lastDatabase?: string;
 	private readonly connectionCache: KustoConnectionCache;
 	private readonly authPreferences: KustoAuthPreferenceService;
-	private disposed = false;
 	/** Tracks when we last showed a DB-load error notification per cluster (to avoid spamming). */
 	private lastDbErrorNotificationByCluster = new Map<string, number>();
 
@@ -186,7 +176,6 @@ export class ConnectionService {
 		this.connectionCache = new KustoConnectionCache(host.context);
 		this.authPreferences = KustoAuthPreferenceService.getInstance(host.context);
 		void this.connectionCache.migrateLegacy(host.connectionManager.getConnections());
-		this.activate();
 		this.loadLastSelection();
 	}
 
@@ -195,16 +184,6 @@ export class ConnectionService {
 		if (typeof resolver === 'function') return resolver.call(this.host.kustoClient, connection);
 		const accountId = this.authPreferences.getPreferredAccountId(connection.id);
 		return accountId ? this.authPreferences.getAccountPartition(connection.authorityId, accountId) : undefined;
-	}
-
-	activate(): void {
-		this.disposed = false;
-		ConnectionService.liveServices.add(this);
-	}
-
-	dispose(): void {
-		this.disposed = true;
-		ConnectionService.liveServices.delete(this);
 	}
 
 	// ── Last selection ──
@@ -233,201 +212,6 @@ export class ConnectionService {
 
 	findConnection(connectionId: string): KustoConnection | undefined {
 		return this.host.connectionManager.getConnections().find((c) => c.id === connectionId);
-	}
-
-	// ── Favorites ──
-	private getFavoriteAccountPartitions(): Map<string, string | undefined> {
-		return new Map(this.host.connectionManager.getConnections().map(connection => [connection.id, this.getResolvedAccountPartition(connection)]));
-	}
-
-	getFavorites(): KustoFavorite[] {
-		const raw = this.host.context.globalState.get<unknown>(STORAGE_KEYS.favorites);
-		const partitions = this.getFavoriteAccountPartitions();
-		const { favorites, unresolved } = migrateKustoFavoritesWithStatus(raw, this.host.connectionManager.getConnections(), partitions);
-		if (unresolved === 0 && JSON.stringify(raw ?? []) !== JSON.stringify(favorites)) void this.host.context.globalState.update(STORAGE_KEYS.favorites, favorites);
-		return filterKustoFavoritesForActivePrincipals(favorites, partitions);
-	}
-
-	private favoriteKey(connectionId: string, database: string): string {
-		const c = String(connectionId || '').trim();
-		const d = String(database || '').trim().toLowerCase();
-		return `${c}|${d}`;
-	}
-
-	private async setFavorites(
-		favorites: KustoFavorite[],
-		boxId?: string,
-		expectedOwner?: { connectionId: string; accountPartition?: string },
-	): Promise<void> {
-		const raw = this.host.context.globalState.get<unknown>(STORAGE_KEYS.favorites);
-		const partitions = this.getFavoriteAccountPartitions();
-		if (expectedOwner && partitions.get(expectedOwner.connectionId) !== expectedOwner.accountPartition) return;
-		const allFavorites = migrateKustoFavoritesWithStatus(raw, this.host.connectionManager.getConnections(), partitions).favorites;
-		await this.host.context.globalState.update(STORAGE_KEYS.favorites, mergeKustoFavoritesForActivePrincipals(allFavorites, favorites, partitions));
-		ConnectionService.broadcastKustoFavoritesData(this.host.context, boxId, this);
-	}
-
-	static broadcastKustoFavoritesData(context: vscode.ExtensionContext, originatingBoxId?: string, originatingService?: ConnectionService): void {
-		for (const service of ConnectionService.liveServices) {
-			if (service.disposed) {
-				ConnectionService.liveServices.delete(service);
-				continue;
-			}
-			if (!service.sharesFavoriteStorageWithContext(context)) {
-				continue;
-			}
-			void service
-				.sendFavoritesData(service === originatingService ? originatingBoxId : undefined)
-				.catch((error: unknown) => service.logFavoritesBroadcastError(error));
-		}
-		for (const listener of ConnectionService.kustoFavoritesListeners) {
-			try {
-				void Promise.resolve(listener(context)).catch((error: unknown) => {
-					try { getWorkbenchLogger().warn('[favorites] Failed to notify Kusto favorites listener', error); } catch {
-						// ignore logging failures
-					}
-				});
-			} catch (error) {
-				try { getWorkbenchLogger().warn('[favorites] Failed to notify Kusto favorites listener', error); } catch {
-					// ignore logging failures
-				}
-			}
-		}
-	}
-
-	static onKustoFavoritesChanged(listener: (context: vscode.ExtensionContext) => void | PromiseLike<void>): vscode.Disposable {
-		ConnectionService.kustoFavoritesListeners.add(listener);
-		return { dispose: () => { ConnectionService.kustoFavoritesListeners.delete(listener); } };
-	}
-
-	private sharesFavoriteStorageWithContext(context: vscode.ExtensionContext): boolean {
-		if (this.host.context === context) {
-			return true;
-		}
-		try {
-			return this.host.context.globalState.get<unknown>(STORAGE_KEYS.favorites) === context.globalState.get<unknown>(STORAGE_KEYS.favorites);
-		} catch {
-			return false;
-		}
-	}
-
-	private logFavoritesBroadcastError(error: unknown): void {
-		try { this.host.output.warn(`[favorites] Failed to broadcast favoritesData: ${error instanceof Error ? error.message : String(error)}`); } catch {
-			// ignore logging failures
-		}
-	}
-
-	private async sendFavoritesData(boxId?: string): Promise<void> {
-		const payload: any = { type: 'favoritesData', favorites: this.getFavorites() };
-		if (boxId) {
-			payload.boxId = boxId;
-		}
-		await Promise.resolve(this.host.postMessage(payload));
-	}
-
-	async promptAddFavorite(
-		message: Extract<IncomingWebviewMessage, { type: 'requestAddFavorite' }>
-	): Promise<void> {
-		const clusterUrlRaw = String(message.clusterUrl || '').trim();
-		const connectionId = String(message.connectionId || '').trim();
-		const databaseRaw = String(message.database || '').trim();
-		if (!connectionId || !clusterUrlRaw || !databaseRaw) {
-			return;
-		}
-		const clusterUrl = normalizeFavoriteClusterUrl(clusterUrlRaw);
-		const database = databaseRaw;
-		const connection = this.findConnection(connectionId);
-		const startingAccountPartition = connection ? this.getResolvedAccountPartition(connection) : undefined;
-		const defaultName =
-			String(message.defaultName || '').trim() || `${getClusterShortName(clusterUrl)}.${database}`;
-
-		const picked = await vscode.window.showInputBox({
-			title: 'Add to favorites',
-			prompt: 'Enter a friendly name for this cluster + database',
-			value: defaultName,
-			ignoreFocusOut: true
-		});
-		const name = typeof picked === 'string' ? picked.trim() : '';
-		if (!name) {
-			return;
-		}
-		if (!connection || this.getResolvedAccountPartition(connection) !== startingAccountPartition) return;
-		await this.addOrUpdateFavorite({ name, connectionId, clusterUrl, database }, message.boxId, startingAccountPartition);
-	}
-
-	private async addOrUpdateFavorite(favorite: KustoFavorite, boxId?: string, accountPartition?: string): Promise<void> {
-		const name = String(favorite.name || '').trim();
-		const connectionId = String(favorite.connectionId || '').trim();
-		const clusterUrl = normalizeFavoriteClusterUrl(String(favorite.clusterUrl || '').trim());
-		const database = String(favorite.database || '').trim();
-		if (!name || !connectionId || !clusterUrl || !database) {
-			return;
-		}
-		const key = this.favoriteKey(connectionId, database);
-		const current = this.getFavorites();
-		const next: KustoFavorite[] = [];
-		let replaced = false;
-		for (const f of current) {
-			const fk = this.favoriteKey(f.connectionId, f.database);
-			if (fk === key) {
-				next.push({ name, connectionId, clusterUrl, database, ...(accountPartition ? { accountPartition } : {}) } as KustoFavorite);
-				replaced = true;
-			} else {
-				next.push(f);
-			}
-		}
-		if (!replaced) {
-			next.push({ name, connectionId, clusterUrl, database, ...(accountPartition ? { accountPartition } : {}) } as KustoFavorite);
-		}
-		await this.setFavorites(next, boxId, { connectionId, accountPartition });
-	}
-
-	async removeFavorite(connectionIdRaw: string, databaseRaw: string): Promise<void> {
-		const connectionId = String(connectionIdRaw || '').trim();
-		const database = String(databaseRaw || '').trim();
-		if (!connectionId || !database) {
-			return;
-		}
-		const key = this.favoriteKey(connectionId, database);
-		const current = this.getFavorites();
-		const next = current.filter((f) => this.favoriteKey(f.connectionId, f.database) !== key);
-		await this.setFavorites(next);
-	}
-
-	async confirmRemoveFavorite(
-		message: Extract<IncomingWebviewMessage, { type: 'confirmRemoveFavorite' }>
-	): Promise<void> {
-		const requestId = String(message.requestId || '').trim();
-		const clusterUrl = normalizeFavoriteClusterUrl(String(message.clusterUrl || '').trim());
-		const connectionId = String(message.connectionId || '').trim();
-		const database = String(message.database || '').trim();
-		const label = String(message.label || '').trim();
-		if (!requestId) {
-			return;
-		}
-
-		let ok = false;
-		try {
-			const display = label || (clusterUrl && database ? `${clusterUrl} (${database})` : 'this favorite');
-			const choice = await vscode.window.showWarningMessage(
-				`Remove "${display}" from favorites?`,
-				{ modal: true },
-				'Remove'
-			);
-			ok = choice === 'Remove';
-		} catch {
-			ok = false;
-		}
-
-		this.host.postMessage({
-			type: 'confirmRemoveFavoriteResult',
-			requestId,
-			ok,
-			connectionId,
-			clusterUrl,
-			database,
-			boxId: message.boxId
-		});
 	}
 
 	// ── Cached databases ──
@@ -872,7 +656,7 @@ export class ConnectionService {
 					lastConnectionId: this.lastConnectionId,
 					lastDatabase: this.lastDatabase,
 					cachedDatabases: this.getCachedDatabases(),
-					favorites: this.getFavorites(),
+					favorites: this.host.getKustoFavorites(),
 					...settings,
 					leaveNoTraceClusters,
 					leaveNoTraceGloballyBlocked: policy.globallyBlocked,
@@ -903,11 +687,11 @@ export class ConnectionService {
 			return undefined;
 		}
 
-		const favorites = this.getFavorites();
+		const favorites = this.host.getKustoFavorites();
 		const favoriteKeys = new Set<string>();
 		for (const f of favorites) {
 			try {
-				favoriteKeys.add(this.favoriteKey(f.connectionId, f.database));
+				favoriteKeys.add(getKustoFavoriteKey(f.connectionId, f.database));
 			} catch {
 				// ignore
 			}
@@ -947,7 +731,7 @@ export class ConnectionService {
 				const score = scoreSchemaMatch(tokens, schema);
 				if (score <= 0) continue;
 
-				const isFavorite = favoriteKeys.has(this.favoriteKey(conn.id, database));
+				const isFavorite = favoriteKeys.has(getKustoFavoriteKey(conn.id, database));
 
 				if (!best) {
 					best = { clusterUrl, database, authorityId: conn.authorityId, connectionIdHint: conn.id, score, isFavorite };

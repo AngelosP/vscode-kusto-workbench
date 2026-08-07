@@ -3,7 +3,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { ConnectionManager, normalizeFilePath, type FileConnectionCacheEntry } from './connectionManager';
-import { ConnectionService, setTestIsolateKustoConnections, testIsolateKustoConnections } from './queryEditorConnection';
+import { setTestIsolateKustoConnections, testIsolateKustoConnections } from './queryEditorConnection';
+import { HostKustoFavoritesApplicationHandler } from './kustoFavoritesApplicationHandler';
 import { CachedValuesViewerV2 } from './cachedValuesViewer';
 import { ConnectionManagerViewerV2 } from './connectionManagerViewer';
 import { SqlWorkbenchService } from './sql/sqlWorkbenchService';
@@ -1690,7 +1691,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				return;
 			}
 			const removed = await clearAllKustoConnectionsAndFavorites(context, connectionManager);
-			ConnectionService.broadcastKustoFavoritesData(context);
+			HostKustoFavoritesApplicationHandler.broadcastKustoFavoritesData(context);
 			void vscode.window.showInformationMessage(
 				removed > 0 ? `Deleted ${removed} connection${removed === 1 ? '' : 's'}.` : 'No saved connections to delete.'
 			);

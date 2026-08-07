@@ -6,7 +6,6 @@ import {
 	getClusterShortName,
 	getClusterShortNameKey,
 	getClusterCacheKey,
-	normalizeFavoriteClusterUrl,
 	ConnectionService
 } from '../../../src/host/queryEditorConnection';
 import { STORAGE_KEYS } from '../../../src/host/queryEditorTypes';
@@ -15,7 +14,6 @@ import { KustoConnectionCache } from '../../../src/host/kustoConnectionCache';
 
 afterEach(() => {
 	vi.restoreAllMocks();
-	(ConnectionService as any).liveServices?.clear?.();
 	(ConnectionService as any).zeroResultRecoveryByCluster?.clear?.();
 	(ConnectionService as any).databaseCacheSettlementByCluster?.clear?.();
 });
@@ -131,28 +129,6 @@ describe('getClusterCacheKey', () => {
 	});
 });
 
-describe('normalizeFavoriteClusterUrl', () => {
-	it('bare hostname → https:// prepended', () => {
-		expect(normalizeFavoriteClusterUrl('mycluster.kusto.windows.net')).toBe('https://mycluster.kusto.windows.net');
-	});
-
-	it('trailing slash is removed', () => {
-		expect(normalizeFavoriteClusterUrl('https://mycluster.kusto.windows.net/')).toBe('https://mycluster.kusto.windows.net');
-	});
-
-	it('whitespace is trimmed', () => {
-		expect(normalizeFavoriteClusterUrl('  https://mycluster  ')).toBe('https://mycluster');
-	});
-
-	it('empty input → empty string', () => {
-		expect(normalizeFavoriteClusterUrl('')).toBe('');
-	});
-
-	it('multiple trailing slashes are removed', () => {
-		expect(normalizeFavoriteClusterUrl('https://mycluster///')).toBe('https://mycluster');
-	});
-});
-
 // ── ConnectionService ─────────────────────────────────────────────────────────
 
 function makeMockHost(overrides: Partial<Record<string, any>> = {}) {
@@ -193,6 +169,7 @@ function makeMockHost(overrides: Partial<Record<string, any>> = {}) {
 		formatQueryExecutionErrorForUser: () => 'error',
 		normalizeClusterUrlKey: (url: string) => url.toLowerCase(),
 		getCachedSchemaFromDisk: overrides.getCachedSchemaFromDisk ?? (async () => undefined),
+		getKustoFavorites: overrides.getKustoFavorites ?? (() => overrides.favorites ?? []),
 		_globalState: globalState,
 	};
 }
@@ -231,7 +208,6 @@ describe('ConnectionService — shared privacy snapshot readiness', () => {
 		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'connectionsData', leaveNoTraceClusters: ['cluster'], leaveNoTraceGloballyBlocked: false,
 		}));
-		service.dispose();
 	});
 
 	it('holds canonical policy admission through connectionsData delivery', async () => {
@@ -272,7 +248,6 @@ describe('ConnectionService — shared privacy snapshot readiness', () => {
 		await publish;
 		expect(lockHeld).toBe(false);
 		expect((host as any).postKustoPublication).toHaveBeenCalledOnce();
-		service.dispose();
 	});
 
 	it('retries a rejected correlated policy snapshot with the same request ID and fresh admission', async () => {
@@ -307,7 +282,6 @@ describe('ConnectionService — shared privacy snapshot readiness', () => {
 			expect.objectContaining({ policyRequestId: 'policy-request-retry', leaveNoTraceClusters: ['first-policy'] }),
 			expect.objectContaining({ policyRequestId: 'policy-request-retry', leaveNoTraceClusters: ['second-policy'] }),
 		]);
-		service.dispose();
 	});
 
 	it('captures connection identity and account partition only after asynchronous snapshot refresh', async () => {
@@ -341,7 +315,6 @@ describe('ConnectionService — shared privacy snapshot readiness', () => {
 			})],
 		}));
 		expect(JSON.stringify(postMessage.mock.calls)).not.toContain('https://old.kusto.windows.net');
-		service.dispose();
 	});
 });
 
@@ -1165,162 +1138,6 @@ describe('ConnectionService — database request identity', () => {
 	});
 });
 
-describe('ConnectionService — getFavorites', () => {
-	it('returns empty array when no favorites stored', () => {
-		const host = makeMockHost();
-		const svc = new ConnectionService(host as any);
-		expect(svc.getFavorites()).toEqual([]);
-	});
-
-	it('returns valid favorites from storage', async () => {
-		const host = makeMockHost({ connections: [{ id: 'c1', name: 'Test', clusterUrl: 'https://test' }] });
-		const favs = [{ name: 'My Fav', connectionId: 'c1', clusterUrl: 'https://test', database: 'db1' }];
-		await host.context.globalState.update(STORAGE_KEYS.favorites, favs);
-		const svc = new ConnectionService(host as any);
-		const result = svc.getFavorites();
-		expect(result).toHaveLength(1);
-		expect(result[0]).toEqual(favs[0]);
-	});
-
-	it('skips invalid favorites (missing fields)', async () => {
-		const host = makeMockHost({ connections: [{ id: 'c1', name: 'Test', clusterUrl: 'https://test' }] });
-		const favs = [
-			{ name: 'Good', connectionId: 'c1', clusterUrl: 'https://test', database: 'db1' },
-			{ name: '', connectionId: 'c1', clusterUrl: 'https://test', database: 'db1' }, // empty name
-			{ connectionId: 'c1', clusterUrl: 'https://test', database: 'db1' }, // missing name
-			null,
-			42,
-		];
-		await host.context.globalState.update(STORAGE_KEYS.favorites, favs);
-		const svc = new ConnectionService(host as any);
-		const result = svc.getFavorites();
-		expect(result).toHaveLength(1);
-		expect(result[0].name).toBe('Good');
-	});
-});
-
-describe('ConnectionService — promptAddFavorite', () => {
-	const openFileClasses = [
-		{ id: 'kqlx', label: '.kqlx', supportsManySections: true },
-		{ id: 'plain-kql', label: 'plain .kql', supportsManySections: false },
-		{ id: 'plain-csl', label: 'plain .csl', supportsManySections: false },
-		{ id: 'kql-sidecar', label: '.kql + .kql.json', supportsManySections: true },
-		{ id: 'csl-sidecar', label: '.csl + .csl.json', supportsManySections: true },
-	];
-	const oneSectionProviderPermutations = openFileClasses.flatMap(source =>
-		openFileClasses.map(target => ({
-			shape: 'one-section open files',
-			source,
-			target,
-			sourceSections: 1,
-			targetSections: 1,
-		}))
-	);
-	const manySectionProviderPermutations = openFileClasses
-		.filter(fileClass => fileClass.supportsManySections)
-		.flatMap(source => openFileClasses
-			.filter(fileClass => fileClass.supportsManySections)
-			.map(target => ({
-				shape: 'many-section open files',
-				source,
-				target,
-				sourceSections: 3,
-				targetSections: 3,
-			}))
-		);
-	const providerSyncPermutations = [...oneSectionProviderPermutations, ...manySectionProviderPermutations];
-
-	it('stores the favorite and notifies the originating provider', async () => {
-		const postMessage = vi.fn();
-		vi.spyOn(vscode.window, 'showInputBox').mockResolvedValue('Friendly Favorite' as any);
-		const host = makeMockHost({
-			postMessage,
-			connections: [{ id: 'c1', name: 'Cluster One', clusterUrl: 'https://cluster-one.kusto.windows.net' }],
-		});
-		const svc = new ConnectionService(host as any);
-
-		await svc.promptAddFavorite({
-			type: 'requestAddFavorite',
-			connectionId: 'c1',
-			clusterUrl: 'cluster-one.kusto.windows.net/',
-			database: 'Samples',
-			boxId: 'query_origin',
-		});
-
-		expect(host._globalState.get(STORAGE_KEYS.favorites)).toEqual([
-			{ name: 'Friendly Favorite', connectionId: 'c1', clusterUrl: 'https://cluster-one.kusto.windows.net', database: 'Samples', accountPartition: 'test-partition' },
-		]);
-		expect(postMessage).toHaveBeenCalledWith({
-			type: 'favoritesData',
-			boxId: 'query_origin',
-			favorites: [
-				{ name: 'Friendly Favorite', connectionId: 'c1', clusterUrl: 'https://cluster-one.kusto.windows.net', database: 'Samples' },
-			],
-		});
-	});
-
-	it('does not assign an A favorite to B when identity changes while the prompt is open', async () => {
-		const connection = { id: 'c1', name: 'Cluster One', clusterUrl: 'https://cluster-one.kusto.windows.net' };
-		let partition = 'partition-a';
-		const picked = deferred<string | undefined>();
-		vi.spyOn(vscode.window, 'showInputBox').mockReturnValue(picked.promise as any);
-		const host = makeMockHost({
-			connections: [connection],
-			getAccountPartition: () => partition,
-		});
-		const svc = new ConnectionService(host as any);
-
-		const prompt = svc.promptAddFavorite({
-			type: 'requestAddFavorite', connectionId: 'c1', clusterUrl: connection.clusterUrl, database: 'SecretA', boxId: 'query_1',
-		});
-		await Promise.resolve();
-		partition = 'partition-b';
-		picked.resolve('A favorite');
-		await prompt;
-
-		expect(host._globalState.get(STORAGE_KEYS.favorites)).toBeUndefined();
-	});
-
-	it.each(providerSyncPermutations)(
-		'notifies already-open $target.label target when $source.label source changes favorites ($shape, source sections=$sourceSections, target sections=$targetSections)',
-		async ({ source, target, shape, sourceSections, targetSections }) => {
-		const sharedGlobalState = new Map<string, any>();
-		const originatingPostMessage = vi.fn();
-		const otherOpenProviderPostMessage = vi.fn();
-		const key = `${shape}-${source.id}-to-${target.id}-${sourceSections}-${targetSections}`;
-		const favoriteName = `Cross File Favorite ${key}`;
-		const clusterUrl = `cross-file-${source.id}-to-${target.id}-${sourceSections}-${targetSections}.kusto.windows.net`;
-		const connectionId = `connection-${key}`;
-		const database = `CrossDb${sourceSections}${targetSections}`;
-		vi.spyOn(vscode.window, 'showInputBox').mockResolvedValue(favoriteName as any);
-		const connections = [{ id: connectionId, name: key, clusterUrl: `https://${clusterUrl}` }];
-		const originatingHost = makeMockHost({ postMessage: originatingPostMessage, globalState: sharedGlobalState, connections });
-		const otherOpenProviderHost = makeMockHost({ postMessage: otherOpenProviderPostMessage, globalState: sharedGlobalState, connections });
-		const originatingService = new ConnectionService(originatingHost as any);
-		const otherOpenService = new ConnectionService(otherOpenProviderHost as any);
-
-		await originatingService.promptAddFavorite({
-			type: 'requestAddFavorite',
-			connectionId,
-			clusterUrl,
-			database,
-			boxId: 'query_origin',
-		});
-		const favorite = { name: favoriteName, connectionId, clusterUrl: `https://${clusterUrl}`, database };
-
-		expect(otherOpenService.getFavorites()).toEqual([favorite]);
-		expect(originatingPostMessage).toHaveBeenCalledWith({
-			type: 'favoritesData',
-			boxId: 'query_origin',
-			favorites: [favorite],
-		});
-		expect(otherOpenProviderPostMessage).toHaveBeenCalledWith({
-			type: 'favoritesData',
-			favorites: [favorite],
-		});
-	});
-});
-
 describe('ConnectionService — getCachedDatabases', () => {
 	it('returns empty object when nothing cached', () => {
 		const host = makeMockHost();
@@ -1412,10 +1229,8 @@ describe('ConnectionService — plain-file schema inference', () => {
 			connections,
 			getAccountPartition: (connection: { id: string }) => `${connection.id}-partition`,
 			getCachedSchemaFromDisk: async () => ({ schema: { tables: ['SharedTable'], functions: [] } }),
+			favorites: [{ name: 'Guest favorite', connectionId: 'guest', clusterUrl, database: 'SharedDb' }],
 		});
-		await host.context.globalState.update(STORAGE_KEYS.favorites, [
-			{ name: 'Guest favorite', connectionId: 'guest', clusterUrl, database: 'SharedDb' },
-		]);
 		const cache = new KustoConnectionCache(host.context as any);
 		await cache.setDatabases('home', 'home-partition', ['SharedDb']);
 		await cache.setDatabases('guest', 'guest-partition', ['SharedDb']);
@@ -1427,41 +1242,6 @@ describe('ConnectionService — plain-file schema inference', () => {
 			authorityId: 'resource.onmicrosoft.com',
 			connectionIdHint: 'guest',
 		});
-	});
-});
-
-describe('ConnectionService — removeFavorite', () => {
-	it('removes matching favorite', async () => {
-		const postMessage = () => {};
-		const host = makeMockHost({
-			postMessage,
-			connections: [
-				{ id: 'keep', name: 'Keep', clusterUrl: 'https://keep' },
-				{ id: 'remove', name: 'Remove', clusterUrl: 'https://remove' },
-			],
-		});
-		const favs = [
-			{ name: 'Keep', connectionId: 'keep', clusterUrl: 'https://keep', database: 'db' },
-			{ name: 'Remove', connectionId: 'remove', clusterUrl: 'https://remove', database: 'db' },
-		];
-		await host.context.globalState.update(STORAGE_KEYS.favorites, favs);
-		const svc = new ConnectionService(host as any);
-		await svc.removeFavorite('remove', 'db');
-		const result = svc.getFavorites();
-		expect(result).toHaveLength(1);
-		expect(result[0].name).toBe('Keep');
-	});
-
-	it('does nothing when connection ID is empty', async () => {
-		const host = makeMockHost();
-		const svc = new ConnectionService(host as any);
-		await svc.removeFavorite('', 'db'); // should not throw
-	});
-
-	it('does nothing when database is empty', async () => {
-		const host = makeMockHost();
-		const svc = new ConnectionService(host as any);
-		await svc.removeFavorite('c1', ''); // should not throw
 	});
 });
 
