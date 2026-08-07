@@ -62,7 +62,7 @@ import { EmbeddedTutorialWebviewHost, EmbeddedTutorialWebviewRegistry } from './
 import { perfMark } from './perfTrace';
 import { getWorkbenchLogger, type WorkbenchLogger } from './workbenchLogger';
 import type { FileOpenTrace } from './fileOpenTrace';
-import { getEditingPreferencesData, setEditingPreference } from './editingPreferences';
+import { getEditingPreferencesData } from './editingPreferences';
 import { QueryRunCoordinator } from './queryRunCoordinator';
 import { KustoExecutionCoordinator, type KustoExecutionLease } from './kustoExecutionCoordinator';
 import { hasKustoCopilotRequestIdentity, kustoCopilotRequestIdentityEquals, type KustoComparisonRunIdentity, type KustoCopilotRequestIdentity, type KustoDispatchIdentity, type KustoExecutionProducer, type KustoExecutionRequestIdentity, type KustoExecutionStarted, type KustoSectionExecutionOutcome, type KustoSectionExecutionTarget, type PreparedComparisonSection } from '../shared/kustoExecution';
@@ -118,6 +118,10 @@ import {
 	HostEditorCursorStatusApplicationHandler,
 	type EditorCursorStatusApplicationHandler,
 } from './editorCursorStatusApplicationHandler';
+import {
+	HostEditingPreferencesApplicationHandler,
+	type EditingPreferencesApplicationHandler,
+} from './editingPreferencesApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -217,6 +221,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly cachedValuesOpenApplication: CachedValuesOpenApplicationHandler;
 	readonly copilotAgentOpenApplication: CopilotAgentOpenApplicationHandler;
 	readonly editorCursorStatusApplication: EditorCursorStatusApplicationHandler;
+	readonly editingPreferencesApplication: EditingPreferencesApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -631,6 +636,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		cachedValuesOpenApplication?: CachedValuesOpenApplicationHandler,
 		copilotAgentOpenApplication?: CopilotAgentOpenApplicationHandler,
 		editorCursorStatusApplication?: EditorCursorStatusApplicationHandler,
+		editingPreferencesApplication?: EditingPreferencesApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -673,6 +679,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			?? new HostEditorCursorStatusApplicationHandler({
 				statusBar: editorCursorStatusBar,
 				extensionMode: this.context.extensionMode,
+				postMessage: message => this.postMessage(message),
+			});
+		this.editingPreferencesApplication = editingPreferencesApplication
+			?? new HostEditingPreferencesApplicationHandler({
+				context: this.context,
+				getPublisher: () => toolOrchestrator,
 				postMessage: message => this.postMessage(message),
 			});
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
@@ -1066,6 +1078,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 			return;
 		}
+		const editingPreferencesApplicationMessage = this.editingPreferencesApplication?.handleMessage(message);
+		if (editingPreferencesApplicationMessage) {
+			await editingPreferencesApplicationMessage;
+			return;
+		}
 		switch (message.type) {
 			case 'kustoSectionOpen':
 				this.kustoExecutionCoordinator.openSection(message.boxId, message.sectionInstanceId);
@@ -1393,15 +1410,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'promptImportConnectionsXml':
 				await this.connection.promptImportConnectionsXml(message.boxId);
-				return;
-			case 'setCaretDocsEnabled':
-				await this.updateEditingPreference(STORAGE_KEYS.caretDocsEnabled, !!message.enabled);
-				return;
-			case 'setAutoTriggerAutocompleteEnabled':
-				await this.updateEditingPreference(STORAGE_KEYS.autoTriggerAutocompleteEnabled, !!message.enabled);
-				return;
-			case 'setCopilotInlineCompletionsEnabled':
-				await this.updateEditingPreference(STORAGE_KEYS.copilotInlineCompletionsEnabled, !!message.enabled);
 				return;
 			case 'requestCopilotInlineCompletion':
 				if (message.flavor === 'sql') {
@@ -1989,18 +1997,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		);
 	}
 
-	private async updateEditingPreference(
-		key: typeof STORAGE_KEYS.caretDocsEnabled | typeof STORAGE_KEYS.autoTriggerAutocompleteEnabled | typeof STORAGE_KEYS.copilotInlineCompletionsEnabled,
-		enabled: boolean,
-	): Promise<void> {
-		const preferences = await setEditingPreference(this.context, key, enabled);
-		if (toolOrchestrator) {
-			await toolOrchestrator.postToAllWebviews(preferences);
-		} else {
-			await this.postMessage(preferences);
-		}
-	}
-
 	public async inferClusterDatabaseForKqlQuery(
 		queryText: string
 	): Promise<{ clusterUrl: string; database: string; authorityId?: string; connectionIdHint: string } | undefined> {
@@ -2098,6 +2094,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.sqlLifecycle.dispose();
 			this._comparisonOwnerByBoxId.clear();
 			this.editorCursorStatusApplication.dispose();
+			this.editingPreferencesApplication.dispose();
 			this.kustoExecutionCoordinator.dispose();
 			this.cancelAllRunningQueries();
 			this.kustoClient.dispose();

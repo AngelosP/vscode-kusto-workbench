@@ -108,6 +108,7 @@ type HostMessageSenderExtraction = Readonly<{
 
 const HOST_MESSAGE_ARGUMENT_BY_METHOD = new Map<string, number>([
 	['postMessage', 0],
+	['postToAllWebviews', 0],
 	['postMessageContained', 0],
 	['postMessageRequired', 0],
 	['postMessageRequiredContained', 0],
@@ -238,7 +239,10 @@ function extractPostMessageTypes(relativePath: string): HostMessageSenderExtract
 			let argumentIndex: number | undefined;
 			if (ts.isPropertyAccessExpression(node.expression)) {
 				method = node.expression.name.text;
-				if (node.expression.expression.kind === ts.SyntaxKind.ThisKeyword) {
+				const receiver = node.expression.expression.getText(sourceFile);
+				if (node.expression.expression.kind === ts.SyntaxKind.ThisKeyword || receiver === 'this.options') {
+					argumentIndex = HOST_MESSAGE_ARGUMENT_BY_METHOD.get(method);
+				} else if (method === 'postToAllWebviews') {
 					argumentIndex = HOST_MESSAGE_ARGUMENT_BY_METHOD.get(method);
 				} else if (method === 'postMessage' && /webview/i.test(node.expression.expression.getText(sourceFile))) {
 					argumentIndex = 0;
@@ -282,6 +286,7 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 		extractPostMessageTypes('src/host/informationNotificationApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/cachedValuesOpenApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/editorCursorStatusApplicationHandler.ts'),
+		extractPostMessageTypes('src/host/editingPreferencesApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/kustoExecutionCoordinator.ts'),
 		extractPostMessageTypes('src/host/sql/sqlEditorLifecycleCoordinator.ts'),
 		extractPostMessageTypes('src/host/kqlxEditorProvider.ts'),
@@ -296,28 +301,38 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 }
 
 const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
+	'src/host/artifactCsvSaveApplicationHandler.ts::postMessage::postMessage::49:10',
+	'src/host/controlCommandSyntaxApplicationHandler.ts::postMessage::postMessage::50:3',
+	'src/host/dashboardApplicationHandler.ts::postMessage::postMessage::102:10',
+	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postMessage::68:10',
+	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postToAllWebviews::66:10',
+	'src/host/editorCursorStatusApplicationHandler.ts::postMessage::postMessage::83:10',
 	'src/host/kqlCompatEditorProvider.ts::requestFinalPersist::postMessage::620:57',
 	'src/host/kqlxEditorProvider.ts::deliverWebviewMessage::postMessage::1233:34',
 	'src/host/kqlxEditorProvider.ts::postWebviewMessage::postMessage::1222:10',
 	'src/host/kqlxEditorProvider.ts::resolveCustomTextEditor::postMessage::3608:19',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::405:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::637:28',
+	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::453:33',
+	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::89:10',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::410:27',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::643:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::647:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::652:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::655:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::649:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::653:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::658:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::661:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::676:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::691:29',
-	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::828:26',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::2044:21',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::1968:21',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::1987:22',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1940:21',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::1952:21',
-	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::2000:10',
-	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::553:25',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::664:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::667:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::682:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::688:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::703:29',
+	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::840:26',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::2040:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::1976:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::1995:22',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1948:21',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::1960:21',
+	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::558:25',
+	'src/host/querySharingApplicationHandler.ts::postMessage::postMessage::32:10',
+	'src/host/resourceUriApplicationHandler.ts::postMessage::postMessage::50:3',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1741:13',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1745:10',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageContained::postMessageRequiredContained::2013:8',
@@ -328,6 +343,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::publishOwnerChangeWithRetry::postMessageRequiredContained::1766:27',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::replayOwnerChange::postMessageRequiredContained::1795:14',
 	'src/host/sqlCompatEditorProvider.ts::requestFinalPersist::postMessage::488:57',
+	'src/host/urlContentApplicationHandler.ts::postMessage::postMessage::79:3',
 ] as const;
 
 function extractDataTypeComparisons(relativePath: string): string[] {
