@@ -130,6 +130,10 @@ import {
 	HostKustoConnectionOnboardingApplicationHandler,
 	type KustoConnectionOnboardingApplicationHandler,
 } from './kustoConnectionOnboardingApplicationHandler';
+import {
+	HostSqlConnectionOnboardingApplicationHandler,
+	type SqlConnectionOnboardingApplicationHandler,
+} from './sqlConnectionOnboardingApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -232,6 +236,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly editingPreferencesApplication: EditingPreferencesApplicationHandler;
 	readonly kustoConnectionIntakeApplication: KustoConnectionIntakeApplicationHandler;
 	readonly kustoConnectionOnboardingApplication: KustoConnectionOnboardingApplicationHandler;
+	readonly sqlConnectionOnboardingApplication: SqlConnectionOnboardingApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -649,6 +654,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		editingPreferencesApplication?: EditingPreferencesApplicationHandler,
 		kustoConnectionIntakeApplication?: KustoConnectionIntakeApplicationHandler,
 		kustoConnectionOnboardingApplication?: KustoConnectionOnboardingApplicationHandler,
+		sqlConnectionOnboardingApplication?: SqlConnectionOnboardingApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -723,6 +729,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				postMessage: message => this.postMessage(message),
 				refreshConnections: () => this.sendConnectionsData(),
 				output: this.output,
+			});
+		this.sqlConnectionOnboardingApplication = sqlConnectionOnboardingApplication
+			?? new HostSqlConnectionOnboardingApplicationHandler({
+				connectionManager: this.sqlConnectionManager,
+				globalState: this.context.globalState,
+				postMessage: message => this.postMessage(message),
 			});
 		this.schema = new SchemaService(this);
 		this.sqlLifecycle = new SqlEditorLifecycleCoordinator({
@@ -1123,6 +1135,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const kustoConnectionOnboardingApplicationMessage = this.kustoConnectionOnboardingApplication?.handleMessage(message);
 		if (kustoConnectionOnboardingApplicationMessage) {
 			await kustoConnectionOnboardingApplicationMessage;
+			return;
+		}
+		const sqlConnectionOnboardingApplicationMessage = this.sqlConnectionOnboardingApplication?.handleMessage(message);
+		if (sqlConnectionOnboardingApplicationMessage) {
+			await sqlConnectionOnboardingApplicationMessage;
 			return;
 		}
 		switch (message.type) {
@@ -1600,12 +1617,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 						}
 					}
 				}
-				return;
-			case 'promptAddSqlConnection':
-				await this.promptAddSqlConnection(message.boxId);
-				return;
-			case 'addSqlConnection':
-				await this.addSqlConnectionFromWebview(message);
 				return;
 			case 'testSetSqlAuthOverride':
 				if (this.context.extensionMode === vscode.ExtensionMode.Production) {
@@ -2119,6 +2130,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.editingPreferencesApplication.dispose();
 			this.kustoConnectionIntakeApplication.dispose();
 			this.kustoConnectionOnboardingApplication.dispose();
+			this.sqlConnectionOnboardingApplication.dispose();
 			this.kustoExecutionCoordinator.dispose();
 			this.cancelAllRunningQueries();
 			this.kustoClient.dispose();
@@ -2919,105 +2931,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					return publish(this.sanitizeSqlPrincipalOwnedResultsFromSnapshot(locallySanitized, sqlSnapshot));
 				});
 			});
-		});
-	}
-
-	private async promptAddSqlConnection(boxId?: string): Promise<void> {
-		const serverUrl = await vscode.window.showInputBox({
-			prompt: 'SQL Server address',
-			placeHolder: 'myserver.database.windows.net',
-			ignoreFocusOut: true,
-		});
-		if (!serverUrl) {
-			return;
-		}
-
-		const authType = await vscode.window.showQuickPick(
-			[
-				{ label: 'Azure AD (default)', id: 'aad' },
-				{ label: 'SQL Login (username/password)', id: 'sql-login' },
-			],
-			{ placeHolder: 'Authentication type', ignoreFocusOut: true },
-		);
-		if (!authType) {
-			return;
-		}
-
-		let username: string | undefined;
-		let password: string | undefined;
-		if (authType.id === 'sql-login') {
-			username = await vscode.window.showInputBox({
-				prompt: 'Username',
-				placeHolder: 'sa',
-				ignoreFocusOut: true,
-			});
-			if (!username) {
-				return;
-			}
-			password = await vscode.window.showInputBox({
-				prompt: 'Password',
-				password: true,
-				ignoreFocusOut: true,
-			});
-			if (password === undefined) {
-				return;
-			}
-		}
-
-		const name = (await vscode.window.showInputBox({
-			prompt: 'Connection name (optional)',
-			placeHolder: serverUrl.trim(),
-			ignoreFocusOut: true,
-		})) || '';
-
-		const newConn = await this.sqlConnectionManager.addConnection(
-			{
-				name: name.trim() || serverUrl.trim(),
-				dialect: 'mssql',
-				serverUrl: serverUrl.trim(),
-				authType: authType.id,
-				username,
-			},
-			password,
-		);
-
-		await this.context.globalState.update('sql.lastConnectionId', newConn.id);
-
-		this.postMessage({
-			type: 'sqlConnectionAdded',
-			boxId,
-			connectionId: newConn.id,
-			connections: this.sqlConnectionManager.getConnections(),
-		});
-	}
-
-	private async addSqlConnectionFromWebview(
-		message: Extract<IncomingWebviewMessage, { type: 'addSqlConnection' }>
-	): Promise<void> {
-		const serverUrl = String(message.serverUrl || '').trim();
-		if (!serverUrl) return;
-		const name = String(message.name || '').trim() || serverUrl;
-
-		const newConn = await this.sqlConnectionManager.addConnection(
-			{
-				name,
-				dialect: message.dialect || 'mssql',
-				serverUrl,
-				authType: message.authType || 'aad',
-				username: message.username,
-				port: message.port,
-				database: message.database,
-			},
-			message.password,
-		);
-
-		await this.context.globalState.update('sql.lastConnectionId', newConn.id);
-
-		this.postMessage({
-			type: 'sqlConnectionAdded',
-			boxId: message.boxId,
-			connectionId: newConn.id,
-			connections: this.sqlConnectionManager.getConnections(),
 		});
 	}
 
