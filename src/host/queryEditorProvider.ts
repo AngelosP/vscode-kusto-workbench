@@ -126,6 +126,10 @@ import {
 	HostKustoConnectionIntakeApplicationHandler,
 	type KustoConnectionIntakeApplicationHandler,
 } from './kustoConnectionIntakeApplicationHandler';
+import {
+	HostKustoConnectionOnboardingApplicationHandler,
+	type KustoConnectionOnboardingApplicationHandler,
+} from './kustoConnectionOnboardingApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -227,6 +231,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly editorCursorStatusApplication: EditorCursorStatusApplicationHandler;
 	readonly editingPreferencesApplication: EditingPreferencesApplicationHandler;
 	readonly kustoConnectionIntakeApplication: KustoConnectionIntakeApplicationHandler;
+	readonly kustoConnectionOnboardingApplication: KustoConnectionOnboardingApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -643,6 +648,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		editorCursorStatusApplication?: EditorCursorStatusApplicationHandler,
 		editingPreferencesApplication?: EditingPreferencesApplicationHandler,
 		kustoConnectionIntakeApplication?: KustoConnectionIntakeApplicationHandler,
+		kustoConnectionOnboardingApplication?: KustoConnectionOnboardingApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -704,6 +710,20 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		});
 		this.kqlLanguageHost = new KqlLanguageServiceHost(this.connectionManager, this.context);
 		this.connection = new ConnectionService(this);
+		this.kustoConnectionOnboardingApplication = kustoConnectionOnboardingApplication
+			?? new HostKustoConnectionOnboardingApplicationHandler({
+				connectionManager: this.connectionManager,
+				authPreferences: KustoAuthPreferenceService.getInstance(this.context),
+				kustoClient: this.kustoClient,
+				saveLastSelection: (connectionId, database) => this.connection.saveLastSelection(connectionId, database),
+				getLastSelection: () => ({
+					lastConnectionId: this.connection.getLastConnectionId(),
+					lastDatabase: this.connection.getLastDatabase(),
+				}),
+				postMessage: message => this.postMessage(message),
+				refreshConnections: () => this.sendConnectionsData(),
+				output: this.output,
+			});
 		this.schema = new SchemaService(this);
 		this.sqlLifecycle = new SqlEditorLifecycleCoordinator({
 			context: this.context,
@@ -1098,6 +1118,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const kustoConnectionIntakeApplicationMessage = this.kustoConnectionIntakeApplication?.handleMessage(message);
 		if (kustoConnectionIntakeApplicationMessage) {
 			await kustoConnectionIntakeApplicationMessage;
+			return;
+		}
+		const kustoConnectionOnboardingApplicationMessage = this.kustoConnectionOnboardingApplication?.handleMessage(message);
+		if (kustoConnectionOnboardingApplicationMessage) {
+			await kustoConnectionOnboardingApplicationMessage;
 			return;
 		}
 		switch (message.type) {
@@ -1687,15 +1712,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'requestCrossClusterSchema':
 				await this.schema.handleCrossClusterSchemaRequest(message.clusterName, message.database, message.boxId, message.requestToken, message.requestSource, message.traceId);
 				return;
-			case 'promptAddConnection':
-				await this.connection.promptAddConnection(message.boxId);
-				return;
-			case 'addConnection':
-				await this.connection.addConnectionFromWebview(message);
-				return;
-			case 'testKustoConnection':
-				await this.connection.testConnectionFromWebview(message);
-				return;
 			case 'kqlLanguageRequest':
 				await this.handleKqlLanguageRequest(message);
 				return;
@@ -2102,6 +2118,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.editorCursorStatusApplication.dispose();
 			this.editingPreferencesApplication.dispose();
 			this.kustoConnectionIntakeApplication.dispose();
+			this.kustoConnectionOnboardingApplication.dispose();
 			this.kustoExecutionCoordinator.dispose();
 			this.cancelAllRunningQueries();
 			this.kustoClient.dispose();

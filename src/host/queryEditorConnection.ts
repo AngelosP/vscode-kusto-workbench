@@ -6,7 +6,7 @@ import { extractKqlSchemaMatchTokens, scoreSchemaMatch } from './kqlSchemaInfere
 import { kustoClusterKey, kustoDatabaseKey } from '../shared/kustoClusterUrls';
 import { schemaCacheKey } from './schemaCache';
 import { KustoConnectionCache } from './kustoConnectionCache';
-import { KustoAuthPreferenceService, type KustoAccountPreference } from './kustoAuthPreferenceService';
+import { KustoAuthPreferenceService } from './kustoAuthPreferenceService';
 import { getKustoConnectionIdentityKey, normalizeKustoAuthorityId } from '../shared/kustoAuth';
 import { filterKustoFavoritesForActivePrincipals, mergeKustoFavoritesForActivePrincipals, migrateKustoFavoritesWithStatus } from './connectionManagerFavorites';
 import {
@@ -144,7 +144,6 @@ export interface ConnectionServiceHost {
 	formatQueryExecutionErrorForUser(error: unknown, connection: KustoConnection, database?: string): string;
 	normalizeClusterUrlKey(url: string): string;
 	getCachedSchemaFromDisk(cacheKey: string): Promise<CachedSchemaEntry | undefined>;
-	refreshConnectionsData?(): Promise<void>;
 }
 
 
@@ -997,129 +996,6 @@ export class ConnectionService {
 			if (applied) return;
 		}
 		throw new Error('Kusto policy snapshot was not applied by the webview.');
-	}
-
-	// ── Connection CRUD ──
-
-	async promptAddConnection(boxId?: string): Promise<void> {
-		this.host.postMessage({ type: 'openKustoAddConnectionDialog', boxId });
-	}
-
-	async addConnectionFromWebview(data: { name: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }): Promise<void> {
-		let clusterUrl = String(data.clusterUrl || '').trim();
-		if (!clusterUrl) return;
-		clusterUrl = ensureHttpsUrl(clusterUrl);
-
-		const name = String(data.name || '').trim() || clusterUrl;
-		const database = String(data.database || '').trim() || undefined;
-		const accountId = String(data.accountId || '').trim();
-		let authorityId: string | undefined;
-		try {
-			authorityId = normalizeKustoAuthorityId(data.authorityId);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			this.host.postMessage({ type: 'kustoConnectionMutationResult', boxId: data.boxId, success: false, message });
-			return;
-		}
-
-		try {
-			const newConn = await this.host.connectionManager.addConnection({ name, clusterUrl, database, authorityId });
-			if (accountId) {
-				const account = (await this.authPreferences.getAccounts()).find(candidate => candidate.id === accountId) ?? { id: accountId, label: accountId };
-				await this.authPreferences.setExplicitAccount(newConn.id, account);
-			}
-			await this.saveLastSelection(newConn.id, newConn.database);
-			await this.host.refreshConnectionsData?.();
-
-			this.host.postMessage({
-				type: 'connectionAdded',
-				boxId: data.boxId,
-				connectionId: newConn.id,
-				lastConnectionId: this.lastConnectionId,
-				lastDatabase: this.lastDatabase,
-			});
-		} catch (error) {
-			this.host.postMessage({
-				type: 'kustoConnectionMutationResult',
-				boxId: data.boxId,
-				success: false,
-				message: error instanceof Error ? error.message : String(error),
-			});
-		}
-	}
-
-	async testConnectionFromWebview(data: { name?: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }): Promise<void> {
-		const traceId = createDatabaseListTraceId();
-		let clusterUrl = String(data.clusterUrl || '').trim();
-		if (!clusterUrl) {
-			this.traceDatabaseList(traceId, 'test.invalid-request', { reason: 'missing-cluster-url' });
-			this.host.postMessage({ type: 'kustoConnectionTestResult', boxId: data.boxId, success: false, message: 'Enter a cluster URL before testing.' });
-			return;
-		}
-		clusterUrl = ensureHttpsUrl(clusterUrl);
-
-		let connection: KustoConnection;
-		try {
-			connection = {
-				id: `draft:${Date.now()}:${Math.random().toString(36).slice(2)}`,
-				name: String(data.name || '').trim() || clusterUrl,
-				clusterUrl,
-				database: String(data.database || '').trim() || undefined,
-				authorityId: normalizeKustoAuthorityId(data.authorityId),
-			};
-		} catch (error) {
-			this.host.postMessage({ type: 'kustoConnectionTestResult', boxId: data.boxId, success: false, message: error instanceof Error ? error.message : String(error) });
-			return;
-		}
-
-		this.traceDatabaseList(traceId, 'test.start', { connectionId: connection.id, boxId: data.boxId });
-		this.host.postMessage({ type: 'kustoConnectionTestStarted', boxId: data.boxId });
-		try {
-			const accountId = String(data.accountId || '').trim();
-			const preference: KustoAccountPreference = accountId ? { mode: 'explicit', accountId } : { mode: 'automatic' };
-			const operation = () => this.host.kustoClient.getDatabases(connection, true, {
-					allowInteractive: true,
-					traceId,
-					source: 'query-editor-connection-test',
-					persistIdentity: false,
-				});
-			const transient = (this.host.kustoClient as unknown as { withTransientAuthPreference?: <T>(candidate: KustoConnection, authPreference: KustoAccountPreference, callback: () => Promise<T>) => Promise<T> }).withTransientAuthPreference;
-			const databases = typeof transient === 'function'
-				? await transient.call(this.host.kustoClient, connection, preference, operation)
-				: await operation();
-			const databaseList = (Array.isArray(databases) ? databases : []).map(d => String(d || '').trim()).filter(Boolean);
-			this.traceDatabaseList(traceId, 'test.success', { connectionId: connection.id, databaseCount: databaseList.length });
-			this.host.postMessage(databaseList.length === 0 ? {
-				type: 'kustoConnectionTestResult',
-				boxId: data.boxId,
-				success: false,
-				warning: true,
-				message: 'Connected, but no databases are visible. Check the Authority / Tenant ID and account.',
-				databases: databaseList,
-			} : {
-				type: 'kustoConnectionTestResult',
-				boxId: data.boxId,
-				success: true,
-				message: `Connected successfully! Found ${databaseList.length} database(s).`,
-				databases: databaseList,
-			});
-		} catch (error) {
-			const errorMsg = error instanceof Error ? error.message : String(error);
-			const isAuthError = this.host.kustoClient.isAuthenticationError(error);
-			this.traceDatabaseList(traceId, 'test.failed', {
-				connectionId: connection.id,
-				boxId: data.boxId,
-				isAuthError,
-				...getDatabaseListErrorDetails(error),
-			});
-			this.host.postMessage({
-				type: 'kustoConnectionTestResult',
-				boxId: data.boxId,
-				success: false,
-				message: isAuthError ? 'Authentication failed. Please sign in when prompted.' : `Connection failed: ${errorMsg}`,
-				isAuthError,
-			});
-		}
 	}
 
 	// ── Schema inference for .kql/.csl files ──

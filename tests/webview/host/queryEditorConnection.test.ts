@@ -1465,63 +1465,6 @@ describe('ConnectionService — removeFavorite', () => {
 	});
 });
 
-describe('ConnectionService — add/test connection UI routing', () => {
-	it('routes promptAddConnection back to the canonical webview dialog', async () => {
-		const postMessage = vi.fn();
-		const host = makeMockHost({ postMessage });
-		const svc = new ConnectionService(host as any);
-
-		await svc.promptAddConnection('query_1');
-
-		expect(postMessage).toHaveBeenCalledWith({ type: 'openKustoAddConnectionDialog', boxId: 'query_1' });
-	});
-
-	it('tests a draft connection without saving it', async () => {
-		const postMessage = vi.fn();
-		const getDatabases = vi.fn(async () => ['Samples', 'Telemetry']);
-		const host = makeMockHost({ postMessage, getDatabases });
-		const svc = new ConnectionService(host as any);
-
-		await svc.testConnectionFromWebview({ name: 'Draft', clusterUrl: 'draft.kusto.windows.net', database: 'Samples', boxId: 'query_1' });
-
-		expect(getDatabases).toHaveBeenCalledWith(expect.objectContaining({
-			id: expect.stringMatching(/^draft:/),
-			name: 'Draft',
-			clusterUrl: 'https://draft.kusto.windows.net',
-			database: 'Samples',
-		}), true, expect.objectContaining({
-			allowInteractive: true,
-			traceId: expect.any(String),
-			source: 'query-editor-connection-test',
-			persistIdentity: false,
-		}));
-		expect(postMessage).toHaveBeenNthCalledWith(1, { type: 'kustoConnectionTestStarted', boxId: 'query_1' });
-		expect(postMessage).toHaveBeenNthCalledWith(2, {
-			type: 'kustoConnectionTestResult',
-			boxId: 'query_1',
-			success: true,
-			message: 'Connected successfully! Found 2 database(s).',
-			databases: ['Samples', 'Telemetry'],
-		});
-	});
-
-	it.each(['add', 'test'] as const)('returns a terminal form error for malformed Authority during %s', async action => {
-		const postMessage = vi.fn();
-		const host = makeMockHost({ postMessage });
-		host.connectionManager.addConnection = vi.fn();
-		const svc = new ConnectionService(host as any);
-
-		if (action === 'add') {
-			await svc.addConnectionFromWebview({ clusterUrl: 'https://cluster.kusto.windows.net', authorityId: 'https://login.microsoftonline.com/tenant', boxId: 'query_1' });
-			expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'kustoConnectionMutationResult', boxId: 'query_1', success: false }));
-			expect(host.connectionManager.addConnection).not.toHaveBeenCalled();
-		} else {
-			await svc.testConnectionFromWebview({ clusterUrl: 'https://cluster.kusto.windows.net', authorityId: 'https://login.microsoftonline.com/tenant', boxId: 'query_1' });
-			expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'kustoConnectionTestResult', boxId: 'query_1', success: false }));
-		}
-	});
-});
-
 // ── migrateCachedDatabasesToClusterKeys ───────────────────────────────────────
 // Critical for preventing database cache loss during migration from connection-id
 // based keys to cluster-url based keys.
