@@ -179,6 +179,7 @@ export const window = {
 		dispose: () => {},
 	}),
 	showInputBox: () => Promise.resolve(undefined),
+	showOpenDialog: () => Promise.resolve(undefined),
 	showSaveDialog: () => Promise.resolve(undefined),
 	showInformationMessage: () => Promise.resolve(undefined),
 	showErrorMessage: () => Promise.resolve(undefined),

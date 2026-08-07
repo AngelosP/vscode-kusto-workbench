@@ -1522,54 +1522,6 @@ describe('ConnectionService — add/test connection UI routing', () => {
 	});
 });
 
-describe('ConnectionService — XML import resilience', () => {
-	it('imports a valid connection when an existing historical authority is malformed', async () => {
-		const connections: any[] = [
-			{ id: 'legacy', name: 'Legacy', clusterUrl: 'https://legacy.kusto.windows.net', authorityId: 'not a tenant' },
-		];
-		const addConnection = vi.fn(async (connection: any) => {
-			const added = { id: 'valid', ...connection };
-			connections.push(added);
-			return added;
-		});
-		const host = makeMockHost({ connections });
-		host.connectionManager.getConnections = () => connections;
-		host.connectionManager.addConnection = addConnection;
-		const service = new ConnectionService(host as any);
-
-		await service.importConnectionsFromXml([
-			{ name: 'Valid', clusterUrl: 'https://valid.kusto.windows.net', authorityId: 'resource.onmicrosoft.com' },
-		]);
-
-		expect(addConnection).toHaveBeenCalledWith(expect.objectContaining({
-			name: 'Valid',
-			clusterUrl: 'https://valid.kusto.windows.net',
-			authorityId: 'resource.onmicrosoft.com',
-		}));
-	});
-
-	it('skips a malformed imported authority and still adds the later valid connection', async () => {
-		const connections: any[] = [];
-		const addConnection = vi.fn(async (connection: any) => {
-			const added = { id: `added-${connections.length}`, ...connection };
-			connections.push(added);
-			return added;
-		});
-		const host = makeMockHost({ connections });
-		host.connectionManager.getConnections = () => connections;
-		host.connectionManager.addConnection = addConnection;
-		const service = new ConnectionService(host as any);
-
-		await service.importConnectionsFromXml([
-			{ name: 'Malformed', clusterUrl: 'https://bad.kusto.windows.net', authorityId: 'not a tenant' },
-			{ name: 'Valid', clusterUrl: 'https://valid.kusto.windows.net', authorityId: 'resource.onmicrosoft.com' },
-		]);
-
-		expect(addConnection).toHaveBeenCalledTimes(1);
-		expect(addConnection).toHaveBeenCalledWith(expect.objectContaining({ name: 'Valid', authorityId: 'resource.onmicrosoft.com' }));
-	});
-});
-
 // ── migrateCachedDatabasesToClusterKeys ───────────────────────────────────────
 // Critical for preventing database cache loss during migration from connection-id
 // based keys to cluster-url based keys.

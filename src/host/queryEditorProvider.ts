@@ -122,6 +122,10 @@ import {
 	HostEditingPreferencesApplicationHandler,
 	type EditingPreferencesApplicationHandler,
 } from './editingPreferencesApplicationHandler';
+import {
+	HostKustoConnectionIntakeApplicationHandler,
+	type KustoConnectionIntakeApplicationHandler,
+} from './kustoConnectionIntakeApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -222,6 +226,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly copilotAgentOpenApplication: CopilotAgentOpenApplicationHandler;
 	readonly editorCursorStatusApplication: EditorCursorStatusApplicationHandler;
 	readonly editingPreferencesApplication: EditingPreferencesApplicationHandler;
+	readonly kustoConnectionIntakeApplication: KustoConnectionIntakeApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -637,6 +642,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		copilotAgentOpenApplication?: CopilotAgentOpenApplicationHandler,
 		editorCursorStatusApplication?: EditorCursorStatusApplicationHandler,
 		editingPreferencesApplication?: EditingPreferencesApplicationHandler,
+		kustoConnectionIntakeApplication?: KustoConnectionIntakeApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -686,6 +692,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				context: this.context,
 				getPublisher: () => toolOrchestrator,
 				postMessage: message => this.postMessage(message),
+			});
+		this.kustoConnectionIntakeApplication = kustoConnectionIntakeApplication
+			?? new HostKustoConnectionIntakeApplicationHandler({
+				connectionManager: this.connectionManager,
+				postMessage: message => this.postMessage(message),
+				refreshConnections: () => this.sendConnectionsData(),
 			});
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
 			this.handleKustoAuthPreferenceChange(change);
@@ -1083,6 +1095,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await editingPreferencesApplicationMessage;
 			return;
 		}
+		const kustoConnectionIntakeApplicationMessage = this.kustoConnectionIntakeApplication?.handleMessage(message);
+		if (kustoConnectionIntakeApplicationMessage) {
+			await kustoConnectionIntakeApplicationMessage;
+			return;
+		}
 		switch (message.type) {
 			case 'kustoSectionOpen':
 				this.kustoExecutionCoordinator.openSection(message.boxId, message.sectionInstanceId);
@@ -1404,13 +1421,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'removeSqlFavorite':
 				await this.connection.removeSqlFavorite(message.connectionId, message.database);
 				return;
-			case 'addConnectionsForClusters':
-				await this.connection.addConnectionsForClusters(message.clusterUrls);
-				await this.sendConnectionsData();
-				return;
-			case 'promptImportConnectionsXml':
-				await this.connection.promptImportConnectionsXml(message.boxId);
-				return;
 			case 'requestCopilotInlineCompletion':
 				if (message.flavor === 'sql') {
 					try {
@@ -1676,10 +1686,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'requestCrossClusterSchema':
 				await this.schema.handleCrossClusterSchemaRequest(message.clusterName, message.database, message.boxId, message.requestToken, message.requestSource, message.traceId);
-				return;
-			case 'importConnectionsFromXml':
-				await this.connection.importConnectionsFromXml(message.connections);
-				await this.sendConnectionsData();
 				return;
 			case 'promptAddConnection':
 				await this.connection.promptAddConnection(message.boxId);
@@ -2095,6 +2101,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this._comparisonOwnerByBoxId.clear();
 			this.editorCursorStatusApplication.dispose();
 			this.editingPreferencesApplication.dispose();
+			this.kustoConnectionIntakeApplication.dispose();
 			this.kustoExecutionCoordinator.dispose();
 			this.cancelAllRunningQueries();
 			this.kustoClient.dispose();
