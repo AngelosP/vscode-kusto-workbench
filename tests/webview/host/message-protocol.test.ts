@@ -281,6 +281,7 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 		extractPostMessageTypes('src/host/copilotContentOpenApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/informationNotificationApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/cachedValuesOpenApplicationHandler.ts'),
+		extractPostMessageTypes('src/host/editorCursorStatusApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/kustoExecutionCoordinator.ts'),
 		extractPostMessageTypes('src/host/sql/sqlEditorLifecycleCoordinator.ts'),
 		extractPostMessageTypes('src/host/kqlxEditorProvider.ts'),
@@ -299,23 +300,24 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kqlxEditorProvider.ts::deliverWebviewMessage::postMessage::1233:34',
 	'src/host/kqlxEditorProvider.ts::postWebviewMessage::postMessage::1222:10',
 	'src/host/kqlxEditorProvider.ts::resolveCustomTextEditor::postMessage::3608:19',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::402:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::633:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::639:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::405:27',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::637:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::643:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::648:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::651:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::654:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::657:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::681:29',
-	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::816:26',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::2061:21',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::1985:21',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::2004:22',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1957:21',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::1969:21',
-	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::2017:10',
-	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::550:25',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::647:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::652:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::655:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::658:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::661:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::676:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::691:29',
+	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::828:26',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::2044:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::1968:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::1987:22',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1940:21',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::1952:21',
+	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::2000:10',
+	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::553:25',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1741:13',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1745:10',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageContained::postMessageRequiredContained::2013:8',
@@ -1108,6 +1110,11 @@ describe('Message Protocol Contract', () => {
 		it('keeps Copilot agent opening response-free', () => {
 			const extraction = extractPostMessageTypes('src/host/copilotAgentOpenApplicationHandler.ts');
 			expect(extraction).toEqual({ types: [], dynamicSites: [] });
+		});
+
+		it('extracts the development cursor-status snapshot response', () => {
+			const extraction = extractPostMessageTypes('src/host/editorCursorStatusApplicationHandler.ts');
+			expect(extraction.types).toContain('editorCursorStatusSnapshot');
 		});
 
 		it('every host→webview type has a handler case (or is known-unhandled)', () => {

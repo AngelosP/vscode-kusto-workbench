@@ -114,6 +114,10 @@ import {
 	HostCopilotAgentOpenApplicationHandler,
 	type CopilotAgentOpenApplicationHandler,
 } from './copilotAgentOpenApplicationHandler';
+import {
+	HostEditorCursorStatusApplicationHandler,
+	type EditorCursorStatusApplicationHandler,
+} from './editorCursorStatusApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -146,7 +150,6 @@ const SQL_COPILOT_PREFLIGHT_EXECUTION_ID = 'sql-copilot-owner-preflight';
 
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
-	private static cursorOwnerSequence = 0;
 	private static readonly activeProviders = new Set<QueryEditorProvider>();
 
 	private static activeProviderForTest(): QueryEditorProvider {
@@ -187,7 +190,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	private panel?: vscode.WebviewPanel;
 	private _panelDisposed = true;
-	private readonly cursorOwnerPrefix = `queryEditor:${++QueryEditorProvider.cursorOwnerSequence}:`;
 	readonly kustoClient: KustoQueryClient;
 	readonly output: WorkbenchLogger = getWorkbenchLogger();
 	readonly connection: ConnectionService;
@@ -214,6 +216,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly informationNotificationApplication: InformationNotificationApplicationHandler;
 	readonly cachedValuesOpenApplication: CachedValuesOpenApplicationHandler;
 	readonly copilotAgentOpenApplication: CopilotAgentOpenApplicationHandler;
+	readonly editorCursorStatusApplication: EditorCursorStatusApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -614,7 +617,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		readonly connectionManager: ConnectionManager,
 		readonly context: vscode.ExtensionContext,
 		private readonly sqlWorkbench: SqlWorkbenchService,
-		private readonly editorCursorStatusBar?: EditorCursorStatusBar,
+		editorCursorStatusBar?: EditorCursorStatusBar,
 		dashboardApplication?: DashboardApplicationHandler,
 		artifactCsvSaveApplication?: ArtifactCsvSaveApplicationHandler,
 		pythonExecutionApplication?: PythonExecutionApplicationHandler,
@@ -627,6 +630,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		informationNotificationApplication?: InformationNotificationApplicationHandler,
 		cachedValuesOpenApplication?: CachedValuesOpenApplicationHandler,
 		copilotAgentOpenApplication?: CopilotAgentOpenApplicationHandler,
+		editorCursorStatusApplication?: EditorCursorStatusApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -665,6 +669,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			?? new HostCachedValuesOpenApplicationHandler();
 		this.copilotAgentOpenApplication = copilotAgentOpenApplication
 			?? new HostCopilotAgentOpenApplicationHandler();
+		this.editorCursorStatusApplication = editorCursorStatusApplication
+			?? new HostEditorCursorStatusApplicationHandler({
+				statusBar: editorCursorStatusBar,
+				extensionMode: this.context.extensionMode,
+				postMessage: message => this.postMessage(message),
+			});
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
 			this.handleKustoAuthPreferenceChange(change);
 		});
@@ -746,6 +756,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.connection.activate();
 		this.fileOpenTrace?.mark('queryEditorProvider.connection.activate.done');
 		this.panel = panel;
+		this.editorCursorStatusApplication.setPanelVisible(panel.visible);
 		QueryEditorProvider.activeProviders.add(this);
 		this.registerPanelDisposal(panel);
 		// Do NOT set panel.iconPath here — this method is called for custom editors
@@ -760,6 +771,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			initialDocumentLoading: !!options?.initialDocumentLoading
 		});
 		if (this._panelDisposed || this.panel !== panel) return;
+		this.editorCursorStatusApplication.setPanelVisible(panel.visible);
 		webview.html = html;
 		perfMark('host.queryEditorProvider.htmlAssigned');
 		this.fileOpenTrace?.mark('queryEditorProvider.html.assigned');
@@ -786,10 +798,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		// (e.g. user switches from another .kqlx tab back to this one).
 		this.panel.onDidChangeViewState(() => {
 			this.fileOpenTrace?.mark('queryEditorProvider.viewState.changed', { visible: this.panel?.visible, active: this.panel?.active });
-			if (this.panel?.visible) {
+			const visible = this.panel?.visible === true;
+			this.editorCursorStatusApplication.setPanelVisible(visible);
+			if (visible) {
 				this.connectToolOrchestrator();
-			} else {
-				this.clearCursorStatusForProvider();
 			}
 		});
 
@@ -862,38 +874,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		if (!toolOrchestrator || this.toolOrchestratorToken === undefined) return;
 		toolOrchestrator.disconnectIfOwner(this.toolOrchestratorToken);
 		this.toolOrchestratorToken = undefined;
-	}
-
-	private getCursorStatusOwnerId(message: { boxId?: string; editorKind?: string }): string {
-		const boxId = typeof message.boxId === 'string' && message.boxId.trim() ? message.boxId.trim() : '';
-		const editorKind = typeof message.editorKind === 'string' && message.editorKind.trim() ? message.editorKind.trim() : 'editor';
-		return `${this.cursorOwnerPrefix}${boxId || editorKind}`;
-	}
-
-	private handleEditorCursorPositionChanged(message: IncomingWebviewMessage & { type: 'editorCursorPositionChanged' }): void {
-		if (!this.editorCursorStatusBar || !this.panel?.visible) {
-			return;
-		}
-		this.editorCursorStatusBar.update(this.getCursorStatusOwnerId(message), message);
-	}
-
-	private async postEditorCursorStatusSnapshot(message: IncomingWebviewMessage & { type: 'getEditorCursorStatusSnapshot' }): Promise<void> {
-		if (this.context.extensionMode === vscode.ExtensionMode.Production) {
-			return;
-		}
-		try {
-			await this.postMessage({
-				type: 'editorCursorStatusSnapshot',
-				requestId: message.requestId,
-				snapshot: this.editorCursorStatusBar?.getSnapshot() ?? { visible: false, text: '' }
-			});
-		} catch {
-			// ignore test-only snapshot failures
-		}
-	}
-
-	private clearCursorStatusForProvider(): void {
-		this.editorCursorStatusBar?.clearOwnerPrefix(this.cursorOwnerPrefix);
 	}
 
 	private toolStateResponseResolvers = new Map<string, (sections: unknown[] | undefined) => void>();
@@ -976,6 +956,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 		);
 		const panel = this.panel;
+		this.editorCursorStatusApplication.setPanelVisible(panel.visible);
 		this.registerPanelDisposal(panel);
 		try {
 			const light = vscode.Uri.joinPath(this.extensionUri, 'media', 'images', 'kusto-file-light.svg');
@@ -988,6 +969,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const webview = panel.webview;
 		const html = await getQueryEditorHtml(webview, this.extensionUri, this.context);
 		if (this._panelDisposed || this.panel !== panel) return;
+		this.editorCursorStatusApplication.setPanelVisible(panel.visible);
 		webview.html = html;
 
 
@@ -1000,10 +982,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 		// Reconnect the orchestrator when this panel becomes visible again
 		this.panel.onDidChangeViewState(() => {
-			if (this.panel?.visible) {
+			const visible = this.panel?.visible === true;
+			this.editorCursorStatusApplication.setPanelVisible(visible);
+			if (visible) {
 				this.connectToolOrchestrator();
-			} else {
-				this.clearCursorStatusForProvider();
 			}
 		});
 
@@ -1077,6 +1059,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		if (this.informationNotificationApplication?.handleMessage(message)) {
 			return;
 		}
+		const editorCursorStatusApplicationMessage = this.editorCursorStatusApplication?.handleMessage(message);
+		if (editorCursorStatusApplicationMessage) {
+			if (editorCursorStatusApplicationMessage !== true) {
+				await editorCursorStatusApplicationMessage;
+			}
+			return;
+		}
 		switch (message.type) {
 			case 'kustoSectionOpen':
 				this.kustoExecutionCoordinator.openSection(message.boxId, message.sectionInstanceId);
@@ -1116,12 +1105,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				}
 				return;
 			}
-			case 'editorCursorPositionChanged':
-				this.handleEditorCursorPositionChanged(message);
-				return;
-			case 'getEditorCursorStatusSnapshot':
-				await this.postEditorCursorStatusSnapshot(message);
-				return;
 			case 'sqlComparisonAdmissionAck': {
 				const requestId = String(message.requestId || '').trim();
 				const comparisonBoxId = String(message.comparisonBoxId || '').trim();
@@ -2114,7 +2097,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.fileOpenTrace?.mark('queryEditorProvider.dispose.start');
 			this.sqlLifecycle.dispose();
 			this._comparisonOwnerByBoxId.clear();
-			this.clearCursorStatusForProvider();
+			this.editorCursorStatusApplication.dispose();
 			this.kustoExecutionCoordinator.dispose();
 			this.cancelAllRunningQueries();
 			this.kustoClient.dispose();
