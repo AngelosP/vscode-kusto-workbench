@@ -413,6 +413,47 @@ function startMessage(queryMode = 'plain') {
 }
 
 describe('Kusto Copilot function execution', () => {
+	it('discovers Copilot models and publishes exact availability', async () => {
+		const model = createTextModel('unused');
+		vscodeMocks.selectChatModels.mockReset();
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+
+		await service.checkCopilotAvailability('availability-query-1');
+
+		expect(vscodeMocks.selectChatModels).toHaveBeenCalledOnce();
+		expect(vscodeMocks.selectChatModels).toHaveBeenCalledWith({ vendor: 'copilot' });
+		expect(host.postMessage).toHaveBeenCalledWith({
+			type: 'copilotAvailability',
+			boxId: 'availability-query-1',
+			available: true,
+		});
+	});
+
+	it('publishes unavailable for no models and model-discovery failure', async () => {
+		vscodeMocks.selectChatModels.mockReset();
+		vscodeMocks.selectChatModels
+			.mockResolvedValueOnce([])
+			.mockRejectedValueOnce(new Error('Copilot model discovery failed'));
+		const host = createHost([]);
+		const service = new CopilotService(host);
+
+		await service.checkCopilotAvailability('availability-empty');
+		await service.checkCopilotAvailability('availability-failed');
+
+		expect(host.postMessage).toHaveBeenNthCalledWith(1, {
+			type: 'copilotAvailability',
+			boxId: 'availability-empty',
+			available: false,
+		});
+		expect(host.postMessage).toHaveBeenNthCalledWith(2, {
+			type: 'copilotAvailability',
+			boxId: 'availability-failed',
+			available: false,
+		});
+	});
+
 	it('cancels only the exact Copilot sequence without canceling unrelated source work', () => {
 		const host = createHost([]);
 		const service = new CopilotService(host);

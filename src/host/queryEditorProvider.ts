@@ -158,6 +158,10 @@ import {
 	HostCopilotInlineCompletionApplicationHandler,
 	type CopilotInlineCompletionApplicationHandler,
 } from './copilotInlineCompletionApplicationHandler';
+import {
+	HostCopilotAvailabilityApplicationHandler,
+	type CopilotAvailabilityApplicationHandler,
+} from './copilotAvailabilityApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -268,6 +272,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly sqlLastSelectionApplication: SqlLastSelectionApplicationHandler;
 	readonly developmentNoteMutationApplication: DevelopmentNoteMutationApplicationHandler;
 	readonly copilotInlineCompletionApplication: CopilotInlineCompletionApplicationHandler;
+	readonly copilotAvailabilityApplication: CopilotAvailabilityApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -692,6 +697,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		sqlLastSelectionApplication?: SqlLastSelectionApplicationHandler,
 		developmentNoteMutationApplication?: DevelopmentNoteMutationApplicationHandler,
 		copilotInlineCompletionApplication?: CopilotInlineCompletionApplicationHandler,
+		copilotAvailabilityApplication?: CopilotAvailabilityApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -849,6 +855,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				handleCopilotInlineCompletionRequest: (message, expectedSqlOwner, ownerToken) =>
 					this.copilot.handleCopilotInlineCompletionRequest(message, expectedSqlOwner, ownerToken),
 				postMessage: message => this.postMessage(message),
+			});
+		this.copilotAvailabilityApplication = copilotAvailabilityApplication
+			?? new HostCopilotAvailabilityApplicationHandler({
+				checkCopilotAvailability: boxId => this.copilot.checkCopilotAvailability(boxId),
 			});
 		this.copilot = new CopilotService(this);
 		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
@@ -1235,6 +1245,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await copilotInlineCompletionApplicationMessage;
 			return;
 		}
+		const copilotAvailabilityApplicationMessage = this.copilotAvailabilityApplication?.handleMessage(message);
+		if (copilotAvailabilityApplicationMessage) {
+			await copilotAvailabilityApplicationMessage;
+			return;
+		}
 		switch (message.type) {
 			case 'kustoSectionOpen':
 				this.kustoExecutionCoordinator.openSection(message.boxId, message.sectionInstanceId);
@@ -1572,9 +1587,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				} catch {
 					// ignore
 				}
-				return;
-			case 'checkCopilotAvailability':
-				await this.copilot.checkCopilotAvailability(message.boxId);
 				return;
 			case 'prepareCopilotWriteQuery':
 				await this.copilot.prepareCopilotWriteQuery(message);
@@ -2063,6 +2075,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 			this.developmentNoteMutationApplication.dispose();
 			this.copilotInlineCompletionApplication.dispose();
+			this.copilotAvailabilityApplication.dispose();
 			this.copilot.disposeKustoOwners();
 			this.copilot.invalidateSqlConnections(
 				[], [...this.sqlLifecycle.listComparisonBoxIds()],
