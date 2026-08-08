@@ -1611,6 +1611,32 @@ describe('Kusto Copilot function execution', () => {
 		expect((service as any).copilotConversationHistoryByBoxId.has('box-close')).toBe(false);
 	});
 
+	it('normalizes box scope and clears only rules, development notes, and conversation history', () => {
+		const service = new CopilotService(createHost([]));
+		const target = 'box-clear-generic';
+		const neighbor = 'box-clear-neighbor';
+		(service as any).copilotGeneralRulesSentPerBox.add(target);
+		(service as any).copilotGeneralRulesSentPerBox.add(neighbor);
+		(service as any).copilotDevNotesSentPerBox.add(target);
+		(service as any).copilotDevNotesSentPerBox.add(neighbor);
+		(service as any).copilotConversationHistoryByBoxId.set(target, [{ type: 'user-message', id: 'a', text: 'remove' }]);
+		(service as any).copilotConversationHistoryByBoxId.set(neighbor, [{ type: 'user-message', id: 'b', text: 'keep' }]);
+		(service as any).copilotConversationOwnerByBoxId.set(target, { flavor: 'sql', connectionId: 'sql-a' });
+
+		service.clearCopilotConversation('   ');
+		expect((service as any).copilotConversationHistoryByBoxId.has(target)).toBe(true);
+
+		service.clearCopilotConversation(`  ${target}  `);
+
+		expect((service as any).copilotGeneralRulesSentPerBox.has(target)).toBe(false);
+		expect((service as any).copilotDevNotesSentPerBox.has(target)).toBe(false);
+		expect((service as any).copilotConversationHistoryByBoxId.has(target)).toBe(false);
+		expect((service as any).copilotConversationOwnerByBoxId.has(target)).toBe(true);
+		expect((service as any).copilotGeneralRulesSentPerBox.has(neighbor)).toBe(true);
+		expect((service as any).copilotDevNotesSentPerBox.has(neighbor)).toBe(true);
+		expect((service as any).copilotConversationHistoryByBoxId.get(neighbor)[0].text).toBe('keep');
+	});
+
 	it('clears completed host history only for the exact Kusto conversation owner', () => {
 		const service = new CopilotService(createHost([]));
 		const current = { boxId: 'box-clear', copilotRequestId: 'request-current', sectionInstanceId: 'instance-current', targetGeneration: 3 };

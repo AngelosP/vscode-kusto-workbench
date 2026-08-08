@@ -166,6 +166,10 @@ import {
 	HostCopilotWriteQueryPreparationApplicationHandler,
 	type CopilotWriteQueryPreparationApplicationHandler,
 } from './copilotWriteQueryPreparationApplicationHandler';
+import {
+	HostCopilotConversationClearApplicationHandler,
+	type CopilotConversationClearApplicationHandler,
+} from './copilotConversationClearApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -278,6 +282,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly copilotInlineCompletionApplication: CopilotInlineCompletionApplicationHandler;
 	readonly copilotAvailabilityApplication: CopilotAvailabilityApplicationHandler;
 	readonly copilotWriteQueryPreparationApplication: CopilotWriteQueryPreparationApplicationHandler;
+	readonly copilotConversationClearApplication: CopilotConversationClearApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -704,6 +709,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		copilotInlineCompletionApplication?: CopilotInlineCompletionApplicationHandler,
 		copilotAvailabilityApplication?: CopilotAvailabilityApplicationHandler,
 		copilotWriteQueryPreparationApplication?: CopilotWriteQueryPreparationApplicationHandler,
+		copilotConversationClearApplication?: CopilotConversationClearApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -869,6 +875,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.copilotWriteQueryPreparationApplication = copilotWriteQueryPreparationApplication
 			?? new HostCopilotWriteQueryPreparationApplicationHandler({
 				prepareCopilotWriteQuery: message => this.copilot.prepareCopilotWriteQuery(message),
+			});
+		this.copilotConversationClearApplication = copilotConversationClearApplication
+			?? new HostCopilotConversationClearApplicationHandler({
+				clearCopilotConversation: boxId => this.copilot.clearCopilotConversation(boxId),
+				clearKustoCopilotConversation: message => this.copilot.clearKustoCopilotConversation(message),
 			});
 		this.copilot = new CopilotService(this);
 		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
@@ -1266,6 +1277,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await copilotWriteQueryPreparationApplicationMessage;
 			return;
 		}
+		const copilotConversationClearApplicationMessage
+			= this.copilotConversationClearApplication?.handleMessage(message);
+		if (copilotConversationClearApplicationMessage) {
+			await copilotConversationClearApplicationMessage;
+			return;
+		}
 		switch (message.type) {
 			case 'kustoSectionOpen':
 				this.kustoExecutionCoordinator.openSection(message.boxId, message.sectionInstanceId);
@@ -1645,13 +1662,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					}
 				}
 				this.copilot.cancelCopilotWriteQuery(message.boxId);
-				return;
-			case 'clearCopilotConversation':
-				if (message.flavor === 'kusto') {
-					if (hasKustoCopilotRequestIdentity(message)) this.copilot.clearKustoCopilotConversation(message);
-				} else {
-					this.copilot.clearCopilotConversation(message.boxId);
-				}
 				return;
 			case 'clearComparisonSummary':
 				this.deleteComparisonSummary(`${String(message.sourceBoxId || '')}::${String(message.comparisonBoxId || '')}`);
@@ -2090,6 +2100,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.copilotInlineCompletionApplication.dispose();
 			this.copilotAvailabilityApplication.dispose();
 			this.copilotWriteQueryPreparationApplication.dispose();
+			this.copilotConversationClearApplication.dispose();
 			this.copilot.disposeKustoOwners();
 			this.copilot.invalidateSqlConnections(
 				[], [...this.sqlLifecycle.listComparisonBoxIds()],
