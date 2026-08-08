@@ -4,8 +4,10 @@ import type { SqlConnection } from './sqlConnectionManager';
 import type { SqlDatabaseSchemaIndex } from './sql/sqlDialect';
 import { MSSQL_STORED_PROCEDURE_SCHEMA_QUERY, MSSQL_TABLE_SCHEMA_QUERY, parseMssqlSchemaRows } from './sql/mssqlSchema';
 import { SqlQueryExecutionError } from './sql/sqlErrors';
-import type { StsQueryService } from './sql/stsQueryService';
+import type { SqlDatabaseDiscoveryResult, StsQueryService } from './sql/stsQueryService';
 
+export { SqlDatabaseDiscoveryOwnerError } from './sql/stsQueryService';
+export type { SqlDatabaseDiscoveryOwner, SqlDatabaseDiscoveryResult } from './sql/stsQueryService';
 export { SqlQueryCancelledError, SqlQueryExecutionError } from './sql/sqlErrors';
 
 // ---------------------------------------------------------------------------
@@ -27,6 +29,19 @@ export class SqlQueryClient {
 	async getDatabases(connection: SqlConnection, options?: { passwordOverride?: string; allowUncommittedTarget?: boolean; signal?: AbortSignal }): Promise<string[]> {
 		this.assertMssql(connection);
 		return this.queryService.getDatabases(connection, options?.passwordOverride, options?.allowUncommittedTarget, options?.signal);
+	}
+
+	async getDatabasesWithIdentity(
+		connection: SqlConnection,
+		options?: { passwordOverride?: string; allowUncommittedTarget?: boolean; signal?: AbortSignal },
+	): Promise<SqlDatabaseDiscoveryResult> {
+		this.assertMssql(connection);
+		return this.queryService.getDatabasesWithIdentity(
+			connection,
+			options?.passwordOverride,
+			options?.allowUncommittedTarget,
+			options?.signal,
+		);
 	}
 
 	async getDatabaseSchema(connection: SqlConnection, database: string, options?: { signal?: AbortSignal }): Promise<SqlDatabaseSchemaIndex> {

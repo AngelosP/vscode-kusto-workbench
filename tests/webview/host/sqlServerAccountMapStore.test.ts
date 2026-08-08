@@ -238,6 +238,34 @@ describe('SqlServerAccountMapStore', () => {
 		}
 	});
 
+	it('fails closed when an observer skips a none-to-A-to-B transition', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-map-gap-'));
+		tempDirectories.push(directory);
+		const writerContext = createContext(directory);
+		const observerContext = createContext(directory);
+		const writer = new SqlServerAccountMapStore(writerContext, output());
+		const observer = new SqlServerAccountMapStore(observerContext, output());
+		const changes: any[] = [];
+		observer.onDidChange(change => changes.push(change));
+
+		try {
+			await Promise.all([writer.ready(), observer.ready()]);
+			await setCanonicalSqlServerAccount(writerContext, 'server.example', 'account-a');
+			await setCanonicalSqlServerAccount(writerContext, 'server.example', 'account-b');
+			await observer.refresh();
+
+			expect(observer.getAccountsByServer()).toEqual({ 'server.example': 'account-b' });
+			expect(changes).toEqual([expect.objectContaining({
+				changedServerUrls: ['server.example'],
+				establishedServerUrls: [],
+				invalidatedServerUrls: ['server.example'],
+			})]);
+		} finally {
+			writer.dispose();
+			observer.dispose();
+		}
+	});
+
 	it('quarantines a malformed canonical account map and recovers the legacy mirror', async () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-corrupt-'));
 		tempDirectories.push(directory);

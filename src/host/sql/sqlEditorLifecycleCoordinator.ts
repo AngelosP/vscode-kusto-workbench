@@ -149,6 +149,7 @@ export class SqlEditorLifecycleCoordinator {
 	private readonly sectionInstanceIdByBoxId = new Map<string, string>();
 	private readonly retiredSectionInstanceIdByBoxId = new Map<string, string>();
 	private readonly databaseRequestIdByBoxId = new Map<string, string>();
+	private databaseRequestSequence = 0;
 	private readonly activeConnectAttemptByBoxId = new Map<string, SqlConnectAttempt>();
 	private readonly connectSequenceByBoxId = new Map<string, number>();
 	private readonly documentConnectAttemptByBoxId = new Map<string, SqlConnectAttempt>();
@@ -250,7 +251,11 @@ export class SqlEditorLifecycleCoordinator {
 			}),
 			sqlWorkbench.onDidChangeSqlPrincipals(change => {
 				const sessionEpoch = this.sessionEpoch;
-				void this.handlePrincipalsChangedForSession(change.connectionIds, sessionEpoch).catch(() => {
+				void this.handlePrincipalsChangedForSession(
+					change.connectionIds,
+					sessionEpoch,
+					change.establishedConnectionIds,
+				).catch(() => {
 					this.handleConnectionSnapshotFailure(
 						sessionEpoch,
 						'[sql] Principal change handling failed; scheduling a connection snapshot retry.',
@@ -537,8 +542,8 @@ export class SqlEditorLifecycleCoordinator {
 		if (!this.isSectionCurrent(boxId, sectionInstanceId)) return undefined;
 		const target = this.ownership.getTarget(boxId);
 		if (!target || target.connectionId !== connectionId) return undefined;
-		const requestId = this.options.createRequestId?.()
-			?? `sql-db-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+		const requestId = `${this.options.createRequestId?.()
+			?? `sql-db-${Date.now()}-${Math.random().toString(16).slice(2)}`}:${++this.databaseRequestSequence}`;
 		this.databaseRequestIdByBoxId.set(boxId, requestId);
 		return Object.freeze({
 			requestId,
@@ -560,6 +565,12 @@ export class SqlEditorLifecycleCoordinator {
 				database,
 				ticket.targetGeneration,
 			);
+	}
+
+	completeDatabaseRequest(ticket: SqlDatabaseRequestTicket): boolean {
+		if (!this.isDatabaseRequestCurrent(ticket)) return false;
+		this.databaseRequestIdByBoxId.delete(ticket.boxId);
+		return true;
 	}
 
 	isDatabaseSectionOwnerCurrent(ticket: SqlDatabaseRequestTicket): boolean {
@@ -1206,17 +1217,31 @@ export class SqlEditorLifecycleCoordinator {
 		for (const connectionId of removedIds) this.pruneConnectionEventEpoch(connectionId);
 	}
 
-	async handlePrincipalsChanged(connectionIds: readonly string[]): Promise<void> {
-		await this.handlePrincipalsChangedForSession(connectionIds, this.sessionEpoch);
+	async handlePrincipalsChanged(
+		connectionIds: readonly string[],
+		establishedConnectionIds: readonly string[] = [],
+	): Promise<void> {
+		await this.handlePrincipalsChangedForSession(
+			connectionIds,
+			this.sessionEpoch,
+			establishedConnectionIds,
+		);
 	}
 
 	private async handlePrincipalsChangedForSession(
 		connectionIds: readonly string[],
 		sessionEpoch: number,
+		establishedConnectionIds: readonly string[] = [],
 	): Promise<void> {
 		if (!this.isSessionEpochCurrent(sessionEpoch)) return;
-		const changedIds = new Set(connectionIds);
-		if (changedIds.size === 0) return;
+		const allChangedIds = new Set(connectionIds);
+		if (allChangedIds.size === 0) return;
+		const establishedIds = new Set(establishedConnectionIds);
+		const changedIds = new Set([...allChangedIds].filter(connectionId => !establishedIds.has(connectionId)));
+		if (changedIds.size === 0) {
+			await this.refreshConnectionsDataRequired(sessionEpoch);
+			return;
+		}
 		const capturedTargets = this.ownership.listTargets();
 		const ownerChangedMessages: SqlOwnerChangedPublication[] = [];
 		const schemaTargets: Array<{

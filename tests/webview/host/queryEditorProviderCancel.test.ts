@@ -1045,6 +1045,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.sqlConnectionOnboardingApplication = { dispose: vi.fn() };
 		provider.sqlFavoritesApplication = { dispose: vi.fn() };
 		provider.kustoFavoritesApplication = { dispose: vi.fn() };
+		provider.sqlDatabaseDiscoveryApplication = { dispose: vi.fn() };
 		provider.cancelAllRunningQueries = vi.fn();
 		provider.kustoClient = { dispose: vi.fn() };
 		provider.disconnectToolOrchestrator = vi.fn();
@@ -1094,6 +1095,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.sqlConnectionOnboardingApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.sqlFavoritesApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.kustoFavoritesApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider.sqlDatabaseDiscoveryApplication.dispose).toHaveBeenCalledOnce();
 	});
 
 	it('ignores policy messages after the panel webview getter is disposed', () => {

@@ -415,6 +415,7 @@ export class SqlServerAccountMapStore implements vscode.Disposable {
 
 	private async applySnapshot(snapshot: AccountMapSnapshot, emit = true): Promise<void> {
 		if (snapshot.version < this.snapshot.version) return;
+		const previousVersion = this.snapshot.version;
 		const previous = this.snapshot.accountsByServer;
 		const changedServerUrls = [...new Set([...Object.keys(previous), ...Object.keys(snapshot.accountsByServer)])]
 			.filter(server => previous[server] !== snapshot.accountsByServer[server]);
@@ -425,12 +426,15 @@ export class SqlServerAccountMapStore implements vscode.Disposable {
 			// The locked file is authoritative.
 		}
 		if (emit && !this.disposed && changedServerUrls.length > 0) {
+			const contiguousTransition = snapshot.version === previousVersion + 1;
 			this.changeEmitter.fire({
 				accountsByServer: this.getAccountsByServer(),
 				previousAccountsByServer: { ...previous },
 				changedServerUrls,
-				establishedServerUrls: changedServerUrls.filter(server => !previous[server] && !!snapshot.accountsByServer[server]),
-				invalidatedServerUrls: changedServerUrls.filter(server => !!previous[server]),
+				establishedServerUrls: changedServerUrls.filter(server =>
+					contiguousTransition && !previous[server] && !!snapshot.accountsByServer[server]),
+				invalidatedServerUrls: changedServerUrls.filter(server =>
+					!!previous[server] || (!contiguousTransition && !!snapshot.accountsByServer[server])),
 				version: snapshot.version,
 			});
 		}

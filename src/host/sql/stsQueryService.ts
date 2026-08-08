@@ -56,6 +56,27 @@ const SUBSET_PAGE_SIZE = 1_000;
 type ExecutionPhase = 'starting' | 'connecting' | 'executing' | 'paging' | 'cleaning' | 'done';
 export type ProtectedStsRuntimeFactory = () => Promise<StsRuntimeLike>;
 
+export type SqlDatabaseDiscoveryOwner = Readonly<{
+	principalFingerprint: string;
+	revocationGeneration: number;
+	expectedProtected: boolean;
+}>;
+
+export type SqlDatabaseDiscoveryResult = Readonly<{
+	databases: readonly string[];
+	owner: SqlDatabaseDiscoveryOwner;
+}>;
+
+export class SqlDatabaseDiscoveryOwnerError extends Error {
+	constructor(
+		readonly originalError: unknown,
+		readonly owner: SqlDatabaseDiscoveryOwner | undefined,
+	) {
+		super(originalError instanceof Error ? originalError.message : String(originalError));
+		this.name = 'SqlDatabaseDiscoveryOwnerError';
+	}
+}
+
 interface Deferred<T> {
 	promise: Promise<T>;
 	resolve(value: T): void;
@@ -132,10 +153,28 @@ export class StsQueryService {
 	}
 
 	async getDatabases(connection: SqlConnection, passwordOverride?: string, allowUncommittedTarget = false, signal?: AbortSignal): Promise<string[]> {
+		try {
+			return [...(await this.getDatabasesWithIdentity(
+				connection, passwordOverride, allowUncommittedTarget, signal,
+			)).databases];
+		} catch (error) {
+			if (error instanceof SqlDatabaseDiscoveryOwnerError) throw error.originalError;
+			throw error;
+		}
+	}
+
+	async getDatabasesWithIdentity(
+		connection: SqlConnection,
+		passwordOverride?: string,
+		allowUncommittedTarget = false,
+		signal?: AbortSignal,
+	): Promise<SqlDatabaseDiscoveryResult> {
 		const operation = this.createOperation(connection, connection.database || 'master', undefined, passwordOverride, allowUncommittedTarget);
 		const abort = () => operation.cancel();
 		if (signal?.aborted) abort();
 		else signal?.addEventListener('abort', abort, { once: true });
+		let result: SqlDatabaseDiscoveryResult | undefined;
+		let failure: SqlDatabaseDiscoveryOwnerError | undefined;
 		try {
 			const response = await operation.runRequest<StsListDatabasesResponse>(
 				STS_METHODS.listDatabases,
@@ -147,12 +186,36 @@ export class StsQueryService {
 				.filter(Boolean)
 				.sort((left, right) => left.toLowerCase().localeCompare(right.toLowerCase()));
 			await operation.assertCurrentOwner();
-			return databaseNames;
+			const owner = operation.getDatabaseDiscoveryOwner();
+			if (!owner) throw new Error('SQL database discovery owner is unavailable.');
+			result = Object.freeze({ databases: Object.freeze(databaseNames), owner });
+		} catch (error) {
+			failure = error instanceof SqlDatabaseDiscoveryOwnerError
+				? error
+				: new SqlDatabaseDiscoveryOwnerError(error, operation.getDatabaseDiscoveryOwner());
 		} finally {
 			signal?.removeEventListener('abort', abort);
-			await operation.dispose();
-			this.activeOperations.delete(operation);
+			try {
+				await operation.dispose();
+			} catch (error) {
+				failure = new SqlDatabaseDiscoveryOwnerError(
+					error,
+					result?.owner ?? operation.getDatabaseDiscoveryOwner(),
+				);
+			} finally {
+				this.activeOperations.delete(operation);
+			}
 		}
+		if (failure) {
+			throw failure;
+		}
+		if (!result) {
+			throw new SqlDatabaseDiscoveryOwnerError(
+				new Error('SQL database discovery completed without a result.'),
+				operation.getDatabaseDiscoveryOwner(),
+			);
+		}
+		return result;
 	}
 
 	executeQuery(
@@ -510,7 +573,9 @@ class StsExecutionOperation {
 		try {
 			await process.sendRequest(method, params, { timeoutMs: CLEANUP_TIMEOUT_MS, expectedEpoch: this.epoch });
 		} catch (error) {
-			this.output.warn(`[sts] Cleanup request failed (${method}): ${sanitizeStsLogText(error instanceof Error ? error.message : error)}`);
+			this.output.warn(this.protectedExecution
+				? `[sql-lnt] Isolated STS cleanup request failed (${method}).`
+				: `[sts] Cleanup request failed (${method}): ${sanitizeStsLogText(error instanceof Error ? error.message : error)}`);
 		}
 	}
 
@@ -520,6 +585,16 @@ class StsExecutionOperation {
 
 	async assertCurrentOwner(): Promise<void> {
 		await this.assertAllowed();
+	}
+
+	getDatabaseDiscoveryOwner(): SqlDatabaseDiscoveryOwner | undefined {
+		return this.principalFingerprint
+			? Object.freeze({
+				principalFingerprint: this.principalFingerprint,
+				revocationGeneration: this.revocationGeneration,
+				expectedProtected: this.protectedExecution,
+			})
+			: undefined;
 	}
 
 	private assertDispatchCurrent(): void {

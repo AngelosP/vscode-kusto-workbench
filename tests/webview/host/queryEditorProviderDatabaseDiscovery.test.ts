@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { QueryEditorProvider } from '../../../src/host/queryEditorProvider';
-import { QueryRunCoordinator } from '../../../src/host/queryRunCoordinator';
-import { SqlEditorLifecycleCoordinator } from '../../../src/host/sql/sqlEditorLifecycleCoordinator';
+import { sqlSchemaPrincipalFingerprint } from '../../../src/host/sqlEditorSchema';
+import {
+	beginSqlDatabaseCacheRequest,
+	SQL_DATABASE_CACHE_STORAGE_KEY,
+	writeOwnedSqlDatabaseCacheEntry,
+} from '../../../src/host/sqlDatabaseCache';
 
 function createProviderHarness(): QueryEditorProvider & Record<string, any> {
 	const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
@@ -16,15 +20,15 @@ function deferred<T>() {
 	return { promise, resolve };
 }
 
-function createSqlDiscoveryHarness(options: { accountId?: string; authType?: 'aad' | 'sql-login' } = {}) {
+function createSqlConnectionSnapshotHarness(options: { accountId?: string; authType?: 'aad' | 'sql-login' } = {}) {
 	const provider = createProviderHarness();
 	const authType = options.authType ?? 'sql-login';
 	let accountId = options.accountId;
-	let connection: any = {
+	const connection: any = {
 		id: 'sql-1', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', port: 1433,
 		database: 'master', authType, ...(authType === 'sql-login' ? { username: 'user-a' } : {}),
 	};
-	const cachedDatabases: Record<string, string[]> = {};
+	const cachedDatabases: Record<string, any> = {};
 	const globalState = {
 		get: vi.fn((key: string) => {
 			if (key === 'sql.auth.serverAccountMap') return accountId ? { 'server.example': accountId } : {};
@@ -38,34 +42,18 @@ function createSqlDiscoveryHarness(options: { accountId?: string; authType?: 'aa
 			}
 		}),
 	};
-	const getDatabases = vi.fn<(...args: any[]) => Promise<string[]>>();
 	const connectionManager = {
 		getConnection: vi.fn(() => connection),
-		getConnections: vi.fn(() => connection ? [connection] : []),
-		assertConnectionCurrent: vi.fn(async () => undefined),
+		getConnections: vi.fn(() => [connection]),
 	};
-	const client = { getDatabases };
 	provider.context = { globalState };
 	provider.sqlWorkbench = {
 		connectionManager,
-		client,
-		leaveNoTracePolicy: { getRevocationGeneration: vi.fn(() => 0) },
-		assertSqlConnectionAllowed: vi.fn(async () => undefined),
-		dispatchSqlConnectionAllowed: vi.fn(async (_connectionId: string, dispatch: () => unknown) => await dispatch()),
-		dispatchSqlOwnerAllowed: vi.fn(async (_connection: unknown, _principal: string, _revocation: number, dispatch: () => unknown) => await dispatch()),
-		dispatchSqlOwnerProtection: vi.fn(async (_connection: unknown, _principal: string, _revocation: number, _protected: boolean, dispatch: () => unknown) => await dispatch()),
 		dispatchSqlOwnerSnapshot: vi.fn(async (dispatch: (snapshot: any) => unknown) => await dispatch({
 			policy: { connectionIds: [], version: 1, globallyBlocked: false, revocationGenerations: {} },
-			connections: connection ? [connection] : [], connectionVersion: 1,
+			connections: [connection], connectionVersion: 1,
 			accountsByServer: accountId ? { 'server.example': accountId } : {}, principalVersion: 1,
 		})),
-		dispatchSqlPolicySnapshot: vi.fn(async (dispatch: (policy: any) => unknown) => await dispatch({
-			connectionIds: [], version: 1, globallyBlocked: false, revocationGenerations: {},
-		})),
-		isLeaveNoTraceConnection: vi.fn(() => false),
-		refreshLeaveNoTracePolicy: vi.fn(async () => []),
-		getLeaveNoTraceConnectionIds: vi.fn(() => []),
-		getStateVersions: vi.fn(() => ({ policy: 1, principals: 1, connections: 1 })),
 	};
 	provider.sqlFavoritesApplication = {
 		handleMessage: vi.fn(),
@@ -75,43 +63,36 @@ function createSqlDiscoveryHarness(options: { accountId?: string; authType?: 'aa
 	provider.output = { error: vi.fn(), warn: vi.fn() };
 	provider.postMessage = vi.fn();
 	provider.sqlConnectionsSnapshotTail = Promise.resolve(true);
-	const sqlLifecycle = new SqlEditorLifecycleCoordinator({
-		context: provider.context,
-		sqlWorkbench: provider.sqlWorkbench,
-		queryRuns: new QueryRunCoordinator(),
-		output: provider.output,
-		hasWebview: () => true,
-		effects: {
-			postMessage: (message: unknown) => provider.postMessage(message),
-			cancelCopilotWriteQuery: vi.fn(),
-			cancelCopilotQueryTarget: vi.fn(),
-			invalidateSqlCopilot: vi.fn(),
-			rejectPendingComparisonEnsures: vi.fn(),
-			deleteComparisonSummary: vi.fn(),
-			invalidatePersistence: vi.fn(),
-			refreshConnectionsData: vi.fn(async () => true),
-			prefetchSchema: vi.fn(async () => undefined),
-		},
-	});
-	sqlLifecycle.openSection('sql-box', 'instance-sql-box');
-	sqlLifecycle.adoptTarget('sql-box', 'instance-sql-box', 'sql-1', undefined, 7);
-	provider.sqlLifecycle = sqlLifecycle;
 	return {
 		provider,
-		sqlLifecycle,
-		getDatabases,
 		globalState,
 		cachedDatabases,
 		getConnection: () => connection,
-		setConnection: (value: any) => { connection = value; },
 		setAccountId: (value: string | undefined) => { accountId = value; },
 	};
 }
 
-async function flushAsyncDispatch(): Promise<void> {
-	await Promise.resolve();
-	await Promise.resolve();
-	await Promise.resolve();
+async function seedOwnedSqlDatabaseCache(
+	harness: ReturnType<typeof createSqlConnectionSnapshotHarness>,
+	databases: string[],
+): Promise<void> {
+	const connection = harness.getConnection();
+	const principalFingerprint = sqlSchemaPrincipalFingerprint(harness.provider.context, connection);
+	if (!principalFingerprint) throw new Error('Expected a SQL principal fingerprint.');
+	const request = await beginSqlDatabaseCacheRequest(
+		harness.provider.context,
+		SQL_DATABASE_CACHE_STORAGE_KEY,
+		connection,
+	);
+	await writeOwnedSqlDatabaseCacheEntry(
+		harness.provider.context,
+		SQL_DATABASE_CACHE_STORAGE_KEY,
+		connection,
+		principalFingerprint,
+		databases,
+		request,
+		async () => undefined,
+	);
 }
 
 describe('QueryEditorProvider database discovery routing', () => {
@@ -152,148 +133,10 @@ describe('QueryEditorProvider database discovery routing', () => {
 	});
 });
 
-describe('QueryEditorProvider SQL database discovery ownership', () => {
-	it('discovers protected databases ephemerally without writing the durable cache', async () => {
-		const harness = createSqlDiscoveryHarness();
-		harness.provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => true);
-		harness.getDatabases.mockResolvedValue(['PrivateB', 'PrivateA']);
-
-		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
-
-		expect(harness.provider.sqlWorkbench.dispatchSqlOwnerProtection).toHaveBeenCalled();
-		expect(harness.provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-			type: 'sqlDatabasesData', databases: ['PrivateA', 'PrivateB'],
-		}));
-		expect(harness.cachedDatabases).toEqual({});
-		expect(harness.globalState.update).not.toHaveBeenCalledWith(
-			'sql.connectionManager.cachedDatabases', expect.anything(),
-		);
-	});
-
-	it('echoes the current request and target generation on loading and data', async () => {
-		const harness = createSqlDiscoveryHarness();
-		harness.getDatabases.mockResolvedValue(['DbB', 'DbA']);
-
-		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
-
-		const messages = harness.provider.postMessage.mock.calls.map((call: any[]) => call[0]);
-		const loading = messages.find((message: any) => message.type === 'sqlDatabasesLoading');
-		expect(loading).toMatchObject({ boxId: 'sql-box', sqlConnectionId: 'sql-1', targetGeneration: 7, requestId: expect.any(String) });
-		expect(messages).toContainEqual(expect.objectContaining({
-			type: 'sqlDatabasesData', boxId: 'sql-box', sqlConnectionId: 'sql-1',
-			targetGeneration: 7, requestId: loading.requestId, databases: ['DbA', 'DbB'],
-		}));
-	});
-
-	it('does not publish databases when canonical admission rejects after discovery', async () => {
-		const harness = createSqlDiscoveryHarness();
-		harness.getDatabases.mockResolvedValue(['SecretDb']);
-		harness.provider.sqlWorkbench.dispatchSqlOwnerAllowed = vi.fn(async () => {
-			throw new Error('Leave No Trace committed');
-		});
-
-		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
-
-		expect(harness.provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
-			type: 'sqlDatabasesData',
-		}));
-	});
-
-	it('correlates an early database discovery error to the current section instance', async () => {
-		const harness = createSqlDiscoveryHarness();
-		harness.provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn(async () => {
-			throw new Error('Connection unavailable');
-		});
-
-		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
-
-		expect(harness.provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-			type: 'sqlDatabasesError', boxId: 'sql-box', sectionInstanceId: 'instance-sql-box',
-			sqlConnectionId: 'sql-1', targetGeneration: 7, error: 'Connection unavailable',
-		}));
-	});
-
-	it('allows first AAD discovery to establish the principal once', async () => {
-		const harness = createSqlDiscoveryHarness({ authType: 'aad' });
-		harness.getDatabases.mockImplementation(async () => {
-			harness.setAccountId('account-a');
-			return ['DbA'];
-		});
-
-		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
-
-		expect((harness.cachedDatabases as any).entries['sql-1']).toEqual(expect.objectContaining({
-			version: 1,
-			connectionId: 'sql-1',
-			databases: ['DbA'],
-			principalFingerprint: expect.any(String),
-			targetSignature: expect.stringMatching(/^v2:[0-9a-f]{64}$/),
-		}));
-		expect(harness.provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'sqlDatabasesData', databases: ['DbA'] }));
-	});
-
-	it('admits only the newest overlapping request for an unchanged target', async () => {
-		const harness = createSqlDiscoveryHarness();
-		const first = deferred<string[]>();
-		const second = deferred<string[]>();
-		let invocation = 0;
-		harness.getDatabases.mockImplementation(() => (++invocation === 1 ? first.promise : second.promise));
-
-		const firstRun = harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
-		await vi.waitFor(() => expect(harness.getDatabases).toHaveBeenCalledTimes(1));
-		const secondRun = harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
-		await vi.waitFor(() => expect(harness.getDatabases).toHaveBeenCalledTimes(2));
-		first.resolve(['OldDb']);
-		await firstRun;
-
-		expect((harness.cachedDatabases as any).entries).toEqual({});
-		expect(harness.provider.postMessage.mock.calls.map((call: any[]) => call[0]).filter((message: any) => message.type === 'sqlDatabasesData')).toEqual([]);
-
-		second.resolve(['CurrentDb']);
-		await secondRun;
-		const loadingMessages = harness.provider.postMessage.mock.calls.map((call: any[]) => call[0]).filter((message: any) => message.type === 'sqlDatabasesLoading');
-		const dataMessages = harness.provider.postMessage.mock.calls.map((call: any[]) => call[0]).filter((message: any) => message.type === 'sqlDatabasesData');
-		expect(loadingMessages).toHaveLength(2);
-		expect(dataMessages).toEqual([expect.objectContaining({ requestId: loadingMessages[1].requestId, databases: ['CurrentDb'] })]);
-		expect((harness.cachedDatabases as any).entries['sql-1']).toEqual(expect.objectContaining({ databases: ['CurrentDb'] }));
-	});
-
-	it.each(['legacy-array', 'principal-mismatch', 'target-mismatch'] as const)('ignores an unowned %s cache and performs guarded discovery', async cacheKind => {
-		const harness = createSqlDiscoveryHarness();
-		if (cacheKind === 'legacy-array') {
-			(harness.cachedDatabases as any)['sql-1'] = ['StaleDb'];
-		} else {
-			harness.cachedDatabases.schemaVersion = 1 as any;
-			harness.cachedDatabases.version = 1 as any;
-			harness.cachedDatabases.entries = {
-				'sql-1': {
-					version: 1,
-					connectionId: 'sql-1',
-					targetSignature: cacheKind === 'target-mismatch' ? 'stale-target' : JSON.stringify({
-						dialect: 'mssql', serverUrl: 'server.example', port: 1433, database: 'master', authType: 'sql-login', username: 'user-a',
-					}),
-					principalFingerprint: cacheKind === 'principal-mismatch' ? 'stale-principal' : 'unused',
-					databases: ['StaleDb'],
-					writeId: 'stale-write', requestId: 'stale-request', requestVersion: 1, updatedAt: Date.now(),
-				},
-			};
-			harness.cachedDatabases.latestRequestByConnectionId = { 'sql-1': { requestId: 'stale-request', version: 1 } } as any;
-			harness.cachedDatabases.deletedAtVersionByConnectionId = {} as any;
-			harness.cachedDatabases.clearedAtVersion = 0 as any;
-		}
-		harness.getDatabases.mockResolvedValue(['FreshDb']);
-
-		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', false);
-
-		expect(harness.getDatabases).toHaveBeenCalledOnce();
-		expect(harness.provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'sqlDatabasesData', databases: ['FreshDb'] }));
-		expect((harness.cachedDatabases as any).entries['sql-1']).toEqual(expect.objectContaining({ databases: ['FreshDb'] }));
-	});
-
+describe('QueryEditorProvider SQL connection snapshot ownership', () => {
 	it('omits a populated cache from connection snapshots after principal rotation', async () => {
-		const harness = createSqlDiscoveryHarness({ accountId: 'account-a', authType: 'aad' });
-		harness.getDatabases.mockResolvedValue(['AccountADb']);
-		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
+		const harness = createSqlConnectionSnapshotHarness({ accountId: 'account-a', authType: 'aad' });
+		await seedOwnedSqlDatabaseCache(harness, ['AccountADb']);
 
 		harness.provider.postMessage.mockClear();
 		harness.setAccountId('account-b');
@@ -306,7 +149,7 @@ describe('QueryEditorProvider SQL database discovery ownership', () => {
 	});
 
 	it('canonically strips protected cache data and principal fingerprints from a stale local snapshot', async () => {
-		const harness = createSqlDiscoveryHarness({ accountId: 'account-a', authType: 'aad' });
+		const harness = createSqlConnectionSnapshotHarness({ accountId: 'account-a', authType: 'aad' });
 		(harness.cachedDatabases as any).entries = {
 			'sql-1': { databases: ['SecretDb'] },
 		};
@@ -326,7 +169,7 @@ describe('QueryEditorProvider SQL database discovery ownership', () => {
 	});
 
 	it('propagates the latest failed delivery across overlapping connection snapshots', async () => {
-		const harness = createSqlDiscoveryHarness();
+		const harness = createSqlConnectionSnapshotHarness();
 		const firstDelivery = deferred<boolean>();
 		harness.provider.postMessage
 			.mockImplementationOnce(() => firstDelivery.promise)
@@ -340,26 +183,5 @@ describe('QueryEditorProvider SQL database discovery ownership', () => {
 		await expect(first).resolves.toBe(true);
 		await expect(second).resolves.toBe(false);
 		expect(harness.provider.postMessage).toHaveBeenCalledTimes(2);
-	});
-
-	it.each(['edited', 'deleted', 'principal-rotated', 'generation-changed'] as const)('drops metadata when its owner is %s', async change => {
-		const harness = createSqlDiscoveryHarness();
-		const pending = deferred<string[]>();
-		harness.getDatabases.mockReturnValue(pending.promise);
-
-		const run = harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
-		await vi.waitFor(() => expect(harness.getDatabases).toHaveBeenCalledOnce());
-		if (change === 'edited') harness.setConnection({ ...harness.getConnection(), database: 'OtherDb' });
-		if (change === 'deleted') harness.setConnection(undefined);
-		if (change === 'principal-rotated') harness.setConnection({ ...harness.getConnection(), username: 'user-b' });
-		if (change === 'generation-changed') {
-			harness.sqlLifecycle.adoptTarget('sql-box', 'instance-sql-box', 'sql-1', undefined, 8);
-		}
-		pending.resolve(['StaleDb']);
-		await run;
-
-		expect((harness.cachedDatabases as any).entries).toEqual({});
-		expect(harness.provider.postMessage.mock.calls.map((call: any[]) => call[0]).filter((message: any) =>
-			message.type === 'sqlDatabasesData' || message.type === 'sqlDatabasesError')).toEqual([]);
 	});
 });

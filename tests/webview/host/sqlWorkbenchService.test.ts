@@ -66,6 +66,7 @@ describe('SqlWorkbenchService global privacy recovery', () => {
 
 			expect(changes).toEqual([expect.objectContaining({
 				serverUrls: ['aad.example'], connectionIds: ['sql-a'],
+				establishedConnectionIds: ['sql-a'],
 			})]);
 			expect(cancelConnection).not.toHaveBeenCalled();
 		} finally {

@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
-import { StsQueryService } from '../../../src/host/sql/stsQueryService';
+import {
+	SqlDatabaseDiscoveryOwnerError,
+	StsQueryService,
+} from '../../../src/host/sql/stsQueryService';
 import { STS_METHODS } from '../../../src/host/sql/stsProtocol';
 
 type NotificationHandler = (params: any, epoch: number) => void;
@@ -42,7 +45,12 @@ class FakeProcessManager {
 	}
 }
 
-function createHarness(leaveNoTracePolicy?: any, dispatchSqlOwnerAllowed?: any, createProtectedRuntime?: any) {
+function createHarness(
+	leaveNoTracePolicy?: any,
+	dispatchSqlOwnerAllowed?: any,
+	createProtectedRuntime?: any,
+	dispatchSqlOwnerProtection?: any,
+) {
 	let accountMap: Record<string, string> = {};
 	const process = new FakeProcessManager();
 	const runtime = { getProcessManager: vi.fn().mockResolvedValue(process), dispose: vi.fn() };
@@ -62,7 +70,7 @@ function createHarness(leaveNoTracePolicy?: any, dispatchSqlOwnerAllowed?: any, 
 	const output = { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any;
 	const service = new StsQueryService(
 		runtime as any, connectionManager as any, context, output,
-		leaveNoTracePolicy, dispatchSqlOwnerAllowed, createProtectedRuntime,
+		leaveNoTracePolicy, dispatchSqlOwnerAllowed, createProtectedRuntime, dispatchSqlOwnerProtection,
 	);
 	const connection = {
 		id: 'sql-1', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example',
@@ -500,6 +508,181 @@ describe('StsQueryService', () => {
 		const connect = await waitForRequest(process, STS_METHODS.connect);
 		completeConnection(process, connect[0].params.ownerUri);
 		expect(await promise).toEqual(['Alpha', 'master', 'zeta']);
+	});
+
+	it('returns the exact principal and protection generation with protected database discovery', async () => {
+		const policy = {
+			getConnectionIds: () => ['sql-1'],
+			getRevocationGeneration: () => 4,
+			isProtected: () => true,
+			refresh: vi.fn(async () => ['sql-1']),
+			assertAllowed: vi.fn(async () => { throw new Error('shared STS must stay blocked'); }),
+		};
+		const protectedProcess = new FakeProcessManager();
+		protectedProcess.onRequest = method => method === STS_METHODS.listDatabases
+			? { databaseNames: ['zeta', 'Alpha'] }
+			: {};
+		const protectedRuntime = {
+			getProcessManager: vi.fn(async () => protectedProcess),
+			dispose: vi.fn(async () => undefined),
+		};
+		const dispatchProtection = vi.fn(async (
+			_connection: unknown,
+			_principal: string,
+			_revocation: number,
+			_protected: boolean,
+			dispatch: () => unknown,
+		) => await dispatch());
+		const { service, connection } = createHarness(
+			policy,
+			undefined,
+			vi.fn(async () => protectedRuntime),
+			dispatchProtection,
+		);
+
+		const promise = service.getDatabasesWithIdentity(connection);
+		const connect = await waitForRequest(protectedProcess, STS_METHODS.connect);
+		completeConnection(protectedProcess, connect[0].params.ownerUri);
+
+		await expect(promise).resolves.toEqual({
+			databases: ['Alpha', 'zeta'],
+			owner: {
+				principalFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+				revocationGeneration: 4,
+				expectedProtected: true,
+			},
+		});
+	});
+
+	it('suppresses protected cleanup exception details from durable logs', async () => {
+		const policy = {
+			getConnectionIds: () => ['sql-1'],
+			getRevocationGeneration: () => 4,
+			isProtected: () => true,
+			refresh: vi.fn(async () => ['sql-1']),
+			assertAllowed: vi.fn(async () => { throw new Error('shared STS must stay blocked'); }),
+		};
+		const protectedProcess = new FakeProcessManager();
+		protectedProcess.onRequest = method => {
+			if (method === STS_METHODS.listDatabases) return { databaseNames: ['DbA'] };
+			if (method === STS_METHODS.disconnect) {
+				throw new Error('SecretLedger PrivateCustomers cleanup failed');
+			}
+			return {};
+		};
+		const protectedRuntime = {
+			getProcessManager: vi.fn(async () => protectedProcess),
+			dispose: vi.fn(async () => undefined),
+		};
+		const dispatchProtection = vi.fn(async (
+			_connection: unknown,
+			_principal: string,
+			_revocation: number,
+			_protected: boolean,
+			dispatch: () => unknown,
+		) => await dispatch());
+		const harness = createHarness(
+			policy,
+			undefined,
+			vi.fn(async () => protectedRuntime),
+			dispatchProtection,
+		);
+
+		const promise = harness.service.getDatabasesWithIdentity(harness.connection);
+		const connect = await waitForRequest(protectedProcess, STS_METHODS.connect);
+		completeConnection(protectedProcess, connect[0].params.ownerUri);
+		await expect(promise).resolves.toMatchObject({ databases: ['DbA'] });
+
+		expect(harness.output.warn).toHaveBeenCalledWith(
+			`[sql-lnt] Isolated STS cleanup request failed (${STS_METHODS.disconnect}).`,
+		);
+		const durableLog = harness.output.warn.mock.calls.flat().join('\n');
+		expect(durableLog).not.toContain('SecretLedger');
+		expect(durableLog).not.toContain('PrivateCustomers');
+	});
+
+	it('preserves the first-AAD protected discovery owner when isolated runtime cleanup rejects', async () => {
+		const policy = {
+			getConnectionIds: () => ['sql-1'],
+			getRevocationGeneration: () => 4,
+			isProtected: () => true,
+			refresh: vi.fn(async () => ['sql-1']),
+			assertAllowed: vi.fn(async () => { throw new Error('shared STS must stay blocked'); }),
+		};
+		const protectedProcess = new FakeProcessManager();
+		protectedProcess.onRequest = method => method === STS_METHODS.listDatabases
+			? { databaseNames: ['DbA'] }
+			: {};
+		const cleanupFailure = new Error('protected cleanup failed');
+		const protectedRuntime = {
+			getProcessManager: vi.fn(async () => protectedProcess),
+			dispose: vi.fn(async () => { throw cleanupFailure; }),
+		};
+		const dispatchProtection = vi.fn(async (
+			_connection: unknown,
+			_principal: string,
+			_revocation: number,
+			_protected: boolean,
+			dispatch: () => unknown,
+		) => await dispatch());
+		const harness = createHarness(
+			policy,
+			undefined,
+			vi.fn(async () => protectedRuntime),
+			dispatchProtection,
+		);
+		harness.connection.authType = 'aad';
+		delete (harness.connection as any).username;
+		vi.spyOn(vscode.authentication, 'getSession').mockResolvedValue({
+			accessToken: 'aad-token', account: { id: 'account-a', label: 'Account A' },
+		} as any);
+
+		const promise = harness.service.getDatabasesWithIdentity(harness.connection);
+		const connect = await waitForRequest(protectedProcess, STS_METHODS.connect);
+		completeConnection(protectedProcess, connect[0].params.ownerUri);
+
+		await expect(promise).rejects.toMatchObject({
+			name: 'SqlDatabaseDiscoveryOwnerError',
+			originalError: cleanupFailure,
+			owner: {
+				principalFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+				revocationGeneration: 4,
+				expectedProtected: true,
+			},
+		});
+		expect(harness.context.globalState.get('sql.auth.serverAccountMap')).toEqual({
+			'server.example': 'account-a',
+		});
+		expect((harness.service as any).activeOperations.size).toBe(0);
+	});
+
+	it('carries a captured owner on identity-aware failure while legacy discovery rethrows the original error', async () => {
+		const { process, service, connection } = createHarness();
+		const failure = new Error('database list failed');
+		process.onRequest = method => {
+			if (method === STS_METHODS.listDatabases) throw failure;
+			return {};
+		};
+
+		const identityPromise = service.getDatabasesWithIdentity(connection);
+		let connect = await waitForRequest(process, STS_METHODS.connect);
+		completeConnection(process, connect[0].params.ownerUri);
+		await expect(identityPromise).rejects.toMatchObject({
+			name: 'SqlDatabaseDiscoveryOwnerError',
+			originalError: failure,
+			owner: {
+				principalFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+				revocationGeneration: 0,
+				expectedProtected: false,
+			},
+		});
+		await expect(identityPromise).rejects.toBeInstanceOf(SqlDatabaseDiscoveryOwnerError);
+
+		process.requests.length = 0;
+		const legacyPromise = service.getDatabases(connection);
+		connect = await waitForRequest(process, STS_METHODS.connect);
+		completeConnection(process, connect[0].params.ownerUri);
+		await expect(legacyPromise).rejects.toBe(failure);
 	});
 
 	it('rejects in-flight database discovery after connection-scoped cancellation', async () => {

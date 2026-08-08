@@ -23,6 +23,10 @@ describe('StsRuntime', () => {
 
 	it('deletes the isolated protected runtime sandbox after stopping its process', async () => {
 		let sandbox = '';
+		const output = {
+			trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+			show: vi.fn(), log: vi.fn(),
+		};
 		const manager = {
 			epoch: 1, isRunning: true, isFailed: false, ready: Promise.resolve(),
 			start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined),
@@ -31,7 +35,7 @@ describe('StsRuntime', () => {
 		const dependencies = {
 			ensureSts: vi.fn(async () => 'sts-binary'),
 			invalidateStsCache: vi.fn(async () => undefined),
-			createProcessManager: vi.fn((_binary: string, _logs: string, _output: unknown, launch: any) => {
+			createProcessManager: vi.fn((_binary: string, _logs: string, protectedOutput: any, launch: any) => {
 				sandbox = launch.cwd;
 				expect(launch.env.TEMP).toBe(sandbox);
 				expect(launch.env.TMP).toBe(sandbox);
@@ -43,6 +47,8 @@ describe('StsRuntime', () => {
 				expect(launch.env.NUGET_PACKAGES).toContain(sandbox);
 				expect(launch.suppressProcessOutput).toBe(true);
 				expect(typeof launch.onProcessStarted).toBe('function');
+				protectedOutput.warn('SecretLedger PrivateCustomers');
+				protectedOutput.error(new Error('PrivateObject failed'));
 				fs.writeFileSync(path.join(sandbox, 'buffered-result.tmp'), 'secret', 'utf8');
 				return manager;
 			}),
@@ -53,7 +59,7 @@ describe('StsRuntime', () => {
 		} as any;
 		const runtime = await createProtectedStsRuntime(
 			context,
-			{ info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
+			output as any,
 			dependencies as any,
 		);
 
@@ -63,6 +69,17 @@ describe('StsRuntime', () => {
 
 		expect(manager.stop).toHaveBeenCalledOnce();
 		expect(fs.existsSync(sandbox)).toBe(false);
+		const durableLog = [
+			...output.trace.mock.calls,
+			...output.debug.mock.calls,
+			...output.info.mock.calls,
+			...output.warn.mock.calls,
+			...output.error.mock.calls,
+		].flat().join('\n');
+		expect(durableLog).toContain('[sql-lnt] Isolated STS diagnostic suppressed.');
+		expect(durableLog).not.toContain('SecretLedger');
+		expect(durableLog).not.toContain('PrivateCustomers');
+		expect(durableLog).not.toContain('PrivateObject');
 	});
 
 	it('shares one cold start and publishes only an initialized manager', async () => {

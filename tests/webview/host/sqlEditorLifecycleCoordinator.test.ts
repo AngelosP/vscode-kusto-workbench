@@ -167,7 +167,10 @@ function createHarness(options: {
 	const connectionEvents = new FakeEvent<readonly SqlConnection[]>();
 	const runtimeEvents = new FakeEvent<{ current?: StsProcessManager }>();
 	const leaveNoTraceEvents = new FakeEvent<LeaveNoTraceChange>();
-	const principalEvents = new FakeEvent<{ connectionIds: string[] }>();
+	const principalEvents = new FakeEvent<{
+		connectionIds: string[];
+		establishedConnectionIds: string[];
+	}>();
 	const protectedConnectionIds = new Set<string>();
 	const revocationGenerations = new Map<string, number>();
 	const accountsByServer: Record<string, string> = {
@@ -344,8 +347,8 @@ function createHarness(options: {
 			connections = [...next];
 			connectionEvents.fire(connections);
 		},
-		emitPrincipals(connectionIds: string[]) {
-			principalEvents.fire({ connectionIds });
+		emitPrincipals(connectionIds: string[], establishedConnectionIds: string[] = []) {
+			principalEvents.fire({ connectionIds, establishedConnectionIds });
 		},
 		emitLeaveNoTrace(change: LeaveNoTraceChange) {
 			leaveNoTraceEvents.fire(change);
@@ -1385,6 +1388,39 @@ describe('SqlEditorLifecycleCoordinator', () => {
 		expect(harness.coordinator.getGeneration('sql_1')).toBe(2);
 		expect(harness.effects.refreshConnectionsData.mock.invocationCallOrder[0])
 			.toBeLessThan(harness.effects.prefetchSchema.mock.invocationCallOrder[0]);
+	});
+
+	it('preserves target generation and database request ownership for first AAD establishment', async () => {
+		const harness = createHarness({ connections: [SQL_A] });
+		harness.coordinator.openSection('sql_1', 'instance-1');
+		expect(harness.coordinator.adoptTarget('sql_1', 'instance-1', SQL_A.id, undefined, 1)).toBe(true);
+		const ticket = harness.coordinator.beginDatabaseRequest(SQL_A.id, 'sql_1', 'instance-1');
+		expect(ticket).toBeDefined();
+		harness.effects.refreshConnectionsData.mockClear();
+
+		harness.emitPrincipals([SQL_A.id], [SQL_A.id]);
+		await vi.waitFor(() => expect(harness.effects.refreshConnectionsData).toHaveBeenCalledOnce());
+
+		expect(harness.coordinator.getGeneration('sql_1')).toBe(1);
+		expect(harness.coordinator.isDatabaseRequestCurrent(ticket!)).toBe(true);
+		expect(harness.messages).not.toContainEqual(expect.objectContaining({
+			type: 'sqlConnectionOwnerChanged',
+		}));
+		expect(harness.effects.invalidatePersistence).not.toHaveBeenCalled();
+		expect(harness.effects.invalidateSqlCopilot).not.toHaveBeenCalled();
+	});
+
+	it('completes only the exact current database request ticket', () => {
+		const harness = createHarness({ connections: [SQL_A] });
+		harness.coordinator.openSection('sql_1', 'instance-1');
+		expect(harness.coordinator.adoptTarget('sql_1', 'instance-1', SQL_A.id, undefined, 1)).toBe(true);
+		const first = harness.coordinator.beginDatabaseRequest(SQL_A.id, 'sql_1', 'instance-1')!;
+		const second = harness.coordinator.beginDatabaseRequest(SQL_A.id, 'sql_1', 'instance-1')!;
+
+		expect(harness.coordinator.completeDatabaseRequest(first)).toBe(false);
+		expect(harness.coordinator.isDatabaseRequestCurrent(second)).toBe(true);
+		expect(harness.coordinator.completeDatabaseRequest(second)).toBe(true);
+		expect(harness.coordinator.isDatabaseRequestCurrent(second)).toBe(false);
 	});
 
 	it.each(['connection', 'principal'] as const)(
@@ -2534,7 +2570,7 @@ describe('SqlEditorLifecycleCoordinator', () => {
 		const newTicket = harness.coordinator.beginDatabaseRequest(SQL_A.id, 'sql_1', 'instance-1');
 		if (!newTicket) throw new Error('Expected a new-session database request ticket.');
 
-		expect(newTicket.requestId).toBe(oldTicket.requestId);
+		expect(newTicket.requestId).not.toBe(oldTicket.requestId);
 		expect(newTicket.sessionEpoch).not.toBe(oldTicket.sessionEpoch);
 		expect(harness.coordinator.isDatabaseRequestCurrent(oldTicket, 'DbA')).toBe(false);
 		expect(harness.coordinator.isDatabaseSectionOwnerCurrent(oldTicket)).toBe(false);

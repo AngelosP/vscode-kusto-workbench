@@ -33,6 +33,22 @@ const activeProtectedStsRoots = new Set<string>();
 const PROTECTED_STS_CHILD_PID_FILE = 'sts-child.pid';
 const PROTECTED_STS_MAX_LIVE_AGE_MS = 24 * 60 * 60 * 1000;
 
+function createProtectedStsLogger(output: WorkbenchLogger): WorkbenchLogger {
+	const log = (level: 'trace' | 'debug' | 'info' | 'warn' | 'error') =>
+		(_message: string | Error, ..._args: unknown[]) => {
+			output[level]('[sql-lnt] Isolated STS diagnostic suppressed.');
+		};
+	return {
+		trace: log('trace'),
+		debug: log('debug'),
+		info: log('info'),
+		warn: log('warn'),
+		error: log('error'),
+		show: preserveFocus => output.show(preserveFocus),
+		log: log('info'),
+	};
+}
+
 function processIsAlive(pid: number): boolean {
 	if (!Number.isSafeInteger(pid) || pid <= 0) return false;
 	try {
@@ -77,8 +93,8 @@ export async function cleanupAbandonedProtectedStsSandboxes(output?: WorkbenchLo
 			try { childPid = Number(await fs.promises.readFile(path.join(root, PROTECTED_STS_CHILD_PID_FILE), 'utf8')); } catch { /* no child marker */ }
 			if (childPid && childPid !== process.pid) terminateProcess(childPid);
 			await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-		} catch (error) {
-			output?.warn(`[sql-lnt] Failed to remove an abandoned isolated STS sandbox: ${error instanceof Error ? error.message : String(error)}`);
+		} catch {
+			output?.warn('[sql-lnt] Failed to remove an abandoned isolated STS sandbox.');
 		}
 	}
 }
@@ -89,6 +105,7 @@ export async function createProtectedStsRuntime(
 	dependencies: StsRuntimeDependencies = defaultDependencies,
 ): Promise<StsRuntimeLike> {
 	await cleanupAbandonedProtectedStsSandboxes(output);
+	const protectedOutput = createProtectedStsLogger(output);
 	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), `${PROTECTED_STS_TEMP_PREFIX}${process.pid}-`));
 	activeProtectedStsRoots.add(root);
 	const home = path.join(root, 'home');
@@ -121,12 +138,12 @@ export async function createProtectedStsRuntime(
 		NUGET_PACKAGES: nuget,
 		NUGET_HTTP_CACHE_PATH: path.join(nuget, 'http-cache'),
 	};
-	const runtime = new StsRuntime(context, output, {
+	const runtime = new StsRuntime(context, protectedOutput, {
 		...dependencies,
-		createProcessManager: (binaryPath, _logPath, logger) => dependencies.createProcessManager(
+		createProcessManager: (binaryPath, _logPath, _logger) => dependencies.createProcessManager(
 			binaryPath,
 			logs,
-			logger,
+			protectedOutput,
 			{
 				cwd: root,
 				env,

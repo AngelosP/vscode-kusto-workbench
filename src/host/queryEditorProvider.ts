@@ -5,7 +5,7 @@ import * as crypto from 'crypto';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient, QueryExecutionError, type CancelableQueryExecution } from './kustoClient';
 import { SqlQueryClient, SqlQueryCancelledError } from './sqlClient';
-import { readCurrentSqlSchemaPrincipalFingerprint, SqlSchemaService, sqlSchemaPrincipalFingerprint, sqlSchemaPrincipalFingerprintForPrincipal } from './sqlEditorSchema';
+import { SqlSchemaService, sqlSchemaPrincipalFingerprintForPrincipal } from './sqlEditorSchema';
 import { SqlWorkbenchService, type SqlOwnerSnapshot } from './sql/sqlWorkbenchService';
 import {
 	sqlResultOwnersEqual,
@@ -22,12 +22,9 @@ import { normalizeSqlServerUrl } from './sql/sqlAuthState';
 import { clearSqlTokenOverride, setSqlServerAccountMapEntry, setSqlTokenOverride } from './sql/sqlAuthState';
 import { KustoConnectionLifecycle } from './kustoConnectionLifecycle';
 import {
-	beginSqlDatabaseCacheRequest,
 	getOwnedSqlDatabaseCacheEntry,
-	getOwnedSqlDatabaseLists,
 	sqlDatabaseTargetSignature,
 	SQL_DATABASE_CACHE_STORAGE_KEY,
-	writeOwnedSqlDatabaseCacheEntry,
 } from './sqlDatabaseCache';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { getQueryEditorHtml } from './queryEditorHtml';
@@ -142,6 +139,10 @@ import {
 	HostKustoFavoritesApplicationHandler,
 	type KustoFavoritesApplicationHandler,
 } from './kustoFavoritesApplicationHandler';
+import {
+	HostSqlDatabaseDiscoveryApplicationHandler,
+	type SqlDatabaseDiscoveryApplicationHandler,
+} from './sqlDatabaseDiscoveryApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -247,6 +248,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly sqlConnectionOnboardingApplication: SqlConnectionOnboardingApplicationHandler;
 	readonly sqlFavoritesApplication: SqlFavoritesApplicationHandler;
 	readonly kustoFavoritesApplication: KustoFavoritesApplicationHandler;
+	readonly sqlDatabaseDiscoveryApplication: SqlDatabaseDiscoveryApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -667,6 +669,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		sqlConnectionOnboardingApplication?: SqlConnectionOnboardingApplicationHandler,
 		sqlFavoritesApplication?: SqlFavoritesApplicationHandler,
 		kustoFavoritesApplication?: KustoFavoritesApplicationHandler,
+		sqlDatabaseDiscoveryApplication?: SqlDatabaseDiscoveryApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -793,6 +796,16 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					this.prefetchSqlSchema(connectionId, database, boxId, forceRefresh),
 			},
 		});
+		this.sqlDatabaseDiscoveryApplication = sqlDatabaseDiscoveryApplication
+			?? new HostSqlDatabaseDiscoveryApplicationHandler({
+				context: this.context,
+				lifecycle: this.sqlLifecycle,
+				workbench: this.sqlWorkbench,
+				connectionManager: this.sqlConnectionManager,
+				client: this.sqlClient,
+				postMessage: message => this.postMessage(message),
+				output: this.output,
+			});
 		this.copilot = new CopilotService(this);
 		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
 			invalidateConnections: connectionIds => {
@@ -1178,6 +1191,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const kustoFavoritesApplicationMessage = this.kustoFavoritesApplication?.handleMessage(message);
 		if (kustoFavoritesApplicationMessage) {
 			await kustoFavoritesApplicationMessage;
+			return;
+		}
+		const sqlDatabaseDiscoveryApplicationMessage = this.sqlDatabaseDiscoveryApplication?.handleMessage(message);
+		if (sqlDatabaseDiscoveryApplicationMessage) {
+			await sqlDatabaseDiscoveryApplicationMessage;
 			return;
 		}
 		switch (message.type) {
@@ -1615,18 +1633,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'sqlSectionOpen':
 				this.sqlLifecycle.openSection(message.boxId, message.sectionInstanceId);
 				return;
-			case 'getSqlDatabases':
-				if (!this.sqlLifecycle.adoptTarget(
-					message.boxId, message.sectionInstanceId, message.sqlConnectionId, undefined, message.targetGeneration,
-				)) return;
-				await this.sendSqlDatabases(message.sqlConnectionId, message.boxId, message.sectionInstanceId, false);
-				return;
-			case 'refreshSqlDatabases':
-				if (!this.sqlLifecycle.adoptTarget(
-					message.boxId, message.sectionInstanceId, message.sqlConnectionId, undefined, message.targetGeneration,
-				)) return;
-				await this.sendSqlDatabases(message.sqlConnectionId, message.boxId, message.sectionInstanceId, true);
-				return;
 			case 'retireSqlTarget':
 				this.sqlLifecycle.retireTarget(message.boxId, message.sectionInstanceId, message.targetGeneration);
 				return;
@@ -2017,42 +2023,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		});
 	}
 
-	private async postSqlConnectionMessageAllowed(
-		connection: import('./sqlConnectionManager').SqlConnection,
-		message: Record<string, unknown>,
-		isCurrent: () => boolean = () => true,
-	): Promise<void> {
-		const principalFingerprint = await readCurrentSqlSchemaPrincipalFingerprint(this.context, connection);
-		if (!principalFingerprint) throw new Error('SQL principal is unavailable before canonical dispatch admission.');
-		await this.sqlWorkbench.dispatchSqlOwnerAllowed(
-			connection,
-			principalFingerprint,
-			this.sqlWorkbench.leaveNoTracePolicy.getRevocationGeneration(connection.id),
-			() => {
-			if (isCurrent()) this.postMessage(message);
-			},
-		);
-	}
-
-	private async postSqlConnectionMessageProtection(
-		connection: import('./sqlConnectionManager').SqlConnection,
-		expectedProtected: boolean,
-		message: Record<string, unknown>,
-		isCurrent: () => boolean = () => true,
-	): Promise<void> {
-		const principalFingerprint = await readCurrentSqlSchemaPrincipalFingerprint(this.context, connection);
-		if (!principalFingerprint) throw new Error('SQL principal is unavailable before protected dispatch admission.');
-		await this.sqlWorkbench.dispatchSqlOwnerProtection(
-			connection,
-			principalFingerprint,
-			this.sqlWorkbench.leaveNoTracePolicy.getRevocationGeneration(connection.id),
-			expectedProtected,
-			() => {
-				if (isCurrent()) this.postMessage(message);
-			},
-		);
-	}
-
 	public async inferClusterDatabaseForKqlQuery(
 		queryText: string
 	): Promise<{ clusterUrl: string; database: string; authorityId?: string; connectionIdHint: string } | undefined> {
@@ -2160,6 +2130,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.sqlConnectionOnboardingApplication.dispose();
 			this.sqlFavoritesApplication.dispose();
 			this.kustoFavoritesApplication.dispose();
+			this.sqlDatabaseDiscoveryApplication.dispose();
 			this.kustoExecutionCoordinator.dispose();
 			this.cancelAllRunningQueries();
 			this.kustoClient.dispose();
@@ -2443,153 +2414,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			});
 			return delivered === true;
 		});
-	}
-
-	private async sendSqlDatabases(
-		sqlConnectionId: string,
-		boxId: string,
-		sectionInstanceId: string,
-		forceRefresh: boolean,
-	): Promise<void> {
-		const ticket = this.sqlLifecycle.beginDatabaseRequest(sqlConnectionId, boxId, sectionInstanceId);
-		if (!ticket) return;
-		const connection = this.sqlConnectionManager.getConnection(sqlConnectionId);
-		const { requestId, targetGeneration: generation } = ticket;
-		this.postMessage({ type: 'sqlDatabasesLoading', requestId, targetGeneration: generation, boxId, sectionInstanceId, sqlConnectionId });
-		if (!connection) {
-			this.postMessage({ type: 'sqlDatabasesError', requestId, targetGeneration: generation, boxId, sectionInstanceId, sqlConnectionId, error: 'SQL connection not found.' });
-			return;
-		}
-		if (this.sqlWorkbench.isLeaveNoTraceConnection(connection.id)) {
-			const protectedGeneration = this.sqlWorkbench.leaveNoTracePolicy.getRevocationGeneration(connection.id);
-			const isCurrentProtectedOwner = () => this.sqlLifecycle.isDatabaseRequestCurrent(ticket)
-				&& this.sqlWorkbench.isLeaveNoTraceConnection(connection.id)
-				&& this.sqlWorkbench.leaveNoTracePolicy.getRevocationGeneration(connection.id) === protectedGeneration;
-			try {
-				const databases = (await this.sqlClient.getDatabases(connection)).slice()
-					.sort((left, right) => left.toLowerCase().localeCompare(right.toLowerCase()));
-				await this.postSqlConnectionMessageProtection(connection, true, {
-					type: 'sqlDatabasesData', requestId, targetGeneration: generation,
-					databases, boxId, sectionInstanceId, sqlConnectionId,
-				}, isCurrentProtectedOwner);
-			} catch (error) {
-				if (!isCurrentProtectedOwner()) return;
-				const message = error instanceof Error ? error.message : String(error);
-				this.output.warn(`[sql-lnt] Isolated database discovery failed: ${sanitizeStsLogText(message)}`);
-				this.postMessage({
-					type: 'sqlDatabasesError', requestId, targetGeneration: generation,
-					boxId, sectionInstanceId, sqlConnectionId, error: message,
-				});
-			}
-			return;
-		}
-		const targetSignature = sqlDatabaseTargetSignature(connection);
-		const startingPrincipalFingerprint = sqlSchemaPrincipalFingerprint(this.context, connection);
-		let cacheRequest;
-		try {
-			cacheRequest = await beginSqlDatabaseCacheRequest(this.context, SQL_DATABASE_CACHE_STORAGE_KEY, connection);
-		} catch {
-			if (this.sqlLifecycle.isDatabaseRequestCurrent(ticket)) {
-				this.postMessage({ type: 'sqlDatabasesError', requestId, targetGeneration: generation, boxId, sectionInstanceId, sqlConnectionId, error: 'SQL connection is changing. Try again when the update completes.' });
-			}
-			return;
-		}
-		let acceptedPrincipalFingerprint = startingPrincipalFingerprint;
-		const isCurrentRequestOwner = (): boolean => {
-			const current = this.sqlConnectionManager.getConnection(connection.id);
-			const currentPrincipalFingerprint = current ? sqlSchemaPrincipalFingerprint(this.context, current) : undefined;
-			return !!current
-				&& sqlDatabaseTargetSignature(current) === targetSignature
-				&& (acceptedPrincipalFingerprint === undefined || currentPrincipalFingerprint === acceptedPrincipalFingerprint)
-				&& this.sqlLifecycle.isDatabaseRequestCurrent(ticket);
-		};
-		const assertCurrentOwner = async (requireEstablishedPrincipal = false): Promise<void> => {
-			await this.sqlWorkbench.assertSqlConnectionAllowed(connection.id);
-			await this.sqlConnectionManager.assertConnectionCurrent(connection);
-			const current = this.sqlConnectionManager.getConnection(connection.id);
-			const currentPrincipalFingerprint = current ? await readCurrentSqlSchemaPrincipalFingerprint(this.context, current) : undefined;
-			if (!isCurrentRequestOwner()) {
-				throw new Error('SQL database target changed while loading.');
-			}
-			if (acceptedPrincipalFingerprint !== undefined && currentPrincipalFingerprint !== acceptedPrincipalFingerprint) {
-				throw new Error('SQL database principal changed while loading.');
-			}
-			if (requireEstablishedPrincipal) {
-				if (!currentPrincipalFingerprint) throw new Error('SQL database identity unavailable after loading.');
-				acceptedPrincipalFingerprint = currentPrincipalFingerprint;
-			}
-		};
-		try {
-			await assertCurrentOwner();
-		} catch (error) {
-			if (!isCurrentRequestOwner()) return;
-			this.postMessage({
-				type: 'sqlDatabasesError', requestId, targetGeneration: generation,
-				boxId, sectionInstanceId, sqlConnectionId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return;
-		}
-		const isCurrentOwner = () => this.sqlLifecycle.isDatabaseSectionOwnerCurrent(ticket);
-
-		const cachedBefore = (await getOwnedSqlDatabaseCacheEntry(this.context, SQL_DATABASE_CACHE_STORAGE_KEY, connection))?.databases ?? [];
-
-		if (!forceRefresh && cachedBefore.length > 0) {
-			try {
-				await assertCurrentOwner();
-				await this.postSqlConnectionMessageAllowed(connection, {
-					type: 'sqlDatabasesData', requestId, targetGeneration: generation, databases: cachedBefore, boxId, sectionInstanceId, sqlConnectionId,
-				}, isCurrentRequestOwner);
-			} catch {
-				// A newer request or target owns this section now.
-			}
-			return;
-		}
-
-		try {
-			const databases = await this.sqlClient.getDatabases(connection);
-			const sorted = databases.slice().sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-			await assertCurrentOwner(true);
-			await writeOwnedSqlDatabaseCacheEntry(
-					this.context,
-					SQL_DATABASE_CACHE_STORAGE_KEY,
-					connection,
-					acceptedPrincipalFingerprint!,
-					sorted,
-					cacheRequest,
-					() => assertCurrentOwner(),
-				);
-			await assertCurrentOwner();
-				await this.postSqlConnectionMessageAllowed(connection, {
-					type: 'sqlDatabasesData', requestId, targetGeneration: generation, databases: sorted, boxId, sectionInstanceId, sqlConnectionId,
-				}, isCurrentRequestOwner);
-		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : String(error);
-			try {
-				await assertCurrentOwner();
-			} catch {
-				return;
-			}
-			const loggedError = sanitizeStsLogText(errorMessage);
-			this.output.error([
-				`[${new Date().toISOString()}] Failed to load SQL databases`,
-				`  error: ${this.sqlWorkbench.isLeaveNoTraceConnection(connection.id) ? 'Leave No Trace blocked SQL metadata logging.' : loggedError}`,
-			].join('\n'));
-
-			if (cachedBefore.length > 0) {
-				try {
-					await assertCurrentOwner();
-					await this.postSqlConnectionMessageAllowed(connection, {
-						type: 'sqlDatabasesData', requestId, targetGeneration: generation, databases: cachedBefore, boxId, sectionInstanceId, sqlConnectionId,
-					}, isCurrentRequestOwner);
-				} catch { /* Leave No Trace blocks fallback metadata. */ }
-				vscode.window.showWarningMessage(`Failed to refresh SQL database list. Using cached list.`);
-				return;
-			}
-
-			vscode.window.showErrorMessage(`Failed to load SQL database list: ${errorMessage}`);
-			if (isCurrentOwner()) this.postMessage({ type: 'sqlDatabasesError', requestId, targetGeneration: generation, boxId, sectionInstanceId, sqlConnectionId, error: errorMessage });
-		}
 	}
 
 	private async prefetchSqlSchema(sqlConnectionId: string, database: string, boxId: string, forceRefresh: boolean): Promise<void> {

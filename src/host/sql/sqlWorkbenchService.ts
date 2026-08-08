@@ -65,7 +65,12 @@ export class SqlWorkbenchService {
 	readonly serverAccountMap: SqlServerAccountMapStore;
 	private readonly leaveNoTraceEmitter = new vscode.EventEmitter<SqlLeaveNoTraceChange>();
 	readonly onDidChangeLeaveNoTrace = this.leaveNoTraceEmitter.event;
-	private readonly sqlPrincipalEmitter = new vscode.EventEmitter<{ serverUrls: string[]; connectionIds: string[]; version: number }>();
+	private readonly sqlPrincipalEmitter = new vscode.EventEmitter<{
+		serverUrls: string[];
+		connectionIds: string[];
+		establishedConnectionIds: string[];
+		version: number;
+	}>();
 	readonly onDidChangeSqlPrincipals = this.sqlPrincipalEmitter.event;
 	private readonly sqlConnectionEmitter = new vscode.EventEmitter<{ connectionIds: string[]; version: number }>();
 	readonly onDidChangeSqlConnections = this.sqlConnectionEmitter.event;
@@ -121,15 +126,19 @@ export class SqlWorkbenchService {
 		});
 		this.serverAccountMap.onDidChange(change => {
 			const changed = new Set(change.changedServerUrls);
+			const established = new Set(change.establishedServerUrls);
 			const invalidated = new Set(change.invalidatedServerUrls);
 			const changedConnections = this.connectionManager.getConnections()
 				.filter(connection => changed.has(String(connection.serverUrl || '').trim().toLowerCase()));
+			const establishedConnections = changedConnections
+				.filter(connection => established.has(String(connection.serverUrl || '').trim().toLowerCase()));
 			const invalidatedConnections = changedConnections
 				.filter(connection => invalidated.has(String(connection.serverUrl || '').trim().toLowerCase()));
 			for (const connection of invalidatedConnections) void this.queryService.cancelConnection(connection.id);
 			this.sqlPrincipalEmitter.fire({
 				serverUrls: change.changedServerUrls,
 				connectionIds: changedConnections.map(connection => connection.id),
+				establishedConnectionIds: establishedConnections.map(connection => connection.id),
 				version: change.version,
 			});
 			void (async () => {
