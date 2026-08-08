@@ -43,7 +43,7 @@ vi.mock('../../src/webview/core/kusto-copilot-output-runtime.js', () => ({
 }));
 
 import { CopilotChatManagerController, type CopilotChatManagerHost } from '../../src/webview/sections/copilot-chat-manager.controller.js';
-import { kustoWebviewFlavor } from '../../src/webview/sections/copilot-chat-flavor.js';
+import { kustoWebviewFlavor, sqlWebviewFlavor } from '../../src/webview/sections/copilot-chat-flavor.js';
 
 describe('CopilotChatManagerController document capabilities', () => {
 	beforeEach(() => {
@@ -83,6 +83,36 @@ describe('CopilotChatManagerController document capabilities', () => {
 			type: 'showInfo', message: 'Adding a query section requires upgrading this compatibility file first.',
 		});
 		expect(mocks.setSectionName).not.toHaveBeenCalled();
+	});
+
+	it('emits exact Kusto and SQL preparation messages when installing each chat manager', () => {
+		const createHost = (boxId: string) => {
+			const host = document.createElement('div') as HTMLElement & CopilotChatManagerHost;
+			host.boxId = boxId;
+			host.addController = vi.fn();
+			host.getCopilotConnectionId = () => 'connection-1';
+			host.getCopilotServerUrl = () => 'https://cluster.example';
+			host.getDatabase = () => 'Db';
+			host.getCopilotEditorValue = () => '';
+			host.layoutCopilotEditor = vi.fn();
+		const wrapper = document.createElement('div');
+		wrapper.className = 'query-editor-wrapper';
+		host.appendChild(wrapper);
+		document.body.appendChild(host);
+		return host;
+		};
+		const kustoHost = createHost('query_source');
+		const sqlHost = createHost('sql_source');
+
+		new CopilotChatManagerController(kustoHost, kustoWebviewFlavor).installCopilotChat();
+		new CopilotChatManagerController(sqlHost, sqlWebviewFlavor).installCopilotChat();
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'prepareCopilotWriteQuery', boxId: 'query_source', flavor: 'kusto',
+		});
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'prepareCopilotWriteQuery', boxId: 'sql_source', flavor: 'sql',
+		});
 	});
 
 	it('emits exact tool-result and Markdown-preview open messages', () => {

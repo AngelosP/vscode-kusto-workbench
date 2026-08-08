@@ -25,6 +25,7 @@ vi.mock('vscode', async () => {
 import * as vscode from 'vscode';
 import { CopilotService, type CopilotServiceHost } from '../../../src/host/queryEditorCopilot.js';
 import type { KustoConnection } from '../../../src/host/connectionManager.js';
+import { DEFAULT_PREFERRED_COPILOT_MODEL_ID, STORAGE_KEYS } from '../../../src/host/queryEditorTypes.js';
 import { appendQueryMode, buildCacheDirective, isControlCommand, normalizeControlCommandForExecution } from '../../../src/host/queryEditorUtils.js';
 import { QueryRunCoordinator } from '../../../src/host/queryRunCoordinator.js';
 import { SqlExecutionBroker } from '../../../src/host/sql/sqlExecutionBroker.js';
@@ -451,6 +452,103 @@ describe('Kusto Copilot function execution', () => {
 			type: 'copilotAvailability',
 			boxId: 'availability-failed',
 			available: false,
+		});
+	});
+
+	it('normalizes the box ID and publishes sorted Kusto models with the persisted selection and Kusto tools', async () => {
+		const storedModel = { ...createTextModel('unused'), id: 'stored-model', name: 'Zulu' };
+		const alphaModel = { ...createTextModel('unused'), id: 'alpha-model', name: 'Alpha' };
+		const blankIdModel = { ...createTextModel('unused'), id: '', name: 'Hidden' };
+		vscodeMocks.selectChatModels.mockReset();
+		vscodeMocks.selectChatModels.mockResolvedValue([storedModel, blankIdModel, alphaModel]);
+		const host = createHost([]) as any;
+		host.context.globalState.get = vi.fn(() => 'stored-model');
+		const service = new CopilotService(host);
+		const expectedTools = service.getCopilotLocalTools();
+
+		await service.prepareCopilotWriteQuery({
+			type: 'prepareCopilotWriteQuery', boxId: '  prepare-kusto-1  ', flavor: 'kusto',
+		});
+
+		expect(vscodeMocks.selectChatModels).toHaveBeenCalledOnce();
+		expect(vscodeMocks.selectChatModels).toHaveBeenCalledWith({ vendor: 'copilot' });
+		expect(host.context.globalState.get).toHaveBeenCalledWith(STORAGE_KEYS.lastOptimizeCopilotModelId);
+		expect(host.postMessage).toHaveBeenCalledOnce();
+		expect(host.postMessage).toHaveBeenCalledWith({
+			type: 'copilotWriteQueryOptions',
+			boxId: 'prepare-kusto-1',
+			models: [
+				{ id: 'alpha-model', label: 'Alpha' },
+				{ id: 'stored-model', label: 'Zulu' },
+			],
+			selectedModelId: 'stored-model',
+			tools: expectedTools,
+		});
+	});
+
+	it('uses the preferred default model and SQL tools when the persisted SQL selection is stale', async () => {
+		const fallbackModel = { ...createTextModel('unused'), id: 'fallback-model', name: 'Alpha' };
+		const preferredModel = {
+			...createTextModel('unused'), id: DEFAULT_PREFERRED_COPILOT_MODEL_ID, name: 'Zulu',
+		};
+		vscodeMocks.selectChatModels.mockReset();
+		vscodeMocks.selectChatModels.mockResolvedValue([fallbackModel, preferredModel]);
+		const host = createHost([]) as any;
+		host.context.globalState.get = vi.fn(() => 'missing-model');
+		const service = new CopilotService(host);
+		const expectedTools = service.getSqlCopilotLocalTools();
+
+		await service.prepareCopilotWriteQuery({
+			type: 'prepareCopilotWriteQuery', boxId: 'prepare-sql-1', flavor: 'sql',
+		});
+
+		expect(host.postMessage).toHaveBeenCalledWith({
+			type: 'copilotWriteQueryOptions',
+			boxId: 'prepare-sql-1',
+			models: [
+				{ id: 'fallback-model', label: 'Alpha' },
+				{ id: DEFAULT_PREFERRED_COPILOT_MODEL_ID, label: 'Zulu' },
+			],
+			selectedModelId: DEFAULT_PREFERRED_COPILOT_MODEL_ID,
+			tools: expectedTools,
+		});
+	});
+
+	it('publishes exact unavailable and discovery-failure preparation outputs with flavor-local tools', async () => {
+		vscodeMocks.selectChatModels.mockReset();
+		vscodeMocks.selectChatModels
+			.mockResolvedValueOnce([])
+			.mockRejectedValueOnce(new Error('Copilot preparation discovery failed'));
+		const host = createHost([]) as any;
+		const service = new CopilotService(host);
+		const kustoTools = service.getCopilotLocalTools();
+		const sqlTools = service.getSqlCopilotLocalTools();
+
+		await service.prepareCopilotWriteQuery({
+			type: 'prepareCopilotWriteQuery', boxId: '  prepare-empty  ', flavor: 'kusto',
+		});
+		await service.prepareCopilotWriteQuery({
+			type: 'prepareCopilotWriteQuery', boxId: 'prepare-failed', flavor: 'sql',
+		});
+
+		expect(host.postMessage).toHaveBeenNthCalledWith(1, {
+			type: 'copilotWriteQueryOptions',
+			boxId: 'prepare-empty',
+			models: [],
+			selectedModelId: '',
+			tools: kustoTools,
+		});
+		expect(host.postMessage).toHaveBeenNthCalledWith(2, {
+			type: 'copilotWriteQueryStatus',
+			boxId: 'prepare-empty',
+			status: 'GitHub Copilot is not available. Enable Copilot in VS Code to use this feature.',
+		});
+		expect(host.postMessage).toHaveBeenNthCalledWith(3, {
+			type: 'copilotWriteQueryOptions',
+			boxId: 'prepare-failed',
+			models: [],
+			selectedModelId: '',
+			tools: sqlTools,
 		});
 	});
 
