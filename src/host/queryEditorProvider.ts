@@ -174,6 +174,10 @@ import {
 	HostCopilotHistoryRemovalApplicationHandler,
 	type CopilotHistoryRemovalApplicationHandler,
 } from './copilotHistoryRemovalApplicationHandler';
+import {
+	HostCopilotChatFirstTimeApplicationHandler,
+	type CopilotChatFirstTimeApplicationHandler,
+} from './copilotChatFirstTimeApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -288,6 +292,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly copilotWriteQueryPreparationApplication: CopilotWriteQueryPreparationApplicationHandler;
 	readonly copilotConversationClearApplication: CopilotConversationClearApplicationHandler;
 	readonly copilotHistoryRemovalApplication: CopilotHistoryRemovalApplicationHandler;
+	readonly copilotChatFirstTimeApplication: CopilotChatFirstTimeApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -716,6 +721,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		copilotWriteQueryPreparationApplication?: CopilotWriteQueryPreparationApplicationHandler,
 		copilotConversationClearApplication?: CopilotConversationClearApplicationHandler,
 		copilotHistoryRemovalApplication?: CopilotHistoryRemovalApplicationHandler,
+		copilotChatFirstTimeApplication?: CopilotChatFirstTimeApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -891,6 +897,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			?? new HostCopilotHistoryRemovalApplicationHandler({
 				removeFromCopilotHistory: (boxId, entryId) =>
 					this.copilot.removeFromCopilotHistory(boxId, entryId),
+			});
+		this.copilotChatFirstTimeApplication = copilotChatFirstTimeApplication
+			?? new HostCopilotChatFirstTimeApplicationHandler({
+				globalState: this.context.globalState,
+				postMessage: message => this.postMessage(message),
 			});
 		this.copilot = new CopilotService(this);
 		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
@@ -1300,6 +1311,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await copilotHistoryRemovalApplicationMessage;
 			return;
 		}
+		const copilotChatFirstTimeApplicationMessage
+			= this.copilotChatFirstTimeApplication?.handleMessage(message);
+		if (copilotChatFirstTimeApplicationMessage) {
+			await copilotChatFirstTimeApplicationMessage;
+			return;
+		}
 		switch (message.type) {
 			case 'kustoSectionOpen':
 				this.kustoExecutionCoordinator.openSection(message.boxId, message.sectionInstanceId);
@@ -1682,9 +1699,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'clearComparisonSummary':
 				this.deleteComparisonSummary(`${String(message.sourceBoxId || '')}::${String(message.comparisonBoxId || '')}`);
-				return;
-			case 'copilotChatFirstTimeCheck':
-				await this.copilot.handleCopilotChatFirstTimeCheck(message.boxId);
 				return;
 			case 'prepareOptimizeQuery':
 				await this.copilot.prepareOptimizeQuery(message);
@@ -2116,6 +2130,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.copilotWriteQueryPreparationApplication.dispose();
 			this.copilotConversationClearApplication.dispose();
 			this.copilotHistoryRemovalApplication.dispose();
+			this.copilotChatFirstTimeApplication.dispose();
 			this.copilot.disposeKustoOwners();
 			this.copilot.invalidateSqlConnections(
 				[], [...this.sqlLifecycle.listComparisonBoxIds()],

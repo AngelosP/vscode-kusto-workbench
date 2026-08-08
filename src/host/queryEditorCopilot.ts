@@ -31,7 +31,6 @@ import {
 	buildOptimizeQueryPrompt as buildOptimizeQueryPromptFn
 } from './copilotPromptUtils';
 import { getCopilotFlavorById, type CopilotChatFlavor } from './copilotChatFlavor';
-import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 import { convertKustoFunctionDefinitionsToInline } from '../shared/kustoFunctionDefinitions';
 import type { WorkbenchLogger } from './workbenchLogger';
 import type { KustoComparisonRunIdentity, KustoCopilotRequestIdentity, KustoDispatchIdentity, KustoExecutionProducer, KustoOptimizeRequestIdentity, KustoSectionExecutionOutcome, KustoSectionExecutionTarget, PreparedComparisonSection } from '../shared/kustoExecution.js';
@@ -1445,34 +1444,6 @@ Completion:`;
 		}
 
 		return this.sanitizeProviderToolMessageSequence(messages);
-	}
-
-	async handleCopilotChatFirstTimeCheck(boxId: string): Promise<void> {
-		const already = this.host.context.globalState.get<boolean>(STORAGE_KEYS.copilotChatFirstTimeDismissed);
-		if (already) {
-			this.host.postMessage({ type: 'copilotChatFirstTimeResult', boxId, action: 'proceed' });
-			return;
-		}
-
-		await this.host.context.globalState.update(STORAGE_KEYS.copilotChatFirstTimeDismissed, true);
-
-		const openAgent = 'Open the Kusto Workbench agent';
-		const useChat = 'Use this Copilot Chat window';
-		const choice = await vscode.window.showInformationMessage(
-			'Hello there! Did you know this extension comes with a custom agent called \'Kusto Workbench\' that is available through the VS Code Copilot chat window? You should use that instead of this chat window unless you are very familiar with both and you understand the differences.',
-			{ modal: true },
-			openAgent,
-			useChat
-		);
-
-		if (choice === openAgent) {
-			await openKustoWorkbenchAgentChat();
-			this.host.postMessage({ type: 'copilotChatFirstTimeResult', boxId, action: 'openedAgent' });
-		} else if (choice === useChat) {
-			this.host.postMessage({ type: 'copilotChatFirstTimeResult', boxId, action: 'proceed' });
-		} else {
-			this.host.postMessage({ type: 'copilotChatFirstTimeResult', boxId, action: 'dismissed' });
-		}
 	}
 
 	async startCopilotWriteQuery(

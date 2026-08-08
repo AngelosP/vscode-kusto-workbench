@@ -149,6 +149,7 @@ describe('QueryEditorProvider Copilot agent-open application', () => {
 		const extensionSource = readSource('src/host/extension.ts');
 		const dashboardSource = readSource('src/host/dashboardApplicationHandler.ts');
 		const copilotSource = readSource('src/host/queryEditorCopilot.ts');
+		const firstTimeHandlerSource = readSource('src/host/copilotChatFirstTimeApplicationHandler.ts');
 		const controllerSource = readSource('src/webview/sections/copilot-chat-manager.controller.ts');
 
 		expect(providerSource).not.toContain("case 'openCopilotAgent':");
@@ -162,7 +163,8 @@ describe('QueryEditorProvider Copilot agent-open application', () => {
 		expect(helperSource).toContain('isPartialQuery: options.submit === false');
 		expect(helperSource).toContain('return !query;');
 
-		for (const source of [extensionSource, dashboardSource, copilotSource]) {
+		expect(copilotSource).not.toContain("from './copilotChatOpenUtils'");
+		for (const source of [extensionSource, dashboardSource, firstTimeHandlerSource]) {
 			expect(source).toContain("from './copilotChatOpenUtils'");
 			expect(source).toContain('openKustoWorkbenchAgentChat(');
 		}

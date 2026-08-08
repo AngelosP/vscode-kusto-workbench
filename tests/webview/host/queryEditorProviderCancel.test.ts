@@ -1054,6 +1054,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.copilotWriteQueryPreparationApplication = { dispose: vi.fn() };
 		provider.copilotConversationClearApplication = { dispose: vi.fn() };
 		provider.copilotHistoryRemovalApplication = { dispose: vi.fn() };
+		provider.copilotChatFirstTimeApplication = { dispose: vi.fn() };
 		provider.cancelAllRunningQueries = vi.fn();
 		provider.kustoClient = { dispose: vi.fn() };
 		provider.disconnectToolOrchestrator = vi.fn();
@@ -1110,6 +1111,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.copilotWriteQueryPreparationApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.copilotConversationClearApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.copilotHistoryRemovalApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider.copilotChatFirstTimeApplication.dispose).toHaveBeenCalledOnce();
 	});
 
 	it('ignores policy messages after the panel webview getter is disposed', () => {

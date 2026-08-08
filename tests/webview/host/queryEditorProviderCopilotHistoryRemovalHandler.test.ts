@@ -280,7 +280,10 @@ describe('QueryEditorProvider Copilot history-removal application', () => {
 			"type: 'removeFromCopilotHistory'; boxId: string; entryId: string",
 		);
 
-		expect(providerSource).toContain("case 'copilotChatFirstTimeCheck':");
+		expect(providerSource).not.toContain("case 'copilotChatFirstTimeCheck':");
+		expect(providerSource).toContain(
+			'this.copilotChatFirstTimeApplication?.handleMessage(message)',
+		);
 		expect(providerSource).toContain("case 'startCopilotWriteQuery':");
 		expect(providerSource).toContain("case 'cancelCopilotWriteQuery':");
 		expect(providerSource).toContain("case 'prepareOptimizeQuery':");
