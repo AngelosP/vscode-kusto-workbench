@@ -26,7 +26,6 @@ import {
 	sqlDatabaseTargetSignature,
 	SQL_DATABASE_CACHE_STORAGE_KEY,
 } from './sqlDatabaseCache';
-import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { getQueryEditorHtml } from './queryEditorHtml';
 import { toolOrchestrator } from './extension';
 import { CopilotService, CopilotServiceHost, SQL_COPILOT_OWNER_CHANGED_MESSAGE } from './queryEditorCopilot';
@@ -143,6 +142,10 @@ import {
 	HostSqlDatabaseDiscoveryApplicationHandler,
 	type SqlDatabaseDiscoveryApplicationHandler,
 } from './sqlDatabaseDiscoveryApplicationHandler';
+import {
+	HostKqlLanguageRequestApplicationHandler,
+	type KqlLanguageRequestApplicationHandler,
+} from './kqlLanguageRequestApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -249,6 +252,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly sqlFavoritesApplication: SqlFavoritesApplicationHandler;
 	readonly kustoFavoritesApplication: KustoFavoritesApplicationHandler;
 	readonly sqlDatabaseDiscoveryApplication: SqlDatabaseDiscoveryApplicationHandler;
+	readonly kqlLanguageRequestApplication: KqlLanguageRequestApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -607,7 +611,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			timer: ReturnType<typeof setTimeout>;
 		}>
 	>();
-	private readonly kqlLanguageHost: KqlLanguageServiceHost;
 	private readonly copilot: CopilotService;
 	private configSubscription?: vscode.Disposable;
 	private authPreferenceSubscription?: vscode.Disposable;
@@ -670,6 +673,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		sqlFavoritesApplication?: SqlFavoritesApplicationHandler,
 		kustoFavoritesApplication?: KustoFavoritesApplicationHandler,
 		sqlDatabaseDiscoveryApplication?: SqlDatabaseDiscoveryApplicationHandler,
+		kqlLanguageRequestApplication?: KqlLanguageRequestApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -729,7 +733,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
 			this.handleKustoAuthPreferenceChange(change);
 		});
-		this.kqlLanguageHost = new KqlLanguageServiceHost(this.connectionManager, this.context);
 		this.connection = new ConnectionService(this);
 		this.kustoConnectionOnboardingApplication = kustoConnectionOnboardingApplication
 			?? new HostKustoConnectionOnboardingApplicationHandler({
@@ -803,6 +806,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				workbench: this.sqlWorkbench,
 				connectionManager: this.sqlConnectionManager,
 				client: this.sqlClient,
+				postMessage: message => this.postMessage(message),
+				output: this.output,
+			});
+		this.kqlLanguageRequestApplication = kqlLanguageRequestApplication
+			?? new HostKqlLanguageRequestApplicationHandler({
+				connectionManager: this.connectionManager,
+				context: this.context,
 				postMessage: message => this.postMessage(message),
 				output: this.output,
 			});
@@ -1196,6 +1206,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const sqlDatabaseDiscoveryApplicationMessage = this.sqlDatabaseDiscoveryApplication?.handleMessage(message);
 		if (sqlDatabaseDiscoveryApplicationMessage) {
 			await sqlDatabaseDiscoveryApplicationMessage;
+			return;
+		}
+		const kqlLanguageRequestApplicationMessage = this.kqlLanguageRequestApplication?.handleMessage(message);
+		if (kqlLanguageRequestApplicationMessage) {
+			await kqlLanguageRequestApplicationMessage;
 			return;
 		}
 		switch (message.type) {
@@ -1752,9 +1767,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'requestCrossClusterSchema':
 				await this.schema.handleCrossClusterSchemaRequest(message.clusterName, message.database, message.boxId, message.requestToken, message.requestSource, message.traceId);
 				return;
-			case 'kqlLanguageRequest':
-				await this.handleKqlLanguageRequest(message);
-				return;
 			case 'toolExecutionStarted':
 				if (toolOrchestrator) toolOrchestrator.handleKustoExecutionStarted(message.requestId, message.owner);
 				return;
@@ -1939,47 +1951,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		});
 	}
 
-	private async handleKqlLanguageRequest(
-		message: Extract<IncomingWebviewMessage, { type: 'kqlLanguageRequest' }>
-	): Promise<void> {
-		const requestId = String(message.requestId || '').trim();
-		if (!requestId) {
-			return;
-		}
-		try {
-			const params = message.params && typeof message.params === 'object' ? message.params : { text: '' };
-			switch (message.method) {
-				case 'textDocument/diagnostic': {
-					const result = await this.kqlLanguageHost.getDiagnostics(params);
-					this.postMessage({ type: 'kqlLanguageResponse', requestId, ok: true, result });
-					return;
-				}
-				case 'kusto/findTableReferences': {
-					const result = await this.kqlLanguageHost.findTableReferences(params);
-					this.postMessage({ type: 'kqlLanguageResponse', requestId, ok: true, result });
-					return;
-				}
-				default:
-					this.postMessage({
-						type: 'kqlLanguageResponse',
-						requestId,
-						ok: false,
-						error: { message: 'Unsupported method.' }
-					});
-					return;
-			}
-		} catch (error) {
-			const raw = this.getErrorMessage(error);
-			this.output.error(`[kql-ls] request failed: ${raw}`);
-			this.postMessage({
-				type: 'kqlLanguageResponse',
-				requestId,
-				ok: false,
-				error: { message: 'KQL language service failed to process the request.' }
-			});
-		}
-	}
-
 
 	normalizeClusterUrlKey(url: string): string {
 		return kustoClusterKey(url);
@@ -2131,6 +2102,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.sqlFavoritesApplication.dispose();
 			this.kustoFavoritesApplication.dispose();
 			this.sqlDatabaseDiscoveryApplication.dispose();
+			this.kqlLanguageRequestApplication.dispose();
 			this.kustoExecutionCoordinator.dispose();
 			this.cancelAllRunningQueries();
 			this.kustoClient.dispose();
