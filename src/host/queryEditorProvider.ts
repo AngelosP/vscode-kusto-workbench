@@ -150,6 +150,10 @@ import {
 	HostSqlLastSelectionApplicationHandler,
 	type SqlLastSelectionApplicationHandler,
 } from './sqlLastSelectionApplicationHandler';
+import {
+	HostDevelopmentNoteMutationApplicationHandler,
+	type DevelopmentNoteMutationApplicationHandler,
+} from './developmentNoteMutationApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -258,6 +262,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly sqlDatabaseDiscoveryApplication: SqlDatabaseDiscoveryApplicationHandler;
 	readonly kqlLanguageRequestApplication: KqlLanguageRequestApplicationHandler;
 	readonly sqlLastSelectionApplication: SqlLastSelectionApplicationHandler;
+	readonly developmentNoteMutationApplication: DevelopmentNoteMutationApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -680,6 +685,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		sqlDatabaseDiscoveryApplication?: SqlDatabaseDiscoveryApplicationHandler,
 		kqlLanguageRequestApplication?: KqlLanguageRequestApplicationHandler,
 		sqlLastSelectionApplication?: SqlLastSelectionApplicationHandler,
+		developmentNoteMutationApplication?: DevelopmentNoteMutationApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -825,6 +831,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.sqlLastSelectionApplication = sqlLastSelectionApplication
 			?? new HostSqlLastSelectionApplicationHandler({
 				globalState: this.context.globalState,
+			});
+		this.developmentNoteMutationApplication = developmentNoteMutationApplication
+			?? new HostDevelopmentNoteMutationApplicationHandler({
+				postMessage: message => this.postMessage(message),
+				isAvailable: () => !!this.panel,
 			});
 		this.copilot = new CopilotService(this);
 		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
@@ -994,10 +1005,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	private toolStateResponseResolvers = new Map<string, (sections: unknown[] | undefined) => void>();
-	private webviewMutationResponseResolvers = new Map<string, {
-		resolve: (result: { success: boolean; error?: string }) => void;
-		timer: ReturnType<typeof setTimeout>;
-	}>();
 	private connectionsDataRevision = 0;
 	private connectionsDataTail: Promise<void> = Promise.resolve();
 
@@ -1027,26 +1034,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		});
 	}
 
-	async updateDevelopmentNotes(message: Record<string, unknown>): Promise<{ success: boolean; error?: string }> {
-		if (!this.panel) return { success: false, error: 'Kusto Workbench editor is unavailable.' };
-		const requestId = `copilot_devnotes_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-		return new Promise(resolve => {
-			const timer = setTimeout(() => {
-				this.webviewMutationResponseResolvers.delete(requestId);
-				resolve({ success: false, error: 'Development note update timed out.' });
-			}, 5000);
-			this.webviewMutationResponseResolvers.set(requestId, { resolve, timer });
-			const settleDeliveryFailure = (error: string) => {
-				const pending = this.webviewMutationResponseResolvers.get(requestId);
-				if (!pending) return;
-				this.webviewMutationResponseResolvers.delete(requestId);
-				clearTimeout(pending.timer);
-				pending.resolve({ success: false, error });
-			};
-			void Promise.resolve(this.postMessage({ type: 'updateDevNotes', requestId, ...message })).then(delivered => {
-				if (delivered === false) settleDeliveryFailure('Kusto Workbench rejected the development note request.');
-			}, error => settleDeliveryFailure(error instanceof Error ? error.message : String(error)));
-		});
+	updateDevelopmentNotes(message: Record<string, unknown>): Promise<{ success: boolean; error?: string }> {
+		return this.developmentNoteMutationApplication.updateDevelopmentNotes(message);
 	}
 
 	private rebuildSqlComparisonOwners(sections: unknown[]): void {
@@ -1776,21 +1765,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'toolResponse':
 				// Handle response from webview for tool orchestrator commands
-				if (message.requestId) {
-					const pending = this.webviewMutationResponseResolvers.get(message.requestId);
-					if (pending) {
-						this.webviewMutationResponseResolvers.delete(message.requestId);
-						clearTimeout(pending.timer);
-						const result = message.result && typeof message.result === 'object'
-							? message.result as Record<string, unknown>
-							: {};
-						pending.resolve({
-							success: !message.error && result.success === true,
-							...(message.error ? { error: String(message.error) } : {}),
-						});
-						return;
-					}
-				}
+				if (this.developmentNoteMutationApplication.handleMessage(message)) return;
 				if (toolOrchestrator && message.requestId) {
 					toolOrchestrator.handleWebviewResponse(message.requestId, message.result, message.error);
 				}
@@ -2083,11 +2058,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			for (const [requestId, pending] of [...this.pendingComparisonEnsureByRequestId]) {
 				this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
 			}
-			for (const [requestId, pending] of [...this.webviewMutationResponseResolvers]) {
-				this.webviewMutationResponseResolvers.delete(requestId);
-				clearTimeout(pending.timer);
-				pending.resolve({ success: false, error: 'Kusto Workbench editor closed.' });
-			}
+			this.developmentNoteMutationApplication.dispose();
 			this.copilot.disposeKustoOwners();
 			this.copilot.invalidateSqlConnections(
 				[], [...this.sqlLifecycle.listComparisonBoxIds()],

@@ -1048,6 +1048,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.sqlDatabaseDiscoveryApplication = { dispose: vi.fn() };
 		provider.kqlLanguageRequestApplication = { dispose: vi.fn() };
 		provider.sqlLastSelectionApplication = { dispose: vi.fn() };
+		provider.developmentNoteMutationApplication = { dispose: vi.fn() };
 		provider.cancelAllRunningQueries = vi.fn();
 		provider.kustoClient = { dispose: vi.fn() };
 		provider.disconnectToolOrchestrator = vi.fn();
@@ -1061,8 +1062,6 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			'comparison-pending',
 			{ resolve: vi.fn(), reject: rejectComparison, timer: comparisonTimer, sourceBoxId: 'query_1' },
 		]]);
-		provider.webviewMutationResponseResolvers = new Map();
-
 		provider.registerPanelDisposal(panel);
 		disposePanel();
 		clearTimeout(kustoStartTimer);
@@ -1100,6 +1099,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.sqlDatabaseDiscoveryApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.kqlLanguageRequestApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.sqlLastSelectionApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider.developmentNoteMutationApplication.dispose).toHaveBeenCalledOnce();
 	});
 
 	it('ignores policy messages after the panel webview getter is disposed', () => {
@@ -1122,27 +1122,6 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 
 		await expect(provider.postMessage({ type: 'test' })).resolves.toBe(false);
 		expect(provider.output.warn).toHaveBeenCalledWith('[webview] postMessage failed: delivery failed');
-	});
-
-	it('correlates a development-note admission error back to the awaiting Copilot request', async () => {
-		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
-		provider.panel = {};
-		provider.webviewMutationResponseResolvers = new Map();
-		provider.postMessage = vi.fn(() => true);
-
-		const pending = provider.updateDevelopmentNotes({ action: 'add', entry: { id: 'note_1' } });
-		const request = provider.postMessage.mock.calls[0][0];
-		expect(request).toMatchObject({ type: 'updateDevNotes', action: 'add', requestId: expect.any(String) });
-
-		await provider.handleWebviewMessage({
-			type: 'toolResponse', requestId: request.requestId,
-			result: { success: false }, error: 'Development notes require a companion metadata file.',
-		});
-
-		await expect(pending).resolves.toEqual({
-			success: false, error: 'Development notes require a companion metadata file.',
-		});
-		expect(provider.webviewMutationResponseResolvers.size).toBe(0);
 	});
 
 	it.each(['schema-result', 'schema-error'] as const)('suppresses %s details when schema owner admission rejects', async mode => {
