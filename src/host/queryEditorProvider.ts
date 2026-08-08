@@ -146,6 +146,10 @@ import {
 	HostKqlLanguageRequestApplicationHandler,
 	type KqlLanguageRequestApplicationHandler,
 } from './kqlLanguageRequestApplicationHandler';
+import {
+	HostSqlLastSelectionApplicationHandler,
+	type SqlLastSelectionApplicationHandler,
+} from './sqlLastSelectionApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -253,6 +257,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly kustoFavoritesApplication: KustoFavoritesApplicationHandler;
 	readonly sqlDatabaseDiscoveryApplication: SqlDatabaseDiscoveryApplicationHandler;
 	readonly kqlLanguageRequestApplication: KqlLanguageRequestApplicationHandler;
+	readonly sqlLastSelectionApplication: SqlLastSelectionApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -674,6 +679,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		kustoFavoritesApplication?: KustoFavoritesApplicationHandler,
 		sqlDatabaseDiscoveryApplication?: SqlDatabaseDiscoveryApplicationHandler,
 		kqlLanguageRequestApplication?: KqlLanguageRequestApplicationHandler,
+		sqlLastSelectionApplication?: SqlLastSelectionApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -815,6 +821,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				context: this.context,
 				postMessage: message => this.postMessage(message),
 				output: this.output,
+			});
+		this.sqlLastSelectionApplication = sqlLastSelectionApplication
+			?? new HostSqlLastSelectionApplicationHandler({
+				globalState: this.context.globalState,
 			});
 		this.copilot = new CopilotService(this);
 		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
@@ -1211,6 +1221,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const kqlLanguageRequestApplicationMessage = this.kqlLanguageRequestApplication?.handleMessage(message);
 		if (kqlLanguageRequestApplicationMessage) {
 			await kqlLanguageRequestApplicationMessage;
+			return;
+		}
+		const sqlLastSelectionApplicationMessage = this.sqlLastSelectionApplication?.handleMessage(message);
+		if (sqlLastSelectionApplicationMessage) {
+			await sqlLastSelectionApplicationMessage;
 			return;
 		}
 		switch (message.type) {
@@ -1650,17 +1665,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'retireSqlTarget':
 				this.sqlLifecycle.retireTarget(message.boxId, message.sectionInstanceId, message.targetGeneration);
-				return;
-			case 'saveSqlLastSelection':
-				{
-					const cid = String(message.sqlConnectionId || '').trim();
-					if (cid) {
-						await this.context.globalState.update('sql.lastConnectionId', cid);
-						if (message.database !== undefined) {
-							await this.context.globalState.update('sql.lastDatabase', message.database);
-						}
-					}
-				}
 				return;
 			case 'testSetSqlAuthOverride':
 				if (this.context.extensionMode === vscode.ExtensionMode.Production) {
@@ -2103,6 +2107,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.kustoFavoritesApplication.dispose();
 			this.sqlDatabaseDiscoveryApplication.dispose();
 			this.kqlLanguageRequestApplication.dispose();
+			this.sqlLastSelectionApplication.dispose();
 			this.kustoExecutionCoordinator.dispose();
 			this.cancelAllRunningQueries();
 			this.kustoClient.dispose();
