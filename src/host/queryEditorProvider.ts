@@ -154,6 +154,10 @@ import {
 	HostDevelopmentNoteMutationApplicationHandler,
 	type DevelopmentNoteMutationApplicationHandler,
 } from './developmentNoteMutationApplicationHandler';
+import {
+	HostCopilotInlineCompletionApplicationHandler,
+	type CopilotInlineCompletionApplicationHandler,
+} from './copilotInlineCompletionApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -263,6 +267,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly kqlLanguageRequestApplication: KqlLanguageRequestApplicationHandler;
 	readonly sqlLastSelectionApplication: SqlLastSelectionApplicationHandler;
 	readonly developmentNoteMutationApplication: DevelopmentNoteMutationApplicationHandler;
+	readonly copilotInlineCompletionApplication: CopilotInlineCompletionApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -686,6 +691,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		kqlLanguageRequestApplication?: KqlLanguageRequestApplicationHandler,
 		sqlLastSelectionApplication?: SqlLastSelectionApplicationHandler,
 		developmentNoteMutationApplication?: DevelopmentNoteMutationApplicationHandler,
+		copilotInlineCompletionApplication?: CopilotInlineCompletionApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -836,6 +842,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			?? new HostDevelopmentNoteMutationApplicationHandler({
 				postMessage: message => this.postMessage(message),
 				isAvailable: () => !!this.panel,
+			});
+		this.copilotInlineCompletionApplication = copilotInlineCompletionApplication
+			?? new HostCopilotInlineCompletionApplicationHandler({
+				assertSqlOwnerToken: (boxId, ownerToken) => this.assertSqlOwnerToken(boxId, ownerToken),
+				handleCopilotInlineCompletionRequest: (message, expectedSqlOwner, ownerToken) =>
+					this.copilot.handleCopilotInlineCompletionRequest(message, expectedSqlOwner, ownerToken),
+				postMessage: message => this.postMessage(message),
 			});
 		this.copilot = new CopilotService(this);
 		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
@@ -1217,6 +1230,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await sqlLastSelectionApplicationMessage;
 			return;
 		}
+		const copilotInlineCompletionApplicationMessage = this.copilotInlineCompletionApplication?.handleMessage(message);
+		if (copilotInlineCompletionApplicationMessage) {
+			await copilotInlineCompletionApplicationMessage;
+			return;
+		}
 		switch (message.type) {
 			case 'kustoSectionOpen':
 				this.kustoExecutionCoordinator.openSection(message.boxId, message.sectionInstanceId);
@@ -1522,21 +1540,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'getConnections':
 				await this.sendConnectionsData(message.policyRequestId);
-				return;
-			case 'requestCopilotInlineCompletion':
-				if (message.flavor === 'sql') {
-					try {
-						const issued = await this.assertSqlOwnerToken(message.boxId, message.ownerToken);
-						await this.copilot.handleCopilotInlineCompletionRequest(message, issued.owner, issued.token);
-					} catch {
-						this.postMessage({
-							type: 'copilotInlineCompletionResult', requestId: message.requestId,
-							boxId: message.boxId, ownerToken: message.ownerToken, completions: [],
-						});
-					}
-				} else {
-					await this.copilot.handleCopilotInlineCompletionRequest(message);
-				}
 				return;
 			case 'getDatabases':
 				await this.connection.sendDatabases(message.connectionId, message.boxId, {
@@ -2059,6 +2062,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
 			}
 			this.developmentNoteMutationApplication.dispose();
+			this.copilotInlineCompletionApplication.dispose();
 			this.copilot.disposeKustoOwners();
 			this.copilot.invalidateSqlConnections(
 				[], [...this.sqlLifecycle.listComparisonBoxIds()],

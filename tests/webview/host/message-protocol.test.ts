@@ -297,6 +297,7 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 		extractPostMessageTypes('src/host/kqlLanguageRequestApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/sqlLastSelectionApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/developmentNoteMutationApplicationHandler.ts'),
+		extractPostMessageTypes('src/host/copilotInlineCompletionApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/kustoExecutionCoordinator.ts'),
 		extractPostMessageTypes('src/host/sql/sqlEditorLifecycleCoordinator.ts'),
 		extractPostMessageTypes('src/host/kqlxEditorProvider.ts'),
@@ -325,30 +326,31 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kustoConnectionOnboardingApplicationHandler.ts::testConnectionFromWebview::postMessage::189:4',
 	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::453:33',
 	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::89:10',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::451:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::692:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::456:27',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::698:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::702:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::707:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::710:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::704:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::708:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::713:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::716:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::731:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::719:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::722:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::737:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::742:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::759:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::767:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::743:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::748:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::765:29',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::773:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::782:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::793:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::821:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::828:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::837:29',
-	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::956:26',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::2020:21',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1960:21',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::1972:21',
-	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::599:25',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::779:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::788:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::799:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::827:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::834:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::843:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::851:29',
+	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::969:26',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::2023:21',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1963:21',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::1975:21',
+	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::604:25',
 	'src/host/querySharingApplicationHandler.ts::postMessage::postMessage::32:10',
 	'src/host/resourceUriApplicationHandler.ts::postMessage::postMessage::50:3',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1766:13',
@@ -1128,6 +1130,11 @@ describe('Message Protocol Contract', () => {
 		it('extracts the development-note mutation request', () => {
 			const extraction = extractPostMessageTypes('src/host/developmentNoteMutationApplicationHandler.ts');
 			expect(extraction.types).toContain('updateDevNotes');
+		});
+
+		it('extracts the Copilot inline-completion fallback', () => {
+			const extraction = extractPostMessageTypes('src/host/copilotInlineCompletionApplicationHandler.ts');
+			expect(extraction.types).toContain('copilotInlineCompletionResult');
 		});
 
 		it('extracts both Python execution handler terminals', () => {
