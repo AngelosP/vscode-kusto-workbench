@@ -301,6 +301,7 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 		extractPostMessageTypes('src/host/copilotAvailabilityApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/copilotWriteQueryPreparationApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/copilotConversationClearApplicationHandler.ts'),
+		extractPostMessageTypes('src/host/copilotHistoryRemovalApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/kustoExecutionCoordinator.ts'),
 		extractPostMessageTypes('src/host/sql/sqlEditorLifecycleCoordinator.ts'),
 		extractPostMessageTypes('src/host/kqlxEditorProvider.ts'),
@@ -329,31 +330,31 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kustoConnectionOnboardingApplicationHandler.ts::testConnectionFromWebview::postMessage::189:4',
 	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::453:33',
 	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::89:10',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::471:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::716:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::476:27',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::722:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::726:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::731:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::734:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::728:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::732:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::737:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::740:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::755:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::743:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::746:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::761:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::766:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::783:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::791:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::767:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::772:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::789:29',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::797:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::806:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::817:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::845:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::852:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::861:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::869:29',
-	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::1000:26',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::2058:21',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1998:21',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::2010:21',
-	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::619:25',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::803:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::812:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::823:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::851:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::858:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::867:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::875:29',
+	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::1011:26',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::2072:21',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::2012:21',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::2024:21',
+	'src/host/queryEditorProvider.ts::waitForSqlComparisonAdmission::postMessage::624:25',
 	'src/host/querySharingApplicationHandler.ts::postMessage::postMessage::32:10',
 	'src/host/resourceUriApplicationHandler.ts::postMessage::postMessage::50:3',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1766:13',
@@ -1155,6 +1156,13 @@ describe('Message Protocol Contract', () => {
 		it('keeps the Copilot conversation-clear admission handler response-free', () => {
 			const extraction = extractPostMessageTypes(
 				'src/host/copilotConversationClearApplicationHandler.ts',
+			);
+			expect(extraction).toEqual({ types: [], dynamicSites: [] });
+		});
+
+		it('keeps the Copilot history-removal admission handler response-free', () => {
+			const extraction = extractPostMessageTypes(
+				'src/host/copilotHistoryRemovalApplicationHandler.ts',
 			);
 			expect(extraction).toEqual({ types: [], dynamicSites: [] });
 		});

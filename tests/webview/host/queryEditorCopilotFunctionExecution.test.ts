@@ -1637,6 +1637,32 @@ describe('Kusto Copilot function execution', () => {
 		expect((service as any).copilotConversationHistoryByBoxId.get(neighbor)[0].text).toBe('keep');
 	});
 
+	it('normalizes history-removal scope and marks only eligible entries removed', () => {
+		const service = new CopilotService(createHost([]));
+		const target = 'box-history-removal';
+		const neighbor = 'box-history-neighbor';
+		const history = [
+			{ type: 'tool-call', id: 'tool-entry', result: 'tool result' },
+			{ type: 'general-rules', id: 'rules-entry', text: 'rules' },
+			{ type: 'user-message', id: 'user-entry', text: 'question' },
+		];
+		const neighborHistory = [{ type: 'tool-call', id: 'neighbor-entry', result: 'keep' }];
+		(service as any).copilotConversationHistoryByBoxId.set(target, history);
+		(service as any).copilotConversationHistoryByBoxId.set(neighbor, neighborHistory);
+
+		service.removeFromCopilotHistory('   ', 'tool-entry');
+		service.removeFromCopilotHistory(target, '   ');
+		service.removeFromCopilotHistory(target, 'missing-entry');
+		service.removeFromCopilotHistory(`  ${target}  `, '  tool-entry  ');
+		service.removeFromCopilotHistory(target, 'rules-entry');
+		service.removeFromCopilotHistory(target, 'user-entry');
+
+		expect(history[0].removed).toBe(true);
+		expect(history[1].removed).toBe(true);
+		expect(history[2]).not.toHaveProperty('removed');
+		expect(neighborHistory[0]).not.toHaveProperty('removed');
+	});
+
 	it('clears completed host history only for the exact Kusto conversation owner', () => {
 		const service = new CopilotService(createHost([]));
 		const current = { boxId: 'box-clear', copilotRequestId: 'request-current', sectionInstanceId: 'instance-current', targetGeneration: 3 };
