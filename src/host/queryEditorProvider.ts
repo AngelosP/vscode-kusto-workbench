@@ -53,7 +53,7 @@ import {
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { KustoAuthPreferenceService, type KustoAuthPreferenceChange } from './kustoAuthPreferenceService';
 import type { KustoLeaveNoTracePolicySnapshot } from './kustoLeaveNoTracePolicyStore';
-import { getKustoConnectionIdentityKey, resolveKustoConnection, resolveStrictKustoConnection } from '../shared/kustoAuth';
+import { getKustoConnectionIdentityKey, resolveKustoConnection } from '../shared/kustoAuth';
 import { EmbeddedTutorialWebviewHost, EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWebviewHost';
 import { perfMark } from './perfTrace';
 import { getWorkbenchLogger, type WorkbenchLogger } from './workbenchLogger';
@@ -178,6 +178,10 @@ import {
 	HostCopilotChatFirstTimeApplicationHandler,
 	type CopilotChatFirstTimeApplicationHandler,
 } from './copilotChatFirstTimeApplicationHandler';
+import {
+	HostWorkbenchToolSessionApplicationHandler,
+	type WorkbenchToolSessionApplicationHandler,
+} from './workbenchToolSessionApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -293,6 +297,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly copilotConversationClearApplication: CopilotConversationClearApplicationHandler;
 	readonly copilotHistoryRemovalApplication: CopilotHistoryRemovalApplicationHandler;
 	readonly copilotChatFirstTimeApplication: CopilotChatFirstTimeApplicationHandler;
+	readonly workbenchToolSessionApplication: WorkbenchToolSessionApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -722,6 +727,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		copilotConversationClearApplication?: CopilotConversationClearApplicationHandler,
 		copilotHistoryRemovalApplication?: CopilotHistoryRemovalApplicationHandler,
 		copilotChatFirstTimeApplication?: CopilotChatFirstTimeApplicationHandler,
+		workbenchToolSessionApplication?: WorkbenchToolSessionApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -903,6 +909,16 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				globalState: this.context.globalState,
 				postMessage: message => this.postMessage(message),
 			});
+		this.workbenchToolSessionApplication = workbenchToolSessionApplication
+			?? new HostWorkbenchToolSessionApplicationHandler({
+				getOrchestrator: () => toolOrchestrator,
+				postMessage: message => this.postMessage(message),
+				isAvailable: () => !!this.panel,
+				getDocumentUri: () => this.documentUri,
+				connectionManager: this.connectionManager,
+				schema: this.schema,
+				sqlLifecycle: this.sqlLifecycle,
+			});
 		this.copilot = new CopilotService(this);
 		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
 			invalidateConnections: connectionIds => {
@@ -985,7 +1001,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.fileOpenTrace?.mark('queryEditorProvider.messageHandler.configured', { shouldRegisterMessageHandler });
 
 		// Connect the tool orchestrator to this webview instance
-		this.connectToolOrchestrator();
+		this.workbenchToolSessionApplication.activate();
 		this.fileOpenTrace?.mark('queryEditorProvider.toolOrchestrator.connected');
 
 		// Reconnect the orchestrator when this panel becomes visible again
@@ -995,7 +1011,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			const visible = this.panel?.visible === true;
 			this.editorCursorStatusApplication.setPanelVisible(visible);
 			if (visible) {
-				this.connectToolOrchestrator();
+				this.workbenchToolSessionApplication.activate();
 			}
 		});
 
@@ -1005,107 +1021,17 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.fileOpenTrace?.mark('queryEditorProvider.initialize.end');
 	}
 
-	// Token returned by the orchestrator's connect(), used to guard disconnect.
-	private toolOrchestratorToken: number | undefined;
-
 	/** URI string of the backing document (set by custom editor providers before initializeWebviewPanel). */
 	documentUri?: string;
-
-	private connectToolOrchestrator(): void {
-		if (!toolOrchestrator) return;
-		if (this.toolOrchestratorToken !== undefined) {
-			toolOrchestrator.activateConnection(this.toolOrchestratorToken);
-			return;
-		}
-
-		this.toolOrchestratorToken = toolOrchestrator.connect(
-			(message: unknown) => this.postMessage(message),
-			async () => {
-				const sections = await this.requestSectionsFromWebview();
-				return sections as Array<{ id?: string; type: string; [key: string]: unknown }> | undefined;
-			},
-			async (clusterUrl: string, connectionId: string) => {
-				const sections = await this.requestSectionsFromWebview('schema-refresh', connectionId) ?? [];
-				const connections = this.connectionManager.getConnections();
-				const targets = sections.flatMap(section => {
-					const candidate = section as {
-						id?: unknown; type?: unknown; connectionId?: unknown; schemaRequestToken?: unknown;
-						sectionInstanceId?: unknown; targetGeneration?: unknown;
-						clusterUrl?: unknown; authorityId?: unknown; connectionIdHint?: unknown; database?: unknown;
-					};
-					if (canonicalSectionKind(candidate.type) !== 'query') return [];
-					const boxId = String(candidate.id || '').trim();
-					const database = String(candidate.database || '').trim();
-					const runtimeConnectionId = String(candidate.connectionId || '').trim();
-					const resolution = runtimeConnectionId
-						? resolveStrictKustoConnection(connections, { clusterUrl: candidate.clusterUrl, connectionId: runtimeConnectionId })
-						: resolveKustoConnection(connections, candidate);
-					return boxId && database && resolution.kind === 'matched' && resolution.connection.id === connectionId
-						? [{
-							boxId, database, requestToken: String(candidate.schemaRequestToken || '').trim() || undefined,
-							...(typeof candidate.sectionInstanceId === 'string' && Number.isSafeInteger(candidate.targetGeneration)
-								? { sectionInstanceId: candidate.sectionInstanceId, targetGeneration: Number(candidate.targetGeneration) }
-								: {}),
-						}]
-						: [];
-				});
-				return this.schema.refreshSchemaForTools(clusterUrl, connectionId, targets);
-			},
-			this.documentUri,
-			(sectionId?: string) => {
-				const id = String(sectionId || '').trim();
-				if (id) return this.sqlLifecycle.getConnectionId(id);
-				return this.sqlLifecycle.getFirstConnectionId();
-			},
-			(sectionId: string) => {
-				const id = String(sectionId || '').trim();
-				return id ? this.sqlLifecycle.getReadyToolOwner(id) : undefined;
-			},
-		);
-	}
-
-	private disconnectToolOrchestrator(): void {
-		if (!toolOrchestrator || this.toolOrchestratorToken === undefined) return;
-		toolOrchestrator.disconnectIfOwner(this.toolOrchestratorToken);
-		this.toolOrchestratorToken = undefined;
-	}
-
-	private toolStateResponseResolvers = new Map<string, (sections: unknown[] | undefined) => void>();
 	private connectionsDataRevision = 0;
 	private connectionsDataTail: Promise<void> = Promise.resolve();
 
 	async requestSectionsFromWebview(purpose?: 'schema-refresh', targetConnectionId?: string): Promise<unknown[] | undefined> {
-		if (!this.panel) return undefined;
-		
-		const requestId = `state_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-		
-		return new Promise<unknown[] | undefined>((resolve) => {
-			const timer = setTimeout(() => {
-				this.toolStateResponseResolvers.delete(requestId);
-				resolve(undefined);
-			}, 5000);
-			
-			this.toolStateResponseResolvers.set(requestId, (sections) => {
-				clearTimeout(timer);
-				this.toolStateResponseResolvers.delete(requestId);
-				if (sections) this.rebuildSqlComparisonOwners(sections);
-				resolve(sections);
-			});
-			
-			this.postMessage({
-				type: 'requestToolState', requestId,
-				...(purpose ? { purpose } : {}),
-				...(targetConnectionId ? { targetConnectionId } : {}),
-			});
-		});
+		return this.workbenchToolSessionApplication.requestSectionsFromWebview(purpose, targetConnectionId);
 	}
 
 	updateDevelopmentNotes(message: Record<string, unknown>): Promise<{ success: boolean; error?: string }> {
 		return this.developmentNoteMutationApplication.updateDevelopmentNotes(message);
-	}
-
-	private rebuildSqlComparisonOwners(sections: unknown[]): void {
-		this.sqlLifecycle.reconcileComparisonOwners(sections);
 	}
 
 	async openEditor(): Promise<void> {
@@ -1150,14 +1076,14 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		});
 
 		// Connect the tool orchestrator to this webview instance
-		this.connectToolOrchestrator();
+		this.workbenchToolSessionApplication.activate();
 
 		// Reconnect the orchestrator when this panel becomes visible again
 		this.panel.onDidChangeViewState(() => {
 			const visible = this.panel?.visible === true;
 			this.editorCursorStatusApplication.setPanelVisible(visible);
 			if (visible) {
-				this.connectToolOrchestrator();
+				this.workbenchToolSessionApplication.activate();
 			}
 		});
 
@@ -1315,6 +1241,15 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			= this.copilotChatFirstTimeApplication?.handleMessage(message);
 		if (copilotChatFirstTimeApplicationMessage) {
 			await copilotChatFirstTimeApplicationMessage;
+			return;
+		}
+		if (message.type === 'toolResponse') {
+			if (this.developmentNoteMutationApplication.handleMessage(message)) return;
+		}
+		const workbenchToolSessionApplicationMessage
+			= this.workbenchToolSessionApplication?.handleMessage(message);
+		if (workbenchToolSessionApplicationMessage) {
+			await workbenchToolSessionApplicationMessage;
 			return;
 		}
 		switch (message.type) {
@@ -1826,25 +1761,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'requestCrossClusterSchema':
 				await this.schema.handleCrossClusterSchemaRequest(message.clusterName, message.database, message.boxId, message.requestToken, message.requestSource, message.traceId);
 				return;
-			case 'toolExecutionStarted':
-				if (toolOrchestrator) toolOrchestrator.handleKustoExecutionStarted(message.requestId, message.owner);
-				return;
-			case 'toolResponse':
-				// Handle response from webview for tool orchestrator commands
-				if (this.developmentNoteMutationApplication.handleMessage(message)) return;
-				if (toolOrchestrator && message.requestId) {
-					toolOrchestrator.handleWebviewResponse(message.requestId, message.result, message.error);
-				}
-				return;
-			case 'toolStateResponse':
-				// Handle state response from webview
-				{
-					const resolver = this.toolStateResponseResolvers.get(message.requestId);
-					if (resolver) {
-						resolver(message.error ? undefined : message.sections);
-					}
-				}
-				return;
 			default:
 				return;
 		}
@@ -2131,6 +2047,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.copilotConversationClearApplication.dispose();
 			this.copilotHistoryRemovalApplication.dispose();
 			this.copilotChatFirstTimeApplication.dispose();
+			this.workbenchToolSessionApplication.dispose();
 			this.copilot.disposeKustoOwners();
 			this.copilot.invalidateSqlConnections(
 				[], [...this.sqlLifecycle.listComparisonBoxIds()],
@@ -2154,7 +2071,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.kustoExecutionCoordinator.dispose();
 			this.cancelAllRunningQueries();
 			this.kustoClient.dispose();
-			this.disconnectToolOrchestrator();
 			this.embeddedTutorialRegistration?.dispose();
 			this.embeddedTutorialRegistration = undefined;
 			this.embeddedTutorialHost = undefined;
@@ -2498,7 +2414,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	public sanitizeSqlLeaveNoTraceState<T extends { sections?: unknown[] }>(state: T): T {
 		state = this.stripLegacyResultPayloads(state);
 		const sections = Array.isArray(state?.sections) ? state.sections : [];
-		this.rebuildSqlComparisonOwners(sections);
+		this.sqlLifecycle.reconcileComparisonOwners(sections);
 		const sectionsById = new Map(
 			sections
 				.filter((section): section is Record<string, unknown> => !!section && typeof section === 'object')

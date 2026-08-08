@@ -1055,9 +1055,9 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.copilotConversationClearApplication = { dispose: vi.fn() };
 		provider.copilotHistoryRemovalApplication = { dispose: vi.fn() };
 		provider.copilotChatFirstTimeApplication = { dispose: vi.fn() };
+		provider.workbenchToolSessionApplication = { dispose: vi.fn() };
 		provider.cancelAllRunningQueries = vi.fn();
 		provider.kustoClient = { dispose: vi.fn() };
-		provider.disconnectToolOrchestrator = vi.fn();
 		provider.connection = { dispose: vi.fn() };
 		provider.kustoConnectionLifecycle = { dispose: vi.fn() };
 		provider.pendingKustoExecutionStartAcks = new Map([[
@@ -1112,6 +1112,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.copilotConversationClearApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.copilotHistoryRemovalApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.copilotChatFirstTimeApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider.workbenchToolSessionApplication.dispose).toHaveBeenCalledOnce();
 	});
 
 	it('ignores policy messages after the panel webview getter is disposed', () => {
@@ -2154,7 +2155,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		const liveOwner = { sourceBoxId: 'sql_1', connectionId: 'sql-1', copilotSequence: 7, comparisonRequestId: 'request-1' };
 		provider.sqlLifecycle.setComparisonOwner('comparison_1', liveOwner);
 
-		provider.rebuildSqlComparisonOwners([
+		provider.sqlLifecycle.reconcileComparisonOwners([
 			{ id: 'sql_1', type: 'sql' },
 			{ id: 'comparison_1', type: 'query', comparisonSourceBoxId: 'sql_1' },
 		]);
