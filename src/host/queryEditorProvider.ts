@@ -28,7 +28,7 @@ import {
 } from './sqlDatabaseCache';
 import { getQueryEditorHtml } from './queryEditorHtml';
 import { toolOrchestrator } from './extension';
-import { CopilotService, CopilotServiceHost, SQL_COPILOT_OWNER_CHANGED_MESSAGE } from './queryEditorCopilot';
+import { CopilotService, CopilotServiceHost } from './queryEditorCopilot';
 import { ConnectionService, ConnectionServiceHost } from './queryEditorConnection';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { canonicalSectionKind } from '../shared/documentSectionCapabilities';
@@ -186,6 +186,10 @@ import {
 	HostKustoConnectionBrowsingApplicationHandler,
 	type KustoConnectionBrowsingApplicationHandler,
 } from './kustoConnectionBrowsingApplicationHandler';
+import {
+	HostCopilotQueryWorkflowApplicationHandler,
+	type CopilotQueryWorkflowApplicationHandler,
+} from './copilotQueryWorkflowApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -213,9 +217,6 @@ type PendingComparisonEnsure = {
 		timer: ReturnType<typeof setTimeout>;
 	};
 };
-
-const SQL_COPILOT_PREFLIGHT_EXECUTION_ID = 'sql-copilot-owner-preflight';
-
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
 	private static readonly activeProviders = new Set<QueryEditorProvider>();
@@ -303,6 +304,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly copilotChatFirstTimeApplication: CopilotChatFirstTimeApplicationHandler;
 	readonly workbenchToolSessionApplication: WorkbenchToolSessionApplicationHandler;
 	readonly kustoConnectionBrowsingApplication: KustoConnectionBrowsingApplicationHandler;
+	readonly copilotQueryWorkflowApplication: CopilotQueryWorkflowApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -722,6 +724,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		copilotChatFirstTimeApplication?: CopilotChatFirstTimeApplicationHandler,
 		workbenchToolSessionApplication?: WorkbenchToolSessionApplicationHandler,
 		kustoConnectionBrowsingApplication?: KustoConnectionBrowsingApplicationHandler,
+		copilotQueryWorkflowApplication?: CopilotQueryWorkflowApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -922,6 +925,16 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					vscode.commands.executeCommand('kusto.refreshTextEditorDiagnostics'),
 			});
 		this.copilot = new CopilotService(this);
+		this.copilotQueryWorkflowApplication = copilotQueryWorkflowApplication
+			?? new HostCopilotQueryWorkflowApplicationHandler({
+				copilot: this.copilot,
+				sqlExecutionBroker: this.sqlExecutionBroker,
+				sqlLifecycle: this.sqlLifecycle,
+				getSqlConnectionManager: () => this.sqlConnectionManager,
+				getSqlSchemaService: () => this.sqlSchemaService,
+				getSqlClient: () => this.sqlClient,
+				postMessage: message => this.postMessage(message),
+			});
 		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
 			invalidateConnections: connectionIds => {
 				this.kustoExecutionCoordinator.revokeConnections(connectionIds);
@@ -1260,6 +1273,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await kustoConnectionBrowsingApplicationMessage;
 			return;
 		}
+		const copilotQueryWorkflowApplicationMessage
+			= this.copilotQueryWorkflowApplication?.handleMessage(message);
+		if (copilotQueryWorkflowApplicationMessage) {
+			await copilotQueryWorkflowApplicationMessage;
+			return;
+		}
 		switch (message.type) {
 			case 'kustoSectionOpen':
 				this.kustoExecutionCoordinator.openSection(message.boxId, message.sectionInstanceId);
@@ -1529,57 +1548,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				} catch {
 					// ignore
 				}
-				return;
-			case 'startCopilotWriteQuery':
-				if (message.flavor === 'sql') {
-					const preflight = this.sqlExecutionBroker.reservePreflight(
-						message.boxId, SQL_COPILOT_PREFLIGHT_EXECUTION_ID, message.sqlOwnerToken,
-					);
-					try { await this.assertSqlOwnerToken(message.boxId, message.sqlOwnerToken); }
-					catch {
-						if (this.sqlExecutionBroker.clearPreflight(preflight)) {
-							this.postMessage({
-								type: 'copilotWriteQueryDone', boxId: message.boxId, ok: false,
-								message: SQL_COPILOT_OWNER_CHANGED_MESSAGE, ownerToken: String(message.sqlOwnerToken || ''),
-							});
-						}
-						return;
-					}
-					if (!this.sqlExecutionBroker.clearPreflight(preflight)) return;
-					await this.copilot.startCopilotWriteQuery(message, this.sqlConnectionManager, this.sqlSchemaService, this.sqlClient);
-					return;
-				}
-				await this.copilot.startCopilotWriteQuery(message, this.sqlConnectionManager, this.sqlSchemaService, this.sqlClient);
-				return;
-			case 'cancelCopilotWriteQuery':
-				if (message.flavor === 'kusto') {
-					this.copilot.cancelCopilotWriteQuery(message.boxId, undefined, {
-						boxId: message.boxId,
-						copilotRequestId: message.copilotRequestId,
-						sectionInstanceId: message.sectionInstanceId,
-						targetGeneration: message.targetGeneration,
-					});
-					return;
-				}
-				{
-					const canceledPreflight = this.sqlExecutionBroker.cancelExpected(
-						message.boxId, SQL_COPILOT_PREFLIGHT_EXECUTION_ID, false,
-					);
-					if (canceledPreflight) {
-						const ownerToken = this.sqlLifecycle.getOwnerToken(message.boxId);
-						this.postMessage({ type: 'copilotWriteQueryDone', boxId: message.boxId, ok: false, message: 'Canceled.', ...(ownerToken ? { ownerToken } : {}) });
-					}
-				}
-				this.copilot.cancelCopilotWriteQuery(message.boxId);
-				return;
-			case 'prepareOptimizeQuery':
-				await this.copilot.prepareOptimizeQuery(message);
-				return;
-			case 'cancelOptimizeQuery':
-				this.copilot.cancelOptimizeQuery(message);
-				return;
-			case 'optimizeQuery':
-				await this.copilot.optimizeQueryWithCopilot(message);
 				return;
 			case 'executeQuery':
 				await this.executeQueryFromWebview(message);
@@ -1927,6 +1895,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.copilotChatFirstTimeApplication.dispose();
 			this.workbenchToolSessionApplication.dispose();
 			this.kustoConnectionBrowsingApplication.dispose();
+			this.copilotQueryWorkflowApplication.dispose();
 			this.copilot.disposeKustoOwners();
 			this.copilot.invalidateSqlConnections(
 				[], [...this.sqlLifecycle.listComparisonBoxIds()],

@@ -284,10 +284,13 @@ describe('QueryEditorProvider Copilot history-removal application', () => {
 		expect(providerSource).toContain(
 			'this.copilotChatFirstTimeApplication?.handleMessage(message)',
 		);
-		expect(providerSource).toContain("case 'startCopilotWriteQuery':");
-		expect(providerSource).toContain("case 'cancelCopilotWriteQuery':");
-		expect(providerSource).toContain("case 'prepareOptimizeQuery':");
-		expect(providerSource).toContain("case 'cancelOptimizeQuery':");
-		expect(providerSource).toContain("case 'optimizeQuery':");
+		expect(providerSource).not.toContain("case 'startCopilotWriteQuery':");
+		expect(providerSource).not.toContain("case 'cancelCopilotWriteQuery':");
+		expect(providerSource).not.toContain("case 'prepareOptimizeQuery':");
+		expect(providerSource).not.toContain("case 'cancelOptimizeQuery':");
+		expect(providerSource).not.toContain("case 'optimizeQuery':");
+		expect(providerSource).toContain(
+			'this.copilotQueryWorkflowApplication?.handleMessage(message)',
+		);
 	});
 });

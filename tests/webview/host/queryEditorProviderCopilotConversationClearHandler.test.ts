@@ -283,8 +283,11 @@ describe('QueryEditorProvider Copilot conversation-clear application', () => {
 		expect(callerSource).toContain(
 			"postMessageToHost({ type: 'clearCopilotConversation', boxId, flavor: 'sql' })",
 		);
-		expect(providerSource).toContain("case 'startCopilotWriteQuery':");
-		expect(providerSource).toContain("case 'cancelCopilotWriteQuery':");
+		expect(providerSource).not.toContain("case 'startCopilotWriteQuery':");
+		expect(providerSource).not.toContain("case 'cancelCopilotWriteQuery':");
+		expect(providerSource).toContain(
+			'this.copilotQueryWorkflowApplication?.handleMessage(message)',
+		);
 		expect(hostTypesSource).toContain(
 			"type: 'clearCopilotConversation'; flavor: 'kusto'",
 		);

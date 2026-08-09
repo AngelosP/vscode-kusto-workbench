@@ -23,6 +23,7 @@ import {
 import { SqlExecutionBroker } from '../../../src/host/sql/sqlExecutionBroker';
 import { SqlWorkbenchService } from '../../../src/host/sql/sqlWorkbenchService';
 import { withSqlStateFileLock } from '../../../src/host/sql/sqlStateTransaction';
+import { HostCopilotQueryWorkflowApplicationHandler } from '../../../src/host/copilotQueryWorkflowApplicationHandler';
 
 const TEST_CONNECTION: KustoConnection = {
 	id: 'conn-1',
@@ -465,6 +466,20 @@ function createSqlProviderHarness() {
 		...message,
 	});
 	return provider;
+}
+
+function installCopilotQueryWorkflowApplication(
+	provider: QueryEditorProvider & Record<string, any>,
+): void {
+	provider.copilotQueryWorkflowApplication = new HostCopilotQueryWorkflowApplicationHandler({
+		copilot: provider.copilot,
+		sqlExecutionBroker: provider.sqlExecutionBroker,
+		sqlLifecycle: provider.sqlLifecycle,
+		getSqlConnectionManager: () => provider.sqlConnectionManager,
+		getSqlSchemaService: () => provider.sqlSchemaService,
+		getSqlClient: () => provider.sqlClient,
+		postMessage: (message: unknown) => provider.postMessage(message),
+	});
 }
 
 describe('QueryEditorProvider cancellation orchestration', () => {
@@ -963,39 +978,44 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 	});
 
 	it('posts a correlated generic terminal response when SQL owner preflight rejects', async () => {
-			const provider = createSqlProviderHarness();
-			provider.assertSqlOwnerToken = vi.fn(async () => { throw new Error('C:\\private\\sql-policy.lock failed'); });
-			provider.copilot = {
-				startCopilotWriteQuery: vi.fn(),
-			};
+		const provider = createSqlProviderHarness();
+		provider.sqlLifecycle.setOwnerAllowedAssertion(
+			vi.fn(async () => { throw new Error('C:\\private\\sql-policy.lock failed'); }),
+		);
+		provider.copilot = {
+			startCopilotWriteQuery: vi.fn(),
+		};
+		installCopilotQueryWorkflowApplication(provider);
 
-			await provider.handleWebviewMessage({
-				type: 'startCopilotWriteQuery', boxId: 'sql_1', flavor: 'sql', sqlOwnerToken: 'owner-token',
-			} as any);
+		await provider.handleWebviewMessage({
+			type: 'startCopilotWriteQuery', boxId: 'sql_1', flavor: 'sql', sqlOwnerToken: 'owner-token',
+		} as any);
 
-			expect(provider.postMessage).toHaveBeenCalledWith({
-				type: 'copilotWriteQueryDone', boxId: 'sql_1', ok: false,
-				message: 'SQL section owner changed. Retry the request.', ownerToken: 'owner-token',
-			});
-			expect(JSON.stringify(provider.postMessage.mock.calls)).not.toContain('sql-policy.lock');
-			expect(provider.copilot.startCopilotWriteQuery).not.toHaveBeenCalled();
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'copilotWriteQueryDone', boxId: 'sql_1', ok: false,
+			message: 'SQL section owner changed. Retry the request.', ownerToken: 'owner-token',
+		});
+		expect(JSON.stringify(provider.postMessage.mock.calls)).not.toContain('sql-policy.lock');
+		expect(provider.copilot.startCopilotWriteQuery).not.toHaveBeenCalled();
 	});
 
 	it('Stop during SQL owner preflight prevents service dispatch', async () => {
 		const provider = createSqlProviderHarness();
-		const ownerValidation = deferred<any>();
-		provider.assertSqlOwnerToken = vi.fn(() => ownerValidation.promise);
+		const ownerValidation = deferred<void>();
+		const assertOwnerAllowed = vi.fn(() => ownerValidation.promise);
+		provider.sqlLifecycle.setOwnerAllowedAssertion(assertOwnerAllowed);
 		provider.copilot = {
 			startCopilotWriteQuery: vi.fn(),
 			cancelCopilotWriteQuery: vi.fn(),
 		};
+		installCopilotQueryWorkflowApplication(provider);
 
 		const start = provider.handleWebviewMessage({
 			type: 'startCopilotWriteQuery', boxId: 'sql_1', flavor: 'sql', sqlOwnerToken: 'owner-token',
 		} as any);
-		await vi.waitFor(() => expect(provider.assertSqlOwnerToken).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(assertOwnerAllowed).toHaveBeenCalledOnce());
 		await provider.handleWebviewMessage({ type: 'cancelCopilotWriteQuery', boxId: 'sql_1' } as any);
-		ownerValidation.resolve(provider.sqlLifecycle.getIssuedOwner('sql_1'));
+		ownerValidation.resolve();
 		await start;
 
 		expect(provider.copilot.startCopilotWriteQuery).not.toHaveBeenCalled();
@@ -1057,6 +1077,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.copilotChatFirstTimeApplication = { dispose: vi.fn() };
 		provider.workbenchToolSessionApplication = { dispose: vi.fn() };
 		provider.kustoConnectionBrowsingApplication = { dispose: vi.fn() };
+		provider.copilotQueryWorkflowApplication = { dispose: vi.fn() };
 		provider.cancelAllRunningQueries = vi.fn();
 		provider.kustoClient = { dispose: vi.fn() };
 		provider.connection = { dispose: vi.fn() };
@@ -1115,6 +1136,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.copilotChatFirstTimeApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.workbenchToolSessionApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.kustoConnectionBrowsingApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider.copilotQueryWorkflowApplication.dispose).toHaveBeenCalledOnce();
 	});
 
 	it('ignores policy messages after the panel webview getter is disposed', () => {
