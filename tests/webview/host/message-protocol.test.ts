@@ -323,7 +323,7 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 
 const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/artifactCsvSaveApplicationHandler.ts::postMessage::postMessage::49:10',
-	'src/host/comparisonPreparationApplicationHandler.ts::waitForSqlComparisonAdmission::postMessage::626:25',
+	'src/host/comparisonPreparationApplicationHandler.ts::waitForSqlComparisonAdmission::postMessage::627:25',
 	'src/host/controlCommandSyntaxApplicationHandler.ts::postMessage::postMessage::50:3',
 	'src/host/dashboardApplicationHandler.ts::postMessage::postMessage::102:10',
 	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postMessage::68:10',

@@ -5,6 +5,7 @@ import {
 	kustoSyntheticDatabaseRequests,
 	kustoSyntheticSchemaRequests,
 } from '../../src/webview/core/kusto-synthetic-request-runtime.js';
+import { retireSqlComparisonAdmission } from '../../src/webview/core/sql-comparison-admission-runtime.js';
 
 const handlerState = vi.hoisted(() => ({
 	activeQueryEditorBoxId: '',
@@ -5303,6 +5304,95 @@ describe('changedSections agent provenance', () => {
 		}
 	});
 
+	it('locally retires finalized admission before target detachment and rejects late completion', async () => {
+		handlerState.pState.documentKind = 'sqlx';
+		handlerState.pState.allowedSectionKinds = ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+		const source = createFakeSqlSection() as FakeSqlSection & {
+			getServerUrl: () => string; getConnectionId: () => string; getDatabase: () => string;
+		};
+		const comparison = createFakeSqlSection() as FakeSqlSection & {
+			getConnectionId: () => string; getDatabase: () => string;
+			setQuery: ReturnType<typeof vi.fn>;
+			setComparisonAdmissionPending: ReturnType<typeof vi.fn>;
+			setComparisonPersistenceSnapshot: ReturnType<typeof vi.fn>;
+		};
+		source.id = 'sql_source';
+		comparison.id = 'sql_comparison';
+		source.getServerUrl = () => 'server.example';
+		source.getConnectionId = () => 'sql-a';
+		source.getDatabase = () => 'Db';
+		comparison.getConnectionId = () => 'sql-a';
+		comparison.getDatabase = () => 'Db';
+		comparison.setQuery = vi.fn();
+		comparison.setComparisonAdmissionPending = vi.fn();
+		comparison.setComparisonPersistenceSnapshot = vi.fn();
+		document.body.append(source, comparison);
+		handlerState.optimizationMetadataByBoxId.sql_source = { comparisonBoxId: 'sql_comparison' };
+		handlerState.optimizationMetadataByBoxId.sql_comparison = { sourceBoxId: 'sql_source', isComparison: true };
+		mocks.getSqlSectionElement.mockImplementation((boxId: string) => ({
+			sql_source: source, sql_comparison: comparison,
+		} as Record<string, FakeSqlSection>)[boxId] || null);
+
+		dispatchHostMessage({
+			type: 'ensureComparisonBox', requestId: 'finalized-retarget', boxId: 'sql_source',
+			query: 'SELECT new', engine: 'sql', sourceSectionInstanceId: source.sqlSession.instanceId,
+			sourceTargetGeneration: source.sqlSession.targetGeneration,
+		});
+		await Promise.resolve();
+		for (const [type, phase] of [
+			['sqlComparisonAdmission', 'staged'],
+			['sqlComparisonAdmissionCommit', 'committed'],
+			['sqlComparisonAdmissionFinalize', 'finalized'],
+		] as const) {
+			dispatchHostMessage({
+				type, requestId: 'finalized-retarget', sourceBoxId: 'sql_source',
+				comparisonBoxId: 'sql_comparison', accepted: true,
+			});
+			await Promise.resolve();
+			expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'sqlComparisonAdmissionAck', phase, accepted: true,
+			}));
+		}
+
+		expect(retireSqlComparisonAdmission('sql_comparison', 'sql_source')).toBe(true);
+		expect(comparison.setComparisonAdmissionPending).toHaveBeenLastCalledWith(false);
+		expect(comparison.setComparisonPersistenceSnapshot).toHaveBeenLastCalledWith(undefined);
+		expect(comparison.hasAttribute('data-sql-comparison-admission-request-id')).toBe(false);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmissionComplete', requestId: 'finalized-retarget',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison',
+		});
+		await Promise.resolve();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionAck', phase: 'completed', requestId: 'finalized-retarget',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison', accepted: false,
+		});
+
+		dispatchHostMessage({
+			type: 'ensureComparisonBox', requestId: 'after-finalized-retarget', boxId: 'sql_source',
+			query: 'SELECT retry', engine: 'sql', sourceSectionInstanceId: source.sqlSession.instanceId,
+			sourceTargetGeneration: source.sqlSession.targetGeneration,
+		});
+		await Promise.resolve();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'comparisonBoxEnsured', requestId: 'after-finalized-retarget',
+			comparisonBoxId: 'sql_comparison',
+		}));
+		expect(retireSqlComparisonAdmission('sql_comparison', 'sql_source')).toBe(false);
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmissionRollback', requestId: 'after-finalized-retarget',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison',
+		});
+		await Promise.resolve();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionAck', phase: 'rolledBack',
+			requestId: 'after-finalized-retarget', sourceBoxId: 'sql_source',
+			comparisonBoxId: 'sql_comparison', accepted: true,
+		});
+	});
+
 	it('restores reused SQL query and persisted results when a committed proposal is rejected', async () => {
 		handlerState.pState.documentKind = 'sqlx';
 		handlerState.pState.allowedSectionKinds = ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
@@ -5348,6 +5438,7 @@ describe('changedSections agent provenance', () => {
 		await Promise.resolve();
 		expect(comparison.setQuery).toHaveBeenLastCalledWith('SELECT new');
 		expect((handlerState.pState.queryResultJsonByBoxId as any).sql_comparison).toBeUndefined();
+		expect(retireSqlComparisonAdmission('sql_comparison', 'sql_source')).toBe(false);
 
 		dispatchHostMessage({
 			type: 'sqlComparisonAdmissionRollback', requestId: 'sql-reuse-rollback',

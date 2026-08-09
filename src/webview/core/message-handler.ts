@@ -93,6 +93,7 @@ import {
 	waitForHostOwnedMarkdownCommands,
 } from './markdown-document-client.js';
 import { retireAllPythonExecutions } from './python-execution-admission.js';
+import { registerSqlComparisonAdmissionRetirementHandler } from './sql-comparison-admission-runtime.js';
 import { reconcileProjectedSectionOrder } from './section-projection-order.js';
 import {
 	__kustoControlCommandDocCache, __kustoControlCommandDocPending,
@@ -1173,6 +1174,21 @@ function clearPendingSqlComparisonAdmission(pending: PendingSqlComparisonAdmissi
 	}
 	try { clearTimeout(pending.timer); } catch { /* ignore */ }
 }
+
+registerSqlComparisonAdmissionRetirementHandler((comparisonBoxId, sourceBoxId) => {
+	const requestId = pendingSqlComparisonAdmissionRequestByBoxId.get(comparisonBoxId);
+	const pending = requestId ? pendingSqlComparisonAdmissionByRequestId.get(requestId) : undefined;
+	if (!pending || pending.sourceBoxId !== sourceBoxId || pending.comparisonBoxId !== comparisonBoxId) {
+		return false;
+	}
+	if (pending.phase !== 'finalized') return false;
+	const comparison = __kustoGetSqlSectionElement(comparisonBoxId);
+	comparison?.removeAttribute?.(SQL_COMPARISON_ADMISSION_ATTRIBUTE);
+	comparison?.setComparisonPersistenceSnapshot?.(undefined);
+	comparison?.setComparisonAdmissionPending?.(false);
+	clearPendingSqlComparisonAdmission(pending);
+	return true;
+});
 
 function applySqlComparisonAdmissionDecision(message: any): void {
 	const requestId = String(message?.requestId || '').trim();

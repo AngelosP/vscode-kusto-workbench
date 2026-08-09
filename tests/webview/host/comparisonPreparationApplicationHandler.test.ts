@@ -474,12 +474,52 @@ describe('HostComparisonPreparationApplicationHandler', () => {
 			type: 'sqlComparisonRemoved', boxId: 'comparison', sourceBoxId: 'source',
 		});
 		await expect(preparation).rejects.toThrow('Canceled');
+		expect(harness.postMessage).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionRollback', requestId,
+			sourceBoxId: 'source', comparisonBoxId: 'comparison',
+		});
 		expect(harness.sqlExecutionBroker.supersede).not.toHaveBeenCalled();
 		expect(harness.cancelCopilotQueryTarget).toHaveBeenCalledWith('source', 'comparison', 31);
 		expect(harness.cancelCopilotWriteQuery).toHaveBeenCalledWith('source', 31);
 
 		policy.resolve();
 		await ensured;
+		expect(harness.lifecycle.getComparisonOwner('comparison')).toBeUndefined();
+	});
+
+	it('keeps committed removal on the exact acknowledged rollback path', async () => {
+		const harness = createHarness();
+		harness.lifecycle.openSection('comparison', 'comparison-instance');
+		harness.lifecycle.setTarget('comparison', 'sql-connection', 'Database', 7);
+		automaticallyAcknowledgeRollback(harness);
+		const preparation = harness.handler.ensureComparisonBoxInWebview(
+			'source', 'SELECT 2', createCancellation().token, 35,
+		);
+		void preparation.catch(() => undefined);
+		await flushPromises();
+		const requestId = String(postedMessage(harness, 'ensureComparisonBox').requestId);
+		const ensured = harness.handler.handleMessage(sqlComparisonEnsured(requestId));
+		await vi.waitFor(() => expect(harness.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ type: 'sqlComparisonAdmission', requestId }),
+		));
+		await harness.handler.handleMessage(sqlAck(requestId, 'staged'));
+		await vi.waitFor(() => expect(harness.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ type: 'sqlComparisonAdmissionCommit', requestId }),
+		));
+		await harness.handler.handleMessage(sqlAck(requestId, 'committed'));
+		await vi.waitFor(() => expect(harness.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ type: 'sqlComparisonAdmissionFinalize', requestId }),
+		));
+
+		await harness.handler.handleMessage({
+			type: 'sqlComparisonRemoved', boxId: 'comparison', sourceBoxId: 'source',
+		});
+		await ensured;
+		await expect(preparation).rejects.toThrow('Canceled');
+		expect(harness.postMessage).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionRollback', requestId,
+			sourceBoxId: 'source', comparisonBoxId: 'comparison',
+		});
 		expect(harness.lifecycle.getComparisonOwner('comparison')).toBeUndefined();
 	});
 
@@ -522,8 +562,48 @@ describe('HostComparisonPreparationApplicationHandler', () => {
 
 		await expect(preparation).rejects.toThrow('Canceled');
 		expect(harness.lifecycle.getComparisonOwner('comparison')).toBeUndefined();
+		expect(harness.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'sqlComparisonAdmissionRollback', requestId,
+		}));
 		expect(harness.cancelCopilotQueryTarget).toHaveBeenCalledWith('source', 'comparison', 37);
 		expect(harness.cancelCopilotWriteQuery).toHaveBeenCalledWith('source', 37);
+	});
+
+	it('makes finalized acknowledgement atomic with immediate removal', async () => {
+		const harness = createHarness();
+		harness.lifecycle.openSection('comparison', 'comparison-instance');
+		harness.lifecycle.setTarget('comparison', 'sql-connection', 'Database', 7);
+		const preparation = harness.handler.ensureComparisonBoxInWebview(
+			'source', 'SELECT 2', createCancellation().token, 39,
+		);
+		void preparation.catch(() => undefined);
+		await flushPromises();
+		const requestId = String(postedMessage(harness, 'ensureComparisonBox').requestId);
+		const ensured = harness.handler.handleMessage(sqlComparisonEnsured(requestId));
+		for (const [phase, outboundType] of [
+			['staged', 'sqlComparisonAdmission'],
+			['committed', 'sqlComparisonAdmissionCommit'],
+			['finalized', 'sqlComparisonAdmissionFinalize'],
+		] as const) {
+			await vi.waitFor(() => expect(harness.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ type: outboundType, requestId }),
+			));
+			if (phase === 'finalized') break;
+			await harness.handler.handleMessage(sqlAck(requestId, phase));
+		}
+
+		const finalized = harness.handler.handleMessage(sqlAck(requestId, 'finalized'));
+		const removed = harness.handler.handleMessage({
+			type: 'sqlComparisonRemoved', boxId: 'comparison', sourceBoxId: 'source',
+		});
+		await Promise.all([finalized, removed, ensured]);
+
+		await expect(preparation).rejects.toThrow('Canceled');
+		expect(harness.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'sqlComparisonAdmissionRollback', requestId,
+		}));
+		expect(harness.lifecycle.getComparisonOwner('comparison')).toBeUndefined();
+		expect(harness.cancelCopilotQueryTarget).toHaveBeenCalledWith('source', 'comparison', 39);
 	});
 
 	it('rejects nested SQL sources and lifecycle-invalid SQL sources before mutation', async () => {

@@ -225,6 +225,9 @@ export class HostComparisonPreparationApplicationHandler
 			|| comparisonBoxId !== admissionAck.comparisonBoxId
 			|| message.phase !== admissionAck.phase
 			|| String(message.sourceBoxId || '').trim() !== pending.sourceBoxId) return;
+		if (message.phase === 'finalized' && message.accepted === true) {
+			this.markCompletionStarted(pending);
+		}
 		admissionAck.resolve(message.accepted === true);
 	}
 
@@ -407,17 +410,7 @@ export class HostComparisonPreparationApplicationHandler
 					}
 					return;
 				}
-				if (this.options.sqlLifecycle.getComparisonOwner(comparisonBoxId)
-					!== pending.previousSqlComparisonOwner) {
-					this.settlePendingComparisonEnsure(requestId, pending, {
-						error: new Error('SQL comparison ownership changed before final validation completed.'),
-					});
-					return;
-				}
-				pending.completionStarted = true;
-				try { clearTimeout(pending.timer); } catch { /* ignore */ }
-				try { pending.cancellationDisposable?.dispose(); } catch { /* ignore */ }
-				pending.cancellationDisposable = undefined;
+				this.markCompletionStarted(pending);
 				let completed = false;
 				while (!completed && !this.disposed
 					&& this.pendingComparisonEnsureByRequestId.get(requestId) === pending) {
@@ -486,7 +479,7 @@ export class HostComparisonPreparationApplicationHandler
 				pendingEntry[0],
 				pendingEntry[1],
 				{ error: new Error('Canceled') },
-				{ removalConfirmed: true },
+				{ removalConfirmed: pendingEntry[1].completionStarted === true },
 			);
 		}
 		const sqlOwner = this.options.sqlLifecycle.getComparisonOwner(comparisonBoxId);
@@ -519,6 +512,14 @@ export class HostComparisonPreparationApplicationHandler
 		if (owner.copilotSequence !== undefined) {
 			this.options.cancelCopilotWriteQuery(owner.sourceBoxId, owner.copilotSequence);
 		}
+	}
+
+	private markCompletionStarted(pending: PendingComparisonEnsure): void {
+		if (pending.completionStarted) return;
+		pending.completionStarted = true;
+		try { clearTimeout(pending.timer); } catch { /* ignore */ }
+		try { pending.cancellationDisposable?.dispose(); } catch { /* ignore */ }
+		pending.cancellationDisposable = undefined;
 	}
 
 	private settlePendingComparisonEnsure(

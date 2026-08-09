@@ -70,6 +70,7 @@ import {
 	unregisterSqlDerivedComparisonSession,
 	unregisterSqlDerivedComparisonsForSource,
 } from './sql-section-message-router.js';
+import { retireSqlComparisonAdmission } from './sql-comparison-admission-runtime.js';
 import { clearResultsState, rebindResultArtifactConsumer, unbindResultArtifactConsumer } from './results-state';
 import { comparisonSourceArtifactConsumerId, htmlDashboardFactArtifactConsumerId } from '../../shared/resultArtifact.js';
 import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility, setQueryExecuting, __kustoSetLinkedOptimizationMode } from '../sections/query-execution.controller';
@@ -3310,6 +3311,7 @@ function detachSqlComparisonOwnership(id: string, notifyHost = true): string {
 	const ownMetadata = optimizationMetadataByBoxId[id];
 	const sourceBoxId = ownMetadata?.isComparison ? String(ownMetadata.sourceBoxId || '').trim() : '';
 	if (!sourceBoxId) return '';
+	try { retireSqlComparisonAdmission(id, sourceBoxId); } catch (e) { console.error('[kusto]', e); }
 	try { document.getElementById(id)?.removeAttribute('data-sql-comparison-admission-request-id'); } catch (e) { console.error('[kusto]', e); }
 	unregisterSqlDerivedComparisonSession(id);
 	try { unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId(id)); } catch (e) { console.error('[kusto]', e); }

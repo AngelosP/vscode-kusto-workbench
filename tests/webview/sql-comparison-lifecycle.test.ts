@@ -15,6 +15,7 @@ import {
 	setResultsState,
 } from '../../src/webview/core/results-state.js';
 import { comparisonSourceArtifactConsumerId } from '../../src/shared/resultArtifact.js';
+import { registerSqlComparisonAdmissionRetirementHandler } from '../../src/webview/core/sql-comparison-admission-runtime.js';
 
 describe('SQL comparison lifecycle', () => {
 	beforeEach(() => {
@@ -134,6 +135,8 @@ describe('SQL comparison lifecycle', () => {
 
 	it('detaches comparison ownership when an established comparison target changes', async () => {
 		const postMessage = vi.fn();
+		const retireAdmission = vi.fn(() => false);
+		const retirementRegistration = registerSqlComparisonAdmissionRetirementHandler(retireAdmission);
 		const previousVsCode = window.vscode;
 		window.vscode = { postMessage } as any;
 		try {
@@ -154,10 +157,12 @@ describe('SQL comparison lifecycle', () => {
 			expect(optimizationMetadataByBoxId[comparisonId]).toBeUndefined();
 			expect(comparison.hasAttribute('data-sql-comparison-admission-request-id')).toBe(false);
 			expect(comparison.serialize()).not.toHaveProperty('comparisonSourceBoxId');
+			expect(retireAdmission).toHaveBeenCalledWith(comparisonId, 'sql_source');
 			expect(postMessage).toHaveBeenCalledWith({
 				type: 'sqlComparisonRemoved', boxId: comparisonId, sourceBoxId: 'sql_source',
 			});
 		} finally {
+			retirementRegistration.dispose();
 			window.vscode = previousVsCode;
 		}
 	});
