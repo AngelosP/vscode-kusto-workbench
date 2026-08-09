@@ -4,17 +4,13 @@ import * as crypto from 'crypto';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient } from './kustoClient';
-import { SqlQueryClient, SqlQueryCancelledError } from './sqlClient';
+import { SqlQueryClient } from './sqlClient';
 import { SqlSchemaService, sqlSchemaPrincipalFingerprintForPrincipal } from './sqlEditorSchema';
 import { SqlWorkbenchService, type SqlOwnerSnapshot } from './sql/sqlWorkbenchService';
 import {
 	sqlResultOwnersEqual,
 	type SqlResultOwner,
 } from './sql/sqlEditorSessionRegistry';
-import {
-	type SqlExecutionAdmission,
-	type SqlExecutionLease,
-} from './sql/sqlExecutionBroker';
 import { SqlEditorLifecycleCoordinator } from './sql/sqlEditorLifecycleCoordinator';
 import { sanitizeStsLogText } from './sql/stsLogSanitizer';
 import { normalizeSqlServerUrl } from './sql/sqlAuthState';
@@ -41,7 +37,6 @@ import {
 	normalizeControlCommandForExecution as normalizeControlCommandForExecutionFn,
 	buildCacheDirective as buildCacheDirectiveFn
 } from './queryEditorUtils';
-import { appendSqlQueryMode as appendSqlQueryModeFn } from './sqlEditorUtils';
 import {
 	STORAGE_KEYS,
 	CachedSchemaEntry,
@@ -198,6 +193,10 @@ import {
 	HostComparisonPreparationApplicationHandler,
 	type ComparisonPreparationApplicationHandler,
 } from './comparisonPreparationApplicationHandler';
+import {
+	HostSqlSectionExecutionApplicationHandler,
+	type SqlSectionExecutionApplicationHandler,
+} from './sqlSectionExecutionApplicationHandler';
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
 	private static readonly activeProviders = new Set<QueryEditorProvider>();
@@ -280,6 +279,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly copilotQueryWorkflowApplication: CopilotQueryWorkflowApplicationHandler;
 	readonly kustoSectionExecutionApplication: KustoSectionExecutionApplicationHandler;
 	readonly comparisonPreparationApplication: ComparisonPreparationApplicationHandler;
+	readonly sqlSectionExecutionApplication: SqlSectionExecutionApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -392,10 +392,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		await this.sqlLifecycle.assertResultOwnerAllowed(boxId, expectedOwner);
 	}
 
-	async assertSqlResultOwnerProtection(boxId: string, expectedOwner: SqlResultOwner, expectedProtected: boolean): Promise<void> {
-		await this.sqlLifecycle.assertResultOwnerProtection(boxId, expectedOwner, expectedProtected);
-	}
-
 	private sqlResultOwnersEqual(left: SqlResultOwner | undefined, right: SqlResultOwner | undefined): boolean {
 		return sqlResultOwnersEqual(left, right);
 	}
@@ -479,6 +475,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		copilotQueryWorkflowApplication?: CopilotQueryWorkflowApplicationHandler,
 		kustoSectionExecutionApplication?: KustoSectionExecutionApplicationHandler,
 		comparisonPreparationApplication?: ComparisonPreparationApplicationHandler,
+		sqlSectionExecutionApplication?: SqlSectionExecutionApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -721,6 +718,17 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				cancelCopilotWriteQuery: (boxId, expectedSequence) =>
 					this.copilot.cancelCopilotWriteQuery(boxId, expectedSequence),
 				createRequestId: () => crypto.randomUUID(),
+			});
+		this.sqlSectionExecutionApplication = sqlSectionExecutionApplication
+			?? new HostSqlSectionExecutionApplicationHandler({
+				sqlLifecycle: this.sqlLifecycle,
+				sqlExecutionBroker: this.sqlExecutionBroker,
+				sqlWorkbench: this.sqlWorkbench,
+				connectionManager: this.sqlConnectionManager,
+				client: this.sqlClient,
+				postMessage: message => this.postMessage(message),
+				refreshConnectionsData: () => this.sendSqlConnectionsData(),
+				output: this.output,
 			});
 		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
 			invalidateConnections: connectionIds => {
@@ -1078,6 +1086,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await comparisonPreparationApplicationMessage;
 			return;
 		}
+		const sqlSectionExecutionApplicationMessage
+			= this.sqlSectionExecutionApplication?.handleMessage(message);
+		if (sqlSectionExecutionApplicationMessage) {
+			await sqlSectionExecutionApplicationMessage;
+			return;
+		}
 		switch (message.type) {
 			case 'getSqlConnections':
 				await this.sendSqlConnectionsData();
@@ -1100,13 +1114,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					return;
 				}
 				await clearSqlTokenOverride(this.context, message.accountId);
-				return;
-			case 'executeSqlQuery':
-				await this.executeSqlQueryFromWebview(message);
-				return;
-			case 'cancelSqlQuery':
-				if (!this.sqlLifecycle.isSectionCurrent(message.boxId, message.sectionInstanceId)) return;
-				this.sqlExecutionBroker.cancelExpected(message.boxId, message.executionId, true);
 				return;
 			case 'prefetchSqlSchema':
 				if (!this.sqlLifecycle.adoptTarget(
@@ -1183,29 +1190,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	public async refreshSqlConnectionsData(): Promise<void> {
 		await this.sendSqlConnectionsData();
-	}
-
-	private async postSqlOwnerMessageAllowed(
-		boxId: string,
-		expectedOwner: SqlResultOwner,
-		message: Record<string, unknown>,
-		isCurrent: () => boolean = () => true,
-	): Promise<void> {
-		await this.dispatchSqlResultOwnerAllowed(boxId, expectedOwner, () => {
-			if (isCurrent()) this.postMessage(message);
-		});
-	}
-
-	private async postSqlOwnerMessageProtection(
-		boxId: string,
-		expectedOwner: SqlResultOwner,
-		expectedProtected: boolean,
-		message: Record<string, unknown>,
-		isCurrent: () => boolean = () => true,
-	): Promise<void> {
-		await this.sqlLifecycle.dispatchResultOwnerProtection(boxId, expectedOwner, expectedProtected, () => {
-			if (isCurrent()) this.postMessage(message);
-		});
 	}
 
 	public async inferClusterDatabaseForKqlQuery(
@@ -1292,6 +1276,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.copilotQueryWorkflowApplication.dispose();
 			this.kustoSectionExecutionApplication.dispose();
 			this.comparisonPreparationApplication.dispose();
+			this.sqlSectionExecutionApplication.dispose();
 			this.copilot.disposeKustoOwners();
 			this.copilot.invalidateSqlConnections(
 				[], [...this.sqlLifecycle.listComparisonBoxIds()],
@@ -1790,160 +1775,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				});
 			});
 		});
-	}
-
-	private async executeSqlQueryFromWebview(
-		message: Extract<IncomingWebviewMessage, { type: 'executeSqlQuery' }>
-	): Promise<void> {
-		const boxId = String(message.boxId || '').trim();
-		const executionId = String(message.executionId || '').trim();
-		if (!boxId || !executionId || !this.sqlLifecycle.isSectionCurrent(boxId, message.sectionInstanceId)) return;
-		const comparisonSourceIdentity = message.comparisonSourceBoxId && message.comparisonSourceExecutionId
-			? {
-				comparisonSourceBoxId: String(message.comparisonSourceBoxId),
-				comparisonSourceExecutionId: String(message.comparisonSourceExecutionId),
-			}
-			: {};
-
-		const preflight = this.sqlExecutionBroker.reservePreflight(boxId, executionId, message.ownerToken);
-		const protectedExecution = this.sqlWorkbench.isLeaveNoTraceConnection(message.sqlConnectionId);
-		let admission: SqlExecutionAdmission | undefined;
-		let lease: SqlExecutionLease<ReturnType<SqlQueryClient['executeQueryCancelable']>> | undefined;
-		const isStillActiveRun = () => {
-			if (lease) return lease.isCurrent();
-			if (admission) return this.sqlExecutionBroker.isAdmissionCurrent(admission);
-			return this.sqlExecutionBroker.isPreflightCurrent(preflight);
-		};
-		const postCurrentError = (error: string, ownerToken?: string) => {
-			const isCurrent = isStillActiveRun();
-			this.sqlExecutionBroker.clearPreflight(preflight);
-			if (!isCurrent) return;
-			this.postMessage({
-				type: 'queryError', error, boxId,
-				...(ownerToken ? { ownerToken } : {}),
-				executionId, ...comparisonSourceIdentity,
-			});
-		};
-		let issuedOwner: { token: string; owner: SqlResultOwner } | undefined;
-		try {
-			issuedOwner = protectedExecution
-				? await this.sqlLifecycle.assertOwnerTokenProtection(boxId, message.ownerToken, true)
-				: await this.assertSqlOwnerToken(boxId, message.ownerToken);
-			if (!isStillActiveRun()
-				|| !this.sqlLifecycle.isSectionCurrent(boxId, message.sectionInstanceId)) {
-				this.sqlExecutionBroker.clearPreflight(preflight);
-				return;
-			}
-		} catch (error) {
-			postCurrentError(error instanceof Error ? error.message : String(error), message.ownerToken);
-			return;
-		}
-
-		const connection = this.sqlConnectionManager.getConnection(message.sqlConnectionId);
-		if (!connection) {
-			postCurrentError('SQL connection not found. Please configure a connection.', issuedOwner.token);
-			return;
-		}
-
-		if (!message.database) {
-			postCurrentError('Please select a database.', issuedOwner.token);
-			return;
-		}
-
-		const resultOwner = issuedOwner.owner;
-		if (resultOwner.connectionId !== connection.id || resultOwner.database !== message.database) {
-			postCurrentError('SQL section target changed. Run the query again.', issuedOwner.token);
-			return;
-		}
-		if (message.toolExecution) {
-			const expected = message.expectedOwner;
-			if (!message.executionId || !expected || !resultOwner
-				|| expected.connectionId !== resultOwner.connectionId
-				|| expected.database !== resultOwner.database
-				|| expected.targetSignature !== resultOwner.targetSignature
-				|| expected.principalFingerprint !== resultOwner.principalFingerprint
-				|| expected.revocationGeneration !== resultOwner.revocationGeneration) {
-				postCurrentError('SQL tool execution owner changed before query dispatch.', issuedOwner.token);
-				return;
-			}
-		}
-		const queryWithMode = appendSqlQueryModeFn(message.query, message.queryMode);
-		try {
-			if (!isStillActiveRun()
-				|| !this.sqlLifecycle.isSectionCurrent(boxId, message.sectionInstanceId)) return;
-			admission = this.sqlExecutionBroker.promotePreflight(preflight);
-			if (!admission) return;
-			lease = this.sqlExecutionBroker.start(admission, () =>
-				this.sqlClient.executeQueryCancelable(connection, message.database, queryWithMode));
-			const result = await lease.execution.promise;
-			if (isStillActiveRun()) {
-				await this.sendSqlConnectionsData();
-				if (protectedExecution) await this.assertSqlResultOwnerProtection(boxId, resultOwner, true);
-				else await this.assertSqlResultOwnerAllowed(boxId, resultOwner);
-				if (!isStillActiveRun()) return;
-				const resultMessage = {
-					type: 'queryResult', result, boxId, ownerToken: issuedOwner.token, executionId,
-					query: message.query, connectionId: resultOwner.connectionId, database: resultOwner.database,
-					...comparisonSourceIdentity,
-				};
-				if (protectedExecution) {
-					await this.postSqlOwnerMessageProtection(boxId, resultOwner, true, resultMessage, isStillActiveRun);
-				} else {
-					await this.postSqlOwnerMessageAllowed(boxId, resultOwner, resultMessage, isStillActiveRun);
-				}
-			}
-		} catch (error) {
-			if ((error as any)?.isCancelled === true || error instanceof SqlQueryCancelledError) {
-				if (isStillActiveRun()) {
-					try {
-						const cancelledMessage = {
-							type: 'queryCancelled', boxId, ownerToken: issuedOwner.token, executionId,
-							...comparisonSourceIdentity,
-						};
-						if (protectedExecution) {
-							await this.postSqlOwnerMessageProtection(boxId, resultOwner, true, cancelledMessage, isStillActiveRun);
-						} else {
-							await this.postSqlOwnerMessageAllowed(boxId, resultOwner, cancelledMessage, isStillActiveRun);
-						}
-					} catch { /* owner invalidation provides the terminal UI state */ }
-				}
-				return;
-			}
-			if (isStillActiveRun()) {
-				const errorMessage = error instanceof Error ? error.message : String(error);
-				// Error is displayed inline in the SQL section — no notification popup
-				// (avoids stealing keyboard focus from the Monaco editor).
-				try {
-					const postError = () => {
-						if (!isStillActiveRun()) return;
-						if (protectedExecution) {
-							this.output.warn('[sql-lnt] Isolated SQL query failed; details were not logged.');
-						} else {
-							this.output.error([
-								`[${new Date().toISOString()}] SQL query execution failed`,
-								`  boxId: ${boxId}`,
-								`  error: ${sanitizeStsLogText(errorMessage)}`,
-							].join('\n'));
-						}
-						this.postMessage({
-							type: 'queryError', error: errorMessage, boxId, ownerToken: issuedOwner.token, executionId,
-							...comparisonSourceIdentity,
-						});
-					};
-					if (protectedExecution) {
-						await this.sqlLifecycle.dispatchResultOwnerProtection(boxId, resultOwner, true, postError);
-					} else {
-						await this.dispatchSqlResultOwnerAllowed(boxId, resultOwner, postError);
-					}
-				} catch {
-					this.output.warn('[sql] Query failed after owner invalidation; error details suppressed.');
-				}
-			}
-		} finally {
-			this.sqlExecutionBroker.clearPreflight(preflight);
-			if (admission) this.sqlExecutionBroker.clearPending(admission);
-			lease?.release();
-		}
 	}
 
 	buildCacheDirective(

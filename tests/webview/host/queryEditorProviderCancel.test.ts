@@ -27,6 +27,7 @@ import { withSqlStateFileLock } from '../../../src/host/sql/sqlStateTransaction'
 import { HostCopilotQueryWorkflowApplicationHandler } from '../../../src/host/copilotQueryWorkflowApplicationHandler';
 import { HostKustoSectionExecutionApplicationHandler } from '../../../src/host/kustoSectionExecutionApplicationHandler';
 import { HostComparisonPreparationApplicationHandler } from '../../../src/host/comparisonPreparationApplicationHandler';
+import { HostSqlSectionExecutionApplicationHandler } from '../../../src/host/sqlSectionExecutionApplicationHandler';
 
 const TEST_CONNECTION: KustoConnection = {
 	id: 'conn-1',
@@ -489,12 +490,12 @@ function createSqlProviderHarness() {
 	sqlLifecycle.setTarget('sql_1', 'sql-1', 'Db', 1, 'owner-token');
 	provider.sqlLifecycle = sqlLifecycle;
 	let executionSequence = 0;
-	const executeSqlQueryFromWebview = provider.executeSqlQueryFromWebview.bind(provider);
-	provider.executeSqlQueryFromWebview = (message: Record<string, unknown>) => executeSqlQueryFromWebview({
+	installSqlSectionExecutionApplication(provider);
+	provider.executeSqlQueryFromWebview = (message: Record<string, unknown>) => provider.sqlSectionExecutionApplication.handleMessage({
 		sectionInstanceId: 'instance-1',
 		executionId: `test-execution-${++executionSequence}`,
 		...message,
-	});
+	}) ?? Promise.resolve();
 	installComparisonPreparationApplication(provider);
 	return provider;
 }
@@ -537,6 +538,37 @@ function installComparisonPreparationApplication(
 		cancelCopilotWriteQuery: (boxId, expectedSequence) =>
 			provider.copilot?.cancelCopilotWriteQuery?.(boxId, expectedSequence),
 		createRequestId: () => `comparison-test-${++comparisonRequestSequence}`,
+	});
+}
+
+function installSqlSectionExecutionApplication(
+	provider: QueryEditorProvider & Record<string, any>,
+): void {
+	provider.sqlSectionExecutionApplication = new HostSqlSectionExecutionApplicationHandler({
+		sqlLifecycle: {
+			isSectionCurrent: (...args) => provider.sqlLifecycle.isSectionCurrent(...args),
+			assertOwnerToken: (...args) => provider.assertSqlOwnerToken(...args),
+			assertOwnerTokenProtection: (...args) => provider.sqlLifecycle.assertOwnerTokenProtection(...args),
+			assertResultOwnerAllowed: (...args) => provider.assertSqlResultOwnerAllowed(...args),
+			assertResultOwnerProtection: (...args) => provider.sqlLifecycle.assertResultOwnerProtection(...args),
+			dispatchResultOwnerAllowed: (...args) => provider.dispatchSqlResultOwnerAllowed(...args),
+			dispatchResultOwnerProtection: (...args) => provider.sqlLifecycle.dispatchResultOwnerProtection(...args),
+		},
+		sqlExecutionBroker: provider.sqlExecutionBroker,
+		sqlWorkbench: {
+			isLeaveNoTraceConnection: connectionId =>
+				provider.sqlWorkbench.isLeaveNoTraceConnection(connectionId),
+		},
+		connectionManager: {
+			getConnection: connectionId => provider.sqlConnectionManager.getConnection(connectionId),
+		},
+		client: {
+			executeQueryCancelable: (sqlConnection, database, query) =>
+				provider.sqlClient.executeQueryCancelable(sqlConnection, database, query),
+		},
+		postMessage: message => provider.postMessage(message),
+		refreshConnectionsData: () => provider.sendSqlConnectionsData(),
+		output: provider.output,
 	});
 }
 
@@ -1131,6 +1163,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.copilotQueryWorkflowApplication = { dispose: vi.fn() };
 		provider.kustoSectionExecutionApplication = { dispose: vi.fn() };
 		provider.comparisonPreparationApplication = { dispose: vi.fn(() => rejectComparison(new Error('Canceled'))) };
+		provider.sqlSectionExecutionApplication = { dispose: vi.fn() };
 		provider.cancelAllRunningQueries = vi.fn();
 		provider.kustoClient = { dispose: vi.fn() };
 		provider.connection = { dispose: vi.fn() };
@@ -1146,6 +1179,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.kustoConnectionLifecycle.dispose).toHaveBeenCalledOnce();
 		expect(provider.kustoSectionExecutionApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.comparisonPreparationApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider.sqlSectionExecutionApplication.dispose).toHaveBeenCalledOnce();
 		expect(rejectComparison).toHaveBeenCalledWith(expect.objectContaining({ message: 'Canceled' }));
 		expect(provider.dashboardApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.artifactCsvSaveApplication.dispose).toHaveBeenCalledOnce();

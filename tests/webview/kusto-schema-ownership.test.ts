@@ -112,7 +112,7 @@ describe('Kusto schema ownership boundaries', () => {
 	it('keeps Kusto section terminal construction on the execution coordinator', () => {
 		const violations: string[] = [];
 		const sqlTerminalOwners = new Set([
-			'src/host/queryEditorProvider.ts',
+			'src/host/sqlSectionExecutionApplicationHandler.ts',
 			'src/host/queryEditorCopilot.ts',
 			'src/host/sql/sqlExecutionBroker.ts',
 		]);
