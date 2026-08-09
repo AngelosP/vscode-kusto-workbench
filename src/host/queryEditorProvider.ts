@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
-import { KustoQueryClient, QueryExecutionError, type CancelableQueryExecution } from './kustoClient';
+import { KustoQueryClient } from './kustoClient';
 import { SqlQueryClient, SqlQueryCancelledError } from './sqlClient';
 import { SqlSchemaService, sqlSchemaPrincipalFingerprintForPrincipal } from './sqlEditorSchema';
 import { SqlWorkbenchService, type SqlOwnerSnapshot } from './sql/sqlWorkbenchService';
@@ -60,8 +60,8 @@ import { getWorkbenchLogger, type WorkbenchLogger } from './workbenchLogger';
 import type { FileOpenTrace } from './fileOpenTrace';
 import { getEditingPreferencesData } from './editingPreferences';
 import { QueryRunCoordinator } from './queryRunCoordinator';
-import { KustoExecutionCoordinator, type KustoExecutionLease } from './kustoExecutionCoordinator';
-import { hasKustoCopilotRequestIdentity, kustoCopilotRequestIdentityEquals, type KustoComparisonRunIdentity, type KustoCopilotRequestIdentity, type KustoDispatchIdentity, type KustoExecutionProducer, type KustoExecutionRequestIdentity, type KustoExecutionStarted, type KustoSectionExecutionOutcome, type KustoSectionExecutionTarget, type PreparedComparisonSection } from '../shared/kustoExecution';
+import { KustoExecutionCoordinator } from './kustoExecutionCoordinator';
+import { hasKustoCopilotRequestIdentity, kustoCopilotRequestIdentityEquals, type KustoCopilotRequestIdentity, type KustoDispatchIdentity, type KustoSectionExecutionTarget, type PreparedComparisonSection } from '../shared/kustoExecution';
 import {
 	HostDashboardApplicationHandler,
 	type DashboardApplicationHandler,
@@ -190,6 +190,11 @@ import {
 	HostCopilotQueryWorkflowApplicationHandler,
 	type CopilotQueryWorkflowApplicationHandler,
 } from './copilotQueryWorkflowApplicationHandler';
+import {
+	HostKustoSectionExecutionApplicationHandler,
+	type KustoSectionExecutionApplicationHandler,
+	type KustoSectionQueryExecutionOptions,
+} from './kustoSectionExecutionApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -265,14 +270,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly schema: SchemaService;
 	private _queryRunCoordinator?: QueryRunCoordinator;
 	private _kustoExecutionCoordinator?: KustoExecutionCoordinator;
-	private readonly pendingKustoExecutionStartAcks = new Map<string, {
-		resolve: (accepted: boolean) => void;
-		timer: ReturnType<typeof setTimeout>;
-	}>();
-	private readonly pendingKustoPublicationAcks = new Map<string, {
-		resolve: (accepted: boolean) => void;
-		timer?: ReturnType<typeof setTimeout>;
-	}>();
 	readonly dashboardApplication: DashboardApplicationHandler;
 	readonly artifactCsvSaveApplication: ArtifactCsvSaveApplicationHandler;
 	readonly pythonExecutionApplication: PythonExecutionApplicationHandler;
@@ -305,6 +302,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly workbenchToolSessionApplication: WorkbenchToolSessionApplicationHandler;
 	readonly kustoConnectionBrowsingApplication: KustoConnectionBrowsingApplicationHandler;
 	readonly copilotQueryWorkflowApplication: CopilotQueryWorkflowApplicationHandler;
+	readonly kustoSectionExecutionApplication: KustoSectionExecutionApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -327,131 +325,29 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		});
 	}
 
-	async postKustoPublication(message: unknown): Promise<boolean> {
-		if (this._panelDisposed) return false;
-		const publicationId = `kusto-publication-${crypto.randomUUID()}`;
-		const publicationDeadline = Date.now() + 5_000;
-		const waitForAck = (phase: 'staged' | 'applied', timeoutMs?: number): Promise<boolean> => new Promise(resolve => {
-			const key = `${publicationId}:${phase}`;
-			const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
-				this.pendingKustoPublicationAcks.delete(key);
-				resolve(false);
-			}, timeoutMs);
-			this.pendingKustoPublicationAcks.set(key, { resolve, ...(timer ? { timer } : {}) });
-		});
-		const settleTransportFailure = (phase: 'staged' | 'applied') => {
-			const key = `${publicationId}:${phase}`;
-			const pending = this.pendingKustoPublicationAcks.get(key);
-			if (!pending) return;
-			this.pendingKustoPublicationAcks.delete(key);
-			if (pending.timer) clearTimeout(pending.timer);
-			pending.resolve(false);
-		};
-		const staged = waitForAck('staged', 5_000);
-		if (!await this.postMessage({
-			type: 'kustoPublicationStage', publicationId, publicationDeadline,
-			payload: message,
-		})) settleTransportFailure('staged');
-		if (!await staged) return false;
-		const applied = waitForAck('applied');
-		const appliedKey = `${publicationId}:applied`;
-		const appliedPending = this.pendingKustoPublicationAcks.get(appliedKey);
-		if (appliedPending) {
-			appliedPending.timer = setTimeout(async () => {
-				if (this.pendingKustoPublicationAcks.get(appliedKey) !== appliedPending) return;
-				appliedPending.timer = setTimeout(() => settleTransportFailure('applied'), 1_000);
-				if (!await this.postMessage({ type: 'kustoPublicationRevoke', publicationId })) settleTransportFailure('applied');
-			}, Math.max(1, publicationDeadline - Date.now()));
-		}
-		if (!await this.postMessage({ type: 'kustoPublicationCommit', publicationId })) settleTransportFailure('applied');
-		return applied;
-	}
-
-	private kustoExecutionAckKey(identity: Pick<KustoExecutionRequestIdentity, 'boxId' | 'executionId' | 'sectionInstanceId' | 'targetGeneration'>): string {
-		return `${identity.boxId}\u0000${identity.sectionInstanceId}\u0000${identity.targetGeneration}\u0000${identity.executionId}`;
-	}
-
-	private async claimKustoExecutionInWebview(
-		reservation: import('../shared/kustoExecution').KustoExecutionReservation, query: string,
-		expectedPredecessorExecutionId?: string,
-	): Promise<boolean> {
-		const key = this.kustoExecutionAckKey(reservation);
-		const prior = this.pendingKustoExecutionStartAcks.get(key);
-		if (prior) {
-			clearTimeout(prior.timer);
-			prior.resolve(false);
-		}
-		const result = new Promise<boolean>(resolve => {
-			const timer = setTimeout(() => {
-				this.pendingKustoExecutionStartAcks.delete(key);
-				resolve(false);
-			}, 5000);
-			this.pendingKustoExecutionStartAcks.set(key, { resolve, timer });
-		});
-		const message: KustoExecutionStarted = {
-			type: 'kustoExecutionStarted', ...reservation, query,
-			...(expectedPredecessorExecutionId ? { expectedPredecessorExecutionId } : {}),
-		};
-		const delivered = await this.postMessage(message);
-		if (delivered !== true) {
-			const pending = this.pendingKustoExecutionStartAcks.get(key);
-			if (pending) {
-				this.pendingKustoExecutionStartAcks.delete(key);
-				clearTimeout(pending.timer);
-				pending.resolve(false);
-			}
-		}
-		return result;
-	}
-
-	private rejectPendingKustoExecutionStartAcks(): void {
-		const pendingAcks = [...this.pendingKustoExecutionStartAcks.values()];
-		this.pendingKustoExecutionStartAcks.clear();
-		for (const pending of pendingAcks) {
-			clearTimeout(pending.timer);
-			pending.resolve(false);
-		}
+	postKustoPublication(message: unknown): Promise<boolean> {
+		return this.kustoSectionExecutionApplication.postKustoPublication(message);
 	}
 
 	getKustoSectionExecutionTarget(boxId: string): KustoSectionExecutionTarget | undefined {
-		const owner = this.kustoExecutionCoordinator.getTarget(boxId);
-		if (!owner?.connectionId || !owner.database) return undefined;
-		return Object.freeze({
-			engine: 'kusto',
-			boxId: owner.boxId,
-			sectionInstanceId: owner.sectionInstanceId,
-			targetGeneration: owner.targetGeneration,
-			connectionId: owner.connectionId,
-			database: owner.database,
-		});
+		return this.kustoSectionExecutionApplication.getKustoSectionExecutionTarget(boxId);
 	}
 
 	cancelKustoSectionExecution(target: KustoSectionExecutionTarget, executionId: string): boolean {
-		return this.kustoExecutionCoordinator.cancelExpected({
-			boxId: target.boxId,
-			executionId,
-			sectionInstanceId: target.sectionInstanceId,
-			targetGeneration: target.targetGeneration,
-		});
+		return this.kustoSectionExecutionApplication.cancelKustoSectionExecution(target, executionId);
 	}
 
 	getKustoSectionExecutionAccountPartition(target: KustoSectionExecutionTarget, executionId: string): string | undefined {
-		return this.kustoExecutionCoordinator.getDispatchAccountPartition({
-			boxId: target.boxId,
-			executionId,
-			sectionInstanceId: target.sectionInstanceId,
-			targetGeneration: target.targetGeneration,
-		});
+		return this.kustoSectionExecutionApplication
+			.getKustoSectionExecutionAccountPartition(target, executionId);
 	}
 
-	getCurrentKustoConnectionForDispatch(connectionId: string, dispatch: KustoDispatchIdentity): KustoConnection | undefined {
-		const current = this.connectionManager.getConnections().find(connection => connection.id === connectionId);
-		return current
-			&& this.connectionManager.getConnectionIncarnation(connectionId) === dispatch.connectionRevision
-			&& getKustoConnectionIdentityKey(current.clusterUrl, current.authorityId) === dispatch.connectionIdentityKey
-			&& this.kustoClient.getConnectionSessionGeneration(current) === dispatch.authSessionGeneration
-			? current
-			: undefined;
+	getCurrentKustoConnectionForDispatch(
+		connectionId: string,
+		dispatch: KustoDispatchIdentity,
+	): KustoConnection | undefined {
+		return this.kustoSectionExecutionApplication
+			.getCurrentKustoConnectionForDispatch(connectionId, dispatch);
 	}
 
 	// SQL schema responses and persistence remain provider adapters. Editor lifecycle
@@ -725,6 +621,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		workbenchToolSessionApplication?: WorkbenchToolSessionApplicationHandler,
 		kustoConnectionBrowsingApplication?: KustoConnectionBrowsingApplicationHandler,
 		copilotQueryWorkflowApplication?: CopilotQueryWorkflowApplicationHandler,
+		kustoSectionExecutionApplication?: KustoSectionExecutionApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -934,6 +831,30 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				getSqlSchemaService: () => this.sqlSchemaService,
 				getSqlClient: () => this.sqlClient,
 				postMessage: message => this.postMessage(message),
+			});
+		this.kustoSectionExecutionApplication = kustoSectionExecutionApplication
+			?? new HostKustoSectionExecutionApplicationHandler({
+				coordinator: this.kustoExecutionCoordinator,
+				kustoClient: this.kustoClient,
+				connection: this.connection,
+				connectionManager: this.connectionManager,
+				postMessage: message => this.postMessage(message),
+				refreshConnectionsData: () => this.refreshConnectionsData(),
+				cancelKustoCopilotSection: (boxId, sectionInstanceId) =>
+					this.copilot.cancelKustoCopilotSection(boxId, sectionInstanceId),
+				getErrorMessage: error => this.getErrorMessage(error),
+				formatQueryExecutionErrorForUser: (error, connection, database) =>
+					this.formatQueryExecutionErrorForUser(error, connection, database),
+				logQueryExecutionError: (error, connection, database, boxId, query) =>
+					this.logQueryExecutionError(error, connection, database, boxId, query),
+				appendQueryMode: (query, queryMode) => this.appendQueryMode(query, queryMode),
+				isControlCommand: query => this.isControlCommand(query),
+				normalizeControlCommandForExecution: query => this.normalizeControlCommandForExecution(query),
+				buildCacheDirective: (enabled, value, unit) => this.buildCacheDirective(enabled, value, unit),
+				showErrorMessage: message => { void vscode.window.showErrorMessage(message); },
+				isDisposed: () => this._panelDisposed,
+				createPublicationId: () => crypto.randomUUID(),
+				now: () => Date.now(),
 			});
 		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
 			invalidateConnections: connectionIds => {
@@ -1279,45 +1200,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await copilotQueryWorkflowApplicationMessage;
 			return;
 		}
+		const kustoSectionExecutionApplicationMessage
+			= this.kustoSectionExecutionApplication?.handleMessage(message);
+		if (kustoSectionExecutionApplicationMessage) {
+			await kustoSectionExecutionApplicationMessage;
+			return;
+		}
 		switch (message.type) {
-			case 'kustoSectionOpen':
-				this.kustoExecutionCoordinator.openSection(message.boxId, message.sectionInstanceId);
-				return;
-			case 'kustoSectionTarget':
-				this.kustoExecutionCoordinator.adoptTarget({
-					boxId: message.boxId,
-					sectionInstanceId: message.sectionInstanceId,
-					targetGeneration: message.targetGeneration,
-					connectionId: message.connectionId,
-					database: message.database,
-					connectionRevision: message.connectionRevision,
-					connectionIdentityKey: message.connectionIdentityKey,
-				});
-				return;
-			case 'kustoSectionClose':
-				this.copilot.cancelKustoCopilotSection(message.boxId, message.sectionInstanceId);
-				this.kustoExecutionCoordinator.closeSection(message.boxId, message.sectionInstanceId);
-				return;
-			case 'kustoExecutionStartedAck': {
-				const key = this.kustoExecutionAckKey(message);
-				const pending = this.pendingKustoExecutionStartAcks.get(key);
-				if (pending) {
-					this.pendingKustoExecutionStartAcks.delete(key);
-					clearTimeout(pending.timer);
-					pending.resolve(message.accepted === true);
-				}
-				return;
-			}
-			case 'kustoPublicationAck': {
-				const key = `${message.publicationId}:${message.phase}`;
-				const pending = this.pendingKustoPublicationAcks.get(key);
-				if (pending) {
-					this.pendingKustoPublicationAcks.delete(key);
-					if (pending.timer) clearTimeout(pending.timer);
-					pending.resolve(message.accepted === true);
-				}
-				return;
-			}
 			case 'sqlComparisonAdmissionAck': {
 				const requestId = String(message.requestId || '').trim();
 				const comparisonBoxId = String(message.comparisonBoxId || '').trim();
@@ -1549,9 +1438,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					// ignore
 				}
 				return;
-			case 'executeQuery':
-				await this.executeQueryFromWebview(message);
-				return;
 			case 'getSqlConnections':
 				await this.sendSqlConnectionsData();
 				return;
@@ -1643,14 +1529,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					message.boxId, message.sectionInstanceId, message.sqlConnectionId, message.database,
 					message.targetGeneration, message.expectedOwner,
 				);
-				return;
-			case 'cancelQuery':
-				this.kustoExecutionCoordinator.cancelExpected({
-					boxId: message.boxId,
-					executionId: message.executionId,
-					sectionInstanceId: message.sectionInstanceId,
-					targetGeneration: message.targetGeneration,
-				});
 				return;
 			case 'prefetchSchema':
 				await this.schema.prefetchSchema(message.connectionId, message.database, message.boxId, !!message.forceRefresh, message.requestToken, {
@@ -1865,12 +1743,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			if (this.panel !== panel) return;
 			this._panelDisposed = true;
 			QueryEditorProvider.activeProviders.delete(this);
-			this.rejectPendingKustoExecutionStartAcks();
-			for (const [publicationId, pending] of [...this.pendingKustoPublicationAcks]) {
-				this.pendingKustoPublicationAcks.delete(publicationId);
-				if (pending.timer) clearTimeout(pending.timer);
-				pending.resolve(false);
-			}
 			this.dashboardApplication.dispose();
 			this.artifactCsvSaveApplication.dispose();
 			this.pythonExecutionApplication.dispose();
@@ -1896,6 +1768,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.workbenchToolSessionApplication.dispose();
 			this.kustoConnectionBrowsingApplication.dispose();
 			this.copilotQueryWorkflowApplication.dispose();
+			this.kustoSectionExecutionApplication.dispose();
 			this.copilot.disposeKustoOwners();
 			this.copilot.invalidateSqlConnections(
 				[], [...this.sqlLifecycle.listComparisonBoxIds()],
@@ -1959,181 +1832,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		return this.schema.saveCachedSchemaToDisk(cacheKey, entry);
 	}
 
-	private async executeQueryFromWebview(
-		message: Extract<IncomingWebviewMessage, { type: 'executeQuery' }>
-	): Promise<void> {
-		const boxId = String(message.boxId || '').trim();
-		const database = String(message.database || '').trim();
-		const target: KustoSectionExecutionTarget = {
-			engine: 'kusto',
-			boxId,
-			sectionInstanceId: String(message.sectionInstanceId || '').trim(),
-			targetGeneration: Number(message.targetGeneration),
-			connectionId: String(message.connectionId || '').trim(),
-			database,
-		};
-		await this.executeKustoSectionQuery({
-			target,
-			executionId: String(message.executionId || '').trim(),
-			producer: message.producer ?? 'manual',
-			comparisonRun: message.comparisonRun,
-			query: message.query,
-			queryMode: message.queryMode,
-			cacheEnabled: message.cacheEnabled,
-			cacheValue: message.cacheValue,
-			cacheUnit: message.cacheUnit,
-			persistSelection: true,
-			notifyUserOnError: true,
-			preclaimedByWebview: true,
-		});
-	}
-
-	async executeKustoSectionQuery(options: {
-		target: KustoSectionExecutionTarget;
-		executionId: string;
-		producer: KustoExecutionProducer;
-		comparisonRun?: KustoComparisonRunIdentity;
-		copilotRequestId?: string;
-		query: string;
-		queryMode?: string;
-		cacheEnabled?: boolean;
-		cacheValue?: number;
-		cacheUnit?: CacheUnit | string;
-		persistSelection?: boolean;
-		ensureResultsVisible?: boolean;
-		notifyUserOnError?: boolean;
-		preclaimedByWebview?: boolean;
-	}): Promise<KustoSectionExecutionOutcome<import('./kustoClient').QueryResult>> {
-		const { target } = options;
-		const boxId = String(target.boxId || '').trim();
-		const database = String(target.database || '').trim();
-		const request: KustoExecutionRequestIdentity = {
-			...target,
-			executionId: String(options.executionId || '').trim(),
-			producer: options.producer,
-			query: options.query,
-			...(options.comparisonRun ? { comparisonRun: options.comparisonRun } : {}),
-			...(options.copilotRequestId ? { copilotRequestId: options.copilotRequestId } : {}),
-		};
-		const expectedPredecessorExecutionId = this.kustoExecutionCoordinator.getActive(boxId)?.executionId;
-		let reservation;
-		try {
-			reservation = this.kustoExecutionCoordinator.reserve(request);
-		} catch {
-			if ((options.preclaimedByWebview || options.producer === 'manual' || options.producer === 'tool')
-				&& !this.kustoExecutionCoordinator.hasExactActiveRequest(request)) {
-				await this.kustoExecutionCoordinator.rejectPreclaimedRequest(request);
-			}
-			return { status: 'superseded', executionId: request.executionId };
-		}
-		if (!options.preclaimedByWebview && (options.producer === 'copilot' || options.producer === 'comparison')
-			&& !await this.claimKustoExecutionInWebview(reservation, options.query, expectedPredecessorExecutionId)) {
-			this.kustoExecutionCoordinator.cancelExpected(reservation);
-			return { status: 'superseded', executionId: request.executionId };
-		}
-		if (options.persistSelection) {
-			try {
-				await this.connection.saveLastSelection(target.connectionId, database);
-			} catch (error) {
-				const userMessage = this.getErrorMessage(error);
-				this.kustoExecutionCoordinator.fail(reservation, userMessage);
-				return { status: 'failed', executionId: request.executionId, error: userMessage };
-			}
-		}
-
-		const connection = this.connection.findConnection(target.connectionId);
-		if (!connection) {
-			this.kustoExecutionCoordinator.fail(reservation, 'Connection not found.');
-			if (options.notifyUserOnError) vscode.window.showErrorMessage('Connection not found');
-			return { status: 'failed', executionId: request.executionId, error: 'Connection not found.' };
-		}
-
-		if (!database) {
-			this.kustoExecutionCoordinator.fail(reservation, 'Please select a database.');
-			if (options.notifyUserOnError) vscode.window.showErrorMessage('Please select a database');
-			return { status: 'failed', executionId: request.executionId, error: 'Please select a database.' };
-		}
-
-		const queryWithMode = this.appendQueryMode(options.query, options.queryMode);
-		// Control commands (starting with '.') should not have cache directives prepended
-		const isControl = this.isControlCommand(options.query);
-		const cacheDirective = isControl ? '' : this.buildCacheDirective(options.cacheEnabled, options.cacheValue, options.cacheUnit);
-		const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
-		const executionQuery = this.normalizeControlCommandForExecution(finalQuery);
-
-		const cancelClientKey = boxId ? `${boxId}::${connection.id}` : connection.id;
-		let lease: KustoExecutionLease<CancelableQueryExecution> | undefined;
-		let pendingDispatch: KustoDispatchIdentity | undefined;
-		try {
-			lease = this.kustoExecutionCoordinator.start(reservation, () => this.kustoClient.executeQueryCancelable(
-				connection,
-				database,
-				executionQuery,
-				cancelClientKey,
-				{
-					onDispatch: identity => {
-						if (!lease) {
-							pendingDispatch = identity;
-							return;
-						}
-						if (!lease.captureDispatch(identity)) throw new Error('Kusto execution was superseded before dispatch.');
-					},
-				},
-			));
-			if (pendingDispatch && !lease.captureDispatch(pendingDispatch)) {
-				throw new Error('Kusto execution was superseded before dispatch.');
-			}
-			const result = await lease.execution.promise;
-			if (!lease.isCurrent()) return { status: 'superseded', executionId: request.executionId };
-			await this.kustoClient.waitForProviderAccountRefresh();
-			if (!lease.isCurrent()) return { status: 'superseded', executionId: request.executionId };
-			await this.refreshConnectionsData();
-			const dispatch = lease.getDispatch();
-			const producingAccountPartition = dispatch?.accountPartition;
-			const currentConnection = dispatch
-				? this.getCurrentKustoConnectionForDispatch(connection.id, dispatch)
-				: undefined;
-			if (lease.isCurrent()
-				&& dispatch
-				&& currentConnection
-				&& producingAccountPartition
-				&& this.kustoClient.getConnectionSessionGeneration(connection) === dispatch.authSessionGeneration
-				&& this.kustoClient.getAccountPartition(currentConnection) === producingAccountPartition) {
-				const admission = await this.connectionManager.admitLeaveNoTraceRevision(
-					dispatch.clusterEndpoint,
-					dispatch.leaveNoTraceRevision,
-					() => {
-						const admittedConnection = this.getCurrentKustoConnectionForDispatch(connection.id, dispatch);
-						return lease?.isCurrent() === true
-							&& !!admittedConnection
-							&& this.kustoClient.getConnectionSessionGeneration(connection) === dispatch.authSessionGeneration
-							&& this.kustoClient.getAccountPartition(admittedConnection) === producingAccountPartition
-							&& this.kustoExecutionCoordinator.succeed(reservation, result, options.ensureResultsVisible === true);
-					},
-				);
-				if (admission.admitted && admission.value === true) {
-					return { status: 'success', executionId: request.executionId, result };
-				}
-			}
-			this.kustoExecutionCoordinator.cancelExpected(reservation);
-			return { status: 'superseded', executionId: request.executionId };
-		} catch (error) {
-			if ((error as any)?.name === 'QueryCancelledError' || (error as any)?.isCancelled === true) {
-				this.kustoExecutionCoordinator.cancelExpected(reservation);
-				return { status: 'cancelled', executionId: request.executionId };
-			}
-			if (this.kustoExecutionCoordinator.getActive(boxId)?.reservationSequence === reservation.reservationSequence) {
-				this.logQueryExecutionError(error, connection, database, boxId, executionQuery);
-				const userMessage = this.formatQueryExecutionErrorForUser(error, connection, database);
-				const clientActivityId = error instanceof QueryExecutionError ? error.clientActivityId : undefined;
-				if (options.notifyUserOnError) vscode.window.showErrorMessage(userMessage);
-				this.kustoExecutionCoordinator.fail(reservation, userMessage, clientActivityId);
-				return { status: 'failed', executionId: request.executionId, error: userMessage };
-			}
-			return { status: 'superseded', executionId: request.executionId };
-		} finally {
-			lease?.release();
-		}
+	async executeKustoSectionQuery(options: KustoSectionQueryExecutionOptions) {
+		return this.kustoSectionExecutionApplication.executeKustoSectionQuery(options);
 	}
 
 	// ── SQL connection helpers ───────────────────────────────────────────────

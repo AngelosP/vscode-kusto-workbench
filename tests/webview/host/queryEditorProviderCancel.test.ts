@@ -24,6 +24,7 @@ import { SqlExecutionBroker } from '../../../src/host/sql/sqlExecutionBroker';
 import { SqlWorkbenchService } from '../../../src/host/sql/sqlWorkbenchService';
 import { withSqlStateFileLock } from '../../../src/host/sql/sqlStateTransaction';
 import { HostCopilotQueryWorkflowApplicationHandler } from '../../../src/host/copilotQueryWorkflowApplicationHandler';
+import { HostKustoSectionExecutionApplicationHandler } from '../../../src/host/kustoSectionExecutionApplicationHandler';
 
 const TEST_CONNECTION: KustoConnection = {
 	id: 'conn-1',
@@ -80,6 +81,7 @@ function dispatchingKustoExecution(execution: Record<string, unknown>, leaveNoTr
 }
 
 let executeMessageSequence = 0;
+let publicationIdSequence = 0;
 
 function executeMessage(boxId: string, query: string = 'print x=1', executionId = `kusto-test-${++executeMessageSequence}`): ExecuteQueryMessage {
 	return {
@@ -99,10 +101,36 @@ function executeMessage(boxId: string, query: string = 'print x=1', executionId 
 	};
 }
 
+function installKustoSectionExecutionApplication(
+	provider: QueryEditorProvider & Record<string, any>,
+): void {
+	provider.kustoSectionExecutionApplication = new HostKustoSectionExecutionApplicationHandler({
+		coordinator: provider.kustoExecutionCoordinator,
+		kustoClient: provider.kustoClient,
+		connection: provider.connection,
+		connectionManager: provider.connectionManager,
+		postMessage: (message: unknown) => provider.postMessage(message),
+		refreshConnectionsData: () => provider.refreshConnectionsData(),
+		cancelKustoCopilotSection: (boxId, sectionInstanceId) =>
+			provider.copilot?.cancelKustoCopilotSection?.(boxId, sectionInstanceId),
+		getErrorMessage: error => provider.getErrorMessage(error),
+		formatQueryExecutionErrorForUser: (error, connection, database) =>
+			provider.formatQueryExecutionErrorForUser(error, connection, database),
+		logQueryExecutionError: (error, connection, database, boxId, query) =>
+			provider.logQueryExecutionError(error, connection, database, boxId, query),
+		appendQueryMode: (query, queryMode) => provider.appendQueryMode(query, queryMode),
+		isControlCommand: query => provider.isControlCommand(query),
+		normalizeControlCommandForExecution: query => provider.normalizeControlCommandForExecution(query),
+		buildCacheDirective: (enabled, value, unit) => provider.buildCacheDirective(enabled, value, unit),
+		showErrorMessage: message => { void message; },
+		isDisposed: () => provider._panelDisposed === true,
+		createPublicationId: () => `test-${++publicationIdSequence}`,
+		now: () => Date.now(),
+	});
+}
+
 function createProviderHarness() {
 	const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
-	provider.pendingKustoExecutionStartAcks = new Map();
-	provider.pendingKustoPublicationAcks = new Map();
 	provider.postMessage = vi.fn(() => true);
 	provider.postKustoPublication = vi.fn(async (message: unknown) => await Promise.resolve(provider.postMessage(message)) !== false);
 	provider.refreshConnectionsData = vi.fn(async () => undefined);
@@ -133,6 +161,7 @@ function createProviderHarness() {
 	provider.logQueryExecutionError = vi.fn();
 	provider.formatQueryExecutionErrorForUser = vi.fn((error: unknown) => error instanceof Error ? error.message : String(error));
 	provider.output = { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() };
+	installKustoSectionExecutionApplication(provider);
 	provider.kustoExecutionCoordinator.openSection('query_1', 'instance-query_1');
 	provider.kustoExecutionCoordinator.adoptTarget({
 		boxId: 'query_1', sectionInstanceId: 'instance-query_1', targetGeneration: 1,
@@ -879,20 +908,18 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 	});
 
 	it('waits for webview application acknowledgement after transport accepts a Kusto publication', async () => {
-		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
-		provider._panelDisposed = false;
-		provider.pendingKustoPublicationAcks = new Map();
-		provider.panel = { webview: { postMessage: vi.fn(async () => true) } };
-		provider.output = { warn: vi.fn() };
+		const provider = createProviderHarness();
+		provider.postMessage = vi.fn(async () => true);
 
 		let settled = false;
-		const publishing = provider.postKustoPublication({ type: 'queryCancelled', executionId: 'ack-test' })
+		const publishing = provider.kustoSectionExecutionApplication
+			.postKustoPublication({ type: 'queryCancelled', executionId: 'ack-test' })
 			.then(value => { settled = true; return value; });
-		await vi.waitFor(() => expect(provider.panel.webview.postMessage).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledOnce());
 		expect(settled).toBe(false);
-		const stage = provider.panel.webview.postMessage.mock.calls[0][0];
+		const stage = provider.postMessage.mock.calls[0][0];
 		await provider.handleWebviewMessage({ type: 'kustoPublicationAck', publicationId: stage.publicationId, phase: 'staged', accepted: true });
-		await vi.waitFor(() => expect(provider.panel.webview.postMessage).toHaveBeenCalledTimes(2));
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledTimes(2));
 		await provider.handleWebviewMessage({ type: 'kustoPublicationAck', publicationId: stage.publicationId, phase: 'applied', accepted: true });
 
 		await expect(publishing).resolves.toBe(true);
@@ -901,27 +928,24 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 	it('fails a Kusto publication closed when applied and revoke acknowledgements are lost', async () => {
 		vi.useFakeTimers();
 		try {
-			const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
-			provider._panelDisposed = false;
-			provider.pendingKustoPublicationAcks = new Map();
-			provider.panel = { webview: { postMessage: vi.fn(async () => true) } };
-			provider.output = { warn: vi.fn() };
+			const provider = createProviderHarness();
+			provider.postMessage = vi.fn(async () => true);
 
-			const publishing = provider.postKustoPublication({ type: 'queryResult', result: { rows: [['secret']] } });
-			await vi.waitFor(() => expect(provider.panel.webview.postMessage).toHaveBeenCalledOnce());
-			const stage = provider.panel.webview.postMessage.mock.calls[0][0];
+			const publishing = provider.kustoSectionExecutionApplication
+				.postKustoPublication({ type: 'queryResult', result: { rows: [['secret']] } });
+			await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledOnce());
+			const stage = provider.postMessage.mock.calls[0][0];
 			await provider.handleWebviewMessage({
 				type: 'kustoPublicationAck', publicationId: stage.publicationId, phase: 'staged', accepted: true,
 			});
-			await vi.waitFor(() => expect(provider.panel.webview.postMessage).toHaveBeenCalledTimes(2));
+			await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledTimes(2));
 
 			await vi.advanceTimersByTimeAsync(6_000);
 
 			await expect(publishing).resolves.toBe(false);
-			expect(provider.panel.webview.postMessage).toHaveBeenCalledWith({
+			expect(provider.postMessage).toHaveBeenCalledWith({
 				type: 'kustoPublicationRevoke', publicationId: stage.publicationId,
 			});
-			expect(provider.pendingKustoPublicationAcks.size).toBe(0);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -930,11 +954,8 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 	it('treats revoke status as success when commit applied but its acknowledgement was lost', async () => {
 		vi.useFakeTimers();
 		try {
-			const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
-			provider._panelDisposed = false;
-			provider.pendingKustoPublicationAcks = new Map();
-			provider.output = { warn: vi.fn() };
-			provider.panel = { webview: { postMessage: vi.fn(async (message: any) => {
+			const provider = createProviderHarness();
+			provider.postMessage = vi.fn(async (message: any) => {
 				if (message.type === 'kustoPublicationStage') {
 					queueMicrotask(() => void provider.handleWebviewMessage({
 						type: 'kustoPublicationAck', publicationId: message.publicationId,
@@ -948,15 +969,15 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 					}));
 				}
 				return true;
-			}) } };
+			});
 
-			const publishing = provider.postKustoPublication({ type: 'queryResult', result: { rows: [['applied']] } });
-			await vi.waitFor(() => expect(provider.panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'kustoPublicationCommit' })));
+			const publishing = provider.kustoSectionExecutionApplication
+				.postKustoPublication({ type: 'queryResult', result: { rows: [['applied']] } });
+			await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'kustoPublicationCommit' })));
 			await vi.advanceTimersByTimeAsync(5_000);
 
 			await expect(publishing).resolves.toBe(true);
-			expect(provider.panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'kustoPublicationRevoke' }));
-			expect(provider.pendingKustoPublicationAcks.size).toBe(0);
+			expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'kustoPublicationRevoke' }));
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1029,9 +1050,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 	it('invalidates all SQL Copilot owners before panel disposal clears editor state', () => {
 		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
 		let disposePanel!: () => void;
-		const resolveKustoStart = vi.fn();
 		const rejectComparison = vi.fn();
-		const kustoStartTimer = setTimeout(() => undefined, 30_000);
 		const comparisonTimer = setTimeout(() => undefined, 30_000);
 		const panel = { onDidDispose: vi.fn((handler: () => void) => { disposePanel = handler; }) } as any;
 		provider.panel = panel;
@@ -1045,7 +1064,6 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.copilot = { disposeKustoOwners: vi.fn(), invalidateSqlConnections: vi.fn() };
 		provider.sqlPersistenceInvalidationEmitter = { dispose: vi.fn() };
 		provider.kustoPersistenceInvalidationEmitter = { dispose: vi.fn() };
-		provider.pendingKustoPublicationAcks = new Map();
 		provider.dashboardApplication = { dispose: vi.fn() };
 		provider.artifactCsvSaveApplication = { dispose: vi.fn() };
 		provider.pythonExecutionApplication = { dispose: vi.fn() };
@@ -1078,21 +1096,17 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.workbenchToolSessionApplication = { dispose: vi.fn() };
 		provider.kustoConnectionBrowsingApplication = { dispose: vi.fn() };
 		provider.copilotQueryWorkflowApplication = { dispose: vi.fn() };
+		provider.kustoSectionExecutionApplication = { dispose: vi.fn() };
 		provider.cancelAllRunningQueries = vi.fn();
 		provider.kustoClient = { dispose: vi.fn() };
 		provider.connection = { dispose: vi.fn() };
 		provider.kustoConnectionLifecycle = { dispose: vi.fn() };
-		provider.pendingKustoExecutionStartAcks = new Map([[
-			'query_1\u0000instance-query_1\u00001\u0000execution-1',
-			{ resolve: resolveKustoStart, timer: kustoStartTimer },
-		]]);
 		provider.pendingComparisonEnsureByRequestId = new Map([[
 			'comparison-pending',
 			{ resolve: vi.fn(), reject: rejectComparison, timer: comparisonTimer, sourceBoxId: 'query_1' },
 		]]);
 		provider.registerPanelDisposal(panel);
 		disposePanel();
-		clearTimeout(kustoStartTimer);
 		clearTimeout(comparisonTimer);
 
 		expect(provider.copilot.invalidateSqlConnections).toHaveBeenCalledWith([], ['comparison_1']);
@@ -1101,8 +1115,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			.toBeLessThan(provider.sqlLifecycle.dispose.mock.invocationCallOrder[0]);
 		expect(provider.kustoConnectionLifecycle.dispose).toHaveBeenCalledOnce();
 		expect(provider._comparisonOwnerByBoxId).toEqual(new Map());
-		expect(resolveKustoStart).toHaveBeenCalledWith(false);
-		expect(provider.pendingKustoExecutionStartAcks.size).toBe(0);
+		expect(provider.kustoSectionExecutionApplication.dispose).toHaveBeenCalledOnce();
 		expect(rejectComparison).toHaveBeenCalledWith(expect.objectContaining({ message: 'Canceled' }));
 		expect(provider.pendingComparisonEnsureByRequestId.size).toBe(0);
 		expect(provider.dashboardApplication.dispose).toHaveBeenCalledOnce();
@@ -1514,7 +1527,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			};
 		});
 
-		const task = provider.executeQueryFromWebview(executeMessage('query_1'));
+		const task = provider.handleWebviewMessage(executeMessage('query_1'));
 		await flushPromises();
 		incarnation = 3;
 		result.resolve(queryResult('stale-aba'));
@@ -1532,6 +1545,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.connectionManager.getConnections.mockImplementation(() => [current]);
 		provider.connectionManager.getConnectionIncarnation.mockImplementation(() => incarnation);
 		provider._kustoExecutionCoordinator = undefined;
+		installKustoSectionExecutionApplication(provider);
 		provider.kustoExecutionCoordinator.openSection('query_1', 'instance-query_1');
 		provider.kustoExecutionCoordinator.adoptTarget({
 			boxId: 'query_1', sectionInstanceId: 'instance-query_1', targetGeneration: 1,
@@ -1541,7 +1555,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		current = replacement;
 		incarnation = 2;
 
-		await provider.executeQueryFromWebview(executeMessage('query_1', 'print stale=1', 'stale-before-reservation'));
+		await provider.handleWebviewMessage(executeMessage('query_1', 'print stale=1', 'stale-before-reservation'));
 
 		expect(provider.kustoClient.executeQueryCancelable).not.toHaveBeenCalled();
 		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -2236,7 +2250,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			getAccountPartition: () => 'partition-current',
 		}));
 
-		await provider.executeQueryFromWebview(message);
+		await provider.handleWebviewMessage(message);
 
 		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'queryResult', result, boxId: 'query_1', executionId: 'execution-success',
@@ -2423,7 +2437,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			getAccountPartition: () => 'partition-current',
 		});
 
-		await provider.executeQueryFromWebview(executeMessage('query_1'));
+		await provider.handleWebviewMessage(executeMessage('query_1'));
 
 		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryResult' }));
 		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -2447,7 +2461,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			getAccountPartition: () => 'partition-current',
 		}));
 
-		const task = provider.executeQueryFromWebview(executeMessage('query_1'));
+		const task = provider.handleWebviewMessage(executeMessage('query_1'));
 		await flushPromises();
 		currentConnection = replacement;
 		result.resolve(queryResult('stale-physical-target'));
@@ -2477,7 +2491,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			};
 		});
 
-		const task = provider.executeQueryFromWebview(executeMessage('query_1'));
+		const task = provider.handleWebviewMessage(executeMessage('query_1'));
 		await flushPromises();
 		policyRevision = 2;
 		provider.connectionManager.policyRevision = policyRevision;
@@ -2499,7 +2513,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			clientActivityId: 'KW.execute_query;error',
 		});
 
-		await provider.executeQueryFromWebview(message);
+		await provider.handleWebviewMessage(message);
 
 		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'queryError', boxId: 'query_1', executionId: 'execution-error',
@@ -2517,7 +2531,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			clientActivityId: 'KW.execute_query;cancel',
 		});
 
-		const task = provider.executeQueryFromWebview(message);
+		const task = provider.handleWebviewMessage(message);
 		await flushPromises();
 		await provider.handleWebviewMessage({
 			type: 'cancelQuery', boxId: 'query_1', executionId: 'execution-cancel',
@@ -2569,7 +2583,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		});
 
 		const message = executeMessage('query_1');
-		const task = provider.executeQueryFromWebview(message);
+		const task = provider.handleWebviewMessage(message);
 		await flushPromises();
 
 		await provider.handleWebviewMessage({
@@ -2599,10 +2613,10 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			.mockImplementationOnce(dispatchingKustoExecution({ promise: first.promise, cancel: firstCancel, clientActivityId: 'KW.execute_query;first', getAccountPartition: () => 'partition-current' }))
 			.mockImplementationOnce(dispatchingKustoExecution({ promise: Promise.resolve(secondResult), cancel: secondCancel, clientActivityId: 'KW.execute_query;second', getAccountPartition: () => 'partition-current' }));
 
-		const firstTask = provider.executeQueryFromWebview(executeMessage('query_1', 'print label="first"'));
+		const firstTask = provider.handleWebviewMessage(executeMessage('query_1', 'print label="first"'));
 		await flushPromises();
 
-		await provider.executeQueryFromWebview(executeMessage('query_1', 'print label="second"'));
+		await provider.handleWebviewMessage(executeMessage('query_1', 'print label="second"'));
 
 		expect(firstCancel).toHaveBeenCalledTimes(1);
 		expect(provider.postMessage).not.toHaveBeenCalledWith({ type: 'queryCancelled', boxId: 'query_1' });
@@ -2630,9 +2644,9 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			.mockImplementationOnce(dispatchingKustoExecution({ promise: Promise.resolve(firstResult), cancel: vi.fn(), clientActivityId: 'KW.execute_query;first', getAccountPartition: () => 'partition-current' }))
 			.mockImplementationOnce(dispatchingKustoExecution({ promise: Promise.resolve(secondResult), cancel: vi.fn(), clientActivityId: 'KW.execute_query;second', getAccountPartition: () => 'partition-current' }));
 
-		const firstTask = provider.executeQueryFromWebview(executeMessage('query_1', 'print label="first"'));
+		const firstTask = provider.handleWebviewMessage(executeMessage('query_1', 'print label="first"'));
 		await flushPromises();
-		const secondTask = provider.executeQueryFromWebview(executeMessage('query_1', 'print label="second"'));
+		const secondTask = provider.handleWebviewMessage(executeMessage('query_1', 'print label="second"'));
 		snapshot.resolve();
 		await Promise.all([firstTask, secondTask]);
 
@@ -2657,7 +2671,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			getAccountPartition: () => 'partition-a',
 		});
 
-		const task = provider.executeQueryFromWebview(executeMessage('query_1'));
+		const task = provider.handleWebviewMessage(executeMessage('query_1'));
 		await flushPromises();
 		currentPartition = 'partition-b';
 		snapshot.resolve();
@@ -2692,7 +2706,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			clientActivityId: 'KW.execute_query;commented-control',
 		});
 
-		await provider.executeQueryFromWebview(message);
+		await provider.handleWebviewMessage(message);
 
 		expect(provider.buildCacheDirective).not.toHaveBeenCalled();
 		expect(provider.kustoClient.executeQueryCancelable).toHaveBeenCalledWith(
@@ -2720,7 +2734,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			clientActivityId: 'KW.execute_query;real-control-detection',
 		});
 
-		await provider.executeQueryFromWebview(message);
+		await provider.handleWebviewMessage(message);
 
 		expect(provider.isControlCommand).toHaveBeenCalledWith(originalQuery);
 		expect(provider.buildCacheDirective).not.toHaveBeenCalled();

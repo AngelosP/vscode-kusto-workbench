@@ -2469,6 +2469,10 @@ describe('message-handler dispatch', () => {
 			'../../src/webview/sections/query-execution.controller.js',
 		);
 		const { QueryEditorProvider } = await import('../../src/host/queryEditorProvider.js');
+		const { HostKustoSectionExecutionApplicationHandler } = await import(
+			'../../src/host/kustoSectionExecutionApplicationHandler.js'
+		);
+		const { getKustoConnectionIdentityKey } = await import('../../src/shared/kustoAuth.js');
 		const { normalizeControlCommandForExecution } = await import('../../src/host/queryEditorUtils.js');
 		const resultsState = await import('../../src/webview/core/results-state.js');
 		const persistence = await import('../../src/webview/core/persistence.js');
@@ -2477,6 +2481,7 @@ describe('message-handler dispatch', () => {
 		const connection = {
 			id: 'connection-cross-layer', name: 'Cross layer', clusterUrl: 'https://cross-layer.kusto.windows.net',
 		};
+		const connectionIdentityKey = getKustoConnectionIdentityKey(connection.clusterUrl);
 		const { section } = createSectionWithShell(boxId, { id: boxId, type: 'query', query: 'print Value=42' });
 		const host = section as any;
 		host.boxId = boxId;
@@ -2513,7 +2518,6 @@ describe('message-handler dispatch', () => {
 		});
 
 		const provider = Object.create(QueryEditorProvider.prototype) as any;
-		provider.pendingKustoExecutionStartAcks = new Map();
 		provider.refreshConnectionsData = vi.fn(async () => undefined);
 		provider.connectionManager = {
 			getConnections: vi.fn(() => [connection]),
@@ -2522,7 +2526,6 @@ describe('message-handler dispatch', () => {
 			admitLeaveNoTraceRevision: vi.fn(async (_clusterUrl: string, expectedGeneration: number, admit: () => unknown) =>
 				expectedGeneration === 0 ? { admitted: true, value: admit() } : { admitted: false }),
 		};
-		provider.getCurrentKustoConnectionForDispatch = vi.fn(() => connection);
 		provider.connection = {
 			saveLastSelection: vi.fn(async () => undefined),
 			findConnection: vi.fn(() => connection),
@@ -2535,7 +2538,7 @@ describe('message-handler dispatch', () => {
 			executeQueryCancelable: vi.fn((_connection: unknown, _database: string, _query: string, _key: string, options: any) => {
 				options.onDispatch({
 					dispatchAttempt: 1, connectionRevision: 0, leaveNoTraceRevision: 0,
-					connectionIdentityKey: 'cross-layer|', clusterEndpoint: connection.clusterUrl,
+					connectionIdentityKey, clusterEndpoint: connection.clusterUrl,
 					accountPartition: 'partition-cross-layer', authSessionGeneration: 0, clientActivityId: 'KW.execute_query;cross-layer',
 				});
 				return {
@@ -2564,17 +2567,39 @@ describe('message-handler dispatch', () => {
 			}
 			return true;
 		});
-		provider.pendingKustoPublicationAcks = new Map();
+		provider.kustoSectionExecutionApplication = new HostKustoSectionExecutionApplicationHandler({
+			coordinator: provider.kustoExecutionCoordinator,
+			kustoClient: provider.kustoClient,
+			connection: provider.connection,
+			connectionManager: provider.connectionManager,
+			postMessage: (message: unknown) => provider.postMessage(message),
+			refreshConnectionsData: () => provider.refreshConnectionsData(),
+			cancelKustoCopilotSection: () => undefined,
+			getErrorMessage: (error: unknown) => provider.getErrorMessage(error),
+			formatQueryExecutionErrorForUser: (error: unknown, targetConnection: any, database?: string) =>
+				provider.formatQueryExecutionErrorForUser(error, targetConnection, database),
+			logQueryExecutionError: (error: unknown, targetConnection: any, database: string | undefined, targetBoxId: string, query: string) =>
+				provider.logQueryExecutionError(error, targetConnection, database, targetBoxId, query),
+			appendQueryMode: (query: string, queryMode?: string) => provider.appendQueryMode(query, queryMode),
+			isControlCommand: (query: string) => provider.isControlCommand(query),
+			normalizeControlCommandForExecution: (query: string) => provider.normalizeControlCommandForExecution(query),
+			buildCacheDirective: (enabled?: boolean, value?: number, unit?: string) =>
+				provider.buildCacheDirective(enabled, value, unit),
+			showErrorMessage: () => undefined,
+			isDisposed: () => false,
+			createPublicationId: () => 'cross-layer',
+			now: () => Date.now(),
+		});
 		provider.kustoExecutionCoordinator.openSection(boxId, lifecycle.sectionInstanceId);
 		provider.kustoExecutionCoordinator.adoptTarget({
 			boxId, ...lifecycle, connectionId: connection.id, database: 'Samples',
 			connectionRevision: 0,
-			connectionIdentityKey: `${connection.clusterUrl.replace(/^https?:\/\//, '').replace(/\.kusto\.windows\.net\/?$/i, '').toLowerCase()}|`,
+			connectionIdentityKey,
 		});
 		vi.mocked(resultsState.displayResultForBox).mockClear();
 		vi.mocked(persistence.__kustoOnQueryResult).mockClear();
 
-		await provider.executeQueryFromWebview(outbound);
+		await provider.handleWebviewMessage(outbound);
 		await vi.waitFor(() => expect(persistence.__kustoOnQueryResult).toHaveBeenCalledWith(
 			boxId, result, expect.objectContaining({ clientActivityId: 'KW.execute_query;cross-layer' }),
 		));
