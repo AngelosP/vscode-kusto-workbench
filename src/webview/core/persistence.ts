@@ -1897,6 +1897,19 @@ export function isDocumentMutationAllowed(): boolean {
 		&& !__kustoIsReadOnlyBrowserViewer();
 }
 
+export function applyBrowserViewerDocumentProjection(message: Record<string, unknown>): boolean {
+	if (!__kustoIsReadOnlyBrowserViewer()) return false;
+	try {
+		return handleDocumentDataMessage(message);
+	} finally {
+		__kustoPersistenceEnabled = false;
+		if (__kustoPersistTimer) {
+			clearTimeout(__kustoPersistTimer);
+			__kustoPersistTimer = null;
+		}
+	}
+}
+
 export function resetDocumentPersistenceForTest(): void {
 	__kustoPersistenceEnabled = true;
 	__kustoHasAppliedDocument = false;
@@ -3283,7 +3296,7 @@ export function handleDocumentDataMessage(message: any): boolean {
 		: true;
 	pState.documentRuntimeActive = false;
 	__kustoClearMalformedDocumentLock();
-	__kustoRequestFreshLeaveNoTracePolicy();
+	if (!__kustoIsReadOnlyBrowserViewer()) __kustoRequestFreshLeaveNoTracePolicy();
 	const incomingEditRevision = Number(message?.editRevision);
 	const incomingSourceGeneration = Number(message?.sourceGeneration);
 	__kustoSetDocumentLoading(true, 'Opening notebook...');

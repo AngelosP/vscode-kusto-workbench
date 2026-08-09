@@ -38,7 +38,12 @@ import {
 	htmlDashboardFactArtifactConsumerId,
 	RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT,
 } from '../../shared/resultArtifact.js';
-import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
+import {
+	__kustoForceEditorWritable,
+	__kustoEnsureEditorWritableSoon,
+	__kustoInstallWritableGuard,
+	__kustoIsEditorReadOnlyByCapability,
+} from '../monaco/writable.js';
 import { __kustoAttachAutoResizeToContent } from '../monaco/resize.js';
 import { DASHBOARD_CHART_DEFAULTS } from '../../shared/dashboardCharts.js';
 import { DASHBOARD_TABLE_CELL_BAR } from '../../shared/dashboardTables.js';
@@ -1010,9 +1015,10 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	}
 
 	private _renderCodeMode(): TemplateResult {
+		const browserReadOnly = (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode === true;
 		return html`
 			<div class="editor-wrapper" id="editor-wrapper">
-				<kw-monaco-toolbar box-id=${this.boxId} .items=${this._toolbarItems} aria-label="HTML editor tools"></kw-monaco-toolbar>
+				${browserReadOnly ? nothing : html`<kw-monaco-toolbar box-id=${this.boxId} .items=${this._toolbarItems} aria-label="HTML editor tools"></kw-monaco-toolbar>`}
 				<div class="editor-area">
 					<div class="editor-placeholder" id="editor-placeholder">Probably best to let the agent do this part ...</div>
 					<slot name="editor"></slot>
@@ -1080,11 +1086,12 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			const pendingCode = this._consumePendingHtmlCode();
 			if (pendingCode !== undefined) this._savedCode = pendingCode;
 
+			const readOnly = __kustoIsEditorReadOnlyByCapability();
 			const editor = monaco.editor.create(slotted, {
 				value: pendingCode ?? this._savedCode ?? this.initialCode ?? '',
 				language: 'html',
-				readOnly: false,
-				domReadOnly: false,
+				readOnly,
+				domReadOnly: readOnly,
 				automaticLayout: true,
 				scrollbar: { alwaysConsumeMouseWheel: false, verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
 				fixedOverflowWidgets: true,

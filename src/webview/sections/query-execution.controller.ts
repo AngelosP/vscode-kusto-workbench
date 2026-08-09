@@ -43,6 +43,10 @@ import {
 import { __kustoParseFunction, __kustoParseParamList } from '../monaco/prettify';
 import { findKustoFunctionDefinitionAtOffset, getSingleKustoCodeFenceBodyRange, hasKustoFunctionDefinition, normalizeKustoText } from '../../shared/kustoFunctionDefinitions.js';
 import { comparisonSourceArtifactConsumerId } from '../../shared/resultArtifact.js';
+
+function canExecuteKustoInCurrentHost(): boolean {
+	return (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode !== true;
+}
 import type { FunctionParam } from '../components/kw-function-params-dialog';
 import { hasKustoOptimizeRequestIdentity, kustoExecutionRequestIdentityEquals, kustoOptimizeRequestIdentityEquals, type KustoComparisonRunIdentity, type KustoExecutionProducer, type KustoExecutionRequestIdentity, type KustoOptimizeRequestIdentity } from '../../shared/kustoExecution.js';
 import { synchronizeKustoSectionTarget } from '../core/query-section-accessors.js';
@@ -1519,6 +1523,7 @@ export function executeQuery(
 	producer: KustoExecutionProducer = 'manual',
 	comparisonOptions?: ComparisonExecutionOptions,
 ): string | undefined {
+	if (!canExecuteKustoInCurrentHost()) return undefined;
 	const effectiveMode = mode || getRunMode(boxId);
 	// Run Function mode — divert to the dedicated async handler.
 	if (effectiveMode === 'runFunction') {
@@ -1718,6 +1723,7 @@ export function executeQuery(
 // ── executeQueryDirect — execute an arbitrary query string for a given box ─────
 
 export function executeQueryDirect(boxId: string, query: string): string | undefined {
+	if (!canExecuteKustoInCurrentHost()) return undefined;
 	const id = String(boxId || '').trim();
 	if (!id || !query.trim()) return undefined;
 	const connectionId = __kustoGetConnectionId(id);
@@ -1825,6 +1831,7 @@ function getRunFunctionText(editor: any, fullText: string): string {
 }
 
 export async function executeRunFunction(boxId: string): Promise<void> {
+	if (!canExecuteKustoInCurrentHost()) return;
 	const id = boxId.trim();
 	if (!id) return;
 	// Guard against re-entrance while the dialog is open.

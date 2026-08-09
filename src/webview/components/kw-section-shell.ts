@@ -4,6 +4,7 @@ import { styles } from './kw-section-shell.styles.js';
 import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 import { sectionIcons, type SectionType } from '../shared/icon-registry.js';
+import { pState } from '../shared/persistence-state.js';
 
 // ─── SVG icon constants (matching kw-chart-section.ts) ────────────────────────
 
@@ -80,17 +81,20 @@ export class KwSectionShell extends LitElement {
 	}
 
 	override render() {
+		const readOnly = this._isReadOnlyHost();
 		const showCopilotBadge = this.agentTouched && !!this.hasChanges;
 		const changesTooltip = this.hasChanges === 'new' ? 'Section was added after the last save'
 			: this.hasChanges === 'modified' ? 'Section has unsaved changes' : '';
 		return html`
 			<div class="section-header" title=${changesTooltip || nothing}>
 				<div class="query-name-group">
+					${readOnly ? nothing : html`
 					<button type="button" class="section-drag-handle" draggable="true"
 						title="Drag to reorder" aria-label="Reorder section"
 						@dragstart=${this._onDragStart}>
 						<span class="section-drag-handle-glyph" aria-hidden="true">⋮</span>
 					</button>
+					`}
 					${this.sectionType && sectionIcons[this.sectionType] ? html`<span class="section-type-icon" aria-hidden="true">${sectionIcons[this.sectionType]}</span>` : nothing}
 					${showCopilotBadge ? html`
 					<span class="agent-touched-icon" title="Modified by Copilot">
@@ -99,18 +103,20 @@ export class KwSectionShell extends LitElement {
 							: html`<span .innerHTML=${SVG_COPILOT_SMALL}></span>`}
 					</span>
 					` : nothing}
-					<input type="text" class="query-name"
+					${readOnly
+						? (this.name ? html`<span class="query-name-readonly">${this.name}</span>` : nothing)
+						: html`<input type="text" class="query-name"
 						.value=${this.name}
 						placeholder=${this.namePlaceholder}
-						@input=${this._onNameInput} />
+						@input=${this._onNameInput} />`}
 				</div>
 				<div class="section-actions">
 					<div class="md-tabs" role="tablist" aria-label="Section tools">
-						${this.expanded ? html`
+						${this.expanded && !readOnly ? html`
 						<slot name="header-buttons" @slotchange=${this._onHeaderButtonsSlotChange}></slot>
 						${this._hasHeaderButtons ? html`<span class="md-tabs-divider" aria-hidden="true"></span>` : nothing}
 						` : nothing}
-						${this.showDiffBtn ? html`
+						${this.showDiffBtn && !readOnly ? html`
 						<button class="unified-btn-secondary md-tab diff-btn"
 							type="button" @click=${this._onDiffClick}
 							title="Show unsaved changes" aria-label="Show unsaved changes">
@@ -133,15 +139,15 @@ export class KwSectionShell extends LitElement {
 							<span .innerHTML=${SVG_EYE}></span>
 						</button>
 					</div>
-					<button class="unified-btn-secondary unified-btn-icon-only close-btn"
+					${readOnly ? nothing : html`<button class="unified-btn-secondary unified-btn-icon-only close-btn"
 						type="button" @click=${this._onClose}
 						title="Remove" aria-label="Remove">
 						<span .innerHTML=${SVG_CLOSE}></span>
-					</button>
+					</button>`}
 				</div>
 			</div>
 			${this.expanded ? html`
-				<slot name="header-extra"></slot>
+				${readOnly ? nothing : html`<slot name="header-extra"></slot>`}
 				<slot></slot>
 			` : nothing}
 		`;
@@ -149,12 +155,18 @@ export class KwSectionShell extends LitElement {
 
 	// ── Event handlers ────────────────────────────────────────────────────────
 
+	private _isReadOnlyHost(): boolean {
+		return pState.documentMutationAllowed !== true
+			|| (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode === true;
+	}
+
 	private _onHeaderButtonsSlotChange(e: Event): void {
 		const slot = e.target as HTMLSlotElement;
 		this._hasHeaderButtons = (slot.assignedElements().length > 0);
 	}
 
 	private _onDragStart(e: DragEvent): void {
+		if (this._isReadOnlyHost()) return;
 		if (e.dataTransfer) {
 			e.dataTransfer.setData('text/plain', this.boxId);
 			e.dataTransfer.effectAllowed = 'move';
@@ -167,6 +179,7 @@ export class KwSectionShell extends LitElement {
 	}
 
 	private _onNameInput(e: Event): void {
+		if (this._isReadOnlyHost()) return;
 		const val = (e.target as HTMLInputElement).value;
 		this.dispatchEvent(new CustomEvent('name-change', {
 			detail: { name: val },
@@ -202,6 +215,7 @@ export class KwSectionShell extends LitElement {
 	}
 
 	private _onClose(): void {
+		if (this._isReadOnlyHost()) return;
 		this.dispatchEvent(new CustomEvent('section-remove', {
 			detail: { boxId: this.boxId },
 			bubbles: true,
@@ -217,6 +231,7 @@ export class KwSectionShell extends LitElement {
 	}
 
 	private _onDiffClick(): void {
+		if (this._isReadOnlyHost()) return;
 		this.dispatchEvent(new CustomEvent('show-section-diff', {
 			detail: { boxId: this.boxId },
 			bubbles: true,

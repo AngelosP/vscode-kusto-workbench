@@ -26,7 +26,7 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 Assessment date: 2026-08-09
 
-The comparison was refreshed against the current working tree after PRO-2 deterministic main-webview startup convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
+The comparison was refreshed against the current working tree after BRW-1 typed read-only browser composition convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
 The current architecture is not uniformly legacy. Several high-risk contexts already provide good models for the rest of the application.
 
@@ -79,6 +79,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | Comparison summary presentation | [`displayComparisonSummary`](src/webview/sections/query-execution.controller.ts) computes and renders from immutable artifact lineage; no host summary mirror, waiter, route, callback, or protocol message remains | Strong local presentation boundary |
 | Native document-view lifecycle protocol | [`documentViewProtocol.ts`](src/shared/documentViewProtocol.ts), one host-created panel UUID, runtime parsing, exactly-once initial projection, and session-fenced commands/results/Save barriers | Strong initial protocol slice |
 | Main-webview startup | [`MainWebviewStartupGateway`](src/host/mainWebviewStartupGateway.ts) is the shared panel-scoped transport for native KQLX plus KQL and SQL compatibility, with listener-first installation, explicit dispatcher readiness, ordered startup queues, correlated reply reentrancy, and stable close retirement | Strong startup boundary |
+| Browser read-only composition | [`BrowserViewerRoot`](browser-ext/src/browser-viewer-root.ts) owns generation-fenced payload adoption and one immutable typed projection; the direct browser presentation adapter declares least-privileged host capabilities without synthetic VS Code startup replay | Strong initial browser boundary |
 | Unmigrated section serialization | Kusto/SQL and remaining adapter-heavy kinds still participate in broad restore/persistence switches; Markdown, URL, Python, Chart, Transformation, and HTML native state no longer comes from component `serialize()` | Useful transitional boundary |
 
 These parts should normally be wrapped behind golden-outcome ports, not rewritten. Their adversarial lifecycle tests are migration assets.
@@ -112,11 +113,11 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
 | 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 3/4/5/4/3/5 | 43 | HST-1 through HST-36 completed; residual lifecycle/schema/projection adapters have no selected bounded extraction |
 | 1 | `DOC` | Document actor and section-definition registry | 4/4/4/4/2/5 | 43 | DOC-1 through DOC-6 closed; Kusto/SQL deferred |
-| 3 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | BRW-1 selected; document/projection/startup prerequisites are ready |
-| 4 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 3/3/5/4/3/3 | 39 | PRO-1 and PRO-2 closed; broader runtime schemas, capability negotiation, and domain-router migration remain |
-| 4 | `CMP` | Compatibility-provider composition around the shared sidecar core | 4/4/3/3/3/4 | 39 | Open; startup is shared but save/reload/close orchestration remains duplicated |
-| 6 | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 3/3/3/3/4/4 | 35 | Open |
-| 7 | `KLS` | Custom KQL analyzer decomposition behind a language-analysis port | 3/3/2/2/3/4 | 30 | Open |
+| 3 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 3/3/5/4/3/3 | 39 | PRO-1 and PRO-2 closed; broader runtime schemas, capability negotiation, and domain-router migration remain |
+| 3 | `CMP` | Compatibility-provider composition around the shared sidecar core | 4/4/3/3/3/4 | 39 | CMP-1 selected; KQL/SQL close orchestration remains duplicated around the shared session/store/gateway |
+| 5 | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 3/3/3/3/4/4 | 35 | Open |
+| 6 | `KLS` | Custom KQL analyzer decomposition behind a language-analysis port | 3/3/2/2/3/4 | 30 | Open |
+| 7 | `BRW` | Real browser read-only composition root | 2/3/3/2/3/2 | 27 | BRW-1 closed; residual active-content/resource policy remains deferred to ACT |
 | - | `ACT` | Untrusted-document capability admission | 5/5/5/5/3/5 | 53 | Deferred by product direction; excluded from active ranking |
 
 Bundle headroom is a release constraint and must remain gated, but it is not itself an ownership architecture. Large domain algorithms are not automatically gaps when they have one owner and focused contracts.
@@ -302,13 +303,25 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 
 **Golden outcome:** browser rendering uses shared codecs, projections, and section views with an explicit read-only capability set.
 
-**Current divergence:**
+**Status:** closed through BRW-1.
 
-- The viewer simulates VS Code host messages, duplicates startup, patches globals, and repeatedly enforces read-only behavior.
-- Unsupported operations are dropped or hidden by convention instead of being absent from host capabilities.
-- No dedicated browser-extension test suite currently validates startup and read-only contracts.
+**Current alignment:**
 
-**Migration theme:** compose a `BrowserViewerRoot` after document projections and host capabilities exist. Do not fork section implementations.
+- `BrowserViewerRoot` consumes the immutable `LoadedBrowserFile` snapshot, rejects stale and duplicate load generations, delegates native and companion parsing to the shared codecs and native validation, and publishes one deep-frozen typed projection.
+- Browser presentation defaults are applied only to a cloned state. The parsed document preserves unknown root/state fields, known-section extensions, opaque sections, and order.
+- `browserViewerProjection.ts` runtime-validates explicit host capabilities: read and admitted derived download are available; editing, persistence, authentication, Kusto/SQL execution, and Copilot are absent. Authored active-content policy is explicitly deferred rather than falsely denied.
+- `browser-viewer-presentation.ts` restores through the existing section and immutable-artifact paths without entering the main VS Code dispatcher. Restored rows gain only CSV export permission.
+- `viewer-boot.js` owns loading/banner/error/height presentation only. Synthetic `persistenceMode`, `connectionsData`, `copilotAvailability`, and `documentData` replay, persistence-global patching, and delayed read-only repair are gone.
+- Shared section chrome and Monaco writability honor the read-only capability. URL sources render statically without host fetch, Python has no browser execution shortcut/admission, and browser CSV nonce/replay/download behavior remains adapter-owned.
+- Inline and standalone payloads carry the content-script load generation. Duplicate standalone retries acknowledge without replaying or changing accepted UI; stale deliveries neither acknowledge nor alter presentation.
+
+**Remaining divergence:**
+
+- Read-only remains distinct from trust. Authored HTML/script behavior, nested resources, CSP, network and navigation policy, origin/trust revision, and artifact exposure policy remain deferred ACT work.
+- The browser presentation adapter still composes the shared legacy section runtime and a narrow browser event handshake rather than a fully host-neutral plugin projection port.
+- `vscode-shim.js` remains a browser CSV adapter, although it no longer impersonates unsupported host responses.
+
+**Migration theme:** BRW-1 is closed. Do not broaden residual browser work into deferred ACT policy or fork section implementations without a separately selected slice.
 
 ### `CMP` - Compatibility Provider Composition
 
@@ -1055,23 +1068,39 @@ The final focused ring passed 2 files and 11 tests; the expanded owner/message-p
 
 **Exclusions:** no migration of the 13 provider domain cases; no SQL/Kusto execution, schema, language, connection, document, sidecar, artifact, persistence, browser-root, global protocol, ambient-window, dashboard/compiler, analyzer, or deferred ACT redesign.
 
-## Next Iteration
+## Completed Browser Iteration
 
 ### Iteration `BRW-1`: Typed Read-Only Browser Projection Root
 
+**Status:** closed on 2026-08-09. The definitive documentation-aware review returned `VERDICT: NO BRW-1 BLOCKER`.
+
+**Boundary:** `BrowserViewerRoot` is the sole browser payload-adoption and projection owner. It consumes `LoadedBrowserFile`, preserves the content-script generation, rejects stale and duplicate adoption, delegates native and KQL-companion parsing to `viewer-document.ts` and shared codecs, deep-freezes the parsed document, applies browser defaults to a separate deep clone, and presents exactly one typed projection. `browserViewerProjection.ts` owns the runtime-validated cross-bundle contract and explicit host capabilities.
+
+**Displaced authority:** `viewer-boot.js` no longer parses documents, mutates codec state, emits synthetic `persistenceMode`, `connectionsData`, `copilotAvailability`, or `documentData`, patches persistence globals, or schedules repeated read-only repair. It owns only payload admission plus loading, banner, error, background, spacing, and height presentation. `vscode-shim.js` owns only browser CSV nonce/replay/download behavior and supplies no synthetic response for unsupported host work.
+
+**Read-only contract:** editing, persistence, authentication, Kusto execution, SQL execution, and Copilot are explicitly unavailable. Shared section chrome removes rename/reorder/remove/edit/authentication controls; Monaco creation and writable guards retain `readOnly`/`domReadOnly`; browser light-DOM host controls are absent. URL sections render the authored URL statically without host fetch, and Kusto, SQL, and Python register no browser Run shortcuts and reject execution before reservation/publication. Static source, section view controls, result inspection, and CSV Save remain usable. Authored active-content policy is explicitly deferred rather than falsely denied; BRW-1 does not claim read-only establishes ACT trust.
+
+**Guards:** the red-first root suite drives native KQLX and KQL-plus-companion payloads through the real owner, proves deep immutability, cloned defaults, opaque preservation, explicit capabilities, and stale/duplicate rejection, and statically forbids the four synthetic startup messages and timer/global patches. Its bundled real-boot regression proves duplicate standalone retries acknowledge without replaying or changing accepted UI while stale deliveries do neither. Adjacent regressions prove capability-owned Monaco read-only behavior, least-privileged section chrome, static URL rendering, absent Python execution, artifact restoration, and CSV behavior.
+
+**Preserved owners and exclusions:** browser source providers, `BrowserFileLoadCoordinator`, shared codecs/native validation/document-kind matrix, section views, immutable artifact restoration, CSV download, content-script iframe ownership, standalone token/acknowledgement/resize handling, PRO-2 startup, and all 13 provider routes remain intact. No ACT/CSP/network/origin/trust policy, native document ownership, Kusto/SQL execution, compatibility convergence, global protocol, dashboard/compiler, or ambient-window redesign is included.
+
+**Qualification:** the definitive focused BRW ring passes 16 files and 460 tests with `--maxWorkers=1`. Complete sequential and official coverage Vitest pass 292 files and 6,303 tests at 48.23% statements. Strict host/shared, webview, and browser TypeScript checks, integration compilation, task-owned diagnostics, and `git diff --check` pass. The complete VS Code 1.132.0 extension-host suite passes 209/209 with `--timeout 5000`. Production extension and strict browser builds pass; ESLint reports zero errors and five existing warnings. Both synchronized bundle gates pass at 1,946.2 KB host and 2,807.1 KB webview; baselines are 1,897/2,758 KB with the 50 KB buffer unchanged. Built-browser checks prove mixed Kusto/SQL/Markdown/Python/URL/Chart views, read-only editors, static URL, exact restored rows and CSV bytes, duplicate acknowledgement without replay, stale rejection, zero host execution/synthetic startup messages, and no `390x844` horizontal overflow. The desktop screenshot is clean; the integrated capture surface reset during mobile screenshot capture, so mobile evidence is the exact Playwright DOM/layout and accessibility result. Reviewer-driven regressions cover duplicate/stale retry UI, deferred active-content policy honesty, static URL rendering, and Kusto/SQL/Python execution denial. Reviews returned `VERDICT: NO BRW-1 IMPLEMENTATION BLOCKER` and definitive `VERDICT: NO BRW-1 BLOCKER`.
+
+## Next Iteration
+
+### Iteration `CMP-1`: Shared Compatibility Close Coordinator
+
 **Status:** selected next, not started.
 
-**Post-PRO-2 rescore:** deterministic main-panel startup lowers residual PRO from 45 to 39: harm drops 4 -> 3, amplification 4 -> 3, and evidence 4 -> 3 while reach, leverage, and feasibility remain 5/4/3. HST and DOC remain tied at 43, but their residual work is deferred Kusto/SQL ownership without a coherent low-risk extraction. BRW remains 41 and is now the highest-scoring theme with a dependency-ready bounded slice. CMP and PRO are 39, DSH 35, KLS 30, and ACT remains product-deferred at 53.
+**Post-BRW-1 rescore:** BRW drops from 41 to 27 because synthetic composition, mutable defaults, startup replay, and convention-only host capabilities are gone. PRO and CMP tie at 39. HST and DOC remain 43 but have no coherent eligible bounded slice because their residual work is deferred Kusto/SQL ownership. CMP is selected over PRO because KQL and SQL compatibility providers now share sidecar format/store/session mechanics and `MainWebviewStartupGateway`, yet retain nearly identical close-finalization transactions with a clear parameterized real-provider boundary. DSH remains 35, KLS 30, and ACT remains product-deferred at 53.
 
-**Selection rationale:** browser acquisition already uses stale-fenced load generations and shared codec/capability validation, but `viewer-boot.js` still constructs synthetic VS Code host messages, silently drops unsupported commands, patches globals, and repeatedly enforces read-only presentation. PRO-2 completes the native startup prerequisite without changing that browser divergence.
+**Boundary:** introduce one panel-scoped `CompatSidecarCloseCoordinator` around the existing `CompatSidecarSession`, `CompatSidecarStore`, and `MainWebviewStartupGateway`. It owns delayed-beforeunload and correlated-final-snapshot retirement admission, exactly-once close start, final-persist/beforeunload ordering, stable retired-inbound closure, session close transition, subscription disposal, dirty Save/Discard choice, exact draft save/recovery, final repair/drain, and terminal settlement. KQL and SQL providers supply language-specific write, recovery, repair, notification, and disposable capabilities.
 
-**Boundary:** introduce one typed `BrowserViewerRoot` that consumes the existing loaded-file snapshot, delegates parsing to current shared owners, applies browser presentation defaults without mutating parsed state, and emits exactly one immutable browser projection with explicit read-only capabilities. Make `viewer-boot.js` a thin loading/banner/error adapter and remove its competing initial-projection construction.
+**Falsifiable hypothesis and red-first check:** parameterize the real KQL and SQL compatibility providers, dispose each panel while its final snapshot response is delayed and its sidecar draft is dirty, then deliver beforeunload/final-snapshot traffic in reversed order. Require exactly one injected close coordinator to admit only correlated retained traffic, wait the gateway/session tails, save or recover the newest draft once, drain the exact store, and settle close. Before CMP-1 the structural coordinator receives zero calls because both providers own the transaction locally.
 
-**Falsifiable hypothesis and red-first check:** drive the real browser boot boundary with one native KQLX payload and one KQL-plus-companion payload. Require one exact typed projection, explicit read-only capabilities, duplicate-load rejection, opaque-data preservation, and zero replay of the legacy `persistenceMode` / `connectionsData` / `copilotAvailability` / `documentData` sequence. The test fails before BRW-1 because those synthetic messages are the current composition mechanism.
+**Preserved owners:** `TextDocument` remains primary-text and native edit-history authority. `CompatSidecarFormat`, `CompatSidecarStore`, and `CompatSidecarSession` retain linkage/hydration, lock/CAS/repair/recovery, revisions/persist queues/final snapshot/reload primitives. `MainWebviewStartupGateway` retains transport retirement. KQL inference/cache, SQL lifecycle, privacy sanitation, sidecar create/adopt UX, message shapes, and `QueryEditorProvider` domain routing remain unchanged.
 
-**Preserved owners:** browser source providers and load generations; shared codecs, native validation, and the document-kind matrix; section views, artifact restoration, and CSV download; content-script iframe/source ownership; PRO-2 native startup; and all 13 provider domain routes.
-
-**Exclusions:** no ACT origin/trust, CSP, network, active-content, or resource-policy work; no Kusto/SQL execution or document ownership migration; no compatibility-provider convergence; no global protocol rewrite; and no wholesale `vscode-shim`, CSS, timer, or ambient-window cleanup beyond displaced initial-projection authority.
+**Exclusions:** no projection/reload migration, provider merge, Markdown compatibility migration, sidecar format/store/session rewrite, primary-text ownership change, document actor/protocol redesign, Kusto/SQL execution or schema change, dashboard/compiler work, or deferred ACT work.
 
 ## Convergence Loop
 
@@ -1256,6 +1285,7 @@ These are not full golden-outcome iterations retroactively, but they materially 
 | `HST-35` | `HostComparisonPreparationApplicationHandler` | Provider-owned three-route comparison transaction, request/Kusto-owner maps, five SQL acknowledgement phases, rollback retry, target/policy revalidation, removal cancellation, and disposal settlement | Red-first three-route/preparation forwarding, direct Kusto/SQL acknowledgement/race/rollback/removal/disposal tests, 15-case provider guard, atomic two-sided finalized-removal cleanup, preserved canonical services/messages, sender inventory, constructor slot, and thin delegation | Final focused 844; full/coverage 6,249 at 48.21%; extension-host 201, production/browser, bundle gates, and blocker review complete | 2026-08-08 |
 | `HST-36` | `HostSqlSectionExecutionApplicationHandler` | Provider-owned execute/cancel workflow, synchronous preflight, owner/protection and tool-owner validation, query shaping, physical start, manual terminals, protected logging, and exact cleanup | Red-first execute/cancel forwarding, direct reservation/race/terminal/rotation/cleanup/disposal tests, 13-case provider guard, preserved canonical SQL services/messages, sender inventory, constructor slot, and disposal | Focused 1,053; full/coverage 6,275 at 48.21%; extension-host 201 on rerun, production/browser, bundle gates, and definitive blocker review complete | 2026-08-09 |
 | `PRO-2` | `MainWebviewStartupGateway` + explicit dispatcher readiness | Three provider-local startup queues, pre-ready host projection delivery, import-order dispatcher drain, and split disposal admission/drain authority | Three-mode listener/readiness handoff, ordinary/correlated ordering, rejection continuity, immutable retirement admission, stable-tail close, linked-validation cancellation, successor isolation, tutorial transport, and protocol inventory guards | Focused 414; full/coverage 6,293 at 48.25%; compatibility 128, native lifecycle 23, extension-host 209, production/browser, bundle gates, and definitive blocker review complete | 2026-08-09 |
+| `BRW-1` | `BrowserViewerRoot` + runtime-validated `BrowserViewerProjection` | Boot-owned parsing/default mutation, synthetic four-message startup replay, persistence-global patches, delayed read-only repair, and convention-only unsupported host work | Native/companion immutable projection, stale/duplicate generation, real bundled boot retry, opaque preservation, capability-owned shell/Monaco/execution, static URL, artifact/CSV, and visible rendering guards | Focused 460; full/coverage 6,303 at 48.23%; extension-host 209, strict types, production/browser, exact CSV, desktop/mobile layout, bundle gates, and definitive blocker review complete | 2026-08-09 |
 
 ## Decision Discipline
 

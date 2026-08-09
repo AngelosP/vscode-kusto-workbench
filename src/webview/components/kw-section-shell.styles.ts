@@ -131,6 +131,15 @@ export const styles = css`
 		.query-name:focus {
 			border-color: var(--vscode-focusBorder);
 		}
+		.query-name-readonly {
+			font-size: 12px;
+			color: var(--vscode-foreground);
+			padding: 2px 6px;
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
 
 		/* ── Action buttons ──────────────────────────────────────────────── */
 

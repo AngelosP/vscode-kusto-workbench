@@ -30,6 +30,7 @@ let container: HTMLDivElement;
 
 beforeEach(() => {
 	clearSqlSectionSessionsForTest();
+	delete (window as any).__kustoReadOnlyMode;
 	container = document.createElement('div');
 	document.body.appendChild(container);
 });
@@ -41,6 +42,7 @@ afterEach(() => {
 	setConnections([]);
 	render(nothing, container);
 	container.remove();
+	delete (window as any).__kustoReadOnlyMode;
 });
 
 function createSection(boxId = 'sql_test1'): KwSqlSection {
@@ -972,6 +974,27 @@ describe('kw-sql-section loading states', () => {
 			expect(payload.executionId).toMatch(/^sql-run-/);
 			expect(payload.toolExecution).toBeUndefined();
 			expect(payload.expectedOwner).toBeUndefined();
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('does not reserve or publish SQL execution in the read-only browser host', () => {
+		const el = createSection();
+		el.setConnections([
+			{ id: 'sql-a', name: 'SQL', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad' },
+		], { lastConnectionId: 'sql-a' });
+		el.setDatabase('Db');
+		el.setQuery('SELECT 1 AS Value');
+		el.setStsReady(true, 'owner-token');
+		(window as any).__kustoReadOnlyMode = true;
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			expect((el as any)._runQuery()).toBe(false);
+			expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'executeSqlQuery' }));
+			expect(el.isQueryExecuting()).toBe(false);
 		} finally {
 			window.vscode = previousVsCode;
 		}

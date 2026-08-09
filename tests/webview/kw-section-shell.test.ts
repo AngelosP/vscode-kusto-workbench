@@ -3,6 +3,7 @@ import { html, render, nothing } from 'lit';
 import '../../src/webview/components/kw-section-shell.js';
 import type { KwSectionShell } from '../../src/webview/components/kw-section-shell.js';
 import type { SectionType } from '../../src/webview/shared/icon-registry.js';
+import { pState } from '../../src/webview/shared/persistence-state.js';
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -68,16 +69,40 @@ function getCloseButton(el: KwSectionShell): HTMLButtonElement {
 beforeEach(() => {
 	container = document.createElement('div');
 	document.body.appendChild(container);
+	pState.documentMutationAllowed = true;
+	delete (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode;
 });
 
 afterEach(() => {
 	render(nothing, container);
 	container.remove();
+	pState.documentMutationAllowed = true;
+	delete (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode;
 });
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('kw-section-shell', () => {
+	it('omits mutation controls but retains view controls in read-only mode', async () => {
+		pState.documentMutationAllowed = false;
+		(window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode = true;
+		const el = createShell({ name: 'Read-only section', sectionType: 'chart' }, {
+			headerButtons: html`<button slot="header-buttons" class="custom-btn">Edit mode</button>`,
+			headerExtra: html`<button slot="header-extra" class="connection-btn">Authenticate</button>`,
+		});
+		await el.updateComplete;
+
+		expect(el.shadowRoot!.querySelector('.section-drag-handle')).toBeNull();
+		expect(el.shadowRoot!.querySelector('.query-name')).toBeNull();
+		expect(el.shadowRoot!.querySelector('.query-name-readonly')?.textContent).toBe('Read-only section');
+		expect(el.shadowRoot!.querySelector('slot[name="header-buttons"]')).toBeNull();
+		expect(el.shadowRoot!.querySelector('slot[name="header-extra"]')).toBeNull();
+		expect(el.shadowRoot!.querySelector('.diff-btn')).toBeNull();
+		expect(el.shadowRoot!.querySelector('.close-btn')).toBeNull();
+		expect(getToggleButton(el)).toBeTruthy();
+		expect(getFitButton(el)).toBeTruthy();
+	});
+
 	it('renders drag handle, name input, toggle, and close buttons', async () => {
 		const el = createShell();
 		await el.updateComplete;

@@ -585,6 +585,9 @@ document.addEventListener('keydown', (event: any) => {
 	if (!(event.ctrlKey || event.metaKey) || !isEnter) {
 		return;
 	}
+	if ((window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode === true) {
+		return;
+	}
 	if (!activeQueryEditorBoxId) {
 		return;
 	}

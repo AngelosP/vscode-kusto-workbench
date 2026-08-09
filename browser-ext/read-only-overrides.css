@@ -141,6 +141,16 @@
 
 /* ---- Hide interactive-only UI elements ---- */
 
+/* Shared webview light-DOM controls gated by the browser projection. */
+body[data-kusto-browser-read-only="true"] kw-query-section kw-query-toolbar,
+body[data-kusto-browser-read-only="true"] kw-query-section .query-actions,
+body[data-kusto-browser-read-only="true"] kw-query-section .qe-caret-docs-banner,
+body[data-kusto-browser-read-only="true"] kw-query-section .qe-missing-clusters-banner,
+body[data-kusto-browser-read-only="true"] kw-sql-section kw-sql-toolbar,
+body[data-kusto-browser-read-only="true"] kw-sql-section .query-actions {
+	display: none !important;
+}
+
 /* Run / cancel buttons on query boxes */
 .run-btn,
 .cancel-btn {

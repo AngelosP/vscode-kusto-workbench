@@ -114,7 +114,12 @@ import {
 	sanitizeXAxisSettings,
 	sanitizeYAxisSettings,
 } from '../shared/chart-utils';
-import { __kustoForceEditorWritable, __kustoInstallWritableGuard, __kustoEnsureEditorWritableSoon } from '../monaco/writable';
+import {
+	__kustoForceEditorWritable,
+	__kustoInstallWritableGuard,
+	__kustoEnsureEditorWritableSoon,
+	__kustoIsEditorReadOnlyByCapability,
+} from '../monaco/writable';
 import { __kustoAttachAutoResizeToContent, __kustoAutoSizeEditor } from '../monaco/resize';
 import { tryParseFiniteNumber, tryParseDate } from '../shared/transform-expr';
 import { __kustoCancelMonacoInitRetry, __kustoMonacoInitRetryCountByBoxId, __kustoCrossClusterSchemas } from '../monaco/monaco';
@@ -2491,11 +2496,12 @@ function initPythonEditor( boxId: any) {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
+		const readOnly = __kustoIsEditorReadOnlyByCapability();
 		const editor = monaco.editor.create(container, {
 			value: initialValue,
 			language: 'python',
-			readOnly: false,
-			domReadOnly: false,
+			readOnly,
+			domReadOnly: readOnly,
 			automaticLayout: true,
 			scrollbar: { alwaysConsumeMouseWheel: false, verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
 			fixedOverflowWidgets: true,
@@ -2547,16 +2553,18 @@ function initPythonEditor( boxId: any) {
 
 		// Ctrl+Enter / Ctrl+Shift+Enter runs the Python code (not the Kusto query).
 		try {
-			const runPython = () => {
-				try {
-					const el = document.getElementById(boxId) as any;
-					if (el && typeof el._run === 'function') {
-						el._run();
-					}
-				} catch (e) { console.error('[kusto]', e); }
-			};
-			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runPython);
-			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter, runPython);
+			if ((window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode !== true) {
+				const runPython = () => {
+					try {
+						const el = document.getElementById(boxId) as any;
+						if (el && typeof el._run === 'function') {
+							el._run();
+						}
+					} catch (e) { console.error('[kusto]', e); }
+				};
+				editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runPython);
+				editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter, runPython);
+			}
 		} catch (e) { console.error('[kusto]', e); }
 
 		// Drag handle resize (copied from KQL editor behavior).

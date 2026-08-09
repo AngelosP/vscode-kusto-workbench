@@ -32,6 +32,7 @@ import {
 	__kustoInstallWritableGuard,
 	__kustoEnsureEditorWritableSoon,
 	__kustoEnsureAllEditorsWritableSoon,
+	__kustoIsEditorReadOnlyByCapability,
 } from './writable';
 import {
 	__kustoIsElementVisibleForSuggest,
@@ -4940,11 +4941,12 @@ function initQueryEditor(boxId: any) {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
+		const readOnly = __kustoIsEditorReadOnlyByCapability();
 		const editor = monaco.editor.create(container, {
 			value: initialValue,
 			language: 'kusto',
-			readOnly: false,
-			domReadOnly: false,
+			readOnly,
+			domReadOnly: readOnly,
 			automaticLayout: true,
 			scrollbar: { alwaysConsumeMouseWheel: false, verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
 			// Reduce the blank gap between the line numbers and the code.
@@ -6608,13 +6610,15 @@ function initQueryEditor(boxId: any) {
 		// NOTE: We install this at the Monaco level so Monaco can't consume Ctrl+Shift+Enter before
 		// our document-level capture handler runs.
 		try {
-			const __kustoRunThisQueryBox = () => {
-				try {
-					executeQuery(boxId);
-				} catch (e) { console.error('[kusto]', e); }
-			};
-			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, __kustoRunThisQueryBox);
-			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter, __kustoRunThisQueryBox);
+			if ((window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode !== true) {
+				const __kustoRunThisQueryBox = () => {
+					try {
+						executeQuery(boxId);
+					} catch (e) { console.error('[kusto]', e); }
+				};
+				editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, __kustoRunThisQueryBox);
+				editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter, __kustoRunThisQueryBox);
+			}
 		} catch (e) { console.error('[kusto]', e); }
 
 		// Docs tooltip: keep visible while typing, even when Monaco autocomplete is open.

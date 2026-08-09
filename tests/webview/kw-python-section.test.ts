@@ -91,6 +91,8 @@ function createPythonSection(initialCode = ''): KwPythonSection {
 beforeEach(() => {
 	resetHostOwnedMarkdownDocument();
 	resetPythonExecutionAdmissionForTest();
+	pState.documentMutationAllowed = true;
+	delete (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode;
 	container = document.createElement('div');
 	container.id = 'queries-container';
 	document.body.appendChild(container);
@@ -103,6 +105,8 @@ afterEach(() => {
 	container.remove();
 	delete (window as any).ensureMonaco;
 	delete (window as any).schedulePersist;
+	pState.documentMutationAllowed = true;
+	delete (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode;
 	vi.restoreAllMocks();
 });
 
@@ -472,6 +476,27 @@ describe('kw-python-section — host-owned document state', () => {
 });
 
 describe('kw-python-section — Ctrl+Enter runs Python', () => {
+	it('registers no run shortcut and cannot execute in the read-only browser host', async () => {
+		pState.documentMutationAllowed = false;
+		(window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode = true;
+		const mockMonaco = createMockMonaco();
+		(window as any).ensureMonaco = () => Promise.resolve(mockMonaco);
+		const posted: any[] = [];
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage(message: any) { posted.push(message); } } as any;
+		try {
+			const el = createPythonSection('print(1)');
+			await el.updateComplete;
+			await new Promise(resolve => setTimeout(resolve, 0));
+
+			expect(mockMonaco.editors[0].commands).toHaveLength(0);
+			(el as any)._run();
+			expect(posted.some(message => message.type === 'executePython')).toBe(false);
+			expect(el.shadowRoot?.textContent).not.toContain('Running…');
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
 
 	it('registers Ctrl+Enter and Ctrl+Shift+Enter commands on the editor', async () => {
 		const mockMonaco = createMockMonaco();

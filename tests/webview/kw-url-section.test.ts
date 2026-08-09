@@ -165,6 +165,7 @@ function createUrlSection(boxId = 'url_test_1'): KwUrlSection {
 
 beforeEach(() => {
 	resetHostOwnedMarkdownDocument();
+	delete (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode;
 	container = document.createElement('div');
 	document.body.appendChild(container);
 });
@@ -173,9 +174,33 @@ afterEach(() => {
 	render(nothing, container);
 	container.remove();
 	resetHostOwnedMarkdownDocument();
+	delete (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode;
 });
 
 describe('kw-url-section — rendering', () => {
+	it('renders the authored URL statically without requesting browser-host fetch', async () => {
+		(window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode = true;
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			const el = createUrlSection();
+			el.setUrl('https://example.com/data.csv');
+			el.setExpanded(true);
+			await el.updateComplete;
+
+			(el as any)._requestFetch();
+			await el.updateComplete;
+
+			expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'fetchUrl' }));
+			expect(el.getFetchState()).toMatchObject({ loading: false, loaded: false });
+			expect(el.shadowRoot!.querySelector('.url-readonly-source')?.textContent)
+				.toBe('https://example.com/data.csv');
+			expect(el.shadowRoot!.querySelector('.url-input')).toBeNull();
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
 
 	it('renders without errors', async () => {
 		const el = createUrlSection();

@@ -1,10 +1,8 @@
 // Shim for acquireVsCodeApi() — replaces media/queryEditor/vscode.js in the web viewer.
 // The extension's webview code uses `vscode.postMessage(...)` for all communication
-// with the extension host. This shim handles browser-supported workflows locally
-// and ignores host-only messages so the webview can run without an extension host.
-//
-// The viewer-boot.js script drives the UI by posting simulated extension-host messages
-// to window, using the same protocol the real extension uses.
+// with the extension host. This least-privileged adapter implements only browser CSV
+// downloads. The typed browser projection root supplies document presentation directly;
+// unavailable host capabilities never receive synthetic responses.
 
 window.__kustoReadOnlyMode = true;
 
@@ -142,7 +140,7 @@ const vscode = {
 			return;
 		}
 
-		// Everything else is silently ignored — no extension host to talk to.
+		// Every other host capability is absent in the read-only browser projection.
 	},
 	getState: function() { return null; },
 	setState: function() {}

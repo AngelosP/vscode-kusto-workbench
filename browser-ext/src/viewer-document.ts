@@ -53,6 +53,10 @@ export type BrowserCompatibilityStateResult =
 	| Readonly<{ ok: true; state: KqlxStateV1 }>
 	| Readonly<{ ok: false; error: string }>;
 
+export type BrowserCompatibilityDocumentResult =
+	| Readonly<{ ok: true; file: KqlxFileV1 }>
+	| Readonly<{ ok: false; error: string }>;
+
 export type BrowserCompatibilityOwner = Readonly<{
 	expectedFilename: string;
 	rawContentUrl?: string;
@@ -93,12 +97,17 @@ function companionTargetsOwner(linkedPath: string, owner: BrowserCompatibilityOw
 	return linkedPath.replace(/\\/g, '/').replace(/^\.\//, '') === owner.expectedFilename;
 }
 
-export function composeBrowserCompatibilityState(
+export function composeBrowserCompatibilityDocument(
 	queryText: string,
 	companion: BrowserCompanionState = { status: 'missing' },
 	owner?: BrowserCompatibilityOwner,
-): BrowserCompatibilityStateResult {
-	if (companion.status === 'missing') return { ok: true, state: { sections: [{ type: 'query', query: queryText }] } };
+): BrowserCompatibilityDocumentResult {
+	if (companion.status === 'missing') {
+		return {
+			ok: true,
+			file: { kind: 'kqlx', version: 1, state: { sections: [{ type: 'query', query: queryText }] } },
+		};
+	}
 	if (companion.status === 'error') return { ok: false, error: `Failed to load companion file: ${companion.error}` };
 	const parsed = parseBrowserWorkbenchText(companion.content, { allowedKinds: ['kqlx'], defaultKind: 'kqlx' });
 	if (!parsed.ok) return parsed;
@@ -114,5 +123,71 @@ export function composeBrowserCompatibilityState(
 	}
 	primary.query = queryText;
 	delete primary.linkedQueryPath;
-	return { ok: true, state: { ...parsed.file.state, sections } as KqlxStateV1 };
+	return {
+		ok: true,
+		file: {
+			...parsed.file,
+			state: { ...parsed.file.state, sections } as KqlxStateV1,
+		},
+	};
+}
+
+export function composeBrowserCompatibilityState(
+	queryText: string,
+	companion: BrowserCompanionState = { status: 'missing' },
+	owner?: BrowserCompatibilityOwner,
+): BrowserCompatibilityStateResult {
+	const result = composeBrowserCompatibilityDocument(queryText, companion, owner);
+	return result.ok ? { ok: true, state: result.file.state } : result;
+}
+
+export type BrowserViewerDocumentPayload = Readonly<{
+	filename: string;
+	content: string;
+	companionState: BrowserCompanionState;
+	rawContentUrl?: string;
+	sidecarUrl?: string;
+}>;
+
+export type BrowserViewerDocumentResult =
+	| Readonly<{ ok: true; file: KqlxFileV1 }>
+	| Readonly<{ ok: false; title: string; error: string }>;
+
+export function parseBrowserViewerDocument(payload: BrowserViewerDocumentPayload): BrowserViewerDocumentResult {
+	const filename = String(payload.filename || '');
+	const lowerFilename = filename.toLowerCase();
+	if (lowerFilename.endsWith('.kqlx') || lowerFilename.endsWith('.mdx')) {
+		const expectedKind = lowerFilename.endsWith('.mdx') ? 'mdx' : 'kqlx';
+		const parsed = parseBrowserNativeWorkbenchText(payload.content, {
+			allowedKinds: [expectedKind],
+			defaultKind: expectedKind,
+		});
+		return parsed.ok ? parsed : { ok: false, title: 'Invalid .kqlx file', error: parsed.error };
+	}
+	if (lowerFilename.endsWith('.sqlx')) {
+		const parsed = parseBrowserNativeWorkbenchText(payload.content, {
+			allowedKinds: ['sqlx'],
+			defaultKind: 'sqlx',
+		});
+		return parsed.ok ? parsed : { ok: false, title: 'Invalid .sqlx file', error: parsed.error };
+	}
+	if (lowerFilename.endsWith('.kql.json') || lowerFilename.endsWith('.csl.json')) {
+		const parsed = parseBrowserWorkbenchText(payload.content, { allowedKinds: ['kqlx'] });
+		return parsed.ok ? parsed : { ok: false, title: 'Invalid sidecar file', error: parsed.error };
+	}
+	if (lowerFilename.endsWith('.kql') || lowerFilename.endsWith('.csl')) {
+		const composed = composeBrowserCompatibilityDocument(payload.content, payload.companionState, {
+			expectedFilename: filename,
+			rawContentUrl: payload.rawContentUrl,
+			sidecarUrl: payload.sidecarUrl,
+		});
+		return composed.ok
+			? composed
+			: { ok: false, title: 'Invalid companion file', error: composed.error };
+	}
+	return {
+		ok: false,
+		title: 'Unsupported file type',
+		error: 'Supported: .kqlx, .sqlx, .mdx, .kql, .csl, .kql.json, .csl.json',
+	};
 }

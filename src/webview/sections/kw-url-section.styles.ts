@@ -52,6 +52,19 @@ export const styles = css`
 		.url-input:focus {
 			border-color: var(--vscode-focusBorder);
 		}
+		.url-readonly-source {
+			font-family: var(--vscode-editor-font-family, monospace);
+			font-size: 12px;
+			line-height: 1.5;
+			color: var(--vscode-foreground);
+			padding: 6px 8px;
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
+			background: var(--vscode-input-background);
+			overflow-wrap: anywhere;
+			white-space: pre-wrap;
+			user-select: text;
+		}
 
 		/* ── Status / error messages ──────────────────────────────────── */
 

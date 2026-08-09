@@ -1,6 +1,6 @@
 import { pState } from '../shared/persistence-state';
 import type { SectionElement } from '../shared/dom-helpers';
-import { LitElement, html, type PropertyValues } from 'lit';
+import { LitElement, html, nothing, type PropertyValues } from 'lit';
 import { styles } from './kw-python-section.styles.js';
 import { sectionGlowStyles } from '../shared/section-glow.styles.js';
 import { sashSheet } from '../shared/sash-styles.js';
@@ -13,7 +13,12 @@ import type { MonacoToolbarItem } from '../components/kw-monaco-toolbar.js';
 import { undoIcon, redoIcon, commentIcon, indentIcon, outdentIcon, runIcon } from '../shared/icon-registry.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { schedulePersist } from '../core/persistence.js';
-import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
+import {
+	__kustoForceEditorWritable,
+	__kustoEnsureEditorWritableSoon,
+	__kustoInstallWritableGuard,
+	__kustoIsEditorReadOnlyByCapability,
+} from '../monaco/writable.js';
 import { __kustoAttachAutoResizeToContent } from '../monaco/resize.js';
 import { postMessageToHost } from '../shared/webview-messages.js';
 import { createMonacoCursorStatusPublisher, type EditorCursorStatusPublisher } from '../shared/editor-cursor-status.js';
@@ -167,6 +172,7 @@ export class KwPythonSection extends LitElement implements SectionElement {
 	}
 
 	override render() {
+		const browserReadOnly = (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode === true;
 		return html`
 			<div class="section-root">
 			<kw-section-shell
@@ -186,7 +192,7 @@ export class KwPythonSection extends LitElement implements SectionElement {
 					<span class="run-label">Run</span>
 				</button>
 				<div class="editor-wrapper" id="editor-wrapper">
-					<kw-monaco-toolbar box-id=${this.boxId} .items=${this._toolbarItems} aria-label="Python editor tools"></kw-monaco-toolbar>
+					${browserReadOnly ? nothing : html`<kw-monaco-toolbar box-id=${this.boxId} .items=${this._toolbarItems} aria-label="Python editor tools"></kw-monaco-toolbar>`}
 					<slot name="editor"></slot>
 					<div class="resizer"
 						title="Drag to resize editor\nDouble-click to fit to contents"
@@ -230,11 +236,12 @@ export class KwPythonSection extends LitElement implements SectionElement {
 			slotted.style.minHeight = '0';
 			slotted.style.minWidth = '0';
 
+			const readOnly = __kustoIsEditorReadOnlyByCapability();
 			const editor = monaco.editor.create(slotted, {
 				value: this._savedCode ?? this.initialCode ?? '',
 				language: 'python',
-				readOnly: false,
-				domReadOnly: false,
+				readOnly,
+				domReadOnly: readOnly,
 				automaticLayout: true,
 				scrollbar: { alwaysConsumeMouseWheel: false, verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
 				fixedOverflowWidgets: true,
@@ -298,9 +305,11 @@ export class KwPythonSection extends LitElement implements SectionElement {
 
 			// Ctrl+Enter / Ctrl+Shift+Enter runs the Python code (not the Kusto query).
 			try {
-				const runPython = () => this._run();
-				editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runPython);
-				editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter, runPython);
+				if (this._canExecutePython()) {
+					const runPython = () => this._run();
+					editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runPython);
+					editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter, runPython);
+				}
 			} catch (e) { console.error('[kusto]', e); }
 
 			// Restore persisted height.
@@ -360,6 +369,7 @@ export class KwPythonSection extends LitElement implements SectionElement {
 	// ── Actions ───────────────────────────────────────────────────────────────
 
 	private _run(): void {
+		if (!this._canExecutePython()) return;
 		if (!this._editor || this._running) return;
 		const model = this._editor.getModel();
 		const code = model ? model.getValue() : '';
@@ -379,6 +389,11 @@ export class KwPythonSection extends LitElement implements SectionElement {
 			this._running = false;
 			this._output = 'Failed to send run request.';
 		}
+	}
+
+	private _canExecutePython(): boolean {
+		return pState.documentMutationAllowed !== false
+			&& (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode !== true;
 	}
 
 	private _onShellNameChange(e: CustomEvent<{ name: string }>): void {

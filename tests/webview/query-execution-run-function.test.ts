@@ -261,6 +261,19 @@ describe('executeRunFunction', () => {
 		delete (window as any).__kustoGetStatementBlocksFromModel;
 		delete (window as any).__kustoExtractStatementTextAtCursor;
 		delete (window as any).__kustoClearAutoFindInQueryEditor;
+		delete (window as any).__kustoReadOnlyMode;
+	});
+
+	it('does not claim or publish Kusto execution in the read-only browser host', () => {
+		(window as any).__kustoReadOnlyMode = true;
+		testState.queryEditors.query_1 = makeEditor('print x=1');
+		appendExecutionControls('query_1');
+
+		const executionId = executeQuery('query_1', 'plain');
+
+		expect(executionId).toBeUndefined();
+		expect(testState.beginQueryExecution).not.toHaveBeenCalled();
+		expect(getExecuteMessages()).toHaveLength(0);
 	});
 
 	it('runs a no-parameter function definition after a leading comment', async () => {

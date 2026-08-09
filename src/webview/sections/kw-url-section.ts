@@ -180,6 +180,7 @@ export class KwUrlSection extends LitElement implements SectionElement {
 	// ── Render ─────────────────────────────────────────────────────────────────
 
 	override render() {
+		const browserReadOnly = this._isReadOnlyBrowserHost();
 		return html`
 			<div class="section-root">
 				<kw-section-shell
@@ -201,16 +202,18 @@ export class KwUrlSection extends LitElement implements SectionElement {
 						${this._imageMenuOpen ? this._renderImageMenu() : nothing}
 					</div>
 					` : nothing}
-					<input slot="header-extra" type="text" class="url-input"
+					${browserReadOnly ? (this._url.trim() ? html`
+					<div class="url-readonly-source" aria-label="URL source">${this._url}</div>
+					` : nothing) : html`<input slot="header-extra" type="text" class="url-input"
 						placeholder="Enter a URL to an image or .csv file that is publicly accessible."
 						.value=${this._url}
-						@input=${this._onUrlInput} />
-					${this._fetchState.loading ? html`
+						@input=${this._onUrlInput} />`}
+					${!browserReadOnly && this._fetchState.loading ? html`
 						<div class="url-status-msg">Loading…</div>
-					` : this._fetchState.error ? html`
+					` : !browserReadOnly && this._fetchState.error ? html`
 						<div class="url-status-msg url-error-msg">${this._fetchState.error}</div>
 					` : nothing}
-					${this._url.trim() && this._fetchState.loaded ? html`
+					${!browserReadOnly && this._url.trim() && this._fetchState.loaded ? html`
 					<div class="output-wrapper" id="output-wrapper" data-kusto-no-editor-focus="true">
 					<div class="url-output ${this._imageOutputClasses()}" id="url-content" aria-label="URL content"
 						style="display:${this._csvActive ? 'none' : ''}"></div>
@@ -740,7 +743,7 @@ export class KwUrlSection extends LitElement implements SectionElement {
 		this._fetchState = st;
 		this._updateToggleClasses();
 		this._renderUrlContent();
-		if (st.expanded && st.url) {
+		if (!this._isReadOnlyBrowserHost() && st.expanded && st.url) {
 			this._requestFetch();
 		}
 		this._schedulePersist();
@@ -785,6 +788,7 @@ export class KwUrlSection extends LitElement implements SectionElement {
 	// ── Fetch URL Content ─────────────────────────────────────────────────────
 
 	private _requestFetch(): void {
+		if (this._isReadOnlyBrowserHost()) return;
 		const st = this._fetchState;
 		if (!st.expanded || st.loading || st.loaded) return;
 		const url = st.url.trim();
@@ -809,6 +813,10 @@ export class KwUrlSection extends LitElement implements SectionElement {
 		if (!this._fetchDebounceTimer) return;
 		clearTimeout(this._fetchDebounceTimer);
 		this._fetchDebounceTimer = null;
+	}
+
+	private _isReadOnlyBrowserHost(): boolean {
+		return (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode === true;
 	}
 
 	// ── Message handling ──────────────────────────────────────────────────────

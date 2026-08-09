@@ -2,11 +2,17 @@
 // Forces Monaco textareas to remain writable despite VS Code webview timing glitches.
 
 import { queryEditors } from '../core/state';
+import { pState } from '../shared/persistence-state';
 
 const _win = window;
 
 const __kustoWritableGuardsByEditor = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;
 const SQL_COMPARISON_ADMISSION_LOCK_SELECTOR = '[data-sql-comparison-admission-pending]';
+
+export function __kustoIsEditorReadOnlyByCapability(): boolean {
+	return pState.documentMutationAllowed !== true
+		|| (_win as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode === true;
+}
 
 function __kustoIsEditorAdmissionLocked(editor: any): boolean {
 	try {
@@ -26,14 +32,22 @@ export function __kustoNormalizeTextareasWritable(root: any) {
 		if (!textareas || !textareas.length) {
 			return;
 		}
+		const readOnly = __kustoIsEditorReadOnlyByCapability();
 		for (const ta of textareas) {
 			if (!ta) continue;
-			try { ta.readOnly = false; } catch (e) { console.error('[kusto]', e); }
+			try { ta.readOnly = readOnly; } catch (e) { console.error('[kusto]', e); }
 			try { ta.disabled = false; } catch (e) { console.error('[kusto]', e); }
-			try { ta.removeAttribute && ta.removeAttribute('readonly'); } catch (e) { console.error('[kusto]', e); }
+			try {
+				if (readOnly) ta.setAttribute?.('readonly', '');
+				else ta.removeAttribute?.('readonly');
+			} catch (e) { console.error('[kusto]', e); }
 			try { ta.removeAttribute && ta.removeAttribute('disabled'); } catch (e) { console.error('[kusto]', e); }
 			// Some environments can set aria-disabled; clear it to avoid AT/DOM locking.
 			try { ta.removeAttribute && ta.removeAttribute('aria-disabled'); } catch (e) { console.error('[kusto]', e); }
+			try {
+				if (readOnly) ta.setAttribute?.('aria-readonly', 'true');
+				else ta.removeAttribute?.('aria-readonly');
+			} catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
 }
@@ -41,8 +55,12 @@ export function __kustoNormalizeTextareasWritable(root: any) {
 export function __kustoForceEditorWritable(editor: any) {
 	try {
 		if (!editor) return;
-		if (__kustoIsEditorAdmissionLocked(editor)) {
+		if (__kustoIsEditorReadOnlyByCapability() || __kustoIsEditorAdmissionLocked(editor)) {
 			try { editor.updateOptions?.({ readOnly: true, domReadOnly: true }); } catch (e) { console.error('[kusto]', e); }
+			try {
+				const dom = typeof editor.getDomNode === 'function' ? editor.getDomNode() : null;
+				if (dom) __kustoNormalizeTextareasWritable(dom);
+			} catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 		try {
@@ -63,6 +81,10 @@ export function __kustoForceEditorWritable(editor: any) {
 export function __kustoInstallWritableGuard(editor: any) {
 	try {
 		if (!editor) return;
+		if (__kustoIsEditorReadOnlyByCapability()) {
+			__kustoForceEditorWritable(editor);
+			return;
+		}
 		if (typeof MutationObserver === 'undefined') return;
 		if (__kustoWritableGuardsByEditor && __kustoWritableGuardsByEditor.get(editor)) {
 			return;
@@ -112,6 +134,10 @@ export function __kustoInstallWritableGuard(editor: any) {
 
 export function __kustoEnsureEditorWritableSoon(editor: any) {
 	try {
+		if (__kustoIsEditorReadOnlyByCapability()) {
+			__kustoForceEditorWritable(editor);
+			return;
+		}
 		// Retry a few times; this avoids relying on a single timing point.
 		const delays = [0, 50, 250, 1000];
 		for (const d of delays) {

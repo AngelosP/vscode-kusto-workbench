@@ -33,6 +33,7 @@ describe('document section capability ownership', () => {
 		const preload = source('src/webview/queryEditor.js');
 		const markdownWebview = source('src/webview/md-editor/md-persistence.ts');
 		const browserViewer = source('browser-ext/viewer-boot.js');
+		const browserRoot = source('browser-ext/src/browser-viewer-root.ts');
 		const browserDocument = source('browser-ext/src/viewer-document.ts');
 		const browserPreload = source('browser-ext/queryEditor-loader.js');
 
@@ -54,10 +55,13 @@ describe('document section capability ownership', () => {
 		expect(browserDocument).toContain("from '../../src/host/kqlxFormat'");
 		expect(browserDocument).toContain("from '../../src/shared/nativeDocumentValidation'");
 		expect(notebookProvider).toContain("from '../shared/nativeDocumentValidation'");
-		expect(browserViewer).toContain('parseBrowserNativeWorkbenchText');
+		expect(browserViewer).toContain('BrowserViewerRoot');
+		expect(browserViewer).not.toContain('parseBrowserNativeWorkbenchText');
+		expect(browserViewer).not.toContain('parseBrowserWorkbenchText');
+		expect(browserRoot).toContain('parseBrowserViewerDocument');
 		for (const decisionSurface of [
 			notebookProvider, compatibilityFormat, diffViewer, queryEditorProvider, comparisonPreparation,
-			messageHandler, persistence, sectionFactory, preload, browserViewer, browserPreload,
+			messageHandler, persistence, sectionFactory, preload, browserViewer, browserRoot, browserPreload,
 		]) {
 			expect(decisionSurface).not.toMatch(/(?:===|!==)\s*['"]copilotQuery['"]/);
 			expect(decisionSurface).not.toContain("'copilotQuery'");
@@ -68,7 +72,10 @@ describe('document section capability ownership', () => {
 			expect(owner).toContain('documentSectionCapabilities');
 		}
 		expect(markdownWebview).toContain("from '../core/document-capabilities.js'");
-		expect(browserViewer).toContain("from './src/viewer-document'");
+		expect(browserRoot).toContain("from './viewer-document'");
+		for (const syntheticType of ['persistenceMode', 'connectionsData', 'copilotAvailability', 'documentData']) {
+			expect(browserViewer).not.toContain(`type: '${syntheticType}'`);
+		}
 	});
 
 	it('inventories raw factory calls and keeps legacy creation bridges capability-gated', () => {

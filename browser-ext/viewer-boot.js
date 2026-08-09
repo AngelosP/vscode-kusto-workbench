@@ -1,10 +1,15 @@
-import { browserCanonicalSectionKind, browserDefaultSectionKind, composeBrowserCompatibilityState, parseBrowserNativeWorkbenchText, parseBrowserWorkbenchText } from './src/viewer-document';
+import { BrowserViewerRoot } from './src/browser-viewer-root';
+import {
+	BROWSER_VIEWER_PRESENTATION_READY_DATASET_KEY,
+	BROWSER_VIEWER_PRESENTATION_READY_EVENT,
+	BROWSER_VIEWER_PROJECTION_APPLIED_EVENT,
+	BROWSER_VIEWER_PROJECTION_EVENT,
+} from '../src/shared/browserViewerProjection';
 
 // Viewer Boot Script for Browser Extension
 // Receives file content from the content script via postMessage (instead of
-// fetching from a server proxy like the web app does). Then parses the content
-// and posts the same sequence of messages that the real VS Code extension host
-// would send to the webview, so all existing webview code works identically.
+// fetching from a server proxy like the web app does), delegates adoption to the
+// typed browser root, and owns only browser loading/banner/error presentation.
 
 (function() {
 	'use strict';
@@ -30,21 +35,6 @@ import { browserCanonicalSectionKind, browserDefaultSectionKind, composeBrowserC
 			return _origError.apply(console, arguments);
 		};
 	} catch (_) { /* ignore */ }
-
-	// ---- Helpers ----
-
-	function getFilenameFromUrl(url) {
-		try {
-			var parts = url.split('/');
-			return parts[parts.length - 1] || '';
-		} catch {
-			return '';
-		}
-	}
-
-	function postExtensionMessage(message) {
-		window.dispatchEvent(new MessageEvent('message', { data: message }));
-	}
 
 	// ---- Loading UI ----
 
@@ -91,185 +81,56 @@ import { browserCanonicalSectionKind, browserDefaultSectionKind, composeBrowserC
 		}
 	}
 
-	// ---- Pre-process sections for browser extension defaults ----
+	// ---- Typed projection presentation ----
 
-	/**
-	 * When viewing in the browser (read-only), apply sensible defaults:
-	 * - Query sections collapsed (reader wants to see results, not raw KQL)
-	 * - Markdown sections in Preview mode (rendered, not editable)
-	 * - Chart sections in Preview mode (show the chart, not the config)
-	 */
-	function applyBrowserViewDefaults(sections) {
-		if (!Array.isArray(sections)) return sections;
-		for (var i = 0; i < sections.length; i++) {
-			var sec = sections[i];
-			if (!sec || typeof sec !== 'object') continue;
-			var t = browserCanonicalSectionKind(sec.type);
-			if (t === 'query' || t === 'sql') {
-				sec.expanded = false;
-			} else if (t === 'markdown') {
-				sec.mode = 'preview';
-			} else if (t === 'chart') {
-				sec.mode = 'preview';
-			}
-		}
-		return sections;
+	var pendingProjection = null;
+	var pendingPresentationOptions = null;
+
+	function isPresentationReady() {
+		return document.documentElement.dataset[BROWSER_VIEWER_PRESENTATION_READY_DATASET_KEY] === 'true';
 	}
 
-	// ---- Process file content ----
-
-	function processFileContent(filename, content, companionState, rawContentUrl, sidecarUrl) {
-		var lowerFilename = (filename || '').toLowerCase();
-		var state;
-		var documentKind = 'kqlx';
-
-		if (lowerFilename.endsWith('.kqlx') || lowerFilename.endsWith('.mdx')) {
-			// .kqlx file: parse as KqlxFileV1
-			var expectedKind = lowerFilename.endsWith('.mdx') ? 'mdx' : 'kqlx';
-			var parsed = parseBrowserNativeWorkbenchText(content, { allowedKinds: [expectedKind], defaultKind: expectedKind });
-			if (!parsed.ok) {
-				showError('Invalid .kqlx file', parsed.error);
-				return null;
-			}
-			state = parsed.file.state;
-			documentKind = parsed.file.kind;
-
-		} else if (lowerFilename.endsWith('.sqlx')) {
-			// .sqlx file: SQL notebook, same JSON schema as .kqlx with kind 'sqlx'
-			var sqlxParsed = parseBrowserNativeWorkbenchText(content, { allowedKinds: ['sqlx'], defaultKind: 'sqlx' });
-			if (!sqlxParsed.ok) {
-				showError('Invalid .sqlx file', sqlxParsed.error);
-				return null;
-			}
-			state = sqlxParsed.file.state;
-			documentKind = sqlxParsed.file.kind;
-
-		} else if (lowerFilename.endsWith('.kql.json') || lowerFilename.endsWith('.csl.json')) {
-			// .kql.json sidecar: parse it
-			var sidecarParsed = parseBrowserWorkbenchText(content, { allowedKinds: ['kqlx'] });
-			if (!sidecarParsed.ok) {
-				showError('Invalid sidecar file', sidecarParsed.error);
-				return null;
-			}
-			state = sidecarParsed.file.state;
-
-		} else if (lowerFilename.endsWith('.kql') || lowerFilename.endsWith('.csl')) {
-			// .kql/.csl file: raw query text + optional sidecar
-			var queryText = content;
-			var compatibility = composeBrowserCompatibilityState(queryText, companionState, {
-				expectedFilename: filename,
-				rawContentUrl: rawContentUrl,
-				sidecarUrl: sidecarUrl
-			});
-			if (!compatibility.ok) {
-				showError('Invalid companion file', compatibility.error);
-				return null;
-			}
-			state = compatibility.state;
-
-		} else {
-			showError('Unsupported file type', 'Supported: .kqlx, .sqlx, .mdx, .kql, .csl, .kql.json, .csl.json');
-			return null;
-		}
-
-		// Apply browser-view defaults (collapse queries, preview markdown/chart)
-		if (state && Array.isArray(state.sections)) {
-			state.sections = applyBrowserViewDefaults(state.sections);
-		}
-
-		return { state: state, documentKind: documentKind };
+	function dispatchProjection(projection) {
+		pendingProjection = null;
+		window.dispatchEvent(new CustomEvent(BROWSER_VIEWER_PROJECTION_EVENT, { detail: projection }));
 	}
 
-	// ---- Render the notebook ----
+	function presentProjection(projection) {
+		var options = pendingPresentationOptions || {};
+		pendingPresentationOptions = null;
+		if (options.hostBackgroundColor) {
+			applyHostBackgroundColor(options.hostBackgroundColor);
+		}
+		if (!options.standalone) {
+			try {
+				var container = document.getElementById('queries-container');
+				if (container) container.style.paddingTop = '20px';
+			} catch { /* ignore */ }
+		}
+		showLoading('Rendering ' + projection.source.filename + '...');
+		updateBanner(projection.source.filename, projection.source.pageUrl, projection.source.sourceLabel);
+		if (isPresentationReady()) dispatchProjection(projection);
+		else pendingProjection = projection;
+	}
 
-	function renderNotebook(filename, state, documentKind, pageUrl) {
-		showLoading('Rendering...');
+	function flushPendingProjection() {
+		if (pendingProjection && isPresentationReady()) dispatchProjection(pendingProjection);
+	}
 
-		// 1. persistenceMode
-		postExtensionMessage({
-			type: 'persistenceMode',
-			isSessionFile: false,
-			documentUri: pageUrl || '',
-			compatibilityMode: false,
-			documentKind: documentKind,
-			allowedSectionKinds: [],
-			defaultSectionKind: browserDefaultSectionKind(documentKind)
-		});
-
-		// 2. connectionsData
-		postExtensionMessage({
-			type: 'connectionsData',
-			connections: [],
-			lastConnectionId: null,
-			lastDatabase: null,
-			cachedDatabases: {},
-			favorites: [],
-			leaveNoTraceClusters: [],
-			caretDocsEnabled: false,
-			autoTriggerAutocompleteEnabled: false,
-			copilotInlineCompletionsEnabled: false
-		});
-
-		// 3. copilotAvailability
-		postExtensionMessage({
-			type: 'copilotAvailability',
-			available: false,
-			boxId: '__kusto_global__'
-		});
-
-		// 4. documentData
-		postExtensionMessage({
-			type: 'documentData',
-			ok: true,
-			state: state,
-			documentUri: pageUrl || ''
-		});
-
+	window.addEventListener(BROWSER_VIEWER_PRESENTATION_READY_EVENT, flushPendingProjection);
+	window.addEventListener(BROWSER_VIEWER_PROJECTION_APPLIED_EVENT, function(event) {
+		var detail = event && event.detail;
+		if (!detail || detail.applied !== true) {
+			showError('Unable to render file', 'The browser presentation adapter rejected the document projection.');
+			return;
+		}
 		hideLoading();
-
-		// Make editors read-only
-		setTimeout(function() { makeEditorsReadOnly(); }, 1500);
-		setTimeout(function() { makeEditorsReadOnly(); }, 3000);
-		setTimeout(function() { makeEditorsReadOnly(); }, 5000);
-
-		// Report height to parent frame for auto-sizing
 		reportHeight();
 		setTimeout(reportHeight, 2000);
 		setTimeout(reportHeight, 5000);
-	}
+	});
 
-	// ---- Make editors read-only ----
-
-	function makeEditorsReadOnly() {
-		try {
-			if (typeof queryEditors !== 'undefined' && queryEditors) {
-				for (var key in queryEditors) {
-					if (queryEditors.hasOwnProperty(key)) {
-						var editor = queryEditors[key];
-						if (editor && typeof editor.updateOptions === 'function') {
-							editor.updateOptions({ readOnly: true });
-						}
-					}
-				}
-			}
-		} catch (e) {
-			// ignore
-		}
-		try {
-			if (typeof pythonEditors !== 'undefined' && pythonEditors) {
-				for (var key2 in pythonEditors) {
-					if (pythonEditors.hasOwnProperty(key2)) {
-						var editor2 = pythonEditors[key2];
-						if (editor2 && typeof editor2.updateOptions === 'function') {
-							editor2.updateOptions({ readOnly: true });
-						}
-					}
-				}
-			}
-		} catch (e2) {
-			// ignore
-		}
-	}
+	var browserViewerRoot = new BrowserViewerRoot({ present: presentProjection });
 
 	// ---- Report height to parent (for iframe auto-sizing) ----
 
@@ -287,15 +148,6 @@ import { browserCanonicalSectionKind, browserDefaultSectionKind, composeBrowserC
 		} catch {
 			// ignore — might not be in an iframe
 		}
-	}
-
-	// ---- Disable persistence ----
-
-	try {
-		window.__kustoPersistenceEnabled = false;
-		window.schedulePersist = function() { /* no-op in read-only viewer */ };
-	} catch {
-		// ignore
 	}
 
 	// ---- Listen for file content from the content script ----
@@ -326,8 +178,6 @@ import { browserCanonicalSectionKind, browserDefaultSectionKind, composeBrowserC
 		}
 	}
 
-	var __kustoLoadFileHandled = false;
-
 	function handleIncomingMessage(event) {
 		if (!event.data || typeof event.data !== 'object') return;
 
@@ -347,46 +197,45 @@ import { browserCanonicalSectionKind, browserDefaultSectionKind, composeBrowserC
 		}
 
 		if (event.data.type !== 'kusto-workbench-load-file') return;
-		// Only handle the first load-file message (retries from the opener keep arriving)
-		if (__kustoLoadFileHandled) return;
-		__kustoLoadFileHandled = true;
-
-		// Acknowledge receipt so the sender can stop retrying
-		try {
-			window.parent.postMessage({ type: 'kusto-workbench-load-file-ack' }, '*');
-		} catch { /* ignore — might not be in an iframe */ }
 
 		var filename = event.data.filename || '';
 		var content = event.data.content || '';
-			var companionState = event.data.companionState || { status: 'missing' };
-			var rawContentUrl = event.data.rawContentUrl || '';
-			var sidecarUrl = event.data.sidecarUrl || '';
+		var companionState = event.data.companionState || { status: 'missing' };
+		var rawContentUrl = event.data.rawContentUrl || '';
+		var sidecarUrl = event.data.sidecarUrl || '';
 		var pageUrl = event.data.pageUrl || '';
 		var sourceLabel = event.data.sourceLabel || '';
-
-		// Apply host page background color if provided
-		if (event.data.hostBackgroundColor) {
-			applyHostBackgroundColor(event.data.hostBackgroundColor);
+		var loadGeneration = Number(event.data.loadGeneration);
+		if (!Number.isSafeInteger(loadGeneration) || loadGeneration <= 0) {
+			showError('Invalid viewer payload', 'The file load generation is missing or invalid.');
+			return;
 		}
 
-		// Add top spacing inside the iframe so there's a gap between the
-		// host page header and our content, without exposing the host's
-		// container background through an external margin.
-		// Skip for standalone tabs (opened via new-tab viewer).
-		if (!event.data.standalone) {
+		var file = Object.freeze({
+			filename: String(filename),
+			rawContentUrl: String(rawContentUrl),
+			sidecarUrl: sidecarUrl ? String(sidecarUrl) : undefined,
+			pageUrl: String(pageUrl),
+			sourceLabel: String(sourceLabel)
+		});
+		pendingPresentationOptions = Object.freeze({
+			hostBackgroundColor: event.data.hostBackgroundColor,
+			standalone: event.data.standalone === true
+		});
+		var adoption = browserViewerRoot.adopt(Object.freeze({
+			snapshot: Object.freeze({ generation: loadGeneration, file: file }),
+			content: String(content),
+			companionState: companionState
+		}));
+		if (!adoption.ok) pendingPresentationOptions = null;
+		if (adoption.reason !== 'stale') {
 			try {
-				var container = document.getElementById('queries-container');
-				if (container) container.style.paddingTop = '20px';
-			} catch { /* ignore */ }
+				window.parent.postMessage({ type: 'kusto-workbench-load-file-ack' }, '*');
+			} catch { /* ignore — might not be in an iframe */ }
 		}
-
-		showLoading('Parsing ' + filename + '...');
-		updateBanner(filename, pageUrl, sourceLabel);
-
-			var result = processFileContent(filename, content, companionState, rawContentUrl, sidecarUrl);
-		if (!result) return;
-
-		renderNotebook(filename, result.state, result.documentKind, pageUrl);
+		if (!adoption.ok && adoption.reason === 'invalid') {
+			showError(adoption.title, adoption.error);
+		}
 	}
 
 	window.addEventListener('message', handleIncomingMessage);

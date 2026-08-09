@@ -53,6 +53,7 @@ import './sections/kw-sql-section.js';
 import './sections/kw-query-section.js';
 import './sections/kw-query-toolbar.js';
 import './core/main.js';
+import './core/browser-viewer-presentation.js';
 import { startMainWebviewMessageDispatcher } from './core/message-handler.js';
 
 void startMainWebviewMessageDispatcher();

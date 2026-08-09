@@ -522,6 +522,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	// ── Render ─────────────────────────────────────────────────────────────────
 
 	override render(): TemplateResult {
+		const browserReadOnly = (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode === true;
 		return html`
 			<div class="section-root">
 				<kw-section-shell
@@ -547,7 +548,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 					</div>
 					<div class="tf-wrapper-host ${this._expanded ? '' : 'is-hidden'}" id="tf-wrapper"
 						style="height:${this._wrapperHeight}px">
-						${this._mode === 'edit' ? this._renderControls() : nothing}
+						${this._mode === 'edit' && !browserReadOnly ? this._renderControls() : nothing}
 						${this._renderResults()}
 						${this._resultColumns.length ? html`<div class="resizer"
 							title="Drag to resize"

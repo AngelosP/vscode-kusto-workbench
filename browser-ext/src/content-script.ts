@@ -338,6 +338,7 @@ async function openViewerInNewTab() {
 
 		const payload = {
 			type: 'kusto-workbench-load-file',
+			loadGeneration: snapshot.generation,
 			filename: file.filename,
 			content,
 			companionState,
@@ -641,6 +642,7 @@ function createViewerIframe(
 
 		iframe.contentWindow?.postMessage({
 			type: 'kusto-workbench-load-file',
+			loadGeneration: snapshot.generation,
 			filename: file.filename,
 			content,
 			companionState,

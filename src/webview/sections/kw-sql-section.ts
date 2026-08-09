@@ -20,7 +20,12 @@ import './kw-sql-toolbar.js';
 import { maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { schedulePersist, __kustoClearStoredQueryResult } from '../core/persistence.js';
-import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
+import {
+	__kustoForceEditorWritable,
+	__kustoEnsureEditorWritableSoon,
+	__kustoInstallWritableGuard,
+	__kustoIsEditorReadOnlyByCapability,
+} from '../monaco/writable.js';
 import { registerStsProviders, registerStsEditorModel, unregisterStsEditorModel } from '../monaco/sql-sts-providers.js';
 import { autoTriggerAutocompleteEnabled, optimizationMetadataByBoxId, setActiveMonacoEditor, queryEditorBoxByModelUri, queryEditors } from '../core/state.js';
 import { __kustoOpenShareModal, getRunMode, setRunMode } from './kw-query-toolbar.js';
@@ -474,6 +479,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	// ── Missing connections banner ────────────────────────────────────────────
 
 	private _renderMissingConnectionsBanner(): TemplateResult | typeof nothing {
+		if ((window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode === true) return nothing;
 		if (this._connections.length > 0) return nothing;
 		return html`
 			<div class="sql-missing-connections-banner" role="status" aria-live="polite">
@@ -1102,12 +1108,13 @@ export class KwSqlSection extends LitElement implements SectionElement {
 				}
 			}
 
+			const readOnly = this._comparisonAdmissionPending || __kustoIsEditorReadOnlyByCapability();
 			const editor = monaco.editor.create(editorDiv, {
 				value: initialValue,
 				language: 'sql',
 				theme: getCurrentMonacoThemeName(),
-				readOnly: this._comparisonAdmissionPending,
-				domReadOnly: this._comparisonAdmissionPending,
+				readOnly,
+				domReadOnly: readOnly,
 				minimap: { enabled: false },
 				scrollBeyondLastLine: false,
 				automaticLayout: false,
@@ -1197,9 +1204,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 			// Shift+Enter → run query.
 			try {
-				const KeyMod = monaco.KeyMod;
-				const KeyCode = monaco.KeyCode;
-				editor.addCommand(KeyMod.Shift | KeyCode.Enter, () => this._runQuery());
+				if (!this._isReadOnlyBrowserHost()) {
+					const KeyMod = monaco.KeyMod;
+					const KeyCode = monaco.KeyCode;
+					editor.addCommand(KeyMod.Shift | KeyCode.Enter, () => this._runQuery());
+				}
 			} catch (e) { console.error('[kusto]', e); }
 
 			// Ctrl+Shift+Space → trigger Copilot inline suggestion (ghost text).
@@ -1526,7 +1535,8 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		}
 		this._comparisonAdmissionPending = pending;
 		this.toggleAttribute('data-sql-comparison-admission-pending', pending);
-		try { this._editor?.updateOptions({ readOnly: pending, domReadOnly: pending }); } catch (e) { console.error('[kusto]', e); }
+		const readOnly = pending || __kustoIsEditorReadOnlyByCapability();
+		try { this._editor?.updateOptions({ readOnly, domReadOnly: readOnly }); } catch (e) { console.error('[kusto]', e); }
 		this._syncActionBar();
 	}
 	public getActiveQueryExecutionId(): string { return this._activeQueryExecutionId; }
@@ -2444,6 +2454,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	// ── Execution ─────────────────────────────────────────────────────────────
 
 	public reserveToolRun(executionId: string): Promise<SqlToolRunResult> {
+		if (this._isReadOnlyBrowserHost()) throw new Error('SQL execution is unavailable in the read-only browser viewer.');
 		if (this._comparisonAdmissionPending) throw new Error('SQL comparison admission is still settling.');
 		if (this.sqlSession.hasPendingToolRun) throw new Error('A SQL tool query is already running for this section.');
 		const id = String(executionId || '').trim();
@@ -2561,6 +2572,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	}
 
 	private _runQuery(): boolean {
+		if (this._isReadOnlyBrowserHost()) return false;
 		if (this._comparisonAdmissionPending || this._executing || !this._sqlConnectionId || !this._database) {
 			return false;
 		}
@@ -2621,6 +2633,10 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			...(this.sqlSession.pendingToolExecutionId && this.sqlSession.toolExpectedOwner ? { expectedOwner: { ...this.sqlSession.toolExpectedOwner } } : {}),
 		});
 		return true;
+	}
+
+	private _isReadOnlyBrowserHost(): boolean {
+		return (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode === true;
 	}
 
 	// ── Run mode ──────────────────────────────────────────────────────────────
