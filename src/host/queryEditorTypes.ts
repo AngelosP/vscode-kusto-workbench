@@ -355,16 +355,6 @@ export type IncomingWebviewMessage =
 		type: 'sqlComparisonAdmissionAck'; phase: 'staged' | 'committed' | 'finalized' | 'completed' | 'rolledBack'; requestId: string; sourceBoxId: string;
 		comparisonBoxId: string; accepted: boolean;
 	}
-	| {
-			type: 'comparisonSummary';
-			sourceBoxId: string;
-			comparisonBoxId: string;
-			dataMatches: boolean;
-			headersMatch?: boolean;
-			rowOrderMatches?: boolean;
-			columnOrderMatches?: boolean;
-		}
-	| { type: 'clearComparisonSummary'; sourceBoxId: string; comparisonBoxId: string }
 	| { type: 'toolResponse'; requestId: string; result: unknown; error?: string }
 	| { type: 'toolExecutionStarted'; requestId: string; owner: KustoExecutionRequestIdentity }
 	| { type: 'toolStateResponse'; requestId: string; sections: unknown[]; error?: string }

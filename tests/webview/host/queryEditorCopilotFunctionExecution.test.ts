@@ -167,8 +167,6 @@ function createHost(capturedQueries: string[], executeError?: Error): CopilotSer
 				connectionId: TEST_CONNECTION.id, database: 'Samples',
 			},
 		}),
-		waitForComparisonSummary: () => Promise.resolve({ dataMatches: true, headersMatch: true }),
-		deleteComparisonSummary: vi.fn(),
 		requestSectionsFromWebview: () => Promise.resolve(undefined),
 		updateDevelopmentNotes: vi.fn(async () => ({ success: true })),
 		revealPanel: vi.fn(),

@@ -173,7 +173,6 @@ function createHarness(options: {
 			cancelCopilotQueryTarget: vi.fn(),
 			invalidateSqlCopilot: vi.fn(),
 			rejectPendingComparisonEnsures: vi.fn(),
-			deleteComparisonSummary: vi.fn(),
 			invalidatePersistence: vi.fn(),
 			refreshConnectionsData: vi.fn(async () => true),
 			prefetchSchema: vi.fn(async () => undefined),

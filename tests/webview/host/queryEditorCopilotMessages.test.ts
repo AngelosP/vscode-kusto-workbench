@@ -48,8 +48,6 @@ function makeHost(): CopilotServiceHost {
 				connectionId: 'connection-a', database: 'Db',
 			},
 		}),
-		waitForComparisonSummary: () => Promise.resolve({ dataMatches: true, headersMatch: true }),
-		deleteComparisonSummary: () => {},
 		requestSectionsFromWebview: () => Promise.resolve(undefined),
 		updateDevelopmentNotes: () => Promise.resolve({ success: true }),
 		revealPanel: () => {},

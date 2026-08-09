@@ -649,18 +649,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}, () => complete(false));
 		});
 	}
-	private readonly latestComparisonSummaryByKey = new Map<
-		string,
-		{ dataMatches: boolean; headersMatch: boolean; timestamp: number }
-	>();
-	private readonly pendingComparisonSummaryByKey = new Map<
-		string,
-		Array<{
-			resolve: (summary: { dataMatches: boolean; headersMatch: boolean }) => void;
-			reject: (error: Error) => void;
-			timer: ReturnType<typeof setTimeout>;
-		}>
-	>();
 	private readonly copilot: CopilotService;
 	private configSubscription?: vscode.Disposable;
 	private authPreferenceSubscription?: vscode.Disposable;
@@ -851,8 +839,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 						}
 					}
 				},
-				deleteComparisonSummary: (sourceBoxId, comparisonBoxId) =>
-					this.deleteComparisonSummary(`${sourceBoxId}::${comparisonBoxId}`),
 				invalidatePersistence: () => this.sqlPersistenceInvalidationEmitter.fire(),
 				refreshConnectionsData: () => this.sendSqlConnectionsData(),
 				prefetchSchema: (connectionId, database, boxId, forceRefresh) =>
@@ -1544,39 +1530,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					// ignore
 				}
 				return;
-			case 'comparisonSummary':
-				try {
-					const sourceBoxId = String(message.sourceBoxId || '');
-					const comparisonBoxId = String(message.comparisonBoxId || '');
-					if (!sourceBoxId || !comparisonBoxId) {
-						return;
-					}
-					const key = `${sourceBoxId}::${comparisonBoxId}`;
-					const summary = {
-						dataMatches: !!message.dataMatches,
-						headersMatch: message.headersMatch === null || message.headersMatch === undefined ? true : !!message.headersMatch
-					};
-					this.latestComparisonSummaryByKey.set(key, { ...summary, timestamp: Date.now() });
-					const pending = this.pendingComparisonSummaryByKey.get(key);
-					if (pending && pending.length) {
-						this.pendingComparisonSummaryByKey.delete(key);
-						for (const w of pending) {
-							try {
-								clearTimeout(w.timer);
-							} catch {
-								// ignore
-							}
-							try {
-								w.resolve(summary);
-							} catch {
-								// ignore
-							}
-						}
-					}
-				} catch {
-					// ignore
-				}
-				return;
 			case 'startCopilotWriteQuery':
 				if (message.flavor === 'sql') {
 					const preflight = this.sqlExecutionBroker.reservePreflight(
@@ -1618,9 +1571,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					}
 				}
 				this.copilot.cancelCopilotWriteQuery(message.boxId);
-				return;
-			case 'clearComparisonSummary':
-				this.deleteComparisonSummary(`${String(message.sourceBoxId || '')}::${String(message.comparisonBoxId || '')}`);
 				return;
 			case 'prepareOptimizeQuery':
 				await this.copilot.prepareOptimizeQuery(message);
@@ -1700,7 +1650,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				} else {
 					this._comparisonOwnerByBoxId.delete(comparisonBoxId);
 				}
-				this.deleteComparisonSummary(`${owner.sourceBoxId}::${comparisonBoxId}`);
 				if (owner.comparisonRequestId) {
 					const pending = this.pendingComparisonEnsureByRequestId.get(owner.comparisonRequestId);
 					if (pending) {
@@ -1846,60 +1795,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		});
 	}
 
-	async waitForComparisonSummary(
-		sourceBoxId: string,
-		comparisonBoxId: string,
-		token: vscode.CancellationToken
-	): Promise<{ dataMatches: boolean; headersMatch: boolean }> {
-		const key = `${sourceBoxId}::${comparisonBoxId}`;
-		const existing = this.latestComparisonSummaryByKey.get(key);
-		if (existing) {
-			return { dataMatches: existing.dataMatches, headersMatch: existing.headersMatch };
-		}
-
-		return await new Promise<{ dataMatches: boolean; headersMatch: boolean }>((resolve, reject) => {
-			if (token.isCancellationRequested) {
-				reject(new Error('Canceled'));
-				return;
-			}
-
-			const timer = setTimeout(() => {
-				try {
-					const pending = this.pendingComparisonSummaryByKey.get(key) || [];
-					this.pendingComparisonSummaryByKey.set(
-						key,
-						pending.filter((p) => p.reject !== reject)
-					);
-					if ((this.pendingComparisonSummaryByKey.get(key) || []).length === 0) {
-						this.pendingComparisonSummaryByKey.delete(key);
-					}
-				} catch {
-					// ignore
-				}
-				reject(new Error('Timed out while waiting for comparison summary'));
-			}, 20000);
-
-			const entry = { resolve, reject, timer };
-			const pending = this.pendingComparisonSummaryByKey.get(key) || [];
-			pending.push(entry);
-			this.pendingComparisonSummaryByKey.set(key, pending);
-
-			try {
-				token.onCancellationRequested(() => {
-					try {
-						clearTimeout(timer);
-					} catch {
-						// ignore
-					}
-					reject(new Error('Canceled'));
-				});
-			} catch {
-				// ignore
-			}
-		});
-	}
-
-
 	normalizeClusterUrlKey(url: string): string {
 		return kustoClusterKey(url);
 	}
@@ -1966,10 +1861,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		};
 		this.connectionsDataTail = this.connectionsDataTail.then(send, send);
 		await this.connectionsDataTail;
-	}
-
-	deleteComparisonSummary(key: string): void {
-		this.latestComparisonSummaryByKey.delete(key);
 	}
 
 	revealPanel(): void {

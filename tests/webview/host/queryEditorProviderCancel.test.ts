@@ -2062,7 +2062,6 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		const provider = createSqlProviderHarness();
 		provider.sqlLifecycle.setComparisonOwner('comparison_1', { sourceBoxId: 'sql_1', connectionId: 'sql-1', copilotSequence: 7 });
 		provider.sqlLifecycle.setOwnerToken('comparison_1', 'token');
-		provider.latestComparisonSummaryByKey = new Map([['sql_1::comparison_1', { dataMatches: true, headersMatch: true, timestamp: 1 }]]);
 		const supersede = vi.spyOn(provider.sqlExecutionBroker, 'supersede');
 		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
 
@@ -2074,7 +2073,6 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.copilot.cancelCopilotWriteQuery).toHaveBeenCalledWith('sql_1', 7);
 		expect(provider.sqlLifecycle.getComparisonOwner('comparison_1')).toBeUndefined();
 		expect(provider.sqlLifecycle.getOwnerToken('comparison_1')).toBeUndefined();
-		expect(provider.latestComparisonSummaryByKey.has('sql_1::comparison_1')).toBe(false);
 	});
 
 	it('ignores comparison removal events that are not tracked as SQL comparisons', async () => {
@@ -2091,7 +2089,6 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider._comparisonOwnerByBoxId.set('kusto_comparison', {
 			sourceBoxId: 'kusto_1', copilotSequence: 9, comparisonRequestId: 'request-kusto',
 		});
-		provider.latestComparisonSummaryByKey = new Map();
 		provider._kustoExecutionCoordinator = { getActive: vi.fn(() => ({
 			boxId: 'kusto_comparison', executionId: 'comparison-run', sectionInstanceId: 'comparison-instance',
 			targetGeneration: 1, reservationSequence: 1,
@@ -2114,7 +2111,6 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		const provider = createSqlProviderHarness();
 		provider.sqlLifecycle.setComparisonOwner('comparison_1', { sourceBoxId: 'sql_1', connectionId: 'sql-1', copilotSequence: 7 });
 		provider.sqlLifecycle.setOwnerToken('comparison_1', 'token');
-		provider.latestComparisonSummaryByKey = new Map();
 		const supersede = vi.spyOn(provider.sqlExecutionBroker, 'supersede');
 		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
 
@@ -2130,7 +2126,6 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 	it('tombstones a SQL comparison but rejects whole-sequence cancellation when the source is omitted', async () => {
 		const provider = createSqlProviderHarness();
 		provider.sqlLifecycle.setComparisonOwner('comparison_1', { sourceBoxId: 'sql_1', connectionId: 'sql-1', copilotSequence: 7 });
-		provider.latestComparisonSummaryByKey = new Map();
 		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
 
 		await provider.handleWebviewMessage({ type: 'sqlComparisonRemoved', boxId: 'comparison_1' } as any);
@@ -2143,7 +2138,6 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 	it('does not cancel newer source work for a restored comparison without a live sequence', async () => {
 		const provider = createSqlProviderHarness();
 		provider.sqlLifecycle.setComparisonOwner('comparison_1', { sourceBoxId: 'sql_1', connectionId: 'sql-1' });
-		provider.latestComparisonSummaryByKey = new Map();
 		provider.copilot = { cancelCopilotWriteQuery: vi.fn() };
 
 		await provider.handleWebviewMessage({ type: 'sqlComparisonRemoved', boxId: 'comparison_1', sourceBoxId: 'sql_1' } as any);
@@ -2182,7 +2176,6 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			sqlSourceDatabase: 'Db',
 			copilotSequence: 7,
 		}]]);
-		provider.latestComparisonSummaryByKey = new Map();
 		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
 		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn(() => policy.promise);
 		provider.sqlLifecycle.openSection('comparison_1', 'instance-comparison');

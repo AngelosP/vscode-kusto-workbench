@@ -279,9 +279,6 @@ function createHarness(options: {
 		}),
 		invalidateSqlCopilot: vi.fn(() => order.push('invalidateSqlCopilot')),
 		rejectPendingComparisonEnsures: vi.fn((sourceBoxId: string) => order.push(`rejectPendingComparisonEnsures:${sourceBoxId}`)),
-		deleteComparisonSummary: vi.fn((sourceBoxId: string, comparisonBoxId: string) => {
-			order.push(`deleteComparisonSummary:${sourceBoxId}:${comparisonBoxId}`);
-		}),
 		invalidatePersistence: vi.fn(() => order.push('invalidatePersistence')),
 		refreshConnectionsData: vi.fn(async () => {
 			order.push('refreshConnectionsData');
@@ -518,7 +515,7 @@ describe('SqlEditorLifecycleCoordinator', () => {
 		expect(harness.effects.cancelCopilotQueryTarget).not.toHaveBeenCalled();
 	});
 
-	it('closing a SQL comparison removes its own owner and summary without retiring the source', () => {
+	it('closing a SQL comparison removes its own owner without retiring the source', () => {
 		const harness = createHarness();
 		const { coordinator } = harness;
 		coordinator.openSection('sql_source', 'instance-source');
@@ -535,7 +532,6 @@ describe('SqlEditorLifecycleCoordinator', () => {
 		expect(coordinator.getTarget('sql_source')).toEqual({
 			boxId: 'sql_source', connectionId: SQL_A.id, database: 'DbA', generation: 1,
 		});
-		expect(harness.effects.deleteComparisonSummary).toHaveBeenCalledWith('sql_source', 'sql_comparison');
 		expect(harness.effects.cancelCopilotWriteQuery).toHaveBeenCalledWith('sql_comparison');
 		expect(harness.effects.cancelCopilotWriteQuery).not.toHaveBeenCalledWith('sql_source');
 	});
@@ -558,7 +554,6 @@ describe('SqlEditorLifecycleCoordinator', () => {
 		}
 
 		expect(coordinator.getComparisonOwner('sql_comparison')).toBeUndefined();
-		expect(harness.effects.deleteComparisonSummary).toHaveBeenCalledWith('sql_source', 'sql_comparison');
 		expect(coordinator.getTarget('sql_source')).toEqual({
 			boxId: 'sql_source', connectionId: SQL_A.id, database: 'DbA', generation: 1,
 		});

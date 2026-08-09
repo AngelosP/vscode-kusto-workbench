@@ -870,9 +870,9 @@ describe('kw-query-section loading states', () => {
 		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
 		expect(pState.resultArtifactByBoxId.test1).toBeUndefined();
 		expect(el.querySelector('.comparison-summary-banner')).toBeNull();
-		expect(postMessageToHost).toHaveBeenCalledWith({
-			type: 'clearComparisonSummary', sourceBoxId: 'query_source', comparisonBoxId: 'test1',
-		});
+		expect(postMessageToHost).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: 'clearComparisonSummary' }),
+		);
 		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'cancelCopilotWriteQuery', boxId: 'test1', flavor: 'kusto', ...copilotOwner });
 		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'clearCopilotConversation', flavor: 'kusto', ...copilotOwner });
 		expect(retiredOutputs).toContainEqual({

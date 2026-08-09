@@ -1166,17 +1166,6 @@ export function displayComparisonSummary(sourceBoxId: any, comparisonBoxId: any)
 		__kustoUpdateAcceptOptimizationsButton(comparisonBoxId, true, acceptTooltip);
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoApplyComparisonSummaryVisibility(comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
-	try {
-		postMessageToHost({
-			type: 'comparisonSummary',
-			sourceBoxId: String(sourceBoxId || ''),
-			comparisonBoxId: String(comparisonBoxId || ''),
-			dataMatches: !!dataMatches,
-			headersMatch: !!columnHeaderNamesMatch,
-			rowOrderMatches: !!rowOrderMatches,
-			columnOrderMatches: !!columnOrderMatches
-		});
-	} catch (e) { console.error('[kusto]', e); }
 }
 
 // ── Optimize prompt flow ──────────────────────────────────────────────────────

@@ -117,7 +117,6 @@ export interface SqlEditorLifecycleEffects {
 	cancelCopilotQueryTarget(sourceBoxId: string, targetBoxId: string, expectedSequence: number): void;
 	invalidateSqlCopilot(connectionIds: readonly string[], comparisonBoxIds: readonly string[]): void;
 	rejectPendingComparisonEnsures(sourceBoxId: string): void;
-	deleteComparisonSummary(sourceBoxId: string, comparisonBoxId: string): void;
 	invalidatePersistence(): void;
 	refreshConnectionsData(): Promise<boolean>;
 	prefetchSchema(connectionId: string, database: string, boxId: string, forceRefresh: boolean): Promise<void>;
@@ -433,8 +432,7 @@ export class SqlEditorLifecycleCoordinator {
 			this.ownership.getIssuedOwner(id)?.owner ?? this.ownership.getOwner(id),
 		);
 		return this.ownership.adoptTarget(id, connectionId, database, targetGeneration, () => {
-			const ownComparisonOwner = this.ownership.removeComparisonOwner(id);
-			if (ownComparisonOwner) this.options.effects.deleteComparisonSummary(ownComparisonOwner.sourceBoxId, id);
+			this.ownership.removeComparisonOwner(id);
 			this.invalidateProtectedPublication(id);
 			this.clearTokenPublicationClaim(id, true);
 			this.clearOwnerChangeReplay(id);
@@ -476,8 +474,7 @@ export class SqlEditorLifecycleCoordinator {
 		let result: 'rejected' | 'unchanged' | 'changed';
 		try {
 			result = this.ownership.retireTarget(boxId, targetGeneration, () => {
-				const ownComparisonOwner = this.ownership.removeComparisonOwner(boxId);
-				if (ownComparisonOwner) this.options.effects.deleteComparisonSummary(ownComparisonOwner.sourceBoxId, boxId);
+				this.ownership.removeComparisonOwner(boxId);
 				this.invalidateProtectedPublication(boxId);
 				this.clearTokenPublicationClaim(boxId, true);
 				this.clearOwnerChangeReplay(boxId);
@@ -790,8 +787,7 @@ export class SqlEditorLifecycleCoordinator {
 			id,
 			this.ownership.getIssuedOwner(id)?.owner ?? this.ownership.getOwner(id),
 		);
-		const ownComparisonOwner = this.ownership.removeComparisonOwner(id);
-		if (ownComparisonOwner) this.options.effects.deleteComparisonSummary(ownComparisonOwner.sourceBoxId, id);
+		this.ownership.removeComparisonOwner(id);
 		const comparisonBoxIds = this.ownership.listComparisonOwners()
 			.filter(({ owner }) => owner.sourceBoxId === id)
 			.map(({ boxId: comparisonBoxId }) => comparisonBoxId);
@@ -1400,10 +1396,6 @@ export class SqlEditorLifecycleCoordinator {
 		if (invalidatedConnectionIds.length === 0) return;
 		this.options.effects.invalidatePersistence();
 		this.options.effects.invalidateSqlCopilot(invalidatedConnectionIds, comparisonBoxIds);
-		for (const comparisonBoxId of comparisonBoxIds) {
-			const owner = this.ownership.getComparisonOwner(comparisonBoxId);
-			if (owner) this.options.effects.deleteComparisonSummary(owner.sourceBoxId, comparisonBoxId);
-		}
 		for (const boxId of sourceBoxIds) {
 			this.clearOwnerChangeReplay(boxId);
 			const sectionInstanceId = this.sectionInstanceIdByBoxId.get(boxId);

@@ -91,8 +91,6 @@ export interface CopilotServiceHost {
 	saveCachedSchemaToDisk(key: string, entry: CachedSchemaEntry): Promise<void>;
 
 	ensureComparisonBoxInWebview(sourceBoxId: string, query: string, token: vscode.CancellationToken, copilotSequence?: number, kustoRequest?: KustoCopilotRequestIdentity): Promise<PreparedComparisonSection>;
-	waitForComparisonSummary(sourceBoxId: string, comparisonBoxId: string, token: vscode.CancellationToken): Promise<{ dataMatches: boolean; headersMatch: boolean }>;
-	deleteComparisonSummary(key: string): void;
 
 	requestSectionsFromWebview(): Promise<unknown[] | undefined>;
 	updateDevelopmentNotes(message: Record<string, unknown>): Promise<{ success: boolean; error?: string }>;
@@ -2208,12 +2206,6 @@ Completion:`;
 						};
 
 						try {
-							this.host.deleteComparisonSummary(`${boxId}::${comparisonBoxId}`);
-						} catch {
-							// ignore
-						}
-
-						try {
 							let sourceExecutionIdForComparison = '';
 							postStatus('Running original query…');
 							try {
@@ -2269,12 +2261,6 @@ Completion:`;
 								if (!currentSourceTarget || !sameDataTarget(currentSourceTarget, preparedComparison.kustoTarget)) {
 									throw new Error('Kusto comparison target changed.');
 								}
-								try {
-									this.host.deleteComparisonSummary(`${boxId}::${comparisonBoxId}`);
-								} catch {
-									// ignore
-								}
-
 								try {
 									if (!sourceExecutionIdForComparison) throw new Error('Kusto comparison source artifact identity is unavailable.');
 									await executeQueryAndPost(
@@ -3605,10 +3591,6 @@ Completion:`;
 							});
 							return;
 						}
-
-						try {
-							this.host.deleteComparisonSummary(`${boxId}::${comparisonBoxId}`);
-						} catch { /* ignore */ }
 
 						// Run both queries if sqlClient is available
 						if (sqlClient && connection) {

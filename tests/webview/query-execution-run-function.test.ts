@@ -490,6 +490,9 @@ describe('executeRunFunction', () => {
 
 		expect(testState.getResultArtifact).toHaveBeenCalledWith(sourceArtifactA.artifactId);
 		expect(testState.getResultsState).not.toHaveBeenCalledWith('query_1');
+		expect(testState.postMessageToHost).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: 'comparisonSummary' }),
+		);
 		const banner = comparison.querySelector('.comparison-summary-banner');
 		expect(banner).not.toBeNull();
 		expect(banner?.querySelector('[data-injected]')).toBeNull();

@@ -252,8 +252,6 @@ export type OutgoingWebviewMessage =
 	// Comparisons
 	| ({ type: 'comparisonBoxEnsured'; engine?: 'sql' | 'kusto'; requestId: string; sourceBoxId: string; comparisonBoxId: string; kustoTarget?: KustoSectionExecutionTarget } & Partial<KustoCopilotRequestIdentity>)
 	| { type: 'sqlComparisonAdmissionAck'; phase: 'staged' | 'committed' | 'finalized' | 'completed' | 'rolledBack'; requestId: string; sourceBoxId: string; comparisonBoxId: string; accepted: boolean }
-	| { type: 'comparisonSummary'; sourceBoxId: string; comparisonBoxId: string; dataMatches: boolean; headersMatch?: boolean; rowOrderMatches?: boolean; columnOrderMatches?: boolean }
-	| { type: 'clearComparisonSummary'; sourceBoxId: string; comparisonBoxId: string }
 
 	// Schema
 	| ({ type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string; cacheOnly?: boolean; silent?: boolean; reason?: string } & Partial<KustoEditorLifecycleIdentity>)

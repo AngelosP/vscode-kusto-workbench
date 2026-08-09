@@ -1752,10 +1752,6 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		delete pState.resultArtifactByBoxId[this.boxId];
 		this.clearResults();
 		this.querySelector('.comparison-summary-banner')?.remove();
-		const sourceBoxId = String(optimizationMetadataByBoxId[this.boxId]?.sourceBoxId || '').trim();
-		if (sourceBoxId) {
-			try { postMessageToHost({ type: 'clearComparisonSummary', sourceBoxId, comparisonBoxId: this.boxId }); } catch (e) { console.error('[kusto]', e); }
-		}
 		this.copilotChatCtrl.retireKustoCopilotTarget();
 		try { window.schedulePersist?.('kusto-target-retired'); } catch (e) { console.error('[kusto]', e); }
 	}
