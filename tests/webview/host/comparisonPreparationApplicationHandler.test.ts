@@ -297,6 +297,30 @@ describe('HostComparisonPreparationApplicationHandler', () => {
 		await expect(preparation).rejects.toThrow('Canceled');
 	});
 
+	it('rejects a matching Kusto request ID from the wrong source box', async () => {
+		const harness = createHarness(false);
+		const cancellation = createCancellation();
+		const target: KustoSectionExecutionTarget = {
+			engine: 'kusto', boxId: 'comparison', sectionInstanceId: 'comparison-instance',
+			targetGeneration: 9, connectionId: 'kusto-connection', database: 'Samples',
+		};
+		const preparation = harness.handler.ensureComparisonBoxInWebview(
+			'source', 'print 1', cancellation.token,
+		);
+		void preparation.catch(() => undefined);
+		await flushPromises();
+
+		await harness.handler.handleMessage({
+			type: 'comparisonBoxEnsured', engine: 'kusto', requestId: 'request-1',
+			sourceBoxId: 'wrong-source', comparisonBoxId: 'comparison', kustoTarget: target,
+		});
+		expect(harness.kustoExecutionCoordinator.openSection).not.toHaveBeenCalled();
+		expect(harness.kustoExecutionCoordinator.adoptTarget).not.toHaveBeenCalled();
+
+		cancellation.cancel();
+		await expect(preparation).rejects.toThrow('Canceled');
+	});
+
 	it('requires exact acknowledgements through all four forward SQL phases', async () => {
 		const harness = createHarness();
 		harness.lifecycle.openSection('comparison', 'comparison-instance');

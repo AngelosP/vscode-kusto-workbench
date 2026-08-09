@@ -637,6 +637,8 @@ function kustoDispatch(clientActivityId: string): Record<string, unknown> {
 }
 
 let getResultsStateMock: ReturnType<typeof vi.fn>;
+let messageHandlerModule: typeof import('../../src/webview/core/message-handler.js');
+let initialDispatcherReadyCount = 0;
 
 describe('message-handler dispatch', () => {
 	beforeAll(async () => {
@@ -648,7 +650,20 @@ describe('message-handler dispatch', () => {
 		await import('../../src/webview/components/kw-section-shell.js');
 		const resultsState = await import('../../src/webview/core/results-state.js');
 		getResultsStateMock = resultsState.getResultsState as unknown as ReturnType<typeof vi.fn>;
-		await import('../../src/webview/core/message-handler.js');
+		messageHandlerModule = await import('../../src/webview/core/message-handler.js');
+		(window as any).__kustoBufferedHostMessages = [{
+			type: 'persistenceMode',
+			isSessionFile: false,
+			documentUri: 'file:///startup.kqlx',
+			documentKind: 'kqlx',
+			allowedSectionKinds: ['query'],
+			defaultSectionKind: 'query',
+			compatibilityMode: false,
+		}];
+		await messageHandlerModule.startMainWebviewMessageDispatcher();
+		initialDispatcherReadyCount = mocks.postMessageToHost.mock.calls.filter(([message]) =>
+			message.type === 'mainWebviewDispatcherReady',
+		).length;
 	});
 
 	beforeEach(async () => {
@@ -716,6 +731,19 @@ describe('message-handler dispatch', () => {
 		handlerState.pState.queryResultJsonByBoxId = {};
 		handlerState.pState.resultArtifactByBoxId = {};
 		handlerState.pState.upgradeRequestType = 'requestUpgradeToKqlx';
+	});
+
+	it('adopts buffered host traffic before publishing dispatcher readiness exactly once', async () => {
+		expect(handlerState.pState.documentUri).toBe('file:///startup.kqlx');
+		expect((window as any).__kustoBufferedHostMessages).toEqual([]);
+		expect((window as any).__kustoHostMessageDispatcherReady).toBe(true);
+		expect(initialDispatcherReadyCount).toBe(1);
+
+		await messageHandlerModule.startMainWebviewMessageDispatcher();
+		await messageHandlerModule.startMainWebviewMessageDispatcher();
+		expect(mocks.postMessageToHost.mock.calls.filter(([message]) =>
+			message.type === 'mainWebviewDispatcherReady',
+		)).toHaveLength(0);
 	});
 
 	it('answers final-persist requests and records persistence acknowledgements', async () => {

@@ -26,7 +26,7 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 Assessment date: 2026-08-09
 
-The comparison was refreshed against the current working tree after HST-36 manual SQL section execution extraction. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
+The comparison was refreshed against the current working tree after PRO-2 deterministic main-webview startup convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
 The current architecture is not uniformly legacy. Several high-risk contexts already provide good models for the rest of the application.
 
@@ -78,6 +78,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | Manual SQL section execution workflow | [`HostSqlSectionExecutionApplicationHandler`](src/host/sqlSectionExecutionApplicationHandler.ts) owns exact execute/cancel admission, synchronous preflight, owner/protection and tool-owner validation, query shaping, physical start, exact terminals, protected logging, cleanup, and disposal; SQL lifecycle/broker/workbench/client services remain canonical capabilities | Strong bounded host-application boundary |
 | Comparison summary presentation | [`displayComparisonSummary`](src/webview/sections/query-execution.controller.ts) computes and renders from immutable artifact lineage; no host summary mirror, waiter, route, callback, or protocol message remains | Strong local presentation boundary |
 | Native document-view lifecycle protocol | [`documentViewProtocol.ts`](src/shared/documentViewProtocol.ts), one host-created panel UUID, runtime parsing, exactly-once initial projection, and session-fenced commands/results/Save barriers | Strong initial protocol slice |
+| Main-webview startup | [`MainWebviewStartupGateway`](src/host/mainWebviewStartupGateway.ts) is the shared panel-scoped transport for native KQLX plus KQL and SQL compatibility, with listener-first installation, explicit dispatcher readiness, ordered startup queues, correlated reply reentrancy, and stable close retirement | Strong startup boundary |
 | Unmigrated section serialization | Kusto/SQL and remaining adapter-heavy kinds still participate in broad restore/persistence switches; Markdown, URL, Python, Chart, Transformation, and HTML native state no longer comes from component `serialize()` | Useful transitional boundary |
 
 These parts should normally be wrapped behind golden-outcome ports, not rewritten. Their adversarial lifecycle tests are migration assets.
@@ -109,11 +110,11 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | ---: | --- | --- | --- | ---: | --- |
 | - | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Closed through EXA-2; transport-neutral coordinator convergence remains deferred |
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
-| 1 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/4/3/4 | 45 | PRO-1 closed; PRO-2 selected |
-| 2 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 3/4/5/4/3/5 | 43 | HST-1 through HST-36 completed; residual routes are lifecycle/schema/projection adapters |
-| 3 | `DOC` | Document actor and section-definition registry | 4/4/4/4/2/5 | 43 | DOC-1 through DOC-6 closed; Kusto/SQL deferred |
-| 4 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | Open, depends on document/projection contracts |
-| 5 | `CMP` | Compatibility-provider composition around the shared sidecar core | 4/4/3/3/3/4 | 39 | Open |
+| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 3/4/5/4/3/5 | 43 | HST-1 through HST-36 completed; residual lifecycle/schema/projection adapters have no selected bounded extraction |
+| 1 | `DOC` | Document actor and section-definition registry | 4/4/4/4/2/5 | 43 | DOC-1 through DOC-6 closed; Kusto/SQL deferred |
+| 3 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | BRW-1 selected; document/projection/startup prerequisites are ready |
+| 4 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 3/3/5/4/3/3 | 39 | PRO-1 and PRO-2 closed; broader runtime schemas, capability negotiation, and domain-router migration remain |
+| 4 | `CMP` | Compatibility-provider composition around the shared sidecar core | 4/4/3/3/3/4 | 39 | Open; startup is shared but save/reload/close orchestration remains duplicated |
 | 6 | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 3/3/3/3/4/4 | 35 | Open |
 | 7 | `KLS` | Custom KQL analyzer decomposition behind a language-analysis port | 3/3/2/2/3/4 | 30 | Open |
 | - | `ACT` | Untrusted-document capability admission | 5/5/5/5/3/5 | 53 | Deferred by product direction; excluded from active ranking |
@@ -231,7 +232,7 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 - Unmigrated components still supply serialization without being canonical domain state. Restore behavior still knows component-private methods and timing.
 - Adding a section requires edits across format, component, factory, persistence, tool removal, startup imports, and privacy handling.
 
-**Migration theme:** DOC-1 through DOC-6 proved the transport-neutral aggregate/definition pattern with Markdown, URL, Python, Chart, Transformation, and HTML while preserving runtime-heavy adapters. Kusto/SQL remain materially higher-risk and are deferred until separately selected. The next eligible work is host composition behind the contracts now proven.
+**Migration theme:** DOC-1 through DOC-6 proved the transport-neutral aggregate/definition pattern with Markdown, URL, Python, Chart, Transformation, and HTML while preserving runtime-heavy adapters. Kusto/SQL remain materially higher-risk and are deferred until separately selected. No DOC slice is currently selected; BRW-1 is the sole next iteration.
 
 ### `PRO` - Protocol, View Sessions, And Startup
 
@@ -240,15 +241,15 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 **Current divergence:**
 
 - `documentViewProtocol.ts` now owns runtime schemas and discriminated types for native `documentData`, `documentReloadResult`, host-owned section commands/results, and Save barriers. `KqlxEditorProvider` stamps one host-created UUID per panel; both directions reject malformed or cross-session envelopes before side effects, and the webview applies the initial projection exactly once.
+- `MainWebviewStartupGateway` now owns listener-first installation, explicit dispatcher readiness, ordered inbound/outbound startup buffering, correlated waiter reentrancy, and retirement for native KQLX plus KQL and SQL compatibility panels. Embedded tutorial traffic uses the same transport. `index.ts` starts the dispatcher explicitly after registration; readiness is consumed as control traffic before domain routing.
 - Existing source generations, command IDs, revisions, per-URI queues, and Save leases remain inner fences. Metadata-free compatibility and browser/legacy behavior is unchanged.
 - All unrelated host/webview messages still use duplicated unions, `unknown` host output, and `any` dispatcher input.
 - [`message-handler.ts`](src/webview/core/message-handler.ts) is a central switch while some temporary and component listeners observe the same transport independently.
 - [`window-bridges.d.ts`](src/webview/window-bridges.d.ts) remains a large ambient contract, and state is mirrored between module bindings and `window`.
-- [`index.ts`](src/webview/index.ts) relies on import-time side effects and says `main` must be last even though component registration imports follow it.
 - The preload queues early Add commands in `window.__kustoQueryEditorPendingAdds`, while runtime restore drains a separate `pState.queryEditorPendingAdds`. There is no explicit adoption handoff.
 - Browser startup implements a different buffering/acknowledgement protocol.
 
-**Migration theme:** PRO-1 closes only the host-owned document lifecycle channel. Future PRO slices may add capability/plugin readiness and migrate one additional domain router at a time; do not turn the proven narrow schema into a global rewrite. Ambient bridges are removed only after their owning contract exists.
+**Migration theme:** PRO-1 closes the host-owned document lifecycle channel and PRO-2 closes main VS Code panel startup. Future PRO slices may add capability/plugin readiness and migrate one additional domain router at a time; do not turn either proven narrow contract into a global rewrite. Ambient bridges are removed only after their owning contract exists.
 
 ### `HST` - Host Application Composition
 
@@ -1036,21 +1037,41 @@ The final focused ring passed 2 files and 11 tests; the expanded owner/message-p
 
 **Guards and qualification:** the real-provider structural test was red first at 2/2 intended failures with zero fake calls and legacy resolved routing, then passed constructor identity, reference-identical execute/cancel forwarding, deferred settlement, exact rejection, and zero direct provider lifecycle/broker/workbench/client/transport effects. Direct coverage passes 23 tests. The definitive focused owner/service/caller/router/artifact/persistence/protocol ring passes 28 files and 1,053 tests. Full and official coverage Vitest pass 289 files and 6,275 tests at 48.21% statements; the first full run failed only a stale terminal-owner allowlist and the complete rerun passed. VS Code 1.132.0 extension-host passed 201/201 with `--timeout 5000` on the complete rerun after one unchanged bounded-close test timed out in the first 200/201 run and passed alone in 912 ms. Strict host/webview/browser types, integration compilation, production extension and browser builds, ESLint with zero errors and five existing warnings, sender inventory, and both bundle gates pass. Final sizes are 1,939.5 KB host and 2,802.0 KB webview; synchronized host baseline moved 1,889 -> 1,890 KB with the 50 KB buffer unchanged. Native E2E was not required because external SQL and webview behavior is unchanged and the complete host workflow is directly covered. Reviews returned `VERDICT: NO HST-36 IMPLEMENTATION BLOCKER` and definitive `VERDICT: NO HST-36 BLOCKER`.
 
-## Next Iteration
+## Completed Protocol Iteration
 
 ### Iteration `PRO-2`: Deterministic Main-Webview Startup Gateway
 
-**Status:** selected next, not started.
+**Status:** closed on 2026-08-09. The definitive documentation-aware review returned `VERDICT: NO PRO-2 BLOCKER`.
 
-**Post-HST-36 rescore:** HST harm drops from 4 to 3 because its last provider-owned execution terminal workflow moved behind an explicit owner. HST is now 43, tied with DOC but behind PRO at 45. PRO is the highest eligible gap; BRW remains 41, CMP 39, DSH 35, KLS 30, and ACT remains deferred at 53. The provider retains exactly 13 domain discriminator cases; PRO-2 does not move them.
+**Boundary:** `MainWebviewStartupGateway` is the shared panel-scoped transport for native KQLX, KQL compatibility, and SQL compatibility composition. It installs inbound and disposal listeners synchronously, buffers ordinary inbound traffic until handler construction, buffers all outbound traffic until explicit dispatcher readiness, drains each direction once in order, permits only identity-shaped waiter replies to re-enter a blocked handler, and retires the panel on disposal. `index.ts` explicitly starts the webview dispatcher after registrations; startup drains the preload buffer before publishing `mainWebviewDispatcherReady` exactly once. `QueryEditorProvider` consumes readiness before application routing and supplies one injectable transport used by application handlers and embedded tutorials.
 
-**Selection rationale:** native KQLX, KQL compatibility, and SQL compatibility each own separate pre-handler inbound queues; Markdown compatibility has a separate readiness flag; and `queryEditor.js` owns another host-message buffer plus pending-add state while `index.ts` requires `main` to import last for dispatcher correctness. PRO-1 authenticates the native document-view channel but does not provide one explicit readiness and exactly-once startup handoff across main query-editor host modes.
+**Retirement contract:** ordinary and outbound traffic is rejected after retirement. Eligibility is captured when close-critical traffic is admitted and is not re-evaluated against an expired grace window. One serialized retired chain contains retained and post-disposal admissions, isolates individual failures, rejects new traffic after atomic admission closure, and is awaited to a stable tail before native or compatibility session cleanup. Native listener installation also precedes linked-file physical validation; panel disposal cancels that startup wait and releases same-URI close tracking without waiting for filesystem completion.
 
-**Boundary:** introduce one shared panel-scoped main-webview startup gateway for native KQLX, KQL compatibility, and SQL compatibility composition. It owns listener-first installation, explicit dispatcher readiness, ordered pre-ready inbound/outbound buffering, exactly-once drain, and disposal retirement. Preserve PRO-1 native view-session envelopes, compatibility sidecar sessions, `QueryEditorProvider` domain routing, document aggregates, persistence, Kusto/SQL lifecycle, application handlers, and metadata-free compatibility message shapes.
+**Preserved owners:** PRO-1 native panel UUID envelopes, source generations, command/reload/request identities, document revisions, URI queues, Save leases, compatibility sidecar sessions, document aggregates, Kusto/SQL lifecycle, application handlers, and exact 13-case provider domain routing remain unchanged authorities. Correlated reentrancy is only transport scheduling; canonical handlers still validate exact request, source, execution, publication, phase, and owner identities. Metadata-free compatibility message shapes remain unchanged.
 
-**Falsifiable hypothesis and red-first check:** parameterize the three real host modes, deliver exact inbound requests before handler construction and exact outbound projection traffic before webview dispatcher readiness, then signal readiness and prove each message is applied once in original order while disposed or predecessor-panel traffic is rejected. Before implementation the test must expose host-local queues and bootstrap/import-order dependence rather than one gateway-owned handoff.
+**Guards:** the three real host modes prove listener-first inbound and readiness-gated outbound traffic, exact ordering, one initial projection, and retired-panel rejection. Direct gateway tests cover duplicate readiness, ordinary versus correlated reentrancy, synchronous reentry, handler rejection, retirement before handler installation, immutable close admission, stable-tail quiescence, and successor isolation. Native and sidecar lifecycle tests cover disposal inside linked validation, pre-handler and blocked-handler close, expired final-persist rejection, correlated Save replies, multiple retained messages beyond the grace window, and exact final persistence. Protocol extraction inventories the gateway plus embedded tutorial senders/listeners and keeps readiness outside the 13 application routes.
+
+**Qualification:** the final focused gateway/tutorial/protocol/provider/session ring passes 11 files and 414 tests; direct gateway coverage passes 12/12 and protocol inventory passes 58/58. The complete compatibility sidecar matrix passes 128/128 and native KQLX lifecycle passes 23/23. Full sequential and official coverage Vitest pass 291 files and 6,293 tests at 48.25% statements. The complete VS Code 1.132.0 extension-host suite passes 209/209 with `--timeout 5000`; its first run exposed five invalid/read-only fixtures whose no-listener assumption conflicted with listener-first validation, and the corrected active-subscription assertions plus complete rerun passed. Strict host/webview/browser types, integration compilation, production extension and browser builds, ESLint with zero errors and five existing warnings, diagnostics, protocol sender inventory, and both bundle gates pass. Final production sizes are 1,946.2 KB host and 2,802.1 KB webview; intentional growth moved synchronized baselines from 1,890/2,752 KB to 1,897/2,753 KB with the 50 KB buffer unchanged. No native E2E was required because external editor behavior and rendering are unchanged while the startup, persistence, retirement, and real-provider boundaries are exercised in the extension host. The definitive documentation-aware review returned `VERDICT: NO PRO-2 BLOCKER`.
 
 **Exclusions:** no migration of the 13 provider domain cases; no SQL/Kusto execution, schema, language, connection, document, sidecar, artifact, persistence, browser-root, global protocol, ambient-window, dashboard/compiler, analyzer, or deferred ACT redesign.
+
+## Next Iteration
+
+### Iteration `BRW-1`: Typed Read-Only Browser Projection Root
+
+**Status:** selected next, not started.
+
+**Post-PRO-2 rescore:** deterministic main-panel startup lowers residual PRO from 45 to 39: harm drops 4 -> 3, amplification 4 -> 3, and evidence 4 -> 3 while reach, leverage, and feasibility remain 5/4/3. HST and DOC remain tied at 43, but their residual work is deferred Kusto/SQL ownership without a coherent low-risk extraction. BRW remains 41 and is now the highest-scoring theme with a dependency-ready bounded slice. CMP and PRO are 39, DSH 35, KLS 30, and ACT remains product-deferred at 53.
+
+**Selection rationale:** browser acquisition already uses stale-fenced load generations and shared codec/capability validation, but `viewer-boot.js` still constructs synthetic VS Code host messages, silently drops unsupported commands, patches globals, and repeatedly enforces read-only presentation. PRO-2 completes the native startup prerequisite without changing that browser divergence.
+
+**Boundary:** introduce one typed `BrowserViewerRoot` that consumes the existing loaded-file snapshot, delegates parsing to current shared owners, applies browser presentation defaults without mutating parsed state, and emits exactly one immutable browser projection with explicit read-only capabilities. Make `viewer-boot.js` a thin loading/banner/error adapter and remove its competing initial-projection construction.
+
+**Falsifiable hypothesis and red-first check:** drive the real browser boot boundary with one native KQLX payload and one KQL-plus-companion payload. Require one exact typed projection, explicit read-only capabilities, duplicate-load rejection, opaque-data preservation, and zero replay of the legacy `persistenceMode` / `connectionsData` / `copilotAvailability` / `documentData` sequence. The test fails before BRW-1 because those synthetic messages are the current composition mechanism.
+
+**Preserved owners:** browser source providers and load generations; shared codecs, native validation, and the document-kind matrix; section views, artifact restoration, and CSV download; content-script iframe/source ownership; PRO-2 native startup; and all 13 provider domain routes.
+
+**Exclusions:** no ACT origin/trust, CSP, network, active-content, or resource-policy work; no Kusto/SQL execution or document ownership migration; no compatibility-provider convergence; no global protocol rewrite; and no wholesale `vscode-shim`, CSS, timer, or ambient-window cleanup beyond displaced initial-projection authority.
 
 ## Convergence Loop
 
@@ -1234,6 +1255,7 @@ These are not full golden-outcome iterations retroactively, but they materially 
 | `HST-34` | `HostKustoSectionExecutionApplicationHandler` | Provider-owned seven-route lifecycle/acknowledgement/manual execution workflow, two acknowledgement maps, physical/policy admission, direct cancellation/Copilot close effects, and disposal settlement | Red-first reference-identical seven-route forwarding, direct lifecycle/ack/manual terminal/replacement/disposal tests, 18-case provider guard, preserved coordinator/client/caller/message owners, sender inventory, constructor slot, and lifecycle disposal | Focused 806, full/coverage Vitest 6,231 at 48.19%, extension-host 201, production/browser, bundle gates, and definitive blocker review complete | 2026-08-08 |
 | `HST-35` | `HostComparisonPreparationApplicationHandler` | Provider-owned three-route comparison transaction, request/Kusto-owner maps, five SQL acknowledgement phases, rollback retry, target/policy revalidation, removal cancellation, and disposal settlement | Red-first three-route/preparation forwarding, direct Kusto/SQL acknowledgement/race/rollback/removal/disposal tests, 15-case provider guard, atomic two-sided finalized-removal cleanup, preserved canonical services/messages, sender inventory, constructor slot, and thin delegation | Final focused 844; full/coverage 6,249 at 48.21%; extension-host 201, production/browser, bundle gates, and blocker review complete | 2026-08-08 |
 | `HST-36` | `HostSqlSectionExecutionApplicationHandler` | Provider-owned execute/cancel workflow, synchronous preflight, owner/protection and tool-owner validation, query shaping, physical start, manual terminals, protected logging, and exact cleanup | Red-first execute/cancel forwarding, direct reservation/race/terminal/rotation/cleanup/disposal tests, 13-case provider guard, preserved canonical SQL services/messages, sender inventory, constructor slot, and disposal | Focused 1,053; full/coverage 6,275 at 48.21%; extension-host 201 on rerun, production/browser, bundle gates, and definitive blocker review complete | 2026-08-09 |
+| `PRO-2` | `MainWebviewStartupGateway` + explicit dispatcher readiness | Three provider-local startup queues, pre-ready host projection delivery, import-order dispatcher drain, and split disposal admission/drain authority | Three-mode listener/readiness handoff, ordinary/correlated ordering, rejection continuity, immutable retirement admission, stable-tail close, linked-validation cancellation, successor isolation, tutorial transport, and protocol inventory guards | Focused 414; full/coverage 6,293 at 48.25%; compatibility 128, native lifecycle 23, extension-host 209, production/browser, bundle gates, and definitive blocker review complete | 2026-08-09 |
 
 ## Decision Discipline
 

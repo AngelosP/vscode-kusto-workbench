@@ -12,6 +12,7 @@ import { normalizeSection, computeChangedSections, formatSectionDiffContent, Kql
 import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTypes';
 import { getWorkbenchLogger } from './workbenchLogger';
 import { createFileOpenTrace } from './fileOpenTrace';
+import { isMainWebviewCorrelatedReply, MainWebviewStartupGateway } from './mainWebviewStartupGateway';
 import { addableSectionKindsForDocument, canonicalAddableSectionKind, defaultSectionKindForDocument } from '../shared/documentSectionCapabilities';
 
 const INITIAL_PROJECTION_MAX_ATTEMPTS = 4;
@@ -156,39 +157,61 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		};
 		fileOpenTrace.mark('webview.options.set');
 
+		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
+		let outerDisposed = false;
+		let delayedBeforeUnloadAdmissionOpen = true;
+		let closeFinalization: (() => void) | undefined;
+		let closeFinalizationStarted = false;
+		const startCloseFinalizationIfReady = (): void => {
+			if (!outerDisposed || closeFinalizationStarted || !closeFinalization) return;
+			closeFinalizationStarted = true;
+			closeFinalization();
+		};
+		let sidecarSession: CompatSidecarSession;
+		const isRetiredInboundAllowed = (message: IncomingWebviewMessage): boolean => {
+			const delayedBeforeUnload = delayedBeforeUnloadAdmissionOpen
+				&& message.type === 'persistDocument' && String((message as any).reason || '') === 'beforeunload';
+			const correlatedFinalPersist = message.type === 'persistDocument'
+				&& sidecarSession?.hasPendingFinalPersistRequest(String((message as any).flushRequestId || ''));
+			return delayedBeforeUnload || correlatedFinalPersist;
+		};
+		const isPendingFinalPersistReply = (message: IncomingWebviewMessage): boolean =>
+			message.type === 'persistDocument'
+			&& sidecarSession?.hasPendingFinalPersistRequest(String((message as any).flushRequestId || '')) === true;
+		const startupGateway = new MainWebviewStartupGateway<IncomingWebviewMessage>({
+			panel: webviewPanel,
+			admitInbound: input => {
+				if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+				const message = input as IncomingWebviewMessage;
+				if (typeof message.type !== 'string') return undefined;
+				if (outerDisposed && !isRetiredInboundAllowed(message)) return undefined;
+				return message;
+			},
+			allowReentrantInbound: message => isMainWebviewCorrelatedReply(message) || isPendingFinalPersistReply(message),
+			allowRetiredInbound: isRetiredInboundAllowed,
+			trace: (event, message, queuedCount) => {
+				if (event === 'received') {
+					fileOpenTrace.mark('webview.message.received', {
+						type: message.type, handlerReady: !!handleIncomingWebviewMessage, queued: queuedCount,
+					});
+					return;
+				}
+				fileOpenTrace.mark(
+					event === 'queued' ? 'webview.message.queued' : 'webview.message.flushQueued',
+					{ type: message.type, queued: queuedCount },
+				);
+			},
+		});
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.sqlWorkbench, this.editorCursorStatusBar);
 		queryEditor.fileOpenTrace = fileOpenTrace;
 		queryEditor.documentUri = document.uri.toString();
-		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
-		const queuedWebviewMessages: IncomingWebviewMessage[] = [];
-		let outerDisposed = false;
-		let delayedBeforeUnloadAdmissionOpen = true;
-		let sidecarSession: CompatSidecarSession;
-		const webviewMessageSubscription = webviewPanel.webview.onDidReceiveMessage((message: IncomingWebviewMessage) => {
-			if (!message || typeof message.type !== 'string') {
-				return;
-			}
-			const delayedBeforeUnload = outerDisposed && delayedBeforeUnloadAdmissionOpen
-				&& message.type === 'persistDocument' && String((message as any).reason || '') === 'beforeunload';
-			const correlatedFinalPersist = outerDisposed && message.type === 'persistDocument'
-				&& sidecarSession?.hasPendingFinalPersistRequest(String((message as any).flushRequestId || ''));
-			if (outerDisposed && !delayedBeforeUnload && !correlatedFinalPersist) return;
-			fileOpenTrace.mark('webview.message.received', { type: message.type, handlerReady: !!handleIncomingWebviewMessage, queued: queuedWebviewMessages.length });
-			if (!handleIncomingWebviewMessage) {
-				queuedWebviewMessages.push(message);
-				fileOpenTrace.mark('webview.message.queued', { type: message.type, queued: queuedWebviewMessages.length });
-				return;
-			}
-			return handleIncomingWebviewMessage(message);
+		queryEditor.setMessageTransport(message => startupGateway.postMessage(message));
+		const outerDisposalSubscription = webviewPanel.onDidDispose(() => {
+			outerDisposed = true;
+			startCloseFinalizationIfReady();
 		});
-		const outerDisposalSubscription = webviewPanel.onDidDispose(() => { outerDisposed = true; });
 		fileOpenTrace.mark('initializeWebviewPanel.start');
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, initialDocumentLoading: true });
-		if (outerDisposed) {
-			webviewMessageSubscription.dispose();
-			outerDisposalSubscription.dispose();
-			return;
-		}
 		fileOpenTrace.mark('initializeWebviewPanel.done');
 
 		// Sidecar support: if there is a sibling .sql.json file that links back to this .sql,
@@ -268,7 +291,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				? `This is a .sql file. To add sections, Kusto Workbench will create a companion metadata file (${sidecarName}) next to it.`
 				: '';
 			try {
-				void webviewPanel.webview.postMessage({
+				void startupGateway.postMessage({
 					type: 'persistenceMode',
 					isSessionFile: false,
 					compatibilityMode,
@@ -335,7 +358,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				const json = JSON.stringify(changes);
 				if (json === lastPostedChangesJson) return;
 				lastPostedChangesJson = json;
-				void webviewPanel.webview.postMessage({
+				void startupGateway.postMessage({
 					type: 'changedSections',
 					changes
 				} satisfies ChangedSectionsMessage);
@@ -410,7 +433,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			fileOpenTrace.mark('postDocument.documentText.read', { length: sqlText.length });
 			if (sidecarLoadError) {
 				const reload = sidecarSession.createReloadRequest();
-				const delivered = await webviewPanel.webview.postMessage({
+				const delivered = await startupGateway.postMessage({
 					type: 'documentData', ok: false, sourceGeneration: generation, forceReload,
 					reloadRequestId: reload.requestId, documentUri: document.uri.toString(),
 					documentKind: 'sql', allowedSectionKinds: [], error: sidecarLoadError,
@@ -440,7 +463,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				? sidecarSession.createReloadRequest()
 				: undefined;
 			const reloadRequestId = reload?.requestId;
-			const delivered = await webviewPanel.webview.postMessage({
+			const delivered = await startupGateway.postMessage({
 				type: 'documentData',
 				ok: true,
 				sourceGeneration: generation,
@@ -485,16 +508,11 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			return appliedCurrent;
 		};
 		const requestFinalPersist = (reason: string, timeoutMs = 2_000): Promise<void> => {
-			return sidecarSession.requestFinalPersist(message => webviewPanel.webview.postMessage(message), reason, timeoutMs);
+			return sidecarSession.requestFinalPersist(message => startupGateway.postMessage(message), reason, timeoutMs);
 		};
 
 		// Track if the webview has initialized and whether it's currently being edited by the user.
-		if (outerDisposed) {
-			webviewMessageSubscription.dispose();
-			outerDisposalSubscription.dispose();
-			return;
-		}
-		const subscriptions: vscode.Disposable[] = [webviewMessageSubscription, outerDisposalSubscription];
+		const subscriptions: vscode.Disposable[] = [startupGateway, outerDisposalSubscription];
 		if (typeof (webviewPanel as any).onDidChangeViewState === 'function') {
 			subscriptions.push((webviewPanel as any).onDidChangeViewState((event: { webviewPanel: vscode.WebviewPanel }) => {
 				sidecarSession.setPanelVisible(event.webviewPanel.visible);
@@ -660,7 +678,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			})
 		);
 
-		webviewPanel.onDidDispose(() => {
+		closeFinalization = () => {
 			void (async () => {
 				let saveRequested = false;
 				try {
@@ -668,6 +686,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					if (sidecarSession.isPanelVisible) await sidecarSession.waitForBeforeUnload();
 					else await new Promise<void>(resolve => setImmediate(resolve));
 					delayedBeforeUnloadAdmissionOpen = false;
+					await startupGateway.closeRetiredInboundAdmission();
 					sidecarSession.beginClose();
 					for (const subscription of subscriptions) {
 						try { subscription.dispose(); } catch { /* ignore */ }
@@ -721,7 +740,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					}
 				}
 			})();
-		});
+		};
 
 		handleIncomingWebviewMessage = async (message: IncomingWebviewMessage) => {
 			if (!message || typeof message.type !== 'string') {
@@ -793,7 +812,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					postPersistenceMode();
 					await postDocument({ forceReload: true, expectedEditRevision: upgradeRevision });
 					try {
-						void webviewPanel.webview.postMessage({ type: 'enabledSqlSidecar', addKind: normalizedAddKind });
+						void startupGateway.postMessage({ type: 'enabledSqlSidecar', addKind: normalizedAddKind });
 					} catch {
 						// ignore
 					}
@@ -805,6 +824,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				case 'persistDocument': {
 					const snapshotId = String((message as any).snapshotId || '').trim();
 					const flushRequestId = String((message as any).flushRequestId || '').trim();
+					if (flushRequestId && !sidecarSession.hasPendingFinalPersistRequest(flushRequestId)) return;
 					if (sidecarLoadError) {
 						if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId, new Error(sidecarLoadError));
 						return;
@@ -844,7 +864,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						}
 						if (hasRevision) sidecarSession.adoptRevision(revision, 'replace');
 						if (snapshotId && !outerDisposed) {
-							try { void Promise.resolve(webviewPanel.webview.postMessage({ type: 'persistDocumentAck', snapshotId, editRevision: sidecarSession.currentEditRevision })).catch(() => undefined); }
+							try { void startupGateway.postMessage({ type: 'persistDocumentAck', snapshotId, editRevision: sidecarSession.currentEditRevision }).catch(() => undefined); }
 							catch { /* ignore */ }
 						}
 						if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId);
@@ -1008,7 +1028,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 							return;
 						}
 						if (snapshotId && !outerDisposed) {
-							try { void Promise.resolve(webviewPanel.webview.postMessage({ type: 'persistDocumentAck', snapshotId, editRevision: incomingEditRevision })).catch(() => undefined); }
+							try { void startupGateway.postMessage({ type: 'persistDocumentAck', snapshotId, editRevision: incomingEditRevision }).catch(() => undefined); }
 							catch { /* ignore */ }
 						}
 						if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId);
@@ -1113,10 +1133,8 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			}
 		};
 
-		for (const queuedMessage of queuedWebviewMessages.splice(0)) {
-			fileOpenTrace.mark('webview.message.flushQueued', { type: queuedMessage.type });
-			await handleIncomingWebviewMessage(queuedMessage);
-		}
+		await startupGateway.setInboundHandler(handleIncomingWebviewMessage);
+		startCloseFinalizationIfReady();
 	}
 
 	private static buildSidecarFileForCompat(compatUri: vscode.Uri, state: KqlxStateV1, baseFile?: KqlxFileV1): KqlxFileV1 {

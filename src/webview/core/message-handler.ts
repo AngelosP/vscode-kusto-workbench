@@ -5257,12 +5257,6 @@ const __kustoDispatchHostMessage = async (message: any) => {
 	}
 };
 
-(window as any).__kustoHostMessageDispatcherReady = true;
-window.addEventListener('message', async (event: any) => {
-	const message = (event && event.data && typeof event.data === 'object') ? event.data : {};
-	await __kustoDispatchHostMessage(message);
-});
-
 export async function drainBufferedHostMessages(): Promise<void> {
 	try {
 		const buffered = Array.isArray((window as any).__kustoBufferedHostMessages)
@@ -5270,4 +5264,18 @@ export async function drainBufferedHostMessages(): Promise<void> {
 			: [];
 		for (const message of buffered) await __kustoDispatchHostMessage(message);
 	} catch (e) { console.error('[kusto]', e); }
+}
+
+let mainWebviewMessageDispatcherStarted = false;
+
+export async function startMainWebviewMessageDispatcher(): Promise<void> {
+	if (mainWebviewMessageDispatcherStarted) return;
+	mainWebviewMessageDispatcherStarted = true;
+	window.addEventListener('message', async (event: any) => {
+		const message = (event && event.data && typeof event.data === 'object') ? event.data : {};
+		await __kustoDispatchHostMessage(message);
+	});
+	(window as any).__kustoHostMessageDispatcherReady = true;
+	await drainBufferedHostMessages();
+	postMessageToHost({ type: 'mainWebviewDispatcherReady' });
 }

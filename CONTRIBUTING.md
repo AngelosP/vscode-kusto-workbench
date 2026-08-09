@@ -149,6 +149,8 @@ Native `.kqlx` / `.sqlx` / `.mdx` Markdown, URL, Python, Chart, Transformation, 
 * **Document-view protocol**: `src/shared/documentViewProtocol.ts` is the sole runtime schema and discriminated type owner for native `documentData`, `documentReloadResult`, host-owned section commands/results, and the Save barrier request/result. Every native in-scope envelope carries protocol version 1, channel `document-view`, and the host-created panel session ID. Validate before projection, client, command queue, revision, or Save-lease side effects. Do not duplicate these message shapes in provider or webview unions.
 * **Panel session identity**: A view-session UUID identifies one concrete panel incarnation and never replaces source generation. Dispose/replace retires the session before delayed traffic can act. Cross-session acknowledgements, commands, results, and barriers are dropped at the outer protocol fence; source generation, command ID, revisions, URI queue, and Save leases remain authoritative inside it. Metadata-free compatibility and browser/legacy messages stay outside this native channel.
 * **Exactly-once initial projection**: A native webview adopts its session from the first valid `documentData`. The initial reload request remains tombstoned for the full panel lifetime, later request IDs are bounded, and malformed or duplicate projections cannot materialize sections or emit another acknowledgement.
+* **Main-webview startup authority**: `MainWebviewStartupGateway` is the sole panel-scoped startup transport for native KQLX, KQL compatibility, and SQL compatibility. Construct it before any asynchronous initialization or linked-file validation. Route provider and embedded-tutorial sends through it. Do not add provider-local startup queues or direct main-panel sends. `mainWebviewDispatcherReady` is control traffic and must never enter application routing.
+* **Startup ordering and retirement**: Ordinary inbound messages drain in admission order; only structurally identity-bearing waiter replies may re-enter a blocked handler, and their canonical application handlers must still validate exact identity. One rejected message cannot strand the queue. On disposal, retain only explicitly eligible close traffic, close retired admission atomically, and await its stable chain before session cleanup or gateway disposal.
 * **View-only components**: `kw-markdown-section`, `kw-url-section`, `kw-python-section`, `kw-chart-section`, and `kw-transformation-section` emit revisioned commands and apply host projections. Native persistence must not call their `serialize()` methods. Plain `.md` compatibility and metadata-free browser/legacy hosts intentionally retain their existing serializers.
 * **URL runtime boundary**: only authored `name`, `url`, `expanded`, `outputHeightPx`, `imageSizeMode`, `imageAlign`, and `imageOverflow` are aggregate state. Redirect URLs, fetched content, request/loading/error state, CSV artifacts, iframe/DOMPurify rendering, debounce, and autosizing remain component/runtime effects. A default image display value may serialize by omission.
 * **Python runtime boundary**: only authored `name`, `code`, admitted terminal `output`, `expanded`, and `editorHeightPx` are aggregate state. Monaco instances, transient `Running...` UI, and local-code policy remain view/runtime adapter effects. `HostPythonExecutionApplicationHandler` is the sole native owner of `executePython`, interpreter fallback, process/stdin/stdout/stderr lifecycle, independent 200 KB UTF-8 output caps, the 15-second timeout/kill terminal, `pythonResult` / `pythonError` publication, and disposal. `QueryEditorProvider` may construct/inject, synchronously offer typed messages to, and dispose this handler; it must not regain Python process creation, discriminator cases, output accumulation, timeout transitions, or terminal construction. The box-ID-only protocol permits one outstanding request per section through `python-execution-admission.ts`; projection/removal/invalidation retires publication authority, inactive terminals settle without publishing, and the handler must emit one bounded timeout terminal even if process close never arrives. Timeout/disposal authority must be established before `kill()` so synchronous or late close/error cannot publish twice.
@@ -467,7 +469,7 @@ Two tsconfig files exist:
 
 ## Webview Import Order — Matters
 
-`src/webview/index.ts` defines the module import order for the IIFE bundle. Because runtime modules register window globals at import time, **order is load-bearing**:
+`src/webview/index.ts` defines the module import order and the explicit startup point for the IIFE bundle. Runtime bridges still register at import time, so their dependency order is load-bearing; dispatcher installation no longer depends on `core/main.ts` being imported last.
 
 | Order | Module | Why |
 | ----- | ------ | --- |
@@ -475,15 +477,16 @@ Two tsconfig files exist:
 | Before monaco | `monaco/diagnostics.js` | Registers bridges that `monaco.js` reads at import time |
 | Before monaco | `monaco/completions.js` | Registers completion bridges that `monaco.js` reads at import time |
 | After both | `monaco/monaco.js` | Consumes diagnostics and completion bridges |
-| **Last** (among runtime modules) | `core/main.js` | Message dispatcher — wires everything together, must see all bridges |
-| Any order | Components and sections | Self-register custom elements, no import-order dependencies |
+| Before startup | `core/main.js`, components, and sections | Register runtime effects, bridges, and custom elements before host traffic is adopted |
+| **Final executable step** | `startMainWebviewMessageDispatcher()` | Installs the listener, drains preload-buffered host traffic, and publishes readiness exactly once |
 
 ### What must not change
 
 - **`state.js` must be the first module import.** Moving it later will cause undefined globals.
 - **`monaco-diagnostics.js` and `monaco-completions.js` must appear before `monaco.js`.** Reversing this causes Monaco to initialize without the KQL diagnostics or completions.
-- **`main.js` must be the last module import.** It sets up the `message` event listener that dispatches to all other modules. If another module imports after it and registers bridges, main won't know about them.
-- **Components and sections can be in any order** — they self-register via `@customElement()` and have no import-time side effects that depend on other components.
+- **Every runtime, component, and section registration must precede the explicit dispatcher start call.** Do not restore listener installation or buffer draining as an import-time side effect of `core/main.js`.
+- **Call `startMainWebviewMessageDispatcher()` once, after imports.** It is idempotent, but duplicate startup calls hide composition mistakes and must not become normal wiring.
+- **Components and sections can be imported in any order before startup** — they self-register via `@customElement()` and have no ordering dependencies on one another.
 
 ---
 
@@ -663,7 +666,7 @@ Use this checklist when reviewing any PR or change:
 - [ ] No new UI framework introduced (only Lit for components).
 - [ ] No JavaScript-based responsive layout (CSS Container Queries only).
 - [ ] No scroll-anchored popups/dropdowns.
-- [ ] Webview import order in `index.ts` preserved (`state` first, `main` last, diagnostics/completions before monaco).
+- [ ] Webview import order in `index.ts` preserved (`state` first, diagnostics/completions before monaco, all registrations before `startMainWebviewMessageDispatcher()`).
 - [ ] New section types follow the [full checklist](#new-section-types--checklist), including arbitrary-ID serialization and owner-routed removal.
 - [ ] HTML dashboard changes follow the [dashboard checklist](#html-dashboards-and-power-bi-checklist), including provenance and `data-kw-bind` compatibility.
 - [ ] Lazy-loaded vendors remain lazy (no direct imports).

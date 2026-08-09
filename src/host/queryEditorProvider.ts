@@ -22,6 +22,7 @@ import {
 	SQL_DATABASE_CACHE_STORAGE_KEY,
 } from './sqlDatabaseCache';
 import { getQueryEditorHtml } from './queryEditorHtml';
+import { MAIN_WEBVIEW_DISPATCHER_READY_TYPE } from './mainWebviewStartupGateway';
 import { toolOrchestrator } from './extension';
 import { CopilotService, CopilotServiceHost } from './queryEditorCopilot';
 import { ConnectionService, ConnectionServiceHost } from './queryEditorConnection';
@@ -405,7 +406,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private readonly kustoConnectionLifecycle: KustoConnectionLifecycle;
 	private embeddedTutorialHost?: EmbeddedTutorialWebviewHost;
 	private embeddedTutorialRegistration?: vscode.Disposable;
+	private messageTransport?: (message: unknown) => Thenable<boolean>;
 	fileOpenTrace?: FileOpenTrace;
+
+	setMessageTransport(transport: ((message: unknown) => Thenable<boolean>) | undefined): void {
+		this.messageTransport = transport;
+	}
 
 	getErrorMessage(error: unknown): string {
 		return getErrorMessageFn(error);
@@ -795,7 +801,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		webview.html = html;
 		perfMark('host.queryEditorProvider.htmlAssigned');
 		this.fileOpenTrace?.mark('queryEditorProvider.html.assigned');
-		this.embeddedTutorialHost = new EmbeddedTutorialWebviewHost(this.panel, this.documentUri);
+		this.embeddedTutorialHost = new EmbeddedTutorialWebviewHost(
+			this.panel,
+			this.documentUri,
+			message => this.postMessage(message),
+		);
 		this.embeddedTutorialRegistration = EmbeddedTutorialWebviewRegistry.register(this.embeddedTutorialHost);
 		this.fileOpenTrace?.mark('queryEditorProvider.embeddedTutorial.registered');
 
@@ -803,10 +813,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		if (shouldRegisterMessageHandler) {
 			// Ensure messages from the webview are handled in all host contexts (including custom editors).
 			// openEditor() also wires this up for the standalone panel, but custom editors call initializeWebviewPanel().
-			this.panel.webview.onDidReceiveMessage((message: IncomingWebviewMessage) => {
-				this.fileOpenTrace?.mark('queryEditorProvider.webviewMessage.received', { type: message?.type });
-				return this.handleWebviewMessage(message);
-			});
+			this.panel.webview.onDidReceiveMessage(input => this.handlePanelWebviewMessage(input));
 		}
 		this.fileOpenTrace?.mark('queryEditorProvider.messageHandler.configured', { shouldRegisterMessageHandler });
 
@@ -881,9 +888,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		webview.html = html;
 
 
-		this.panel.webview.onDidReceiveMessage((message: IncomingWebviewMessage) => {
-			return this.handleWebviewMessage(message);
-		});
+		this.panel.webview.onDidReceiveMessage(input => this.handlePanelWebviewMessage(input));
 
 		// Connect the tool orchestrator to this webview instance
 		this.workbenchToolSessionApplication.activate();
@@ -899,6 +904,14 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 		this.sendWorkbenchSettings();
 		this.watchWorkbenchSettings();
+	}
+
+	private handlePanelWebviewMessage(input: unknown): void | Promise<void> {
+		if (input && typeof input === 'object'
+			&& (input as Record<string, unknown>).type === MAIN_WEBVIEW_DISPATCHER_READY_TYPE) return;
+		const message = input as IncomingWebviewMessage;
+		this.fileOpenTrace?.mark('queryEditorProvider.webviewMessage.received', { type: message?.type });
+		return this.handleWebviewMessage(message);
 	}
 
 	public async handleWebviewMessage(message: IncomingWebviewMessage): Promise<void> {
@@ -1230,6 +1243,14 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	postMessage(message: unknown): Thenable<boolean> {
 		if (this._panelDisposed) return Promise.resolve(false);
 		try {
+			if (this.messageTransport) {
+				return Promise.resolve(this.messageTransport(message)).catch(error => {
+					if (!this._panelDisposed) {
+						this.output.warn(`[webview] postMessage failed: ${sanitizeStsLogText(error instanceof Error ? error.message : error)}`);
+					}
+					return false;
+				});
+			}
 			const panel = this.panel;
 			if (!panel) return Promise.resolve(false);
 			const delivery = panel.webview.postMessage(message);

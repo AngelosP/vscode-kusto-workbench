@@ -37,6 +37,7 @@ interface TutorialWebviewSessionOptions {
 	catalogService: TutorialCatalogService;
 	subscriptionService: TutorialSubscriptionService;
 	webview: () => vscode.Webview | undefined;
+	postMessage?: (message: unknown) => boolean | PromiseLike<boolean>;
 	dismiss: () => void | Promise<void>;
 }
 
@@ -235,6 +236,10 @@ export class TutorialWebviewSession {
 	private async postMessage(message: unknown): Promise<void> {
 		const webview = this.options.webview();
 		if (!webview || this.disposed) {
+			return;
+		}
+		if (this.options.postMessage) {
+			await this.options.postMessage(message);
 			return;
 		}
 		await webview.postMessage(message);

@@ -14,6 +14,10 @@ import { stringifyKqlxFile } from '../../src/host/kqlxFormat';
 import { SqlCompatEditorProvider } from '../../src/host/sqlCompatEditorProvider';
 import { CompatSidecarStore, readCompatSidecarSnapshot } from '../../src/host/compatSidecarStore';
 import { CompatSidecarSession } from '../../src/host/compatSidecarSession';
+import {
+	adaptMainWebviewStartupTestPanel,
+	deferMainWebviewReadyForTest,
+} from './mainWebviewStartupTestAdapter';
 
 type DisposableLike = { dispose(): void };
 function connectionManagerStub(overrides: Record<string, unknown> = {}) {
@@ -201,6 +205,8 @@ async function waitForCondition(
 suite('Sidecar .kql.json strategy', () => {
 	const originalInitializeWebviewPanel = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 	const originalResolveKqlxEditor = (KqlxEditorProvider as any).prototype.resolveCustomTextEditor;
+	const originalResolveKqlCompatEditor = (KqlCompatEditorProvider as any).prototype.resolveCustomTextEditor;
+	const originalResolveSqlCompatEditor = (SqlCompatEditorProvider as any).prototype.resolveCustomTextEditor;
 	const originalHandle = (QueryEditorProvider as any).prototype.handleWebviewMessage;
 	const originalInfer = (QueryEditorProvider as any).prototype.inferClusterDatabaseForKqlQuery;
 	const originalOnDidChangeTextDocument = vscode.workspace.onDidChangeTextDocument;
@@ -220,8 +226,27 @@ suite('Sidecar .kql.json strategy', () => {
 			panel: vscode.WebviewPanel,
 			token: vscode.CancellationToken,
 		) {
+			adaptMainWebviewStartupTestPanel(panel);
 			adaptKqlxDocumentViewTestPanel(panel);
 			return originalResolveKqlxEditor.call(this, document, panel, token);
+		};
+		(KqlCompatEditorProvider as any).prototype.resolveCustomTextEditor = function (
+			this: KqlCompatEditorProvider,
+			document: vscode.TextDocument,
+			panel: vscode.WebviewPanel,
+			token: vscode.CancellationToken,
+		) {
+			adaptMainWebviewStartupTestPanel(panel);
+			return originalResolveKqlCompatEditor.call(this, document, panel, token);
+		};
+		(SqlCompatEditorProvider as any).prototype.resolveCustomTextEditor = function (
+			this: SqlCompatEditorProvider,
+			document: vscode.TextDocument,
+			panel: vscode.WebviewPanel,
+			token: vscode.CancellationToken,
+		) {
+			adaptMainWebviewStartupTestPanel(panel);
+			return originalResolveSqlCompatEditor.call(this, document, panel, token);
 		};
 		(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
 			// no-op
@@ -243,6 +268,8 @@ suite('Sidecar .kql.json strategy', () => {
 
 	suiteTeardown(() => {
 		(KqlxEditorProvider as any).prototype.resolveCustomTextEditor = originalResolveKqlxEditor;
+		(KqlCompatEditorProvider as any).prototype.resolveCustomTextEditor = originalResolveKqlCompatEditor;
+		(SqlCompatEditorProvider as any).prototype.resolveCustomTextEditor = originalResolveSqlCompatEditor;
 		(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitializeWebviewPanel;
 		(QueryEditorProvider as any).prototype.handleWebviewMessage = originalHandle;
 		(QueryEditorProvider as any).prototype.inferClusterDatabaseForKqlQuery = originalInfer;
@@ -5803,7 +5830,7 @@ suite('Sidecar .kql.json strategy', () => {
 				postMessage: async () => true,
 				onDidReceiveMessage: (handler: unknown) => {
 					receiveHandler = handler;
-					return { dispose() {} };
+					return { dispose() { receiveHandler = undefined; } };
 				},
 			} as any;
 			const panel = {
@@ -5849,7 +5876,10 @@ suite('Sidecar .kql.json strategy', () => {
 				let receiveHandler: unknown;
 				const webview = {
 					options: {}, html: '', postMessage: async () => true,
-					onDidReceiveMessage: (handler: unknown) => { receiveHandler = handler; return { dispose() {} }; },
+					onDidReceiveMessage: (handler: unknown) => {
+						receiveHandler = handler;
+						return { dispose() { receiveHandler = undefined; } };
+					},
 				} as any;
 				const panel = { webview, onDidDispose: () => ({ dispose() {} }) } as any;
 
@@ -5891,7 +5921,7 @@ suite('Sidecar .kql.json strategy', () => {
 				options: {}, html: '', postMessage: async () => true,
 				onDidReceiveMessage: (handler: unknown) => {
 					receiveHandler = handler;
-					return { dispose() {} };
+					return { dispose() { receiveHandler = undefined; } };
 				},
 			} as any;
 			await provider.resolveCustomTextEditor({
@@ -5932,7 +5962,7 @@ suite('Sidecar .kql.json strategy', () => {
 				postMessage: async () => { postedMessages++; return true; },
 				onDidReceiveMessage: (handler: (message: any) => unknown) => {
 					receiveHandler = handler;
-					return { dispose() {} };
+					return { dispose() { receiveHandler = undefined; } };
 				},
 			} as any;
 			const panel = {
@@ -5940,8 +5970,13 @@ suite('Sidecar .kql.json strategy', () => {
 				reveal: () => { revealCount++; },
 				onDidDispose: (handler: () => void) => {
 					disposeRegistrations++;
-					disposeHandler = handler;
-					return { dispose() {} };
+					disposeHandler ??= handler;
+					let active = true;
+					return { dispose() {
+						if (!active) return;
+						active = false;
+						disposeRegistrations--;
+					} };
 				},
 			} as any;
 
@@ -5989,7 +6024,7 @@ suite('Sidecar .kql.json strategy', () => {
 				postMessage: async () => { postedMessages++; return true; },
 				onDidReceiveMessage: (handler: unknown) => {
 					receiveHandler = handler;
-					return { dispose() {} };
+					return { dispose() { receiveHandler = undefined; } };
 				},
 			} as any;
 			await provider.resolveCustomTextEditor({
@@ -6886,210 +6921,614 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
-	test('.kqlx requestDocument sent during webview initialization is replayed', async () => {
-		let receiveHandler: ((message: any) => unknown) | undefined;
-		const posted: any[] = [];
-		const previousInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+	for (const variant of [
+		{
+			name: 'native KQLX', extension: '.kqlx', Provider: KqlxEditorProvider,
+			text: JSON.stringify({
+				kind: 'kqlx', version: 1, state: { sections: [
+					{ type: 'query', id: 'query_startup', query: 'StartupTable | take 1' },
+				] },
+			}, null, 2),
+			documentKind: 'kqlx', compatibilityMode: false,
+		},
+		{
+			name: 'KQL compatibility', extension: '.kql', Provider: KqlCompatEditorProvider,
+			text: 'StartupTable | take 1', documentKind: 'kql', compatibilityMode: true,
+		},
+		{
+			name: 'SQL compatibility', extension: '.sql', Provider: SqlCompatEditorProvider,
+			text: 'select top 1 * from StartupTable', documentKind: 'sql', compatibilityMode: true,
+		},
+	] as const) {
+		test(`${variant.name} startup buffers both directions until explicit dispatcher readiness`, async () => {
+			let receiveHandler: ((message: any) => unknown) | undefined;
+			let queryEditor: QueryEditorProvider | undefined;
+			let markInitializeEntered!: () => void;
+			let releaseInitialize!: () => void;
+			const initializeEntered = new Promise<void>(resolve => { markInitializeEntered = resolve; });
+			const initializeGate = new Promise<void>(resolve => { releaseInitialize = resolve; });
+			const posted: any[] = [];
+			const delegatedInbound: string[] = [];
+			const disposeHandlers: Array<() => unknown> = [];
+			const previousInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+			const previousHandle = (QueryEditorProvider as any).prototype.handleWebviewMessage;
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-main-startup-'));
+			const filePath = path.join(tmpDir, `startup${variant.extension}`);
+			let resolveEditor: Promise<void> | undefined;
 
-		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kqlx-startup-'));
-		const kqlxPath = path.join(tmpDir, 'startup.kqlx');
-		const kqlxText = JSON.stringify({
-			kind: 'kqlx',
-			version: 1,
-			state: {
-				sections: [
-					{ type: 'query', id: 'query_startup', query: 'StartupTable | take 1' }
-				]
+			try {
+				fs.writeFileSync(filePath, variant.text, 'utf8');
+				(QueryEditorProvider as any).prototype.handleWebviewMessage = async (message: any) => {
+					delegatedInbound.push(String(message?.type || ''));
+				};
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async function (panel: vscode.WebviewPanel) {
+					queryEditor = this;
+					(this as any).panel = panel;
+					(this as any)._panelDisposed = false;
+					assert.ok(receiveHandler, 'the panel listener must be installed before handler construction');
+					void Promise.resolve(receiveHandler!({ type: 'getConnections' }));
+					void Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+					const deliveries = [
+						this.postMessage({ type: 'settingsUpdate', alternatingRowColor: 'startup-first' }),
+						this.postMessage({ type: 'connectionsData', connections: [], sqlConnections: [] }),
+					];
+					markInitializeEntered();
+					await initializeGate;
+					await Promise.all(deliveries);
+				};
+
+				const fakeContext: vscode.ExtensionContext = {
+					subscriptions: [],
+					workspaceState: { get: () => undefined, update: async () => undefined } as any,
+					globalState: { get: () => undefined, update: async () => undefined } as any,
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+					extensionMode: vscode.ExtensionMode.Test,
+				} as any;
+				const provider = new (variant.Provider as any)(
+					fakeContext,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
+					connectionManagerStub(),
+					sqlWorkbenchStub(),
+				);
+				const document: vscode.TextDocument = {
+					uri: vscode.Uri.file(filePath),
+					getText: () => variant.text,
+					lineCount: 1,
+					lineAt: () => ({ text: variant.text } as any),
+					eol: vscode.EndOfLine.LF,
+				} as any;
+				const webview: vscode.Webview = {
+					options: {} as any,
+					postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = handler;
+						return { dispose() {} } as DisposableLike;
+					},
+				} as any;
+				const webviewPanel: vscode.WebviewPanel = {
+					webview,
+					visible: true,
+					active: true,
+					onDidDispose: (handler: () => unknown) => {
+						disposeHandlers.push(handler);
+						return { dispose() {} } as DisposableLike;
+					},
+					onDidChangeViewState: () => ({ dispose() {} } as DisposableLike),
+				} as any;
+				deferMainWebviewReadyForTest(webviewPanel);
+
+				resolveEditor = Promise.resolve(provider.resolveCustomTextEditor(document, webviewPanel, {} as any));
+				await initializeEntered;
+				assert.strictEqual(posted.length, 0, 'host projections must wait for dispatcher readiness');
+
+				await Promise.resolve(receiveHandler!({ type: 'mainWebviewDispatcherReady' }));
+				await waitForCondition(() => posted.length === 2, 'readiness must drain both queued projections');
+				assert.deepStrictEqual(posted.map(message => message.type), ['settingsUpdate', 'connectionsData']);
+
+				releaseInitialize();
+				await resolveEditor;
+				assert.deepStrictEqual(delegatedInbound, ['getConnections']);
+				const documentMessages = posted.filter(message => message?.type === 'documentData' && message.ok === true);
+				assert.strictEqual(documentMessages.length, 1, 'the queued document request must apply exactly once');
+				const persistenceMode = posted.find(message => message?.type === 'persistenceMode');
+				assert.strictEqual(persistenceMode?.documentKind, variant.documentKind);
+				assert.strictEqual(persistenceMode?.compatibilityMode, variant.compatibilityMode);
+				assert.strictEqual(documentMessages[0].state.sections[0].query, variant.text.includes('StartupTable | take 1')
+					? 'StartupTable | take 1'
+					: 'select top 1 * from StartupTable');
+
+				for (const dispose of disposeHandlers) dispose();
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const retiredDelivery = await queryEditor!.postMessage({
+					type: 'settingsUpdate', alternatingRowColor: 'retired-panel',
+				});
+				assert.strictEqual(retiredDelivery, false, 'the retired panel transport must reject outbound traffic');
+				assert.strictEqual(
+					posted.filter(message => message?.type === 'documentData' && message.ok === true).length,
+					1,
+					'the retired panel listener must reject predecessor traffic',
+				);
+				assert.ok(!posted.some(message => message?.alternatingRowColor === 'retired-panel'));
+			} finally {
+				try { await Promise.resolve(receiveHandler?.({ type: 'mainWebviewDispatcherReady' })); } catch { /* ignore */ }
+				releaseInitialize?.();
+				try { await resolveEditor; } catch { /* preserve the original assertion */ }
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = previousInitialize;
+				(QueryEditorProvider as any).prototype.handleWebviewMessage = previousHandle;
+				try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 			}
-		}, null, 2);
+		});
+	}
+
+	test('expired final-persist replies cannot mutate any main host mode', async () => {
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-expired-final-persist-'));
+		const variants = [
+			{
+				extension: '.kqlx', Provider: KqlxEditorProvider, kind: 'kqlx', primaryType: 'query',
+				initialText: JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [
+					{ id: 'query_expired', type: 'query', query: 'print original = 1' },
+				] } }, null, 2),
+				expiredQuery: 'print expired = 1',
+			},
+			{
+				extension: '.kql', Provider: KqlCompatEditorProvider, kind: 'kql', primaryType: 'query',
+				initialText: 'print original = 1', expiredQuery: 'print expired = 1',
+			},
+			{
+				extension: '.sql', Provider: SqlCompatEditorProvider, kind: 'sql', primaryType: 'sql',
+				initialText: 'SELECT 1 AS original', expiredQuery: 'SELECT 1 AS expired',
+			},
+		] as const;
 
 		try {
-			fs.writeFileSync(kqlxPath, kqlxText, 'utf8');
-			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
-				assert.ok(receiveHandler, 'expected early webview message handler');
-				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			let activeText = '';
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+				if (typeof replacement !== 'string') return false;
+				activeText = replacement;
+				return true;
 			};
+			for (const [index, variant] of variants.entries()) {
+				const sourcePath = path.join(tmpDir, `expired-${index}${variant.extension}`);
+				activeText = variant.initialText;
+				fs.writeFileSync(sourcePath, activeText, 'utf8');
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				const posted: any[] = [];
+				const provider = new (variant.Provider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-${index}`)),
+						extensionMode: vscode.ExtensionMode.Test,
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(sourcePath), getText: () => activeText,
+					get lineCount() { return Math.max(1, activeText.split(/\r?\n/).length); },
+					lineAt: (line: number) => ({ text: activeText.split(/\r?\n/)[line] ?? '' }),
+					eol: vscode.EndOfLine.LF, isDirty: false,
+					positionAt: (_offset: number) => new vscode.Position(0, 0), save: async () => true,
+				} as any;
+				const panel = {
+					visible: true, active: true,
+					webview: {
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+						onDidReceiveMessage: (handler: (message: any) => unknown) => {
+							receiveHandler = handler;
+							return { dispose() {} };
+						},
+					},
+					onDidDispose: () => ({ dispose() {} }),
+					onDidChangeViewState: () => ({ dispose() {} }),
+				} as any;
 
-			const fakeContext: vscode.ExtensionContext = {
-				subscriptions: [],
-				workspaceState: { get: () => undefined, update: async () => undefined } as any,
-				globalState: { get: () => undefined, update: async () => undefined } as any,
-				globalStorageUri: vscode.Uri.file('C:/tmp')
-			} as any;
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const projection = posted.filter(message => message?.type === 'documentData' && message.ok === true).at(-1);
+				assert.ok(projection);
+				const message = {
+					type: 'persistDocument', flushRequestId: `expired-flush-${index}`,
+					sourceGeneration: projection.sourceGeneration, editRevision: 1,
+					state: { sections: [{
+						id: projection.state.sections[0].id,
+						type: variant.primaryType,
+						query: variant.expiredQuery,
+					}] },
+				};
+				await Promise.resolve(receiveHandler!(message));
+				assert.strictEqual(activeText, variant.initialText, `${variant.extension} must ignore an expired flush reply`);
+			}
+		} finally {
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
 
+	test('compatibility close promotes pre-disposal beforeunload while ordinary startup work is blocked', async () => {
+		const originalHandle = (QueryEditorProvider as any).prototype.handleWebviewMessage;
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const originalShowWarningMessage = vscode.window.showWarningMessage;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-blocked-beforeunload-'));
+		const variants = [
+			{ extension: '.kql', Provider: KqlCompatEditorProvider, kind: 'kqlx', primaryType: 'query', primaryId: 'compat_primary_query' },
+			{ extension: '.sql', Provider: SqlCompatEditorProvider, kind: 'sqlx', primaryType: 'sql', primaryId: 'compat_primary_sql' },
+		] as const;
+		let savePromptCount = 0;
+
+		try {
+			(vscode.window as any).showWarningMessage = async () => {
+				savePromptCount++;
+				return 'Save';
+			};
+			for (const [index, variant] of variants.entries()) {
+				let markBlocked!: () => void;
+				let releaseBlocked!: () => void;
+				const blocked = new Promise<void>(resolve => { markBlocked = resolve; });
+				const blockedGate = new Promise<void>(resolve => { releaseBlocked = resolve; });
+				let finalSanitationStarted = false;
+				(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => {
+					if (JSON.stringify(state).includes('BLOCKED_FINAL_STATE')) finalSanitationStarted = true;
+					return state;
+				};
+				(QueryEditorProvider as any).prototype.handleWebviewMessage = async (message: any) => {
+					if (message?.type !== 'pauseStartupForBeforeUnloadTest') return;
+					markBlocked();
+					await blockedGate;
+				};
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
+					assert.ok(receiveHandler, 'listener-first startup must expose the receiver during initialization');
+					void Promise.resolve(receiveHandler!({ type: 'pauseStartupForBeforeUnloadTest' }));
+				};
+				const sourcePath = path.join(tmpDir, `blocked-${index}${variant.extension}`);
+				const sidecarPath = `${sourcePath}.json`;
+				fs.writeFileSync(sourcePath, 'select 1', 'utf8');
+				fs.writeFileSync(sidecarPath, JSON.stringify({
+					kind: variant.kind, version: 1, state: { sections: [
+						{ id: variant.primaryId, type: variant.primaryType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'markdown_1', type: 'markdown', text: 'BASELINE' },
+					] },
+				}), 'utf8');
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				const disposeHandlers: Array<() => void> = [];
+				const posted: any[] = [];
+				const provider = new (variant.Provider as any)(
+					{ subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined }, globalState: { get: () => undefined, update: async () => undefined } } as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(sourcePath), getText: () => 'select 1', lineCount: 1,
+					lineAt: () => ({ text: 'select 1' }), eol: vscode.EndOfLine.LF, isDirty: false, save: async () => true,
+				} as any;
+				const panel = {
+					visible: true,
+					webview: {
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+						onDidReceiveMessage: (handler: (message: any) => unknown) => { receiveHandler = handler; return { dispose() {} }; },
+					},
+					onDidChangeViewState: () => ({ dispose() {} }),
+					onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+				} as any;
+
+				let resolvingSettled = false;
+				const resolving = Promise.resolve(provider.resolveCustomTextEditor(document, panel, {} as any))
+					.finally(() => { resolvingSettled = true; });
+				await blocked;
+				let finalInboundSettled = false;
+				const finalInbound = Promise.resolve(receiveHandler!({
+					type: 'persistDocument', reason: 'beforeunload', editRevision: 1,
+					state: { sections: [
+						{ id: variant.primaryId, type: variant.primaryType, query: 'select 1' },
+						{ id: 'markdown_1', type: 'markdown', text: 'BLOCKED_FINAL_STATE' },
+					] },
+				})).finally(() => { finalInboundSettled = true; });
+				for (const dispose of disposeHandlers) dispose();
+				await waitForCondition(
+					() => finalSanitationStarted,
+					`${variant.extension} admitted beforeunload must start while startup remains blocked`,
+					1_000,
+				);
+				await new Promise<void>(resolve => setTimeout(resolve, 650));
+				releaseBlocked();
+				await waitForCondition(
+					() => resolvingSettled && finalInboundSettled,
+					`${variant.extension} close stalled: resolving=${resolvingSettled}, finalInbound=${finalInboundSettled}`,
+					1_000,
+				);
+				await Promise.all([resolving, finalInbound]);
+				await waitForCondition(
+					() => fs.readFileSync(sidecarPath, 'utf8').includes('BLOCKED_FINAL_STATE'),
+					`${variant.extension} close must retain the admitted final state; savePrompts=${savePromptCount}`,
+					1_000,
+				);
+			}
+		} finally {
+			(QueryEditorProvider as any).prototype.handleWebviewMessage = originalHandle;
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			(vscode.window as any).showWarningMessage = originalShowWarningMessage;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('compatibility close retains beforeunload when disposal precedes handler installation', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const originalShowWarningMessage = vscode.window.showWarningMessage;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-prehandler-beforeunload-'));
+		const variants = [
+			{ extension: '.kql', Provider: KqlCompatEditorProvider, kind: 'kqlx', primaryType: 'query', primaryId: 'compat_primary_query' },
+			{ extension: '.sql', Provider: SqlCompatEditorProvider, kind: 'sqlx', primaryType: 'sql', primaryId: 'compat_primary_sql' },
+		] as const;
+
+		try {
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => state;
+			(vscode.window as any).showWarningMessage = async () => 'Save';
+			for (const [index, variant] of variants.entries()) {
+				let markInitializeEntered!: () => void;
+				let releaseInitialize!: () => void;
+				const initializeEntered = new Promise<void>(resolve => { markInitializeEntered = resolve; });
+				const initializeGate = new Promise<void>(resolve => { releaseInitialize = resolve; });
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
+					markInitializeEntered();
+					await initializeGate;
+				};
+				const sourcePath = path.join(tmpDir, `prehandler-${index}${variant.extension}`);
+				const sidecarPath = `${sourcePath}.json`;
+				fs.writeFileSync(sourcePath, 'select 1', 'utf8');
+				fs.writeFileSync(sidecarPath, JSON.stringify({
+					kind: variant.kind, version: 1, state: { sections: [
+						{ id: variant.primaryId, type: variant.primaryType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'markdown_1', type: 'markdown', text: 'BASELINE' },
+					] },
+				}), 'utf8');
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				const disposeHandlers: Array<() => void> = [];
+				const provider = new (variant.Provider as any)(
+					{ subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined }, globalState: { get: () => undefined, update: async () => undefined } } as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(sourcePath), getText: () => 'select 1', lineCount: 1,
+					lineAt: () => ({ text: 'select 1' }), eol: vscode.EndOfLine.LF, isDirty: false, save: async () => true,
+				} as any;
+				const panel = {
+					visible: true,
+					webview: {
+						options: {}, postMessage: async () => true,
+						onDidReceiveMessage: (handler: (message: any) => unknown) => { receiveHandler = handler; return { dispose() {} }; },
+					},
+					onDidChangeViewState: () => ({ dispose() {} }),
+					onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+				} as any;
+
+				const resolving = Promise.resolve(provider.resolveCustomTextEditor(document, panel, {} as any));
+				await initializeEntered;
+				const finalInbound = Promise.resolve(receiveHandler!({
+					type: 'persistDocument', reason: 'beforeunload', editRevision: 1,
+					state: { sections: [
+						{ id: variant.primaryId, type: variant.primaryType, query: 'select 1' },
+						{ id: 'markdown_1', type: 'markdown', text: 'PREHANDLER_FINAL_STATE' },
+					] },
+				}));
+				for (const dispose of disposeHandlers) dispose();
+				releaseInitialize();
+				await Promise.all([resolving, finalInbound]);
+				await waitForCondition(
+					() => fs.readFileSync(sidecarPath, 'utf8').includes('PREHANDLER_FINAL_STATE'),
+					`${variant.extension} pre-handler close must retain final state`,
+					1_000,
+				);
+			}
+		} finally {
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			(vscode.window as any).showWarningMessage = originalShowWarningMessage;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('rich session close promotes pre-disposal beforeunload during handler construction', async () => {
+		const previousInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-rich-early-close-'));
+		const sessionPath = path.join(tmpDir, 'session.kqlx');
+		const initialText = JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [] } });
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const disposeHandlers: Array<() => void> = [];
+		let markInitializeEntered!: () => void;
+		let releaseInitialize!: () => void;
+		const initializeEntered = new Promise<void>(resolve => { markInitializeEntered = resolve; });
+		const initializeGate = new Promise<void>(resolve => { releaseInitialize = resolve; });
+		let resolveEditor: Promise<void> | undefined;
+
+		try {
+			fs.writeFileSync(sessionPath, initialText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async function (panel: vscode.WebviewPanel) {
+				(this as any).panel = panel;
+				(this as any)._panelDisposed = false;
+				markInitializeEntered();
+				await initializeGate;
+			};
 			const provider = new (KqlxEditorProvider as any)(
-				fakeContext,
-				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
-				connectionManagerStub(),
-				sqlWorkbenchStub()
-			) as KqlxEditorProvider;
-
-			const document: vscode.TextDocument = {
-				uri: vscode.Uri.file(kqlxPath),
-				getText: () => kqlxText,
-				eol: vscode.EndOfLine.LF
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(tmpDir), extensionMode: vscode.ExtensionMode.Test,
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			);
+			const document = {
+				uri: vscode.Uri.file(sessionPath), getText: () => initialText, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
 			} as any;
-
-			const webview: vscode.Webview = {
-				options: {} as any,
-				postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
-				onDidReceiveMessage: (handler: any) => {
-					receiveHandler = handler;
-					return { dispose() {} } as DisposableLike;
-				}
+			const panel = {
+				visible: true, active: true,
+				webview: {
+					options: {}, postMessage: async () => true,
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+						receiveHandler = handler;
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
 			} as any;
+			deferMainWebviewReadyForTest(panel);
 
-			const webviewPanel: vscode.WebviewPanel = {
-				webview,
-				onDidDispose: () => ({ dispose() {} } as DisposableLike)
-			} as any;
-
-			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
-
-			const docMsg = posted.find((m) => m && m.type === 'documentData' && m.ok === true);
-			assert.ok(docMsg, 'expected queued requestDocument to produce documentData');
-			assert.strictEqual(docMsg.state.sections[0].query, 'StartupTable | take 1');
+			resolveEditor = Promise.resolve(provider.resolveCustomTextEditor(document, panel, {} as any));
+			await initializeEntered;
+			const inbound = Promise.resolve(receiveHandler!({
+				type: 'persistDocument', reason: 'beforeunload', snapshotId: 'early-close', editRevision: 1,
+				state: { sections: [{ id: 'query_early', type: 'query', query: 'EARLY_FINAL_STATE' }] },
+			}));
+			for (const dispose of [...disposeHandlers]) dispose();
+			releaseInitialize();
+			await resolveEditor;
+			await inbound;
+			await waitForCondition(
+				() => fs.readFileSync(sessionPath, 'utf8').includes('EARLY_FINAL_STATE'),
+				'early beforeunload state should reach the session file',
+			);
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 1_000), true);
 		} finally {
+			releaseInitialize?.();
+			try { await resolveEditor; } catch { /* preserve the original assertion */ }
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = previousInitialize;
-			try {
-				fs.rmSync(tmpDir, { recursive: true, force: true });
-			} catch {
-				// ignore
-			}
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});
 
-	test('.kql requestDocument sent during webview initialization is replayed', async () => {
+	test('native close during initial file identity lookup completes close tracking', async () => {
+		const originalRealpath = fs.promises.realpath;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-native-identity-close-'));
+		const filePath = path.join(tmpDir, 'identity-close.kqlx');
+		const text = JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [] } });
 		let receiveHandler: ((message: any) => unknown) | undefined;
-		const posted: any[] = [];
-		const previousInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
-
-		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kql-startup-'));
-		const kqlPath = path.join(tmpDir, 'startup.kql');
+		const disposeHandlers: Array<() => void> = [];
+		let markIdentityStarted!: () => void;
+		let releaseIdentity!: () => void;
+		const identityStarted = new Promise<void>(resolve => { markIdentityStarted = resolve; });
+		const identityGate = new Promise<void>(resolve => { releaseIdentity = resolve; });
+		let gated = false;
+		let resolveEditor: Promise<void> | undefined;
 
 		try {
-			fs.writeFileSync(kqlPath, 'StartupTable | take 1', 'utf8');
-			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
-				assert.ok(receiveHandler, 'expected early webview message handler');
-				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
-			};
-
-			const fakeContext: vscode.ExtensionContext = {
-				subscriptions: [],
-				workspaceState: { get: () => undefined, update: async () => undefined } as any,
-				globalState: { get: () => undefined, update: async () => undefined } as any
-			} as any;
-
-			const provider = new (KqlCompatEditorProvider as any)(
-				fakeContext,
-				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
-				connectionManagerStub(),
-				sqlWorkbenchStub()
-			) as KqlCompatEditorProvider;
-
-			const document: vscode.TextDocument = {
-				uri: vscode.Uri.file(kqlPath),
-				getText: () => 'StartupTable | take 1',
-				lineCount: 1,
-				lineAt: () => ({ text: 'StartupTable | take 1' } as any)
-			} as any;
-
-			const webview: vscode.Webview = {
-				options: {} as any,
-				postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
-				onDidReceiveMessage: (handler: any) => {
-					receiveHandler = handler;
-					return { dispose() {} } as DisposableLike;
+			fs.writeFileSync(filePath, text, 'utf8');
+			(fs.promises as any).realpath = async (candidate: string) => {
+				if (!gated && path.resolve(candidate).toLowerCase() === path.resolve(filePath).toLowerCase()) {
+					gated = true;
+					markIdentityStarted();
+					await identityGate;
 				}
+				return originalRealpath(candidate);
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			);
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => text, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
 			} as any;
-
-			const webviewPanel: vscode.WebviewPanel = {
-				webview,
-				visible: true,
-				onDidDispose: () => ({ dispose() {} } as DisposableLike),
-				onDidChangeViewState: () => ({ dispose() {} } as DisposableLike)
+			const panel = {
+				visible: true, active: true,
+				webview: {
+					options: {}, postMessage: async () => true,
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+						receiveHandler = handler;
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
 			} as any;
-
-			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
-
-			const docMsg = posted.find((m) => m && m.type === 'documentData' && m.ok === true);
-			assert.ok(docMsg, 'expected queued requestDocument to produce documentData');
-			assert.strictEqual(docMsg.compatibilityMode, true);
-			assert.strictEqual(docMsg.documentKind, 'kql');
-			assert.strictEqual(docMsg.state.sections[0].query, 'StartupTable | take 1');
+			resolveEditor = Promise.resolve(provider.resolveCustomTextEditor(document, panel, {} as any));
+			await identityStarted;
+			assert.ok(receiveHandler);
+			for (const dispose of [...disposeHandlers]) dispose();
+			releaseIdentity();
+			await resolveEditor;
+			assert.strictEqual(
+				await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 1_000),
+				true,
+				'close finalization must start even when disposal lands inside identity acquisition',
+			);
+			assert.ok(
+				![...(provider as any).markdownPanelOwners.values()]
+					.some((owners: Map<unknown, unknown>) => owners.has(panel)),
+				'a panel disposed before Markdown owner registration must be retired after registration',
+			);
 		} finally {
-			(QueryEditorProvider as any).prototype.initializeWebviewPanel = previousInitialize;
-			try {
-				fs.rmSync(tmpDir, { recursive: true, force: true });
-			} catch {
-				// ignore
-			}
+			releaseIdentity?.();
+			try { await resolveEditor; } catch { /* preserve the original assertion */ }
+			(fs.promises as any).realpath = originalRealpath;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});
 
-	test('.sql requestDocument sent during webview initialization is replayed', async () => {
-		let receiveHandler: ((message: any) => unknown) | undefined;
-		const posted: any[] = [];
-		const previousInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
-
-		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-startup-'));
-		const sqlPath = path.join(tmpDir, 'startup.sql');
+	test('native linked-query validation installs disposal tracking before filesystem identity awaits', async () => {
+		const originalRealpath = fs.promises.realpath;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-linked-validation-close-'));
+		const filePath = path.join(tmpDir, 'linked-validation.kqlx');
+		const linkedPath = path.join(tmpDir, 'linked.kql');
+		const text = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [{
+				id: 'query_linked', type: 'query', query: 'print value = 1', linkedQueryPath: 'linked.kql',
+			}] },
+		});
+		const disposeHandlers: Array<() => void> = [];
+		let markValidationStarted!: () => void;
+		let releaseValidation!: () => void;
+		const validationStarted = new Promise<void>(resolve => { markValidationStarted = resolve; });
+		const validationGate = new Promise<void>(resolve => { releaseValidation = resolve; });
+		let gated = false;
+		let resolveEditor: Promise<void> | undefined;
 
 		try {
-			fs.writeFileSync(sqlPath, 'select top 1 * from StartupTable', 'utf8');
-			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
-				assert.ok(receiveHandler, 'expected early webview message handler');
-				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
-			};
-
-			const fakeContext: vscode.ExtensionContext = {
-				subscriptions: [],
-				workspaceState: { get: () => undefined, update: async () => undefined } as any,
-				globalState: { get: () => undefined, update: async () => undefined } as any
-			} as any;
-
-			const provider = new (SqlCompatEditorProvider as any)(
-				fakeContext,
-				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
-				connectionManagerStub(),
-				sqlWorkbenchStub()
-			) as SqlCompatEditorProvider;
-
-			const document: vscode.TextDocument = {
-				uri: vscode.Uri.file(sqlPath),
-				getText: () => 'select top 1 * from StartupTable',
-				lineCount: 1,
-				lineAt: () => ({ text: 'select top 1 * from StartupTable' } as any)
-			} as any;
-
-			const webview: vscode.Webview = {
-				options: {} as any,
-				postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
-				onDidReceiveMessage: (handler: any) => {
-					receiveHandler = handler;
-					return { dispose() {} } as DisposableLike;
+			fs.writeFileSync(filePath, text, 'utf8');
+			fs.writeFileSync(linkedPath, 'print value = 1', 'utf8');
+			(fs.promises as any).realpath = async (candidate: string) => {
+				if (!gated && path.resolve(candidate).toLowerCase() === path.resolve(filePath).toLowerCase()) {
+					gated = true;
+					markValidationStarted();
+					await validationGate;
 				}
+				return originalRealpath(candidate);
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			);
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => text, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+			} as any;
+			const panel = {
+				visible: true, active: true,
+				webview: { options: {}, postMessage: async () => true, onDidReceiveMessage: () => ({ dispose() {} }) },
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
 			} as any;
 
-			const webviewPanel: vscode.WebviewPanel = {
-				webview,
-				onDidDispose: () => ({ dispose() {} } as DisposableLike)
-			} as any;
-
-			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
-
-			const docMsg = posted.find((m) => m && m.type === 'documentData' && m.ok === true);
-			assert.ok(docMsg, 'expected queued requestDocument to produce documentData');
-			assert.strictEqual(docMsg.compatibilityMode, true);
-			assert.strictEqual(docMsg.documentKind, 'sql');
-			assert.strictEqual(docMsg.state.sections[0].query, 'select top 1 * from StartupTable');
+			resolveEditor = Promise.resolve(provider.resolveCustomTextEditor(document, panel, {} as any));
+			await validationStarted;
+			assert.ok(disposeHandlers.length > 0, 'open-editor disposal tracking must precede linked-query validation');
+			for (const dispose of [...disposeHandlers]) dispose();
+			releaseValidation();
+			await resolveEditor;
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 1_000), true);
 		} finally {
-			(QueryEditorProvider as any).prototype.initializeWebviewPanel = previousInitialize;
-			try {
-				fs.rmSync(tmpDir, { recursive: true, force: true });
-			} catch {
-				// ignore
-			}
+			releaseValidation?.();
+			try { await resolveEditor; } catch { /* preserve the original assertion */ }
+			(fs.promises as any).realpath = originalRealpath;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});
 

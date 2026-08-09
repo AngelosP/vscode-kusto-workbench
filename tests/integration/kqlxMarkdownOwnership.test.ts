@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { CompatSidecarSession } from '../../src/host/compatSidecarSession';
 import { KqlxEditorProvider } from '../../src/host/kqlxEditorProvider';
 import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
+import { adaptMainWebviewStartupTestPanel } from './mainWebviewStartupTestAdapter';
 
 type DisposableLike = { dispose(): void };
 
@@ -97,6 +98,24 @@ function sqlWorkbenchStub(): any {
 }
 
 suite('KQLX host-owned Markdown lifecycle', () => {
+	const originalResolveCustomTextEditor = (KqlxEditorProvider as any).prototype.resolveCustomTextEditor;
+
+	suiteSetup(() => {
+		(KqlxEditorProvider as any).prototype.resolveCustomTextEditor = function (
+			this: KqlxEditorProvider,
+			document: vscode.TextDocument,
+			panel: vscode.WebviewPanel,
+			token: vscode.CancellationToken,
+		) {
+			adaptMainWebviewStartupTestPanel(panel);
+			return originalResolveCustomTextEditor.call(this, document, panel, token);
+		};
+	});
+
+	suiteTeardown(() => {
+		(KqlxEditorProvider as any).prototype.resolveCustomTextEditor = originalResolveCustomTextEditor;
+	});
+
 	test('Power BI compensation cannot mutate a same-ID HTML replacement and cleanup follows host projection', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalApplyEdit = vscode.workspace.applyEdit;
@@ -316,6 +335,74 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			releaseQueue?.();
 			reopenedRegistration?.finishClosing();
 			(vscode.workspace as any).onDidCloseTextDocument = originalOnDidClose;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('linked validation installs the receiver first and disposal cancels startup', async () => {
+		const originalRealpath = fs.promises.realpath;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-linked-startup-dispose-'));
+		const filePath = path.join(tmpDir, 'linked-startup.kqlx');
+		const linkedPath = path.join(tmpDir, 'query.kql');
+		const currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', query: '', linkedQueryPath: 'query.kql' },
+			] },
+		}, null, 2) + '\n';
+		let releaseRealpath!: () => void;
+		const realpathGate = new Promise<void>(resolve => { releaseRealpath = resolve; });
+		let receiverInstalled = false;
+		let disposePanel!: () => void;
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			fs.writeFileSync(linkedPath, 'print value = 1\n', 'utf8');
+			(fs.promises as any).realpath = async (target: fs.PathLike) => {
+				await realpathGate;
+				return originalRealpath(target as any);
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+					extensionMode: vscode.ExtensionMode.Test,
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+			} as vscode.TextDocument;
+			const disposalHandlers: Array<() => void> = [];
+			const panel = {
+				webview: {
+					options: {}, html: '', postMessage: async () => true,
+					onDidReceiveMessage: () => {
+						receiverInstalled = true;
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => {
+					disposalHandlers.push(handler);
+					return { dispose() {} };
+				},
+			} as any;
+			disposePanel = () => disposalHandlers.forEach(handler => handler());
+
+			const resolving = provider.resolveCustomTextEditor(document, panel, {} as vscode.CancellationToken);
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(receiverInstalled, true, 'gateway receiver must precede linked-file validation');
+			disposePanel();
+			assert.strictEqual(await Promise.race([
+				resolving.then(() => true),
+				new Promise<false>(resolve => setTimeout(() => resolve(false), 250)),
+			]), true, 'panel disposal must cancel blocked linked-file startup');
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 250), true);
+		} finally {
+			disposePanel?.();
+			releaseRealpath?.();
+			(fs.promises as any).realpath = originalRealpath;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});
@@ -1855,7 +1942,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
-	test('session close drains an admitted Markdown command after panel disposal', async () => {
+	test('session close drains a stamped Markdown command delivered after panel disposal', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-markdown-session-close-'));
 		const filePath = path.join(tmpDir, 'session.kqlx');
@@ -1927,7 +2014,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.strictEqual(JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections[0].text, 'after first');
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 			assert.strictEqual(latestProjection.state.sections[0].text, 'after first');
-			const command = Promise.resolve(receiveHandler!({
+			const closeCommand = {
 				type: 'markdownDocumentCommand', commandId: 'session-close-command', sourceGeneration,
 				expectedDocumentRevision: latestProjection.documentRevision,
 				command: {
@@ -1935,8 +2022,9 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 					expectedSectionRevision: latestProjection.markdownSectionRevisions.markdown_session,
 					patch: { text: 'after close' },
 				},
-			}));
+			};
 			for (const dispose of disposeHandlers) dispose();
+			const command = Promise.resolve(receiveHandler!(closeCommand));
 			await command;
 			await new Promise<void>(resolve => setTimeout(resolve, 650));
 
@@ -1945,6 +2033,116 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.deepStrictEqual(saved.state.sections[0].futureMarkdown, { keep: true });
 		} finally {
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('session close drains two admitted messages when the first exceeds the grace window', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-markdown-session-close-chain-'));
+		const filePath = path.join(tmpDir, 'session.kqlx');
+		const initialText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_session', type: 'query', query: 'print adapter = "before"' },
+				{ id: 'markdown_session', type: 'markdown', text: 'before' },
+			] },
+		}, null, 2) + '\n';
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const disposeHandlers: Array<() => void> = [];
+		let latestProjection: any;
+		let gateCommand = false;
+		let markCommandStarted!: () => void;
+		let releaseCommand!: () => void;
+		const commandStarted = new Promise<void>(resolve => { markCommandStarted = resolve; });
+		const commandGate = new Promise<void>(resolve => { releaseCommand = resolve; });
+
+		try {
+			fs.writeFileSync(filePath, initialText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
+				state: any,
+				publish: (value: any) => Promise<unknown>,
+			) => {
+				if (gateCommand && JSON.stringify(state).includes('markdown after grace')) {
+					gateCommand = false;
+					markCommandStarted();
+					await commandGate;
+				}
+				return publish(state);
+			};
+			const context = {
+				subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+				globalState: { get: () => undefined, update: async () => undefined },
+				globalStorageUri: vscode.Uri.file(tmpDir), extensionMode: vscode.ExtensionMode.Test,
+			} as unknown as vscode.ExtensionContext;
+			const provider = new (KqlxEditorProvider as any)(
+				context, vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
+				connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => initialText, eol: vscode.EndOfLine.LF,
+				positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: false, version: 1,
+			} as unknown as vscode.TextDocument;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						if (message?.type === 'documentData') latestProjection = message;
+						if (message?.reloadRequestId) {
+							await Promise.resolve(receiveHandler?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: Number(message.editRevision || 0),
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => {
+					disposeHandlers.push(handler);
+					return { dispose() {} };
+				},
+			} as unknown as vscode.WebviewPanel;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as vscode.CancellationToken);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			gateCommand = true;
+			for (const dispose of disposeHandlers) dispose();
+			const command = Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommand', commandId: 'session-chain-command',
+				sourceGeneration: latestProjection.sourceGeneration,
+				expectedDocumentRevision: latestProjection.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'markdown_session',
+					expectedSectionRevision: latestProjection.markdownSectionRevisions.markdown_session,
+					patch: { text: 'markdown after grace' },
+				},
+			}));
+			await commandStarted;
+			const finalSnapshot = Promise.resolve(receiveHandler!({
+				type: 'persistDocument', reason: 'beforeunload', editRevision: 1,
+				sourceGeneration: latestProjection.sourceGeneration,
+				state: { sections: [
+					{ id: 'query_session', type: 'query', query: 'print adapter = "after"' },
+					{ id: 'markdown_session', type: 'markdown', text: 'stale adapter markdown' },
+				] },
+			}));
+			await new Promise<void>(resolve => setTimeout(resolve, 650));
+			releaseCommand();
+			await Promise.all([command, finalSnapshot]);
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 2_000), true);
+
+			const saved = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+			assert.strictEqual(saved.state.sections[0].query, 'print adapter = "after"');
+			assert.strictEqual(saved.state.sections[1].text, 'markdown after grace');
+		} finally {
+			releaseCommand?.();
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});

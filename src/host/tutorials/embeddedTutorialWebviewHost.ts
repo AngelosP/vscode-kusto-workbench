@@ -44,6 +44,7 @@ export class EmbeddedTutorialWebviewHost {
 	constructor(
 		private readonly panel: vscode.WebviewPanel,
 		readonly documentUri: string | undefined,
+		private readonly messageTransport?: (message: unknown) => boolean | PromiseLike<boolean>,
 	) {}
 
 	get visible(): boolean {
@@ -58,6 +59,7 @@ export class EmbeddedTutorialWebviewHost {
 				catalogService: services.catalogService,
 				subscriptionService: services.subscriptionService,
 				webview: () => this.panel.webview,
+				postMessage: message => this.postMessage(message),
 				dismiss: () => this.hide(),
 			}, options);
 		} else {
@@ -76,13 +78,14 @@ export class EmbeddedTutorialWebviewHost {
 	}
 
 	dispose(): void {
+		this.showSequence++;
 		this.session?.dispose();
 		this.session = undefined;
 	}
 
 	private hide(): void {
 		this.showSequence++;
-		this.panel.webview.postMessage({ type: 'hideEmbeddedTutorialViewer' });
+		void this.postMessage({ type: 'hideEmbeddedTutorialViewer' }).catch(() => undefined);
 		this.dispose();
 	}
 
@@ -92,11 +95,18 @@ export class EmbeddedTutorialWebviewHost {
 			if (sequence !== this.showSequence) {
 				return;
 			}
-			void this.panel.webview.postMessage({ type: 'showEmbeddedTutorialViewer' });
+			void this.postMessage({ type: 'showEmbeddedTutorialViewer' }).catch(() => undefined);
 		};
 		post();
 		setTimeout(post, 100);
 		setTimeout(post, 350);
+	}
+
+	private async postMessage(message: unknown): Promise<boolean> {
+		if (this.messageTransport) {
+			return await this.messageTransport(message) !== false;
+		}
+		return await this.panel.webview.postMessage(message) !== false;
 	}
 
 	private ensureTutorialResourceRoot(catalogService: TutorialCatalogService): void {

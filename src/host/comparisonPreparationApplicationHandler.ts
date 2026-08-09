@@ -247,6 +247,7 @@ export class HostComparisonPreparationApplicationHandler
 				}
 				return;
 			}
+			if (String(message.sourceBoxId || '').trim() !== pending.sourceBoxId) return;
 			if (pending.sqlConnectionId && comparisonBoxId) pending.comparisonBoxId = comparisonBoxId;
 			if (pending.kustoRequest && (!hasKustoCopilotRequestIdentity(message)
 				|| !kustoCopilotRequestIdentityEquals(pending.kustoRequest, message))) return;

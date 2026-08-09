@@ -311,6 +311,9 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 		extractPostMessageTypes('src/host/sqlSectionExecutionApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/kustoExecutionCoordinator.ts'),
 		extractPostMessageTypes('src/host/sql/sqlEditorLifecycleCoordinator.ts'),
+		extractPostMessageTypes('src/host/mainWebviewStartupGateway.ts'),
+		extractPostMessageTypes('src/host/tutorials/embeddedTutorialWebviewHost.ts'),
+		extractPostMessageTypes('src/host/tutorials/tutorialWebviewSession.ts'),
 		extractPostMessageTypes('src/host/kqlxEditorProvider.ts'),
 		extractPostMessageTypes('src/host/kqlCompatEditorProvider.ts'),
 		extractPostMessageTypes('src/host/mdCompatEditorProvider.ts'),
@@ -324,47 +327,45 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 
 const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/artifactCsvSaveApplicationHandler.ts::postMessage::postMessage::49:10',
-	'src/host/comparisonPreparationApplicationHandler.ts::waitForSqlComparisonAdmission::postMessage::627:25',
+	'src/host/comparisonPreparationApplicationHandler.ts::waitForSqlComparisonAdmission::postMessage::628:25',
 	'src/host/controlCommandSyntaxApplicationHandler.ts::postMessage::postMessage::50:3',
 	'src/host/dashboardApplicationHandler.ts::postMessage::postMessage::102:10',
 	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postMessage::68:10',
 	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postToAllWebviews::66:10',
 	'src/host/editorCursorStatusApplicationHandler.ts::postMessage::postMessage::83:10',
-	'src/host/kqlCompatEditorProvider.ts::requestFinalPersist::postMessage::620:57',
 	'src/host/kqlLanguageRequestApplicationHandler.ts::postMessage::postMessage::42:3',
-	'src/host/kqlxEditorProvider.ts::deliverWebviewMessage::postMessage::1233:34',
-	'src/host/kqlxEditorProvider.ts::postWebviewMessage::postMessage::1222:10',
-	'src/host/kqlxEditorProvider.ts::resolveCustomTextEditor::postMessage::3608:19',
 	'src/host/kustoConnectionOnboardingApplicationHandler.ts::testConnectionFromWebview::postMessage::189:4',
 	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::453:33',
+	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::274:33',
 	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::89:10',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::361:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::482:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::362:27',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::488:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::492:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::497:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::500:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::494:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::498:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::503:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::506:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::521:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::509:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::512:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::527:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::532:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::549:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::557:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::533:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::538:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::555:29',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::563:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::572:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::583:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::604:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::611:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::620:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::628:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::651:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::656:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::682:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::690:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::714:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::729:29',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::1235:21',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::569:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::578:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::589:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::610:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::617:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::626:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::634:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::657:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::662:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::688:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::696:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::720:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::735:29',
+	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::807:15',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::1256:21',
 	'src/host/querySharingApplicationHandler.ts::postMessage::postMessage::32:10',
 	'src/host/resourceUriApplicationHandler.ts::postMessage::postMessage::50:3',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1758:13',
@@ -376,13 +377,16 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::publishOwnerChangeWithRetry::postMessageRequiredContained::1772:13',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::publishOwnerChangeWithRetry::postMessageRequiredContained::1783:27',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::replayOwnerChange::postMessageRequiredContained::1812:14',
-	'src/host/sqlCompatEditorProvider.ts::requestFinalPersist::postMessage::488:57',
 	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::deliverMessage::postMessage::143:31',
 	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::deliverTerminalMessage::postMessage::161:31',
 	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::postSqlConnectionMessageAllowed::postMessage::215:31',
 	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::postSqlConnectionMessageProtection::postMessage::284:31',
 	'src/host/sqlSectionExecutionApplicationHandler.ts::postSqlOwnerMessageAllowed::postMessage::250:21',
 	'src/host/sqlSectionExecutionApplicationHandler.ts::postSqlOwnerMessageProtection::postMessage::266:22',
+	'src/host/tutorials/embeddedTutorialWebviewHost.ts::postMessage::postMessage::109:16',
+	'src/host/tutorials/embeddedTutorialWebviewHost.ts::show::postMessage::62:29',
+	'src/host/tutorials/tutorialWebviewSession.ts::postMessage::postMessage::242:10',
+	'src/host/tutorials/tutorialWebviewSession.ts::postMessage::postMessage::245:9',
 	'src/host/urlContentApplicationHandler.ts::postMessage::postMessage::79:3',
 	'src/host/workbenchToolSessionApplicationHandler.ts::activate::postMessage::88:15',
 ] as const;
@@ -628,6 +632,7 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	'showSectionDiff',
 
 	// Provider messages (kqlx, kqlCompat, mdCompat, sqlCompat editors — NOT in IncomingWebviewMessage)
+	'mainWebviewDispatcherReady',
 	'requestDocument',
 	'persistDocument',
 	'documentReloadResult',
@@ -644,6 +649,7 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
  * rather than the main queryEditorProvider. These are NOT in IncomingWebviewMessage.
  */
 const PROVIDER_ONLY_OUTGOING_TYPES = new Set([
+	'mainWebviewDispatcherReady',
 	'requestDocument',
 	'persistDocument',
 	'documentReloadResult',
@@ -916,9 +922,14 @@ const COMPONENT_HANDLED_HOST_TO_WEBVIEW_TYPES = [
 /** Host messages consumed by a targeted window listener outside the generic dispatcher. */
 const DIRECT_LISTENER_HOST_TO_WEBVIEW_TYPES = [
 	'editorCursorStatusSnapshot',
+	'error',
+	'hideEmbeddedTutorialViewer',
 	'kustoPublicationStage',
 	'kustoPublicationCommit',
 	'kustoPublicationRevoke',
+	'showEmbeddedTutorialViewer',
+	'snapshot',
+	'tutorialContent',
 ] as const;
 
 /**
@@ -964,14 +975,34 @@ const KNOWN_UNHANDLED_HOST_MESSAGES = new Set([
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('Message Protocol Contract', () => {
-	it('registers query sections before the main dispatcher drains buffered document data', () => {
+	it('registers query sections before the explicit main-webview dispatcher starts', () => {
 		const source = readWorkspaceFile('src/webview/index.ts');
 		expect(source.indexOf("import './sections/kw-query-section.js';")).toBeGreaterThanOrEqual(0);
 		expect(source.indexOf("import './sections/kw-query-section.js';"))
-			.toBeLessThan(source.indexOf("import './core/main.js';"));
+			.toBeLessThan(source.indexOf('startMainWebviewMessageDispatcher();'));
+	});
+
+	it('uses one explicit main-webview startup gateway instead of provider-local queues or import-order draining', () => {
+		for (const providerPath of [
+			'src/host/kqlxEditorProvider.ts',
+			'src/host/kqlCompatEditorProvider.ts',
+			'src/host/sqlCompatEditorProvider.ts',
+		]) {
+			const provider = readWorkspaceFile(providerPath);
+			expect(provider).toContain('MainWebviewStartupGateway');
+			expect(provider).toContain('isMainWebviewCorrelatedReply(message) || isPendingFinalPersistReply(message)');
+			expect(provider).not.toContain('queuedWebviewMessages');
+		}
+
 		const main = readWorkspaceFile('src/webview/core/main.ts');
-		expect(main.indexOf('kustoEditorSchemaCoordinator.subscribeLifecycle'))
-			.toBeLessThan(main.indexOf('drainBufferedHostMessages();'));
+		expect(main).not.toContain('drainBufferedHostMessages');
+
+		const index = readWorkspaceFile('src/webview/index.ts');
+		expect(index).toContain('startMainWebviewMessageDispatcher');
+
+		const queryEditorProvider = readWorkspaceFile('src/host/queryEditorProvider.ts');
+		expect(queryEditorProvider).toContain('MAIN_WEBVIEW_DISPATCHER_READY_TYPE) return;');
+		expect(queryEditorProvider.match(/this\.handlePanelWebviewMessage\(input\)/g)).toHaveLength(2);
 	});
 
 	// ─── Compile-time guards ───────────────────────────────────────────────
@@ -1275,6 +1306,23 @@ describe('Message Protocol Contract', () => {
 		it('extracts the development cursor-status snapshot response', () => {
 			const extraction = extractPostMessageTypes('src/host/editorCursorStatusApplicationHandler.ts');
 			expect(extraction.types).toContain('editorCursorStatusSnapshot');
+		});
+
+		it('extracts tutorial senders and their targeted listeners', () => {
+			const embeddedHost = extractPostMessageTypes('src/host/tutorials/embeddedTutorialWebviewHost.ts');
+			const session = extractPostMessageTypes('src/host/tutorials/tutorialWebviewSession.ts');
+			expect(embeddedHost.types).toEqual(expect.arrayContaining([
+				'hideEmbeddedTutorialViewer',
+				'showEmbeddedTutorialViewer',
+			]));
+			expect(session.types).toEqual(expect.arrayContaining(['error', 'snapshot', 'tutorialContent']));
+			const overlay = readWorkspaceFile('src/webview/tutorials/embedded-tutorial-overlay.ts');
+			const viewer = readWorkspaceFile('src/webview/tutorials/kw-tutorial-viewer.ts');
+			for (const type of [
+				'error', 'hideEmbeddedTutorialViewer', 'showEmbeddedTutorialViewer', 'snapshot', 'tutorialContent',
+			]) {
+				expect(`${overlay}\n${viewer}`).toMatch(new RegExp(`(?:message\\.)?type === ['"]${type}['"]`));
+			}
 		});
 
 		it('every host→webview type has a handler case (or is known-unhandled)', () => {

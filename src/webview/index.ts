@@ -52,4 +52,7 @@ import './sections/kw-html-section.js';
 import './sections/kw-sql-section.js';
 import './sections/kw-query-section.js';
 import './sections/kw-query-toolbar.js';
-import './core/main.js'; // Must be last — installs and drains the message dispatcher
+import './core/main.js';
+import { startMainWebviewMessageDispatcher } from './core/message-handler.js';
+
+void startMainWebviewMessageDispatcher();

@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 
 import { KqlCompatEditorProvider } from '../../src/host/kqlCompatEditorProvider';
 import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
+import { adaptMainWebviewStartupTestPanel } from './mainWebviewStartupTestAdapter';
 
 type DisposableLike = { dispose(): void };
 
@@ -124,6 +125,7 @@ suite('KQL compat editor - inferred cluster/db wiring', () => {
 				webview,
 				onDidDispose: () => ({ dispose() {} } as DisposableLike)
 			} as any;
+			adaptMainWebviewStartupTestPanel(webviewPanel);
 
 			const token: vscode.CancellationToken = {
 				isCancellationRequested: false,

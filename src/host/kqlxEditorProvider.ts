@@ -19,6 +19,7 @@ import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { getKustoConnectionIdentityKey, normalizeKustoAuthorityId } from '../shared/kustoAuth';
 import { getWorkbenchLogger } from './workbenchLogger';
 import { createFileOpenTrace } from './fileOpenTrace';
+import { isMainWebviewCorrelatedReply, MainWebviewStartupGateway } from './mainWebviewStartupGateway';
 import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
 import { CompatSidecarSession } from './compatSidecarSession';
 import { publishOwnedFileText } from './ownedFilePublication';
@@ -1091,67 +1092,51 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			return;
 		}
 		const openEditorRegistration = KqlxEditorProvider.trackOpenEditor(document.uri, webviewPanel);
-		const initialParse = parseKqlxText(document.getText(), {
-			allowedKinds: [documentKindForPerf],
-			defaultKind: documentKindForPerf,
+		let outerDisposed = false;
+		let signalOuterDisposal!: () => void;
+		const outerDisposalSignal = new Promise<void>(resolve => { signalOuterDisposal = resolve; });
+		let handleOuterDisposal = () => undefined;
+		const outerDisposalSubscription = webviewPanel.onDidDispose(() => {
+			if (outerDisposed) return;
+			outerDisposed = true;
+			openEditorRegistration.beginClosing();
+			signalOuterDisposal();
+			handleOuterDisposal();
 		});
-		const unsafeLinkedQueryReason = initialParse.ok
-			? await getUnsafeLinkedQueryReasonFresh(document.uri, initialParse.file.state)
-			: undefined;
-		if (!initialParse.ok || unsafeLinkedQueryReason) {
-			webviewPanel.webview.options = { enableScripts: false };
-			const reason = initialParse.ok ? unsafeLinkedQueryReason : initialParse.error;
-			webviewPanel.webview.html = `<h2>Invalid Kusto Workbench file</h2><p>${escapeHtmlText(reason)}</p><p>Read-only to prevent data loss. Open with the Text Editor to repair.</p>`;
-			webviewPanel.onDidDispose(() => openEditorRegistration.dispose());
-			return;
-		}
-		// For the "modified" side (file: scheme) or normal usage, render the regular editor.
-		const docDir = (() => {
-			try {
-				if (document.uri.scheme === 'file') {
-					return vscode.Uri.file(path.dirname(document.uri.fsPath));
-				}
-			} catch {
-				// ignore
-			}
-			return undefined;
-		})();
-		const workspaceFolderUri = (() => {
-			try {
-				return vscode.workspace.getWorkspaceFolder(document.uri)?.uri;
-			} catch {
-				return undefined;
-			}
-		})();
-
-		webviewPanel.webview.options = {
-			enableScripts: true,
-			localResourceRoots: [this.extensionUri, docDir, workspaceFolderUri].filter(Boolean) as vscode.Uri[]
-		};
-		fileOpenTrace.mark('webview.options.set', { localResourceRoots: [this.extensionUri, docDir, workspaceFolderUri].filter(Boolean).length });
-
-		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.sqlWorkbench, this.editorCursorStatusBar);
-		queryEditor.fileOpenTrace = fileOpenTrace;
-		queryEditor.documentUri = document.uri.toString();
+		const globalStorageUri = this.context.globalStorageUri;
+		const isSessionFile = !!globalStorageUri
+			&& normalizeWorkbenchUriKey(document.uri)
+				=== normalizeWorkbenchUriKey(vscode.Uri.joinPath(globalStorageUri, 'session.kqlx'));
 		const viewSessionId = randomUUID();
 		let documentViewSessionActive = true;
 		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
-		const queuedWebviewMessages: IncomingWebviewMessage[] = [];
 		const admittedWebviewHandlers = new Set<Promise<void>>();
 		const admittedPersistenceHandlers = new Set<Promise<void>>();
-		let outerDisposed = false;
 		let closeFinalizationAbandoned = false;
 		let delayedBeforeUnloadAdmissionOpen = true;
+		const finalPersistSession = new CompatSidecarSession(false, 'Kusto Workbench document');
 		let retireMarkdownPanelOwner = () => undefined;
-		const isDelayedSessionPersistenceMessage = (message: IncomingWebviewMessage): boolean =>
-			outerDisposed && delayedBeforeUnloadAdmissionOpen && !closeFinalizationAbandoned
-			&& isSessionFile && (
+		let closeFinalization: (() => void) | undefined;
+		let closeFinalizationStarted = false;
+		const startCloseFinalizationIfReady = (): void => {
+			if (!outerDisposed || closeFinalizationStarted || !closeFinalization) return;
+			closeFinalizationStarted = true;
+			closeFinalization();
+		};
+		const isSessionCloseCriticalShape = (message: IncomingWebviewMessage): boolean =>
+			isSessionFile && (
 				(message.type === 'persistDocument' && String((message as any).reason || '') === 'beforeunload')
 				|| message.type === 'markdownDocumentCommand'
 			);
+		const isSessionCloseCriticalMessage = (message: IncomingWebviewMessage): boolean =>
+			delayedBeforeUnloadAdmissionOpen && !closeFinalizationAbandoned
+			&& isSessionCloseCriticalShape(message);
+		const isPendingFinalPersistReply = (message: IncomingWebviewMessage): boolean =>
+			message.type === 'persistDocument'
+			&& finalPersistSession.hasPendingFinalPersistRequest(String((message as any).flushRequestId || ''));
 		const runIncomingWebviewMessage = (message: IncomingWebviewMessage): Promise<void> => {
 			const handler = handleIncomingWebviewMessage;
-			const delayedSessionPersistence = isDelayedSessionPersistenceMessage(message);
+			const delayedSessionPersistence = outerDisposed && isSessionCloseCriticalShape(message);
 			if (!handler || (outerDisposed && !delayedSessionPersistence)) return Promise.resolve();
 			let settleAdmission!: () => void;
 			const admission = new Promise<void>(resolve => { settleAdmission = resolve; });
@@ -1181,29 +1166,16 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (isDocumentViewWebviewMessageType(input)) {
 				const parsed = parseDocumentViewWebviewMessage(input);
 				if (!parsed.ok
-					|| !documentViewSessionActive
 					|| parsed.value.viewSessionId !== viewSessionId) return undefined;
+				if (!documentViewSessionActive && !isSessionCloseCriticalShape(parsed.value)) return undefined;
 				return parsed.value;
 			}
 			const message = input as Record<string, unknown>;
-			return typeof message.type === 'string' ? message as IncomingWebviewMessage : undefined;
+			if (typeof message.type !== 'string') return undefined;
+			const admitted = message as IncomingWebviewMessage;
+			if (outerDisposed && !isSessionCloseCriticalMessage(admitted)) return undefined;
+			return admitted;
 		};
-		const webviewMessageSubscription = webviewPanel.webview.onDidReceiveMessage((input: unknown) => {
-			const message = admitIncomingWebviewMessage(input);
-			if (!message) return;
-			const delayedSessionPersistence = message && typeof message.type === 'string'
-				&& isDelayedSessionPersistenceMessage(message);
-			if ((outerDisposed && !delayedSessionPersistence) || !message || typeof message.type !== 'string') {
-				return;
-			}
-			fileOpenTrace.mark('webview.message.received', { type: message.type, handlerReady: !!handleIncomingWebviewMessage, queued: queuedWebviewMessages.length });
-			if (!handleIncomingWebviewMessage) {
-				queuedWebviewMessages.push(message);
-				fileOpenTrace.mark('webview.message.queued', { type: message.type, queued: queuedWebviewMessages.length });
-				return;
-			}
-			return runIncomingWebviewMessage(message);
-		});
 		const prepareOutgoingWebviewMessage = (message: unknown): unknown | undefined => {
 			if (!isDocumentViewHostMessageType(message)) return message;
 			if (!documentViewSessionActive) return undefined;
@@ -1214,46 +1186,125 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			return parsed.value;
 		};
-		const postWebviewMessage = (message: unknown): boolean => {
-			if (outerDisposed) return false;
-			const outgoing = prepareOutgoingWebviewMessage(message);
-			if (!outgoing) return false;
+		const startupGateway = new MainWebviewStartupGateway<IncomingWebviewMessage>({
+			panel: webviewPanel,
+			admitInbound: admitIncomingWebviewMessage,
+			prepareOutbound: prepareOutgoingWebviewMessage,
+			allowReentrantInbound: message => isMainWebviewCorrelatedReply(message) || isPendingFinalPersistReply(message),
+			allowRetiredInbound: isSessionCloseCriticalMessage,
+			trace: (event, message, queuedCount) => {
+				if (event === 'received') {
+					fileOpenTrace.mark('webview.message.received', {
+						type: message.type, handlerReady: !!handleIncomingWebviewMessage, queued: queuedCount,
+					});
+					return;
+				}
+				fileOpenTrace.mark(
+					event === 'queued' ? 'webview.message.queued' : 'webview.message.flushQueued',
+					{ type: message.type, queued: queuedCount },
+				);
+			},
+		});
+		const initialParse = parseKqlxText(document.getText(), {
+			allowedKinds: [documentKindForPerf],
+			defaultKind: documentKindForPerf,
+		});
+		let unsafeLinkedQueryReason: string | undefined;
+		if (initialParse.ok) {
 			try {
-				void webviewPanel.webview.postMessage(outgoing);
-				return true;
-			} catch {
-				return false;
+				const validation = await Promise.race([
+					getUnsafeLinkedQueryReasonFresh(document.uri, initialParse.file.state)
+						.then(reason => ({ kind: 'validated' as const, reason })),
+					outerDisposalSignal.then(() => ({ kind: 'disposed' as const })),
+				]);
+				if (validation.kind === 'disposed') {
+					documentViewSessionActive = false;
+					startupGateway.dispose();
+					outerDisposalSubscription.dispose();
+					openEditorRegistration.finishClosing();
+					return;
+				}
+				unsafeLinkedQueryReason = validation.reason;
+			} catch (error) {
+				documentViewSessionActive = false;
+				startupGateway.dispose();
+				outerDisposalSubscription.dispose();
+				openEditorRegistration.dispose();
+				throw error;
 			}
+		}
+		if (outerDisposed) {
+			documentViewSessionActive = false;
+			startupGateway.dispose();
+			outerDisposalSubscription.dispose();
+			openEditorRegistration.finishClosing();
+			return;
+		}
+		if (!initialParse.ok || unsafeLinkedQueryReason) {
+			documentViewSessionActive = false;
+			startupGateway.dispose();
+			webviewPanel.webview.options = { enableScripts: false };
+			const reason = initialParse.ok ? unsafeLinkedQueryReason : initialParse.error;
+			webviewPanel.webview.html = `<h2>Invalid Kusto Workbench file</h2><p>${escapeHtmlText(reason)}</p><p>Read-only to prevent data loss. Open with the Text Editor to repair.</p>`;
+			handleOuterDisposal = () => {
+				outerDisposalSubscription.dispose();
+				openEditorRegistration.finishClosing();
+			};
+			return;
+		}
+		// For the "modified" side (file: scheme) or normal usage, render the regular editor.
+		const docDir = (() => {
+			try {
+				if (document.uri.scheme === 'file') {
+					return vscode.Uri.file(path.dirname(document.uri.fsPath));
+				}
+			} catch {
+				// ignore
+			}
+			return undefined;
+		})();
+		const workspaceFolderUri = (() => {
+			try {
+				return vscode.workspace.getWorkspaceFolder(document.uri)?.uri;
+			} catch {
+				return undefined;
+			}
+		})();
+
+		webviewPanel.webview.options = {
+			enableScripts: true,
+			localResourceRoots: [this.extensionUri, docDir, workspaceFolderUri].filter(Boolean) as vscode.Uri[]
+		};
+		fileOpenTrace.mark('webview.options.set', { localResourceRoots: [this.extensionUri, docDir, workspaceFolderUri].filter(Boolean).length });
+		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.sqlWorkbench, this.editorCursorStatusBar);
+		queryEditor.fileOpenTrace = fileOpenTrace;
+		queryEditor.documentUri = document.uri.toString();
+		queryEditor.setMessageTransport(message => startupGateway.postMessage(message));
+		const postWebviewMessage = (message: unknown): boolean => {
+			return startupGateway.postMessageFireAndForget(message);
 		};
 		const deliverWebviewMessage = async (message: unknown): Promise<boolean> => {
-			if (outerDisposed) return false;
-			const outgoing = prepareOutgoingWebviewMessage(message);
-			if (!outgoing) return false;
-			try {
-				return await Promise.resolve(webviewPanel.webview.postMessage(outgoing)) !== false;
-			} catch {
-				return false;
-			}
+			return startupGateway.postMessage(message);
 		};
-		const outerDisposalSubscription = webviewPanel.onDidDispose(() => {
+		handleOuterDisposal = () => {
 			documentViewSessionActive = false;
-			outerDisposed = true;
 			retireMarkdownPanelOwner();
-			openEditorRegistration.beginClosing();
-		});
+			startCloseFinalizationIfReady();
+		};
+		if (outerDisposed) handleOuterDisposal();
 		fileOpenTrace.mark('initializeWebviewPanel.start');
 		try {
 			await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, initialDocumentLoading: true });
 		} catch (error) {
 			documentViewSessionActive = false;
-			webviewMessageSubscription.dispose();
+			startupGateway.dispose();
 			outerDisposalSubscription.dispose();
 			openEditorRegistration.dispose();
 			throw error;
 		}
-		if (outerDisposed) {
+		if (outerDisposed && !isSessionFile) {
 			documentViewSessionActive = false;
-			webviewMessageSubscription.dispose();
+			startupGateway.dispose();
 			outerDisposalSubscription.dispose();
 			openEditorRegistration.finishClosing();
 			return;
@@ -1277,10 +1328,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			// ignore
 		}
 
-		const sessionUri = vscode.Uri.joinPath(this.context.globalStorageUri, 'session.kqlx');
-		const isSessionFile = (() => {
-			return normalizeWorkbenchUriKey(document.uri) === normalizeWorkbenchUriKey(sessionUri);
-		})();
 		const readProjectionSourceText = (): Promise<string> =>
 			this.readProjectionSourceTextForDocument(document, isSessionFile);
 		const isProjectionSourceCurrent = async (text: string): Promise<boolean> =>
@@ -2127,6 +2174,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			if (current.size === 0) this.markdownPanelOwners.delete(markdownDocumentKey);
 		};
+		if (outerDisposed) retireMarkdownPanelOwner();
 		const isLocalNativeSaveCoordinator = () => {
 			const canonicalOwner = this.markdownDocuments.get(markdownDocumentKey);
 			const canonicalOwnerIsLive = !!canonicalOwner
@@ -3277,8 +3325,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (!outerDisposed) void postDocument({ forceReload: true });
 		};
 
-		const subscriptions: vscode.Disposable[] = [webviewMessageSubscription, outerDisposalSubscription];
-		const finalPersistSession = new CompatSidecarSession(false, 'Kusto Workbench document');
+		const subscriptions: vscode.Disposable[] = [startupGateway, outerDisposalSubscription];
 		const markdownBarrierRequests = new Map<string, {
 			sourceGeneration: number;
 			resolve: (lease: MarkdownSaveLease | undefined) => void;
@@ -3605,7 +3652,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							throw new Error('The source Markdown changed before its projection was acknowledged.');
 						}
 						const adapterState = await finalPersistSession.requestFinalPersist<KqlxStateV1>(
-							message => webviewPanel.webview.postMessage(message), 'save', 1_000,
+							message => startupGateway.postMessage(message), 'save', 1_000,
 						);
 						const saveState = saveMarkdownOwner
 							? overlayOwnedMarkdownState(adapterState, saveMarkdownOwner.document)
@@ -3874,7 +3921,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			})
 		);
 
-		webviewPanel.onDidDispose(() => {
+		closeFinalization = () => {
 			void (async () => {
 				try {
 					settleAllNativeMarkdownSaveLeases();
@@ -3890,6 +3937,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const persistenceDrain = (async () => {
 						if (isSessionFile) await finalPersistSession.waitForBeforeUnload(500);
 						delayedBeforeUnloadAdmissionOpen = false;
+						await startupGateway.closeRetiredInboundAdmission();
 						await Promise.allSettled([...admittedPersistenceHandlers]);
 						while (linkedSaveTasks.size > 0 || nativeSavePreparations.size > 0) {
 							if (linkedSaveTasks.size > 0) await Promise.allSettled([...linkedSaveTasks]);
@@ -3939,17 +3987,19 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				} catch {
 					// The document may already have been closed by VS Code.
 				} finally {
+					retireMarkdownPanelOwner();
 					for (const s of subscriptions) {
 						try { s.dispose(); } catch { /* ignore */ }
 					}
 					openEditorRegistration.finishClosing();
 				}
 			})();
-		});
+		};
+		startCloseFinalizationIfReady();
 
 		handleIncomingWebviewMessage = async (message: IncomingWebviewMessage) => {
 			const delayedSessionPersistence = message && typeof message.type === 'string'
-				&& isDelayedSessionPersistenceMessage(message);
+				&& outerDisposed && isSessionCloseCriticalShape(message);
 			if ((outerDisposed && !delayedSessionPersistence) || !message || typeof message.type !== 'string') {
 				return;
 			}
@@ -4271,8 +4321,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					return;
 				}
 				case 'persistDocument': {
-					await projectionActivationTail;
 					const flushRequestId = (message as any).flushRequestId;
+					if (flushRequestId && !finalPersistSession.hasPendingFinalPersistRequest(String(flushRequestId))) return;
+					await projectionActivationTail;
 					const flushUnavailableReason = (message as any).flushUnavailableReason;
 					const snapshotId = String((message as any).snapshotId || '').trim();
 					const incomingSourceGeneration = Number((message as any).sourceGeneration);
@@ -4845,7 +4896,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							}
 							if (persistAccepted && snapshotId && Number.isSafeInteger(incomingEditRevision) && !outerDisposed) {
 								try {
-									await webviewPanel.webview.postMessage({
+									await startupGateway.postMessage({
 										type: 'persistDocumentAck', snapshotId, editRevision: incomingEditRevision,
 										...(acceptedOrderedSectionIds ? { orderedSectionIds: acceptedOrderedSectionIds } : {}),
 									});
@@ -4980,10 +5031,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 		};
 
-		for (const queuedMessage of queuedWebviewMessages.splice(0)) {
-			fileOpenTrace.mark('webview.message.flushQueued', { type: queuedMessage.type });
-			await runIncomingWebviewMessage(queuedMessage);
-		}
+		await startupGateway.setInboundHandler(runIncomingWebviewMessage);
 
 		// Do not push document contents automatically.
 		// The webview asks for the initial document explicitly (requestDocument).

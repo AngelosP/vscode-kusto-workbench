@@ -2281,7 +2281,8 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.sqlLifecycle.setTarget('comparison_1', 'sql-1', 'Db', 1);
 
 		const ensured = provider.handleWebviewMessage({
-			type: 'comparisonBoxEnsured', requestId: 'request-1', comparisonBoxId: 'comparison_1',
+			type: 'comparisonBoxEnsured', engine: 'sql', requestId: 'request-1',
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1',
 			sourceSectionInstanceId: 'instance-1', sourceTargetGeneration: 1,
 			comparisonSectionInstanceId: 'instance-comparison', comparisonTargetGeneration: 1,
 			comparisonConnectionId: 'sql-1', comparisonDatabase: 'Db',

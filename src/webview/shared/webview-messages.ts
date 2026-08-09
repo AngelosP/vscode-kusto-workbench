@@ -301,6 +301,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'showSectionDiff'; sectionId: string }
 
 	// Provider messages (kqlx, kqlCompat, mdCompat editors)
+	| { type: 'mainWebviewDispatcherReady' }
 	| { type: 'requestDocument' }
 	| { type: 'persistDocument'; state: unknown; sourceGeneration?: number; flush?: boolean; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; flushUnavailableReason?: string; testOnlyNoop?: boolean }
 	| DocumentViewWebviewMessageInput

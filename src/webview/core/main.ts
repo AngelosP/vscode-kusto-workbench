@@ -10,7 +10,6 @@ import { registerPageScrollDismissable } from './page-scroll-dismiss.js';
 import { perfMark } from './perf.js';
 import { traceFileOpen } from './file-open-trace.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
-import { drainBufferedHostMessages } from './message-handler.js';
 import { getAllowedAddSectionKinds } from './document-capabilities.js';
 
 // Side-effect imports — register event handlers on import.
@@ -43,8 +42,6 @@ kustoEditorSchemaCoordinator.subscribeLifecycle(event => {
 		connectionIdentityKey: event.target?.connectionIdentityKey,
 	});
 });
-
-void drainBufferedHostMessages();
 
 // Request connections on load (only in the query editor webview, not side-panel webviews
 // like cached-values or connection-manager that also load the bundle).

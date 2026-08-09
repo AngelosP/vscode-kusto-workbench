@@ -148,6 +148,21 @@ describe('QueryEditorProvider editor cursor-status application', () => {
 		expect(postMessage).not.toHaveBeenCalled();
 	});
 
+	it('consumes dispatcher readiness before application routing in every panel composition', async () => {
+		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
+		const handleWebviewMessage = vi.fn(async () => undefined);
+		provider.handleWebviewMessage = handleWebviewMessage;
+		provider.fileOpenTrace = { mark: vi.fn() } as any;
+
+		await provider.handlePanelWebviewMessage({ type: 'mainWebviewDispatcherReady' });
+		expect(handleWebviewMessage).not.toHaveBeenCalled();
+
+		const ordinaryMessage = { type: 'getConnections' } satisfies IncomingWebviewMessage;
+		await provider.handlePanelWebviewMessage(ordinaryMessage);
+		expect(handleWebviewMessage).toHaveBeenCalledOnce();
+		expect(handleWebviewMessage).toHaveBeenCalledWith(ordinaryMessage);
+	});
+
 	it('retains only injection and panel lifecycle forwarding while the handler owns both routes', () => {
 		const workspaceRoot = path.resolve(__dirname, '../../..');
 		const readSource = (relativePath: string) => fs.readFileSync(
