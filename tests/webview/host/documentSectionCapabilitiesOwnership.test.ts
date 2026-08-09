@@ -20,6 +20,7 @@ describe('document section capability ownership', () => {
 		const compatibilityFormat = source('src/host/compatSidecarFormat.ts');
 		const diffViewer = source('src/host/diffViewerUtils.ts');
 		const queryEditorProvider = source('src/host/queryEditorProvider.ts');
+		const comparisonPreparation = source('src/host/comparisonPreparationApplicationHandler.ts');
 		const kqlCompat = source('src/host/kqlCompatEditorProvider.ts');
 		const sqlCompat = source('src/host/sqlCompatEditorProvider.ts');
 		const webviewCapabilities = source('src/webview/core/document-capabilities.ts');
@@ -49,13 +50,13 @@ describe('document section capability ownership', () => {
 			expect(creationSurface).toContain('createSectionWithCapabilities');
 			expect(creationSurface).not.toMatch(/\badd(?:Query|Sql|Chart|Transformation|Markdown|Python|Url|Html)Box\s*\(/);
 		}
-		expect(queryEditorProvider).toContain("engine: sqlConnectionId ? 'sql' : 'kusto'");
+		expect(comparisonPreparation).toContain("engine: sqlConnectionId ? 'sql' : 'kusto'");
 		expect(browserDocument).toContain("from '../../src/host/kqlxFormat'");
 		expect(browserDocument).toContain("from '../../src/shared/nativeDocumentValidation'");
 		expect(notebookProvider).toContain("from '../shared/nativeDocumentValidation'");
 		expect(browserViewer).toContain('parseBrowserNativeWorkbenchText');
 		for (const decisionSurface of [
-			notebookProvider, compatibilityFormat, diffViewer, queryEditorProvider,
+			notebookProvider, compatibilityFormat, diffViewer, queryEditorProvider, comparisonPreparation,
 			messageHandler, persistence, sectionFactory, preload, browserViewer, browserPreload,
 		]) {
 			expect(decisionSurface).not.toMatch(/(?:===|!==)\s*['"]copilotQuery['"]/);

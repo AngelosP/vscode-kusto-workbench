@@ -12,6 +12,7 @@ import { getKustoConnectionIdentityKey } from '../../../src/shared/kustoAuth';
 import { sqlConnectionTargetSignature } from '../../../src/shared/sqlConnectionIdentity';
 import { sqlSchemaPrincipalFingerprintForPrincipal } from '../../../src/host/sqlEditorSchema';
 import { QueryRunCoordinator } from '../../../src/host/queryRunCoordinator';
+import type { KustoExecutionCoordinator } from '../../../src/host/kustoExecutionCoordinator';
 import {
 	SqlEditorSessionRegistry,
 	type SqlComparisonOwner,
@@ -25,6 +26,7 @@ import { SqlWorkbenchService } from '../../../src/host/sql/sqlWorkbenchService';
 import { withSqlStateFileLock } from '../../../src/host/sql/sqlStateTransaction';
 import { HostCopilotQueryWorkflowApplicationHandler } from '../../../src/host/copilotQueryWorkflowApplicationHandler';
 import { HostKustoSectionExecutionApplicationHandler } from '../../../src/host/kustoSectionExecutionApplicationHandler';
+import { HostComparisonPreparationApplicationHandler } from '../../../src/host/comparisonPreparationApplicationHandler';
 
 const TEST_CONNECTION: KustoConnection = {
 	id: 'conn-1',
@@ -82,6 +84,7 @@ function dispatchingKustoExecution(execution: Record<string, unknown>, leaveNoTr
 
 let executeMessageSequence = 0;
 let publicationIdSequence = 0;
+let comparisonRequestSequence = 0;
 
 function executeMessage(boxId: string, query: string = 'print x=1', executionId = `kusto-test-${++executeMessageSequence}`): ExecuteQueryMessage {
 	return {
@@ -403,8 +406,6 @@ class TestSqlLifecycle {
 
 function createSqlProviderHarness() {
 	const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
-	provider._comparisonOwnerByBoxId = new Map();
-	provider.pendingComparisonEnsureByRequestId = new Map();
 	provider.postMessage = vi.fn(async (message: any) => {
 		if (message?.type === 'sqlComparisonAdmissionRollback') {
 			queueMicrotask(() => void provider.handleWebviewMessage({
@@ -494,6 +495,7 @@ function createSqlProviderHarness() {
 		executionId: `test-execution-${++executionSequence}`,
 		...message,
 	});
+	installComparisonPreparationApplication(provider);
 	return provider;
 }
 
@@ -511,13 +513,43 @@ function installCopilotQueryWorkflowApplication(
 	});
 }
 
+function installComparisonPreparationApplication(
+	provider: QueryEditorProvider & Record<string, any>,
+): void {
+	provider.comparisonPreparationApplication = new HostComparisonPreparationApplicationHandler({
+		sqlLifecycle: provider.sqlLifecycle,
+		sqlExecutionBroker: provider.sqlExecutionBroker,
+		sqlWorkbench: provider.sqlWorkbench,
+		kustoExecutionCoordinator: {
+			openSection: (...args: Parameters<KustoExecutionCoordinator['openSection']>) =>
+				provider.kustoExecutionCoordinator.openSection(...args),
+			adoptTarget: (...args: Parameters<KustoExecutionCoordinator['adoptTarget']>) =>
+				provider.kustoExecutionCoordinator.adoptTarget(...args),
+			getActive: (...args: Parameters<KustoExecutionCoordinator['getActive']>) =>
+				provider.kustoExecutionCoordinator.getActive(...args),
+			cancelExpected: (...args: Parameters<KustoExecutionCoordinator['cancelExpected']>) =>
+				provider.kustoExecutionCoordinator.cancelExpected(...args),
+		},
+		postMessage: (message: unknown) => provider.postMessage(message),
+		hasWebview: () => !!provider.panel,
+		cancelCopilotQueryTarget: (sourceBoxId, targetBoxId, expectedSequence) =>
+			provider.copilot?.cancelCopilotQueryTarget?.(sourceBoxId, targetBoxId, expectedSequence),
+		cancelCopilotWriteQuery: (boxId, expectedSequence) =>
+			provider.copilot?.cancelCopilotWriteQuery?.(boxId, expectedSequence),
+		createRequestId: () => `comparison-test-${++comparisonRequestSequence}`,
+	});
+}
+
+function comparisonPreparationState(provider: QueryEditorProvider & Record<string, any>): Record<string, any> {
+	return provider.comparisonPreparationApplication;
+}
+
 describe('QueryEditorProvider cancellation orchestration', () => {
 	it('stamps SQL comparison preparation with the SQL engine', async () => {
 		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
 		provider.panel = {};
-		provider.pendingComparisonEnsureByRequestId = new Map();
-		provider._comparisonOwnerByBoxId = new Map();
 		provider.sqlLifecycle = {
+			executionBroker: { supersede: vi.fn() },
 			getConnectionId: vi.fn(() => 'sql-a'),
 			getComparisonOwner: vi.fn(() => undefined),
 			getSectionInstanceId: vi.fn(() => 'instance-sql-source'),
@@ -526,6 +558,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		};
 		provider.sqlWorkbench = { assertSqlConnectionAllowed: vi.fn(async () => undefined) };
 		provider.postMessage = vi.fn();
+		installComparisonPreparationApplication(provider);
 		let cancel!: () => void;
 		const token = {
 			isCancellationRequested: false,
@@ -897,14 +930,14 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1',
 		}));
 		expect(settled).toBe(false);
-		expect(provider.pendingComparisonEnsureByRequestId.has(request.requestId)).toBe(true);
+		expect(comparisonPreparationState(provider).pendingComparisonEnsureByRequestId.has(request.requestId)).toBe(true);
 
 		await provider.handleWebviewMessage({
 			type: 'sqlComparisonAdmissionAck', phase: 'rolledBack', requestId: request.requestId,
 			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1', accepted: true,
 		} as any);
 		await expect(preparing).rejects.toThrow(/missing, stale, self-referential, or mismatched/);
-		expect(provider.pendingComparisonEnsureByRequestId.has(request.requestId)).toBe(false);
+		expect(comparisonPreparationState(provider).pendingComparisonEnsureByRequestId.has(request.requestId)).toBe(false);
 	});
 
 	it('waits for webview application acknowledgement after transport accepts a Kusto publication', async () => {
@@ -1097,14 +1130,11 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.kustoConnectionBrowsingApplication = { dispose: vi.fn() };
 		provider.copilotQueryWorkflowApplication = { dispose: vi.fn() };
 		provider.kustoSectionExecutionApplication = { dispose: vi.fn() };
+		provider.comparisonPreparationApplication = { dispose: vi.fn(() => rejectComparison(new Error('Canceled'))) };
 		provider.cancelAllRunningQueries = vi.fn();
 		provider.kustoClient = { dispose: vi.fn() };
 		provider.connection = { dispose: vi.fn() };
 		provider.kustoConnectionLifecycle = { dispose: vi.fn() };
-		provider.pendingComparisonEnsureByRequestId = new Map([[
-			'comparison-pending',
-			{ resolve: vi.fn(), reject: rejectComparison, timer: comparisonTimer, sourceBoxId: 'query_1' },
-		]]);
 		provider.registerPanelDisposal(panel);
 		disposePanel();
 		clearTimeout(comparisonTimer);
@@ -1114,10 +1144,9 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.copilot.invalidateSqlConnections.mock.invocationCallOrder[0])
 			.toBeLessThan(provider.sqlLifecycle.dispose.mock.invocationCallOrder[0]);
 		expect(provider.kustoConnectionLifecycle.dispose).toHaveBeenCalledOnce();
-		expect(provider._comparisonOwnerByBoxId).toEqual(new Map());
 		expect(provider.kustoSectionExecutionApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider.comparisonPreparationApplication.dispose).toHaveBeenCalledOnce();
 		expect(rejectComparison).toHaveBeenCalledWith(expect.objectContaining({ message: 'Canceled' }));
-		expect(provider.pendingComparisonEnsureByRequestId.size).toBe(0);
 		expect(provider.dashboardApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.artifactCsvSaveApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.pythonExecutionApplication.dispose).toHaveBeenCalledOnce();
@@ -2122,7 +2151,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 
 	it('cancels a tracked Kusto comparison and its exact Copilot sequence when removed', async () => {
 		const provider = createSqlProviderHarness();
-		provider._comparisonOwnerByBoxId.set('kusto_comparison', {
+		comparisonPreparationState(provider).comparisonOwnerByBoxId.set('kusto_comparison', {
 			sourceBoxId: 'kusto_1', copilotSequence: 9, comparisonRequestId: 'request-kusto',
 		});
 		provider._kustoExecutionCoordinator = { getActive: vi.fn(() => ({
@@ -2140,7 +2169,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		}));
 		expect(provider.copilot.cancelCopilotQueryTarget).toHaveBeenCalledWith('kusto_1', 'kusto_comparison', 9);
 		expect(provider.copilot.cancelCopilotWriteQuery).toHaveBeenCalledWith('kusto_1', 9);
-		expect(provider._comparisonOwnerByBoxId.has('kusto_comparison')).toBe(false);
+		expect(comparisonPreparationState(provider).comparisonOwnerByBoxId.has('kusto_comparison')).toBe(false);
 	});
 
 	it('tombstones a SQL comparison but rejects a mismatched source cancellation', async () => {
@@ -2201,7 +2230,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		const policy = deferred<void>();
 		const resolve = vi.fn();
 		const reject = vi.fn();
-		provider.pendingComparisonEnsureByRequestId = new Map([['request-1', {
+		comparisonPreparationState(provider).pendingComparisonEnsureByRequestId = new Map([['request-1', {
 			resolve,
 			reject,
 			timer: setTimeout(() => undefined, 10_000),
@@ -2229,7 +2258,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		await provider.handleWebviewMessage({ type: 'sqlComparisonRemoved', boxId: 'comparison_1', sourceBoxId: 'sql_1' } as any);
 
 		await vi.waitFor(() => expect(reject).toHaveBeenCalledWith(expect.objectContaining({ message: 'Canceled' })));
-		expect(provider.pendingComparisonEnsureByRequestId.has('request-1')).toBe(false);
+		expect(comparisonPreparationState(provider).pendingComparisonEnsureByRequestId.has('request-1')).toBe(false);
 		expect(provider.sqlLifecycle.getComparisonOwner('comparison_1')).toBeUndefined();
 		expect(provider.copilot.cancelCopilotWriteQuery).toHaveBeenCalledWith('sql_1', 7);
 

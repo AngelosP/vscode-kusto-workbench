@@ -361,7 +361,7 @@ describe('QueryEditorProvider Kusto section execution application', () => {
 			expect(handlerSource).toContain(`case '${route}':`);
 			expect(typesSource).toContain(`type: '${route}'`);
 		}
-		expect(providerSource.match(/^\s*case '/gm) ?? []).toHaveLength(18);
+		expect(providerSource.match(/^\s*case '/gm) ?? []).toHaveLength(15);
 		expect(handlerSource.match(/^\s*case '/gm) ?? []).toHaveLength(7);
 		expect(providerSource).not.toContain('pendingKustoExecutionStartAcks');
 		expect(providerSource).not.toContain('pendingKustoPublicationAcks');
