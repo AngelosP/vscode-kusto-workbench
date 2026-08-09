@@ -182,6 +182,10 @@ import {
 	HostWorkbenchToolSessionApplicationHandler,
 	type WorkbenchToolSessionApplicationHandler,
 } from './workbenchToolSessionApplicationHandler';
+import {
+	HostKustoConnectionBrowsingApplicationHandler,
+	type KustoConnectionBrowsingApplicationHandler,
+} from './kustoConnectionBrowsingApplicationHandler';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -298,6 +302,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly copilotHistoryRemovalApplication: CopilotHistoryRemovalApplicationHandler;
 	readonly copilotChatFirstTimeApplication: CopilotChatFirstTimeApplicationHandler;
 	readonly workbenchToolSessionApplication: WorkbenchToolSessionApplicationHandler;
+	readonly kustoConnectionBrowsingApplication: KustoConnectionBrowsingApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -728,6 +733,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		copilotHistoryRemovalApplication?: CopilotHistoryRemovalApplicationHandler,
 		copilotChatFirstTimeApplication?: CopilotChatFirstTimeApplicationHandler,
 		workbenchToolSessionApplication?: WorkbenchToolSessionApplicationHandler,
+		kustoConnectionBrowsingApplication?: KustoConnectionBrowsingApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -918,6 +924,16 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				connectionManager: this.connectionManager,
 				schema: this.schema,
 				sqlLifecycle: this.sqlLifecycle,
+			});
+		this.kustoConnectionBrowsingApplication = kustoConnectionBrowsingApplication
+			?? new HostKustoConnectionBrowsingApplicationHandler({
+				sendConnectionsData: policyRequestId => this.sendConnectionsData(policyRequestId),
+				sendDatabases: (connectionId, boxId, request) =>
+					this.connection.sendDatabases(connectionId, boxId, request),
+				saveLastSelection: (connectionId, database) =>
+					this.connection.saveLastSelection(connectionId, database),
+				refreshTextEditorDiagnostics: () =>
+					vscode.commands.executeCommand('kusto.refreshTextEditorDiagnostics'),
 			});
 		this.copilot = new CopilotService(this);
 		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
@@ -1252,6 +1268,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await workbenchToolSessionApplicationMessage;
 			return;
 		}
+		const kustoConnectionBrowsingApplicationMessage
+			= this.kustoConnectionBrowsingApplication?.handleMessage(message);
+		if (kustoConnectionBrowsingApplicationMessage) {
+			await kustoConnectionBrowsingApplicationMessage;
+			return;
+		}
 		switch (message.type) {
 			case 'kustoSectionOpen':
 				this.kustoExecutionCoordinator.openSection(message.boxId, message.sectionInstanceId);
@@ -1551,41 +1573,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 							}
 						}
 					}
-				} catch {
-					// ignore
-				}
-				return;
-			case 'getConnections':
-				await this.sendConnectionsData(message.policyRequestId);
-				return;
-			case 'getDatabases':
-				await this.connection.sendDatabases(message.connectionId, message.boxId, {
-					mode: 'passive',
-					requestToken: message.requestToken,
-					requiredDatabase: message.requiredDatabase,
-					sectionInstanceId: message.sectionInstanceId,
-					targetGeneration: message.targetGeneration,
-				});
-				return;
-			case 'refreshDatabases':
-				await this.connection.sendDatabases(message.connectionId, message.boxId, {
-					mode: 'interactive-refresh',
-					requestToken: message.requestToken,
-					requiredDatabase: message.requiredDatabase,
-					sectionInstanceId: message.sectionInstanceId,
-					targetGeneration: message.targetGeneration,
-				});
-				return;
-			case 'saveLastSelection':
-				{
-					const cid = String(message.connectionId || '').trim();
-					if (!cid) {
-						return;
-					}
-					await this.connection.saveLastSelection(cid, message.database);
-				}
-				try {
-					await vscode.commands.executeCommand('kusto.refreshTextEditorDiagnostics');
 				} catch {
 					// ignore
 				}
@@ -2048,6 +2035,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.copilotHistoryRemovalApplication.dispose();
 			this.copilotChatFirstTimeApplication.dispose();
 			this.workbenchToolSessionApplication.dispose();
+			this.kustoConnectionBrowsingApplication.dispose();
 			this.copilot.disposeKustoOwners();
 			this.copilot.invalidateSqlConnections(
 				[], [...this.sqlLifecycle.listComparisonBoxIds()],
