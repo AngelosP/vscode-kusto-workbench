@@ -1,7 +1,4 @@
-// Power BI export: generates a PBIP project folder that uses the marketplace
-// HTML Content visual to render an HTML section's code with Kusto data.
-
-import * as vscode from 'vscode';
+// Pure Power BI renderers used by the project artifact compiler.
 import {
 	DASHBOARD_BAR_CHART,
 	DASHBOARD_DISTRIBUTION_BAR_CHART,
@@ -77,9 +74,27 @@ export interface PowerBiExportInput {
 	previewHeight?: number;
 }
 
+export interface PowerBiArtifactIdSource {
+	nextUuid(): string;
+	nextRelationshipId(): string;
+	nextHex(length: number): string;
+	nextToken(): string;
+}
+
+function randomHex(length: number): string {
+	return Array.from({ length }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+}
+
+export const defaultPowerBiArtifactIdSource: PowerBiArtifactIdSource = Object.freeze({
+	nextUuid: () => globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).substring(2),
+	nextRelationshipId: () => globalThis.crypto?.randomUUID?.() ?? randomHex(32),
+	nextHex: randomHex,
+	nextToken: () => Math.random().toString(36).substring(2),
+});
+
 // ── Sanitize name for file system / Power BI identifiers ────────────────────
 
-function sanitizeName(name: string): string {
+export function sanitizeName(name: string): string {
 	return name.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50) || 'KustoHtmlDashboard';
 }
 
@@ -1583,20 +1598,21 @@ export function generateHtmlMeasureTmdl(
 	htmlCode: string,
 	dataSources: PowerBiDataSource[] = [],
 	portableIr?: PortableDashboardIr | null,
+	idSource: PowerBiArtifactIdSource = defaultPowerBiArtifactIdSource,
 ): string {
 	const escapeTmdlName = (s: string) => s.replace(/'/g, "''");
 	const daxExpression = generateDaxMeasure(htmlCode, dataSources, portableIr ?? compilePortableDashboard({ htmlCode }).ir);
 
 	return [
 		`table '${escapeTmdlName(MEASURES_TABLE_NAME)}'`,
-		`\tlineageTag: ${crypto.randomUUID?.() ?? Math.random().toString(36).substring(2)}`,
+		`\tlineageTag: ${idSource.nextUuid()}`,
 		'',
 		`\tmeasure '${escapeTmdlName(HTML_MEASURE_NAME)}' = ${daxExpression}`,
-		`\t\tlineageTag: ${crypto.randomUUID?.() ?? Math.random().toString(36).substring(2)}`,
+		`\t\tlineageTag: ${idSource.nextUuid()}`,
 		'',
 		`\tcolumn Column1`,
 		`\t\tdataType: string`,
-		`\t\tlineageTag: ${crypto.randomUUID?.() ?? Math.random().toString(36).substring(2)}`,
+		`\t\tlineageTag: ${idSource.nextUuid()}`,
 		`\t\tsummarizeBy: none`,
 		`\t\tsourceColumn: Column1`,
 		'',
@@ -1687,6 +1703,7 @@ export function generateSlicerVisualJson(
 	position: SlicerPosition,
 	mode: 'dropdown' | 'list' | 'between' = 'dropdown',
 	tabOrder = 0,
+	idSource: PowerBiArtifactIdSource = defaultPowerBiArtifactIdSource,
 ): string {
 	const pbiMode = mode === 'between' ? 'Between' : mode === 'list' ? 'Basic' : 'Dropdown';
 	const isBetween = mode === 'between';
@@ -1761,7 +1778,7 @@ export function generateSlicerVisualJson(
 
 	// All slicers need a filterConfig so PBI binds the field and emits
 	// cross-filter interactions to other visuals on the page.
-	const filterId = Array.from({ length: 20 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+	const filterId = idSource.nextHex(20);
 	result.filterConfig = {
 		filters: [{
 			name: filterId,
@@ -1783,7 +1800,11 @@ export interface TmdlRelationship {
 	toColumn: string;
 }
 
-function generateModelTmdl(tableNames: string[], relationships: TmdlRelationship[] = []): string {
+export function generateModelTmdl(
+	tableNames: string[],
+	relationships: TmdlRelationship[] = [],
+	idSource: PowerBiArtifactIdSource = defaultPowerBiArtifactIdSource,
+): string {
 	const allTables = [MEASURES_TABLE_NAME, ...tableNames];
 	const lines = [
 		'model Model',
@@ -1811,7 +1832,7 @@ function generateModelTmdl(tableNames: string[], relationships: TmdlRelationship
 		lines.push('');
 		const esc = (s: string) => s.replace(/'/g, "''");
 		for (const rel of relationships) {
-			const id = crypto.randomUUID?.() ?? Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+			const id = idSource.nextRelationshipId();
 			lines.push(`relationship ${id}`);
 			lines.push(`\tfromColumn: '${esc(rel.fromTable)}'.'${esc(rel.fromColumn)}'`);
 			lines.push(`\ttoColumn: '${esc(rel.toTable)}'.'${esc(rel.toColumn)}'`);
@@ -2115,6 +2136,7 @@ export function generateDimTableTmdl(
 	database: string,
 	sourceQuery: string,
 	dataMode: PowerBiDataMode = 'import',
+	idSource: PowerBiArtifactIdSource = defaultPowerBiArtifactIdSource,
 ): string {
 	const tmdlType = kustoTypeToTmdl(columnType);
 	const escapeTmdlName = (s: string) => s.replace(/'/g, "''");
@@ -2126,11 +2148,11 @@ export function generateDimTableTmdl(
 
 	const lines: string[] = [
 		`table '${escapeTmdlName(dimTableName)}'`,
-		`\tlineageTag: ${crypto.randomUUID?.() ?? Math.random().toString(36).substring(2)}`,
+		`\tlineageTag: ${idSource.nextUuid()}`,
 		'',
 		`\tcolumn '${escapeTmdlName(columnName)}'`,
 		`\t\tdataType: ${tmdlType}`,
-		`\t\tlineageTag: ${Math.random().toString(36).substring(2)}`,
+		`\t\tlineageTag: ${idSource.nextToken()}`,
 		`\t\tsummarizeBy: none`,
 		`\t\tisKey`,
 		`\t\tsourceColumn: ${escapeTmdlName(columnName)}`,
@@ -2147,14 +2169,18 @@ export function generateDimTableTmdl(
 	return lines.join('\n');
 }
 
-export function generateTableTmdl(ds: PowerBiDataSource, dataMode: PowerBiDataMode = 'import'): string {
+export function generateTableTmdl(
+	ds: PowerBiDataSource,
+	dataMode: PowerBiDataMode = 'import',
+	idSource: PowerBiArtifactIdSource = defaultPowerBiArtifactIdSource,
+): string {
 	const tableName = sanitizeName(ds.name);
 	const normalizedQuery = normalizeKqlForPowerBiQuery(ds.query);
 	const escapedQuery = escapePowerQueryMString(normalizedQuery);
 	const escapeTmdlName = (s: string) => s.replace(/'/g, "''");
 	const lines: string[] = [
 		`table '${escapeTmdlName(tableName)}'`,
-		`\tlineageTag: ${crypto.randomUUID?.() ?? Math.random().toString(36).substring(2)}`,
+		`\tlineageTag: ${idSource.nextUuid()}`,
 		'',
 	];
 
@@ -2162,7 +2188,7 @@ export function generateTableTmdl(ds: PowerBiDataSource, dataMode: PowerBiDataMo
 		const tmdlType = kustoTypeToTmdl(col.type);
 		lines.push(`\tcolumn '${escapeTmdlName(col.name)}'`);
 		lines.push(`\t\tdataType: ${tmdlType}`);
-		lines.push(`\t\tlineageTag: ${Math.random().toString(36).substring(2)}`);
+		lines.push(`\t\tlineageTag: ${idSource.nextToken()}`);
 		lines.push(`\t\tsummarizeBy: none`);
 		lines.push(`\t\tsourceColumn: ${escapeTmdlName(col.name)}`);
 		lines.push('');
@@ -2281,7 +2307,7 @@ function replaceVarRefs(text: string, vars: Map<string, string>): string {
 // ── Extract background color from HTML ──────────────────────────────────────
 
 /** Extract the body background color from the HTML's CSS. Returns null if not found. */
-function extractHtmlBackground(htmlCode: string): string | null {
+export function extractHtmlBackground(htmlCode: string): string | null {
 	// Match body { ... background: #xyz ... } or body { ... background-color: #xyz ... }
 	const bodyMatch = htmlCode.match(/body\s*\{[^}]*?\bbackground(?:-color)?\s*:\s*([^;}\s]+)/i);
 	return bodyMatch ? bodyMatch[1].trim() : null;
@@ -2370,7 +2396,7 @@ function patchBodySelectorsInCss(css: string): string {
 
 // ── PBIR functions — matched against Power BI Desktop April 2026 output ─────
 
-function generatePbirReportJson(): string {
+export function generatePbirReportJson(): string {
 	const obj: Record<string, unknown> = {
 		$schema: 'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/report/3.2.0/schema.json',
 		themeCollection: {
@@ -2393,7 +2419,7 @@ function generatePbirReportJson(): string {
 	return JSON.stringify(obj, null, 2);
 }
 
-function generatePbirPageJson(pageName: string, pageHeight = 720, bgColor?: string): string {
+export function generatePbirPageJson(pageName: string, pageHeight = 720, bgColor?: string): string {
 	const obj: Record<string, unknown> = {
 		$schema: 'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/page/2.1.0/schema.json',
 		name: pageName,
@@ -2413,7 +2439,7 @@ function generatePbirPageJson(pageName: string, pageHeight = 720, bgColor?: stri
 	return JSON.stringify(obj, null, 2);
 }
 
-function generatePbirPagesJson(pageName: string): string {
+export function generatePbirPagesJson(pageName: string): string {
 	return JSON.stringify({
 		$schema: 'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/pagesMetadata/1.0.0/schema.json',
 		pageOrder: [pageName],
@@ -2421,14 +2447,14 @@ function generatePbirPagesJson(pageName: string): string {
 	}, null, 2);
 }
 
-function generatePbirVersionJson(): string {
+export function generatePbirVersionJson(): string {
 	return JSON.stringify({
 		$schema: 'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/versionMetadata/1.0.0/schema.json',
 		version: '2.0.0',
 	}, null, 2);
 }
 
-function generateDefinitionPbir(semanticModelFolder: string): string {
+export function generateDefinitionPbir(semanticModelFolder: string): string {
 	return JSON.stringify({
 		$schema: 'https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json',
 		version: '4.0',
@@ -2438,7 +2464,7 @@ function generateDefinitionPbir(semanticModelFolder: string): string {
 	}, null, 2);
 }
 
-function generateDefinitionPbism(): string {
+export function generateDefinitionPbism(): string {
 	return JSON.stringify({
 		$schema: 'https://developer.microsoft.com/json-schemas/fabric/item/semanticModel/definitionProperties/1.0.0/schema.json',
 		version: '4.2',
@@ -2446,8 +2472,12 @@ function generateDefinitionPbism(): string {
 	}, null, 2);
 }
 
-function generatePlatformFile(type: 'Report' | 'SemanticModel', displayName: string): string {
-	const uuid = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+export function generatePlatformFile(
+	type: 'Report' | 'SemanticModel',
+	displayName: string,
+	idSource: PowerBiArtifactIdSource = defaultPowerBiArtifactIdSource,
+): string {
+	const uuid = idSource.nextHex(32);
 	const logicalId = `${uuid.substring(0, 8)}-${uuid.substring(8, 12)}-${uuid.substring(12, 16)}-${uuid.substring(16, 20)}-${uuid.substring(20)}`;
 	return JSON.stringify({
 		$schema: 'https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json',
@@ -2456,168 +2486,10 @@ function generatePlatformFile(type: 'Report' | 'SemanticModel', displayName: str
 	}, null, 2);
 }
 
-function generateDatabaseTmdl(): string {
+export function generateDatabaseTmdl(): string {
 	return 'database\n\tcompatibilityLevel: 1600\n';
 }
 
-function generateCultureTmdl(): string {
+export function generateCultureTmdl(): string {
 	return 'cultureInfo en-US\n';
-}
-
-// ── Main export function ────────────────────────────────────────────────────
-
-export async function exportHtmlToPowerBI(
-	input: PowerBiExportInput,
-	folderUri: vscode.Uri,
-	options?: Readonly<{ signal?: AbortSignal; commitOnFirstWrite?: boolean }>,
-): Promise<void> {
-	const portableDashboard = validatePowerBiHtmlBindings(input.htmlCode, input.dataSources);
-
-	const projectName = input.projectName || sanitizeName(input.sectionName) || 'KustoHtmlDashboard';
-	const reportFolder = `${projectName}.Report`;
-	const modelFolder = `${projectName}.SemanticModel`;
-	const pageName = 'ReportPage1';
-	const visualId = Array.from({ length: 20 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
-	const dataMode = normalizePowerBiDataMode(input.dataMode, 'import');
-	for (const dataSource of input.dataSources) {
-		canonicalizePowerBiKustoClusterUrl(dataSource.clusterUrl);
-	}
-
-	// ── Page height from actual preview rendering ──────────────────────
-	// The HTML section's preview iframe measures scrollHeight and sends it.
-	// PBI max page height is 14400px; default 16:9 is 720px.
-	const contentHeight = Math.min(14400, Math.max(720, input.previewHeight || 720));
-
-	// ── Slicer layout (from model.dimensions) ────────────────────────
-	const dimensions = portableDashboard.ir?.dimensions ?? [];
-
-	// Resolve the fact data source
-	const factDs = portableDashboard.ir?.fact
-		? input.dataSources.find(d => d.sectionId === portableDashboard.ir?.fact.sectionId)
-		: input.dataSources[0];
-	const factTableName = factDs ? sanitizeName(factDs.name) : '';
-
-	// Build slicer bindings directly on the fact table. Avoid generated DirectQuery
-	// dimension tables here: ADX DirectQuery can fail when Power BI composes
-	// joins over native KQL queries that contain `let` statements.
-	const resolvedSlicers = resolveFactTableSlicers(factDs, dimensions);
-
-	const SLICER_ROW_HEIGHT = 60;
-	const SLICER_ROW_MARGIN = 20;
-	const SLICER_GAP = 16;
-	const hasSlicers = resolvedSlicers.length > 0;
-	const slicerYOffset = hasSlicers ? SLICER_ROW_MARGIN + SLICER_ROW_HEIGHT + SLICER_ROW_MARGIN : 0;
-	// The preview scrollHeight includes the injected slicer UI (~100px). In PBI
-	// the slicer row is a separate native visual, so subtract the preview slicer
-	// height to avoid double-counting when computing the page height.
-	const PREVIEW_SLICER_APPROX = 80;
-	const adjustedContentHeight = hasSlicers ? Math.max(720, contentHeight - PREVIEW_SLICER_APPROX) : contentHeight;
-	const pageHeight = Math.min(14400, adjustedContentHeight + slicerYOffset);
-
-	// ── Resolve CSS custom properties so they work in PBI HTML Content ──
-	// The visual renders inside a <div>, so :root/body selectors don't
-	// match and var() references never resolve.  Inline them now.
-	const resolvedHtml = resolveCssVariables(input.htmlCode);
-
-	// ── Extract background BEFORE patching body selectors (regex expects `body{`) ──
-	const bgColor = extractHtmlBackground(resolvedHtml) || undefined;
-
-	// ── Patch body selectors → .kw-pbi-root wrapper for PBI visual ──
-	const pbiHtml = patchCssForPbiVisual(resolvedHtml);
-	const transformedPortableDashboard = validatePowerBiHtmlBindings(pbiHtml, input.dataSources);
-	const htmlMeasureTmdl = generateHtmlMeasureTmdl(
-		pbiHtml,
-		input.dataSources,
-		transformedPortableDashboard.ir,
-	);
-
-	let externalWriteCommitted = false;
-	const write = async (relativePath: string, content: string | Buffer) => {
-		if (options?.commitOnFirstWrite === false) {
-			if (options.signal?.aborted) {
-				const error = new Error('Power BI export preparation canceled.');
-				error.name = 'AbortError';
-				throw error;
-			}
-		} else if (!externalWriteCommitted) {
-			if (options?.signal?.aborted) {
-				const error = new Error('Power BI export canceled before external commit.');
-				error.name = 'AbortError';
-				throw error;
-			}
-			externalWriteCommitted = true;
-		}
-		const uri = vscode.Uri.joinPath(folderUri, relativePath);
-		const data = typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
-		await vscode.workspace.fs.writeFile(uri, data);
-	};
-
-	// ── .pbip entry point
-	await write(`${projectName}.pbip`, JSON.stringify({
-		$schema: 'https://developer.microsoft.com/json-schemas/fabric/pbip/pbipProperties/1.0.0/schema.json',
-		version: '1.0',
-		artifacts: [
-			{ report: { path: reportFolder } },
-		],
-		settings: { enableAutoRecovery: true },
-	}, null, 2));
-
-	// ── .gitignore
-	await write('.gitignore', '**/.pbi/localSettings.json\n**/.pbi/cache.abf\n');
-
-	// ── .platform files (required by PBI Desktop)
-	await write(`${reportFolder}/.platform`, generatePlatformFile('Report', projectName));
-	await write(`${modelFolder}/.platform`, generatePlatformFile('SemanticModel', projectName));
-
-	// ── Report definition (PBIR format — folder-based)
-	await write(`${reportFolder}/definition.pbir`, generateDefinitionPbir(modelFolder));
-	await write(`${reportFolder}/definition/version.json`, generatePbirVersionJson());
-	await write(`${reportFolder}/definition/report.json`, generatePbirReportJson());
-	await write(`${reportFolder}/definition/pages/pages.json`, generatePbirPagesJson(pageName));
-	await write(`${reportFolder}/definition/pages/${pageName}/page.json`, generatePbirPageJson(pageName, pageHeight, bgColor));
-
-	// ── HTML Content visual (marketplace visual — references the HTML measure)
-	await write(
-		`${reportFolder}/definition/pages/${pageName}/visuals/${visualId}/visual.json`,
-		generateHtmlContentVisualJson(visualId, pageHeight, slicerYOffset),
-	);
-
-	// ── Slicer visuals (native PBI slicers above the HTML Content visual)
-	if (hasSlicers) {
-		const PAGE_WIDTH = 1500;
-		const SLICER_X_MARGIN = 25;
-		const availableWidth = PAGE_WIDTH - 2 * SLICER_X_MARGIN;
-		const slicerWidth = Math.floor((availableWidth - (resolvedSlicers.length - 1) * SLICER_GAP) / resolvedSlicers.length);
-
-		for (let i = 0; i < resolvedSlicers.length; i++) {
-			const s = resolvedSlicers[i];
-			const slicerVisualId = Array.from({ length: 20 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
-			const x = SLICER_X_MARGIN + i * (slicerWidth + SLICER_GAP);
-			await write(
-				`${reportFolder}/definition/pages/${pageName}/visuals/${slicerVisualId}/visual.json`,
-				generateSlicerVisualJson(slicerVisualId, s.tableName, s.columnName, {
-					x, y: SLICER_ROW_MARGIN, width: slicerWidth, height: SLICER_ROW_HEIGHT,
-				}, s.mode, i + 1),
-			);
-		}
-	}
-
-	// ── Semantic model (fact tables only; slicers bind directly to fact columns)
-	await write(`${modelFolder}/definition.pbism`, generateDefinitionPbism());
-	const factTableNames = input.dataSources.map(ds => sanitizeName(ds.name));
-	await write(`${modelFolder}/definition/model.tmdl`, generateModelTmdl(factTableNames));
-	await write(`${modelFolder}/definition/database.tmdl`, generateDatabaseTmdl());
-	await write(`${modelFolder}/definition/cultures/en-US.tmdl`, generateCultureTmdl());
-
-	// ── Data source tables (Kusto)
-	for (const ds of input.dataSources) {
-		const tableName = sanitizeName(ds.name);
-		await write(`${modelFolder}/definition/tables/${tableName}.tmdl`, generateTableTmdl(ds, dataMode));
-	}
-
-	// ── HTML measures table (DAX measure containing the dashboard HTML/JS)
-	await write(
-		`${modelFolder}/definition/tables/${MEASURES_TABLE_NAME}.tmdl`,
-		htmlMeasureTmdl,
-	);
 }

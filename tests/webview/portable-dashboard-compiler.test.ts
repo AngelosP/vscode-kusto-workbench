@@ -787,6 +787,8 @@ describe('portable dashboard compiler ownership', () => {
 		const compiler = source('src/shared/portableDashboardCompiler.ts');
 		const compatibility = source('src/shared/htmlDashboardUpgrade.ts');
 		const powerBiExport = source('src/host/powerBiExport.ts');
+		const powerBiProjectArtifacts = source('src/host/powerBiProjectArtifacts.ts');
+		const powerBiProjectWriter = source('src/host/powerBiProjectWriter.ts');
 		const powerBiPublish = source('src/host/powerBiPublish.ts');
 		const htmlSection = source('src/webview/sections/kw-html-section.ts');
 		const tools = source('src/host/kustoWorkbenchTools.ts');
@@ -797,7 +799,12 @@ describe('portable dashboard compiler ownership', () => {
 		expect(compatibility).toContain('compilePortableDashboard');
 		expect(compatibility).not.toContain('function findDataKwBindTargetElements');
 		expect(compatibility).not.toContain('function isValidScalarDisplay');
-		expect(powerBiExport).toContain('const portableDashboard = validatePowerBiHtmlBindings');
+		expect(powerBiProjectArtifacts).toContain('portableDashboard: PortableDashboardCompilation');
+		expect(powerBiProjectArtifacts).toContain('validatePowerBiHtmlBindings(powerBiHtml');
+		expect(powerBiProjectArtifacts).not.toContain("from 'vscode'");
+		expect(powerBiProjectArtifacts).not.toContain('workspace.fs');
+		expect(powerBiProjectWriter).toContain('writePowerBiProjectArtifacts');
+		expect(powerBiProjectWriter).toContain('workspace.fs.writeFile');
 		expect(powerBiExport).toContain('portableIr.bindings');
 		expect(powerBiExport).not.toContain('function findMissingPowerBiBindingColumns');
 		expect(powerBiExport).not.toContain('function parseProvenance');
@@ -808,6 +815,8 @@ describe('portable dashboard compiler ownership', () => {
 		expect(htmlSection).not.toContain('JSON.stringify(this._provenance ?? null)');
 		expect(htmlSection).toContain('analyzeHtmlDashboardPowerBiCompatibility(code, dataSources)');
 		expect(tools).toContain('getPowerBiHtmlValidationDiagnostics');
-		expect(powerBiPublish).toContain('exportHtmlToPowerBI');
+		expect(powerBiPublish).toContain('compilePowerBiProjectArtifacts');
+		expect(powerBiPublish).toContain('powerBiProjectArtifactsToFabricParts');
+		expect(powerBiPublish).not.toContain('workspace.fs');
 	});
 });

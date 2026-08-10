@@ -2,14 +2,20 @@
 // Creates SemanticModel + Report items in a Fabric workspace using TMDL/PBIR artifacts.
 
 import * as vscode from 'vscode';
-import * as os from 'os';
 import {
-	exportHtmlToPowerBI,
+	defaultPowerBiArtifactIdSource,
 	normalizePowerBiDataMode,
 	validatePowerBiHtmlBindings,
+	type PowerBiArtifactIdSource,
 	type PowerBiDataMode,
 	type PowerBiDataSource,
 } from './powerBiExport';
+import {
+	compilePowerBiProjectArtifacts,
+	powerBiProjectArtifactsToFabricParts,
+	type FabricDefinitionPart,
+	type PowerBiProjectArtifactManifest,
+} from './powerBiProjectArtifacts';
 import { getWorkbenchLogger } from './workbenchLogger';
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
@@ -248,6 +254,48 @@ export interface PublishResult {
 	cleanupCreatedItems?: () => Promise<boolean>;
 }
 
+interface PreparedPowerBiPublishArtifacts {
+	readonly dataMode: PowerBiDataMode;
+	readonly manifest: PowerBiProjectArtifactManifest;
+	readonly modelParts: FabricDefinitionPart[];
+}
+
+function preparePowerBiPublishArtifacts(
+	input: PublishInput,
+	idSource: PowerBiArtifactIdSource = defaultPowerBiArtifactIdSource,
+): PreparedPowerBiPublishArtifacts {
+	const portableDashboard = validatePowerBiHtmlBindings(input.htmlCode, input.dataSources);
+	const hasExistingIds = !!(input.semanticModelId && input.reportId);
+	const dataMode = normalizePowerBiDataMode(input.dataMode, hasExistingIds ? 'directQuery' : 'import');
+	const projectName = input.reportName.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50) || 'KustoHtmlDashboard';
+	const manifest = compilePowerBiProjectArtifacts({
+		htmlCode: input.htmlCode,
+		sectionName: input.reportName,
+		projectName,
+		dataSources: input.dataSources,
+		dataMode,
+		previewHeight: input.pageHeight,
+	}, portableDashboard, idSource);
+	return {
+		dataMode,
+		manifest,
+		modelParts: powerBiProjectArtifactsToFabricParts(manifest, manifest.semanticModelFolder),
+	};
+}
+
+export function preparePowerBiPublishArtifactsForTest(
+	input: PublishInput,
+	idSource: PowerBiArtifactIdSource = defaultPowerBiArtifactIdSource,
+): PreparedPowerBiPublishArtifacts & {
+	readonly reportParts: FabricDefinitionPart[];
+} {
+	const prepared = preparePowerBiPublishArtifacts(input, idSource);
+	return {
+		...prepared,
+		reportParts: powerBiProjectArtifactsToFabricParts(prepared.manifest, prepared.manifest.reportFolder),
+	};
+}
+
 /**
  * Poll a long-running Fabric operation until it completes.
  * Unlike {@link awaitFabricItem}, this does NOT fall back to listing items — the caller already knows the item ID.
@@ -381,32 +429,10 @@ async function fabricItemExistsWithAuth(
  * - Returns the report URL and the item IDs for persistence.
  */
 export async function publishToPowerBIService(input: PublishInput): Promise<PublishResult> {
-	validatePowerBiHtmlBindings(input.htmlCode, input.dataSources);
-
-	// Generate artifacts using a temp folder — reuses the battle-tested exportHtmlToPowerBI().
-	// We write to a temp dir, read the files back, then clean up.
-	const tempUri = createPowerBiPublishTempUri();
-	const hasExistingIds = !!(input.semanticModelId && input.reportId);
-	const dataMode = normalizePowerBiDataMode(input.dataMode, hasExistingIds ? 'directQuery' : 'import');
+	const { dataMode, manifest, modelParts } = preparePowerBiPublishArtifacts(input);
 
 	try {
-		await exportHtmlToPowerBI(
-			{
-				htmlCode: input.htmlCode,
-				sectionName: input.reportName,
-				projectName: input.reportName.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50) || 'KustoHtmlDashboard',
-				dataSources: input.dataSources,
-				dataMode,
-				previewHeight: input.pageHeight,
-			},
-			tempUri,
-			{ signal: input.signal, commitOnFirstWrite: false },
-		);
-
-		// Read back the generated files
-		const projectName = input.reportName.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50) || 'KustoHtmlDashboard';
-		const reportFolder = `${projectName}.Report`;
-		const modelFolder = `${projectName}.SemanticModel`;
+		throwIfAborted(input.signal);
 		const initialAuth = await getFabricAuthContext();
 		throwIfAborted(input.signal);
 		const commitGate = createExternalCommitGate(
@@ -414,7 +440,6 @@ export async function publishToPowerBIService(input: PublishInput): Promise<Publ
 			initialAuth,
 			input.firstCommitAdmission,
 		);
-		const modelParts = await collectDefinitionParts(tempUri, modelFolder, commitGate);
 		let updateExistingItems = false;
 		if (input.semanticModelId && input.reportId) {
 			const [semanticModelExists, reportExists] = await Promise.all([
@@ -435,7 +460,7 @@ export async function publishToPowerBIService(input: PublishInput): Promise<Publ
 				await renameFabricItem(input.workspaceId, input.reportId, input.reportName, commitGate);
 			}
 			await updateFabricItemDefinition(input.workspaceId, input.semanticModelId, modelParts, 'TMDL', commitGate);
-			const reportParts = await collectDefinitionParts(tempUri, reportFolder, commitGate);
+			const reportParts = powerBiProjectArtifactsToFabricParts(manifest, manifest.reportFolder);
 			patchPbirForService(reportParts, input.semanticModelId);
 			await updateFabricItemDefinition(input.workspaceId, input.reportId, reportParts, undefined, commitGate);
 
@@ -478,7 +503,7 @@ export async function publishToPowerBIService(input: PublishInput): Promise<Publ
 				smResult, input.workspaceId, 'SemanticModel', semanticModelStagingName, commitGate,
 			);
 
-			const reportParts = await collectDefinitionParts(tempUri, reportFolder, commitGate);
+			const reportParts = powerBiProjectArtifactsToFabricParts(manifest, manifest.reportFolder);
 			patchPbirForService(reportParts, semanticModelId);
 			const reportBody = {
 				displayName: reportStagingName,
@@ -537,23 +562,13 @@ export async function publishToPowerBIService(input: PublishInput): Promise<Publ
 			throw error;
 		}
 	} finally {
-		// Clean up temp directory
-		try { await vscode.workspace.fs.delete(tempUri, { recursive: true }); } catch { /* best effort */ }
+		// Project artifacts remain in memory; publish has no staging directory to clean up.
 	}
-}
-
-function createPowerBiPublishTempUri(): vscode.Uri {
-	const uniqueId = createPublishTransactionId();
-	return vscode.Uri.joinPath(vscode.Uri.file(os.tmpdir()), `kw-pbi-publish-${uniqueId}`);
 }
 
 function createPublishTransactionId(): string {
 	return globalThis.crypto?.randomUUID?.()
 		?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-export function createPowerBiPublishTempUriForTest(): vscode.Uri {
-	return createPowerBiPublishTempUri();
 }
 
 async function cleanupCreatedPowerBiItems(
@@ -584,13 +599,6 @@ async function cleanupCreatedPowerBiItems(
 		}
 	}
 	return true;
-}
-
-function throwIfAborted(signal: AbortSignal | undefined): void {
-	if (!signal?.aborted) return;
-	const error = new Error('Power BI publish canceled before external commit.');
-	error.name = 'AbortError';
-	throw error;
 }
 
 function createExternalCommitGate(
@@ -789,41 +797,9 @@ async function triggerSemanticModelRefresh(
 	}
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-async function collectDefinitionParts(
-	baseUri: vscode.Uri,
-	folder: string,
-	commitGate?: ExternalCommitGate,
-): Promise<Array<{ path: string; payload: string; payloadType: string }>> {
-	const parts: Array<{ path: string; payload: string; payloadType: string }> = [];
-	const folderUri = vscode.Uri.joinPath(baseUri, folder);
-
-	async function walk(dir: vscode.Uri, prefix: string): Promise<void> {
-		commitGate?.check();
-		const entries = await vscode.workspace.fs.readDirectory(dir);
-		for (const [name, type] of entries) {
-			commitGate?.check();
-			const entryUri = vscode.Uri.joinPath(dir, name);
-			const entryPath = prefix ? `${prefix}/${name}` : name;
-
-			if (type === vscode.FileType.Directory) {
-				// Skip .pbi metadata folders
-				if (name === '.pbi') continue;
-				await walk(entryUri, entryPath);
-			} else if (type === vscode.FileType.File) {
-				// Skip .platform files — Fabric creates its own
-				if (name === '.platform') continue;
-				const content = await vscode.workspace.fs.readFile(entryUri);
-				parts.push({
-					path: entryPath,
-					payload: Buffer.from(content).toString('base64'),
-					payloadType: 'InlineBase64',
-				});
-			}
-		}
-	}
-
-	await walk(folderUri, '');
-	return parts;
+function throwIfAborted(signal: AbortSignal | undefined): void {
+	if (!signal?.aborted) return;
+	const error = new Error('Power BI publish canceled before external commit.');
+	error.name = 'AbortError';
+	throw error;
 }

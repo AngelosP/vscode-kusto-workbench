@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { createHash } from 'crypto';
 import * as vscode from 'vscode';
 import {
 	generateHtmlMeasureTmdl,
@@ -8,7 +9,6 @@ import {
 	escapeDaxString,
 	escapeDaxColumnRef,
 	daxColumnExpr,
-	exportHtmlToPowerBI,
 	findUnsupportedPowerBiBindings,
 	getPowerBiHtmlValidationDiagnostics,
 	getPowerBiHtmlValidationIssues,
@@ -18,8 +18,14 @@ import {
 	resolveFactTableSlicers,
 	resolveCssVariables,
 	patchCssForPbiVisual,
+	type PowerBiArtifactIdSource,
 	type PowerBiDataSource,
 } from '../../../src/host/powerBiExport';
+import {
+	compilePowerBiProjectArtifacts,
+	powerBiProjectArtifactsToFabricParts,
+} from '../../../src/host/powerBiProjectArtifacts';
+import { exportHtmlToPowerBI, writePowerBiProjectArtifacts } from '../../../src/host/powerBiProjectWriter';
 import { PortableDashboardAdmissionError } from '../../../src/shared/portableDashboardCompiler';
 import {
 	DASHBOARD_BAR_CHART,
@@ -3915,5 +3921,161 @@ describe('generateDimTableTmdl', () => {
 		expect(embeddedKql).toContain('| distinct X');
 		expect(embeddedKql).not.toContain('real export comment');
 		expect(embeddedKql).not.toContain('vstfs:/ X =');
+	});
+});
+
+describe('Power BI project artifact manifest', () => {
+	function deterministicIdSource(): PowerBiArtifactIdSource {
+		let uuidSequence = 0;
+		let relationshipSequence = 0;
+		let hexSequence = 0;
+		let tokenSequence = 0;
+		return {
+			nextUuid: () => `00000000-0000-4000-8000-${String(++uuidSequence).padStart(12, '0')}`,
+			nextRelationshipId: () => `10000000-0000-4000-8000-${String(++relationshipSequence).padStart(12, '0')}`,
+			nextHex: length => (++hexSequence).toString(16).padStart(length, '0').slice(-length),
+			nextToken: () => `token${++tokenSequence}`,
+		};
+	}
+
+	function representativeManifest() {
+		const htmlCode = makeV1Html(
+			{ total: { display: { type: 'scalar', agg: 'COUNT' } } },
+			'<span data-kw-bind="total">0</span>',
+			[{ column: 'Day', mode: 'between' }],
+		);
+		const input = {
+			htmlCode,
+			sectionName: 'Artifact parity',
+			projectName: 'ArtifactParity',
+			dataSources: [factDataSource],
+			dataMode: 'import' as const,
+			previewHeight: 900,
+		};
+		return {
+			input,
+			manifest: compilePowerBiProjectArtifacts(
+				input,
+				validatePowerBiHtmlBindings(htmlCode, input.dataSources),
+				deterministicIdSource(),
+			),
+		};
+	}
+
+	it('feeds local export and Fabric preparation from one byte-identical sorted manifest', async () => {
+		const { manifest } = representativeManifest();
+
+		expect(manifest.artifacts.map(artifact => artifact.path)).toEqual(
+			[...manifest.artifacts.map(artifact => artifact.path)].sort(),
+		);
+		expect(new Set(manifest.artifacts.map(artifact => artifact.path)).size).toBe(manifest.artifacts.length);
+
+		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile').mockResolvedValue(undefined);
+		const createDirectory = vi.spyOn(vscode.workspace.fs, 'createDirectory').mockResolvedValue(undefined);
+		const target = vscode.Uri.file('C:/tmp/dsh-2-artifact-parity');
+		await writePowerBiProjectArtifacts(manifest, target);
+
+		expect(writeFile).toHaveBeenCalledTimes(manifest.artifacts.length);
+		for (let index = 0; index < manifest.artifacts.length; index++) {
+			const artifact = manifest.artifacts[index];
+			const [uri, bytes] = writeFile.mock.calls[index];
+			expect(String(uri).replace(/\\/g, '/')).toMatch(new RegExp(`/${artifact.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+			expect(Buffer.from(bytes as Uint8Array)).toEqual(Buffer.from(artifact.bytes));
+		}
+
+		for (const folder of [manifest.reportFolder, manifest.semanticModelFolder]) {
+			const expected = manifest.artifacts
+				.filter(artifact => artifact.path.startsWith(`${folder}/`))
+				.filter(artifact => !artifact.path.endsWith('/.platform'))
+				.map(artifact => ({
+					path: artifact.path.slice(folder.length + 1),
+					bytes: Buffer.from(artifact.bytes),
+				}));
+			const parts = powerBiProjectArtifactsToFabricParts(manifest, folder);
+			expect(parts.map(part => part.path)).toEqual(expected.map(artifact => artifact.path));
+			for (let index = 0; index < parts.length; index++) {
+				expect(Buffer.from(parts[index].payload, 'base64')).toEqual(expected[index].bytes);
+				expect(parts[index].payloadType).toBe('InlineBase64');
+			}
+		}
+
+		createDirectory.mockRestore();
+		writeFile.mockRestore();
+	});
+
+	it('does not expose mutable manifest byte storage', () => {
+		const { manifest } = representativeManifest();
+		const firstArtifact = manifest.artifacts[0];
+		const expected = Buffer.from(firstArtifact.bytes);
+		const exposedCopy = firstArtifact.bytes as Uint8Array;
+		exposedCopy.fill(0);
+
+		expect(Buffer.from(firstArtifact.bytes)).toEqual(expected);
+		expect(Buffer.from(powerBiProjectArtifactsToFabricParts(manifest, manifest.reportFolder)[0].payload, 'base64'))
+			.toEqual(Buffer.from(
+				manifest.artifacts.find(artifact => artifact.path === `${manifest.reportFolder}/definition.pbir`)!.bytes,
+			));
+	});
+
+	it('rejects cancellation before creating a local project directory', async () => {
+		const { manifest } = representativeManifest();
+		const controller = new AbortController();
+		controller.abort();
+		const createDirectory = vi.spyOn(vscode.workspace.fs, 'createDirectory');
+		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile');
+
+		await expect(writePowerBiProjectArtifacts(
+			manifest,
+			vscode.Uri.file('C:/tmp/dsh-2-canceled-export'),
+			{ signal: controller.signal },
+		)).rejects.toEqual(expect.objectContaining({ name: 'AbortError' }));
+		expect(createDirectory).not.toHaveBeenCalled();
+		expect(writeFile).not.toHaveBeenCalled();
+		createDirectory.mockRestore();
+		writeFile.mockRestore();
+	});
+
+	it('rejects Windows-equivalent artifact path collisions', () => {
+		const collidingSource = { ...factDataSource, name: '_kw_htmlmeasures' };
+		const htmlCode = makeV1Html(
+			{ total: { display: { type: 'scalar', agg: 'COUNT' } } },
+			'<span data-kw-bind="total">0</span>',
+		);
+
+		expect(() => compilePowerBiProjectArtifacts({
+			htmlCode,
+			sectionName: 'Collision',
+			projectName: 'Collision',
+			dataSources: [collidingSource],
+		}, validatePowerBiHtmlBindings(htmlCode, [collidingSource]), deterministicIdSource()))
+			.toThrow(/artifact paths collide on Windows.*_KW_HtmlMeasures.*_kw_htmlmeasures|artifact paths collide on Windows.*_kw_htmlmeasures.*_KW_HtmlMeasures/i);
+	});
+
+	it('matches the complete generated project path and byte golden', () => {
+		const { manifest } = representativeManifest();
+		const actual = manifest.artifacts.map(artifact => ({
+			path: artifact.path,
+			sha256: createHash('sha256').update(artifact.bytes).digest('hex'),
+		}));
+
+		expect(actual).toEqual([
+			{ path: '.gitignore', sha256: '0a8a5e0126dd3f6c4dbf71310c778fc7953089f4d279ccbd2e932b26a1147adb' },
+			{ path: 'ArtifactParity.Report/.platform', sha256: 'bc7377f4e76271578d7610f432c8825e10803953d73c452b99e1c2592b44b75d' },
+			{ path: 'ArtifactParity.Report/definition.pbir', sha256: '77c9be2cfa1d7067e5090329b450af605696e2c540e4e963e5f04cf9f4ff517c' },
+			{ path: 'ArtifactParity.Report/definition/pages/ReportPage1/page.json', sha256: 'fa34e0244860c20d5a2b24b968e67d718caab4fe5332146744192fdbdd351aba' },
+			{ path: 'ArtifactParity.Report/definition/pages/ReportPage1/visuals/00000000000000000001/visual.json', sha256: '73d262cbf5f7d960c52978d989504073f3f0ad6f947bb6f769f43933b64dfd83' },
+			{ path: 'ArtifactParity.Report/definition/pages/ReportPage1/visuals/00000000000000000004/visual.json', sha256: 'ca026238c6796b359cc95f9e5e2c04f1d00daa2a80dc2aefbb03a58ec27388a9' },
+			{ path: 'ArtifactParity.Report/definition/pages/pages.json', sha256: 'a073e037fe060da8dabdc2f870946f5f148be1608636c4db5c2e74e89c6f361c' },
+			{ path: 'ArtifactParity.Report/definition/report.json', sha256: 'f19a6bb05387024cfa927b727203dbc953355039f3b8884966d073f9f0a75130' },
+			{ path: 'ArtifactParity.Report/definition/version.json', sha256: '32bc72b8e7996a054f96e655c8dd8fda82e5f502532610b45bc21a18cffe30b6' },
+			{ path: 'ArtifactParity.SemanticModel/.platform', sha256: '66fa5d3e0a7dec05a4fefcd4bc5929b271832114bb08e5d720a16aca4bdcf67f' },
+			{ path: 'ArtifactParity.SemanticModel/definition.pbism', sha256: 'e761066d848bfaec8496b03ec887aa0a158a8c14a2b359240fc43ca46bb54fcf' },
+			{ path: 'ArtifactParity.SemanticModel/definition/cultures/en-US.tmdl', sha256: 'a995d477a1d573696686ae8d71e4e145e6f59a77effcace88992a3491440c77a' },
+			{ path: 'ArtifactParity.SemanticModel/definition/database.tmdl', sha256: '71bbba8bc0dd61900dc629a69a3d8c62918e3a2f94878e08867319d6e8c356c1' },
+			{ path: 'ArtifactParity.SemanticModel/definition/model.tmdl', sha256: '4196e14640049c96ff846e25867af225d25f5fc7c20611eed4284da4d7775fb7' },
+			{ path: 'ArtifactParity.SemanticModel/definition/tables/Fact_Events.tmdl', sha256: 'f520656d6cf36b6e8a5ddf0f4108c0bd675e3bd3298c4cb6933b141551c6e449' },
+			{ path: 'ArtifactParity.SemanticModel/definition/tables/_KW_HtmlMeasures.tmdl', sha256: '6e19edcabc20eb36f323188ff6cbe28bb04936f80be90334b37d5248e65c3b27' },
+			{ path: 'ArtifactParity.pbip', sha256: 'add5698e04ea38dcc8d36609402757c6e2c6fdefaebff5bea49eef0f192e2b81' },
+		]);
 	});
 });

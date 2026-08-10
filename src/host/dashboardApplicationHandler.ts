@@ -17,11 +17,11 @@ import type {
 	IncomingWebviewMessage,
 } from './queryEditorTypes';
 import {
-	exportHtmlToPowerBI,
 	normalizePowerBiDataMode,
 	validatePowerBiHtmlBindings,
 	type PowerBiDataMode,
 } from './powerBiExport';
+import { exportHtmlToPowerBI } from './powerBiProjectWriter';
 import {
 	checkFabricItemExists,
 	listFabricWorkspaces,
