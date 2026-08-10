@@ -641,35 +641,43 @@ export function isSchemaWorkerApplyRequired(boxId: string): boolean {
 	return kustoEditorSchemaCoordinator.getOwnedState<boolean>(String(boxId || '').trim(), 'workerApplyRequired') === true;
 }
 
-export function waitForSchemaWorkerReady(boxId: string, schemaKey?: string, timeoutMs: number = 900, modelUri?: string): Promise<boolean> {
+export function waitForSchemaWorkerReady(boxId: string, schemaKey?: string, timeoutMs: number = 900, modelUri?: string, signal?: AbortSignal): Promise<boolean> {
 	const id = String(boxId || '').trim();
-	if (!id) return Promise.resolve(false);
+	if (!id || signal?.aborted) return Promise.resolve(false);
 	if (isSchemaWorkerReady(id, schemaKey, modelUri)) {
 		return Promise.resolve(true);
 	}
 	return new Promise(resolve => {
 		let settled = false;
 		let timeoutId: number | undefined;
+		const removeWaiter = () => {
+			try {
+				const remaining = (getSchemaWorkerReadyWaiters(id) || []).filter(waiter => waiter.resolve !== finish);
+				if (remaining.length) setSchemaWorkerReadyWaiters(id, remaining);
+				else clearSchemaWorkerReadyWaiters(id);
+			} catch (e) { console.error('[kusto]', e); }
+		};
 		const finish = (ready: boolean) => {
 			if (settled) return;
 			settled = true;
 			if (timeoutId !== undefined) {
 				try { clearTimeout(timeoutId); } catch (e) { console.error('[kusto]', e); }
 			}
+			try { signal?.removeEventListener('abort', abort); } catch { /* best effort */ }
+			removeWaiter();
 			resolve(ready);
 		};
+		const abort = () => finish(false);
 		try {
 			const waiters = getSchemaWorkerReadyWaiters(id) || [];
 			waiters.push({ schemaKey, modelUri, resolve: finish });
 			setSchemaWorkerReadyWaiters(id, waiters);
-			timeoutId = window.setTimeout(() => {
-				try {
-					const remaining = (getSchemaWorkerReadyWaiters(id) || []).filter(waiter => waiter.resolve !== finish);
-					if (remaining.length) setSchemaWorkerReadyWaiters(id, remaining);
-					else clearSchemaWorkerReadyWaiters(id);
-				} catch (e) { console.error('[kusto]', e); }
-				finish(isSchemaWorkerReady(id, schemaKey, modelUri));
-			}, Math.max(0, timeoutMs));
+			if (signal?.aborted) {
+				finish(false);
+				return;
+			}
+			signal?.addEventListener('abort', abort, { once: true });
+			timeoutId = window.setTimeout(() => finish(isSchemaWorkerReady(id, schemaKey, modelUri)), Math.max(0, timeoutMs));
 		} catch {
 			finish(false);
 		}

@@ -88,6 +88,29 @@ describe('KustoSupplementalSchemaCoordinator', () => {
 		expect(escalated).toMatchObject({ status: 'scheduled', requestSource: 'autocomplete', requestToken: undefined });
 	});
 
+	it('does not downgrade autocomplete ownership when adopting a background broker', () => {
+		const coordinator = new KustoSupplementalSchemaCoordinator();
+		const state = coordinator.syncReferences({ boxId: 'query_1', modelUri: 'model://1', modelVersion: 1, references: [remote], now: 10 }).added[0];
+		const escalated = coordinator.escalateToAutocomplete(supplementalStateIdentity(state), 20)!;
+
+		const adopted = coordinator.markFetching(supplementalStateIdentity(escalated), {
+			requestToken: 'background-cache',
+			requestSource: 'background',
+			deadlineAt: 100,
+			now: 30,
+		});
+		expect(adopted).toMatchObject({
+			status: 'scheduled',
+			requestSource: 'autocomplete',
+		});
+		expect(adopted).not.toHaveProperty('requestToken');
+		expect(adopted).not.toHaveProperty('deadlineAt');
+		expect(coordinator.escalateToAutocomplete(supplementalStateIdentity(adopted!), 40)).toMatchObject({
+			status: 'scheduled',
+			requestSource: 'autocomplete',
+		});
+	});
+
 	it('preserves a loaded stale fallback when an autocomplete refresh fails', () => {
 		const coordinator = new KustoSupplementalSchemaCoordinator();
 		const state = coordinator.syncReferences({ boxId: 'query_1', modelUri: 'model://1', modelVersion: 1, references: [remote], now: 10 }).added[0];

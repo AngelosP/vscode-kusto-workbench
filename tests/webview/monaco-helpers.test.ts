@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { __kustoAreEquivalentMonacoMarkers, __kustoDisableMonacoKustoWorkerHover, __kustoGetColumnsByTable } from '../../src/webview/monaco/monaco.js';
+import { __kustoAreEquivalentMonacoMarkers, __kustoAutocompleteSchemaTargetIdentityMatches, __kustoDetectStringPrefix, __kustoDisableMonacoKustoWorkerHover, __kustoFindLatestLetAssignmentEnd, __kustoGetColumnCompletionPipelineContext, __kustoGetColumnsByTable, __kustoLimitSupplementalReferences } from '../../src/webview/monaco/monaco.js';
 import { __kustoNormalizeCollapsedMonacoMarkers } from '../../src/webview/monaco/marker-ranges.js';
+import { getKustoSchemaIdentityKey } from '../../src/shared/kustoAuth.js';
 
 function makeMonacoModel(text: string) {
 	const lines = text.split('\n');
@@ -82,6 +83,79 @@ describe('__kustoGetColumnsByTable', () => {
 	});
 });
 
+describe('__kustoGetColumnCompletionPipelineContext', () => {
+	it('finds the current let pipeline source inside a function body', () => {
+		const beforeCursor = `.create-or-alter function F(startTime:datetime) {
+let RemoteTools = dynamic(["tool"]);
+let submcpinvoked=cluster('aoaiagents1.westus').database('prod').Log
+| where TI`;
+
+		expect(__kustoGetColumnCompletionPipelineContext(beforeCursor)).toEqual({
+			operator: 'where',
+			operatorTail: ' TI',
+			sourceStage: "cluster('aoaiagents1.westus').database('prod').Log",
+			priorStages: [],
+		});
+	});
+
+	it('preserves prior pipeline stages for ordinary queries', () => {
+		expect(__kustoGetColumnCompletionPipelineContext('Events\n| extend Alias = Name\n| project Al')).toEqual({
+			operator: 'project',
+			operatorTail: ' Al',
+			sourceStage: 'Events',
+			priorStages: ['extend Alias = Name'],
+		});
+	});
+
+	it('ignores fake let assignments inside strings and comments', () => {
+		const prefix = [
+			"let source = cluster('remote').database('Db').Events",
+			'| extend Quoted = "let fake =", Single = \'it\\\'s let other =\', Verbatim = @\'C:\\temp\\let verbatim = value\', Hidden = h@\'C:\\temp\\let hidden = value\', Triple = ```let triple = value```',
+			'// let commented = Ignored',
+			'/* let blocked = Ignored */',
+			'| where ',
+		].join('\n');
+		const assignmentEnd = __kustoFindLatestLetAssignmentEnd(prefix);
+
+		expect(prefix.slice(assignmentEnd).trimStart()).toMatch(/^cluster\('remote'\)/);
+		expect(__kustoGetColumnCompletionPipelineContext(prefix)).toMatchObject({
+			operator: 'where',
+			operatorTail: ' ',
+			sourceStage: "cluster('remote').database('Db').Events",
+		});
+	});
+
+	it('detects ordinary, hidden, verbatim, and hidden-verbatim string prefixes', () => {
+		expect(__kustoDetectStringPrefix("'value'", 0)).toEqual({ quote: "'", length: 1, verbatim: false });
+		expect(__kustoDetectStringPrefix('h"value"', 0)).toEqual({ quote: '"', length: 2, verbatim: false });
+		expect(__kustoDetectStringPrefix("@'C:\\temp\\'", 0)).toEqual({ quote: "'", length: 2, verbatim: true });
+		expect(__kustoDetectStringPrefix('H@"C:\\temp\\"', 0)).toEqual({ quote: '"', length: 3, verbatim: true });
+	});
+});
+
+describe('__kustoLimitSupplementalReferences', () => {
+	it('tracks at most sixteen references and leaves overflow for fallback-only behavior', () => {
+		const references = Array.from({ length: 17 }, (_, index) => `remote-${index + 1}`);
+
+		expect(__kustoLimitSupplementalReferences(references)).toEqual(references.slice(0, 16));
+	});
+
+	it('admits a retry key only after finding its synchronized coordinator state', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const contextBranch = source.slice(
+			source.indexOf("recordAutocompleteTrace(traceId, 'schema-prepare-context'"),
+			source.indexOf("recordAutocompleteTrace(traceId, 'schema-prepare-keys'"),
+		);
+		const stateLookup = contextBranch.lastIndexOf('const state = synchronizedStates.find');
+		const untrackedGuard = contextBranch.indexOf('if (!state) continue;', stateLookup);
+		const keyAdmission = contextBranch.indexOf('keys.push(key);', stateLookup);
+
+		expect(stateLookup).toBeGreaterThan(-1);
+		expect(untrackedGuard).toBeGreaterThan(stateLookup);
+		expect(keyAdmission).toBeGreaterThan(untrackedGuard);
+	});
+});
+
 // ── __kustoDisableMonacoKustoWorkerHover ─────────────────────────────────────
 
 describe('__kustoDisableMonacoKustoWorkerHover', () => {
@@ -154,6 +228,82 @@ describe('__kustoDisableMonacoKustoWorkerHover', () => {
 		expect(editorCreateEndIndex).toBeGreaterThan(editorCreateIndex);
 		expect(editorCreateBlock).toContain("language: 'kusto'");
 		expect(editorCreateBlock).toContain("cursorBlinking: 'solid'");
+	});
+});
+
+describe('Kusto autocomplete schema retry', () => {
+	it('keeps a retry current across canonical-equivalent database and cluster normalization', () => {
+		const makeTarget = (clusterUrl: string, database: string) => ({
+			sectionInstanceId: 'section-1',
+			targetGeneration: 4,
+			context: {
+				connectionId: 'connection-1',
+				accountPartition: 'partition-1',
+				clusterUrl,
+				database,
+				schemaKey: getKustoSchemaIdentityKey('connection-1', 'partition-1', clusterUrl, database),
+			},
+		});
+		const expected = makeTarget('https://aoaiagents1.westus', 'prod');
+
+		expect(__kustoAutocompleteSchemaTargetIdentityMatches(
+			expected,
+			makeTarget('https://AOAIAGENTS1.WESTUS.kusto.windows.net/', 'Prod'),
+		)).toBe(true);
+		expect(__kustoAutocompleteSchemaTargetIdentityMatches(expected, makeTarget('https://aoaiagents1.westus', 'other'))).toBe(false);
+	});
+
+	it('installs the retry trigger before schema preparation can block the first request', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const triggerStart = source.indexOf('const __kustoTriggerAutocomplete = async (ed: any) => {');
+		const requestClaimIndex = source.indexOf('request = boxId && schemaTarget ? __kustoAutocompleteRetryCoordinator.begin({', triggerStart);
+		const retryTriggerIndex = source.indexOf('__kustoTriggerAutocompleteInternal = __kustoTriggerAutocomplete;', triggerStart);
+		const schemaPreparationIndex = source.indexOf('const schemaState = await __kustoPrepareSchemaForAutocomplete(ed, traceId, request);', triggerStart);
+
+		expect(triggerStart).toBeGreaterThan(-1);
+		expect(requestClaimIndex).toBeGreaterThan(triggerStart);
+		expect(retryTriggerIndex).toBeGreaterThan(triggerStart);
+		expect(schemaPreparationIndex).toBeGreaterThan(requestClaimIndex);
+		expect(schemaPreparationIndex).toBeGreaterThan(retryTriggerIndex);
+	});
+
+	it('binds every request to section lifecycle and concrete context when present', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const triggerStart = source.indexOf('const __kustoTriggerAutocomplete = async (ed: any) => {');
+		const targetCapture = source.indexOf('__kustoCaptureAutocompleteSchemaTarget(boxId)', triggerStart);
+		const requestBegin = source.indexOf('__kustoAutocompleteRetryCoordinator.begin({', triggerStart);
+		const targetMatch = source.indexOf('__kustoAutocompleteSchemaTargetMatches(boxId, schemaTarget)', requestBegin);
+		const lifecycleSubscription = source.indexOf('kustoEditorSchemaCoordinator.subscribeLifecycle', requestBegin);
+
+		expect(targetCapture).toBeGreaterThan(triggerStart);
+		expect(requestBegin).toBeGreaterThan(targetCapture);
+		expect(targetMatch).toBeGreaterThan(requestBegin);
+		expect(lifecycleSubscription).toBeGreaterThan(requestBegin);
+		expect(source.slice(targetCapture, requestBegin + 80)).toContain('boxId && schemaTarget');
+		expect(source).toContain("...(context ? { context: Object.freeze({ ...context }) } : {})");
+		expect(source).toContain('!!current.context === !!expected.context');
+	});
+
+	it('queues a supplemental retry before showing cold no-context fallback', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const noContextStart = source.indexOf("recordAutocompleteTrace(traceId, 'schema-prepare-no-context'");
+		const contextStart = source.indexOf("recordAutocompleteTrace(traceId, 'schema-prepare-context'", noContextStart);
+		const noContextBranch = source.slice(noContextStart, contextStart);
+		const quickWaitIndex = noContextBranch.indexOf("'schema-prepare-no-context-cross-cluster-wait'");
+		const escalationIndex = noContextBranch.indexOf('__kustoSupplementalCoordinator.escalateToAutocomplete');
+		const primaryReadyIndex = noContextBranch.indexOf('__kustoSupplementalCoordinator.setPrimaryReady(modelUri, true)');
+		const retryIndex = noContextBranch.indexOf('__kustoQueueAutocompleteRetryForSupplementalSchemas(request, ed, boxId, modelUri, missingKeys)');
+		const blockedIndex = noContextBranch.indexOf("return 'blocked'", retryIndex);
+		const readyIndex = noContextBranch.indexOf("return 'ready'", retryIndex);
+
+		expect(noContextStart).toBeGreaterThan(-1);
+		expect(contextStart).toBeGreaterThan(noContextStart);
+		expect(quickWaitIndex).toBeGreaterThan(-1);
+		expect(escalationIndex).toBeGreaterThan(-1);
+		expect(primaryReadyIndex).toBeGreaterThan(escalationIndex);
+		expect(retryIndex).toBeGreaterThan(quickWaitIndex);
+		expect(blockedIndex).toBe(-1);
+		expect(readyIndex).toBeGreaterThan(retryIndex);
 	});
 });
 

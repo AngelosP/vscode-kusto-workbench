@@ -248,6 +248,10 @@ export class KustoSupplementalSchemaCoordinator {
 	}): KustoSupplementalSchemaState | undefined {
 		const state = this.getMutable(identity);
 		if (!state) return this.stale(identity);
+		if (state.requestSource === 'autocomplete' && args.requestSource === 'background') {
+			state.updatedAt = args.now ?? Date.now();
+			return freezeState(state);
+		}
 		state.requestToken = String(args.requestToken || '').trim() || undefined;
 		state.requestSource = args.requestSource;
 		state.deadlineAt = args.deadlineAt;

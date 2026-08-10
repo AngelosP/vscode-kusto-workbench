@@ -65,6 +65,16 @@ describe('schema worker readiness state', () => {
 		await expect(waiting).resolves.toBe(true);
 	});
 
+	it('removes an aborted worker-ready waiter immediately', async () => {
+		const controller = new AbortController();
+		const waiting = waitForSchemaWorkerReady('query_1', 'cluster|db', 1000, 'inmemory://model/new', controller.signal);
+
+		controller.abort();
+
+		await expect(waiting).resolves.toBe(false);
+		expect(kustoEditorSchemaCoordinator.getOwnedState('query_1', 'workerReadyWaiters')).toBeUndefined();
+	});
+
 	it('ignores stale preparation revisions and settles blockers only for the current delivery', () => {
 		const first = beginKustoPreparation('query_1', {
 			stage: 'schema',

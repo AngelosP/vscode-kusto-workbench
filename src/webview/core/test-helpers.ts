@@ -12,7 +12,7 @@ import { DOCUMENT_VIEW_CHANNEL, DOCUMENT_VIEW_PROTOCOL_VERSION } from '../../sha
 import { perfSnapshot } from './perf.js';
 import { getPageScrollElement, getPageScrollMaxTop, getPageScrollTop, setPageScrollTop } from './utils.js';
 import { __kustoFindSuggestWidgetForEditor } from '../monaco/suggest.js';
-import { __kustoCrossClusterSchemas, __kustoGetSupplementalSchemaSnapshot, __kustoInjectSupplementalSchemaForTest, __kustoSchemaTracker, __kustoSetCustomColumnCompletionProviderEnabledForTest, __kustoTraceCrossCluster } from '../monaco/monaco.js';
+import { __kustoCrossClusterSchemas, __kustoGetSupplementalSchemaSnapshot, __kustoInjectSupplementalSchemaForTest, __kustoScheduleSupplementalSchemaForTest, __kustoSchemaTracker, __kustoSetCustomColumnCompletionProviderEnabledForTest, __kustoTraceCrossCluster } from '../monaco/monaco.js';
 import { kustoSupplementalTraceId } from '../shared/kusto-supplemental-schema-coordinator.js';
 import { extractCrossClusterRefs } from '../shared/cross-cluster-schema.js';
 import { computeMissingClusterUrls } from '../shared/clusterUtils.js';
@@ -3349,23 +3349,27 @@ async function e2eAssertAllRenderedSnapshotsHaveColumns(context: string, expecte
 	const expected = String(expectedCsv || '').split(',').map(value => value.trim()).filter(Boolean);
 	const snapshots: Array<{ elapsedMs: number; labels: string[] }> = [];
 	const started = performance.now();
-	while (performance.now() - started <= durationMs) {
+	const capture = () => {
 		const labels = e2eRenderedSuggestLabelsSnapshot(contextLabel, E2E_SECTION.kusto.editor);
-		if (labels.length) {
-			const elapsedMs = performance.now() - started;
-			snapshots.push({ elapsedMs, labels });
-			const normalizedLabels = new Set(labels.map(label => e2eNormalizeSuggestColumnLabel(label)));
-			const missing = expected.filter(candidate => !normalizedLabels.has(e2eNormalizeSuggestColumnLabel(candidate)));
-			if (missing.length) {
-				throw new Error(`${contextLabel}: rendered dropdown snapshot at ${Math.round(elapsedMs)}ms missing [${missing.join(', ')}], got rows: ${labels.slice(0, 40).join(', ')}; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
-			}
+		const elapsedMs = performance.now() - started;
+		snapshots.push({ elapsedMs, labels });
+		const normalizedLabels = new Set(labels.map(label => e2eNormalizeSuggestColumnLabel(label)));
+		const missing = expected.filter(candidate => !normalizedLabels.has(e2eNormalizeSuggestColumnLabel(candidate)));
+		if (missing.length) {
+			throw new Error(`${contextLabel}: rendered dropdown snapshot at ${Math.round(elapsedMs)}ms missing [${missing.join(', ')}], got rows: ${labels.slice(0, 40).join(', ')}; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
 		}
+	};
+	while (performance.now() - started < durationMs) {
+		capture();
 		await e2eDelay(intervalMs);
 	}
-	if (!snapshots.length) {
-		throw new Error(`${contextLabel}: no rendered suggestion snapshots in ${durationMs}ms; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
-	}
-	return { snapshots: snapshots.map(snapshot => ({ elapsedMs: Math.round(snapshot.elapsedMs), labels: snapshot.labels.slice(0, 40) })) };
+	capture();
+	const final = snapshots[snapshots.length - 1];
+	return {
+		sampleCount: snapshots.length,
+		durationMs: Math.round(final?.elapsedMs || 0),
+		finalLabels: final?.labels.slice(0, 40) || [],
+	};
 }
 
 async function e2eAssertRenderedSnapshotsExcludeColumns(context: string, excludedCsv: string = '', durationMs: number = 1500, intervalMs: number = 100, requireSnapshot: boolean = true): Promise<any> {
@@ -4257,6 +4261,38 @@ function e2eSetKustoQueryWithCaretMarkerStrict(queryWithMarker: string, marker: 
 		throw new Error(`Strict caret verification failed: expected ${lineNumber}:${column}, got ${actual ? `${actual.lineNumber}:${actual.column}` : '(none)'}`);
 	}
 	return `strict set kusto query with caret at ${lineNumber}:${column}`;
+}
+
+function e2eScheduleNoContextAutocompleteRetryFixture(delayMs: number = 1800): string {
+	const section = e2eSection('kusto');
+	const boxId = String(section.boxId || section.id || '').trim();
+	if (!boxId) throw new Error('Kusto section is unavailable for delayed supplemental retry');
+	const clusterName = 'delayed-supplemental.westus.kusto.windows.net';
+	const clusterUrl = `https://${clusterName}`;
+	const database = 'TelemetryDb';
+	const connection = {
+		id: 'e2e-delayed-supplemental-connection',
+		name: 'E2E Delayed Supplemental',
+		clusterUrl,
+		accountPartition: 'e2e-delayed-supplemental-partition',
+	};
+	const existingConnections = Array.isArray(_win.connections) ? _win.connections : [];
+	if (!existingConnections.some((candidate: any) => candidate?.id === connection.id)) existingConnections.push(connection);
+	e2eSetKustoQueryWithCaretMarkerStrict(`cluster('${clusterName}').database('${database}').RemoteEvents\n| where ⟦caret⟧`);
+	const rawSchemaJson = e2eBuildShowSchema(database, {
+		RemoteEvents: { TIMESTAMP: 'datetime', RemoteOnlyColumn: 'string' },
+	});
+	if (!__kustoScheduleSupplementalSchemaForTest({
+		clusterName,
+		clusterUrl,
+		database,
+		boxId,
+		rawSchemaJson,
+		delayMs: Math.max(1300, Number(delayMs) || 0),
+	})) {
+		throw new Error('Failed to schedule delayed supplemental retry fixture');
+	}
+	return `delayed supplemental retry fixture scheduled for ${Math.max(1300, Number(delayMs) || 0)}ms`;
 }
 
 async function e2eAssertKustoSemanticSuggestAt(queryWithMarker: string, expectedCsv: string, context: string, timeoutMs: number = 7000): Promise<string> {
@@ -7468,6 +7504,7 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		},
 		setCurrentClusterWorkflowScenario: () => e2eSetCurrentClusterWorkflowScenario(),
 		setMissingRemoteSchemaScenario: () => e2eSetKustoQueryWithCaretMarker(e2eKustoMissingRemoteSchemaQuery()) + ' for missing remote schema timeout',
+		scheduleNoContextAutocompleteRetryFixture: (delayMs: number = 1800) => e2eScheduleNoContextAutocompleteRetryFixture(delayMs),
 		assertSemanticSuggestAt: (queryWithMarker: string, expectedCsv: string, context: string, timeoutMs?: number) => e2eAssertKustoSemanticSuggestAt(queryWithMarker, expectedCsv, context, timeoutMs),
 		assertSemanticScenario: (scenario: KustoSemanticCompletionScenario, timeoutMs?: number) => e2eAssertKustoSemanticScenario(scenario, timeoutMs),
 		assertSemanticScenarioVisible: (scenario: KustoSemanticCompletionScenario, timeoutMs?: number) => e2eAssertKustoSemanticScenarioVisible(scenario, timeoutMs),
@@ -7477,6 +7514,7 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		liveSemanticDiagnostics: (context: string = 'live semantic diagnostics') => e2eKustoLiveSemanticDiagnostics(context),
 		clearCrossClusterTrace: () => { if (typeof _win.__kustoClearCrossClusterTrace === 'function') _win.__kustoClearCrossClusterTrace(); return 'cross-cluster trace cleared'; },
 		getCrossClusterTrace: () => typeof _win.__kustoGetCrossClusterTrace === 'function' ? _win.__kustoGetCrossClusterTrace() : [],
+		supplementalSnapshot: () => __kustoGetSupplementalSchemaSnapshot(),
 		getAutocompleteTrace: (traceId?: string) => typeof _win.__kustoGetAutocompleteTrace === 'function' ? _win.__kustoGetAutocompleteTrace(traceId) : null,
 		compactAutocompleteTrace: (traceId?: string) => e2eCompactAutocompleteTrace(traceId),
 		assertAutocompleteTraceEvents: (context: string, requiredCsv: string = '', forbiddenCsv: string = '') => e2eAssertAutocompleteTraceEvents(context, requiredCsv, forbiddenCsv),
