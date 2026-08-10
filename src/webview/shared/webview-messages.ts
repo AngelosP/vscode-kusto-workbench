@@ -15,7 +15,20 @@ import {
 	type DocumentViewWebviewMessage,
 	type DocumentViewWebviewMessageInput,
 } from '../../shared/documentViewProtocol.js';
+import {
+	isCompatibilityPersistenceWebviewMessageType,
+	stampCompatibilityPersistenceWebviewMessage,
+	type CompatibilityPersistenceWebviewMessage,
+	type CompatibilityPersistenceWebviewMessageInput,
+} from '../../shared/compatibilityPersistenceProtocol.js';
 import { pState } from './persistence-state.js';
+
+let compatibilityDocumentRequestSequence = 0;
+const MAX_COMPATIBILITY_DOCUMENT_REQUESTS = 64;
+
+function createCompatibilityDocumentRequestId(): string {
+	return `compat-document-request-${Date.now()}-${++compatibilityDocumentRequestSequence}`;
+}
 
 // ── Query execution & results ──────────────────────────────────────────────
 
@@ -302,7 +315,7 @@ export type OutgoingWebviewMessage =
 
 	// Provider messages (kqlx, kqlCompat, mdCompat editors)
 	| { type: 'mainWebviewDispatcherReady' }
-	| { type: 'requestDocument' }
+	| { type: 'requestDocument'; requestId?: string }
 	| { type: 'persistDocument'; state: unknown; sourceGeneration?: number; flush?: boolean; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; flushUnavailableReason?: string; testOnlyNoop?: boolean }
 	| DocumentViewWebviewMessageInput
 	| { type: 'requestUpgradeToKqlx'; addKind?: string; state?: unknown; editRevision?: number }
@@ -315,8 +328,37 @@ export type OutgoingWebviewMessage =
  * Safe to call when `window.vscode` is unavailable (e.g. browser-ext standalone) — silently no-ops.
  */
 export function postMessageToHost(msg: OutgoingWebviewMessage): void {
-	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage = msg;
-	if (pState.documentViewSessionId && isDocumentViewWebviewMessageType(msg)) {
+	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage | CompatibilityPersistenceWebviewMessage = msg;
+	if (pState.compatibilityPersistenceViewSessionId && isCompatibilityPersistenceWebviewMessageType(msg)) {
+		const input = msg.type === 'requestDocument'
+			? {
+				type: 'requestDocument' as const,
+				requestId: typeof msg.requestId === 'string' && msg.requestId.trim()
+					? msg.requestId.trim()
+					: createCompatibilityDocumentRequestId(),
+			}
+			: msg as unknown as CompatibilityPersistenceWebviewMessageInput;
+		const parsed = stampCompatibilityPersistenceWebviewMessage(
+			pState.compatibilityPersistenceViewSessionId,
+			input,
+			pState.documentKind === 'kql' || pState.documentKind === 'sql'
+				? pState.documentKind
+				: undefined,
+		);
+		if (!parsed.ok) {
+			console.error('[kusto] Rejected invalid compatibility persistence webview message:', parsed.error);
+			return;
+		}
+		if (parsed.value.type === 'requestDocument') {
+			pState.compatibilityPersistenceDocumentRequestIds.add(parsed.value.requestId);
+			while (pState.compatibilityPersistenceDocumentRequestIds.size > MAX_COMPATIBILITY_DOCUMENT_REQUESTS) {
+				pState.compatibilityPersistenceDocumentRequestIds.delete(
+					pState.compatibilityPersistenceDocumentRequestIds.values().next().value!,
+				);
+			}
+		}
+		outbound = parsed.value;
+	} else if (pState.documentViewSessionId && isDocumentViewWebviewMessageType(msg)) {
 		const parsed = stampDocumentViewWebviewMessage(
 			pState.documentViewSessionId,
 			msg as DocumentViewWebviewMessageInput,

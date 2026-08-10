@@ -338,34 +338,34 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::453:33',
 	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::274:33',
 	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::89:10',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::363:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::489:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::495:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::499:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::504:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::507:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::510:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::513:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::528:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::534:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::539:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::556:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::564:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::570:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::579:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::590:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::611:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::618:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::627:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::635:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::658:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::663:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::689:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::697:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::721:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::736:29',
-	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::808:15',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::1257:21',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::364:27',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::490:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::496:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::500:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::505:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::508:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::511:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::514:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::529:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::535:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::540:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::557:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::565:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::571:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::580:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::591:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::612:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::619:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::628:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::636:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::659:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::664:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::690:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::698:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::722:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::737:29',
+	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::815:15',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::1264:21',
 	'src/host/querySharingApplicationHandler.ts::postMessage::postMessage::32:10',
 	'src/host/resourceUriApplicationHandler.ts::postMessage::postMessage::50:3',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1758:13',
@@ -1020,6 +1020,60 @@ describe('Message Protocol Contract', () => {
 		expect(queryEditorProvider.match(/this\.handlePanelWebviewMessage\(input\)/g)).toHaveLength(2);
 	});
 
+	it('keeps compatibility persistence lifecycle traffic on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/compatibilityPersistenceProtocol.ts',
+			'CompatibilityPersistenceWebviewMessage',
+		)).toEqual([
+			'documentReloadResult',
+			'persistDocument',
+			'requestDocument',
+		]);
+		expect(extractTypeDiscriminants(
+			'src/shared/compatibilityPersistenceProtocol.ts',
+			'CompatibilityPersistenceHostMessage',
+		)).toEqual([
+			'documentData',
+			'persistDocumentAck',
+			'requestFinalPersist',
+		]);
+
+		for (const [providerPath, documentKind] of [
+			['src/host/kqlCompatEditorProvider.ts', 'kql'],
+			['src/host/sqlCompatEditorProvider.ts', 'sql'],
+		] as const) {
+			const provider = readWorkspaceFile(providerPath);
+			const parserCall = `parseCompatibilityPersistenceWebviewMessage(input, '${documentKind}')`;
+			expect(provider).toContain(parserCall);
+			expect(provider).toContain('parsed.value.viewSessionId !== viewSessionId');
+			expect(provider).toContain('stampCompatibilityPersistenceHostMessage(viewSessionId, message)');
+			expect(provider).toContain('compatibilityPersistence,');
+			expect(provider.indexOf(parserCall))
+				.toBeLessThan(provider.indexOf('closeCoordinator.allowRetiredInbound(parsed.value)'));
+		}
+
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(webviewMessages).toContain('stampCompatibilityPersistenceWebviewMessage');
+		expect(webviewMessages).toContain('compatibilityPersistenceDocumentRequestIds.add');
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		expect(messageHandler).toContain('parseCompatibilityPersistenceHostMessage(message)');
+		expect(messageHandler).toContain('compatibilityPersistenceDocumentRequestIds.has');
+		expect(messageHandler.indexOf('parseCompatibilityPersistenceHostMessage(message)'))
+			.toBeLessThan(messageHandler.indexOf('parseDocumentViewHostMessage(message)'));
+
+		const html = readWorkspaceFile('src/webview/queryEditor.html');
+		const preload = readWorkspaceFile('src/webview/queryEditor.js');
+		expect(html).toContain('compatibilityPersistence: {{compatibilityPersistenceJson}}');
+		expect(preload).toContain('compatibilityPersistence.initialRequestId = initialRequestId');
+		expect(preload).toContain('protocolVersion: compatibilityPersistence.protocolVersion');
+		expect(preload).toContain('channel: compatibilityPersistence.channel');
+
+		const closeCoordinator = readWorkspaceFile('src/host/compatSidecarCloseCoordinator.ts');
+		const markdownCompatibility = readWorkspaceFile('src/host/mdCompatEditorProvider.ts');
+		expect(closeCoordinator).not.toContain('compatibilityPersistenceProtocol');
+		expect(markdownCompatibility).not.toContain('compatibilityPersistenceProtocol');
+	});
+
 	// ─── Compile-time guards ───────────────────────────────────────────────
 	// These calls exist solely for the TypeScript compiler to verify that
 	// every string literal in our arrays is a valid union discriminant.
@@ -1048,6 +1102,7 @@ describe('Message Protocol Contract', () => {
 			[...new Set([
 				...extractTypeDiscriminants('src/webview/shared/webview-messages.ts', 'OutgoingWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/documentViewProtocol.ts', 'DocumentViewWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/compatibilityPersistenceProtocol.ts', 'CompatibilityPersistenceWebviewMessage'),
 			])].sort()
 		);
 	});

@@ -9,6 +9,11 @@ import {
 	isDocumentViewHostMessageType,
 	parseDocumentViewHostMessage,
 } from '../../shared/documentViewProtocol.js';
+import {
+	COMPATIBILITY_PERSISTENCE_CHANNEL,
+	isCompatibilityPersistenceHostMessageType,
+	parseCompatibilityPersistenceHostMessage,
+} from '../../shared/compatibilityPersistenceProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -1435,6 +1440,51 @@ window.addEventListener(DOCUMENT_RUNTIME_INVALIDATED_EVENT, () => {
 
 const __kustoDispatchHostMessage = async (message: any) => {
 	message = (message && typeof message === 'object') ? message : {};
+	let compatibilityProjectionFingerprint: string | undefined;
+	const compatibilityPersistenceMessage = isCompatibilityPersistenceHostMessageType(message)
+		&& (message.channel === COMPATIBILITY_PERSISTENCE_CHANNEL
+			|| !!pState.compatibilityPersistenceViewSessionId);
+	if (compatibilityPersistenceMessage) {
+		const parsed = parseCompatibilityPersistenceHostMessage(message);
+		if (!parsed.ok
+			|| parsed.value.viewSessionId !== pState.compatibilityPersistenceViewSessionId) return;
+		if (parsed.value.type === 'documentData') {
+			const currentGeneration = Number(pState.sourceGeneration);
+			if (Number.isSafeInteger(currentGeneration)
+				&& parsed.value.sourceGeneration < currentGeneration) {
+				postMessageToHost({
+					type: 'documentReloadResult', requestId: parsed.value.reloadRequestId,
+					applied: false, editRevision: pState.documentEditRevision,
+					markdownCommandBarrierSupported: true,
+				});
+				return;
+			}
+		}
+		if (parsed.value.type === 'documentData' && parsed.value.requestSource === 'webview') {
+			compatibilityProjectionFingerprint = getCompatibilityProjectionFingerprint(parsed.value);
+			const requestId = parsed.value.requestId;
+			const pending = pState.compatibilityPersistenceDocumentRequestIds.has(requestId);
+			const appliedFingerprint = pState.compatibilityPersistenceAppliedDocumentRequests.get(requestId);
+			if (!pending && appliedFingerprint === undefined) return;
+			if (!pending && appliedFingerprint === compatibilityProjectionFingerprint) {
+				const currentGeneration = Number(pState.sourceGeneration);
+				const retryGeneration = parsed.value.sourceGeneration;
+				const applied = !Number.isSafeInteger(currentGeneration) || retryGeneration >= currentGeneration;
+				if (applied) pState.sourceGeneration = retryGeneration;
+				postMessageToHost({
+					type: 'documentReloadResult', requestId: parsed.value.reloadRequestId,
+					applied, editRevision: pState.documentEditRevision,
+					markdownCommandBarrierSupported: true,
+				});
+				if (applied && parsed.value.ok
+					&& pState.documentEditRevision > parsed.value.editRevision) {
+					schedulePersist('compatibility-projection-retry', true);
+				}
+				return;
+			}
+		}
+		message = parsed.value;
+	} else {
 	const documentViewMessage = isDocumentViewHostMessageType(message)
 		&& (hasDocumentViewEnvelopeFields(message) || !!pState.documentViewSessionId);
 	if (documentViewMessage) {
@@ -1458,6 +1508,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			while (requestIds.size > 64) requestIds.delete(requestIds.values().next().value!);
 		}
 		message = parsed.value;
+	}
 	}
 	const incomingType = String(message.type || '');
 	if (pState.documentRuntimeActive === false) {
@@ -2304,6 +2355,21 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					applied, editRevision: pState.documentEditRevision,
 					markdownCommandBarrierSupported: true,
 				});
+			}
+			if (applied
+				&& message.channel === COMPATIBILITY_PERSISTENCE_CHANNEL
+				&& message.requestSource === 'webview') {
+				const requestId = String(message.requestId);
+				pState.compatibilityPersistenceDocumentRequestIds.delete(requestId);
+				pState.compatibilityPersistenceAppliedDocumentRequests.set(
+					requestId,
+					compatibilityProjectionFingerprint ?? getCompatibilityProjectionFingerprint(message),
+				);
+				while (pState.compatibilityPersistenceAppliedDocumentRequests.size > 64) {
+					pState.compatibilityPersistenceAppliedDocumentRequests.delete(
+						pState.compatibilityPersistenceAppliedDocumentRequests.keys().next().value!,
+					);
+				}
 			}
 			if (applied) finalizeDocumentDefaultsAfterAcknowledgement(message.state);
 			break;
@@ -5256,6 +5322,24 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			break;
 	}
 };
+
+function getCompatibilityProjectionFingerprint(message: Record<string, unknown>): string {
+	const {
+		protocolVersion: _protocolVersion,
+		channel: _channel,
+		viewSessionId: _viewSessionId,
+		requestId: _requestId,
+		requestSource: _requestSource,
+		reloadRequestId: _reloadRequestId,
+		sourceGeneration: _sourceGeneration,
+		...projection
+	} = message;
+	try {
+		return JSON.stringify(projection);
+	} catch {
+		return '';
+	}
+}
 
 export async function drainBufferedHostMessages(): Promise<void> {
 	try {

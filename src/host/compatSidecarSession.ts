@@ -23,6 +23,7 @@ export class CompatSidecarSession {
 	private persistSequence = 0;
 	private persistTail: Promise<void> = Promise.resolve();
 	private upgradeTail: Promise<void> = Promise.resolve();
+	private pendingUpgradeCount = 0;
 	private closing = false;
 	private editRevision = 0;
 	private stateEditRevision = 0;
@@ -49,6 +50,7 @@ export class CompatSidecarSession {
 	get isClosing(): boolean { return this.closing; }
 	get isPanelVisible(): boolean { return this.panelVisible; }
 	get hasPendingFinalPersist(): boolean { return this.pendingFinalPersists.size > 0; }
+	get hasPendingUpgrade(): boolean { return this.pendingUpgradeCount > 0; }
 	hasPendingFinalPersistRequest(requestId: string): boolean {
 		return !!requestId && this.pendingFinalPersists.has(requestId);
 	}
@@ -135,6 +137,7 @@ export class CompatSidecarSession {
 
 	async beginUpgrade(revision: number): Promise<CompatUpgradeLease | undefined> {
 		if (this.closing) return undefined;
+		this.pendingUpgradeCount += 1;
 		const priorPersist = this.persistTail;
 		const priorUpgrade = this.upgradeTail;
 		let release!: () => void;
@@ -146,6 +149,7 @@ export class CompatSidecarSession {
 		]);
 		if (this.closing || !Number.isSafeInteger(revision) || revision < this.editRevision) {
 			release();
+			this.pendingUpgradeCount -= 1;
 			return undefined;
 		}
 		this.editRevision = revision;
@@ -155,6 +159,7 @@ export class CompatSidecarSession {
 			finish: () => {
 				if (finished) return;
 				finished = true;
+				this.pendingUpgradeCount -= 1;
 				release();
 			},
 		});

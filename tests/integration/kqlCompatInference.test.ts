@@ -4,7 +4,11 @@ import * as vscode from 'vscode';
 
 import { KqlCompatEditorProvider } from '../../src/host/kqlCompatEditorProvider';
 import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
-import { adaptMainWebviewStartupTestPanel } from './mainWebviewStartupTestAdapter';
+import {
+	adaptCompatibilityPersistenceTestPanel,
+	adaptMainWebviewStartupTestPanel,
+	registerCompatibilityPersistenceTestBootstrap,
+} from './mainWebviewStartupTestAdapter';
 
 type DisposableLike = { dispose(): void };
 
@@ -53,7 +57,11 @@ suite('KQL compat editor - inferred cluster/db wiring', () => {
 		const posted: any[] = [];
 
 		try {
-			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async (
+				panel: vscode.WebviewPanel,
+				options: any,
+			) => {
+				registerCompatibilityPersistenceTestBootstrap(panel, options?.compatibilityPersistence);
 				// no-op for this regression test
 			};
 			(QueryEditorProvider as any).prototype.handleWebviewMessage = async () => {
@@ -126,6 +134,7 @@ suite('KQL compat editor - inferred cluster/db wiring', () => {
 				onDidDispose: () => ({ dispose() {} } as DisposableLike)
 			} as any;
 			adaptMainWebviewStartupTestPanel(webviewPanel);
+			adaptCompatibilityPersistenceTestPanel(webviewPanel);
 
 			const token: vscode.CancellationToken = {
 				isCancellationRequested: false,

@@ -44,7 +44,11 @@ const handlerState = vi.hoisted(() => ({
 		devNotesSections: [],
 		lastExecutedBox: '',
 		documentEditRevision: 0,
+		sourceGeneration: 0,
 		documentViewSessionId: '',
+		compatibilityPersistenceViewSessionId: '',
+		compatibilityPersistenceDocumentRequestIds: new Set<string>(),
+		compatibilityPersistenceAppliedDocumentRequests: new Map<string, string>(),
 		documentViewInitialProjectionRequestId: '',
 		documentViewProjectionRequestIds: new Set<string>(),
 		resultsVisibleByBoxId: {},
@@ -54,6 +58,15 @@ const handlerState = vi.hoisted(() => ({
 
 const mocks = {
 	postMessageToHost: vi.fn((message: Record<string, unknown>) => {
+		const compatibilityTypes = new Set([
+			'requestDocument', 'persistDocument', 'documentReloadResult',
+		]);
+		const compatibilitySessionId = String(handlerState.pState.compatibilityPersistenceViewSessionId || '');
+		if (compatibilitySessionId && compatibilityTypes.has(String(message.type || ''))) {
+			Object.assign(message, {
+				protocolVersion: 1, channel: 'compatibility-persistence', viewSessionId: compatibilitySessionId,
+			});
+		}
 		const documentViewTypes = new Set([
 			'documentReloadResult', 'markdownDocumentCommand', 'markdownDocumentCommandBarrierResult',
 		]);
@@ -623,6 +636,18 @@ function documentViewHostMessage(message: Record<string, unknown>): Record<strin
 	};
 }
 
+function compatibilityHostMessage(
+	message: Record<string, unknown>,
+	viewSessionId = 'compatibility-session-1',
+): Record<string, unknown> {
+	return {
+		protocolVersion: 1,
+		channel: 'compatibility-persistence',
+		viewSessionId,
+		...message,
+	};
+}
+
 function kustoDispatch(clientActivityId: string): Record<string, unknown> {
 	return {
 		dispatchAttempt: 1,
@@ -718,7 +743,11 @@ describe('message-handler dispatch', () => {
 		});
 		delete (window as any).__kustoEnterFavoritesModeForBox;
 		handlerState.pState.documentEditRevision = 0;
+		handlerState.pState.sourceGeneration = 0;
 		handlerState.pState.documentViewSessionId = '';
+		handlerState.pState.compatibilityPersistenceViewSessionId = '';
+		handlerState.pState.compatibilityPersistenceDocumentRequestIds = new Set<string>();
+		handlerState.pState.compatibilityPersistenceAppliedDocumentRequests = new Map<string, string>();
 		handlerState.pState.documentViewInitialProjectionRequestId = '';
 		handlerState.pState.documentViewProjectionRequestIds = new Set<string>();
 		handlerState.pState.documentKind = 'kqlx';
@@ -803,6 +832,150 @@ describe('message-handler dispatch', () => {
 		dispatchHostMessage(message);
 		await Promise.resolve();
 		expect(mocks.handleDocumentDataMessage).toHaveBeenCalledWith(message);
+	});
+
+	it('rejects malformed and predecessor compatibility lifecycle traffic before B effects', async () => {
+		handlerState.pState.compatibilityPersistenceViewSessionId = 'compatibility-session-B';
+		handlerState.pState.compatibilityPersistenceDocumentRequestIds = new Set(['document-request-B']);
+		const projection = compatibilityHostMessage({
+			type: 'documentData', ok: true, requestId: 'document-request-B', requestSource: 'webview',
+			reloadRequestId: 'reload-B', sourceGeneration: 4, forceReload: true,
+			documentUri: 'file:///tmp/query.kql', documentKind: 'kql', allowedSectionKinds: ['query'],
+			firstSectionPinned: true, documentMutationAllowed: true, editRevision: 0,
+			state: { sections: [{ id: 'compat_primary_query', type: 'query', query: 'print 1' }] },
+			compatibilityMode: true, compatibilitySingleKind: 'query', defaultSectionKind: 'query',
+			upgradeRequestType: 'requestUpgradeToKqlx', compatibilityTooltip: 'Create a companion file.',
+		}, 'compatibility-session-B');
+
+		dispatchHostMessage({ ...projection, viewSessionId: 'compatibility-session-A' });
+		dispatchHostMessage({ ...projection, editRevision: '0' });
+		await Promise.resolve();
+		expect(mocks.handleDocumentDataMessage).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).not.toHaveBeenCalled();
+
+		dispatchHostMessage(projection);
+		await Promise.resolve();
+		expect(mocks.handleDocumentDataMessage).toHaveBeenCalledTimes(1);
+		expect(mocks.handleDocumentDataMessage).toHaveBeenCalledWith(projection);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(compatibilityHostMessage({
+			type: 'documentReloadResult', requestId: 'reload-B', applied: true, editRevision: 0,
+			markdownCommandBarrierSupported: true,
+		}, 'compatibility-session-B'));
+		expect(handlerState.pState.compatibilityPersistenceDocumentRequestIds.has('document-request-B')).toBe(false);
+
+		mocks.handleDocumentDataMessage.mockClear();
+		mocks.postMessageToHost.mockClear();
+		handlerState.pState.documentEditRevision = 2;
+		const retryProjection = {
+			...projection,
+			reloadRequestId: 'reload-B-retry',
+			sourceGeneration: 5,
+		};
+		dispatchHostMessage(retryProjection);
+		await Promise.resolve();
+		expect(mocks.handleDocumentDataMessage).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(compatibilityHostMessage({
+			type: 'documentReloadResult', requestId: 'reload-B-retry', applied: true, editRevision: 2,
+			markdownCommandBarrierSupported: true,
+		}, 'compatibility-session-B'));
+		expect(handlerState.pState.sourceGeneration).toBe(5);
+		const persistence = await import('../../src/webview/core/persistence.js');
+		expect(persistence.schedulePersist).toHaveBeenCalledWith('compatibility-projection-retry', true);
+
+		dispatchHostMessage(compatibilityHostMessage({
+			type: 'requestFinalPersist', requestId: 'final-B', reason: 'save',
+		}, 'compatibility-session-A'));
+		dispatchHostMessage(compatibilityHostMessage({
+			type: 'requestFinalPersist', requestId: 'final-B', reason: 4,
+		}, 'compatibility-session-B'));
+		dispatchHostMessage(compatibilityHostMessage({
+			type: 'requestFinalPersist', requestId: 'final-B', reason: 'save',
+		}, 'compatibility-session-B'));
+		expect(mocks.flushCompatibilityPersist).toHaveBeenCalledTimes(1);
+		expect(mocks.flushCompatibilityPersist).toHaveBeenCalledWith('final-B', 'save');
+
+		dispatchHostMessage(compatibilityHostMessage({
+			type: 'persistDocumentAck', snapshotId: 'snapshot-B', editRevision: 1,
+		}, 'compatibility-session-A'));
+		dispatchHostMessage(compatibilityHostMessage({
+			type: 'persistDocumentAck', snapshotId: 'snapshot-B', editRevision: '1',
+		}, 'compatibility-session-B'));
+		dispatchHostMessage(compatibilityHostMessage({
+			type: 'persistDocumentAck', snapshotId: 'snapshot-B', editRevision: 1,
+		}, 'compatibility-session-B'));
+		expect(mocks.acknowledgePersistDocument).toHaveBeenCalledTimes(1);
+		expect(mocks.acknowledgePersistDocument).toHaveBeenCalledWith('snapshot-B', 1, undefined);
+	});
+
+	it('bounds applied compatibility requests and applies a changed retry under the same request', async () => {
+		handlerState.pState.compatibilityPersistenceViewSessionId = 'compatibility-session-B';
+		for (let index = 0; index < 66; index++) {
+			const requestId = `bounded-request-${index}`;
+			handlerState.pState.compatibilityPersistenceDocumentRequestIds.add(requestId);
+			dispatchHostMessage(compatibilityHostMessage({
+				type: 'documentData', ok: true, requestId, requestSource: 'webview',
+				reloadRequestId: `bounded-reload-${index}`, sourceGeneration: index + 1, forceReload: true,
+				documentUri: 'file:///tmp/query.kql', documentKind: 'kql', allowedSectionKinds: ['query'],
+				firstSectionPinned: true, documentMutationAllowed: true, editRevision: 0,
+				state: { sections: [{ id: 'compat_primary_query', type: 'query', query: `print ${index}` }] },
+				compatibilityMode: true, compatibilitySingleKind: 'query', defaultSectionKind: 'query',
+				upgradeRequestType: 'requestUpgradeToKqlx', compatibilityTooltip: '',
+			}, 'compatibility-session-B'));
+		}
+		await Promise.resolve();
+		expect(handlerState.pState.compatibilityPersistenceAppliedDocumentRequests.size).toBe(64);
+		expect(handlerState.pState.compatibilityPersistenceAppliedDocumentRequests.has('bounded-request-0')).toBe(false);
+		expect(handlerState.pState.compatibilityPersistenceAppliedDocumentRequests.has('bounded-request-65')).toBe(true);
+
+		mocks.handleDocumentDataMessage.mockClear();
+		const changedRetry = compatibilityHostMessage({
+			type: 'documentData', ok: true, requestId: 'bounded-request-65', requestSource: 'webview',
+			reloadRequestId: 'bounded-reload-changed', sourceGeneration: 67, forceReload: true,
+			documentUri: 'file:///tmp/query.kql', documentKind: 'kql', allowedSectionKinds: ['query'],
+			firstSectionPinned: true, documentMutationAllowed: true, editRevision: 0,
+			state: { sections: [{ id: 'compat_primary_query', type: 'query', query: 'print changed' }] },
+			compatibilityMode: true, compatibilitySingleKind: 'query', defaultSectionKind: 'query',
+			upgradeRequestType: 'requestUpgradeToKqlx', compatibilityTooltip: '',
+		}, 'compatibility-session-B');
+		dispatchHostMessage(changedRetry);
+		await Promise.resolve();
+		expect(mocks.handleDocumentDataMessage).toHaveBeenCalledOnce();
+		expect(mocks.handleDocumentDataMessage).toHaveBeenCalledWith(changedRetry);
+	});
+
+	it('rejects a changed compatibility retry whose generation is older than the current projection', async () => {
+		handlerState.pState.compatibilityPersistenceViewSessionId = 'compatibility-session-B';
+		handlerState.pState.compatibilityPersistenceDocumentRequestIds = new Set(['stale-retry-request']);
+		const projection = compatibilityHostMessage({
+			type: 'documentData', ok: true, requestId: 'stale-retry-request', requestSource: 'webview',
+			reloadRequestId: 'stale-retry-initial', sourceGeneration: 8, forceReload: true,
+			documentUri: 'file:///tmp/query.kql', documentKind: 'kql', allowedSectionKinds: ['query'],
+			firstSectionPinned: true, documentMutationAllowed: true, editRevision: 0,
+			state: { sections: [{ id: 'compat_primary_query', type: 'query', query: 'print current' }] },
+			compatibilityMode: true, compatibilitySingleKind: 'query', defaultSectionKind: 'query',
+			upgradeRequestType: 'requestUpgradeToKqlx', compatibilityTooltip: '',
+		}, 'compatibility-session-B');
+		dispatchHostMessage(projection);
+		await Promise.resolve();
+		handlerState.pState.sourceGeneration = 8;
+		expect(handlerState.pState.sourceGeneration).toBe(8);
+
+		mocks.handleDocumentDataMessage.mockClear();
+		mocks.postMessageToHost.mockClear();
+		dispatchHostMessage({
+			...projection,
+			reloadRequestId: 'stale-retry-lower',
+			sourceGeneration: 7,
+			state: { sections: [{ id: 'compat_primary_query', type: 'query', query: 'print stale changed' }] },
+		});
+		await Promise.resolve();
+
+		expect(mocks.handleDocumentDataMessage).not.toHaveBeenCalled();
+		expect(handlerState.pState.sourceGeneration).toBe(8);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(compatibilityHostMessage({
+			type: 'documentReloadResult', requestId: 'stale-retry-lower', applied: false, editRevision: 0,
+			markdownCommandBarrierSupported: true,
+		}, 'compatibility-session-B'));
 	});
 
 	it('rejects malformed and duplicate initial document-view projections before adoption', async () => {

@@ -128,6 +128,12 @@ declare global {
 		// queryEditor.html — config object injected by extension host
 		// =====================================================================
 		__kustoQueryEditorConfig?: {
+			compatibilityPersistence?: {
+				protocolVersion: 1;
+				channel: 'compatibility-persistence';
+				viewSessionId: string;
+				initialRequestId?: string;
+			} | null;
 			monacoVsUri?: string;
 			monacoLoaderUri?: string;
 			cacheBuster?: string;

@@ -30,13 +30,16 @@ describe('CompatSidecarSession', () => {
 
 	it('holds newer persists behind an upgrade lease', async () => {
 		const session = new CompatSidecarSession(true, 'KQL');
+		expect(session.hasPendingUpgrade).toBe(false);
 		const upgrade = await session.beginUpgrade(1);
+		expect(session.hasPendingUpgrade).toBe(true);
 		const work = vi.fn();
 		const persist = session.queuePersist(1, async () => { work(); });
 		await Promise.resolve();
 		expect(work).not.toHaveBeenCalled();
 
 		upgrade?.finish();
+		expect(session.hasPendingUpgrade).toBe(false);
 		await persist;
 		expect(work).toHaveBeenCalledOnce();
 	});

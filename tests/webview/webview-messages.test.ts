@@ -9,11 +9,15 @@ describe('webview document-view transport', () => {
 	beforeEach(() => {
 		postMessage.mockReset();
 		pState.documentViewSessionId = '';
+		pState.compatibilityPersistenceViewSessionId = '';
+		pState.compatibilityPersistenceDocumentRequestIds.clear();
 		(window as any).vscode = { postMessage };
 	});
 
 	afterEach(() => {
 		pState.documentViewSessionId = '';
+		pState.compatibilityPersistenceViewSessionId = '';
+		pState.compatibilityPersistenceDocumentRequestIds.clear();
 		delete (window as any).vscode;
 	});
 
@@ -45,6 +49,55 @@ describe('webview document-view transport', () => {
 		expect(postMessage).toHaveBeenCalledWith({
 			type: 'documentReloadResult', requestId: 'compat-reload', applied: true, editRevision: 0,
 		});
+	});
+
+	it('stamps compatibility document requests and tracks their correlation', () => {
+		pState.compatibilityPersistenceViewSessionId = 'compatibility-session-1';
+		postMessageToHost({ type: 'requestDocument' });
+
+		const message = postMessage.mock.calls[0]?.[0];
+		expect(message).toEqual(expect.objectContaining({
+			protocolVersion: 1,
+			channel: 'compatibility-persistence',
+			viewSessionId: 'compatibility-session-1',
+			type: 'requestDocument',
+		}));
+		expect(typeof message.requestId).toBe('string');
+		expect(pState.compatibilityPersistenceDocumentRequestIds.has(message.requestId)).toBe(true);
+	});
+
+	it('bounds pending compatibility document requests', () => {
+		pState.compatibilityPersistenceViewSessionId = 'compatibility-session-1';
+		for (let index = 0; index < 70; index++) {
+			postMessageToHost({ type: 'requestDocument', requestId: `request-${index}` });
+		}
+
+		expect(pState.compatibilityPersistenceDocumentRequestIds.size).toBe(64);
+		expect(pState.compatibilityPersistenceDocumentRequestIds.has('request-0')).toBe(false);
+		expect(pState.compatibilityPersistenceDocumentRequestIds.has('request-69')).toBe(true);
+	});
+
+	it('stamps valid compatibility snapshots and drops malformed ones', () => {
+		pState.compatibilityPersistenceViewSessionId = 'compatibility-session-1';
+		postMessageToHost({
+			type: 'persistDocument', state: { sections: [] }, sourceGeneration: 2,
+			editRevision: 3, snapshotId: 'snapshot-1',
+		});
+
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			protocolVersion: 1,
+			channel: 'compatibility-persistence',
+			viewSessionId: 'compatibility-session-1',
+			type: 'persistDocument',
+			snapshotId: 'snapshot-1',
+		}));
+		postMessage.mockClear();
+
+		postMessageToHost({
+			type: 'persistDocument', state: { sections: [] }, sourceGeneration: 2,
+			editRevision: -1, snapshotId: 'snapshot-malformed',
+		});
+		expect(postMessage).not.toHaveBeenCalled();
 	});
 
 	it('drops malformed in-scope messages instead of posting them', () => {

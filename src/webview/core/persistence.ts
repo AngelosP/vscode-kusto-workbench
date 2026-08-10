@@ -1920,6 +1920,9 @@ export function resetDocumentPersistenceForTest(): void {
 	pState.documentViewSessionId = '';
 	pState.documentViewInitialProjectionRequestId = '';
 	pState.documentViewProjectionRequestIds.clear();
+	pState.compatibilityPersistenceViewSessionId = '';
+	pState.compatibilityPersistenceDocumentRequestIds.clear();
+	pState.compatibilityPersistenceAppliedDocumentRequests.clear();
 	pState.sourceGeneration = 0;
 	pState.documentMutationAllowed = true;
 	pState.documentRuntimeActive = true;
@@ -2026,6 +2029,17 @@ export function flushCompatibilityPersist(requestId?: string, reason = 'flush'):
 				postMessageToHost({
 					type: 'persistDocument', state: { sections: [] }, sourceGeneration: pState.sourceGeneration, flushRequestId: requestId,
 					flushUnavailableReason: pState.restoreInProgress ? 'restore-in-progress' : 'persistence-disabled',
+				});
+			}
+			return;
+		}
+		if (pState.compatibilityPersistenceViewSessionId
+			&& pState.documentKind !== 'kql'
+			&& pState.documentKind !== 'sql') {
+			if (requestId) {
+				postMessageToHost({
+					type: 'persistDocument', state: { sections: [] }, sourceGeneration: pState.sourceGeneration,
+					flushRequestId: requestId, flushUnavailableReason: 'document-not-ready',
 				});
 			}
 			return;

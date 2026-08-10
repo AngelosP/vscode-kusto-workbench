@@ -207,7 +207,27 @@
 			if (path === 'vscodeApi.js' && window.vscode && !window.__kustoBootstrapRequestDocumentSent) {
 				try {
 					traceFileOpen('bootstrap.requestDocument.send');
-					window.vscode.postMessage({ type: 'requestDocument' });
+					var requestDocumentMessage = { type: 'requestDocument' };
+					var compatibilityPersistence = window.__kustoQueryEditorConfig
+						? window.__kustoQueryEditorConfig.compatibilityPersistence
+						: null;
+					if (compatibilityPersistence
+						&& typeof compatibilityPersistence.protocolVersion === 'number'
+						&& typeof compatibilityPersistence.channel === 'string'
+						&& compatibilityPersistence.channel
+						&& typeof compatibilityPersistence.viewSessionId === 'string'
+						&& compatibilityPersistence.viewSessionId.trim()) {
+						var initialRequestId = 'compat-document-request-' + Date.now() + '-bootstrap';
+						compatibilityPersistence.initialRequestId = initialRequestId;
+						requestDocumentMessage = {
+							type: 'requestDocument',
+							protocolVersion: compatibilityPersistence.protocolVersion,
+							channel: compatibilityPersistence.channel,
+							viewSessionId: compatibilityPersistence.viewSessionId,
+							requestId: initialRequestId
+						};
+					}
+					window.vscode.postMessage(requestDocumentMessage);
 					window.__kustoBootstrapRequestDocumentSent = true;
 					perfMark('webview.bootstrap.requestDocument.sent');
 				} catch (e) { console.error('[kusto]', e); }

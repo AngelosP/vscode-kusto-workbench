@@ -15,9 +15,13 @@ import { SqlCompatEditorProvider } from '../../src/host/sqlCompatEditorProvider'
 import { CompatSidecarStore, readCompatSidecarSnapshot } from '../../src/host/compatSidecarStore';
 import { CompatSidecarSession } from '../../src/host/compatSidecarSession';
 import { CompatSidecarCloseCoordinator } from '../../src/host/compatSidecarCloseCoordinator';
+import { parseCompatibilityPersistenceWebviewMessage } from '../../src/shared/compatibilityPersistenceProtocol';
 import {
+	adaptCompatibilityPersistenceTestPanel,
 	adaptMainWebviewStartupTestPanel,
 	deferMainWebviewReadyForTest,
+	getCompatibilityPersistenceTestBootstrap,
+	registerCompatibilityPersistenceTestBootstrap,
 } from './mainWebviewStartupTestAdapter';
 
 type DisposableLike = { dispose(): void };
@@ -238,6 +242,7 @@ suite('Sidecar .kql.json strategy', () => {
 			token: vscode.CancellationToken,
 		) {
 			adaptMainWebviewStartupTestPanel(panel);
+			adaptCompatibilityPersistenceTestPanel(panel);
 			return originalResolveKqlCompatEditor.call(this, document, panel, token);
 		};
 		(SqlCompatEditorProvider as any).prototype.resolveCustomTextEditor = function (
@@ -247,9 +252,14 @@ suite('Sidecar .kql.json strategy', () => {
 			token: vscode.CancellationToken,
 		) {
 			adaptMainWebviewStartupTestPanel(panel);
+			adaptCompatibilityPersistenceTestPanel(panel);
 			return originalResolveSqlCompatEditor.call(this, document, panel, token);
 		};
-		(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
+		(QueryEditorProvider as any).prototype.initializeWebviewPanel = async (
+			panel: vscode.WebviewPanel,
+			options: any,
+		) => {
+			registerCompatibilityPersistenceTestBootstrap(panel, options?.compatibilityPersistence);
 			// no-op
 		};
 		(QueryEditorProvider as any).prototype.handleWebviewMessage = async () => {
@@ -801,11 +811,16 @@ suite('Sidecar .kql.json strategy', () => {
 
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const projection = posted.filter(message => message?.type === 'documentData' && message?.ok === true).at(-1);
+				const bootstrap = getCompatibilityPersistenceTestBootstrap(panel);
+				assert.ok(projection && bootstrap);
 				const acceptedSidecarText = fs.readFileSync(sidecarPath, 'utf8');
 				applyEditCalls = 0;
 				const snapshotId = `idless-forged-${index}`;
 				await Promise.resolve(receiveHandler!({
+					...bootstrap,
 					type: 'persistDocument', snapshotId, editRevision: 1,
+					sourceGeneration: projection.sourceGeneration,
 					state: { sections: [{ type: variant.primaryKind, query: variant.forgedText }] },
 				}));
 
@@ -6962,7 +6977,8 @@ suite('Sidecar .kql.json strategy', () => {
 				(QueryEditorProvider as any).prototype.handleWebviewMessage = async (message: any) => {
 					delegatedInbound.push(String(message?.type || ''));
 				};
-				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async function (panel: vscode.WebviewPanel) {
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async function (panel: vscode.WebviewPanel, options: any) {
+					registerCompatibilityPersistenceTestBootstrap(panel, options?.compatibilityPersistence);
 					queryEditor = this;
 					(this as any).panel = panel;
 					(this as any)._panelDisposed = false;
@@ -7179,7 +7195,8 @@ suite('Sidecar .kql.json strategy', () => {
 					markBlocked();
 					await blockedGate;
 				};
-				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async (panel: vscode.WebviewPanel, options: any) => {
+					registerCompatibilityPersistenceTestBootstrap(panel, options?.compatibilityPersistence);
 					assert.ok(receiveHandler, 'listener-first startup must expose the receiver during initialization');
 					void Promise.resolve(receiveHandler!({ type: 'pauseStartupForBeforeUnloadTest' }));
 				};
@@ -7272,7 +7289,8 @@ suite('Sidecar .kql.json strategy', () => {
 				let releaseInitialize!: () => void;
 				const initializeEntered = new Promise<void>(resolve => { markInitializeEntered = resolve; });
 				const initializeGate = new Promise<void>(resolve => { releaseInitialize = resolve; });
-				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async (panel: vscode.WebviewPanel, options: any) => {
+					registerCompatibilityPersistenceTestBootstrap(panel, options?.compatibilityPersistence);
 					markInitializeEntered();
 					await initializeGate;
 				};
@@ -7350,7 +7368,8 @@ suite('Sidecar .kql.json strategy', () => {
 				let releaseInitialize!: () => void;
 				const initializeEntered = new Promise<void>(resolve => { markInitializeEntered = resolve; });
 				const initializeGate = new Promise<void>(resolve => { releaseInitialize = resolve; });
-				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async (panel: vscode.WebviewPanel, options: any) => {
+					registerCompatibilityPersistenceTestBootstrap(panel, options?.compatibilityPersistence);
 					markInitializeEntered();
 					await initializeGate;
 				};
@@ -9027,17 +9046,29 @@ suite('Sidecar .kql.json strategy', () => {
 					] },
 				})));
 				await paused;
-				const newerPersist = Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
+				const bootstrap = getCompatibilityPersistenceTestBootstrap(panel);
+				assert.ok(bootstrap);
+				const revisionTwoMessage = {
+					...bootstrap,
 					type: 'persistDocument', sourceGeneration: activeSourceGeneration, editRevision: 2,
+					snapshotId: `upgrade-revision-2-${index}`,
 					state: { sections: [
-						{ type: variant.firstType, query: 'select 1' },
-						{ type: 'markdown', text: 'PERSIST_REVISION_2' },
+						{ id: variant.firstType === 'query' ? 'compat_primary_query' : 'compat_primary_sql', type: variant.firstType, query: 'select 1' },
+						{ id: 'compat_2_markdown', type: 'markdown', text: 'PERSIST_REVISION_2' },
 					] },
-				})));
+				};
+				const parsedRevisionTwo = parseCompatibilityPersistenceWebviewMessage(
+					revisionTwoMessage,
+					variant.firstType === 'query' ? 'kql' : 'sql',
+				);
+				assert.ok(parsedRevisionTwo.ok, parsedRevisionTwo.ok ? undefined : parsedRevisionTwo.error);
+				const newerPersist = Promise.resolve(receiveHandler!(revisionTwoMessage));
 				release();
 				await Promise.all([upgrade, newerPersist]);
 				assert.ok(posted.some(message => message?.type === 'documentData'
 					&& message.expectedEditRevision === 1), `${variant.extension} upgrade reload must remain bound to revision 1`);
+				assert.ok(posted.some(message => message?.type === 'persistDocumentAck'
+					&& message.editRevision === 2), `${variant.extension} revision 2 persist must acknowledge exactly once`);
 				await Promise.resolve(saveHandler!(document));
 
 				const finalText = fs.readFileSync(sidecarPath, 'utf8');
@@ -9048,6 +9079,127 @@ suite('Sidecar .kql.json strategy', () => {
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
 			(vscode.window as any).showInformationMessage = originalShowInformationMessage;
 			(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSaveTextDocument;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('queued multi-section snapshots reject when companion creation is cancelled or fails', async () => {
+		const originalShowInformationMessage = vscode.window.showInformationMessage;
+		const variants = [
+			{
+				extension: '.kql', Provider: KqlCompatEditorProvider, requestType: 'requestUpgradeToKqlx',
+				primaryType: 'query', primaryId: 'compat_primary_query', enableMethod: 'enableSidecarKqlxForCompat',
+			},
+			{
+				extension: '.sql', Provider: SqlCompatEditorProvider, requestType: 'requestUpgradeToSqlx',
+				primaryType: 'sql', primaryId: 'compat_primary_sql', enableMethod: 'enableSidecarForSqlCompat',
+			},
+		] as const;
+		const outcomes = ['cancelled', 'failed'] as const;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-upgrade-failure-'));
+
+		try {
+			for (const [variantIndex, variant] of variants.entries()) {
+				for (const [outcomeIndex, outcome] of outcomes.entries()) {
+					let markUpgradeBlocked!: () => void;
+					let releaseUpgrade!: () => void;
+					const upgradeBlocked = new Promise<void>(resolve => { markUpgradeBlocked = resolve; });
+					const upgradeGate = new Promise<void>(resolve => { releaseUpgrade = resolve; });
+					const prototype = (variant.Provider as any).prototype;
+					const originalEnable = prototype[variant.enableMethod];
+					if (outcome === 'cancelled') {
+						(vscode.window as any).showInformationMessage = async () => {
+							markUpgradeBlocked();
+							await upgradeGate;
+							return undefined;
+						};
+					} else {
+						(vscode.window as any).showInformationMessage = async () => 'Create companion file';
+						prototype[variant.enableMethod] = async () => {
+							markUpgradeBlocked();
+							await upgradeGate;
+							return undefined;
+						};
+					}
+
+					const sourcePath = path.join(tmpDir, `upgrade-${variantIndex}-${outcomeIndex}${variant.extension}`);
+					const sidecarPath = `${sourcePath}.json`;
+					fs.writeFileSync(sourcePath, 'select 1', 'utf8');
+					let receiveHandler: ((message: any) => unknown) | undefined;
+					const posted: any[] = [];
+					const provider = new (variant.Provider as any)(
+						{
+							subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+							globalState: { get: () => undefined, update: async () => undefined },
+							globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-${variantIndex}-${outcomeIndex}`)),
+						} as any,
+						vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+					);
+					const document = {
+						uri: vscode.Uri.file(sourcePath), getText: () => 'select 1', lineCount: 1,
+						lineAt: () => ({ text: 'select 1' }), isDirty: false, save: async () => true,
+					} as any;
+					const panel = {
+						visible: true,
+						webview: {
+							options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+							onDidReceiveMessage: (handler: (message: any) => unknown) => {
+								receiveHandler = handler;
+								return { dispose() {} };
+							},
+						},
+						onDidChangeViewState: () => ({ dispose() {} }),
+						onDidDispose: () => ({ dispose() {} }),
+					} as any;
+
+					try {
+						await provider.resolveCustomTextEditor(document, panel, {} as any);
+						await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+						const projection = posted.filter(message => message?.type === 'documentData' && message?.ok === true).at(-1);
+						const bootstrap = getCompatibilityPersistenceTestBootstrap(panel);
+						assert.ok(projection && bootstrap);
+						const upgrade = Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
+							type: variant.requestType, addKind: 'markdown', editRevision: 1,
+							state: { sections: [
+								{ type: variant.primaryType, query: 'select 1' },
+								{ type: 'markdown', text: 'UPGRADE_PENDING' },
+							] },
+						})));
+						await upgradeBlocked;
+						const rejectedSnapshotId = `failed-upgrade-${variantIndex}-${outcomeIndex}`;
+						const queuedSnapshot = Promise.resolve(receiveHandler!({
+							...bootstrap,
+							type: 'persistDocument', sourceGeneration: projection.sourceGeneration,
+							editRevision: 2, snapshotId: rejectedSnapshotId,
+							state: { sections: [
+								{ id: variant.primaryId, type: variant.primaryType, query: 'select 1' },
+								{ id: 'compat_2_markdown', type: 'markdown', text: 'MUST_NOT_ADMIT' },
+							] },
+						}));
+						releaseUpgrade();
+						await Promise.all([upgrade, queuedSnapshot]);
+
+						assert.strictEqual(fs.existsSync(sidecarPath), false);
+						assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+							&& message.snapshotId === rejectedSnapshotId));
+						const validSnapshotId = `plain-after-upgrade-${variantIndex}-${outcomeIndex}`;
+						await Promise.resolve(receiveHandler!({
+							...bootstrap,
+							type: 'persistDocument', sourceGeneration: projection.sourceGeneration,
+							editRevision: 1, snapshotId: validSnapshotId,
+							state: { sections: [
+								{ id: variant.primaryId, type: variant.primaryType, query: 'select 1' },
+							] },
+						}));
+						assert.strictEqual(posted.filter(message => message?.type === 'persistDocumentAck'
+							&& message.snapshotId === validSnapshotId).length, 1);
+					} finally {
+						prototype[variant.enableMethod] = originalEnable;
+					}
+				}
+			}
+		} finally {
+			(vscode.window as any).showInformationMessage = originalShowInformationMessage;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});
@@ -10081,6 +10233,7 @@ suite('Sidecar .kql.json strategy', () => {
 				fs.writeFileSync(sourcePath, 'select 1', 'utf8');
 				let receiveHandler: ((message: any) => unknown) | undefined;
 				let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+				let pendingProjection: any;
 				(vscode.workspace as any).onWillSaveTextDocument = (handler: (event: vscode.TextDocumentWillSaveEvent) => unknown) => {
 					willSaveHandler = handler;
 					return { dispose() {} };
@@ -10097,6 +10250,7 @@ suite('Sidecar .kql.json strategy', () => {
 					webview: {
 						options: {},
 						postMessage: async (message: any) => {
+							if (message?.type === 'documentData') pendingProjection = message;
 							if (message?.type === 'requestFinalPersist') {
 								void Promise.resolve().then(() => receiveHandler?.({
 									type: 'persistDocument', state: { sections: [] },
@@ -10116,6 +10270,8 @@ suite('Sidecar .kql.json strategy', () => {
 
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				assert.ok(willSaveHandler && receiveHandler);
+				const initialProjection = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				await waitForCondition(() => !!pendingProjection, `${variant.extension} initial projection was not posted`);
 				let saveBarrier: Promise<vscode.TextEdit[]> | undefined;
 				willSaveHandler!({
 					document,
@@ -10125,6 +10281,11 @@ suite('Sidecar .kql.json strategy', () => {
 				await assert.doesNotReject(saveBarrier!);
 				assert.deepStrictEqual(await saveBarrier!, []);
 				assert.deepStrictEqual(errors, []);
+				await Promise.resolve(receiveHandler!({
+					type: 'documentReloadResult', requestId: pendingProjection.reloadRequestId,
+					applied: true, editRevision: Number(pendingProjection.editRevision || 0),
+				}));
+				await initialProjection;
 			}
 		} finally {
 			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSaveTextDocument;
@@ -11027,6 +11188,297 @@ suite('Sidecar .kql.json strategy', () => {
 		} finally {
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
 			(vscode.window as any).showWarningMessage = originalShowWarningMessage;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('compatibility persistence rejects malformed and predecessor panel traffic before successor effects', async () => {
+		const prototype = (QueryEditorProvider as any).prototype;
+		const originalInitialize = prototype.initializeWebviewPanel;
+		const originalSanitize = prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalOnDidChangeTextDocument = vscode.workspace.onDidChangeTextDocument;
+		const originalOnWillSaveTextDocument = vscode.workspace.onWillSaveTextDocument;
+		const originalOnDidSaveTextDocument = vscode.workspace.onDidSaveTextDocument;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-compat-persistence-session-'));
+		const variants = [
+			{
+				extension: '.kql', Provider: KqlCompatEditorProvider, primaryType: 'query',
+				primaryId: 'compat_primary_query', kind: 'kqlx',
+			},
+			{
+				extension: '.sql', Provider: SqlCompatEditorProvider, primaryType: 'sql',
+				primaryId: 'compat_primary_sql', kind: 'sqlx',
+			},
+		] as const;
+		type RegisteredHandler<T> = { active: boolean; handler: T };
+		const changeHandlers: Array<RegisteredHandler<(event: vscode.TextDocumentChangeEvent) => unknown>> = [];
+		const willSaveHandlers: Array<RegisteredHandler<(event: vscode.TextDocumentWillSaveEvent) => unknown>> = [];
+		const didSaveHandlers: Array<RegisteredHandler<(document: vscode.TextDocument) => unknown>> = [];
+		const bootstrapByPanel = new Map<object, any>();
+		let attackSanitizations = 0;
+
+		const register = <T>(handlers: Array<RegisteredHandler<T>>, handler: T): vscode.Disposable => {
+			const registration = { active: true, handler };
+			handlers.push(registration);
+			return { dispose: () => { registration.active = false; } };
+		};
+		const envelope = (viewSessionId: string, message: Record<string, unknown>) => ({
+			protocolVersion: 1,
+			channel: 'compatibility-persistence',
+			viewSessionId,
+			...message,
+		});
+
+		try {
+			prototype.initializeWebviewPanel = async (_panel: vscode.WebviewPanel, options: any) => {
+				bootstrapByPanel.set(_panel as object, options?.compatibilityPersistence);
+			};
+			prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => {
+				if (JSON.stringify(state).includes('ATTACK_')) attackSanitizations++;
+				return state;
+			};
+			(vscode.workspace as any).onDidChangeTextDocument = (handler: any) => register(changeHandlers, handler);
+			(vscode.workspace as any).onWillSaveTextDocument = (handler: any) => register(willSaveHandlers, handler);
+			(vscode.workspace as any).onDidSaveTextDocument = (handler: any) => register(didSaveHandlers, handler);
+
+			for (const [index, variant] of variants.entries()) {
+				changeHandlers.length = 0;
+				willSaveHandlers.length = 0;
+				didSaveHandlers.length = 0;
+				attackSanitizations = 0;
+				const sourcePath = path.join(tmpDir, `session-${index}${variant.extension}`);
+				const sidecarPath = `${sourcePath}.json`;
+				let currentText = variant.primaryType === 'query' ? 'print original = 1' : 'SELECT 1 AS original';
+				let applyEditCalls = 0;
+				fs.writeFileSync(sourcePath, currentText, 'utf8');
+				fs.writeFileSync(sidecarPath, JSON.stringify({
+					kind: variant.kind, version: 1,
+					state: { sections: [
+						{ id: variant.primaryId, type: variant.primaryType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'markdown_1', type: 'markdown', text: 'BASELINE' },
+					] },
+				}, null, 2) + '\n', 'utf8');
+				(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+					applyEditCalls++;
+					const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+					if (typeof replacement !== 'string') return false;
+					currentText = replacement;
+					return true;
+				};
+
+				const provider = new (variant.Provider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-${index}`)),
+						extensionMode: vscode.ExtensionMode.Test,
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(sourcePath), getText: () => currentText,
+					get lineCount() { return Math.max(1, currentText.split(/\r?\n/).length); },
+					lineAt: (line: number) => ({ text: currentText.split(/\r?\n/)[line] ?? '' }),
+					eol: vscode.EndOfLine.LF, isDirty: false, save: async () => true,
+				} as any;
+				const createPanel = () => {
+					let receive: ((message: any) => unknown) | undefined;
+					const posted: any[] = [];
+					const disposeHandlers: Array<() => void> = [];
+					const panel = {
+						visible: true, active: true,
+						webview: {
+							options: {}, postMessage: async (message: any) => { posted.push(message); return true; },
+							onDidReceiveMessage: (handler: (message: any) => unknown) => {
+								receive = handler;
+								return { dispose() {} };
+							},
+						},
+						onDidChangeViewState: () => ({ dispose() {} }),
+						onDidDispose: (handler: () => void) => {
+							disposeHandlers.push(handler);
+							return { dispose() {} };
+						},
+					} as any;
+					return { panel, posted, disposeHandlers, receive: () => receive };
+				};
+				const openPanel = async (label: string) => {
+					const testPanel = createPanel();
+					await provider.resolveCustomTextEditor(document, testPanel.panel, {} as any);
+					const bootstrap = bootstrapByPanel.get(testPanel.panel as object);
+					assert.strictEqual(bootstrap?.protocolVersion, 1, `${variant.extension} ${label} must receive a protocol version`);
+					assert.strictEqual(bootstrap?.channel, 'compatibility-persistence');
+					assert.ok(typeof bootstrap?.viewSessionId === 'string' && bootstrap.viewSessionId.length > 0);
+					const requestId = `${label}-request-${index}`;
+					let settled = false;
+					const request = Promise.resolve(testPanel.receive()!(envelope(bootstrap.viewSessionId, {
+						type: 'requestDocument', requestId,
+					}))).then(() => { settled = true; });
+					await waitForCondition(
+						() => testPanel.posted.some(message => message?.type === 'documentData' && message?.requestId === requestId),
+						`${variant.extension} ${label} did not receive its correlated projection`,
+					);
+					const projection = testPanel.posted.find(message => message?.type === 'documentData' && message?.requestId === requestId);
+					assert.strictEqual(projection.viewSessionId, bootstrap.viewSessionId);
+					assert.strictEqual(projection.channel, 'compatibility-persistence');
+					await Promise.resolve(testPanel.receive()!(envelope(bootstrap.viewSessionId, {
+						type: 'documentReloadResult', requestId: projection.reloadRequestId,
+						applied: true, editRevision: Number(projection.editRevision || 0),
+					})));
+					await request;
+					assert.strictEqual(settled, true);
+					return { ...testPanel, bootstrap, projection };
+				};
+
+				const panelA = await openPanel('A');
+				panelA.panel.visible = false;
+				for (const dispose of panelA.disposeHandlers) dispose();
+				await new Promise<void>(resolve => setImmediate(resolve));
+				const panelB = await openPanel('B');
+				assert.notStrictEqual(panelA.bootstrap.viewSessionId, panelB.bootstrap.viewSessionId);
+
+				const projectionCount = panelB.posted.filter(message => message?.type === 'documentData').length;
+				void Promise.resolve(panelB.receive()!(envelope(panelA.bootstrap.viewSessionId, {
+					type: 'requestDocument', requestId: `B-predecessor-request-${index}`,
+				})));
+				void Promise.resolve(panelB.receive()!({
+					protocolVersion: '1', channel: 'compatibility-persistence',
+					viewSessionId: panelB.bootstrap.viewSessionId,
+					type: 'requestDocument', requestId: `B-malformed-request-${index}`,
+				}));
+				await new Promise<void>(resolve => setImmediate(resolve));
+				assert.strictEqual(
+					panelB.posted.filter(message => message?.type === 'documentData').length,
+					projectionCount,
+					`${variant.extension} B must not project for malformed or predecessor requests`,
+				);
+
+				const reloadRequestId = `B-reload-request-${index}`;
+				let reloadSettled = false;
+				const reload = Promise.resolve(panelB.receive()!(envelope(panelB.bootstrap.viewSessionId, {
+					type: 'requestDocument', requestId: reloadRequestId,
+				}))).then(() => { reloadSettled = true; });
+				await waitForCondition(
+					() => panelB.posted.some(message => message?.type === 'documentData' && message?.requestId === reloadRequestId),
+					`${variant.extension} B did not publish the reload projection`,
+				);
+				const reloadProjection = panelB.posted.find(message => message?.type === 'documentData' && message?.requestId === reloadRequestId);
+				await Promise.resolve(panelB.receive()!(envelope(panelA.bootstrap.viewSessionId, {
+					type: 'documentReloadResult', requestId: reloadProjection.reloadRequestId,
+					applied: true, editRevision: Number(reloadProjection.editRevision || 0),
+				})));
+				await Promise.resolve(panelB.receive()!({
+					protocolVersion: 1, channel: 'compatibility-persistence',
+					viewSessionId: panelB.bootstrap.viewSessionId,
+					type: 'documentReloadResult', requestId: reloadProjection.reloadRequestId,
+					applied: 'true', editRevision: Number(reloadProjection.editRevision || 0),
+				}));
+				await new Promise<void>(resolve => setImmediate(resolve));
+				assert.strictEqual(reloadSettled, false, `${variant.extension} B reload must remain pending`);
+				await Promise.resolve(panelB.receive()!(envelope(panelB.bootstrap.viewSessionId, {
+					type: 'documentReloadResult', requestId: reloadProjection.reloadRequestId,
+					applied: true, editRevision: Number(reloadProjection.editRevision || 0),
+				})));
+				await reload;
+
+				const attackState = (text: string) => ({ sections: [
+					{ id: variant.primaryId, type: variant.primaryType, query: currentText },
+					{ id: 'markdown_1', type: 'markdown', text },
+				] });
+				for (const attack of [
+					envelope(panelA.bootstrap.viewSessionId, {
+						type: 'persistDocument', state: attackState('ATTACK_PREDECESSOR'),
+						sourceGeneration: reloadProjection.sourceGeneration, editRevision: 1,
+						snapshotId: `predecessor-${index}`,
+					}),
+					{
+						protocolVersion: 1, channel: 'compatibility-persistence',
+						viewSessionId: panelB.bootstrap.viewSessionId,
+						type: 'persistDocument', state: attackState('ATTACK_MALFORMED'),
+						sourceGeneration: reloadProjection.sourceGeneration, editRevision: '1',
+						snapshotId: `malformed-${index}`,
+					},
+					{
+						protocolVersion: 1, channel: 'compatibility-persistence',
+						viewSessionId: panelB.bootstrap.viewSessionId,
+						type: 'persistDocument', state: { sections: [{}] },
+						sourceGeneration: reloadProjection.sourceGeneration, editRevision: 99,
+						snapshotId: `malformed-state-${index}`,
+					},
+				]) {
+					await Promise.resolve(panelB.receive()!(attack));
+				}
+				assert.strictEqual(attackSanitizations, 0, `${variant.extension} B must not reserve attack persists`);
+				assert.strictEqual(applyEditCalls, 0, `${variant.extension} B primary text must remain untouched`);
+				assert.ok(!panelB.posted.some(message => message?.snapshotId === `predecessor-${index}`));
+				assert.ok(!panelB.posted.some(message => message?.snapshotId === `malformed-${index}`));
+				assert.ok(!panelB.posted.some(message => message?.snapshotId === `malformed-state-${index}`));
+
+				const validSnapshotId = `valid-${index}`;
+				await Promise.resolve(panelB.receive()!(envelope(panelB.bootstrap.viewSessionId, {
+					type: 'persistDocument', state: attackState('B_VALID'),
+					sourceGeneration: reloadProjection.sourceGeneration, editRevision: 1,
+					snapshotId: validSnapshotId,
+				})));
+				assert.strictEqual(
+					panelB.posted.filter(message => message?.type === 'persistDocumentAck' && message?.snapshotId === validSnapshotId).length,
+					1,
+				);
+
+				const activeWillSave = [...willSaveHandlers].reverse().find(registration => registration.active);
+				assert.ok(activeWillSave);
+				let saveBarrier: Promise<vscode.TextEdit[]> | undefined;
+				activeWillSave.handler({
+					document,
+					waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { saveBarrier = Promise.resolve(thenable); },
+				} as any);
+				await waitForCondition(
+					() => panelB.posted.some(message => message?.type === 'requestFinalPersist'),
+					`${variant.extension} B did not request final persistence`,
+				);
+				const finalRequest = panelB.posted.find(message => message?.type === 'requestFinalPersist');
+				assert.strictEqual(finalRequest.viewSessionId, panelB.bootstrap.viewSessionId);
+				let saveSettled = false;
+				const save = saveBarrier!.then(value => { saveSettled = true; return value; });
+				await Promise.resolve(panelB.receive()!(envelope(panelA.bootstrap.viewSessionId, {
+					type: 'persistDocument', state: attackState('ATTACK_FINAL_PREDECESSOR'),
+					sourceGeneration: reloadProjection.sourceGeneration, editRevision: 2,
+					snapshotId: `predecessor-final-${index}`, flushRequestId: finalRequest.requestId,
+				})));
+				await Promise.resolve(panelB.receive()!({
+					protocolVersion: 1, channel: 'compatibility-persistence',
+					viewSessionId: panelB.bootstrap.viewSessionId,
+					type: 'persistDocument', state: null,
+					sourceGeneration: reloadProjection.sourceGeneration, editRevision: 2,
+					snapshotId: `malformed-final-${index}`, flushRequestId: finalRequest.requestId,
+				}));
+				await new Promise<void>(resolve => setImmediate(resolve));
+				assert.strictEqual(saveSettled, false, `${variant.extension} B final waiter must remain pending`);
+				await Promise.resolve(panelB.receive()!(envelope(panelB.bootstrap.viewSessionId, {
+					type: 'persistDocument', state: attackState('B_FINAL'),
+					sourceGeneration: reloadProjection.sourceGeneration, editRevision: 2,
+					snapshotId: `valid-final-${index}`, flushRequestId: finalRequest.requestId,
+				})));
+				assert.deepStrictEqual(await save, []);
+				assert.strictEqual(
+					panelB.posted.filter(message => message?.type === 'persistDocumentAck' && message?.snapshotId === `valid-final-${index}`).length,
+					1,
+				);
+				const activeDidSave = [...didSaveHandlers].reverse().find(registration => registration.active);
+				assert.ok(activeDidSave);
+				await Promise.resolve(activeDidSave.handler(document));
+				const persisted = fs.readFileSync(sidecarPath, 'utf8');
+				assert.ok(persisted.includes('B_FINAL'));
+				assert.ok(!persisted.includes('ATTACK_'));
+			}
+		} finally {
+			prototype.initializeWebviewPanel = originalInitialize;
+			prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChangeTextDocument;
+			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSaveTextDocument;
+			(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSaveTextDocument;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});

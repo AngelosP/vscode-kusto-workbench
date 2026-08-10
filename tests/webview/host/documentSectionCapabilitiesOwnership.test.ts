@@ -72,6 +72,10 @@ describe('document section capability ownership', () => {
 			expect(owner).toContain('documentSectionCapabilities');
 		}
 		expect(markdownWebview).toContain("from '../core/document-capabilities.js'");
+		expect(preload).toContain('compatibilityPersistence.initialRequestId = initialRequestId');
+		expect(preload).toContain('protocolVersion: compatibilityPersistence.protocolVersion');
+		expect(preload).toContain('channel: compatibilityPersistence.channel');
+		expect(preload).toContain('viewSessionId: compatibilityPersistence.viewSessionId');
 		expect(browserRoot).toContain("from './viewer-document'");
 		for (const syntheticType of ['persistenceMode', 'connectionsData', 'copilotAvailability', 'documentData']) {
 			expect(browserViewer).not.toContain(`type: '${syntheticType}'`);

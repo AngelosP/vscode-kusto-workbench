@@ -208,6 +208,46 @@ describe('compatSidecarFormat', () => {
 		expect(file.state.sections[2]).toMatchObject({ entries: [{ id: 'note_1', content: 'keep' }] });
 	});
 
+	it('validates a projected legacy primary with a newly identified Markdown section', () => {
+		const baseline = {
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ type: 'query', linkedQueryPath: 'sample.kql' },
+			] },
+		} as any;
+		const hydrated = hydrateCompatSidecarState(baseline, 'StormEvents | take 2', {
+			primaryKind: 'query', sidecarKind: 'kqlx',
+		});
+
+		const file = buildCompatSidecarFile(
+			Uri.file('/work/sample.kql'),
+			{ sections: [
+				hydrated.sections[0],
+				{ id: 'compat_test_2_markdown', type: 'markdown', title: 'Notes', text: 'hello' } as any,
+			] },
+			{ primaryKind: 'query', sidecarKind: 'kqlx' },
+			baseline,
+		);
+
+		expect(file.state.sections.map(section => section.type)).toEqual(['query', 'markdown']);
+	});
+
+	it('validates a newer snapshot against an upgrade-created companion baseline', () => {
+		const uri = Uri.file('/work/sample.kql');
+		const format = { primaryKind: 'query', sidecarKind: 'kqlx' } as const;
+		const created = buildCompatSidecarFile(uri, { sections: [
+			{ id: 'compat_primary_query', type: 'query', query: 'print 1' } as any,
+			{ type: 'markdown', text: 'revision 1' } as any,
+		] }, format);
+		const markdownId = String((created.state.sections[1] as any).id);
+
+		const next = buildCompatSidecarFile(uri, { sections: [
+			{ id: 'compat_primary_query', type: 'query', query: 'print 1' } as any,
+			{ id: markdownId, type: 'markdown', text: 'revision 2' } as any,
+		] }, format, created);
+
+		expect(next.state.sections[1]).toMatchObject({ id: markdownId, text: 'revision 2' });
+	});
+
 	it.each([
 		['query', 'kqlx', 'sample.kql'],
 		['sql', 'sqlx', 'sample.sql'],

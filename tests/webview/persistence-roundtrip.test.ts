@@ -197,6 +197,9 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 		documentRuntimeActive: true,
 		documentEditRevision: 0,
 		documentViewSessionId: '',
+		compatibilityPersistenceViewSessionId: '',
+		compatibilityPersistenceDocumentRequestIds: new Set<string>(),
+		compatibilityPersistenceAppliedDocumentRequests: new Map<string, string>(),
 		documentViewInitialProjectionRequestId: '',
 		documentViewProjectionRequestIds: new Set<string>(),
 		documentUri: '',
@@ -2436,6 +2439,19 @@ describe('persistence round-trip', () => {
 		} finally {
 			pState.restoreInProgress = false;
 		}
+	});
+
+	it('answers a compatibility final request before the initial projection is ready', () => {
+		pState.compatibilityPersistenceViewSessionId = 'compatibility-session-1';
+		pState.documentKind = '';
+		vi.mocked(postMessageToHost).mockClear();
+
+		flushCompatibilityPersist('startup-flush-1', 'save');
+
+		expect(vi.mocked(postMessageToHost).mock.calls[0][0]).toEqual({
+			type: 'persistDocument', state: { sections: [] }, sourceGeneration: 0,
+			flushRequestId: 'startup-flush-1', flushUnavailableReason: 'document-not-ready',
+		});
 	});
 
 	it('sends a compatibility upgrade with the exact persisted revision', () => {

@@ -22,6 +22,7 @@ import {
 	SQL_DATABASE_CACHE_STORAGE_KEY,
 } from './sqlDatabaseCache';
 import { getQueryEditorHtml } from './queryEditorHtml';
+import type { CompatibilityPersistenceEnvelope } from '../shared/compatibilityPersistenceProtocol';
 import { MAIN_WEBVIEW_DISPATCHER_READY_TYPE } from './mainWebviewStartupGateway';
 import { toolOrchestrator } from './extension';
 import { CopilotService, CopilotServiceHost } from './queryEditorCopilot';
@@ -774,7 +775,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	async initializeWebviewPanel(
 		panel: vscode.WebviewPanel,
-		options?: { registerMessageHandler?: boolean; hideFooterControls?: boolean; initialDocumentLoading?: boolean }
+		options?: {
+			registerMessageHandler?: boolean;
+			hideFooterControls?: boolean;
+			initialDocumentLoading?: boolean;
+			compatibilityPersistence?: CompatibilityPersistenceEnvelope;
+		}
 	): Promise<void> {
 		this.sqlLifecycle.startSession();
 		this._panelDisposed = false;
@@ -795,7 +801,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const webview = panel.webview;
 		const html = await getQueryEditorHtml(webview, this.extensionUri, this.context, {
 			hideFooterControls: !!options?.hideFooterControls,
-			initialDocumentLoading: !!options?.initialDocumentLoading
+			initialDocumentLoading: !!options?.initialDocumentLoading,
+			compatibilityPersistence: options?.compatibilityPersistence,
 		});
 		if (this._panelDisposed || this.panel !== panel) return;
 		this.editorCursorStatusApplication.setPanelVisible(panel.visible);

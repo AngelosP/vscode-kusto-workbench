@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import { perfMark } from './perfTrace';
+import type { CompatibilityPersistenceEnvelope } from '../shared/compatibilityPersistenceProtocol';
 
 type QueryEditorHtmlAssets = {
 	template: string;
@@ -55,7 +56,12 @@ export async function getQueryEditorHtml(
 	webview: vscode.Webview,
 	extensionUri: vscode.Uri,
 	context: vscode.ExtensionContext,
-	options?: { hideFooterControls?: boolean; initialDocumentLoading?: boolean; documentTitle?: string }
+	options?: {
+		hideFooterControls?: boolean;
+		initialDocumentLoading?: boolean;
+		documentTitle?: string;
+		compatibilityPersistence?: CompatibilityPersistenceEnvelope;
+	}
 ): Promise<string> {
 	perfMark('host.queryEditorHtml.start');
 	const assets = await getCachedQueryEditorHtmlAssets(extensionUri);
@@ -183,6 +189,7 @@ export async function getQueryEditorHtml(
 
 	const initialDocumentLoading = options?.initialDocumentLoading === true;
 	const bodyAttributes = queryEditorBodyAttributes(initialDocumentLoading, context.extensionMode);
+	const compatibilityPersistenceJson = JSON.stringify(options?.compatibilityPersistence ?? null).replaceAll('<', '\\u003c');
 
 	const html = template
 		.replaceAll('{{documentLoadingBodyAttributes}}', bodyAttributes)
@@ -203,6 +210,7 @@ export async function getQueryEditorHtml(
 			tuiColorPickerCssUri,
 			toastUiEditorColorSyntaxCssUri,
 		]))
+		.replaceAll('{{compatibilityPersistenceJson}}', compatibilityPersistenceJson)
 		.replaceAll('{{cacheBuster}}', cacheBuster)
 		// CSS bundle inlined last so its content cannot contain {{...}} placeholders
 		// that earlier replacements would accidentally substitute into.

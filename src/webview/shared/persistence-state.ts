@@ -17,12 +17,33 @@ import type { UrlSectionState } from '../../shared/urlSectionDefinition.js';
 import type { TransformationSectionState } from '../../shared/transformationSectionDefinition.js';
 import type { HtmlSectionState } from '../../shared/htmlSectionDefinition.js';
 import { addableSectionKindsForDocument, defaultSectionKindForDocument } from '../../shared/documentSectionCapabilities.js';
+import { parseCompatibilityPersistenceEnvelope } from '../../shared/compatibilityPersistenceProtocol.js';
+
+const compatibilityPersistenceBootstrap = parseCompatibilityPersistenceEnvelope(
+	window.__kustoQueryEditorConfig?.compatibilityPersistence,
+);
+const compatibilityPersistenceConfig = window.__kustoQueryEditorConfig?.compatibilityPersistence;
+const initialCompatibilityRequestId = compatibilityPersistenceBootstrap.ok
+	&& typeof compatibilityPersistenceConfig?.initialRequestId === 'string'
+	&& compatibilityPersistenceConfig.initialRequestId.trim()
+	? compatibilityPersistenceConfig.initialRequestId.trim()
+	: '';
 
 export const pState = {
 	/** Monotonic local UI edit revision used to reject stale host reloads. */
 	documentEditRevision: 0,
 	/** Host-created identity for the concrete native document-view panel incarnation. */
 	documentViewSessionId: '',
+	/** Host-created identity for the concrete KQL/SQL compatibility panel incarnation. */
+	compatibilityPersistenceViewSessionId: compatibilityPersistenceBootstrap.ok
+		? compatibilityPersistenceBootstrap.value.viewSessionId
+		: '',
+	/** Requests awaiting a correlated compatibility document projection. */
+	compatibilityPersistenceDocumentRequestIds: new Set<string>(
+		initialCompatibilityRequestId ? [initialCompatibilityRequestId] : [],
+	),
+	/** Bounded applied-request fingerprints used to re-acknowledge a lost reload result without replaying the projection. */
+	compatibilityPersistenceAppliedDocumentRequests: new Map<string, string>(),
 	/** First projection request retained for the full session to make initial application exactly-once. */
 	documentViewInitialProjectionRequestId: '',
 	/** Bounded terminal request IDs preventing a projection from applying twice in one view session. */
