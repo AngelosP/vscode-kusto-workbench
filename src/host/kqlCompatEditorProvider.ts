@@ -39,6 +39,11 @@ import {
 	type CompatSidecarFileIdentity,
 } from './compatSidecarStore';
 import { CompatSidecarSession } from './compatSidecarSession';
+import {
+	CompatSidecarCloseCoordinator,
+	type CompatSidecarCloseCoordinatorFactory,
+	type CompatSidecarCloseFinalization,
+} from './compatSidecarCloseCoordinator';
 import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
 
 const KQL_COMPAT_SIDECAR_FORMAT: CompatSidecarFormat = {
@@ -122,7 +127,8 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		private readonly extensionUri: vscode.Uri,
 		private readonly connectionManager: ConnectionManager,
 		private readonly sqlWorkbench: SqlWorkbenchService,
-		private readonly editorCursorStatusBar?: EditorCursorStatusBar
+		private readonly editorCursorStatusBar?: EditorCursorStatusBar,
+		private readonly closeCoordinatorFactory: CompatSidecarCloseCoordinatorFactory = options => new CompatSidecarCloseCoordinator(options),
 	) {}
 
 	/**
@@ -230,36 +236,19 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 
 		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
 		let outerDisposed = false;
-		let delayedBeforeUnloadAdmissionOpen = true;
-		let closeFinalization: (() => void) | undefined;
-		let closeFinalizationStarted = false;
-		const startCloseFinalizationIfReady = (): void => {
-			if (!outerDisposed || closeFinalizationStarted || !closeFinalization) return;
-			closeFinalizationStarted = true;
-			closeFinalization();
-		};
-		let sidecarSession: CompatSidecarSession;
-		const isRetiredInboundAllowed = (message: IncomingWebviewMessage): boolean => {
-			const delayedBeforeUnload = delayedBeforeUnloadAdmissionOpen
-				&& message.type === 'persistDocument' && String((message as any).reason || '') === 'beforeunload';
-			const correlatedFinalPersist = message.type === 'persistDocument'
-				&& sidecarSession?.hasPendingFinalPersistRequest(String((message as any).flushRequestId || ''));
-			return delayedBeforeUnload || correlatedFinalPersist;
-		};
-		const isPendingFinalPersistReply = (message: IncomingWebviewMessage): boolean =>
-			message.type === 'persistDocument'
-			&& sidecarSession?.hasPendingFinalPersistRequest(String((message as any).flushRequestId || '')) === true;
+		const sidecarSession = new CompatSidecarSession(webviewPanel.visible === true, 'KQL');
+		const closeCoordinator = this.closeCoordinatorFactory({ session: sidecarSession });
 		const startupGateway = new MainWebviewStartupGateway<IncomingWebviewMessage>({
 			panel: webviewPanel,
 			admitInbound: input => {
 				if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
 				const message = input as IncomingWebviewMessage;
 				if (typeof message.type !== 'string') return undefined;
-				if (outerDisposed && !isRetiredInboundAllowed(message)) return undefined;
+				if (outerDisposed && !closeCoordinator.allowRetiredInbound(message)) return undefined;
 				return message;
 			},
-			allowReentrantInbound: message => isMainWebviewCorrelatedReply(message) || isPendingFinalPersistReply(message),
-			allowRetiredInbound: isRetiredInboundAllowed,
+			allowReentrantInbound: message => isMainWebviewCorrelatedReply(message) || closeCoordinator.isPendingFinalPersistReply(message),
+			allowRetiredInbound: message => closeCoordinator.allowRetiredInbound(message),
 			trace: (event, message, queuedCount) => {
 				if (event === 'received') {
 					fileOpenTrace.mark('webview.message.received', {
@@ -279,8 +268,10 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		queryEditor.setMessageTransport(message => startupGateway.postMessage(message));
 		const outerDisposalSubscription = webviewPanel.onDidDispose(() => {
 			outerDisposed = true;
-			startCloseFinalizationIfReady();
+			void closeCoordinator.disposePanel();
 		});
+		const subscriptions: vscode.Disposable[] = [startupGateway, outerDisposalSubscription];
+		try {
 		perfMark('host.kqlCompat.initializeWebview.start');
 		fileOpenTrace.mark('initializeWebviewPanel.start');
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, initialDocumentLoading: true });
@@ -336,7 +327,6 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		let sidecarLoadError: string | undefined;
 		let lastWrittenSidecarText: string | undefined;
 		let lastWrittenSidecarIdentity: CompatSidecarFileIdentity | undefined;
-		sidecarSession = new CompatSidecarSession(webviewPanel.visible === true, 'KQL');
 		perfMark('host.kqlCompat.sidecar.start');
 		try {
 			sidecarUri = KqlCompatEditorProvider.getSidecarKqlxUriForCompat(document.uri);
@@ -644,7 +634,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		};
 
 		// Track if the webview has initialized and whether it's currently being edited by the user.
-		const subscriptions: vscode.Disposable[] = [startupGateway, outerDisposalSubscription];
+		sidecarSession.setPanelVisible(webviewPanel.visible === true);
 		if (typeof (webviewPanel as any).onDidChangeViewState === 'function') {
 			subscriptions.push((webviewPanel as any).onDidChangeViewState((event: { webviewPanel: vscode.WebviewPanel }) => {
 				sidecarSession.setPanelVisible(event.webviewPanel.visible);
@@ -813,68 +803,43 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			})
 		);
 
-		closeFinalization = () => {
-			void (async () => {
-				let saveRequested = false;
-				try {
-					await sidecarSession.waitForFinalPersists();
-					if (sidecarSession.isPanelVisible) await sidecarSession.waitForBeforeUnload();
-					else await new Promise<void>(resolve => setImmediate(resolve));
-					delayedBeforeUnloadAdmissionOpen = false;
-					await startupGateway.closeRetiredInboundAdmission();
-					sidecarSession.beginClose();
-					for (const subscription of subscriptions) {
-						try { subscription.dispose(); } catch { /* ignore */ }
-					}
-					await sidecarSession.waitForPersists();
-					if (sidecarUri && sidecarFile && lastKnownSidecarState && sidecarSession.isDirty) {
-						const sidecarUriToSave = sidecarUri;
-						const stateToSave = lastKnownSidecarState;
-						const sidecarName = getSidecarDisplayName();
-						const choice = await vscode.window.showWarningMessage(
-							`You have unsaved notebook metadata changes in ${sidecarName}. Save them now?`,
-							{ modal: true },
-							'Save',
-							'Discard'
-						);
-						if (choice === 'Save') {
-							saveRequested = true;
-							const { file: persisted, text, identity } = await writeFreshSidecar(sidecarUriToSave, stateToSave, sidecarSession.baseText ?? lastWrittenSidecarText);
-							sidecarFile = persisted;
-							lastWrittenSidecarText = text;
-							lastWrittenSidecarIdentity = identity;
-							sidecarSession.markClean();
-						}
-					}
-				} catch (error) {
-					if (saveRequested && sidecarUri && lastKnownSidecarState) {
-						try {
-							const recoveryUri = await writeDraftRecoveryFile(sidecarUri, lastKnownSidecarState);
-							void vscode.window.showErrorMessage(`Companion metadata changed before close. The sanitized draft was recovered to ${recoveryUri.fsPath}.`);
-						} catch {
-							void vscode.window.showErrorMessage(`Failed to save companion metadata: ${error instanceof Error ? error.message : String(error)}`);
-						}
-					}
-				}
-				try {
-					if (sidecarUri) {
-						const repaired = await repairPersistedSidecar(sidecarUri);
-						if (repaired) {
-							sidecarFile = repaired.file;
-							lastWrittenSidecarText = repaired.text;
-							lastWrittenSidecarIdentity = repaired.identity;
-						}
-					}
-					await sidecarStore.drain();
-				} catch {
-					// The sidecar may already be unavailable.
-				} finally {
-					sidecarSession.settleClose();
-					for (const s of subscriptions) {
-						try { s.dispose(); } catch { /* ignore */ }
-					}
-				}
-			})();
+		const closeFinalization: CompatSidecarCloseFinalization = {
+			gateway: startupGateway,
+			subscriptions,
+			captureDraft: () => sidecarUri && sidecarFile && lastKnownSidecarState
+				? { uri: sidecarUri, state: lastKnownSidecarState, displayName: getSidecarDisplayName() }
+				: undefined,
+			promptSave: sidecarName => vscode.window.showWarningMessage(
+				`You have unsaved notebook metadata changes in ${sidecarName}. Save them now?`,
+				{ modal: true },
+				'Save',
+				'Discard',
+			),
+			saveDraft: async draft => {
+				const { file: persisted, text, identity } = await writeFreshSidecar(
+					draft.uri, draft.state, sidecarSession.baseText ?? lastWrittenSidecarText,
+				);
+				sidecarFile = persisted;
+				lastWrittenSidecarText = text;
+				lastWrittenSidecarIdentity = identity;
+				sidecarSession.markClean();
+			},
+			recoverDraft: draft => writeDraftRecoveryFile(draft.uri, draft.state),
+			notifyRecovered: recoveryUri => {
+				void vscode.window.showErrorMessage(`Companion metadata changed before close. The sanitized draft was recovered to ${recoveryUri.fsPath}.`);
+			},
+			notifySaveFailed: error => {
+				void vscode.window.showErrorMessage(`Failed to save companion metadata: ${error instanceof Error ? error.message : String(error)}`);
+			},
+			repair: async () => {
+				if (!sidecarUri) return;
+				const repaired = await repairPersistedSidecar(sidecarUri);
+				if (!repaired) return;
+				sidecarFile = repaired.file;
+				lastWrittenSidecarText = repaired.text;
+				lastWrittenSidecarIdentity = repaired.identity;
+			},
+			drainStore: () => sidecarStore.drain(),
 		};
 
 		handleIncomingWebviewMessage = async (message: IncomingWebviewMessage) => {
@@ -1318,7 +1283,15 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		};
 
 		await startupGateway.setInboundHandler(handleIncomingWebviewMessage);
-		startCloseFinalizationIfReady();
+		closeCoordinator.configure(closeFinalization);
+		} catch (error) {
+			try { queryEditor.disposePanel(webviewPanel); } catch { /* continue compatibility cleanup */ }
+			await closeCoordinator.failInitialization({
+				gateway: startupGateway,
+				subscriptions,
+			});
+			throw error;
+		}
 	}
 
 	private static buildSidecarFileForCompat(compatUri: vscode.Uri, state: KqlxStateV1, baseFile?: KqlxFileV1): KqlxFileV1 {

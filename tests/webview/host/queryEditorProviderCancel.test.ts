@@ -1115,9 +1115,15 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 	it('invalidates all SQL Copilot owners before panel disposal clears editor state', () => {
 		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
 		let disposePanel!: () => void;
+		const disposePanelSubscription = vi.fn();
 		const rejectComparison = vi.fn();
 		const comparisonTimer = setTimeout(() => undefined, 30_000);
-		const panel = { onDidDispose: vi.fn((handler: () => void) => { disposePanel = handler; }) } as any;
+		const panel = {
+			onDidDispose: vi.fn((handler: () => void) => {
+				disposePanel = handler;
+				return { dispose: disposePanelSubscription };
+			}),
+		} as any;
 		provider.panel = panel;
 		provider._panelDisposed = false;
 		provider.sqlLifecycle = {
@@ -1170,6 +1176,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.kustoConnectionLifecycle = { dispose: vi.fn() };
 		provider.registerPanelDisposal(panel);
 		disposePanel();
+		provider.disposePanel(panel);
 		clearTimeout(comparisonTimer);
 
 		expect(provider.copilot.invalidateSqlConnections).toHaveBeenCalledWith([], ['comparison_1']);
@@ -1213,6 +1220,9 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.workbenchToolSessionApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.kustoConnectionBrowsingApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.copilotQueryWorkflowApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider._panelDisposed).toBe(true);
+		expect(provider.panel).toBeUndefined();
+		expect(disposePanelSubscription).toHaveBeenCalledOnce();
 	});
 
 	it('ignores policy messages after the panel webview getter is disposed', () => {

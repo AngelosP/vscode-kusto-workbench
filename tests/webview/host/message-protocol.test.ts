@@ -338,34 +338,34 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::453:33',
 	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::274:33',
 	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::89:10',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::362:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::488:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::494:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::498:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::503:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::506:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::509:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::512:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::527:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::533:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::538:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::555:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::563:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::569:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::578:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::589:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::610:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::617:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::626:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::634:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::657:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::662:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::688:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::696:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::720:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::735:29',
-	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::807:15',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::1256:21',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::363:27',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::489:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::495:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::499:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::504:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::507:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::510:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::513:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::528:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::534:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::539:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::556:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::564:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::570:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::579:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::590:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::611:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::618:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::627:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::635:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::658:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::663:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::689:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::697:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::721:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::736:29',
+	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::808:15',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::1257:21',
 	'src/host/querySharingApplicationHandler.ts::postMessage::postMessage::32:10',
 	'src/host/resourceUriApplicationHandler.ts::postMessage::postMessage::50:3',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1758:13',
@@ -983,16 +983,31 @@ describe('Message Protocol Contract', () => {
 	});
 
 	it('uses one explicit main-webview startup gateway instead of provider-local queues or import-order draining', () => {
+		const nativeProvider = readWorkspaceFile('src/host/kqlxEditorProvider.ts');
+		expect(nativeProvider).toContain('MainWebviewStartupGateway');
+		expect(nativeProvider).toContain('isMainWebviewCorrelatedReply(message) || isPendingFinalPersistReply(message)');
+		expect(nativeProvider).not.toContain('queuedWebviewMessages');
+
 		for (const providerPath of [
-			'src/host/kqlxEditorProvider.ts',
 			'src/host/kqlCompatEditorProvider.ts',
 			'src/host/sqlCompatEditorProvider.ts',
 		]) {
 			const provider = readWorkspaceFile(providerPath);
 			expect(provider).toContain('MainWebviewStartupGateway');
-			expect(provider).toContain('isMainWebviewCorrelatedReply(message) || isPendingFinalPersistReply(message)');
+			expect(provider).toContain('isMainWebviewCorrelatedReply(message) || closeCoordinator.isPendingFinalPersistReply(message)');
+			expect(provider).toContain('closeCoordinator.allowRetiredInbound(message)');
+			expect(provider).toContain('closeCoordinator.configure(closeFinalization)');
 			expect(provider).not.toContain('queuedWebviewMessages');
+			expect(provider).not.toContain('waitForFinalPersists()');
+			expect(provider).not.toContain('closeRetiredInboundAdmission()');
 		}
+
+		const closeCoordinator = readWorkspaceFile('src/host/compatSidecarCloseCoordinator.ts');
+		expect(closeCoordinator).toContain('waitForFinalPersists()');
+		expect(closeCoordinator).toContain('closeRetiredInboundAdmission()');
+		expect(closeCoordinator).toContain('this.options.session.beginClose()');
+		expect(closeCoordinator).toContain('this.options.session.settleClose()');
+		expect(closeCoordinator).toContain('finalization.drainStore()');
 
 		const main = readWorkspaceFile('src/webview/core/main.ts');
 		expect(main).not.toContain('drainBufferedHostMessages');

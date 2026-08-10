@@ -26,7 +26,7 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 Assessment date: 2026-08-09
 
-The comparison was refreshed against the current working tree after BRW-1 typed read-only browser composition convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
+The comparison was refreshed against the current working tree after CMP-1 shared compatibility close convergence. During the session, disjoint autocomplete work was externally committed and pushed as `747199c07b74d17de16d939094aafacf32c72250`; local and `origin/main` are synchronized at that base. CMP-1 itself remains uncommitted and unpushed. The final CMP-1 qualification and bundle baselines include the synchronized external base. The comparison includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
 The current architecture is not uniformly legacy. Several high-risk contexts already provide good models for the rest of the application.
 
@@ -37,7 +37,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | Exact Kusto schema ownership | [`KustoEditorSchemaCoordinator`](src/webview/core/kusto-editor-schema-coordinator.ts), exact message routing, model leases, target generations, and tombstones | Strong foundation |
 | Serialized shared Kusto worker | [`KustoWorkerMutationPort`](src/webview/shared/kusto-worker-mutation-port.ts) with detached settlement and inline recovery | Strong foundation |
 | SQL target and execution ownership | [`SqlEditorLifecycleCoordinator`](src/host/sql/sqlEditorLifecycleCoordinator.ts), [`SqlEditorSessionRegistry`](src/host/sql/sqlEditorSessionRegistry.ts), and [`SqlExecutionBroker`](src/host/sql/sqlExecutionBroker.ts) | Strong foundation |
-| Compatibility sidecar mechanics | [`CompatSidecarFormat`](src/host/compatSidecarFormat.ts), [`CompatSidecarStore`](src/host/compatSidecarStore.ts), and [`CompatSidecarSession`](src/host/compatSidecarSession.ts) | Strong shared core |
+| Compatibility sidecar mechanics and close | [`CompatSidecarFormat`](src/host/compatSidecarFormat.ts), [`CompatSidecarStore`](src/host/compatSidecarStore.ts), [`CompatSidecarSession`](src/host/compatSidecarSession.ts), and panel-scoped [`CompatSidecarCloseCoordinator`](src/host/compatSidecarCloseCoordinator.ts) | Strong shared core and close owner |
 | Lossless notebook codec and kind capabilities | [`kqlxOverlay.ts`](src/host/kqlxOverlay.ts) preserves exact unknown data; [`documentSectionCapabilities.ts`](src/shared/documentSectionCapabilities.ts) owns every known `.kqlx`/`.sqlx`/`.mdx` allow/default/add decision across parser, host, webview, tools, upgrades, and browser | Strong foundation |
 | Kusto physical identity fencing | Connection, schema, and database operations capture endpoint and authority identity before asynchronous work | Strong foundation |
 | SQL Leave No Trace policy | Cross-window policy, revocation generations, protected one-shot runtime, and guarded admission | Strong but SQL-specific |
@@ -113,9 +113,9 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
 | 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 3/4/5/4/3/5 | 43 | HST-1 through HST-36 completed; residual lifecycle/schema/projection adapters have no selected bounded extraction |
 | 1 | `DOC` | Document actor and section-definition registry | 4/4/4/4/2/5 | 43 | DOC-1 through DOC-6 closed; Kusto/SQL deferred |
-| 3 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 3/3/5/4/3/3 | 39 | PRO-1 and PRO-2 closed; broader runtime schemas, capability negotiation, and domain-router migration remain |
-| 3 | `CMP` | Compatibility-provider composition around the shared sidecar core | 4/4/3/3/3/4 | 39 | CMP-1 selected; KQL/SQL close orchestration remains duplicated around the shared session/store/gateway |
-| 5 | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 3/3/3/3/4/4 | 35 | Open |
+| 3 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 3/3/5/4/3/3 | 39 | PRO-1 and PRO-2 closed; PRO-3 compatibility persistence-channel validation selected next |
+| 4 | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 3/3/3/3/4/4 | 35 | Open |
+| 5 | `CMP` | Compatibility-provider composition around the shared sidecar core | 3/4/2/3/3/3 | 33 | CMP-1 closed; duplicated projection/reload/save routing remains, but close orchestration has one owner |
 | 6 | `KLS` | Custom KQL analyzer decomposition behind a language-analysis port | 3/3/2/2/3/4 | 30 | Open |
 | 7 | `BRW` | Real browser read-only composition root | 2/3/3/2/3/2 | 27 | BRW-1 closed; residual active-content/resource policy remains deferred to ACT |
 | - | `ACT` | Untrusted-document capability admission | 5/5/5/5/3/5 | 53 | Deferred by product direction; excluded from active ranking |
@@ -233,7 +233,7 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 - Unmigrated components still supply serialization without being canonical domain state. Restore behavior still knows component-private methods and timing.
 - Adding a section requires edits across format, component, factory, persistence, tool removal, startup imports, and privacy handling.
 
-**Migration theme:** DOC-1 through DOC-6 proved the transport-neutral aggregate/definition pattern with Markdown, URL, Python, Chart, Transformation, and HTML while preserving runtime-heavy adapters. Kusto/SQL remain materially higher-risk and are deferred until separately selected. No DOC slice is currently selected; BRW-1 is the sole next iteration.
+**Migration theme:** DOC-1 through DOC-6 proved the transport-neutral aggregate/definition pattern with Markdown, URL, Python, Chart, Transformation, and HTML while preserving runtime-heavy adapters. Kusto/SQL remain materially higher-risk and are deferred until separately selected. No DOC slice is currently selected; PRO-3 is next.
 
 ### `PRO` - Protocol, View Sessions, And Startup
 
@@ -329,10 +329,11 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 
 **Current divergence:**
 
-- Shared sidecar format/store/session mechanics are strong.
-- Provider shells still duplicate panel routing, save/reload/close orchestration, and integration with `QueryEditorProvider`.
+- Shared sidecar format/store/session mechanics and panel close orchestration are strong.
+- `CompatSidecarCloseCoordinator` now solely owns KQL/SQL retained close admission, exactly-once startup, gateway/session/store ordering, Save/Discard and exact recovery, disposal, and settlement. Providers inject only language-specific effects.
+- Provider shells still duplicate projection/reload/save message routing and integration with `QueryEditorProvider`. Compatibility lifecycle messages remain metadata-free and runtime-unvalidated outside local structural checks.
 
-**Migration theme:** preserve the sidecar core and replace provider orchestration after the document actor and protocol are available.
+**Migration theme:** preserve the proven sidecar core and close owner. Move another provider transaction only behind a separately proven protocol or application boundary; do not merge providers or rewrite the sidecar core.
 
 ### `DSH` - Dashboard Compiler Boundary
 
@@ -1086,21 +1087,37 @@ The final focused ring passed 2 files and 11 tests; the expanded owner/message-p
 
 **Qualification:** the definitive focused BRW ring passes 16 files and 460 tests with `--maxWorkers=1`. Complete sequential and official coverage Vitest pass 292 files and 6,303 tests at 48.23% statements. Strict host/shared, webview, and browser TypeScript checks, integration compilation, task-owned diagnostics, and `git diff --check` pass. The complete VS Code 1.132.0 extension-host suite passes 209/209 with `--timeout 5000`. Production extension and strict browser builds pass; ESLint reports zero errors and five existing warnings. Both synchronized bundle gates pass at 1,946.2 KB host and 2,807.1 KB webview; baselines are 1,897/2,758 KB with the 50 KB buffer unchanged. Built-browser checks prove mixed Kusto/SQL/Markdown/Python/URL/Chart views, read-only editors, static URL, exact restored rows and CSV bytes, duplicate acknowledgement without replay, stale rejection, zero host execution/synthetic startup messages, and no `390x844` horizontal overflow. The desktop screenshot is clean; the integrated capture surface reset during mobile screenshot capture, so mobile evidence is the exact Playwright DOM/layout and accessibility result. Reviewer-driven regressions cover duplicate/stale retry UI, deferred active-content policy honesty, static URL rendering, and Kusto/SQL/Python execution denial. Reviews returned `VERDICT: NO BRW-1 IMPLEMENTATION BLOCKER` and definitive `VERDICT: NO BRW-1 BLOCKER`.
 
-## Next Iteration
+## Completed Compatibility Iteration
 
 ### Iteration `CMP-1`: Shared Compatibility Close Coordinator
 
-**Status:** selected next, not started.
+**Status:** closed on 2026-08-09. The definitive documentation-aware review returned `VERDICT: NO CMP-1 BLOCKER`.
 
-**Post-BRW-1 rescore:** BRW drops from 41 to 27 because synthetic composition, mutable defaults, startup replay, and convention-only host capabilities are gone. PRO and CMP tie at 39. HST and DOC remain 43 but have no coherent eligible bounded slice because their residual work is deferred Kusto/SQL ownership. CMP is selected over PRO because KQL and SQL compatibility providers now share sidecar format/store/session mechanics and `MainWebviewStartupGateway`, yet retain nearly identical close-finalization transactions with a clear parameterized real-provider boundary. DSH remains 35, KLS 30, and ACT remains product-deferred at 53.
+**Boundary:** one panel-scoped `CompatSidecarCloseCoordinator` now surrounds the existing `CompatSidecarSession`, `CompatSidecarStore`, and `MainWebviewStartupGateway` for both KQL and SQL compatibility providers. It owns delayed-beforeunload and correlated-final-snapshot retired admission, exactly-once close start, final-persist/beforeunload ordering, stable gateway-admission closure, session close and persist/upgrade drain, subscription disposal, dirty Save/Discard, exact attempted-draft recovery, final repair, exact store drain, rejected-initialization cleanup, and terminal settlement. Only explicit Discard abandons a dirty draft; prompt rejection or dismissal recovers it.
 
-**Boundary:** introduce one panel-scoped `CompatSidecarCloseCoordinator` around the existing `CompatSidecarSession`, `CompatSidecarStore`, and `MainWebviewStartupGateway`. It owns delayed-beforeunload and correlated-final-snapshot retirement admission, exactly-once close start, final-persist/beforeunload ordering, stable retired-inbound closure, session close transition, subscription disposal, dirty Save/Discard choice, exact draft save/recovery, final repair/drain, and terminal settlement. KQL and SQL providers supply language-specific write, recovery, repair, notification, and disposable capabilities.
+**Displaced authority:** both providers no longer own delayed-beforeunload admission flags, final-persist reply predicates, close-start flags, final-persist/beforeunload sequencing, stable gateway closure, session close/settlement, subscription-disposal loops, Save/Discard choice, recovery selection, or final repair/store drain. They retain primary-text edits, KQL inference/cache, SQL lifecycle integration, privacy sanitation, sidecar create/adopt UX, diff UI, protocol names, copy, and injected write/recovery/repair/notification state updates.
 
-**Falsifiable hypothesis and red-first check:** parameterize the real KQL and SQL compatibility providers, dispose each panel while its final snapshot response is delayed and its sidecar draft is dirty, then deliver beforeunload/final-snapshot traffic in reversed order. Require exactly one injected close coordinator to admit only correlated retained traffic, wait the gateway/session tails, save or recover the newest draft once, drain the exact store, and settle close. Before CMP-1 the structural coordinator receives zero calls because both providers own the transaction locally.
+**Guards and qualification:** the real-provider test was red first with zero coordinator creations while the legacy transactions still ran. It now parameterizes KQL and SQL across Save and forced-recovery modes, dirties a real sidecar, delays a correlated final request, disposes, delivers beforeunload then ordinary then correlated-final traffic, and proves one coordinator, newest sanitized draft identity, ordinary-retired rejection, exact recovery, repair, store drain, and settlement. Rejected initialization before and after panel disposal, prompt rejection/dismissal, Discard, persist/upgrade tails, notification failures, repair failure, duplicate disposal, nested-provider cleanup, hidden-to-visible startup resynchronization, and displaced provider authority have direct regressions. The final focused owner/session/store/gateway/protocol/nested-lifecycle ring passes 7 files and 227 tests; the compatibility matrix passes 134/134 with `--timeout 5000`. A preceding 133-test complete matrix attempt reached 129/133 on four timing-sensitive unchanged cases; all four passed together in isolation and the complete unchanged rerun passed. Full sequential and official coverage Vitest pass 294 files and 6,338 tests at 48.33% statements. The complete VS Code 1.132.0 extension-host suite passes 213/213 with `--timeout 5000`. Strict host/webview/browser types, integration compilation, production extension and browser builds, ESLint with zero errors and five existing warnings, diagnostics, and both bundle gates pass. Final production sizes are 1,948.7 KB host and 2,816.9 KB webview; synchronized baselines are 1,899/2,767 KB with the 50 KB buffer unchanged. CMP-1 accounts for the host increase; the webview baseline includes disjoint externally committed autocomplete work at `747199c07b74d17de16d939094aafacf32c72250`. CMP-1 remains uncommitted and unpushed. The first full Vitest run failed only a stale PRO-2 source guard at 6,334/6,335; the guard was updated to assert the new owner and every complete rerun passed. No native E2E was required because external controls, rendering, primary-text ownership, sidecar formats, and message shapes are unchanged.
 
 **Preserved owners:** `TextDocument` remains primary-text and native edit-history authority. `CompatSidecarFormat`, `CompatSidecarStore`, and `CompatSidecarSession` retain linkage/hydration, lock/CAS/repair/recovery, revisions/persist queues/final snapshot/reload primitives. `MainWebviewStartupGateway` retains transport retirement. KQL inference/cache, SQL lifecycle, privacy sanitation, sidecar create/adopt UX, message shapes, and `QueryEditorProvider` domain routing remain unchanged.
 
 **Exclusions:** no projection/reload migration, provider merge, Markdown compatibility migration, sidecar format/store/session rewrite, primary-text ownership change, document actor/protocol redesign, Kusto/SQL execution or schema change, dashboard/compiler work, or deferred ACT work.
+
+**Residual:** a permanently non-settling external `QueryEditorProvider.initializeWebviewPanel()` promise still requires upstream cancellation or a startup deadline. Rejected initialization and all admitted close work settle through the coordinator; the residual is not a second close authority.
+
+## Next Iteration
+
+### Iteration `PRO-3`: Runtime-Validated Compatibility Persistence Channel
+
+**Status:** selected next, not started.
+
+**Post-CMP-1 rescore:** CMP drops from 39 to 33 because the duplicated close transaction, retired-admission decision, dirty-close UX, and terminal cleanup are gone. PRO remains 39 and is selected because KQL and SQL compatibility persistence messages still cross the main transport through duplicated metadata-free unions and object casts before revision, reload, primary-text, or sidecar effects. HST and DOC remain 43 but have no coherent eligible bounded slice because their residual Kusto/SQL ownership is deferred. DSH remains 35, KLS 30, BRW 27, and ACT remains product-deferred at 53.
+
+**Boundary:** introduce one shared runtime schema/parser for only the existing KQL/SQL compatibility persistence lifecycle traffic: initial request/projection correlation, `persistDocument`, correlated final-persist responses, and `documentReloadResult`. Bind accepted traffic to one host-created compatibility panel session while preserving source generations, edit revisions, sidecar session/store/coordinator ownership, existing user-facing messages, and language-specific upgrade routes. Validate before revision adoption, persist queue admission, primary-text mutation, final-persist settlement, or reload settlement.
+
+**Falsifiable hypothesis and red-first check:** parameterize the real KQL and SQL providers, establish successor panel B for the same plain file, then inject malformed and predecessor-session persistence/reload/final traffic carrying otherwise B-current source generation, revision, and correlation fields. Before PRO-3 the metadata-free structural casts cannot reject on panel-session identity; after PRO-3 none may reserve a persist, edit primary text, settle B's waiter, or mutate/recover B's sidecar, while valid B traffic completes exactly once.
+
+**Preserved owners and exclusions:** preserve `CompatSidecarCloseCoordinator`, `CompatSidecarSession`, `CompatSidecarStore`, `MainWebviewStartupGateway`, primary `TextDocument`, KQL inference/cache, SQL lifecycle, privacy sanitation, sidecar create/adopt UX, provider routing, and all non-compatibility messages. Do not migrate projection/reload ownership, merge providers, add Markdown compatibility, rewrite the global protocol, change sidecar formats, touch execution/schema/dashboard/browser composition, or implement deferred ACT.
 
 ## Convergence Loop
 
@@ -1286,6 +1303,7 @@ These are not full golden-outcome iterations retroactively, but they materially 
 | `HST-36` | `HostSqlSectionExecutionApplicationHandler` | Provider-owned execute/cancel workflow, synchronous preflight, owner/protection and tool-owner validation, query shaping, physical start, manual terminals, protected logging, and exact cleanup | Red-first execute/cancel forwarding, direct reservation/race/terminal/rotation/cleanup/disposal tests, 13-case provider guard, preserved canonical SQL services/messages, sender inventory, constructor slot, and disposal | Focused 1,053; full/coverage 6,275 at 48.21%; extension-host 201 on rerun, production/browser, bundle gates, and definitive blocker review complete | 2026-08-09 |
 | `PRO-2` | `MainWebviewStartupGateway` + explicit dispatcher readiness | Three provider-local startup queues, pre-ready host projection delivery, import-order dispatcher drain, and split disposal admission/drain authority | Three-mode listener/readiness handoff, ordinary/correlated ordering, rejection continuity, immutable retirement admission, stable-tail close, linked-validation cancellation, successor isolation, tutorial transport, and protocol inventory guards | Focused 414; full/coverage 6,293 at 48.25%; compatibility 128, native lifecycle 23, extension-host 209, production/browser, bundle gates, and definitive blocker review complete | 2026-08-09 |
 | `BRW-1` | `BrowserViewerRoot` + runtime-validated `BrowserViewerProjection` | Boot-owned parsing/default mutation, synthetic four-message startup replay, persistence-global patches, delayed read-only repair, and convention-only unsupported host work | Native/companion immutable projection, stale/duplicate generation, real bundled boot retry, opaque preservation, capability-owned shell/Monaco/execution, static URL, artifact/CSV, and visible rendering guards | Focused 460; full/coverage 6,303 at 48.23%; extension-host 209, strict types, production/browser, exact CSV, desktop/mobile layout, bundle gates, and definitive blocker review complete | 2026-08-09 |
+| `CMP-1` | `CompatSidecarCloseCoordinator` | Duplicated KQL/SQL retired-admission flags, close-start state, final-persist/beforeunload ordering, session/gateway/store cleanup, dirty-close UX, recovery selection, and settlement | Red-first reversed retained traffic, KQL/SQL Save/recovery sanitation, prompt/init/disposal/tail/failure, nested-provider cleanup, and startup-visibility tests plus displaced-authority/PRO-2 guards | Focused 227; compatibility 134; full/coverage 6,338 at 48.33%; extension-host 213, production/browser, bundle gates, and definitive blocker review complete | 2026-08-09 |
 
 ## Decision Discipline
 

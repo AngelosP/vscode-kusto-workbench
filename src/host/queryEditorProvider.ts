@@ -239,6 +239,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	private panel?: vscode.WebviewPanel;
+	private panelDisposalSubscription?: vscode.Disposable;
 	private _panelDisposed = true;
 	readonly kustoClient: KustoQueryClient;
 	readonly output: WorkbenchLogger = getWorkbenchLogger();
@@ -1269,67 +1270,72 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	private registerPanelDisposal(panel: vscode.WebviewPanel): void {
-		panel.onDidDispose(() => {
-			if (this.panel !== panel) return;
-			this._panelDisposed = true;
-			QueryEditorProvider.activeProviders.delete(this);
-			this.dashboardApplication.dispose();
-			this.artifactCsvSaveApplication.dispose();
-			this.pythonExecutionApplication.dispose();
-			this.importedCsvSaveApplication.dispose();
-			this.querySharingApplication.dispose();
-			this.urlContentApplication.dispose();
-			this.controlCommandSyntaxApplication.dispose();
-			this.resourceUriApplication.dispose();
-			this.copilotContentOpenApplication.dispose();
-			this.informationNotificationApplication.dispose();
-			this.cachedValuesOpenApplication.dispose();
-			this.copilotAgentOpenApplication.dispose();
-			this.developmentNoteMutationApplication.dispose();
-			this.copilotInlineCompletionApplication.dispose();
-			this.copilotAvailabilityApplication.dispose();
-			this.copilotWriteQueryPreparationApplication.dispose();
-			this.copilotConversationClearApplication.dispose();
-			this.copilotHistoryRemovalApplication.dispose();
-			this.copilotChatFirstTimeApplication.dispose();
-			this.workbenchToolSessionApplication.dispose();
-			this.kustoConnectionBrowsingApplication.dispose();
-			this.copilotQueryWorkflowApplication.dispose();
-			this.kustoSectionExecutionApplication.dispose();
-			this.comparisonPreparationApplication.dispose();
-			this.sqlSectionExecutionApplication.dispose();
-			this.copilot.disposeKustoOwners();
-			this.copilot.invalidateSqlConnections(
-				[], [...this.sqlLifecycle.listComparisonBoxIds()],
-			);
-			this.sqlLifecycle.disposeSubscriptions();
-			this.sqlPersistenceInvalidationEmitter.dispose();
-			this.kustoPersistenceInvalidationEmitter.dispose();
-			this.fileOpenTrace?.mark('queryEditorProvider.dispose.start');
-			this.sqlLifecycle.dispose();
-			this.editorCursorStatusApplication.dispose();
-			this.editingPreferencesApplication.dispose();
-			this.kustoConnectionIntakeApplication.dispose();
-			this.kustoConnectionOnboardingApplication.dispose();
-			this.sqlConnectionOnboardingApplication.dispose();
-			this.sqlFavoritesApplication.dispose();
-			this.kustoFavoritesApplication.dispose();
-			this.sqlDatabaseDiscoveryApplication.dispose();
-			this.kqlLanguageRequestApplication.dispose();
-			this.sqlLastSelectionApplication.dispose();
-			this.kustoExecutionCoordinator.dispose();
-			this.cancelAllRunningQueries();
-			this.kustoClient.dispose();
-			this.embeddedTutorialRegistration?.dispose();
-			this.embeddedTutorialRegistration = undefined;
-			this.embeddedTutorialHost = undefined;
-			this.configSubscription?.dispose();
-			this.configSubscription = undefined;
-			this.authPreferenceSubscription?.dispose();
-			this.authPreferenceSubscription = undefined;
-			this.kustoConnectionLifecycle.dispose();
-			this.panel = undefined;
-		});
+		this.panelDisposalSubscription?.dispose();
+		this.panelDisposalSubscription = panel.onDidDispose(() => this.disposePanel(panel));
+	}
+
+	disposePanel(panel: vscode.WebviewPanel): void {
+		if (this.panel !== panel || this._panelDisposed) return;
+		this._panelDisposed = true;
+		QueryEditorProvider.activeProviders.delete(this);
+		this.panelDisposalSubscription?.dispose();
+		this.panelDisposalSubscription = undefined;
+		this.dashboardApplication.dispose();
+		this.artifactCsvSaveApplication.dispose();
+		this.pythonExecutionApplication.dispose();
+		this.importedCsvSaveApplication.dispose();
+		this.querySharingApplication.dispose();
+		this.urlContentApplication.dispose();
+		this.controlCommandSyntaxApplication.dispose();
+		this.resourceUriApplication.dispose();
+		this.copilotContentOpenApplication.dispose();
+		this.informationNotificationApplication.dispose();
+		this.cachedValuesOpenApplication.dispose();
+		this.copilotAgentOpenApplication.dispose();
+		this.developmentNoteMutationApplication.dispose();
+		this.copilotInlineCompletionApplication.dispose();
+		this.copilotAvailabilityApplication.dispose();
+		this.copilotWriteQueryPreparationApplication.dispose();
+		this.copilotConversationClearApplication.dispose();
+		this.copilotHistoryRemovalApplication.dispose();
+		this.copilotChatFirstTimeApplication.dispose();
+		this.workbenchToolSessionApplication.dispose();
+		this.kustoConnectionBrowsingApplication.dispose();
+		this.copilotQueryWorkflowApplication.dispose();
+		this.kustoSectionExecutionApplication.dispose();
+		this.comparisonPreparationApplication.dispose();
+		this.sqlSectionExecutionApplication.dispose();
+		this.copilot.disposeKustoOwners();
+		this.copilot.invalidateSqlConnections(
+			[], [...this.sqlLifecycle.listComparisonBoxIds()],
+		);
+		this.sqlLifecycle.disposeSubscriptions();
+		this.sqlPersistenceInvalidationEmitter.dispose();
+		this.kustoPersistenceInvalidationEmitter.dispose();
+		this.fileOpenTrace?.mark('queryEditorProvider.dispose.start');
+		this.sqlLifecycle.dispose();
+		this.editorCursorStatusApplication.dispose();
+		this.editingPreferencesApplication.dispose();
+		this.kustoConnectionIntakeApplication.dispose();
+		this.kustoConnectionOnboardingApplication.dispose();
+		this.sqlConnectionOnboardingApplication.dispose();
+		this.sqlFavoritesApplication.dispose();
+		this.kustoFavoritesApplication.dispose();
+		this.sqlDatabaseDiscoveryApplication.dispose();
+		this.kqlLanguageRequestApplication.dispose();
+		this.sqlLastSelectionApplication.dispose();
+		this.kustoExecutionCoordinator.dispose();
+		this.cancelAllRunningQueries();
+		this.kustoClient.dispose();
+		this.embeddedTutorialRegistration?.dispose();
+		this.embeddedTutorialRegistration = undefined;
+		this.embeddedTutorialHost = undefined;
+		this.configSubscription?.dispose();
+		this.configSubscription = undefined;
+		this.authPreferenceSubscription?.dispose();
+		this.authPreferenceSubscription = undefined;
+		this.kustoConnectionLifecycle.dispose();
+		this.panel = undefined;
 	}
 
 	// ── Alternating row color setting ──────────────────────────────────────────

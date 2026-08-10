@@ -374,13 +374,14 @@ Focused coverage lives in `browser-viewer-root.test.ts`, `browser-file-load.test
 
 ## Compatibility Sidecar Development
 
-The `.kql`/`.csl` and `.sql` compatibility providers share three load-bearing abstractions:
+The `.kql`/`.csl` and `.sql` compatibility providers share four load-bearing abstractions:
 
 * `CompatSidecarFormat` for pure linkage/hydration/canonicalization.
 * `CompatSidecarStore` for lock/CAS/repair/recovery publication and accepted physical identity.
-* `CompatSidecarSession` for revision, queue, upgrade, dirty, final-save, reload, and close coordination.
+* `CompatSidecarSession` for revision, queue, upgrade, dirty, final-save/reload correlation, and close-transition primitives.
+* `CompatSidecarCloseCoordinator` for retired close-traffic admission, exactly-once close startup, gateway/session/store ordering, subscription disposal, Save/Discard, exact attempted-draft recovery, repair/drain, initialization-failure cleanup, and terminal settlement.
 
-Keep KQL inference, connection caching, primary-text application, protocol message names, and language-specific sidecar create/adopt UX in provider adapters. Capture a sidecar's accepted identity at load or return it directly from the owned creation/adoption primitive; never resample the pathname after releasing publication ownership. Any sidecar lifecycle change must run the full parameterized `tests/integration/kqlSidecar.test.ts` matrix for both KQL and SQL variants.
+Keep KQL inference, connection caching, primary-text application, protocol message names, and language-specific sidecar create/adopt UX in provider adapters. Providers may inject write, recovery, repair, notification, and state-update effects into the close coordinator; they must not regain delayed-beforeunload/final-snapshot admission, close-start flags, gateway admission closure, session close/drain, Save/Discard decisions, recovery selection, final repair/store drain, or terminal settlement. Only explicit Discard may abandon a dirty close draft; prompt rejection or dismissal must recover the exact captured sanitized draft. Capture a sidecar's accepted identity at load or return it directly from the owned creation/adoption primitive; never resample the pathname after releasing publication ownership. Any sidecar lifecycle change must run the direct coordinator/session/store/gateway ring with `--maxWorkers=1` and the full parameterized `tests/integration/kqlSidecar.test.ts` matrix for both KQL and SQL variants with `--timeout 5000`.
 
 ---
 

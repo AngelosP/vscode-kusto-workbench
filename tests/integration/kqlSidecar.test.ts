@@ -14,6 +14,7 @@ import { stringifyKqlxFile } from '../../src/host/kqlxFormat';
 import { SqlCompatEditorProvider } from '../../src/host/sqlCompatEditorProvider';
 import { CompatSidecarStore, readCompatSidecarSnapshot } from '../../src/host/compatSidecarStore';
 import { CompatSidecarSession } from '../../src/host/compatSidecarSession';
+import { CompatSidecarCloseCoordinator } from '../../src/host/compatSidecarCloseCoordinator';
 import {
 	adaptMainWebviewStartupTestPanel,
 	deferMainWebviewReadyForTest,
@@ -7330,6 +7331,103 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('compatibility close resynchronizes visibility after delayed initialization', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const originalShowWarningMessage = vscode.window.showWarningMessage;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-compat-startup-visibility-'));
+		const variants = [
+			{ extension: '.kql', Provider: KqlCompatEditorProvider, kind: 'kqlx', primaryType: 'query', primaryId: 'compat_primary_query' },
+			{ extension: '.sql', Provider: SqlCompatEditorProvider, kind: 'sqlx', primaryType: 'sql', primaryId: 'compat_primary_sql' },
+		] as const;
+		const finalStateSaved: boolean[] = [];
+
+		try {
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => state;
+			(vscode.window as any).showWarningMessage = async () => 'Save';
+			for (const [index, variant] of variants.entries()) {
+				let markInitializeEntered!: () => void;
+				let releaseInitialize!: () => void;
+				const initializeEntered = new Promise<void>(resolve => { markInitializeEntered = resolve; });
+				const initializeGate = new Promise<void>(resolve => { releaseInitialize = resolve; });
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
+					markInitializeEntered();
+					await initializeGate;
+				};
+				const sourcePath = path.join(tmpDir, `visibility-${index}${variant.extension}`);
+				const sidecarPath = `${sourcePath}.json`;
+				fs.writeFileSync(sourcePath, 'select 1', 'utf8');
+				fs.writeFileSync(sidecarPath, JSON.stringify({
+					kind: variant.kind, version: 1, state: { sections: [
+						{ id: variant.primaryId, type: variant.primaryType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'markdown_1', type: 'markdown', text: 'BASELINE' },
+					] },
+				}), 'utf8');
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				const disposeHandlers: Array<() => void> = [];
+				const posted: any[] = [];
+				const provider = new (variant.Provider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `visibility-global-${index}`)),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(sourcePath), getText: () => 'select 1', lineCount: 1,
+					lineAt: () => ({ text: 'select 1' }), eol: vscode.EndOfLine.LF, isDirty: false,
+				} as any;
+				const panel = {
+					visible: false,
+					webview: {
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+						onDidReceiveMessage: (handler: (message: any) => unknown) => {
+							receiveHandler = handler;
+							return { dispose() {} };
+						},
+					},
+					onDidChangeViewState: () => ({ dispose() {} }),
+					onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+				} as any;
+
+				const resolving = Promise.resolve(provider.resolveCustomTextEditor(document, panel, {} as any));
+				await initializeEntered;
+				panel.visible = true;
+				releaseInitialize();
+				await resolving;
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				await Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
+					type: 'persistDocument', editRevision: 1,
+					state: { sections: [
+						{ type: variant.primaryType, query: 'select 1' },
+						{ id: 'markdown_1', type: 'markdown', text: 'STARTUP_DIRTY' },
+					] },
+				})));
+
+				setTimeout(() => {
+					void Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
+						type: 'persistDocument', reason: 'beforeunload', editRevision: 2,
+						state: { sections: [
+							{ type: variant.primaryType, query: 'select 1' },
+							{ id: 'markdown_1', type: 'markdown', text: 'VISIBLE_FINAL_STATE' },
+						] },
+					})));
+				}, 50);
+				for (const dispose of disposeHandlers) dispose();
+				await new Promise<void>(resolve => setTimeout(resolve, 700));
+				finalStateSaved.push(fs.readFileSync(sidecarPath, 'utf8').includes('VISIBLE_FINAL_STATE'));
+			}
+
+			assert.deepStrictEqual(finalStateSaved, [true, true]);
+		} finally {
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			(vscode.window as any).showWarningMessage = originalShowWarningMessage;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('rich session close promotes pre-disposal beforeunload during handler construction', async () => {
 		const previousInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-rich-early-close-'));
@@ -10702,6 +10800,354 @@ suite('Sidecar .kql.json strategy', () => {
 		} finally {
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
 			(vscode.window as any).showWarningMessage = originalShowWarningMessage;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('compatibility close coordinator drains reversed retained snapshots exactly once', async () => {
+		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const originalShowWarningMessage = vscode.window.showWarningMessage;
+		const variants = [
+			{
+				extension: '.kql', Provider: KqlCompatEditorProvider, primaryType: 'query',
+				primaryId: 'compat_primary_query', kind: 'kqlx', forceRecovery: false,
+			},
+			{
+				extension: '.kql', Provider: KqlCompatEditorProvider, primaryType: 'query',
+				primaryId: 'compat_primary_query', kind: 'kqlx', forceRecovery: true,
+			},
+			{
+				extension: '.sql', Provider: SqlCompatEditorProvider, primaryType: 'sql',
+				primaryId: 'compat_primary_sql', kind: 'sqlx', forceRecovery: false,
+			},
+			{
+				extension: '.sql', Provider: SqlCompatEditorProvider, primaryType: 'sql',
+				primaryId: 'compat_primary_sql', kind: 'sqlx', forceRecovery: true,
+			},
+		] as const;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-compat-close-coordinator-'));
+
+		try {
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => ({
+				...state,
+				sections: Array.isArray(state?.sections) ? state.sections.map((section: any) => {
+					const sanitized = { ...section };
+					if (sanitized.resultJson === 'PROTECTED_CLOSE_ROW') delete sanitized.resultJson;
+					return sanitized;
+				}) : [],
+			});
+			(vscode.window as any).showWarningMessage = async () => 'Save';
+			for (const [index, variant] of variants.entries()) {
+				const sourcePath = path.join(tmpDir, `coordinated-close-${index}${variant.extension}`);
+				const sidecarPath = `${sourcePath}.json`;
+				fs.writeFileSync(sourcePath, 'select 1', 'utf8');
+				fs.writeFileSync(sidecarPath, JSON.stringify({
+					kind: variant.kind, version: 1,
+					state: { sections: [
+						{ id: variant.primaryId, type: variant.primaryType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'markdown_1', type: 'markdown', text: 'BASELINE' },
+					] },
+				}, null, 2) + '\n', 'utf8');
+
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				const disposeHandlers: Array<() => void> = [];
+				const viewStateHandlers: Array<(event: { webviewPanel: any }) => void> = [];
+				const posted: any[] = [];
+				let finalRequestId = '';
+				let coordinatorCreations = 0;
+				let closeStarts = 0;
+				let closeSettlements = 0;
+				let saveDraftCalls = 0;
+				let recoveryCalls = 0;
+				let repairCalls = 0;
+				let storeDrainCalls = 0;
+				let closePromise: Promise<void> | undefined;
+				let recoveryUri: vscode.Uri | undefined;
+				const retainedAdmission: Array<{ reason: string; flushRequestId: string; allowed: boolean }> = [];
+				const savedDrafts: any[] = [];
+				const recoveredDrafts: any[] = [];
+				const coordinatorFactory = (options: any) => {
+					coordinatorCreations++;
+					const delegate = new CompatSidecarCloseCoordinator(options);
+					return {
+						allowRetiredInbound(message: any) {
+							const allowed = delegate.allowRetiredInbound(message);
+							retainedAdmission.push({
+								reason: String(message?.reason || ''),
+								flushRequestId: String(message?.flushRequestId || ''),
+								allowed,
+							});
+							return allowed;
+						},
+						isPendingFinalPersistReply: (message: any) => delegate.isPendingFinalPersistReply(message),
+						configure(finalization: any) {
+							delegate.configure({
+								...finalization,
+								saveDraft: async (draft: any) => {
+									saveDraftCalls++;
+									savedDrafts.push(draft);
+									if (variant.forceRecovery) throw new Error('Forced close-time CAS conflict');
+									await finalization.saveDraft(draft);
+								},
+								recoverDraft: async (draft: any) => {
+									recoveryCalls++;
+									recoveredDrafts.push(draft);
+									recoveryUri = await finalization.recoverDraft(draft);
+									return recoveryUri;
+								},
+								repair: async () => {
+									repairCalls++;
+									await finalization.repair();
+								},
+								drainStore: async () => {
+									storeDrainCalls++;
+									await finalization.drainStore();
+								},
+							});
+						},
+						failInitialization: (cleanup: any) => delegate.failInitialization(cleanup),
+						disposePanel() {
+							closeStarts++;
+							closePromise = Promise.resolve(delegate.disposePanel()).then(() => {
+								closeSettlements++;
+							});
+							return closePromise;
+						},
+					};
+				};
+				const provider = new (variant.Provider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-${index}`)),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+					undefined, coordinatorFactory,
+				);
+				const document = {
+					uri: vscode.Uri.file(sourcePath), getText: () => 'select 1', lineCount: 1,
+					lineAt: () => ({ text: 'select 1' }), eol: vscode.EndOfLine.LF, isDirty: false,
+					save: async () => true,
+				} as any;
+				const panel = {
+					visible: true,
+					webview: {
+						options: {}, postMessage: async (message: any) => {
+							posted.push(message);
+							if (message?.reloadRequestId) {
+								await Promise.resolve(receiveHandler?.({
+									type: 'documentReloadResult', requestId: message.reloadRequestId,
+									applied: true, editRevision: Number(message.editRevision || 0),
+								}));
+							}
+							if (message?.type === 'requestFinalPersist') finalRequestId = String(message.requestId || '');
+							return true;
+						},
+						onDidReceiveMessage: (handler: (message: any) => unknown) => {
+							receiveHandler = handler;
+							return { dispose() {} };
+						},
+					},
+					onDidChangeViewState: (handler: (event: { webviewPanel: any }) => void) => {
+						viewStateHandlers.push(handler);
+						return { dispose() {} };
+					},
+					onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+				} as any;
+
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				assert.ok(receiveHandler);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				await Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
+					type: 'persistDocument', editRevision: 1, snapshotId: `dirty-${index}`,
+					state: { sections: [
+						{ type: variant.primaryType, query: 'select 1' },
+						{ id: 'markdown_1', type: 'markdown', text: 'DIRTY_DRAFT' },
+					] },
+				})));
+				panel.visible = false;
+				for (const handler of viewStateHandlers) handler({ webviewPanel: panel });
+				await waitForCondition(() => !!finalRequestId, `${variant.extension} must request a final snapshot before disposal`);
+				panel.visible = true;
+				for (const handler of viewStateHandlers) handler({ webviewPanel: panel });
+				for (const dispose of disposeHandlers) dispose();
+
+				await Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
+					type: 'persistDocument', reason: 'beforeunload', editRevision: 2,
+					snapshotId: `beforeunload-${index}`,
+					state: { sections: [
+						{ type: variant.primaryType, query: 'select 1' },
+						{ id: 'markdown_1', type: 'markdown', text: 'BEFOREUNLOAD_DRAFT' },
+					] },
+				})));
+				await Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
+					type: 'persistDocument', editRevision: 99, snapshotId: `ordinary-${index}`,
+					state: { sections: [
+						{ type: variant.primaryType, query: 'select 1' },
+						{ id: 'markdown_1', type: 'markdown', text: 'REJECTED_ORDINARY' },
+					] },
+				})));
+				await Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
+					type: 'persistDocument', flushRequestId: finalRequestId, editRevision: 3,
+					snapshotId: `final-${index}`,
+					state: { sections: [
+						{ type: variant.primaryType, query: 'select 1' },
+						{ id: 'markdown_1', type: 'markdown', text: 'FINAL_NEWEST_DRAFT' },
+						{ id: 'sql_protected', type: 'sql', query: 'select secret', resultJson: 'PROTECTED_CLOSE_ROW' },
+					] },
+				})));
+				if (closePromise) await closePromise;
+				else await new Promise<void>(resolve => setTimeout(resolve, 700));
+
+				assert.strictEqual(coordinatorCreations, 1, `${variant.extension} must create one panel close coordinator`);
+				assert.strictEqual(closeStarts, 1, `${variant.extension} must start close exactly once`);
+				assert.strictEqual(closeSettlements, 1, `${variant.extension} must settle close exactly once`);
+				assert.strictEqual(saveDraftCalls, 1, `${variant.extension} must attempt one exact draft save`);
+				assert.strictEqual(recoveryCalls, variant.forceRecovery ? 1 : 0);
+				assert.strictEqual(repairCalls, 1, `${variant.extension} must run final repair once`);
+				assert.strictEqual(storeDrainCalls, 1, `${variant.extension} must drain the exact store once`);
+				assert.ok(JSON.stringify(savedDrafts[0]?.state).includes('FINAL_NEWEST_DRAFT'));
+				assert.ok(!JSON.stringify(savedDrafts[0]?.state).includes('REJECTED_ORDINARY'));
+				assert.ok(!JSON.stringify(savedDrafts[0]?.state).includes('PROTECTED_CLOSE_ROW'));
+				assert.ok(retainedAdmission.some(entry => entry.reason === 'beforeunload' && entry.allowed));
+				assert.ok(retainedAdmission.some(entry => entry.flushRequestId === finalRequestId && entry.allowed));
+				assert.ok(retainedAdmission.some(entry => !entry.reason && !entry.flushRequestId && !entry.allowed));
+				if (variant.forceRecovery) {
+					assert.ok(recoveryUri);
+					assert.ok(JSON.stringify(recoveredDrafts[0]?.state).includes('FINAL_NEWEST_DRAFT'));
+					assert.ok(!JSON.stringify(recoveredDrafts[0]?.state).includes('PROTECTED_CLOSE_ROW'));
+					assert.ok(fs.readFileSync(recoveryUri!.fsPath, 'utf8').includes('FINAL_NEWEST_DRAFT'));
+					assert.ok(!fs.readFileSync(recoveryUri!.fsPath, 'utf8').includes('PROTECTED_CLOSE_ROW'));
+				} else {
+					assert.ok(fs.readFileSync(sidecarPath, 'utf8').includes('FINAL_NEWEST_DRAFT'));
+				}
+				assert.ok(!fs.readFileSync(sidecarPath, 'utf8').includes('REJECTED_ORDINARY'));
+				assert.ok(!fs.readFileSync(sidecarPath, 'utf8').includes('PROTECTED_CLOSE_ROW'));
+			}
+		} finally {
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			(vscode.window as any).showWarningMessage = originalShowWarningMessage;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('compatibility initialization failure settles an already disposed panel', async () => {
+		const prototype = (QueryEditorProvider as any).prototype;
+		const originalInitialize = prototype.initializeWebviewPanel;
+		const variants = [KqlCompatEditorProvider, SqlCompatEditorProvider] as const;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-compat-init-failure-'));
+
+		try {
+			for (const [index, Provider] of variants.entries()) {
+				let initializationStarted!: () => void;
+				const started = new Promise<void>(resolve => { initializationStarted = resolve; });
+				let rejectInitialization!: () => void;
+				const initialization = new Promise<void>((_resolve, reject) => {
+					rejectInitialization = () => reject(new Error(`compat init failed ${index}`));
+				});
+				prototype.initializeWebviewPanel = async () => {
+					initializationStarted();
+					await initialization;
+				};
+				let inboundDisposals = 0;
+				let panelSubscriptionDisposals = 0;
+				const disposeHandlers: Array<() => void> = [];
+				const sourcePath = path.join(tmpDir, `failed-${index}${index === 0 ? '.kql' : '.sql'}`);
+				const provider = new (Provider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-${index}`)),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(sourcePath), getText: () => 'select 1', lineCount: 1,
+					lineAt: () => ({ text: 'select 1' }), eol: vscode.EndOfLine.LF, isDirty: false,
+				} as any;
+				const panel = {
+					visible: true,
+					webview: {
+						options: {}, postMessage: async () => true,
+						onDidReceiveMessage: () => ({ dispose: () => { inboundDisposals++; } }),
+					},
+					onDidDispose: (handler: () => void) => {
+						disposeHandlers.push(handler);
+						return { dispose: () => { panelSubscriptionDisposals++; } };
+					},
+				} as any;
+
+				const opening = provider.resolveCustomTextEditor(document, panel, {} as any);
+				await started;
+				for (const dispose of disposeHandlers) dispose();
+				rejectInitialization();
+				await assert.rejects(opening, new RegExp(`compat init failed ${index}`));
+
+				assert.strictEqual(inboundDisposals, 1);
+				assert.strictEqual(panelSubscriptionDisposals, 2);
+			}
+		} finally {
+			prototype.initializeWebviewPanel = originalInitialize;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('compatibility initialization rejection disposes the live nested query provider', async () => {
+		const prototype = (QueryEditorProvider as any).prototype;
+		const originalInitialize = prototype.initializeWebviewPanel;
+		const variants = [KqlCompatEditorProvider, SqlCompatEditorProvider] as const;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-compat-live-init-failure-'));
+
+		try {
+			for (const [index, Provider] of variants.entries()) {
+				let nestedProvider: any;
+				prototype.initializeWebviewPanel = async function (this: QueryEditorProvider, panel: vscode.WebviewPanel) {
+					nestedProvider = this;
+					(this as any).panel = panel;
+					(this as any)._panelDisposed = false;
+					(QueryEditorProvider as any).activeProviders.add(this);
+					(this as any).registerPanelDisposal(panel);
+					throw new Error(`live compat init failed ${index}`);
+				};
+				let inboundDisposals = 0;
+				let panelSubscriptionDisposals = 0;
+				const sourcePath = path.join(tmpDir, `live-failed-${index}${index === 0 ? '.kql' : '.sql'}`);
+				const provider = new (Provider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `live-global-${index}`)),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(sourcePath), getText: () => 'select 1', lineCount: 1,
+					lineAt: () => ({ text: 'select 1' }), eol: vscode.EndOfLine.LF, isDirty: false,
+				} as any;
+				const panel = {
+					visible: true,
+					webview: {
+						options: {}, postMessage: async () => true,
+						onDidReceiveMessage: () => ({ dispose: () => { inboundDisposals++; } }),
+					},
+					onDidDispose: () => ({ dispose: () => { panelSubscriptionDisposals++; } }),
+				} as any;
+
+				await assert.rejects(
+					provider.resolveCustomTextEditor(document, panel, {} as any),
+					new RegExp(`live compat init failed ${index}`),
+				);
+
+				assert.ok(nestedProvider);
+				assert.strictEqual(nestedProvider._panelDisposed, true);
+				assert.strictEqual(nestedProvider.panel, undefined);
+				assert.strictEqual(nestedProvider.authPreferenceSubscription, undefined);
+				assert.strictEqual((QueryEditorProvider as any).activeProviders.has(nestedProvider), false);
+				assert.strictEqual(inboundDisposals, 1);
+				assert.strictEqual(panelSubscriptionDisposals, 3);
+			}
+		} finally {
+			prototype.initializeWebviewPanel = originalInitialize;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});
