@@ -10,8 +10,12 @@ import { KustoConnectionCache, type KustoConnectionCacheGeneration } from './kus
 import type { SqlConnection, SqlConnectionManager } from './sqlConnectionManager';
 import type { KustoQueryClient } from './kustoClient';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget } from './schemaIndexUtils';
-import { getPowerBiHtmlValidationIssues, type PowerBiDataSource } from './powerBiExport';
+import {
+	getPowerBiHtmlValidationDiagnostics,
+	type PowerBiDataSource,
+} from './powerBiExport';
 import { getLegacyDashboardWarnings } from '../shared/htmlDashboardUpgrade';
+import type { PortableDashboardDiagnostic } from '../shared/portableDashboardCompiler';
 import { classifyWorkbenchUri, classifyWorkbenchUriString, type WorkbenchFileInfo, type WorkbenchFileKind } from './workbenchFileTypes';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { getKustoConnectionIdentityKey, resolveStrictKustoConnection } from '../shared/kustoAuth';
@@ -343,6 +347,7 @@ export interface ValidateHtmlDashboardResult {
 	valid: boolean;
 	sectionId: string;
 	issues: string[];
+	diagnostics: PortableDashboardDiagnostic[];
 	warnings: string[];
 	hasProvenance: boolean;
 	bindingCount: number;
@@ -2324,6 +2329,7 @@ export class KustoWorkbenchToolOrchestrator {
 				valid: false,
 				sectionId: '',
 				issues: ['sectionId is required.'],
+				diagnostics: [],
 				warnings: [],
 				hasProvenance: false,
 				bindingCount: 0,
@@ -2343,6 +2349,7 @@ export class KustoWorkbenchToolOrchestrator {
 				valid: false,
 				sectionId,
 				issues: [message],
+				diagnostics: [],
 				warnings: [],
 				hasProvenance: false,
 				bindingCount: 0,
@@ -2358,9 +2365,11 @@ export class KustoWorkbenchToolOrchestrator {
 		if (!context.success) issues.push(context.error || 'Unable to read HTML dashboard context.');
 		if (!code.trim()) issues.push('HTML section has no dashboard code.');
 		if (!context.hasProvenance) issues.push('Missing application/kw-provenance block. Upgrade this dashboard to the latest provenance contract before finalizing.');
-		if ((context.bindingCount || 0) === 0) issues.push('No provenance bindings found. Add bindings for every exportable scalar, table, repeated table, pivot, and chart.');
 		if (dataSources.length === 0) issues.push('No runnable fact data source found. Run the fact query and ensure provenance model.fact.sectionId points at that query section.');
-		issues.push(...getPowerBiHtmlValidationIssues(code, dataSources));
+		const diagnostics = getPowerBiHtmlValidationDiagnostics(code, dataSources);
+		issues.push(...diagnostics
+			.filter(diagnostic => diagnostic.code !== 'missing-provenance')
+			.map(diagnostic => diagnostic.message));
 
 		let filePath: string | undefined;
 		let fileName: string | undefined;
@@ -2378,6 +2387,7 @@ export class KustoWorkbenchToolOrchestrator {
 			valid: !!context.success && uniqueIssues.length === 0,
 			sectionId,
 			issues: uniqueIssues,
+			diagnostics,
 			warnings: uniqueStrings(getLegacyDashboardWarnings(code)),
 			hasProvenance: !!context.hasProvenance,
 			bindingCount: context.bindingCount || 0,

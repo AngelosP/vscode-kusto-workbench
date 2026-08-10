@@ -249,6 +249,10 @@ export const workspace = {
 			fileSystemStore.set(uri.toString(), bytes);
 			fileSystemStore.set(uri.fsPath, bytes);
 		},
+		delete: async (uri: Uri, _options?: { recursive?: boolean }) => {
+			fileSystemStore.delete(uri.toString());
+			fileSystemStore.delete(uri.fsPath);
+		},
 	},
 	openTextDocument: async (uri: Uri) => ({ uri }),
 	onDidOpenTextDocument: () => ({ dispose: () => {} }),

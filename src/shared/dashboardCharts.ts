@@ -1,4 +1,10 @@
-import { isReservedDashboardTooltipAlias, isValidDashboardTooltipSpec, type DashboardTooltipSpec } from './dashboardTooltips';
+import {
+	dashboardAggregateNeedsColumn,
+	isReservedDashboardTooltipAlias,
+	isValidDashboardAggregate,
+	isValidDashboardTooltipSpec,
+	type DashboardTooltipSpec,
+} from './dashboardTooltips';
 
 export interface PreAggregate {
 	groupBy: string | string[];
@@ -157,11 +163,11 @@ function isValidChartDimensionName(value: unknown): value is string {
 }
 
 function aggregateNeedsColumn(agg: unknown): boolean {
-	return String(agg || '').toUpperCase() !== 'COUNT';
+	return dashboardAggregateNeedsColumn(agg);
 }
 
 function isChartValue(value: unknown): value is ChartValue {
-	if (!isRecord(value) || !isNonEmptyString(value.agg)) return false;
+	if (!isRecord(value) || !isValidDashboardAggregate(value.agg)) return false;
 	if (aggregateNeedsColumn(value.agg) && !isNonEmptyString(value.column)) return false;
 	if (value.column !== undefined && typeof value.column !== 'string') return false;
 	if (value.format !== undefined && typeof value.format !== 'string') return false;
@@ -252,7 +258,7 @@ function isPreAggregate(value: unknown): value is PreAggregate {
 	const validGroupBy = isValidChartDimensionName(groupBy) || (Array.isArray(groupBy) && groupBy.length > 0 && groupBy.every(isValidChartDimensionName));
 	if (!validGroupBy || !isRecord(value.compute)) return false;
 	const compute = value.compute;
-	if (!isValidChartDimensionName(compute.name) || !isNonEmptyString(compute.agg)) return false;
+	if (!isValidChartDimensionName(compute.name) || !isValidDashboardAggregate(compute.agg)) return false;
 	if (aggregateNeedsColumn(compute.agg) && !isNonEmptyString(compute.column)) return false;
 	if (compute.column !== undefined && typeof compute.column !== 'string') return false;
 	return true;
@@ -278,7 +284,7 @@ export function isValidDashboardChartDisplay(display: unknown): display is Dashb
 		&& Array.isArray(display.series)
 		&& display.series.length > 0
 		&& display.series.every(series => isRecord(series)
-			&& isNonEmptyString(series.agg)
+			&& isValidDashboardAggregate(series.agg)
 			&& (!aggregateNeedsColumn(series.agg) || isNonEmptyString(series.column))
 			&& (series.column === undefined || typeof series.column === 'string')
 			&& (series.label === undefined || typeof series.label === 'string'));

@@ -10,6 +10,7 @@ import { htmlDashboardFactArtifactConsumerId } from '../../src/shared/resultArti
 import { pState } from '../../src/webview/shared/persistence-state';
 
 type BridgeSection = KwHtmlSection & { _buildDataBridgeScript(): string; refreshDataBridge(): void };
+type ScalarBindingRuntime = { bind(bindingId: string, value: unknown): void; bindHtml(bindingId: string, html: string): void };
 type HeightSection = KwHtmlSection & {
 	_mode: 'code' | 'preview';
 	_userResizedPreview: boolean;
@@ -194,6 +195,70 @@ describe('generated slicer layout', () => {
 });
 
 describe('HTML dashboard artifact bridge ownership', () => {
+	it('uses the Power BI missing-column diagnostic during preview preflight', () => {
+		pState.htmlPowerBiCompatibilityCheckEnabled = true;
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		section.boxId = 'html_missing_scalar_column';
+		section.setCode(`<script type="application/kw-provenance">${JSON.stringify({
+			version: 1,
+			model: { fact: { sectionId: 'query_fact', sectionName: 'Fact Events' } },
+			bindings: {
+				'total-actions': { display: { type: 'scalar', agg: 'SUM', column: 'MissingMetric' } },
+			},
+		})}</script><main><span data-kw-bind="total-actions"></span></main>`);
+		section._collectDataSourcesForPBI = () => [{
+			name: 'Fact Events',
+			sectionId: 'query_fact',
+			clusterUrl: 'https://cluster.example',
+			database: 'db',
+			query: 'FactEvents',
+			columns: [{ name: 'ExistingMetric', type: 'long' }],
+		}];
+
+		expect(section.evaluatePowerBiCompatibilityNotice()?.diagnostics).toEqual([{
+			code: 'missing-column',
+			severity: 'error',
+			message: 'total-actions (column: missing column MissingMetric)',
+			bindingKey: 'total-actions',
+			role: 'column',
+			columnName: 'MissingMetric',
+		}]);
+	});
+
+	it('does not expose a schema-rejected portable binding to the preview renderer', () => {
+		const sourceId = 'query_preview_missing_scalar_column';
+		setResultsState(sourceId, {
+			columns: [{ name: 'ExistingMetric', type: 'long' }],
+			rows: [[42]],
+		}, {
+			policy: { exposeToActiveContent: true },
+		});
+		const section = new KwHtmlSection() as unknown as BridgeSection;
+		section.boxId = 'html_preview_missing_scalar_column';
+		section.setCode(`<script type="application/kw-provenance">${JSON.stringify({
+			version: 1,
+			model: { fact: { sectionId: sourceId, sectionName: 'Fact Events' } },
+			bindings: {
+				'total-actions': { display: { type: 'scalar', agg: 'SUM', column: 'MissingMetric' } },
+			},
+		})}</script><main><span data-kw-bind="total-actions"></span></main>`);
+
+		const bridge = section._buildDataBridgeScript();
+		document.body.innerHTML = '<span data-kw-bind="total-actions">unchanged</span><div data-kw-bind="preview-only"></div>';
+		const script = bridge.match(/<script>([\s\S]*?)<\/script>/i)?.[1];
+		expect(script).toBeTruthy();
+		new Function(script!).call(window);
+		const runtime = (window as Window & typeof globalThis & { KustoWorkbench: ScalarBindingRuntime }).KustoWorkbench;
+		runtime.bind('total-actions', 99);
+		runtime.bindHtml('preview-only', '<strong>preview</strong>');
+
+		expect(bridge).toContain('"bindings":{}');
+		expect(bridge).not.toContain('MissingMetric');
+		expect(document.querySelector('[data-kw-bind="total-actions"]')?.textContent).toBe('unchanged');
+		expect(document.querySelector('[data-kw-bind="preview-only"]')?.innerHTML).toBe('<strong>preview</strong>');
+		clearResultsState(sourceId);
+	});
+
 	it('cancels hidden iframe measurement when the dashboard workflow retires', async () => {
 		const section = new KwHtmlSection() as unknown as HeightSection;
 		section.id = 'html_measurement_cancel';

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import * as vscode from 'vscode';
 import {
 	generateHtmlMeasureTmdl,
 	generateHtmlContentVisualJson,
@@ -7,7 +8,9 @@ import {
 	escapeDaxString,
 	escapeDaxColumnRef,
 	daxColumnExpr,
+	exportHtmlToPowerBI,
 	findUnsupportedPowerBiBindings,
+	getPowerBiHtmlValidationDiagnostics,
 	getPowerBiHtmlValidationIssues,
 	validatePowerBiHtmlBindings,
 	generateDaxMeasure,
@@ -17,6 +20,7 @@ import {
 	patchCssForPbiVisual,
 	type PowerBiDataSource,
 } from '../../../src/host/powerBiExport';
+import { PortableDashboardAdmissionError } from '../../../src/shared/portableDashboardCompiler';
 import {
 	DASHBOARD_BAR_CHART,
 	DASHBOARD_LINE_CHART,
@@ -294,7 +298,7 @@ describe('findUnsupportedPowerBiBindings', () => {
 			'<table data-kw-bind="by-skill"></table><div data-kw-bind="by-skill"></div>',
 		);
 
-		expect(findUnsupportedPowerBiBindings(html)).toEqual(['by-skill (repeatedTable: target must be a visible non-table container element)']);
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['by-skill (repeatedTable: expected exactly one data-kw-bind target, found 2)']);
 	});
 
 	it('reports invalid optional chart fields before export', () => {
@@ -354,7 +358,7 @@ describe('findUnsupportedPowerBiBindings', () => {
 		]);
 	});
 
-	it('reports standalone tbody table targets before export', () => {
+	it('reports browser-dropped standalone tbody through full validation', () => {
 		const html = makeV1Html(
 			{
 				'top-table': {
@@ -368,7 +372,10 @@ describe('findUnsupportedPowerBiBindings', () => {
 			'<tbody data-kw-bind="top-table"></tbody>',
 		);
 
-		expect(findUnsupportedPowerBiBindings(html)).toEqual(['top-table (table: target must be table or tbody inside table)']);
+		expect(findUnsupportedPowerBiBindings(html)).toEqual([]);
+		expect(getPowerBiHtmlValidationIssues(html, [factDataSource])).toEqual([
+			'top-table (missing data-kw-bind target)',
+		]);
 	});
 
 	it('reports scalar and chart bindings rendered on void elements', () => {
@@ -400,6 +407,232 @@ describe('findUnsupportedPowerBiBindings', () => {
 		]);
 		expect(() => validatePowerBiHtmlBindings(html, [factDataSource])).toThrow(/missing column OS/);
 		expect(() => validatePowerBiHtmlBindings(html, [factDataSource])).toThrow(/missing column Actions/);
+	});
+
+	it('returns a typed missing-column diagnostic for a structurally valid scalar binding', () => {
+		const html = makeV1Html(
+			{
+				'total-actions': { display: { type: 'scalar', agg: 'SUM', column: 'MissingMetric' } },
+			},
+			'<span data-kw-bind="total-actions"></span>',
+		);
+
+		expect(getPowerBiHtmlValidationDiagnostics(html, [factDataSource])).toEqual([{
+			code: 'missing-column',
+			severity: 'error',
+			message: 'total-actions (column: missing column MissingMetric)',
+			bindingKey: 'total-actions',
+			role: 'column',
+			columnName: 'MissingMetric',
+		}]);
+	});
+
+	it('rejects local export with typed diagnostics before filesystem mutation', async () => {
+		const html = makeV1Html(
+			{
+				'total-actions': { display: { type: 'scalar', agg: 'SUM', column: 'MissingMetric' } },
+			},
+			'<span data-kw-bind="total-actions"></span>',
+		);
+		const createDirectory = vi.spyOn(vscode.workspace.fs, 'createDirectory');
+		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile');
+
+		let error: unknown;
+		try {
+			await exportHtmlToPowerBI({
+				htmlCode: html,
+				sectionName: 'Missing column',
+				dataSources: [factDataSource],
+			}, vscode.Uri.file('C:/tmp/dsh-1-missing-column'));
+		} catch (caught) {
+			error = caught;
+		}
+
+		expect(error).toBeInstanceOf(PortableDashboardAdmissionError);
+		expect((error as PortableDashboardAdmissionError).diagnostics).toEqual([{
+			code: 'missing-column',
+			severity: 'error',
+			message: 'total-actions (column: missing column MissingMetric)',
+			bindingKey: 'total-actions',
+			role: 'column',
+			columnName: 'MissingMetric',
+		}]);
+		expect(createDirectory).not.toHaveBeenCalled();
+		expect(writeFile).not.toHaveBeenCalled();
+		createDirectory.mockRestore();
+		writeFile.mockRestore();
+	});
+
+	it('rejects local export without provenance before filesystem mutation', async () => {
+		const createDirectory = vi.spyOn(vscode.workspace.fs, 'createDirectory');
+		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile');
+
+		let error: unknown;
+		try {
+			await exportHtmlToPowerBI({
+				htmlCode: '<main>Preview-only dashboard</main>',
+				sectionName: 'Missing provenance',
+				dataSources: [],
+			}, vscode.Uri.file('C:/tmp/dsh-1-missing-provenance'));
+		} catch (caught) {
+			error = caught;
+		}
+
+		expect(error).toBeInstanceOf(PortableDashboardAdmissionError);
+		expect((error as PortableDashboardAdmissionError).diagnostics).toEqual([{
+			code: 'missing-provenance',
+			severity: 'error',
+			message: 'Missing application/kw-provenance block. Ask Kusto Workbench to make this dashboard exportable to Power BI.',
+		}]);
+		expect(createDirectory).not.toHaveBeenCalled();
+		expect(writeFile).not.toHaveBeenCalled();
+		createDirectory.mockRestore();
+		writeFile.mockRestore();
+	});
+
+	it('rejects nested binding ranges before local export filesystem mutation', async () => {
+		const html = makeV1Html(
+			{
+				outer: { display: { type: 'scalar', agg: 'COUNT' } },
+				inner: { display: { type: 'scalar', agg: 'COUNT' } },
+			},
+			'<div data-kw-bind="outer"><span data-kw-bind="inner">0</span></div>',
+		);
+		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile');
+
+		let error: unknown;
+		try {
+			await exportHtmlToPowerBI({
+				htmlCode: html,
+				sectionName: 'Nested targets',
+				dataSources: [factDataSource],
+			}, vscode.Uri.file('C:/tmp/dsh-1-nested-targets'));
+		} catch (caught) {
+			error = caught;
+		}
+
+		expect(error).toBeInstanceOf(PortableDashboardAdmissionError);
+		expect((error as PortableDashboardAdmissionError).diagnostics.map(diagnostic => diagnostic.code)).toEqual([
+			'overlapping-target', 'overlapping-target',
+		]);
+		expect(writeFile).not.toHaveBeenCalled();
+		writeFile.mockRestore();
+	});
+
+	it('rejects browser-generated duplicate targets before local export writes', async () => {
+		const html = makeV1Html(
+			{ total: { display: { type: 'scalar', agg: 'COUNT' } } },
+			'<b data-kw-bind="total">one<div>two</b>three</div>',
+		);
+		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile');
+
+		let error: unknown;
+		try {
+			await exportHtmlToPowerBI({
+				htmlCode: html,
+				sectionName: 'Generated duplicate',
+				dataSources: [factDataSource],
+			}, vscode.Uri.file('C:/tmp/dsh-1-generated-duplicate'));
+		} catch (caught) {
+			error = caught;
+		}
+
+		expect(error).toBeInstanceOf(PortableDashboardAdmissionError);
+		expect((error as PortableDashboardAdmissionError).diagnostics).toEqual([{
+			code: 'duplicate-target', severity: 'error',
+			message: 'total (scalar: expected exactly one data-kw-bind target, found 2)',
+			bindingKey: 'total', displayType: 'scalar',
+		}]);
+		expect(writeFile).not.toHaveBeenCalled();
+		writeFile.mockRestore();
+	});
+
+	it('rejects foster-parented table content before local export writes', async () => {
+		const html = makeV1Html(
+			{ rows: { display: { type: 'table', groupBy: ['OS'], columns: [{ name: 'OS' }] } } },
+			'prefix<table data-kw-bind="rows">FOSTER_MARKER</table>',
+		);
+		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile');
+		let error: unknown;
+		try {
+			await exportHtmlToPowerBI({
+				htmlCode: html,
+				sectionName: 'Rejected dashboard',
+				dataSources: [factDataSource],
+			}, vscode.Uri.file('C:/tmp/dsh-1-rejected-dashboard'));
+		} catch (caught) {
+			error = caught;
+		}
+		expect(error).toBeInstanceOf(PortableDashboardAdmissionError);
+		expect((error as PortableDashboardAdmissionError).diagnostics[0].code).toBe('invalid-target');
+		expect(writeFile).not.toHaveBeenCalled();
+		writeFile.mockRestore();
+	});
+
+	it.each([
+		{
+			name: 'form-pointer changes outside the target',
+			body: '<table><form id="owner"><tr><td>'
+				+ '<div data-kw-bind="total"></form></div>'
+				+ '</td></tr></table><input id="outside" type="submit">',
+		},
+		{
+			name: 'tree-builder tokenizer state around ignored select content',
+			body: '<table><form id="owner"><tr><td>'
+				+ '<div data-kw-bind="total"><select><style></select></form></div>'
+				+ '</td></tr></table><input id="outside" type="submit">',
+		},
+		{
+			name: 'root attribute adoption from the target',
+			body: '<div data-kw-bind="total"><html data-kw-mode="adopted"></html></div>',
+		},
+	])('rejects $name before local export writes', async ({ body }) => {
+		const html = makeV1Html(
+			{ total: { display: { type: 'scalar', agg: 'COUNT' } } },
+			body,
+		);
+		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile');
+		let error: unknown;
+		try {
+			await exportHtmlToPowerBI({
+				htmlCode: html,
+				sectionName: 'Parser state change',
+				dataSources: [factDataSource],
+			}, vscode.Uri.file('C:/tmp/dsh-1-parser-state-change'));
+		} catch (caught) {
+			error = caught;
+		}
+		expect(error).toBeInstanceOf(PortableDashboardAdmissionError);
+		expect((error as PortableDashboardAdmissionError).diagnostics[0]).toMatchObject({
+			code: 'invalid-target', bindingKey: 'total',
+		});
+		expect(writeFile).not.toHaveBeenCalled();
+		writeFile.mockRestore();
+	});
+
+	it('recompiles transformed HTML before writing its dynamic measure', async () => {
+		const html = makeV1Html(
+			{ total: { display: { type: 'scalar', agg: 'COUNT' } } },
+			'<style>:root{--fg:#123456}body{color:var(--fg)}</style><span data-kw-bind="total">0</span>',
+		);
+		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+		await exportHtmlToPowerBI({
+			htmlCode: html,
+			sectionName: 'Transformed ranges',
+			projectName: 'TransformedRanges',
+			dataSources: [factDataSource],
+		}, vscode.Uri.file('C:/tmp/dsh-1-transformed-ranges'));
+
+		const measureWrite = writeFile.mock.calls.find(([uri]) =>
+			String(uri).replace(/\\/g, '/').endsWith('/TransformedRanges.SemanticModel/definition/tables/_KW_HtmlMeasures.tmdl'));
+		expect(measureWrite).toBeDefined();
+		const measure = Buffer.from(measureWrite![1] as Uint8Array).toString('utf8');
+		expect(measure).toContain('VAR _scalar_0');
+		expect(measure).toContain('<div class=""kw-pbi-root"">');
+		expect(measure).toContain('<span data-kw-bind=""total"">" & _scalar_0 & "</span>');
+		expect(measure).not.toContain('application/kw-provenance');
+		writeFile.mockRestore();
 	});
 
 	it('reports missing columns referenced by segmented bar specs', () => {
@@ -1543,6 +1776,20 @@ describe('generateDaxMeasure — v1 scalar', () => {
 		expect(result).toContain('[DeviceId]');
 	});
 
+	it('HTML-escapes hostile scalar format output before target insertion', () => {
+		const html = makeV1Html(
+			{ total: { display: { type: 'scalar', agg: 'COUNT', format: '#,##0"</form>"' } } },
+			'<span data-kw-bind="total">0</span>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('VAR _scalar_0 = SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE');
+		expect(result).toContain('FORMAT(COUNTROWS');
+		expect(result).toContain('"<", "&lt;"');
+		expect(result).toContain('<span data-kw-bind=""total"">" & _scalar_0 & "</span>');
+	});
+
 	it('falls back to static string when no provenance', () => {
 		const result = generateDaxMeasure('<div>Hello</div>', [factDataSource]);
 		expect(result).toMatch(/^"/);
@@ -1604,6 +1851,33 @@ describe('generateDaxMeasure — v1 scalar', () => {
 
 		expect(result).toContain('<noscript><span data-kw-bind=""total"">old</span></noscript>');
 		expect(result).toContain('<span data-kw-bind=""total"">" & _scalar_0 & "</span>');
+	});
+
+	it('rewrites the admitted target after a textarea decoy', () => {
+		const html = makeV1Html(
+			{ 'total': { display: { type: 'scalar', agg: 'COUNT' } } },
+			'<textarea><span data-kw-bind="total">decoy</span></textarea><span data-kw-bind="total">0</span>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('<textarea><span data-kw-bind=""total"">decoy</span></textarea>');
+		expect(result).toContain('<span data-kw-bind=""total"">" & _scalar_0 & "</span>');
+		expect(result).not.toContain('<textarea><span data-kw-bind=""total"">" & _scalar_0');
+	});
+
+	it('rewrites admitted unquoted attributes after quoted delimiters', () => {
+		const provenance = JSON.stringify({
+			version: 1,
+			model: { fact: { sectionId: 'query_fact', sectionName: 'Fact Events' } },
+			bindings: { total: { display: { type: 'scalar', agg: 'COUNT' } } },
+		});
+		const html = `<script nonce="a > b" type=application/kw-provenance>${provenance}</script>`
+			+ '<span title="a > b" data-kw-bind=total>0</span>';
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('<span title=""a > b"" data-kw-bind=total>" & _scalar_0 & "</span>');
 	});
 });
 
@@ -2114,6 +2388,25 @@ describe('generateDaxMeasure — repeated table', () => {
 });
 
 describe('generateDaxMeasure — v1 pivot', () => {
+	it('HTML-escapes hostile pivot format output in cells and totals', () => {
+		const html = makeV1Html(
+			{
+				pivot: { display: {
+					type: 'pivot', rows: ['SkillName'], pivotBy: 'ClientName',
+					pivotValues: ['vscode'], value: 'SkillName', agg: 'COUNT', total: true,
+					format: '#,##0"</form>"',
+				} },
+			},
+			'<table data-kw-bind="pivot"></table>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('VAR _rows_0 = CONCATENATEX');
+		expect(result.match(/SUBSTITUTE\(SUBSTITUTE\(SUBSTITUTE\(SUBSTITUTE\(SUBSTITUTE/g)?.length).toBeGreaterThanOrEqual(3);
+		expect(result).toContain('"<", "&lt;"');
+	});
+
 	it('generates CALCULATE per pivot value from fact table', () => {
 		const html = makeV1Html(
 			{
@@ -2499,6 +2792,21 @@ describe('generateDaxMeasure — preAggregate', () => {
 // ── SVG chart binding DAX generation ────────────────────────────────────────
 
 describe('generateDaxMeasure — bar chart', () => {
+	it('XML-escapes hostile formatted bar labels', () => {
+		const html = makeV1Html(
+			{ chart: { display: {
+				type: 'bar', groupBy: 'OS', value: { agg: 'COUNT', format: '#,##0"</form>"' },
+			} } },
+			'<div data-kw-bind="chart"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('VAR _bar_0 =');
+		expect(result).toContain('SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(FORMAT([Val]');
+		expect(result).toContain('"<", "&lt;"');
+	});
+
 	it('generates SUMMARIZE + CONCATENATEX with SVG rect elements', () => {
 		const html = makeV1Html(
 			{
@@ -2799,6 +3107,21 @@ describe('generateDaxMeasure — bar chart', () => {
 });
 
 describe('generateDaxMeasure — pie chart', () => {
+	it('XML-escapes hostile formatted pie labels and totals', () => {
+		const html = makeV1Html(
+			{ chart: { display: {
+				type: 'pie', groupBy: 'OS', value: { agg: 'COUNT', format: '#,##0"</form>"' },
+			} } },
+			'<div data-kw-bind="chart"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('VAR _pie_0 =');
+		expect(result.match(/SUBSTITUTE\(SUBSTITUTE\(SUBSTITUTE\(SUBSTITUTE\(FORMAT/g)?.length).toBeGreaterThanOrEqual(2);
+		expect(result).toContain('"<", "&lt;"');
+	});
+
 	it('generates SVG circles with stroke-dasharray', () => {
 		const html = makeV1Html(
 			{

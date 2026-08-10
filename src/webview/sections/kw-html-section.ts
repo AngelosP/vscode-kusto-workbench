@@ -52,7 +52,6 @@ import {
 	analyzeHtmlDashboardPowerBiCompatibility,
 	canOfferHtmlDashboardPowerBiUpgrade,
 	getKnownUnsupportedPowerBiCompatibilityReasons,
-	getKnownUnsupportedPowerBiDisplayTypes,
 	parseKwProvenance,
 	type HtmlDashboardPowerBiCompatibilityResult,
 	type KwModelDimension,
@@ -60,6 +59,10 @@ import {
 	type KwProvenance,
 	type PowerBiUpgradeNoticeState,
 } from '../../shared/htmlDashboardUpgrade.js';
+import {
+	compilePortableDashboard,
+	portableDashboardIrToProvenance,
+} from '../../shared/portableDashboardCompiler.js';
 import { createMonacoCursorStatusPublisher, type EditorCursorStatusPublisher } from '../shared/editor-cursor-status.js';
 import type { HtmlSectionState, PbiPublishInfo } from '../../shared/htmlSectionDefinition.js';
 
@@ -217,7 +220,6 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	/** Pending publish context while the native partial-publish warning is awaiting a choice. */
 	private _pendingPowerBiPartialPublish: PendingPowerBiPartialPublish | undefined;
 	private _pendingPowerBiPublishHelp: PendingPowerBiPublishHelp | undefined;
-	private _pendingPowerBiUnsupportedHelpRequestId: string | undefined;
 	private _dashboardWorkflowGeneration = 0;
 	private _pendingExportWorkflow: { requestId: string; generation: number } | undefined;
 	private _pendingDashboardMeasurementCancel: (() => void) | undefined;
@@ -280,7 +282,6 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			this._pendingExportWorkflow?.requestId,
 			this._pendingPowerBiPartialPublish?.requestId,
 			this._pendingPowerBiPublishHelp?.requestId,
-			this._pendingPowerBiUnsupportedHelpRequestId,
 		].filter((requestId): requestId is string => !!requestId));
 		const cancelMeasurement = this._pendingDashboardMeasurementCancel;
 		this._pendingDashboardMeasurementCancel = undefined;
@@ -288,7 +289,6 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		this._pendingExportWorkflow = undefined;
 		this._pendingPowerBiPartialPublish = undefined;
 		this._pendingPowerBiPublishHelp = undefined;
-		this._pendingPowerBiUnsupportedHelpRequestId = undefined;
 		const dialog = this.shadowRoot?.querySelector<any>('kw-publish-pbi-dialog');
 		try { dialog?.hide?.(); } catch (e) { console.error('[kusto]', e); }
 		try { cancelMeasurement?.(); } catch (e) { console.error('[kusto]', e); }
@@ -522,17 +522,6 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	private _getKnownUnsupportedPowerBiCompatibilityReasons(code = this._getCodeText()): string[] {
 		return getKnownUnsupportedPowerBiCompatibilityReasons(analyzeHtmlDashboardPowerBiCompatibility(code).reasons);
-	}
-
-	private _getPowerBiUnsupportedBlockerMessage(reasons: string[]): string {
-		const types = getKnownUnsupportedPowerBiDisplayTypes(reasons);
-		const visualSummary = types.length === 0
-			? 'one or more visuals'
-			: `${types.join(', ')} ${types.length === 1 ? 'visuals' : 'visuals'}`;
-		const supportRequest = types.length <= 1
-			? 'Ask for support for this chart type; it will be added once the owner knows people need it.'
-			: 'Ask for support for these chart types; they will be added once the owner knows people need them.';
-		return `Power BI export does not support ${visualSummary} yet. Use the HTML preview, or change the binding to scalar, table, repeatedTable, pivot, bar, pie, or line before publishing. ${supportRequest}`;
 	}
 
 	private _hasPowerBiExportMetadata(): boolean {
@@ -821,21 +810,18 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			return;
 		}
 
-		const compatibilityStatus = analyzeHtmlDashboardPowerBiCompatibility(code);
-		const unsupportedReasons = getKnownUnsupportedPowerBiCompatibilityReasons(compatibilityStatus.reasons);
 		const dataSources = this._collectDataSourcesForPBI();
+		const compatibilityStatus = analyzeHtmlDashboardPowerBiCompatibility(code, dataSources);
+		if (compatibilityStatus.diagnostics.length > 0) {
+			this._requestPowerBiPublishHelp(
+				code,
+				compatibilityStatus.diagnostics.map(diagnostic => diagnostic.message),
+				workflowGeneration,
+			);
+			return;
+		}
+
 		if (dataSources.length === 0) {
-			if (unsupportedReasons.length > 0) {
-				try {
-					const requestId = this._createDashboardWorkflowRequestId('unsupported-help');
-					this._pendingPowerBiUnsupportedHelpRequestId = requestId;
-					postMessageToHost({
-						type: 'showPowerBiUnsupportedVisualHelp', requestId,
-						message: this._getPowerBiUnsupportedBlockerMessage(unsupportedReasons),
-					});
-				} catch (e) { console.error('[kusto]', e); }
-				return;
-			}
 			try {
 				const requestId = this._createDashboardWorkflowRequestId('publish-help');
 				const reasons = this._getPowerBiPublishBlockerReasons(code);
@@ -859,9 +845,10 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			return;
 		}
 
-		if (compatibilityStatus.needsUpgrade && compatibilityStatus.reasons.length > 0) {
+		const legacyReasons = compatibilityStatus.reasons;
+		if (legacyReasons.length > 0) {
 			this._requestPowerBiPartialPublishWarning(
-				code, dataSources, compatibilityStatus.reasons, workflowGeneration,
+				code, dataSources, legacyReasons, workflowGeneration,
 			);
 			return;
 		}
@@ -872,6 +859,29 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		this._openPublishDialog(
 			code, dataSources, previewHeight, this._name || 'KustoHtmlDashboard', workflowGeneration,
 		);
+	}
+
+	private _requestPowerBiPublishHelp(code: string, reasons: string[], workflowGeneration: number): void {
+		if (!this._ownsLiveState() || workflowGeneration !== this._dashboardWorkflowGeneration) return;
+		const requestId = this._createDashboardWorkflowRequestId('publish-help');
+		this._pendingPowerBiPublishHelp = {
+			requestId,
+			workflowGeneration,
+			code,
+			sectionName: this._name || undefined,
+			targetVersion: CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
+			reasons,
+		};
+		try {
+			postMessageToHost({
+				type: 'showPowerBiPublishHelp',
+				requestId,
+				sectionId: this.boxId,
+				sectionName: this._name || undefined,
+				targetVersion: CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
+				reasons,
+			});
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _requestPowerBiPartialPublishWarning(
@@ -916,7 +926,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				sectionId: this.boxId,
 				sectionName: pending.suggestedName || undefined,
 				targetVersion: CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
-				reasons: analyzeHtmlDashboardPowerBiCompatibility(pending.code).reasons,
+				reasons: analyzeHtmlDashboardPowerBiCompatibility(pending.code, pending.dataSources).reasons,
 			});
 			return;
 		}
@@ -1278,6 +1288,12 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			name: typeof c === 'string' ? c : (c?.name || 'column'),
 			type: typeof c === 'object' ? (c?.type || 'string') : 'string',
 		}));
+		const portableDashboard = compilePortableDashboard({
+			htmlCode: this._getCodeText(),
+			dataSources: [{ sectionId: factSectionId, columns }],
+		});
+		if (!portableDashboard.ir) return '';
+		const portableProvenance = portableDashboardIrToProvenance(portableDashboard.ir);
 		const allRows = Array.isArray(artifact.rows) ? artifact.rows : [];
 		const capped = allRows.length > MAX_ROWS;
 		const rawRows = capped ? allRows.slice(0, MAX_ROWS) : allRows;
@@ -1290,12 +1306,12 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 		const fact = { columns, rows, totalRows: allRows.length, capped };
 		const json = JSON.stringify({ fact }).replace(/<\//g, '<\\/');
-		const provenanceJson = JSON.stringify(this._provenance ?? null).replace(/<\//g, '<\\/');
+		const provenanceJson = JSON.stringify(portableProvenance).replace(/<\//g, '<\\/');
 		const chartDefaultsJson = JSON.stringify(DASHBOARD_CHART_DEFAULTS).replace(/<\//g, '<\\/');
 		const tableDefaultsJson = JSON.stringify(DASHBOARD_TABLE_CELL_BAR).replace(/<\//g, '<\\/');
 
 		// Build slicer emulation from model.dimensions
-		const dimensions = this._provenance?.model?.dimensions;
+		const dimensions = portableProvenance.model.dimensions;
 		let slicerBlock = '';
 		if (dimensions && dimensions.length > 0) {
 			slicerBlock = this._buildSlicerBlock(dimensions, columns, rows);
@@ -1558,7 +1574,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	function _renderLineSvg(display){var g=_chartDefaults.line,mat=_lineRows(display),rows=mat.rows,series=mat.series,plotW=g.W-g.padL-g.padR,plotH=g.H-g.padT-g.padB,plotBottom=g.padT+plotH,xLabelY=plotBottom+g.xLabelGap,legendY=xLabelY+g.legendTopGap,legendColumns=Math.max(1,Math.floor(plotW/g.legendColumnWidth)),legendRows=Math.max(1,Math.ceil(series.length/legendColumns)),svgH=Math.max(g.H,legendY+legendRows*g.legendRowH+g.legendBottomPad),min,max;for(var r=0;r<rows.length;r++){for(var s=0;s<series.length;s++){var v=_num(rows[r]['S'+s]);if(min===undefined||v<min)min=v;if(max===undefined||v>max)max=v;}}if(min===undefined){min=0;max=0;}var range=max-min,body='';for(var grid=0;grid<g.gridCount;grid++){var y=g.padT+grid*plotH/(g.gridCount-1),yv=max-(grid*range/(g.gridCount-1));body+="<line x1='"+g.padL+"' y1='"+y+"' x2='"+(g.W-g.padR)+"' y2='"+y+"' stroke='#E6E6E6' stroke-width='1'/>";body+="<text x='"+(g.padL-8)+"' y='"+(y+4)+"' text-anchor='end' font-size='11' fill='#605E5C'>"+_esc(_formatChartNumber(yv,'#,##0'))+"</text>";}body+="<line x1='"+g.padL+"' y1='"+g.padT+"' x2='"+g.padL+"' y2='"+plotBottom+"' stroke='#C8C6C4' stroke-width='1'/><line x1='"+g.padL+"' y1='"+plotBottom+"' x2='"+(g.W-g.padR)+"' y2='"+plotBottom+"' stroke='#C8C6C4' stroke-width='1'/>";for(var s=0;s<series.length;s++){var pts=[],singlePoint='',pointMarkers='',seriesColor=_chartColor(display.colors,s);for(var r=0;r<rows.length;r++){var x=rows.length<=1?g.padL+plotW/2:g.padL+plotW*r/(rows.length-1),y=g.padT+plotH-(range===0?plotH/2:(_num(rows[r]['S'+s])-min)/range*plotH),valueText=_formatChartNumber(rows[r]['S'+s],'#,##0'),seriesLabel=series[s].label||series[s].column||('Series '+(s+1)),tip=_tooltipText(display.tooltip,rows[r],[display.xAxis+': '+_axisLabel(rows[r][display.xAxis],display.xAxis,mat.fact),seriesLabel+': '+valueText]);pts.push(x.toFixed(1)+','+y.toFixed(1));if(tip){var pointBody="<circle cx='"+x.toFixed(1)+"' cy='"+y.toFixed(1)+"' r='"+g.pointRadius+"' fill='#FFFFFF' stroke='"+seriesColor+"' stroke-width='"+g.pointStrokeWidth+"'/>"+"<circle cx='"+x.toFixed(1)+"' cy='"+y.toFixed(1)+"' r='"+g.tooltipHitRadius+"' fill='#FFFFFF' fill-opacity='0' stroke='none' pointer-events='all'/>";pointMarkers+=_svgWrapTooltip(tip,pointBody);}else if(rows.length===1){singlePoint="<circle cx='"+x.toFixed(1)+"' cy='"+y.toFixed(1)+"' r='"+g.pointRadius+"' fill='"+seriesColor+"'/>";}}body+="<polyline points='"+pts.join(' ')+"' fill='none' stroke='"+seriesColor+"' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/>"+singlePoint+pointMarkers;}for(var s=0;s<series.length;s++){var col=s%legendColumns,row=Math.floor(s/legendColumns),lx=g.padL+col*g.legendColumnWidth,ly=legendY+row*g.legendRowH,label=series[s].label||series[s].column||('Series '+(s+1));body+="<line x1='"+lx+"' y1='"+(ly-4)+"' x2='"+(lx+g.legendLineWidth)+"' y2='"+(ly-4)+"' stroke='"+_chartColor(display.colors,s)+"' stroke-width='3' stroke-linecap='round'/>";body+="<text x='"+(lx+g.legendGap)+"' y='"+ly+"' font-size='11' fill='#605E5C'>"+_esc(label)+"</text>";}if(rows.length>0){body+="<text x='"+g.padL+"' y='"+xLabelY+"' font-size='11' fill='#605E5C'>"+_esc(_axisLabel(rows[0][display.xAxis],display.xAxis,mat.fact))+"</text>";body+="<text x='"+(g.W-g.padR)+"' y='"+xLabelY+"' text-anchor='end' font-size='11' fill='#605E5C'>"+_esc(_axisLabel(rows[rows.length-1][display.xAxis],display.xAxis,mat.fact))+"</text>";}return _svgRoot(g.W,svgH,body);}
 	function _renderChart(id,spec){var key=String(id||'');if(!key)return;var display=_chartDisplay(key,spec);if(!display||!display.type)return;_chartRegistry[key]=display;var el=_bindEl(key);if(!el){if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){_renderRegisteredCharts();},{once:true});return;}var svg='';if(display.type==='bar'&&display.groupBy)svg=_renderBarSvg(display);else if(display.type==='pie'&&display.groupBy)svg=_renderPieSvg(display);else if(display.type==='line'&&display.xAxis)svg=_renderLineSvg(display);if(svg)el.innerHTML=svg;}
 	function _renderRegisteredCharts(){for(var key in _chartRegistry){if(Object.prototype.hasOwnProperty.call(_chartRegistry,key))_renderChart(key,_chartRegistry[key]);}}
-	function _bind(id,val){var el=_bindEl(id);if(el)el.textContent=_fmtVal(val);}
+	function _bind(id,val){var key=String(id||''),binding=_p&&_p.bindings?_p.bindings[key]:null;if(!binding||!binding.display||binding.display.type!=='scalar')return;var el=_bindEl(key);if(el)el.textContent=_fmtVal(val);}
 	function _bindHtml(id,html){var el=_bindEl(id);if(el)el.innerHTML=html;}
 	window.KustoWorkbench={
 		getData:function(){return _d;},
@@ -2666,7 +2682,11 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			this._powerBiCompatibilityStatus = undefined;
 			return undefined;
 		}
-		const status = analyzeHtmlDashboardPowerBiCompatibility(this._getCodeText());
+		const dataSources = this._collectDataSourcesForPBI();
+		const status = analyzeHtmlDashboardPowerBiCompatibility(
+			this._getCodeText(),
+			dataSources.length > 0 ? dataSources : undefined,
+		);
 		this._powerBiCompatibilityStatus = canOfferHtmlDashboardPowerBiUpgrade(status) ? status : undefined;
 		return this._powerBiCompatibilityStatus;
 	}

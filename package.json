@@ -1959,6 +1959,7 @@
     "lit": "^3.3.2",
     "monaco-editor": "^0.52.0",
     "overlayscrollbars": "^2.15.1",
+    "parse5": "^7.3.0",
     "proper-lockfile": "^4.1.2",
     "sql-formatter": "^15.7.3",
     "vscode-jsonrpc": "^8.2.1"

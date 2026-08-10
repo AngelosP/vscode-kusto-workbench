@@ -73,10 +73,6 @@ describe('QueryEditorProvider dashboard application forwarding', () => {
 				sectionId: 'html-dashboard-1', sectionName: 'Dashboard', targetVersion: 1,
 				reasons: ['Preview-only interaction.'],
 			},
-			{
-				type: 'showPowerBiUnsupportedVisualHelp', requestId: 'dashboard-unsupported-1',
-				message: 'Unsupported visual.',
-			},
 			{ type: 'cancelDashboardWorkflow', requestId: 'dashboard-cancel-1' },
 			{ type: 'publishToPowerBIAck', requestId: 'dashboard-publish-1', accepted: true },
 			{

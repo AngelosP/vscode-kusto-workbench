@@ -10,23 +10,37 @@ export interface DashboardTooltipSpec {
 }
 
 export const DASHBOARD_TOOLTIP_ALIAS_PREFIX = '__kw_tooltip_';
-export const DASHBOARD_TOOLTIP_AGGREGATES = ['COUNT', 'SUM', 'AVG', 'AVERAGE', 'MIN', 'MAX', 'DISTINCTCOUNT', 'DCOUNT'] as const;
+export const DASHBOARD_AGGREGATES = ['COUNT', 'SUM', 'AVG', 'AVERAGE', 'MIN', 'MAX', 'DISTINCTCOUNT', 'DCOUNT'] as const;
+export const DASHBOARD_TOOLTIP_AGGREGATES = DASHBOARD_AGGREGATES;
+export type DashboardAggregate = typeof DASHBOARD_AGGREGATES[number];
 
 export function dashboardTooltipAlias(varIdx: number, fieldIndex: number): string {
 	return `${DASHBOARD_TOOLTIP_ALIAS_PREFIX}${varIdx}_${fieldIndex}`;
 }
 
 export function dashboardTooltipAggregateNeedsColumn(agg: unknown): boolean {
-	return normalizeDashboardTooltipAggregate(agg) !== 'COUNT';
+	return dashboardAggregateNeedsColumn(agg);
 }
 
 export function normalizeDashboardTooltipAggregate(agg: unknown): string {
+	return normalizeDashboardAggregate(agg);
+}
+
+export function normalizeDashboardAggregate(agg: unknown): string {
 	return String(agg || '').trim().toUpperCase();
 }
 
 export function isValidDashboardTooltipAggregate(agg: unknown): boolean {
+	return isValidDashboardAggregate(agg);
+}
+
+export function isValidDashboardAggregate(agg: unknown): agg is string {
 	return typeof agg === 'string'
-		&& (DASHBOARD_TOOLTIP_AGGREGATES as readonly string[]).includes(normalizeDashboardTooltipAggregate(agg));
+		&& (DASHBOARD_AGGREGATES as readonly string[]).includes(normalizeDashboardAggregate(agg));
+}
+
+export function dashboardAggregateNeedsColumn(agg: unknown): boolean {
+	return normalizeDashboardAggregate(agg) !== 'COUNT';
 }
 
 export function isReservedDashboardTooltipAlias(value: string): boolean {

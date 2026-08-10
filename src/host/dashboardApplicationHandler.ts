@@ -14,13 +14,12 @@ import type {
 	RequestHtmlDashboardUpgradeWithCopilotMessage,
 	ShowPowerBiPartialPublishWarningMessage,
 	ShowPowerBiPublishHelpMessage,
-	ShowPowerBiUnsupportedVisualHelpMessage,
 	IncomingWebviewMessage,
 } from './queryEditorTypes';
 import {
 	exportHtmlToPowerBI,
-	findUnsupportedPowerBiBindings,
 	normalizePowerBiDataMode,
+	validatePowerBiHtmlBindings,
 	type PowerBiDataMode,
 } from './powerBiExport';
 import {
@@ -33,12 +32,9 @@ import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import type { PbiPublishInfo } from '../shared/htmlSectionDefinition';
 import type { MarkdownDocumentProjection } from '../shared/markdownDocumentAggregate';
 
-const GITHUB_ISSUES_URL = 'https://github.com/AngelosP/vscode-kusto-workbench/issues';
-
 export type DashboardApplicationMessage =
 	| ShowPowerBiPublishHelpMessage
 	| ShowPowerBiPartialPublishWarningMessage
-	| ShowPowerBiUnsupportedVisualHelpMessage
 	| CancelDashboardWorkflowMessage
 	| PublishToPowerBIAckMessage
 	| ExportDashboardMessage
@@ -108,8 +104,6 @@ export class HostDashboardApplicationHandler implements DashboardApplicationHand
 				return this.showPowerBiPublishHelp(message);
 			case 'showPowerBiPartialPublishWarning':
 				return this.showPowerBiPartialPublishWarning(message);
-			case 'showPowerBiUnsupportedVisualHelp':
-				return this.showPowerBiUnsupportedVisualHelp(message);
 			case 'cancelDashboardWorkflow':
 				this.cancelWorkflow(message.requestId);
 				return Promise.resolve();
@@ -177,7 +171,7 @@ export class HostDashboardApplicationHandler implements DashboardApplicationHand
 		const fixAction = 'Fix it using Kusto Workbench';
 		try {
 			const selection = await vscode.window.showWarningMessage(
-				`Power BI publish needs query-backed data bindings for ${sectionLabel}. Ask Kusto Workbench to add or fix the provenance block, connect it to query results, and then try publishing again.`,
+				`Power BI publish needs compatible query-backed data bindings for ${sectionLabel}. Ask Kusto Workbench to fix the reported provenance or source-schema issues, then try publishing again.`,
 				fixAction,
 			);
 			if (!sectionId || !this.isWorkflowCurrent(requestId, workflow)) return;
@@ -228,22 +222,6 @@ export class HostDashboardApplicationHandler implements DashboardApplicationHand
 			}
 
 			postResult('dismissed');
-		} finally {
-			this.finishWorkflow(requestId, workflow);
-		}
-	}
-
-	private async showPowerBiUnsupportedVisualHelp(message: ShowPowerBiUnsupportedVisualHelpMessage): Promise<void> {
-		const requestId = String(message.requestId || '').trim();
-		const workflow = this.beginWorkflow(requestId);
-		if (!workflow) return;
-		const openIssuesAction = 'Ask for it';
-		const text = String(message.message || '').trim() || 'Power BI export does not support this chart type yet.';
-		try {
-			const selection = await vscode.window.showInformationMessage(text, openIssuesAction);
-			if (selection === openIssuesAction && this.isWorkflowCurrent(requestId, workflow)) {
-				await vscode.env.openExternal(vscode.Uri.parse(GITHUB_ISSUES_URL));
-			}
 		} finally {
 			this.finishWorkflow(requestId, workflow);
 		}
@@ -317,14 +295,9 @@ export class HostDashboardApplicationHandler implements DashboardApplicationHand
 
 			const lower = picked.fsPath.toLowerCase();
 			if (lower.endsWith('.pbip')) {
+				validatePowerBiHtmlBindings(htmlContent, message.dataSources || []);
 				if (!message.dataSources || message.dataSources.length === 0) {
 					vscode.window.showWarningMessage('No data bindings found. Add a provenance block with data source references before exporting to Power BI.');
-					return;
-				}
-
-				const unsupportedBindings = findUnsupportedPowerBiBindings(htmlContent);
-				if (unsupportedBindings.length > 0) {
-					vscode.window.showWarningMessage(`Power BI export supports scalar, table, repeatedTable, pivot, bar, pie, and line bindings. Unsupported bindings: ${unsupportedBindings.join(', ')}.`);
 					return;
 				}
 
@@ -406,17 +379,7 @@ export class HostDashboardApplicationHandler implements DashboardApplicationHand
 		const workflow = this.beginWorkflow(message.requestId);
 		if (!workflow) return;
 		try {
-			const unsupportedBindings = findUnsupportedPowerBiBindings(message.htmlCode);
-			if (unsupportedBindings.length > 0) {
-				const messageText = `Power BI publish supports scalar, table, repeatedTable, pivot, bar, pie, and line bindings. Unsupported bindings: ${unsupportedBindings.join(', ')}.`;
-				vscode.window.showWarningMessage(messageText);
-				this.postMessage({
-					type: 'publishToPowerBIResult', requestId: message.requestId,
-					boxId: message.boxId, ok: false, error: messageText,
-				});
-				return;
-			}
-
+			validatePowerBiHtmlBindings(message.htmlCode, message.dataSources);
 			const hasExistingIds = !!(message.semanticModelId && message.reportId);
 			const dataMode: PowerBiDataMode = normalizePowerBiDataMode(
 				message.dataMode,

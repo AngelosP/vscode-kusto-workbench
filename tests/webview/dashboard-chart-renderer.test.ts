@@ -46,7 +46,7 @@ function installBridge(bindings: Record<string, object>, bodyHtml: string, rows:
 
 	const section = new KwHtmlSection();
 	section.boxId = 'html_chart_test';
-	section.setCode(htmlWithBindings(bindings));
+	section.setCode(`${htmlWithBindings(bindings)}${bodyHtml}`);
 
 	const bridgeHtml = (section as BridgeSection)._buildDataBridgeScript();
 	const match = bridgeHtml.match(/<script>([\s\S]*?)<\/script>/i);

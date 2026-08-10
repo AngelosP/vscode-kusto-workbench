@@ -9,12 +9,9 @@ import {
 	DASHBOARD_PIE_CHART,
 	chartColor,
 	escapeXmlLiteral,
-	isSupportedPowerBiDisplayType,
-	isValidDashboardChartDisplay,
 	type BarColorRule,
 	type BarDisplay,
 	type ChartValue,
-	type DashboardChartDisplay,
 	type LineDisplay,
 	type PieDisplay,
 	type PreAggregate,
@@ -22,11 +19,8 @@ import {
 import {
 	isTableCellBarColumn,
 	isTableCellFormattedColumn,
-	isValidRepeatedTableDisplay,
-	isValidTableDisplay,
 	repeatedTableRepeatColumns,
 	REPEATED_TABLE_ROW_INDEX_ALIAS_PREFIX,
-	tableAggregateNeedsColumn,
 	tableCellBarAlias,
 	tableCellBarColor,
 	tableCellBarGeometry,
@@ -40,14 +34,22 @@ import {
 	type TableDisplay,
 } from '../shared/dashboardTables';
 import {
-	dashboardTooltipAggregateNeedsColumn,
 	dashboardTooltipAlias,
 	normalizeDashboardTooltipAggregate,
 	type DashboardTooltipField,
 	type DashboardTooltipSpec,
 } from '../shared/dashboardTooltips';
-import { parseKwProvenance } from '../shared/htmlDashboardUpgrade';
+import {
+	findUnsupportedPowerBiBindings as findSharedUnsupportedPowerBiBindings,
+} from '../shared/htmlDashboardUpgrade';
 import { canonicalizePowerBiKustoClusterUrl } from '../shared/kustoClusterUrls';
+import {
+	compilePortableDashboard,
+	PortableDashboardAdmissionError,
+	type PortableDashboardCompilation,
+	type PortableDashboardDiagnostic,
+	type PortableDashboardIr,
+} from '../shared/portableDashboardCompiler';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -137,426 +139,51 @@ interface ScalarDisplay { type: 'scalar'; agg: string; column?: string; format?:
 
 interface PivotDisplay { type: 'pivot'; rows: string[]; pivotBy: string; pivotValues: string[]; value: string; agg: string; format?: string; total?: boolean; preAggregate?: PreAggregate }
 
-interface ModelFact { sectionId: string; sectionName: string }
 export interface ModelDimension { column: string; label?: string; mode?: 'dropdown' | 'list' | 'between' }
 
 export interface ResolvedSlicer { tableName: string; columnName: string; mode: 'dropdown' | 'list' | 'between' }
 
-interface ProvenanceBinding {
-	display?: ScalarDisplay | TableDisplay | PivotDisplay | DashboardChartDisplay | RepeatedTableDisplay;
-}
-
-interface Provenance {
-	version: number;
-	model: { fact: ModelFact; dimensions?: ModelDimension[] };
-	bindings: Record<string, ProvenanceBinding>;
-}
-
-function parseProvenance(htmlCode: string): Provenance | null {
-	return parseKwProvenance(htmlCode) as Provenance | null;
-}
-
-function findDataKwBindTargets(htmlCode: string): Set<string> {
-	return new Set(findDataKwBindTargetTags(htmlCode).keys());
-}
-
-function stripNonRenderedHtmlBlocks(html: string): string {
-	return html.replace(/<!--[\s\S]*?-->|<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>|<template\b[\s\S]*?<\/template>|<noscript\b[\s\S]*?<\/noscript>/gi, '');
-}
-
-interface DataKwBindTargetElement { tagName: string; openTag: string }
-
-function findDataKwBindTargetElements(htmlCode: string): Map<string, DataKwBindTargetElement[]> {
-	const targets = new Map<string, DataKwBindTargetElement[]>();
-	const elementHtml = stripNonRenderedHtmlBlocks(htmlCode);
-	const re = /<([a-zA-Z][a-zA-Z0-9:-]*)\b[^>]*\bdata-kw-bind\s*=\s*(["'])(.*?)\2[^>]*>/gi;
-	let match: RegExpExecArray | null;
-	while ((match = re.exec(elementHtml)) !== null) {
-		const key = match[3];
-		const tagName = match[1].toLowerCase();
-		const elements = targets.get(key) ?? [];
-		elements.push({ tagName, openTag: match[0] });
-		targets.set(key, elements);
-	}
-	return targets;
-}
-
-function findDataKwBindTargetTags(htmlCode: string): Map<string, string[]> {
-	const targetTags = new Map<string, string[]>();
-	for (const [key, elements] of findDataKwBindTargetElements(htmlCode)) {
-		targetTags.set(key, elements.map(element => element.tagName));
-	}
-	return targetTags;
-}
-
-function isHiddenDataKwBindTarget(openTag: string): boolean {
-	if (/\shidden(?:\s|=|>)/i.test(openTag)) return true;
-	if (/\baria-hidden\s*=\s*(["'])true\1/i.test(openTag)) return true;
-	const classMatch = openTag.match(/\bclass\s*=\s*(["'])(.*?)\1/i);
-	if (classMatch && /(?:^|\s)pbi-hidden(?:\s|$)/i.test(classMatch[2])) return true;
-	const styleMatch = openTag.match(/\bstyle\s*=\s*(["'])(.*?)\1/i);
-	if (styleMatch && /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\b/i.test(styleMatch[2])) return true;
-	return false;
-}
-
-function bindingAttributePattern(key: string): string {
-	return `data-kw-bind\\s*=\\s*["']${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`;
-}
-
-function hasBoundContainerElement(html: string, bindAttr: string): boolean {
-	const re = new RegExp(
-		`<([a-zA-Z][a-zA-Z0-9:-]*)\\b[^>]*?\\b${bindAttr}[^>]*>[\\s\\S]*?</\\1>`, 'i',
-	);
-	return re.test(html);
-}
 function isRepeatedTableContainerTag(tagName: string): boolean {
 	return !['table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th'].includes(tagName.toLowerCase());
-}
-
-function isVisibleRepeatedTableTarget(target: DataKwBindTargetElement): boolean {
-	return isRepeatedTableContainerTag(target.tagName) && !isHiddenDataKwBindTarget(target.openTag);
-}
-
-function isObjectRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === 'object';
-}
-
-function isNonEmptyText(value: unknown): value is string {
-	return typeof value === 'string' && value.trim().length > 0;
-}
-
-function aggregateRequiresColumn(agg: unknown): boolean {
-	return String(agg || 'COUNT').toUpperCase() !== 'COUNT';
-}
-
-function isValidPreAggregateSpec(value: unknown): value is PreAggregate {
-	if (!isObjectRecord(value) || !isObjectRecord(value.compute)) return false;
-	const groupBy = value.groupBy;
-	const validGroupBy = isNonEmptyText(groupBy) || (Array.isArray(groupBy) && groupBy.length > 0 && groupBy.every(isNonEmptyText));
-	if (!validGroupBy || !isNonEmptyText(value.compute.name) || !isNonEmptyText(value.compute.agg)) return false;
-	if (aggregateRequiresColumn(value.compute.agg) && !isNonEmptyText(value.compute.column)) return false;
-	if (value.compute.column !== undefined && typeof value.compute.column !== 'string') return false;
-	return true;
-}
-
-function isValidScalarDisplay(display: unknown): display is ScalarDisplay {
-	if (!isObjectRecord(display) || display.type !== 'scalar') return false;
-	if (display.agg !== undefined && !isNonEmptyText(display.agg)) return false;
-	if (aggregateRequiresColumn(display.agg) && !isNonEmptyText(display.column)) return false;
-	if (display.column !== undefined && typeof display.column !== 'string') return false;
-	if (display.format !== undefined && typeof display.format !== 'string') return false;
-	return true;
-}
-
-function isValidPivotDisplay(display: unknown): display is PivotDisplay {
-	if (!isObjectRecord(display) || display.type !== 'pivot') return false;
-	if (!Array.isArray(display.rows) || display.rows.length === 0 || !display.rows.every(isNonEmptyText)) return false;
-	if (!isNonEmptyText(display.pivotBy)) return false;
-	if (!Array.isArray(display.pivotValues) || display.pivotValues.length === 0 || !display.pivotValues.every(value => typeof value === 'string')) return false;
-	if (!isNonEmptyText(display.agg)) return false;
-	if (aggregateRequiresColumn(display.agg) && !isNonEmptyText(display.value)) return false;
-	if (display.value !== undefined && typeof display.value !== 'string') return false;
-	if (display.format !== undefined && typeof display.format !== 'string') return false;
-	if (display.total !== undefined && typeof display.total !== 'boolean') return false;
-	if (display.preAggregate !== undefined && !isValidPreAggregateSpec(display.preAggregate)) return false;
-	return true;
-}
-
-function preAggregateOutputColumns(preAggregate: PreAggregate): Set<string> {
-	const groupBy = Array.isArray(preAggregate.groupBy) ? preAggregate.groupBy : [preAggregate.groupBy];
-	return new Set([...groupBy, preAggregate.compute.name]);
-}
-
-function tableValueColumnTypes(groupBy: string[], columns: TableColumnSpec[], sourceTypes: Map<string, string>): Map<string, string> {
-	const types = new Map<string, string>();
-	for (const columnName of groupBy) types.set(columnName, sourceTypes.get(columnName) ?? '');
-	for (const column of columns) {
-		if (isTableCellBarColumn(column)) continue;
-		types.set(column.name, column.agg ? 'real' : (sourceTypes.get(column.name) ?? ''));
-	}
-	return types;
 }
 
 function columnKey(name: string): string {
 	return name.trim().toLowerCase();
 }
 
-function findMissingPowerBiBindingTargets(htmlCode: string): string[] {
-	const provenance = parseProvenance(htmlCode);
-	if (!provenance) return [];
-	const renderedTargetTags = findDataKwBindTargetTags(htmlCode);
-	return Object.keys(provenance.bindings)
-		.filter(bindingKey => !renderedTargetTags.has(bindingKey))
-		.map(bindingKey => `${bindingKey} (missing data-kw-bind target)`);
-}
-
-function findMissingPowerBiBindingColumns(htmlCode: string, dataSources: PowerBiDataSource[]): string[] {
-	const provenance = parseProvenance(htmlCode);
-	if (!provenance) return [];
-	const factDs = dataSources.find(dataSource => dataSource.sectionId === provenance.model.fact.sectionId);
-	if (!factDs) return [];
-	const factColumns = new Set(factDs.columns.map(column => column.name));
-	const factColumnTypes = new Map(factDs.columns.map(column => [column.name, column.type]));
-	const renderedTargetTags = findDataKwBindTargetTags(htmlCode);
-	const missing: string[] = [];
-	const requireFactColumn = (bindingKey: string, columnName: unknown, role: string) => {
-		if (isNonEmptyText(columnName) && !factColumns.has(columnName)) missing.push(`${bindingKey} (${role}: missing column ${columnName})`);
-	};
-	const requireAllowedColumn = (bindingKey: string, columnName: unknown, role: string, allowedColumns: Set<string>) => {
-		if (isNonEmptyText(columnName) && !allowedColumns.has(columnName)) missing.push(`${bindingKey} (${role}: missing column ${columnName})`);
-	};
-	const requireNumericCellFormatColumn = (bindingKey: string, column: TableColumnSpec, role: string, rowColumnTypes: Map<string, string>) => {
-		if (!isTableCellFormattedColumn(column)) return;
-		const columnName = column.cellFormat.valueColumn ?? column.name;
-		const columnTypeName = rowColumnTypes.get(columnName);
-		if (columnTypeName === undefined) {
-			missing.push(`${bindingKey} (${role}: missing column ${columnName})`);
-		} else if (!isNumericKustoType(columnTypeName)) {
-			missing.push(`${bindingKey} (${role}: non-numeric column ${columnName})`);
-		}
-	};
-	const requireTooltipColumns = (bindingKey: string, tooltip: DashboardTooltipSpec | undefined, role: string, sourceColumns: Set<string>, rowColumns: Set<string>) => {
-		if (!tooltip) return;
-		for (let fieldIndex = 0; fieldIndex < tooltip.fields.length; fieldIndex++) {
-			const field = tooltip.fields[fieldIndex];
-			const fieldRole = `${role}.tooltip.fields[${fieldIndex}].column`;
-			if (field.agg) {
-				if (dashboardTooltipAggregateNeedsColumn(field.agg)) requireAllowedColumn(bindingKey, field.column, fieldRole, sourceColumns);
-			} else {
-				requireAllowedColumn(bindingKey, field.column, fieldRole, rowColumns);
-			}
-		}
-	};
-	const preAggregateColumnTypes = (preAggregate: PreAggregate): Map<string, string> => {
-		const groupBy = Array.isArray(preAggregate.groupBy) ? preAggregate.groupBy : [preAggregate.groupBy];
-		const types = new Map<string, string>();
-		for (const columnName of groupBy) types.set(columnName, factColumnTypes.get(columnName) ?? '');
-		types.set(preAggregate.compute.name, 'real');
-		return types;
-	};
-	const validatePreAggregate = (bindingKey: string, preAggregate: PreAggregate | undefined): Set<string> | undefined => {
-		if (!preAggregate) return undefined;
-		const groupBy = Array.isArray(preAggregate.groupBy) ? preAggregate.groupBy : [preAggregate.groupBy];
-		for (const columnName of groupBy) requireFactColumn(bindingKey, columnName, 'preAggregate.groupBy');
-		const computeNameKey = columnKey(preAggregate.compute.name);
-		const groupByCollision = groupBy.find(columnName => columnKey(columnName) === computeNameKey);
-		const factCollision = factDs.columns.find(column => columnKey(column.name) === computeNameKey);
-		if (groupByCollision) {
-			missing.push(`${bindingKey} (preAggregate.compute.name: collides with groupBy column ${groupByCollision})`);
-		} else if (factCollision) {
-			missing.push(`${bindingKey} (preAggregate.compute.name: collides with fact column ${factCollision.name})`);
-		}
-		if (aggregateRequiresColumn(preAggregate.compute.agg)) requireFactColumn(bindingKey, preAggregate.compute.column, 'preAggregate.compute.column');
-		return preAggregateOutputColumns(preAggregate);
-	};
-	const dimensions = Array.isArray(provenance.model.dimensions) ? provenance.model.dimensions : [];
-	for (let i = 0; i < dimensions.length; i++) {
-		const dimension = dimensions[i];
-		if (isObjectRecord(dimension) && isNonEmptyText(dimension.column) && !factColumns.has(dimension.column)) {
-			missing.push(`model.dimensions[${i}] (slicer: missing column ${dimension.column})`);
-		}
-	}
-	for (const [bindingKey, binding] of Object.entries(provenance.bindings)) {
-		if (!renderedTargetTags.has(bindingKey) || !binding.display) continue;
-		const display = binding.display;
-		if (isValidScalarDisplay(display)) {
-			if (aggregateRequiresColumn(display.agg)) requireFactColumn(bindingKey, display.column, 'column');
-		} else if (isValidTableDisplay(display)) {
-			const preColumns = validatePreAggregate(bindingKey, display.preAggregate);
-			const outputColumns = preColumns ?? factColumns;
-			const outputColumnTypes = display.preAggregate ? preAggregateColumnTypes(display.preAggregate) : factColumnTypes;
-			const rowColumnTypes = tableValueColumnTypes(display.groupBy, display.columns, outputColumnTypes);
-			const rowColumns = new Set(rowColumnTypes.keys());
-			requireTooltipColumns(bindingKey, display.tooltip, 'display', outputColumns, rowColumns);
-			for (const columnName of display.groupBy) requireAllowedColumn(bindingKey, columnName, 'groupBy', outputColumns);
-			for (let i = 0; i < display.columns.length; i++) {
-				const column = display.columns[i];
-				if (isTableCellBarColumn(column)) {
-					for (let s = 0; s < column.cellBar.segments.length; s++) {
-						const segment = column.cellBar.segments[s];
-						if (tableAggregateNeedsColumn(segment.agg)) requireAllowedColumn(bindingKey, segment.column, `columns[${i}].cellBar.segments[${s}].column`, outputColumns);
-					}
-					continue;
-				}
-				const sourceColumn = column.sourceColumn || column.name;
-				if (column.agg) {
-					if (tableAggregateNeedsColumn(column.agg)) requireAllowedColumn(bindingKey, sourceColumn, 'column', outputColumns);
-				} else {
-					requireAllowedColumn(bindingKey, column.name, 'column', outputColumns);
-				}
-				requireNumericCellFormatColumn(bindingKey, column, `columns[${i}].cellFormat.valueColumn`, rowColumnTypes);
-			}
-			if (display.orderBy) {
-				const orderColumns = new Set([...display.groupBy, ...display.columns.filter(column => !isTableCellBarColumn(column)).map(column => column.name)]);
-				requireAllowedColumn(bindingKey, display.orderBy.column, 'orderBy', orderColumns);
-			}
-		} else if (isValidRepeatedTableDisplay(display)) {
-			const preColumns = validatePreAggregate(bindingKey, display.preAggregate);
-			const outputColumns = preColumns ?? factColumns;
-			const outputColumnTypes = display.preAggregate ? preAggregateColumnTypes(display.preAggregate) : factColumnTypes;
-			for (const columnName of display.repeatBy) requireAllowedColumn(bindingKey, columnName, 'repeatBy', outputColumns);
-			const repeatColumns = repeatedTableRepeatColumns(display);
-			for (let i = 0; i < repeatColumns.length; i++) {
-				const column = repeatColumns[i];
-				if (column.agg) {
-					if (tableAggregateNeedsColumn(column.agg)) requireAllowedColumn(bindingKey, column.sourceColumn || column.name, `repeatColumns[${i}].column`, outputColumns);
-				} else {
-					requireAllowedColumn(bindingKey, column.name, `repeatColumns[${i}].column`, outputColumns);
-				}
-			}
-			if (display.repeatOrderBy) {
-				const orderColumns = new Set([...display.repeatBy, ...repeatColumns.map(column => column.name)]);
-				requireAllowedColumn(bindingKey, display.repeatOrderBy.column, 'repeatOrderBy', orderColumns);
-			}
-			for (const columnName of display.table.groupBy) requireAllowedColumn(bindingKey, columnName, 'table.groupBy', outputColumns);
-			for (let i = 0; i < display.table.columns.length; i++) {
-				const column = display.table.columns[i];
-				if (isTableCellBarColumn(column)) {
-					for (let s = 0; s < column.cellBar.segments.length; s++) {
-						const segment = column.cellBar.segments[s];
-						if (tableAggregateNeedsColumn(segment.agg)) requireAllowedColumn(bindingKey, segment.column, `table.columns[${i}].cellBar.segments[${s}].column`, outputColumns);
-					}
-					continue;
-				}
-				const sourceColumn = column.sourceColumn || column.name;
-				if (column.agg) {
-					if (tableAggregateNeedsColumn(column.agg)) requireAllowedColumn(bindingKey, sourceColumn, `table.columns[${i}].column`, outputColumns);
-				} else {
-					requireAllowedColumn(bindingKey, column.name, `table.columns[${i}].column`, outputColumns);
-				}
-			}
-			const innerRowColumnTypes = tableValueColumnTypes(display.table.groupBy, display.table.columns, outputColumnTypes);
-			const innerRowColumns = new Set(innerRowColumnTypes.keys());
-			requireTooltipColumns(bindingKey, display.table.tooltip, 'table', outputColumns, innerRowColumns);
-			if (display.table.orderBy) {
-				const orderColumns = new Set([...display.table.groupBy, ...display.table.columns.filter(column => !isTableCellBarColumn(column)).map(column => column.name)]);
-				requireAllowedColumn(bindingKey, display.table.orderBy.column, 'table.orderBy', orderColumns);
-			}
-			for (let i = 0; i < display.table.columns.length; i++) {
-				requireNumericCellFormatColumn(bindingKey, display.table.columns[i], `table.columns[${i}].cellFormat.valueColumn`, innerRowColumnTypes);
-			}
-		} else if (isValidPivotDisplay(display)) {
-			const preColumns = validatePreAggregate(bindingKey, display.preAggregate);
-			const outputColumns = preColumns ?? factColumns;
-			for (const columnName of display.rows) requireAllowedColumn(bindingKey, columnName, 'rows', outputColumns);
-			requireAllowedColumn(bindingKey, display.pivotBy, 'pivotBy', outputColumns);
-			if (aggregateRequiresColumn(display.agg)) requireAllowedColumn(bindingKey, display.value, 'value', outputColumns);
-		} else if (isValidDashboardChartDisplay(display)) {
-			const preColumns = validatePreAggregate(bindingKey, display.preAggregate);
-			const outputColumns = preColumns ?? factColumns;
-			if (display.type === 'bar') {
-				requireTooltipColumns(bindingKey, display.tooltip, 'display', outputColumns, new Set([display.groupBy]));
-				requireAllowedColumn(bindingKey, display.groupBy, 'groupBy', outputColumns);
-				if (display.segments) {
-					for (let i = 0; i < display.segments.length; i++) {
-						const segment = display.segments[i];
-						if (aggregateRequiresColumn(segment.agg)) requireAllowedColumn(bindingKey, segment.column, `segments[${i}].column`, outputColumns);
-					}
-				} else if (display.value && aggregateRequiresColumn(display.value.agg)) {
-					requireAllowedColumn(bindingKey, display.value.column, 'value.column', outputColumns);
-				}
-			} else if (display.type === 'pie') {
-				requireTooltipColumns(bindingKey, display.tooltip, 'display', outputColumns, new Set([display.groupBy]));
-				requireAllowedColumn(bindingKey, display.groupBy, 'groupBy', outputColumns);
-				if (aggregateRequiresColumn(display.value.agg)) requireAllowedColumn(bindingKey, display.value.column, 'value.column', outputColumns);
-			} else {
-				requireTooltipColumns(bindingKey, display.tooltip, 'display', outputColumns, new Set([display.xAxis]));
-				requireAllowedColumn(bindingKey, display.xAxis, 'xAxis', outputColumns);
-				for (const series of display.series) {
-					if (aggregateRequiresColumn(series.agg)) requireAllowedColumn(bindingKey, series.column, 'series.column', outputColumns);
-				}
-			}
-		}
-	}
-	return missing;
-}
-
 export function findUnsupportedPowerBiBindings(htmlCode: string): string[] {
-	const provenance = parseProvenance(htmlCode);
-	if (!provenance) return [];
-	const renderedTargetElements = findDataKwBindTargetElements(htmlCode);
-	const renderedTargetTags = new Map(Array.from(renderedTargetElements, ([key, elements]) => [key, elements.map(element => element.tagName)]));
-	const renderedHtml = stripNonRenderedHtmlBlocks(htmlCode);
-	const unsupported: string[] = [];
-	for (const [key] of renderedTargetTags) {
-		const binding = provenance.bindings[key];
-		if (!binding) {
-			unsupported.push(`${key} (missing provenance binding)`);
-			continue;
-		}
-		if (!binding.display) {
-			unsupported.push(`${key} (missing display)`);
-			continue;
-		}
-		const display = binding.display as { type?: unknown };
-		const type = typeof display.type === 'string' ? display.type : '';
-		if (!type) {
-			unsupported.push(`${key} (missing display type)`);
-			continue;
-		}
-		const targets = renderedTargetElements.get(key) ?? [];
-		if (targets.length > 0 && targets.every(target => isHiddenDataKwBindTarget(target.openTag))) {
-			unsupported.push(`${key} (${type}: target is hidden; bind exportable content to a visible data-kw-bind element)`);
-			continue;
-		}
-		const bindAttr = bindingAttributePattern(key);
-		if ((type === 'table' || type === 'pivot') && !matchTableElement(renderedHtml, bindAttr)) {
-			unsupported.push(`${key} (${type}: target must be table or tbody inside table)`);
-		} else if (type === 'repeatedTable' && !hasBoundContainerElement(renderedHtml, bindAttr)) {
-			unsupported.push(`${key} (${type}: target must be container element)`);
-		} else if (type === 'repeatedTable' && targets.some(target => !isVisibleRepeatedTableTarget(target))) {
-			unsupported.push(`${key} (${type}: target must be a visible non-table container element)`);
-		} else if ((type === 'scalar' || type === 'bar' || type === 'pie' || type === 'line') && !hasBoundContainerElement(renderedHtml, bindAttr)) {
-			unsupported.push(`${key} (${type}: target must be container element)`);
-		}
-	}
-	for (const [key, binding] of Object.entries(provenance.bindings)) {
-		if (!renderedTargetTags.has(key)) continue;
-		const display = binding.display as { type?: unknown } | undefined;
-		const type = typeof display?.type === 'string' ? display.type : '';
-		const top = (display as { top?: unknown } | undefined)?.top;
-		if (type && !isSupportedPowerBiDisplayType(type)) {
-			unsupported.push(`${key} (${type})`);
-		} else if (type === 'scalar' && !isValidScalarDisplay(display)) {
-			unsupported.push(`${key} (${type}: invalid spec)`);
-		} else if (type === 'table' && top !== undefined && (typeof top !== 'number' || !Number.isInteger(top) || top <= 0 || !isObjectRecord((display as { orderBy?: unknown }).orderBy))) {
-			unsupported.push(`${key} (${type}: invalid top)`);
-		} else if (type === 'table' && !isValidTableDisplay(display)) {
-			unsupported.push(`${key} (${type}: invalid spec)`);
-		} else if (type === 'repeatedTable' && (display as { repeatTop?: unknown } | undefined)?.repeatTop !== undefined) {
-			const repeatTop = (display as { repeatTop?: unknown; repeatOrderBy?: unknown }).repeatTop;
-			if (typeof repeatTop !== 'number' || !Number.isInteger(repeatTop) || repeatTop <= 0 || !isObjectRecord((display as { repeatOrderBy?: unknown }).repeatOrderBy)) {
-				unsupported.push(`${key} (${type}: invalid repeatTop)`);
-			} else if (!isValidRepeatedTableDisplay(display)) {
-				unsupported.push(`${key} (${type}: invalid spec)`);
-			}
-		} else if (type === 'repeatedTable' && !isValidRepeatedTableDisplay(display)) {
-			unsupported.push(`${key} (${type}: invalid spec)`);
-		} else if (type === 'pivot' && !isValidPivotDisplay(display)) {
-			unsupported.push(`${key} (${type}: invalid spec)`);
-		} else if ((type === 'bar' || type === 'pie' || type === 'line') && !isValidDashboardChartDisplay(display)) {
-			unsupported.push(`${key} (${type}: invalid chart spec)`);
-		}
-	}
-	return unsupported;
+	return findSharedUnsupportedPowerBiBindings(htmlCode).map(issue =>
+		issue.replace(/\((bar|pie|line): invalid chart spec:[^)]+\)$/, '($1: invalid chart spec)'),
+	);
 }
 
 export function getPowerBiHtmlValidationIssues(htmlCode: string, dataSources?: PowerBiDataSource[]): string[] {
-	return [
-		...findMissingPowerBiBindingTargets(htmlCode),
-		...findUnsupportedPowerBiBindings(htmlCode),
-		...(dataSources ? findMissingPowerBiBindingColumns(htmlCode, dataSources) : []),
-	];
+	return getPowerBiHtmlValidationDiagnostics(htmlCode, dataSources)
+		.filter(diagnostic => diagnostic.code !== 'missing-provenance')
+		.map(diagnostic => diagnostic.message);
 }
 
-export function validatePowerBiHtmlBindings(htmlCode: string, dataSources?: PowerBiDataSource[]): void {
-	const unsupportedBindings = getPowerBiHtmlValidationIssues(htmlCode, dataSources);
-	if (unsupportedBindings.length > 0) {
-		throw new Error(`Power BI export supports scalar, table, repeatedTable, pivot, bar, pie, and line bindings. Unsupported bindings: ${unsupportedBindings.join(', ')}.`);
+export function getPowerBiHtmlValidationDiagnostics(
+	htmlCode: string,
+	dataSources?: PowerBiDataSource[],
+): PortableDashboardDiagnostic[] {
+	return [...compilePortableDashboard({ htmlCode, dataSources }).diagnostics];
+}
+
+export function validatePowerBiHtmlBindings(htmlCode: string, dataSources?: PowerBiDataSource[]): PortableDashboardCompilation {
+	const compilation = compilePortableDashboard({ htmlCode, dataSources });
+	const unsupportedBindings = [...compilation.diagnostics];
+	const unsupportedMessages = unsupportedBindings.map(diagnostic => diagnostic.message);
+	if (!compilation.ir || unsupportedMessages.length > 0) {
+		throw new PortableDashboardAdmissionError(
+			`Power BI export supports scalar, table, repeatedTable, pivot, bar, pie, and line bindings. Unsupported bindings: ${unsupportedMessages.join(', ')}.`,
+			unsupportedBindings,
+		);
 	}
+	return compilation;
 }
 
-export function resolveFactTableSlicers(factDs: PowerBiDataSource | undefined, dimensions: ModelDimension[]): ResolvedSlicer[] {
+export function resolveFactTableSlicers(factDs: PowerBiDataSource | undefined, dimensions: readonly ModelDimension[]): ResolvedSlicer[] {
 	if (!factDs) return [];
 	const factTableName = sanitizeName(factDs.name);
 	const resolvedSlicers: ResolvedSlicer[] = [];
@@ -677,7 +304,7 @@ function generateScalarDaxVar(factTable: string, display: ScalarDisplay, varIdx:
 		aggExpr = mapAggToDax(display.agg, factTable, display.column);
 	}
 	const rawFmt = display.format || '#,##0';
-	const scalarDax = buildFormatExpr(aggExpr, rawFmt);
+	const scalarDax = daxHtmlEscape(buildFormatExpr(aggExpr, rawFmt));
 	return { scalarVar, scalarDax };
 }
 
@@ -1125,8 +752,8 @@ function generatePivotDaxVars(factTable: string, display: PivotDisplay, varIdx: 
 	const preVars: string[] = [];
 
 	// thead
-	const rowHeaders = display.rows.map(r => `<th>${escapeDaxString(r)}</th>`).join('');
-	const pivotHeaders = display.pivotValues.map(v => `<th style=""text-align:right"">${escapeDaxString(v)}</th>`).join('');
+	const rowHeaders = display.rows.map(r => `<th>${escapeDaxString(escapeHtmlTextLiteral(r))}</th>`).join('');
+	const pivotHeaders = display.pivotValues.map(v => `<th style=""text-align:right"">${escapeDaxString(escapeHtmlTextLiteral(v))}</th>`).join('');
 	const totalHeader = display.total === true ? '<th style=""text-align:right"">Total</th>' : '';
 	const theadDax = `"<thead><tr>${rowHeaders}${pivotHeaders}${totalHeader}</tr></thead>"`;
 
@@ -1145,7 +772,7 @@ function generatePivotDaxVars(factTable: string, display: PivotDisplay, varIdx: 
 		const computedCol = escCol(display.preAggregate.compute.name);
 
 		// Row dim cells — unqualified refs from pre-agg VAR
-		rowDimCells = display.rows.map(r => `"<td>" & ${escCol(r)} & "</td>"`).join(' & ');
+		rowDimCells = display.rows.map(r => `"<td>" & ${daxHtmlEscape(escCol(r))} & "</td>"`).join(' & ');
 
 		// Pivot cells: SUMX(FILTER(preVar, [pivotBy]="val" && [row0]=EARLIER([row0]) && ...), [Computed])
 		pivotCells = display.pivotValues.map(val => {
@@ -1161,7 +788,7 @@ function generatePivotDaxVars(factTable: string, display: PivotDisplay, varIdx: 
 			else if (aggName === 'MAX') calcExpr = `MAXX(${filtered}, ${computedCol})`;
 			else if (aggName === 'MIN') calcExpr = `MINX(${filtered}, ${computedCol})`;
 			else calcExpr = `COUNTROWS(${filtered})`;
-			return `"<td style=""text-align:right"">" & ${buildFormatExpr(calcExpr, rawFmt)} & "</td>"`;
+			return `"<td style=""text-align:right"">" & ${daxHtmlEscape(buildFormatExpr(calcExpr, rawFmt))} & "</td>"`;
 		}).join(' & ');
 
 		// Total cell: same but without pivotBy filter
@@ -1176,7 +803,7 @@ function generatePivotDaxVars(factTable: string, display: PivotDisplay, varIdx: 
 			else if (aggName === 'MAX') totalExpr = `MAXX(${filtered}, ${computedCol})`;
 			else if (aggName === 'MIN') totalExpr = `MINX(${filtered}, ${computedCol})`;
 			else totalExpr = `COUNTROWS(${filtered})`;
-			totalCell = ` & "<td style=""text-align:right""><strong>" & ${buildFormatExpr(totalExpr, rawFmt)} & "</strong></td>"`;
+			totalCell = ` & "<td style=""text-align:right""><strong>" & ${daxHtmlEscape(buildFormatExpr(totalExpr, rawFmt))} & "</strong></td>"`;
 		}
 
 		rowExpr = `"<tr>" & ${rowDimCells} & ${pivotCells}${totalCell} & "</tr>"`;
@@ -1186,7 +813,7 @@ function generatePivotDaxVars(factTable: string, display: PivotDisplay, varIdx: 
 		rowsDax = `CONCATENATEX(SUMMARIZE(${preVarName}, ${rowGroupCols}), ${rowExpr}, "", ${sortCol}, ASC)`;
 	} else {
 		// Standard pivot from fact table
-		rowDimCells = display.rows.map(r => `"<td>" & ${escCol(r)} & "</td>"`).join(' & ');
+		rowDimCells = display.rows.map(r => `"<td>" & ${daxHtmlEscape(escCol(r))} & "</td>"`).join(' & ');
 
 		pivotCells = display.pivotValues.map(val => {
 			const filterExpr = `${tbl}${escCol(display.pivotBy)} = "${escapeDaxString(val)}"`;
@@ -1195,7 +822,7 @@ function generatePivotDaxVars(factTable: string, display: PivotDisplay, varIdx: 
 				: aggName === 'DISTINCTCOUNT' || aggName === 'DCOUNT'
 					? `CALCULATE(DISTINCTCOUNT(${tbl}${escCol(display.value)}), ${filterExpr})`
 					: `CALCULATE(${aggName}X(${tbl}, ${escCol(display.value)}), ${filterExpr})`;
-			return `"<td style=""text-align:right"">" & ${buildFormatExpr(calcExpr, rawFmt)} & "</td>"`;
+			return `"<td style=""text-align:right"">" & ${daxHtmlEscape(buildFormatExpr(calcExpr, rawFmt))} & "</td>"`;
 		}).join(' & ');
 
 		if (display.total === true) {
@@ -1204,7 +831,7 @@ function generatePivotDaxVars(factTable: string, display: PivotDisplay, varIdx: 
 				: aggName === 'DISTINCTCOUNT' || aggName === 'DCOUNT'
 					? `CALCULATE(DISTINCTCOUNT(${tbl}${escCol(display.value)}))`
 					: `CALCULATE(${aggName}X(${tbl}, ${escCol(display.value)}))`;
-			totalCell = ` & "<td style=""text-align:right""><strong>" & ${buildFormatExpr(totalExpr, rawFmt)} & "</strong></td>"`;
+			totalCell = ` & "<td style=""text-align:right""><strong>" & ${daxHtmlEscape(buildFormatExpr(totalExpr, rawFmt))} & "</strong></td>"`;
 		}
 
 		rowExpr = `"<tr>" & ${rowDimCells} & ${pivotCells}${totalCell} & "</tr>"`;
@@ -1298,11 +925,12 @@ function generateSimpleBarChartDax(factTable: string, display: BarDisplay & { va
 		`${i + 1}, "${chartColor(display.colors, i)}"`,
 	).join(', ');
 
-	const valueTextExpr = buildFormatExpr('[Val]', display.value.format || '#,##0');
+	const rawValueTextExpr = buildFormatExpr('[Val]', display.value.format || '#,##0');
+	const valueTextExpr = daxXmlEscape(rawValueTextExpr);
 	const labelTextExpr = daxXmlEscape(lineAxisLabelExpr(groupByRef, display.groupBy, dataSource));
 	const tooltipExpr = tooltipTextDax(display.tooltip, varIdx, [
 		tooltipLineDax(display.groupBy, lineAxisLabelExpr(groupByRef, display.groupBy, dataSource)),
-		tooltipLineDax('Value', valueTextExpr),
+		tooltipLineDax('Value', rawValueTextExpr),
 	]);
 	const simpleBarInnerExpr = `"<text x='${labelW - 6}' y='" & FORMAT(_y + 16, "0") & "' text-anchor='end' font-size='11' fill='#605E5C'>" & ${labelTextExpr} & "</text>" `
 		+ `& "<rect x='${labelW}' y='" & FORMAT(_y + 2, "0") & "' width='" & FORMAT(_w, "0") & "' height='${rowH - 4}' rx='2' fill='" & _col & "'/>" `
@@ -1502,10 +1130,11 @@ function generateAdvancedBarChartDax(factTable: string, display: BarDisplay, var
 
 	const geom = exportBarGeometry(display);
 	const labelTextExpr = daxXmlEscape(lineAxisLabelExpr(groupByRef, display.groupBy, dataSource));
-	const valueTextExpr = buildFormatExpr('[Val]', barValueFormat(display));
+	const rawValueTextExpr = buildFormatExpr('[Val]', barValueFormat(display));
+	const valueTextExpr = daxXmlEscape(rawValueTextExpr);
 	const tooltipExpr = tooltipTextDax(display.tooltip, varIdx, [
 		tooltipLineDax(display.groupBy, lineAxisLabelExpr(groupByRef, display.groupBy, dataSource)),
-		tooltipLineDax('Value', valueTextExpr),
+		tooltipLineDax('Value', rawValueTextExpr),
 	]);
 	const denominatorExpr = display.thresholdBands
 		? daxNumber(thresholdDomain(display))
@@ -1587,12 +1216,14 @@ export function generatePieChartDax(factTable: string, display: PieDisplay, varI
 	const colorCases = Array.from({ length: 10 }, (_, i) =>
 		`${i + 1}, "${chartColor(display.colors, i)}"`,
 	).join(', ');
-	const valueTextExpr = buildFormatExpr('[Val]', display.value.format || '#,##0');
-	const totalTextExpr = buildFormatExpr(tp, display.value.format || '#,##0');
+	const rawValueTextExpr = buildFormatExpr('[Val]', display.value.format || '#,##0');
+	const rawTotalTextExpr = buildFormatExpr(tp, display.value.format || '#,##0');
+	const valueTextExpr = daxXmlEscape(rawValueTextExpr);
+	const totalTextExpr = daxXmlEscape(rawTotalTextExpr);
 	const labelTextExpr = daxXmlEscape(lineAxisLabelExpr(groupByRef, display.groupBy, dataSource));
 	const pieTooltipExpr = tooltipTextDax(display.tooltip, varIdx, [
 		tooltipLineDax(display.groupBy, lineAxisLabelExpr(groupByRef, display.groupBy, dataSource)),
-		tooltipLineDax('Value', valueTextExpr),
+		tooltipLineDax('Value', rawValueTextExpr),
 	]);
 
 	const svgExpr = `CONCATENATEX(`
@@ -1761,83 +1392,36 @@ export function generateLineChartDax(factTable: string, display: LineDisplay, va
 	vars.push(`VAR ${sp} = ${svgDax}`);
 	return sp;
 }
-/**
- * Match a `<table>` element that has a `data-kw-bind` attribute either on the
- * `<table>` tag itself or on a `<tbody>` child.
- *
- * Pattern 1: `<table data-kw-bind="x">...</table>`
- * Pattern 2: `<table ...><thead>...</thead><tbody data-kw-bind="x">...</tbody></table>`
- */
-interface TableElementMatch {
-	fullMatch: string;
-	target: 'table' | 'tbody';
-	tableOpen: string;
-	innerContent: string;
-	tableClose: string;
-	beforeTbody?: string;
-	tbodyOpen?: string;
-	tbodyInner?: string;
-	tbodyClose?: string;
-	afterTbody?: string;
+type DaxHtmlReplacementPart =
+	| { kind: 'html'; value: string }
+	| { kind: 'expression'; value: string };
+
+interface DaxHtmlRewrite {
+	startOffset: number;
+	endOffset: number;
+	parts: DaxHtmlReplacementPart[];
 }
 
-function matchTableElement(html: string, bindAttr: string): TableElementMatch | null {
-	// Try <table data-kw-bind="x">
-	const onTableRe = new RegExp(
-		`(<table\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</table>)`, 'i',
-	);
-	const onTable = html.match(onTableRe);
-	if (onTable) {
-		return {
-			fullMatch: onTable[0],
-			target: 'table',
-			tableOpen: onTable[1],
-			innerContent: onTable[2],
-			tableClose: onTable[3],
-		};
-	}
-
-	// Try <tbody data-kw-bind="x"> inside a <table>
-	// Use negative lookahead (?!<table\b) to prevent crossing <table> boundaries
-	// when multiple tables exist in the HTML.
-	const onTbodyRe = new RegExp(
-		`(<table\\b[^>]*>)((?:(?!<table\\b)[\\s\\S])*?)(<tbody\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</tbody>)((?:(?!<table\\b)[\\s\\S])*?)(</table>)`, 'i',
-	);
-	const onTbody = html.match(onTbodyRe);
-	if (!onTbody) return null;
-	return {
-		fullMatch: onTbody[0],
-		target: 'tbody',
-		tableOpen: onTbody[1],
-		beforeTbody: onTbody[2],
-		tbodyOpen: onTbody[3],
-		tbodyInner: onTbody[4],
-		tbodyClose: onTbody[5],
-		afterTbody: onTbody[6],
-		tableClose: onTbody[7],
-		innerContent: `${onTbody[2]}${onTbody[3]}${onTbody[4]}${onTbody[5]}${onTbody[6]}`,
+function daxHtmlExpression(htmlCode: string, rewrites: DaxHtmlRewrite[]): string {
+	const sorted = [...rewrites].sort((left, right) => left.startOffset - right.startOffset);
+	const parts: string[] = [];
+	let cursor = 0;
+	const appendHtml = (value: string): void => {
+		if (value) parts.push(`"${escapeDaxString(value)}"`);
 	};
-}
-
-function replaceTableElement(match: TableElementMatch, theadVar: string | undefined, rowsVar: string | undefined): string {
-	if (match.target === 'tbody') {
-		return `${match.tableOpen}${match.beforeTbody ?? ''}${match.tbodyOpen ?? ''}{{${rowsVar}}}${match.tbodyClose ?? ''}${match.afterTbody ?? ''}${match.tableClose}`;
+	for (const rewrite of sorted) {
+		if (rewrite.startOffset < cursor || rewrite.endOffset < rewrite.startOffset || rewrite.endOffset > htmlCode.length) {
+			throw new Error('Portable dashboard target source ranges overlap or are invalid.');
+		}
+		appendHtml(htmlCode.slice(cursor, rewrite.startOffset));
+		for (const part of rewrite.parts) {
+			if (part.kind === 'html') appendHtml(part.value);
+			else parts.push(part.value);
+		}
+		cursor = rewrite.endOffset;
 	}
-	return `${match.tableOpen}{{${theadVar}}}<tbody>{{${rowsVar}}}</tbody>${match.tableClose}`;
-}
-
-function protectNonRenderedHtmlBlocks(html: string): { html: string; blocks: string[] } {
-	const blocks: string[] = [];
-	const protectedHtml = html.replace(/<!--[\s\S]*?-->|<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>|<template\b[\s\S]*?<\/template>|<noscript\b[\s\S]*?<\/noscript>/gi, block => {
-		const token = `__KW_PROTECTED_HTML_BLOCK_${blocks.length}__`;
-		blocks.push(block);
-		return token;
-	});
-	return { html: protectedHtml, blocks };
-}
-
-function restoreNonRenderedHtmlBlocks(html: string, blocks: string[]): string {
-	return html.replace(/__KW_PROTECTED_HTML_BLOCK_(\d+)__/g, (_match, indexText: string) => blocks[Number(indexText)] ?? '');
+	appendHtml(htmlCode.slice(cursor));
+	return parts.length > 0 ? parts.join(' & ') : '""';
 }
 
 /**
@@ -1846,138 +1430,139 @@ function restoreNonRenderedHtmlBlocks(html: string, blocks: string[]): string {
  * Native slicer visuals bind directly to fact columns, so their filter context
  * reaches the generated HTML measure without generated dimension relationships.
  */
-export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSource[]): string {
-	const provenance = parseProvenance(htmlCode);
-	if (!provenance || dataSources.length === 0) {
+export function generateDaxMeasure(
+	htmlCode: string,
+	dataSources: PowerBiDataSource[],
+	portableIr: PortableDashboardIr | null = compilePortableDashboard({ htmlCode }).ir,
+): string {
+	if (!portableIr || dataSources.length === 0) {
 		return `"${escapeDaxString(htmlCode)}"`;
 	}
 
 	// Resolve the fact table
-	const factDs = dataSources.find(d => d.sectionId === provenance.model.fact.sectionId);
+	const factDs = dataSources.find(d => d.sectionId === portableIr.fact.sectionId);
 	if (!factDs) return `"${escapeDaxString(htmlCode)}"`;
 	const factTable = sanitizeName(factDs.name);
 
-	// Strip provenance script block (not needed in PBI)
-	let html = htmlCode.replace(/<script\s+type\s*=\s*["']application\/kw-provenance["'][^>]*>[\s\S]*?<\/script>/gi, '');
-	const protectedBlocks = protectNonRenderedHtmlBlocks(html);
-	html = protectedBlocks.html;
-
 	const vars: string[] = [];
+	const rewrites: DaxHtmlRewrite[] = [{
+		startOffset: portableIr.provenanceSource.startOffset,
+		endOffset: portableIr.provenanceSource.endOffset,
+		parts: [],
+	}];
 	let varIdx = 0;
+	let rewrittenBindings = 0;
 
 	// Process each binding — all reference the same fact table
-	for (const [key, binding] of Object.entries(provenance.bindings)) {
-		const bindAttr = bindingAttributePattern(key);
-
-		if (!binding.display) continue;
+	for (const binding of portableIr.bindings) {
+		if (!binding.admitted) continue;
+		const target = binding.targets[0];
+		const innerEndOffset = target?.source.endTagStartOffset;
+		if (!target || innerEndOffset === undefined) continue;
 		const display = binding.display;
 
 		if (display.type === 'scalar') {
-			if (!isValidScalarDisplay(display)) continue;
-			const scalarRe = new RegExp(
-				`(<([a-zA-Z][a-zA-Z0-9:-]*)\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</\\2>)`, 'i',
-			);
-			const scalarMatch = html.match(scalarRe);
-			if (!scalarMatch) continue;
-
 			const result = generateScalarDaxVar(factTable, display as ScalarDisplay, varIdx);
 			if (result.scalarVar && result.scalarDax) {
 				vars.push(`VAR ${result.scalarVar} = ${result.scalarDax}`);
-				html = html.replace(scalarMatch[0], () => `${scalarMatch[1]}{{${result.scalarVar}}}${scalarMatch[4]}`);
+				rewrites.push({
+					startOffset: target.source.startTagEndOffset,
+					endOffset: innerEndOffset,
+					parts: [{ kind: 'expression', value: result.scalarVar }],
+				});
+				rewrittenBindings++;
 			}
 			varIdx++;
 			continue;
 		}
 
 		if (display.type === 'table') {
-			if (!isValidTableDisplay(display)) continue;
-			const tableMatch = matchTableElement(html, bindAttr);
-			if (!tableMatch) continue;
-
-			const originalClasses = extractOriginalThClasses(tableMatch.innerContent);
+			const tableSource = target.tagName === 'table' ? target.source : target.tableSource;
+			if (!tableSource || tableSource.endTagStartOffset === undefined) continue;
+			const originalClasses = extractOriginalThClasses(
+				htmlCode.slice(tableSource.startTagEndOffset, tableSource.endTagStartOffset),
+			);
 			const result = generateTableDaxVars(factTable, display as TableDisplay, varIdx, originalClasses);
 			if (result.preVars) result.preVars.forEach(v => vars.push(v));
 			if (result.theadVar && result.theadDax) vars.push(`VAR ${result.theadVar} = ${result.theadDax}`);
 			if (result.rowsVar && result.rowsDax) vars.push(`VAR ${result.rowsVar} = ${result.rowsDax}`);
-
-			const replaced = replaceTableElement(tableMatch, result.theadVar, result.rowsVar);
-			html = html.replace(tableMatch.fullMatch, () => replaced);
+			if (!result.rowsVar || (target.tagName === 'table' && !result.theadVar)) continue;
+			rewrites.push({
+				startOffset: target.source.startTagEndOffset,
+				endOffset: innerEndOffset,
+				parts: target.tagName === 'tbody'
+					? [{ kind: 'expression', value: result.rowsVar }]
+					: [
+						{ kind: 'expression', value: result.theadVar! },
+						{ kind: 'html', value: '<tbody>' },
+						{ kind: 'expression', value: result.rowsVar },
+						{ kind: 'html', value: '</tbody>' },
+					],
+			});
+			rewrittenBindings++;
 			varIdx++;
 			continue;
 		}
 
 		if (display.type === 'pivot') {
-			if (!isValidPivotDisplay(display)) continue;
-			const tableMatch = matchTableElement(html, bindAttr);
-			if (!tableMatch) continue;
-
 			const result = generatePivotDaxVars(factTable, display as PivotDisplay, varIdx);
 			if (result.preVars) result.preVars.forEach(v => vars.push(v));
 			if (result.theadVar && result.theadDax) vars.push(`VAR ${result.theadVar} = ${result.theadDax}`);
 			if (result.rowsVar && result.rowsDax) vars.push(`VAR ${result.rowsVar} = ${result.rowsDax}`);
-
-			const replaced = replaceTableElement(tableMatch, result.theadVar, result.rowsVar);
-			html = html.replace(tableMatch.fullMatch, () => replaced);
+			if (!result.rowsVar || (target.tagName === 'table' && !result.theadVar)) continue;
+			rewrites.push({
+				startOffset: target.source.startTagEndOffset,
+				endOffset: innerEndOffset,
+				parts: target.tagName === 'tbody'
+					? [{ kind: 'expression', value: result.rowsVar }]
+					: [
+						{ kind: 'expression', value: result.theadVar! },
+						{ kind: 'html', value: '<tbody>' },
+						{ kind: 'expression', value: result.rowsVar },
+						{ kind: 'html', value: '</tbody>' },
+					],
+			});
+			rewrittenBindings++;
 			varIdx++;
 			continue;
 		}
 
 		if (display.type === 'repeatedTable') {
-			if (!isValidRepeatedTableDisplay(display)) continue;
-			const repeatedTableRe = new RegExp(
-				'(<([a-zA-Z][a-zA-Z0-9:-]*)\\b[^>]*?\\b' + bindAttr + '[^>]*>)([\\s\\S]*?)(</\\2>)', 'i',
-			);
-			const repeatedTableMatch = html.match(repeatedTableRe);
-			if (!repeatedTableMatch || !isRepeatedTableContainerTag(repeatedTableMatch[2])) continue;
+			if (!isRepeatedTableContainerTag(target.tagName)) continue;
 
 			const markerName = generateRepeatedTableDax(factTable, display as RepeatedTableDisplay, varIdx, vars);
-			html = html.replace(repeatedTableMatch[0], () => `${repeatedTableMatch[1]}{{${markerName}}}${repeatedTableMatch[4]}`);
+			rewrites.push({
+				startOffset: target.source.startTagEndOffset,
+				endOffset: innerEndOffset,
+				parts: [{ kind: 'expression', value: markerName }],
+			});
+			rewrittenBindings++;
 			varIdx++;
 			continue;
 		}
 
 		if (display.type === 'bar' || display.type === 'pie' || display.type === 'line') {
-			if (!isValidDashboardChartDisplay(display)) continue;
-			const chartRe = new RegExp(
-				`(<([a-zA-Z][a-zA-Z0-9:-]*)\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</\\2>)`, 'i',
-			);
-			const chartMatch = html.match(chartRe);
-			if (!chartMatch) continue;
-
 			let markerName: string;
 			if (display.type === 'bar') markerName = generateBarChartDax(factTable, display as BarDisplay, varIdx, vars, factDs);
 			else if (display.type === 'pie') markerName = generatePieChartDax(factTable, display as PieDisplay, varIdx, vars, factDs);
 			else markerName = generateLineChartDax(factTable, display as LineDisplay, varIdx, vars, factDs);
-
-			html = html.replace(chartMatch[0], () => `${chartMatch[1]}{{${markerName}}}${chartMatch[4]}`);
+			rewrites.push({
+				startOffset: target.source.startTagEndOffset,
+				endOffset: innerEndOffset,
+				parts: [{ kind: 'expression', value: markerName }],
+			});
+			rewrittenBindings++;
 			varIdx++;
 			continue;
 		}
 	}
 
-	if (vars.length === 0) {
-		return `"${escapeDaxString(restoreNonRenderedHtmlBlocks(html, protectedBlocks.blocks))}"`;
+	const admittedBindings = portableIr.bindings.filter(binding => binding.admitted).length;
+	if (rewrittenBindings !== admittedBindings) {
+		throw new Error(`Portable dashboard rewrite mismatch: expected ${admittedBindings}, rewrote ${rewrittenBindings}.`);
 	}
-
-	// Build the RETURN expression: split HTML at markers, escape fragments, join with &
-	const markerRe = /\{\{(_[a-z]+_\d+)\}\}/g;
-	const parts: string[] = [];
-	let lastIndex = 0;
-
-	for (const m of html.matchAll(markerRe)) {
-		const fragment = restoreNonRenderedHtmlBlocks(html.substring(lastIndex, m.index), protectedBlocks.blocks);
-		if (fragment) {
-			parts.push(`"${escapeDaxString(fragment)}"`);
-		}
-		parts.push(m[1]);
-		lastIndex = m.index! + m[0].length;
-	}
-	const trailing = restoreNonRenderedHtmlBlocks(html.substring(lastIndex), protectedBlocks.blocks);
-	if (trailing) {
-		parts.push(`"${escapeDaxString(trailing)}"`);
-	}
-
-	const returnExpr = parts.join(' & ');
+	const returnExpr = daxHtmlExpression(htmlCode, rewrites);
+	if (vars.length === 0) return returnExpr;
 	return `${vars.join(' ')} RETURN ${returnExpr}`;
 }
 
@@ -1994,9 +1579,13 @@ export function escapeDaxString(html: string): string {
  * dynamic DAX expression with CONCATENATEX to build HTML from live DirectQuery data.
  * Otherwise, embeds the HTML as a static DAX string literal.
  */
-export function generateHtmlMeasureTmdl(htmlCode: string, dataSources: PowerBiDataSource[] = []): string {
+export function generateHtmlMeasureTmdl(
+	htmlCode: string,
+	dataSources: PowerBiDataSource[] = [],
+	portableIr?: PortableDashboardIr | null,
+): string {
 	const escapeTmdlName = (s: string) => s.replace(/'/g, "''");
-	const daxExpression = generateDaxMeasure(htmlCode, dataSources);
+	const daxExpression = generateDaxMeasure(htmlCode, dataSources, portableIr ?? compilePortableDashboard({ htmlCode }).ir);
 
 	return [
 		`table '${escapeTmdlName(MEASURES_TABLE_NAME)}'`,
@@ -2882,7 +2471,7 @@ export async function exportHtmlToPowerBI(
 	folderUri: vscode.Uri,
 	options?: Readonly<{ signal?: AbortSignal; commitOnFirstWrite?: boolean }>,
 ): Promise<void> {
-	validatePowerBiHtmlBindings(input.htmlCode, input.dataSources);
+	const portableDashboard = validatePowerBiHtmlBindings(input.htmlCode, input.dataSources);
 
 	const projectName = input.projectName || sanitizeName(input.sectionName) || 'KustoHtmlDashboard';
 	const reportFolder = `${projectName}.Report`;
@@ -2900,12 +2489,11 @@ export async function exportHtmlToPowerBI(
 	const contentHeight = Math.min(14400, Math.max(720, input.previewHeight || 720));
 
 	// ── Slicer layout (from model.dimensions) ────────────────────────
-	const provenance = parseProvenance(input.htmlCode);
-	const dimensions = provenance?.model?.dimensions ?? [];
+	const dimensions = portableDashboard.ir?.dimensions ?? [];
 
 	// Resolve the fact data source
-	const factDs = provenance?.model?.fact
-		? input.dataSources.find(d => d.sectionId === provenance.model.fact.sectionId)
+	const factDs = portableDashboard.ir?.fact
+		? input.dataSources.find(d => d.sectionId === portableDashboard.ir?.fact.sectionId)
 		: input.dataSources[0];
 	const factTableName = factDs ? sanitizeName(factDs.name) : '';
 
@@ -2936,6 +2524,12 @@ export async function exportHtmlToPowerBI(
 
 	// ── Patch body selectors → .kw-pbi-root wrapper for PBI visual ──
 	const pbiHtml = patchCssForPbiVisual(resolvedHtml);
+	const transformedPortableDashboard = validatePowerBiHtmlBindings(pbiHtml, input.dataSources);
+	const htmlMeasureTmdl = generateHtmlMeasureTmdl(
+		pbiHtml,
+		input.dataSources,
+		transformedPortableDashboard.ir,
+	);
 
 	let externalWriteCommitted = false;
 	const write = async (relativePath: string, content: string | Buffer) => {
@@ -3022,5 +2616,8 @@ export async function exportHtmlToPowerBI(
 	}
 
 	// ── HTML measures table (DAX measure containing the dashboard HTML/JS)
-	await write(`${modelFolder}/definition/tables/${MEASURES_TABLE_NAME}.tmdl`, generateHtmlMeasureTmdl(pbiHtml, input.dataSources));
+	await write(
+		`${modelFolder}/definition/tables/${MEASURES_TABLE_NAME}.tmdl`,
+		htmlMeasureTmdl,
+	);
 }

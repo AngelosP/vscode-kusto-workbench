@@ -66,6 +66,25 @@ const previousPublishInfo = {
 	reportName: 'Old dashboard', reportUrl: 'https://app.powerbi.com/old', dataMode: 'directQuery',
 } as const;
 
+const validPublishHtmlCode = `<script type="application/kw-provenance">${JSON.stringify({
+	version: 1,
+	model: { fact: { sectionId: 'query_fact', sectionName: 'Fact Events' } },
+	bindings: {
+		'total-actions': { display: { type: 'scalar', agg: 'COUNT' } },
+	},
+})}</script><span data-kw-bind="total-actions"></span>`;
+
+function validPublishDataSources() {
+	return [{
+		name: 'Fact Events',
+		sectionId: 'query_fact',
+		clusterUrl: 'https://cluster.kusto.windows.net',
+		database: 'db',
+		query: 'FactEvents',
+		columns: [{ name: 'ActionCount', type: 'long' }],
+	}];
+}
+
 function publishProjection(
 	documentRevision: number,
 	sectionRevision: number,
@@ -162,6 +181,26 @@ describe('HostDashboardApplicationHandler Power BI workflows', () => {
 		});
 	});
 
+	it('rejects malformed provenance before empty-source PBIP handling or filesystem writes', async () => {
+		const provider = createProviderHarness();
+		vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue(vscode.Uri.file('C:/tmp/malformed.pbip'));
+		const showWarningMessage = vi.spyOn(vscode.window, 'showWarningMessage');
+		const showErrorMessage = vi.spyOn(vscode.window, 'showErrorMessage');
+		const createDirectory = vi.spyOn(vscode.workspace.fs, 'createDirectory');
+		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile');
+
+		await provider.handleMessage({
+			type: 'exportDashboard', requestId: 'export-malformed', boxId: 'html_publish',
+			html: '<script type="application/kw-provenance">{broken</script><main>Dashboard</main>',
+			suggestedFileName: 'Malformed', dataSources: [],
+		});
+
+		expect(showWarningMessage).not.toHaveBeenCalledWith(expect.stringContaining('No data bindings found'));
+		expect(showErrorMessage).toHaveBeenCalledWith(expect.stringContaining('Dashboard provenance contains invalid JSON.'));
+		expect(createDirectory).not.toHaveBeenCalled();
+		expect(writeFile).not.toHaveBeenCalled();
+	});
+
 	it('returns the unchanged successful publish response and retains its application lease until ack', async () => {
 		const provider = createProviderHarness();
 		powerBiPublishMocks.publishToPowerBIService.mockResolvedValue({
@@ -172,7 +211,8 @@ describe('HostDashboardApplicationHandler Power BI workflows', () => {
 		const message = {
 			type: 'publishToPowerBI' as const, requestId: 'publish-success', boxId: 'html_publish',
 			workspaceId: 'workspace-1', workspaceName: 'Analytics', reportName: 'Dashboard',
-			pageWidth: 1280, pageHeight: 720, htmlCode: '<main></main>', dataSources: [],
+			pageWidth: 1280, pageHeight: 720,
+			htmlCode: validPublishHtmlCode, dataSources: validPublishDataSources(),
 			dataMode: 'import' as const,
 		};
 
@@ -191,6 +231,30 @@ describe('HostDashboardApplicationHandler Power BI workflows', () => {
 			type: 'publishToPowerBIAck', requestId: 'publish-success', accepted: true,
 		});
 		expect(provider.pendingPowerBiPublishAcks.has('publish-success')).toBe(false);
+	});
+
+	it('rejects inadmissible publish before Leave No Trace policy or publish service effects', async () => {
+		const provider = createProviderHarness();
+		const isLeaveNoTrace = vi.spyOn(provider.options.connectionManager, 'isLeaveNoTrace');
+		const showWarningMessage = vi.spyOn(vscode.window, 'showWarningMessage');
+
+		await provider.handleMessage({
+			type: 'publishToPowerBI', requestId: 'publish-invalid', boxId: 'html_publish',
+			workspaceId: 'workspace-1', reportName: 'Invalid dashboard',
+			pageWidth: 1280, pageHeight: 720, htmlCode: '<main>Preview only</main>',
+			dataSources: validPublishDataSources(), dataMode: 'import',
+		});
+
+		expect(isLeaveNoTrace).not.toHaveBeenCalled();
+		expect(showWarningMessage).not.toHaveBeenCalled();
+		expect(powerBiPublishMocks.publishToPowerBIService).not.toHaveBeenCalled();
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'publishToPowerBIResult', requestId: 'publish-invalid',
+			boxId: 'html_publish', ok: false,
+			error: expect.stringContaining(
+				'Missing application/kw-provenance block. Ask Kusto Workbench to make this dashboard exportable to Power BI.',
+			),
+		});
 	});
 
 	it('opens the Kusto Workbench fix prompt when the notification action is selected', async () => {
@@ -242,7 +306,7 @@ describe('HostDashboardApplicationHandler Power BI workflows', () => {
 		const message = {
 			type: 'publishToPowerBI', requestId: 'publish-retired-after-commit', boxId: 'html_publish',
 			workspaceId: 'workspace-1', reportName: 'Dashboard', pageWidth: 1280, pageHeight: 720,
-			htmlCode: '<main></main>', dataSources: [], dataMode: 'import',
+			htmlCode: validPublishHtmlCode, dataSources: validPublishDataSources(), dataMode: 'import',
 		};
 
 		const publishing = provider.publishToPowerBI(message);
@@ -588,42 +652,4 @@ describe('HostDashboardApplicationHandler Power BI workflows', () => {
 		expect(provider.requestHtmlDashboardUpgradeWithCopilot).not.toHaveBeenCalled();
 	});
 
-	it('opens GitHub Issues when unsupported visual notification action is selected', async () => {
-		const provider = createProviderHarness();
-		vi.spyOn(vscode.window, 'showInformationMessage').mockResolvedValue('Ask for it' as any);
-		const openExternal = vi.spyOn(vscode.env, 'openExternal').mockResolvedValue(true as any);
-
-		await provider.showPowerBiUnsupportedVisualHelp({
-			type: 'showPowerBiUnsupportedVisualHelp',
-			requestId: 'unsupported-help-1',
-			message: 'Power BI export does not support heatmap visuals yet. Ask for support for this chart type; it will be added once the owner knows people need it.',
-		});
-
-		expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-			expect.stringContaining('Ask for support for this chart type'),
-			'Ask for it',
-		);
-		expect(openExternal).toHaveBeenCalledTimes(1);
-		expect(openExternal.mock.calls[0][0].toString()).toBe('https://github.com/AngelosP/vscode-kusto-workbench/issues');
-	});
-
-	it('does not open GitHub after unsupported-help cancellation', async () => {
-		const provider = createProviderHarness();
-		let resolveSelection!: (selection: string | undefined) => void;
-		vi.spyOn(vscode.window, 'showInformationMessage').mockReturnValue(new Promise(resolve => {
-			resolveSelection = resolve as (selection: string | undefined) => void;
-		}) as any);
-		const openExternal = vi.spyOn(vscode.env, 'openExternal').mockResolvedValue(true as any);
-
-		const prompt = provider.showPowerBiUnsupportedVisualHelp({
-			type: 'showPowerBiUnsupportedVisualHelp', requestId: 'unsupported-help-cancel',
-			message: 'Unsupported visual',
-		});
-		await Promise.resolve();
-		provider.cancelWorkflow('unsupported-help-cancel');
-		resolveSelection('Ask for it');
-		await prompt;
-
-		expect(openExternal).not.toHaveBeenCalled();
-	});
 });

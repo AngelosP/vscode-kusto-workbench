@@ -215,11 +215,6 @@ export type ShowPowerBiPartialPublishWarningMessage = {
 	targetVersion?: number;
 	reasons?: string[];
 };
-export type ShowPowerBiUnsupportedVisualHelpMessage = {
-	type: 'showPowerBiUnsupportedVisualHelp';
-	requestId: string;
-	message: string;
-};
 export type PublishToPowerBIMessage = {
 	type: 'publishToPowerBI';
 	requestId: string;
@@ -273,7 +268,6 @@ export type IncomingWebviewMessage =
 	| { type: 'showInfo'; message: string }
 	| ShowPowerBiPublishHelpMessage
 	| ShowPowerBiPartialPublishWarningMessage
-	| ShowPowerBiUnsupportedVisualHelpMessage
 	| SaveImportedCsvMessage
 	| RequestArtifactCsvSaveMessage
 	| ArtifactCsvSaveDataMessage

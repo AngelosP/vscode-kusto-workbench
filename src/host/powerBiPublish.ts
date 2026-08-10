@@ -3,7 +3,13 @@
 
 import * as vscode from 'vscode';
 import * as os from 'os';
-import { exportHtmlToPowerBI, normalizePowerBiDataMode, type PowerBiDataMode, type PowerBiDataSource } from './powerBiExport';
+import {
+	exportHtmlToPowerBI,
+	normalizePowerBiDataMode,
+	validatePowerBiHtmlBindings,
+	type PowerBiDataMode,
+	type PowerBiDataSource,
+} from './powerBiExport';
 import { getWorkbenchLogger } from './workbenchLogger';
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
@@ -375,6 +381,8 @@ async function fabricItemExistsWithAuth(
  * - Returns the report URL and the item IDs for persistence.
  */
 export async function publishToPowerBIService(input: PublishInput): Promise<PublishResult> {
+	validatePowerBiHtmlBindings(input.htmlCode, input.dataSources);
+
 	// Generate artifacts using a temp folder — reuses the battle-tested exportHtmlToPowerBI().
 	// We write to a temp dir, read the files back, then clean up.
 	const tempUri = createPowerBiPublishTempUri();

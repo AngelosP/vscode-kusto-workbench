@@ -26,7 +26,7 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 Assessment date: 2026-08-10
 
-The comparison was refreshed against the current working tree after PRO-3 runtime-validated compatibility persistence convergence. CMP-1 is committed locally at `ff178e9025c803a1923ab19654670e1bb73f7e40`; its parent and current `origin/main` are `747199c07b74d17de16d939094aafacf32c72250`. PRO-3 remains uncommitted and unpushed. The comparison includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
+The comparison was refreshed against the current working tree after DSH-1 portable dashboard admission convergence. PRO-3 is committed at `bfd4da522114bbbc8dab8567be7c5d9e0787afce` on CMP-1 parent `ff178e9025c803a1923ab19654670e1bb73f7e40`; current `HEAD` and `origin/main` are synchronized at PRO-3. DSH-1 remains uncommitted and unpushed. The comparison includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
 The current architecture is not uniformly legacy. Several high-risk contexts already provide good models for the rest of the application.
 
@@ -42,7 +42,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | Lossless notebook codec and kind capabilities | [`kqlxOverlay.ts`](src/host/kqlxOverlay.ts) preserves exact unknown data; [`documentSectionCapabilities.ts`](src/shared/documentSectionCapabilities.ts) owns every known `.kqlx`/`.sqlx`/`.mdx` allow/default/add decision across parser, host, webview, tools, upgrades, and browser | Strong foundation |
 | Kusto physical identity fencing | Connection, schema, and database operations capture endpoint and authority identity before asynchronous work | Strong foundation |
 | SQL Leave No Trace policy | Cross-window policy, revocation generations, protected one-shot runtime, and guarded admission | Strong but SQL-specific |
-| Dashboard domain semantics | Shared provenance upgrade/validation concepts and extensive Power BI golden tests | Good domain core, mixed with adapters |
+| Portable dashboard admission | [`portableDashboardCompiler.ts`](src/shared/portableDashboardCompiler.ts) owns standards-based provenance v1 parsing, browser-tree/source-range target and replacement admission, display/source-schema validation, typed diagnostics, and normalized IR across preview, agent, export, and publish paths | Strong compiler boundary |
 | Dashboard application workflow | [`HostDashboardApplicationHandler`](src/host/dashboardApplicationHandler.ts) owns all dashboard requests, cancellation, first-commit admission, publish application/compensation leases, and cleanup; `QueryEditorProvider` only composes transport | Strong initial host-application boundary |
 | Artifact CSV save workflow | [`HostArtifactCsvSaveApplicationHandler`](src/host/artifactCsvSaveApplicationHandler.ts) owns picker admission, nonce challenges, cancellation, deadlines, replay tombstones, exact correlation, and file publication; `QueryEditorProvider` only composes transport | Strong bounded host-application boundary |
 | Imported CSV save workflow | [`HostImportedCsvSaveApplicationHandler`](src/host/importedCsvSaveApplicationHandler.ts) owns empty-data UX, picker admission, URI-preserving extension handling, exact UTF-8 publication, saved-file actions, failures, and disposal; `QueryEditorProvider` only composes routing | Strong bounded host-application boundary |
@@ -114,8 +114,8 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
 | 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 3/4/5/4/3/5 | 43 | HST-1 through HST-36 completed; residual lifecycle/schema/projection adapters have no selected bounded extraction |
 | 1 | `DOC` | Document actor and section-definition registry | 4/4/4/4/2/5 | 43 | DOC-1 through DOC-6 closed; Kusto/SQL deferred |
-| 3 | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 3/4/3/4/4/5 | 40 | DSH-1 portable dashboard admission IR selected next |
-| 4 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 2/3/5/4/2/3 | 35 | PRO-1 through PRO-3 closed; unrelated global routes and capability readiness remain |
+| 3 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 2/3/5/4/2/3 | 35 | PRO-1 through PRO-3 closed; unrelated global routes and capability readiness remain |
+| 4 | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 2/3/3/4/3/4 | 33 | DSH-1 complete; pure project artifact generation and temporary publish staging remain adapter-coupled |
 | 5 | `KLS` | Custom KQL analyzer decomposition behind a language-analysis port | 3/3/2/2/3/4 | 30 | Open |
 | 6 | `CMP` | Compatibility-provider composition around the shared sidecar core | 2/4/2/3/2/3 | 29 | CMP-1 and PRO-3 close shared close/protocol boundaries; projection/reload/save orchestration remains duplicated |
 | 7 | `BRW` | Real browser read-only composition root | 2/3/3/2/3/2 | 27 | BRW-1 closed; residual active-content/resource policy remains deferred to ACT |
@@ -234,7 +234,7 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 - Unmigrated components still supply serialization without being canonical domain state. Restore behavior still knows component-private methods and timing.
 - Adding a section requires edits across format, component, factory, persistence, tool removal, startup imports, and privacy handling.
 
-**Migration theme:** DOC-1 through DOC-6 proved the transport-neutral aggregate/definition pattern with Markdown, URL, Python, Chart, Transformation, and HTML while preserving runtime-heavy adapters. Kusto/SQL remain materially higher-risk and are deferred until separately selected. No DOC slice is currently selected; DSH-1 is next.
+**Migration theme:** DOC-1 through DOC-6 proved the transport-neutral aggregate/definition pattern with Markdown, URL, Python, Chart, Transformation, and HTML while preserving runtime-heavy adapters. Kusto/SQL remain materially higher-risk and are deferred until separately selected. No DOC slice is currently selected; DSH-2 is next.
 
 ### `PRO` - Protocol, View Sessions, And Startup
 
@@ -342,12 +342,20 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 
 **Golden outcome:** one portable dashboard specification and compiler IR drives shared bindings in preview and standalone HTML plus PBIR/TMDL/DAX and publishing adapters. An explicitly active source extension preserves trusted preview and raw standalone HTML behavior that is not portable to Power BI.
 
-**Current divergence:**
+**Current alignment:**
 
-- Domain semantics and tests are mature, but `htmlDashboardUpgrade.ts`, `powerBiExport.ts`, and `kw-html-section.ts` independently interpret target, source-column, table, chart, tooltip, and portability rules.
-- Structurally valid provenance can pass HTML preview compatibility analysis without source-schema validation and fail only during export. Pure validation/generation and VS Code filesystem/Fabric orchestration still meet in large host modules.
+- `portableDashboardCompiler.ts` is the sole pure owner for provenance v1 parsing, browser-created target discovery, replacement-stability admission, scalar/table/repeated-table/pivot/chart/tooltip validation, source-schema admission, typed diagnostics, and normalized portable IR. It uses `parse5` tree construction, exact source ranges, full-tree masked equivalence, and parser-state guards rather than textual target matching.
+- `htmlDashboardUpgrade.ts` is a compatibility-notice adapter over the compiler. Preview scalar/chart/table/repeated-table bindings and slicers consume admitted provenance; `bindHtml()` remains explicitly preview-only.
+- Agent validation returns compiler diagnostics. Local export and publish preparation throw `PortableDashboardAdmissionError` with the same diagnostics before filesystem, authentication, or Fabric effects. Local export recompiles transformed HTML, precomputes the complete measure before the first write, and rewrites only compiler-owned source ranges; every admitted binding is rewritten exactly once and dynamic text is HTML/XML escaped.
+- Malformed binding arrays and source schemas fail closed. The old host missing-column validator, host provenance parser, and shared compatibility target/display interpreter are deleted and blocked by ownership tests.
 
-**Migration theme:** DSH-1 introduces one pure portable dashboard admission IR for provenance parsing, target/source-column validation, typed diagnostics, and normalized bindings. Keep DAX/TMDL/PBIR rendering, preview runtime, Fabric workflows, provenance v1, and generated output goldens unchanged.
+**Remaining divergence:**
+
+- Pure DAX/TMDL/PBIR generation and 29 path/content decisions still live inside `powerBiExport.ts` beside `vscode.workspace.fs` publication.
+- `powerBiPublish.ts` still writes a temporary PBIP project, reads it back into Fabric definition parts, and deletes the staging directory. Local export and publish therefore share output indirectly through filesystem staging rather than a pure project-artifact contract.
+- Raw standalone HTML remains an intentional active-content export outside portable IR; origin/trust/CSP/network admission remains deferred ACT work.
+
+**Migration theme:** DSH-1 is complete. DSH-2 should introduce one pure in-memory Power BI project artifact compiler consumed by local filesystem export and Fabric publishing, preserving generated bytes and Fabric transaction behavior while retiring temporary publish staging.
 
 ### `KLS` - KQL Analyzer Boundary
 
@@ -638,7 +646,7 @@ The component and renderer remain adapters. Equal projections retain the exact e
 
 **Status:** closed on 2026-08-05. The definitive blocker-only review returned `VERDICT: NO HST-1 BLOCKER`.
 
-**Boundary:** `HostDashboardApplicationHandler` is the injected owner for all ten dashboard request/cancel/ack routes, request abort controllers, user prompts, HTML/PBIP export, Fabric workspace/item lookup, first-external-commit Leave No Trace admission, publish application/compensation leases, stale retirement, and cleanup finalization. `QueryEditorProvider` constructs or accepts the handler, offers typed inbound messages, preserves synchronous admission for unrelated Kusto/SQL traffic, and disposes it. `KqlxEditorProvider` supplies only the explicit publish apply/settle/cleanup hooks backed by the existing URI queue.
+**Boundary:** `HostDashboardApplicationHandler` is the injected owner for all nine dashboard request/cancel/ack routes, request abort controllers, user prompts, HTML/PBIP export, Fabric workspace/item lookup, first-external-commit Leave No Trace admission, publish application/compensation leases, stale retirement, and cleanup finalization. `QueryEditorProvider` constructs or accepts the handler, offers typed inbound messages, preserves synchronous admission for unrelated Kusto/SQL traffic, and disposes it. `KqlxEditorProvider` supplies only the explicit publish apply/settle/cleanup hooks backed by the existing URI queue.
 
 **Displaced authority:** `QueryEditorProvider` no longer owns dashboard workflow maps, publish-ack maps, cleanup admission, dashboard discriminator cases, Power BI/Fabric adapter imports, or publish state transitions. `powerBiExport.ts`, `powerBiPublish.ts`, the document aggregate/URI queue, `kw-html-section`, `kw-publish-pbi-dialog`, provenance v1, generated PBIR/TMDL/DAX, message shapes, and product behavior are unchanged.
 
@@ -1122,19 +1130,35 @@ The final focused ring passed 2 files and 11 tests; the expanded owner/message-p
 
 **Qualification:** the final focused ring passes 12 files and 499 tests with `--maxWorkers=1`; the parameterized compatibility extension-host matrix passes 134/134 with `--timeout 5000`. Full sequential and official coverage Vitest pass 295 files and 6,352 tests at 48.38% statements. The complete VS Code 1.132.0 extension-host suite passes 215/215 with `--timeout 5000`. Strict host/webview/browser types, integration compilation, production extension and browser builds, ESLint with zero errors and five existing warnings, diagnostics, `git diff --check`, and both synchronized bundle gates pass. Final production sizes are 1,957.7 KB host and 2,826.6 KB webview; baselines are 1,908/2,777 KB with the 50 KB buffer unchanged. The first full Vitest run had one unchanged ten-second Kusto identity timeout and a dependent delegated-Copilot miss; both passed alone, and the complete verbose rerun passed unchanged. A subsequent worker process orphaned before reporting progress and was terminated; it produced no test failure. Native E2E was not required because controls, rendering, file formats, primary-text behavior, and provider ownership remain unchanged.
 
-## Next Iteration
+## Completed Dashboard Iteration
 
 ### Iteration `DSH-1`: Portable Dashboard Admission IR
 
+**Status:** closed on 2026-08-10. The definitive blocker-only review returned `VERDICT: NO DSH-1 BLOCKER`.
+
+**Boundary:** `portableDashboardCompiler.ts` is the sole pure owner for provenance v1 parsing, exactly-one browser-created `data-kw-bind` target admission, scalar/table/repeated-table/pivot/chart/tooltip and slicer validation, source-schema validation, typed diagnostics, and normalized portable IR. Standards-based `parse5` tree construction plus source locations reject source-less browser clones, inert/hidden contexts, parser-state form boundaries, overlapping/reparented ranges, and replacements that alter DOM outside the target. One shared aggregate vocabulary is validated and normalized across every aggregate-bearing binding position. `htmlDashboardUpgrade.ts` is a typed compatibility-notice adapter. Preview scalar/chart/table/repeated-table paths consume admitted provenance, while `bindHtml()` remains explicitly preview-only.
+
+**Cross-path admission:** preview preflight, agent validation, local export, and publish preparation pass the same authored HTML and fact schema to the compiler. A structurally valid scalar `SUM(MissingMetric)` returns the same `missing-column` diagnostic object across all four paths. Local export and publish reject every compiler diagnostic or null IR with `PortableDashboardAdmissionError` before filesystem, authentication, or Fabric effects. Malformed provenance, binding arrays, dimensions, source schemas, unavailable fact sources, unsupported aggregates, duplicate/overlapping targets, browser tree corrections, unstable replacement contexts, and empty binding IDs fail closed with typed diagnostics rather than throwing or falling back. Provenance-only zero-binding data bridges remain valid consistently across all adapters.
+
+**Displaced authority:** the complete host source-column validator, host provenance parser/target scanner, compatibility analyzer's target/display interpreter, Power BI binding regex/rewrite scanner, host string-only export/publish preflights, and obsolete `showPowerBiUnsupportedVisualHelp` route are deleted. `HostDashboardApplicationHandler` now owns nine dashboard routes and validates before mode or Leave No Trace effects. `powerBiExport.ts` recompiles the transformed HTML, precomputes its measure before the first write, and consumes exact compiler-owned source ranges; direct renderer-unit APIs retain structural IR only as an algorithm test adapter. Static ownership and protocol guards prevent duplicate admission or the retired route from returning.
+
+**Preserved owners and exclusions:** `HostDashboardApplicationHandler`, HTML Monaco/iframe/artifact binding, provenance v1, preview renderer algorithms, DAX/TMDL/PBIR output, Fabric authentication/create/update/recovery/cleanup, temporary PBIP publishing staging, document persistence, raw standalone HTML, and deferred ACT/CSP/trust policy remain intact.
+
+**Qualification:** the final focused ring passes 14 files and 556 tests with `--maxWorkers=1`. Full sequential and official coverage Vitest pass 297 files and 6,457 tests; statement coverage is 48.35% versus the unchanged 27.67% threshold. The complete VS Code 1.132.0 extension-host suite passes 215/215 with `--timeout 5000`. Strict host/webview/browser types, integration compilation, production extension and browser builds, ESLint with zero errors and five existing warnings, current generated-route scans, and both synchronized bundle gates pass. Final production sizes are 2,146.2 KB host and 3,020.2 KB webview; synchronized baselines are 2,147/3,021 KB with the 50 KB buffer unchanged. Native E2E run `20260810-185619` passes all four `html-powerbi-upgrade` scenarios; six foreground-valid `1300x950` screenshots and three JSON artifacts were reviewed, proving restored warning visibility, dismissal behavior, clean valid previews, exact compiler reasons, and the active section-specific upgrade chat. No live authenticated Fabric tenant publish was performed; transaction/effect ordering remains covered by focused mocked REST, filesystem, authentication, cancellation, and cleanup tests.
+
+## Next Iteration
+
+### Iteration `DSH-2`: Pure Power BI Project Artifacts
+
 **Status:** selected next, not started.
 
-**Post-PRO-3 rescore:** HST and DOC remain 43 but have no coherent eligible bounded slice. DSH rises from 35 to 40 because three current interpreters can disagree on source-column and portability admission, and a narrow shared compiler boundary is feasible. PRO drops from 39 to 35 after compatibility persistence validation. KLS remains 30, CMP drops from 33 to 29, BRW remains 27, and ACT remains product-deferred at 53.
+**Post-DSH-1 rescore:** HST and DOC remain 43 but have no coherent eligible bounded slice. PRO remains 35 but likewise has no selected bounded route. DSH falls from 40 to 33 after admission convergence; KLS remains 30, CMP remains 29, BRW remains 27, and ACT remains product-deferred at 53. DSH-2 is selected because its remaining filesystem coupling has one concrete reversible boundary.
 
-**Boundary:** introduce one pure compiler that parses provenance v1, validates binding targets and source columns, and returns typed diagnostics plus a normalized portable dashboard IR. Route HTML compatibility analysis, agent/tool validation, preview binding admission, and Power BI generation through that result while keeping renderer algorithms and generated output unchanged.
+**Boundary:** introduce one pure in-memory Power BI project artifact compiler from admitted portable IR and export input. Local `.pbip` export writes those artifacts through VS Code filesystem adapters; Fabric publish consumes the same artifact set directly. Preserve every generated path and byte, DAX/TMDL/PBIR algorithms, data modes, cancellation, first-external-commit admission, authentication, update/create/recovery/compensation, refresh, document metadata, and raw standalone HTML.
 
-**Falsifiable hypothesis and red-first check:** use a structurally valid scalar `SUM` binding that references an absent fact column. Today HTML compatibility analysis accepts it while Power BI validation rejects it. Require one identical typed `missing-column` diagnostic from preview preflight, agent validation, local export, and publish preparation, while existing valid output goldens remain byte-semantic matches.
+**Falsifiable hypothesis and red-first check:** compile one valid representative dashboard for local export and publish preparation. Today local export writes project files while publish writes the same project to a temporary directory and reads it back. Require both adapters to consume one byte-identical sorted artifact manifest, and prove publish preparation performs zero temporary filesystem writes or reads while existing output goldens remain exact.
 
-**Preserved owners and exclusions:** preserve `HostDashboardApplicationHandler`, HTML Monaco/iframe/artifact binding, provenance v1, preview renderers, DAX/TMDL/PBIR generation, Fabric authentication and create/update/recovery/cleanup, document persistence, and standalone HTML behavior. Do not rewrite preview rendering, remove temporary PBIP staging, change Fabric REST, add provenance v2, touch document/protocol ownership, or implement ACT/CSP/trust policy.
+**Exclusions:** do not change Fabric REST/auth/transaction behavior, generated file formats or bytes, provenance v1 or the portable admission IR, preview renderers, document/protocol ownership, standalone HTML, or ACT/CSP/trust policy.
 
 ## Convergence Loop
 
@@ -1322,6 +1346,7 @@ These are not full golden-outcome iterations retroactively, but they materially 
 | `BRW-1` | `BrowserViewerRoot` + runtime-validated `BrowserViewerProjection` | Boot-owned parsing/default mutation, synthetic four-message startup replay, persistence-global patches, delayed read-only repair, and convention-only unsupported host work | Native/companion immutable projection, stale/duplicate generation, real bundled boot retry, opaque preservation, capability-owned shell/Monaco/execution, static URL, artifact/CSV, and visible rendering guards | Focused 460; full/coverage 6,303 at 48.23%; extension-host 209, strict types, production/browser, exact CSV, desktop/mobile layout, bundle gates, and definitive blocker review complete | 2026-08-09 |
 | `CMP-1` | `CompatSidecarCloseCoordinator` | Duplicated KQL/SQL retired-admission flags, close-start state, final-persist/beforeunload ordering, session/gateway/store cleanup, dirty-close UX, recovery selection, and settlement | Red-first reversed retained traffic, KQL/SQL Save/recovery sanitation, prompt/init/disposal/tail/failure, nested-provider cleanup, and startup-visibility tests plus displaced-authority/PRO-2 guards | Focused 227; compatibility 134; full/coverage 6,338 at 48.33%; extension-host 213, production/browser, bundle gates, and definitive blocker review complete | 2026-08-09 |
 | `PRO-3` | `compatibilityPersistenceProtocol.ts` + host-created compatibility panel UUID | Metadata-free KQL/SQL lifecycle casts and sessionless request/projection, persist, final, acknowledgement, and reload admission | A/B successor traffic, malformed/high-revision state, lost-ack replay, stale-generation, failed-upgrade, unavailable-final, protocol inventory, and preserved sidecar-owner guards | Focused 499; compatibility 134; full/coverage 6,352 at 48.38%; extension-host 215, production/browser, bundle gates, and definitive blocker review complete | 2026-08-10 |
+| `DSH-1` | `portableDashboardCompiler.ts` + normalized portable IR | Duplicate provenance/target/source validators, Power BI binding regex rewrites, string-only preflights, and obsolete unsupported-visual route | Cross-path typed diagnostics, standards-tree/source-range and replacement-stability guards, exact-range rewrites, zero-effect export/publish failures, hostile output escaping, protocol/ownership guards, and native warning/chat E2E | Focused 556; full/coverage 6,457 at 48.35%; extension-host 215, production/browser, bundle gates, native 4/4, and definitive blocker review complete | 2026-08-10 |
 
 ## Decision Discipline
 

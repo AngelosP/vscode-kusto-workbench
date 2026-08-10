@@ -5,7 +5,13 @@ import {
 	type BarSegmentSpec,
 	type PreAggregate,
 } from './dashboardCharts';
-import { DASHBOARD_TOOLTIP_ALIAS_PREFIX, isValidDashboardTooltipSpec, type DashboardTooltipSpec } from './dashboardTooltips';
+import {
+	dashboardAggregateNeedsColumn,
+	DASHBOARD_TOOLTIP_ALIAS_PREFIX,
+	isValidDashboardAggregate,
+	isValidDashboardTooltipSpec,
+	type DashboardTooltipSpec,
+} from './dashboardTooltips';
 
 export interface TableCellBarSpec {
 	segments: BarSegmentSpec[];
@@ -103,15 +109,15 @@ export function tableCellBarColor(spec: TableCellBarSpec, segment: BarSegmentSpe
 }
 
 export function tableAggregateNeedsColumn(agg: unknown): boolean {
-	return String(agg || 'COUNT').toUpperCase() !== 'COUNT';
+	return dashboardAggregateNeedsColumn(agg || 'COUNT');
 }
 
-export function isTableCellBarColumn(column: TableColumnSpec): column is TableColumnSpec & { cellBar: TableCellBarSpec } {
-	return column.cellBar !== undefined;
+export function isTableCellBarColumn(column: unknown): column is TableColumnSpec & { cellBar: TableCellBarSpec } {
+	return isRecord(column) && column.cellBar !== undefined;
 }
 
-export function isTableCellFormattedColumn(column: TableColumnSpec): column is TableColumnSpec & { cellFormat: TableCellFormatSpec } {
-	return column.cellFormat !== undefined;
+export function isTableCellFormattedColumn(column: unknown): column is TableColumnSpec & { cellFormat: TableCellFormatSpec } {
+	return isRecord(column) && column.cellFormat !== undefined;
 }
 
 export function isValidTableDisplay(display: unknown): display is TableDisplay {
@@ -188,7 +194,7 @@ function isSafeCssColor(value: unknown): value is string {
 }
 
 function isValidTableBarSegment(value: unknown): value is BarSegmentSpec {
-	if (!isRecord(value) || !isNonEmptyString(value.agg)) return false;
+	if (!isRecord(value) || !isValidDashboardAggregate(value.agg)) return false;
 	if (tableAggregateNeedsColumn(value.agg) && !isNonEmptyString(value.column)) return false;
 	if (value.column !== undefined && typeof value.column !== 'string') return false;
 	if (value.format !== undefined && typeof value.format !== 'string') return false;
@@ -233,6 +239,7 @@ function isValidCellFormatSpec(value: unknown): value is TableCellFormatSpec {
 }
 
 function areValidTableColumns(columns: TableColumnSpec[], groupBy: string[], allowCellBar: boolean, allowCellFormat = true): boolean {
+	if (!columns.every(column => isRecord(column) && isNonEmptyString(column.name))) return false;
 	const groupedColumns = new Set(groupBy);
 	const summarizedColumns = sortableTableColumns(groupBy, columns);
 	if (hasReservedAliasName(groupBy)) return false;
@@ -240,7 +247,7 @@ function areValidTableColumns(columns: TableColumnSpec[], groupBy: string[], all
 		if (!isRecord(column) || !isNonEmptyString(column.name)) return false;
 		if (isReservedAliasName(column.name)) return false;
 		if (column.header !== undefined && typeof column.header !== 'string') return false;
-		if (column.agg !== undefined && !isNonEmptyString(column.agg)) return false;
+		if (column.agg !== undefined && !isValidDashboardAggregate(column.agg)) return false;
 		if (column.sourceColumn !== undefined && typeof column.sourceColumn !== 'string') return false;
 		if (column.format !== undefined && typeof column.format !== 'string') return false;
 		if (column.cellBar !== undefined) {
@@ -277,7 +284,7 @@ function isValidPreAggregateSpec(value: unknown): value is PreAggregate {
 	if (!isRecord(value) || !isRecord(value.compute)) return false;
 	const groupBy = value.groupBy;
 	const validGroupBy = isNonEmptyString(groupBy) || (Array.isArray(groupBy) && groupBy.length > 0 && groupBy.every(isNonEmptyString));
-	if (!validGroupBy || !isNonEmptyString(value.compute.name) || !isNonEmptyString(value.compute.agg)) return false;
+	if (!validGroupBy || !isNonEmptyString(value.compute.name) || !isValidDashboardAggregate(value.compute.agg)) return false;
 	const groupByColumns = (Array.isArray(groupBy) ? groupBy : [groupBy]) as string[];
 	if (hasReservedAliasName(groupByColumns) || isReservedAliasName(value.compute.name)) return false;
 	if (tableAggregateNeedsColumn(value.compute.agg) && !isNonEmptyString(value.compute.column)) return false;
