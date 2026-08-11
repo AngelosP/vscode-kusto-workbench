@@ -415,7 +415,7 @@ describe('QueryEditorProvider comparison preparation application', () => {
 			expect(handlerSource).toContain(`case '${route}':`);
 			expect(typesSource).toContain(`type: '${route}'`);
 		}
-		expect(providerSource.match(/^\s*case '/gm) ?? []).toHaveLength(11);
+		expect(providerSource.match(/^\s*case '/gm) ?? []).toHaveLength(2);
 		expect(handlerSource.match(/^\s*case '/gm) ?? []).toHaveLength(3);
 		expect(providerSource).not.toContain('pendingComparisonEnsureByRequestId');
 		expect(providerSource).not.toContain('_comparisonOwnerByBoxId');

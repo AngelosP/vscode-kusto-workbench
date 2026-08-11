@@ -13,7 +13,6 @@ import {
 } from './sql/sqlEditorSessionRegistry';
 import { SqlEditorLifecycleCoordinator } from './sql/sqlEditorLifecycleCoordinator';
 import { sanitizeStsLogText } from './sql/stsLogSanitizer';
-import { clearSqlTokenOverride, setSqlServerAccountMapEntry, setSqlTokenOverride } from './sql/sqlAuthState';
 import { KustoConnectionLifecycle } from './kustoConnectionLifecycle';
 import { getOwnedSqlDatabaseCacheEntry, SQL_DATABASE_CACHE_STORAGE_KEY } from './sqlDatabaseCache';
 import { getQueryEditorHtml } from './queryEditorHtml';
@@ -205,6 +204,10 @@ import {
 	HostKustoConnectionsProjectionApplicationHandler,
 	type KustoConnectionsProjectionApplicationHandler,
 } from './kustoConnectionsProjectionApplicationHandler';
+import {
+	HostSqlEditorLifecycleApplicationHandler,
+	type SqlEditorLifecycleApplicationHandler,
+} from './sqlEditorLifecycleApplicationHandler';
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
 	private static readonly activeProviders = new Set<QueryEditorProvider>();
@@ -293,6 +296,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly sqlConnectionsProjectionApplication: SqlConnectionsProjectionApplicationHandler;
 	readonly persistedResultSanitizationApplication: PersistedResultSanitizationApplicationHandler;
 	readonly kustoConnectionsProjectionApplication: KustoConnectionsProjectionApplicationHandler;
+	readonly sqlEditorLifecycleApplication: SqlEditorLifecycleApplicationHandler;
 	readonly onDidInvalidateSqlPersistence: vscode.Event<void>;
 	readonly onDidInvalidateKustoPersistence: vscode.Event<void>;
 
@@ -494,6 +498,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		sqlConnectionsProjectionApplication?: SqlConnectionsProjectionApplicationHandler,
 		persistedResultSanitizationApplication?: PersistedResultSanitizationApplicationHandler,
 		kustoConnectionsProjectionApplication?: KustoConnectionsProjectionApplicationHandler,
+		sqlEditorLifecycleApplication?: SqlEditorLifecycleApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -639,6 +644,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				prefetchSchema: request => this.sqlSchemaRequestApplication.requestSchema(request),
 			},
 		});
+		this.sqlEditorLifecycleApplication = sqlEditorLifecycleApplication
+			?? new HostSqlEditorLifecycleApplicationHandler({
+				context: this.context,
+				lifecycle: this.sqlLifecycle,
+			});
 		this.persistedResultSanitizationApplication = persistedResultSanitizationApplication
 			?? new HostPersistedResultSanitizationApplicationHandler({
 				connectionManager: this.connectionManager,
@@ -1180,44 +1190,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await sqlSectionExecutionApplicationMessage;
 			return;
 		}
+		const sqlEditorLifecycleApplicationMessage
+			= this.sqlEditorLifecycleApplication?.handleMessage(message);
+		if (sqlEditorLifecycleApplicationMessage) {
+			await sqlEditorLifecycleApplicationMessage;
+			return;
+		}
 		switch (message.type) {
-			case 'sqlSectionOpen':
-				this.sqlLifecycle.openSection(message.boxId, message.sectionInstanceId);
-				return;
-			case 'retireSqlTarget':
-				this.sqlLifecycle.retireTarget(message.boxId, message.sectionInstanceId, message.targetGeneration);
-				return;
-			case 'testSetSqlAuthOverride':
-				if (this.context.extensionMode === vscode.ExtensionMode.Production) {
-					return;
-				}
-				await setSqlServerAccountMapEntry(this.context, message.serverUrl, message.accountId);
-				await setSqlTokenOverride(this.context, message.accountId, message.token);
-				return;
-			case 'testClearSqlAuthOverride':
-				if (this.context.extensionMode === vscode.ExtensionMode.Production) {
-					return;
-				}
-				await clearSqlTokenOverride(this.context, message.accountId);
-				return;
-			case 'stsRequest':
-				await this.sqlLifecycle.handleLanguageRequest(message.requestId, message.method, message.params);
-				return;
-			case 'stsDidOpen':
-				this.sqlLifecycle.didOpen(message.boxId, message.sectionInstanceId, message.text);
-				return;
-			case 'stsDidChange':
-				await this.sqlLifecycle.didChange(message.boxId, message.sectionInstanceId, message.text);
-				return;
-			case 'stsDidClose':
-				this.sqlLifecycle.didClose(message.boxId, message.sectionInstanceId);
-				return;
-			case 'stsConnect':
-				await this.sqlLifecycle.connect(
-					message.boxId, message.sectionInstanceId, message.sqlConnectionId, message.database,
-					message.targetGeneration, message.expectedOwner,
-				);
-				return;
 			case 'prefetchSchema':
 				await this.schema.prefetchSchema(message.connectionId, message.database, message.boxId, !!message.forceRefresh, message.requestToken, {
 					cacheOnly: !!message.cacheOnly,
@@ -1355,6 +1334,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.kustoSectionExecutionApplication.dispose();
 		this.comparisonPreparationApplication.dispose();
 		this.sqlSectionExecutionApplication.dispose();
+		this.sqlEditorLifecycleApplication.dispose();
 		this.sqlConnectionsProjectionApplication.dispose();
 		this.copilot.disposeKustoOwners();
 		this.copilot.invalidateSqlConnections(
