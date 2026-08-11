@@ -315,7 +315,7 @@ describe('QueryEditorProvider SQL section execution application', () => {
 			expect(handlerSource).toContain(`case '${route}':`);
 			expect(typesSource).toContain(`type: '${route}'`);
 		}
-		expect(providerSource.match(/^\s*case '/gm) ?? []).toHaveLength(12);
+		expect(providerSource.match(/^\s*case '/gm) ?? []).toHaveLength(11);
 		expect(handlerSource.match(/^\s*case '/gm) ?? []).toHaveLength(2);
 		expect(providerSource).not.toContain('executeSqlQueryFromWebview');
 		expect(providerSource).not.toContain('appendSqlQueryMode as appendSqlQueryModeFn');

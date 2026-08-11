@@ -244,6 +244,7 @@ describe('QueryEditorProvider SQL favorites application', () => {
 		const providerSource = readSource('src/host/queryEditorProvider.ts');
 		const connectionSource = readSource('src/host/queryEditorConnection.ts');
 		const handlerSource = readSource('src/host/sqlFavoritesApplicationHandler.ts');
+		const projectionSource = readSource('src/host/sqlConnectionsProjectionApplicationHandler.ts');
 		const helpersSource = readSource('src/host/connectionManagerFavorites.ts');
 		const managerViewerSource = readSource('src/host/connectionManagerViewer.ts');
 		const hostTypesSource = readSource('src/host/queryEditorTypes.ts');
@@ -263,10 +264,11 @@ describe('QueryEditorProvider SQL favorites application', () => {
 		expect(connectionSource).not.toContain('promptAddSqlFavorite(');
 		expect(connectionSource).not.toContain('addOrUpdateSqlFavorite(');
 		expect(connectionSource).not.toContain('removeSqlFavorite(');
-		expect(providerSource).toContain('private _sqlConnectionsSnapshotRevision = 0;');
-		expect(providerSource).toContain('private sqlConnectionsSnapshotTail: Promise<boolean> = Promise.resolve(true);');
-		expect(providerSource).toContain('private async sendSqlConnectionsData(): Promise<boolean>');
-		expect(providerSource).toContain('sqlFavorites: this.sqlFavoritesApplication.getFavorites()');
+		expect(providerSource).not.toContain('private _sqlConnectionsSnapshotRevision');
+		expect(providerSource).not.toContain('private sqlConnectionsSnapshotTail');
+		expect(providerSource).not.toContain('private async sendSqlConnectionsData(');
+		expect(providerSource).toContain('getFavorites: () => this.sqlFavoritesApplication.getFavorites()');
+		expect(projectionSource).toContain('this.options.getFavorites()');
 		expect(providerSource).toContain('this.sqlFavoritesApplication.dispose();');
 		expect(handlerSource).toContain('sanitizeSqlFavorites');
 		expect(handlerSource).toContain('getSqlFavoriteKey');

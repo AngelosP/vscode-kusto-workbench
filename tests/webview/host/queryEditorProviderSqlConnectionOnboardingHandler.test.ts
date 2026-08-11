@@ -250,6 +250,7 @@ describe('QueryEditorProvider SQL connection-onboarding application', () => {
 		);
 		const providerSource = readSource('src/host/queryEditorProvider.ts');
 		const handlerSource = readSource('src/host/sqlConnectionOnboardingApplicationHandler.ts');
+		const projectionSource = readSource('src/host/sqlConnectionsProjectionApplicationHandler.ts');
 		const managerSource = readSource('src/host/sqlConnectionManager.ts');
 		const workbenchSource = readSource('src/host/sql/sqlWorkbenchService.ts');
 		const lifecycleSource = readSource('src/host/sql/sqlEditorLifecycleCoordinator.ts');
@@ -266,9 +267,12 @@ describe('QueryEditorProvider SQL connection-onboarding application', () => {
 		}
 		expect(providerSource).not.toContain('private async promptAddSqlConnection(');
 		expect(providerSource).not.toContain('private async addSqlConnectionFromWebview(');
-		expect(providerSource).toContain('private _sqlConnectionsSnapshotRevision = 0;');
-		expect(providerSource).toContain('private sqlConnectionsSnapshotTail: Promise<boolean> = Promise.resolve(true);');
-		expect(providerSource).toContain('private async sendSqlConnectionsData(): Promise<boolean>');
+		expect(providerSource).not.toContain('private _sqlConnectionsSnapshotRevision');
+		expect(providerSource).not.toContain('private sqlConnectionsSnapshotTail');
+		expect(providerSource).not.toContain('private async sendSqlConnectionsData(');
+		expect(projectionSource).toContain('private snapshotRevision = 0;');
+		expect(projectionSource).toContain('private snapshotTail: Promise<boolean> = Promise.resolve(true);');
+		expect(projectionSource).toContain("type: 'sqlConnectionsData'");
 		expect(providerSource).toContain('this.sqlConnectionOnboardingApplication.dispose();');
 		expect(handlerSource).toContain("await this.options.globalState.update('sql.lastConnectionId', newConnection.id);");
 		expect(handlerSource).toContain('connections: this.options.connectionManager.getConnections(),');

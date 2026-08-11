@@ -257,6 +257,7 @@ describe('QueryEditorProvider SQL database discovery application', () => {
 		);
 		const providerSource = readSource('src/host/queryEditorProvider.ts');
 		const handlerSource = readSource('src/host/sqlDatabaseDiscoveryApplicationHandler.ts');
+		const projectionSource = readSource('src/host/sqlConnectionsProjectionApplicationHandler.ts');
 		const lifecycleSource = readSource('src/host/sql/sqlEditorLifecycleCoordinator.ts');
 		const workbenchSource = readSource('src/host/sql/sqlWorkbenchService.ts');
 		const cacheSource = readSource('src/host/sqlDatabaseCache.ts');
@@ -295,8 +296,9 @@ describe('QueryEditorProvider SQL database discovery application', () => {
 		expect(handlerSource).toContain('this.cache.writeOwnedEntry(');
 		expect(cacheSource).toContain('export async function beginSqlDatabaseCacheRequest(');
 		expect(cacheSource).toContain('export async function writeOwnedSqlDatabaseCacheEntry(');
-		expect(providerSource).toContain("type: 'sqlConnectionsData'");
-		expect(providerSource).toContain('sqlFavorites: this.sqlFavoritesApplication.getFavorites()');
+		expect(providerSource).not.toContain("type: 'sqlConnectionsData'");
+		expect(projectionSource).toContain("type: 'sqlConnectionsData'");
+		expect(projectionSource).toContain('this.options.getFavorites()');
 		expect(sqlMessageRouterSource).toContain("case 'sqlDatabasesLoading':");
 		expect(sqlMessageRouterSource).toContain("case 'sqlDatabasesData':");
 		expect(sqlMessageRouterSource).toContain("case 'sqlDatabasesError':");

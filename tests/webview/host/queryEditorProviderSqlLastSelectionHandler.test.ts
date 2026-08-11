@@ -174,6 +174,7 @@ describe('QueryEditorProvider SQL last-selection application', () => {
 		);
 		const providerSource = readSource('src/host/queryEditorProvider.ts');
 		const handlerSource = readSource('src/host/sqlLastSelectionApplicationHandler.ts');
+		const projectionSource = readSource('src/host/sqlConnectionsProjectionApplicationHandler.ts');
 		const onboardingSource = readSource('src/host/sqlConnectionOnboardingApplicationHandler.ts');
 		const hostTypesSource = readSource('src/host/queryEditorTypes.ts');
 		const emitterSource = readSource('src/webview/sections/sql-section-session.controller.ts');
@@ -191,8 +192,10 @@ describe('QueryEditorProvider SQL last-selection application', () => {
 		expect(handlerSource).toContain('message.database !== undefined');
 		expect(handlerSource).toContain("update('sql.lastDatabase', message.database)");
 		expect(onboardingSource).toContain("update('sql.lastConnectionId', newConnection.id)");
-		expect(providerSource).toContain("globalState.get<string>('sql.lastConnectionId')");
-		expect(providerSource).toContain("globalState.get<string>('sql.lastDatabase')");
+		expect(providerSource).not.toContain("globalState.get<string>('sql.lastConnectionId')");
+		expect(providerSource).not.toContain("globalState.get<string>('sql.lastDatabase')");
+		expect(projectionSource).toContain("applicationState.get<string>('sql.lastConnectionId')");
+		expect(projectionSource).toContain("applicationState.get<string>('sql.lastDatabase')");
 		expect(hostTypesSource).toContain("type: 'saveSqlLastSelection'");
 		expect(emitterSource).toContain("type: 'saveSqlLastSelection'");
 	});

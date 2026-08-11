@@ -16,11 +16,7 @@ import { sanitizeStsLogText } from './sql/stsLogSanitizer';
 import { normalizeSqlServerUrl } from './sql/sqlAuthState';
 import { clearSqlTokenOverride, setSqlServerAccountMapEntry, setSqlTokenOverride } from './sql/sqlAuthState';
 import { KustoConnectionLifecycle } from './kustoConnectionLifecycle';
-import {
-	getOwnedSqlDatabaseCacheEntry,
-	sqlDatabaseTargetSignature,
-	SQL_DATABASE_CACHE_STORAGE_KEY,
-} from './sqlDatabaseCache';
+import { getOwnedSqlDatabaseCacheEntry, SQL_DATABASE_CACHE_STORAGE_KEY } from './sqlDatabaseCache';
 import { getQueryEditorHtml } from './queryEditorHtml';
 import type { CompatibilityPersistenceEnvelope } from '../shared/compatibilityPersistenceProtocol';
 import { MAIN_WEBVIEW_DISPATCHER_READY_TYPE } from './mainWebviewStartupGateway';
@@ -203,6 +199,10 @@ import {
 	HostSqlSchemaRequestApplicationHandler,
 	type SqlSchemaRequestApplicationHandler,
 } from './sqlSchemaRequestApplicationHandler';
+import {
+	HostSqlConnectionsProjectionApplicationHandler,
+	type SqlConnectionsProjectionApplicationHandler,
+} from './sqlConnectionsProjectionApplicationHandler';
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
 	private static readonly activeProviders = new Set<QueryEditorProvider>();
@@ -288,6 +288,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly comparisonPreparationApplication: ComparisonPreparationApplicationHandler;
 	readonly sqlSectionExecutionApplication: SqlSectionExecutionApplicationHandler;
 	readonly sqlSchemaRequestApplication: SqlSchemaRequestApplicationHandler;
+	readonly sqlConnectionsProjectionApplication: SqlConnectionsProjectionApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -339,8 +340,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	// state is owned by SqlEditorLifecycleCoordinator; shared runtime state stays in SqlWorkbenchService.
 	private _sqlSchemaService?: SqlSchemaService;
 	private readonly sqlLifecycle: SqlEditorLifecycleCoordinator;
-	private _sqlConnectionsSnapshotRevision = 0;
-	private sqlConnectionsSnapshotTail: Promise<boolean> = Promise.resolve(true);
 	private readonly sqlPersistenceInvalidationEmitter = new vscode.EventEmitter<void>();
 	readonly onDidInvalidateSqlPersistence = this.sqlPersistenceInvalidationEmitter.event;
 	private readonly kustoPersistenceInvalidationEmitter = new vscode.EventEmitter<void>();
@@ -490,6 +489,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		comparisonPreparationApplication?: ComparisonPreparationApplicationHandler,
 		sqlSectionExecutionApplication?: SqlSectionExecutionApplicationHandler,
 		sqlSchemaRequestApplication?: SqlSchemaRequestApplicationHandler,
+		sqlConnectionsProjectionApplication?: SqlConnectionsProjectionApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -577,6 +577,19 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				postMessage: message => this.postMessage(message),
 				output: this.output,
 			});
+		this.sqlConnectionsProjectionApplication = sqlConnectionsProjectionApplication
+			?? new HostSqlConnectionsProjectionApplicationHandler({
+				applicationState: this.context.globalState,
+				connectionManager: this.sqlConnectionManager,
+				workbench: this.sqlWorkbench,
+				readDatabaseCache: connection => getOwnedSqlDatabaseCacheEntry(
+					this.context,
+					SQL_DATABASE_CACHE_STORAGE_KEY,
+					connection,
+				),
+				getFavorites: () => this.sqlFavoritesApplication.getFavorites(),
+				postMessage: message => this.postMessage(message),
+			});
 		this.kustoFavoritesApplication = kustoFavoritesApplication
 			?? new HostKustoFavoritesApplicationHandler({
 				context: this.context,
@@ -603,7 +616,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				rejectPendingComparisonEnsures: sourceBoxId =>
 					this.comparisonPreparationApplication?.rejectPendingComparisonEnsures(sourceBoxId),
 				invalidatePersistence: () => this.sqlPersistenceInvalidationEmitter.fire(),
-				refreshConnectionsData: () => this.sendSqlConnectionsData(),
+				refreshConnectionsData: () => this.sqlConnectionsProjectionApplication.refresh(),
 				prefetchSchema: request => this.sqlSchemaRequestApplication.requestSchema(request),
 			},
 		});
@@ -748,7 +761,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				connectionManager: this.sqlConnectionManager,
 				client: this.sqlClient,
 				postMessage: message => this.postMessage(message),
-				refreshConnectionsData: () => this.sendSqlConnectionsData(),
+				refreshConnectionsData: () => this.sqlConnectionsProjectionApplication.refresh(),
 				output: this.output,
 			});
 		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
@@ -1048,6 +1061,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await sqlSchemaRequestApplicationMessage;
 			return;
 		}
+		const sqlConnectionsProjectionApplicationMessage
+			= this.sqlConnectionsProjectionApplication?.handleMessage(message);
+		if (sqlConnectionsProjectionApplicationMessage) {
+			await sqlConnectionsProjectionApplicationMessage;
+			return;
+		}
 		const kqlLanguageRequestApplicationMessage = this.kqlLanguageRequestApplication?.handleMessage(message);
 		if (kqlLanguageRequestApplicationMessage) {
 			await kqlLanguageRequestApplicationMessage;
@@ -1132,9 +1151,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			return;
 		}
 		switch (message.type) {
-			case 'getSqlConnections':
-				await this.sendSqlConnectionsData();
-				return;
 			case 'sqlSectionOpen':
 				this.sqlLifecycle.openSection(message.boxId, message.sectionInstanceId);
 				return;
@@ -1222,7 +1238,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	public async refreshSqlConnectionsData(): Promise<void> {
-		await this.sendSqlConnectionsData();
+		await this.sqlConnectionsProjectionApplication.refresh();
 	}
 
 	public async inferClusterDatabaseForKqlQuery(
@@ -1324,6 +1340,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.kustoSectionExecutionApplication.dispose();
 		this.comparisonPreparationApplication.dispose();
 		this.sqlSectionExecutionApplication.dispose();
+		this.sqlConnectionsProjectionApplication.dispose();
 		this.copilot.disposeKustoOwners();
 		this.copilot.invalidateSqlConnections(
 			[], [...this.sqlLifecycle.listComparisonBoxIds()],
@@ -1388,70 +1405,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	async executeKustoSectionQuery(options: KustoSectionQueryExecutionOptions) {
 		return this.kustoSectionExecutionApplication.executeKustoSectionQuery(options);
-	}
-
-	// ── SQL connection helpers ───────────────────────────────────────────────
-
-	private async sendSqlConnectionsData(): Promise<boolean> {
-		const publish = () => this.publishSqlConnectionsDataSnapshot();
-		const result = this.sqlConnectionsSnapshotTail.then(publish, publish);
-		this.sqlConnectionsSnapshotTail = result.catch(() => false);
-		return result;
-	}
-
-	private async publishSqlConnectionsDataSnapshot(): Promise<boolean> {
-		const revision = (this._sqlConnectionsSnapshotRevision ?? 0) + 1;
-		this._sqlConnectionsSnapshotRevision = revision;
-		const capturedConnections = this.sqlConnectionManager.getConnections();
-		const cacheEntries = new Map<string, Awaited<ReturnType<typeof getOwnedSqlDatabaseCacheEntry>>>();
-		for (const connection of capturedConnections) {
-			cacheEntries.set(connection.id, await getOwnedSqlDatabaseCacheEntry(this.context, SQL_DATABASE_CACHE_STORAGE_KEY, connection));
-		}
-		const lastSqlConnectionId = this.context.globalState.get<string>('sql.lastConnectionId') || '';
-		const lastSqlDatabase = this.context.globalState.get<string>('sql.lastDatabase') || '';
-		return this.sqlWorkbench.dispatchSqlOwnerSnapshot(async snapshot => {
-			const canonicalProtectedIds = snapshot.policy.globallyBlocked
-				? new Set(snapshot.connections.map(connection => connection.id))
-				: new Set(snapshot.policy.connectionIds);
-			const principalByConnectionId = new Map<string, string>();
-			const publishedConnections = snapshot.connections.map(connection => {
-				const authType = String(connection.authType || '').trim().toLowerCase();
-				const principal = authType === 'aad'
-					? snapshot.accountsByServer[normalizeSqlServerUrl(connection.serverUrl)]
-					: String(connection.username || '').trim();
-				const principalFingerprint = sqlSchemaPrincipalFingerprintForPrincipal(connection, principal);
-				if (principalFingerprint) principalByConnectionId.set(connection.id, principalFingerprint);
-				const revocationGeneration = snapshot.policy.revocationGenerations[connection.id] ?? 0;
-				return canonicalProtectedIds.has(connection.id) || !principalFingerprint
-					? { ...connection, revocationGeneration }
-					: { ...connection, principalFingerprint, revocationGeneration };
-			});
-			const cachedDatabases = Object.fromEntries(snapshot.connections.flatMap(connection => {
-				if (canonicalProtectedIds.has(connection.id)) return [];
-				const entry = cacheEntries.get(connection.id);
-				if (!entry
-					|| entry.targetSignature !== sqlDatabaseTargetSignature(connection)
-					|| entry.principalFingerprint !== principalByConnectionId.get(connection.id)) return [];
-				return [[connection.id, entry.databases] as const];
-			}));
-			const delivered = await this.postMessage({
-				type: 'sqlConnectionsData',
-				revision,
-				sqlStateVersions: {
-					policy: snapshot.policy.version,
-					connections: snapshot.connectionVersion,
-					principals: snapshot.principalVersion,
-				},
-				connections: publishedConnections,
-				lastConnectionId: lastSqlConnectionId,
-				lastDatabase: lastSqlDatabase,
-				cachedDatabases,
-				sqlFavorites: this.sqlFavoritesApplication.getFavorites()
-					.filter(favorite => !canonicalProtectedIds.has(favorite.connectionId)),
-				sqlLeaveNoTrace: [...canonicalProtectedIds],
-			});
-			return delivered === true;
-		});
 	}
 
 	public sanitizeSqlLeaveNoTraceState<T extends { sections?: unknown[] }>(state: T): T {

@@ -485,7 +485,11 @@ function createSqlProviderHarness() {
 			return result.value;
 		}),
 	};
-	provider.sendSqlConnectionsData = vi.fn(async () => undefined);
+	provider.sqlConnectionsProjectionApplication = {
+		handleMessage: vi.fn(),
+		refresh: vi.fn(async () => true),
+		dispose: vi.fn(),
+	};
 	const sqlLifecycle = new TestSqlLifecycle(
 		provider.context,
 		provider.sqlWorkbench,
@@ -586,7 +590,7 @@ function installSqlSectionExecutionApplication(
 				provider.sqlClient.executeQueryCancelable(sqlConnection, database, query),
 		},
 		postMessage: message => provider.postMessage(message),
-		refreshConnectionsData: () => provider.sendSqlConnectionsData(),
+		refreshConnectionsData: () => provider.sqlConnectionsProjectionApplication.refresh(),
 		output: provider.output,
 	});
 }
@@ -1190,6 +1194,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.kustoSectionExecutionApplication = { dispose: vi.fn() };
 		provider.comparisonPreparationApplication = { dispose: vi.fn(() => rejectComparison(new Error('Canceled'))) };
 		provider.sqlSectionExecutionApplication = { dispose: vi.fn() };
+		provider.sqlConnectionsProjectionApplication = { dispose: vi.fn() };
 		provider.cancelAllRunningQueries = vi.fn();
 		provider.kustoClient = { dispose: vi.fn() };
 		provider.connection = { dispose: vi.fn() };
@@ -1207,6 +1212,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.kustoSectionExecutionApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.comparisonPreparationApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.sqlSectionExecutionApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider.sqlConnectionsProjectionApplication.dispose).toHaveBeenCalledOnce();
 		expect(rejectComparison).toHaveBeenCalledWith(expect.objectContaining({ message: 'Canceled' }));
 		expect(provider.dashboardApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.artifactCsvSaveApplication.dispose).toHaveBeenCalledOnce();
