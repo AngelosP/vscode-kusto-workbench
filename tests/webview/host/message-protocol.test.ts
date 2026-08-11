@@ -13,6 +13,7 @@ import * as path from 'node:path';
 import * as ts from 'typescript';
 import type { IncomingWebviewMessage } from '../../../src/host/queryEditorTypes';
 import type { OutgoingWebviewMessage } from '../../../src/webview/shared/webview-messages';
+import type { KustoSchemaData } from '../../../src/shared/kustoSchemaProtocol';
 
 // ─── Type-level helpers ──────────────────────────────────────────────────────
 // These force a compile error if the union discriminants change.
@@ -1080,6 +1081,53 @@ describe('Message Protocol Contract', () => {
 		expect(markdownCompatibility).not.toContain('compatibilityPersistenceProtocol');
 	});
 
+	it('keeps Kusto schema requests and deliveries on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/kustoSchemaProtocol.ts',
+			'KustoSchemaWebviewMessage',
+		)).toEqual([
+			'prefetchSchema',
+			'requestCrossClusterSchema',
+		]);
+		expect(extractTypeDiscriminants(
+			'src/shared/kustoSchemaProtocol.ts',
+			'KustoSchemaHostMessage',
+		)).toEqual([
+			'crossClusterSchemaData',
+			'crossClusterSchemaError',
+			'schemaData',
+			'schemaError',
+		]);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| KustoSchemaWebviewMessage');
+		expect(webviewMessages).toContain('| KustoSchemaWebviewMessage');
+		expect(hostTypes).not.toContain("type: 'prefetchSchema'");
+		expect(hostTypes).not.toContain("type: 'requestCrossClusterSchema'");
+		expect(webviewMessages).not.toContain("type: 'prefetchSchema'");
+		expect(webviewMessages).not.toContain("type: 'requestCrossClusterSchema'");
+		expect(webviewMessages).toContain('parseKustoSchemaWebviewMessage(msg)');
+
+		const requestHandler = readWorkspaceFile('src/host/kustoSchemaRequestApplicationHandler.ts');
+		expect(requestHandler.indexOf('parseKustoSchemaWebviewMessage(message)'))
+			.toBeLessThan(requestHandler.indexOf('this.options.schema.prefetchSchema('));
+		expect(requestHandler.indexOf('parseKustoSchemaWebviewMessage(message)'))
+			.toBeLessThan(requestHandler.indexOf('this.options.schema.handleCrossClusterSchemaRequest('));
+
+		const schemaService = readWorkspaceFile('src/host/queryEditorSchema.ts');
+		expect(schemaService).toContain('postMessage(message: KustoSchemaHostMessage): void;');
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		expect(dispatcher.indexOf('parseKustoSchemaHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf('const incomingType'));
+		expect(dispatcher.indexOf('parseKustoSchemaHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf('admitKustoSchemaDelivery('));
+		expect(dispatcher.indexOf('parseKustoSchemaHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf("__kustoTraceCrossCluster('response-received'"));
+	});
+
 	// ─── Compile-time guards ───────────────────────────────────────────────
 	// These calls exist solely for the TypeScript compiler to verify that
 	// every string literal in our arrays is a valid union discriminant.
@@ -1099,7 +1147,10 @@ describe('Message Protocol Contract', () => {
 
 	it('INCOMING_WEBVIEW_MESSAGE_TYPES matches the IncomingWebviewMessage source union', () => {
 		expect([...INCOMING_WEBVIEW_MESSAGE_TYPES].sort()).toEqual(
-			extractTypeDiscriminants('src/host/queryEditorTypes.ts', 'IncomingWebviewMessage')
+			[...new Set([
+				...extractTypeDiscriminants('src/host/queryEditorTypes.ts', 'IncomingWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/kustoSchemaProtocol.ts', 'KustoSchemaWebviewMessage'),
+			])].sort()
 		);
 	});
 
@@ -1109,6 +1160,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/webview/shared/webview-messages.ts', 'OutgoingWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/documentViewProtocol.ts', 'DocumentViewWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/compatibilityPersistenceProtocol.ts', 'CompatibilityPersistenceWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/kustoSchemaProtocol.ts', 'KustoSchemaWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1599,13 +1651,14 @@ function makeFavoritesDataMessage() {
 	};
 }
 
-function makeSchemaDataMessage() {
+function makeSchemaDataMessage(): KustoSchemaData {
 	return {
 		type: 'schemaData' as const,
 		boxId: 'query_1',
 		connectionId: 'conn_1',
 		database: 'Logs',
 		clusterUrl: 'https://cluster1.kusto.windows.net',
+		accountPartition: 'account-1',
 		requestToken: 'tok_abc123',
 		schema: {
 			tables: ['StormEvents', 'PopulationData'],
@@ -1614,7 +1667,12 @@ function makeSchemaDataMessage() {
 				PopulationData: { State: 'string', Population: 'long' },
 			},
 			functions: [
-				{ name: 'GetTopStorms', parameters: '(n:int)', body: 'StormEvents | top n by DamageProperty' },
+				{
+					name: 'GetTopStorms',
+					parametersText: '(n:int)',
+					parameters: [{ name: 'n', type: 'int' }],
+					body: 'StormEvents | top n by DamageProperty',
+				},
 			],
 			rawSchemaJson: { /* opaque blob — shape varies by Kusto version */ },
 		},

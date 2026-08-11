@@ -4,6 +4,7 @@ import type { KustoEditorLifecycleIdentity } from '../shared/kustoSchemaLifecycl
 import type { KustoComparisonRunIdentity, KustoSectionExecutionTarget } from '../shared/kustoExecution';
 import type { KustoExecutionRequestIdentity } from '../shared/kustoExecution';
 import type { KustoCopilotRequestIdentity, KustoOptimizeRequestIdentity } from '../shared/kustoExecution';
+import type { KustoSchemaWebviewMessage } from '../shared/kustoSchemaProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -319,8 +320,7 @@ export type IncomingWebviewMessage =
 	| { type: 'removeSqlFavorite'; connectionId: string; database: string; boxId?: string }
 	| CopyAdeLinkMessage
 	| ShareToClipboardMessage
-	| ({ type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string; cacheOnly?: boolean; silent?: boolean; reason?: string } & Partial<KustoEditorLifecycleIdentity>)
-	| { type: 'requestCrossClusterSchema'; clusterName: string; database: string; boxId: string; requestToken: string; requestSource: 'background' | 'autocomplete'; traceId?: string }
+	| KustoSchemaWebviewMessage
 	| { type: 'stsRequest'; requestId: string; method: string; params: { boxId: string; sectionInstanceId: string; line: number; column: number; ownerToken?: string; targetGeneration?: number } }
 	| { type: 'stsDidOpen'; boxId: string; sectionInstanceId: string; text: string }
 	| { type: 'stsDidChange'; boxId: string; sectionInstanceId: string; text: string }

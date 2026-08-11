@@ -14,6 +14,11 @@ import {
 	isCompatibilityPersistenceHostMessageType,
 	parseCompatibilityPersistenceHostMessage,
 } from '../../shared/compatibilityPersistenceProtocol.js';
+import {
+	isKustoSchemaHostMessageType,
+	parseKustoSchemaHostMessage,
+	type KustoSchemaHostMessage,
+} from '../../shared/kustoSchemaProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -1440,6 +1445,13 @@ window.addEventListener(DOCUMENT_RUNTIME_INVALIDATED_EVENT, () => {
 
 const __kustoDispatchHostMessage = async (message: any) => {
 	message = (message && typeof message === 'object') ? message : {};
+	let kustoSchemaHostMessage: KustoSchemaHostMessage | undefined;
+	if (isKustoSchemaHostMessageType(message)) {
+		const parsed = parseKustoSchemaHostMessage(message);
+		if (!parsed.ok) return;
+		kustoSchemaHostMessage = parsed.value;
+		message = parsed.value;
+	}
 	let compatibilityProjectionFingerprint: string | undefined;
 	const compatibilityPersistenceMessage = isCompatibilityPersistenceHostMessageType(message)
 		&& (message.channel === COMPATIBILITY_PERSISTENCE_CHANNEL
@@ -3005,13 +3017,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		case 'crossClusterSchemaData':
 			// Handle cross-cluster schema response
 			try {
-				const clusterName = message.clusterName;
-				const clusterUrl = message.clusterUrl;
-				const database = message.database;
-				const rawSchemaJson = message.rawSchemaJson;
-				__kustoTraceCrossCluster('response-received', { clusterName, clusterUrl, database, boxId: message.boxId, requestToken: (message as any).requestToken || '', requestSource: (message as any).requestSource || '', deliverySource: (message as any).deliverySource || '', cacheAgeMs: (message as any).cacheAgeMs });
-				if (!__kustoIsCurrentCrossClusterRequest(message.boxId, clusterName, database, (message as any).requestToken || '')) {
-					__kustoTraceCrossCluster('response-dropped-stale-token', { clusterName, database, boxId: message.boxId, requestToken: (message as any).requestToken || '' });
+				const delivery = kustoSchemaHostMessage;
+				if (!delivery || delivery.type !== 'crossClusterSchemaData') break;
+				const clusterName = delivery.clusterName;
+				const clusterUrl = delivery.clusterUrl;
+				const database = delivery.database;
+				const rawSchemaJson = delivery.rawSchemaJson;
+				__kustoTraceCrossCluster('response-received', { clusterName, clusterUrl, database, boxId: delivery.boxId, requestToken: delivery.requestToken, requestSource: delivery.requestSource, deliverySource: delivery.deliverySource, cacheAgeMs: delivery.cacheAgeMs });
+				if (!__kustoIsCurrentCrossClusterRequest(delivery.boxId, clusterName, database, delivery.requestToken)) {
+					__kustoTraceCrossCluster('response-dropped-stale-token', { clusterName, database, boxId: delivery.boxId, requestToken: delivery.requestToken });
 					__kustoReleaseStaleCrossClusterResponse(clusterName, database, 'Stale schema response ignored; request is retryable');
 					break;
 				}
@@ -3020,14 +3034,14 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					__kustoHandleCrossClusterSchemaData({
 						clusterName,
 						clusterUrl,
-						connectionId: String((message as any).connectionId || ''),
-						accountPartition: String((message as any).accountPartition || ''),
+						connectionId: delivery.connectionId || '',
+						accountPartition: delivery.accountPartition || '',
 						database,
-						boxId: message.boxId,
-						requestToken: (message as any).requestToken || '',
-						requestSource: (message as any).requestSource,
-						deliverySource: (message as any).deliverySource,
-						cacheAgeMs: (message as any).cacheAgeMs,
+						boxId: delivery.boxId,
+						requestToken: delivery.requestToken,
+						requestSource: delivery.requestSource,
+						deliverySource: delivery.deliverySource,
+						cacheAgeMs: delivery.cacheAgeMs,
 						rawSchemaJson,
 					});
 				}
@@ -3038,21 +3052,23 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		case 'crossClusterSchemaError':
 			// Handle cross-cluster schema error
 			try {
-				const clusterName = message.clusterName;
-				const database = message.database;
-				__kustoTraceCrossCluster('response-error', { clusterName, database, boxId: (message as any).boxId || '', requestToken: (message as any).requestToken || '', error: (message as any).error || '' });
-				if (!__kustoIsCurrentCrossClusterRequest((message as any).boxId || '', clusterName, database, (message as any).requestToken || '')) {
-					__kustoTraceCrossCluster('response-error-dropped-stale-token', { clusterName, database, boxId: (message as any).boxId || '', requestToken: (message as any).requestToken || '' });
+				const delivery = kustoSchemaHostMessage;
+				if (!delivery || delivery.type !== 'crossClusterSchemaError') break;
+				const clusterName = delivery.clusterName;
+				const database = delivery.database;
+				__kustoTraceCrossCluster('response-error', { clusterName, database, boxId: delivery.boxId, requestToken: delivery.requestToken, error: delivery.error });
+				if (!__kustoIsCurrentCrossClusterRequest(delivery.boxId, clusterName, database, delivery.requestToken)) {
+					__kustoTraceCrossCluster('response-error-dropped-stale-token', { clusterName, database, boxId: delivery.boxId, requestToken: delivery.requestToken });
 					__kustoReleaseStaleCrossClusterResponse(clusterName, database, 'Stale schema error ignored; request is retryable');
 					break;
 				}
 				__kustoHandleCrossClusterSchemaError({
 					clusterName,
 					database,
-					boxId: (message as any).boxId || '',
-					requestToken: (message as any).requestToken || '',
-					requestSource: (message as any).requestSource,
-					failureKind: (message as any).failureKind,
+					boxId: delivery.boxId,
+					requestToken: delivery.requestToken,
+					requestSource: delivery.requestSource,
+					failureKind: delivery.failureKind,
 				});
 			} catch (e) { console.error('[kusto]', e); }
 			break;

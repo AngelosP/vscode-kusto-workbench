@@ -1,9 +1,10 @@
 import type { IncomingWebviewMessage } from './queryEditorTypes';
 import type { SchemaService } from './queryEditorSchema';
-
-type KustoSchemaRequestMessage = Extract<IncomingWebviewMessage, {
-	type: 'prefetchSchema' | 'requestCrossClusterSchema';
-}>;
+import {
+	isKustoSchemaWebviewMessageType,
+	parseKustoSchemaWebviewMessage,
+	type KustoSchemaWebviewMessage,
+} from '../shared/kustoSchemaProtocol';
 
 type KustoSchemaService = Pick<SchemaService,
 	| 'prefetchSchema'
@@ -25,21 +26,17 @@ export class HostKustoSchemaRequestApplicationHandler
 	constructor(private readonly options: KustoSchemaRequestApplicationHandlerOptions) {}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
-		switch (message.type) {
-			case 'prefetchSchema':
-			case 'requestCrossClusterSchema':
-				if (this.disposed) return Promise.resolve();
-				return this.handleKustoSchemaRequest(message);
-			default:
-				return undefined;
-		}
+		if (!isKustoSchemaWebviewMessageType(message)) return undefined;
+		const parsed = parseKustoSchemaWebviewMessage(message);
+		if (!parsed.ok || this.disposed) return Promise.resolve();
+		return this.handleKustoSchemaRequest(parsed.value);
 	}
 
 	dispose(): void {
 		this.disposed = true;
 	}
 
-	private async handleKustoSchemaRequest(message: KustoSchemaRequestMessage): Promise<void> {
+	private async handleKustoSchemaRequest(message: KustoSchemaWebviewMessage): Promise<void> {
 		switch (message.type) {
 			case 'prefetchSchema':
 				await this.options.schema.prefetchSchema(

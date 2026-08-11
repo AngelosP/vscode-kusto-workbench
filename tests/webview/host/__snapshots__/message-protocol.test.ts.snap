@@ -98,6 +98,7 @@ exports[`Message Payload Factories > queryResult payload shape 1`] = `
 
 exports[`Message Payload Factories > schemaData payload shape 1`] = `
 {
+  "accountPartition": "account-1",
   "boxId": "query_1",
   "clusterUrl": "https://cluster1.kusto.windows.net",
   "connectionId": "conn_1",
@@ -120,7 +121,13 @@ exports[`Message Payload Factories > schemaData payload shape 1`] = `
       {
         "body": "StormEvents | top n by DamageProperty",
         "name": "GetTopStorms",
-        "parameters": "(n:int)",
+        "parameters": [
+          {
+            "name": "n",
+            "type": "int",
+          },
+        ],
+        "parametersText": "(n:int)",
       },
     ],
     "rawSchemaJson": {},

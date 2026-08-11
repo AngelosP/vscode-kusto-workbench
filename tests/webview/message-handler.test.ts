@@ -80,6 +80,7 @@ const mocks = {
 	markCrossClusterSchemaError: vi.fn(),
 	handleCrossClusterSchemaData: vi.fn(() => true),
 	handleCrossClusterSchemaError: vi.fn(() => true),
+	traceFileOpen: vi.fn(),
 	retryPrimarySchemaEnhancement: vi.fn(() => true),
 	releaseStaleCrossClusterResponse: vi.fn(),
 	handleDocumentDataMessage: vi.fn(() => true),
@@ -172,6 +173,10 @@ vi.mock('../../src/webview/shared/schema-utils.js', () => ({
 
 vi.mock('../../src/webview/shared/safe-run.js', () => ({
 	safeRun: vi.fn((fn: () => unknown) => fn()),
+}));
+
+vi.mock('../../src/webview/core/file-open-trace.js', () => ({
+	traceFileOpen: mocks.traceFileOpen,
 }));
 
 vi.mock('../../src/webview/core/markdown-document-client.js', () => ({
@@ -1484,6 +1489,52 @@ describe('message-handler dispatch', () => {
 		}));
 	});
 
+	it('drops malformed primary schema data before trace, catalog, or worker effects', async () => {
+		const setMonacoKustoSchema = vi.fn();
+		(window as any).__kustoSetMonacoKustoSchema = setMonacoKustoSchema;
+
+		dispatchHostMessage({
+			type: 'schemaData',
+			boxId: 'query_7',
+			connectionId: 'c1',
+			database: 'Telemetry',
+			schema: {
+				tables: ['Events'],
+				columnTypesByTable: { Events: { Timestamp: 'datetime' } },
+				rawSchemaJson: { Databases: {} },
+			},
+			schemaMeta: { refreshState: ['completed'], workerUpdateNeeded: true },
+		});
+		await Promise.resolve();
+
+		expect(mocks.traceFileOpen).not.toHaveBeenCalled();
+		expect(handlerState.schemaByBoxId.query_7).toBeUndefined();
+		expect(handlerState.schemaMetaByBoxId.query_7).toBeUndefined();
+		expect(setMonacoKustoSchema).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{ requestSource: 'manual' },
+		{ cacheAgeMs: 'fresh' },
+	])('drops malformed current cross-cluster schema data before supplemental delivery: %o', async malformedField => {
+		dispatchHostMessage({
+			type: 'crossClusterSchemaData',
+			boxId: 'query_7',
+			clusterName: 'remote',
+			clusterUrl: 'https://remote.kusto.windows.net',
+			database: 'Telemetry',
+			requestToken: 'token-7',
+			requestSource: 'background',
+			deliverySource: 'disk-cache-fresh',
+			cacheAgeMs: 100,
+			rawSchemaJson: '{"Databases":{}}',
+			...malformedField,
+		});
+		await Promise.resolve();
+
+		expect(mocks.handleCrossClusterSchemaData).not.toHaveBeenCalled();
+	});
+
 	it('drops stale cross-cluster schema responses before applying schema', async () => {
 		const monacoModule = await import('../../src/webview/monaco/monaco.js');
 		(monacoModule.__kustoIsCurrentCrossClusterRequest as unknown as ReturnType<typeof vi.fn>).mockReturnValueOnce(false);
@@ -1497,6 +1548,8 @@ describe('message-handler dispatch', () => {
 			clusterUrl: 'https://remote.kusto.windows.net',
 			database: 'Telemetry',
 			requestToken: 'old-token',
+			requestSource: 'background',
+			deliverySource: 'disk-cache-stale',
 			rawSchemaJson: '{"Databases":{}}',
 		});
 		await Promise.resolve();
@@ -1538,6 +1591,8 @@ describe('message-handler dispatch', () => {
 			clusterName: 'remote',
 			database: 'Telemetry',
 			requestToken: 'old-token',
+			requestSource: 'background',
+			failureKind: 'fetch-failed',
 			error: 'boom',
 		});
 		await Promise.resolve();

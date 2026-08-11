@@ -57,6 +57,19 @@ describe('HostKustoSchemaRequestApplicationHandler', () => {
 		expect(schema.handleCrossClusterSchemaRequest).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		{ ...prefetchMessage(), forceRefresh: 'yes' },
+		{ ...prefetchMessage(), targetGeneration: '17' },
+		{ ...crossClusterMessage(), requestSource: 'manual' },
+	])('claims and drops malformed recognized requests before schema effects: %o', async message => {
+		const { handler, schema } = createHandler();
+
+		await expect(handler.handleMessage(message as unknown as IncomingWebviewMessage)).resolves.toBeUndefined();
+
+		expect(schema.prefetchSchema).not.toHaveBeenCalled();
+		expect(schema.handleCrossClusterSchemaRequest).not.toHaveBeenCalled();
+	});
+
 	it('shapes prefetch flags and includes only a complete lifecycle identity', async () => {
 		const { handler, schema } = createHandler();
 		const complete = prefetchMessage({

@@ -22,6 +22,11 @@ import { getKustoConnectionIdentityKey, resolveKustoConnection, resolveStrictKus
 import { databaseListTraceRef, getDatabaseListErrorDetails } from './databaseListTrace';
 import type { WorkbenchLogger } from './workbenchLogger';
 import type { KustoEditorLifecycleIdentity } from '../shared/kustoSchemaLifecycle';
+import type {
+	KustoSchemaHostMessage,
+	KustoSchemaMetadata,
+	KustoSupplementalFailureKind,
+} from '../shared/kustoSchemaProtocol';
 
 
 // ── SchemaServiceHost interface ──
@@ -31,7 +36,7 @@ export interface SchemaServiceHost {
 	readonly kustoClient: KustoQueryClient;
 	readonly connectionManager: ConnectionManager;
 	readonly output: WorkbenchLogger;
-	postMessage(message: unknown): void;
+	postMessage(message: KustoSchemaHostMessage): void;
 	formatQueryExecutionErrorForUser(error: unknown, connection: KustoConnection, database?: string): string;
 	findConnection(connectionId: string): KustoConnection | undefined;
 }
@@ -58,9 +63,7 @@ type BackgroundSchemaRefreshListener = {
 	lifecycle?: KustoEditorLifecycleIdentity;
 };
 
-type SupplementalFailureKind = 'missing-connection' | 'ambiguous-connection' | 'auth-required' | 'not-found' | 'fetch-failed' | 'invalid-schema';
-
-function supplementalFailureKind(error: unknown, isAuthenticationError?: (error: unknown) => boolean): SupplementalFailureKind {
+function supplementalFailureKind(error: unknown, isAuthenticationError?: (error: unknown) => boolean): KustoSupplementalFailureKind {
 	if (isAuthenticationError?.(error)) return 'auth-required';
 	const details = getDatabaseListErrorDetails(error);
 	if (details.status === 401 || details.status === 403 || /^AADSTS/i.test(details.code || '')) return 'auth-required';
@@ -105,7 +108,7 @@ export class SchemaService {
 		accountPartition: string;
 		requestToken?: string;
 		schema: DatabaseSchemaIndex;
-		meta?: Record<string, unknown>;
+		meta?: KustoSchemaMetadata;
 		lifecycle?: KustoEditorLifecycleIdentity;
 	}): void {
 		const schema = requireWorkerReadySchema(args.schema, args.database);
@@ -638,7 +641,7 @@ export class SchemaService {
 		const resolution = resolveKustoConnection(connections, { clusterUrl: normalizeClusterEndpoint(clusterName) });
 
 		if (resolution.kind !== 'matched') {
-			const failureKind: SupplementalFailureKind = resolution.kind === 'ambiguous' ? 'ambiguous-connection' : 'missing-connection';
+			const failureKind: KustoSupplementalFailureKind = resolution.kind === 'ambiguous' ? 'ambiguous-connection' : 'missing-connection';
 			trace('request.failed', { failureKind });
 			this.host.postMessage({
 				type: 'crossClusterSchemaError',

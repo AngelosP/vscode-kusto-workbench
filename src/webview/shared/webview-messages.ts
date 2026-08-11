@@ -21,6 +21,11 @@ import {
 	type CompatibilityPersistenceWebviewMessage,
 	type CompatibilityPersistenceWebviewMessageInput,
 } from '../../shared/compatibilityPersistenceProtocol.js';
+import {
+	isKustoSchemaWebviewMessageType,
+	parseKustoSchemaWebviewMessage,
+	type KustoSchemaWebviewMessage,
+} from '../../shared/kustoSchemaProtocol.js';
 import { pState } from './persistence-state.js';
 
 let compatibilityDocumentRequestSequence = 0;
@@ -260,8 +265,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'sqlComparisonAdmissionAck'; phase: 'staged' | 'committed' | 'finalized' | 'completed' | 'rolledBack'; requestId: string; sourceBoxId: string; comparisonBoxId: string; accepted: boolean }
 
 	// Schema
-	| ({ type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string; cacheOnly?: boolean; silent?: boolean; reason?: string } & Partial<KustoEditorLifecycleIdentity>)
-	| { type: 'requestCrossClusterSchema'; clusterName: string; database: string; boxId: string; requestToken: string; requestSource: 'background' | 'autocomplete'; traceId?: string }
+	| KustoSchemaWebviewMessage
 	| { type: 'stsRequest'; requestId: string; method: string; params: { boxId: string; sectionInstanceId: string; line: number; column: number; ownerToken?: string; targetGeneration?: number } }
 	| { type: 'stsDidOpen'; boxId: string; sectionInstanceId: string; text: string }
 	| { type: 'stsDidChange'; boxId: string; sectionInstanceId: string; text: string }
@@ -358,6 +362,13 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 		);
 		if (!parsed.ok) {
 			console.error('[kusto] Rejected invalid document-view webview message:', parsed.error);
+			return;
+		}
+		outbound = parsed.value;
+	} else if (isKustoSchemaWebviewMessageType(msg)) {
+		const parsed = parseKustoSchemaWebviewMessage(msg);
+		if (!parsed.ok) {
+			console.error('[kusto] Rejected invalid Kusto schema webview message:', parsed.error);
 			return;
 		}
 		outbound = parsed.value;

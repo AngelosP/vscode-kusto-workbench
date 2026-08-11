@@ -2584,7 +2584,7 @@ export function __kustoHandleCrossClusterSchemaError(message: {
 	boxId: string;
 	requestToken: string;
 	requestSource?: KustoSupplementalRequestSource;
-	failureKind?: KustoSupplementalFailureKind;
+	failureKind?: unknown;
 }): boolean {
 	const key = __kustoGetCrossClusterSchemaKey(message.clusterName, message.database);
 	const broker = key ? __kustoCrossClusterSchemas[key] : undefined;

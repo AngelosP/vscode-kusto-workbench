@@ -216,12 +216,16 @@ describe('QueryEditorProvider Kusto schema request application', () => {
 		const handlerSource = readSource('src/host/kustoSchemaRequestApplicationHandler.ts');
 		const schemaSource = readSource('src/host/queryEditorSchema.ts');
 		const typesSource = readSource('src/host/queryEditorTypes.ts');
+		const protocolSource = readSource('src/shared/kustoSchemaProtocol.ts');
 
 		for (const route of ['prefetchSchema', 'requestCrossClusterSchema']) {
 			expect(providerSource).not.toContain(`case '${route}':`);
 			expect(handlerSource).toContain(`case '${route}':`);
-			expect(typesSource).toContain(`type: '${route}'`);
+			expect(protocolSource).toContain(`type: '${route}'`);
+			expect(typesSource).not.toContain(`type: '${route}'`);
 		}
+		expect(typesSource).toContain('| KustoSchemaWebviewMessage');
+		expect(handlerSource).toContain('parseKustoSchemaWebviewMessage(message)');
 		expect(providerSource.match(/^\s*case '/gm) ?? []).toHaveLength(0);
 		expect(providerSource).not.toContain('this.schema.prefetchSchema(');
 		expect(providerSource).not.toContain('this.schema.handleCrossClusterSchemaRequest(');

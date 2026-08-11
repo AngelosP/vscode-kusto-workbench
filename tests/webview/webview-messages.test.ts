@@ -168,4 +168,22 @@ describe('postMessageToHost', () => {
 			requestId: 'cursor-request-1'
 		});
 	});
+
+	it('posts valid Kusto schema requests and drops malformed recognized requests', () => {
+		const postMessage = vi.fn();
+		(window as any).vscode = { postMessage };
+		postMessageToHost({
+			type: 'requestCrossClusterSchema', clusterName: 'remote', database: 'Telemetry',
+			boxId: 'query_1', requestToken: 'token-1', requestSource: 'background',
+		});
+
+		expect(postMessage).toHaveBeenCalledOnce();
+		postMessage.mockClear();
+		postMessageToHost({
+			type: 'requestCrossClusterSchema', clusterName: 'remote', database: 'Telemetry',
+			boxId: 'query_1', requestToken: 'token-1', requestSource: 'manual',
+		} as unknown as Parameters<typeof postMessageToHost>[0]);
+
+		expect(postMessage).not.toHaveBeenCalled();
+	});
 });
