@@ -26,7 +26,7 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 Assessment date: 2026-08-10
 
-The comparison was refreshed against the current working tree after DSH-2 pure Power BI project artifact convergence. DSH-1 is committed locally at `9c493d8c5a085a3d0b18cfb42d49f64fa97cf111`; its parent and current `origin/main` are PRO-3 at `bfd4da522114bbbc8dab8567be7c5d9e0787afce`, so local `main` is one commit ahead. DSH-2 remains uncommitted and unpushed. The comparison includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
+The comparison was refreshed against the current working tree after KLS-1 canonical KQL source analysis convergence. The clean base commit is DSH-2 at `5f56a018894d0de3819c6cc060d073006850af26`; `HEAD`, local `main`, and `origin/main` were synchronized before KLS-1. KLS-1 remains uncommitted and unpushed. The comparison includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
 The current architecture is not uniformly legacy. Several high-risk contexts already provide good models for the rest of the application.
 
@@ -64,6 +64,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | Query Editor Kusto favorites | [`HostKustoFavoritesApplicationHandler`](src/host/kustoFavoritesApplicationHandler.ts) owns migration, principal filtering, mutation/persistence, cross-panel/listener publication, confirmation, projection reads, activation, and disposal; Connection Manager routes remain an independent workflow | Strong bounded host-application boundary |
 | Query Editor SQL database discovery | [`HostSqlDatabaseDiscoveryApplicationHandler`](src/host/sqlDatabaseDiscoveryApplicationHandler.ts) owns target adoption, passive/refresh acquisition, canonical target/principal/privacy admission, exact terminals, protected STS cleanup, cache sequencing, and disposal; lifecycle/workbench/cache/client owners remain separate | Strong bounded host-application boundary |
 | Query Editor KQL language requests | [`HostKqlLanguageRequestApplicationHandler`](src/host/kqlLanguageRequestApplicationHandler.ts) owns request admission, language-host delegation, supported/unsupported/failure terminals, logging, and disposal; language host/analyzer and webview resolver owners remain separate | Strong bounded host-application boundary |
+| Canonical KQL source analysis | [`analyzeKqlSource`](src/host/kqlLanguageService/sourceAnalysis.ts) owns exact-layout masking, statements/management spans, lexical scopes, and physical table references across diagnostics, reference lookup, schema matching, and fail-closed Fully Qualify ranges | Strong pure analyzer boundary |
 | Query Editor SQL last selection | [`HostSqlLastSelectionApplicationHandler`](src/host/sqlLastSelectionApplicationHandler.ts) owns trimmed connection admission, ordered last-connection/optional last-database application-state writes, exact rejection, response-free behavior, and disposal; emitter/onboarding/projection owners remain separate | Strong bounded host-application boundary |
 | Copilot development-note mutation | [`HostDevelopmentNoteMutationApplicationHandler`](src/host/developmentNoteMutationApplicationHandler.ts) owns request IDs, five-second deadlines, delivery failures, matching response settlement, and disposal; Copilot semantics, webview mutation/persistence, and unclaimed tool responses remain with their existing owners | Strong bounded host-application boundary |
 | Copilot inline-completion admission | [`HostCopilotInlineCompletionApplicationHandler`](src/host/copilotInlineCompletionApplicationHandler.ts) owns Kusto/SQL route admission, SQL owner-token assertion/delegation, exact empty SQL fallback, and disposal; Copilot model behavior, SQL lifecycle/privacy, and webview resolution/application remain with their existing owners | Strong bounded host-application boundary |
@@ -115,11 +116,11 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
 | 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 3/4/5/4/3/5 | 43 | HST-1 through HST-36 completed; residual lifecycle/schema/projection adapters have no selected bounded extraction |
 | 1 | `DOC` | Document actor and section-definition registry | 4/4/4/4/2/5 | 43 | DOC-1 through DOC-6 closed; Kusto/SQL deferred |
-| 3 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 2/3/5/4/2/3 | 35 | PRO-1 through PRO-3 closed; unrelated global routes and capability readiness remain |
+| 3 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 2/3/5/4/2/4 | 36 | PRO-1 through PRO-3 closed; PRO-4 selected for exactly-once preload Add handoff |
 | - | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 2/3/3/4/3/4 | 33 | Closed through DSH-2; residual raw active-content policy belongs to deferred ACT |
-| 4 | `KLS` | Custom KQL analyzer decomposition behind a language-analysis port | 3/3/2/2/4/5 | 32 | KLS-1 selected: canonical KQL source analysis |
-| 5 | `CMP` | Compatibility-provider composition around the shared sidecar core | 2/4/2/3/2/3 | 29 | CMP-1 and PRO-3 close shared close/protocol boundaries; projection/reload/save orchestration remains duplicated |
-| 6 | `BRW` | Real browser read-only composition root | 2/3/3/2/3/2 | 27 | BRW-1 closed; residual active-content/resource policy remains deferred to ACT |
+| 4 | `CMP` | Compatibility-provider composition around the shared sidecar core | 2/4/2/3/2/3 | 29 | CMP-1 and PRO-3 close shared close/protocol boundaries; projection/reload/save orchestration remains duplicated |
+| 5 | `BRW` | Real browser read-only composition root | 2/3/3/2/3/2 | 27 | BRW-1 closed; residual active-content/resource policy remains deferred to ACT |
+| 6 | `KLS` | Custom KQL analyzer decomposition behind a language-analysis port | 2/2/2/1/2/2 | 20 | Closed through KLS-1; broader semantic column flow remains separately deferred |
 | - | `ACT` | Untrusted-document capability admission | 5/5/5/5/3/5 | 53 | Deferred by product direction; excluded from active ranking |
 
 Bundle headroom is a release constraint and must remain gated, but it is not itself an ownership architecture. Large domain algorithms are not automatically gaps when they have one owner and focused contracts.
@@ -362,12 +363,16 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 
 **Golden outcome:** language analysis is a replaceable adapter behind a typed request/result contract.
 
-**Current divergence:**
+**Status:** closed through KLS-1.
 
-- `KqlLanguageService.findTableReferences()` and `getDiagnostics()` independently scan statements, `let` bindings, and table sources, while `extractKqlSchemaMatchTokens()` owns another lexical scanner.
-- A source-confirmed probe shows `let X = TableA; X` omits physical `TableA`, while `join` text inside a string or line comment produces false table references and the string case produces `KW_UNKNOWN_TABLE`.
+**Current alignment:**
 
-**Migration theme:** KLS-1 should introduce one pure offset-preserving source analysis for comments/strings, statement boundaries, `let` scopes, and physical table references, then make diagnostics, references, and schema inference consume it. Do not broaden into column-flow or Monaco worker changes.
+- `sourceAnalysis.ts` owns one immutable exact-layout result for comments/strings, statement and management-command spans, lexical `let`/parameter/tabular scopes, and physical table references.
+- `findTableReferences()`, unknown-table diagnostics, schema matching, and Fully Qualify consume that result. The schema-inference scanner and webview qualifier fallback are deleted.
+- Fully Qualify validates standalone exact UTF-16 ranges, ordering, uniqueness, and non-overlap before replacing; malformed, empty, or failed responses leave source text unchanged.
+- Focused regressions cover aliases, wrappers, functions, scalar-query wrappers, union forms, management commands, lexical shadowing, wildcard/qualified/function exclusions, CRLF offsets, strings/comments, and hostile ranges.
+
+**Remaining divergence:** full semantic column-flow analysis remains a best-effort diagnostics concern in `service.ts`; Monaco-Kusto worker/schema behavior remains a separate mature adapter. Neither is a second physical-source owner.
 
 ## Completed Iteration Detail
 
@@ -1162,21 +1167,37 @@ The final focused ring passed 2 files and 11 tests; the expanded owner/message-p
 
 **Qualification:** the red-first contract failed on the missing manifest modules. The final focused ring passes 3 files and 330 tests; the adjacent dashboard/protocol/compensation ring passes 9 files and 457 tests with `--maxWorkers=1`. Full sequential and official coverage Vitest pass 297 files and 6,465 tests at 48.35% statements. The complete VS Code 1.132.0 extension-host suite passes 215/215 with `--timeout 5000`. Strict host/webview/browser types, integration compilation, production extension and browser builds, ESLint with zero errors and five existing warnings, task diagnostics, `git diff --check`, and integrated/standalone bundle gates pass. Final production sizes are 2,147.4 KB host and 3,020.2 KB webview; synchronized 2,147/3,021 KB baselines and the 50 KB buffer remain unchanged. The first blocker review found mutable bytes, Windows path collisions, and insufficient exact-output proof; all three were fixed before the clean review. Native E2E was not required because controls, messages, renderer behavior, and external transaction semantics are unchanged; no live authenticated Fabric tenant publish was performed.
 
-## Next Iteration
+## Completed KQL Analyzer Iteration
 
 ### Iteration `KLS-1`: Canonical KQL Source Analysis
 
+**Status:** closed on 2026-08-10. The definitive review returned `VERDICT: NO KLS-1 BLOCKER`.
+
+**Boundary:** `sourceAnalysis.ts` is the pure immutable owner of exact UTF-16 source layout, ordinary/hidden/verbatim/triple-backtick strings, comments, statement and management-command spans, lexical `let`/query/scalar/tabular parameter scopes, and physical table references. `KqlLanguageService.findTableReferences()`, unknown-table and lexical column diagnostics, `extractKqlSchemaMatchTokens()`, and Fully Qualify consume that result. Column propagation remains a separate best-effort stage and Monaco worker/schema behavior is unchanged.
+
+**Displaced authority and guards:** the service's duplicate comment and table scanners, schema inference's string/comment scanner plus service re-entry, and the webview qualification fallback lexer are deleted. Fully Qualify now preserves exact CRLF text and admits only sorted, unique, non-overlapping standalone identifier ranges before replacement. Static ownership coverage prevents the removed scanners from returning. Adversarial regressions cover alias chains and declaration order, lexical shadowing, wrapper/grouped/qualified/source-form expressions, function bodies and parameters, scalar query wrappers, union operands and bounds, wildcard patterns, management commands, strings/comments, and hostile ranges.
+
+**Red-first evidence:** the required query initially returned only `StringOnly` and `CommentOnly` from both references and schema matching while omitting `TableA`. The unchanged assertions now return exactly `TableA` and no `KW_UNKNOWN_TABLE` diagnostic.
+
+**Qualification:** the definitive focused and adjacent ring passes 8 files and 131 tests with `--maxWorkers=1`. Full sequential and official coverage Vitest pass 299 files and 6,505 tests at 48.07% statements. The complete VS Code 1.132.0 extension-host suite passes 215/215 with `--timeout 5000`. Strict host/webview/browser types, integration compilation, production extension and browser builds, ESLint with zero errors and five existing warnings, and the synchronized bundle gate pass. Final production sizes are 2,147.5 KB host and 3,020.0 KB webview within unchanged baselines and the 50 KB buffer. Native E2E was not required because controls, message shapes, Monaco worker/schema lifecycle, and external effects are unchanged.
+
+## Next Iteration
+
+### Iteration `PRO-4`: Exactly-Once Preload Add Handoff
+
 **Status:** selected next, not started.
 
-**Post-DSH-2 rescore:** HST and DOC remain 43 but still have no coherent eligible bounded slice. PRO remains 35 without a characterized route. DSH is closed through DSH-2. KLS rises from 30 to 32 (`3/3/2/2/4/5`) because the duplicated scanners now have a source-confirmed defect and a cheap pure boundary. CMP remains 29, BRW remains 27, and ACT remains product-deferred at 53.
+**Post-KLS-1 rescore:** HST and DOC remain 43 without a newly characterized safe slice. PRO rises to 36 (`2/3/5/4/2/4`) because the preload/runtime Add queues are now a source-confirmed duplicate authority with a cheap cross-boundary test. CMP remains 29, BRW remains 27, KLS falls to 20 after closing its demonstrated defect, and ACT remains product-deferred at 53.
 
-**Boundary:** introduce one pure `analyzeKqlSource(text)` result that owns offset-preserving comment/string masking, statement boundaries, `let`/tabular scopes, and physical table references. Make diagnostics, `findTableReferences()`, and schema inference consume that immutable result and delete their duplicate source scanners.
+**Current divergence:** `queryEditor.js` accepts early Add calls into `window.__kustoQueryEditorPendingAdds`. Runtime takeover replaces the Add globals, while `__kustoApplyPendingAdds()` drains only `pState.queryEditorPendingAdds`. There is no atomic adoption handoff, so an accepted preload Add can disappear and the empty-document finalizer can insert the default section instead.
 
-**Falsifiable hypothesis and red-first check:** analyze `let X = TableA; X | where Message contains "join StringOnly" // | join CommentOnly on id | take 1`. Require table references and schema-inference tokens to contain exactly `TableA`, with no unknown-table diagnostic. Current behavior omits `TableA`, reports `StringOnly` and `CommentOnly` as references, and diagnoses `StringOnly`.
+**Boundary:** atomically transfer and clear the preload Add counts into `pState.queryEditorPendingAdds` before runtime globals replace the stubs. Retain one runtime queue and the existing post-acknowledgement capability-aware drain; do not add a second replay path.
 
-**Primary files:** `src/host/kqlLanguageService/service.ts`, a new pure source-analysis module under `src/host/kqlLanguageService/`, `src/host/kqlSchemaInference.ts`, `tests/webview/host/kqlDiagnostics.test.ts`, and `tests/webview/host/kqlSchemaInference.test.ts`.
+**Falsifiable hypothesis and red-first check:** seed the real preload buffer with one Markdown Add, perform runtime takeover, and acknowledge an empty KQLX projection whose default is Query. Require exactly one Markdown section, zero Query sections, both queues cleared, and no duplicate after a second finalization. Current code loses the Markdown request and creates the default Query.
 
-**Exclusions:** no full column-flow rewrite, Monaco-Kusto/worker or schema-cache changes, protocol/request-handler changes, external parser replacement, Kusto/SQL document migration, compatibility-provider merge, dashboard follow-up, or ACT work.
+**Primary files:** `src/webview/queryEditor.js`, `src/webview/shared/persistence-state.ts`, `src/webview/core/persistence.ts`, and `tests/webview/persistence-roundtrip.test.ts`.
+
+**Exclusions:** no `MainWebviewStartupGateway` or protocol redesign, ambient bridge cleanup, compatibility-provider merge, browser-loader work, new section behavior, KLS follow-up, or deferred ACT work.
 
 ## Convergence Loop
 
@@ -1366,6 +1387,7 @@ These are not full golden-outcome iterations retroactively, but they materially 
 | `PRO-3` | `compatibilityPersistenceProtocol.ts` + host-created compatibility panel UUID | Metadata-free KQL/SQL lifecycle casts and sessionless request/projection, persist, final, acknowledgement, and reload admission | A/B successor traffic, malformed/high-revision state, lost-ack replay, stale-generation, failed-upgrade, unavailable-final, protocol inventory, and preserved sidecar-owner guards | Focused 499; compatibility 134; full/coverage 6,352 at 48.38%; extension-host 215, production/browser, bundle gates, and definitive blocker review complete | 2026-08-10 |
 | `DSH-1` | `portableDashboardCompiler.ts` + normalized portable IR | Duplicate provenance/target/source validators, Power BI binding regex rewrites, string-only preflights, and obsolete unsupported-visual route | Cross-path typed diagnostics, standards-tree/source-range and replacement-stability guards, exact-range rewrites, zero-effect export/publish failures, hostile output escaping, protocol/ownership guards, and native warning/chat E2E | Focused 556; full/coverage 6,457 at 48.35%; extension-host 215, production/browser, bundle gates, native 4/4, and definitive blocker review complete | 2026-08-10 |
 | `DSH-2` | `powerBiProjectArtifacts.ts` + `powerBiProjectWriter.ts` | Publish temp URI/export/tree-read/delete staging and local writer-owned path/content assembly | Sorted copy-on-read manifest, Windows collision admission, deterministic 17-artifact golden, local/publish byte parity, zero-filesystem publish guard, cancellation, and mocked Fabric transaction tests | Focused 330; adjacent 457; full/coverage 6,465 at 48.35%; extension-host 215, production/browser, bundle gates, and clean implementation review complete | 2026-08-10 |
+| `KLS-1` | `analyzeKqlSource()` + fail-closed qualification ranges | Duplicate service and schema-inference scanners plus the webview fallback lexer | Red-first alias/string/comment probe, exact-layout/scopes/management/wrapper/union/range regressions, static ownership guard, and lexical column-scope preservation | Focused 131; full/coverage 6,505 at 48.07%; extension-host 215, production/browser, bundle gate, and definitive blocker review complete | 2026-08-10 |
 
 ## Decision Discipline
 

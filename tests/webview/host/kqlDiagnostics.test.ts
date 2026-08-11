@@ -2,6 +2,24 @@ import { describe, it, expect } from 'vitest';
 import { KqlLanguageService, _splitTopLevelStatements } from '../../../src/host/kqlLanguageService/service';
 
 describe('KQL diagnostics', () => {
+	it('resolves physical let sources without treating string or comment text as tables', () => {
+		const text = [
+			'let X = TableA;',
+			'X',
+			'| where Message contains "join StringOnly"',
+			'// | join CommentOnly on id',
+			'| take 1'
+		].join('\n');
+		const schema: any = {
+			tables: ['TableA'],
+			columnTypesByTable: { TableA: { Message: 'string' } }
+		};
+
+		const svc = new KqlLanguageService();
+		expect(svc.findTableReferences(text).map((reference) => reference.name)).toEqual(['TableA']);
+		expect(svc.getDiagnostics(text, schema).filter((diagnostic) => diagnostic.code === 'KW_UNKNOWN_TABLE')).toHaveLength(0);
+	});
+
 	it('does not report string words as unknown tables inside create-or-alter function bodies', () => {
 		const text = [
 			'// Shared function for getting the top-level error category',
@@ -72,6 +90,76 @@ describe('KQL diagnostics', () => {
 		const diags = svc.getDiagnostics(text, null);
 		const expectedPipe = diags.filter((d) => d.code === 'KW_EXPECTED_PIPE');
 		expect(expectedPipe.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it('preserves pipe state across a comment-only line', () => {
+		const text = [
+			'TableA',
+			'| take 1',
+			'// explanatory comment',
+			'project Value'
+		].join('\n');
+		const schema: any = {
+			tables: ['TableA'],
+			columnTypesByTable: { TableA: { Value: 'string' } }
+		};
+
+		const diagnostics = new KqlLanguageService().getDiagnostics(text, schema);
+		expect(diagnostics.some((diagnostic) => diagnostic.code === 'KW_EXPECTED_PIPE')).toBe(true);
+	});
+
+	it('uses lexical parameter and let scopes for column diagnostics', () => {
+		const text = [
+			'declare query_parameters(flag:bool = true);',
+			'let F = (limit:long) {',
+			'    let localOnly = limit + 1;',
+			'    TableA | where Value > localOnly and Enabled == flag',
+			'};',
+			'TableA | where Value > localOnly;',
+			'TableA | where Value > futureValue;',
+			'let futureValue = 1;'
+		].join('\n');
+		const schema: any = {
+			tables: ['TableA'],
+			columnTypesByTable: { TableA: { Value: 'long', Enabled: 'bool' } }
+		};
+
+		const unknownColumns = new KqlLanguageService()
+			.getDiagnostics(text, schema)
+			.filter((diagnostic) => diagnostic.code === 'KW_UNKNOWN_COLUMN');
+
+		expect(unknownColumns.filter((diagnostic) => diagnostic.message.includes('`limit`'))).toHaveLength(0);
+		expect(unknownColumns.filter((diagnostic) => diagnostic.message.includes('`flag`'))).toHaveLength(0);
+		expect(unknownColumns.filter((diagnostic) => diagnostic.message.includes('`localOnly`'))).toHaveLength(1);
+		expect(unknownColumns.filter((diagnostic) => diagnostic.message.includes('`futureValue`'))).toHaveLength(1);
+	});
+
+	it('does not let a function-local alias shadow outer join column inference', () => {
+		const text = [
+			'let Shared = OuterTable;',
+			'let F = () {',
+			'    let Shared = InnerTable;',
+			'    Shared | take 1',
+			'};',
+			'BaseTable',
+			'| join (Shared) on Id',
+			'| where OuterOnly == "ok" and InnerOnly == "bad"'
+		].join('\n');
+		const schema: any = {
+			tables: ['BaseTable', 'OuterTable', 'InnerTable'],
+			columnTypesByTable: {
+				BaseTable: { Id: 'long' },
+				OuterTable: { Id: 'long', OuterOnly: 'string' },
+				InnerTable: { Id: 'long', InnerOnly: 'string' }
+			}
+		};
+
+		const unknownColumns = new KqlLanguageService()
+			.getDiagnostics(text, schema)
+			.filter((diagnostic) => diagnostic.code === 'KW_UNKNOWN_COLUMN');
+
+		expect(unknownColumns.filter((diagnostic) => diagnostic.message.includes('`OuterOnly`'))).toHaveLength(0);
+		expect(unknownColumns.filter((diagnostic) => diagnostic.message.includes('`InnerOnly`'))).toHaveLength(1);
 	});
 
 	it('treats blank lines as statement separators', () => {

@@ -81,7 +81,7 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `kqlxFormat.ts` | Type definitions for the `.kqlx` JSON file format (`KqlxSectionV1`, `KqlxStateV1`) |
 | `schemaCache.ts` | Disk-based caching for database schemas |
 | `schemaIndexUtils.ts` | Schema formatting utilities for compact text representation |
-| `kqlSchemaInference.ts` | Extracts table/function references from KQL for schema matching |
+| `kqlSchemaInference.ts` | Builds schema-match tokens from canonical physical table references plus masked function calls |
 | `queryEditorHtml.ts` | HTML rendering for the query editor webview |
 | `selectionTracker.ts` | Tracks text editor selections for compatibility mode |
 | `diffViewerUtils.ts` | Utilities for rendering diff views |
@@ -128,9 +128,12 @@ A custom, lightweight language service for KQL diagnostics and analysis:
 
 | File | Purpose |
 | ---- | ------- |
-| `service.ts` | Core diagnostics engine (~2100 lines). Parses KQL, detects errors, tracks column availability |
+| `sourceAnalysis.ts` | Pure immutable KQL source analysis: offset-preserving comment/string masking, statements, management-command spans, lexical `let`/parameter scopes, and physical table references |
+| `service.ts` | Core diagnostics engine. Consumes canonical source analysis and tracks column availability |
 | `host.ts` | Bridge between extension and language service. Resolves schema context |
 | `protocol.ts` | Type definitions for diagnostics, positions, ranges (LSP-compatible) |
+
+`analyzeKqlSource(text)` is the sole host-side lexical and physical-table source owner. `KqlLanguageService.findTableReferences()`, unknown-table diagnostics, schema matching, and Fully Qualify consume its exact UTF-16 ranges. Fully Qualify admits complete, non-overlapping identifier ranges through `kql-table-reference-ranges.ts`; an empty or malformed response is a no-op and never falls back to a second scanner. Column-flow simulation remains in `service.ts` and is intentionally separate from source ownership.
 
 ## Webview UI (`src/webview/`)
 
@@ -1010,10 +1013,12 @@ Tests are organized under `tests/`:
 | `copilotPromptUtils.test.ts` | Prompt template building, tool definition enumeration |
 | `copilotConversationUtils.test.ts` | Conversation history sanitization, tool call result insertion |
 | `queryEditorConnection.test.ts` | URL normalization, connection naming, cluster key generation |
-| `kqlSchemaInference.test.ts` | Table/function extraction from KQL queries |
+| `kqlSchemaInference.test.ts` | Canonical physical-table and masked function tokens for schema matching |
+| `kqlSourceAnalysis.test.ts` | Exact-layout masking, statements/management spans, lexical scopes, physical references, immutability, and scanner ownership |
 | `kqlxFormat.test.ts` | `.kqlx` file parsing, serialization, creation |
 | `schemaIndexUtils.test.ts` | Schema formatting, column counting, token-budget pruning |
-| `kqlDiagnostics.test.ts` | KQL error detection, pipe operator validation, statement splitting |
+| `kqlDiagnostics.test.ts` | KQL error detection, lexical table/column scopes, pipe operator validation, and statement splitting |
+| `kql-table-reference-ranges.test.ts` | Fail-closed exact range admission and replacement for Fully Qualify |
 | `message-protocol.test.ts` | Host↔webview message type alignment, payload shape contracts, including dashboard export/publish messages |
 | `queryEditorProviderDashboardHandler.test.ts` | Real-provider dashboard handler injection/forwarding and static displaced-authority guard |
 | `queryEditorProviderQuerySharingHandler.test.ts` | Real-provider query-sharing injection/forwarding and static displaced-authority guard |

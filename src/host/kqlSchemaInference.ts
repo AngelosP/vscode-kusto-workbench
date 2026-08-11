@@ -1,4 +1,4 @@
-import { KqlLanguageService } from './kqlLanguageService/service';
+import { analyzeKqlSource } from './kqlLanguageService/sourceAnalysis';
 import type { DatabaseSchemaIndex } from './kustoClient';
 
 export type KqlSchemaMatchTokens = {
@@ -8,93 +8,6 @@ export type KqlSchemaMatchTokens = {
 };
 
 const normalizeNameLower = (name: string): string => String(name || '').trim().toLowerCase();
-
-const stripCommentsAndStringsBestEffort = (text: string): string => {
-	// Best-effort masking so we can scan for "Foo(" without matching comments/strings.
-	// Keep length/offsets irrelevant for our use-case.
-	const s = String(text ?? '');
-	let out = '';
-	let inLine = false;
-	let inBlock = false;
-	let inSingle = false;
-	let inDouble = false;
-	for (let i = 0; i < s.length; i++) {
-		const ch = s[i];
-		const next = s[i + 1];
-		if (inLine) {
-			if (ch === '\n') {
-				inLine = false;
-				out += ch;
-			} else {
-				out += ' ';
-			}
-			continue;
-		}
-		if (inBlock) {
-			if (ch === '*' && next === '/') {
-				out += '  ';
-				i++;
-				inBlock = false;
-				continue;
-			}
-			out += ch === '\n' ? ch : ' ';
-			continue;
-		}
-		if (inSingle) {
-			out += ' ';
-			if (ch === "'") {
-				// Kusto escape ''
-				if (next === "'") {
-					out += ' ';
-					i++;
-					continue;
-				}
-				inSingle = false;
-			}
-			continue;
-		}
-		if (inDouble) {
-			out += ' ';
-			if (ch === '\\') {
-				if (next !== undefined) {
-					out += ' ';
-					i++;
-				}
-				continue;
-			}
-			if (ch === '"') {
-				inDouble = false;
-			}
-			continue;
-		}
-
-		if (ch === '/' && next === '/') {
-			out += '  ';
-			i++;
-			inLine = true;
-			continue;
-		}
-		if (ch === '/' && next === '*') {
-			out += '  ';
-			i++;
-			inBlock = true;
-			continue;
-		}
-		if (ch === "'") {
-			out += ' ';
-			inSingle = true;
-			continue;
-		}
-		if (ch === '"') {
-			out += ' ';
-			inDouble = true;
-			continue;
-		}
-
-		out += ch;
-	}
-	return out;
-};
 
 const DEFAULT_FUNCTION_STOPLIST = new Set(
 	[
@@ -135,24 +48,17 @@ const DEFAULT_FUNCTION_STOPLIST = new Set(
 export const extractKqlSchemaMatchTokens = (queryText: string): KqlSchemaMatchTokens => {
 	const tableNamesLower = new Set<string>();
 	const functionNamesLower = new Set<string>();
+	const analysis = analyzeKqlSource(queryText);
 
-	// 1) Tables/views: use the existing lightweight KQL language service.
-	try {
-		const svc = new KqlLanguageService();
-		const refs = svc.findTableReferences(String(queryText ?? ''));
-		for (const r of refs) {
-			const n = normalizeNameLower(r?.name || '');
-			if (n) tableNamesLower.add(n);
-		}
-	} catch {
-		// ignore
+	for (const reference of analysis.physicalTableReferences) {
+		const nameLower = normalizeNameLower(reference.name);
+		if (nameLower) tableNamesLower.add(nameLower);
 	}
 
-	// 2) Functions: best-effort scan for Identifier(
+	// Functions remain a best-effort token scan over the canonical masked source.
 	try {
-		const masked = stripCommentsAndStringsBestEffort(String(queryText ?? ''));
 		const re = /\b([A-Za-z_][\w-]*)\s*\(/g;
-		for (const m of masked.matchAll(re)) {
+		for (const m of analysis.maskedText.matchAll(re)) {
 			const raw = String(m?.[1] || '');
 			const n = normalizeNameLower(raw);
 			if (!n) continue;

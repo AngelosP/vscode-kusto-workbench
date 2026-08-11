@@ -76,6 +76,11 @@ import { comparisonSourceArtifactConsumerId, htmlDashboardFactArtifactConsumerId
 import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility, setQueryExecuting, __kustoSetLinkedOptimizationMode } from '../sections/query-execution.controller';
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
 import { buildSchemaInfo } from '../shared/schema-utils';
+import {
+	admitKqlTableReferenceRanges,
+	applyKqlTableReferenceReplacements,
+	type AdmittedKqlTableReference
+} from '../shared/kql-table-reference-ranges.js';
 import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
 import { registerPageScrollDismissable } from './page-scroll-dismiss.js';
 import { closeShareModalForOwner } from '../shared/share-modal-runtime.js';
@@ -948,11 +953,7 @@ export async function fullyQualifyTablesInEditor( boxId: any) {
 }
 
 async function qualifyTablesInTextPriority( text: any, opts: any) {
-	// Normalize CRLF → LF to match the host-side KQL language service which
-	// normalizes before computing offsets. Without this, every \r\n before a
-	// table reference shifts the host's offsets relative to the original text,
-	// causing the replacement to eat preceding characters (e.g., ';').
-	text = String(text ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+	text = String(text ?? '');
 	const normalizeClusterForKusto = (clusterUrl: any) => {
 		let s = String(clusterUrl || '')
 			.trim()
@@ -968,7 +969,7 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 	const currentTableLower = new Set(currentTables.map((t: any) => t.toLowerCase()));
 
 	// Prefer language service to find true table-reference ranges (instead of regex/lexer guessing).
-	let candidates = [];
+	let candidates: AdmittedKqlTableReference[] = [];
 	try {
 		if (typeof window.__kustoRequestKqlTableReferences === 'function') {
 			const res = await window.__kustoRequestKqlTableReferences({
@@ -978,108 +979,11 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 				boxId: opts.boxId
 			});
 			const refs = res && Array.isArray(res.references) ? res.references : null;
-			if (refs && refs.length) {
-				candidates = refs
-					.map((r: any) => ({ value: String(r.name || ''), start: Number(r.startOffset), end: Number(r.endOffset) }))
-					.filter((r: any) => r.value && Number.isFinite(r.start) && Number.isFinite(r.end) && r.end > r.start);
+			if (refs) {
+				candidates = Array.from(admitKqlTableReferenceRanges(text, refs));
 			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
-
-	// Fallback: previous best-effort lexer (kept for resilience).
-	if (!candidates.length) {
-		const isIdentChar = (ch: any) => /[A-Za-z0-9_\-]/.test(ch);
-		const skipNames = new Set();
-		const tokens = [];
-		{
-			let i = 0;
-			let inS = false;
-			let inLineComment = false;
-			let inBlockComment = false;
-			while (i < text.length) {
-				const ch = text[i];
-				const next = text[i + 1];
-				if (inLineComment) {
-					if (ch === '\n') inLineComment = false;
-					i++;
-					continue;
-				}
-				if (inBlockComment) {
-					if (ch === '*' && next === '/') {
-						inBlockComment = false;
-						i += 2;
-						continue;
-					}
-					i++;
-					continue;
-				}
-				if (inS) {
-					if (ch === "'") {
-						inS = false;
-					}
-					i++;
-					continue;
-				}
-				if (ch === '/' && next === '/') {
-					inLineComment = true;
-					i += 2;
-					continue;
-				}
-				if (ch === '/' && next === '*') {
-					inBlockComment = true;
-					i += 2;
-					continue;
-				}
-				if (ch === "'") {
-					inS = true;
-					i++;
-					continue;
-				}
-				if ((ch === '_' || /[A-Za-z]/.test(ch)) && !inS) {
-					let j = i + 1;
-					while (j < text.length && isIdentChar(text[j])) j++;
-					const value = text.slice(i, j);
-					tokens.push({ value, start: i, end: j });
-					i = j;
-					continue;
-				}
-				i++;
-			}
-		}
-
-		for (let idx = 0; idx < tokens.length; idx++) {
-			const t = tokens[idx];
-			if (!t || String(t.value).toLowerCase() !== 'let') {
-				continue;
-			}
-			const nameTok = tokens[idx + 1];
-			if (!nameTok) continue;
-			let k = nameTok.end;
-			while (k < text.length && /\s/.test(text[k])) k++;
-			if (text[k] === '=') {
-				skipNames.add(nameTok.value);
-			}
-		}
-
-		for (const tok of tokens) {
-			if (skipNames.has(tok.value)) {
-				continue;
-			}
-			// Skip if already qualified (immediate '.' before name).
-			let p = tok.start - 1;
-			while (p >= 0 && text[p] === ' ') p--;
-			if (p >= 0 && text[p] === '.') {
-				continue;
-			}
-			// Skip if this looks like a function call.
-			let a = tok.end;
-			while (a < text.length && text[a] === ' ') a++;
-			if (text[a] === '(') {
-				continue;
-			}
-			candidates.push(tok);
-		}
-	}
 
 	if (!candidates.length) {
 		return text;
@@ -1334,18 +1238,13 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 		const lower = String(tok.value).toLowerCase();
 		const loc = resolvedLocationByLower.get(lower);
 		if (!loc || !loc.clusterUrl || !loc.database) continue;
-		replacements.push({ start: tok.start, end: tok.end, fq: fq(loc.clusterUrl, loc.database, String(tok.value)) });
+		replacements.push({ start: tok.start, end: tok.end, text: fq(loc.clusterUrl, loc.database, String(tok.value)) });
 	}
 	if (!replacements.length) {
 		return text;
 	}
 
-	let out = text;
-	for (let i = replacements.length - 1; i >= 0; i--) {
-		const r = replacements[i];
-		out = out.slice(0, r.start) + r.fq + out.slice(r.end);
-	}
-	return out;
+	return applyKqlTableReferenceReplacements(text, replacements);
 }
 
 let pinnedSectionRemovalBypassDepth = 0;

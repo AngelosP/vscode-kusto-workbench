@@ -205,6 +205,19 @@ Focused coverage lives in `document-view-protocol.test.ts`, `webview-messages.te
 
 KQL language request ownership is covered directly by `kqlLanguageRequestApplicationHandler.test.ts` and through the real provider by `queryEditorProviderKqlLanguageRequestHandler.test.ts`; keep `kqlDiagnostics.test.ts`, `message-handler.test.ts`, `message-protocol.test.ts`, and provider disposal coverage in the adjacent ring.
 
+## KQL Source Analysis Development
+
+Host-side KQL source ownership is canonical and pure. Preserve these boundaries:
+
+* **One analysis owner**: `src/host/kqlLanguageService/sourceAnalysis.ts` alone owns offset-preserving comment/string masking, statement and management-command spans, lexical `let` and parameter scopes, and physical table references. Diagnostics, `findTableReferences()`, schema matching, and Fully Qualify must consume `analyzeKqlSource(text)` rather than add another scanner.
+* **Exact source layout**: analysis offsets are UTF-16 offsets into the exact input. Preserve CRLF and every original character position; do not normalize line endings before analysis or replacement.
+* **Physical references only**: aliases, scalar/query/tabular parameters, stored-function calls, fully qualified sources, wildcard patterns, source-form operators, strings/comments, and management-command bodies are not physical references in the current database. Wrappers, nested function bodies, unions, and scalar query wrappers must retain their actual physical sources.
+* **Lexical visibility**: resolve declarations and parameter kinds by the narrowest visible scope and declaration offset. A later or function-local binding cannot change an earlier or outer reference.
+* **Fail-closed qualification**: `src/webview/shared/kql-table-reference-ranges.ts` validates exact standalone identifiers, integer bounds, ordering, uniqueness, and non-overlap before replacement. A successful empty response, malformed response, or transport failure leaves source text byte-semantically unchanged. Do not restore a webview fallback lexer.
+* **Column-flow boundary**: pipeline column propagation remains in `service.ts`; KLS source analysis supplies lexical visibility and physical sources but does not attempt a full semantic column-flow rewrite.
+
+Focused coverage lives in `kqlSourceAnalysis.test.ts`, `kqlDiagnostics.test.ts`, `kqlSchemaInference.test.ts`, and `kql-table-reference-ranges.test.ts`. Keep the KQL request handler/provider, toolbar, and schema-ownership tests in the adjacent ring, and run Vitest with `--maxWorkers=1`.
+
 SQL last-selection ownership is covered directly by `sqlLastSelectionApplicationHandler.test.ts` and through the real provider by `queryEditorProviderSqlLastSelectionHandler.test.ts`; keep `sql-section-session.controller.test.ts`, SQL onboarding/discovery/lifecycle tests, `message-protocol.test.ts`, and provider disposal coverage in the adjacent ring.
 
 Development-note mutation correlation is covered directly by `developmentNoteMutationApplicationHandler.test.ts` and through the real provider by `queryEditorProviderDevelopmentNoteMutationHandler.test.ts`; keep Copilot tool/history coverage, `message-handler.test.ts`, persistence/codec tests, `message-protocol.test.ts`, and provider disposal coverage in the adjacent ring.

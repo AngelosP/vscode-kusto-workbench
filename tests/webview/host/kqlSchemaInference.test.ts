@@ -5,6 +5,28 @@ import { formatSchemaAsCompactText, formatSchemaWithOptions, formatSchemaWithTok
 import type { SchemaPrunePhase } from '../../../src/host/schemaIndexUtils';
 
 describe('kqlSchemaInference', () => {
+	it('uses only the physical table behind a let alias', () => {
+		const query = [
+			'let X = TableA;',
+			'X',
+			'| where Message contains "join StringOnly"',
+			'// | join CommentOnly on id',
+			'| take 1'
+		].join('\n');
+
+		const tokens = extractKqlSchemaMatchTokens(query);
+		expect([...tokens.tableNamesLower]).toEqual(['tablea']);
+	});
+
+	it('includes tables read inside scalar query wrappers', () => {
+		const tokens = extractKqlSchemaMatchTokens([
+			'let cutoff = toscalar(TableA | summarize max(Value));',
+			'TableB | where Value > cutoff'
+		].join('\n'));
+
+		expect([...tokens.tableNamesLower]).toEqual(['tablea', 'tableb']);
+	});
+
 	it('extracts table references and function calls (best-effort)', () => {
 		const q = `
 // comment TableX | where x == 1
