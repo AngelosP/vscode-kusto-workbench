@@ -29,6 +29,7 @@ import { HostKustoSectionExecutionApplicationHandler } from '../../../src/host/k
 import { HostComparisonPreparationApplicationHandler } from '../../../src/host/comparisonPreparationApplicationHandler';
 import { HostSqlSectionExecutionApplicationHandler } from '../../../src/host/sqlSectionExecutionApplicationHandler';
 import { HostSqlSchemaRequestApplicationHandler } from '../../../src/host/sqlSchemaRequestApplicationHandler';
+import { HostPersistedResultSanitizationApplicationHandler } from '../../../src/host/persistedResultSanitizationApplicationHandler';
 import {
 	clearSqlSectionSessionsForTest,
 	registerSqlSectionSession,
@@ -499,6 +500,13 @@ function createSqlProviderHarness() {
 	sqlLifecycle.openSection('sql_1', 'instance-1');
 	sqlLifecycle.setTarget('sql_1', 'sql-1', 'Db', 1, 'owner-token');
 	provider.sqlLifecycle = sqlLifecycle;
+	provider.persistedResultSanitizationApplication = new HostPersistedResultSanitizationApplicationHandler({
+		connectionManager: provider.connectionManager,
+		kustoClient: provider.kustoClient,
+		sqlConnectionManager: provider.sqlWorkbench.connectionManager,
+		sqlLifecycle: provider.sqlLifecycle,
+		sqlWorkbench: provider.sqlWorkbench,
+	});
 	installSqlSchemaRequestApplication(provider);
 	let executionSequence = 0;
 	installSqlSectionExecutionApplication(provider);
@@ -1156,8 +1164,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		};
 		provider._comparisonOwnerByBoxId = new Map([['kusto_comparison', { sourceBoxId: 'kusto_1' }]]);
 		provider.copilot = { disposeKustoOwners: vi.fn(), invalidateSqlConnections: vi.fn() };
-		provider.sqlPersistenceInvalidationEmitter = { dispose: vi.fn() };
-		provider.kustoPersistenceInvalidationEmitter = { dispose: vi.fn() };
+		provider.persistedResultSanitizationApplication = { dispose: vi.fn() };
 		provider.dashboardApplication = { dispose: vi.fn() };
 		provider.artifactCsvSaveApplication = { dispose: vi.fn() };
 		provider.pythonExecutionApplication = { dispose: vi.fn() };
@@ -1213,6 +1220,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.comparisonPreparationApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.sqlSectionExecutionApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.sqlConnectionsProjectionApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider.persistedResultSanitizationApplication.dispose).toHaveBeenCalledOnce();
 		expect(rejectComparison).toHaveBeenCalledWith(expect.objectContaining({ message: 'Canceled' }));
 		expect(provider.dashboardApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.artifactCsvSaveApplication.dispose).toHaveBeenCalledOnce();
@@ -2108,6 +2116,13 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			getConnectionId: vi.fn((boxId: string) => boxId === 'sql_1' ? 'sql-1' : undefined),
 		};
 		provider.context = context;
+		provider.persistedResultSanitizationApplication = new HostPersistedResultSanitizationApplicationHandler({
+			connectionManager,
+			kustoClient: provider.kustoClient,
+			sqlConnectionManager: sqlWorkbench.connectionManager,
+			sqlLifecycle: provider.sqlLifecycle,
+			sqlWorkbench,
+		});
 		const releaseSqlLock = deferred<void>();
 		const sqlLockEntered = deferred<void>();
 		let sqlLock: Promise<void> | undefined;

@@ -286,6 +286,7 @@ describe('QueryEditorProvider Workbench tool session application', () => {
 		);
 		const providerSource = readSource('src/host/queryEditorProvider.ts');
 		const handlerSource = readSource('src/host/workbenchToolSessionApplicationHandler.ts');
+		const sanitationSource = readSource('src/host/persistedResultSanitizationApplicationHandler.ts');
 		const orchestratorSource = readSource('src/host/kustoWorkbenchTools.ts');
 		const schemaSource = readSource('src/host/queryEditorSchema.ts');
 		const sqlLifecycleSource = readSource('src/host/sql/sqlEditorLifecycleCoordinator.ts');
@@ -315,7 +316,8 @@ describe('QueryEditorProvider Workbench tool session application', () => {
 		);
 		expect(providerSource).toContain('this.workbenchToolSessionApplication.activate();');
 		expect(providerSource).toContain('this.workbenchToolSessionApplication.dispose();');
-		expect(providerSource).toContain('this.sqlLifecycle.reconcileComparisonOwners(sections);');
+		expect(providerSource).not.toContain('this.sqlLifecycle.reconcileComparisonOwners(sections);');
+		expect(sanitationSource).toContain('this.options.sqlLifecycle.reconcileComparisonOwners(sections);');
 
 		expect(handlerSource).toContain('private connectionToken: number | undefined;');
 		expect(handlerSource).toContain('private readonly stateResponseResolvers');
