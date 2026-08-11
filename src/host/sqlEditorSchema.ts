@@ -8,7 +8,11 @@ import type { WorkbenchLogger } from './workbenchLogger';
 import { normalizeSqlServerUrl, readSqlServerAccountMap } from './sql/sqlAuthState';
 import { readCurrentSqlServerAccountMap } from './sql/sqlServerAccountMapStore';
 import { sqlConnectionTargetSignature } from '../shared/sqlConnectionIdentity';
-import { captureSqlSchemaCacheGeneration, publishSqlSchemaCacheFile } from './sqlSchemaCacheGeneration';
+import {
+	captureSqlSchemaCacheGeneration,
+	publishSqlSchemaCacheFile,
+	runWithSqlSchemaCacheGeneration,
+} from './sqlSchemaCacheGeneration';
 
 // ---------------------------------------------------------------------------
 // Standalone SQL schema cache helpers (used by SqlSchemaService and CachedValuesViewer)
@@ -94,44 +98,48 @@ export async function readCachedSqlSchemaFromDisk(
 	expectedGeneration?: string,
 ): Promise<CachedSqlSchemaEntry | undefined> {
 	try {
-		const cacheGeneration = expectedGeneration ?? await captureSqlSchemaCacheGeneration(globalStorageUri);
-		const uri = getSqlSchemaCacheFileUri(globalStorageUri, cacheKey);
-		const buf = await vscode.workspace.fs.readFile(uri);
-		const parsed = JSON.parse(Buffer.from(buf).toString('utf8'));
-		if (
-			!parsed?.schema
-			|| parsed.version !== SQL_SCHEMA_CACHE_VERSION
-			|| typeof parsed.timestamp !== 'number'
-			|| typeof parsed.serverUrl !== 'string'
-			|| typeof parsed.database !== 'string'
-			|| typeof parsed.connectionId !== 'string'
-			|| !parsed.connectionId.trim()
-			|| typeof parsed.principalFingerprint !== 'string'
-			|| !parsed.principalFingerprint.trim()
-			|| typeof parsed.targetSignature !== 'string'
-			|| !parsed.targetSignature
-			|| typeof parsed.cacheGeneration !== 'string'
-			|| !parsed.cacheGeneration
-			|| parsed.cacheGeneration !== cacheGeneration
-		) {
-			return undefined;
-		}
-		if (expectedOwner && (
-			parsed.connectionId !== expectedOwner.connectionId
-			|| parsed.principalFingerprint !== expectedOwner.principalFingerprint
-			|| parsed.targetSignature !== expectedOwner.targetSignature
-		)) return undefined;
-		return {
-			schema: parsed.schema,
-			timestamp: parsed.timestamp,
-			version: typeof parsed.version === 'number' ? parsed.version : undefined,
-			serverUrl: parsed.serverUrl,
-			database: parsed.database,
-			connectionId: parsed.connectionId,
-			principalFingerprint: parsed.principalFingerprint,
-			targetSignature: parsed.targetSignature,
-			cacheGeneration: parsed.cacheGeneration,
-		};
+		const admission = await runWithSqlSchemaCacheGeneration(
+			globalStorageUri,
+			expectedGeneration,
+			async cacheGeneration => {
+				const uri = getSqlSchemaCacheFileUri(globalStorageUri, cacheKey);
+				const buf = await vscode.workspace.fs.readFile(uri);
+				const parsed = JSON.parse(Buffer.from(buf).toString('utf8'));
+				if (
+					!parsed?.schema
+					|| parsed.version !== SQL_SCHEMA_CACHE_VERSION
+					|| typeof parsed.timestamp !== 'number'
+					|| typeof parsed.serverUrl !== 'string'
+					|| typeof parsed.database !== 'string'
+					|| typeof parsed.connectionId !== 'string'
+					|| !parsed.connectionId.trim()
+					|| typeof parsed.principalFingerprint !== 'string'
+					|| !parsed.principalFingerprint.trim()
+					|| typeof parsed.targetSignature !== 'string'
+					|| !parsed.targetSignature
+					|| typeof parsed.cacheGeneration !== 'string'
+					|| !parsed.cacheGeneration
+					|| parsed.cacheGeneration !== cacheGeneration
+				) return undefined;
+				if (expectedOwner && (
+					parsed.connectionId !== expectedOwner.connectionId
+					|| parsed.principalFingerprint !== expectedOwner.principalFingerprint
+					|| parsed.targetSignature !== expectedOwner.targetSignature
+				)) return undefined;
+				return {
+					schema: parsed.schema,
+					timestamp: parsed.timestamp,
+					version: typeof parsed.version === 'number' ? parsed.version : undefined,
+					serverUrl: parsed.serverUrl,
+					database: parsed.database,
+					connectionId: parsed.connectionId,
+					principalFingerprint: parsed.principalFingerprint,
+					targetSignature: parsed.targetSignature,
+					cacheGeneration: parsed.cacheGeneration,
+				} satisfies CachedSqlSchemaEntry;
+			},
+		);
+		return admission.admitted ? admission.value : undefined;
 	} catch {
 		return undefined;
 	}
@@ -168,7 +176,11 @@ export class SqlSchemaService {
 		connection: SqlConnection,
 		database: string,
 		forceRefresh = false,
-		options?: { signal?: AbortSignal; expectedOwner?: SqlSchemaCacheOwner },
+		options?: {
+			signal?: AbortSignal;
+			expectedOwner?: SqlSchemaCacheOwner;
+			assertRequestCurrent?: () => void | PromiseLike<void>;
+		},
 	): Promise<{ schema: SqlDatabaseSchemaIndex; fromCache: boolean }> {
 		const capturedConnection = { ...connection };
 		const targetSignature = sqlSchemaTargetSignature(capturedConnection);
@@ -178,14 +190,14 @@ export class SqlSchemaService {
 		const principalPromise = options?.expectedOwner
 			? Promise.resolve(options.expectedOwner.principalFingerprint)
 			: readCurrentSqlSchemaPrincipalFingerprint(this.host.context, capturedConnection);
-		this.throwIfAborted(options?.signal);
+		await this.assertRequestCurrent(options);
 		await this.host.assertSqlConnectionAllowed?.(capturedConnection.id);
-		this.throwIfAborted(options?.signal);
+		await this.assertRequestCurrent(options);
 		const principalFingerprint = await principalPromise;
 		const owner = principalFingerprint ? { principalFingerprint, targetSignature } : undefined;
 		if (!owner) throw new Error('SQL schema identity is unavailable.');
 		await this.assertCurrentOwner(capturedConnection, owner);
-		this.throwIfAborted(options?.signal);
+		await this.assertRequestCurrent(options);
 		const cacheKey = this.cacheKey(capturedConnection, database, owner);
 		let cacheGeneration = await captureSqlSchemaCacheGeneration(this.host.context.globalStorageUri);
 
@@ -194,8 +206,9 @@ export class SqlSchemaService {
 			const mem = this.memoryCache.get(cacheKey);
 			if (mem && mem.generation === cacheGeneration && (Date.now() - mem.entry.timestamp) < this.CACHE_TTL_MS) {
 				await this.assertCurrentOwner(capturedConnection, owner);
-				this.throwIfAborted(options?.signal);
+				await this.assertRequestCurrent(options);
 				const currentGeneration = await captureSqlSchemaCacheGeneration(this.host.context.globalStorageUri);
+				await this.assertRequestCurrent(options);
 				if (currentGeneration === mem.generation) return { schema: mem.entry.schema, fromCache: true };
 				cacheGeneration = currentGeneration;
 			}
@@ -204,12 +217,13 @@ export class SqlSchemaService {
 
 		// Disk cache.
 		if (!forceRefresh) {
-			this.throwIfAborted(options?.signal);
+			await this.assertRequestCurrent(options);
 			const disk = await this.readDiskCache(cacheKey, capturedConnection.id, owner);
 			if (disk && (Date.now() - disk.timestamp) < this.CACHE_TTL_MS) {
 				await this.assertCurrentOwner(capturedConnection, owner);
-				this.throwIfAborted(options?.signal);
+				await this.assertRequestCurrent(options);
 				const currentGeneration = await captureSqlSchemaCacheGeneration(this.host.context.globalStorageUri);
+				await this.assertRequestCurrent(options);
 				if (currentGeneration === cacheGeneration) {
 					this.memoryCache.set(cacheKey, { entry: disk, generation: cacheGeneration });
 					return { schema: disk.schema, fromCache: true };
@@ -220,9 +234,9 @@ export class SqlSchemaService {
 
 		// Fetch from server.
 		await this.assertCurrentOwner(capturedConnection, owner);
-		this.throwIfAborted(options?.signal);
+		await this.assertRequestCurrent(options);
 		const schema = await this.host.sqlClient.getDatabaseSchema(capturedConnection, database, { signal: options?.signal });
-		this.throwIfAborted(options?.signal);
+		await this.assertRequestCurrent(options);
 		await this.assertCurrentOwner(capturedConnection, owner);
 		const entry: CachedSqlSchemaEntry = {
 			schema,
@@ -234,18 +248,28 @@ export class SqlSchemaService {
 			targetSignature,
 			cacheGeneration,
 		};
-		await this.writeDiskCache(cacheKey, entry, capturedConnection, cacheGeneration);
-		this.throwIfAborted(options?.signal);
+		await this.writeDiskCache(cacheKey, entry, capturedConnection, cacheGeneration, options);
+		await this.assertRequestCurrent(options);
 		await this.assertCurrentOwner(capturedConnection, owner);
 		if (await captureSqlSchemaCacheGeneration(this.host.context.globalStorageUri) !== cacheGeneration) {
 			throw new Error('SQL schema cache was cleared while the refresh was running.');
 		}
+		await this.assertRequestCurrent(options);
 		this.memoryCache.set(cacheKey, { entry, generation: cacheGeneration });
 		return { schema, fromCache: false };
 	}
 
 	private throwIfAborted(signal?: AbortSignal): void {
 		if (signal?.aborted) throw new SqlQueryCancelledError('SQL schema request cancelled.');
+	}
+
+	private async assertRequestCurrent(options?: {
+		signal?: AbortSignal;
+		assertRequestCurrent?: () => void | PromiseLike<void>;
+	}): Promise<void> {
+		this.throwIfAborted(options?.signal);
+		await options?.assertRequestCurrent?.();
+		this.throwIfAborted(options?.signal);
 	}
 
 	// ── Disk cache helpers ──────────────────────────────────────────────
@@ -262,7 +286,13 @@ export class SqlSchemaService {
 		return readCachedSqlSchemaFromDisk(this.host.context.globalStorageUri, cacheKey, { connectionId, ...owner });
 	}
 
-	private async writeDiskCache(cacheKey: string, entry: CachedSqlSchemaEntry, connection: SqlConnection, cacheGeneration: string): Promise<void> {
+	private async writeDiskCache(
+		cacheKey: string,
+		entry: CachedSqlSchemaEntry,
+		connection: SqlConnection,
+		cacheGeneration: string,
+		options?: { signal?: AbortSignal; assertRequestCurrent?: () => void | PromiseLike<void> },
+	): Promise<void> {
 		const dir = this.getCacheDirUri();
 		const uri = this.getCacheFileUri(cacheKey);
 		const tempUri = vscode.Uri.joinPath(dir, `${crypto.randomUUID()}.tmp`);
@@ -285,7 +315,10 @@ export class SqlSchemaService {
 				cacheGeneration,
 				tempUri,
 				uri,
-				() => this.assertCurrentOwner(connection, entry),
+				async () => {
+					await this.assertCurrentOwner(connection, entry);
+					await this.assertRequestCurrent(options);
+				},
 			);
 			if (!published) {
 				try { await vscode.workspace.fs.delete(tempUri, { useTrash: false }); } catch { /* ignore */ }

@@ -123,6 +123,38 @@ describe('kw-cached-values scrollbars', () => {
 		expect(hide).toHaveBeenCalledOnce();
 	});
 
+	it('routes SQL Clear All as one pending host mutation without a competing snapshot request', async () => {
+		const el = createElement() as KwCachedValues & Record<string, any>;
+		await el.updateComplete;
+		window.dispatchEvent(new MessageEvent('message', { data: { type: 'snapshot', snapshot: {
+			...snapshot('partition-a', 1),
+			activeKind: 'sql',
+			sqlAvailable: true,
+			sqlConnections: [{ id: 'sql1', name: 'SQL', serverUrl: 'server.example', authType: 'sql-login' }],
+			sqlCachedDatabases: { sql1: ['Db'] },
+		} } }));
+		await el.updateComplete;
+		postedMessages = [];
+
+		const clear = el.shadowRoot!.querySelector<HTMLButtonElement>(
+			'button[aria-label="clear all cached SQL schema data"]',
+		);
+		expect(clear).not.toBeNull();
+		clear!.click();
+
+		expect(postedMessages).toEqual([{ type: 'sqlSchema.clearAll' }]);
+		expect(el._requestPending).toBe(true);
+
+		window.dispatchEvent(new MessageEvent('message', { data: { type: 'snapshot', snapshot: {
+			...snapshot('partition-a', 2),
+			activeKind: 'sql',
+			sqlAvailable: true,
+			sqlConnections: [{ id: 'sql1', name: 'SQL', serverUrl: 'server.example', authType: 'sql-login' }],
+			sqlCachedDatabases: {},
+		} } }));
+		expect(el._requestPending).toBe(false);
+	});
+
 	it('closes affected Kusto schema and object state immediately when policy ownership changes', async () => {
 		const el = createElement() as KwCachedValues & Record<string, any>;
 		await el.updateComplete;

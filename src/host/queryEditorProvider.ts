@@ -199,6 +199,10 @@ import {
 	HostSqlSectionExecutionApplicationHandler,
 	type SqlSectionExecutionApplicationHandler,
 } from './sqlSectionExecutionApplicationHandler';
+import {
+	HostSqlSchemaRequestApplicationHandler,
+	type SqlSchemaRequestApplicationHandler,
+} from './sqlSchemaRequestApplicationHandler';
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
 	private static readonly activeProviders = new Set<QueryEditorProvider>();
@@ -283,6 +287,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly kustoSectionExecutionApplication: KustoSectionExecutionApplicationHandler;
 	readonly comparisonPreparationApplication: ComparisonPreparationApplicationHandler;
 	readonly sqlSectionExecutionApplication: SqlSectionExecutionApplicationHandler;
+	readonly sqlSchemaRequestApplication: SqlSchemaRequestApplicationHandler;
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
@@ -484,6 +489,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		kustoSectionExecutionApplication?: KustoSectionExecutionApplicationHandler,
 		comparisonPreparationApplication?: ComparisonPreparationApplicationHandler,
 		sqlSectionExecutionApplication?: SqlSectionExecutionApplicationHandler,
+		sqlSchemaRequestApplication?: SqlSchemaRequestApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -598,10 +604,17 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					this.comparisonPreparationApplication?.rejectPendingComparisonEnsures(sourceBoxId),
 				invalidatePersistence: () => this.sqlPersistenceInvalidationEmitter.fire(),
 				refreshConnectionsData: () => this.sendSqlConnectionsData(),
-				prefetchSchema: (connectionId, database, boxId, forceRefresh) =>
-					this.prefetchSqlSchema(connectionId, database, boxId, forceRefresh),
+				prefetchSchema: request => this.sqlSchemaRequestApplication.requestSchema(request),
 			},
 		});
+		this.sqlSchemaRequestApplication = sqlSchemaRequestApplication
+			?? new HostSqlSchemaRequestApplicationHandler({
+				lifecycle: this.sqlLifecycle,
+				connectionManager: this.sqlConnectionManager,
+				getSchemaService: () => this.sqlSchemaService,
+				postMessage: message => this.postMessage(message),
+				output: this.output,
+			});
 		this.sqlDatabaseDiscoveryApplication = sqlDatabaseDiscoveryApplication
 			?? new HostSqlDatabaseDiscoveryApplicationHandler({
 				context: this.context,
@@ -1030,6 +1043,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await sqlDatabaseDiscoveryApplicationMessage;
 			return;
 		}
+		const sqlSchemaRequestApplicationMessage = this.sqlSchemaRequestApplication?.handleMessage(message);
+		if (sqlSchemaRequestApplicationMessage) {
+			await sqlSchemaRequestApplicationMessage;
+			return;
+		}
 		const kqlLanguageRequestApplicationMessage = this.kqlLanguageRequestApplication?.handleMessage(message);
 		if (kqlLanguageRequestApplicationMessage) {
 			await kqlLanguageRequestApplicationMessage;
@@ -1135,12 +1153,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					return;
 				}
 				await clearSqlTokenOverride(this.context, message.accountId);
-				return;
-			case 'prefetchSqlSchema':
-				if (!this.sqlLifecycle.adoptTarget(
-					message.boxId, message.sectionInstanceId, message.sqlConnectionId, message.database, message.targetGeneration,
-				)) return;
-				await this.prefetchSqlSchema(message.sqlConnectionId, message.database, message.boxId, !!message.forceRefresh);
 				return;
 			case 'stsRequest':
 				await this.sqlLifecycle.handleLanguageRequest(message.requestId, message.method, message.params);
@@ -1329,6 +1341,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.sqlFavoritesApplication.dispose();
 		this.kustoFavoritesApplication.dispose();
 		this.sqlDatabaseDiscoveryApplication.dispose();
+		this.sqlSchemaRequestApplication.dispose();
 		this.kqlLanguageRequestApplication.dispose();
 		this.sqlLastSelectionApplication.dispose();
 		this.kustoExecutionCoordinator.dispose();
@@ -1439,65 +1452,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			});
 			return delivered === true;
 		});
-	}
-
-	private async prefetchSqlSchema(sqlConnectionId: string, database: string, boxId: string, forceRefresh: boolean): Promise<void> {
-		const connection = this.sqlConnectionManager.getConnection(sqlConnectionId);
-		const sectionInstanceId = this.sqlLifecycle.getSectionInstanceId(boxId);
-		if (!connection || !database || !sectionInstanceId) {
-			return;
-		}
-		const owner = this.getSqlResultOwner(boxId);
-		if (!owner || owner.connectionId !== sqlConnectionId || owner.database !== database) return;
-		try {
-			this.output.info(`[sql-schema] request forceRefresh=${forceRefresh}`);
-			const { schema, fromCache } = await this.sqlSchemaService.getSchema(connection, database, forceRefresh);
-			const tablesCount = schema.tables?.length ?? 0;
-			let columnsCount = 0;
-			if (schema.columnsByTable) {
-				for (const tbl of Object.keys(schema.columnsByTable)) {
-					columnsCount += Object.keys(schema.columnsByTable[tbl] || {}).length;
-				}
-			}
-			await this.dispatchSqlResultOwnerAllowed(boxId, owner, () => {
-				if (!this.sqlLifecycle.isSectionCurrent(boxId, sectionInstanceId)
-					|| !this.sqlResultOwnersEqual(this.getSqlResultOwner(boxId), owner)) return;
-				this.output.info(`[sql-schema] loaded tables=${tablesCount} columns=${columnsCount} fromCache=${fromCache}`);
-				this.postMessage({
-					type: 'sqlSchemaData',
-					boxId,
-					sectionInstanceId,
-					sqlConnectionId,
-					database,
-					targetGeneration: owner.generation,
-					serverUrl: connection.serverUrl,
-					schema,
-					schemaMeta: { fromCache, tablesCount, columnsCount },
-				});
-			});
-		} catch (error) {
-			const msg = error instanceof Error ? error.message : String(error);
-			try {
-				await this.dispatchSqlResultOwnerAllowed(boxId, owner, () => {
-					if (!this.sqlLifecycle.isSectionCurrent(boxId, sectionInstanceId)
-						|| !this.sqlResultOwnersEqual(this.getSqlResultOwner(boxId), owner)) return;
-					this.output.error(`[sql-schema] error: ${sanitizeStsLogText(msg)}`);
-					this.postMessage({
-						type: 'sqlSchemaData',
-						boxId,
-						sectionInstanceId,
-						sqlConnectionId,
-						database,
-						targetGeneration: owner.generation,
-						serverUrl: connection.serverUrl,
-						schema: null,
-						schemaMeta: { error: true, errorMessage: msg },
-					});
-				});
-			} catch {
-				this.output.warn('[sql-schema] Request failed after owner invalidation; details suppressed.');
-			}
-		}
 	}
 
 	public sanitizeSqlLeaveNoTraceState<T extends { sections?: unknown[] }>(state: T): T {

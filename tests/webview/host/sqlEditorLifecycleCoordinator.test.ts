@@ -7,6 +7,7 @@ import {
 	SqlEditorLifecycleCoordinator,
 	type SqlEditorLanguageService,
 	type SqlEditorLifecycleEffects,
+	type SqlSchemaRefreshRequest,
 } from '../../../src/host/sql/sqlEditorLifecycleCoordinator';
 import type { StsDiagnosticsEvent, StsExpectedOwner } from '../../../src/host/sql/stsLanguageService';
 import type { StsProcessManager } from '../../../src/host/sql/stsProcessManager';
@@ -284,8 +285,8 @@ function createHarness(options: {
 			order.push('refreshConnectionsData');
 			return true;
 		}),
-		prefetchSchema: vi.fn(async (connectionId: string, database: string, boxId: string) => {
-			order.push(`prefetchSchema:${connectionId}:${database}:${boxId}`);
+		prefetchSchema: vi.fn(async (request: SqlSchemaRefreshRequest) => {
+			order.push(`prefetchSchema:${request.connectionId}:${request.database}:${request.boxId}`);
 		}),
 	};
 	const output = {
@@ -1368,7 +1369,14 @@ describe('SqlEditorLifecycleCoordinator', () => {
 		harness.effects.prefetchSchema.mockClear();
 
 		harness.emitPrincipals([SQL_A.id]);
-		await vi.waitFor(() => expect(harness.effects.prefetchSchema).toHaveBeenCalledWith(SQL_A.id, 'DbA', 'sql_1', false));
+		await vi.waitFor(() => expect(harness.effects.prefetchSchema).toHaveBeenCalledWith({
+			boxId: 'sql_1',
+			sectionInstanceId: 'instance-1',
+			connectionId: SQL_A.id,
+			database: 'DbA',
+			targetGeneration: 2,
+			forceRefresh: false,
+		}));
 
 		expect(harness.messages).toContainEqual(expect.objectContaining({
 			type: 'sqlConnectionOwnerChanged',
@@ -1515,7 +1523,14 @@ describe('SqlEditorLifecycleCoordinator', () => {
 
 		expect(ownerChangeAttempts).toBe(3);
 		expect(harness.effects.refreshConnectionsData).toHaveBeenCalled();
-		expect(harness.effects.prefetchSchema).toHaveBeenCalledWith(SQL_A.id, 'DbA', 'sql_1', false);
+		expect(harness.effects.prefetchSchema).toHaveBeenCalledWith({
+			boxId: 'sql_1',
+			sectionInstanceId: 'instance-1',
+			connectionId: SQL_A.id,
+			database: 'DbA',
+			targetGeneration: 2,
+			forceRefresh: false,
+		});
 		expect(vi.getTimerCount()).toBe(0);
 	});
 

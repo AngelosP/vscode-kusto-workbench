@@ -329,7 +329,7 @@ describe('QueryEditorProvider Copilot query workflow application', () => {
 			expect(providerSource).not.toContain(`case '${route}':`);
 			expect(handlerSource).toContain(`case '${route}':`);
 		}
-		expect(providerSource.match(/^\s*case '/gm) ?? []).toHaveLength(13);
+		expect(providerSource.match(/^\s*case '/gm) ?? []).toHaveLength(12);
 		expect(handlerSource.match(/^\s*case '/gm) ?? []).toHaveLength(5);
 		expect(providerSource).not.toContain('sql-copilot-owner-preflight');
 		expect(providerSource).toContain(

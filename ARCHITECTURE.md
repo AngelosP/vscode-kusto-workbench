@@ -41,6 +41,7 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `sqlFavoritesApplicationHandler.ts` | Injected host application owner for Query Editor SQL favorite naming, sanitized mutation and persistence, exact publication, failure containment, projection reads, and disposal |
 | `kustoFavoritesApplicationHandler.ts` | Injected host application owner for Query Editor Kusto favorite migration, principal filtering, mutation/persistence, cross-panel/listener publication, confirmation, projection reads, activation, and disposal |
 | `sqlDatabaseDiscoveryApplicationHandler.ts` | Injected host application owner for Query Editor SQL database loading, passive/refresh acquisition, exact lifecycle tickets, canonical target/principal/privacy admission, protected one-shot discovery, cache sequencing, terminal reconciliation, and disposal |
+| `sqlSchemaRequestApplicationHandler.ts` | Injected host application owner for Query Editor SQL schema refresh reservation, same-section supersession, exact lifecycle-owner capture, cache/result/error admission, publication, and disposal |
 | `kqlLanguageRequestApplicationHandler.ts` | Injected host application owner for Query Editor KQL language request admission, language-host delegation, supported/unsupported/failure response construction, logging, and disposal |
 | `sqlLastSelectionApplicationHandler.ts` | Injected response-free host application owner for Query Editor SQL last-connection and optional last-database persistence, exact write ordering, rejection propagation, and disposal |
 | `developmentNoteMutationApplicationHandler.ts` | Injected host application owner for Copilot development-note request IDs, five-second correlation deadlines, exact delivery failures, matching `toolResponse` settlement, and disposal |
@@ -85,7 +86,7 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `queryEditorHtml.ts` | HTML rendering for the query editor webview |
 | `selectionTracker.ts` | Tracks text editor selections for compatibility mode |
 | `diffViewerUtils.ts` | Utilities for rendering diff views |
-| `cachedValuesViewer.ts` | Cached values viewer panel |
+| `cachedValuesViewer.ts` | Cached values viewer panel, including generation-leased and application-acknowledged SQL schema/cache publication |
 | `kustoWorkbenchTools.ts` | VS Code agent tool registrations |
 | `copilotConversationUtils.ts` | Copilot conversation message building utilities |
 | `copilotPromptUtils.ts` | Pure prompt template builders for Copilot optimization and tool definitions |
@@ -101,7 +102,7 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `firstLaunch/firstLaunchProfileLease.ts` | `proper-lockfile`-backed profile lease preventing concurrent setup across VS Code windows |
 | `sqlConnectionManager.ts` | Persists SQL connections in VS Code global state, passwords in SecretStorage |
 | `sqlClient.ts` | Stable SQL data-plane facade over SQL Tools Service: database/schema discovery, cancelable execution |
-| `sqlEditorSchema.ts` | SQL schema caching + webview wiring (`prefetchSqlSchema`/`sqlSchemaData`) |
+| `sqlEditorSchema.ts` | SQL schema disk/memory cache with physical-owner, cache-generation, and exact request-current admission |
 | `copilotChatFlavor.ts` | Flavor configuration for Copilot chat (Kusto vs SQL) |
 | `sql/sqlDialect.ts` | Persisted SQL dialect metadata and shared schema types |
 | `sql/mssqlDialect.ts` | MSSQL connection-form metadata (`mssql` ID, auth modes, default port) |
@@ -754,7 +755,8 @@ SQL sections provide a near-identical notebook experience for T-SQL queries agai
 * **`SqlEditorSessionRegistry`** — one state-owning editor-scoped authority for section/comparison targets, generations, result ownership, lineage, and owner tokens
 * **`SqlExecutionBroker`** — one editor-scoped authority for SQL preflight reservations, single-attempt transport admission, exact cancellation, currentness, and guarded release. Manual and Copilot callers retain query shaping, retries, user-facing terminals, and conversation history
 * **`SqlQueryClient`** — stable caller-facing facade over STS database discovery, schema queries, execution, and cancellation
-* **`SqlSchemaService`** (`sqlEditorSchema.ts`) — disk + memory schema cache, webview wiring via `prefetchSqlSchema`/`sqlSchemaData` messages
+* **`HostSqlSchemaRequestApplicationHandler`** — one per editor/webview. Synchronously reserves each section's schema request, aborts and supersedes prior same-section work, captures the exact section/target/result owner, and admits cache/result/error publication only while that request remains current
+* **`SqlSchemaService`** (`sqlEditorSchema.ts`) — disk + memory schema cache. Physical target/principal ownership, cache generation, and the injected exact request-current assertion are revalidated inside disk CAS, before memory publication, and before return
 
 ### SQL Tools Service (STS) — Language And Data Engine
 
@@ -770,7 +772,9 @@ Every query execution gets a unique owner URI. The public `QueryResult`, host/we
 
 ### SQL Editor Lifecycle Boundary
 
-`QueryEditorProvider` remains the webview and cross-language adapter. It owns SQL schema I/O and response shaping plus lock-held persistence sanitation/publication. Manual execution and cancellation are delegated to `HostSqlSectionExecutionApplicationHandler`; SQL single-connection prompting and intake are delegated to `HostSqlConnectionOnboardingApplicationHandler`; Query Editor SQL favorites are delegated to `HostSqlFavoritesApplicationHandler`; SQL database discovery is delegated to `HostSqlDatabaseDiscoveryApplicationHandler`; cross-engine comparison preparation is delegated to `HostComparisonPreparationApplicationHandler`; and editor-local identity and sequencing remain delegated to `SqlEditorLifecycleCoordinator`.
+`QueryEditorProvider` remains the webview and cross-language adapter. It constructs, forwards to, and disposes `HostSqlSchemaRequestApplicationHandler`; both webview `prefetchSqlSchema` and lifecycle-triggered refreshes use that exact owner. The provider retains lock-held persistence sanitation/publication and SQL connection projection. Manual execution and cancellation are delegated to `HostSqlSectionExecutionApplicationHandler`; SQL single-connection prompting and intake are delegated to `HostSqlConnectionOnboardingApplicationHandler`; Query Editor SQL favorites are delegated to `HostSqlFavoritesApplicationHandler`; SQL database discovery is delegated to `HostSqlDatabaseDiscoveryApplicationHandler`; cross-engine comparison preparation is delegated to `HostComparisonPreparationApplicationHandler`; and editor-local identity and sequencing remain delegated to `SqlEditorLifecycleCoordinator`.
+
+SQL schema cache generation is part of publication authority. A request-current callback participates in `SqlSchemaService` disk publication and memory admission, so aborting a superseded request is not the only fence. If stale post-rename cleanup cannot delete the canonical file, the shared generation advances while the generation lock is held; readers using either a fresh or previously captured generation reject that file. Cached Values holds the same generation through Kusto-then-SQL owner admission and staged/applied webview acknowledgement for schema and snapshot successes. SQL Clear All retires older snapshot revisions before mutation, advances schema generation even if database-cache clearing fails, and publishes one fresh snapshot or an explicit pending-state terminal.
 
 The coordinator composes, but does not replace, the canonical authorities:
 

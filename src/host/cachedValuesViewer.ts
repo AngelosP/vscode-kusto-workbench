@@ -31,7 +31,12 @@ import {
 	readSqlServerAccountMap,
 	setSqlServerAccountMapEntry,
 } from './sql/sqlAuthState';
-import { captureSqlSchemaCacheGeneration, clearSqlSchemaCacheFiles, publishSqlSchemaCacheFile } from './sqlSchemaCacheGeneration';
+import {
+	captureSqlSchemaCacheGeneration,
+	clearSqlSchemaCacheFiles,
+	publishSqlSchemaCacheFile,
+	runWithSqlSchemaCacheGeneration,
+} from './sqlSchemaCacheGeneration';
 
 /**
  * Cached Values Viewer — uses Lit web components for the UI.
@@ -142,6 +147,8 @@ type Snapshot = {
 	sqlCacheOwners?: Record<string, { targetSignature: string; principalFingerprint: string }>;
 	/** Host-only provenance removed before posting to the webview. */
 	sqlSchemaKeyOwners?: Record<string, { targetSignature: string; principalFingerprint: string }>;
+	/** Host-only cache generation held through SQL-capable snapshot publication. */
+	sqlSchemaCacheGeneration?: string;
 };
 
 type IncomingMessage =
@@ -496,6 +503,34 @@ export class CachedValuesViewerV2 {
 		return await dispatch();
 	}
 
+	private async postSqlSchemaPublication(
+		connection: SqlConnection,
+		owner: SqlSchemaCacheOwner & { revocationGeneration: number },
+		cacheGeneration: string,
+		payload: Record<string, unknown>,
+	): Promise<boolean> {
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			try {
+				const publication = await runWithSqlSchemaCacheGeneration(
+					this.context.globalStorageUri,
+					cacheGeneration,
+					async () => this.connectionManager.runWithLeaveNoTraceSnapshotLock(async () =>
+						this.dispatchSqlAllowed(
+							connection,
+							owner.principalFingerprint,
+							owner.revocationGeneration,
+							() => this.postKustoPublication(payload),
+						)),
+				);
+				if (!publication.admitted) return false;
+				if (publication.value === true) return true;
+			} catch {
+				return false;
+			}
+		}
+		return false;
+	}
+
 	private async dispatchSqlPolicySnapshot<T>(
 		dispatch: (snapshot: { connectionIds: readonly string[]; version: number; globallyBlocked: boolean }) => T | PromiseLike<T>,
 	): Promise<T> {
@@ -611,6 +646,7 @@ export class CachedValuesViewerV2 {
 		// Check which databases have cached schema files on disk
 		const cachedSchemaKeys: string[] = [];
 		const sqlSchemaKeyOwners: NonNullable<Snapshot['sqlSchemaKeyOwners']> = {};
+		let sqlSchemaCacheGeneration: string | undefined;
 		const globalStorageUri = this.context.globalStorageUri;
 		// Kusto schemas
 		for (const [connectionId, dbs] of Object.entries(cachedDatabases)) {
@@ -626,7 +662,7 @@ export class CachedValuesViewerV2 {
 		}
 		// SQL schemas
 		if (sqlAvailable) {
-			const sqlSchemaCacheGeneration = await captureSqlSchemaCacheGeneration(globalStorageUri);
+			sqlSchemaCacheGeneration = await captureSqlSchemaCacheGeneration(globalStorageUri);
 			for (const [connId, dbs] of Object.entries(sqlCachedDatabases)) {
 				const conn = this.sqlDeps?.getSqlConnectionManager().getConnection(connId);
 				if (!conn) continue;
@@ -641,6 +677,12 @@ export class CachedValuesViewerV2 {
 						sqlSchemaKeyOwners[key] = { ...owner };
 					}
 				}
+			}
+			if (await captureSqlSchemaCacheGeneration(globalStorageUri) !== sqlSchemaCacheGeneration) {
+				for (let index = cachedSchemaKeys.length - 1; index >= 0; index -= 1) {
+					if (cachedSchemaKeys[index].startsWith('sql:')) cachedSchemaKeys.splice(index, 1);
+				}
+				for (const key of Object.keys(sqlSchemaKeyOwners)) delete sqlSchemaKeyOwners[key];
 			}
 		}
 
@@ -661,49 +703,62 @@ export class CachedValuesViewerV2 {
 			cachedSchemaKeys,
 			sqlCacheOwners,
 			sqlSchemaKeyOwners,
+			...(sqlSchemaCacheGeneration ? { sqlSchemaCacheGeneration } : {}),
 		};
 	}
 
-	private async sendSnapshotToWebview(): Promise<void> {
+	private async sendSnapshotToWebview(): Promise<boolean> {
 		try {
 			const revision = ++this.snapshotRevision;
-			let snapshot;
-			while (true) {
-				snapshot = await this.buildSnapshot(revision);
-				let sqlRefreshSucceeded = true;
-				try { await this.sqlDeps?.refreshSqlLeaveNoTracePolicy?.(); } catch { sqlRefreshSucceeded = false; }
-				if (revision !== this.snapshotRevision) return;
-				if (!sqlRefreshSucceeded) {
-					snapshot = await this.buildSnapshot(revision, true);
-					break;
+			for (let attempt = 0; attempt < 3 && revision === this.snapshotRevision; attempt += 1) {
+				let snapshot;
+				while (true) {
+					snapshot = await this.buildSnapshot(revision);
+					let sqlRefreshSucceeded = true;
+					try { await this.sqlDeps?.refreshSqlLeaveNoTracePolicy?.(); } catch { sqlRefreshSucceeded = false; }
+					if (revision !== this.snapshotRevision) return false;
+					if (!sqlRefreshSucceeded) {
+						snapshot = await this.buildSnapshot(revision, true);
+						break;
+					}
+					if (snapshot.sqlAvailable === false) continue;
+					const currentVersions = this.sqlDeps?.getSqlStateVersions?.();
+					if (JSON.stringify(currentVersions) === JSON.stringify(snapshot.sqlStateVersions)) break;
 				}
-				if (snapshot.sqlAvailable === false) continue;
-				const currentVersions = this.sqlDeps?.getSqlStateVersions?.();
-				if (JSON.stringify(currentVersions) === JSON.stringify(snapshot.sqlStateVersions)) break;
-			}
-			if (snapshot.sqlAvailable === false) {
-				await this.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoPolicy => {
-					const protectedClusters = new Set(kustoPolicy.clusterKeys);
-					const protectedIds = new Set(snapshot.connections
-						.filter(connection => kustoPolicy.globallyBlocked || protectedClusters.has(kustoClusterKey(connection.clusterUrl)))
-						.map(connection => connection.id));
-					await this.postKustoPublication({
-						type: 'snapshot', snapshot: {
-							...snapshot,
-							connections: snapshot.connections.filter(connection => !protectedIds.has(connection.id)),
-							cachedDatabases: Object.fromEntries(Object.entries(snapshot.cachedDatabases)
-								.filter(([connectionId]) => !protectedIds.has(connectionId))),
-							cachedSchemaKeys: snapshot.cachedSchemaKeys.filter(key => {
-								if (!key.startsWith('kusto:')) return true;
-								return !protectedIds.has(key.slice(6).split('|', 1)[0]);
-							}),
-						},
+				if (snapshot.sqlAvailable === false) {
+					const applied = await this.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoPolicy => {
+						const protectedClusters = new Set(kustoPolicy.clusterKeys);
+						const protectedIds = new Set(snapshot.connections
+							.filter(connection => kustoPolicy.globallyBlocked || protectedClusters.has(kustoClusterKey(connection.clusterUrl)))
+							.map(connection => connection.id));
+						const {
+							sqlCacheOwners: _sqlCacheOwners,
+							sqlSchemaKeyOwners: _sqlSchemaKeyOwners,
+							sqlSchemaCacheGeneration: _sqlSchemaCacheGeneration,
+							...publicSnapshot
+						} = snapshot;
+						return this.postKustoPublication({
+							type: 'snapshot', snapshot: {
+								...publicSnapshot,
+								connections: snapshot.connections.filter(connection => !protectedIds.has(connection.id)),
+								cachedDatabases: Object.fromEntries(Object.entries(snapshot.cachedDatabases)
+									.filter(([connectionId]) => !protectedIds.has(connectionId))),
+								cachedSchemaKeys: snapshot.cachedSchemaKeys.filter(key => {
+									if (!key.startsWith('kusto:')) return true;
+									return !protectedIds.has(key.slice(6).split('|', 1)[0]);
+								}),
+							},
+						});
 					});
-				});
-				return;
-			}
-			await this.retrySqlOwnerSnapshotAcquisition(() => this.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoPolicy => {
-				return this.tryDispatchSqlOwnerSnapshot((canonical: any) => {
+					return applied === true;
+				}
+				const cacheGeneration = snapshot.sqlSchemaCacheGeneration
+					?? await captureSqlSchemaCacheGeneration(this.context.globalStorageUri);
+				const publication = await runWithSqlSchemaCacheGeneration(
+					this.context.globalStorageUri,
+					cacheGeneration,
+					async () => this.retrySqlOwnerSnapshotAcquisition(() => this.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoPolicy => {
+						return this.tryDispatchSqlOwnerSnapshot((canonical: any) => {
 				if (revision !== this.snapshotRevision) return;
 				const protectedIds = canonical.policy.globallyBlocked
 					? new Set<string>((canonical.connections as SqlConnection[]).map(connection => connection.id))
@@ -727,7 +782,12 @@ export class CachedValuesViewerV2 {
 						&& captured.targetSignature === sqlDatabaseTargetSignature(current)
 						&& captured.principalFingerprint === canonicalPrincipalById.get(connectionId);
 				};
-				const { sqlCacheOwners: _sqlCacheOwners, sqlSchemaKeyOwners, ...publicSnapshot } = snapshot;
+				const {
+					sqlCacheOwners: _sqlCacheOwners,
+					sqlSchemaKeyOwners,
+					sqlSchemaCacheGeneration: _sqlSchemaCacheGeneration,
+					...publicSnapshot
+				} = snapshot;
 				const protectedKustoClusters = new Set(kustoPolicy.clusterKeys);
 				const protectedKustoIds = new Set(snapshot.connections
 					.filter(connection => kustoPolicy.globallyBlocked || protectedKustoClusters.has(kustoClusterKey(connection.clusterUrl)))
@@ -765,11 +825,16 @@ export class CachedValuesViewerV2 {
 					}),
 				};
 				return this.postKustoPublication({ type: 'snapshot', snapshot: admittedSnapshot });
-			});
-			}));
+						});
+					})),
+				);
+				if (publication.admitted && publication.value === true) return true;
+			}
+			return false;
 		} catch (error) {
 			// Ignore transient panel lifecycle races (dispose/reveal ordering), but keep diagnostics.
 			getWorkbenchLogger().warn('[kusto] cached values snapshot refresh failed', error);
+			return false;
 		}
 	}
 
@@ -1168,14 +1233,13 @@ export class CachedValuesViewerV2 {
 					ok = false;
 				}
 				try {
-					await this.assertCurrentSqlSchemaOwner(connection, owner);
 					if (ok) {
-						await this.dispatchSqlAllowed(connection, owner.principalFingerprint, owner.revocationGeneration, () => {
-							const current = this.sqlDeps?.getSqlConnectionManager().getConnection(connectionId);
-							if (!current || sqlSchemaTargetSignature(current) !== owner.targetSignature) return;
-							return this.panel.webview.postMessage({ type: 'schemaResult', requestId, connectionId, clusterKey: serverUrl, database, ok, json: jsonText });
+						await this.postSqlSchemaPublication(connection, owner, cacheGeneration, {
+							type: 'schemaResult', requestId, connectionId, clusterKey: serverUrl,
+							database, ok, json: jsonText,
 						});
 					} else {
+						await this.assertCurrentSqlSchemaOwner(connection, owner);
 						this.panel.webview.postMessage({ type: 'schemaResult', requestId, connectionId, clusterKey: serverUrl, database, ok, json: jsonText });
 					}
 				} catch {
@@ -1251,13 +1315,11 @@ export class CachedValuesViewerV2 {
 					const viewsCount = schema.views?.length ?? 0;
 					const procsCount = schema.storedProcedures?.length ?? 0;
 					const jsonText = JSON.stringify({ server: connection.serverUrl, database, schema, meta: { cacheAgeMs: 0, tablesCount, viewsCount, procsCount, timestamp: entry.timestamp } }, null, 2);
-					await this.assertCurrentSqlSchemaOwner(connection, owner);
-					await this.dispatchSqlAllowed(connection, owner.principalFingerprint, owner.revocationGeneration, () => {
-						const current = this.sqlDeps?.getSqlConnectionManager().getConnection(connectionId);
-						if (!current || sqlSchemaTargetSignature(current) !== owner.targetSignature) return;
-						return this.panel.webview.postMessage({ type: 'schemaResult', requestId, connectionId, clusterKey: connection.serverUrl, database, ok: true, json: jsonText });
+					const applied = await this.postSqlSchemaPublication(connection, owner, cacheGeneration, {
+						type: 'schemaResult', requestId, connectionId, clusterKey: connection.serverUrl,
+						database, ok: true, json: jsonText,
 					});
-					void vscode.window.setStatusBarMessage(`Refreshed SQL schema for ${database}`, 2000);
+					if (applied) void vscode.window.setStatusBarMessage(`Refreshed SQL schema for ${database}`, 2000);
 				} catch (error) {
 					this.panel.webview.postMessage({
 						type: 'schemaResult', requestId, connectionId, clusterKey: connection.serverUrl, database, ok: false,
@@ -1268,12 +1330,25 @@ export class CachedValuesViewerV2 {
 				return;
 			}
 			case 'sqlSchema.clearAll': {
+				this.snapshotRevision += 1;
+				let clearFailed = false;
 				try {
 					await clearSqlDatabaseCacheStore(this.context, STORAGE_KEYS.sqlCachedDatabases);
-					await clearSqlSchemaCacheFiles(this.context.globalStorageUri, getSqlSchemaCacheDirUri(this.context.globalStorageUri));
-					void vscode.window.setStatusBarMessage('Cleared cached SQL schema data', 2000);
 				} catch {
+					clearFailed = true;
+				}
+				try {
+					await clearSqlSchemaCacheFiles(this.context.globalStorageUri, getSqlSchemaCacheDirUri(this.context.globalStorageUri));
+				} catch {
+					clearFailed = true;
+				}
+				if (clearFailed) {
 					void vscode.window.showErrorMessage('Failed to delete all SQL schema cache files. Remaining files have been invalidated and will not be reused.');
+				} else {
+					void vscode.window.setStatusBarMessage('Cleared cached SQL schema data', 2000);
+				}
+				if (!await this.sendSnapshotToWebview()) {
+					try { await this.panel.webview.postMessage({ type: 'kustoMutationComplete' }); } catch { /* panel disposed */ }
 				}
 				return;
 			}

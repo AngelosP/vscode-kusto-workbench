@@ -1165,8 +1165,8 @@ export class KwCachedValues extends LitElement {
 	}
 
 	private _onSqlSchemaClearAll(): void {
+		this._requestPending = true;
 		this._vscode.postMessage({ type: 'sqlSchema.clearAll' });
-		this._requestSnapshot();
 	}
 
 	private _onSqlServerAccountChange(serverUrl: string, e: Event): void {

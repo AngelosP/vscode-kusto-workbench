@@ -28,6 +28,12 @@ import { HostCopilotQueryWorkflowApplicationHandler } from '../../../src/host/co
 import { HostKustoSectionExecutionApplicationHandler } from '../../../src/host/kustoSectionExecutionApplicationHandler';
 import { HostComparisonPreparationApplicationHandler } from '../../../src/host/comparisonPreparationApplicationHandler';
 import { HostSqlSectionExecutionApplicationHandler } from '../../../src/host/sqlSectionExecutionApplicationHandler';
+import { HostSqlSchemaRequestApplicationHandler } from '../../../src/host/sqlSchemaRequestApplicationHandler';
+import {
+	clearSqlSectionSessionsForTest,
+	registerSqlSectionSession,
+	routeSqlSectionMessage,
+} from '../../../src/webview/core/sql-section-message-router';
 
 const TEST_CONNECTION: KustoConnection = {
 	id: 'conn-1',
@@ -489,6 +495,7 @@ function createSqlProviderHarness() {
 	sqlLifecycle.openSection('sql_1', 'instance-1');
 	sqlLifecycle.setTarget('sql_1', 'sql-1', 'Db', 1, 'owner-token');
 	provider.sqlLifecycle = sqlLifecycle;
+	installSqlSchemaRequestApplication(provider);
 	let executionSequence = 0;
 	installSqlSectionExecutionApplication(provider);
 	provider.executeSqlQueryFromWebview = (message: Record<string, unknown>) => provider.sqlSectionExecutionApplication.handleMessage({
@@ -498,6 +505,18 @@ function createSqlProviderHarness() {
 	}) ?? Promise.resolve();
 	installComparisonPreparationApplication(provider);
 	return provider;
+}
+
+function installSqlSchemaRequestApplication(
+	provider: QueryEditorProvider & Record<string, any>,
+): void {
+	provider.sqlSchemaRequestApplication = new HostSqlSchemaRequestApplicationHandler({
+		lifecycle: provider.sqlLifecycle,
+		connectionManager: provider.sqlConnectionManager,
+		getSchemaService: () => provider.sqlSchemaService,
+		postMessage: (message: Record<string, unknown>) => provider.postMessage(message),
+		output: provider.output,
+	});
 }
 
 function installCopilotQueryWorkflowApplication(
@@ -1155,6 +1174,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.sqlFavoritesApplication = { dispose: vi.fn() };
 		provider.kustoFavoritesApplication = { dispose: vi.fn() };
 		provider.sqlDatabaseDiscoveryApplication = { dispose: vi.fn() };
+		provider.sqlSchemaRequestApplication = { dispose: vi.fn() };
 		provider.kqlLanguageRequestApplication = { dispose: vi.fn() };
 		provider.sqlLastSelectionApplication = { dispose: vi.fn() };
 		provider.developmentNoteMutationApplication = { dispose: vi.fn() };
@@ -1208,6 +1228,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.sqlFavoritesApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.kustoFavoritesApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.sqlDatabaseDiscoveryApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider.sqlSchemaRequestApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.kqlLanguageRequestApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.sqlLastSelectionApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.developmentNoteMutationApplication.dispose).toHaveBeenCalledOnce();
@@ -1258,14 +1279,103 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 				};
 			}),
 		};
-		provider.dispatchSqlResultOwnerAllowed = vi.fn(async () => { throw new Error('owner invalid'); });
+		provider.sqlLifecycle.dispatchResultOwnerAllowed = vi.fn(async () => { throw new Error('owner invalid'); });
 
-		await provider.prefetchSqlSchema('sql-1', 'Db', 'sql_1', false);
+		await provider.sqlSchemaRequestApplication.handleMessage({
+			type: 'prefetchSqlSchema', sqlConnectionId: 'sql-1', database: 'Db', boxId: 'sql_1',
+			sectionInstanceId: 'instance-1', targetGeneration: 1, forceRefresh: false,
+		});
 
 		expect(JSON.stringify(provider.output.info.mock.calls)).not.toContain('SECRET_SCHEMA');
 		expect(JSON.stringify(provider.output.error.mock.calls)).not.toContain('SECRET_SCHEMA');
 		expect(provider.output.warn).toHaveBeenCalledWith(expect.stringContaining('details suppressed'));
 		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'sqlSchemaData' }));
+	});
+
+	it('admits only the newest same-target SQL schema request to cache and the real router', async () => {
+		clearSqlSectionSessionsForTest();
+		const provider = createSqlProviderHarness();
+		const requestA = deferred<{ schema: { tables: string[]; columnsByTable: Record<string, Record<string, string>> }; fromCache: boolean }>();
+		const requestB = deferred<{ schema: { tables: string[]; columnsByTable: Record<string, Record<string, string>> }; fromCache: boolean }>();
+		const cachePublications: string[] = [];
+		let schemaRequest = 0;
+		provider._sqlSchemaService = {
+			getSchema: vi.fn((_connection, _database, _forceRefresh, options?: { assertRequestCurrent?: () => void | Promise<void> }) => {
+				const request = schemaRequest++ === 0 ? requestA : requestB;
+				return request.promise.then(async result => {
+					await options?.assertRequestCurrent?.();
+					cachePublications.push(result.schema.tables[0]);
+					return result;
+				});
+			}),
+		};
+		const session = {
+			boxId: 'sql_1',
+			instanceId: 'instance-1',
+			targetGeneration: 1,
+			ownerToken: '',
+			stsReady: false,
+			advanceTargetGeneration: vi.fn(() => 1),
+			adoptHostGeneration: vi.fn(() => true),
+			clearDatabaseRequest: vi.fn(),
+			beginDatabaseRequest: vi.fn(() => true),
+			acceptDatabaseResponse: vi.fn(() => true),
+			completeDatabaseRequest: vi.fn(() => true),
+			setStsReady: vi.fn(() => true),
+			setExecutionOwner: vi.fn(() => true),
+			requestSts: vi.fn(async () => null),
+			admitOwnedMessage: vi.fn(() => true),
+			resolveStsResponse: vi.fn(() => true),
+			clear: vi.fn(),
+		};
+		registerSqlSectionSession(session);
+		const setSchema = vi.fn();
+		const section = {
+			sqlSession: session,
+			getSqlConnectionId: vi.fn(() => 'sql-1'),
+			getDatabase: vi.fn(() => 'Db'),
+			setSchemaInfo: vi.fn(),
+		};
+		const terminalMessages: Array<Record<string, unknown>> = [];
+		provider.postMessage = vi.fn(async (message: Record<string, unknown>) => {
+			if (message.type === 'sqlSchemaData') {
+				terminalMessages.push(message);
+				expect(routeSqlSectionMessage(message, {
+					getSection: vi.fn(() => section),
+					clearSchema: vi.fn(),
+					setSchema,
+					updateDatabases: vi.fn(),
+					reportDatabasesError: vi.fn(),
+					handleStsResponse: vi.fn(),
+					handleStsDiagnostics: vi.fn(),
+					clearPolicyBox: vi.fn(),
+				})).toBe('handled');
+			}
+			return true;
+		});
+
+		const first = provider.handleWebviewMessage({
+			type: 'prefetchSqlSchema', sqlConnectionId: 'sql-1', database: 'Db', boxId: 'sql_1',
+			sectionInstanceId: 'instance-1', targetGeneration: 1, forceRefresh: true,
+		});
+		await vi.waitFor(() => expect(provider._sqlSchemaService.getSchema).toHaveBeenCalledTimes(1));
+		const second = provider.handleWebviewMessage({
+			type: 'prefetchSqlSchema', sqlConnectionId: 'sql-1', database: 'Db', boxId: 'sql_1',
+			sectionInstanceId: 'instance-1', targetGeneration: 1, forceRefresh: true,
+		});
+		await vi.waitFor(() => expect(provider._sqlSchemaService.getSchema).toHaveBeenCalledTimes(2));
+
+		requestB.resolve({ schema: { tables: ['SchemaB'], columnsByTable: {} }, fromCache: false });
+		await second;
+		requestA.resolve({ schema: { tables: ['SchemaA'], columnsByTable: {} }, fromCache: false });
+		await first;
+
+		expect(cachePublications).toEqual(['SchemaB']);
+		expect(terminalMessages).toHaveLength(1);
+		expect(terminalMessages[0]).toMatchObject({ schema: { tables: ['SchemaB'] } });
+		expect(setSchema).toHaveBeenCalledOnce();
+		expect(setSchema).toHaveBeenCalledWith('sql_1', expect.objectContaining({ tables: ['SchemaB'] }));
+		clearSqlSectionSessionsForTest();
 	});
 
 	it('posts queryError when SQL setup fails synchronously', async () => {

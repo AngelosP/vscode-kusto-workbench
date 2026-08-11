@@ -49,6 +49,23 @@ export async function captureSqlSchemaCacheGeneration(globalStorageUri: vscode.U
 	return withGenerationLock(globalStorageUri, async generation => generation);
 }
 
+export type SqlSchemaCacheGenerationAdmission<T> =
+	| Readonly<{ admitted: true; value: T }>
+	| Readonly<{ admitted: false }>;
+
+export async function runWithSqlSchemaCacheGeneration<T>(
+	globalStorageUri: vscode.Uri,
+	expectedGeneration: string | undefined,
+	action: (generation: string) => Promise<T>,
+): Promise<SqlSchemaCacheGenerationAdmission<T>> {
+	return withGenerationLock(globalStorageUri, async generation => {
+		if (expectedGeneration !== undefined && generation !== expectedGeneration) {
+			return { admitted: false };
+		}
+		return { admitted: true, value: await action(generation) };
+	});
+}
+
 export async function publishSqlSchemaCacheFile(
 	globalStorageUri: vscode.Uri,
 	expectedGeneration: string,
@@ -63,7 +80,12 @@ export async function publishSqlSchemaCacheFile(
 		try {
 			await assertOwner();
 		} catch (error) {
-			try { await vscode.workspace.fs.delete(fileUri, { useTrash: false }); } catch { /* preserve ownership error */ }
+			try {
+				await vscode.workspace.fs.delete(fileUri, { useTrash: false });
+			} catch {
+				const resolved = paths(globalStorageUri);
+				if (resolved) await writeGeneration(resolved.generationPath, crypto.randomUUID());
+			}
 			throw error;
 		}
 		return true;

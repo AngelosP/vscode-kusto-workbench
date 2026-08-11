@@ -9,6 +9,12 @@ import {
 	clearSqlSchemaCacheFiles,
 	publishSqlSchemaCacheFile,
 } from '../../../src/host/sqlSchemaCacheGeneration';
+import {
+	getSqlSchemaCacheFileUri,
+	readCachedSqlSchemaFromDisk,
+	sqlSchemaCacheKey,
+	SQL_SCHEMA_CACHE_VERSION,
+} from '../../../src/host/sqlEditorSchema';
 
 describe('SQL schema cache generation', () => {
 	it('quarantines malformed generation state and advances to a safe generation', async () => {
@@ -75,6 +81,61 @@ describe('SQL schema cache generation', () => {
 			fs.rmSync(directory, { recursive: true, force: true });
 		}
 	});
+
+	it('invalidates a surviving stale schema file when post-rename deletion fails', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-schema-publish-delete-failure-'));
+		const storageUri = vscode.Uri.file(directory);
+		const cacheDirUri = vscode.Uri.joinPath(storageUri, 'sqlSchemaCache');
+		const owner = { principalFingerprint: 'principal-a', targetSignature: 'target-a' };
+		const cacheKey = sqlSchemaCacheKey('Db', 'sql-1', owner);
+		const tempUri = vscode.Uri.joinPath(cacheDirUri, 'pending.tmp');
+		const fileUri = getSqlSchemaCacheFileUri(storageUri, cacheKey);
+		const fsApi = vscode.workspace.fs as any;
+		const originalRename = fsApi.rename;
+		const originalDelete = fsApi.delete;
+		try {
+			const generation = await captureSqlSchemaCacheGeneration(storageUri);
+			await fsApi.writeFile(tempUri, Buffer.from(JSON.stringify({
+				version: SQL_SCHEMA_CACHE_VERSION,
+				schema: { tables: ['SchemaA'], columnsByTable: {} },
+				timestamp: Date.now(),
+				serverUrl: 'server.example',
+				database: 'Db',
+				connectionId: 'sql-1',
+				...owner,
+				cacheGeneration: generation,
+			}), 'utf8'));
+			fsApi.rename = vi.fn(async (source: vscode.Uri, target: vscode.Uri) => {
+				const bytes = await fsApi.readFile(source);
+				await fsApi.writeFile(target, bytes);
+				await originalDelete(source, { useTrash: false });
+			});
+			fsApi.delete = vi.fn(async (uri: vscode.Uri, options: unknown) => {
+				if (uri.toString() === fileUri.toString()) throw new Error('access denied');
+				return originalDelete(uri, options);
+			});
+			let checks = 0;
+
+			await expect(publishSqlSchemaCacheFile(storageUri, generation, tempUri, fileUri, vi.fn(async () => {
+				if (++checks === 2) throw new Error('request A superseded');
+			}))).rejects.toThrow('request A superseded');
+
+			expect(await captureSqlSchemaCacheGeneration(storageUri)).not.toBe(generation);
+			await expect(readCachedSqlSchemaFromDisk(storageUri, cacheKey, {
+				connectionId: 'sql-1',
+				...owner,
+			}, generation)).resolves.toBeUndefined();
+			await expect(readCachedSqlSchemaFromDisk(storageUri, cacheKey, {
+				connectionId: 'sql-1',
+				...owner,
+			})).resolves.toBeUndefined();
+		} finally {
+			if (originalRename === undefined) delete fsApi.rename; else fsApi.rename = originalRename;
+			if (originalDelete === undefined) delete fsApi.delete; else fsApi.delete = originalDelete;
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it('rejects a schema publish captured before Clear All', async () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-schema-generation-'));
 		const storageUri = vscode.Uri.file(directory);

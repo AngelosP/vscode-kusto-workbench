@@ -111,6 +111,15 @@ type SqlProtectedPolicyBarrier = Readonly<{
 	ready: Promise<boolean>;
 }>;
 
+export type SqlSchemaRefreshRequest = Readonly<{
+	boxId: string;
+	sectionInstanceId: string;
+	connectionId: string;
+	database: string;
+	targetGeneration: number;
+	forceRefresh: boolean;
+}>;
+
 export interface SqlEditorLifecycleEffects {
 	postMessage(message: unknown): boolean | PromiseLike<boolean>;
 	cancelCopilotWriteQuery(boxId: string, expectedSequence?: number): void;
@@ -119,7 +128,7 @@ export interface SqlEditorLifecycleEffects {
 	rejectPendingComparisonEnsures(sourceBoxId: string): void;
 	invalidatePersistence(): void;
 	refreshConnectionsData(): Promise<boolean>;
-	prefetchSchema(connectionId: string, database: string, boxId: string, forceRefresh: boolean): Promise<void>;
+	prefetchSchema(request: SqlSchemaRefreshRequest): Promise<void>;
 }
 
 export interface SqlEditorLifecycleCoordinatorOptions {
@@ -1242,6 +1251,7 @@ export class SqlEditorLifecycleCoordinator {
 		const ownerChangedMessages: SqlOwnerChangedPublication[] = [];
 		const schemaTargets: Array<{
 			boxId: string;
+			sectionInstanceId: string;
 			connectionId: string;
 			database: string;
 			generation: number;
@@ -1299,6 +1309,7 @@ export class SqlEditorLifecycleCoordinator {
 				if (rotatedTarget.database) {
 					schemaTargets.push({
 						boxId: target.boxId,
+						sectionInstanceId,
 						connectionId: rotatedTarget.connectionId,
 						database: rotatedTarget.database,
 						generation: rotatedTarget.generation,
@@ -1323,7 +1334,14 @@ export class SqlEditorLifecycleCoordinator {
 				target.database,
 				target.generation,
 			)) continue;
-			await this.options.effects.prefetchSchema(target.connectionId, target.database, target.boxId, false);
+			await this.options.effects.prefetchSchema({
+				boxId: target.boxId,
+				sectionInstanceId: target.sectionInstanceId,
+				connectionId: target.connectionId,
+				database: target.database,
+				targetGeneration: target.generation,
+				forceRefresh: false,
+			});
 		}
 	}
 
@@ -1822,12 +1840,14 @@ export class SqlEditorLifecycleCoordinator {
 						&& !publication.retired
 						&& publication.database
 						&& this.isOwnerChangePublicationCurrent(publication, sessionEpoch)) {
-						await this.options.effects.prefetchSchema(
-							publication.connectionId,
-							publication.database,
-							publication.boxId,
-							false,
-						);
+						await this.options.effects.prefetchSchema({
+							boxId: publication.boxId,
+							sectionInstanceId: publication.sectionInstanceId,
+							connectionId: publication.connectionId,
+							database: publication.database,
+							targetGeneration: publication.targetGeneration,
+							forceRefresh: false,
+						});
 					}
 				}
 				return;

@@ -83,6 +83,7 @@ describe('SqlSchemaService Leave No Trace policy', () => {
 	it('revalidates after a live schema fetch before returning or caching it', async () => {
 		const pending = deferred<any>();
 		let allowed = true;
+		const getDatabaseSchema = vi.fn(() => pending.promise);
 		const assertSqlConnectionAllowed = vi.fn(async () => {
 			if (!allowed) throw new Error('Leave No Trace blocked');
 		});
@@ -91,7 +92,7 @@ describe('SqlSchemaService Leave No Trace policy', () => {
 				globalStorageUri: { toString: () => 'file:///storage' },
 				globalState: { get: vi.fn(() => ({})) },
 			} as any,
-			sqlClient: { getDatabaseSchema: vi.fn(() => pending.promise) } as any,
+			sqlClient: { getDatabaseSchema } as any,
 			output: { warn: vi.fn(), error: vi.fn() } as any,
 			assertSqlConnectionAllowed,
 			postMessage: vi.fn(),
@@ -99,12 +100,12 @@ describe('SqlSchemaService Leave No Trace policy', () => {
 		const connection = { id: 'sql-sensitive', serverUrl: 'server.example', authType: 'sql-login', username: 'user' } as any;
 
 		const result = service.getSchema(connection, 'Db', true);
-		await vi.waitFor(() => expect(assertSqlConnectionAllowed).toHaveBeenCalledTimes(1));
+		await vi.waitFor(() => expect(getDatabaseSchema).toHaveBeenCalledOnce());
 		allowed = false;
 		pending.resolve({ tables: ['Secret'], columnsByTable: { Secret: { Value: 'int' } } });
 
 		await expect(result).rejects.toThrow('Leave No Trace blocked');
-		expect(assertSqlConnectionAllowed).toHaveBeenCalledTimes(2);
+		expect(assertSqlConnectionAllowed.mock.calls.length).toBeGreaterThanOrEqual(2);
 	});
 
 	it('does not rebind a stale schema request to a changed same-ID target', async () => {
@@ -149,6 +150,85 @@ describe('SqlSchemaService Leave No Trace policy', () => {
 
 		await expect(request).rejects.toMatchObject({ isCancelled: true });
 		expect(getDatabaseSchema).not.toHaveBeenCalled();
+	});
+
+	it('removes A inside the disk CAS when a newer same-target request supersedes it', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-schema-request-cas-'));
+		const storageUri = vscode.Uri.file(directory);
+		const fsApi = vscode.workspace.fs as any;
+		const originalRename = fsApi.rename;
+		const firstRenameEntered = deferred<void>();
+		const releaseFirstRename = deferred<void>();
+		let renameCount = 0;
+		fsApi.rename = vi.fn(async (source: vscode.Uri, target: vscode.Uri) => {
+			renameCount += 1;
+			if (renameCount === 1) {
+				firstRenameEntered.resolve(undefined);
+				await releaseFirstRename.promise;
+			}
+			const bytes = await fsApi.readFile(source);
+			await fsApi.writeFile(target, bytes);
+			await fsApi.delete(source, { useTrash: false });
+		});
+		try {
+			const schemaA = deferred<any>();
+			const schemaB = deferred<any>();
+			const getDatabaseSchema = vi.fn()
+				.mockImplementationOnce(() => schemaA.promise)
+				.mockImplementationOnce(() => schemaB.promise);
+			const connection = {
+				id: 'sql-1', dialect: 'mssql', serverUrl: 'server.example',
+				authType: 'sql-login', username: 'user',
+			} as any;
+			const service = new SqlSchemaService({
+				context: { globalStorageUri: storageUri, globalState: { get: vi.fn(() => ({})) } } as any,
+				sqlClient: { getDatabaseSchema } as any,
+				output: { warn: vi.fn(), error: vi.fn() } as any,
+				assertSqlConnectionAllowed: vi.fn(async () => undefined),
+				getCurrentSqlConnection: () => connection,
+				postMessage: vi.fn(),
+			});
+			let currentRequest = 'A';
+			const assertCurrent = (requestId: string) => {
+				if (currentRequest !== requestId) throw new Error(`request ${requestId} superseded`);
+			};
+			const requestA = service.getSchema(connection, 'Db', true, {
+				assertRequestCurrent: () => assertCurrent('A'),
+			});
+			await vi.waitFor(() => expect(getDatabaseSchema).toHaveBeenCalledOnce());
+			schemaA.resolve({ tables: ['SchemaA'], columnsByTable: {} });
+			await firstRenameEntered.promise;
+
+			currentRequest = 'B';
+			const requestB = service.getSchema(connection, 'Db', true, {
+				assertRequestCurrent: () => assertCurrent('B'),
+			});
+			releaseFirstRename.resolve(undefined);
+			await expect(requestA).rejects.toThrow('request A superseded');
+			await vi.waitFor(() => expect(getDatabaseSchema).toHaveBeenCalledTimes(2));
+			schemaB.resolve({ tables: ['SchemaB'], columnsByTable: {} });
+			await expect(requestB).resolves.toEqual({
+				schema: { tables: ['SchemaB'], columnsByTable: {} },
+				fromCache: false,
+			});
+
+			const owner = {
+				principalFingerprint: sqlSchemaPrincipalFingerprint(
+					{ globalState: { get: vi.fn(() => ({})) } } as any,
+					connection,
+				)!,
+				targetSignature: sqlSchemaTargetSignature(connection),
+			};
+			const cacheKey = sqlSchemaCacheKey('Db', connection.id, owner);
+			await expect(readCachedSqlSchemaFromDisk(storageUri, cacheKey, {
+				connectionId: connection.id,
+				...owner,
+			})).resolves.toMatchObject({ schema: { tables: ['SchemaB'] } });
+		} finally {
+			if (originalRename === undefined) delete fsApi.rename;
+			else fsApi.rename = originalRename;
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
 	});
 
 	it('invalidates an existing service memory cache after Clear All advances the shared generation', async () => {

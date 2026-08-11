@@ -1,5 +1,6 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -394,6 +395,10 @@ describe('CachedValuesViewerV2 Kusto mutation completion', () => {
 
 	it('releases Kusto snapshot admission between contended SQL owner attempts', async () => {
 		const viewer = createViewerHarness();
+		const storageDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-cached-values-snapshot-contention-'));
+		tempDirectories.push(storageDirectory);
+		viewer.context = { globalStorageUri: vscode.Uri.file(storageDirectory) };
+		const sqlSchemaCacheGeneration = await captureSqlSchemaCacheGeneration(viewer.context.globalStorageUri);
 		const retry = deferred<void>();
 		const continueRetry = deferred<void>();
 		let kustoHeld = false;
@@ -414,7 +419,7 @@ describe('CachedValuesViewerV2 Kusto mutation completion', () => {
 			connections: [], cachedDatabases: {}, sqlAuth: { sessions: [] }, sqlConnections: [],
 			sqlCachedDatabases: {}, sqlLeaveNoTrace: [], sqlAvailable: true, sqlServerAccountMap: {},
 			sqlStateVersions: { policy: 1, connections: 1, principals: 1 }, cachedSchemaKeys: [],
-			sqlCacheOwners: {}, sqlSchemaKeyOwners: {},
+			sqlCacheOwners: {}, sqlSchemaKeyOwners: {}, sqlSchemaCacheGeneration,
 		}));
 		viewer.sqlDeps = {
 			refreshSqlLeaveNoTracePolicy: vi.fn(async () => undefined),
@@ -760,6 +765,111 @@ describe('CachedValuesViewerV2 Kusto mutation completion', () => {
 });
 
 describe('CachedValuesViewerV2 SQL database ownership', () => {
+	it('holds generation, Kusto, and SQL owner locks through applied schema acknowledgement', async () => {
+		const harness = createSqlViewerHarness();
+		await harness.setAccountId('account-a');
+		const viewer = harness.viewer;
+		const generation = await captureSqlSchemaCacheGeneration(harness.context.globalStorageUri);
+		const owner = {
+			principalFingerprint: sqlSchemaPrincipalFingerprint(viewer.context, harness.connection)!,
+			targetSignature: sqlSchemaTargetSignature(harness.connection),
+			revocationGeneration: 0,
+		};
+		const stagePosted = deferred<void>();
+		const releaseStageAcknowledgement = deferred<void>();
+		let kustoHeld = false;
+		let sqlHeld = false;
+		viewer.connectionManager = {
+			runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => {
+				kustoHeld = true;
+				try { return await run({ clusterKeys: [], globallyBlocked: false, version: 1, revocationGenerations: {} }); }
+				finally { kustoHeld = false; }
+			}),
+		};
+		viewer.sqlDeps.dispatchSqlOwnerAllowed = vi.fn(async (
+			_connection: unknown,
+			_principal: string,
+			_revocation: number,
+			dispatch: () => unknown,
+		) => {
+			expect(kustoHeld).toBe(true);
+			sqlHeld = true;
+			try { return await dispatch(); }
+			finally { sqlHeld = false; }
+		});
+		viewer.panel = { webview: { postMessage: vi.fn(async (message: any) => {
+			expect(kustoHeld).toBe(true);
+			expect(sqlHeld).toBe(true);
+			if (message.type === 'kustoPublicationStage') {
+				stagePosted.resolve(undefined);
+				await releaseStageAcknowledgement.promise;
+				await viewer.onMessage({
+					type: 'kustoPublicationAck', publicationId: message.publicationId,
+					phase: 'staged', accepted: true,
+				});
+			}
+			if (message.type === 'kustoPublicationCommit') {
+				await viewer.onMessage({
+					type: 'kustoPublicationAck', publicationId: message.publicationId,
+					phase: 'applied', accepted: true,
+				});
+			}
+			return true;
+		}) } };
+
+		const publication = viewer.postSqlSchemaPublication(
+			harness.connection,
+			owner,
+			generation,
+			{ type: 'schemaResult', requestId: 'schema-locks', connectionId: harness.connection.id },
+		);
+		await stagePosted.promise;
+		expect(kustoHeld).toBe(true);
+		expect(sqlHeld).toBe(true);
+		releaseStageAcknowledgement.resolve(undefined);
+
+		await expect(publication).resolves.toBe(true);
+		expect(kustoHeld).toBe(false);
+		expect(sqlHeld).toBe(false);
+		expect(viewer.panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'kustoPublicationStage',
+			payload: expect.objectContaining({ type: 'schemaResult', requestId: 'schema-locks' }),
+		}));
+		expect(viewer.panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'kustoPublicationCommit',
+		}));
+	});
+
+	it('retries a current SQL schema publication after one rejected application', async () => {
+		const harness = createSqlViewerHarness();
+		await harness.setAccountId('account-a');
+		const generation = await captureSqlSchemaCacheGeneration(harness.context.globalStorageUri);
+		const owner = {
+			principalFingerprint: sqlSchemaPrincipalFingerprint(harness.viewer.context, harness.connection)!,
+			targetSignature: sqlSchemaTargetSignature(harness.connection),
+			revocationGeneration: 0,
+		};
+		harness.viewer.connectionManager = {
+			runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => await run({
+				clusterKeys: [], globallyBlocked: false, version: 1, revocationGenerations: {},
+			})),
+		};
+		harness.viewer.postKustoPublication = vi.fn()
+			.mockResolvedValueOnce(false)
+			.mockResolvedValueOnce(true);
+
+		await expect(harness.viewer.postSqlSchemaPublication(
+			harness.connection,
+			owner,
+			generation,
+			{ type: 'schemaResult', requestId: 'schema-retry', connectionId: harness.connection.id },
+		)).resolves.toBe(true);
+
+		expect(harness.viewer.postKustoPublication).toHaveBeenCalledTimes(2);
+		expect(harness.viewer.connectionManager.runWithLeaveNoTraceSnapshotLock).toHaveBeenCalledTimes(2);
+		expect(harness.dispatchSqlConnectionAllowed).toHaveBeenCalledTimes(2);
+	});
+
 	it('publishes Kusto cached values while omitting SQL when SQL policy refresh fails', async () => {
 		const viewer = createViewerHarness();
 		const postMessage = vi.fn();
@@ -799,6 +909,10 @@ describe('CachedValuesViewerV2 SQL database ownership', () => {
 
 	it('filters a SQL schema key whose captured owner differs from the canonical snapshot owner', async () => {
 		const viewer = createViewerHarness();
+		const storageDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-cached-values-snapshot-owner-'));
+		tempDirectories.push(storageDirectory);
+		viewer.context = { globalStorageUri: vscode.Uri.file(storageDirectory) };
+		const sqlSchemaCacheGeneration = await captureSqlSchemaCacheGeneration(viewer.context.globalStorageUri);
 		const postMessage = vi.fn(async () => true);
 		const connection = {
 			id: 'sql-1', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example',
@@ -825,6 +939,7 @@ describe('CachedValuesViewerV2 SQL database ownership', () => {
 			sqlServerAccountMap: {}, cachedSchemaKeys: ['kusto:kusto-1|Db', 'sql:sql-1|DbA'],
 			sqlCacheOwners: { 'sql-1': { targetSignature, principalFingerprint } },
 			sqlSchemaKeyOwners: { 'sql:sql-1|DbA': { targetSignature: `${targetSignature}-stale`, principalFingerprint } },
+			sqlSchemaCacheGeneration,
 		}));
 		viewer.connectionManager = { getConnections: vi.fn(() => []) };
 		installKustoSnapshotAdmission(viewer, postMessage);
@@ -835,6 +950,144 @@ describe('CachedValuesViewerV2 SQL database ownership', () => {
 		expect(published.sqlCachedDatabases).toEqual({ 'sql-1': ['DbA'] });
 		expect(published.cachedSchemaKeys).toEqual(['kusto:kusto-1|Db']);
 		expect(published.sqlSchemaKeyOwners).toBeUndefined();
+	});
+
+	it('retries a current SQL-capable snapshot after one rejected application', async () => {
+		const viewer = createViewerHarness();
+		const storageDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-cached-values-snapshot-retry-'));
+		tempDirectories.push(storageDirectory);
+		viewer.context = { globalStorageUri: vscode.Uri.file(storageDirectory) };
+		const generation = await captureSqlSchemaCacheGeneration(viewer.context.globalStorageUri);
+		const stateVersions = { policy: 1, connections: 1, principals: 1 };
+		viewer.snapshotRevision = 0;
+		viewer.buildSnapshot = vi.fn(async (revision: number) => ({
+			revision, timestamp: Date.now(), activeKind: 'sql', auth: { sessions: [], knownAccounts: [] },
+			connections: [], cachedDatabases: {}, sqlAuth: { sessions: [] }, sqlConnections: [],
+			sqlCachedDatabases: {}, sqlLeaveNoTrace: [], sqlStateVersions: stateVersions,
+			sqlAvailable: true, sqlServerAccountMap: {}, cachedSchemaKeys: [], sqlCacheOwners: {},
+			sqlSchemaKeyOwners: {}, sqlSchemaCacheGeneration: generation,
+		}));
+		viewer.connectionManager = {
+			getConnections: vi.fn(() => []),
+			runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => await run({
+				clusterKeys: [], globallyBlocked: false, version: 1, revocationGenerations: {},
+			})),
+		};
+		viewer.sqlDeps = {
+			refreshSqlLeaveNoTracePolicy: vi.fn(async () => undefined),
+			getSqlStateVersions: () => stateVersions,
+			dispatchSqlOwnerSnapshot: async (dispatch: (snapshot: any) => unknown) => await dispatch({
+				policy: { connectionIds: [], globallyBlocked: false, version: 1 },
+				connections: [], connectionVersion: 1, accountsByServer: {}, principalVersion: 1,
+			}),
+		};
+		viewer.postKustoPublication = vi.fn()
+			.mockResolvedValueOnce(false)
+			.mockResolvedValueOnce(true);
+
+		await expect(viewer.sendSnapshotToWebview()).resolves.toBe(true);
+
+		expect(viewer.postKustoPublication).toHaveBeenCalledTimes(2);
+		expect(viewer.buildSnapshot).toHaveBeenCalledTimes(2);
+	});
+
+	it('retires a pending SQL cache snapshot and publishes a fresh snapshot after Clear All', async () => {
+		const harness = createSqlViewerHarness();
+		await harness.setAccountId('account-a');
+		const viewer = harness.viewer;
+		const oldGeneration = await captureSqlSchemaCacheGeneration(harness.context.globalStorageUri);
+		const firstKustoAdmission = deferred<void>();
+		const releaseFirstKustoAdmission = deferred<void>();
+		let kustoAdmissionCount = 0;
+		viewer.snapshotRevision = 0;
+		viewer.connectionManager = {
+			getConnections: vi.fn(() => []),
+			runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => {
+				kustoAdmissionCount += 1;
+				if (kustoAdmissionCount === 1) {
+					firstKustoAdmission.resolve(undefined);
+					await releaseFirstKustoAdmission.promise;
+				}
+				return await run({ clusterKeys: [], globallyBlocked: false, version: 1, revocationGenerations: {} });
+			}),
+		};
+		const stateVersions = { policy: 1, connections: 1, principals: 1 };
+		viewer.sqlDeps = {
+			...viewer.sqlDeps,
+			refreshSqlLeaveNoTracePolicy: vi.fn(async () => undefined),
+			getSqlStateVersions: () => stateVersions,
+		};
+		viewer.buildSnapshot = vi.fn(async (revision: number) => {
+			const fresh = revision !== 1;
+			const generation = fresh
+				? await captureSqlSchemaCacheGeneration(harness.context.globalStorageUri)
+				: oldGeneration;
+			return {
+				revision, timestamp: Date.now(), activeKind: 'sql', auth: { sessions: [], knownAccounts: [] },
+				connections: [], cachedDatabases: {}, sqlAuth: { sessions: [] },
+				sqlConnections: [], sqlCachedDatabases: {}, sqlLeaveNoTrace: [],
+				sqlStateVersions: stateVersions, sqlAvailable: true, sqlServerAccountMap: {},
+				cachedSchemaKeys: fresh ? [] : ['sql:sql-1|DbA'],
+				sqlCacheOwners: {},
+				sqlSchemaKeyOwners: fresh ? {} : {
+					'sql:sql-1|DbA': { targetSignature: 'stale-target', principalFingerprint: 'stale-principal' },
+				},
+				sqlSchemaCacheGeneration: generation,
+			};
+		});
+		viewer.postKustoPublication = vi.fn(async () => true);
+
+		const staleSnapshot = viewer.sendSnapshotToWebview();
+		await firstKustoAdmission.promise;
+		const clear = viewer.onMessage({ type: 'sqlSchema.clearAll' });
+		expect(viewer.snapshotRevision).toBe(2);
+		releaseFirstKustoAdmission.resolve(undefined);
+		await Promise.all([staleSnapshot, clear]);
+
+		expect(await captureSqlSchemaCacheGeneration(harness.context.globalStorageUri)).not.toBe(oldGeneration);
+		expect(viewer.postKustoPublication).toHaveBeenCalledOnce();
+		expect(viewer.postKustoPublication).toHaveBeenCalledWith({
+			type: 'snapshot',
+			snapshot: expect.objectContaining({
+				revision: 3,
+				cachedSchemaKeys: [],
+				sqlCachedDatabases: {},
+			}),
+		});
+	});
+
+	it('invalidates SQL schema generation and refreshes after database-cache clearing fails', async () => {
+		const harness = createSqlViewerHarness();
+		const storageRoot = harness.context.globalStorageUri.fsPath;
+		const suffix = crypto.createHash('sha1')
+			.update('sql.connectionManager.cachedDatabases', 'utf8')
+			.digest('hex')
+			.slice(0, 12);
+		fs.mkdirSync(path.join(storageRoot, `sql-database-cache-${suffix}.v1.json`));
+		const before = await captureSqlSchemaCacheGeneration(harness.context.globalStorageUri);
+		harness.viewer.sendSnapshotToWebview = vi.fn(async () => undefined);
+		const showErrorMessage = vi.spyOn(vscode.window, 'showErrorMessage').mockResolvedValue(undefined);
+
+		await harness.viewer.onMessage({ type: 'sqlSchema.clearAll' });
+
+		expect(await captureSqlSchemaCacheGeneration(harness.context.globalStorageUri)).not.toBe(before);
+		expect(harness.viewer.sendSnapshotToWebview).toHaveBeenCalledOnce();
+		expect(showErrorMessage).toHaveBeenCalledWith(
+			'Failed to delete all SQL schema cache files. Remaining files have been invalidated and will not be reused.',
+		);
+	});
+
+	it('settles SQL Clear All when every fresh snapshot application is rejected', async () => {
+		const harness = createSqlViewerHarness();
+		harness.viewer.sendSnapshotToWebview = vi.fn(async () => false);
+		harness.viewer.panel.webview.postMessage.mockResolvedValue(true);
+
+		await harness.viewer.onMessage({ type: 'sqlSchema.clearAll' });
+
+		expect(harness.viewer.sendSnapshotToWebview).toHaveBeenCalledOnce();
+		expect(harness.viewer.panel.webview.postMessage).toHaveBeenCalledWith({
+			type: 'kustoMutationComplete',
+		});
 	});
 
 	it('returns a correlated terminal response when cached schema identity is unavailable', async () => {
