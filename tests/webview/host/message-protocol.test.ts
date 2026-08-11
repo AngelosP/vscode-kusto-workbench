@@ -1128,6 +1128,48 @@ describe('Message Protocol Contract', () => {
 			.toBeLessThan(dispatcher.indexOf("__kustoTraceCrossCluster('response-received'"));
 	});
 
+	it('keeps Kusto database discovery requests and deliveries on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/kustoDatabaseDiscoveryProtocol.ts',
+			'KustoDatabaseDiscoveryWebviewMessage',
+		)).toEqual(['getDatabases', 'refreshDatabases']);
+		expect(extractTypeDiscriminants(
+			'src/shared/kustoDatabaseDiscoveryProtocol.ts',
+			'KustoDatabaseDiscoveryHostMessage',
+		)).toEqual(['databasesData', 'databasesError']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| KustoDatabaseDiscoveryWebviewMessage');
+		expect(webviewMessages).toContain('| KustoDatabaseDiscoveryWebviewMessage');
+		expect(hostTypes).not.toContain("type: 'getDatabases'");
+		expect(hostTypes).not.toContain("type: 'refreshDatabases'");
+		expect(webviewMessages).not.toContain("type: 'getDatabases'");
+		expect(webviewMessages).not.toContain("type: 'refreshDatabases'");
+		expect(webviewMessages).toContain('parseKustoDatabaseDiscoveryWebviewMessage(msg)');
+
+		const requestHandler = readWorkspaceFile('src/host/kustoConnectionBrowsingApplicationHandler.ts');
+		expect(requestHandler.indexOf('parseKustoDatabaseDiscoveryWebviewMessage(message)'))
+			.toBeLessThan(requestHandler.indexOf('this.options.sendDatabases('));
+
+		const connectionService = readWorkspaceFile('src/host/queryEditorConnection.ts');
+		expect(connectionService).toContain('postMessage(message: KustoDatabaseDiscoveryHostMessage)');
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		expect(dispatcher.indexOf('parseKustoDatabaseDiscoveryHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf('const incomingType'));
+		expect(dispatcher.indexOf('parseKustoDatabaseDiscoveryHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf('admitKustoDatabaseDelivery('));
+		expect(dispatcher.indexOf('parseKustoDatabaseDiscoveryHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf('updateDatabaseSelect('));
+
+		const testHelpers = readWorkspaceFile('src/webview/core/test-helpers.ts');
+		const waiter = testHelpers.slice(testHelpers.indexOf('export async function e2eIdentityRequestDatabases'));
+		expect(waiter.indexOf('parseKustoDatabaseDiscoveryHostMessage(message)'))
+			.toBeLessThan(waiter.indexOf('window.clearTimeout(timer)'));
+	});
+
 	// ─── Compile-time guards ───────────────────────────────────────────────
 	// These calls exist solely for the TypeScript compiler to verify that
 	// every string literal in our arrays is a valid union discriminant.
@@ -1150,6 +1192,7 @@ describe('Message Protocol Contract', () => {
 			[...new Set([
 				...extractTypeDiscriminants('src/host/queryEditorTypes.ts', 'IncomingWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kustoSchemaProtocol.ts', 'KustoSchemaWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/kustoDatabaseDiscoveryProtocol.ts', 'KustoDatabaseDiscoveryWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1161,6 +1204,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/documentViewProtocol.ts', 'DocumentViewWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/compatibilityPersistenceProtocol.ts', 'CompatibilityPersistenceWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kustoSchemaProtocol.ts', 'KustoSchemaWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/kustoDatabaseDiscoveryProtocol.ts', 'KustoDatabaseDiscoveryWebviewMessage'),
 			])].sort()
 		);
 	});

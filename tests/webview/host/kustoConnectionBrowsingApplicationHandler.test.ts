@@ -126,6 +126,22 @@ describe('HostKustoConnectionBrowsingApplicationHandler', () => {
 		});
 	});
 
+	it('claims malformed database requests before service effects', async () => {
+		const harness = createHandler();
+
+		await expect(harness.handler.handleMessage({
+			type: 'getDatabases', connectionId: 'connection', boxId: 'box', targetGeneration: '17',
+		} as unknown as IncomingWebviewMessage)).resolves.toBeUndefined();
+		await expect(harness.handler.handleMessage({
+			type: 'refreshDatabases', connectionId: 'connection', boxId: 42,
+		} as unknown as IncomingWebviewMessage)).resolves.toBeUndefined();
+		await expect(harness.handler.handleMessage(Object.assign([], {
+			type: 'getDatabases', connectionId: 'connection', boxId: 'box',
+		}) as unknown as IncomingWebviewMessage)).resolves.toBeUndefined();
+
+		expect(harness.sendDatabases).not.toHaveBeenCalled();
+	});
+
 	it('keeps blank selection response-free and side-effect-free', async () => {
 		const harness = createHandler();
 

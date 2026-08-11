@@ -1966,6 +1966,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 	}
 	try {
 		const r = (typeof reason === 'string' && reason) ? reason : '';
+		const persistImmediately = immediate || r === 'reorder';
 		const tracksEditRevision = pState.documentKind === 'kql' || pState.documentKind === 'sql';
 		if (__kustoPersistTimer) {
 			clearTimeout(__kustoPersistTimer);
@@ -2043,7 +2044,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 		};
-		if (immediate) {
+		if (persistImmediately) {
 			// Immediate persist - no debounce
 			doPersist();
 		} else {

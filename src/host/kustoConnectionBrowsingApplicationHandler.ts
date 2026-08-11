@@ -1,12 +1,13 @@
 import type { KustoEditorLifecycleIdentity } from '../shared/kustoSchemaLifecycle';
 import type { IncomingWebviewMessage } from './queryEditorTypes';
+import {
+	isKustoDatabaseDiscoveryWebviewMessageType,
+	parseKustoDatabaseDiscoveryWebviewMessage,
+	type KustoDatabaseDiscoveryWebviewMessage,
+} from '../shared/kustoDatabaseDiscoveryProtocol';
 
 type GetConnectionsMessage = Extract<IncomingWebviewMessage, {
 	type: 'getConnections';
-}>;
-
-type GetDatabasesMessage = Extract<IncomingWebviewMessage, {
-	type: 'getDatabases' | 'refreshDatabases';
 }>;
 
 type SaveLastSelectionMessage = Extract<IncomingWebviewMessage, {
@@ -38,16 +39,18 @@ export class HostKustoConnectionBrowsingApplicationHandler
 	constructor(private readonly options: KustoConnectionBrowsingApplicationHandlerOptions) {}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
+		if (isKustoDatabaseDiscoveryWebviewMessageType(message)) {
+			const parsed = parseKustoDatabaseDiscoveryWebviewMessage(message);
+			if (!parsed.ok || this.disposed) return Promise.resolve();
+			return this.getDatabases(
+				parsed.value,
+				parsed.value.type === 'getDatabases' ? 'passive' : 'interactive-refresh',
+			);
+		}
 		switch (message.type) {
 			case 'getConnections':
 				if (this.disposed) return Promise.resolve();
 				return this.getConnections(message);
-			case 'getDatabases':
-				if (this.disposed) return Promise.resolve();
-				return this.getDatabases(message, 'passive');
-			case 'refreshDatabases':
-				if (this.disposed) return Promise.resolve();
-				return this.getDatabases(message, 'interactive-refresh');
 			case 'saveLastSelection':
 				if (this.disposed) return Promise.resolve();
 				return this.saveLastSelection(message);
@@ -65,7 +68,7 @@ export class HostKustoConnectionBrowsingApplicationHandler
 	}
 
 	private async getDatabases(
-		message: GetDatabasesMessage,
+		message: KustoDatabaseDiscoveryWebviewMessage,
 		mode: DatabaseDiscoveryRequest['mode'],
 	): Promise<void> {
 		await this.options.sendDatabases(message.connectionId, message.boxId, {

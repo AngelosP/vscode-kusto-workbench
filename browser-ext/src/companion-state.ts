@@ -5,11 +5,12 @@ export type BrowserCompanionState =
 
 export async function loadBrowserCompanion(
 	sidecarUrl: string | undefined,
-	fetchText: (url: string) => Promise<string>,
+	fetchText: (url: string, signal: AbortSignal) => Promise<string>,
+	signal: AbortSignal,
 ): Promise<BrowserCompanionState> {
 	if (!sidecarUrl) return { status: 'missing' };
 	try {
-		return { status: 'loaded', content: await fetchText(sidecarUrl) };
+		return { status: 'loaded', content: await fetchText(sidecarUrl, signal) };
 	} catch (error) {
 		const status = typeof error === 'object' && error !== null && 'status' in error
 			? Number(error.status)

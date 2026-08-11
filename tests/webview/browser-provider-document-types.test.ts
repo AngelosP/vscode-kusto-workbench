@@ -150,10 +150,10 @@ describe('browser provider document types', () => {
 	it('falls back only when the companion is absent with HTTP 404', async () => {
 		const missing = await loadBrowserCompanion('https://example.test/sample.kql.json', async () => {
 			throw Object.assign(new Error('HTTP 404: Not Found'), { status: 404 });
-		});
+		}, new AbortController().signal);
 		const failed = await loadBrowserCompanion('https://example.test/sample.kql.json', async () => {
 			throw Object.assign(new Error('HTTP 500: Server Error'), { status: 500 });
-		});
+		}, new AbortController().signal);
 
 		expect(missing).toEqual({ status: 'missing' });
 		expect(composeBrowserCompatibilityState('print primary = 1', missing)).toMatchObject({
@@ -166,7 +166,9 @@ describe('browser provider document types', () => {
 	});
 
 	it('rejects an existing empty companion instead of treating it as absent', async () => {
-		const companion = await loadBrowserCompanion('https://example.test/sample.kql.json', async () => '');
+		const companion = await loadBrowserCompanion(
+			'https://example.test/sample.kql.json', async () => '', new AbortController().signal,
+		);
 
 		expect(companion).toEqual({ status: 'loaded', content: '' });
 		expect(composeBrowserCompatibilityState('print primary = 1', companion)).toMatchObject({ ok: false });

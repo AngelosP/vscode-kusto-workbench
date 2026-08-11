@@ -3791,7 +3791,7 @@ describe('persistence round-trip', () => {
 		container.insertBefore(transformation, query);
 		vi.mocked(postMessageToHost).mockClear();
 
-		schedulePersist('reorder', true);
+		schedulePersist('reorder');
 		const persist = vi.mocked(postMessageToHost).mock.calls
 			.map(call => call[0] as any)
 			.find(message => message.type === 'persistDocument');

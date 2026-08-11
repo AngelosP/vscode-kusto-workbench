@@ -639,7 +639,7 @@ export class KwSectionReorderPopup extends LitElement {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
-		try { _win.schedulePersist?.('reorder'); } catch (e) { console.error('[kusto]', e); }
+		try { _win.schedulePersist?.('reorder', true); } catch (e) { console.error('[kusto]', e); }
 		try { _win.__kustoRefreshAllDataSourceDropdowns?.(); } catch (e) { console.error('[kusto]', e); }
 	}
 

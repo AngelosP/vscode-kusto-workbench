@@ -272,11 +272,13 @@ describe('QueryEditorProvider Kusto connection browsing application', () => {
 		expect(providerSource).toContain('this.kustoConnectionBrowsingApplication.dispose();');
 
 		expect(handlerSource).toContain("case 'getConnections':");
-		expect(handlerSource).toContain("case 'getDatabases':");
-		expect(handlerSource).toContain("case 'refreshDatabases':");
+		expect(handlerSource).not.toContain("case 'getDatabases':");
+		expect(handlerSource).not.toContain("case 'refreshDatabases':");
 		expect(handlerSource).toContain("case 'saveLastSelection':");
-		expect(handlerSource).toContain("return this.getDatabases(message, 'passive');");
-		expect(handlerSource).toContain("return this.getDatabases(message, 'interactive-refresh');");
+		expect(handlerSource).toContain('parseKustoDatabaseDiscoveryWebviewMessage(message)');
+		expect(handlerSource).toContain("parsed.value.type === 'getDatabases' ? 'passive' : 'interactive-refresh'");
+		expect(handlerSource.indexOf('parseKustoDatabaseDiscoveryWebviewMessage(message)'))
+			.toBeLessThan(handlerSource.indexOf('this.options.sendDatabases('));
 		expect(handlerSource).toContain('await this.options.saveLastSelection(connectionId, message.database);');
 		expect(handlerSource).toContain('await this.options.refreshTextEditorDiagnostics();');
 
@@ -286,6 +288,7 @@ describe('QueryEditorProvider Kusto connection browsing application', () => {
 		expect(connectionServiceSource).toContain('KustoConnectionCache');
 		expect(connectionServiceSource).toContain('getDatabasesWithIdentity');
 		expect(connectionServiceSource).toContain('traceDatabaseList');
+		expect(connectionServiceSource).toContain('postMessage(message: KustoDatabaseDiscoveryHostMessage)');
 
 		const compatibilitySelection = compatibilitySource.indexOf("case 'saveLastSelection':");
 		const compatibilityCache = compatibilitySource.indexOf('setFileConnection(', compatibilitySelection);
@@ -303,8 +306,9 @@ describe('QueryEditorProvider Kusto connection browsing application', () => {
 			"vscode.commands.registerCommand('kusto.refreshTextEditorDiagnostics'",
 		);
 		expect(typesSource).toContain("type: 'getConnections'; policyRequestId?: string");
-		expect(typesSource).toContain("type: 'getDatabases'; connectionId: string; boxId: string");
-		expect(typesSource).toContain("type: 'refreshDatabases'; connectionId: string; boxId: string");
+		expect(typesSource).toContain('| KustoDatabaseDiscoveryWebviewMessage');
+		expect(typesSource).not.toContain("type: 'getDatabases'");
+		expect(typesSource).not.toContain("type: 'refreshDatabases'");
 		expect(typesSource).toContain("type: 'saveLastSelection'; connectionId: string; database?: string");
 	});
 });

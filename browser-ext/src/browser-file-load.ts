@@ -14,8 +14,10 @@ export type LoadedBrowserFile = Readonly<{
 
 export class BrowserFileLoadCoordinator {
 	private generation = 0;
+	private activeRequest: Readonly<{ generation: number; controller: AbortController }> | undefined;
 
 	capture(file: DetectedFile): BrowserFileLoadSnapshot {
+		this.abortActiveRequest();
 		return {
 			generation: ++this.generation,
 			file: Object.freeze({ ...file }),
@@ -24,6 +26,7 @@ export class BrowserFileLoadCoordinator {
 
 	invalidate(): void {
 		this.generation++;
+		this.abortActiveRequest();
 	}
 
 	isCurrent(snapshot: BrowserFileLoadSnapshot): boolean {
@@ -32,12 +35,28 @@ export class BrowserFileLoadCoordinator {
 
 	async load(
 		snapshot: BrowserFileLoadSnapshot,
-		fetchText: (url: string) => Promise<string>,
+		fetchText: (url: string, signal: AbortSignal) => Promise<string>,
 	): Promise<LoadedBrowserFile | undefined> {
-		const content = await fetchText(snapshot.file.rawContentUrl);
 		if (!this.isCurrent(snapshot)) return undefined;
-		const companionState = await loadBrowserCompanion(snapshot.file.sidecarUrl, fetchText);
-		if (!this.isCurrent(snapshot)) return undefined;
-		return { snapshot, content, companionState };
+		this.abortActiveRequest();
+		const controller = new AbortController();
+		this.activeRequest = { generation: snapshot.generation, controller };
+		try {
+			const content = await fetchText(snapshot.file.rawContentUrl, controller.signal);
+			if (!this.isCurrent(snapshot)) return undefined;
+			const companionState = await loadBrowserCompanion(snapshot.file.sidecarUrl, fetchText, controller.signal);
+			if (!this.isCurrent(snapshot)) return undefined;
+			return { snapshot, content, companionState };
+		} catch (error) {
+			if (controller.signal.aborted || !this.isCurrent(snapshot)) return undefined;
+			throw error;
+		} finally {
+			if (this.activeRequest?.generation === snapshot.generation) this.activeRequest = undefined;
+		}
+	}
+
+	private abortActiveRequest(): void {
+		this.activeRequest?.controller.abort();
+		this.activeRequest = undefined;
 	}
 }

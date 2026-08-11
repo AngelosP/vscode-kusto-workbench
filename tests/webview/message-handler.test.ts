@@ -780,6 +780,29 @@ describe('message-handler dispatch', () => {
 		)).toHaveLength(0);
 	});
 
+	it('continues draining buffered host traffic after one message handler throws', async () => {
+		const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+		mocks.applyEditingPreferencesData.mockImplementationOnce(() => {
+			throw new Error('broken buffered preference');
+		});
+		(window as any).__kustoBufferedHostMessages = [
+			{ type: 'editingPreferencesData' },
+			{
+				type: 'persistenceMode',
+				documentUri: 'file:///after-buffer-error.kqlx',
+				documentKind: 'kqlx',
+				allowedSectionKinds: ['query'],
+			},
+		];
+
+		await messageHandlerModule.drainBufferedHostMessages();
+
+		expect(handlerState.pState.documentUri).toBe('file:///after-buffer-error.kqlx');
+		expect((window as any).__kustoBufferedHostMessages).toEqual([]);
+		expect(consoleError).toHaveBeenCalledWith('[kusto]', expect.any(Error));
+		consoleError.mockRestore();
+	});
+
 	it('answers final-persist requests and records persistence acknowledgements', async () => {
 		dispatchHostMessage({ type: 'requestFinalPersist', requestId: 'flush-1', reason: 'save' });
 		dispatchHostMessage({ type: 'persistDocumentAck', snapshotId: 'snapshot-1', editRevision: 7 });
@@ -1246,6 +1269,43 @@ describe('message-handler dispatch', () => {
 		await Promise.resolve();
 		expect(mocks.updateDatabaseSelect).toHaveBeenCalledWith('query_1', ['db2', 'db1'], 'c1', undefined, undefined, undefined);
 		expect(mocks.onDatabasesError).toHaveBeenCalledWith('query_1', 'boom', 'c1', undefined);
+	});
+
+	it('rejects malformed current database data before updating the editor', async () => {
+		const lease = kustoEditorSchemaCoordinator.openSection('query_1', 'instance-current')!;
+		kustoEditorSchemaCoordinator.setTarget(lease, 'c1', 'Samples');
+		const identity = kustoEditorSchemaCoordinator.beginDatabaseRequest(lease, 'database-current')!;
+		const state = await import('../../src/webview/core/state.js');
+		state.databaseRequestTokenByBoxId.query_1 = identity.requestToken;
+
+		dispatchHostMessage({
+			type: 'databasesData',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			databases: ['Samples'],
+			authoritative: 'yes',
+			...identity,
+		});
+		await Promise.resolve();
+
+		expect(mocks.updateDatabaseSelect).not.toHaveBeenCalled();
+	});
+
+	it('rejects array-shaped and sparse current database data before updating the editor', async () => {
+		const lease = kustoEditorSchemaCoordinator.openSection('query_1', 'instance-current')!;
+		kustoEditorSchemaCoordinator.setTarget(lease, 'c1', 'Samples');
+		const identity = kustoEditorSchemaCoordinator.beginDatabaseRequest(lease, 'database-current')!;
+		const state = await import('../../src/webview/core/state.js');
+		state.databaseRequestTokenByBoxId.query_1 = identity.requestToken;
+		const base = {
+			type: 'databasesData', boxId: 'query_1', connectionId: 'c1', ...identity,
+		};
+
+		dispatchHostMessage(Object.assign([], { ...base, databases: ['ArrayDb'] }));
+		dispatchHostMessage({ ...base, databases: new Array<string>(1) });
+		await Promise.resolve();
+
+		expect(mocks.updateDatabaseSelect).not.toHaveBeenCalled();
 	});
 
 	it('caches active synthetic schema success and consumes tombstoned late delivery', async () => {

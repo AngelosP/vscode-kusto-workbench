@@ -131,6 +131,7 @@ export class KwSectionShell extends LitElement {
 						</button>
 						` : nothing}
 						<button class="unified-btn-secondary md-tab toggle-btn ${this.expanded ? 'is-active' : ''}"
+							id=${this.boxId + '_toggle'}
 							type="button" role="tab"
 							aria-selected=${this.expanded ? 'true' : 'false'}
 							@click=${this._onToggle}

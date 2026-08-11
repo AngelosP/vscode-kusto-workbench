@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import {
 	deriveLocalFilename,
+	deriveSidecarCompanionUrl,
+	fetchRemoteContent,
 	fetchGitHubContent,
 	parseContentDisposition,
 	redactRemoteUrlForLog,
@@ -13,6 +15,7 @@ import {
 	remoteSnapshotChildUri,
 	RemoteSnapshotLeaseStore,
 	RemoteSnapshotLifecycle,
+	RemoteSnapshotLifecycleTaskRunner,
 	remoteContentSnapshotId,
 	remoteSnapshotDirectoryPath,
 	remoteSnapshotTabInputUris,
@@ -51,6 +54,19 @@ describe('redactRemoteUrlForLog', () => {
 });
 
 describe('remote snapshot filenames', () => {
+	it.each([
+		[
+			'https://files.example/session.kql.json?token=abc123&download=1',
+			'https://files.example/session.kql?token=abc123&download=1',
+		],
+		[
+			'https://files.example/path/session.csl.json?sig=secret#preview',
+			'https://files.example/path/session.csl?sig=secret#preview',
+		],
+	])('derives the query companion URL without changing credentials or fragments', (sidecarUrl, expected) => {
+		expect(deriveSidecarCompanionUrl(sidecarUrl)).toBe(expected);
+	});
+
 	it.each(['../session.kqlx', '..\\session.kqlx', '.', '..', 'C:session.kqlx', '\\\\server\\share.sqlx'])(
 		'rejects unsafe basename %j', filename => {
 			expect(() => sanitizeRemoteFilename(filename)).toThrow('unsafe');
@@ -119,6 +135,29 @@ describe('fetchGitHubContent', () => {
 		}));
 
 		const outcome = fetchGitHubContent('https://raw.githubusercontent.com/owner/repo/main/report.sqlx').then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		await vi.advanceTimersByTimeAsync(15_000);
+
+		await expect(outcome).resolves.toEqual(expect.objectContaining({ message: 'body aborted' }));
+	});
+});
+
+describe('fetchRemoteContent', () => {
+	it('keeps the request deadline active while a successful body stalls', async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+			const signal = init?.signal;
+			const body = new ReadableStream<Uint8Array>({
+				start(controller) {
+					signal?.addEventListener('abort', () => controller.error(new Error('body aborted')), { once: true });
+				},
+			});
+			return new Response(body, { status: 200 });
+		}));
+
+		const outcome = fetchRemoteContent('https://files.example/report.kqlx').then(
 			() => undefined,
 			(error: unknown) => error,
 		);
@@ -283,5 +322,36 @@ describe('remoteSnapshotTabInputUris', () => {
 
 		expect(remoteSnapshotTabInputUris(new vscode.TabInputTextDiff(original, modified)))
 			.toEqual([original, modified]);
+	});
+});
+
+describe('remote snapshot lifecycle disposal', () => {
+	it('suppresses claims admitted after lifecycle disposal', async () => {
+		const remoteRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-remote-disposed-'));
+		tempDirectories.push(remoteRoot);
+		const snapshotDir = path.join(remoteRoot, 'source-hash', 'content-hash');
+		fs.mkdirSync(snapshotDir, { recursive: true });
+		fs.writeFileSync(path.join(snapshotDir, 'report.sqlx'), 'SELECT 1', 'utf8');
+		const lifecycle = new RemoteSnapshotLifecycle(vscode.Uri.file(remoteRoot), 60_000) as any;
+		await lifecycle.ready();
+		const acquire = vi.spyOn(lifecycle.leaseStore, 'acquire');
+
+		lifecycle.dispose();
+		await lifecycle.claimTabInput(new vscode.TabInputCustom(vscode.Uri.file(path.join(snapshotDir, 'report.sqlx'))));
+
+		expect(acquire).not.toHaveBeenCalled();
+	});
+
+	it('cancels queued lifecycle retries on disposal', async () => {
+		vi.useFakeTimers();
+		const runner = new RemoteSnapshotLifecycleTaskRunner();
+		const task = vi.fn().mockRejectedValue(new Error('claim failed'));
+
+		runner.run('Remote snapshot tab claim', task);
+		await vi.waitFor(() => expect(task).toHaveBeenCalledOnce());
+		runner.dispose();
+		await vi.advanceTimersByTimeAsync(2_000);
+
+		expect(task).toHaveBeenCalledOnce();
 	});
 });

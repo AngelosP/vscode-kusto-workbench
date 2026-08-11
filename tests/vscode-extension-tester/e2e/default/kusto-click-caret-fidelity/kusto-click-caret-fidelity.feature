@@ -14,6 +14,7 @@ Feature: Kusto editor click caret fidelity
     And I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 1 second
     When I evaluate "window.__e2e.kusto.assertClickCaretFidelityWithHtmlSection()" in the webview for 20 seconds
+    When I click at 30, 700
     Then I take a screenshot "01-kusto-click-caret-fidelity"
 
   Scenario: Clicking a restored Kusto editor below an HTML preview keeps the caret on the clicked line
@@ -23,16 +24,19 @@ Feature: Kusto editor click caret fidelity
     And I wait for "kw-html-section" in the webview for 20 seconds
     And I wait for "kw-query-section" in the webview for 20 seconds
     When I evaluate "window.__e2e.kusto.assertClickCaretFidelityAfterRestoredHtmlPreviewScroll()" in the webview for 25 seconds
+    When I click at 30, 700
     Then I take a screenshot "02-restored-html-preview-kusto-click-caret-fidelity"
 
-  Scenario: Native clicking a restored Kusto editor below an HTML preview keeps the caret on the clicked line
+  Scenario: Native clicking and typing in a restored Kusto editor below an HTML preview uses the clicked caret
     When I open file "tests/vscode-extension-tester/e2e/default/kusto-click-caret-fidelity/fixtures/restored-html-preview-click.kqlx" in the editor
     And I wait 6 seconds
     And I wait for "#queries-container" in the webview for 20 seconds
     And I wait for "kw-html-section" in the webview for 20 seconds
     And I wait for "kw-query-section" in the webview for 20 seconds
     When I evaluate "window.__e2e.kusto.prepareRestoredHtmlPreviewNativeClickTarget()" in the webview for 25 seconds
-    And I move the mouse to 185, 560
+    And I move the mouse to 193, 650
     And I click
-    When I evaluate "window.__e2e.kusto.assertRestoredHtmlPreviewNativeClickTarget()" in the webview for 10 seconds
-    Then I take a screenshot "03-restored-html-preview-native-click-caret-fidelity"
+    And I type "NATIVE_TYPED"
+    When I evaluate "window.__e2e.kusto.assertRestoredHtmlPreviewNativeTyping('NATIVE_TYPED')" in the webview for 10 seconds
+    When I click at 30, 700
+    Then I take a screenshot "03-restored-html-preview-native-click-and-typing"

@@ -363,7 +363,7 @@ import { safeRun } from '../shared/safe-run';
 
 			resyncArraysFromDom();
 			bestEffortRelayoutMovedEditors(draggingId);
-			try { schedulePersist && schedulePersist('reorder'); } catch (e) { console.error('[kusto]', e); }
+			try { schedulePersist && schedulePersist('reorder', true); } catch (e) { console.error('[kusto]', e); }
 			// Refresh Data dropdowns in Chart/Transformation sections to update position labels
 			try { __kustoRefreshAllDataSourceDropdowns(); } catch (e) { console.error('[kusto]', e); }
 			draggingId = '';
@@ -385,7 +385,7 @@ import { safeRun } from '../shared/safe-run';
 						// Important: if the drop landed outside the container (e.g. over an editor/input),
 						// the container 'drop' handler may not fire. Persist the reverted DOM order so
 						// users can drag back to the original ordering and clear the dirty state.
-						try { schedulePersist && schedulePersist('reorder'); } catch (e) { console.error('[kusto]', e); }
+						try { schedulePersist && schedulePersist('reorder', true); } catch (e) { console.error('[kusto]', e); }
 						// Refresh Data dropdowns in Chart/Transformation sections to update position labels
 						try { __kustoRefreshAllDataSourceDropdowns(); } catch (e) { console.error('[kusto]', e); }
 					}

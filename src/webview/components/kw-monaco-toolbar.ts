@@ -271,6 +271,7 @@ export class KwMonacoToolbar extends LitElement implements ToolbarOverflowHost {
 			<span class="qe-toolbar-overflow-wrapper is-visible" id="${this.boxId}_toolbar_overflow_wrapper">
 				<button type="button"
 					class=${classMap({ 'qe-toolbar-overflow-btn': true, 'is-active': this._overflowMenuOpen })}
+					data-testid="toolbar-overflow-button"
 					id="${this.boxId}_toolbar_overflow_btn"
 					title="More actions" aria-label="More actions"
 					aria-haspopup="true" aria-expanded=${this._overflowMenuOpen ? 'true' : 'false'}
@@ -339,6 +340,7 @@ export class KwMonacoToolbar extends LitElement implements ToolbarOverflowHost {
 			entries.push(html`
 				<div class=${classMap({ 'qe-toolbar-overflow-item': true, 'qe-overflow-item-active': isActive })}
 					role="menuitem" tabindex="-1"
+					data-action-label=${item.overflowLabel || item.label || ''}
 					style=${isDisabled ? 'opacity:0.5;cursor:default;' : ''}
 					aria-disabled=${isDisabled ? 'true' : 'false'}
 					@click=${() => { if (!isDisabled) { item.action?.(); this._closeOverflow(); } }}>
@@ -351,6 +353,7 @@ export class KwMonacoToolbar extends LitElement implements ToolbarOverflowHost {
 
 		return html`
 			<div class="qe-toolbar-overflow-menu kusto-dropdown-menu" role="menu"
+				data-testid="toolbar-overflow-menu"
 				id="${this.boxId}_toolbar_overflow_menu"
 				@mousedown=${(e: Event) => e.stopPropagation()}
 				@click=${(e: Event) => e.stopPropagation()}>

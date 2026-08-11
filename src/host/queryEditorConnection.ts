@@ -20,6 +20,7 @@ import {
 	traceDatabaseList,
 } from './databaseListTrace';
 import type { KustoEditorLifecycleIdentity } from '../shared/kustoSchemaLifecycle';
+import type { KustoDatabaseDiscoveryHostMessage } from '../shared/kustoDatabaseDiscoveryProtocol';
 
 type DatabaseDiscoveryRequest =
 	| ({ mode: 'passive'; requestToken?: string; requiredDatabase?: string } & Partial<KustoEditorLifecycleIdentity>)
@@ -122,7 +123,7 @@ export interface ConnectionServiceHost {
 	readonly context: vscode.ExtensionContext;
 	readonly kustoClient: KustoQueryClient;
 	readonly output: WorkbenchLogger;
-	postMessage(message: unknown): Thenable<boolean> | PromiseLike<boolean> | void;
+	postMessage(message: KustoDatabaseDiscoveryHostMessage): Thenable<boolean> | PromiseLike<boolean> | void;
 	formatQueryExecutionErrorForUser(error: unknown, connection: KustoConnection, database?: string): string;
 	normalizeClusterUrlKey(url: string): string;
 	getCachedSchemaFromDisk(cacheKey: string): Promise<CachedSchemaEntry | undefined>;

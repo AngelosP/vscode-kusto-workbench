@@ -63,3 +63,29 @@ Feature: SQL toolbar actions - prettify, comment toggle, undo, redo, search
     When I press "Escape"
     And I wait 1 second
     When I execute command "workbench.action.closeAllEditors"
+
+  Scenario: Narrow toolbar overflow executes an action and dismisses on page scroll
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 700 by 900
+    When I execute command "kusto.openQueryEditor"
+    And I wait 3 seconds
+    When I evaluate "window.__e2e.layout.createStressNotebook()" in the webview for 20 seconds
+    And I evaluate "(() => { const section = document.getElementById('e2e_layout_sql'); const toolbar = section?.querySelector('kw-sql-toolbar'); const surface = toolbar?.querySelector('.query-editor-toolbar'); if (!section || !toolbar || !surface) throw new Error('Layout SQL toolbar is missing'); toolbar.style.display = 'block'; toolbar.style.width = '180px'; toolbar.style.maxWidth = '180px'; surface.style.width = '180px'; surface.style.maxWidth = '180px'; section.scrollIntoView({ block: 'start' }); window.__e2e.sql.setQuery(`select * from mytable where id=1 and name='test'`); return { toolbarWidth: toolbar.getBoundingClientRect().width, surfaceWidth: surface.getBoundingClientRect().width }; })()" in the webview
+    And I wait 2 seconds
+    When I wait for "kw-sql-toolbar [data-testid='toolbar-overflow-button']" in the webview for 10 seconds
+    And I evaluate "(() => { const button = document.querySelector(`kw-sql-toolbar [data-testid='toolbar-overflow-button']`); if (!button || button.getBoundingClientRect().width <= 0) throw new Error('Toolbar overflow button is not visible'); return button.getAttribute('aria-expanded'); })()" in the webview
+    When I click "kw-sql-toolbar [data-testid='toolbar-overflow-button']" in the webview
+    And I wait for "kw-sql-toolbar [data-testid='toolbar-overflow-menu']" in the webview for 10 seconds
+    And I wait for "kw-sql-toolbar [data-action-label='Search']" in the webview for 10 seconds
+    When I click "kw-sql-toolbar [data-action-label='Search']" in the webview
+    And I wait 1 second
+    When I evaluate "(() => { const section = document.getElementById('e2e_layout_sql'); const findWidget = section?.querySelector('.find-widget') || section?.querySelector('.monaco-editor .find-widget'); if (!findWidget || findWidget.getBoundingClientRect().height <= 0) throw new Error('Overflow Search did not open the Monaco find widget'); if (document.querySelector(`kw-sql-toolbar [data-testid='toolbar-overflow-menu']`)) throw new Error('Overflow menu remained open after action'); return 'overflow Search opened Monaco find'; })()" in the webview
+    When I press "Escape"
+    And I wait 1 second
+    When I click "kw-sql-toolbar [data-testid='toolbar-overflow-button']" in the webview
+    And I wait for "kw-sql-toolbar [data-testid='toolbar-overflow-menu']" in the webview for 10 seconds
+    When I scroll "[data-kw-page-scroll-element='true']" by 0 300
+    And I wait 1 second
+    When I evaluate "(() => { const viewport = document.querySelector(`[data-kw-page-scroll-element='true']`); if (!viewport || viewport.scrollTop < 100) throw new Error('Page did not scroll'); if (document.querySelector(`kw-sql-toolbar [data-testid='toolbar-overflow-menu']`)) throw new Error('Overflow menu remained open after page scroll'); return viewport.scrollTop; })()" in the webview
+    Then I take a screenshot "07-narrow-toolbar-overflow-dismissed"
+    When I execute command "workbench.action.revertAndCloseActiveEditor"

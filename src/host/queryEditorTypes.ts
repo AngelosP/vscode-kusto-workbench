@@ -1,10 +1,10 @@
 import * as vscode from 'vscode';
 import { DatabaseSchemaIndex } from './kustoClient';
-import type { KustoEditorLifecycleIdentity } from '../shared/kustoSchemaLifecycle';
 import type { KustoComparisonRunIdentity, KustoSectionExecutionTarget } from '../shared/kustoExecution';
 import type { KustoExecutionRequestIdentity } from '../shared/kustoExecution';
 import type { KustoCopilotRequestIdentity, KustoOptimizeRequestIdentity } from '../shared/kustoExecution';
 import type { KustoSchemaWebviewMessage } from '../shared/kustoSchemaProtocol';
+import type { KustoDatabaseDiscoveryWebviewMessage } from '../shared/kustoDatabaseDiscoveryProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -256,8 +256,7 @@ export type IncomingWebviewMessage =
 	| { type: 'fileOpenTrace'; event: string; timeMs?: number; sequence?: number; detail?: unknown }
 	| EditorCursorPositionChangedMessage
 	| EditorCursorStatusSnapshotRequestMessage
-	| ({ type: 'getDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string } & Partial<KustoEditorLifecycleIdentity>)
-	| ({ type: 'refreshDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string } & Partial<KustoEditorLifecycleIdentity>)
+	| KustoDatabaseDiscoveryWebviewMessage
 	| { type: 'saveLastSelection'; connectionId: string; database?: string }
 	| { type: 'seeCachedValues' }
 	| { type: 'resolveResourceUri'; requestId: string; path: string; baseUri?: string }

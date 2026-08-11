@@ -26,6 +26,7 @@ Feature: KQL companion sidecar — .kql with existing .kql.json skips upgrade pr
     And I wait 1 second
     When I select "Kusto Query (Compatibility Mode)" from the QuickPick
     And I wait 5 seconds
+    When I click at 30, 700
     Then I take a screenshot "01-kql-opened-with-sidecar"
 
     # ── TEST 1: Verify the query section exists ─────────────────────────
@@ -35,11 +36,13 @@ Feature: KQL companion sidecar — .kql with existing .kql.json skips upgrade pr
     # ── TEST 2: Verify add-section buttons are visible (sidecar mode) ───
     When I wait for "button[data-add-kind='markdown']" in the webview for 10 seconds
     When I evaluate "(() => { const btn = document.querySelector('button[data-add-kind=' + String.fromCharCode(34) + 'markdown' + String.fromCharCode(34) + ']'); if (!btn) throw new Error('Markdown add button not found'); const wrapper = btn.closest('.add-control-wrapper'); const title = String(wrapper?.getAttribute('title') || ''); if (title.includes('companion metadata file') || title.includes('create a companion')) throw new Error('Expected existing sidecar mode, but markdown add control still has compatibility tooltip: ' + title); return 'sidecar-add-control-ready'; })()" in the webview
+    When I click at 30, 700
     Then I take a screenshot "02-add-buttons-visible"
 
     # ── TEST 3: Add a markdown section — should NOT trigger upgrade ─────
     When I click "button[data-add-kind='markdown']" in the webview
     And I wait 3 seconds
+    When I click at 30, 700
     Then I take a screenshot "03-after-add-markdown"
 
     # ── TEST 4: Verify NO upgrade notification appeared ─────────────────
@@ -54,3 +57,4 @@ Feature: KQL companion sidecar — .kql with existing .kql.json skips upgrade pr
 
     # ── TEST 7: Verify sections serialize correctly (query + markdown) ──
     When I evaluate "(() => { const tags = ['kw-query-section','kw-sql-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = document.querySelectorAll(tags.join(',')); const types = [...els].map(el => { try { const s = el.serialize(); return s?.type || 'unknown'; } catch { return 'no-serialize'; } }); if (!types.includes('query')) throw new Error('Missing query section in serialization: ' + types.join(', ')); if (!types.includes('markdown')) throw new Error('Missing markdown section in serialization: ' + types.join(', ')); return 'serialized types: ' + types.join(', '); })()" in the webview
+    When I execute command "workbench.action.revertAndCloseActiveEditor"

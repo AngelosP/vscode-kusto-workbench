@@ -94,6 +94,7 @@ type SnapshotIdentity = Readonly<{
 const REMOTE_SNAPSHOT_LEASE_STALE_MS = 90_000;
 const REMOTE_SNAPSHOT_LEASE_UPDATE_MS = 15_000;
 const REMOTE_SNAPSHOT_STARTUP_CLEANUP_DELAY_MS = 120_000;
+const REMOTE_FETCH_TIMEOUT_MS = 15_000;
 const MAX_REMOTE_TEXT_BYTES = 16 * 1024 * 1024;
 const MAX_REMOTE_METADATA_BYTES = 1024 * 1024;
 const MAX_REMOTE_DIAGNOSTIC_BYTES = 64 * 1024;
@@ -142,6 +143,15 @@ export function sanitizeRemoteFilename(value: string): string {
 		throw new Error('The remote file name is unsafe.');
 	}
 	return filename;
+}
+
+export function deriveSidecarCompanionUrl(sidecarUrl: string): string {
+	const parsed = new URL(sidecarUrl);
+	if (!/\.(?:kql|csl)\.json$/i.test(parsed.pathname)) {
+		throw new Error('The remote sidecar URL must end with .kql.json or .csl.json.');
+	}
+	parsed.pathname = parsed.pathname.slice(0, -'.json'.length);
+	return parsed.toString();
 }
 
 export function remoteSnapshotChildUri(snapshotDir: vscode.Uri, filename: string): vscode.Uri {
@@ -371,6 +381,7 @@ export class RemoteSnapshotLifecycle implements RemoteSnapshotLifecycleLike, vsc
 	private readonly initialization: Promise<void>;
 	private readonly leaseStore: RemoteSnapshotLeaseStore | undefined;
 	private startupCleanupTimer: ReturnType<typeof setTimeout> | undefined;
+	private disposed = false;
 
 	constructor(
 		private readonly remoteDir: vscode.Uri,
@@ -383,6 +394,7 @@ export class RemoteSnapshotLifecycle implements RemoteSnapshotLifecycleLike, vsc
 		if (this.leaseStore) {
 			this.startupCleanupTimer = setTimeout(() => {
 				this.startupCleanupTimer = undefined;
+				if (this.disposed) return;
 				void this.initialization.then(() => this.leaseStore?.cleanupAbandonedSnapshots()).catch(error => {
 					diagLog(`Failed to clean abandoned remote snapshots: ${error instanceof Error ? error.message : String(error)}`);
 				});
@@ -401,6 +413,7 @@ export class RemoteSnapshotLifecycle implements RemoteSnapshotLifecycleLike, vsc
 		action: (snapshotDir: vscode.Uri) => Promise<void>,
 	): Promise<void> {
 		await this.initialization;
+		if (this.disposed) throw new Error('Remote snapshot lifecycle is disposed.');
 		const snapshotDir = vscode.Uri.joinPath(sourceDir, `${remoteContentSnapshotId(contents)}-${crypto.randomUUID()}`);
 		try {
 			if (this.leaseStore && snapshotDir.scheme === 'file') {
@@ -420,16 +433,19 @@ export class RemoteSnapshotLifecycle implements RemoteSnapshotLifecycleLike, vsc
 
 	async claimTabInput(input: unknown): Promise<void> {
 		await this.initialization;
+		if (this.disposed) return;
 		await Promise.all(remoteSnapshotTabInputUris(input).map(uri => this.claimUri(uri)));
 	}
 
 	async releaseTabInput(input: unknown): Promise<void> {
 		await this.initialization;
+		if (this.disposed) return;
 		await Promise.all(remoteSnapshotTabInputUris(input).map(uri => this.releaseUri(uri)));
 	}
 
 	async releaseClosedUri(uri: vscode.Uri): Promise<void> {
 		await this.initialization;
+		if (this.disposed) return;
 		const snapshotDir = this.snapshotDirectoryForUri(uri);
 		if (!snapshotDir || !this.leaseStore || this.activeSnapshotKeys().has(normalizedPathKey(snapshotDir.fsPath))) {
 			return;
@@ -439,6 +455,8 @@ export class RemoteSnapshotLifecycle implements RemoteSnapshotLifecycleLike, vsc
 	}
 
 	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
 		if (this.startupCleanupTimer) clearTimeout(this.startupCleanupTimer);
 		this.startupCleanupTimer = undefined;
 		void this.leaseStore?.dispose().catch(error => {
@@ -447,7 +465,7 @@ export class RemoteSnapshotLifecycle implements RemoteSnapshotLifecycleLike, vsc
 	}
 
 	private async claimRestoredTabs(): Promise<void> {
-		if (!this.leaseStore) return;
+		if (this.disposed || !this.leaseStore) return;
 		await Promise.all(this.currentTabUris().map(uri => this.claimUri(uri)));
 	}
 
@@ -485,12 +503,45 @@ export class RemoteSnapshotLifecycle implements RemoteSnapshotLifecycleLike, vsc
 	}
 
 	private async claimUri(uri: vscode.Uri): Promise<void> {
+		if (this.disposed) return;
 		const snapshotDir = this.snapshotDirectoryForUri(uri);
 		if (snapshotDir && this.leaseStore) await this.leaseStore.acquire(snapshotDir.fsPath);
 	}
 
 	private async releaseUri(uri: vscode.Uri): Promise<void> {
 		await this.releaseClosedUri(uri);
+	}
+}
+
+export class RemoteSnapshotLifecycleTaskRunner implements vscode.Disposable {
+	private readonly retryTimers = new Set<ReturnType<typeof setTimeout>>();
+	private disposed = false;
+
+	run(label: string, task: () => Promise<void>, attempt = 0): void {
+		if (this.disposed) return;
+		let running: Promise<void>;
+		try {
+			running = task();
+		} catch (error) {
+			running = Promise.reject(error);
+		}
+		void running.catch(error => {
+			diagLog(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+			if (this.disposed || attempt >= 2) return;
+			const timer = setTimeout(() => {
+				this.retryTimers.delete(timer);
+				this.run(label, task, attempt + 1);
+			}, 250 * (attempt + 1));
+			this.retryTimers.add(timer);
+			timer.unref?.();
+		});
+	}
+
+	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		for (const timer of this.retryTimers) clearTimeout(timer);
+		this.retryTimers.clear();
 	}
 }
 
@@ -692,7 +743,7 @@ export async function fetchGitHubContent(url: string): Promise<string> {
 		let lastError: unknown;
 		for (let attempt = 1; attempt <= 2; attempt++) {
 			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), 15_000);
+			const timer = setTimeout(() => controller.abort(), REMOTE_FETCH_TIMEOUT_MS);
 			try {
 				const response = await fetch(rawUrl, { ...(headers ? { headers } : {}), signal: controller.signal });
 				return { response, finish: () => clearTimeout(timer) };
@@ -1276,7 +1327,7 @@ async function openPlainRemoteFile(
 	const sourceDir = await urlSubDir(remoteDir, remoteUrl);
 
 	if (isSidecar) {
-		const baseQueryUrl = remoteUrl.slice(0, -('.json'.length));
+		const baseQueryUrl = deriveSidecarCompanionUrl(remoteUrl);
 		const sidecarUrl = remoteUrl;
 
 		progress.report({ message: 'Downloading query file…' });
@@ -1323,7 +1374,7 @@ async function openGitHubRemoteFile(
 
 	if (isSidecar) {
 		// For sidecar files, also download the companion .kql/.csl file.
-		const baseQueryUrl = normalizedUrl.replace(/\.json(\?|$)/, '$1');
+		const baseQueryUrl = deriveSidecarCompanionUrl(normalizedUrl);
 		const sidecarUrl = normalizedUrl;
 
 		progress.report({ message: 'Downloading query file from GitHub…' });
@@ -1417,7 +1468,7 @@ async function openLocalFile(
  * Fetches text content from a remote URL.
  * Supports http/https URLs.
  */
-async function fetchRemoteContent(url: string): Promise<string> {
+export async function fetchRemoteContent(url: string): Promise<string> {
 	// Validate URL
 	let parsed: URL;
 	try {
@@ -1431,11 +1482,17 @@ async function fetchRemoteContent(url: string): Promise<string> {
 	}
 
 	// Use globalThis.fetch (available in Node 18+ which VS Code ships with)
-	const response = await fetch(url);
-	if (!response.ok) {
-		throw new Error(`HTTP ${response.status} ${response.statusText} when fetching ${url}`);
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), REMOTE_FETCH_TIMEOUT_MS);
+	try {
+		const response = await fetch(url, { signal: controller.signal });
+		if (!response.ok) {
+			throw new Error(`HTTP ${response.status} ${response.statusText} when fetching ${url}`);
+		}
+		return await readRemoteTextBody(response);
+	} finally {
+		clearTimeout(timer);
 	}
-	return await readRemoteTextBody(response);
 }
 
 // ─── URL validation helper ──────────────────────────────────────────────────
@@ -1489,21 +1546,15 @@ export function registerRemoteFileOpener(
 ): void {
 	const remoteDir = vscode.Uri.joinPath(context.globalStorageUri, 'remote-files');
 	const snapshotLifecycle = new RemoteSnapshotLifecycle(remoteDir);
+	const lifecycleTaskRunner = new RemoteSnapshotLifecycleTaskRunner();
 	context.subscriptions.push(snapshotLifecycle);
-	const runLifecycleTask = (label: string, task: () => Promise<void>, attempt = 0): void => {
-		void task().catch(error => {
-			diagLog(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
-			if (attempt >= 2) return;
-			const timer = setTimeout(() => runLifecycleTask(label, task, attempt + 1), 250 * (attempt + 1));
-			timer.unref?.();
-		});
-	};
+	context.subscriptions.push(lifecycleTaskRunner);
 	context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(event => {
 		for (const tab of [...event.opened, ...event.changed]) {
-			runLifecycleTask('Remote snapshot tab claim', () => snapshotLifecycle.claimTabInput(tab.input));
+			lifecycleTaskRunner.run('Remote snapshot tab claim', () => snapshotLifecycle.claimTabInput(tab.input));
 		}
 		for (const tab of event.closed) {
-			runLifecycleTask('Remote snapshot tab release', () => snapshotLifecycle.releaseTabInput(tab.input));
+			lifecycleTaskRunner.run('Remote snapshot tab release', () => snapshotLifecycle.releaseTabInput(tab.input));
 		}
 	}));
 

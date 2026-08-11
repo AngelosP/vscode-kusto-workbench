@@ -5,7 +5,6 @@
  * (in queryEditorTypes.ts). It also includes provider-specific messages that the
  * kqlx/kqlCompat/mdCompat editors handle.
  */
-import type { KustoEditorLifecycleIdentity } from '../../shared/kustoSchemaLifecycle.js';
 import type { KustoSectionExecutionTarget } from '../../shared/kustoExecution.js';
 import type { KustoExecutionRequestIdentity } from '../../shared/kustoExecution.js';
 import type { KustoCopilotRequestIdentity, KustoOptimizeRequestIdentity } from '../../shared/kustoExecution.js';
@@ -26,6 +25,11 @@ import {
 	parseKustoSchemaWebviewMessage,
 	type KustoSchemaWebviewMessage,
 } from '../../shared/kustoSchemaProtocol.js';
+import {
+	isKustoDatabaseDiscoveryWebviewMessageType,
+	parseKustoDatabaseDiscoveryWebviewMessage,
+	type KustoDatabaseDiscoveryWebviewMessage,
+} from '../../shared/kustoDatabaseDiscoveryProtocol.js';
 import { pState } from './persistence-state.js';
 
 let compatibilityDocumentRequestSequence = 0;
@@ -186,8 +190,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'kustoExecutionStartedAck'; boxId: string; executionId: string; sectionInstanceId: string; targetGeneration: number; accepted: boolean }
 	| OutgoingEditorCursorPositionChangedMessage
 	| OutgoingEditorCursorStatusSnapshotRequestMessage
-	| ({ type: 'getDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string } & Partial<KustoEditorLifecycleIdentity>)
-	| ({ type: 'refreshDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string } & Partial<KustoEditorLifecycleIdentity>)
+	| KustoDatabaseDiscoveryWebviewMessage
 	| { type: 'saveLastSelection'; connectionId: string; database?: string }
 	| { type: 'promptAddConnection'; boxId?: string }
 	| { type: 'addConnection'; name: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }
@@ -362,6 +365,13 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 		);
 		if (!parsed.ok) {
 			console.error('[kusto] Rejected invalid document-view webview message:', parsed.error);
+			return;
+		}
+		outbound = parsed.value;
+	} else if (isKustoDatabaseDiscoveryWebviewMessageType(msg)) {
+		const parsed = parseKustoDatabaseDiscoveryWebviewMessage(msg);
+		if (!parsed.ok) {
+			console.error('[kusto] Rejected invalid Kusto database discovery webview message:', parsed.error);
 			return;
 		}
 		outbound = parsed.value;

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BrowserFileLoadCoordinator } from '../../browser-ext/src/browser-file-load';
+import { readBrowserTextBody } from '../../browser-ext/src/browser-text-fetch';
 import type { DetectedFile } from '../../browser-ext/src/providers/types';
 
 function deferred<T>() {
@@ -30,9 +31,12 @@ describe('BrowserFileLoadCoordinator', () => {
 
 		const snapshotA = coordinator.capture(file('A'));
 		const loadA = coordinator.load(snapshotA, fetchText);
-		await vi.waitFor(() => expect(fetchText).toHaveBeenCalledWith(expect.stringContaining('A.kql.json')));
+		await vi.waitFor(() => expect(fetchText.mock.calls.some(([url]) => url.includes('A.kql.json'))).toBe(true));
+		const requestASignal = fetchText.mock.calls.find(([url]) => url.includes('A.kql.json'))?.[1] as AbortSignal;
+		expect(requestASignal.aborted).toBe(false);
 
 		const snapshotB = coordinator.capture(file('B'));
+		expect(requestASignal.aborted).toBe(true);
 		const loadB = coordinator.load(snapshotB, fetchText);
 		companionA.resolve('{"file":"A"}');
 
@@ -48,13 +52,29 @@ describe('BrowserFileLoadCoordinator', () => {
 
 	it('invalidates a pending primary fetch during navigation cleanup', async () => {
 		const coordinator = new BrowserFileLoadCoordinator();
-		const primary = deferred<string>();
 		const snapshot = coordinator.capture(file('A'));
-		const loading = coordinator.load(snapshot, () => primary.promise);
+		let capturedSignal: AbortSignal | undefined;
+		const loading = coordinator.load(snapshot, (_url, signal) => new Promise<string>((_resolve, reject) => {
+			capturedSignal = signal;
+			signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+		}));
+		await vi.waitFor(() => expect(capturedSignal).toBeDefined());
 
 		coordinator.invalidate();
-		primary.resolve('STALE_QUERY_A');
 
 		await expect(loading).resolves.toBeUndefined();
+		expect(capturedSignal?.aborted).toBe(true);
+	});
+
+	it('rejects a streaming response once it exceeds the browser file size limit', async () => {
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new Uint8Array(16 * 1024 * 1024));
+				controller.enqueue(new Uint8Array([1]));
+				controller.close();
+			},
+		});
+
+		await expect(readBrowserTextBody(new Response(body))).rejects.toThrow('16777216-byte size limit');
 	});
 });

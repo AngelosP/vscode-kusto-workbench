@@ -19,6 +19,10 @@ import {
 	parseKustoSchemaHostMessage,
 	type KustoSchemaHostMessage,
 } from '../../shared/kustoSchemaProtocol.js';
+import {
+	isKustoDatabaseDiscoveryHostMessageType,
+	parseKustoDatabaseDiscoveryHostMessage,
+} from '../../shared/kustoDatabaseDiscoveryProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -1445,6 +1449,11 @@ window.addEventListener(DOCUMENT_RUNTIME_INVALIDATED_EVENT, () => {
 
 const __kustoDispatchHostMessage = async (message: any) => {
 	message = (message && typeof message === 'object') ? message : {};
+	if (isKustoDatabaseDiscoveryHostMessageType(message)) {
+		const parsed = parseKustoDatabaseDiscoveryHostMessage(message);
+		if (!parsed.ok) return;
+		message = parsed.value;
+	}
 	let kustoSchemaHostMessage: KustoSchemaHostMessage | undefined;
 	if (isKustoSchemaHostMessageType(message)) {
 		const parsed = parseKustoSchemaHostMessage(message);
@@ -5358,12 +5367,14 @@ function getCompatibilityProjectionFingerprint(message: Record<string, unknown>)
 }
 
 export async function drainBufferedHostMessages(): Promise<void> {
-	try {
-		const buffered = Array.isArray((window as any).__kustoBufferedHostMessages)
-			? (window as any).__kustoBufferedHostMessages.splice(0)
-			: [];
-		for (const message of buffered) await __kustoDispatchHostMessage(message);
-	} catch (e) { console.error('[kusto]', e); }
+	const buffered = Array.isArray((window as any).__kustoBufferedHostMessages)
+		? (window as any).__kustoBufferedHostMessages.splice(0)
+		: [];
+	for (const message of buffered) {
+		try {
+			await __kustoDispatchHostMessage(message);
+		} catch (e) { console.error('[kusto]', e); }
+	}
 }
 
 let mainWebviewMessageDispatcherStarted = false;

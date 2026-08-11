@@ -9,6 +9,7 @@ import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
 import { getSqlSectionSession } from './sql-section-message-router.js';
 import { pState } from '../shared/persistence-state.js';
 import { DOCUMENT_VIEW_CHANNEL, DOCUMENT_VIEW_PROTOCOL_VERSION } from '../../shared/documentViewProtocol.js';
+import { parseKustoDatabaseDiscoveryHostMessage } from '../../shared/kustoDatabaseDiscoveryProtocol.js';
 import { perfSnapshot } from './perf.js';
 import { getPageScrollElement, getPageScrollMaxTop, getPageScrollTop, setPageScrollTop } from './utils.js';
 import { __kustoFindSuggestWidgetForEditor } from '../monaco/suggest.js';
@@ -41,6 +42,7 @@ type MonacoLike = {
 	setValue?: (value: string) => void;
 	getModel?: () => {
 		getLineCount?: () => number;
+		getLineContent?: (lineNumber: number) => string;
 		getLineMaxColumn?: (lineNumber: number) => number;
 		getLanguageId?: () => string;
 		getValueInRange?: (range: unknown) => string;
@@ -2058,7 +2060,7 @@ async function e2eIdentityToolConfigure(sectionId: string, input: Record<string,
 	}
 }
 
-async function e2eIdentityRequestDatabases(connectionId: string, timeoutMs = 6000): Promise<string[]> {
+export async function e2eIdentityRequestDatabases(connectionId: string, timeoutMs = 6000): Promise<string[]> {
 	const requestId = `__e2e_identity_dbreq__${Date.now()}_${Math.random().toString(16).slice(2)}`;
 	return await new Promise<string[]>((resolve, reject) => {
 		const timer = window.setTimeout(() => {
@@ -2068,9 +2070,11 @@ async function e2eIdentityRequestDatabases(connectionId: string, timeoutMs = 600
 		const onMessage = (event: MessageEvent) => {
 			const message = event.data || {};
 			if (message.type !== 'databasesData' || message.boxId !== requestId) return;
+			const parsed = parseKustoDatabaseDiscoveryHostMessage(message);
+			if (!parsed.ok || parsed.value.type !== 'databasesData') return;
 			window.clearTimeout(timer);
 			window.removeEventListener('message', onMessage);
-			resolve((Array.isArray(message.databases) ? message.databases : []).map((value: any) => String(value || '').trim()).filter(Boolean));
+			resolve(parsed.value.databases.map(value => value.trim()).filter(Boolean));
 		};
 		window.addEventListener('message', onMessage);
 		try {
@@ -7118,6 +7122,45 @@ async function e2eAssertRestoredHtmlPreviewNativeClickTarget(): Promise<string> 
 	return `native click kept Kusto caret at ${position.lineNumber}:${position.column}; click=${expectation.clientX},${expectation.clientY}; preparedScrollTop=${expectation.scrollTop}; target=${expectation.targetDescription}`;
 }
 
+async function e2eAssertRestoredHtmlPreviewNativeTyping(marker: string): Promise<string> {
+	await e2eLayoutDelay(250);
+	const expectation = _win.__e2eRestoredNativeClickExpectation as RestoredNativeClickExpectation | undefined;
+	if (!expectation) throw new Error('Restored native-typing expectation was not prepared');
+	const querySection = document.getElementById('query_click_fidelity_restored') as HTMLElement | null;
+	const editor = querySection ? resolveMonacoEditorFromElement(querySection) : null;
+	const model = editor?.getModel?.();
+	const position = editor?.getPosition?.();
+	if (!editor || !model || !position) throw new Error('Restored native-typing Kusto editor is unavailable');
+	const value = String(editor?.getValue?.() || '');
+	const valueLines = value.split(/\r?\n/);
+	const markerLines = valueLines
+		.map((line, index) => line.includes(marker) ? index + 1 : 0)
+		.filter(Boolean);
+	if (markerLines.length !== 1 || markerLines[0] !== expectation.lineNumber) {
+		throw new Error(`Native typing updated the wrong model line: expected ${expectation.lineNumber}, got ${markerLines.join(',') || '(none)'}`);
+	}
+	const line = String(model.getLineContent?.(expectation.lineNumber) || '');
+	if (!line.includes(marker)) {
+		throw new Error(`Native typing did not update the clicked line ${expectation.lineNumber}: ${line}`);
+	}
+	const expectedColumn = expectation.column + marker.length;
+	if (position.lineNumber !== expectation.lineNumber || position.column !== expectedColumn) {
+		throw new Error(`Native typing advanced the wrong caret: expected ${expectation.lineNumber}:${expectedColumn}, got ${position.lineNumber}:${position.column}`);
+	}
+	const scrollTop = e2ePageScrollTop(e2ePageScrollElement());
+	if (Math.abs(scrollTop - expectation.scrollTop) > 2) {
+		throw new Error(`Native typing changed page scroll: prepared=${expectation.scrollTop}, current=${scrollTop}`);
+	}
+	const renderedLines = Array.from(editor.getDomNode?.()?.querySelectorAll('.view-line') || [], element => String(element.textContent || ''));
+	const renderedMarkerRows = renderedLines
+		.map((renderedLine, index) => renderedLine.includes(marker) ? index + 1 : 0)
+		.filter(Boolean);
+	if (renderedMarkerRows.length !== 1 || renderedMarkerRows[0] !== expectation.lineNumber) {
+		throw new Error(`Native typing rendered on the wrong visible row: expected ${expectation.lineNumber}, got ${renderedMarkerRows.join(',') || '(none)'}`);
+	}
+	return `native typing inserted ${marker} at ${expectation.lineNumber}:${expectation.column} and advanced to ${position.lineNumber}:${position.column}`;
+}
+
 async function e2eAssertKustoClickCaretFidelityAfterRestoredHtmlPreviewScroll(): Promise<string> {
 	await e2eLayoutWaitFor(() => !!document.getElementById('html_click_fidelity_restored') && !!document.getElementById('query_click_fidelity_restored'), 'restored HTML and Kusto sections', 15000);
 	const htmlSection = document.getElementById('html_click_fidelity_restored') as HTMLElement | null;
@@ -7456,6 +7499,7 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		assertClickCaretFidelityAfterRestoredHtmlPreviewScroll: () => e2eAssertKustoClickCaretFidelityAfterRestoredHtmlPreviewScroll(),
 		prepareRestoredHtmlPreviewNativeClickTarget: () => e2ePrepareRestoredHtmlPreviewNativeClickTarget(),
 		assertRestoredHtmlPreviewNativeClickTarget: () => e2eAssertRestoredHtmlPreviewNativeClickTarget(),
+		assertRestoredHtmlPreviewNativeTyping: (marker: string) => e2eAssertRestoredHtmlPreviewNativeTyping(marker),
 		selectSampleDatabase: (sectionIndex: number = 0) => e2eSelectSampleKustoDatabase(sectionIndex),
 		selectDifferentDatabase: () => e2eSelectDifferentKustoDatabase(),
 		assertPreparationReady: (sectionIndex: number = 0) => e2eAssertKustoPreparationReady(sectionIndex),

@@ -19,6 +19,8 @@ import { findProvider } from './providers/registry';
 import type { DetectedFile, FileSourceProvider, ViewModeTabBarInfo } from './providers/types';
 import { type BrowserCompanionState } from './companion-state';
 import { BrowserFileLoadCoordinator, type BrowserFileLoadSnapshot } from './browser-file-load';
+import { installBrowserViewportForwarding } from './browser-viewport-forwarding';
+import { fetchBrowserText } from './browser-text-fetch';
 
 // ---- State ----
 
@@ -31,6 +33,7 @@ let originalContent: HTMLElement | null = null;
 let navigationCleanup: (() => void) | null = null;
 let isRendered = false;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let removeViewportForwarding: (() => void) | null = null;
 
 const fileLoadCoordinator = new BrowserFileLoadCoordinator();
 
@@ -55,6 +58,7 @@ let lastDetectedRawUrl: string | null = null;
 
 function init() {
 	console.log(LOG_PREFIX, 'init', location.href);
+	window.addEventListener('message', handleViewerMessage);
 	detectAndSetup();
 
 	// Re-detect on SPA navigations
@@ -165,6 +169,8 @@ function dumpTabBarDiagnostics() {
 
 function cleanup() {
 	fileLoadCoordinator.invalidate();
+	removeViewportForwarding?.();
+	removeViewportForwarding = null;
 	if (retryTimer) {
 		clearTimeout(retryTimer);
 		retryTimer = null;
@@ -627,18 +633,13 @@ function createViewerIframe(
 
 		// Forward scroll/viewport info so fixed-position dialogs inside the
 		// iframe can center within the visible region instead of the full document.
-		const sendViewportInfo = () => {
-			if (!fileLoadCoordinator.isCurrent(snapshot) || viewerIframe !== iframe) return;
-			const rect = iframe.getBoundingClientRect();
-			iframe.contentWindow?.postMessage({
-				type: 'kusto-workbench-viewport',
-				scrollTop: Math.max(0, -rect.top),
-				viewportHeight: window.innerHeight,
-			}, '*');
-		};
-		window.addEventListener('scroll', sendViewportInfo, { passive: true });
-		window.addEventListener('resize', sendViewportInfo, { passive: true });
-		sendViewportInfo();
+		removeViewportForwarding?.();
+		removeViewportForwarding = installBrowserViewportForwarding(
+			window,
+			() => iframe.getBoundingClientRect().top,
+			message => iframe.contentWindow?.postMessage(message, '*'),
+			() => fileLoadCoordinator.isCurrent(snapshot) && viewerIframe === iframe,
+		);
 
 		iframe.contentWindow?.postMessage({
 			type: 'kusto-workbench-load-file',
@@ -653,7 +654,6 @@ function createViewerIframe(
 			hostBackgroundColor,
 		}, '*');
 
-		window.addEventListener('message', handleViewerMessage);
 	};
 
 	// Tab mode: insert after the header anchor
@@ -697,29 +697,7 @@ function handleViewerMessage(event: MessageEvent) {
 	}
 }
 
-// ---- Fetch helper ----
-
-class HttpStatusError extends Error {
-	constructor(readonly status: number, statusText: string) {
-		super(`HTTP ${status}: ${statusText}`);
-	}
-}
-
-async function fetchContent(url: string): Promise<string> {
-	const response = await fetch(url, {
-		credentials: 'same-origin', // same-origin sends cookies for the initial request (e.g. github.com)
-		redirect: 'follow',         // but not for cross-origin redirects (e.g. raw.githubusercontent.com)
-		headers: {
-			'Accept': 'text/plain, application/json, */*',
-		},
-	});
-
-	if (!response.ok) {
-		throw new HttpStatusError(response.status, response.statusText);
-	}
-
-	return response.text();
-}
+const fetchContent = fetchBrowserText;
 
 // ---- Utility ----
 

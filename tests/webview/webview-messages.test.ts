@@ -186,4 +186,35 @@ describe('postMessageToHost', () => {
 
 		expect(postMessage).not.toHaveBeenCalled();
 	});
+
+	it('posts valid Kusto database requests and rejects malformed ones before E2E capture', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const request = {
+				type: 'refreshDatabases' as const, connectionId: '', boxId: 'query_1',
+				requestToken: 'token-1', sectionInstanceId: 'instance-1', targetGeneration: 2,
+			};
+			postMessageToHost(request);
+
+			expect(capture).toHaveBeenCalledWith(request);
+			expect(postMessage).toHaveBeenCalledWith(request);
+			capture.mockClear();
+			postMessage.mockClear();
+
+			postMessageToHost({
+				type: 'getDatabases', connectionId: 'connection-1', boxId: 'query_1', targetGeneration: '2',
+			} as unknown as Parameters<typeof postMessageToHost>[0]);
+			postMessageToHost(Object.assign([], {
+				type: 'refreshDatabases', connectionId: 'connection-1', boxId: 'query_1',
+			}) as unknown as Parameters<typeof postMessageToHost>[0]);
+
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
 });
