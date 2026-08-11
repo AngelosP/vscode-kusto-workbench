@@ -244,9 +244,11 @@ describe('QueryEditorProvider Kusto connection-intake application', () => {
 		]) {
 			expect(serviceSource).not.toContain(`async ${method}(`);
 		}
-		expect(providerSource).toContain('private connectionsDataRevision = 0;');
-		expect(providerSource).toContain('private connectionsDataTail: Promise<void> = Promise.resolve();');
-		expect(providerSource).toContain('refreshConnections: () => this.sendConnectionsData()');
+		expect(providerSource).not.toContain('connectionsDataRevision');
+		expect(providerSource).not.toContain('connectionsDataTail');
+		expect(providerSource).toContain(
+			'refreshConnections: () => this.kustoConnectionsProjectionApplication.refresh()',
+		);
 		expect(providerSource).toContain('this.kustoConnectionIntakeApplication.dispose();');
 		expect(handlerSource).toContain('await this.options.refreshConnections();');
 		expect(managerSource).toContain("this.changeEmitter.fire({ type: 'added', connection: { ...newConnection } });");

@@ -258,6 +258,7 @@ describe('QueryEditorProvider Copilot chat first-time application', () => {
 		);
 		const providerSource = readSource('src/host/queryEditorProvider.ts');
 		const handlerSource = readSource('src/host/copilotChatFirstTimeApplicationHandler.ts');
+		const projectionSource = readSource('src/host/kustoConnectionsProjectionApplicationHandler.ts');
 		const copilotSource = readSource('src/host/queryEditorCopilot.ts');
 		const typesSource = readSource('src/host/queryEditorTypes.ts');
 		const managerSource = readSource('src/webview/sections/copilot-chat-manager.controller.ts');
@@ -296,8 +297,9 @@ describe('QueryEditorProvider Copilot chat first-time application', () => {
 		expect(typesSource).toContain(
 			"copilotChatFirstTimeDismissed: 'kusto.copilotChatFirstTimeDismissed'",
 		);
-		expect(providerSource).toContain(
-			'copilotChatFirstTimeDismissed: !!this.context.globalState.get<boolean>(STORAGE_KEYS.copilotChatFirstTimeDismissed)',
+		expect(providerSource).not.toContain('STORAGE_KEYS.copilotChatFirstTimeDismissed');
+		expect(projectionSource).toContain(
+			'STORAGE_KEYS.copilotChatFirstTimeDismissed',
 		);
 		expect(managerSource.match(/postMessageToHost\(\{ type: 'copilotChatFirstTimeCheck'/g))
 			.toHaveLength(1);

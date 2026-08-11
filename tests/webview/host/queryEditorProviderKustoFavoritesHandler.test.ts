@@ -296,6 +296,7 @@ describe('QueryEditorProvider Kusto favorites application', () => {
 		const providerSource = readSource('src/host/queryEditorProvider.ts');
 		const connectionSource = readSource('src/host/queryEditorConnection.ts');
 		const handlerSource = readSource('src/host/kustoFavoritesApplicationHandler.ts');
+		const projectionSource = readSource('src/host/kustoConnectionsProjectionApplicationHandler.ts');
 		const helpersSource = readSource('src/host/connectionManagerFavorites.ts');
 		const managerViewerSource = readSource('src/host/connectionManagerViewer.ts');
 		const extensionSource = readSource('src/host/extension.ts');
@@ -329,7 +330,7 @@ describe('QueryEditorProvider Kusto favorites application', () => {
 		]) {
 			expect(connectionSource).not.toContain(displaced);
 		}
-		expect(connectionSource).toContain('favorites: this.host.getKustoFavorites()');
+		expect(projectionSource).toContain('favorites: this.options.getFavorites()');
 		expect(connectionSource).toContain('const favorites = this.host.getKustoFavorites();');
 		expect(connectionSource).toContain('getKustoFavoriteKey(f.connectionId, f.database)');
 		expect(connectionSource).toContain('getKustoFavoriteKey(conn.id, database)');

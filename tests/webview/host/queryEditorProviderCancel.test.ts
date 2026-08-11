@@ -1197,6 +1197,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.copilotChatFirstTimeApplication = { dispose: vi.fn() };
 		provider.workbenchToolSessionApplication = { dispose: vi.fn() };
 		provider.kustoConnectionBrowsingApplication = { dispose: vi.fn() };
+		provider.kustoConnectionsProjectionApplication = { dispose: vi.fn() };
 		provider.copilotQueryWorkflowApplication = { dispose: vi.fn() };
 		provider.kustoSectionExecutionApplication = { dispose: vi.fn() };
 		provider.comparisonPreparationApplication = { dispose: vi.fn(() => rejectComparison(new Error('Canceled'))) };
@@ -1254,6 +1255,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.copilotChatFirstTimeApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.workbenchToolSessionApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.kustoConnectionBrowsingApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider.kustoConnectionsProjectionApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.copilotQueryWorkflowApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider._panelDisposed).toBe(true);
 		expect(provider.panel).toBeUndefined();
@@ -2466,7 +2468,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 	it('does not revoke unrelated owners when a forgotten account maps to no connections', () => {
 		const provider = createProviderHarness();
 		provider.copilot = { invalidateKustoConnections: vi.fn() };
-		provider.sendConnectionsData = vi.fn(async () => undefined);
+		provider.kustoConnectionsProjectionApplication = { refresh: vi.fn(async () => undefined) };
 		const reservation = provider.kustoExecutionCoordinator.reserve({
 			boxId: 'query_1', executionId: 'execution-unrelated', sectionInstanceId: 'instance-query_1',
 			targetGeneration: 1, connectionId: TEST_CONNECTION.id, database: 'Samples', producer: 'manual',
@@ -2480,7 +2482,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.kustoExecutionCoordinator.getActive('query_1')).toBe(reservation);
 		expect(provider.copilot.invalidateKustoConnections).not.toHaveBeenCalled();
 		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'kustoAuthIdentityChanged' }));
-		expect(provider.sendConnectionsData).toHaveBeenCalledOnce();
+		expect(provider.kustoConnectionsProjectionApplication.refresh).toHaveBeenCalledOnce();
 	});
 
 	it('requires the exact Kusto execution-start acknowledgement before Copilot dispatch', async () => {

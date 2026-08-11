@@ -33,7 +33,6 @@ import {
 	buildCacheDirective as buildCacheDirectiveFn
 } from './queryEditorUtils';
 import {
-	STORAGE_KEYS,
 	CachedSchemaEntry,
 	CacheUnit,
 	IncomingWebviewMessage,
@@ -46,7 +45,6 @@ import { EmbeddedTutorialWebviewHost, EmbeddedTutorialWebviewRegistry } from './
 import { perfMark } from './perfTrace';
 import { getWorkbenchLogger, type WorkbenchLogger } from './workbenchLogger';
 import type { FileOpenTrace } from './fileOpenTrace';
-import { getEditingPreferencesData } from './editingPreferences';
 import { QueryRunCoordinator } from './queryRunCoordinator';
 import { KustoExecutionCoordinator } from './kustoExecutionCoordinator';
 import { type KustoCopilotRequestIdentity, type KustoDispatchIdentity, type KustoSectionExecutionTarget, type PreparedComparisonSection } from '../shared/kustoExecution';
@@ -203,6 +201,10 @@ import {
 	HostPersistedResultSanitizationApplicationHandler,
 	type PersistedResultSanitizationApplicationHandler,
 } from './persistedResultSanitizationApplicationHandler';
+import {
+	HostKustoConnectionsProjectionApplicationHandler,
+	type KustoConnectionsProjectionApplicationHandler,
+} from './kustoConnectionsProjectionApplicationHandler';
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
 	private static readonly activeProviders = new Set<QueryEditorProvider>();
@@ -290,6 +292,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly sqlSchemaRequestApplication: SqlSchemaRequestApplicationHandler;
 	readonly sqlConnectionsProjectionApplication: SqlConnectionsProjectionApplicationHandler;
 	readonly persistedResultSanitizationApplication: PersistedResultSanitizationApplicationHandler;
+	readonly kustoConnectionsProjectionApplication: KustoConnectionsProjectionApplicationHandler;
 	readonly onDidInvalidateSqlPersistence: vscode.Event<void>;
 	readonly onDidInvalidateKustoPersistence: vscode.Event<void>;
 
@@ -490,6 +493,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		sqlSchemaRequestApplication?: SqlSchemaRequestApplicationHandler,
 		sqlConnectionsProjectionApplication?: SqlConnectionsProjectionApplicationHandler,
 		persistedResultSanitizationApplication?: PersistedResultSanitizationApplicationHandler,
+		kustoConnectionsProjectionApplication?: KustoConnectionsProjectionApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -544,7 +548,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			?? new HostKustoConnectionIntakeApplicationHandler({
 				connectionManager: this.connectionManager,
 				postMessage: message => this.postMessage(message),
-				refreshConnections: () => this.sendConnectionsData(),
+				refreshConnections: () => this.kustoConnectionsProjectionApplication.refresh(),
 			});
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
 			this.handleKustoAuthPreferenceChange(change);
@@ -561,7 +565,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					lastDatabase: this.connection.getLastDatabase(),
 				}),
 				postMessage: message => this.postMessage(message),
-				refreshConnections: () => this.sendConnectionsData(),
+				refreshConnections: () => this.kustoConnectionsProjectionApplication.refresh(),
 				output: this.output,
 			});
 		this.sqlConnectionOnboardingApplication = sqlConnectionOnboardingApplication
@@ -598,6 +602,21 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				authPreferences: KustoAuthPreferenceService.getInstance(this.context),
 				postMessage: message => this.postMessage(message),
 				output: this.output,
+			});
+		this.kustoConnectionsProjectionApplication = kustoConnectionsProjectionApplication
+			?? new HostKustoConnectionsProjectionApplicationHandler({
+				context: this.context,
+				connectionManager: this.connectionManager,
+				authPreferences: KustoAuthPreferenceService.getInstance(this.context),
+				kustoClient: this.kustoClient,
+				getLastSelection: () => ({
+					lastConnectionId: this.connection.getLastConnectionId(),
+					lastDatabase: this.connection.getLastDatabase(),
+				}),
+				getCachedDatabases: () => this.connection.getCachedDatabases(),
+				getFavorites: () => this.kustoFavoritesApplication.getFavorites(),
+				postMessage: message => this.postMessage(message),
+				postKustoPublication: message => this.postKustoPublication(message),
 			});
 		this.schema = new SchemaService(this);
 		this.sqlLifecycle = new SqlEditorLifecycleCoordinator({
@@ -708,7 +727,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			});
 		this.kustoConnectionBrowsingApplication = kustoConnectionBrowsingApplication
 			?? new HostKustoConnectionBrowsingApplicationHandler({
-				sendConnectionsData: policyRequestId => this.sendConnectionsData(policyRequestId),
+				sendConnectionsData: async policyRequestId => {
+					await this.kustoConnectionsProjectionApplication.refresh(policyRequestId);
+				},
 				sendDatabases: (connectionId, boxId, request) =>
 					this.connection.sendDatabases(connectionId, boxId, request),
 				saveLastSelection: (connectionId, database) =>
@@ -786,7 +807,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			publishIdentityChange: connectionIds => this.postMessage({
 				type: 'kustoAuthIdentityChanged', connectionIds: [...connectionIds], reason: 'connection-mutated',
 			}),
-			refreshConnections: () => this.sendConnectionsData(),
+			refreshConnections: () => this.kustoConnectionsProjectionApplication.refresh(),
 		});
 		this.sqlLifecycle.startSession();
 	}
@@ -808,7 +829,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				this.postMessage({ type: 'kustoAuthIdentityChanged', connectionIds: change.connectionIds, reason: change.reason });
 			}
 		}
-		void this.sendConnectionsData();
+		void this.kustoConnectionsProjectionApplication.refresh();
 	}
 
 	async initializeWebviewPanel(
@@ -886,9 +907,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	/** URI string of the backing document (set by custom editor providers before initializeWebviewPanel). */
 	documentUri?: string;
-	private connectionsDataRevision = 0;
-	private connectionsDataTail: Promise<void> = Promise.resolve();
-
 	async requestSectionsFromWebview(purpose?: 'schema-refresh', targetConnectionId?: string): Promise<unknown[] | undefined> {
 		return this.workbenchToolSessionApplication.requestSectionsFromWebview(purpose, targetConnectionId);
 	}
@@ -1246,7 +1264,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	public async refreshConnectionsData(): Promise<void> {
-		await this.sendConnectionsData();
+		await this.kustoConnectionsProjectionApplication.refresh();
 	}
 
 	public async refreshSqlConnectionsData(): Promise<void> {
@@ -1261,22 +1279,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	public getKustoFavorites() {
 		return this.kustoFavoritesApplication.getFavorites();
-	}
-
-	private async sendConnectionsData(policyRequestId?: string): Promise<void> {
-		const revision = ++this.connectionsDataRevision;
-		const send = async () => {
-			const { type: _type, revision: editingPreferencesRevision, ...editingPreferences } = getEditingPreferencesData(this.context);
-			await this.connection.sendConnectionsData({
-				...editingPreferences,
-				editingPreferencesRevision,
-				connectionsRevision: revision,
-				copilotChatFirstTimeDismissed: !!this.context.globalState.get<boolean>(STORAGE_KEYS.copilotChatFirstTimeDismissed),
-				...(policyRequestId ? { policyRequestId } : {}),
-			});
-		};
-		this.connectionsDataTail = this.connectionsDataTail.then(send, send);
-		await this.connectionsDataTail;
 	}
 
 	revealPanel(): void {
@@ -1348,6 +1350,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.copilotChatFirstTimeApplication.dispose();
 		this.workbenchToolSessionApplication.dispose();
 		this.kustoConnectionBrowsingApplication.dispose();
+		this.kustoConnectionsProjectionApplication.dispose();
 		this.copilotQueryWorkflowApplication.dispose();
 		this.kustoSectionExecutionApplication.dispose();
 		this.comparisonPreparationApplication.dispose();

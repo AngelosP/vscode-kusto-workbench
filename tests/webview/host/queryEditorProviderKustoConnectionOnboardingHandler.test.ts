@@ -265,9 +265,11 @@ describe('QueryEditorProvider Kusto connection-onboarding application', () => {
 		for (const method of ['promptAddConnection', 'addConnectionFromWebview', 'testConnectionFromWebview']) {
 			expect(serviceSource).not.toContain(`async ${method}(`);
 		}
-		expect(providerSource).toContain('private connectionsDataRevision = 0;');
-		expect(providerSource).toContain('private connectionsDataTail: Promise<void> = Promise.resolve();');
-		expect(providerSource).toContain('refreshConnections: () => this.sendConnectionsData()');
+		expect(providerSource).not.toContain('connectionsDataRevision');
+		expect(providerSource).not.toContain('connectionsDataTail');
+		expect(providerSource).toContain(
+			'refreshConnections: () => this.kustoConnectionsProjectionApplication.refresh()',
+		);
 		expect(providerSource).toContain('this.kustoConnectionOnboardingApplication.dispose();');
 		expect(handlerSource).toContain('await this.options.refreshConnections();');
 		expect(handlerSource).toContain('await this.options.saveLastSelection(newConnection.id, newConnection.database);');

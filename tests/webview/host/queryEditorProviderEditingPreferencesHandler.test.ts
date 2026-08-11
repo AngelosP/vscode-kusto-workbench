@@ -186,6 +186,7 @@ describe('QueryEditorProvider editing-preferences application', () => {
 		);
 		const providerSource = readSource('src/host/queryEditorProvider.ts');
 		const handlerSource = readSource('src/host/editingPreferencesApplicationHandler.ts');
+		const projectionSource = readSource('src/host/kustoConnectionsProjectionApplicationHandler.ts');
 		const preferenceSource = readSource('src/host/editingPreferences.ts');
 		const extensionSource = readSource('src/host/extension.ts');
 		const emitterSource = readSource('src/webview/shared/webview-messages.ts');
@@ -202,8 +203,9 @@ describe('QueryEditorProvider editing-preferences application', () => {
 		expect(providerSource).not.toContain('updateEditingPreference(');
 		expect(providerSource).not.toContain('setEditingPreference');
 		expect(providerSource).toContain('this.editingPreferencesApplication.dispose();');
-		expect(providerSource).toContain('getEditingPreferencesData(this.context)');
-		expect(providerSource).toContain('editingPreferencesRevision');
+		expect(providerSource).not.toContain('getEditingPreferencesData');
+		expect(projectionSource).toContain('getEditingPreferencesData(this.options.context)');
+		expect(projectionSource).toContain('editingPreferencesRevision');
 		expect(handlerSource).toContain('await setEditingPreference(this.options.context, key, !!message.enabled)');
 		expect(handlerSource).toContain('await publisher.postToAllWebviews(preferences);');
 		expect(handlerSource).toContain('await this.options.postMessage(preferences);');

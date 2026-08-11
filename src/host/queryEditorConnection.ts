@@ -21,8 +21,6 @@ import {
 } from './databaseListTrace';
 import type { KustoEditorLifecycleIdentity } from '../shared/kustoSchemaLifecycle';
 
-export let testIsolateKustoConnections = false;
-
 type DatabaseDiscoveryRequest =
 	| ({ mode: 'passive'; requestToken?: string; requiredDatabase?: string } & Partial<KustoEditorLifecycleIdentity>)
 	| ({ mode: 'interactive-refresh'; requestToken?: string; requiredDatabase?: string } & Partial<KustoEditorLifecycleIdentity>);
@@ -71,11 +69,6 @@ function isDatabaseDiscoveryCancellation(error: unknown): boolean {
 	}
 	return false;
 }
-
-export function setTestIsolateKustoConnections(enabled: boolean): void {
-	testIsolateKustoConnections = !!enabled;
-}
-
 
 // ── Pure utility functions (no instance state needed) ──
 
@@ -130,7 +123,6 @@ export interface ConnectionServiceHost {
 	readonly kustoClient: KustoQueryClient;
 	readonly output: WorkbenchLogger;
 	postMessage(message: unknown): Thenable<boolean> | PromiseLike<boolean> | void;
-	postKustoPublication?(message: unknown): Promise<boolean>;
 	formatQueryExecutionErrorForUser(error: unknown, connection: KustoConnection, database?: string): string;
 	normalizeClusterUrlKey(url: string): string;
 	getCachedSchemaFromDisk(cacheKey: string): Promise<CachedSchemaEntry | undefined>;
@@ -598,78 +590,6 @@ export class ConnectionService {
 				error: `Failed to ${action} database list.\n${userMessage}`
 			});
 		}
-	}
-
-	// ── Send connections data ──
-
-	async sendConnectionsData(settings: {
-		caretDocsEnabled: boolean;
-		caretDocsEnabledUserSet: boolean;
-		autoTriggerAutocompleteEnabled: boolean;
-		autoTriggerAutocompleteEnabledUserSet: boolean;
-		copilotInlineCompletionsEnabled: boolean;
-		copilotInlineCompletionsEnabledUserSet: boolean;
-		editingPreferencesRevision: number;
-		copilotChatFirstTimeDismissed: boolean;
-		connectionsRevision: number;
-		policyRequestId?: string;
-	}): Promise<void> {
-		if (testIsolateKustoConnections) {
-			this.host.postMessage({
-				type: 'connectionsData',
-				connections: [],
-				lastConnectionId: null,
-				lastDatabase: null,
-				cachedDatabases: {},
-				favorites: [],
-				...settings,
-				leaveNoTraceClusters: [],
-				leaveNoTraceGloballyBlocked: false,
-				leaveNoTraceRevisions: {},
-				devNotesEnabled: true
-			});
-			return;
-		}
-		const attempts = settings.policyRequestId ? 2 : 1;
-		for (let attempt = 0; attempt < attempts; attempt++) {
-			const accounts = await this.authPreferences.getAccounts();
-			const applied = await this.host.connectionManager.runWithLeaveNoTraceSnapshotLock(async policy => {
-				const connections = this.host.connectionManager.getConnections().map(connection => {
-					let accountPartition: string | undefined;
-					try { accountPartition = this.getResolvedAccountPartition(connection); } catch { accountPartition = undefined; }
-					let connectionIdentityKey: string | undefined;
-					try { connectionIdentityKey = getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId); } catch { connectionIdentityKey = undefined; }
-					return {
-						...connection,
-						accountPartition,
-						connectionRevision: this.host.connectionManager.getConnectionIncarnation(connection.id),
-						...(connectionIdentityKey ? { connectionIdentityKey } : {}),
-					};
-				});
-				const leaveNoTraceClusters = policy.globallyBlocked
-					? [...new Set(connections.map(connection => this.host.connectionManager.normalizeClusterUrl(connection.clusterUrl)).filter(Boolean))]
-					: [...policy.clusterKeys];
-				const payload = {
-					type: 'connectionsData',
-					connections,
-					accounts,
-					lastConnectionId: this.lastConnectionId,
-					lastDatabase: this.lastDatabase,
-					cachedDatabases: this.getCachedDatabases(),
-					favorites: this.host.getKustoFavorites(),
-					...settings,
-					leaveNoTraceClusters,
-					leaveNoTraceGloballyBlocked: policy.globallyBlocked,
-					leaveNoTraceRevisions: policy.revocationGenerations,
-					devNotesEnabled: true
-				};
-				if (this.host.postKustoPublication) return this.host.postKustoPublication(payload);
-				await Promise.resolve(this.host.postMessage(payload));
-				return true;
-			});
-			if (applied) return;
-		}
-		throw new Error('Kusto policy snapshot was not applied by the webview.');
 	}
 
 	// ── Schema inference for .kql/.csl files ──
