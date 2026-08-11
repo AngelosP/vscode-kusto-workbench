@@ -23,6 +23,10 @@ import {
 	isKustoDatabaseDiscoveryHostMessageType,
 	parseKustoDatabaseDiscoveryHostMessage,
 } from '../../shared/kustoDatabaseDiscoveryProtocol.js';
+import {
+	isSqlDatabaseDiscoveryHostMessageType,
+	parseSqlDatabaseDiscoveryHostMessage,
+} from '../../shared/sqlDatabaseDiscoveryProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -1451,6 +1455,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 	message = (message && typeof message === 'object') ? message : {};
 	if (isKustoDatabaseDiscoveryHostMessageType(message)) {
 		const parsed = parseKustoDatabaseDiscoveryHostMessage(message);
+		if (!parsed.ok) return;
+		message = parsed.value;
+	}
+	if (isSqlDatabaseDiscoveryHostMessageType(message)) {
+		const parsed = parseSqlDatabaseDiscoveryHostMessage(message);
 		if (!parsed.ok) return;
 		message = parsed.value;
 	}

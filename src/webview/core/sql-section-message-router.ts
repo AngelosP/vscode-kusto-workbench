@@ -1,4 +1,9 @@
 import { buildSchemaInfo } from '../shared/schema-utils.js';
+import {
+	isSqlDatabaseDiscoveryHostMessageType,
+	parseSqlDatabaseDiscoveryHostMessage,
+	type SqlDatabaseDiscoveryHostMessage,
+} from '../../shared/sqlDatabaseDiscoveryProtocol.js';
 
 export interface SqlSectionSessionTarget {
 	readonly boxId: string;
@@ -48,8 +53,8 @@ export interface SqlSectionMessageRouterEffects {
 	getDerivedSourceBoxId?(boxId: string): string | undefined;
 	clearSchema(boxId: string): void;
 	setSchema(boxId: string, schema: unknown): void;
-	updateDatabases(boxId: string, databases: unknown, connectionId: unknown): void;
-	reportDatabasesError(boxId: string, error: unknown, connectionId: unknown): void;
+	updateDatabases(boxId: string, databases: string[], connectionId: string): void;
+	reportDatabasesError(boxId: string, error: string, connectionId: string): void;
 	handleStsResponse(boxId: string, requestId: string, result: unknown, ownerToken?: string, targetGeneration?: number): void;
 	handleStsDiagnostics(boxId: string, markers: unknown[]): void;
 	clearPolicyBox(boxId: string): void;
@@ -110,7 +115,7 @@ function getMessageTarget(
 
 function messageMatchesInstance(
 	session: SqlSectionSessionTarget | undefined,
-	message: Record<string, unknown>,
+	message: { readonly sectionInstanceId?: unknown },
 ): session is SqlSectionSessionTarget {
 	return !!session && session.instanceId === String(message.sectionInstanceId || '');
 }
@@ -161,6 +166,13 @@ export function routeSqlSectionMessage(
 	message: Record<string, unknown>,
 	effects: SqlSectionMessageRouterEffects,
 ): SqlSectionMessageRouteResult {
+	let databaseMessage: SqlDatabaseDiscoveryHostMessage | undefined;
+	if (isSqlDatabaseDiscoveryHostMessageType(message)) {
+		const parsed = parseSqlDatabaseDiscoveryHostMessage(message);
+		if (!parsed.ok) return 'rejected';
+		databaseMessage = parsed.value;
+		message = parsed.value as unknown as Record<string, unknown>;
+	}
 	const type = String(message.type || '');
 	const boxId = String(message.boxId || '').trim();
 	if (boxId && SQL_OWNER_SENSITIVE_MESSAGE_TYPES.has(type)) {
@@ -182,23 +194,27 @@ export function routeSqlSectionMessage(
 			return 'handled';
 		}
 		case 'sqlDatabasesLoading': {
+			const delivery = databaseMessage!;
 			if (!boxId) return 'rejected';
 			const { section, session } = getMessageTarget(boxId, effects);
-			if (!messageMatchesInstance(session, message)
-				|| !session.beginDatabaseRequest(String(message.requestId || ''), Number(message.targetGeneration ?? 0))) return 'rejected';
+			if (!messageMatchesInstance(session, delivery)
+				|| !session.beginDatabaseRequest(delivery.requestId, delivery.targetGeneration)) return 'rejected';
 			section?.setDatabasesLoading?.(true);
 			return 'handled';
 		}
 		case 'sqlDatabasesData':
 		case 'sqlDatabasesError': {
+			const delivery = databaseMessage!;
 			if (!boxId) return 'rejected';
 			const { session } = getMessageTarget(boxId, effects);
-			const requestId = typeof message.requestId === 'string' ? message.requestId : undefined;
-			if (!messageMatchesInstance(session, message)
-				|| !session.acceptDatabaseResponse(requestId, Number(message.targetGeneration ?? 0))) return 'rejected';
-			if (type === 'sqlDatabasesData') effects.updateDatabases(boxId, message.databases, message.sqlConnectionId);
-			else effects.reportDatabasesError(boxId, message.error, message.sqlConnectionId);
-			session.completeDatabaseRequest(requestId!);
+			if (!messageMatchesInstance(session, delivery)
+				|| !session.acceptDatabaseResponse(delivery.requestId, delivery.targetGeneration)) return 'rejected';
+			if (delivery.type === 'sqlDatabasesData') {
+				effects.updateDatabases(boxId, delivery.databases, delivery.sqlConnectionId);
+			} else if (delivery.type === 'sqlDatabasesError') {
+				effects.reportDatabasesError(boxId, delivery.error, delivery.sqlConnectionId);
+			} else return 'rejected';
+			session.completeDatabaseRequest(delivery.requestId);
 			return 'handled';
 		}
 		case 'sqlSchemaData': {

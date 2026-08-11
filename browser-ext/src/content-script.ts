@@ -21,6 +21,7 @@ import { type BrowserCompanionState } from './companion-state';
 import { BrowserFileLoadCoordinator, type BrowserFileLoadSnapshot } from './browser-file-load';
 import { installBrowserViewportForwarding } from './browser-viewport-forwarding';
 import { fetchBrowserText } from './browser-text-fetch';
+import { retireBrowserViewerElement } from './browser-viewer-cleanup';
 
 // ---- State ----
 
@@ -175,18 +176,9 @@ function cleanup() {
 		clearTimeout(retryTimer);
 		retryTimer = null;
 	}
-	if (kustoTab && kustoTab.parentNode) {
-		kustoTab.parentNode.removeChild(kustoTab);
-		kustoTab = null;
-	}
-	if (renderButton && renderButton.parentNode) {
-		renderButton.parentNode.removeChild(renderButton);
-		renderButton = null;
-	}
-	if (viewerIframe && viewerIframe.parentNode) {
-		viewerIframe.parentNode.removeChild(viewerIframe);
-		viewerIframe = null;
-	}
+	kustoTab = retireBrowserViewerElement(kustoTab);
+	renderButton = retireBrowserViewerElement(renderButton);
+	viewerIframe = retireBrowserViewerElement(viewerIframe, iframe => { iframe.onload = null; });
 	if (originalContent) {
 		originalContent.style.display = '';
 		originalContent = null;

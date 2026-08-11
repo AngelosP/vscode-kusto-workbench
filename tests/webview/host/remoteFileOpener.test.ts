@@ -165,6 +165,15 @@ describe('fetchRemoteContent', () => {
 
 		await expect(outcome).resolves.toEqual(expect.objectContaining({ message: 'body aborted' }));
 	});
+
+	it('cancels a non-success response body before throwing the HTTP error', async () => {
+		const cancel = vi.fn();
+		const body = new ReadableStream<Uint8Array>({ cancel });
+		vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status: 500, statusText: 'Server Error' })));
+
+		await expect(fetchRemoteContent('https://files.example/report.kqlx')).rejects.toThrow('HTTP 500');
+		expect(cancel).toHaveBeenCalledOnce();
+	});
 });
 
 describe('remoteContentSnapshotId', () => {
@@ -350,6 +359,21 @@ describe('remote snapshot lifecycle disposal', () => {
 		runner.run('Remote snapshot tab claim', task);
 		await vi.waitFor(() => expect(task).toHaveBeenCalledOnce());
 		runner.dispose();
+		await vi.advanceTimersByTimeAsync(2_000);
+
+		expect(task).toHaveBeenCalledOnce();
+	});
+
+	it('does not retry a task that rejects after runner disposal', async () => {
+		vi.useFakeTimers();
+		let rejectTask!: (error: Error) => void;
+		const task = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectTask = reject; }));
+		const runner = new RemoteSnapshotLifecycleTaskRunner();
+
+		runner.run('Remote snapshot tab claim', task);
+		runner.dispose();
+		rejectTask(new Error('late claim failure'));
+		await Promise.resolve();
 		await vi.advanceTimersByTimeAsync(2_000);
 
 		expect(task).toHaveBeenCalledOnce();

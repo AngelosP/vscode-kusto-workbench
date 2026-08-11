@@ -30,6 +30,11 @@ import {
 	parseKustoDatabaseDiscoveryWebviewMessage,
 	type KustoDatabaseDiscoveryWebviewMessage,
 } from '../../shared/kustoDatabaseDiscoveryProtocol.js';
+import {
+	isSqlDatabaseDiscoveryWebviewMessageType,
+	parseSqlDatabaseDiscoveryWebviewMessage,
+	type SqlDatabaseDiscoveryWebviewMessage,
+} from '../../shared/sqlDatabaseDiscoveryProtocol.js';
 import { pState } from './persistence-state.js';
 
 let compatibilityDocumentRequestSequence = 0;
@@ -240,8 +245,7 @@ export type OutgoingWebviewMessage =
 	// SQL connections & databases
 	| { type: 'getSqlConnections' }
 	| { type: 'sqlSectionOpen'; boxId: string; sectionInstanceId: string }
-	| { type: 'getSqlDatabases'; sqlConnectionId: string; boxId: string; sectionInstanceId: string; targetGeneration: number }
-	| { type: 'refreshSqlDatabases'; sqlConnectionId: string; boxId: string; sectionInstanceId: string; targetGeneration: number }
+	| SqlDatabaseDiscoveryWebviewMessage
 	| { type: 'retireSqlTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number }
 	| { type: 'saveSqlLastSelection'; sqlConnectionId: string; database?: string }
 	| { type: 'promptAddSqlConnection'; boxId?: string }
@@ -372,6 +376,13 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 		const parsed = parseKustoDatabaseDiscoveryWebviewMessage(msg);
 		if (!parsed.ok) {
 			console.error('[kusto] Rejected invalid Kusto database discovery webview message:', parsed.error);
+			return;
+		}
+		outbound = parsed.value;
+	} else if (isSqlDatabaseDiscoveryWebviewMessageType(msg)) {
+		const parsed = parseSqlDatabaseDiscoveryWebviewMessage(msg);
+		if (!parsed.ok) {
+			console.error('[kusto] Rejected invalid SQL database discovery webview message:', parsed.error);
 			return;
 		}
 		outbound = parsed.value;

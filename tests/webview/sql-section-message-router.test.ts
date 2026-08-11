@@ -82,10 +82,10 @@ describe('routeSqlSectionMessage', () => {
 		registerSqlSectionSession(target);
 		const { effects } = createEffects(target);
 		target.adoptHostGeneration(4);
-		expect(routeSqlSectionMessage({ type: 'sqlDatabasesLoading', boxId: 'sql-1', sectionInstanceId: target.instanceId, requestId: 'current', targetGeneration: 4 }, effects)).toBe('handled');
-		expect(routeSqlSectionMessage({ type: 'sqlDatabasesData', boxId: 'sql-1', sectionInstanceId: target.instanceId, targetGeneration: 4 }, effects)).toBe('rejected');
-		expect(routeSqlSectionMessage({ type: 'sqlDatabasesData', boxId: 'sql-1', sectionInstanceId: target.instanceId, requestId: 'stale', targetGeneration: 4 }, effects)).toBe('rejected');
-		expect(routeSqlSectionMessage({ type: 'sqlDatabasesData', boxId: 'sql-1', sectionInstanceId: target.instanceId, requestId: 'current', targetGeneration: 4 }, effects)).toBe('handled');
+		expect(routeSqlSectionMessage({ type: 'sqlDatabasesLoading', boxId: 'sql-1', sectionInstanceId: target.instanceId, sqlConnectionId: 'sql-a', requestId: 'current', targetGeneration: 4 }, effects)).toBe('handled');
+		expect(routeSqlSectionMessage({ type: 'sqlDatabasesData', boxId: 'sql-1', sectionInstanceId: target.instanceId, sqlConnectionId: 'sql-a', targetGeneration: 4, databases: ['Db'] }, effects)).toBe('rejected');
+		expect(routeSqlSectionMessage({ type: 'sqlDatabasesData', boxId: 'sql-1', sectionInstanceId: target.instanceId, sqlConnectionId: 'sql-a', requestId: 'stale', targetGeneration: 4, databases: ['Db'] }, effects)).toBe('rejected');
+		expect(routeSqlSectionMessage({ type: 'sqlDatabasesData', boxId: 'sql-1', sectionInstanceId: target.instanceId, sqlConnectionId: 'sql-a', requestId: 'current', targetGeneration: 4, databases: ['Db'] }, effects)).toBe('handled');
 		expect(effects.updateDatabases).toHaveBeenCalledOnce();
 	});
 
@@ -96,7 +96,7 @@ describe('routeSqlSectionMessage', () => {
 		target.adoptHostGeneration(4);
 		expect(routeSqlSectionMessage({
 			type: 'sqlDatabasesLoading', boxId: 'sql-1', sectionInstanceId: target.instanceId,
-			requestId: 'first', targetGeneration: 4,
+			sqlConnectionId: 'sql-a', requestId: 'first', targetGeneration: 4,
 		}, effects)).toBe('handled');
 		(effects.updateDatabases as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
 			target.beginDatabaseRequest('newer', 4);
@@ -104,10 +104,41 @@ describe('routeSqlSectionMessage', () => {
 
 		expect(routeSqlSectionMessage({
 			type: 'sqlDatabasesData', boxId: 'sql-1', sectionInstanceId: target.instanceId,
-			requestId: 'first', targetGeneration: 4, databases: ['Db'],
+			sqlConnectionId: 'sql-a', requestId: 'first', targetGeneration: 4, databases: ['Db'],
 		}, effects)).toBe('handled');
 		expect(target.completeDatabaseRequest).toHaveReturnedWith(false);
 		expect(target.acceptDatabaseResponse('newer', 4)).toBe(true);
+	});
+
+	it('rejects malformed current database data before ledger or UI effects', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		const { effects } = createEffects(target);
+		const inheritedDatabases = new Array<string>(1);
+		const inheritedDatabasePrototype = Object.create(Array.prototype) as string[];
+		inheritedDatabasePrototype[0] = 'InheritedDb';
+		Object.setPrototypeOf(inheritedDatabases, inheritedDatabasePrototype);
+		target.adoptHostGeneration(4);
+		expect(routeSqlSectionMessage({
+			type: 'sqlDatabasesLoading', boxId: 'sql-1', sectionInstanceId: target.instanceId,
+			sqlConnectionId: 'sql-a', requestId: 'current', targetGeneration: 4,
+		}, effects)).toBe('handled');
+
+		expect(routeSqlSectionMessage({
+			type: 'sqlDatabasesData', boxId: 'sql-1', sectionInstanceId: target.instanceId,
+			sqlConnectionId: 'sql-a', requestId: 'current', targetGeneration: 4,
+			databases: ['CurrentDb', 42],
+		}, effects)).toBe('rejected');
+		expect(routeSqlSectionMessage({
+			type: 'sqlDatabasesData', boxId: 'sql-1', sectionInstanceId: target.instanceId,
+			sqlConnectionId: 'sql-a', requestId: 'current', targetGeneration: 4,
+			databases: inheritedDatabases,
+		}, effects)).toBe('rejected');
+
+		expect(target.acceptDatabaseResponse('current', 4)).toBe(true);
+		expect(effects.updateDatabases).not.toHaveBeenCalled();
+		expect(effects.reportDatabasesError).not.toHaveBeenCalled();
+		expect(target.completeDatabaseRequest).not.toHaveBeenCalled();
 	});
 
 	it('rejects owner-sensitive messages after owner rotation', () => {
@@ -153,7 +184,7 @@ describe('routeSqlSectionMessage', () => {
 
 		expect(routeSqlSectionMessage({
 			type: 'sqlDatabasesLoading', boxId: 'sql-1', sectionInstanceId: 'retired-instance',
-			requestId: 'stale', targetGeneration: 2,
+			sqlConnectionId: 'sql-a', requestId: 'stale', targetGeneration: 2,
 		}, effects)).toBe('rejected');
 		expect(target.beginDatabaseRequest).not.toHaveBeenCalled();
 	});

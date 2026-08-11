@@ -45,6 +45,9 @@ export async function fetchBrowserText(url: string, signal: AbortSignal): Promis
 		redirect: 'follow',
 		headers: { 'Accept': 'text/plain, application/json, */*' },
 	});
-	if (!response.ok) throw new BrowserHttpStatusError(response.status, response.statusText);
+	if (!response.ok) {
+		try { await response.body?.cancel(); } catch { /* ignore */ }
+		throw new BrowserHttpStatusError(response.status, response.statusText);
+	}
 	return readBrowserTextBody(response);
 }

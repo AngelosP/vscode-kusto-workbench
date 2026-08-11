@@ -51,7 +51,7 @@ export class BrowserFileLoadCoordinator {
 			if (controller.signal.aborted || !this.isCurrent(snapshot)) return undefined;
 			throw error;
 		} finally {
-			if (this.activeRequest?.generation === snapshot.generation) this.activeRequest = undefined;
+			if (this.activeRequest?.controller === controller) this.activeRequest = undefined;
 		}
 	}
 

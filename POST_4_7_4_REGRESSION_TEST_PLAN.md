@@ -37,7 +37,7 @@ These journeys are release gates because unit tests cannot prove their input and
 | Journey | Test ID | Assertions |
 | --- | --- | --- |
 | Scrolled Monaco click and typing | `kusto-click-caret-fidelity` | Native click maps to the intended line; uninterrupted typing changes that model and rendered row; caret advances exactly; page scroll remains stable |
-| Responsive toolbar overflow | `sql-toolbar-actions` | Real overflow appears at narrow width; hidden Search action opens Monaco Find; action closes menu; real page scroll dismisses a reopened menu |
+| Responsive toolbar overflow | `sql-toolbar-actions` | Real Copilot split narrows the editor; hidden Share action routes exactly; action closes menu; native PageDown dismisses a reopened menu |
 | Section controls and layout | `section-layout-regression` | Native double-click auto-fit changes bounded height; real collapse/expand hides and restores content without replacing section ownership |
 | Compatibility close | `kql-companion-close` | Dirty metadata remains off disk; native Save/Discard modal appears; Save writes exact sidecar state; reopen restores it |
 | Horizontal table keyboard navigation | `tabular-keyboard-horizontal-scroll` plus authenticated table suites | Real arrow/Page keys move the active table viewport without moving the page |
@@ -93,3 +93,21 @@ Then run the native behavior subset above against `default`, `kusto-auth`, and `
 2. A never-settling nested webview initializer can outlive panel cancellation/disposal. The fix must preserve pre-handler `beforeunload` state; racing disposal and dropping that state is not acceptable.
 3. Editor database loading needs a bounded timeout owned by the existing lifecycle coordinator so a sole malformed/lost terminal cannot leave controls loading forever.
 4. The browser viewer still needs built-browser adversarial coverage for forged pre-adoption page messages and repeated SPA navigation.
+
+## Framework Fix Request: Selector-Based Native Drag
+
+**What I was trying to do:** Reorder a section through the real Section Manager/drag handle, immediately Save or close, reopen the notebook, and verify exact durable order.
+
+**What capability is missing:** `vscode-extension-tester` has selector clicks and raw pointer movement, but no selector-to-selector native drag step that resolves stable element centers across webview shadow DOM and holds the OS mouse button during movement.
+
+**What I observed:** The extension exposes stable section IDs and `.section-card[data-section-id]` cards, but the available test would have to dispatch synthetic drag events or hard-code layout-specific coordinates. Neither is acceptable evidence for the human drag path.
+
+**What the framework needs:** Resolve source and target selectors through CDP, translate their centers to Dev Host screen coordinates, perform native mouse-down, interpolated movement, and mouse-up through the Windows bridge, and capture diagnostics/screenshots when either target is offscreen.
+
+**Suggested syntax:**
+
+```gherkin
+When I drag "kw-section-reorder-popup .section-card[data-section-id='section-a']" to "kw-section-reorder-popup .section-card[data-section-id='section-b']" in the webview
+```
+
+**Priority:** degraded. Deterministic persistence coverage exists, but the real human reorder gesture remains unqualified.

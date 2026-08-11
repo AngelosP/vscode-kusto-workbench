@@ -386,10 +386,10 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::publishOwnerChangeWithRetry::postMessageRequiredContained::1790:13',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::publishOwnerChangeWithRetry::postMessageRequiredContained::1801:27',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::replayOwnerChange::postMessageRequiredContained::1830:14',
-	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::deliverMessage::postMessage::143:31',
-	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::deliverTerminalMessage::postMessage::161:31',
-	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::postSqlConnectionMessageAllowed::postMessage::215:31',
-	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::postSqlConnectionMessageProtection::postMessage::284:31',
+	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::deliverMessage::postMessage::146:31',
+	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::deliverTerminalMessage::postMessage::164:31',
+	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::postSqlConnectionMessageAllowed::postMessage::218:31',
+	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::postSqlConnectionMessageProtection::postMessage::287:31',
 	'src/host/sqlSectionExecutionApplicationHandler.ts::postSqlOwnerMessageAllowed::postMessage::250:21',
 	'src/host/sqlSectionExecutionApplicationHandler.ts::postSqlOwnerMessageProtection::postMessage::266:22',
 	'src/host/tutorials/embeddedTutorialWebviewHost.ts::postMessage::postMessage::109:16',
@@ -1170,6 +1170,49 @@ describe('Message Protocol Contract', () => {
 			.toBeLessThan(waiter.indexOf('window.clearTimeout(timer)'));
 	});
 
+	it('keeps SQL database discovery requests and deliveries on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/sqlDatabaseDiscoveryProtocol.ts',
+			'SqlDatabaseDiscoveryWebviewMessage',
+		)).toEqual(['getSqlDatabases', 'refreshSqlDatabases']);
+		expect(extractTypeDiscriminants(
+			'src/shared/sqlDatabaseDiscoveryProtocol.ts',
+			'SqlDatabaseDiscoveryHostMessage',
+		)).toEqual(['sqlDatabasesData', 'sqlDatabasesError', 'sqlDatabasesLoading']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| SqlDatabaseDiscoveryWebviewMessage');
+		expect(webviewMessages).toContain('| SqlDatabaseDiscoveryWebviewMessage');
+		expect(hostTypes).not.toContain("type: 'getSqlDatabases'");
+		expect(hostTypes).not.toContain("type: 'refreshSqlDatabases'");
+		expect(webviewMessages).not.toContain("type: 'getSqlDatabases'");
+		expect(webviewMessages).not.toContain("type: 'refreshSqlDatabases'");
+		expect(webviewMessages).toContain('parseSqlDatabaseDiscoveryWebviewMessage(msg)');
+
+		const requestHandler = readWorkspaceFile('src/host/sqlDatabaseDiscoveryApplicationHandler.ts');
+		expect(requestHandler.indexOf('parseSqlDatabaseDiscoveryWebviewMessage(message)'))
+			.toBeLessThan(requestHandler.indexOf('this.options.lifecycle.adoptTarget('));
+		expect(requestHandler).toContain('postMessage: (message: SqlDatabaseDiscoveryHostMessage)');
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		expect(dispatcher.indexOf('parseSqlDatabaseDiscoveryHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf('const incomingType'));
+		expect(dispatcher.indexOf('parseSqlDatabaseDiscoveryHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf('routeSqlSectionMessage(message'));
+
+		const router = readWorkspaceFile('src/webview/core/sql-section-message-router.ts');
+		expect(router.indexOf('parseSqlDatabaseDiscoveryHostMessage(message)'))
+			.toBeLessThan(router.indexOf("case 'sqlDatabasesLoading':"));
+		expect(router.indexOf('parseSqlDatabaseDiscoveryHostMessage(message)'))
+			.toBeLessThan(router.indexOf('session.beginDatabaseRequest('));
+		expect(router.indexOf('parseSqlDatabaseDiscoveryHostMessage(message)'))
+			.toBeLessThan(router.indexOf('session.acceptDatabaseResponse('));
+		expect(router.indexOf('parseSqlDatabaseDiscoveryHostMessage(message)'))
+			.toBeLessThan(router.indexOf('effects.updateDatabases('));
+	});
+
 	// ─── Compile-time guards ───────────────────────────────────────────────
 	// These calls exist solely for the TypeScript compiler to verify that
 	// every string literal in our arrays is a valid union discriminant.
@@ -1193,6 +1236,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/host/queryEditorTypes.ts', 'IncomingWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kustoSchemaProtocol.ts', 'KustoSchemaWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kustoDatabaseDiscoveryProtocol.ts', 'KustoDatabaseDiscoveryWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/sqlDatabaseDiscoveryProtocol.ts', 'SqlDatabaseDiscoveryWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1205,6 +1249,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/compatibilityPersistenceProtocol.ts', 'CompatibilityPersistenceWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kustoSchemaProtocol.ts', 'KustoSchemaWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kustoDatabaseDiscoveryProtocol.ts', 'KustoDatabaseDiscoveryWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/sqlDatabaseDiscoveryProtocol.ts', 'SqlDatabaseDiscoveryWebviewMessage'),
 			])].sort()
 		);
 	});

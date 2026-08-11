@@ -526,8 +526,9 @@ export class RemoteSnapshotLifecycleTaskRunner implements vscode.Disposable {
 			running = Promise.reject(error);
 		}
 		void running.catch(error => {
+			if (this.disposed) return;
 			diagLog(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
-			if (this.disposed || attempt >= 2) return;
+			if (attempt >= 2) return;
 			const timer = setTimeout(() => {
 				this.retryTimers.delete(timer);
 				this.run(label, task, attempt + 1);
@@ -1487,6 +1488,7 @@ export async function fetchRemoteContent(url: string): Promise<string> {
 	try {
 		const response = await fetch(url, { signal: controller.signal });
 		if (!response.ok) {
+			try { await response.body?.cancel(); } catch { /* ignore */ }
 			throw new Error(`HTTP ${response.status} ${response.statusText} when fetching ${url}`);
 		}
 		return await readRemoteTextBody(response);

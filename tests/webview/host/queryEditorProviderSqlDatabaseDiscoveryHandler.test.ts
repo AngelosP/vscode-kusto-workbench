@@ -262,15 +262,20 @@ describe('QueryEditorProvider SQL database discovery application', () => {
 		const workbenchSource = readSource('src/host/sql/sqlWorkbenchService.ts');
 		const cacheSource = readSource('src/host/sqlDatabaseCache.ts');
 		const hostTypesSource = readSource('src/host/queryEditorTypes.ts');
+		const protocolSource = readSource('src/shared/sqlDatabaseDiscoveryProtocol.ts');
 		const emitterSource = readSource('src/webview/sections/sql-section-session.controller.ts');
 		const sqlMessageRouterSource = readSource('src/webview/core/sql-section-message-router.ts');
 
 		for (const type of ['getSqlDatabases', 'refreshSqlDatabases']) {
 			expect(providerSource).not.toContain(`case '${type}':`);
-			expect(handlerSource).toContain(`case '${type}':`);
-			expect(hostTypesSource).toContain(`type: '${type}'`);
+			expect(protocolSource).toContain(`type: '${type}'`);
+			expect(hostTypesSource).not.toContain(`type: '${type}'`);
 			expect(emitterSource).toContain(`type: '${type}'`);
 		}
+		expect(hostTypesSource).toContain('| SqlDatabaseDiscoveryWebviewMessage');
+		expect(handlerSource.indexOf('parseSqlDatabaseDiscoveryWebviewMessage(message)'))
+			.toBeLessThan(handlerSource.indexOf('this.options.lifecycle.adoptTarget('));
+		expect(handlerSource).toContain('postMessage: (message: SqlDatabaseDiscoveryHostMessage)');
 		for (const displaced of [
 			'private async sendSqlDatabases(',
 			'private async postSqlConnectionMessageAllowed(',
@@ -302,5 +307,7 @@ describe('QueryEditorProvider SQL database discovery application', () => {
 		expect(sqlMessageRouterSource).toContain("case 'sqlDatabasesLoading':");
 		expect(sqlMessageRouterSource).toContain("case 'sqlDatabasesData':");
 		expect(sqlMessageRouterSource).toContain("case 'sqlDatabasesError':");
+		expect(sqlMessageRouterSource.indexOf('parseSqlDatabaseDiscoveryHostMessage(message)'))
+			.toBeLessThan(sqlMessageRouterSource.indexOf("case 'sqlDatabasesLoading':"));
 	});
 });

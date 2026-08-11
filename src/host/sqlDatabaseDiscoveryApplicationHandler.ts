@@ -20,10 +20,16 @@ import {
 } from './sqlDatabaseCache';
 import type { IncomingWebviewMessage } from './queryEditorTypes';
 import type { WorkbenchLogger } from './workbenchLogger';
-
-type SqlDatabaseDiscoveryMessage = Extract<IncomingWebviewMessage, {
-	type: 'getSqlDatabases' | 'refreshSqlDatabases';
-}>;
+import {
+	isSqlDatabaseDiscoveryWebviewMessageType,
+	parseSqlDatabaseDiscoveryWebviewMessage,
+	type SqlDatabaseDiscoveryDeliveryIdentity,
+	type SqlDatabaseDiscoveryHostMessage,
+	type SqlDatabaseDiscoveryWebviewMessage,
+	type SqlDatabasesData,
+	type SqlDatabasesError,
+	type SqlDatabasesLoading,
+} from '../shared/sqlDatabaseDiscoveryProtocol';
 
 type SqlDiscoveryConnection = NonNullable<ReturnType<SqlConnectionManager['getConnection']>>;
 
@@ -59,7 +65,7 @@ export type SqlDatabaseDiscoveryApplicationHandlerOptions = {
 	client: Pick<SqlQueryClient, 'getDatabasesWithIdentity'>;
 	cache?: SqlDatabaseDiscoveryCache;
 	waitForDeliveryRetry?: () => Promise<void>;
-	postMessage: (message: Record<string, unknown>) => PromiseLike<boolean> | void;
+	postMessage: (message: SqlDatabaseDiscoveryHostMessage) => PromiseLike<boolean> | void;
 	output: Pick<WorkbenchLogger, 'error' | 'warn'>;
 };
 
@@ -79,22 +85,19 @@ export class HostSqlDatabaseDiscoveryApplicationHandler implements SqlDatabaseDi
 	}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
-		switch (message.type) {
-			case 'getSqlDatabases':
-			case 'refreshSqlDatabases':
-				break;
-			default:
-				return undefined;
-		}
+		if (!isSqlDatabaseDiscoveryWebviewMessageType(message)) return undefined;
+		const parsed = parseSqlDatabaseDiscoveryWebviewMessage(message);
+		if (!parsed.ok) return Promise.resolve();
+		const request = parsed.value;
 		if (this.disposed) return Promise.resolve();
 		if (!this.options.lifecycle.adoptTarget(
-			message.boxId,
-			message.sectionInstanceId,
-			message.sqlConnectionId,
+			request.boxId,
+			request.sectionInstanceId,
+			request.sqlConnectionId,
 			undefined,
-			message.targetGeneration,
+			request.targetGeneration,
 		)) return Promise.resolve();
-		return this.sendSqlDatabases(message, message.type === 'refreshSqlDatabases');
+		return this.sendSqlDatabases(request, request.type === 'refreshSqlDatabases');
 	}
 
 	dispose(): void {
@@ -134,7 +137,7 @@ export class HostSqlDatabaseDiscoveryApplicationHandler implements SqlDatabaseDi
 	}
 
 	private async deliverMessage(
-		message: Record<string, unknown>,
+		message: SqlDatabasesLoading,
 		isCurrent: () => boolean = () => true,
 	): Promise<boolean> {
 		for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -152,7 +155,7 @@ export class HostSqlDatabaseDiscoveryApplicationHandler implements SqlDatabaseDi
 	}
 
 	private async deliverTerminalMessage(
-		message: Record<string, unknown>,
+		message: SqlDatabasesData | SqlDatabasesError,
 		ticket: SqlDatabaseRequestTicket,
 		isCurrent: () => boolean,
 	): Promise<boolean> {
@@ -172,14 +175,14 @@ export class HostSqlDatabaseDiscoveryApplicationHandler implements SqlDatabaseDi
 
 	private async reconcileRetiredDatabaseRequest(
 		ticket: SqlDatabaseRequestTicket,
-		message: Record<string, unknown>,
+		message: SqlDatabasesError,
 	): Promise<void> {
 		if (this.disposed || !this.options.lifecycle.isDatabaseRequestCurrent(ticket)) return;
 		await this.deliverTerminalMessage(message, ticket, () =>
 			this.options.lifecycle.isDatabaseRequestCurrent(ticket));
 	}
 
-	private createRetirementMessage(message: Record<string, unknown>): Record<string, unknown> {
+	private createRetirementMessage(message: SqlDatabaseDiscoveryDeliveryIdentity): SqlDatabasesError {
 		return {
 			type: 'sqlDatabasesError',
 			requestId: message.requestId,
@@ -194,7 +197,7 @@ export class HostSqlDatabaseDiscoveryApplicationHandler implements SqlDatabaseDi
 	private async postSqlConnectionMessageAllowed(
 		connection: SqlDiscoveryConnection,
 		owner: SqlDatabaseDiscoveryOwner,
-		message: Record<string, unknown>,
+		message: SqlDatabasesData | SqlDatabasesError,
 		ticket: SqlDatabaseRequestTicket,
 		isCurrent: () => boolean,
 	): Promise<boolean> {
@@ -243,7 +246,7 @@ export class HostSqlDatabaseDiscoveryApplicationHandler implements SqlDatabaseDi
 	private async postSqlConnectionMessageProtection(
 		connection: SqlDiscoveryConnection,
 		owner: SqlDatabaseDiscoveryOwner,
-		message: Record<string, unknown>,
+		message: SqlDatabasesData | SqlDatabasesError,
 		ticket: SqlDatabaseRequestTicket,
 		isCurrent: () => boolean,
 	): Promise<boolean> {
@@ -334,7 +337,7 @@ export class HostSqlDatabaseDiscoveryApplicationHandler implements SqlDatabaseDi
 		this.logWarning('[sql-database] SQL database discovery failed after its owner changed.');
 	}
 
-	private async sendSqlDatabases(message: SqlDatabaseDiscoveryMessage, forceRefresh: boolean): Promise<void> {
+	private async sendSqlDatabases(message: SqlDatabaseDiscoveryWebviewMessage, forceRefresh: boolean): Promise<void> {
 		const { sqlConnectionId, boxId, sectionInstanceId } = message;
 		const ticket = this.options.lifecycle.beginDatabaseRequest(sqlConnectionId, boxId, sectionInstanceId);
 		if (!ticket) return;

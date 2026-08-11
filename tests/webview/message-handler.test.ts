@@ -3314,6 +3314,26 @@ describe('message-handler dispatch', () => {
 		expect(sqlEl.sqlSession.databaseRequestId).toBe('');
 	});
 
+	it('keeps the current SQL database request pending after malformed data', () => {
+		const sqlEl = createFakeSqlSection();
+		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
+		sqlEl.sqlSession.targetGeneration = 4;
+
+		dispatchHostMessage({
+			type: 'sqlDatabasesLoading', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId,
+			sqlConnectionId: 'sql-a', requestId: 'db-current', targetGeneration: 4,
+		});
+		dispatchHostMessage({
+			type: 'sqlDatabasesData', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId,
+			sqlConnectionId: 'sql-a', requestId: 'db-current', targetGeneration: 4,
+			databases: ['CurrentDb', 42],
+		});
+
+		expect(mocks.updateSqlDatabaseSelect).not.toHaveBeenCalled();
+		expect(mocks.onSqlDatabasesError).not.toHaveBeenCalled();
+		expect(sqlEl.sqlSession.databaseRequestId).toBe('db-current');
+	});
+
 	it('rejects a delayed SQL result after the owner token rotates', () => {
 		const resultsState = vi.mocked(getResultsStateMock);
 		const sqlEl = createFakeSqlSection() as FakeSqlSection & {

@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BrowserFileLoadCoordinator } from '../../browser-ext/src/browser-file-load';
-import { readBrowserTextBody } from '../../browser-ext/src/browser-text-fetch';
+import { fetchBrowserText, readBrowserTextBody } from '../../browser-ext/src/browser-text-fetch';
 import type { DetectedFile } from '../../browser-ext/src/providers/types';
 
 function deferred<T>() {
@@ -15,6 +15,10 @@ const file = (name: string): DetectedFile => ({
 	sidecarUrl: `https://dev.azure.test/items?path=%2F${name}.kql.json`,
 	pageUrl: `https://dev.azure.test/repo?path=%2F${name}.kql`,
 	sourceLabel: 'Azure DevOps',
+});
+
+afterEach(() => {
+	vi.unstubAllGlobals();
 });
 
 describe('BrowserFileLoadCoordinator', () => {
@@ -76,5 +80,40 @@ describe('BrowserFileLoadCoordinator', () => {
 		});
 
 		await expect(readBrowserTextBody(new Response(body))).rejects.toThrow('16777216-byte size limit');
+	});
+
+	it('keeps the newer request owned when the same snapshot is loaded twice', async () => {
+		const coordinator = new BrowserFileLoadCoordinator();
+		const snapshot = coordinator.capture(file('A'));
+		let companionCall = 0;
+		let secondSignal: AbortSignal | undefined;
+		const fetchText = vi.fn((url: string, signal: AbortSignal) => {
+			if (!url.includes('.json')) return Promise.resolve(companionCall === 0 ? 'QUERY_FIRST' : 'QUERY_SECOND');
+			companionCall++;
+			if (companionCall === 2) secondSignal = signal;
+			return new Promise<string>((_resolve, reject) => {
+				signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+			});
+		});
+
+		const first = coordinator.load(snapshot, fetchText);
+		await vi.waitFor(() => expect(companionCall).toBe(1));
+		const second = coordinator.load(snapshot, fetchText);
+		await vi.waitFor(() => expect(secondSignal).toBeDefined());
+		await expect(first).resolves.toBeUndefined();
+
+		coordinator.invalidate();
+		expect(secondSignal?.aborted).toBe(true);
+		await expect(second).resolves.toBeUndefined();
+	});
+
+	it('cancels a non-success response body before throwing the HTTP error', async () => {
+		const cancel = vi.fn();
+		const body = new ReadableStream<Uint8Array>({ cancel });
+		vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status: 404, statusText: 'Not Found' })));
+
+		await expect(fetchBrowserText('https://example.test/missing.kql.json', new AbortController().signal))
+			.rejects.toMatchObject({ status: 404 });
+		expect(cancel).toHaveBeenCalledOnce();
 	});
 });

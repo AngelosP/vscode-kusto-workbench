@@ -12,6 +12,7 @@ export async function loadBrowserCompanion(
 	try {
 		return { status: 'loaded', content: await fetchText(sidecarUrl, signal) };
 	} catch (error) {
+		if (signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw error;
 		const status = typeof error === 'object' && error !== null && 'status' in error
 			? Number(error.status)
 			: undefined;

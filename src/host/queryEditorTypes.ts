@@ -5,6 +5,7 @@ import type { KustoExecutionRequestIdentity } from '../shared/kustoExecution';
 import type { KustoCopilotRequestIdentity, KustoOptimizeRequestIdentity } from '../shared/kustoExecution';
 import type { KustoSchemaWebviewMessage } from '../shared/kustoSchemaProtocol';
 import type { KustoDatabaseDiscoveryWebviewMessage } from '../shared/kustoDatabaseDiscoveryProtocol';
+import type { SqlDatabaseDiscoveryWebviewMessage } from '../shared/sqlDatabaseDiscoveryProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -304,8 +305,7 @@ export type IncomingWebviewMessage =
 	| ExecuteQueryMessage
 	| { type: 'getSqlConnections' }
 	| { type: 'sqlSectionOpen'; boxId: string; sectionInstanceId: string }
-	| { type: 'getSqlDatabases'; sqlConnectionId: string; boxId: string; sectionInstanceId: string; targetGeneration: number }
-	| { type: 'refreshSqlDatabases'; sqlConnectionId: string; boxId: string; sectionInstanceId: string; targetGeneration: number }
+	| SqlDatabaseDiscoveryWebviewMessage
 	| { type: 'retireSqlTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number }
 	| { type: 'saveSqlLastSelection'; sqlConnectionId: string; database?: string }
 	| { type: 'promptAddSqlConnection'; boxId?: string }

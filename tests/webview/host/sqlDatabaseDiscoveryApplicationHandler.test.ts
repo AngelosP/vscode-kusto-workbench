@@ -266,6 +266,23 @@ describe('HostSqlDatabaseDiscoveryApplicationHandler', () => {
 		expect(harness.postMessage).not.toHaveBeenCalled();
 	});
 
+	it('claims malformed recognized requests before target adoption', async () => {
+		const harness = createHarness();
+		const adoptTarget = vi.spyOn(harness.lifecycle, 'adoptTarget');
+		const beginRequest = vi.spyOn(harness.lifecycle, 'beginDatabaseRequest');
+		const claimed = harness.handler.handleMessage({
+			type: 'refreshSqlDatabases', sqlConnectionId: 'sql-1', boxId: 'sql-box',
+			sectionInstanceId: 'instance-sql-box', targetGeneration: -1,
+		} as unknown as IncomingWebviewMessage);
+
+		expect(claimed).not.toBeUndefined();
+		await claimed;
+		expect(adoptTarget).not.toHaveBeenCalled();
+		expect(beginRequest).not.toHaveBeenCalled();
+		expect(harness.getDatabases).not.toHaveBeenCalled();
+		expect(harness.postMessage).not.toHaveBeenCalled();
+	});
+
 	it('adopts the exact target before issuing one lifecycle request and publishes its identity', async () => {
 		const harness = createHarness();
 		harness.getDatabases.mockResolvedValue(['DbB', 'DbA']);
