@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const testState = vi.hoisted(() => {
@@ -185,8 +187,17 @@ vi.mock('../../src/webview/shared/webview-messages.js', () => ({
 	postMessageToHost: testState.postMessageToHost,
 }));
 
-vi.mock('../../src/webview/shared/persistence-state.js', () => ({
-	pState: {
+vi.mock('../../src/webview/shared/persistence-state.js', () => {
+	const queryEditorPendingAddKinds = [
+		'query', 'chart', 'transformation', 'markdown', 'python', 'url',
+	] as const;
+	const createEmptyQueryEditorPendingAdds = () => ({
+		query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0,
+	});
+	return {
+		queryEditorPendingAddKinds,
+		createEmptyQueryEditorPendingAdds,
+		pState: {
 		compatibilityMode: false,
 		compatibilitySingleKind: 'query',
 		allowedSectionKinds: ['query', 'chart', 'transformation', 'python', 'url', 'markdown'],
@@ -206,7 +217,7 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 		compatibilityTooltip: '',
 		htmlPowerBiCompatibilityCheckEnabled: true,
 		restoreInProgress: false,
-		queryEditorPendingAdds: { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 },
+		queryEditorPendingAdds: createEmptyQueryEditorPendingAdds(),
 		pendingQueryTextByBoxId: {} as Record<string, string>,
 		pendingMarkdownTextByBoxId: {} as Record<string, string>,
 		pendingPythonCodeByBoxId: {} as Record<string, string>,
@@ -219,11 +230,14 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 		resultArtifactByBoxId: {} as Record<string, any>,
 		kustoResultOwnerByBoxId: {} as Record<string, { accountPartition: string; leaveNoTraceRevision: number }>,
 		lastExecutedBox: '',
+		documentDataApplyCount: 0,
+		documentDefaultsFinalizedApplyCount: -1,
 		copilotChatFirstTimeDismissed: false,
 		isSessionFile: false,
 		devNotesSections: [],
-	}
-}));
+		},
+	};
+});
 
 vi.mock('../../src/webview/core/results-state.js', () => ({
 	displayResult: vi.fn(),
@@ -370,7 +384,7 @@ vi.mock('../../src/webview/monaco/monaco.js', () => ({
 	__kustoUpdateSchemaForFocusedBox: vi.fn(),
 }));
 
-import { pState } from '../../src/webview/shared/persistence-state.js';
+import { createEmptyQueryEditorPendingAdds, pState } from '../../src/webview/shared/persistence-state.js';
 import { postMessageToHost } from '../../src/webview/shared/webview-messages.js';
 import { clearResultsState, displayResult, displayResultForBox } from '../../src/webview/core/results-state.js';
 import { optimizationMetadataByBoxId, sqlFavoritesModeByBoxId } from '../../src/webview/core/state.js';
@@ -378,7 +392,7 @@ import { updateConnectionSelects, __kustoGetConnectionId, __kustoGetDatabase, __
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
 import { __kustoCloseShareModal, setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
 import { addChartBox } from '../../src/webview/sections/kw-chart-section.js';
-import { acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, createSectionWithCapabilities, discardPendingSqlResultRestores, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, markKustoLeaveNoTracePolicyPending, resetDocumentPersistenceForTest, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, schedulePersist, __kustoApplyDocumentCapabilities, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
+import { acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, createSectionWithCapabilities, discardPendingSqlResultRestores, finalizeDocumentDefaultsAfterAcknowledgement, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, installRuntimeAddSectionBridges, markKustoLeaveNoTracePolicyPending, resetDocumentPersistenceForTest, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, schedulePersist, __kustoApplyDocumentCapabilities, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
 import { createDerivedResultArtifactPublication, publicationFromPersistedResultArtifact, RESULT_ARTIFACT_CSV_RESET_EVENT } from '../../src/shared/resultArtifact.js';
 import { sqlConnectionTargetSignature } from '../../src/shared/sqlConnectionIdentity.js';
 
@@ -2525,6 +2539,61 @@ describe('persistence round-trip', () => {
 		expect(window.addUrlBox({ id: 'forged_url' })).toBe('');
 		expect(testState.addMarkdownBox).not.toHaveBeenCalled();
 		expect(testState.urlBoxes).toEqual([]);
+	});
+
+	it('adopts a preload Markdown Add exactly once before default finalization', () => {
+		const emptyPendingAdds = createEmptyQueryEditorPendingAdds();
+		const runtimeWindow = window as unknown as Record<string, unknown>;
+		const preloadBridgeNames = [
+			'__kustoRequestAddSection', 'addQueryBox', 'addSqlBox', 'addMarkdownBox',
+			'addChartBox', 'addTransformationBox', 'addPythonBox', 'addUrlBox',
+			'addHtmlBox', 'addCopilotQueryBox',
+		] as const;
+		const runtimeBridges = Object.fromEntries(preloadBridgeNames.map(name => [name, runtimeWindow[name]]));
+		const preloadSource = readFileSync(resolve(process.cwd(), 'src/webview/queryEditor.js'), 'utf8');
+		const preloadStart = preloadSource.indexOf('\t// If the user clicks one of the add buttons');
+		const preloadEnd = preloadSource.indexOf('\n\tconst getBaseUrl = () => {', preloadStart);
+		expect(preloadStart).toBeGreaterThanOrEqual(0);
+		expect(preloadEnd).toBeGreaterThan(preloadStart);
+
+		try {
+			for (const name of preloadBridgeNames) delete runtimeWindow[name];
+			delete runtimeWindow.__kustoQueryEditorPendingAdds;
+			pState.queryEditorPendingAdds = { ...emptyPendingAdds };
+
+			new Function(preloadSource.slice(preloadStart, preloadEnd))();
+			const preloadRequestAddSection = runtimeWindow.__kustoRequestAddSection;
+			(window as unknown as { __kustoRequestAddSection: (kind: string) => void })
+				.__kustoRequestAddSection('markdown');
+			expect(runtimeWindow.__kustoQueryEditorPendingAdds).toEqual({
+				...emptyPendingAdds, markdown: 1,
+			});
+
+			installRuntimeAddSectionBridges();
+			expect(runtimeWindow.__kustoRequestAddSection).not.toBe(preloadRequestAddSection);
+			installRuntimeAddSectionBridges();
+			expect(pState.queryEditorPendingAdds).toEqual({
+				...emptyPendingAdds, markdown: 1,
+			});
+
+			const state = { sections: [] };
+			expect(handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind: 'kqlx', documentUri: 'file:///tmp/preload-add-handoff.kqlx',
+				allowedSectionKinds: ['query', 'markdown'], defaultSectionKind: 'query', state,
+			})).toBe(true);
+
+			finalizeDocumentDefaultsAfterAcknowledgement(state);
+			finalizeDocumentDefaultsAfterAcknowledgement(state);
+
+			expect(testState.markdownBoxes).toHaveLength(1);
+			expect(testState.queryBoxes).toHaveLength(0);
+			expect(pState.queryEditorPendingAdds).toEqual(emptyPendingAdds);
+			expect(runtimeWindow.__kustoQueryEditorPendingAdds).toEqual(emptyPendingAdds);
+		} finally {
+			Object.assign(runtimeWindow, runtimeBridges);
+			delete runtimeWindow.__kustoQueryEditorPendingAdds;
+		}
 	});
 
 	it('hides controls and inserts no default for an explicit empty capability set', () => {

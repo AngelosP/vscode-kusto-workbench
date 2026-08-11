@@ -42,7 +42,8 @@
 	}
 
 	// If the user clicks one of the add buttons before scripts are fully loaded,
-	// queue those clicks and replay them once initialization completes.
+	// queue those clicks and replay them once initialization completes. This is a
+	// preload-only buffer; runtime takeover atomically adopts and clears it.
 	if (!window.__kustoQueryEditorPendingAdds || typeof window.__kustoQueryEditorPendingAdds !== 'object') {
 		window.__kustoQueryEditorPendingAdds = { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 };
 	}

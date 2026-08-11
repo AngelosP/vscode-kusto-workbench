@@ -26,7 +26,7 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 Assessment date: 2026-08-10
 
-The comparison was refreshed against the current working tree after KLS-1 canonical KQL source analysis convergence. The clean base commit is DSH-2 at `5f56a018894d0de3819c6cc060d073006850af26`; `HEAD`, local `main`, and `origin/main` were synchronized before KLS-1. KLS-1 remains uncommitted and unpushed. The comparison includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
+The comparison was refreshed against the current working tree after PRO-4 exactly-once preload Add convergence. `HEAD` and local `main` remain the clean KLS-1 commit `5b968bb8e4adfc449a52304189d30f3445da1e4b`; `origin/main` remains its DSH-2 parent `5f56a018894d0de3819c6cc060d073006850af26`, so local `main` is one commit ahead. PRO-4 is uncommitted and unpushed. The comparison includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
 The current architecture is not uniformly legacy. Several high-risk contexts already provide good models for the rest of the application.
 
@@ -82,6 +82,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | Comparison summary presentation | [`displayComparisonSummary`](src/webview/sections/query-execution.controller.ts) computes and renders from immutable artifact lineage; no host summary mirror, waiter, route, callback, or protocol message remains | Strong local presentation boundary |
 | Native document-view lifecycle protocol | [`documentViewProtocol.ts`](src/shared/documentViewProtocol.ts), one host-created panel UUID, runtime parsing, exactly-once initial projection, and session-fenced commands/results/Save barriers | Strong initial protocol slice |
 | Main-webview startup | [`MainWebviewStartupGateway`](src/host/mainWebviewStartupGateway.ts) is the shared panel-scoped transport for native KQLX plus KQL and SQL compatibility, with listener-first installation, explicit dispatcher readiness, ordered startup queues, correlated reply reentrancy, and stable close retirement | Strong startup boundary |
+| Preload Add takeover | [`installRuntimeAddSectionBridges()`](src/webview/core/persistence.ts) atomically adopts and clears the preload Add buffer before replacing stubs; one runtime queue drains once per applied projection before default creation | Strong bounded startup handoff |
 | Browser read-only composition | [`BrowserViewerRoot`](browser-ext/src/browser-viewer-root.ts) owns generation-fenced payload adoption and one immutable typed projection; the direct browser presentation adapter declares least-privileged host capabilities without synthetic VS Code startup replay | Strong initial browser boundary |
 | Unmigrated section serialization | Kusto/SQL and remaining adapter-heavy kinds still participate in broad restore/persistence switches; Markdown, URL, Python, Chart, Transformation, and HTML native state no longer comes from component `serialize()` | Useful transitional boundary |
 
@@ -114,13 +115,13 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | ---: | --- | --- | --- | ---: | --- |
 | - | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Closed through EXA-2; transport-neutral coordinator convergence remains deferred |
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
-| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 3/4/5/4/3/5 | 43 | HST-1 through HST-36 completed; residual lifecycle/schema/projection adapters have no selected bounded extraction |
-| 1 | `DOC` | Document actor and section-definition registry | 4/4/4/4/2/5 | 43 | DOC-1 through DOC-6 closed; Kusto/SQL deferred |
-| 3 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 2/3/5/4/2/4 | 36 | PRO-1 through PRO-3 closed; PRO-4 selected for exactly-once preload Add handoff |
+| 1 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/3/3/4/3/5 | 40 | HST-1 through HST-36 completed; HST-37 selected for exact SQL schema refresh ownership |
+| 2 | `DOC` | Document actor and section-definition registry | 4/4/3/4/1/3 | 38 | DOC-1 through DOC-6 closed; Kusto/SQL deferred |
+| 3 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 2/3/5/4/2/2 | 34 | Closed through PRO-4; broader protocol/plugin readiness remains unselected |
 | - | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 2/3/3/4/3/4 | 33 | Closed through DSH-2; residual raw active-content policy belongs to deferred ACT |
-| 4 | `CMP` | Compatibility-provider composition around the shared sidecar core | 2/4/2/3/2/3 | 29 | CMP-1 and PRO-3 close shared close/protocol boundaries; projection/reload/save orchestration remains duplicated |
-| 5 | `BRW` | Real browser read-only composition root | 2/3/3/2/3/2 | 27 | BRW-1 closed; residual active-content/resource policy remains deferred to ACT |
-| 6 | `KLS` | Custom KQL analyzer decomposition behind a language-analysis port | 2/2/2/1/2/2 | 20 | Closed through KLS-1; broader semantic column flow remains separately deferred |
+| 4 | `CMP` | Compatibility-provider composition around the shared sidecar core | 2/4/2/3/2/2 | 28 | CMP-1 and PRO-3 close shared close/protocol boundaries; projection/reload/save orchestration remains duplicated |
+| 5 | `BRW` | Real browser read-only composition root | 1/2/2/2/2/1 | 18 | BRW-1 closed; residual active-content/resource policy remains deferred to ACT |
+| 6 | `KLS` | Custom KQL analyzer decomposition behind a language-analysis port | 1/2/2/1/2/1 | 16 | Closed through KLS-1; broader semantic column flow remains separately deferred |
 | - | `ACT` | Untrusted-document capability admission | 5/5/5/5/3/5 | 53 | Deferred by product direction; excluded from active ranking |
 
 Bundle headroom is a release constraint and must remain gated, but it is not itself an ownership architecture. Large domain algorithms are not automatically gaps when they have one owner and focused contracts.
@@ -236,7 +237,7 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 - Unmigrated components still supply serialization without being canonical domain state. Restore behavior still knows component-private methods and timing.
 - Adding a section requires edits across format, component, factory, persistence, tool removal, startup imports, and privacy handling.
 
-**Migration theme:** DOC-1 through DOC-6 proved the transport-neutral aggregate/definition pattern with Markdown, URL, Python, Chart, Transformation, and HTML while preserving runtime-heavy adapters. Kusto/SQL remain materially higher-risk and are deferred until separately selected. No DOC slice is currently selected; DSH-2 is next.
+**Migration theme:** DOC-1 through DOC-6 proved the transport-neutral aggregate/definition pattern with Markdown, URL, Python, Chart, Transformation, and HTML while preserving runtime-heavy adapters. Kusto/SQL remain materially higher-risk and are deferred until separately selected. No DOC slice is currently selected; HST-37 is next.
 
 ### `PRO` - Protocol, View Sessions, And Startup
 
@@ -248,13 +249,13 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 - `MainWebviewStartupGateway` now owns listener-first installation, explicit dispatcher readiness, ordered inbound/outbound startup buffering, correlated waiter reentrancy, and retirement for native KQLX plus KQL and SQL compatibility panels. Embedded tutorial traffic uses the same transport. `index.ts` starts the dispatcher explicitly after registration; readiness is consumed as control traffic before domain routing.
 - `compatibilityPersistenceProtocol.ts` owns strict KQL/SQL request/projection, persistence, final-persist, acknowledgement, and reload schemas. Providers create one UUID per panel, validate at gateway admission, and stamp outbound lifecycle traffic. The webview uses bounded request/replay ledgers, rejects stale generations, re-acknowledges identical retries without rematerializing, and resends newer local state.
 - Existing source generations, command IDs, revisions, per-URI queues, Save leases, sidecar sessions, and close coordination remain inner owners. Markdown compatibility and browser/legacy behavior is unchanged.
+- `queryEditor.js` now owns only the preload Add count buffer. `installRuntimeAddSectionBridges()` synchronously merges supported counts into `pState.queryEditorPendingAdds`, clears the preload object, and replaces every stub in one call stack. The capability-aware finalizer drains that sole runtime queue once per applied projection before creating a document default.
 - All unrelated host/webview messages still use duplicated unions, `unknown` host output, and `any` dispatcher input.
 - [`message-handler.ts`](src/webview/core/message-handler.ts) is a central switch while some temporary and component listeners observe the same transport independently.
 - [`window-bridges.d.ts`](src/webview/window-bridges.d.ts) remains a large ambient contract, and state is mirrored between module bindings and `window`.
-- The preload queues early Add commands in `window.__kustoQueryEditorPendingAdds`, while runtime restore drains a separate `pState.queryEditorPendingAdds`. There is no explicit adoption handoff.
 - Browser startup implements a different buffering/acknowledgement protocol.
 
-**Migration theme:** PRO-1 closes the host-owned document lifecycle channel, PRO-2 closes main VS Code panel startup, and PRO-3 closes KQL/SQL compatibility persistence traffic. Future PRO slices may add capability/plugin readiness and migrate one unrelated domain router at a time; do not turn the proven narrow contracts into a global rewrite. Ambient bridges are removed only after their owning contract exists.
+**Migration theme:** PRO-1 closes the host-owned document lifecycle channel, PRO-2 closes main VS Code panel startup, PRO-3 closes KQL/SQL compatibility persistence traffic, and PRO-4 closes preload Add takeover. Future PRO slices may add capability/plugin readiness and migrate one unrelated domain router at a time; do not turn the proven narrow contracts into a global rewrite. Ambient bridges are removed only after their owning contract exists.
 
 ### `HST` - Host Application Composition
 
@@ -298,10 +299,11 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 - HST-34 moved the complete seven-route Kusto section execution/publication workflow into one injected `HostKustoSectionExecutionApplicationHandler`: section open/target/close, exact start/publication acknowledgement ledgers and five-second deadlines, manual execution admission, query shaping, selection ordering, physical/account/Leave No Trace admission, exact cancellation, terminal/error/refresh behavior, Copilot close cleanup, late suppression, and disposal. The provider has none of the seven cases, acknowledgement maps, manual execution method, or physical-dispatch decision; only thin `CopilotServiceHost` delegates remain. `KustoExecutionCoordinator`, `KustoQueryClient`, `ConnectionService`, `ConnectionManager`, `CopilotService`, callers, messages, artifacts, persistence, schema, SQL, comparisons, and browser behavior remain unchanged owners.
 - HST-35 moved the complete cross-engine comparison preparation transaction into one injected `HostComparisonPreparationApplicationHandler`: exact `sqlComparisonAdmissionAck`, `comparisonBoxEnsured`, and `sqlComparisonRemoved` admission; pending request/Kusto owner maps; the 20-second deadline; SQL staged/committed/finalized/completed/rolledBack correlation; rollback retry; Kusto/SQL target and SQL policy revalidation; removal cancellation; lifecycle rejection; and disposal settlement. The provider has none of the three cases, maps, helpers, or transaction decisions and retains only a thin preparation delegate. `SqlEditorLifecycleCoordinator`, `SqlEditorSessionRegistry`, `SqlExecutionBroker`, `KustoExecutionCoordinator`, `CopilotService`, callers, messages, artifacts, persistence, and browser behavior remain unchanged owners.
 - HST-36 moved the complete manual SQL reservation-to-terminal workflow into one injected `HostSqlSectionExecutionApplicationHandler`: exact `executeSqlQuery` and `cancelSqlQuery` admission, synchronous preflight, owner-token/protection and tool-owner validation, query-mode shaping, physical start, ordinary/protected terminals, detail-free protected logging, exact cleanup, and disposal. The provider has neither case, no private execution method or terminal helper, and exactly 13 live discriminator cases. `SqlEditorLifecycleCoordinator`, `SqlEditorSessionRegistry`, `SqlExecutionBroker`, `SqlWorkbenchService`, `SqlQueryClient`, Copilot SQL execution, callers, messages, artifacts, persistence, and browser behavior remain unchanged owners.
+- SQL schema refresh remains provider-owned and request-identity-free. Reversed same-target `prefetchSqlSchema` calls can both pass the same section/target checks, publish older schema after newer schema, and leave the shared schema cache on the stale result. Lifecycle-triggered refreshes enter through a second callback carrying only connection, database, box, and force-refresh values.
 - [`QueryEditorProvider`](src/host/queryEditorProvider.ts) still combines panel transport with SQL language/schema adapters, connection projection, persistence UX, and cross-language coordination.
 - Focused tests often construct or patch the provider without a real composition root, indicating that use cases do not have narrow injectable boundaries.
 
-**Migration theme:** do not split the class by file category first. Move routes behind the execution, document, protocol, and dashboard contracts as those owners are introduced. The provider shrinks as a consequence.
+**Migration theme:** HST-37 moves the complete SQL schema request from synchronous reservation through cache/publication admission behind one exact owner. Do not split the class by file category or add a generic handler framework first; the provider shrinks as a consequence of the proved workflow boundary.
 
 ### `BRW` - Browser Composition Root
 
@@ -1181,23 +1183,35 @@ The final focused ring passed 2 files and 11 tests; the expanded owner/message-p
 
 **Qualification:** the definitive focused and adjacent ring passes 8 files and 131 tests with `--maxWorkers=1`. Full sequential and official coverage Vitest pass 299 files and 6,505 tests at 48.07% statements. The complete VS Code 1.132.0 extension-host suite passes 215/215 with `--timeout 5000`. Strict host/webview/browser types, integration compilation, production extension and browser builds, ESLint with zero errors and five existing warnings, and the synchronized bundle gate pass. Final production sizes are 2,147.5 KB host and 3,020.0 KB webview within unchanged baselines and the 50 KB buffer. Native E2E was not required because controls, message shapes, Monaco worker/schema lifecycle, and external effects are unchanged.
 
-## Next Iteration
+## Completed Protocol Iteration
 
 ### Iteration `PRO-4`: Exactly-Once Preload Add Handoff
 
+**Status:** closed on 2026-08-10. The definitive blocker review returned `VERDICT: NO PRO-4 BLOCKER`.
+
+**Boundary and displaced authority:** `queryEditor.js` retains a preload-only Add count object. `installRuntimeAddSectionBridges()` snapshots supported positive safe-integer counts, merges them with `pState.queryEditorPendingAdds`, clears the preload object, and only then replaces every Add stub. The sole runtime queue retains the existing capability-aware post-acknowledgement drain. `documentDefaultsFinalizedApplyCount` makes Add/default finalization exactly once for each applied projection, so a repeated finalizer cannot create a default after consuming an early request. No startup gateway, protocol, browser loader, compatibility provider, section behavior, or ambient bridge was redesigned.
+
+**Red-first guard:** the real preload source queues one Markdown request before takeover. Before implementation, the regression produced zero Markdown sections while the other 122 persistence tests passed. It now proves one Markdown, zero default Query sections, both queues cleared, no duplication after repeated takeover, and no duplicate/default after repeated finalization.
+
+**Qualification:** the final focused preload/persistence/dispatcher/capability/protocol/startup ring passes 6 files and 410 tests with `--maxWorkers=1`. Full sequential and official coverage Vitest pass 299 files and 6,506 tests at 48.13% statements. The complete VS Code 1.132.0 extension-host suite passes 215/215 with `--timeout 5000`. Strict host/webview/browser types, integration compilation, production extension and browser builds, ESLint with zero errors and five existing warnings, diagnostics, `git diff --check`, and both synchronized bundle gates pass. Final production sizes are 2,147.5 KB host and 3,020.6 KB webview within unchanged baselines and the 50 KB buffer. Native E2E was not required because controls, message shapes, startup transport, and visible section behavior are unchanged.
+
+## Next Iteration
+
+### Iteration `HST-37`: Exact SQL Schema Refresh Ownership
+
 **Status:** selected next, not started.
 
-**Post-KLS-1 rescore:** HST and DOC remain 43 without a newly characterized safe slice. PRO rises to 36 (`2/3/5/4/2/4`) because the preload/runtime Add queues are now a source-confirmed duplicate authority with a cheap cross-boundary test. CMP remains 29, BRW remains 27, KLS falls to 20 after closing its demonstrated defect, and ACT remains product-deferred at 53.
+**Post-PRO-4 rescore:** HST is 40 (`4/3/3/4/3/5`) with a source-confirmed stale-schema publication defect and a bounded extraction. DOC is 38, PRO falls to 34 after closing its concrete preload defect, CMP is 28, BRW is 18, and KLS is 16. ACT remains product-deferred at 53 and is excluded from active ranking.
 
-**Current divergence:** `queryEditor.js` accepts early Add calls into `window.__kustoQueryEditorPendingAdds`. Runtime takeover replaces the Add globals, while `__kustoApplyPendingAdds()` drains only `pState.queryEditorPendingAdds`. There is no atomic adoption handoff, so an accepted preload Add can disappear and the empty-document finalizer can insert the default section instead.
+**Current divergence:** `QueryEditorProvider` owns `prefetchSqlSchema` target adoption, acquisition, error/result shaping, owner checks, and publication. Requests carry section/target identity but no request sequence. Two same-target refreshes can resolve B then A; both still match the same lifecycle owner, so older A can publish after B and overwrite the cache. `SqlEditorLifecycleCoordinator` also invokes the same provider effect through a reduced connection/database/box callback, leaving two entry routes without one exact request owner.
 
-**Boundary:** atomically transfer and clear the preload Add counts into `pState.queryEditorPendingAdds` before runtime globals replace the stubs. Retain one runtime queue and the existing post-acknowledgement capability-aware drain; do not add a second replay path.
+**Boundary:** introduce one `HostSqlSchemaRequestApplicationHandler` that synchronously reserves an exact per-section schema request, supersedes the prior request, captures the lifecycle owner, drives acquisition through `SqlSchemaService`, and admits cache/result/error publication only while both request and owner remain current. Route both webview and lifecycle-triggered refreshes through that owner. `QueryEditorProvider` should construct/inject, reference-identically forward, supply narrow capabilities, and dispose it.
 
-**Falsifiable hypothesis and red-first check:** seed the real preload buffer with one Markdown Add, perform runtime takeover, and acknowledge an empty KQLX projection whose default is Query. Require exactly one Markdown section, zero Query sections, both queues cleared, and no duplicate after a second finalization. Current code loses the Markdown request and creates the default Query.
+**Falsifiable hypothesis and red-first check:** send two same-target `prefetchSqlSchema` requests through the real provider, resolve B before A, and route emitted responses through the real SQL schema router. Require exactly one admitted terminal containing B and no cache or UI publication from A. Current code permits A to overwrite B.
 
-**Primary files:** `src/webview/queryEditor.js`, `src/webview/shared/persistence-state.ts`, `src/webview/core/persistence.ts`, and `tests/webview/persistence-roundtrip.test.ts`.
+**Primary files:** new `src/host/sqlSchemaRequestApplicationHandler.ts`, `src/host/queryEditorProvider.ts`, `src/host/sql/sqlEditorLifecycleCoordinator.ts`, `src/host/sqlEditorSchema.ts` if the existing abort/cache boundary needs tightening, and focused handler/provider/router tests.
 
-**Exclusions:** no `MainWebviewStartupGateway` or protocol redesign, ambient bridge cleanup, compatibility-provider merge, browser-loader work, new section behavior, KLS follow-up, or deferred ACT work.
+**Exclusions:** no protocol or startup redesign, STS language-route extraction, Kusto schema changes, cache-format change, compatibility/browser work, Kusto/SQL document-actor migration, generic handler framework, dashboard work, or deferred ACT work.
 
 ## Convergence Loop
 
@@ -1388,6 +1402,7 @@ These are not full golden-outcome iterations retroactively, but they materially 
 | `DSH-1` | `portableDashboardCompiler.ts` + normalized portable IR | Duplicate provenance/target/source validators, Power BI binding regex rewrites, string-only preflights, and obsolete unsupported-visual route | Cross-path typed diagnostics, standards-tree/source-range and replacement-stability guards, exact-range rewrites, zero-effect export/publish failures, hostile output escaping, protocol/ownership guards, and native warning/chat E2E | Focused 556; full/coverage 6,457 at 48.35%; extension-host 215, production/browser, bundle gates, native 4/4, and definitive blocker review complete | 2026-08-10 |
 | `DSH-2` | `powerBiProjectArtifacts.ts` + `powerBiProjectWriter.ts` | Publish temp URI/export/tree-read/delete staging and local writer-owned path/content assembly | Sorted copy-on-read manifest, Windows collision admission, deterministic 17-artifact golden, local/publish byte parity, zero-filesystem publish guard, cancellation, and mocked Fabric transaction tests | Focused 330; adjacent 457; full/coverage 6,465 at 48.35%; extension-host 215, production/browser, bundle gates, and clean implementation review complete | 2026-08-10 |
 | `KLS-1` | `analyzeKqlSource()` + fail-closed qualification ranges | Duplicate service and schema-inference scanners plus the webview fallback lexer | Red-first alias/string/comment probe, exact-layout/scopes/management/wrapper/union/range regressions, static ownership guard, and lexical column-scope preservation | Focused 131; full/coverage 6,505 at 48.07%; extension-host 215, production/browser, bundle gate, and definitive blocker review complete | 2026-08-10 |
+| `PRO-4` | `installRuntimeAddSectionBridges()` + applied-projection finalization token | Split preload/runtime Add queues and repeatable empty-document finalization | Real preload Markdown handoff, repeated takeover/finalization, capability/default, dispatcher, protocol, and startup guards | Focused 410; full/coverage 6,506 at 48.13%; extension-host 215, production/browser, bundle gates, and definitive blocker review complete | 2026-08-10 |
 
 ## Decision Discipline
 

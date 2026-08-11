@@ -6,7 +6,11 @@ import { normalizeClusterUrl, isLeaveNoTraceCluster, normalizePersistedResultJso
 import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
 import { resolveKustoConnection } from '../../shared/kustoAuth.js';
 import { postMessageToHost } from '../shared/webview-messages';
-import { pState } from '../shared/persistence-state';
+import {
+	createEmptyQueryEditorPendingAdds,
+	pState,
+	queryEditorPendingAddKinds,
+} from '../shared/persistence-state';
 import { clearResultsState, displayResultForBox, getCurrentResultArtifact, getResultsState, getResultsStateRevision } from './results-state';
 import {
 	createDerivedResultArtifactPublication,
@@ -1143,15 +1147,7 @@ function __kustoCreateSectionFromLegacyBridge(kind: unknown, options: unknown): 
 	return result.ok ? result.sectionId : '';
 }
 
-_win.addQueryBox = options => __kustoCreateSectionFromLegacyBridge('query', options);
-_win.addSqlBox = options => __kustoCreateSectionFromLegacyBridge('sql', options);
-_win.addChartBox = options => __kustoCreateSectionFromLegacyBridge('chart', options);
-_win.addTransformationBox = options => __kustoCreateSectionFromLegacyBridge('transformation', options);
-_win.addMarkdownBox = options => __kustoCreateSectionFromLegacyBridge('markdown', options);
-_win.addPythonBox = options => __kustoCreateSectionFromLegacyBridge('python', options);
-_win.addUrlBox = options => __kustoCreateSectionFromLegacyBridge('url', options);
-_win.addHtmlBox = options => __kustoCreateSectionFromLegacyBridge('html', options);
-_win.addCopilotQueryBox = options => {
+function __kustoCreateCopilotQuerySectionFromLegacyBridge(options: unknown): string {
 	const sectionId = __kustoCreateSectionFromLegacyBridge('query', options);
 	if (!sectionId) return '';
 	try {
@@ -1162,7 +1158,7 @@ _win.addCopilotQueryBox = options => {
 		}
 	} catch (error) { console.error('[kusto]', error); }
 	return sectionId;
-};
+}
 
 export function __kustoRequestAddSection(kind: any, afterBoxId?: string) {
 	const admission = getAddSectionAdmission(kind);
@@ -1202,12 +1198,45 @@ export function __kustoRequestAddSection(kind: any, afterBoxId?: string) {
 	return result.ok ? result.sectionId : undefined;
 }
 
-// Replace the early bootstrap stub (defined in queryEditor.js before all scripts load).
-// In some browsers, relying on a global function declaration is not enough to override
-// an existing window property, so assign explicitly.
-try {
+function __kustoPendingAddCount(value: unknown): number {
+	return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function __kustoAdoptPreloadPendingAdds(): void {
+	const preloadWindow = _win as unknown as { __kustoQueryEditorPendingAdds?: unknown };
+	const preloadValue = preloadWindow.__kustoQueryEditorPendingAdds;
+	if (!preloadValue || typeof preloadValue !== 'object' || Array.isArray(preloadValue)) return;
+
+	const preloadAdds = preloadValue as Record<string, unknown>;
+	const runtimeAdds = pState.queryEditorPendingAdds && typeof pState.queryEditorPendingAdds === 'object'
+		? pState.queryEditorPendingAdds
+		: createEmptyQueryEditorPendingAdds();
+	const adoptedAdds = createEmptyQueryEditorPendingAdds();
+	for (const kind of queryEditorPendingAddKinds) {
+		adoptedAdds[kind] = __kustoPendingAddCount(runtimeAdds[kind])
+			+ __kustoPendingAddCount(preloadAdds[kind]);
+	}
+	pState.queryEditorPendingAdds = adoptedAdds;
+	for (const kind of queryEditorPendingAddKinds) preloadAdds[kind] = 0;
+}
+
+export function installRuntimeAddSectionBridges(): void {
+	// Adopt before replacing any preload stub. JavaScript runs this transfer and all
+	// assignments in one call stack, so an accepted preload click has exactly one queue.
+	__kustoAdoptPreloadPendingAdds();
+	_win.addQueryBox = options => __kustoCreateSectionFromLegacyBridge('query', options);
+	_win.addSqlBox = options => __kustoCreateSectionFromLegacyBridge('sql', options);
+	_win.addChartBox = options => __kustoCreateSectionFromLegacyBridge('chart', options);
+	_win.addTransformationBox = options => __kustoCreateSectionFromLegacyBridge('transformation', options);
+	_win.addMarkdownBox = options => __kustoCreateSectionFromLegacyBridge('markdown', options);
+	_win.addPythonBox = options => __kustoCreateSectionFromLegacyBridge('python', options);
+	_win.addUrlBox = options => __kustoCreateSectionFromLegacyBridge('url', options);
+	_win.addHtmlBox = options => __kustoCreateSectionFromLegacyBridge('html', options);
+	_win.addCopilotQueryBox = __kustoCreateCopilotQuerySectionFromLegacyBridge;
 	_win.__kustoRequestAddSection = __kustoRequestAddSection;
-} catch (e) { console.error('[kusto]', e); }
+}
+
+installRuntimeAddSectionBridges();
 
 // During restore, Monaco editors are created asynchronously.
 // Stash initial values here so init*Editor can apply them once the editor exists.
@@ -1926,6 +1955,7 @@ export function resetDocumentPersistenceForTest(): void {
 	pState.sourceGeneration = 0;
 	pState.documentMutationAllowed = true;
 	pState.documentRuntimeActive = true;
+	pState.documentDefaultsFinalizedApplyCount = -1;
 	resetHostOwnedMarkdownDocument();
 	__kustoClearMalformedDocumentLock();
 }
@@ -3158,9 +3188,9 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 function __kustoApplyPendingAdds() {
 	const pendingAdds = (pState.queryEditorPendingAdds && typeof (pState.queryEditorPendingAdds) === 'object')
 		? pState.queryEditorPendingAdds
-		: { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 };
+		: createEmptyQueryEditorPendingAdds();
 	// Reset counts so they don't replay on reload.
-	pState.queryEditorPendingAdds = { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 };
+	pState.queryEditorPendingAdds = createEmptyQueryEditorPendingAdds();
 
 	const pendingTotal =
 		(pendingAdds.query || 0) +
@@ -3462,6 +3492,8 @@ export function handleDocumentDataMessage(message: any): boolean {
 export function finalizeDocumentDefaultsAfterAcknowledgement(state: unknown): void {
 	if (!pState.documentRuntimeActive || pState.restoreInProgress) return;
 	try {
+		if (pState.documentDefaultsFinalizedApplyCount === pState.documentDataApplyCount) return;
+		pState.documentDefaultsFinalizedApplyCount = pState.documentDataApplyCount;
 		const stateRecord = state && typeof state === 'object' ? state as Record<string, unknown> : {};
 		const persistedSections = Array.isArray(stateRecord.sections) ? stateRecord.sections : [];
 		if (persistedSections.length !== 0) return;

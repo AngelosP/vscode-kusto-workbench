@@ -29,6 +29,16 @@ const initialCompatibilityRequestId = compatibilityPersistenceBootstrap.ok
 	? compatibilityPersistenceConfig.initialRequestId.trim()
 	: '';
 
+export const queryEditorPendingAddKinds = [
+	'query', 'chart', 'transformation', 'markdown', 'python', 'url',
+] as const;
+export type QueryEditorPendingAddKind = typeof queryEditorPendingAddKinds[number];
+export type QueryEditorPendingAdds = Record<QueryEditorPendingAddKind, number>;
+
+export function createEmptyQueryEditorPendingAdds(): QueryEditorPendingAdds {
+	return { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 };
+}
+
 export const pState = {
 	/** Monotonic local UI edit revision used to reject stale host reloads. */
 	documentEditRevision: 0,
@@ -114,7 +124,7 @@ export const pState = {
 	devNotesSections: [] as any[],
 
 	/** Pending add-section counts from before the doc was fully loaded. */
-	queryEditorPendingAdds: { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 } as Record<string, number>,
+	queryEditorPendingAdds: createEmptyQueryEditorPendingAdds(),
 
 	/** Per-box pending markdown reveal payload (queued before editor initializes). */
 	pendingMarkdownRevealByBoxId: {} as Record<string, any>,
@@ -170,6 +180,8 @@ export const pState = {
 
 	/** Number of documentData payloads whose restore completed in this webview. */
 	documentDataApplyCount: 0,
+	/** Applied projection whose post-acknowledgement Add/default finalization already ran. */
+	documentDefaultsFinalizedApplyCount: -1,
 
 	/** Box ID of the last executed query (used by results routing). */
 	lastExecutedBox: null as string | null,
