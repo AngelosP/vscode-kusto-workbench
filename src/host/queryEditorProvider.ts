@@ -208,6 +208,10 @@ import {
 	HostSqlEditorLifecycleApplicationHandler,
 	type SqlEditorLifecycleApplicationHandler,
 } from './sqlEditorLifecycleApplicationHandler';
+import {
+	HostKustoSchemaRequestApplicationHandler,
+	type KustoSchemaRequestApplicationHandler,
+} from './kustoSchemaRequestApplicationHandler';
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
 	private static readonly activeProviders = new Set<QueryEditorProvider>();
@@ -297,6 +301,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly persistedResultSanitizationApplication: PersistedResultSanitizationApplicationHandler;
 	readonly kustoConnectionsProjectionApplication: KustoConnectionsProjectionApplicationHandler;
 	readonly sqlEditorLifecycleApplication: SqlEditorLifecycleApplicationHandler;
+	readonly kustoSchemaRequestApplication: KustoSchemaRequestApplicationHandler;
 	readonly onDidInvalidateSqlPersistence: vscode.Event<void>;
 	readonly onDidInvalidateKustoPersistence: vscode.Event<void>;
 
@@ -499,6 +504,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		persistedResultSanitizationApplication?: PersistedResultSanitizationApplicationHandler,
 		kustoConnectionsProjectionApplication?: KustoConnectionsProjectionApplicationHandler,
 		sqlEditorLifecycleApplication?: SqlEditorLifecycleApplicationHandler,
+		kustoSchemaRequestApplication?: KustoSchemaRequestApplicationHandler,
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.dashboardApplication = dashboardApplication ?? new HostDashboardApplicationHandler({
@@ -624,6 +630,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				postKustoPublication: message => this.postKustoPublication(message),
 			});
 		this.schema = new SchemaService(this);
+		this.kustoSchemaRequestApplication = kustoSchemaRequestApplication
+			?? new HostKustoSchemaRequestApplicationHandler({ schema: this.schema });
 		this.sqlLifecycle = new SqlEditorLifecycleCoordinator({
 			context: this.context,
 			sqlWorkbench: this.sqlWorkbench,
@@ -1196,22 +1204,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await sqlEditorLifecycleApplicationMessage;
 			return;
 		}
-		switch (message.type) {
-			case 'prefetchSchema':
-				await this.schema.prefetchSchema(message.connectionId, message.database, message.boxId, !!message.forceRefresh, message.requestToken, {
-					cacheOnly: !!message.cacheOnly,
-					silent: !!message.silent,
-					reason: message.reason,
-				}, message.sectionInstanceId !== undefined && message.targetGeneration !== undefined ? {
-					sectionInstanceId: message.sectionInstanceId,
-					targetGeneration: message.targetGeneration,
-				} : undefined);
-				return;
-			case 'requestCrossClusterSchema':
-				await this.schema.handleCrossClusterSchemaRequest(message.clusterName, message.database, message.boxId, message.requestToken, message.requestSource, message.traceId);
-				return;
-			default:
-				return;
+		const kustoSchemaRequestApplicationMessage
+			= this.kustoSchemaRequestApplication?.handleMessage(message);
+		if (kustoSchemaRequestApplicationMessage) {
+			await kustoSchemaRequestApplicationMessage;
 		}
 	}
 
@@ -1335,6 +1331,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.comparisonPreparationApplication.dispose();
 		this.sqlSectionExecutionApplication.dispose();
 		this.sqlEditorLifecycleApplication.dispose();
+		this.kustoSchemaRequestApplication.dispose();
 		this.sqlConnectionsProjectionApplication.dispose();
 		this.copilot.disposeKustoOwners();
 		this.copilot.invalidateSqlConnections(

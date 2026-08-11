@@ -1203,6 +1203,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.comparisonPreparationApplication = { dispose: vi.fn(() => rejectComparison(new Error('Canceled'))) };
 		provider.sqlSectionExecutionApplication = { dispose: vi.fn() };
 		provider.sqlEditorLifecycleApplication = { dispose: vi.fn() };
+		provider.kustoSchemaRequestApplication = { dispose: vi.fn() };
 		provider.sqlConnectionsProjectionApplication = { dispose: vi.fn() };
 		provider.cancelAllRunningQueries = vi.fn();
 		provider.kustoClient = { dispose: vi.fn() };
@@ -1222,6 +1223,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.comparisonPreparationApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.sqlSectionExecutionApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.sqlEditorLifecycleApplication.dispose).toHaveBeenCalledOnce();
+		expect(provider.kustoSchemaRequestApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.sqlConnectionsProjectionApplication.dispose).toHaveBeenCalledOnce();
 		expect(provider.persistedResultSanitizationApplication.dispose).toHaveBeenCalledOnce();
 		expect(rejectComparison).toHaveBeenCalledWith(expect.objectContaining({ message: 'Canceled' }));

@@ -282,9 +282,9 @@ describe('QueryEditorProvider SQL editor lifecycle application', () => {
 			expect(handlerSource).toContain(`case '${route}':`);
 			expect(typesSource).toContain(`type: '${route}'`);
 		}
-		expect(providerSource.match(/^\s*case '/gm) ?? []).toHaveLength(2);
-		expect(providerSource).toContain("case 'prefetchSchema':");
-		expect(providerSource).toContain("case 'requestCrossClusterSchema':");
+		expect(providerSource.match(/^\s*case '/gm) ?? []).toHaveLength(0);
+		expect(providerSource).not.toContain("case 'prefetchSchema':");
+		expect(providerSource).not.toContain("case 'requestCrossClusterSchema':");
 		expect(providerSource).not.toContain("from './sql/sqlAuthState';");
 		expect(providerSource).not.toContain('setSqlServerAccountMapEntry(');
 		expect(providerSource).not.toContain('setSqlTokenOverride(');
