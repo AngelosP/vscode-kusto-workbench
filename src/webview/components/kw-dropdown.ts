@@ -50,6 +50,7 @@ export class KwDropdown extends LitElement {
 	@property({ type: Boolean }) disabled = false;
 	@property({ type: Boolean }) loading = false;
 	@property({ type: String }) loadingText = 'Loading...';
+	@property({ type: String, attribute: 'aria-label' }) ariaLabel = '';
 	@property({ type: Boolean }) showDelete = false;
 	@property({ attribute: false }) buttonIcon: TemplateResult | null = null;
 	@property({ type: Boolean }) compactIconOnly = false;
@@ -129,6 +130,7 @@ export class KwDropdown extends LitElement {
 		return html`
 			<button type="button" class="kusto-dropdown-btn"
 				aria-haspopup="listbox"
+				aria-label=${this.ariaLabel || selectedItem?.label || this.placeholder}
 				aria-expanded="${this._open ? 'true' : 'false'}"
 				?disabled=${this.disabled || this.loading}
 				title="${selectedItem?.label || ''}"
@@ -162,7 +164,7 @@ export class KwDropdown extends LitElement {
 					const globalIdx = idx('action', act.id);
 					return html`
 						<div class="kusto-dropdown-action ${globalIdx === this._focusedIndex ? 'is-focused' : ''}"
-							role="option" tabindex="-1"
+							role="option" tabindex="-1" data-dropdown-action-id=${act.id}
 							@click=${() => this._onActionClick(act.id)}
 							@mouseenter=${() => { this._focusedIndex = globalIdx; }}>
 							${act.label}
@@ -175,7 +177,7 @@ export class KwDropdown extends LitElement {
 					const isFocused = globalIdx === this._focusedIndex;
 					return html`
 						<div class="kusto-dropdown-item ${isSelected ? 'is-selected' : ''} ${isFocused ? 'is-focused' : ''} ${item.disabled ? 'is-disabled' : ''}"
-							role="option" tabindex="-1"
+							role="option" tabindex="-1" data-dropdown-item-id=${item.id}
 							aria-selected="${isSelected ? 'true' : 'false'}"
 							@click=${() => !item.disabled && this._onItemClick(item)}
 							@mouseenter=${() => { if (!item.disabled) this._focusedIndex = globalIdx; }}>
@@ -197,7 +199,7 @@ export class KwDropdown extends LitElement {
 					const globalIdx = idx('action', act.id);
 					return html`
 						<div class="kusto-dropdown-action ${globalIdx === this._focusedIndex ? 'is-focused' : ''}"
-							role="option" tabindex="-1"
+							role="option" tabindex="-1" data-dropdown-action-id=${act.id}
 							@click=${() => this._onActionClick(act.id)}
 							@mouseenter=${() => { this._focusedIndex = globalIdx; }}>
 							${act.label}
@@ -291,6 +293,10 @@ export class KwDropdown extends LitElement {
 	}
 
 	private _onButtonKeydown(e: KeyboardEvent): void {
+		if (this._open && ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' '].includes(e.key)) {
+			this._onMenuKeydown(e);
+			return;
+		}
 		if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
 			e.preventDefault();
 			if (!this._open) {

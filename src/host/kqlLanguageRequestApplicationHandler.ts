@@ -3,8 +3,12 @@ import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { getErrorMessage } from './queryEditorUtils';
 import type { IncomingWebviewMessage } from './queryEditorTypes';
 import type { WorkbenchLogger } from './workbenchLogger';
-
-type KqlLanguageRequestMessage = Extract<IncomingWebviewMessage, { type: 'kqlLanguageRequest' }>;
+import {
+	isKqlLanguageWebviewMessageType,
+	parseKqlLanguageWebviewMessage,
+	type KqlLanguageHostMessage,
+	type KqlLanguageRequestMessage,
+} from '../shared/kqlLanguageProtocol';
 
 export interface KqlLanguageRequestApplicationHandler {
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined;
@@ -14,7 +18,7 @@ export interface KqlLanguageRequestApplicationHandler {
 export type KqlLanguageRequestApplicationHandlerOptions = {
 	connectionManager: ConnectionManager;
 	context: import('vscode').ExtensionContext;
-	postMessage: (message: unknown) => Thenable<boolean>;
+	postMessage: (message: KqlLanguageHostMessage) => Thenable<boolean>;
 	output: Pick<WorkbenchLogger, 'error'>;
 	languageHost?: Pick<KqlLanguageServiceHost, 'getDiagnostics' | 'findTableReferences'>;
 };
@@ -29,26 +33,27 @@ export class HostKqlLanguageRequestApplicationHandler implements KqlLanguageRequ
 	}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
-		if (message.type !== 'kqlLanguageRequest') return undefined;
-		return this.handleKqlLanguageRequest(message);
+		if (!isKqlLanguageWebviewMessageType(message)) return undefined;
+		const parsed = parseKqlLanguageWebviewMessage(message);
+		if (!parsed.ok) return Promise.resolve();
+		return this.handleKqlLanguageRequest(parsed.value);
 	}
 
 	dispose(): void {
 		this.disposed = true;
 	}
 
-	private postMessage(message: unknown): void {
+	private postMessage(message: KqlLanguageHostMessage): void {
 		if (this.disposed) return;
 		this.options.postMessage(message);
 	}
 
 	private async handleKqlLanguageRequest(message: KqlLanguageRequestMessage): Promise<void> {
 		if (this.disposed) return;
-		const requestId = String(message.requestId || '').trim();
-		if (!requestId) return;
+		const requestId = message.requestId;
 
 		try {
-			const params = message.params && typeof message.params === 'object' ? message.params : { text: '' };
+			const params = message.params;
 			switch (message.method) {
 				case 'textDocument/diagnostic': {
 					const result = await this.languageHost.getDiagnostics(params);

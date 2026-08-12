@@ -396,6 +396,7 @@ export class KwCopilotChat extends LitElement {
 						${ICONS.clearAll}
 					</button>
 					<button type="button" class="icon-btn close-btn"
+						data-testid="copilot-chat-close"
 						title="Close chat"
 						@click=${this._onClose}>
 						${ICONS.close}
@@ -423,6 +424,7 @@ export class KwCopilotChat extends LitElement {
 						<div class="tools-container">
 							<button type="button"
 								class="tools-btn ${this._toolsPanelOpen ? 'is-active' : ''}"
+								data-testid="copilot-chat-tools"
 								title="Tools"
 								aria-pressed=${this._toolsPanelOpen ? 'true' : 'false'}
 								?disabled=${this._tools.length === 0}

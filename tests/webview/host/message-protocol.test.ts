@@ -339,7 +339,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postMessage::68:10',
 	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postToAllWebviews::66:10',
 	'src/host/editorCursorStatusApplicationHandler.ts::postMessage::postMessage::83:10',
-	'src/host/kqlLanguageRequestApplicationHandler.ts::postMessage::postMessage::42:3',
+	'src/host/kqlLanguageRequestApplicationHandler.ts::postMessage::postMessage::48:3',
 	'src/host/kustoConnectionOnboardingApplicationHandler.ts::testConnectionFromWebview::postMessage::189:4',
 	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::453:33',
 	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::274:33',
@@ -1251,6 +1251,46 @@ describe('Message Protocol Contract', () => {
 		expect(router).not.toContain('message.schema as');
 	});
 
+	it('keeps KQL language requests and responses on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/kqlLanguageProtocol.ts',
+			'KqlLanguageWebviewMessage',
+		)).toEqual(['kqlLanguageRequest']);
+		expect(extractTypeDiscriminants(
+			'src/shared/kqlLanguageProtocol.ts',
+			'KqlLanguageHostMessage',
+		)).toEqual(['kqlLanguageResponse']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| KqlLanguageWebviewMessage');
+		expect(webviewMessages).toContain('| KqlLanguageWebviewMessage');
+		expect(hostTypes).not.toContain("type: 'kqlLanguageRequest'");
+		expect(webviewMessages).not.toContain("type: 'kqlLanguageRequest'");
+		expect(webviewMessages).toContain('parseKqlLanguageWebviewMessage(msg)');
+
+		const requestHandler = readWorkspaceFile('src/host/kqlLanguageRequestApplicationHandler.ts');
+		expect(requestHandler.indexOf('parseKqlLanguageWebviewMessage(message)'))
+			.toBeLessThan(requestHandler.indexOf('this.languageHost.getDiagnostics(params)'));
+		expect(requestHandler.indexOf('parseKqlLanguageWebviewMessage(message)'))
+			.toBeLessThan(requestHandler.indexOf('this.languageHost.findTableReferences(params)'));
+		expect(requestHandler).toContain('postMessage: (message: KqlLanguageHostMessage)');
+
+		const serviceProtocol = readWorkspaceFile('src/host/kqlLanguageService/protocol.ts');
+		expect(serviceProtocol).toContain("export * from '../../shared/kqlLanguageProtocol';");
+		expect(serviceProtocol).not.toContain('export type KqlLanguageRequestMessage =');
+		expect(serviceProtocol).not.toContain('export type KqlLanguageResponseMessage =');
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		expect(dispatcher.indexOf('parseKqlLanguageHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf("case 'kqlLanguageResponse':"));
+		expect(dispatcher.indexOf('parseKqlLanguageHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf('const r = __kustoKqlLanguageRequestResolversById'));
+		expect(dispatcher.indexOf('isKqlLanguageResponseForMethod('))
+			.toBeLessThan(dispatcher.indexOf('delete __kustoKqlLanguageRequestResolversById[reqId]'));
+	});
+
 	// ─── Compile-time guards ───────────────────────────────────────────────
 	// These calls exist solely for the TypeScript compiler to verify that
 	// every string literal in our arrays is a valid union discriminant.
@@ -1276,6 +1316,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/kustoDatabaseDiscoveryProtocol.ts', 'KustoDatabaseDiscoveryWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlDatabaseDiscoveryProtocol.ts', 'SqlDatabaseDiscoveryWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlSchemaProtocol.ts', 'SqlSchemaWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/kqlLanguageProtocol.ts', 'KqlLanguageWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1290,6 +1331,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/kustoDatabaseDiscoveryProtocol.ts', 'KustoDatabaseDiscoveryWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlDatabaseDiscoveryProtocol.ts', 'SqlDatabaseDiscoveryWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlSchemaProtocol.ts', 'SqlSchemaWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/kqlLanguageProtocol.ts', 'KqlLanguageWebviewMessage'),
 			])].sort()
 		);
 	});

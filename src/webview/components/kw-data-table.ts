@@ -1134,11 +1134,11 @@ export class KwDataTable extends LitElement {
 	private _renderTh(h: any): TemplateResult {
 		const col = h.column as Column<CellValue[]>, sd = col.getIsSorted(), si = this._sorting.findIndex(s => s.id === col.id), ci = parseInt(col.id);
 		const isFiltered = isColumnFiltered(ci, this._columnFilters);
-		return html`<th @click=${(e: MouseEvent) => { if (!(e.target as HTMLElement).closest('.cm-btn') && !(e.target as HTMLElement).closest('.filtered-link')) col.toggleSorting(undefined, e.shiftKey); }}
+		return html`<th data-column-index=${ci} @click=${(e: MouseEvent) => { if (!(e.target as HTMLElement).closest('.cm-btn') && !(e.target as HTMLElement).closest('.filtered-link')) col.toggleSorting(undefined, e.shiftKey); }}
 			@contextmenu=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openColumnMenuAt(ci, e.clientX, e.clientY); }}
 			class="${sd ? 'sorted' : ''}">
 			<div class="thc"><span class="thn">${col.columnDef.header}${sd ? html`<span class="si2">${sd === 'asc' ? '↑' : '↓'}${this._sorting.length > 1 ? html`<sup>${si + 1}</sup>` : nothing}</span>` : nothing}${isFiltered ? html`<a href="#" class="filtered-link" @click=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openFilterDialog(ci); }}>(filtered)</a>` : nothing}</span>
-				<button class="cm-btn" @click=${(e: MouseEvent) => { e.stopPropagation(); this._openColumnMenu(ci, e); }}>☰</button>
+				<button class="cm-btn" data-column-index=${ci} title="Column menu for ${col.columnDef.header}" aria-label="Column menu for ${col.columnDef.header}" @click=${(e: MouseEvent) => { e.stopPropagation(); this._openColumnMenu(ci, e); }}>☰</button>
 			</div>
 		</th>`;
 	}
@@ -1175,16 +1175,16 @@ export class KwDataTable extends LitElement {
 		const ci = this._columnMenuOpen!;
 		const col = this._table?.getHeaderGroups()[0]?.headers[ci]?.column as Column<CellValue[]> | undefined;
 		if (!col) return html``;
-		return html`<div class="cm" style="left:${this._columnMenuPos.x}px;top:${this._columnMenuPos.y}px;" @click=${(e: Event) => e.stopPropagation()}>
-			<div class="cmi" @click=${() => { col.toggleSorting(false, false); this._closeColumnMenu(); }}>Sort ascending</div>
-			<div class="cmi" @click=${() => { col.toggleSorting(true, false); this._closeColumnMenu(); }}>Sort descending</div>
-			${col.getIsSorted() ? html`<div class="cmi" @click=${() => { col.clearSorting(); this._closeColumnMenu(); }}>Remove sort</div>` : nothing}
-			<div class="cmi" @click=${() => this._openFilterDialog(ci)}>Filter...</div>
+		return html`<div class="cm" role="menu" data-column-index=${ci} style="left:${this._columnMenuPos.x}px;top:${this._columnMenuPos.y}px;" @click=${(e: Event) => e.stopPropagation()}>
+			<div class="cmi" role="menuitem" data-action="sort-ascending" @click=${() => { col.toggleSorting(false, false); this._closeColumnMenu(); }}>Sort ascending</div>
+			<div class="cmi" role="menuitem" data-action="sort-descending" @click=${() => { col.toggleSorting(true, false); this._closeColumnMenu(); }}>Sort descending</div>
+			${col.getIsSorted() ? html`<div class="cmi" role="menuitem" data-action="remove-sort" @click=${() => { col.clearSorting(); this._closeColumnMenu(); }}>Remove sort</div>` : nothing}
+			<div class="cmi" role="menuitem" data-action="filter" @click=${() => this._openFilterDialog(ci)}>Filter...</div>
 			<div class="cms"></div>
-			<div class="cmi" @click=${() => { this._copyCol(ci); this._closeColumnMenu(); }}>Copy column values</div>
+			<div class="cmi" role="menuitem" data-action="copy-column" @click=${() => { this._copyCol(ci); this._closeColumnMenu(); }}>Copy column values</div>
 			<div class="cms"></div>
-			<div class="cmi" @click=${() => this._openUniqueValues(ci, 'unique-values')}>Show unique values</div>
-			${this.columns.length >= 2 ? html`<div class="cmi" @click=${() => this._openUniqueValues(ci, 'unique-count')}>Unique count by column</div>` : nothing}
+			<div class="cmi" role="menuitem" data-action="unique-values" @click=${() => this._openUniqueValues(ci, 'unique-values')}>Show unique values</div>
+			${this.columns.length >= 2 ? html`<div class="cmi" role="menuitem" data-action="unique-count" @click=${() => this._openUniqueValues(ci, 'unique-count')}>Unique count by column</div>` : nothing}
 		</div>`;
 	}
 

@@ -207,8 +207,11 @@ describe('QueryEditorProvider KQL language request application', () => {
 		const handlerSource = readSource('src/host/kqlLanguageRequestApplicationHandler.ts');
 		const languageHostSource = readSource('src/host/kqlLanguageService/host.ts');
 		const languageServiceSource = readSource('src/host/kqlLanguageService/service.ts');
+		const languageProtocolSource = readSource('src/host/kqlLanguageService/protocol.ts');
+		const sharedProtocolSource = readSource('src/shared/kqlLanguageProtocol.ts');
 		const hostTypesSource = readSource('src/host/queryEditorTypes.ts');
 		const webviewSource = readSource('src/webview/core/message-handler.ts');
+		const webviewMessagesSource = readSource('src/webview/shared/webview-messages.ts');
 
 		expect(providerSource).not.toContain("from './kqlLanguageService/host'");
 		expect(providerSource).not.toContain('private readonly kqlLanguageHost:');
@@ -229,7 +232,15 @@ describe('QueryEditorProvider KQL language request application', () => {
 		expect(languageHostSource).toContain('this.service.findTableReferences(');
 		expect(languageServiceSource).toContain('getDiagnostics(');
 		expect(languageServiceSource).toContain('findTableReferences(');
-		expect(hostTypesSource).toContain("type: 'kqlLanguageRequest'");
+		expect(languageProtocolSource).toContain("export * from '../../shared/kqlLanguageProtocol';");
+		expect(sharedProtocolSource).toContain("type: 'kqlLanguageRequest'");
+		expect(sharedProtocolSource).toContain("type: 'kqlLanguageResponse'");
+		expect(hostTypesSource).toContain("import type { KqlLanguageWebviewMessage } from '../shared/kqlLanguageProtocol';");
+		expect(hostTypesSource).not.toContain('export type KqlLanguageRequestMessage =');
+		expect(handlerSource).toContain('parseKqlLanguageWebviewMessage(message)');
+		expect(webviewMessagesSource).toContain('parseKqlLanguageWebviewMessage(msg)');
+		expect(webviewSource).toContain('parseKqlLanguageHostMessage(message)');
+		expect(webviewSource).toContain('isKqlLanguageResponseForMethod(');
 		expect(webviewSource).toContain("method: 'kusto/findTableReferences'");
 		expect(webviewSource).toContain("case 'kqlLanguageResponse':");
 		expect(webviewSource).toContain('__kustoKqlLanguageRequestResolversById');

@@ -99,17 +99,17 @@ export class KwSortDialog extends LitElement {
 				</div>`)}
 				<div class="sr-add">
 					<span class="sr-add-label">Add sort</span>
-					<select class="sr-col" id="sr-add-col">
+					<select class="sr-col" id="sr-add-col" data-testid="sort-add-column" aria-label="Sort column">
 						<option value="" selected>Select a column…</option>
 						${unusedCols.map(c => html`<option value="${c.idx}">${c.name}</option>`)}
 					</select>
-					<select class="sr-dir" id="sr-add-dir"><option value="asc" selected>Ascending</option><option value="desc">Descending</option></select>
-					<button class="sr-add-btn" title="Add" @click=${() => this._addInline()}>+</button>
+					<select class="sr-dir" id="sr-add-dir" data-testid="sort-add-direction" aria-label="Sort direction"><option value="asc" selected>Ascending</option><option value="desc">Descending</option></select>
+					<button class="sr-add-btn" data-testid="sort-add" title="Add" @click=${() => this._addInline()}>+</button>
 				</div>
 			</div>
 			<div class="sd-f">
-				<button class="sd-btn sd-btn-danger" @click=${this._clear}>Remove Sort</button>
-				<button class="sd-btn" @click=${() => this._apply()}>Apply</button>
+				<button class="sd-btn sd-btn-danger" data-testid="sort-remove" @click=${this._clear}>Remove Sort</button>
+				<button class="sd-btn" data-testid="sort-apply" @click=${() => this._apply()}>Apply</button>
 			</div>
 		</div></div>`;
 	}

@@ -285,4 +285,44 @@ describe('postMessageToHost', () => {
 			delete (window as any).__e2eCaptureHostMessage;
 		}
 	});
+
+	it('posts valid KQL language requests and rejects malformed ones before E2E capture', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const params = {
+				text: 'StormEvents', connectionId: 'connection-1', database: 'Samples',
+				boxId: 'query-1', uri: 'file:///workspace/query.kql',
+			};
+			const requests = [
+				{ type: 'kqlLanguageRequest', requestId: 'diagnostics-1', method: 'textDocument/diagnostic', params },
+				{ type: 'kqlLanguageRequest', requestId: 'references-1', method: 'kusto/findTableReferences', params },
+			] as const;
+			for (const request of requests) {
+				postMessageToHost(request);
+				expect(capture.mock.calls.at(-1)?.[0]).toBe(request);
+				expect(postMessage.mock.calls.at(-1)?.[0]).toBe(request);
+			}
+			capture.mockClear();
+			postMessage.mockClear();
+
+			for (const request of [
+				{ type: 'kqlLanguageRequest', requestId: '   ', method: 'kusto/findTableReferences', params },
+				{ type: 'kqlLanguageRequest', requestId: 'unsupported-1', method: 'workspace/symbol', params },
+				{ type: 'kqlLanguageRequest', requestId: 'malformed-1', method: 'textDocument/diagnostic', params: { text: 42 } },
+				Object.assign([], {
+					type: 'kqlLanguageRequest', requestId: 'array-1', method: 'kusto/findTableReferences', params,
+				}),
+			]) {
+				postMessageToHost(request as unknown as Parameters<typeof postMessageToHost>[0]);
+			}
+
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
 });

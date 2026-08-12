@@ -1,4 +1,4 @@
-import { LitElement, html, nothing, type TemplateResult } from 'lit';
+import { LitElement, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { styles } from './kw-connection-manager.styles.js';
 import { scrollbarSheet } from '../../shared/scrollbar-styles.js';
 import { osStyles } from '../../shared/os-styles.js';
@@ -252,6 +252,7 @@ export class KwConnectionManager extends LitElement {
 	@state() private _modalAuthorityId = '';
 	@state() private _modalAccountId = '';
 	@state() private _testResult = '';
+	private _modalReturnFocus: HTMLElement | null = null;
 
 	// SQL modal state
 	@state() private _modalServerUrl = '';
@@ -314,9 +315,22 @@ export class KwConnectionManager extends LitElement {
 		this._cleanupRefreshMenuScrollDismiss();
 	}
 
-	protected override updated(): void {
+	protected override updated(changedProps: PropertyValues): void {
+		super.updated(changedProps);
 		this._syncScrollOwnerTestState();
 		this._clampExplorerScroll();
+		if (changedProps.has('_modalVisible')) {
+			if (this._modalVisible) {
+				const form = this.shadowRoot?.querySelector(this._activeKind === 'sql' ? 'kw-sql-connection-form' : 'kw-kusto-connection-form') as any;
+				void form?.updateComplete?.then(() => {
+					const selector = this._activeKind === 'sql' ? '[data-testid="sql-conn-server-url"]' : '[data-testid="kusto-conn-cluster-url"]';
+					(form.shadowRoot?.querySelector(selector) as HTMLElement | null)?.focus();
+				});
+			} else if (this._modalReturnFocus?.isConnected) {
+				this._modalReturnFocus.focus();
+				this._modalReturnFocus = null;
+			}
+		}
 	}
 
 	private _getExplorerScrollElement(): HTMLElement | null {
@@ -1971,11 +1985,11 @@ export class KwConnectionManager extends LitElement {
 
 	private _renderKustoModal(): TemplateResult {
 		return html`
-			<div class="modal-overlay" data-testid="cm-modal-overlay" @click=${() => this._closeModal()}>
-				<div class="modal-content" data-testid="cm-modal-content" @click=${(e: Event) => e.stopPropagation()}>
+			<div class="modal-overlay" data-testid="cm-modal-overlay" @click=${() => this._closeModal()} @keydown=${this._onModalKeydown}>
+				<div class="modal-content" data-testid="cm-modal-content" role="dialog" aria-modal="true" aria-labelledby="cm-kusto-modal-title" @click=${(e: Event) => e.stopPropagation()}>
 					<div class="modal-header">
-						<h2>${this._modalMode === 'edit' ? 'Edit Connection' : 'Add Connection'}</h2>
-						<button class="btn-icon" @click=${() => this._closeModal()}>${ICONS.close}</button>
+						<h2 id="cm-kusto-modal-title">${this._modalMode === 'edit' ? 'Edit Connection' : 'Add Connection'}</h2>
+						<button class="btn-icon" data-testid="cm-modal-close" title="Close" aria-label="Close" @click=${() => this._closeModal()}>${ICONS.close}</button>
 					</div>
 					<div class="modal-body">
 						<kw-kusto-connection-form
@@ -1994,8 +2008,8 @@ export class KwConnectionManager extends LitElement {
 						></kw-kusto-connection-form>
 					</div>
 					<div class="modal-footer">
-						<button class="btn" @click=${() => this._closeModal()}>Cancel</button>
-						<button class="btn primary" @click=${() => this._submitKustoForm()}>Save</button>
+						<button class="btn" data-testid="cm-modal-cancel" @click=${() => this._closeModal()}>Cancel</button>
+						<button class="btn primary" data-testid="cm-modal-save" @click=${() => this._submitKustoForm()}>Save</button>
 					</div>
 				</div>
 			</div>
@@ -2099,6 +2113,11 @@ export class KwConnectionManager extends LitElement {
 	}
 
 	private _openModal(mode: 'add' | 'edit', connId?: string): void {
+		try {
+			this._modalReturnFocus = this.shadowRoot?.activeElement as HTMLElement | null;
+		} catch {
+			this._modalReturnFocus = null;
+		}
 		this._modalMode = mode;
 		this._editingConnectionId = connId ?? null;
 		this._sqlTestConnectionRequestId = null;

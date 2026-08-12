@@ -216,6 +216,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	@state() private _favorites: KustoFavorite[] = [];
 	@state() private _showAddConnectionModal = false;
 	@state() private _addConnectionTestResult = '';
+	private _addConnectionReturnFocus: HTMLElement | null = null;
 	// ── Header row reactive state ─────────────────────────────────────────────
 
 	@state() private _name = '';
@@ -419,6 +420,17 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	override updated(changedProps: Map<string, unknown>): void {
 		super.updated(changedProps);
 		this._syncTestStateAttrs();
+		if (changedProps.has('_showAddConnectionModal')) {
+			if (this._showAddConnectionModal) {
+				const form = this.shadowRoot?.querySelector('kw-kusto-connection-form') as any;
+				void form?.updateComplete?.then(() => {
+					(form.shadowRoot?.querySelector('[data-testid="kusto-conn-cluster-url"]') as HTMLElement | null)?.focus();
+				});
+			} else if (this._addConnectionReturnFocus?.isConnected) {
+				this._addConnectionReturnFocus.focus();
+				this._addConnectionReturnFocus = null;
+			}
+		}
 	}
 
 	private _syncTestStateAttrs(): void {
@@ -489,13 +501,14 @@ export class KwQuerySection extends LitElement implements SectionElement {
 							aria-label="Run query options" title="Run query options">${downChevronSvg}</button>
 						<div class="unified-btn-split-menu" id="${id}_run_menu" role="menu">
 							<div class="unified-btn-split-menu-item unified-btn-split-menu-fn" id="${id}_run_menu_runFunction" role="menuitem"
+								data-run-mode="runFunction"
 								style="display:none"
 								@click=${() => callGlobal('__kustoApplyRunModeFromMenu', id, 'runFunction')}>Run Function</div>
-							<div class="unified-btn-split-menu-item" role="menuitem"
+							<div class="unified-btn-split-menu-item" role="menuitem" data-run-mode="plain"
 								@click=${() => callGlobal('__kustoApplyRunModeFromMenu', id, 'plain')}>Run Query</div>
-							<div class="unified-btn-split-menu-item" role="menuitem"
+							<div class="unified-btn-split-menu-item" role="menuitem" data-run-mode="take100"
 								@click=${() => callGlobal('__kustoApplyRunModeFromMenu', id, 'take100')}>Run Query (take 100)</div>
-							<div class="unified-btn-split-menu-item" role="menuitem"
+							<div class="unified-btn-split-menu-item" role="menuitem" data-run-mode="sample100"
 								@click=${() => callGlobal('__kustoApplyRunModeFromMenu', id, 'sample100')}>Run Query (sample 100)</div>
 						</div>
 					</div>
@@ -657,6 +670,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			<div class="select-wrapper half-width" title="Kusto Cluster">
 				<kw-dropdown
 					data-testid="cluster-dropdown"
+					aria-label="Kusto Cluster"
 					.items=${clusterItems}
 					.actions=${clusterActions}
 					.selectedId=${this._connectionId}
@@ -676,6 +690,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			<div class="select-wrapper half-width" title="Kusto Database">
 				<kw-dropdown
 					data-testid="database-dropdown"
+					aria-label="Kusto Database"
 					.items=${dbItems}
 					.selectedId=${this._database}
 					.placeholder=${'Select Database...'}
@@ -796,6 +811,8 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	}
 
 	openAddConnectionModal(): void {
+		const clusterDropdown = this.shadowRoot?.querySelector('kw-dropdown[data-testid="cluster-dropdown"]') as any;
+		this._addConnectionReturnFocus = clusterDropdown?.shadowRoot?.querySelector('.kusto-dropdown-btn') ?? null;
 		this._addConnectionTestResult = '';
 		this._showAddConnectionModal = true;
 	}
@@ -837,13 +854,13 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 	private _renderAddConnectionModal(): TemplateResult {
 		return html`
-			<div class="add-connection-overlay" @click=${() => this._onAddConnectionCancel()} @keydown=${(e: KeyboardEvent) => {
+			<div class="add-connection-overlay" role="dialog" aria-modal="true" aria-labelledby="${this.boxId}_add_connection_title" @click=${() => this._onAddConnectionCancel()} @keydown=${(e: KeyboardEvent) => {
 				if (e.key === 'Escape') { this._onAddConnectionCancel(); e.preventDefault(); }
 			}}>
 				<div class="add-connection-dialog" @click=${(e: Event) => e.stopPropagation()}>
 					<div class="add-connection-header">
-						<span class="add-connection-title">Add Connection</span>
-						<button class="add-connection-close" @click=${() => this._onAddConnectionCancel()}>
+						<span class="add-connection-title" id="${this.boxId}_add_connection_title">Add Connection</span>
+						<button class="add-connection-close" data-testid="kusto-add-connection-close" title="Close" aria-label="Close" @click=${() => this._onAddConnectionCancel()}>
 							<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M8 8.707l3.646 3.647.708-.708L8.707 8l3.647-3.646-.708-.708L8 7.293 4.354 3.646l-.708.708L7.293 8l-3.647 3.646.708.708L8 8.707z"/></svg>
 						</button>
 					</div>
@@ -859,8 +876,8 @@ export class KwQuerySection extends LitElement implements SectionElement {
 						></kw-kusto-connection-form>
 					</div>
 					<div class="add-connection-footer">
-						<button class="add-connection-btn" @click=${() => this._onAddConnectionCancel()}>Cancel</button>
-						<button class="add-connection-btn primary" @click=${() => this._submitAddConnectionForm()}>Save</button>
+						<button class="add-connection-btn" data-testid="kusto-add-connection-cancel" @click=${() => this._onAddConnectionCancel()}>Cancel</button>
+						<button class="add-connection-btn primary" data-testid="kusto-add-connection-save" @click=${() => this._submitAddConnectionForm()}>Save</button>
 					</div>
 				</div>
 			</div>

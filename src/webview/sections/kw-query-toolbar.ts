@@ -39,6 +39,7 @@ import { executeQuery, __kustoIsRunSelectionReady } from './query-execution.cont
 import { closeAllMenus } from '../core/dropdown.js';
 import { schedulePersist } from '../core/persistence.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
+import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
 import { canonicalizePowerBiKustoClusterUrl } from '../../shared/kustoClusterUrls.js';
 import { clearActiveShareModal, closeShareModalForOwner, registerActiveShareModal } from '../shared/share-modal-runtime.js';
 import {
@@ -711,8 +712,17 @@ export function setRunMode(boxId: any, mode: any): void {
 
 let removeRunMenuScrollDismiss: (() => void) | null = null;
 let activeRunMenuBoxId: string | null = null;
+let runMenuDismissRegistered = false;
+const dismissActiveRunMenu = (): void => {
+	const id = activeRunMenuBoxId;
+	if (id) closeRunMenu(id);
+};
 
 function cleanupRunMenuScrollDismiss(): void {
+	if (runMenuDismissRegistered) {
+		removeDismissable(dismissActiveRunMenu);
+		runMenuDismissRegistered = false;
+	}
 	if (removeRunMenuScrollDismiss) {
 		removeRunMenuScrollDismiss();
 		removeRunMenuScrollDismiss = null;
@@ -741,6 +751,8 @@ export function toggleRunMenu(boxId: any): void {
 	closeAllRunMenus();
 	menu.style.display = next;
 	if (next === 'block') {
+		pushDismissable(dismissActiveRunMenu);
+		runMenuDismissRegistered = true;
 		try {
 			removeRunMenuScrollDismiss = registerPageScrollDismissable(() => closeAllRunMenus(), {
 				dismissOnWheel: true,

@@ -611,6 +611,27 @@ describe('kw-dropdown', () => {
 		expect(getMenu(el)).not.toBeNull();
 	});
 
+	it('keyboard navigation remains on the trigger after a click opens the menu', async () => {
+		const el = createDropdown({ items: sampleItems, selectedId: 'a' });
+		await el.updateComplete;
+		let selectedId = '';
+		el.addEventListener('dropdown-select', ((event: CustomEvent) => {
+			selectedId = event.detail.id;
+		}) as EventListener);
+
+		const btn = getButton(el);
+		btn.focus();
+		btn.click();
+		await el.updateComplete;
+		btn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+		await el.updateComplete;
+		btn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await el.updateComplete;
+
+		expect(selectedId).toBe('b');
+		expect(getMenu(el)).toBeNull();
+	});
+
 	it('keyboard navigation skips disabled items', async () => {
 		const disabledItems: DropdownItem[] = [
 			{ id: 'a', label: 'Alpha', disabled: true },

@@ -478,7 +478,7 @@ export class KwFilterDialog extends LitElement {
 					</div>
 					<div class="fd-list" role="group" aria-label="Values">
 						${filtered.length === 0 ? html`<div class="fd-empty">No values match</div>` : filtered.map(item => html`
-							<label class="fd-item">
+							<label class="fd-item" data-filter-value=${item.key}>
 								<input type="checkbox" .checked=${selectedSet.has(item.key)} @change=${(e: Event) => this._toggleChoice(item.key, (e.target as HTMLInputElement).checked)} />
 								<span class="fd-item-text">${item.label}</span>
 								<span class="fd-item-count">${item.count}</span>
@@ -533,8 +533,8 @@ export class KwFilterDialog extends LitElement {
 				`}
 			</div>
 			<div class="sd-f">
-				<button class="sd-btn sd-btn-danger" @click=${this._removeFilter}>Remove Filter</button>
-				<button class="sd-btn" @click=${() => this._apply()}>Apply</button>
+				<button class="sd-btn sd-btn-danger" data-testid="filter-remove" @click=${this._removeFilter}>Remove Filter</button>
+				<button class="sd-btn" data-testid="filter-apply" @click=${() => this._apply()}>Apply</button>
 			</div>
 		</div></div>`;
 	}

@@ -3,6 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { classMap } from 'lit/directives/class-map.js';
 import { ToolbarOverflowController, type ToolbarOverflowHost } from '../sections/toolbar-overflow.controller.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
+import { pushDismissable, removeDismissable } from './dismiss-stack.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -99,6 +100,8 @@ export class KwMonacoToolbar extends LitElement implements ToolbarOverflowHost {
 	protected _overflowController = new ToolbarOverflowController(this as unknown as ToolbarOverflowHost);
 	private _removePageScrollListener: (() => void) | null = null;
 	private _dismissListenerTimer: ReturnType<typeof setTimeout> | null = null;
+	private _menuDismissRegistered = false;
+	private _dismissMenus = (): void => this.closeAllMenus();
 
 	// ── Submenu state ─────────────────────────────────────────────────────────
 
@@ -518,6 +521,10 @@ export class KwMonacoToolbar extends LitElement implements ToolbarOverflowHost {
 	// ── Menu dismiss listeners ────────────────────────────────────────────────
 
 	private _addMenuDismissListeners(): void {
+		if (!this._menuDismissRegistered) {
+			pushDismissable(this._dismissMenus);
+			this._menuDismissRegistered = true;
+		}
 		this._removePageScrollListener?.();
 		this._removePageScrollListener = registerPageScrollDismissable(() => this.closeAllMenus(), {
 			dismissOnWheel: true,
@@ -531,6 +538,10 @@ export class KwMonacoToolbar extends LitElement implements ToolbarOverflowHost {
 	}
 
 	private _removeMenuDismissListeners(): void {
+		if (this._menuDismissRegistered) {
+			removeDismissable(this._dismissMenus);
+			this._menuDismissRegistered = false;
+		}
 		if (this._dismissListenerTimer) {
 			clearTimeout(this._dismissListenerTimer);
 			this._dismissListenerTimer = null;

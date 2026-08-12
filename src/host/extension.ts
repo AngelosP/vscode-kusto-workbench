@@ -1846,6 +1846,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	if (context.extensionMode !== vscode.ExtensionMode.Production) {
 		context.subscriptions.push(
 			vscode.commands.registerCommand('kustoWorkbench.test.resetFirstLaunchSetup', () => firstLaunchCoordinator.resetForDevelopment()),
+			vscode.commands.registerCommand('kustoWorkbench.test.resetCopilotChatFirstTime', () =>
+				context.globalState.update(STORAGE_KEYS.copilotChatFirstTimeDismissed, undefined)),
 			vscode.commands.registerCommand('kustoWorkbench.test.closeQueryEditorSession', async () => {
 				const sessionUri = vscode.Uri.joinPath(context.globalStorageUri, 'session.kqlx');
 				await closeQueryEditorSessionTabs(sessionUri);

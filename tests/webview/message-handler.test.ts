@@ -803,6 +803,80 @@ describe('message-handler dispatch', () => {
 		consoleError.mockRestore();
 	});
 
+	it('keeps a KQL table-reference request pending after a malformed matching response', async () => {
+		mocks.postMessageToHost.mockClear();
+		let settled = false;
+		const requestPromise = (window as any).__kustoRequestKqlTableReferences({
+			text: 'Events',
+			connectionId: 'connection-1',
+			database: 'database-1',
+			boxId: 'query-1',
+		}).then((result: unknown) => {
+			settled = true;
+			return result;
+		});
+		const request = mocks.postMessageToHost.mock.calls.find(([message]) =>
+			message.type === 'kqlLanguageRequest',
+		)?.[0];
+		expect(request).toEqual(expect.objectContaining({
+			type: 'kqlLanguageRequest',
+			method: 'kusto/findTableReferences',
+		}));
+
+		dispatchHostMessage({
+			type: 'kqlLanguageResponse',
+			requestId: '   ',
+			ok: true,
+			result: { references: [] },
+		});
+		dispatchHostMessage({
+			type: 'kqlLanguageResponse',
+			requestId: request?.requestId,
+			ok: true,
+			result: { diagnostics: [] },
+		});
+		dispatchHostMessage({
+			type: 'kqlLanguageResponse',
+			requestId: request?.requestId,
+			ok: true,
+			result: { references: [{ name: 'Events', startOffset: 0, endOffset: '11' }] },
+		});
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		const validResult = { references: [{ name: 'Events', startOffset: 0, endOffset: 6 }] };
+		dispatchHostMessage({
+			type: 'kqlLanguageResponse',
+			requestId: request?.requestId,
+			ok: true,
+			result: validResult,
+		});
+		expect(await requestPromise).toBe(validResult);
+	});
+
+	it('keeps the KQL table-reference request timeout at 1500 ms', async () => {
+		vi.useFakeTimers();
+		try {
+			let settled = false;
+			const requestPromise = (window as any).__kustoRequestKqlTableReferences({
+				text: 'Events',
+				connectionId: 'connection-1',
+				database: 'database-1',
+				boxId: 'query-1',
+			}).then((result: unknown) => {
+				settled = true;
+				return result;
+			});
+
+			await vi.advanceTimersByTimeAsync(1499);
+			expect(settled).toBe(false);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(await requestPromise).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('answers final-persist requests and records persistence acknowledgements', async () => {
 		dispatchHostMessage({ type: 'requestFinalPersist', requestId: 'flush-1', reason: 'save' });
 		dispatchHostMessage({ type: 'persistDocumentAck', snapshotId: 'snapshot-1', editRevision: 7 });

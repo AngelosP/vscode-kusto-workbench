@@ -7290,6 +7290,119 @@ async function e2eSeedQueryResult(boxId: string, result: unknown, artifactPublic
 	return `seeded local result for ${id}`;
 }
 
+function e2eKustoUxTable(): any {
+	const section = e2eSection('kusto');
+	const results = document.getElementById(e2eKustoElementId(section, 'results'));
+	const table = results?.querySelector('kw-data-table') as any;
+	if (!table) throw new Error('Kusto UX result table not found');
+	return table;
+}
+
+function e2eKustoUxAssertRenderedRows(expected: number): string {
+	const table = e2eKustoUxTable();
+	const visible = Number(table.getVisibleRowCount?.() ?? table.rows?.length ?? 0);
+	const rendered = Array.from(table.shadowRoot?.querySelectorAll('#dt-body tbody tr') ?? []) as HTMLElement[];
+	const viewport = table._vScrollCtrl?.getScrollElement?.() as HTMLElement | null;
+	const viewportRect = viewport?.getBoundingClientRect();
+	if (visible !== expected || rendered.length !== expected) {
+		throw new Error(`Kusto UX expected ${expected} visible/rendered rows, got ${visible}/${rendered.length}`);
+	}
+	if (!viewportRect || viewportRect.width <= 0 || viewportRect.height <= 0
+		|| rendered.some(row => row.getBoundingClientRect().height <= 0)) {
+		throw new Error('Kusto UX rows are not visible in a positive-size viewport');
+	}
+	return `Kusto UX rendered rows=${rendered.length}`;
+}
+
+function e2eKustoUxAssertSearch(query: string, minimumMatches: number): string {
+	const table = e2eKustoUxTable();
+	const bar = table.shadowRoot?.querySelector('kw-search-bar') as any;
+	const matches = Number(table._searchCtrl?.matches?.length ?? 0);
+	if (!bar || table._searchCtrl?.query !== query || matches < minimumMatches
+		|| !table.shadowRoot?.querySelector('td.mc, td.mh')) {
+		throw new Error(`Kusto UX search mismatch: query=${table._searchCtrl?.query}, matches=${matches}`);
+	}
+	return `Kusto UX search ${query}: ${matches} matches`;
+}
+
+function e2eKustoUxAssertPopup(kind: string, expectedOpen: boolean): string {
+	const table = e2eKustoUxTable();
+	const selectors: Record<string, string> = {
+		search: 'kw-search-bar',
+		rowJump: '.row-jump-inp',
+		columnJump: '.cj-inp',
+		columnMenu: '.cm',
+		sort: 'kw-sort-dialog',
+		filter: 'kw-filter-dialog',
+		uniqueValues: 'kw-unique-values-dialog',
+		objectViewer: 'kw-object-viewer .modal-content',
+	};
+	const selector = selectors[kind];
+	if (!selector) throw new Error(`Unknown Kusto UX popup kind: ${kind}`);
+	const open = !!table.shadowRoot?.querySelector(selector);
+	if (open !== expectedOpen) throw new Error(`Kusto UX ${kind} expected open=${expectedOpen}, got ${open}`);
+	return `Kusto UX ${kind} open=${open}`;
+}
+
+function e2eKustoUxAssertSelectedRow(oneBasedRow: number): string {
+	const table = e2eKustoUxTable();
+	const expectedIndex = oneBasedRow - 1;
+	const selectedIndex = Number(table._selectionCtrl?.selectedCell?.row ?? -1);
+	const selectedRow = table.shadowRoot?.querySelector(`tr.sel-row[data-idx='${expectedIndex}']`) as HTMLElement | null;
+	if (selectedIndex !== expectedIndex || !selectedRow || selectedRow.getBoundingClientRect().height <= 0) {
+		throw new Error(`Kusto UX expected selected row ${expectedIndex}, got ${selectedIndex}`);
+	}
+	return `Kusto UX selected row=${oneBasedRow}`;
+}
+
+function e2eKustoUxAssertColumnVisible(columnName: string): string {
+	const table = e2eKustoUxTable();
+	const columnIndex = (table.columns || []).findIndex((column: any) => String(column?.name ?? column) === columnName);
+	const header = table.shadowRoot?.querySelector(`th[data-column-index='${columnIndex}']`) as HTMLElement | null;
+	const viewport = table._vScrollCtrl?.getScrollElement?.() as HTMLElement | null;
+	const headerRect = header?.getBoundingClientRect();
+	const viewportRect = viewport?.getBoundingClientRect();
+	if (columnIndex < 0 || !headerRect || !viewportRect || headerRect.width <= 0
+		|| headerRect.left < viewportRect.left || headerRect.right > viewportRect.right + 1) {
+		throw new Error(`Kusto UX column is not visible: ${columnName}`);
+	}
+	return `Kusto UX column visible: ${columnName}; scrollLeft=${viewport?.scrollLeft ?? 0}`;
+}
+
+function e2eKustoUxAssertFirstRow(columnName: string, expected: string): string {
+	const table = e2eKustoUxTable();
+	const columnIndex = (table.columns || []).findIndex((column: any) => String(column?.name ?? column) === columnName);
+	const first = table._table?.getRowModel?.().rows?.[0]?.original?.[columnIndex];
+	const value = first && typeof first === 'object' && 'full' in first ? first.full : first;
+	const renderedCells = table.shadowRoot?.querySelectorAll('#dt-body tbody tr:first-child td:not(.rn)') ?? [];
+	const rendered = renderedCells[columnIndex]?.textContent?.trim() ?? '';
+	if (columnIndex < 0 || String(value) !== expected || rendered !== expected) {
+		throw new Error(`Kusto UX expected first ${columnName}=${expected}, got model=${String(value)} rendered=${rendered}`);
+	}
+	return `Kusto UX first ${columnName}=${expected}`;
+}
+
+function e2eKustoUxAssertObjectViewer(expectedText: string): string {
+	const table = e2eKustoUxTable();
+	const viewer = table.shadowRoot?.querySelector('kw-object-viewer') as any;
+	const modal = viewer?.shadowRoot?.querySelector('.modal-content') as HTMLElement | null;
+	if (!viewer?.open || !modal || modal.getBoundingClientRect().width <= 0
+		|| !String(modal.textContent || '').includes(expectedText)) {
+		throw new Error(`Kusto UX object viewer missing visible text: ${expectedText}`);
+	}
+	return `Kusto UX object viewer contains ${expectedText}`;
+}
+
+function e2eKustoUxAssertResultsVisible(expectedVisible: boolean): string {
+	const table = e2eKustoUxTable();
+	const viewport = table.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
+	const visible = !!viewport && viewport.getBoundingClientRect().height > 0;
+	if (visible !== expectedVisible) {
+		throw new Error(`Kusto UX results expected visible=${expectedVisible}, got ${visible}`);
+	}
+	return `Kusto UX results visible=${visible}`;
+}
+
 if (document.body.dataset.kustoE2eEnabled === 'true') {
 	_win.__e2e = {
 	proof: {
@@ -7492,6 +7605,20 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 	},
 	kusto: {
 		...e2eQueryApi('kusto'),
+		resetCopilotFirstTimeState: () => {
+			pState.copilotChatFirstTimeDismissed = false;
+			return 'Kusto Copilot first-time state reset';
+		},
+		ux: {
+			assertRenderedRows: e2eKustoUxAssertRenderedRows,
+			assertSearch: e2eKustoUxAssertSearch,
+			assertPopup: e2eKustoUxAssertPopup,
+			assertSelectedRow: e2eKustoUxAssertSelectedRow,
+			assertColumnVisible: e2eKustoUxAssertColumnVisible,
+			assertFirstRow: e2eKustoUxAssertFirstRow,
+			assertObjectViewer: e2eKustoUxAssertObjectViewer,
+			assertResultsVisible: e2eKustoUxAssertResultsVisible,
+		},
 		runFunctionManual: {
 			setConnected: e2eRunFunctionSetConnected,
 			leadingComments: e2eRunFunctionManualLeadingComments,

@@ -40,6 +40,11 @@ import {
 	parseSqlSchemaWebviewMessage,
 	type SqlSchemaWebviewMessage,
 } from '../../shared/sqlSchemaProtocol.js';
+import {
+	isKqlLanguageWebviewMessageType,
+	parseKqlLanguageWebviewMessage,
+	type KqlLanguageWebviewMessage,
+} from '../../shared/kqlLanguageProtocol.js';
 import { pState } from './persistence-state.js';
 
 let compatibilityDocumentRequestSequence = 0;
@@ -123,13 +128,6 @@ export type OutgoingOptimizeQueryMessage = KustoOptimizeRequestIdentity & {
 };
 
 // ── Schema & language service ──────────────────────────────────────────────
-
-export type OutgoingKqlLanguageRequestMessage = {
-	type: 'kqlLanguageRequest';
-	requestId: string;
-	method: string;
-	params: { text: string; connectionId?: string; database?: string; boxId?: string; uri?: string };
-};
 
 export type OutgoingFetchControlCommandSyntaxMessage = {
 	type: 'fetchControlCommandSyntax';
@@ -287,7 +285,7 @@ export type OutgoingWebviewMessage =
 		type: 'stsConnect'; boxId: string; sectionInstanceId: string; sqlConnectionId: string; database: string; targetGeneration: number;
 		expectedOwner?: { connectionId: string; database: string; targetSignature: string; principalFingerprint: string; revocationGeneration: number };
 	}
-	| OutgoingKqlLanguageRequestMessage
+	| KqlLanguageWebviewMessage
 	| OutgoingFetchControlCommandSyntaxMessage
 
 	// Copilot
@@ -395,6 +393,13 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 		const parsed = parseSqlSchemaWebviewMessage(msg);
 		if (!parsed.ok) {
 			console.error('[kusto] Rejected invalid SQL schema webview message:', parsed.error);
+			return;
+		}
+		outbound = parsed.value;
+	} else if (isKqlLanguageWebviewMessageType(msg)) {
+		const parsed = parseKqlLanguageWebviewMessage(msg);
+		if (!parsed.ok) {
+			console.error('[kusto] Rejected invalid KQL language webview message:', parsed.error);
 			return;
 		}
 		outbound = parsed.value;

@@ -95,6 +95,24 @@ function hasSpinner(el: KwQuerySection): boolean {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('kw-query-section loading states', () => {
+	it('focuses and restores the cluster trigger around the add-connection dialog', async () => {
+		const el = createSection();
+		await el.updateComplete;
+
+		el.openAddConnectionModal();
+		await el.updateComplete;
+		const form = el.shadowRoot?.querySelector('kw-kusto-connection-form') as any;
+		await form?.updateComplete;
+		const clusterInput = form?.shadowRoot?.querySelector('[data-testid="kusto-conn-cluster-url"]');
+		expect(form?.shadowRoot?.activeElement).toBe(clusterInput);
+
+		clusterInput?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
+		await el.updateComplete;
+		const dropdown = el.shadowRoot?.querySelector('kw-dropdown[data-testid="cluster-dropdown"]') as any;
+		expect(el.shadowRoot?.querySelector('.add-connection-dialog')).toBeNull();
+		expect(dropdown?.shadowRoot?.activeElement).toBe(dropdown?.shadowRoot?.querySelector('.kusto-dropdown-btn'));
+	});
+
 	it('correlates CSV save events to the exact admitted Kusto artifact', async () => {
 		const el = createSection();
 		el.id = el.boxId;

@@ -31,6 +31,13 @@ import {
 	isSqlSchemaHostMessageType,
 	parseSqlSchemaHostMessage,
 } from '../../shared/sqlSchemaProtocol.js';
+import {
+	isKqlLanguageHostMessageType,
+	isKqlLanguageResponseForMethod,
+	parseKqlLanguageHostMessage,
+	type KqlLanguageHostMessage,
+	type KqlLanguageMethod,
+} from '../../shared/kqlLanguageProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -727,7 +734,12 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 // --- KQL language service bridge (webview -> extension host) ---
 // Used to share a single semantic engine between the webview Monaco editor and VS Code text editors.
 // If the bridge is unavailable or times out, callers should fall back to local heuristics.
-let __kustoKqlLanguageRequestResolversById: any = {};
+type KqlLanguageRequestResolver = {
+	method: KqlLanguageMethod;
+	resolve: (result: unknown) => void;
+};
+
+let __kustoKqlLanguageRequestResolversById: Record<string, KqlLanguageRequestResolver> = {};
 
 // --- Local resource URI resolver (webview -> extension host) ---
 // Used to map markdown-relative paths (e.g. ./images/a.png) to webview-safe URIs.
@@ -793,6 +805,7 @@ try {
 			} catch (e) { console.error('[kusto]', e); }
 
 			__kustoKqlLanguageRequestResolversById[requestId] = {
+				method: 'kusto/findTableReferences',
 				resolve: (result: any) => {
 					try { if (timer) clearTimeout(timer); } catch (e) { console.error('[kusto]', e); }
 					resolve(result);
@@ -1470,6 +1483,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 	if (isSqlSchemaHostMessageType(message)) {
 		const parsed = parseSqlSchemaHostMessage(message);
 		if (!parsed.ok) return;
+		message = parsed.value;
+	}
+	let kqlLanguageHostMessage: KqlLanguageHostMessage | undefined;
+	if (isKqlLanguageHostMessageType(message)) {
+		const parsed = parseKqlLanguageHostMessage(message);
+		if (!parsed.ok) return;
+		kqlLanguageHostMessage = parsed.value;
 		message = parsed.value;
 	}
 	let kustoSchemaHostMessage: KustoSchemaHostMessage | undefined;
@@ -2432,11 +2452,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			break;
 		case 'kqlLanguageResponse':
 			try {
-				const reqId = String(message.requestId || '');
+				if (!kqlLanguageHostMessage) break;
+				const reqId = kqlLanguageHostMessage.requestId;
 				const r = __kustoKqlLanguageRequestResolversById && __kustoKqlLanguageRequestResolversById[reqId];
-				if (r && typeof r.resolve === 'function') {
+				if (r && typeof r.resolve === 'function'
+					&& isKqlLanguageResponseForMethod(kqlLanguageHostMessage, r.method)) {
 					try {
-						r.resolve(message.ok ? (message.result || null) : null);
+						r.resolve(kqlLanguageHostMessage.ok ? kqlLanguageHostMessage.result : null);
 					} catch (e) { console.error('[kusto]', e); }
 					try { delete __kustoKqlLanguageRequestResolversById[reqId]; } catch (e) { console.error('[kusto]', e); }
 				}

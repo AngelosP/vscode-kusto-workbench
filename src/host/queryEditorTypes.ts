@@ -7,6 +7,7 @@ import type { KustoSchemaWebviewMessage } from '../shared/kustoSchemaProtocol';
 import type { KustoDatabaseDiscoveryWebviewMessage } from '../shared/kustoDatabaseDiscoveryProtocol';
 import type { SqlDatabaseDiscoveryWebviewMessage } from '../shared/sqlDatabaseDiscoveryProtocol';
 import type { SqlSchemaWebviewMessage } from '../shared/sqlSchemaProtocol';
+import type { KqlLanguageWebviewMessage } from '../shared/kqlLanguageProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -152,13 +153,6 @@ export type ImportConnectionsFromXmlMessage = {
 	type: 'importConnectionsFromXml';
 	connections: Array<{ name: string; clusterUrl: string; database?: string; authorityId?: string }>;
 	boxId?: string;
-};
-
-export type KqlLanguageRequestMessage = {
-	type: 'kqlLanguageRequest';
-	requestId: string;
-	method: 'textDocument/diagnostic' | 'kusto/findTableReferences';
-	params: { text: string; connectionId?: string; database?: string; boxId?: string; uri?: string };
 };
 
 export type FetchControlCommandSyntaxMessage = { type: 'fetchControlCommandSyntax'; requestId: string; commandLower: string; href: string };
@@ -334,7 +328,7 @@ export type IncomingWebviewMessage =
 	| { type: 'addConnection'; name: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }
 	| { type: 'testKustoConnection'; name?: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }
 	| ImportConnectionsFromXmlMessage
-	| KqlLanguageRequestMessage
+	| KqlLanguageWebviewMessage
 	| FetchControlCommandSyntaxMessage
 	| { type: 'openToolResultInEditor'; boxId: string; tool: string; label: string; content: string }
 	| { type: 'openMarkdownPreview'; filePath: string }

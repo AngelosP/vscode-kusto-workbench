@@ -98,7 +98,7 @@ describe('HostKqlLanguageRequestApplicationHandler', () => {
 		expect(languageHost.findTableReferences).not.toHaveBeenCalled();
 		expect(postMessage).toHaveBeenCalledOnce();
 		expect(postMessage).toHaveBeenCalledWith({
-			type: 'kqlLanguageResponse', requestId: 'diagnostics-1', ok: true, result,
+			type: 'kqlLanguageResponse', requestId: '  diagnostics-1  ', ok: true, result,
 		});
 		expect(error).not.toHaveBeenCalled();
 	});
@@ -160,12 +160,12 @@ describe('HostKqlLanguageRequestApplicationHandler', () => {
 		expect(error).not.toHaveBeenCalled();
 	});
 
-	it('preserves fallback params for malformed runtime input', async () => {
+	it('claims malformed params without analysis or publication', async () => {
 		const languageHost = {
 			getDiagnostics: vi.fn(async () => ({ diagnostics: [] })),
 			findTableReferences: vi.fn(async () => ({ references: [] })),
 		};
-		const { handler } = createHandler(languageHost);
+		const { handler, postMessage, error } = createHandler(languageHost);
 		const message = {
 			type: 'kqlLanguageRequest', requestId: 'malformed-params',
 			method: 'textDocument/diagnostic', params: null,
@@ -173,10 +173,13 @@ describe('HostKqlLanguageRequestApplicationHandler', () => {
 
 		await handler.handleMessage(message);
 
-		expect(languageHost.getDiagnostics).toHaveBeenCalledWith({ text: '' });
+		expect(languageHost.getDiagnostics).not.toHaveBeenCalled();
+		expect(languageHost.findTableReferences).not.toHaveBeenCalled();
+		expect(postMessage).not.toHaveBeenCalled();
+		expect(error).not.toHaveBeenCalled();
 	});
 
-	it('publishes the existing unsupported-method response without delegation', async () => {
+	it('claims unsupported methods without delegation or publication', async () => {
 		const { handler, languageHost, postMessage, error } = createHandler();
 		const message = {
 			type: 'kqlLanguageRequest', requestId: 'unsupported-1',
@@ -187,10 +190,7 @@ describe('HostKqlLanguageRequestApplicationHandler', () => {
 
 		expect(languageHost.getDiagnostics).not.toHaveBeenCalled();
 		expect(languageHost.findTableReferences).not.toHaveBeenCalled();
-		expect(postMessage).toHaveBeenCalledWith({
-			type: 'kqlLanguageResponse', requestId: 'unsupported-1', ok: false,
-			error: { message: 'Unsupported method.' },
-		});
+		expect(postMessage).not.toHaveBeenCalled();
 		expect(error).not.toHaveBeenCalled();
 	});
 

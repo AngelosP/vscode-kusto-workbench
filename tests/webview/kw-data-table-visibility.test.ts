@@ -312,6 +312,22 @@ describe('kw-data-table visibility lifecycle', () => {
 		expect(internal._selectionCtrl.selectionRange).toBeNull();
 	});
 
+	it('renders sort-dialog row order and the Clear Sort control', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Name' }, { name: 'Score', type: 'long' }];
+		table.rows = [['alpha', 1], ['bravo', 3], ['charlie', 2]];
+		document.body.appendChild(table);
+		await settleTable(table);
+
+		(table as any)._onSortChange(new CustomEvent('sort-change', {
+			detail: { sorting: [{ id: '1', desc: true }] },
+		}));
+		await settleTable(table);
+
+		expect(renderedCellText(table)).toEqual(['bravo', '3', 'charlie', '2', 'alpha', '1']);
+		expect(table.shadowRoot?.querySelector('[title="Clear sort"]')).toBeTruthy();
+	});
+
 	it('exports the current filtered and sorted row projection', async () => {
 		const table = document.createElement('kw-data-table') as KwDataTable;
 		table.columns = [{ name: 'Name' }, { name: 'Score', type: 'long' }];

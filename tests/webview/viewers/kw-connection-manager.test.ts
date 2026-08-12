@@ -764,6 +764,26 @@ describe('kw-connection-manager', () => {
 	// ── Search state ───────────────────────────────────────────────────────────
 
 	describe('connection form modal', () => {
+		it('focuses the Kusto cluster field and restores the Add button on Escape', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({ connections: [], cachedDatabases: {}, sqlConnections: [], sqlCachedDatabases: {} }));
+			await el.updateComplete;
+			const addButton = el.shadowRoot!.querySelector('[data-testid="cm-add-connection"]') as HTMLButtonElement;
+			addButton.focus();
+			addButton.click();
+			await el.updateComplete;
+
+			const form = el.shadowRoot!.querySelector('kw-kusto-connection-form') as any;
+			await form.updateComplete;
+			const clusterInput = form.shadowRoot!.querySelector('[data-testid="kusto-conn-cluster-url"]');
+			expect(form.shadowRoot!.activeElement).toBe(clusterInput);
+
+			clusterInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
+			await el.updateComplete;
+			expect(el.shadowRoot!.querySelector('[data-testid="cm-modal-overlay"]')).toBeNull();
+			expect(el.shadowRoot!.activeElement).toBe(addButton);
+		});
+
 		it('Kusto: add modal shows Test Connection and posts draft details', async () => {
 			const el = createElement();
 			sendSnapshot(el, snapshot({ connections: [], cachedDatabases: {}, sqlConnections: [], sqlCachedDatabases: {} }));
