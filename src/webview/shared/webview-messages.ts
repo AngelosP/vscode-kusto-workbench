@@ -45,6 +45,11 @@ import {
 	parseKqlLanguageWebviewMessage,
 	type KqlLanguageWebviewMessage,
 } from '../../shared/kqlLanguageProtocol.js';
+import {
+	isControlCommandSyntaxWebviewMessageType,
+	parseControlCommandSyntaxWebviewMessage,
+	type ControlCommandSyntaxWebviewMessage,
+} from '../../shared/controlCommandSyntaxProtocol.js';
 import { pState } from './persistence-state.js';
 
 let compatibilityDocumentRequestSequence = 0;
@@ -125,15 +130,6 @@ export type OutgoingOptimizeQueryMessage = KustoOptimizeRequestIdentity & {
 	queryName: string;
 	modelId?: string;
 	promptText?: string;
-};
-
-// ── Schema & language service ──────────────────────────────────────────────
-
-export type OutgoingFetchControlCommandSyntaxMessage = {
-	type: 'fetchControlCommandSyntax';
-	requestId: string;
-	commandLower: string;
-	href: string;
 };
 
 // ── Connections & favorites ────────────────────────────────────────────────
@@ -286,7 +282,7 @@ export type OutgoingWebviewMessage =
 		expectedOwner?: { connectionId: string; database: string; targetSignature: string; principalFingerprint: string; revocationGeneration: number };
 	}
 	| KqlLanguageWebviewMessage
-	| OutgoingFetchControlCommandSyntaxMessage
+	| ControlCommandSyntaxWebviewMessage
 
 	// Copilot
 	| { type: 'checkCopilotAvailability'; boxId: string }
@@ -400,6 +396,13 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 		const parsed = parseKqlLanguageWebviewMessage(msg);
 		if (!parsed.ok) {
 			console.error('[kusto] Rejected invalid KQL language webview message:', parsed.error);
+			return;
+		}
+		outbound = parsed.value;
+	} else if (isControlCommandSyntaxWebviewMessageType(msg)) {
+		const parsed = parseControlCommandSyntaxWebviewMessage(msg);
+		if (!parsed.ok) {
+			console.error('[kusto] Rejected invalid control-command syntax webview message:', parsed.error);
 			return;
 		}
 		outbound = parsed.value;

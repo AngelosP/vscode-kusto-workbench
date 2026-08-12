@@ -701,7 +701,15 @@ describe('message-handler dispatch', () => {
 		kustoSyntheticSchemaRequests.clearForTests();
 		kustoSyntheticDatabaseRequests.clearForTests();
 		const state = await import('../../src/webview/core/state.js');
+		const monaco = await import('../../src/webview/monaco/monaco.js');
 		document.body.innerHTML = '';
+		for (const key of Object.keys(monaco.__kustoControlCommandDocCache)) {
+			delete monaco.__kustoControlCommandDocCache[key];
+		}
+		for (const key of Object.keys(monaco.__kustoControlCommandDocPending)) {
+			delete monaco.__kustoControlCommandDocPending[key];
+		}
+		delete (window as any).__kustoRefreshActiveCaretDocs;
 		handlerState.activeQueryEditorBoxId = '';
 		handlerState.connections.splice(0, handlerState.connections.length);
 		handlerState.kustoFavorites.splice(0, handlerState.kustoFavorites.length);
@@ -778,6 +786,76 @@ describe('message-handler dispatch', () => {
 		expect(mocks.postMessageToHost.mock.calls.filter(([message]) =>
 			message.type === 'mainWebviewDispatcherReady',
 		)).toHaveLength(0);
+	});
+
+	it('settles control-command syntax only for a valid result with the current request identity', async () => {
+		const monaco = await import('../../src/webview/monaco/monaco.js');
+		const commandLower = '.show tables';
+		const requestId = 'current-syntax-request';
+		const refreshCaretDocs = vi.fn();
+		monaco.__kustoControlCommandDocPending[commandLower] = requestId;
+		(window as any).__kustoRefreshActiveCaretDocs = refreshCaretDocs;
+
+		dispatchHostMessage({
+			type: 'controlCommandSyntaxResult', requestId, commandLower, ok: true,
+			syntax: '.show tables with (HotCache=true)', withArgs: ['HotCache', 42],
+		});
+		expect(monaco.__kustoControlCommandDocCache).toEqual({});
+		expect(monaco.__kustoControlCommandDocPending).toEqual({ [commandLower]: requestId });
+		expect(refreshCaretDocs).not.toHaveBeenCalled();
+
+		dispatchHostMessage({
+			type: 'controlCommandSyntaxResult', requestId: 'stale-syntax-request', commandLower, ok: true,
+			syntax: '.show tables with (HotCache=true)', withArgs: ['HotCache'],
+		});
+		expect(monaco.__kustoControlCommandDocCache).toEqual({});
+		expect(monaco.__kustoControlCommandDocPending).toEqual({ [commandLower]: requestId });
+		expect(refreshCaretDocs).not.toHaveBeenCalled();
+
+		dispatchHostMessage({
+			type: 'controlCommandSyntaxResult', requestId, commandLower, ok: true,
+			syntax: '.show tables with (HotCache=true)', withArgs: ['HotCache'],
+		});
+		expect(monaco.__kustoControlCommandDocCache[commandLower]).toEqual({
+			syntax: '.show tables with (HotCache=true)',
+			withArgs: ['HotCache'],
+			fetchedAt: expect.any(Number),
+		});
+		expect(monaco.__kustoControlCommandDocPending).toEqual({});
+		expect(refreshCaretDocs).toHaveBeenCalledOnce();
+
+		delete (window as any).__kustoRefreshActiveCaretDocs;
+	});
+
+	it('settles a failed control-command syntax result only with its canonical empty payload', async () => {
+		const monaco = await import('../../src/webview/monaco/monaco.js');
+		const commandLower = '.show tables';
+		const requestId = 'current-failed-syntax-request';
+		const refreshCaretDocs = vi.fn();
+		monaco.__kustoControlCommandDocPending[commandLower] = requestId;
+		(window as any).__kustoRefreshActiveCaretDocs = refreshCaretDocs;
+
+		for (const malformed of [
+			{ syntax: 'injected', withArgs: [] },
+			{ syntax: '', withArgs: ['HotCache'] },
+		]) {
+			dispatchHostMessage({
+				type: 'controlCommandSyntaxResult', requestId, commandLower, ok: false, ...malformed,
+			});
+			expect(monaco.__kustoControlCommandDocCache).toEqual({});
+			expect(monaco.__kustoControlCommandDocPending).toEqual({ [commandLower]: requestId });
+			expect(refreshCaretDocs).not.toHaveBeenCalled();
+		}
+
+		dispatchHostMessage({
+			type: 'controlCommandSyntaxResult', requestId, commandLower, ok: false,
+			syntax: '', withArgs: [],
+		});
+		expect(monaco.__kustoControlCommandDocCache[commandLower]).toEqual({
+			syntax: '', withArgs: [], fetchedAt: expect.any(Number),
+		});
+		expect(monaco.__kustoControlCommandDocPending).toEqual({});
+		expect(refreshCaretDocs).toHaveBeenCalledOnce();
 	});
 
 	it('continues draining buffered host traffic after one message handler throws', async () => {

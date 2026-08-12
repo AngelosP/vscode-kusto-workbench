@@ -325,4 +325,39 @@ describe('postMessageToHost', () => {
 			delete (window as any).__e2eCaptureHostMessage;
 		}
 	});
+
+	it('posts valid control-command syntax requests and rejects malformed ones before E2E capture', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const request = {
+				type: 'fetchControlCommandSyntax' as const,
+				requestId: 'syntax-request-1',
+				commandLower: '.show tables',
+				href: '/en-us/kusto/management/show-tables-command',
+			};
+			postMessageToHost(request);
+
+			expect(capture).toHaveBeenCalledWith(request);
+			expect(postMessage).toHaveBeenCalledWith(request);
+			capture.mockClear();
+			postMessage.mockClear();
+
+			for (const malformed of [
+				{ ...request, requestId: '   ' },
+				{ ...request, commandLower: 42 },
+				{ ...request, href: '' },
+				Object.assign([], request),
+			]) {
+				postMessageToHost(malformed as unknown as Parameters<typeof postMessageToHost>[0]);
+			}
+
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
 });

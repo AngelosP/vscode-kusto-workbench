@@ -717,7 +717,7 @@ export function addQueryBox( options?: any) {
 						// Ensure we never leave slack after a drag on error-only content.
 						__kustoClampResultsWrapperHeight(id);
 					} catch (e) { console.error('[kusto]', e); }
-					try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+					try { schedulePersist('results-resize', true); } catch (e) { console.error('[kusto]', e); }
 				};
 
 				document.addEventListener('mousemove', onMove, true);
@@ -1269,6 +1269,7 @@ export function isPinnedFirstSection(boxId: unknown): boolean {
 
 export function removeQueryBox( boxId: any) {
 	if (isPinnedFirstSection(boxId)) return;
+	try { window.closeRunMenu?.(String(boxId || '')); } catch (e) { console.error('[kusto]', e); }
 	try { closeShareModalForOwner(boxId); } catch (e) { console.error('[kusto]', e); }
 	__kustoCancelMonacoInitRetry(String(boxId || ''));
 	unregisterSqlDerivedComparisonSession(String(boxId || ''));

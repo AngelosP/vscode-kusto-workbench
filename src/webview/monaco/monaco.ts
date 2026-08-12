@@ -7858,14 +7858,18 @@ function initQueryEditor(boxId: any) {
 				const onUp = () => {
 					document.removeEventListener('mousemove', onMove, true);
 					document.removeEventListener('mouseup', onUp, true);
+					document.removeEventListener('mouseleave', onUp);
+					window.removeEventListener('blur', onUp);
 					resizer.classList.remove('is-dragging');
 					document.body.style.cursor = previousCursor;
 					document.body.style.userSelect = previousUserSelect;
-					try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+					try { schedulePersist('editor-resize', true); } catch (e) { console.error('[kusto]', e); }
 				};
 
 				document.addEventListener('mousemove', onMove, true);
 				document.addEventListener('mouseup', onUp, true);
+				document.addEventListener('mouseleave', onUp);
+				window.addEventListener('blur', onUp);
 			});
 
 			// Double-click to fit editor to contents - delegate to the button's function

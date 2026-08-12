@@ -631,6 +631,25 @@ describe('kw-filter-dialog — Lit component', () => {
 		expect(typeSelect).toBeTruthy();
 	});
 
+	it('focuses the first rule operator when reopening an existing Rules filter', async () => {
+		const el = createFilterDialog({
+			columnFilters: [{
+				id: '0',
+				value: {
+					kind: 'rules', dataType: 'string', combineOp: 'and',
+					rules: [{ op: 'contains', text: 'A' }],
+				},
+			}],
+		});
+		await el.updateComplete;
+		await el.updateComplete;
+
+		const firstRuleOperator = getShadow(el, '.fr-rule-op');
+		expect(firstRuleOperator).toBeTruthy();
+		expect(el.shadowRoot?.activeElement).toBe(firstRuleOperator);
+		expect(getShadow(el, '[role="dialog"]')).toBeTruthy();
+	});
+
 	it('renders search bar in values mode', async () => {
 		const el = createFilterDialog();
 		await el.updateComplete;

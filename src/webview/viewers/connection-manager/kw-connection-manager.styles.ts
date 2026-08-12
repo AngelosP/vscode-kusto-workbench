@@ -5,6 +5,7 @@ export const styles = css`
 
 		:host {
 			display: flex;
+			position: relative;
 			flex-direction: column;
 			font-family: var(--vscode-font-family);
 			font-size: var(--vscode-font-size);
@@ -201,7 +202,7 @@ export const styles = css`
 		.loading-state svg { width: 16px; height: 16px; vertical-align: middle; margin-right: 4px; }
 
 		/* Modal */
-		.modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.5); z-index: 10000; display: flex; align-items: center; justify-content: center; }
+		.modal-overlay { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.5); z-index: 10000; display: flex; align-items: center; justify-content: center; }
 		.modal-content { background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border); border-radius: 8px; width: 440px; max-width: 90%; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3); }
 		.modal-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--vscode-panel-border); }
 		.modal-body { padding: 16px 20px; }

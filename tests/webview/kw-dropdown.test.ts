@@ -145,6 +145,18 @@ describe('kw-dropdown', () => {
 		expect(getMenu(el)).toBeNull();
 	});
 
+	it('closes and retires an open menu when disconnected', async () => {
+		const el = createDropdown({ items: sampleItems });
+		await el.updateComplete;
+		getButton(el).click();
+		await el.updateComplete;
+		expect((el as any)._open).toBe(true);
+
+		el.remove();
+
+		expect((el as any)._open).toBe(false);
+	});
+
 	it('items rendered in menu with correct labels', async () => {
 		const el = createDropdown({ items: sampleItems });
 		await el.updateComplete;
@@ -408,6 +420,8 @@ describe('kw-dropdown', () => {
 		await el.updateComplete;
 
 		expect(btn.getAttribute('aria-expanded')).toBe('true');
+		expect(btn.getAttribute('aria-controls')).toBe(getMenu(el)?.id);
+		expect(btn.getAttribute('aria-activedescendant')).toBe(getItems(el)[0].id);
 		const menu = getMenu(el)!;
 		expect(menu.getAttribute('role')).toBe('listbox');
 

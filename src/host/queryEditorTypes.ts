@@ -8,6 +8,7 @@ import type { KustoDatabaseDiscoveryWebviewMessage } from '../shared/kustoDataba
 import type { SqlDatabaseDiscoveryWebviewMessage } from '../shared/sqlDatabaseDiscoveryProtocol';
 import type { SqlSchemaWebviewMessage } from '../shared/sqlSchemaProtocol';
 import type { KqlLanguageWebviewMessage } from '../shared/kqlLanguageProtocol';
+import type { ControlCommandSyntaxWebviewMessage } from '../shared/controlCommandSyntaxProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -155,7 +156,6 @@ export type ImportConnectionsFromXmlMessage = {
 	boxId?: string;
 };
 
-export type FetchControlCommandSyntaxMessage = { type: 'fetchControlCommandSyntax'; requestId: string; commandLower: string; href: string };
 export type PowerBiDataMode = 'import' | 'directQuery';
 
 export type SaveImportedCsvMessage = { type: 'saveImportedCsv'; csv: string; suggestedFileName?: string };
@@ -329,7 +329,7 @@ export type IncomingWebviewMessage =
 	| { type: 'testKustoConnection'; name?: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }
 	| ImportConnectionsFromXmlMessage
 	| KqlLanguageWebviewMessage
-	| FetchControlCommandSyntaxMessage
+	| ControlCommandSyntaxWebviewMessage
 	| { type: 'openToolResultInEditor'; boxId: string; tool: string; label: string; content: string }
 	| { type: 'openMarkdownPreview'; filePath: string }
 	| ({

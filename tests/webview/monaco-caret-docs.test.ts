@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	initCaretDocsDeps,
 	buildFunctionSignatureMarkdown,
@@ -24,6 +24,9 @@ import {
 	setGeneratedFunctionsMerged,
 	__kustoGetControlCommandHoverAt,
 	__kustoControlCommands,
+	__kustoControlCommandDocCache,
+	__kustoControlCommandDocPending,
+	__kustoScheduleFetchControlCommandSyntax,
 } from '../../src/webview/monaco/caret-docs';
 import { __kustoGetStatementStartAtOffset } from '../../src/webview/monaco/diagnostics.js';
 import { clearKustoEditorSchema, setKustoEditorSchema } from '../../src/webview/core/schema-catalogs.js';
@@ -407,6 +410,70 @@ describe('__kustoParseControlCommandSyntaxFromLearnHtml', () => {
 	it('returns null for HTML with no code blocks', () => {
 		const html = '<h2>Syntax</h2><p>Some text</p>';
 		expect(__kustoParseControlCommandSyntaxFromLearnHtml(html)).toBeNull();
+	});
+});
+
+describe('__kustoScheduleFetchControlCommandSyntax', () => {
+	beforeEach(() => {
+		for (const key of Object.keys(__kustoControlCommandDocCache)) delete __kustoControlCommandDocCache[key];
+		for (const key of Object.keys(__kustoControlCommandDocPending)) delete __kustoControlCommandDocPending[key];
+		(window as any).vscode = { postMessage: vi.fn() };
+	});
+
+	afterEach(() => {
+		delete (window as any).vscode;
+	});
+
+	it('publishes one exact request and deduplicates pending or fresh command work', () => {
+		const command = {
+			commandLower: '.show tables',
+			href: '/en-us/kusto/management/show-tables-command',
+		};
+		const postMessage = (window as any).vscode.postMessage as ReturnType<typeof vi.fn>;
+
+		__kustoScheduleFetchControlCommandSyntax(command);
+		__kustoScheduleFetchControlCommandSyntax(command);
+
+		expect(postMessage).toHaveBeenCalledOnce();
+		const request = postMessage.mock.calls[0][0];
+		expect(request).toEqual({
+			type: 'fetchControlCommandSyntax',
+			requestId: expect.stringMatching(/^ccs_[0-9a-f]*_[0-9a-f]+$/),
+			commandLower: command.commandLower,
+			href: command.href,
+		});
+		expect(__kustoControlCommandDocPending[command.commandLower]).toBe(request.requestId);
+
+		delete __kustoControlCommandDocPending[command.commandLower];
+		__kustoControlCommandDocCache[command.commandLower] = {
+			syntax: '.show tables', withArgs: [], fetchedAt: Date.now(),
+		};
+		__kustoScheduleFetchControlCommandSyntax(command);
+		expect(postMessage).toHaveBeenCalledOnce();
+	});
+
+	it('does not record pending state for malformed command metadata', () => {
+		const postMessage = (window as any).vscode.postMessage as ReturnType<typeof vi.fn>;
+		const sparseCommand = new Array<unknown>(1);
+		const inheritedCommand = new Array<unknown>(1);
+		const inheritedPrototype = Object.create(Array.prototype) as unknown[];
+		inheritedPrototype[0] = '.show tables';
+		Object.setPrototypeOf(inheritedCommand, inheritedPrototype);
+
+		for (const command of [
+			{ commandLower: 42, href: '/en-us/kusto/management/show-tables-command' },
+			{ commandLower: ['.show tables'], href: '/en-us/kusto/management/show-tables-command' },
+			{ commandLower: sparseCommand, href: '/en-us/kusto/management/show-tables-command' },
+			{ commandLower: inheritedCommand, href: '/en-us/kusto/management/show-tables-command' },
+			{ commandLower: '.show tables', href: 42 },
+			{ commandLower: '.show tables', href: ['/en-us/kusto/management/show-tables-command'] },
+			{ commandLower: '.show tables', href: '   ' },
+		]) {
+			__kustoScheduleFetchControlCommandSyntax(command);
+		}
+
+		expect(postMessage).not.toHaveBeenCalled();
+		expect(__kustoControlCommandDocPending).toEqual({});
 	});
 });
 

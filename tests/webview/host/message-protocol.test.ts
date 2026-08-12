@@ -334,7 +334,7 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/artifactCsvSaveApplicationHandler.ts::postMessage::postMessage::49:10',
 	'src/host/comparisonPreparationApplicationHandler.ts::waitForSqlComparisonAdmission::postMessage::628:25',
-	'src/host/controlCommandSyntaxApplicationHandler.ts::postMessage::postMessage::50:3',
+	'src/host/controlCommandSyntaxApplicationHandler.ts::postMessage::postMessage::56:3',
 	'src/host/dashboardApplicationHandler.ts::postMessage::postMessage::98:10',
 	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postMessage::68:10',
 	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postToAllWebviews::66:10',
@@ -1291,6 +1291,45 @@ describe('Message Protocol Contract', () => {
 			.toBeLessThan(dispatcher.indexOf('delete __kustoKqlLanguageRequestResolversById[reqId]'));
 	});
 
+	it('keeps control-command syntax requests and results on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/controlCommandSyntaxProtocol.ts',
+			'ControlCommandSyntaxWebviewMessage',
+		)).toEqual(['fetchControlCommandSyntax']);
+		expect(extractTypeDiscriminants(
+			'src/shared/controlCommandSyntaxProtocol.ts',
+			'ControlCommandSyntaxHostMessage',
+		)).toEqual(['controlCommandSyntaxResult']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| ControlCommandSyntaxWebviewMessage');
+		expect(webviewMessages).toContain('| ControlCommandSyntaxWebviewMessage');
+		expect(hostTypes).not.toContain("type: 'fetchControlCommandSyntax'");
+		expect(webviewMessages).not.toContain("type: 'fetchControlCommandSyntax'");
+		expect(webviewMessages).toContain('parseControlCommandSyntaxWebviewMessage(msg)');
+
+		const requestHandler = readWorkspaceFile('src/host/controlCommandSyntaxApplicationHandler.ts');
+		expect(requestHandler.indexOf('parseControlCommandSyntaxWebviewMessage(message)'))
+			.toBeLessThan(requestHandler.indexOf('this.controlCommandSyntaxCache.get(commandLower)'));
+		expect(requestHandler.indexOf('parseControlCommandSyntaxWebviewMessage(message)'))
+			.toBeLessThan(requestHandler.indexOf("new URL(href, 'https://learn.microsoft.com/en-us/kusto/')"));
+		expect(requestHandler).toContain('postMessage: (message: ControlCommandSyntaxHostMessage)');
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		expect(dispatcher.indexOf('parseControlCommandSyntaxHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf("case 'controlCommandSyntaxResult':"));
+		expect(dispatcher.indexOf('parseControlCommandSyntaxHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf('__kustoControlCommandDocPending[result.commandLower]'));
+		expect(dispatcher.indexOf('__kustoControlCommandDocPending[result.commandLower] !== result.requestId'))
+			.toBeLessThan(dispatcher.indexOf('__kustoControlCommandDocCache[result.commandLower] ='));
+		expect(dispatcher.indexOf('__kustoControlCommandDocPending[result.commandLower] !== result.requestId'))
+			.toBeLessThan(dispatcher.indexOf('delete __kustoControlCommandDocPending[result.commandLower]'));
+		expect(dispatcher.indexOf('__kustoControlCommandDocPending[result.commandLower] !== result.requestId'))
+			.toBeLessThan(dispatcher.indexOf('window.__kustoRefreshActiveCaretDocs()'));
+	});
+
 	// ─── Compile-time guards ───────────────────────────────────────────────
 	// These calls exist solely for the TypeScript compiler to verify that
 	// every string literal in our arrays is a valid union discriminant.
@@ -1317,6 +1356,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/sqlDatabaseDiscoveryProtocol.ts', 'SqlDatabaseDiscoveryWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlSchemaProtocol.ts', 'SqlSchemaWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kqlLanguageProtocol.ts', 'KqlLanguageWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/controlCommandSyntaxProtocol.ts', 'ControlCommandSyntaxWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1332,6 +1372,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/sqlDatabaseDiscoveryProtocol.ts', 'SqlDatabaseDiscoveryWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlSchemaProtocol.ts', 'SqlSchemaWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kqlLanguageProtocol.ts', 'KqlLanguageWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/controlCommandSyntaxProtocol.ts', 'ControlCommandSyntaxWebviewMessage'),
 			])].sort()
 		);
 	});

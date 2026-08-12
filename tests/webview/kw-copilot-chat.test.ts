@@ -420,6 +420,45 @@ describe('kw-copilot-chat — tools', () => {
 		expect(getShadowEl(el, '.tools-panel')).toBeFalsy();
 	});
 
+	it('does not install a delayed outside listener after disconnect', async () => {
+		vi.useFakeTimers();
+		try {
+			const el = createChat();
+			await waitUpdate(el);
+			el.applyOptions([], '', sampleTools);
+			await waitUpdate(el);
+			const addListener = vi.spyOn(document, 'addEventListener');
+
+			getShadowEl(el, '.tools-btn')!.click();
+			await waitUpdate(el);
+			el.remove();
+			addListener.mockClear();
+			vi.runOnlyPendingTimers();
+
+			expect(addListener).not.toHaveBeenCalledWith('mousedown', expect.any(Function), true);
+			expect((el as any)._toolsPanelListenerTimer).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('returns focus to the Tools trigger when Escape dismisses the panel', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.applyOptions([], '', sampleTools);
+		await waitUpdate(el);
+		const toolsButton = getShadowEl(el, '.tools-btn') as HTMLButtonElement;
+		toolsButton.click();
+		await waitUpdate(el);
+		(getShadowEl(el, '.tool-checkbox') as HTMLInputElement).focus();
+
+		document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		await waitUpdate(el);
+
+		expect(getShadowEl(el, '.tools-panel')).toBeNull();
+		expect(el.shadowRoot?.activeElement).toBe(toolsButton);
+	});
+
 	it('renders tool items with checkboxes in correct groups', async () => {
 		const el = createChat();
 		await waitUpdate(el);

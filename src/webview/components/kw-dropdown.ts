@@ -6,6 +6,8 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from './dismiss-stack.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 
+let dropdownAriaSequence = 0;
+
 // ─── Exported Types ───────────────────────────────────────────────────────────
 
 export interface DropdownItem {
@@ -40,6 +42,7 @@ const trashIconSvg = html`<svg viewBox="0 0 16 16" width="14" height="14" fill="
  */
 @customElement('kw-dropdown')
 export class KwDropdown extends LitElement {
+	private readonly _ariaId = `kw-dropdown-${++dropdownAriaSequence}`;
 
 	// ── Properties ────────────────────────────────────────────────────────────
 
@@ -98,8 +101,8 @@ export class KwDropdown extends LitElement {
 	}
 
 	override disconnectedCallback(): void {
+		this._closeMenu();
 		super.disconnectedCallback();
-		this._removeListeners();
 	}
 
 	private _addListeners(): void {
@@ -131,6 +134,8 @@ export class KwDropdown extends LitElement {
 			<button type="button" class="kusto-dropdown-btn"
 				aria-haspopup="listbox"
 				aria-label=${this.ariaLabel || selectedItem?.label || this.placeholder}
+				aria-controls=${`${this._ariaId}-menu`}
+				aria-activedescendant=${this._open && this._focusedIndex >= 0 ? `${this._ariaId}-option-${this._focusedIndex}` : nothing}
 				aria-expanded="${this._open ? 'true' : 'false'}"
 				?disabled=${this.disabled || this.loading}
 				title="${selectedItem?.label || ''}"
@@ -157,14 +162,14 @@ export class KwDropdown extends LitElement {
 		const idx = (type: 'action' | 'item', id: string) => indexMap.get(`${type}:${id}`) ?? -1;
 
 		return html`
-			<div class="kusto-dropdown-menu" role="listbox" tabindex="-1"
+			<div class="kusto-dropdown-menu" id=${`${this._ariaId}-menu`} role="listbox" tabindex="-1"
 				@mousedown=${(e: Event) => e.stopPropagation()}
 				@keydown=${this._onMenuKeydown}>
 				${topActions.map(act => {
 					const globalIdx = idx('action', act.id);
 					return html`
 						<div class="kusto-dropdown-action ${globalIdx === this._focusedIndex ? 'is-focused' : ''}"
-							role="option" tabindex="-1" data-dropdown-action-id=${act.id}
+							id=${`${this._ariaId}-option-${globalIdx}`} role="option" tabindex="-1" data-dropdown-action-id=${act.id}
 							@click=${() => this._onActionClick(act.id)}
 							@mouseenter=${() => { this._focusedIndex = globalIdx; }}>
 							${act.label}
@@ -177,7 +182,7 @@ export class KwDropdown extends LitElement {
 					const isFocused = globalIdx === this._focusedIndex;
 					return html`
 						<div class="kusto-dropdown-item ${isSelected ? 'is-selected' : ''} ${isFocused ? 'is-focused' : ''} ${item.disabled ? 'is-disabled' : ''}"
-							role="option" tabindex="-1" data-dropdown-item-id=${item.id}
+							id=${globalIdx >= 0 ? `${this._ariaId}-option-${globalIdx}` : nothing} role="option" tabindex="-1" data-dropdown-item-id=${item.id}
 							aria-selected="${isSelected ? 'true' : 'false'}"
 							@click=${() => !item.disabled && this._onItemClick(item)}
 							@mouseenter=${() => { if (!item.disabled) this._focusedIndex = globalIdx; }}>
@@ -199,7 +204,7 @@ export class KwDropdown extends LitElement {
 					const globalIdx = idx('action', act.id);
 					return html`
 						<div class="kusto-dropdown-action ${globalIdx === this._focusedIndex ? 'is-focused' : ''}"
-							role="option" tabindex="-1" data-dropdown-action-id=${act.id}
+							id=${`${this._ariaId}-option-${globalIdx}`} role="option" tabindex="-1" data-dropdown-action-id=${act.id}
 							@click=${() => this._onActionClick(act.id)}
 							@mouseenter=${() => { this._focusedIndex = globalIdx; }}>
 							${act.label}

@@ -50,16 +50,28 @@ describe('HostControlCommandSyntaxApplicationHandler', () => {
 		expect(postMessage).not.toHaveBeenCalled();
 	});
 
-	it('preserves invalid-request shaping without fetching', async () => {
+	it('claims malformed recognized requests without fetching or publishing', async () => {
 		const fetchLearn = vi.fn();
 		const { handler, postMessage } = createHandler(fetchLearn);
 
 		await handler.handleMessage(syntaxMessage('', '.SHOW TABLES', ''));
+		await handler.handleMessage({
+			type: 'fetchControlCommandSyntax', requestId: 'request-1', commandLower: 42, href: '/docs',
+		} as unknown as Parameters<typeof handler.handleMessage>[0]);
 
 		expect(fetchLearn).not.toHaveBeenCalled();
+		expect(postMessage).not.toHaveBeenCalled();
+	});
+
+	it('preserves exact validated request and command identity', async () => {
+		const fetchLearn = vi.fn(async () => new Response('<h2>Syntax</h2><pre>.show tables</pre>', { status: 200 }));
+		const { handler, postMessage } = createHandler(fetchLearn);
+
+		await handler.handleMessage(syntaxMessage(' request-1 ', '.SHOW TABLES'));
+
 		expect(postMessage).toHaveBeenCalledWith({
-			type: 'controlCommandSyntaxResult', requestId: '', commandLower: '.show tables',
-			ok: false, syntax: '', withArgs: [],
+			type: 'controlCommandSyntaxResult', requestId: ' request-1 ', commandLower: '.SHOW TABLES',
+			ok: true, syntax: '.show tables', withArgs: [],
 		});
 	});
 
@@ -127,7 +139,7 @@ describe('HostControlCommandSyntaxApplicationHandler', () => {
 
 		await handler.handleMessage(syntaxMessage('request-1'));
 		now += DAY_MS - 1;
-		await handler.handleMessage(syntaxMessage('request-2', '.SHOW TABLES'));
+		await handler.handleMessage(syntaxMessage('request-2'));
 		now += 1;
 		await handler.handleMessage(syntaxMessage('request-3'));
 

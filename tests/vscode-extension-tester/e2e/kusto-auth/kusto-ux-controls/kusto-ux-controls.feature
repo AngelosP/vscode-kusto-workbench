@@ -25,7 +25,7 @@ Feature: Kusto surrounding UX controls
     When I click "kw-query-section [id$='_run_btn']" in the webview
     When I wait for "kw-query-section[data-test-executing='false']" in the webview for 30 seconds
     When I evaluate "(() => { window.__e2e.kusto.assertNoError(); window.__e2e.kusto.assertResultColumns('Timestamp,User,Action,Details,DurationMs'); window.__e2e.kusto.assertRowCount(3); return window.__e2e.kusto.ux.assertRenderedRows(3); })()" in the webview
-    When I scroll "kw-query-section kw-data-table" into view
+    When I scroll "kw-data-table" into view
 
     When I click "button[title='Search data']" in the webview
     When I evaluate "window.__e2e.kusto.ux.assertPopup('search', true)" in the webview
@@ -121,9 +121,9 @@ Feature: Kusto surrounding UX controls
     When I click "button[title='Show results']" in the webview
     When I evaluate "(() => { window.__e2e.kusto.ux.assertResultsVisible(true); return window.__e2e.kusto.ux.assertRenderedRows(3); })()" in the webview
 
-    When I evaluate "(() => { const section = document.querySelector('kw-query-section'); const wrapper = document.getElementById(section.boxId + '_results_wrapper'); window.__kustoUxResultsHeightBefore = wrapper?.getBoundingClientRect().height || 0; return window.__kustoUxResultsHeightBefore; })()" in the webview
+    When I evaluate "(() => { const section = document.querySelector('kw-query-section'); const wrapper = document.getElementById(section.boxId + '_results_wrapper'); wrapper.style.height = '300px'; wrapper.dataset.kustoUserResized = 'true'; window.__kustoUxResultsHeightBefore = wrapper.getBoundingClientRect().height; return window.__kustoUxResultsHeightBefore; })()" in the webview
     When I double click "kw-query-section [id$='_results_resizer']" in the webview
     And I wait 1 second
-    When I evaluate "(() => { const section = document.querySelector('kw-query-section'); const wrapper = document.getElementById(section.boxId + '_results_wrapper'); const after = wrapper?.getBoundingClientRect().height || 0; if (after < 80 || after > 750) throw new Error('Result auto-fit produced invalid height: ' + after); return { before: window.__kustoUxResultsHeightBefore, after }; })()" in the webview
+    When I evaluate "(() => { const section = document.querySelector('kw-query-section'); const wrapper = document.getElementById(section.boxId + '_results_wrapper'); const before = Number(window.__kustoUxResultsHeightBefore); const after = wrapper?.getBoundingClientRect().height || 0; if (after < 80 || after > 750 || before - after < 20) throw new Error('Result auto-fit did not visibly change height: ' + JSON.stringify({ before, after })); return { before, after }; })()" in the webview
     Then I take a screenshot "10-results-restored-and-fit"
     When I execute command "workbench.action.closeAllEditors"

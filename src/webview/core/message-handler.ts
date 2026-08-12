@@ -38,6 +38,11 @@ import {
 	type KqlLanguageHostMessage,
 	type KqlLanguageMethod,
 } from '../../shared/kqlLanguageProtocol.js';
+import {
+	isControlCommandSyntaxHostMessageType,
+	parseControlCommandSyntaxHostMessage,
+	type ControlCommandSyntaxHostMessage,
+} from '../../shared/controlCommandSyntaxProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -1485,6 +1490,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		if (!parsed.ok) return;
 		message = parsed.value;
 	}
+	let controlCommandSyntaxHostMessage: ControlCommandSyntaxHostMessage | undefined;
+	if (isControlCommandSyntaxHostMessageType(message)) {
+		const parsed = parseControlCommandSyntaxHostMessage(message);
+		if (!parsed.ok) return;
+		controlCommandSyntaxHostMessage = parsed.value;
+		message = parsed.value;
+	}
 	let kqlLanguageHostMessage: KqlLanguageHostMessage | undefined;
 	if (isKqlLanguageHostMessageType(message)) {
 		const parsed = parseKqlLanguageHostMessage(message);
@@ -1733,31 +1745,23 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
-		case 'controlCommandSyntaxResult':
+		case 'controlCommandSyntaxResult': {
+			const result = controlCommandSyntaxHostMessage;
+			if (!result
+				|| __kustoControlCommandDocPending[result.commandLower] !== result.requestId) break;
+			__kustoControlCommandDocCache[result.commandLower] = {
+				syntax: result.syntax,
+				withArgs: result.withArgs,
+				fetchedAt: Date.now(),
+			};
+			delete __kustoControlCommandDocPending[result.commandLower];
 			try {
-				const commandLower = String(message.commandLower || '').trim();
-				if (commandLower) {
-					try {
-						const ok = !!message.ok;
-						const syntax = ok && typeof message.syntax === 'string' ? String(message.syntax) : '';
-						const withArgs = ok && Array.isArray(message.withArgs) ? message.withArgs.map((s: any) => String(s)) : [];
-						__kustoControlCommandDocCache[commandLower] = {
-							syntax,
-							withArgs,
-							fetchedAt: Date.now()
-						};
-					} catch (e) { console.error('[kusto]', e); }
-					try {
-						delete __kustoControlCommandDocPending[commandLower];
-					} catch (e) { console.error('[kusto]', e); }
-					try {
-						if (typeof window.__kustoRefreshActiveCaretDocs === 'function') {
-							window.__kustoRefreshActiveCaretDocs();
-						}
-					} catch (e) { console.error('[kusto]', e); }
+				if (typeof window.__kustoRefreshActiveCaretDocs === 'function') {
+					window.__kustoRefreshActiveCaretDocs();
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
+		}
 		case 'sqlComparisonAdmission':
 			try { applySqlComparisonAdmissionDecision(message); } catch (e) { console.error('[kusto]', e); }
 			break;

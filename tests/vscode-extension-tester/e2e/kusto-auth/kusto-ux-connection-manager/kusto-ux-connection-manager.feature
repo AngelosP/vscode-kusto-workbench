@@ -26,6 +26,7 @@ Feature: Kusto Connection Manager surrounding UX
 
     When I click "[data-testid='kusto-conn-cluster-url']" in the webview "Connection Manager"
     When I type "draft-only.kusto.windows.net"
+    When I evaluate "(() => { const manager = document.querySelector('kw-connection-manager'); const form = manager?.shadowRoot?.querySelector('kw-kusto-connection-form'); const value = form?.shadowRoot?.querySelector('[data-testid=kusto-conn-cluster-url]')?.value; if (value !== 'draft-only.kusto.windows.net') throw new Error('Manager add draft typing did not apply: ' + value); return value; })()" in the webview "Connection Manager"
     When I click "[data-testid='cm-modal-cancel']" in the webview "Connection Manager"
     When I evaluate "(() => { const manager = document.querySelector('kw-connection-manager'); const root = manager?.shadowRoot; const add = root?.querySelector('[data-testid=cm-add-connection]'); const names = [...(root?.querySelectorAll('[data-testid=cm-kusto-connection-row] .explorer-list-item-name') || [])].map(node => node.textContent?.trim()); if (root?.querySelector('[data-testid=cm-modal-overlay]') || root?.activeElement !== add || names.some(name => name?.includes('draft-only'))) throw new Error('Cancelled add draft leaked or focus was lost'); return 'add draft cancelled'; })()" in the webview "Connection Manager"
 
@@ -35,16 +36,18 @@ Feature: Kusto Connection Manager surrounding UX
     Then I take a screenshot "03-manager-edit-dialog"
 
     When I click "[data-testid='kusto-conn-name']" in the webview "Connection Manager"
-    When I press "Ctrl+A"
-    When I type "Do Not Save This Name"
+    When I press "End"
+    When I type " - Do Not Save"
+    When I evaluate "(() => { const manager = document.querySelector('kw-connection-manager'); const form = manager?.shadowRoot?.querySelector('kw-kusto-connection-form'); const value = form?.shadowRoot?.querySelector('[data-testid=kusto-conn-name]')?.value || ''; if (!value.includes('Do Not Save')) throw new Error('Manager edit draft typing did not apply: ' + value); return value; })()" in the webview "Connection Manager"
     When I press "Escape"
-    When I evaluate "(() => { const manager = document.querySelector('kw-connection-manager'); const root = manager?.shadowRoot; const names = [...(root?.querySelectorAll('[data-testid=cm-kusto-connection-row] .explorer-list-item-name') || [])].map(node => node.textContent?.trim()); const active = root?.activeElement; if (root?.querySelector('[data-testid=cm-modal-overlay]') || active?.getAttribute('title') !== 'Edit' || names.some(name => name === 'Do Not Save This Name') || JSON.stringify(names) !== JSON.stringify(window.__cmUxOriginalNames)) throw new Error('Cancelled edit draft leaked or focus was lost: ' + JSON.stringify({ names, activeTitle: active?.getAttribute('title') })); return 'edit draft cancelled'; })()" in the webview "Connection Manager"
+    When I evaluate "(() => { const manager = document.querySelector('kw-connection-manager'); const root = manager?.shadowRoot; const names = [...(root?.querySelectorAll('[data-testid=cm-kusto-connection-row] .explorer-list-item-name') || [])].map(node => node.textContent?.trim()); const active = root?.activeElement; if (root?.querySelector('[data-testid=cm-modal-overlay]') || active?.getAttribute('title') !== 'Edit' || names.some(name => name?.includes('Do Not Save')) || JSON.stringify(names) !== JSON.stringify(window.__cmUxOriginalNames)) throw new Error('Cancelled edit draft leaked or focus was lost: ' + JSON.stringify({ names, activeTitle: active?.getAttribute('title') })); return 'edit draft cancelled'; })()" in the webview "Connection Manager"
+    Then I take a screenshot "04-manager-edit-cancelled"
 
     When I click "[data-testid='cm-filter-search']" in the webview "Connection Manager"
     When I wait for "[data-testid='cm-search-input']" in the webview "Connection Manager" for 10 seconds
     When I click ".search-refresh-drop" in the webview "Connection Manager"
     When I evaluate "(() => { const manager = document.querySelector('kw-connection-manager'); const menu = manager?.shadowRoot?.querySelector('.search-refresh-menu'); if (!menu || menu.getBoundingClientRect().width <= 0 || !menu.textContent.includes('Refresh all connections')) throw new Error('Search refresh menu did not open visibly'); return 'refresh menu open'; })()" in the webview "Connection Manager"
-    Then I take a screenshot "04-manager-refresh-menu"
+    Then I take a screenshot "05-manager-refresh-menu"
     When I press "Escape"
     When I evaluate "(() => { const manager = document.querySelector('kw-connection-manager'); if (manager?.shadowRoot?.querySelector('.search-refresh-menu')) throw new Error('Search refresh menu did not close on Escape'); return 'refresh menu dismissed'; })()" in the webview "Connection Manager"
     When I execute command "workbench.action.closeAllEditors"

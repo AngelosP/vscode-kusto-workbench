@@ -4,14 +4,23 @@ import { getKustoEditorSchema } from '../core/schema-catalogs.js';
 // Call initCaretDocsDeps(monaco) from the require callback to provide the AMD reference.
 import { postMessageToHost } from '../shared/webview-messages';
 import { __kustoGetStatementStartAtOffset } from './diagnostics';
+import {
+	parseControlCommandSyntaxWebviewMessage,
+} from '../../shared/controlCommandSyntaxProtocol.js';
 
 // Generated functions merge flag (shared with monaco-completions.ts via re-export from monaco.ts)
 export let __kustoGeneratedFunctionsMerged = false;
 export function setGeneratedFunctionsMerged(v: boolean) { __kustoGeneratedFunctionsMerged = v; }
 
 // Control command doc cache / pending fetch tracking — re-exported by monaco.ts.
-export let __kustoControlCommandDocCache: Record<string, any> = {};
-export let __kustoControlCommandDocPending: Record<string, any> = {};
+export type ControlCommandDocCacheEntry = {
+	syntax: string;
+	withArgs: string[];
+	fetchedAt: number;
+};
+
+export let __kustoControlCommandDocCache: Record<string, ControlCommandDocCacheEntry> = {};
+export let __kustoControlCommandDocPending: Record<string, string> = {};
 
 // AMD reference — set via initCaretDocsDeps().
 let _monacoRange: any = null;
@@ -690,24 +699,26 @@ const __kustoExtractWithOptionArgsFromSyntax = (syntaxText: any) => {
 
 const __kustoScheduleFetchControlCommandSyntax = (cmd: any) => {
 	try {
-		if (!cmd || !cmd.commandLower || !cmd.href) return;
+		if (!cmd) return;
+		const requestId = `ccs_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
+		const parsed = parseControlCommandSyntaxWebviewMessage({
+			type: 'fetchControlCommandSyntax',
+			requestId,
+			commandLower: cmd.commandLower,
+			href: cmd.href,
+		});
+		if (!parsed.ok) return;
+		const key = parsed.value.commandLower;
 		const cache = __kustoGetOrInitControlCommandDocCache();
-		const key = String(cmd.commandLower);
 		const entry = cache[key];
 		const now = Date.now();
 		if (entry && entry.fetchedAt && (now - entry.fetchedAt) < KUSTO_CONTROL_COMMAND_DOCS_CACHE_TTL_MS && entry.syntax) {
 			return;
 		}
 		if (__kustoControlCommandDocPending && __kustoControlCommandDocPending[key]) return;
-		const requestId = `ccs_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
-		__kustoControlCommandDocPending[key] = requestId;
 		try {
-			postMessageToHost({
-				type: 'fetchControlCommandSyntax',
-				requestId,
-				commandLower: key,
-				href: String(cmd.href)
-			});
+			__kustoControlCommandDocPending[key] = requestId;
+			postMessageToHost(parsed.value);
 		} catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }
 };

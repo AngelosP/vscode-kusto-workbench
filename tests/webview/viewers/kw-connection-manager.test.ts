@@ -776,9 +776,11 @@ describe('kw-connection-manager', () => {
 			const form = el.shadowRoot!.querySelector('kw-kusto-connection-form') as any;
 			await form.updateComplete;
 			const clusterInput = form.shadowRoot!.querySelector('[data-testid="kusto-conn-cluster-url"]');
+			const overlay = el.shadowRoot!.querySelector('[data-testid="cm-modal-overlay"]') as HTMLElement;
 			expect(form.shadowRoot!.activeElement).toBe(clusterInput);
 
 			clusterInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
+			expect(overlay.style.display).toBe('none');
 			await el.updateComplete;
 			expect(el.shadowRoot!.querySelector('[data-testid="cm-modal-overlay"]')).toBeNull();
 			expect(el.shadowRoot!.activeElement).toBe(addButton);

@@ -7327,6 +7327,12 @@ function e2eKustoUxAssertSearch(query: string, minimumMatches: number): string {
 
 function e2eKustoUxAssertPopup(kind: string, expectedOpen: boolean): string {
 	const table = e2eKustoUxTable();
+	if (kind === 'objectViewer') {
+		const viewer = table.shadowRoot?.querySelector('kw-object-viewer') as any;
+		const open = viewer?.open === true;
+		if (open !== expectedOpen) throw new Error(`Kusto UX objectViewer expected open=${expectedOpen}, got ${open}`);
+		return `Kusto UX objectViewer open=${open}`;
+	}
 	const selectors: Record<string, string> = {
 		search: 'kw-search-bar',
 		rowJump: '.row-jump-inp',
@@ -7335,7 +7341,6 @@ function e2eKustoUxAssertPopup(kind: string, expectedOpen: boolean): string {
 		sort: 'kw-sort-dialog',
 		filter: 'kw-filter-dialog',
 		uniqueValues: 'kw-unique-values-dialog',
-		objectViewer: 'kw-object-viewer .modal-content',
 	};
 	const selector = selectors[kind];
 	if (!selector) throw new Error(`Unknown Kusto UX popup kind: ${kind}`);

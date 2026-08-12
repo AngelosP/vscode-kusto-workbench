@@ -266,6 +266,11 @@ export class KwFilterDialog extends LitElement {
 
 	protected override firstUpdated(): void {
 		this._initDraft();
+		void this.updateComplete.then(() => {
+			if (!this.isConnected) return;
+			const selector = this._mode === 'rules' ? '.fr-rule-op' : '[data-testid="filter-values-search"]';
+			(this.shadowRoot?.querySelector(selector) as HTMLElement | null)?.focus();
+		});
 	}
 
 	private _initDraft(): void {
@@ -453,9 +458,9 @@ export class KwFilterDialog extends LitElement {
 		]);
 		const activeRules = this._draftRules.filter(r => String(r.op || '').trim()).length;
 
-		return html`<div class="sd-bg" @click=${this._close}><div class="sd fd" @click=${(e: Event) => e.stopPropagation()}>
+		return html`<div class="sd-bg" @click=${this._close}><div class="sd fd" role="dialog" aria-modal="true" aria-labelledby="filter-dialog-title" @click=${(e: Event) => e.stopPropagation()}>
 			<div class="sd-h">
-				<strong>Filter applied to the column '${colName}'</strong>
+				<strong id="filter-dialog-title">Filter applied to the column '${colName}'</strong>
 				<button type="button" class="nb sd-x" title="Close" aria-label="Close" @click=${this._close}>${ICON_CLOSE}</button>
 			</div>
 			<div class="fd-modes">
@@ -468,7 +473,7 @@ export class KwFilterDialog extends LitElement {
 					<div class="fd-tools">
 						<div class="sc fd-search">
 							<svg class="sc-icon" viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.5 6.5a4 4 0 1 1-8 0 4 4 0 0 1 8 0zm-.82 4.12a5 5 0 1 1 .707-.707l3.536 3.536-.707.707-3.536-3.536z"/></svg>
-							<input type="text" class="sinp" placeholder="Search values..." autocomplete="off" spellcheck="false" .value=${this._searchQuery}
+							<input type="text" class="sinp" data-testid="filter-values-search" placeholder="Search values..." autocomplete="off" spellcheck="false" .value=${this._searchQuery}
 								@input=${(e: Event) => { this._searchQuery = (e.target as HTMLInputElement).value; }} />
 						</div>
 						<div class="fd-actions">

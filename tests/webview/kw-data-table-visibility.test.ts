@@ -20,6 +20,7 @@ const overlayMocks = vi.hoisted(() => {
 			viewport,
 			destroyed: false,
 			destroy: vi.fn(() => { instance.destroyed = true; }),
+			update: vi.fn(),
 			elements: vi.fn(() => ({ viewport })),
 		};
 		instances.push(instance);
@@ -326,6 +327,115 @@ describe('kw-data-table visibility lifecycle', () => {
 
 		expect(renderedCellText(table)).toEqual(['bravo', '3', 'charlie', '2', 'alpha', '1']);
 		expect(table.shadowRoot?.querySelector('[title="Clear sort"]')).toBeTruthy();
+	});
+
+	it('cancels deferred column-menu listeners when disconnected', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Name' }];
+		table.rows = [['alpha']];
+		document.body.appendChild(table);
+		await settleTable(table);
+		const addListener = vi.spyOn(document, 'addEventListener');
+
+		(table as any)._openColumnMenuAt(0, 100, 100);
+		table.remove();
+		addListener.mockClear();
+		flushRaf();
+
+		expect(addListener).not.toHaveBeenCalledWith('mousedown', expect.any(Function));
+		expect((table as any)._columnMenuListenerRaf).toBe(0);
+	});
+
+	it('focuses and restores the Sort toolbar button around its dialog', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Name' }];
+		table.rows = [['alpha']];
+		document.body.appendChild(table);
+		await settleTable(table);
+		const button = table.shadowRoot?.querySelector<HTMLButtonElement>('button[title="Sort"]')!;
+
+		button.click();
+		await table.updateComplete;
+		const dialog = table.shadowRoot?.querySelector('kw-sort-dialog') as any;
+		await dialog.updateComplete;
+		expect(dialog.shadowRoot?.querySelector('[role="dialog"]')).toBeTruthy();
+		expect(dialog.shadowRoot?.activeElement).toBe(dialog.shadowRoot?.querySelector('[data-testid="sort-add-column"]'));
+
+		document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		await table.updateComplete;
+		expect(table.shadowRoot?.activeElement).toBe(button);
+	});
+
+	it('focuses and restores a column menu button around its Filter dialog', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Name' }];
+		table.rows = [['alpha'], ['bravo']];
+		document.body.appendChild(table);
+		await settleTable(table);
+		const button = table.shadowRoot?.querySelector<HTMLButtonElement>('button[aria-label="Column menu for Name"]')!;
+
+		(table as any)._openFilterDialog(0);
+		await table.updateComplete;
+		const dialog = table.shadowRoot?.querySelector('kw-filter-dialog') as any;
+		await dialog.updateComplete;
+		await Promise.resolve();
+		expect(dialog.shadowRoot?.querySelector('[role="dialog"]')).toBeTruthy();
+		expect(dialog.shadowRoot?.activeElement).toBe(dialog.shadowRoot?.querySelector('[data-testid="filter-values-search"]'));
+
+		document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		await table.updateComplete;
+		expect(table.shadowRoot?.activeElement).toBe(button);
+	});
+
+	it('restores Sort focus when page scrolling dismisses the dialog', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Name' }];
+		table.rows = [['alpha']];
+		document.body.appendChild(table);
+		await settleTable(table);
+		const button = table.shadowRoot?.querySelector<HTMLButtonElement>('button[title="Sort"]')!;
+		button.click();
+		await table.updateComplete;
+
+		(table as any)._onDocumentScrollDismiss();
+		await table.updateComplete;
+
+		expect(table.shadowRoot?.querySelector('kw-sort-dialog')).toBeNull();
+		expect(table.shadowRoot?.activeElement).toBe(button);
+	});
+
+	it('restores column-menu focus when page scrolling dismisses Filter', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Name' }];
+		table.rows = [['alpha']];
+		document.body.appendChild(table);
+		await settleTable(table);
+		const button = table.shadowRoot?.querySelector<HTMLButtonElement>('button[aria-label="Column menu for Name"]')!;
+		(table as any)._openFilterDialog(0);
+		await table.updateComplete;
+
+		(table as any)._onDocumentScrollDismiss();
+		await table.updateComplete;
+
+		expect(table.shadowRoot?.querySelector('kw-filter-dialog')).toBeNull();
+		expect(table.shadowRoot?.activeElement).toBe(button);
+		expect((table as any)._filterDialogReturnFocus).toBeNull();
+	});
+
+	it('removes the column-menu document listener when page scrolling dismisses it', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Name' }];
+		table.rows = [['alpha']];
+		document.body.appendChild(table);
+		await settleTable(table);
+		(table as any)._openColumnMenuAt(0, 100, 100);
+		flushRaf();
+		const removeListener = vi.spyOn(document, 'removeEventListener');
+
+		(table as any)._onDocumentScrollDismiss();
+
+		expect((table as any)._columnMenuOpen).toBeNull();
+		expect(removeListener).toHaveBeenCalledWith('mousedown', expect.any(Function));
 	});
 
 	it('exports the current filtered and sorted row projection', async () => {

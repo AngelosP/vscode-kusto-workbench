@@ -20,6 +20,7 @@ export class KwSortDialog extends LitElement {
 
 	protected override firstUpdated(): void {
 		this._draft = [...this.sorting];
+		(this.shadowRoot?.querySelector('[data-testid="sort-add-column"]') as HTMLElement | null)?.focus();
 	}
 
 	protected override willUpdate(changed: import('lit').PropertyValues): void {
@@ -80,9 +81,9 @@ export class KwSortDialog extends LitElement {
 		const unusedCols = this.columns.map((c, i) => ({ name: c.name, idx: i }))
 			.filter(c => !this._draft.some(s => s.id === String(c.idx)));
 
-		return html`<div class="sd-bg" @click=${this._close}><div class="sd" @click=${(e: Event) => e.stopPropagation()}>
+		return html`<div class="sd-bg" @click=${this._close}><div class="sd" role="dialog" aria-modal="true" aria-labelledby="sort-dialog-title" @click=${(e: Event) => e.stopPropagation()}>
 			<div class="sd-h">
-				<strong>Sort</strong>
+				<strong id="sort-dialog-title">Sort</strong>
 				<button class="nb sd-x" title="Close" @click=${this._close}>${ICON_CLOSE}</button>
 			</div>
 			<div class="sd-b" data-overlay-scroll="x:hidden">

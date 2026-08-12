@@ -2182,6 +2182,8 @@ export class KwConnectionManager extends LitElement {
 	}
 
 	private _closeModal(): void {
+		const overlay = this.shadowRoot?.querySelector('[data-testid="cm-modal-overlay"]') as HTMLElement | null;
+		if (overlay) overlay.style.display = 'none';
 		this._modalVisible = false;
 		this._editingConnectionId = null;
 		this._sqlTestConnectionRequestId = null;

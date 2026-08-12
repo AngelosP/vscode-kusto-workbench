@@ -134,9 +134,13 @@ export class KwCopilotChat extends LitElement {
 	/** Bound handler for closing tools panel on outside click. */
 	private _closeToolsPanelBound = this._onOutsideClickToolsPanel.bind(this);
 	/** Stable dismiss callback for dismiss-stack (Escape key). */
-	private _dismissToolsPanel = (): void => { this._closeToolsPanel(); };
+	private _dismissToolsPanel = (): void => {
+		this._closeToolsPanel();
+		(this.shadowRoot?.querySelector('.tools-btn') as HTMLElement | null)?.focus();
+	};
 	/** Bound scroll handler for dismiss-on-scroll. */
 	private _removeToolsPanelScrollListener: (() => void) | null = null;
+	private _toolsPanelListenerTimer: ReturnType<typeof setTimeout> | null = null;
 	private _markdownPreviewLibsRequested = false;
 
 	@query('.messages') private _messagesHost!: HTMLDivElement;
@@ -929,6 +933,7 @@ export class KwCopilotChat extends LitElement {
 
 		// Position after render.
 		this.updateComplete.then(() => {
+			if (!this.isConnected || !this._toolsPanelOpen) return;
 			const btn = (e.currentTarget || e.target) as HTMLElement;
 			const panel = this.shadowRoot?.querySelector('.tools-panel') as HTMLElement;
 			if (!btn || !panel) return;
@@ -937,25 +942,43 @@ export class KwCopilotChat extends LitElement {
 			panel.style.top = '0px';
 			panel.style.bottom = 'auto';
 			const panelRect = panel.getBoundingClientRect();
-			const ph = panelRect.height;
 			const pw = panelRect.width;
 			const gap = 4;
-			let top = btnRect.top - ph - gap;
+			const vpH = document.documentElement.clientHeight || window.innerHeight;
+			const spaceAbove = Math.max(0, btnRect.top - gap - 4);
+			const spaceBelow = Math.max(0, vpH - btnRect.bottom - gap - 4);
+			const placeAbove = spaceAbove >= spaceBelow;
+			const availableHeight = placeAbove ? spaceAbove : spaceBelow;
+			panel.style.maxHeight = Math.max(0, availableHeight) + 'px';
+			const ph = Math.min(panel.scrollHeight, availableHeight);
+			let top = placeAbove ? btnRect.top - ph - gap : btnRect.bottom + gap;
 			let left = btnRect.left;
-			if (top < 0) top = btnRect.bottom + gap;
 			const vpW = document.documentElement.clientWidth || window.innerWidth;
 			if (left + pw > vpW) left = Math.max(0, vpW - pw - 4);
+			top = Math.max(4, Math.min(top, vpH - ph - 4));
 			panel.style.top = top + 'px';
 			panel.style.left = left + 'px';
 		});
-		setTimeout(() => document.addEventListener('mousedown', this._closeToolsPanelBound, true), 0);
+		this._toolsPanelListenerTimer = setTimeout(() => {
+			this._toolsPanelListenerTimer = null;
+			if (!this.isConnected || !this._toolsPanelOpen) return;
+			document.addEventListener('mousedown', this._closeToolsPanelBound, true);
+		}, 0);
 		pushDismissable(this._dismissToolsPanel);
 		this._removeToolsPanelScrollListener = registerPageScrollDismissable(() => this._closeToolsPanel());
 	}
 
 	/** Close the tools panel and remove all listeners. */
 	private _closeToolsPanel(): void {
-		if (!this._toolsPanelOpen) return;
+		if (this._toolsPanelListenerTimer) {
+			clearTimeout(this._toolsPanelListenerTimer);
+			this._toolsPanelListenerTimer = null;
+		}
+		if (!this._toolsPanelOpen) {
+			document.removeEventListener('mousedown', this._closeToolsPanelBound, true);
+			removeDismissable(this._dismissToolsPanel);
+			return;
+		}
 		this._toolsPanelOpen = false;
 		document.removeEventListener('mousedown', this._closeToolsPanelBound, true);
 		if (this._removeToolsPanelScrollListener) {

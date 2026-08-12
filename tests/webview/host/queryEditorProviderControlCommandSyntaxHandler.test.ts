@@ -124,7 +124,7 @@ describe('QueryEditorProvider control-command syntax application', () => {
 		const displacedProviderAuthorities = [
 			['controlCommandSyntaxCache', 'controlCommandSyntaxCache'],
 			['CONTROL_COMMAND_SYNTAX_CACHE_TTL_MS', 'CONTROL_COMMAND_SYNTAX_CACHE_TTL_MS'],
-			["case 'fetchControlCommandSyntax':", "message.type !== 'fetchControlCommandSyntax'"],
+			["case 'fetchControlCommandSyntax':", 'isControlCommandSyntaxWebviewMessageType(message)'],
 			['decodeHtmlEntities', 'decodeHtmlEntities'],
 			['extractControlCommandSyntaxFromLearnHtml', 'extractControlCommandSyntaxFromLearnHtml'],
 			['extractWithArgsFromSyntax', 'extractWithArgsFromSyntax'],

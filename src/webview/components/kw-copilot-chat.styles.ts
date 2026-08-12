@@ -454,6 +454,9 @@ export const styles = css`
 		z-index: 1000;
 		min-width: 300px;
 		max-width: 380px;
+		max-height: calc(100vh - 8px);
+		overflow-y: auto;
+		overscroll-behavior: contain;
 		padding: 10px;
 		border: 1px solid var(--vscode-input-border);
 		border-radius: 4px;

@@ -294,6 +294,9 @@ export class KwDataTable extends LitElement {
 	private _prevRowJumpVis = false;
 	private _prevColJumpVis = false;
 	private _chromeRafPending = false;
+	private _columnMenuListenerRaf = 0;
+	private _sortDialogReturnFocus: HTMLElement | null = null;
+	private _filterDialogReturnFocus: HTMLElement | null = null;
 
 	/** Visible row count after current sort/filter state is applied. */
 	public getVisibleRowCount(): number {
@@ -505,7 +508,7 @@ export class KwDataTable extends LitElement {
 	private _dismissRowJump = (): void => { this._rowJumpCtrl.toggle(this._table?.getRowModel().rows.length ?? 0); };
 	private _dismissColJump = (): void => { this._colJumpOpen = false; this._colJumpQuery = ''; };
 	private _dismissColumnMenu = (): void => { this._closeColumnMenu(); };
-	private _dismissSortDialog = (): void => { this._sortDialogOpen = false; };
+	private _dismissSortDialog = (): void => { this._closeSortDialog(); };
 	private _dismissFilterDialog = (): void => { this._closeFilterDialog(); };
 	private _removePageScrollListener: (() => void) | null = null;
 
@@ -604,6 +607,10 @@ export class KwDataTable extends LitElement {
 	}
 
 	disconnectedCallback(): void {
+		if (this._columnMenuListenerRaf) {
+			cancelAnimationFrame(this._columnMenuListenerRaf);
+			this._columnMenuListenerRaf = 0;
+		}
 		super.disconnectedCallback();
 		this._destroyOverlayScrollbars();
 		// Clean up dismiss stack
@@ -775,6 +782,7 @@ export class KwDataTable extends LitElement {
 
 	private _openFilterDialog(colIndex: number): void {
 		this._closeColumnMenu();
+		this._filterDialogReturnFocus = this.shadowRoot?.querySelector(`button.cm-btn[data-column-index='${colIndex}']`) as HTMLElement | null;
 		this._filterDialogColIndex = colIndex;
 		this._filterDialogOpen = true;
 	}
@@ -782,6 +790,25 @@ export class KwDataTable extends LitElement {
 	private _closeFilterDialog(): void {
 		this._filterDialogOpen = false;
 		this._filterDialogColIndex = null;
+		const returnFocus = this._filterDialogReturnFocus;
+		this._filterDialogReturnFocus = null;
+		void this.updateComplete.then(() => returnFocus?.isConnected && returnFocus.focus());
+	}
+
+	private _toggleSortDialog(event: Event): void {
+		if (this._sortDialogOpen) {
+			this._closeSortDialog();
+			return;
+		}
+		this._sortDialogReturnFocus = event.currentTarget as HTMLElement;
+		this._sortDialogOpen = true;
+	}
+
+	private _closeSortDialog(): void {
+		this._sortDialogOpen = false;
+		const returnFocus = this._sortDialogReturnFocus;
+		this._sortDialogReturnFocus = null;
+		void this.updateComplete.then(() => returnFocus?.isConnected && returnFocus.focus());
 	}
 
 	// ── Unique values (delegated to <kw-unique-values-dialog>) ──
@@ -908,7 +935,7 @@ export class KwDataTable extends LitElement {
 				.columns=${this.columns}
 				.sorting=${this._sorting}
 				@sort-change=${this._onSortChange}
-				@sort-close=${() => this._sortDialogOpen = false}
+				@sort-close=${this._closeSortDialog}
 			></kw-sort-dialog>` : nothing}
 			${this._filterDialogOpen ? html`<kw-filter-dialog
 				.columns=${this.columns}
@@ -944,7 +971,7 @@ export class KwDataTable extends LitElement {
 				<button class="tbtn ${this._searchCtrl.visible ? 'act' : ''}" title="Search data" @click=${() => this._toggleSearch()}>${ICON.search}</button>
 				<button class="tbtn ${this._rowJumpCtrl.visible ? 'act' : ''}" title="Scroll to row" @click=${() => this._toggleRowJump(totalRows)}>${ICON.scrollToRow}</button>
 				<button class="tbtn ${this._colJumpOpen ? 'act' : ''}" title="Scroll to column" @click=${() => { this._colJumpOpen = !this._colJumpOpen; this._colJumpQuery = ''; }}>${ICON.scrollToCol}</button>
-				<button class="tbtn ${this._sortDialogOpen ? 'act' : ''}" title="Sort" @click=${() => this._sortDialogOpen = !this._sortDialogOpen}>${ICON.sort}</button>
+				<button class="tbtn ${this._sortDialogOpen ? 'act' : ''}" title="Sort" @click=${this._toggleSortDialog}>${ICON.sort}</button>
 				<span class="sep"></span>
 				${this.options.showSave !== false ? html`<button class="tbtn" data-testid="data-table-save" title="Save results to file" @click=${() => this._save()}>${ICON.save}</button>` : nothing}
 				<button class="tbtn" title="Copy (Ctrl+C)" @click=${() => this._selectionCtrl.copy()}>${ICON.copy}</button>
@@ -1155,10 +1182,19 @@ export class KwDataTable extends LitElement {
 		this._columnMenuPos = { x, y };
 		this._columnMenuOpen = ci;
 		// Defer so this click doesn't immediately trigger the close handler
-		requestAnimationFrame(() => document.addEventListener('mousedown', this._onDocMouseDown));
+		if (this._columnMenuListenerRaf) cancelAnimationFrame(this._columnMenuListenerRaf);
+		this._columnMenuListenerRaf = requestAnimationFrame(() => {
+			this._columnMenuListenerRaf = 0;
+			if (!this.isConnected || this._columnMenuOpen !== ci) return;
+			document.addEventListener('mousedown', this._onDocMouseDown);
+		});
 	}
 
 	private _closeColumnMenu(): void {
+		if (this._columnMenuListenerRaf) {
+			cancelAnimationFrame(this._columnMenuListenerRaf);
+			this._columnMenuListenerRaf = 0;
+		}
 		this._columnMenuOpen = null;
 		document.removeEventListener('mousedown', this._onDocMouseDown);
 	}
@@ -1244,7 +1280,7 @@ export class KwDataTable extends LitElement {
 		this._sorting = e.detail.sorting;
 		this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: this._sorting } }));
 		this._vScrollCtrl.updateCount();
-		this._sortDialogOpen = false;
+		this._closeSortDialog();
 	};
 	private _clearSort(): void { this._sorting = []; this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: [] } })); this._sortDialogOpen = false; this._vScrollCtrl.updateCount(); }
 	private _scrollToCol(ci: number): void {
@@ -1288,9 +1324,9 @@ export class KwDataTable extends LitElement {
 
 	private _onDocumentScrollDismiss = (): void => {
 		if (!this._columnMenuOpen && this._columnMenuOpen !== 0 && !this._sortDialogOpen && !this._filterDialogOpen) return;
-		this._columnMenuOpen = null;
-		this._sortDialogOpen = false;
-		this._filterDialogOpen = false;
+		if (this._columnMenuOpen !== null) this._closeColumnMenu();
+		if (this._sortDialogOpen) this._closeSortDialog();
+		if (this._filterDialogOpen) this._closeFilterDialog();
 	};
 
 	private _syncPopupScrollDismiss(changed?: PropertyValues): void {

@@ -6062,7 +6062,8 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
-	test('KQLX close bounds non-persistence handlers that do not settle', async () => {
+	test('KQLX close bounds non-persistence handlers that do not settle', async function () {
+		this.timeout(5_000);
 		const originalHandleWebviewMessage = (QueryEditorProvider as any).prototype.handleWebviewMessage;
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kqlx-close-timeout-'));
 		const filePath = path.join(tmpDir, 'close-timeout.kqlx');

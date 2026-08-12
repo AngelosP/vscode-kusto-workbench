@@ -1,9 +1,13 @@
 import { getErrorMessage } from './queryEditorUtils';
 import type { IncomingWebviewMessage } from './queryEditorTypes';
+import {
+	isControlCommandSyntaxWebviewMessageType,
+	parseControlCommandSyntaxWebviewMessage,
+	type ControlCommandSyntaxHostMessage,
+	type ControlCommandSyntaxRequestMessage,
+} from '../shared/controlCommandSyntaxProtocol';
 
 const CONTROL_COMMAND_SYNTAX_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-
-type FetchControlCommandSyntaxMessage = Extract<IncomingWebviewMessage, { type: 'fetchControlCommandSyntax' }>;
 
 type ControlCommandSyntaxCacheEntry = {
 	timestamp: number;
@@ -18,7 +22,7 @@ export interface ControlCommandSyntaxApplicationHandler {
 }
 
 export type ControlCommandSyntaxApplicationHandlerOptions = {
-	postMessage: (message: unknown) => Thenable<boolean>;
+	postMessage: (message: ControlCommandSyntaxHostMessage) => Thenable<boolean>;
 	fetchLearn?: typeof fetch;
 	now?: () => number;
 };
@@ -35,8 +39,10 @@ export class HostControlCommandSyntaxApplicationHandler implements ControlComman
 	}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
-		if (message.type !== 'fetchControlCommandSyntax') return undefined;
-		return this.handleFetchControlCommandSyntax(message);
+		if (!isControlCommandSyntaxWebviewMessageType(message)) return undefined;
+		const parsed = parseControlCommandSyntaxWebviewMessage(message);
+		if (!parsed.ok) return Promise.resolve();
+		return this.handleFetchControlCommandSyntax(parsed.value);
 	}
 
 	dispose(): void {
@@ -45,7 +51,7 @@ export class HostControlCommandSyntaxApplicationHandler implements ControlComman
 		this.controlCommandSyntaxCache.clear();
 	}
 
-	private postMessage(message: unknown): void {
+	private postMessage(message: ControlCommandSyntaxHostMessage): void {
 		if (this.disposed) return;
 		this.options.postMessage(message);
 	}
@@ -126,15 +132,9 @@ export class HostControlCommandSyntaxApplicationHandler implements ControlComman
 		}
 	}
 
-	private async handleFetchControlCommandSyntax(message: FetchControlCommandSyntaxMessage): Promise<void> {
+	private async handleFetchControlCommandSyntax(message: ControlCommandSyntaxRequestMessage): Promise<void> {
 		if (this.disposed) return;
-		const requestId = String(message.requestId || '');
-		const commandLower = String(message.commandLower || '').toLowerCase();
-		const href = String(message.href || '');
-		if (!requestId || !commandLower || !href) {
-			this.postMessage({ type: 'controlCommandSyntaxResult', requestId, commandLower, ok: false, syntax: '', withArgs: [] });
-			return;
-		}
+		const { requestId, commandLower, href } = message;
 
 		try {
 			const now = this.now();
