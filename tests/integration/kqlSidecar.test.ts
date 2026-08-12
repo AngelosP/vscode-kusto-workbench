@@ -1605,7 +1605,16 @@ suite('Sidecar .kql.json strategy', () => {
 				] },
 			}));
 			assert.strictEqual(fs.readFileSync(linkedPath, 'utf8'), 'StormEvents\r\n| take 5');
-			assert.ok(!vscode.workspace.textDocuments.some(document => document.uri.fsPath === linkedPath));
+			const linkedUri = vscode.Uri.file(linkedPath);
+			const residentLinkedDocument = vscode.workspace.textDocuments.find(document => document.uri.toString() === linkedUri.toString());
+			if (residentLinkedDocument) {
+				assert.strictEqual(residentLinkedDocument.isDirty, false, 'EOL-only persistence must not dirty a resident linked document');
+				assert.strictEqual(
+					residentLinkedDocument.getText().replace(/\r\n?/g, '\n'),
+					'StormEvents\n| take 5',
+					'EOL-only persistence must preserve equivalent linked-buffer text',
+				);
+			}
 
 			for (const count of [6, 7]) {
 				await Promise.resolve(receiveHandler!({

@@ -2,12 +2,16 @@ import * as crypto from 'crypto';
 import * as os from 'os';
 import * as vscode from 'vscode';
 
-import type {
-	ArtifactCsvSaveDataMessage,
-	CancelArtifactCsvSaveIntentMessage,
-	IncomingWebviewMessage,
-	RequestArtifactCsvSaveMessage,
-} from './queryEditorTypes';
+import type { IncomingWebviewMessage } from './queryEditorTypes';
+import {
+	admitArtifactCsvSaveWebviewMessage,
+	parseArtifactCsvSaveHostMessage,
+	type ArtifactCsvSaveDataMessage,
+	type ArtifactCsvSaveHostMessage,
+	type ArtifactCsvSaveWebviewMessage,
+	type CancelArtifactCsvSaveIntentMessage,
+	type RequestArtifactCsvSaveMessage,
+} from '../shared/artifactCsvSaveProtocol';
 import { notifySavedFile, withCsvExtension } from './savedFileNotification';
 
 const ARTIFACT_CSV_TRANSFER_TIMEOUT_MS = 60_000;
@@ -23,10 +27,7 @@ type PendingArtifactCsvSave = {
 	timer: ReturnType<typeof setTimeout>;
 };
 
-export type ArtifactCsvSaveApplicationMessage =
-	| RequestArtifactCsvSaveMessage
-	| ArtifactCsvSaveDataMessage
-	| CancelArtifactCsvSaveIntentMessage;
+export type ArtifactCsvSaveApplicationMessage = ArtifactCsvSaveWebviewMessage;
 
 export interface ArtifactCsvSaveApplicationHandler {
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined;
@@ -34,7 +35,7 @@ export interface ArtifactCsvSaveApplicationHandler {
 }
 
 export type ArtifactCsvSaveApplicationHandlerOptions = {
-	postMessage: (message: unknown) => Thenable<boolean>;
+	postMessage: (message: ArtifactCsvSaveHostMessage) => Thenable<boolean>;
 	isDisposed: () => boolean;
 };
 
@@ -45,21 +46,23 @@ export class HostArtifactCsvSaveApplicationHandler implements ArtifactCsvSaveApp
 
 	constructor(private readonly options: ArtifactCsvSaveApplicationHandlerOptions) {}
 
-	private postMessage(message: unknown): Thenable<boolean> {
-		return this.options.postMessage(message);
+	private postMessage(message: ArtifactCsvSaveHostMessage): Thenable<boolean> {
+		const parsed = parseArtifactCsvSaveHostMessage(message);
+		return parsed.ok ? this.options.postMessage(parsed.value) : Promise.resolve(false);
 	}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
-		switch (message.type) {
+		const admission = admitArtifactCsvSaveWebviewMessage(message);
+		if (!admission.recognized) return undefined;
+		if (!admission.parsed.ok) return Promise.resolve();
+		switch (admission.parsed.value.type) {
 			case 'requestArtifactCsvSave':
-				return this.requestArtifactCsvSave(message);
+				return this.requestArtifactCsvSave(admission.parsed.value);
 			case 'artifactCsvSaveData':
-				return this.acceptArtifactCsvSaveData(message);
+				return this.acceptArtifactCsvSaveData(admission.parsed.value);
 			case 'cancelArtifactCsvSaveIntent':
-				this.cancelArtifactCsvSaveIntent(message);
+				this.cancelArtifactCsvSaveIntent(admission.parsed.value);
 				return Promise.resolve();
-			default:
-				return undefined;
 		}
 	}
 
@@ -74,9 +77,9 @@ export class HostArtifactCsvSaveApplicationHandler implements ArtifactCsvSaveApp
 	}
 
 	private async requestArtifactCsvSave(message: RequestArtifactCsvSaveMessage): Promise<void> {
-		const exportId = String(message.requestId || '').trim();
-		const boxId = String(message.boxId || '').trim();
-		const artifactId = String(message.artifactId || '').trim();
+		const exportId = message.requestId;
+		const boxId = message.boxId;
+		const artifactId = message.artifactId;
 		if (!exportId || !boxId || !artifactId || this.pendingArtifactCsvIntentIds.has(exportId)
 			|| this.completedArtifactCsvIntentIds.has(exportId)) return;
 		if (this.pendingArtifactCsvIntentIds.size >= ARTIFACT_CSV_MAX_ACTIVE_INTENTS) {
@@ -138,17 +141,17 @@ export class HostArtifactCsvSaveApplicationHandler implements ArtifactCsvSaveApp
 	}
 
 	private async acceptArtifactCsvSaveData(message: ArtifactCsvSaveDataMessage): Promise<void> {
-		const requestId = String(message.requestId || '').trim();
+		const requestId = message.requestId;
 		const pending = this.pendingArtifactCsvSaves.get(requestId);
 		if (!pending
-			|| pending.boxId !== String(message.boxId || '').trim()
-			|| pending.artifactId !== String(message.artifactId || '').trim()) return;
+			|| pending.boxId !== message.boxId
+			|| pending.artifactId !== message.artifactId) return;
 
 		this.pendingArtifactCsvSaves.delete(requestId);
 		clearTimeout(pending.timer);
 		this.completeArtifactCsvIntent(pending.exportId);
-		const csv = typeof message.csv === 'string' ? message.csv : '';
-		if (message.accepted !== true || !csv.trim()) {
+		const csv = message.accepted ? message.csv : '';
+		if (!message.accepted || !csv.trim()) {
 			void vscode.window.showInformationMessage('Results are no longer available for CSV export.');
 			return;
 		}
@@ -161,8 +164,7 @@ export class HostArtifactCsvSaveApplicationHandler implements ArtifactCsvSaveApp
 	}
 
 	private cancelArtifactCsvSaveIntent(message: CancelArtifactCsvSaveIntentMessage): void {
-		const exportId = String(message.requestId || '').trim();
-		if (!exportId) return;
+		const exportId = message.requestId;
 		let knownIntent = this.pendingArtifactCsvIntentIds.has(exportId);
 		for (const [requestId, pending] of [...this.pendingArtifactCsvSaves]) {
 			if (pending.exportId !== exportId) continue;

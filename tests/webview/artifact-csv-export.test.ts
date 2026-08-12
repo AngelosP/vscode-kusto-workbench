@@ -25,6 +25,7 @@ import {
 	csvTableArtifactConsumerId,
 	RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT,
 } from '../../src/shared/resultArtifact.js';
+import { admitArtifactCsvSaveHostMessage } from '../../src/shared/artifactCsvSaveProtocol.js';
 import {
 	cancelArtifactCsvSave,
 	provideArtifactCsvSaveData,
@@ -70,6 +71,7 @@ describe('artifact CSV export gate', () => {
 			suggestedFileName: 'Results.csv',
 		});
 		provideArtifactCsvSaveData({
+			type: 'requestArtifactCsvSaveData',
 			requestId: 'host-nonce', exportId: intent.requestId,
 			boxId, artifactId: artifactA.artifactId,
 		});
@@ -79,6 +81,45 @@ describe('artifact CSV export gate', () => {
 		});
 		expect(getCurrentResultArtifact(boxId)?.producer?.executionId).toBe('execution-b');
 		expect(getBoundResultArtifact(csvTableArtifactConsumerId(boxId), boxId)).toBe(artifactA);
+		releaseArtifactCsvTable(boxId, tableToken);
+	});
+
+	it('keeps a pending export after a malformed matching host challenge', () => {
+		const boxId = 'query_csv_malformed_challenge';
+		setResultsState(boxId, { columns: ['Value'], rows: [['a']], metadata: {} }, {
+			producer: { engine: 'kusto', boxId, executionId: 'execution-a' },
+			policy: { exportToCsv: true },
+		});
+		const artifact = getCurrentResultArtifact(boxId)!;
+		const tableToken = registerArtifactCsvTable(boxId, artifact.artifactId)!;
+		expect(saveArtifactCsv({
+			sourceBoxId: boxId, artifactId: artifact.artifactId, tableToken, csv: 'Value\na',
+		})).toBe(true);
+		const intent = mocks.postMessageToHost.mock.calls
+			.map(call => call[0])
+			.find(message => message.type === 'requestArtifactCsvSave');
+		mocks.postMessageToHost.mockClear();
+
+		provideArtifactCsvSaveData({
+			type: 'requestArtifactCsvSaveData',
+			requestId: 'malformed-host-nonce', exportId: intent.requestId,
+			boxId: [boxId], artifactId: artifact.artifactId,
+		} as any);
+		expect(mocks.postMessageToHost).not.toHaveBeenCalled();
+
+		const canonicalChallenge = {
+			requestId: 'canonical-host-nonce', exportId: intent.requestId,
+			boxId, artifactId: artifact.artifactId, type: 'requestArtifactCsvSaveData' as const,
+		};
+		expect(admitArtifactCsvSaveHostMessage(canonicalChallenge)).toMatchObject({
+			recognized: true, parsed: { ok: true },
+		});
+		provideArtifactCsvSaveData(canonicalChallenge);
+		expect(mocks.postMessageToHost).toHaveBeenCalledOnce();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'artifactCsvSaveData', requestId: 'canonical-host-nonce', boxId,
+			artifactId: artifact.artifactId, accepted: true, csv: 'Value\na',
+		});
 		releaseArtifactCsvTable(boxId, tableToken);
 	});
 
@@ -148,6 +189,7 @@ describe('artifact CSV export gate', () => {
 		mocks.postMessageToHost.mockClear();
 
 		provideArtifactCsvSaveData({
+			type: 'requestArtifactCsvSaveData',
 			requestId: 'host-nonce', exportId: intent.requestId, boxId, artifactId: artifact.artifactId,
 		});
 		expect(mocks.postMessageToHost).not.toHaveBeenCalled();
@@ -165,10 +207,11 @@ describe('artifact CSV export gate', () => {
 		const intent = mocks.postMessageToHost.mock.calls
 			.map(call => call[0])
 			.find(message => message.type === 'requestArtifactCsvSave');
-		cancelArtifactCsvSave(intent.requestId);
+		cancelArtifactCsvSave({ type: 'cancelArtifactCsvSave', exportId: intent.requestId });
 		mocks.postMessageToHost.mockClear();
 
 		provideArtifactCsvSaveData({
+			type: 'requestArtifactCsvSaveData',
 			requestId: 'host-nonce', exportId: intent.requestId, boxId, artifactId: artifact.artifactId,
 		});
 		expect(mocks.postMessageToHost).not.toHaveBeenCalled();

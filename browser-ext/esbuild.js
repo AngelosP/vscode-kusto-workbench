@@ -100,6 +100,19 @@ esbuild.buildSync({
 	logLevel: 'info',
 });
 
+console.log('Bundling vscode-shim.js...');
+esbuild.buildSync({
+	entryPoints: [path.resolve(__dirname, 'vscode-shim.js')],
+	bundle: true,
+	outfile: path.join(DIST, 'vscode-shim.js'),
+	platform: 'browser',
+	target: 'es2022',
+	format: 'iife',
+	minify: isProduction,
+	sourcemap: !isProduction,
+	logLevel: 'info',
+});
+
 // ---- 2. Copy static files ----
 
 console.log('Copying static files...');
@@ -117,12 +130,6 @@ for (const file of staticFiles) {
 		path.join(DIST, file)
 	);
 }
-
-// Copy vscode-shim.js (local copy)
-copyFileSync(
-	path.join(__dirname, 'vscode-shim.js'),
-	path.join(DIST, 'vscode-shim.js')
-);
 
 // Copy read-only-overrides.css (local copy)
 copyFileSync(
@@ -177,7 +184,7 @@ copyDirSync(
 // We need to replace it with our shim so the webview code gets the stub.
 console.log('Replacing dist/webview/vscodeApi.js with vscode-shim.js...');
 copyIfExists(
-	path.join(__dirname, 'vscode-shim.js'),
+	path.join(DIST, 'vscode-shim.js'),
 	path.join(DIST, 'dist', 'webview', 'vscodeApi.js')
 );
 

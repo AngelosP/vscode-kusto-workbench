@@ -12,6 +12,7 @@ import type { ControlCommandSyntaxWebviewMessage } from '../shared/controlComman
 import type { ResourceUriWebviewMessage } from '../shared/resourceUriProtocol';
 import type { UrlContentWebviewMessage } from '../shared/urlContentProtocol';
 import type { PythonExecutionWebviewMessage } from '../shared/pythonExecutionProtocol';
+import type { ArtifactCsvSaveWebviewMessage } from '../shared/artifactCsvSaveProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -162,13 +163,6 @@ export type ImportConnectionsFromXmlMessage = {
 export type PowerBiDataMode = 'import' | 'directQuery';
 
 export type SaveImportedCsvMessage = { type: 'saveImportedCsv'; csv: string; suggestedFileName?: string };
-export type RequestArtifactCsvSaveMessage = {
-	type: 'requestArtifactCsvSave'; requestId: string; boxId: string; artifactId: string; suggestedFileName?: string;
-};
-export type ArtifactCsvSaveDataMessage = {
-	type: 'artifactCsvSaveData'; requestId: string; boxId: string; artifactId: string; accepted: boolean; csv?: string;
-};
-export type CancelArtifactCsvSaveIntentMessage = { type: 'cancelArtifactCsvSaveIntent'; requestId: string };
 export type CancelDashboardWorkflowMessage = { type: 'cancelDashboardWorkflow'; requestId: string };
 export type PublishToPowerBIAckMessage = {
 	type: 'publishToPowerBIAck';
@@ -268,9 +262,7 @@ export type IncomingWebviewMessage =
 	| ShowPowerBiPublishHelpMessage
 	| ShowPowerBiPartialPublishWarningMessage
 	| SaveImportedCsvMessage
-	| RequestArtifactCsvSaveMessage
-	| ArtifactCsvSaveDataMessage
-	| CancelArtifactCsvSaveIntentMessage
+	| ArtifactCsvSaveWebviewMessage
 	| CancelDashboardWorkflowMessage
 	| PublishToPowerBIAckMessage
 	| ExportDashboardMessage

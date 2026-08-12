@@ -453,6 +453,48 @@ describe('postMessageToHost', () => {
 		}
 	});
 
+	it('snapshots artifact CSV messages and rejects malformed ones before E2E capture', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const messages = [
+				{
+					type: 'requestArtifactCsvSave' as const, requestId: 'export-1',
+					boxId: 'query-1', artifactId: 'artifact-1', suggestedFileName: 'Results.csv',
+				},
+				{
+					type: 'artifactCsvSaveData' as const, requestId: 'nonce-1',
+					boxId: 'query-1', artifactId: 'artifact-1', accepted: true as const, csv: '',
+				},
+				{ type: 'cancelArtifactCsvSaveIntent' as const, requestId: 'export-1' },
+			];
+			for (const message of messages) {
+				postMessageToHost(message);
+				expect(capture.mock.calls.at(-1)?.[0]).toEqual(message);
+				expect(capture.mock.calls.at(-1)?.[0]).not.toBe(message);
+				expect(postMessage.mock.calls.at(-1)?.[0]).toEqual(message);
+				expect(postMessage.mock.calls.at(-1)?.[0]).not.toBe(message);
+			}
+			capture.mockClear();
+			postMessage.mockClear();
+
+			for (const malformed of [
+				{ ...messages[0], boxId: ['query-1'] },
+				{ ...messages[1], accepted: false, csv: '' },
+				{ ...messages[2], requestId: [] },
+			]) {
+				postMessageToHost(malformed as unknown as Parameters<typeof postMessageToHost>[0]);
+			}
+
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
+
 	it('snapshots valid Python requests and rejects malformed ones before E2E capture', () => {
 		const postMessage = vi.fn();
 		const capture = vi.fn();

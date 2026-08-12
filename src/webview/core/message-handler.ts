@@ -54,6 +54,9 @@ import {
 import {
 	admitPythonExecutionHostMessage,
 } from '../../shared/pythonExecutionProtocol.js';
+import {
+	admitArtifactCsvSaveHostMessage,
+} from '../../shared/artifactCsvSaveProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -1485,7 +1488,14 @@ window.addEventListener(DOCUMENT_RUNTIME_INVALIDATED_EVENT, () => {
 });
 
 const __kustoDispatchHostMessage = async (message: any) => {
-	const pythonExecutionAdmission = admitPythonExecutionHostMessage(message);
+	const artifactCsvSaveAdmission = admitArtifactCsvSaveHostMessage(message);
+	if (artifactCsvSaveAdmission.recognized) {
+		if (!artifactCsvSaveAdmission.parsed.ok) return;
+		message = artifactCsvSaveAdmission.parsed.value;
+	}
+	const pythonExecutionAdmission = artifactCsvSaveAdmission.recognized
+		? { recognized: false as const }
+		: admitPythonExecutionHostMessage(message);
 	if (pythonExecutionAdmission.recognized) {
 		if (!pythonExecutionAdmission.parsed.ok) return;
 		message = pythonExecutionAdmission.parsed.value;
@@ -1756,7 +1766,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			provideArtifactCsvSaveData(message);
 			break;
 		case 'cancelArtifactCsvSave':
-			cancelArtifactCsvSave(message.exportId);
+			cancelArtifactCsvSave(message);
 			break;
 		case 'settingsUpdate':
 			try {

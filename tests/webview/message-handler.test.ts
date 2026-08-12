@@ -104,6 +104,8 @@ const mocks = {
 	parseKustoExplorerConnectionsXml: vi.fn(),
 	onPythonResult: vi.fn(),
 	onPythonError: vi.fn(),
+	provideArtifactCsvSaveData: vi.fn(),
+	cancelArtifactCsvSave: vi.fn(),
 	handleStsResponse: vi.fn(),
 	handleStsDiagnostics: vi.fn(),
 	displayCancelled: vi.fn(),
@@ -165,6 +167,11 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 
 vi.mock('../../src/webview/shared/webview-messages.js', () => ({
 	postMessageToHost: mocks.postMessageToHost,
+}));
+
+vi.mock('../../src/webview/shared/artifact-csv-export.js', () => ({
+	provideArtifactCsvSaveData: mocks.provideArtifactCsvSaveData,
+	cancelArtifactCsvSave: mocks.cancelArtifactCsvSave,
 }));
 
 vi.mock('../../src/webview/shared/schema-utils.js', () => ({
@@ -819,6 +826,28 @@ describe('message-handler dispatch', () => {
 			window.dispatchEvent(new MessageEvent('message', { data: proxy }));
 			expect(propertyReads).toBe(0);
 		}
+	});
+
+	it('admits artifact CSV host messages before the dispatcher reaches pending-export effects', () => {
+		dispatchHostMessage({
+			type: 'requestArtifactCsvSaveData', requestId: 'nonce-1', exportId: 'export-1',
+			boxId: ['query-1'], artifactId: 'artifact-1',
+		});
+		expect(mocks.provideArtifactCsvSaveData).not.toHaveBeenCalled();
+
+		const challenge = {
+			type: 'requestArtifactCsvSaveData', requestId: 'nonce-1', exportId: 'export-1',
+			boxId: 'query-1', artifactId: 'artifact-1',
+		};
+		dispatchHostMessage(challenge);
+		expect(mocks.provideArtifactCsvSaveData).toHaveBeenCalledOnce();
+		expect(mocks.provideArtifactCsvSaveData.mock.calls[0]?.[0]).toEqual(challenge);
+		expect(mocks.provideArtifactCsvSaveData.mock.calls[0]?.[0]).not.toBe(challenge);
+
+		dispatchHostMessage({ type: 'cancelArtifactCsvSave', exportId: ['export-1'] });
+		expect(mocks.cancelArtifactCsvSave).not.toHaveBeenCalled();
+		dispatchHostMessage({ type: 'cancelArtifactCsvSave', exportId: 'export-1' });
+		expect(mocks.cancelArtifactCsvSave).toHaveBeenCalledOnce();
 	});
 
 	it('settles control-command syntax only for a valid result with the current request identity', async () => {

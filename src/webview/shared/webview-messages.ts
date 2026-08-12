@@ -63,6 +63,10 @@ import {
 	admitPythonExecutionWebviewMessage,
 	type PythonExecutionWebviewMessage,
 } from '../../shared/pythonExecutionProtocol.js';
+import {
+	admitArtifactCsvSaveWebviewMessage,
+	type ArtifactCsvSaveWebviewMessage,
+} from '../../shared/artifactCsvSaveProtocol.js';
 import { pState } from './persistence-state.js';
 
 let compatibilityDocumentRequestSequence = 0;
@@ -232,9 +236,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'seeCachedValues' }
 	| ResourceUriWebviewMessage
 	| { type: 'saveImportedCsv'; csv: string; suggestedFileName?: string }
-	| { type: 'requestArtifactCsvSave'; requestId: string; boxId: string; artifactId: string; suggestedFileName?: string }
-	| { type: 'artifactCsvSaveData'; requestId: string; boxId: string; artifactId: string; accepted: boolean; csv?: string }
-	| { type: 'cancelArtifactCsvSaveIntent'; requestId: string }
+	| ArtifactCsvSaveWebviewMessage
 	| { type: 'cancelDashboardWorkflow'; requestId: string }
 	| { type: 'publishToPowerBIAck'; requestId: string; accepted: boolean }
 	| { type: 'exportDashboard'; requestId: string; boxId: string; html: string; suggestedFileName?: string; previewHeight?: number; dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> }
@@ -345,11 +347,20 @@ export type OutgoingWebviewMessage =
  */
 export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage | CompatibilityPersistenceWebviewMessage = msg;
-	const pythonExecutionAdmission = admitPythonExecutionWebviewMessage(msg);
-	const urlContentAdmission = pythonExecutionAdmission.recognized
+	const artifactCsvSaveAdmission = admitArtifactCsvSaveWebviewMessage(msg);
+	const pythonExecutionAdmission = artifactCsvSaveAdmission.recognized
+		? { recognized: false as const }
+		: admitPythonExecutionWebviewMessage(msg);
+	const urlContentAdmission = artifactCsvSaveAdmission.recognized || pythonExecutionAdmission.recognized
 		? { recognized: false as const }
 		: admitUrlContentWebviewMessage(msg);
-	if (pythonExecutionAdmission.recognized) {
+	if (artifactCsvSaveAdmission.recognized) {
+		if (!artifactCsvSaveAdmission.parsed.ok) {
+			console.error('[kusto] Rejected invalid artifact CSV save webview message:', artifactCsvSaveAdmission.parsed.error);
+			return;
+		}
+		outbound = artifactCsvSaveAdmission.parsed.value;
+	} else if (pythonExecutionAdmission.recognized) {
 		if (!pythonExecutionAdmission.parsed.ok) {
 			console.error('[kusto] Rejected invalid Python execution webview message:', pythonExecutionAdmission.parsed.error);
 			return;

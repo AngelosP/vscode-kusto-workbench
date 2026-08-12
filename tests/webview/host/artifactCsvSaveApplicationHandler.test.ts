@@ -51,6 +51,22 @@ describe('HostArtifactCsvSaveApplicationHandler', () => {
 		expect(postMessage).not.toHaveBeenCalled();
 	});
 
+	it('claims malformed intents before picker or intent effects', async () => {
+		const { handler, postMessage } = createHandlerHarness();
+		const pickerSpy = vi.spyOn(vscode.window, 'showSaveDialog');
+
+		await handler.handleMessage({
+			type: 'requestArtifactCsvSave', requestId: 'export-malformed',
+			boxId: ['query-1'], artifactId: 'artifact-1',
+		} as any);
+
+		expect(pickerSpy).not.toHaveBeenCalled();
+		expect(handler.pendingArtifactCsvIntentIds.size).toBe(0);
+		expect(handler.pendingArtifactCsvSaves.size).toBe(0);
+		expect(handler.completedArtifactCsvIntentIds.size).toBe(0);
+		expect(postMessage).not.toHaveBeenCalled();
+	});
+
 	it('writes exact bytes only after the matching one-use nonce response', async () => {
 		const { handler, postMessage } = createHandlerHarness();
 		const savedUri = vscode.Uri.file('C:/Users/test/Downloads/results.csv');
@@ -154,6 +170,45 @@ describe('HostArtifactCsvSaveApplicationHandler', () => {
 		});
 		expect(writeSpy).toHaveBeenCalledOnce();
 		expect(writeSpy).toHaveBeenCalledWith(savedUri, Buffer.from('correct', 'utf8'));
+	});
+
+	it('leaves the exact nonce state untouched after a malformed matching transfer', async () => {
+		vi.useFakeTimers();
+		const { handler, postMessage } = createHandlerHarness();
+		const savedUri = vscode.Uri.file('C:/Users/test/Downloads/results.csv');
+		vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue(savedUri as any);
+		const informationSpy = vi.spyOn(vscode.window, 'showInformationMessage').mockResolvedValue(undefined as any);
+		const errorSpy = vi.spyOn(vscode.window, 'showErrorMessage').mockResolvedValue(undefined as any);
+		const writeSpy = vi.spyOn(vscode.workspace.fs, 'writeFile');
+
+		await handler.handleMessage({
+			type: 'requestArtifactCsvSave', requestId: 'export-malformed',
+			boxId: 'query-1', artifactId: 'artifact-1',
+		});
+		const challenge = findChallenge(postMessage, 'export-malformed');
+		const pending = handler.pendingArtifactCsvSaves.get(challenge.requestId);
+		const timer = pending.timer;
+
+		await handler.handleMessage({
+			type: 'artifactCsvSaveData', requestId: challenge.requestId,
+			boxId: ['query-1'], artifactId: 'artifact-1', accepted: true, csv: 'forged',
+		} as any);
+
+		expect(handler.pendingArtifactCsvSaves.get(challenge.requestId)).toBe(pending);
+		expect(handler.pendingArtifactCsvSaves.get(challenge.requestId).timer).toBe(timer);
+		expect(handler.pendingArtifactCsvIntentIds.has('export-malformed')).toBe(true);
+		expect(handler.completedArtifactCsvIntentIds.size).toBe(0);
+		expect(writeSpy).not.toHaveBeenCalled();
+		expect(informationSpy).not.toHaveBeenCalled();
+		expect(errorSpy).not.toHaveBeenCalled();
+
+		await handler.handleMessage({
+			type: 'artifactCsvSaveData', requestId: challenge.requestId,
+			boxId: 'query-1', artifactId: 'artifact-1', accepted: true, csv: 'canonical',
+		});
+
+		expect(writeSpy).toHaveBeenCalledOnce();
+		expect(writeSpy).toHaveBeenCalledWith(savedUri, Buffer.from('canonical', 'utf8'));
 	});
 
 	it('keeps concurrent exports correlated when responses complete in reverse order', async () => {

@@ -55,7 +55,10 @@ function admitTestMessage(input: unknown): TestMessage | undefined {
 describe('MainWebviewStartupGateway', () => {
 	it('recognizes every identity-shaped waiter reply and all SQL comparison phases', () => {
 		const replies: TestMessage[] = [
-			{ type: 'artifactCsvSaveData', requestId: 'csv-1' },
+			{
+				type: 'artifactCsvSaveData', requestId: 'csv-1', boxId: 'query-1',
+				artifactId: 'artifact-1', accepted: false,
+			},
 			{ type: 'comparisonBoxEnsured', requestId: 'comparison-1' },
 			{ type: 'documentReloadResult', requestId: 'reload-1' },
 			{ type: 'markdownDocumentCommandBarrierResult', requestId: 'barrier-1' },
@@ -77,12 +80,41 @@ describe('MainWebviewStartupGateway', () => {
 
 		for (const reply of replies) expect(isMainWebviewCorrelatedReply(reply)).toBe(true);
 		expect(isMainWebviewCorrelatedReply({ type: 'persistDocument' })).toBe(false);
+		expect(isMainWebviewCorrelatedReply({
+			type: 'artifactCsvSaveData', requestId: 'csv-1', boxId: ['query-1'],
+			artifactId: 'artifact-1', accepted: true, csv: 'forged',
+		})).toBe(false);
 		expect(isMainWebviewCorrelatedReply({ type: 'persistDocument', flushRequestId: 'flush-1' })).toBe(false);
 		expect(isMainWebviewCorrelatedReply({ type: 'toolResponse', requestId: '' })).toBe(false);
 		expect(isMainWebviewCorrelatedReply({
 			type: 'sqlComparisonAdmissionAck', requestId: 'sql-invalid', sourceBoxId: 'source',
 			comparisonBoxId: 'comparison', phase: 'invalid',
 		})).toBe(false);
+	});
+
+	it('snapshots artifact CSV replies before startup queueing and reentrancy checks', async () => {
+		const harness = createPanelHarness();
+		const received: TestMessage[] = [];
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel,
+			admitInbound: admitTestMessage,
+			allowReentrantInbound: isMainWebviewCorrelatedReply,
+		});
+		const reply: TestMessage = {
+			type: 'artifactCsvSaveData', requestId: 'csv-1', boxId: 'query-1',
+			artifactId: 'artifact-1', accepted: true, csv: 'canonical',
+		};
+
+		void harness.receive(reply);
+		reply.boxId = ['query-1'];
+		reply.csv = 'forged';
+		await gateway.setInboundHandler(message => { received.push(message); });
+
+		expect(received).toEqual([{
+			type: 'artifactCsvSaveData', requestId: 'csv-1', boxId: 'query-1',
+			artifactId: 'artifact-1', accepted: true, csv: 'canonical',
+		}]);
+		expect(received[0]).not.toBe(reply);
 	});
 
 	it('installs listener first and drains both directions exactly once in order', async () => {

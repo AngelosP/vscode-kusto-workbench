@@ -1,8 +1,16 @@
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { buildSync } from 'esbuild';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const shimSource = readFileSync(resolve('browser-ext/vscode-shim.js'), 'utf8');
+const shimPath = resolve('browser-ext/vscode-shim.js');
+const shimSource = buildSync({
+	entryPoints: [shimPath],
+	bundle: true,
+	platform: 'browser',
+	target: 'es2022',
+	format: 'iife',
+	write: false,
+}).outputFiles[0].text;
 
 describe('browser CSV host shim', () => {
 	let postedHostMessages: unknown[];
@@ -50,6 +58,11 @@ describe('browser CSV host shim', () => {
 			boxId: 'query-1', artifactId: 'wrong-artifact', accepted: true, csv: 'wrong',
 		});
 		expect(clickSpy).not.toHaveBeenCalled();
+		window.vscode.postMessage({
+			type: 'artifactCsvSaveData', requestId: challenge.requestId,
+			boxId: ['query-1'], artifactId: 'artifact-1', accepted: true, csv: 'forged',
+		});
+		expect(clickSpy).not.toHaveBeenCalled();
 
 		const response = {
 			type: 'artifactCsvSaveData', requestId: challenge.requestId,
@@ -60,6 +73,27 @@ describe('browser CSV host shim', () => {
 		expect(clickSpy).toHaveBeenCalledOnce();
 		const anchor = appendedElements.find(element => element instanceof HTMLAnchorElement) as HTMLAnchorElement;
 		expect(anchor.download).toBe('Filtered Results.csv');
+	});
+
+	it('rejects malformed governed intents without invoking accessors or creating challenges', () => {
+		let getterCalls = 0;
+		const malformed = {
+			type: 'requestArtifactCsvSave', requestId: 'export-malformed',
+			artifactId: 'artifact-1',
+		};
+		Object.defineProperty(malformed, 'boxId', {
+			enumerable: true,
+			get() {
+				getterCalls++;
+				throw new Error('must not run');
+			},
+		});
+
+		window.vscode.postMessage(malformed);
+
+		expect(getterCalls).toBe(0);
+		expect(postedHostMessages).toEqual([]);
+		expect(clickSpy).not.toHaveBeenCalled();
 	});
 
 	it('downloads imported CSV without artifact governance', () => {

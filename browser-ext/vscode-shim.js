@@ -4,6 +4,11 @@
 // downloads. The typed browser projection root supplies document presentation directly;
 // unavailable host capabilities never receive synthetic responses.
 
+import {
+	admitArtifactCsvSaveWebviewMessage,
+	parseArtifactCsvSaveHostMessage,
+} from '../src/shared/artifactCsvSaveProtocol.js';
+
 window.__kustoReadOnlyMode = true;
 
 const pendingArtifactCsvSaves = new Map();
@@ -56,41 +61,50 @@ function downloadCsv(csv, suggestedFileName) {
 	}, 100);
 }
 
+function postArtifactCsvHostMessage(message) {
+	const parsed = parseArtifactCsvSaveHostMessage(message);
+	if (!parsed.ok) return false;
+	window.postMessage(parsed.value, '*');
+	return true;
+}
+
 function requestArtifactCsvData(message) {
-	const exportId = String(message.requestId || '').trim();
-	const boxId = String(message.boxId || '').trim();
-	const artifactId = String(message.artifactId || '').trim();
-	if (!exportId || !boxId || !artifactId || activeArtifactCsvExportIds.has(exportId)
+	const exportId = message.requestId;
+	const boxId = message.boxId;
+	const artifactId = message.artifactId;
+	if (activeArtifactCsvExportIds.has(exportId)
 		|| completedArtifactCsvExportIds.has(exportId)) return;
 	if (activeArtifactCsvExportIds.size >= artifactCsvMaxActiveIntents) {
 		completeArtifactCsvIntent(exportId);
-		window.postMessage({ type: 'cancelArtifactCsvSave', exportId: exportId }, '*');
+		postArtifactCsvHostMessage({ type: 'cancelArtifactCsvSave', exportId: exportId });
 		return;
 	}
-	activeArtifactCsvExportIds.add(exportId);
 	const requestId = 'browser-artifact-csv-' + (globalThis.crypto?.randomUUID?.()
 		|| Date.now() + '-' + Math.random().toString(16).slice(2));
+	const challenge = parseArtifactCsvSaveHostMessage({
+		type: 'requestArtifactCsvSaveData', requestId: requestId, exportId: exportId,
+		boxId: boxId, artifactId: artifactId,
+	});
+	if (!challenge.ok) return;
+	activeArtifactCsvExportIds.add(exportId);
 	const timer = setTimeout(function() {
 		pendingArtifactCsvSaves.delete(requestId);
 		completeArtifactCsvIntent(exportId);
-		window.postMessage({ type: 'cancelArtifactCsvSave', exportId: exportId }, '*');
+		postArtifactCsvHostMessage({ type: 'cancelArtifactCsvSave', exportId: exportId });
 	}, 60_000);
 	pendingArtifactCsvSaves.set(requestId, {
 		exportId: exportId, boxId: boxId, artifactId: artifactId,
 		suggestedFileName: message.suggestedFileName, timer: timer,
 	});
-	window.postMessage({
-		type: 'requestArtifactCsvSaveData', requestId: requestId, exportId: exportId,
-		boxId: boxId, artifactId: artifactId,
-	}, '*');
+	window.postMessage(challenge.value, '*');
 }
 
 function acceptArtifactCsvData(message) {
-	const requestId = String(message.requestId || '').trim();
+	const requestId = message.requestId;
 	const pending = pendingArtifactCsvSaves.get(requestId);
 	if (!pending
-		|| pending.boxId !== String(message.boxId || '').trim()
-		|| pending.artifactId !== String(message.artifactId || '').trim()) return;
+		|| pending.boxId !== message.boxId
+		|| pending.artifactId !== message.artifactId) return;
 	pendingArtifactCsvSaves.delete(requestId);
 	clearTimeout(pending.timer);
 	completeArtifactCsvIntent(pending.exportId);
@@ -100,7 +114,7 @@ function acceptArtifactCsvData(message) {
 }
 
 function cancelArtifactCsvIntent(message) {
-	const exportId = String(message.requestId || '').trim();
+	const exportId = message.requestId;
 	let knownIntent = activeArtifactCsvExportIds.has(exportId);
 	for (const [requestId, pending] of pendingArtifactCsvSaves) {
 		if (pending.exportId !== exportId) continue;
@@ -114,20 +128,22 @@ function cancelArtifactCsvIntent(message) {
 const vscode = {
 	postMessage: function(message) {
 		// In read-only mode, intercept specific messages that we can handle in-browser.
-		if (!message || typeof message !== 'object') return;
-
-		if (message.type === 'requestArtifactCsvSave') {
-			requestArtifactCsvData(message);
+		const inputType = typeof message;
+		if (!message || (inputType !== 'object' && inputType !== 'function')) return;
+		const admission = admitArtifactCsvSaveWebviewMessage(message);
+		if (admission.recognized) {
+			if (!admission.parsed.ok) return;
+			const governedMessage = admission.parsed.value;
+			if (governedMessage.type === 'requestArtifactCsvSave') {
+				requestArtifactCsvData(governedMessage);
+			} else if (governedMessage.type === 'artifactCsvSaveData') {
+				acceptArtifactCsvData(governedMessage);
+			} else {
+				cancelArtifactCsvIntent(governedMessage);
+			}
 			return;
 		}
-		if (message.type === 'artifactCsvSaveData') {
-			acceptArtifactCsvData(message);
-			return;
-		}
-		if (message.type === 'cancelArtifactCsvSaveIntent') {
-			cancelArtifactCsvIntent(message);
-			return;
-		}
+		if (inputType !== 'object') return;
 
 		// Imported CSV and legacy bundles do not require artifact governance.
 		if ((message.type === 'saveImportedCsv' || message.type === 'saveResultsCsv')

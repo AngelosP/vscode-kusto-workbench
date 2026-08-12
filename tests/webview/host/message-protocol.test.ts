@@ -332,7 +332,7 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 }
 
 const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
-	'src/host/artifactCsvSaveApplicationHandler.ts::postMessage::postMessage::49:10',
+	'src/host/artifactCsvSaveApplicationHandler.ts::postMessage::postMessage::51:22',
 	'src/host/comparisonPreparationApplicationHandler.ts::waitForSqlComparisonAdmission::postMessage::628:25',
 	'src/host/controlCommandSyntaxApplicationHandler.ts::postMessage::postMessage::56:3',
 	'src/host/dashboardApplicationHandler.ts::postMessage::postMessage::98:10',
@@ -342,7 +342,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kqlLanguageRequestApplicationHandler.ts::postMessage::postMessage::48:3',
 	'src/host/kustoConnectionOnboardingApplicationHandler.ts::testConnectionFromWebview::postMessage::189:4',
 	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::453:33',
-	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::274:33',
+	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::286:33',
 	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::93:10',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::380:27',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::512:28',
@@ -1486,6 +1486,63 @@ describe('Message Protocol Contract', () => {
 		expect(pythonSection).not.toContain("vscode.postMessage({ type: 'executePython'");
 	});
 
+	it('keeps artifact CSV intents and transfers on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/artifactCsvSaveProtocol.ts',
+			'ArtifactCsvSaveWebviewMessage',
+		)).toEqual(['artifactCsvSaveData', 'cancelArtifactCsvSaveIntent', 'requestArtifactCsvSave']);
+		expect(extractTypeDiscriminants(
+			'src/shared/artifactCsvSaveProtocol.ts',
+			'ArtifactCsvSaveHostMessage',
+		)).toEqual(['cancelArtifactCsvSave', 'requestArtifactCsvSaveData']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| ArtifactCsvSaveWebviewMessage');
+		expect(webviewMessages).toContain('| ArtifactCsvSaveWebviewMessage');
+		for (const type of ['requestArtifactCsvSave', 'artifactCsvSaveData', 'cancelArtifactCsvSaveIntent']) {
+			expect(hostTypes).not.toContain(`type: '${type}'`);
+			expect(webviewMessages).not.toContain(`type: '${type}'`);
+		}
+		const wrapperAdmissionIndex = webviewMessages.indexOf('admitArtifactCsvSaveWebviewMessage(msg)');
+		const captureIndex = webviewMessages.indexOf('const e2eCaptureHostMessage');
+		expect(wrapperAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(wrapperAdmissionIndex).toBeLessThan(captureIndex);
+
+		const handler = readWorkspaceFile('src/host/artifactCsvSaveApplicationHandler.ts');
+		const handlerAdmissionIndex = handler.indexOf('admitArtifactCsvSaveWebviewMessage(message)');
+		expect(handlerAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(handlerAdmissionIndex).toBeLessThan(handler.indexOf('vscode.window.showSaveDialog'));
+		expect(handlerAdmissionIndex).toBeLessThan(handler.indexOf('this.pendingArtifactCsvSaves.get(requestId)'));
+		expect(handler).toContain('postMessage: (message: ArtifactCsvSaveHostMessage)');
+		expect(handler.indexOf('parseArtifactCsvSaveHostMessage(message)'))
+			.toBeLessThan(handler.indexOf('this.options.postMessage(parsed.value)'));
+
+		const gateway = readWorkspaceFile('src/host/mainWebviewStartupGateway.ts');
+		expect(gateway.indexOf('admitArtifactCsvSaveWebviewMessage(input)'))
+			.toBeLessThan(gateway.indexOf('this.options.admitInbound(input)'));
+
+		const dispatcher = readWorkspaceFile('src/webview/core/message-handler.ts')
+			.slice(readWorkspaceFile('src/webview/core/message-handler.ts').indexOf('const __kustoDispatchHostMessage'));
+		expect(dispatcher.indexOf('admitArtifactCsvSaveHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf("case 'requestArtifactCsvSaveData':"));
+
+		const exportGate = readWorkspaceFile('src/webview/shared/artifact-csv-export.ts');
+		const transfer = exportGate.slice(exportGate.indexOf('export function provideArtifactCsvSaveData'));
+		expect(transfer.indexOf('admitArtifactCsvSaveHostMessage(message)'))
+			.toBeLessThan(transfer.indexOf('takePending(challenge.exportId)'));
+		expect(transfer.indexOf('admitArtifactCsvSaveHostMessage(message)'))
+			.toBeLessThan(transfer.indexOf('bindResultArtifactConsumer('));
+
+		const browserShim = readWorkspaceFile('browser-ext/vscode-shim.js');
+		expect(browserShim).toContain("from '../src/shared/artifactCsvSaveProtocol.js'");
+		const browserDispatch = browserShim.slice(browserShim.indexOf('postMessage: function(message)'));
+		expect(browserDispatch.indexOf('admitArtifactCsvSaveWebviewMessage(message)'))
+			.toBeLessThan(browserDispatch.indexOf('acceptArtifactCsvData(governedMessage)'));
+		expect(browserDispatch.indexOf('admitArtifactCsvSaveWebviewMessage(message)'))
+			.toBeLessThan(browserDispatch.indexOf('downloadCsv(message.csv'));
+	});
+
 	// ─── Compile-time guards ───────────────────────────────────────────────
 	// These calls exist solely for the TypeScript compiler to verify that
 	// every string literal in our arrays is a valid union discriminant.
@@ -1516,6 +1573,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/resourceUriProtocol.ts', 'ResourceUriWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/pythonExecutionProtocol.ts', 'PythonExecutionWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/urlContentProtocol.ts', 'UrlContentWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/artifactCsvSaveProtocol.ts', 'ArtifactCsvSaveWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1535,6 +1593,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/resourceUriProtocol.ts', 'ResourceUriWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/pythonExecutionProtocol.ts', 'PythonExecutionWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/urlContentProtocol.ts', 'UrlContentWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/artifactCsvSaveProtocol.ts', 'ArtifactCsvSaveWebviewMessage'),
 			])].sort()
 		);
 	});

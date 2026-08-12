@@ -1,4 +1,7 @@
 import type * as vscode from 'vscode';
+import {
+	admitArtifactCsvSaveWebviewMessage,
+} from '../shared/artifactCsvSaveProtocol';
 
 export const MAIN_WEBVIEW_DISPATCHER_READY_TYPE = 'mainWebviewDispatcherReady' as const;
 
@@ -31,11 +34,15 @@ function hasCorrelationId(value: unknown): boolean {
 
 
 export function isMainWebviewCorrelatedReply(input: unknown): boolean {
+	const artifactCsvSaveAdmission = admitArtifactCsvSaveWebviewMessage(input);
+	if (artifactCsvSaveAdmission.recognized) {
+		return artifactCsvSaveAdmission.parsed.ok
+			&& artifactCsvSaveAdmission.parsed.value.type === 'artifactCsvSaveData';
+	}
 	if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
 	const message = input as CorrelatedMessage;
 	const type = typeof message.type === 'string' ? message.type : '';
 	switch (type) {
-		case 'artifactCsvSaveData':
 		case 'comparisonBoxEnsured':
 		case 'documentReloadResult':
 		case 'markdownDocumentCommandBarrierResult':
@@ -173,6 +180,11 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 	}
 
 	private receive(input: unknown): void | Promise<void> {
+		const artifactCsvSaveAdmission = admitArtifactCsvSaveWebviewMessage(input);
+		if (artifactCsvSaveAdmission.recognized) {
+			if (!artifactCsvSaveAdmission.parsed.ok) return;
+			input = artifactCsvSaveAdmission.parsed.value;
+		}
 		if (isDispatcherReadyMessage(input)) return this.markDispatcherReady();
 
 		const message = this.options.admitInbound(input);

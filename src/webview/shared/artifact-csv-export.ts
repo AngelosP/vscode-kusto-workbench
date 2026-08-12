@@ -9,6 +9,10 @@ import {
 	getBoundResultArtifact,
 	unbindResultArtifactConsumer,
 } from '../core/results-state.js';
+import {
+	admitArtifactCsvSaveHostMessage,
+	type ArtifactCsvSaveDataMessage,
+} from '../../shared/artifactCsvSaveProtocol.js';
 import { postMessageToHost } from './webview-messages.js';
 
 export type ArtifactCsvExportRequest = Readonly<{
@@ -148,13 +152,15 @@ function takePending(requestId: unknown): PendingCsvExport | undefined {
 	return pending;
 }
 
-export function provideArtifactCsvSaveData(message: {
-	requestId?: unknown; exportId?: unknown; boxId?: unknown; artifactId?: unknown;
-}): void {
-	const pending = takePending(message.exportId);
+export function provideArtifactCsvSaveData(message: unknown): void {
+	const admission = admitArtifactCsvSaveHostMessage(message);
+	if (!admission.recognized || !admission.parsed.ok
+		|| admission.parsed.value.type !== 'requestArtifactCsvSaveData') return;
+	const challenge = admission.parsed.value;
+	const pending = takePending(challenge.exportId);
 	if (!pending) return;
-	const matches = pending.sourceBoxId === String(message.boxId || '').trim()
-		&& pending.artifactId === String(message.artifactId || '').trim()
+	const matches = pending.sourceBoxId === challenge.boxId
+		&& pending.artifactId === challenge.artifactId
 		&& activeTableMatches(pending);
 	const consumerId = csvSaveArtifactConsumerId(pending.sourceBoxId);
 	try {
@@ -163,18 +169,27 @@ export function provideArtifactCsvSaveData(message: {
 		) === pending.artifactId;
 		const artifact = bound ? getBoundResultArtifact(consumerId, pending.sourceBoxId) : null;
 		const accepted = !!artifact && artifact.policy?.exportToCsv === true;
-		postMessageToHost({
-			type: 'artifactCsvSaveData', requestId: String(message.requestId || '').trim(),
-			boxId: pending.sourceBoxId, artifactId: pending.artifactId, accepted,
-			...(accepted ? { csv: String(pending.csv || '') } : {}),
-		});
+		const response: ArtifactCsvSaveDataMessage = accepted
+			? {
+				type: 'artifactCsvSaveData', requestId: challenge.requestId,
+				boxId: pending.sourceBoxId, artifactId: pending.artifactId,
+				accepted: true, csv: String(pending.csv || ''),
+			}
+			: {
+				type: 'artifactCsvSaveData', requestId: challenge.requestId,
+				boxId: pending.sourceBoxId, artifactId: pending.artifactId, accepted: false,
+			};
+		postMessageToHost(response);
 	} finally {
 		unbindResultArtifactConsumer(consumerId);
 	}
 }
 
-export function cancelArtifactCsvSave(requestId: unknown): void {
-	takePending(requestId);
+export function cancelArtifactCsvSave(message: unknown): void {
+	const admission = admitArtifactCsvSaveHostMessage(message);
+	if (!admission.recognized || !admission.parsed.ok
+		|| admission.parsed.value.type !== 'cancelArtifactCsvSave') return;
+	takePending(admission.parsed.value.exportId);
 }
 
 if (typeof window !== 'undefined') {
