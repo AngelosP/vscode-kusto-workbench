@@ -1,11 +1,14 @@
 import type { IncomingWebviewMessage } from './queryEditorTypes';
+import {
+	admitUrlContentWebviewMessage,
+	type FetchUrlMessage,
+	type UrlContentHostMessage,
+} from '../shared/urlContentProtocol';
 
 const URL_FETCH_TIMEOUT_MS = 15_000;
 const URL_CONTENT_MAX_CHARS = 200_000;
 const URL_TEXT_MAX_BYTES = 100 * 1024 * 1024;
 const URL_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
-
-type FetchUrlMessage = Extract<IncomingWebviewMessage, { type: 'fetchUrl' }>;
 
 export interface UrlContentApplicationHandler {
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined;
@@ -13,7 +16,7 @@ export interface UrlContentApplicationHandler {
 }
 
 export type UrlContentApplicationHandlerOptions = {
-	postMessage: (message: unknown) => Thenable<boolean>;
+	postMessage: (message: UrlContentHostMessage) => Thenable<boolean>;
 	fetchUrl?: typeof fetch;
 	timeoutMs?: number;
 	maxChars?: number;
@@ -35,14 +38,41 @@ function formatBytes(byteLength: number): string {
 }
 
 function getErrorName(error: unknown): string {
-	if ((typeof error !== 'object' || error === null) && typeof error !== 'function') return '';
-	return String((error as { name?: unknown }).name || '');
+	return getErrorStringProperty(error, 'name') ?? '';
 }
 
 function getErrorMessage(error: unknown): string | undefined {
+	return getErrorStringProperty(error, 'message');
+}
+
+function getErrorStringProperty(error: unknown, key: 'name' | 'message'): string | undefined {
 	if ((typeof error !== 'object' || error === null) && typeof error !== 'function') return undefined;
-	const message = (error as { message?: unknown }).message;
-	return typeof message === 'string' ? message : undefined;
+	try {
+		let owner: object | null = error;
+		const seen = new Set<object>();
+		let depth = 0;
+		while (owner && depth++ < 16) {
+			if (seen.has(owner)) return undefined;
+			seen.add(owner);
+			const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+			if (descriptor) {
+				if (Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+					return typeof descriptor.value === 'string' ? descriptor.value : undefined;
+				}
+				if (typeof DOMException !== 'undefined'
+					&& owner === DOMException.prototype
+					&& typeof descriptor.get === 'function') {
+					const value = descriptor.get.call(error);
+					return typeof value === 'string' ? value : undefined;
+				}
+				return undefined;
+			}
+			owner = Object.getPrototypeOf(owner);
+		}
+	} catch {
+		return undefined;
+	}
+	return undefined;
 }
 
 export class HostUrlContentApplicationHandler implements UrlContentApplicationHandler {
@@ -63,8 +93,10 @@ export class HostUrlContentApplicationHandler implements UrlContentApplicationHa
 	}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
-		if (message.type !== 'fetchUrl') return undefined;
-		return this.fetchUrlContent(message);
+		const admission = admitUrlContentWebviewMessage(message);
+		if (!admission.recognized) return undefined;
+		if (!admission.parsed.ok) return Promise.resolve();
+		return this.fetchUrlContent(admission.parsed.value);
 	}
 
 	dispose(): void {
@@ -74,16 +106,16 @@ export class HostUrlContentApplicationHandler implements UrlContentApplicationHa
 		this.activeAbortControllers.clear();
 	}
 
-	private postMessage(message: unknown): void {
+	private postMessage(message: UrlContentHostMessage): void {
 		if (this.disposed) return;
 		this.options.postMessage(message);
 	}
 
 	private async fetchUrlContent(message: FetchUrlMessage): Promise<void> {
 		if (this.disposed) return;
-		const boxId = String(message.boxId || '').trim();
-		const rawUrl = String(message.url || '').trim();
-		const requestId = String(message.requestId || '').trim();
+		const boxId = message.boxId.trim();
+		const rawUrl = message.url.trim();
+		const requestId = message.requestId.trim();
 		if (!boxId) return;
 		const responseIdentity = { boxId, requestId, requestedUrl: rawUrl };
 
@@ -214,9 +246,10 @@ export class HostUrlContentApplicationHandler implements UrlContentApplicationHa
 			});
 		} catch (error) {
 			if (this.disposed) return;
+			const failureMessage = getErrorMessage(error);
 			const errorMessage = getErrorName(error) === 'AbortError'
 				? `Timed out after ${Math.round(this.timeoutMs / 1000)}s.`
-				: (getErrorMessage(error) ?? 'Failed to fetch URL.');
+				: (failureMessage?.trim() ? failureMessage : 'Failed to fetch URL.');
 			this.postMessage({ type: 'urlError', ...responseIdentity, error: errorMessage });
 		} finally {
 			clearTimeout(timer);

@@ -117,7 +117,8 @@ describe('QueryEditorProvider URL content application', () => {
 		);
 		const displacedProviderAuthorities = [
 			['fetchUrlFromWebview', 'private async fetchUrlContent('],
-			["case 'fetchUrl':", "message.type !== 'fetchUrl'"],
+			["case 'fetchUrl':", 'admitUrlContentWebviewMessage(message)'],
+			['admitUrlContentWebviewMessage', 'admitUrlContentWebviewMessage(message)'],
 			['new AbortController()', 'new AbortController()'],
 			['URL_FETCH_TIMEOUT_MS = 15_000', 'URL_FETCH_TIMEOUT_MS = 15_000'],
 			['URL_TEXT_MAX_BYTES = 100 * 1024 * 1024', 'URL_TEXT_MAX_BYTES = 100 * 1024 * 1024'],

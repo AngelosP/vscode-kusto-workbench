@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import * as crypto from 'crypto';
+import * as path from 'path';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient } from './kustoClient';
@@ -879,6 +880,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const html = await getQueryEditorHtml(webview, this.extensionUri, this.context, {
 			hideFooterControls: !!options?.hideFooterControls,
 			initialDocumentLoading: !!options?.initialDocumentLoading,
+			documentTitle: this.documentUri ? path.posix.basename(vscode.Uri.parse(this.documentUri).path) : undefined,
 			compatibilityPersistence: options?.compatibilityPersistence,
 		});
 		if (this._panelDisposed || this.panel !== panel) return;

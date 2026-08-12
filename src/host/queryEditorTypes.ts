@@ -10,6 +10,7 @@ import type { SqlSchemaWebviewMessage } from '../shared/sqlSchemaProtocol';
 import type { KqlLanguageWebviewMessage } from '../shared/kqlLanguageProtocol';
 import type { ControlCommandSyntaxWebviewMessage } from '../shared/controlCommandSyntaxProtocol';
 import type { ResourceUriWebviewMessage } from '../shared/resourceUriProtocol';
+import type { UrlContentWebviewMessage } from '../shared/urlContentProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -281,7 +282,7 @@ export type IncomingWebviewMessage =
 	| { type: 'setCopilotInlineCompletionsEnabled'; enabled: boolean }
 	| { type: 'requestCopilotInlineCompletion'; requestId: string; boxId: string; textBefore: string; textAfter: string; flavor?: 'kusto' | 'sql'; ownerToken?: string }
 	| { type: 'executePython'; boxId: string; code: string }
-	| { type: 'fetchUrl'; boxId: string; url: string; requestId: string }
+	| UrlContentWebviewMessage
 	| { type: 'kustoSectionOpen'; boxId: string; sectionInstanceId: string }
 	| { type: 'kustoSectionTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number; connectionId?: string; database?: string; connectionRevision?: number; connectionIdentityKey?: string }
 	| { type: 'kustoSectionClose'; boxId: string; sectionInstanceId: string }

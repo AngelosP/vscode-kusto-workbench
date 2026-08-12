@@ -153,6 +153,7 @@ type DeferredRestoredResultJob = {
 type DeferredRestoredResultState = 'ready' | 'pending' | 'invalid';
 
 let __kustoDeferredRestoredResultJobs: DeferredRestoredResultJob[] = [];
+let __kustoLastDeferredRestoredResultSettlementForTest: unknown;
 type PendingSqlOwnedRestore = {
 	generation: number;
 	documentUri: string;
@@ -758,6 +759,49 @@ export function getDeferredRestoredResultJobCountForTest(): number {
 	return __kustoDeferredRestoredResultJobs.length;
 }
 
+export function getLastDeferredRestoredResultSettlementForTest(): unknown {
+	return __kustoLastDeferredRestoredResultSettlementForTest;
+}
+
+function __kustoRecordDeferredRestoredResultSettlementForTest(
+	job: DeferredRestoredResultJob,
+	state: DeferredRestoredResultState,
+): void {
+	const section = document.getElementById(job.boxId) as any;
+	const resolution = job.kind === 'query' && !job.sqlOwnerConnectionId
+		? resolveKustoConnection(connections || [], {
+			clusterUrl: job.kustoClusterUrl,
+			authorityId: job.kustoAuthorityId,
+			connectionIdHint: job.kustoConnectionIdHint,
+		})
+		: undefined;
+	__kustoLastDeferredRestoredResultSettlementForTest = {
+		state,
+		boxId: job.boxId,
+		documentCurrent: __kustoIsDeferredResultJobDocumentCurrent(job),
+		persistenceEpoch: { expected: job.persistenceEpoch, current: __kustoPersistenceEpoch },
+		resultsRevision: { expected: job.initialResultsRevision, current: getResultsStateRevision(job.boxId) },
+		tagName: String(section?.tagName || '').toLowerCase(),
+		query: { expected: job.expectedQueryText, current: __kustoCurrentRestoredQueryText(job) },
+		connection: {
+			expected: job.kustoConnectionIdHint,
+			resolved: resolution?.kind === 'matched' ? resolution.connection.id : resolution?.kind,
+			current: String(section?.getConnectionId?.() || ''),
+		},
+		database: { expected: job.kustoDatabase, current: String(section?.getDatabase?.() || '') },
+		accountPartition: {
+			expected: job.kustoAccountPartition,
+			current: resolution?.kind === 'matched' ? String((resolution.connection as any).accountPartition || '') : '',
+		},
+		leaveNoTraceRevision: {
+			expected: job.kustoLeaveNoTraceRevision,
+			current: __kustoKustoPolicyRevocationGenerations[kustoClusterKey(job.kustoClusterUrl)] ?? 0,
+		},
+		policyReady: __kustoKustoPolicyReady,
+		protected: __kustoIsProtectedKustoResult(job.boxId, job.kustoClusterUrl, job.kustoConnectionIdHint),
+	};
+}
+
 function __kustoPersistedArtifactClaimsCapability(
 	value: unknown,
 	capability: 'sendToModel' | 'shareToClipboard' | 'exportToCsv',
@@ -937,7 +981,42 @@ function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): vo
 				__kustoSetQueryResultsOutputHeightPx(job.boxId, job.resultsHeightPx);
 			} catch (e) { console.error('[kusto]', e); }
 		}
+		if (__kustoIsDeferredResultJobDocumentCurrent(job)
+			&& job.persistenceEpoch === __kustoPersistenceEpoch
+			&& __kustoDeferredRestoredResultJobs.length === 0
+			&& __kustoPendingSqlOwnedRestores.length === 0
+			&& __kustoDeferredRestoreOnlyChangedOwnedOutput(job)) {
+			__kustoSeedPersistSignatureFromCurrentState();
+		}
 	} catch (e) { console.error('[kusto]', e); }
+}
+
+function __kustoDeferredRestoreComparableState(value: unknown, job: DeferredRestoredResultJob): unknown {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+	const copy = JSON.parse(JSON.stringify(value)) as { sections?: Array<Record<string, unknown>> };
+	for (const section of Array.isArray(copy.sections) ? copy.sections : []) {
+		if (String(section?.id || '').trim() !== job.boxId) continue;
+		for (const key of [
+			'resultJson', 'resultArtifact', 'kustoAccountPartition',
+			'kustoLeaveNoTraceRevision',
+		]) delete section[key];
+		if (__kustoIsKustoOwnedRestore(job) && !String(job.kustoConnectionIdHint || '').trim()) {
+			delete section.connectionIdHint;
+		}
+	}
+	return copy;
+}
+
+function __kustoDeferredRestoreOnlyChangedOwnedOutput(job: DeferredRestoredResultJob): boolean {
+	try {
+		if (!__kustoLastPersistSignature) return false;
+		const cleanState = JSON.parse(__kustoLastPersistSignature);
+		const currentState = __kustoBuildPersistSignatureState(getKqlxState());
+		return JSON.stringify(__kustoDeferredRestoreComparableState(cleanState, job))
+			=== JSON.stringify(__kustoDeferredRestoreComparableState(currentState, job));
+	} catch {
+		return false;
+	}
 }
 
 function __kustoScheduleDeferredRestoredResults(): void {
@@ -951,7 +1030,9 @@ function __kustoScheduleDeferredRestoredResults(): void {
 			const nextIndex = __kustoDeferredRestoredResultJobs.findIndex(job => __kustoGetDeferredResultJobState(job) !== 'pending');
 			const job = nextIndex >= 0 ? __kustoDeferredRestoredResultJobs.splice(nextIndex, 1)[0] : undefined;
 			if (job) {
-				if (__kustoGetDeferredResultJobState(job) === 'ready') {
+				const state = __kustoGetDeferredResultJobState(job);
+				__kustoRecordDeferredRestoredResultSettlementForTest(job, state);
+				if (state === 'ready') {
 					__kustoRenderDeferredRestoredResult(job);
 				} else {
 					__kustoDeleteStoredQueryResultJson(job.boxId);
@@ -972,7 +1053,9 @@ export function resolvePendingKustoResultRestores(): void {
 		const nextIndex = __kustoDeferredRestoredResultJobs.findIndex(job => __kustoGetDeferredResultJobState(job) !== 'pending');
 		if (nextIndex < 0) break;
 		const job = __kustoDeferredRestoredResultJobs.splice(nextIndex, 1)[0];
-		if (__kustoGetDeferredResultJobState(job) === 'ready') {
+		const state = __kustoGetDeferredResultJobState(job);
+		__kustoRecordDeferredRestoredResultSettlementForTest(job, state);
+		if (state === 'ready') {
 			__kustoRenderDeferredRestoredResult(job);
 		} else {
 			__kustoDeleteStoredQueryResultJson(job.boxId);
@@ -1420,6 +1503,27 @@ function __kustoGetPersistSignature(state: any) {
 		return JSON.stringify(__kustoBuildPersistSignatureState(state));
 	} catch {
 		return '';
+	}
+}
+
+function __kustoIsAutomaticOwnerEnrichmentOnly(cleanSignature: string, currentState: unknown): boolean {
+	try {
+		if (!cleanSignature) return false;
+		const clean = JSON.parse(cleanSignature) as { sections?: Array<Record<string, unknown>> };
+		const current = JSON.parse(JSON.stringify(currentState)) as { sections?: Array<Record<string, unknown>> };
+		const cleanById = new Map((Array.isArray(clean.sections) ? clean.sections : [])
+			.map(section => [String(section?.id || '').trim(), section] as const)
+			.filter(([id]) => !!id));
+		for (const section of Array.isArray(current.sections) ? current.sections : []) {
+			const baseline = cleanById.get(String(section?.id || '').trim());
+			if (!baseline) continue;
+			for (const key of ['connectionIdHint', 'targetSignature', 'principalFingerprint', 'revocationGeneration']) {
+				if (!Object.prototype.hasOwnProperty.call(baseline, key)) delete section[key];
+			}
+		}
+		return JSON.stringify(clean) === JSON.stringify(current);
+	} catch {
+		return false;
 	}
 }
 
@@ -1991,8 +2095,26 @@ export function schedulePersist(reason?: any, immediate?: any) {
 		}
 		const doPersist = () => {
 			try {
+				__kustoPersistTimer = null;
+				if (__kustoDeferredRestoredResultJobs.some(job => job.expectedQueryText !== undefined
+					&& __kustoCurrentRestoredQueryText(job) !== job.expectedQueryText)) {
+					resolvePendingKustoResultRestores();
+				}
+				if (__kustoDeferredRestoredResultJobs.length > 0 || __kustoPendingSqlOwnedRestores.length > 0) {
+					__kustoPersistTimer = setTimeout(doPersist, 100);
+					return;
+				}
 				const state = getKqlxState();
-				const sig = __kustoGetPersistSignature(state);
+				const signatureState = __kustoBuildPersistSignatureState(state);
+				const sig = JSON.stringify(signatureState);
+				if (!r && sig !== __kustoLastPersistSignature
+					&& __kustoIsAutomaticOwnerEnrichmentOnly(__kustoLastPersistSignature, signatureState)) {
+					__kustoLastPersistSignature = sig;
+					__kustoLastPersistRevision = pState.documentEditRevision;
+					__kustoLastSentPersistSignature = sig;
+					__kustoLastSentPersistRevision = pState.documentEditRevision;
+					return;
+				}
 				if (sig && sig === __kustoLastPersistSignature) {
 					return;
 				}
@@ -2689,7 +2811,7 @@ function applyKqlxState(
 							// Trigger database field load for this connection.
 							try {
 								kwEl.dispatchEvent(new CustomEvent('connection-changed', {
-									detail: { boxId: boxId, connectionId: resolvedConnectionId, clusterUrl: desiredClusterUrl },
+									detail: { boxId: boxId, connectionId: resolvedConnectionId, clusterUrl: desiredClusterUrl, database: db },
 									bubbles: true, composed: true,
 								}));
 							} catch (e) { console.error('[kusto]', e); }

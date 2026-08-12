@@ -46,7 +46,11 @@ Feature: Custom editor open performance
     Then I collect JSON artifact "webview-perf-second-kql" from webview expression "window.__e2e?.perf?.snapshot?.()"
 
   Scenario: Open a persisted-results KQLX file
-    When I open file "tests/vscode-extension-tester/e2e/default/persisted-results-restore/fixtures/persisted-results.kqlx" in the editor
+    When I delete file "tests/vscode-extension-tester/runs/default/open-performance/owned-results.kqlx"
+    And I wait 1 second
+    When I execute command "kustoWorkbench.test.preparePersistedResultFixture" with args '[{"engine":"kusto","templatePath":"tests/vscode-extension-tester/e2e/default/persisted-results-restore/fixtures/persisted-results.kqlx","outputPath":"tests/vscode-extension-tester/runs/default/open-performance/owned-results.kqlx"}]'
+    And I wait 1 second
+    When I open file "tests/vscode-extension-tester/runs/default/open-performance/owned-results.kqlx" in the editor
     When I wait for "kw-query-section" in the webview for 30 seconds
     When I wait for "kw-query-section .monaco-editor" in the webview for 30 seconds
     When I wait for "kw-query-section[data-test-has-results='true']" in the webview for 30 seconds
@@ -54,6 +58,7 @@ Feature: Custom editor open performance
     Then I wait for "[data-testid='e2e-proof-persisted-kqlx-webview-perf']" in the webview for 5 seconds
     Then I collect JSON artifact "host-perf" from extension host expression "(() => { const s = globalThis.__kustoPerf?.snapshot?.(); if (!s || s.enabled !== true) throw new Error('host perf disabled'); const c = s.current; if (!c || c.label !== 'host.kqlx.resolve') throw new Error('wrong host perf label: ' + JSON.stringify(c)); const names = (c.marks || []).map(m => m.name); const missing = ['host.kqlx.webviewInitialized','host.kqlx.postDocument.start','host.kqlx.documentText.read','host.kqlx.parse.done','host.kqlx.sanitize.done','host.kqlx.documentData.posted'].filter(n => !names.includes(n)); if (missing.length) throw new Error('missing host perf marks: ' + missing.join(',')); return s; })()"
     Then I collect JSON artifact "webview-perf" from webview expression "window.__e2e?.perf?.snapshot?.()"
+    When I delete file "tests/vscode-extension-tester/runs/default/open-performance/owned-results.kqlx"
 
   Scenario: Open a mixed KQLX file
     Given a file "tests/vscode-extension-tester/runs/default/open-performance/mixed-open.kqlx" exists with content:

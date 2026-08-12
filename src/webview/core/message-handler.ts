@@ -48,6 +48,9 @@ import {
 	parseResourceUriHostMessage,
 	type ResourceUriHostMessage,
 } from '../../shared/resourceUriProtocol.js';
+import {
+	admitUrlContentHostMessage,
+} from '../../shared/urlContentProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -1480,6 +1483,11 @@ window.addEventListener(DOCUMENT_RUNTIME_INVALIDATED_EVENT, () => {
 
 const __kustoDispatchHostMessage = async (message: any) => {
 	message = (message && typeof message === 'object') ? message : {};
+	const urlContentAdmission = admitUrlContentHostMessage(message);
+	if (urlContentAdmission.recognized) {
+		if (!urlContentAdmission.parsed.ok) return;
+		message = urlContentAdmission.parsed.value;
+	}
 	if (isKustoDatabaseDiscoveryHostMessageType(message)) {
 		const parsed = parseKustoDatabaseDiscoveryHostMessage(message);
 		if (!parsed.ok) return;

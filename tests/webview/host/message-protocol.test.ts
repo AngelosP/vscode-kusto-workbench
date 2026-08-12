@@ -344,37 +344,37 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::453:33',
 	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::274:33',
 	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::89:10',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::379:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::511:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::517:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::521:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::526:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::529:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::532:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::535:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::550:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::556:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::561:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::578:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::586:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::592:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::606:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::614:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::629:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::642:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::677:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::687:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::694:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::703:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::711:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::734:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::739:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::767:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::775:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::799:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::814:29',
-	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::892:15',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::1281:21',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::380:27',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::512:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::518:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::522:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::527:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::530:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::533:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::536:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::551:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::557:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::562:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::579:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::587:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::593:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::607:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::615:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::630:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::643:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::678:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::688:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::695:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::704:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::712:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::735:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::740:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::768:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::776:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::800:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::815:29',
+	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::894:15',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::1283:21',
 	'src/host/querySharingApplicationHandler.ts::postMessage::postMessage::32:10',
 	'src/host/resourceUriApplicationHandler.ts::postMessage::postMessage::56:3',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1776:13',
@@ -396,7 +396,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/tutorials/embeddedTutorialWebviewHost.ts::show::postMessage::62:29',
 	'src/host/tutorials/tutorialWebviewSession.ts::postMessage::postMessage::242:10',
 	'src/host/tutorials/tutorialWebviewSession.ts::postMessage::postMessage::245:9',
-	'src/host/urlContentApplicationHandler.ts::postMessage::postMessage::79:3',
+	'src/host/urlContentApplicationHandler.ts::postMessage::postMessage::111:3',
 	'src/host/workbenchToolSessionApplicationHandler.ts::activate::postMessage::88:15',
 ] as const;
 
@@ -1376,6 +1376,62 @@ describe('Message Protocol Contract', () => {
 			.toBeLessThan(markdownPersistence.indexOf('_resourceResolvers[reqId]'));
 	});
 
+	it('keeps URL content requests and deliveries on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/urlContentProtocol.ts',
+			'UrlContentWebviewMessage',
+		)).toEqual(['fetchUrl']);
+		expect(extractTypeDiscriminants(
+			'src/shared/urlContentProtocol.ts',
+			'UrlContentHostMessage',
+		)).toEqual(['urlContent', 'urlError']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| UrlContentWebviewMessage');
+		expect(webviewMessages).toContain('| UrlContentWebviewMessage');
+		expect(hostTypes).not.toContain("type: 'fetchUrl'");
+		expect(webviewMessages).not.toContain("type: 'fetchUrl'");
+		expect(webviewMessages).toContain('admitUrlContentWebviewMessage(msg)');
+
+		const requestHandler = readWorkspaceFile('src/host/urlContentApplicationHandler.ts');
+		const requestAdmission = requestHandler.slice(requestHandler.indexOf('handleMessage('));
+		const hostAdmissionIndex = requestAdmission.indexOf('admitUrlContentWebviewMessage(message)');
+		const hostIdentityIndex = requestAdmission.indexOf('const boxId = message.boxId.trim()');
+		const hostFetchIndex = requestAdmission.indexOf('this.fetchUrl(url.toString()');
+		expect(hostAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(hostIdentityIndex).toBeGreaterThanOrEqual(0);
+		expect(hostFetchIndex).toBeGreaterThanOrEqual(0);
+		expect(hostAdmissionIndex).toBeLessThan(hostIdentityIndex);
+		expect(hostAdmissionIndex).toBeLessThan(hostFetchIndex);
+		expect(requestHandler).toContain('postMessage: (message: UrlContentHostMessage)');
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		const dispatcherAdmissionIndex = dispatcher.indexOf('admitUrlContentHostMessage(message)');
+		const contentCaseIndex = dispatcher.indexOf("case 'urlContent':");
+		const errorCaseIndex = dispatcher.indexOf("case 'urlError':");
+		expect(dispatcherAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(contentCaseIndex).toBeGreaterThanOrEqual(0);
+		expect(errorCaseIndex).toBeGreaterThanOrEqual(0);
+		expect(dispatcherAdmissionIndex).toBeLessThan(contentCaseIndex);
+		expect(dispatcherAdmissionIndex).toBeLessThan(errorCaseIndex);
+
+		const urlSection = readWorkspaceFile('src/webview/sections/kw-url-section.ts');
+		const listener = urlSection.slice(urlSection.indexOf('private _onMessage'));
+		const listenerAdmissionIndex = listener.indexOf('admitUrlContentHostMessage(e.data)');
+		const correlationIndex = listener.indexOf('matchesActiveRequest');
+		const retirementIndex = listener.indexOf('this._activeFetchRequest = null');
+		const artifactIndex = listener.indexOf('this.clearPublishedCsvResult()');
+		for (const index of [listenerAdmissionIndex, correlationIndex, retirementIndex, artifactIndex]) {
+			expect(index).toBeGreaterThanOrEqual(0);
+		}
+		expect(listenerAdmissionIndex).toBeLessThan(correlationIndex);
+		expect(listenerAdmissionIndex).toBeLessThan(retirementIndex);
+		expect(listenerAdmissionIndex).toBeLessThan(artifactIndex);
+		expect(urlSection).toContain("postMessageToHost({ type: 'fetchUrl'");
+	});
+
 	// ─── Compile-time guards ───────────────────────────────────────────────
 	// These calls exist solely for the TypeScript compiler to verify that
 	// every string literal in our arrays is a valid union discriminant.
@@ -1404,6 +1460,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/kqlLanguageProtocol.ts', 'KqlLanguageWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/controlCommandSyntaxProtocol.ts', 'ControlCommandSyntaxWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/resourceUriProtocol.ts', 'ResourceUriWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/urlContentProtocol.ts', 'UrlContentWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1421,6 +1478,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/kqlLanguageProtocol.ts', 'KqlLanguageWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/controlCommandSyntaxProtocol.ts', 'ControlCommandSyntaxWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/resourceUriProtocol.ts', 'ResourceUriWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/urlContentProtocol.ts', 'UrlContentWebviewMessage'),
 			])].sort()
 		);
 	});

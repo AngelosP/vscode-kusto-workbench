@@ -55,6 +55,10 @@ import {
 	parseResourceUriWebviewMessage,
 	type ResourceUriWebviewMessage,
 } from '../../shared/resourceUriProtocol.js';
+import {
+	admitUrlContentWebviewMessage,
+	type UrlContentWebviewMessage,
+} from '../../shared/urlContentProtocol.js';
 import { pState } from './persistence-state.js';
 
 let compatibilityDocumentRequestSequence = 0;
@@ -307,7 +311,7 @@ export type OutgoingWebviewMessage =
 
 	// Python / URL
 	| { type: 'executePython'; boxId: string; code: string }
-	| { type: 'fetchUrl'; boxId: string; url: string; requestId: string }
+	| UrlContentWebviewMessage
 
 	// Tool responses (agent tools)
 	| { type: 'toolResponse'; requestId: string; result: unknown; error?: string }
@@ -337,7 +341,14 @@ export type OutgoingWebviewMessage =
  */
 export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage | CompatibilityPersistenceWebviewMessage = msg;
-	if (pState.compatibilityPersistenceViewSessionId && isCompatibilityPersistenceWebviewMessageType(msg)) {
+	const urlContentAdmission = admitUrlContentWebviewMessage(msg);
+	if (urlContentAdmission.recognized) {
+		if (!urlContentAdmission.parsed.ok) {
+			console.error('[kusto] Rejected invalid URL content webview message:', urlContentAdmission.parsed.error);
+			return;
+		}
+		outbound = urlContentAdmission.parsed.value;
+	} else if (pState.compatibilityPersistenceViewSessionId && isCompatibilityPersistenceWebviewMessageType(msg)) {
 		const input = msg.type === 'requestDocument'
 			? {
 				type: 'requestDocument' as const,

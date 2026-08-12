@@ -20,6 +20,10 @@ import { __kustoRefreshAllDataSourceDropdowns } from '../core/section-factory.js
 import { ensureDomPurifyLoaded } from '../shared/lazy-vendor.js';
 import { clearResultsState, setResultsState } from '../core/results-state.js';
 import type { UrlSectionState } from '../../shared/urlSectionDefinition.js';
+import {
+	admitUrlContentHostMessage,
+} from '../../shared/urlContentProtocol.js';
+import { postMessageToHost } from '../shared/webview-messages.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -799,10 +803,7 @@ export class KwUrlSection extends LitElement implements SectionElement {
 		this._fetchState = { ...st, loading: true, error: '' };
 		this._renderUrlContent();
 		try {
-			const vscode = window.vscode;
-			if (vscode && typeof vscode.postMessage === 'function') {
-				vscode.postMessage({ type: 'fetchUrl', boxId: this.boxId, url, requestId });
-			}
+			postMessageToHost({ type: 'fetchUrl', boxId: this.boxId, url, requestId });
 		} catch {
 			this._fetchState = { ...st, loading: false, error: 'Failed to request URL.' };
 			this._renderUrlContent();
@@ -822,15 +823,17 @@ export class KwUrlSection extends LitElement implements SectionElement {
 	// ── Message handling ──────────────────────────────────────────────────────
 
 	private _onMessage = (e: MessageEvent): void => {
-		const msg = e.data;
-		if (!msg || typeof msg !== 'object') return;
+		const admission = admitUrlContentHostMessage(e.data);
+		if (!admission.recognized || !admission.parsed.ok) return;
+		const msg = admission.parsed.value;
+		if (msg.boxId !== this.boxId) return;
 
 		const matchesActiveRequest = () => {
 			const active = this._activeFetchRequest;
-			return !!active && String(msg.requestId || '') === active.requestId
-				&& String(msg.requestedUrl || '').trim() === active.url;
+			return !!active && msg.requestId === active.requestId
+				&& msg.requestedUrl === active.url;
 		};
-		if (msg.type === 'urlContent' && msg.boxId === this.boxId) {
+		if (msg.type === 'urlContent') {
 			if (!matchesActiveRequest()) return;
 			this._activeFetchRequest = null;
 			this.clearPublishedCsvResult();
@@ -838,20 +841,20 @@ export class KwUrlSection extends LitElement implements SectionElement {
 			st.loading = false;
 			st.loaded = true;
 			st.error = '';
-			st.resolvedUrl = String(msg.url || st.resolvedUrl || st.url || '');
-			st.contentType = String(msg.contentType || st.contentType || '');
-			st.status = (typeof msg.status === 'number') ? msg.status : (st.status ?? null);
-			st.kind = String(msg.kind || '').toLowerCase();
-			st.truncated = !!msg.truncated;
-			st.dataUri = String(msg.dataUri || '');
-			st.body = (typeof msg.body === 'string') ? msg.body : '';
+			st.resolvedUrl = msg.url;
+			st.contentType = msg.contentType;
+			st.status = msg.status;
+			st.kind = msg.kind;
+			st.truncated = msg.kind === 'image' ? false : msg.truncated;
+			st.dataUri = msg.kind === 'image' ? msg.dataUri : '';
+			st.body = msg.kind === 'image' ? '' : msg.body;
 			if (!st.__hasFetchedOnce) {
 				st.__hasFetchedOnce = true;
 				if (st.kind === 'image') {
 					st.__autoSizeImagePending = true;
 				}
 			}
-			st.content = st.body || '';
+			st.content = st.body;
 			// Schedule auto-fit for non-image content (images use __autoSizeImagePending).
 			if (st.kind !== 'image') {
 				this._autoFitPending = true;
@@ -859,7 +862,7 @@ export class KwUrlSection extends LitElement implements SectionElement {
 			this._fetchState = st;
 		}
 
-		if (msg.type === 'urlError' && msg.boxId === this.boxId) {
+		if (msg.type === 'urlError') {
 			if (!matchesActiveRequest()) return;
 			this._activeFetchRequest = null;
 			this.clearPublishedCsvResult();
@@ -867,7 +870,7 @@ export class KwUrlSection extends LitElement implements SectionElement {
 			st.loading = false;
 			st.loaded = false;
 			st.content = '';
-			st.error = String(msg.error || 'Failed to load URL.');
+			st.error = msg.error;
 			this._fetchState = st;
 		}
 	};

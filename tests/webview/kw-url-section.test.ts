@@ -259,6 +259,7 @@ describe('kw-url-section — rendering', () => {
 			type: 'urlContent', boxId: 'custom-url', requestId: request.requestId,
 			requestedUrl: request.url, url: 'https://example.com/data.csv',
 			kind: 'csv', contentType: 'text/csv', status: 200, body: 'Name,Score\nalpha,1\nbeta,2',
+			truncated: false, byteLength: 25,
 		} }));
 		await el.updateComplete;
 		await el.updateComplete;
@@ -289,6 +290,222 @@ describe('kw-url-section — rendering', () => {
 		}
 	});
 
+	it('ignores malformed matching and valid stale URL deliveries before settling the current request', async () => {
+		const el = createUrlSection('url-protocol-admission');
+		el.setUrl('https://example.com/current.csv');
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			(el as any)._requestFetch();
+			await el.updateComplete;
+			const request = postMessage.mock.calls.at(-1)?.[0] as any;
+			const activeRequest = (el as any)._activeFetchRequest;
+			const artifact = getCurrentResultArtifact(el.boxId);
+
+			const expectPendingState = () => {
+				expect((el as any)._activeFetchRequest).toBe(activeRequest);
+				expect(el.getFetchState()).toMatchObject({
+					loading: true, loaded: false, error: '', kind: '', body: '',
+				});
+				expect(el.shadowRoot?.querySelector('.url-status-msg')?.textContent).toBe('Loading…');
+				expect(getCurrentResultArtifact(el.boxId)).toBe(artifact);
+			};
+
+			expectPendingState();
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
+				requestedUrl: request.url, url: request.url,
+				kind: ['csv'], contentType: 'text/csv', status: 200,
+				body: 'Value\nFORGED', truncated: false, byteLength: 12,
+			} }));
+			await el.updateComplete;
+			await el.updateComplete;
+			expectPendingState();
+
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: el.boxId, requestId: `${request.requestId}-stale`,
+				requestedUrl: request.url, url: request.url,
+				kind: 'csv', contentType: 'text/csv', status: 200,
+				body: 'Value\nSTALE', truncated: false, byteLength: 11,
+			} }));
+			await el.updateComplete;
+			expectPendingState();
+
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
+				requestedUrl: request.url, url: request.url,
+				kind: 'csv', contentType: 'text/csv', status: 200,
+				body: 'Value\nCURRENT', truncated: false, byteLength: 13,
+			} }));
+			await el.updateComplete;
+			await el.updateComplete;
+
+			expect((el as any)._activeFetchRequest).toBeNull();
+			expect(el.getFetchState()).toMatchObject({ loading: false, loaded: true, error: '' });
+			expect(getCurrentResultArtifact(el.boxId)?.rows).toEqual([['CURRENT']]);
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('requires exact requested URL identity and preserves an empty text body', async () => {
+		const el = createUrlSection('url-exact-identity');
+		el.setUrl('https://example.com/empty.txt');
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			(el as any)._requestFetch();
+			await el.updateComplete;
+			const request = postMessage.mock.calls.at(-1)?.[0] as any;
+			const activeRequest = (el as any)._activeFetchRequest;
+
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
+				requestedUrl: `${request.url} `, url: request.url,
+				kind: 'text', contentType: 'text/plain', status: 200,
+				body: 'stale', truncated: false, byteLength: 5,
+			} }));
+			await el.updateComplete;
+
+			expect((el as any)._activeFetchRequest).toBe(activeRequest);
+			expect(el.getFetchState()).toMatchObject({ loading: true, loaded: false, body: '' });
+
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
+				requestedUrl: request.url, url: 'https://cdn.example.com/empty.txt',
+				kind: 'text', contentType: 'text/plain', status: 200,
+				body: '', truncated: false, byteLength: 0,
+			} }));
+			await el.updateComplete;
+
+			expect((el as any)._activeFetchRequest).toBeNull();
+			expect(el.getFetchState()).toMatchObject({
+				loading: false, loaded: true, body: '', content: '',
+				resolvedUrl: 'https://cdn.example.com/empty.txt',
+			});
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('rejects a mixed image branch before settling and rendering canonical image content', async () => {
+		const el = createUrlSection('url-image-delivery');
+		el.setUrl('https://example.com/image.png');
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			(el as any)._requestFetch();
+			await el.updateComplete;
+			const request = postMessage.mock.calls.at(-1)?.[0] as any;
+			const activeRequest = (el as any)._activeFetchRequest;
+			const dataUri = 'data:image/png;base64,AA==';
+
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
+				requestedUrl: request.url, url: request.url,
+				kind: 'image', contentType: 'image/png', status: 200,
+				dataUri, body: '', byteLength: 1,
+			} }));
+			await el.updateComplete;
+			expect((el as any)._activeFetchRequest).toBe(activeRequest);
+			expect(el.getFetchState()).toMatchObject({ loading: true, loaded: false, dataUri: '' });
+
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
+				requestedUrl: request.url, url: 'https://cdn.example.com/image.png',
+				kind: 'image', contentType: 'image/png', status: 200,
+				dataUri, byteLength: 1,
+			} }));
+			await el.updateComplete;
+			await el.updateComplete;
+
+			expect((el as any)._activeFetchRequest).toBeNull();
+			expect(el.getFetchState()).toMatchObject({
+				loading: false, loaded: true, kind: 'image', body: '', content: '', dataUri,
+				resolvedUrl: 'https://cdn.example.com/image.png',
+			});
+			expect(el.shadowRoot?.querySelector('img')?.getAttribute('src')).toBe(dataUri);
+			expect(el.shadowRoot?.querySelector('kw-data-table')).toBeNull();
+			expect(getCurrentResultArtifact(el.boxId)).toBeNull();
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('ignores a matching delivery with an inherited required field', async () => {
+		const el = createUrlSection('url-inherited-delivery');
+		el.setUrl('https://example.com/current.csv');
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			(el as any)._requestFetch();
+			await el.updateComplete;
+			const request = postMessage.mock.calls.at(-1)?.[0] as any;
+			const activeRequest = (el as any)._activeFetchRequest;
+			const inheritedKind = Object.assign(Object.create({ kind: 'csv' }), {
+				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
+				requestedUrl: request.url, url: request.url, contentType: 'text/csv', status: 200,
+				body: 'Value\nFORGED', truncated: false, byteLength: 12,
+			});
+
+			window.dispatchEvent(new MessageEvent('message', { data: inheritedKind }));
+			await el.updateComplete;
+			expect((el as any)._activeFetchRequest).toBe(activeRequest);
+			expect(el.getFetchState()).toMatchObject({ loading: true, loaded: false, body: '' });
+			expect(getCurrentResultArtifact(el.boxId)).toBeNull();
+
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
+				requestedUrl: request.url, url: request.url, contentType: 'text/csv', status: 200,
+				kind: 'csv', body: 'Value\nCURRENT', truncated: false, byteLength: 13,
+			} }));
+			await el.updateComplete;
+			await el.updateComplete;
+			expect(getCurrentResultArtifact(el.boxId)?.rows).toEqual([['CURRENT']]);
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('snapshots a valid delivery proxy before component field reads', async () => {
+		const el = createUrlSection('url-proxy-delivery');
+		el.setUrl('https://example.com/current.csv');
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			(el as any)._requestFetch();
+			await el.updateComplete;
+			const request = postMessage.mock.calls.at(-1)?.[0] as any;
+			let propertyReads = 0;
+			const delivery = {
+				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
+				requestedUrl: request.url, url: request.url, contentType: 'text/csv', status: 200,
+				kind: 'csv', body: 'Value\nCURRENT', truncated: false, byteLength: 13,
+			};
+			const deliveryProxy = new Proxy(delivery, {
+				get() {
+					propertyReads++;
+					throw new Error('property read');
+				},
+			});
+
+			window.dispatchEvent(new MessageEvent('message', { data: deliveryProxy }));
+			await el.updateComplete;
+			await el.updateComplete;
+
+			expect(propertyReads).toBe(0);
+			expect((el as any)._activeFetchRequest).toBeNull();
+			expect(getCurrentResultArtifact(el.boxId)?.rows).toEqual([['CURRENT']]);
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
 	it('does not republish URL A rows while URL B is pending', async () => {
 		const el = createUrlSection('url-replacement');
 		const postMessage = vi.fn();
@@ -303,6 +520,7 @@ describe('kw-url-section — rendering', () => {
 				type: 'urlContent', boxId: el.boxId, requestId: requestA.requestId,
 				requestedUrl: requestA.url, url: requestA.url,
 				kind: 'csv', contentType: 'text/csv', status: 200, body: 'Value\nA',
+				truncated: false, byteLength: 7,
 			} }));
 			await el.updateComplete;
 			expect(getCurrentResultArtifact(el.boxId)?.rows).toEqual([['A']]);
@@ -318,12 +536,15 @@ describe('kw-url-section — rendering', () => {
 			});
 
 			for (const lateA of [
-				{ type: 'urlContent', body: 'Value\nLATE_A', kind: 'csv', url: requestA.url },
+				{
+					type: 'urlContent', body: 'Value\nLATE_A', kind: 'csv', url: requestA.url,
+					contentType: 'text/csv', status: 200, truncated: false, byteLength: 12,
+				},
 				{ type: 'urlError', error: 'Late A failure' },
 			]) {
 				window.dispatchEvent(new MessageEvent('message', { data: {
 					...lateA, boxId: el.boxId, requestId: requestA.requestId,
-					requestedUrl: requestA.url, contentType: 'text/csv', status: 200,
+					requestedUrl: requestA.url,
 				} }));
 			}
 			await el.updateComplete;
@@ -334,6 +555,7 @@ describe('kw-url-section — rendering', () => {
 				type: 'urlContent', boxId: el.boxId, requestId: requestB.requestId,
 				requestedUrl: requestB.url, url: requestB.url,
 				kind: 'csv', contentType: 'text/csv', status: 200, body: 'Value\nB',
+				truncated: false, byteLength: 7,
 			} }));
 			await el.updateComplete;
 			expect(getCurrentResultArtifact(el.boxId)?.rows).toEqual([['B']]);
@@ -356,6 +578,7 @@ describe('kw-url-section — rendering', () => {
 				type: 'urlContent', boxId: oldSection.boxId, requestId: requestA.requestId,
 				requestedUrl: requestA.url, url: requestA.url,
 				kind: 'csv', contentType: 'text/csv', status: 200, body: 'Value\nOLD',
+				truncated: false, byteLength: 9,
 			} }));
 			await oldSection.updateComplete;
 			expect(getCurrentResultArtifact(oldSection.boxId)?.rows).toEqual([['OLD']]);
@@ -370,12 +593,15 @@ describe('kw-url-section — rendering', () => {
 			expect(requestB.requestId).not.toBe(requestA.requestId);
 
 			for (const lateA of [
-				{ type: 'urlContent', kind: 'csv', body: 'Value\nLATE_A', url: requestA.url },
+				{
+					type: 'urlContent', kind: 'csv', body: 'Value\nLATE_A', url: requestA.url,
+					contentType: 'text/csv', status: 200, truncated: false, byteLength: 12,
+				},
 				{ type: 'urlError', error: 'Late A failure' },
 			]) {
 				window.dispatchEvent(new MessageEvent('message', { data: {
 					...lateA, boxId: newSection.boxId, requestId: requestA.requestId,
-					requestedUrl: requestA.url, contentType: 'text/csv', status: 200,
+					requestedUrl: requestA.url,
 				} }));
 			}
 			await newSection.updateComplete;
@@ -386,6 +612,7 @@ describe('kw-url-section — rendering', () => {
 				type: 'urlContent', boxId: newSection.boxId, requestId: requestB.requestId,
 				requestedUrl: requestB.url, url: requestB.url,
 				kind: 'csv', contentType: 'text/csv', status: 200, body: 'Value\nB',
+				truncated: false, byteLength: 7,
 			} }));
 			await newSection.updateComplete;
 			expect(getCurrentResultArtifact(newSection.boxId)?.rows).toEqual([['B']]);
@@ -418,6 +645,7 @@ describe('kw-url-section — rendering', () => {
 				type: 'urlContent', boxId: replacement.boxId, requestId: requestB.requestId,
 				requestedUrl: requestB.url, url: requestB.url,
 				kind: 'csv', contentType: 'text/csv', status: 200, body: 'Value\nB',
+				truncated: false, byteLength: 7,
 			} }));
 			await replacement.updateComplete;
 			expect(getCurrentResultArtifact(replacement.boxId)?.rows).toEqual([['B']]);
@@ -474,7 +702,7 @@ describe('kw-url-section — rendering', () => {
 			window.dispatchEvent(new MessageEvent('message', { data: {
 				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
 				requestedUrl: request.url, url: request.url, kind: 'csv', contentType: 'text/csv',
-				status: 200, body: 'Name\nalpha',
+				status: 200, body: 'Name\nalpha', truncated: false, byteLength: 10,
 			} }));
 			await el.updateComplete;
 			await el.updateComplete;
@@ -644,7 +872,7 @@ describe('kw-url-section — public API', () => {
 			window.dispatchEvent(new MessageEvent('message', { data: {
 				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
 				requestedUrl: request.url, url: request.url, kind: 'csv', contentType: 'text/csv',
-				status: 200, body: 'Name\nalpha',
+				status: 200, body: 'Name\nalpha', truncated: false, byteLength: 10,
 			} }));
 			await el.updateComplete;
 			await el.updateComplete;
@@ -688,7 +916,7 @@ describe('kw-url-section — public API', () => {
 			window.dispatchEvent(new MessageEvent('message', { data: {
 				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
 				requestedUrl: request.url, url: resolvedUrl, kind: 'csv', contentType: 'text/csv',
-				status: 200, body: 'Name\nalpha',
+				status: 200, body: 'Name\nalpha', truncated: false, byteLength: 10,
 			} }));
 			await el.updateComplete;
 			await el.updateComplete;
@@ -723,7 +951,7 @@ describe('kw-url-section — public API', () => {
 			window.dispatchEvent(new MessageEvent('message', { data: {
 				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
 				requestedUrl: request.url, url: request.url, kind: 'html', contentType: 'text/html',
-				status: 200, body: '<main>stable</main>',
+				status: 200, body: '<main>stable</main>', truncated: false, byteLength: 19,
 			} }));
 			await el.updateComplete;
 			await el.updateComplete;

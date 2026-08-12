@@ -82,6 +82,7 @@ export class FirstLaunchCoordinator {
 	private automaticRunActive = false;
 	private sessionSuppressed = false;
 	private transactionInFlight = false;
+	private developmentForcePending = false;
 	private firstUseSettled = false;
 	private firstUseSettledPromise!: Promise<void>;
 	private resolveFirstUseSettled!: () => void;
@@ -176,6 +177,9 @@ export class FirstLaunchCoordinator {
 	}
 
 	async resetForDevelopment(): Promise<void> {
+		const previousRun = this.activeRun;
+		if (previousRun) await previousRun;
+		this.developmentForcePending = true;
 		this.transactionInFlight = true;
 		this.sessionSuppressed = false;
 		try {
@@ -211,16 +215,18 @@ export class FirstLaunchCoordinator {
 		const context = this.options.context;
 		const configuration = vscode.workspace.getConfiguration('kustoWorkbench');
 		const explicitFilePreferenceValues = FILE_PREFERENCE_KEYS.map(key => configuration.inspect<boolean>(key)?.globalValue);
-		const stateValue = context.globalState.get(FIRST_LAUNCH_STATE_KEY);
+		const storedStateValue = context.globalState.get(FIRST_LAUNCH_STATE_KEY);
 		const journalValue = context.globalState.get(FIRST_LAUNCH_WRITE_JOURNAL_KEY);
 		const forcePending = context.globalState.get<boolean>(FIRST_LAUNCH_FORCE_PENDING_KEY) === true;
+		const stateValue = forcePending && this.developmentForcePending ? undefined : storedStateValue;
 		const installMarkerValue = context.globalState.get(FIRST_LAUNCH_INSTALL_MARKER_KEY);
 		this.resolution = resolveFirstLaunchState(stateValue, journalValue, {
 			globalStateKeys: forcePending ? [] : (typeof context.globalState.keys === 'function' ? [...context.globalState.keys()] : []),
 			explicitFilePreferenceValues: forcePending ? [] : explicitFilePreferenceValues,
 			globalEditorAssociations: forcePending ? {} : readGlobalEditorAssociations(),
 		}, installMarkerValue);
-		const migratePendingProfile = this.options.migratePendingProfileByDefault === true;
+		const migratePendingProfile = this.options.migratePendingProfileByDefault === true
+			&& !this.developmentForcePending;
 		if (this.resolution.kind === 'pending' && (migratePendingProfile || (this.options.migrateFreshProfileByDefault === true && !forcePending))) {
 			if (forcePending && migratePendingProfile) {
 				await context.globalState.update(FIRST_LAUNCH_FORCE_PENDING_KEY, undefined);
@@ -454,6 +460,7 @@ export class FirstLaunchCoordinator {
 			};
 			await context.globalState.update(FIRST_LAUNCH_STATE_KEY, record);
 			await context.globalState.update(FIRST_LAUNCH_FORCE_PENDING_KEY, undefined);
+			this.developmentForcePending = false;
 			this.resolution = { kind: 'terminal', record };
 			await context.globalState.update(FIRST_LAUNCH_WRITE_JOURNAL_KEY, undefined);
 		} finally {

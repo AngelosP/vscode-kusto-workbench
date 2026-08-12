@@ -4,6 +4,7 @@
   "state": {
     "sections": [
       {
+        "id": "compat_1_query",
         "type": "query",
         "linkedQueryPath": "sidecar-test.kql"
       }

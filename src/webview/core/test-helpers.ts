@@ -30,7 +30,7 @@ import {
 import { htmlDashboardFactArtifactConsumerId, shareClipboardArtifactConsumerId } from '../../shared/resultArtifact.js';
 import { displayComparisonSummary } from '../sections/query-execution.controller.js';
 import { __kustoCloseShareModal, __kustoOpenShareModal, __kustoShareCopyToClipboard } from '../sections/kw-query-toolbar.js';
-import { adoptCurrentStateAsCleanForTest, isPersistenceSuppressedForTest, schedulePersist, suppressPersistenceForTest } from './persistence.js';
+import { adoptCurrentStateAsCleanForTest, getLastDeferredRestoredResultSettlementForTest, isPersistenceSuppressedForTest, schedulePersist, suppressPersistenceForTest } from './persistence.js';
 
 type MonacoLike = {
 	getDomNode?: () => HTMLElement | null;
@@ -2068,12 +2068,16 @@ export async function e2eIdentityRequestDatabases(connectionId: string, timeoutM
 			reject(new Error(`Timed out waiting for databasesData for ${connectionId}`));
 		}, timeoutMs);
 		const onMessage = (event: MessageEvent) => {
-			const message = event.data || {};
-			if (message.type !== 'databasesData' || message.boxId !== requestId) return;
+			const message = event.data;
+			if (message?.boxId !== requestId) return;
 			const parsed = parseKustoDatabaseDiscoveryHostMessage(message);
-			if (!parsed.ok || parsed.value.type !== 'databasesData') return;
+			if (!parsed.ok || parsed.value.connectionId !== connectionId) return;
 			window.clearTimeout(timer);
 			window.removeEventListener('message', onMessage);
+			if (parsed.value.type === 'databasesError') {
+				reject(new Error(`Database discovery failed for ${connectionId}: ${parsed.value.error}`));
+				return;
+			}
 			resolve(parsed.value.databases.map(value => value.trim()).filter(Boolean));
 		};
 		window.addEventListener('message', onMessage);
@@ -2114,7 +2118,12 @@ async function e2eIdentityAssertSectionFavoriteAlias(): Promise<any> {
 	section.setConnections?.([shortConnection], { lastConnectionId: shortConnection.id });
 	section.setDatabase?.(E2E_KUSTO_IDENTITY_CHECKLIST.database);
 	section.setDatabases?.([E2E_KUSTO_IDENTITY_CHECKLIST.database], E2E_KUSTO_IDENTITY_CHECKLIST.database);
-	section.setFavorites?.([{ name: E2E_KUSTO_IDENTITY_CHECKLIST.favoriteName, clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl, database: E2E_KUSTO_IDENTITY_CHECKLIST.database }]);
+	section.setFavorites?.([{
+		name: E2E_KUSTO_IDENTITY_CHECKLIST.favoriteName,
+		connectionId: shortConnection.id,
+		clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl,
+		database: E2E_KUSTO_IDENTITY_CHECKLIST.database,
+	}]);
 	section.setFavoritesMode?.(true);
 	section.requestUpdate?.();
 	await section.updateComplete;
@@ -2137,9 +2146,14 @@ async function e2eIdentityAssertConnectionManagerAliases(foo: E2eIdentityConnect
 	const snapshot = {
 		connections: [regionalShort, foo, foobar],
 		sqlConnections: [],
-		favorites: [{ name: E2E_KUSTO_IDENTITY_CHECKLIST.favoriteName, clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl, database: E2E_KUSTO_IDENTITY_CHECKLIST.database }],
+		favorites: [{
+			name: E2E_KUSTO_IDENTITY_CHECKLIST.favoriteName,
+			connectionId: regionalShort.id,
+			clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl,
+			database: E2E_KUSTO_IDENTITY_CHECKLIST.database,
+		}],
 		leaveNoTraceClusters: [E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl],
-		cachedDatabases: { [E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey]: [E2E_KUSTO_IDENTITY_CHECKLIST.database] },
+		cachedDatabases: { [regionalShort.id]: [E2E_KUSTO_IDENTITY_CHECKLIST.database] },
 		sqlCachedDatabases: {},
 		activeKind: 'kusto',
 		searchState: {
@@ -5678,6 +5692,7 @@ async function e2eChartAssertTitleSyncAndHeatmapNumericCategories(): Promise<str
 		requestedUrl: 'https://example.invalid/chart-regression.csv',
 		url: 'https://example.invalid/chart-regression.csv',
 		kind: 'csv', contentType: 'text/csv', status: 200, body: csvBody,
+		truncated: false, byteLength: new TextEncoder().encode(csvBody).byteLength,
 	} }));
 	await e2eLayoutWaitFor(() => (getResultsState(sourceId)?.columns || []).length === 3, 'chart regression CSV data');
 
@@ -5722,6 +5737,7 @@ async function e2eChartAssertTitleSyncAndHeatmapNumericCategories(): Promise<str
 			requestedUrl: 'https://example.invalid/chart-regression.csv',
 			url: 'https://example.invalid/chart-regression.csv',
 			kind: 'csv', contentType: 'text/csv', status: 200, body: csvBody,
+			truncated: false, byteLength: new TextEncoder().encode(csvBody).byteLength,
 		} }));
 		chartSection.syncFromGlobalState();
 		await e2eLayoutWaitForUpdate(chartSection as HTMLElement);
@@ -6559,6 +6575,8 @@ function e2eLayoutDispatchUrlContent(boxId: string): void {
 			status: 200,
 			kind: 'text',
 			body: e2eLayoutGeneratedLines('URL body', 42),
+			truncated: false,
+			byteLength: new TextEncoder().encode(e2eLayoutGeneratedLines('URL body', 42)).byteLength,
 		},
 	}));
 }
@@ -7290,6 +7308,100 @@ async function e2eSeedQueryResult(boxId: string, result: unknown, artifactPublic
 	return `seeded local result for ${id}`;
 }
 
+let e2eDocumentCommandCapture: {
+	previousCapture?: (message: unknown) => unknown;
+	commands: any[];
+	results: any[];
+	onMessage: (event: MessageEvent) => void;
+} | undefined;
+
+function e2eBeginDocumentCommandCapture(): string {
+	if (e2eDocumentCommandCapture) throw new Error('Document command capture is already active');
+	const previousCapture = _win.__e2eCaptureHostMessage;
+	const commands: any[] = [];
+	const results: any[] = [];
+	const onMessage = (event: MessageEvent) => {
+		if (event.data?.type === 'markdownDocumentCommandResult') {
+			results.push(JSON.parse(JSON.stringify(event.data)));
+		}
+	};
+	e2eDocumentCommandCapture = { previousCapture, commands, results, onMessage };
+	_win.__e2eCaptureHostMessage = (message: any) => {
+		if (message?.type === 'markdownDocumentCommand') {
+			commands.push(JSON.parse(JSON.stringify(message)));
+		}
+		return typeof previousCapture === 'function' ? previousCapture(message) !== false : true;
+	};
+	window.addEventListener('message', onMessage);
+	return 'document command capture armed';
+}
+
+async function e2eWaitForDocumentCommands(minimumCount = 1, timeoutMs = 10000): Promise<unknown> {
+	const capture = e2eDocumentCommandCapture;
+	if (!capture) throw new Error('Document command capture is not active');
+	const deadline = performance.now() + timeoutMs;
+	let stableCount = -1;
+	let stableSince = 0;
+	try {
+		while (performance.now() < deadline) {
+			const commandIds = [...new Set(capture.commands.map(command => String(command.commandId || '')).filter(Boolean))];
+			const failed = capture.results.find(result => commandIds.includes(String(result.commandId || '')) && result.ok !== true);
+			if (failed) throw new Error(`Document command was rejected: ${JSON.stringify(failed)}`);
+			const allSettled = commandIds.length >= minimumCount && commandIds.every(commandId =>
+				capture.results.some(result => result.commandId === commandId && result.ok === true));
+			if (allSettled) {
+				if (stableCount !== commandIds.length) {
+					stableCount = commandIds.length;
+					stableSince = performance.now();
+				} else if (performance.now() - stableSince >= 250) {
+					return {
+						commandIds,
+						commands: capture.commands.map(command => ({
+							commandId: String(command.commandId || ''),
+							type: String(command.command?.type || ''),
+							sectionId: String(command.command?.section?.id || command.command?.sectionId || ''),
+							sectionType: String(command.command?.section?.type || ''),
+						})),
+						results: capture.results.map(result => ({
+							commandId: String(result.commandId || ''),
+							ok: result.ok === true,
+							orderedSectionIds: Array.isArray(result.projection?.orderedSectionIds)
+								? [...result.projection.orderedSectionIds] : [],
+							markdownSectionIds: Array.isArray(result.projection?.markdownSections)
+								? result.projection.markdownSections.map((section: any) => String(section?.id || '')) : [],
+							htmlSectionIds: Array.isArray(result.projection?.htmlSections)
+								? result.projection.htmlSections.map((section: any) => String(section?.id || '')) : [],
+						})),
+					};
+				}
+			} else {
+				stableCount = -1;
+				stableSince = 0;
+			}
+			await e2eDelay(50);
+		}
+		throw new Error(`Timed out waiting for document commands: ${JSON.stringify({
+			minimumCount, commands: capture.commands, results: capture.results,
+		})}`);
+	} finally {
+		window.removeEventListener('message', capture.onMessage);
+		if (typeof capture.previousCapture === 'function') _win.__e2eCaptureHostMessage = capture.previousCapture;
+		else delete _win.__e2eCaptureHostMessage;
+		e2eDocumentCommandCapture = undefined;
+	}
+}
+
+async function e2eWaitForPersistedResult(boxId: string, timeoutMs: number): Promise<string> {
+	const id = String(boxId || '').trim();
+	const deadline = performance.now() + Number(timeoutMs || 0);
+	while (performance.now() < deadline) {
+		const section = document.getElementById(id) as HTMLElement | null;
+		if (section?.dataset.testHasResults === 'true') return `persisted result restored for ${id}`;
+		await e2eDelay(100);
+	}
+	throw new Error(`Timed out waiting for persisted result ${id}: ${JSON.stringify(getLastDeferredRestoredResultSettlementForTest())}`);
+}
+
 function e2eKustoUxTable(): any {
 	const section = e2eSection('kusto');
 	const results = document.getElementById(e2eKustoElementId(section, 'results'));
@@ -7421,6 +7533,9 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 	workbench: {
 		clearSections: () => e2eClearSectionsStable(),
 		seedResult: e2eSeedQueryResult,
+		beginDocumentCommandCapture: e2eBeginDocumentCommandCapture,
+		waitForDocumentCommands: e2eWaitForDocumentCommands,
+		waitForPersistedResult: e2eWaitForPersistedResult,
 		enableIsolatedKustoConnections: e2eEnableIsolatedKustoConnections,
 		assertIsolatedKustoConnections: e2eAssertIsolatedKustoConnections,
 		removeSection: (selector: string) => _win.__testRemoveSection(selector),

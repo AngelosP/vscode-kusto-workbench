@@ -150,7 +150,9 @@ describe('QueryEditorProvider resource URI application', () => {
 			expect(handlerSource, `${handlerAuthority} must remain owned by the resource URI handler`)
 				.toContain(handlerAuthority);
 		}
-		expect(providerSource).not.toMatch(/import\s+\*\s+as\s+path\s+from\s+['"]path['"]/);
+		expect(providerSource).not.toMatch(
+			/\bpath(?:\.(?:posix|win32))?\.(?:resolve|join|normalize|isAbsolute|relative|dirname)\s*\(/,
+		);
 		expect(providerSource).toContain('asWebviewUri: uri => this.panel?.webview.asWebviewUri(uri)');
 	});
 });

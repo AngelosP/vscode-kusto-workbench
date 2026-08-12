@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { shouldRetryVscodeBootstrapFailure } from './e2e-full-suite-support.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const e2eRoot = path.join(repoRoot, 'tests', 'vscode-extension-tester');
@@ -509,6 +510,36 @@ function artifactDirFromOutput(output, profile, testId) {
 	return latestRunDir(profile, testId);
 }
 
+function runE2eCommandWithBootstrapRetry(args, outputFile, envOverrides) {
+	const attempts = [];
+	let totalDurationMs = 0;
+	for (let attempt = 1; attempt <= 3; attempt += 1) {
+		const result = runCommand('vscode-ext-test', args, attempt === 1 ? outputFile : '', envOverrides);
+		totalDurationMs += result.durationMs;
+		attempts.push({ attempt, status: result.status, durationMs: result.durationMs });
+		if (attempt > 1) {
+			appendFileSync(outputFile, `\n\n=== VS Code bootstrap retry ${attempt - 1} ===\n${result.combinedOutput}`, 'utf8');
+		}
+		const explicitRunDir = /Artifacts written to:\s*(.+)\s*$/m.exec(result.combinedOutput)?.[1]?.trim() || '';
+		const hasStructuredResults = !!explicitRunDir
+			&& existsSync(path.resolve(repoRoot, explicitRunDir, 'results.json'));
+		if (attempt >= 3 || !shouldRetryVscodeBootstrapFailure({
+			status: result.status,
+			output: result.combinedOutput,
+			hasStructuredResults,
+		})) {
+			return {
+				...result,
+				durationMs: totalDurationMs,
+				attempts,
+				bootstrapRetries: attempt - 1,
+			};
+		}
+		console.warn(`Retrying VS Code bootstrap after transient download failure (${attempt}/3).`);
+	}
+	throw new Error('Unreachable E2E retry state.');
+}
+
 function walkFiles(rootDir) {
 	if (!existsSync(rootDir)) {
 		return [];
@@ -656,6 +687,9 @@ function summarizeSuite({ runStartedAt, completedAt, options, cases, excludedScr
 		runStartedAt,
 		completedAt,
 		vscodeVersion: options.vscodeVersion,
+		vscodeExtTestVersion: process.env.E2E_VSCODE_EXT_TEST_VERSION || 'unknown',
+		nodeVersion: process.version,
+		commitSha: process.env.GITHUB_SHA || '',
 		profiles: options.profiles.length > 0 ? options.profiles : discoverProfiles(),
 		includeScreenshotGenerators: options.includeScreenshotGenerators,
 		includeOptInTests: options.includeOptInTests,
@@ -695,6 +729,9 @@ function toMarkdown(summary) {
 	lines.push(`- Started: ${summary.runStartedAt}`);
 	lines.push(`- Completed: ${summary.completedAt}`);
 	lines.push(`- VS Code: ${summary.vscodeVersion}`);
+	lines.push(`- vscode-ext-test: ${summary.vscodeExtTestVersion}`);
+	lines.push(`- Node.js: ${summary.nodeVersion}`);
+	if (summary.commitSha) lines.push(`- Commit: ${summary.commitSha}`);
 	lines.push(`- Selected: ${summary.totalSelected} tests`);
 	lines.push(`- Executed: ${summary.executed}`);
 	lines.push(`- Passed: ${summary.passed}`);
@@ -778,6 +815,9 @@ function appendHistory(outputRoot, summary) {
 		runStartedAt: summary.runStartedAt,
 		completedAt: summary.completedAt,
 		vscodeVersion: summary.vscodeVersion,
+		vscodeExtTestVersion: summary.vscodeExtTestVersion,
+		nodeVersion: summary.nodeVersion,
+		commitSha: summary.commitSha,
 		selected: summary.totalSelected,
 		executed: summary.executed,
 		passed: summary.passed,
@@ -937,18 +977,21 @@ function main() {
 		for (const [key, value] of Object.entries(testCase.env ?? {})) {
 			args.push('--env', `${key}=${value}`);
 		}
+		args.push(
+			'--env',
+			`KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH=${testCase.testId === 'first-launch-setup' ? '0' : '1'}`,
+		);
 
 		const preparedWorkspace = prepareTestWorkspace(testCase, suiteOutputDir);
 		const envOverrides = {
 			...(preparedWorkspace ? { VSCODE_EXT_TEST_WORKSPACE: preparedWorkspace.workspaceDir } : {}),
-			...(testCase.testId === 'first-launch-setup' ? {} : { KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH: '1' }),
 		};
 		if (preparedWorkspace) {
 			console.log(`Seeded per-test VS Code workspace settings for ${testCase.profile}/${testCase.testId}: ${relativePath(preparedWorkspace.settingsPath)}`);
 		}
 
 		const outputFile = path.join(commandLogDir, `${testCase.profile}__${testCase.testId}.log`);
-		const result = runCommand('vscode-ext-test', args, outputFile, envOverrides);
+		const result = runE2eCommandWithBootstrapRetry(args, outputFile, envOverrides);
 		const runDir = artifactDirFromOutput(result.combinedOutput, testCase.profile, testCase.testId);
 		const artifacts = summarizeArtifacts(runDir);
 		const resultFailed = result.status !== 0 || (artifacts.results?.totalFailed || 0) > 0;
@@ -971,6 +1014,8 @@ function main() {
 			outputChannels: artifacts.outputChannels,
 			failures: artifacts.failures,
 			commandOutput: outputFile,
+			attempts: result.attempts,
+			bootstrapRetries: result.bootstrapRetries,
 		});
 
 		const managedWorkspaceStorage = listManagedWorkspaceStorage(testCase.profile, preparedWorkspace?.workspaceDir);

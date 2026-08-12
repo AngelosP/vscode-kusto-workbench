@@ -366,7 +366,10 @@ export function addQueryBox( options?: any) {
 		kwEl.addEventListener('connection-changed', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
-			kwEl.setSchemaLifecycleTarget?.(String(detail.connectionId || ''), undefined);
+			kwEl.setSchemaLifecycleTarget?.(
+				String(detail.connectionId || ''),
+				String(detail.database || '').trim() || undefined,
+			);
 			try { if (schemaFetchInFlightByBoxId) schemaFetchInFlightByBoxId[boxId] = false; } catch (e) { console.error('[kusto]', e); }
 			try { if (lastSchemaRequestAtByBoxId) lastSchemaRequestAtByBoxId[boxId] = 0; } catch (e) { console.error('[kusto]', e); }
 			try { delete schemaRequestTokenByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }

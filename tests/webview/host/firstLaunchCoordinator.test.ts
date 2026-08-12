@@ -202,6 +202,28 @@ describe('FirstLaunchCoordinator', () => {
 		await run;
 	});
 
+	it('waits for an earlier setup run before resetting command admission', async () => {
+		const test = harness();
+		const firstRun = test.coordinator.triggerAutomatic('file');
+		await flush();
+		expect(test.openPanel).toHaveBeenCalledOnce();
+
+		let resetSettled = false;
+		const reset = test.coordinator.resetForDevelopment().then(() => { resetSettled = true; });
+		await flush();
+		expect(resetSettled).toBe(false);
+
+		test.resolvePanel('closed');
+		await firstRun;
+		await reset;
+
+		const commandRun = test.coordinator.triggerAutomatic('command');
+		await flush();
+		expect(test.openPanel).toHaveBeenCalledTimes(2);
+		test.resolvePanel('closed');
+		await commandRun;
+	});
+
 	it('can migrate a fresh development profile unless reset explicitly forces pending', async () => {
 		const test = harness({ migrateFreshProfileByDefault: true });
 
@@ -219,6 +241,33 @@ describe('FirstLaunchCoordinator', () => {
 		expect(test.openPanel).not.toHaveBeenCalled();
 		expect(test.state.has(FIRST_LAUNCH_FORCE_PENDING_KEY)).toBe(false);
 		expect((test.state.get(FIRST_LAUNCH_STATE_KEY) as any).status).toBe('migrated');
+	});
+
+	it('development reset overrides pending-profile migration for the next setup run', async () => {
+		const test = harness({ migratePendingProfileByDefault: true });
+		await test.coordinator.resetForDevelopment();
+
+		const run = test.coordinator.triggerAutomatic('command');
+		await flush();
+		expect(test.openPanel).toHaveBeenCalledOnce();
+		test.resolvePanel('closed');
+		await run;
+	});
+
+	it('development reset overrides a stale terminal state written after reset', async () => {
+		const test = harness({ migratePendingProfileByDefault: true });
+		await test.coordinator.resetForDevelopment();
+		test.state.set(FIRST_LAUNCH_STATE_KEY, {
+			schemaVersion: 1,
+			status: 'migrated',
+			completedAt: new Date().toISOString(),
+		});
+
+		const run = test.coordinator.triggerAutomatic('command');
+		await flush();
+		expect(test.openPanel).toHaveBeenCalledOnce();
+		test.resolvePanel('closed');
+		await run;
 	});
 
 	it('quarantines a malformed current journal and reopens setup', async () => {

@@ -11,6 +11,10 @@ on:
         description: 'vscode-ext-test npm tarball URL, or latest'
         required: false
         default: 'latest'
+      vscodeVersion:
+        description: 'VS Code version, or latest'
+        required: false
+        default: 'latest'
   schedule:
     - cron: '0 4 * * *'
 
@@ -25,15 +29,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           clean: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20.x
+          node-version: 22.x
           cache: npm
 
       - name: Install dependencies
@@ -79,10 +83,18 @@ jobs:
           }
           $command = Get-Command vscode-ext-test -ErrorAction Stop
           Write-Host "vscode-ext-test path: $($command.Source)"
-          vscode-ext-test --version
+          $installedVersion = [string](vscode-ext-test --version)
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          $installedVersion = $installedVersion.Trim()
+          "E2E_VSCODE_EXT_TEST_VERSION=$installedVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "vscode-ext-test version: $installedVersion"
 
       - name: Resolve latest stable VS Code
         shell: pwsh
+        env:
+          REQUESTED_VSCODE_VERSION: ${{ github.event.inputs.vscodeVersion || 'latest' }}
         run: |
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Stop'
@@ -94,24 +106,33 @@ jobs:
             throw "Unable to parse package.json engines.vscode minimum from '$engineRange'"
           }
 
-          $releaseUri = 'https://update.code.visualstudio.com/api/releases/stable?released=true'
-          $response = Invoke-RestMethod -Uri $releaseUri -TimeoutSec 30
-          $versions = @($response) |
-            ForEach-Object { [string]$_ } |
-            Where-Object { $_ -match '^\d+\.\d+\.\d+$' } |
-            Sort-Object { [version]$_ } -Descending
-
-          $latest = $versions | Select-Object -First 1
-          if (-not $latest) {
-            throw "No stable VS Code versions were returned from $releaseUri"
+          $requested = [string]$env:REQUESTED_VSCODE_VERSION
+          if ([string]::IsNullOrWhiteSpace($requested) -or $requested -eq 'latest') {
+            $releaseUri = 'https://update.code.visualstudio.com/api/releases/stable?released=true'
+            $response = Invoke-RestMethod -Uri $releaseUri -TimeoutSec 30
+            $versions = @($response) |
+              ForEach-Object { [string]$_ } |
+              Where-Object { $_ -match '^\d+\.\d+\.\d+$' } |
+              Sort-Object { [version]$_ } -Descending
+            $resolved = $versions | Select-Object -First 1
+            if (-not $resolved) {
+              throw "No stable VS Code versions were returned from $releaseUri"
+            }
+          } elseif ($requested -match '^\d+\.\d+\.\d+$') {
+            $resolved = $requested
+          } else {
+            throw "VS Code version must be 'latest' or a numeric version, got '$requested'"
           }
-          if ([version]$latest -lt [version]$minimumEngine) {
-            throw "Resolved VS Code $latest is below extension engine minimum $minimumEngine"
+          if ([version]$resolved -lt [version]$minimumEngine) {
+            throw "Resolved VS Code $resolved is below extension engine minimum $minimumEngine"
           }
 
-          "E2E_VSCODE_VERSION=$latest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "Resolved latest stable VS Code: $latest" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          Write-Host "Resolved latest stable VS Code: $latest"
+          "E2E_VSCODE_VERSION=$resolved" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "Resolved VS Code: $resolved (requested: $requested)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          Write-Host "Resolved VS Code: $resolved (requested: $requested)"
+
+      - name: Validate E2E bootstrap retry policy
+        run: node --test tests/scripts/e2e-full-suite-support.test.mjs
 
       - name: Run default-profile E2E suite
         shell: pwsh
@@ -126,7 +147,7 @@ jobs:
 
       - name: Upload E2E signal artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-default-suite-${{ github.run_number }}
           if-no-files-found: ignore

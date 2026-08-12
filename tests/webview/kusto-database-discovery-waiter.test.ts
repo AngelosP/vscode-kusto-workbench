@@ -36,4 +36,20 @@ describe('bundled Kusto database discovery waiter', () => {
 
 		await expect(request).resolves.toEqual(['DbB', 'DbA']);
 	});
+
+	it('rejects a valid correlated error and ignores other connection errors', async () => {
+		const postMessage = vi.fn();
+		(window as any).vscode = { postMessage };
+		const request = e2eIdentityRequestDatabases('connection-1', 1000);
+		const outbound = postMessage.mock.calls[0]?.[0];
+
+		window.dispatchEvent(new MessageEvent('message', { data: {
+			type: 'databasesError', boxId: outbound.boxId, connectionId: 'connection-2', error: 'unrelated',
+		} }));
+		window.dispatchEvent(new MessageEvent('message', { data: {
+			type: 'databasesError', boxId: outbound.boxId, connectionId: 'connection-1', error: 'offline',
+		} }));
+
+		await expect(request).rejects.toThrow('Database discovery failed for connection-1: offline');
+	});
 });

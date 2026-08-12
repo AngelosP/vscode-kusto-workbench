@@ -2798,6 +2798,32 @@ describe('persistence round-trip', () => {
 		}
 	});
 
+	it('adopts automatic owner proof enrichment without hiding authored target changes', () => {
+		vi.useFakeTimers();
+		try {
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentUri: 'file:///tmp/owner-enrichment.kqlx',
+				state: { sections: [{
+					id: 'query_owner_enrichment', type: 'query', query: 'print Value=1',
+					clusterUrl: 'https://owner.kusto.windows.net', database: 'Db',
+				}] },
+			});
+			const query = document.getElementById('query_owner_enrichment') as HTMLElement & { serialize: () => unknown };
+			query.serialize = () => ({
+				id: 'query_owner_enrichment', type: 'query', query: 'print Value=1',
+				clusterUrl: 'https://owner.kusto.windows.net', connectionIdHint: 'connection-1', database: 'Db',
+			});
+			vi.mocked(postMessageToHost).mockClear();
+
+			schedulePersist();
+			vi.advanceTimersByTime(500);
+			expect(postMessageToHost).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('does not flush restored non-session files on beforeunload', () => {
 		pState.isSessionFile = false;
 		const resultJson = JSON.stringify({
@@ -3942,6 +3968,10 @@ describe('persistence round-trip', () => {
 			expect(handleDocumentDataMessage(projection(2))).toBe(true);
 			expect(document.getElementById(querySection.id)).toBe(query);
 			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
+			vi.mocked(postMessageToHost).mockClear();
+			schedulePersist();
+			vi.advanceTimersByTime(500);
+			expect(postMessageToHost).not.toHaveBeenCalled();
 
 			testState.kustoConnections.push(ownedKustoConnection({
 				id: 'late-handoff', clusterUrl: querySection.clusterUrl,
@@ -3957,6 +3987,8 @@ describe('persistence round-trip', () => {
 				querySection.id,
 				{ label: 'Results', showExecutionTime: true },
 			);
+			vi.advanceTimersByTime(500);
+			expect(postMessageToHost).not.toHaveBeenCalled();
 		} finally {
 			vi.useRealTimers();
 		}

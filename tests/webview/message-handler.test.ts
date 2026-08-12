@@ -793,6 +793,34 @@ describe('message-handler dispatch', () => {
 		)).toHaveLength(0);
 	});
 
+	it('snapshots URL delivery proxies before dispatcher field reads', () => {
+		for (const delivery of [
+			{
+				type: 'urlContent', boxId: 'url-section', requestId: 'request-1',
+				requestedUrl: 'https://example.com/data.csv', url: 'https://example.com/data.csv',
+				contentType: 'text/csv', status: 200, byteLength: 12,
+				kind: ['csv'], body: 'Name\nFORGED', truncated: false,
+			},
+			{
+				type: 'urlContent', boxId: 'url-section', requestId: 'request-1',
+				requestedUrl: 'https://example.com/data.csv', url: 'https://example.com/data.csv',
+				contentType: 'text/csv', status: 200, byteLength: 12,
+				kind: 'csv', body: 'Name\nCURRENT', truncated: false,
+			},
+		]) {
+			let propertyReads = 0;
+			const proxy = new Proxy(delivery, {
+				get() {
+					propertyReads++;
+					throw new Error('dispatcher property read');
+				},
+			});
+
+			window.dispatchEvent(new MessageEvent('message', { data: proxy }));
+			expect(propertyReads).toBe(0);
+		}
+	});
+
 	it('settles control-command syntax only for a valid result with the current request identity', async () => {
 		const monaco = await import('../../src/webview/monaco/monaco.js');
 		const commandLower = '.show tables';

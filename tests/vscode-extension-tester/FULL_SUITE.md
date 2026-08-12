@@ -85,7 +85,9 @@ The orchestrator writes ignored artifacts under `tests/vscode-extension-tester/h
 - `full-suite-<timestamp>/command-output/` for raw `vscode-ext-test` output.
 - Per-test framework artifacts remain in `tests/vscode-extension-tester/runs/<profile>/<test-id>/<timestamp>/` with `report.md`, `results.json`, screenshots, and output channel logs.
 
-The suite summaries record the VS Code version requested for the run. Scheduled CI resolves this to the latest stable numeric version before invoking the runner, so the artifact trail shows which editor release produced the signal.
+The suite summaries record the resolved VS Code version, installed `vscode-ext-test` version, Node.js version, and CI commit SHA. Scheduled CI resolves the default `latest` editor request to a stable numeric version before invoking the runner, so the artifact trail identifies the complete toolchain that produced the signal.
+
+The orchestrator retries only transient VS Code download failures that happen before launch and before any structured test result exists. Retryable signals are limited to download output with `ECONNRESET`, `ETIMEDOUT`, `EAI_AGAIN`, or HTTP 429/502/503/504. Assertion failures, step timeouts, post-launch failures, and runs with `results.json` are never retried. Every attempt remains in the raw command log and the run record reports its attempt count.
 
 ## Per-Test Workspace Settings
 
@@ -150,7 +152,7 @@ $package = ($release.assets | Where-Object name -match '^vscode-ext-test-\d+\.\d
 npm install -g $package
 ```
 
-Do not rely on a local symlink or a preinstalled global CLI for scheduled runs. Scheduled runs use the latest released framework by default so new framework step definitions are picked up automatically. When validating a candidate or rolling back, run the workflow manually with the `vscodeExtTestPackage` input set to a specific tarball URL.
+Do not rely on a local symlink or a preinstalled global CLI for scheduled runs. Scheduled runs use the latest released framework and latest stable VS Code by default so compatibility drift remains visible. For diagnosis, run the workflow manually with `vscodeExtTestPackage` set to a specific tarball URL and/or `vscodeVersion` set to a numeric version. These inputs do not change the scheduled defaults.
 
 Authenticated coverage remains opt-in for local or future prepared self-hosted runs with `npm run test:e2e:full:behavior`.
 

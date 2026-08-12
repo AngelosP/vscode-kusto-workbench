@@ -57,6 +57,51 @@ describe('HostUrlContentApplicationHandler', () => {
 		expect(postMessage).not.toHaveBeenCalled();
 	});
 
+	it('claims malformed recognized requests before coercion or fetch effects', async () => {
+		const fetchUrl = vi.fn();
+		const { handler, postMessage } = createHandler(fetchUrl);
+		const inheritedBoxId = Object.assign(Object.create({ boxId: 'url-section' }), {
+			type: 'fetchUrl', url: 'https://example.com/data.csv', requestId: 'url-request',
+		});
+		for (const message of [
+			Object.assign([], fetchMessage('https://example.com/data.csv')),
+			Object.assign(() => undefined, fetchMessage('https://example.com/data.csv')),
+			inheritedBoxId,
+			{ ...fetchMessage('https://example.com/data.csv'), boxId: ['url-section'] },
+			{ ...fetchMessage('https://example.com/data.csv'), url: { href: 'https://example.com' } },
+			{ ...fetchMessage('https://example.com/data.csv'), requestId: 42 },
+		]) {
+			await handler.handleMessage(message as never);
+		}
+
+		expect(fetchUrl).not.toHaveBeenCalled();
+		expect(postMessage).not.toHaveBeenCalled();
+	});
+
+	it('snapshots a valid request proxy before host field reads', async () => {
+		let propertyReads = 0;
+		const request = fetchMessage('https://example.com/data.csv');
+		const requestProxy = new Proxy(request, {
+			get() {
+				propertyReads++;
+				throw new Error('property read');
+			},
+		});
+		const fetchUrl = vi.fn(async () => createResponse('Name\nalpha', {
+			status: 200, contentType: 'text/csv', url: request.url,
+		}));
+		const { handler, postMessage } = createHandler(fetchUrl);
+
+		await handler.handleMessage(requestProxy);
+
+		expect(propertyReads).toBe(0);
+		expect(fetchUrl).toHaveBeenCalledOnce();
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'urlContent', boxId: request.boxId, requestId: request.requestId,
+			requestedUrl: request.url, kind: 'csv', body: 'Name\nalpha',
+		}));
+	});
+
 	it('preserves normalized request identity for invalid and non-HTTP URLs', async () => {
 		const fetchUrl = vi.fn();
 		const { handler, postMessage } = createHandler(fetchUrl);
@@ -138,6 +183,24 @@ describe('HostUrlContentApplicationHandler', () => {
 		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'urlContent', url, contentType, kind, body, truncated: false,
 		}));
+	});
+
+	it('publishes an empty text body without dropping it', async () => {
+		const fetchUrl = vi.fn(async () => createResponse('', {
+			status: 200,
+			contentType: 'text/plain',
+			url: 'https://example.com/empty.txt',
+		}));
+		const { handler, postMessage } = createHandler(fetchUrl);
+
+		await handler.handleMessage(fetchMessage('https://example.com/empty.txt'));
+
+		expect(postMessage).toHaveBeenCalledWith({
+			type: 'urlContent', boxId: 'url-section', requestId: 'url-request',
+			requestedUrl: 'https://example.com/empty.txt', url: 'https://example.com/empty.txt',
+			contentType: 'text/plain', status: 200, kind: 'text', body: '',
+			truncated: false, byteLength: 0,
+		});
 	});
 
 	it('sniffs HTML bodies and does not classify an HTML response as CSV by extension', async () => {
@@ -236,19 +299,94 @@ describe('HostUrlContentApplicationHandler', () => {
 		});
 	});
 
-	it('preserves fetch failure messages and the generic non-Error fallback', async () => {
+	it('preserves nonblank fetch failure messages and canonicalizes blank or non-Error failures', async () => {
 		const fetchUrl = vi.fn()
 			.mockRejectedValueOnce(new Error('socket closed'))
+			.mockRejectedValueOnce(new Error(''))
 			.mockRejectedValueOnce('failed');
 		const { handler, postMessage } = createHandler(fetchUrl);
 
 		await handler.handleMessage(fetchMessage('https://example.com/a'));
 		await handler.handleMessage(fetchMessage('https://example.com/b', 'url-b', 'request-b'));
+		await handler.handleMessage(fetchMessage('https://example.com/c', 'url-c', 'request-c'));
 
 		expect(postMessage.mock.calls.map(call => call[0])).toEqual([
 			{
 				type: 'urlError', boxId: 'url-section', requestId: 'url-request',
 				requestedUrl: 'https://example.com/a', error: 'socket closed',
+			},
+			{
+				type: 'urlError', boxId: 'url-b', requestId: 'request-b',
+				requestedUrl: 'https://example.com/b', error: 'Failed to fetch URL.',
+			},
+			{
+				type: 'urlError', boxId: 'url-c', requestId: 'request-c',
+				requestedUrl: 'https://example.com/c', error: 'Failed to fetch URL.',
+			},
+		]);
+	});
+
+	it('extracts proxy errors without property reads and ignores hostile accessors', async () => {
+		let propertyReads = 0;
+		const proxiedError = new Proxy(new Error('proxy failure'), {
+			get() {
+				propertyReads++;
+				throw new Error('property read');
+			},
+		});
+		const accessorError = {};
+		Object.defineProperty(accessorError, 'message', {
+			get() {
+				propertyReads++;
+				throw new Error('accessor read');
+			},
+		});
+		const fetchUrl = vi.fn()
+			.mockRejectedValueOnce(proxiedError)
+			.mockRejectedValueOnce(accessorError);
+		const { handler, postMessage } = createHandler(fetchUrl);
+
+		await handler.handleMessage(fetchMessage('https://example.com/a'));
+		await handler.handleMessage(fetchMessage('https://example.com/b', 'url-b', 'request-b'));
+
+		expect(propertyReads).toBe(0);
+		expect(postMessage.mock.calls.map(call => call[0])).toEqual([
+			{
+				type: 'urlError', boxId: 'url-section', requestId: 'url-request',
+				requestedUrl: 'https://example.com/a', error: 'proxy failure',
+			},
+			{
+				type: 'urlError', boxId: 'url-b', requestId: 'request-b',
+				requestedUrl: 'https://example.com/b', error: 'Failed to fetch URL.',
+			},
+		]);
+	});
+
+	it('bounds cyclic and unbounded error prototype inspection', async () => {
+		let cyclicError: object;
+		cyclicError = new Proxy({}, {
+			getPrototypeOf: () => cyclicError,
+		});
+		let prototypeReads = 0;
+		const createUnboundedError = (): object => new Proxy({}, {
+			getPrototypeOf() {
+				prototypeReads++;
+				return createUnboundedError();
+			},
+		});
+		const fetchUrl = vi.fn()
+			.mockRejectedValueOnce(cyclicError)
+			.mockRejectedValueOnce(createUnboundedError());
+		const { handler, postMessage } = createHandler(fetchUrl);
+
+		await handler.handleMessage(fetchMessage('https://example.com/a'));
+		await handler.handleMessage(fetchMessage('https://example.com/b', 'url-b', 'request-b'));
+
+		expect(prototypeReads).toBe(32);
+		expect(postMessage.mock.calls.map(call => call[0])).toEqual([
+			{
+				type: 'urlError', boxId: 'url-section', requestId: 'url-request',
+				requestedUrl: 'https://example.com/a', error: 'Failed to fetch URL.',
 			},
 			{
 				type: 'urlError', boxId: 'url-b', requestId: 'request-b',
@@ -276,6 +414,18 @@ describe('HostUrlContentApplicationHandler', () => {
 		expect(postMessage).toHaveBeenCalledWith({
 			type: 'urlError', boxId: 'url-section', requestId: 'url-request',
 			requestedUrl: 'https://example.com/slow', error: 'Timed out after 15s.',
+		});
+	});
+
+	it('preserves the timeout terminal for a native AbortError DOMException', async () => {
+		const fetchUrl = vi.fn().mockRejectedValue(new DOMException('This operation was aborted', 'AbortError'));
+		const { handler, postMessage } = createHandler(fetchUrl);
+
+		await handler.handleMessage(fetchMessage('https://example.com/aborted'));
+
+		expect(postMessage).toHaveBeenCalledWith({
+			type: 'urlError', boxId: 'url-section', requestId: 'url-request',
+			requestedUrl: 'https://example.com/aborted', error: 'Timed out after 15s.',
 		});
 	});
 

@@ -41,6 +41,7 @@ import { deleteCachedSchemasForConnections, getSchemaCacheFileUri, SCHEMA_CACHE_
 import { KustoAuthPreferenceService } from './kustoAuthPreferenceService';
 import { KustoConnectionCache } from './kustoConnectionCache';
 import { normalizeKustoAuthorityId } from '../shared/kustoAuth';
+import { sqlConnectionTargetSignature } from '../shared/sqlConnectionIdentity';
 
 import { getWorkbenchLogger, registerWorkbenchLogger } from './workbenchLogger';
 import { EditorAssociationManager } from './firstLaunch/editorAssociationManager';
@@ -192,6 +193,127 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		const testAuthAccount = { id: 'kusto-workbench-test-account', label: 'Kusto Workbench test account' };
 		const testAuthPreferences = KustoAuthPreferenceService.getInstance(context);
 		const testConnectionCache = new KustoConnectionCache(context);
+		const persistedResultFixturePrefix = 'E2E Persisted Result Fixture';
+		const persistedResultKustoCluster = 'https://persisted-results-e2e.kusto.windows.net';
+		const persistedResultKustoDatabase = 'PersistedDb';
+		const persistedResultSqlServer = 'offline-sql-e2e.database.windows.net';
+		const persistedResultSqlDatabase = 'OfflineWarehouse';
+		const persistedResultAuthAccount = {
+			id: 'kusto-workbench-persisted-result-test-account',
+			label: 'Kusto Workbench persisted-result test account',
+		};
+		const cleanupPersistedResultFixtureState = async (): Promise<void> => {
+			for (const connection of connectionManager.getConnections()) {
+				if (!String(connection.name || '').startsWith(persistedResultFixturePrefix)
+					&& kustoClusterKey(connection.clusterUrl) !== kustoClusterKey(persistedResultKustoCluster)) continue;
+				await testConnectionCache.clearConnection(connection.id);
+				await testAuthPreferences.removeConnection(connection.id);
+				await connectionManager.removeConnection(connection.id);
+			}
+			await connectionManager.removeLeaveNoTrace(persistedResultKustoCluster);
+			await testAuthPreferences.clearTokenOverride(undefined, persistedResultAuthAccount.id);
+			await sqlWorkbenchService!.ready();
+			for (const connection of sqlWorkbenchService!.connectionManager.getConnections()) {
+				if (!String(connection.name || '').startsWith(persistedResultFixturePrefix)
+					&& String(connection.serverUrl || '').trim().toLowerCase() !== persistedResultSqlServer) continue;
+				await sqlWorkbenchService!.setLeaveNoTraceConnection(connection.id, false);
+				await sqlWorkbenchService!.connectionManager.removeConnection(connection.id);
+			}
+		};
+		const persistedResultFixtureStartupCleanup = cleanupPersistedResultFixtureState().catch(error => {
+			getWorkbenchLogger().warn(`[e2e] failed to clean persisted-result fixtures: ${error instanceof Error ? error.name : 'Error'}`);
+		});
+		const preparePersistedResultFixture = async (request: unknown): Promise<{ outputPath: string; connectionId: string }> => {
+			if (!request || typeof request !== 'object' || Array.isArray(request)) {
+				throw new Error('Persisted-result fixture request must be an object.');
+			}
+			const candidate = request as { engine?: unknown; templatePath?: unknown; outputPath?: unknown };
+			const engine = String(candidate.engine || '').trim();
+			const templatePath = String(candidate.templatePath || '').trim();
+			const outputPath = String(candidate.outputPath || '').trim();
+			if ((engine !== 'kusto' && engine !== 'sql') || !templatePath || !outputPath) {
+				throw new Error('Persisted-result fixture requires engine, templatePath, and outputPath.');
+			}
+			await persistedResultFixtureStartupCleanup;
+			await cleanupPersistedResultFixtureState();
+			const absoluteTemplatePath = path.isAbsolute(templatePath) ? templatePath : path.join(context.extensionPath, templatePath);
+			const absoluteOutputPath = path.isAbsolute(outputPath) ? outputPath : path.join(context.extensionPath, outputPath);
+			const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(absoluteTemplatePath));
+			const fixture = JSON.parse(Buffer.from(bytes).toString('utf8')) as { state?: { sections?: Array<Record<string, unknown>> } };
+			const section = fixture.state?.sections?.[0];
+			if (!section || typeof section.resultJson !== 'string') {
+				throw new Error('Persisted-result template must contain one section with resultJson.');
+			}
+			let connectionId = '';
+			if (engine === 'kusto') {
+				const connection = await connectionManager.addConnection({
+					name: `${persistedResultFixturePrefix} Kusto`,
+					clusterUrl: persistedResultKustoCluster,
+					database: persistedResultKustoDatabase,
+				});
+				await testAuthPreferences.setExplicitAccount(connection.id, persistedResultAuthAccount);
+				await testAuthPreferences.setTokenOverride(
+					connection.authorityId,
+					persistedResultAuthAccount.id,
+					'kusto-workbench-offline-e2e-token',
+					[connection.id],
+				);
+				const accountPartition = testAuthPreferences.getAccountPartition(connection.authorityId, persistedResultAuthAccount.id);
+				await testConnectionCache.setDatabases(connection.id, accountPartition, [persistedResultKustoDatabase]);
+				const schema = {
+					tables: ['PersistedFixture'],
+					columnTypesByTable: {
+						PersistedFixture: { RowId: 'long' },
+					},
+				};
+				await writeCachedSchemaToDisk(
+					context.globalStorageUri,
+					schemaCacheKey(connection.clusterUrl, persistedResultKustoDatabase, connection.id, accountPartition),
+					{
+						schema,
+						timestamp: Date.now(),
+						version: SCHEMA_CACHE_VERSION,
+						clusterUrl: connection.clusterUrl,
+						database: persistedResultKustoDatabase,
+						connectionId: connection.id,
+						accountPartition,
+					},
+				);
+				Object.assign(section, {
+					clusterUrl: connection.clusterUrl,
+					database: persistedResultKustoDatabase,
+					kustoAccountPartition: accountPartition,
+					kustoLeaveNoTraceRevision: connectionManager.getLeaveNoTraceRevision(connection.clusterUrl),
+				});
+				delete section.connectionIdHint;
+				connectionId = connection.id;
+			} else {
+				await sqlWorkbenchService!.ready();
+				const connection = await sqlWorkbenchService!.connectionManager.addConnection({
+					name: `${persistedResultFixturePrefix} SQL`,
+					dialect: 'mssql',
+					serverUrl: persistedResultSqlServer,
+					database: persistedResultSqlDatabase,
+					authType: 'sql-login',
+					username: 'persisted_results_e2e',
+				}, 'persisted-results-e2e-only');
+				await sqlWorkbenchService!.setLeaveNoTraceConnection(connection.id, false);
+				Object.assign(section, {
+					serverUrl: connection.serverUrl,
+					connectionIdHint: connection.id,
+					targetSignature: sqlConnectionTargetSignature(connection),
+					database: persistedResultSqlDatabase,
+					revocationGeneration: sqlWorkbenchService!.leaveNoTracePolicy.getRevocationGeneration(connection.id),
+				});
+				connectionId = connection.id;
+			}
+			await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(absoluteOutputPath)));
+			await vscode.workspace.fs.writeFile(
+				vscode.Uri.file(absoluteOutputPath),
+				Buffer.from(`${JSON.stringify(fixture, null, 2)}\n`, 'utf8'),
+			);
+			return { outputPath: absoluteOutputPath, connectionId };
+		};
 		const authorityLivePrefix = 'E2E Authority ID Live';
 		const authorityLiveJournalKey = 'kusto.test.authorityLiveFixture.v1';
 		type AuthorityLiveJournal = { connectionIds: string[] };
@@ -456,10 +578,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			for (const cluster of testClusters) {
 				await connectionManager.removeLeaveNoTrace(cluster);
 			}
+			await testAuthPreferences.clearTokenOverride(undefined, testAuthAccount.id);
 		};
 
 		context.subscriptions.push(
 			vscode.commands.registerCommand('kustoWorkbench.test.runAuthorityLiveFixture', runAuthorityLiveFixture),
+			vscode.commands.registerCommand('kustoWorkbench.test.preparePersistedResultFixture', preparePersistedResultFixture),
 			vscode.commands.registerCommand('kustoWorkbench.test.cleanupAuthorityLiveFixture', async () => {
 				await authorityLiveStartupCleanup;
 				await cleanupAuthorityLiveState();
@@ -588,6 +712,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				};
 			}),
 			vscode.commands.registerCommand('kustoWorkbench.test.seedKustoIdentityChecklist', async () => {
+				await testAuthPreferences.waitForProviderAccountRefresh();
 				await cleanupIdentityChecklistState();
 				const seeds = [
 					{ name: `${testPrefix} Prod`, clusterUrl: 'https://identity-prod.kusto.windows.net', database: 'ChecklistDb' },
@@ -596,13 +721,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					{ name: `${testPrefix} Foobar`, clusterUrl: 'https://identity-foobar.kusto.windows.net', database: 'ChecklistDb' },
 					{ name: `${testPrefix} Regional`, clusterUrl: 'https://identityadx.westus.kusto.windows.net', database: 'ChecklistDb' },
 				];
-				const added = [] as Array<{ id: string; name: string; clusterUrl: string; database?: string }>;
+				const added = [] as Array<{ id: string; name: string; clusterUrl: string; authorityId?: string; database?: string }>;
 				for (const seed of seeds) {
-					added.push(await connectionManager.addConnection(seed));
+					const connection = await connectionManager.addConnection(seed);
+					await testAuthPreferences.setExplicitAccount(connection.id, testAuthAccount);
+					added.push(connection);
 				}
-				const cached = context.globalState.get<Record<string, string[]> | undefined>(STORAGE_KEYS.cachedDatabases) || {};
-				cached[kustoClusterKey('identityadx.westus')] = ['ChecklistDb', 'CachedOnlyDb'];
-				await context.globalState.update(STORAGE_KEYS.cachedDatabases, cached);
 				const favoritesRaw = context.globalState.get<unknown>(STORAGE_KEYS.favorites);
 				const favorites = Array.isArray(favoritesRaw) ? favoritesRaw.filter((favorite: any) =>
 					!String(favorite?.name || '').startsWith(testPrefix) && !isTestCluster(favorite?.clusterUrl)
@@ -610,6 +734,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				favorites.push({ name: `${testPrefix} Regional Favorite`, clusterUrl: 'https://identityadx.westus.kusto.windows.net', database: 'ChecklistDb' });
 				await context.globalState.update(STORAGE_KEYS.favorites, favorites);
 				await connectionManager.addLeaveNoTrace('https://identityadx.westus.kusto.windows.net');
+				await testAuthPreferences.setTokenOverride(
+					undefined,
+					testAuthAccount.id,
+					'kusto-workbench-identity-e2e-token',
+					added.map(connection => connection.id),
+				);
+				for (const connection of added) {
+					const accountPartition = testAuthPreferences.getAccountPartition(connection.authorityId, testAuthAccount.id);
+					const databases = kustoClusterKey(connection.clusterUrl) === kustoClusterKey('identityadx.westus')
+						? ['ChecklistDb', 'CachedOnlyDb']
+						: ['ChecklistDb'];
+					await testConnectionCache.setDatabases(connection.id, accountPartition, databases);
+				}
 				return { added, cachedKey: kustoClusterKey('identityadx.westus') };
 			}),
 			vscode.commands.registerCommand('kustoWorkbench.test.assertClipboardContains', async (expected: string) => {

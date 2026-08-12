@@ -399,4 +399,57 @@ describe('postMessageToHost', () => {
 			delete (window as any).__e2eCaptureHostMessage;
 		}
 	});
+
+	it('posts valid URL requests and rejects malformed ones before E2E capture', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const request = {
+				type: 'fetchUrl' as const, boxId: 'url-section',
+				url: 'https://example.com/data.csv', requestId: 'url-request-1',
+			};
+			postMessageToHost(request);
+
+			expect(capture.mock.calls[0]?.[0]).toEqual(request);
+			expect(capture.mock.calls[0]?.[0]).not.toBe(request);
+			expect(postMessage.mock.calls[0]?.[0]).toEqual(request);
+			expect(postMessage.mock.calls[0]?.[0]).not.toBe(request);
+			capture.mockClear();
+			postMessage.mockClear();
+			let propertyReads = 0;
+			const requestProxy = new Proxy(request, {
+				get() {
+					propertyReads++;
+					throw new Error('property read');
+				},
+			});
+			postMessageToHost(requestProxy);
+			expect(capture.mock.calls[0]?.[0]).toEqual(request);
+			expect(postMessage.mock.calls[0]?.[0]).toEqual(request);
+			expect(propertyReads).toBe(0);
+			capture.mockClear();
+			postMessage.mockClear();
+
+			const inheritedRequestId = Object.assign(Object.create({ requestId: request.requestId }), {
+				type: request.type, boxId: request.boxId, url: request.url,
+			});
+			for (const malformed of [
+				{ ...request, boxId: '' },
+				{ ...request, url: 42 },
+				{ ...request, requestId: [] },
+				inheritedRequestId,
+				Object.assign([], request),
+				Object.assign(() => undefined, request),
+			]) {
+				postMessageToHost(malformed as unknown as Parameters<typeof postMessageToHost>[0]);
+			}
+
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
 });

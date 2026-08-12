@@ -175,6 +175,7 @@ describe('__kustoGetChartDatasetsInDomOrder', () => {
 			type: 'urlContent', boxId: url.boxId, requestId: 'chart-url-request',
 			requestedUrl: 'https://example.com/data.csv', url: 'https://example.com/data.csv',
 			kind: 'csv', contentType: 'text/csv', status: 200, body: 'Name,Score\nalpha,1',
+			truncated: false, byteLength: 18,
 		} }));
 		await url.updateComplete;
 

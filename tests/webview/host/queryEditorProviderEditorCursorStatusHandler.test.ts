@@ -56,6 +56,7 @@ vi.mock('../../../src/host/tutorials/embeddedTutorialWebviewHost', () => ({
 
 import { QueryEditorProvider } from '../../../src/host/queryEditorProvider';
 import type { IncomingWebviewMessage } from '../../../src/host/queryEditorTypes';
+import { getQueryEditorHtml } from '../../../src/host/queryEditorHtml';
 
 type StructuralCursorStatusHandler = {
 	handleMessage: ReturnType<typeof vi.fn>;
@@ -121,6 +122,7 @@ describe('QueryEditorProvider editor cursor-status application', () => {
 		};
 		const postMessage = vi.fn(async () => true);
 		const provider = createProvider(editorCursorStatusBar, cursorStatusApplication, postMessage);
+		provider.documentUri = 'file:///tmp/favorites-source.kqlx';
 		const update = {
 			type: 'editorCursorPositionChanged',
 			boxId: '  query_13  ',
@@ -206,6 +208,7 @@ describe('QueryEditorProvider editor cursor-status application', () => {
 		};
 		const postMessage = vi.fn(async () => true);
 		const provider = createProvider(editorCursorStatusBar, cursorStatusApplication, postMessage);
+		provider.documentUri = 'file:///tmp/favorites-source.kqlx';
 		let onDidChangeViewState!: () => void;
 		const panel = {
 			visible: true,
@@ -225,6 +228,12 @@ describe('QueryEditorProvider editor cursor-status application', () => {
 
 		await provider.initializeWebviewPanel(panel, { registerMessageHandler: false });
 
+		expect(getQueryEditorHtml).toHaveBeenCalledWith(
+			panel.webview,
+			expect.anything(),
+			expect.anything(),
+			expect.objectContaining({ documentTitle: 'favorites-source.kqlx' }),
+		);
 		expect(cursorStatusApplication.setPanelVisible).toHaveBeenNthCalledWith(1, true);
 		expect(cursorStatusApplication.setPanelVisible).toHaveBeenNthCalledWith(2, true);
 		(panel as unknown as { visible: boolean }).visible = false;

@@ -1,0 +1,13 @@
+{
+  "env": {
+    "KUSTO_WORKBENCH_PERF": "1"
+  },
+  "workspaceSettings": {
+    "workbench.editor.enablePreview": false,
+    "workbench.editorAssociations": {
+      "*.kqlx": "kusto.kqlxEditor",
+      "*.kql": "kusto.kqlCompatEditor",
+      "*.csl": "kusto.kqlCompatEditor"
+    }
+  }
+}
