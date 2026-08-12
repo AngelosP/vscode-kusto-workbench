@@ -3,8 +3,12 @@ import * as vscode from 'vscode';
 
 import { getErrorMessage } from './queryEditorUtils';
 import type { IncomingWebviewMessage } from './queryEditorTypes';
-
-type ResolveResourceUriMessage = Extract<IncomingWebviewMessage, { type: 'resolveResourceUri' }>;
+import {
+	isResourceUriWebviewMessageType,
+	parseResourceUriWebviewMessage,
+	type ResourceUriHostMessage,
+	type ResourceUriRequestMessage,
+} from '../shared/resourceUriProtocol';
 
 export interface ResourceUriApplicationHandler {
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined;
@@ -12,7 +16,7 @@ export interface ResourceUriApplicationHandler {
 }
 
 export type ResourceUriApplicationHandlerOptions = {
-	postMessage: (message: unknown) => Thenable<boolean>;
+	postMessage: (message: ResourceUriHostMessage) => Thenable<boolean>;
 	asWebviewUri: (uri: vscode.Uri) => vscode.Uri | Thenable<vscode.Uri | undefined> | undefined;
 	stat?: (uri: vscode.Uri) => Thenable<vscode.FileStat>;
 	getWorkspaceFolder?: (uri: vscode.Uri) => vscode.WorkspaceFolder | undefined;
@@ -35,8 +39,10 @@ export class HostResourceUriApplicationHandler implements ResourceUriApplication
 	}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
-		if (message.type !== 'resolveResourceUri') return undefined;
-		return this.resolveResourceUri(message);
+		if (!isResourceUriWebviewMessageType(message)) return undefined;
+		const parsed = parseResourceUriWebviewMessage(message);
+		if (!parsed.ok) return Promise.resolve();
+		return this.resolveResourceUri(parsed.value);
 	}
 
 	dispose(): void {
@@ -45,25 +51,32 @@ export class HostResourceUriApplicationHandler implements ResourceUriApplication
 		this.resolvedResourceUriCache.clear();
 	}
 
-	private postMessage(message: unknown): void {
+	private postMessage(message: ResourceUriHostMessage): void {
 		if (this.disposed) return;
 		this.options.postMessage(message);
 	}
 
-	private reply(requestId: string, payload: { ok: boolean; uri?: string; error?: string }): void {
+	private reply(
+		requestId: string,
+		payload: { ok: true; uri: string } | { ok: false; error: string },
+	): void {
 		if (this.disposed) return;
 		try {
-			this.postMessage({ type: 'resolveResourceUriResult', requestId, ...payload });
+			if (payload.ok) {
+				this.postMessage({ type: 'resolveResourceUriResult', requestId, ok: true, uri: payload.uri });
+			} else {
+				this.postMessage({ type: 'resolveResourceUriResult', requestId, ok: false, error: payload.error });
+			}
 		} catch {
 			// ignore
 		}
 	}
 
-	private async resolveResourceUri(message: ResolveResourceUriMessage): Promise<void> {
+	private async resolveResourceUri(message: ResourceUriRequestMessage): Promise<void> {
 		if (this.disposed) return;
-		const requestId = String(message.requestId || '');
-		const rawPath = String(message.path || '');
-		const rawBase = typeof message.baseUri === 'string' ? String(message.baseUri || '') : '';
+		const requestId = message.requestId;
+		const rawPath = message.path;
+		const rawBase = message.baseUri ?? '';
 
 		if (!requestId) {
 			return;

@@ -792,7 +792,7 @@ export class KwDataTable extends LitElement {
 		this._filterDialogColIndex = null;
 		const returnFocus = this._filterDialogReturnFocus;
 		this._filterDialogReturnFocus = null;
-		void this.updateComplete.then(() => returnFocus?.isConnected && returnFocus.focus());
+		void this.updateComplete.then(() => returnFocus?.isConnected && returnFocus.focus({ preventScroll: true }));
 	}
 
 	private _toggleSortDialog(event: Event): void {
@@ -808,7 +808,7 @@ export class KwDataTable extends LitElement {
 		this._sortDialogOpen = false;
 		const returnFocus = this._sortDialogReturnFocus;
 		this._sortDialogReturnFocus = null;
-		void this.updateComplete.then(() => returnFocus?.isConnected && returnFocus.focus());
+		void this.updateComplete.then(() => returnFocus?.isConnected && returnFocus.focus({ preventScroll: true }));
 	}
 
 	// ── Unique values (delegated to <kw-unique-values-dialog>) ──

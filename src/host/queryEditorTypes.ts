@@ -9,6 +9,7 @@ import type { SqlDatabaseDiscoveryWebviewMessage } from '../shared/sqlDatabaseDi
 import type { SqlSchemaWebviewMessage } from '../shared/sqlSchemaProtocol';
 import type { KqlLanguageWebviewMessage } from '../shared/kqlLanguageProtocol';
 import type { ControlCommandSyntaxWebviewMessage } from '../shared/controlCommandSyntaxProtocol';
+import type { ResourceUriWebviewMessage } from '../shared/resourceUriProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -255,7 +256,7 @@ export type IncomingWebviewMessage =
 	| KustoDatabaseDiscoveryWebviewMessage
 	| { type: 'saveLastSelection'; connectionId: string; database?: string }
 	| { type: 'seeCachedValues' }
-	| { type: 'resolveResourceUri'; requestId: string; path: string; baseUri?: string }
+	| ResourceUriWebviewMessage
 	| { type: 'requestAddFavorite'; connectionId: string; clusterUrl: string; database: string; defaultName?: string; boxId?: string }
 	| { type: 'removeFavorite'; connectionId: string; clusterUrl: string; database: string; boxId?: string }
 	| { type: 'confirmRemoveFavorite'; requestId: string; label?: string; connectionId: string; clusterUrl: string; database: string; boxId?: string }

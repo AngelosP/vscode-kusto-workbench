@@ -4,9 +4,8 @@ export const styles = css`
 		*, *::before, *::after { box-sizing: border-box; }
 
 		:host {
-			display: flex;
-			position: relative;
-			flex-direction: column;
+			display: grid;
+			grid-template: minmax(0, 1fr) / minmax(0, 1fr);
 			font-family: var(--vscode-font-family);
 			font-size: var(--vscode-font-size);
 			color: var(--vscode-editor-foreground);
@@ -17,6 +16,7 @@ export const styles = css`
 			box-sizing: border-box;
 			overflow: hidden;
 		}
+		.manager-content { grid-area: 1 / 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--vscode-editor-background); }
 
 		h1 { font-size: 16px; margin: 0; font-weight: 600; white-space: nowrap; }
 
@@ -202,10 +202,11 @@ export const styles = css`
 		.loading-state svg { width: 16px; height: 16px; vertical-align: middle; margin-right: 4px; }
 
 		/* Modal */
-		.modal-overlay { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.5); z-index: 10000; display: flex; align-items: center; justify-content: center; }
-		.modal-content { background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border); border-radius: 8px; width: 440px; max-width: 90%; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3); }
+		.modal-overlay { color: inherit; background: transparent; border: 0; padding: 0; width: 440px; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); overflow: hidden; }
+		.modal-overlay::backdrop { background: rgba(0, 0, 0, 0.5); }
+		.modal-content { background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border); border-radius: 8px; width: 100%; max-height: calc(100vh - 32px); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3); }
 		.modal-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--vscode-panel-border); }
-		.modal-body { padding: 16px 20px; }
+		.modal-body { min-height: 0; overflow-y: auto; padding: 16px 20px; }
 		.modal-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--vscode-panel-border); }
 		.form-group { margin-bottom: 12px; }
 		.form-group label { display: block; font-size: 12px; margin-bottom: 4px; }

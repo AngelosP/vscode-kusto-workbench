@@ -376,7 +376,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::892:15',
 	'src/host/queryEditorProvider.ts::postMessage::postMessage::1281:21',
 	'src/host/querySharingApplicationHandler.ts::postMessage::postMessage::32:10',
-	'src/host/resourceUriApplicationHandler.ts::postMessage::postMessage::50:3',
+	'src/host/resourceUriApplicationHandler.ts::postMessage::postMessage::56:3',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1776:13',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1780:10',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageContained::postMessageRequiredContained::2050:8',
@@ -1330,6 +1330,52 @@ describe('Message Protocol Contract', () => {
 			.toBeLessThan(dispatcher.indexOf('window.__kustoRefreshActiveCaretDocs()'));
 	});
 
+	it('keeps resource URI requests and results on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/resourceUriProtocol.ts',
+			'ResourceUriWebviewMessage',
+		)).toEqual(['resolveResourceUri']);
+		expect(extractTypeDiscriminants(
+			'src/shared/resourceUriProtocol.ts',
+			'ResourceUriHostMessage',
+		)).toEqual(['resolveResourceUriResult']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| ResourceUriWebviewMessage');
+		expect(webviewMessages).toContain('| ResourceUriWebviewMessage');
+		expect(hostTypes).not.toContain("type: 'resolveResourceUri'");
+		expect(webviewMessages).not.toContain("type: 'resolveResourceUri'");
+		expect(webviewMessages).toContain('parseResourceUriWebviewMessage(msg)');
+
+		const requestHandler = readWorkspaceFile('src/host/resourceUriApplicationHandler.ts');
+		expect(requestHandler.indexOf('parseResourceUriWebviewMessage(message)'))
+			.toBeLessThan(requestHandler.indexOf('this.resolvedResourceUriCache.get(cacheKey)'));
+		expect(requestHandler.indexOf('parseResourceUriWebviewMessage(message)'))
+			.toBeLessThan(requestHandler.indexOf('await this.stat(targetUri)'));
+		expect(requestHandler).toContain('postMessage: (message: ResourceUriHostMessage)');
+
+		const markdownProvider = readWorkspaceFile('src/host/mdCompatEditorProvider.ts');
+		expect(markdownProvider.indexOf('parseResourceUriWebviewMessage(message)'))
+			.toBeLessThan(markdownProvider.indexOf("case 'resolveResourceUri':"));
+		expect(markdownProvider.indexOf('parseResourceUriWebviewMessage(message)'))
+			.toBeLessThan(markdownProvider.indexOf('vscode.workspace.fs.stat(targetUri)'));
+		expect(markdownProvider).toContain('satisfies ResourceUriHostMessage');
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		expect(dispatcher.indexOf('parseResourceUriHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf("case 'resolveResourceUriResult':"));
+		expect(dispatcher.indexOf('parseResourceUriHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf('__kustoResourceUriRequestResolversById[reqId]'));
+
+		const markdownPersistence = readWorkspaceFile('src/webview/md-editor/md-persistence.ts');
+		expect(markdownPersistence.indexOf('parseResourceUriHostMessage(message)'))
+			.toBeLessThan(markdownPersistence.indexOf("case 'resolveResourceUriResult':"));
+		expect(markdownPersistence.indexOf('parseResourceUriHostMessage(message)'))
+			.toBeLessThan(markdownPersistence.indexOf('_resourceResolvers[reqId]'));
+	});
+
 	// ─── Compile-time guards ───────────────────────────────────────────────
 	// These calls exist solely for the TypeScript compiler to verify that
 	// every string literal in our arrays is a valid union discriminant.
@@ -1357,6 +1403,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/sqlSchemaProtocol.ts', 'SqlSchemaWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kqlLanguageProtocol.ts', 'KqlLanguageWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/controlCommandSyntaxProtocol.ts', 'ControlCommandSyntaxWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/resourceUriProtocol.ts', 'ResourceUriWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1373,6 +1420,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/sqlSchemaProtocol.ts', 'SqlSchemaWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kqlLanguageProtocol.ts', 'KqlLanguageWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/controlCommandSyntaxProtocol.ts', 'ControlCommandSyntaxWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/resourceUriProtocol.ts', 'ResourceUriWebviewMessage'),
 			])].sort()
 		);
 	});

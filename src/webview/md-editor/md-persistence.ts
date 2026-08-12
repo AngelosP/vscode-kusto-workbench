@@ -5,6 +5,11 @@ import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages.js';
 import { KwMarkdownSection, markdownBoxes, markdownEditors, type MarkdownSectionData } from '../sections/kw-markdown-section.js';
 import { applyDocumentCapabilityProjection, assertProjectedSectionsAllowed } from '../core/document-capabilities.js';
+import {
+	isResourceUriHostMessageType,
+	parseResourceUriHostMessage,
+	type ResourceUriHostMessage,
+} from '../../shared/resourceUriProtocol.js';
 
 const _win = window as any;
 
@@ -54,7 +59,7 @@ _win.__kustoResolveResourceUri = async function (args: any): Promise<string | nu
 			}
 		};
 		try {
-			postMessageToHost({ type: 'resolveResourceUri', requestId, path: p, baseUri } as any);
+			postMessageToHost({ type: 'resolveResourceUri', requestId, path: p, baseUri });
 		} catch {
 			delete _resourceResolvers[requestId];
 			clearTimeout(timer);
@@ -68,8 +73,15 @@ _win.__kustoResolveResourceUri = async function (args: any): Promise<string | nu
 let _initialized = false;
 
 window.addEventListener('message', (event) => {
-	const message = event.data;
+	let message = event.data;
 	if (!message || typeof message.type !== 'string') return;
+	let resourceUriHostMessage: ResourceUriHostMessage | undefined;
+	if (isResourceUriHostMessageType(message)) {
+		const parsed = parseResourceUriHostMessage(message);
+		if (!parsed.ok) return;
+		resourceUriHostMessage = parsed.value;
+		message = parsed.value;
+	}
 
 	switch (message.type) {
 		case 'persistenceMode':
@@ -147,10 +159,11 @@ window.addEventListener('message', (event) => {
 
 		case 'resolveResourceUriResult':
 			try {
-				const reqId = String(message.requestId || '');
+				if (!resourceUriHostMessage) break;
+				const reqId = resourceUriHostMessage.requestId;
 				const r = _resourceResolvers[reqId];
 				if (r && typeof r.resolve === 'function') {
-					const uri = (message.ok && typeof message.uri === 'string') ? String(message.uri) : null;
+					const uri = resourceUriHostMessage.ok ? resourceUriHostMessage.uri : null;
 					r.resolve(uri);
 					delete _resourceResolvers[reqId];
 				}

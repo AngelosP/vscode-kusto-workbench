@@ -25,7 +25,7 @@ Feature: Kusto surrounding UX controls
     When I click "kw-query-section [id$='_run_btn']" in the webview
     When I wait for "kw-query-section[data-test-executing='false']" in the webview for 30 seconds
     When I evaluate "(() => { window.__e2e.kusto.assertNoError(); window.__e2e.kusto.assertResultColumns('Timestamp,User,Action,Details,DurationMs'); window.__e2e.kusto.assertRowCount(3); return window.__e2e.kusto.ux.assertRenderedRows(3); })()" in the webview
-    When I scroll "kw-data-table" into view
+    When I evaluate "(() => { const table = document.querySelector('kw-query-section kw-data-table'); if (!table) throw new Error('Rendered Kusto result table was not found for scrolling'); table.scrollIntoView({ block: 'center' }); return table.getBoundingClientRect().toJSON(); })()" in the webview
 
     When I click "button[title='Search data']" in the webview
     When I evaluate "window.__e2e.kusto.ux.assertPopup('search', true)" in the webview

@@ -79,6 +79,25 @@ describe('HostResourceUriApplicationHandler', () => {
 		expect(asWebviewUri).not.toHaveBeenCalled();
 	});
 
+	it('claims malformed recognized requests before response, path, stat, or conversion effects', async () => {
+		const { handler, postMessage, stat, getWorkspaceFolder, asWebviewUri } = createHandler();
+		const request = resourceMessage();
+
+		for (const malformed of [
+			Object.assign([], request),
+			{ ...request, requestId: 42 },
+			{ ...request, path: { toString: () => 'assets/forged.png' } },
+			{ ...request, baseUri: 42 },
+		]) {
+			await handler.handleMessage(malformed as unknown as Parameters<typeof handler.handleMessage>[0]);
+		}
+
+		expect(postMessage).not.toHaveBeenCalled();
+		expect(stat).not.toHaveBeenCalled();
+		expect(getWorkspaceFolder).not.toHaveBeenCalled();
+		expect(asWebviewUri).not.toHaveBeenCalled();
+	});
+
 	it('preserves the exact empty-path failure', async () => {
 		const { handler, postMessage, stat, asWebviewUri } = createHandler();
 

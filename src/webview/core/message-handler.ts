@@ -43,6 +43,11 @@ import {
 	parseControlCommandSyntaxHostMessage,
 	type ControlCommandSyntaxHostMessage,
 } from '../../shared/controlCommandSyntaxProtocol.js';
+import {
+	isResourceUriHostMessageType,
+	parseResourceUriHostMessage,
+	type ResourceUriHostMessage,
+} from '../../shared/resourceUriProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -1490,6 +1495,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		if (!parsed.ok) return;
 		message = parsed.value;
 	}
+	let resourceUriHostMessage: ResourceUriHostMessage | undefined;
+	if (isResourceUriHostMessageType(message)) {
+		const parsed = parseResourceUriHostMessage(message);
+		if (!parsed.ok) return;
+		resourceUriHostMessage = parsed.value;
+		message = parsed.value;
+	}
 	let controlCommandSyntaxHostMessage: ControlCommandSyntaxHostMessage | undefined;
 	if (isControlCommandSyntaxHostMessageType(message)) {
 		const parsed = parseControlCommandSyntaxHostMessage(message);
@@ -2445,10 +2457,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			break;
 		case 'resolveResourceUriResult':
 			try {
-				const reqId = String(message.requestId || '');
+				if (!resourceUriHostMessage) break;
+				const reqId = resourceUriHostMessage.requestId;
 				const r = __kustoResourceUriRequestResolversById && __kustoResourceUriRequestResolversById[reqId];
 				if (r && typeof r.resolve === 'function') {
-					const uri = (message && message.ok && typeof message.uri === 'string') ? String(message.uri) : null;
+					const uri = resourceUriHostMessage.ok ? resourceUriHostMessage.uri : null;
 					try { r.resolve(uri); } catch (e) { console.error('[kusto]', e); }
 					try { delete __kustoResourceUriRequestResolversById[reqId]; } catch (e) { console.error('[kusto]', e); }
 				}

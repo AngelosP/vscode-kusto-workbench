@@ -394,6 +394,7 @@ describe('kw-data-table visibility lifecycle', () => {
 		document.body.appendChild(table);
 		await settleTable(table);
 		const button = table.shadowRoot?.querySelector<HTMLButtonElement>('button[title="Sort"]')!;
+		const focus = vi.spyOn(button, 'focus');
 		button.click();
 		await table.updateComplete;
 
@@ -402,6 +403,7 @@ describe('kw-data-table visibility lifecycle', () => {
 
 		expect(table.shadowRoot?.querySelector('kw-sort-dialog')).toBeNull();
 		expect(table.shadowRoot?.activeElement).toBe(button);
+		expect(focus).toHaveBeenCalledWith({ preventScroll: true });
 	});
 
 	it('restores column-menu focus when page scrolling dismisses Filter', async () => {
@@ -411,6 +413,7 @@ describe('kw-data-table visibility lifecycle', () => {
 		document.body.appendChild(table);
 		await settleTable(table);
 		const button = table.shadowRoot?.querySelector<HTMLButtonElement>('button[aria-label="Column menu for Name"]')!;
+		const focus = vi.spyOn(button, 'focus');
 		(table as any)._openFilterDialog(0);
 		await table.updateComplete;
 
@@ -420,6 +423,7 @@ describe('kw-data-table visibility lifecycle', () => {
 		expect(table.shadowRoot?.querySelector('kw-filter-dialog')).toBeNull();
 		expect(table.shadowRoot?.activeElement).toBe(button);
 		expect((table as any)._filterDialogReturnFocus).toBeNull();
+		expect(focus).toHaveBeenCalledWith({ preventScroll: true });
 	});
 
 	it('removes the column-menu document listener when page scrolling dismisses it', async () => {

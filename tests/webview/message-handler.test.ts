@@ -265,6 +265,11 @@ vi.mock('../../src/webview/sections/kw-markdown-section.js', () => ({
 	__kustoMaximizeMarkdownBox: vi.fn(),
 	commitMarkdownDocumentState: vi.fn(() => true),
 	reconcileHostOwnedMarkdownProjection: mocks.reconcileHostOwnedMarkdownProjection,
+	KwMarkdownSection: class {
+		static addMarkdownBox = vi.fn(() => 'markdown_1');
+	},
+	markdownBoxes: [],
+	markdownEditors: {},
 }));
 
 vi.mock('../../src/webview/sections/kw-chart-section.js', () => ({
@@ -7337,5 +7342,109 @@ describe('tool section name persistence', () => {
 		expect(htmlEl.setCode).toHaveBeenCalledWith('<main>Dashboard</main>');
 		expect(htmlEl.setMode).toHaveBeenCalledWith('preview');
 		expect(htmlEl.fitToContents).not.toHaveBeenCalled();
+	});
+});
+
+describe('resource URI result settlement', () => {
+	it('settles only a valid result with the current request identity in both webview paths', async () => {
+		const paths = [
+			{
+				name: 'main Query Editor',
+				install: async () => {
+					await messageHandlerModule.startMainWebviewMessageDispatcher();
+				},
+			},
+			{
+				name: 'plain Markdown compatibility',
+				install: async () => {
+					await import('../../src/webview/md-editor/md-persistence.js');
+				},
+			},
+		] as const;
+
+		for (const path of paths) {
+			await path.install();
+			vi.useFakeTimers();
+			try {
+				mocks.postMessageToHost.mockClear();
+				let renderedUri: string | null | undefined;
+				let settlementCount = 0;
+				const requestPromise = (window as any).__kustoResolveResourceUri({
+					path: './images/current.png',
+					baseUri: '',
+				}).then((result: string | null) => {
+					settlementCount += 1;
+					renderedUri = result;
+					return result;
+				});
+				const request = mocks.postMessageToHost.mock.calls.find(([message]) =>
+					message.type === 'resolveResourceUri',
+				)?.[0];
+				expect(request, path.name).toEqual(expect.objectContaining({
+					type: 'resolveResourceUri',
+					path: './images/current.png',
+					baseUri: '',
+				}));
+
+				dispatchHostMessage({
+					type: 'resolveResourceUriResult',
+					requestId: request?.requestId,
+					ok: 'yes',
+					uri: 'forged',
+				});
+				dispatchHostMessage({
+					type: 'resolveResourceUriResult',
+					requestId: 'stale-resource-request',
+					ok: true,
+					uri: 'vscode-webview://stale',
+				});
+				await Promise.resolve();
+				expect(settlementCount, path.name).toBe(0);
+				expect(renderedUri, path.name).toBeUndefined();
+				expect(vi.getTimerCount(), path.name).toBe(1);
+
+				await vi.advanceTimersByTimeAsync(1999);
+				expect(settlementCount, path.name).toBe(0);
+				expect(renderedUri, path.name).toBeUndefined();
+
+				dispatchHostMessage({
+					type: 'resolveResourceUriResult',
+					requestId: request?.requestId,
+					ok: true,
+					uri: 'vscode-webview://current',
+				});
+				expect(await requestPromise, path.name).toBe('vscode-webview://current');
+				expect(renderedUri, path.name).toBe('vscode-webview://current');
+				expect(settlementCount, path.name).toBe(1);
+				expect(vi.getTimerCount(), path.name).toBe(0);
+
+				dispatchHostMessage({
+					type: 'resolveResourceUriResult',
+					requestId: request?.requestId,
+					ok: true,
+					uri: 'vscode-webview://duplicate',
+				});
+				await Promise.resolve();
+				expect(renderedUri, path.name).toBe('vscode-webview://current');
+				expect(settlementCount, path.name).toBe(1);
+
+				mocks.postMessageToHost.mockClear();
+				let timeoutSettled = false;
+				const timeoutPromise = (window as any).__kustoResolveResourceUri({
+					path: './images/timeout.png',
+					baseUri: '',
+				}).then((result: string | null) => {
+					timeoutSettled = true;
+					return result;
+				});
+				await vi.advanceTimersByTimeAsync(1999);
+				expect(timeoutSettled, path.name).toBe(false);
+				await vi.advanceTimersByTimeAsync(1);
+				expect(await timeoutPromise, path.name).toBeNull();
+				expect(vi.getTimerCount(), path.name).toBe(0);
+			} finally {
+				vi.useRealTimers();
+			}
+		}
 	});
 });

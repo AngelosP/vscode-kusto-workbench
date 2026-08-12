@@ -133,7 +133,7 @@ describe('QueryEditorProvider resource URI application', () => {
 		);
 		const displacedProviderAuthorities = [
 			['resolvedResourceUriCache', 'resolvedResourceUriCache'],
-			["case 'resolveResourceUri':", "message.type !== 'resolveResourceUri'"],
+			["case 'resolveResourceUri':", 'isResourceUriWebviewMessageType(message)'],
 			['private async resolveResourceUri', 'private async resolveResourceUri'],
 			['vscode.workspace.fs.stat', 'vscode.workspace.fs.stat'],
 			['vscode.workspace.getWorkspaceFolder', 'vscode.workspace.getWorkspaceFolder'],

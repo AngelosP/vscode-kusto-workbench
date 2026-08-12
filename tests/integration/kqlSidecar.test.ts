@@ -12543,6 +12543,139 @@ suite('Sidecar .kql.json strategy', () => {
 });
 
 suite('.md compat persistence', () => {
+	test('resource URI requests validate before plain-Markdown path effects', async () => {
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let disposeHandler: (() => void) | undefined;
+		const posted: any[] = [];
+		const convertedUris: vscode.Uri[] = [];
+		let pathStringCoercions = 0;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-md-resource-uri-'));
+		const mdPath = path.join(tmpDir, 'test.md');
+		const imagePath = path.join(tmpDir, 'images', 'current.png');
+		let resolveLocalConversion!: () => void;
+		const localConversion = new Promise<void>(resolve => { resolveLocalConversion = resolve; });
+		let awaitingLocalConversion = false;
+		const originalOnDidChange = (vscode.workspace as any).onDidChangeTextDocument;
+		try {
+			(vscode.workspace as any).onDidChangeTextDocument = () => ({ dispose() {} } as DisposableLike);
+			fs.writeFileSync(mdPath, '# Resource URI', 'utf8');
+			fs.mkdirSync(path.dirname(imagePath), { recursive: true });
+			fs.writeFileSync(imagePath, 'image', 'utf8');
+
+			const fakeContext = {
+				subscriptions: [],
+				workspaceState: { get: () => undefined, update: async () => undefined },
+				globalState: { get: () => undefined, update: async () => undefined },
+				extension: { packageJSON: { version: 'test' } },
+			} as unknown as vscode.ExtensionContext;
+			const extensionRoot = vscode.Uri.file(path.resolve(__dirname, '..', '..', '..'));
+			const provider = new (MdCompatEditorProvider as any)(
+				fakeContext, extensionRoot, {} as any,
+			) as MdCompatEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(mdPath),
+				getText: () => '# Resource URI',
+				lineCount: 1,
+				lineAt: () => ({ text: '# Resource URI' }),
+			} as unknown as vscode.TextDocument;
+			const webview = {
+				options: {},
+				html: '',
+				postMessage: async (message: unknown) => { posted.push(message); return true; },
+				onDidReceiveMessage: (handler: (message: unknown) => unknown) => {
+					receiveHandler = handler;
+					return { dispose() {} } as DisposableLike;
+				},
+				asWebviewUri: (uri: vscode.Uri) => {
+					convertedUris.push(uri);
+					if (awaitingLocalConversion) resolveLocalConversion();
+					return vscode.Uri.parse('vscode-webview://resource/current.png');
+				},
+			} as unknown as vscode.Webview;
+			const webviewPanel = {
+				webview,
+				visible: true,
+				onDidDispose: (handler: () => void) => {
+					disposeHandler = handler;
+					return { dispose() {} } as DisposableLike;
+				},
+				onDidChangeViewState: () => ({ dispose() {} } as DisposableLike),
+			} as unknown as vscode.WebviewPanel;
+
+			await provider.resolveCustomTextEditor(document, webviewPanel, {} as vscode.CancellationToken);
+			assert.ok(receiveHandler, 'expected webview message handler');
+			const conversionCountBeforeRequest = convertedUris.length;
+			await Promise.resolve(receiveHandler!({
+				type: 'resolveResourceUri', requestId: 'malformed-resource',
+				path: {
+					toString: () => {
+						pathStringCoercions += 1;
+						return './images/forged.png';
+					},
+				},
+				baseUri: '',
+			}));
+			await Promise.resolve();
+			assert.strictEqual(pathStringCoercions, 0, 'malformed request must not coerce its path');
+			assert.strictEqual(
+				convertedUris.length,
+				conversionCountBeforeRequest,
+				'malformed request must not convert a URI',
+			);
+			assert.strictEqual(
+				posted.some(message => message?.requestId === 'malformed-resource'),
+				false,
+				'malformed request must not publish a result',
+			);
+
+			await Promise.resolve(receiveHandler!({
+				type: 'resolveResourceUri', requestId: 'empty-resource', path: '', baseUri: '',
+			}));
+			await Promise.resolve(receiveHandler!({
+				type: 'resolveResourceUri', requestId: 'passthrough-resource',
+				path: '  https://example.test/current.png  ',
+			}));
+			assert.deepStrictEqual(
+				posted.filter(message => message?.type === 'resolveResourceUriResult'),
+				[
+					{
+						type: 'resolveResourceUriResult', requestId: 'empty-resource',
+						ok: false, error: 'Empty path.',
+					},
+					{
+						type: 'resolveResourceUriResult', requestId: 'passthrough-resource',
+						ok: true, uri: 'https://example.test/current.png',
+					},
+				],
+			);
+			assert.strictEqual(convertedUris.length, conversionCountBeforeRequest);
+
+			awaitingLocalConversion = true;
+			await Promise.resolve(receiveHandler!({
+				type: 'resolveResourceUri', requestId: 'local-resource',
+				path: 'images/current.png', baseUri: document.uri.toString(),
+			}));
+			await localConversion;
+			assert.strictEqual(convertedUris.length, conversionCountBeforeRequest + 1);
+			assert.strictEqual(
+				path.normalize(convertedUris.at(-1)!.fsPath).toLowerCase(),
+				path.normalize(imagePath).toLowerCase(),
+				'plain Markdown must resolve relative paths from the document directory',
+			);
+			assert.deepStrictEqual(
+				posted.find(message => message?.requestId === 'local-resource'),
+				{
+					type: 'resolveResourceUriResult', requestId: 'local-resource',
+					ok: true, uri: 'vscode-webview://resource/current.png',
+				},
+			);
+		} finally {
+			disposeHandler?.();
+			(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChange;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('persistDocument with changed markdown text should dirty a .md file', async () => {
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		const posted: any[] = [];

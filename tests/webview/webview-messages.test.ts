@@ -360,4 +360,43 @@ describe('postMessageToHost', () => {
 			delete (window as any).__e2eCaptureHostMessage;
 		}
 	});
+
+	it('posts valid resource URI requests and rejects malformed ones before E2E capture', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const requests = [
+				{
+					type: 'resolveResourceUri', requestId: ' resource-request-1 ',
+					path: ' ./images/logo.png ', baseUri: '',
+				},
+				{
+					type: 'resolveResourceUri', requestId: 'resource-request-2', path: '',
+				},
+			] as const;
+			for (const request of requests) {
+				postMessageToHost(request);
+				expect(capture.mock.calls.at(-1)?.[0]).toBe(request);
+				expect(postMessage.mock.calls.at(-1)?.[0]).toBe(request);
+			}
+			capture.mockClear();
+			postMessage.mockClear();
+
+			for (const malformed of [
+				{ ...requests[0], requestId: '' },
+				{ ...requests[0], path: 42 },
+				{ ...requests[0], baseUri: null },
+				Object.assign([], requests[0]),
+			]) {
+				postMessageToHost(malformed as unknown as Parameters<typeof postMessageToHost>[0]);
+			}
+
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
 });

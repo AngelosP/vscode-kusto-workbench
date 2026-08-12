@@ -50,6 +50,11 @@ import {
 	parseControlCommandSyntaxWebviewMessage,
 	type ControlCommandSyntaxWebviewMessage,
 } from '../../shared/controlCommandSyntaxProtocol.js';
+import {
+	isResourceUriWebviewMessageType,
+	parseResourceUriWebviewMessage,
+	type ResourceUriWebviewMessage,
+} from '../../shared/resourceUriProtocol.js';
 import { pState } from './persistence-state.js';
 
 let compatibilityDocumentRequestSequence = 0;
@@ -217,7 +222,7 @@ export type OutgoingWebviewMessage =
 	| OutgoingPowerBiPublishHelpMessage
 	| OutgoingPowerBiPartialPublishWarningMessage
 	| { type: 'seeCachedValues' }
-	| { type: 'resolveResourceUri'; requestId: string; path: string; baseUri?: string }
+	| ResourceUriWebviewMessage
 	| { type: 'saveImportedCsv'; csv: string; suggestedFileName?: string }
 	| { type: 'requestArtifactCsvSave'; requestId: string; boxId: string; artifactId: string; suggestedFileName?: string }
 	| { type: 'artifactCsvSaveData'; requestId: string; boxId: string; artifactId: string; accepted: boolean; csv?: string }
@@ -403,6 +408,13 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 		const parsed = parseControlCommandSyntaxWebviewMessage(msg);
 		if (!parsed.ok) {
 			console.error('[kusto] Rejected invalid control-command syntax webview message:', parsed.error);
+			return;
+		}
+		outbound = parsed.value;
+	} else if (isResourceUriWebviewMessageType(msg)) {
+		const parsed = parseResourceUriWebviewMessage(msg);
+		if (!parsed.ok) {
+			console.error('[kusto] Rejected invalid resource URI webview message:', parsed.error);
 			return;
 		}
 		outbound = parsed.value;

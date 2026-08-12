@@ -14,12 +14,20 @@ import { EmbeddedTutorialWebviewHost, EmbeddedTutorialWebviewRegistry } from './
 import { getWorkbenchLogger } from './workbenchLogger';
 import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
 import { addableSectionKindsForDocument, canonicalAddableSectionKind, defaultSectionKindForDocument } from '../shared/documentSectionCapabilities';
+import {
+	isResourceUriWebviewMessageType,
+	parseResourceUriWebviewMessage,
+	type ResourceUriHostMessage,
+	type ResourceUriRequestMessage,
+	type ResourceUriWebviewMessage,
+} from '../shared/resourceUriProtocol';
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
 	| ({ type: 'editorCursorPositionChanged' } & EditorCursorStatusPayload)
 	| { type: 'persistDocument'; state: { sections?: Array<{ type?: string; text?: string }> } }
 	| { type: 'requestUpgradeToMdx'; addKind?: string }
+	| ResourceUriWebviewMessage
 	| { type: string; [key: string]: unknown };
 
 export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
@@ -464,6 +472,13 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 			if (!message || typeof message.type !== 'string') {
 				return;
 			}
+			let resourceUriRequest: ResourceUriRequestMessage | undefined;
+			if (isResourceUriWebviewMessageType(message)) {
+				const parsed = parseResourceUriWebviewMessage(message);
+				if (!parsed.ok) return;
+				resourceUriRequest = parsed.value;
+				message = parsed.value;
+			}
 			if (embeddedTutorialHost.handleMessage(message)) {
 				return;
 			}
@@ -574,10 +589,21 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 					return;
 				}
 				case 'resolveResourceUri': {
-					const requestId = String((message as any).requestId || '');
-					const rawPath = String((message as any).path || '');
-					const reply = (payload: { ok: boolean; uri?: string; error?: string }) => {
-						try { void webviewPanel.webview.postMessage({ type: 'resolveResourceUriResult', requestId, ...payload }); } catch { /* ignore */ }
+					if (!resourceUriRequest) return;
+					const requestId = resourceUriRequest.requestId;
+					const rawPath = resourceUriRequest.path;
+					const reply = (payload: { ok: true; uri: string } | { ok: false; error: string }) => {
+						try {
+							if (payload.ok) {
+								void webviewPanel.webview.postMessage({
+									type: 'resolveResourceUriResult', requestId, ok: true, uri: payload.uri,
+								} satisfies ResourceUriHostMessage);
+							} else {
+								void webviewPanel.webview.postMessage({
+									type: 'resolveResourceUriResult', requestId, ok: false, error: payload.error,
+								} satisfies ResourceUriHostMessage);
+							}
+						} catch { /* ignore */ }
 					};
 					if (!requestId) return;
 					if (!rawPath.trim()) { reply({ ok: false, error: 'Empty path.' }); return; }

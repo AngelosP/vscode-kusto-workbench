@@ -764,6 +764,113 @@ describe('kw-connection-manager', () => {
 	// ── Search state ───────────────────────────────────────────────────────────
 
 	describe('connection form modal', () => {
+		it('opens the replacement native dialog when a snapshot changes connection kind', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({ sqlConnections: [], sqlCachedDatabases: {} }));
+			await el.updateComplete;
+			clickButtonByTestId(el, 'cm-add-connection');
+			await el.updateComplete;
+			expect(el.shadowRoot!.querySelector<HTMLDialogElement>('dialog[data-testid="cm-modal-overlay"]')?.open).toBe(true);
+
+			sendSnapshot(el, snapshot({ activeKind: 'sql', connections: [], cachedDatabases: {} }));
+			await el.updateComplete;
+
+			const dialog = el.shadowRoot!.querySelector<HTMLDialogElement>('dialog[data-testid="cm-modal-overlay"]');
+			expect(dialog?.open).toBe(true);
+			const form = dialog?.querySelector('kw-sql-connection-form') as any;
+			expect(form).not.toBeNull();
+			expect(dialog?.querySelector('kw-kusto-connection-form')).toBeNull();
+			await form.updateComplete;
+			await nextFrame();
+			expect(form.shadowRoot?.activeElement).toBe(form.shadowRoot?.querySelector('[data-testid="sql-conn-server"]'));
+		});
+
+		it('focuses the SQL server field when opening a normal Add dialog', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({ activeKind: 'sql' }));
+			await el.updateComplete;
+			clickButtonByTestId(el, 'cm-add-connection');
+			await el.updateComplete;
+
+			const form = el.shadowRoot!.querySelector('kw-sql-connection-form') as any;
+			await form.updateComplete;
+			await nextFrame();
+
+			expect(form.shadowRoot?.activeElement).toBe(form.shadowRoot?.querySelector('[data-testid="sql-conn-server"]'));
+		});
+
+		it('resets a Kusto edit to a clean SQL Add before submission', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot());
+			await el.updateComplete;
+			(el as any)._openModal('edit', 'c1');
+			await el.updateComplete;
+
+			sendSnapshot(el, snapshot({ activeKind: 'sql' }));
+			await el.updateComplete;
+			const form = el.shadowRoot!.querySelector('kw-sql-connection-form') as any;
+			expect(form.mode).toBe('add');
+			expect(form.name).toBe('');
+			expect(form.serverUrl).toBe('');
+			expect((el as any)._editingConnectionId).toBeNull();
+
+			postedMessages = [];
+			form.dispatchEvent(new CustomEvent('sql-connection-form-submit', {
+				detail: { name: 'New SQL', serverUrl: 'new.database.windows.net', dialect: 'mssql', authType: 'aad' },
+				bubbles: true,
+				composed: true,
+			}));
+
+			expect(postedMessages).toContainEqual(expect.objectContaining({
+				type: 'sql.connection.add', serverUrl: 'new.database.windows.net',
+			}));
+			expect(messageTypes()).not.toContain('sql.connection.edit');
+			await new Promise(resolve => setTimeout(resolve, 110));
+		});
+
+		it('resets a SQL edit to a clean Kusto Add before submission', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({ activeKind: 'sql' }));
+			await el.updateComplete;
+			(el as any)._openModal('edit', 'sql1');
+			await el.updateComplete;
+
+			sendSnapshot(el, snapshot({ activeKind: 'kusto' }));
+			await el.updateComplete;
+			const form = el.shadowRoot!.querySelector('kw-kusto-connection-form') as any;
+			expect(form.mode).toBe('add');
+			expect(form.name).toBe('');
+			expect(form.clusterUrl).toBe('');
+			expect((el as any)._editingConnectionId).toBeNull();
+
+			postedMessages = [];
+			form.dispatchEvent(new CustomEvent('connection-form-submit', {
+				detail: { name: 'New Kusto', clusterUrl: 'https://new.kusto.windows.net', database: '' },
+				bubbles: true,
+				composed: true,
+			}));
+
+			expect(postedMessages).toContainEqual(expect.objectContaining({
+				type: 'connection.add', clusterUrl: 'https://new.kusto.windows.net',
+			}));
+			expect(messageTypes()).not.toContain('connection.edit');
+		});
+
+		it('bounds modal content and gives its body a vertical scroll owner', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot());
+			await el.updateComplete;
+			clickButtonByTestId(el, 'cm-add-connection');
+			await el.updateComplete;
+
+			const dialog = el.shadowRoot!.querySelector<HTMLDialogElement>('dialog[data-testid="cm-modal-overlay"]')!;
+			const content = dialog.querySelector<HTMLElement>('.modal-content')!;
+			const body = dialog.querySelector<HTMLElement>('.modal-body')!;
+			expect(getComputedStyle(dialog).overflow).toBe('hidden');
+			expect(getComputedStyle(content).display).toBe('grid');
+			expect(getComputedStyle(body).overflowY).toBe('auto');
+		});
+
 		it('focuses the Kusto cluster field and restores the Add button on Escape', async () => {
 			const el = createElement();
 			sendSnapshot(el, snapshot({ connections: [], cachedDatabases: {}, sqlConnections: [], sqlCachedDatabases: {} }));
@@ -776,13 +883,13 @@ describe('kw-connection-manager', () => {
 			const form = el.shadowRoot!.querySelector('kw-kusto-connection-form') as any;
 			await form.updateComplete;
 			const clusterInput = form.shadowRoot!.querySelector('[data-testid="kusto-conn-cluster-url"]');
-			const overlay = el.shadowRoot!.querySelector('[data-testid="cm-modal-overlay"]') as HTMLElement;
 			expect(form.shadowRoot!.activeElement).toBe(clusterInput);
 
 			clusterInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
-			expect(overlay.style.display).toBe('none');
 			await el.updateComplete;
 			expect(el.shadowRoot!.querySelector('[data-testid="cm-modal-overlay"]')).toBeNull();
+			expect(el.shadowRoot!.querySelector('.modal-content')).toBeNull();
+			expect(el.shadowRoot!.querySelector('kw-kusto-connection-form')).toBeNull();
 			expect(el.shadowRoot!.activeElement).toBe(addButton);
 		});
 
