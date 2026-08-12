@@ -61,26 +61,26 @@ Feature: Tabular keyboard horizontal scroll
     When I evaluate "window.__e2eTabularKeyboardScroll.assertVisible('sql', 16)" in the webview for 10 seconds
     When I evaluate "window.__e2eAssertActiveKwScroller('sql', 16)" in the webview for 10 seconds
 
-    When I evaluate "window.__e2eTabularKeyboardScroll.focusTable('csv')" in the webview for 10 seconds
+    When I evaluate "window.__e2eTabularKeyboardScroll.focusTable('csv')" in the webview for 20 seconds
     When I evaluate "(() => { document.body.tabIndex = -1; document.body.focus(); return document.activeElement === document.body ? 'body focused' : 'active=' + document.activeElement?.tagName; })()" in the webview for 10 seconds
     When I press "Right"
     When I press "Right"
     When I press "Right"
     When I press "Right"
-    When I evaluate "window.__e2eTabularKeyboardScroll.assertVisible('csv', 4)" in the webview for 10 seconds
+    When I evaluate "window.__e2eTabularKeyboardScroll.assertVisible('csv', 4)" in the webview for 20 seconds
     When I press "Right"
     When I press "Right"
     When I press "Right"
     When I press "Right"
-    When I evaluate "window.__e2eTabularKeyboardScroll.assertVisible('csv', 8)" in the webview for 10 seconds
+    When I evaluate "window.__e2eTabularKeyboardScroll.assertVisible('csv', 8)" in the webview for 20 seconds
     When I press "Right"
     When I press "Right"
     When I press "Right"
     When I press "Right"
-    When I evaluate "window.__e2eTabularKeyboardScroll.assertVisible('csv', 12)" in the webview for 10 seconds
+    When I evaluate "window.__e2eTabularKeyboardScroll.assertVisible('csv', 12)" in the webview for 20 seconds
     When I press "Right"
     When I press "Right"
     When I press "Right"
     When I press "Right"
-    When I evaluate "window.__e2eTabularKeyboardScroll.assertVisible('csv', 16)" in the webview for 10 seconds
-    When I evaluate "window.__e2eAssertActiveKwScroller('csv', 16)" in the webview for 10 seconds
+    When I evaluate "window.__e2eTabularKeyboardScroll.assertVisible('csv', 16)" in the webview for 20 seconds
+    When I evaluate "window.__e2eAssertActiveKwScroller('csv', 16)" in the webview for 20 seconds

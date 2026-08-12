@@ -4,6 +4,12 @@ import {
 	parseSqlDatabaseDiscoveryHostMessage,
 	type SqlDatabaseDiscoveryHostMessage,
 } from '../../shared/sqlDatabaseDiscoveryProtocol.js';
+import {
+	isSqlSchemaHostMessageType,
+	parseSqlSchemaHostMessage,
+	type SqlSchemaHostMessage,
+	type SqlSchemaPayload,
+} from '../../shared/sqlSchemaProtocol.js';
 
 export interface SqlSectionSessionTarget {
 	readonly boxId: string;
@@ -52,7 +58,7 @@ export interface SqlSectionMessageRouterEffects {
 	getSection(boxId: string): SqlSectionElement | null | undefined;
 	getDerivedSourceBoxId?(boxId: string): string | undefined;
 	clearSchema(boxId: string): void;
-	setSchema(boxId: string, schema: unknown): void;
+	setSchema(boxId: string, schema: SqlSchemaPayload): void;
 	updateDatabases(boxId: string, databases: string[], connectionId: string): void;
 	reportDatabasesError(boxId: string, error: string, connectionId: string): void;
 	handleStsResponse(boxId: string, requestId: string, result: unknown, ownerToken?: string, targetGeneration?: number): void;
@@ -173,6 +179,13 @@ export function routeSqlSectionMessage(
 		databaseMessage = parsed.value;
 		message = parsed.value as unknown as Record<string, unknown>;
 	}
+	let schemaMessage: SqlSchemaHostMessage | undefined;
+	if (isSqlSchemaHostMessageType(message)) {
+		const parsed = parseSqlSchemaHostMessage(message);
+		if (!parsed.ok) return 'rejected';
+		schemaMessage = parsed.value;
+		message = parsed.value as unknown as Record<string, unknown>;
+	}
 	const type = String(message.type || '');
 	const boxId = String(message.boxId || '').trim();
 	if (boxId && SQL_OWNER_SENSITIVE_MESSAGE_TYPES.has(type)) {
@@ -218,32 +231,22 @@ export function routeSqlSectionMessage(
 			return 'handled';
 		}
 		case 'sqlSchemaData': {
+			const delivery = schemaMessage!;
 			if (!boxId) return 'rejected';
 			const { section, session } = getMessageTarget(boxId, effects);
-			if (!section || !messageMatchesInstance(session, message)) return 'rejected';
+			if (!section || !messageMatchesInstance(session, delivery)) return 'rejected';
 			const connectionId = String(section.getSqlConnectionId?.() ?? section.getConnectionId?.() ?? '');
 			const database = String(section.getDatabase?.() || '');
-			if (connectionId !== String(message.sqlConnectionId || '')
-				|| database !== String(message.database || '')
-				|| session.targetGeneration !== Number(message.targetGeneration ?? 0)) return 'rejected';
-			const meta = (message.schemaMeta && typeof message.schemaMeta === 'object')
-				? message.schemaMeta as Record<string, unknown>
-				: {};
-			if (meta.error) {
-				section.setSchemaInfo?.(buildSchemaInfo(String(meta.errorMessage || 'Schema failed'), true));
+			if (connectionId !== delivery.sqlConnectionId
+				|| database !== delivery.database
+				|| session.targetGeneration !== delivery.targetGeneration) return 'rejected';
+			if (delivery.schema === null) {
+				section.setSchemaInfo?.(buildSchemaInfo(delivery.schemaMeta.errorMessage || 'Schema failed', true));
 				return 'handled';
 			}
-			const schema = message.schema as { tables?: unknown[]; columnsByTable?: Record<string, Record<string, unknown>> } | undefined;
-			if (!schema) return 'handled';
+			const schema = delivery.schema;
 			effects.setSchema(boxId, schema);
-			const tablesCount = Number(meta.tablesCount ?? schema.tables?.length ?? 0);
-			let columnsCount = Number(meta.columnsCount ?? 0);
-			if (!columnsCount && schema.columnsByTable) {
-				for (const table of Object.keys(schema.columnsByTable)) {
-					columnsCount += Object.keys(schema.columnsByTable[table] || {}).length;
-				}
-			}
-			const fromCache = !!meta.fromCache;
+			const { tablesCount, columnsCount, fromCache } = delivery.schemaMeta;
 			section.setSchemaInfo?.(buildSchemaInfo(
 				`${tablesCount} tables, ${columnsCount} cols${fromCache ? ' (cached)' : ''}`,
 				false,

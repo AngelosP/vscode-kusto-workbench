@@ -27,6 +27,10 @@ import {
 	isSqlDatabaseDiscoveryHostMessageType,
 	parseSqlDatabaseDiscoveryHostMessage,
 } from '../../shared/sqlDatabaseDiscoveryProtocol.js';
+import {
+	isSqlSchemaHostMessageType,
+	parseSqlSchemaHostMessage,
+} from '../../shared/sqlSchemaProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -1463,6 +1467,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		if (!parsed.ok) return;
 		message = parsed.value;
 	}
+	if (isSqlSchemaHostMessageType(message)) {
+		const parsed = parseSqlSchemaHostMessage(message);
+		if (!parsed.ok) return;
+		message = parsed.value;
+	}
 	let kustoSchemaHostMessage: KustoSchemaHostMessage | undefined;
 	if (isKustoSchemaHostMessageType(message)) {
 		const parsed = parseKustoSchemaHostMessage(message);
@@ -1649,7 +1658,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		clearSchema: boxId => {
 			delete sqlSchemaByBoxId[boxId];
 		},
-		setSchema: (boxId, schema) => { sqlSchemaByBoxId[boxId] = schema as typeof sqlSchemaByBoxId[string]; },
+		setSchema: (boxId, schema) => { sqlSchemaByBoxId[boxId] = schema; },
 		updateDatabases: (boxId: string, databases: string[], connectionId?: string) => {
 			updateSqlDatabaseSelect(boxId, databases, connectionId);
 			resolvePendingSqlResultRestores();

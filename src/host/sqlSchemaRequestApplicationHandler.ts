@@ -1,6 +1,12 @@
 import type { SqlConnectionManager } from './sqlConnectionManager';
 import type { SqlSchemaService } from './sqlEditorSchema';
 import type { IncomingWebviewMessage } from './queryEditorTypes';
+import {
+	isSqlSchemaWebviewMessageType,
+	parseSqlSchemaWebviewMessage,
+	type SqlSchemaHostMessage,
+	type SqlSchemaPrefetchRequest,
+} from '../shared/sqlSchemaProtocol';
 import type {
 	SqlEditorLifecycleCoordinator,
 	SqlSchemaRefreshRequest,
@@ -12,7 +18,6 @@ import {
 import { sanitizeStsLogText } from './sql/stsLogSanitizer';
 import type { WorkbenchLogger } from './workbenchLogger';
 
-type SqlSchemaRequestMessage = Extract<IncomingWebviewMessage, { type: 'prefetchSqlSchema' }>;
 type SqlSchemaRequestConnection = NonNullable<ReturnType<SqlConnectionManager['getConnection']>>;
 
 type ActiveSqlSchemaRequest = Readonly<{
@@ -39,7 +44,7 @@ export type SqlSchemaRequestApplicationHandlerOptions = {
 	>;
 	connectionManager: Pick<SqlConnectionManager, 'getConnection'>;
 	getSchemaService: () => Pick<SqlSchemaService, 'getSchema'>;
-	postMessage: (message: Record<string, unknown>) => boolean | PromiseLike<boolean> | void;
+	postMessage: (message: SqlSchemaHostMessage) => boolean | PromiseLike<boolean> | void;
 	output: Pick<WorkbenchLogger, 'info' | 'error' | 'warn'>;
 };
 
@@ -58,16 +63,19 @@ export class HostSqlSchemaRequestApplicationHandler implements SqlSchemaRequestA
 	constructor(private readonly options: SqlSchemaRequestApplicationHandlerOptions) {}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
-		if (message.type !== 'prefetchSqlSchema') return undefined;
+		if (!isSqlSchemaWebviewMessageType(message)) return undefined;
+		const parsed = parseSqlSchemaWebviewMessage(message);
+		if (!parsed.ok) return Promise.resolve();
+		const request = parsed.value;
 		if (this.disposed) return Promise.resolve();
 		if (!this.options.lifecycle.adoptTarget(
-			message.boxId,
-			message.sectionInstanceId,
-			message.sqlConnectionId,
-			message.database,
-			message.targetGeneration,
+			request.boxId,
+			request.sectionInstanceId,
+			request.sqlConnectionId,
+			request.database,
+			request.targetGeneration,
 		)) return Promise.resolve();
-		return this.reserveSchemaRequest(this.fromWebviewMessage(message));
+		return this.reserveSchemaRequest(this.fromWebviewMessage(request));
 	}
 
 	requestSchema(request: SqlSchemaRefreshRequest): Promise<void> {
@@ -82,7 +90,7 @@ export class HostSqlSchemaRequestApplicationHandler implements SqlSchemaRequestA
 		this.activeRequests.clear();
 	}
 
-	private fromWebviewMessage(message: SqlSchemaRequestMessage): SqlSchemaRefreshRequest {
+	private fromWebviewMessage(message: SqlSchemaPrefetchRequest): SqlSchemaRefreshRequest {
 		return {
 			boxId: message.boxId,
 			sectionInstanceId: message.sectionInstanceId,

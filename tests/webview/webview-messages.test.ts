@@ -250,4 +250,39 @@ describe('postMessageToHost', () => {
 			delete (window as any).__e2eCaptureHostMessage;
 		}
 	});
+
+	it('posts valid SQL schema requests and rejects malformed ones before E2E capture', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const request = {
+				type: 'prefetchSqlSchema' as const, sqlConnectionId: 'sql-1', database: 'Db',
+				boxId: 'sql_1', sectionInstanceId: 'instance-1', targetGeneration: 2,
+				forceRefresh: false,
+			};
+			postMessageToHost(request);
+
+			expect(capture).toHaveBeenCalledWith(request);
+			expect(postMessage).toHaveBeenCalledWith(request);
+			capture.mockClear();
+			postMessage.mockClear();
+
+			postMessageToHost({
+				type: 'prefetchSqlSchema', sqlConnectionId: 'sql-1', database: 'Db',
+				boxId: 'sql_1', sectionInstanceId: 'instance-1', targetGeneration: 2,
+				forceRefresh: 'yes',
+			} as unknown as Parameters<typeof postMessageToHost>[0]);
+			postMessageToHost(Object.assign([], {
+				type: 'prefetchSqlSchema', sqlConnectionId: 'sql-1', database: 'Db',
+				boxId: 'sql_1', sectionInstanceId: 'instance-1', targetGeneration: 2,
+			}) as unknown as Parameters<typeof postMessageToHost>[0]);
+
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
 });

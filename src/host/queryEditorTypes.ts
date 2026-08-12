@@ -6,6 +6,7 @@ import type { KustoCopilotRequestIdentity, KustoOptimizeRequestIdentity } from '
 import type { KustoSchemaWebviewMessage } from '../shared/kustoSchemaProtocol';
 import type { KustoDatabaseDiscoveryWebviewMessage } from '../shared/kustoDatabaseDiscoveryProtocol';
 import type { SqlDatabaseDiscoveryWebviewMessage } from '../shared/sqlDatabaseDiscoveryProtocol';
+import type { SqlSchemaWebviewMessage } from '../shared/sqlSchemaProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -314,7 +315,7 @@ export type IncomingWebviewMessage =
 	| { type: 'testClearSqlAuthOverride'; accountId: string }
 	| ExecuteSqlQueryMessage
 	| { type: 'cancelSqlQuery'; boxId: string; sectionInstanceId: string; executionId?: string }
-	| { type: 'prefetchSqlSchema'; sqlConnectionId: string; database: string; boxId: string; sectionInstanceId: string; targetGeneration: number; forceRefresh?: boolean }
+	| SqlSchemaWebviewMessage
 	| { type: 'requestAddSqlFavorite'; connectionId: string; database: string; defaultName?: string; boxId?: string }
 	| { type: 'removeSqlFavorite'; connectionId: string; database: string; boxId?: string }
 	| CopyAdeLinkMessage

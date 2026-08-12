@@ -1282,6 +1282,98 @@ describe('kw-sql-section loading states', () => {
 		expect(el.acceptsQueryTerminal()).toBe(false);
 	});
 
+	it('preserves the visible results viewport height across a same-section rerun', async () => {
+		const el = createSection();
+		await el.updateComplete;
+		vi.useFakeTimers();
+		try {
+			expect(el.displayResult({
+				columns: [{ name: 'Value', type: 'string' }],
+				rows: [['first']],
+				metadata: {},
+			}, { executionId: 'execution-a' })).toBe(true);
+
+			const wrapper = document.getElementById('sql_test1_sql_results_wrapper')!;
+			wrapper.style.height = '240px';
+			wrapper.dataset.kustoUserResized = 'true';
+
+			expect(el.setExternalQueryExecuting(true, 'execution-b')).toBe(true);
+			expect(wrapper.style.display).toBe('none');
+			expect(wrapper.style.height).toBe('240px');
+			expect(wrapper.dataset.kustoUserResized).toBe('true');
+
+			expect(el.displayResult({
+				columns: [{ name: 'Value', type: 'string' }],
+				rows: [['second']],
+				metadata: {},
+			}, { executionId: 'execution-b' })).toBe(true);
+			expect(wrapper.style.display).toBe('flex');
+			expect(wrapper.style.height).toBe('240px');
+			expect(wrapper.dataset.kustoUserResized).toBe('true');
+			expect((el.querySelector('kw-data-table') as any)?.rows).toEqual([['second']]);
+
+			vi.advanceTimersByTime(300);
+			expect(wrapper.style.height).toBe('240px');
+			expect(wrapper.dataset.kustoUserResized).toBe('true');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('does not let delayed auto-fit override an immediate user resize', async () => {
+		const el = createSection();
+		await el.updateComplete;
+		vi.useFakeTimers();
+		try {
+			expect(el.displayResult({
+				columns: [{ name: 'Value', type: 'string' }],
+				rows: [['first']],
+				metadata: {},
+			})).toBe(true);
+			const wrapper = document.getElementById('sql_test1_sql_results_wrapper')!;
+			const autoFitHeight = wrapper.style.height;
+
+			(el as any)._onResultsResizerMouseDown(new MouseEvent('mousedown', { clientY: 0 }));
+			document.dispatchEvent(new MouseEvent('mousemove', { clientY: 180 }));
+			document.dispatchEvent(new MouseEvent('mouseup'));
+			const userHeight = wrapper.style.height;
+			expect(userHeight).not.toBe(autoFitHeight);
+			expect(wrapper.dataset.kustoUserResized).toBe('true');
+
+			vi.advanceTimersByTime(300);
+			expect(wrapper.style.height).toBe(userHeight);
+			expect(wrapper.dataset.kustoUserResized).toBe('true');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('clears the results resize marker whenever the viewport height is reset', async () => {
+		const el = createSection();
+		await el.updateComplete;
+		const wrapper = document.getElementById('sql_test1_sql_results_wrapper')!;
+		const markResized = () => {
+			wrapper.style.height = '240px';
+			wrapper.dataset.kustoUserResized = 'true';
+		};
+		const expectSizingReset = () => {
+			expect(wrapper.style.height).toBe('');
+			expect(wrapper.dataset.kustoUserResized).toBeUndefined();
+		};
+
+		markResized();
+		expect(el.displayResult({ columns: [], rows: [], metadata: {} })).toBe(true);
+		expectSizingReset();
+
+		markResized();
+		el.displayError('query failed');
+		expectSizingReset();
+
+		markResized();
+		el.clearResults();
+		expectSizingReset();
+	});
+
 	it('rejects a pending tool query when the user cancels it', async () => {
 		const el = createSection();
 		el.setConnections([{ id: 'sql-a', name: 'SQL', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad' }], { lastConnectionId: 'sql-a' });

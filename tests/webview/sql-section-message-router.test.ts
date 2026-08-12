@@ -141,6 +141,62 @@ describe('routeSqlSectionMessage', () => {
 		expect(target.completeDatabaseRequest).not.toHaveBeenCalled();
 	});
 
+	it('rejects malformed current schema data before catalog or schema-info effects', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		const { effects } = createEffects(target);
+		target.adoptHostGeneration(4);
+
+		expect(routeSqlSectionMessage({
+			type: 'sqlSchemaData', boxId: 'sql-1', sectionInstanceId: target.instanceId,
+			sqlConnectionId: 'sql-a', database: 'Db', targetGeneration: 4,
+			serverUrl: 'tcp:server.example',
+			schema: {
+				tables: ['Events', 42],
+				columnsByTable: { Events: { Id: 'int' } },
+			},
+			schemaMeta: { fromCache: false, tablesCount: 2, columnsCount: 1 },
+		}, effects)).toBe('rejected');
+		expect(routeSqlSectionMessage({
+			type: 'sqlSchemaData', boxId: 'sql-1', sectionInstanceId: target.instanceId,
+			sqlConnectionId: 'sql-a', database: 'Db', targetGeneration: 4,
+			serverUrl: 'tcp:server.example', schema: null,
+			schemaMeta: {
+				error: true, errorMessage: 'failed', fromCache: false,
+			},
+		}, effects)).toBe('rejected');
+
+		expect(effects.setSchema).not.toHaveBeenCalled();
+		const section = effects.getSection('sql-1') as { setSchemaInfo: ReturnType<typeof vi.fn> };
+		expect(section.setSchemaInfo).not.toHaveBeenCalled();
+	});
+
+	it('preserves the fallback for a valid empty schema error message', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		const { effects } = createEffects(target);
+		target.adoptHostGeneration(4);
+
+		expect(routeSqlSectionMessage({
+			type: 'sqlSchemaData', boxId: 'sql-1', sectionInstanceId: target.instanceId,
+			sqlConnectionId: 'sql-a', database: 'Db', targetGeneration: 4,
+			serverUrl: 'tcp:server.example', schema: null,
+			schemaMeta: { error: true, errorMessage: '' },
+		}, effects)).toBe('handled');
+
+		const section = effects.getSection('sql-1') as { setSchemaInfo: ReturnType<typeof vi.fn> };
+		expect(section.setSchemaInfo).toHaveBeenCalledWith({
+			status: 'error',
+			statusText: 'Error',
+			errorMessage: 'Schema failed',
+			cached: false,
+			tables: undefined,
+			cols: undefined,
+			funcs: undefined,
+		});
+		expect(effects.setSchema).not.toHaveBeenCalled();
+	});
+
 	it('rejects owner-sensitive messages after owner rotation', () => {
 		const target = createTarget();
 		registerSqlSectionSession(target);

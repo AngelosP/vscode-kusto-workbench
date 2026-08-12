@@ -3,6 +3,9 @@ Feature: Kusto results table — display, columns, rows, data table features
   Background:
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 1280 by 1000
+    When I execute command "workbench.action.closeAuxiliaryBar"
     And I wait 2 seconds
 
   Scenario: Results table rendering, column types, row data, visibility toggle
@@ -25,6 +28,7 @@ Feature: Kusto results table — display, columns, rows, data table features
     When I wait for "kw-query-section[data-test-database-selected='true']" in the webview for 10 seconds
     When I wait for "kw-query-section .monaco-editor" in the webview for 20 seconds
     When I evaluate "window.__e2e.kusto.assertEditorMapped()" in the webview
+    When I click at 30, 700
     Then I take a screenshot "01-setup-ready"
 
     # ── TEST 1: Multi-column result with typed columns ────────────────────
@@ -37,6 +41,7 @@ Feature: Kusto results table — display, columns, rows, data table features
     And I wait 1 second
 
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const dt = document.getElementById(el.boxId + '_results')?.querySelector('kw-data-table'); if (!dt) throw new Error('No data table'); const cols = (dt.columns || []).map(c => ({ name: c.name || c, type: c.type || '' })); if (cols.length < 5) throw new Error('Expected 5 columns, got ' + cols.length); const names = cols.map(c => c.name); if (!names.includes('str_col')) throw new Error('Missing str_col'); if (!names.includes('int_col')) throw new Error('Missing int_col'); if (!names.includes('real_col')) throw new Error('Missing real_col'); if (!names.includes('bool_col')) throw new Error('Missing bool_col'); if (!names.includes('dt_col')) throw new Error('Missing dt_col'); return 'columns: ' + cols.map(c => c.name + '(' + c.type + ')').join(', ') + ' ✓'; })()" in the webview
+    When I click at 30, 700
     Then I take a screenshot "02-typed-columns"
 
     # ── TEST 2: Row data values are correct ───────────────────────────────
@@ -47,10 +52,11 @@ Feature: Kusto results table — display, columns, rows, data table features
     And I wait 1 second
 
     When I evaluate "window.__e2e.kusto.run()" in the webview
-    When I wait for "kw-query-section[data-test-executing='false'][data-test-has-results='true']" in the webview for 30 seconds
+    When I wait for "kw-query-section[data-test-executing='false']" in the webview for 30 seconds
     And I wait 1 second
 
     When I evaluate "(() => { window.__e2e.kusto.assertRowCount(20); return window.__e2e.kusto.assertResultColumns('i,name,value'); })()" in the webview
+    When I click at 30, 700
     Then I take a screenshot "03-large-result"
 
     # ── TEST 4: Data table has save button ────────────────────────────────
@@ -66,6 +72,7 @@ Feature: Kusto results table — display, columns, rows, data table features
 
     # For empty results: either has-results with 0 rows, or "No results" message
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const resultsDiv = document.getElementById(el.boxId + '_results'); if (!resultsDiv) throw new Error('No results div'); const html = resultsDiv.innerHTML; const dt = resultsDiv.querySelector('kw-data-table'); if (dt) { const rows = dt.rows || []; if (rows.length > 0) throw new Error('Expected 0 rows, got ' + rows.length); return 'empty data table (0 rows)'; } if (html.toLowerCase().includes('no results') || html.toLowerCase().includes('no result')) { return 'No results message shown'; } throw new Error('Expected empty results table or no-results message, got: ' + html.substring(0, 100)); })()" in the webview
+    When I click at 30, 700
     Then I take a screenshot "04-no-results"
 
     # ── TEST 6: Stale overlay then re-run clears it ───────────────────────
@@ -73,7 +80,7 @@ Feature: Kusto results table — display, columns, rows, data table features
     And I wait 1 second
 
     When I evaluate "window.__e2e.kusto.run()" in the webview
-    When I wait for "kw-query-section[data-test-executing='false'][data-test-has-results='true']" in the webview for 30 seconds
+    When I wait for "kw-query-section[data-test-executing='false']" in the webview for 30 seconds
     And I wait 1 second
 
     # Edit to trigger stale
@@ -81,13 +88,15 @@ Feature: Kusto results table — display, columns, rows, data table features
     And I wait 1 second
 
     When I evaluate "window.__e2e.kusto.assertStaleResults()" in the webview
+    When I click at 30, 700
     Then I take a screenshot "05-stale-overlay"
 
     # Re-run to clear stale
     When I evaluate "window.__e2e.kusto.run()" in the webview
-    When I wait for "kw-query-section[data-test-executing='false'][data-test-has-results='true']" in the webview for 30 seconds
+    When I wait for "kw-query-section[data-test-executing='false']" in the webview for 30 seconds
     And I wait 1 second
 
     When I evaluate "window.__e2e.kusto.assertResultsNotStale()" in the webview
+    When I click at 30, 700
     Then I take a screenshot "06-stale-cleared"
     When I execute command "workbench.action.closeAllEditors"

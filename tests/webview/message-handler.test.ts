@@ -3168,6 +3168,9 @@ describe('message-handler dispatch', () => {
 
 	it('routes sqlSchemaData success and error states to the SQL section', async () => {
 		const sqlEl = createFakeSqlSection();
+		(sqlEl as any).getSqlConnectionId = vi.fn(() => 'sql_conn_1');
+		(sqlEl as any).getDatabase = vi.fn(() => 'CurrentDb');
+		sqlEl.sqlSession.targetGeneration = 4;
 		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
 		const schema = {
 			tables: ['Events', 'Users'],
@@ -3178,6 +3181,10 @@ describe('message-handler dispatch', () => {
 			type: 'sqlSchemaData',
 			boxId: 'sql_1',
 			sectionInstanceId: sqlEl.sqlSession.instanceId,
+			sqlConnectionId: 'sql_conn_1',
+			database: 'CurrentDb',
+			targetGeneration: 4,
+			serverUrl: 'tcp:current.example.test',
 			schema,
 			schemaMeta: { tablesCount: 2, columnsCount: 2, fromCache: true },
 		});
@@ -3185,7 +3192,23 @@ describe('message-handler dispatch', () => {
 			type: 'sqlSchemaData',
 			boxId: 'sql_1',
 			sectionInstanceId: sqlEl.sqlSession.instanceId,
+			sqlConnectionId: 'sql_conn_1',
+			database: 'CurrentDb',
+			targetGeneration: 4,
+			serverUrl: 'tcp:current.example.test',
+			schema: null,
 			schemaMeta: { error: true, errorMessage: 'Schema failed' },
+		});
+		dispatchHostMessage({
+			type: 'sqlSchemaData',
+			boxId: 'sql_1',
+			sectionInstanceId: sqlEl.sqlSession.instanceId,
+			sqlConnectionId: 'sql_conn_1',
+			database: 'CurrentDb',
+			targetGeneration: 4,
+			serverUrl: 'tcp:current.example.test',
+			schema: null,
+			schemaMeta: { error: true, errorMessage: '' },
 		});
 		await Promise.resolve();
 
@@ -3200,6 +3223,63 @@ describe('message-handler dispatch', () => {
 			isError: true,
 			meta: undefined,
 		});
+		expect(sqlEl.setSchemaInfo).toHaveBeenNthCalledWith(3, {
+			text: 'Schema failed',
+			isError: true,
+			meta: undefined,
+		});
+	});
+
+	it('rejects malformed current sqlSchemaData without replacing prior schema state', async () => {
+		const sqlEl = createFakeSqlSection();
+		(sqlEl as any).getSqlConnectionId = vi.fn(() => 'sql_conn_1');
+		(sqlEl as any).getDatabase = vi.fn(() => 'CurrentDb');
+		sqlEl.sqlSession.targetGeneration = 4;
+		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
+		const priorSchema = {
+			tables: ['PriorEvents'],
+			columnsByTable: { PriorEvents: { Id: 'int' } },
+		};
+		const priorSchemaInfo = {
+			text: '1 tables, 1 cols',
+			isError: false,
+			meta: { fromCache: false, tablesCount: 1, columnsCount: 1, functionsCount: 0 },
+		};
+		handlerState.sqlSchemaByBoxId.sql_1 = priorSchema;
+		sqlEl.setSchemaInfo(priorSchemaInfo);
+
+		dispatchHostMessage({
+			type: 'sqlSchemaData',
+			boxId: 'sql_1',
+			sectionInstanceId: sqlEl.sqlSession.instanceId,
+			sqlConnectionId: 'sql_conn_1',
+			database: 'CurrentDb',
+			targetGeneration: 4,
+			serverUrl: 'tcp:current.example.test',
+			schema: {
+				tables: ['Events', 42],
+				columnsByTable: { Events: { Id: 'int' } },
+			},
+			schemaMeta: { tablesCount: 2, columnsCount: 1, fromCache: false },
+		});
+		dispatchHostMessage({
+			type: 'sqlSchemaData',
+			boxId: 'sql_1',
+			sectionInstanceId: sqlEl.sqlSession.instanceId,
+			sqlConnectionId: 'sql_conn_1',
+			database: 'CurrentDb',
+			targetGeneration: 4,
+			serverUrl: 'tcp:current.example.test',
+			schema: null,
+			schemaMeta: {
+				error: true, errorMessage: 'failed', fromCache: false,
+			},
+		});
+		await Promise.resolve();
+
+		expect(handlerState.sqlSchemaByBoxId.sql_1).toBe(priorSchema);
+		expect(sqlEl.setSchemaInfo).toHaveBeenCalledTimes(1);
+		expect(sqlEl.setSchemaInfo).toHaveBeenLastCalledWith(priorSchemaInfo);
 	});
 
 	it('preserves SQL schema when Kusto authentication identity changes', () => {

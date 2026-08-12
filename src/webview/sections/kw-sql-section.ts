@@ -252,6 +252,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	private _savedQuery: string | null = null;
 	private _lastFitHeight = 0;
 	private _savedEditorHeightPx: number | undefined;
+	private _resultsFitGeneration = 0;
 	private _schemaInfoState: SchemaInfoState = { status: 'not-loaded' };
 	private get _stsReady(): boolean { return this.sqlSession.stsReady; }
 	private get _stsDocumentOpened(): boolean { return this.sqlSession.stsDocumentOpened; }
@@ -2230,7 +2231,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 		if (!columns.length && !rows.length) {
 			resultsBody.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:var(--vscode-descriptionForeground)">No results</div>';
-			if (resultsWrapper) { resultsWrapper.style.display = 'block'; resultsWrapper.style.height = ''; }
+			if (resultsWrapper) {
+				resultsWrapper.style.display = 'block';
+				resultsWrapper.style.height = '';
+				delete resultsWrapper.dataset.kustoUserResized;
+			}
 			return true;
 		}
 
@@ -2336,10 +2341,16 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		// Retry at 50ms, 150ms, and 300ms to account for data-table rendering latency.
 		// Skip auto-fit when the user already persisted a custom results height.
 		if (initialBodyVisible && !resultsWrapper?.dataset.kustoUserResized) {
-			this._fitResultsToContents();
-			setTimeout(() => this._fitResultsToContents(), 50);
-			setTimeout(() => this._fitResultsToContents(), 150);
-			setTimeout(() => this._fitResultsToContents(), 300);
+			const fitGeneration = ++this._resultsFitGeneration;
+			const fitThisTable = () => {
+				if (this._resultsFitGeneration !== fitGeneration
+					|| !dt.isConnected || resultsBody.querySelector('kw-data-table') !== dt) return;
+				this._fitResultsToContents();
+			};
+			fitThisTable();
+			setTimeout(fitThisTable, 50);
+			setTimeout(fitThisTable, 150);
+			setTimeout(fitThisTable, 300);
 		}
 		return true;
 	}
@@ -2382,12 +2393,13 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (resultsWrapper) {
 			resultsWrapper.style.display = 'block';
 			resultsWrapper.style.height = '';
+			delete resultsWrapper.dataset.kustoUserResized;
 		}
 		this._syncTestStateAttrs();
 		this._syncActionBar();
 	}
 
-	public clearResults(): void {
+	public clearResults(options?: { preserveSize?: boolean }): void {
 		this._releaseCsvResultArtifact();
 		this._hasResults = false;
 		this._lastError = '';
@@ -2397,7 +2409,10 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (body) body.innerHTML = '';
 		if (wrapper) {
 			wrapper.style.display = 'none';
-			wrapper.style.height = '';
+			if (!options?.preserveSize) {
+				wrapper.style.height = '';
+				delete wrapper.dataset.kustoUserResized;
+			}
 			wrapper.classList.remove('is-stale');
 		}
 		if (resizer) resizer.style.display = 'none';
@@ -2448,7 +2463,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	private _retireResultDataForRerun(): void {
 		try { __kustoClearStoredQueryResult(this.boxId); } catch (e) { console.error('[kusto]', e); }
 		try { retireResultsStateForRerun(this.boxId); } catch (e) { console.error('[kusto]', e); }
-		this.clearResults();
+		this.clearResults({ preserveSize: true });
 	}
 
 	// ── Execution ─────────────────────────────────────────────────────────────
@@ -2787,6 +2802,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	/** Force-fit results — used for explicit user actions (double-click, toolbar). */
 	private _forceFitResultsToContents(): void {
+		this._resultsFitGeneration += 1;
 		this._fitResultsToContents(true);
 	}
 
@@ -2855,6 +2871,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		e.preventDefault();
 		const wrapper = document.getElementById(this.boxId + '_sql_results_wrapper');
 		if (!wrapper) return;
+		this._resultsFitGeneration += 1;
 
 		const startY = e.clientY;
 		const startHeight = wrapper.offsetHeight;

@@ -141,6 +141,21 @@ describe('HostSqlSchemaRequestApplicationHandler', () => {
 		expect(harness.getSchema).not.toHaveBeenCalled();
 	});
 
+	it('claims malformed recognized requests before target adoption', async () => {
+		const harness = createHarness();
+		const malformed = {
+			...webviewRequest(),
+			forceRefresh: 'yes',
+		} as unknown as IncomingWebviewMessage;
+
+		await harness.handler.handleMessage(malformed);
+
+		expect(harness.lifecycle.adoptTarget).not.toHaveBeenCalled();
+		expect(harness.lifecycle.getResultOwner).not.toHaveBeenCalled();
+		expect(harness.getSchema).not.toHaveBeenCalled();
+		expect(harness.postMessage).not.toHaveBeenCalled();
+	});
+
 	it('synchronously supersedes a same-target request and admits only B', async () => {
 		const harness = createHarness();
 		const requestA = deferred<ReturnType<typeof schemaResult>>();
@@ -306,7 +321,10 @@ describe('HostSqlSchemaRequestApplicationHandler', () => {
 		expect(providerSource).toContain('readonly sqlSchemaRequestApplication: SqlSchemaRequestApplicationHandler;');
 		expect(providerSource).toContain('prefetchSchema: request => this.sqlSchemaRequestApplication.requestSchema(request)');
 		expect(providerSource).toContain('this.sqlSchemaRequestApplication.dispose();');
-		expect(handlerSource).toContain("message.type !== 'prefetchSqlSchema'");
+		expect(handlerSource).toContain('parseSqlSchemaWebviewMessage(message)');
+		expect(handlerSource.indexOf('parseSqlSchemaWebviewMessage(message)'))
+			.toBeLessThan(handlerSource.indexOf('this.options.lifecycle.adoptTarget('));
+		expect(handlerSource).toContain('postMessage: (message: SqlSchemaHostMessage)');
 		expect(handlerSource).toContain('private readonly activeRequests = new Map<string, ActiveSqlSchemaRequest>();');
 		expect(handlerSource).toContain('previous?.abortController.abort();');
 		expect(handlerSource).toContain('assertRequestCurrent: () => this.assertCurrent(active)');

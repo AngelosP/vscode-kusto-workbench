@@ -1213,6 +1213,44 @@ describe('Message Protocol Contract', () => {
 			.toBeLessThan(router.indexOf('effects.updateDatabases('));
 	});
 
+	it('keeps SQL schema requests and deliveries on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/sqlSchemaProtocol.ts',
+			'SqlSchemaWebviewMessage',
+		)).toEqual(['prefetchSqlSchema']);
+		expect(extractTypeDiscriminants(
+			'src/shared/sqlSchemaProtocol.ts',
+			'SqlSchemaHostMessage',
+		)).toEqual(['sqlSchemaData']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| SqlSchemaWebviewMessage');
+		expect(webviewMessages).toContain('| SqlSchemaWebviewMessage');
+		expect(hostTypes).not.toContain("type: 'prefetchSqlSchema'");
+		expect(webviewMessages).not.toContain("type: 'prefetchSqlSchema'");
+		expect(webviewMessages).toContain('parseSqlSchemaWebviewMessage(msg)');
+
+		const requestHandler = readWorkspaceFile('src/host/sqlSchemaRequestApplicationHandler.ts');
+		expect(requestHandler.indexOf('parseSqlSchemaWebviewMessage(message)'))
+			.toBeLessThan(requestHandler.indexOf('this.options.lifecycle.adoptTarget('));
+		expect(requestHandler).toContain('postMessage: (message: SqlSchemaHostMessage)');
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		expect(dispatcher.indexOf('parseSqlSchemaHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf('routeSqlSectionMessage(message'));
+
+		const router = readWorkspaceFile('src/webview/core/sql-section-message-router.ts');
+		expect(router.indexOf('parseSqlSchemaHostMessage(message)'))
+			.toBeLessThan(router.indexOf("case 'sqlSchemaData':"));
+		expect(router.indexOf('parseSqlSchemaHostMessage(message)'))
+			.toBeLessThan(router.indexOf('effects.setSchema('));
+		expect(router.indexOf('parseSqlSchemaHostMessage(message)'))
+			.toBeLessThan(router.indexOf('section.setSchemaInfo?.('));
+		expect(router).not.toContain('message.schema as');
+	});
+
 	// ─── Compile-time guards ───────────────────────────────────────────────
 	// These calls exist solely for the TypeScript compiler to verify that
 	// every string literal in our arrays is a valid union discriminant.
@@ -1237,6 +1275,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/kustoSchemaProtocol.ts', 'KustoSchemaWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kustoDatabaseDiscoveryProtocol.ts', 'KustoDatabaseDiscoveryWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlDatabaseDiscoveryProtocol.ts', 'SqlDatabaseDiscoveryWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/sqlSchemaProtocol.ts', 'SqlSchemaWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1250,6 +1289,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/kustoSchemaProtocol.ts', 'KustoSchemaWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kustoDatabaseDiscoveryProtocol.ts', 'KustoDatabaseDiscoveryWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlDatabaseDiscoveryProtocol.ts', 'SqlDatabaseDiscoveryWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/sqlSchemaProtocol.ts', 'SqlSchemaWebviewMessage'),
 			])].sort()
 		);
 	});

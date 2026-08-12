@@ -44,7 +44,7 @@ Feature: SQL results table — display, stale overlay, metadata
 
     When I evaluate "window.__e2e.sql.assertResultColumns('TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE')" in the webview
     When I move the Dev Host to 0, 0
-    When I click at 400, 15
+    When I click at 30, 700
     Then I take a screenshot "01-multi-column-results"
 
     # ── TEST 2: Results have correct row count ────────────────────────────
@@ -56,7 +56,7 @@ Feature: SQL results table — display, stale overlay, metadata
 
     When I evaluate "window.__e2e.sql.assertStaleResults()" in the webview
     When I move the Dev Host to 0, 0
-    When I click at 400, 15
+    When I click at 30, 700
     Then I take a screenshot "02-stale-overlay"
 
     # ── TEST 4: Re-run → stale overlay clears ────────────────────────────
@@ -65,7 +65,9 @@ Feature: SQL results table — display, stale overlay, metadata
     And I wait 1 second
 
     When I evaluate "window.__e2e.sql.assertResultsNotStale()" in the webview
+    When I evaluate "(() => { window.__e2e.sql.assertRowCount(3); return window.__e2e.sql.assertResultColumns('TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE'); })()" in the webview
+    When I evaluate "window.__e2e.sql.assertRenderedRowCount(3)" in the webview
     When I move the Dev Host to 0, 0
-    When I click at 400, 15
+    When I click at 30, 700
     Then I take a screenshot "03-stale-cleared"
     When I execute command "workbench.action.closeAllEditors"

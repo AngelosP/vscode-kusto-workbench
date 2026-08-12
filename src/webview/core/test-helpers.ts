@@ -7469,6 +7469,26 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 			}
 			return 'sql results not stale';
 		},
+		assertRenderedRowCount: (expected: number) => {
+			const section = e2eSection('sql');
+			const table = section.querySelector('kw-data-table') as HTMLElement | null;
+			if (!table) {
+				throw new Error('SQL results table not found');
+			}
+			const renderedRows = table.shadowRoot?.querySelectorAll('#dt-body tbody tr') ?? [];
+			if (renderedRows.length !== expected) {
+				throw new Error(`SQL expected ${expected} rendered rows, got ${renderedRows.length}`);
+			}
+			const viewport = table.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
+			const viewportRect = viewport?.getBoundingClientRect();
+			const tableStyle = getComputedStyle(table);
+			const rowsVisible = Array.from(renderedRows).every(row => row.getBoundingClientRect().height > 0);
+			if (!viewportRect || viewportRect.width <= 0 || viewportRect.height <= 0
+				|| tableStyle.display === 'none' || tableStyle.visibility === 'hidden' || !rowsVisible) {
+				throw new Error('SQL results rows are not visible in a positive-size viewport');
+			}
+			return `sql rendered row count = ${renderedRows.length}`;
+		},
 	},
 	kusto: {
 		...e2eQueryApi('kusto'),

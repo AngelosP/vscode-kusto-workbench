@@ -35,6 +35,11 @@ import {
 	parseSqlDatabaseDiscoveryWebviewMessage,
 	type SqlDatabaseDiscoveryWebviewMessage,
 } from '../../shared/sqlDatabaseDiscoveryProtocol.js';
+import {
+	isSqlSchemaWebviewMessageType,
+	parseSqlSchemaWebviewMessage,
+	type SqlSchemaWebviewMessage,
+} from '../../shared/sqlSchemaProtocol.js';
 import { pState } from './persistence-state.js';
 
 let compatibilityDocumentRequestSequence = 0;
@@ -263,7 +268,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'cancelSqlQuery'; boxId: string; sectionInstanceId: string; executionId?: string }
 
 	// SQL schema
-	| { type: 'prefetchSqlSchema'; sqlConnectionId: string; database: string; boxId: string; sectionInstanceId: string; targetGeneration: number; forceRefresh?: boolean }
+	| SqlSchemaWebviewMessage
 
 	// SQL copilot — unified into Copilot section below
 
@@ -383,6 +388,13 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 		const parsed = parseSqlDatabaseDiscoveryWebviewMessage(msg);
 		if (!parsed.ok) {
 			console.error('[kusto] Rejected invalid SQL database discovery webview message:', parsed.error);
+			return;
+		}
+		outbound = parsed.value;
+	} else if (isSqlSchemaWebviewMessageType(msg)) {
+		const parsed = parseSqlSchemaWebviewMessage(msg);
+		if (!parsed.ok) {
+			console.error('[kusto] Rejected invalid SQL schema webview message:', parsed.error);
 			return;
 		}
 		outbound = parsed.value;
