@@ -888,6 +888,23 @@ describe('kw-connection-manager', () => {
 	// ── Search state ───────────────────────────────────────────────────────────
 
 	describe('search state', () => {
+		it('closes the search refresh menu on Escape', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot());
+			await el.updateComplete;
+			clickButtonByTestId(el, 'cm-filter-search');
+			await el.updateComplete;
+
+			(el.shadowRoot!.querySelector('.search-refresh-drop') as HTMLButtonElement).click();
+			await el.updateComplete;
+			expect(el.shadowRoot!.querySelector('.search-refresh-menu')).not.toBeNull();
+
+			document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+			await el.updateComplete;
+
+			expect(el.shadowRoot!.querySelector('.search-refresh-menu')).toBeNull();
+		});
+
 		it('acknowledges staged search results only after the live request applies', async () => {
 			vi.useFakeTimers();
 			try {

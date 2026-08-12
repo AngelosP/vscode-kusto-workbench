@@ -6,6 +6,7 @@ import { OverlayScrollbarsController } from '../../components/overlay-scrollbars
 import { customElement, state } from 'lit/decorators.js';
 import { ICONS, iconRegistryStyles } from '../../shared/icon-registry.js';
 import { registerPageScrollDismissable } from '../../core/page-scroll-dismiss.js';
+import { pushDismissable, removeDismissable } from '../../components/dismiss-stack.js';
 import type { KustoConnectionFormSubmitDetail } from '../../components/kw-kusto-connection-form.js';
 import type { SqlConnectionFormSubmitDetail } from '../../components/kw-sql-connection-form.js';
 import '../../components/kw-kusto-connection-form.js';
@@ -241,6 +242,8 @@ export class KwConnectionManager extends LitElement {
 	private _previewRequestIds = new Map<string, KustoRequestOwner>();
 	@state() private _activeFilter: ActiveFilter = 'all';
 	@state() private _refreshMenuOpen = false;
+	private _refreshMenuDismissRegistered = false;
+	private _dismissRefreshMenu = (): void => this._closeRefreshMenu();
 
 	// Modal state
 	@state() private _modalVisible = false;
@@ -473,6 +476,8 @@ export class KwConnectionManager extends LitElement {
 		this._refreshMenuOpen = nextOpen;
 		this._cleanupRefreshMenuScrollDismiss();
 		if (nextOpen) {
+			pushDismissable(this._dismissRefreshMenu);
+			this._refreshMenuDismissRegistered = true;
 			this._removeRefreshMenuScrollDismiss = registerPageScrollDismissable(() => this._closeRefreshMenu(), {
 				dismissOnWheel: true,
 				shouldDismiss: ({ event, kind }) => {
@@ -490,6 +495,10 @@ export class KwConnectionManager extends LitElement {
 	}
 
 	private _cleanupRefreshMenuScrollDismiss(): void {
+		if (this._refreshMenuDismissRegistered) {
+			removeDismissable(this._dismissRefreshMenu);
+			this._refreshMenuDismissRegistered = false;
+		}
 		if (!this._removeRefreshMenuScrollDismiss) return;
 		this._removeRefreshMenuScrollDismiss();
 		this._removeRefreshMenuScrollDismiss = null;
