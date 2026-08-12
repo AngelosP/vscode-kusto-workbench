@@ -8,6 +8,7 @@ import {
 	resetHostOwnedMarkdownDocument,
 } from '../../src/webview/core/markdown-document-client.js';
 import {
+	isPythonExecutionPending,
 	resetPythonExecutionAdmissionForTest,
 	retireAllPythonExecutions,
 } from '../../src/webview/core/python-execution-admission.js';
@@ -287,6 +288,43 @@ describe('kw-python-section — host-owned document state', () => {
 		});
 	});
 
+	it('leaves the current run untouched when a matching Python terminal is malformed', async () => {
+		activateHostOwnership();
+		const mockMonaco = createMockMonaco();
+		(window as any).ensureMonaco = () => Promise.resolve(mockMonaco);
+		const posted: any[] = [];
+		(window as any).vscode = { postMessage(message: any) { posted.push(message); } };
+		const el = createPythonSection('print(1)');
+		await el.updateComplete;
+		await new Promise(resolve => setTimeout(resolve, 0));
+		el.applyHostDocumentState(pState.hostOwnedPythonSections.py_test_1);
+		const ctrlEnter = mockMonaco.KeyMod.CtrlCmd | mockMonaco.KeyCode.Enter;
+		mockMonaco.editors[0].commands.get(ctrlEnter)!();
+		const runButton = el.shadowRoot!.querySelector<HTMLButtonElement>('.run-btn')!;
+		posted.length = 0;
+
+		onPythonResult({
+			type: 'pythonResult', boxId: ['py_test_1'], stdout: 'forged', stderr: '', exitCode: 0,
+		} as any);
+		await el.updateComplete;
+
+		expect(isPythonExecutionPending('py_test_1')).toBe(true);
+		expect(runButton.disabled).toBe(true);
+		expect(el.shadowRoot?.textContent).toContain('Running…');
+		expect(el.serialize().output).toBe('before output');
+		expect(posted.filter(message => message.type === 'markdownDocumentCommand')).toHaveLength(0);
+
+		onPythonResult({
+			type: 'pythonResult', boxId: 'py_test_1', stdout: 'canonical', stderr: '', exitCode: 0,
+		});
+		await el.updateComplete;
+
+		expect(isPythonExecutionPending('py_test_1')).toBe(false);
+		expect(runButton.disabled).toBe(false);
+		expect(el.serialize().output).toBe('canonical');
+		expect(posted.filter(message => message.type === 'markdownDocumentCommand')).toHaveLength(1);
+	});
+
 	it('persists clearing a nonempty live model as empty code', async () => {
 		activateHostOwnership();
 		const mockMonaco = createMockMonaco();
@@ -543,5 +581,24 @@ describe('kw-python-section — Ctrl+Enter runs Python', () => {
 		expect(el.serialize().output).toBe('previous output');
 
 		delete (window as any).vscode;
+	});
+
+	it('rejects a malformed runtime box identity before reservation or running state', async () => {
+		const mockMonaco = createMockMonaco();
+		(window as any).ensureMonaco = () => Promise.resolve(mockMonaco);
+		const posted: any[] = [];
+		(window as any).vscode = { postMessage(message: any) { posted.push(message); } };
+		const el = createPythonSection('print(42)');
+		await el.updateComplete;
+		await new Promise(resolve => setTimeout(resolve, 0));
+		(el as unknown as { boxId: unknown }).boxId = ['py_test_1'];
+
+		(el as any)._run();
+		await el.updateComplete;
+
+		expect(posted).toHaveLength(0);
+		expect(isPythonExecutionPending('py_test_1')).toBe(false);
+		expect(el.shadowRoot?.querySelector<HTMLButtonElement>('.run-btn')?.disabled).toBe(false);
+		expect(el.shadowRoot?.textContent).not.toContain('Running…');
 	});
 });

@@ -1,4 +1,4 @@
-const transientNetworkPattern = /\b(?:ECONNRESET|ETIMEDOUT|EAI_AGAIN)\b|\bHTTP(?: status)?\s*(?:429|502|503|504)\b/i;
+const transientNetworkPattern = /\b(?:ECONNRESET|ETIMEDOUT|EAI_AGAIN)\b|\bHTTP(?: status)?\s*(?:429|502|503|504)\b|@vscode\/test-electron request timeout out after \d+ms/i;
 const vscodeDownloadPattern = /Downloading VS Code|Error downloading|update\.code\.visualstudio\.com/i;
 const vscodeLaunchPattern = /Launching VS Code|VS Code launched|Extension Development Host/i;
 

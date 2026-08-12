@@ -26,9 +26,8 @@ export function cancelPythonExecution(boxId: string, owner: object): void {
 }
 
 export function consumePythonExecutionTerminal(boxId: string): PythonExecutionReservation | undefined {
-	const id = String(boxId || '').trim();
-	const pending = pendingByBoxId.get(id);
-	if (pending) pendingByBoxId.delete(id);
+	const pending = pendingByBoxId.get(boxId);
+	if (pending) pendingByBoxId.delete(boxId);
 	return pending;
 }
 

@@ -224,6 +224,67 @@ describe('FirstLaunchCoordinator', () => {
 		await commandRun;
 	});
 
+	it('holds a new automatic trigger until a development reset finishes', async () => {
+		const test = harness();
+		let releaseStateWrite!: () => void;
+		const stateWrite = new Promise<void>(resolve => { releaseStateWrite = resolve; });
+		test.globalState.update.mockImplementationOnce(async (key: string, value: unknown) => {
+			await stateWrite;
+			if (value === undefined) test.state.delete(key);
+			else test.state.set(key, value);
+		});
+
+		const reset = test.coordinator.resetForDevelopment();
+		await flush();
+		const commandRun = test.coordinator.triggerAutomatic('command');
+		await flush();
+		expect(test.openPanel).not.toHaveBeenCalled();
+
+		releaseStateWrite();
+		await reset;
+		await flush();
+		expect(test.openPanel).toHaveBeenCalledOnce();
+		test.resolvePanel('closed');
+		await commandRun;
+	});
+
+	it('waits for stale initialization before writing development reset state', async () => {
+		const state = new Map<string, unknown>([
+			[FIRST_LAUNCH_FORCE_PENDING_KEY, true],
+			[FIRST_LAUNCH_INSTALL_MARKER_KEY, { schemaVersion: 1, createdAt: 'before-reset' }],
+		]);
+		const test = harness({ state, migratePendingProfileByDefault: true });
+		let releaseMigration!: () => void;
+		const migrationWrite = new Promise<void>(resolve => { releaseMigration = resolve; });
+		let blockedMigration = false;
+		test.globalState.update.mockImplementation(async (key: string, value: unknown) => {
+			if (!blockedMigration && key === FIRST_LAUNCH_FORCE_PENDING_KEY && value === undefined) {
+				blockedMigration = true;
+				await migrationWrite;
+			}
+			if (value === undefined) state.delete(key);
+			else state.set(key, value);
+		});
+
+		const initialization = test.coordinator.initialize();
+		await flush();
+		const reset = test.coordinator.resetForDevelopment();
+		await flush();
+		expect(state.get(FIRST_LAUNCH_FORCE_PENDING_KEY)).toBe(true);
+
+		releaseMigration();
+		await initialization;
+		await reset;
+		expect(state.get(FIRST_LAUNCH_FORCE_PENDING_KEY)).toBe(true);
+		expect(state.has(FIRST_LAUNCH_STATE_KEY)).toBe(false);
+
+		const commandRun = test.coordinator.triggerAutomatic('command');
+		await flush();
+		expect(test.openPanel).toHaveBeenCalledOnce();
+		test.resolvePanel('closed');
+		await commandRun;
+	});
+
 	it('can migrate a fresh development profile unless reset explicitly forces pending', async () => {
 		const test = harness({ migrateFreshProfileByDefault: true });
 
@@ -362,6 +423,25 @@ describe('FirstLaunchCoordinator', () => {
 
 		const run = test.coordinator.triggerAutomatic('activity-bar');
 		await flush();
+		test.resolvePanel('closed');
+		await run;
+		await waiting;
+		expect(released).toBe(true);
+	});
+
+	it('carries an automatic tutorial waiter across development reset', async () => {
+		const test = harness();
+		let released = false;
+		const waiting = test.coordinator.waitForAutomaticSetup().then(() => { released = true; });
+		await flush();
+
+		await test.coordinator.resetForDevelopment();
+		await flush();
+		expect(released).toBe(false);
+
+		const run = test.coordinator.triggerAutomatic('command');
+		await flush();
+		expect(test.openPanel).toHaveBeenCalledOnce();
 		test.resolvePanel('closed');
 		await run;
 		await waiting;

@@ -3,11 +3,15 @@ import { StringDecoder } from 'string_decoder';
 import * as vscode from 'vscode';
 
 import type { IncomingWebviewMessage } from './queryEditorTypes';
+import {
+	admitPythonExecutionWebviewMessage,
+	type ExecutePythonMessage,
+	type PythonExecutionHostMessage,
+	type PythonResultMessage,
+	PYTHON_OUTPUT_MAX_BYTES,
+} from '../shared/pythonExecutionProtocol';
 
 const PYTHON_EXECUTION_TIMEOUT_MS = 15_000;
-const PYTHON_OUTPUT_MAX_BYTES = 200 * 1024;
-
-type ExecutePythonMessage = Extract<IncomingWebviewMessage, { type: 'executePython' }>;
 
 type ActivePythonAttempt = {
 	cancel(): void;
@@ -64,7 +68,7 @@ export type PythonProcessFactory = (
 ) => ChildProcessWithoutNullStreams;
 
 export type PythonExecutionApplicationHandlerOptions = {
-	postMessage: (message: unknown) => Thenable<boolean>;
+	postMessage: (message: PythonExecutionHostMessage) => Thenable<boolean>;
 	createProcess?: PythonProcessFactory;
 	getWorkingDirectory?: () => string | undefined;
 };
@@ -85,13 +89,15 @@ export class HostPythonExecutionApplicationHandler implements PythonExecutionApp
 			?? (() => vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath);
 	}
 
-	private postMessage(message: unknown): Thenable<boolean> {
+	private postMessage(message: PythonExecutionHostMessage): Thenable<boolean> {
 		return this.options.postMessage(message);
 	}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
-		if (message.type !== 'executePython') return undefined;
-		return this.executePython(message);
+		const admission = admitPythonExecutionWebviewMessage(message);
+		if (!admission.recognized) return undefined;
+		if (!admission.parsed.ok) return Promise.resolve();
+		return this.executePython(admission.parsed.value);
 	}
 
 	dispose(): void {
@@ -102,8 +108,8 @@ export class HostPythonExecutionApplicationHandler implements PythonExecutionApp
 	}
 
 	private async executePython(message: ExecutePythonMessage): Promise<void> {
-		const boxId = String(message.boxId || '').trim();
-		const code = String(message.code || '');
+		const boxId = message.boxId.trim();
+		const code = message.code;
 		if (!boxId || this.disposed) return;
 
 		const cwd = this.getWorkingDirectory();
@@ -139,7 +145,7 @@ export class HostPythonExecutionApplicationHandler implements PythonExecutionApp
 		args: string[],
 		cwd: string | undefined,
 		code: string,
-	): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+	): Promise<Omit<PythonResultMessage, 'type' | 'boxId'>> {
 		return new Promise((resolve, reject) => {
 			const stdout: BoundedPythonOutput = { chunks: [], byteLength: 0 };
 			const stderr: BoundedPythonOutput = { chunks: [], byteLength: 0 };
@@ -150,7 +156,7 @@ export class HostPythonExecutionApplicationHandler implements PythonExecutionApp
 				if (timer) clearTimeout(timer);
 				this.activeAttempts.delete(attempt);
 			};
-			const settle = (result: { stdout: string; stderr: string; exitCode: number | null }) => {
+			const settle = (result: Omit<PythonResultMessage, 'type' | 'boxId'>) => {
 				if (done) return;
 				done = true;
 				cleanup();

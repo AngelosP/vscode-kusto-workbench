@@ -541,8 +541,8 @@ declare global {
 		addHtmlBox: (options?: any) => string;
 		addSqlBox: (options?: any) => string;
 		removeSqlBox: (boxId: any) => void;
-		onPythonResult: (message: any) => void;
-		onPythonError: (message: any) => void;
+		onPythonResult: (message: unknown) => void;
+		onPythonError: (message: unknown) => void;
 		__kustoGetFocusedMonacoEditor: () => any | null;
 		__kustoGetSelectionOrCurrentLineRange: (editor: any) => any;
 		__kustoCopyOrCutFocusedMonaco: (eventOrIsCut?: any, isCut?: any) => Promise<boolean>;

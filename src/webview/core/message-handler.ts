@@ -51,6 +51,9 @@ import {
 import {
 	admitUrlContentHostMessage,
 } from '../../shared/urlContentProtocol.js';
+import {
+	admitPythonExecutionHostMessage,
+} from '../../shared/pythonExecutionProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -317,7 +320,7 @@ function applyToolKustoTarget(sectionId: string, input: any): { success: boolean
 		kwEl.setDesiredConnectionIdentity?.(resolved.connection.authorityId, resolved.connection.id);
 		kwEl.setDesiredClusterUrl?.(resolved.connection.clusterUrl);
 		kwEl.dispatchEvent(new CustomEvent('connection-changed', {
-			detail: { boxId: sectionId, connectionId: resolved.connection.id, clusterUrl: resolved.connection.clusterUrl },
+			detail: { boxId: sectionId, connectionId: resolved.connection.id, clusterUrl: resolved.connection.clusterUrl, source: 'tool' },
 			bubbles: true, composed: true,
 		}));
 	}
@@ -325,7 +328,7 @@ function applyToolKustoTarget(sectionId: string, input: any): { success: boolean
 		kwEl.setDesiredDatabase?.(String(input.database));
 		kwEl.setDatabase?.(String(input.database));
 		kwEl.dispatchEvent(new CustomEvent('database-changed', {
-			detail: { boxId: sectionId, database: String(input.database) },
+			detail: { boxId: sectionId, database: String(input.database), source: 'tool' },
 			bubbles: true, composed: true,
 		}));
 	}
@@ -1482,6 +1485,11 @@ window.addEventListener(DOCUMENT_RUNTIME_INVALIDATED_EVENT, () => {
 });
 
 const __kustoDispatchHostMessage = async (message: any) => {
+	const pythonExecutionAdmission = admitPythonExecutionHostMessage(message);
+	if (pythonExecutionAdmission.recognized) {
+		if (!pythonExecutionAdmission.parsed.ok) return;
+		message = pythonExecutionAdmission.parsed.value;
+	}
 	message = (message && typeof message === 'object') ? message : {};
 	const urlContentAdmission = admitUrlContentHostMessage(message);
 	if (urlContentAdmission.recognized) {
@@ -3198,7 +3206,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						if (kwEl && typeof kwEl.setConnectionId === 'function') {
 							kwEl.setConnectionId(message.connectionId);
 							kwEl.dispatchEvent(new CustomEvent('connection-changed', {
-								detail: { boxId: boxId, connectionId: message.connectionId },
+								detail: { boxId: boxId, connectionId: message.connectionId, source: 'user' },
 								bubbles: true, composed: true,
 							}));
 						}
@@ -3270,7 +3278,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					if (sqlEl && typeof sqlEl.setSqlConnectionId === 'function') {
 						sqlEl.setSqlConnectionId(message.connectionId);
 						sqlEl.dispatchEvent(new CustomEvent('sql-connection-changed', {
-							detail: { boxId: boxId, connectionId: message.connectionId },
+							detail: { boxId: boxId, connectionId: message.connectionId, source: 'user' },
 							bubbles: true, composed: true,
 						}));
 					}
@@ -4709,7 +4717,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					if (input.serverUrl) await new Promise((r: any) => setTimeout(r, 500));
 					sqlEl.setDatabase(String(input.database));
 					sqlEl.dispatchEvent(new CustomEvent('sql-database-changed', {
-						detail: { boxId: sectionId, database: input.database },
+						detail: { boxId: sectionId, database: input.database, source: 'tool' },
 						bubbles: true, composed: true,
 					}));
 					success = true;

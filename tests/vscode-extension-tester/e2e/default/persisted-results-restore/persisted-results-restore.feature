@@ -34,4 +34,5 @@ Feature: Persisted query results restore
 
     When I evaluate "(() => { const section = document.getElementById('query_persisted_results'); if (!section) throw new Error('Persisted query section missing after reopen'); const dt = document.getElementById('query_persisted_results_results')?.querySelector('kw-data-table'); if (!dt) throw new Error('Reopened result table missing'); const data = section.serialize(); const persisted = JSON.parse(data.resultJson || '{}'); const rows = dt.rows || []; if (persisted.rows.length !== 12 || rows.length !== 12) throw new Error('Persisted/rendered row count changed after reopen'); if (rows[5][1] !== 'persist_row_06') throw new Error('Reopened row data mismatch'); if (persisted.metadata.executionTime !== '00:00:00.321') throw new Error('Execution metadata changed after reopen'); return 'reopened persisted results verified'; })()" in the webview
     When I execute command "workbench.action.closeAllEditors"
+    When I execute command "kustoWorkbench.test.cleanupPersistedResultFixture"
     When I delete file "tests/vscode-extension-tester/runs/default/persisted-results-restore/owned-results.kqlx"

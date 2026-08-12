@@ -40,7 +40,7 @@ export interface SqlSectionLifecycleEffects {
 	getConnectionId(boxId: string): string;
 	getDatabase(boxId: string): string;
 	postMessage(message: Record<string, unknown>): void;
-	persist(): void;
+	persist(reason?: string, immediate?: boolean): void;
 }
 
 export interface SqlConnectionChangedDetail {
@@ -49,6 +49,7 @@ export interface SqlConnectionChangedDetail {
 	database?: string;
 	preserveTargetGeneration?: boolean;
 	suppressMetadataRefresh?: boolean;
+	source?: 'user' | 'tool';
 }
 
 export interface SqlDatabaseChangedDetail {
@@ -56,6 +57,7 @@ export interface SqlDatabaseChangedDetail {
 	database?: string;
 	preserveTargetGeneration?: boolean;
 	suppressMetadataRefresh?: boolean;
+	source?: 'user' | 'tool';
 }
 
 type PendingToolRun = {
@@ -175,7 +177,8 @@ export class SqlSectionSessionController implements ReactiveController, SqlSecti
 				targetGeneration,
 			});
 		}
-		effects.persist();
+		const authored = detail.source === 'user' || detail.source === 'tool';
+		effects.persist(authored ? 'sql-target-selection' : undefined, authored);
 	}
 
 	handleDatabaseChanged(detail: SqlDatabaseChangedDetail): void {
@@ -215,7 +218,8 @@ export class SqlSectionSessionController implements ReactiveController, SqlSecti
 				});
 			}
 		}
-		effects.persist();
+		const authored = detail.source === 'user' || detail.source === 'tool';
+		effects.persist(authored ? 'sql-target-selection' : undefined, authored);
 	}
 
 	handleRefreshDatabases(detail: { boxId?: string; connectionId?: string }): void {

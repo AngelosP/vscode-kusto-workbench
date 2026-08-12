@@ -17,6 +17,13 @@ test('retries retryable HTTP download responses', () => {
 	}), true);
 });
 
+test('retries the timeout emitted by the installed VS Code downloader', () => {
+	assert.equal(shouldRetryVscodeBootstrapFailure({
+		status: 1,
+		output: 'Downloading VS Code (1.132.1)...\nError: @vscode/test-electron request timeout out after 30000ms',
+	}), true);
+});
+
 test('does not retry product, step, or post-launch failures', () => {
 	for (const candidate of [
 		{ status: 1, output: 'Then element should exist: assertion failed' },

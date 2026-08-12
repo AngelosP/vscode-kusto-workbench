@@ -911,7 +911,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			this._desiredDatabase = '';
 			this._databases = [];
 			this.dispatchEvent(new CustomEvent('connection-changed', {
-				detail: { boxId: this.boxId, connectionId, clusterUrl: conn?.clusterUrl || '' },
+				detail: { boxId: this.boxId, connectionId, clusterUrl: conn?.clusterUrl || '', source: 'user' },
 				bubbles: true, composed: true,
 			}));
 		}
@@ -969,7 +969,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			this._databases = [];
 			// Dispatch connection-changed so schema gets cleared and databases reload.
 			this.dispatchEvent(new CustomEvent('connection-changed', {
-				detail: { boxId: this.boxId, connectionId: conn.id, clusterUrl: conn.clusterUrl },
+				detail: { boxId: this.boxId, connectionId: conn.id, clusterUrl: conn.clusterUrl, source: 'user' },
 				bubbles: true, composed: true,
 			}));
 			// Also dispatch favorite-selected for any listeners that need the database hint.

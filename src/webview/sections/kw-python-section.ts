@@ -33,6 +33,7 @@ import {
 	retirePythonExecution,
 } from '../core/python-execution-admission.js';
 import type { PythonSectionState } from '../../shared/pythonSectionDefinition.js';
+import { parsePythonExecutionWebviewMessage } from '../../shared/pythonExecutionProtocol.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -373,17 +374,18 @@ export class KwPythonSection extends LitElement implements SectionElement {
 		if (!this._editor || this._running) return;
 		const model = this._editor.getModel();
 		const code = model ? model.getValue() : '';
-		if (!reservePythonExecution(this.boxId, this, code)) {
+		const request = parsePythonExecutionWebviewMessage({
+			type: 'executePython', boxId: this.boxId, code,
+		});
+		if (!request.ok) return;
+		if (!reservePythonExecution(request.value.boxId, this, request.value.code)) {
 			this._running = isPythonExecutionPending(this.boxId);
 			return;
 		}
 		this._output = 'Running…';
 		this._running = true;
 		try {
-			const vscode = window.vscode;
-			if (vscode && typeof vscode.postMessage === 'function') {
-				vscode.postMessage({ type: 'executePython', boxId: this.boxId, code });
-			}
+			postMessageToHost(request.value);
 		} catch {
 			cancelPythonExecution(this.boxId, this);
 			this._running = false;

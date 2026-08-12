@@ -157,6 +157,18 @@ describe('SqlSectionSessionController', () => {
 		});
 	});
 
+	it('persists explicit target transitions as authored changes', () => {
+		const { controller } = createController();
+		const effects = createLifecycleEffects();
+		controller.configureLifecycleEffects(effects);
+
+		controller.handleConnectionChanged({ connectionId: 'sql-a', source: 'user' });
+		controller.handleDatabaseChanged({ database: 'Db', source: 'user' });
+
+		expect(effects.persist).toHaveBeenNthCalledWith(1, 'sql-target-selection', true);
+		expect(effects.persist).toHaveBeenNthCalledWith(2, 'sql-target-selection', true);
+	});
+
 	it('adopts a restored database without host metadata requests', () => {
 		const { controller } = createController();
 		const effects = createLifecycleEffects({ restore: true });

@@ -360,7 +360,7 @@ export class QueryConnectionController implements ReactiveController {
 					kwEl.setConnectionId(connectionId);
 				}
 				kwEl.dispatchEvent(new CustomEvent('connection-changed', {
-					detail: { boxId: tid, connectionId: connectionId, clusterUrl: clusterUrl },
+					detail: { boxId: tid, connectionId: connectionId, clusterUrl: clusterUrl, source: 'user' },
 					bubbles: true, composed: true,
 				}));
 			} catch (e) { console.error('[kusto]', e); }

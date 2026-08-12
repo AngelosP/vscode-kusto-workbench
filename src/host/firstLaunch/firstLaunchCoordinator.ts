@@ -83,7 +83,9 @@ export class FirstLaunchCoordinator {
 	private sessionSuppressed = false;
 	private transactionInFlight = false;
 	private developmentForcePending = false;
+	private developmentReset: Promise<void> | undefined;
 	private firstUseSettled = false;
+	private firstUseBarrierGeneration = 0;
 	private firstUseSettledPromise!: Promise<void>;
 	private resolveFirstUseSettled!: () => void;
 	private readonly profileLease: FirstLaunchProfileLeaseLike;
@@ -110,6 +112,9 @@ export class FirstLaunchCoordinator {
 	}
 
 	triggerAutomatic(source: FirstLaunchTriggerSource): Promise<FirstLaunchPanelOutcome> {
+		if (this.developmentReset) {
+			return this.developmentReset.then(() => this.triggerAutomatic(source));
+		}
 		if (this.activeRun) {
 			if (this.activeRunMode === 'automatic') {
 				return this.activeRun;
@@ -134,6 +139,9 @@ export class FirstLaunchCoordinator {
 	}
 
 	openConfiguration(): Promise<FirstLaunchPanelOutcome> {
+		if (this.developmentReset) {
+			return this.developmentReset.then(() => this.openConfiguration());
+		}
 		if (this.activeRun) {
 			return this.activeRun;
 		}
@@ -158,9 +166,12 @@ export class FirstLaunchCoordinator {
 	}
 
 	async waitForAutomaticSetup(): Promise<void> {
-		await this.initialize();
-		if (!this.firstUseSettled) {
-			await this.firstUseSettledPromise;
+		while (true) {
+			if (this.developmentReset) await this.developmentReset;
+			await this.initialize();
+			const generation = this.firstUseBarrierGeneration;
+			if (!this.firstUseSettled) await this.firstUseSettledPromise;
+			if (generation === this.firstUseBarrierGeneration && !this.developmentReset) return;
 		}
 	}
 
@@ -177,8 +188,21 @@ export class FirstLaunchCoordinator {
 	}
 
 	async resetForDevelopment(): Promise<void> {
+		if (this.developmentReset) return this.developmentReset;
+		const reset = this.resetForDevelopmentOnce();
+		this.developmentReset = reset;
+		try {
+			await reset;
+		} finally {
+			if (this.developmentReset === reset) this.developmentReset = undefined;
+		}
+	}
+
+	private async resetForDevelopmentOnce(): Promise<void> {
 		const previousRun = this.activeRun;
 		if (previousRun) await previousRun;
+		const previousInitialization = this.initialization;
+		if (previousInitialization) await previousInitialization.catch(() => undefined);
 		this.developmentForcePending = true;
 		this.transactionInFlight = true;
 		this.sessionSuppressed = false;
@@ -290,10 +314,13 @@ export class FirstLaunchCoordinator {
 	}
 
 	private resetFirstUseBarrier(): void {
+		const releasePrevious = this.resolveFirstUseSettled;
+		this.firstUseBarrierGeneration++;
 		this.firstUseSettled = false;
 		this.firstUseSettledPromise = new Promise(resolve => {
 			this.resolveFirstUseSettled = resolve;
 		});
+		releasePrevious?.();
 	}
 
 	private settleFirstUseBarrier(): void {

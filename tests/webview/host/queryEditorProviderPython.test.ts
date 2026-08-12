@@ -97,7 +97,7 @@ describe('QueryEditorProvider Python execution', () => {
 		const displacedProviderAuthorities = [
 			['createPythonProcess', 'createProcess'],
 			['executePythonFromWebview', 'private async executePython('],
-			["case 'executePython':", "message.type !== 'executePython'"],
+			["case 'executePython':", 'admitPythonExecutionWebviewMessage(message)'],
 			["type: 'pythonResult'", "type: 'pythonResult'"],
 			["type: 'pythonError'", "type: 'pythonError'"],
 			['spawn(', 'spawn('],

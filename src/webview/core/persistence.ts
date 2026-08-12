@@ -1527,6 +1527,40 @@ function __kustoIsAutomaticOwnerEnrichmentOnly(cleanSignature: string, currentSt
 	}
 }
 
+function __kustoHasPendingRestoredResultsForCurrentDocument(): boolean {
+	const documentUri = String(pState.documentUri || '');
+	return __kustoDeferredRestoredResultJobs.some(__kustoIsDeferredResultJobDocumentCurrent)
+		|| __kustoPendingSqlOwnedRestores.some(job =>
+			job.generation === __kustoRestoreResultGeneration && job.documentUri === documentUri);
+}
+
+function __kustoSettleReadyRestoredResultsForPersist(): void {
+	while (true) {
+		const nextIndex = __kustoDeferredRestoredResultJobs.findIndex(job =>
+			__kustoIsDeferredResultJobDocumentCurrent(job)
+			&& __kustoGetDeferredResultJobState(job) === 'ready');
+		if (nextIndex < 0) return;
+		const job = __kustoDeferredRestoredResultJobs.splice(nextIndex, 1)[0];
+		__kustoRecordDeferredRestoredResultSettlementForTest(job, 'ready');
+		__kustoRenderDeferredRestoredResult(job);
+	}
+}
+
+function __kustoRetirePendingRestoredResultsForPersist(): void {
+	const documentUri = String(pState.documentUri || '');
+	__kustoDeferredRestoredResultJobs = __kustoDeferredRestoredResultJobs.filter(job => {
+		if (!__kustoIsDeferredResultJobDocumentCurrent(job)) return false;
+		if (__kustoGetDeferredResultJobState(job) === 'ready') return true;
+		if (getResultsStateRevision(job.boxId) === job.initialResultsRevision
+			&& pState.queryResultJsonByBoxId?.[job.boxId] === job.resultJson) {
+			__kustoDeleteStoredQueryResultJson(job.boxId);
+		}
+		return false;
+	});
+	__kustoPendingSqlOwnedRestores = __kustoPendingSqlOwnedRestores.filter(job =>
+		job.generation !== __kustoRestoreResultGeneration || job.documentUri !== documentUri);
+}
+
 export function __kustoTryStoreQueryResult(boxId: any, result: any, kustoOwner?: unknown) {
 	try {
 		if (!boxId) return;
@@ -2076,9 +2110,45 @@ export function schedulePersist(reason?: any, immediate?: any) {
 			clearTimeout(__kustoPersistTimer);
 			__kustoPersistTimer = null;
 		}
+		const prepareStateForPersist = (waitForPending: () => void): Readonly<{
+			state: any;
+			signatureState: any;
+			signature: string;
+		}> | undefined => {
+			if (__kustoDeferredRestoredResultJobs.some(job => job.expectedQueryText !== undefined
+				&& __kustoCurrentRestoredQueryText(job) !== job.expectedQueryText)) {
+				resolvePendingKustoResultRestores();
+			}
+			__kustoSettleReadyRestoredResultsForPersist();
+			let state = getKqlxState();
+			let signatureState = __kustoBuildPersistSignatureState(state);
+			let signature = JSON.stringify(signatureState);
+			if (__kustoHasPendingRestoredResultsForCurrentDocument()) {
+				if (signature === __kustoLastPersistSignature) {
+					waitForPending();
+					return undefined;
+				}
+				if (!r && __kustoIsAutomaticOwnerEnrichmentOnly(__kustoLastPersistSignature, signatureState)) {
+					__kustoLastPersistSignature = signature;
+					__kustoLastPersistRevision = pState.documentEditRevision;
+					__kustoLastSentPersistSignature = signature;
+					__kustoLastSentPersistRevision = pState.documentEditRevision;
+					waitForPending();
+					return undefined;
+				}
+				__kustoRetirePendingRestoredResultsForPersist();
+				state = getKqlxState();
+				signatureState = __kustoBuildPersistSignatureState(state);
+				signature = JSON.stringify(signatureState);
+			}
+			return { state, signatureState, signature };
+		};
 		if (tracksEditRevision) {
-			const state = getKqlxState();
-			const sig = __kustoGetPersistSignature(state);
+			const prepared = prepareStateForPersist(() => {
+				__kustoPersistTimer = setTimeout(() => schedulePersist(r, persistImmediately), 100);
+			});
+			if (!prepared) return;
+			const { state, signature: sig } = prepared;
 			if (sig && sig === __kustoLastPersistSignature
 				&& __kustoLastPersistRevision === pState.documentEditRevision) {
 				return;
@@ -2096,17 +2166,11 @@ export function schedulePersist(reason?: any, immediate?: any) {
 		const doPersist = () => {
 			try {
 				__kustoPersistTimer = null;
-				if (__kustoDeferredRestoredResultJobs.some(job => job.expectedQueryText !== undefined
-					&& __kustoCurrentRestoredQueryText(job) !== job.expectedQueryText)) {
-					resolvePendingKustoResultRestores();
-				}
-				if (__kustoDeferredRestoredResultJobs.length > 0 || __kustoPendingSqlOwnedRestores.length > 0) {
+				const prepared = prepareStateForPersist(() => {
 					__kustoPersistTimer = setTimeout(doPersist, 100);
-					return;
-				}
-				const state = getKqlxState();
-				const signatureState = __kustoBuildPersistSignatureState(state);
-				const sig = JSON.stringify(signatureState);
+				});
+				if (!prepared) return;
+				const { state, signatureState, signature: sig } = prepared;
 				if (!r && sig !== __kustoLastPersistSignature
 					&& __kustoIsAutomaticOwnerEnrichmentOnly(__kustoLastPersistSignature, signatureState)) {
 					__kustoLastPersistSignature = sig;
@@ -2201,6 +2265,14 @@ export function flushCompatibilityPersist(requestId?: string, reason = 'flush'):
 			clearTimeout(__kustoPersistTimer);
 			__kustoPersistTimer = null;
 		}
+		if (__kustoDeferredRestoredResultJobs.some(job => job.expectedQueryText !== undefined
+			&& __kustoCurrentRestoredQueryText(job) !== job.expectedQueryText)) {
+			resolvePendingKustoResultRestores();
+		}
+		__kustoSettleReadyRestoredResultsForPersist();
+		if (__kustoHasPendingRestoredResultsForCurrentDocument()) {
+			__kustoRetirePendingRestoredResultsForPersist();
+		}
 		const state = getKqlxState();
 		if (pState.documentKind !== 'kql' && pState.documentKind !== 'sql') {
 			__kustoPersistenceEpoch++;
@@ -2281,6 +2353,14 @@ try {
 			}
 			if (!pState.isSessionFile) {
 				return;
+			}
+			if (__kustoDeferredRestoredResultJobs.some(job => job.expectedQueryText !== undefined
+				&& __kustoCurrentRestoredQueryText(job) !== job.expectedQueryText)) {
+				resolvePendingKustoResultRestores();
+			}
+			__kustoSettleReadyRestoredResultsForPersist();
+			if (__kustoHasPendingRestoredResultsForCurrentDocument()) {
+				__kustoRetirePendingRestoredResultsForPersist();
 			}
 			const state = getKqlxState();
 			const sig = __kustoGetPersistSignature(state);

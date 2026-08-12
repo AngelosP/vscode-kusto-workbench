@@ -36,4 +36,5 @@ Feature: SQL persisted results restore
     Then I take a screenshot "02-stale-overlay-after-edit"
 
     When I execute command "workbench.action.revertAndCloseActiveEditor"
+  When I execute command "kustoWorkbench.test.cleanupPersistedResultFixture"
     When I delete file "tests/vscode-extension-tester/runs/default/sql-persisted-results/persisted-results.sqlx"

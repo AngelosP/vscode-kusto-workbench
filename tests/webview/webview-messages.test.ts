@@ -452,4 +452,50 @@ describe('postMessageToHost', () => {
 			delete (window as any).__e2eCaptureHostMessage;
 		}
 	});
+
+	it('snapshots valid Python requests and rejects malformed ones before E2E capture', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const request = {
+				type: 'executePython' as const, boxId: 'python-section', code: '',
+			};
+			postMessageToHost(request);
+
+			expect(capture.mock.calls[0]?.[0]).toEqual(request);
+			expect(capture.mock.calls[0]?.[0]).not.toBe(request);
+			expect(postMessage.mock.calls[0]?.[0]).toEqual(request);
+			expect(postMessage.mock.calls[0]?.[0]).not.toBe(request);
+			capture.mockClear();
+			postMessage.mockClear();
+
+			let propertyReads = 0;
+			postMessageToHost(new Proxy(request, {
+				get() {
+					propertyReads++;
+					throw new Error('property read');
+				},
+			}));
+			expect(capture).toHaveBeenCalledWith(request);
+			expect(postMessage).toHaveBeenCalledWith(request);
+			expect(propertyReads).toBe(0);
+			capture.mockClear();
+			postMessage.mockClear();
+
+			for (const malformed of [
+				{ ...request, boxId: ['python-section'] },
+				{ ...request, code: null },
+				Object.assign([], request),
+				Object.assign(() => undefined, request),
+			]) {
+				postMessageToHost(malformed as unknown as Parameters<typeof postMessageToHost>[0]);
+			}
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
 });

@@ -2,6 +2,11 @@ Feature: SQL toolbar actions - prettify, comment toggle, undo, redo, search
 
   Background:
     Given the extension is in a clean state
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 1200 by 900
+    And I execute command "workbench.action.closeSidebar"
+    And I execute command "workbench.action.closeAuxiliaryBar"
+    And I execute command "workbench.action.closePanel"
     And I capture the output channel "Kusto Workbench"
     And I wait 2 seconds
 
@@ -24,12 +29,18 @@ Feature: SQL toolbar actions - prettify, comment toggle, undo, redo, search
 
     When I evaluate "window.__e2e.sql.setQuery(`select * from mytable where id=1 and name='test'`)" in the webview
     And I wait 1 second
+    When I execute command "workbench.action.focusActiveEditorGroup"
+    And I move the mouse to 30, 700
+    And I click
     Then I take a screenshot "01-before-prettify"
 
     When I evaluate "(() => { const btn = document.querySelector('kw-sql-toolbar button[aria-label=Prettify]'); if (!btn) throw new Error('Prettify toolbar button not found'); btn.click(); return 'prettify clicked'; })()" in the webview
     And I wait 2 seconds
 
     When I evaluate "(() => { const val = window.__testGetMonacoValue('kw-sql-section .query-editor'); if (val === `select * from mytable where id=1 and name='test'`) throw new Error('SQL was not prettified - still equals original'); const lines = val.split('\\n'); if (lines.length < 2) throw new Error('Prettified SQL should be multi-line, got ' + lines.length + ' lines: ' + val.substring(0, 80)); return 'prettified (' + lines.length + ' lines): ' + val.substring(0, 80); })()" in the webview
+    When I execute command "workbench.action.focusActiveEditorGroup"
+    And I move the mouse to 30, 700
+    And I click
     Then I take a screenshot "02-after-prettify"
 
     When I evaluate "(() => { window.__e2e.sql.setQuery('SELECT 1'); return window.__e2e.sql.setSelection(1, 1, 1, 9); })()" in the webview
@@ -39,18 +50,27 @@ Feature: SQL toolbar actions - prettify, comment toggle, undo, redo, search
     And I wait 1 second
 
     When I evaluate "(() => { const val = window.__testGetMonacoValue('kw-sql-section .query-editor'); if (!val.includes('--')) throw new Error('Comment toggle should add -- prefix, got: ' + val); return 'commented: ' + val; })()" in the webview
+    When I execute command "workbench.action.focusActiveEditorGroup"
+    And I move the mouse to 30, 700
+    And I click
     Then I take a screenshot "03-commented"
 
     When I evaluate "(() => { const btn = document.querySelector('kw-sql-toolbar button[aria-label=Undo]'); if (!btn) throw new Error('Undo toolbar button not found'); btn.click(); return 'undo clicked'; })()" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const val = window.__testGetMonacoValue('kw-sql-section .query-editor'); if (val.includes('--')) throw new Error('Undo should remove comment, got: ' + val); if (!val.includes('SELECT')) throw new Error('Undo should restore SELECT, got: ' + val); return 'undone: ' + val; })()" in the webview
+    When I execute command "workbench.action.focusActiveEditorGroup"
+    And I move the mouse to 30, 700
+    And I click
     Then I take a screenshot "04-undone"
 
     When I evaluate "(() => { const btn = document.querySelector('kw-sql-toolbar button[aria-label=Redo]'); if (!btn) throw new Error('Redo toolbar button not found'); btn.click(); return 'redo clicked'; })()" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const val = window.__testGetMonacoValue('kw-sql-section .query-editor'); if (!val.includes('--')) throw new Error('Redo should restore comment, got: ' + val); return 'redone: ' + val; })()" in the webview
+    When I execute command "workbench.action.focusActiveEditorGroup"
+    And I move the mouse to 30, 700
+    And I click
     Then I take a screenshot "05-redone"
 
     When I evaluate "window.__e2e.sql.setQuery(`SELECT * FROM Products WHERE Color = 'Red'`)" in the webview
@@ -58,6 +78,9 @@ Feature: SQL toolbar actions - prettify, comment toggle, undo, redo, search
     And I wait 2 seconds
 
     When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const findWidget = el.querySelector('.find-widget') || el.querySelector('.monaco-editor .find-widget'); if (!findWidget) throw new Error('Find widget not visible after triggering search'); const visible = findWidget.style.display !== 'none' && findWidget.offsetHeight > 0; if (!visible) throw new Error('Find widget exists but is not visible'); return 'find widget visible'; })()" in the webview
+    When I execute command "workbench.action.focusActiveEditorGroup"
+    And I move the mouse to 30, 700
+    And I click
     Then I take a screenshot "06-find-widget"
 
     When I press "Escape"
@@ -74,23 +97,26 @@ Feature: SQL toolbar actions - prettify, comment toggle, undo, redo, search
     And I wait 2 seconds
     When I wait for "kw-query-toolbar [data-testid='toolbar-overflow-button']" in the webview for 10 seconds
     And I evaluate "(() => { const toolbar = document.querySelector('#e2e_layout_query kw-query-toolbar'); const button = toolbar?.querySelector(`[data-testid='toolbar-overflow-button']`); const hidden = [...(toolbar?.querySelectorAll('.qe-in-overflow') || [])].filter(element => element.getBoundingClientRect().width === 0); if (!button || button.getBoundingClientRect().width <= 0 || hidden.length === 0) throw new Error('No toolbar action moved into overflow'); return { expanded: button.getAttribute('aria-expanded'), hiddenCount: hidden.length }; })()" in the webview
-    When I move the mouse to 365, 197
+    When I execute command "workbench.action.focusActiveEditorGroup"
+    And I move the mouse to 30, 700
     And I click
+    When I evaluate "(() => { const button = document.querySelector('#e2e_layout_query kw-query-toolbar [data-testid=toolbar-overflow-button]'); if (!button) throw new Error('Toolbar overflow button missing'); button.click(); return 'overflow opened'; })()" in the webview
     And I wait for "kw-query-toolbar [data-testid='toolbar-overflow-menu']" in the webview for 10 seconds
     And I evaluate "(() => [...document.querySelectorAll('kw-query-toolbar [data-action-label]')].map(element => element.getAttribute('data-action-label')))()" in the webview
     And I wait for "kw-query-toolbar [data-action-label='Share query as link']" in the webview for 10 seconds
     And I evaluate "(() => { window.__overflowHostMessages = []; window.__e2eCaptureHostMessage = message => { window.__overflowHostMessages.push(JSON.parse(JSON.stringify(message))); return true; }; return 'overflow host capture installed'; })()" in the webview
-    Then I take a screenshot "07-narrow-toolbar-overflow-open"
     When I click the webview element "Share query as link"
     And I wait 1 second
     When I evaluate "(() => { if (document.querySelector(`kw-query-toolbar [data-testid='toolbar-overflow-menu']`)) throw new Error('Overflow menu remained open after Share query as link'); const message = window.__overflowHostMessages.find(candidate => candidate.type === 'showInfo'); if (message?.message !== 'Select a cluster connection first.') throw new Error('Overflow action did not route the expected host message: ' + JSON.stringify(window.__overflowHostMessages)); return message; })()" in the webview
-    When I move the mouse to 365, 197
-    And I click
+    When I evaluate "(() => { const button = document.querySelector('#e2e_layout_query kw-query-toolbar [data-testid=toolbar-overflow-button]'); if (!button) throw new Error('Toolbar overflow button missing'); button.click(); return 'overflow reopened'; })()" in the webview
     And I wait for "kw-query-toolbar [data-testid='toolbar-overflow-menu']" in the webview for 10 seconds
     When I evaluate "(() => { const viewport = document.querySelector(`[data-kw-page-scroll-element='true']`); if (!viewport) throw new Error('Page viewport is missing'); window.__overflowScrollBefore = viewport.scrollTop; return viewport.scrollTop; })()" in the webview
     When I focus "[data-kw-page-scroll-element='true']" in the webview
     When I press "PageDown"
     And I wait 1 second
     When I evaluate "(() => { const viewport = document.querySelector(`[data-kw-page-scroll-element='true']`); const before = Number(window.__overflowScrollBefore); if (!viewport || viewport.scrollTop <= before + 20) throw new Error('Native PageDown did not scroll the page: ' + JSON.stringify({ before, after: viewport?.scrollTop })); if (document.querySelector(`kw-query-toolbar [data-testid='toolbar-overflow-menu']`)) throw new Error('Overflow menu remained open after page scroll'); return { before, after: viewport.scrollTop }; })()" in the webview
+    When I execute command "workbench.action.focusActiveEditorGroup"
+    And I move the mouse to 30, 700
+    And I click
     Then I take a screenshot "08-narrow-toolbar-overflow-dismissed"
     When I execute command "workbench.action.revertAndCloseActiveEditor"

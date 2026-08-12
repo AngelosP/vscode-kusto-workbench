@@ -203,9 +203,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			label: 'Kusto Workbench persisted-result test account',
 		};
 		const cleanupPersistedResultFixtureState = async (): Promise<void> => {
-			for (const connection of connectionManager.getConnections()) {
-				if (!String(connection.name || '').startsWith(persistedResultFixturePrefix)
-					&& kustoClusterKey(connection.clusterUrl) !== kustoClusterKey(persistedResultKustoCluster)) continue;
+			const kustoConnections = connectionManager.getConnections().filter(connection =>
+				String(connection.name || '').startsWith(persistedResultFixturePrefix)
+				|| kustoClusterKey(connection.clusterUrl) === kustoClusterKey(persistedResultKustoCluster));
+			await deleteCachedSchemasForConnections(
+				context.globalStorageUri,
+				new Set(kustoConnections.map(connection => connection.id)),
+			);
+			for (const connection of kustoConnections) {
 				await testConnectionCache.clearConnection(connection.id);
 				await testAuthPreferences.removeConnection(connection.id);
 				await connectionManager.removeConnection(connection.id);
@@ -584,6 +589,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		context.subscriptions.push(
 			vscode.commands.registerCommand('kustoWorkbench.test.runAuthorityLiveFixture', runAuthorityLiveFixture),
 			vscode.commands.registerCommand('kustoWorkbench.test.preparePersistedResultFixture', preparePersistedResultFixture),
+			vscode.commands.registerCommand('kustoWorkbench.test.cleanupPersistedResultFixture', async () => {
+				await persistedResultFixtureStartupCleanup;
+				await cleanupPersistedResultFixtureState();
+			}),
 			vscode.commands.registerCommand('kustoWorkbench.test.cleanupAuthorityLiveFixture', async () => {
 				await authorityLiveStartupCleanup;
 				await cleanupAuthorityLiveState();

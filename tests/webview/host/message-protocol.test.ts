@@ -343,7 +343,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kustoConnectionOnboardingApplicationHandler.ts::testConnectionFromWebview::postMessage::189:4',
 	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::453:33',
 	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::274:33',
-	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::89:10',
+	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::93:10',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::380:27',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::512:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::518:28',
@@ -1432,6 +1432,60 @@ describe('Message Protocol Contract', () => {
 		expect(urlSection).toContain("postMessageToHost({ type: 'fetchUrl'");
 	});
 
+	it('keeps Python execution requests and terminals on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/pythonExecutionProtocol.ts',
+			'PythonExecutionWebviewMessage',
+		)).toEqual(['executePython']);
+		expect(extractTypeDiscriminants(
+			'src/shared/pythonExecutionProtocol.ts',
+			'PythonExecutionHostMessage',
+		)).toEqual(['pythonError', 'pythonResult']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| PythonExecutionWebviewMessage');
+		expect(webviewMessages).toContain('| PythonExecutionWebviewMessage');
+		expect(hostTypes).not.toContain("type: 'executePython'");
+		expect(webviewMessages).not.toContain("type: 'executePython'");
+		const wrapperAdmissionIndex = webviewMessages.indexOf('admitPythonExecutionWebviewMessage(msg)');
+		const captureIndex = webviewMessages.indexOf('const e2eCaptureHostMessage');
+		expect(wrapperAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(wrapperAdmissionIndex).toBeLessThan(captureIndex);
+
+		const requestHandler = readWorkspaceFile('src/host/pythonExecutionApplicationHandler.ts');
+		const requestAdmission = requestHandler.slice(requestHandler.indexOf('handleMessage('));
+		expect(requestAdmission.indexOf('admitPythonExecutionWebviewMessage(message)'))
+			.toBeLessThan(requestAdmission.indexOf('const cwd = this.getWorkingDirectory()'));
+		expect(requestAdmission.indexOf('admitPythonExecutionWebviewMessage(message)'))
+			.toBeLessThan(requestAdmission.indexOf('this.runOnce('));
+		expect(requestHandler).toContain('postMessage: (message: PythonExecutionHostMessage)');
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		const dispatcherAdmissionIndex = dispatcher.indexOf('admitPythonExecutionHostMessage(message)');
+		expect(dispatcherAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(dispatcherAdmissionIndex).toBeLessThan(dispatcher.indexOf('const incomingType'));
+		expect(dispatcherAdmissionIndex).toBeLessThan(dispatcher.indexOf("case 'pythonResult':"));
+		expect(dispatcherAdmissionIndex).toBeLessThan(dispatcher.indexOf("case 'pythonError':"));
+
+		const sectionFactory = readWorkspaceFile('src/webview/core/section-factory.ts');
+		for (const functionName of ['onPythonResult', 'onPythonError']) {
+			const terminalHandler = sectionFactory.slice(sectionFactory.indexOf(`export function ${functionName}`));
+			expect(terminalHandler.indexOf('admitPythonExecutionHostMessage(message)'))
+				.toBeLessThan(terminalHandler.indexOf('consumePythonExecutionTerminal(boxId)'));
+		}
+		expect(sectionFactory).not.toContain('function runPythonBox');
+
+		const pythonSection = readWorkspaceFile('src/webview/sections/kw-python-section.ts');
+		expect(pythonSection.indexOf('parsePythonExecutionWebviewMessage({'))
+			.toBeLessThan(pythonSection.indexOf('reservePythonExecution(request.value.boxId'));
+		expect(pythonSection.indexOf('parsePythonExecutionWebviewMessage({'))
+			.toBeLessThan(pythonSection.indexOf("this._output = 'Running…'"));
+		expect(pythonSection).toContain('postMessageToHost(request.value)');
+		expect(pythonSection).not.toContain("vscode.postMessage({ type: 'executePython'");
+	});
+
 	// ─── Compile-time guards ───────────────────────────────────────────────
 	// These calls exist solely for the TypeScript compiler to verify that
 	// every string literal in our arrays is a valid union discriminant.
@@ -1460,6 +1514,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/kqlLanguageProtocol.ts', 'KqlLanguageWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/controlCommandSyntaxProtocol.ts', 'ControlCommandSyntaxWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/resourceUriProtocol.ts', 'ResourceUriWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/pythonExecutionProtocol.ts', 'PythonExecutionWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/urlContentProtocol.ts', 'UrlContentWebviewMessage'),
 			])].sort()
 		);
@@ -1478,6 +1533,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/kqlLanguageProtocol.ts', 'KqlLanguageWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/controlCommandSyntaxProtocol.ts', 'ControlCommandSyntaxWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/resourceUriProtocol.ts', 'ResourceUriWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/pythonExecutionProtocol.ts', 'PythonExecutionWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/urlContentProtocol.ts', 'UrlContentWebviewMessage'),
 			])].sort()
 		);

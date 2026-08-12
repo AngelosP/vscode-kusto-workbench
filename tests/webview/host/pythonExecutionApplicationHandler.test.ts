@@ -51,6 +51,28 @@ describe('HostPythonExecutionApplicationHandler', () => {
 		expect(postMessage).not.toHaveBeenCalled();
 	});
 
+	it('claims malformed Python requests before working-directory or process effects', async () => {
+		const createProcess = vi.fn();
+		const getWorkingDirectory = vi.fn(() => 'C:\\workspace');
+		const postMessage = vi.fn(() => Promise.resolve(true));
+		const handler = new HostPythonExecutionApplicationHandler({
+			postMessage,
+			createProcess: createProcess as never,
+			getWorkingDirectory,
+		});
+		liveHandlers.add(handler);
+
+		const handled = handler.handleMessage({
+			type: 'executePython', boxId: ['python-section'], code: 'print(1)',
+		} as unknown as Parameters<typeof handler.handleMessage>[0]);
+		expect(handled).toBeInstanceOf(Promise);
+		await handled;
+
+		expect(getWorkingDirectory).not.toHaveBeenCalled();
+		expect(createProcess).not.toHaveBeenCalled();
+		expect(postMessage).not.toHaveBeenCalled();
+	});
+
 	it('writes code to python stdin and publishes its exact terminal output', async () => {
 		const child = new FakePythonProcess();
 		const createProcess = vi.fn(() => child);

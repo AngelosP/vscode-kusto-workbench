@@ -3172,11 +3172,19 @@ describe('message-handler dispatch', () => {
 	});
 
 	it('routes pythonResult and pythonError to python module', async () => {
-		dispatchHostMessage({ type: 'pythonResult', boxId: 'python_1', result: 'ok' });
+		dispatchHostMessage({
+			type: 'pythonResult', boxId: ['python_1'], stdout: 'forged', stderr: '', exitCode: 0,
+		});
+		dispatchHostMessage({
+			type: 'pythonResult', boxId: 'python_1', stdout: 'ok', stderr: '', exitCode: 0,
+		});
 		dispatchHostMessage({ type: 'pythonError', boxId: 'python_1', error: 'failed' });
 		await Promise.resolve();
 		expect(mocks.onPythonResult).toHaveBeenCalledTimes(1);
 		expect(mocks.onPythonError).toHaveBeenCalledTimes(1);
+		expect(mocks.onPythonResult).toHaveBeenCalledWith({
+			type: 'pythonResult', boxId: 'python_1', stdout: 'ok', stderr: '', exitCode: 0,
+		});
 	});
 
 	it('routes importConnectionsXmlText through parser and outbound host message', async () => {
@@ -3348,7 +3356,7 @@ describe('message-handler dispatch', () => {
 		]);
 		expect(mocks.updateSqlConnectionSelects).toHaveBeenCalledTimes(1);
 		expect(sqlEl.setSqlConnectionId).toHaveBeenCalledWith('sql_conn_2');
-		expect(events).toEqual([{ boxId: 'sql_1', connectionId: 'sql_conn_2' }]);
+		expect(events).toEqual([{ boxId: 'sql_1', connectionId: 'sql_conn_2', source: 'user' }]);
 	});
 
 	it('routes sqlSchemaData success and error states to the SQL section', async () => {
@@ -4910,7 +4918,9 @@ describe('changedSections agent provenance', () => {
 			type: 'queryResult', boxId: 'query_stale', executionId: 'execution-stale',
 			result: { columns: [{ name: 'Secret' }], rows: [['stale']] },
 		});
-		dispatchHostMessage({ type: 'pythonResult', boxId: 'python_stale', stdout: 'discarded', exitCode: 0 });
+		dispatchHostMessage({
+			type: 'pythonResult', boxId: 'python_stale', stdout: 'discarded', stderr: '', exitCode: 0,
+		});
 		dispatchHostMessage({ type: 'pythonError', boxId: 'python_error_stale', error: 'discarded' });
 		dispatchHostMessage({ type: 'requestToolState', requestId: 'state-invalid' });
 		dispatchHostMessage({
@@ -7243,6 +7253,34 @@ describe('tool section name persistence', () => {
 
 		expect((section as any).setName).toHaveBeenCalledWith('Renamed SQL');
 		expect(persistence.schedulePersist).toHaveBeenCalledWith(undefined, true);
+	});
+
+	it('toolConfigureSqlSection marks a database-only target change as authored', async () => {
+		handlerState.pState.allowedSectionKinds = ['query', 'sql', 'chart', 'python', 'url', 'markdown'];
+		const { section } = createSectionWithShell('sql_database_tool', {
+			id: 'sql_database_tool', type: 'sql', query: 'select 1', database: 'BeforeDb',
+		});
+		(section as any).setDatabase = vi.fn();
+		const targetChanges: unknown[] = [];
+		section.addEventListener('sql-database-changed', event => {
+			targetChanges.push((event as CustomEvent).detail);
+		});
+		mocks.getSqlSectionElement.mockReturnValue(section);
+
+		dispatchHostMessage({
+			type: 'toolConfigureSqlSection',
+			requestId: 'r-sql-database',
+			input: { sectionId: 'sql_database_tool', database: 'AfterDb' },
+		});
+		await new Promise(resolve => setTimeout(resolve, 50));
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'r-sql-database',
+		}));
+		expect((section as any).setDatabase).toHaveBeenCalledWith('AfterDb');
+		expect(targetChanges).toContainEqual({
+			boxId: 'sql_database_tool', database: 'AfterDb', source: 'tool',
+		});
 	});
 
 	it('rejects an overlapping SQL tool execution before mutating its query', async () => {

@@ -782,7 +782,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			this._databases = [];
 			this._enforceLeaveNoTracePolicy();
 			this.dispatchEvent(new CustomEvent('sql-connection-changed', {
-				detail: { boxId: this.boxId, connectionId: conn.id },
+				detail: { boxId: this.boxId, connectionId: conn.id, source: 'user' },
 				bubbles: true, composed: true,
 			}));
 			this.dispatchEvent(new CustomEvent('sql-favorite-selected', {
@@ -925,7 +925,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			this._databases = [];
 			this._resetSchemaReadiness('not-loaded');
 			this.dispatchEvent(new CustomEvent('sql-connection-changed', {
-				detail: { boxId: this.boxId, connectionId, serverUrl: conn?.serverUrl || '' },
+				detail: { boxId: this.boxId, connectionId, serverUrl: conn?.serverUrl || '', source: 'user' },
 				bubbles: true, composed: true,
 			}));
 		}
@@ -944,7 +944,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			this._clearTargetData(hadCompleteTarget);
 			this._resetSchemaReadiness('loading');
 			this.dispatchEvent(new CustomEvent('sql-database-changed', {
-				detail: { boxId: this.boxId, database },
+				detail: { boxId: this.boxId, database, source: 'user' },
 				bubbles: true, composed: true,
 			}));
 			this._connectStsIfReady('db-change');
@@ -1664,6 +1664,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			this.dispatchEvent(new CustomEvent('sql-connection-changed', {
 				detail: {
 					boxId: this.boxId, connectionId: connection.id, serverUrl: connection.serverUrl, database: this._database,
+					source: 'tool',
 					suppressMetadataRefresh: expectedOwner !== undefined,
 				},
 				bubbles: true, composed: true,
@@ -1671,7 +1672,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		}
 		if (databaseChanged && this._database) {
 			this.dispatchEvent(new CustomEvent('sql-database-changed', {
-				detail: { boxId: this.boxId, database: this._database, suppressMetadataRefresh: expectedOwner !== undefined },
+				detail: { boxId: this.boxId, database: this._database, source: 'tool', suppressMetadataRefresh: expectedOwner !== undefined },
 				bubbles: true, composed: true,
 			}));
 		}

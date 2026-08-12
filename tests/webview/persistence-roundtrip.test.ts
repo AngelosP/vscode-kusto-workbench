@@ -2824,6 +2824,224 @@ describe('persistence round-trip', () => {
 		}
 	});
 
+	it('persists explicit owner selection instead of adopting it as automatic enrichment', () => {
+		vi.useFakeTimers();
+		try {
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentUri: 'file:///tmp/explicit-owner-selection.kqlx',
+				state: { sections: [{
+					id: 'query_explicit_owner', type: 'query', query: 'print Value=1',
+					clusterUrl: 'https://owner.kusto.windows.net', database: 'Db',
+				}] },
+			});
+			const query = document.getElementById('query_explicit_owner') as HTMLElement & { serialize: () => unknown };
+			query.serialize = () => ({
+				id: 'query_explicit_owner', type: 'query', query: 'print Value=1',
+				clusterUrl: 'https://owner.kusto.windows.net', connectionIdHint: 'connection-1', database: 'Db',
+			});
+			const container = document.createElement('div');
+			container.id = 'queries-container';
+			container.appendChild(query);
+			document.body.appendChild(container);
+			vi.mocked(postMessageToHost).mockClear();
+
+			schedulePersist('kusto-target-selection', true);
+
+			expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'persistDocument', reason: 'kusto-target-selection',
+				state: expect.objectContaining({
+					sections: [expect.objectContaining({ connectionIdHint: 'connection-1' })],
+				}),
+			}));
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
+		['KQLX', 'kqlx', 'file:///tmp/missing-owner-edit.kqlx'],
+		['KQL sidecar', 'kql', 'file:///tmp/missing-owner-edit.kql'],
+	] as const)('persists an authored edit after retiring a missing-owner restored result in %s', (_label, documentKind, documentUri) => {
+		vi.useFakeTimers();
+		try {
+			const resultJson = JSON.stringify({ columns: ['Value'], rows: [['private']], metadata: {} });
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind, compatibilityMode: false, documentUri,
+				state: { sections: [
+					{
+						id: 'query_missing_owner_edit', type: 'query', query: 'print Value=1',
+						clusterUrl: 'https://missing-owner.kusto.windows.net', database: 'Db',
+						connectionIdHint: 'missing-owner', resultJson,
+						kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
+					},
+					{ id: 'query_authored_peer', type: 'query', query: 'print Before=1' },
+				] },
+			});
+			applyKustoLeaveNoTracePolicy([], false);
+			flushDeferredRestoreTimers();
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
+			const container = document.createElement('div');
+			container.id = 'queries-container';
+			container.appendChild(document.getElementById('query_missing_owner_edit')!);
+			container.appendChild(document.getElementById('query_authored_peer')!);
+			document.body.appendChild(container);
+
+			let authoredQuery = 'print Before=1';
+			testState.queryEditors.query_authored_peer = { getValue: () => authoredQuery };
+			adoptCurrentStateAsCleanForTest();
+			authoredQuery = 'print After=2';
+			vi.mocked(postMessageToHost).mockClear();
+
+			schedulePersist('query-edit', true);
+
+			const persisted = vi.mocked(postMessageToHost).mock.calls
+				.map(([message]) => message as any)
+				.filter(message => message.type === 'persistDocument')
+				.at(-1);
+			expect(persisted?.state.sections.find((section: any) => section.id === 'query_authored_peer'))
+				.toMatchObject({ query: 'print After=2' });
+			expect(persisted?.state.sections.find((section: any) => section.id === 'query_missing_owner_edit')?.resultJson)
+				.toBeUndefined();
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+
+			testState.kustoConnections.push(ownedKustoConnection({
+				id: 'missing-owner', clusterUrl: 'https://missing-owner.kusto.windows.net',
+			}));
+			resolvePendingKustoResultRestores();
+			flushDeferredRestoreTimers();
+			expect(displayResultForBox).not.toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['private']] }),
+				'query_missing_owner_edit',
+				expect.anything(),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
+		['KQLX', 'kqlx', 'file:///tmp/ready-before-idle.kqlx'],
+		['KQL sidecar', 'kql', 'file:///tmp/ready-before-idle.kql'],
+	] as const)('preserves an owner-ready restored result when another section changes before idle rendering in %s', (_label, documentKind, documentUri) => {
+		vi.useFakeTimers();
+		try {
+			const clusterUrl = 'https://ready-owner.kusto.windows.net';
+			const resultJson = JSON.stringify({ columns: ['Value'], rows: [['ready']], metadata: {} });
+			testState.kustoConnections.push(ownedKustoConnection({ id: 'ready-owner', clusterUrl }));
+			const container = document.createElement('div');
+			container.id = 'queries-container';
+			document.body.appendChild(container);
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind, compatibilityMode: false, documentUri,
+				state: { sections: [
+					{
+						id: 'query_ready_before_idle', type: 'query', query: 'print Value=1',
+						clusterUrl, database: 'Db', connectionIdHint: 'ready-owner', resultJson,
+						...kustoResultOwner,
+					},
+					{ id: 'query_ready_peer', type: 'query', query: 'print Before=1' },
+				] },
+			});
+			applyKustoLeaveNoTracePolicy([], false);
+			(window as any).__testQueryResultJsonByBoxId = pState.queryResultJsonByBoxId;
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
+			let peerQuery = 'print Before=1';
+			testState.queryEditors.query_ready_peer = { getValue: () => peerQuery };
+			peerQuery = 'print After=2';
+			vi.mocked(postMessageToHost).mockClear();
+
+			schedulePersist('query-edit', true);
+
+			expect(pState.queryResultJsonByBoxId.query_ready_before_idle).toBe(resultJson);
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['ready']] }),
+				'query_ready_before_idle',
+				expect.anything(),
+			);
+			const persisted = vi.mocked(postMessageToHost).mock.calls
+				.map(([message]) => message as any)
+				.filter(message => message.type === 'persistDocument')
+				.at(-1);
+			expect(persisted?.state.sections.find((section: any) => section.id === 'query_ready_before_idle')?.resultJson)
+				.toBe(resultJson);
+			expect(persisted?.state.sections.find((section: any) => section.id === 'query_ready_peer'))
+				.toMatchObject({ query: 'print After=2' });
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('preserves a governed SQL sidecar result when persistence wins before idle rendering', () => {
+		vi.useFakeTimers();
+		try {
+			const connection = {
+				id: 'sql-sidecar-ready', name: 'Sidecar', dialect: 'mssql', serverUrl: 'sidecar-ready.example',
+				database: 'Db', authType: 'sql-login', username: 'SidecarUser',
+			};
+			testState.sqlConnections.push(connection);
+			const query = 'SELECT 1 AS Value';
+			const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [[1]], metadata: {} });
+			const resultArtifact = {
+				version: 1, artifactId: 'result:sql_sidecar_ready:1', sourceBoxId: 'sql_sidecar_ready',
+				revision: 1, createdAt: 1,
+				producer: {
+					engine: 'sql', boxId: 'sql_sidecar_ready', executionId: 'sidecar-execution',
+					query, connectionId: connection.id, database: 'Db',
+				},
+				policy: { exposeToActiveContent: true, shareToClipboard: true, exportToCsv: true },
+			};
+			const container = document.createElement('div');
+			container.id = 'queries-container';
+			document.body.appendChild(container);
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind: 'sql', compatibilityMode: false, documentUri: 'file:///tmp/ready-before-idle.sql',
+				state: { sections: [{
+					id: 'sql_sidecar_ready', type: 'sql', query, serverUrl: connection.serverUrl,
+					connectionIdHint: connection.id, targetSignature: sqlConnectionTargetSignature(connection),
+					database: 'Db', resultJson, resultArtifact,
+				}] },
+			});
+			const section = testState.sqlElements.sql_sidecar_ready;
+			section.serialize = () => ({
+				id: 'sql_sidecar_ready', type: 'sql', query, serverUrl: connection.serverUrl,
+				connectionIdHint: connection.id, targetSignature: sqlConnectionTargetSignature(connection),
+				database: 'Db',
+				...(pState.queryResultJsonByBoxId.sql_sidecar_ready
+					? { resultJson: pState.queryResultJsonByBoxId.sql_sidecar_ready } : {}),
+				...(pState.resultArtifactByBoxId.sql_sidecar_ready
+					? { resultArtifact: pState.resultArtifactByBoxId.sql_sidecar_ready } : {}),
+			});
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
+			expect(displayResultForBox).not.toHaveBeenCalled();
+			vi.mocked(postMessageToHost).mockClear();
+
+			schedulePersist('sidecar-edit', true);
+
+			const persisted = vi.mocked(postMessageToHost).mock.calls
+				.map(([message]) => message as any)
+				.filter(message => message.type === 'persistDocument')
+				.at(-1);
+			expect(persisted?.state.sections[0]).toMatchObject({ resultJson, resultArtifact });
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [[1]] }),
+				'sql_sidecar_ready',
+				expect.objectContaining({
+					artifactPublication: expect.objectContaining({
+						policy: expect.objectContaining({ shareToClipboard: true, exportToCsv: true }),
+					}),
+				}),
+			);
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('does not flush restored non-session files on beforeunload', () => {
 		pState.isSessionFile = false;
 		const resultJson = JSON.stringify({

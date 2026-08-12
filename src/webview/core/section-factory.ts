@@ -19,6 +19,11 @@ import {
 import type { HtmlSectionState } from '../../shared/htmlSectionDefinition.js';
 import type { PythonSectionState } from '../../shared/pythonSectionDefinition.js';
 import type { UrlSectionState } from '../../shared/urlSectionDefinition.js';
+import {
+	admitPythonExecutionHostMessage,
+	type PythonErrorMessage,
+	type PythonResultMessage,
+} from '../../shared/pythonExecutionProtocol.js';
 import { consumePythonExecutionTerminal } from './python-execution-admission.js';
 import { perfMark } from './perf.js';
 import {
@@ -428,7 +433,10 @@ export function addQueryBox( options?: any) {
 			}
 			try { __kustoUpdateFavoritesUiForBox(boxId); } catch (e) { console.error('[kusto]', e); }
 			try { if (typeof window.__kustoUpdateRunEnabledForBox === 'function') window.__kustoUpdateRunEnabledForBox(boxId); } catch (e) { console.error('[kusto]', e); }
-			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+			try {
+				const authored = detail.source === 'user' || detail.source === 'tool';
+				schedulePersist(authored ? 'kusto-target-selection' : undefined, authored);
+			} catch (e) { console.error('[kusto]', e); }
 		});
 		kwEl.addEventListener('database-changed', (e: any) => {
 			const detail = e.detail || {};
@@ -440,7 +448,10 @@ export function addQueryBox( options?: any) {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			try { onDatabaseChanged(boxId, String(detail.source || '')); } catch (e) { console.error('[kusto]', e); }
-			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+			try {
+				const authored = detail.source === 'user' || detail.source === 'tool';
+				schedulePersist(authored ? 'kusto-target-selection' : undefined, authored);
+			} catch (e) { console.error('[kusto]', e); }
 		});
 		kwEl.addEventListener('refresh-databases', (e: any) => {
 			const detail = e.detail || {};
@@ -2560,29 +2571,11 @@ function setPythonOutput( boxId: any, text: any) {
 	out.textContent = String(text || '');
 }
 
-function runPythonBox( boxId: any) {
-	const editor = pythonEditors[boxId];
-	if (!editor) {
-		return;
-	}
-	const model = editor.getModel();
-	const code = model ? model.getValue() : '';
-	setPythonOutput(boxId, 'Running…');
-	try {
-		postMessageToHost({ type: 'executePython', boxId, code });
-	} catch (e: any) {
-		setPythonOutput(boxId, 'Failed to send run request.');
-	}
-}
-
-export function onPythonResult( message: any) {
-	const boxId = message && message.boxId ? String(message.boxId) : '';
-	if (!boxId) {
-		return;
-	}
-	const stdout = String(message.stdout || '');
-	const stderr = String(message.stderr || '');
-	const exitCode = (typeof message.exitCode === 'number') ? message.exitCode : null;
+export function onPythonResult(message: unknown): void {
+	const admission = admitPythonExecutionHostMessage(message);
+	if (!admission.recognized || !admission.parsed.ok || admission.parsed.value.type !== 'pythonResult') return;
+	const terminal: PythonResultMessage = admission.parsed.value;
+	const { boxId, stdout, stderr, exitCode } = terminal;
 	let out = '';
 	if (stdout.trim()) {
 		out += stdout;
@@ -2611,12 +2604,12 @@ export function onPythonResult( message: any) {
 	setPythonOutput(boxId, out);
 }
 
-export function onPythonError( message: any) {
-	const boxId = message && message.boxId ? String(message.boxId) : '';
-	if (!boxId) {
-		return;
-	}
-	const error = String(message.error || 'Python execution failed.');
+export function onPythonError(message: unknown): void {
+	const admission = admitPythonExecutionHostMessage(message);
+	if (!admission.recognized || !admission.parsed.ok || admission.parsed.value.type !== 'pythonError') return;
+	const terminal: PythonErrorMessage = admission.parsed.value;
+	const { boxId } = terminal;
+	const error = terminal.error || 'Python execution failed.';
 	const reservation = consumePythonExecutionTerminal(boxId);
 	const element = document.getElementById(boxId) as HTMLElementTagNameMap['kw-python-section'] | null;
 	if (pState.documentRuntimeActive === false) {
@@ -3033,7 +3026,9 @@ export function addSqlBox(options?: any) {
 		getConnectionId: (boxId: string) => String(__kustoGetSqlSectionElement(boxId)?.getSqlConnectionId?.() || ''),
 		getDatabase: (boxId: string) => String(__kustoGetSqlSectionElement(boxId)?.getDatabase?.() || ''),
 		postMessage: (message: Record<string, unknown>) => postMessageToHost(message as any),
-		persist: () => { try { schedulePersist(); } catch (error) { console.error('[kusto]', error); } },
+		persist: (reason?: string, immediate?: boolean) => {
+			try { schedulePersist(reason, immediate); } catch (error) { console.error('[kusto]', error); }
+		},
 	});
 	if (typeof litEl.setLeaveNoTraceConnectionIds === 'function') {
 		litEl.setLeaveNoTraceConnectionIds(sqlLeaveNoTraceConnectionIds);

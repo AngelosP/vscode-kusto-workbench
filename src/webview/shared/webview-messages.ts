@@ -59,6 +59,10 @@ import {
 	admitUrlContentWebviewMessage,
 	type UrlContentWebviewMessage,
 } from '../../shared/urlContentProtocol.js';
+import {
+	admitPythonExecutionWebviewMessage,
+	type PythonExecutionWebviewMessage,
+} from '../../shared/pythonExecutionProtocol.js';
 import { pState } from './persistence-state.js';
 
 let compatibilityDocumentRequestSequence = 0;
@@ -310,7 +314,7 @@ export type OutgoingWebviewMessage =
 	| OutgoingOptimizeQueryMessage
 
 	// Python / URL
-	| { type: 'executePython'; boxId: string; code: string }
+	| PythonExecutionWebviewMessage
 	| UrlContentWebviewMessage
 
 	// Tool responses (agent tools)
@@ -341,8 +345,17 @@ export type OutgoingWebviewMessage =
  */
 export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage | CompatibilityPersistenceWebviewMessage = msg;
-	const urlContentAdmission = admitUrlContentWebviewMessage(msg);
-	if (urlContentAdmission.recognized) {
+	const pythonExecutionAdmission = admitPythonExecutionWebviewMessage(msg);
+	const urlContentAdmission = pythonExecutionAdmission.recognized
+		? { recognized: false as const }
+		: admitUrlContentWebviewMessage(msg);
+	if (pythonExecutionAdmission.recognized) {
+		if (!pythonExecutionAdmission.parsed.ok) {
+			console.error('[kusto] Rejected invalid Python execution webview message:', pythonExecutionAdmission.parsed.error);
+			return;
+		}
+		outbound = pythonExecutionAdmission.parsed.value;
+	} else if (urlContentAdmission.recognized) {
 		if (!urlContentAdmission.parsed.ok) {
 			console.error('[kusto] Rejected invalid URL content webview message:', urlContentAdmission.parsed.error);
 			return;
