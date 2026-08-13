@@ -85,6 +85,10 @@ import {
 	admitQuerySharingWebviewMessage,
 	type QuerySharingWebviewMessage,
 } from '../../shared/querySharingProtocol.js';
+import {
+	admitEditingPreferencesWebviewMessage,
+	type EditingPreferencesWebviewMessage,
+} from '../../shared/editingPreferences.js';
 import { captureRuntimeMessageEnvelope } from '../../shared/runtimeMessageEnvelope.js';
 import { pState } from './persistence-state.js';
 
@@ -241,9 +245,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'publishToPowerBI'; requestId: string; boxId: string; workspaceId: string; reportName: string; pageWidth: number; pageHeight: number; htmlCode: string; dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>; dataMode?: 'import' | 'directQuery'; semanticModelId?: string; reportId?: string; existingReportName?: string; workspaceName?: string; isPersonalWorkspace?: boolean }
 
 	// Settings
-	| { type: 'setCaretDocsEnabled'; enabled: boolean }
-	| { type: 'setAutoTriggerAutocompleteEnabled'; enabled: boolean }
-	| { type: 'setCopilotInlineCompletionsEnabled'; enabled: boolean }
+	| EditingPreferencesWebviewMessage
 
 	// Query execution
 	| OutgoingExecuteQueryMessage
@@ -445,7 +447,10 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 	}
 	const message = envelope.value as unknown as OutgoingWebviewMessage;
 	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage | CompatibilityPersistenceWebviewMessage = message;
-	const kustoConnectionsProjectionAdmission = admitKustoConnectionsProjectionWebviewMessage(message);
+	const editingPreferencesAdmission = admitEditingPreferencesWebviewMessage(message);
+	const kustoConnectionsProjectionAdmission = editingPreferencesAdmission.recognized
+		? { recognized: false as const }
+		: admitKustoConnectionsProjectionWebviewMessage(message);
 	const sqlConnectionsProjectionAdmission = kustoConnectionsProjectionAdmission.recognized
 		? { recognized: false as const }
 		: admitSqlConnectionsProjectionWebviewMessage(message);
@@ -467,7 +472,13 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 		|| querySharingAdmission.recognized
 		? { recognized: false as const }
 		: admitUrlContentWebviewMessage(message);
-	if (kustoConnectionsProjectionAdmission.recognized) {
+	if (editingPreferencesAdmission.recognized) {
+		if (!editingPreferencesAdmission.parsed.ok) {
+			console.error('[kusto] Rejected invalid editing preferences webview message:', editingPreferencesAdmission.parsed.error);
+			return;
+		}
+		outbound = editingPreferencesAdmission.parsed.value;
+	} else if (kustoConnectionsProjectionAdmission.recognized) {
 		if (!kustoConnectionsProjectionAdmission.parsed.ok) {
 			console.error('[kusto] Rejected invalid Kusto connections projection webview message:', kustoConnectionsProjectionAdmission.parsed.error);
 			return;

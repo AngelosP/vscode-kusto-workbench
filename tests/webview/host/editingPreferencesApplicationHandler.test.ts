@@ -4,7 +4,10 @@ vi.mock('../../../src/host/editingPreferences', () => ({
 	setEditingPreference: vi.fn(),
 }));
 
-import type { EditingPreferencesDataMessage } from '../../../src/shared/editingPreferences';
+import {
+	parseEditingPreferencesHostMessage,
+	type EditingPreferencesDataMessage,
+} from '../../../src/shared/editingPreferences';
 import { setEditingPreference } from '../../../src/host/editingPreferences';
 import {
 	HostEditingPreferencesApplicationHandler,
@@ -23,7 +26,7 @@ function deferred<T>() {
 }
 
 function preferences(revision: number): EditingPreferencesDataMessage {
-	return {
+	const parsed = parseEditingPreferencesHostMessage({
 		type: 'editingPreferencesData',
 		revision,
 		caretDocsEnabled: true,
@@ -32,7 +35,9 @@ function preferences(revision: number): EditingPreferencesDataMessage {
 		autoTriggerAutocompleteEnabledUserSet: true,
 		copilotInlineCompletionsEnabled: true,
 		copilotInlineCompletionsEnabledUserSet: true,
-	};
+	});
+	if (!parsed.ok) throw new Error(parsed.error);
+	return parsed.value;
 }
 
 function createHarness(overrides: Partial<EditingPreferencesApplicationHandlerOptions> = {}) {
@@ -66,15 +71,32 @@ describe('HostEditingPreferencesApplicationHandler', () => {
 		expect(postMessage).not.toHaveBeenCalled();
 	});
 
-	it('maps all three discriminators and normalizes enabled values exactly once', async () => {
-		const authoritative = preferences(21);
-		vi.mocked(setEditingPreference).mockResolvedValue(authoritative);
-		const { handler, options, publisher } = createHarness();
+	it('claims malformed setters without configuration writes or publication', async () => {
+		const { handler, publisher, postMessage } = createHarness();
 		const messages = [
 			{ type: 'setCaretDocsEnabled', enabled: 0 },
 			{ type: 'setAutoTriggerAutocompleteEnabled', enabled: 'enabled' },
 			{ type: 'setCopilotInlineCompletionsEnabled', enabled: null },
 		] as unknown as IncomingWebviewMessage[];
+
+		for (const message of messages) {
+			await expect(handler.handleMessage(message)).resolves.toBeUndefined();
+		}
+
+		expect(setEditingPreference).not.toHaveBeenCalled();
+		expect(publisher.postToAllWebviews).not.toHaveBeenCalled();
+		expect(postMessage).not.toHaveBeenCalled();
+	});
+
+	it('maps all three discriminators and preserves exact boolean values', async () => {
+		const authoritative = preferences(21);
+		vi.mocked(setEditingPreference).mockResolvedValue(authoritative);
+		const { handler, options, publisher } = createHarness();
+		const messages = [
+			{ type: 'setCaretDocsEnabled', enabled: false },
+			{ type: 'setAutoTriggerAutocompleteEnabled', enabled: true },
+			{ type: 'setCopilotInlineCompletionsEnabled', enabled: false },
+		] satisfies IncomingWebviewMessage[];
 
 		for (const message of messages) {
 			await handler.handleMessage(message);
@@ -156,6 +178,26 @@ describe('HostEditingPreferencesApplicationHandler', () => {
 		})).rejects.toBe(failure);
 		expect(publisher.postToAllWebviews).not.toHaveBeenCalled();
 		expect(postMessage).not.toHaveBeenCalled();
+	});
+
+	it('rejects malformed authoritative data before every publication path', async () => {
+		vi.mocked(setEditingPreference).mockResolvedValue({
+			...preferences(23),
+			caretDocsEnabled: 'false',
+		} as unknown as EditingPreferencesDataMessage);
+		const global = createHarness();
+
+		await expect(global.handler.handleMessage({
+			type: 'setCaretDocsEnabled', enabled: false,
+		})).rejects.toThrow('Editing preferences publication was invalid');
+		expect(global.publisher.postToAllWebviews).not.toHaveBeenCalled();
+		expect(global.postMessage).not.toHaveBeenCalled();
+
+		const fallback = createHarness({ getPublisher: () => undefined });
+		await expect(fallback.handler.handleMessage({
+			type: 'setCaretDocsEnabled', enabled: false,
+		})).rejects.toThrow('Editing preferences publication was invalid');
+		expect(fallback.postMessage).not.toHaveBeenCalled();
 	});
 
 	it('propagates exact global and fallback publication rejections', async () => {

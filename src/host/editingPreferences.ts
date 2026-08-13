@@ -1,5 +1,8 @@
 import * as vscode from 'vscode';
-import type { EditingPreferencesDataMessage } from '../shared/editingPreferences';
+import {
+	parseEditingPreferencesHostMessage,
+	type EditingPreferencesDataMessage,
+} from '../shared/editingPreferences';
 import type { FirstLaunchEditingPreferences } from '../shared/firstLaunchSetup';
 import { STORAGE_KEYS } from './queryEditorTypes';
 
@@ -31,7 +34,7 @@ function storedBoolean(context: EditingPreferencesContext, key: EditingPreferenc
 
 function revision(context: EditingPreferencesContext): number {
 	const value = context.globalState.get<number>(STORAGE_KEYS.editingPreferencesRevision);
-	return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+	return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
 function configuredBoolean(key: string): boolean | undefined {
@@ -50,7 +53,7 @@ export function getEditingPreferencesData(context: EditingPreferencesContext): E
 	const autocomplete = configuredAutocomplete ?? storedAutocomplete;
 	const copilotInline = configuredCopilotInline ?? storedCopilotInline;
 	const vscodeInlineSuggestEnabled = vscode.workspace.getConfiguration('editor').get<boolean>('inlineSuggest.enabled', true);
-	return {
+	const message: EditingPreferencesDataMessage = {
 		type: 'editingPreferencesData',
 		revision: revision(context),
 		caretDocsEnabled: caretDocs ?? true,
@@ -60,10 +63,18 @@ export function getEditingPreferencesData(context: EditingPreferencesContext): E
 		copilotInlineCompletionsEnabled: copilotInline ?? vscodeInlineSuggestEnabled,
 		copilotInlineCompletionsEnabledUserSet: configuredCopilotInline !== undefined || storedCopilotInline !== undefined,
 	};
+	const parsed = parseEditingPreferencesHostMessage(message);
+	if (!parsed.ok) {
+		throw new Error(`Editing preferences snapshot was invalid: ${parsed.error}`);
+	}
+	return parsed.value;
 }
 
 async function bumpRevision(context: EditingPreferencesContext): Promise<void> {
-	await context.globalState.update(STORAGE_KEYS.editingPreferencesRevision, Math.max(revision(context) + 1, Date.now()));
+	await context.globalState.update(
+		STORAGE_KEYS.editingPreferencesRevision,
+		Math.min(Number.MAX_SAFE_INTEGER, Math.max(revision(context) + 1, Date.now())),
+	);
 }
 
 function enqueue<T>(operation: () => Promise<T>): Promise<T> {

@@ -2015,10 +2015,16 @@ function e2eIdentityFindConnection(connectionsRaw: unknown, clusterKey: string):
 }
 
 async function e2eIdentityWaitForConnections(timeoutMs = 6000): Promise<Record<string, E2eIdentityConnection>> {
-	try { postMessageToHost({ type: 'getConnections' }); } catch { /* ignore */ }
 	const started = performance.now();
 	let lastConnections: unknown = [];
+	let lastRequestAt = 0;
+	let lastError = '';
 	while (performance.now() - started <= timeoutMs) {
+		const now = performance.now();
+		if (now - lastRequestAt >= 250) {
+			try { postMessageToHost({ type: 'getConnections' }); } catch { /* ignore */ }
+			lastRequestAt = now;
+		}
 		lastConnections = _win.connections;
 		try {
 			const prod = e2eIdentityFindConnection(lastConnections, E2E_KUSTO_IDENTITY_CHECKLIST.prodKey);
@@ -2026,12 +2032,35 @@ async function e2eIdentityWaitForConnections(timeoutMs = 6000): Promise<Record<s
 			const foo = e2eIdentityFindConnection(lastConnections, E2E_KUSTO_IDENTITY_CHECKLIST.fooKey);
 			const foobar = e2eIdentityFindConnection(lastConnections, E2E_KUSTO_IDENTITY_CHECKLIST.foobarKey);
 			const regional = e2eIdentityFindConnection(lastConnections, E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey);
+			const cached = _win.cachedDatabases && typeof _win.cachedDatabases === 'object'
+				? _win.cachedDatabases as Record<string, unknown>
+				: {};
+			for (const connection of [prod, nonprod, foo, foobar, regional]) {
+				const databases = Array.isArray(cached[connection.id]) ? cached[connection.id] as unknown[] : [];
+				if (!databases.some(database => String(database).toLowerCase() === E2E_KUSTO_IDENTITY_CHECKLIST.database.toLowerCase())) {
+					throw new Error(`Cached database projection is not ready for ${connection.id}`);
+				}
+			}
+			const regionalDatabases = cached[regional.id] as unknown[];
+			if (!regionalDatabases.some(database => String(database).toLowerCase() === E2E_KUSTO_IDENTITY_CHECKLIST.cachedDatabase.toLowerCase())) {
+				throw new Error('Regional cached-only database projection is not ready');
+			}
+			const favorites = Array.isArray(_win.kustoFavorites) ? _win.kustoFavorites as any[] : [];
+			if (!favorites.some(favorite => String(favorite?.name || '') === E2E_KUSTO_IDENTITY_CHECKLIST.favoriteName
+				&& e2eNormalizeClusterUrlKey(String(favorite?.clusterUrl || '')) === e2eNormalizeClusterUrlKey(E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl))) {
+				throw new Error('Regional favorite projection is not ready');
+			}
+			const leaveNoTraceClusters = Array.isArray(_win.leaveNoTraceClusters) ? _win.leaveNoTraceClusters as unknown[] : [];
+			if (!leaveNoTraceClusters.some(cluster => e2eNormalizeClusterUrlKey(String(cluster)) === e2eNormalizeClusterUrlKey(E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl))) {
+				throw new Error('Regional Leave No Trace projection is not ready');
+			}
 			return { prod, nonprod, foo, foobar, regional };
-		} catch {
+		} catch (error) {
+			lastError = error instanceof Error ? error.message : String(error);
 			await e2eDelay(100);
 		}
 	}
-	throw new Error(`Timed out waiting for seeded checklist connections; last=${JSON.stringify(lastConnections).slice(0, 2000)}`);
+	throw new Error(`Timed out waiting for seeded checklist projection: ${lastError}; connections=${JSON.stringify(lastConnections).slice(0, 1600)}; cachedKeys=${Object.keys(_win.cachedDatabases || {}).join(',')}; favorites=${JSON.stringify((_win.kustoFavorites || []).map((favorite: any) => favorite?.name))}; leaveNoTrace=${JSON.stringify(_win.leaveNoTraceClusters || [])}`);
 }
 
 function e2eIdentityDispatchHostMessage(message: any): void {
@@ -2088,25 +2117,6 @@ export async function e2eIdentityRequestDatabases(connectionId: string, timeoutM
 			window.removeEventListener('message', onMessage);
 			reject(error);
 		}
-	});
-}
-
-async function e2eIdentityWaitForInfoMessage(expectedText: string, timeoutMs = 6000): Promise<string> {
-	const needle = String(expectedText || '').trim();
-	if (!needle) throw new Error('expected info text is required');
-	return await new Promise<string>((resolve, reject) => {
-		const timer = window.setTimeout(() => {
-			window.removeEventListener('message', onMessage);
-			reject(new Error(`Timed out waiting for info message ${JSON.stringify(needle)}`));
-		}, timeoutMs);
-		const onMessage = (event: MessageEvent) => {
-			const message = event.data || {};
-			if (message.type !== 'showInfo' || !String(message.message || '').includes(needle)) return;
-			window.clearTimeout(timer);
-			window.removeEventListener('message', onMessage);
-			resolve(String(message.message || ''));
-		};
-		window.addEventListener('message', onMessage);
 	});
 }
 
@@ -2264,6 +2274,24 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 	const missingFromFullConnection = computeMissingClusterUrls([E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey], [regional]);
 	const missingFromShortConnection = computeMissingClusterUrls([E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl], [shortConnection]);
 	const missingControl = computeMissingClusterUrls(['identity-other.westus'], [regional]);
+	await e2eDelay(1500);
+	const markerSnapshot = (configured: { boxId: string }) => {
+		const editor = _win.queryEditors?.[configured.boxId] as MonacoLike | undefined;
+		const model = editor?.getModel?.();
+		const monacoApi = _win.monaco;
+		if (!model?.uri || !monacoApi?.editor?.getModelMarkers) return [];
+		return (monacoApi.editor.getModelMarkers({ resource: model.uri }) || []).map((marker: any) => ({
+			owner: String(marker.owner || ''),
+			severity: Number(marker.severity),
+			message: String(marker.message || ''),
+			code: typeof marker.code === 'object' ? String(marker.code?.value || '') : String(marker.code || ''),
+		}));
+	};
+	const fullSectionMarkers = markerSnapshot(fullConfigured);
+	const shortSectionMarkers = markerSnapshot(shortConfigured);
+	const aliasWarnings = [...fullSectionMarkers, ...shortSectionMarkers].filter(marker =>
+		marker.code.toUpperCase() === 'KS207' || marker.code.toUpperCase() === 'KS208'
+	);
 	if (refsFromFullSection.length) {
 		throw new Error(`Full regional section treated short regional current-cluster reference as remote: ${JSON.stringify(refsFromFullSection)}`);
 	}
@@ -2279,6 +2307,9 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 	if (missingControl.length !== 1 || missingControl[0] !== 'identity-other.westus') {
 		throw new Error(`Missing-cluster control did not detect true missing cluster: ${JSON.stringify(missingControl)}`);
 	}
+	if (aliasWarnings.length) {
+		throw new Error(`Current-cluster aliases produced unknown-cluster diagnostics: ${JSON.stringify(aliasWarnings)}`);
+	}
 	return {
 		fullSectionBoxId: fullConfigured.boxId,
 		shortSectionBoxId: shortConfigured.boxId,
@@ -2290,6 +2321,8 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 		missingFromFullConnection,
 		missingFromShortConnection,
 		missingControl,
+		fullSectionMarkers,
+		shortSectionMarkers,
 	};
 }
 
@@ -2331,7 +2364,6 @@ async function e2eKustoRunIdentityManualChecklist(): Promise<any> {
 	section.setDatabases?.(cachedDatabases, E2E_KUSTO_IDENTITY_CHECKLIST.database);
 	section.requestUpdate?.();
 	await section.updateComplete;
-	const copyDone = e2eIdentityWaitForInfoMessage('Azure Data Explorer link copied to clipboard.', 7000);
 	postMessageToHost({
 		type: 'copyAdeLink',
 		boxId: sectionId,
@@ -2339,7 +2371,6 @@ async function e2eKustoRunIdentityManualChecklist(): Promise<any> {
 		connectionId: seeded.regional.id,
 		database: E2E_KUSTO_IDENTITY_CHECKLIST.database,
 	});
-	const copyInfo = await copyDone;
 	const proof = {
 		selectedConnectionId,
 		prodConnectionId: seeded.prod.id,
@@ -2349,7 +2380,7 @@ async function e2eKustoRunIdentityManualChecklist(): Promise<any> {
 		favoriteAlias,
 		managerAliases,
 		twoSectionAliasDiagnostics,
-		copyInfo,
+		copyRequested: true,
 		adxExpectedPath: '/clusters/identityadx.westus/databases/ChecklistDb?query=',
 	};
 	e2eSetProofMarker('kusto-identity-manual-checklist', proof);

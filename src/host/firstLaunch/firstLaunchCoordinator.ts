@@ -1,6 +1,9 @@
 import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
-import type { EditingPreferencesDataMessage } from '../../shared/editingPreferences';
+import {
+	parseEditingPreferencesHostMessage,
+	type EditingPreferencesDataMessage,
+} from '../../shared/editingPreferences';
 import type {
 	FirstLaunchEditingPreferences,
 	FirstLaunchFilePreferences,
@@ -305,7 +308,7 @@ export class FirstLaunchCoordinator {
 				await this.options.associationManager.adoptLegacyWorkbenchMappings();
 			}
 			await this.options.associationManager.reconcile(readGlobalFilePreferences(), 'conservative');
-			await this.options.broadcastEditingPreferences(getEditingPreferencesData(context));
+			await this.broadcastEditingPreferences(getEditingPreferencesData(context));
 			if (journalValue !== undefined) {
 				await context.globalState.update(FIRST_LAUNCH_WRITE_JOURNAL_KEY, undefined);
 			}
@@ -329,6 +332,14 @@ export class FirstLaunchCoordinator {
 		}
 		this.firstUseSettled = true;
 		this.resolveFirstUseSettled();
+	}
+
+	private broadcastEditingPreferences(message: EditingPreferencesDataMessage): Promise<unknown> {
+		const parsed = parseEditingPreferencesHostMessage(message);
+		if (!parsed.ok) {
+			throw new Error(`Editing preferences publication was invalid: ${parsed.error}`);
+		}
+		return this.options.broadcastEditingPreferences(parsed.value);
 	}
 
 	private async runPanel(mode: FirstLaunchSetupMode): Promise<FirstLaunchPanelOutcome> {
@@ -475,7 +486,7 @@ export class FirstLaunchCoordinator {
 					throw new Error('The setup transaction is missing editing preferences.');
 				}
 				const preferences = await setEditingPreferences(context, journal.editingPreferences);
-				await this.options.broadcastEditingPreferences(preferences);
+				await this.broadcastEditingPreferences(preferences);
 			} else {
 				await this.options.associationManager.reconcile(journal.filePreferences, 'conservative');
 			}

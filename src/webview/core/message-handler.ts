@@ -70,6 +70,7 @@ import {
 	captureKustoConnectionsProjectionHostMessage,
 } from '../../shared/kustoConnectionsProjectionProtocol.js';
 import { admitQuerySharingHostMessage } from '../../shared/querySharingProtocol.js';
+import { admitEditingPreferencesHostMessage } from '../../shared/editingPreferences.js';
 import { captureRuntimeMessageEnvelope } from '../../shared/runtimeMessageEnvelope.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
@@ -1658,7 +1659,14 @@ const __kustoDispatchHostMessage = async (message: any) => {
 	const envelope = captureRuntimeMessageEnvelope(message);
 	if (!envelope.ok) return;
 	message = envelope.value;
-	const kustoConnectionsProjectionAdmission = admitKustoConnectionsProjectionHostMessage(message);
+	const editingPreferencesAdmission = admitEditingPreferencesHostMessage(message);
+	if (editingPreferencesAdmission.recognized) {
+		if (!editingPreferencesAdmission.parsed.ok) return;
+		message = editingPreferencesAdmission.parsed.value;
+	}
+	const kustoConnectionsProjectionAdmission = editingPreferencesAdmission.recognized
+		? { recognized: false as const }
+		: admitKustoConnectionsProjectionHostMessage(message);
 	if (kustoConnectionsProjectionAdmission.recognized) {
 		if (!kustoConnectionsProjectionAdmission.parsed.ok) return;
 		const captured = captureKustoConnectionsProjectionHostMessage(kustoConnectionsProjectionAdmission.parsed.value);

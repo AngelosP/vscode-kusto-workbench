@@ -1,4 +1,7 @@
-import type { EditingPreferencesDataMessage } from '../../shared/editingPreferences.js';
+import {
+	parseEditingPreferencesHostMessage,
+	type EditingPreferencesDataMessage,
+} from '../../shared/editingPreferences.js';
 import {
 	autoTriggerAutocompleteEnabled,
 	caretDocsEnabled,
@@ -87,22 +90,25 @@ export function applyCaretDocsPresentation(enabled: boolean): void {
 	}
 }
 
-export function applyEditingPreferencesData(message: EditingPreferencesDataMessage): boolean {
-	const revision = Number.isFinite(message.revision) ? Math.max(0, Math.floor(message.revision)) : 0;
+export function applyEditingPreferencesData(message: unknown): boolean {
+	const parsed = parseEditingPreferencesHostMessage(message);
+	if (!parsed.ok) return false;
+	const preferences = parsed.value;
+	const revision = preferences.revision;
 	if (revision < latestRevision) {
 		return false;
 	}
-	latestRevision = revision;
-	setCaretDocsEnabled(!!message.caretDocsEnabled);
-	setAutoTriggerAutocompleteEnabled(!!message.autoTriggerAutocompleteEnabled);
-	setCopilotInlineCompletionsEnabled(!!message.copilotInlineCompletionsEnabled);
-	try { window.__kustoCaretDocsEnabledUserSet = !!message.caretDocsEnabledUserSet; } catch (error) { console.error('[kusto]', error); }
-	try { window.__kustoAutoTriggerAutocompleteEnabledUserSet = !!message.autoTriggerAutocompleteEnabledUserSet; } catch (error) { console.error('[kusto]', error); }
-	try { window.__kustoCopilotInlineCompletionsEnabledUserSet = !!message.copilotInlineCompletionsEnabledUserSet; } catch (error) { console.error('[kusto]', error); }
+	setCaretDocsEnabled(preferences.caretDocsEnabled);
+	setAutoTriggerAutocompleteEnabled(preferences.autoTriggerAutocompleteEnabled);
+	setCopilotInlineCompletionsEnabled(preferences.copilotInlineCompletionsEnabled);
+	try { window.__kustoCaretDocsEnabledUserSet = preferences.caretDocsEnabledUserSet; } catch (error) { console.error('[kusto]', error); }
+	try { window.__kustoAutoTriggerAutocompleteEnabledUserSet = preferences.autoTriggerAutocompleteEnabledUserSet; } catch (error) { console.error('[kusto]', error); }
+	try { window.__kustoCopilotInlineCompletionsEnabledUserSet = preferences.copilotInlineCompletionsEnabledUserSet; } catch (error) { console.error('[kusto]', error); }
 	updateCaretDocsToggleButtons();
 	updateAutoTriggerAutocompleteToggleButtons();
 	updateCopilotInlineCompletionsToggleButtons();
-	applyCaretDocsPresentation(!!message.caretDocsEnabled);
+	applyCaretDocsPresentation(preferences.caretDocsEnabled);
+	latestRevision = revision;
 	return true;
 }
 

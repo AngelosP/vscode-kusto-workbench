@@ -153,6 +153,49 @@ describe('postMessageToHost', () => {
 		expect(getterCalls).toBe(0);
 	});
 
+	it('snapshots editing preference setters and rejects malformed values before E2E capture', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const request = { type: 'setCaretDocsEnabled' as const, enabled: false };
+			postMessageToHost(request);
+
+			expect(capture).toHaveBeenCalledWith(request);
+			expect(capture.mock.calls[0]?.[0]).not.toBe(request);
+			expect(postMessage).toHaveBeenCalledWith(request);
+			expect(postMessage.mock.calls[0]?.[0]).not.toBe(request);
+			capture.mockClear();
+			postMessage.mockClear();
+
+			let getterCalls = 0;
+			const accessor = { type: 'setAutoTriggerAutocompleteEnabled' };
+			Object.defineProperty(accessor, 'enabled', {
+				enumerable: true,
+				get() {
+					getterCalls++;
+					return true;
+				},
+			});
+			for (const malformed of [
+				accessor,
+				{ type: 'setCaretDocsEnabled', enabled: 'false' },
+				{ type: 'setAutoTriggerAutocompleteEnabled', enabled: 1 },
+				{ type: 'setCopilotInlineCompletionsEnabled', enabled: null },
+				Object.assign([], request),
+			]) {
+				postMessageToHost(malformed as unknown as Parameters<typeof postMessageToHost>[0]);
+			}
+
+			expect(getterCalls).toBe(0);
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
+
 	it('rejects an unknown-to-known discriminator proxy before transport', () => {
 		const postMessage = vi.fn();
 		(window as any).vscode = { postMessage };

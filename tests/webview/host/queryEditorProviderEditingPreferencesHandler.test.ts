@@ -198,19 +198,20 @@ describe('QueryEditorProvider editing-preferences application', () => {
 		]) {
 			expect(providerSource).not.toContain(`case '${type}':`);
 			expect(handlerSource).toContain(`case '${type}':`);
-			expect(emitterSource).toContain(`type: '${type}'`);
+			expect(emitterSource).not.toContain(`type: '${type}'`);
 		}
+		expect(emitterSource).toContain('| EditingPreferencesWebviewMessage');
 		expect(providerSource).not.toContain('updateEditingPreference(');
 		expect(providerSource).not.toContain('setEditingPreference');
 		expect(providerSource).toContain('this.editingPreferencesApplication.dispose();');
 		expect(providerSource).not.toContain('getEditingPreferencesData');
 		expect(projectionSource).toContain('getEditingPreferencesData(this.options.context)');
 		expect(projectionSource).toContain('editingPreferencesRevision');
-		expect(handlerSource).toContain('await setEditingPreference(this.options.context, key, !!message.enabled)');
-		expect(handlerSource).toContain('await publisher.postToAllWebviews(preferences);');
-		expect(handlerSource).toContain('await this.options.postMessage(preferences);');
+		expect(handlerSource).toContain('admitEditingPreferencesWebviewMessage(message)');
+		expect(handlerSource).toContain('await setEditingPreference(this.options.context, key, message.enabled)');
+		expect(handlerSource).toContain('await publisher.postToAllWebviews(parsed.value);');
+		expect(handlerSource).toContain('await this.options.postMessage(parsed.value);');
 		expect(preferenceSource).toContain('const STORAGE_TO_CONFIGURATION_KEY');
-		expect(preferenceSource).toContain('Math.max(revision(context) + 1, Date.now())');
 		expect(extensionSource).toContain('onDidChangeConfiguration');
 		expect(extensionSource).toContain('refreshEditingPreferences(context)');
 	});

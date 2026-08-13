@@ -41,6 +41,7 @@
     "onCommand:kustoWorkbench.test.setIsolatedKustoConnections",
     "onCommand:kustoWorkbench.test.clearIsolatedKustoConnections",
     "onCommand:kustoWorkbench.test.cleanupKustoIdentityChecklist",
+    "onCommand:kustoWorkbench.test.seedKustoIdentityChecklist",
     "onCommand:kustoWorkbench.test.seedKustoTextDiagnosticsState",
     "onCommand:kustoWorkbench.test.preparePersistedResultFixture",
     "onCommand:kustoWorkbench.test.cleanupPersistedResultFixture",

@@ -3,6 +3,7 @@ import {
 	applyEditingPreferencesData,
 	resetEditingPreferencesRevisionForTests,
 } from '../../src/webview/core/editing-preferences.js';
+import type { EditingPreferencesDataMessage } from '../../src/shared/editingPreferences.js';
 import {
 	caretDocOverlaysByBoxId,
 	queryBoxes,
@@ -65,5 +66,53 @@ describe('editing preference UI application', () => {
 		expect(overlay.hide).toHaveBeenCalledOnce();
 		expect(applyEditingPreferencesData(message(3, true))).toBe(false);
 		expect(overlay.update).not.toHaveBeenCalled();
+	});
+
+	it('rejects malformed high revisions without poisoning one canonical application', () => {
+		const queryToolbar = document.createElement('kw-query-toolbar') as any;
+		queryToolbar.setCaretDocsActive = vi.fn();
+		queryToolbar.setAutoCompleteActive = vi.fn();
+		queryToolbar.setCopilotInlineActive = vi.fn();
+		const sqlToolbar = document.createElement('kw-sql-toolbar') as any;
+		sqlToolbar.setAutoCompleteActive = vi.fn();
+		sqlToolbar.setCopilotInlineActive = vi.fn();
+		document.body.append(queryToolbar, sqlToolbar);
+		queryBoxes.push('query_1');
+		const docs = document.createElement('div');
+		docs.id = 'query_1_caret_docs';
+		docs.style.display = 'none';
+		const docsText = document.createElement('div');
+		docsText.id = 'query_1_caret_docs_text';
+		docsText.textContent = 'existing documentation';
+		document.body.append(docs, docsText);
+		const malformed = {
+			...message(999, true),
+			caretDocsEnabled: 'false',
+		} as unknown as EditingPreferencesDataMessage;
+
+		expect(applyEditingPreferencesData(malformed)).toBe(false);
+		expect(queryToolbar.setCaretDocsActive).not.toHaveBeenCalled();
+		expect(queryToolbar.setAutoCompleteActive).not.toHaveBeenCalled();
+		expect(queryToolbar.setCopilotInlineActive).not.toHaveBeenCalled();
+		expect(sqlToolbar.setAutoCompleteActive).not.toHaveBeenCalled();
+		expect(sqlToolbar.setCopilotInlineActive).not.toHaveBeenCalled();
+		expect(docs.style.display).toBe('none');
+		expect(docsText.textContent).toBe('existing documentation');
+		expect(docsText.classList.contains('is-watermark')).toBe(false);
+
+		expect(applyEditingPreferencesData(message(1, false))).toBe(true);
+		expect(queryToolbar.setCaretDocsActive).toHaveBeenCalledOnce();
+		expect(queryToolbar.setCaretDocsActive).toHaveBeenCalledWith(false);
+		expect(queryToolbar.setAutoCompleteActive).toHaveBeenCalledOnce();
+		expect(queryToolbar.setCopilotInlineActive).toHaveBeenCalledOnce();
+		expect(sqlToolbar.setAutoCompleteActive).toHaveBeenCalledOnce();
+		expect(sqlToolbar.setCopilotInlineActive).toHaveBeenCalledOnce();
+		expect(docs.style.display).toBe('none');
+		expect(docsText.textContent).toBe('existing documentation');
+	});
+
+	it('reapplies an equal maximum revision for cross-window convergence', () => {
+		expect(applyEditingPreferencesData(message(Number.MAX_SAFE_INTEGER, true))).toBe(true);
+		expect(applyEditingPreferencesData(message(Number.MAX_SAFE_INTEGER, false))).toBe(true);
 	});
 });

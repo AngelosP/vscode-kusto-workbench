@@ -1075,7 +1075,16 @@ describe('message-handler dispatch', () => {
 			throw new Error('broken buffered preference');
 		});
 		(window as any).__kustoBufferedHostMessages = [
-			{ type: 'editingPreferencesData' },
+			{
+				type: 'editingPreferencesData',
+				revision: 1,
+				caretDocsEnabled: true,
+				caretDocsEnabledUserSet: false,
+				autoTriggerAutocompleteEnabled: true,
+				autoTriggerAutocompleteEnabledUserSet: false,
+				copilotInlineCompletionsEnabled: true,
+				copilotInlineCompletionsEnabledUserSet: false,
+			},
 			{
 				type: 'persistenceMode',
 				documentUri: 'file:///after-buffer-error.kqlx',
@@ -1869,6 +1878,35 @@ describe('message-handler dispatch', () => {
 
 		expect(mocks.applyEditingPreferencesData).toHaveBeenCalledWith(message);
 		expect(mocks.postMessageToHost).not.toHaveBeenCalled();
+	});
+
+	it('drops malformed high-revision editing preferences before canonical revision admission', () => {
+		const malformed = {
+			type: 'editingPreferencesData',
+			revision: 999,
+			caretDocsEnabled: 'false',
+			caretDocsEnabledUserSet: true,
+			autoTriggerAutocompleteEnabled: true,
+			autoTriggerAutocompleteEnabledUserSet: true,
+			copilotInlineCompletionsEnabled: true,
+			copilotInlineCompletionsEnabledUserSet: true,
+		};
+		const canonical = {
+			type: 'editingPreferencesData',
+			revision: 1,
+			caretDocsEnabled: false,
+			caretDocsEnabledUserSet: true,
+			autoTriggerAutocompleteEnabled: true,
+			autoTriggerAutocompleteEnabledUserSet: true,
+			copilotInlineCompletionsEnabled: false,
+			copilotInlineCompletionsEnabledUserSet: true,
+		};
+
+		dispatchHostMessage(malformed);
+		dispatchHostMessage(canonical);
+
+		expect(mocks.applyEditingPreferencesData).toHaveBeenCalledOnce();
+		expect(mocks.applyEditingPreferencesData).toHaveBeenCalledWith(canonical);
 	});
 
 	it('routes databasesData and databasesError to database handlers', async () => {

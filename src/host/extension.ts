@@ -55,6 +55,7 @@ import {
 	migrateLegacyEditingPreferences,
 	refreshEditingPreferences,
 } from './editingPreferences';
+import { parseEditingPreferencesHostMessage } from '../shared/editingPreferences';
 
 type TestOpenFileSummary = NonNullable<Awaited<ReturnType<KustoWorkbenchToolOrchestrator['listSections']>>['openFiles']>[number];
 
@@ -83,8 +84,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		associationManager: editorAssociationManager,
 		openPanel: request => FirstLaunchSetupPanel.open(context, context.extensionUri, request),
 		broadcastEditingPreferences: async message => {
+			const parsed = parseEditingPreferencesHostMessage(message);
+			if (!parsed.ok) {
+				throw new Error(`Editing preferences publication was invalid: ${parsed.error}`);
+			}
 			if (toolOrchestrator) {
-				await toolOrchestrator.postToAllWebviews(message);
+				await toolOrchestrator.postToAllWebviews(parsed.value);
 			}
 		},
 		migrateFreshProfileByDefault: context.extensionMode !== vscode.ExtensionMode.Production,
@@ -149,7 +154,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			const editingConfigurationChanged = Object.values(EDITING_PREFERENCE_CONFIGURATION_KEYS)
 				.some(key => e.affectsConfiguration(`kustoWorkbench.${key}`));
 			if (editingConfigurationChanged) {
-				void refreshEditingPreferences(context).then(message => toolOrchestrator?.postToAllWebviews(message)).catch(error => {
+				void refreshEditingPreferences(context).then(message => {
+					const parsed = parseEditingPreferencesHostMessage(message);
+					if (!parsed.ok) {
+						throw new Error(`Editing preferences publication was invalid: ${parsed.error}`);
+					}
+					return toolOrchestrator?.postToAllWebviews(parsed.value);
+				}).catch(error => {
 					getWorkbenchLogger().error('[Kusto Workbench] Failed to refresh editing preferences:', error instanceof Error ? error : String(error));
 				});
 			}
@@ -557,16 +568,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			'https://identity-foobar.kusto.windows.net',
 			'https://identityadx.westus.kusto.windows.net',
 		];
+		const identityClipboardSentinel = 'kusto-identity-checklist-pending';
 		const testClusterKeys = new Set(testClusters.map(cluster => kustoClusterKey(cluster)).filter(Boolean));
 		const isTestCluster = (value: unknown): boolean => testClusterKeys.has(kustoClusterKey(String(value || '')));
+		const assertIdentityChecklistReady = async () => {
+			await testAuthPreferences.waitForProviderAccountRefresh();
+			const connections = connectionManager.getConnections().filter(connection =>
+				String(connection.name || '').startsWith(testPrefix) || isTestCluster(connection.clusterUrl)
+			);
+			if (connections.length !== testClusters.length) {
+				throw new Error(`Identity checklist expected ${testClusters.length} connections, got ${connections.length}.`);
+			}
+			return connections.map(connection => {
+				const preference = testAuthPreferences.getPreference(connection.id);
+				const accountPartition = testAuthPreferences.getAccountPartition(connection.authorityId, testAuthAccount.id);
+				const databases = testConnectionCache.getDatabases(connection.id, accountPartition, false);
+				if (preference.mode !== 'explicit' || preference.accountId !== testAuthAccount.id) {
+					throw new Error(`Identity checklist connection ${connection.name} lost its explicit test account.`);
+				}
+				if (!databases.includes('ChecklistDb')) {
+					throw new Error(`Identity checklist connection ${connection.name} lost its database cache.`);
+				}
+				return { connectionId: connection.id, accountPartition, databases };
+			});
+		};
 		const cleanupIdentityChecklistState = async (): Promise<void> => {
 			const removedConnectionIds = new Set<string>();
 			for (const connection of connectionManager.getConnections()) {
 				if (String(connection.name || '').startsWith(testPrefix) || isTestCluster(connection.clusterUrl)) {
 					removedConnectionIds.add(connection.id);
 					await testConnectionCache.clearConnection(connection.id);
-					await testAuthPreferences.removeConnection(connection.id);
 					await connectionManager.removeConnection(connection.id);
+					await testAuthPreferences.removeConnection(connection.id);
 				}
 			}
 			await deleteCachedSchemasForConnections(context.globalStorageUri, removedConnectionIds);
@@ -727,6 +760,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			vscode.commands.registerCommand('kustoWorkbench.test.seedKustoIdentityChecklist', async () => {
 				await testAuthPreferences.waitForProviderAccountRefresh();
 				await cleanupIdentityChecklistState();
+				await vscode.env.clipboard.writeText(identityClipboardSentinel);
+				const assertExplicitAccounts = (connections: readonly { id: string; name: string }[], stage: string) => {
+					for (const connection of connections) {
+						const preference = testAuthPreferences.getPreference(connection.id);
+						if (preference.mode !== 'explicit' || preference.accountId !== testAuthAccount.id) {
+							throw new Error(`Identity checklist connection ${connection.name} lost its explicit test account at ${stage}.`);
+						}
+					}
+				};
 				const seeds = [
 					{ name: `${testPrefix} Prod`, clusterUrl: 'https://identity-prod.kusto.windows.net', database: 'ChecklistDb' },
 					{ name: `${testPrefix} Nonprod`, clusterUrl: 'https://identity-nonprod.kusto.windows.net', database: 'ChecklistDb' },
@@ -737,7 +779,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				const added = [] as Array<{ id: string; name: string; clusterUrl: string; authorityId?: string; database?: string }>;
 				for (const seed of seeds) {
 					const connection = await connectionManager.addConnection(seed);
-					await testAuthPreferences.setExplicitAccount(connection.id, testAuthAccount);
 					added.push(connection);
 				}
 				const favoritesRaw = context.globalState.get<unknown>(STORAGE_KEYS.favorites);
@@ -747,28 +788,74 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				favorites.push({ name: `${testPrefix} Regional Favorite`, clusterUrl: 'https://identityadx.westus.kusto.windows.net', database: 'ChecklistDb' });
 				await context.globalState.update(STORAGE_KEYS.favorites, favorites);
 				await connectionManager.addLeaveNoTrace('https://identityadx.westus.kusto.windows.net');
+				await Promise.all(added.map(connection =>
+					testAuthPreferences.setExplicitAccount(connection.id, testAuthAccount)
+				));
+				assertExplicitAccounts(added, 'account-assignment');
 				await testAuthPreferences.setTokenOverride(
 					undefined,
 					testAuthAccount.id,
 					'kusto-workbench-identity-e2e-token',
 					added.map(connection => connection.id),
 				);
+				assertExplicitAccounts(added, 'token-override');
 				for (const connection of added) {
 					const accountPartition = testAuthPreferences.getAccountPartition(connection.authorityId, testAuthAccount.id);
 					const databases = kustoClusterKey(connection.clusterUrl) === kustoClusterKey('identityadx.westus')
 						? ['ChecklistDb', 'CachedOnlyDb']
 						: ['ChecklistDb'];
 					await testConnectionCache.setDatabases(connection.id, accountPartition, databases);
+					const schemaWritten = await writeCachedSchemaToDisk(
+						context.globalStorageUri,
+						schemaCacheKey(connection.clusterUrl, 'ChecklistDb', connection.id, accountPartition),
+						{
+							schema: {
+								tables: ['NeedleTable'],
+								columnTypesByTable: { NeedleTable: { Timestamp: 'datetime', Value: 'long' } },
+									rawSchemaJson: {
+										Plugins: [],
+										Databases: {
+											ChecklistDb: {
+												Tables: {
+													NeedleTable: {
+														EntityType: 'Table',
+														OrderedColumns: {
+															Timestamp: { Name: 'Timestamp', CslType: 'datetime' },
+															Value: { Name: 'Value', CslType: 'long' },
+														},
+													},
+												},
+												Functions: {},
+											},
+										},
+									},
+							},
+							timestamp: Date.now(),
+							version: SCHEMA_CACHE_VERSION,
+							clusterUrl: connection.clusterUrl,
+							database: 'ChecklistDb',
+							connectionId: connection.id,
+							accountPartition,
+						},
+					);
+					if (!schemaWritten) {
+						throw new Error(`Identity checklist schema cache write was superseded for ${connection.name}.`);
+					}
 				}
-				return { added, cachedKey: kustoClusterKey('identityadx.westus') };
+				const readiness = await assertIdentityChecklistReady();
+				return { added, cachedKey: kustoClusterKey('identityadx.westus'), readiness };
 			}),
 			vscode.commands.registerCommand('kustoWorkbench.test.assertClipboardContains', async (expected: string) => {
-				const text = await vscode.env.clipboard.readText();
 				const needle = String(expected || '');
-				if (!needle || !text.includes(needle)) {
-					throw new Error(`Clipboard did not contain ${JSON.stringify(needle)}. Clipboard=${JSON.stringify(text.slice(0, 500))}`);
+				if (!needle) throw new Error('Clipboard assertion requires non-empty text.');
+				const deadline = Date.now() + 10_000;
+				let text = '';
+				while (Date.now() < deadline) {
+					text = await vscode.env.clipboard.readText();
+					if (text.includes(needle)) return text;
+					await new Promise(resolve => setTimeout(resolve, 100));
 				}
-				return text;
+				throw new Error(`Clipboard did not contain ${JSON.stringify(needle)}. Clipboard=${JSON.stringify(text.slice(0, 500))}`);
 			})
 		);
 	}

@@ -102,6 +102,21 @@ describe('editing preferences host data', () => {
 		expect(message.revision).toBeGreaterThan(4);
 	});
 
+	it('saturates the revision at the maximum safe integer', async () => {
+		vi.spyOn(vscode.workspace, 'getConfiguration').mockImplementation((section: string) => ({
+			get: () => section === 'editor' ? true : undefined,
+			inspect: () => undefined,
+			update: vi.fn(async () => undefined),
+		}) as any);
+		const test = contextHarness();
+		test.values.set(STORAGE_KEYS.editingPreferencesRevision, Number.MAX_SAFE_INTEGER);
+
+		const message = await refreshEditingPreferences(test.context);
+
+		expect(message.revision).toBe(Number.MAX_SAFE_INTEGER);
+		expect(test.values.get(STORAGE_KEYS.editingPreferencesRevision)).toBe(Number.MAX_SAFE_INTEGER);
+	});
+
 	it('migrates legacy values once and Reset Setting returns to defaults instead of stale state', async () => {
 		const configured = new Map<string, boolean>();
 		vi.spyOn(vscode.workspace, 'getConfiguration').mockImplementation((section: string) => ({

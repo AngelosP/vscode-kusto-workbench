@@ -365,8 +365,8 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/comparisonPreparationApplicationHandler.ts::waitForSqlComparisonAdmission::postMessage::628:25',
 	'src/host/controlCommandSyntaxApplicationHandler.ts::postMessage::postMessage::56:3',
 	'src/host/dashboardApplicationHandler.ts::postMessage::postMessage::98:10',
-	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postMessage::68:10',
-	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postToAllWebviews::66:10',
+	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postMessage::75:10',
+	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postToAllWebviews::73:10',
 	'src/host/editorCursorStatusApplicationHandler.ts::postMessage::postMessage::83:10',
 	'src/host/kqlLanguageRequestApplicationHandler.ts::postMessage::postMessage::48:3',
 	'src/host/kustoConnectionOnboardingApplicationHandler.ts::testConnectionFromWebview::postMessage::189:4',
@@ -1809,6 +1809,70 @@ describe('Message Protocol Contract', () => {
 		expect(dispatcherAdmissionIndex).toBeLessThan(dispatcher.indexOf('navigator.clipboard.write('));
 	});
 
+	it('keeps editing preference setters and delivery on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/editingPreferences.ts',
+			'EditingPreferencesWebviewMessage',
+		)).toEqual([
+			'setAutoTriggerAutocompleteEnabled',
+			'setCaretDocsEnabled',
+			'setCopilotInlineCompletionsEnabled',
+		]);
+		expect(extractTypeDiscriminants(
+			'src/shared/editingPreferences.ts',
+			'EditingPreferencesHostMessage',
+		)).toEqual(['editingPreferencesData']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| EditingPreferencesWebviewMessage');
+		expect(webviewMessages).toContain('| EditingPreferencesWebviewMessage');
+		for (const type of [
+			'setCaretDocsEnabled',
+			'setAutoTriggerAutocompleteEnabled',
+			'setCopilotInlineCompletionsEnabled',
+		]) {
+			expect(hostTypes).not.toContain(`type: '${type}'`);
+			expect(webviewMessages).not.toContain(`type: '${type}'`);
+		}
+		const wrapperAdmissionIndex = webviewMessages.indexOf('admitEditingPreferencesWebviewMessage(message)');
+		expect(wrapperAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(wrapperAdmissionIndex).toBeLessThan(webviewMessages.indexOf('const e2eCaptureHostMessage'));
+
+		const handler = readWorkspaceFile('src/host/editingPreferencesApplicationHandler.ts');
+		const handlerAdmissionIndex = handler.indexOf('admitEditingPreferencesWebviewMessage(message)');
+		expect(handlerAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(handlerAdmissionIndex).toBeLessThan(handler.indexOf('setEditingPreference('));
+		expect(handler).not.toContain('!!message.enabled');
+		expect(handler.indexOf('parseEditingPreferencesHostMessage(preferences)'))
+			.toBeLessThan(handler.indexOf('publisher.postToAllWebviews(parsed.value)'));
+		expect(handler.indexOf('parseEditingPreferencesHostMessage(preferences)'))
+			.toBeLessThan(handler.indexOf('this.options.postMessage(parsed.value)'));
+
+		const hostPreferences = readWorkspaceFile('src/host/editingPreferences.ts');
+		expect(hostPreferences.indexOf('parseEditingPreferencesHostMessage(message)'))
+			.toBeLessThan(hostPreferences.indexOf('return parsed.value'));
+		const firstLaunch = readWorkspaceFile('src/host/firstLaunch/firstLaunchCoordinator.ts');
+		expect(firstLaunch.indexOf('parseEditingPreferencesHostMessage(message)'))
+			.toBeLessThan(firstLaunch.indexOf('this.options.broadcastEditingPreferences(parsed.value)'));
+		const extension = readWorkspaceFile('src/host/extension.ts');
+		expect(extension).toContain('parseEditingPreferencesHostMessage(message)');
+		expect(extension).toContain('toolOrchestrator.postToAllWebviews(parsed.value)');
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		const dispatcherAdmissionIndex = dispatcher.indexOf('admitEditingPreferencesHostMessage(message)');
+		expect(dispatcherAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(dispatcherAdmissionIndex).toBeLessThan(dispatcher.indexOf("case 'editingPreferencesData':"));
+		const application = readWorkspaceFile('src/webview/core/editing-preferences.ts');
+		expect(application.indexOf('parseEditingPreferencesHostMessage(message)'))
+			.toBeLessThan(application.indexOf('if (revision < latestRevision)'));
+		expect(application.indexOf('parseEditingPreferencesHostMessage(message)'))
+			.toBeLessThan(application.indexOf('setCaretDocsEnabled(preferences.caretDocsEnabled)'));
+		expect(application.indexOf('applyCaretDocsPresentation(preferences.caretDocsEnabled)'))
+			.toBeLessThan(application.indexOf('latestRevision = revision'));
+	});
+
 	// ─── Compile-time guards ───────────────────────────────────────────────
 	// These calls exist solely for the TypeScript compiler to verify that
 	// every string literal in our arrays is a valid union discriminant.
@@ -1844,6 +1908,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/sqlConnectionsProjectionProtocol.ts', 'SqlConnectionsProjectionWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kustoConnectionsProjectionProtocol.ts', 'KustoConnectionsProjectionWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/querySharingProtocol.ts', 'QuerySharingWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/editingPreferences.ts', 'EditingPreferencesWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1868,6 +1933,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/sqlConnectionsProjectionProtocol.ts', 'SqlConnectionsProjectionWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kustoConnectionsProjectionProtocol.ts', 'KustoConnectionsProjectionWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/querySharingProtocol.ts', 'QuerySharingWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/editingPreferences.ts', 'EditingPreferencesWebviewMessage'),
 			])].sort()
 		);
 		expect(extractStringArrayVariable(

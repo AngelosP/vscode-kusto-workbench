@@ -41,6 +41,45 @@ describe('first-launch integration inventory', () => {
 		}
 	});
 
+	it('activates identity fixture setup before opening an editor', () => {
+		for (const command of ['cleanupKustoIdentityChecklist', 'seedKustoIdentityChecklist']) {
+			expect(packageJson.activationEvents).toContain(`onCommand:kustoWorkbench.test.${command}`);
+		}
+	});
+
+	it('settles identity cleanup and structure before assigning fixture principals', () => {
+		const cleanup = extensionSource.slice(
+			extensionSource.indexOf('const cleanupIdentityChecklistState'),
+			extensionSource.indexOf('context.subscriptions.push(', extensionSource.indexOf('const cleanupIdentityChecklistState')),
+		);
+		const removeConnection = cleanup.indexOf('await connectionManager.removeConnection(connection.id)');
+		const removePreference = cleanup.indexOf('await testAuthPreferences.removeConnection(connection.id)');
+		expect(removeConnection).toBeGreaterThanOrEqual(0);
+		expect(removePreference).toBeGreaterThanOrEqual(0);
+		expect(removeConnection).toBeLessThan(removePreference);
+
+		const seed = extensionSource.slice(
+			extensionSource.indexOf("registerCommand('kustoWorkbench.test.seedKustoIdentityChecklist'"),
+			extensionSource.indexOf("registerCommand('kustoWorkbench.test.assertClipboardContains'"),
+		);
+		const addConnection = seed.indexOf('await connectionManager.addConnection(');
+		const addLeaveNoTrace = seed.indexOf('await connectionManager.addLeaveNoTrace(');
+		const setExplicitAccount = seed.indexOf('testAuthPreferences.setExplicitAccount(');
+		const setTokenOverride = seed.indexOf('await testAuthPreferences.setTokenOverride(');
+		const setDatabases = seed.indexOf('await testConnectionCache.setDatabases(');
+		const setClipboardSentinel = seed.indexOf('await vscode.env.clipboard.writeText(identityClipboardSentinel)');
+		for (const marker of [addConnection, addLeaveNoTrace, setExplicitAccount, setTokenOverride, setDatabases, setClipboardSentinel]) {
+			expect(marker).toBeGreaterThanOrEqual(0);
+		}
+		expect(addConnection).toBeLessThan(addLeaveNoTrace);
+		expect(addLeaveNoTrace).toBeLessThan(setExplicitAccount);
+		expect(seed).toContain('await Promise.all(added.map(connection =>');
+		expect(setExplicitAccount).toBeLessThan(setTokenOverride);
+		expect(setTokenOverride).toBeLessThan(setDatabases);
+		expect(seed).toContain('if (!schemaWritten)');
+		expect(extensionSource).toContain('Clipboard assertion requires non-empty text.');
+	});
+
 	it('declares file-opening choices as profile-only application settings', () => {
 		for (const key of ['openKqlFiles', 'openCslFiles', 'openMdFiles', 'openSqlFiles']) {
 			expect(packageJson.contributes.configuration.properties[`kustoWorkbench.${key}`]?.scope, key).toBe('application');

@@ -1,12 +1,13 @@
 import type * as vscode from 'vscode';
 
-import type { EditingPreferencesDataMessage } from '../shared/editingPreferences';
+import {
+	admitEditingPreferencesWebviewMessage,
+	parseEditingPreferencesHostMessage,
+	type EditingPreferencesDataMessage,
+	type EditingPreferencesWebviewMessage,
+} from '../shared/editingPreferences';
 import { setEditingPreference } from './editingPreferences';
 import { STORAGE_KEYS, type IncomingWebviewMessage } from './queryEditorTypes';
-
-type EditingPreferencesMessage = Extract<IncomingWebviewMessage, {
-	type: 'setCaretDocsEnabled' | 'setAutoTriggerAutocompleteEnabled' | 'setCopilotInlineCompletionsEnabled';
-}>;
 
 type EditingPreferenceStorageKey =
 	| typeof STORAGE_KEYS.caretDocsEnabled
@@ -34,8 +35,12 @@ export class HostEditingPreferencesApplicationHandler implements EditingPreferen
 	constructor(private readonly options: EditingPreferencesApplicationHandlerOptions) {}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
+		const admission = admitEditingPreferencesWebviewMessage(message);
+		if (!admission.recognized) return undefined;
+		if (!admission.parsed.ok) return Promise.resolve();
+		const request = admission.parsed.value;
 		let key: EditingPreferenceStorageKey;
-		switch (message.type) {
+		switch (request.type) {
 			case 'setCaretDocsEnabled':
 				key = STORAGE_KEYS.caretDocsEnabled;
 				break;
@@ -45,11 +50,9 @@ export class HostEditingPreferencesApplicationHandler implements EditingPreferen
 			case 'setCopilotInlineCompletionsEnabled':
 				key = STORAGE_KEYS.copilotInlineCompletionsEnabled;
 				break;
-			default:
-				return undefined;
 		}
 		if (this.disposed) return Promise.resolve();
-		return this.updatePreference(message, key);
+		return this.updatePreference(request, key);
 	}
 
 	dispose(): void {
@@ -57,15 +60,19 @@ export class HostEditingPreferencesApplicationHandler implements EditingPreferen
 	}
 
 	private async updatePreference(
-		message: EditingPreferencesMessage,
+		message: EditingPreferencesWebviewMessage,
 		key: EditingPreferenceStorageKey,
 	): Promise<void> {
-		const preferences = await setEditingPreference(this.options.context, key, !!message.enabled);
+		const preferences = await setEditingPreference(this.options.context, key, message.enabled);
+		const parsed = parseEditingPreferencesHostMessage(preferences);
+		if (!parsed.ok) {
+			throw new Error(`Editing preferences publication was invalid: ${parsed.error}`);
+		}
 		const publisher = this.options.getPublisher();
 		if (publisher) {
-			await publisher.postToAllWebviews(preferences);
+			await publisher.postToAllWebviews(parsed.value);
 		} else {
-			await this.options.postMessage(preferences);
+			await this.options.postMessage(parsed.value);
 		}
 	}
 }

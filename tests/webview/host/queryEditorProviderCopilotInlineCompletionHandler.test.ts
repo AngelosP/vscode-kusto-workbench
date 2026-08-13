@@ -275,7 +275,7 @@ describe('QueryEditorProvider Copilot inline-completion application', () => {
 		expect(monacoSource).toContain('}, 10000);');
 		expect(messageHandlerSource).toContain("case 'copilotInlineCompletionResult':");
 		expect(editingPreferencesSource).toContain(
-			'setCopilotInlineCompletionsEnabled(!!message.copilotInlineCompletionsEnabled);',
+			'setCopilotInlineCompletionsEnabled(preferences.copilotInlineCompletionsEnabled);',
 		);
 	});
 });
