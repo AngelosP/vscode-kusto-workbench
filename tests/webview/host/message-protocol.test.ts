@@ -1531,6 +1531,10 @@ describe('Message Protocol Contract', () => {
 		const transfer = exportGate.slice(exportGate.indexOf('export function provideArtifactCsvSaveData'));
 		expect(transfer.indexOf('admitArtifactCsvSaveHostMessage(message)'))
 			.toBeLessThan(transfer.indexOf('takePending(challenge.exportId)'));
+		expect(transfer.indexOf('candidate.sourceBoxId !== challenge.boxId'))
+			.toBeLessThan(transfer.indexOf('takePending(challenge.exportId)'));
+		expect(transfer.indexOf('candidate.artifactId !== challenge.artifactId'))
+			.toBeLessThan(transfer.indexOf('takePending(challenge.exportId)'));
 		expect(transfer.indexOf('admitArtifactCsvSaveHostMessage(message)'))
 			.toBeLessThan(transfer.indexOf('bindResultArtifactConsumer('));
 

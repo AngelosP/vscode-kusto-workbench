@@ -106,6 +106,27 @@ describe('artifact CSV export gate', () => {
 			boxId: [boxId], artifactId: artifact.artifactId,
 		} as any);
 		expect(mocks.postMessageToHost).not.toHaveBeenCalled();
+		provideArtifactCsvSaveData({
+			type: 'requestArtifactCsvSaveData',
+			requestId: 'padded-host-nonce', exportId: ` ${intent.requestId} `,
+			boxId, artifactId: artifact.artifactId,
+		});
+		expect(mocks.postMessageToHost).not.toHaveBeenCalled();
+		provideArtifactCsvSaveData({
+			type: 'requestArtifactCsvSaveData',
+			requestId: 'padded-box-host-nonce', exportId: intent.requestId,
+			boxId: ` ${boxId} `, artifactId: artifact.artifactId,
+		});
+		expect(mocks.postMessageToHost).not.toHaveBeenCalled();
+		provideArtifactCsvSaveData({
+			type: 'requestArtifactCsvSaveData',
+			requestId: 'padded-artifact-host-nonce', exportId: intent.requestId,
+			boxId, artifactId: ` ${artifact.artifactId} `,
+		});
+		expect(mocks.postMessageToHost).not.toHaveBeenCalled();
+		cancelArtifactCsvSave({
+			type: 'cancelArtifactCsvSave', exportId: ` ${intent.requestId} `,
+		});
 
 		const canonicalChallenge = {
 			requestId: 'canonical-host-nonce', exportId: intent.requestId,

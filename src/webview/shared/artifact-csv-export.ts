@@ -143,11 +143,10 @@ export function saveArtifactCsv(request: ArtifactCsvExportRequest): boolean {
 	return true;
 }
 
-function takePending(requestId: unknown): PendingCsvExport | undefined {
-	const id = String(requestId || '').trim();
-	const pending = pendingExportByRequestId.get(id);
+function takePending(requestId: string): PendingCsvExport | undefined {
+	const pending = pendingExportByRequestId.get(requestId);
 	if (!pending) return undefined;
-	pendingExportByRequestId.delete(id);
+	pendingExportByRequestId.delete(requestId);
 	window.clearTimeout(pending.timer);
 	return pending;
 }
@@ -157,11 +156,13 @@ export function provideArtifactCsvSaveData(message: unknown): void {
 	if (!admission.recognized || !admission.parsed.ok
 		|| admission.parsed.value.type !== 'requestArtifactCsvSaveData') return;
 	const challenge = admission.parsed.value;
+	const candidate = pendingExportByRequestId.get(challenge.exportId);
+	if (!candidate
+		|| candidate.sourceBoxId !== challenge.boxId
+		|| candidate.artifactId !== challenge.artifactId) return;
 	const pending = takePending(challenge.exportId);
 	if (!pending) return;
-	const matches = pending.sourceBoxId === challenge.boxId
-		&& pending.artifactId === challenge.artifactId
-		&& activeTableMatches(pending);
+	const matches = activeTableMatches(pending);
 	const consumerId = csvSaveArtifactConsumerId(pending.sourceBoxId);
 	try {
 		const bound = matches && bindResultArtifactConsumer(
