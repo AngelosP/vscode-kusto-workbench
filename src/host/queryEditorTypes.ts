@@ -16,6 +16,7 @@ import type { ArtifactCsvSaveWebviewMessage } from '../shared/artifactCsvSavePro
 import type { SqlStsEditorLanguageWebviewMessage } from '../shared/sqlStsEditorLanguageProtocol';
 import type { SqlConnectionsProjectionWebviewMessage } from '../shared/sqlConnectionsProjectionProtocol';
 import type { KustoConnectionsProjectionWebviewMessage } from '../shared/kustoConnectionsProjectionProtocol';
+import type { QuerySharingWebviewMessage } from '../shared/querySharingProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -131,30 +132,6 @@ export type ExecuteSqlQueryMessage = {
 		principalFingerprint: string;
 		revocationGeneration: number;
 	};
-};
-
-export type CopyAdeLinkMessage = {
-	type: 'copyAdeLink';
-	query: string;
-	connectionId: string;
-	database: string;
-	boxId: string;
-};
-
-export type ShareToClipboardMessage = {
-	type: 'shareToClipboard';
-	engine: 'kusto' | 'sql';
-	boxId: string;
-	includeTitle: boolean;
-	includeQuery: boolean;
-	includeResults: boolean;
-	sectionName: string;
-	queryText: string;
-	connectionId: string;
-	database: string;
-	columns: string[];
-	rowsData: string[][];
-	totalRows: number;
 };
 
 export type ImportConnectionsFromXmlMessage = {
@@ -310,8 +287,7 @@ export type IncomingWebviewMessage =
 	| SqlSchemaWebviewMessage
 	| { type: 'requestAddSqlFavorite'; connectionId: string; database: string; defaultName?: string; boxId?: string }
 	| { type: 'removeSqlFavorite'; connectionId: string; database: string; boxId?: string }
-	| CopyAdeLinkMessage
-	| ShareToClipboardMessage
+	| QuerySharingWebviewMessage
 	| KustoSchemaWebviewMessage
 	| SqlStsEditorLanguageWebviewMessage
 	| { type: 'sqlComparisonRemoved'; boxId: string; sourceBoxId?: string }

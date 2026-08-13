@@ -531,6 +531,64 @@ describe('postMessageToHost', () => {
 		}
 	});
 
+	it('snapshots query sharing requests and rejects malformed ones before E2E capture', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const request = {
+				type: 'shareToClipboard' as const,
+				engine: 'kusto' as const,
+				boxId: 'query-1',
+				includeTitle: true,
+				includeQuery: true,
+				includeResults: true,
+				sectionName: 'Storm sample',
+				queryText: 'StormEvents | take 10',
+				connectionId: 'connection-1',
+				database: 'Samples',
+				columns: ['State', 'Count'],
+				rowsData: [['WA', '10']],
+				totalRows: 1,
+			};
+			postMessageToHost(request);
+
+			expect(capture.mock.calls[0]?.[0]).toEqual(request);
+			expect(capture.mock.calls[0]?.[0]).not.toBe(request);
+			expect(capture.mock.calls[0]?.[0].columns).not.toBe(request.columns);
+			expect(postMessage.mock.calls[0]?.[0]).toEqual(request);
+			capture.mockClear();
+			postMessage.mockClear();
+
+			let getterCalls = 0;
+			const accessor = { ...request };
+			Object.defineProperty(accessor, 'queryText', {
+				enumerable: true,
+				get() {
+					getterCalls++;
+					throw new Error('must not run');
+				},
+			});
+			for (const malformed of [
+				accessor,
+				{ ...request, includeResults: 'yes' },
+				{ ...request, columns: ['State', 42] },
+				{ ...request, rowsData: [['WA', 10]] },
+				{ ...request, totalRows: -1 },
+				Object.assign([], request),
+			]) {
+				postMessageToHost(malformed as unknown as Parameters<typeof postMessageToHost>[0]);
+			}
+
+			expect(getterCalls).toBe(0);
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
+
 	it('snapshots artifact CSV messages and rejects malformed ones before E2E capture', () => {
 		const postMessage = vi.fn();
 		const capture = vi.fn();

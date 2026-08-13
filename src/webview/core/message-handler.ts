@@ -69,6 +69,7 @@ import {
 	admitKustoConnectionsProjectionHostMessage,
 	captureKustoConnectionsProjectionHostMessage,
 } from '../../shared/kustoConnectionsProjectionProtocol.js';
+import { admitQuerySharingHostMessage } from '../../shared/querySharingProtocol.js';
 import { captureRuntimeMessageEnvelope } from '../../shared/runtimeMessageEnvelope.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
@@ -1693,6 +1694,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 	if (pythonExecutionAdmission.recognized) {
 		if (!pythonExecutionAdmission.parsed.ok) return;
 		message = pythonExecutionAdmission.parsed.value;
+	}
+	const querySharingAdmission = pythonExecutionAdmission.recognized
+		? { recognized: false as const }
+		: admitQuerySharingHostMessage(message);
+	if (querySharingAdmission.recognized) {
+		if (!querySharingAdmission.parsed.ok) return;
+		message = querySharingAdmission.parsed.value;
 	}
 	message = (message && typeof message === 'object') ? message : {};
 	const urlContentAdmission = admitUrlContentHostMessage(message);
@@ -5659,8 +5667,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		case 'shareContentReady':
 			// Write rich HTML + plain text to the clipboard for Teams / rich-text paste.
 			try {
-				const html = String(message.html || '');
-				const text = String(message.text || '');
+				const { html, text } = message;
 				if (navigator.clipboard && typeof navigator.clipboard.write === 'function') {
 					const htmlBlob = new Blob([html], { type: 'text/html' });
 					const textBlob = new Blob([text], { type: 'text/plain' });

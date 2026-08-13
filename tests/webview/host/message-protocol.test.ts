@@ -405,7 +405,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/queryEditorProvider.ts::<module>::postMessage::819:29',
 	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::898:15',
 	'src/host/queryEditorProvider.ts::postMessage::postMessage::1287:21',
-	'src/host/querySharingApplicationHandler.ts::postMessage::postMessage::32:10',
+	'src/host/querySharingApplicationHandler.ts::postMessage::postMessage::36:22',
 	'src/host/resourceUriApplicationHandler.ts::postMessage::postMessage::56:3',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1806:13',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1810:10',
@@ -846,7 +846,6 @@ const HOST_TO_WEBVIEW_TYPES = [
 	'settingsUpdate',
 	'requestToolState',
 	'queryCancelled',
-	'showInfo',
 	'shareContentReady',
 	'controlCommandSyntaxResult',
 	'resolveResourceUriResult',
@@ -1001,14 +1000,7 @@ const TOOL_FRAMEWORK_HANDLER_TYPES = new Set([
 	'compareQueryPerformanceWithQuery',
 ]);
 
-/**
- * Host sends `showInfo` to the webview but message-handler.ts has no case for it.
- * This is a known benign inconsistency — VS Code's postMessage is fire-and-forget
- * and the info toast was historically shown differently.
- */
-const KNOWN_UNHANDLED_HOST_MESSAGES = new Set([
-	'showInfo',
-]);
+const KNOWN_UNHANDLED_HOST_MESSAGES = new Set<string>();
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Tests
@@ -1775,6 +1767,48 @@ describe('Message Protocol Contract', () => {
 			.toBeLessThan(browserDispatch.indexOf('downloadCsv(message.csv'));
 	});
 
+	it('keeps query sharing requests and delivery on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/querySharingProtocol.ts',
+			'QuerySharingWebviewMessage',
+		)).toEqual(['copyAdeLink', 'shareToClipboard']);
+		expect(extractTypeDiscriminants(
+			'src/shared/querySharingProtocol.ts',
+			'QuerySharingHostMessage',
+		)).toEqual(['shareContentReady']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| QuerySharingWebviewMessage');
+		expect(webviewMessages).toContain('| QuerySharingWebviewMessage');
+		for (const type of ['copyAdeLink', 'shareToClipboard']) {
+			expect(hostTypes).not.toContain(`type: '${type}'`);
+			expect(webviewMessages).not.toContain(`type: '${type}'`);
+		}
+		const wrapperAdmissionIndex = webviewMessages.indexOf('admitQuerySharingWebviewMessage(message)');
+		const captureIndex = webviewMessages.indexOf('const e2eCaptureHostMessage');
+		expect(wrapperAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(wrapperAdmissionIndex).toBeLessThan(captureIndex);
+
+		const handler = readWorkspaceFile('src/host/querySharingApplicationHandler.ts');
+		const handlerAdmissionIndex = handler.indexOf('admitQuerySharingWebviewMessage(message)');
+		expect(handlerAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(handlerAdmissionIndex).toBeLessThan(handler.indexOf('this.options.findConnection('));
+		expect(handlerAdmissionIndex).toBeLessThan(handler.indexOf('const htmlParts: string[]'));
+		expect(handler).toContain('postMessage: (message: QuerySharingHostMessage)');
+		expect(handler.indexOf('parseQuerySharingHostMessage(message)'))
+			.toBeLessThan(handler.indexOf('this.options.postMessage(parsed.value)'));
+		expect(handler).not.toContain("type: 'showInfo'");
+		expect(handler).toContain("showInformationMessage('Azure Data Explorer link copied to clipboard.')");
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		const dispatcherAdmissionIndex = dispatcher.indexOf('admitQuerySharingHostMessage(message)');
+		expect(dispatcherAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(dispatcherAdmissionIndex).toBeLessThan(dispatcher.indexOf("case 'shareContentReady':"));
+		expect(dispatcherAdmissionIndex).toBeLessThan(dispatcher.indexOf('navigator.clipboard.write('));
+	});
+
 	// ─── Compile-time guards ───────────────────────────────────────────────
 	// These calls exist solely for the TypeScript compiler to verify that
 	// every string literal in our arrays is a valid union discriminant.
@@ -1809,6 +1843,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/sqlStsEditorLanguageProtocol.ts', 'SqlStsEditorLanguageWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlConnectionsProjectionProtocol.ts', 'SqlConnectionsProjectionWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kustoConnectionsProjectionProtocol.ts', 'KustoConnectionsProjectionWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/querySharingProtocol.ts', 'QuerySharingWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1832,6 +1867,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/sqlStsEditorLanguageProtocol.ts', 'SqlStsEditorLanguageWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlConnectionsProjectionProtocol.ts', 'SqlConnectionsProjectionWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kustoConnectionsProjectionProtocol.ts', 'KustoConnectionsProjectionWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/querySharingProtocol.ts', 'QuerySharingWebviewMessage'),
 			])].sort()
 		);
 		expect(extractStringArrayVariable(
@@ -2076,10 +2112,7 @@ describe('Message Protocol Contract', () => {
 
 		it('extracts query-sharing handler responses', () => {
 			const extraction = extractPostMessageTypes('src/host/querySharingApplicationHandler.ts');
-			expect(extraction.types).toEqual(expect.arrayContaining([
-				'showInfo',
-				'shareContentReady',
-			]));
+			expect(extraction.types).toEqual(['shareContentReady']);
 		});
 
 		it('extracts both URL-content handler terminals', () => {

@@ -2,12 +2,15 @@ import * as zlib from 'zlib';
 import * as vscode from 'vscode';
 
 import { exportAzureDataExplorerClusterPath } from '../shared/kustoClusterUrls';
+import {
+	admitQuerySharingWebviewMessage,
+	parseQuerySharingHostMessage,
+	type CopyAdeLinkMessage,
+	type QuerySharingHostMessage,
+	type ShareToClipboardMessage,
+} from '../shared/querySharingProtocol';
 import type { KustoConnection } from './connectionManager';
-import type {
-	CopyAdeLinkMessage,
-	IncomingWebviewMessage,
-	ShareToClipboardMessage,
-} from './queryEditorTypes';
+import type { IncomingWebviewMessage } from './queryEditorTypes';
 
 export interface QuerySharingApplicationHandler {
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined;
@@ -16,7 +19,7 @@ export interface QuerySharingApplicationHandler {
 
 export type QuerySharingApplicationHandlerOptions = {
 	findConnection: (connectionId: string) => Pick<KustoConnection, 'clusterUrl'> | undefined;
-	postMessage: (message: unknown) => Thenable<boolean>;
+	postMessage: (message: QuerySharingHostMessage) => Thenable<boolean>;
 	writeClipboardText?: (text: string) => Thenable<void>;
 };
 
@@ -28,18 +31,20 @@ export class HostQuerySharingApplicationHandler implements QuerySharingApplicati
 		this.writeClipboardText = options.writeClipboardText ?? (text => vscode.env.clipboard.writeText(text));
 	}
 
-	private postMessage(message: unknown): Thenable<boolean> {
-		return this.options.postMessage(message);
+	private postMessage(message: QuerySharingHostMessage): Thenable<boolean> {
+		const parsed = parseQuerySharingHostMessage(message);
+		return parsed.ok ? this.options.postMessage(parsed.value) : Promise.resolve(false);
 	}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
-		switch (message.type) {
+		const admission = admitQuerySharingWebviewMessage(message);
+		if (!admission.recognized) return undefined;
+		if (!admission.parsed.ok) return Promise.resolve();
+		switch (admission.parsed.value.type) {
 			case 'copyAdeLink':
-				return this.copyAdeLink(message);
+				return this.copyAdeLink(admission.parsed.value);
 			case 'shareToClipboard':
-				return this.shareToClipboard(message);
-			default:
-				return undefined;
+				return this.shareToClipboard(admission.parsed.value);
 		}
 	}
 
@@ -50,10 +55,9 @@ export class HostQuerySharingApplicationHandler implements QuerySharingApplicati
 	private async copyAdeLink(message: CopyAdeLinkMessage): Promise<void> {
 		if (this.disposed) return;
 		try {
-			const boxId = String(message.boxId || '').trim();
-			const query = String(message.query || '').trim();
-			const database = String(message.database || '').trim();
-			const connectionId = String(message.connectionId || '').trim();
+			const query = message.query.trim();
+			const database = message.database.trim();
+			const connectionId = message.connectionId.trim();
 			if (!query) {
 				vscode.window.showInformationMessage('No query text to share.');
 				return;
@@ -72,7 +76,7 @@ export class HostQuerySharingApplicationHandler implements QuerySharingApplicati
 				vscode.window.showErrorMessage('Connection not found.');
 				return;
 			}
-			const adxClusterPath = exportAzureDataExplorerClusterPath(String(connection.clusterUrl || '').trim());
+			const adxClusterPath = exportAzureDataExplorerClusterPath(connection.clusterUrl.trim());
 			if (!adxClusterPath) {
 				vscode.window.showErrorMessage('Could not determine cluster name for the selected connection.');
 				return;
@@ -95,13 +99,6 @@ export class HostQuerySharingApplicationHandler implements QuerySharingApplicati
 			await this.writeClipboardText(url);
 			if (this.disposed) return;
 			vscode.window.showInformationMessage('Azure Data Explorer link copied to clipboard.');
-			try {
-				if (boxId) {
-					this.postMessage({ type: 'showInfo', message: 'Azure Data Explorer link copied to clipboard.' });
-				}
-			} catch {
-				// ignore
-			}
 		} catch {
 			if (!this.disposed) {
 				vscode.window.showErrorMessage('Failed to copy Azure Data Explorer link.');
@@ -128,13 +125,13 @@ export class HostQuerySharingApplicationHandler implements QuerySharingApplicati
 
 			let adeUrl = '';
 			try {
-				const trimmedQuery = String(queryText || '').trim();
-				const trimmedConnectionId = String(connectionId || '').trim();
-				const trimmedDatabase = String(database || '').trim();
+				const trimmedQuery = queryText.trim();
+				const trimmedConnectionId = connectionId.trim();
+				const trimmedDatabase = database.trim();
 				if (engine !== 'sql' && trimmedQuery && trimmedConnectionId && trimmedDatabase) {
 					const connection = this.options.findConnection(trimmedConnectionId);
 					if (connection) {
-						const adxClusterPath = exportAzureDataExplorerClusterPath(String(connection.clusterUrl || '').trim());
+						const adxClusterPath = exportAzureDataExplorerClusterPath(connection.clusterUrl.trim());
 						if (adxClusterPath) {
 							const gz = zlib.gzipSync(Buffer.from(trimmedQuery, 'utf8'));
 							const encoded = gz.toString('base64').replace(/=+$/g, '');
@@ -149,7 +146,7 @@ export class HostQuerySharingApplicationHandler implements QuerySharingApplicati
 				// If URL generation fails, just skip the link.
 			}
 
-			const escHtml = (s: string) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+			const escHtml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 			if (includeTitle) {
 				const title = sectionName || (engine === 'sql' ? 'SQL Query' : 'Kusto Query');
@@ -163,7 +160,7 @@ export class HostQuerySharingApplicationHandler implements QuerySharingApplicati
 			}
 
 			if (includeQuery) {
-				const query = String(queryText || '').trim();
+				const query = queryText.trim();
 				if (query) {
 					htmlParts.push(
 						`<b style="font-size:13px">Query</b>` +
@@ -181,7 +178,7 @@ export class HostQuerySharingApplicationHandler implements QuerySharingApplicati
 					return `<tr style="background:${background}">${cells}</tr>`;
 				}).join('');
 
-				const escCell = (value: string) => String(value ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+				const escCell = (value: string) => value.replace(/\|/g, '\\|').replace(/\n/g, ' ');
 				const headerRow = '| ' + columns.map(escCell).join(' | ') + ' |';
 				const separator = '| ' + columns.map(() => '---').join(' | ') + ' |';
 				const dataRows = rowsData.map(row =>

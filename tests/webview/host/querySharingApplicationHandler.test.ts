@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 
 import { HostQuerySharingApplicationHandler } from '../../../src/host/querySharingApplicationHandler';
-import type { ShareToClipboardMessage } from '../../../src/host/queryEditorTypes';
+import type { ShareToClipboardMessage } from '../../../src/shared/querySharingProtocol';
 
 const CLUSTER_URL = 'https://contoso.westus.kusto.windows.net';
 
@@ -82,6 +82,31 @@ describe('HostQuerySharingApplicationHandler', () => {
 		expect(writeClipboardText).not.toHaveBeenCalled();
 	});
 
+	it('claims malformed sharing requests before lookup or formatting effects', async () => {
+		const { handler, findConnection, postMessage, writeClipboardText } = createHandler();
+		let getterCalls = 0;
+		const accessor = {
+			type: 'copyAdeLink', connectionId: 'connection-1', database: 'Samples', boxId: 'query-1',
+		};
+		Object.defineProperty(accessor, 'query', {
+			enumerable: true,
+			get() {
+				getterCalls++;
+				throw new Error('must not run');
+			},
+		});
+
+		await handler.handleMessage(accessor as never);
+		await handler.handleMessage({
+			...shareMessage(), columns: ['State', 42],
+		} as never);
+
+		expect(getterCalls).toBe(0);
+		expect(findConnection).not.toHaveBeenCalled();
+		expect(postMessage).not.toHaveBeenCalled();
+		expect(writeClipboardText).not.toHaveBeenCalled();
+	});
+
 	it.each([
 		[{ query: '' }, 'No query text to share.'],
 		[{ connectionId: '' }, 'Select a cluster connection first.'],
@@ -118,7 +143,7 @@ describe('HostQuerySharingApplicationHandler', () => {
 		});
 	});
 
-	it('copies a Kusto gzip/base64 ADX link and publishes both notifications', async () => {
+	it('copies a Kusto gzip/base64 ADX link and publishes the native notification', async () => {
 		const { handler, postMessage, writeClipboardText } = createHandler();
 		const infoSpy = vi.spyOn(vscode.window, 'showInformationMessage');
 		const query = 'StormEvents\n| where State == "WA"';
@@ -130,9 +155,7 @@ describe('HostQuerySharingApplicationHandler', () => {
 		expect(copiedUrl).toMatch(/^https:\/\/dataexplorer\.azure\.com\/clusters\/contoso\.westus\/databases\/Samples%20%26%20More\?query=/);
 		expect(decodeAdxQuery(copiedUrl)).toBe(query);
 		expect(infoSpy).toHaveBeenCalledWith('Azure Data Explorer link copied to clipboard.');
-		expect(postMessage).toHaveBeenCalledWith({
-			type: 'showInfo', message: 'Azure Data Explorer link copied to clipboard.',
-		});
+		expect(postMessage).not.toHaveBeenCalled();
 	});
 
 	it('reports host clipboard failure without publishing success', async () => {

@@ -81,6 +81,10 @@ import {
 	captureKustoConnectionsProjectionWebviewMessage,
 	type KustoConnectionsProjectionWebviewMessage,
 } from '../../shared/kustoConnectionsProjectionProtocol.js';
+import {
+	admitQuerySharingWebviewMessage,
+	type QuerySharingWebviewMessage,
+} from '../../shared/querySharingProtocol.js';
 import { captureRuntimeMessageEnvelope } from '../../shared/runtimeMessageEnvelope.js';
 import { pState } from './persistence-state.js';
 
@@ -107,30 +111,6 @@ export type OutgoingExecuteQueryMessage = {
 	cacheEnabled?: boolean;
 	cacheValue?: number;
 	cacheUnit?: string;
-};
-
-export type OutgoingCopyAdeLinkMessage = {
-	type: 'copyAdeLink';
-	query: string;
-	connectionId: string;
-	database: string;
-	boxId: string;
-};
-
-export type OutgoingShareToClipboardMessage = {
-	type: 'shareToClipboard';
-	engine: 'kusto' | 'sql';
-	boxId: string;
-	includeTitle: boolean;
-	includeQuery: boolean;
-	includeResults: boolean;
-	sectionName: string;
-	queryText: string;
-	connectionId: string;
-	database: string;
-	columns: string[];
-	rowsData: string[][];
-	totalRows: number;
 };
 
 // ── Copilot ────────────────────────────────────────────────────────────────
@@ -268,8 +248,7 @@ export type OutgoingWebviewMessage =
 	// Query execution
 	| OutgoingExecuteQueryMessage
 	| { type: 'cancelQuery'; boxId: string; executionId: string; sectionInstanceId: string; targetGeneration: number }
-	| OutgoingCopyAdeLinkMessage
-	| OutgoingShareToClipboardMessage
+	| QuerySharingWebviewMessage
 
 	// SQL connections & databases
 	| SqlConnectionsProjectionWebviewMessage
@@ -479,8 +458,13 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 	const pythonExecutionAdmission = stsEditorLanguageAdmission.recognized || artifactCsvSaveAdmission.recognized
 		? { recognized: false as const }
 		: admitPythonExecutionWebviewMessage(message);
+	const querySharingAdmission = stsEditorLanguageAdmission.recognized
+		|| artifactCsvSaveAdmission.recognized || pythonExecutionAdmission.recognized
+		? { recognized: false as const }
+		: admitQuerySharingWebviewMessage(message);
 	const urlContentAdmission = stsEditorLanguageAdmission.recognized
 		|| artifactCsvSaveAdmission.recognized || pythonExecutionAdmission.recognized
+		|| querySharingAdmission.recognized
 		? { recognized: false as const }
 		: admitUrlContentWebviewMessage(message);
 	if (kustoConnectionsProjectionAdmission.recognized) {
@@ -523,6 +507,12 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 			return;
 		}
 		outbound = pythonExecutionAdmission.parsed.value;
+	} else if (querySharingAdmission.recognized) {
+		if (!querySharingAdmission.parsed.ok) {
+			console.error('[kusto] Rejected invalid query sharing webview message:', querySharingAdmission.parsed.error);
+			return;
+		}
+		outbound = querySharingAdmission.parsed.value;
 	} else if (urlContentAdmission.recognized) {
 		if (!urlContentAdmission.parsed.ok) {
 			console.error('[kusto] Rejected invalid URL content webview message:', urlContentAdmission.parsed.error);

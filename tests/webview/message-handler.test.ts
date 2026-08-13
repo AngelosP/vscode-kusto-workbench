@@ -918,6 +918,39 @@ describe('message-handler dispatch', () => {
 		}
 	});
 
+	it('ignores malformed share content before one canonical clipboard write', async () => {
+		const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+		const writeText = vi.fn().mockResolvedValue(undefined);
+		Object.defineProperty(navigator, 'clipboard', {
+			configurable: true,
+			value: { writeText },
+		});
+		let getterCalls = 0;
+		const accessorDelivery = { type: 'shareContentReady', text: 'forged accessor text' };
+		Object.defineProperty(accessorDelivery, 'html', {
+			enumerable: true,
+			get() {
+				getterCalls++;
+				throw new Error('share content getter must not run');
+			},
+		});
+
+		try {
+			window.dispatchEvent(new MessageEvent('message', { data: accessorDelivery }));
+			dispatchHostMessage({ type: 'shareContentReady', html: ['forged'], text: { forged: true } });
+			dispatchHostMessage({
+				type: 'shareContentReady', html: '<b>Canonical</b>', text: 'Canonical text',
+			});
+
+			await vi.waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+			expect(writeText).toHaveBeenCalledWith('Canonical text');
+			expect(getterCalls).toBe(0);
+		} finally {
+			if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
+			else delete (navigator as { clipboard?: unknown }).clipboard;
+		}
+	});
+
 	it('makes an unknown-to-known discriminator proxy inert before protocol routing', () => {
 		let typeDescriptorReads = 0;
 		let getterCalls = 0;
