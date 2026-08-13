@@ -120,6 +120,8 @@ const HOST_MESSAGE_ARGUMENT_BY_METHOD = new Map<string, number>([
 	['postSqlConnectionMessageProtection', 2],
 	['postConnectMessageWithRetry', 2],
 	['postProtectedMessageWithRetry', 2],
+	['postSqlStsMessageContained', 0],
+	['postProtectedStsMessageWithRetry', 2],
 ]);
 const HOST_MESSAGE_ARGUMENT_BY_LOCAL_FUNCTION = new Map<string, number>([
 	['postWebviewMessage', 0],
@@ -377,15 +379,17 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/queryEditorProvider.ts::postMessage::postMessage::1283:21',
 	'src/host/querySharingApplicationHandler.ts::postMessage::postMessage::32:10',
 	'src/host/resourceUriApplicationHandler.ts::postMessage::postMessage::56:3',
-	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1776:13',
-	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1780:10',
-	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageContained::postMessageRequiredContained::2050:8',
-	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageRequiredContained::postMessageRequired::2060:10',
-	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postProtectedMessageWithRetry::postMessageRequiredContained::1713:13',
-	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postProtectedMessageWithRetry::postMessageRequiredContained::1717:10',
-	'src/host/sql/sqlEditorLifecycleCoordinator.ts::publishOwnerChangeWithRetry::postMessageRequiredContained::1790:13',
-	'src/host/sql/sqlEditorLifecycleCoordinator.ts::publishOwnerChangeWithRetry::postMessageRequiredContained::1801:27',
-	'src/host/sql/sqlEditorLifecycleCoordinator.ts::replayOwnerChange::postMessageRequiredContained::1830:14',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1806:13',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1810:10',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageContained::postMessageRequiredContained::2080:8',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageRequiredContained::postMessageRequired::2107:10',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postProtectedMessageWithRetry::postMessageRequiredContained::1718:13',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postProtectedMessageWithRetry::postMessageRequiredContained::1722:10',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postProtectedStsMessageWithRetry::postProtectedMessageWithRetry::1736:10',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postSqlStsMessageContained::postMessageContained::2097:3',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::publishOwnerChangeWithRetry::postMessageRequiredContained::1820:13',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::publishOwnerChangeWithRetry::postMessageRequiredContained::1831:27',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::replayOwnerChange::postMessageRequiredContained::1860:14',
 	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::deliverMessage::postMessage::146:31',
 	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::deliverTerminalMessage::postMessage::164:31',
 	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::postSqlConnectionMessageAllowed::postMessage::218:31',
@@ -1251,6 +1255,72 @@ describe('Message Protocol Contract', () => {
 		expect(router).not.toContain('message.schema as');
 	});
 
+	it('keeps SQL STS editor-language traffic on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/sqlStsEditorLanguageProtocol.ts',
+			'SqlStsEditorLanguageWebviewMessage',
+		)).toEqual(['stsConnect', 'stsDidChange', 'stsDidClose', 'stsDidOpen', 'stsRequest']);
+		expect(extractTypeDiscriminants(
+			'src/shared/sqlStsEditorLanguageProtocol.ts',
+			'SqlStsEditorLanguageHostMessage',
+		)).toEqual(['stsConnectionState', 'stsDiagnostics', 'stsResponse']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| SqlStsEditorLanguageWebviewMessage');
+		expect(webviewMessages).toContain('| SqlStsEditorLanguageWebviewMessage');
+		for (const type of ['stsRequest', 'stsDidOpen', 'stsDidChange', 'stsDidClose', 'stsConnect']) {
+			expect(hostTypes).not.toContain(`type: '${type}'`);
+			expect(webviewMessages).not.toContain(`type: '${type}'`);
+		}
+		expect(webviewMessages.indexOf('admitSqlStsEditorLanguageWebviewMessage(msg)'))
+			.toBeLessThan(webviewMessages.indexOf('const e2eCaptureHostMessage'));
+
+		const providers = readWorkspaceFile('src/webview/monaco/sql-sts-providers.ts');
+		expect(providers.indexOf('parseSqlStsEditorLanguageWebviewMessage({'))
+			.toBeLessThan(providers.indexOf('return session.requestSts<T>('));
+
+		const section = readWorkspaceFile('src/webview/sections/kw-sql-section.ts');
+		const openMethod = section.slice(
+			section.indexOf('private _openStsDocumentIfNeeded'),
+			section.indexOf('private _connectStsIfReady'),
+		);
+		expect(openMethod.indexOf('const message = admitSqlStsMessage({'))
+			.toBeLessThan(openMethod.indexOf('this.sqlSession.markStsDocumentOpened();'));
+		const connectMethod = section.slice(
+			section.indexOf('private _connectStsIfReady'),
+			section.indexOf('private _disposeEditor'),
+		);
+		expect(connectMethod.indexOf('const message = admitSqlStsMessage({'))
+			.toBeLessThan(connectMethod.indexOf('this._openStsDocumentIfNeeded()'));
+		expect(connectMethod.indexOf('const message = admitSqlStsMessage({'))
+			.toBeLessThan(connectMethod.indexOf('this.sqlSession.beginStsConnect(target)'));
+
+		const requestHandler = readWorkspaceFile('src/host/sqlEditorLifecycleApplicationHandler.ts');
+		expect(requestHandler.indexOf('admitSqlStsEditorLanguageWebviewMessage(message)'))
+			.toBeLessThan(requestHandler.indexOf('this.options.lifecycle.handleLanguageRequest('));
+
+		const coordinator = readWorkspaceFile('src/host/sql/sqlEditorLifecycleCoordinator.ts');
+		expect(coordinator).toContain('message: SqlStsEditorLanguageHostMessage');
+		expect(coordinator.indexOf('parseSqlStsEditorLanguageHostMessage(message)', coordinator.indexOf('private postSqlStsMessageContained')))
+			.toBeLessThan(coordinator.indexOf('this.postMessageContained(parsed.value', coordinator.indexOf('private postSqlStsMessageContained')));
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		expect(dispatcher.indexOf('admitSqlStsEditorLanguageHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf('routeSqlSectionMessage(message'));
+
+		const router = readWorkspaceFile('src/webview/core/sql-section-message-router.ts');
+		expect(router.indexOf('admitSqlStsEditorLanguageHostMessage(message)'))
+			.toBeLessThan(router.indexOf("case 'stsResponse':"));
+		expect(router.indexOf('admitSqlStsEditorLanguageHostMessage(message)'))
+			.toBeLessThan(router.indexOf('effects.handleStsResponse('));
+		expect(router.indexOf('admitSqlStsEditorLanguageHostMessage(message)'))
+			.toBeLessThan(router.indexOf('effects.handleStsDiagnostics('));
+		expect(router.indexOf('admitSqlStsEditorLanguageHostMessage(message)'))
+			.toBeLessThan(router.indexOf('section.setStsReady?.('));
+	});
+
 	it('keeps KQL language requests and responses on one runtime-validated shared channel', () => {
 		expect(extractTypeDiscriminants(
 			'src/shared/kqlLanguageProtocol.ts',
@@ -1578,6 +1648,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/pythonExecutionProtocol.ts', 'PythonExecutionWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/urlContentProtocol.ts', 'UrlContentWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/artifactCsvSaveProtocol.ts', 'ArtifactCsvSaveWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/sqlStsEditorLanguageProtocol.ts', 'SqlStsEditorLanguageWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1598,6 +1669,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/pythonExecutionProtocol.ts', 'PythonExecutionWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/urlContentProtocol.ts', 'UrlContentWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/artifactCsvSaveProtocol.ts', 'ArtifactCsvSaveWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/sqlStsEditorLanguageProtocol.ts', 'SqlStsEditorLanguageWebviewMessage'),
 			])].sort()
 		);
 	});

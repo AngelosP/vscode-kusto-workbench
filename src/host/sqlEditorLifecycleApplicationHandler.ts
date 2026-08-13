@@ -3,6 +3,10 @@ import * as vscode from 'vscode';
 import type { IncomingWebviewMessage } from './queryEditorTypes';
 import type { SqlEditorLifecycleCoordinator } from './sql/sqlEditorLifecycleCoordinator';
 import {
+	admitSqlStsEditorLanguageWebviewMessage,
+	type SqlStsEditorLanguageWebviewMessage,
+} from '../shared/sqlStsEditorLanguageProtocol';
+import {
 	clearSqlTokenOverride,
 	setSqlServerAccountMapEntry,
 	setSqlTokenOverride,
@@ -13,13 +17,8 @@ type SqlEditorLifecycleMessage = Extract<IncomingWebviewMessage, {
 		| 'sqlSectionOpen'
 		| 'retireSqlTarget'
 		| 'testSetSqlAuthOverride'
-		| 'testClearSqlAuthOverride'
-		| 'stsRequest'
-		| 'stsDidOpen'
-		| 'stsDidChange'
-		| 'stsDidClose'
-		| 'stsConnect';
-}>;
+		| 'testClearSqlAuthOverride';
+}> | SqlStsEditorLanguageWebviewMessage;
 
 type SqlEditorLifecycle = Pick<SqlEditorLifecycleCoordinator,
 	| 'openSection'
@@ -47,16 +46,16 @@ export class HostSqlEditorLifecycleApplicationHandler
 	constructor(private readonly options: SqlEditorLifecycleApplicationHandlerOptions) {}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
+		const stsAdmission = admitSqlStsEditorLanguageWebviewMessage(message);
+		if (stsAdmission.recognized) {
+			if (this.disposed || !stsAdmission.parsed.ok) return Promise.resolve();
+			return this.handleSqlEditorLifecycleMessage(stsAdmission.parsed.value);
+		}
 		switch (message.type) {
 			case 'sqlSectionOpen':
 			case 'retireSqlTarget':
 			case 'testSetSqlAuthOverride':
 			case 'testClearSqlAuthOverride':
-			case 'stsRequest':
-			case 'stsDidOpen':
-			case 'stsDidChange':
-			case 'stsDidClose':
-			case 'stsConnect':
 				if (this.disposed) return Promise.resolve();
 				return this.handleSqlEditorLifecycleMessage(message);
 			default:

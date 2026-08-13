@@ -3663,6 +3663,16 @@ describe('message-handler dispatch', () => {
 		sqlEl.getDatabase = vi.fn(() => 'Db');
 		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
 
+		dispatchHostMessage({ type: 'stsResponse', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, requestId: 'sts_1', result: { forged: true }, ownerToken: ['owner-1'], targetGeneration: 4 });
+		dispatchHostMessage({ type: 'stsDiagnostics', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, markers: null });
+		dispatchHostMessage({
+			type: 'stsConnectionState', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, state: 'ready', ownerToken: ['owner-1'], targetGeneration: 4,
+			connectionId: 'sql-a', database: 'Db',
+		});
+		expect(mocks.handleStsResponse).not.toHaveBeenCalled();
+		expect(mocks.handleStsDiagnostics).not.toHaveBeenCalled();
+		expect(sqlEl.setStsReady).not.toHaveBeenCalled();
+
 		dispatchHostMessage({ type: 'stsResponse', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, requestId: 'sts_1', result: { items: [] }, ownerToken: 'owner-1', targetGeneration: 4 });
 		dispatchHostMessage({ type: 'stsDiagnostics', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, markers: [{ message: 'before ready' }] });
 		dispatchHostMessage({ type: 'stsDiagnostics', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, markers: [] });

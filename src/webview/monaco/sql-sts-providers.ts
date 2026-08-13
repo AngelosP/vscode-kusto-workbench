@@ -10,6 +10,7 @@
 import { postMessageToHost } from '../shared/webview-messages.js';
 import { getSqlSectionSession } from '../core/sql-section-message-router.js';
 import { sqlSchemaByBoxId } from '../core/schema-catalogs.js';
+import { parseSqlStsEditorLanguageWebviewMessage } from '../../shared/sqlStsEditorLanguageProtocol.js';
 
 const _win = window as any;
 
@@ -31,8 +32,20 @@ function stsRequest<T>(
 	const boxId = String(params.boxId || '');
 	const session = getSqlSectionSession(boxId);
 	if (!session) return Promise.resolve(null);
+	const preflight = parseSqlStsEditorLanguageWebviewMessage({
+		type: 'stsRequest',
+		requestId: 'sts-preflight',
+		method,
+		params: {
+			...params,
+			sectionInstanceId: session.instanceId,
+			ownerToken: session.ownerToken,
+			targetGeneration: session.targetGeneration,
+		},
+	});
+	if (!preflight.ok) return Promise.resolve(null);
 	return session.requestSts<T>(method, params.line, params.column, timeoutMs, (requestId, owner) => {
-			postMessageToHost({
+		const request = parseSqlStsEditorLanguageWebviewMessage({
 				type: 'stsRequest',
 				requestId,
 				method,
@@ -41,11 +54,13 @@ function stsRequest<T>(
 					ownerToken: owner.ownerToken, targetGeneration: owner.targetGeneration,
 				},
 			});
+			if (!request.ok) throw new Error(request.error);
+			postMessageToHost(request.value);
 	});
 }
 
 /** Called from message-handler when an stsResponse arrives. */
-export function handleStsResponse(boxId: string, requestId: string, result: unknown, ownerToken?: string, targetGeneration?: number): void {
+export function handleStsResponse(boxId: string, requestId: string, result: unknown, ownerToken: string, targetGeneration: number): void {
 	getSqlSectionSession(boxId)?.resolveStsResponse(requestId, result, ownerToken, targetGeneration);
 }
 
@@ -70,7 +85,7 @@ function getBoxIdForModel(modelUri: string): string | null {
 // ── Diagnostics ────────────────────────────────────────────────────────────
 
 /** Called from message-handler when stsDiagnostics arrives. */
-export function handleStsDiagnostics(boxId: string, markers: any[]): void {
+export function handleStsDiagnostics(boxId: string, markers: object[]): void {
 	const monaco = _win.monaco;
 	if (!monaco?.editor) return;
 

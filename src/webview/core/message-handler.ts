@@ -57,6 +57,9 @@ import {
 import {
 	admitArtifactCsvSaveHostMessage,
 } from '../../shared/artifactCsvSaveProtocol.js';
+import {
+	admitSqlStsEditorLanguageHostMessage,
+} from '../../shared/sqlStsEditorLanguageProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -1488,7 +1491,14 @@ window.addEventListener(DOCUMENT_RUNTIME_INVALIDATED_EVENT, () => {
 });
 
 const __kustoDispatchHostMessage = async (message: any) => {
-	const artifactCsvSaveAdmission = admitArtifactCsvSaveHostMessage(message);
+	const stsEditorLanguageAdmission = admitSqlStsEditorLanguageHostMessage(message);
+	if (stsEditorLanguageAdmission.recognized) {
+		if (!stsEditorLanguageAdmission.parsed.ok) return;
+		message = stsEditorLanguageAdmission.parsed.value;
+	}
+	const artifactCsvSaveAdmission = stsEditorLanguageAdmission.recognized
+		? { recognized: false as const }
+		: admitArtifactCsvSaveHostMessage(message);
 	if (artifactCsvSaveAdmission.recognized) {
 		if (!artifactCsvSaveAdmission.parsed.ok) return;
 		message = artifactCsvSaveAdmission.parsed.value;

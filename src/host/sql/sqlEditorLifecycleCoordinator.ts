@@ -19,6 +19,11 @@ import { sanitizeStsLogText } from './stsLogSanitizer';
 import { StsLanguageService, type StsExpectedOwner } from './stsLanguageService';
 import type { StsProcessManager } from './stsProcessManager';
 import type { SqlWorkbenchService } from './sqlWorkbenchService';
+import {
+	parseSqlStsEditorLanguageHostMessage,
+	type SqlStsConnectionStateMessage,
+	type SqlStsEditorLanguageHostMessage,
+} from '../../shared/sqlStsEditorLanguageProtocol';
 
 export type SqlEditorLanguageService = Pick<StsLanguageService,
 	| 'onDiagnostics'
@@ -616,7 +621,7 @@ export class SqlEditorLifecycleCoordinator {
 			if (this.pendingLanguageRequestByKey.get(pendingRequestKey) === pendingRequest) {
 				this.pendingLanguageRequestByKey.delete(pendingRequestKey);
 			}
-			this.postMessageContained({
+			this.postSqlStsMessageContained({
 				type: 'stsResponse', boxId: params.boxId, sectionInstanceId: params.sectionInstanceId,
 				requestId, result, ownerToken, targetGeneration,
 			}, sessionEpoch, '[sts] Language response publication failed.');
@@ -1489,7 +1494,7 @@ export class SqlEditorLifecycleCoordinator {
 		boxId: string,
 		ticket: SqlProtectedPublicationTicket,
 	): Promise<void> {
-		await this.postProtectedMessageWithRetry(boxId, ticket, {
+		await this.postProtectedStsMessageWithRetry(boxId, ticket, {
 			type: 'stsConnectionState', boxId, sectionInstanceId: ticket.sectionInstanceId, state: 'error',
 			error: 'Unable to prepare isolated SQL execution. Reconnect and retry.',
 			targetGeneration: ticket.targetGeneration,
@@ -1542,7 +1547,7 @@ export class SqlEditorLifecycleCoordinator {
 			this.options.output.warn('[sql-lnt] Failed to prepare isolated SQL execution.');
 			if (!this.isProtectedPublicationCurrent(boxId, ticket)) return;
 			try {
-				await this.postProtectedMessageWithRetry(boxId, ticket, {
+				await this.postProtectedStsMessageWithRetry(boxId, ticket, {
 					type: 'stsConnectionState', boxId, sectionInstanceId, state: 'error',
 					error: 'Unable to prepare isolated SQL execution. Reconnect and retry.',
 					targetGeneration: ticket.targetGeneration,
@@ -1597,7 +1602,7 @@ export class SqlEditorLifecycleCoordinator {
 					if (!sqlResultOwnersEqual(this.ownership.getOwner(event.boxId), owner)) return;
 					const sectionInstanceId = this.sectionInstanceIdByBoxId.get(event.boxId);
 					if (!sectionInstanceId) return;
-					this.postMessageContained({
+					this.postSqlStsMessageContained({
 						type: 'stsDiagnostics', boxId: event.boxId, sectionInstanceId, markers: event.markers,
 					}, sessionEpoch, '[sts] Diagnostics publication failed.');
 				});
@@ -1717,6 +1722,25 @@ export class SqlEditorLifecycleCoordinator {
 		return this.postMessageRequiredContained(message, ticket.sessionEpoch, warning);
 	}
 
+	private async postProtectedStsMessageWithRetry(
+		boxId: string,
+		ticket: SqlProtectedPublicationTicket,
+		message: SqlStsConnectionStateMessage,
+		warning: string,
+	): Promise<boolean> {
+		const parsed = parseSqlStsEditorLanguageHostMessage(message);
+		if (!parsed.ok || parsed.value.type !== 'stsConnectionState') {
+			if (this.isSessionEpochCurrent(ticket.sessionEpoch)) this.options.output.warn(warning);
+			return false;
+		}
+		return this.postProtectedMessageWithRetry(
+			boxId,
+			ticket,
+			parsed.value as unknown as Record<string, unknown>,
+			warning,
+		);
+	}
+
 	private isCapturedTargetCurrent(target: SqlEditorTarget): boolean {
 		return this.ownership.isTargetCurrent(
 			target.boxId,
@@ -1769,15 +1793,21 @@ export class SqlEditorLifecycleCoordinator {
 	private async postConnectMessageWithRetry(
 		boxId: string,
 		attempt: SqlConnectAttempt,
-		message: Record<string, unknown>,
+		message: SqlStsConnectionStateMessage,
 		warning: string,
 	): Promise<boolean> {
+		const parsed = parseSqlStsEditorLanguageHostMessage(message);
+		if (!parsed.ok || parsed.value.type !== 'stsConnectionState') {
+			if (this.isSessionEpochCurrent(attempt.sessionEpoch)) this.options.output.warn(warning);
+			return false;
+		}
+		const delivery = parsed.value;
 		if (!this.isCurrentConnect(boxId, attempt)) return false;
-		if (await this.postMessageRequiredContained(message, attempt.sessionEpoch, warning)) return true;
+		if (await this.postMessageRequiredContained(delivery, attempt.sessionEpoch, warning)) return true;
 		if (!this.isCurrentConnect(boxId, attempt)) return false;
 		await new Promise<void>(resolve => setTimeout(resolve, 100));
 		if (!this.isCurrentConnect(boxId, attempt)) return false;
-		return this.postMessageRequiredContained(message, attempt.sessionEpoch, warning);
+		return this.postMessageRequiredContained(delivery, attempt.sessionEpoch, warning);
 	}
 
 	private async publishOwnerChangeWithRetry(
@@ -2048,6 +2078,23 @@ export class SqlEditorLifecycleCoordinator {
 		onFailure?: () => void,
 	): void {
 		void this.postMessageRequiredContained(message, sessionEpoch, warning, onFailure);
+	}
+
+	private postSqlStsMessageContained(
+		message: SqlStsEditorLanguageHostMessage,
+		sessionEpoch: number,
+		warning: string,
+		onFailure?: () => void,
+	): void {
+		const parsed = parseSqlStsEditorLanguageHostMessage(message);
+		if (!parsed.ok) {
+			if (this.isSessionEpochCurrent(sessionEpoch)) {
+				this.options.output.warn(warning);
+				onFailure?.();
+			}
+			return;
+		}
+		this.postMessageContained(parsed.value, sessionEpoch, warning, onFailure);
 	}
 
 	private async postMessageRequiredContained(

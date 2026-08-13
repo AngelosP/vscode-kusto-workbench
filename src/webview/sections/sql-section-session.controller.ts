@@ -441,10 +441,8 @@ export class SqlSectionSessionController implements ReactiveController, SqlSecti
 		});
 	}
 
-	resolveStsResponse(requestId: string, result: unknown, ownerToken?: string, targetGeneration?: number): boolean {
-		const responseOwner: SqlStsRequestOwner | undefined = ownerToken && Number.isSafeInteger(targetGeneration)
-			? { ownerToken: String(ownerToken), targetGeneration: Number(targetGeneration) }
-			: undefined;
+	resolveStsResponse(requestId: string, result: unknown, ownerToken: string, targetGeneration: number): boolean {
+		const responseOwner: SqlStsRequestOwner = { ownerToken, targetGeneration };
 		return this.stsRequests.resolve(requestId, result, responseOwner);
 	}
 

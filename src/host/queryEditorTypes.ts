@@ -13,6 +13,7 @@ import type { ResourceUriWebviewMessage } from '../shared/resourceUriProtocol';
 import type { UrlContentWebviewMessage } from '../shared/urlContentProtocol';
 import type { PythonExecutionWebviewMessage } from '../shared/pythonExecutionProtocol';
 import type { ArtifactCsvSaveWebviewMessage } from '../shared/artifactCsvSaveProtocol';
+import type { SqlStsEditorLanguageWebviewMessage } from '../shared/sqlStsEditorLanguageProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -310,15 +311,8 @@ export type IncomingWebviewMessage =
 	| CopyAdeLinkMessage
 	| ShareToClipboardMessage
 	| KustoSchemaWebviewMessage
-	| { type: 'stsRequest'; requestId: string; method: string; params: { boxId: string; sectionInstanceId: string; line: number; column: number; ownerToken?: string; targetGeneration?: number } }
-	| { type: 'stsDidOpen'; boxId: string; sectionInstanceId: string; text: string }
-	| { type: 'stsDidChange'; boxId: string; sectionInstanceId: string; text: string }
-	| { type: 'stsDidClose'; boxId: string; sectionInstanceId: string }
+	| SqlStsEditorLanguageWebviewMessage
 	| { type: 'sqlComparisonRemoved'; boxId: string; sourceBoxId?: string }
-	| {
-		type: 'stsConnect'; boxId: string; sectionInstanceId: string; sqlConnectionId: string; database: string; targetGeneration: number;
-		expectedOwner?: { connectionId: string; database: string; targetSignature: string; principalFingerprint: string; revocationGeneration: number };
-	}
 	| { type: 'promptAddConnection'; boxId?: string }
 	| { type: 'addConnection'; name: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }
 	| { type: 'testKustoConnection'; name?: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }

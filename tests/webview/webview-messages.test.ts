@@ -540,4 +540,48 @@ describe('postMessageToHost', () => {
 			delete (window as any).__e2eCaptureHostMessage;
 		}
 	});
+
+	it('snapshots valid SQL STS editor-language requests and rejects malformed ones before E2E capture', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const params = {
+				boxId: 'sql-1', sectionInstanceId: 'instance-1', line: 1, column: 2,
+				ownerToken: 'owner-1', targetGeneration: 0,
+			};
+			const request = {
+				type: 'stsRequest' as const, requestId: 'request-1',
+				method: 'textDocument/hover', params,
+			};
+			postMessageToHost(request);
+
+			expect(capture.mock.calls[0]?.[0]).toEqual(request);
+			expect(capture.mock.calls[0]?.[0]).not.toBe(request);
+			expect(capture.mock.calls[0]?.[0].params).toBe(params);
+			expect(postMessage.mock.calls[0]?.[0]).toEqual(request);
+			capture.mockClear();
+			postMessage.mockClear();
+
+			for (const malformed of [
+				{ ...request, params: { ...params, ownerToken: ['owner-1'] } },
+				{ ...request, params: { ...params, line: 0 } },
+				{ type: 'stsDidChange', boxId: 'sql-1', sectionInstanceId: 'instance-1', text: null },
+				{
+					type: 'stsConnect', boxId: 'sql-1', sectionInstanceId: 'instance-1',
+					sqlConnectionId: 'connection-1', database: 'Db', targetGeneration: 0,
+					expectedOwner: { connectionId: 'connection-1' },
+				},
+				Object.assign([], request),
+			]) {
+				postMessageToHost(malformed as unknown as Parameters<typeof postMessageToHost>[0]);
+			}
+
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
 });

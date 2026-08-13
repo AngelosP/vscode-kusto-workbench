@@ -10,6 +10,10 @@ import {
 	type SqlSchemaHostMessage,
 	type SqlSchemaPayload,
 } from '../../shared/sqlSchemaProtocol.js';
+import {
+	admitSqlStsEditorLanguageHostMessage,
+	type SqlStsEditorLanguageHostMessage,
+} from '../../shared/sqlStsEditorLanguageProtocol.js';
 
 export interface SqlSectionSessionTarget {
 	readonly boxId: string;
@@ -33,7 +37,7 @@ export interface SqlSectionSessionTarget {
 	acceptDatabaseResponse(requestId: string | undefined, generation: number): boolean;
 	completeDatabaseRequest(requestId: string): boolean;
 	admitOwnedMessage(message: { ownerToken?: unknown; executionId?: unknown; type?: unknown }): boolean;
-	resolveStsResponse(requestId: string, result: unknown, ownerToken?: string, targetGeneration?: number): boolean;
+	resolveStsResponse(requestId: string, result: unknown, ownerToken: string, targetGeneration: number): boolean;
 	clear(): void;
 }
 
@@ -61,8 +65,8 @@ export interface SqlSectionMessageRouterEffects {
 	setSchema(boxId: string, schema: SqlSchemaPayload): void;
 	updateDatabases(boxId: string, databases: string[], connectionId: string): void;
 	reportDatabasesError(boxId: string, error: string, connectionId: string): void;
-	handleStsResponse(boxId: string, requestId: string, result: unknown, ownerToken?: string, targetGeneration?: number): void;
-	handleStsDiagnostics(boxId: string, markers: unknown[]): void;
+	handleStsResponse(boxId: string, requestId: string, result: unknown, ownerToken: string, targetGeneration: number): void;
+	handleStsDiagnostics(boxId: string, markers: object[]): void;
 	clearPolicyBox(boxId: string): void;
 }
 
@@ -172,6 +176,13 @@ export function routeSqlSectionMessage(
 	message: Record<string, unknown>,
 	effects: SqlSectionMessageRouterEffects,
 ): SqlSectionMessageRouteResult {
+	let stsMessage: SqlStsEditorLanguageHostMessage | undefined;
+	const stsAdmission = admitSqlStsEditorLanguageHostMessage(message);
+	if (stsAdmission.recognized) {
+		if (!stsAdmission.parsed.ok) return 'rejected';
+		stsMessage = stsAdmission.parsed.value;
+		message = stsAdmission.parsed.value as unknown as Record<string, unknown>;
+	}
 	let databaseMessage: SqlDatabaseDiscoveryHostMessage | undefined;
 	if (isSqlDatabaseDiscoveryHostMessageType(message)) {
 		const parsed = parseSqlDatabaseDiscoveryHostMessage(message);
@@ -255,42 +266,46 @@ export function routeSqlSectionMessage(
 			return 'handled';
 		}
 		case 'stsResponse': {
+			const delivery = stsMessage!;
+			if (delivery.type !== 'stsResponse') return 'rejected';
 			if (!boxId) return 'rejected';
 			const { session } = getMessageTarget(boxId, effects);
-			if (!messageMatchesInstance(session, message)) return 'rejected';
+			if (!messageMatchesInstance(session, delivery)) return 'rejected';
 			effects.handleStsResponse(
 				boxId,
-				String(message.requestId || ''),
-				message.result,
-				typeof message.ownerToken === 'string' ? message.ownerToken : undefined,
-				typeof message.targetGeneration === 'number' ? message.targetGeneration : undefined,
+				delivery.requestId,
+				delivery.result,
+				delivery.ownerToken,
+				delivery.targetGeneration,
 			);
 			return 'handled';
 		}
 		case 'stsDiagnostics': {
+			const delivery = stsMessage!;
+			if (delivery.type !== 'stsDiagnostics') return 'rejected';
 			if (!boxId) return 'rejected';
 			const { session } = getMessageTarget(boxId, effects);
-			const markers = Array.isArray(message.markers) ? message.markers : [];
-			if (!messageMatchesInstance(session, message) || (!session.stsReady && markers.length > 0)) return 'rejected';
-			effects.handleStsDiagnostics(boxId, markers);
+			if (!messageMatchesInstance(session, delivery)
+				|| (!session.stsReady && delivery.markers.length > 0)) return 'rejected';
+			effects.handleStsDiagnostics(boxId, delivery.markers);
 			return 'handled';
 		}
 		case 'stsConnectionState': {
+			const delivery = stsMessage!;
+			if (delivery.type !== 'stsConnectionState') return 'rejected';
 			if (!boxId) return 'rejected';
 			const { section, session } = getMessageTarget(boxId, effects);
-			if (!section || !messageMatchesInstance(session, message)) return 'rejected';
-			if (message.targetGeneration !== undefined
-				&& session.targetGeneration !== Number(message.targetGeneration)) return 'rejected';
-			const state = String(message.state || '');
-			if (state === 'ready' && (
-				String(section.getConnectionId?.() ?? section.getSqlConnectionId?.() ?? '') !== String(message.connectionId || '')
-				|| String(section.getDatabase?.() || '') !== String(message.database || '')
+			if (!section || !messageMatchesInstance(session, delivery)) return 'rejected';
+			if (delivery.targetGeneration !== undefined
+				&& session.targetGeneration !== delivery.targetGeneration) return 'rejected';
+			if (delivery.state === 'ready' && (
+				String(section.getConnectionId?.() ?? section.getSqlConnectionId?.() ?? '') !== delivery.connectionId
+				|| String(section.getDatabase?.() || '') !== delivery.database
 			)) return 'rejected';
-			if (state === 'error') {
-				section.notifyStsConnectionError?.(String(message.error || 'SQL Tools Service connection failed.'));
+			if (delivery.state === 'error') {
+				section.notifyStsConnectionError?.(delivery.error || 'SQL Tools Service connection failed.');
 			} else {
-				const generation = typeof message.targetGeneration === 'number' ? message.targetGeneration : undefined;
-				section.setStsReady?.(state === 'ready', String(message.ownerToken || ''), generation);
+				section.setStsReady?.(true, delivery.ownerToken, delivery.targetGeneration);
 			}
 			return 'handled';
 		}

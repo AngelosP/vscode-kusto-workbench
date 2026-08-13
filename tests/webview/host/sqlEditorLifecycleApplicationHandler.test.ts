@@ -151,6 +151,31 @@ describe('HostSqlEditorLifecycleApplicationHandler', () => {
 		expect(lifecycle.connect.mock.calls[0][5]).toBe(expectedOwner);
 	});
 
+	it('claims malformed STS traffic before lifecycle effects', async () => {
+		const { handler, lifecycle } = createHandler();
+		const { messages } = createLifecycleMessages();
+		const request = messages[2];
+		const open = messages[3];
+		const connect = messages[6];
+
+		for (const malformed of [
+			{ ...request, params: { ...request.params, ownerToken: ['owner-token-exact'] } },
+			{ ...request, params: { ...request.params, line: 0 } },
+			{ ...open, text: null },
+			{ ...connect, expectedOwner: { ...connect.expectedOwner, revocationGeneration: '17' } },
+		]) {
+			await expect(handler.handleMessage(
+				malformed as unknown as IncomingWebviewMessage,
+			)).resolves.toBeUndefined();
+		}
+
+		expect(lifecycle.handleLanguageRequest).not.toHaveBeenCalled();
+		expect(lifecycle.didOpen).not.toHaveBeenCalled();
+		expect(lifecycle.didChange).not.toHaveBeenCalled();
+		expect(lifecycle.didClose).not.toHaveBeenCalled();
+		expect(lifecycle.connect).not.toHaveBeenCalled();
+	});
+
 	it('writes the development account map before the token override', async () => {
 		const { context, handler } = createHandler();
 		const accountWrite = deferred<void>();

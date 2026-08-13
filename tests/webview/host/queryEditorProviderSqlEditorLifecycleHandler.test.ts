@@ -265,6 +265,7 @@ describe('QueryEditorProvider SQL editor lifecycle application', () => {
 		const lifecycleSource = readSource('src/host/sql/sqlEditorLifecycleCoordinator.ts');
 		const authSource = readSource('src/host/sql/sqlAuthState.ts');
 		const typesSource = readSource('src/host/queryEditorTypes.ts');
+		const protocolSource = readSource('src/shared/sqlStsEditorLanguageProtocol.ts');
 		const routes = [
 			'sqlSectionOpen',
 			'retireSqlTarget',
@@ -280,8 +281,11 @@ describe('QueryEditorProvider SQL editor lifecycle application', () => {
 		for (const route of routes) {
 			expect(providerSource).not.toContain(`case '${route}':`);
 			expect(handlerSource).toContain(`case '${route}':`);
-			expect(typesSource).toContain(`type: '${route}'`);
+			if (route.startsWith('sts')) expect(protocolSource).toContain(`type: '${route}'`);
+			else expect(typesSource).toContain(`type: '${route}'`);
 		}
+		expect(typesSource).toContain('| SqlStsEditorLanguageWebviewMessage');
+		expect(typesSource).not.toContain("type: 'stsRequest'");
 		expect(providerSource.match(/^\s*case '/gm) ?? []).toHaveLength(0);
 		expect(providerSource).not.toContain("case 'prefetchSchema':");
 		expect(providerSource).not.toContain("case 'requestCrossClusterSchema':");

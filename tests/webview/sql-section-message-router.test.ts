@@ -8,6 +8,7 @@ import {
 	type SqlSectionMessageRouterEffects,
 	type SqlSectionSessionTarget,
 } from '../../src/webview/core/sql-section-message-router.js';
+import { SqlStsRequestCoordinator } from '../../src/webview/monaco/sql-sts-request-coordinator.js';
 
 function createTarget(boxId = 'sql-1'): SqlSectionSessionTarget {
 	let generation = 0;
@@ -230,6 +231,100 @@ describe('routeSqlSectionMessage', () => {
 			ownerToken: 'owner-a', targetGeneration: 2,
 		}, effects)).toBe('handled');
 		expect(effects.handleStsResponse).toHaveBeenCalledWith('sql-1', 'sts-1', { items: [] }, 'owner-a', 2);
+	});
+
+	it('leaves the exact STS resolver and timer pending after malformed matching ownership', async () => {
+		const target = createTarget();
+		target.adoptHostGeneration(1);
+		registerSqlSectionSession(target);
+		const { effects } = createEffects(target);
+		const coordinator = new SqlStsRequestCoordinator();
+		const owner = { ownerToken: 'owner-a', targetGeneration: 1 };
+		coordinator.setOwner('sql-1', owner);
+		let requestId = '';
+		const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+		const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+		const request = coordinator.request('sql-1', 60_000, id => { requestId = id; });
+		const timer = setTimeoutSpy.mock.results.at(-1)?.value;
+		const settled = vi.fn();
+		void request.then(settled);
+		(effects.handleStsResponse as ReturnType<typeof vi.fn>).mockImplementation(
+			(_boxId: string, responseRequestId: string, result: unknown, ownerToken: string, targetGeneration: number) => {
+				const responseOwner = { ownerToken, targetGeneration };
+				coordinator.resolve(responseRequestId, result, responseOwner);
+			},
+		);
+
+		try {
+			const malformedRoute = routeSqlSectionMessage({
+				type: 'stsResponse', boxId: 'sql-1', sectionInstanceId: target.instanceId,
+				requestId, result: { forged: true }, ownerToken: ['owner-a'], targetGeneration: 1,
+			}, effects);
+			await Promise.resolve();
+
+			expect(malformedRoute).toBe('rejected');
+			expect(settled).not.toHaveBeenCalled();
+			expect(clearTimeoutSpy).not.toHaveBeenCalled();
+
+			const canonicalResult = { items: [{ label: 'canonical' }] };
+			expect(routeSqlSectionMessage({
+				type: 'stsResponse', boxId: 'sql-1', sectionInstanceId: target.instanceId,
+				requestId, result: canonicalResult, ownerToken: 'owner-a', targetGeneration: 1,
+			}, effects)).toBe('handled');
+			await expect(request).resolves.toBe(canonicalResult);
+			expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
+			expect(clearTimeoutSpy).toHaveBeenCalledWith(timer);
+		} finally {
+			coordinator.clearBox('sql-1');
+			setTimeoutSpy.mockRestore();
+			clearTimeoutSpy.mockRestore();
+		}
+	});
+
+	it('rejects malformed diagnostics and connection state before SQL state effects', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		const { effects } = createEffects(target);
+		const section = effects.getSection('sql-1') as {
+			setStsReady: ReturnType<typeof vi.fn>;
+			notifyStsConnectionError?: ReturnType<typeof vi.fn>;
+		};
+		section.notifyStsConnectionError = vi.fn();
+
+		for (const malformed of [
+			{ type: 'stsDiagnostics', boxId: 'sql-1', sectionInstanceId: target.instanceId, markers: null },
+			{ type: 'stsDiagnostics', boxId: 'sql-1', sectionInstanceId: target.instanceId, markers: [42] },
+			{
+				type: 'stsConnectionState', boxId: 'sql-1', sectionInstanceId: target.instanceId,
+				state: 'ready', ownerToken: ['owner-a'], connectionId: 'sql-a', database: 'Db', targetGeneration: 0,
+			},
+			{
+				type: 'stsConnectionState', boxId: 'sql-1', sectionInstanceId: target.instanceId,
+				state: 'error', error: ['failed'],
+			},
+		]) {
+			expect(routeSqlSectionMessage(malformed as Record<string, unknown>, effects)).toBe('rejected');
+		}
+
+		expect(effects.handleStsDiagnostics).not.toHaveBeenCalled();
+		expect(section.setStsReady).not.toHaveBeenCalled();
+		expect(section.notifyStsConnectionError).not.toHaveBeenCalled();
+
+		expect(routeSqlSectionMessage({
+			type: 'stsDiagnostics', boxId: 'sql-1', sectionInstanceId: target.instanceId, markers: [],
+		}, effects)).toBe('handled');
+		expect(routeSqlSectionMessage({
+			type: 'stsConnectionState', boxId: 'sql-1', sectionInstanceId: target.instanceId,
+			state: 'ready', ownerToken: 'owner-a', connectionId: 'sql-a', database: 'Db', targetGeneration: 0,
+		}, effects)).toBe('handled');
+		expect(routeSqlSectionMessage({
+			type: 'stsConnectionState', boxId: 'sql-1', sectionInstanceId: target.instanceId,
+			state: 'error', error: '',
+		}, effects)).toBe('handled');
+
+		expect(effects.handleStsDiagnostics).toHaveBeenCalledOnce();
+		expect(section.setStsReady).toHaveBeenCalledWith(true, 'owner-a', 0);
+		expect(section.notifyStsConnectionError).toHaveBeenCalledWith('SQL Tools Service connection failed.');
 	});
 
 	it('rejects metadata from a retired section instance', () => {

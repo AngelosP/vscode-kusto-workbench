@@ -67,6 +67,10 @@ import {
 	admitArtifactCsvSaveWebviewMessage,
 	type ArtifactCsvSaveWebviewMessage,
 } from '../../shared/artifactCsvSaveProtocol.js';
+import {
+	admitSqlStsEditorLanguageWebviewMessage,
+	type SqlStsEditorLanguageWebviewMessage,
+} from '../../shared/sqlStsEditorLanguageProtocol.js';
 import { pState } from './persistence-state.js';
 
 let compatibilityDocumentRequestSequence = 0;
@@ -287,15 +291,8 @@ export type OutgoingWebviewMessage =
 
 	// Schema
 	| KustoSchemaWebviewMessage
-	| { type: 'stsRequest'; requestId: string; method: string; params: { boxId: string; sectionInstanceId: string; line: number; column: number; ownerToken?: string; targetGeneration?: number } }
-	| { type: 'stsDidOpen'; boxId: string; sectionInstanceId: string; text: string }
-	| { type: 'stsDidChange'; boxId: string; sectionInstanceId: string; text: string }
-	| { type: 'stsDidClose'; boxId: string; sectionInstanceId: string }
+	| SqlStsEditorLanguageWebviewMessage
 	| { type: 'sqlComparisonRemoved'; boxId: string; sourceBoxId?: string }
-	| {
-		type: 'stsConnect'; boxId: string; sectionInstanceId: string; sqlConnectionId: string; database: string; targetGeneration: number;
-		expectedOwner?: { connectionId: string; database: string; targetSignature: string; principalFingerprint: string; revocationGeneration: number };
-	}
 	| KqlLanguageWebviewMessage
 	| ControlCommandSyntaxWebviewMessage
 
@@ -347,14 +344,24 @@ export type OutgoingWebviewMessage =
  */
 export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage | CompatibilityPersistenceWebviewMessage = msg;
-	const artifactCsvSaveAdmission = admitArtifactCsvSaveWebviewMessage(msg);
-	const pythonExecutionAdmission = artifactCsvSaveAdmission.recognized
+	const stsEditorLanguageAdmission = admitSqlStsEditorLanguageWebviewMessage(msg);
+	const artifactCsvSaveAdmission = stsEditorLanguageAdmission.recognized
+		? { recognized: false as const }
+		: admitArtifactCsvSaveWebviewMessage(msg);
+	const pythonExecutionAdmission = stsEditorLanguageAdmission.recognized || artifactCsvSaveAdmission.recognized
 		? { recognized: false as const }
 		: admitPythonExecutionWebviewMessage(msg);
-	const urlContentAdmission = artifactCsvSaveAdmission.recognized || pythonExecutionAdmission.recognized
+	const urlContentAdmission = stsEditorLanguageAdmission.recognized
+		|| artifactCsvSaveAdmission.recognized || pythonExecutionAdmission.recognized
 		? { recognized: false as const }
 		: admitUrlContentWebviewMessage(msg);
-	if (artifactCsvSaveAdmission.recognized) {
+	if (stsEditorLanguageAdmission.recognized) {
+		if (!stsEditorLanguageAdmission.parsed.ok) {
+			console.error('[kusto] Rejected invalid SQL STS editor-language webview message:', stsEditorLanguageAdmission.parsed.error);
+			return;
+		}
+		outbound = stsEditorLanguageAdmission.parsed.value;
+	} else if (artifactCsvSaveAdmission.recognized) {
 		if (!artifactCsvSaveAdmission.parsed.ok) {
 			console.error('[kusto] Rejected invalid artifact CSV save webview message:', artifactCsvSaveAdmission.parsed.error);
 			return;

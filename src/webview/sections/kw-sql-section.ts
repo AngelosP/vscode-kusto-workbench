@@ -59,9 +59,22 @@ import {
 	saveArtifactCsv,
 } from '../shared/artifact-csv-export.js';
 import { SqlSectionSessionController, type SqlToolRunResult } from './sql-section-session.controller.js';
+import {
+	parseSqlStsEditorLanguageWebviewMessage,
+	type SqlStsEditorLanguageWebviewMessage,
+} from '../../shared/sqlStsEditorLanguageProtocol.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 const SQL_LEAVE_NO_TRACE_PENDING = 'Preparing isolated Leave No Trace execution. Try again shortly.';
+
+function admitSqlStsMessage(
+	message: SqlStsEditorLanguageWebviewMessage,
+): SqlStsEditorLanguageWebviewMessage | undefined {
+	const parsed = parseSqlStsEditorLanguageWebviewMessage(message);
+	if (parsed.ok) return parsed.value;
+	console.error('[kusto] Rejected invalid local SQL STS editor-language message:', parsed.error);
+	return undefined;
+}
 
 /** Serialized shape for .kqlx persistence — must match KqlxSectionV1 sql variant. */
 export interface SqlSectionData {
@@ -1171,10 +1184,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			if (this._stsDocumentOpened) {
 				try {
-					postMessageToHost({
+					const message = admitSqlStsMessage({
 						type: 'stsDidChange', boxId: this.boxId,
 						sectionInstanceId: this.sqlSession.instanceId, text: editor.getValue(),
-					} as any);
+					});
+					if (message) postMessageToHost(message);
 				} catch (e) { console.error('[kusto]', e); }
 			}
 			try { this._maybeAutoTriggerAutocomplete(changeEvt); } catch (err) { console.error('[kusto]', err); }
@@ -1268,10 +1282,12 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		try {
 			const text = this._editor.getValue();
 			console.log(`[sts-diag] stsDidOpen boxId=${this.boxId} textLen=${text.length}`);
-			postMessageToHost({
+			const message = admitSqlStsMessage({
 				type: 'stsDidOpen', boxId: this.boxId,
 				sectionInstanceId: this.sqlSession.instanceId, text,
-			} as any);
+			});
+			if (!message) return false;
+			postMessageToHost(message);
 			this.sqlSession.markStsDocumentOpened();
 			return true;
 		} catch (e) {
@@ -1286,15 +1302,17 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			if (this._stsReady) this.sqlSession.setStsReady(false);
 			if (!this._sqlConnectionId || !this._database) return;
 			const target = `${this._connectionTargetSignature(this._sqlConnectionId)}\n${this._database}`;
-			if (!this.sqlSession.beginStsConnect(target)) return;
-			postMessageToHost({
+			const message = admitSqlStsMessage({
 				type: 'stsConnect',
 				boxId: this.boxId,
 				sectionInstanceId: this.sqlSession.instanceId,
 				sqlConnectionId: this._sqlConnectionId,
 				database: this._database,
 				targetGeneration: this.sqlSession.targetGeneration,
-			} as any);
+			});
+			if (!message) return;
+			if (!this.sqlSession.beginStsConnect(target)) return;
+			postMessageToHost(message);
 			return;
 		}
 		if (!this._sqlConnectionId || !this._database) {
@@ -1310,19 +1328,21 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			console.log(`[sts-diag] stsConnect SKIPPED (${reason}, restore) boxId=${this.boxId} connId=${this._sqlConnectionId} db=${this._database}`);
 			return;
 		}
+		const message = admitSqlStsMessage({
+			type: 'stsConnect',
+			boxId: this.boxId,
+			sectionInstanceId: this.sqlSession.instanceId,
+			sqlConnectionId: this._sqlConnectionId,
+			database: this._database,
+			targetGeneration: this.sqlSession.targetGeneration,
+			...(this.sqlSession.toolExpectedOwner ? { expectedOwner: this.sqlSession.toolExpectedOwner } : {}),
+		});
+		if (!message) return;
 		if (!this._openStsDocumentIfNeeded()) return;
 		if (!this.sqlSession.beginStsConnect(target)) return;
 		console.log(`[sts-diag] stsConnect (${reason}) boxId=${this.boxId} connId=${this._sqlConnectionId} db=${this._database}`);
 		try {
-			postMessageToHost({
-				type: 'stsConnect',
-				boxId: this.boxId,
-				sectionInstanceId: this.sqlSession.instanceId,
-				sqlConnectionId: this._sqlConnectionId,
-				database: this._database,
-				targetGeneration: this.sqlSession.targetGeneration,
-				...(this.sqlSession.toolExpectedOwner ? { expectedOwner: this.sqlSession.toolExpectedOwner } : {}),
-			} as any);
+			postMessageToHost(message);
 		} catch (e) {
 			this.sqlSession.failStsConnectStart();
 			console.error('[kusto]', e);
@@ -1330,14 +1350,15 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	}
 
 	private _disposeEditor(): void {
+		const closeMessage = admitSqlStsMessage({
+			type: 'stsDidClose', boxId: this.boxId, sectionInstanceId: this.sqlSession.instanceId,
+		});
 		this.sqlSession.rejectPendingToolRun(new Error('SQL editor closed during tool execution.'));
 		this.sqlSession.setStsReady(false);
 		try {
-			postMessageToHost({
-				type: 'stsDidClose', boxId: this.boxId, sectionInstanceId: this.sqlSession.instanceId,
-			} as any);
+			if (closeMessage) postMessageToHost(closeMessage);
 		} catch { /* ignore */ }
-		if (this._stsDocumentOpened) this.sqlSession.markStsDocumentClosed();
+		if (closeMessage && this._stsDocumentOpened) this.sqlSession.markStsDocumentClosed();
 
 		// Unregister model URI mapping and shared editor maps.
 		if (this._editor) {
