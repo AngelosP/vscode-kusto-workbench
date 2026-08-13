@@ -9,8 +9,14 @@ export interface ImportedCsvSaveApplicationHandler {
 	dispose(): void;
 }
 
+export type ImportedCsvSaveApplicationHandlerOptions = {
+	showSaveDialog?: (options: vscode.SaveDialogOptions) => Thenable<vscode.Uri | undefined>;
+};
+
 export class HostImportedCsvSaveApplicationHandler implements ImportedCsvSaveApplicationHandler {
 	private disposed = false;
+
+	constructor(private readonly options: ImportedCsvSaveApplicationHandlerOptions = {}) {}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
 		if (message.type !== 'saveImportedCsv') return undefined;
@@ -32,7 +38,7 @@ export class HostImportedCsvSaveApplicationHandler implements ImportedCsvSaveApp
 
 			const suggestedFileName = String(message.suggestedFileName || 'kusto-results.csv') || 'kusto-results.csv';
 			const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(os.homedir());
-			const picked = await vscode.window.showSaveDialog({
+			const picked = await (this.options.showSaveDialog ?? vscode.window.showSaveDialog)({
 				defaultUri: vscode.Uri.joinPath(baseDir, suggestedFileName),
 				filters: { CSV: ['csv'] },
 			});

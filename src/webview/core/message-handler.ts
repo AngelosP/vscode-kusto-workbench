@@ -1,5 +1,6 @@
 let kustoAuthIdentityInvalidated = false;
 let latestConnectionsRevision = 0;
+let applyingConnectionsData = false;
 // Message handler — extracted from main.ts
 // Dispatches incoming postMessage from the extension host to the right module.
 import { pState } from '../shared/persistence-state';
@@ -64,6 +65,11 @@ import {
 	admitSqlConnectionsProjectionHostMessage,
 	captureSqlConnectionsProjectionHostMessage,
 } from '../../shared/sqlConnectionsProjectionProtocol.js';
+import {
+	admitKustoConnectionsProjectionHostMessage,
+	captureKustoConnectionsProjectionHostMessage,
+} from '../../shared/kustoConnectionsProjectionProtocol.js';
+import { captureRuntimeMessageEnvelope } from '../../shared/runtimeMessageEnvelope.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -121,7 +127,11 @@ import {
 } from '../sections/kw-transformation-section';
 
 import { setRunMode } from '../sections/kw-query-toolbar';
-import { applyEditingPreferencesData } from './editing-preferences.js';
+import {
+	applyEditingPreferencesData,
+	captureEditingPreferencesRuntime,
+	restoreEditingPreferencesRuntime,
+} from './editing-preferences.js';
 import {
 	executeKustoComparisonPair, executeQuery, setQueryExecuting, __kustoSetResultsVisible,
 	__kustoSetLinkedOptimizationMode, displayComparisonSummary,
@@ -138,6 +148,9 @@ import {
 	resolvePendingKustoResultRestores,
 	discardPendingSqlResultRestores,
 	applyKustoLeaveNoTracePolicy,
+	beginKustoLeaveNoTracePolicyApplication,
+	captureKustoLeaveNoTracePolicyRuntime,
+	restoreKustoLeaveNoTracePolicyRuntime,
 	isDocumentMutationAllowed,
 	finalizeDocumentDefaultsAfterAcknowledgement,
 	DOCUMENT_RUNTIME_INVALIDATED_EVENT,
@@ -165,7 +178,9 @@ import { routeSqlSectionMessage } from './sql-section-message-router.js';
 import {
 	activeQueryEditorBoxId,
 	connections, setConnections, setLastConnectionId, setLastDatabase,
-	kustoFavorites, setKustoFavorites, setLeaveNoTraceClusters,
+	lastConnectionId, lastDatabase,
+	kustoFavorites, setKustoFavorites, leaveNoTraceClusters, setLeaveNoTraceClusters,
+	caretDocsEnabled, autoTriggerAutocompleteEnabled, copilotInlineCompletionsEnabled,
 	queryEditors, cachedDatabases, optimizationMetadataByBoxId,
 	queryBoxes,
 	schemaByConnDb,
@@ -317,6 +332,96 @@ function replaceSqlCachedDatabases(value: Record<string, string[]>): void {
 			value: descriptor.value, enumerable: true, configurable: true, writable: true,
 		});
 	}
+}
+
+function replaceKustoCachedDatabases(value: Record<string, string[]>): void {
+	for (const key of Object.keys(cachedDatabases)) delete cachedDatabases[key];
+	for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+		if (!descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) continue;
+		Object.defineProperty(cachedDatabases, key, {
+			value: descriptor.value, enumerable: true, configurable: true, writable: true,
+		});
+	}
+}
+
+type KustoConnectionsApplicationSnapshot = Readonly<{
+	accountsHadOwnValue: boolean;
+	accounts: unknown;
+	connections: typeof connections;
+	lastConnectionId: typeof lastConnectionId;
+	lastDatabase: typeof lastDatabase;
+	cachedDatabases: Record<string, unknown>;
+	favorites: typeof kustoFavorites;
+	leaveNoTraceClusters: typeof leaveNoTraceClusters;
+	devNotesEnabledHadOwnValue: boolean;
+	devNotesEnabled: unknown;
+	copilotChatFirstTimeDismissed: boolean;
+	preferences: ReturnType<typeof captureEditingPreferencesRuntime>;
+	leaveNoTracePolicy: ReturnType<typeof captureKustoLeaveNoTracePolicyRuntime>;
+}>;
+
+function captureOwnWindowValue(key: string): Readonly<{ hadOwnValue: boolean; value: unknown }> {
+	const descriptor = Object.getOwnPropertyDescriptor(window, key);
+	return {
+		hadOwnValue: !!descriptor,
+		value: descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+			? descriptor.value
+			: undefined,
+	};
+}
+
+function restoreOwnWindowValue(key: string, hadOwnValue: boolean, value: unknown): void {
+	if (!hadOwnValue) {
+		delete (window as unknown as Record<string, unknown>)[key];
+		return;
+	}
+	Object.defineProperty(window, key, {
+		value,
+		enumerable: true,
+		configurable: true,
+		writable: true,
+	});
+}
+
+function captureKustoConnectionsApplicationSnapshot(): KustoConnectionsApplicationSnapshot {
+	const accounts = captureOwnWindowValue('__kustoAccounts');
+	const devNotesEnabled = captureOwnWindowValue('__kustoDevNotesEnabled');
+	const cached = Object.create(null) as Record<string, unknown>;
+	Object.defineProperties(cached, Object.getOwnPropertyDescriptors(cachedDatabases));
+	return {
+		accountsHadOwnValue: accounts.hadOwnValue,
+		accounts: accounts.value,
+		connections: connections.slice(),
+		lastConnectionId,
+		lastDatabase,
+		cachedDatabases: cached,
+		favorites: kustoFavorites.slice(),
+		leaveNoTraceClusters: leaveNoTraceClusters.slice(),
+		devNotesEnabledHadOwnValue: devNotesEnabled.hadOwnValue,
+		devNotesEnabled: devNotesEnabled.value,
+		copilotChatFirstTimeDismissed: !!pState.copilotChatFirstTimeDismissed,
+		preferences: captureEditingPreferencesRuntime(),
+		leaveNoTracePolicy: captureKustoLeaveNoTracePolicyRuntime(),
+	};
+}
+
+function restoreKustoConnectionsApplicationSnapshot(snapshot: KustoConnectionsApplicationSnapshot): void {
+	restoreOwnWindowValue('__kustoAccounts', snapshot.accountsHadOwnValue, snapshot.accounts);
+	setConnections(snapshot.connections);
+	setLastConnectionId(snapshot.lastConnectionId);
+	setLastDatabase(snapshot.lastDatabase);
+	replaceKustoCachedDatabases(snapshot.cachedDatabases as Record<string, string[]>);
+	setKustoFavorites(snapshot.favorites);
+	setLeaveNoTraceClusters(snapshot.leaveNoTraceClusters);
+	restoreOwnWindowValue(
+		'__kustoDevNotesEnabled',
+		snapshot.devNotesEnabledHadOwnValue,
+		snapshot.devNotesEnabled,
+	);
+	pState.copilotChatFirstTimeDismissed = snapshot.copilotChatFirstTimeDismissed;
+	restoreKustoLeaveNoTracePolicyRuntime(snapshot.leaveNoTracePolicy);
+	restoreEditingPreferencesRuntime(snapshot.preferences);
+	try { window.connections = connections; } catch (error) { console.error('[kusto]', error); }
 }
 
 function resolveToolKustoConnection(input: any): { connection?: any; error?: string } {
@@ -888,8 +993,52 @@ const kustoOptimizeOutputMessageTypes = new Set([
 ]);
 const ADMITTED_KUSTO_TERMINAL_EVENT = 'kusto-workbench-query-terminal';
 const ADMITTED_KUSTO_EXECUTION_STARTED_EVENT = 'kusto-workbench-query-started';
-const stagedKustoPublications = new Map<string, { payload: any; deadline: number; timer: ReturnType<typeof setTimeout> }>();
+const stagedKustoPublications = new Map<string, { payload: unknown; deadline: number; timer: ReturnType<typeof setTimeout> }>();
 const completedKustoPublications = new Map<string, { accepted: boolean; timer: ReturnType<typeof setTimeout> }>();
+
+type StagedKustoPayloadCapture =
+	| Readonly<{ ok: true; value: Record<string, unknown> }>
+	| Readonly<{ ok: false }>;
+
+function captureStagedKustoPayload(input: unknown): StagedKustoPayloadCapture {
+	if (!input || typeof input !== 'object') return { ok: false };
+	try {
+		if (Array.isArray(input)) return { ok: false };
+		const descriptors = Object.getOwnPropertyDescriptors(input);
+		const captured: Record<string, unknown> = {};
+		for (const key of Reflect.ownKeys(descriptors)) {
+			const descriptor = Reflect.get(descriptors, key) as PropertyDescriptor;
+			if (!descriptor.enumerable) continue;
+			if (typeof key !== 'string' || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+				return { ok: false };
+			}
+			Object.defineProperty(captured, key, {
+				value: descriptor.value,
+				enumerable: true,
+				configurable: true,
+				writable: true,
+			});
+		}
+		return { ok: true, value: captured };
+	} catch {
+		return { ok: false };
+	}
+}
+
+function attachKustoPublicationId(
+	payload: Record<string, unknown>,
+	publicationId: string,
+): Record<string, unknown> {
+	const message = Object.create(null) as Record<string, unknown>;
+	Object.defineProperties(message, Object.getOwnPropertyDescriptors(payload));
+	Object.defineProperty(message, 'publicationId', {
+		value: publicationId,
+		enumerable: true,
+		configurable: true,
+		writable: true,
+	});
+	return message;
+}
 
 function matchesPendingKustoToolExecution(identity: KustoExecutionRequestIdentity): boolean {
 	for (const owner of kustoToolExecutionOwnerByRequestId.values()) {
@@ -1505,7 +1654,19 @@ window.addEventListener(DOCUMENT_RUNTIME_INVALIDATED_EVENT, () => {
 });
 
 const __kustoDispatchHostMessage = async (message: any) => {
-	const sqlConnectionsProjectionAdmission = admitSqlConnectionsProjectionHostMessage(message);
+	const envelope = captureRuntimeMessageEnvelope(message);
+	if (!envelope.ok) return;
+	message = envelope.value;
+	const kustoConnectionsProjectionAdmission = admitKustoConnectionsProjectionHostMessage(message);
+	if (kustoConnectionsProjectionAdmission.recognized) {
+		if (!kustoConnectionsProjectionAdmission.parsed.ok) return;
+		const captured = captureKustoConnectionsProjectionHostMessage(kustoConnectionsProjectionAdmission.parsed.value);
+		if (!captured.ok) return;
+		message = captured.value;
+	}
+	const sqlConnectionsProjectionAdmission = kustoConnectionsProjectionAdmission.recognized
+		? { recognized: false as const }
+		: admitSqlConnectionsProjectionHostMessage(message);
 	if (sqlConnectionsProjectionAdmission.recognized) {
 		if (!sqlConnectionsProjectionAdmission.parsed.ok) return;
 		const captured = captureSqlConnectionsProjectionHostMessage(sqlConnectionsProjectionAdmission.parsed.value);
@@ -1696,13 +1857,32 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			acknowledgeKustoPublication(message, false, 'staged');
 			return;
 		}
+		const stablePayload = captureStagedKustoPayload(message.payload);
+		if (!stablePayload.ok) {
+			acknowledgeKustoPublication(message, false, 'staged');
+			return;
+		}
+		let payload: Record<string, unknown> = stablePayload.value;
+		const connectionsAdmission = admitKustoConnectionsProjectionHostMessage(payload);
+		if (connectionsAdmission.recognized) {
+			if (!connectionsAdmission.parsed.ok) {
+				acknowledgeKustoPublication(message, false, 'staged');
+				return;
+			}
+			const captured = captureKustoConnectionsProjectionHostMessage(connectionsAdmission.parsed.value);
+			if (!captured.ok) {
+				acknowledgeKustoPublication(message, false, 'staged');
+				return;
+			}
+			payload = captured.value;
+		}
 		const previous = stagedKustoPublications.get(publicationId);
 		if (previous) clearTimeout(previous.timer);
 		const timer = setTimeout(() => {
 			if (!stagedKustoPublications.delete(publicationId)) return;
 			postMessageToHost({ type: 'kustoPublicationAck', publicationId, phase: 'applied', accepted: false });
 		}, Math.max(0, deadline - Date.now()));
-		stagedKustoPublications.set(publicationId, { payload: message.payload, deadline, timer });
+		stagedKustoPublications.set(publicationId, { payload, deadline, timer });
 		acknowledgeKustoPublication(message, true, 'staged');
 		return;
 	}
@@ -1715,7 +1895,26 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			acknowledgeKustoPublication(message, false, 'applied');
 			return;
 		}
-		message = { ...(staged.payload || {}), publicationId };
+		const stablePayload = captureStagedKustoPayload(staged.payload);
+		if (!stablePayload.ok) {
+			acknowledgeKustoPublication(message, false, 'applied');
+			return;
+		}
+		let payload: Record<string, unknown> = stablePayload.value;
+		const connectionsAdmission = admitKustoConnectionsProjectionHostMessage(payload);
+		if (connectionsAdmission.recognized) {
+			if (!connectionsAdmission.parsed.ok) {
+				acknowledgeKustoPublication(message, false, 'applied');
+				return;
+			}
+			const captured = captureKustoConnectionsProjectionHostMessage(connectionsAdmission.parsed.value);
+			if (!captured.ok) {
+				acknowledgeKustoPublication(message, false, 'applied');
+				return;
+			}
+			payload = captured.value;
+		}
+		message = attachKustoPublicationId(payload, publicationId);
 	}
 	if (message.type === 'kustoPublicationRevoke') {
 		const publicationId = String(message.publicationId || '').trim();
@@ -2115,107 +2314,139 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'connectionsData':
-			if (typeof message.connectionsRevision === 'number') {
-				if (message.connectionsRevision < latestConnectionsRevision) { acknowledgeKustoPublication(message, false); break; }
-				latestConnectionsRevision = message.connectionsRevision;
-			}
-			try { (window as any).__kustoAccounts = Array.isArray(message.accounts) ? message.accounts : []; } catch (e) { console.error('[kusto]', e); }
-			applyEditingPreferencesData({
-				type: 'editingPreferencesData',
-				revision: typeof message.editingPreferencesRevision === 'number' ? message.editingPreferencesRevision : 0,
-				caretDocsEnabled: typeof message.caretDocsEnabled === 'boolean' ? message.caretDocsEnabled : true,
-				caretDocsEnabledUserSet: !!message.caretDocsEnabledUserSet,
-				autoTriggerAutocompleteEnabled: typeof message.autoTriggerAutocompleteEnabled === 'boolean' ? message.autoTriggerAutocompleteEnabled : true,
-				autoTriggerAutocompleteEnabledUserSet: !!message.autoTriggerAutocompleteEnabledUserSet,
-				copilotInlineCompletionsEnabled: typeof message.copilotInlineCompletionsEnabled === 'boolean' ? message.copilotInlineCompletionsEnabled : true,
-				copilotInlineCompletionsEnabledUserSet: !!message.copilotInlineCompletionsEnabledUserSet,
-			});
-			if ((window as any).__e2eIsolatedKustoConnections) {
-				setConnections([]);
-				try { window.connections = connections; } catch (e) { console.error('[kusto]', e); }
-				setLastConnectionId(null);
-				setLastDatabase(null);
-				for (const k of Object.keys(cachedDatabases)) delete cachedDatabases[k];
-				setKustoFavorites([]);
-				setLeaveNoTraceClusters([]);
-				applyKustoLeaveNoTracePolicy([], false, undefined, {});
-				updateConnectionSelects();
-				acknowledgeKustoPublication(message, true);
+			if (applyingConnectionsData) {
+				acknowledgeKustoPublication(message, false);
 				break;
 			}
-			const previousAccountPartitionByConnectionId = new Map(
-				connections.map(connection => [String(connection?.id || ''), String(connection?.accountPartition || '')]),
-			);
-			const incomingConnections = Array.isArray(message.connections) ? message.connections : [];
-			const accountPartitionChangedConnectionIds = new Set<string>();
-			for (const connection of incomingConnections) {
-				const connectionId = String(connection?.id || '').trim();
-				if (!connectionId || !previousAccountPartitionByConnectionId.has(connectionId)) continue;
-				if (previousAccountPartitionByConnectionId.get(connectionId) !== String(connection?.accountPartition || '')) {
-					accountPartitionChangedConnectionIds.add(connectionId);
+			applyingConnectionsData = true;
+			try {
+				const revision = message.connectionsRevision;
+				if (revision !== undefined && revision < latestConnectionsRevision) {
+					acknowledgeKustoPublication(message, false);
+					break;
 				}
-			}
-			setConnections(incomingConnections);
-			try { window.connections = connections; } catch (e) { console.error('[kusto]', e); }
-			setLastConnectionId(message.lastConnectionId);
-			setLastDatabase(message.lastDatabase);
-			for (const k of Object.keys(cachedDatabases)) delete cachedDatabases[k];
-			Object.assign(cachedDatabases, message.cachedDatabases || {});
-			setKustoFavorites(Array.isArray(message.favorites) ? message.favorites : []);
-			setLeaveNoTraceClusters(Array.isArray(message.leaveNoTraceClusters) ? message.leaveNoTraceClusters : []);
-			applyKustoLeaveNoTracePolicy(
-				Array.isArray(message.leaveNoTraceClusters) ? message.leaveNoTraceClusters : [],
-				message.leaveNoTraceGloballyBlocked === true,
-				message.policyRequestId,
-				message.leaveNoTraceRevisions || {},
-			);
-			try { window.__kustoDevNotesEnabled = !!message.devNotesEnabled; } catch (e) { console.error('[kusto]', e); }
-			try { pState.copilotChatFirstTimeDismissed = !!message.copilotChatFirstTimeDismissed; } catch (e) { console.error('[kusto]', e); }
-			updateConnectionSelects();
-			resolvePendingKustoResultRestores();
-			if (accountPartitionChangedConnectionIds.size > 0) {
-				const sectionIds = new Set([
-					...kustoEditorSchemaCoordinator.getSectionIds(),
-					...Object.keys(queryEditors || {}),
-				]);
-				for (const boxId of sectionIds) {
-					const connectionId = String(__kustoGetConnectionId(boxId) || '').trim();
-					if (!accountPartitionChangedConnectionIds.has(connectionId)) continue;
-					delete schemaRequestTokenByBoxId[boxId];
-					delete databaseRequestTokenByBoxId[boxId];
-					clearKustoEditorSchema(boxId);
-					clearKustoSchemaMetadata(boxId);
-					schemaFetchInFlightByBoxId[boxId] = false;
-					lastSchemaRequestAtByBoxId[boxId] = 0;
-					requireSchemaWorkerApply(boxId);
-					requestKustoSchemaApplyForBox(boxId, false);
+				const applicationSnapshot = captureKustoConnectionsApplicationSnapshot();
+				const isolated = !!(window as any).__e2eIsolatedKustoConnections;
+				const previousAccountPartitionByConnectionId = new Map(
+					connections.map(connection => [
+						String(connection?.id || ''),
+						String(connection?.accountPartition || ''),
+					]),
+				);
+				const incomingConnections = isolated ? [] : message.connections;
+				const accountPartitionChangedConnectionIds = new Set<string>();
+				for (const connection of incomingConnections) {
+					const connectionId = String(connection?.id || '').trim();
+					if (!connectionId || !previousAccountPartitionByConnectionId.has(connectionId)) continue;
+					if (previousAccountPartitionByConnectionId.get(connectionId)
+						!== String(connection?.accountPartition || '')) {
+						accountPartitionChangedConnectionIds.add(connectionId);
+					}
 				}
-			}
-			if (kustoAuthIdentityInvalidated) {
-				kustoAuthIdentityInvalidated = false;
-				const sectionIds = new Set([
-					...kustoEditorSchemaCoordinator.getSectionIds(),
-					...Object.keys(queryEditors || {}),
-				]);
-				for (const boxId of sectionIds) {
-					requireSchemaWorkerApply(boxId);
-					requestKustoSchemaApplyForBox(boxId, false);
+				const policyApplication = beginKustoLeaveNoTracePolicyApplication();
+				try {
+					(window as any).__kustoAccounts = Array.isArray(message.accounts) ? message.accounts : [];
+					setConnections(incomingConnections);
+					window.connections = connections;
+					setLastConnectionId(isolated ? null : message.lastConnectionId ?? null);
+					setLastDatabase(isolated ? null : message.lastDatabase ?? null);
+					replaceKustoCachedDatabases(isolated ? {} : message.cachedDatabases || {});
+					setKustoFavorites(isolated ? [] : message.favorites || []);
+					setLeaveNoTraceClusters(isolated ? [] : message.leaveNoTraceClusters || []);
+					if (!isolated) {
+						window.__kustoDevNotesEnabled = !!message.devNotesEnabled;
+						pState.copilotChatFirstTimeDismissed = !!message.copilotChatFirstTimeDismissed;
+					}
+					applyEditingPreferencesData({
+						type: 'editingPreferencesData',
+						revision: typeof message.editingPreferencesRevision === 'number'
+							? message.editingPreferencesRevision
+							: 0,
+						caretDocsEnabled: typeof message.caretDocsEnabled === 'boolean'
+							? message.caretDocsEnabled
+							: true,
+						caretDocsEnabledUserSet: !!message.caretDocsEnabledUserSet,
+						autoTriggerAutocompleteEnabled:
+							typeof message.autoTriggerAutocompleteEnabled === 'boolean'
+								? message.autoTriggerAutocompleteEnabled
+								: true,
+						autoTriggerAutocompleteEnabledUserSet:
+							!!message.autoTriggerAutocompleteEnabledUserSet,
+						copilotInlineCompletionsEnabled:
+							typeof message.copilotInlineCompletionsEnabled === 'boolean'
+								? message.copilotInlineCompletionsEnabled
+								: true,
+						copilotInlineCompletionsEnabledUserSet:
+							!!message.copilotInlineCompletionsEnabledUserSet,
+					});
+					applyKustoLeaveNoTracePolicy(
+						isolated ? [] : message.leaveNoTraceClusters || [],
+						isolated ? false : message.leaveNoTraceGloballyBlocked === true,
+						isolated ? undefined : message.policyRequestId,
+						isolated ? {} : message.leaveNoTraceRevisions || {},
+					);
+					policyApplication.commit();
+				} catch (error) {
+					policyApplication.rollback();
+					try {
+						restoreKustoConnectionsApplicationSnapshot(applicationSnapshot);
+					} catch (restoreError) {
+						console.error('[kusto]', restoreError);
+					}
+					console.error('[kusto]', error);
+					acknowledgeKustoPublication(message, false);
+					break;
 				}
+				try { updateConnectionSelects(); } catch (error) { console.error('[kusto]', error); }
+				if (!isolated) {
+					try { resolvePendingKustoResultRestores(); } catch (error) { console.error('[kusto]', error); }
+				}
+
+				if (!isolated) {
+					if (accountPartitionChangedConnectionIds.size > 0) {
+						try {
+							const sectionIds = new Set([
+								...kustoEditorSchemaCoordinator.getSectionIds(),
+								...Object.keys(queryEditors || {}),
+							]);
+							for (const boxId of sectionIds) {
+								const connectionId = String(__kustoGetConnectionId(boxId) || '').trim();
+								if (!accountPartitionChangedConnectionIds.has(connectionId)) continue;
+								delete schemaRequestTokenByBoxId[boxId];
+								delete databaseRequestTokenByBoxId[boxId];
+								clearKustoEditorSchema(boxId);
+								clearKustoSchemaMetadata(boxId);
+								schemaFetchInFlightByBoxId[boxId] = false;
+								lastSchemaRequestAtByBoxId[boxId] = 0;
+								requireSchemaWorkerApply(boxId);
+								requestKustoSchemaApplyForBox(boxId, false);
+							}
+						} catch (error) { console.error('[kusto]', error); }
+					}
+					if (kustoAuthIdentityInvalidated) {
+						try {
+							const sectionIds = new Set([
+								...kustoEditorSchemaCoordinator.getSectionIds(),
+								...Object.keys(queryEditors || {}),
+							]);
+							for (const boxId of sectionIds) {
+								requireSchemaWorkerApply(boxId);
+								requestKustoSchemaApplyForBox(boxId, false);
+							}
+							kustoAuthIdentityInvalidated = false;
+						} catch (error) { console.error('[kusto]', error); }
+					}
+					try { __kustoUpdateFavoritesUiForAllBoxes(); } catch (error) { console.error('[kusto]', error); }
+					try { __kustoTryAutoEnterFavoritesModeForAllBoxes(); } catch (error) { console.error('[kusto]', error); }
+					try { __kustoMaybeDefaultFirstBoxToFavoritesMode(); } catch (error) { console.error('[kusto]', error); }
+					try { __kustoOnConnectionsUpdated(); } catch (error) { console.error('[kusto]', error); }
+					try { __kustoScheduleLocalSchemaPrewarm('connections-data'); } catch (error) { console.error('[kusto]', error); }
+				}
+				acknowledgeKustoPublication(message, true);
+				if (revision !== undefined) latestConnectionsRevision = revision;
+			} finally {
+				applyingConnectionsData = false;
 			}
-			try {
-				__kustoUpdateFavoritesUiForAllBoxes();
-			} catch (e) { console.error('[kusto]', e); }
-			try {
-				__kustoTryAutoEnterFavoritesModeForAllBoxes();
-			} catch (e) { console.error('[kusto]', e); }
-			try {
-				__kustoMaybeDefaultFirstBoxToFavoritesMode();
-			} catch (e) { console.error('[kusto]', e); }
-			try {
-				__kustoOnConnectionsUpdated();
-			} catch (e) { console.error('[kusto]', e); }
-			try { __kustoScheduleLocalSchemaPrewarm('connections-data'); } catch (e) { console.error('[kusto]', e); }
-			acknowledgeKustoPublication(message, true);
 			break;
 		case 'kustoAuthIdentityChanged':
 			try {

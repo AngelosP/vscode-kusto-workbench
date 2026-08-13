@@ -15,6 +15,7 @@ import {
 	isSchemaWorkerApplyRequired,
 	lastSchemaRequestAtByBoxId,
 	optimizationMetadataByBoxId,
+	queryBoxes,
 	queryEditors,
 	schemaByConnDb,
 	schemaMetaByConnDb,
@@ -32,7 +33,10 @@ import {
 } from '../../src/webview/core/state.js';
 import { getKustoEditorSchema, setKustoEditorSchema } from '../../src/webview/core/schema-catalogs.js';
 import { kustoEditorSchemaCoordinator } from '../../src/webview/core/kusto-editor-schema-runtime.js';
-import { invalidateLinkedComparisonSchemaForSource } from '../../src/webview/sections/query-connection.controller.js';
+import {
+	invalidateLinkedComparisonSchemaForSource,
+	updateConnectionSelects,
+} from '../../src/webview/sections/query-connection.controller.js';
 import { applyKustoLeaveNoTracePolicy, markKustoLeaveNoTracePolicyPending } from '../../src/webview/core/persistence.js';
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
 import { pState } from '../../src/webview/shared/persistence-state.js';
@@ -79,6 +83,33 @@ function createSection(boxId = 'test1'): KwQuerySection {
 	render(html`<kw-query-section box-id=${boxId}></kw-query-section>`, container);
 	return container.querySelector('kw-query-section')! as KwQuerySection;
 }
+
+it('continues selector reconciliation after one section throws', () => {
+	render(html`
+		<kw-query-section box-id="selector_first"></kw-query-section>
+		<kw-query-section box-id="selector_second"></kw-query-section>
+	`, container);
+	const first = container.querySelector('[box-id="selector_first"]') as KwQuerySection;
+	const second = container.querySelector('[box-id="selector_second"]') as KwQuerySection;
+	first.id = 'selector_first';
+	second.id = 'selector_second';
+	const firstSetConnections = vi.fn(() => { throw new Error('selector failure'); });
+	const secondSetConnections = vi.fn();
+	first.setConnections = firstSetConnections;
+	second.setConnections = secondSetConnections;
+	queryBoxes.push('selector_first', 'selector_second');
+
+	try {
+		expect(() => updateConnectionSelects()).not.toThrow();
+		expect(firstSetConnections).toHaveBeenCalledOnce();
+		expect(secondSetConnections).toHaveBeenCalledOnce();
+	} finally {
+		for (const id of ['selector_first', 'selector_second']) {
+			const index = queryBoxes.indexOf(id);
+			if (index >= 0) queryBoxes.splice(index, 1);
+		}
+	}
+});
 
 function getRefreshButton(el: KwQuerySection): HTMLButtonElement | null {
 	return el.shadowRoot!.querySelector('.refresh-btn-wrap button') as HTMLButtonElement | null;

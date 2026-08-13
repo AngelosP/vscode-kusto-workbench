@@ -127,6 +127,56 @@ describe('postMessageToHost', () => {
 		expect(postMessage).toHaveBeenCalledWith({ type: 'getConnections' });
 	});
 
+	it('captures Kusto connection requests before transport and rejects malformed metadata', () => {
+		const postMessage = vi.fn();
+		(window as any).vscode = { postMessage };
+		const request = { type: 'getConnections' as const, policyRequestId: ' policy-request ' };
+
+		postMessageToHost(request);
+
+		expect(postMessage).toHaveBeenCalledWith(request);
+		expect(postMessage.mock.calls[0][0]).not.toBe(request);
+		postMessage.mockClear();
+
+		let getterCalls = 0;
+		const malformed = { type: 'getConnections' };
+		Object.defineProperty(malformed, 'policyRequestId', {
+			enumerable: true,
+			get() {
+				getterCalls++;
+				return 'forged';
+			},
+		});
+		postMessageToHost(malformed as unknown as Parameters<typeof postMessageToHost>[0]);
+
+		expect(postMessage).not.toHaveBeenCalled();
+		expect(getterCalls).toBe(0);
+	});
+
+	it('rejects an unknown-to-known discriminator proxy before transport', () => {
+		const postMessage = vi.fn();
+		(window as any).vscode = { postMessage };
+		let typeDescriptorReads = 0;
+		let getterCalls = 0;
+		const message = new Proxy({ type: 'unrelatedOutboundType' }, {
+			get(target, key, receiver) {
+				getterCalls++;
+				return key === 'type' ? 'getConnections' : Reflect.get(target, key, receiver);
+			},
+			getOwnPropertyDescriptor(target, key) {
+				const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+				if (key === 'type') typeDescriptorReads++;
+				return descriptor;
+			},
+		});
+
+		postMessageToHost(message as unknown as Parameters<typeof postMessageToHost>[0]);
+
+		expect(typeDescriptorReads).toBe(1);
+		expect(getterCalls).toBe(0);
+		expect(postMessage).not.toHaveBeenCalled();
+	});
+
 	it('does not throw when vscode is undefined', () => {
 		delete (window as any).vscode;
 		expect(() => postMessageToHost({ type: 'getConnections' })).not.toThrow();
@@ -326,8 +376,10 @@ describe('postMessageToHost', () => {
 			] as const;
 			for (const request of requests) {
 				postMessageToHost(request);
-				expect(capture.mock.calls.at(-1)?.[0]).toBe(request);
-				expect(postMessage.mock.calls.at(-1)?.[0]).toBe(request);
+				expect(capture.mock.calls.at(-1)?.[0]).toEqual(request);
+				expect(capture.mock.calls.at(-1)?.[0]).not.toBe(request);
+				expect(postMessage.mock.calls.at(-1)?.[0]).toEqual(request);
+				expect(postMessage.mock.calls.at(-1)?.[0]).not.toBe(request);
 			}
 			capture.mockClear();
 			postMessage.mockClear();
@@ -402,8 +454,10 @@ describe('postMessageToHost', () => {
 			] as const;
 			for (const request of requests) {
 				postMessageToHost(request);
-				expect(capture.mock.calls.at(-1)?.[0]).toBe(request);
-				expect(postMessage.mock.calls.at(-1)?.[0]).toBe(request);
+				expect(capture.mock.calls.at(-1)?.[0]).toEqual(request);
+				expect(capture.mock.calls.at(-1)?.[0]).not.toBe(request);
+				expect(postMessage.mock.calls.at(-1)?.[0]).toEqual(request);
+				expect(postMessage.mock.calls.at(-1)?.[0]).not.toBe(request);
 			}
 			capture.mockClear();
 			postMessage.mockClear();

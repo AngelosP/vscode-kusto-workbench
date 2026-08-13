@@ -64,6 +64,7 @@ import {
 	HostImportedCsvSaveApplicationHandler,
 	type ImportedCsvSaveApplicationHandler,
 } from './importedCsvSaveApplicationHandler';
+import { showCsvSaveDialogWithDevelopmentTarget } from './developmentCsvSaveTarget';
 import {
 	HostQuerySharingApplicationHandler,
 	type QuerySharingApplicationHandler,
@@ -517,11 +518,14 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.artifactCsvSaveApplication = artifactCsvSaveApplication ?? new HostArtifactCsvSaveApplicationHandler({
 			postMessage: message => this.postMessage(message),
 			isDisposed: () => this._panelDisposed,
+			showSaveDialog: showCsvSaveDialogWithDevelopmentTarget,
 		});
 		this.pythonExecutionApplication = pythonExecutionApplication ?? new HostPythonExecutionApplicationHandler({
 			postMessage: message => this.postMessage(message),
 		});
-		this.importedCsvSaveApplication = importedCsvSaveApplication ?? new HostImportedCsvSaveApplicationHandler();
+		this.importedCsvSaveApplication = importedCsvSaveApplication ?? new HostImportedCsvSaveApplicationHandler({
+			showSaveDialog: showCsvSaveDialogWithDevelopmentTarget,
+		});
 		this.querySharingApplication = querySharingApplication ?? new HostQuerySharingApplicationHandler({
 			findConnection: connectionId => this.connection.findConnection(connectionId),
 			postMessage: message => this.postMessage(message),

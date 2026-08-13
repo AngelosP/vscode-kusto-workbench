@@ -76,6 +76,12 @@ import {
 	captureSqlConnectionsProjectionWebviewMessage,
 	type SqlConnectionsProjectionWebviewMessage,
 } from '../../shared/sqlConnectionsProjectionProtocol.js';
+import {
+	admitKustoConnectionsProjectionWebviewMessage,
+	captureKustoConnectionsProjectionWebviewMessage,
+	type KustoConnectionsProjectionWebviewMessage,
+} from '../../shared/kustoConnectionsProjectionProtocol.js';
+import { captureRuntimeMessageEnvelope } from '../../shared/runtimeMessageEnvelope.js';
 import { pState } from './persistence-state.js';
 
 let compatibilityDocumentRequestSequence = 0;
@@ -213,7 +219,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'fileOpenTrace'; event: string; timeMs?: number; sequence?: number; detail?: unknown }
 	| { type: 'kustoPublicationAck'; publicationId: string; phase: 'staged' | 'applied'; accepted: boolean }
 	// Connection & database
-	| { type: 'getConnections'; policyRequestId?: string }
+	| KustoConnectionsProjectionWebviewMessage
 	| { type: 'kustoSectionOpen'; boxId: string; sectionInstanceId: string }
 	| { type: 'kustoSectionTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number; connectionId?: string; database?: string; connectionRevision?: number; connectionIdentityKey?: string }
 	| { type: 'kustoSectionClose'; boxId: string; sectionInstanceId: string }
@@ -342,28 +348,153 @@ export type OutgoingWebviewMessage =
 	| { type: 'requestUpgradeToMdx'; addKind?: string; state?: unknown; editRevision?: number }
 	| { type: 'requestUpgradeToSqlx'; addKind?: string; state?: unknown; editRevision?: number };
 
+export const runtimeOutgoingWebviewMessageTypes = [
+	'fileOpenTrace',
+	'getConnections',
+	'kustoPublicationAck',
+	'kustoSectionOpen',
+	'kustoSectionTarget',
+	'kustoSectionClose',
+	'kustoExecutionStartedAck',
+	'editorCursorPositionChanged',
+	'getEditorCursorStatusSnapshot',
+	'getDatabases',
+	'refreshDatabases',
+	'saveLastSelection',
+	'promptAddConnection',
+	'addConnection',
+	'testKustoConnection',
+	'promptImportConnectionsXml',
+	'addConnectionsForClusters',
+	'importConnectionsFromXml',
+	'requestAddFavorite',
+	'removeFavorite',
+	'confirmRemoveFavorite',
+	'requestAddSqlFavorite',
+	'removeSqlFavorite',
+	'showInfo',
+	'showPowerBiPublishHelp',
+	'showPowerBiPartialPublishWarning',
+	'seeCachedValues',
+	'resolveResourceUri',
+	'saveImportedCsv',
+	'requestArtifactCsvSave',
+	'artifactCsvSaveData',
+	'cancelArtifactCsvSaveIntent',
+	'cancelDashboardWorkflow',
+	'publishToPowerBIAck',
+	'exportDashboard',
+	'getPbiWorkspaces',
+	'checkPbiItemExists',
+	'publishToPowerBI',
+	'setCaretDocsEnabled',
+	'setAutoTriggerAutocompleteEnabled',
+	'setCopilotInlineCompletionsEnabled',
+	'executeQuery',
+	'cancelQuery',
+	'executeSqlQuery',
+	'cancelSqlQuery',
+	'copyAdeLink',
+	'shareToClipboard',
+	'getSqlConnections',
+	'sqlSectionOpen',
+	'getSqlDatabases',
+	'refreshSqlDatabases',
+	'retireSqlTarget',
+	'saveSqlLastSelection',
+	'promptAddSqlConnection',
+	'addSqlConnection',
+	'testSetSqlAuthOverride',
+	'testClearSqlAuthOverride',
+	'prefetchSqlSchema',
+	'comparisonBoxEnsured',
+	'sqlComparisonAdmissionAck',
+	'sqlComparisonRemoved',
+	'prefetchSchema',
+	'requestCrossClusterSchema',
+	'stsRequest',
+	'stsDidOpen',
+	'stsDidChange',
+	'stsDidClose',
+	'stsConnect',
+	'kqlLanguageRequest',
+	'fetchControlCommandSyntax',
+	'checkCopilotAvailability',
+	'prepareCopilotWriteQuery',
+	'startCopilotWriteQuery',
+	'cancelCopilotWriteQuery',
+	'clearCopilotConversation',
+	'removeFromCopilotHistory',
+	'requestCopilotInlineCompletion',
+	'prepareOptimizeQuery',
+	'cancelOptimizeQuery',
+	'optimizeQuery',
+	'executePython',
+	'fetchUrl',
+	'toolResponse',
+	'toolExecutionStarted',
+	'toolStateResponse',
+	'openToolResultInEditor',
+	'openMarkdownPreview',
+	'openCopilotAgent',
+	'copilotChatFirstTimeCheck',
+	'requestHtmlDashboardUpgradeWithCopilot',
+	'showSectionDiff',
+	'mainWebviewDispatcherReady',
+	'requestDocument',
+	'persistDocument',
+	'documentReloadResult',
+	'requestUpgradeToKqlx',
+	'requestUpgradeToMdx',
+	'requestUpgradeToSqlx',
+	'markdownDocumentCommand',
+	'markdownDocumentCommandBarrierResult',
+] as const satisfies readonly OutgoingWebviewMessage['type'][];
+
+const runtimeOutgoingWebviewMessageTypeSet = new Set<string>(runtimeOutgoingWebviewMessageTypes);
+
 
 /**
  * Send a typed message from the webview to the extension host.
  * Safe to call when `window.vscode` is unavailable (e.g. browser-ext standalone) — silently no-ops.
  */
 export function postMessageToHost(msg: OutgoingWebviewMessage): void {
-	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage | CompatibilityPersistenceWebviewMessage = msg;
-	const sqlConnectionsProjectionAdmission = admitSqlConnectionsProjectionWebviewMessage(msg);
+	const envelope = captureRuntimeMessageEnvelope(msg);
+	if (!envelope.ok || !runtimeOutgoingWebviewMessageTypeSet.has(envelope.value.type)) {
+		console.error('[kusto] Rejected invalid outbound message envelope.');
+		return;
+	}
+	const message = envelope.value as unknown as OutgoingWebviewMessage;
+	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage | CompatibilityPersistenceWebviewMessage = message;
+	const kustoConnectionsProjectionAdmission = admitKustoConnectionsProjectionWebviewMessage(message);
+	const sqlConnectionsProjectionAdmission = kustoConnectionsProjectionAdmission.recognized
+		? { recognized: false as const }
+		: admitSqlConnectionsProjectionWebviewMessage(message);
 	const stsEditorLanguageAdmission = sqlConnectionsProjectionAdmission.recognized
 		? { recognized: false as const }
-		: admitSqlStsEditorLanguageWebviewMessage(msg);
+		: admitSqlStsEditorLanguageWebviewMessage(message);
 	const artifactCsvSaveAdmission = stsEditorLanguageAdmission.recognized
 		? { recognized: false as const }
-		: admitArtifactCsvSaveWebviewMessage(msg);
+		: admitArtifactCsvSaveWebviewMessage(message);
 	const pythonExecutionAdmission = stsEditorLanguageAdmission.recognized || artifactCsvSaveAdmission.recognized
 		? { recognized: false as const }
-		: admitPythonExecutionWebviewMessage(msg);
+		: admitPythonExecutionWebviewMessage(message);
 	const urlContentAdmission = stsEditorLanguageAdmission.recognized
 		|| artifactCsvSaveAdmission.recognized || pythonExecutionAdmission.recognized
 		? { recognized: false as const }
-		: admitUrlContentWebviewMessage(msg);
-	if (sqlConnectionsProjectionAdmission.recognized) {
+		: admitUrlContentWebviewMessage(message);
+	if (kustoConnectionsProjectionAdmission.recognized) {
+		if (!kustoConnectionsProjectionAdmission.parsed.ok) {
+			console.error('[kusto] Rejected invalid Kusto connections projection webview message:', kustoConnectionsProjectionAdmission.parsed.error);
+			return;
+		}
+		const captured = captureKustoConnectionsProjectionWebviewMessage(kustoConnectionsProjectionAdmission.parsed.value);
+		if (!captured.ok) {
+			console.error('[kusto] Rejected unstable Kusto connections projection webview message:', captured.error);
+			return;
+		}
+		outbound = captured.value;
+	} else if (sqlConnectionsProjectionAdmission.recognized) {
 		if (!sqlConnectionsProjectionAdmission.parsed.ok) {
 			console.error('[kusto] Rejected invalid SQL connections projection webview message:', sqlConnectionsProjectionAdmission.parsed.error);
 			return;
@@ -398,15 +529,15 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 			return;
 		}
 		outbound = urlContentAdmission.parsed.value;
-	} else if (pState.compatibilityPersistenceViewSessionId && isCompatibilityPersistenceWebviewMessageType(msg)) {
-		const input = msg.type === 'requestDocument'
+	} else if (pState.compatibilityPersistenceViewSessionId && isCompatibilityPersistenceWebviewMessageType(message)) {
+		const input = message.type === 'requestDocument'
 			? {
 				type: 'requestDocument' as const,
-				requestId: typeof msg.requestId === 'string' && msg.requestId.trim()
-					? msg.requestId.trim()
+				requestId: typeof message.requestId === 'string' && message.requestId.trim()
+					? message.requestId.trim()
 					: createCompatibilityDocumentRequestId(),
 			}
-			: msg as unknown as CompatibilityPersistenceWebviewMessageInput;
+			: message as unknown as CompatibilityPersistenceWebviewMessageInput;
 		const parsed = stampCompatibilityPersistenceWebviewMessage(
 			pState.compatibilityPersistenceViewSessionId,
 			input,
@@ -427,60 +558,60 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 			}
 		}
 		outbound = parsed.value;
-	} else if (pState.documentViewSessionId && isDocumentViewWebviewMessageType(msg)) {
+	} else if (pState.documentViewSessionId && isDocumentViewWebviewMessageType(message)) {
 		const parsed = stampDocumentViewWebviewMessage(
 			pState.documentViewSessionId,
-			msg as DocumentViewWebviewMessageInput,
+			message as DocumentViewWebviewMessageInput,
 		);
 		if (!parsed.ok) {
 			console.error('[kusto] Rejected invalid document-view webview message:', parsed.error);
 			return;
 		}
 		outbound = parsed.value;
-	} else if (isKustoDatabaseDiscoveryWebviewMessageType(msg)) {
-		const parsed = parseKustoDatabaseDiscoveryWebviewMessage(msg);
+	} else if (isKustoDatabaseDiscoveryWebviewMessageType(message)) {
+		const parsed = parseKustoDatabaseDiscoveryWebviewMessage(message);
 		if (!parsed.ok) {
 			console.error('[kusto] Rejected invalid Kusto database discovery webview message:', parsed.error);
 			return;
 		}
 		outbound = parsed.value;
-	} else if (isSqlDatabaseDiscoveryWebviewMessageType(msg)) {
-		const parsed = parseSqlDatabaseDiscoveryWebviewMessage(msg);
+	} else if (isSqlDatabaseDiscoveryWebviewMessageType(message)) {
+		const parsed = parseSqlDatabaseDiscoveryWebviewMessage(message);
 		if (!parsed.ok) {
 			console.error('[kusto] Rejected invalid SQL database discovery webview message:', parsed.error);
 			return;
 		}
 		outbound = parsed.value;
-	} else if (isSqlSchemaWebviewMessageType(msg)) {
-		const parsed = parseSqlSchemaWebviewMessage(msg);
+	} else if (isSqlSchemaWebviewMessageType(message)) {
+		const parsed = parseSqlSchemaWebviewMessage(message);
 		if (!parsed.ok) {
 			console.error('[kusto] Rejected invalid SQL schema webview message:', parsed.error);
 			return;
 		}
 		outbound = parsed.value;
-	} else if (isKqlLanguageWebviewMessageType(msg)) {
-		const parsed = parseKqlLanguageWebviewMessage(msg);
+	} else if (isKqlLanguageWebviewMessageType(message)) {
+		const parsed = parseKqlLanguageWebviewMessage(message);
 		if (!parsed.ok) {
 			console.error('[kusto] Rejected invalid KQL language webview message:', parsed.error);
 			return;
 		}
 		outbound = parsed.value;
-	} else if (isControlCommandSyntaxWebviewMessageType(msg)) {
-		const parsed = parseControlCommandSyntaxWebviewMessage(msg);
+	} else if (isControlCommandSyntaxWebviewMessageType(message)) {
+		const parsed = parseControlCommandSyntaxWebviewMessage(message);
 		if (!parsed.ok) {
 			console.error('[kusto] Rejected invalid control-command syntax webview message:', parsed.error);
 			return;
 		}
 		outbound = parsed.value;
-	} else if (isResourceUriWebviewMessageType(msg)) {
-		const parsed = parseResourceUriWebviewMessage(msg);
+	} else if (isResourceUriWebviewMessageType(message)) {
+		const parsed = parseResourceUriWebviewMessage(message);
 		if (!parsed.ok) {
 			console.error('[kusto] Rejected invalid resource URI webview message:', parsed.error);
 			return;
 		}
 		outbound = parsed.value;
-	} else if (isKustoSchemaWebviewMessageType(msg)) {
-		const parsed = parseKustoSchemaWebviewMessage(msg);
+	} else if (isKustoSchemaWebviewMessageType(message)) {
+		const parsed = parseKustoSchemaWebviewMessage(message);
 		if (!parsed.ok) {
 			console.error('[kusto] Rejected invalid Kusto schema webview message:', parsed.error);
 			return;

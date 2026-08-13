@@ -7,6 +7,10 @@ import { getEditingPreferencesData } from './editingPreferences';
 import type { KustoAuthPreferenceService } from './kustoAuthPreferenceService';
 import type { KustoQueryClient } from './kustoClient';
 import { STORAGE_KEYS } from './queryEditorTypes';
+import {
+	captureKustoConnectionsProjectionHostMessage,
+	type KustoConnectionsData,
+} from '../shared/kustoConnectionsProjectionProtocol';
 
 export let testIsolateKustoConnections = false;
 
@@ -34,8 +38,8 @@ export type KustoConnectionsProjectionApplicationHandlerOptions = {
 	getLastSelection(): { lastConnectionId?: string; lastDatabase?: string };
 	getCachedDatabases(): Record<string, string[]>;
 	getFavorites(): KustoFavorite[];
-	postMessage(message: Record<string, unknown>): boolean | PromiseLike<boolean> | void;
-	postKustoPublication(message: Record<string, unknown>): Promise<boolean>;
+	postMessage(message: KustoConnectionsData): boolean | PromiseLike<boolean> | void;
+	postKustoPublication(message: KustoConnectionsData): Promise<boolean>;
 };
 
 export class HostKustoConnectionsProjectionApplicationHandler
@@ -72,6 +76,17 @@ export class HostKustoConnectionsProjectionApplicationHandler
 			: undefined;
 	}
 
+	private captureSnapshot(message: KustoConnectionsData): KustoConnectionsData {
+		const captured = captureKustoConnectionsProjectionHostMessage(message);
+		if (!captured.ok) {
+			throw new Error(`Invalid Kusto connections projection: ${captured.error}`);
+		}
+		if (captured.value.connectionsRevision === undefined) {
+			throw new Error('Invalid Kusto connections projection: canonical revision was omitted.');
+		}
+		return captured.value as KustoConnectionsData;
+	}
+
 	private async publishSnapshot(revision: number, policyRequestId?: string): Promise<void> {
 		const {
 			type: _type,
@@ -89,9 +104,10 @@ export class HostKustoConnectionsProjectionApplicationHandler
 		};
 
 		if (testIsolateKustoConnections) {
-			this.options.postMessage({
+			const message: KustoConnectionsData = {
 				type: 'connectionsData',
 				connections: [],
+				accounts: [],
 				lastConnectionId: null,
 				lastDatabase: null,
 				cachedDatabases: {},
@@ -101,7 +117,9 @@ export class HostKustoConnectionsProjectionApplicationHandler
 				leaveNoTraceGloballyBlocked: false,
 				leaveNoTraceRevisions: {},
 				devNotesEnabled: true,
-			});
+			};
+			const captured = this.captureSnapshot(message);
+			this.options.postMessage(captured);
 			return;
 		}
 
@@ -142,12 +160,12 @@ export class HostKustoConnectionsProjectionApplicationHandler
 					: [...policy.clusterKeys];
 				const selection = this.options.getLastSelection();
 				if (this.disposed) return false;
-				return this.options.postKustoPublication({
+				const message: KustoConnectionsData = {
 					type: 'connectionsData',
 					connections,
 					accounts,
-					lastConnectionId: selection.lastConnectionId,
-					lastDatabase: selection.lastDatabase,
+					lastConnectionId: selection.lastConnectionId ?? null,
+					lastDatabase: selection.lastDatabase ?? null,
 					cachedDatabases: this.options.getCachedDatabases(),
 					favorites: this.options.getFavorites(),
 					...settings,
@@ -155,7 +173,9 @@ export class HostKustoConnectionsProjectionApplicationHandler
 					leaveNoTraceGloballyBlocked: policy.globallyBlocked,
 					leaveNoTraceRevisions: policy.revocationGenerations,
 					devNotesEnabled: true,
-				});
+				};
+				const captured = this.captureSnapshot(message);
+				return this.options.postKustoPublication(captured);
 			});
 			if (applied || this.disposed) return;
 		}

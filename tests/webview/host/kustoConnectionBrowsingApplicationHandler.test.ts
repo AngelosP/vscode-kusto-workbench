@@ -74,6 +74,28 @@ describe('HostKustoConnectionBrowsingApplicationHandler', () => {
 		expect(settled).toBe(true);
 	});
 
+	it('claims malformed connection requests before projection effects without invoking accessors', async () => {
+		const harness = createHandler();
+		let getterCalls = 0;
+		const malformed = { type: 'getConnections' };
+		Object.defineProperty(malformed, 'policyRequestId', {
+			enumerable: true,
+			get() {
+				getterCalls++;
+				return 'forged';
+			},
+		});
+
+		await expect(harness.handler.handleMessage(
+			malformed as unknown as IncomingWebviewMessage,
+		)).resolves.toBeUndefined();
+
+		expect(harness.sendConnectionsData).not.toHaveBeenCalled();
+		expect(harness.sendDatabases).not.toHaveBeenCalled();
+		expect(harness.saveLastSelection).not.toHaveBeenCalled();
+		expect(getterCalls).toBe(0);
+	});
+
 	it('shapes passive database discovery with every exact lifecycle field', async () => {
 		const harness = createHandler();
 		const message = {

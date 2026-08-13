@@ -28,6 +28,7 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 }));
 
 import {
+	captureResultsRuntime,
 	displayResultForBox,
 	getRawCellValue,
 	getResultsState,
@@ -42,6 +43,7 @@ import {
 	clearResultsState,
 	setResultsState,
 	resetCurrentResult,
+	restoreResultsRuntime,
 	currentResult,
 	ensureResultsShownForTool,
 } from '../../src/webview/core/results-state.js';
@@ -99,6 +101,48 @@ describe('results-state displayResultForBox', () => {
 		});
 		expect(state.selectedRows).toBeInstanceOf(Set);
 		expect(getResultsStateRevision('query_1')).toBeGreaterThan(0);
+	});
+
+	it('restores exact result state, artifact identity, bindings, and presentation', () => {
+		const section = document.createElement('div') as HTMLDivElement & {
+			displayResult: ReturnType<typeof vi.fn>;
+			setResultArtifactForCsvExport: ReturnType<typeof vi.fn>;
+		};
+		section.id = 'query_runtime_snapshot';
+		section.displayResult = vi.fn();
+		section.setResultArtifactForCsvExport = vi.fn();
+		document.body.appendChild(section);
+		setResultsState(section.id, { columns: ['Value'], rows: [['before']], metadata: {} });
+		const first = getCurrentResultArtifact(section.id)!;
+		bindResultArtifactConsumer('chart:runtime-snapshot', section.id, first.artifactId);
+		const firstRevision = getResultsStateRevision(section.id);
+		const snapshot = captureResultsRuntime();
+		const transientSection = document.createElement('div') as HTMLDivElement & {
+			clearResults: ReturnType<typeof vi.fn>;
+		};
+		transientSection.id = 'query_runtime_transient';
+		transientSection.clearResults = vi.fn();
+		document.body.appendChild(transientSection);
+
+		setResultsState(section.id, { columns: ['Value'], rows: [['after']], metadata: {} });
+		setResultsState(transientSection.id, { columns: ['Value'], rows: [['transient']], metadata: {} });
+		clearResultsState(section.id);
+		section.displayResult.mockClear();
+		restoreResultsRuntime(snapshot, true);
+
+		expect(getResultsState(section.id)?.rows).toEqual([['before']]);
+		expect(getResultsStateRevision(section.id)).toBe(firstRevision);
+		expect(getCurrentResultArtifact(section.id)).toBe(first);
+		expect(getBoundResultArtifact('chart:runtime-snapshot', section.id)).toBe(first);
+		expect(section.displayResult).toHaveBeenCalledWith(
+			expect.objectContaining({ rows: [['before']] }),
+			{ label: 'Results', showExecutionTime: true },
+		);
+		expect(section.setResultArtifactForCsvExport).toHaveBeenCalledWith(first.artifactId);
+		expect(transientSection.clearResults).toHaveBeenCalledOnce();
+		expect(getResultsState(transientSection.id)).toBeNull();
+		setResultsState(section.id, { columns: ['Value'], rows: [['resumed']], metadata: {} });
+		expect(getCurrentResultArtifact(section.id)?.revision).toBe(first.revision + 1);
 	});
 
 	it('normalizes ragged rows before section presentation and shared state', () => {

@@ -238,7 +238,7 @@ describe('QueryEditorProvider KQL language request application', () => {
 		expect(hostTypesSource).toContain("import type { KqlLanguageWebviewMessage } from '../shared/kqlLanguageProtocol';");
 		expect(hostTypesSource).not.toContain('export type KqlLanguageRequestMessage =');
 		expect(handlerSource).toContain('parseKqlLanguageWebviewMessage(message)');
-		expect(webviewMessagesSource).toContain('parseKqlLanguageWebviewMessage(msg)');
+		expect(webviewMessagesSource).toContain('parseKqlLanguageWebviewMessage(message)');
 		expect(webviewSource).toContain('parseKqlLanguageHostMessage(message)');
 		expect(webviewSource).toContain('isKqlLanguageResponseForMethod(');
 		expect(webviewSource).toContain("method: 'kusto/findTableReferences'");

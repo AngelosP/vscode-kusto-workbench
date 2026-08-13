@@ -273,7 +273,11 @@ describe('QueryEditorProvider Kusto connections projection application', () => {
 		expect(handlerSource).toContain('this.options.getCachedDatabases()');
 		expect(handlerSource).toContain('this.options.getFavorites()');
 		expect(handlerSource).toContain('runWithLeaveNoTraceSnapshotLock');
-		expect(handlerSource).toContain('this.options.postKustoPublication({');
+		expect(handlerSource).toContain('const message: KustoConnectionsData = {');
+		expect(handlerSource).toContain('const captured = this.captureSnapshot(message);');
+		expect(handlerSource).toContain('this.options.postKustoPublication(captured)');
+		expect(handlerSource.indexOf('const captured = this.captureSnapshot(message);'))
+			.toBeLessThan(handlerSource.indexOf('this.options.postKustoPublication(captured)'));
 		expect(handlerSource).toContain("type: 'connectionsData'");
 		expect(handlerSource).toContain('const attempts = policyRequestId ? 2 : 1;');
 

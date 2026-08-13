@@ -15,6 +15,7 @@ import type { PythonExecutionWebviewMessage } from '../shared/pythonExecutionPro
 import type { ArtifactCsvSaveWebviewMessage } from '../shared/artifactCsvSaveProtocol';
 import type { SqlStsEditorLanguageWebviewMessage } from '../shared/sqlStsEditorLanguageProtocol';
 import type { SqlConnectionsProjectionWebviewMessage } from '../shared/sqlConnectionsProjectionProtocol';
+import type { KustoConnectionsProjectionWebviewMessage } from '../shared/kustoConnectionsProjectionProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -246,7 +247,7 @@ export type EditorCursorStatusSnapshotRequestMessage = {
 };
 
 export type IncomingWebviewMessage =
-	| { type: 'getConnections'; policyRequestId?: string }
+	| KustoConnectionsProjectionWebviewMessage
 	| { type: 'kustoPublicationAck'; publicationId: string; phase: 'staged' | 'applied'; accepted: boolean }
 	| { type: 'fileOpenTrace'; event: string; timeMs?: number; sequence?: number; detail?: unknown }
 	| EditorCursorPositionChangedMessage

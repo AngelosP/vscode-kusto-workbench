@@ -443,6 +443,13 @@ export function publicationFromPersistedResultArtifact(
 	};
 }
 
+export type ResultArtifactStoreSnapshot = Readonly<{
+	artifacts: readonly (readonly [string, ResultArtifact])[];
+	currentArtifactIds: readonly (readonly [string, string])[];
+	nextRevisions: readonly (readonly [string, number])[];
+	consumerArtifactIds: readonly (readonly [string, string])[];
+}>;
+
 export class ResultArtifactStore {
 	private readonly artifacts = new Map<string, ResultArtifact>();
 	private readonly currentArtifactIdBySource = new Map<string, string>();
@@ -627,6 +634,29 @@ export class ResultArtifactStore {
 		this.currentArtifactIdBySource.clear();
 		this.nextRevisionBySource.clear();
 		this.artifactIdByConsumer.clear();
+	}
+
+	captureSnapshot(): ResultArtifactStoreSnapshot {
+		return {
+			artifacts: [...this.artifacts.entries()],
+			currentArtifactIds: [...this.currentArtifactIdBySource.entries()],
+			nextRevisions: [...this.nextRevisionBySource.entries()],
+			consumerArtifactIds: [...this.artifactIdByConsumer.entries()],
+		};
+	}
+
+	restoreSnapshot(snapshot: ResultArtifactStoreSnapshot): void {
+		this.clear();
+		for (const [artifactId, artifact] of snapshot.artifacts) this.artifacts.set(artifactId, artifact);
+		for (const [sourceBoxId, artifactId] of snapshot.currentArtifactIds) {
+			this.currentArtifactIdBySource.set(sourceBoxId, artifactId);
+		}
+		for (const [sourceBoxId, revision] of snapshot.nextRevisions) {
+			this.nextRevisionBySource.set(sourceBoxId, revision);
+		}
+		for (const [consumerId, artifactId] of snapshot.consumerArtifactIds) {
+			this.artifactIdByConsumer.set(consumerId, artifactId);
+		}
 	}
 
 	private pruneIfUnreferenced(artifactId: string, visited = new Set<string>()): void {

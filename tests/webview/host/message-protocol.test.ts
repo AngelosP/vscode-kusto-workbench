@@ -140,6 +140,33 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
 	return current;
 }
 
+function extractStringArrayVariable(relativePath: string, variableName: string): string[] {
+	const source = readWorkspaceFile(relativePath);
+	const sourceFile = ts.createSourceFile(relativePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	let values: string[] | undefined;
+	const visit = (node: ts.Node): void => {
+		if (values || !ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name)
+			|| node.name.text !== variableName || !node.initializer) {
+			ts.forEachChild(node, visit);
+			return;
+		}
+		const initializer = unwrapExpression(node.initializer);
+		if (!ts.isArrayLiteralExpression(initializer)) {
+			throw new Error(`${variableName} must be an array literal.`);
+		}
+		values = initializer.elements.map(element => {
+			const value = unwrapExpression(element as ts.Expression);
+			if (!ts.isStringLiteral(value) && !ts.isNoSubstitutionTemplateLiteral(value)) {
+				throw new Error(`${variableName} must contain only string literals.`);
+			}
+			return value.text;
+		});
+	};
+	visit(sourceFile);
+	if (!values) throw new Error(`Variable ${variableName} not found in ${relativePath}.`);
+	return values;
+}
+
 function getObjectLiteralMessageType(expression: ts.Expression): string | undefined {
 	const candidate = unwrapExpression(expression);
 	if (!ts.isObjectLiteralExpression(candidate)) return undefined;
@@ -334,7 +361,7 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 }
 
 const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
-	'src/host/artifactCsvSaveApplicationHandler.ts::postMessage::postMessage::51:22',
+	'src/host/artifactCsvSaveApplicationHandler.ts::postMessage::postMessage::52:22',
 	'src/host/comparisonPreparationApplicationHandler.ts::waitForSqlComparisonAdmission::postMessage::628:25',
 	'src/host/controlCommandSyntaxApplicationHandler.ts::postMessage::postMessage::56:3',
 	'src/host/dashboardApplicationHandler.ts::postMessage::postMessage::98:10',
@@ -343,40 +370,41 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/editorCursorStatusApplicationHandler.ts::postMessage::postMessage::83:10',
 	'src/host/kqlLanguageRequestApplicationHandler.ts::postMessage::postMessage::48:3',
 	'src/host/kustoConnectionOnboardingApplicationHandler.ts::testConnectionFromWebview::postMessage::189:4',
+	'src/host/kustoConnectionsProjectionApplicationHandler.ts::publishSnapshot::postMessage::122:4',
 	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::453:33',
 	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::286:33',
 	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::93:10',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::380:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::512:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::518:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::522:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::527:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::530:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::533:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::536:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::551:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::557:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::562:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::579:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::587:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::593:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::607:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::615:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::630:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::643:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::678:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::688:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::695:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::704:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::712:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::735:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::740:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::768:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::776:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::800:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::815:29',
-	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::894:15',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::1283:21',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::381:27',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::513:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::519:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::524:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::531:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::534:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::537:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::540:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::555:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::561:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::566:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::583:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::591:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::597:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::611:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::619:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::634:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::647:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::682:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::692:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::699:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::708:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::716:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::739:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::744:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::772:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::780:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::804:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::819:29',
+	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::898:15',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::1287:21',
 	'src/host/querySharingApplicationHandler.ts::postMessage::postMessage::32:10',
 	'src/host/resourceUriApplicationHandler.ts::postMessage::postMessage::56:3',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1806:13',
@@ -1112,7 +1140,7 @@ describe('Message Protocol Contract', () => {
 		expect(hostTypes).not.toContain("type: 'requestCrossClusterSchema'");
 		expect(webviewMessages).not.toContain("type: 'prefetchSchema'");
 		expect(webviewMessages).not.toContain("type: 'requestCrossClusterSchema'");
-		expect(webviewMessages).toContain('parseKustoSchemaWebviewMessage(msg)');
+		expect(webviewMessages).toContain('parseKustoSchemaWebviewMessage(message)');
 
 		const requestHandler = readWorkspaceFile('src/host/kustoSchemaRequestApplicationHandler.ts');
 		expect(requestHandler.indexOf('parseKustoSchemaWebviewMessage(message)'))
@@ -1151,7 +1179,7 @@ describe('Message Protocol Contract', () => {
 		expect(hostTypes).not.toContain("type: 'refreshDatabases'");
 		expect(webviewMessages).not.toContain("type: 'getDatabases'");
 		expect(webviewMessages).not.toContain("type: 'refreshDatabases'");
-		expect(webviewMessages).toContain('parseKustoDatabaseDiscoveryWebviewMessage(msg)');
+		expect(webviewMessages).toContain('parseKustoDatabaseDiscoveryWebviewMessage(message)');
 
 		const requestHandler = readWorkspaceFile('src/host/kustoConnectionBrowsingApplicationHandler.ts');
 		expect(requestHandler.indexOf('parseKustoDatabaseDiscoveryWebviewMessage(message)'))
@@ -1193,7 +1221,7 @@ describe('Message Protocol Contract', () => {
 		expect(hostTypes).not.toContain("type: 'refreshSqlDatabases'");
 		expect(webviewMessages).not.toContain("type: 'getSqlDatabases'");
 		expect(webviewMessages).not.toContain("type: 'refreshSqlDatabases'");
-		expect(webviewMessages).toContain('parseSqlDatabaseDiscoveryWebviewMessage(msg)');
+		expect(webviewMessages).toContain('parseSqlDatabaseDiscoveryWebviewMessage(message)');
 
 		const requestHandler = readWorkspaceFile('src/host/sqlDatabaseDiscoveryApplicationHandler.ts');
 		expect(requestHandler.indexOf('parseSqlDatabaseDiscoveryWebviewMessage(message)'))
@@ -1234,7 +1262,7 @@ describe('Message Protocol Contract', () => {
 		expect(webviewMessages).toContain('| SqlSchemaWebviewMessage');
 		expect(hostTypes).not.toContain("type: 'prefetchSqlSchema'");
 		expect(webviewMessages).not.toContain("type: 'prefetchSqlSchema'");
-		expect(webviewMessages).toContain('parseSqlSchemaWebviewMessage(msg)');
+		expect(webviewMessages).toContain('parseSqlSchemaWebviewMessage(message)');
 
 		const requestHandler = readWorkspaceFile('src/host/sqlSchemaRequestApplicationHandler.ts');
 		expect(requestHandler.indexOf('parseSqlSchemaWebviewMessage(message)'))
@@ -1272,7 +1300,7 @@ describe('Message Protocol Contract', () => {
 		expect(webviewMessages).toContain('| SqlConnectionsProjectionWebviewMessage');
 		expect(hostTypes).not.toContain("type: 'getSqlConnections'");
 		expect(webviewMessages).not.toContain("type: 'getSqlConnections'");
-		expect(webviewMessages.indexOf('admitSqlConnectionsProjectionWebviewMessage(msg)'))
+		expect(webviewMessages.indexOf('admitSqlConnectionsProjectionWebviewMessage(message)'))
 			.toBeLessThan(webviewMessages.indexOf('const e2eCaptureHostMessage'));
 		expect(webviewMessages.indexOf('captureSqlConnectionsProjectionWebviewMessage('))
 			.toBeLessThan(webviewMessages.indexOf('const e2eCaptureHostMessage'));
@@ -1305,6 +1333,79 @@ describe('Message Protocol Contract', () => {
 		expect(state).not.toContain('sqlConnections.push(...val)');
 	});
 
+	it('keeps Kusto connections requests and snapshots on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/kustoConnectionsProjectionProtocol.ts',
+			'KustoConnectionsProjectionWebviewMessage',
+		)).toEqual(['getConnections']);
+		expect(extractTypeDiscriminants(
+			'src/shared/kustoConnectionsProjectionProtocol.ts',
+			'KustoConnectionsProjectionHostMessage',
+		)).toEqual(['connectionsData']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| KustoConnectionsProjectionWebviewMessage');
+		expect(webviewMessages).toContain('| KustoConnectionsProjectionWebviewMessage');
+		expect(hostTypes).not.toContain("type: 'getConnections'");
+		expect(webviewMessages).not.toContain("type: 'getConnections'");
+		expect(webviewMessages.indexOf('const envelope = captureRuntimeMessageEnvelope(msg)'))
+			.toBeLessThan(webviewMessages.indexOf('admitKustoConnectionsProjectionWebviewMessage(message)'));
+		expect(webviewMessages.indexOf('admitKustoConnectionsProjectionWebviewMessage(message)'))
+			.toBeLessThan(webviewMessages.indexOf('const e2eCaptureHostMessage'));
+		expect(webviewMessages.indexOf('captureKustoConnectionsProjectionWebviewMessage('))
+			.toBeLessThan(webviewMessages.indexOf('const e2eCaptureHostMessage'));
+
+		const browsingHandler = readWorkspaceFile('src/host/kustoConnectionBrowsingApplicationHandler.ts');
+		expect(browsingHandler.indexOf('admitKustoConnectionsProjectionWebviewMessage(message)'))
+			.toBeLessThan(browsingHandler.indexOf('this.options.sendConnectionsData('));
+
+		const projectionHandler = readWorkspaceFile('src/host/kustoConnectionsProjectionApplicationHandler.ts');
+		expect(projectionHandler).toContain('postKustoPublication(message: KustoConnectionsData)');
+		const publishSnapshot = projectionHandler.slice(projectionHandler.indexOf('private async publishSnapshot'));
+		expect(publishSnapshot.indexOf('const captured = this.captureSnapshot(message)'))
+			.toBeLessThan(publishSnapshot.indexOf('this.options.postKustoPublication(captured)'));
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		expect(dispatcher.indexOf('const envelope = captureRuntimeMessageEnvelope(message)'))
+			.toBeLessThan(dispatcher.indexOf('admitKustoConnectionsProjectionHostMessage(message)'));
+		expect(dispatcher.indexOf('admitKustoConnectionsProjectionHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf("case 'connectionsData':"));
+		expect(dispatcher.indexOf('captureKustoConnectionsProjectionHostMessage('))
+			.toBeLessThan(dispatcher.indexOf("case 'connectionsData':"));
+		const stage = dispatcher.slice(
+			dispatcher.indexOf("if (message.type === 'kustoPublicationStage')"),
+			dispatcher.indexOf("if (message.type === 'kustoPublicationCommit')"),
+		);
+		expect(stage.indexOf('admitKustoConnectionsProjectionHostMessage(payload)'))
+			.toBeLessThan(stage.indexOf('stagedKustoPublications.set('));
+		expect(stage.indexOf('captureKustoConnectionsProjectionHostMessage('))
+			.toBeLessThan(stage.indexOf('stagedKustoPublications.set('));
+		const commit = dispatcher.slice(
+			dispatcher.indexOf("if (message.type === 'kustoPublicationCommit')"),
+			dispatcher.indexOf("if (message.type === 'kustoPublicationRevoke')"),
+		);
+		expect(commit.indexOf('captureKustoConnectionsProjectionHostMessage('))
+			.toBeLessThan(commit.indexOf('message = attachKustoPublicationId(payload, publicationId)'));
+
+		const connectionsCase = dispatcher.slice(
+			dispatcher.indexOf("case 'connectionsData':"),
+			dispatcher.indexOf("case 'kustoAuthIdentityChanged':"),
+		);
+		expect(connectionsCase.indexOf('policyApplication.commit()'))
+			.toBeLessThan(connectionsCase.indexOf('updateConnectionSelects()'));
+		const rollbackBranch = connectionsCase.slice(
+			connectionsCase.indexOf('} catch (error) {'),
+			connectionsCase.indexOf('try { updateConnectionSelects();'),
+		);
+		expect(rollbackBranch).not.toContain('updateConnectionSelects()');
+		expect(connectionsCase.lastIndexOf('resolvePendingKustoResultRestores()'))
+			.toBeLessThan(connectionsCase.lastIndexOf('acknowledgeKustoPublication(message, true)'));
+		expect(connectionsCase.lastIndexOf('acknowledgeKustoPublication(message, true)'))
+			.toBeLessThan(connectionsCase.lastIndexOf('latestConnectionsRevision = revision'));
+	});
+
 	it('keeps SQL STS editor-language traffic on one runtime-validated shared channel', () => {
 		expect(extractTypeDiscriminants(
 			'src/shared/sqlStsEditorLanguageProtocol.ts',
@@ -1323,7 +1424,7 @@ describe('Message Protocol Contract', () => {
 			expect(hostTypes).not.toContain(`type: '${type}'`);
 			expect(webviewMessages).not.toContain(`type: '${type}'`);
 		}
-		expect(webviewMessages.indexOf('admitSqlStsEditorLanguageWebviewMessage(msg)'))
+		expect(webviewMessages.indexOf('admitSqlStsEditorLanguageWebviewMessage(message)'))
 			.toBeLessThan(webviewMessages.indexOf('const e2eCaptureHostMessage'));
 
 		const providers = readWorkspaceFile('src/webview/monaco/sql-sts-providers.ts');
@@ -1387,7 +1488,7 @@ describe('Message Protocol Contract', () => {
 		expect(webviewMessages).toContain('| KqlLanguageWebviewMessage');
 		expect(hostTypes).not.toContain("type: 'kqlLanguageRequest'");
 		expect(webviewMessages).not.toContain("type: 'kqlLanguageRequest'");
-		expect(webviewMessages).toContain('parseKqlLanguageWebviewMessage(msg)');
+		expect(webviewMessages).toContain('parseKqlLanguageWebviewMessage(message)');
 
 		const requestHandler = readWorkspaceFile('src/host/kqlLanguageRequestApplicationHandler.ts');
 		expect(requestHandler.indexOf('parseKqlLanguageWebviewMessage(message)'))
@@ -1427,7 +1528,7 @@ describe('Message Protocol Contract', () => {
 		expect(webviewMessages).toContain('| ControlCommandSyntaxWebviewMessage');
 		expect(hostTypes).not.toContain("type: 'fetchControlCommandSyntax'");
 		expect(webviewMessages).not.toContain("type: 'fetchControlCommandSyntax'");
-		expect(webviewMessages).toContain('parseControlCommandSyntaxWebviewMessage(msg)');
+		expect(webviewMessages).toContain('parseControlCommandSyntaxWebviewMessage(message)');
 
 		const requestHandler = readWorkspaceFile('src/host/controlCommandSyntaxApplicationHandler.ts');
 		expect(requestHandler.indexOf('parseControlCommandSyntaxWebviewMessage(message)'))
@@ -1466,7 +1567,7 @@ describe('Message Protocol Contract', () => {
 		expect(webviewMessages).toContain('| ResourceUriWebviewMessage');
 		expect(hostTypes).not.toContain("type: 'resolveResourceUri'");
 		expect(webviewMessages).not.toContain("type: 'resolveResourceUri'");
-		expect(webviewMessages).toContain('parseResourceUriWebviewMessage(msg)');
+		expect(webviewMessages).toContain('parseResourceUriWebviewMessage(message)');
 
 		const requestHandler = readWorkspaceFile('src/host/resourceUriApplicationHandler.ts');
 		expect(requestHandler.indexOf('parseResourceUriWebviewMessage(message)'))
@@ -1512,7 +1613,7 @@ describe('Message Protocol Contract', () => {
 		expect(webviewMessages).toContain('| UrlContentWebviewMessage');
 		expect(hostTypes).not.toContain("type: 'fetchUrl'");
 		expect(webviewMessages).not.toContain("type: 'fetchUrl'");
-		expect(webviewMessages).toContain('admitUrlContentWebviewMessage(msg)');
+		expect(webviewMessages).toContain('admitUrlContentWebviewMessage(message)');
 
 		const requestHandler = readWorkspaceFile('src/host/urlContentApplicationHandler.ts');
 		const requestAdmission = requestHandler.slice(requestHandler.indexOf('handleMessage('));
@@ -1568,7 +1669,7 @@ describe('Message Protocol Contract', () => {
 		expect(webviewMessages).toContain('| PythonExecutionWebviewMessage');
 		expect(hostTypes).not.toContain("type: 'executePython'");
 		expect(webviewMessages).not.toContain("type: 'executePython'");
-		const wrapperAdmissionIndex = webviewMessages.indexOf('admitPythonExecutionWebviewMessage(msg)');
+		const wrapperAdmissionIndex = webviewMessages.indexOf('admitPythonExecutionWebviewMessage(message)');
 		const captureIndex = webviewMessages.indexOf('const e2eCaptureHostMessage');
 		expect(wrapperAdmissionIndex).toBeGreaterThanOrEqual(0);
 		expect(wrapperAdmissionIndex).toBeLessThan(captureIndex);
@@ -1624,7 +1725,7 @@ describe('Message Protocol Contract', () => {
 			expect(hostTypes).not.toContain(`type: '${type}'`);
 			expect(webviewMessages).not.toContain(`type: '${type}'`);
 		}
-		const wrapperAdmissionIndex = webviewMessages.indexOf('admitArtifactCsvSaveWebviewMessage(msg)');
+		const wrapperAdmissionIndex = webviewMessages.indexOf('admitArtifactCsvSaveWebviewMessage(message)');
 		const captureIndex = webviewMessages.indexOf('const e2eCaptureHostMessage');
 		expect(wrapperAdmissionIndex).toBeGreaterThanOrEqual(0);
 		expect(wrapperAdmissionIndex).toBeLessThan(captureIndex);
@@ -1700,6 +1801,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/artifactCsvSaveProtocol.ts', 'ArtifactCsvSaveWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlStsEditorLanguageProtocol.ts', 'SqlStsEditorLanguageWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlConnectionsProjectionProtocol.ts', 'SqlConnectionsProjectionWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/kustoConnectionsProjectionProtocol.ts', 'KustoConnectionsProjectionWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1722,8 +1824,13 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/artifactCsvSaveProtocol.ts', 'ArtifactCsvSaveWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlStsEditorLanguageProtocol.ts', 'SqlStsEditorLanguageWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlConnectionsProjectionProtocol.ts', 'SqlConnectionsProjectionWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/kustoConnectionsProjectionProtocol.ts', 'KustoConnectionsProjectionWebviewMessage'),
 			])].sort()
 		);
+		expect(extractStringArrayVariable(
+			'src/webview/shared/webview-messages.ts',
+			'runtimeOutgoingWebviewMessageTypes',
+		).sort()).toEqual([...OUTGOING_WEBVIEW_MESSAGE_TYPES].sort());
 	});
 
 	it('handled message inventory matches the generic handler and SQL router cases', () => {

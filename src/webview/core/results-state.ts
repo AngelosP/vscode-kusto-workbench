@@ -8,6 +8,7 @@ import {
 	projectRowsToDeclaredColumns,
 	RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT,
 	ResultArtifactStore,
+	type ResultArtifactStoreSnapshot,
 	type ResultArtifactPublication,
 } from '../../shared/resultArtifact.js';
 export type {
@@ -24,6 +25,69 @@ const _resultsByBoxId: Record<string, any> = {};
 const _resultsRevisionByBoxId: Record<string, number> = {};
 const _resultArtifacts = new ResultArtifactStore();
 export let currentResult: any = null;
+
+export type ResultsRuntimeSnapshot = Readonly<{
+	states: Record<string, any>;
+	revisions: Record<string, number>;
+	artifacts: ResultArtifactStoreSnapshot;
+	currentResult: any;
+}>;
+
+function copyResultsRecord<T>(source: Record<string, T>): Record<string, T> {
+	const copy = Object.create(null) as Record<string, T>;
+	Object.defineProperties(copy, Object.getOwnPropertyDescriptors(source));
+	return copy;
+}
+
+function replaceResultsRecord<T>(target: Record<string, T>, source: Record<string, T>): void {
+	for (const key of Reflect.ownKeys(target)) Reflect.deleteProperty(target, key);
+	Object.defineProperties(target, Object.getOwnPropertyDescriptors(source));
+}
+
+export function captureResultsRuntime(): ResultsRuntimeSnapshot {
+	return {
+		states: copyResultsRecord(_resultsByBoxId),
+		revisions: copyResultsRecord(_resultsRevisionByBoxId),
+		artifacts: _resultArtifacts.captureSnapshot(),
+		currentResult,
+	};
+}
+
+export function restoreResultsRuntime(snapshot: ResultsRuntimeSnapshot, restorePresentation = false): void {
+	const currentStates = copyResultsRecord(_resultsByBoxId);
+	const currentArtifactIds = new Map(
+		Object.keys(currentStates).map(boxId => [boxId, _resultArtifacts.getCurrent(boxId)?.artifactId]),
+	);
+	const snapshotArtifactIds = new Map(snapshot.artifacts.currentArtifactIds);
+	const restoreState = () => {
+		replaceResultsRecord(_resultsByBoxId, snapshot.states);
+		replaceResultsRecord(_resultsRevisionByBoxId, snapshot.revisions);
+		_resultArtifacts.restoreSnapshot(snapshot.artifacts);
+		currentResult = snapshot.currentResult;
+	};
+	restoreState();
+	if (!restorePresentation) return;
+	for (const boxId of Object.keys(currentStates)) {
+		if (Object.prototype.hasOwnProperty.call(snapshot.states, boxId)) continue;
+		const section = document.getElementById(boxId) as any;
+		try { section?.clearResults?.(); } catch (error) { console.error('[kusto]', error); }
+		try { __kustoNotifyResultsUpdated(boxId); } catch (error) { console.error('[kusto]', error); }
+	}
+	for (const [boxId, state] of Object.entries(snapshot.states)) {
+		if (currentStates[boxId] === state
+			&& currentArtifactIds.get(boxId) === snapshotArtifactIds.get(boxId)) continue;
+		const section = document.getElementById(boxId) as any;
+		try {
+			section?.displayResult?.(state, { label: 'Results', showExecutionTime: true });
+			const artifact = _resultArtifacts.getCurrent(boxId);
+			if (artifact) section?.setResultArtifactForCsvExport?.(artifact.artifactId);
+		} catch (error) {
+			console.error('[kusto]', error);
+		}
+		try { __kustoNotifyResultsUpdated(boxId); } catch (error) { console.error('[kusto]', error); }
+	}
+	restoreState();
+}
 
 export function resetCurrentResult() {
 	currentResult = null;

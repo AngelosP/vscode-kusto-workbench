@@ -942,7 +942,9 @@ export function updateConnectionSelects() {
 	queryBoxes.forEach((id: any) => {
 		const el = __kustoGetQuerySectionElement(id);
 		if (el && typeof el.setConnections === 'function') {
-			el.setConnections(connections || [], { lastConnectionId: lastConnectionId || '' });
+			try {
+				el.setConnections(connections || [], { lastConnectionId: lastConnectionId || '' });
+			} catch (e) { console.error('[kusto]', e); }
 		}
 		try { __kustoUpdateFavoritesUiForBox(id); } catch (e) { console.error('[kusto]', e); }
 	});

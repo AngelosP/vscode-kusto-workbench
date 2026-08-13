@@ -7,6 +7,29 @@ import {
 } from '../../src/shared/resultArtifact.js';
 
 describe('ResultArtifactStore', () => {
+	it('restores an exact runtime snapshot including bindings and next revisions', () => {
+		const store = new ResultArtifactStore();
+		const first = store.publish('query_snapshot', {
+			columns: ['Value'], rows: [['before']], metadata: {},
+		})!;
+		store.bind('chart:snapshot', 'query_snapshot', first.artifactId);
+		const snapshot = store.captureSnapshot();
+
+		const second = store.publish('query_snapshot', {
+			columns: ['Value'], rows: [['after']], metadata: {},
+		})!;
+		store.unbind('chart:snapshot');
+		store.restoreSnapshot(snapshot);
+
+		expect(store.getCurrent('query_snapshot')).toBe(first);
+		expect(store.getBound('chart:snapshot', 'query_snapshot')).toBe(first);
+		expect(store.get(second.artifactId)).toBeUndefined();
+		const resumed = store.publish('query_snapshot', {
+			columns: ['Value'], rows: [['resumed']], metadata: {},
+		})!;
+		expect(resumed.revision).toBe(first.revision + 1);
+	});
+
 	it('restores persisted identity and advances the next source revision', () => {
 		const firstStore = new ResultArtifactStore();
 		const original = firstStore.publish('query_1', {

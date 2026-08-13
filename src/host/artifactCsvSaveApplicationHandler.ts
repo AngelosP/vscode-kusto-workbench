@@ -37,6 +37,7 @@ export interface ArtifactCsvSaveApplicationHandler {
 export type ArtifactCsvSaveApplicationHandlerOptions = {
 	postMessage: (message: ArtifactCsvSaveHostMessage) => Thenable<boolean>;
 	isDisposed: () => boolean;
+	showSaveDialog?: (options: vscode.SaveDialogOptions) => Thenable<vscode.Uri | undefined>;
 };
 
 export class HostArtifactCsvSaveApplicationHandler implements ArtifactCsvSaveApplicationHandler {
@@ -92,7 +93,7 @@ export class HostArtifactCsvSaveApplicationHandler implements ArtifactCsvSaveApp
 		try {
 			const suggestedFileName = String(message.suggestedFileName || 'kusto-results.csv') || 'kusto-results.csv';
 			const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(os.homedir());
-			const picked = await vscode.window.showSaveDialog({
+			const picked = await (this.options.showSaveDialog ?? vscode.window.showSaveDialog)({
 				defaultUri: vscode.Uri.joinPath(baseDir, suggestedFileName),
 				filters: { CSV: ['csv'] },
 			});

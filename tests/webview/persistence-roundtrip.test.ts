@@ -240,6 +240,8 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => {
 });
 
 vi.mock('../../src/webview/core/results-state.js', () => ({
+	captureResultsRuntime: vi.fn(() => ({ token: 'results-runtime' })),
+	restoreResultsRuntime: vi.fn(),
 	displayResult: vi.fn(),
 	displayResultForBox: vi.fn(),
 	clearResultsState: vi.fn(),
@@ -392,8 +394,8 @@ import { updateConnectionSelects, __kustoGetConnectionId, __kustoGetDatabase, __
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
 import { __kustoCloseShareModal, setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
 import { addChartBox } from '../../src/webview/sections/kw-chart-section.js';
-import { acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, createSectionWithCapabilities, discardPendingSqlResultRestores, finalizeDocumentDefaultsAfterAcknowledgement, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, installRuntimeAddSectionBridges, markKustoLeaveNoTracePolicyPending, resetDocumentPersistenceForTest, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, schedulePersist, __kustoApplyDocumentCapabilities, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
-import { createDerivedResultArtifactPublication, publicationFromPersistedResultArtifact, RESULT_ARTIFACT_CSV_RESET_EVENT } from '../../src/shared/resultArtifact.js';
+import { acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, beginKustoLeaveNoTracePolicyApplication, captureKustoLeaveNoTracePolicyRuntime, createSectionWithCapabilities, discardPendingSqlResultRestores, finalizeDocumentDefaultsAfterAcknowledgement, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, installRuntimeAddSectionBridges, markKustoLeaveNoTracePolicyPending, resetDocumentPersistenceForTest, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, restoreKustoLeaveNoTracePolicyRuntime, schedulePersist, __kustoApplyDocumentCapabilities, __kustoClearStoredQueryResult, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
+import { createDerivedResultArtifactPublication, publicationFromPersistedResultArtifact, RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, RESULT_ARTIFACT_CSV_RESET_EVENT } from '../../src/shared/resultArtifact.js';
 import { sqlConnectionTargetSignature } from '../../src/shared/sqlConnectionIdentity.js';
 
 describe('persistence round-trip', () => {
@@ -3184,6 +3186,118 @@ describe('persistence round-trip', () => {
 		expect(purge).toBeTruthy();
 		expect(purge.state.sections.find((section: any) => section.id === 'query_policy_first')?.resultJson).toBeUndefined();
 		expect(pState.queryResultJsonByBoxId.query_policy_first).toBeUndefined();
+	});
+
+	it('does not persist a protected-result purge before commit or after rollback', () => {
+		const resultJson = JSON.stringify({ columns: ['Secret'], rows: [['REJECTED_SECRET']], metadata: {} });
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/rejected-policy.kqlx',
+			state: { sections: [{
+				type: 'query', id: 'query_rejected_policy', query: 'print secret=1',
+				clusterUrl: 'https://secret.kusto.windows.net', resultJson, ...kustoResultOwner,
+			}] },
+		});
+		pState.queryResultJsonByBoxId.query_rejected_policy = resultJson;
+		pState.kustoResultOwnerByBoxId.query_rejected_policy = {
+			accountPartition: 'partition-a', leaveNoTraceRevision: 0,
+		};
+		const serializedBefore = JSON.stringify(getKqlxState());
+		const ownerBefore = { ...pState.kustoResultOwnerByBoxId.query_rejected_policy };
+		vi.mocked(postMessageToHost).mockClear();
+		vi.mocked(clearResultsState).mockClear();
+		const application = beginKustoLeaveNoTracePolicyApplication();
+
+		applyKustoLeaveNoTracePolicy(['https://secret.kusto.windows.net'], false);
+
+		expect(clearResultsState).not.toHaveBeenCalled();
+		expect(pState.queryResultJsonByBoxId.query_rejected_policy).toBe(resultJson);
+		expect(pState.kustoResultOwnerByBoxId.query_rejected_policy).toEqual(ownerBefore);
+		expect(JSON.stringify(getKqlxState())).toBe(serializedBefore);
+		expect(vi.mocked(postMessageToHost).mock.calls.some(
+			([message]) => (message as any).type === 'persistDocument',
+		)).toBe(false);
+		application.rollback();
+		expect(clearResultsState).not.toHaveBeenCalled();
+		expect(pState.queryResultJsonByBoxId.query_rejected_policy).toBe(resultJson);
+		expect(pState.kustoResultOwnerByBoxId.query_rejected_policy).toEqual(ownerBefore);
+		expect(JSON.stringify(getKqlxState())).toBe(serializedBefore);
+		expect(vi.mocked(postMessageToHost).mock.calls.some(
+			([message]) => (message as any).type === 'persistDocument',
+		)).toBe(false);
+	});
+
+	it('emits protected-result revocation and persistence only at commit', () => {
+		const resultJson = JSON.stringify({ columns: ['Secret'], rows: [['COMMITTED_SECRET']], metadata: {} });
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/committed-policy.kqlx',
+			state: { sections: [{
+				type: 'query', id: 'query_committed_policy', query: 'print secret=1',
+				clusterUrl: 'https://secret.kusto.windows.net',
+			}] },
+		});
+		pState.queryResultJsonByBoxId.query_committed_policy = resultJson;
+		pState.kustoResultOwnerByBoxId.query_committed_policy = {
+			accountPartition: 'partition-a', leaveNoTraceRevision: 0,
+		};
+		const revoked = vi.fn();
+		window.addEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, revoked);
+		vi.mocked(clearResultsState).mockImplementationOnce(boxId => {
+			window.dispatchEvent(new CustomEvent(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, {
+				detail: { sourceBoxId: boxId, consumerIds: ['active-consumer'] },
+			}));
+		});
+		vi.mocked(postMessageToHost).mockClear();
+		const application = beginKustoLeaveNoTracePolicyApplication();
+
+		try {
+			applyKustoLeaveNoTracePolicy(['https://secret.kusto.windows.net'], false);
+			expect(clearResultsState).not.toHaveBeenCalled();
+			expect(revoked).not.toHaveBeenCalled();
+			expect(postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'persistDocument' }));
+
+			application.commit();
+
+			expect(clearResultsState).toHaveBeenCalledWith('query_committed_policy');
+			expect(revoked).toHaveBeenCalledOnce();
+			expect(pState.queryResultJsonByBoxId.query_committed_policy).toBeUndefined();
+			expect(pState.kustoResultOwnerByBoxId.query_committed_policy).toBeUndefined();
+			expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'persistDocument', reason: 'kusto-leave-no-trace-policy',
+			}));
+		} finally {
+			window.removeEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, revoked);
+		}
+	});
+
+	it('restores Kusto result ownership and stored-result signatures exactly', () => {
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/owner-rollback.kqlx',
+			state: { sections: [{
+				type: 'query', id: 'query_owner_rollback', query: 'print value=1',
+				clusterUrl: 'https://public.kusto.windows.net',
+			}] },
+		});
+		pState.queryResultJsonByBoxId.query_owner_rollback = JSON.stringify({
+			columns: ['Value'], rows: [[1]], metadata: {},
+		});
+		pState.kustoResultOwnerByBoxId.query_owner_rollback = {
+			accountPartition: 'partition-a', leaveNoTraceRevision: 0,
+		};
+		const serializedBefore = JSON.stringify(getKqlxState());
+		const resultJsonBefore = pState.queryResultJsonByBoxId.query_owner_rollback;
+		const ownerBefore = { ...pState.kustoResultOwnerByBoxId.query_owner_rollback };
+		adoptCurrentStateAsCleanForTest();
+		const snapshot = captureKustoLeaveNoTracePolicyRuntime();
+
+		__kustoClearStoredQueryResult('query_owner_rollback');
+		restoreKustoLeaveNoTracePolicyRuntime(snapshot);
+
+		expect(pState.queryResultJsonByBoxId.query_owner_rollback).toBe(resultJsonBefore);
+		expect(pState.kustoResultOwnerByBoxId.query_owner_rollback).toEqual(ownerBefore);
+		expect(JSON.stringify(getKqlxState())).toBe(serializedBefore);
+		vi.mocked(postMessageToHost).mockClear();
+		schedulePersist('owner-rollback-check', true);
+		expect(postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'persistDocument' }));
 	});
 
 	it('still purges a protected restore after a benign no-op persist schedule', () => {

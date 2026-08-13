@@ -9,8 +9,9 @@ Feature: Exact CSV result artifacts
   And I execute command "workbench.action.closePanel"
     And I wait 2 seconds
 
-  Scenario: Governed results hide denied Save and export allowed bytes through the native picker
+  Scenario: Governed results hide denied Save and export allowed bytes through the host handler
   	When I delete file "${TEMP}\kusto-workbench-exact-results.csv"
+  When I execute command "kustoWorkbench.test.setNextCsvSaveTarget" with args '["kusto-workbench-exact-results.csv"]'
   	When I execute command "kustoWorkbench.test.setIsolatedKustoConnections"
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
@@ -30,13 +31,7 @@ Feature: Exact CSV result artifacts
     Then I take a screenshot "csv-save-enabled"
 
     When I click "[data-testid='data-table-save']" in the webview
-    And I wait 3 seconds
-  	And I save the file as "${TEMP}\kusto-workbench-exact-results.csv"
-    And I wait 2 seconds
-  	Then the file "${TEMP}\kusto-workbench-exact-results.csv" should contain "Name,Score"
-  	Then the file "${TEMP}\kusto-workbench-exact-results.csv" should contain "alpha,1"
-  	Then the file "${TEMP}\kusto-workbench-exact-results.csv" should contain "bravo,2"
-    Then I collect JSON artifact "exact-csv-bytes" from extension host expression "(async () => { const base = String(process.env.TEMP || process.env.TMP || ''); const uri = vscode.Uri.joinPath(vscode.Uri.file(base), 'kusto-workbench-exact-results.csv'); const bytes = await vscode.workspace.fs.readFile(uri); const text = new TextDecoder().decode(bytes); const newline = String.fromCharCode(10); const expected = 'Name,Score' + newline + 'alpha,1' + newline + 'bravo,2'; if (text !== expected) throw new Error('CSV bytes differ: ' + JSON.stringify({ expected, actual: text })); return { text, byteLength: bytes.byteLength }; })()"
+    Then I collect JSON artifact "exact-csv-bytes" from extension host expression "(async () => { const base = String(process.env.TEMP || process.env.TMP || ''); const uri = vscode.Uri.joinPath(vscode.Uri.file(base), 'kusto-workbench-exact-results.csv'); const newline = String.fromCharCode(10); const expected = 'Name,Score' + newline + 'alpha,1' + newline + 'bravo,2'; const deadline = Date.now() + 10000; let lastError = ''; while (Date.now() < deadline) { try { const bytes = await vscode.workspace.fs.readFile(uri); const text = new TextDecoder().decode(bytes); if (text !== expected) throw new Error('CSV bytes differ: ' + JSON.stringify({ expected, actual: text })); return { text, byteLength: bytes.byteLength }; } catch (error) { lastError = String(error?.message || error); await new Promise(resolve => setTimeout(resolve, 100)); } } throw new Error('Exact CSV write did not settle: ' + lastError); })()"
   	When I click at 100, 100
   	And I wait 1 second
     Then I take a screenshot "csv-save-complete"

@@ -5,10 +5,10 @@ import {
 	parseKustoDatabaseDiscoveryWebviewMessage,
 	type KustoDatabaseDiscoveryWebviewMessage,
 } from '../shared/kustoDatabaseDiscoveryProtocol';
-
-type GetConnectionsMessage = Extract<IncomingWebviewMessage, {
-	type: 'getConnections';
-}>;
+import {
+	admitKustoConnectionsProjectionWebviewMessage,
+	type KustoConnectionsProjectionRequest,
+} from '../shared/kustoConnectionsProjectionProtocol';
 
 type SaveLastSelectionMessage = Extract<IncomingWebviewMessage, {
 	type: 'saveLastSelection';
@@ -39,6 +39,11 @@ export class HostKustoConnectionBrowsingApplicationHandler
 	constructor(private readonly options: KustoConnectionBrowsingApplicationHandlerOptions) {}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
+		const connectionsAdmission = admitKustoConnectionsProjectionWebviewMessage(message);
+		if (connectionsAdmission.recognized) {
+			if (!connectionsAdmission.parsed.ok || this.disposed) return Promise.resolve();
+			return this.getConnections(connectionsAdmission.parsed.value);
+		}
 		if (isKustoDatabaseDiscoveryWebviewMessageType(message)) {
 			const parsed = parseKustoDatabaseDiscoveryWebviewMessage(message);
 			if (!parsed.ok || this.disposed) return Promise.resolve();
@@ -48,9 +53,6 @@ export class HostKustoConnectionBrowsingApplicationHandler
 			);
 		}
 		switch (message.type) {
-			case 'getConnections':
-				if (this.disposed) return Promise.resolve();
-				return this.getConnections(message);
 			case 'saveLastSelection':
 				if (this.disposed) return Promise.resolve();
 				return this.saveLastSelection(message);
@@ -63,7 +65,7 @@ export class HostKustoConnectionBrowsingApplicationHandler
 		this.disposed = true;
 	}
 
-	private async getConnections(message: GetConnectionsMessage): Promise<void> {
+	private async getConnections(message: KustoConnectionsProjectionRequest): Promise<void> {
 		await this.options.sendConnectionsData(message.policyRequestId);
 	}
 

@@ -1,6 +1,7 @@
 import type { EditingPreferencesDataMessage } from '../../shared/editingPreferences.js';
 import {
 	autoTriggerAutocompleteEnabled,
+	caretDocsEnabled,
 	caretDocOverlaysByBoxId,
 	copilotInlineCompletionsEnabled,
 	queryBoxes,
@@ -10,6 +11,16 @@ import {
 } from './state.js';
 
 let latestRevision = -1;
+
+export type EditingPreferencesRuntimeSnapshot = Readonly<{
+	revision: number;
+	caretDocsEnabled: boolean;
+	caretDocsEnabledUserSet: boolean;
+	autoTriggerAutocompleteEnabled: boolean;
+	autoTriggerAutocompleteEnabledUserSet: boolean;
+	copilotInlineCompletionsEnabled: boolean;
+	copilotInlineCompletionsEnabledUserSet: boolean;
+}>;
 
 export function updateCaretDocsToggleButtons(): void {
 	for (const toolbar of document.querySelectorAll('kw-query-toolbar')) {
@@ -93,6 +104,32 @@ export function applyEditingPreferencesData(message: EditingPreferencesDataMessa
 	updateCopilotInlineCompletionsToggleButtons();
 	applyCaretDocsPresentation(!!message.caretDocsEnabled);
 	return true;
+}
+
+export function captureEditingPreferencesRuntime(): EditingPreferencesRuntimeSnapshot {
+	return {
+		revision: latestRevision,
+		caretDocsEnabled,
+		caretDocsEnabledUserSet: !!window.__kustoCaretDocsEnabledUserSet,
+		autoTriggerAutocompleteEnabled,
+		autoTriggerAutocompleteEnabledUserSet: !!window.__kustoAutoTriggerAutocompleteEnabledUserSet,
+		copilotInlineCompletionsEnabled,
+		copilotInlineCompletionsEnabledUserSet: !!window.__kustoCopilotInlineCompletionsEnabledUserSet,
+	};
+}
+
+export function restoreEditingPreferencesRuntime(snapshot: EditingPreferencesRuntimeSnapshot): void {
+	latestRevision = snapshot.revision;
+	setCaretDocsEnabled(snapshot.caretDocsEnabled);
+	setAutoTriggerAutocompleteEnabled(snapshot.autoTriggerAutocompleteEnabled);
+	setCopilotInlineCompletionsEnabled(snapshot.copilotInlineCompletionsEnabled);
+	window.__kustoCaretDocsEnabledUserSet = snapshot.caretDocsEnabledUserSet;
+	window.__kustoAutoTriggerAutocompleteEnabledUserSet = snapshot.autoTriggerAutocompleteEnabledUserSet;
+	window.__kustoCopilotInlineCompletionsEnabledUserSet = snapshot.copilotInlineCompletionsEnabledUserSet;
+	updateCaretDocsToggleButtons();
+	updateAutoTriggerAutocompleteToggleButtons();
+	updateCopilotInlineCompletionsToggleButtons();
+	applyCaretDocsPresentation(snapshot.caretDocsEnabled);
 }
 
 export function resetEditingPreferencesRevisionForTests(): void {

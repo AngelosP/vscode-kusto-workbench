@@ -42,6 +42,7 @@ import { KustoAuthPreferenceService } from './kustoAuthPreferenceService';
 import { KustoConnectionCache } from './kustoConnectionCache';
 import { normalizeKustoAuthorityId } from '../shared/kustoAuth';
 import { sqlConnectionTargetSignature } from '../shared/sqlConnectionIdentity';
+import { setNextDevelopmentCsvSaveTarget } from './developmentCsvSaveTarget';
 
 import { getWorkbenchLogger, registerWorkbenchLogger } from './workbenchLogger';
 import { EditorAssociationManager } from './firstLaunch/editorAssociationManager';
@@ -161,6 +162,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	if (context.extensionMode !== vscode.ExtensionMode.Production) {
 		context.subscriptions.push(
 			vscode.commands.registerCommand('kustoWorkbench.test.getCursorStatusBar', () => editorCursorStatusBar.getSnapshot()),
+			vscode.commands.registerCommand('kustoWorkbench.test.setNextCsvSaveTarget', (target: string) => {
+				return setNextDevelopmentCsvSaveTarget(target).fsPath;
+			}),
 			vscode.commands.registerCommand('kustoWorkbench.test.setIsolatedKustoConnections', (enabled: boolean = true) => {
 				setTestIsolateKustoConnections(!!enabled);
 			}),

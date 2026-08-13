@@ -11,7 +11,16 @@ import {
 	pState,
 	queryEditorPendingAddKinds,
 } from '../shared/persistence-state';
-import { clearResultsState, displayResultForBox, getCurrentResultArtifact, getResultsState, getResultsStateRevision } from './results-state';
+import {
+	captureResultsRuntime,
+	clearResultsState,
+	displayResultForBox,
+	getCurrentResultArtifact,
+	getResultsState,
+	getResultsStateRevision,
+	restoreResultsRuntime,
+	type ResultsRuntimeSnapshot,
+} from './results-state';
 import {
 	createDerivedResultArtifactPublication,
 	projectRowsToDeclaredColumns,
@@ -115,6 +124,7 @@ let __kustoHtmlPowerBiCompatibilityTimer: any = null;
 let __kustoHtmlPowerBiCompatibilityRunToken = 0;
 let __kustoRestoreResultGeneration = 0;
 let __kustoDeferredRestoredResultScheduled = false;
+let __kustoDeferredRestoredResultScheduleToken: object | null = null;
 let __kustoKustoPolicyReady = false;
 let __kustoKustoPolicyGloballyBlocked = false;
 let __kustoKustoPolicyClusterKeys = new Set<string>();
@@ -122,6 +132,8 @@ let __kustoKustoPolicyRevocationGenerations: Record<string, number> = {};
 let __kustoRequiredPolicyRequestId = '';
 let __kustoPersistenceEpoch = 0;
 let __kustoPendingProtectedResultPurge = false;
+let __kustoProtectedResultPurgeDeferralDepth = 0;
+let __kustoKustoPolicyEffectsPending = false;
 export const DOCUMENT_RUNTIME_INVALIDATED_EVENT = 'kusto-document-runtime-invalidated';
 
 function __kustoIsReadOnlyBrowserViewer(): boolean {
@@ -173,6 +185,88 @@ let __kustoLegacyDocumentPreferences: {
 	caretDocsEnabled?: boolean;
 	autoTriggerAutocompleteEnabled?: boolean;
 } = {};
+
+export type KustoLeaveNoTracePolicyRuntimeSnapshot = Readonly<{
+	policyReady: boolean;
+	globallyBlocked: boolean;
+	clusterKeys: readonly string[];
+	revocationGenerations: Record<string, number>;
+	requiredPolicyRequestId: string;
+	pendingProtectedResultPurge: boolean;
+	policyEffectsPending: boolean;
+	deferredRestoredResultScheduled: boolean;
+	deferredRestoredResultScheduleToken: object | null;
+	deferredRestoredResultJobs: readonly DeferredRestoredResultJob[];
+	lastDeferredRestoredResultSettlement: unknown;
+	queryResultJsonByBoxId: typeof pState.queryResultJsonByBoxId;
+	resultArtifactByBoxId: typeof pState.resultArtifactByBoxId;
+	kustoResultOwnerByBoxId: typeof pState.kustoResultOwnerByBoxId;
+	storedResultSignatures: Record<string, { json: string; token: string }>;
+	storedResultRevision: number;
+	lastExecutedBox: string;
+	lastPersistSignature: string;
+	results: ResultsRuntimeSnapshot;
+}>;
+
+function __kustoCloneRuntimeRecord<T>(source: T): T {
+	if (!source || typeof source !== 'object') return source;
+	const clone = Object.create(Object.getPrototypeOf(source));
+	Object.defineProperties(clone, Object.getOwnPropertyDescriptors(source));
+	return clone;
+}
+
+function __kustoReplaceRuntimeRecord<T extends object>(target: T, source: T): void {
+	for (const key of Reflect.ownKeys(target)) Reflect.deleteProperty(target, key);
+	Object.defineProperties(target, Object.getOwnPropertyDescriptors(source));
+}
+
+export function captureKustoLeaveNoTracePolicyRuntime(): KustoLeaveNoTracePolicyRuntimeSnapshot {
+	return {
+		policyReady: __kustoKustoPolicyReady,
+		globallyBlocked: __kustoKustoPolicyGloballyBlocked,
+		clusterKeys: [...__kustoKustoPolicyClusterKeys],
+		revocationGenerations: __kustoCloneRuntimeRecord(__kustoKustoPolicyRevocationGenerations),
+		requiredPolicyRequestId: __kustoRequiredPolicyRequestId,
+		pendingProtectedResultPurge: __kustoPendingProtectedResultPurge,
+		policyEffectsPending: __kustoKustoPolicyEffectsPending,
+		deferredRestoredResultScheduled: __kustoDeferredRestoredResultScheduled,
+		deferredRestoredResultScheduleToken: __kustoDeferredRestoredResultScheduleToken,
+		deferredRestoredResultJobs: __kustoDeferredRestoredResultJobs.slice(),
+		lastDeferredRestoredResultSettlement: __kustoLastDeferredRestoredResultSettlementForTest,
+		queryResultJsonByBoxId: __kustoCloneRuntimeRecord(pState.queryResultJsonByBoxId),
+		resultArtifactByBoxId: __kustoCloneRuntimeRecord(pState.resultArtifactByBoxId),
+		kustoResultOwnerByBoxId: __kustoCloneRuntimeRecord(pState.kustoResultOwnerByBoxId),
+		storedResultSignatures: __kustoCloneRuntimeRecord(__kustoStoredResultSignatureByBoxId),
+		storedResultRevision: __kustoStoredResultRevision,
+		lastExecutedBox: String(pState.lastExecutedBox || ''),
+		lastPersistSignature: __kustoLastPersistSignature,
+		results: captureResultsRuntime(),
+	};
+}
+
+export function restoreKustoLeaveNoTracePolicyRuntime(
+	snapshot: KustoLeaveNoTracePolicyRuntimeSnapshot,
+): void {
+	__kustoKustoPolicyReady = snapshot.policyReady;
+	__kustoKustoPolicyGloballyBlocked = snapshot.globallyBlocked;
+	__kustoKustoPolicyClusterKeys = new Set(snapshot.clusterKeys);
+	__kustoKustoPolicyRevocationGenerations = __kustoCloneRuntimeRecord(snapshot.revocationGenerations);
+	__kustoRequiredPolicyRequestId = snapshot.requiredPolicyRequestId;
+	__kustoPendingProtectedResultPurge = snapshot.pendingProtectedResultPurge;
+	__kustoKustoPolicyEffectsPending = snapshot.policyEffectsPending;
+	__kustoDeferredRestoredResultScheduled = snapshot.deferredRestoredResultScheduled;
+	__kustoDeferredRestoredResultScheduleToken = snapshot.deferredRestoredResultScheduleToken;
+	__kustoDeferredRestoredResultJobs = snapshot.deferredRestoredResultJobs.slice();
+	__kustoLastDeferredRestoredResultSettlementForTest = snapshot.lastDeferredRestoredResultSettlement;
+	pState.queryResultJsonByBoxId = __kustoCloneRuntimeRecord(snapshot.queryResultJsonByBoxId);
+	pState.resultArtifactByBoxId = __kustoCloneRuntimeRecord(snapshot.resultArtifactByBoxId);
+	pState.kustoResultOwnerByBoxId = __kustoCloneRuntimeRecord(snapshot.kustoResultOwnerByBoxId);
+	__kustoReplaceRuntimeRecord(__kustoStoredResultSignatureByBoxId, snapshot.storedResultSignatures);
+	__kustoStoredResultRevision = snapshot.storedResultRevision;
+	pState.lastExecutedBox = snapshot.lastExecutedBox;
+	__kustoLastPersistSignature = snapshot.lastPersistSignature;
+	restoreResultsRuntime(snapshot.results, true);
+}
 
 function legacyDocumentPreferencesForPersistence() {
 	return { ...__kustoLegacyDocumentPreferences };
@@ -394,6 +488,7 @@ function __kustoStartRestoreResultBatch(preserveIds: ReadonlySet<string> = new S
 	__kustoDeferredRestoredResultJobs = retainedDeferred;
 	__kustoPendingSqlOwnedRestores = retainedPendingSql;
 	__kustoDeferredRestoredResultScheduled = retainedScheduled;
+	if (!retainedScheduled) __kustoDeferredRestoredResultScheduleToken = null;
 	__kustoPendingProtectedResultPurge = retainedProtectedPurge;
 	return __kustoRestoreResultGeneration;
 }
@@ -535,10 +630,109 @@ export function canPersistKustoResult(clusterUrl: unknown): boolean {
 
 function __kustoRequestProtectedResultPurge(): void {
 	__kustoPendingProtectedResultPurge = true;
+	if (__kustoProtectedResultPurgeDeferralDepth > 0) return;
 	if (!__kustoPersistenceEnabled || pState.restoreInProgress) return;
 	__kustoPendingProtectedResultPurge = false;
 	__kustoLastPersistSignature = '';
 	schedulePersist('kusto-leave-no-trace-policy', true);
+}
+
+export type KustoLeaveNoTracePolicyApplication = Readonly<{
+	commit(): void;
+	rollback(): void;
+}>;
+
+export function beginKustoLeaveNoTracePolicyApplication(): KustoLeaveNoTracePolicyApplication {
+	const pendingProtectedResultPurge = __kustoPendingProtectedResultPurge;
+	const policyEffectsPending = __kustoKustoPolicyEffectsPending;
+	__kustoProtectedResultPurgeDeferralDepth++;
+	let settled = false;
+	const settle = (commit: boolean) => {
+		if (settled) return;
+		if (commit && __kustoProtectedResultPurgeDeferralDepth === 1 && __kustoKustoPolicyEffectsPending) {
+			const plan = __kustoPrepareKustoLeaveNoTracePolicyEffects();
+			settled = true;
+			__kustoProtectedResultPurgeDeferralDepth = 0;
+			__kustoKustoPolicyEffectsPending = false;
+			__kustoCommitKustoLeaveNoTracePolicyEffects(plan);
+			return;
+		}
+		settled = true;
+		__kustoProtectedResultPurgeDeferralDepth = Math.max(0, __kustoProtectedResultPurgeDeferralDepth - 1);
+		if (!commit) {
+			__kustoPendingProtectedResultPurge = pendingProtectedResultPurge;
+			__kustoKustoPolicyEffectsPending = policyEffectsPending;
+		}
+		if (commit
+			&& __kustoProtectedResultPurgeDeferralDepth === 0
+			&& __kustoPendingProtectedResultPurge
+			&& !__kustoDeferredRestoredResultJobs.some(__kustoIsKustoOwnedRestore)) {
+			__kustoRequestProtectedResultPurge();
+		}
+	};
+	return {
+		commit: () => settle(true),
+		rollback: () => settle(false),
+	};
+}
+
+type KustoLeaveNoTracePolicyEffectsPlan = Readonly<{
+	retainedDeferredJobs: DeferredRestoredResultJob[];
+	storedResultBoxIdsToDelete: readonly string[];
+	protectedBoxIds: readonly string[];
+	changed: boolean;
+}>;
+
+function __kustoPrepareKustoLeaveNoTracePolicyEffects(): KustoLeaveNoTracePolicyEffectsPlan {
+	let changed = false;
+	const retainedDeferredJobs: DeferredRestoredResultJob[] = [];
+	const storedResultBoxIdsToDelete: string[] = [];
+	for (const job of __kustoDeferredRestoredResultJobs) {
+		if (!__kustoIsKustoOwnedRestore(job)) {
+			retainedDeferredJobs.push(job);
+			continue;
+		}
+		if (!__kustoIsDeferredResultJobDocumentCurrent(job)) continue;
+		if (__kustoIsProtectedKustoResult(job.boxId, job.kustoClusterUrl, job.kustoConnectionIdHint)) {
+			if (pState.queryResultJsonByBoxId?.[job.boxId] === job.resultJson) {
+				storedResultBoxIdsToDelete.push(job.boxId);
+			}
+			changed = true;
+			continue;
+		}
+		const ownerState = __kustoGetDeferredResultJobOwnerState(job);
+		if (ownerState === 'invalid') {
+			changed = true;
+			continue;
+		}
+		retainedDeferredJobs.push(job);
+	}
+
+	const protectedBoxIds: string[] = [];
+	for (const rawBoxId of queryBoxes || []) {
+		const boxId = String(rawBoxId || '').trim();
+		if (!boxId || __kustoIsSqlOwnedQueryBox(boxId) || !__kustoIsProtectedKustoResult(boxId)) continue;
+		protectedBoxIds.push(boxId);
+		changed = changed || !!pState.queryResultJsonByBoxId?.[boxId] || !!getResultsState(boxId);
+	}
+	return { retainedDeferredJobs, storedResultBoxIdsToDelete, protectedBoxIds, changed };
+}
+
+function __kustoCommitKustoLeaveNoTracePolicyEffects(plan: KustoLeaveNoTracePolicyEffectsPlan): void {
+	__kustoDeferredRestoredResultJobs = plan.retainedDeferredJobs;
+	for (const boxId of plan.storedResultBoxIdsToDelete) __kustoDeleteStoredQueryResultJson(boxId);
+	for (const boxId of plan.protectedBoxIds) {
+		__kustoDeleteStoredQueryResultJson(boxId);
+		try { clearResultsState(boxId); } catch (e) { console.error('[kusto]', e); }
+		try { (document.getElementById(boxId) as any)?.clearResults?.(); } catch (e) { console.error('[kusto]', e); }
+		if (pState.lastExecutedBox === boxId) pState.lastExecutedBox = '';
+	}
+	if (plan.changed) __kustoPendingProtectedResultPurge = true;
+	__kustoScheduleDeferredRestoredResults();
+	if (__kustoPendingProtectedResultPurge
+		&& !__kustoDeferredRestoredResultJobs.some(__kustoIsKustoOwnedRestore)) {
+		try { __kustoRequestProtectedResultPurge(); } catch (e) { console.error('[kusto]', e); }
+	}
 }
 
 export function applyKustoLeaveNoTracePolicy(
@@ -558,41 +752,11 @@ export function applyKustoLeaveNoTracePolicy(
 		__kustoRequiredPolicyRequestId = '';
 	}
 	__kustoKustoPolicyReady = true;
-	let changed = false;
-
-	__kustoDeferredRestoredResultJobs = __kustoDeferredRestoredResultJobs.filter(job => {
-		if (!__kustoIsKustoOwnedRestore(job)) return true;
-		if (!__kustoIsDeferredResultJobDocumentCurrent(job)) return false;
-		if (__kustoIsProtectedKustoResult(job.boxId, job.kustoClusterUrl, job.kustoConnectionIdHint)) {
-			if (pState.queryResultJsonByBoxId?.[job.boxId] === job.resultJson) __kustoDeleteStoredQueryResultJson(job.boxId);
-			changed = true;
-			return false;
-		}
-		const ownerState = __kustoGetDeferredResultJobOwnerState(job);
-		if (ownerState === 'invalid') changed = true;
-		return ownerState !== 'invalid';
-	});
-
-	for (const rawBoxId of queryBoxes || []) {
-		const boxId = String(rawBoxId || '').trim();
-		if (!boxId || __kustoIsSqlOwnedQueryBox(boxId) || !__kustoIsProtectedKustoResult(boxId)) continue;
-		const hadStoredResult = !!pState.queryResultJsonByBoxId?.[boxId];
-		const hadRenderedResult = !!getResultsState(boxId);
-		__kustoDeleteStoredQueryResultJson(boxId);
-		clearResultsState(boxId);
-		try { (document.getElementById(boxId) as any)?.clearResults?.(); } catch (e) { console.error('[kusto]', e); }
-		if (pState.lastExecutedBox === boxId) pState.lastExecutedBox = '';
-		changed = changed || hadStoredResult || hadRenderedResult;
-	}
-
-	if (changed) {
-		__kustoPendingProtectedResultPurge = true;
-	}
-	__kustoScheduleDeferredRestoredResults();
-	if (__kustoPendingProtectedResultPurge
-		&& !__kustoDeferredRestoredResultJobs.some(__kustoIsKustoOwnedRestore)) {
-		try { __kustoRequestProtectedResultPurge(); } catch (e) { console.error('[kusto]', e); }
-	}
+	__kustoKustoPolicyEffectsPending = true;
+	if (__kustoProtectedResultPurgeDeferralDepth > 0) return;
+	const plan = __kustoPrepareKustoLeaveNoTracePolicyEffects();
+	__kustoKustoPolicyEffectsPending = false;
+	__kustoCommitKustoLeaveNoTracePolicyEffects(plan);
 }
 
 function __kustoQueueRestoredResult(job: Omit<DeferredRestoredResultJob, 'generation' | 'documentUri' | 'initialResultsRevision' | 'persistenceEpoch'>): void {
@@ -1025,7 +1189,11 @@ function __kustoScheduleDeferredRestoredResults(): void {
 		if (!__kustoIsReadOnlyBrowserViewer()
 			&& !__kustoKustoPolicyReady && __kustoDeferredRestoredResultJobs.every(__kustoIsKustoOwnedRestore)) return;
 		__kustoDeferredRestoredResultScheduled = true;
+		const scheduleToken = {};
+		__kustoDeferredRestoredResultScheduleToken = scheduleToken;
 		__kustoQueueIdle(() => {
+			if (__kustoDeferredRestoredResultScheduleToken !== scheduleToken) return;
+			__kustoDeferredRestoredResultScheduleToken = null;
 			__kustoDeferredRestoredResultScheduled = false;
 			const nextIndex = __kustoDeferredRestoredResultJobs.findIndex(job => __kustoGetDeferredResultJobState(job) !== 'pending');
 			const job = nextIndex >= 0 ? __kustoDeferredRestoredResultJobs.splice(nextIndex, 1)[0] : undefined;
@@ -2079,6 +2247,10 @@ export function applyBrowserViewerDocumentProjection(message: Record<string, unk
 
 export function resetDocumentPersistenceForTest(): void {
 	__kustoPersistenceEnabled = true;
+	__kustoProtectedResultPurgeDeferralDepth = 0;
+	__kustoKustoPolicyEffectsPending = false;
+	__kustoDeferredRestoredResultScheduled = false;
+	__kustoDeferredRestoredResultScheduleToken = null;
 	__kustoHasAppliedDocument = false;
 	__kustoLastAppliedDocumentUri = '';
 	__kustoLastAppliedProjectionState = undefined;

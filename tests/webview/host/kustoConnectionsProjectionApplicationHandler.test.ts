@@ -5,6 +5,7 @@ vi.mock('../../../src/host/editingPreferences', () => ({
 }));
 
 import { getKustoConnectionIdentityKey } from '../../../src/shared/kustoAuth';
+import { parseKustoConnectionsProjectionHostMessage } from '../../../src/shared/kustoConnectionsProjectionProtocol';
 import type { KustoConnection } from '../../../src/host/connectionManager';
 import type { KustoLeaveNoTracePolicySnapshot } from '../../../src/host/kustoLeaveNoTracePolicyStore';
 import { getEditingPreferencesData } from '../../../src/host/editingPreferences';
@@ -154,6 +155,29 @@ describe('HostKustoConnectionsProjectionApplicationHandler', () => {
 	afterEach(() => {
 		setTestIsolateKustoConnections(false);
 		vi.clearAllMocks();
+	});
+
+	it('publishes fresh-profile selections as null through JSON transport', async () => {
+		let transported: unknown;
+		const harness = createHarness({
+			getLastSelection: vi.fn(() => ({
+				lastConnectionId: undefined,
+				lastDatabase: undefined,
+			})),
+			postKustoPublication: vi.fn(async message => {
+				transported = JSON.parse(JSON.stringify(message));
+				return true;
+			}),
+		});
+
+		await harness.handler.refresh();
+
+		expect(transported).toMatchObject({
+			type: 'connectionsData',
+			lastConnectionId: null,
+			lastDatabase: null,
+		});
+		expect(parseKustoConnectionsProjectionHostMessage(transported)).toMatchObject({ ok: true });
 	});
 
 	it('publishes the complete physical projection and holds policy admission through application acknowledgement', async () => {
@@ -416,6 +440,21 @@ describe('HostKustoConnectionsProjectionApplicationHandler', () => {
 		expect(harness.runWithLeaveNoTraceSnapshotLock).not.toHaveBeenCalled();
 		expect(harness.postKustoPublication).not.toHaveBeenCalled();
 		transport.resolve(true);
+	});
+
+	it('rejects malformed captured state before generic publication staging', async () => {
+		const harness = createHarness({
+			getCachedDatabases: vi.fn(() => ({
+				'kusto-1': ['DatabaseOne', 42 as unknown as string],
+			})),
+		});
+
+		await expect(harness.handler.refresh()).rejects.toThrow(
+			'Invalid Kusto connections projection',
+		);
+
+		expect(harness.postKustoPublication).not.toHaveBeenCalled();
+		expect(harness.postMessage).not.toHaveBeenCalled();
 	});
 
 	it('suppresses admitted and later work when disposed before policy admission', async () => {

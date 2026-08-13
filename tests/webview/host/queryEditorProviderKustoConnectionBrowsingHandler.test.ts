@@ -255,6 +255,7 @@ describe('QueryEditorProvider Kusto connection browsing application', () => {
 		const compatibilitySource = readSource('src/host/kqlCompatEditorProvider.ts');
 		const extensionSource = readSource('src/host/extension.ts');
 		const typesSource = readSource('src/host/queryEditorTypes.ts');
+		const protocolSource = readSource('src/shared/kustoConnectionsProjectionProtocol.ts');
 
 		expect(providerSource).not.toContain("case 'getConnections':");
 		expect(providerSource).not.toContain("case 'getDatabases':");
@@ -271,10 +272,13 @@ describe('QueryEditorProvider Kusto connection browsing application', () => {
 		);
 		expect(providerSource).toContain('this.kustoConnectionBrowsingApplication.dispose();');
 
-		expect(handlerSource).toContain("case 'getConnections':");
+		expect(handlerSource).not.toContain("case 'getConnections':");
 		expect(handlerSource).not.toContain("case 'getDatabases':");
 		expect(handlerSource).not.toContain("case 'refreshDatabases':");
 		expect(handlerSource).toContain("case 'saveLastSelection':");
+		expect(handlerSource).toContain('admitKustoConnectionsProjectionWebviewMessage(message)');
+		expect(handlerSource.indexOf('admitKustoConnectionsProjectionWebviewMessage(message)'))
+			.toBeLessThan(handlerSource.indexOf('this.options.sendConnectionsData('));
 		expect(handlerSource).toContain('parseKustoDatabaseDiscoveryWebviewMessage(message)');
 		expect(handlerSource).toContain("parsed.value.type === 'getDatabases' ? 'passive' : 'interactive-refresh'");
 		expect(handlerSource.indexOf('parseKustoDatabaseDiscoveryWebviewMessage(message)'))
@@ -305,7 +309,10 @@ describe('QueryEditorProvider Kusto connection browsing application', () => {
 		expect(extensionSource).toContain(
 			"vscode.commands.registerCommand('kusto.refreshTextEditorDiagnostics'",
 		);
-		expect(typesSource).toContain("type: 'getConnections'; policyRequestId?: string");
+		expect(typesSource).toContain('| KustoConnectionsProjectionWebviewMessage');
+		expect(typesSource).not.toContain("type: 'getConnections'; policyRequestId?: string");
+		expect(protocolSource).toContain("type: 'getConnections';");
+		expect(protocolSource).toContain('policyRequestId?: string;');
 		expect(typesSource).toContain('| KustoDatabaseDiscoveryWebviewMessage');
 		expect(typesSource).not.toContain("type: 'getDatabases'");
 		expect(typesSource).not.toContain("type: 'refreshDatabases'");

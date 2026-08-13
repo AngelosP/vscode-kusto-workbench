@@ -135,7 +135,25 @@ const mocks = {
 	updateAutoTriggerAutocompleteToggleButtons: vi.fn(),
 	updateCopilotInlineCompletionsToggleButtons: vi.fn(),
 	applyEditingPreferencesData: vi.fn(),
+	captureEditingPreferencesRuntime: vi.fn(() => ({
+		revision: -1,
+		caretDocsEnabled: true,
+		caretDocsEnabledUserSet: false,
+		autoTriggerAutocompleteEnabled: true,
+		autoTriggerAutocompleteEnabledUserSet: false,
+		copilotInlineCompletionsEnabled: true,
+		copilotInlineCompletionsEnabledUserSet: false,
+	})),
+	restoreEditingPreferencesRuntime: vi.fn(),
 	applyKustoLeaveNoTracePolicy: vi.fn(),
+	commitKustoLeaveNoTracePolicyApplication: vi.fn(),
+	rollbackKustoLeaveNoTracePolicyApplication: vi.fn(),
+	beginKustoLeaveNoTracePolicyApplication: vi.fn(() => ({
+		commit: () => mocks.commitKustoLeaveNoTracePolicyApplication(),
+		rollback: () => mocks.rollbackKustoLeaveNoTracePolicyApplication(),
+	})),
+	captureKustoLeaveNoTracePolicyRuntime: vi.fn(() => ({ token: 'policy-runtime-before' })),
+	restoreKustoLeaveNoTracePolicyRuntime: vi.fn(),
 	getResultArtifactByProducerExecution: vi.fn(),
 	getCurrentResultArtifact: vi.fn(() => null),
 	getResultsStateRevision: vi.fn(() => 0),
@@ -309,6 +327,8 @@ vi.mock('../../src/webview/sections/kw-query-toolbar.js', () => ({
 
 vi.mock('../../src/webview/core/editing-preferences.js', () => ({
 	applyEditingPreferencesData: mocks.applyEditingPreferencesData,
+	captureEditingPreferencesRuntime: mocks.captureEditingPreferencesRuntime,
+	restoreEditingPreferencesRuntime: mocks.restoreEditingPreferencesRuntime,
 }));
 
 vi.mock('../../src/webview/sections/query-execution.controller.js', async () => {
@@ -346,6 +366,9 @@ vi.mock('../../src/webview/core/persistence.js', () => ({
 	resolvePendingSqlResultRestores: mocks.resolvePendingSqlResultRestores,
 	discardPendingSqlResultRestores: mocks.discardPendingSqlResultRestores,
 	applyKustoLeaveNoTracePolicy: mocks.applyKustoLeaveNoTracePolicy,
+	beginKustoLeaveNoTracePolicyApplication: mocks.beginKustoLeaveNoTracePolicyApplication,
+	captureKustoLeaveNoTracePolicyRuntime: mocks.captureKustoLeaveNoTracePolicyRuntime,
+	restoreKustoLeaveNoTracePolicyRuntime: mocks.restoreKustoLeaveNoTracePolicyRuntime,
 	isDocumentMutationAllowed: () => handlerState.pState.documentMutationAllowed === true,
 	finalizeDocumentDefaultsAfterAcknowledgement: vi.fn(),
 }));
@@ -691,6 +714,59 @@ function kustoDispatch(clientActivityId: string): Record<string, unknown> {
 	};
 }
 
+function kustoConnectionsSnapshot(connectionsRevision: number, connectionId: string) {
+	return {
+		type: 'connectionsData' as const,
+		connectionsRevision,
+		connections: [{
+			id: connectionId,
+			name: `Connection ${connectionId}`,
+			clusterUrl: `https://${connectionId}.kusto.windows.net`,
+			database: 'DatabaseOne',
+			authorityId: 'organizations',
+			accountPartition: `partition-${connectionId}`,
+			connectionRevision: connectionsRevision,
+			connectionIdentityKey: `${connectionId}|organizations`,
+		}],
+		accounts: [{ id: 'account-a', label: 'Account A', lastUsedAt: 1 }],
+		lastConnectionId: connectionId,
+		lastDatabase: 'DatabaseOne',
+		cachedDatabases: { [connectionId]: ['DatabaseOne'] },
+		favorites: [{
+			name: 'Favorite One', connectionId,
+			clusterUrl: `https://${connectionId}.kusto.windows.net`, database: 'DatabaseOne',
+		}],
+		caretDocsEnabled: true,
+		caretDocsEnabledUserSet: true,
+		autoTriggerAutocompleteEnabled: true,
+		autoTriggerAutocompleteEnabledUserSet: false,
+		copilotInlineCompletionsEnabled: true,
+		copilotInlineCompletionsEnabledUserSet: false,
+		editingPreferencesRevision: connectionsRevision,
+		copilotChatFirstTimeDismissed: false,
+		leaveNoTraceClusters: [],
+		leaveNoTraceGloballyBlocked: false,
+		leaveNoTraceRevisions: {},
+		devNotesEnabled: true,
+	};
+}
+
+function stageKustoPublication(publicationId: string, payload: Record<string, unknown>): void {
+	dispatchHostMessage({
+		type: 'kustoPublicationStage', publicationId,
+		publicationDeadline: Date.now() + 1_000, payload,
+	});
+}
+
+function commitKustoPublication(publicationId: string): void {
+	dispatchHostMessage({ type: 'kustoPublicationCommit', publicationId });
+}
+
+function publishKustoPublication(publicationId: string, payload: Record<string, unknown>): void {
+	stageKustoPublication(publicationId, payload);
+	commitKustoPublication(publicationId);
+}
+
 let getResultsStateMock: ReturnType<typeof vi.fn>;
 let messageHandlerModule: typeof import('../../src/webview/core/message-handler.js');
 let initialDispatcherReadyCount = 0;
@@ -840,6 +916,32 @@ describe('message-handler dispatch', () => {
 			window.dispatchEvent(new MessageEvent('message', { data: proxy }));
 			expect(propertyReads).toBe(0);
 		}
+	});
+
+	it('makes an unknown-to-known discriminator proxy inert before protocol routing', () => {
+		let typeDescriptorReads = 0;
+		let getterCalls = 0;
+		const message = new Proxy({
+			...kustoConnectionsSnapshot(Number.MAX_SAFE_INTEGER, 'unchecked-max'),
+			type: 'unrelatedHostType',
+		}, {
+			get(target, key, receiver) {
+				getterCalls++;
+				return key === 'type' ? 'connectionsData' : Reflect.get(target, key, receiver);
+			},
+			getOwnPropertyDescriptor(target, key) {
+				const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+				if (key === 'type') typeDescriptorReads++;
+				return descriptor;
+			},
+		});
+
+		window.dispatchEvent(new MessageEvent('message', { data: message }));
+
+		expect(typeDescriptorReads).toBe(1);
+		expect(getterCalls).toBe(0);
+		expect(mocks.setConnections).not.toHaveBeenCalled();
+		expect(mocks.applyKustoLeaveNoTracePolicy).not.toHaveBeenCalled();
 	});
 
 	it('admits artifact CSV host messages before the dispatcher reaches pending-export effects', () => {
@@ -1449,28 +1551,273 @@ describe('message-handler dispatch', () => {
 		}));
 	});
 
+	it('treats Kusto connection revision zero as a present canonical revision', () => {
+		dispatchHostMessage(kustoConnectionsSnapshot(0, 'canonical-zero'));
+
+		expect(mocks.setConnections).toHaveBeenCalledOnce();
+		expect(mocks.setConnections).toHaveBeenCalledWith([
+			expect.objectContaining({ id: 'canonical-zero', connectionRevision: 0 }),
+		]);
+	});
+
 	it('ignores an older connection snapshot after a newer principal revision', async () => {
 		dispatchHostMessage({
-			type: 'connectionsData',
-			connectionsRevision: 200,
-			connections: [{ id: 'c1', clusterUrl: 'https://cluster.kusto.windows.net', accountPartition: 'partition-b' }],
+			...kustoConnectionsSnapshot(200, 'c1'),
+			connections: [{
+				...kustoConnectionsSnapshot(200, 'c1').connections[0],
+				accountPartition: 'partition-b',
+			}],
 			cachedDatabases: { c1: ['DbB'] },
-			favorites: [],
-			leaveNoTraceClusters: [],
 		});
 		dispatchHostMessage({
-			type: 'connectionsData',
-			connectionsRevision: 199,
-			connections: [{ id: 'c1', clusterUrl: 'https://cluster.kusto.windows.net', accountPartition: 'partition-a' }],
+			...kustoConnectionsSnapshot(199, 'c1'),
+			connections: [{
+				...kustoConnectionsSnapshot(199, 'c1').connections[0],
+				accountPartition: 'partition-a',
+			}],
 			cachedDatabases: { c1: ['DbA'] },
-			favorites: [],
-			leaveNoTraceClusters: [],
 		});
 
 		expect(mocks.setConnections).toHaveBeenCalledTimes(1);
 		expect(mocks.setConnections).toHaveBeenCalledWith([
 			expect.objectContaining({ accountPartition: 'partition-b' }),
 		]);
+	});
+
+	it('rejects a malformed staged Kusto snapshot without poisoning revision recovery', () => {
+		publishKustoPublication('connections-revision-300', kustoConnectionsSnapshot(300, 'canonical-300'));
+		expect(mocks.setConnections).toHaveBeenLastCalledWith([
+			expect.objectContaining({ id: 'canonical-300' }),
+		]);
+		vi.clearAllMocks();
+
+		publishKustoPublication('connections-malformed-max', {
+			...kustoConnectionsSnapshot(Number.MAX_SAFE_INTEGER, 'malformed-max'),
+			connections: {},
+		});
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoPublicationAck', publicationId: 'connections-malformed-max',
+			phase: 'staged', accepted: false,
+		});
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoPublicationAck', publicationId: 'connections-malformed-max',
+			phase: 'applied', accepted: false,
+		});
+		expect(mocks.setConnections).not.toHaveBeenCalled();
+		expect(mocks.setLastConnectionId).not.toHaveBeenCalled();
+		expect(mocks.setLastDatabase).not.toHaveBeenCalled();
+		expect(mocks.setKustoFavorites).not.toHaveBeenCalled();
+		expect(mocks.setLeaveNoTraceClusters).not.toHaveBeenCalled();
+		expect(mocks.applyKustoLeaveNoTracePolicy).not.toHaveBeenCalled();
+		expect(mocks.applyEditingPreferencesData).not.toHaveBeenCalled();
+		expect(mocks.updateConnectionSelects).not.toHaveBeenCalled();
+
+		publishKustoPublication('connections-revision-301', kustoConnectionsSnapshot(301, 'canonical-301'));
+		expect(mocks.setConnections).toHaveBeenCalledOnce();
+		expect(mocks.setConnections).toHaveBeenCalledWith([
+			expect.objectContaining({ id: 'canonical-301' }),
+		]);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoPublicationAck', publicationId: 'connections-revision-301',
+			phase: 'applied', accepted: true,
+		});
+	});
+
+	it('captures a staged Kusto snapshot before storage', () => {
+		const payload = kustoConnectionsSnapshot(302, 'captured-302');
+		stageKustoPublication('connections-captured-302', payload);
+
+		payload.connections[0].id = 'mutated-after-stage';
+		payload.connections[0].name = 'Mutated after stage';
+		payload.cachedDatabases['captured-302'][0] = 'MutatedDatabase';
+		commitKustoPublication('connections-captured-302');
+
+		expect(mocks.setConnections).toHaveBeenCalledWith([
+			expect.objectContaining({ id: 'captured-302', name: 'Connection captured-302' }),
+		]);
+	});
+
+	it('does not let a descriptor-varying staged payload become unchecked connectionsData', () => {
+		let propertyReads = 0;
+		let typeDescriptorReads = 0;
+		const payload = new Proxy(kustoConnectionsSnapshot(303, 'descriptor-varying'), {
+			get() {
+				propertyReads++;
+				throw new Error('payload property read');
+			},
+			getOwnPropertyDescriptor(target, key) {
+				const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+				if (key !== 'type' || !descriptor) return descriptor;
+				typeDescriptorReads++;
+				return {
+					...descriptor,
+					value: typeDescriptorReads === 1 ? 'unrecognizedPayload' : 'connectionsData',
+				};
+			},
+		});
+
+		stageKustoPublication('connections-descriptor-varying', payload);
+		commitKustoPublication('connections-descriptor-varying');
+
+		expect(propertyReads).toBe(0);
+		expect(typeDescriptorReads).toBe(1);
+		expect(mocks.setConnections).not.toHaveBeenCalled();
+		expect(mocks.applyKustoLeaveNoTracePolicy).not.toHaveBeenCalled();
+	});
+
+	it('applies prototype-sensitive Kusto cache keys as own data properties', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		const cachedDatabases = Object.create(null) as Record<string, string[]>;
+		Object.defineProperty(cachedDatabases, '__proto__', {
+			value: ['PrototypeDatabase'], enumerable: true, configurable: true, writable: true,
+		});
+		const payload = {
+			...kustoConnectionsSnapshot(303, '__proto__'),
+			cachedDatabases,
+		};
+		const initialPrototype = Object.getPrototypeOf(state.cachedDatabases);
+
+		publishKustoPublication('connections-prototype-303', payload);
+
+		expect(Object.getPrototypeOf(state.cachedDatabases)).toBe(initialPrototype);
+		expect(Object.prototype.hasOwnProperty.call(state.cachedDatabases, '__proto__')).toBe(true);
+		expect(state.cachedDatabases.__proto__).toEqual(['PrototypeDatabase']);
+	});
+
+	it('does not commit a valid failed revision and admits a lower recovery snapshot', () => {
+		mocks.setConnections.mockImplementationOnce(() => {
+			throw new Error('application failed');
+		});
+		publishKustoPublication(
+			'connections-valid-failed-max',
+			kustoConnectionsSnapshot(Number.MAX_SAFE_INTEGER, 'failed-max'),
+		);
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoPublicationAck', publicationId: 'connections-valid-failed-max',
+			phase: 'applied', accepted: false,
+		});
+		vi.clearAllMocks();
+
+		publishKustoPublication('connections-recovery-304', kustoConnectionsSnapshot(304, 'recovery-304'));
+
+		expect(mocks.setConnections).toHaveBeenCalledOnce();
+		expect(mocks.setConnections).toHaveBeenCalledWith([
+			expect.objectContaining({ id: 'recovery-304' }),
+		]);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoPublicationAck', publicationId: 'connections-recovery-304',
+			phase: 'applied', accepted: true,
+		});
+	});
+
+	it('orders equal, lower, and direct unrevisioned Kusto snapshots without moving the watermark', () => {
+		dispatchHostMessage(kustoConnectionsSnapshot(305, 'canonical-305'));
+		dispatchHostMessage(kustoConnectionsSnapshot(304, 'lower-304'));
+		dispatchHostMessage(kustoConnectionsSnapshot(0, 'lower-zero'));
+		dispatchHostMessage(kustoConnectionsSnapshot(305, 'equal-305'));
+		dispatchHostMessage({
+			type: 'connectionsData',
+			connectionsRevision: undefined,
+			connections: [{ id: 'legacy-direct', clusterUrl: 'https://legacy.kusto.windows.net' }],
+		});
+		dispatchHostMessage(kustoConnectionsSnapshot(304, 'lower-after-legacy'));
+		dispatchHostMessage(kustoConnectionsSnapshot(306, 'canonical-306'));
+
+		expect(mocks.setConnections.mock.calls.map(([value]) => value[0]?.id)).toEqual([
+			'canonical-305',
+			'equal-305',
+			'legacy-direct',
+			'canonical-306',
+		]);
+	});
+
+	it('rolls back projection, preferences, and staged privacy state after a late valid failure', () => {
+		const baselineConnection = { id: 'baseline', clusterUrl: 'https://baseline.kusto.windows.net' };
+		handlerState.connections.splice(0, handlerState.connections.length, baselineConnection);
+		(window as any).__kustoAccounts = [{ id: 'baseline-account' }];
+		(window as any).__kustoDevNotesEnabled = false;
+		handlerState.pState.copilotChatFirstTimeDismissed = true;
+		mocks.applyKustoLeaveNoTracePolicy.mockImplementationOnce(() => {
+			throw new Error('late staged-policy failure');
+		});
+
+		publishKustoPublication(
+			'connections-late-failed-max',
+			kustoConnectionsSnapshot(Number.MAX_SAFE_INTEGER, 'late-failed-max'),
+		);
+
+		expect(mocks.setConnections).toHaveBeenCalledTimes(2);
+		expect(mocks.setConnections).toHaveBeenLastCalledWith([baselineConnection]);
+		expect(mocks.restoreEditingPreferencesRuntime).toHaveBeenCalledWith(
+			expect.objectContaining({ revision: -1 }),
+		);
+		expect(mocks.restoreKustoLeaveNoTracePolicyRuntime).toHaveBeenCalledWith({
+			token: 'policy-runtime-before',
+		});
+		expect((window as any).__kustoAccounts).toEqual([{ id: 'baseline-account' }]);
+		expect((window as any).__kustoDevNotesEnabled).toBe(false);
+		expect(handlerState.pState.copilotChatFirstTimeDismissed).toBe(true);
+		expect(mocks.applyKustoLeaveNoTracePolicy).toHaveBeenCalledOnce();
+		expect(mocks.rollbackKustoLeaveNoTracePolicyApplication).toHaveBeenCalledOnce();
+		expect(mocks.commitKustoLeaveNoTracePolicyApplication).not.toHaveBeenCalled();
+		expect(mocks.updateConnectionSelects).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoPublicationAck', publicationId: 'connections-late-failed-max',
+			phase: 'applied', accepted: false,
+		});
+
+		vi.clearAllMocks();
+		publishKustoPublication('connections-recovery-307', kustoConnectionsSnapshot(307, 'recovery-307'));
+		expect(mocks.setConnections).toHaveBeenCalledOnce();
+		expect(mocks.setConnections).toHaveBeenCalledWith([
+			expect.objectContaining({ id: 'recovery-307' }),
+		]);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoPublicationAck', publicationId: 'connections-recovery-307',
+			phase: 'applied', accepted: true,
+		});
+		expect(mocks.commitKustoLeaveNoTracePolicyApplication).toHaveBeenCalledOnce();
+		expect(mocks.rollbackKustoLeaveNoTracePolicyApplication).not.toHaveBeenCalled();
+	});
+
+	it('commits before selector reconciliation and contains a selector failure', () => {
+		mocks.updateConnectionSelects.mockImplementationOnce(() => {
+			throw new Error('post-commit selector reconciliation failure');
+		});
+
+		publishKustoPublication('connections-selector-failed-308', kustoConnectionsSnapshot(308, 'selector-308'));
+
+		expect(mocks.setConnections).toHaveBeenCalledOnce();
+		expect(mocks.setConnections).toHaveBeenCalledWith([
+			expect.objectContaining({ id: 'selector-308' }),
+		]);
+		expect(mocks.commitKustoLeaveNoTracePolicyApplication).toHaveBeenCalledOnce();
+		expect(mocks.rollbackKustoLeaveNoTracePolicyApplication).not.toHaveBeenCalled();
+		expect(mocks.restoreEditingPreferencesRuntime).not.toHaveBeenCalled();
+		expect(mocks.restoreKustoLeaveNoTracePolicyRuntime).not.toHaveBeenCalled();
+		expect(mocks.updateConnectionSelects).toHaveBeenCalledOnce();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoPublicationAck', publicationId: 'connections-selector-failed-308',
+			phase: 'applied', accepted: true,
+		});
+	});
+
+	it('rejects a lower snapshot reentered synchronously from the applied acknowledgement', () => {
+		mocks.postMessageToHost
+			.mockImplementationOnce(() => undefined)
+			.mockImplementationOnce(() => {
+				dispatchHostMessage(kustoConnectionsSnapshot(308, 'reentrant-lower-308'));
+			});
+
+		publishKustoPublication('connections-reentrant-309', kustoConnectionsSnapshot(309, 'canonical-309'));
+
+		expect(mocks.setConnections.mock.calls.map(([value]) => value[0]?.id)).toEqual(['canonical-309']);
+		vi.clearAllMocks();
+		dispatchHostMessage(kustoConnectionsSnapshot(308, 'lower-after-ack-308'));
+		dispatchHostMessage(kustoConnectionsSnapshot(310, 'canonical-310'));
+		expect(mocks.setConnections.mock.calls.map(([value]) => value[0]?.id)).toEqual(['canonical-310']);
 	});
 
 	it('routes revisioned editing preferences without touching document persistence', () => {
