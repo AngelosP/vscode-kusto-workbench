@@ -26,8 +26,6 @@ import {
 	stampCompatibilityPersistenceHostMessage,
 	type CompatibilityPersistenceWebviewMessage,
 } from '../shared/compatibilityPersistenceProtocol';
-
-const INITIAL_PROJECTION_MAX_ATTEMPTS = 4;
 import { resolveKustoConnection } from '../shared/kustoAuth';
 import {
 	assertCompatPrimaryIdentity,
@@ -53,6 +51,11 @@ import {
 	type CompatSidecarCloseCoordinatorFactory,
 	type CompatSidecarCloseFinalization,
 } from './compatSidecarCloseCoordinator';
+import {
+	CompatSidecarProjectionCoordinator,
+	type CompatSidecarProjectionCoordinatorFactory,
+	type CompatSidecarProjectionRequest,
+} from './compatSidecarProjectionCoordinator';
 import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
 
 const KQL_COMPAT_SIDECAR_FORMAT: CompatSidecarFormat = {
@@ -136,6 +139,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		private readonly sqlWorkbench: SqlWorkbenchService,
 		private readonly editorCursorStatusBar?: EditorCursorStatusBar,
 		private readonly closeCoordinatorFactory: CompatSidecarCloseCoordinatorFactory = options => new CompatSidecarCloseCoordinator(options),
+		private readonly projectionCoordinatorFactory: CompatSidecarProjectionCoordinatorFactory = options => new CompatSidecarProjectionCoordinator(options),
 	) {}
 
 	/**
@@ -538,133 +542,100 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			}
 		};
 
-		let postDocumentGeneration = 0;
-		let activeSourceGeneration = 0;
-		let pendingSourceGeneration: number | undefined;
-		let pendingProjectionEditRevision: number | undefined;
-		let sourceReloadEpoch = 0;
-		let sourceReloadAuthority: { epoch: number; text: string } | undefined;
-		let sourceRollbackFailed = false;
-		let sourceRollbackFailedCandidate: string | undefined;
-		const sameSourceText = (left: string, right: string) => left.replace(/\r\n?/g, '\n') === right.replace(/\r\n?/g, '\n');
-		const postDocument = async (options?: {
-			forceReload?: boolean;
-			requestId?: string;
-			expectedEditRevision?: number;
+		type KqlProjectionRequest = CompatSidecarProjectionRequest & Readonly<{
 			sidecarFileOverride?: KqlxFileV1;
-			retirePersists?: boolean;
-		}): Promise<boolean> => {
-			const requestSource = options?.requestId ? 'webview' as const : 'host' as const;
-			if (options?.retirePersists) {
-				sidecarSession.retirePersists();
-				const sourceText = document.getText();
-				sourceReloadAuthority = { epoch: ++sourceReloadEpoch, text: sourceText };
-				if (sourceRollbackFailedCandidate === undefined || !sameSourceText(sourceText, sourceRollbackFailedCandidate)) {
-					sourceRollbackFailed = false;
-					sourceRollbackFailedCandidate = undefined;
+		}>;
+		const projectionCoordinator = this.projectionCoordinatorFactory({
+			session: sidecarSession,
+			readSourceText: () => document.getText(),
+			isDisposed: () => outerDisposed,
+			postProjection: async projection => {
+				const requestContext = projection.context as Readonly<{ sidecarFileOverride?: KqlxFileV1 }> | undefined;
+				const forceReload = projection.forceReload;
+				perfMark('host.kqlCompat.postDocument.start', { forceReload, sidecarEnabled: !!sidecarFile });
+				fileOpenTrace.mark('postDocument.start', { forceReload, sidecarEnabled: !!sidecarFile });
+				const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
+				const queryText = projection.sourceText;
+				fileOpenTrace.mark('postDocument.documentText.read', { length: queryText.length });
+				if (sidecarLoadError) {
+					const reloadRequestId = projection.reserveReload();
+					if (!reloadRequestId) return false;
+					return startupGateway.postMessage({
+						type: 'documentData', ok: false, requestId: projection.requestId,
+						requestSource: projection.requestSource, sourceGeneration: projection.generation, forceReload,
+						reloadRequestId, documentUri: document.uri.toString(),
+						documentKind: 'kql', allowedSectionKinds: [], error: sidecarLoadError,
+						firstSectionPinned: false, documentMutationAllowed: false,
+					});
 				}
-			}
-			const generation = ++postDocumentGeneration;
-			const requestId = options?.requestId ?? `compat-document-${crypto.randomUUID()}`;
-			pendingSourceGeneration = generation;
-			const projectionEditRevision = Number(options?.expectedEditRevision);
-			pendingProjectionEditRevision = Number.isSafeInteger(projectionEditRevision) && projectionEditRevision >= 0
-				? projectionEditRevision
-				: undefined;
-			const forceReload = options?.forceReload ?? false;
-			perfMark('host.kqlCompat.postDocument.start', { forceReload, sidecarEnabled: !!sidecarFile });
-			fileOpenTrace.mark('postDocument.start', { forceReload, sidecarEnabled: !!sidecarFile });
-			const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
-			const queryText = document.getText();
-			fileOpenTrace.mark('postDocument.documentText.read', { length: queryText.length });
-			if (sidecarLoadError) {
-				const reload = sidecarSession.createReloadRequest();
+				const effectiveSidecarFile = requestContext?.sidecarFileOverride ?? sidecarFile;
+				const sidecarEnabled = !!effectiveSidecarFile;
+				const sidecarName = getSidecarDisplayName();
+				let state: KqlxStateV1;
+				if (sidecarEnabled && effectiveSidecarFile) {
+					state = hydrateCompatSidecarState(effectiveSidecarFile, queryText, KQL_COMPAT_SIDECAR_FORMAT);
+				} else {
+					state = {
+						sections: [
+							{
+								id: PLAIN_KQL_PRIMARY_SECTION_ID,
+								type: 'query',
+								query: queryText,
+								...(inferredSelection ? {
+									clusterUrl: inferredSelection.clusterUrl,
+									authorityId: inferredSelection.authorityId,
+									connectionIdHint: inferredSelection.connectionIdHint,
+									database: inferredSelection.database,
+								} : {})
+							}
+						]
+					};
+				}
+				state = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(state);
+				if (!projection.isCurrent()) return false;
+				const reloadRequestId = projection.reserveReload();
+				if (!reloadRequestId) return false;
 				const delivered = await startupGateway.postMessage({
-					type: 'documentData', ok: false, requestId, requestSource, sourceGeneration: generation, forceReload,
-					reloadRequestId: reload.requestId, documentUri: document.uri.toString(),
-					documentKind: 'kql', allowedSectionKinds: [], error: sidecarLoadError,
-					firstSectionPinned: false, documentMutationAllowed: false,
+					type: 'documentData',
+					ok: true,
+					requestId: projection.requestId,
+					requestSource: projection.requestSource,
+					sourceGeneration: projection.generation,
+					forceReload,
+					editRevision: sidecarSession.currentEditRevision,
+					...(projection.expectedEditRevision !== undefined ? { expectedEditRevision: projection.expectedEditRevision } : {}),
+					reloadRequestId,
+					documentUri: document.uri.toString(),
+					suppressPersistenceForTest: this.context.extensionMode !== vscode.ExtensionMode.Production
+						&& process.env.KUSTO_WORKBENCH_E2E_SUPPRESS_PERSISTENCE === '1',
+					compatibilityMode: !sidecarEnabled,
+					documentKind: 'kql',
+					compatibilitySingleKind: 'query',
+					allowedSectionKinds: addableSectionKindsForDocument('kqlx'),
+					defaultSectionKind: defaultSectionKindForDocument('kqlx'),
+					upgradeRequestType: 'requestUpgradeToKqlx',
+					compatibilityTooltip: !sidecarEnabled
+						? `This is a .kql/.csl file. To add sections, Kusto Workbench will create a companion metadata file (${sidecarName}) next to it.`
+						: '',
+					firstSectionPinned: true,
+					documentMutationAllowed: true,
+					htmlPowerBiCompatibilityCheckEnabled,
+					state
 				});
-				if (!delivered) sidecarSession.failReload(reload.requestId);
-				const applied = await reload.result;
-				return applied && generation === postDocumentGeneration && document.getText() === queryText;
-			}
-			const effectiveSidecarFile = options?.sidecarFileOverride ?? sidecarFile;
-			const sidecarEnabled = !!effectiveSidecarFile;
-			const sidecarName = getSidecarDisplayName();
-			let state: KqlxStateV1;
-			if (sidecarEnabled && effectiveSidecarFile) {
-				state = hydrateCompatSidecarState(effectiveSidecarFile, queryText, KQL_COMPAT_SIDECAR_FORMAT);
-			} else {
-				state = {
-					sections: [
-						{
-							id: PLAIN_KQL_PRIMARY_SECTION_ID,
-							type: 'query',
-							query: queryText,
-							...(inferredSelection ? {
-								clusterUrl: inferredSelection.clusterUrl,
-								authorityId: inferredSelection.authorityId,
-								connectionIdHint: inferredSelection.connectionIdHint,
-								database: inferredSelection.database,
-							} : {})
-						}
-					]
-				};
-			}
-			state = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(state);
-			if (outerDisposed || generation !== postDocumentGeneration || document.getText() !== queryText) return false;
-			const requiresApplicationAck = true;
-			const reload = requiresApplicationAck
-				? sidecarSession.createReloadRequest()
-				: undefined;
-			const reloadRequestId = reload?.requestId;
-			const delivered = await startupGateway.postMessage({
-				type: 'documentData',
-				ok: true,
-				requestId,
-				requestSource,
-				sourceGeneration: generation,
-				forceReload,
-				editRevision: sidecarSession.currentEditRevision,
-				...(options?.expectedEditRevision !== undefined ? { expectedEditRevision: options.expectedEditRevision } : {}),
-				...(reloadRequestId ? { reloadRequestId } : {}),
-				documentUri: document.uri.toString(),
-				suppressPersistenceForTest: this.context.extensionMode !== vscode.ExtensionMode.Production
-					&& process.env.KUSTO_WORKBENCH_E2E_SUPPRESS_PERSISTENCE === '1',
-				compatibilityMode: !sidecarEnabled,
-				documentKind: 'kql',
-				compatibilitySingleKind: 'query',
-				allowedSectionKinds: addableSectionKindsForDocument('kqlx'),
-				defaultSectionKind: defaultSectionKindForDocument('kqlx'),
-				upgradeRequestType: 'requestUpgradeToKqlx',
-				compatibilityTooltip: !sidecarEnabled
-					? `This is a .kql/.csl file. To add sections, Kusto Workbench will create a companion metadata file (${sidecarName}) next to it.`
-					: '',
-				firstSectionPinned: true,
-				documentMutationAllowed: true,
-				htmlPowerBiCompatibilityCheckEnabled,
-				state
-			});
-			if (generation !== postDocumentGeneration || document.getText() !== queryText) {
-				if (reloadRequestId) sidecarSession.failReload(reloadRequestId);
-				return false;
-			}
-			perfMark('host.kqlCompat.documentData.posted', { sections: state.sections.length, sidecarEnabled });
-			fileOpenTrace.mark('postDocument.documentData.posted', { sections: state.sections.length, sidecarEnabled, forceReload });
-			if (!delivered && reloadRequestId) {
-				sidecarSession.failReload(reloadRequestId);
-			}
-			const applied = reload ? await reload.result : delivered;
-			const appliedCurrent = applied && generation === postDocumentGeneration && document.getText() === queryText;
-			if (appliedCurrent) {
-				activeSourceGeneration = generation;
-			}
-			if (appliedCurrent && pendingSourceGeneration === generation) {
-				pendingSourceGeneration = undefined;
-				pendingProjectionEditRevision = undefined;
-			}
-			return appliedCurrent;
+				perfMark('host.kqlCompat.documentData.posted', { sections: state.sections.length, sidecarEnabled });
+				fileOpenTrace.mark('postDocument.documentData.posted', { sections: state.sections.length, sidecarEnabled, forceReload });
+				return delivered;
+			},
+		});
+		const postDocument = (options?: KqlProjectionRequest): Promise<boolean> => {
+			const request: CompatSidecarProjectionRequest = {
+				forceReload: options?.forceReload,
+				requestId: options?.requestId,
+				expectedEditRevision: options?.expectedEditRevision,
+				retirePersists: options?.retirePersists,
+				context: { sidecarFileOverride: options?.sidecarFileOverride },
+			};
+			return projectionCoordinator.project(request);
 		};
 		const requestFinalPersist = (reason: string, timeoutMs = 2_000): Promise<void> => {
 			return sidecarSession.requestFinalPersist(message => startupGateway.postMessage(message), reason, timeoutMs);
@@ -720,7 +691,6 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		};
 		subscriptions.push(queryEditor.onDidInvalidateSqlPersistence(repairInvalidatedPersistence));
 		subscriptions.push(queryEditor.onDidInvalidateKustoPersistence(repairInvalidatedPersistence));
-		let webviewInitialized = false;
 		const ownedDocumentEdits = new OwnedDocumentEditTracker(text => text.replace(/\r\n?/g, '\n'));
 		let activeSourceMutations = 0;
 		const applyOwnedSourceEdit = async (edit: vscode.WorkspaceEdit, expectedText: string): Promise<boolean> => {
@@ -734,36 +704,6 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				activeSourceMutations--;
 			}
 		};
-		let initialProjectionRecovery: Promise<boolean> | undefined;
-		let initialProjectionRestartRequested = false;
-		const postInitialDocument = async (requestId?: string): Promise<boolean> => {
-			for (let attempt = 0; attempt < INITIAL_PROJECTION_MAX_ATTEMPTS && !outerDisposed; attempt++) {
-				const delivered = await postDocument({ forceReload: true, requestId, retirePersists: true });
-				if (delivered) return true;
-			}
-			return false;
-		};
-		const ensureInitialDocument = (requestId?: string, allowFollowUp = true): Promise<boolean> => {
-			if (webviewInitialized) return Promise.resolve(true);
-			if (initialProjectionRecovery) {
-				initialProjectionRestartRequested = true;
-				return initialProjectionRecovery;
-			}
-			const run = postInitialDocument(requestId).then(delivered => {
-				if (delivered) webviewInitialized = true;
-				return delivered;
-			});
-			initialProjectionRecovery = run;
-			const settleInitialProjection = () => {
-				initialProjectionRecovery = undefined;
-				const restart = !webviewInitialized && initialProjectionRestartRequested && allowFollowUp && !outerDisposed;
-				initialProjectionRestartRequested = false;
-				if (restart) void ensureInitialDocument(undefined, false);
-			};
-			void run.then(settleInitialProjection, settleInitialProjection);
-			return initialProjectionRecovery;
-		};
-
 		// Listen for external file changes (e.g., from Copilot, git, or other processes).
 		subscriptions.push(
 			vscode.workspace.onDidChangeTextDocument((e) => {
@@ -774,15 +714,14 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					if (e.contentChanges.length === 0) {
 						return;
 					}
-					if (!webviewInitialized) {
-						if (initialProjectionRecovery) initialProjectionRestartRequested = true;
-						else void ensureInitialDocument();
+					if (!projectionCoordinator.isInitialized) {
+						void projectionCoordinator.requestSourceReload().catch(() => undefined);
 						return;
 					}
 					if (ownedDocumentEdits.observe(e.document.getText())) return;
 					// Notify the webview that the document changed externally.
 					// Use forceReload to ensure the webview updates even if already initialized.
-					void postDocument({ forceReload: true, retirePersists: true }).catch(() => undefined);
+					void projectionCoordinator.requestSourceReload().catch(() => undefined);
 				} catch {
 					// ignore
 				}
@@ -793,7 +732,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		subscriptions.push(
 			vscode.workspace.onWillSaveTextDocument((event) => {
 				if (event.document.uri.toString() !== document.uri.toString()) return;
-				if (sourceRollbackFailed || activeSourceMutations > 0) {
+				if (projectionCoordinator.sourceRollbackFailed || activeSourceMutations > 0) {
 					event.waitUntil(Promise.reject(new Error('Cannot save because a source update is still settling or an external reload could not be restored. Reload the file and try again.')));
 					return;
 				}
@@ -885,9 +824,11 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			}
 			switch (message.type) {
 				case 'documentReloadResult': {
-					const requestId = String(message.requestId || '');
-					const revision = Number(message.editRevision);
-					sidecarSession.completeReload(requestId, message.applied === true, revision);
+						projectionCoordinator.completeReload({
+							requestId: String(message.requestId || ''),
+							applied: message.applied === true,
+							editRevision: Number(message.editRevision),
+						});
 					return;
 				}
 				case 'requestDocument':
@@ -898,9 +839,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					// In Explorer single-click preview mode, VS Code can reuse the same webview
 					// panel for different files. Force reload here so documentData is always
 					// re-applied for the current document.
-					webviewInitialized = webviewInitialized
-						? await postDocument({ forceReload: true, requestId: String(message.requestId), retirePersists: true })
-						: await ensureInitialDocument(String(message.requestId));
+					await projectionCoordinator.requestDocument(String(message.requestId));
 					perfMark('host.kqlCompat.requestDocument.completed');
 					fileOpenTrace.mark('requestDocument.completed');
 					return;
@@ -1026,22 +965,12 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						}
 						return;
 					}
-					const incomingSourceGeneration = Number((message as any).sourceGeneration);
-					const incomingRevisionForPending = Number((message as any).editRevision);
-					const sourceGenerationMissing = !Number.isSafeInteger(incomingSourceGeneration);
-					const supersedesPendingProjection = pendingSourceGeneration !== undefined
-						&& pendingProjectionEditRevision !== undefined
-						&& Number.isSafeInteger(incomingRevisionForPending)
-						&& incomingRevisionForPending > pendingProjectionEditRevision
-						&& incomingSourceGeneration === activeSourceGeneration;
-					if (supersedesPendingProjection) {
-						pendingSourceGeneration = undefined;
-						pendingProjectionEditRevision = undefined;
-						postDocumentGeneration++;
-					}
-					if ((snapshotId || flushRequestId) && (!supersedesPendingProjection && pendingSourceGeneration !== undefined
-						|| (sourceGenerationMissing && this.context.extensionMode === vscode.ExtensionMode.Production)
-						|| (!sourceGenerationMissing && incomingSourceGeneration !== activeSourceGeneration))) {
+					if (!projectionCoordinator.admitPersist({
+						sourceGeneration: (message as any).sourceGeneration,
+						editRevision: (message as any).editRevision,
+						requireCurrentGeneration: !!(snapshotId || flushRequestId),
+						allowMissingSourceGeneration: this.context.extensionMode !== vscode.ExtensionMode.Production,
+					})) {
 						if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId, new Error('The final KQL metadata snapshot belonged to an older source projection.'));
 						return;
 					}
@@ -1075,7 +1004,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						return;
 					}
 					const incomingEditRevision = hasRevision ? revision : sidecarSession.currentEditRevision;
-					const reloadEpochAtAdmission = sourceReloadEpoch;
+					const reloadEpochAtAdmission = projectionCoordinator.captureSourceReloadEpoch();
 					const incomingRawState: KqlxStateV1 = {
 						caretDocsEnabled:
 							typeof rawState.caretDocsEnabled === 'boolean' ? rawState.caretDocsEnabled : undefined,
@@ -1181,28 +1110,18 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 								return superseded();
 							}
 							if (!persistIsCurrent()) {
-								const authority = sourceReloadAuthority;
-								if (authority && authority.epoch > reloadEpochAtAdmission
-									&& sourceReloadAuthority === authority
-									&& sameSourceText(document.getText(), nextText)) {
-									sourceRollbackFailed = true;
-									sourceRollbackFailedCandidate = nextText;
-									for (let rollbackAttempt = 0; rollbackAttempt < 3; rollbackAttempt++) {
-										if (sourceReloadAuthority !== authority || !sameSourceText(document.getText(), nextText)) break;
+								await projectionCoordinator.rollbackSupersededSourceEdit(
+									reloadEpochAtAdmission,
+									nextText,
+									async authoritativeText => {
 										const rollback = new vscode.WorkspaceEdit();
 										const lineCount = Math.max(1, document.lineCount || 1);
-										rollback.replace(document.uri, new vscode.Range(0, 0, lineCount - 1, document.lineAt(lineCount - 1).text.length), authority.text);
-										await applyOwnedSourceEdit(rollback, authority.text);
-										if (sameSourceText(document.getText(), authority.text)) break;
-									}
-									if (sameSourceText(document.getText(), nextText)) {
-										sourceRollbackFailed = true;
-										sourceRollbackFailedCandidate = nextText;
-									} else {
-										sourceRollbackFailed = false;
-										sourceRollbackFailedCandidate = undefined;
-									}
-								}
+										rollback.replace(document.uri, new vscode.Range(
+											0, 0, lineCount - 1, document.lineAt(lineCount - 1).text.length,
+										), authoritativeText);
+										return applyOwnedSourceEdit(rollback, authoritativeText);
+									},
+								);
 								return superseded();
 							}
 						}

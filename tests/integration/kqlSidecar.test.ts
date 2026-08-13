@@ -15,6 +15,7 @@ import { SqlCompatEditorProvider } from '../../src/host/sqlCompatEditorProvider'
 import { CompatSidecarStore, readCompatSidecarSnapshot } from '../../src/host/compatSidecarStore';
 import { CompatSidecarSession } from '../../src/host/compatSidecarSession';
 import { CompatSidecarCloseCoordinator } from '../../src/host/compatSidecarCloseCoordinator';
+import { CompatSidecarProjectionCoordinator } from '../../src/host/compatSidecarProjectionCoordinator';
 import { parseCompatibilityPersistenceWebviewMessage } from '../../src/shared/compatibilityPersistenceProtocol';
 import {
 	adaptCompatibilityPersistenceTestPanel,
@@ -4874,6 +4875,180 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('shared compatibility projection coordinator keeps B authoritative after a late A acknowledgement', async () => {
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalDidSave = vscode.workspace.onDidSaveTextDocument;
+		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+		const variants = [
+			{
+				extension: '.kql', Provider: KqlCompatEditorProvider, primaryType: 'query',
+				primaryId: 'compat_primary_query', sidecarKind: 'kqlx',
+			},
+			{
+				extension: '.sql', Provider: SqlCompatEditorProvider, primaryType: 'sql',
+				primaryId: 'compat_primary_sql', sidecarKind: 'sqlx',
+			},
+		] as const;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-compat-projection-coordinator-'));
+
+		try {
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => state;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
+				state: any, publish: (value: any) => Promise<unknown>,
+			) => publish(state);
+			for (const [index, variant] of variants.entries()) {
+				let currentText = 'A';
+				const sourcePath = path.join(tmpDir, `source-${index}${variant.extension}`);
+				const sidecarPath = `${sourcePath}.json`;
+				fs.writeFileSync(sourcePath, currentText, 'utf8');
+				fs.writeFileSync(sidecarPath, JSON.stringify({
+					kind: variant.sidecarKind,
+					version: 1,
+					state: { sections: [
+						{ id: variant.primaryId, type: variant.primaryType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'markdown_1', type: 'markdown', text: 'BASELINE' },
+					] },
+				}, null, 2) + '\n', 'utf8');
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
+				const posted: any[] = [];
+				const held: any[] = [];
+				let holdProjection = false;
+				let coordinatorCreations = 0;
+				let projectionCalls = 0;
+				let persistAdmissionCalls = 0;
+				(vscode.workspace as any).onDidSaveTextDocument = (handler: any) => {
+					didSaveHandler = handler;
+					return { dispose() {} };
+				};
+				(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+					const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+					if (typeof replacement !== 'string') return false;
+					currentText = replacement;
+					return true;
+				};
+				const coordinatorFactory = (options: any) => {
+					coordinatorCreations++;
+					const coordinator = new CompatSidecarProjectionCoordinator(options) as any;
+					const project = coordinator.project.bind(coordinator);
+					const admitPersist = coordinator.admitPersist.bind(coordinator);
+					coordinator.project = (...args: any[]) => {
+						projectionCalls++;
+						return project(...args);
+					};
+					coordinator.admitPersist = (...args: any[]) => {
+						persistAdmissionCalls++;
+						return admitPersist(...args);
+					};
+					return coordinator;
+				};
+				const provider = new (variant.Provider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-${index}`)),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+					undefined, undefined, coordinatorFactory,
+				);
+				const lines = () => currentText.split(/\r?\n/);
+				const document = {
+					uri: vscode.Uri.file(sourcePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+					get lineCount() { return lines().length; },
+					lineAt: (line: number) => ({ text: lines()[line] || '' }),
+					positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+				} as vscode.TextDocument;
+				const panel = {
+					visible: true,
+					webview: {
+						options: {},
+						postMessage: async (message: any) => {
+							posted.push(message);
+							if (message?.reloadRequestId) {
+								if (holdProjection) {
+									holdProjection = false;
+									held.push(message);
+								} else {
+									await Promise.resolve(receiveHandler?.({
+										type: 'documentReloadResult', requestId: message.reloadRequestId,
+										applied: true, editRevision: Number(message.editRevision || 0),
+									}));
+								}
+							}
+							return true;
+						},
+						onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					},
+					onDidDispose: () => ({ dispose() {} }),
+					onDidChangeViewState: () => ({ dispose() {} }),
+				} as any;
+
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				holdProjection = true;
+				const requestA = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				await waitForCondition(() => held.length === 1, `${variant.extension} should hold projection A`);
+				const projectionA = held[0];
+
+				currentText = 'B';
+				holdProjection = true;
+				const requestB = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				await waitForCondition(() => held.length === 2, `${variant.extension} should hold projection B`);
+				const projectionB = held[1];
+				await Promise.resolve(receiveHandler!({
+					type: 'documentReloadResult', requestId: projectionA.reloadRequestId,
+					applied: true, editRevision: 50,
+				}));
+				await requestA;
+
+				await Promise.resolve(receiveHandler!({
+					type: 'persistDocument', snapshotId: `stale-a-${index}`,
+					sourceGeneration: projectionA.sourceGeneration, editRevision: 51,
+					state: { sections: [
+						{ id: variant.primaryId, type: variant.primaryType, query: 'A_STALE' },
+						{ id: 'markdown_1', type: 'markdown', text: 'A_MUST_NOT_PUBLISH' },
+					] },
+				}));
+				assert.strictEqual(currentText, 'B');
+				assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+					&& message.snapshotId === `stale-a-${index}`));
+				assert.ok(!fs.readFileSync(sidecarPath, 'utf8').includes('A_MUST_NOT_PUBLISH'));
+
+				await Promise.resolve(receiveHandler!({
+					type: 'documentReloadResult', requestId: projectionB.reloadRequestId,
+					applied: true, editRevision: 2,
+				}));
+				await requestB;
+				await Promise.resolve(receiveHandler!({
+					type: 'persistDocument', snapshotId: `current-b-${index}`,
+					sourceGeneration: projectionB.sourceGeneration, editRevision: 52,
+					state: { sections: [
+						{ id: variant.primaryId, type: variant.primaryType, query: 'B' },
+						{ id: 'markdown_1', type: 'markdown', text: 'B_AUTHORITATIVE' },
+					] },
+				}));
+				await waitForCondition(() => posted.some(message => message?.type === 'persistDocumentAck'
+					&& message.snapshotId === `current-b-${index}`), `${variant.extension} should acknowledge B`);
+				assert.ok(didSaveHandler);
+				await Promise.resolve(didSaveHandler!(document));
+				await waitForCondition(() => fs.readFileSync(sidecarPath, 'utf8').includes('B_AUTHORITATIVE'),
+					`${variant.extension} should publish only B sidecar state`);
+				assert.ok(!fs.readFileSync(sidecarPath, 'utf8').includes('A_MUST_NOT_PUBLISH'));
+				assert.strictEqual(currentText, 'B');
+				assert.strictEqual(coordinatorCreations, 1, `${variant.extension} should create one projection coordinator`);
+				assert.ok(projectionCalls >= 3, `${variant.extension} should route every projection through the coordinator`);
+				assert.strictEqual(persistAdmissionCalls, 2, `${variant.extension} should route both snapshots through shared admission`);
+			}
+		} finally {
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(vscode.workspace as any).onDidSaveTextDocument = originalDidSave;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('source reload rolls back an already-started stale edit for rich and compatibility providers', async () => {
 		const originalApplyEdit = vscode.workspace.applyEdit;
 		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
@@ -8110,7 +8285,7 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
-	test('rejected compatibility reload keeps the previous source generation blocked', async () => {
+	test('rejected compatibility reload blocks the previous generation and restores bounded recovery', async () => {
 		const variants = [
 			{ extension: '.kql', Provider: KqlCompatEditorProvider, primaryType: 'query', kind: 'kqlx' },
 			{ extension: '.sql', Provider: SqlCompatEditorProvider, primaryType: 'sql', kind: 'sqlx' },
@@ -8129,7 +8304,7 @@ suite('Sidecar .kql.json strategy', () => {
 					] },
 				}), 'utf8');
 				let receiveHandler: ((message: any) => unknown) | undefined;
-				let rejectReload = false;
+				let rejectedDeliveries = 0;
 				const posted: any[] = [];
 				const provider = new (variant.Provider as any)(
 					{
@@ -8148,7 +8323,10 @@ suite('Sidecar .kql.json strategy', () => {
 						options: {}, postMessage: async (message: any) => {
 							posted.push(message);
 							if (message?.type !== 'documentData') return true;
-							if (rejectReload) return false;
+							if (rejectedDeliveries > 0) {
+								rejectedDeliveries--;
+								return false;
+							}
 							if (message.reloadRequestId) {
 								await Promise.resolve(receiveHandler?.({
 									type: 'documentReloadResult', requestId: message.reloadRequestId,
@@ -8165,7 +8343,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const initialGeneration = Number(posted.find(message => message?.type === 'documentData')?.sourceGeneration);
 				assert.ok(Number.isSafeInteger(initialGeneration));
 
-				rejectReload = true;
+				rejectedDeliveries = 1;
 				primaryText = variant.primaryType === 'sql' ? 'select external' : 'print external = 1';
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 				await Promise.resolve(receiveHandler!({
@@ -8179,6 +8357,14 @@ suite('Sidecar .kql.json strategy', () => {
 				assert.ok(!posted.some(message => message?.type === 'persistDocumentAck' && message.snapshotId === `stale-${index}`));
 				const saved = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
 				assert.strictEqual(saved.state.sections.find((section: any) => section.id === 'markdown_1').text, 'BASELINE');
+
+				const attemptsBeforeRecovery = posted.filter(message => message?.type === 'documentData').length;
+				rejectedDeliveries = 1;
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const recoveryAttempts = posted.filter(message => message?.type === 'documentData').slice(attemptsBeforeRecovery);
+				assert.strictEqual(recoveryAttempts.length, 2, `${variant.extension} should retry after a current reload failure`);
+				assert.strictEqual(recoveryAttempts.at(-1)?.state?.sections?.[0]?.query,
+					variant.primaryType === 'sql' ? 'select external' : 'print external = 1');
 			}
 		} finally {
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }

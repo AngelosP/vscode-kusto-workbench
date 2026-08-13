@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Uri } from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
 	getSidecarKqlxUriForCompat,
 	resolveLinkedQueryUri,
@@ -182,5 +184,20 @@ describe('pendingAddKindKeyForUri', () => {
 		const uri1 = Uri.file('/path/Query.kql');
 		const uri2 = Uri.file('/path/query.kql');
 		expect(pendingAddKindKeyForUri(uri1)).toBe(pendingAddKindKeyForUri(uri2));
+	});
+});
+
+describe('compatibility projection ownership', () => {
+	it('keeps KQL and SQL payload construction in providers behind one shared coordinator', () => {
+		for (const fileName of ['kqlCompatEditorProvider.ts', 'sqlCompatEditorProvider.ts']) {
+			const source = fs.readFileSync(path.join(process.cwd(), 'src', 'host', fileName), 'utf8');
+			expect(source).toContain('CompatSidecarProjectionCoordinator');
+			expect(source).toContain('postProjection: async projection =>');
+			expect(source).toContain('projectionCoordinator.requestSourceReload()');
+			expect(source).toContain('projectionCoordinator.requestDocument');
+			expect(source).toContain('projectionCoordinator.rollbackSupersededSourceEdit');
+			expect(source).toContain('hydrateCompatSidecarState');
+			expect(source).toContain('applyOwnedSourceEdit');
+		}
 	});
 });

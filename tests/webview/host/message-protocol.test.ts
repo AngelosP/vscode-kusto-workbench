@@ -1109,8 +1109,15 @@ describe('Message Protocol Contract', () => {
 		expect(preload).toContain('channel: compatibilityPersistence.channel');
 
 		const closeCoordinator = readWorkspaceFile('src/host/compatSidecarCloseCoordinator.ts');
+		const projectionCoordinator = readWorkspaceFile('src/host/compatSidecarProjectionCoordinator.ts');
 		const markdownCompatibility = readWorkspaceFile('src/host/mdCompatEditorProvider.ts');
 		expect(closeCoordinator).not.toContain('compatibilityPersistenceProtocol');
+		expect(closeCoordinator).not.toContain('CompatSidecarProjectionCoordinator');
+		expect(projectionCoordinator).toContain('completeReload(result: CompatSidecarReloadResult)');
+		expect(projectionCoordinator).toContain('admitPersist(admission: CompatSidecarPersistAdmission)');
+		expect(projectionCoordinator).toContain('ensureInitialProjection(requestId?: string)');
+		expect(projectionCoordinator).not.toContain('KqlxStateV1');
+		expect(projectionCoordinator).not.toContain('vscode');
 		expect(markdownCompatibility).not.toContain('compatibilityPersistenceProtocol');
 	});
 

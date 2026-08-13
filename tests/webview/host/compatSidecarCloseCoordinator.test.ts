@@ -215,11 +215,15 @@ describe('CompatSidecarCloseCoordinator', () => {
 		for (const fileName of ['kqlCompatEditorProvider.ts', 'sqlCompatEditorProvider.ts']) {
 			const source = fs.readFileSync(path.join(process.cwd(), 'src', 'host', fileName), 'utf8');
 			expect(source).toContain('closeCoordinator.configure(closeFinalization)');
+			expect(source).toContain('projectionCoordinatorFactory');
 			expect(source).not.toContain('waitForFinalPersists()');
 			expect(source).not.toContain('closeRetiredInboundAdmission()');
 			expect(source).not.toContain('delayedBeforeUnloadAdmissionOpen');
 			expect(source).not.toContain('sidecarSession.beginClose()');
 			expect(source).not.toContain('sidecarSession.settleClose()');
 		}
+		const closeSource = fs.readFileSync(path.join(process.cwd(), 'src', 'host', 'compatSidecarCloseCoordinator.ts'), 'utf8');
+		expect(closeSource).not.toContain('CompatSidecarProjectionCoordinator');
+		expect(closeSource).not.toContain('sourceGeneration');
 	});
 });

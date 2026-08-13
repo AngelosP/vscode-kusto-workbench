@@ -17,7 +17,7 @@ const DIST = join(__dirname, '..', 'dist');
 
 // ── Baselines (KB) — synchronized with the integrated production gate ──
 const BASELINES = {
-	'extension.js':                                        2153,
+	'extension.js':                                        2157,
 	'webview/webview.bundle.js':                           3065,
 	'webview/md-editor.bundle.js':                          261,
 	'webview/tutorial-viewer.bundle.js':                    154,
