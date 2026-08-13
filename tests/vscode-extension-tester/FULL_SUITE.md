@@ -28,6 +28,14 @@ To pin a local run to the same VS Code selection mechanism used by CI, pass a ve
 node scripts/e2e-full-suite.mjs --profiles default --vscode-version stable
 ```
 
+Scheduled CI divides the sorted default-profile test IDs into four deterministic round-robin shards. Reproduce one shard locally with the same one-based coordinates:
+
+```powershell
+node scripts/e2e-full-suite.mjs --profiles default --shard-index 2 --shard-count 4 --vscode-version stable
+```
+
+Both shard flags are required together. Each summary records its shard, its selected count, and the total selected across all shards.
+
 Dry-run discovery:
 
 ```powershell
@@ -144,7 +152,7 @@ The orchestrator also seeds named profiles with quiet host settings such as `ext
 
 ## Scheduling
 
-The scheduled workflow `.github/workflows/e2e-full-suite.yml` runs on GitHub-hosted `windows-latest`; no self-hosted runner or custom `kusto-workbench-e2e` label is required for the current CI signal. It executes the unauthenticated `default` profile only and intentionally skips `sql-auth` and `kusto-auth` because those named profiles require prepared authentication state. Before the run, the workflow queries the official VS Code stable release endpoint, semver-sorts the returned stable versions, validates the newest version against `package.json`'s VS Code engine minimum, and passes the resolved numeric version to `vscode-ext-test` via `--vscode-version`. The workflow also queries the latest `vscode-extension-tester` GitHub release and installs the `vscode-ext-test-*.tgz` asset before running the suite:
+The scheduled workflow `.github/workflows/e2e-full-suite.yml` runs four fail-independent shards on GitHub-hosted `windows-latest`; no self-hosted runner or custom `kusto-workbench-e2e` label is required for the current CI signal. It executes the unauthenticated `default` profile only and intentionally skips `sql-auth` and `kusto-auth` because those named profiles require prepared authentication state. Each shard has a unique artifact and a 60-minute ceiling. Before each shard runs, the workflow queries the official VS Code stable release endpoint, semver-sorts the returned stable versions, validates the newest version against `package.json`'s VS Code engine minimum, and passes the resolved numeric version to `vscode-ext-test` via `--vscode-version`. The workflow also queries the latest `vscode-extension-tester` GitHub release and installs the `vscode-ext-test-*.tgz` asset before running the suite:
 
 ```powershell
 $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/AngelosP/vscode-extension-tester/releases/latest'

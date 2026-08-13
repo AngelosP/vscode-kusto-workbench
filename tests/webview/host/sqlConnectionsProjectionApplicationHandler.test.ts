@@ -124,6 +124,22 @@ function createHarness(options: {
 }
 
 describe('HostSqlConnectionsProjectionApplicationHandler', () => {
+	it('claims malformed recognized requests before projection effects', async () => {
+		const harness = createHarness();
+		const malformed = Object.assign([], { type: 'getSqlConnections' });
+
+		await expect(harness.handler.handleMessage(
+			malformed as unknown as IncomingWebviewMessage,
+		)).resolves.toBeUndefined();
+
+		expect(harness.getConnections).not.toHaveBeenCalled();
+		expect(harness.readDatabaseCache).not.toHaveBeenCalled();
+		expect(harness.applicationStateGet).not.toHaveBeenCalled();
+		expect(harness.dispatchSqlOwnerSnapshot).not.toHaveBeenCalled();
+		expect(harness.getFavorites).not.toHaveBeenCalled();
+		expect(harness.postMessage).not.toHaveBeenCalled();
+	});
+
 	it('declines unrelated traffic and publishes the complete canonical projection', async () => {
 		const connection = sqlConnection({ authType: 'aad', username: undefined });
 		const principal = 'account-a';
@@ -166,6 +182,47 @@ describe('HostSqlConnectionsProjectionApplicationHandler', () => {
 			sqlFavorites: [favorite],
 			sqlLeaveNoTrace: [],
 		});
+	});
+
+	it('validates the complete canonical projection before transport', async () => {
+		const malformedConnection = {
+			...sqlConnection(),
+			name: 42,
+		} as unknown as SqlConnection;
+		const harness = createHarness({
+			capturedConnections: [malformedConnection],
+			snapshot: ownerSnapshot([malformedConnection]),
+		});
+
+		await expect(harness.handler.refresh()).resolves.toBe(false);
+
+		expect(harness.dispatchSqlOwnerSnapshot).toHaveBeenCalledOnce();
+		expect(harness.postMessage).not.toHaveBeenCalled();
+	});
+
+	it('treats prototype-sensitive connection IDs as own policy and cache keys', async () => {
+		const connection = sqlConnection({ id: '__proto__' });
+		const cacheEntry = databaseCacheEntry(connection, 'user-a', ['PrototypeDb']);
+		const harness = createHarness({
+			capturedConnections: [connection],
+			snapshot: ownerSnapshot([connection], {
+				policy: {
+					connectionIds: [], version: 7, globallyBlocked: false, revocationGenerations: {},
+				},
+			}),
+			cacheEntries: new Map([[connection.id, cacheEntry]]),
+		});
+
+		await expect(harness.handler.refresh()).resolves.toBe(true);
+
+		const payload = harness.postMessage.mock.calls[0][0];
+		expect(payload.connections[0]).toEqual({
+			...connection,
+			principalFingerprint: sqlSchemaPrincipalFingerprintForPrincipal(connection, 'user-a'),
+			revocationGeneration: 0,
+		});
+		expect(Object.prototype.hasOwnProperty.call(payload.cachedDatabases, connection.id)).toBe(true);
+		expect(payload.cachedDatabases[connection.id]).toEqual(['PrototypeDb']);
 	});
 
 	it('joins cache data only to the canonical target and principal snapshot', async () => {

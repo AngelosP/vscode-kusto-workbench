@@ -13,7 +13,10 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { shouldRetryVscodeBootstrapFailure } from './e2e-full-suite-support.mjs';
+import {
+	selectE2eShard,
+	shouldRetryVscodeBootstrapFailure,
+} from './e2e-full-suite-support.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const e2eRoot = path.join(repoRoot, 'tests', 'vscode-extension-tester');
@@ -47,6 +50,8 @@ Options:
   --profile-check-only              Only check named-profile residue, then exit.
   --timeout <ms>                    Pass a per-step timeout to vscode-ext-test.
 	--vscode-version <version>        VS Code version to pass to vscode-ext-test. Defaults to E2E_VSCODE_VERSION or stable.
+	--shard-index <n>                 One-based shard to run. Requires --shard-count.
+	--shard-count <n>                 Total deterministic round-robin shards. Requires --shard-index.
   --quarantine <path>               Quarantine manifest path.
   --output-dir <path>               History/output root. Defaults to tests/vscode-extension-tester/history.
   --help                            Show this help.
@@ -68,6 +73,8 @@ function parseArgs(argv) {
 		profileCheckOnly: false,
 		timeout: '',
 		vscodeVersion: process.env.E2E_VSCODE_VERSION || 'stable',
+		shardIndex: '',
+		shardCount: '',
 		quarantinePath: defaultQuarantinePath,
 		outputDir: historyRoot,
 	};
@@ -125,6 +132,12 @@ function parseArgs(argv) {
 			case '--vscode-version':
 				options.vscodeVersion = next();
 				break;
+			case '--shard-index':
+				options.shardIndex = next();
+				break;
+			case '--shard-count':
+				options.shardCount = next();
+				break;
 			case '--quarantine':
 				options.quarantinePath = path.resolve(repoRoot, next());
 				break;
@@ -147,6 +160,17 @@ function parseArgs(argv) {
 	options.profiles = unique(options.profiles.map(value => value.trim()).filter(Boolean));
 	options.testIds = unique(options.testIds.map(value => value.trim()).filter(Boolean));
 	options.vscodeVersion = String(options.vscodeVersion || '').trim() || 'stable';
+	if (!!options.shardIndex !== !!options.shardCount) {
+		throw new Error('--shard-index and --shard-count must be provided together.');
+	}
+	if (options.shardIndex) {
+		options.shardIndex = Number(options.shardIndex);
+		options.shardCount = Number(options.shardCount);
+		selectE2eShard([], options.shardIndex, options.shardCount);
+	} else {
+		options.shardIndex = 1;
+		options.shardCount = 1;
+	}
 	return options;
 }
 
@@ -672,7 +696,7 @@ function updateLedger(outputRoot, runRecords) {
 	return ledger;
 }
 
-function summarizeSuite({ runStartedAt, completedAt, options, cases, excludedScreenshotGenerators, excludedOptInTests, runRecords, quarantineErrors, profileResidueRecords, ledger }) {
+function summarizeSuite({ runStartedAt, completedAt, options, cases, selectedBeforeSharding, excludedScreenshotGenerators, excludedOptInTests, runRecords, quarantineErrors, profileResidueRecords, ledger }) {
 	const executed = runRecords.filter(record => record.status === 'passed' || record.status === 'failed');
 	const passed = runRecords.filter(record => record.status === 'passed');
 	const failed = runRecords.filter(record => record.status === 'failed');
@@ -691,10 +715,13 @@ function summarizeSuite({ runStartedAt, completedAt, options, cases, excludedScr
 		nodeVersion: process.version,
 		commitSha: process.env.GITHUB_SHA || '',
 		profiles: options.profiles.length > 0 ? options.profiles : discoverProfiles(),
+		shardIndex: options.shardIndex,
+		shardCount: options.shardCount,
 		includeScreenshotGenerators: options.includeScreenshotGenerators,
 		includeOptInTests: options.includeOptInTests,
 		dryRun: options.dryRun,
-		totalDiscovered: cases.length + excludedScreenshotGenerators.length + excludedOptInTests.length,
+		totalDiscovered: selectedBeforeSharding + excludedScreenshotGenerators.length + excludedOptInTests.length,
+		totalSelectedAcrossShards: selectedBeforeSharding,
 		totalSelected: cases.length,
 		executed: executed.length + allowedFailures.length,
 		passed: passed.length,
@@ -732,12 +759,14 @@ function toMarkdown(summary) {
 	lines.push(`- vscode-ext-test: ${summary.vscodeExtTestVersion}`);
 	lines.push(`- Node.js: ${summary.nodeVersion}`);
 	if (summary.commitSha) lines.push(`- Commit: ${summary.commitSha}`);
-	lines.push(`- Selected: ${summary.totalSelected} tests`);
+	lines.push(`- Shard: ${summary.shardIndex}/${summary.shardCount}`);
+	lines.push(`- Selected: ${summary.totalSelected} of ${summary.totalSelectedAcrossShards} tests`);
 	lines.push(`- Executed: ${summary.executed}`);
 	lines.push(`- Passed: ${summary.passed}`);
 	lines.push(`- Failed: ${summary.failed}`);
 	lines.push(`- Allowed failures: ${summary.allowedFailures}`);
-	lines.push(`- Quarantined/skipped: ${summary.quarantined}`);
+	lines.push(`- Quarantined: ${summary.quarantined}`);
+	lines.push(`- Skipped: ${summary.skipped}`);
 	lines.push(`- Screenshot generators excluded: ${summary.excludedScreenshotGenerators}`);
 	lines.push(`- Opt-in tests excluded: ${summary.excludedOptInTests}`);
 	lines.push(`- Profile residue failures: ${summary.profileResidueFailures}`);
@@ -818,12 +847,16 @@ function appendHistory(outputRoot, summary) {
 		vscodeExtTestVersion: summary.vscodeExtTestVersion,
 		nodeVersion: summary.nodeVersion,
 		commitSha: summary.commitSha,
+		shardIndex: summary.shardIndex,
+		shardCount: summary.shardCount,
 		selected: summary.totalSelected,
+		selectedAcrossShards: summary.totalSelectedAcrossShards,
 		executed: summary.executed,
 		passed: summary.passed,
 		failed: summary.failed,
 		allowedFailures: summary.allowedFailures,
 		quarantined: summary.quarantined,
+		skipped: summary.skipped,
 		profileResidueFailures: summary.profileResidueFailures,
 		failures: summary.runs
 			.filter(record => record.status === 'failed')
@@ -836,8 +869,8 @@ function shouldFailSuite(summary) {
 	return summary.failed > 0 || summary.quarantinePolicyErrors.length > 0 || summary.profileResidueFailures > 0;
 }
 
-function printCaseList(cases, excludedScreenshotGenerators, excludedOptInTests) {
-	console.log(`Selected ${cases.length} E2E tests.`);
+function printCaseList(cases, selectedBeforeSharding, excludedScreenshotGenerators, excludedOptInTests, options) {
+	console.log(`Selected ${cases.length} of ${selectedBeforeSharding} E2E tests for shard ${options.shardIndex}/${options.shardCount}.`);
 	for (const testCase of cases) {
 		const quarantine = testCase.quarantine ? ` quarantined:${testCase.quarantine.mode}` : '';
 		console.log(`- ${testCase.profile}/${testCase.testId} [${testCase.category}]${quarantine}`);
@@ -870,11 +903,14 @@ function main() {
 	mkdirSync(suiteOutputDir, { recursive: true });
 
 	const quarantine = loadQuarantine(options);
-	const { cases, excludedScreenshotGenerators, excludedOptInTests } = discoverCases(options, quarantine.entries);
+	const discovery = discoverCases(options, quarantine.entries);
+	const selectedBeforeSharding = discovery.cases.length;
+	const cases = selectE2eShard(discovery.cases, options.shardIndex, options.shardCount);
+	const { excludedScreenshotGenerators, excludedOptInTests } = discovery;
 	const profileResidueRecords = [];
 	const runRecords = [];
 
-	printCaseList(cases, excludedScreenshotGenerators, excludedOptInTests);
+	printCaseList(cases, selectedBeforeSharding, excludedScreenshotGenerators, excludedOptInTests, options);
 
 	const reusableProfiles = unique(cases.map(testCase => testCase.profile));
 	for (const profile of reusableProfiles) {
@@ -897,6 +933,7 @@ function main() {
 			completedAt: new Date().toISOString(),
 			options,
 			cases,
+			selectedBeforeSharding,
 			excludedScreenshotGenerators,
 			excludedOptInTests,
 			runRecords,
@@ -919,6 +956,7 @@ function main() {
 			completedAt: new Date().toISOString(),
 			options,
 			cases,
+			selectedBeforeSharding,
 			excludedScreenshotGenerators,
 			excludedOptInTests,
 			runRecords,
@@ -938,6 +976,7 @@ function main() {
 			completedAt: new Date().toISOString(),
 			options,
 			cases,
+			selectedBeforeSharding,
 			excludedScreenshotGenerators,
 			excludedOptInTests,
 			runRecords,
@@ -1036,6 +1075,7 @@ function main() {
 		completedAt: new Date().toISOString(),
 		options,
 		cases,
+		selectedBeforeSharding,
 		excludedScreenshotGenerators,
 		excludedOptInTests,
 		runRecords,

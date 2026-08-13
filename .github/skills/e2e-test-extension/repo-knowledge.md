@@ -78,6 +78,12 @@ anything new you learned. Structure it however makes sense for this repo.
 - The fixed controller never leaves save-confirmation dialogs unattended: clean-state reset discards dirty test editors; explicit `workbench.action.closeAllEditors` discards them and fails with the dirty filenames.
 - Native Save As steps expand `${TEMP}` but not `${VSCODE_EXT_TEST_WORKSPACE}`. Use `${TEMP}` for deterministic output files.
 - After a native Save As dialog, the controller-backed notification assertion can miss a visible saved-file toast, and Windows UI Automation cannot enumerate its web-rendered action buttons. Verify exact file bytes and capture a trustworthy screenshot of the notification instead.
+- GitHub-hosted Windows uses a 1024x768 desktop with a 1024x720 work area. Keep native-picker Dev Host windows at or below 1000x700 and allow three seconds after the Save control before driving Save As; oversized windows produced clipped captures and missing picker output in run `31659044893`.
+- `vscode-ext-test` 0.1.18 `I save the file as` finds the real `File name:` edit and presses Enter, but does not prove the dialog closed or the file appeared. Keep a direct exact-byte/file assertion immediately after every native picker step.
+- Accessibility-name clicks on custom-editor tab/title text are focus-only and can miss visibly present Chromium content. For screenshots use `workbench.action.focusActiveEditorGroup` plus an in-window blank coordinate. Clipboard writes additionally require a native click inside the webview, not the Activity Bar.
+- After closing and reopening the same custom editor, wait one second before reopening so the retired CDP webview target is disposed; otherwise unqualified evaluation can attach to the predecessor target.
+- The full suite supports deterministic round-robin sharding through paired one-based `--shard-index` and `--shard-count` flags. Scheduled default-profile CI runs four fail-independent shards.
+- `kusto-favorites-sync` keeps 11 representative native scenarios covering every real file host in source and target roles. The complete 5x5 one-section and 3x3 many-section provider matrices remain in `kustoFavoritesApplicationHandler.test.ts` (34 direct permutations).
 
 ## Testability Recommendations
 

@@ -12,8 +12,9 @@ const handlerState = vi.hoisted(() => ({
 	connections: [] as Array<Record<string, unknown>>,
 	kustoFavorites: [] as Array<Record<string, unknown>>,
 	sqlConnections: [] as Array<Record<string, unknown>>,
-	sqlCachedDatabases: {} as Record<string, string[]>,
+	sqlCachedDatabases: Object.create(null) as Record<string, string[]>,
 	sqlFavorites: [] as Array<Record<string, unknown>>,
+	sqlLeaveNoTraceConnectionIds: [] as string[],
 	sqlFavoritesModeByBoxId: {} as Record<string, boolean>,
 	schemaByBoxId: {} as Record<string, unknown>,
 	sqlSchemaByBoxId: {} as Record<string, unknown>,
@@ -120,6 +121,9 @@ const mocks = {
 	setLastDatabase: vi.fn(),
 	setKustoFavorites: vi.fn(),
 	setSqlFavorites: vi.fn(),
+	setSqlLeaveNoTraceConnectionIds: vi.fn(),
+	resolvePendingSqlResultRestores: vi.fn(),
+	discardPendingSqlResultRestores: vi.fn(),
 	setLeaveNoTraceClusters: vi.fn(),
 	setCaretDocsEnabled: vi.fn(),
 	setAutoTriggerAutocompleteEnabled: vi.fn(),
@@ -339,8 +343,8 @@ vi.mock('../../src/webview/core/persistence.js', () => ({
 	__kustoOnQueryResult: vi.fn(),
 	__kustoScheduleLocalSchemaPrewarm: vi.fn(),
 	resolvePendingKustoResultRestores: vi.fn(),
-	resolvePendingSqlResultRestores: vi.fn(),
-	discardPendingSqlResultRestores: vi.fn(),
+	resolvePendingSqlResultRestores: mocks.resolvePendingSqlResultRestores,
+	discardPendingSqlResultRestores: mocks.discardPendingSqlResultRestores,
 	applyKustoLeaveNoTracePolicy: mocks.applyKustoLeaveNoTracePolicy,
 	isDocumentMutationAllowed: () => handlerState.pState.documentMutationAllowed === true,
 	finalizeDocumentDefaultsAfterAcknowledgement: vi.fn(),
@@ -393,6 +397,15 @@ vi.mock('../../src/webview/core/state.js', async () => {
 	setSqlFavorites: vi.fn((favorites: Array<Record<string, unknown>>) => {
 		mocks.setSqlFavorites(favorites);
 		handlerState.sqlFavorites.splice(0, handlerState.sqlFavorites.length, ...favorites);
+	}),
+	sqlLeaveNoTraceConnectionIds: handlerState.sqlLeaveNoTraceConnectionIds,
+	setSqlLeaveNoTraceConnectionIds: vi.fn((connectionIds: string[]) => {
+		mocks.setSqlLeaveNoTraceConnectionIds(connectionIds);
+		handlerState.sqlLeaveNoTraceConnectionIds.splice(
+			0,
+			handlerState.sqlLeaveNoTraceConnectionIds.length,
+			...connectionIds,
+		);
 	}),
 	sqlCachedDatabases: handlerState.sqlCachedDatabases,
 	sqlFavoritesModeByBoxId: handlerState.sqlFavoritesModeByBoxId,
@@ -727,6 +740,7 @@ describe('message-handler dispatch', () => {
 		handlerState.kustoFavorites.splice(0, handlerState.kustoFavorites.length);
 		handlerState.sqlConnections.splice(0, handlerState.sqlConnections.length);
 		handlerState.sqlFavorites.splice(0, handlerState.sqlFavorites.length);
+		handlerState.sqlLeaveNoTraceConnectionIds.splice(0, handlerState.sqlLeaveNoTraceConnectionIds.length);
 		for (const key of Object.keys(handlerState.sqlCachedDatabases)) delete handlerState.sqlCachedDatabases[key];
 		for (const key of Object.keys(handlerState.sqlFavoritesModeByBoxId)) delete handlerState.sqlFavoritesModeByBoxId[key];
 		for (const key of Object.keys(handlerState.schemaByBoxId)) delete handlerState.schemaByBoxId[key];
@@ -3288,18 +3302,219 @@ describe('message-handler dispatch', () => {
 	it('ignores SQL connection data delivered after a newer revision', async () => {
 		dispatchHostMessage({
 			type: 'sqlConnectionsData', revision: 20,
-			connections: [{ id: 'sql-new', serverUrl: 'new.example' }],
-			cachedDatabases: { 'sql-new': ['CurrentDb'] }, sqlLeaveNoTrace: ['sql-new'],
+			sqlStateVersions: { policy: 20, connections: 20, principals: 20 },
+			connections: [{
+				id: 'sql-new', name: 'New', dialect: 'mssql', serverUrl: 'new.example', authType: 'aad',
+			}],
+			lastConnectionId: 'sql-new', lastDatabase: 'CurrentDb',
+			cachedDatabases: { 'sql-new': ['CurrentDb'] }, sqlFavorites: [], sqlLeaveNoTrace: ['sql-new'],
 		});
 		dispatchHostMessage({
 			type: 'sqlConnectionsData', revision: 19,
-			connections: [{ id: 'sql-old', serverUrl: 'old.example' }],
-			cachedDatabases: { 'sql-old': ['StaleDb'] }, sqlLeaveNoTrace: [],
+			sqlStateVersions: { policy: 19, connections: 19, principals: 19 },
+			connections: [{
+				id: 'sql-old', name: 'Old', dialect: 'mssql', serverUrl: 'old.example', authType: 'aad',
+			}],
+			lastConnectionId: 'sql-old', lastDatabase: 'StaleDb',
+			cachedDatabases: { 'sql-old': ['StaleDb'] }, sqlFavorites: [], sqlLeaveNoTrace: [],
 		});
 
 		const state = await import('../../src/webview/core/state.js');
 		expect(state.sqlConnections.map(connection => connection.id)).toEqual(['sql-new']);
 		expect(state.sqlCachedDatabases).toEqual({ 'sql-new': ['CurrentDb'] });
+	});
+
+	it('rejects a malformed SQL connections snapshot before revision or UI effects', async () => {
+		const baselineConnection = {
+			id: 'sql-current', name: 'Current', dialect: 'mssql', serverUrl: 'current.example',
+			authType: 'aad', revocationGeneration: 2,
+		};
+		dispatchHostMessage({
+			type: 'sqlConnectionsData', revision: 20,
+			sqlStateVersions: { policy: 20, connections: 20, principals: 20 },
+			connections: [baselineConnection],
+			lastConnectionId: baselineConnection.id,
+			lastDatabase: 'CurrentDb',
+			cachedDatabases: { [baselineConnection.id]: ['CurrentDb'] },
+			sqlFavorites: [{ name: 'Current', connectionId: baselineConnection.id, database: 'CurrentDb' }],
+			sqlLeaveNoTrace: [baselineConnection.id],
+		});
+		vi.clearAllMocks();
+
+		dispatchHostMessage({
+			type: 'sqlConnectionsData', revision: Number.MAX_SAFE_INTEGER,
+			sqlStateVersions: { policy: 20, connections: 20, principals: 20 },
+			connections: {},
+			lastConnectionId: baselineConnection.id,
+			lastDatabase: 'CurrentDb',
+			cachedDatabases: {},
+			sqlFavorites: [],
+			sqlLeaveNoTrace: [],
+		});
+		let iteratorCalls = 0;
+		const iteratorHostileConnections = [baselineConnection];
+		Object.defineProperty(iteratorHostileConnections, Symbol.iterator, {
+			configurable: true,
+			value() {
+				iteratorCalls++;
+				throw new Error('iterator invoked');
+			},
+		});
+		dispatchHostMessage({
+			type: 'sqlConnectionsData', revision: Number.MAX_SAFE_INTEGER,
+			sqlStateVersions: { policy: 20, connections: 20, principals: 20 },
+			connections: iteratorHostileConnections,
+			lastConnectionId: baselineConnection.id,
+			lastDatabase: 'CurrentDb',
+			cachedDatabases: { [baselineConnection.id]: ['CurrentDb'] },
+			sqlFavorites: [{ name: 'Current', connectionId: baselineConnection.id, database: 'CurrentDb' }],
+			sqlLeaveNoTrace: [baselineConnection.id],
+		});
+
+		expect(handlerState.sqlConnections).toEqual([baselineConnection]);
+		expect(handlerState.sqlCachedDatabases).toEqual({ [baselineConnection.id]: ['CurrentDb'] });
+		expect(handlerState.sqlFavorites).toEqual([
+			{ name: 'Current', connectionId: baselineConnection.id, database: 'CurrentDb' },
+		]);
+		expect(handlerState.sqlLeaveNoTraceConnectionIds).toEqual([baselineConnection.id]);
+		expect((window as any).__kustoSqlLastConnectionId).toBe(baselineConnection.id);
+		expect((window as any).__kustoSqlLastDatabase).toBe('CurrentDb');
+		expect(mocks.setSqlConnections).not.toHaveBeenCalled();
+		expect(mocks.setSqlFavorites).not.toHaveBeenCalled();
+		expect(mocks.setSqlLeaveNoTraceConnectionIds).not.toHaveBeenCalled();
+		expect(mocks.discardPendingSqlResultRestores).not.toHaveBeenCalled();
+		expect(mocks.updateSqlConnectionSelects).not.toHaveBeenCalled();
+		expect(mocks.resolvePendingSqlResultRestores).not.toHaveBeenCalled();
+		expect(mocks.updateSqlFavoritesUiForAllBoxes).not.toHaveBeenCalled();
+		expect(iteratorCalls).toBe(0);
+
+		const canonicalConnection = {
+			id: 'sql-next', name: 'Next', dialect: 'mssql', serverUrl: 'next.example',
+			authType: 'sql-login', username: 'user-next', revocationGeneration: 0,
+		};
+		dispatchHostMessage({
+			type: 'sqlConnectionsData', revision: 21,
+			sqlStateVersions: { policy: 21, connections: 21, principals: 21 },
+			connections: [canonicalConnection],
+			lastConnectionId: canonicalConnection.id,
+			lastDatabase: 'NextDb',
+			cachedDatabases: { [canonicalConnection.id]: ['NextDb'] },
+			sqlFavorites: [{ name: 'Next', connectionId: canonicalConnection.id, database: 'NextDb' }],
+			sqlLeaveNoTrace: [],
+		});
+
+		expect(handlerState.sqlConnections).toEqual([canonicalConnection]);
+		expect(handlerState.sqlCachedDatabases).toEqual({ [canonicalConnection.id]: ['NextDb'] });
+		expect(handlerState.sqlFavorites).toEqual([
+			{ name: 'Next', connectionId: canonicalConnection.id, database: 'NextDb' },
+		]);
+		expect(handlerState.sqlLeaveNoTraceConnectionIds).toEqual([]);
+		expect((window as any).__kustoSqlLastConnectionId).toBe(canonicalConnection.id);
+		expect((window as any).__kustoSqlLastDatabase).toBe('NextDb');
+		expect(mocks.setSqlConnections).toHaveBeenCalledWith([canonicalConnection]);
+		expect(mocks.setSqlFavorites).toHaveBeenCalledWith([
+			{ name: 'Next', connectionId: canonicalConnection.id, database: 'NextDb' },
+		]);
+		expect(mocks.setSqlLeaveNoTraceConnectionIds).toHaveBeenCalledWith([]);
+		expect(mocks.updateSqlConnectionSelects).toHaveBeenCalledOnce();
+		expect(mocks.resolvePendingSqlResultRestores).toHaveBeenCalledOnce();
+		expect(mocks.updateSqlFavoritesUiForAllBoxes).toHaveBeenCalledOnce();
+	});
+
+	it('treats prototype-sensitive SQL connection IDs as ordinary cache keys', async () => {
+		const connection = {
+			id: '__proto__', name: 'Prototype', dialect: 'mssql', serverUrl: 'prototype.example',
+			authType: 'sql-login', username: 'user', revocationGeneration: 0,
+		};
+		const cachedDatabases = Object.fromEntries([[connection.id, ['PrototypeDb']]]);
+		dispatchHostMessage({
+			type: 'sqlConnectionsData', revision: 30,
+			sqlStateVersions: { policy: 30, connections: 30, principals: 30 },
+			connections: [connection], lastConnectionId: connection.id, lastDatabase: 'PrototypeDb',
+			cachedDatabases, sqlFavorites: [], sqlLeaveNoTrace: [],
+		});
+
+		expect(Object.getPrototypeOf(handlerState.sqlCachedDatabases)).toBeNull();
+		expect(Object.prototype.hasOwnProperty.call(handlerState.sqlCachedDatabases, connection.id)).toBe(true);
+		expect(handlerState.sqlCachedDatabases[connection.id]).toEqual(['PrototypeDb']);
+
+		dispatchHostMessage({
+			type: 'sqlConnectionsData', revision: 31,
+			sqlStateVersions: { policy: 31, connections: 31, principals: 31 },
+			connections: [connection], lastConnectionId: connection.id, lastDatabase: 'PrototypeDb',
+			cachedDatabases: {}, sqlFavorites: [], sqlLeaveNoTrace: [connection.id],
+		});
+
+		expect(Object.getPrototypeOf(handlerState.sqlCachedDatabases)).toBeNull();
+		expect(Object.prototype.hasOwnProperty.call(handlerState.sqlCachedDatabases, connection.id)).toBe(false);
+		expect(handlerState.sqlCachedDatabases[connection.id]).toBeUndefined();
+		expect(handlerState.sqlLeaveNoTraceConnectionIds).toEqual([connection.id]);
+	});
+
+	it('orders zero, equal, lower, and explicitly unrevisioned SQL snapshots', async () => {
+		const snapshot = (revision: number, id: string) => ({
+			type: 'sqlConnectionsData', revision,
+			sqlStateVersions: { policy: revision, connections: revision, principals: revision },
+			connections: [{
+				id, name: id, dialect: 'mssql', serverUrl: `${id}.example`, authType: 'aad',
+			}],
+			lastConnectionId: id, lastDatabase: `${id}Db`, cachedDatabases: { [id]: [`${id}Db`] },
+			sqlFavorites: [], sqlLeaveNoTrace: [],
+		});
+
+		dispatchHostMessage(snapshot(40, 'sql-forty'));
+		dispatchHostMessage(snapshot(39, 'sql-lower'));
+		dispatchHostMessage(snapshot(0, 'sql-zero'));
+		expect(handlerState.sqlConnections.map(connection => connection.id)).toEqual(['sql-forty']);
+
+		dispatchHostMessage(snapshot(40, 'sql-equal'));
+		expect(handlerState.sqlConnections.map(connection => connection.id)).toEqual(['sql-equal']);
+
+		dispatchHostMessage({
+			type: 'sqlConnectionsData', revision: undefined,
+			connections: [{ id: 'sql-legacy', serverUrl: 'legacy.example' }],
+		});
+		expect(handlerState.sqlConnections.map(connection => connection.id)).toEqual(['sql-legacy']);
+
+		dispatchHostMessage(snapshot(41, 'sql-forty-one'));
+		expect(handlerState.sqlConnections.map(connection => connection.id)).toEqual(['sql-forty-one']);
+	});
+
+	it('commits the SQL snapshot watermark only after application succeeds', async () => {
+		const failedConnection = {
+			id: 'sql-failed', name: 'Failed', dialect: 'mssql', serverUrl: 'failed.example', authType: 'aad',
+		};
+		mocks.updateSqlConnectionSelects.mockImplementationOnce(() => {
+			throw new Error('selector application failed');
+		});
+		dispatchHostMessage({
+			type: 'sqlConnectionsData', revision: Number.MAX_SAFE_INTEGER,
+			sqlStateVersions: { policy: 50, connections: 50, principals: 50 },
+			connections: [failedConnection], lastConnectionId: failedConnection.id, lastDatabase: 'FailedDb',
+			cachedDatabases: { [failedConnection.id]: ['FailedDb'] }, sqlFavorites: [], sqlLeaveNoTrace: [],
+		});
+
+		const recoveredConnection = {
+			id: 'sql-recovered', name: 'Recovered', dialect: 'mssql',
+			serverUrl: 'recovered.example', authType: 'aad',
+		};
+		dispatchHostMessage({
+			type: 'sqlConnectionsData', revision: 42,
+			sqlStateVersions: { policy: 42, connections: 42, principals: 42 },
+			connections: [recoveredConnection], lastConnectionId: recoveredConnection.id, lastDatabase: 'RecoveredDb',
+			cachedDatabases: { [recoveredConnection.id]: ['RecoveredDb'] },
+			sqlFavorites: [{ name: 'Recovered', connectionId: recoveredConnection.id, database: 'RecoveredDb' }],
+			sqlLeaveNoTrace: [],
+		});
+
+		expect(handlerState.sqlConnections).toEqual([recoveredConnection]);
+		expect(handlerState.sqlCachedDatabases).toEqual({ [recoveredConnection.id]: ['RecoveredDb'] });
+		expect(handlerState.sqlFavorites).toEqual([
+			{ name: 'Recovered', connectionId: recoveredConnection.id, database: 'RecoveredDb' },
+		]);
+		expect((window as any).__kustoSqlLastConnectionId).toBe(recoveredConnection.id);
+		expect((window as any).__kustoSqlLastDatabase).toBe('RecoveredDb');
+		expect(mocks.resolvePendingSqlResultRestores).toHaveBeenCalledOnce();
 	});
 
 	it('routes sqlFavoritesData and enters favorites mode for the originating SQL section', async () => {

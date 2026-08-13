@@ -14,6 +14,7 @@ import type { UrlContentWebviewMessage } from '../shared/urlContentProtocol';
 import type { PythonExecutionWebviewMessage } from '../shared/pythonExecutionProtocol';
 import type { ArtifactCsvSaveWebviewMessage } from '../shared/artifactCsvSaveProtocol';
 import type { SqlStsEditorLanguageWebviewMessage } from '../shared/sqlStsEditorLanguageProtocol';
+import type { SqlConnectionsProjectionWebviewMessage } from '../shared/sqlConnectionsProjectionProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -294,7 +295,7 @@ export type IncomingWebviewMessage =
 	| ({ type: 'cancelOptimizeQuery' } & KustoOptimizeRequestIdentity)
 	| OptimizeQueryMessage
 	| ExecuteQueryMessage
-	| { type: 'getSqlConnections' }
+	| SqlConnectionsProjectionWebviewMessage
 	| { type: 'sqlSectionOpen'; boxId: string; sectionInstanceId: string }
 	| SqlDatabaseDiscoveryWebviewMessage
 	| { type: 'retireSqlTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number }

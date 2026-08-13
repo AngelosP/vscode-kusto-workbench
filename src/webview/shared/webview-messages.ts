@@ -71,6 +71,11 @@ import {
 	admitSqlStsEditorLanguageWebviewMessage,
 	type SqlStsEditorLanguageWebviewMessage,
 } from '../../shared/sqlStsEditorLanguageProtocol.js';
+import {
+	admitSqlConnectionsProjectionWebviewMessage,
+	captureSqlConnectionsProjectionWebviewMessage,
+	type SqlConnectionsProjectionWebviewMessage,
+} from '../../shared/sqlConnectionsProjectionProtocol.js';
 import { pState } from './persistence-state.js';
 
 let compatibilityDocumentRequestSequence = 0;
@@ -261,7 +266,7 @@ export type OutgoingWebviewMessage =
 	| OutgoingShareToClipboardMessage
 
 	// SQL connections & databases
-	| { type: 'getSqlConnections' }
+	| SqlConnectionsProjectionWebviewMessage
 	| { type: 'sqlSectionOpen'; boxId: string; sectionInstanceId: string }
 	| SqlDatabaseDiscoveryWebviewMessage
 	| { type: 'retireSqlTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number }
@@ -344,7 +349,10 @@ export type OutgoingWebviewMessage =
  */
 export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage | CompatibilityPersistenceWebviewMessage = msg;
-	const stsEditorLanguageAdmission = admitSqlStsEditorLanguageWebviewMessage(msg);
+	const sqlConnectionsProjectionAdmission = admitSqlConnectionsProjectionWebviewMessage(msg);
+	const stsEditorLanguageAdmission = sqlConnectionsProjectionAdmission.recognized
+		? { recognized: false as const }
+		: admitSqlStsEditorLanguageWebviewMessage(msg);
 	const artifactCsvSaveAdmission = stsEditorLanguageAdmission.recognized
 		? { recognized: false as const }
 		: admitArtifactCsvSaveWebviewMessage(msg);
@@ -355,7 +363,18 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 		|| artifactCsvSaveAdmission.recognized || pythonExecutionAdmission.recognized
 		? { recognized: false as const }
 		: admitUrlContentWebviewMessage(msg);
-	if (stsEditorLanguageAdmission.recognized) {
+	if (sqlConnectionsProjectionAdmission.recognized) {
+		if (!sqlConnectionsProjectionAdmission.parsed.ok) {
+			console.error('[kusto] Rejected invalid SQL connections projection webview message:', sqlConnectionsProjectionAdmission.parsed.error);
+			return;
+		}
+		const captured = captureSqlConnectionsProjectionWebviewMessage(sqlConnectionsProjectionAdmission.parsed.value);
+		if (!captured.ok) {
+			console.error('[kusto] Rejected unstable SQL connections projection webview message:', captured.error);
+			return;
+		}
+		outbound = captured.value;
+	} else if (stsEditorLanguageAdmission.recognized) {
 		if (!stsEditorLanguageAdmission.parsed.ok) {
 			console.error('[kusto] Rejected invalid SQL STS editor-language webview message:', stsEditorLanguageAdmission.parsed.error);
 			return;

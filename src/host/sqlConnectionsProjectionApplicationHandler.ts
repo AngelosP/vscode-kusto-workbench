@@ -10,6 +10,23 @@ import {
 import type { IncomingWebviewMessage } from './queryEditorTypes';
 import { normalizeSqlServerUrl } from './sql/sqlAuthState';
 import type { SqlWorkbenchService } from './sql/sqlWorkbenchService';
+import {
+	admitSqlConnectionsProjectionWebviewMessage,
+	parseSqlConnectionsProjectionHostMessage,
+	type SqlConnectionsData,
+	type SqlConnectionsProjectionHostMessage,
+} from '../shared/sqlConnectionsProjectionProtocol';
+
+function readOwnDataProperty(record: Readonly<Record<string, unknown>>, key: string): unknown {
+	try {
+		const descriptor = Object.getOwnPropertyDescriptor(record, key);
+		return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+			? descriptor.value
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 export interface SqlConnectionsProjectionApplicationHandler {
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined;
@@ -23,7 +40,7 @@ export type SqlConnectionsProjectionApplicationHandlerOptions = {
 	workbench: Pick<SqlWorkbenchService, 'dispatchSqlOwnerSnapshot'>;
 	readDatabaseCache: (connection: SqlConnection) => Promise<SqlDatabaseCacheEntry | undefined>;
 	getFavorites: () => SqlFavorite[];
-	postMessage: (message: Record<string, unknown>) => boolean | PromiseLike<boolean>;
+	postMessage: (message: SqlConnectionsProjectionHostMessage) => boolean | PromiseLike<boolean>;
 };
 
 export class HostSqlConnectionsProjectionApplicationHandler
@@ -35,7 +52,9 @@ export class HostSqlConnectionsProjectionApplicationHandler
 	constructor(private readonly options: SqlConnectionsProjectionApplicationHandlerOptions) {}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
-		if (message.type !== 'getSqlConnections') return undefined;
+		const admission = admitSqlConnectionsProjectionWebviewMessage(message);
+		if (!admission.recognized) return undefined;
+		if (!admission.parsed.ok) return Promise.resolve();
 		if (this.disposed) return Promise.resolve();
 		return this.refresh().then(() => undefined);
 	}
@@ -70,12 +89,20 @@ export class HostSqlConnectionsProjectionApplicationHandler
 			const principalByConnectionId = new Map<string, string>();
 			const publishedConnections = snapshot.connections.map(connection => {
 				const authType = String(connection.authType || '').trim().toLowerCase();
+				const account = readOwnDataProperty(
+					snapshot.accountsByServer,
+					normalizeSqlServerUrl(connection.serverUrl),
+				);
 				const principal = authType === 'aad'
-					? snapshot.accountsByServer[normalizeSqlServerUrl(connection.serverUrl)]
+					? (typeof account === 'string' ? account : undefined)
 					: String(connection.username || '').trim();
 				const principalFingerprint = sqlSchemaPrincipalFingerprintForPrincipal(connection, principal);
 				if (principalFingerprint) principalByConnectionId.set(connection.id, principalFingerprint);
-				const revocationGeneration = snapshot.policy.revocationGenerations[connection.id] ?? 0;
+				const candidateGeneration = readOwnDataProperty(snapshot.policy.revocationGenerations, connection.id);
+				const revocationGeneration = typeof candidateGeneration === 'number'
+					&& Number.isSafeInteger(candidateGeneration) && candidateGeneration >= 0
+					? candidateGeneration
+					: 0;
 				return canonicalProtectedIds.has(connection.id) || !principalFingerprint
 					? { ...connection, revocationGeneration }
 					: { ...connection, principalFingerprint, revocationGeneration };
@@ -88,7 +115,7 @@ export class HostSqlConnectionsProjectionApplicationHandler
 					|| entry.principalFingerprint !== principalByConnectionId.get(connection.id)) return [];
 				return [[connection.id, entry.databases] as const];
 			}));
-			const delivered = await this.options.postMessage({
+			const message: SqlConnectionsData = {
 				type: 'sqlConnectionsData',
 				revision,
 				sqlStateVersions: {
@@ -105,7 +132,10 @@ export class HostSqlConnectionsProjectionApplicationHandler
 					: this.options.getFavorites()
 						.filter(favorite => !canonicalProtectedIds.has(favorite.connectionId)),
 				sqlLeaveNoTrace: [...canonicalProtectedIds],
-			});
+			};
+			const parsed = parseSqlConnectionsProjectionHostMessage(message);
+			if (!parsed.ok) return false;
+			const delivered = await this.options.postMessage(parsed.value);
 			return delivered === true;
 		});
 	}

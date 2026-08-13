@@ -60,6 +60,10 @@ import {
 import {
 	admitSqlStsEditorLanguageHostMessage,
 } from '../../shared/sqlStsEditorLanguageProtocol.js';
+import {
+	admitSqlConnectionsProjectionHostMessage,
+	captureSqlConnectionsProjectionHostMessage,
+} from '../../shared/sqlConnectionsProjectionProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -302,6 +306,16 @@ function applySqlLeaveNoTraceConnectionIds(value: unknown): void {
 		} else {
 			sqlPolicyBlockedBoxIds.delete(boxId);
 		}
+	}
+}
+
+function replaceSqlCachedDatabases(value: Record<string, string[]>): void {
+	for (const key of Object.keys(sqlCachedDatabases)) delete sqlCachedDatabases[key];
+	for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+		if (!descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) continue;
+		Object.defineProperty(sqlCachedDatabases, key, {
+			value: descriptor.value, enumerable: true, configurable: true, writable: true,
+		});
 	}
 }
 
@@ -1491,7 +1505,16 @@ window.addEventListener(DOCUMENT_RUNTIME_INVALIDATED_EVENT, () => {
 });
 
 const __kustoDispatchHostMessage = async (message: any) => {
-	const stsEditorLanguageAdmission = admitSqlStsEditorLanguageHostMessage(message);
+	const sqlConnectionsProjectionAdmission = admitSqlConnectionsProjectionHostMessage(message);
+	if (sqlConnectionsProjectionAdmission.recognized) {
+		if (!sqlConnectionsProjectionAdmission.parsed.ok) return;
+		const captured = captureSqlConnectionsProjectionHostMessage(sqlConnectionsProjectionAdmission.parsed.value);
+		if (!captured.ok) return;
+		message = captured.value;
+	}
+	const stsEditorLanguageAdmission = sqlConnectionsProjectionAdmission.recognized
+		? { recognized: false as const }
+		: admitSqlStsEditorLanguageHostMessage(message);
 	if (stsEditorLanguageAdmission.recognized) {
 		if (!stsEditorLanguageAdmission.parsed.ok) return;
 		message = stsEditorLanguageAdmission.parsed.value;
@@ -3236,19 +3259,18 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		// ── SQL connection messages ────────────────────────────────────
 		case 'sqlConnectionsData':
 			try {
-				const revision = Number(message.revision) || 0;
-				if (revision && revision < latestSqlConnectionsRevision) break;
-				if (revision) latestSqlConnectionsRevision = revision;
-				setSqlConnections(Array.isArray(message.connections) ? message.connections : []);
-				for (const k of Object.keys(sqlCachedDatabases)) delete sqlCachedDatabases[k];
-				Object.assign(sqlCachedDatabases, message.cachedDatabases || {});
+				const revision = message.revision;
+				if (revision !== undefined && revision < latestSqlConnectionsRevision) break;
+				setSqlConnections(message.connections);
+				replaceSqlCachedDatabases(message.cachedDatabases ?? {});
 				try { (window as any).__kustoSqlLastConnectionId = message.lastConnectionId || ''; } catch (e) { console.error('[kusto]', e); }
 				try { (window as any).__kustoSqlLastDatabase = message.lastDatabase || ''; } catch (e) { console.error('[kusto]', e); }
-				setSqlFavorites(Array.isArray(message.sqlFavorites) ? message.sqlFavorites : []);
+				setSqlFavorites(message.sqlFavorites ?? []);
 				applySqlLeaveNoTraceConnectionIds(message.sqlLeaveNoTrace);
 				updateSqlConnectionSelects();
 				resolvePendingSqlResultRestores();
 				try { updateSqlFavoritesUiForAllBoxes(); } catch (e) { console.error('[kusto]', e); }
+				if (revision !== undefined) latestSqlConnectionsRevision = revision;
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'sqlLeaveNoTraceData':

@@ -16,7 +16,8 @@ Feature: Exact clipboard share result artifacts
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
 
-    When I click the element "session.kqlx"
+    When I execute command "workbench.action.focusActiveEditorGroup"
+    And I click at 100, 100
     When I evaluate "window.__e2e.share.assertArtifactClipboard()" in the webview for 20 seconds
     And I wait 1 second
     Then I collect JSON artifact "hst5-rich-share-clipboard" from extension host expression "(async () => { const text = await vscode.env.clipboard.readText(); if (!text.includes('artifact-b') || text.includes('must-not-copy') || text.includes('revoked')) throw new Error('Unexpected rich-share clipboard: ' + JSON.stringify(text)); return { text, containsArtifactB: true, containsDenied: false, containsRevoked: false }; })()"
@@ -24,15 +25,15 @@ Feature: Exact clipboard share result artifacts
 
   Scenario: Copy a Kusto ADX link through the real host clipboard adapter
     When I execute command "kustoWorkbench.test.cleanupKustoIdentityChecklist"
-    When I execute command "kustoWorkbench.test.seedKustoIdentityChecklist"
     When I execute command "kusto.openQueryEditor"
     And I wait 2 seconds
-    When I evaluate "(() => { const connection = (window.connections || []).find(c => c.name === 'E2E Identity Checklist Regional'); if (!connection) throw new Error('HST-5 seeded connection unavailable'); window.vscode?.postMessage({ type: 'copyAdeLink', boxId: 'hst5-native-copy', query: 'print hst5_query_sharing = 1', connectionId: connection.id, database: 'ChecklistDb' }); return { connectionId: connection.id }; })()" in the webview for 15 seconds
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
+    When I execute command "kustoWorkbench.test.seedKustoIdentityChecklist"
+    When I execute command "workbench.action.focusActiveEditorGroup"
+    And I click at 400, 400
+    When I evaluate "(async () => { const deadline = Date.now() + 10000; let connection; while (Date.now() < deadline) { connection = (window.connections || []).find(c => c.name === 'E2E Identity Checklist Regional'); if (connection) break; await new Promise(resolve => setTimeout(resolve, 100)); } if (!connection) throw new Error('HST-5 seeded connection unavailable'); window.vscode?.postMessage({ type: 'copyAdeLink', boxId: 'hst5-native-copy', query: 'print hst5_query_sharing = 1', connectionId: connection.id, database: 'ChecklistDb' }); return { connectionId: connection.id }; })()" in the webview for 15 seconds
     And I wait 1 second
     When I execute command "kustoWorkbench.test.assertClipboardContains" with args '["https://dataexplorer.azure.com/clusters/identityadx.westus/databases/ChecklistDb?query="]'
-    When I execute command "workbench.action.focusActiveEditorGroup"
-    And I move the mouse to 30, 700
-    And I click
     Then I take a screenshot "hst5-query-sharing-clipboard"
     When I execute command "kustoWorkbench.test.cleanupKustoIdentityChecklist"
     When I execute command "workbench.action.closeAllEditors"

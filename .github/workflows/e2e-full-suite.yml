@@ -23,9 +23,13 @@ permissions:
 
 jobs:
   default-suite:
-    name: Default Profile E2E Suite
+    name: Default Profile E2E Suite (${{ matrix.shard }}/4)
     runs-on: windows-latest
-    timeout-minutes: 360
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
 
     steps:
       - name: Checkout
@@ -138,8 +142,14 @@ jobs:
         shell: pwsh
         env:
           E2E_INCLUDE_SCREENSHOTS: ${{ github.event.inputs.includeScreenshotGenerators || 'false' }}
+          E2E_SHARD_INDEX: ${{ matrix.shard }}
         run: |
-          $arguments = @('--profiles', 'default', '--vscode-version', $env:E2E_VSCODE_VERSION)
+          $arguments = @(
+            '--profiles', 'default',
+            '--vscode-version', $env:E2E_VSCODE_VERSION,
+            '--shard-index', $env:E2E_SHARD_INDEX,
+            '--shard-count', '4'
+          )
           if ($env:E2E_INCLUDE_SCREENSHOTS -eq 'true') {
             $arguments += '--include-screenshot-generators'
           }
@@ -149,7 +159,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-default-suite-${{ github.run_number }}
+          name: e2e-default-suite-${{ github.run_number }}-attempt-${{ github.run_attempt }}-shard-${{ matrix.shard }}
           if-no-files-found: ignore
           retention-days: 30
           path: |

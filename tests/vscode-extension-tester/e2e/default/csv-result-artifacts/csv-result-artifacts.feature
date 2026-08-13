@@ -3,7 +3,7 @@ Feature: Exact CSV result artifacts
   Background:
     Given the extension is in a clean state
   When I move the Dev Host to 0, 0
-  And I resize the Dev Host to 1300 by 950
+  And I resize the Dev Host to 1000 by 700
   And I execute command "workbench.action.closeSidebar"
   And I execute command "workbench.action.closeAuxiliaryBar"
   And I execute command "workbench.action.closePanel"
@@ -30,7 +30,7 @@ Feature: Exact CSV result artifacts
     Then I take a screenshot "csv-save-enabled"
 
     When I click "[data-testid='data-table-save']" in the webview
-    And I wait 2 seconds
+    And I wait 3 seconds
   	And I save the file as "${TEMP}\kusto-workbench-exact-results.csv"
     And I wait 2 seconds
   	Then the file "${TEMP}\kusto-workbench-exact-results.csv" should contain "Name,Score"

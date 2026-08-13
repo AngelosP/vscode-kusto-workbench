@@ -154,7 +154,7 @@ export const runModesByBoxId: Record<string, any> = {};
 export const caretDocOverlaysByBoxId: Record<string, any> = {};
 export const copilotInlineCompletionRequests: Record<string, any> = {};
 export const sqlConnections: any[] = [];
-export const sqlCachedDatabases: Record<string, any> = {};
+export const sqlCachedDatabases: Record<string, any> = Object.create(null);
 export const sqlFavoritesModeByBoxId: Record<string, any> = {};
 
 // ---------------------------------------------------------------------------
@@ -264,7 +264,11 @@ export function setActiveMonacoEditor(val: any) { activeMonacoEditor = val; try 
 export function setCaretDocsEnabled(val: boolean) { caretDocsEnabled = val; try { _win.caretDocsEnabled = val; } catch (e) { console.error('[kusto]', e); } }
 export function setAutoTriggerAutocompleteEnabled(val: boolean) { autoTriggerAutocompleteEnabled = val; try { _win.autoTriggerAutocompleteEnabled = val; } catch (e) { console.error('[kusto]', e); } }
 export function setCopilotInlineCompletionsEnabled(val: boolean) { copilotInlineCompletionsEnabled = val; try { _win.copilotInlineCompletionsEnabled = val; } catch (e) { console.error('[kusto]', e); } }
-export function setSqlConnections(val: any[]) { sqlConnections.length = 0; sqlConnections.push(...val); try { _win.sqlConnections = sqlConnections; } catch (e) { console.error('[kusto]', e); } }
+export function setSqlConnections(val: any[]) {
+	sqlConnections.length = 0;
+	for (let index = 0; index < val.length; index++) sqlConnections.push(val[index]);
+	try { _win.sqlConnections = sqlConnections; } catch (e) { console.error('[kusto]', e); }
+}
 
 export function registerKustoSchemaApplyRequester(requester: KustoSchemaApplyRequester): () => void {
 	kustoSchemaApplyRequester = requester;

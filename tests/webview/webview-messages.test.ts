@@ -251,6 +251,30 @@ describe('postMessageToHost', () => {
 		}
 	});
 
+	it('posts valid SQL connections requests and rejects malformed ones before E2E capture', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const request = { type: 'getSqlConnections' as const };
+			postMessageToHost(request);
+
+			expect(capture).toHaveBeenCalledWith(request);
+			expect(capture.mock.calls[0]?.[0]).not.toBe(request);
+			expect(postMessage).toHaveBeenCalledWith(request);
+			expect(postMessage.mock.calls[0]?.[0]).not.toBe(request);
+			capture.mockClear();
+			postMessage.mockClear();
+
+			postMessageToHost(Object.assign([], request) as unknown as Parameters<typeof postMessageToHost>[0]);
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
+
 	it('posts valid SQL schema requests and rejects malformed ones before E2E capture', () => {
 		const postMessage = vi.fn();
 		const capture = vi.fn();

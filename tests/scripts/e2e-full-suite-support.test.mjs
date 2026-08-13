@@ -1,7 +1,27 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { shouldRetryVscodeBootstrapFailure } from '../../scripts/e2e-full-suite-support.mjs';
+import {
+	selectE2eShard,
+	shouldRetryVscodeBootstrapFailure,
+} from '../../scripts/e2e-full-suite-support.mjs';
+
+test('partitions E2E cases deterministically without overlap', () => {
+	const cases = ['a', 'b', 'c', 'd', 'e'];
+
+	assert.deepEqual(selectE2eShard(cases, 1, 2), ['a', 'c', 'e']);
+	assert.deepEqual(selectE2eShard(cases, 2, 2), ['b', 'd']);
+	assert.deepEqual(
+		[...selectE2eShard(cases, 1, 2), ...selectE2eShard(cases, 2, 2)].sort(),
+		cases,
+	);
+});
+
+test('rejects invalid E2E shard coordinates', () => {
+	assert.throws(() => selectE2eShard([], 1, 0), /count must be a positive integer/);
+	assert.throws(() => selectE2eShard([], 0, 2), /index must be between 1 and 2/);
+	assert.throws(() => selectE2eShard([], 3, 2), /index must be between 1 and 2/);
+});
 
 test('retries a transient VS Code download failure before launch', () => {
 	assert.equal(shouldRetryVscodeBootstrapFailure({

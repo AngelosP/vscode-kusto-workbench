@@ -390,6 +390,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::publishOwnerChangeWithRetry::postMessageRequiredContained::1820:13',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::publishOwnerChangeWithRetry::postMessageRequiredContained::1831:27',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::replayOwnerChange::postMessageRequiredContained::1860:14',
+	'src/host/sqlConnectionsProjectionApplicationHandler.ts::publishSnapshot::postMessage::138:28',
 	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::deliverMessage::postMessage::146:31',
 	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::deliverTerminalMessage::postMessage::164:31',
 	'src/host/sqlDatabaseDiscoveryApplicationHandler.ts::postSqlConnectionMessageAllowed::postMessage::218:31',
@@ -1255,6 +1256,55 @@ describe('Message Protocol Contract', () => {
 		expect(router).not.toContain('message.schema as');
 	});
 
+	it('keeps SQL connections requests and snapshots on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/sqlConnectionsProjectionProtocol.ts',
+			'SqlConnectionsProjectionWebviewMessage',
+		)).toEqual(['getSqlConnections']);
+		expect(extractTypeDiscriminants(
+			'src/shared/sqlConnectionsProjectionProtocol.ts',
+			'SqlConnectionsProjectionHostMessage',
+		)).toEqual(['sqlConnectionsData']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| SqlConnectionsProjectionWebviewMessage');
+		expect(webviewMessages).toContain('| SqlConnectionsProjectionWebviewMessage');
+		expect(hostTypes).not.toContain("type: 'getSqlConnections'");
+		expect(webviewMessages).not.toContain("type: 'getSqlConnections'");
+		expect(webviewMessages.indexOf('admitSqlConnectionsProjectionWebviewMessage(msg)'))
+			.toBeLessThan(webviewMessages.indexOf('const e2eCaptureHostMessage'));
+		expect(webviewMessages.indexOf('captureSqlConnectionsProjectionWebviewMessage('))
+			.toBeLessThan(webviewMessages.indexOf('const e2eCaptureHostMessage'));
+
+		const projectionHandler = readWorkspaceFile('src/host/sqlConnectionsProjectionApplicationHandler.ts');
+		expect(projectionHandler.indexOf('admitSqlConnectionsProjectionWebviewMessage(message)'))
+			.toBeLessThan(projectionHandler.indexOf('return this.refresh().then('));
+		expect(projectionHandler).toContain('postMessage: (message: SqlConnectionsProjectionHostMessage)');
+		expect(projectionHandler.indexOf('parseSqlConnectionsProjectionHostMessage(message)'))
+			.toBeLessThan(projectionHandler.indexOf('this.options.postMessage(parsed.value)'));
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		expect(dispatcher.indexOf('admitSqlConnectionsProjectionHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf("case 'sqlConnectionsData':"));
+		expect(dispatcher.indexOf('captureSqlConnectionsProjectionHostMessage('))
+			.toBeLessThan(dispatcher.indexOf("case 'sqlConnectionsData':"));
+		expect(dispatcher.indexOf('admitSqlConnectionsProjectionHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf('latestSqlConnectionsRevision = revision'));
+		expect(dispatcher.indexOf('captureSqlConnectionsProjectionHostMessage('))
+			.toBeLessThan(dispatcher.indexOf('latestSqlConnectionsRevision = revision'));
+		expect(dispatcher.indexOf('admitSqlConnectionsProjectionHostMessage(message)'))
+			.toBeLessThan(dispatcher.indexOf('setSqlConnections(message.connections)'));
+		expect(dispatcher.indexOf('setSqlConnections(message.connections)'))
+			.toBeLessThan(dispatcher.indexOf('latestSqlConnectionsRevision = revision'));
+		expect(dispatcher.indexOf('resolvePendingSqlResultRestores()'))
+			.toBeLessThan(dispatcher.indexOf('latestSqlConnectionsRevision = revision'));
+
+		const state = readWorkspaceFile('src/webview/core/state.ts');
+		expect(state).not.toContain('sqlConnections.push(...val)');
+	});
+
 	it('keeps SQL STS editor-language traffic on one runtime-validated shared channel', () => {
 		expect(extractTypeDiscriminants(
 			'src/shared/sqlStsEditorLanguageProtocol.ts',
@@ -1649,6 +1699,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/urlContentProtocol.ts', 'UrlContentWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/artifactCsvSaveProtocol.ts', 'ArtifactCsvSaveWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlStsEditorLanguageProtocol.ts', 'SqlStsEditorLanguageWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/sqlConnectionsProjectionProtocol.ts', 'SqlConnectionsProjectionWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1670,6 +1721,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/urlContentProtocol.ts', 'UrlContentWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/artifactCsvSaveProtocol.ts', 'ArtifactCsvSaveWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/sqlStsEditorLanguageProtocol.ts', 'SqlStsEditorLanguageWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/sqlConnectionsProjectionProtocol.ts', 'SqlConnectionsProjectionWebviewMessage'),
 			])].sort()
 		);
 	});

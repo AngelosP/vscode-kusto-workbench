@@ -227,7 +227,8 @@ describe('QueryEditorProvider SQL connections projection application', () => {
 		expect(providerSource).not.toContain('sendSqlConnectionsData');
 		expect(providerSource.match(/sqlConnectionsProjectionApplication\.refresh\(\)/g)).toHaveLength(3);
 		expect(providerSource).toContain('this.sqlConnectionsProjectionApplication.dispose();');
-		expect(handlerSource).toContain("if (message.type !== 'getSqlConnections')");
+		expect(handlerSource.indexOf('admitSqlConnectionsProjectionWebviewMessage(message)'))
+			.toBeLessThan(handlerSource.indexOf('return this.refresh().then('));
 		expect(handlerSource).toContain("type: 'sqlConnectionsData'");
 		expect(handlerSource).toContain('private snapshotTail: Promise<boolean> = Promise.resolve(true);');
 		expect(handlerSource).toContain('this.options.workbench.dispatchSqlOwnerSnapshot');
