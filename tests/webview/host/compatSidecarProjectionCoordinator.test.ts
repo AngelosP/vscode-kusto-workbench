@@ -366,7 +366,7 @@ describe('CompatSidecarProjectionCoordinator', () => {
 			const source = fs.readFileSync(path.join(process.cwd(), 'src', 'host', fileName), 'utf8');
 			expect(source).toContain('projectionCoordinatorFactory');
 			expect(source).toContain('projectionCoordinator.completeReload');
-			expect(source).toContain('projectionCoordinator.admitPersist');
+			expect(source).not.toContain('projectionCoordinator.admitPersist');
 			for (const displaced of [
 				'postDocumentGeneration',
 				'activeSourceGeneration',
@@ -380,5 +380,9 @@ describe('CompatSidecarProjectionCoordinator', () => {
 				expect(source).not.toContain(displaced);
 			}
 		}
+		const persistCoordinator = fs.readFileSync(path.join(
+			process.cwd(), 'src', 'host', 'compatSidecarPersistCoordinator.ts',
+		), 'utf8');
+		expect(persistCoordinator).toContain('projection.admitPersist');
 	});
 });

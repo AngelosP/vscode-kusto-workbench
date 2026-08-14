@@ -577,6 +577,42 @@ describe('getDatabaseSchema discovery policy', () => {
 		expect(dispatchAuthenticated).toHaveBeenCalledOnce();
 	});
 
+	it('does not enqueue cache deletion for a newly added connection', async () => {
+		let connectionListener: ((change: any) => void) | undefined;
+		const globalState = new Map<string, unknown>();
+		const context = {
+			globalState: {
+				get: <T>(key: string, fallback?: T) => globalState.has(key) ? globalState.get(key) as T : fallback,
+				update: async (key: string, value: unknown) => { globalState.set(key, value); },
+			},
+			secrets: {
+				keys: async () => [], get: async () => undefined,
+				store: async () => undefined, delete: async () => undefined,
+			},
+			globalStorageUri: vscode.Uri.file(`/connection-lifecycle-${Date.now()}`),
+			subscriptions: [],
+		} as any;
+		const connectionManager = {
+			getConnections: vi.fn(() => []),
+			onDidChangeConnections: vi.fn((listener: (change: any) => void) => {
+				connectionListener = listener;
+				return { dispose: vi.fn() };
+			}),
+		} as any;
+		const client = new KustoQueryClient(context, undefined, connectionManager);
+		const clearConnection = vi.fn(async () => undefined);
+		(client as any).connectionCache = { clearConnection };
+
+		connectionListener?.({ type: 'added', connection: TEST_CONNECTION });
+		await flushPromises();
+		expect(clearConnection).not.toHaveBeenCalled();
+
+		connectionListener?.({ type: 'removed', connection: TEST_CONNECTION });
+		await flushPromises();
+		expect(clearConnection).toHaveBeenCalledWith(TEST_CONNECTION.id);
+		client.dispose();
+	});
+
 	it('fails closed before warm metadata cache lookup when a dispatch gate has no manager', async () => {
 		const kustoClient = new KustoQueryClient();
 		(kustoClient as any).getAccountPartition = vi.fn(() => 'partition-1');

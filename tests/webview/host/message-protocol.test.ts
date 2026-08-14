@@ -345,6 +345,7 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 		extractPostMessageTypes('src/host/sqlEditorLifecycleApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/kustoSchemaRequestApplicationHandler.ts'),
 		extractPostMessageTypes('src/host/kustoExecutionCoordinator.ts'),
+		extractPostMessageTypes('src/host/compatSidecarPersistCoordinator.ts'),
 		extractPostMessageTypes('src/host/sql/sqlEditorLifecycleCoordinator.ts'),
 		extractPostMessageTypes('src/host/mainWebviewStartupGateway.ts'),
 		extractPostMessageTypes('src/host/tutorials/embeddedTutorialWebviewHost.ts'),
@@ -2045,6 +2046,12 @@ describe('Message Protocol Contract', () => {
 				'requestArtifactCsvSaveData',
 				'cancelArtifactCsvSave',
 			]));
+		});
+
+		it('extracts the shared compatibility persist acknowledgement sender', () => {
+			const extraction = extractPostMessageTypes('src/host/compatSidecarPersistCoordinator.ts');
+			expect(extraction.types).toEqual(['persistDocumentAck']);
+			expect(extraction.dynamicSites).toEqual([]);
 		});
 
 		it('extracts the SQL connection-onboarding acknowledgement', () => {

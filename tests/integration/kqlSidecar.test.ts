@@ -5049,6 +5049,241 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('shared compatibility persist coordinator gates final snapshot application before effects', async () => {
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalWillSave = vscode.workspace.onWillSaveTextDocument;
+		const originalDidSave = vscode.workspace.onDidSaveTextDocument;
+		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+		const variants = [
+			{
+				extension: '.kql', Provider: KqlCompatEditorProvider, primaryType: 'query',
+				primaryId: 'compat_primary_query', sidecarKind: 'kqlx', marker: 'KQL_COORDINATED',
+			},
+			{
+				extension: '.sql', Provider: SqlCompatEditorProvider, primaryType: 'sql',
+				primaryId: 'compat_primary_sql', sidecarKind: 'sqlx', marker: 'SQL_COORDINATED',
+			},
+		] as const;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-compat-persist-coordinator-'));
+
+		try {
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => state;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
+				state: any, publish: (value: any) => Promise<unknown>,
+			) => publish(state);
+			for (const [index, variant] of variants.entries()) {
+				let currentText = 'A';
+				const sourcePath = path.join(tmpDir, `source-${index}${variant.extension}`);
+				const sidecarPath = `${sourcePath}.json`;
+				fs.writeFileSync(sourcePath, currentText, 'utf8');
+				fs.writeFileSync(sidecarPath, JSON.stringify({
+					kind: variant.sidecarKind,
+					version: 1,
+					state: { sections: [
+						{ id: variant.primaryId, type: variant.primaryType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'markdown_1', type: 'markdown', text: 'BASELINE' },
+					] },
+				}, null, 2) + '\n', 'utf8');
+
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+				let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
+				const posted: any[] = [];
+				let sourceEditCalls = 0;
+				let sessionCommitCalls = 0;
+				let finalSettlementCalls = 0;
+				let coordinatorCreations = 0;
+				let coordinatorCalls = 0;
+				let releaseCoordinator!: () => void;
+				const coordinatorGate = new Promise<void>(resolve => { releaseCoordinator = resolve; });
+
+				(vscode.workspace as any).onWillSaveTextDocument = (handler: any) => {
+					willSaveHandler = handler;
+					return { dispose() {} };
+				};
+				(vscode.workspace as any).onDidSaveTextDocument = (handler: any) => {
+					didSaveHandler = handler;
+					return { dispose() {} };
+				};
+				(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+					sourceEditCalls++;
+					const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+					if (typeof replacement !== 'string') return false;
+					currentText = replacement;
+					return true;
+				};
+				const closeCoordinatorFactory = (options: any) => {
+					const session = options.session as any;
+					for (const method of ['adoptRevision', 'setStateRevision', 'setMaterializedDirty'] as const) {
+						const original = session[method].bind(session);
+						session[method] = (...args: any[]) => {
+							sessionCommitCalls++;
+							return original(...args);
+						};
+					}
+					const completeFinalPersist = session.completeFinalPersist.bind(session);
+					session.completeFinalPersist = (...args: any[]) => {
+						const completed = completeFinalPersist(...args);
+						if (completed) finalSettlementCalls++;
+						return completed;
+					};
+					return new CompatSidecarCloseCoordinator(options);
+				};
+				const persistCoordinatorFactory = (options: any) => {
+					coordinatorCreations++;
+					const Coordinator = require('../../src/host/compatSidecarPersistCoordinator')
+						.CompatSidecarPersistCoordinator;
+					const coordinator = new Coordinator(options);
+					const persist = coordinator.persist.bind(coordinator);
+					coordinator.persist = async (...args: any[]) => {
+						coordinatorCalls++;
+						await coordinatorGate;
+						return persist(...args);
+					};
+					return coordinator;
+				};
+				const provider = new (variant.Provider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-${index}`)),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+					undefined, closeCoordinatorFactory, undefined, persistCoordinatorFactory,
+				);
+				const lines = () => currentText.split(/\r?\n/);
+				const document = {
+					uri: vscode.Uri.file(sourcePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+					get lineCount() { return lines().length; },
+					lineAt: (line: number) => ({ text: lines()[line] || '' }),
+					positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+				} as vscode.TextDocument;
+				const panel = {
+					visible: true,
+					webview: {
+						options: {},
+						postMessage: async (message: any) => {
+							posted.push(message);
+							if (message?.reloadRequestId) {
+								await Promise.resolve(receiveHandler?.({
+									type: 'documentReloadResult', requestId: message.reloadRequestId,
+									applied: true, editRevision: Number(message.editRevision || 0),
+								}));
+							}
+							return true;
+						},
+						onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					},
+					onDidDispose: () => ({ dispose() {} }),
+					onDidChangeViewState: () => ({ dispose() {} }),
+				} as any;
+
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const projection = [...posted].reverse().find(message => message?.type === 'documentData' && message?.ok === true);
+				assert.ok(projection, `${variant.extension} should publish an initial projection`);
+				assert.ok(willSaveHandler, `${variant.extension} should register the existing will-save path`);
+				assert.ok(didSaveHandler, `${variant.extension} should register the existing did-save path`);
+				const bootstrap = getCompatibilityPersistenceTestBootstrap(panel);
+				assert.ok(bootstrap, `${variant.extension} should expose its compatibility envelope`);
+				const durableBeforePersist = fs.readFileSync(sidecarPath, 'utf8');
+				sourceEditCalls = 0;
+				sessionCommitCalls = 0;
+				finalSettlementCalls = 0;
+				posted.length = 0;
+
+				let saveBarrier!: Promise<unknown>;
+				willSaveHandler!({
+					document,
+					waitUntil: value => { saveBarrier = Promise.resolve(value); },
+				} as vscode.TextDocumentWillSaveEvent);
+				await waitForCondition(
+					() => posted.some(message => message?.type === 'requestFinalPersist'),
+					`${variant.extension} should create a real pending final request`,
+				);
+				const finalRequest = posted.find(message => message?.type === 'requestFinalPersist');
+				let saveBarrierSettlements = 0;
+				void saveBarrier.then(
+					() => { saveBarrierSettlements++; },
+					() => { saveBarrierSettlements++; },
+				);
+				const persistPromise = Promise.resolve(receiveHandler!({
+					...bootstrap,
+					type: 'persistDocument',
+					sourceGeneration: projection.sourceGeneration,
+					editRevision: 1,
+					snapshotId: `coordinated-${index}`,
+					flushRequestId: finalRequest.requestId,
+					flush: true,
+					reason: 'save',
+					state: { sections: [
+						{ id: variant.primaryId, type: variant.primaryType, query: 'B' },
+						{ id: 'markdown_1', type: 'markdown', text: variant.marker },
+					] },
+				}));
+				await waitForCondition(
+					() => coordinatorCalls > 0 || sourceEditCalls > 0 || finalSettlementCalls > 0,
+					`${variant.extension} should reach the held persist boundary`,
+				);
+				await Promise.resolve();
+				assert.deepStrictEqual({
+					coordinatorCreations,
+					coordinatorCalls,
+					sourceEditCalls,
+					sessionCommitCalls,
+					diffPublications: posted.filter(message => message?.type === 'changedSections').length,
+					ackAttempts: posted.filter(message => message?.type === 'persistDocumentAck').length,
+					finalSettlementCalls,
+					saveBarrierSettlements,
+					durableChanged: fs.readFileSync(sidecarPath, 'utf8') !== durableBeforePersist,
+					currentText,
+				}, {
+					coordinatorCreations: 1,
+					coordinatorCalls: 1,
+					sourceEditCalls: 0,
+					sessionCommitCalls: 0,
+					diffPublications: 0,
+					ackAttempts: 0,
+					finalSettlementCalls: 0,
+					saveBarrierSettlements: 0,
+					durableChanged: false,
+					currentText: 'A',
+				}, `${variant.extension} must not apply a final snapshot before coordinator release`);
+
+				releaseCoordinator();
+				await persistPromise;
+				await saveBarrier;
+				assert.strictEqual(coordinatorCalls, 1, `${variant.extension} should coordinate once`);
+				assert.strictEqual(sourceEditCalls, 1, `${variant.extension} should apply one source edit`);
+				assert.ok(sessionCommitCalls > 0, `${variant.extension} should commit draft state after release`);
+				assert.strictEqual(posted.filter(message => message?.type === 'persistDocumentAck').length, 1,
+					`${variant.extension} should attempt one live acknowledgement`);
+				assert.strictEqual(finalSettlementCalls, 1, `${variant.extension} should settle the final request once`);
+				assert.strictEqual(saveBarrierSettlements, 1, `${variant.extension} should settle the save barrier once`);
+				assert.strictEqual(currentText, 'B');
+				assert.strictEqual(fs.readFileSync(sidecarPath, 'utf8'), durableBeforePersist,
+					`${variant.extension} must not durably write the sidecar before didSave`);
+
+				await Promise.resolve(didSaveHandler!(document));
+				await waitForCondition(
+					() => fs.readFileSync(sidecarPath, 'utf8').includes(variant.marker),
+					`${variant.extension} should durably write only through didSave`,
+				);
+				assert.strictEqual(coordinatorCalls, 1);
+				assert.strictEqual(posted.filter(message => message?.type === 'persistDocumentAck').length, 1);
+				assert.strictEqual(finalSettlementCalls, 1);
+			}
+		} finally {
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(vscode.workspace as any).onWillSaveTextDocument = originalWillSave;
+			(vscode.workspace as any).onDidSaveTextDocument = originalDidSave;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('source reload rolls back an already-started stale edit for rich and compatibility providers', async () => {
 		const originalApplyEdit = vscode.workspace.applyEdit;
 		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;

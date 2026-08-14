@@ -569,8 +569,47 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			'https://identityadx.westus.kusto.windows.net',
 		];
 		const identityClipboardSentinel = 'kusto-identity-checklist-pending';
+		const identitySelectionBaselineName = 'E2E Identity Selection Baseline';
+		const identitySelectionBaselineCluster = 'https://identity-baseline.kusto.windows.net';
+		const identitySelectionBaselineDatabase = 'BaselineDb';
+		const identitySelectionBaselineAccount = {
+			id: 'kusto-workbench-identity-baseline-account',
+			label: 'Kusto Workbench identity baseline account',
+		};
 		const testClusterKeys = new Set(testClusters.map(cluster => kustoClusterKey(cluster)).filter(Boolean));
 		const isTestCluster = (value: unknown): boolean => testClusterKeys.has(kustoClusterKey(String(value || '')));
+		type IdentityChecklistPreviousSelection = {
+			lastConnectionId?: string;
+			lastConnectionIdPresent: boolean;
+			lastDatabase?: string;
+			lastDatabasePresent: boolean;
+		};
+		let identityChecklistPreviousSelection: IdentityChecklistPreviousSelection | undefined;
+		let identitySelectionBaselinePreviousSelection: IdentityChecklistPreviousSelection | undefined;
+		let identitySelectionBaselineConnectionId = '';
+		const captureIdentitySelection = (): IdentityChecklistPreviousSelection => {
+			const keys = typeof context.globalState.keys === 'function'
+				? new Set(context.globalState.keys())
+				: undefined;
+			const lastConnectionId = context.globalState.get<string | undefined>(STORAGE_KEYS.lastConnectionId);
+			const lastDatabase = context.globalState.get<string | undefined>(STORAGE_KEYS.lastDatabase);
+			return {
+				lastConnectionId,
+				lastConnectionIdPresent: keys?.has(STORAGE_KEYS.lastConnectionId) ?? lastConnectionId !== undefined,
+				lastDatabase,
+				lastDatabasePresent: keys?.has(STORAGE_KEYS.lastDatabase) ?? lastDatabase !== undefined,
+			};
+		};
+		const restoreIdentitySelection = async (selection: IdentityChecklistPreviousSelection): Promise<void> => {
+			await context.globalState.update(
+				STORAGE_KEYS.lastConnectionId,
+				selection.lastConnectionIdPresent ? selection.lastConnectionId : undefined,
+			);
+			await context.globalState.update(
+				STORAGE_KEYS.lastDatabase,
+				selection.lastDatabasePresent ? selection.lastDatabase : undefined,
+			);
+		};
 		const assertIdentityChecklistReady = async () => {
 			await testAuthPreferences.waitForProviderAccountRefresh();
 			const connections = connectionManager.getConnections().filter(connection =>
@@ -621,6 +660,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				await connectionManager.removeLeaveNoTrace(cluster);
 			}
 			await testAuthPreferences.clearTokenOverride(undefined, testAuthAccount.id);
+			const previousSelection = identityChecklistPreviousSelection;
+			identityChecklistPreviousSelection = undefined;
+			if (previousSelection) {
+				await restoreIdentitySelection(previousSelection);
+			} else if (removedConnectionIds.has(String(context.globalState.get(STORAGE_KEYS.lastConnectionId) || ''))) {
+				await context.globalState.update(STORAGE_KEYS.lastConnectionId, undefined);
+				await context.globalState.update(STORAGE_KEYS.lastDatabase, undefined);
+			}
 		};
 
 		context.subscriptions.push(
@@ -635,6 +682,101 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				await cleanupAuthorityLiveState();
 			}),
 			vscode.commands.registerCommand('kustoWorkbench.test.cleanupKustoIdentityChecklist', cleanupIdentityChecklistState),
+			vscode.commands.registerCommand('kustoWorkbench.test.prepareKustoIdentitySelectionBaseline', async () => {
+				await cleanupIdentityChecklistState();
+				for (const connection of connectionManager.getConnections()) {
+					if (connection.name !== identitySelectionBaselineName
+						&& kustoClusterKey(connection.clusterUrl) !== kustoClusterKey(identitySelectionBaselineCluster)) continue;
+					await connectionManager.removeConnection(connection.id);
+					await testAuthPreferences.removeConnection(connection.id);
+				}
+				identitySelectionBaselinePreviousSelection = captureIdentitySelection();
+				const baseline = await connectionManager.addConnection({
+					name: identitySelectionBaselineName,
+					clusterUrl: identitySelectionBaselineCluster,
+					database: identitySelectionBaselineDatabase,
+				});
+				identitySelectionBaselineConnectionId = baseline.id;
+				const accountPartition = testAuthPreferences.getAccountPartition(
+					baseline.authorityId,
+					identitySelectionBaselineAccount.id,
+				);
+				await testAuthPreferences.setTokenOverride(
+					baseline.authorityId,
+					identitySelectionBaselineAccount.id,
+					'kusto-workbench-identity-baseline-token',
+					[baseline.id],
+				);
+				await testConnectionCache.setDatabases(
+					baseline.id,
+					accountPartition,
+					[identitySelectionBaselineDatabase],
+				);
+				const schemaWritten = await writeCachedSchemaToDisk(
+					context.globalStorageUri,
+					schemaCacheKey(baseline.clusterUrl, identitySelectionBaselineDatabase, baseline.id, accountPartition),
+					{
+						schema: {
+							tables: ['BaselineTable'],
+							columnTypesByTable: { BaselineTable: { Value: 'long' } },
+							rawSchemaJson: {
+								Plugins: [],
+								Databases: {
+									BaselineDb: {
+										Tables: {
+											BaselineTable: {
+												EntityType: 'Table',
+												OrderedColumns: { Value: { Name: 'Value', CslType: 'long' } },
+											},
+										},
+										Functions: {},
+									},
+								},
+							},
+						},
+						timestamp: Date.now(),
+						version: SCHEMA_CACHE_VERSION,
+						clusterUrl: baseline.clusterUrl,
+						database: identitySelectionBaselineDatabase,
+						connectionId: baseline.id,
+						accountPartition,
+					},
+				);
+				if (!schemaWritten) throw new Error('Identity selection baseline schema cache write was superseded.');
+				await testAuthPreferences.setExplicitAccounts([baseline.id], identitySelectionBaselineAccount);
+				await context.globalState.update(STORAGE_KEYS.lastConnectionId, baseline.id);
+				await context.globalState.update(STORAGE_KEYS.lastDatabase, identitySelectionBaselineDatabase);
+				return { connectionId: baseline.id, database: identitySelectionBaselineDatabase };
+			}),
+			vscode.commands.registerCommand('kustoWorkbench.test.assertAndCleanupKustoIdentitySelectionBaseline', async () => {
+				const expectedConnectionId = identitySelectionBaselineConnectionId;
+				const previousSelection = identitySelectionBaselinePreviousSelection;
+				let error = '';
+				try {
+					const actualConnectionId = context.globalState.get<string | undefined>(STORAGE_KEYS.lastConnectionId);
+					const actualDatabase = context.globalState.get<string | undefined>(STORAGE_KEYS.lastDatabase);
+					if (!expectedConnectionId || actualConnectionId !== expectedConnectionId
+						|| actualDatabase !== identitySelectionBaselineDatabase) {
+						error = `Identity checklist did not restore the baseline selection: expected=${expectedConnectionId}/${identitySelectionBaselineDatabase} actual=${actualConnectionId}/${actualDatabase}`;
+					}
+				} finally {
+					if (expectedConnectionId) {
+						await testConnectionCache.clearConnection(expectedConnectionId);
+						await connectionManager.removeConnection(expectedConnectionId);
+						await testAuthPreferences.removeConnection(expectedConnectionId);
+						await deleteCachedSchemasForConnections(context.globalStorageUri, new Set([expectedConnectionId]));
+					}
+					await testAuthPreferences.clearTokenOverride(
+						undefined,
+						identitySelectionBaselineAccount.id,
+					);
+					identitySelectionBaselineConnectionId = '';
+					identitySelectionBaselinePreviousSelection = undefined;
+					if (previousSelection) await restoreIdentitySelection(previousSelection);
+				}
+				if (error) throw new Error(error);
+				return { restored: true };
+			}),
 			vscode.commands.registerCommand('kustoWorkbench.test.cleanupSupplementalSchemaDiagnosticsState', async () => {
 				await supplementalStartupCleanup;
 				await cleanupSupplementalSchemaDiagnosticsState(false);
@@ -760,12 +902,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			vscode.commands.registerCommand('kustoWorkbench.test.seedKustoIdentityChecklist', async () => {
 				await testAuthPreferences.waitForProviderAccountRefresh();
 				await cleanupIdentityChecklistState();
+				identityChecklistPreviousSelection = captureIdentitySelection();
 				await vscode.env.clipboard.writeText(identityClipboardSentinel);
 				const assertExplicitAccounts = (connections: readonly { id: string; name: string }[], stage: string) => {
 					for (const connection of connections) {
 						const preference = testAuthPreferences.getPreference(connection.id);
 						if (preference.mode !== 'explicit' || preference.accountId !== testAuthAccount.id) {
-							throw new Error(`Identity checklist connection ${connection.name} lost its explicit test account at ${stage}.`);
+							const stored = context.globalState.get<Record<string, unknown> | undefined>('kusto.auth.connectionPreferences.v1') || {};
+							throw new Error(`Identity checklist connection ${connection.name} lost its explicit test account at ${stage}: preference=${JSON.stringify(preference)} storedKeys=${Object.keys(stored).join(',')} storedValue=${JSON.stringify(stored[connection.id])}.`);
 						}
 					}
 				};
@@ -781,24 +925,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					const connection = await connectionManager.addConnection(seed);
 					added.push(connection);
 				}
+				await connectionManager.addLeaveNoTrace('https://identityadx.westus.kusto.windows.net');
+				await testAuthPreferences.setExplicitAccounts(
+					added.map(connection => connection.id),
+					testAuthAccount,
+				);
+				assertExplicitAccounts(added, 'account-assignment');
+				const regionalConnection = added.find(connection =>
+					kustoClusterKey(connection.clusterUrl) === kustoClusterKey('identityadx.westus')
+				);
+				if (!regionalConnection) throw new Error('Identity checklist regional connection was not seeded.');
+				const regionalAccountPartition = testAuthPreferences.getAccountPartition(
+					regionalConnection.authorityId,
+					testAuthAccount.id,
+				);
 				const favoritesRaw = context.globalState.get<unknown>(STORAGE_KEYS.favorites);
 				const favorites = Array.isArray(favoritesRaw) ? favoritesRaw.filter((favorite: any) =>
 					!String(favorite?.name || '').startsWith(testPrefix) && !isTestCluster(favorite?.clusterUrl)
 				) : [];
-				favorites.push({ name: `${testPrefix} Regional Favorite`, clusterUrl: 'https://identityadx.westus.kusto.windows.net', database: 'ChecklistDb' });
+				favorites.push({
+					name: `${testPrefix} Regional Favorite`,
+					connectionId: regionalConnection.id,
+					clusterUrl: regionalConnection.clusterUrl,
+					database: 'ChecklistDb',
+					accountPartition: regionalAccountPartition,
+				});
 				await context.globalState.update(STORAGE_KEYS.favorites, favorites);
-				await connectionManager.addLeaveNoTrace('https://identityadx.westus.kusto.windows.net');
-				await Promise.all(added.map(connection =>
-					testAuthPreferences.setExplicitAccount(connection.id, testAuthAccount)
-				));
-				assertExplicitAccounts(added, 'account-assignment');
 				await testAuthPreferences.setTokenOverride(
 					undefined,
 					testAuthAccount.id,
 					'kusto-workbench-identity-e2e-token',
 					added.map(connection => connection.id),
 				);
-				assertExplicitAccounts(added, 'token-override');
 				for (const connection of added) {
 					const accountPartition = testAuthPreferences.getAccountPartition(connection.authorityId, testAuthAccount.id);
 					const databases = kustoClusterKey(connection.clusterUrl) === kustoClusterKey('identityadx.westus')
@@ -842,6 +1000,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 						throw new Error(`Identity checklist schema cache write was superseded for ${connection.name}.`);
 					}
 				}
+				assertExplicitAccounts(added, 'fixture-complete');
 				const readiness = await assertIdentityChecklistReady();
 				return { added, cachedKey: kustoClusterKey('identityadx.westus'), readiness };
 			}),

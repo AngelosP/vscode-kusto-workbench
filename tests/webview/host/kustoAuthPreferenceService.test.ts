@@ -451,6 +451,30 @@ describe('KustoAuthPreferenceService', () => {
 		expect(test.service.getPreferredAccountId('conn-2')).toBe('account-2');
 	});
 
+	it('assigns one explicit account to multiple connections in one state write', async () => {
+		const test = harness();
+		const changes: unknown[] = [];
+		test.service.onDidChange(change => changes.push(change));
+
+		await test.service.setExplicitAccounts(
+			['conn-1', 'conn-2', 'conn-1'],
+			{ id: 'account-1', label: 'one@example.com' },
+		);
+
+		expect(test.service.getPreferredAccountId('conn-1')).toBe('account-1');
+		expect(test.service.getPreferredAccountId('conn-2')).toBe('account-1');
+		expect(test.context.globalState.update).toHaveBeenCalledWith(
+			'kusto.auth.connectionPreferences.v1',
+			{
+				'conn-1': { mode: 'explicit', accountId: 'account-1' },
+				'conn-2': { mode: 'explicit', accountId: 'account-1' },
+			},
+		);
+		expect(changes).toEqual([{
+			connectionIds: ['conn-1', 'conn-2'], reason: 'selection', accountId: 'account-1',
+		}]);
+	});
+
 	it('isolates account partitions and token overrides by authority', async () => {
 		const test = harness();
 		const homePartition = test.service.getAccountPartition(undefined, 'account-1');

@@ -15,6 +15,7 @@ const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const extensionSource = readFileSync(join(root, 'src', 'host', 'extension.ts'), 'utf8');
 const remoteSource = readFileSync(join(root, 'src', 'host', 'remoteFileOpener.ts'), 'utf8');
 const queryToolbarSource = readFileSync(join(root, 'src', 'webview', 'sections', 'kw-query-toolbar.ts'), 'utf8');
+const testHelpersSource = readFileSync(join(root, 'src', 'webview', 'core', 'test-helpers.ts'), 'utf8');
 const esbuildSource = readFileSync(join(root, 'esbuild.js'), 'utf8');
 const sizeReportSource = readFileSync(join(root, 'scripts', 'bundle-size.mjs'), 'utf8');
 const sizeGateSource = readFileSync(join(root, 'scripts', 'bundle-size-gate.mjs'), 'utf8');
@@ -42,7 +43,11 @@ describe('first-launch integration inventory', () => {
 	});
 
 	it('activates identity fixture setup before opening an editor', () => {
-		for (const command of ['cleanupKustoIdentityChecklist', 'seedKustoIdentityChecklist']) {
+		for (const command of [
+			'cleanupKustoIdentityChecklist',
+			'prepareKustoIdentitySelectionBaseline',
+			'seedKustoIdentityChecklist',
+		]) {
 			expect(packageJson.activationEvents).toContain(`onCommand:kustoWorkbench.test.${command}`);
 		}
 	});
@@ -64,20 +69,39 @@ describe('first-launch integration inventory', () => {
 		);
 		const addConnection = seed.indexOf('await connectionManager.addConnection(');
 		const addLeaveNoTrace = seed.indexOf('await connectionManager.addLeaveNoTrace(');
-		const setExplicitAccount = seed.indexOf('testAuthPreferences.setExplicitAccount(');
+		const setExplicitAccount = seed.indexOf('testAuthPreferences.setExplicitAccounts(');
+		const persistFavorites = seed.indexOf('await context.globalState.update(STORAGE_KEYS.favorites, favorites)');
 		const setTokenOverride = seed.indexOf('await testAuthPreferences.setTokenOverride(');
 		const setDatabases = seed.indexOf('await testConnectionCache.setDatabases(');
 		const setClipboardSentinel = seed.indexOf('await vscode.env.clipboard.writeText(identityClipboardSentinel)');
-		for (const marker of [addConnection, addLeaveNoTrace, setExplicitAccount, setTokenOverride, setDatabases, setClipboardSentinel]) {
+		for (const marker of [addConnection, addLeaveNoTrace, setExplicitAccount, persistFavorites, setTokenOverride, setDatabases, setClipboardSentinel]) {
 			expect(marker).toBeGreaterThanOrEqual(0);
 		}
 		expect(addConnection).toBeLessThan(addLeaveNoTrace);
 		expect(addLeaveNoTrace).toBeLessThan(setExplicitAccount);
-		expect(seed).toContain('await Promise.all(added.map(connection =>');
-		expect(setExplicitAccount).toBeLessThan(setTokenOverride);
+		expect(seed).toContain('added.map(connection => connection.id)');
+		expect(setExplicitAccount).toBeLessThan(persistFavorites);
+		expect(persistFavorites).toBeLessThan(setTokenOverride);
 		expect(setTokenOverride).toBeLessThan(setDatabases);
 		expect(seed).toContain('if (!schemaWritten)');
 		expect(extensionSource).toContain('Clipboard assertion requires non-empty text.');
+		expect(extensionSource).toContain('selection.lastConnectionIdPresent');
+		expect(extensionSource).toContain('selection.lastDatabasePresent');
+		expect(extensionSource).toContain('identityChecklistPreviousSelection = captureIdentitySelection();');
+		expect(extensionSource).toContain("registerCommand('kustoWorkbench.test.assertAndCleanupKustoIdentitySelectionBaseline'");
+		expect(extensionSource).toContain('if (previousSelection) await restoreIdentitySelection(previousSelection)');
+		const baseline = extensionSource.slice(
+			extensionSource.indexOf("registerCommand('kustoWorkbench.test.prepareKustoIdentitySelectionBaseline'"),
+			extensionSource.indexOf("registerCommand('kustoWorkbench.test.assertAndCleanupKustoIdentitySelectionBaseline'"),
+		);
+		expect(baseline.indexOf('await cleanupIdentityChecklistState()'))
+			.toBeLessThan(baseline.indexOf('identitySelectionBaselinePreviousSelection = captureIdentitySelection()'));
+		expect(extensionSource).toContain("rawSchemaJson: {");
+		expect(extensionSource).toContain('setExplicitAccounts(');
+		expect(testHelpersSource).toContain("message.payload?.policyRequestId === policyRequestId");
+		expect(testHelpersSource).toContain("message.type !== 'kustoPublicationCommit'");
+		expect(testHelpersSource).toContain("const shortConnection = { ...regional, clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey }");
+		expect(testHelpersSource).toContain('shortSectionClusterUrl: shortConfigured.clusterUrl');
 	});
 
 	it('declares file-opening choices as profile-only application settings', () => {

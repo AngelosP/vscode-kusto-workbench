@@ -52,6 +52,11 @@ import {
 	type CompatSidecarProjectionCoordinatorFactory,
 	type CompatSidecarProjectionRequest,
 } from './compatSidecarProjectionCoordinator';
+import {
+	CompatSidecarPersistCoordinator,
+	type CompatSidecarPersistCoordinatorFactory,
+	type CompatSidecarPersistMessage,
+} from './compatSidecarPersistCoordinator';
 
 const SQL_COMPAT_SIDECAR_FORMAT: CompatSidecarFormat = {
 	primaryKind: 'sql',
@@ -107,6 +112,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		private readonly editorCursorStatusBar?: EditorCursorStatusBar,
 		private readonly closeCoordinatorFactory: CompatSidecarCloseCoordinatorFactory = options => new CompatSidecarCloseCoordinator(options),
 		private readonly projectionCoordinatorFactory: CompatSidecarProjectionCoordinatorFactory = options => new CompatSidecarProjectionCoordinator(options),
+		private readonly persistCoordinatorFactory: CompatSidecarPersistCoordinatorFactory = options => new CompatSidecarPersistCoordinator(options),
 	) {}
 
 	private detectDiffContext(document: vscode.TextDocument): { isDiff: boolean; originalUri?: vscode.Uri } {
@@ -573,6 +579,70 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				activeSourceMutations--;
 			}
 		};
+		const persistCoordinator = this.persistCoordinatorFactory({
+			session: sidecarSession,
+			projection: projectionCoordinator,
+			languageLabel: 'SQL',
+			getLoadError: () => sidecarLoadError,
+			allowMissingSourceGeneration: this.context.extensionMode !== vscode.ExtensionMode.Production,
+			allowTestOnlyNoop: this.context.extensionMode !== vscode.ExtensionMode.Production,
+			isLive: () => !outerDisposed,
+			postMessage: message => startupGateway.postMessage(message),
+			warnUnavailable: () => {
+				getWorkbenchLogger().warn('[kusto] SQL metadata snapshot unavailable during save; saving primary text only.');
+			},
+			adapter: {
+				captureState: state => ({
+					caretDocsEnabled: typeof state.caretDocsEnabled === 'boolean' ? state.caretDocsEnabled : undefined,
+					autoTriggerAutocompleteEnabled: typeof state.autoTriggerAutocompleteEnabled === 'boolean'
+						? state.autoTriggerAutocompleteEnabled
+						: undefined,
+					sections: state.sections as KqlxStateV1['sections'],
+				}),
+				validateState: (state, allowPendingUpgrade) => {
+					if (!sidecarFile) {
+						assertCompatPrimaryIdentity(state, 'sql', PLAIN_SQL_PRIMARY_SECTION_ID);
+						if (state.sections.length !== 1 && !allowPendingUpgrade) {
+							throw new Error('Plain SQL snapshots may contain only the pinned primary section.');
+						}
+					}
+					SqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, state, sidecarFile);
+				},
+				sanitizeState: state => queryEditor.sanitizeSqlLeaveNoTraceStateFresh<KqlxStateV1>(state),
+				prepareMaterializedDraft: state => sidecarUri && sidecarFile
+					? SqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, state, sidecarFile)
+					: undefined,
+				materializeState: async state => {
+					const candidate = await freshSidecarFile(state);
+					return sidecarUri && sidecarFile ? candidate : undefined;
+				},
+				serializeMaterialized: stringifyKqlxFile,
+				getLastWrittenMaterializedText: () => lastWrittenSidecarText,
+				getPrimaryText: state => {
+					const primary = state.sections[0] as Record<string, unknown> | undefined;
+					return typeof primary?.query === 'string' ? primary.query : '';
+				},
+				readSourceText: () => document.getText(),
+				applySourceText: async text => {
+					const lineCount = Math.max(1, document.lineCount || 1);
+					const edit = new vscode.WorkspaceEdit();
+					edit.replace(document.uri, new vscode.Range(
+						0,
+						0,
+						lineCount - 1,
+						document.lineAt(lineCount - 1).text.length,
+					), text);
+					return applyOwnedSourceEdit(edit, text);
+				},
+				requestSourceReload: () => { void postDocument({ forceReload: true, retirePersists: true }); },
+				setKnownState: state => { lastKnownSidecarState = state; },
+				setMaterializedSidecar: file => { sidecarFile = file; },
+				publishChanges: computeAndPostChanges,
+				notifyPreparationFailure: error => {
+					void vscode.window.showErrorMessage(`Failed to prepare companion metadata: ${error instanceof Error ? error.message : String(error)}`);
+				},
+			},
+		});
 		// Listen for external file changes (e.g., from Copilot, git, or other processes).
 		subscriptions.push(
 			vscode.workspace.onDidChangeTextDocument((e) => {
@@ -764,219 +834,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					}
 				}
 				case 'persistDocument': {
-					const snapshotId = String((message as any).snapshotId || '').trim();
-					const flushRequestId = String((message as any).flushRequestId || '').trim();
-					if (flushRequestId && !sidecarSession.hasPendingFinalPersistRequest(flushRequestId)) return;
-					if (sidecarLoadError) {
-						if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId, new Error(sidecarLoadError));
-						return;
-					}
-					if (flushRequestId && (message as any).flushUnavailableReason) {
-						getWorkbenchLogger().warn('[kusto] SQL metadata snapshot unavailable during save; saving primary text only.');
-						sidecarSession.completeFinalPersist(flushRequestId);
-						return;
-					}
-					const rawState = message.state as unknown as KqlxStateV1;
-					try {
-						if (!sidecarFile) {
-							assertCompatPrimaryIdentity(rawState, 'sql', PLAIN_SQL_PRIMARY_SECTION_ID);
-							if (rawState.sections.length !== 1 && !sidecarSession.hasPendingUpgrade) {
-								throw new Error('Plain SQL snapshots may contain only the pinned primary section.');
-							}
-						}
-						SqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, rawState, sidecarFile);
-					} catch (error) {
-						if (flushRequestId) {
-							sidecarSession.completeFinalPersist(
-								flushRequestId,
-								error instanceof Error ? error : new Error(String(error)),
-							);
-						}
-						return;
-					}
-					if (!projectionCoordinator.admitPersist({
-						sourceGeneration: (message as any).sourceGeneration,
-						editRevision: (message as any).editRevision,
-						requireCurrentGeneration: !!(snapshotId || flushRequestId),
-						allowMissingSourceGeneration: this.context.extensionMode !== vscode.ExtensionMode.Production,
-					})) {
-						if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId, new Error('The final SQL metadata snapshot belonged to an older source projection.'));
-						return;
-					}
-					const testOnlyNoop = (message as any).testOnlyNoop === true
-						&& this.context.extensionMode !== vscode.ExtensionMode.Production;
-					if (testOnlyNoop) {
-						const revision = Number((message as any)?.editRevision);
-						const hasRevision = Number.isSafeInteger(revision) && revision >= 0;
-						if (hasRevision && sidecarSession.isStaleRevision(revision)) {
-							if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId, new Error('The final SQL metadata snapshot was stale.'));
-							return;
-						}
-						if (hasRevision) sidecarSession.adoptRevision(revision, 'replace');
-						if (snapshotId && !outerDisposed) {
-							try { void startupGateway.postMessage({ type: 'persistDocumentAck', snapshotId, editRevision: sidecarSession.currentEditRevision }).catch(() => undefined); }
-							catch { /* ignore */ }
-						}
-						if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId);
-						sidecarSession.markBeforeUnload((message as any).reason);
-						return;
-					}
-					if (sidecarSession.isClosing) {
-						if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId, new Error('The SQL metadata editor closed before its final snapshot was admitted.'));
-						return;
-					}
-					const revision = Number((message as any)?.editRevision);
-					const hasRevision = Number.isSafeInteger(revision) && revision >= 0;
-					if (hasRevision && sidecarSession.isStaleRevision(revision)) {
-						if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId, new Error('The final SQL metadata snapshot was stale.'));
-						sidecarSession.markBeforeUnload((message as any).reason);
-						return;
-					}
-					const incomingEditRevision = hasRevision ? revision : sidecarSession.currentEditRevision;
-					const reloadEpochAtAdmission = projectionCoordinator.captureSourceReloadEpoch();
-					const incomingRawState: KqlxStateV1 = {
-						caretDocsEnabled:
-							typeof rawState.caretDocsEnabled === 'boolean' ? rawState.caretDocsEnabled : undefined,
-						autoTriggerAutocompleteEnabled:
-							typeof rawState.autoTriggerAutocompleteEnabled === 'boolean'
-								? rawState.autoTriggerAutocompleteEnabled
-								: undefined,
-						sections: rawState.sections
-					};
-					const superseded = () => ({ ok: false as const, error: new Error('The SQL metadata snapshot was superseded before admission.') });
-					const run = sidecarSession.queuePersist(incomingEditRevision, async persistIsCurrent => {
-						if (!persistIsCurrent()) return superseded();
-						try {
-							if (!sidecarFile) {
-								assertCompatPrimaryIdentity(incomingRawState, 'sql', PLAIN_SQL_PRIMARY_SECTION_ID);
-								if (incomingRawState.sections.length !== 1) {
-									throw new Error('Plain SQL snapshots may contain only the pinned primary section.');
-								}
-							}
-							SqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, incomingRawState, sidecarFile);
-						} catch (error) {
-							return { ok: false as const, error: error instanceof Error ? error : new Error(String(error)) };
-						}
-						if (!persistIsCurrent()) return superseded();
-						if (hasRevision) sidecarSession.adoptRevision(revision);
-						let incomingState: KqlxStateV1;
-						try {
-							incomingState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh<KqlxStateV1>(incomingRawState);
-						} catch (error) {
-							void vscode.window.showErrorMessage(`Failed to prepare companion metadata: ${error instanceof Error ? error.message : String(error)}`);
-							return { ok: false as const, error: new Error(`Failed to prepare SQL companion metadata: ${error instanceof Error ? error.message : String(error)}`) };
-						}
-						if (!persistIsCurrent()) return superseded();
-
-						let persistedSidecar: KqlxFileV1 | undefined;
-						let validatedSidecarDraft: KqlxFileV1 | undefined;
-						try {
-							if (sidecarUri && sidecarFile) {
-								validatedSidecarDraft = SqlCompatEditorProvider.buildSidecarFileForCompat(
-									document.uri,
-									incomingState,
-									sidecarFile,
-								);
-							}
-							const candidate = await freshSidecarFile(incomingState);
-							if (sidecarUri && sidecarFile) persistedSidecar = candidate;
-						} catch (error) {
-							const primarySql = incomingState.sections[0] as Record<string, unknown> | undefined;
-							const nextText = typeof primarySql?.query === 'string' ? primarySql.query : '';
-							const currentText = (() => {
-								try { return document.getText(); } catch { return ''; }
-							})();
-							if (validatedSidecarDraft && persistIsCurrent()
-								&& nextText.replace(/\r\n/g, '\n') === currentText.replace(/\r\n/g, '\n')) {
-								lastKnownSidecarState = incomingState;
-								sidecarSession.setStateRevision(incomingEditRevision);
-								const text = stringifyKqlxFile(validatedSidecarDraft);
-								sidecarSession.setMaterializedDirty(text !== lastWrittenSidecarText, lastWrittenSidecarText);
-								computeAndPostChanges(incomingState);
-							}
-							void vscode.window.showErrorMessage(`Failed to prepare companion metadata: ${error instanceof Error ? error.message : String(error)}`);
-							return { ok: false as const, error: new Error(`Failed to materialize SQL companion metadata: ${error instanceof Error ? error.message : String(error)}`) };
-						}
-						if (!persistIsCurrent()) return superseded();
-
-						// Section zero is the identity-pinned owner of the plain-text document.
-						const primarySql = incomingState.sections[0] as Record<string, unknown> | undefined;
-						const nextText = typeof primarySql?.query === 'string' ? primarySql.query : '';
-						const currentText = (() => {
-							try {
-								return document.getText();
-							} catch {
-								return '';
-							}
-						})();
-
-						const normalizeEol = (s: string) => s.replace(/\r\n/g, '\n');
-						const textActuallyChanged = normalizeEol(nextText) !== normalizeEol(currentText);
-						const wouldBlankFile = !nextText.trim() && !!currentText.trim();
-
-						const fullRange = new vscode.Range(
-							0,
-							0,
-							document.lineCount ? document.lineCount - 1 : 0,
-							document.lineCount ? document.lineAt(document.lineCount - 1).text.length : 0
-						);
-						if (textActuallyChanged && !wouldBlankFile) {
-							const edit = new vscode.WorkspaceEdit();
-							edit.replace(document.uri, fullRange, nextText);
-							if (!await applyOwnedSourceEdit(edit, nextText)) {
-								return { ok: false as const, error: new Error('VS Code rejected the final SQL text update.') };
-							}
-							if (normalizeEol(document.getText()) !== normalizeEol(nextText)) {
-								void postDocument({ forceReload: true, retirePersists: true });
-								return superseded();
-							}
-							if (!persistIsCurrent()) {
-								await projectionCoordinator.rollbackSupersededSourceEdit(
-									reloadEpochAtAdmission,
-									nextText,
-									async authoritativeText => {
-										const rollback = new vscode.WorkspaceEdit();
-										const lineCount = Math.max(1, document.lineCount || 1);
-										rollback.replace(document.uri, new vscode.Range(
-											0, 0, lineCount - 1, document.lineAt(lineCount - 1).text.length,
-										), authoritativeText);
-										return applyOwnedSourceEdit(rollback, authoritativeText);
-									},
-								);
-								return superseded();
-							}
-						}
-
-						if (!persistIsCurrent()) return superseded();
-						lastKnownSidecarState = incomingState;
-						sidecarSession.setStateRevision(incomingEditRevision);
-						if (persistedSidecar) {
-							const text = stringifyKqlxFile(persistedSidecar);
-							const nextDirty = (typeof lastWrittenSidecarText === 'string') ? (text !== lastWrittenSidecarText) : true;
-							sidecarFile = persistedSidecar;
-							sidecarSession.setMaterializedDirty(nextDirty, lastWrittenSidecarText);
-						}
-
-						computeAndPostChanges(incomingState);
-						return { ok: true as const };
-					});
-					sidecarSession.markBeforeUnload((message as any).reason);
-					try {
-						const outcome = await run;
-						if (!outcome.ok) {
-							if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId, outcome.error);
-							return;
-						}
-						if (snapshotId && !outerDisposed) {
-							try { void startupGateway.postMessage({ type: 'persistDocumentAck', snapshotId, editRevision: incomingEditRevision }).catch(() => undefined); }
-							catch { /* ignore */ }
-						}
-						if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId);
-					} catch (error) {
-						if (flushRequestId) {
-							sidecarSession.completeFinalPersist(flushRequestId, new Error(`Failed to admit the final SQL metadata snapshot: ${error instanceof Error ? error.message : String(error)}`));
-						}
-					}
+					await persistCoordinator.persist(message as CompatSidecarPersistMessage);
 					return;
 				}
 				case 'showSectionDiff': {

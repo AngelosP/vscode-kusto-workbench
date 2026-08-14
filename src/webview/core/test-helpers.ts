@@ -3,7 +3,7 @@
 // Used by the vscode-ext-test E2E framework via `When I evaluate`.
 
 import { postMessageToHost } from '../shared/webview-messages.js';
-import { getKustoPreparationState, isSchemaEnhancementReady, isSchemaWorkerReady, requestKustoSchemaApplyForBox, requireSchemaWorkerApply, schemaDiagnosticsTrustedByBoxId, setActiveMonacoEditor } from './state.js';
+import { getKustoPreparationState, isSchemaEnhancementReady, isSchemaWorkerReady, requestKustoSchemaApplyForBox, requireSchemaWorkerApply, schemaDiagnosticsTrustedByBoxId, setActiveMonacoEditor, setActiveQueryEditorBoxId } from './state.js';
 import { getKustoEditorSchema, getKustoEditorSchemaIds, getSqlEditorSchema } from './schema-catalogs.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
 import { getSqlSectionSession } from './sql-section-message-router.js';
@@ -1033,7 +1033,7 @@ function e2eAssertKustoPreparationReady(sectionIndex: number = 0): string {
 	const preparation = getKustoPreparationState(boxId);
 	if (preparation.status !== 'ready') throw new Error(`Preparation is ${preparation.status}/${preparation.stage}`);
 	if (preparation.target.database !== database || preparation.target.schemaKey !== schemaKey || preparation.target.modelUri !== modelUri) {
-		throw new Error(`Preparation target mismatch for section ${sectionIndex}: expectedSchemaId=${kustoSupplementalTraceId(schemaKey)} expectedModelId=${kustoSupplementalTraceId(modelUri)} actualSchemaId=${kustoSupplementalTraceId(String(preparation.target.schemaKey || ''))} actualModelId=${kustoSupplementalTraceId(String(preparation.target.modelUri || ''))}`);
+		throw new Error(`Preparation target mismatch for section ${sectionIndex}: expectedDatabase=${JSON.stringify(database)} actualDatabase=${JSON.stringify(preparation.target.database)} expectedSchemaId=${kustoSupplementalTraceId(schemaKey)} expectedModelId=${kustoSupplementalTraceId(modelUri)} actualSchemaId=${kustoSupplementalTraceId(String(preparation.target.schemaKey || ''))} actualModelId=${kustoSupplementalTraceId(String(preparation.target.modelUri || ''))}`);
 	}
 	if (!isSchemaWorkerReady(boxId, schemaKey, modelUri)) throw new Error(`Worker is not ready for section ${sectionIndex}: schemaId=${kustoSupplementalTraceId(schemaKey)} modelId=${kustoSupplementalTraceId(modelUri)}`);
 	return `preparation ready for section ${sectionIndex}: schemaId=${kustoSupplementalTraceId(schemaKey)} modelId=${kustoSupplementalTraceId(modelUri)}`;
@@ -2015,16 +2015,39 @@ function e2eIdentityFindConnection(connectionsRaw: unknown, clusterKey: string):
 }
 
 async function e2eIdentityWaitForConnections(timeoutMs = 6000): Promise<Record<string, E2eIdentityConnection>> {
+	const policyRequestId = `e2e-identity-projection-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+	const correlatedProjection = new Promise<void>((resolve, reject) => {
+		let publicationId = '';
+		const timer = window.setTimeout(() => {
+			window.removeEventListener('message', onMessage);
+			reject(new Error(`Timed out waiting for correlated identity projection ${policyRequestId}`));
+		}, timeoutMs);
+		const onMessage = (event: MessageEvent) => {
+			const message = event.data || {};
+			if (message.type === 'kustoPublicationStage'
+				&& message.payload?.type === 'connectionsData'
+				&& message.payload?.policyRequestId === policyRequestId) {
+				publicationId = String(message.publicationId || '');
+				return;
+			}
+			if (message.type !== 'kustoPublicationCommit' || !publicationId
+				|| String(message.publicationId || '') !== publicationId) return;
+			window.clearTimeout(timer);
+			window.removeEventListener('message', onMessage);
+			resolve();
+		};
+		window.addEventListener('message', onMessage);
+		try { postMessageToHost({ type: 'getConnections', policyRequestId }); } catch (error) {
+			window.clearTimeout(timer);
+			window.removeEventListener('message', onMessage);
+			reject(error);
+		}
+	});
+	await correlatedProjection;
 	const started = performance.now();
 	let lastConnections: unknown = [];
-	let lastRequestAt = 0;
 	let lastError = '';
 	while (performance.now() - started <= timeoutMs) {
-		const now = performance.now();
-		if (now - lastRequestAt >= 250) {
-			try { postMessageToHost({ type: 'getConnections' }); } catch { /* ignore */ }
-			lastRequestAt = now;
-		}
 		lastConnections = _win.connections;
 		try {
 			const prod = e2eIdentityFindConnection(lastConnections, E2E_KUSTO_IDENTITY_CHECKLIST.prodKey);
@@ -2237,14 +2260,13 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 	const sections = e2eKustoFavoriteSections().slice(0, 2) as any[];
 	const fullSection = sections[0];
 	const shortSection = sections[1];
-	const shortConnection = { id: 'e2e-identity-regional-short-diagnostics', name: 'E2E Identity Short Diagnostics', clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey };
-	const connectionsForSections = [regional, shortConnection];
+	const shortConnection = { ...regional, clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey };
 	const fullQuery = `cluster('${E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey}').database('${E2E_KUSTO_IDENTITY_CHECKLIST.database}').NeedleTable | take 1`;
 	const shortQuery = `cluster('${E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl}').database('${E2E_KUSTO_IDENTITY_CHECKLIST.database}').NeedleTable | take 1`;
 	const configure = async (section: any, connection: any, query: string) => {
+		section.setConnections?.([connection], { lastConnectionId: connection.id });
 		section.setConnectionId?.(connection.id);
 		section.setDesiredClusterUrl?.(connection.clusterUrl);
-		section.setConnections?.(connectionsForSections, { lastConnectionId: connection.id });
 		section.setDatabase?.(E2E_KUSTO_IDENTITY_CHECKLIST.database);
 		section.setDatabases?.([E2E_KUSTO_IDENTITY_CHECKLIST.database], E2E_KUSTO_IDENTITY_CHECKLIST.database);
 		const boxId = String(section.boxId || section.id || '').trim();
@@ -2253,9 +2275,43 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 			throw new Error(`Kusto editor missing for two-section alias diagnostics check: ${boxId || '<missing>'}`);
 		}
 		editor.setValue(query);
+		setActiveQueryEditorBoxId(boxId);
+		setActiveMonacoEditor(editor);
+		editor.focus?.();
+		if (!section.connectionCtrl?.onDatabaseChanged) {
+			throw new Error(`Kusto connection lifecycle is unavailable for ${boxId}`);
+		}
+		section.connectionCtrl.onDatabaseChanged('user');
 		section.requestUpdate?.();
 		await section.updateComplete;
-		return { boxId, query };
+		const sectionIndex = sections.indexOf(section);
+		const deadline = performance.now() + 15000;
+		let retriedErrorGeneration = -1;
+		while (performance.now() < deadline) {
+			const preparation = getKustoPreparationState(boxId);
+			if (preparation.status === 'ready') {
+				try {
+					e2eAssertKustoPreparationReady(sectionIndex);
+					break;
+				} catch {
+					section.connectionCtrl.onDatabaseChanged('user');
+				}
+			}
+			if (preparation.status === 'error' && preparation.generation !== retriedErrorGeneration) {
+				retriedErrorGeneration = preparation.generation;
+				section.connectionCtrl.onDatabaseChanged('user');
+			}
+			await e2eDelay(100);
+		}
+		if (getKustoPreparationState(boxId).status !== 'ready') {
+			await e2eWaitForKustoPreparationReady(sectionIndex, 1);
+		}
+		return {
+			boxId,
+			query,
+			clusterUrl: String(section.getClusterUrl?.() || ''),
+			database: String(section.getDatabase?.() || ''),
+		};
 	};
 	const fullConfigured = await configure(fullSection, regional, fullQuery);
 	const shortConfigured = await configure(shortSection, shortConnection, shortQuery);
@@ -2274,21 +2330,39 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 	const missingFromFullConnection = computeMissingClusterUrls([E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey], [regional]);
 	const missingFromShortConnection = computeMissingClusterUrls([E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl], [shortConnection]);
 	const missingControl = computeMissingClusterUrls(['identity-other.westus'], [regional]);
-	await e2eDelay(1500);
-	const markerSnapshot = (configured: { boxId: string }) => {
+	const validateWithWorker = async (configured: { boxId: string }, section: any) => {
 		const editor = _win.queryEditors?.[configured.boxId] as MonacoLike | undefined;
 		const model = editor?.getModel?.();
 		const monacoApi = _win.monaco;
-		if (!model?.uri || !monacoApi?.editor?.getModelMarkers) return [];
-		return (monacoApi.editor.getModelMarkers({ resource: model.uri }) || []).map((marker: any) => ({
-			owner: String(marker.owner || ''),
-			severity: Number(marker.severity),
-			message: String(marker.message || ''),
-			code: typeof marker.code === 'object' ? String(marker.code?.value || '') : String(marker.code || ''),
+		if (!model?.uri || !monacoApi?.languages?.kusto?.getKustoWorker) {
+			throw new Error(`Kusto worker is unavailable for ${configured.boxId}`);
+		}
+		setActiveQueryEditorBoxId(configured.boxId);
+		setActiveMonacoEditor(editor);
+		editor?.focus?.();
+		requireSchemaWorkerApply(configured.boxId);
+		requestKustoSchemaApplyForBox(configured.boxId, true);
+		await e2eWaitForKustoPreparationReady(sections.indexOf(section), 15000);
+		const workerAccessor = await monacoApi.languages.kusto.getKustoWorker();
+		const worker = await workerAccessor(model.uri);
+		const diagnostics = await worker.doValidation(model.uri.toString(), []);
+		return (Array.isArray(diagnostics) ? diagnostics : []).map((diagnostic: any) => ({
+			severity: Number(diagnostic?.severity),
+			message: String(diagnostic?.message || ''),
+			code: typeof diagnostic?.code === 'object' ? String(diagnostic.code?.value || '') : String(diagnostic?.code || ''),
 		}));
 	};
-	const fullSectionMarkers = markerSnapshot(fullConfigured);
-	const shortSectionMarkers = markerSnapshot(shortConfigured);
+	let fullSectionMarkers = await validateWithWorker(fullConfigured, fullSection);
+	const shortSectionMarkers = await validateWithWorker(shortConfigured, shortSection);
+	const fullEditor = _win.queryEditors?.[fullConfigured.boxId] as MonacoLike | undefined;
+	if (!fullEditor?.setValue) throw new Error('Full regional editor is unavailable for diagnostic control.');
+	fullEditor.setValue(`cluster('identity-other.westus').database('${E2E_KUSTO_IDENTITY_CHECKLIST.database}').NeedleTable | take 1`);
+	const remoteControlMarkers = await validateWithWorker(fullConfigured, fullSection);
+	if (!remoteControlMarkers.some(marker => marker.code.toUpperCase() === 'KS207')) {
+		throw new Error(`Remote-cluster diagnostic control did not produce KS207: ${JSON.stringify(remoteControlMarkers)}`);
+	}
+	fullEditor.setValue(fullQuery);
+	fullSectionMarkers = await validateWithWorker(fullConfigured, fullSection);
 	const aliasWarnings = [...fullSectionMarkers, ...shortSectionMarkers].filter(marker =>
 		marker.code.toUpperCase() === 'KS207' || marker.code.toUpperCase() === 'KS208'
 	);
@@ -2313,8 +2387,8 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 	return {
 		fullSectionBoxId: fullConfigured.boxId,
 		shortSectionBoxId: shortConfigured.boxId,
-		fullSectionClusterUrl: regional.clusterUrl,
-		shortSectionClusterUrl: shortConnection.clusterUrl,
+		fullSectionClusterUrl: fullConfigured.clusterUrl,
+		shortSectionClusterUrl: shortConfigured.clusterUrl,
 		refsFromFullSection,
 		refsFromShortSection,
 		remoteControlRefs,
@@ -2323,6 +2397,7 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 		missingControl,
 		fullSectionMarkers,
 		shortSectionMarkers,
+		remoteControlMarkers,
 	};
 }
 

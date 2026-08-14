@@ -319,8 +319,10 @@ export class KustoQueryClient {
 						: [change.connection.id];
 				for (const id of ids) this.bumpConnectionRevision(id);
 				this.invalidateClients(ids);
-				for (const id of ids) void this.connectionCache?.clearConnection(id);
-				if (context) void deleteCachedSchemasForConnections(context.globalStorageUri, new Set(ids));
+				if (change.type !== 'added') {
+					for (const id of ids) void this.connectionCache?.clearConnection(id);
+					if (context) void deleteCachedSchemasForConnections(context.globalStorageUri, new Set(ids));
+				}
 				if (change.type === 'removed') void this.authPreferences?.removeConnection(change.connection.id);
 				if (change.type === 'cleared') {
 					for (const connection of change.connections) void this.authPreferences?.removeConnection(connection.id);

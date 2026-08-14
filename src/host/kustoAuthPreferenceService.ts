@@ -330,12 +330,19 @@ export class KustoAuthPreferenceService implements vscode.Disposable {
 		const id = String(connectionId || '').trim();
 		const accountId = String(account?.id || '').trim();
 		if (!id || !accountId) return Promise.resolve();
+		return this.setExplicitAccounts([id], account);
+	}
+
+	setExplicitAccounts(connectionIds: readonly string[], account: vscode.AuthenticationSessionAccountInformation): Promise<void> {
+		const ids = [...new Set(connectionIds.map(connectionId => String(connectionId || '').trim()).filter(Boolean))];
+		const accountId = String(account?.id || '').trim();
+		if (ids.length === 0 || !accountId) return Promise.resolve();
 		return this.enqueue(async () => {
 			const preferences = this.readPreferences();
-			preferences[id] = { mode: 'explicit', accountId };
+			for (const id of ids) preferences[id] = { mode: 'explicit', accountId };
 			await this.context.globalState.update(STORAGE_KEYS.preferences, preferences);
 			await this.upsertKnownAccount(account);
-			this.changeEmitter.fire({ connectionIds: [id], reason: 'selection', accountId });
+			this.changeEmitter.fire({ connectionIds: ids, reason: 'selection', accountId });
 		});
 	}
 

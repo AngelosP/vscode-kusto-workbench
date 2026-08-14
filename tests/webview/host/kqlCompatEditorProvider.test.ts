@@ -187,17 +187,24 @@ describe('pendingAddKindKeyForUri', () => {
 	});
 });
 
-describe('compatibility projection ownership', () => {
-	it('keeps KQL and SQL payload construction in providers behind one shared coordinator', () => {
+describe('compatibility coordinator ownership', () => {
+	it('keeps physical projection and persist effects in providers behind their shared coordinators', () => {
 		for (const fileName of ['kqlCompatEditorProvider.ts', 'sqlCompatEditorProvider.ts']) {
 			const source = fs.readFileSync(path.join(process.cwd(), 'src', 'host', fileName), 'utf8');
 			expect(source).toContain('CompatSidecarProjectionCoordinator');
+			expect(source).toContain('CompatSidecarPersistCoordinator');
 			expect(source).toContain('postProjection: async projection =>');
 			expect(source).toContain('projectionCoordinator.requestSourceReload()');
 			expect(source).toContain('projectionCoordinator.requestDocument');
-			expect(source).toContain('projectionCoordinator.rollbackSupersededSourceEdit');
+			expect(source).toContain('await persistCoordinator.persist(message as CompatSidecarPersistMessage);');
+			expect(source).not.toContain('projectionCoordinator.rollbackSupersededSourceEdit');
 			expect(source).toContain('hydrateCompatSidecarState');
 			expect(source).toContain('applyOwnedSourceEdit');
 		}
+
+		const persistCoordinator = fs.readFileSync(path.join(
+			process.cwd(), 'src', 'host', 'compatSidecarPersistCoordinator.ts',
+		), 'utf8');
+		expect(persistCoordinator).toContain('projection.rollbackSupersededSourceEdit');
 	});
 });
