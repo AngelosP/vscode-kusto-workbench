@@ -628,6 +628,34 @@ describe('Kusto Copilot function execution', () => {
 		expect(host.postMessage).toHaveBeenCalledWith({ type: 'sqlCopilotPolicyChanged', boxIds: ['box-sql', 'box-comparison'] });
 	});
 
+	it('publishes a canonical inline completion result with exact request identity and context', async () => {
+		const model = createTextModel('```kusto\n| take 5\n```');
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		const request = {
+			type: 'requestCopilotInlineCompletion' as const,
+			requestId: ' inline-1 ',
+			boxId: ' query-inline ',
+			textBefore: '  StormEvents\n| ',
+			textAfter: '\n| take 10  ',
+			flavor: 'kusto' as const,
+		};
+
+		await service.handleCopilotInlineCompletionRequest(request);
+
+		const promptMessages = model.sendRequest.mock.calls[0]?.[0] as vscode.LanguageModelChatMessage[];
+		const prompt = (promptMessages[0]?.content[0] as vscode.LanguageModelTextPart).value;
+		expect(prompt).toContain(request.textBefore);
+		expect(prompt).toContain(request.textAfter);
+		expect(hostMessagesOfType(host, 'copilotInlineCompletionResult')).toEqual([{
+			type: 'copilotInlineCompletionResult',
+			requestId: request.requestId,
+			boxId: request.boxId,
+			completions: [{ insertText: '| take 5' }],
+		}]);
+	});
+
 	it('does not dispatch an inline SQL prompt when its owner is invalidated during model selection', async () => {
 		const modelSelection = deferred<any[]>();
 		const model = createTextModel('FROM SecretTable');

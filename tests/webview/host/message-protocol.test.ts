@@ -365,6 +365,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/artifactCsvSaveApplicationHandler.ts::postMessage::postMessage::52:22',
 	'src/host/comparisonPreparationApplicationHandler.ts::waitForSqlComparisonAdmission::postMessage::628:25',
 	'src/host/controlCommandSyntaxApplicationHandler.ts::postMessage::postMessage::56:3',
+	'src/host/copilotInlineCompletionApplicationHandler.ts::postMessage::postMessage::69:18',
 	'src/host/dashboardApplicationHandler.ts::postMessage::postMessage::98:10',
 	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postMessage::75:10',
 	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postToAllWebviews::73:10',
@@ -1810,6 +1811,58 @@ describe('Message Protocol Contract', () => {
 		expect(dispatcherAdmissionIndex).toBeLessThan(dispatcher.indexOf('navigator.clipboard.write('));
 	});
 
+	it('keeps Copilot inline-completion requests and results on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/copilotInlineCompletionProtocol.ts',
+			'CopilotInlineCompletionWebviewMessage',
+		)).toEqual(['requestCopilotInlineCompletion']);
+		expect(extractTypeDiscriminants(
+			'src/shared/copilotInlineCompletionProtocol.ts',
+			'CopilotInlineCompletionHostMessage',
+		)).toEqual(['copilotInlineCompletionResult']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| CopilotInlineCompletionWebviewMessage');
+		expect(webviewMessages).toContain('| CopilotInlineCompletionWebviewMessage');
+		expect(hostTypes).not.toContain("type: 'requestCopilotInlineCompletion'");
+		expect(webviewMessages).not.toContain("type: 'requestCopilotInlineCompletion'");
+		const wrapperAdmissionIndex = webviewMessages.indexOf('admitCopilotInlineCompletionWebviewMessage(message)');
+		expect(wrapperAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(wrapperAdmissionIndex).toBeLessThan(webviewMessages.indexOf('const e2eCaptureHostMessage'));
+
+		const handler = readWorkspaceFile('src/host/copilotInlineCompletionApplicationHandler.ts');
+		const handlerAdmissionIndex = handler.indexOf('admitCopilotInlineCompletionWebviewMessage(message)');
+		expect(handlerAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(handlerAdmissionIndex).toBeLessThan(handler.indexOf('this.options.assertSqlOwnerToken('));
+		expect(handlerAdmissionIndex).toBeLessThan(handler.indexOf('this.options.handleCopilotInlineCompletionRequest('));
+		expect(handler).toContain('postMessage: (message: CopilotInlineCompletionHostMessage)');
+		expect(handler.indexOf('parseCopilotInlineCompletionHostMessage(message)'))
+			.toBeLessThan(handler.indexOf('this.options.postMessage(parsed.value)'));
+
+		const copilot = readWorkspaceFile('src/host/queryEditorCopilot.ts');
+		const inlineCopilot = copilot.slice(
+			copilot.indexOf('async handleCopilotInlineCompletionRequest('),
+			copilot.indexOf('async prepareCopilotWriteQuery('),
+		);
+		expect(inlineCopilot.indexOf('parseCopilotInlineCompletionHostMessage(result)'))
+			.toBeLessThan(inlineCopilot.indexOf('this.host.postMessage(parsed.value)'));
+		expect(inlineCopilot).not.toContain("String(message.requestId || '').trim()");
+		expect(inlineCopilot).not.toContain("String(message.boxId || '').trim()");
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		const dispatcherAdmissionIndex = dispatcher.indexOf('admitCopilotInlineCompletionHostMessage(message)');
+		expect(dispatcherAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(dispatcherAdmissionIndex).toBeLessThan(dispatcher.indexOf('routeSqlSectionMessage(message'));
+		expect(dispatcherAdmissionIndex).toBeLessThan(dispatcher.indexOf("case 'copilotInlineCompletionResult':"));
+
+		const sqlRouter = readWorkspaceFile('src/webview/core/sql-section-message-router.ts');
+		const router = sqlRouter.slice(sqlRouter.indexOf('export function routeSqlSectionMessage'));
+		expect(router.indexOf('admitCopilotInlineCompletionHostMessage(message)'))
+			.toBeLessThan(router.indexOf('admitOwnerSensitiveMessage(boxId, message, effects)'));
+	});
+
 	it('keeps editing preference setters and delivery on one runtime-validated shared channel', () => {
 		expect(extractTypeDiscriminants(
 			'src/shared/editingPreferences.ts',
@@ -1910,6 +1963,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/kustoConnectionsProjectionProtocol.ts', 'KustoConnectionsProjectionWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/querySharingProtocol.ts', 'QuerySharingWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/editingPreferences.ts', 'EditingPreferencesWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/copilotInlineCompletionProtocol.ts', 'CopilotInlineCompletionWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1935,6 +1989,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/kustoConnectionsProjectionProtocol.ts', 'KustoConnectionsProjectionWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/querySharingProtocol.ts', 'QuerySharingWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/editingPreferences.ts', 'EditingPreferencesWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/copilotInlineCompletionProtocol.ts', 'CopilotInlineCompletionWebviewMessage'),
 			])].sort()
 		);
 		expect(extractStringArrayVariable(

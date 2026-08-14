@@ -80,7 +80,7 @@ describe('HostCopilotInlineCompletionApplicationHandler', () => {
 		expect(postMessage).not.toHaveBeenCalled();
 	});
 
-	it('reference-identically delegates Kusto and awaits exact settlement', async () => {
+	it('descriptor-snapshots Kusto requests and awaits exact settlement', async () => {
 		const completion = deferred<void>();
 		const handleCopilotInlineCompletionRequest = vi.fn(() => completion.promise);
 		const { handler, assertSqlOwnerToken, postMessage } = createHandler({
@@ -95,7 +95,7 @@ describe('HostCopilotInlineCompletionApplicationHandler', () => {
 
 		expect(handleCopilotInlineCompletionRequest).toHaveBeenCalledOnce();
 		expect(handleCopilotInlineCompletionRequest.mock.calls[0]).toEqual([message]);
-		expect(handleCopilotInlineCompletionRequest.mock.calls[0][0]).toBe(message);
+		expect(handleCopilotInlineCompletionRequest.mock.calls[0][0]).not.toBe(message);
 		expect(assertSqlOwnerToken).not.toHaveBeenCalled();
 		expect(postMessage).not.toHaveBeenCalled();
 		expect(settled).toBe(false);
@@ -128,7 +128,8 @@ describe('HostCopilotInlineCompletionApplicationHandler', () => {
 
 		admission.resolve(issuedOwnerToken);
 		await vi.waitFor(() => expect(handleCopilotInlineCompletionRequest).toHaveBeenCalledOnce());
-		expect(handleCopilotInlineCompletionRequest.mock.calls[0][0]).toBe(message);
+		expect(handleCopilotInlineCompletionRequest.mock.calls[0][0]).toEqual(message);
+		expect(handleCopilotInlineCompletionRequest.mock.calls[0][0]).not.toBe(message);
 		expect(handleCopilotInlineCompletionRequest.mock.calls[0][1]).toBe(issuedOwnerToken.owner);
 		expect(handleCopilotInlineCompletionRequest.mock.calls[0][2]).toBe(issuedOwnerToken.token);
 		expect(postMessage).not.toHaveBeenCalled();
@@ -137,6 +138,19 @@ describe('HostCopilotInlineCompletionApplicationHandler', () => {
 		completion.resolve();
 		await expect(request).resolves.toBeUndefined();
 		expect(settled).toBe(true);
+	});
+
+	it('claims malformed recognized requests before SQL owner or Copilot effects', async () => {
+		const { handler, assertSqlOwnerToken, handleCopilotInlineCompletionRequest, postMessage } = createHandler();
+
+		await expect(handler.handleMessage({
+			...sqlMessage(),
+			ownerToken: ['forged'],
+		} as unknown as IncomingWebviewMessage)).resolves.toBeUndefined();
+
+		expect(assertSqlOwnerToken).not.toHaveBeenCalled();
+		expect(handleCopilotInlineCompletionRequest).not.toHaveBeenCalled();
+		expect(postMessage).not.toHaveBeenCalled();
 	});
 
 	it('publishes the exact empty SQL fallback when owner admission rejects', async () => {
@@ -171,7 +185,8 @@ describe('HostCopilotInlineCompletionApplicationHandler', () => {
 		await expect(handler.handleMessage(message)).resolves.toBeUndefined();
 
 		expect(assertSqlOwnerToken).toHaveBeenCalledWith(message.boxId, message.ownerToken);
-		expect(handleCopilotInlineCompletionRequest.mock.calls[0][0]).toBe(message);
+		expect(handleCopilotInlineCompletionRequest.mock.calls[0][0]).toEqual(message);
+		expect(handleCopilotInlineCompletionRequest.mock.calls[0][0]).not.toBe(message);
 		expect(handleCopilotInlineCompletionRequest.mock.calls[0][1]).toBe(issuedOwnerToken.owner);
 		expect(handleCopilotInlineCompletionRequest.mock.calls[0][2]).toBe(issuedOwnerToken.token);
 		expect(postMessage).toHaveBeenCalledWith({
@@ -211,7 +226,8 @@ describe('HostCopilotInlineCompletionApplicationHandler', () => {
 
 		await expect(handler.handleMessage(message)).rejects.toBe(failure);
 
-		expect(handleCopilotInlineCompletionRequest.mock.calls[0][0]).toBe(message);
+		expect(handleCopilotInlineCompletionRequest.mock.calls[0][0]).toEqual(message);
+		expect(handleCopilotInlineCompletionRequest.mock.calls[0][0]).not.toBe(message);
 		expect(assertSqlOwnerToken).not.toHaveBeenCalled();
 		expect(postMessage).not.toHaveBeenCalled();
 	});
@@ -231,7 +247,8 @@ describe('HostCopilotInlineCompletionApplicationHandler', () => {
 		handler.dispose();
 		admission.resolve(issuedOwnerToken);
 		await vi.waitFor(() => expect(handleCopilotInlineCompletionRequest).toHaveBeenCalledOnce());
-		expect(handleCopilotInlineCompletionRequest.mock.calls[0][0]).toBe(message);
+		expect(handleCopilotInlineCompletionRequest.mock.calls[0][0]).toEqual(message);
+		expect(handleCopilotInlineCompletionRequest.mock.calls[0][0]).not.toBe(message);
 		expect(handleCopilotInlineCompletionRequest.mock.calls[0][1]).toBe(issuedOwnerToken.owner);
 		expect(handleCopilotInlineCompletionRequest.mock.calls[0][2]).toBe(issuedOwnerToken.token);
 		expect(postMessage).not.toHaveBeenCalled();

@@ -196,6 +196,38 @@ describe('postMessageToHost', () => {
 		}
 	});
 
+	it('snapshots inline completion requests and rejects malformed values before E2E capture', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const request = {
+				type: 'requestCopilotInlineCompletion' as const,
+				requestId: ' inline-1 ', boxId: ' query-1 ',
+				textBefore: 'StormEvents\n| ', textAfter: '\n| take 10', flavor: 'kusto' as const,
+			};
+			postMessageToHost(request);
+
+			expect(capture).toHaveBeenCalledWith(request);
+			expect(capture.mock.calls[0]?.[0]).not.toBe(request);
+			expect(postMessage).toHaveBeenCalledWith(request);
+			expect(postMessage.mock.calls[0]?.[0]).not.toBe(request);
+			capture.mockClear();
+			postMessage.mockClear();
+
+			postMessageToHost({
+				...request,
+				ownerToken: ['forged'],
+			} as unknown as Parameters<typeof postMessageToHost>[0]);
+
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
+
 	it('rejects an unknown-to-known discriminator proxy before transport', () => {
 		const postMessage = vi.fn();
 		(window as any).vscode = { postMessage };

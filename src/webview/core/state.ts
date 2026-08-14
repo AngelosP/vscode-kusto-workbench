@@ -11,6 +11,7 @@ import {
 } from './schema-catalogs.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
 import type { KustoEditorSchemaRequestIdentity, KustoEditorSchemaTarget } from '../../shared/kustoSchemaLifecycle.js';
+import type { CopilotInlineCompletion } from '../../shared/copilotInlineCompletionProtocol.js';
 // State module — central webview state.
 // All state variables are exported for direct ES module import within the
 // esbuild-bundled IIFE.  Window assignments are kept alongside exports so
@@ -152,7 +153,9 @@ export const suggestedDatabaseByClusterKeyByBoxId: Record<string, any> = {};
 export const queryExecutionTimers: Record<string, any> = {};
 export const runModesByBoxId: Record<string, any> = {};
 export const caretDocOverlaysByBoxId: Record<string, any> = {};
-export const copilotInlineCompletionRequests: Record<string, any> = {};
+export const copilotInlineCompletionRequests: Record<string, {
+	resolve: (completions: CopilotInlineCompletion[]) => void;
+}> = {};
 export const sqlConnections: any[] = [];
 export const sqlCachedDatabases: Record<string, any> = Object.create(null);
 export const sqlFavoritesModeByBoxId: Record<string, any> = {};

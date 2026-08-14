@@ -71,6 +71,7 @@ import {
 } from '../../shared/kustoConnectionsProjectionProtocol.js';
 import { admitQuerySharingHostMessage } from '../../shared/querySharingProtocol.js';
 import { admitEditingPreferencesHostMessage } from '../../shared/editingPreferences.js';
+import { admitCopilotInlineCompletionHostMessage } from '../../shared/copilotInlineCompletionProtocol.js';
 import { captureRuntimeMessageEnvelope } from '../../shared/runtimeMessageEnvelope.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
@@ -1709,6 +1710,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 	if (querySharingAdmission.recognized) {
 		if (!querySharingAdmission.parsed.ok) return;
 		message = querySharingAdmission.parsed.value;
+	}
+	const copilotInlineCompletionAdmission = querySharingAdmission.recognized
+		? { recognized: false as const }
+		: admitCopilotInlineCompletionHostMessage(message);
+	if (copilotInlineCompletionAdmission.recognized) {
+		if (!copilotInlineCompletionAdmission.parsed.ok) return;
+		message = copilotInlineCompletionAdmission.parsed.value;
 	}
 	message = (message && typeof message === 'object') ? message : {};
 	const urlContentAdmission = admitUrlContentHostMessage(message);
@@ -4197,8 +4205,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 
 		case 'copilotInlineCompletionResult':
 			try {
-				const requestId = String(message.requestId || '');
-				const completions = message.completions || [];
+				const requestId = message.requestId;
+				const completions = message.completions;
 				// Delegate to the handler registered by the inline completions provider.
 				// This caches the result and re-triggers the inline suggest action.
 				if (typeof _win.__kustoHandleInlineCompletionResult === 'function') {

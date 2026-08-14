@@ -89,6 +89,10 @@ import {
 	admitEditingPreferencesWebviewMessage,
 	type EditingPreferencesWebviewMessage,
 } from '../../shared/editingPreferences.js';
+import {
+	admitCopilotInlineCompletionWebviewMessage,
+	type CopilotInlineCompletionWebviewMessage,
+} from '../../shared/copilotInlineCompletionProtocol.js';
 import { captureRuntimeMessageEnvelope } from '../../shared/runtimeMessageEnvelope.js';
 import { pState } from './persistence-state.js';
 
@@ -297,7 +301,7 @@ export type OutgoingWebviewMessage =
 	| ({ type: 'clearCopilotConversation'; flavor: 'kusto' } & KustoCopilotRequestIdentity)
 	| { type: 'clearCopilotConversation'; boxId: string; flavor?: 'sql' }
 	| { type: 'removeFromCopilotHistory'; boxId: string; entryId: string }
-	| { type: 'requestCopilotInlineCompletion'; requestId: string; boxId: string; textBefore: string; textAfter: string; flavor?: 'kusto' | 'sql'; ownerToken?: string }
+	| CopilotInlineCompletionWebviewMessage
 
 	// Optimize
 	| ({ type: 'prepareOptimizeQuery'; query: string } & KustoOptimizeRequestIdentity)
@@ -448,7 +452,11 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 	const message = envelope.value as unknown as OutgoingWebviewMessage;
 	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage | CompatibilityPersistenceWebviewMessage = message;
 	const editingPreferencesAdmission = admitEditingPreferencesWebviewMessage(message);
+	const copilotInlineCompletionAdmission = editingPreferencesAdmission.recognized
+		? { recognized: false as const }
+		: admitCopilotInlineCompletionWebviewMessage(message);
 	const kustoConnectionsProjectionAdmission = editingPreferencesAdmission.recognized
+		|| copilotInlineCompletionAdmission.recognized
 		? { recognized: false as const }
 		: admitKustoConnectionsProjectionWebviewMessage(message);
 	const sqlConnectionsProjectionAdmission = kustoConnectionsProjectionAdmission.recognized
@@ -478,6 +486,12 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 			return;
 		}
 		outbound = editingPreferencesAdmission.parsed.value;
+	} else if (copilotInlineCompletionAdmission.recognized) {
+		if (!copilotInlineCompletionAdmission.parsed.ok) {
+			console.error('[kusto] Rejected invalid Copilot inline-completion webview message:', copilotInlineCompletionAdmission.parsed.error);
+			return;
+		}
+		outbound = copilotInlineCompletionAdmission.parsed.value;
 	} else if (kustoConnectionsProjectionAdmission.recognized) {
 		if (!kustoConnectionsProjectionAdmission.parsed.ok) {
 			console.error('[kusto] Rejected invalid Kusto connections projection webview message:', kustoConnectionsProjectionAdmission.parsed.error);

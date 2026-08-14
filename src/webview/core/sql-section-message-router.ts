@@ -14,6 +14,9 @@ import {
 	admitSqlStsEditorLanguageHostMessage,
 	type SqlStsEditorLanguageHostMessage,
 } from '../../shared/sqlStsEditorLanguageProtocol.js';
+import {
+	admitCopilotInlineCompletionHostMessage,
+} from '../../shared/copilotInlineCompletionProtocol.js';
 
 export interface SqlSectionSessionTarget {
 	readonly boxId: string;
@@ -176,6 +179,11 @@ export function routeSqlSectionMessage(
 	message: Record<string, unknown>,
 	effects: SqlSectionMessageRouterEffects,
 ): SqlSectionMessageRouteResult {
+	const inlineCompletionAdmission = admitCopilotInlineCompletionHostMessage(message);
+	if (inlineCompletionAdmission.recognized) {
+		if (!inlineCompletionAdmission.parsed.ok) return 'rejected';
+		message = inlineCompletionAdmission.parsed.value as unknown as Record<string, unknown>;
+	}
 	let stsMessage: SqlStsEditorLanguageHostMessage | undefined;
 	const stsAdmission = admitSqlStsEditorLanguageHostMessage(message);
 	if (stsAdmission.recognized) {

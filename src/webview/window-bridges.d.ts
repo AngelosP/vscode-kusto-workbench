@@ -11,6 +11,8 @@
  * load order isn't guaranteed. State from state.ts is non-optional (loads first).
  */
 
+import type { CopilotInlineCompletion } from '../shared/copilotInlineCompletionProtocol.js';
+
 declare global {
 
 	// =================================================================
@@ -107,8 +109,13 @@ declare global {
 		caretDocOverlaysByBoxId: Record<string, any>;
 		autoTriggerAutocompleteEnabled: boolean;
 		copilotInlineCompletionsEnabled: boolean;
-		copilotInlineCompletionRequests: Record<string, any>;
-		__kustoHandleInlineCompletionResult?: (requestId: string, completions: any[]) => void;
+		copilotInlineCompletionRequests: Record<string, {
+			resolve: (completions: CopilotInlineCompletion[]) => void;
+		}>;
+		__kustoHandleInlineCompletionResult?: (
+			requestId: string,
+			completions: CopilotInlineCompletion[],
+		) => void;
 
 		// SQL state
 		sqlConnections: any[];

@@ -951,6 +951,78 @@ describe('message-handler dispatch', () => {
 		}
 	});
 
+	it('keeps the inline completion resolver and ten-second timer live until a canonical result arrives', async () => {
+		const { copilotInlineCompletionRequests } = await import('../../src/webview/core/state.js');
+		const { handleCopilotInlineCompletionResult } = await import(
+			'../../src/webview/monaco/copilot-inline-completion-runtime.js'
+		);
+		const requestId = 'inline-current';
+		const settled = vi.fn();
+		const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+		const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+		const timeoutId = setTimeout(() => {
+			delete copilotInlineCompletionRequests[requestId];
+			settled([]);
+		}, 10_000);
+		const resolver = {
+			resolve: (completions: Array<{ insertText: string }>) => {
+				clearTimeout(timeoutId);
+				settled(completions);
+			},
+		};
+		const previousHandler = (window as any).__kustoHandleInlineCompletionResult;
+		copilotInlineCompletionRequests[requestId] = resolver;
+		(window as any).__kustoHandleInlineCompletionResult = handleCopilotInlineCompletionResult;
+
+		try {
+			dispatchHostMessage({
+				type: 'copilotInlineCompletionResult', requestId, boxId: 'query-inline',
+				completions: [{ insertText: 42 }],
+			});
+			await Promise.resolve();
+
+			expect(copilotInlineCompletionRequests[requestId]).toBe(resolver);
+			expect(settled).not.toHaveBeenCalled();
+			expect(clearTimeoutSpy).not.toHaveBeenCalled();
+
+			dispatchHostMessage({
+				type: 'copilotInlineCompletionResult', requestId: 'inline-stale', boxId: 'query-inline',
+				completions: [{ insertText: '| stale' }],
+			});
+			await Promise.resolve();
+			expect(copilotInlineCompletionRequests[requestId]).toBe(resolver);
+			expect(settled).not.toHaveBeenCalled();
+			expect(clearTimeoutSpy).not.toHaveBeenCalled();
+
+			const completions = [{ insertText: '| take 10' }];
+			dispatchHostMessage({
+				type: 'copilotInlineCompletionResult', requestId, boxId: 'query-inline', completions,
+			});
+			await Promise.resolve();
+
+			expect(copilotInlineCompletionRequests[requestId]).toBeUndefined();
+			expect(settled).toHaveBeenCalledOnce();
+			expect(settled).toHaveBeenCalledWith(completions);
+			expect(clearTimeoutSpy).toHaveBeenCalledOnce();
+			expect(clearTimeoutSpy).toHaveBeenCalledWith(timeoutId);
+			expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 10_000);
+
+			dispatchHostMessage({
+				type: 'copilotInlineCompletionResult', requestId, boxId: 'query-inline',
+				completions: [{ insertText: '| duplicate' }],
+			});
+			await Promise.resolve();
+			expect(settled).toHaveBeenCalledOnce();
+			expect(clearTimeoutSpy).toHaveBeenCalledOnce();
+		} finally {
+			clearTimeout(timeoutId);
+			delete copilotInlineCompletionRequests[requestId];
+			(window as any).__kustoHandleInlineCompletionResult = previousHandler;
+			setTimeoutSpy.mockRestore();
+			clearTimeoutSpy.mockRestore();
+		}
+	});
+
 	it('makes an unknown-to-known discriminator proxy inert before protocol routing', () => {
 		let typeDescriptorReads = 0;
 		let getterCalls = 0;

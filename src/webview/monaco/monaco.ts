@@ -107,6 +107,8 @@ import { filterResolvableCrossClusterMarkers } from '../shared/kusto-diagnostic-
 import { decideKustoSupplementalCompletionPolicy } from '../shared/kusto-supplemental-completion-policy';
 import { kustoClusterKey, kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
 import { getKustoSchemaIdentityKey, resolveKustoConnection } from '../../shared/kustoAuth.js';
+import type { CopilotInlineCompletion } from '../../shared/copilotInlineCompletionProtocol.js';
+import { handleCopilotInlineCompletionResult } from './copilot-inline-completion-runtime.js';
 import {
 	connections,
 	monacoReadyPromise,
@@ -4847,12 +4849,7 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 
 					// The result handler is still needed for main.ts message dispatch.
 					// It resolves the pending promise.
-					_win.__kustoHandleInlineCompletionResult = (requestId: string, completions: any[]) => {
-						const pending = copilotInlineCompletionRequests[requestId];
-						if (!pending || typeof pending.resolve !== 'function') return;
-						delete copilotInlineCompletionRequests[requestId];
-						pending.resolve(completions || []);
-					};
+					_win.__kustoHandleInlineCompletionResult = handleCopilotInlineCompletionResult;
 
 					// Factory for inline completion providers — registers one per language.
 					const __kustoCreateInlineCompletionProvider = (flavor: 'kusto' | 'sql', commentMarker: string) => ({
@@ -4914,14 +4911,14 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 								// IMPORTANT: we do NOT hook token.onCancellationRequested — Monaco
 								// aggressively cancels especially for manual triggers, which would
 								// delete the pending request before the LLM can respond.
-								const completionPromise = new Promise<any[]>((resolve) => {
+								const completionPromise = new Promise<CopilotInlineCompletion[]>((resolve) => {
 									const timeoutId = setTimeout(() => {
 										delete copilotInlineCompletionRequests[requestId];
 										resolve([]);
 									}, 10000);
 
 									copilotInlineCompletionRequests[requestId] = {
-										resolve: (completions: any) => {
+										resolve: (completions: CopilotInlineCompletion[]) => {
 											clearTimeout(timeoutId);
 											resolve(completions);
 										}

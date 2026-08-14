@@ -207,6 +207,31 @@ describe('routeSqlSectionMessage', () => {
 		expect(routeSqlSectionMessage({ type: 'queryResult', boxId: 'sql-1', ownerToken: 'owner-new' }, effects)).toBe('not-sql');
 	});
 
+	it('rejects malformed inline completion ownership before owned-message admission', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		const { effects } = createEffects(target);
+		target.setStsReady(true, 'owner-current', 0);
+
+		expect(routeSqlSectionMessage({
+			type: 'copilotInlineCompletionResult', requestId: 'inline-current', boxId: 'sql-1',
+			ownerToken: ['owner-current'], completions: [],
+		}, effects)).toBe('rejected');
+		expect(target.admitOwnedMessage).not.toHaveBeenCalled();
+		const inheritedOwner = Object.assign(Object.create({ ownerToken: 'owner-current' }), {
+			type: 'copilotInlineCompletionResult', requestId: 'inline-current', boxId: 'sql-1',
+			completions: [],
+		});
+		expect(routeSqlSectionMessage(inheritedOwner, effects)).toBe('rejected');
+		expect(target.admitOwnedMessage).not.toHaveBeenCalled();
+
+		expect(routeSqlSectionMessage({
+			type: 'copilotInlineCompletionResult', requestId: 'inline-current', boxId: 'sql-1',
+			ownerToken: 'owner-current', completions: [],
+		}, effects)).toBe('not-sql');
+		expect(target.admitOwnedMessage).toHaveBeenCalledOnce();
+	});
+
 	it('routes an execution-only owner without marking STS language ready', () => {
 		const target = createTarget();
 		registerSqlSectionSession(target);

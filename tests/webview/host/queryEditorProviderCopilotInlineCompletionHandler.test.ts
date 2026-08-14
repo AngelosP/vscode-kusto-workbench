@@ -235,6 +235,8 @@ describe('QueryEditorProvider Copilot inline-completion application', () => {
 		const webviewTypesSource = readSource('src/webview/shared/webview-messages.ts');
 		const monacoSource = readSource('src/webview/monaco/monaco.ts');
 		const messageHandlerSource = readSource('src/webview/core/message-handler.ts');
+		const sqlRouterSource = readSource('src/webview/core/sql-section-message-router.ts');
+		const protocolSource = readSource('src/shared/copilotInlineCompletionProtocol.ts');
 		const editingPreferencesSource = readSource('src/webview/core/editing-preferences.ts');
 
 		expect(providerSource).not.toContain("case 'requestCopilotInlineCompletion':");
@@ -251,13 +253,14 @@ describe('QueryEditorProvider Copilot inline-completion application', () => {
 			'this.copilotInlineCompletionApplication?.handleMessage(message)',
 		);
 		expect(providerSource).toContain('this.copilotInlineCompletionApplication.dispose();');
-		expect(handlerSource).toContain("message.type !== 'requestCopilotInlineCompletion'");
+		expect(handlerSource).toContain('admitCopilotInlineCompletionWebviewMessage(message)');
 		expect(handlerSource).toContain('this.options.assertSqlOwnerToken(message.boxId, message.ownerToken)');
 		expect(handlerSource).toContain(
 			'this.options.handleCopilotInlineCompletionRequest(message, issued.owner, issued.token)',
 		);
 		expect(handlerSource).toContain("type: 'copilotInlineCompletionResult'");
 		expect(handlerSource).toContain('completions: []');
+		expect(handlerSource).toContain('parseCopilotInlineCompletionHostMessage(message)');
 
 		expect(copilotSource).toContain('private readonly runningSqlInlineCompletionByBoxId');
 		expect(copilotSource).toContain('let model = this._cachedInlineModel;');
@@ -269,11 +272,17 @@ describe('QueryEditorProvider Copilot inline-completion application', () => {
 		expect(sqlOwnerSource).toContain('async assertOwnerToken(');
 		expect(sqlOwnerSource).toContain('private readonly ownerTokenByBoxId');
 
-		expect(hostTypesSource).toContain("type: 'requestCopilotInlineCompletion'");
-		expect(webviewTypesSource).toContain("type: 'requestCopilotInlineCompletion'");
+		expect(protocolSource).toContain("type: 'requestCopilotInlineCompletion'");
+		expect(protocolSource).toContain("type: 'copilotInlineCompletionResult'");
+		expect(hostTypesSource).toContain('| CopilotInlineCompletionWebviewMessage');
+		expect(webviewTypesSource).toContain('| CopilotInlineCompletionWebviewMessage');
+		expect(hostTypesSource).not.toContain("type: 'requestCopilotInlineCompletion'");
+		expect(webviewTypesSource).not.toContain("type: 'requestCopilotInlineCompletion'");
 		expect(monacoSource).toContain("type: 'requestCopilotInlineCompletion'");
 		expect(monacoSource).toContain('}, 10000);');
 		expect(messageHandlerSource).toContain("case 'copilotInlineCompletionResult':");
+		expect(messageHandlerSource).toContain('admitCopilotInlineCompletionHostMessage(message)');
+		expect(sqlRouterSource).toContain('admitCopilotInlineCompletionHostMessage(message)');
 		expect(editingPreferencesSource).toContain(
 			'setCopilotInlineCompletionsEnabled(preferences.copilotInlineCompletionsEnabled);',
 		);

@@ -35,6 +35,12 @@ import { convertKustoFunctionDefinitionsToInline } from '../shared/kustoFunction
 import type { WorkbenchLogger } from './workbenchLogger';
 import type { KustoComparisonRunIdentity, KustoCopilotRequestIdentity, KustoDispatchIdentity, KustoExecutionProducer, KustoOptimizeRequestIdentity, KustoSectionExecutionOutcome, KustoSectionExecutionTarget, PreparedComparisonSection } from '../shared/kustoExecution.js';
 import { hasKustoOptimizeRequestIdentity, kustoCopilotRequestIdentityEquals, kustoOptimizeRequestIdentityEquals } from '../shared/kustoExecution.js';
+import {
+	parseCopilotInlineCompletionHostMessage,
+	type CopilotInlineCompletion,
+	type CopilotInlineCompletionHostMessage,
+	type CopilotInlineCompletionWebviewMessage,
+} from '../shared/copilotInlineCompletionProtocol.js';
 
 export const SQL_COPILOT_OWNER_CHANGED_MESSAGE = 'SQL section owner changed. Retry the request.';
 
@@ -1054,14 +1060,14 @@ export class CopilotService {
 	}
 
 	async handleCopilotInlineCompletionRequest(
-		message: Extract<IncomingWebviewMessage, { type: 'requestCopilotInlineCompletion' }>,
+		message: CopilotInlineCompletionWebviewMessage,
 		expectedSqlOwner?: SqlResultOwner,
 		ownerToken?: string,
 	): Promise<void> {
-		const requestId = String(message.requestId || '').trim();
-		const boxId = String(message.boxId || '').trim();
-		const textBefore = String(message.textBefore || '');
-		const textAfter = String(message.textAfter || '');
+		const requestId = message.requestId;
+		const boxId = message.boxId;
+		const textBefore = message.textBefore;
+		const textAfter = message.textAfter;
 		const flavor = message.flavor === 'sql' ? 'sql' : 'kusto';
 
 		if (!requestId) {
@@ -1069,10 +1075,14 @@ export class CopilotService {
 		}
 		if (flavor === 'sql' && !expectedSqlOwner) return;
 
-		const postResult = (completions: Array<{ insertText: string }>, error?: string) => this.host.postMessage({
-			type: 'copilotInlineCompletionResult', requestId, boxId, completions,
-			...(ownerToken ? { ownerToken } : {}), ...(error ? { error } : {}),
-		});
+		const postResult = (completions: CopilotInlineCompletion[], error?: string) => {
+			const result: CopilotInlineCompletionHostMessage = {
+				type: 'copilotInlineCompletionResult', requestId, boxId, completions,
+				...(ownerToken ? { ownerToken } : {}), ...(error ? { error } : {}),
+			};
+			const parsed = parseCopilotInlineCompletionHostMessage(result);
+			return parsed.ok ? this.host.postMessage(parsed.value) : false;
+		};
 		const cts = new vscode.CancellationTokenSource();
 		if (expectedSqlOwner) {
 			const previous = this.runningSqlInlineCompletionByBoxId.get(boxId);

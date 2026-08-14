@@ -18,6 +18,7 @@ import type { SqlConnectionsProjectionWebviewMessage } from '../shared/sqlConnec
 import type { KustoConnectionsProjectionWebviewMessage } from '../shared/kustoConnectionsProjectionProtocol';
 import type { QuerySharingWebviewMessage } from '../shared/querySharingProtocol';
 import type { EditingPreferencesWebviewMessage } from '../shared/editingPreferences';
+import type { CopilotInlineCompletionWebviewMessage } from '../shared/copilotInlineCompletionProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -252,7 +253,7 @@ export type IncomingWebviewMessage =
 	| CheckPbiItemExistsMessage
 	| PublishToPowerBIMessage
 	| EditingPreferencesWebviewMessage
-	| { type: 'requestCopilotInlineCompletion'; requestId: string; boxId: string; textBefore: string; textAfter: string; flavor?: 'kusto' | 'sql'; ownerToken?: string }
+	| CopilotInlineCompletionWebviewMessage
 	| PythonExecutionWebviewMessage
 	| UrlContentWebviewMessage
 	| { type: 'kustoSectionOpen'; boxId: string; sectionInstanceId: string }

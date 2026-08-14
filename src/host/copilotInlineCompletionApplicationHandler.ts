@@ -1,9 +1,13 @@
 import type { IncomingWebviewMessage } from './queryEditorTypes';
 import type { SqlIssuedOwnerToken, SqlResultOwner } from './sql/sqlEditorSessionRegistry';
+import {
+	admitCopilotInlineCompletionWebviewMessage,
+	parseCopilotInlineCompletionHostMessage,
+	type CopilotInlineCompletionHostMessage,
+	type CopilotInlineCompletionWebviewMessage,
+} from '../shared/copilotInlineCompletionProtocol';
 
-type CopilotInlineCompletionMessage = Extract<IncomingWebviewMessage, {
-	type: 'requestCopilotInlineCompletion';
-}>;
+type CopilotInlineCompletionMessage = CopilotInlineCompletionWebviewMessage;
 
 export interface CopilotInlineCompletionApplicationHandler {
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined;
@@ -17,7 +21,7 @@ export type CopilotInlineCompletionApplicationHandlerOptions = {
 		expectedSqlOwner?: SqlResultOwner,
 		ownerToken?: string,
 	) => Promise<void>;
-	postMessage: (message: unknown) => Thenable<boolean>;
+	postMessage: (message: CopilotInlineCompletionHostMessage) => Thenable<boolean>;
 };
 
 export class HostCopilotInlineCompletionApplicationHandler
@@ -27,9 +31,11 @@ export class HostCopilotInlineCompletionApplicationHandler
 	constructor(private readonly options: CopilotInlineCompletionApplicationHandlerOptions) {}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
-		if (message.type !== 'requestCopilotInlineCompletion') return undefined;
+		const admission = admitCopilotInlineCompletionWebviewMessage(message);
+		if (!admission.recognized) return undefined;
+		if (!admission.parsed.ok) return Promise.resolve();
 		if (this.disposed) return Promise.resolve();
-		return this.handleCopilotInlineCompletionRequest(message);
+		return this.handleCopilotInlineCompletionRequest(admission.parsed.value);
 	}
 
 	dispose(): void {
@@ -48,7 +54,7 @@ export class HostCopilotInlineCompletionApplicationHandler
 			const issued = await this.options.assertSqlOwnerToken(message.boxId, message.ownerToken);
 			await this.options.handleCopilotInlineCompletionRequest(message, issued.owner, issued.token);
 		} catch {
-			this.options.postMessage({
+			this.postMessage({
 				type: 'copilotInlineCompletionResult',
 				requestId: message.requestId,
 				boxId: message.boxId,
@@ -56,5 +62,10 @@ export class HostCopilotInlineCompletionApplicationHandler
 				completions: [],
 			});
 		}
+	}
+
+	private postMessage(message: CopilotInlineCompletionHostMessage): void {
+		const parsed = parseCopilotInlineCompletionHostMessage(message);
+		if (parsed.ok) this.options.postMessage(parsed.value);
 	}
 }
