@@ -153,6 +153,28 @@ describe('postMessageToHost', () => {
 		expect(getterCalls).toBe(0);
 	});
 
+	it('rejects malformed Kusto publication acknowledgements before generic capture or E2E transport', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const malformed = Object.assign(Object.create({ inherited: true }), {
+				type: 'kustoPublicationAck',
+				publicationId: 'publication-current',
+				phase: 'applied',
+				accepted: true,
+			});
+
+			postMessageToHost(malformed as Parameters<typeof postMessageToHost>[0]);
+
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
+
 	it('snapshots editing preference setters and rejects malformed values before E2E capture', () => {
 		const postMessage = vi.fn();
 		const capture = vi.fn();

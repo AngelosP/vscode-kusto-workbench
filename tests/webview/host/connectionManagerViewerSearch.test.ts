@@ -174,6 +174,43 @@ describe('ConnectionManagerViewerV2 schema search mapping', () => {
 		}
 	});
 
+	it('keeps the exact Connection Manager publication waiter live after a malformed matching acknowledgement', async () => {
+		vi.useFakeTimers();
+		try {
+			const viewer = Object.create(ConnectionManagerViewerV2.prototype) as ConnectionManagerViewerV2 & Record<string, any>;
+			viewer.pendingKustoPublicationAcks = new Map();
+			const postMessage = vi.fn(async () => true);
+			viewer.panel = { webview: { postMessage } };
+			let settled = false;
+			const publishing = viewer.postKustoPublication({ type: 'searchResults', requestId: 'publication-current', results: [] })
+				.then((accepted: boolean) => { settled = true; return accepted; });
+			await vi.waitFor(() => expect(postMessage).toHaveBeenCalledOnce());
+			const stage = postMessage.mock.calls[0][0];
+			await viewer.onMessage({
+				type: 'kustoPublicationAck', publicationId: stage.publicationId, phase: 'staged', accepted: true,
+			});
+			await vi.waitFor(() => expect(postMessage).toHaveBeenCalledTimes(2));
+			const key = `${stage.publicationId}:applied`;
+			const pending = viewer.pendingKustoPublicationAcks.get(key);
+			const deadline = pending?.timer;
+
+			await viewer.onMessage({
+				type: 'kustoPublicationAck', publicationId: [stage.publicationId], phase: 'applied', accepted: true,
+			});
+
+			expect(settled).toBe(false);
+			expect(viewer.pendingKustoPublicationAcks.get(key)).toBe(pending);
+			expect(viewer.pendingKustoPublicationAcks.get(key)?.timer).toBe(deadline);
+
+			await viewer.onMessage({
+				type: 'kustoPublicationAck', publicationId: stage.publicationId, phase: 'applied', accepted: true,
+			});
+			await expect(publishing).resolves.toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('rejects old-target SQL preview rows during final canonical admission', async () => {
 		const harness = createSqlConnectionTestHarness({ authType: 'sql-login' });
 		const result = deferred<any>();

@@ -19,6 +19,10 @@ import {
 	type SearchControllerHost,
 } from './connection-manager-search.controller.js';
 import { kustoClusterKey } from '../../shared/clusterUtils.js';
+import {
+	admitKustoPublicationHostMessage,
+	parseKustoPublicationWebviewMessage,
+} from '../../../shared/kustoPublicationProtocol.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -608,20 +612,37 @@ export class KwConnectionManager extends LitElement {
 	private _onMessage = (event: MessageEvent) => {
 		let msg = event.data;
 		if (!msg) return;
+		const publicationAdmission = admitKustoPublicationHostMessage(msg);
+		if (publicationAdmission.recognized) {
+			if (!publicationAdmission.parsed.ok) return;
+			msg = publicationAdmission.parsed.value;
+		}
+		const createAcknowledgement = (
+			publicationId: string,
+			phase: 'staged' | 'applied',
+			accepted: boolean,
+		) => parseKustoPublicationWebviewMessage({
+				type: 'kustoPublicationAck', publicationId, phase, accepted,
+			});
 		const acknowledge = (accepted: boolean, phase: 'staged' | 'applied' = 'applied') => {
-			if (!msg.publicationId) return;
+			if (typeof msg.publicationId !== 'string') return;
+			const parsed = createAcknowledgement(msg.publicationId, phase, accepted);
+			if (!parsed.ok) return;
+			const acknowledgement = parsed.value;
 			if (phase === 'applied') {
-				const previous = this._completedKustoPublications.get(msg.publicationId);
+				const previous = this._completedKustoPublications.get(acknowledgement.publicationId);
 				if (previous) clearTimeout(previous.timer);
-				const timer = setTimeout(() => this._completedKustoPublications.delete(msg.publicationId), 10_000);
-				this._completedKustoPublications.set(msg.publicationId, { accepted, timer });
+				const timer = setTimeout(() => this._completedKustoPublications.delete(acknowledgement.publicationId), 10_000);
+				this._completedKustoPublications.set(acknowledgement.publicationId, {
+					accepted: acknowledgement.accepted, timer,
+				});
 			}
-			this._vscode.postMessage({ type: 'kustoPublicationAck', publicationId: msg.publicationId, phase, accepted });
+			this._vscode.postMessage(acknowledgement);
 		};
 		if (msg.type === 'kustoPublicationStage') {
-			const publicationId = String(msg.publicationId || '');
-			const deadline = Number(msg.publicationDeadline);
-			if (!publicationId || !Number.isFinite(deadline) || deadline < Date.now()) {
+			const publicationId = msg.publicationId;
+			const deadline = msg.publicationDeadline;
+			if (deadline < Date.now()) {
 				acknowledge(false, 'staged');
 				return;
 			}
@@ -629,14 +650,15 @@ export class KwConnectionManager extends LitElement {
 			if (previous) clearTimeout(previous.timer);
 			const timer = setTimeout(() => {
 				if (!this._stagedKustoPublications.delete(publicationId)) return;
-				this._vscode.postMessage({ type: 'kustoPublicationAck', publicationId, phase: 'applied', accepted: false });
+				const acknowledgement = createAcknowledgement(publicationId, 'applied', false);
+				if (acknowledgement.ok) this._vscode.postMessage(acknowledgement.value);
 			}, Math.max(0, deadline - Date.now()));
 			this._stagedKustoPublications.set(publicationId, { payload: msg.payload, deadline, timer });
 			acknowledge(true, 'staged');
 			return;
 		}
 		if (msg.type === 'kustoPublicationCommit') {
-			const publicationId = String(msg.publicationId || '');
+			const publicationId = msg.publicationId;
 			const staged = this._stagedKustoPublications.get(publicationId);
 			this._stagedKustoPublications.delete(publicationId);
 			if (staged) clearTimeout(staged.timer);
@@ -647,7 +669,7 @@ export class KwConnectionManager extends LitElement {
 			msg = { ...(staged.payload || {}), publicationId };
 		}
 		if (msg.type === 'kustoPublicationRevoke') {
-			const publicationId = String(msg.publicationId || '');
+			const publicationId = msg.publicationId;
 			const staged = this._stagedKustoPublications.get(publicationId);
 			if (staged) {
 				clearTimeout(staged.timer);
@@ -656,7 +678,9 @@ export class KwConnectionManager extends LitElement {
 			acknowledge(this._completedKustoPublications.get(publicationId)?.accepted === true, 'applied');
 			return;
 		}
-		if (msg.publicationId && Number(msg.publicationDeadline) < Date.now()) {
+		if (typeof msg.publicationId === 'string'
+			&& typeof msg.publicationDeadline === 'number'
+			&& msg.publicationDeadline < Date.now()) {
 			acknowledge(false, 'applied');
 			return;
 		}

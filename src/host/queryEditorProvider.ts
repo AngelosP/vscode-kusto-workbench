@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-
+import { admitKustoPublicationWebviewMessage } from '../shared/kustoPublicationProtocol';
 import * as crypto from 'crypto';
 import * as path from 'path';
 
@@ -995,6 +995,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	private handlePanelWebviewMessage(input: unknown): void | Promise<void> {
+		const publicationAdmission = admitKustoPublicationWebviewMessage(input);
+		if (publicationAdmission.recognized) {
+			if (!publicationAdmission.parsed.ok) return;
+			input = publicationAdmission.parsed.value;
+		}
 		if (input && typeof input === 'object'
 			&& (input as Record<string, unknown>).type === MAIN_WEBVIEW_DISPATCHER_READY_TYPE) return;
 		const message = input as IncomingWebviewMessage;
@@ -1003,6 +1008,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	public async handleWebviewMessage(message: IncomingWebviewMessage): Promise<void> {
+		const publicationAdmission = admitKustoPublicationWebviewMessage(message);
+		if (publicationAdmission.recognized) {
+			if (!publicationAdmission.parsed.ok) return;
+			message = publicationAdmission.parsed.value;
+		}
 		if (message?.type === 'fileOpenTrace') {
 			this.fileOpenTrace?.mark(`webview.${message.event}`, { timeMs: message.timeMs, sequence: message.sequence, detail: message.detail });
 			return;

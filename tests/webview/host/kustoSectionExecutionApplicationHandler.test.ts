@@ -262,7 +262,9 @@ describe('HostKustoSectionExecutionApplicationHandler', () => {
 		const stage = harness.transport.mock.calls[0][0] as {
 			type: string; publicationId: string; payload: unknown;
 		};
-		expect(stage.payload).toBe(payload);
+		expect(stage.payload).toEqual(payload);
+		expect(stage.payload).not.toBe(payload);
+		expect(Object.isFrozen(stage.payload)).toBe(true);
 
 		await harness.handler.handleMessage({
 			type: 'kustoPublicationAck', publicationId: `${stage.publicationId}-wrong`,
@@ -292,6 +294,50 @@ describe('HostKustoSectionExecutionApplicationHandler', () => {
 			phase: 'applied', accepted: false,
 		});
 		expect(harness.transport).toHaveBeenCalledTimes(2);
+	});
+
+	it('keeps the applied publication waiter and deadline live after a malformed matching acknowledgement', async () => {
+		vi.useFakeTimers();
+		try {
+			const harness = createHarness();
+			let settled = false;
+			const publishing = harness.handler.postKustoPublication({ type: 'queryResult', marker: 'publication-current' })
+				.then(value => { settled = true; return value; });
+			await flushPromises();
+			const stage = harness.transport.mock.calls[0][0] as { publicationId: string };
+
+			await harness.handler.handleMessage({
+				type: 'kustoPublicationAck', publicationId: stage.publicationId,
+				phase: 'staged', accepted: true,
+			});
+			await flushPromises();
+			const appliedKey = `${stage.publicationId}:applied`;
+			const pendingPublicationAcks = (harness.handler as unknown as {
+				pendingPublicationAcks: Map<string, { timer?: ReturnType<typeof setTimeout> }>;
+			}).pendingPublicationAcks;
+			const pending = pendingPublicationAcks.get(appliedKey);
+			expect(pending).toBeDefined();
+			const deadline = pending?.timer;
+			const timerCount = vi.getTimerCount();
+
+			await harness.handler.handleMessage({
+				type: 'kustoPublicationAck', publicationId: [stage.publicationId] as unknown as string,
+				phase: 'applied', accepted: true,
+			});
+
+			expect(settled).toBe(false);
+			expect(pendingPublicationAcks.get(appliedKey)).toBe(pending);
+			expect(pendingPublicationAcks.get(appliedKey)?.timer).toBe(deadline);
+			expect(vi.getTimerCount()).toBe(timerCount);
+
+			await harness.handler.handleMessage({
+				type: 'kustoPublicationAck', publicationId: stage.publicationId,
+				phase: 'applied', accepted: true,
+			});
+			await expect(publishing).resolves.toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('publishes exact manual success and failure terminals', async () => {

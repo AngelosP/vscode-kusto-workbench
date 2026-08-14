@@ -21,6 +21,10 @@ import type {
 	KustoSectionExecutionTarget,
 } from '../shared/kustoExecution';
 import { getKustoConnectionIdentityKey } from '../shared/kustoAuth';
+import {
+	admitKustoPublicationWebviewMessage,
+	parseKustoPublicationHostMessage,
+} from '../shared/kustoPublicationProtocol';
 
 type PendingAcknowledgement = {
 	resolve: (accepted: boolean) => void;
@@ -104,6 +108,12 @@ export class HostKustoSectionExecutionApplicationHandler
 	constructor(private readonly options: KustoSectionExecutionApplicationHandlerOptions) {}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
+		const publicationAdmission = admitKustoPublicationWebviewMessage(message);
+		if (publicationAdmission.recognized) {
+			if (this.disposed || !publicationAdmission.parsed.ok) return Promise.resolve();
+			this.settlePublicationAck(publicationAdmission.parsed.value);
+			return Promise.resolve();
+		}
 		switch (message.type) {
 			case 'kustoSectionOpen':
 				if (this.disposed) return Promise.resolve();
@@ -130,10 +140,6 @@ export class HostKustoSectionExecutionApplicationHandler
 				if (this.disposed) return Promise.resolve();
 				this.settleExecutionStartAck(message);
 				return Promise.resolve();
-			case 'kustoPublicationAck':
-				if (this.disposed) return Promise.resolve();
-				this.settlePublicationAck(message);
-				return Promise.resolve();
 			case 'executeQuery':
 				if (this.disposed) return Promise.resolve();
 				return this.executeQueryFromWebview(message);
@@ -155,6 +161,12 @@ export class HostKustoSectionExecutionApplicationHandler
 		if (this.disposed || this.options.isDisposed()) return false;
 		const publicationId = `kusto-publication-${this.options.createPublicationId()}`;
 		const publicationDeadline = this.options.now() + 5_000;
+		const stageMessage = parseKustoPublicationHostMessage({
+			type: 'kustoPublicationStage', publicationId, publicationDeadline, payload: message,
+		});
+		const commitMessage = parseKustoPublicationHostMessage({ type: 'kustoPublicationCommit', publicationId });
+		const revokeMessage = parseKustoPublicationHostMessage({ type: 'kustoPublicationRevoke', publicationId });
+		if (!stageMessage.ok || !commitMessage.ok || !revokeMessage.ok) return false;
 		const waitForAck = (phase: 'staged' | 'applied', timeoutMs?: number): Promise<boolean> => new Promise(resolve => {
 			const key = `${publicationId}:${phase}`;
 			const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
@@ -172,10 +184,7 @@ export class HostKustoSectionExecutionApplicationHandler
 			pending.resolve(false);
 		};
 		const staged = waitForAck('staged', 5_000);
-		if (!await this.options.postMessage({
-			type: 'kustoPublicationStage', publicationId, publicationDeadline,
-			payload: message,
-		})) settleTransportFailure('staged');
+		if (!await this.options.postMessage(stageMessage.value)) settleTransportFailure('staged');
 		if (!await staged) return false;
 		const applied = waitForAck('applied');
 		const appliedKey = `${publicationId}:applied`;
@@ -184,12 +193,12 @@ export class HostKustoSectionExecutionApplicationHandler
 			appliedPending.timer = setTimeout(async () => {
 				if (this.pendingPublicationAcks.get(appliedKey) !== appliedPending) return;
 				appliedPending.timer = setTimeout(() => settleTransportFailure('applied'), 1_000);
-				if (!await this.options.postMessage({ type: 'kustoPublicationRevoke', publicationId })) {
+				if (!await this.options.postMessage(revokeMessage.value)) {
 					settleTransportFailure('applied');
 				}
 			}, Math.max(1, publicationDeadline - this.options.now()));
 		}
-		if (!await this.options.postMessage({ type: 'kustoPublicationCommit', publicationId })) {
+		if (!await this.options.postMessage(commitMessage.value)) {
 			settleTransportFailure('applied');
 		}
 		return applied;

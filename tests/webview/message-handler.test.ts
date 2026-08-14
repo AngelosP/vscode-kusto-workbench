@@ -2774,6 +2774,128 @@ describe('message-handler dispatch', () => {
 		});
 	});
 
+	it.each(['Query Editor', 'Connection Manager', 'Cached Values'] as const)(
+		'keeps the exact staged Kusto publication live after a malformed matching commit in %s',
+		async surface => {
+			vi.useFakeTimers();
+			const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+			try {
+				const publicationId = 'publication-current';
+				let deliver: (message: Record<string, unknown>) => void;
+				let getStage: (() => unknown) | undefined;
+				let getApplyCount: () => number;
+				let getAcks: () => Array<Record<string, unknown>>;
+				let assertAppliedPayload: () => void;
+
+				if (surface === 'Query Editor') {
+					const { connectionsRevision: _connectionsRevision, ...payload } = kustoConnectionsSnapshot(401, publicationId);
+					mocks.setConnections.mockClear();
+					mocks.postMessageToHost.mockClear();
+					deliver = dispatchHostMessage;
+					getApplyCount = () => mocks.setConnections.mock.calls.length;
+					getAcks = () => mocks.postMessageToHost.mock.calls.map(([message]) => message);
+					assertAppliedPayload = () => {
+						expect(mocks.setConnections).toHaveBeenCalledWith([
+							expect.objectContaining({ id: publicationId }),
+						]);
+					};
+					deliver({
+						type: 'kustoPublicationStage', publicationId,
+						publicationDeadline: Date.now() + 1_000, payload,
+					});
+				} else {
+					await import(surface === 'Connection Manager'
+						? '../../src/webview/viewers/connection-manager/kw-connection-manager.js'
+						: '../../src/webview/viewers/cached-values/kw-cached-values.js');
+					const tagName = surface === 'Connection Manager' ? 'kw-connection-manager' : 'kw-cached-values';
+					const element = document.createElement(tagName) as HTMLElement & Record<string, any>;
+					const posted: Array<Record<string, unknown>> = [];
+					element._vscode = {
+						postMessage: (message: Record<string, unknown>) => posted.push(message),
+						getState: () => undefined,
+						setState: () => undefined,
+					};
+					const initialSnapshot = element._snapshot;
+					let currentSnapshot = initialSnapshot;
+					let applyCount = 0;
+					Object.defineProperty(element, '_snapshot', {
+						configurable: true,
+						get: () => currentSnapshot,
+						set: value => { applyCount += 1; currentSnapshot = value; },
+					});
+					const snapshot = surface === 'Connection Manager'
+						? {
+							revision: 401, timestamp: Date.now(), activeKind: 'kusto',
+							connections: [{
+								id: publicationId, name: 'Publication current',
+								clusterUrl: 'https://publication-current.kusto.windows.net',
+								accountPreference: { mode: 'automatic' },
+							}],
+							accounts: [], favorites: [], cachedDatabases: {}, expandedClusters: [],
+							leaveNoTraceClusters: [], sqlConnections: [], sqlFavorites: [],
+							sqlCachedDatabases: {}, sqlExpandedConnections: [], sqlLeaveNoTrace: [],
+						}
+						: {
+							revision: 401, timestamp: Date.now(), activeKind: 'kusto',
+							auth: { sessions: [], knownAccounts: [], clusterAccountMap: {} },
+							connections: [{
+								id: publicationId, name: 'Publication current',
+								clusterUrl: 'https://publication-current.kusto.windows.net',
+								accountPreference: { mode: 'automatic' }, hasTokenOverride: false,
+							}],
+							cachedDatabases: {}, sqlAuth: { sessions: [] }, sqlConnections: [],
+							sqlCachedDatabases: {}, sqlLeaveNoTrace: [], sqlServerAccountMap: {},
+							cachedSchemaKeys: [],
+						};
+					const payload = { type: 'snapshot', snapshot };
+					deliver = message => element._onMessage(new MessageEvent('message', { data: message }));
+					getStage = () => element._stagedKustoPublications.get(publicationId);
+					getApplyCount = () => applyCount;
+					getAcks = () => posted;
+					assertAppliedPayload = () => expect(currentSnapshot).toBe(snapshot);
+					deliver({
+						type: 'kustoPublicationStage', publicationId,
+						publicationDeadline: Date.now() + 1_000, payload,
+					});
+				}
+
+				const staged = getStage?.();
+				const stagedPayload = (staged as { payload?: unknown } | undefined)?.payload;
+				getAcks().splice(0);
+				clearTimeoutSpy.mockClear();
+
+				for (const malformedCommit of [
+					Object.assign(Object.create({ inherited: true }), {
+						type: 'kustoPublicationCommit', publicationId,
+					}),
+					{ type: 'kustoPublicationCommit', publicationId: [publicationId] },
+				]) {
+					deliver(malformedCommit);
+
+					if (getStage) {
+						expect(getStage()).toBe(staged);
+						expect((getStage() as { payload?: unknown }).payload).toBe(stagedPayload);
+					}
+					expect(clearTimeoutSpy).not.toHaveBeenCalled();
+					expect(getApplyCount()).toBe(0);
+					expect(getAcks().filter(message => message.phase === 'applied')).toEqual([]);
+				}
+
+				deliver({ type: 'kustoPublicationCommit', publicationId });
+
+				expect(getApplyCount()).toBe(1);
+				assertAppliedPayload();
+				expect(getAcks().filter(message => message.phase === 'applied')).toEqual([{
+					type: 'kustoPublicationAck', publicationId, phase: 'applied', accepted: true,
+				}]);
+			} finally {
+				await vi.runOnlyPendingTimersAsync();
+				clearTimeoutSpy.mockRestore();
+				vi.useRealTimers();
+			}
+		},
+	);
+
 	it('revokes staged Kusto publication authority before a late commit can render', async () => {
 		vi.useFakeTimers();
 		try {

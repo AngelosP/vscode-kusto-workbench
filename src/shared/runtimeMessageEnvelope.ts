@@ -1,5 +1,14 @@
+export type RuntimeMessageEnvelopeDescriptorSnapshot = Readonly<{
+	input: object;
+	descriptors: PropertyDescriptorMap;
+}>;
+
 export type RuntimeMessageEnvelopeCaptureResult =
-	| Readonly<{ ok: true; value: Record<string, unknown> & { type: string } }>
+	| Readonly<{
+		ok: true;
+		value: Record<string, unknown> & { type: string };
+		descriptorSnapshot: RuntimeMessageEnvelopeDescriptorSnapshot;
+	}>
 	| Readonly<{ ok: false; error: string }>;
 
 export function captureRuntimeMessageEnvelope(input: unknown): RuntimeMessageEnvelopeCaptureResult {
@@ -30,7 +39,11 @@ export function captureRuntimeMessageEnvelope(input: unknown): RuntimeMessageEnv
 				writable: true,
 			});
 		}
-		return { ok: true, value: captured };
+		return {
+			ok: true,
+			value: captured,
+			descriptorSnapshot: { input, descriptors },
+		};
 	} catch {
 		return { ok: false, error: 'Message envelope could not be captured.' };
 	}

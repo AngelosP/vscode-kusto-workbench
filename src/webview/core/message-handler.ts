@@ -72,6 +72,11 @@ import {
 import { admitQuerySharingHostMessage } from '../../shared/querySharingProtocol.js';
 import { admitEditingPreferencesHostMessage } from '../../shared/editingPreferences.js';
 import { admitCopilotInlineCompletionHostMessage } from '../../shared/copilotInlineCompletionProtocol.js';
+import {
+	admitKustoPublicationHostMessage,
+	admitKustoPublicationHostMessageFromEnvelope,
+	parseKustoPublicationWebviewMessage,
+} from '../../shared/kustoPublicationProtocol.js';
 import { captureRuntimeMessageEnvelope } from '../../shared/runtimeMessageEnvelope.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
@@ -999,35 +1004,6 @@ const ADMITTED_KUSTO_EXECUTION_STARTED_EVENT = 'kusto-workbench-query-started';
 const stagedKustoPublications = new Map<string, { payload: unknown; deadline: number; timer: ReturnType<typeof setTimeout> }>();
 const completedKustoPublications = new Map<string, { accepted: boolean; timer: ReturnType<typeof setTimeout> }>();
 
-type StagedKustoPayloadCapture =
-	| Readonly<{ ok: true; value: Record<string, unknown> }>
-	| Readonly<{ ok: false }>;
-
-function captureStagedKustoPayload(input: unknown): StagedKustoPayloadCapture {
-	if (!input || typeof input !== 'object') return { ok: false };
-	try {
-		if (Array.isArray(input)) return { ok: false };
-		const descriptors = Object.getOwnPropertyDescriptors(input);
-		const captured: Record<string, unknown> = {};
-		for (const key of Reflect.ownKeys(descriptors)) {
-			const descriptor = Reflect.get(descriptors, key) as PropertyDescriptor;
-			if (!descriptor.enumerable) continue;
-			if (typeof key !== 'string' || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
-				return { ok: false };
-			}
-			Object.defineProperty(captured, key, {
-				value: descriptor.value,
-				enumerable: true,
-				configurable: true,
-				writable: true,
-			});
-		}
-		return { ok: true, value: captured };
-	} catch {
-		return { ok: false };
-	}
-}
-
 function attachKustoPublicationId(
 	payload: Record<string, unknown>,
 	publicationId: string,
@@ -1284,15 +1260,18 @@ function emitAdmittedKustoTerminal(message: any): void {
 }
 
 function acknowledgeKustoPublication(message: any, accepted: boolean, phase: 'staged' | 'applied' = 'applied'): void {
-	const publicationId = String(message?.publicationId || '').trim();
-	if (!publicationId) return;
+	const parsed = parseKustoPublicationWebviewMessage({
+		type: 'kustoPublicationAck', publicationId: message?.publicationId, phase, accepted,
+	});
+	if (!parsed.ok) return;
+	const acknowledgement = parsed.value;
 	if (phase === 'applied') {
-		const previous = completedKustoPublications.get(publicationId);
+		const previous = completedKustoPublications.get(acknowledgement.publicationId);
 		if (previous) clearTimeout(previous.timer);
-		const timer = setTimeout(() => completedKustoPublications.delete(publicationId), 10_000);
-		completedKustoPublications.set(publicationId, { accepted, timer });
+		const timer = setTimeout(() => completedKustoPublications.delete(acknowledgement.publicationId), 10_000);
+		completedKustoPublications.set(acknowledgement.publicationId, { accepted: acknowledgement.accepted, timer });
 	}
-	postMessageToHost({ type: 'kustoPublicationAck', publicationId, phase, accepted });
+	postMessageToHost(acknowledgement);
 }
 
 const SQL_COMPARISON_ADMISSION_ATTRIBUTE = 'data-sql-comparison-admission-request-id';
@@ -1660,7 +1639,21 @@ const __kustoDispatchHostMessage = async (message: any) => {
 	const envelope = captureRuntimeMessageEnvelope(message);
 	if (!envelope.ok) return;
 	message = envelope.value;
-	const editingPreferencesAdmission = admitEditingPreferencesHostMessage(message);
+	const rawKustoPublicationAdmission = admitKustoPublicationHostMessageFromEnvelope(
+		envelope.descriptorSnapshot,
+	);
+	if (rawKustoPublicationAdmission.recognized) {
+		if (!rawKustoPublicationAdmission.parsed.ok) return;
+		message = rawKustoPublicationAdmission.parsed.value;
+	}
+	const kustoPublicationAdmission = admitKustoPublicationHostMessage(message);
+	if (kustoPublicationAdmission.recognized) {
+		if (!kustoPublicationAdmission.parsed.ok) return;
+		message = kustoPublicationAdmission.parsed.value;
+	}
+	const editingPreferencesAdmission = kustoPublicationAdmission.recognized
+		? { recognized: false as const }
+		: admitEditingPreferencesHostMessage(message);
 	if (editingPreferencesAdmission.recognized) {
 		if (!editingPreferencesAdmission.parsed.ok) return;
 		message = editingPreferencesAdmission.parsed.value;
@@ -1875,18 +1868,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		}
 	}
 	if (message.type === 'kustoPublicationStage') {
-		const publicationId = String(message.publicationId || '').trim();
-		const deadline = Number(message.publicationDeadline);
-		if (!publicationId || !Number.isFinite(deadline) || deadline < Date.now()) {
+		const publicationId = message.publicationId;
+		const deadline = message.publicationDeadline;
+		if (deadline < Date.now()) {
 			acknowledgeKustoPublication(message, false, 'staged');
 			return;
 		}
-		const stablePayload = captureStagedKustoPayload(message.payload);
-		if (!stablePayload.ok) {
-			acknowledgeKustoPublication(message, false, 'staged');
-			return;
-		}
-		let payload: Record<string, unknown> = stablePayload.value;
+		let payload: Record<string, unknown> = message.payload;
 		const connectionsAdmission = admitKustoConnectionsProjectionHostMessage(payload);
 		if (connectionsAdmission.recognized) {
 			if (!connectionsAdmission.parsed.ok) {
@@ -1911,7 +1899,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		return;
 	}
 	if (message.type === 'kustoPublicationCommit') {
-		const publicationId = String(message.publicationId || '').trim();
+		const publicationId = message.publicationId;
 		const staged = stagedKustoPublications.get(publicationId);
 		stagedKustoPublications.delete(publicationId);
 		if (staged) clearTimeout(staged.timer);
@@ -1919,12 +1907,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			acknowledgeKustoPublication(message, false, 'applied');
 			return;
 		}
-		const stablePayload = captureStagedKustoPayload(staged.payload);
-		if (!stablePayload.ok) {
-			acknowledgeKustoPublication(message, false, 'applied');
-			return;
-		}
-		let payload: Record<string, unknown> = stablePayload.value;
+		let payload = staged.payload as Record<string, unknown>;
 		const connectionsAdmission = admitKustoConnectionsProjectionHostMessage(payload);
 		if (connectionsAdmission.recognized) {
 			if (!connectionsAdmission.parsed.ok) {
@@ -1941,7 +1924,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		message = attachKustoPublicationId(payload, publicationId);
 	}
 	if (message.type === 'kustoPublicationRevoke') {
-		const publicationId = String(message.publicationId || '').trim();
+		const publicationId = message.publicationId;
 		const staged = stagedKustoPublications.get(publicationId);
 		if (staged) {
 			clearTimeout(staged.timer);

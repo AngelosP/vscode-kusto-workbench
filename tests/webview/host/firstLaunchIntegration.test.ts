@@ -98,7 +98,8 @@ describe('first-launch integration inventory', () => {
 			.toBeLessThan(baseline.indexOf('identitySelectionBaselinePreviousSelection = captureIdentitySelection()'));
 		expect(extensionSource).toContain("rawSchemaJson: {");
 		expect(extensionSource).toContain('setExplicitAccounts(');
-		expect(testHelpersSource).toContain("message.payload?.policyRequestId === policyRequestId");
+		expect(testHelpersSource).toContain('admitKustoPublicationHostMessage(event.data)');
+		expect(testHelpersSource).toContain("message.payload.policyRequestId === policyRequestId");
 		expect(testHelpersSource).toContain("message.type !== 'kustoPublicationCommit'");
 		expect(testHelpersSource).toContain("const shortConnection = { ...regional, clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey }");
 		expect(testHelpersSource).toContain('shortSectionClusterUrl: shortConfigured.clusterUrl');

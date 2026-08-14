@@ -765,6 +765,42 @@ describe('CachedValuesViewerV2 Kusto mutation completion', () => {
 });
 
 describe('CachedValuesViewerV2 SQL database ownership', () => {
+	it('keeps the exact Cached Values publication waiter live after a malformed matching acknowledgement', async () => {
+		vi.useFakeTimers();
+		try {
+			const viewer = createViewerHarness();
+			const postMessage = vi.fn(async () => true);
+			viewer.panel = { webview: { postMessage } };
+			let settled = false;
+			const publishing = viewer.postKustoPublication({ type: 'snapshot', snapshot: { revision: 1 } })
+				.then((accepted: boolean) => { settled = true; return accepted; });
+			await vi.waitFor(() => expect(postMessage).toHaveBeenCalledOnce());
+			const stage = postMessage.mock.calls[0][0];
+			await viewer.onMessage({
+				type: 'kustoPublicationAck', publicationId: stage.publicationId, phase: 'staged', accepted: true,
+			});
+			await vi.waitFor(() => expect(postMessage).toHaveBeenCalledTimes(2));
+			const key = `${stage.publicationId}:applied`;
+			const pending = viewer.pendingKustoPublicationAcks.get(key);
+			const deadline = pending?.timer;
+
+			await viewer.onMessage({
+				type: 'kustoPublicationAck', publicationId: [stage.publicationId], phase: 'applied', accepted: true,
+			});
+
+			expect(settled).toBe(false);
+			expect(viewer.pendingKustoPublicationAcks.get(key)).toBe(pending);
+			expect(viewer.pendingKustoPublicationAcks.get(key)?.timer).toBe(deadline);
+
+			await viewer.onMessage({
+				type: 'kustoPublicationAck', publicationId: stage.publicationId, phase: 'applied', accepted: true,
+			});
+			await expect(publishing).resolves.toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('holds generation, Kusto, and SQL owner locks through applied schema acknowledgement', async () => {
 		const harness = createSqlViewerHarness();
 		await harness.setAccountId('account-a');

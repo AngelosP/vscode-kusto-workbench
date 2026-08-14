@@ -19,6 +19,7 @@ import type { KustoConnectionsProjectionWebviewMessage } from '../shared/kustoCo
 import type { QuerySharingWebviewMessage } from '../shared/querySharingProtocol';
 import type { EditingPreferencesWebviewMessage } from '../shared/editingPreferences';
 import type { CopilotInlineCompletionWebviewMessage } from '../shared/copilotInlineCompletionProtocol';
+import type { KustoPublicationWebviewMessage } from '../shared/kustoPublicationProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -227,7 +228,7 @@ export type EditorCursorStatusSnapshotRequestMessage = {
 
 export type IncomingWebviewMessage =
 	| KustoConnectionsProjectionWebviewMessage
-	| { type: 'kustoPublicationAck'; publicationId: string; phase: 'staged' | 'applied'; accepted: boolean }
+	| KustoPublicationWebviewMessage
 	| { type: 'fileOpenTrace'; event: string; timeMs?: number; sequence?: number; detail?: unknown }
 	| EditorCursorPositionChangedMessage
 	| EditorCursorStatusSnapshotRequestMessage

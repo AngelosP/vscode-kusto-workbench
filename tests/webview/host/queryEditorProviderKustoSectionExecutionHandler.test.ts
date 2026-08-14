@@ -281,12 +281,12 @@ describe('QueryEditorProvider Kusto section execution application', () => {
 		vi.clearAllMocks();
 	});
 
-	it('reference-identically forwards all seven routes and awaits their exact settlements', async () => {
+	it('forwards all seven routes with descriptor-captured publication acknowledgements', async () => {
 		const messages = createMessages();
 		const settlements = messages.map(() => deferred<void>());
 		const kustoSectionExecutionApplication: StructuralKustoSectionExecutionHandler = {
 			handleMessage: vi.fn((candidate: IncomingWebviewMessage) => {
-				const index = messages.indexOf(candidate);
+				const index = messages.findIndex(message => message.type === candidate.type);
 				return index >= 0 ? settlements[index].promise : undefined;
 			}),
 			dispose: vi.fn(),
@@ -304,7 +304,14 @@ describe('QueryEditorProvider Kusto section execution application', () => {
 
 		expect(kustoSectionExecutionApplication.handleMessage).toHaveBeenCalledTimes(7);
 		messages.forEach((message, index) => {
-			expect(kustoSectionExecutionApplication.handleMessage.mock.calls[index][0]).toBe(message);
+			const delivered = kustoSectionExecutionApplication.handleMessage.mock.calls[index][0];
+			if (message.type === 'kustoPublicationAck') {
+				expect(delivered).toEqual(message);
+				expect(delivered).not.toBe(message);
+				expect(Object.isFrozen(delivered)).toBe(true);
+			} else {
+				expect(delivered).toBe(message);
+			}
 		});
 		expect((provider as unknown as { kustoSectionExecutionApplication: unknown })
 			.kustoSectionExecutionApplication).toBe(kustoSectionExecutionApplication);
@@ -336,6 +343,25 @@ describe('QueryEditorProvider Kusto section execution application', () => {
 		expectNoDirectEffects(transport, executionStartAckLedger, publicationAckLedger);
 	});
 
+	it('rejects malformed publication acknowledgements before provider tracing or handler routing', async () => {
+		const kustoSectionExecutionApplication: StructuralKustoSectionExecutionHandler = {
+			handleMessage: vi.fn(() => Promise.resolve()),
+			dispose: vi.fn(),
+		};
+		const { provider } = createProvider(kustoSectionExecutionApplication);
+		const malformed = Object.assign(Object.create({ inherited: true }), {
+			type: 'kustoPublicationAck', publicationId: 'publication-current',
+			phase: 'applied', accepted: true,
+		});
+
+		await (provider as unknown as {
+			handlePanelWebviewMessage(input: unknown): void | Promise<void>;
+		}).handlePanelWebviewMessage(malformed);
+		await provider.handleWebviewMessage(malformed as IncomingWebviewMessage);
+
+		expect(kustoSectionExecutionApplication.handleMessage).not.toHaveBeenCalled();
+	});
+
 	it('deletes seven provider cases and all displaced execution and acknowledgement authority', () => {
 		const workspaceRoot = path.resolve(__dirname, '../../..');
 		const readSource = (relativePath: string) => fs.readFileSync(
@@ -353,7 +379,6 @@ describe('QueryEditorProvider Kusto section execution application', () => {
 			'kustoSectionTarget',
 			'kustoSectionClose',
 			'kustoExecutionStartedAck',
-			'kustoPublicationAck',
 			'executeQuery',
 			'cancelQuery',
 		]) {
@@ -361,8 +386,14 @@ describe('QueryEditorProvider Kusto section execution application', () => {
 			expect(handlerSource).toContain(`case '${route}':`);
 			expect(typesSource).toContain(`type: '${route}'`);
 		}
+		expect(providerSource).not.toContain("case 'kustoPublicationAck':");
+		expect(handlerSource).not.toContain("case 'kustoPublicationAck':");
+		expect(typesSource).toContain('KustoPublicationWebviewMessage');
+		const publicationAdmissionIndex = handlerSource.indexOf('admitKustoPublicationWebviewMessage(message)');
+		expect(publicationAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(publicationAdmissionIndex).toBeLessThan(handlerSource.indexOf('this.settlePublicationAck('));
 		expect(providerSource.match(/^\s*case '/gm) ?? []).toHaveLength(0);
-		expect(handlerSource.match(/^\s*case '/gm) ?? []).toHaveLength(7);
+		expect(handlerSource.match(/^\s*case '/gm) ?? []).toHaveLength(6);
 		expect(providerSource).not.toContain('pendingKustoExecutionStartAcks');
 		expect(providerSource).not.toContain('pendingKustoPublicationAcks');
 		expect(providerSource).not.toContain('kustoExecutionAckKey');

@@ -2,6 +2,10 @@ import type * as vscode from 'vscode';
 import {
 	admitArtifactCsvSaveWebviewMessage,
 } from '../shared/artifactCsvSaveProtocol';
+import {
+	admitKustoPublicationHostMessage,
+	admitKustoPublicationWebviewMessage,
+} from '../shared/kustoPublicationProtocol';
 
 export const MAIN_WEBVIEW_DISPATCHER_READY_TYPE = 'mainWebviewDispatcherReady' as const;
 
@@ -34,6 +38,8 @@ function hasCorrelationId(value: unknown): boolean {
 
 
 export function isMainWebviewCorrelatedReply(input: unknown): boolean {
+	const publicationAdmission = admitKustoPublicationWebviewMessage(input);
+	if (publicationAdmission.recognized) return publicationAdmission.parsed.ok;
 	const artifactCsvSaveAdmission = admitArtifactCsvSaveWebviewMessage(input);
 	if (artifactCsvSaveAdmission.recognized) {
 		return artifactCsvSaveAdmission.parsed.ok
@@ -56,9 +62,6 @@ export function isMainWebviewCorrelatedReply(input: unknown): boolean {
 				&& hasCorrelationId(message.executionId)
 				&& hasCorrelationId(message.sectionInstanceId)
 				&& Number.isSafeInteger(message.targetGeneration);
-		case 'kustoPublicationAck':
-			return hasCorrelationId(message.publicationId)
-				&& (message.phase === 'staged' || message.phase === 'applied');
 		case 'sqlComparisonAdmissionAck':
 			return hasCorrelationId(message.requestId)
 				&& hasCorrelationId(message.sourceBoxId)
@@ -180,6 +183,11 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 	}
 
 	private receive(input: unknown): void | Promise<void> {
+		const publicationAdmission = admitKustoPublicationWebviewMessage(input);
+		if (publicationAdmission.recognized) {
+			if (!publicationAdmission.parsed.ok) return;
+			input = publicationAdmission.parsed.value;
+		}
 		const artifactCsvSaveAdmission = admitArtifactCsvSaveWebviewMessage(input);
 		if (artifactCsvSaveAdmission.recognized) {
 			if (!artifactCsvSaveAdmission.parsed.ok) return;
@@ -232,6 +240,13 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 	private enqueueOutbound(message: unknown): { accepted: boolean; delivery: Promise<boolean> } {
 		if (this.retired || this.disposed) {
 			return { accepted: false, delivery: Promise.resolve(false) };
+		}
+		const publicationAdmission = admitKustoPublicationHostMessage(message);
+		if (publicationAdmission.recognized) {
+			if (!publicationAdmission.parsed.ok) {
+				return { accepted: false, delivery: Promise.resolve(false) };
+			}
+			message = publicationAdmission.parsed.value;
 		}
 
 		let prepared: unknown | undefined;

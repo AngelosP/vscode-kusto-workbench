@@ -10,6 +10,7 @@ import { getSqlSectionSession } from './sql-section-message-router.js';
 import { pState } from '../shared/persistence-state.js';
 import { DOCUMENT_VIEW_CHANNEL, DOCUMENT_VIEW_PROTOCOL_VERSION } from '../../shared/documentViewProtocol.js';
 import { parseKustoDatabaseDiscoveryHostMessage } from '../../shared/kustoDatabaseDiscoveryProtocol.js';
+import { admitKustoPublicationHostMessage } from '../../shared/kustoPublicationProtocol.js';
 import { perfSnapshot } from './perf.js';
 import { getPageScrollElement, getPageScrollMaxTop, getPageScrollTop, setPageScrollTop } from './utils.js';
 import { __kustoFindSuggestWidgetForEditor } from '../monaco/suggest.js';
@@ -2023,15 +2024,17 @@ async function e2eIdentityWaitForConnections(timeoutMs = 6000): Promise<Record<s
 			reject(new Error(`Timed out waiting for correlated identity projection ${policyRequestId}`));
 		}, timeoutMs);
 		const onMessage = (event: MessageEvent) => {
-			const message = event.data || {};
+			const admission = admitKustoPublicationHostMessage(event.data);
+			if (!admission.recognized || !admission.parsed.ok) return;
+			const message = admission.parsed.value;
 			if (message.type === 'kustoPublicationStage'
-				&& message.payload?.type === 'connectionsData'
-				&& message.payload?.policyRequestId === policyRequestId) {
-				publicationId = String(message.publicationId || '');
+				&& message.payload.type === 'connectionsData'
+				&& message.payload.policyRequestId === policyRequestId) {
+				publicationId = message.publicationId;
 				return;
 			}
 			if (message.type !== 'kustoPublicationCommit' || !publicationId
-				|| String(message.publicationId || '') !== publicationId) return;
+				|| message.publicationId !== publicationId) return;
 			window.clearTimeout(timer);
 			window.removeEventListener('message', onMessage);
 			resolve();

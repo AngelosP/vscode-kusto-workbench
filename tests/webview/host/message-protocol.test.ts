@@ -374,7 +374,10 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kustoConnectionOnboardingApplicationHandler.ts::testConnectionFromWebview::postMessage::189:4',
 	'src/host/kustoConnectionsProjectionApplicationHandler.ts::publishSnapshot::postMessage::122:4',
 	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::453:33',
-	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::286:33',
+	'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::187:14',
+	'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::196:16',
+	'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::201:14',
+	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::301:33',
 	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::93:10',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::381:27',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::513:28',
@@ -406,7 +409,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/queryEditorProvider.ts::<module>::postMessage::804:29',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::819:29',
 	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::898:15',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::1287:21',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::1297:21',
 	'src/host/querySharingApplicationHandler.ts::postMessage::postMessage::36:22',
 	'src/host/resourceUriApplicationHandler.ts::postMessage::postMessage::56:3',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1806:13',
@@ -1863,6 +1866,123 @@ describe('Message Protocol Contract', () => {
 			.toBeLessThan(router.indexOf('admitOwnerSensitiveMessage(boxId, message, effects)'));
 	});
 
+	it('keeps Kusto publication transactions on one runtime-validated shared channel', () => {
+		expect(extractTypeDiscriminants(
+			'src/shared/kustoPublicationProtocol.ts',
+			'KustoPublicationHostMessage',
+		)).toEqual([
+			'kustoPublicationCommit',
+			'kustoPublicationRevoke',
+			'kustoPublicationStage',
+		]);
+		expect(extractTypeDiscriminants(
+			'src/shared/kustoPublicationProtocol.ts',
+			'KustoPublicationWebviewMessage',
+		)).toEqual(['kustoPublicationAck']);
+
+		const hostTypes = readWorkspaceFile('src/host/queryEditorTypes.ts');
+		const webviewMessages = readWorkspaceFile('src/webview/shared/webview-messages.ts');
+		expect(hostTypes).toContain('| KustoPublicationWebviewMessage');
+		expect(webviewMessages).toContain('| KustoPublicationWebviewMessage');
+		expect(hostTypes).not.toContain("type: 'kustoPublicationAck'");
+		expect(webviewMessages).not.toContain("type: 'kustoPublicationAck'");
+		const wrapper = webviewMessages.slice(webviewMessages.indexOf('export function postMessageToHost'));
+		const wrapperCaptureIndex = wrapper.indexOf('captureRuntimeMessageEnvelope(msg)');
+		const wrapperPublicationIndex = wrapper.indexOf('admitKustoPublicationWebviewMessageFromEnvelope(');
+		expect(wrapperCaptureIndex).toBeGreaterThanOrEqual(0);
+		expect(wrapperPublicationIndex).toBeGreaterThan(wrapperCaptureIndex);
+		expect(wrapperPublicationIndex).toBeLessThan(wrapper.indexOf('const e2eCaptureHostMessage'));
+
+		for (const [relativePath, ingressMarker, settlementMarker] of [
+			['src/host/kustoSectionExecutionApplicationHandler.ts', 'handleMessage(message:', 'this.settlePublicationAck('],
+			['src/host/connectionManagerViewer.ts', 'private async onMessage(', 'this.pendingKustoPublicationAcks.get(key)'],
+			['src/host/cachedValuesViewer.ts', 'private async onMessage(', 'this.pendingKustoPublicationAcks.get(key)'],
+		] as const) {
+			const source = readWorkspaceFile(relativePath);
+			expect(source.indexOf('parseKustoPublicationHostMessage({'))
+				.toBeLessThan(source.indexOf('const waitForAck ='));
+			const ingress = source.slice(source.indexOf(ingressMarker));
+			expect(ingress.indexOf('admitKustoPublicationWebviewMessage('))
+				.toBeLessThan(ingress.indexOf(settlementMarker));
+		}
+
+		const dispatcher = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const acknowledgement = dispatcher.slice(
+			dispatcher.indexOf('function acknowledgeKustoPublication('),
+			dispatcher.indexOf('const SQL_COMPARISON_ADMISSION_ATTRIBUTE'),
+		);
+		expect(acknowledgement.indexOf('parseKustoPublicationWebviewMessage({'))
+			.toBeLessThan(acknowledgement.indexOf('completedKustoPublications.get('));
+		const dispatch = dispatcher.slice(dispatcher.indexOf('const __kustoDispatchHostMessage'));
+		const dispatcherCaptureIndex = dispatch.indexOf('captureRuntimeMessageEnvelope(message)');
+		const dispatcherPublicationIndex = dispatch.indexOf('admitKustoPublicationHostMessageFromEnvelope(');
+		expect(dispatcherCaptureIndex).toBeGreaterThanOrEqual(0);
+		expect(dispatcherPublicationIndex).toBeGreaterThan(dispatcherCaptureIndex);
+		expect(dispatcherPublicationIndex)
+			.toBeLessThan(dispatch.indexOf('admitEditingPreferencesHostMessage(message)'));
+		expect(dispatcherPublicationIndex)
+			.toBeLessThan(dispatch.indexOf("if (message.type === 'kustoPublicationStage')"));
+		expect(dispatcher).not.toContain('function captureStagedKustoPayload(');
+
+		const gateway = readWorkspaceFile('src/host/mainWebviewStartupGateway.ts');
+		const correlation = gateway.slice(
+			gateway.indexOf('export function isMainWebviewCorrelatedReply'),
+			gateway.indexOf('function isDispatcherReadyMessage'),
+		);
+		expect(correlation.indexOf('admitKustoPublicationWebviewMessage(input)'))
+			.toBeLessThan(correlation.indexOf('admitArtifactCsvSaveWebviewMessage(input)'));
+		expect(correlation).not.toContain("case 'kustoPublicationAck':");
+		const receive = gateway.slice(gateway.indexOf('private receive('), gateway.indexOf('private enqueueRetiredInbound('));
+		expect(receive.indexOf('admitKustoPublicationWebviewMessage(input)'))
+			.toBeLessThan(receive.indexOf('this.options.admitInbound(input)'));
+		const enqueueOutbound = gateway.slice(
+			gateway.indexOf('private enqueueOutbound('),
+			gateway.indexOf('private async drainOutbound('),
+		);
+		expect(enqueueOutbound.indexOf('admitKustoPublicationHostMessage(message)'))
+			.toBeLessThan(enqueueOutbound.indexOf('this.options.prepareOutbound'));
+
+		const provider = readWorkspaceFile('src/host/queryEditorProvider.ts');
+		const panelIngress = provider.slice(
+			provider.indexOf('private handlePanelWebviewMessage('),
+			provider.indexOf('public async handleWebviewMessage('),
+		);
+		expect(panelIngress.indexOf('admitKustoPublicationWebviewMessage(input)'))
+			.toBeLessThan(panelIngress.indexOf('MAIN_WEBVIEW_DISPATCHER_READY_TYPE'));
+		expect(panelIngress.indexOf('admitKustoPublicationWebviewMessage(input)'))
+			.toBeLessThan(panelIngress.indexOf("fileOpenTrace?.mark('queryEditorProvider.webviewMessage.received'"));
+		const providerRouting = provider.slice(provider.indexOf('public async handleWebviewMessage('));
+		expect(providerRouting.indexOf('admitKustoPublicationWebviewMessage(message)'))
+			.toBeLessThan(providerRouting.indexOf("if (message?.type === 'fileOpenTrace')"));
+		expect(providerRouting.indexOf('admitKustoPublicationWebviewMessage(message)'))
+			.toBeLessThan(providerRouting.indexOf('this.dashboardApplication?.handleMessage(message)'));
+
+		for (const relativePath of [
+			'src/webview/viewers/connection-manager/kw-connection-manager.ts',
+			'src/webview/viewers/cached-values/kw-cached-values.ts',
+		]) {
+			const source = readWorkspaceFile(relativePath);
+			expect(source.indexOf('admitKustoPublicationHostMessage(msg)'))
+				.toBeLessThan(source.indexOf("if (msg?.type === 'kustoPublicationStage')") >= 0
+					? source.indexOf("if (msg?.type === 'kustoPublicationStage')")
+					: source.indexOf("if (msg.type === 'kustoPublicationStage')"));
+			expect(source.indexOf('createAcknowledgement(msg.publicationId, phase, accepted)'))
+				.toBeLessThan(source.indexOf('this._completedKustoPublications.get(acknowledgement.publicationId)'));
+			expect(source).not.toContain("String(msg.publicationId || '')");
+			expect(source).not.toContain('Number(msg.publicationDeadline)');
+		}
+
+		const testHelpers = readWorkspaceFile('src/webview/core/test-helpers.ts');
+		const identityProjectionStart = testHelpers.indexOf('async function e2eIdentityWaitForConnections(');
+		const identityProjection = testHelpers.slice(
+			identityProjectionStart,
+			testHelpers.indexOf('const started = performance.now()', identityProjectionStart),
+		);
+		expect(identityProjection.indexOf('admitKustoPublicationHostMessage(event.data)'))
+			.toBeLessThan(identityProjection.indexOf("message.type === 'kustoPublicationStage'"));
+		expect(identityProjection).not.toContain('String(message.publicationId');
+	});
+
 	it('keeps editing preference setters and delivery on one runtime-validated shared channel', () => {
 		expect(extractTypeDiscriminants(
 			'src/shared/editingPreferences.ts',
@@ -1964,6 +2084,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/querySharingProtocol.ts', 'QuerySharingWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/editingPreferences.ts', 'EditingPreferencesWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/copilotInlineCompletionProtocol.ts', 'CopilotInlineCompletionWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/kustoPublicationProtocol.ts', 'KustoPublicationWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -1990,6 +2111,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/querySharingProtocol.ts', 'QuerySharingWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/editingPreferences.ts', 'EditingPreferencesWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/copilotInlineCompletionProtocol.ts', 'CopilotInlineCompletionWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/kustoPublicationProtocol.ts', 'KustoPublicationWebviewMessage'),
 			])].sort()
 		);
 		expect(extractStringArrayVariable(
@@ -2221,13 +2343,20 @@ describe('Message Protocol Contract', () => {
 			const extraction = extractPostMessageTypes(
 				'src/host/kustoSectionExecutionApplicationHandler.ts',
 			);
-			expect(extraction.types).toEqual([
-				'kustoExecutionStarted',
+			expect(extraction.types).toEqual(['kustoExecutionStarted']);
+			expect(extraction.dynamicSites).toEqual([
+				'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::187:14',
+				'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::196:16',
+				'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::201:14',
+			]);
+			expect(extractTypeDiscriminants(
+				'src/shared/kustoPublicationProtocol.ts',
+				'KustoPublicationHostMessage',
+			)).toEqual([
 				'kustoPublicationCommit',
 				'kustoPublicationRevoke',
 				'kustoPublicationStage',
 			]);
-			expect(extraction.dynamicSites).toEqual([]);
 		});
 
 		it('extracts both Python execution handler terminals', () => {

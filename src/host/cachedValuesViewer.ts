@@ -37,6 +37,11 @@ import {
 	publishSqlSchemaCacheFile,
 	runWithSqlSchemaCacheGeneration,
 } from './sqlSchemaCacheGeneration';
+import {
+	admitKustoPublicationWebviewMessage,
+	parseKustoPublicationHostMessage,
+	type KustoPublicationWebviewMessage,
+} from '../shared/kustoPublicationProtocol';
 
 /**
  * Cached Values Viewer — uses Lit web components for the UI.
@@ -153,7 +158,7 @@ type Snapshot = {
 
 type IncomingMessage =
 	| { type: 'requestSnapshot' }
-	| { type: 'kustoPublicationAck'; publicationId: string; phase: 'staged' | 'applied'; accepted: boolean }
+	| KustoPublicationWebviewMessage
 	| { type: 'copyToClipboard'; text: string }
 	| { type: 'setActiveKind'; kind: 'kusto' | 'sql' }
 	| { type: 'auth.copyToken'; connectionId: string; accountId: string }
@@ -339,6 +344,12 @@ export class CachedValuesViewerV2 {
 	private async postKustoPublication(message: Record<string, unknown>): Promise<boolean> {
 		const publicationId = `kusto-cached-values-publication-${randomUUID()}`;
 		const publicationDeadline = Date.now() + 5_000;
+		const stageMessage = parseKustoPublicationHostMessage({
+			type: 'kustoPublicationStage', publicationId, publicationDeadline, payload: message,
+		});
+		const commitMessage = parseKustoPublicationHostMessage({ type: 'kustoPublicationCommit', publicationId });
+		const revokeMessage = parseKustoPublicationHostMessage({ type: 'kustoPublicationRevoke', publicationId });
+		if (!stageMessage.ok || !commitMessage.ok || !revokeMessage.ok) return false;
 		const waitForAck = (phase: 'staged' | 'applied', timeoutMs?: number): Promise<boolean> => new Promise(resolve => {
 			const key = `${publicationId}:${phase}`;
 			const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
@@ -356,9 +367,7 @@ export class CachedValuesViewerV2 {
 			pending.resolve(false);
 		};
 		const staged = waitForAck('staged', 5_000);
-		if (!await this.panel.webview.postMessage({
-			type: 'kustoPublicationStage', publicationId, publicationDeadline, payload: message,
-		})) fail('staged');
+		if (!await this.panel.webview.postMessage(stageMessage.value)) fail('staged');
 		if (!await staged) return false;
 		const applied = waitForAck('applied');
 		const pending = this.pendingKustoPublicationAcks.get(`${publicationId}:applied`);
@@ -367,10 +376,10 @@ export class CachedValuesViewerV2 {
 			pending.timer = setTimeout(async () => {
 				if (this.pendingKustoPublicationAcks.get(key) !== pending) return;
 				pending.timer = setTimeout(() => fail('applied'), 1_000);
-				if (!await this.panel.webview.postMessage({ type: 'kustoPublicationRevoke', publicationId })) fail('applied');
+				if (!await this.panel.webview.postMessage(revokeMessage.value)) fail('applied');
 			}, Math.max(1, publicationDeadline - Date.now()));
 		}
-		if (!await this.panel.webview.postMessage({ type: 'kustoPublicationCommit', publicationId })) fail('applied');
+		if (!await this.panel.webview.postMessage(commitMessage.value)) fail('applied');
 		return applied;
 	}
 
@@ -875,13 +884,16 @@ export class CachedValuesViewerV2 {
 	// ─── Message handling ──────────────────────────────────────────────────
 
 	private async onMessage(msg: IncomingMessage): Promise<void> {
-		if (msg.type === 'kustoPublicationAck') {
-			const key = `${msg.publicationId}:${msg.phase}`;
+		const publicationAdmission = admitKustoPublicationWebviewMessage(msg);
+		if (publicationAdmission.recognized) {
+			if (!publicationAdmission.parsed.ok) return;
+			const acknowledgement = publicationAdmission.parsed.value;
+			const key = `${acknowledgement.publicationId}:${acknowledgement.phase}`;
 			const pending = this.pendingKustoPublicationAcks.get(key);
 			if (pending) {
 				this.pendingKustoPublicationAcks.delete(key);
 				if (pending.timer) clearTimeout(pending.timer);
-				pending.resolve(msg.accepted === true);
+				pending.resolve(acknowledgement.accepted);
 			}
 			return;
 		}

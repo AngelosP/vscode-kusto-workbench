@@ -70,8 +70,8 @@ describe('MainWebviewStartupGateway', () => {
 				type: 'kustoExecutionStartedAck', boxId: 'query-1', executionId: 'execution-1',
 				sectionInstanceId: 'section-1', targetGeneration: 1,
 			},
-			{ type: 'kustoPublicationAck', publicationId: 'publication-1', phase: 'staged' },
-			{ type: 'kustoPublicationAck', publicationId: 'publication-1', phase: 'applied' },
+			{ type: 'kustoPublicationAck', publicationId: 'publication-1', phase: 'staged', accepted: true },
+			{ type: 'kustoPublicationAck', publicationId: 'publication-1', phase: 'applied', accepted: false },
 			...['staged', 'committed', 'finalized', 'completed', 'rolledBack'].map(phase => ({
 				type: 'sqlComparisonAdmissionAck', requestId: `sql-${phase}`,
 				sourceBoxId: 'sql-source', comparisonBoxId: 'sql-comparison', phase,
@@ -87,9 +87,38 @@ describe('MainWebviewStartupGateway', () => {
 		expect(isMainWebviewCorrelatedReply({ type: 'persistDocument', flushRequestId: 'flush-1' })).toBe(false);
 		expect(isMainWebviewCorrelatedReply({ type: 'toolResponse', requestId: '' })).toBe(false);
 		expect(isMainWebviewCorrelatedReply({
+			type: 'kustoPublicationAck', publicationId: 'publication-1', phase: 'applied',
+		})).toBe(false);
+		expect(isMainWebviewCorrelatedReply({
 			type: 'sqlComparisonAdmissionAck', requestId: 'sql-invalid', sourceBoxId: 'source',
 			comparisonBoxId: 'comparison', phase: 'invalid',
 		})).toBe(false);
+	});
+
+	it('rejects malformed Kusto publication traffic before startup queueing and delivery', async () => {
+		const harness = createPanelHarness();
+		const received: TestMessage[] = [];
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel,
+			admitInbound: admitTestMessage,
+			allowReentrantInbound: isMainWebviewCorrelatedReply,
+		});
+		const malformedAck = Object.assign(Object.create({ inherited: true }), {
+			type: 'kustoPublicationAck', publicationId: 'publication-current',
+			phase: 'applied', accepted: true,
+		});
+
+		void harness.receive(malformedAck);
+		await gateway.setInboundHandler(message => { received.push(message); });
+		expect(received).toEqual([]);
+
+		await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE });
+		const malformedStage = Object.assign(Object.create({ inherited: true }), {
+			type: 'kustoPublicationStage', publicationId: 'publication-current',
+			publicationDeadline: Date.now() + 1_000, payload: { type: 'snapshot' },
+		});
+		await expect(gateway.postMessage(malformedStage)).resolves.toBe(false);
+		expect(harness.posted).toEqual([]);
 	});
 
 	it('snapshots artifact CSV replies before startup queueing and reentrancy checks', async () => {

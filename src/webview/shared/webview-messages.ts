@@ -93,6 +93,11 @@ import {
 	admitCopilotInlineCompletionWebviewMessage,
 	type CopilotInlineCompletionWebviewMessage,
 } from '../../shared/copilotInlineCompletionProtocol.js';
+import {
+	admitKustoPublicationWebviewMessage,
+	admitKustoPublicationWebviewMessageFromEnvelope,
+	type KustoPublicationWebviewMessage,
+} from '../../shared/kustoPublicationProtocol.js';
 import { captureRuntimeMessageEnvelope } from '../../shared/runtimeMessageEnvelope.js';
 import { pState } from './persistence-state.js';
 
@@ -205,7 +210,7 @@ export type OutgoingPowerBiPartialPublishWarningMessage = {
 
 export type OutgoingWebviewMessage =
 	| { type: 'fileOpenTrace'; event: string; timeMs?: number; sequence?: number; detail?: unknown }
-	| { type: 'kustoPublicationAck'; publicationId: string; phase: 'staged' | 'applied'; accepted: boolean }
+	| KustoPublicationWebviewMessage
 	// Connection & database
 	| KustoConnectionsProjectionWebviewMessage
 	| { type: 'kustoSectionOpen'; boxId: string; sectionInstanceId: string }
@@ -449,9 +454,22 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 		console.error('[kusto] Rejected invalid outbound message envelope.');
 		return;
 	}
-	const message = envelope.value as unknown as OutgoingWebviewMessage;
+	let message = envelope.value as unknown as OutgoingWebviewMessage;
+	const rawKustoPublicationAdmission = admitKustoPublicationWebviewMessageFromEnvelope(
+		envelope.descriptorSnapshot,
+	);
+	if (rawKustoPublicationAdmission.recognized) {
+		if (!rawKustoPublicationAdmission.parsed.ok) {
+			console.error('[kusto] Rejected invalid Kusto publication acknowledgement:', rawKustoPublicationAdmission.parsed.error);
+			return;
+		}
+		message = rawKustoPublicationAdmission.parsed.value;
+	}
 	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage | CompatibilityPersistenceWebviewMessage = message;
-	const editingPreferencesAdmission = admitEditingPreferencesWebviewMessage(message);
+	const kustoPublicationAdmission = admitKustoPublicationWebviewMessage(message);
+	const editingPreferencesAdmission = kustoPublicationAdmission.recognized
+		? { recognized: false as const }
+		: admitEditingPreferencesWebviewMessage(message);
 	const copilotInlineCompletionAdmission = editingPreferencesAdmission.recognized
 		? { recognized: false as const }
 		: admitCopilotInlineCompletionWebviewMessage(message);
@@ -480,7 +498,13 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 		|| querySharingAdmission.recognized
 		? { recognized: false as const }
 		: admitUrlContentWebviewMessage(message);
-	if (editingPreferencesAdmission.recognized) {
+	if (kustoPublicationAdmission.recognized) {
+		if (!kustoPublicationAdmission.parsed.ok) {
+			console.error('[kusto] Rejected invalid Kusto publication acknowledgement:', kustoPublicationAdmission.parsed.error);
+			return;
+		}
+		outbound = kustoPublicationAdmission.parsed.value;
+	} else if (editingPreferencesAdmission.recognized) {
 		if (!editingPreferencesAdmission.parsed.ok) {
 			console.error('[kusto] Rejected invalid editing preferences webview message:', editingPreferencesAdmission.parsed.error);
 			return;

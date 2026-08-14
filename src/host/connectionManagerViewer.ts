@@ -61,6 +61,11 @@ import {
 	unblockSqlDatabaseCacheConnection,
 	writeOwnedSqlDatabaseCacheEntry,
 } from './sqlDatabaseCache';
+import {
+	admitKustoPublicationWebviewMessage,
+	parseKustoPublicationHostMessage,
+	type KustoPublicationWebviewMessage,
+} from '../shared/kustoPublicationProtocol';
 
 /**
  * Connection Manager Viewer — Lit web components edition.
@@ -110,7 +115,7 @@ function cacheGenerationMatches(
 
 type IncomingMessage =
 	| { type: 'requestSnapshot' }
-	| { type: 'kustoPublicationAck'; publicationId: string; phase: 'staged' | 'applied'; accepted: boolean }
+	| KustoPublicationWebviewMessage
 	| { type: 'connection.add'; name: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string }
 	| { type: 'connection.edit'; id: string; name: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string }
 	| { type: 'connection.delete'; id: string }
@@ -335,6 +340,12 @@ export class ConnectionManagerViewerV2 {
 	private async postKustoPublication(message: Record<string, unknown>): Promise<boolean> {
 		const publicationId = `kusto-viewer-publication-${randomUUID()}`;
 		const publicationDeadline = Date.now() + 5_000;
+		const stageMessage = parseKustoPublicationHostMessage({
+			type: 'kustoPublicationStage', publicationId, publicationDeadline, payload: message,
+		});
+		const commitMessage = parseKustoPublicationHostMessage({ type: 'kustoPublicationCommit', publicationId });
+		const revokeMessage = parseKustoPublicationHostMessage({ type: 'kustoPublicationRevoke', publicationId });
+		if (!stageMessage.ok || !commitMessage.ok || !revokeMessage.ok) return false;
 		const waitForAck = (phase: 'staged' | 'applied', timeoutMs?: number): Promise<boolean> => new Promise(resolve => {
 			const key = `${publicationId}:${phase}`;
 			const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
@@ -352,7 +363,7 @@ export class ConnectionManagerViewerV2 {
 			pending.resolve(false);
 		};
 		const staged = waitForAck('staged', 5_000);
-		if (!await this.panel.webview.postMessage({ type: 'kustoPublicationStage', publicationId, publicationDeadline, payload: message })) fail('staged');
+		if (!await this.panel.webview.postMessage(stageMessage.value)) fail('staged');
 		if (!await staged) return false;
 		const applied = waitForAck('applied');
 		const appliedPending = this.pendingKustoPublicationAcks.get(`${publicationId}:applied`);
@@ -361,10 +372,10 @@ export class ConnectionManagerViewerV2 {
 			appliedPending.timer = setTimeout(async () => {
 				if (this.pendingKustoPublicationAcks.get(key) !== appliedPending) return;
 				appliedPending.timer = setTimeout(() => fail('applied'), 1_000);
-				if (!await this.panel.webview.postMessage({ type: 'kustoPublicationRevoke', publicationId })) fail('applied');
+				if (!await this.panel.webview.postMessage(revokeMessage.value)) fail('applied');
 			}, Math.max(1, publicationDeadline - Date.now()));
 		}
-		if (!await this.panel.webview.postMessage({ type: 'kustoPublicationCommit', publicationId })) fail('applied');
+		if (!await this.panel.webview.postMessage(commitMessage.value)) fail('applied');
 		return applied;
 	}
 
@@ -1139,13 +1150,16 @@ export class ConnectionManagerViewerV2 {
 	// ─── Message handling (identical to original) ───────────────────────────
 
 	private async onMessage(msg: IncomingMessage): Promise<void> {
-		if (msg.type === 'kustoPublicationAck') {
-			const key = `${msg.publicationId}:${msg.phase}`;
+		const publicationAdmission = admitKustoPublicationWebviewMessage(msg);
+		if (publicationAdmission.recognized) {
+			if (!publicationAdmission.parsed.ok) return;
+			const acknowledgement = publicationAdmission.parsed.value;
+			const key = `${acknowledgement.publicationId}:${acknowledgement.phase}`;
 			const pending = this.pendingKustoPublicationAcks.get(key);
 			if (pending) {
 				this.pendingKustoPublicationAcks.delete(key);
 				if (pending.timer) clearTimeout(pending.timer);
-				pending.resolve(msg.accepted === true);
+				pending.resolve(acknowledgement.accepted);
 			}
 			return;
 		}
