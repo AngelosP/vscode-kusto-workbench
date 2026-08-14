@@ -27,6 +27,10 @@ import {
 	parseHtmlSection,
 	type HtmlSectionState,
 } from './htmlSectionDefinition';
+import {
+	parseDevelopmentNoteSection,
+	type DevelopmentNoteSectionState,
+} from './developmentNoteSectionDefinition';
 
 export const DOCUMENT_VIEW_PROTOCOL_VERSION = 1 as const;
 export const DOCUMENT_VIEW_CHANNEL = 'document-view' as const;
@@ -193,10 +197,11 @@ function parseOwnedSection(
 	input: unknown,
 ): DocumentViewParseResult<
 	ChartSectionState | MarkdownSectionState | PythonSectionState | TransformationSectionState | UrlSectionState
-	| HtmlSectionState
+	| DevelopmentNoteSectionState | HtmlSectionState
 > {
 	if (!isRecord(input)) return failure('Host-owned section must be an object.');
 	if (input.type === 'chart') return parseChartSection(input);
+	if (input.type === 'devnotes') return parseDevelopmentNoteSection(input);
 	if (input.type === 'html') return parseHtmlSection(input);
 	if (input.type === 'markdown') return parseMarkdownSection(input);
 	if (input.type === 'python') return parsePythonSection(input);
@@ -240,10 +245,12 @@ export function parseDocumentViewProjection(input: unknown): DocumentViewParseRe
 		return failure('Document-view projection revision must be a non-negative safe integer.');
 	}
 	const chartInput = input.chartSections ?? [];
+	const developmentNoteInput = input.developmentNoteSections ?? [];
 	const htmlInput = input.htmlSections ?? [];
 	const pythonInput = input.pythonSections ?? [];
 	const transformationInput = input.transformationSections ?? [];
 	if (!Array.isArray(chartInput)
+		|| !Array.isArray(developmentNoteInput)
 		|| !Array.isArray(htmlInput)
 		|| !Array.isArray(input.markdownSections)
 		|| !Array.isArray(pythonInput)
@@ -257,6 +264,12 @@ export function parseDocumentViewProjection(input: unknown): DocumentViewParseRe
 		const parsed = parseChartSection(section);
 		if (!parsed.ok) return parsed;
 		chartSections.push(parsed.value);
+	}
+	const developmentNoteSections: DevelopmentNoteSectionState[] = [];
+	for (const section of developmentNoteInput) {
+		const parsed = parseDevelopmentNoteSection(section);
+		if (!parsed.ok) return parsed;
+		developmentNoteSections.push(parsed.value);
 	}
 	const htmlSections: HtmlSectionState[] = [];
 	for (const section of htmlInput) {
@@ -290,6 +303,7 @@ export function parseDocumentViewProjection(input: unknown): DocumentViewParseRe
 	}
 	const ownedIds = [
 		...chartSections.map(section => section.id),
+		...developmentNoteSections.map(section => section.id),
 		...htmlSections.map(section => section.id),
 		...markdownSections.map(section => section.id),
 		...pythonSections.map(section => section.id),
@@ -323,6 +337,7 @@ export function parseDocumentViewProjection(input: unknown): DocumentViewParseRe
 			sectionRevisions: sectionRevisions.value,
 			markdownSectionRevisions: markdownSectionRevisions.value,
 			chartSections,
+			developmentNoteSections,
 			htmlSections,
 			markdownSections,
 			pythonSections,

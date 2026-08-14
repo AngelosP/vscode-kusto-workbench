@@ -35,10 +35,17 @@ import {
 	patchHtmlSection,
 	type HtmlSectionState,
 } from './htmlSectionDefinition';
+import {
+	parseDevelopmentNoteSection,
+	parseDevelopmentNoteSectionPatch,
+	patchDevelopmentNoteSection,
+	type DevelopmentNoteSectionState,
+} from './developmentNoteSectionDefinition';
 
 type SectionRecord = Record<string, unknown>;
 type OwnedSectionState =
 	| ChartSectionState
+	| DevelopmentNoteSectionState
 	| HtmlSectionState
 	| MarkdownSectionState
 	| PythonSectionState
@@ -48,7 +55,7 @@ type OwnedSectionKind = OwnedSectionState['type'];
 
 export function isMarkdownDocumentOwnedSectionKind(value: unknown): value is OwnedSectionKind {
 	const kind = canonicalSectionKind(String(value ?? ''));
-	return kind === 'chart' || kind === 'html' || kind === 'markdown' || kind === 'python'
+	return kind === 'chart' || kind === 'devnotes' || kind === 'html' || kind === 'markdown' || kind === 'python'
 		|| kind === 'transformation' || kind === 'url';
 }
 
@@ -93,6 +100,7 @@ export interface MarkdownDocumentProjection {
 	sectionRevisions: Readonly<Record<string, number>>;
 	markdownSectionRevisions: Readonly<Record<string, number>>;
 	chartSections: readonly ChartSectionState[];
+	developmentNoteSections: readonly DevelopmentNoteSectionState[];
 	htmlSections: readonly HtmlSectionState[];
 	markdownSections: readonly MarkdownSectionState[];
 	pythonSections: readonly PythonSectionState[];
@@ -160,6 +168,7 @@ function parseOwnedSection(input: unknown):
 	if (!isRecord(input)) return { ok: false, error: 'Host-owned section must be an object.' };
 	const kind = ownedSectionKind(input);
 	if (kind === 'chart') return parseChartSection(input);
+	if (kind === 'devnotes') return parseDevelopmentNoteSection(input);
 	if (kind === 'html') return parseHtmlSection(input);
 	if (kind === 'markdown') return parseMarkdownSection(input);
 	if (kind === 'python') return parsePythonSection(input);
@@ -167,7 +176,7 @@ function parseOwnedSection(input: unknown):
 	if (kind === 'url') return parseUrlSection(input);
 	return {
 		ok: false,
-		error: 'Host-owned section must have type "chart", "html", "markdown", "python", "transformation", or "url".',
+		error: 'Host-owned section must have type "chart", "devnotes", "html", "markdown", "python", "transformation", or "url".',
 	};
 }
 
@@ -231,6 +240,9 @@ export class MarkdownDocumentAggregate {
 		const chartSections = ownedSections.filter(
 			(section): section is ChartSectionState => section.type === 'chart',
 		);
+		const developmentNoteSections = ownedSections.filter(
+			(section): section is DevelopmentNoteSectionState => section.type === 'devnotes',
+		);
 		const htmlSections = ownedSections.filter(
 			(section): section is HtmlSectionState => section.type === 'html',
 		);
@@ -254,6 +266,7 @@ export class MarkdownDocumentAggregate {
 				[...this.sectionRevisions].filter(([id]) => markdownIds.has(id)),
 			),
 			chartSections,
+			developmentNoteSections,
 			htmlSections,
 			markdownSections,
 			pythonSections,
@@ -266,7 +279,7 @@ export class MarkdownDocumentAggregate {
 	public hasUnmigratedVisualSections(): boolean {
 		return this.state.sections.some(section => {
 			const kind = canonicalSectionKind(String(section.type ?? ''));
-			return !!kind && !isMarkdownDocumentOwnedSectionKind(kind) && kind !== 'devnotes';
+			return !!kind && !isMarkdownDocumentOwnedSectionKind(kind);
 		});
 	}
 
@@ -358,6 +371,8 @@ export class MarkdownDocumentAggregate {
 			|| command.expectedSectionRevision !== currentSectionRevision) {
 			const sectionLabel = currentKind === 'chart'
 				? 'Chart'
+				: currentKind === 'devnotes'
+					? 'Development-note'
 				: currentKind === 'html'
 					? 'HTML'
 				: currentKind === 'markdown'
@@ -388,6 +403,15 @@ export class MarkdownDocumentAggregate {
 			if (!parsedCurrent.ok) return commandFailure(this, 'invalid-command', parsedCurrent.error);
 			if (!parsedPatch.ok) return commandFailure(this, 'invalid-command', parsedPatch.error);
 			sections[sectionIndex] = patchChartSection(parsedCurrent.value, parsedPatch.value) as unknown as SectionRecord;
+		} else if (currentKind === 'devnotes') {
+			const parsedCurrent = parseDevelopmentNoteSection(sections[sectionIndex]);
+			const parsedPatch = parseDevelopmentNoteSectionPatch(command.patch);
+			if (!parsedCurrent.ok) return commandFailure(this, 'invalid-command', parsedCurrent.error);
+			if (!parsedPatch.ok) return commandFailure(this, 'invalid-command', parsedPatch.error);
+			sections[sectionIndex] = patchDevelopmentNoteSection(
+				parsedCurrent.value,
+				parsedPatch.value,
+			) as unknown as SectionRecord;
 		} else if (currentKind === 'html') {
 			const parsedCurrent = parseHtmlSection(sections[sectionIndex]);
 			const parsedPatch = parseHtmlSectionPatch(command.patch);

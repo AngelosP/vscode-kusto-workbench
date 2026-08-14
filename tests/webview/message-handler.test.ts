@@ -28,6 +28,7 @@ const handlerState = vi.hoisted(() => ({
 	queryEditors: {} as Record<string, any>,
 	queryBoxes: [] as string[],
 	sqlBoxes: [] as string[],
+	developmentNoteSections: [] as any[],
 	optimizationMetadataByBoxId: {} as Record<string, any>,
 	pState: {
 		isSessionFile: false,
@@ -42,7 +43,7 @@ const handlerState = vi.hoisted(() => ({
 		upgradeRequestType: 'requestUpgradeToKqlx',
 		compatibilityTooltip: '',
 		copilotChatFirstTimeDismissed: false,
-		devNotesSections: [],
+		metadataFreeDevelopmentNoteSections: [],
 		lastExecutedBox: '',
 		documentEditRevision: 0,
 		sourceGeneration: 0,
@@ -163,6 +164,23 @@ const mocks = {
 	clearStoredQueryResult: vi.fn(),
 	createSectionWithCapabilities: vi.fn(),
 	isHostOwnedMarkdownDocument: vi.fn(() => false),
+	isHostOwnedDevelopmentNoteDocument: vi.fn(() => true),
+	getOptimisticHostOwnedDevelopmentNoteSections: vi.fn(() => structuredClone(handlerState.developmentNoteSections)),
+	getOptimisticHostOwnedDocumentSectionOrder: vi.fn(() => [
+		...handlerState.queryBoxes,
+		...handlerState.developmentNoteSections.map(section => section.id),
+	]),
+	requestHostOwnedDevelopmentNoteAdd: vi.fn((section: any) => {
+		if (handlerState.developmentNoteSections.some(candidate => candidate.id === section.id)) return Promise.resolve(false);
+		handlerState.developmentNoteSections.push(structuredClone(section));
+		return Promise.resolve(true);
+	}),
+	requestHostOwnedDevelopmentNotePatch: vi.fn((section: any) => {
+		const index = handlerState.developmentNoteSections.findIndex(candidate => candidate.id === section.id);
+		if (index < 0) return Promise.resolve(false);
+		handlerState.developmentNoteSections[index] = structuredClone(section);
+		return Promise.resolve(true);
+	}),
 	waitForHostOwnedMarkdownCommands: vi.fn(async () => true),
 	handleHostOwnedMarkdownCommandResult: vi.fn(() => ({ handled: false, accepted: false })),
 	reconcileHostOwnedChartProjection: vi.fn(),
@@ -210,6 +228,11 @@ vi.mock('../../src/webview/core/file-open-trace.js', () => ({
 
 vi.mock('../../src/webview/core/markdown-document-client.js', () => ({
 	isHostOwnedMarkdownDocument: mocks.isHostOwnedMarkdownDocument,
+	isHostOwnedDevelopmentNoteDocument: mocks.isHostOwnedDevelopmentNoteDocument,
+	getOptimisticHostOwnedDevelopmentNoteSections: mocks.getOptimisticHostOwnedDevelopmentNoteSections,
+	getOptimisticHostOwnedDocumentSectionOrder: mocks.getOptimisticHostOwnedDocumentSectionOrder,
+	requestHostOwnedDevelopmentNoteAdd: mocks.requestHostOwnedDevelopmentNoteAdd,
+	requestHostOwnedDevelopmentNotePatch: mocks.requestHostOwnedDevelopmentNotePatch,
 	waitForHostOwnedMarkdownCommands: mocks.waitForHostOwnedMarkdownCommands,
 	handleHostOwnedMarkdownCommandResult: mocks.handleHostOwnedMarkdownCommandResult,
 }));
@@ -831,6 +854,7 @@ describe('message-handler dispatch', () => {
 		for (const key of Object.keys(handlerState.queryEditors)) delete handlerState.queryEditors[key];
 		handlerState.queryBoxes.splice(0, handlerState.queryBoxes.length);
 		handlerState.sqlBoxes.splice(0, handlerState.sqlBoxes.length);
+		handlerState.developmentNoteSections.splice(0, handlerState.developmentNoteSections.length);
 		for (const key of Object.keys(handlerState.optimizationMetadataByBoxId)) delete handlerState.optimizationMetadataByBoxId[key];
 		delete (window as any).__kustoSqlLastConnectionId;
 		delete (window as any).__kustoSqlLastDatabase;
@@ -843,6 +867,22 @@ describe('message-handler dispatch', () => {
 		mocks.getClusterUrl.mockReturnValue('');
 		mocks.getDatabase.mockReturnValue('');
 		mocks.getSqlSectionElement.mockReturnValue(null);
+		mocks.isHostOwnedDevelopmentNoteDocument.mockReturnValue(true);
+		mocks.getOptimisticHostOwnedDevelopmentNoteSections.mockImplementation(
+			() => structuredClone(handlerState.developmentNoteSections),
+		);
+		mocks.requestHostOwnedDevelopmentNoteAdd.mockImplementation((section: any) => {
+			if (handlerState.developmentNoteSections.some(candidate => candidate.id === section.id)) return Promise.resolve(false);
+			handlerState.developmentNoteSections.push(structuredClone(section));
+			return Promise.resolve(true);
+		});
+		mocks.requestHostOwnedDevelopmentNotePatch.mockImplementation((section: any) => {
+			const index = handlerState.developmentNoteSections.findIndex(candidate => candidate.id === section.id);
+			if (index < 0) return Promise.resolve(false);
+			handlerState.developmentNoteSections[index] = structuredClone(section);
+			return Promise.resolve(true);
+		});
+		mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(true);
 		mocks.createSectionWithCapabilities.mockImplementation((kind: unknown) => {
 			const sectionKind = String(kind || '');
 			if (handlerState.pState.compatibilityMode) {
@@ -871,7 +911,7 @@ describe('message-handler dispatch', () => {
 		handlerState.pState.documentMutationAllowed = true;
 		handlerState.pState.documentRuntimeActive = true;
 		handlerState.pState.firstSectionPinned = false;
-		handlerState.pState.devNotesSections = [];
+		handlerState.pState.metadataFreeDevelopmentNoteSections = [];
 		handlerState.pState.queryResultJsonByBoxId = {};
 		handlerState.pState.resultArtifactByBoxId = {};
 		handlerState.pState.upgradeRequestType = 'requestUpgradeToKqlx';
@@ -5572,6 +5612,22 @@ describe('changedSections agent provenance', () => {
 		mocks.getDatabase.mockReturnValue('');
 		mocks.getSqlSectionElement.mockReturnValue(null);
 		mocks.setRunMode.mockImplementation(() => undefined);
+		handlerState.developmentNoteSections.splice(0, handlerState.developmentNoteSections.length);
+		handlerState.pState.metadataFreeDevelopmentNoteSections = [];
+		mocks.isHostOwnedDevelopmentNoteDocument.mockReturnValue(true);
+		mocks.getOptimisticHostOwnedDevelopmentNoteSections.mockImplementation(
+			() => structuredClone(handlerState.developmentNoteSections),
+		);
+		mocks.requestHostOwnedDevelopmentNoteAdd.mockImplementation((section: any) => {
+			handlerState.developmentNoteSections.push(structuredClone(section));
+			return Promise.resolve(true);
+		});
+		mocks.requestHostOwnedDevelopmentNotePatch.mockImplementation((section: any) => {
+			const index = handlerState.developmentNoteSections.findIndex(candidate => candidate.id === section.id);
+			if (index < 0) return Promise.resolve(false);
+			handlerState.developmentNoteSections[index] = structuredClone(section);
+			return Promise.resolve(true);
+		});
 		for (const key of Object.keys(handlerState.queryEditors)) delete handlerState.queryEditors[key];
 		for (const key of Object.keys(handlerState.optimizationMetadataByBoxId)) delete handlerState.optimizationMetadataByBoxId[key];
 		handlerState.pState.documentKind = 'kqlx';
@@ -5769,7 +5825,7 @@ describe('changedSections agent provenance', () => {
 		});
 		await Promise.resolve();
 
-		expect(handlerState.pState.devNotesSections).toEqual([]);
+		expect(handlerState.pState.metadataFreeDevelopmentNoteSections).toEqual([]);
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'toolResponse', requestId: `devnotes-malformed-${documentKind}`, result: { success: false },
 			error: expect.stringContaining('read-only'),
@@ -5835,7 +5891,7 @@ describe('changedSections agent provenance', () => {
 		dispatchHostMessage({ type: 'requestToolState', requestId: 'state-before-document' });
 		await Promise.resolve();
 
-		expect(handlerState.pState.devNotesSections).toEqual([]);
+		expect(handlerState.pState.metadataFreeDevelopmentNoteSections).toEqual([]);
 		expect(mocks.createSectionWithCapabilities).not.toHaveBeenCalled();
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
 			type: 'toolResponse', requestId: 'note-before-document', result: { success: false },
@@ -5869,12 +5925,61 @@ describe('changedSections agent provenance', () => {
 		});
 		await Promise.resolve();
 
-		expect(handlerState.pState.devNotesSections).toEqual([]);
+		expect(handlerState.pState.metadataFreeDevelopmentNoteSections).toEqual([]);
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'toolResponse', requestId: `devnotes-${documentKind}`, result: { success: false },
 			error: expect.stringContaining('companion metadata file'),
 		}));
 	});
+
+	it.each(['kql', 'sql'] as const)(
+		'preserves development-note mutation for sidecar-enabled %s companions',
+		async documentKind => {
+			handlerState.pState.documentKind = documentKind;
+			handlerState.pState.compatibilityMode = false;
+			handlerState.pState.documentMutationAllowed = true;
+			mocks.isHostOwnedDevelopmentNoteDocument.mockReturnValue(false);
+			const persistence = await import('../../src/webview/core/persistence.js');
+			vi.mocked(persistence.schedulePersist).mockClear();
+			const first = {
+				id: `note_${documentKind}`, created: '2026-08-02T00:00:00.000Z',
+				updated: '2026-08-02T00:00:00.000Z', category: 'usage-note',
+				content: 'first', source: 'agent',
+			};
+			const replacement = {
+				...first, id: `${first.id}_replacement`, updated: '2026-08-02T00:01:00.000Z',
+				content: 'replacement',
+			};
+
+			dispatchHostMessage({
+				type: 'updateDevNotes', requestId: `${documentKind}-add`, action: 'add', entry: first,
+			});
+			await Promise.resolve();
+			dispatchHostMessage({
+				type: 'updateDevNotes', requestId: `${documentKind}-supersede`, action: 'supersede',
+				supersededId: first.id, entry: replacement,
+			});
+			await Promise.resolve();
+			dispatchHostMessage({
+				type: 'updateDevNotes', requestId: `${documentKind}-remove`, action: 'remove',
+				noteId: replacement.id,
+			});
+			await Promise.resolve();
+
+			expect(handlerState.pState.metadataFreeDevelopmentNoteSections).toEqual([
+				expect.objectContaining({ type: 'devnotes', entries: [] }),
+			]);
+			expect(persistence.schedulePersist).toHaveBeenCalledTimes(3);
+			expect(persistence.schedulePersist).toHaveBeenCalledWith('devnotes-update');
+			expect(mocks.requestHostOwnedDevelopmentNoteAdd).not.toHaveBeenCalled();
+			expect(mocks.requestHostOwnedDevelopmentNotePatch).not.toHaveBeenCalled();
+			for (const action of ['add', 'supersede', 'remove']) {
+				expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+					type: 'toolResponse', requestId: `${documentKind}-${action}`, result: { success: true },
+				});
+			}
+		},
+	);
 
 	it('acknowledges only actual development-note add, supersede, and remove transitions', async () => {
 		handlerState.pState.compatibilityMode = false;
@@ -5889,7 +5994,8 @@ describe('changedSections agent provenance', () => {
 
 		dispatchHostMessage({ type: 'updateDevNotes', requestId: 'note-add', action: 'add', entry: first });
 		await Promise.resolve();
-		expect(handlerState.pState.devNotesSections[0].entries).toEqual([first]);
+		await Promise.resolve();
+		expect(handlerState.developmentNoteSections[0].entries).toEqual([first]);
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
 			type: 'toolResponse', requestId: 'note-add', result: { success: true },
 		});
@@ -5899,7 +6005,8 @@ describe('changedSections agent provenance', () => {
 			supersededId: first.id, entry: replacement,
 		});
 		await Promise.resolve();
-		expect(handlerState.pState.devNotesSections[0].entries).toEqual([replacement]);
+		await Promise.resolve();
+		expect(handlerState.developmentNoteSections[0].entries).toEqual([replacement]);
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
 			type: 'toolResponse', requestId: 'note-supersede', result: { success: true },
 		});
@@ -5909,7 +6016,7 @@ describe('changedSections agent provenance', () => {
 			supersededId: 'missing', entry: { ...replacement, id: 'note_never_added' },
 		});
 		await Promise.resolve();
-		expect(handlerState.pState.devNotesSections[0].entries).toEqual([replacement]);
+		expect(handlerState.developmentNoteSections[0].entries).toEqual([replacement]);
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'toolResponse', requestId: 'note-missing', result: { success: false },
 			error: expect.stringContaining('not found uniquely'),
@@ -5919,22 +6026,76 @@ describe('changedSections agent provenance', () => {
 			type: 'updateDevNotes', requestId: 'note-remove', action: 'remove', noteId: replacement.id,
 		});
 		await Promise.resolve();
-		expect(handlerState.pState.devNotesSections[0].entries).toEqual([]);
+		await Promise.resolve();
+		expect(handlerState.developmentNoteSections[0].entries).toEqual([]);
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
 			type: 'toolResponse', requestId: 'note-remove', result: { success: true },
 		});
 		const persistence = await import('../../src/webview/core/persistence.js');
-		expect(persistence.schedulePersist).toHaveBeenCalledTimes(3);
+		expect(mocks.waitForHostOwnedMarkdownCommands).not.toHaveBeenCalled();
+		expect(handlerState.pState.metadataFreeDevelopmentNoteSections).toEqual([]);
+		expect(persistence.schedulePersist).not.toHaveBeenCalled();
+	});
+
+	it('settles development-note mutation only after host command acknowledgement', async () => {
+		let acknowledge!: (accepted: boolean) => void;
+		mocks.requestHostOwnedDevelopmentNoteAdd.mockImplementationOnce((section: any) => {
+			handlerState.developmentNoteSections.push(structuredClone(section));
+			return new Promise<boolean>(resolve => { acknowledge = resolve; });
+		});
+		const entry = {
+			id: 'note_delayed', created: '2026-08-02T00:00:00.000Z', updated: '2026-08-02T00:00:00.000Z',
+			category: 'usage-note', content: 'wait for host', source: 'agent',
+		};
+
+		dispatchHostMessage({
+			type: 'updateDevNotes', requestId: 'note-delayed', action: 'add', entry,
+		});
+		await Promise.resolve();
+		expect(mocks.requestHostOwnedDevelopmentNoteAdd).toHaveBeenCalledOnce();
+		expect(mocks.postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'note-delayed',
+		}));
+
+		acknowledge(true);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'note-delayed', result: { success: true },
+		});
+	});
+
+	it('creates a collision-free hidden development-note section ID', async () => {
+		const now = vi.spyOn(Date, 'now').mockReturnValue(1234);
+		handlerState.queryBoxes.push('devnotes_1234');
+		try {
+			dispatchHostMessage({
+				type: 'updateDevNotes', requestId: 'note-collision', action: 'add',
+				entry: {
+					id: 'note_collision', created: '2026-08-02T00:00:00.000Z',
+					updated: '2026-08-02T00:00:00.000Z', category: 'usage-note',
+					content: 'collision safe', source: 'agent',
+				},
+			});
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(mocks.requestHostOwnedDevelopmentNoteAdd).toHaveBeenCalledWith(expect.objectContaining({
+				id: 'devnotes_1234_2', type: 'devnotes',
+			}));
+		} finally {
+			now.mockRestore();
+		}
 	});
 
 	it('leaves duplicate development notes unchanged when removal is not unique', async () => {
 		const duplicateA = { id: 'duplicate_note', content: 'A' };
 		const duplicateB = { id: 'duplicate_note', content: 'B' };
-		handlerState.pState.devNotesSections = [
+		handlerState.developmentNoteSections.push(
 			{ id: 'devnotes_a', type: 'devnotes', entries: [duplicateA] },
 			{ id: 'devnotes_b', type: 'devnotes', entries: [duplicateB] },
-		];
-		const before = structuredClone(handlerState.pState.devNotesSections);
+		);
+		const before = structuredClone(handlerState.developmentNoteSections);
 		const persistence = await import('../../src/webview/core/persistence.js');
 		vi.mocked(persistence.schedulePersist).mockClear();
 
@@ -5943,13 +6104,94 @@ describe('changedSections agent provenance', () => {
 		});
 		await Promise.resolve();
 
-		expect(handlerState.pState.devNotesSections).toEqual(before);
+		expect(handlerState.developmentNoteSections).toEqual(before);
+		expect(handlerState.pState.metadataFreeDevelopmentNoteSections).toEqual([]);
 		expect(persistence.schedulePersist).not.toHaveBeenCalled();
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'toolResponse', requestId: 'remove-duplicate-note', result: { success: false },
 			error: expect.stringContaining('not found uniquely'),
 		}));
 	});
+
+	it('ignores an arbitrary-ID hidden development-note section during reorder', async () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		for (const id of ['query_a', 'query_b']) {
+			const section = document.createElement('div');
+			section.id = id;
+			container.appendChild(section);
+		}
+		document.body.appendChild(container);
+		handlerState.developmentNoteSections.push({ id: 'notes_owner', type: 'devnotes', entries: [] });
+
+		dispatchHostMessage({
+			type: 'toolReorderSections', requestId: 'reorder-arbitrary-devnotes',
+			sectionIds: ['query_b', 'notes_owner', 'query_a'],
+		});
+		await Promise.resolve();
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'reorder-arbitrary-devnotes',
+			result: { success: true, error: undefined }, error: undefined,
+		});
+		expect(Array.from(container.children).map(child => child.id)).toEqual(['query_b', 'query_a']);
+	});
+
+	it('reorders a visible section whose ID starts with the legacy devnotes prefix', async () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		for (const id of ['devnotes_query', 'query_other']) {
+			const section = document.createElement('div');
+			section.id = id;
+			container.appendChild(section);
+		}
+		document.body.appendChild(container);
+
+		dispatchHostMessage({
+			type: 'toolReorderSections', requestId: 'reorder-visible-prefix',
+			sectionIds: ['query_other', 'devnotes_query'],
+		});
+		await Promise.resolve();
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'reorder-visible-prefix',
+			result: { success: true, error: undefined }, error: undefined,
+		});
+		expect(Array.from(container.children).map(child => child.id)).toEqual(['query_other', 'devnotes_query']);
+	});
+
+	it.each(['kql', 'sql'] as const)(
+		'normalizes a whitespace-bearing hidden development-note ID for %s companion reorder',
+		async documentKind => {
+			const container = document.createElement('div');
+			container.id = 'queries-container';
+			for (const id of ['primary_section', 'visible_section']) {
+				const section = document.createElement('div');
+				section.id = id;
+				container.appendChild(section);
+			}
+			document.body.appendChild(container);
+			handlerState.pState.documentKind = documentKind;
+			mocks.isHostOwnedDevelopmentNoteDocument.mockReturnValue(false);
+			handlerState.pState.metadataFreeDevelopmentNoteSections = [{
+				id: ' notes_owner ', type: 'devnotes', entries: [],
+			}];
+
+			dispatchHostMessage({
+				type: 'toolReorderSections', requestId: `reorder-${documentKind}-spaced-devnotes`,
+				sectionIds: ['visible_section', ' notes_owner ', 'primary_section'],
+			});
+			await Promise.resolve();
+
+			expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+				type: 'toolResponse', requestId: `reorder-${documentKind}-spaced-devnotes`,
+				result: { success: true, error: undefined }, error: undefined,
+			});
+			expect(Array.from(container.children).map(child => child.id)).toEqual([
+				'visible_section', 'primary_section',
+			]);
+		},
+	);
 
 	it('removes an arbitrary query section ID through the owning cleanup path', async () => {
 		const sectionFactory = await import('../../src/webview/core/section-factory.js');

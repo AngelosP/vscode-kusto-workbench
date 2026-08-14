@@ -223,7 +223,17 @@ describe('QueryEditorProvider development-note mutation application', () => {
 		expect(copilotSource).toContain("tool: 'update_development_note'");
 		expect(hostTypesSource).toContain("type: 'toolResponse'; requestId: string; result: unknown; error?: string");
 		expect(webviewSource).toContain("case 'updateDevNotes':");
-		expect(webviewSource).toContain("schedulePersist('devnotes-update')");
+		expect(webviewSource).toContain('requestHostOwnedDevelopmentNoteAdd');
+		expect(webviewSource).toContain('requestHostOwnedDevelopmentNotePatch');
+		expect(webviewSource).toContain('mutated = await commandSettlement;');
+		expect(webviewSource).toContain('const hiddenDevelopmentNoteIds = new Set(');
+		expect(webviewSource).toContain('getOptimisticHostOwnedDevelopmentNoteSections()');
+		expect(webviewSource).toContain('!hiddenDevelopmentNoteIds.has(id.trim())');
+		expect(webviewSource).not.toContain("startsWith('devnotes_')");
+		expect(webviewSource).not.toContain('pState.devNotesSections');
+		expect(webviewSource).toContain('const metadataFreeCompanion = !pState.compatibilityMode');
+		expect(webviewSource).toContain('pState.metadataFreeDevelopmentNoteSections');
+		expect(webviewSource).toContain("if (mutated) schedulePersist('devnotes-update');");
 		expect(webviewSource).toContain("type: 'toolResponse', requestId: message.requestId, result: { success: mutated }");
 	});
 });

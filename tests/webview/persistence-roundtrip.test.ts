@@ -234,7 +234,7 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => {
 		documentDefaultsFinalizedApplyCount: -1,
 		copilotChatFirstTimeDismissed: false,
 		isSessionFile: false,
-		devNotesSections: [],
+		metadataFreeDevelopmentNoteSections: [],
 		},
 	};
 });
@@ -454,7 +454,7 @@ describe('persistence round-trip', () => {
 		pState.documentKind = 'kqlx';
 		pState.documentEditRevision = 0;
 		pState.documentUri = '';
-		pState.devNotesSections = [];
+		pState.metadataFreeDevelopmentNoteSections = [];
 		pState.lastExecutedBox = '';
 		pState.htmlPowerBiCompatibilityCheckEnabled = true;
 		(window as any).__testPendingQueryTextByBoxId = pState.pendingQueryTextByBoxId;
@@ -4495,6 +4495,41 @@ describe('persistence round-trip', () => {
 		expect(getKqlxState().sections).toEqual([
 			{ id: 'legacy_query_1', type: 'query', query: 'print legacy = 1' },
 		]);
+	});
+
+	it('serializes native development notes from the acknowledged host projection in exact order', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const authoritativeEntry = {
+			id: 'note_authoritative', created: '2026-08-14T10:00:00.000Z', updated: '2026-08-14T10:01:00.000Z',
+			category: 'clarification', content: 'host state', source: 'agent',
+		};
+
+		expect(handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri: 'file:///tmp/devnotes-owner.kqlx',
+			sourceGeneration: 4, documentRevision: 0,
+			sectionRevisions: { markdown_a: 0, devnotes_owner: 0, markdown_b: 0 },
+			markdownSectionRevisions: { markdown_a: 0, markdown_b: 0 },
+			state: { sections: [
+				{ id: 'markdown_a', type: 'markdown', text: 'A' },
+				{ id: 'devnotes_owner', type: 'devnotes', entries: [authoritativeEntry] },
+				{ id: 'markdown_b', type: 'markdown', text: 'B' },
+			] },
+		})).toBe(true);
+		expect(pState.metadataFreeDevelopmentNoteSections).toEqual([]);
+		pState.metadataFreeDevelopmentNoteSections = [{
+			id: 'devnotes_owner', type: 'devnotes', entries: [{ ...authoritativeEntry, content: 'stale adapter' }],
+		}];
+
+		const state = getKqlxState();
+		expect(state.sections.map((section: any) => section.id)).toEqual([
+			'markdown_a', 'devnotes_owner', 'markdown_b',
+		]);
+		expect(state.sections[1]).toEqual({
+			id: 'devnotes_owner', type: 'devnotes', entries: [authoritativeEntry],
+		});
 	});
 
 	it.each([

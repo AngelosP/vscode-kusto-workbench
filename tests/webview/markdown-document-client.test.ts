@@ -8,9 +8,13 @@ import { pState } from '../../src/webview/shared/persistence-state.js';
 import {
 	acknowledgeHostOwnedDocumentOrder,
 	adoptHostOwnedMarkdownDocument,
+	getHostOwnedDevelopmentNoteSections,
+	getOptimisticHostOwnedDevelopmentNoteSections,
 	handleHostOwnedMarkdownCommandResult,
 	requestHostOwnedChartPatch,
 	requestHostOwnedChartRemove,
+	requestHostOwnedDevelopmentNoteAdd,
+	requestHostOwnedDevelopmentNotePatch,
 	requestHostOwnedHtmlPatch,
 	requestHostOwnedHtmlPublishInfoPatch,
 	requestHostOwnedHtmlRemove,
@@ -117,6 +121,112 @@ describe('host-owned Markdown command client', () => {
 			sourceGeneration: 7, expectedDocumentRevision: 1,
 			command: { type: 'patch', sectionId: 'markdown_1', expectedSectionRevision: 1 },
 		});
+	});
+
+	it('sequences hidden development-note add and patch through the optimistic projection', async () => {
+		const first = {
+			id: 'note_first', created: '2026-08-14T10:00:00.000Z', updated: '2026-08-14T10:00:00.000Z',
+			category: 'usage-note', content: 'first', source: 'agent',
+		};
+		const replacement = {
+			...first, id: 'note_replacement', updated: '2026-08-14T10:01:00.000Z', content: 'replacement',
+		};
+		const addSettlement = requestHostOwnedDevelopmentNoteAdd({
+			id: 'devnotes_owner', type: 'devnotes', entries: [first],
+		}, 'markdown_1');
+		const patchSettlement = requestHostOwnedDevelopmentNotePatch({
+			id: 'devnotes_owner', type: 'devnotes', entries: [replacement],
+		});
+
+		const add = await waitForPostedMessage(1);
+		const patch = await waitForPostedMessage(2);
+		expect(add).toMatchObject({
+			expectedDocumentRevision: 0,
+			command: { type: 'add', afterSectionId: 'markdown_1', section: { id: 'devnotes_owner' } },
+		});
+		expect(patch).toMatchObject({
+			expectedDocumentRevision: 1,
+			command: {
+				type: 'patch', sectionId: 'devnotes_owner', expectedSectionRevision: 1,
+				patch: { entries: [replacement] },
+			},
+		});
+		expect(getHostOwnedDevelopmentNoteSections()).toEqual([]);
+		expect(getOptimisticHostOwnedDevelopmentNoteSections()).toEqual([{
+			id: 'devnotes_owner', type: 'devnotes', entries: [replacement],
+		}]);
+
+		handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: add.commandId, ok: true, sourceGeneration: 7,
+			projection: {
+				documentRevision: 1, sectionRevisions: { markdown_1: 0, devnotes_owner: 1 },
+				markdownSectionRevisions: { markdown_1: 0 },
+				developmentNoteSections: [{ id: 'devnotes_owner', type: 'devnotes', entries: [first] }],
+				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'before', expanded: true, mode: 'wysiwyg' }],
+				urlSections: [], orderedSectionIds: ['markdown_1', 'devnotes_owner'],
+			},
+		});
+		handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: patch.commandId, ok: true, sourceGeneration: 7,
+			projection: {
+				documentRevision: 2, sectionRevisions: { markdown_1: 0, devnotes_owner: 2 },
+				markdownSectionRevisions: { markdown_1: 0 },
+				developmentNoteSections: [{ id: 'devnotes_owner', type: 'devnotes', entries: [replacement] }],
+				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'before', expanded: true, mode: 'wysiwyg' }],
+				urlSections: [], orderedSectionIds: ['markdown_1', 'devnotes_owner'],
+			},
+		});
+		await expect(addSettlement).resolves.toBe(true);
+		await expect(patchSettlement).resolves.toBe(true);
+	});
+
+	it('settles an overlapping committed note independently from a later rejected note', async () => {
+		const first = {
+			id: 'note_first', created: '2026-08-14T10:00:00.000Z', updated: '2026-08-14T10:00:00.000Z',
+			category: 'usage-note', content: 'first', source: 'agent',
+		};
+		const second = {
+			...first, id: 'note_second', updated: '2026-08-14T10:01:00.000Z', content: 'second',
+		};
+		adoptHostOwnedMarkdownDocument({
+			documentRevision: 0, sourceGeneration: 20,
+			sectionRevisions: { devnotes_owner: 0 }, markdownSectionRevisions: {},
+		}, { sections: [{ id: 'devnotes_owner', type: 'devnotes', entries: [] }] });
+		postMessageToHost.mockClear();
+
+		const firstSettlement = requestHostOwnedDevelopmentNotePatch({
+			id: 'devnotes_owner', type: 'devnotes', entries: [first],
+		});
+		const secondSettlement = requestHostOwnedDevelopmentNotePatch({
+			id: 'devnotes_owner', type: 'devnotes', entries: [first, second],
+		});
+		const firstCommand = await waitForPostedMessage(1);
+		const secondCommand = await waitForPostedMessage(2);
+
+		handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: firstCommand.commandId,
+			ok: true, sourceGeneration: 20,
+			projection: {
+				documentRevision: 1, sectionRevisions: { devnotes_owner: 1 }, markdownSectionRevisions: {},
+				developmentNoteSections: [{ id: 'devnotes_owner', type: 'devnotes', entries: [first] }],
+				markdownSections: [], urlSections: [], orderedSectionIds: ['devnotes_owner'],
+			},
+		});
+		const rejected = handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: secondCommand.commandId,
+			ok: false, sourceGeneration: 20, documentRevision: 1,
+			error: { code: 'stale-document-revision', message: 'rejected later command' },
+			projection: {
+				documentRevision: 1, sectionRevisions: { devnotes_owner: 1 }, markdownSectionRevisions: {},
+				developmentNoteSections: [{ id: 'devnotes_owner', type: 'devnotes', entries: [first] }],
+				markdownSections: [], urlSections: [], orderedSectionIds: ['devnotes_owner'],
+			},
+		});
+
+		await expect(firstSettlement).resolves.toBe(true);
+		await expect(secondSettlement).resolves.toBe(false);
+		expect(rejected).toMatchObject({ handled: true, accepted: false });
+		expect(getHostOwnedDevelopmentNoteSections()[0].entries).toEqual([first]);
 	});
 
 	it('holds the Save barrier until every burst command settles', async () => {

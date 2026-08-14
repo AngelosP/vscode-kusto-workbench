@@ -164,10 +164,16 @@ import {
 	DOCUMENT_RUNTIME_INVALIDATED_EVENT,
 } from './persistence';
 import {
+	getOptimisticHostOwnedDevelopmentNoteSections,
+	getOptimisticHostOwnedDocumentSectionOrder,
 	handleHostOwnedMarkdownCommandResult,
+	isHostOwnedDevelopmentNoteDocument,
 	isHostOwnedMarkdownDocument,
+	requestHostOwnedDevelopmentNoteAdd,
+	requestHostOwnedDevelopmentNotePatch,
 	waitForHostOwnedMarkdownCommands,
 } from './markdown-document-client.js';
+import { parseDevelopmentNoteSection } from '../../shared/developmentNoteSectionDefinition.js';
 import { retireAllPythonExecutions } from './python-execution-admission.js';
 import { registerSqlComparisonAdmissionRetirementHandler } from './sql-comparison-admission-runtime.js';
 import { reconcileProjectedSectionOrder } from './section-projection-order.js';
@@ -2560,89 +2566,208 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			applyEditingPreferencesData(message);
 			break;
 		case 'updateDevNotes': {
-			// Mutate passthrough dev notes sections from extension host (Copilot / agent tool calls)
 			const mutationAllowed = isDocumentMutationAllowed();
-			if (!mutationAllowed || pState.compatibilityMode) {
+			const hostOwned = isHostOwnedDevelopmentNoteDocument();
+			const metadataFreeCompanion = !pState.compatibilityMode
+				&& !hostOwned
+				&& (pState.documentKind === 'kql' || pState.documentKind === 'sql');
+			if (!mutationAllowed || pState.compatibilityMode || (!hostOwned && !metadataFreeCompanion)) {
 				if (message.requestId) {
 					postMessageToHost({
 						type: 'toolResponse', requestId: message.requestId, result: { success: false },
 						error: !mutationAllowed
 							? 'This document is read-only and cannot accept development notes.'
-							: 'Development notes require a companion metadata file. Upgrade this compatibility document first.',
+							: pState.compatibilityMode
+								? 'Development notes require a companion metadata file. Upgrade this compatibility document first.'
+								: 'Development notes are unavailable in the current document host.',
 					});
 				}
 				break;
 			}
 			let mutationError = '';
 			let mutated = false;
+			let commandSettlement: Promise<boolean> | undefined;
 			try {
-				if (!Array.isArray(pState.devNotesSections)) {
-					pState.devNotesSections = [];
-				}
+				if (metadataFreeCompanion) {
+					const sections = pState.metadataFreeDevelopmentNoteSections;
+					const action = String(message.action || '');
+					const parseEntry = () => parseDevelopmentNoteSection({
+						id: 'devnotes_input', type: 'devnotes', entries: [message.entry],
+					});
+					if (action === 'add') {
+						if (!message.entry || typeof message.entry !== 'object') {
+							mutationError = 'A development note entry is required.';
+						} else {
+							const parsed = parseEntry();
+							if (!parsed.ok) mutationError = parsed.error;
+							else {
+								const entry = parsed.value.entries![0];
+								const duplicate = sections.some((section: any) =>
+									Array.isArray(section?.entries)
+									&& section.entries.some((candidate: any) => String(candidate?.id || '') === entry.id));
+								if (duplicate) mutationError = `Development note "${entry.id}" already exists.`;
+								else {
+									let owner = sections.find((section: any) => section?.type === 'devnotes');
+									if (!owner) {
+										const baseId = `devnotes_${Date.now()}`;
+										let sectionId = baseId;
+										for (let suffix = 2; document.getElementById(sectionId)
+											|| sections.some((section: any) => String(section?.id || '') === sectionId); suffix++) {
+											sectionId = `${baseId}_${suffix}`;
+										}
+										owner = { id: sectionId, type: 'devnotes', entries: [] };
+										sections.push(owner);
+									}
+									if (!Array.isArray(owner.entries)) owner.entries = [];
+									owner.entries.push(entry);
+									mutated = true;
+								}
+							}
+						}
+					} else if (action === 'supersede') {
+						const supersededId = String(message.supersededId || message.supersedes || '').trim();
+						if (!supersededId || !message.entry || typeof message.entry !== 'object') {
+							mutationError = 'A superseded note ID and replacement entry are required.';
+						} else {
+							const parsed = parseEntry();
+							if (!parsed.ok) mutationError = parsed.error;
+							else {
+								const replacement = parsed.value.entries![0];
+								const matches: Array<{ section: any; index: number }> = [];
+								for (const section of sections) {
+									if (!Array.isArray(section?.entries)) continue;
+									section.entries.forEach((entry: any, index: number) => {
+										if (String(entry?.id || '') === supersededId) matches.push({ section, index });
+									});
+								}
+								const duplicateReplacement = sections.some((section: any) =>
+									Array.isArray(section?.entries) && section.entries.some((entry: any) =>
+										String(entry?.id || '') === replacement.id
+										&& String(entry?.id || '') !== supersededId));
+								if (matches.length !== 1) {
+									mutationError = `Development note "${supersededId}" was not found uniquely.`;
+								} else if (duplicateReplacement) {
+									mutationError = `Development note "${replacement.id}" already exists.`;
+								} else {
+									matches[0].section.entries.splice(matches[0].index, 1, replacement);
+									mutated = true;
+								}
+							}
+						}
+					} else if (action === 'remove') {
+						const noteId = String(message.noteId || '');
+						const matches: Array<{ section: any; index: number }> = [];
+						if (noteId) {
+							for (const section of sections) {
+								if (!Array.isArray(section?.entries)) continue;
+								section.entries.forEach((entry: any, index: number) => {
+									if (String(entry?.id || '') === noteId) matches.push({ section, index });
+								});
+							}
+						}
+						if (matches.length === 1) {
+							matches[0].section.entries.splice(matches[0].index, 1);
+							mutated = true;
+						} else mutationError = `Development note "${noteId}" was not found uniquely.`;
+					} else {
+						mutationError = `Unknown development note action "${action}".`;
+					}
+					if (mutated) schedulePersist('devnotes-update');
+				} else {
+				const sections = [...getOptimisticHostOwnedDevelopmentNoteSections()];
 				const action = String(message.action || '');
 				if (action === 'add') {
 					if (!message.entry || typeof message.entry !== 'object') {
 						mutationError = 'A development note entry is required.';
 					} else {
-					// Ensure a single devnotes section exists
-					let dn = pState.devNotesSections.find((s: any) => s && s.type === 'devnotes');
-					if (!dn) {
-						dn = { type: 'devnotes', id: 'devnotes_' + Date.now(), entries: [] };
-						pState.devNotesSections.push(dn);
-					}
-					if (!Array.isArray(dn.entries)) dn.entries = [];
-					const entryId = String((message.entry as Record<string, unknown>).id || '').trim();
-					const duplicate = entryId && pState.devNotesSections.some((section: any) =>
-						Array.isArray(section?.entries) && section.entries.some((entry: any) => String(entry?.id || '') === entryId));
-					if (duplicate) mutationError = `Development note "${entryId}" already exists.`;
-					else {
-						dn.entries.push(message.entry);
-						mutated = true;
-					}
+						const parsed = parseDevelopmentNoteSection({
+							id: 'devnotes_input', type: 'devnotes', entries: [message.entry],
+						});
+						if (!parsed.ok) mutationError = parsed.error;
+						else {
+							const entry = parsed.value.entries![0];
+							const entryId = entry.id.trim();
+							const duplicate = entryId && sections.some(section =>
+								(section.entries ?? []).some(candidate => candidate.id === entryId));
+							if (duplicate) mutationError = `Development note "${entryId}" already exists.`;
+							else if (sections.length > 0) {
+								const owner = sections[0];
+								commandSettlement = requestHostOwnedDevelopmentNotePatch({
+									...owner, entries: [...(owner.entries ?? []), entry],
+								});
+							} else {
+								const existingIds = new Set(getOptimisticHostOwnedDocumentSectionOrder());
+								const baseId = `devnotes_${Date.now()}`;
+								let sectionId = baseId;
+								for (let suffix = 2; existingIds.has(sectionId); suffix++) {
+									sectionId = `${baseId}_${suffix}`;
+								}
+								commandSettlement = requestHostOwnedDevelopmentNoteAdd({
+									id: sectionId, type: 'devnotes', entries: [entry],
+								});
+							}
+						}
 					}
 				} else if (action === 'supersede') {
 					const supersededId = String(message.supersededId || message.supersedes || '').trim();
 					if (!supersededId || !message.entry || typeof message.entry !== 'object') {
 						mutationError = 'A superseded note ID and replacement entry are required.';
 					} else {
-						const matches: Array<{ section: any; index: number }> = [];
-						for (const section of pState.devNotesSections) {
-							if (!Array.isArray(section?.entries)) continue;
-							section.entries.forEach((entry: any, index: number) => {
-								if (String(entry?.id || '') === supersededId) matches.push({ section, index });
-							});
-						}
-						const replacementId = String((message.entry as Record<string, unknown>).id || '').trim();
-						const duplicateReplacement = replacementId && pState.devNotesSections.some((section: any) =>
-							Array.isArray(section?.entries) && section.entries.some((entry: any) =>
-								String(entry?.id || '') === replacementId && String(entry?.id || '') !== supersededId));
-						if (matches.length !== 1) mutationError = `Development note "${supersededId}" was not found uniquely.`;
-						else if (duplicateReplacement) mutationError = `Development note "${replacementId}" already exists.`;
+						const parsed = parseDevelopmentNoteSection({
+							id: 'devnotes_input', type: 'devnotes', entries: [message.entry],
+						});
+						if (!parsed.ok) mutationError = parsed.error;
 						else {
-							matches[0].section.entries.splice(matches[0].index, 1, message.entry);
-							mutated = true;
+							const replacement = parsed.value.entries![0];
+							const matches: Array<{ sectionIndex: number; entryIndex: number }> = [];
+							sections.forEach((section, sectionIndex) => {
+								(section.entries ?? []).forEach((entry, entryIndex) => {
+									if (entry.id === supersededId) matches.push({ sectionIndex, entryIndex });
+								});
+							});
+							const replacementId = replacement.id.trim();
+							const duplicateReplacement = replacementId && sections.some(section =>
+								(section.entries ?? []).some(entry =>
+									entry.id === replacementId && entry.id !== supersededId));
+							if (matches.length !== 1) {
+								mutationError = `Development note "${supersededId}" was not found uniquely.`;
+							} else if (duplicateReplacement) {
+								mutationError = `Development note "${replacementId}" already exists.`;
+							} else {
+								const match = matches[0];
+								const owner = sections[match.sectionIndex];
+								const entries = [...(owner.entries ?? [])];
+								entries.splice(match.entryIndex, 1, replacement);
+								commandSettlement = requestHostOwnedDevelopmentNotePatch({ ...owner, entries });
+							}
 						}
 					}
 				} else if (action === 'remove') {
 					const noteId = String(message.noteId || '');
-					const matches: Array<{ section: any; index: number }> = [];
+					const matches: Array<{ sectionIndex: number; entryIndex: number }> = [];
 					if (noteId) {
-						for (const section of pState.devNotesSections) {
-							if (!Array.isArray(section?.entries)) continue;
-							section.entries.forEach((entry: any, index: number) => {
-								if (String(entry?.id || '') === noteId) matches.push({ section, index });
+						sections.forEach((section, sectionIndex) => {
+							(section.entries ?? []).forEach((entry, entryIndex) => {
+								if (entry.id === noteId) matches.push({ sectionIndex, entryIndex });
 							});
-						}
+						});
 					}
 					if (matches.length === 1) {
-						matches[0].section.entries.splice(matches[0].index, 1);
-						mutated = true;
+						const match = matches[0];
+						const owner = sections[match.sectionIndex];
+						const entries = [...(owner.entries ?? [])];
+						entries.splice(match.entryIndex, 1);
+						commandSettlement = requestHostOwnedDevelopmentNotePatch({ ...owner, entries });
 					} else mutationError = `Development note "${noteId}" was not found uniquely.`;
 				} else {
 					mutationError = `Unknown development note action "${action}".`;
 				}
-				if (mutated) {
-					try { schedulePersist('devnotes-update'); } catch (e) { console.error('[kusto]', e); }
+				if (commandSettlement) {
+					mutated = await commandSettlement;
+					if (!mutated) mutationError = 'The development note update was not acknowledged by the document host.';
+				} else if (!mutationError) {
+					mutationError = 'The development note update could not enter the document command queue.';
+				}
 				}
 			} catch (e) {
 				console.error('[kusto]', e);
@@ -4464,8 +4589,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			try {
 				const requestId = String(message.requestId || '');
 				const rawSectionIds = Array.isArray(message.sectionIds) ? message.sectionIds.map((id: any) => String(id)) : [];
-				// Strip devnotes IDs — they have no DOM presence and cannot be reordered
-				const sectionIds = rawSectionIds.filter((id: any) => !id.startsWith('devnotes_'));
+				const hiddenDevelopmentNoteIds = new Set(
+					(isHostOwnedDevelopmentNoteDocument()
+						? getOptimisticHostOwnedDevelopmentNoteSections()
+						: pState.metadataFreeDevelopmentNoteSections
+							.filter((section: any) => section?.type === 'devnotes'))
+						.map((section: any) => String(section.id || '').trim())
+						.filter(Boolean),
+				);
+				const sectionIds = rawSectionIds.filter((id: any) => !hiddenDevelopmentNoteIds.has(id.trim()));
 				let success = false;
 				let error = '';
 				

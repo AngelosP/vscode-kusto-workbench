@@ -3,7 +3,12 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ConnectionManager, KustoConnection } from './connectionManager';
-import { createEmptyKqlxOrMdxFile, DevNoteEntry, KqlxFileKind, KqlxSectionV1 } from './kqlxFormat';
+import {
+	createEmptyKqlxOrMdxFile,
+	type DevNoteEntry,
+	type KqlxFileKind,
+	type KqlxSectionV1,
+} from './kqlxFormat';
 import { defaultSectionKindForDocument } from '../shared/documentSectionCapabilities';
 import { captureSchemaCacheGeneration, readAllCachedSchemasFromDisk, readCachedSchemaFromDiskByCluster, searchCachedSchemas, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey, schemaPrincipalIdentity, type SchemaCacheGeneration } from './schemaCache';
 import { KustoConnectionCache, type KustoConnectionCacheGeneration } from './kustoConnectionCache';

@@ -129,6 +129,49 @@ describe('MarkdownDocumentAggregate', () => {
 		]);
 	});
 
+	it('owns development-note replacements across stale adapter rebases', () => {
+		const original = {
+			id: 'note_original', created: '2026-08-14T10:00:00.000Z', updated: '2026-08-14T10:00:00.000Z',
+			category: 'correction', relatedSectionIds: ['query_1'], content: 'before', source: 'copilot',
+		};
+		const replacement = {
+			id: 'note_replacement', created: '2026-08-14T10:05:00.000Z', updated: '2026-08-14T10:05:00.000Z',
+			category: 'clarification', relatedSectionIds: ['query_1'], content: 'after', source: 'agent',
+		};
+		const created = MarkdownDocumentAggregate.create({
+			sections: [
+				{ id: 'devnotes_owner', type: 'devnotes', entries: [original] },
+				{ id: 'future_opaque', type: 'future-section', futureMetadata: { keep: true } },
+			],
+		});
+		if (!created.ok) throw new Error(created.error);
+
+		const patched = created.document.transition({
+			expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'devnotes_owner', expectedSectionRevision: 0,
+				patch: { entries: [replacement] },
+			},
+		});
+		expect(patched.ok).toBe(true);
+		if (!patched.ok) return;
+
+		const rebased = patched.document.withAdapterState({ sections: [
+			{ id: 'devnotes_owner', type: 'devnotes', entries: [original] },
+			{ id: 'future_opaque', type: 'future-section', futureMetadata: { keep: true } },
+		] });
+		expect(rebased.projection()).toMatchObject({
+			documentRevision: 1,
+			sectionRevisions: { devnotes_owner: 1 },
+			developmentNoteSections: [{ id: 'devnotes_owner', type: 'devnotes', entries: [replacement] }],
+			orderedSectionIds: ['devnotes_owner', 'future_opaque'],
+		});
+		expect(rebased.snapshot().sections).toEqual([
+			{ id: 'devnotes_owner', type: 'devnotes', entries: [replacement] },
+			{ id: 'future_opaque', type: 'future-section', futureMetadata: { keep: true } },
+		]);
+	});
+
 	it('owns URL transitions and rejects stale URL adapter state', () => {
 		const created = MarkdownDocumentAggregate.create({
 			sections: [

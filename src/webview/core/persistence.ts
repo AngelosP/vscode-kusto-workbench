@@ -85,12 +85,15 @@ import {
 import {
 	adoptHostOwnedMarkdownDocument,
 	getHostOwnedChartSection,
+	getHostOwnedDevelopmentNoteSections,
+	getHostOwnedDocumentSectionOrder,
 	getHostOwnedHtmlSection,
 	getHostOwnedMarkdownSection,
 	getHostOwnedPythonSection,
 	getHostOwnedTransformationSection,
 	getHostOwnedUrlSection,
 	isHostOwnedChartDocument,
+	isHostOwnedDevelopmentNoteDocument,
 	isHostOwnedHtmlDocument,
 	isHostOwnedMarkdownDocument,
 	isHostOwnedPythonDocument,
@@ -1928,6 +1931,30 @@ function __kustoSetQueryResultsOutputHeightPx(boxId: any, heightPx: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
+function insertHostOwnedDevelopmentNotes(sections: any[]): void {
+	const notes = [...getHostOwnedDevelopmentNoteSections()];
+	const order = getHostOwnedDocumentSectionOrder();
+	const orderIndex = new Map(order.map((sectionId, index) => [sectionId, index]));
+	notes.sort((left, right) =>
+		(orderIndex.get(left.id) ?? Number.MAX_SAFE_INTEGER)
+		- (orderIndex.get(right.id) ?? Number.MAX_SAFE_INTEGER));
+	for (const noteSection of notes) {
+		if (sections.some(section => String(section?.id || '') === noteSection.id)) continue;
+		const noteIndex = orderIndex.get(noteSection.id);
+		let insertionIndex = sections.length;
+		if (noteIndex !== undefined) {
+			for (let index = noteIndex + 1; index < order.length; index++) {
+				const anchorIndex = sections.findIndex(section => String(section?.id || '') === order[index]);
+				if (anchorIndex >= 0) {
+					insertionIndex = anchorIndex;
+					break;
+				}
+			}
+		}
+		sections.splice(insertionIndex, 0, noteSection);
+	}
+}
+
 export function getKqlxState() {
 	// Compatibility mode (.kql/.csl/.md): only a single section is supported.
 	try {
@@ -2129,10 +2156,13 @@ export function getKqlxState() {
 		}
 	}
 
-	// Re-inject passthrough dev notes sections (hidden, no DOM elements)
 	try {
-		for (const dn of pState.devNotesSections) {
-			if (dn && dn.type === 'devnotes') sections.push(dn);
+		if (isHostOwnedDevelopmentNoteDocument()) {
+			insertHostOwnedDevelopmentNotes(sections);
+		} else {
+			for (const dn of pState.metadataFreeDevelopmentNoteSections) {
+				if (dn && dn.type === 'devnotes') sections.push(dn);
+			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
@@ -2704,7 +2734,7 @@ function __kustoClearAllSections(preserveOwnedIds: ReadonlySet<string> = new Set
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	// Clear passthrough dev notes sections
-	try { pState.devNotesSections = []; } catch (e) { console.error('[kusto]', e); }
+	try { pState.metadataFreeDevelopmentNoteSections = []; } catch (e) { console.error('[kusto]', e); }
 	});
 }
 
@@ -2983,11 +3013,12 @@ function applyKqlxState(
 			const rawType = section && section.type ? String(section.type) : '';
 			const t = canonicalSectionKind(rawType) ?? rawType;
 			if (t === 'devnotes') {
-				// Dev notes are hidden — store as passthrough, no DOM element
-				try {
-					pState.devNotesSections = pState.devNotesSections || [];
-					pState.devNotesSections.push(section);
-				} catch (e) { console.error('[kusto]', e); }
+				if (!pState.hostOwnedMarkdownActive) {
+					try {
+						pState.metadataFreeDevelopmentNoteSections = pState.metadataFreeDevelopmentNoteSections || [];
+						pState.metadataFreeDevelopmentNoteSections.push(section);
+					} catch (e) { console.error('[kusto]', e); }
+				}
 				continue;
 			}
 			if (t === 'query') {

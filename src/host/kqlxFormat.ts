@@ -31,12 +31,18 @@ import {
 	type PersistedHtmlSectionState,
 	type PbiPublishInfo,
 } from '../shared/htmlSectionDefinition';
+import {
+	validatePersistedDevelopmentNoteSection,
+	type DevelopmentNoteEntry,
+	type PersistedDevelopmentNoteSectionState,
+} from '../shared/developmentNoteSectionDefinition';
 
 export { overlayKqlxFileState } from './kqlxOverlay';
 
 export type KqlxVersion = 1;
 
 export type { PbiPublishInfo } from '../shared/htmlSectionDefinition';
+export type { DevelopmentNoteEntry as DevNoteEntry } from '../shared/developmentNoteSectionDefinition';
 
 export type KqlxSectionV1 =
 	| {
@@ -115,6 +121,7 @@ export type KqlxSectionV1 =
 	| PersistedChartSectionState
 	| PersistedTransformationSectionState
 	| PersistedHtmlSectionState
+	| PersistedDevelopmentNoteSectionState
 	| {
 			id?: string;
 			type: 'sql';
@@ -141,26 +148,9 @@ export type KqlxSectionV1 =
 			copilotChatWidthPx?: number;
 		}
 	| {
-			id?: string;
-			type: 'devnotes';
-			entries?: DevNoteEntry[];
-		}
-	| {
 			type: string;
 			[key: string]: unknown;
 		};
-
-export interface DevNoteEntry {
-	id: string;
-	/** ISO 8601 timestamp */
-	created: string;
-	/** ISO 8601 timestamp, updated when content changes */
-	updated: string;
-	category: 'correction' | 'clarification' | 'schema-hint' | 'usage-note' | 'gotcha';
-	relatedSectionIds?: string[];
-	content: string;
-	source: 'user' | 'copilot' | 'agent';
-}
 
 export interface KqlxStateV1 {
 	caretDocsEnabled?: boolean;
@@ -298,11 +288,15 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 				? validatePersistedTransformationSection(section)
 			: canonicalKind === 'html'
 				? validatePersistedHtmlSection(section)
+			: canonicalKind === 'devnotes'
+				? validatePersistedDevelopmentNoteSection(section)
 				: getInvalidKqlxKnownFieldShape(section);
 		if (invalidKnownShape) {
-			return { ok: false, error: canonicalKind === 'markdown' || canonicalKind === 'python' || canonicalKind === 'url'
+			return { ok: false, error: canonicalKind === 'markdown' || canonicalKind === 'python'
+				|| canonicalKind === 'url'
 				? `Invalid .kqlx: section ${index} ${invalidKnownShape}`
-				: canonicalKind === 'chart' || canonicalKind === 'transformation' || canonicalKind === 'html'
+				: canonicalKind === 'chart' || canonicalKind === 'transformation'
+					|| canonicalKind === 'html' || canonicalKind === 'devnotes'
 					? `Invalid .kqlx: section ${index} invalid known field shape: ${invalidKnownShape}`
 					: `Invalid .kqlx: section ${index} invalid known field shape at "${invalidKnownShape}".` };
 		}

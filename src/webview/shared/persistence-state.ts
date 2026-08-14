@@ -16,6 +16,7 @@ import type { PythonSectionState } from '../../shared/pythonSectionDefinition.js
 import type { UrlSectionState } from '../../shared/urlSectionDefinition.js';
 import type { TransformationSectionState } from '../../shared/transformationSectionDefinition.js';
 import type { HtmlSectionState } from '../../shared/htmlSectionDefinition.js';
+import type { DevelopmentNoteSectionState } from '../../shared/developmentNoteSectionDefinition.js';
 import { addableSectionKindsForDocument, defaultSectionKindForDocument } from '../../shared/documentSectionCapabilities.js';
 import { parseCompatibilityPersistenceEnvelope } from '../../shared/compatibilityPersistenceProtocol.js';
 
@@ -74,6 +75,8 @@ export const pState = {
 	hostOwnedMarkdownSections: {} as Record<string, MarkdownSectionState>,
 	/** Last acknowledged host projection used instead of Chart DOM serialization. */
 	hostOwnedChartSections: {} as Record<string, ChartSectionState>,
+	/** Last acknowledged hidden development-note projection. */
+	hostOwnedDevelopmentNoteSections: {} as Record<string, DevelopmentNoteSectionState>,
 	/** Last acknowledged host projection used instead of Python DOM serialization. */
 	hostOwnedPythonSections: {} as Record<string, PythonSectionState>,
 	/** Last acknowledged host projection used instead of URL DOM serialization. */
@@ -120,8 +123,8 @@ export const pState = {
 	/** Pending editor wrapper height to apply when Monaco initializes. */
 	pendingWrapperHeightPxByBoxId: {} as Record<string, number>,
 
-	/** Passthrough dev-notes sections (hidden, no DOM elements). */
-	devNotesSections: [] as any[],
+	/** Development-note passthrough used only when no native document owner is available. */
+	metadataFreeDevelopmentNoteSections: [] as any[],
 
 	/** Pending add-section counts from before the doc was fully loaded. */
 	queryEditorPendingAdds: createEmptyQueryEditorPendingAdds(),

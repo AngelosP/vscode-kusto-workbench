@@ -1072,7 +1072,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
-	test('HTML, Transformation, Chart, Python, URL, and Markdown host commands survive stale DOM state, view recreation, and lossless save', async () => {
+	test('Development Notes, HTML, Transformation, Chart, Python, URL, and Markdown host commands survive stale adapter state, view recreation, and lossless save', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalOnDidChange = vscode.workspace.onDidChangeTextDocument;
 		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
@@ -1176,7 +1176,13 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						id: 'future_opaque', type: 'future-section',
 						payload: { keep: ['opaque', 42] },
 					},
-					{ id: 'devnotes_owner', type: 'devnotes', entries: [] },
+					{
+						id: 'devnotes_owner', type: 'devnotes', futureDevnotes: { keep: true }, entries: [{
+							id: 'note_original', created: '2026-08-02T00:00:00.000Z',
+							updated: '2026-08-02T00:00:00.000Z', category: 'usage-note',
+							content: 'before', source: 'user', futureEntry: { belongsTo: 'note_original' },
+						}],
+					},
 				],
 			},
 		};
@@ -1366,7 +1372,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.deepStrictEqual(initialProjection.markdownSectionRevisions, { markdown_original: 0 });
 			assert.deepStrictEqual(initialProjection.sectionRevisions, {
 				markdown_original: 0, url_original: 0, python_original: 0, chart_original: 0,
-				transformation_original: 0, html_original: 0,
+				transformation_original: 0, html_original: 0, devnotes_owner: 0,
 			});
 
 			const sendCommand = async (message: any) => {
@@ -1738,6 +1744,28 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				JSON.stringify(htmlPatched),
 			);
 
+			const authoritativeNote = {
+				id: 'note_authoritative', created: '2026-08-02T00:05:00.000Z',
+				updated: '2026-08-02T00:05:00.000Z', category: 'clarification',
+				content: 'host-owned note', source: 'agent', relatedSectionIds: ['markdown_original'],
+			};
+			const devnotesPatched = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'devnotes-patch',
+				expectedDocumentRevision: 14,
+				command: {
+					type: 'patch', sectionId: 'devnotes_owner', expectedSectionRevision: 0,
+					patch: { entries: [authoritativeNote] },
+				},
+			});
+			assert.deepStrictEqual(
+				{
+					ok: devnotesPatched.ok, documentRevision: devnotesPatched.documentRevision,
+					sectionRevision: devnotesPatched.sectionRevision,
+				},
+				{ ok: true, documentRevision: 15, sectionRevision: 1 },
+				JSON.stringify(devnotesPatched),
+			);
+
 			await firstView.dispose();
 
 			const recreatedView = createPanel();
@@ -1745,11 +1773,11 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			await recreatedView.receive({ type: 'requestDocument' });
 			const recreatedProjection = recreatedView.posted.find(message => message?.type === 'documentData' && message.ok === true);
 			assert.ok(recreatedProjection, 'recreated view must receive a projection');
-			assert.strictEqual(recreatedProjection.documentRevision, 14);
+			assert.strictEqual(recreatedProjection.documentRevision, 15);
 			assert.deepStrictEqual(recreatedProjection.markdownSectionRevisions, { markdown_original: 1 });
 			assert.deepStrictEqual(recreatedProjection.sectionRevisions, {
 				markdown_original: 1, url_original: 1, python_original: 1, chart_original: 1,
-				transformation_original: 1, html_original: 1,
+				transformation_original: 1, html_original: 1, devnotes_owner: 1,
 			});
 			assert.strictEqual(recreatedProjection.state.sections[0].text, 'after');
 			assert.strictEqual(recreatedProjection.state.sections[0].title, 'Host owned');
@@ -1819,6 +1847,9 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 					dismissedForSection: true, dismissedForVersion: 1,
 					dismissedForSignature: 'after-signature', dismissedAt: '2026-08-04T00:00:00.000Z',
 				},
+			});
+			assert.deepStrictEqual(recreatedProjection.state.sections[7], {
+				id: 'devnotes_owner', type: 'devnotes', entries: [authoritativeNote],
 			});
 
 			const owningSaveHandler = willSaveHandlers.at(-1);
@@ -1929,7 +1960,11 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				futureHtml: { producer: 'future-html' },
 			});
 			assert.deepStrictEqual(saved.state.sections[6], fixture.state.sections[6]);
-			assert.strictEqual(saved.state.sections[7].entries[0].content, 'adapter-owned note');
+			assert.deepStrictEqual(saved.state.sections[7], {
+				id: 'devnotes_owner', type: 'devnotes', futureDevnotes: { keep: true },
+				entries: [authoritativeNote],
+			});
+			assert.strictEqual((saved.state.sections[7].entries[0] as Record<string, unknown>).futureEntry, undefined);
 			await recreatedView.dispose();
 		} finally {
 			for (const subscription of workspaceSubscriptions) subscription.dispose();

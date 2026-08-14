@@ -220,6 +220,44 @@ describe('document-view protocol', () => {
 		if (!malformed.ok) expect(malformed.error).toContain('semanticModelId');
 	});
 
+	it('carries hidden development-note state through the existing document-view channel', () => {
+		const developmentNotes = {
+			id: 'devnotes_owner', type: 'devnotes', entries: [{
+				id: 'note_1', created: '2026-08-14T10:00:00.000Z', updated: '2026-08-14T10:05:00.000Z',
+				category: 'decision', relatedSectionIds: ['query_1'], content: 'Keep this', source: 'future-agent',
+			}],
+		} as const;
+		const documentData = parseDocumentViewHostMessage({
+			...envelope,
+			type: 'documentData', ok: true, reloadRequestId: 'reload-devnotes', sourceGeneration: 6,
+			forceReload: false, documentUri: 'file:///tmp/devnotes.kqlx',
+			state: { sections: [developmentNotes, { id: 'future_1', type: 'future-section' }] },
+			documentRevision: 0, sectionRevisions: { devnotes_owner: 0 }, markdownSectionRevisions: {},
+		});
+		expect(documentData.ok).toBe(true);
+
+		const commandResult = parseDocumentViewHostMessage({
+			...envelope,
+			type: 'markdownDocumentCommandResult', commandId: 'devnotes-command', ok: true,
+			sourceGeneration: 6, documentRevision: 1, sectionRevision: 1,
+			projection: {
+				documentRevision: 1, sectionRevisions: { devnotes_owner: 1 }, markdownSectionRevisions: {},
+				developmentNoteSections: [developmentNotes], markdownSections: [], urlSections: [],
+				orderedSectionIds: ['devnotes_owner', 'future_1'],
+			},
+		});
+		expect(commandResult.ok).toBe(true);
+
+		const malformed = parseDocumentViewHostMessage({
+			...envelope,
+			type: 'documentData', ok: true, reloadRequestId: 'reload-devnotes-bad', sourceGeneration: 6,
+			forceReload: false, documentUri: 'file:///tmp/devnotes.kqlx',
+			state: { sections: [{ ...developmentNotes, entries: [{ id: 'incomplete' }] }] },
+			documentRevision: 0, sectionRevisions: { devnotes_owner: 0 }, markdownSectionRevisions: {},
+		});
+		expect(malformed.ok).toBe(false);
+	});
+
 	it('rejects malformed envelopes and internally inconsistent payloads', () => {
 		expect(parseDocumentViewHostMessage({
 			...envelope,
