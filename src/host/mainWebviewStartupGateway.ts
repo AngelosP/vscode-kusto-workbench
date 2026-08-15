@@ -9,6 +9,11 @@ import {
 	admitKustoPublicationWebviewMessageFromEnvelope,
 } from '../shared/kustoPublicationProtocol';
 import { admitDevelopmentNoteMutationWebviewMessage } from '../shared/developmentNoteMutationProtocol';
+import {
+	admitToolStateSnapshotHostMessage,
+	admitToolStateSnapshotWebviewMessage,
+	admitToolStateSnapshotWebviewMessageFromEnvelope,
+} from '../shared/toolStateSnapshotProtocol';
 import { captureRuntimeMessageEnvelope } from '../shared/runtimeMessageEnvelope';
 
 export const MAIN_WEBVIEW_DISPATCHER_READY_TYPE = 'mainWebviewDispatcherReady' as const;
@@ -92,6 +97,8 @@ export function isMainWebviewCorrelatedReply(input: unknown): boolean {
 		return artifactCsvSaveAdmission.parsed.ok
 			&& artifactCsvSaveAdmission.parsed.value.type === 'artifactCsvSaveData';
 	}
+	const toolStateAdmission = admitToolStateSnapshotWebviewMessage(input);
+	if (toolStateAdmission.recognized) return toolStateAdmission.parsed.ok;
 	const typeInspection = safelyInspectProperty(input, 'type');
 	if (typeInspection?.kind !== 'data' || typeof typeInspection.value !== 'string') return false;
 	const type = typeInspection.value;
@@ -107,7 +114,6 @@ export function isMainWebviewCorrelatedReply(input: unknown): boolean {
 		case 'markdownDocumentCommandBarrierResult':
 		case 'publishToPowerBIAck':
 		case 'toolExecutionStarted':
-		case 'toolStateResponse':
 			return hasDescriptorCorrelationId(input, 'requestId');
 		case 'kustoExecutionStartedAck':
 			return hasDescriptorCorrelationId(input, 'boxId')
@@ -254,6 +260,13 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 			if (!artifactCsvSaveAdmission.parsed.ok) return;
 			input = artifactCsvSaveAdmission.parsed.value;
 		}
+		const toolStateAdmission = admitToolStateSnapshotWebviewMessageFromEnvelope(
+			envelope.descriptorSnapshot,
+		);
+		if (toolStateAdmission.recognized) {
+			if (!toolStateAdmission.parsed.ok) return;
+			input = toolStateAdmission.parsed.value;
+		}
 		if (isDispatcherReadyMessage(input)) return this.markDispatcherReady();
 
 		const message = this.options.admitInbound(input);
@@ -301,6 +314,13 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 	private enqueueOutbound(message: unknown): { accepted: boolean; delivery: Promise<boolean> } {
 		if (this.retired || this.disposed) {
 			return { accepted: false, delivery: Promise.resolve(false) };
+		}
+		const toolStateAdmission = admitToolStateSnapshotHostMessage(message);
+		if (toolStateAdmission.recognized) {
+			if (!toolStateAdmission.parsed.ok) {
+				return { accepted: false, delivery: Promise.resolve(false) };
+			}
+			message = toolStateAdmission.parsed.value;
 		}
 		const publicationAdmission = admitKustoPublicationHostMessage(message);
 		if (publicationAdmission.recognized) {

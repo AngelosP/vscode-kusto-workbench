@@ -1602,6 +1602,56 @@ describe('message-handler dispatch', () => {
 		});
 	});
 
+	it('rejects malformed tool-state requests before snapshot and schema-owner effects', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		let getterCalls = 0;
+		const accessor = { type: 'requestToolState', purpose: 'schema-refresh', targetConnectionId: 'c1' };
+		Object.defineProperty(accessor, 'requestId', {
+			enumerable: true,
+			get() {
+				getterCalls++;
+				return 'forged';
+			},
+		});
+
+		dispatchHostMessage(accessor);
+		dispatchHostMessage(Object.assign(Object.create({ inherited: true }), {
+			type: 'requestToolState', requestId: 'state-custom',
+		}));
+		dispatchHostMessage({
+			type: 'requestToolState', requestId: 'state-array',
+			purpose: 'schema-refresh', targetConnectionId: ['c1'],
+		});
+		await Promise.resolve();
+
+		expect(getterCalls).toBe(0);
+		expect(persistence.getKqlxState).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).not.toHaveBeenCalled();
+		expect(kustoEditorSchemaCoordinator.getSchemaRequestToken('query_1')).toBeUndefined();
+	});
+
+	it('constructs a canonical error response when current tool state is not snapshot-safe', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		vi.mocked(persistence.getKqlxState).mockReturnValueOnce({
+			sections: [{
+				type: 'markdown',
+				id: 'markdown-unsafe',
+				settings: Object.assign(Object.create({ inherited: true }), { mode: 'preview' }),
+			}],
+		} as any);
+
+		dispatchHostMessage({ type: 'requestToolState', requestId: 'tool-state-invalid-snapshot' });
+		await Promise.resolve();
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledOnce();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolStateResponse',
+			requestId: 'tool-state-invalid-snapshot',
+			sections: [],
+			error: 'The current tool state could not be captured.',
+		});
+	});
+
 	it('exports exact Kusto lifecycle ownership in tool state', async () => {
 		const persistence = await import('../../src/webview/core/persistence.js');
 		vi.mocked(persistence.getKqlxState).mockReturnValueOnce({

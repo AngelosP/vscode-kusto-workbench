@@ -74,7 +74,7 @@ describe('MainWebviewStartupGateway', () => {
 			{ type: 'publishToPowerBIAck', requestId: 'publish-1' },
 			{ type: 'toolExecutionStarted', requestId: 'tool-start-1' },
 			{ type: 'toolResponse', requestId: 'tool-1' },
-			{ type: 'toolStateResponse', requestId: 'state-1' },
+			{ type: 'toolStateResponse', requestId: 'state-1', sections: [] },
 			{
 				type: 'kustoExecutionStartedAck', boxId: 'query-1', executionId: 'execution-1',
 				sectionInstanceId: 'section-1', targetGeneration: 1,
@@ -95,6 +95,9 @@ describe('MainWebviewStartupGateway', () => {
 		})).toBe(false);
 		expect(isMainWebviewCorrelatedReply({ type: 'persistDocument', flushRequestId: 'flush-1' })).toBe(false);
 		expect(isMainWebviewCorrelatedReply({ type: 'toolResponse', requestId: '' })).toBe(false);
+		expect(isMainWebviewCorrelatedReply({
+			type: 'toolStateResponse', requestId: 'state-1', sections: {},
+		})).toBe(false);
 		expect(isMainWebviewCorrelatedReply({
 			type: 'kustoPublicationAck', publicationId: 'publication-1', phase: 'applied',
 		})).toBe(false);
@@ -325,7 +328,13 @@ describe('MainWebviewStartupGateway', () => {
 
 		void harness.receive({ type: 'request', sequence: 2 });
 		expect(events).toEqual(['start:request:1']);
-		await Promise.resolve(harness.receive({ type: 'toolStateResponse', requestId: 'state-reply' }));
+		await Promise.resolve(harness.receive({
+			type: 'toolStateResponse', requestId: 'state-reply', sections: {},
+		}));
+		expect(events).toEqual(['start:request:1']);
+		await Promise.resolve(harness.receive({
+			type: 'toolStateResponse', requestId: 'state-reply', sections: [],
+		}));
 		await drain;
 
 		expect(events).toEqual([

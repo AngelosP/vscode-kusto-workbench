@@ -154,9 +154,11 @@ describe('HostWorkbenchToolSessionApplicationHandler', () => {
 			requestId: defaultMessage.requestId,
 			sections: defaultSections,
 		} satisfies IncomingWebviewMessage);
-		await expect(defaultRequest).resolves.toBe(defaultSections);
+		const resolvedDefaultSections = await defaultRequest;
+		expect(resolvedDefaultSections).toEqual(defaultSections);
+		expect(resolvedDefaultSections).not.toBe(defaultSections);
 		expect(harness.reconcileComparisonOwners).toHaveBeenCalledOnce();
-		expect(harness.reconcileComparisonOwners.mock.calls[0][0]).toBe(defaultSections);
+		expect(harness.reconcileComparisonOwners.mock.calls[0][0]).toBe(resolvedDefaultSections);
 
 		const targetedRequest = harness.handler.requestSectionsFromWebview(
 			'schema-refresh',
@@ -175,9 +177,71 @@ describe('HostWorkbenchToolSessionApplicationHandler', () => {
 			requestId: targetedMessage.requestId,
 			sections: targetedSections,
 		} satisfies IncomingWebviewMessage);
-		await expect(targetedRequest).resolves.toBe(targetedSections);
+		const resolvedTargetedSections = await targetedRequest;
+		expect(resolvedTargetedSections).toEqual(targetedSections);
+		expect(resolvedTargetedSections).not.toBe(targetedSections);
 		expect(harness.reconcileComparisonOwners).toHaveBeenCalledTimes(2);
-		expect(harness.reconcileComparisonOwners.mock.calls[1][0]).toBe(targetedSections);
+		expect(harness.reconcileComparisonOwners.mock.calls[1][0]).toBe(resolvedTargetedSections);
+	});
+
+	it('keeps the exact state waiter live after a matching malformed response', async () => {
+		vi.useFakeTimers();
+		const harness = createHarness();
+		const pending = harness.handler.requestSectionsFromWebview();
+		const request = getLastStateRequest(harness.postMessage);
+		let settled = false;
+		void pending.finally(() => { settled = true; });
+
+		await harness.handler.handleMessage({
+			type: 'toolStateResponse',
+			requestId: request.requestId,
+			sections: {},
+		} as unknown as IncomingWebviewMessage);
+		await vi.advanceTimersByTimeAsync(4999);
+
+		expect(settled).toBe(false);
+		expect(harness.reconcileComparisonOwners).not.toHaveBeenCalled();
+
+		const sections = [{ id: 'canonical-section', type: 'query' }];
+		await harness.handler.handleMessage({
+			type: 'toolStateResponse',
+			requestId: request.requestId,
+			sections,
+		} satisfies IncomingWebviewMessage);
+
+		const resolvedSections = await pending;
+		expect(resolvedSections).toEqual(sections);
+		expect(resolvedSections).not.toBe(sections);
+		expect(harness.reconcileComparisonOwners).toHaveBeenCalledOnce();
+		expect(harness.reconcileComparisonOwners).toHaveBeenCalledWith(resolvedSections);
+	});
+
+	it('keeps the exact state waiter live after an oversized matching response', async () => {
+		vi.useFakeTimers();
+		const harness = createHarness();
+		const pending = harness.handler.requestSectionsFromWebview();
+		const request = getLastStateRequest(harness.postMessage);
+		let settled = false;
+		void pending.finally(() => { settled = true; });
+		const oversizedValues = Array.from({ length: 10_001 }, (_, index) => index);
+
+		await harness.handler.handleMessage({
+			type: 'toolStateResponse',
+			requestId: request.requestId,
+			sections: [{ type: 'query', id: 'oversized-section', oversizedValues }],
+		} as unknown as IncomingWebviewMessage);
+		await vi.advanceTimersByTimeAsync(4999);
+
+		expect(settled).toBe(false);
+		expect(harness.reconcileComparisonOwners).not.toHaveBeenCalled();
+
+		const sections = [{ id: 'canonical-after-oversized', type: 'query' }];
+		await harness.handler.handleMessage({
+			type: 'toolStateResponse', requestId: request.requestId, sections,
+		} satisfies IncomingWebviewMessage);
+
+		await expect(pending).resolves.toEqual(sections);
+		expect(harness.reconcileComparisonOwners).toHaveBeenCalledOnce();
 	});
 
 	it('correlates concurrent state requests through reversed, unmatched, and late responses', async () => {
@@ -201,13 +265,13 @@ describe('HostWorkbenchToolSessionApplicationHandler', () => {
 		await harness.handler.handleMessage({
 			type: 'toolStateResponse', requestId: secondRequest.requestId, sections: secondSections,
 		} satisfies IncomingWebviewMessage);
-		await expect(second).resolves.toBe(secondSections);
+		await expect(second).resolves.toEqual(secondSections);
 		expect(firstSettled).toBe(false);
 
 		await harness.handler.handleMessage({
 			type: 'toolStateResponse', requestId: firstRequest.requestId, sections: firstSections,
 		} satisfies IncomingWebviewMessage);
-		await expect(first).resolves.toBe(firstSections);
+		await expect(first).resolves.toEqual(firstSections);
 		expect(harness.reconcileComparisonOwners.mock.calls.map(call => call[0]))
 			.toEqual([secondSections, firstSections]);
 
@@ -381,7 +445,7 @@ describe('HostWorkbenchToolSessionApplicationHandler', () => {
 		await harness.handler.handleMessage({
 			type: 'toolStateResponse', requestId: stateRequest.requestId, sections,
 		} satisfies IncomingWebviewMessage);
-		await expect(state).resolves.toBe(sections);
+		await expect(state).resolves.toEqual(sections);
 	});
 
 	it('settles pending state, disconnects once, and suppresses later work on disposal', async () => {

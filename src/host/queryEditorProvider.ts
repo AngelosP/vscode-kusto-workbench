@@ -5,6 +5,10 @@ import {
 } from '../shared/kustoPublicationProtocol';
 import { admitArtifactCsvSaveWebviewMessageFromEnvelope } from '../shared/artifactCsvSaveProtocol';
 import { admitDevelopmentNoteMutationWebviewMessage } from '../shared/developmentNoteMutationProtocol';
+import {
+	admitToolStateSnapshotHostMessage,
+	admitToolStateSnapshotWebviewMessageFromEnvelope,
+} from '../shared/toolStateSnapshotProtocol';
 import { captureRuntimeMessageEnvelope } from '../shared/runtimeMessageEnvelope';
 import * as crypto from 'crypto';
 import * as path from 'path';
@@ -1038,6 +1042,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			if (!artifactCsvSaveAdmission.parsed.ok) return;
 			input = artifactCsvSaveAdmission.parsed.value;
 		}
+		const toolStateAdmission = admitToolStateSnapshotWebviewMessageFromEnvelope(
+			envelope.descriptorSnapshot,
+		);
+		if (toolStateAdmission.recognized) {
+			if (!toolStateAdmission.parsed.ok) return;
+			input = toolStateAdmission.parsed.value;
+		}
 		if (this.handleDevelopmentNoteMutationResponse(input)) return;
 		if (input && typeof input === 'object'
 			&& (input as Record<string, unknown>).type === MAIN_WEBVIEW_DISPATCHER_READY_TYPE) return;
@@ -1324,6 +1335,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	postMessage(message: unknown): Thenable<boolean> {
 		if (this._panelDisposed) return Promise.resolve(false);
+		const toolStateAdmission = admitToolStateSnapshotHostMessage(message);
+		if (toolStateAdmission.recognized) {
+			if (!toolStateAdmission.parsed.ok) return Promise.resolve(false);
+			message = toolStateAdmission.parsed.value;
+		}
 		try {
 			if (this.messageTransport) {
 				return Promise.resolve(this.messageTransport(message)).catch(error => {

@@ -35,6 +35,7 @@ import {
 	type DevelopmentNoteMutationPayload,
 	type DevelopmentNoteMutationWebviewAdmission,
 } from '../shared/developmentNoteMutationProtocol.js';
+import type { ToolStateSection } from '../shared/toolStateSnapshotProtocol.js';
 
 export type TargetFields = {
 	openFileId?: string;
@@ -461,15 +462,13 @@ interface KustoFavorite {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Simplified section type for tool orchestrator (doesn't need full KqlxSectionV1)
-interface ToolSection {
+interface ToolSection extends ToolStateSection {
 	id?: string;
-	type: string;
 	name?: string;
 	title?: string;
 	expanded?: boolean;
 	clusterUrl?: string;
 	database?: string;
-	[key: string]: unknown;
 }
 
 type ToolSectionSummary = {

@@ -21,6 +21,7 @@ import type { EditingPreferencesWebviewMessage } from '../shared/editingPreferen
 import type { CopilotInlineCompletionWebviewMessage } from '../shared/copilotInlineCompletionProtocol';
 import type { KustoPublicationWebviewMessage } from '../shared/kustoPublicationProtocol';
 import type { DevelopmentNoteMutationWebviewMessage } from '../shared/developmentNoteMutationProtocol';
+import type { ToolStateSnapshotWebviewMessage } from '../shared/toolStateSnapshotProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -315,7 +316,7 @@ export type IncomingWebviewMessage =
 	| DevelopmentNoteMutationWebviewMessage
 	| { type: 'toolResponse'; requestId: string; result: unknown; error?: string }
 	| { type: 'toolExecutionStarted'; requestId: string; owner: KustoExecutionRequestIdentity }
-	| { type: 'toolStateResponse'; requestId: string; sections: unknown[]; error?: string }
+	| ToolStateSnapshotWebviewMessage
 	| { type: 'openCopilotAgent' }
 	| { type: 'copilotChatFirstTimeCheck'; boxId: string }
 	| { type: 'showSectionDiff'; sectionId: string };

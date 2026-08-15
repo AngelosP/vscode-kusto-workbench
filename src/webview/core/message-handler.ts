@@ -82,6 +82,10 @@ import {
 	admitDevelopmentNoteMutationHostMessageFromEnvelope,
 	createDevelopmentNoteMutationWebviewMessage,
 } from '../../shared/developmentNoteMutationProtocol.js';
+import {
+	admitToolStateSnapshotHostMessageFromEnvelope,
+	createToolStateResponseMessage,
+} from '../../shared/toolStateSnapshotProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -1663,6 +1667,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		if (!developmentNoteMutationAdmission.parsed.ok) return;
 		message = developmentNoteMutationAdmission.parsed.value;
 	}
+	const toolStateAdmission = developmentNoteMutationAdmission.recognized
+		? { recognized: false as const }
+		: admitToolStateSnapshotHostMessageFromEnvelope(envelope.descriptorSnapshot);
+	if (toolStateAdmission.recognized) {
+		if (!toolStateAdmission.parsed.ok) return;
+		message = toolStateAdmission.parsed.value;
+	}
 	const kustoPublicationAdmission = admitKustoPublicationHostMessage(message);
 	if (kustoPublicationAdmission.recognized) {
 		if (!kustoPublicationAdmission.parsed.ok) return;
@@ -1864,15 +1875,19 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			'sqlComparisonAdmissionRelease',
 		]);
 		if (!recoveryMessages.has(incomingType)) {
-			const requestId = String(message.requestId || '');
+			const requestId = incomingType === 'requestToolState'
+				? message.requestId
+				: String(message.requestId || '');
 			const invalidRuntime = pState.documentMutationAllowed === false;
 			if (incomingType === 'requestToolState' && requestId) {
-				postMessageToHost({
-					type: 'toolStateResponse', requestId, sections: [],
-					error: invalidRuntime
+				const response = createToolStateResponseMessage(
+					requestId,
+					[],
+					invalidRuntime
 						? 'This document is invalid and its retained sections are non-executable.'
 						: 'This document is still loading and has no executable sections yet.',
-				} as any);
+				);
+				if (response.ok) postMessageToHost(response.value);
 			} else if ((incomingType.startsWith('tool') || incomingType === 'updateDevNotes') && requestId) {
 				const error = invalidRuntime
 					? 'This document is invalid and its retained sections are read-only.'
@@ -4339,7 +4354,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		case 'requestToolState':
 			// Extension is requesting the current sections state
 			try {
-				const requestId = String(message.requestId || '');
+				const requestId = message.requestId;
 				if (requestId) {
 					const state = getKqlxState();
 					const sections = (state && state.sections) ? state.sections.map((section: any) => {
@@ -4358,7 +4373,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						const database = boxId ? String(__kustoGetDatabase(boxId) || section.database || '').trim() : '';
 						let requestToken = boxId ? String(schemaRequestTokenByBoxId[boxId] || '') : '';
 						if (message.purpose === 'schema-refresh'
-							&& connectionId === String(message.targetConnectionId || '').trim()
+							&& connectionId === (message.targetConnectionId || '').trim()
 							&& boxId && database) {
 							const lease = kustoEditorSchemaCoordinator.getLease(boxId);
 							if (lease) {
@@ -4383,12 +4398,23 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							...(lifecycle || {}),
 						} : section;
 					}) : [];
-					postMessageToHost({ type: 'toolStateResponse', requestId, sections });
+					const response = createToolStateResponseMessage(requestId, sections);
+					if (response.ok) {
+						postMessageToHost(response.value);
+					} else {
+						const unavailable = createToolStateResponseMessage(
+							requestId,
+							[],
+							'The current tool state could not be captured.',
+						);
+						if (unavailable.ok) postMessageToHost(unavailable.value);
+					}
 				}
 			} catch (err: any) {
 				console.error('[Kusto Tools] Error getting state:', err);
 				try {
-					postMessageToHost({ type: 'toolStateResponse', requestId: message.requestId, sections: [] });
+					const response = createToolStateResponseMessage(message.requestId, []);
+					if (response.ok) postMessageToHost(response.value);
 				} catch (e) { console.error('[kusto]', e); }
 			}
 			break;

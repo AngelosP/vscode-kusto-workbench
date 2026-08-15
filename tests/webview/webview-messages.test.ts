@@ -250,6 +250,51 @@ describe('postMessageToHost', () => {
 		}
 	});
 
+	it('snapshots tool-state responses and rejects malformed sections before E2E capture', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const sections = [{
+				type: 'query', id: 'query-1', lifecycle: { sectionInstanceId: 'instance-1' },
+			}];
+			const response = {
+				type: 'toolStateResponse' as const, requestId: 'state-1', sections,
+			};
+			postMessageToHost(response);
+
+			expect(capture).toHaveBeenCalledWith(response);
+			expect(capture.mock.calls[0]?.[0]).not.toBe(response);
+			expect(capture.mock.calls[0]?.[0].sections).not.toBe(sections);
+			expect(postMessage).toHaveBeenCalledWith(response);
+			expect(postMessage.mock.calls[0]?.[0]).not.toBe(response);
+			capture.mockClear();
+			postMessage.mockClear();
+
+			let getterCalls = 0;
+			const accessorSection = { type: 'query', id: 'query-1' };
+			Object.defineProperty(accessorSection, 'database', {
+				enumerable: true,
+				get() {
+					getterCalls++;
+					return 'forged';
+				},
+			});
+			for (const malformedSections of [{}, [accessorSection]]) {
+				postMessageToHost({
+					type: 'toolStateResponse', requestId: 'state-1', sections: malformedSections,
+				} as unknown as Parameters<typeof postMessageToHost>[0]);
+			}
+
+			expect(getterCalls).toBe(0);
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
+
 	it('rejects an unknown-to-known discriminator proxy before transport', () => {
 		const postMessage = vi.fn();
 		(window as any).vscode = { postMessage };

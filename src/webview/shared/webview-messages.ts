@@ -99,6 +99,10 @@ import {
 	type KustoPublicationWebviewMessage,
 } from '../../shared/kustoPublicationProtocol.js';
 import type { DevelopmentNoteMutationWebviewMessage } from '../../shared/developmentNoteMutationProtocol.js';
+import {
+	admitToolStateSnapshotWebviewMessageFromEnvelope,
+	type ToolStateSnapshotWebviewMessage,
+} from '../../shared/toolStateSnapshotProtocol.js';
 import { captureRuntimeMessageEnvelope } from '../../shared/runtimeMessageEnvelope.js';
 import { pState } from './persistence-state.js';
 
@@ -322,7 +326,7 @@ export type OutgoingWebviewMessage =
 	| DevelopmentNoteMutationWebviewMessage
 	| { type: 'toolResponse'; requestId: string; result: unknown; error?: string }
 	| { type: 'toolExecutionStarted'; requestId: string; owner: KustoExecutionRequestIdentity }
-	| { type: 'toolStateResponse'; requestId: string; sections: unknown[]; error?: string }
+	| ToolStateSnapshotWebviewMessage
 	| { type: 'openToolResultInEditor'; boxId: string; tool: string; label: string; content: string }
 	| { type: 'openMarkdownPreview'; filePath: string }
 	| { type: 'openCopilotAgent' }
@@ -466,6 +470,16 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 			return;
 		}
 		message = rawKustoPublicationAdmission.parsed.value;
+	}
+	const rawToolStateAdmission = rawKustoPublicationAdmission.recognized
+		? { recognized: false as const }
+		: admitToolStateSnapshotWebviewMessageFromEnvelope(envelope.descriptorSnapshot);
+	if (rawToolStateAdmission.recognized) {
+		if (!rawToolStateAdmission.parsed.ok) {
+			console.error('[kusto] Rejected invalid tool-state response:', rawToolStateAdmission.parsed.error);
+			return;
+		}
+		message = rawToolStateAdmission.parsed.value;
 	}
 	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage | CompatibilityPersistenceWebviewMessage = message;
 	const kustoPublicationAdmission = admitKustoPublicationWebviewMessage(message);

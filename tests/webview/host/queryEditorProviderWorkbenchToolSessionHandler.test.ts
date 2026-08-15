@@ -419,7 +419,7 @@ describe('QueryEditorProvider Workbench tool session application', () => {
 		expect(handlerSource).toContain(
 			'setTimeout(() => this.settleStateRequest(requestId, undefined), 5000);',
 		);
-		expect(handlerSource).toContain("type: 'requestToolState', requestId");
+		expect(handlerSource).toContain('createRequestToolStateMessage(requestId, purpose, targetConnectionId)');
 		expect(handlerSource).toContain('resolveStrictKustoConnection');
 		expect(handlerSource).toContain('canonicalSectionKind(candidate.type)');
 		expect(handlerSource).toContain('this.options.schema.refreshSchemaForTools');

@@ -7,15 +7,19 @@ import { canonicalSectionKind } from '../shared/documentSectionCapabilities';
 import { resolveKustoConnection, resolveStrictKustoConnection } from '../shared/kustoAuth';
 import type { KustoExecutionRequestIdentity } from '../shared/kustoExecution';
 import type { DevelopmentNoteMutationWebviewAdmission } from '../shared/developmentNoteMutationProtocol';
+import {
+	admitToolStateSnapshotWebviewMessage,
+	createRequestToolStateMessage,
+	type ToolStateSection,
+	type ToolStateSnapshotWebviewMessage,
+} from '../shared/toolStateSnapshotProtocol';
 
 type WorkbenchToolSessionMessage = Extract<IncomingWebviewMessage, {
-	type: 'toolExecutionStarted' | 'toolResponse' | 'toolStateResponse';
-}>;
+	type: 'toolExecutionStarted' | 'toolResponse';
+}> | ToolStateSnapshotWebviewMessage;
 
-type WorkbenchToolSection = {
+type WorkbenchToolSection = ToolStateSection & {
 	id?: string;
-	type: string;
-	[key: string]: unknown;
 };
 
 type WorkbenchToolSchemaRefreshResult = {
@@ -135,10 +139,15 @@ implements WorkbenchToolSessionApplicationHandler {
 	}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
+		const stateAdmission = admitToolStateSnapshotWebviewMessage(message);
+		if (stateAdmission.recognized) {
+			if (this.disposed || !stateAdmission.parsed.ok) return Promise.resolve();
+			this.routeMessage(stateAdmission.parsed.value);
+			return Promise.resolve();
+		}
 		switch (message.type) {
 			case 'toolExecutionStarted':
 			case 'toolResponse':
-			case 'toolStateResponse':
 				break;
 			default:
 				return undefined;
@@ -155,17 +164,15 @@ implements WorkbenchToolSessionApplicationHandler {
 		if (this.disposed || !this.options.isAvailable()) return Promise.resolve(undefined);
 
 		const requestId = `state_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+		const request = createRequestToolStateMessage(requestId, purpose, targetConnectionId);
+		if (!request.ok) return Promise.resolve(undefined);
 		return new Promise(resolve => {
 			const timer = setTimeout(() => this.settleStateRequest(requestId, undefined), 5000);
 			this.stateResponseResolvers.set(requestId, { resolve, timer });
 
 			let delivery: boolean | PromiseLike<boolean>;
 			try {
-				delivery = this.options.postMessage({
-					type: 'requestToolState', requestId,
-					...(purpose ? { purpose } : {}),
-					...(targetConnectionId ? { targetConnectionId } : {}),
-				});
+				delivery = this.options.postMessage(request.value);
 			} catch {
 				this.settleStateRequest(requestId, undefined);
 				return;
