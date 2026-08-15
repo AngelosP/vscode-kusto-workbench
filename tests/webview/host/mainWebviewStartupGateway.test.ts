@@ -1,10 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as vscode from 'vscode';
 
+import { HostArtifactCsvSaveApplicationHandler } from '../../../src/host/artifactCsvSaveApplicationHandler';
+import { HostDevelopmentNoteMutationApplicationHandler } from '../../../src/host/developmentNoteMutationApplicationHandler';
 import {
 	isMainWebviewCorrelatedReply,
 	MAIN_WEBVIEW_DISPATCHER_READY_TYPE,
 	MainWebviewStartupGateway,
 } from '../../../src/host/mainWebviewStartupGateway';
+import {
+	admitDevelopmentNoteMutationWebviewMessage,
+	createDevelopmentNoteMutationWebviewMessage,
+	type DevelopmentNoteMutationHostMessage,
+} from '../../../src/shared/developmentNoteMutationProtocol';
+import { admitArtifactCsvSaveWebviewMessage } from '../../../src/shared/artifactCsvSaveProtocol';
 
 type TestMessage = { type: string; sequence?: number; [key: string]: unknown };
 
@@ -146,6 +155,76 @@ describe('MainWebviewStartupGateway', () => {
 		expect(received[0]).not.toBe(reply);
 	});
 
+	it('does not consume a live artifact transfer after dropping a non-enumerable field', async () => {
+		vi.useFakeTimers();
+		const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+		const informationSpy = vi.spyOn(vscode.window, 'showInformationMessage').mockResolvedValue(undefined as any);
+		const harness = createPanelHarness();
+		const posted: any[] = [];
+		const artifactHandler = new HostArtifactCsvSaveApplicationHandler({
+			postMessage: async message => {
+				posted.push(message);
+				return true;
+			},
+			isDisposed: () => false,
+			showSaveDialog: async () => vscode.Uri.file('C:/Users/test/Downloads/gateway.csv'),
+		}) as HostArtifactCsvSaveApplicationHandler & Record<string, any>;
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel,
+			admitInbound: admitTestMessage,
+			allowReentrantInbound: isMainWebviewCorrelatedReply,
+		});
+
+		try {
+			await artifactHandler.handleMessage({
+				type: 'requestArtifactCsvSave', requestId: 'gateway-export',
+				boxId: 'query-1', artifactId: 'artifact-1',
+			} as any);
+			const challenge = posted.find(message => message.type === 'requestArtifactCsvSaveData');
+			if (!challenge) throw new Error('Expected an artifact CSV transfer challenge.');
+			const pending = artifactHandler.pendingArtifactCsvSaves.get(challenge.requestId);
+			if (!pending) throw new Error('Expected a live artifact CSV transfer.');
+			const initialTimerCount = vi.getTimerCount();
+			await gateway.setInboundHandler(message => artifactHandler.handleMessage(message as any));
+
+			const malformed: Record<string, unknown> = {
+				type: 'artifactCsvSaveData', requestId: challenge.requestId,
+				boxId: 'query-1', artifactId: 'artifact-1', accepted: false,
+			};
+			Object.defineProperty(malformed, 'csv', {
+				enumerable: false,
+				value: 'must remain invalid',
+			});
+			const directAdmission = admitArtifactCsvSaveWebviewMessage(malformed);
+			expect(directAdmission).toMatchObject({ recognized: true, parsed: { ok: false } });
+
+			await Promise.resolve(harness.receive(malformed));
+			expect(artifactHandler.pendingArtifactCsvSaves.get(challenge.requestId)).toBe(pending);
+			expect(artifactHandler.pendingArtifactCsvSaves.get(challenge.requestId).timer).toBe(pending.timer);
+			expect(artifactHandler.pendingArtifactCsvIntentIds.has('gateway-export')).toBe(true);
+			expect(artifactHandler.completedArtifactCsvIntentIds.size).toBe(0);
+			expect(vi.getTimerCount()).toBe(initialTimerCount);
+			expect(clearTimeoutSpy).not.toHaveBeenCalled();
+			expect(informationSpy).not.toHaveBeenCalled();
+
+			await Promise.resolve(harness.receive({
+				type: 'artifactCsvSaveData', requestId: challenge.requestId,
+				boxId: 'query-1', artifactId: 'artifact-1', accepted: false,
+			}));
+			expect(artifactHandler.pendingArtifactCsvSaves.size).toBe(0);
+			expect(artifactHandler.pendingArtifactCsvIntentIds.has('gateway-export')).toBe(false);
+			expect(artifactHandler.completedArtifactCsvIntentIds.has('gateway-export')).toBe(true);
+			expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
+			expect(informationSpy).toHaveBeenCalledWith('Results are no longer available for CSV export.');
+		} finally {
+			artifactHandler.dispose();
+			gateway.dispose();
+			clearTimeoutSpy.mockRestore();
+			informationSpy.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
 	it('installs listener first and drains both directions exactly once in order', async () => {
 		const harness = createPanelHarness();
 		const inbound: number[] = [];
@@ -257,6 +336,254 @@ describe('MainWebviewStartupGateway', () => {
 			'start:request:2',
 			'end:request:2',
 		]);
+	});
+
+	it('keeps an accessor-backed mutation response from consuming work during a blocked startup drain', async () => {
+		vi.useFakeTimers();
+		const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+		const harness = createPanelHarness();
+		let outbound: DevelopmentNoteMutationHostMessage | undefined;
+		const mutationHandler = new HostDevelopmentNoteMutationApplicationHandler({
+			isAvailable: () => true,
+			postMessage: message => {
+				outbound = message;
+				return true;
+			},
+		});
+		let mutationSettled = false;
+		const mutation = mutationHandler.updateDevelopmentNotes({ action: 'remove', noteId: 'note-1' });
+		void mutation.then(() => { mutationSettled = true; });
+		const requestId = outbound?.requestId;
+		if (!requestId) throw new Error('Expected a development-note mutation request.');
+		const initialTimerCount = vi.getTimerCount();
+
+		let markFirstStarted!: () => void;
+		let releaseFirst!: () => void;
+		const firstStarted = new Promise<void>(resolve => { markFirstStarted = resolve; });
+		const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+		let genericResponses = 0;
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel,
+			admitInbound: admitTestMessage,
+			allowReentrantInbound: isMainWebviewCorrelatedReply,
+		});
+		void harness.receive({ type: 'request', sequence: 1 });
+		const drain = gateway.setInboundHandler(async message => {
+			if (message.type === 'request') {
+				markFirstStarted();
+				await firstGate;
+				return;
+			}
+			const admission = admitDevelopmentNoteMutationWebviewMessage(message);
+			const claimed = mutationHandler.handleResponseAdmission(admission)
+				|| (admission.recognized && !admission.parsed.ok
+					&& !admission.requestId && mutationHandler.hasPendingResponse());
+			if (!claimed) genericResponses++;
+			if (admission.recognized && admission.parsed.ok
+				&& admission.parsed.value.requestId === requestId) releaseFirst();
+		});
+
+		try {
+			await firstStarted;
+			let getterCalls = 0;
+			const malformed: Record<string, unknown> = {
+				type: 'toolResponse',
+				result: { success: 'yes' },
+			};
+			Object.defineProperty(malformed, 'requestId', {
+				configurable: true,
+				enumerable: true,
+				get() {
+					getterCalls++;
+					Object.defineProperties(malformed, {
+						requestId: { configurable: true, enumerable: true, value: requestId },
+						result: { configurable: true, enumerable: true, value: { success: true } },
+					});
+					return requestId;
+				},
+			});
+
+			await Promise.resolve(harness.receive(malformed));
+			expect(getterCalls).toBe(0);
+			expect(mutationHandler.hasPendingResponse()).toBe(true);
+			expect(mutationSettled).toBe(false);
+			expect(vi.getTimerCount()).toBe(initialTimerCount);
+			expect(clearTimeoutSpy).not.toHaveBeenCalled();
+			expect(genericResponses).toBe(0);
+
+			let typeGetCalls = 0;
+			const proxyTarget: Record<string, unknown> = {
+				type: 'toolResponse',
+				requestId,
+				result: { success: 'yes' },
+			};
+			const typeMutatingProxy = new Proxy(proxyTarget, {
+				get(target, key, receiver) {
+					if (key === 'type') {
+						typeGetCalls++;
+						target.result = { success: true };
+					}
+					return Reflect.get(target, key, receiver);
+				},
+			});
+			await Promise.resolve(harness.receive(typeMutatingProxy));
+			expect(typeGetCalls).toBe(0);
+			expect(mutationHandler.hasPendingResponse()).toBe(true);
+			expect(mutationSettled).toBe(false);
+			expect(vi.getTimerCount()).toBe(initialTimerCount);
+			expect(clearTimeoutSpy).not.toHaveBeenCalled();
+			expect(genericResponses).toBe(0);
+
+			let resultDescriptorCalls = 0;
+			const descriptorTarget: Record<string, unknown> = {
+				type: 'toolResponse',
+				requestId,
+				result: { success: 'yes' },
+			};
+			const descriptorMutatingProxy = new Proxy(descriptorTarget, {
+				getOwnPropertyDescriptor(target, key) {
+					const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+					if (key === 'result' && ++resultDescriptorCalls === 1) {
+						target.result = { success: true };
+					}
+					return descriptor;
+				},
+			});
+			await Promise.resolve(harness.receive(descriptorMutatingProxy));
+			expect(resultDescriptorCalls).toBe(1);
+			expect(mutationHandler.hasPendingResponse()).toBe(true);
+			expect(mutationSettled).toBe(false);
+			expect(vi.getTimerCount()).toBe(initialTimerCount);
+			expect(clearTimeoutSpy).not.toHaveBeenCalled();
+			expect(genericResponses).toBe(0);
+
+			let nestedDescriptorCalls = 0;
+			const nestedDescriptorTarget: Record<string, unknown> = { success: 'yes' };
+			const nestedDescriptorProxy = new Proxy(nestedDescriptorTarget, {
+				getOwnPropertyDescriptor(target, key) {
+					const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+					if (key === 'success' && ++nestedDescriptorCalls === 1) target.success = true;
+					return descriptor;
+				},
+			});
+			await Promise.resolve(harness.receive({
+				type: 'toolResponse', requestId, result: nestedDescriptorProxy,
+			}));
+			expect(nestedDescriptorCalls).toBe(0);
+			expect(mutationHandler.hasPendingResponse()).toBe(true);
+			expect(mutationSettled).toBe(false);
+			expect(vi.getTimerCount()).toBe(initialTimerCount);
+			expect(clearTimeoutSpy).not.toHaveBeenCalled();
+			expect(genericResponses).toBe(0);
+
+			let nestedPrototypeCalls = 0;
+			const nestedPrototypeProxy = new Proxy({ success: true }, {
+				getPrototypeOf() {
+					nestedPrototypeCalls++;
+					return nestedPrototypeCalls === 1 ? { custom: true } : Object.prototype;
+				},
+			});
+			await Promise.resolve(harness.receive({
+				type: 'toolResponse', requestId, result: nestedPrototypeProxy,
+			}));
+			expect(nestedPrototypeCalls).toBe(0);
+			expect(mutationHandler.hasPendingResponse()).toBe(true);
+			expect(mutationSettled).toBe(false);
+			expect(vi.getTimerCount()).toBe(initialTimerCount);
+			expect(clearTimeoutSpy).not.toHaveBeenCalled();
+			expect(genericResponses).toBe(0);
+
+			let topLevelPrototypeCalls = 0;
+			const inheritedRequestPrototype = { requestId };
+			const topLevelPrototypeProxy = new Proxy({
+				type: 'toolResponse', result: { success: 'yes' },
+			}, {
+				getPrototypeOf() {
+					topLevelPrototypeCalls++;
+					return topLevelPrototypeCalls === 1
+						? inheritedRequestPrototype
+						: Object.prototype;
+				},
+			});
+			await Promise.resolve(harness.receive(topLevelPrototypeProxy));
+			expect(topLevelPrototypeCalls).toBe(1);
+			expect(mutationHandler.hasPendingResponse()).toBe(true);
+			expect(mutationSettled).toBe(false);
+			expect(vi.getTimerCount()).toBe(initialTimerCount);
+			expect(clearTimeoutSpy).not.toHaveBeenCalled();
+			expect(genericResponses).toBe(0);
+
+			let aliasedOwnKeysCalls = 0;
+			const aliasedTarget: Record<string, unknown> = {
+				type: 'toolResponse', requestId, success: true,
+			};
+			let aliasedResponse!: Record<string, unknown>;
+			aliasedResponse = new Proxy(aliasedTarget, {
+				ownKeys() {
+					aliasedOwnKeysCalls++;
+					return aliasedOwnKeysCalls === 1
+						? ['type', 'requestId', 'result']
+						: ['success'];
+				},
+				getOwnPropertyDescriptor(target, key) {
+					if (key === 'result') {
+						return { configurable: true, enumerable: true, writable: true, value: aliasedResponse };
+					}
+					return Reflect.getOwnPropertyDescriptor(target, key);
+				},
+			});
+			await Promise.resolve(harness.receive(aliasedResponse));
+			expect(aliasedOwnKeysCalls).toBe(1);
+			expect(mutationHandler.hasPendingResponse()).toBe(true);
+			expect(mutationSettled).toBe(false);
+			expect(vi.getTimerCount()).toBe(initialTimerCount);
+			expect(clearTimeoutSpy).not.toHaveBeenCalled();
+			expect(genericResponses).toBe(0);
+
+			let wrappedOwnKeysCalls = 0;
+			const wrappedTarget: Record<string, unknown> = {
+				type: 'toolResponse', requestId, success: true,
+			};
+			let shapeVaryingResponse!: Record<string, unknown>;
+			let wrappedResponse!: Record<string, unknown>;
+			shapeVaryingResponse = new Proxy(wrappedTarget, {
+				ownKeys() {
+					wrappedOwnKeysCalls++;
+					return wrappedOwnKeysCalls === 1
+						? ['type', 'requestId', 'result']
+						: ['success'];
+				},
+				getOwnPropertyDescriptor(target, key) {
+					if (key === 'result') {
+						return { configurable: true, enumerable: true, writable: true, value: wrappedResponse };
+					}
+					return Reflect.getOwnPropertyDescriptor(target, key);
+				},
+			});
+			wrappedResponse = new Proxy(shapeVaryingResponse, {});
+			await Promise.resolve(harness.receive(shapeVaryingResponse));
+			expect(wrappedOwnKeysCalls).toBe(1);
+			expect(mutationHandler.hasPendingResponse()).toBe(true);
+			expect(mutationSettled).toBe(false);
+			expect(vi.getTimerCount()).toBe(initialTimerCount);
+			expect(clearTimeoutSpy).not.toHaveBeenCalled();
+			expect(genericResponses).toBe(0);
+
+			await Promise.resolve(harness.receive(
+				createDevelopmentNoteMutationWebviewMessage(requestId, true),
+			));
+			await drain;
+			await expect(mutation).resolves.toEqual({ success: true });
+			expect(mutationHandler.hasPendingResponse()).toBe(false);
+			expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
+			expect(genericResponses).toBe(0);
+		} finally {
+			releaseFirst();
+			mutationHandler.dispose();
+			gateway.dispose();
+			clearTimeoutSpy.mockRestore();
+			vi.useRealTimers();
+		}
 	});
 
 	it('queues synchronous ordinary reentry behind the complete startup queue', async () => {

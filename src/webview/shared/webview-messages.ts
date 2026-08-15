@@ -98,6 +98,7 @@ import {
 	admitKustoPublicationWebviewMessageFromEnvelope,
 	type KustoPublicationWebviewMessage,
 } from '../../shared/kustoPublicationProtocol.js';
+import type { DevelopmentNoteMutationWebviewMessage } from '../../shared/developmentNoteMutationProtocol.js';
 import { captureRuntimeMessageEnvelope } from '../../shared/runtimeMessageEnvelope.js';
 import { pState } from './persistence-state.js';
 
@@ -318,6 +319,7 @@ export type OutgoingWebviewMessage =
 	| UrlContentWebviewMessage
 
 	// Tool responses (agent tools)
+	| DevelopmentNoteMutationWebviewMessage
 	| { type: 'toolResponse'; requestId: string; result: unknown; error?: string }
 	| { type: 'toolExecutionStarted'; requestId: string; owner: KustoExecutionRequestIdentity }
 	| { type: 'toolStateResponse'; requestId: string; sections: unknown[]; error?: string }

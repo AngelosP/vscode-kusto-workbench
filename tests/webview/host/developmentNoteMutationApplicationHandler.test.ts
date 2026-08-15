@@ -21,6 +21,17 @@ function toolResponse(
 	return { type: 'toolResponse', requestId, result, error };
 }
 
+function noteEntry(id: string) {
+	return {
+		id,
+		created: '2026-08-14T00:00:00.000Z',
+		updated: '2026-08-14T00:00:00.000Z',
+		category: 'usage-note',
+		content: `Content for ${id}`,
+		source: 'copilot',
+	};
+}
+
 describe('HostDevelopmentNoteMutationApplicationHandler', () => {
 	afterEach(() => {
 		vi.useRealTimers();
@@ -49,7 +60,7 @@ describe('HostDevelopmentNoteMutationApplicationHandler', () => {
 			postMessage,
 			isAvailable: () => true,
 		});
-		const mutation = { action: 'add', entry: { id: 'note_1' } };
+		const mutation = { action: 'add', entry: noteEntry('note_1') } as const;
 
 		const pending = handler.updateDevelopmentNotes(mutation);
 
@@ -64,6 +75,93 @@ describe('HostDevelopmentNoteMutationApplicationHandler', () => {
 		expect(handler.handleMessage(response)).toBe(true);
 		await expect(pending).resolves.toEqual({ success: true });
 		expect(handler.handleMessage(response)).toBe(false);
+	});
+
+	it('keeps the exact waiter and five-second timer live until a canonical response settles it', async () => {
+		vi.useFakeTimers();
+		const postMessage = vi.fn(() => true);
+		const handler = new HostDevelopmentNoteMutationApplicationHandler({
+			postMessage,
+			isAvailable: () => true,
+		});
+		let settled = false;
+		const pending = handler.updateDevelopmentNotes({ action: 'add', entry: noteEntry('note_1') });
+		void pending.then(() => { settled = true; });
+		const request = postMessage.mock.calls[0][0] as { requestId: string };
+
+		expect(vi.getTimerCount()).toBe(1);
+		expect(handler.handleMessage(toolResponse(request.requestId, { success: 'yes' }))).toBe(true);
+		expect(settled).toBe(false);
+		expect(vi.getTimerCount()).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(4999);
+		expect(settled).toBe(false);
+		expect(vi.getTimerCount()).toBe(1);
+
+		expect(handler.handleMessage(toolResponse(request.requestId, { success: true }))).toBe(true);
+		await expect(pending).resolves.toEqual({ success: true });
+		expect(settled).toBe(true);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it('claims inherited matching correlation without consuming its waiter or timer', async () => {
+		vi.useFakeTimers();
+		const postMessage = vi.fn(() => true);
+		const handler = new HostDevelopmentNoteMutationApplicationHandler({
+			postMessage,
+			isAvailable: () => true,
+		});
+		let settled = false;
+		const pending = handler.updateDevelopmentNotes({ action: 'remove', noteId: 'note_inherited' });
+		void pending.then(() => { settled = true; });
+		const request = postMessage.mock.calls[0][0] as { requestId: string };
+		const inherited = Object.assign(Object.create({ requestId: request.requestId }), {
+			type: 'toolResponse', result: { success: 'yes' },
+		});
+
+		expect(handler.handleMessage(inherited)).toBe(true);
+		expect(settled).toBe(false);
+		expect(vi.getTimerCount()).toBe(1);
+		expect(handler.handleMessage(toolResponse(request.requestId, { success: true }))).toBe(true);
+		await expect(pending).resolves.toEqual({ success: true });
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it.each([
+		{ action: 'add', entry: { id: 'partial' } },
+		{ action: 'remove', noteId: 'note_1', requestId: 'caller-controlled' },
+	])('rejects malformed producer payload $action before request, waiter, timer, or transport effects', async mutation => {
+		vi.useFakeTimers();
+		const postMessage = vi.fn(() => true);
+		const handler = new HostDevelopmentNoteMutationApplicationHandler({
+			postMessage,
+			isAvailable: () => true,
+		});
+
+		await expect(handler.updateDevelopmentNotes(mutation as never)).resolves.toEqual({
+			success: false,
+			error: expect.any(String),
+		});
+		expect(postMessage).not.toHaveBeenCalled();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it('rejects a revoked nested related-section array before waiter, timer, or transport effects', async () => {
+		vi.useFakeTimers();
+		const postMessage = vi.fn(() => true);
+		const handler = new HostDevelopmentNoteMutationApplicationHandler({
+			postMessage,
+			isAvailable: () => true,
+		});
+		const relatedSectionIds = Proxy.revocable(['query_1'], {});
+		relatedSectionIds.revoke();
+
+		await expect(handler.updateDevelopmentNotes({
+			action: 'add',
+			entry: { ...noteEntry('note_revoked'), relatedSectionIds: relatedSectionIds.proxy },
+		})).resolves.toEqual({ success: false, error: expect.any(String) });
+		expect(postMessage).not.toHaveBeenCalled();
+		expect(vi.getTimerCount()).toBe(0);
 	});
 
 	it('settles the exact claimed error and false result shapes', async () => {
@@ -114,7 +212,7 @@ describe('HostDevelopmentNoteMutationApplicationHandler', () => {
 			isAvailable: () => true,
 		});
 
-		await expect(handler.updateDevelopmentNotes({ action: 'add' })).resolves.toEqual({
+		await expect(handler.updateDevelopmentNotes({ action: 'remove', noteId: 'note_delivery' })).resolves.toEqual({
 			success: false,
 			error,
 		});
@@ -142,7 +240,7 @@ describe('HostDevelopmentNoteMutationApplicationHandler', () => {
 			isAvailable: () => true,
 		});
 		let settled = false;
-		const pending = handler.updateDevelopmentNotes({ action: 'add' });
+		const pending = handler.updateDevelopmentNotes({ action: 'remove', noteId: 'note_timeout' });
 		void pending.then(() => { settled = true; });
 		const request = postMessage.mock.calls[0][0] as { requestId: string };
 
@@ -167,7 +265,7 @@ describe('HostDevelopmentNoteMutationApplicationHandler', () => {
 			postMessage,
 			isAvailable: () => true,
 		});
-		const first = handler.updateDevelopmentNotes({ action: 'add', entry: { id: 'note_1' } });
+		const first = handler.updateDevelopmentNotes({ action: 'add', entry: noteEntry('note_1') });
 		const firstRequest = postMessage.mock.calls[0][0] as { requestId: string };
 		const second = handler.updateDevelopmentNotes({ action: 'remove', noteId: 'note_2' });
 

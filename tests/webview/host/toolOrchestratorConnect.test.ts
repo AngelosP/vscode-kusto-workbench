@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { KustoWorkbenchToolOrchestrator } from '../../../src/host/kustoWorkbenchTools';
 import { classifyWorkbenchUri } from '../../../src/host/workbenchFileTypes';
@@ -90,6 +90,11 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		resetOpenEditorState();
 	});
 
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
 	it('connect returns a token and listSections uses the stateGetter', async () => {
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 		const stateGetter = vi.fn(async () => [
@@ -101,6 +106,112 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect(stateGetter).toHaveBeenCalledTimes(1);
 		expect(result.sections).toHaveLength(1);
 		expect(result.sections[0].id).toBe('q1');
+	});
+
+	it('keeps the agent development-note waiter live until an exact canonical response arrives', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-08-14T00:00:00.000Z'));
+		vi.spyOn(Math, 'random').mockReturnValue(0.5);
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/development-notes.kqlx');
+		const poster = vi.fn(() => true);
+		orch.connect(poster, vi.fn(async () => []), vi.fn(), uri.toString());
+		setActiveCustomTab(uri, 'kusto.kqlxEditor');
+		let settled = false;
+
+		const pending = orch.manageDevelopmentNotes({
+			action: 'add',
+			category: 'usage-note',
+			content: 'Agent exact note',
+			relatedSectionIds: ['query_exact'],
+		});
+		void pending.then(() => { settled = true; });
+		const request = poster.mock.calls[0][0] as any;
+
+		expect(request).toEqual({
+			type: 'updateDevNotes',
+			requestId: 'tool_1_1786665600000',
+			action: 'add',
+			entry: {
+				id: 'dn_1786665600000_i',
+				created: '2026-08-14T00:00:00.000Z',
+				updated: '2026-08-14T00:00:00.000Z',
+				category: 'usage-note',
+				content: 'Agent exact note',
+				source: 'agent',
+				relatedSectionIds: ['query_exact'],
+			},
+		});
+		expect(vi.getTimerCount()).toBe(1);
+
+		const malformed = {
+			type: 'toolResponse', requestId: request.requestId, result: { success: 'yes' },
+		};
+		expect(orch.handleDevelopmentNoteMutationResponse(malformed)).toBe(true);
+		await Promise.resolve();
+		expect(settled).toBe(false);
+		expect(vi.getTimerCount()).toBe(1);
+		const inherited = Object.assign(Object.create({ requestId: request.requestId }), {
+			type: 'toolResponse', result: { success: 'yes' },
+		});
+		expect(orch.handleDevelopmentNoteMutationResponse(inherited)).toBe(true);
+		await Promise.resolve();
+		expect(settled).toBe(false);
+		expect(vi.getTimerCount()).toBe(1);
+		orch.handleWebviewResponse(request.requestId, { success: 'yes' });
+		await Promise.resolve();
+		expect(settled).toBe(false);
+		expect(vi.getTimerCount()).toBe(1);
+
+		const canonical = {
+			type: 'toolResponse', requestId: request.requestId, result: { success: true },
+		};
+		expect(orch.handleDevelopmentNoteMutationResponse(canonical)).toBe(true);
+		await expect(pending).resolves.toEqual({ success: true });
+		expect(settled).toBe(true);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it('rejects malformed agent development-note payloads before transport', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/development-notes.kqlx');
+		const poster = vi.fn(() => true);
+		orch.connect(poster, vi.fn(async () => []), vi.fn(), uri.toString());
+		setActiveCustomTab(uri, 'kusto.kqlxEditor');
+
+		await expect(orch.manageDevelopmentNotes({
+			action: 'add',
+			category: 'usage-note',
+			content: 'Malformed agent note',
+			relatedSectionIds: ['query_exact', 42] as unknown as string[],
+		})).rejects.toThrow('relatedSectionIds');
+		expect(poster).not.toHaveBeenCalled();
+	});
+
+	it('rejects a revoked nested agent development-note array before transport or waiter effects', async () => {
+		vi.useFakeTimers();
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/development-notes.kqlx');
+		const poster = vi.fn(() => true);
+		orch.connect(poster, vi.fn(async () => []), vi.fn(), uri.toString());
+		setActiveCustomTab(uri, 'kusto.kqlxEditor');
+		const relatedSectionIds = Proxy.revocable(['query_exact'], {});
+		relatedSectionIds.revoke();
+
+		await expect(orch.manageDevelopmentNotes({
+			action: 'add',
+			category: 'usage-note',
+			content: 'Revoked agent note',
+			relatedSectionIds: relatedSectionIds.proxy,
+		})).rejects.toThrow('relatedSectionIds');
+		expect(poster).not.toHaveBeenCalled();
+		expect(vi.getTimerCount()).toBe(0);
 	});
 
 	it('keeps Kusto optimization comparisons in tool inventory when SQL privacy is enabled elsewhere', async () => {

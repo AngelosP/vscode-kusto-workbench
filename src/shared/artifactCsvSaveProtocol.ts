@@ -1,3 +1,5 @@
+import type { RuntimeMessageEnvelopeDescriptorSnapshot } from './runtimeMessageEnvelope';
+
 type UnknownRecord = Record<string, unknown>;
 
 export type ArtifactCsvSaveParseResult<T> =
@@ -297,6 +299,21 @@ export function admitArtifactCsvSaveWebviewMessage(
 		recognized: true,
 		parsed: parseArtifactCsvSaveWebviewMessageWithType(input, inspection.type),
 	};
+}
+
+export function admitArtifactCsvSaveWebviewMessageFromEnvelope(
+	snapshot: RuntimeMessageEnvelopeDescriptorSnapshot,
+): ArtifactCsvSaveAdmissionResult<ArtifactCsvSaveWebviewMessage> {
+	try {
+		const captured = Object.create(null) as UnknownRecord;
+		Object.defineProperties(captured, snapshot.descriptors);
+		return admitArtifactCsvSaveWebviewMessage(captured);
+	} catch {
+		return {
+			recognized: true,
+			parsed: failure('Artifact CSV save request could not be captured.'),
+		};
+	}
 }
 
 export function admitArtifactCsvSaveHostMessage(

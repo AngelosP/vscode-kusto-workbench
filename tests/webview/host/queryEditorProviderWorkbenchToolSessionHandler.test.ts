@@ -8,6 +8,7 @@ const toolOrchestratorMocks = vi.hoisted(() => ({
 	activateConnection: vi.fn(),
 	disconnectIfOwner: vi.fn(),
 	handleKustoExecutionStarted: vi.fn(),
+	handleDevelopmentNoteMutationResponse: vi.fn(() => false),
 	handleWebviewResponse: vi.fn(),
 }));
 
@@ -54,6 +55,9 @@ import type { IncomingWebviewMessage } from '../../../src/host/queryEditorTypes'
 
 type StructuralWorkbenchToolSessionHandler = {
 	activate: ReturnType<typeof vi.fn>;
+	handleDevelopmentNoteMutationResponse: ReturnType<typeof vi.fn>;
+	handleDevelopmentNoteMutationResponseAdmission?: ReturnType<typeof vi.fn>;
+	hasPendingDevelopmentNoteMutationResponse?: ReturnType<typeof vi.fn>;
 	handleMessage: ReturnType<typeof vi.fn>;
 	requestSectionsFromWebview: ReturnType<typeof vi.fn>;
 	dispose: ReturnType<typeof vi.fn>;
@@ -189,6 +193,7 @@ describe('QueryEditorProvider Workbench tool session application', () => {
 		] satisfies IncomingWebviewMessage[];
 		const workbenchToolSessionApplication: StructuralWorkbenchToolSessionHandler = {
 			activate: vi.fn(),
+			handleDevelopmentNoteMutationResponse: vi.fn(() => false),
 			handleMessage: vi.fn((candidate: IncomingWebviewMessage) => {
 				const index = messages.indexOf(candidate);
 				return index >= 0 ? routeSettlements[index].promise : undefined;
@@ -218,7 +223,9 @@ describe('QueryEditorProvider Workbench tool session application', () => {
 			.workbenchToolSessionApplication).toBe(workbenchToolSessionApplication);
 		expect(settled).toEqual([false, false, false]);
 		expect(developmentNoteMutationApplication.handleMessage).toHaveBeenCalledOnce();
-		expect(developmentNoteMutationApplication.handleMessage.mock.calls[0][0]).toBe(messages[1]);
+		expect(developmentNoteMutationApplication.handleMessage).toHaveBeenCalledWith(messages[1]);
+		expect(workbenchToolSessionApplication.handleDevelopmentNoteMutationResponse).toHaveBeenCalledOnce();
+		expect(workbenchToolSessionApplication.handleDevelopmentNoteMutationResponse).toHaveBeenCalledWith(messages[1]);
 		expect(legacyStateResolver).not.toHaveBeenCalled();
 		expect(toolOrchestratorMocks.handleKustoExecutionStarted).not.toHaveBeenCalled();
 		expect(toolOrchestratorMocks.handleWebviewResponse).not.toHaveBeenCalled();
@@ -233,6 +240,7 @@ describe('QueryEditorProvider Workbench tool session application', () => {
 		const sections = [{ id: 'section-state-exact', type: 'query' }];
 		const workbenchToolSessionApplication: StructuralWorkbenchToolSessionHandler = {
 			activate: vi.fn(),
+			handleDevelopmentNoteMutationResponse: vi.fn(() => false),
 			handleMessage: vi.fn(() => undefined),
 			requestSectionsFromWebview: vi.fn(() => settlement.promise),
 			dispose: vi.fn(),
@@ -258,6 +266,7 @@ describe('QueryEditorProvider Workbench tool session application', () => {
 	it('gives matching development-note responses first claim before tool-session fallthrough', async () => {
 		const workbenchToolSessionApplication: StructuralWorkbenchToolSessionHandler = {
 			activate: vi.fn(),
+			handleDevelopmentNoteMutationResponse: vi.fn(() => false),
 			handleMessage: vi.fn(() => Promise.resolve()),
 			requestSectionsFromWebview: vi.fn(),
 			dispose: vi.fn(),
@@ -274,6 +283,86 @@ describe('QueryEditorProvider Workbench tool session application', () => {
 
 		expect(developmentNoteMutationApplication.handleMessage).toHaveBeenCalledOnce();
 		expect(developmentNoteMutationApplication.handleMessage.mock.calls[0][0]).toBe(message);
+		expect(workbenchToolSessionApplication.handleMessage).not.toHaveBeenCalled();
+		expect(toolOrchestratorMocks.handleWebviewResponse).not.toHaveBeenCalled();
+	});
+
+	it('gives matching agent development-note responses first claim before generic tool routing', async () => {
+		const workbenchToolSessionApplication: StructuralWorkbenchToolSessionHandler = {
+			activate: vi.fn(),
+			handleDevelopmentNoteMutationResponse: vi.fn(() => true),
+			handleMessage: vi.fn(() => Promise.resolve()),
+			requestSectionsFromWebview: vi.fn(),
+			dispose: vi.fn(),
+		};
+		const { provider, developmentNoteMutationApplication } = createProvider(workbenchToolSessionApplication);
+		const message = {
+			type: 'toolResponse', requestId: 'tool-development-note-claimed-exact', result: { success: 'yes' },
+		} as unknown as IncomingWebviewMessage;
+
+		await provider.handleWebviewMessage(message);
+
+		expect(developmentNoteMutationApplication.handleMessage).toHaveBeenCalledWith(message);
+		expect(workbenchToolSessionApplication.handleDevelopmentNoteMutationResponse).toHaveBeenCalledWith(message);
+		expect(workbenchToolSessionApplication.handleMessage).not.toHaveBeenCalled();
+		expect(toolOrchestratorMocks.handleWebviewResponse).not.toHaveBeenCalled();
+	});
+
+	it('quarantines unsafe matching agent correlation before property access and admits the canonical response', async () => {
+		let getterCalls = 0;
+		const handleAdmission = vi.fn((admission: {
+			requestId?: string;
+			parsed: { ok: boolean };
+		}) => admission.requestId === 'tool-development-note-current');
+		const workbenchToolSessionApplication: StructuralWorkbenchToolSessionHandler = {
+			activate: vi.fn(),
+			handleDevelopmentNoteMutationResponse: vi.fn(() => false),
+			handleDevelopmentNoteMutationResponseAdmission: handleAdmission,
+			hasPendingDevelopmentNoteMutationResponse: vi.fn(() => true),
+			handleMessage: vi.fn(() => Promise.resolve()),
+			requestSectionsFromWebview: vi.fn(),
+			dispose: vi.fn(),
+		};
+		const { provider, developmentNoteMutationApplication } = createProvider(workbenchToolSessionApplication);
+		(developmentNoteMutationApplication as unknown as {
+			handleResponseAdmission: ReturnType<typeof vi.fn>;
+			hasPendingResponse: ReturnType<typeof vi.fn>;
+		}).handleResponseAdmission = vi.fn(() => false);
+		(developmentNoteMutationApplication as unknown as {
+			hasPendingResponse: ReturnType<typeof vi.fn>;
+		}).hasPendingResponse = vi.fn(() => false);
+		const inherited = Object.assign(Object.create({ requestId: 'tool-development-note-current' }), {
+			type: 'toolResponse', result: { success: 'yes' },
+		}) as IncomingWebviewMessage;
+		const accessor: Record<string, unknown> = {
+			type: 'toolResponse', result: { success: 'yes' },
+		};
+		Object.defineProperty(accessor, 'requestId', {
+			enumerable: true,
+			get() {
+				getterCalls++;
+				return 'tool-development-note-current';
+			},
+		});
+		const canonical = {
+			type: 'toolResponse', requestId: 'tool-development-note-current', result: { success: true },
+		} satisfies IncomingWebviewMessage;
+
+		await provider.handleWebviewMessage(inherited);
+		await provider.handleWebviewMessage(accessor as unknown as IncomingWebviewMessage);
+		await provider.handleWebviewMessage(canonical);
+
+		expect(getterCalls).toBe(0);
+		expect(handleAdmission).toHaveBeenCalledTimes(3);
+		expect(handleAdmission.mock.calls[0][0]).toMatchObject({
+			requestId: 'tool-development-note-current', parsed: { ok: false },
+		});
+		expect(handleAdmission.mock.calls[1][0]).toMatchObject({
+			requestId: undefined, parsed: { ok: false },
+		});
+		expect(handleAdmission.mock.calls[2][0]).toMatchObject({
+			requestId: 'tool-development-note-current', parsed: { ok: true },
+		});
 		expect(workbenchToolSessionApplication.handleMessage).not.toHaveBeenCalled();
 		expect(toolOrchestratorMocks.handleWebviewResponse).not.toHaveBeenCalled();
 	});
@@ -309,7 +398,13 @@ describe('QueryEditorProvider Workbench tool session application', () => {
 			'return this.workbenchToolSessionApplication.requestSectionsFromWebview(purpose, targetConnectionId);',
 		);
 		expect(providerSource).toContain(
-			'if (this.developmentNoteMutationApplication.handleMessage(message)) return;',
+			'const admission = admitDevelopmentNoteMutationWebviewMessage(input);',
+		);
+		expect(providerSource).toContain(
+			'this.developmentNoteMutationApplication.handleResponseAdmission(admission)',
+		);
+		expect(providerSource).toContain(
+			'this.workbenchToolSessionApplication.handleDevelopmentNoteMutationResponseAdmission(admission)',
 		);
 		expect(providerSource).toContain(
 			'= this.workbenchToolSessionApplication?.handleMessage(message);',

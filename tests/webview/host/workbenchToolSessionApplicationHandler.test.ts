@@ -19,12 +19,14 @@ function createHarness(options?: {
 	const activateConnection = vi.fn();
 	const disconnectIfOwner = vi.fn();
 	const handleKustoExecutionStarted = vi.fn();
+	const handleDevelopmentNoteMutationResponse = vi.fn(() => false);
 	const handleWebviewResponse = vi.fn();
 	const orchestrator = {
 		connect,
 		activateConnection,
 		disconnectIfOwner,
 		handleKustoExecutionStarted,
+		handleDevelopmentNoteMutationResponse,
 		handleWebviewResponse,
 	} satisfies WorkbenchToolSessionOrchestrator;
 	const getConnectionId = vi.fn((sectionId: string) => `connection:${sectionId}`);
@@ -68,6 +70,7 @@ function createHarness(options?: {
 		activateConnection,
 		disconnectIfOwner,
 		handleKustoExecutionStarted,
+		handleDevelopmentNoteMutationResponse,
 		handleWebviewResponse,
 		getConnectionId,
 		getFirstConnectionId,
@@ -349,17 +352,24 @@ describe('HostWorkbenchToolSessionApplicationHandler', () => {
 		} as const;
 		const result = { success: true };
 		const unrelated = { type: 'showInfo', message: 'unrelated' } satisfies IncomingWebviewMessage;
+		const mutationResponse = {
+			type: 'toolResponse', requestId: 'tool-development-note-exact', result: { success: true },
+		} satisfies IncomingWebviewMessage;
 
 		expect(harness.handler.handleMessage(unrelated)).toBeUndefined();
+		expect(harness.handler.handleDevelopmentNoteMutationResponse(mutationResponse)).toBe(false);
+		expect(harness.handleDevelopmentNoteMutationResponse).toHaveBeenCalledOnce();
+		expect(harness.handleDevelopmentNoteMutationResponse).toHaveBeenCalledWith(mutationResponse);
 		await harness.handler.handleMessage({
 			type: 'toolExecutionStarted', requestId: 'tool-start-exact', owner,
 		} satisfies IncomingWebviewMessage);
 		expect(harness.handleKustoExecutionStarted).toHaveBeenCalledOnce();
 		expect(harness.handleKustoExecutionStarted).toHaveBeenCalledWith('tool-start-exact', owner);
 
-		await harness.handler.handleMessage({
+		const response = {
 			type: 'toolResponse', requestId: 'tool-response-exact', result, error: 'tool-error-exact',
-		} satisfies IncomingWebviewMessage);
+		} satisfies IncomingWebviewMessage;
+		await harness.handler.handleMessage(response);
 		expect(harness.handleWebviewResponse).toHaveBeenCalledOnce();
 		expect(harness.handleWebviewResponse).toHaveBeenCalledWith(
 			'tool-response-exact', result, 'tool-error-exact',

@@ -1815,7 +1815,7 @@ describe('message-handler dispatch', () => {
 		commitKustoPublication('connections-descriptor-varying');
 
 		expect(propertyReads).toBe(0);
-		expect(typeDescriptorReads).toBe(1);
+		expect(typeDescriptorReads).toBe(0);
 		expect(mocks.setConnections).not.toHaveBeenCalled();
 		expect(mocks.applyKustoLeaveNoTracePolicy).not.toHaveBeenCalled();
 	});
@@ -5829,6 +5829,101 @@ describe('changedSections agent provenance', () => {
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'toolResponse', requestId: `devnotes-malformed-${documentKind}`, result: { success: false },
 			error: expect.stringContaining('read-only'),
+		}));
+	});
+
+	it.each([
+		{ mode: 'native', documentKind: 'kqlx', hostOwned: true },
+		{ mode: 'companion', documentKind: 'kql', hostOwned: false },
+	] as const)('admits $mode development-note mutation before any native or companion effects', async ({ mode, documentKind, hostOwned }) => {
+		handlerState.pState.documentKind = documentKind;
+		handlerState.pState.compatibilityMode = false;
+		handlerState.pState.documentMutationAllowed = true;
+		mocks.isHostOwnedDevelopmentNoteDocument.mockReturnValue(hostOwned);
+		const persistence = await import('../../src/webview/core/persistence.js');
+		vi.mocked(persistence.schedulePersist).mockClear();
+		const note = {
+			id: `note_${mode}`,
+			created: '2026-08-14T00:00:00.000Z',
+			updated: '2026-08-14T00:00:00.000Z',
+			category: 'usage-note',
+			content: `${mode} note`,
+			source: 'agent',
+		};
+
+		dispatchHostMessage({
+			type: 'updateDevNotes', requestId: `${mode}-malformed`, action: ['add'], entry: note,
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(handlerState.developmentNoteSections).toEqual([]);
+		expect(handlerState.pState.metadataFreeDevelopmentNoteSections).toEqual([]);
+		expect(mocks.requestHostOwnedDevelopmentNoteAdd).not.toHaveBeenCalled();
+		expect(mocks.requestHostOwnedDevelopmentNotePatch).not.toHaveBeenCalled();
+		expect(persistence.schedulePersist).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({
+			requestId: `${mode}-malformed`,
+		}));
+
+		dispatchHostMessage({
+			type: 'updateDevNotes', requestId: `${mode}-canonical`, action: 'add', entry: note,
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+
+		if (hostOwned) {
+			expect(mocks.requestHostOwnedDevelopmentNoteAdd).toHaveBeenCalledOnce();
+			expect(handlerState.developmentNoteSections[0]?.entries).toEqual([note]);
+			expect(persistence.schedulePersist).not.toHaveBeenCalled();
+		} else {
+			expect(mocks.requestHostOwnedDevelopmentNoteAdd).not.toHaveBeenCalled();
+			expect(handlerState.pState.metadataFreeDevelopmentNoteSections[0]?.entries).toEqual([note]);
+			expect(persistence.schedulePersist).toHaveBeenCalledOnce();
+			expect(persistence.schedulePersist).toHaveBeenCalledWith('devnotes-update');
+		}
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: `${mode}-canonical`, result: { success: true },
+		});
+	});
+
+	it.each([
+		{ mode: 'native', documentKind: 'kqlx', hostOwned: true },
+		{ mode: 'companion', documentKind: 'sql', hostOwned: false },
+	] as const)('rejects revoked nested $mode development-note arrays before mutation effects', async ({ mode, documentKind, hostOwned }) => {
+		handlerState.pState.documentKind = documentKind;
+		handlerState.pState.compatibilityMode = false;
+		handlerState.pState.documentMutationAllowed = true;
+		mocks.isHostOwnedDevelopmentNoteDocument.mockReturnValue(hostOwned);
+		const persistence = await import('../../src/webview/core/persistence.js');
+		vi.mocked(persistence.schedulePersist).mockClear();
+		const relatedSectionIds = Proxy.revocable(['query_exact'], {});
+		relatedSectionIds.revoke();
+
+		dispatchHostMessage({
+			type: 'updateDevNotes',
+			requestId: `${mode}-revoked`,
+			action: 'add',
+			entry: {
+				id: `note_${mode}_revoked`,
+				created: '2026-08-14T00:00:00.000Z',
+				updated: '2026-08-14T00:00:00.000Z',
+				category: 'usage-note',
+				content: 'must not mutate',
+				source: 'agent',
+				relatedSectionIds: relatedSectionIds.proxy,
+			},
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(handlerState.developmentNoteSections).toEqual([]);
+		expect(handlerState.pState.metadataFreeDevelopmentNoteSections).toEqual([]);
+		expect(mocks.requestHostOwnedDevelopmentNoteAdd).not.toHaveBeenCalled();
+		expect(mocks.requestHostOwnedDevelopmentNotePatch).not.toHaveBeenCalled();
+		expect(persistence.schedulePersist).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({
+			requestId: `${mode}-revoked`,
 		}));
 	});
 

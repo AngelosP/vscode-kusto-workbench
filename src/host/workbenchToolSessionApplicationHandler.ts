@@ -6,6 +6,7 @@ import type { SqlReadyToolOwner } from './sql/sqlEditorSessionRegistry';
 import { canonicalSectionKind } from '../shared/documentSectionCapabilities';
 import { resolveKustoConnection, resolveStrictKustoConnection } from '../shared/kustoAuth';
 import type { KustoExecutionRequestIdentity } from '../shared/kustoExecution';
+import type { DevelopmentNoteMutationWebviewAdmission } from '../shared/developmentNoteMutationProtocol';
 
 type WorkbenchToolSessionMessage = Extract<IncomingWebviewMessage, {
 	type: 'toolExecutionStarted' | 'toolResponse' | 'toolStateResponse';
@@ -39,11 +40,21 @@ export interface WorkbenchToolSessionOrchestrator {
 	activateConnection(token: number): void;
 	disconnectIfOwner(token: number): void;
 	handleKustoExecutionStarted(requestId: string, owner: KustoExecutionRequestIdentity): void;
+	handleDevelopmentNoteMutationResponse(message: unknown): boolean;
+	handleDevelopmentNoteMutationResponseAdmission(
+		admission: DevelopmentNoteMutationWebviewAdmission,
+	): boolean;
+	hasPendingDevelopmentNoteMutationResponse(): boolean;
 	handleWebviewResponse(requestId: string, result: unknown, error?: string): void;
 }
 
 export interface WorkbenchToolSessionApplicationHandler {
 	activate(): void;
+	handleDevelopmentNoteMutationResponse(message: unknown): boolean;
+	handleDevelopmentNoteMutationResponseAdmission?(
+		admission: DevelopmentNoteMutationWebviewAdmission,
+	): boolean;
+	hasPendingDevelopmentNoteMutationResponse?(): boolean;
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined;
 	requestSectionsFromWebview(
 		purpose?: 'schema-refresh',
@@ -103,6 +114,24 @@ implements WorkbenchToolSessionApplicationHandler {
 		);
 		this.connectedOrchestrator = orchestrator;
 		this.connectionToken = token;
+	}
+
+	handleDevelopmentNoteMutationResponse(message: unknown): boolean {
+		if (this.disposed) return false;
+		return this.options.getOrchestrator()?.handleDevelopmentNoteMutationResponse(message) === true;
+	}
+
+	handleDevelopmentNoteMutationResponseAdmission(
+		admission: DevelopmentNoteMutationWebviewAdmission,
+	): boolean {
+		if (this.disposed) return false;
+		return this.options.getOrchestrator()
+			?.handleDevelopmentNoteMutationResponseAdmission?.(admission) === true;
+	}
+
+	hasPendingDevelopmentNoteMutationResponse(): boolean {
+		if (this.disposed) return false;
+		return this.options.getOrchestrator()?.hasPendingDevelopmentNoteMutationResponse?.() === true;
 	}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {

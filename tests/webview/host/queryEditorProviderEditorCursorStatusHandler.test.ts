@@ -162,7 +162,7 @@ describe('QueryEditorProvider editor cursor-status application', () => {
 		const ordinaryMessage = { type: 'getConnections' } satisfies IncomingWebviewMessage;
 		await provider.handlePanelWebviewMessage(ordinaryMessage);
 		expect(handleWebviewMessage).toHaveBeenCalledOnce();
-		expect(handleWebviewMessage).toHaveBeenCalledWith(ordinaryMessage);
+		expect(handleWebviewMessage).toHaveBeenCalledWith(ordinaryMessage, true);
 	});
 
 	it('retains only injection and panel lifecycle forwarding while the handler owns both routes', () => {

@@ -1,11 +1,15 @@
 import type * as vscode from 'vscode';
 import {
 	admitArtifactCsvSaveWebviewMessage,
+	admitArtifactCsvSaveWebviewMessageFromEnvelope,
 } from '../shared/artifactCsvSaveProtocol';
 import {
 	admitKustoPublicationHostMessage,
 	admitKustoPublicationWebviewMessage,
+	admitKustoPublicationWebviewMessageFromEnvelope,
 } from '../shared/kustoPublicationProtocol';
+import { admitDevelopmentNoteMutationWebviewMessage } from '../shared/developmentNoteMutationProtocol';
+import { captureRuntimeMessageEnvelope } from '../shared/runtimeMessageEnvelope';
 
 export const MAIN_WEBVIEW_DISPATCHER_READY_TYPE = 'mainWebviewDispatcherReady' as const;
 
@@ -30,10 +34,53 @@ type PendingInbound<TInbound> = {
 	retirementEligible: boolean;
 };
 
-type CorrelatedMessage = { type?: unknown; [key: string]: unknown };
+type SafePropertyInspection =
+	| Readonly<{ kind: 'data'; value: unknown }>
+	| Readonly<{ kind: 'accessor' }>;
 
 function hasCorrelationId(value: unknown): boolean {
 	return typeof value === 'string' && value.trim().length > 0;
+}
+
+function safelyInspectProperty(input: unknown, key: string): SafePropertyInspection | undefined {
+	if (!input || (typeof input !== 'object' && typeof input !== 'function')) return undefined;
+	try {
+		if (typeof input === 'function' || Array.isArray(input)) return undefined;
+		let owner = input as object | null;
+		const seen = new Set<object>();
+		let depth = 0;
+		while (owner && depth++ < 16) {
+			if (seen.has(owner)) return undefined;
+			seen.add(owner);
+			const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+			if (descriptor) {
+				return Object.prototype.hasOwnProperty.call(descriptor, 'value')
+					? { kind: 'data', value: descriptor.value }
+					: { kind: 'accessor' };
+			}
+			owner = Object.getPrototypeOf(owner);
+		}
+	} catch {
+		return undefined;
+	}
+	return undefined;
+}
+
+function hasDescriptorCorrelationId(input: unknown, key: string): boolean {
+	const inspected = safelyInspectProperty(input, key);
+	return inspected?.kind === 'data' && hasCorrelationId(inspected.value);
+}
+
+function hasSafeIntegerProperty(input: unknown, key: string): boolean {
+	const inspected = safelyInspectProperty(input, key);
+	return inspected?.kind === 'data' && Number.isSafeInteger(inspected.value);
+}
+
+function hasAllowedStringProperty(input: unknown, key: string, allowed: readonly string[]): boolean {
+	const inspected = safelyInspectProperty(input, key);
+	return inspected?.kind === 'data'
+		&& typeof inspected.value === 'string'
+		&& allowed.includes(inspected.value);
 }
 
 
@@ -45,38 +92,45 @@ export function isMainWebviewCorrelatedReply(input: unknown): boolean {
 		return artifactCsvSaveAdmission.parsed.ok
 			&& artifactCsvSaveAdmission.parsed.value.type === 'artifactCsvSaveData';
 	}
-	if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
-	const message = input as CorrelatedMessage;
-	const type = typeof message.type === 'string' ? message.type : '';
+	const typeInspection = safelyInspectProperty(input, 'type');
+	if (typeInspection?.kind !== 'data' || typeof typeInspection.value !== 'string') return false;
+	const type = typeInspection.value;
+	if (type === 'toolResponse') {
+		const mutationAdmission = admitDevelopmentNoteMutationWebviewMessage(input);
+		if (!mutationAdmission.recognized) return false;
+		if (mutationAdmission.parsed.ok || mutationAdmission.requestId) return true;
+		return safelyInspectProperty(input, 'requestId')?.kind === 'accessor';
+	}
 	switch (type) {
 		case 'comparisonBoxEnsured':
 		case 'documentReloadResult':
 		case 'markdownDocumentCommandBarrierResult':
 		case 'publishToPowerBIAck':
 		case 'toolExecutionStarted':
-		case 'toolResponse':
 		case 'toolStateResponse':
-			return hasCorrelationId(message.requestId);
+			return hasDescriptorCorrelationId(input, 'requestId');
 		case 'kustoExecutionStartedAck':
-			return hasCorrelationId(message.boxId)
-				&& hasCorrelationId(message.executionId)
-				&& hasCorrelationId(message.sectionInstanceId)
-				&& Number.isSafeInteger(message.targetGeneration);
+			return hasDescriptorCorrelationId(input, 'boxId')
+				&& hasDescriptorCorrelationId(input, 'executionId')
+				&& hasDescriptorCorrelationId(input, 'sectionInstanceId')
+				&& hasSafeIntegerProperty(input, 'targetGeneration');
 		case 'sqlComparisonAdmissionAck':
-			return hasCorrelationId(message.requestId)
-				&& hasCorrelationId(message.sourceBoxId)
-				&& hasCorrelationId(message.comparisonBoxId)
-				&& ['staged', 'committed', 'finalized', 'completed', 'rolledBack'].includes(String(message.phase));
+			return hasDescriptorCorrelationId(input, 'requestId')
+				&& hasDescriptorCorrelationId(input, 'sourceBoxId')
+				&& hasDescriptorCorrelationId(input, 'comparisonBoxId')
+				&& hasAllowedStringProperty(
+					input,
+					'phase',
+					['staged', 'committed', 'finalized', 'completed', 'rolledBack'],
+				);
 		default:
 			return false;
 	}
 }
 
 function isDispatcherReadyMessage(input: unknown): boolean {
-	return !!input
-		&& typeof input === 'object'
-		&& !Array.isArray(input)
-		&& (input as Record<string, unknown>).type === MAIN_WEBVIEW_DISPATCHER_READY_TYPE;
+	const type = safelyInspectProperty(input, 'type');
+	return type?.kind === 'data' && type.value === MAIN_WEBVIEW_DISPATCHER_READY_TYPE;
 }
 
 export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
@@ -183,12 +237,19 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 	}
 
 	private receive(input: unknown): void | Promise<void> {
-		const publicationAdmission = admitKustoPublicationWebviewMessage(input);
+		const envelope = captureRuntimeMessageEnvelope(input);
+		if (!envelope.ok) return;
+		input = envelope.value;
+		const publicationAdmission = admitKustoPublicationWebviewMessageFromEnvelope(
+			envelope.descriptorSnapshot,
+		);
 		if (publicationAdmission.recognized) {
 			if (!publicationAdmission.parsed.ok) return;
 			input = publicationAdmission.parsed.value;
 		}
-		const artifactCsvSaveAdmission = admitArtifactCsvSaveWebviewMessage(input);
+		const artifactCsvSaveAdmission = admitArtifactCsvSaveWebviewMessageFromEnvelope(
+			envelope.descriptorSnapshot,
+		);
 		if (artifactCsvSaveAdmission.recognized) {
 			if (!artifactCsvSaveAdmission.parsed.ok) return;
 			input = artifactCsvSaveAdmission.parsed.value;

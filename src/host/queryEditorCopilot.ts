@@ -41,6 +41,7 @@ import {
 	type CopilotInlineCompletionHostMessage,
 	type CopilotInlineCompletionWebviewMessage,
 } from '../shared/copilotInlineCompletionProtocol.js';
+import type { DevelopmentNoteMutationPayload } from '../shared/developmentNoteMutationProtocol.js';
 
 export const SQL_COPILOT_OWNER_CHANGED_MESSAGE = 'SQL section owner changed. Retry the request.';
 
@@ -99,7 +100,7 @@ export interface CopilotServiceHost {
 	ensureComparisonBoxInWebview(sourceBoxId: string, query: string, token: vscode.CancellationToken, copilotSequence?: number, kustoRequest?: KustoCopilotRequestIdentity): Promise<PreparedComparisonSection>;
 
 	requestSectionsFromWebview(): Promise<unknown[] | undefined>;
-	updateDevelopmentNotes(message: Record<string, unknown>): Promise<{ success: boolean; error?: string }>;
+	updateDevelopmentNotes(message: DevelopmentNoteMutationPayload): Promise<{ success: boolean; error?: string }>;
 	revealPanel(): void;
 }
 
@@ -2489,11 +2490,9 @@ Completion:`;
 								source: 'copilot',
 								...(Array.isArray(args.relatedSectionIds) && args.relatedSectionIds.length > 0 ? { relatedSectionIds: args.relatedSectionIds } : {})
 							};
-							const admission = await this.host.updateDevelopmentNotes({
-								action: noteId ? 'supersede' : 'add',
-								entry,
-								supersededId: noteId || undefined,
-							});
+							const admission = await this.host.updateDevelopmentNotes(noteId
+								? { action: 'supersede', entry, supersededId: noteId }
+								: { action: 'add', entry });
 							toolResult = admission.success
 								? `Development note saved (id: ${newNoteId}, category: ${category}).` +
 									(noteId ? ` Superseded note: ${noteId}.` : '')

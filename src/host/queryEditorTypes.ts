@@ -20,6 +20,7 @@ import type { QuerySharingWebviewMessage } from '../shared/querySharingProtocol'
 import type { EditingPreferencesWebviewMessage } from '../shared/editingPreferences';
 import type { CopilotInlineCompletionWebviewMessage } from '../shared/copilotInlineCompletionProtocol';
 import type { KustoPublicationWebviewMessage } from '../shared/kustoPublicationProtocol';
+import type { DevelopmentNoteMutationWebviewMessage } from '../shared/developmentNoteMutationProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -311,6 +312,7 @@ export type IncomingWebviewMessage =
 		type: 'sqlComparisonAdmissionAck'; phase: 'staged' | 'committed' | 'finalized' | 'completed' | 'rolledBack'; requestId: string; sourceBoxId: string;
 		comparisonBoxId: string; accepted: boolean;
 	}
+	| DevelopmentNoteMutationWebviewMessage
 	| { type: 'toolResponse'; requestId: string; result: unknown; error?: string }
 	| { type: 'toolExecutionStarted'; requestId: string; owner: KustoExecutionRequestIdentity }
 	| { type: 'toolStateResponse'; requestId: string; sections: unknown[]; error?: string }

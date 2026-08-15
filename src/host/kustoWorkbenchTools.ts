@@ -29,6 +29,12 @@ import { sqlConnectionTargetSignature } from '../shared/sqlConnectionIdentity';
 import { readCurrentSqlSchemaPrincipalFingerprint } from './sqlEditorSchema';
 import type { KustoExecutionRequestIdentity } from '../shared/kustoExecution.js';
 import type { KustoLeaveNoTracePolicySnapshot } from './kustoLeaveNoTracePolicyStore';
+import {
+	admitDevelopmentNoteMutationWebviewMessage,
+	createDevelopmentNoteMutationHostMessage,
+	type DevelopmentNoteMutationPayload,
+	type DevelopmentNoteMutationWebviewAdmission,
+} from '../shared/developmentNoteMutationProtocol.js';
 
 export type TargetFields = {
 	openFileId?: string;
@@ -595,6 +601,7 @@ export class KustoWorkbenchToolOrchestrator {
 		connectionToken: number;
 		kustoExecution?: KustoExecutionRequestIdentity;
 	}>();
+	private readonly developmentNoteMutationRequestIds = new Set<string>();
 	private responseSeq = 0;
 	private readonly kustoConnectionCache: KustoConnectionCache;
 	// Monotonically increasing token to track which editor instance is currently connected.
@@ -695,6 +702,7 @@ export class KustoWorkbenchToolOrchestrator {
 		for (const [requestId, pending] of [...this.pendingResponses]) {
 			if (pending.connectionToken !== token) continue;
 			this.pendingResponses.delete(requestId);
+			this.developmentNoteMutationRequestIds.delete(requestId);
 			if (pending.timer) clearTimeout(pending.timer);
 			pending.cancellationSubscription?.dispose();
 			pending.reject(new Error('The owning Kusto Workbench editor closed before the request completed.'));
@@ -1118,10 +1126,42 @@ export class KustoWorkbenchToolOrchestrator {
 		return { attempted: connections.length, delivered };
 	}
 
+	handleDevelopmentNoteMutationResponse(message: unknown): boolean {
+		return this.handleDevelopmentNoteMutationResponseAdmission(
+			admitDevelopmentNoteMutationWebviewMessage(message),
+		);
+	}
+
+	handleDevelopmentNoteMutationResponseAdmission(
+		admission: DevelopmentNoteMutationWebviewAdmission,
+	): boolean {
+		if (!admission.recognized || !admission.requestId
+			|| !this.developmentNoteMutationRequestIds.has(admission.requestId)) return false;
+		if (!admission.parsed.ok) return true;
+		const response = admission.parsed.value;
+		this.settleWebviewResponse(response.requestId, response.result, response.error, true);
+		return true;
+	}
+
+	hasPendingDevelopmentNoteMutationResponse(): boolean {
+		return this.developmentNoteMutationRequestIds.size > 0;
+	}
+
 	handleWebviewResponse(requestId: string, result: unknown, error?: string): void {
+		this.settleWebviewResponse(requestId, result, error, false);
+	}
+
+	private settleWebviewResponse(
+		requestId: string,
+		result: unknown,
+		error: string | undefined,
+		allowDevelopmentNoteMutation: boolean,
+	): void {
+		if (!allowDevelopmentNoteMutation && this.developmentNoteMutationRequestIds.has(requestId)) return;
 		const pending = this.pendingResponses.get(requestId);
 		if (!pending) return;
 		this.pendingResponses.delete(requestId);
+		this.developmentNoteMutationRequestIds.delete(requestId);
 		if (pending.timer) clearTimeout(pending.timer);
 		pending.cancellationSubscription?.dispose();
 		if (error) {
@@ -1164,6 +1204,15 @@ export class KustoWorkbenchToolOrchestrator {
 		if (cancellationToken?.isCancellationRequested) throw new vscode.CancellationError();
 		
 		const requestId = `tool_${++this.responseSeq}_${Date.now()}`;
+		const developmentNoteRequest = type === 'updateDevNotes'
+			? createDevelopmentNoteMutationHostMessage(requestId, payload)
+			: undefined;
+		if (developmentNoteRequest && !developmentNoteRequest.ok) {
+			throw new Error(developmentNoteRequest.error);
+		}
+		const outboundMessage = developmentNoteRequest?.ok
+			? developmentNoteRequest.value
+			: { type, requestId, ...payload };
 		
 		return new Promise<T>((resolve, reject) => {
 			let pending!: {
@@ -1182,6 +1231,7 @@ export class KustoWorkbenchToolOrchestrator {
 					const pending = this.pendingResponses.get(requestId);
 					if (!pending) return;
 					this.pendingResponses.delete(requestId);
+					this.developmentNoteMutationRequestIds.delete(requestId);
 					pending.cancellationSubscription?.dispose();
 					try { cancelKustoExecution(); } catch { /* preserve timeout */ }
 					try { onTimeout?.(target.connection!, requestId); } catch { /* preserve timeout */ }
@@ -1194,9 +1244,11 @@ export class KustoWorkbenchToolOrchestrator {
 				connectionToken: target.connection!.token,
 			};
 			this.pendingResponses.set(requestId, pending);
+			if (developmentNoteRequest) this.developmentNoteMutationRequestIds.add(requestId);
 			const cancelPending = () => {
 				if (this.pendingResponses.get(requestId) !== pending) return;
 				this.pendingResponses.delete(requestId);
+				this.developmentNoteMutationRequestIds.delete(requestId);
 				if (timer) clearTimeout(timer);
 				pending.cancellationSubscription?.dispose();
 				try { cancelKustoExecution(); } catch { /* preserve cancellation */ }
@@ -1211,9 +1263,10 @@ export class KustoWorkbenchToolOrchestrator {
 			}
 			let posted: unknown;
 			try {
-				posted = target.connection!.poster({ type, requestId, ...payload });
+				posted = target.connection!.poster(outboundMessage);
 			} catch (error) {
 				this.pendingResponses.delete(requestId);
+				this.developmentNoteMutationRequestIds.delete(requestId);
 				if (timer) clearTimeout(timer);
 				pending.cancellationSubscription?.dispose();
 				reject(error instanceof Error ? error : new Error(String(error)));
@@ -1222,12 +1275,14 @@ export class KustoWorkbenchToolOrchestrator {
 			void Promise.resolve(posted).then(delivered => {
 				if (delivered === true || this.pendingResponses.get(requestId) !== pending) return;
 				this.pendingResponses.delete(requestId);
+				this.developmentNoteMutationRequestIds.delete(requestId);
 				if (timer) clearTimeout(timer);
 				pending.cancellationSubscription?.dispose();
 				reject(new Error('The targeted Kusto Workbench editor rejected the request.'));
 			}, error => {
 				if (this.pendingResponses.get(requestId) !== pending) return;
 				this.pendingResponses.delete(requestId);
+				this.developmentNoteMutationRequestIds.delete(requestId);
 				if (timer) clearTimeout(timer);
 				pending.cancellationSubscription?.dispose();
 				reject(error instanceof Error ? error : new Error(String(error)));
@@ -1838,8 +1893,10 @@ export class KustoWorkbenchToolOrchestrator {
 				source: 'agent',
 				...(input.relatedSectionIds ? { relatedSectionIds: input.relatedSectionIds } : {}),
 			};
-			const action = input.supersedes ? 'supersede' : 'add';
-			return this.sendToWebview('updateDevNotes', { action, entry, supersededId: input.supersedes }, 30000, target);
+			const mutation: DevelopmentNoteMutationPayload = input.supersedes
+				? { action: 'supersede', entry, supersededId: input.supersedes }
+				: { action: 'add', entry };
+			return this.sendToWebview('updateDevNotes', mutation, 30000, target);
 		} else if (input.action === 'remove') {
 			if (!input.noteId) {
 				return { success: false, error: '"noteId" is required when removing a development note.' };

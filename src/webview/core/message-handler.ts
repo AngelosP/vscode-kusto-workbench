@@ -78,6 +78,10 @@ import {
 	parseKustoPublicationWebviewMessage,
 } from '../../shared/kustoPublicationProtocol.js';
 import { captureRuntimeMessageEnvelope } from '../../shared/runtimeMessageEnvelope.js';
+import {
+	admitDevelopmentNoteMutationHostMessageFromEnvelope,
+	createDevelopmentNoteMutationWebviewMessage,
+} from '../../shared/developmentNoteMutationProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -1652,6 +1656,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		if (!rawKustoPublicationAdmission.parsed.ok) return;
 		message = rawKustoPublicationAdmission.parsed.value;
 	}
+	const developmentNoteMutationAdmission = rawKustoPublicationAdmission.recognized
+		? { recognized: false as const }
+		: admitDevelopmentNoteMutationHostMessageFromEnvelope(envelope.descriptorSnapshot);
+	if (developmentNoteMutationAdmission.recognized) {
+		if (!developmentNoteMutationAdmission.parsed.ok) return;
+		message = developmentNoteMutationAdmission.parsed.value;
+	}
 	const kustoPublicationAdmission = admitKustoPublicationHostMessage(message);
 	if (kustoPublicationAdmission.recognized) {
 		if (!kustoPublicationAdmission.parsed.ok) return;
@@ -1863,12 +1874,12 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						: 'This document is still loading and has no executable sections yet.',
 				} as any);
 			} else if ((incomingType.startsWith('tool') || incomingType === 'updateDevNotes') && requestId) {
-				postMessageToHost({
-					type: 'toolResponse', requestId, result: { success: false },
-					error: invalidRuntime
-						? 'This document is invalid and its retained sections are read-only.'
-						: 'This document is still loading and cannot accept mutations yet.',
-				});
+				const error = invalidRuntime
+					? 'This document is invalid and its retained sections are read-only.'
+					: 'This document is still loading and cannot accept mutations yet.';
+				postMessageToHost(incomingType === 'updateDevNotes'
+					? createDevelopmentNoteMutationWebviewMessage(requestId, false, error)
+					: { type: 'toolResponse', requestId, result: { success: false }, error });
 			}
 			return;
 		}
@@ -2572,16 +2583,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				&& !hostOwned
 				&& (pState.documentKind === 'kql' || pState.documentKind === 'sql');
 			if (!mutationAllowed || pState.compatibilityMode || (!hostOwned && !metadataFreeCompanion)) {
-				if (message.requestId) {
-					postMessageToHost({
-						type: 'toolResponse', requestId: message.requestId, result: { success: false },
-						error: !mutationAllowed
-							? 'This document is read-only and cannot accept development notes.'
-							: pState.compatibilityMode
-								? 'Development notes require a companion metadata file. Upgrade this compatibility document first.'
-								: 'Development notes are unavailable in the current document host.',
-					});
-				}
+				postMessageToHost(createDevelopmentNoteMutationWebviewMessage(
+					message.requestId,
+					false,
+					!mutationAllowed
+						? 'This document is read-only and cannot accept development notes.'
+						: pState.compatibilityMode
+							? 'Development notes require a companion metadata file. Upgrade this compatibility document first.'
+							: 'Development notes are unavailable in the current document host.',
+				));
 				break;
 			}
 			let mutationError = '';
@@ -2590,7 +2600,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			try {
 				if (metadataFreeCompanion) {
 					const sections = pState.metadataFreeDevelopmentNoteSections;
-					const action = String(message.action || '');
+					const action = message.action;
 					const parseEntry = () => parseDevelopmentNoteSection({
 						id: 'devnotes_input', type: 'devnotes', entries: [message.entry],
 					});
@@ -2625,7 +2635,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							}
 						}
 					} else if (action === 'supersede') {
-						const supersededId = String(message.supersededId || message.supersedes || '').trim();
+						const supersededId = message.supersededId.trim();
 						if (!supersededId || !message.entry || typeof message.entry !== 'object') {
 							mutationError = 'A superseded note ID and replacement entry are required.';
 						} else {
@@ -2655,7 +2665,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							}
 						}
 					} else if (action === 'remove') {
-						const noteId = String(message.noteId || '');
+						const noteId = message.noteId;
 						const matches: Array<{ section: any; index: number }> = [];
 						if (noteId) {
 							for (const section of sections) {
@@ -2675,7 +2685,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					if (mutated) schedulePersist('devnotes-update');
 				} else {
 				const sections = [...getOptimisticHostOwnedDevelopmentNoteSections()];
-				const action = String(message.action || '');
+				const action = message.action;
 				if (action === 'add') {
 					if (!message.entry || typeof message.entry !== 'object') {
 						mutationError = 'A development note entry is required.';
@@ -2709,7 +2719,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						}
 					}
 				} else if (action === 'supersede') {
-					const supersededId = String(message.supersededId || message.supersedes || '').trim();
+					const supersededId = message.supersededId.trim();
 					if (!supersededId || !message.entry || typeof message.entry !== 'object') {
 						mutationError = 'A superseded note ID and replacement entry are required.';
 					} else {
@@ -2743,7 +2753,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						}
 					}
 				} else if (action === 'remove') {
-					const noteId = String(message.noteId || '');
+					const noteId = message.noteId;
 					const matches: Array<{ sectionIndex: number; entryIndex: number }> = [];
 					if (noteId) {
 						sections.forEach((section, sectionIndex) => {
@@ -2775,12 +2785,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			}
 			// Respond to extension host if a requestId was provided
 			try {
-				if (message.requestId) {
-					postMessageToHost({
-						type: 'toolResponse', requestId: message.requestId, result: { success: mutated },
-						...(mutated ? {} : { error: mutationError || 'Development note update was rejected.' }),
-					});
-				}
+				postMessageToHost(createDevelopmentNoteMutationWebviewMessage(
+					message.requestId,
+					mutated,
+					mutated ? undefined : mutationError || 'Development note update was rejected.',
+				));
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		}

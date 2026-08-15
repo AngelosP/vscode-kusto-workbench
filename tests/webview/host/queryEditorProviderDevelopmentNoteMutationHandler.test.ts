@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 
 const toolOrchestrator = vi.hoisted(() => ({
+	handleDevelopmentNoteMutationResponse: vi.fn(() => false),
 	handleWebviewResponse: vi.fn(),
 }));
 
@@ -46,6 +47,7 @@ vi.mock('../../../src/host/extension', () => ({
 }));
 
 import { QueryEditorProvider } from '../../../src/host/queryEditorProvider';
+import { HostDevelopmentNoteMutationApplicationHandler } from '../../../src/host/developmentNoteMutationApplicationHandler';
 import type { IncomingWebviewMessage } from '../../../src/host/queryEditorTypes';
 
 type DevelopmentNoteMutationResult = { success: boolean; error?: string };
@@ -124,6 +126,8 @@ describe('QueryEditorProvider development-note mutation application', () => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 		toolOrchestrator.handleWebviewResponse.mockReset();
+		toolOrchestrator.handleDevelopmentNoteMutationResponse.mockReset();
+		toolOrchestrator.handleDevelopmentNoteMutationResponse.mockReturnValue(false);
 	});
 
 	it('delegates exact mutations, claims matching responses, and preserves unclaimed tool responses', async () => {
@@ -188,6 +192,170 @@ describe('QueryEditorProvider development-note mutation application', () => {
 		expect(providerResolverMap).toHaveLength(0);
 	});
 
+	it('keeps the real HST-23 waiter live through inherited and accessor correlation until canonical settlement', async () => {
+		vi.useFakeTimers();
+		const postMessage = vi.fn(() => true);
+		const mutationHandler = new HostDevelopmentNoteMutationApplicationHandler({
+			postMessage,
+			isAvailable: () => true,
+		});
+		const { provider } = createProvider(
+			mutationHandler as unknown as StructuralDevelopmentNoteMutationHandler,
+		);
+		let settled = false;
+		let getterCalls = 0;
+		const pending = provider.updateDevelopmentNotes({ action: 'remove', noteId: 'note_provider_exact' });
+		void pending.then(() => { settled = true; });
+		const request = postMessage.mock.calls[0][0] as { requestId: string };
+		const inherited = Object.assign(Object.create({ requestId: request.requestId }), {
+			type: 'toolResponse', result: { success: 'yes' },
+		});
+		const accessor: Record<string, unknown> = {
+			type: 'toolResponse', result: { success: 'yes' },
+		};
+		Object.defineProperty(accessor, 'requestId', {
+			enumerable: true,
+			get() {
+				getterCalls++;
+				return request.requestId;
+			},
+		});
+
+		await provider.handleWebviewMessage(inherited as IncomingWebviewMessage);
+		await provider.handleWebviewMessage(accessor as unknown as IncomingWebviewMessage);
+		expect(getterCalls).toBe(0);
+		expect(settled).toBe(false);
+		expect(vi.getTimerCount()).toBe(1);
+		expect(toolOrchestrator.handleWebviewResponse).not.toHaveBeenCalled();
+
+		await provider.handleWebviewMessage({
+			type: 'toolResponse', requestId: request.requestId, result: { success: true },
+		});
+		await expect(pending).resolves.toEqual({ success: true });
+		expect(settled).toBe(true);
+		expect(vi.getTimerCount()).toBe(0);
+		expect(toolOrchestrator.handleWebviewResponse).not.toHaveBeenCalled();
+	});
+
+	it('captures standalone panel traffic once before mutation response admission', async () => {
+		vi.useFakeTimers();
+		const postMessage = vi.fn(() => true);
+		const mutationHandler = new HostDevelopmentNoteMutationApplicationHandler({
+			postMessage,
+			isAvailable: () => true,
+		});
+		const { provider } = createProvider(
+			mutationHandler as unknown as StructuralDevelopmentNoteMutationHandler,
+		);
+		const handlePanelMessage = (provider as unknown as {
+			handlePanelWebviewMessage(input: unknown): void | Promise<void>;
+		}).handlePanelWebviewMessage.bind(provider);
+		let settled = false;
+		const pending = provider.updateDevelopmentNotes({ action: 'remove', noteId: 'note_standalone_exact' });
+		void pending.then(() => { settled = true; });
+		const request = postMessage.mock.calls[0][0] as { requestId: string };
+		let resultDescriptorCalls = 0;
+		const target: Record<string, unknown> = {
+			type: 'toolResponse', requestId: request.requestId, result: { success: 'yes' },
+		};
+		const descriptorVaryingResponse = new Proxy(target, {
+			getOwnPropertyDescriptor(candidate, key) {
+				const descriptor = Reflect.getOwnPropertyDescriptor(candidate, key);
+				if (key === 'result' && ++resultDescriptorCalls === 1) {
+					candidate.result = { success: true };
+				}
+				return descriptor;
+			},
+		});
+
+		await handlePanelMessage(descriptorVaryingResponse);
+		expect(resultDescriptorCalls).toBe(1);
+		expect(mutationHandler.hasPendingResponse()).toBe(true);
+		expect(settled).toBe(false);
+		expect(vi.getTimerCount()).toBe(1);
+		expect(toolOrchestrator.handleWebviewResponse).not.toHaveBeenCalled();
+
+		let prototypeCalls = 0;
+		const inheritedRequestPrototype = { requestId: request.requestId };
+		const prototypeVaryingResponse = new Proxy({
+			type: 'toolResponse', result: { success: 'yes' },
+		}, {
+			getPrototypeOf() {
+				prototypeCalls++;
+				return prototypeCalls === 1 ? inheritedRequestPrototype : Object.prototype;
+			},
+		});
+		await handlePanelMessage(prototypeVaryingResponse);
+		expect(prototypeCalls).toBe(1);
+		expect(mutationHandler.hasPendingResponse()).toBe(true);
+		expect(settled).toBe(false);
+		expect(vi.getTimerCount()).toBe(1);
+		expect(toolOrchestrator.handleWebviewResponse).not.toHaveBeenCalled();
+
+		let aliasedOwnKeysCalls = 0;
+		const aliasedTarget: Record<string, unknown> = {
+			type: 'toolResponse', requestId: request.requestId, success: true,
+		};
+		let aliasedResponse!: Record<string, unknown>;
+		aliasedResponse = new Proxy(aliasedTarget, {
+			ownKeys() {
+				aliasedOwnKeysCalls++;
+				return aliasedOwnKeysCalls === 1
+					? ['type', 'requestId', 'result']
+					: ['success'];
+			},
+			getOwnPropertyDescriptor(candidate, key) {
+				if (key === 'result') {
+					return { configurable: true, enumerable: true, writable: true, value: aliasedResponse };
+				}
+				return Reflect.getOwnPropertyDescriptor(candidate, key);
+			},
+		});
+		await handlePanelMessage(aliasedResponse);
+		expect(aliasedOwnKeysCalls).toBe(1);
+		expect(mutationHandler.hasPendingResponse()).toBe(true);
+		expect(settled).toBe(false);
+		expect(vi.getTimerCount()).toBe(1);
+		expect(toolOrchestrator.handleWebviewResponse).not.toHaveBeenCalled();
+
+		let wrappedOwnKeysCalls = 0;
+		const wrappedTarget: Record<string, unknown> = {
+			type: 'toolResponse', requestId: request.requestId, success: true,
+		};
+		let shapeVaryingResponse!: Record<string, unknown>;
+		let wrappedResponse!: Record<string, unknown>;
+		shapeVaryingResponse = new Proxy(wrappedTarget, {
+			ownKeys() {
+				wrappedOwnKeysCalls++;
+				return wrappedOwnKeysCalls === 1
+					? ['type', 'requestId', 'result']
+					: ['success'];
+			},
+			getOwnPropertyDescriptor(candidate, key) {
+				if (key === 'result') {
+					return { configurable: true, enumerable: true, writable: true, value: wrappedResponse };
+				}
+				return Reflect.getOwnPropertyDescriptor(candidate, key);
+			},
+		});
+		wrappedResponse = new Proxy(shapeVaryingResponse, {});
+		await handlePanelMessage(shapeVaryingResponse);
+		expect(wrappedOwnKeysCalls).toBe(1);
+		expect(mutationHandler.hasPendingResponse()).toBe(true);
+		expect(settled).toBe(false);
+		expect(vi.getTimerCount()).toBe(1);
+		expect(toolOrchestrator.handleWebviewResponse).not.toHaveBeenCalled();
+
+		await handlePanelMessage({
+			type: 'toolResponse', requestId: request.requestId, result: { success: true },
+		});
+		await expect(pending).resolves.toEqual({ success: true });
+		expect(mutationHandler.hasPendingResponse()).toBe(false);
+		expect(settled).toBe(true);
+		expect(vi.getTimerCount()).toBe(0);
+		expect(toolOrchestrator.handleWebviewResponse).not.toHaveBeenCalled();
+	});
+
 	it('deletes displaced correlation authority while preserving Copilot, webview, and message owners', () => {
 		const workspaceRoot = path.resolve(__dirname, '../../..');
 		const readSource = (relativePath: string) => fs.readFileSync(
@@ -207,7 +375,10 @@ describe('QueryEditorProvider development-note mutation application', () => {
 			'return this.developmentNoteMutationApplication.updateDevelopmentNotes(message);',
 		);
 		expect(providerSource).toContain(
-			'if (this.developmentNoteMutationApplication.handleMessage(message)) return;',
+			'const admission = admitDevelopmentNoteMutationWebviewMessage(input);',
+		);
+		expect(providerSource).toContain(
+			'this.developmentNoteMutationApplication.handleResponseAdmission(admission)',
 		);
 		expect(providerSource).toMatch(
 			/sqlLastSelectionApplication\?: SqlLastSelectionApplicationHandler,\s+developmentNoteMutationApplication\?: DevelopmentNoteMutationApplicationHandler,/,
@@ -216,10 +387,18 @@ describe('QueryEditorProvider development-note mutation application', () => {
 		expect(handlerSource).toContain('private readonly webviewMutationResponseResolvers');
 		expect(handlerSource).toContain('const requestId = `copilot_devnotes_');
 		expect(handlerSource).toContain('}, 5000);');
-		expect(handlerSource).toContain("type: 'updateDevNotes'");
-		expect(handlerSource).toContain('if (!pending) return false;');
+		expect(handlerSource).toContain('createDevelopmentNoteMutationHostMessage(requestId, message)');
+		expect(handlerSource).toContain('if (!admission.parsed.ok) return true;');
+		const responseMethodStart = handlerSource.indexOf('\n\thandleMessage(message: unknown): boolean {');
+		const responseMethodSource = handlerSource.slice(
+			responseMethodStart,
+			handlerSource.indexOf('\n\tdispose(): void {', responseMethodStart),
+		);
+		expect(responseMethodSource.indexOf('if (!admission.parsed.ok) return true;'))
+			.toBeLessThan(responseMethodSource.indexOf('const pending = this.webviewMutationResponseResolvers.get'));
 		expect(copilotSource).toContain("action: 'remove'");
-		expect(copilotSource).toContain("action: noteId ? 'supersede' : 'add'");
+		expect(copilotSource).toContain("? { action: 'supersede', entry, supersededId: noteId }");
+		expect(copilotSource).toContain(": { action: 'add', entry }");
 		expect(copilotSource).toContain("tool: 'update_development_note'");
 		expect(hostTypesSource).toContain("type: 'toolResponse'; requestId: string; result: unknown; error?: string");
 		expect(webviewSource).toContain("case 'updateDevNotes':");
@@ -234,6 +413,6 @@ describe('QueryEditorProvider development-note mutation application', () => {
 		expect(webviewSource).toContain('const metadataFreeCompanion = !pState.compatibilityMode');
 		expect(webviewSource).toContain('pState.metadataFreeDevelopmentNoteSections');
 		expect(webviewSource).toContain("if (mutated) schedulePersist('devnotes-update');");
-		expect(webviewSource).toContain("type: 'toolResponse', requestId: message.requestId, result: { success: mutated }");
+		expect(webviewSource).toContain('createDevelopmentNoteMutationWebviewMessage(');
 	});
 });

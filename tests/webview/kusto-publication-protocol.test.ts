@@ -117,6 +117,57 @@ describe('Kusto publication protocol', () => {
 		expect(getterCalls).toBe(0);
 	});
 
+	it('rejects a shape-varying envelope aliased as its own payload after one snapshot', () => {
+		let ownKeysCalls = 0;
+		const target: Record<string, unknown> = {
+			type: 'kustoPublicationStage',
+			publicationId: 'publication-self-payload',
+			publicationDeadline: 1_234.5,
+			kind: 'snapshot',
+		};
+		let selfPayload!: Record<string, unknown>;
+		selfPayload = new Proxy(target, {
+			ownKeys() {
+				ownKeysCalls++;
+				return ownKeysCalls === 1
+					? ['type', 'publicationId', 'publicationDeadline', 'payload']
+					: ['kind'];
+			},
+			getOwnPropertyDescriptor(candidate, key) {
+				if (key === 'payload') {
+					return { configurable: true, enumerable: true, writable: true, value: selfPayload };
+				}
+				return Reflect.getOwnPropertyDescriptor(candidate, key);
+			},
+		});
+
+		expect(admitKustoPublicationHostMessage(selfPayload))
+			.toMatchObject({ recognized: true, parsed: { ok: false } });
+		expect(ownKeysCalls).toBe(1);
+
+		let wrappedOwnKeysCalls = 0;
+		let shapeVaryingStage!: Record<string, unknown>;
+		let wrappedPayload!: Record<string, unknown>;
+		shapeVaryingStage = new Proxy(target, {
+			ownKeys() {
+				wrappedOwnKeysCalls++;
+				return wrappedOwnKeysCalls === 1
+					? ['type', 'publicationId', 'publicationDeadline', 'payload']
+					: ['kind'];
+			},
+			getOwnPropertyDescriptor(candidate, key) {
+				if (key === 'payload') {
+					return { configurable: true, enumerable: true, writable: true, value: wrappedPayload };
+				}
+				return Reflect.getOwnPropertyDescriptor(candidate, key);
+			},
+		});
+		wrappedPayload = new Proxy(shapeVaryingStage, {});
+		expect(admitKustoPublicationHostMessage(shapeVaryingStage))
+			.toMatchObject({ recognized: true, parsed: { ok: false } });
+		expect(wrappedOwnKeysCalls).toBe(1);
+	});
+
 	it('atomically captures a valid proxy without property reads', () => {
 		const message = stage();
 		let typeInspections = 0;

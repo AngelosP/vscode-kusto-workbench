@@ -1,5 +1,11 @@
 import * as vscode from 'vscode';
-import { admitKustoPublicationWebviewMessage } from '../shared/kustoPublicationProtocol';
+import {
+	admitKustoPublicationWebviewMessage,
+	admitKustoPublicationWebviewMessageFromEnvelope,
+} from '../shared/kustoPublicationProtocol';
+import { admitArtifactCsvSaveWebviewMessageFromEnvelope } from '../shared/artifactCsvSaveProtocol';
+import { admitDevelopmentNoteMutationWebviewMessage } from '../shared/developmentNoteMutationProtocol';
+import { captureRuntimeMessageEnvelope } from '../shared/runtimeMessageEnvelope';
 import * as crypto from 'crypto';
 import * as path from 'path';
 
@@ -935,7 +941,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		return this.workbenchToolSessionApplication.requestSectionsFromWebview(purpose, targetConnectionId);
 	}
 
-	updateDevelopmentNotes(message: Record<string, unknown>): Promise<{ success: boolean; error?: string }> {
+	updateDevelopmentNotes(message: import('../shared/developmentNoteMutationProtocol').DevelopmentNoteMutationPayload): Promise<{ success: boolean; error?: string }> {
 		return this.developmentNoteMutationApplication.updateDevelopmentNotes(message);
 	}
 
@@ -994,25 +1000,63 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.watchWorkbenchSettings();
 	}
 
+	private handleDevelopmentNoteMutationResponse(input: unknown): boolean {
+		const admission = admitDevelopmentNoteMutationWebviewMessage(input);
+		if (!admission.recognized) return false;
+		const copilotClaimed = this.developmentNoteMutationApplication?.handleResponseAdmission
+			? this.developmentNoteMutationApplication.handleResponseAdmission(admission)
+			: this.developmentNoteMutationApplication?.handleMessage(input) === true;
+		if (copilotClaimed) return true;
+		const agentClaimed = this.workbenchToolSessionApplication
+			?.handleDevelopmentNoteMutationResponseAdmission
+			? this.workbenchToolSessionApplication.handleDevelopmentNoteMutationResponseAdmission(admission)
+			: this.workbenchToolSessionApplication?.handleDevelopmentNoteMutationResponse?.(input) === true;
+		if (agentClaimed) return true;
+		if (!admission.parsed.ok && !admission.requestId) {
+			return this.developmentNoteMutationApplication?.hasPendingResponse?.() === true
+				|| this.workbenchToolSessionApplication
+					?.hasPendingDevelopmentNoteMutationResponse?.() === true;
+		}
+		return false;
+	}
+
 	private handlePanelWebviewMessage(input: unknown): void | Promise<void> {
-		const publicationAdmission = admitKustoPublicationWebviewMessage(input);
+		const envelope = captureRuntimeMessageEnvelope(input);
+		if (!envelope.ok) return;
+		input = envelope.value;
+		const publicationAdmission = admitKustoPublicationWebviewMessageFromEnvelope(
+			envelope.descriptorSnapshot,
+		);
 		if (publicationAdmission.recognized) {
 			if (!publicationAdmission.parsed.ok) return;
 			input = publicationAdmission.parsed.value;
 		}
+		const artifactCsvSaveAdmission = admitArtifactCsvSaveWebviewMessageFromEnvelope(
+			envelope.descriptorSnapshot,
+		);
+		if (artifactCsvSaveAdmission.recognized) {
+			if (!artifactCsvSaveAdmission.parsed.ok) return;
+			input = artifactCsvSaveAdmission.parsed.value;
+		}
+		if (this.handleDevelopmentNoteMutationResponse(input)) return;
 		if (input && typeof input === 'object'
 			&& (input as Record<string, unknown>).type === MAIN_WEBVIEW_DISPATCHER_READY_TYPE) return;
 		const message = input as IncomingWebviewMessage;
 		this.fileOpenTrace?.mark('queryEditorProvider.webviewMessage.received', { type: message?.type });
-		return this.handleWebviewMessage(message);
+		return this.handleWebviewMessage(message, true);
 	}
 
-	public async handleWebviewMessage(message: IncomingWebviewMessage): Promise<void> {
+	public async handleWebviewMessage(
+		message: IncomingWebviewMessage,
+		developmentNoteMutationResponseChecked = false,
+	): Promise<void> {
 		const publicationAdmission = admitKustoPublicationWebviewMessage(message);
 		if (publicationAdmission.recognized) {
 			if (!publicationAdmission.parsed.ok) return;
 			message = publicationAdmission.parsed.value;
 		}
+		if (!developmentNoteMutationResponseChecked
+			&& this.handleDevelopmentNoteMutationResponse(message)) return;
 		if (message?.type === 'fileOpenTrace') {
 			this.fileOpenTrace?.mark(`webview.${message.event}`, { timeMs: message.timeMs, sequence: message.sequence, detail: message.detail });
 			return;
@@ -1174,9 +1218,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		if (copilotChatFirstTimeApplicationMessage) {
 			await copilotChatFirstTimeApplicationMessage;
 			return;
-		}
-		if (message.type === 'toolResponse') {
-			if (this.developmentNoteMutationApplication.handleMessage(message)) return;
 		}
 		const workbenchToolSessionApplicationMessage
 			= this.workbenchToolSessionApplication?.handleMessage(message);

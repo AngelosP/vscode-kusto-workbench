@@ -1,4 +1,7 @@
-import type { RuntimeMessageEnvelopeDescriptorSnapshot } from './runtimeMessageEnvelope';
+import {
+	isRuntimeProxy,
+	type RuntimeMessageEnvelopeDescriptorSnapshot,
+} from './runtimeMessageEnvelope';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -44,6 +47,7 @@ export type KustoPublicationWebviewMessage = KustoPublicationAckMessage;
 type DescriptorSnapshot = Readonly<{
 	input: UnknownRecord;
 	descriptors: PropertyDescriptorMap;
+	prototype: object | null;
 }>;
 
 type KnownTypeInspection =
@@ -95,15 +99,15 @@ function inspectKnownTypeSnapshot(
 			};
 		}
 
-		let owner = input as object | null;
+		let owner = snapshot.prototype;
 		const seen = new Set<object>();
-		let depth = 0;
+		let depth = 1;
 		while (owner && depth++ < 16) {
 			if (seen.has(owner)) {
 				return { recognized: true, type: failure('type prototype inspection was cyclic.'), snapshot };
 			}
 			seen.add(owner);
-			const inherited = owner === input ? undefined : Object.getOwnPropertyDescriptor(owner, 'type');
+			const inherited = Object.getOwnPropertyDescriptor(owner, 'type');
 			if (inherited) {
 				const value = descriptorValue(inherited);
 				if (typeof value === 'string' && !types.has(value)) return { recognized: false };
@@ -132,6 +136,7 @@ function inspectKnownType(input: unknown, types: ReadonlySet<string>): KnownType
 		return inspectKnownTypeSnapshot({
 			input: input as UnknownRecord,
 			descriptors: Object.getOwnPropertyDescriptors(input),
+			prototype: Object.getPrototypeOf(input),
 		}, types);
 	} catch {
 		return { recognized: true, type: failure('type could not be inspected.') };
@@ -145,6 +150,7 @@ function inspectRuntimeEnvelopeSnapshot(
 	return inspectKnownTypeSnapshot({
 		input: snapshot.input as UnknownRecord,
 		descriptors: snapshot.descriptors,
+		prototype: snapshot.prototype,
 	}, types);
 }
 
@@ -157,8 +163,7 @@ function validateExactRecord(
 		if (typeof snapshot.input === 'function' || Array.isArray(snapshot.input)) {
 			return failure(`${label} must be an object record.`);
 		}
-		const prototype = Object.getPrototypeOf(snapshot.input);
-		if (prototype !== Object.prototype && prototype !== null) {
+		if (snapshot.prototype !== Object.prototype && snapshot.prototype !== null) {
 			return failure(`${label} must use a canonical object prototype.`);
 		}
 		const keys = Reflect.ownKeys(snapshot.descriptors);
@@ -191,7 +196,9 @@ function readPublicationId(snapshot: DescriptorSnapshot): KustoPublicationParseR
 }
 
 function capturePayload(input: unknown, envelope: UnknownRecord): KustoPublicationParseResult<Readonly<Record<string, unknown>>> {
+	if (input === envelope) return failure('payload must not alias its enclosing publication.');
 	if (!input || typeof input !== 'object') return failure('payload must be an object record.');
+	if (isRuntimeProxy(input)) return failure('payload must not be a proxy-backed record.');
 	try {
 		if (Array.isArray(input)) return failure('payload must be an object record.');
 		const prototype = Object.getPrototypeOf(input);
