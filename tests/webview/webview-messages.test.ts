@@ -175,6 +175,55 @@ describe('postMessageToHost', () => {
 		}
 	});
 
+	it('snapshots Kusto execution-start acknowledgements and rejects malformed values before E2E capture', () => {
+		const postMessage = vi.fn();
+		const capture = vi.fn();
+		(window as any).vscode = { postMessage };
+		(window as any).__e2eCaptureHostMessage = capture;
+		try {
+			const acknowledgement = {
+				type: 'kustoExecutionStartedAck' as const,
+				boxId: 'query-1',
+				executionId: 'execution-1',
+				sectionInstanceId: 'instance-1',
+				targetGeneration: 1,
+				accepted: true,
+			};
+			postMessageToHost(acknowledgement);
+
+			expect(capture).toHaveBeenCalledOnce();
+			expect(capture).toHaveBeenCalledWith(acknowledgement);
+			expect(capture.mock.calls[0][0]).not.toBe(acknowledgement);
+			expect(Object.isFrozen(capture.mock.calls[0][0])).toBe(true);
+			expect(postMessage).toHaveBeenCalledWith(acknowledgement);
+			capture.mockClear();
+			postMessage.mockClear();
+
+			let getterCalls = 0;
+			const accessor = { ...acknowledgement } as Record<string, unknown>;
+			Object.defineProperty(accessor, 'accepted', {
+				enumerable: true,
+				get() {
+					getterCalls++;
+					return true;
+				},
+			});
+			for (const malformed of [
+				{ ...acknowledgement, accepted: 'yes' },
+				{ ...acknowledgement, extra: true },
+				accessor,
+			]) {
+				postMessageToHost(malformed as unknown as Parameters<typeof postMessageToHost>[0]);
+			}
+
+			expect(getterCalls).toBe(0);
+			expect(capture).not.toHaveBeenCalled();
+			expect(postMessage).not.toHaveBeenCalled();
+		} finally {
+			delete (window as any).__e2eCaptureHostMessage;
+		}
+	});
+
 	it('snapshots editing preference setters and rejects malformed values before E2E capture', () => {
 		const postMessage = vi.fn();
 		const capture = vi.fn();

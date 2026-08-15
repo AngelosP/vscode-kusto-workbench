@@ -77,7 +77,7 @@ describe('MainWebviewStartupGateway', () => {
 			{ type: 'toolStateResponse', requestId: 'state-1', sections: [] },
 			{
 				type: 'kustoExecutionStartedAck', boxId: 'query-1', executionId: 'execution-1',
-				sectionInstanceId: 'section-1', targetGeneration: 1,
+				sectionInstanceId: 'section-1', targetGeneration: 1, accepted: true,
 			},
 			{ type: 'kustoPublicationAck', publicationId: 'publication-1', phase: 'staged', accepted: true },
 			{ type: 'kustoPublicationAck', publicationId: 'publication-1', phase: 'applied', accepted: false },
@@ -345,6 +345,106 @@ describe('MainWebviewStartupGateway', () => {
 			'start:request:2',
 			'end:request:2',
 		]);
+	});
+
+	it('admits only a canonical execution-start acknowledgement during blocked startup', async () => {
+		vi.useFakeTimers();
+		const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+		const harness = createPanelHarness();
+		const events: string[] = [];
+		let markFirstStarted!: () => void;
+		let releaseFirst!: () => void;
+		const firstStarted = new Promise<void>(resolve => { markFirstStarted = resolve; });
+		const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+		const waiterTimer = setTimeout(() => undefined, 5_000);
+		const timerCount = vi.getTimerCount();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel,
+			admitInbound: admitTestMessage,
+			allowReentrantInbound: isMainWebviewCorrelatedReply,
+		});
+		void harness.receive({ type: 'request', sequence: 1 });
+		const drain = gateway.setInboundHandler(async message => {
+			if (message.type === 'request') {
+				events.push('request:start');
+				markFirstStarted();
+				await firstGate;
+				events.push('request:end');
+				return;
+			}
+			events.push('ack');
+			clearTimeout(waiterTimer);
+			releaseFirst();
+		});
+
+		await firstStarted;
+		const identity = {
+			type: 'kustoExecutionStartedAck',
+			boxId: 'query-1',
+			executionId: 'execution-1',
+			sectionInstanceId: 'instance-1',
+			targetGeneration: 1,
+		};
+		await Promise.resolve(harness.receive({ ...identity, accepted: 'yes' }));
+		expect(events).toEqual(['request:start']);
+		expect(vi.getTimerCount()).toBe(timerCount);
+		expect(clearTimeoutSpy).not.toHaveBeenCalled();
+
+		await Promise.resolve(harness.receive({ ...identity, accepted: true }));
+		await drain;
+		expect(events).toEqual(['request:start', 'ack', 'request:end']);
+		expect(clearTimeoutSpy).toHaveBeenCalledOnce();
+	});
+
+	it('rejects a captured proxied execution-start acknowledgement before reentrancy or routing', async () => {
+		const harness = createPanelHarness();
+		const received: TestMessage[] = [];
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel,
+			admitInbound: admitTestMessage,
+			allowReentrantInbound: isMainWebviewCorrelatedReply,
+		});
+		await gateway.setInboundHandler(message => { received.push(message); });
+		const acknowledgement = new Proxy({
+			type: 'kustoExecutionStartedAck',
+			boxId: 'query-1',
+			executionId: 'execution-1',
+			sectionInstanceId: 'instance-1',
+			targetGeneration: 1,
+			accepted: true,
+		}, {});
+
+		await Promise.resolve(harness.receive(acknowledgement));
+
+		expect(received).toEqual([]);
+	});
+
+	it('rejects malformed execution starts before startup transport', async () => {
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel,
+			admitInbound: admitTestMessage,
+		});
+		await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE });
+		const start = {
+			type: 'kustoExecutionStarted',
+			engine: 'kusto',
+			boxId: 'query-1',
+			executionId: 'execution-1',
+			sectionInstanceId: 'instance-1',
+			targetGeneration: 1,
+			connectionId: 'connection-1',
+			database: 'Samples',
+			producer: 'copilot',
+			reservationSequence: 1,
+			query: 'print Value=1',
+		};
+
+		await expect(gateway.postMessage({ ...start, query: ['forged'] })).resolves.toBe(false);
+		expect(harness.posted).toEqual([]);
+		await expect(gateway.postMessage(start)).resolves.toBe(true);
+		expect(harness.posted).toEqual([start]);
+		expect(harness.posted[0]).not.toBe(start);
 	});
 
 	it('keeps an accessor-backed mutation response from consuming work during a blocked startup drain', async () => {

@@ -362,6 +362,34 @@ describe('QueryEditorProvider Kusto section execution application', () => {
 		expect(kustoSectionExecutionApplication.handleMessage).not.toHaveBeenCalled();
 	});
 
+	it('rejects malformed execution-start acknowledgements at standalone panel ingress', async () => {
+		const kustoSectionExecutionApplication: StructuralKustoSectionExecutionHandler = {
+			handleMessage: vi.fn(() => Promise.resolve()),
+			dispose: vi.fn(),
+		};
+		const { provider } = createProvider(kustoSectionExecutionApplication);
+		const identity = {
+			type: 'kustoExecutionStartedAck' as const,
+			boxId: 'query-current',
+			executionId: 'execution-current',
+			sectionInstanceId: 'instance-current',
+			targetGeneration: 2,
+		};
+		const handlePanelMessage = (provider as unknown as {
+			handlePanelWebviewMessage(input: unknown): void | Promise<void>;
+		}).handlePanelWebviewMessage.bind(provider);
+
+		await handlePanelMessage({ ...identity, accepted: 'yes' });
+		await handlePanelMessage(new Proxy({ ...identity, accepted: true }, {}));
+		expect(kustoSectionExecutionApplication.handleMessage).not.toHaveBeenCalled();
+
+		await handlePanelMessage({ ...identity, accepted: true });
+		expect(kustoSectionExecutionApplication.handleMessage).toHaveBeenCalledOnce();
+		const delivered = kustoSectionExecutionApplication.handleMessage.mock.calls[0][0];
+		expect(delivered).toEqual({ ...identity, accepted: true });
+		expect(Object.isFrozen(delivered)).toBe(true);
+	});
+
 	it('deletes seven provider cases and all displaced execution and acknowledgement authority', () => {
 		const workspaceRoot = path.resolve(__dirname, '../../..');
 		const readSource = (relativePath: string) => fs.readFileSync(
@@ -378,7 +406,6 @@ describe('QueryEditorProvider Kusto section execution application', () => {
 			'kustoSectionOpen',
 			'kustoSectionTarget',
 			'kustoSectionClose',
-			'kustoExecutionStartedAck',
 			'executeQuery',
 			'cancelQuery',
 		]) {
@@ -386,6 +413,16 @@ describe('QueryEditorProvider Kusto section execution application', () => {
 			expect(handlerSource).toContain(`case '${route}':`);
 			expect(typesSource).toContain(`type: '${route}'`);
 		}
+		expect(providerSource).not.toContain("case 'kustoExecutionStartedAck':");
+		expect(handlerSource).not.toContain("case 'kustoExecutionStartedAck':");
+		expect(typesSource).toContain('KustoExecutionStartWebviewMessage');
+		const executionStartAdmissionIndex = handlerSource.indexOf(
+			'admitKustoExecutionStartWebviewMessage(message)',
+		);
+		expect(executionStartAdmissionIndex).toBeGreaterThanOrEqual(0);
+		expect(executionStartAdmissionIndex).toBeLessThan(
+			handlerSource.indexOf('this.settleExecutionStartAck('),
+		);
 		expect(providerSource).not.toContain("case 'kustoPublicationAck':");
 		expect(handlerSource).not.toContain("case 'kustoPublicationAck':");
 		expect(typesSource).toContain('KustoPublicationWebviewMessage');
@@ -393,7 +430,7 @@ describe('QueryEditorProvider Kusto section execution application', () => {
 		expect(publicationAdmissionIndex).toBeGreaterThanOrEqual(0);
 		expect(publicationAdmissionIndex).toBeLessThan(handlerSource.indexOf('this.settlePublicationAck('));
 		expect(providerSource.match(/^\s*case '/gm) ?? []).toHaveLength(0);
-		expect(handlerSource.match(/^\s*case '/gm) ?? []).toHaveLength(6);
+		expect(handlerSource.match(/^\s*case '/gm) ?? []).toHaveLength(5);
 		expect(providerSource).not.toContain('pendingKustoExecutionStartAcks');
 		expect(providerSource).not.toContain('pendingKustoPublicationAcks');
 		expect(providerSource).not.toContain('kustoExecutionAckKey');

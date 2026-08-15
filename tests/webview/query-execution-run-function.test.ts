@@ -365,6 +365,40 @@ describe('executeRunFunction', () => {
 		expect(controller.admitQueryTerminal(controller.getActiveExecution()!)).toBe('active');
 	});
 
+	it('does not install or retire an execution owner when UI activation throws', () => {
+		const host = {
+			boxId: 'query_cmp_1', addController: vi.fn(), requestUpdate: vi.fn(),
+			getConnectionId: () => 'conn-1', getDatabase: () => 'Samples',
+			getSchemaLifecycleIdentity: () => ({ sectionInstanceId: 'instance-cmp', targetGeneration: 2 }),
+		} as any;
+		const controller = new QueryExecutionController(host);
+		const currentComparisonRun = {
+			sourceBoxId: 'query_1', sourceExecutionId: 'source-a', comparisonBoxId: 'query_cmp_1',
+		};
+		expect(controller.beginQueryExecution(
+			'current-execution', 'comparison', undefined, undefined, currentComparisonRun,
+		)).toBe(true);
+		const currentOwner = controller.getActiveExecution();
+		const candidateComparisonRun = {
+			sourceBoxId: 'query_1', sourceExecutionId: 'source-b', comparisonBoxId: 'query_cmp_1',
+		};
+		vi.spyOn(controller, 'setQueryExecuting').mockImplementationOnce(() => {
+			throw new Error('UI activation failed');
+		});
+
+		expect(controller.beginQueryExecution(
+			'candidate-execution', 'comparison', undefined, 'current-execution', candidateComparisonRun,
+		)).toBe(false);
+		expect(controller.getActiveExecution()).toBe(currentOwner);
+		expect(controller.admitQueryTerminal({
+			engine: 'kusto', boxId: 'query_cmp_1', executionId: 'candidate-execution',
+			sectionInstanceId: 'instance-cmp', targetGeneration: 2,
+			connectionId: 'conn-1', database: 'Samples', producer: 'comparison',
+			comparisonRun: candidateComparisonRun,
+		})).toBe('rejected');
+		controller.retireActiveQueryExecution();
+	});
+
 	it('does not require Kusto comparisonRun for a SQL-owned comparison section', () => {
 		testState.queryEditors.query_cmp_1 = makeEditor('SELECT 2');
 		appendExecutionControls('query_cmp_1');

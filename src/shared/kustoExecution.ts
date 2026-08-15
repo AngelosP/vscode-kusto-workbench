@@ -47,12 +47,6 @@ export type KustoExecutionSuccessStamp = KustoExecutionReservation & Readonly<{
 	dispatch: KustoDispatchIdentity;
 }>;
 
-export type KustoExecutionStarted = KustoExecutionReservation & Readonly<{
-	type: 'kustoExecutionStarted';
-	query: string;
-	expectedPredecessorExecutionId?: string;
-}>;
-
 export type KustoCopilotRequestIdentity = KustoEditorLifecycleIdentity & Readonly<{
 	boxId: string;
 	copilotRequestId: string;

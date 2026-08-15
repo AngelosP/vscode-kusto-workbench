@@ -86,6 +86,10 @@ import {
 	admitToolStateSnapshotHostMessageFromEnvelope,
 	createToolStateResponseMessage,
 } from '../../shared/toolStateSnapshotProtocol.js';
+import {
+	admitKustoExecutionStartHostMessageFromEnvelope,
+	createKustoExecutionStartedAckMessage,
+} from '../../shared/kustoExecutionStartProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -1078,6 +1082,13 @@ function settleSqlTerminalExecution(message: any): void {
 	}
 }
 
+type ComparisonSourceBinding = Readonly<{
+	consumerId: string;
+	artifactId: string;
+	retentionConsumerId?: string;
+	previous?: Readonly<{ sourceBoxId: string; artifactId: string }>;
+}>;
+
 function bindComparisonSourceArtifact(comparisonRun: any): boolean {
 	const sourceBoxId = String(comparisonRun?.sourceBoxId || '').trim();
 	const sourceExecutionId = String(comparisonRun?.sourceExecutionId || '').trim();
@@ -1088,6 +1099,61 @@ function bindComparisonSourceArtifact(comparisonRun: any): boolean {
 	return bindResultArtifactConsumer(
 		comparisonSourceArtifactConsumerId(comparisonBoxId), sourceBoxId, artifact.artifactId,
 	) === artifact.artifactId;
+}
+
+function beginComparisonSourceBinding(message: any): ComparisonSourceBinding | undefined {
+	const comparisonRun = message?.comparisonRun;
+	const sourceBoxId = String(comparisonRun?.sourceBoxId || '').trim();
+	const sourceExecutionId = String(comparisonRun?.sourceExecutionId || '').trim();
+	const comparisonBoxId = String(comparisonRun?.comparisonBoxId || '').trim();
+	if (!sourceBoxId || !sourceExecutionId || !comparisonBoxId) return undefined;
+	const artifact = getResultArtifactByProducerExecution(sourceBoxId, sourceExecutionId);
+	if (!artifact) return undefined;
+	const consumerId = comparisonSourceArtifactConsumerId(comparisonBoxId);
+	const previous = getBoundResultArtifact(consumerId);
+	const retentionConsumerId = previous && previous.artifactId !== artifact.artifactId
+		? `${consumerId}:pending:${message.sectionInstanceId}:${message.targetGeneration}:${message.executionId}`
+		: undefined;
+	if (retentionConsumerId && previous
+		&& bindResultArtifactConsumer(
+			retentionConsumerId,
+			previous.sourceBoxId,
+			previous.artifactId,
+		) !== previous.artifactId) {
+		return undefined;
+	}
+	if (bindResultArtifactConsumer(consumerId, sourceBoxId, artifact.artifactId) !== artifact.artifactId) {
+		if (retentionConsumerId) unbindResultArtifactConsumer(retentionConsumerId);
+		return undefined;
+	}
+	return {
+		consumerId,
+		artifactId: artifact.artifactId,
+		...(retentionConsumerId ? { retentionConsumerId } : {}),
+		...(previous ? {
+			previous: { sourceBoxId: previous.sourceBoxId, artifactId: previous.artifactId },
+		} : {}),
+	};
+}
+
+function commitComparisonSourceBinding(binding: ComparisonSourceBinding): void {
+	if (binding.retentionConsumerId) unbindResultArtifactConsumer(binding.retentionConsumerId);
+}
+
+function rollbackComparisonSourceBinding(binding: ComparisonSourceBinding): void {
+	const current = getBoundResultArtifact(binding.consumerId);
+	if (current?.artifactId === binding.artifactId) {
+		if (binding.previous) {
+			bindResultArtifactConsumer(
+				binding.consumerId,
+				binding.previous.sourceBoxId,
+				binding.previous.artifactId,
+			);
+		} else {
+			unbindResultArtifactConsumer(binding.consumerId);
+		}
+	}
+	if (binding.retentionConsumerId) unbindResultArtifactConsumer(binding.retentionConsumerId);
 }
 
 function bindSqlComparisonSourceArtifact(comparisonBoxId: string, message: any): boolean {
@@ -1673,6 +1739,14 @@ const __kustoDispatchHostMessage = async (message: any) => {
 	if (toolStateAdmission.recognized) {
 		if (!toolStateAdmission.parsed.ok) return;
 		message = toolStateAdmission.parsed.value;
+	}
+	const executionStartAdmission = developmentNoteMutationAdmission.recognized
+		|| toolStateAdmission.recognized
+		? { recognized: false as const }
+		: admitKustoExecutionStartHostMessageFromEnvelope(envelope.descriptorSnapshot);
+	if (executionStartAdmission.recognized) {
+		if (!executionStartAdmission.parsed.ok) return;
+		message = executionStartAdmission.parsed.value;
 	}
 	const kustoPublicationAdmission = admitKustoPublicationHostMessage(message);
 	if (kustoPublicationAdmission.recognized) {
@@ -2547,35 +2621,46 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'kustoExecutionStarted': {
-			const boxId = String(message.boxId || '');
+			const boxId = message.boxId;
 			const section = __kustoGetQuerySectionElement(boxId);
 			const lifecycle = section?.getSchemaLifecycleIdentity?.();
 			const targetMatches = !!section
-				&& lifecycle?.sectionInstanceId === String(message.sectionInstanceId || '')
-				&& lifecycle?.targetGeneration === Number(message.targetGeneration)
-				&& String(section.getConnectionId?.() || '') === String(message.connectionId || '')
-				&& String(section.getDatabase?.() || '').toLowerCase() === String(message.database || '').toLowerCase();
-			const comparisonBindingAccepted = !message.comparisonRun
-				|| String(message.boxId || '') !== String(message.comparisonRun.comparisonBoxId || '')
-				|| bindComparisonSourceArtifact(message.comparisonRun);
-			const accepted = targetMatches && comparisonBindingAccepted
-				&& section.beginQueryExecution?.(
-					String(message.executionId || ''), message.producer, String(message.copilotRequestId || '') || undefined,
-					String(message.expectedPredecessorExecutionId || ''),
-					message.comparisonRun,
-				) === true;
-			if (!accepted && message.comparisonRun
-				&& String(message.boxId || '') === String(message.comparisonRun.comparisonBoxId || '')) {
-				releaseComparisonSourceArtifact(message);
+				&& lifecycle?.sectionInstanceId === message.sectionInstanceId
+				&& lifecycle?.targetGeneration === message.targetGeneration
+				&& String(section.getConnectionId?.() || '') === message.connectionId
+				&& String(section.getDatabase?.() || '').toLowerCase() === message.database.toLowerCase();
+			const activeExecution = section?.getActiveExecution?.();
+			const predecessorMatches = !activeExecution
+				|| activeExecution.executionId === message.expectedPredecessorExecutionId;
+			const requiresComparisonBinding = message.producer === 'comparison'
+				&& message.boxId === message.comparisonRun.comparisonBoxId;
+			const comparisonBinding = targetMatches && predecessorMatches && requiresComparisonBinding
+				? beginComparisonSourceBinding(message)
+				: undefined;
+			const comparisonBindingAccepted = !requiresComparisonBinding || !!comparisonBinding;
+			let accepted = false;
+			try {
+				accepted = targetMatches && predecessorMatches && comparisonBindingAccepted
+					&& section.beginQueryExecution?.(
+						message.executionId, message.producer, message.copilotRequestId,
+						message.expectedPredecessorExecutionId ?? '',
+						message.comparisonRun,
+					) === true;
+			} catch (error) {
+				console.error('[kusto]', error);
 			}
-			postMessageToHost({
-				type: 'kustoExecutionStartedAck',
-				boxId,
-				executionId: String(message.executionId || ''),
-				sectionInstanceId: String(message.sectionInstanceId || ''),
-				targetGeneration: Number(message.targetGeneration),
+			if (comparisonBinding) {
+				if (accepted) commitComparisonSourceBinding(comparisonBinding);
+				else rollbackComparisonSourceBinding(comparisonBinding);
+			}
+			const acknowledgement = createKustoExecutionStartedAckMessage(
+				message.boxId,
+				message.executionId,
+				message.sectionInstanceId,
+				message.targetGeneration,
 				accepted,
-			});
+			);
+			if (acknowledgement.ok) postMessageToHost(acknowledgement.value);
 			if (accepted) {
 				window.dispatchEvent(new CustomEvent(ADMITTED_KUSTO_EXECUTION_STARTED_EVENT, { detail: message }));
 			}

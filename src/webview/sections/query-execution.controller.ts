@@ -280,8 +280,8 @@ export class QueryExecutionController implements ReactiveController {
 		if (!id || !lifecycle || !connectionId || !database) return false;
 		if (expectedPredecessorExecutionId !== undefined && this.activeExecution
 			&& this.activeExecution.executionId !== expectedPredecessorExecutionId) return false;
-		if (this.activeExecution) this.rememberRetired(this.activeExecution);
-		this.activeExecution = Object.freeze({
+		const previousExecution = this.activeExecution;
+		const nextExecution = Object.freeze({
 			engine: 'kusto',
 			boxId: this.host.boxId,
 			executionId: id,
@@ -293,8 +293,16 @@ export class QueryExecutionController implements ReactiveController {
 			...(copilotRequestId ? { copilotRequestId } : {}),
 			...(comparisonRun ? { comparisonRun } : {}),
 		});
+		try {
+			this.setQueryExecuting(true);
+		} catch (error) {
+			try { this.setQueryExecuting(previousExecution !== undefined); } catch { /* best effort */ }
+			console.error('[kusto]', error);
+			return false;
+		}
+		if (previousExecution) this.rememberRetired(previousExecution);
+		this.activeExecution = nextExecution;
 		this.cancelling = false;
-		this.setQueryExecuting(true);
 		return true;
 	}
 

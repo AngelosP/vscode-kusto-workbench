@@ -9,6 +9,10 @@ import {
 	admitToolStateSnapshotHostMessage,
 	admitToolStateSnapshotWebviewMessageFromEnvelope,
 } from '../shared/toolStateSnapshotProtocol';
+import {
+	admitKustoExecutionStartHostMessage,
+	admitKustoExecutionStartWebviewMessageFromEnvelope,
+} from '../shared/kustoExecutionStartProtocol';
 import { captureRuntimeMessageEnvelope } from '../shared/runtimeMessageEnvelope';
 import * as crypto from 'crypto';
 import * as path from 'path';
@@ -1049,6 +1053,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			if (!toolStateAdmission.parsed.ok) return;
 			input = toolStateAdmission.parsed.value;
 		}
+		const executionStartAdmission = admitKustoExecutionStartWebviewMessageFromEnvelope(
+			envelope.descriptorSnapshot,
+		);
+		if (executionStartAdmission.recognized) {
+			if (!executionStartAdmission.parsed.ok) return;
+			input = executionStartAdmission.parsed.value;
+		}
 		if (this.handleDevelopmentNoteMutationResponse(input)) return;
 		if (input && typeof input === 'object'
 			&& (input as Record<string, unknown>).type === MAIN_WEBVIEW_DISPATCHER_READY_TYPE) return;
@@ -1335,6 +1346,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	postMessage(message: unknown): Thenable<boolean> {
 		if (this._panelDisposed) return Promise.resolve(false);
+		const executionStartAdmission = admitKustoExecutionStartHostMessage(message);
+		if (executionStartAdmission.recognized) {
+			if (!executionStartAdmission.parsed.ok) return Promise.resolve(false);
+			message = executionStartAdmission.parsed.value;
+		}
 		const toolStateAdmission = admitToolStateSnapshotHostMessage(message);
 		if (toolStateAdmission.recognized) {
 			if (!toolStateAdmission.parsed.ok) return Promise.resolve(false);

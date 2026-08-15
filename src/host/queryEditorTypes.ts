@@ -22,6 +22,7 @@ import type { CopilotInlineCompletionWebviewMessage } from '../shared/copilotInl
 import type { KustoPublicationWebviewMessage } from '../shared/kustoPublicationProtocol';
 import type { DevelopmentNoteMutationWebviewMessage } from '../shared/developmentNoteMutationProtocol';
 import type { ToolStateSnapshotWebviewMessage } from '../shared/toolStateSnapshotProtocol';
+import type { KustoExecutionStartWebviewMessage } from '../shared/kustoExecutionStartProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -262,7 +263,7 @@ export type IncomingWebviewMessage =
 	| { type: 'kustoSectionOpen'; boxId: string; sectionInstanceId: string }
 	| { type: 'kustoSectionTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number; connectionId?: string; database?: string; connectionRevision?: number; connectionIdentityKey?: string }
 	| { type: 'kustoSectionClose'; boxId: string; sectionInstanceId: string }
-	| { type: 'kustoExecutionStartedAck'; boxId: string; executionId: string; sectionInstanceId: string; targetGeneration: number; accepted: boolean }
+	| KustoExecutionStartWebviewMessage
 	| { type: 'cancelQuery'; boxId: string; executionId: string; sectionInstanceId: string; targetGeneration: number }
 	| { type: 'checkCopilotAvailability'; boxId: string }
 	| { type: 'prepareCopilotWriteQuery'; boxId: string; flavor?: 'kusto' | 'sql' }

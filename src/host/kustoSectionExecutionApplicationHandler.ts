@@ -16,10 +16,14 @@ import type {
 	KustoDispatchIdentity,
 	KustoExecutionProducer,
 	KustoExecutionRequestIdentity,
-	KustoExecutionStarted,
 	KustoSectionExecutionOutcome,
 	KustoSectionExecutionTarget,
 } from '../shared/kustoExecution';
+import {
+	admitKustoExecutionStartWebviewMessage,
+	createKustoExecutionStartedMessage,
+	type KustoExecutionStartedAckMessage,
+} from '../shared/kustoExecutionStartProtocol';
 import { getKustoConnectionIdentityKey } from '../shared/kustoAuth';
 import {
 	admitKustoPublicationWebviewMessage,
@@ -108,6 +112,12 @@ export class HostKustoSectionExecutionApplicationHandler
 	constructor(private readonly options: KustoSectionExecutionApplicationHandlerOptions) {}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
+		const executionStartAdmission = admitKustoExecutionStartWebviewMessage(message);
+		if (executionStartAdmission.recognized) {
+			if (this.disposed || !executionStartAdmission.parsed.ok) return Promise.resolve();
+			this.settleExecutionStartAck(executionStartAdmission.parsed.value);
+			return Promise.resolve();
+		}
 		const publicationAdmission = admitKustoPublicationWebviewMessage(message);
 		if (publicationAdmission.recognized) {
 			if (this.disposed || !publicationAdmission.parsed.ok) return Promise.resolve();
@@ -135,10 +145,6 @@ export class HostKustoSectionExecutionApplicationHandler
 				if (this.disposed) return Promise.resolve();
 				this.options.cancelKustoCopilotSection(message.boxId, message.sectionInstanceId);
 				this.options.coordinator.closeSection(message.boxId, message.sectionInstanceId);
-				return Promise.resolve();
-			case 'kustoExecutionStartedAck':
-				if (this.disposed) return Promise.resolve();
-				this.settleExecutionStartAck(message);
 				return Promise.resolve();
 			case 'executeQuery':
 				if (this.disposed) return Promise.resolve();
@@ -433,6 +439,12 @@ export class HostKustoSectionExecutionApplicationHandler
 		query: string,
 		expectedPredecessorExecutionId?: string,
 	): Promise<boolean> {
+		const message = createKustoExecutionStartedMessage(
+			reservation,
+			query,
+			expectedPredecessorExecutionId,
+		);
+		if (!message.ok) return false;
 		const key = this.executionAckKey(reservation);
 		const prior = this.pendingExecutionStartAcks.get(key);
 		if (prior) {
@@ -446,13 +458,7 @@ export class HostKustoSectionExecutionApplicationHandler
 			}, 5_000);
 			this.pendingExecutionStartAcks.set(key, { resolve, timer });
 		});
-		const message: KustoExecutionStarted = {
-			type: 'kustoExecutionStarted',
-			...reservation,
-			query,
-			...(expectedPredecessorExecutionId ? { expectedPredecessorExecutionId } : {}),
-		};
-		const delivered = await this.options.postMessage(message);
+		const delivered = await this.options.postMessage(message.value);
 		if (delivered !== true) {
 			const pending = this.pendingExecutionStartAcks.get(key);
 			if (pending) {
@@ -465,7 +471,7 @@ export class HostKustoSectionExecutionApplicationHandler
 	}
 
 	private settleExecutionStartAck(
-		message: Extract<IncomingWebviewMessage, { type: 'kustoExecutionStartedAck' }>,
+		message: KustoExecutionStartedAckMessage,
 	): void {
 		const key = this.executionAckKey(message);
 		const pending = this.pendingExecutionStartAcks.get(key);

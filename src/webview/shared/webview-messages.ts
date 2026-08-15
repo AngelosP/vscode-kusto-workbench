@@ -103,6 +103,10 @@ import {
 	admitToolStateSnapshotWebviewMessageFromEnvelope,
 	type ToolStateSnapshotWebviewMessage,
 } from '../../shared/toolStateSnapshotProtocol.js';
+import {
+	admitKustoExecutionStartWebviewMessageFromEnvelope,
+	type KustoExecutionStartWebviewMessage,
+} from '../../shared/kustoExecutionStartProtocol.js';
 import { captureRuntimeMessageEnvelope } from '../../shared/runtimeMessageEnvelope.js';
 import { pState } from './persistence-state.js';
 
@@ -221,7 +225,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'kustoSectionOpen'; boxId: string; sectionInstanceId: string }
 	| { type: 'kustoSectionTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number; connectionId?: string; database?: string; connectionRevision?: number; connectionIdentityKey?: string }
 	| { type: 'kustoSectionClose'; boxId: string; sectionInstanceId: string }
-	| { type: 'kustoExecutionStartedAck'; boxId: string; executionId: string; sectionInstanceId: string; targetGeneration: number; accepted: boolean }
+	| KustoExecutionStartWebviewMessage
 	| OutgoingEditorCursorPositionChangedMessage
 	| OutgoingEditorCursorStatusSnapshotRequestMessage
 	| KustoDatabaseDiscoveryWebviewMessage
@@ -480,6 +484,17 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 			return;
 		}
 		message = rawToolStateAdmission.parsed.value;
+	}
+	const rawKustoExecutionStartAdmission = rawKustoPublicationAdmission.recognized
+		|| rawToolStateAdmission.recognized
+		? { recognized: false as const }
+		: admitKustoExecutionStartWebviewMessageFromEnvelope(envelope.descriptorSnapshot);
+	if (rawKustoExecutionStartAdmission.recognized) {
+		if (!rawKustoExecutionStartAdmission.parsed.ok) {
+			console.error('[kusto] Rejected invalid Kusto execution-start acknowledgement:', rawKustoExecutionStartAdmission.parsed.error);
+			return;
+		}
+		message = rawKustoExecutionStartAdmission.parsed.value;
 	}
 	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage | CompatibilityPersistenceWebviewMessage = message;
 	const kustoPublicationAdmission = admitKustoPublicationWebviewMessage(message);

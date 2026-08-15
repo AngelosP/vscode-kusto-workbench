@@ -252,6 +252,74 @@ describe('HostKustoSectionExecutionApplicationHandler', () => {
 		expect(harness.executeQueryCancelable).toHaveBeenCalledOnce();
 	});
 
+	it('keeps the exact execution-start waiter and deadline live after a malformed matching acknowledgement', async () => {
+		vi.useFakeTimers();
+		const harness = createHarness();
+		await harness.openAndTarget();
+		const result = queryResult('copilot-canonical');
+		harness.executeQueryCancelable.mockImplementationOnce(dispatchingExecution(Promise.resolve(result)));
+		let settled = false;
+
+		const running = harness.handler.executeKustoSectionQuery({
+			target: harness.handler.getKustoSectionExecutionTarget('query-1')!,
+			executionId: 'copilot-malformed-ack',
+			producer: 'copilot',
+			query: 'print x=1',
+		}).then(value => {
+			settled = true;
+			return value;
+		});
+		await flushPromises();
+		expect(harness.transport).toHaveBeenCalledOnce();
+		const started = harness.transport.mock.calls[0][0] as {
+			boxId: string;
+			executionId: string;
+			sectionInstanceId: string;
+			targetGeneration: number;
+		};
+		const acknowledgementIdentity = {
+			boxId: started.boxId,
+			executionId: started.executionId,
+			sectionInstanceId: started.sectionInstanceId,
+			targetGeneration: started.targetGeneration,
+		};
+		const pendingExecutionStartAcks = (harness.handler as unknown as {
+			pendingExecutionStartAcks: Map<string, { timer?: ReturnType<typeof setTimeout> }>;
+		}).pendingExecutionStartAcks;
+		const pending = [...pendingExecutionStartAcks.values()][0];
+		const deadline = pending?.timer;
+		const timerCount = vi.getTimerCount();
+
+		await harness.handler.handleMessage({
+			type: 'kustoExecutionStartedAck',
+			...acknowledgementIdentity,
+			accepted: 'yes' as unknown as boolean,
+		});
+
+		expect(settled).toBe(false);
+		expect(harness.executeQueryCancelable).not.toHaveBeenCalled();
+		expect([...pendingExecutionStartAcks.values()][0]).toBe(pending);
+		expect([...pendingExecutionStartAcks.values()][0]?.timer).toBe(deadline);
+		expect(vi.getTimerCount()).toBe(timerCount);
+
+		await vi.advanceTimersByTimeAsync(4_999);
+		expect(settled).toBe(false);
+		expect(harness.executeQueryCancelable).not.toHaveBeenCalled();
+		expect([...pendingExecutionStartAcks.values()][0]).toBe(pending);
+		expect([...pendingExecutionStartAcks.values()][0]?.timer).toBe(deadline);
+
+		await harness.handler.handleMessage({
+			type: 'kustoExecutionStartedAck',
+			...acknowledgementIdentity,
+			accepted: true,
+		});
+
+		await expect(running).resolves.toEqual({
+			status: 'success', executionId: 'copilot-malformed-ack', result,
+		});
+		expect(harness.executeQueryCancelable).toHaveBeenCalledOnce();
+	});
+
 	it('requires exact staged and applied publication acknowledgements', async () => {
 		const harness = createHarness();
 		const payload = { type: 'queryResult', marker: 'exact-payload' };

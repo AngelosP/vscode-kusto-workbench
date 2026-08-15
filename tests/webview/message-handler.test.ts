@@ -6,6 +6,10 @@ import {
 	kustoSyntheticSchemaRequests,
 } from '../../src/webview/core/kusto-synthetic-request-runtime.js';
 import { retireSqlComparisonAdmission } from '../../src/webview/core/sql-comparison-admission-runtime.js';
+import {
+	comparisonSourceArtifactConsumerId,
+	ResultArtifactStore,
+} from '../../src/shared/resultArtifact.js';
 
 const handlerState = vi.hoisted(() => ({
 	activeQueryEditorBoxId: '',
@@ -3151,7 +3155,7 @@ describe('message-handler dispatch', () => {
 			type: 'kustoExecutionStarted', engine: 'kusto', boxId: 'query_comparison', executionId: 'comparison-execution',
 			sectionInstanceId: 'instance-1', targetGeneration: 1,
 			connectionId: 'connection-1', database: 'Samples', producer: 'comparison', reservationSequence: 2,
-			comparisonRun,
+			comparisonRun, query: 'print Value="optimized"',
 		});
 		dispatchHostMessage({
 			type: 'queryResult', engine: 'kusto', boxId: 'query_comparison', executionId: 'comparison-execution',
@@ -3236,6 +3240,7 @@ describe('message-handler dispatch', () => {
 			type: 'kustoExecutionStarted', engine: 'kusto', boxId: host.boxId,
 			executionId: 'copilot-delayed', sectionInstanceId: 'instance-crossed', targetGeneration: 1,
 			connectionId: 'connection-1', database: 'Db', producer: 'copilot', reservationSequence: 1,
+			query: 'print marker="copilot"',
 		});
 		await Promise.resolve();
 
@@ -3246,6 +3251,239 @@ describe('message-handler dispatch', () => {
 		expect(controller.getActiveExecution()).toEqual(expect.objectContaining({
 			executionId: 'manual-current', producer: 'manual',
 		}));
+	});
+
+	it('rejects malformed execution-start traffic before section and artifact effects', () => {
+		const section = {
+			getSchemaLifecycleIdentity: vi.fn(() => ({
+				sectionInstanceId: 'instance-protocol', targetGeneration: 3,
+			})),
+			getConnectionId: vi.fn(() => 'connection-protocol'),
+			getDatabase: vi.fn(() => 'Samples'),
+			beginQueryExecution: vi.fn(() => true),
+		};
+		mocks.getQuerySectionElement.mockReset();
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.bindResultArtifactConsumer.mockClear();
+		mocks.postMessageToHost.mockClear();
+		const start = {
+			type: 'kustoExecutionStarted',
+			engine: 'kusto',
+			boxId: 'query-protocol',
+			executionId: 'execution-protocol',
+			sectionInstanceId: 'instance-protocol',
+			targetGeneration: 3,
+			connectionId: 'connection-protocol',
+			database: 'Samples',
+			producer: 'copilot',
+			reservationSequence: 5,
+			query: 'print Value=1',
+		} as const;
+
+		dispatchHostMessage({ ...start, query: ['print forged=1'] });
+		dispatchHostMessage(new Proxy(start, {}) as unknown as Record<string, unknown>);
+
+		expect(mocks.getQuerySectionElement).not.toHaveBeenCalled();
+		expect(section.beginQueryExecution).not.toHaveBeenCalled();
+		expect(mocks.bindResultArtifactConsumer).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).not.toHaveBeenCalled();
+
+		dispatchHostMessage(start);
+
+		expect(section.beginQueryExecution).toHaveBeenCalledOnce();
+		expect(section.beginQueryExecution).toHaveBeenCalledWith(
+			'execution-protocol', 'copilot', undefined, '', undefined,
+		);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoExecutionStartedAck',
+			boxId: 'query-protocol',
+			executionId: 'execution-protocol',
+			sectionInstanceId: 'instance-protocol',
+			targetGeneration: 3,
+			accepted: true,
+		});
+	});
+
+	it('preserves a newer comparison binding when a delayed start omits or fails its predecessor claim', () => {
+		const store = new ResultArtifactStore();
+		const sourceA = store.publish('query-source', { columns: ['Value'], rows: [['a']], metadata: {} }, {
+			producer: { engine: 'kusto', boxId: 'query-source', executionId: 'source-a' },
+		})!;
+		const consumerId = comparisonSourceArtifactConsumerId('query-comparison');
+		store.bind(consumerId, 'query-source', sourceA.artifactId);
+		const sourceB = store.publish('query-source', { columns: ['Value'], rows: [['b']], metadata: {} }, {
+			producer: { engine: 'kusto', boxId: 'query-source', executionId: 'source-b' },
+		})!;
+		mocks.getResultArtifactByProducerExecution.mockImplementation(
+			(boxId: string, executionId: string) => store.getByProducerExecution(boxId, executionId) ?? null,
+		);
+		mocks.getBoundResultArtifact.mockImplementation(
+			(consumer: string) => store.getBound(consumer) ?? null,
+		);
+		mocks.bindResultArtifactConsumer.mockImplementation(
+			(consumer: string, source: string, artifactId?: string) => store.bind(consumer, source, artifactId),
+		);
+		mocks.unbindResultArtifactConsumer.mockImplementation(
+			(consumer: string) => store.unbind(consumer),
+		);
+		const activeExecution = {
+			engine: 'kusto', boxId: 'query-comparison', executionId: 'newer-execution',
+			sectionInstanceId: 'instance-current', targetGeneration: 4,
+			connectionId: 'connection-current', database: 'Samples', producer: 'comparison',
+		};
+		const section = {
+			getSchemaLifecycleIdentity: vi.fn(() => ({
+				sectionInstanceId: 'instance-current', targetGeneration: 4,
+			})),
+			getConnectionId: vi.fn(() => 'connection-current'),
+			getDatabase: vi.fn(() => 'Samples'),
+			getActiveExecution: vi.fn(() => activeExecution),
+			beginQueryExecution: vi.fn(() => false),
+		};
+		mocks.getQuerySectionElement.mockReset();
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.bindResultArtifactConsumer.mockClear();
+		mocks.unbindResultArtifactConsumer.mockClear();
+		mocks.postMessageToHost.mockClear();
+		const comparisonRun = {
+			sourceBoxId: 'query-source',
+			sourceExecutionId: 'source-b',
+			comparisonBoxId: 'query-comparison',
+		};
+		const start = {
+			type: 'kustoExecutionStarted', engine: 'kusto', boxId: 'query-comparison',
+			executionId: 'stale-execution', sectionInstanceId: 'instance-current', targetGeneration: 4,
+			connectionId: 'connection-current', database: 'Samples', producer: 'comparison',
+			reservationSequence: 8, query: 'print Value=2', comparisonRun,
+		} as const;
+
+		dispatchHostMessage(start);
+		expect(section.beginQueryExecution).not.toHaveBeenCalled();
+		expect(store.getBound(consumerId)).toBe(sourceA);
+		expect(store.get(sourceA.artifactId)).toBe(sourceA);
+
+		dispatchHostMessage({
+			...start,
+			executionId: 'refused-execution',
+			expectedPredecessorExecutionId: 'newer-execution',
+		});
+
+		expect(section.beginQueryExecution).toHaveBeenCalledOnce();
+		expect(store.getBound(consumerId)).toBe(sourceA);
+		expect(store.get(sourceA.artifactId)).toBe(sourceA);
+		expect(store.get(sourceB.artifactId)).toBe(sourceB);
+		expect(mocks.postMessageToHost).toHaveBeenNthCalledWith(1, {
+			type: 'kustoExecutionStartedAck', boxId: 'query-comparison', executionId: 'stale-execution',
+			sectionInstanceId: 'instance-current', targetGeneration: 4, accepted: false,
+		});
+		expect(mocks.postMessageToHost).toHaveBeenNthCalledWith(2, {
+			type: 'kustoExecutionStartedAck', boxId: 'query-comparison', executionId: 'refused-execution',
+			sectionInstanceId: 'instance-current', targetGeneration: 4, accepted: false,
+		});
+
+		section.beginQueryExecution.mockImplementationOnce(() => {
+			throw new Error('claim failed');
+		});
+		dispatchHostMessage({
+			...start,
+			executionId: 'throwing-execution',
+			expectedPredecessorExecutionId: 'newer-execution',
+		});
+
+		expect(store.getBound(consumerId)).toBe(sourceA);
+		expect(store.get(sourceA.artifactId)).toBe(sourceA);
+		expect(store.get(sourceB.artifactId)).toBe(sourceB);
+		expect(store.captureSnapshot().consumerArtifactIds).toEqual([[consumerId, sourceA.artifactId]]);
+		expect(mocks.postMessageToHost).toHaveBeenNthCalledWith(3, {
+			type: 'kustoExecutionStartedAck', boxId: 'query-comparison', executionId: 'throwing-execution',
+			sectionInstanceId: 'instance-current', targetGeneration: 4, accepted: false,
+		});
+
+		mocks.getResultArtifactByProducerExecution.mockReset();
+		mocks.getBoundResultArtifact.mockReset();
+		mocks.bindResultArtifactConsumer.mockReset();
+		mocks.unbindResultArtifactConsumer.mockReset();
+	});
+
+	it('preserves the prior owner and binding through a real-controller activation failure and late cancellation', async () => {
+		const executionModule = await vi.importActual<typeof import('../../src/webview/sections/query-execution.controller.js')>(
+			'../../src/webview/sections/query-execution.controller.js',
+		);
+		const store = new ResultArtifactStore();
+		const sourceA = store.publish('query-source', { columns: ['Value'], rows: [['a']], metadata: {} }, {
+			producer: { engine: 'kusto', boxId: 'query-source', executionId: 'source-a' },
+		})!;
+		const consumerId = comparisonSourceArtifactConsumerId('query-comparison');
+		store.bind(consumerId, 'query-source', sourceA.artifactId);
+		const sourceB = store.publish('query-source', { columns: ['Value'], rows: [['b']], metadata: {} }, {
+			producer: { engine: 'kusto', boxId: 'query-source', executionId: 'source-b' },
+		})!;
+		mocks.getResultArtifactByProducerExecution.mockImplementation(
+			(boxId: string, executionId: string) => store.getByProducerExecution(boxId, executionId) ?? null,
+		);
+		mocks.getBoundResultArtifact.mockImplementation(
+			(consumer: string) => store.getBound(consumer) ?? null,
+		);
+		mocks.bindResultArtifactConsumer.mockImplementation(
+			(consumer: string, source: string, artifactId?: string) => store.bind(consumer, source, artifactId),
+		);
+		mocks.unbindResultArtifactConsumer.mockImplementation(
+			(consumer: string) => store.unbind(consumer),
+		);
+		const host = {
+			boxId: 'query-comparison', addController: vi.fn(), requestUpdate: vi.fn(),
+			getConnectionId: () => 'connection-current', getDatabase: () => 'Samples',
+			getSchemaLifecycleIdentity: () => ({ sectionInstanceId: 'instance-current', targetGeneration: 4 }),
+		} as any;
+		const controller = new executionModule.QueryExecutionController(host);
+		const currentComparisonRun = {
+			sourceBoxId: 'query-source', sourceExecutionId: 'source-a', comparisonBoxId: 'query-comparison',
+		};
+		expect(controller.beginQueryExecution(
+			'newer-execution', 'comparison', undefined, undefined, currentComparisonRun,
+		)).toBe(true);
+		Object.assign(host, {
+			beginQueryExecution: controller.beginQueryExecution.bind(controller),
+			getActiveExecution: controller.getActiveExecution.bind(controller),
+			admitQueryTerminal: controller.admitQueryTerminal.bind(controller),
+			completeQueryExecution: controller.completeQueryExecution.bind(controller),
+		});
+		mocks.getQuerySectionElement.mockReturnValue(host);
+		mocks.postMessageToHost.mockClear();
+		vi.spyOn(controller, 'setQueryExecuting').mockImplementationOnce(() => {
+			throw new Error('UI activation failed');
+		});
+		const comparisonRun = {
+			sourceBoxId: 'query-source', sourceExecutionId: 'source-b', comparisonBoxId: 'query-comparison',
+		};
+		const candidate = {
+			engine: 'kusto' as const, boxId: 'query-comparison', executionId: 'throwing-execution',
+			sectionInstanceId: 'instance-current', targetGeneration: 4,
+			connectionId: 'connection-current', database: 'Samples', producer: 'comparison' as const,
+			comparisonRun, reservationSequence: 9,
+		};
+
+		dispatchHostMessage({
+			type: 'kustoExecutionStarted', ...candidate, query: 'print Value=2',
+			expectedPredecessorExecutionId: 'newer-execution',
+		});
+		dispatchHostMessage({ type: 'queryCancelled', ...candidate, reason: 'cancelled' });
+
+		expect(controller.getActiveExecution()?.executionId).toBe('newer-execution');
+		expect(store.getBound(consumerId)).toBe(sourceA);
+		expect(store.get(sourceA.artifactId)).toBe(sourceA);
+		expect(store.get(sourceB.artifactId)).toBe(sourceB);
+		expect(store.captureSnapshot().consumerArtifactIds).toEqual([[consumerId, sourceA.artifactId]]);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoExecutionStartedAck', boxId: 'query-comparison', executionId: 'throwing-execution',
+			sectionInstanceId: 'instance-current', targetGeneration: 4, accepted: false,
+		});
+
+		controller.retireActiveQueryExecution();
+		mocks.getResultArtifactByProducerExecution.mockReset();
+		mocks.getBoundResultArtifact.mockReset();
+		mocks.bindResultArtifactConsumer.mockReset();
+		mocks.unbindResultArtifactConsumer.mockReset();
 	});
 
 	it('toolConfigureQuerySection acknowledges and consumes only its exact Kusto execution terminal', async () => {
