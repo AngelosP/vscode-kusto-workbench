@@ -14,7 +14,6 @@ export type BrowserViewerCapabilities = Readonly<{
 	executeSql: false;
 	useCopilot: false;
 	downloadDerivedFile: true;
-	activeContentPolicy: 'deferred';
 }>;
 
 export const BROWSER_VIEWER_READ_ONLY_CAPABILITIES: BrowserViewerCapabilities = Object.freeze({
@@ -26,7 +25,6 @@ export const BROWSER_VIEWER_READ_ONLY_CAPABILITIES: BrowserViewerCapabilities = 
 	executeSql: false,
 	useCopilot: false,
 	downloadDerivedFile: true,
-	activeContentPolicy: 'deferred',
 });
 
 export type BrowserViewerState = Readonly<{
@@ -62,6 +60,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasReadOnlyCapabilities(value: unknown): value is BrowserViewerCapabilities {
 	if (!isRecord(value)) return false;
+	if (Object.keys(value).length !== 8) return false;
 	return value.readDocument === true
 		&& value.editDocument === false
 		&& value.persistDocument === false
@@ -69,8 +68,7 @@ function hasReadOnlyCapabilities(value: unknown): value is BrowserViewerCapabili
 		&& value.executeKusto === false
 		&& value.executeSql === false
 		&& value.useCopilot === false
-		&& value.downloadDerivedFile === true
-		&& value.activeContentPolicy === 'deferred';
+		&& value.downloadDerivedFile === true;
 }
 
 function hasSections(value: unknown): value is BrowserViewerState {

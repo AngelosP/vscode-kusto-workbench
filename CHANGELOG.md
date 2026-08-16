@@ -7,7 +7,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 * Default Copilot model changed to `gpt-5.6-sol@1.0` across Workbench and its custom agents.
 * First launch experience for configuring some key experience settings before your first edit.
-* Support for additional Kusto authentication methods (e.g., your Entra ID is a guest on a tenant hosting the Kusto cluster).
+* [Support for additional Kusto authentication methods (e.g., your Entra ID is a guest on a tenant hosting the Kusto cluster).](https://github.com/AngelosP/vscode-kusto-workbench/issues/25)
 * Readiness indicator for each Kusto section as a thin progress line moving from left to right letting you know if things are still happening in the background.
 * Refactor of backend connection management and query execution for both Kusto and SQL for better performance and easier code maintenance.
 * Bugs

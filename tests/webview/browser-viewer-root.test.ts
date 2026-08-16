@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { buildSync } from 'esbuild';
 import { describe, expect, it, vi } from 'vitest';
 import { BrowserFileLoadCoordinator, type LoadedBrowserFile } from '../../browser-ext/src/browser-file-load';
+import { isBrowserViewerProjection } from '../../src/shared/browserViewerProjection';
 import {
 	BROWSER_VIEWER_READ_ONLY_CAPABILITIES,
 	BrowserViewerRoot,
@@ -85,9 +86,13 @@ describe('BrowserViewerRoot', () => {
 			executeSql: false,
 			useCopilot: false,
 			downloadDerivedFile: true,
-			activeContentPolicy: 'deferred',
 		});
-		expect(projection.capabilities).not.toHaveProperty('activeContent');
+		expect(projection.capabilities).not.toHaveProperty('activeContentPolicy');
+		expect(isBrowserViewerProjection(projection)).toBe(true);
+		expect(isBrowserViewerProjection({
+			...projection,
+			capabilities: { ...projection.capabilities, activeContentPolicy: 'deferred' },
+		})).toBe(false);
 		expect(projection.source).toMatchObject({
 			generation: loaded.snapshot.generation,
 			filename: 'native.kqlx',

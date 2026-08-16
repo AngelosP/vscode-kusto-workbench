@@ -44,7 +44,7 @@ The architecture may change freely, but these behaviors must survive.
 - Preserve virtualized result tables, filtering, sorting, search, selection, complex-value viewing, copy, and CSV export.
 - Preserve charts, transformations, comparisons, HTML dashboards, dashboard slicers, and live refresh when an upstream result changes.
 - Preserve bounded optional result persistence and exact restoration admission.
-- Every source or derived output retains its producer identity, source revisions, sensitivity, trust requirements, completeness, and persistence/export/active-content permissions.
+- Every source or derived output retains its producer identity, source revisions, sensitivity, completeness, and persistence/export/active-content permissions.
 
 ### Persistence And Compatibility Files
 
@@ -62,18 +62,15 @@ The architecture may change freely, but these behaviors must survive.
 - Export and Power BI behavior follows artifact policy; protected sources cannot silently enter an Import model.
 - Credentials and tokens never enter documents, webview messages that do not require them, prompts, or durable diagnostics.
 - Cache and operation identity includes the physical target and principal, not only a saved connection ID.
-- Document origin and trust are explicit policy inputs. Every document-authored privileged effect is admitted by one host policy authority using the exact document, origin, trust revision, command, and target. Transport authentication proves message provenance but never substitutes for authorization.
-- Capabilities are independent and least-privileged. They include active scripts, artifact exposure, passive/explicit network access, local-code execution, Kusto execution, SQL/STS execution, language/schema network activity, model/tool use, external resource reads, external resource writes, raw active export, portable publication, and external navigation. Granting one never implies another.
-- Remote and browser documents default to static rendering with no artifact, host execution, external resource, model/tool, or network capability. Local/workspace defaults are derived from VS Code workspace trust and explicit document decisions, never path appearance alone.
-- Document-scoped network access covers authored HTML, URL sections, Markdown resources, automatic restore fetches, nested HTML/CSS/image/font/frame/media resources, authored form/navigation targets, Kusto/SQL/schema/model adapters, and future producers. Passive browser resource resolution cannot bypass the same policy that governs explicit host or script fetches.
-- Document-authored file dependencies, including `linkedQueryPath` and relative Markdown resources, are canonicalized and admitted before read, open, edit, or write. Remote snapshots may automatically access only immutable companions listed in their source manifest and contained within that snapshot. Absolute paths, `file:` URIs, UNC paths, and traversal outside the manifest require explicit adoption and never auto-resolve.
+- All supported documents and their authored HTML, JavaScript, URLs, Markdown resources, linked files, and automation requests are trusted inputs. No document-origin, trust-revision, CSP, or document-scoped network-policy authority is planned.
+- Host capabilities remain explicit: a host that cannot edit, persist, authenticate, execute, invoke Copilot, or download derived data rejects that operation by contract.
 
 ### Automation, Dashboards, And Hosts
 
 - Preserve per-section Kusto and SQL Copilot, optimization, tool execution, cancellation, and conversation management.
 - Preserve agent tools that target explicit files and sections, including non-active open files.
 - Preserve HTML dashboard provenance v1, preview bindings, Power BI validation, PBIR/TMDL generation, Import/DirectQuery behavior, and Fabric create/update publishing.
-- Preserve the full VS Code host and read-only browser viewer. Unsupported browser capabilities are unavailable by contract, never silently simulated. Read-only does not imply trusted active content.
+- Preserve the full VS Code host and read-only browser viewer. Unsupported browser capabilities are unavailable by contract, never silently simulated; authored content otherwise retains its existing trusted behavior.
 - Preserve first-launch setup, application editing preferences, walkthroughs, tutorials, remote-file opening, and agent-skill export.
 
 ## System Topology
@@ -233,7 +230,7 @@ Only composition roots may import concrete adapters and wire all layers together
 | Query admission, replacement, cancellation, and terminal settlement | `ExecutionCoordinator` |
 | Kusto schema target and worker readiness | Kusto schema coordinator behind engine/language ports |
 | STS runtime, epochs, sessions, and replay | SQL runtime adapter |
-| Output manifest, immutable revision, lineage, sensitivity, completeness, trust, permissions | `ArtifactStore` and `ArtifactGraph` |
+| Output manifest, immutable revision, lineage, sensitivity, completeness, permissions | `ArtifactStore` and `ArtifactGraph` |
 | Transformation dependency scheduling | `ArtifactGraph` |
 | Section persistence shape and migration | Registered `SectionDefinition` |
 | DOM, Monaco instances, menus, transient selection | Section view plugin |
@@ -251,8 +248,6 @@ DocumentSession
   documentId
   documentEpoch
   documentRevision
-  origin
-  trustRevision
 
 SectionInstance
   documentId
@@ -290,7 +285,7 @@ Rules:
 1. Reservation happens synchronously before asynchronous preflight. A preflight terminal is correlated to the immutable reservation and does not invent a principal or physical target.
 2. Immediately before each physical dispatch, the engine finalizes an immutable dispatch lease from the actual connection revision, endpoint, authenticated principal, privacy revision, and database.
 3. A dispatched response is publishable only while both its reservation and dispatch lease are current.
-4. Retargeting, reauthentication, privacy or trust change, section removal, document reload, or view disposal revokes affected reservations, dispatch leases, and active-content grants before publication.
+4. Retargeting, reauthentication, privacy change, section removal, document reload, or view disposal revokes affected reservations, dispatch leases, and active-content grants before publication.
 5. Cancellation is correlated to one reservation or dispatch attempt, not every operation sharing a section ID.
 6. Every accepted reservation produces at most one logical terminal outcome.
 7. Logical timeout does not imply physical cancellation when an adapter cannot cancel.
@@ -384,7 +379,7 @@ The coordinator:
 2. Revalidates policy and target and finalizes an immutable dispatch lease from the actual authentication context immediately before dispatch.
 3. Cancels or supersedes the previous conflicting operation.
 4. Uses the selected engine adapter.
-5. Revalidates the reservation, dispatch lease, physical identity, principal, privacy, origin, and trust before admitting a terminal.
+5. Revalidates the reservation, dispatch lease, physical identity, principal, and privacy before admitting a terminal.
 6. Publishes exactly one terminal and, on success, one immutable artifact revision.
 
 A result is not mutable `latest result by box ID`. Every produced value has a durable manifest and a host-scoped payload handle:
@@ -397,8 +392,6 @@ interface ArtifactRecordBase {
   id: ArtifactIdentity;
   producer: ProducerManifest;
   sourceArtifacts: readonly ArtifactIdentity[];
-  sourceOrigin: DocumentOrigin;
-  trustRevision: number;
   policyDecisionRevision: number;
   sensitivity: SensitivityLabel;
   completeness: 'complete' | 'truncated' | 'paged';
@@ -427,9 +420,9 @@ interface ArtifactPermissions {
 }
 ```
 
-`ProducerManifest` is stable across restart and records producer kind, source document/section revision, source origin, trust revision, physical target identity where applicable, principal fingerprint, privacy generation, policy-decision revision, and operation ID. It does not rely on a still-live operation lease to validate restored data.
+`ProducerManifest` is stable across restart and records producer kind, source document/section revision, physical target identity where applicable, principal fingerprint, privacy generation, policy-decision revision, and operation ID. It does not rely on a still-live operation lease to validate restored data.
 
-The persisted record never embeds a process-local handle. On restore, the `ArtifactStore` first revalidates origin, trust, target, principal, privacy, and policy revisions, then rebinds an allowed persisted payload descriptor to a new runtime handle. A trust or origin change revokes the binding and recomputes `exposeToActiveContent` before any renderer receives data.
+The persisted record never embeds a process-local handle. On restore, the `ArtifactStore` first revalidates target, principal, privacy, and policy revisions, then rebinds an allowed persisted payload descriptor to a new runtime handle.
 
 Before the full artifact store exists, any compatibility adapter exposing current results to active content must carry an immutable, host-issued source-admission stamp containing producer/result revision, source target and principal where applicable, privacy-decision revision, and derived lineage. Missing or stale stamps fail closed. A view must never infer active-content safety from the section's current connection after a result was produced.
 
@@ -501,9 +494,9 @@ There is one versioned protocol package for both directions. Every envelope carr
 - Expected or produced revision where relevant.
 - Runtime-validated payload.
 
-Host protocol ingress is authenticated by the transport and bound to the current view session. The application never treats arbitrary `window.message` events as host messages. Bootstrap buffering applies the same admission rule as the runtime dispatcher. Child frames communicate through separate source-bound channels with narrow runtime-validated message types; they cannot send document, trust, result, persistence, tool, or host-control envelopes.
+Host protocol ingress is authenticated by the transport and bound to the current view session. The application never treats arbitrary `window.message` events as host messages. Bootstrap buffering applies the same admission rule as the runtime dispatcher. Child frames communicate through separate source-bound channels with narrow runtime-validated message types; they cannot send document, result, persistence, tool, or host-control envelopes.
 
-After ingress validation, the command gateway authorizes every privileged effect against the current document capability revision before invoking an adapter and again before admitting data or a terminal. Automatic restore work, keyboard actions, Copilot/tool workflows, hidden/offscreen renderers, language/schema preparation, and direct UI commands all use this gateway. Revocation cancels cancellable work, retires uncancellable leases, closes prohibited STS/language sessions, tears down active renderers, and rejects late publication.
+After ingress validation, routes admit work against the current host/view capabilities before invoking an adapter and again before admitting data or a terminal. Automatic restore work, keyboard actions, Copilot/tool workflows, hidden/offscreen renderers, language/schema preparation, and direct UI commands preserve exact document, section, target, and operation identity. Capability changes cancel cancellable work, retire uncancellable leases, close unsupported STS/language sessions, tear down affected renderers, and reject late publication.
 
 Startup is an explicit handshake:
 
@@ -525,7 +518,7 @@ Agent tools and integrated Copilot call application commands directly with captu
 
 ### Browser Composition Root
 
-The browser root uses the same document codecs, section definitions, artifact readers, trust policy, policy-owned resource resolver, and projection models with a capability set such as:
+The browser root uses the same document codecs, section definitions, artifact readers, and projection models with a capability set such as:
 
 ```text
 readDocument = true
@@ -534,10 +527,9 @@ executeQuery = false
 authenticate = false
 persist = false
 downloadDerivedFile = true
-activeContent = false
 ```
 
-The viewer never simulates VS Code responses, patches persistence functions, or repeatedly enforces read-only state with timers. Remote/browser documents render dashboard active content and external Markdown/URL resources statically unless an explicit trusted-host policy enables them. Sandboxes cannot receive artifacts without `exposeToActiveContent` permission. All external resource and navigation URLs are removed, blocked by CSP, or resolved through the policy-owned resource service; assigning a raw external URL in a renderer is not an authority decision.
+The viewer never simulates VS Code responses, patches persistence functions, or repeatedly enforces read-only state with timers. Its unavailable editing, persistence, authentication, execution, and Copilot operations remain unavailable by contract. Authored content and resources retain their existing trusted rendering behavior, while sandboxes cannot receive artifacts without `exposeToActiveContent` permission.
 
 ### Test Composition Root
 
@@ -548,9 +540,9 @@ The test host supplies deterministic clocks, IDs, stores, engines, policies, and
 Dashboard architecture has two explicit layers:
 
 - A portable provenance specification and compiler IR defines the subset shared by preview, standalone HTML, PBIR/TMDL/DAX generation, and Fabric publishing. Binding, slicer, ordering, formatting, and policy semantics are shared across these renderers.
-- An active-content source extension preserves arbitrary authored HTML/JavaScript behavior that cannot be represented in Power BI. It carries origin/trust requirements, active-content artifact permissions, sandbox/CSP/network policy, and validation warnings that identify non-portable behavior. It is used by trusted preview and by the explicit raw standalone HTML export.
+- An active-content source extension preserves arbitrary authored HTML/JavaScript behavior that cannot be represented in Power BI. It carries active-content artifact permissions and validation warnings that identify non-portable behavior. It is used by preview and by the explicit raw standalone HTML export.
 
-Power BI and Fabric export never claim parity for active-content code. They compile only the portable IR and report unsupported behavior before publication. Standalone HTML export remains a distinct active-content export that preserves authored code; it requires an explicit export decision, records or displays its origin/trust implications, and applies the selected standalone CSP/network policy rather than masquerading as a portable renderer.
+Power BI and Fabric export never claim parity for active-content code. They compile only the portable IR and report unsupported behavior before publication. Standalone HTML export remains a distinct trusted active-content export that preserves authored code and requires an explicit export decision rather than masquerading as a portable renderer.
 
 Automation has two layers:
 
@@ -683,7 +675,7 @@ The migration has reached this outcome when all of the following are true:
 2. Every section kind is supplied by a registered definition and view plugin.
 3. Every asynchronous response and terminal carries exact structural identity.
 4. Kusto and SQL use one execution contract and all producers publish immutable artifact records through bounded host stores.
-5. Derived sections consume artifact revisions with retained lineage, completeness, trust, and permissions.
+5. Derived sections consume artifact revisions with retained lineage, completeness, and permissions.
 6. Persistence, export, Copilot, and publishing operate on domain state and artifacts, never DOM snapshots.
 7. Host/webview communication is one runtime-validated, versioned protocol.
 8. The browser viewer is a real read-only composition root.
