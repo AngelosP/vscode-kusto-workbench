@@ -366,7 +366,8 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/comparisonPreparationApplicationHandler.ts::waitForSqlComparisonAdmission::postMessage::628:25',
 	'src/host/controlCommandSyntaxApplicationHandler.ts::postMessage::postMessage::56:3',
 	'src/host/copilotInlineCompletionApplicationHandler.ts::postMessage::postMessage::69:18',
-	'src/host/dashboardApplicationHandler.ts::postMessage::postMessage::98:10',
+	'src/host/dashboardApplicationHandler.ts::postMessage::postMessage::104:10',
+	'src/host/dashboardApplicationHandler.ts::postPowerBiPublishResult::postMessage::108:10',
 	'src/host/developmentNoteMutationApplicationHandler.ts::updateDevelopmentNotes::postMessage::67:16',
 	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postMessage::75:10',
 	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postToAllWebviews::73:10',
@@ -379,39 +380,39 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::193:14',
 	'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::202:16',
 	'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::207:14',
-	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::398:33',
+	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::418:33',
 	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::93:10',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::395:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::527:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::533:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::400:27',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::532:28',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::538:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::545:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::548:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::551:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::554:28',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::569:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::575:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::543:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::550:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::553:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::556:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::559:28',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::574:29',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::580:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::597:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::605:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::611:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::625:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::633:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::648:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::661:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::696:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::706:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::713:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::722:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::730:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::753:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::585:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::602:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::610:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::616:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::630:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::638:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::653:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::666:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::701:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::711:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::718:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::727:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::735:29',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::758:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::786:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::794:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::818:29',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::833:29',
-	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::912:15',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::1370:21',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::763:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::791:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::799:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::823:29',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::838:29',
+	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::917:15',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::1392:21',
 	'src/host/querySharingApplicationHandler.ts::postMessage::postMessage::36:22',
 	'src/host/resourceUriApplicationHandler.ts::postMessage::postMessage::56:3',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1806:13',
@@ -443,7 +444,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 
 function extractDataTypeComparisons(relativePath: string): string[] {
 	const source = readWorkspaceFile(relativePath);
-	const labels = [...source.matchAll(/\.data\.type\s*={2,3}\s*['"]([^'"]+)['"]/g)].map(match => match[1]);
+	const labels = [...source.matchAll(/(?:\.data|\bdata)\.type\s*={2,3}\s*['"]([^'"]+)['"]/g)].map(match => match[1]);
 	return [...new Set(labels)].sort();
 }
 
@@ -2090,6 +2091,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/kustoPublicationProtocol.ts', 'KustoPublicationWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/toolStateSnapshotProtocol.ts', 'ToolStateSnapshotWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kustoExecutionStartProtocol.ts', 'KustoExecutionStartWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/powerBiPublishProtocol.ts', 'PowerBiPublishWebviewMessage'),
 			])].sort()
 		);
 	});
@@ -2119,6 +2121,7 @@ describe('Message Protocol Contract', () => {
 				...extractTypeDiscriminants('src/shared/kustoPublicationProtocol.ts', 'KustoPublicationWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/toolStateSnapshotProtocol.ts', 'ToolStateSnapshotWebviewMessage'),
 				...extractTypeDiscriminants('src/shared/kustoExecutionStartProtocol.ts', 'KustoExecutionStartWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/powerBiPublishProtocol.ts', 'PowerBiPublishWebviewMessage'),
 			])].sort()
 		);
 		expect(extractStringArrayVariable(
@@ -2486,7 +2489,13 @@ describe('Message Protocol Contract', () => {
 		});
 
 		it('component-handled host messages are sent by the host and handled by the HTML section', () => {
-			const providerMessages = new Set<string>(extractMainWebviewHostMessages().types);
+			const providerMessages = new Set<string>([
+				...extractMainWebviewHostMessages().types,
+				...extractTypeDiscriminants(
+					'src/shared/powerBiPublishProtocol.ts',
+					'PowerBiPublishHostMessage',
+				),
+			]);
 			const htmlSectionMessages = new Set<string>(extractDataTypeComparisons('src/webview/sections/kw-html-section.ts'));
 			const publishDialogMessages = new Set<string>(extractMessageTypeComparisons('src/webview/components/kw-publish-pbi-dialog.ts'));
 			const missingSenders: string[] = [];

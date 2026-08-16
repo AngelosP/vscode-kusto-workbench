@@ -65,6 +65,10 @@ import {
 } from '../../shared/portableDashboardCompiler.js';
 import { createMonacoCursorStatusPublisher, type EditorCursorStatusPublisher } from '../shared/editor-cursor-status.js';
 import type { HtmlSectionState, PbiPublishInfo } from '../../shared/htmlSectionDefinition.js';
+import {
+	admitPowerBiPublishHostMessage,
+	createPublishToPowerBIAckMessage,
+} from '../../shared/powerBiPublishProtocol.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1964,49 +1968,55 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			}
 
 			// Host→webview messages (e.source is null for VS Code postMessage)
+			const publishResultAdmission = admitPowerBiPublishHostMessage(e.data);
+			let data = e.data;
+			if (publishResultAdmission.recognized) {
+				if (!publishResultAdmission.parsed.ok) return;
+				data = publishResultAdmission.parsed.value;
+			}
 			if (!this._ownsLiveState()) return;
-			if (e.data.type === 'openPublishPbiDialog' && e.data.boxId === this.boxId) {
-				const requestId = String(e.data.requestId || '');
+			if (data.type === 'openPublishPbiDialog' && data.boxId === this.boxId) {
+				const requestId = String(data.requestId || '');
 				const pending = this._pendingExportWorkflow;
 				if (!pending || requestId !== pending.requestId
 					|| pending.generation !== this._dashboardWorkflowGeneration) return;
 				this._pendingExportWorkflow = undefined;
 				this._openPublishDialog(
-					e.data.htmlCode, e.data.dataSources, e.data.previewHeight, e.data.suggestedName,
+					data.htmlCode, data.dataSources, data.previewHeight, data.suggestedName,
 					pending.generation,
 				);
 				return;
 			}
 
-			if (e.data.type === 'powerBiPartialPublishWarningResult' && e.data.boxId === this.boxId) {
-				void this._handlePowerBiPartialPublishWarningResult(e.data);
+			if (data.type === 'powerBiPartialPublishWarningResult' && data.boxId === this.boxId) {
+				void this._handlePowerBiPartialPublishWarningResult(data);
 				return;
 			}
 
-			if (e.data.type === 'powerBiPublishHelpResult' && e.data.boxId === this.boxId) {
-				this._handlePowerBiPublishHelpResult(e.data);
+			if (data.type === 'powerBiPublishHelpResult' && data.boxId === this.boxId) {
+				this._handlePowerBiPublishHelpResult(data);
 				return;
 			}
 
-			if ((e.data.type === 'pbiWorkspacesResult' || e.data.type === 'publishToPowerBIResult' || e.data.type === 'pbiItemExistsResult') && e.data.boxId === this.boxId) {
+			if ((data.type === 'pbiWorkspacesResult' || data.type === 'publishToPowerBIResult' || data.type === 'pbiItemExistsResult') && data.boxId === this.boxId) {
 				const dialog = this.shadowRoot?.querySelector<any>('kw-publish-pbi-dialog');
-				if (!dialog?.acceptsHostMessage?.(e.data)) return;
+				if (!dialog?.acceptsHostMessage?.(data)) return;
 				// Capture publish GUIDs BEFORE forwarding to dialog so they persist even if the dialog throws.
-				if (e.data.type === 'publishToPowerBIResult' && e.data.ok && e.data.semanticModelId && e.data.reportId) {
+				if (data.type === 'publishToPowerBIResult' && data.ok) {
 					const previousPublishInfo = this._pbiPublishInfo ? { ...this._pbiPublishInfo } : undefined;
 					const nextPublishInfo: PbiPublishInfo = {
-						workspaceId: e.data.workspaceId,
-						workspaceName: e.data.workspaceName,
-						semanticModelId: e.data.semanticModelId,
-						reportId: e.data.reportId,
-						reportName: e.data.reportName || '',
-						reportUrl: e.data.reportUrl || '',
-						dataMode: e.data.dataMode === 'import' || e.data.dataMode === 'directQuery' ? e.data.dataMode : undefined,
+						workspaceId: data.workspaceId,
+						workspaceName: data.workspaceName,
+						semanticModelId: data.semanticModelId,
+						reportId: data.reportId,
+						reportName: data.reportName,
+						reportUrl: data.reportUrl,
+						dataMode: data.dataMode,
 					};
 					const workflowGeneration = this._dashboardWorkflowGeneration;
 					let accepted = true;
 					if (isHostOwnedHtmlDocument()) {
-						const publishRequestId = String(e.data.requestId || '');
+						const publishRequestId = data.requestId;
 						this._pbiPublishInfo = nextPublishInfo;
 						accepted = requestHostOwnedHtmlPublishInfoPatch(
 							this.boxId, nextPublishInfo, publishRequestId, 'apply',
@@ -2018,7 +2028,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 						}
 						const stillCurrent = this._ownsLiveState()
 							&& workflowGeneration === this._dashboardWorkflowGeneration
-							&& dialog.acceptsHostMessage?.(e.data) === true;
+							&& dialog.acceptsHostMessage?.(data) === true;
 						if (accepted && !stillCurrent) {
 							this._pbiPublishInfo = previousPublishInfo ? { ...previousPublishInfo } : undefined;
 							const compensated = requestHostOwnedHtmlPublishInfoPatch(
@@ -2037,12 +2047,12 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 						this._pbiPublishInfo = nextPublishInfo;
 						this._schedulePersist(undefined, true);
 					}
-					postMessageToHost({
-						type: 'publishToPowerBIAck', requestId: String(e.data.requestId || ''), accepted,
-					});
+					const acknowledgement = createPublishToPowerBIAckMessage(data.requestId, accepted);
+					if (!acknowledgement.ok) return;
+					postMessageToHost(acknowledgement.value);
 					if (!accepted) return;
 				}
-				if (dialog) dialog.handleHostMessage(e.data);
+				if (dialog) dialog.handleHostMessage(data);
 				return;
 			}
 		} catch (ex) { console.error('[kusto]', ex); }

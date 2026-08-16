@@ -43,6 +43,8 @@ const nextPublishResult = {
 	reportId: 'report-new',
 	reportName: 'New report',
 	reportUrl: 'https://app.powerbi.com/new',
+	scheduleConfigured: true,
+	initialRefreshTriggered: false,
 	dataMode: 'import',
 };
 
@@ -54,6 +56,31 @@ describe('HTML Power BI publish compensation', () => {
 		mocks.requestHtmlPatch.mockReset();
 		mocks.requestPublishInfoPatch.mockReset();
 		mocks.waitForCommands.mockReset();
+	});
+
+	it('rejects a matching malformed result before metadata, document, acknowledgement, or dialog effects', async () => {
+		const section = new KwHtmlSection();
+		section.id = nextPublishResult.boxId;
+		section.boxId = section.id;
+		section.setPbiPublishInfo(previousPublishInfo);
+		document.body.appendChild(section);
+		await section.updateComplete;
+		const dialog = section.shadowRoot?.querySelector<any>('kw-publish-pbi-dialog');
+		dialog._publishRequestId = nextPublishResult.requestId;
+		const handleHostMessage = vi.spyOn(dialog, 'handleHostMessage');
+
+		await (section as any)._handleIframeMessage({
+			data: { ...nextPublishResult, scheduleConfigured: 'yes' },
+			source: null,
+		} as MessageEvent);
+
+		expect(section.getPbiPublishInfo()).toEqual(previousPublishInfo);
+		expect(dialog._publishRequestId).toBe(nextPublishResult.requestId);
+		expect(mocks.requestHtmlPatch).not.toHaveBeenCalled();
+		expect(mocks.requestPublishInfoPatch).not.toHaveBeenCalled();
+		expect(mocks.waitForCommands).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).not.toHaveBeenCalled();
+		expect(handleHostMessage).not.toHaveBeenCalled();
 	});
 
 	it('preserves the new tuple through a queued ordinary patch and failed compensation CAS', async () => {

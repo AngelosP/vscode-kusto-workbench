@@ -130,4 +130,50 @@ describe('QueryEditorProvider dashboard application forwarding', () => {
 			expect(handlerSource, `${authority} must remain owned by the dashboard handler`).toContain(authority);
 		}
 	});
+
+	it('admits publish acknowledgements and results at the standalone transport boundary', async () => {
+		const dashboardHandler = {
+			handleMessage: vi.fn(async () => undefined),
+			beginPowerBiPublishDocumentApplication: vi.fn(() => false),
+			settlePowerBiPublishDocumentApplication: vi.fn(async () => undefined),
+			setPowerBiPublishCleanupAdmission: vi.fn(),
+			dispose: vi.fn(),
+		} satisfies DashboardApplicationHandler;
+		const provider = new QueryEditorProvider(
+			vscode.Uri.file('C:\\extension'), {} as never, {} as vscode.ExtensionContext,
+			{} as never, undefined, dashboardHandler,
+		);
+		const receive = (provider as unknown as {
+			handlePanelWebviewMessage(input: unknown): void | Promise<void>;
+		}).handlePanelWebviewMessage.bind(provider);
+
+		await receive({ type: 'publishToPowerBIAck', requestId: 'publish-1', accepted: 'yes' });
+		expect(dashboardHandler.handleMessage).not.toHaveBeenCalled();
+		await receive({ type: 'publishToPowerBIAck', requestId: 'publish-1', accepted: true });
+		expect(dashboardHandler.handleMessage).toHaveBeenCalledOnce();
+		expect(dashboardHandler.handleMessage).toHaveBeenCalledWith({
+			type: 'publishToPowerBIAck', requestId: 'publish-1', accepted: true,
+		});
+
+		const transport = vi.fn(async () => true);
+		(provider as any)._panelDisposed = false;
+		provider.setMessageTransport(transport);
+		await expect(provider.postMessage({
+			type: 'publishToPowerBIResult', requestId: 'publish-1', boxId: 'html-1', ok: true,
+			reportUrl: 'https://app.powerbi.com/report', scheduleConfigured: 'yes',
+			initialRefreshTriggered: false, dataMode: 'import', semanticModelId: 'model-1',
+			reportId: 'report-1', workspaceId: 'workspace-1', reportName: 'Operations',
+		})).resolves.toBe(false);
+		expect(transport).not.toHaveBeenCalled();
+
+		await expect(provider.postMessage({
+			type: 'publishToPowerBIResult', requestId: 'publish-1', boxId: 'html-1', ok: false,
+			error: 'Publish failed.',
+		})).resolves.toBe(true);
+		expect(transport).toHaveBeenCalledWith({
+			type: 'publishToPowerBIResult', requestId: 'publish-1', boxId: 'html-1', ok: false,
+			error: 'Publish failed.',
+		});
+		expect(Object.isFrozen(transport.mock.calls[0][0])).toBe(true);
+	});
 });

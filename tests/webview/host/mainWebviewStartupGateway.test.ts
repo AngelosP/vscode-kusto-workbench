@@ -71,7 +71,7 @@ describe('MainWebviewStartupGateway', () => {
 			{ type: 'comparisonBoxEnsured', requestId: 'comparison-1' },
 			{ type: 'documentReloadResult', requestId: 'reload-1' },
 			{ type: 'markdownDocumentCommandBarrierResult', requestId: 'barrier-1' },
-			{ type: 'publishToPowerBIAck', requestId: 'publish-1' },
+			{ type: 'publishToPowerBIAck', requestId: 'publish-1', accepted: true },
 			{ type: 'toolExecutionStarted', requestId: 'tool-start-1' },
 			{ type: 'toolResponse', requestId: 'tool-1' },
 			{ type: 'toolStateResponse', requestId: 'state-1', sections: [] },
@@ -94,6 +94,9 @@ describe('MainWebviewStartupGateway', () => {
 			artifactId: 'artifact-1', accepted: true, csv: 'forged',
 		})).toBe(false);
 		expect(isMainWebviewCorrelatedReply({ type: 'persistDocument', flushRequestId: 'flush-1' })).toBe(false);
+		expect(isMainWebviewCorrelatedReply({
+			type: 'publishToPowerBIAck', requestId: 'publish-1', accepted: 'yes',
+		})).toBe(false);
 		expect(isMainWebviewCorrelatedReply({ type: 'toolResponse', requestId: '' })).toBe(false);
 		expect(isMainWebviewCorrelatedReply({
 			type: 'toolStateResponse', requestId: 'state-1', sections: {},
@@ -105,6 +108,38 @@ describe('MainWebviewStartupGateway', () => {
 			type: 'sqlComparisonAdmissionAck', requestId: 'sql-invalid', sourceBoxId: 'source',
 			comparisonBoxId: 'comparison', phase: 'invalid',
 		})).toBe(false);
+	});
+
+	it('rejects malformed Power BI traffic before startup queueing, reentrancy, or delivery', async () => {
+		const harness = createPanelHarness();
+		const received: TestMessage[] = [];
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel,
+			admitInbound: admitTestMessage,
+			allowReentrantInbound: isMainWebviewCorrelatedReply,
+		});
+
+		void harness.receive({
+			type: 'publishToPowerBIAck', requestId: 'publish-1', accepted: 'yes',
+		});
+		await gateway.setInboundHandler(message => { received.push(message); });
+		expect(received).toEqual([]);
+
+		await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE });
+		await expect(gateway.postMessage({
+			type: 'publishToPowerBIResult', requestId: 'publish-1', boxId: 'html-1', ok: true,
+			reportUrl: 'https://app.powerbi.com/report', scheduleConfigured: 'yes',
+			initialRefreshTriggered: false, dataMode: 'import', semanticModelId: 'model-1',
+			reportId: 'report-1', workspaceId: 'workspace-1', reportName: 'Operations',
+		})).resolves.toBe(false);
+		expect(harness.posted).toEqual([]);
+
+		await harness.receive({
+			type: 'publishToPowerBIAck', requestId: 'publish-1', accepted: true,
+		});
+		expect(received).toEqual([{
+			type: 'publishToPowerBIAck', requestId: 'publish-1', accepted: true,
+		}]);
 	});
 
 	it('rejects malformed Kusto publication traffic before startup queueing and delivery', async () => {

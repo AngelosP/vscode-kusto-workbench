@@ -346,6 +346,36 @@ describe('kw-publish-pbi-dialog', () => {
 		});
 	});
 
+	it('rejects a matching malformed publish result before correlation or dialog state changes', async () => {
+		localStorage.setItem('kw.publishPbi.lastWorkspaceId', 'workspace-1');
+		localStorage.setItem('kw.publishPbi.lastWorkspaceName', 'Analytics');
+		const dialog = createDialog();
+		await showDialog(dialog);
+		await sendWorkspaces(dialog);
+		primaryButton(dialog).click();
+		const requestId = String(lastPublishMessage().requestId);
+		const malformed = {
+			type: 'publishToPowerBIResult', requestId, boxId, ok: true,
+			reportUrl: 'https://app.powerbi.com/forged', scheduleConfigured: 'yes',
+			initialRefreshTriggered: false, dataMode: 'import', semanticModelId: 'model-forged',
+			reportId: 'report-forged', workspaceId: 'workspace-1', workspaceName: 'Analytics',
+			reportName: 'Forged report',
+		};
+
+		expect(dialog.acceptsHostMessage(malformed)).toBe(false);
+		dialog.handleHostMessage(malformed);
+		await waitForUpdate(dialog);
+
+		expect((dialog as any)._publishRequestId).toBe(requestId);
+		expect((dialog as any)._state).toBe('publishing');
+		expect((dialog as any)._reportUrl).toBe('');
+		expect((dialog as any)._pbiPublishInfo).toBeUndefined();
+
+		await sendPublishSuccess(dialog);
+		expect((dialog as any)._publishRequestId).toBe('');
+		expect((dialog as any)._state).toBe('success');
+	});
+
 	it('ignores stale existence results after a publish success updated local metadata', async () => {
 		localStorage.setItem('kw.publishPbi.lastWorkspaceId', 'workspace-1');
 		localStorage.setItem('kw.publishPbi.lastWorkspaceName', 'Analytics');

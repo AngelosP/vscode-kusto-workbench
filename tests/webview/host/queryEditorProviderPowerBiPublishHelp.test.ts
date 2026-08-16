@@ -144,6 +144,7 @@ const restoredPreviousTerminal = {
 
 describe('HostDashboardApplicationHandler Power BI workflows', () => {
 	afterEach(() => {
+		vi.useRealTimers();
 		vi.restoreAllMocks();
 		powerBiPublishMocks.publishToPowerBIService.mockReset();
 		powerBiPublishMocks.listFabricWorkspaces.mockReset();
@@ -231,6 +232,137 @@ describe('HostDashboardApplicationHandler Power BI workflows', () => {
 			type: 'publishToPowerBIAck', requestId: 'publish-success', accepted: true,
 		});
 		expect(provider.pendingPowerBiPublishAcks.has('publish-success')).toBe(false);
+	});
+
+	it('publishes unchanged optional DirectQuery refresh fields', async () => {
+		const provider = createProviderHarness();
+		powerBiPublishMocks.publishToPowerBIService.mockResolvedValue({
+			reportUrl: 'https://app.powerbi.com/direct-query', scheduleConfigured: true,
+			dataMode: 'directQuery', semanticModelId: 'model-existing',
+			reportId: 'report-existing', createdNewItems: false,
+		});
+
+		await provider.handleMessage({
+			type: 'publishToPowerBI', requestId: 'publish-direct-query', boxId: 'html_publish',
+			workspaceId: 'workspace-1', reportName: 'Dashboard', pageWidth: 1280, pageHeight: 720,
+			htmlCode: validPublishHtmlCode, dataSources: validPublishDataSources(),
+			dataMode: 'directQuery', semanticModelId: 'model-existing', reportId: 'report-existing',
+		});
+
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'publishToPowerBIResult', requestId: 'publish-direct-query',
+			boxId: 'html_publish', ok: true,
+			reportUrl: 'https://app.powerbi.com/direct-query', scheduleConfigured: true,
+			initialRefreshTriggered: undefined, dataMode: 'directQuery',
+			semanticModelId: 'model-existing', reportId: 'report-existing',
+			workspaceId: 'workspace-1', reportName: 'Dashboard', workspaceName: undefined,
+		});
+
+		await provider.handleMessage({
+			type: 'publishToPowerBIAck', requestId: 'publish-direct-query', accepted: true,
+		});
+		expect(provider.pendingPowerBiPublishAcks.has('publish-direct-query')).toBe(false);
+	});
+
+	it('keeps the exact created-item application lease and timer live until a canonical acknowledgment', async () => {
+		vi.useFakeTimers();
+		const provider = createProviderHarness();
+		const cleanupCreatedItems = vi.fn(async () => true);
+		powerBiPublishMocks.publishToPowerBIService.mockResolvedValue({
+			reportUrl: 'https://app.powerbi.com/report', scheduleConfigured: true,
+			initialRefreshTriggered: false, dataMode: 'import',
+			semanticModelId: 'model-created', reportId: 'report-created', createdNewItems: true,
+			cleanupCreatedItems,
+		});
+
+		await provider.handleMessage({
+			type: 'publishToPowerBI', requestId: 'publish-canonical-ack', boxId: 'html_publish',
+			workspaceId: 'workspace-1', workspaceName: 'Analytics', reportName: 'Dashboard',
+			pageWidth: 1280, pageHeight: 720,
+			htmlCode: validPublishHtmlCode, dataSources: validPublishDataSources(), dataMode: 'import',
+		});
+
+		const lease = provider.pendingPowerBiPublishAcks.get('publish-canonical-ack');
+		expect(lease).toBeDefined();
+		const timer = lease.timer;
+		expect(vi.getTimerCount()).toBe(1);
+
+		await provider.handleMessage({
+			type: 'publishToPowerBIAck', requestId: 'publish-canonical-ack', accepted: 'yes',
+		} as never);
+
+		expect(provider.pendingPowerBiPublishAcks.get('publish-canonical-ack')).toBe(lease);
+		expect(lease.cleanupRequested).toBe(false);
+		expect(lease.finalizationInProgress).toBe(false);
+		expect(lease.timer).toBe(timer);
+		expect(cleanupCreatedItems).not.toHaveBeenCalled();
+		expect(vi.getTimerCount()).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(14_999);
+		expect(provider.pendingPowerBiPublishAcks.get('publish-canonical-ack')).toBe(lease);
+		expect(lease.timer).toBe(timer);
+		expect(cleanupCreatedItems).not.toHaveBeenCalled();
+
+		await provider.handleMessage({
+			type: 'publishToPowerBIAck', requestId: 'publish-canonical-ack', accepted: true,
+		});
+
+		expect(provider.pendingPowerBiPublishAcks.has('publish-canonical-ack')).toBe(false);
+		expect(cleanupCreatedItems).not.toHaveBeenCalled();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it('expires an unacknowledged created-item lease at exactly 15 seconds', async () => {
+		vi.useFakeTimers();
+		const provider = createProviderHarness();
+		const cleanupCreatedItems = vi.fn(async () => true);
+		powerBiPublishMocks.publishToPowerBIService.mockResolvedValue({
+			reportUrl: 'https://app.powerbi.com/report', scheduleConfigured: true,
+			initialRefreshTriggered: false, dataMode: 'import',
+			semanticModelId: 'model-created', reportId: 'report-created', createdNewItems: true,
+			cleanupCreatedItems,
+		});
+
+		await provider.handleMessage({
+			type: 'publishToPowerBI', requestId: 'publish-timeout', boxId: 'html_publish',
+			workspaceId: 'workspace-1', reportName: 'Dashboard', pageWidth: 1280, pageHeight: 720,
+			htmlCode: validPublishHtmlCode, dataSources: validPublishDataSources(), dataMode: 'import',
+		});
+
+		const lease = provider.pendingPowerBiPublishAcks.get('publish-timeout');
+		expect(lease).toBeDefined();
+		await vi.advanceTimersByTimeAsync(14_999);
+		expect(provider.pendingPowerBiPublishAcks.get('publish-timeout')).toBe(lease);
+		expect(cleanupCreatedItems).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(1);
+		expect(provider.pendingPowerBiPublishAcks.has('publish-timeout')).toBe(false);
+		expect(cleanupCreatedItems).toHaveBeenCalledOnce();
+	});
+
+	it('rearms an applied rejection for exactly five seconds without cleanup', async () => {
+		vi.useFakeTimers();
+		const provider = createProviderHarness();
+		const cleanup = vi.fn(async () => true);
+		const lease = publishLease(cleanup, 'applied');
+		const originalTimer = lease.timer;
+		provider.pendingPowerBiPublishAcks.set('publish-rearm', lease);
+
+		await provider.handleMessage({
+			type: 'publishToPowerBIAck', requestId: 'publish-rearm', accepted: false,
+		});
+
+		expect(provider.pendingPowerBiPublishAcks.get('publish-rearm')).toBe(lease);
+		expect(lease.cleanupRequested).toBe(true);
+		expect(lease.timer).not.toBe(originalTimer);
+		expect(cleanup).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(4_999);
+		expect(provider.pendingPowerBiPublishAcks.get('publish-rearm')).toBe(lease);
+		expect(cleanup).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(1);
+		expect(provider.pendingPowerBiPublishAcks.has('publish-rearm')).toBe(false);
+		expect(cleanup).not.toHaveBeenCalled();
 	});
 
 	it('rejects inadmissible publish before Leave No Trace policy or publish service effects', async () => {

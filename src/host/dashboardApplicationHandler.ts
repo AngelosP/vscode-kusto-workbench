@@ -31,6 +31,12 @@ import type { WorkbenchLogger } from './workbenchLogger';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import type { PbiPublishInfo } from '../shared/htmlSectionDefinition';
 import type { MarkdownDocumentProjection } from '../shared/markdownDocumentAggregate';
+import {
+	admitPowerBiPublishWebviewMessage,
+	createPublishToPowerBIFailureResultMessage,
+	createPublishToPowerBISuccessResultMessage,
+	type PublishToPowerBIResultMessage,
+} from '../shared/powerBiPublishProtocol';
 
 export type DashboardApplicationMessage =
 	| ShowPowerBiPublishHelpMessage
@@ -98,6 +104,10 @@ export class HostDashboardApplicationHandler implements DashboardApplicationHand
 		return this.options.postMessage(message);
 	}
 
+	private postPowerBiPublishResult(message: PublishToPowerBIResultMessage): Thenable<boolean> {
+		return this.postMessage(message);
+	}
+
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
 		switch (message.type) {
 			case 'showPowerBiPublishHelp':
@@ -107,8 +117,14 @@ export class HostDashboardApplicationHandler implements DashboardApplicationHand
 			case 'cancelDashboardWorkflow':
 				this.cancelWorkflow(message.requestId);
 				return Promise.resolve();
-			case 'publishToPowerBIAck':
-				return this.acceptPowerBiPublishAck(message.requestId, message.accepted === true);
+			case 'publishToPowerBIAck': {
+				const admission = admitPowerBiPublishWebviewMessage(message);
+				if (!admission.recognized || !admission.parsed.ok) return undefined;
+				return this.acceptPowerBiPublishAck(
+					admission.parsed.value.requestId,
+					admission.parsed.value.accepted,
+				);
+			}
 			case 'exportDashboard':
 				return this.exportDashboard(message);
 			case 'requestHtmlDashboardUpgradeWithCopilot':
@@ -390,10 +406,10 @@ export class HostDashboardApplicationHandler implements DashboardApplicationHand
 			)) {
 				const messageText = 'Import mode cannot be used with Leave No Trace clusters because it stores query results in Power BI. Select DirectQuery to keep data in Kusto.';
 				vscode.window.showWarningMessage(messageText);
-				this.postMessage({
-					type: 'publishToPowerBIResult', requestId: message.requestId,
-					boxId: message.boxId, ok: false, error: messageText,
-				});
+				const response = createPublishToPowerBIFailureResultMessage(
+					message.requestId, message.boxId, messageText,
+				);
+				if (response.ok) this.postPowerBiPublishResult(response.value);
 				return;
 			}
 
@@ -458,14 +474,20 @@ export class HostDashboardApplicationHandler implements DashboardApplicationHand
 				cleanupRequested: false,
 				finalizationInProgress: false,
 			});
-			const delivered = await this.postMessage({
-				type: 'publishToPowerBIResult', requestId: message.requestId, boxId: message.boxId, ok: true,
-				reportUrl: result.reportUrl, scheduleConfigured: result.scheduleConfigured,
-				initialRefreshTriggered: result.initialRefreshTriggered, dataMode: result.dataMode,
-				semanticModelId: result.semanticModelId, reportId: result.reportId,
-				workspaceId: message.workspaceId, reportName: message.reportName,
-				workspaceName: message.workspaceName,
-			});
+			const response = createPublishToPowerBISuccessResultMessage(
+				message.requestId,
+				message.boxId,
+				result.reportUrl,
+				result.scheduleConfigured,
+				result.initialRefreshTriggered,
+				result.dataMode,
+				result.semanticModelId,
+				result.reportId,
+				message.workspaceId,
+				message.reportName,
+				message.workspaceName,
+			);
+			const delivered = response.ok && await this.postPowerBiPublishResult(response.value);
 			if (!delivered) {
 				await this.acceptPowerBiPublishAck(message.requestId, false);
 				return;
@@ -474,10 +496,10 @@ export class HostDashboardApplicationHandler implements DashboardApplicationHand
 			if (!this.isWorkflowCurrent(message.requestId, workflow)) return;
 			const messageText = error instanceof Error ? error.message : String(error);
 			this.options.output.error('[kusto] Power BI publish error:', error instanceof Error ? error : String(error));
-			this.postMessage({
-				type: 'publishToPowerBIResult', requestId: message.requestId,
-				boxId: message.boxId, ok: false, error: messageText,
-			});
+			const response = createPublishToPowerBIFailureResultMessage(
+				message.requestId, message.boxId, messageText,
+			);
+			if (response.ok) this.postPowerBiPublishResult(response.value);
 		} finally {
 			this.finishWorkflow(message.requestId, workflow);
 		}

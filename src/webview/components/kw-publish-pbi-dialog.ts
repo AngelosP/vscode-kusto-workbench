@@ -8,6 +8,7 @@ import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 import type { PbiPublishInfo } from '../sections/kw-html-section.js';
 import { leaveNoTraceClusters } from '../core/state.js';
 import { isLeaveNoTraceCluster } from '../shared/persistence-utils.js';
+import { admitPowerBiPublishHostMessage } from '../../shared/powerBiPublishProtocol.js';
 
 type DialogState = 'idle' | 'loading-workspaces' | 'ready' | 'publishing' | 'success' | 'error';
 type PublishMode = 'update' | 'new';
@@ -125,6 +126,11 @@ export class KwPublishPbiDialog extends LitElement {
 	}
 
 	public acceptsHostMessage(message: { type?: unknown; requestId?: unknown }): boolean {
+		const admission = admitPowerBiPublishHostMessage(message);
+		if (admission.recognized) {
+			if (!admission.parsed.ok) return false;
+			message = admission.parsed.value;
+		}
 		const requestId = String(message.requestId || '');
 		if (message.type === 'pbiWorkspacesResult') return !!requestId && requestId === this._workspaceRequestId;
 		if (message.type === 'pbiItemExistsResult') return !!requestId && requestId === this._itemExistsRequestId;
@@ -134,6 +140,11 @@ export class KwPublishPbiDialog extends LitElement {
 
 	/** Called by the parent HTML section to forward host→webview messages. */
 	handleHostMessage(message: any): void {
+		const admission = admitPowerBiPublishHostMessage(message);
+		if (admission.recognized) {
+			if (!admission.parsed.ok) return;
+			message = admission.parsed.value;
+		}
 		if (!this.acceptsHostMessage(message)) return;
 		if (message.type === 'pbiWorkspacesResult') {
 			this._workspaceRequestId = '';

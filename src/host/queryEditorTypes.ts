@@ -23,6 +23,9 @@ import type { KustoPublicationWebviewMessage } from '../shared/kustoPublicationP
 import type { DevelopmentNoteMutationWebviewMessage } from '../shared/developmentNoteMutationProtocol';
 import type { ToolStateSnapshotWebviewMessage } from '../shared/toolStateSnapshotProtocol';
 import type { KustoExecutionStartWebviewMessage } from '../shared/kustoExecutionStartProtocol';
+import type { PublishToPowerBIAckMessage } from '../shared/powerBiPublishProtocol';
+
+export type { PublishToPowerBIAckMessage } from '../shared/powerBiPublishProtocol';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -150,11 +153,6 @@ export type PowerBiDataMode = 'import' | 'directQuery';
 
 export type SaveImportedCsvMessage = { type: 'saveImportedCsv'; csv: string; suggestedFileName?: string };
 export type CancelDashboardWorkflowMessage = { type: 'cancelDashboardWorkflow'; requestId: string };
-export type PublishToPowerBIAckMessage = {
-	type: 'publishToPowerBIAck';
-	requestId: string;
-	accepted: boolean;
-};
 export type ExportDashboardMessage = {
 	type: 'exportDashboard';
 	requestId: string;

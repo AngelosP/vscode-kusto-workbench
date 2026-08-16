@@ -26,4 +26,7 @@ Feature: Agent open file targeting
     When I execute command "kustoWorkbench.test.runOpenFileTargetingScenario" with args '["real-editors-forced-failure"]'
     Then the file "tests/vscode-extension-tester/runs/default/agent-open-file-targeting-real-result.json" should exist
     And the file "tests/vscode-extension-tester/runs/default/agent-open-file-targeting-real-result.json" should contain "forcedFailureTriggered:true"
+    And the file "tests/vscode-extension-tester/runs/default/agent-open-file-targeting-real-result.json" should contain "cleanupSavedDirtyDocs:true"
+    And the file "tests/vscode-extension-tester/runs/default/agent-open-file-targeting-real-result.json" should contain "cleanupActiveFileDiskUnchanged:true"
+    And the file "tests/vscode-extension-tester/runs/default/agent-open-file-targeting-real-result.json" should contain "cleanupTargetFileDiskChanged:true"
     And the file "tests/vscode-extension-tester/runs/default/agent-open-file-targeting-real-result.json" should contain "cleanupNoLiveEditors:true"

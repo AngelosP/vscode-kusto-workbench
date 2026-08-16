@@ -13,6 +13,11 @@ import {
 	admitKustoExecutionStartHostMessage,
 	admitKustoExecutionStartWebviewMessageFromEnvelope,
 } from '../shared/kustoExecutionStartProtocol';
+import {
+	admitPowerBiPublishHostMessage,
+	admitPowerBiPublishWebviewMessage,
+	admitPowerBiPublishWebviewMessageFromEnvelope,
+} from '../shared/powerBiPublishProtocol';
 import { captureRuntimeMessageEnvelope } from '../shared/runtimeMessageEnvelope';
 import * as crypto from 'crypto';
 import * as path from 'path';
@@ -1060,6 +1065,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			if (!executionStartAdmission.parsed.ok) return;
 			input = executionStartAdmission.parsed.value;
 		}
+		const powerBiPublishAdmission = admitPowerBiPublishWebviewMessageFromEnvelope(
+			envelope.descriptorSnapshot,
+		);
+		if (powerBiPublishAdmission.recognized) {
+			if (!powerBiPublishAdmission.parsed.ok) return;
+			input = powerBiPublishAdmission.parsed.value;
+		}
 		if (this.handleDevelopmentNoteMutationResponse(input)) return;
 		if (input && typeof input === 'object'
 			&& (input as Record<string, unknown>).type === MAIN_WEBVIEW_DISPATCHER_READY_TYPE) return;
@@ -1072,6 +1084,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		message: IncomingWebviewMessage,
 		developmentNoteMutationResponseChecked = false,
 	): Promise<void> {
+		const powerBiPublishAdmission = admitPowerBiPublishWebviewMessage(message);
+		if (powerBiPublishAdmission.recognized) {
+			if (!powerBiPublishAdmission.parsed.ok) return;
+			message = powerBiPublishAdmission.parsed.value;
+		}
 		const publicationAdmission = admitKustoPublicationWebviewMessage(message);
 		if (publicationAdmission.recognized) {
 			if (!publicationAdmission.parsed.ok) return;
@@ -1355,6 +1372,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		if (toolStateAdmission.recognized) {
 			if (!toolStateAdmission.parsed.ok) return Promise.resolve(false);
 			message = toolStateAdmission.parsed.value;
+		}
+		const powerBiPublishAdmission = admitPowerBiPublishHostMessage(message);
+		if (powerBiPublishAdmission.recognized) {
+			if (!powerBiPublishAdmission.parsed.ok) return Promise.resolve(false);
+			message = powerBiPublishAdmission.parsed.value;
 		}
 		try {
 			if (this.messageTransport) {

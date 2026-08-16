@@ -19,6 +19,11 @@ import {
 	admitKustoExecutionStartWebviewMessage,
 	admitKustoExecutionStartWebviewMessageFromEnvelope,
 } from '../shared/kustoExecutionStartProtocol';
+import {
+	admitPowerBiPublishHostMessage,
+	admitPowerBiPublishWebviewMessage,
+	admitPowerBiPublishWebviewMessageFromEnvelope,
+} from '../shared/powerBiPublishProtocol';
 import { captureRuntimeMessageEnvelope } from '../shared/runtimeMessageEnvelope';
 
 export const MAIN_WEBVIEW_DISPATCHER_READY_TYPE = 'mainWebviewDispatcherReady' as const;
@@ -106,6 +111,8 @@ export function isMainWebviewCorrelatedReply(input: unknown): boolean {
 	if (toolStateAdmission.recognized) return toolStateAdmission.parsed.ok;
 	const executionStartAdmission = admitKustoExecutionStartWebviewMessage(input);
 	if (executionStartAdmission.recognized) return executionStartAdmission.parsed.ok;
+	const powerBiPublishAdmission = admitPowerBiPublishWebviewMessage(input);
+	if (powerBiPublishAdmission.recognized) return powerBiPublishAdmission.parsed.ok;
 	const typeInspection = safelyInspectProperty(input, 'type');
 	if (typeInspection?.kind !== 'data' || typeof typeInspection.value !== 'string') return false;
 	const type = typeInspection.value;
@@ -119,7 +126,6 @@ export function isMainWebviewCorrelatedReply(input: unknown): boolean {
 		case 'comparisonBoxEnsured':
 		case 'documentReloadResult':
 		case 'markdownDocumentCommandBarrierResult':
-		case 'publishToPowerBIAck':
 		case 'toolExecutionStarted':
 			return hasDescriptorCorrelationId(input, 'requestId');
 		case 'sqlComparisonAdmissionAck':
@@ -276,6 +282,13 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 			if (!executionStartAdmission.parsed.ok) return;
 			input = executionStartAdmission.parsed.value;
 		}
+		const powerBiPublishAdmission = admitPowerBiPublishWebviewMessageFromEnvelope(
+			envelope.descriptorSnapshot,
+		);
+		if (powerBiPublishAdmission.recognized) {
+			if (!powerBiPublishAdmission.parsed.ok) return;
+			input = powerBiPublishAdmission.parsed.value;
+		}
 		if (isDispatcherReadyMessage(input)) return this.markDispatcherReady();
 
 		const message = this.options.admitInbound(input);
@@ -344,6 +357,13 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 				return { accepted: false, delivery: Promise.resolve(false) };
 			}
 			message = publicationAdmission.parsed.value;
+		}
+		const powerBiPublishAdmission = admitPowerBiPublishHostMessage(message);
+		if (powerBiPublishAdmission.recognized) {
+			if (!powerBiPublishAdmission.parsed.ok) {
+				return { accepted: false, delivery: Promise.resolve(false) };
+			}
+			message = powerBiPublishAdmission.parsed.value;
 		}
 
 		let prepared: unknown | undefined;

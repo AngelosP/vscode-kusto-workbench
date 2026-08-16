@@ -107,6 +107,10 @@ import {
 	admitKustoExecutionStartWebviewMessageFromEnvelope,
 	type KustoExecutionStartWebviewMessage,
 } from '../../shared/kustoExecutionStartProtocol.js';
+import {
+	admitPowerBiPublishWebviewMessageFromEnvelope,
+	type PowerBiPublishWebviewMessage,
+} from '../../shared/powerBiPublishProtocol.js';
 import { captureRuntimeMessageEnvelope } from '../../shared/runtimeMessageEnvelope.js';
 import { pState } from './persistence-state.js';
 
@@ -255,7 +259,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'saveImportedCsv'; csv: string; suggestedFileName?: string }
 	| ArtifactCsvSaveWebviewMessage
 	| { type: 'cancelDashboardWorkflow'; requestId: string }
-	| { type: 'publishToPowerBIAck'; requestId: string; accepted: boolean }
+	| PowerBiPublishWebviewMessage
 	| { type: 'exportDashboard'; requestId: string; boxId: string; html: string; suggestedFileName?: string; previewHeight?: number; dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> }
 	| OutgoingHtmlDashboardUpgradeWithCopilotMessage
 	| { type: 'getPbiWorkspaces'; requestId: string; boxId: string }
@@ -495,6 +499,16 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 			return;
 		}
 		message = rawKustoExecutionStartAdmission.parsed.value;
+	}
+	const rawPowerBiPublishAdmission = admitPowerBiPublishWebviewMessageFromEnvelope(
+		envelope.descriptorSnapshot,
+	);
+	if (rawPowerBiPublishAdmission.recognized) {
+		if (!rawPowerBiPublishAdmission.parsed.ok) {
+			console.error('[kusto] Rejected invalid Power BI publish acknowledgement:', rawPowerBiPublishAdmission.parsed.error);
+			return;
+		}
+		message = rawPowerBiPublishAdmission.parsed.value;
 	}
 	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage | CompatibilityPersistenceWebviewMessage = message;
 	const kustoPublicationAdmission = admitKustoPublicationWebviewMessage(message);
