@@ -25,7 +25,10 @@ export type BrowserViewerAdoptionResult =
 export type BrowserViewerRootOptions = Readonly<{
 	isCurrent?: (snapshot: BrowserFileLoadSnapshot) => boolean;
 	present: (projection: BrowserViewerProjection) => void;
+	acknowledge?: (generation: number) => void;
 }>;
+
+export type BrowserViewerPresentationSettlement = 'adopted' | 'rejected' | 'ignored';
 
 function cloneJson<T>(value: T): T {
 	return JSON.parse(JSON.stringify(value)) as T;
@@ -56,7 +59,10 @@ function createPresentationState(state: KqlxStateV1): DeepReadonly<KqlxStateV1> 
 }
 
 export class BrowserViewerRoot {
+	private boundGeneration: number | undefined;
+	private pendingGeneration: number | undefined;
 	private adoptedGeneration: number | undefined;
+	private invalidGeneration: number | undefined;
 
 	constructor(private readonly options: BrowserViewerRootOptions) {}
 
@@ -68,8 +74,15 @@ export class BrowserViewerRoot {
 		if (this.options.isCurrent && !this.options.isCurrent(snapshot)) {
 			return { ok: false, reason: 'stale' };
 		}
-		if (this.adoptedGeneration !== undefined) {
-			return snapshot.generation === this.adoptedGeneration
+		if (this.boundGeneration !== undefined && snapshot.generation !== this.boundGeneration) {
+			return { ok: false, reason: 'stale' };
+		}
+		if (snapshot.generation === this.adoptedGeneration || snapshot.generation === this.invalidGeneration) {
+			this.acknowledge(snapshot.generation);
+			return { ok: false, reason: 'duplicate' };
+		}
+		if (this.pendingGeneration !== undefined) {
+			return snapshot.generation === this.pendingGeneration
 				? { ok: false, reason: 'duplicate' }
 				: { ok: false, reason: 'stale' };
 		}
@@ -82,6 +95,9 @@ export class BrowserViewerRoot {
 			sidecarUrl: snapshot.file.sidecarUrl,
 		});
 		if (!parsed.ok) {
+			this.boundGeneration = snapshot.generation;
+			this.invalidGeneration = snapshot.generation;
+			this.acknowledge(snapshot.generation);
 			return { ok: false, reason: 'invalid', title: parsed.title, error: parsed.error };
 		}
 		if (this.options.isCurrent && !this.options.isCurrent(snapshot)) {
@@ -103,8 +119,33 @@ export class BrowserViewerRoot {
 			document,
 			presentationState: createPresentationState(parsed.file.state),
 		});
-		this.adoptedGeneration = snapshot.generation;
-		this.options.present(projection);
+		this.boundGeneration = snapshot.generation;
+		this.pendingGeneration = snapshot.generation;
+		try {
+			this.options.present(projection);
+		} catch (error) {
+			if (this.pendingGeneration === snapshot.generation) this.pendingGeneration = undefined;
+			throw error;
+		}
 		return { ok: true, projection };
+	}
+
+	settlePresentation(generation: number, applied: boolean): BrowserViewerPresentationSettlement {
+		if (!Number.isSafeInteger(generation) || generation <= 0 || generation !== this.pendingGeneration) {
+			return 'ignored';
+		}
+		this.pendingGeneration = undefined;
+		if (!applied) return 'rejected';
+		this.adoptedGeneration = generation;
+		this.acknowledge(generation);
+		return 'adopted';
+	}
+
+	private acknowledge(generation: number): void {
+		try {
+			this.options.acknowledge?.(generation);
+		} catch {
+			// A duplicate delivery can retry the parent acknowledgement.
+		}
 	}
 }

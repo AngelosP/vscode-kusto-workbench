@@ -73,4 +73,60 @@ describe('browser standalone viewer payload routing', () => {
 
 		expect(messages).toEqual([{ type: 'get-pending-viewer-content', requestToken: 'token-b' }]);
 	});
+
+	it('stops retries only for the exact delivered load generation', () => {
+		const messageListeners: Array<(event: { data: unknown; source: unknown }) => void> = [];
+		const iframe = {
+			contentWindow: { postMessage: vi.fn() },
+			addEventListener: vi.fn(),
+		};
+		const windowObject = {
+			location: { href: 'chrome-extension://extension/viewer-standalone.html?request=token-a' },
+			addEventListener: vi.fn((type: string, listener: (event: { data: unknown; source: unknown }) => void) => {
+				if (type === 'message') messageListeners.push(listener);
+			}),
+		};
+		const clearInterval = vi.fn();
+		runInNewContext(
+			readFileSync('browser-ext/viewer-standalone-boot.js', 'utf8'),
+			{
+				window: windowObject,
+				document: { getElementById: vi.fn(() => iframe), title: '' },
+				chrome: {
+					runtime: {
+						lastError: undefined,
+						sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+							callback({ payload: { filename: 'query.kqlx', loadGeneration: 7 } });
+						}),
+					},
+				},
+				URL,
+				console,
+				setInterval: vi.fn(() => 41),
+				clearInterval,
+				setTimeout: vi.fn(),
+			},
+		);
+		expect(messageListeners).toHaveLength(1);
+		const sendAck = (loadGeneration?: unknown) => messageListeners[0]({
+			data: {
+				type: 'kusto-workbench-load-file-ack',
+				...(loadGeneration !== undefined ? { loadGeneration } : {}),
+			},
+			source: iframe.contentWindow,
+		});
+
+		sendAck();
+		sendAck('7');
+		sendAck(8);
+		messageListeners[0]({
+			data: { type: 'kusto-workbench-load-file-ack', loadGeneration: 7 },
+			source: {},
+		});
+		expect(clearInterval).not.toHaveBeenCalled();
+
+		sendAck(7);
+		expect(clearInterval).toHaveBeenCalledOnce();
+		expect(clearInterval).toHaveBeenCalledWith(41);
+	});
 });

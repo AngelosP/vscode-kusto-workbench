@@ -50,7 +50,7 @@ function deliverToIframe() {
 	}
 	// We can't reliably detect whether the sandboxed iframe received the
 	// message (cross-origin), so keep retrying for a few seconds.
-	// viewer-boot.js deduplicates via __kustoLoadFileHandled.
+	// BrowserViewerRoot deduplicates pending and adopted generations.
 }
 
 // Retry delivery several times to handle the race between iframe load
@@ -78,6 +78,11 @@ window.addEventListener('message', (event) => {
 
 	switch (event.data.type) {
 		case 'kusto-workbench-load-file-ack': {
+			const acknowledgedGeneration = event.data.loadGeneration;
+			const expectedGeneration = pendingPayload && pendingPayload.loadGeneration;
+			if (!Number.isSafeInteger(acknowledgedGeneration)
+				|| acknowledgedGeneration <= 0
+				|| acknowledgedGeneration !== expectedGeneration) break;
 			delivered = true;
 			clearInterval(retryInterval);
 			break;

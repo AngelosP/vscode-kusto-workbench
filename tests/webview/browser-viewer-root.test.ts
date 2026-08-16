@@ -189,6 +189,26 @@ describe('BrowserViewerRoot', () => {
 		expectDeeplyFrozen(presented[0]);
 	});
 
+	it('acknowledges an invalid document as terminal without presenting it', () => {
+		const coordinator = new BrowserFileLoadCoordinator();
+		const acknowledge = vi.fn()
+			.mockImplementationOnce(() => { throw new Error('parent unavailable'); });
+		const present = vi.fn();
+		const root = new BrowserViewerRoot({
+			isCurrent: snapshot => coordinator.isCurrent(snapshot),
+			present,
+			acknowledge,
+		});
+		const loaded = loadedFile(coordinator, detectedFile('invalid.kqlx'), '{ invalid json');
+
+		expect(root.adopt(loaded)).toMatchObject({ ok: false, reason: 'invalid' });
+		expect(present).not.toHaveBeenCalled();
+		expect(acknowledge).toHaveBeenCalledOnce();
+		expect(acknowledge).toHaveBeenCalledWith(loaded.snapshot.generation);
+		expect(root.adopt(loaded)).toEqual({ ok: false, reason: 'duplicate' });
+		expect(acknowledge).toHaveBeenCalledTimes(2);
+	});
+
 	it('keeps the browser boot adapter free of synthetic host startup replay and timer-based read-only patches', () => {
 		const source = readFileSync(resolve(process.cwd(), 'browser-ext/viewer-boot.js'), 'utf8');
 
@@ -199,9 +219,57 @@ describe('BrowserViewerRoot', () => {
 		expect(source).not.toContain('makeEditorsReadOnly');
 		expect(source).not.toContain('__kustoPersistenceEnabled');
 		expect(source).not.toContain('schedulePersist =');
+		const presentationSource = readFileSync(
+			resolve(process.cwd(), 'src/webview/core/browser-viewer-presentation.ts'),
+			'utf8',
+		);
+		expect(presentationSource).not.toContain('adoptedGeneration');
 	});
 
-	it('keeps the accepted presentation visible across standalone retries and stale deliveries', () => {
+	it('keeps the first valid generation bound across rejection and presentation failure', () => {
+		const presented: BrowserViewerProjection[] = [];
+		const acknowledge = vi.fn();
+		let throwPresentation = false;
+		const root = new BrowserViewerRoot({
+			present: projection => {
+				presented.push(projection);
+				if (throwPresentation) throw new Error('presentation failed');
+			},
+			acknowledge,
+		});
+		const coordinator = new BrowserFileLoadCoordinator();
+		const generation7 = loadedFile(coordinator, detectedFile('generation-7.kqlx'), JSON.stringify({
+			kind: 'kqlx', version: 1,
+			state: { sections: [{ id: 'query_7', type: 'query', query: 'print value=7' }] },
+		}));
+		const generation8 = loadedFile(coordinator, detectedFile('generation-8.kqlx'), JSON.stringify({
+			kind: 'kqlx', version: 1,
+			state: { sections: [{ id: 'query_8', type: 'query', query: 'print value=8' }] },
+		}));
+
+		expect(root.adopt(generation7)).toMatchObject({ ok: true });
+		expect(root.settlePresentation(generation7.snapshot.generation, false)).toBe('rejected');
+		expect(root.adopt(generation8)).toEqual({ ok: false, reason: 'stale' });
+
+		throwPresentation = true;
+		expect(() => root.adopt(generation7)).toThrow('presentation failed');
+		expect(root.adopt(generation8)).toEqual({ ok: false, reason: 'stale' });
+
+		throwPresentation = false;
+		expect(root.adopt(generation7)).toMatchObject({ ok: true });
+		expect(root.settlePresentation(generation7.snapshot.generation, true)).toBe('adopted');
+		expect(acknowledge).toHaveBeenCalledOnce();
+		expect(acknowledge).toHaveBeenCalledWith(generation7.snapshot.generation);
+		expect(root.adopt(generation7)).toEqual({ ok: false, reason: 'duplicate' });
+		expect(acknowledge).toHaveBeenCalledTimes(2);
+		expect(presented.map(projection => projection.source.generation)).toEqual([
+			generation7.snapshot.generation,
+			generation7.snapshot.generation,
+			generation7.snapshot.generation,
+		]);
+	});
+
+	it('retries a failed presentation before acknowledging the accepted generation', () => {
 		document.body.innerHTML = `
 			<div id="viewer-banner" style="display:none">
 				<span class="viewer-banner-filename"></span>
@@ -218,12 +286,15 @@ describe('BrowserViewerRoot', () => {
 		const postMessage = vi.spyOn(window, 'postMessage').mockImplementation((message: unknown) => {
 			posted.push(message);
 		});
-		window.addEventListener('kusto-workbench-browser-projection', event => {
+		let presentationAttempts = 0;
+		const handleProjection = (event: Event) => {
 			const projection = (event as CustomEvent).detail as BrowserViewerProjection;
+			presentationAttempts++;
 			window.dispatchEvent(new CustomEvent('kusto-workbench-browser-projection-applied', {
-				detail: { generation: projection.source.generation, applied: true },
+				detail: { generation: projection.source.generation, applied: presentationAttempts > 1 },
 			}));
-		}, { once: true });
+		};
+		window.addEventListener('kusto-workbench-browser-projection', handleProjection);
 		const bundle = buildSync({
 			entryPoints: [resolve(process.cwd(), 'browser-ext/viewer-boot.js')],
 			bundle: true,
@@ -248,19 +319,53 @@ describe('BrowserViewerRoot', () => {
 			standalone: true,
 		};
 
+		window.dispatchEvent(new MessageEvent('message', {
+			data: { ...payload, loadGeneration: '7' },
+		}));
+		expect(presentationAttempts).toBe(0);
+		expect(posted.filter(message =>
+			(message as { type?: string })?.type === 'kusto-workbench-load-file-ack')).toHaveLength(0);
+
+		let rejectFirstCanonicalPresentation = true;
+		window.addEventListener('kusto-workbench-browser-projection-applied', event => {
+			if (!rejectFirstCanonicalPresentation) return;
+			rejectFirstCanonicalPresentation = false;
+			event.stopImmediatePropagation();
+			window.dispatchEvent(new CustomEvent('kusto-workbench-browser-projection-applied', {
+				detail: { generation: '7', applied: true },
+			}));
+		}, { once: true, capture: true });
 		window.dispatchEvent(new MessageEvent('message', { data: payload }));
+		expect(presentationAttempts).toBe(1);
+		expect(posted.filter(message =>
+			(message as { type?: string })?.type === 'kusto-workbench-load-file-ack')).toHaveLength(0);
+
+		window.dispatchEvent(new CustomEvent('kusto-workbench-browser-projection-applied', {
+			detail: { generation: 7, applied: false },
+		}));
+		window.dispatchEvent(new MessageEvent('message', { data: payload }));
+		expect(presentationAttempts).toBe(2);
 		expect(document.getElementById('viewer-loading')?.style.display).toBe('none');
 		expect(document.querySelector('.viewer-banner-filename')?.textContent).toBe('accepted.kqlx');
+		expect(posted.filter(message =>
+			(message as { type?: string })?.type === 'kusto-workbench-load-file-ack')).toEqual([
+			{ type: 'kusto-workbench-load-file-ack', loadGeneration: 7 },
+		]);
 
 		window.dispatchEvent(new MessageEvent('message', { data: payload }));
 		window.dispatchEvent(new MessageEvent('message', {
 			data: { ...payload, loadGeneration: 8, filename: 'stale.kqlx' },
 		}));
 
+		expect(presentationAttempts).toBe(2);
 		expect(document.getElementById('viewer-loading')?.style.display).toBe('none');
 		expect(document.querySelector('.viewer-banner-filename')?.textContent).toBe('accepted.kqlx');
 		expect(posted.filter(message =>
-			(message as { type?: string })?.type === 'kusto-workbench-load-file-ack')).toHaveLength(2);
+			(message as { type?: string })?.type === 'kusto-workbench-load-file-ack')).toEqual([
+			{ type: 'kusto-workbench-load-file-ack', loadGeneration: 7 },
+			{ type: 'kusto-workbench-load-file-ack', loadGeneration: 7 },
+		]);
+		window.removeEventListener('kusto-workbench-browser-projection', handleProjection);
 		postMessage.mockRestore();
 	});
 });

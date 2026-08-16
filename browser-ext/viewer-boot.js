@@ -52,6 +52,11 @@ import {
 		if (el) el.style.display = 'none';
 	}
 
+	function hideError() {
+		var el = document.getElementById('viewer-error');
+		if (el) el.style.display = 'none';
+	}
+
 	function showError(title, detail) {
 		hideLoading();
 		var el = document.getElementById('viewer-error');
@@ -98,6 +103,7 @@ import {
 	function presentProjection(projection) {
 		var options = pendingPresentationOptions || {};
 		pendingPresentationOptions = null;
+		hideError();
 		if (options.hostBackgroundColor) {
 			applyHostBackgroundColor(options.hostBackgroundColor);
 		}
@@ -120,7 +126,13 @@ import {
 	window.addEventListener(BROWSER_VIEWER_PRESENTATION_READY_EVENT, flushPendingProjection);
 	window.addEventListener(BROWSER_VIEWER_PROJECTION_APPLIED_EVENT, function(event) {
 		var detail = event && event.detail;
-		if (!detail || detail.applied !== true) {
+		if (!detail
+			|| !Number.isSafeInteger(detail.generation)
+			|| detail.generation <= 0
+			|| typeof detail.applied !== 'boolean') return;
+		var settlement = browserViewerRoot.settlePresentation(detail.generation, detail.applied === true);
+		if (settlement === 'ignored') return;
+		if (settlement === 'rejected') {
 			showError('Unable to render file', 'The browser presentation adapter rejected the document projection.');
 			return;
 		}
@@ -130,7 +142,17 @@ import {
 		setTimeout(reportHeight, 5000);
 	});
 
-	var browserViewerRoot = new BrowserViewerRoot({ present: presentProjection });
+	var browserViewerRoot = new BrowserViewerRoot({
+		present: presentProjection,
+		acknowledge: function(loadGeneration) {
+			try {
+				window.parent.postMessage({
+					type: 'kusto-workbench-load-file-ack',
+					loadGeneration: loadGeneration,
+				}, '*');
+			} catch { /* ignore — might not be in an iframe */ }
+		},
+	});
 
 	// ---- Report height to parent (for iframe auto-sizing) ----
 
@@ -205,7 +227,7 @@ import {
 		var sidecarUrl = event.data.sidecarUrl || '';
 		var pageUrl = event.data.pageUrl || '';
 		var sourceLabel = event.data.sourceLabel || '';
-		var loadGeneration = Number(event.data.loadGeneration);
+		var loadGeneration = event.data.loadGeneration;
 		if (!Number.isSafeInteger(loadGeneration) || loadGeneration <= 0) {
 			showError('Invalid viewer payload', 'The file load generation is missing or invalid.');
 			return;
@@ -228,11 +250,6 @@ import {
 			companionState: companionState
 		}));
 		if (!adoption.ok) pendingPresentationOptions = null;
-		if (adoption.reason !== 'stale') {
-			try {
-				window.parent.postMessage({ type: 'kusto-workbench-load-file-ack' }, '*');
-			} catch { /* ignore — might not be in an iframe */ }
-		}
 		if (!adoption.ok && adoption.reason === 'invalid') {
 			showError(adoption.title, adoption.error);
 		}

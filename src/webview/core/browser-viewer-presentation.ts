@@ -25,8 +25,6 @@ import {
 	sqlCachedDatabases,
 } from './state.js';
 
-let adoptedGeneration: number | undefined;
-
 function clearRecord(record: Record<string, unknown>): void {
 	for (const key of Object.keys(record)) delete record[key];
 }
@@ -56,8 +54,7 @@ function resetUnavailableHostState(): void {
 
 export function applyBrowserViewerProjection(value: unknown): boolean {
 	if ((window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode !== true
-		|| !isBrowserViewerProjection(value)
-		|| adoptedGeneration !== undefined) return false;
+		|| !isBrowserViewerProjection(value)) return false;
 
 	resetUnavailableHostState();
 	document.body.dataset.kustoBrowserReadOnly = 'true';
@@ -66,7 +63,7 @@ export function applyBrowserViewerProjection(value: unknown): boolean {
 	pState.firstSectionPinned = false;
 	pState.documentMutationAllowed = false;
 	pState.htmlPowerBiCompatibilityCheckEnabled = false;
-	const applied = applyBrowserViewerDocumentProjection({
+	return applyBrowserViewerDocumentProjection({
 		ok: true,
 		state: value.presentationState,
 		documentUri: pState.documentUri,
@@ -78,8 +75,6 @@ export function applyBrowserViewerProjection(value: unknown): boolean {
 		htmlPowerBiCompatibilityCheckEnabled: false,
 		sourceGeneration: value.source.generation,
 	});
-	if (applied) adoptedGeneration = value.source.generation;
-	return applied;
 }
 
 function announceProjectionApplied(generation: number, applied: boolean): void {

@@ -394,7 +394,7 @@ import { updateConnectionSelects, __kustoGetConnectionId, __kustoGetDatabase, __
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
 import { __kustoCloseShareModal, setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
 import { addChartBox } from '../../src/webview/sections/kw-chart-section.js';
-import { acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, beginKustoLeaveNoTracePolicyApplication, captureKustoLeaveNoTracePolicyRuntime, createSectionWithCapabilities, discardPendingSqlResultRestores, finalizeDocumentDefaultsAfterAcknowledgement, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, installRuntimeAddSectionBridges, markKustoLeaveNoTracePolicyPending, resetDocumentPersistenceForTest, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, restoreKustoLeaveNoTracePolicyRuntime, schedulePersist, __kustoApplyDocumentCapabilities, __kustoClearStoredQueryResult, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
+import { acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyBrowserViewerDocumentProjection, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, beginKustoLeaveNoTracePolicyApplication, captureKustoLeaveNoTracePolicyRuntime, createSectionWithCapabilities, discardPendingSqlResultRestores, finalizeDocumentDefaultsAfterAcknowledgement, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, installRuntimeAddSectionBridges, markKustoLeaveNoTracePolicyPending, resetDocumentPersistenceForTest, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, restoreKustoLeaveNoTracePolicyRuntime, schedulePersist, __kustoApplyDocumentCapabilities, __kustoClearStoredQueryResult, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
 import { createDerivedResultArtifactPublication, publicationFromPersistedResultArtifact, RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, RESULT_ARTIFACT_CSV_RESET_EVENT } from '../../src/shared/resultArtifact.js';
 import { sqlConnectionTargetSignature } from '../../src/shared/sqlConnectionIdentity.js';
 
@@ -626,6 +626,30 @@ describe('persistence round-trip', () => {
 		} finally {
 			delete (window as any).__kustoReadOnlyMode;
 			vi.useRealTimers();
+		}
+	});
+
+	it('accepts a same-generation browser presentation retry without rematerializing sections', () => {
+		(window as any).__kustoReadOnlyMode = true;
+		const projection = {
+			ok: true,
+			state: { sections: [{ id: 'query_browser_retry', type: 'query', query: 'print value=7' }] },
+			documentUri: 'https://example.test/browser-retry.kqlx',
+			documentKind: 'kqlx',
+			allowedSectionKinds: [],
+			defaultSectionKind: 'query',
+			compatibilityMode: false,
+			documentMutationAllowed: false,
+			htmlPowerBiCompatibilityCheckEnabled: false,
+			sourceGeneration: 7,
+		};
+		try {
+			expect(applyBrowserViewerDocumentProjection(projection)).toBe(true);
+			expect(testState.addQueryBox).toHaveBeenCalledOnce();
+			expect(applyBrowserViewerDocumentProjection(projection)).toBe(true);
+			expect(testState.addQueryBox).toHaveBeenCalledOnce();
+		} finally {
+			delete (window as any).__kustoReadOnlyMode;
 		}
 	});
 
