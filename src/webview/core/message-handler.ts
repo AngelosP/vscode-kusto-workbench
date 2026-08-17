@@ -241,11 +241,22 @@ import {
 	sqlFavorites, setSqlFavorites, sqlFavoritesModeByBoxId,
 } from './state';
 import { getKustoConnectionIdentityKey, getKustoSchemaIdentityKey, resolveStrictKustoConnection } from '../../shared/kustoAuth.js';
+import {
+	createKustoCopilotClarificationRequiredResult,
+	parseKustoCopilotClarifyingQuestionMessage,
+	parseKustoCopilotClarifyingQuestionMessageFromEnvelope,
+	type KustoCopilotClarifyingQuestionMessage,
+} from '../../shared/kustoCopilotClarificationProtocol.js';
 import { hasKustoCopilotRequestIdentity, hasKustoExecutionRequestIdentity, hasKustoExecutionTerminalStamp, hasKustoOptimizeRequestIdentity, kustoCopilotRequestIdentityEquals, kustoExecutionIdentityEquals, kustoExecutionRequestIdentityEquals, type KustoCopilotRequestIdentity, type KustoExecutionRequestIdentity } from '../../shared/kustoExecution.js';
 import { comparisonSourceArtifactConsumerId, createDerivedResultArtifactPublication, modelResultArtifactConsumerId, type ResultArtifactSourcePolicy } from '../../shared/resultArtifact.js';
 import { sqlConnectionTargetSignature } from '../../shared/sqlConnectionIdentity.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
-import { ADMITTED_KUSTO_COPILOT_EVENT, emitAdmittedKustoCopilotOutput } from './kusto-copilot-output-runtime.js';
+import {
+	ADMITTED_KUSTO_COPILOT_EVENT,
+	APPLIED_KUSTO_COPILOT_DONE_EVENT,
+	emitAdmittedKustoCopilotOutput,
+	emitAppliedKustoCopilotDone,
+} from './kusto-copilot-output-runtime.js';
 import { synchronizeKustoSectionTarget } from './query-section-accessors.js';
 import { admitKustoDatabaseDelivery, admitKustoSchemaDelivery } from './kusto-schema-message-router.js';
 import {
@@ -466,20 +477,36 @@ function applyToolKustoTarget(sectionId: string, input: any): { success: boolean
 	if (resolved.error) return { success: false, error: resolved.error };
 	const kwEl = __kustoGetQuerySectionElement(sectionId);
 	if (!kwEl) return { success: false, error: `Query section "${sectionId}" was not found.` };
+	const requestedDatabase = String(input?.database || '').trim();
+	const currentConnectionId = String(kwEl.getConnectionId?.() || '').trim();
+	const currentDatabase = String(kwEl.getDatabase?.() || '').trim();
 	if (resolved.connection) {
+		const connectionChanged = currentConnectionId !== String(resolved.connection.id || '').trim();
 		kwEl.setConnectionId?.(resolved.connection.id);
 		kwEl.setDesiredConnectionIdentity?.(resolved.connection.authorityId, resolved.connection.id);
 		kwEl.setDesiredClusterUrl?.(resolved.connection.clusterUrl);
-		kwEl.dispatchEvent(new CustomEvent('connection-changed', {
-			detail: { boxId: sectionId, connectionId: resolved.connection.id, clusterUrl: resolved.connection.clusterUrl, source: 'tool' },
-			bubbles: true, composed: true,
-		}));
+		if (connectionChanged) {
+			if (requestedDatabase) {
+				kwEl.setDesiredDatabase?.(requestedDatabase);
+				kwEl.setDatabase?.(requestedDatabase);
+			}
+			kwEl.dispatchEvent(new CustomEvent('connection-changed', {
+				detail: {
+					boxId: sectionId,
+					connectionId: resolved.connection.id,
+					clusterUrl: resolved.connection.clusterUrl,
+					...(requestedDatabase ? { database: requestedDatabase } : {}),
+					source: 'tool',
+				},
+				bubbles: true, composed: true,
+			}));
+		}
 	}
-	if (input?.database) {
-		kwEl.setDesiredDatabase?.(String(input.database));
-		kwEl.setDatabase?.(String(input.database));
+	if (requestedDatabase && currentDatabase.toLowerCase() !== requestedDatabase.toLowerCase()) {
+		kwEl.setDesiredDatabase?.(requestedDatabase);
+		kwEl.setDatabase?.(requestedDatabase);
 		kwEl.dispatchEvent(new CustomEvent('database-changed', {
-			detail: { boxId: sectionId, database: String(input.database), source: 'tool' },
+			detail: { boxId: sectionId, database: requestedDatabase, source: 'tool' },
 			bubbles: true, composed: true,
 		}));
 	}
@@ -2084,9 +2111,20 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		clearPolicyBox: clearSqlPolicyBox,
 	}) : 'not-sql';
 	if (sqlRoute !== 'not-sql') return;
+	if (messageType === 'copilotClarifyingQuestion'
+		&& __kustoGetQuerySectionElement(String(message.boxId || ''))) {
+		const clarification = parseKustoCopilotClarifyingQuestionMessageFromEnvelope(
+			envelope.descriptorSnapshot,
+		);
+		if (!clarification.ok) return;
+		message = clarification.value;
+	}
 	if (kustoCopilotOutputMessageTypes.has(messageType)) {
 		const section = __kustoGetQuerySectionElement(String(message.boxId || ''));
-		if (section && section.admitKustoCopilotMessage?.(message, messageType) !== true) {
+		const admitted = messageType === 'revealSection'
+			? section?.admitKustoCopilotConversationOwner?.(message)
+			: section?.admitKustoCopilotMessage?.(message, messageType);
+		if (section && admitted !== true) {
 			acknowledgeKustoPublication(message, false);
 			return;
 		}
@@ -4373,8 +4411,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				if (boxId) {
 					const el = document.getElementById(boxId) as any;
 					if (el) {
+						if (typeof el.setCopilotChatVisible === 'function') { el.setCopilotChatVisible(true); }
 						if (typeof el.setExpanded === 'function') { el.setExpanded(true); }
 						try { el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch { /* ignore */ }
+						if (typeof el.focusCopilotChatInput === 'function') { el.focusCopilotChatInput(); }
 					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -4382,15 +4422,18 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		case 'copilotClarifyingQuestion':
 			try {
 				const boxId = String(message.boxId || '');
+				const interactive = message.responseTarget !== 'calling-agent';
 				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotAppendClarifyingQuestion === 'function') {
 					kwEl.copilotAppendClarifyingQuestion(
 						message.question || '',
-						message.entryId || ''
+						message.entryId || '',
+						interactive,
 					);
-					// Ensure the section is visible so the user can find the question
-					if (typeof kwEl.setExpanded === 'function') { kwEl.setExpanded(true); }
-					try { kwEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch { /* ignore */ }
+					if (interactive) {
+						if (typeof kwEl.setExpanded === 'function') { kwEl.setExpanded(true); }
+						try { kwEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch { /* ignore */ }
+					}
 				} else {
 					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
 					if (sqlEl && typeof sqlEl.copilotAppendClarifyingQuestion === 'function') {
@@ -4410,7 +4453,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotWriteQueryDone === 'function') {
 					kwEl.copilotWriteQueryDone(!!message.ok, message.message || '');
-					kwEl.completeKustoCopilotRequest?.(message);
+					if (kwEl.completeKustoCopilotRequest?.(message) === true) {
+						emitAppliedKustoCopilotDone(message);
+					}
 				} else {
 					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
 					if (sqlEl && typeof sqlEl.copilotWriteQueryDone === 'function') {
@@ -5328,11 +5373,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			break;
 		
 		case 'toolDelegateToKustoWorkbenchCopilot':
-			// Delegate a question to the internal Copilot Chat by simulating user interaction:
-			// 1. Toggle copilot button to show chat
-			// 2. Paste question into chat input
-			// 3. Click send button
-			// 4. Wait for results to be displayed before returning
+			// Delegate through the section's exact Copilot request owner and return
+			// only after the request has reached an applied terminal state.
 			(async () => {
 				let cleanupDelegation: (() => void) | undefined;
 				try {
@@ -5342,24 +5384,42 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						return;
 					}
 					const input = message.input || {};
-					const question = String(input.question || '');
+					const question = String(input.question || '').trim();
 					const maxResultRows = normalizeAskKustoCopilotMaxResultRows(input.maxResultRows);
-					let sectionId = String(input.sectionId || '');
+					let sectionId = String(input.sectionId || '').trim();
+					if (!question) {
+						postMessageToHost({
+							type: 'toolResponse', requestId,
+							result: { success: false, error: 'A non-empty Kusto Copilot question is required.' },
+						});
+						return;
+					}
 					
 					// If no section specified, use the first query section or create one
 					if (!sectionId) {
 						const sections = document.querySelectorAll('[data-section-type="query"]');
 						if (sections.length > 0) {
 							sectionId = sections[0].id;
-						} else {
-							const creation = createSectionWithCapabilities('query');
-							if (!creation.ok) {
-								postMessageToHost({ type: 'toolResponse', requestId, result: { success: false }, error: creation.error });
-								return;
-							}
-							sectionId = creation.sectionId;
-							markSectionAgentTouched(sectionId);
 						}
+					}
+					let querySection = sectionId ? __kustoGetQuerySectionElement(sectionId) : null;
+					if (querySection && (querySection.isCopilotChatRunning?.() === true
+						|| querySection.getActiveKustoCopilotRequest?.())) {
+						postMessageToHost({
+							type: 'toolResponse', requestId,
+							result: { success: false, error: 'Kusto Copilot is already running in this section.', sectionId },
+						});
+						return;
+					}
+					if (!sectionId) {
+						const creation = createSectionWithCapabilities('query');
+						if (!creation.ok) {
+							postMessageToHost({ type: 'toolResponse', requestId, result: { success: false }, error: creation.error });
+							return;
+						}
+						sectionId = creation.sectionId;
+						markSectionAgentTouched(sectionId);
+						querySection = __kustoGetQuerySectionElement(sectionId);
 					}
 					if (input.clusterUrl || input.connectionId || input.database) {
 						const applied = applyToolKustoTarget(sectionId, input);
@@ -5415,46 +5475,32 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						return;
 					}
 				
-				// Ensure the section is in 'Run Query' mode (plain) — not 'take 100' or 'sample 100'.
-				// This prevents the Copilot-generated queries from having unwanted limits appended.
-				const beforeSignature = getSectionSerializedSignature(sectionId);
-				try {
-					setRunMode(sectionId, 'plain');
-				} catch (e) { console.error('[kusto]', e); }
-				markSectionAgentTouched(sectionId, beforeSignature);
-
-				// Step 1: Show the Copilot Chat panel (toggle the button)
-				{
-					const kwEl = __kustoGetQuerySectionElement(sectionId);
-					if (kwEl && typeof kwEl.setCopilotChatVisible === 'function') {
-						kwEl.setCopilotChatVisible(true);
+					// Agent-generated queries always use the unmodified Run Query mode.
+					const beforeSignature = getSectionSerializedSignature(sectionId);
+					try {
+						setRunMode(sectionId, 'plain');
+					} catch (e) { console.error('[kusto]', e); }
+					markSectionAgentTouched(sectionId, beforeSignature);
+					querySection = __kustoGetQuerySectionElement(sectionId);
+					if (!querySection || typeof querySection.submitCopilotChatRequest !== 'function') {
+						postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'Kusto Copilot chat is not available.' } });
+						return;
 					}
-				}
 				
-				// Give the UI a moment to render
-				await new Promise((r: any) => setTimeout(r, 100));
-				
-				// Step 2: Paste the question into the chat input via kw-copilot-chat public API
-				const chatPane = document.getElementById(sectionId + '_copilot_chat_pane');
-				const chatEl = chatPane?.querySelector('kw-copilot-chat') as any;
-				if (!chatEl || typeof chatEl.setInputText !== 'function') {
-					postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'Copilot chat input not found. Is Copilot available?' } });
-					return;
-				}
-				chatEl.setInputText(question);
-				
-				// Set up listener for results BEFORE clicking send
+				// Set up listeners before the atomic request submission.
 				let responded = false;
 				let generatedQuery = '';
 				let queryGenerated = false;
 				let expectedExecutionId = '';
 				let executedQuery = '';
 				let expectedCopilotRequest: KustoCopilotRequestIdentity | undefined;
+				let pendingClarification: KustoCopilotClarifyingQuestionMessage | undefined;
 				let pendingQueryTerminal: any = null;
 				let timeoutId: ReturnType<typeof setTimeout> | undefined;
 				const modelConsumerId = modelResultArtifactConsumerId(requestId);
 				const cleanup = () => {
 					try { window.removeEventListener(ADMITTED_KUSTO_COPILOT_EVENT, resultHandler as EventListener); } catch { /* best effort */ }
+					try { window.removeEventListener(APPLIED_KUSTO_COPILOT_DONE_EVENT, doneHandler as EventListener); } catch { /* best effort */ }
 					try { window.removeEventListener(ADMITTED_KUSTO_EXECUTION_STARTED_EVENT, startedHandler as EventListener); } catch { /* best effort */ }
 					try { window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener); } catch { /* best effort */ }
 					try { if (timeoutId !== undefined) clearTimeout(timeoutId); } catch { /* best effort */ }
@@ -5533,64 +5579,84 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				
 				const resultHandler = (event: Event) => {
 					try {
-						const msg = (event as CustomEvent).detail as Record<string, any>;
-						if (!msg || responded) return;
-						if (!expectedCopilotRequest || !hasKustoCopilotRequestIdentity(msg)
-							|| !kustoCopilotRequestIdentityEquals(expectedCopilotRequest, msg)) return;
-						const output = msg as unknown as Record<string, any>;
-						
-						// Copilot finished generating/writing query
-						if (output.type === 'copilotWriteQueryDone' && output.boxId === sectionId) {
-							queryGenerated = true;
-							try {
-								const editor = queryEditors && queryEditors[sectionId];
-								generatedQuery = executedQuery
-									|| (editor && typeof editor.getValue === 'function' ? editor.getValue() : '');
-							} catch (e) { console.error('[kusto]', e); }
-							
-							if (!output.ok) {
-								responded = true;
-								cleanup();
-								
-								// Don't call __kustoCopilotWriteQueryDone here — the regular
-								// 'copilotWriteQueryDone' handler already does it, and calling
-								// it again produces a duplicate "Canceled." notification.
-								
-								postMessageToHost({ 
-									type: 'toolResponse', 
-									requestId, 
-									result: { 
-										success: false,
-										error: output.message || 'Copilot failed to generate query',
-										query: generatedQuery || undefined
-									}
-								});
-								return;
-							}
-							
-							if (pendingQueryTerminal?.type === 'queryResult') {
-								sendSuccessResponse();
-								return;
-							}
-							if (pendingQueryTerminal?.type === 'modelResultDenied') {
-								sendModelResultFailure(pendingQueryTerminal.error);
-								return;
-							}
-							if (pendingQueryTerminal?.type === 'queryError') {
-								responded = true;
-								cleanup();
-								postMessageToHost({
-									type: 'toolResponse', requestId,
-									result: {
-										success: false, query: generatedQuery || undefined,
-										error: pendingQueryTerminal.error || 'Query execution failed',
-									},
-								});
-								return;
-							}
-						}
+						if (responded) return;
+						const clarification = parseKustoCopilotClarifyingQuestionMessage(
+							(event as CustomEvent).detail,
+						);
+						if (!clarification.ok || clarification.value.responseTarget !== 'calling-agent'
+							|| !expectedCopilotRequest
+							|| !kustoCopilotRequestIdentityEquals(expectedCopilotRequest, clarification.value)) return;
+						pendingClarification = clarification.value;
 					} catch (err: any) {
 						console.error('[Kusto Tools] Error in result handler:', err);
+						sendModelResultFailure(err instanceof Error ? err.message : String(err));
+					}
+				};
+
+				const doneHandler = (event: Event) => {
+					try {
+						const output = (event as CustomEvent).detail as Record<string, unknown>;
+						if (!output || responded || output.type !== 'copilotWriteQueryDone'
+							|| !expectedCopilotRequest || !hasKustoCopilotRequestIdentity(output)
+							|| !kustoCopilotRequestIdentityEquals(expectedCopilotRequest, output)) return;
+						const done = output as KustoCopilotRequestIdentity & {
+							type: 'copilotWriteQueryDone'; ok: boolean; message?: string; retired?: boolean;
+						};
+						if (pendingClarification && done.ok === true && done.retired !== true) {
+							const result = createKustoCopilotClarificationRequiredResult(
+								pendingClarification.question,
+								pendingClarification.boxId,
+							);
+							if (!result.ok) {
+								sendModelResultFailure(result.error);
+								return;
+							}
+							responded = true;
+							cleanup();
+							postMessageToHost({ type: 'toolResponse', requestId, result: result.value });
+							return;
+						}
+						pendingClarification = undefined;
+						queryGenerated = true;
+						try {
+							const editor = queryEditors && queryEditors[sectionId];
+							generatedQuery = executedQuery
+								|| (editor && typeof editor.getValue === 'function' ? editor.getValue() : '');
+						} catch (e) { console.error('[kusto]', e); }
+						if (!done.ok) {
+							responded = true;
+							cleanup();
+							postMessageToHost({
+								type: 'toolResponse', requestId,
+								result: {
+									success: false,
+									error: done.message || 'Copilot failed to generate query',
+									query: generatedQuery || undefined,
+								},
+							});
+							return;
+						}
+						if (pendingQueryTerminal?.type === 'queryResult') {
+							sendSuccessResponse();
+							return;
+						}
+						if (pendingQueryTerminal?.type === 'modelResultDenied') {
+							sendModelResultFailure(pendingQueryTerminal.error);
+							return;
+						}
+						if (pendingQueryTerminal?.type === 'queryError') {
+							responded = true;
+							cleanup();
+							postMessageToHost({
+								type: 'toolResponse', requestId,
+								result: {
+									success: false, query: generatedQuery || undefined,
+									error: pendingQueryTerminal.error || 'Query execution failed',
+								},
+							});
+						}
+					} catch (err: any) {
+						console.error('[Kusto Tools] Error in done handler:', err);
 						sendModelResultFailure(err instanceof Error ? err.message : String(err));
 					}
 				};
@@ -5643,6 +5709,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				};
 				
 				window.addEventListener(ADMITTED_KUSTO_COPILOT_EVENT, resultHandler as EventListener);
+				window.addEventListener(APPLIED_KUSTO_COPILOT_DONE_EVENT, doneHandler as EventListener);
 				window.addEventListener(ADMITTED_KUSTO_EXECUTION_STARTED_EVENT, startedHandler as EventListener);
 				window.addEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener);
 				
@@ -5674,30 +5741,19 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					}
 				}, 180000);
 				
-				// Step 3: Mark this send as agent-driven (require tool use) and send
-				try {
-					if (chatEl && typeof chatEl.setRequireToolUseOnNextSend === 'function') {
-						chatEl.setRequireToolUseOnNextSend(true);
-					}
-				} catch (e) { console.error('[kusto]', e); }
-
-				const kwEl2 = __kustoGetQuerySectionElement(sectionId);
-				if (kwEl2 && typeof kwEl2.copilotWriteQuerySend === 'function') {
-					kwEl2.copilotWriteQuerySend();
-					expectedCopilotRequest = kwEl2.getActiveKustoCopilotRequest?.();
-					if (!expectedCopilotRequest) {
-						cleanup();
-						postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'Copilot request did not start.' } });
-					} else {
-						kustoCopilotToolOwnerByRequestId.set(requestId, expectedCopilotRequest);
-						if (cancelledKustoToolRequestIds.delete(requestId)) {
-							kwEl2.cancelKustoCopilotRequest?.(expectedCopilotRequest);
-						}
-					}
-				} else {
-					// Clean up and report error
+				const submittedOwner = querySection.submitCopilotChatRequest(question, true);
+				if (!hasKustoCopilotRequestIdentity(submittedOwner)) {
 					cleanup();
-					postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'Could not find send button or send function' } });
+					postMessageToHost({
+						type: 'toolResponse', requestId,
+						result: { success: false, error: 'Kusto Copilot request did not start. The section may already be busy.' },
+					});
+				} else {
+					expectedCopilotRequest = submittedOwner;
+					kustoCopilotToolOwnerByRequestId.set(requestId, submittedOwner);
+					if (cancelledKustoToolRequestIds.delete(requestId)) {
+						querySection.cancelKustoCopilotRequest?.(submittedOwner);
+					}
 				}
 				
 				} catch (err: any) {

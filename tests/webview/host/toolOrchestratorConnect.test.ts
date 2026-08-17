@@ -966,7 +966,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 	it('cancels the exact acknowledged Kusto execution on the captured editor', async () => {
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 		const uri = vscode.Uri.file('/work/active-query.kqlx');
-		const poster = vi.fn();
+		const poster = vi.fn(() => true);
 		orch.connect(poster, vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), uri.toString());
 		setActiveCustomTab(uri, 'kusto.kqlxEditor');
 		const cancellation = cancellationToken();
@@ -1699,5 +1699,94 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		await expect(capturePostedInput(0)).resolves.toMatchObject({ maxResultRows: 1 });
 		await expect(capturePostedInput(2000)).resolves.toMatchObject({ maxResultRows: 1000 });
 		await expect(capturePostedInput('250')).resolves.toMatchObject({ maxResultRows: 100 });
+	});
+
+	it('keeps the Kusto Copilot waiter live after a malformed matching clarification result', async () => {
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const poster = vi.fn(() => true);
+		orchestrator.connect(poster, vi.fn(async () => []), vi.fn());
+		let settled = false;
+		const pending = orchestrator.delegateToKustoWorkbenchCopilot({ question: 'Help' });
+		void pending.then(() => { settled = true; });
+		const request = poster.mock.calls[0][0] as any;
+		const revoked = Proxy.revocable({
+			outcome: 'clarification-required', success: false,
+			question: 'Which range?', sectionId: 'query_1',
+		}, {});
+		revoked.revoke();
+
+		expect(() => orchestrator.handleWebviewResponse(request.requestId, revoked.proxy)).not.toThrow();
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		orchestrator.handleWebviewResponse(request.requestId, {
+			outcome: 'clarification-required', success: 'false',
+			question: 'Which range?', sectionId: 'query_1',
+		});
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		orchestrator.handleWebviewResponse(request.requestId, {
+			outcome: 'clarification-required', success: false,
+			question: 'Which range?', sectionId: 'query_1',
+		});
+		await expect(pending).resolves.toEqual({
+			outcome: 'clarification-required', success: false,
+			question: 'Which range?', sectionId: 'query_1',
+		});
+	});
+
+	it('enriches clarification from the exact dispatched file after active focus changes', async () => {
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const fileA = vscode.Uri.file('/work/clarification-a.kqlx');
+		const fileB = vscode.Uri.file('/work/clarification-b.kqlx');
+		const infoA = classifyWorkbenchUri(fileA)!;
+		const posterA = vi.fn(() => true);
+		orchestrator.connect(posterA, vi.fn(async () => []), vi.fn(), fileA.toString());
+		orchestrator.connect(vi.fn(() => true), vi.fn(async () => []), vi.fn(), fileB.toString());
+		setActiveCustomTab(fileA, 'kusto.kqlxEditor');
+
+		const pending = orchestrator.delegateToKustoWorkbenchCopilot({
+			question: 'Help', openFileId: infoA.openFileId,
+		});
+		const request = posterA.mock.calls[0][0] as any;
+		setActiveCustomTab(fileB, 'kusto.kqlxEditor');
+		orchestrator.handleWebviewResponse(request.requestId, {
+			outcome: 'clarification-required', success: false,
+			question: 'Which range?', sectionId: 'query_1',
+		});
+
+		await expect(pending).resolves.toEqual({
+			outcome: 'clarification-required', success: false,
+			question: 'Which range?', sectionId: 'query_1', openFileId: infoA.openFileId,
+		});
+	});
+
+	it('uses the captured file current identity when it is renamed before clarification settles', async () => {
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const oldUri = vscode.Uri.file('/work/clarification-old.kqlx');
+		const newUri = vscode.Uri.file('/work/clarification-new.kqlx');
+		const oldInfo = classifyWorkbenchUri(oldUri)!;
+		const newInfo = classifyWorkbenchUri(newUri)!;
+		const poster = vi.fn(() => true);
+		orchestrator.connect(poster, vi.fn(async () => []), vi.fn(), oldUri.toString());
+
+		const pending = orchestrator.delegateToKustoWorkbenchCopilot({
+			question: 'Help', openFileId: oldInfo.openFileId,
+		});
+		const request = poster.mock.calls[0][0] as any;
+		await orchestrator.handleFilesRenamed([{ oldUri, newUri }]);
+		orchestrator.handleWebviewResponse(request.requestId, {
+			outcome: 'clarification-required', success: false,
+			question: 'Which range?', sectionId: 'query_1',
+		});
+
+		await expect(pending).resolves.toEqual(expect.objectContaining({ openFileId: newInfo.openFileId }));
 	});
 });

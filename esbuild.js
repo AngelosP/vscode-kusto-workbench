@@ -457,8 +457,8 @@ async function main() {
 			}
 		}
 		const BASELINES = {
-			'extension.js':                                        2221,
-			'webview/webview.bundle.js':                           3123,
+			'extension.js':                                        2227,
+			'webview/webview.bundle.js':                           3129,
 			'webview/md-editor.bundle.js':                          289,
 			'webview/tutorial-viewer.bundle.js':                    154,
 			'webview/first-launch-setup.bundle.js':                  40,

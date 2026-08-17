@@ -122,11 +122,12 @@ export class KwCopilotChat extends LitElement {
 
 	// ── Private non-reactive fields ───────────────────────────────────────────
 
-	/** When true the next send will include `requireToolUse: true` in the event (agent-driven). */
-	private _requireToolUseOnNextSend = false;
-
 	/** Auto-scroll pinned state — true means we follow new messages. */
 	private _autoScrollPinned = true;
+	/** Suppresses one message-driven auto-scroll for a passive calling-agent clarification. */
+	private _suppressNextMessageAutoScroll = false;
+	/** Retains manual clarification focus intent until the running textarea is enabled. */
+	private _focusInputAfterRunning = false;
 	/** Counter for generating per-tooltip unique IDs within this instance. */
 	private _tooltipSeq = 0;
 	/** All tooltip elements appended to document.body (cleaned up on disconnect). */
@@ -168,7 +169,8 @@ export class KwCopilotChat extends LitElement {
 
 	override updated(changed: PropertyValues): void {
 		if (changed.has('_messages')) {
-			this._autoScrollIfPinned();
+			if (this._suppressNextMessageAutoScroll) this._suppressNextMessageAutoScroll = false;
+			else this._autoScrollIfPinned();
 		}
 	}
 
@@ -267,18 +269,22 @@ export class KwCopilotChat extends LitElement {
 	}
 
 	/** Append a clarifying question from the assistant. */
-	appendClarifyingQuestion(question: string, entryId: string): void {
+	appendClarifyingQuestion(question: string, entryId: string, interactive = true): void {
 		if (!question) return;
+		if (!interactive) this._suppressNextMessageAutoScroll = true;
 		this._messages = [...this._messages, {
 			id: this._nextId(),
 			kind: 'clarifying-question',
 			text: question,
 			entryId: entryId || undefined,
 		}];
-		// Focus input so user can respond.
-		this.updateComplete.then(() => {
-			this._textarea?.focus();
-		});
+		if (interactive && this._running) {
+			this._focusInputAfterRunning = true;
+		} else if (interactive) {
+			this.updateComplete.then(() => {
+				this._textarea?.focus();
+			});
+		}
 	}
 
 	/** Append a devnotes context card. */
@@ -310,6 +316,12 @@ export class KwCopilotChat extends LitElement {
 	/** Set running state. */
 	setRunning(running: boolean, statusText = ''): void {
 		this._running = running;
+		if (!running && this._focusInputAfterRunning) {
+			this._focusInputAfterRunning = false;
+			this.updateComplete.then(() => {
+				this._textarea?.focus();
+			});
+		}
 		if (statusText) {
 			this.appendMessage('notification', statusText);
 		}
@@ -341,6 +353,7 @@ export class KwCopilotChat extends LitElement {
 		this._userModifiedTools = false;
 		this._enabledTools = this._getDefaultEnabledTools();
 		this._running = false;
+		this._focusInputAfterRunning = false;
 		this._messages = [{
 			id: this._nextId(),
 			kind: 'notification',
@@ -352,11 +365,6 @@ export class KwCopilotChat extends LitElement {
 	getEnabledTools(): string[] {
 		const known = new Set(this._tools.map(t => t.name));
 		return this._enabledTools.filter(n => known.has(n));
-	}
-
-	/** Mark the next send as agent-driven so the host requires tool use. */
-	setRequireToolUseOnNextSend(value: boolean): void {
-		this._requireToolUseOnNextSend = value;
 	}
 
 	/** Focus the chat textarea so the user can start typing. */
@@ -375,6 +383,15 @@ export class KwCopilotChat extends LitElement {
 		if (ta) {
 			ta.value = text;
 		}
+	}
+
+	/** Submit one programmatic request without mutating a user's textarea draft. */
+	submitProgrammaticRequest(text: string, requireToolUse: boolean): boolean {
+		if (this._running) return false;
+		const request = String(text || '').trim();
+		if (!request) return false;
+		this._dispatchSend(request, requireToolUse);
+		return true;
 	}
 
 	/** Get all current messages (for testing/inspection). */
@@ -846,8 +863,11 @@ export class KwCopilotChat extends LitElement {
 		this.appendMessage('user', text);
 		textarea.value = '';
 		this._inputHeight = 32;
-		const requireToolUse = this._requireToolUseOnNextSend;
-		this._requireToolUseOnNextSend = false;
+		this._dispatchSend(text, false, false);
+	}
+
+	private _dispatchSend(text: string, requireToolUse: boolean, appendUserMessage = true): void {
+		if (appendUserMessage) this.appendMessage('user', text);
 		this.dispatchEvent(new CustomEvent('copilot-send', {
 			bubbles: true,
 			composed: true,

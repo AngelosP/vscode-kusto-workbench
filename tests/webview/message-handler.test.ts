@@ -2523,6 +2523,33 @@ describe('message-handler dispatch', () => {
 		expect(mocks.setQueryExecuting).not.toHaveBeenCalledWith('sql_1', false);
 	});
 
+	it('preserves the existing SQL owner-token clarification path', async () => {
+		const sqlEl = createFakeSqlSection() as FakeSqlSection & {
+			getCopilotOwnerToken: ReturnType<typeof vi.fn>;
+			copilotAppendClarifyingQuestion: ReturnType<typeof vi.fn>;
+			setExpanded: ReturnType<typeof vi.fn>;
+			scrollIntoView: ReturnType<typeof vi.fn>;
+		};
+		sqlEl.getCopilotOwnerToken = vi.fn(() => 'owner-current');
+		sqlEl.copilotAppendClarifyingQuestion = vi.fn();
+		sqlEl.setExpanded = vi.fn();
+		sqlEl.scrollIntoView = vi.fn();
+		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
+		mocks.getQuerySectionElement.mockReturnValue(null);
+
+		dispatchHostMessage({
+			type: 'copilotClarifyingQuestion', boxId: 'sql_1', ownerToken: 'owner-current',
+			entryId: 'sql-question', question: 'Which SQL table?',
+		});
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(sqlEl.copilotAppendClarifyingQuestion).toHaveBeenCalledWith(
+			'Which SQL table?', 'sql-question',
+		);
+		expect(sqlEl.setExpanded).toHaveBeenCalledWith(true);
+		expect(sqlEl.scrollIntoView).toHaveBeenCalled();
+	});
+
 	it('admits an exploratory SQL card only for the current owner token', async () => {
 		const sqlEl = createFakeSqlSection() as FakeSqlSection & {
 			getCopilotOwnerToken: ReturnType<typeof vi.fn>;
@@ -5888,7 +5915,8 @@ describe('message-handler dispatch', () => {
 describe('changedSections agent provenance', () => {
 	beforeAll(async () => {
 		await import('../../src/webview/components/kw-section-shell.js');
-		await import('../../src/webview/core/message-handler.js');
+		messageHandlerModule = await import('../../src/webview/core/message-handler.js');
+		await messageHandlerModule.startMainWebviewMessageDispatcher();
 	});
 
 	beforeEach(() => {
@@ -8096,29 +8124,151 @@ describe('changedSections agent provenance', () => {
 		expect(mocks.getQuerySectionElement).not.toHaveBeenCalled();
 	});
 
+	it('rejects a busy delegated Kusto request before run-mode or submission effects', async () => {
+		const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'print 1' });
+		const owner = {
+			boxId: 'query_1', copilotRequestId: 'already-running',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		};
+		const submit = vi.fn();
+		Object.assign(section, {
+			isCopilotChatRunning: vi.fn(() => false),
+			getActiveKustoCopilotRequest: vi.fn(() => owner),
+			submitCopilotChatRequest: submit,
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.setRunMode.mockClear();
+		mocks.createSectionWithCapabilities.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolDelegateToKustoWorkbenchCopilot', requestId: 'r-kusto-busy',
+			input: { sectionId: 'query_1', question: 'Do not replace active work' },
+		});
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'r-kusto-busy',
+			result: {
+				success: false, error: 'Kusto Copilot is already running in this section.',
+				sectionId: 'query_1',
+			},
+		});
+		expect(mocks.setRunMode).not.toHaveBeenCalled();
+		expect(mocks.createSectionWithCapabilities).not.toHaveBeenCalled();
+		expect(submit).not.toHaveBeenCalled();
+	});
+
+	it('keeps manual Kusto clarification interactive and reveals its section', async () => {
+		const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'print 1' });
+		const owner = {
+			boxId: 'query_1', copilotRequestId: 'manual-clarification',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		};
+		const appendClarification = vi.fn();
+		const setExpanded = vi.fn();
+		const scrollIntoView = vi.fn();
+		Object.assign(section, {
+			admitKustoCopilotMessage: vi.fn(() => true),
+			copilotAppendClarifyingQuestion: appendClarification,
+			setExpanded,
+			scrollIntoView,
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+
+		dispatchHostMessage({
+			type: 'copilotClarifyingQuestion', ...owner,
+			entryId: 'manual-entry', question: 'Which time range?',
+			responseTarget: 'section-chat',
+		});
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(appendClarification).toHaveBeenCalledWith('Which time range?', 'manual-entry', true);
+		expect(setExpanded).toHaveBeenCalledWith(true);
+		expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', behavior: 'smooth' });
+	});
+
+	it('admits delayed manual View through the retained conversation owner after done', async () => {
+		const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'print 1' });
+		const owner = {
+			boxId: 'query_1', copilotRequestId: 'manual-view',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		};
+		const setVisible = vi.fn();
+		const setExpanded = vi.fn();
+		const scrollIntoView = vi.fn();
+		const focusInput = vi.fn();
+		Object.assign(section, {
+			admitKustoCopilotMessage: vi.fn(() => true),
+			admitKustoCopilotConversationOwner: vi.fn(() => true),
+			completeKustoCopilotRequest: vi.fn(() => true),
+			copilotWriteQueryDone: vi.fn(),
+			setCopilotChatVisible: setVisible,
+			setExpanded,
+			scrollIntoView,
+			focusCopilotChatInput: focusInput,
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+
+		dispatchHostMessage({ type: 'copilotWriteQueryDone', ...owner, ok: true, message: '' });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		dispatchHostMessage({ type: 'revealSection', ...owner });
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect((section as any).admitKustoCopilotConversationOwner).toHaveBeenCalledWith(
+			expect.objectContaining(owner),
+		);
+		expect(setVisible).toHaveBeenCalledWith(true);
+		expect(setExpanded).toHaveBeenCalledWith(true);
+		expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', behavior: 'smooth' });
+		expect(focusInput).toHaveBeenCalledOnce();
+	});
+
+	it('rejects delayed manual View after Clear retires conversation ownership', async () => {
+		const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'print 1' });
+		const owner = {
+			boxId: 'query_1', copilotRequestId: 'cleared-view',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		};
+		const setVisible = vi.fn();
+		const setExpanded = vi.fn();
+		const scrollIntoView = vi.fn();
+		const focusInput = vi.fn();
+		Object.assign(section, {
+			admitKustoCopilotConversationOwner: vi.fn(() => false),
+			setCopilotChatVisible: setVisible,
+			setExpanded,
+			scrollIntoView,
+			focusCopilotChatInput: focusInput,
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+
+		dispatchHostMessage({ type: 'revealSection', ...owner });
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(setVisible).not.toHaveBeenCalled();
+		expect(setExpanded).not.toHaveBeenCalled();
+		expect(scrollIntoView).not.toHaveBeenCalled();
+		expect(focusInput).not.toHaveBeenCalled();
+	});
+
 	it('does not let delayed delegated cancellation cancel a newer Copilot owner', async () => {
 		const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'print 1' });
 		const oldOwner = { boxId: 'query_1', copilotRequestId: 'delegated-old', sectionInstanceId: 'instance-old', targetGeneration: 1 };
 		const newOwner = { boxId: 'query_1', copilotRequestId: 'delegated-new', sectionInstanceId: 'instance-new', targetGeneration: 1 };
-		let currentOwner = oldOwner;
-		const cancelExact = vi.fn((expected: typeof oldOwner) => expected.copilotRequestId === currentOwner.copilotRequestId);
+		let currentOwner: typeof oldOwner | typeof newOwner | undefined;
+		const cancelExact = vi.fn((expected: typeof oldOwner) => expected.copilotRequestId === currentOwner?.copilotRequestId);
 		Object.assign(section, {
-			setCopilotChatVisible: vi.fn(),
-			copilotWriteQuerySend: vi.fn(),
-			getActiveKustoCopilotRequest: vi.fn(() => oldOwner),
+			isCopilotChatRunning: vi.fn(() => false),
+			submitCopilotChatRequest: vi.fn(() => {
+				currentOwner = oldOwner;
+				return oldOwner;
+			}),
+			getActiveKustoCopilotRequest: vi.fn(() => currentOwner),
 			cancelKustoCopilotRequest: cancelExact,
 		});
 		mocks.getQuerySectionElement.mockReturnValue(section);
 		mocks.getConnectionId.mockReturnValue('conn-1');
 		mocks.getDatabase.mockReturnValue('db-1');
-		const chatPane = document.createElement('div');
-		chatPane.id = 'query_1_copilot_chat_pane';
-		const chatElement = document.createElement('kw-copilot-chat') as any;
-		chatElement.setInputText = vi.fn();
-		chatElement.setRequireToolUseOnNextSend = vi.fn();
-		chatPane.appendChild(chatElement);
-		document.body.appendChild(chatPane);
-
 		dispatchHostMessage({
 			type: 'toolDelegateToKustoWorkbenchCopilot', requestId: 'r-kusto-stale-cancel',
 			input: { sectionId: 'query_1', question: 'Start old request' },
@@ -8130,7 +8280,7 @@ describe('changedSections agent provenance', () => {
 		expect(cancelExact).toHaveBeenCalledWith(oldOwner);
 		expect(cancelExact).toHaveReturnedWith(false);
 
-		window.dispatchEvent(new CustomEvent('kusto-workbench-copilot-output', {
+		window.dispatchEvent(new CustomEvent('kusto-workbench-copilot-done-applied', {
 			detail: { type: 'copilotWriteQueryDone', ...oldOwner, ok: false, message: 'Stopped' },
 		}));
 	});
@@ -8138,13 +8288,18 @@ describe('changedSections agent provenance', () => {
 	it('settles delegated Kusto Copilot immediately when its exact owner is invalidated', async () => {
 		const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'print 1' });
 		const owner = { boxId: 'query_1', copilotRequestId: 'delegated-invalidated', sectionInstanceId: 'instance-old', targetGeneration: 1 };
+		let activeOwner: typeof owner | undefined;
 		Object.assign(section, {
-			setCopilotChatVisible: vi.fn(),
-			copilotWriteQuerySend: vi.fn(),
-			getActiveKustoCopilotRequest: vi.fn(() => owner),
+			isCopilotChatRunning: vi.fn(() => false),
+			submitCopilotChatRequest: vi.fn(() => {
+				activeOwner = owner;
+				return owner;
+			}),
+			getActiveKustoCopilotRequest: vi.fn(() => activeOwner),
 			retireKustoCopilotConversationOwner: vi.fn((identity: typeof owner) => {
 				if (identity.copilotRequestId !== owner.copilotRequestId) return false;
-				window.dispatchEvent(new CustomEvent('kusto-workbench-copilot-output', {
+				activeOwner = undefined;
+				window.dispatchEvent(new CustomEvent('kusto-workbench-copilot-done-applied', {
 					detail: { type: 'copilotWriteQueryDone', ...owner, ok: false, message: 'Canceled.', retired: true },
 				}));
 				return true;
@@ -8153,14 +8308,6 @@ describe('changedSections agent provenance', () => {
 		mocks.getQuerySectionElement.mockReturnValue(section);
 		mocks.getConnectionId.mockReturnValue('conn-1');
 		mocks.getDatabase.mockReturnValue('db-1');
-		const chatPane = document.createElement('div');
-		chatPane.id = 'query_1_copilot_chat_pane';
-		const chatElement = document.createElement('kw-copilot-chat') as any;
-		chatElement.setInputText = vi.fn();
-		chatElement.setRequireToolUseOnNextSend = vi.fn();
-		chatPane.appendChild(chatElement);
-		document.body.appendChild(chatPane);
-
 		dispatchHostMessage({
 			type: 'toolDelegateToKustoWorkbenchCopilot', requestId: 'r-kusto-invalidated',
 			input: { sectionId: 'query_1', question: 'Start request' },
@@ -8174,6 +8321,251 @@ describe('changedSections agent provenance', () => {
 			result: { success: false, error: 'Canceled.', query: undefined },
 		});
 		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('model:r-kusto-invalidated:result');
+	});
+
+	it('returns an exact Kusto Copilot clarification to the originating agent delegation', async () => {
+		const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'print 1' });
+		const owner = {
+			boxId: 'query_1', copilotRequestId: 'delegated-clarification',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		};
+		let activeOwner: typeof owner | undefined;
+		const appendClarification = vi.fn();
+		const setExpanded = vi.fn();
+		const scrollIntoView = vi.fn();
+		Object.assign(section, {
+			isCopilotChatRunning: vi.fn(() => false),
+			submitCopilotChatRequest: vi.fn(() => {
+				activeOwner = owner;
+				return owner;
+			}),
+			getActiveKustoCopilotRequest: vi.fn(() => activeOwner),
+			admitKustoCopilotMessage: vi.fn((message: Record<string, unknown>) =>
+				message.copilotRequestId === owner.copilotRequestId
+					&& message.sectionInstanceId === owner.sectionInstanceId
+					&& message.targetGeneration === owner.targetGeneration),
+			completeKustoCopilotRequest: vi.fn(() => true),
+			copilotWriteQueryDone: vi.fn(),
+			copilotAppendClarifyingQuestion: appendClarification,
+			setExpanded,
+			scrollIntoView,
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.getConnectionId.mockReturnValue('conn-1');
+		mocks.getDatabase.mockReturnValue('db-1');
+
+		dispatchHostMessage({
+			type: 'toolDelegateToKustoWorkbenchCopilot', requestId: 'r-kusto-clarification',
+			input: { sectionId: 'query_1', question: 'Show the important events' },
+		});
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(mocks.postMessageToHost.mock.calls).toEqual([]);
+		expect((section as any).submitCopilotChatRequest).toHaveBeenCalledWith('Show the important events', true);
+		expect(activeOwner).toEqual(owner);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'copilotClarifyingQuestion', ...owner,
+			entryId: 'malformed-entry', question: ['not-a-string'],
+			responseTarget: 'calling-agent',
+		});
+		dispatchHostMessage({
+			type: 'copilotClarifyingQuestion', ...owner,
+			copilotRequestId: 'stale-request',
+			entryId: 'stale-entry', question: 'Stale question?',
+			responseTarget: 'calling-agent',
+		});
+		dispatchHostMessage({
+			type: 'copilotClarifyingQuestion', ...owner,
+			entryId: 'clarification-entry', question: 'Which time range should I use?',
+			responseTarget: 'calling-agent',
+		});
+		dispatchHostMessage({ type: 'copilotWriteQueryDone', ...owner, ok: true, message: '' });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect((section as any).completeKustoCopilotRequest).toHaveBeenCalledWith(expect.objectContaining(owner));
+		expect(appendClarification).toHaveBeenCalledWith(
+			'Which time range should I use?', 'clarification-entry', false,
+		);
+		expect(setExpanded).not.toHaveBeenCalled();
+		expect(scrollIntoView).not.toHaveBeenCalled();
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'r-kusto-clarification',
+			result: {
+				outcome: 'clarification-required', success: false,
+				question: 'Which time range should I use?', sectionId: 'query_1',
+			},
+		});
+		dispatchHostMessage({ type: 'copilotWriteQueryDone', ...owner, ok: false, message: 'Late failure' });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(mocks.postMessageToHost.mock.calls.filter(([message]) =>
+			message.type === 'toolResponse' && message.requestId === 'r-kusto-clarification',
+		)).toHaveLength(1);
+	});
+
+	it('resumes the same conversation when repeated target fields are unchanged', async () => {
+		const clusterUrl = 'https://resume.kusto.windows.net';
+		handlerState.connections.splice(0, handlerState.connections.length, {
+			id: 'conn-resume', clusterUrl, authorityId: 'organizations',
+			accountPartition: 'partition-resume',
+		});
+		const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'print 1' });
+		configureFakeKustoTarget(section, 'conn-resume', 'DbResume');
+		const owner = {
+			boxId: 'query_1', copilotRequestId: 'resumed-request',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		};
+		let retainedConversation = true;
+		const connectionChanged = vi.fn(() => { retainedConversation = false; });
+		const databaseChanged = vi.fn(() => { retainedConversation = false; });
+		section.addEventListener('connection-changed', connectionChanged);
+		section.addEventListener('database-changed', databaseChanged);
+		Object.assign(section, {
+			isCopilotChatRunning: vi.fn(() => false),
+			getActiveKustoCopilotRequest: vi.fn(() => undefined),
+			submitCopilotChatRequest: vi.fn(() => {
+				expect(retainedConversation).toBe(true);
+				return owner;
+			}),
+			admitKustoCopilotMessage: vi.fn(() => true),
+			completeKustoCopilotRequest: vi.fn(() => true),
+			copilotWriteQueryDone: vi.fn(),
+			copilotAppendClarifyingQuestion: vi.fn(),
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.getConnectionId.mockReturnValue('conn-resume');
+		mocks.getDatabase.mockReturnValue('DbResume');
+
+		dispatchHostMessage({
+			type: 'toolDelegateToKustoWorkbenchCopilot', requestId: 'r-kusto-resume',
+			input: {
+				sectionId: 'query_1', question: 'Use the last 30 days',
+				clusterUrl, connectionId: 'conn-resume', database: 'DbResume',
+			},
+		});
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(connectionChanged).not.toHaveBeenCalled();
+		expect(databaseChanged).not.toHaveBeenCalled();
+		dispatchHostMessage({
+			type: 'copilotClarifyingQuestion', ...owner,
+			entryId: 'resumed-entry', question: 'Which event type?',
+			responseTarget: 'calling-agent',
+		});
+		dispatchHostMessage({ type: 'copilotWriteQueryDone', ...owner, ok: true, message: '' });
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'r-kusto-resume',
+			result: {
+				outcome: 'clarification-required', success: false,
+				question: 'Which event type?', sectionId: 'query_1',
+			},
+		});
+	});
+
+	it('lets exact retired done override a stored delegated clarification', async () => {
+		const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'print 1' });
+		const owner = {
+			boxId: 'query_1', copilotRequestId: 'delegated-retired',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		};
+		let activeOwner: typeof owner | undefined;
+		const cancel = vi.fn();
+		Object.assign(section, {
+			isCopilotChatRunning: vi.fn(() => false),
+			submitCopilotChatRequest: vi.fn(() => {
+				activeOwner = owner;
+				return owner;
+			}),
+			getActiveKustoCopilotRequest: vi.fn(() => activeOwner),
+			admitKustoCopilotMessage: vi.fn(() => true),
+			completeKustoCopilotRequest: vi.fn(() => {
+				activeOwner = undefined;
+				return true;
+			}),
+			copilotWriteQueryDone: vi.fn(),
+			cancelKustoCopilotRequest: cancel,
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.getConnectionId.mockReturnValue('conn-1');
+		mocks.getDatabase.mockReturnValue('db-1');
+
+		dispatchHostMessage({
+			type: 'toolDelegateToKustoWorkbenchCopilot', requestId: 'r-kusto-retired',
+			input: { sectionId: 'query_1', question: 'Show events' },
+		});
+		await new Promise(resolve => setTimeout(resolve, 0));
+		mocks.postMessageToHost.mockClear();
+		dispatchHostMessage({
+			type: 'copilotClarifyingQuestion', ...owner,
+			entryId: 'clarification-entry', question: 'Which range?',
+			responseTarget: 'calling-agent',
+		});
+		dispatchHostMessage({
+			type: 'copilotWriteQueryDone', ...owner,
+			ok: false, message: 'Canceled.', retired: true,
+		});
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'r-kusto-retired',
+			result: { success: false, error: 'Canceled.', query: undefined },
+		});
+		expect(mocks.postMessageToHost.mock.calls.some(([message]) =>
+			message.result?.outcome === 'clarification-required',
+		)).toBe(false);
+		expect(cancel).not.toHaveBeenCalled();
+	});
+
+	it('lets exact ordinary canceled done override a stored delegated clarification', async () => {
+		const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'print 1' });
+		const owner = {
+			boxId: 'query_1', copilotRequestId: 'delegated-canceled',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		};
+		let activeOwner: typeof owner | undefined;
+		Object.assign(section, {
+			isCopilotChatRunning: vi.fn(() => false),
+			submitCopilotChatRequest: vi.fn(() => {
+				activeOwner = owner;
+				return owner;
+			}),
+			getActiveKustoCopilotRequest: vi.fn(() => activeOwner),
+			admitKustoCopilotMessage: vi.fn(() => true),
+			completeKustoCopilotRequest: vi.fn(() => {
+				activeOwner = undefined;
+				return true;
+			}),
+			copilotWriteQueryDone: vi.fn(),
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.getConnectionId.mockReturnValue('conn-1');
+		mocks.getDatabase.mockReturnValue('db-1');
+
+		dispatchHostMessage({
+			type: 'toolDelegateToKustoWorkbenchCopilot', requestId: 'r-kusto-canceled',
+			input: { sectionId: 'query_1', question: 'Show events' },
+		});
+		await new Promise(resolve => setTimeout(resolve, 0));
+		mocks.postMessageToHost.mockClear();
+		dispatchHostMessage({
+			type: 'copilotClarifyingQuestion', ...owner,
+			entryId: 'clarification-entry', question: 'Which range?',
+			responseTarget: 'calling-agent',
+		});
+		dispatchHostMessage({
+			type: 'copilotWriteQueryDone', ...owner,
+			ok: false, message: 'Canceled.',
+		});
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'r-kusto-canceled',
+			result: { success: false, error: 'Canceled.', query: undefined },
+		});
+		expect(mocks.postMessageToHost.mock.calls.some(([message]) =>
+			message.result?.outcome === 'clarification-required',
+		)).toBe(false);
 	});
 
 	async function runDelegatedKustoCopilotResponseTest(options: {
@@ -8194,9 +8586,9 @@ describe('changedSections agent provenance', () => {
 			getResultsStateMock = resultsState.getResultsState as unknown as ReturnType<typeof vi.fn>;
 		}
 		const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'range Index from 1 to 10 step 1' });
-		(section as any).setCopilotChatVisible = vi.fn();
 		const lifecycle = { sectionInstanceId: 'instance-query_1', targetGeneration: 4 };
 		const copilotOwner = { boxId: 'query_1', ...lifecycle, copilotRequestId: 'delegated-copilot-request' };
+		let activeCopilotOwner: typeof copilotOwner | undefined;
 		let activeOwner: Record<string, unknown> | undefined;
 		(section as any).getSchemaLifecycleIdentity = vi.fn(() => lifecycle);
 		(section as any).getConnectionId = vi.fn(() => 'conn-1');
@@ -8209,11 +8601,18 @@ describe('changedSections agent provenance', () => {
 			return true;
 		});
 		(section as any).getActiveExecution = vi.fn(() => activeOwner);
-		(section as any).getActiveKustoCopilotRequest = vi.fn(() => copilotOwner);
+		(section as any).isCopilotChatRunning = vi.fn(() => false);
+		(section as any).getActiveKustoCopilotRequest = vi.fn(() => activeCopilotOwner);
 		(section as any).admitKustoCopilotMessage = vi.fn((message: Record<string, unknown>) =>
 			message.copilotRequestId === copilotOwner.copilotRequestId
 				&& message.sectionInstanceId === copilotOwner.sectionInstanceId
 				&& message.targetGeneration === copilotOwner.targetGeneration);
+		(section as any).completeKustoCopilotRequest = vi.fn((identity: Record<string, unknown>) => {
+			if (!activeCopilotOwner || identity.copilotRequestId !== activeCopilotOwner.copilotRequestId) return false;
+			activeCopilotOwner = undefined;
+			return true;
+		});
+		(section as any).copilotWriteQueryDone = vi.fn();
 		(section as any).getActiveExecutionId = vi.fn(() => String(activeOwner?.executionId || ''));
 		(section as any).admitQueryTerminal = vi.fn((identity: Record<string, unknown>) =>
 			activeOwner
@@ -8253,18 +8652,9 @@ describe('changedSections agent provenance', () => {
 		mocks.bindResultArtifactConsumer.mockReturnValue(resultArtifact.artifactId);
 		mocks.getBoundResultArtifact.mockReturnValue(resultArtifact);
 
-		const chatPane = document.createElement('div');
-		chatPane.id = 'query_1_copilot_chat_pane';
-		const chatElement = document.createElement('kw-copilot-chat') as HTMLElement & {
-			setInputText: ReturnType<typeof vi.fn>;
-			setRequireToolUseOnNextSend: ReturnType<typeof vi.fn>;
-		};
-		chatElement.setInputText = vi.fn();
-		chatElement.setRequireToolUseOnNextSend = vi.fn();
-		chatPane.appendChild(chatElement);
-		document.body.appendChild(chatPane);
-
-		(section as any).copilotWriteQuerySend = vi.fn(() => queueMicrotask(() => {
+		(section as any).submitCopilotChatRequest = vi.fn(() => {
+			activeCopilotOwner = copilotOwner;
+			queueMicrotask(() => {
 			const executionId = 'delegated-kusto-execution';
 			if (options.oldTerminalBeforeStart) {
 				window.dispatchEvent(new CustomEvent('kusto-workbench-query-terminal', {
@@ -8305,7 +8695,9 @@ describe('changedSections agent provenance', () => {
 				dispatchHostMessage(doneMessage);
 				dispatchHostMessage(queryResultMessage);
 			}
-		}));
+			});
+			return copilotOwner;
+		});
 
 		const input: Record<string, unknown> = { sectionId: 'query_1', question: 'Help' };
 		if ('maxResultRows' in options) {

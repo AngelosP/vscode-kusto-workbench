@@ -1543,7 +1543,7 @@
         ],
         "toolReferenceName": "askKustoCopilot",
         "displayName": "Ask Kusto Workbench Copilot",
-        "modelDescription": "The primary tool for executing Kusto queries through Kusto Workbench. Delegates questions to the specialized Kusto Workbench Copilot assistant which has deep KQL knowledge and access to database schemas. This tool will write the appropriate KQL query, execute it against the specified cluster/database, and return the actual query results (rows, columns, and data). Use this for any data questions, KQL queries, or data exploration. Returns success/failure status, the generated query, row count, column names, and actual result data (up to maxResultRows rows; default 100).",
+        "modelDescription": "The primary tool for executing Kusto queries through Kusto Workbench. Delegates questions to the specialized Kusto Workbench Copilot assistant which has deep KQL knowledge and access to database schemas. This tool writes KQL, executes it, and returns actual query results. When it returns outcome='clarification-required', ask the returned question verbatim, do not guess, and stop. After the user answers, call this tool again with the same openFileId and sectionId so the section conversation resumes. Otherwise returns success/failure status, the generated query, row count, columns, and up to maxResultRows data rows (default 100).",
         "userDescription": "Ask the Kusto Workbench AI to write and execute a KQL query, returning the results.",
         "canBeReferencedInPrompt": true,
         "icon": "$(hubot)",

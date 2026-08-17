@@ -6,7 +6,7 @@ description: Operate Kusto Workbench to query Azure Data Explorer and SQL source
 
 tools: ['createKustoFile', 'askKustoCopilot', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'activateWorkbenchFile', 'addSection', 'removeSection', 'reorderSections', 'collapseExpandSection', 'configureKustoQuerySection', 'updateMarkdownSection', 'configureChart', 'configureTransformation', 'configureHtmlSection', 'getHtmlDashboardGuide', 'validateHtmlDashboard', 'manageDevelopmentNotes', 'askSqlCopilot', 'listSqlConnections', 'configureSqlSection', 'getSqlSchema']
 
-# version: 13 - Auto-updated by Kusto Workbench. Do not remove this line.
+# version: 15 - Auto-updated by Kusto Workbench. Do not remove this line.
 
 ---
 
@@ -24,7 +24,7 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `#addSection` | Add `query`, `markdown`, `chart`, `transformation`, `url`, `python`, or `html` sections |
 | `#removeSection`, `#reorderSections`, `#collapseExpandSection` | Organize notebook sections |
 | `#configureKustoQuerySection` | Configure a Kusto query section connection and query text |
-| `#askKustoCopilot` | Primary KQL tool: write and execute KQL against a configured section |
+| `#askKustoCopilot` | Primary KQL tool: write and execute KQL, or return a clarification required by the configured section |
 | `#listKustoConnections`, `#listKustoFavorites` | Discover configured Kusto connections |
 | `#getKustoSchema`, `#refreshKustoSchema`, `#searchCachedSchemas` | Inspect and search Kusto schemas |
 | `#configureChart` | Configure chart sections. Always inspect returned validation |
@@ -71,6 +71,12 @@ Tips:
 - Pass `sectionId` to target an existing query section.
 - Specify date ranges when they matter.
 - For cross-cluster or cross-database joins, provide fully qualified names because `#askKustoCopilot` cannot infer them by itself.
+
+If `#askKustoCopilot` returns `outcome: "clarification-required"`:
+
+1. Ask the returned `question` verbatim. Do not infer, answer, or replace it.
+2. Stop query work until the user replies.
+3. On the user's next reply, call `#askKustoCopilot` again with that answer and the exact returned `sectionId` and `openFileId`. This resumes the same section conversation.
 
 ### 4. Query SQL Data
 
@@ -132,6 +138,8 @@ Upgrade on touch:
 Never assume success. Always check responses for `success`, `error`, and validation details.
 
 For `#askKustoCopilot` connection errors, follow the returned `fix` instructions and retry.
+
+For `#askKustoCopilot` clarification outcomes, ask the question verbatim and resume only after the user answers, using the returned file and section identity.
 
 For `#configureChart`, if `validation.valid` is false, read `validation.issues` and fix the chart parameters.
 

@@ -276,12 +276,14 @@ describe('QueryEditorProvider Copilot conversation-clear application', () => {
 		expect(copilotSource).toContain('kustoCopilotRequestIdentityEquals(owner.kustoRequest, expected)');
 		expect(copilotSource).toContain('this.copilotConversationOwnerByBoxId.delete(expected.boxId);');
 
-		expect(callerSource.match(/type: 'clearCopilotConversation'/g)).toHaveLength(5);
+		expect(callerSource.match(/type: 'clearCopilotConversation'/g)).toHaveLength(3);
+		expect(callerSource).toContain("chatEl.addEventListener('copilot-clear', () => {");
+		expect(callerSource).toContain('this.copilotClearConversation();');
 		expect(callerSource).toContain(
 			"postMessageToHost({ type: 'clearCopilotConversation', flavor: 'kusto', ...owner })",
 		);
 		expect(callerSource).toContain(
-			"postMessageToHost({ type: 'clearCopilotConversation', boxId, flavor: 'sql' })",
+			"postMessageToHost({ type: 'clearCopilotConversation', boxId: this.host.boxId, flavor: 'sql' })",
 		);
 		expect(providerSource).not.toContain("case 'startCopilotWriteQuery':");
 		expect(providerSource).not.toContain("case 'cancelCopilotWriteQuery':");

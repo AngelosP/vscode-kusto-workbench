@@ -11,6 +11,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Readiness indicator for each Kusto section as a thin progress line moving from left to right letting you know if things are still happening in the background.
 * Refactor of backend connection management and query execution for both Kusto and SQL for better performance and easier code maintenance.
 * Bugs
+	* Clarifying questions from Kusto Copilot now return to the Kusto Workbench agent that initiated the request, while manually initiated section-chat questions keep their existing purple card and VS Code notification.
     * Better handling of Kusto URIs that can all look different but point to the same cluster. Some of the formats work better than others when embedded into HTML and URIs.
     * No more stale errors being reported for .kql or .csl files, which used to depend on a stale schema instead of the live connection.
     * SQL query execution, database discovery, schema loading, and cancellation now use the same first-use-downloaded Microsoft SQL Tools Service as SQL IntelliSense. This fixes SQL execution in installed VSIX builds where the previous external Node runtime was unavailable.

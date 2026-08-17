@@ -43,7 +43,7 @@ import { pState } from '../../src/webview/shared/persistence-state.js';
 import { clearResultsState, displayResultForBox, getCurrentResultArtifact, getResultsState, setResultsState } from '../../src/webview/core/results-state.js';
 import { postMessageToHost } from '../../src/webview/shared/webview-messages.js';
 import { prepareKustoOptimizeQuery } from '../../src/webview/sections/query-execution.controller.js';
-import { ADMITTED_KUSTO_COPILOT_EVENT } from '../../src/webview/core/kusto-copilot-output-runtime.js';
+import { APPLIED_KUSTO_COPILOT_DONE_EVENT } from '../../src/webview/core/kusto-copilot-output-runtime.js';
 import { getKustoSchemaIdentityKey } from '../../src/shared/kustoAuth.js';
 
 vi.mock('../../src/webview/shared/webview-messages.js', () => ({
@@ -910,10 +910,10 @@ describe('kw-query-section loading states', () => {
 		(el.copilotChatCtrl as any).kustoConversationOwner = copilotOwner;
 		const retiredOutputs: any[] = [];
 		const onRetired = (event: Event) => retiredOutputs.push((event as CustomEvent).detail);
-		window.addEventListener(ADMITTED_KUSTO_COPILOT_EVENT, onRetired);
+		window.addEventListener(APPLIED_KUSTO_COPILOT_DONE_EVENT, onRetired);
 
 		try { el.clearTargetBoundState(); }
-		finally { window.removeEventListener(ADMITTED_KUSTO_COPILOT_EVENT, onRetired); }
+		finally { window.removeEventListener(APPLIED_KUSTO_COPILOT_DONE_EVENT, onRetired); }
 
 		expect(getResultsState('test1')).toBeNull();
 		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
@@ -971,6 +971,7 @@ describe('kw-query-section loading states', () => {
 
 		expect(el.completeKustoCopilotRequest(owner)).toBe(true);
 		expect(el.getActiveKustoCopilotRequest()).toBeUndefined();
+		expect(el.admitKustoCopilotConversationOwner(owner)).toBe(true);
 	});
 
 	it('emits an internal canceled terminal before host-driven Copilot owner retirement', () => {
@@ -981,10 +982,10 @@ describe('kw-query-section loading states', () => {
 		(el.copilotChatCtrl as any).kustoConversationOwner = owner;
 		const outputs: any[] = [];
 		const listener = (event: Event) => outputs.push((event as CustomEvent).detail);
-		window.addEventListener(ADMITTED_KUSTO_COPILOT_EVENT, listener);
+		window.addEventListener(APPLIED_KUSTO_COPILOT_DONE_EVENT, listener);
 
 		try { expect(el.retireKustoCopilotConversationOwner(owner)).toBe(true); }
-		finally { window.removeEventListener(ADMITTED_KUSTO_COPILOT_EVENT, listener); }
+		finally { window.removeEventListener(APPLIED_KUSTO_COPILOT_DONE_EVENT, listener); }
 
 		expect(outputs).toEqual([{
 			type: 'copilotWriteQueryDone', ...owner, ok: false, message: 'Canceled.', retired: true,

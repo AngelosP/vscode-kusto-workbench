@@ -253,7 +253,7 @@ describe('QueryEditorProvider Copilot write-query preparation application', () =
 		expect(copilotSource.match(/type: 'copilotWriteQueryOptions'/g)).toHaveLength(3);
 		expect(copilotSource).toContain("type: 'copilotWriteQueryStatus'");
 
-		expect(callerSource.match(/type: 'prepareCopilotWriteQuery'/g)).toHaveLength(3);
+		expect(callerSource.match(/type: 'prepareCopilotWriteQuery'/g)).toHaveLength(2);
 		expect(callerSource.match(/flavor: this\.flavor\.id/g)).toHaveLength(2);
 		expect(responseRouterSource).toContain("case 'copilotWriteQueryOptions':");
 		expect(responseRouterSource).toContain("case 'copilotWriteQueryStatus':");

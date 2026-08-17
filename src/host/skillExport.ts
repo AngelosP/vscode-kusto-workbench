@@ -2,7 +2,11 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 
 /** Bump this when you change skill-template.md in a way that requires re-export. */
-export const TEMPLATE_VERSION = 13;
+export const TEMPLATE_VERSION = 15;
+
+export function isSkillTemplateCurrent(templateVersion: number): boolean {
+	return templateVersion === TEMPLATE_VERSION;
+}
 
 export const SKILL_FILENAME = 'SKILL.md';
 export const HTML_DASHBOARD_RULES_FILENAME = 'html-dashboard-rules.md';
@@ -259,7 +263,7 @@ export async function checkAndUpdateSkillFiles(context: vscode.ExtensionContext)
 		const missingUntrackedStates = diskStates.filter(state => !state.exists && !state.previousFingerprint && !state.intentionallyMissing);
 
 		if (changedStates.length === 0) {
-			if (record.templateVersion === TEMPLATE_VERSION && missingUntrackedStates.length === 0) {
+			if (isSkillTemplateCurrent(record.templateVersion) && missingUntrackedStates.length === 0) {
 				updatedRecords.push(record);
 			} else {
 				// Files untouched by user, or a current legacy record lacks the new sidecar — silent write.
@@ -268,7 +272,7 @@ export async function checkAndUpdateSkillFiles(context: vscode.ExtensionContext)
 		} else {
 			// User customized or created at least one exported file — show diffs and ask.
 			const changedPaths = changedStates.map(state => vscode.workspace.asRelativePath(state.uri)).join(', ');
-			const message = record.templateVersion === TEMPLATE_VERSION
+			const message = isSkillTemplateCurrent(record.templateVersion)
 				? `Kusto Workbench exported skill files no longer match the tracked export: ${changedPaths}.`
 				: `Kusto Workbench has an updated skill export. These files have local edits or conflicts: ${changedPaths}.`;
 			const pick = await vscode.window.showInformationMessage(

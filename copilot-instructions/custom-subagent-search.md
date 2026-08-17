@@ -19,7 +19,7 @@ You control Kusto Workbench, a VS Code extension for Azure Data Explorer with th
 | Tool | Purpose |
 | ---- | ------- |
 | `#createKustoFile` | Create a new file (`kqlx` for notebooks, `kql`/`csl` for single queries) |
-| `#askKustoCopilot` | Write & execute KQL queries. Section must have connection configured. |
+| `#askKustoCopilot` | Write and execute KQL queries, or return a clarification required by the section. |
 | `#listKustoConnections` | List configured cluster connections |
 | `#listKustoFavorites` | List favorite cluster/database pairs |
 | `#getKustoSchema` | Get database schema (tables, columns, functions) for a cluster |
@@ -55,6 +55,8 @@ You control Kusto Workbench, a VS Code extension for Azure Data Explorer with th
    b. If multiple files are open, keep the intended file's `openFileId` from `openFiles` and pass it to section tools.
    c. Configure it with `#configureKustoQuerySection` for the target cluster/database
    d. Use `#askKustoCopilot` to search the data
+
+If `#askKustoCopilot` returns `outcome: "clarification-required"`, stop and return the exact `question`, `sectionId`, and `openFileId` to the calling agent. Do not guess or continue searching that connection. The calling agent must ask the user and resume the same section after the answer.
 
 4. **Collect all matches.** For each match, include: cluster URL, database, matched entity (table/column/function name), and enough context to be useful (column types, docstrings, etc.).
 

@@ -285,6 +285,15 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	public getActiveKustoCopilotRequest(): import('../../shared/kustoExecution.js').KustoCopilotRequestIdentity | undefined {
 		return this.copilotChatCtrl.getActiveKustoCopilotRequest();
 	}
+	public isCopilotChatRunning(): boolean {
+		return this.copilotChatCtrl.isCopilotChatRunning();
+	}
+	public submitCopilotChatRequest(
+		text: string,
+		requireToolUse: boolean,
+	): import('../../shared/kustoExecution.js').KustoCopilotRequestIdentity | undefined {
+		return this.copilotChatCtrl.submitCopilotChatRequest(text, requireToolUse);
+	}
 	public admitKustoCopilotConversationOwner(identity: unknown): boolean {
 		return this.copilotChatCtrl.admitKustoCopilotConversationOwner(identity);
 	}
@@ -1869,7 +1878,8 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	public getCopilotChatVisible(): boolean { return this.copilotChatCtrl.getCopilotChatVisible(); }
 	public getCopilotChatWidthPx(): number | undefined { return this.copilotChatCtrl.getCopilotChatWidthPx(); }
 	public setCopilotChatWidthPx(widthPx: number): void { this.copilotChatCtrl.setCopilotChatWidthPx(widthPx); }
-	public setCopilotChatVisible(visible: boolean): void { this.copilotChatCtrl.setCopilotChatVisible(visible); }
+	public setCopilotChatVisible(visible: boolean, focusInputOnOpen = true): void { this.copilotChatCtrl.setCopilotChatVisible(visible, focusInputOnOpen); }
+	public focusCopilotChatInput(): void { this.copilotChatCtrl.focusCopilotChatInput(); }
 	public toggleCopilotChat(): void { this.copilotChatCtrl.toggleCopilotChat(); }
 	public disposeCopilotChat(): void { this.copilotChatCtrl.disposeCopilotChat(); }
 	public installCopilotChat(): void { this.copilotChatCtrl.installCopilotChat(); }
@@ -1880,7 +1890,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	public copilotWriteQueryToolResult(toolName: string, label: string, jsonText: string, entryId: string): void { this.copilotChatCtrl.copilotWriteQueryToolResult(toolName, label, jsonText, entryId); }
 	public copilotAppendExecutedQuery(query: string, resultSummary: string, errorMessage: string, entryId: string, result: unknown): void { this.copilotChatCtrl.copilotAppendExecutedQuery(query, resultSummary, errorMessage, entryId, result); }
 	public copilotAppendGeneralRulesLink(filePath: string, preview: string, entryId: string): void { this.copilotChatCtrl.copilotAppendGeneralRulesLink(filePath, preview, entryId); }
-	public copilotAppendClarifyingQuestion(question: string, entryId: string): void { this.copilotChatCtrl.copilotAppendClarifyingQuestion(question, entryId); }
+	public copilotAppendClarifyingQuestion(question: string, entryId: string, interactive = true): void { this.copilotChatCtrl.copilotAppendClarifyingQuestion(question, entryId, interactive); }
 	public copilotAppendQuerySnapshot(queryText: string, entryId: string): void { this.copilotChatCtrl.copilotAppendQuerySnapshot(queryText, entryId); }
 	public copilotAppendDevNotesContext(preview: string, entryId: string): void { this.copilotChatCtrl.copilotAppendDevNotesContext(preview, entryId); }
 	public copilotAppendDevNoteToolCall(action: string, detail: string, result: string, entryId: string): void { this.copilotChatCtrl.copilotAppendDevNoteToolCall(action, detail, result, entryId); }

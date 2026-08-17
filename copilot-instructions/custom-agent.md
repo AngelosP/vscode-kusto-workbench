@@ -23,7 +23,7 @@ You control Kusto Workbench, a VS Code extension for Azure Data Explorer and SQL
 | `#activateWorkbenchFile` | Focus or open a specific Workbench file from `#listSections` |
 | `#addSection` | Add `query`, `markdown`, `chart`, `transformation`, `url`, `python`, or `html` sections |
 | `#configureKustoQuerySection` | Configure a Kusto query section connection and query text |
-| `#askKustoCopilot` | Primary KQL tool: write and execute KQL against a configured section |
+| `#askKustoCopilot` | Primary KQL tool: write and execute KQL, or return a clarification required by the configured section |
 | `#listKustoConnections`, `#listKustoFavorites` | Discover configured Kusto connections |
 | `#getKustoSchema`, `#refreshKustoSchema`, `#searchCachedSchemas` | Inspect and search Kusto schemas |
 | `#configureChart` | Configure chart sections. Always inspect the returned `validation` object |
@@ -69,6 +69,12 @@ If `#askKustoCopilot` fails with no configured cluster:
 3. Retry `#askKustoCopilot`.
 
 Use fully qualified database or cluster names in the prompt to `#askKustoCopilot` when the query must join across databases or clusters.
+
+If `#askKustoCopilot` returns `outcome: "clarification-required"`:
+
+1. Ask the returned `question` verbatim. Do not infer, answer, or replace it.
+2. Stop query work until the user replies.
+3. On the user's next reply, call `#askKustoCopilot` again with that answer and the exact returned `sectionId` and `openFileId`. This resumes the same section conversation.
 
 ### 3\. SQL Data Questions
 
@@ -130,6 +136,8 @@ Power BI readiness:
 Never assume success. Check responses for `success`, `error`, and validation details before reporting completion.
 
 For `#askKustoCopilot` connection errors, follow the returned `fix` instructions and retry.
+
+For `#askKustoCopilot` clarification outcomes, ask the question verbatim and resume only after the user answers, using the returned file and section identity.
 
 For `#configureChart`, if `validation.valid` is false, read `validation.issues` and fix the chart parameters.
 

@@ -24,6 +24,10 @@ import type { PortableDashboardDiagnostic } from '../shared/portableDashboardCom
 import { classifyWorkbenchUri, classifyWorkbenchUriString, type WorkbenchFileInfo, type WorkbenchFileKind } from './workbenchFileTypes';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { getKustoConnectionIdentityKey, resolveStrictKustoConnection } from '../shared/kustoAuth';
+import {
+	parseKustoCopilotClarificationRequiredResult,
+	type KustoCopilotClarificationRequiredResult,
+} from '../shared/kustoCopilotClarificationProtocol.js';
 import { filterKustoFavoritesForActivePrincipals, migrateKustoFavorites } from './connectionManagerFavorites';
 import { sqlConnectionTargetSignature } from '../shared/sqlConnectionIdentity';
 import { readCurrentSqlSchemaPrincipalFingerprint } from './sqlEditorSchema';
@@ -36,6 +40,7 @@ import {
 	type DevelopmentNoteMutationWebviewAdmission,
 } from '../shared/developmentNoteMutationProtocol.js';
 import type { ToolStateSection } from '../shared/toolStateSnapshotProtocol.js';
+import { isRuntimeProxy } from '../shared/runtimeMessageEnvelope.js';
 
 export type TargetFields = {
 	openFileId?: string;
@@ -81,6 +86,32 @@ function normalizeAskKustoCopilotMaxResultRows(value: unknown): number {
 		ASK_KUSTO_COPILOT_MIN_MAX_RESULT_ROWS,
 		Math.min(ASK_KUSTO_COPILOT_MAX_MAX_RESULT_ROWS, integerValue)
 	);
+}
+
+type ToolResponseAdmission<T> =
+	| Readonly<{ ok: true; value: T }>
+	| Readonly<{ ok: false }>;
+
+function admitKustoCopilotDelegationResult(
+	result: unknown,
+): ToolResponseAdmission<DelegateToKustoWorkbenchCopilotResult> {
+	const clarification = parseKustoCopilotClarificationRequiredResult(result);
+	if (clarification.ok) return clarification;
+	if (!result || typeof result !== 'object' || isRuntimeProxy(result)) {
+		return { ok: false };
+	}
+	try {
+		if (Array.isArray(result)) return { ok: false };
+		const prototype = Object.getPrototypeOf(result);
+		if (prototype !== Object.prototype && prototype !== null) return { ok: false };
+		if (Object.getOwnPropertyDescriptor(result, 'outcome')) return { ok: false };
+		const success = Object.getOwnPropertyDescriptor(result, 'success');
+		if (!success?.enumerable || !Object.prototype.hasOwnProperty.call(success, 'value')
+			|| typeof success.value !== 'boolean') return { ok: false };
+		return { ok: true, value: result as DelegateToKustoWorkbenchCopilotResult };
+	} catch {
+		return { ok: false };
+	}
 }
 
 /**
@@ -320,6 +351,23 @@ export interface DelegateToKustoWorkbenchCopilotInput extends TargetFields {
 	/** Optional: Maximum rows returned in the tool response. Defaults to 100. */
 	maxResultRows?: number;
 }
+
+export type DelegateToKustoWorkbenchCopilotResult =
+	| (KustoCopilotClarificationRequiredResult & { openFileId?: string })
+	| {
+		success: boolean;
+		answer?: string;
+		query?: string;
+		executed?: boolean;
+		rowCount?: number;
+		columns?: string[];
+		results?: Array<Record<string, unknown>>;
+		maxResultRows?: number;
+		returnedRowCount?: number;
+		truncated?: string;
+		error?: string;
+		timedOut?: boolean;
+	};
 
 export interface ConfigureHtmlSectionInput extends TargetFields {
 	sectionId: string;
@@ -599,6 +647,7 @@ export class KustoWorkbenchToolOrchestrator {
 		cancellationSubscription?: vscode.Disposable;
 		connectionToken: number;
 		kustoExecution?: KustoExecutionRequestIdentity;
+		admitResult?: (result: unknown) => ToolResponseAdmission<unknown>;
 	}>();
 	private readonly developmentNoteMutationRequestIds = new Set<string>();
 	private responseSeq = 0;
@@ -1159,6 +1208,11 @@ export class KustoWorkbenchToolOrchestrator {
 		if (!allowDevelopmentNoteMutation && this.developmentNoteMutationRequestIds.has(requestId)) return;
 		const pending = this.pendingResponses.get(requestId);
 		if (!pending) return;
+		if (!error && pending.admitResult) {
+			const admission = pending.admitResult(result);
+			if (!admission.ok) return;
+			result = admission.value;
+		}
 		this.pendingResponses.delete(requestId);
 		this.developmentNoteMutationRequestIds.delete(requestId);
 		if (pending.timer) clearTimeout(pending.timer);
@@ -1184,6 +1238,7 @@ export class KustoWorkbenchToolOrchestrator {
 		onTimeout?: (connection: LiveWorkbenchConnection, requestId: string) => void,
 		capturedConnection?: LiveWorkbenchConnection,
 		cancellationToken?: vscode.CancellationToken,
+		admitResult?: (result: unknown) => ToolResponseAdmission<T>,
 	): Promise<T> {
 		const target = capturedConnection
 			? { connection: capturedConnection, openFiles: [], hasActiveUnsupportedFile: false, explicitTargetRequested: false }
@@ -1218,6 +1273,7 @@ export class KustoWorkbenchToolOrchestrator {
 				resolve: (value: unknown) => void; reject: (err: Error) => void;
 				timer?: ReturnType<typeof setTimeout>; cancellationSubscription?: vscode.Disposable;
 				connectionToken: number; kustoExecution?: KustoExecutionRequestIdentity;
+				admitResult?: (result: unknown) => ToolResponseAdmission<unknown>;
 			};
 			const cancelKustoExecution = () => {
 				target.connection!.poster({
@@ -1241,6 +1297,7 @@ export class KustoWorkbenchToolOrchestrator {
 				reject, 
 				timer,
 				connectionToken: target.connection!.token,
+				...(admitResult ? { admitResult: admitResult as (result: unknown) => ToolResponseAdmission<unknown> } : {}),
 			};
 			this.pendingResponses.set(requestId, pending);
 			if (developmentNoteRequest) this.developmentNoteMutationRequestIds.add(requestId);
@@ -2460,36 +2517,45 @@ export class KustoWorkbenchToolOrchestrator {
 		};
 	}
 
-	async delegateToKustoWorkbenchCopilot(input: DelegateToKustoWorkbenchCopilotInput, cancellationToken?: vscode.CancellationToken): Promise<{
-		success: boolean;
-		answer: string;
-		query?: string;
-		executed?: boolean;
-		rowCount?: number;
-		columns?: string[];
-		results?: Array<Record<string, unknown>>;
-		maxResultRows?: number;
-		returnedRowCount?: number;
-		truncated?: string;
-		error?: string;
-		timedOut?: boolean;
-	}> {
+	async delegateToKustoWorkbenchCopilot(
+		input: DelegateToKustoWorkbenchCopilotInput,
+		cancellationToken?: vscode.CancellationToken,
+	): Promise<DelegateToKustoWorkbenchCopilotResult> {
 		const { target, rest } = this.splitTargetFields(input);
 		const preflight = this.preflightKustoToolTarget(rest);
-		if (!preflight.input) return { success: false, answer: '', error: preflight.error };
+		if (!preflight.input) return { success: false, error: preflight.error };
+		const resolvedTarget = this.resolveToolTarget(target);
+		const capturedConnection = resolvedTarget.connection;
+		if (!capturedConnection) {
+			if (resolvedTarget.explicitTarget) {
+				throw new Error('The targeted Kusto Workbench file is open without a live Workbench editor. Reopen it with Kusto Workbench before editing or executing sections.');
+			}
+			if (resolvedTarget.activeFile) {
+				throw new Error('The active Kusto Workbench file is open without a live Workbench editor. Reopen it with Kusto Workbench before editing or executing sections.');
+			}
+			throw new Error('Kusto Workbench is not currently open. Please open a supported Kusto Workbench file or use the Query Editor first.');
+		}
 		const normalizedInput = {
 			...preflight.input,
 			maxResultRows: normalizeAskKustoCopilotMaxResultRows(input.maxResultRows)
 		};
-		return this.sendToWebview(
+		const result = await this.sendToWebview<DelegateToKustoWorkbenchCopilotResult>(
 			'toolDelegateToKustoWorkbenchCopilot',
 			{ input: normalizedInput },
 			180000,
 			target,
 			(connection, requestId) => connection.poster({ type: 'toolCancelKustoCopilot', requestId }),
-			undefined,
+			capturedConnection,
 			cancellationToken,
+			admitKustoCopilotDelegationResult,
 		);
+		const clarification = parseKustoCopilotClarificationRequiredResult(result);
+		if (!clarification.ok) return result;
+		const openFileId = capturedConnection.documentInfo?.openFileId;
+		return Object.freeze({
+			...clarification.value,
+			...(openFileId ? { openFileId } : {}),
+		});
 	}
 
 	private getEditorIdForWorkbenchFile(info: WorkbenchFileInfo): string | undefined {

@@ -47,5 +47,15 @@ describe('tool manifest schemas', () => {
 			expect(tool.inputSchema?.properties?.targetFileUri, `${name} targetFileUri`).toBeTruthy();
 		}
 	});
+
+	it('documents the Kusto Copilot clarification handoff for calling agents', () => {
+		const askKustoCopilot = getTools().find((tool: any) =>
+			tool.name === 'kusto-workbench_ask-kusto-copilot',
+		);
+
+		expect(askKustoCopilot?.modelDescription).toContain("outcome='clarification-required'");
+		expect(askKustoCopilot?.modelDescription).toContain('ask the returned question verbatim');
+		expect(askKustoCopilot?.modelDescription).toContain('same openFileId and sectionId');
+	});
 });
 

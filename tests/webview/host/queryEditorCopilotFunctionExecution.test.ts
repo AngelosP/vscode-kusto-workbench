@@ -1777,6 +1777,181 @@ describe('Kusto Copilot function execution', () => {
 		vscodeMocks.selectChatModels.mockReset();
 	});
 
+	it('preserves manual clarification notification and interactive response targeting', async () => {
+		const model = createModel([[
+			new vscode.LanguageModelToolCallPart(
+				'clarify-call', 'ask_user_clarifying_question', { question: 'Which time range?' },
+			),
+		]]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const notification = vi.spyOn(vscode.window, 'showInformationMessage').mockResolvedValue(undefined);
+		const service = new CopilotService(host);
+
+		await service.startCopilotWriteQuery({ ...startMessage(), requireToolUse: false });
+
+		expect(hostMessagesOfType(host, 'copilotClarifyingQuestion')).toEqual([
+			expect.objectContaining({
+				question: 'Which time range?', responseTarget: 'section-chat',
+				copilotRequestId: 'copilot-request-query_1',
+			}),
+		]);
+		expect(notification).toHaveBeenCalledWith(
+			'Kusto Copilot has a clarifying question for you.', 'View',
+		);
+		notification.mockRestore();
+	});
+
+	it('ignores a delayed manual clarification View action after exact conversation Clear', async () => {
+		const model = createModel([[
+			new vscode.LanguageModelToolCallPart(
+				'clarify-call', 'ask_user_clarifying_question', { question: 'Which time range?' },
+			),
+		]]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const selection = deferred<string | undefined>();
+		const notification = vi.spyOn(vscode.window, 'showInformationMessage').mockReturnValue(selection.promise as any);
+		const service = new CopilotService(host);
+		const owner = {
+			boxId: 'query_1', copilotRequestId: 'copilot-request-query_1',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		};
+
+		await service.startCopilotWriteQuery({ ...startMessage(), requireToolUse: false });
+		expect(service.clearKustoCopilotConversation(owner)).toBe(true);
+		(host.postMessage as any).mockClear();
+		selection.resolve('View');
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(host.revealPanel).not.toHaveBeenCalled();
+		expect(hostMessagesOfType(host, 'revealSection')).toEqual([]);
+		notification.mockRestore();
+	});
+
+	it('requires calling-agent clarification and done delivery without native notification', async () => {
+		const model = createModel([[
+			new vscode.LanguageModelToolCallPart(
+				'clarify-call', 'ask_user_clarifying_question', { question: 'Which time range?' },
+			),
+		]]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const notification = vi.spyOn(vscode.window, 'showInformationMessage').mockResolvedValue(undefined);
+		const service = new CopilotService(host);
+
+		await service.startCopilotWriteQuery({ ...startMessage(), requireToolUse: true });
+
+		expect(hostMessagesOfType(host, 'copilotClarifyingQuestion')).toEqual([
+			expect.objectContaining({ question: 'Which time range?', responseTarget: 'calling-agent' }),
+		]);
+		expect(hostMessagesOfType(host, 'copilotWriteQueryDone')).toEqual([
+			expect.objectContaining({ ok: true, copilotRequestId: 'copilot-request-query_1' }),
+		]);
+		expect(notification).not.toHaveBeenCalled();
+		const history = ((service as any).copilotConversationHistoryByBoxId.get('query_1') ?? []) as any[];
+		expect(history).toEqual(expect.arrayContaining([
+			expect.objectContaining({ tool: 'ask_user_clarifying_question', result: 'Question displayed to user. Awaiting response.' }),
+		]));
+		notification.mockRestore();
+	});
+
+	it('continues the same model conversation after a calling-agent clarification answer', async () => {
+		const model = createModel([
+			[new vscode.LanguageModelToolCallPart(
+				'clarify-time', 'ask_user_clarifying_question', { question: 'Which time range?' },
+			)],
+			[new vscode.LanguageModelToolCallPart(
+				'clarify-event', 'ask_user_clarifying_question', { question: 'Which event type?' },
+			)],
+		]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+
+		await service.startCopilotWriteQuery({ ...startMessage(), requireToolUse: true });
+		await service.startCopilotWriteQuery({
+			...startMessage(),
+			copilotRequestId: 'copilot-request-query_1-follow-up',
+			request: 'Use the last 30 days.',
+			requireToolUse: true,
+		});
+
+		expect(model.sendRequest).toHaveBeenCalledTimes(2);
+		const secondMessages = model.sendRequest.mock.calls[1][0] as vscode.LanguageModelChatMessage[];
+		const secondParts = secondMessages.flatMap(message => message.content);
+		expect(secondParts).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				callId: 'clarify-time', name: 'ask_user_clarifying_question',
+				input: { question: 'Which time range?' },
+			}),
+			expect.objectContaining({
+				callId: 'clarify-time',
+				content: [expect.objectContaining({ value: 'Question displayed to user. Awaiting response.' })],
+			}),
+		]));
+		expect(secondParts).toContainEqual(expect.objectContaining({ value: 'Use the last 30 days.' }));
+		const history = ((service as any).copilotConversationHistoryByBoxId.get('query_1') ?? []) as any[];
+		expect(history).toEqual(expect.arrayContaining([
+			expect.objectContaining({ tool: 'ask_user_clarifying_question', args: { question: 'Which time range?' } }),
+			expect.objectContaining({ type: 'user-message', text: 'Use the last 30 days.' }),
+		]));
+	});
+
+	it.each(['clarification', 'done'] as const)(
+		'rolls back the whole calling-agent tool turn when %s delivery is rejected',
+		async rejectedType => {
+			const model = createModel([[
+				new vscode.LanguageModelToolCallPart(
+					'clarify-call', 'ask_user_clarifying_question', { question: 'Which time range?' },
+				),
+			]]);
+			vscodeMocks.selectChatModels.mockResolvedValue([model]);
+			const host = createHost([]);
+			(host.postMessage as any).mockImplementation((message: any) => {
+				if (rejectedType === 'clarification' && message.type === 'copilotClarifyingQuestion') return false;
+				if (rejectedType === 'done' && message.type === 'copilotWriteQueryDone' && message.ok === true) return false;
+				return true;
+			});
+			const service = new CopilotService(host);
+
+			await service.startCopilotWriteQuery({ ...startMessage(), requireToolUse: true });
+
+			const history = ((service as any).copilotConversationHistoryByBoxId.get('query_1') ?? []) as any[];
+			expect(history.some(entry => entry?.type === 'assistant-message')).toBe(false);
+			expect(history.some(entry => entry?.type === 'tool-call')).toBe(false);
+		},
+	);
+
+	it('rechecks currentness after required clarification delivery before committing history or done', async () => {
+		const model = createModel([[
+			new vscode.LanguageModelToolCallPart(
+				'clarify-call', 'ask_user_clarifying_question', { question: 'Which time range?' },
+			),
+		]]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		const expectedOwner = {
+			boxId: 'query_1', copilotRequestId: 'copilot-request-query_1',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		};
+		(host.postMessage as any).mockImplementation((message: any) => {
+			if (message.type === 'copilotClarifyingQuestion') {
+				service.cancelCopilotWriteQuery('query_1', undefined, expectedOwner);
+			}
+			return true;
+		});
+
+		await service.startCopilotWriteQuery({ ...startMessage(), requireToolUse: true });
+
+		const history = ((service as any).copilotConversationHistoryByBoxId.get('query_1') ?? []) as any[];
+		expect(history.some(entry => entry?.type === 'assistant-message')).toBe(false);
+		expect(history.some(entry => entry?.type === 'tool-call')).toBe(false);
+		expect(hostMessagesOfType(host, 'copilotWriteQueryDone').some(message => message.ok === true)).toBe(false);
+	});
+
 	it('executes final function-definition responses as inline function invocations instead of raw control commands', async () => {
 		const functionQuery = '.create function FilterRows(threshold:long) { range x from 1 to 10 step 1 | where x > threshold }\nFilterRows(5)';
 		const model = createModel([

@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
 	createSectionWithCapabilities: vi.fn(),
 	postMessageToHost: vi.fn(),
 	setSectionName: vi.fn(),
+	emitAppliedDone: vi.fn(),
 }));
 
 vi.mock('../../src/webview/core/persistence.js', () => ({
@@ -39,9 +40,10 @@ vi.mock('../../src/webview/monaco/prettify.js', () => ({
 }));
 
 vi.mock('../../src/webview/core/kusto-copilot-output-runtime.js', () => ({
-	emitAdmittedKustoCopilotOutput: vi.fn(),
+	emitAppliedKustoCopilotDone: mocks.emitAppliedDone,
 }));
 
+import '../../src/webview/components/kw-copilot-chat.js';
 import { CopilotChatManagerController, type CopilotChatManagerHost } from '../../src/webview/sections/copilot-chat-manager.controller.js';
 import { kustoWebviewFlavor, sqlWebviewFlavor } from '../../src/webview/sections/copilot-chat-flavor.js';
 
@@ -152,6 +154,134 @@ describe('CopilotChatManagerController document capabilities', () => {
 		expect(mocks.postMessageToHost).toHaveBeenNthCalledWith(2, {
 			type: 'openMarkdownPreview',
 			...previewDetail,
+		});
+	});
+
+	it('atomically submits an agent request and retains its conversation owner after completion', () => {
+		const host = document.createElement('div') as HTMLElement & CopilotChatManagerHost;
+		host.boxId = 'query_source';
+		host.addController = vi.fn();
+		host.getCopilotConnectionId = () => 'connection-1';
+		host.getCopilotServerUrl = () => 'https://cluster.example';
+		host.getDatabase = () => 'Db';
+		host.getCopilotEditorValue = () => 'print source = 1';
+		host.getSchemaLifecycleIdentity = () => ({ sectionInstanceId: 'instance-1', targetGeneration: 2 });
+		host.layoutCopilotEditor = vi.fn();
+		const wrapper = document.createElement('div');
+		wrapper.className = 'query-editor-wrapper';
+		host.appendChild(wrapper);
+		document.body.appendChild(host);
+		const controller = new CopilotChatManagerController(host, kustoWebviewFlavor);
+		mocks.postMessageToHost.mockClear();
+
+		const owner = controller.submitCopilotChatRequest('Show events', true);
+
+		expect(owner).toMatchObject({
+			boxId: 'query_source', sectionInstanceId: 'instance-1', targetGeneration: 2,
+			copilotRequestId: expect.any(String),
+		});
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'startCopilotWriteQuery', request: 'Show events', requireToolUse: true,
+			...owner,
+		}));
+		expect(controller.isCopilotChatRunning()).toBe(true);
+		controller.getCopilotChatEl()!.setRunning(false);
+		expect(controller.submitCopilotChatRequest('Do not replace', true)).toBeUndefined();
+		expect(controller.completeKustoCopilotRequest(owner)).toBe(true);
+		expect(controller.getActiveKustoCopilotRequest()).toBeUndefined();
+		expect(controller.admitKustoCopilotConversationOwner(owner)).toBe(true);
+	});
+
+	it('emits retirement only after active ownership and running UI are cleared', () => {
+		const host = document.createElement('div') as HTMLElement & CopilotChatManagerHost;
+		host.boxId = 'query_source';
+		host.addController = vi.fn();
+		host.getCopilotConnectionId = () => 'connection-1';
+		host.getCopilotServerUrl = () => 'https://cluster.example';
+		host.getDatabase = () => 'Db';
+		host.getCopilotEditorValue = () => '';
+		host.getSchemaLifecycleIdentity = () => ({ sectionInstanceId: 'instance-1', targetGeneration: 1 });
+		host.layoutCopilotEditor = vi.fn();
+		const wrapper = document.createElement('div');
+		wrapper.className = 'query-editor-wrapper';
+		host.appendChild(wrapper);
+		document.body.appendChild(host);
+		const controller = new CopilotChatManagerController(host, kustoWebviewFlavor);
+		const owner = controller.submitCopilotChatRequest('Show events', true)!;
+		const chat = controller.getCopilotChatEl()!;
+		mocks.emitAppliedDone.mockImplementationOnce(() => {
+			expect(controller.getActiveKustoCopilotRequest()).toBeUndefined();
+			expect(chat.isRunning()).toBe(false);
+		});
+
+		controller.retireKustoCopilotRequest();
+
+		expect(mocks.emitAppliedDone).toHaveBeenCalledWith(expect.objectContaining({
+			...owner, type: 'copilotWriteQueryDone', ok: false, retired: true,
+		}));
+	});
+
+	it('clears exact Kusto ownership locally and cancels active work before host history clear', () => {
+		const host = document.createElement('div') as HTMLElement & CopilotChatManagerHost;
+		host.boxId = 'query_source';
+		host.addController = vi.fn();
+		host.getCopilotConnectionId = () => 'connection-1';
+		host.getCopilotServerUrl = () => 'https://cluster.example';
+		host.getDatabase = () => 'Db';
+		host.getCopilotEditorValue = () => '';
+		host.getSchemaLifecycleIdentity = () => ({ sectionInstanceId: 'instance-1', targetGeneration: 1 });
+		host.layoutCopilotEditor = vi.fn();
+		const wrapper = document.createElement('div');
+		wrapper.className = 'query-editor-wrapper';
+		host.appendChild(wrapper);
+		document.body.appendChild(host);
+		const controller = new CopilotChatManagerController(host, kustoWebviewFlavor);
+		const owner = controller.submitCopilotChatRequest('Show events', true)!;
+		mocks.postMessageToHost.mockClear();
+
+		controller.getCopilotChatEl()!.dispatchEvent(new CustomEvent('copilot-clear'));
+
+		expect(controller.getActiveKustoCopilotRequest()).toBeUndefined();
+		expect(controller.admitKustoCopilotConversationOwner(owner)).toBe(false);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'cancelCopilotWriteQuery', flavor: 'kusto', ...owner,
+		});
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'clearCopilotConversation', flavor: 'kusto', ...owner,
+		});
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'prepareCopilotWriteQuery', boxId: 'query_source', flavor: 'kusto',
+		});
+	});
+
+	it('clears completed conversation ownership through the real Clear event', () => {
+		const host = document.createElement('div') as HTMLElement & CopilotChatManagerHost;
+		host.boxId = 'query_source';
+		host.addController = vi.fn();
+		host.getCopilotConnectionId = () => 'connection-1';
+		host.getCopilotServerUrl = () => 'https://cluster.example';
+		host.getDatabase = () => 'Db';
+		host.getCopilotEditorValue = () => '';
+		host.getSchemaLifecycleIdentity = () => ({ sectionInstanceId: 'instance-1', targetGeneration: 1 });
+		host.layoutCopilotEditor = vi.fn();
+		const wrapper = document.createElement('div');
+		wrapper.className = 'query-editor-wrapper';
+		host.appendChild(wrapper);
+		document.body.appendChild(host);
+		const controller = new CopilotChatManagerController(host, kustoWebviewFlavor);
+		const owner = controller.submitCopilotChatRequest('Show events', true)!;
+		controller.getCopilotChatEl()!.setRunning(false);
+		expect(controller.completeKustoCopilotRequest(owner)).toBe(true);
+		mocks.postMessageToHost.mockClear();
+
+		controller.getCopilotChatEl()!.dispatchEvent(new CustomEvent('copilot-clear'));
+
+		expect(controller.admitKustoCopilotConversationOwner(owner)).toBe(false);
+		expect(mocks.postMessageToHost).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: 'cancelCopilotWriteQuery' }),
+		);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'clearCopilotConversation', flavor: 'kusto', ...owner,
 		});
 	});
 });

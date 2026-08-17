@@ -14,6 +14,7 @@ import { ConversationHistoryEntry, sanitizeConversationHistory, insertMissingToo
 import { schemaCacheKey, schemaPrincipalIdentity, searchCachedSchemas } from './schemaCache';
 import { kustoDatabaseKey } from '../shared/kustoClusterUrls';
 import { getKustoConnectionIdentityKey } from '../shared/kustoAuth';
+import { createKustoCopilotClarifyingQuestionMessage } from '../shared/kustoCopilotClarificationProtocol.js';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget, DEFAULT_SCHEMA_TOKEN_BUDGET_FRACTION, PRUNE_PHASE_DESCRIPTIONS, SchemaPruneResult } from './schemaIndexUtils';
 import {
 	STORAGE_KEYS,
@@ -2533,7 +2534,7 @@ Completion:`;
 						}
 
 						const questionEntryId = this.nextHistoryEntryId(boxId);
-						history.push({
+						const historyEntry: ConversationHistoryEntry = {
 							type: 'tool-call',
 							id: questionEntryId,
 							callId: tc.callId,
@@ -2541,15 +2542,36 @@ Completion:`;
 							args: { question },
 							result: 'Question displayed to user. Awaiting response.',
 							timestamp: Date.now()
-						});
+						};
+						const clarification = createKustoCopilotClarifyingQuestionMessage(
+							kustoRequest!,
+							questionEntryId,
+							question,
+							requireToolUse ? 'calling-agent' : 'section-chat',
+						);
+						if (!clarification.ok) throw new Error(clarification.error);
+
+						if (requireToolUse) {
+							try {
+								assertActiveRequest();
+								await postRequiredRequestMessage(clarification.value);
+								assertActiveRequest();
+								history.push(historyEntry);
+								assertActiveRequest();
+								await postRequiredRequestMessage({
+									type: 'copilotWriteQueryDone', boxId, ok: true, message: '',
+								});
+							} catch (error) {
+								removeSupersededToolTurnHistory();
+								throw error;
+							}
+							return;
+						}
+
+						history.push(historyEntry);
 
 						try {
-							postRequestMessage({
-								type: 'copilotClarifyingQuestion',
-								boxId,
-								entryId: questionEntryId,
-								question
-							});
+							postRequestMessage(clarification.value);
 						} catch {
 							// ignore
 						}
@@ -2559,6 +2581,9 @@ Completion:`;
 							'View'
 						).then(selection => {
 							if (selection === 'View') {
+								const owner = this.copilotConversationOwnerByBoxId.get(boxId);
+								if (owner?.flavor !== 'kusto' || !owner.kustoRequest
+									|| !kustoCopilotRequestIdentityEquals(owner.kustoRequest, kustoRequest!)) return;
 								this.host.revealPanel();
 								// Expand and scroll to the section so the user can find the question.
 								try {

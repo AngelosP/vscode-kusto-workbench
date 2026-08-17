@@ -1066,6 +1066,7 @@ The LLM has access to two categories of tools:
 4. Tool calls are represented with consistent styling, an inspection action, and the ability to remove the response from history.
 5. Notifications not part of the conversation history have distinct styling to indicate the LLM does not see them.
 6. Each user message includes the current Kusto query from the editor (if non-blank), displayed with styling similar to tool calls and removable from history.
+7. A manual Kusto clarification remains an interactive purple card with native notification and section reveal. A clarification produced for `#askKustoCopilot` is correlated through the exact Kusto Copilot request, rendered passively in the same section history, and returned to the calling agent only after the matching `copilotWriteQueryDone` has been applied. The agent resumes by calling the tool again with the returned `openFileId` and `sectionId`; section-scoped history remains the continuation authority.
 
 ## Copilot Integration
 
@@ -1083,6 +1084,8 @@ The extension integrates with VS Code's Copilot APIs for query generation (`star
 ### VS Code Agent Tools (via `registerKustoWorkbenchTools()`)
 
 Tools are contributed in `package.json` and registered with `vscode.lm.registerTool()` in `kustoWorkbenchTools.ts`; the manifest `name` must match the registration ID. Current registrations cover connection/schema discovery, section lifecycle and configuration, query/chart/transformation/HTML/SQL configuration, delegation to Kusto or SQL Copilot, file creation, and development notes.
+
+`kustoCopilotClarificationProtocol.ts` owns the exact identity-stamped Kusto clarification and nested `clarification-required` result. Agent origin is carried atomically on one chat submission through the existing `requireToolUse` field; there is no ambient origin flag. The webview stores a matching clarification until the exact post-application done event, then settles the existing outer tool waiter once. `KustoWorkbenchToolOrchestrator` validates the nested result before consuming that waiter and appends `openFileId` from the same live file connection captured at dispatch. SQL clarification retains its existing owner-token path and is intentionally outside this Kusto-only contract.
 
 HTML dashboard-relevant tools include:
 

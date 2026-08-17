@@ -1870,6 +1870,40 @@ describe('Message Protocol Contract', () => {
 			.toBeLessThan(router.indexOf('admitOwnerSensitiveMessage(boxId, message, effects)'));
 	});
 
+	it('keeps Kusto Copilot clarification on one exact shared contract after SQL routing', () => {
+		const protocol = readWorkspaceFile('src/shared/kustoCopilotClarificationProtocol.ts');
+		expect(protocol).toContain("type: 'copilotClarifyingQuestion'");
+		expect(protocol).toContain("outcome: 'clarification-required'");
+		expect(protocol).toContain("'section-chat' | 'calling-agent'");
+		expect(protocol).not.toContain('openFileId');
+
+		const copilot = readWorkspaceFile('src/host/queryEditorCopilot.ts');
+		expect(copilot).toContain('createKustoCopilotClarifyingQuestionMessage(');
+		expect(copilot.indexOf('await postRequiredRequestMessage(clarification.value)'))
+			.toBeLessThan(copilot.indexOf('history.push(historyEntry)'));
+
+		const messageHandler = readWorkspaceFile('src/webview/core/message-handler.ts');
+		const dispatcher = messageHandler.slice(messageHandler.indexOf('const __kustoDispatchHostMessage'));
+		const sqlRouteIndex = dispatcher.indexOf('const sqlRoute =');
+		const clarificationAdmissionIndex = dispatcher.indexOf('parseKustoCopilotClarifyingQuestionMessageFromEnvelope(');
+		const outputEventIndex = dispatcher.indexOf('emitAdmittedKustoCopilotOutput(message)');
+		expect(sqlRouteIndex).toBeGreaterThanOrEqual(0);
+		expect(clarificationAdmissionIndex).toBeGreaterThan(sqlRouteIndex);
+		expect(outputEventIndex).toBeGreaterThan(clarificationAdmissionIndex);
+
+		const sqlRouter = readWorkspaceFile('src/webview/core/sql-section-message-router.ts');
+		expect(sqlRouter).toContain("'copilotClarifyingQuestion'");
+
+		const tools = readWorkspaceFile('src/host/kustoWorkbenchTools.ts');
+		const settlement = tools.slice(
+			tools.indexOf('private settleWebviewResponse('),
+			tools.indexOf('handleKustoExecutionStarted('),
+		);
+		expect(settlement.indexOf('pending.admitResult(result)'))
+			.toBeLessThan(settlement.indexOf('this.pendingResponses.delete(requestId)'));
+		expect(tools).toContain('capturedConnection.documentInfo?.openFileId');
+	});
+
 	it('keeps Kusto publication transactions on one runtime-validated shared channel', () => {
 		expect(extractTypeDiscriminants(
 			'src/shared/kustoPublicationProtocol.ts',

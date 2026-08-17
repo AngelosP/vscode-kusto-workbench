@@ -26,7 +26,7 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 Assessment date: 2026-08-16
 
-The comparison was refreshed from local `HEAD`/`main` `e251bd020cf6d8d765dd93f66ec6f3237726deb9`, whose parent is trusted-content decision commit `d545d5dfa008c7bc7f3a3ea2e677404d445424e4` and whose grandparent is repository-state reconciliation commit `00dfe98c1bd36dc613f2b89078151c75db0d8a8a`. `origin/main` and `origin/HEAD` remain at pushed PRO-25 commit `4787cd11e7d5c5d3b0ccc06bc50dd10963cf0462`, so local main is three commits ahead. Commit `d545d5d` records the product decision that every supported document and authored resource is trusted, deletes ACT/origin-trust/CSP-network roadmap work, removes `activeContentPolicy`, and preserves ordinary host capability limits plus artifact lineage/privacy/`exposeToActiveContent` checks. Commit `e251bd0` contains the complete BRW-2 implementation, tests, and architecture updates. None of the three local commits was amended, reset, overwritten, or pushed. The worktree was clean before this closure-only ledger update and now contains only that uncommitted documentation change. The comparison includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
+The comparison was refreshed from local `HEAD`/`main` `42177b35a561e7ce243ee5abcf256606b5ef742f`, whose parent is BRW-2 implementation commit `e251bd020cf6d8d765dd93f66ec6f3237726deb9`, grandparent is trusted-content decision commit `d545d5dfa008c7bc7f3a3ea2e677404d445424e4`, and great-grandparent is repository-state reconciliation commit `00dfe98c1bd36dc613f2b89078151c75db0d8a8a`. `origin/main` and `origin/HEAD` remain at pushed PRO-25 commit `4787cd11e7d5c5d3b0ccc06bc50dd10963cf0462`, so local main is four commits ahead. Commit `d545d5d` records the product decision that every supported document and authored resource is trusted, deletes ACT/origin-trust/CSP-network roadmap work, removes `activeContentPolicy`, and preserves ordinary host capability limits plus artifact lineage/privacy/`exposeToActiveContent` checks. Commit `e251bd0` contains the complete BRW-2 implementation, tests, and architecture updates. User-authored commit `42177b3` records the definitive BRW-2 closure ledger and prior explicit no-selection. None of these local commits was amended, reset, overwritten, or pushed, and the worktree was clean before this fresh readiness-pass update. The comparison includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
 The current architecture is not uniformly legacy. Several high-risk contexts already provide good models for the rest of the application.
 
@@ -151,7 +151,7 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 1/1/2/2/1/1 | 15 | Closed through COD-2; no eligible residual ownership gap |
 | - | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 1/1/2/3/4/1 | 20 | Closed through HST-42; `QueryEditorProvider` has zero direct application switch cases |
 | - | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 1/1/1/1/1/1 | 11 | Closed through DSH-2; no eligible residual ownership gap |
-| 5 | `KLS` | Custom KQL analyzer decomposition behind a language-analysis port | 1/2/2/2/2/4 | 21 | Closed through KLS-1; joined dynamic-column facts are lost, but recursive inference has no typed fact contract |
+| 5 | `KLS` | Custom KQL analyzer decomposition behind a language-analysis port | 1/2/2/2/2/4 | 21 | KLS-2 selected: the sole custom column-flow owner drops schema-known dynamic facts from recursive table/let/join/lookup/union inference |
 | 6 | `BRW` | Real browser read-only composition root | 1/2/2/2/1/1 | 17 | Closed through BRW-2; remaining plugin-port and browser CSV-adapter differences have no bounded ownership red |
 
 Bundle headroom is a release constraint and must remain gated, but it is not itself an ownership architecture. Large domain algorithms are not automatically gaps when they have one owner and focused contracts.
@@ -385,7 +385,7 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 
 **Golden outcome:** language analysis is a replaceable adapter behind a typed request/result contract.
 
-**Status:** closed through KLS-1.
+**Status:** KLS-1 is closed. KLS-2 is selected next and not started.
 
 **Current alignment:**
 
@@ -394,7 +394,9 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 - Fully Qualify validates standalone exact UTF-16 ranges, ordering, uniqueness, and non-overlap before replacing; malformed, empty, or failed responses leave source text unchanged.
 - Focused regressions cover aliases, wrappers, functions, scalar-query wrappers, union forms, management commands, lexical shadowing, wildcard/qualified/function exclusions, CRLF offsets, strings/comments, and hostile ranges.
 
-**Remaining divergence:** full semantic column-flow analysis remains a best-effort diagnostics concern in `service.ts`; Monaco-Kusto worker/schema behavior remains a separate mature adapter. Joined or looked-up right-hand dynamic columns currently enter the name set without their dynamic type fact because recursive tabular inference returns only `Set<string>`. A future slice must define one typed recursive column-fact result across table, let, join, lookup, and union inference rather than add a member-access exemption. Neither residual is a second physical-source owner.
+**Remaining divergence:** full semantic column-flow analysis remains a best-effort diagnostics concern in `service.ts`; Monaco-Kusto worker/schema behavior remains a separate mature adapter. Joined or looked-up right-hand dynamic columns currently enter the name set without their dynamic type fact because recursive tabular inference returns only `Set<string>`. KLS-2 defines one private typed recursive column-fact result across physical tables, lexically visible lets, join, lookup, and union inference rather than adding a member-access exemption. It preserves current exact names, diagnostic ranges, join output modes, lookup key exclusion, union name behavior, the existing case-insensitive `dynamic` / `System.Object` / `object` classification, and conservative unknown typing for computed or conflicting outputs. Source analysis, Monaco-Kusto diagnostics/autocomplete, schemas, protocols, and host adapters remain outside the slice.
+
+**Selection evidence:** `KqlLanguageService.getDiagnostics()` is the sole host custom column-flow owner. A no-edit executable probe over `LeftTable | join kind=leftouter (Right) on Id | where Payload.child == "x" and Missing == 1`, where `Right` projects schema-typed dynamic `Payload`, currently returns both `Unknown column child` and the valid control `Unknown column Missing`. The cheap retained red adds a non-dynamic `Label.notDynamic` control and requires exact unknown-member diagnostics only for `notDynamic` and `Missing`. The change can remain private to `service.ts`, with focused coverage in `kqlDiagnostics.test.ts` and bounded adjacent source-analysis, schema-inference, protocol, and request-handler tests.
 
 ## Completed Iteration Detail
 
@@ -1130,7 +1132,7 @@ The final focused ring passed 2 files and 11 tests; the expanded owner/message-p
 
 ### Iteration `BRW-2`: Application-Acknowledged Browser Presentation Generation
 
-**Status:** closed on 2026-08-16 with definitive `VERDICT: NO BRW-2 BLOCKER`. The implementation, tests, and initial architecture updates are committed locally at `e251bd020cf6d8d765dd93f66ec6f3237726deb9`; its parent is `d545d5dfa008c7bc7f3a3ea2e677404d445424e4`. No closure-documentation commit or push was requested or performed.
+**Status:** closed on 2026-08-16 with definitive `VERDICT: NO BRW-2 BLOCKER`. The implementation, tests, and initial architecture updates are committed locally at `e251bd020cf6d8d765dd93f66ec6f3237726deb9`; its parent is `d545d5dfa008c7bc7f3a3ea2e677404d445424e4`. The user later committed the closure ledger locally at `42177b35a561e7ce243ee5abcf256606b5ef742f`; neither BRW-2 commit is in `origin/main`.
 
 **Boundary:** `BrowserViewerRoot` is the sole root-lifetime bound generation, pending/adopted/invalid-terminal state, presentation-settlement, and parent-acknowledgement decision owner. A first valid projection binds its generation and becomes pending. Only the exact canonical applied event promotes it to adopted and emits a generation-correlated acknowledgement. Rejection or a thrown presentation clears only pending-attempt state without acknowledgement, so the bound generation can be presented again while another generation remains stale. An exact adopted duplicate re-acknowledges without replay. Invalid parsed payloads bind their generation and remain terminally acknowledged.
 
@@ -1532,7 +1534,7 @@ Built-browser verification against the rebuilt `browser-ext/dist` proves exact a
 
 ### Iteration `PRO-17`: Runtime-Validated Kusto Connections Snapshot Channel
 
-**Status:** closed on 2026-08-13. The definitive blocker review returned `VERDICT: NO PRO-17 BLOCKER`. No commit or push was requested or performed.
+**Status:** closed on 2026-08-13. The definitive blocker review returned `VERDICT: NO PRO-17 BLOCKER`. At closure no commit or push was requested; implementation commit `b3bdb4549377005e78f1e18d6432b590494243b3` is now an ancestor of pushed PRO-25.
 
 **Boundary:** `src/shared/kustoConnectionsProjectionProtocol.ts` is the sole type/runtime-admission owner for webview request `getConnections` and host delivery `connectionsData`. Host and webview unions reference it. `postMessageToHost()` captures one stable top-level envelope, validates and captures recognized requests before E2E/transport, and `HostKustoConnectionBrowsingApplicationHandler` repeats admission before HST-40 effects. `HostKustoConnectionsProjectionApplicationHandler` constructs a typed canonical snapshot, publishes absent selections as `null`, descriptor-captures complete application values, and preserves its existing physical-identity reads, policy lock, correlated retry, application acknowledgement, development isolation, revision tail, and disposal.
 
@@ -1550,7 +1552,7 @@ Built-browser verification against the rebuilt `browser-ext/dist` proves exact a
 
 ### Iteration `CMP-2`: Shared Compatibility Projection And Reload Coordinator
 
-**Status:** closed on 2026-08-13. The definitive blocker review returned `VERDICT: NO CMP-2 BLOCKER`. No commit or push was requested or performed.
+**Status:** closed on 2026-08-13. The definitive blocker review returned `VERDICT: NO CMP-2 BLOCKER`. At closure no commit or push was requested; implementation commit `46bd5d1be15b667940c38b462eb27ec8ac09fd9f` is now an ancestor of pushed PRO-25.
 
 **Boundary:** one panel-scoped `CompatSidecarProjectionCoordinator` now owns monotonic projection generation reservation, the generation-zero pre-initial baseline, active/pending source identity, same-source pending-projection supersession, bounded initial retry/coalescing plus one requested follow-up, `documentReloadResult` currentness, `persistDocument` source-generation admission, source-reload authority, and terminal rollback-failure fencing for both KQL and SQL compatibility providers. Reload waiters remain `CompatSidecarSession` primitives and are reserved lazily after language-specific preparation, immediately before transport, so sanitation time does not consume their five-second deadline.
 
@@ -1578,7 +1580,7 @@ Built-browser verification against the rebuilt `browser-ext/dist` proves exact a
 
 ### Iteration `PRO-18`: Runtime-Validated Query Sharing Channel
 
-**Status:** closed on 2026-08-13 with definitive `VERDICT: NO PRO-18 BLOCKER`. The initial implementation review returned `VERDICT: NO PRO-18 IMPLEMENTATION BLOCKER`; the first documentation-aware review found and drove canonical-array hardening plus isolated bundle measurement, and the definitive re-review found no remaining blocker. No commit or push was requested or performed.
+**Status:** closed on 2026-08-13 with definitive `VERDICT: NO PRO-18 BLOCKER`. The initial implementation review returned `VERDICT: NO PRO-18 IMPLEMENTATION BLOCKER`; the first documentation-aware review found and drove canonical-array hardening plus isolated bundle measurement, and the definitive re-review found no remaining blocker. At closure no commit or push was requested; implementation commit `17cf579f4e388521cf21355a7997dfea974507c4` is now an ancestor of pushed PRO-25.
 
 **Boundary:** `src/shared/querySharingProtocol.ts` is the sole descriptor-safe type/runtime-admission owner for webview requests `copyAdeLink` and `shareToClipboard` plus host delivery `shareContentReady`. Host and webview unions reference the shared request union. `postMessageToHost()` descriptor-captures before E2E capture or VS Code transport; `HostQuerySharingApplicationHandler` repeats admission before connection lookup, gzip/base64 ADX encoding, or Kusto/SQL formatting and publishes only a typed, revalidated delivery. The central dispatcher admits that delivery before `ClipboardItem`, rich clipboard, or plain-text fallback effects.
 
@@ -1638,7 +1640,7 @@ Built-browser verification against the rebuilt `browser-ext/dist` proves exact a
 
 ### Iteration `DOC-7`: Host-Owned Development-Note State
 
-**Status:** closed on 2026-08-14 with definitive `VERDICT: NO DOC-7 BLOCKER`. The final implementation review returned `VERDICT: NO DOC-7 IMPLEMENTATION BLOCKER`. No commit or push was requested or performed.
+**Status:** closed on 2026-08-14 with definitive `VERDICT: NO DOC-7 BLOCKER`. The final implementation review returned `VERDICT: NO DOC-7 IMPLEMENTATION BLOCKER`. At closure no commit or push was requested; implementation commit `491c8c1d0c835fb8d6e7fe71c08e5571bf6b0321` is now an ancestor of pushed PRO-25.
 
 **Boundary:** `developmentNoteSectionDefinition.ts` owns persisted Development Note section and entry validation, deep cloning, and entries patches. Hidden `devnotes` joins Markdown, URL, Python, Chart, Transformation, and HTML inside the existing `MarkdownDocumentAggregate`, optimistic full-projection client, version-1 document-view channel, physical URI queue, acknowledged projection, and Save barrier. Native restore, panel recreation, state reads, and Save derive notes from the acknowledged host projection; the old native passthrough field and direct `schedulePersist('devnotes-update')` authority are absent.
 
@@ -1654,7 +1656,7 @@ Built-browser verification against the rebuilt `browser-ext/dist` proves exact a
 
 ### Iteration `PRO-22`: Runtime-Validated Development-Note Mutation Channel
 
-**Status:** closed on 2026-08-14 with definitive `VERDICT: NO PRO-22 BLOCKER`. The earlier implementation review returned `VERDICT: NO PRO-22 IMPLEMENTATION BLOCKER`. No commit or push was requested or performed.
+**Status:** closed on 2026-08-14 with definitive `VERDICT: NO PRO-22 BLOCKER`. The earlier implementation review returned `VERDICT: NO PRO-22 IMPLEMENTATION BLOCKER`. At closure no commit or push was requested; implementation commit `8b3211243fb3e15f08395a6eaeb7616212e568d3` is now an ancestor of pushed PRO-25.
 
 **Boundary:** `src/shared/developmentNoteMutationProtocol.ts` is the sole descriptor-safe type/runtime-admission owner for exact add, supersede, and remove `updateDevNotes` requests plus only their correlated `toolResponse` subset. Both Copilot and agent producers construct canonical requests before waiter, timer, or transport effects, so caller payloads cannot overwrite generated type or correlation identity. Main-webview ingress validates the original descriptor snapshot before document-runtime, native aggregate, or KQL/SQL companion effects. Every mutation terminal is built through one typed response constructor.
 
@@ -1686,7 +1688,7 @@ Built-browser verification against the rebuilt `browser-ext/dist` proves exact a
 
 ### Iteration `PRO-24`: Runtime-Validated Kusto Execution-Start Handshake
 
-**Status:** closed on 2026-08-15 with definitive `VERDICT: NO PRO-24 BLOCKER`. The final implementation review returned `VERDICT: NO PRO-24 IMPLEMENTATION BLOCKER`. No commit or push was requested or performed.
+**Status:** closed on 2026-08-15 with definitive `VERDICT: NO PRO-24 BLOCKER`. The final implementation review returned `VERDICT: NO PRO-24 IMPLEMENTATION BLOCKER`. At closure no commit or push was requested; implementation commit `465386b4c3973a18ef692823d29f96a71c555feb` is now an ancestor of pushed PRO-25.
 
 **Boundary:** `src/shared/kustoExecutionStartProtocol.ts` is the sole descriptor-safe type, constructor, and runtime-admission owner for exact `kustoExecutionStarted` and `kustoExecutionStartedAck`. Host construction captures the reservation before waiter/timer/transport effects. Main startup and standalone ingress admit the original descriptor snapshot before queueing, correlated reentrancy, tracing, or routing. The webview admits before section lookup, target/predecessor checks, comparison binding, `beginQueryExecution()`, acknowledgement, or events; acknowledgements use a scalar-only typed constructor and validate before E2E/transport. Host acknowledgement admission precedes exact ledger lookup, deletion, timer cancellation, and settlement.
 
@@ -1710,16 +1712,37 @@ Built-browser verification against the rebuilt `browser-ext/dist` proves exact a
 
 ## Next Iteration
 
-**Status:** no architecture iteration is selected. Final post-BRW-2 scores are PRO 35, DOC 34, EXA 32, CMP 29, KLS 21, and BRW 17.
+### Iteration `KLS-2`: Typed Recursive Column Facts
 
-- PRO remains explicitly deferred with no PRO-26. `parseKqlxText()` validates trimmed section IDs while retaining original section records, and SQL comparison preparation, registry, persistence, sanitation, routing, artifacts, and restore independently normalize identity. The withdrawn protocol-only SQL comparison patch remains invalid because it cannot establish one truthful canonical owner or preservation boundary.
-- DOC remains explicitly deferred with no DOC-8. Native Kusto and SQL serializers still combine Monaco text, target hints, presentation, run settings, result artifacts, privacy identity, and comparison state; moving a partial record would create dual authority.
-- EXA remains explicitly deferred with no EXA-3. Manual SQL terminals use fire-and-forget transport, Copilot has both required and fire-and-forget publication branches, and webview settlement precedes result rendering/artifact admission. No shared manual/Copilot acknowledgement owner defines retry, cancellation, owner retention, or artifact restoration.
-- CMP still lacks the durable split-save recovery record, restart admission, conflict-safe repair, and close interaction required for a complete reversible Save slice.
-- KLS still lacks one typed recursive column-fact contract across table, `let`, `join`, `lookup`, and `union` inference.
-- BRW is closed through BRW-2. The remaining plugin-port and CSV-adapter differences have no concrete bounded ownership failure and do not justify another iteration.
+**Status:** selected next and not started. Final post-BRW-2 theme scores remain PRO 35, DOC 34, EXA 32, CMP 29, KLS 21, and BRW 17. The higher-scoring themes failed readiness; KLS is the first candidate in the required order that satisfies every selection gate.
 
-Resume architecture implementation only after a fresh pass gives one remaining candidate a canonical owner, exact preservation boundary, cheap discriminating red, bounded adjacent coverage, and reversible implementation.
+**Fresh readiness pass:**
+
+- **PRO:** no PRO-26. `parseKqlxText()` validates trimmed section IDs while retaining original section records, and SQL comparison preparation, registry, persistence, sanitation, routing, artifacts, and restore independently normalize identity. The withdrawn protocol-only SQL comparison patch remains invalid because it cannot establish one truthful canonical owner or preservation boundary.
+- **DOC:** no DOC-8. Native Kusto and SQL serializers still combine Monaco text, target hints, presentation, run settings, result artifacts, privacy identity, comparison state, and Copilot layout. Moving a partial record would create dual authority; moving either complete record is not bounded.
+- **EXA:** no EXA-3. Manual SQL terminals ignore a `false` transport result, Copilot has required and best-effort publication branches, and webview SQL settlement precedes result rendering and artifact admission. No shared acknowledgement owner defines retry, cancellation, owner retention, or artifact restoration.
+- **CMP:** no CMP-4. KQL and SQL still duplicate native Save callbacks, ordinary primary-save/sidecar failure writes no durable disposition, and startup has no recovery-record admission. A complete slice first needs a journal schema, restart admission, conflict-safe repair, and close interaction.
+- **KLS:** ready. `KqlLanguageService.getDiagnostics()` is one canonical owner; the exact boundary is host custom column-flow facts only; the failing check is pure and deterministic; adjacent coverage is bounded; and the implementation is a private reversible representation change.
+- **BRW:** not reopened. No new browser ownership failure appeared, so BRW-2 remains definitively closed and no BRW-3 exists.
+
+**Canonical owner and hypothesis:** `KqlLanguageService.getDiagnostics()` in `service.ts` remains the sole custom column-flow decision owner. If recursive tabular inference carries exact column names plus conservative schema-known type facts, then dynamic member access remains valid after physical-table, lexically visible `let`, join, lookup, and union flow without suppressing member diagnostics on non-dynamic or unknown columns.
+
+**Required red:** add one pure `kqlDiagnostics.test.ts` case using `RightTable.Payload: dynamic` and `RightTable.Label: string`:
+
+```kql
+let Right = RightTable | project Id, Payload, Label;
+LeftTable
+| join kind=leftouter (Right) on Id
+| where Payload.child == "x" and Label.notDynamic == "x" and Missing == 1
+```
+
+Require exact `KW_UNKNOWN_COLUMN` ranges for `notDynamic` and `Missing`, but none for `child`. Current behavior additionally reports `child`, so the test discriminates typed propagation from a blanket joined-member exemption.
+
+**Preservation boundary:** keep `sourceAnalysis.ts` as the sole lexical/source owner and preserve exact diagnostic protocol shapes, positions, name casing/order, current name propagation, join left/right/both modes, deduplicated right-side suffixes, lookup right-key exclusion, union inner/outer name behavior, let-cycle containment, and the current case-insensitive `dynamic` / `System.Object` / `object` classification, including its existing containing forms. Preserve every existing diagnostic except a member token whose root now carries a proven dynamic fact. Preserve dynamic facts only through unambiguous identity flow; computed `extend`, assigned `project`, aggregate `summarize`, conflicting union facts, and otherwise unknown outputs remain conservatively untyped. Do not touch Monaco-Kusto worker diagnostics or autocomplete, webview routing, schemas, protocols, files, execution, or browser behavior.
+
+**Bounded coverage and reversibility:** implement only a private fact representation inside `service.ts`. Add focused cases for physical tables, alias chains and lexical redeclaration, cycles, identity project, computed-output fact clearing, join modes and duplicate suffixing, lookup key exclusion, and inner/outer union conflicts. Run `kqlDiagnostics.test.ts` first, then the mandated bounded ring: `kqlSourceAnalysis.test.ts`, `kqlSchemaInference.test.ts`, `kql-table-reference-ranges.test.ts`, `kql-language-protocol.test.ts`, `kqlLanguageRequestApplicationHandler.test.ts`, `queryEditorProviderKqlLanguageRequestHandler.test.ts`, `kw-query-toolbar-share.test.ts`, and `kusto-schema-ownership.test.ts`, with one worker. Revert remains local because no public type, protocol, adapter, or persisted format changes.
+
+Stop after definitive KLS-2 closure and a fresh rescore. Do not begin another iteration in the same implementation pass.
 
 ## Convergence Loop
 

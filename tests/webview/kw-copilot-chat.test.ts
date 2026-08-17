@@ -298,6 +298,45 @@ describe('kw-copilot-chat — send/cancel', () => {
 		expect(last.text).toContain('Type what you want');
 	});
 
+	it('submits one agent request atomically without changing a manual draft', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		const ta = getShadowEl(el, 'textarea') as HTMLTextAreaElement;
+		ta.value = 'unfinished manual draft';
+		const handler = vi.fn();
+		el.addEventListener('copilot-send', handler as any);
+
+		expect(el.submitProgrammaticRequest('Agent request', true)).toBe(true);
+
+		expect(ta.value).toBe('unfinished manual draft');
+		expect(handler).toHaveBeenCalledOnce();
+		expect((handler.mock.calls[0][0] as CustomEvent).detail).toMatchObject({
+			text: 'Agent request', requireToolUse: true,
+		});
+		expect(getMessages(el).at(-1)).toMatchObject({ kind: 'user', text: 'Agent request' });
+	});
+
+	it('rejects blank and busy programmatic requests without leaking origin to manual send', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		const ta = getShadowEl(el, 'textarea') as HTMLTextAreaElement;
+		const handler = vi.fn();
+		el.addEventListener('copilot-send', handler as any);
+
+		expect(el.submitProgrammaticRequest('  ', true)).toBe(false);
+		el.setRunning(true);
+		expect(el.submitProgrammaticRequest('Agent request', true)).toBe(false);
+		expect(handler).not.toHaveBeenCalled();
+
+		el.setRunning(false);
+		ta.value = 'Manual request';
+		(getShadowEl(el, '.send-btn') as HTMLButtonElement).click();
+		expect(handler).toHaveBeenCalledOnce();
+		expect((handler.mock.calls[0][0] as CustomEvent).detail).toMatchObject({
+			text: 'Manual request', requireToolUse: false,
+		});
+	});
+
 	it('dispatches copilot-cancel when running and clicked', async () => {
 		const el = createChat();
 		await waitUpdate(el);
@@ -858,6 +897,52 @@ describe('kw-copilot-chat — clarifying question rendering', () => {
 		await waitUpdate(el);
 		const removeBtn = getShadowEl(el, '.msg-clarifying-question .remove-btn');
 		expect(removeBtn).toBeTruthy();
+	});
+
+	it('manual clarification focuses input and follows the message scroll', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		const scroll = vi.spyOn(el as any, '_autoScrollIfPinned');
+
+		el.appendClarifyingQuestion('What table?', 'cq-manual');
+		await waitUpdate(el);
+
+		expect(el.shadowRoot?.activeElement).toBe(getShadowEl(el, 'textarea'));
+		expect(scroll).toHaveBeenCalled();
+	});
+
+	it('focuses a manual clarification after running state clears', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		const textarea = getShadowEl(el, 'textarea') as HTMLTextAreaElement;
+		el.setRunning(true);
+		await waitUpdate(el);
+
+		el.appendClarifyingQuestion('What table?', 'cq-running');
+		await waitUpdate(el);
+		expect(textarea.disabled).toBe(true);
+		expect(el.shadowRoot?.activeElement).not.toBe(textarea);
+
+		el.setRunning(false);
+		await waitUpdate(el);
+		expect(textarea.disabled).toBe(false);
+		expect(el.shadowRoot?.activeElement).toBe(textarea);
+	});
+
+	it('calling-agent clarification remains passive without focus or auto-scroll', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		const outside = document.createElement('button');
+		document.body.appendChild(outside);
+		outside.focus();
+		const scroll = vi.spyOn(el as any, '_autoScrollIfPinned');
+
+		el.appendClarifyingQuestion('What table?', 'cq-agent', false);
+		await waitUpdate(el);
+
+		expect(document.activeElement).toBe(outside);
+		expect(scroll).not.toHaveBeenCalled();
+		expect(getShadowEl(el, '.msg-clarifying-question')?.textContent).toContain('What table?');
 	});
 });
 

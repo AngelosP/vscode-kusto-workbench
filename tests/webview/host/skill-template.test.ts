@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
-import { createSkillExportFiles, HTML_DASHBOARD_RULES_FILENAME, SKILL_FILENAME, TEMPLATE_VERSION } from '../../../src/host/skillExport';
+import { createSkillExportFiles, HTML_DASHBOARD_RULES_FILENAME, isSkillTemplateCurrent, SKILL_FILENAME, TEMPLATE_VERSION } from '../../../src/host/skillExport';
 
 function readWorkspaceFile(relativePath: string): string {
 	return readFileSync(path.join(process.cwd(), relativePath), 'utf8');
@@ -15,8 +15,10 @@ describe('exported Kusto Workbench skill template', () => {
 	const exportedDashboardRules = exportedFiles.find(file => file.fileName === HTML_DASHBOARD_RULES_FILENAME)?.content ?? '';
 
 	it('is bumped to the current template version', () => {
-		expect(TEMPLATE_VERSION).toBe(13);
-		expect(template).toContain('# version: 13 - Auto-updated by Kusto Workbench. Do not remove this line.');
+		expect(TEMPLATE_VERSION).toBe(15);
+		expect(template).toContain('# version: 15 - Auto-updated by Kusto Workbench. Do not remove this line.');
+		expect(isSkillTemplateCurrent(14)).toBe(false);
+		expect(isSkillTemplateCurrent(15)).toBe(true);
 	});
 
 	it('exports the compact skill and dashboard rules sidecar separately', () => {
@@ -39,6 +41,19 @@ describe('exported Kusto Workbench skill template', () => {
 			'getSqlSchema',
 		]) {
 			expect(exportedSkill).toContain(toolName);
+		}
+	});
+
+	it('requires clarification to return to the user and resume the exact section conversation', () => {
+		for (const content of [
+			exportedSkill,
+			readWorkspaceFile('copilot-instructions/custom-agent.md'),
+			readWorkspaceFile('copilot-instructions/custom-subagent-search.md'),
+		]) {
+			expect(content).toContain('clarification-required');
+			expect(content).toContain('sectionId');
+			expect(content).toContain('openFileId');
+			expect(content).toMatch(/Do not (infer|guess)/);
 		}
 	});
 
