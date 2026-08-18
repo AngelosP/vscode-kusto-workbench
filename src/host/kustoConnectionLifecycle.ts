@@ -6,6 +6,7 @@ import { getKustoConnectionIdentityKey } from '../shared/kustoAuth';
 export interface KustoConnectionLifecycleEffects {
 	invalidateConnections(connectionIds: readonly string[]): void;
 	invalidatePhysicalTargets?(connectionIds: readonly string[]): void;
+	invalidatePersistence?(): void;
 	publishIdentityChange(connectionIds: readonly string[]): unknown | PromiseLike<unknown>;
 	refreshConnections(): unknown | PromiseLike<unknown>;
 }
@@ -52,12 +53,14 @@ export class KustoConnectionLifecycle implements vscode.Disposable {
 				this.effects.invalidatePhysicalTargets?.(invalidated);
 				this.effects.invalidateConnections(invalidated);
 			}
+			this.effects.invalidatePersistence?.();
 			this.enqueue(() => this.handleChange(invalidated));
 		});
 		if (typeof connectionManager.onDidChangeLeaveNoTrace === 'function') {
 			this.leaveNoTraceSubscription = connectionManager.onDidChangeLeaveNoTrace(change => {
 				const invalidated = [...new Set(change.connectionIds.filter(Boolean))];
 				if (invalidated.length > 0) this.effects.invalidateConnections(invalidated);
+				this.effects.invalidatePersistence?.();
 				this.enqueue(() => this.handleLeaveNoTraceChange());
 			});
 		}

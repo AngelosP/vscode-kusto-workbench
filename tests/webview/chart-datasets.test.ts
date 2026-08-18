@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { __kustoGetChartDatasetsInDomOrder, __kustoRefreshAllDataSourceDropdowns, removeHtmlBox } from '../../src/webview/core/section-factory';
-import { htmlDashboardFactArtifactConsumerId } from '../../src/shared/resultArtifact.js';
+import { htmlDashboardFactArtifactConsumerId, toPersistedResultArtifact } from '../../src/shared/resultArtifact.js';
+import {
+	HostPersistedResultSanitizationApplicationHandler,
+	type PersistedResultSanitizationApplicationHandlerOptions,
+} from '../../src/host/persistedResultSanitizationApplicationHandler.js';
 import '../../src/webview/sections/kw-url-section.js';
 import type { KwUrlSection } from '../../src/webview/sections/kw-url-section.js';
 import {
@@ -22,6 +26,7 @@ import {
 	getCurrentResultArtifact,
 	setResultsState,
 } from '../../src/webview/core/results-state';
+import { rebindChartResultArtifactBinding } from '../../src/webview/shared/chart-renderer.js';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -228,6 +233,77 @@ describe('__kustoGetChartDatasetsInDomOrder', () => {
 		expect(datasets).toHaveLength(1);
 		expect((datasets[0].columns[0] as { name: string }).name).toBe('Value');
 		expect(datasets[0].rows).toEqual([['published']]);
+	});
+
+	it('keeps migrated cached rows available to a dependent chart after reopen', async () => {
+		const connection = {
+			id: 'legacy-chart-owner', name: 'Legacy chart owner',
+			clusterUrl: 'https://legacy-chart.kusto.windows.net',
+		};
+		const kustoSnapshot = {
+			clusterKeys: [] as string[], globallyBlocked: false, version: 1,
+			revocationGenerations: {} as Record<string, number>,
+		};
+		const sqlSnapshot = {
+			policy: { connectionIds: [], version: 1, globallyBlocked: false, revocationGenerations: {} },
+			connections: [], connectionVersion: 1, accountsByServer: {}, principalVersion: 1,
+		};
+		const handler = new HostPersistedResultSanitizationApplicationHandler({
+			connectionManager: {
+				getConnections: () => [connection],
+				runWithLeaveNoTraceSnapshotLock: async run => await run(kustoSnapshot),
+			},
+			kustoClient: { getAccountPartition: () => 'partition-chart' },
+			sqlConnectionManager: { getConnection: () => undefined, getConnections: () => [] },
+			sqlLifecycle: {
+				reconcileComparisonOwners: () => undefined,
+				getComparisonOwner: () => undefined,
+				getConnectionId: () => undefined,
+			},
+			sqlWorkbench: {
+				isLeaveNoTraceConnection: () => false,
+				retrySqlOwnerSnapshotAcquisition: async acquire => (await acquire()).value,
+				tryDispatchSqlOwnerSnapshot: async run => ({ acquired: true, value: await run(sqlSnapshot) }),
+				tryRunWithSqlOwnerSnapshotLock: async run => ({ acquired: true, value: await run(sqlSnapshot) }),
+			},
+		} as unknown as PersistedResultSanitizationApplicationHandlerOptions);
+		const resultJson = JSON.stringify({
+			columns: [{ name: 'Category', type: 'string' }, { name: 'Value', type: 'long' }],
+			rows: [['retained', 42]],
+			metadata: { cluster: 'legacy-chart', database: 'Db' },
+		});
+		const legacyState = { sections: [{
+			id: 'query_legacy_chart', type: 'query', query: 'print Category="retained", Value=42',
+			clusterUrl: connection.clusterUrl, connectionIdHint: connection.id, database: 'Db', resultJson,
+		}] };
+
+		try {
+			const migrated = await handler.sanitizeSqlLeaveNoTraceStateFresh(legacyState);
+			const reopened = await handler.sanitizeSqlLeaveNoTraceStateFresh(migrated);
+			expect(reopened).toBe(migrated);
+			setupDom([
+				{ id: 'query_legacy_chart', name: 'Migrated source', tag: 'kw-query-section' },
+				{ id: 'chart_legacy_cache', name: 'Dependent chart', tag: 'kw-chart-section' },
+			]);
+			setResultsState('query_legacy_chart', JSON.parse(resultJson));
+			const restoredArtifact = getCurrentResultArtifact('query_legacy_chart');
+			expect(restoredArtifact?.rows).toEqual([['retained', 42]]);
+			expect(toPersistedResultArtifact(restoredArtifact)).toMatchObject({
+				version: 1, sourceBoxId: 'query_legacy_chart', revision: 1,
+			});
+
+			const datasets = __kustoGetChartDatasetsInDomOrder();
+			expect(datasets).toEqual([
+				expect.objectContaining({ id: 'query_legacy_chart', rows: [['retained', 42]] }),
+			]);
+			rebindChartResultArtifactBinding('chart_legacy_cache', 'query_legacy_chart');
+			expect(getBoundResultArtifact('chart_legacy_cache', 'query_legacy_chart')?.rows)
+				.toEqual([['retained', 42]]);
+		} finally {
+			handler.dispose();
+			clearResultsState('query_legacy_chart');
+			teardownDom();
+		}
 	});
 
 	// Regression: collapsed transformation sections must still appear as data

@@ -9,11 +9,61 @@ import { normalizeSqlServerUrl } from './sql/sqlAuthState';
 import type { SqlOwnerSnapshot, SqlWorkbenchService } from './sql/sqlWorkbenchService';
 import { canonicalSectionKind } from '../shared/documentSectionCapabilities';
 import { resolveKustoConnection } from '../shared/kustoAuth';
-import { kustoClusterKey } from '../shared/kustoClusterUrls';
+import { kustoClusterKey, kustoDatabaseKey } from '../shared/kustoClusterUrls';
 import { sqlConnectionTargetSignatureMatches } from '../shared/sqlConnectionIdentity';
 import type { KustoLeaveNoTracePolicySnapshot } from './kustoLeaveNoTracePolicyStore';
 
 type PersistedResultState = { sections?: unknown[] };
+
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+	return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function legacyKustoResultTargetMatches(resultJson: unknown, clusterUrl: string, database: string): boolean {
+	if (typeof resultJson !== 'string' || !resultJson.trim()) return false;
+	try {
+		const parsed = JSON.parse(resultJson) as { metadata?: unknown };
+		if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+			|| !parsed.metadata || typeof parsed.metadata !== 'object' || Array.isArray(parsed.metadata)) {
+			return false;
+		}
+		const metadata = parsed.metadata as Record<string, unknown>;
+		if (typeof metadata.cluster !== 'string' || typeof metadata.database !== 'string') return false;
+		const persistedTarget = kustoDatabaseKey(metadata.cluster, metadata.database);
+		return !!persistedTarget && persistedTarget === kustoDatabaseKey(clusterUrl, database);
+	} catch {
+		return false;
+	}
+}
+
+function isParseablePersistedResultJson(resultJson: unknown): boolean {
+	if (typeof resultJson !== 'string' || !resultJson.trim()) return false;
+	try {
+		const parsed = JSON.parse(resultJson);
+		return !!parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+	} catch {
+		return false;
+	}
+}
+
+export function hasDeferredLegacyKustoResults(state: PersistedResultState): boolean {
+	const sections = Array.isArray(state?.sections) ? state.sections : [];
+	const sectionsById = new Map(sections
+		.filter((section): section is Record<string, unknown> => !!section && typeof section === 'object')
+		.map(section => [String(section.id || '').trim(), section] as const)
+		.filter(([id]) => !!id));
+	return sections.some(section => {
+		if (!section || typeof section !== 'object' || Array.isArray(section)) return false;
+		const record = section as Record<string, unknown>;
+		if (canonicalSectionKind(record.type) !== 'query'
+			|| !hasOwn(record, 'resultJson')
+			|| hasOwn(record, 'kustoAccountPartition')
+			|| hasOwn(record, 'kustoLeaveNoTraceRevision')) return false;
+		const sourceBoxId = String(record.comparisonSourceBoxId || '').trim();
+		const source = sourceBoxId ? sectionsById.get(sourceBoxId) : undefined;
+		return canonicalSectionKind(source?.type) !== 'sql';
+	});
+}
 
 export interface PersistedResultSanitizationApplicationHandler {
 	readonly onDidInvalidateSqlPersistence: vscode.Event<void>;
@@ -75,7 +125,11 @@ export class HostPersistedResultSanitizationApplicationHandler
 			const sectionType = String(record.type || '');
 			const persistedSourceBoxId = String(record.comparisonSourceBoxId || '').trim();
 			const persistedSource = persistedSourceBoxId ? sectionsById.get(persistedSourceBoxId) : undefined;
-			if (persistedSourceBoxId && !persistedSource && 'resultJson' in record) {
+			const unresolvedLegacyKustoCandidate = canonicalSectionKind(record.type) === 'query'
+				&& !hasOwn(record, 'kustoAccountPartition')
+				&& !hasOwn(record, 'kustoLeaveNoTraceRevision');
+			if (persistedSourceBoxId && !persistedSource && 'resultJson' in record
+				&& !unresolvedLegacyKustoCandidate) {
 				changed = true;
 				const clone = { ...record };
 				delete clone.resultJson;
@@ -212,67 +266,154 @@ export class HostPersistedResultSanitizationApplicationHandler
 		state: T,
 		snapshot: KustoLeaveNoTracePolicySnapshot,
 	): T {
+		type KustoResultDecision =
+			| Readonly<{ kind: 'untouched' | 'preserve' | 'strip' | 'unavailable'; restorable: false }>
+			| Readonly<{ kind: 'keep'; restorable: boolean }>
+			| Readonly<{ kind: 'adopt'; restorable: true; accountPartition: string; leaveNoTraceRevision: number }>;
 		const sections = Array.isArray(state?.sections) ? state.sections : [];
 		const sectionsById = new Map(sections
 			.filter((section): section is Record<string, unknown> => !!section && typeof section === 'object')
 			.map(section => [String(section.id || '').trim(), section] as const));
 		const protectedClusters = new Set(snapshot.clusterKeys);
 		const connections = this.options.connectionManager.getConnections();
+		const decisions = new Map<Record<string, unknown>, KustoResultDecision>();
+		const evaluate = (
+			record: Record<string, unknown>,
+			visiting = new Set<Record<string, unknown>>(),
+		): KustoResultDecision => {
+			const cached = decisions.get(record);
+			if (cached) {
+				return cached;
+			}
+			const hasPersistedAccountPartition = hasOwn(record, 'kustoAccountPartition');
+			const hasPersistedLeaveNoTraceRevision = hasOwn(record, 'kustoLeaveNoTraceRevision');
+			const legacy = !hasPersistedAccountPartition && !hasPersistedLeaveNoTraceRevision;
+			if (!hasOwn(record, 'resultJson')) {
+				return { kind: 'unavailable', restorable: false };
+			}
+			if (canonicalSectionKind(record.type) !== 'query') {
+				return { kind: 'untouched', restorable: false };
+			}
+			if (visiting.has(record)) {
+				return legacy
+					? { kind: 'preserve', restorable: false }
+					: { kind: 'strip', restorable: false };
+			}
+			visiting.add(record);
+			try {
+				const sourceBoxId = String(record.comparisonSourceBoxId || '').trim();
+				const source = sourceBoxId ? sectionsById.get(sourceBoxId) : undefined;
+				const sourceKind = canonicalSectionKind(source?.type);
+				if (sourceBoxId && sourceKind === 'sql') {
+					const decision = { kind: 'untouched', restorable: false } as const;
+					decisions.set(record, decision);
+					return decision;
+				}
+				if (sourceBoxId && sourceKind !== 'query') {
+					const decision = legacy
+						? { kind: 'preserve', restorable: false } as const
+						: { kind: 'strip', restorable: false } as const;
+					decisions.set(record, decision);
+					return decision;
+				}
+				const kustoSource = sourceKind === 'query' ? source : undefined;
+				if (legacy && kustoSource) {
+					const sourceDecision = evaluate(kustoSource, visiting);
+					if ((sourceDecision.kind !== 'keep' && sourceDecision.kind !== 'adopt')
+						|| !sourceDecision.restorable) {
+						const decision = { kind: 'preserve', restorable: false } as const;
+						decisions.set(record, decision);
+						return decision;
+					}
+				}
+				const sourceOwnsComparison = !!sourceBoxId && !!kustoSource;
+				const clusterUrl = String(sourceOwnsComparison ? kustoSource.clusterUrl : record.clusterUrl || '').trim();
+				const database = String(sourceOwnsComparison ? kustoSource.database : record.database || '').trim();
+				const authorityId = sourceOwnsComparison ? kustoSource.authorityId : record.authorityId;
+				const connectionIdHint = sourceOwnsComparison ? kustoSource.connectionIdHint : record.connectionIdHint;
+				const hasExplicitComparisonOwner = !!String(
+					record.clusterUrl || record.authorityId || record.connectionIdHint || record.database || '',
+				).trim();
+				const comparisonOwnerMatches = !sourceOwnsComparison || !hasExplicitComparisonOwner || (
+					kustoClusterKey(record.clusterUrl) === kustoClusterKey(kustoSource.clusterUrl)
+						&& String(record.authorityId || '').trim().toLowerCase()
+							=== String(kustoSource.authorityId || '').trim().toLowerCase()
+						&& String(record.connectionIdHint || '').trim() === String(kustoSource.connectionIdHint || '').trim()
+						&& String(record.database || '').trim().toLowerCase()
+							=== String(kustoSource.database || '').trim().toLowerCase()
+				);
+				let ownerMatches = false;
+				let currentAccountPartition = '';
+				let currentLeaveNoTraceRevision = -1;
+				try {
+					const resolution = resolveKustoConnection(connections, {
+						clusterUrl,
+						authorityId,
+						connectionIdHint,
+					});
+					ownerMatches = !!database
+						&& resolution.kind === 'matched'
+						&& (!String(connectionIdHint || '').trim()
+							|| resolution.connection.id === String(connectionIdHint || '').trim());
+					if (resolution.kind === 'matched') {
+						currentAccountPartition = String(
+							this.options.kustoClient.getAccountPartition(resolution.connection) || '',
+						).trim();
+						currentLeaveNoTraceRevision = snapshot.revocationGenerations?.[kustoClusterKey(clusterUrl)] ?? 0;
+					}
+				} catch {
+					ownerMatches = false;
+				}
+				const protectedResult = snapshot.globallyBlocked || protectedClusters.has(kustoClusterKey(clusterUrl));
+				let decision: KustoResultDecision;
+				if (legacy) {
+					const canAdoptLegacyResult = comparisonOwnerMatches
+						&& ownerMatches
+						&& !!currentAccountPartition
+						&& currentLeaveNoTraceRevision === 0
+						&& !protectedResult
+						&& legacyKustoResultTargetMatches(record.resultJson, clusterUrl, database);
+					decision = canAdoptLegacyResult
+						? {
+							kind: 'adopt', restorable: true,
+							accountPartition: currentAccountPartition,
+							leaveNoTraceRevision: currentLeaveNoTraceRevision,
+						}
+						: { kind: 'preserve', restorable: false };
+				} else {
+					const persistedAccountPartition = String(record.kustoAccountPartition || '').trim();
+					const persistedLeaveNoTraceRevision = Number(record.kustoLeaveNoTraceRevision);
+					const resultOwnerMatches = !!persistedAccountPartition
+						&& persistedAccountPartition === currentAccountPartition
+						&& Number.isSafeInteger(persistedLeaveNoTraceRevision)
+						&& persistedLeaveNoTraceRevision >= 0
+						&& persistedLeaveNoTraceRevision === currentLeaveNoTraceRevision;
+					decision = comparisonOwnerMatches && ownerMatches && resultOwnerMatches && !protectedResult
+						? { kind: 'keep', restorable: isParseablePersistedResultJson(record.resultJson) }
+						: { kind: 'strip', restorable: false };
+				}
+				decisions.set(record, decision);
+				return decision;
+			} finally {
+				visiting.delete(record);
+			}
+		};
 		let changed = false;
 		const sanitized = sections.map(section => {
-			if (!section || typeof section !== 'object' || !('resultJson' in section)) return section;
+			if (!section || typeof section !== 'object' || Array.isArray(section)) return section;
 			const record = section as Record<string, unknown>;
-			if (canonicalSectionKind(record.type) !== 'query') return section;
-			const sourceBoxId = String(record.comparisonSourceBoxId || '').trim();
-			const source = sourceBoxId ? sectionsById.get(sourceBoxId) : undefined;
-			if (sourceBoxId && String(source?.type || '') === 'sql') return section;
-			const sourceOwnsComparison = !!sourceBoxId && !!source;
-			const clusterUrl = String(sourceOwnsComparison ? source.clusterUrl : record.clusterUrl || '').trim();
-			const database = String(sourceOwnsComparison ? source.database : record.database || '').trim();
-			const authorityId = sourceOwnsComparison ? source.authorityId : record.authorityId;
-			const connectionIdHint = sourceOwnsComparison ? source.connectionIdHint : record.connectionIdHint;
-			const hasExplicitComparisonOwner = !!String(
-				record.clusterUrl || record.authorityId || record.connectionIdHint || record.database || '',
-			).trim();
-			const comparisonOwnerMatches = !sourceOwnsComparison || !hasExplicitComparisonOwner || (
-				kustoClusterKey(record.clusterUrl) === kustoClusterKey(source.clusterUrl)
-					&& String(record.authorityId || '').trim().toLowerCase()
-						=== String(source.authorityId || '').trim().toLowerCase()
-					&& String(record.connectionIdHint || '').trim() === String(source.connectionIdHint || '').trim()
-					&& String(record.database || '').trim().toLowerCase()
-						=== String(source.database || '').trim().toLowerCase()
-			);
-			let ownerMatches = false;
-			let currentAccountPartition = '';
-			let currentLeaveNoTraceRevision = -1;
-			try {
-				const resolution = resolveKustoConnection(connections, {
-					clusterUrl,
-					authorityId,
-					connectionIdHint,
-				});
-				ownerMatches = !!database
-					&& resolution.kind === 'matched'
-					&& (!String(connectionIdHint || '').trim()
-						|| resolution.connection.id === String(connectionIdHint || '').trim());
-				if (resolution.kind === 'matched') {
-					currentAccountPartition = String(
-						this.options.kustoClient.getAccountPartition(resolution.connection) || '',
-					).trim();
-					currentLeaveNoTraceRevision = snapshot.revocationGenerations?.[kustoClusterKey(clusterUrl)] ?? 0;
-				}
-			} catch {
-				ownerMatches = false;
+			const decision = evaluate(record);
+			if (decision.kind === 'adopt') {
+				changed = true;
+				const adopted: Record<string, unknown> = {
+					...record,
+					kustoAccountPartition: decision.accountPartition,
+					kustoLeaveNoTraceRevision: decision.leaveNoTraceRevision,
+				};
+				delete adopted.resultArtifact;
+				return adopted;
 			}
-			const protectedResult = snapshot.globallyBlocked || protectedClusters.has(kustoClusterKey(clusterUrl));
-			const persistedAccountPartition = String(record.kustoAccountPartition || '').trim();
-			const persistedLeaveNoTraceRevision = Number(record.kustoLeaveNoTraceRevision);
-			const resultOwnerMatches = !!persistedAccountPartition
-				&& persistedAccountPartition === currentAccountPartition
-				&& Number.isSafeInteger(persistedLeaveNoTraceRevision)
-				&& persistedLeaveNoTraceRevision >= 0
-				&& persistedLeaveNoTraceRevision === currentLeaveNoTraceRevision;
-			if (comparisonOwnerMatches && ownerMatches && resultOwnerMatches && !protectedResult) return section;
+			if (decision.kind !== 'strip') return section;
 			changed = true;
 			const clone = { ...record };
 			delete clone.resultJson;
@@ -326,6 +467,12 @@ export class HostPersistedResultSanitizationApplicationHandler
 			if (!section || typeof section !== 'object' || !('resultJson' in section)) return section;
 			const record = section as Record<string, unknown>;
 			const sourceBoxId = String(record.comparisonSourceBoxId || '').trim();
+			const unresolvedMarkerlessKusto = canonicalSectionKind(record.type) === 'query'
+				&& !!sourceBoxId
+				&& !sectionTypesById.has(sourceBoxId)
+				&& !hasOwn(record, 'kustoAccountPartition')
+				&& !hasOwn(record, 'kustoLeaveNoTraceRevision');
+			if (unresolvedMarkerlessKusto) return section;
 			const sqlOwned = String(record.type || '') === 'sql'
 				|| (!!sourceBoxId && (sectionTypesById.get(sourceBoxId) === 'sql'
 					|| !sectionTypesById.has(sourceBoxId)));

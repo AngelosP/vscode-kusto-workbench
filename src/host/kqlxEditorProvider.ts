@@ -755,6 +755,7 @@ export async function publishKqlxTextFresh<R>(
 	}
 	return publishStateFresh(parsed.file.state, async sanitizedState => {
 		assertDocumentSectionKindsAllowed(kind, sanitizedState.sections);
+		if (sanitizedState === parsed.file.state) return publishText(text);
 		const file = overlayKqlxFileState(
 			parsed.file,
 			sanitizedState,

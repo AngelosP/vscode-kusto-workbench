@@ -71,6 +71,7 @@ Feature: Persistence contracts for unresolved selections and legacy file shapes
       """
       {"kind":"kqlx","version":1,"state":{"caretDocsEnabled":true,"sections":[{"id":"query_legacy_copilot","type":"copilotQuery","name":"Legacy Copilot Query","clusterUrl":"https://persist-e2e.kusto.windows.net","database":"PersistDb","query":"datatable(RowId:int, Label:string)[1, 'legacy_kqlx_marker_alpha', 2, 'legacy_kqlx_marker_beta']","expanded":true,"resultsVisible":false,"runMode":"sample100","cacheEnabled":true,"cacheValue":3,"cacheUnit":"hours","resultJson":"{\"columns\":[{\"name\":\"RowId\",\"type\":\"int\"},{\"name\":\"Label\",\"type\":\"string\"}],\"rows\":[[1,\"legacy_kqlx_marker_alpha\"],[2,\"legacy_kqlx_marker_beta\"]],\"metadata\":{\"executionTime\":\"00:00:00.123\",\"clientActivityId\":\"legacy-kqlx-contract-e2e\"}}"},{"id":"markdown_legacy_preview","type":"markdown","title":"Legacy Preview Notes","text":"# Legacy Markdown\nlegacy markdown marker survives preview tab restore","tab":"preview","expanded":true}]}}
       """
+    When I execute command "kustoWorkbench.test.preparePersistedResultFixture" with args '[{"engine":"kusto","templatePath":"tests/vscode-extension-tester/runs/default/persistence-contracts/legacy-kqlx-contract.kqlx","outputPath":"tests/vscode-extension-tester/runs/default/persistence-contracts/legacy-kqlx-contract.kqlx"}]'
     When I open file "tests/vscode-extension-tester/runs/default/persistence-contracts/legacy-kqlx-contract.kqlx" in the editor
     And I wait 8 seconds
     When I wait for "kw-query-section" in the webview for 20 seconds
@@ -88,4 +89,5 @@ Feature: Persistence contracts for unresolved selections and legacy file shapes
     When I evaluate "window.__e2e.persistence.assertMarkdownSection('markdown_legacy_preview', { title: 'Legacy Preview Notes', textIncludes: 'legacy markdown marker', mode: 'preview', tab: 'preview' })" in the webview
 
     When I execute command "workbench.action.revertAndCloseActiveEditor"
-  When I delete file "tests/vscode-extension-tester/runs/default/persistence-contracts/legacy-kqlx-contract.kqlx"
+    When I execute command "kustoWorkbench.test.cleanupPersistedResultFixture"
+    When I delete file "tests/vscode-extension-tester/runs/default/persistence-contracts/legacy-kqlx-contract.kqlx"

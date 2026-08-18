@@ -1,12 +1,36 @@
 import { describe, expect, it } from 'vitest';
 import {
 	createDerivedResultArtifactPublication,
+	createRestoredKustoResultArtifactPublication,
 	publicationFromPersistedResultArtifact,
 	ResultArtifactStore,
 	toPersistedResultArtifact,
 } from '../../src/shared/resultArtifact.js';
 
 describe('ResultArtifactStore', () => {
+	it('creates only conservative Kusto ownership for a descriptorless restored result', () => {
+		const publication = createRestoredKustoResultArtifactPublication(
+			{ engine: 'kusto', boxId: 'query_legacy', query: 'print Value=1' },
+			'partition-a',
+			0,
+		);
+
+		expect(publication).toEqual({
+			producer: { engine: 'kusto', boxId: 'query_legacy', query: 'print Value=1' },
+			policy: { accountPartition: 'partition-a', leaveNoTraceRevision: 0 },
+		});
+		expect(publication?.policy?.exposeToActiveContent).toBeUndefined();
+		expect(publication?.policy?.sendToModel).toBeUndefined();
+		expect(publication?.policy?.shareToClipboard).toBeUndefined();
+		expect(publication?.policy?.exportToCsv).toBeUndefined();
+		expect(createRestoredKustoResultArtifactPublication(
+			{ engine: 'kusto', boxId: 'query_legacy' }, '', 0,
+		)).toBeUndefined();
+		expect(createRestoredKustoResultArtifactPublication(
+			{ engine: 'kusto', boxId: 'query_legacy' }, 'partition-a', -1,
+		)).toBeUndefined();
+	});
+
 	it('restores an exact runtime snapshot including bindings and next revisions', () => {
 		const store = new ResultArtifactStore();
 		const first = store.publish('query_snapshot', {

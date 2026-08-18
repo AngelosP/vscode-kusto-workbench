@@ -199,6 +199,7 @@ export interface CompatSidecarStoreOptions {
 	isLinked: (sidecarUri: vscode.Uri, file: KqlxFileV1) => boolean;
 	sanitizeFresh: (state: KqlxStateV1) => Promise<KqlxStateV1>;
 	publishFresh: <T>(state: KqlxStateV1, publish: (sanitized: KqlxStateV1) => Promise<T>) => Promise<T>;
+	preserveUnchangedRepairText?: (state: KqlxStateV1) => boolean;
 	buildFile: (state: KqlxStateV1, baseFile?: KqlxFileV1) => KqlxFileV1;
 	stringify: (file: KqlxFileV1) => string;
 }
@@ -260,6 +261,13 @@ export class CompatSidecarStore {
 					publication = await this.options.publishFresh(candidate.state, sanitized => withCompatSidecarLock(uri, baseline.identity, async () => {
 					const locked = await readCompatSidecarSnapshot(uri);
 					if (!compatSidecarFileIdentityEquals(baseline.identity, locked.identity) || locked.text !== currentText) return { raced: true as const };
+					if (isDeepStrictEqual(sanitized, candidate.state)
+						&& this.options.preserveUnchangedRepairText?.(sanitized)) {
+						return {
+							raced: false as const,
+							value: { file: parsed, inputText: currentText, text: currentText, identity: baseline.identity },
+						};
+					}
 					const file = this.options.buildFile(sanitized, candidate);
 					const text = this.options.stringify(file);
 					if (text !== currentText) await writeCompatSidecarTextOwned(uri, text, baseline.identity, currentText);

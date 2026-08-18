@@ -7511,6 +7511,44 @@ async function e2eWaitForPersistedResult(boxId: string, timeoutMs: number): Prom
 	throw new Error(`Timed out waiting for persisted result ${id}: ${JSON.stringify(getLastDeferredRestoredResultSettlementForTest())}`);
 }
 
+async function e2eAssertMigratedResultChart(
+	sourceBoxId: string,
+	chartBoxId: string,
+	expectedRows: number,
+): Promise<unknown> {
+	const sourceId = String(sourceBoxId || '').trim();
+	const chartId = String(chartBoxId || '').trim();
+	await e2eLayoutWaitFor(() => {
+		const artifact = getCurrentResultArtifact(sourceId);
+		const bound = getBoundResultArtifact(chartId, sourceId);
+		return !!artifact && bound?.artifactId === artifact.artifactId;
+	}, 'migrated result chart binding', 10_000);
+	const artifact = getCurrentResultArtifact(sourceId);
+	const bound = getBoundResultArtifact(chartId, sourceId);
+	const chart = document.getElementById(chartId) as any;
+	const rows = artifact?.rows || [];
+	if (!artifact || !bound || rows.length !== Number(expectedRows)
+		|| chart?.tagName !== 'KW-CHART-SECTION'
+		|| String(_win.chartStateByBoxId?.[chartId]?.dataSourceId || '') !== sourceId) {
+		throw new Error(`Migrated chart contract failed: ${JSON.stringify({
+			sourceId, chartId, rows: rows.length, artifactId: artifact?.artifactId,
+			boundArtifactId: bound?.artifactId, chartTag: chart?.tagName,
+			dataSourceId: _win.chartStateByBoxId?.[chartId]?.dataSourceId,
+		})}`);
+	}
+	const policy = artifact.policy;
+	if (policy?.exposeToActiveContent === true || policy?.sendToModel === true
+		|| policy?.shareToClipboard === true || policy?.exportToCsv === true) {
+		throw new Error(`Migrated artifact gained privileged policy: ${JSON.stringify(policy)}`);
+	}
+	return {
+		artifactId: artifact.artifactId,
+		boundArtifactId: bound.artifactId,
+		rows: rows.length,
+		policy: policy ?? null,
+	};
+}
+
 function e2eKustoUxTable(): any {
 	const section = e2eSection('kusto');
 	const results = document.getElementById(e2eKustoElementId(section, 'results'));
@@ -7629,6 +7667,283 @@ function e2eKustoUxAssertResultsVisible(expectedVisible: boolean): string {
 	return `Kusto UX results visible=${visible}`;
 }
 
+type E2eCopilotKind = 'kusto' | 'sql';
+
+const e2eClarificationState: {
+	heldDone?: Record<string, unknown>;
+	originalComplete?: (identity: unknown) => boolean;
+} = {};
+
+function e2eClarificationSection(kind: E2eCopilotKind = 'kusto'): any {
+	return e2eSection(kind);
+}
+
+function e2eClarificationChat(kind: E2eCopilotKind = 'kusto'): any {
+	const section = e2eClarificationSection(kind);
+	const chat = section.getCopilotChatEl?.();
+	if (!chat?.shadowRoot) throw new Error(`${kind} Copilot chat is unavailable`);
+	return chat;
+}
+
+async function e2eClarificationWaitFor(
+	description: string,
+	condition: () => boolean,
+	timeoutMs = 10_000,
+): Promise<void> {
+	const started = performance.now();
+	while (performance.now() - started <= timeoutMs) {
+		if (condition()) return;
+		await e2eDelay(50);
+	}
+	throw new Error(`Timed out waiting for ${description}`);
+}
+
+function e2eBeginKustoClarificationConnectionProjection(database = 'ChecklistDb'): unknown {
+	const section = e2eClarificationSection('kusto');
+	const listener = (event: MessageEvent) => {
+		const message = event.data as any;
+		if (message?.type !== 'e2eCopilotClarificationConnection' || !message.connection?.id) return;
+		window.removeEventListener('message', listener);
+		_win.__e2eCopilotClarificationConnection = message.connection;
+		section.setConnectionId(String(message.connection.id));
+		section.setDatabase(String(message.database || database));
+	};
+	window.addEventListener('message', listener);
+	return { boxId: String(section.boxId || section.id || ''), database, awaitingConnection: true };
+}
+
+async function e2ePrepareKustoClarification(
+	connectionName = 'Kusto Copilot Clarification E2E',
+	database = 'ChecklistDb',
+): Promise<unknown> {
+	const section = e2eClarificationSection('kusto');
+	const wantedName = String(connectionName || '').trim().toLowerCase();
+	const connection = [_win.__e2eCopilotClarificationConnection, ...(_win.connections || [])].find((candidate: any) =>
+		String(candidate?.name || '').trim().toLowerCase().includes(wantedName));
+	if (!connection?.id) {
+		throw new Error(`Kusto E2E connection not found: ${connectionName}; available=${(_win.connections || []).map((candidate: any) => candidate?.name).join(', ')}`);
+	}
+	pState.copilotChatFirstTimeDismissed = true;
+	section.setConnectionId(String(connection.id));
+	section.setDatabase(database);
+	section.setCopilotChatVisible(true, false);
+	await section.updateComplete;
+	await e2eClarificationWaitFor('Kusto Copilot chat installation', () => !!section.getCopilotChatEl?.());
+	const chat = e2eClarificationChat('kusto');
+	await chat.updateComplete;
+	return {
+		boxId: String(section.boxId || section.id || ''),
+		connectionId: String(section.getConnectionId?.() || ''),
+		database: String(section.getDatabase?.() || ''),
+	};
+}
+
+function e2ePinKustoClarificationTarget(database = 'ChecklistDb'): unknown {
+	const section = e2eClarificationSection('kusto');
+	const connection = _win.__e2eCopilotClarificationConnection;
+	if (!connection?.id) throw new Error('The exact Kusto clarification connection is unavailable');
+	section.setConnectionId(String(connection.id));
+	section.setDatabase(database);
+	section.getConnectionId = () => String(connection.id);
+	section.getCopilotConnectionId = () => String(connection.id);
+	section.getDatabase = () => database;
+	return { boxId: String(section.boxId || section.id || ''), connectionId: String(connection.id), database };
+}
+
+async function e2ePrepareSqlClarification(
+	database = 'Db',
+): Promise<unknown> {
+	const section = e2eClarificationSection('sql');
+	const connectionId = 'sql-copilot-clarification-e2e';
+	const ownerToken = 'sql-copilot-clarification-owner-e2e';
+	pState.copilotChatFirstTimeDismissed = true;
+	section.setSqlConnectionId(connectionId);
+	section.setDatabase(database);
+	section.setExecutionOwner(ownerToken, section.sqlSession?.targetGeneration);
+	section.setCopilotChatVisible(true, false);
+	await section.updateComplete;
+	const chat = e2eClarificationChat('sql');
+	await chat.updateComplete;
+	return {
+		boxId: String(section.boxId || section.id || ''),
+		connectionId: String(section.getConnectionId?.() || ''),
+		database: String(section.getDatabase?.() || ''),
+		ownerToken: String(section.getCopilotOwnerToken?.() || ''),
+	};
+}
+
+function e2eClarificationSetDraft(text: string, kind: E2eCopilotKind = 'kusto'): string {
+	const chat = e2eClarificationChat(kind);
+	chat.setInputText(String(text || ''));
+	return `${kind} Copilot draft set`;
+}
+
+function e2eClarificationSubmitManual(question: string, kind: E2eCopilotKind = 'kusto'): string {
+	const section = e2eClarificationSection(kind);
+	const chat = e2eClarificationChat(kind);
+	chat.setInputText(String(question || ''));
+	const send = chat.shadowRoot.querySelector('.send-btn') as HTMLButtonElement | null;
+	if (!send || send.disabled) throw new Error(`${kind} Copilot send button is unavailable`);
+	send.click();
+	return `submitted manual ${kind} Copilot request: ${question}; boxId=${String(section.boxId || section.id || '')}`;
+}
+
+function e2eClarificationFocusEditor(kind: E2eCopilotKind = 'kusto'): string {
+	const section = e2eClarificationSection(kind);
+	section.focusCopilotEditor?.();
+	return `${kind} editor focused`;
+}
+
+function e2eClarificationSnapshot(kind: E2eCopilotKind = 'kusto'): any {
+	const section = e2eClarificationSection(kind);
+	const chat = e2eClarificationChat(kind);
+	const textarea = chat.shadowRoot.querySelector('textarea') as HTMLTextAreaElement | null;
+	const cards = Array.from(chat.shadowRoot.querySelectorAll('.msg-clarifying-question')) as HTMLElement[];
+	const cardStyles = cards.map(card => {
+		const style = getComputedStyle(card);
+		const rect = card.getBoundingClientRect();
+		return {
+			text: String(card.textContent || '').replace(/\s+/g, ' ').trim(),
+			borderLeftWidth: style.borderLeftWidth,
+			borderLeftColor: style.borderLeftColor,
+			backgroundColor: style.backgroundColor,
+			width: Math.round(rect.width),
+			height: Math.round(rect.height),
+		};
+	});
+	return {
+		kind,
+		boxId: String(section.boxId || section.id || ''),
+		expanded: typeof section.isExpanded === 'function' ? section.isExpanded() : !section.classList.contains('is-collapsed'),
+		chatVisible: typeof section.getCopilotChatVisible === 'function' ? section.getCopilotChatVisible() : true,
+		running: chat.isRunning?.() === true,
+		draft: textarea?.value || '',
+		textareaDisabled: textarea?.disabled === true,
+		inputFocused: chat.shadowRoot.activeElement === textarea,
+		questionCount: cards.length,
+		cards: cardStyles,
+		pageScrollTop: getPageScrollTop(),
+		capturedToolResponses: e2eCapturedHostMessages()
+			.filter(message => message?.type === 'toolResponse')
+			.map(message => ({
+				requestId: message.requestId,
+				...(message.result !== undefined
+					? { result: JSON.parse(JSON.stringify(message.result)) }
+					: {}),
+				...(message.error !== undefined ? { error: message.error } : {}),
+			})),
+	};
+}
+
+async function e2eAssertManualClarification(question: string, expectedCount = 1, kind: E2eCopilotKind = 'kusto'): Promise<any> {
+	await e2eClarificationWaitFor('interactive Kusto clarification', () => {
+		const snapshot = e2eClarificationSnapshot(kind);
+		return snapshot.questionCount === expectedCount && snapshot.cards.some((card: any) => card.text.includes(question))
+			&& snapshot.running === false && snapshot.inputFocused === true;
+	});
+	const snapshot = e2eClarificationSnapshot(kind);
+	for (const card of snapshot.cards) {
+		if (card.borderLeftWidth !== '3px' || card.width <= 0 || card.height <= 0
+			|| card.borderLeftColor === 'rgba(0, 0, 0, 0)' || card.borderLeftColor === 'transparent') {
+			throw new Error(`${kind} clarification card styling is invalid: ${JSON.stringify(card)}`);
+		}
+	}
+	return snapshot;
+}
+
+async function e2eAssertPassiveClarification(question: string, expectedDraft: string, expectedCount = 1): Promise<any> {
+	await e2eClarificationWaitFor('passive Kusto clarification', () => {
+		const snapshot = e2eClarificationSnapshot('kusto');
+		return snapshot.questionCount === expectedCount
+			&& snapshot.cards.some((card: any) => card.text.includes(question)) && snapshot.running === false;
+	});
+	const snapshot = e2eClarificationSnapshot('kusto');
+	if (snapshot.inputFocused) throw new Error('Passive Kusto clarification stole input focus');
+	if (snapshot.draft !== expectedDraft) {
+		throw new Error(`Passive Kusto clarification changed the draft: ${JSON.stringify(snapshot.draft)}`);
+	}
+	return snapshot;
+}
+
+function e2eAssertClarificationAbsent(kind: E2eCopilotKind = 'kusto'): any {
+	const snapshot = e2eClarificationSnapshot(kind);
+	if (snapshot.questionCount !== 0) {
+		throw new Error(`Expected no ${kind} clarification cards: ${JSON.stringify(snapshot.cards)}`);
+	}
+	return snapshot;
+}
+
+function e2eClarificationCollapseAndBlur(): any {
+	const section = e2eClarificationSection('kusto');
+	section.setExpanded?.(false);
+	const addButton = document.querySelector("button[data-add-kind='query']") as HTMLElement | null;
+	addButton?.focus();
+	return e2eClarificationSnapshot('kusto');
+}
+
+function e2eClarificationClear(kind: E2eCopilotKind = 'kusto'): any {
+	const chat = e2eClarificationChat(kind);
+	const clear = chat.shadowRoot.querySelector('.clear-btn') as HTMLButtonElement | null;
+	if (!clear) throw new Error(`${kind} Copilot Clear button is unavailable`);
+	clear.click();
+	return e2eClarificationSnapshot(kind);
+}
+
+function e2eAssertClearedViewNoop(): any {
+	const snapshot = e2eClarificationSnapshot('kusto');
+	if (snapshot.questionCount !== 0 || snapshot.expanded || snapshot.inputFocused) {
+		throw new Error(`Cleared clarification View caused stale UI effects: ${JSON.stringify(snapshot)}`);
+	}
+	return snapshot;
+}
+
+function e2eClarificationHoldAppliedDone(): string {
+	const section = e2eClarificationSection('kusto');
+	if (e2eClarificationState.originalComplete) throw new Error('Applied-done barrier is already armed');
+	const original = section.completeKustoCopilotRequest;
+	if (typeof original !== 'function') throw new Error('Kusto applied-done owner is unavailable');
+	e2eClarificationState.originalComplete = original;
+	e2eClarificationState.heldDone = undefined;
+	section.completeKustoCopilotRequest = (identity: unknown) => {
+		e2eClarificationState.heldDone = structuredClone(identity as Record<string, unknown>);
+		return false;
+	};
+	return 'Kusto applied-done barrier armed';
+}
+
+async function e2eClarificationWaitForHeldDone(timeoutMs = 10_000): Promise<unknown> {
+	await e2eClarificationWaitFor('held Kusto applied-done message', () => !!e2eClarificationState.heldDone, timeoutMs);
+	return structuredClone(e2eClarificationState.heldDone!);
+}
+
+function e2eClarificationReleaseHeldDone(): unknown {
+	const section = e2eClarificationSection('kusto');
+	const original = e2eClarificationState.originalComplete;
+	const heldDone = e2eClarificationState.heldDone;
+	if (!original || !heldDone) throw new Error('No held Kusto applied-done message is available');
+	section.completeKustoCopilotRequest = original;
+	e2eClarificationState.originalComplete = undefined;
+	e2eClarificationState.heldDone = undefined;
+	window.postMessage(heldDone, '*');
+	return heldDone;
+}
+
+async function e2eClarificationInjectSql(question: string): Promise<any> {
+	const section = e2eClarificationSection('sql');
+	const ownerToken = String(section.getCopilotOwnerToken?.() || '');
+	if (!ownerToken) throw new Error('SQL clarification owner token is unavailable');
+	const boxId = String(section.boxId || section.id || '');
+	window.postMessage({
+		type: 'copilotClarifyingQuestion', boxId, entryId: 'sql-e2e-clarification', question, ownerToken,
+	}, '*');
+	window.postMessage({ type: 'copilotWriteQueryDone', boxId, ok: true, message: '', ownerToken }, '*');
+	const snapshot = await e2eAssertManualClarification(question, 1, 'sql');
+	const kustoHandoff = snapshot.capturedToolResponses.find((response: any) =>
+		response?.result?.outcome === 'clarification-required');
+	if (kustoHandoff) throw new Error(`SQL clarification emitted a Kusto handoff: ${JSON.stringify(kustoHandoff)}`);
+	return { ...snapshot, ownerToken };
+}
+
 if (document.body.dataset.kustoE2eEnabled === 'true') {
 	_win.__e2e = {
 	proof: {
@@ -7645,6 +7960,7 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		beginDocumentCommandCapture: e2eBeginDocumentCommandCapture,
 		waitForDocumentCommands: e2eWaitForDocumentCommands,
 		waitForPersistedResult: e2eWaitForPersistedResult,
+		assertMigratedResultChart: e2eAssertMigratedResultChart,
 		enableIsolatedKustoConnections: e2eEnableIsolatedKustoConnections,
 		assertIsolatedKustoConnections: e2eAssertIsolatedKustoConnections,
 		removeSection: (selector: string) => _win.__testRemoveSection(selector),
@@ -7712,6 +8028,28 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		assertHidden: (editorKind: string, timeoutMs: number = 5000) => e2eAssertCursorStatusMessage(editorKind, undefined, undefined, false, timeoutMs),
 		assertStatusBarVisible: (editorKind: string, lineNumber: number, column: number, timeoutMs: number = 5000) => e2eAssertCursorStatusBar(editorKind, lineNumber, column, true, timeoutMs),
 		assertStatusBarHidden: (timeoutMs: number = 5000) => e2eAssertCursorStatusBar('', undefined, undefined, false, timeoutMs),
+	},
+	clarification: {
+		beginCapture: e2eBeginHostMessageCapture,
+		restoreCapture: e2eRestoreHostMessageCapture,
+		beginKustoConnectionProjection: e2eBeginKustoClarificationConnectionProjection,
+		prepareKusto: e2ePrepareKustoClarification,
+		pinKustoTarget: e2ePinKustoClarificationTarget,
+		prepareSql: e2ePrepareSqlClarification,
+		setDraft: e2eClarificationSetDraft,
+		submitManual: e2eClarificationSubmitManual,
+		focusEditor: e2eClarificationFocusEditor,
+		snapshot: e2eClarificationSnapshot,
+		assertManual: e2eAssertManualClarification,
+		assertPassive: e2eAssertPassiveClarification,
+		assertAbsent: e2eAssertClarificationAbsent,
+		collapseAndBlur: e2eClarificationCollapseAndBlur,
+		clear: e2eClarificationClear,
+		assertClearedViewNoop: e2eAssertClearedViewNoop,
+		holdAppliedDone: e2eClarificationHoldAppliedDone,
+		waitForHeldDone: e2eClarificationWaitForHeldDone,
+		releaseHeldDone: e2eClarificationReleaseHeldDone,
+		injectSql: e2eClarificationInjectSql,
 	},
 	sql: {
 		...e2eQueryApi('sql'),

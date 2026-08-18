@@ -1789,4 +1789,89 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 
 		await expect(pending).resolves.toEqual(expect.objectContaining({ openFileId: newInfo.openFileId }));
 	});
+
+	it('defers stale renamed-tab closure until the captured clarification settles', async () => {
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const oldUri = vscode.Uri.file('/work/clarification-pending-old.kqlx');
+		const newUri = vscode.Uri.file('/work/clarification-pending-new.kqlx');
+		const oldInfo = classifyWorkbenchUri(oldUri)!;
+		const newInfo = classifyWorkbenchUri(newUri)!;
+		const oldTab = {
+			isActive: true,
+			input: new vscode.TabInputCustom(oldUri, 'kusto.kqlxEditor'),
+			label: 'clarification-pending-old.kqlx',
+		};
+		const group = { activeTab: oldTab, tabs: [oldTab], isActive: true };
+		const poster = vi.fn(() => true);
+		orchestrator.connect(poster, vi.fn(async () => []), vi.fn(), oldUri.toString());
+		setTabGroups(group);
+
+		const pending = orchestrator.delegateToKustoWorkbenchCopilot({
+			question: 'Help', openFileId: oldInfo.openFileId,
+		});
+		const request = poster.mock.calls[0][0] as any;
+		await orchestrator.handleFilesRenamed([{ oldUri, newUri }]);
+
+		expect(group.tabs).toContain(oldTab);
+		orchestrator.handleWebviewResponse(request.requestId, {
+			outcome: 'clarification-required', success: false,
+			question: 'Which range?', sectionId: 'query_1',
+		});
+
+		await expect(pending).resolves.toEqual(expect.objectContaining({ openFileId: newInfo.openFileId }));
+		await vi.waitFor(() => expect(group.tabs).not.toContain(oldTab));
+	});
+
+	it('fences native rename until the remapped clarification response settles', async () => {
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const oldUri = vscode.Uri.file('/work/clarification-will-old.kqlx');
+		const newUri = vscode.Uri.file('/work/clarification-will-new.kqlx');
+		const oldInfo = classifyWorkbenchUri(oldUri)!;
+		const newInfo = classifyWorkbenchUri(newUri)!;
+		const poster = vi.fn(() => true);
+		orchestrator.connect(poster, vi.fn(async () => []), vi.fn(), oldUri.toString());
+
+		const pending = orchestrator.delegateToKustoWorkbenchCopilot({
+			question: 'Help', openFileId: oldInfo.openFileId,
+		});
+		const request = poster.mock.calls[0][0] as any;
+		let renameFenceSettled = false;
+		const renameFence = orchestrator.prepareFilesRename([{ oldUri, newUri }])
+			.then(() => { renameFenceSettled = true; });
+		await Promise.resolve();
+
+		expect(renameFenceSettled).toBe(false);
+		orchestrator.handleWebviewResponse(request.requestId, {
+			outcome: 'clarification-required', success: false,
+			question: 'Which range?', sectionId: 'query_1',
+		});
+
+		await expect(pending).resolves.toEqual(expect.objectContaining({ openFileId: newInfo.openFileId }));
+		await renameFence;
+		expect(renameFenceSettled).toBe(true);
+	});
+
+	it('does not fence rename on unrelated pending tools', async () => {
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const oldUri = vscode.Uri.file('/work/configure-will-old.kqlx');
+		const newUri = vscode.Uri.file('/work/configure-will-new.kqlx');
+		const oldInfo = classifyWorkbenchUri(oldUri)!;
+		const poster = vi.fn(() => true);
+		orchestrator.connect(poster, vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), oldUri.toString());
+
+		const pending = orchestrator.configureQuerySection({
+			question: 'Configure', sectionId: 'query_1', query: 'print 1', openFileId: oldInfo.openFileId,
+		} as any);
+		const request = poster.mock.calls[0][0] as any;
+		await expect(orchestrator.prepareFilesRename([{ oldUri, newUri }])).resolves.toBeUndefined();
+		orchestrator.handleWebviewResponse(request.requestId, { success: true });
+
+		await expect(pending).resolves.toEqual(expect.objectContaining({ success: true }));
+	});
 });

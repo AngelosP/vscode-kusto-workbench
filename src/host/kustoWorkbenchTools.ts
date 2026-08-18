@@ -639,6 +639,15 @@ export class KustoWorkbenchToolOrchestrator {
 	private latestConnectionToken: number | undefined;
 	private readonly liveConnections = new Map<number, LiveWorkbenchConnection>();
 	private readonly renamedWorkbenchFiles = new Map<string, WorkbenchFileInfo>();
+	private readonly deferredRenamedTabClosures = new Map<string, {
+		oldUri: vscode.Uri;
+		newUri: vscode.Uri;
+		newLogicalUriKey: string;
+	}>();
+	private readonly pendingResponseDrainWaiters = new Set<{
+		logicalUriKeys: ReadonlySet<string>;
+		resolve: () => void;
+	}>();
 	// Pending responses from webview
 	private pendingResponses = new Map<string, {
 		resolve: (value: unknown) => void;
@@ -647,6 +656,7 @@ export class KustoWorkbenchToolOrchestrator {
 		cancellationSubscription?: vscode.Disposable;
 		connectionToken: number;
 		kustoExecution?: KustoExecutionRequestIdentity;
+		waitForRename?: boolean;
 		admitResult?: (result: unknown) => ToolResponseAdmission<unknown>;
 	}>();
 	private readonly developmentNoteMutationRequestIds = new Set<string>();
@@ -755,6 +765,7 @@ export class KustoWorkbenchToolOrchestrator {
 			pending.cancellationSubscription?.dispose();
 			pending.reject(new Error('The owning Kusto Workbench editor closed before the request completed.'));
 		}
+		this.flushDeferredRenamedTabClosures();
 		if (this.latestConnectionToken !== token) {
 			return;
 		}
@@ -814,7 +825,15 @@ export class KustoWorkbenchToolOrchestrator {
 		return current;
 	}
 
-	async handleFilesRenamed(files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[]): Promise<void> {
+	private remapRenamedWorkbenchFiles(
+		files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[],
+	): Array<{ oldUri: vscode.Uri; newUri: vscode.Uri; oldLogicalUriKey: string; newLogicalUriKey: string }> {
+		const remapped: Array<{
+			oldUri: vscode.Uri;
+			newUri: vscode.Uri;
+			oldLogicalUriKey: string;
+			newLogicalUriKey: string;
+		}> = [];
 		for (const file of files) {
 			const oldInfo = classifyWorkbenchUri(file.oldUri, { includeOptionalPlainText: true });
 			const newInfo = classifyWorkbenchUri(file.newUri, { includeOptionalPlainText: true });
@@ -838,8 +857,67 @@ export class KustoWorkbenchToolOrchestrator {
 					this.applyLatestConnection(entry);
 				}
 			}
+			remapped.push({
+				oldUri: file.oldUri,
+				newUri: file.newUri,
+				oldLogicalUriKey: oldInfo.logicalUriKey,
+				newLogicalUriKey: newInfo.logicalUriKey,
+			});
 		}
-		await this.closeRenamedWorkbenchTabs(files);
+		return remapped;
+	}
+
+	async prepareFilesRename(files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[]): Promise<void> {
+		const remapped = this.remapRenamedWorkbenchFiles(files);
+		await this.waitForPendingResponses(new Set(remapped.map(file => file.newLogicalUriKey)));
+	}
+
+	async handleFilesRenamed(files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[]): Promise<void> {
+		const immediateTabClosures: Array<{ oldUri: vscode.Uri; newUri: vscode.Uri }> = [];
+		for (const file of this.remapRenamedWorkbenchFiles(files)) {
+			if (this.hasPendingResponseForLogicalUriKey(file.newLogicalUriKey)) {
+				this.deferredRenamedTabClosures.set(file.oldLogicalUriKey, {
+					oldUri: file.oldUri,
+					newUri: file.newUri,
+					newLogicalUriKey: file.newLogicalUriKey,
+				});
+			} else {
+				immediateTabClosures.push({ oldUri: file.oldUri, newUri: file.newUri });
+			}
+		}
+		await this.closeRenamedWorkbenchTabs(immediateTabClosures);
+	}
+
+	private hasPendingResponseForLogicalUriKey(logicalUriKey: string): boolean {
+		for (const pending of this.pendingResponses.values()) {
+			if (pending.waitForRename === true
+				&& this.liveConnections.get(pending.connectionToken)?.logicalUriKey === logicalUriKey) return true;
+		}
+		return false;
+	}
+
+	private waitForPendingResponses(logicalUriKeys: ReadonlySet<string>): Promise<void> {
+		if (![...logicalUriKeys].some(key => this.hasPendingResponseForLogicalUriKey(key))) {
+			return Promise.resolve();
+		}
+		return new Promise(resolve => {
+			this.pendingResponseDrainWaiters.add({ logicalUriKeys, resolve });
+		});
+	}
+
+	private flushDeferredRenamedTabClosures(): void {
+		const ready: Array<{ oldUri: vscode.Uri; newUri: vscode.Uri }> = [];
+		for (const [oldLogicalUriKey, deferred] of this.deferredRenamedTabClosures) {
+			if (this.hasPendingResponseForLogicalUriKey(deferred.newLogicalUriKey)) continue;
+			this.deferredRenamedTabClosures.delete(oldLogicalUriKey);
+			ready.push({ oldUri: deferred.oldUri, newUri: deferred.newUri });
+		}
+		if (ready.length > 0) void this.closeRenamedWorkbenchTabs(ready);
+		for (const waiter of [...this.pendingResponseDrainWaiters]) {
+			if ([...waiter.logicalUriKeys].some(key => this.hasPendingResponseForLogicalUriKey(key))) continue;
+			this.pendingResponseDrainWaiters.delete(waiter);
+			waiter.resolve();
+		}
 	}
 
 	private isSameUriExact(left: vscode.Uri, right: vscode.Uri): boolean {
@@ -1215,6 +1293,7 @@ export class KustoWorkbenchToolOrchestrator {
 		}
 		this.pendingResponses.delete(requestId);
 		this.developmentNoteMutationRequestIds.delete(requestId);
+		this.flushDeferredRenamedTabClosures();
 		if (pending.timer) clearTimeout(pending.timer);
 		pending.cancellationSubscription?.dispose();
 		if (error) {
@@ -1273,6 +1352,7 @@ export class KustoWorkbenchToolOrchestrator {
 				resolve: (value: unknown) => void; reject: (err: Error) => void;
 				timer?: ReturnType<typeof setTimeout>; cancellationSubscription?: vscode.Disposable;
 				connectionToken: number; kustoExecution?: KustoExecutionRequestIdentity;
+				waitForRename?: boolean;
 				admitResult?: (result: unknown) => ToolResponseAdmission<unknown>;
 			};
 			const cancelKustoExecution = () => {
@@ -1287,6 +1367,7 @@ export class KustoWorkbenchToolOrchestrator {
 					if (!pending) return;
 					this.pendingResponses.delete(requestId);
 					this.developmentNoteMutationRequestIds.delete(requestId);
+					this.flushDeferredRenamedTabClosures();
 					pending.cancellationSubscription?.dispose();
 					try { cancelKustoExecution(); } catch { /* preserve timeout */ }
 					try { onTimeout?.(target.connection!, requestId); } catch { /* preserve timeout */ }
@@ -1297,6 +1378,7 @@ export class KustoWorkbenchToolOrchestrator {
 				reject, 
 				timer,
 				connectionToken: target.connection!.token,
+				...(type === 'toolDelegateToKustoWorkbenchCopilot' ? { waitForRename: true } : {}),
 				...(admitResult ? { admitResult: admitResult as (result: unknown) => ToolResponseAdmission<unknown> } : {}),
 			};
 			this.pendingResponses.set(requestId, pending);
@@ -1305,6 +1387,7 @@ export class KustoWorkbenchToolOrchestrator {
 				if (this.pendingResponses.get(requestId) !== pending) return;
 				this.pendingResponses.delete(requestId);
 				this.developmentNoteMutationRequestIds.delete(requestId);
+				this.flushDeferredRenamedTabClosures();
 				if (timer) clearTimeout(timer);
 				pending.cancellationSubscription?.dispose();
 				try { cancelKustoExecution(); } catch { /* preserve cancellation */ }
@@ -1323,6 +1406,7 @@ export class KustoWorkbenchToolOrchestrator {
 			} catch (error) {
 				this.pendingResponses.delete(requestId);
 				this.developmentNoteMutationRequestIds.delete(requestId);
+				this.flushDeferredRenamedTabClosures();
 				if (timer) clearTimeout(timer);
 				pending.cancellationSubscription?.dispose();
 				reject(error instanceof Error ? error : new Error(String(error)));
@@ -1332,6 +1416,7 @@ export class KustoWorkbenchToolOrchestrator {
 				if (delivered === true || this.pendingResponses.get(requestId) !== pending) return;
 				this.pendingResponses.delete(requestId);
 				this.developmentNoteMutationRequestIds.delete(requestId);
+				this.flushDeferredRenamedTabClosures();
 				if (timer) clearTimeout(timer);
 				pending.cancellationSubscription?.dispose();
 				reject(new Error('The targeted Kusto Workbench editor rejected the request.'));
@@ -1339,6 +1424,7 @@ export class KustoWorkbenchToolOrchestrator {
 				if (this.pendingResponses.get(requestId) !== pending) return;
 				this.pendingResponses.delete(requestId);
 				this.developmentNoteMutationRequestIds.delete(requestId);
+				this.flushDeferredRenamedTabClosures();
 				if (timer) clearTimeout(timer);
 				pending.cancellationSubscription?.dispose();
 				reject(error instanceof Error ? error : new Error(String(error)));
@@ -2551,7 +2637,10 @@ export class KustoWorkbenchToolOrchestrator {
 		);
 		const clarification = parseKustoCopilotClarificationRequiredResult(result);
 		if (!clarification.ok) return result;
-		const openFileId = capturedConnection.documentInfo?.openFileId;
+		const currentFile = capturedConnection.documentInfo
+			? this.resolveRenamedWorkbenchFileInfo(capturedConnection.documentInfo)
+			: undefined;
+		const openFileId = currentFile?.openFileId;
 		return Object.freeze({
 			...clarification.value,
 			...(openFileId ? { openFileId } : {}),

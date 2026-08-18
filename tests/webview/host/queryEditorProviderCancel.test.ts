@@ -1978,7 +1978,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		]);
 		const state = { sections: [
 			{ id: 'query_source', type: 'query', clusterUrl: 'https://source.kusto.windows.net', connectionIdHint: 'source', database: 'Db', query: 'T' },
-			{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'query_source', clusterUrl: 'https://other.kusto.windows.net', connectionIdHint: 'other', database: 'OtherDb', query: 'T | count', resultJson: '{"secret":true}', resultArtifact: { version: 1, artifactId: 'kusto-secret' } },
+			{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'query_source', clusterUrl: 'https://other.kusto.windows.net', connectionIdHint: 'other', database: 'OtherDb', query: 'T | count', resultJson: '{"secret":true}', resultArtifact: { version: 1, artifactId: 'kusto-secret' }, kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0 },
 		] };
 
 		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
@@ -2077,6 +2077,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		const state = { sections: [{
 			id: 'query_1', type: 'query', clusterUrl: TEST_CONNECTION.clusterUrl,
 			connectionIdHint: TEST_CONNECTION.id, database: 'Samples', resultJson: '{"secret":true}',
+			kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0,
 		}] };
 
 		const publishing = provider.publishSqlLeaveNoTraceStateFresh(state, async sanitized => {
@@ -2176,8 +2177,8 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		]);
 		const state = { sections: [
 			{ id: 'query_public', type: 'query', clusterUrl: TEST_CONNECTION.clusterUrl, connectionIdHint: TEST_CONNECTION.id, database: 'Samples', resultJson: '{"public":true}', kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0 },
-			{ id: 'query_ownerless', type: 'query', query: 'print 1', resultJson: '{"ownerless":true}' },
-			{ id: 'query_ambiguous', type: 'query', clusterUrl: 'https://shared.kusto.windows.net', database: 'Db', resultJson: '{"ambiguous":true}' },
+			{ id: 'query_ownerless', type: 'query', query: 'print 1', resultJson: '{"ownerless":true}', kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0 },
+			{ id: 'query_ambiguous', type: 'query', clusterUrl: 'https://shared.kusto.windows.net', database: 'Db', resultJson: '{"ambiguous":true}', kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0 },
 		] };
 
 		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
@@ -2195,8 +2196,8 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			clusterKeys: [kustoClusterKey(connection.clusterUrl)], globallyBlocked: false, version: 2,
 		}));
 		const state = { sections: [
-			{ id: 'sql_kusto_source', type: 'query', clusterUrl: connection.clusterUrl, connectionIdHint: connection.id, database: 'Db', resultJson: '{"source":true}' },
-			{ id: 'sql_kusto_comparison', type: 'query', comparisonSourceBoxId: 'sql_kusto_source', clusterUrl: connection.clusterUrl, connectionIdHint: connection.id, database: 'Db', resultJson: '{"comparison":true}' },
+			{ id: 'sql_kusto_source', type: 'query', clusterUrl: connection.clusterUrl, connectionIdHint: connection.id, database: 'Db', resultJson: '{"source":true}', kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0 },
+			{ id: 'sql_kusto_comparison', type: 'query', comparisonSourceBoxId: 'sql_kusto_source', clusterUrl: connection.clusterUrl, connectionIdHint: connection.id, database: 'Db', resultJson: '{"comparison":true}', kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0 },
 		] };
 
 		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
@@ -2211,6 +2212,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		const state = { sections: [{
 			id: 'query_orphan', type: 'query', comparisonSourceBoxId: 'missing_source',
 			query: 'SELECT 2', resultJson: '{"secret":true}',
+			kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0,
 		}] };
 
 		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
@@ -2218,7 +2220,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.sqlWorkbench.refreshLeaveNoTracePolicy).not.toHaveBeenCalled();
 	});
 
-	it('strips unresolved opaque query rows without inferring SQL ownership from their connection ID', async () => {
+	it('preserves unresolved missing-marker query rows without inferring SQL ownership from their connection ID', async () => {
 		const provider = createSqlProviderHarness();
 		provider.sqlWorkbench.refreshLeaveNoTracePolicy = vi.fn(async () => { throw new Error('SQL policy unavailable'); });
 		const state = { sections: [{
@@ -2227,7 +2229,8 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		}] };
 
 		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
-		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(sanitized).toBe(state);
+		expect(sanitized.sections[0]).toHaveProperty('resultJson', '{"secret":true}');
 		expect(provider.sqlWorkbench.dispatchSqlOwnerSnapshot).not.toHaveBeenCalled();
 	});
 

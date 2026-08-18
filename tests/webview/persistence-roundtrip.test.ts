@@ -538,7 +538,7 @@ describe('persistence round-trip', () => {
 				type: 'documentData', ok: true, forceReload: true, documentUri: 'https://example.test/result.kqlx',
 				documentKind: 'kqlx', state: { sections: [{
 					type: 'query', id: 'query_browser_restore', query: 'print Value="browser-kusto"',
-					resultJson,
+					resultJson, ...kustoResultOwner,
 					resultArtifact: {
 						version: 1, artifactId: 'forged-browser-kusto', sourceBoxId: 'query_browser_restore',
 						revision: 99, createdAt: 1,
@@ -569,6 +569,65 @@ describe('persistence round-trip', () => {
 		}
 	});
 
+	it('keeps a markerless Kusto cache inert in the read-only browser viewer', () => {
+		vi.useFakeTimers();
+		(window as any).__kustoReadOnlyMode = true;
+		const resultJson = JSON.stringify({
+			columns: [{ name: 'Value' }], rows: [['unverified-browser-kusto']],
+			metadata: { cluster: 'browser-unverified', database: 'Db' },
+		});
+		try {
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentUri: 'https://example.test/unverified.kqlx', documentKind: 'kqlx',
+				state: { sections: [{
+					type: 'query', id: 'query_browser_unverified', query: 'print Value="unverified-browser-kusto"',
+					clusterUrl: 'https://browser-unverified.kusto.windows.net', database: 'Db', resultJson,
+				}] },
+			});
+			flushDeferredRestoreTimers();
+
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+			expect(displayResultForBox).not.toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['unverified-browser-kusto']] }),
+				'query_browser_unverified', expect.anything(),
+			);
+			expect(pState.queryResultJsonByBoxId.query_browser_unverified).toBeUndefined();
+		} finally {
+			delete (window as any).__kustoReadOnlyMode;
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
+		['blank partition', { kustoAccountPartition: '', kustoLeaveNoTraceRevision: 0 }],
+		['negative revision', { kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: -1 }],
+		['non-integer revision', { kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0.5 }],
+	])('keeps a Kusto cache with %s inert in the read-only browser viewer', (_label, provenance) => {
+		vi.useFakeTimers();
+		(window as any).__kustoReadOnlyMode = true;
+		const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['invalid-browser-owner']], metadata: {} });
+		try {
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentUri: 'https://example.test/invalid-owner.kqlx', documentKind: 'kqlx',
+				state: { sections: [{
+					type: 'query', id: 'query_browser_invalid_owner', query: 'print Value="invalid-browser-owner"',
+					resultJson, ...provenance,
+				}] },
+			});
+			flushDeferredRestoreTimers();
+
+			expect(displayResultForBox).not.toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['invalid-browser-owner']] }),
+				'query_browser_invalid_owner', expect.anything(),
+			);
+		} finally {
+			delete (window as any).__kustoReadOnlyMode;
+			vi.useRealTimers();
+		}
+	});
+
 	it('normalizes ragged restored rows before presentation in the read-only viewer', () => {
 		vi.useFakeTimers();
 		(window as any).__kustoReadOnlyMode = true;
@@ -581,7 +640,7 @@ describe('persistence round-trip', () => {
 				type: 'documentData', ok: true, forceReload: true,
 				documentUri: 'https://example.test/ragged.kqlx', documentKind: 'kqlx',
 				state: { sections: [{
-					type: 'query', id: 'query_ragged_restore', query: 'print A=1, B=2', resultJson,
+					type: 'query', id: 'query_ragged_restore', query: 'print A=1, B=2', resultJson, ...kustoResultOwner,
 				}] },
 			});
 			flushDeferredRestoreTimers();
@@ -2052,6 +2111,99 @@ describe('persistence round-trip', () => {
 		}
 	});
 
+	it('rebuilds conservative artifact lineage for a migrated descriptorless Kusto comparison', () => {
+		vi.useFakeTimers();
+		try {
+			const clusterUrl = 'https://legacy-comparison.kusto.windows.net';
+			testState.kustoConnections.push(ownedKustoConnection({ id: 'legacy-comparison-owner', clusterUrl }));
+			const sourceId = 'query_legacy_comparison_source';
+			const comparisonId = 'query_legacy_comparison_output';
+			const sourceResultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [[1]], metadata: {} });
+			const comparisonResultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [[2]], metadata: {} });
+			const sourcePolicy = { accountPartition: 'partition-a', leaveNoTraceRevision: 0 };
+			const sourceArtifact = {
+				artifactId: `result:${sourceId}:1`, sourceBoxId: sourceId, revision: 1, createdAt: 1,
+				restored: false, columns: [{ name: 'Value' }], rows: [[1]], metadata: {},
+				producer: {
+					engine: 'kusto', boxId: sourceId, query: 'T',
+					connectionId: 'legacy-comparison-owner', database: 'Db', producer: 'restored',
+				},
+				policy: sourcePolicy, lineage: [],
+			};
+			const derivedPublication = createDerivedResultArtifactPublication(
+				{ engine: 'kusto', boxId: comparisonId, producer: 'comparison' },
+				[{ artifact: sourceArtifact, role: 'comparison-source' }],
+			);
+			const comparisonArtifact = {
+				artifactId: `result:${comparisonId}:1`, sourceBoxId: comparisonId, revision: 1, createdAt: 2,
+				restored: false, columns: [{ name: 'Value' }], rows: [[2]], metadata: {},
+				producer: {
+					engine: 'kusto', boxId: comparisonId, query: 'T | count',
+					connectionId: 'legacy-comparison-owner', database: 'Db', producer: 'comparison',
+				},
+				policy: derivedPublication.policy, lineage: derivedPublication.lineage,
+			};
+			let sourceRendered = false;
+			let comparisonRendered = false;
+			vi.mocked(displayResultForBox).mockImplementation((_result, boxId) => {
+				if (boxId === sourceId) sourceRendered = true;
+				if (boxId === comparisonId) comparisonRendered = true;
+				return true;
+			});
+			testState.getCurrentResultArtifact.mockImplementation((boxId: unknown) => {
+				if (sourceRendered && String(boxId) === sourceId) return sourceArtifact;
+				if (comparisonRendered && String(boxId) === comparisonId) return comparisonArtifact;
+				return null;
+			});
+
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentUri: 'file:///tmp/legacy-comparison.kqlx',
+				state: { sections: [
+					{
+						type: 'query', id: sourceId, query: 'T', clusterUrl,
+						connectionIdHint: 'legacy-comparison-owner', database: 'Db',
+						resultJson: sourceResultJson, ...kustoResultOwner,
+					},
+					{
+						type: 'query', id: comparisonId, query: 'T | count',
+						comparisonSourceBoxId: sourceId, resultJson: comparisonResultJson,
+						...kustoResultOwner,
+					},
+				] },
+			});
+			applyKustoLeaveNoTracePolicy([], false);
+			flushDeferredRestoreTimers();
+			flushDeferredRestoreTimers();
+
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [[1]] }), sourceId,
+				expect.objectContaining({
+					artifactPublication: expect.objectContaining({
+						policy: sourcePolicy,
+					}),
+				}),
+			);
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [[2]] }), comparisonId,
+				expect.objectContaining({
+					artifactPublication: expect.objectContaining({
+						lineage: derivedPublication.lineage,
+						policy: derivedPublication.policy,
+					}),
+				}),
+			);
+			expect(derivedPublication.policy).toMatchObject(sourcePolicy);
+			expect(derivedPublication.policy?.exposeToActiveContent).toBeUndefined();
+			expect(derivedPublication.policy?.sendToModel).toBeUndefined();
+			expect(derivedPublication.policy?.shareToClipboard).toBeUndefined();
+			expect(derivedPublication.policy?.exportToCsv).toBeUndefined();
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('rejects a persisted Kusto comparison result owned by a different target than its source', () => {
 		vi.useFakeTimers();
 		try {
@@ -2087,6 +2239,49 @@ describe('persistence round-trip', () => {
 		expect(testState.queryBoxes).toContain('legacy_sql_cmp');
 		expect(pState.pendingQueryTextByBoxId.legacy_sql_cmp).toBe('SELECT 2');
 		expect(pState.queryResultJsonByBoxId.legacy_sql_cmp).toBeUndefined();
+	});
+
+	it.each([
+		['KQLX', 'kqlx', JSON.stringify({ columns: [{ name: 'Value' }], rows: [[1]], metadata: { cluster: 'legacy', database: 'Db' } })],
+		['KQL sidecar', 'kql', JSON.stringify({ columns: [{ name: 'Value' }], rows: [[1]], metadata: { cluster: 'legacy', database: 'Db' } })],
+		['KQLX mismatched', 'kqlx', JSON.stringify({ columns: [{ name: 'Value' }], rows: [[1]], metadata: { cluster: 'other', database: 'Db' } })],
+		['KQL sidecar mismatched', 'kql', JSON.stringify({ columns: [{ name: 'Value' }], rows: [[1]], metadata: { cluster: 'other', database: 'Db' } })],
+		['KQLX malformed', 'kqlx', '{"rows":'],
+		['KQL sidecar malformed', 'kql', '{"rows":'],
+	] as const)('keeps an unverified legacy Kusto cache inert for %s', (_label, documentKind, resultJson) => {
+		vi.useFakeTimers();
+		try {
+			testState.kustoConnections.push(ownedKustoConnection({
+				id: 'legacy-owner', clusterUrl: 'https://legacy.kusto.windows.net',
+			}));
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind, compatibilityMode: false, documentUri: `file:///tmp/legacy.${documentKind}`,
+				state: { sections: [{
+					id: 'legacy_result', type: 'query', query: 'print Value=1',
+					clusterUrl: 'https://legacy.kusto.windows.net', connectionIdHint: 'legacy-owner',
+					database: 'Db', resultJson,
+				}] },
+			});
+
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+			expect(pState.queryResultJsonByBoxId.legacy_result).toBeUndefined();
+			expect(displayResultForBox).not.toHaveBeenCalledWith(
+				expect.anything(), 'legacy_result', expect.anything(),
+			);
+			vi.mocked(postMessageToHost).mockClear();
+			applyKustoLeaveNoTracePolicy([], false);
+			vi.runOnlyPendingTimers();
+
+			expect(displayResultForBox).not.toHaveBeenCalledWith(
+				expect.anything(), 'legacy_result', expect.anything(),
+			);
+			expect(postMessageToHost).not.toHaveBeenCalledWith(
+				expect.objectContaining({ type: 'persistDocument' }),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('does not restore protected SQL resultJson into storage or shared results', () => {
@@ -2160,7 +2355,15 @@ describe('persistence round-trip', () => {
 
 			expect(pState.lastExecutedBox).toBe('query_saved_results');
 			expect(pState.queryResultJsonByBoxId.query_saved_results).toBe(resultJson);
-			expect(displayResultForBox).toHaveBeenCalledWith(JSON.parse(resultJson), 'query_saved_results', { label: 'Results', showExecutionTime: true });
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				JSON.parse(resultJson), 'query_saved_results',
+				expect.objectContaining({
+					label: 'Results', showExecutionTime: true,
+					artifactPublication: expect.objectContaining({
+						policy: { accountPartition: 'partition-a', leaveNoTraceRevision: 0 },
+					}),
+				}),
+			);
 
 			document.body.innerHTML = '';
 			const container = document.createElement('div');
@@ -2192,6 +2395,46 @@ describe('persistence round-trip', () => {
 
 			schedulePersist('roundtrip', true);
 			expect(postMessageToHost).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
+		['KQLX', 'kqlx', 'file:///tmp/migrated-reopen.kqlx'],
+		['KQL sidecar', 'kql', 'file:///tmp/migrated-reopen.kql'],
+	] as const)('restores a migrated cached result after reopening in %s', (_label, documentKind, documentUri) => {
+		vi.useFakeTimers();
+		const clusterUrl = 'https://migrated-reopen.kusto.windows.net';
+		const resultJson = JSON.stringify({
+			columns: [{ name: 'Value', type: 'long' }], rows: [[42]],
+			metadata: { cluster: 'migrated-reopen', database: 'Db' },
+		});
+		const state = { sections: [{
+			id: 'query_migrated_reopen', type: 'query', query: 'print Value=42',
+			clusterUrl, connectionIdHint: 'migrated-reopen-owner', database: 'Db', resultJson,
+			...kustoResultOwner,
+		}] };
+		try {
+			testState.kustoConnections.push(ownedKustoConnection({
+				id: 'migrated-reopen-owner', clusterUrl,
+			}));
+			for (let open = 0; open < 2; open++) {
+				vi.mocked(displayResultForBox).mockClear();
+				handleDocumentDataMessage({
+					type: 'documentData', ok: true, forceReload: true,
+					documentKind, compatibilityMode: false, documentUri, state,
+				});
+				applyKustoLeaveNoTracePolicy([], false);
+				flushDeferredRestoreTimers();
+
+				expect(pState.queryResultJsonByBoxId.query_migrated_reopen).toBe(resultJson);
+				expect(displayResultForBox).toHaveBeenCalledWith(
+					expect.objectContaining({ rows: [[42]] }),
+					'query_migrated_reopen',
+					expect.anything(),
+				);
+			}
 		} finally {
 			vi.useRealTimers();
 		}
@@ -2948,6 +3191,123 @@ describe('persistence round-trip', () => {
 	});
 
 	it.each([
+		['KQLX', 'kqlx', 'file:///tmp/deferred-legacy-edit.kqlx'],
+		['KQL sidecar', 'kql', 'file:///tmp/deferred-legacy-edit.kql'],
+	] as const)('preserves a deferred legacy cache when an unrelated section is edited in %s', (_label, documentKind, documentUri) => {
+		vi.useFakeTimers();
+		try {
+			const clusterUrl = 'https://deferred-legacy.kusto.windows.net';
+			const resultJson = JSON.stringify({
+				columns: [{ name: 'Value', type: 'long' }], rows: [[42]],
+				metadata: { cluster: 'deferred-legacy', database: 'Db' },
+			});
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind, compatibilityMode: false, documentUri,
+				state: { sections: [
+					{
+						id: 'query_deferred_legacy', type: 'query', query: 'print Value=42',
+						clusterUrl, connectionIdHint: 'deferred-owner', database: 'Db', resultJson,
+					},
+					{ id: 'query_deferred_peer', type: 'query', query: 'print Before=1' },
+				] },
+			});
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+			const container = document.createElement('div');
+			container.id = 'queries-container';
+			const legacyElement = document.getElementById('query_deferred_legacy') as HTMLElement & { serialize: () => unknown };
+			legacyElement.serialize = () => ({
+				id: 'query_deferred_legacy', type: 'query', query: 'print Value=42',
+				clusterUrl, connectionIdHint: 'deferred-owner', database: 'Db',
+			});
+			const peerElement = document.getElementById('query_deferred_peer') as HTMLElement & { serialize: () => unknown };
+			let peerQuery = 'print Before=1';
+			peerElement.serialize = () => ({ id: 'query_deferred_peer', type: 'query', query: peerQuery });
+			container.append(legacyElement, peerElement);
+			document.body.appendChild(container);
+			adoptCurrentStateAsCleanForTest();
+			peerQuery = 'print After=2';
+			vi.mocked(postMessageToHost).mockClear();
+
+			schedulePersist('query-edit', true);
+
+			const persisted = vi.mocked(postMessageToHost).mock.calls
+				.map(([message]) => message as any)
+				.filter(message => message.type === 'persistDocument')
+				.at(-1);
+			expect(persisted?.state.sections.find((section: any) => section.id === 'query_deferred_peer'))
+				.toMatchObject({ query: 'print After=2' });
+			const legacy = persisted?.state.sections.find((section: any) => section.id === 'query_deferred_legacy');
+			expect(legacy?.resultJson).toBe(resultJson);
+			expect(legacy).not.toHaveProperty('kustoAccountPartition');
+			expect(legacy).not.toHaveProperty('kustoLeaveNoTraceRevision');
+			expect(displayResultForBox).not.toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [[42]] }),
+				'query_deferred_legacy',
+				expect.anything(),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
+		['KQLX', 'kqlx', 'file:///tmp/deferred-authority-edit.kqlx'],
+		['KQL sidecar', 'kql', 'file:///tmp/deferred-authority-edit.kql'],
+	] as const)('preserves a deferred cache through automatic Kusto owner enrichment in %s', (_label, documentKind, documentUri) => {
+		vi.useFakeTimers();
+		try {
+			const clusterUrl = 'https://deferred-authority.kusto.windows.net';
+			const resultJson = JSON.stringify({
+				columns: [{ name: 'Value', type: 'long' }], rows: [[42]],
+				metadata: { cluster: 'deferred-authority', database: 'Db' },
+			});
+			testState.kustoConnections.push(ownedKustoConnection({
+				id: 'tenant-owner', clusterUrl, authorityId: 'organizations',
+			}));
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind, compatibilityMode: false, documentUri,
+				state: { sections: [
+					{
+						id: 'query_deferred_authority', type: 'query', query: 'print Value=42',
+						clusterUrl, database: 'Db', resultJson,
+					},
+					{ id: 'query_authority_peer', type: 'query', query: 'print Before=1' },
+				] },
+			});
+			const container = document.createElement('div');
+			container.id = 'queries-container';
+			const legacyElement = document.getElementById('query_deferred_authority') as HTMLElement & { serialize: () => unknown };
+			legacyElement.serialize = () => ({
+				id: 'query_deferred_authority', type: 'query', query: 'print Value=42',
+				clusterUrl, authorityId: 'organizations', connectionIdHint: 'tenant-owner', database: 'Db',
+			});
+			const peerElement = document.getElementById('query_authority_peer') as HTMLElement & { serialize: () => unknown };
+			let peerQuery = 'print Before=1';
+			peerElement.serialize = () => ({ id: 'query_authority_peer', type: 'query', query: peerQuery });
+			container.append(legacyElement, peerElement);
+			document.body.appendChild(container);
+			adoptCurrentStateAsCleanForTest();
+			peerQuery = 'print After=2';
+			vi.mocked(postMessageToHost).mockClear();
+
+			schedulePersist('query-edit', true);
+
+			const persisted = vi.mocked(postMessageToHost).mock.calls
+				.map(([message]) => message as any)
+				.filter(message => message.type === 'persistDocument')
+				.at(-1);
+			const legacy = persisted?.state.sections.find((section: any) => section.id === 'query_deferred_authority');
+			expect(legacy?.resultJson).toBe(resultJson);
+			expect(legacy).not.toHaveProperty('kustoAccountPartition');
+			expect(legacy).not.toHaveProperty('kustoLeaveNoTraceRevision');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
 		['KQLX', 'kqlx', 'file:///tmp/ready-before-idle.kqlx'],
 		['KQL sidecar', 'kql', 'file:///tmp/ready-before-idle.kql'],
 	] as const)('preserves an owner-ready restored result when another section changes before idle rendering in %s', (_label, documentKind, documentUri) => {
@@ -3155,7 +3515,12 @@ describe('persistence round-trip', () => {
 			expect(displayResultForBox).toHaveBeenCalledWith(
 				{ ...JSON.parse(newResultJson), metadata: { executionTime: '' } },
 				'query_reload',
-				{ label: 'Results', showExecutionTime: true }
+				expect.objectContaining({
+					label: 'Results', showExecutionTime: true,
+					artifactPublication: expect.objectContaining({
+						policy: { accountPartition: 'partition-a', leaveNoTraceRevision: 0 },
+					}),
+				}),
 			);
 		} finally {
 			vi.useRealTimers();
@@ -3199,7 +3564,7 @@ describe('persistence round-trip', () => {
 			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/policy-first.kqlx',
 			state: { sections: [{
 				type: 'query', id: 'query_policy_first', query: 'print secret=1',
-				clusterUrl: 'https://secret.kusto.windows.net', resultJson,
+				clusterUrl: 'https://secret.kusto.windows.net', resultJson, ...kustoResultOwner,
 			}] },
 		});
 		applyKustoLeaveNoTracePolicy(['https://secret.kusto.windows.net'], false);
@@ -3331,7 +3696,7 @@ describe('persistence round-trip', () => {
 			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/noop-before-policy.kqlx',
 			state: { sections: [{
 				type: 'query', id: 'query_noop_before_policy', query: 'print secret=1',
-				clusterUrl: 'https://secret.kusto.windows.net', resultJson,
+				clusterUrl: 'https://secret.kusto.windows.net', resultJson, ...kustoResultOwner,
 			}] },
 		});
 		const container = document.createElement('div');
@@ -3365,7 +3730,7 @@ describe('persistence round-trip', () => {
 			handleDocumentDataMessage({
 				type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/mixed-policy.kqlx',
 				state: { sections: [
-					{ type: 'query', id: 'query_protected_mixed', query: 'print kind="protected"', clusterUrl: 'https://secret.kusto.windows.net', database: 'Db', resultJson: protectedResult },
+					{ type: 'query', id: 'query_protected_mixed', query: 'print kind="protected"', clusterUrl: 'https://secret.kusto.windows.net', database: 'Db', resultJson: protectedResult, ...kustoResultOwner },
 					{ type: 'query', id: 'query_public_mixed', query: 'print kind="public"', clusterUrl: 'https://public.kusto.windows.net', database: 'Db', resultJson: publicResult, ...kustoResultOwner },
 				] },
 			});
@@ -3706,7 +4071,12 @@ describe('persistence round-trip', () => {
 			expect(displayResultForBox).toHaveBeenCalledWith(
 				{ ...JSON.parse(resultJson), metadata: { executionTime: '' } },
 				'query_late_owner',
-				{ label: 'Results', showExecutionTime: true },
+				expect.objectContaining({
+					label: 'Results', showExecutionTime: true,
+					artifactPublication: expect.objectContaining({
+						policy: { accountPartition: 'partition-a', leaveNoTraceRevision: 0 },
+					}),
+				}),
 			);
 		} finally {
 			vi.useRealTimers();
@@ -4341,7 +4711,12 @@ describe('persistence round-trip', () => {
 			expect(displayResultForBox).toHaveBeenCalledWith(
 				{ ...JSON.parse(resultJson), metadata: { executionTime: '' } },
 				querySection.id,
-				{ label: 'Results', showExecutionTime: true },
+				expect.objectContaining({
+					label: 'Results', showExecutionTime: true,
+					artifactPublication: expect.objectContaining({
+						policy: { accountPartition: 'partition-a', leaveNoTraceRevision: 0 },
+					}),
+				}),
 			);
 			vi.advanceTimersByTime(500);
 			expect(postMessageToHost).not.toHaveBeenCalled();

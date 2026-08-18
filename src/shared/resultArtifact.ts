@@ -252,6 +252,20 @@ export function createDerivedResultArtifactPublication(
 	});
 }
 
+export function createRestoredKustoResultArtifactPublication(
+	producer: ResultArtifactProducer,
+	accountPartition: unknown,
+	leaveNoTraceRevision: unknown,
+): ResultArtifactPublication | undefined {
+	const partition = String(accountPartition || '').trim();
+	const revision = Number(leaveNoTraceRevision);
+	if (!partition || !Number.isSafeInteger(revision) || revision < 0) return undefined;
+	return deepFreeze({
+		producer: snapshotRecord(producer)!,
+		policy: deepFreeze({ accountPartition: partition, leaveNoTraceRevision: revision }),
+	});
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === 'object' && !Array.isArray(value);
 }

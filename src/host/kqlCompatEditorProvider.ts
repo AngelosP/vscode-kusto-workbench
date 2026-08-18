@@ -5,6 +5,7 @@ import * as path from 'path';
 
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
+import { hasDeferredLegacyKustoResults } from './persistedResultSanitizationApplicationHandler';
 import { hasSqlOwnedDocumentState } from './kqlxEditorProvider';
 import type { SqlWorkbenchService } from './sql/sqlWorkbenchService';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
@@ -403,6 +404,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			isLinked: (uri, file) => KqlCompatEditorProvider.isLinkedSidecarForCompatFile(uri, file, document.uri),
 			sanitizeFresh: state => queryEditor.sanitizeSqlLeaveNoTraceStateFresh(state),
 			publishFresh: (state, publish) => queryEditor.publishSqlLeaveNoTraceStateFresh(state, publish),
+			preserveUnchangedRepairText: hasDeferredLegacyKustoResults,
 			buildFile: (state, baseFile) => KqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, state, baseFile),
 			stringify: stringifyKqlxFile,
 		});

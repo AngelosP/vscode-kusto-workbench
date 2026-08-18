@@ -23,6 +23,7 @@ import {
 } from './results-state';
 import {
 	createDerivedResultArtifactPublication,
+	createRestoredKustoResultArtifactPublication,
 	projectRowsToDeclaredColumns,
 	publicationFromPersistedResultArtifact,
 	RESULT_ARTIFACT_CSV_RESET_EVENT,
@@ -609,6 +610,15 @@ function __kustoIsSqlOwnedQueryBox(boxId: string): boolean {
 	return false;
 }
 
+function __kustoHasCompletePersistedKustoResultOwner(section: Record<string, unknown>): boolean {
+	const accountPartition = section.kustoAccountPartition;
+	const leaveNoTraceRevision = section.kustoLeaveNoTraceRevision;
+	return typeof accountPartition === 'string' && !!accountPartition.trim()
+		&& typeof leaveNoTraceRevision === 'number'
+		&& Number.isSafeInteger(leaveNoTraceRevision)
+		&& leaveNoTraceRevision >= 0;
+}
+
 export function markKustoLeaveNoTracePolicyPending(): void {
 	__kustoKustoPolicyReady = false;
 }
@@ -876,8 +886,11 @@ function __kustoGetDeferredResultJobOwnerState(job: DeferredRestoredResultJob): 
 				});
 				if (resolution.kind === 'missing') return 'pending';
 				if (resolution.kind !== 'matched') return 'invalid';
-				const currentConnectionId = String((sectionEl as any).getConnectionId?.() || '').trim();
-				const currentDatabase = String((sectionEl as any).getDatabase?.() || '').trim();
+				const ownerSection = job.derivedSourceBoxId
+					? document.getElementById(job.derivedSourceBoxId) as any
+					: sectionEl as any;
+				const currentConnectionId = String(ownerSection?.getConnectionId?.() || '').trim();
+				const currentDatabase = String(ownerSection?.getDatabase?.() || '').trim();
 				if (!currentConnectionId || !currentDatabase) return 'pending';
 				if (currentConnectionId !== String(resolution.connection.id || '').trim()) return 'invalid';
 				if (currentDatabase !== expectedDatabase) return 'invalid';
@@ -987,7 +1000,7 @@ function __kustoTrustedRestoredResultProducer(job: DeferredRestoredResultJob): R
 }> | undefined {
 	const liveSqlProducer = __kustoLiveSqlRestoredResultProducer(job);
 	if (job.sqlOwnerConnectionId) return liveSqlProducer;
-	const section = document.getElementById(job.boxId) as any;
+	const section = document.getElementById(job.derivedSourceBoxId || job.boxId) as any;
 	const engine = 'kusto';
 	const query = __kustoCurrentRestoredQueryText(job);
 	const connectionId = String(section?.getConnectionId?.() || '').trim();
@@ -1090,6 +1103,15 @@ function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): vo
 		const expectedProducer = trustedProducer
 			? __kustoExpectedPersistedProducer(job.resultArtifact, trustedProducer, claimsProducerCapability)
 			: undefined;
+		const conservativeKustoPublication = trustedProducer
+			&& __kustoIsKustoOwnedRestore(job)
+			&& job.resultArtifact === undefined
+				? createRestoredKustoResultArtifactPublication(
+					{ ...trustedProducer, boxId: job.boxId },
+					job.kustoAccountPartition,
+					job.kustoLeaveNoTraceRevision,
+				)
+				: undefined;
 		const persistedPublication: ResultArtifactPublication | undefined = browserReadOnly
 			? (job.derivedSourceBoxId ? (trustedDerivedPublication ? {
 				...trustedDerivedPublication,
@@ -1111,7 +1133,9 @@ function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): vo
 					...(claimsClipboardShare ? { shareToClipboard: true } : {}),
 					...(claimsCsvExport ? { exportToCsv: true } : {}),
 					...(expectedProducer ? { expectedProducer } : {}),
-				})
+				}) ?? (job.resultArtifact === undefined && __kustoIsKustoOwnedRestore(job)
+					? (job.derivedSourceBoxId ? trustedDerivedPublication : conservativeKustoPublication)
+					: undefined)
 				: undefined);
 		const artifactPublication: ResultArtifactPublication | undefined = persistedPublication && trustedProducer && !browserReadOnly
 			? {
@@ -2172,6 +2196,81 @@ export function getKqlxState() {
 	};
 }
 
+function __kustoDeferredLegacyConfigurationMatches(
+	current: Record<string, unknown>,
+	baseline: Record<string, unknown>,
+): boolean {
+	if (String(current.query || '') !== String(baseline.query || '')
+		|| String(current.comparisonSourceBoxId || '').trim() !== String(baseline.comparisonSourceBoxId || '').trim()
+		|| kustoClusterKey(current.clusterUrl) !== kustoClusterKey(baseline.clusterUrl)
+		|| String(current.database || '').trim().toLowerCase()
+			!== String(baseline.database || '').trim().toLowerCase()) return false;
+	const baselineAuthorityId = String(baseline.authorityId || '').trim().toLowerCase();
+	const currentAuthorityId = String(current.authorityId || '').trim().toLowerCase();
+	const baselineConnectionId = String(baseline.connectionIdHint || '').trim();
+	const currentConnectionId = String(current.connectionIdHint || '').trim();
+	if (baselineAuthorityId && currentAuthorityId !== baselineAuthorityId) return false;
+	if (baselineConnectionId && currentConnectionId !== baselineConnectionId) return false;
+	if (baselineAuthorityId === currentAuthorityId && baselineConnectionId === currentConnectionId) return true;
+	try {
+		const baselineResolution = resolveKustoConnection(connections || [], {
+			clusterUrl: baseline.clusterUrl,
+			authorityId: baseline.authorityId,
+			connectionIdHint: baseline.connectionIdHint,
+		});
+		const currentResolution = resolveKustoConnection(connections || [], {
+			clusterUrl: current.clusterUrl,
+			authorityId: current.authorityId,
+			connectionIdHint: current.connectionIdHint,
+		});
+		return baselineResolution.kind === 'matched'
+			&& currentResolution.kind === 'matched'
+			&& baselineResolution.connection.id === currentResolution.connection.id;
+	} catch {
+		return false;
+	}
+}
+
+function __kustoGetPersistenceSnapshotState(): ReturnType<typeof getKqlxState> {
+	const state = getKqlxState();
+	const sections = Array.isArray(state.sections) ? state.sections : [];
+	const currentById = new Map(sections
+		.filter((section): section is Record<string, unknown> => !!section && typeof section === 'object')
+		.map(section => [String(section.id || '').trim(), section] as const)
+		.filter(([id]) => !!id));
+	let changed = false;
+	const preservedSections = sections.map(section => {
+		if (!section || typeof section !== 'object' || Array.isArray(section)) return section;
+		const current = section as Record<string, unknown>;
+		const id = String(current.id || '').trim();
+		const baseline = id ? __kustoAcknowledgedRuntimeSourceSections[id] as Record<string, unknown> | undefined : undefined;
+		if (!baseline || canonicalSectionKind(baseline.type) !== 'query'
+			|| !Object.prototype.hasOwnProperty.call(baseline, 'resultJson')
+			|| Object.prototype.hasOwnProperty.call(baseline, 'kustoAccountPartition')
+			|| Object.prototype.hasOwnProperty.call(baseline, 'kustoLeaveNoTraceRevision')
+			|| Object.prototype.hasOwnProperty.call(current, 'resultJson')
+			|| !__kustoDeferredLegacyConfigurationMatches(current, baseline)) return section;
+		const sourceBoxId = String(baseline.comparisonSourceBoxId || '').trim();
+		if (sourceBoxId) {
+			const baselineSource = __kustoAcknowledgedRuntimeSourceSections[sourceBoxId] as Record<string, unknown> | undefined;
+			const currentSource = currentById.get(sourceBoxId);
+			if (canonicalSectionKind(baselineSource?.type) === 'sql'
+				|| (!!baselineSource !== !!currentSource)
+				|| (baselineSource && currentSource
+					&& !__kustoDeferredLegacyConfigurationMatches(currentSource, baselineSource))) return section;
+		}
+		changed = true;
+		return {
+			...current,
+			resultJson: baseline.resultJson,
+			...(Object.prototype.hasOwnProperty.call(baseline, 'resultArtifact')
+				? { resultArtifact: baseline.resultArtifact }
+				: {}),
+		};
+	});
+	return changed ? { ...state, sections: preservedSections } : state;
+}
+
 let __kustoLastPersistSignature = '';
 let __kustoLastPersistRevision = 0;
 let __kustoLastSentPersistSignature = '';
@@ -2194,7 +2293,7 @@ function __kustoSeedPersistSignatureFromCurrentState(): void {
 			clearTimeout(__kustoPersistTimer);
 			__kustoPersistTimer = null;
 		}
-		const sig = __kustoGetPersistSignature(getKqlxState());
+		const sig = __kustoGetPersistSignature(__kustoGetPersistenceSnapshotState());
 		if (sig) {
 			__kustoLastPersistSignature = sig;
 			__kustoLastPersistRevision = pState.documentEditRevision;
@@ -2322,7 +2421,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 				resolvePendingKustoResultRestores();
 			}
 			__kustoSettleReadyRestoredResultsForPersist();
-			let state = getKqlxState();
+			let state = __kustoGetPersistenceSnapshotState();
 			let signatureState = __kustoBuildPersistSignatureState(state);
 			let signature = JSON.stringify(signatureState);
 			if (__kustoHasPendingRestoredResultsForCurrentDocument()) {
@@ -2339,7 +2438,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 					return undefined;
 				}
 				__kustoRetirePendingRestoredResultsForPersist();
-				state = getKqlxState();
+				state = __kustoGetPersistenceSnapshotState();
 				signatureState = __kustoBuildPersistSignatureState(state);
 				signature = JSON.stringify(signatureState);
 			}
@@ -2475,7 +2574,7 @@ export function flushCompatibilityPersist(requestId?: string, reason = 'flush'):
 		if (__kustoHasPendingRestoredResultsForCurrentDocument()) {
 			__kustoRetirePendingRestoredResultsForPersist();
 		}
-		const state = getKqlxState();
+		const state = __kustoGetPersistenceSnapshotState();
 		if (pState.documentKind !== 'kql' && pState.documentKind !== 'sql') {
 			__kustoPersistenceEpoch++;
 			postMessageToHost({
@@ -2564,7 +2663,7 @@ try {
 			if (__kustoHasPendingRestoredResultsForCurrentDocument()) {
 				__kustoRetirePendingRestoredResultsForPersist();
 			}
-			const state = getKqlxState();
+			const state = __kustoGetPersistenceSnapshotState();
 			const sig = __kustoGetPersistSignature(state);
 			if (sig && sig === __kustoLastPersistSignature) {
 				return;
@@ -3136,7 +3235,10 @@ function applyKqlxState(
 						|| (__kustoIsReadOnlyBrowserViewer()
 							? comparisonSourceExists
 							: __kustoSqlOwnerMatchesPersisted(sourceSqlElement, comparisonSource));
-					const rj = comparisonSourceBoxId && (!comparisonSourceExists || !sourceOwnerResolved || !comparisonOwnerMatchesSource)
+					const hasRestorableKustoOwner = sqlComparisonSource
+						|| __kustoHasCompletePersistedKustoResultOwner(section);
+					const rj = !hasRestorableKustoOwner
+						|| (comparisonSourceBoxId && (!comparisonSourceExists || !sourceOwnerResolved || !comparisonOwnerMatchesSource))
 						? ''
 						: (section.resultJson ? String(section.resultJson) : '');
 					if (sqlComparisonSource && !sourceOwnerResolved && section.resultJson) {

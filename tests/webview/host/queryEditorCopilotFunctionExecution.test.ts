@@ -1802,6 +1802,39 @@ describe('Kusto Copilot function execution', () => {
 		notification.mockRestore();
 	});
 
+	it('uses the scripted development model through the real clarification flow and records prompts', async () => {
+		const host = createHost([]);
+		const selector = vi.fn(async () => []);
+		const notification = vi.spyOn(vscode.window, 'showInformationMessage').mockResolvedValue(undefined);
+		const service = new CopilotService(host, selector);
+		service.configureDevelopmentModelForTest([{
+			toolCalls: [{
+				callId: 'scripted-clarify',
+				name: 'ask_user_clarifying_question',
+				input: { question: 'Which scripted time range?' },
+			}],
+		}]);
+
+		await service.startCopilotWriteQuery({ ...startMessage(), requireToolUse: false });
+
+		expect(selector).not.toHaveBeenCalled();
+		expect(hostMessagesOfType(host, 'copilotClarifyingQuestion')).toEqual([
+			expect.objectContaining({
+				question: 'Which scripted time range?',
+				responseTarget: 'section-chat',
+			}),
+		]);
+		expect(service.getDevelopmentModelSnapshotForTest()).toEqual(expect.objectContaining({
+			configuredResponses: 1,
+			consumedResponses: 1,
+			remainingResponses: 0,
+			requests: [expect.any(Array)],
+		}));
+		service.clearDevelopmentModelForTest();
+		expect(service.getDevelopmentModelSnapshotForTest()).toBeNull();
+		notification.mockRestore();
+	});
+
 	it('ignores a delayed manual clarification View action after exact conversation Clear', async () => {
 		const model = createModel([[
 			new vscode.LanguageModelToolCallPart(

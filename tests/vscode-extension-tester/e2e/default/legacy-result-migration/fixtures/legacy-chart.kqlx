@@ -1,0 +1,43 @@
+{
+  "kind": "kqlx",
+  "version": 1,
+  "state": {
+    "sections": [
+      {
+        "id": "query_legacy_migration",
+        "type": "query",
+        "name": "Legacy migration source",
+        "query": "datatable(Category:string, Value:long)['alpha', 10, 'beta', 20, 'gamma', 30]",
+        "expanded": false,
+        "resultsVisible": true,
+        "resultJson": "{\"columns\":[{\"name\":\"Category\",\"type\":\"string\"},{\"name\":\"Value\",\"type\":\"long\"}],\"rows\":[[\"alpha\",10],[\"beta\",20],[\"gamma\",30]],\"metadata\":{\"executionTime\":\"00:00:00.042\",\"clientActivityId\":\"legacy-result-migration-e2e\"}}",
+        "resultArtifact": {
+          "version": 1,
+          "artifactId": "result:query_legacy_migration:7",
+          "sourceBoxId": "query_legacy_migration",
+          "revision": 7,
+          "createdAt": 1,
+          "policy": {
+            "exposeToActiveContent": true,
+            "sendToModel": true,
+            "shareToClipboard": true,
+            "exportToCsv": true
+          }
+        }
+      },
+      {
+        "id": "chart_legacy_migration",
+        "type": "chart",
+        "name": "Migrated cache chart",
+        "mode": "preview",
+        "expanded": true,
+        "dataSourceId": "query_legacy_migration",
+        "chartType": "bar",
+        "xColumn": "Category",
+        "yColumn": "Value",
+        "yColumns": ["Value"],
+        "showDataLabels": true
+      }
+    ]
+  }
+}

@@ -372,6 +372,185 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	for (const scenario of [
+		{ name: 'migrates', accountResolved: true, resultKind: 'matching', migrated: true },
+		{ name: 'defers', accountResolved: false, resultKind: 'matching', migrated: false },
+		{ name: 'preserves mismatched', accountResolved: true, resultKind: 'mismatched', migrated: false },
+		{ name: 'preserves malformed', accountResolved: true, resultKind: 'malformed', migrated: false },
+	] as const) {
+		test(`${scenario.name} legacy Kusto results in native KQLX and KQL sidecars`, async () => {
+			const originalApplyEdit = vscode.workspace.applyEdit;
+			const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+			let completedPublications = 0;
+			let activeDocumentUri = '';
+			let activeDocumentText = '';
+			let activeDocumentVersion = 1;
+			let activeDocumentDirty = false;
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `kw-legacy-result-${scenario.resultKind}-`));
+			const connection = {
+				id: 'legacy-owner', name: 'Legacy owner', clusterUrl: 'https://legacy.kusto.windows.net',
+			};
+			const accountId = 'legacy-account';
+			const resultJson = scenario.resultKind === 'malformed'
+				? '{"rows":'
+				: JSON.stringify({
+					columns: [{ name: 'Value', type: 'long' }], rows: [[42]],
+					metadata: {
+						cluster: scenario.resultKind === 'mismatched' ? 'other' : 'legacy', database: 'Db',
+					},
+				});
+
+			try {
+				(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async function (
+					this: QueryEditorProvider,
+					state: any,
+					publish: (sanitizedState: any) => Promise<unknown>,
+				) {
+					try {
+						return await originalPublish.call(this, state, publish);
+					} finally {
+						completedPublications++;
+					}
+				};
+				(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+					const entry = edit.entries().find(([uri]) => uri.toString() === activeDocumentUri);
+					const replacement = entry?.[1]?.[0]?.newText;
+					if (typeof replacement !== 'string') return originalApplyEdit.call(vscode.workspace, edit);
+					activeDocumentText = replacement;
+					activeDocumentVersion++;
+					activeDocumentDirty = true;
+					return true;
+				};
+
+				for (const variant of ['native', 'sidecar'] as const) {
+					let receiveHandler: ((message: any) => unknown) | undefined;
+					const posted: any[] = [];
+					const primaryPath = path.join(tmpDir, `${variant}.kql`);
+					const persistedPath = variant === 'native'
+						? path.join(tmpDir, `${variant}.kqlx`)
+						: path.join(tmpDir, `${variant}.kql.json`);
+					const section = {
+						id: variant === 'native' ? 'legacy_native' : 'compat_primary_query',
+						type: 'query' as const,
+						...(variant === 'native' ? { query: 'print Value=42' } : { linkedQueryPath: `${variant}.kql` }),
+						clusterUrl: connection.clusterUrl,
+						connectionIdHint: connection.id,
+						database: 'Db',
+						resultJson,
+					};
+					const originalBytes = stringifyKqlxFile({
+						kind: 'kqlx', version: 1, state: { sections: [section] },
+					});
+					if (variant === 'sidecar') fs.writeFileSync(primaryPath, 'print Value=42', 'utf8');
+					fs.writeFileSync(persistedPath, originalBytes, 'utf8');
+
+					const preferences = scenario.accountResolved
+						? { [connection.id]: { mode: 'automatic', lastSuccessfulAccountId: accountId } }
+						: undefined;
+					const context = {
+						subscriptions: [],
+						workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: {
+							get: (key: string) => key === 'kusto.auth.connectionPreferences.v1' ? preferences : undefined,
+							update: async () => undefined,
+						},
+						globalStorageUri: vscode.Uri.file(tmpDir),
+					} as any;
+					const accountPartition = KustoAuthPreferenceService.getInstance(context)
+						.getAccountPartition(undefined, accountId);
+					const provider = variant === 'native'
+						? new (KqlxEditorProvider as any)(
+							context, vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
+							connectionManagerStub({ getConnections: () => [connection] }), sqlWorkbenchStub(),
+						) as KqlxEditorProvider
+						: new (KqlCompatEditorProvider as any)(
+							context, vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
+							connectionManagerStub({ getConnections: () => [connection] }), sqlWorkbenchStub(),
+						) as KqlCompatEditorProvider;
+					activeDocumentText = variant === 'native' ? originalBytes : 'print Value=42';
+					activeDocumentUri = vscode.Uri.file(variant === 'native' ? persistedPath : primaryPath).toString();
+					activeDocumentVersion = 1;
+					activeDocumentDirty = false;
+					const document = {
+						uri: vscode.Uri.file(variant === 'native' ? persistedPath : primaryPath),
+						getText: () => activeDocumentText,
+						get version() { return activeDocumentVersion; },
+						get isDirty() { return activeDocumentDirty; },
+						eol: vscode.EndOfLine.LF,
+						positionAt: (_offset: number) => new vscode.Position(0, 0),
+						save: async () => {
+							if (variant === 'native') fs.writeFileSync(persistedPath, activeDocumentText, 'utf8');
+							activeDocumentDirty = false;
+							return true;
+						},
+						lineCount: 1,
+						lineAt: () => ({ text: 'print Value=42' }),
+					} as any;
+					const panel = {
+						visible: true,
+						webview: {
+							options: {},
+							postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+							onDidReceiveMessage: (handler: (message: any) => unknown) => {
+								receiveHandler = handler;
+								return { dispose() {} };
+							},
+						},
+						onDidDispose: () => ({ dispose() {} }),
+						onDidChangeViewState: () => ({ dispose() {} }),
+					} as any;
+
+					const publicationsBeforeOpen = completedPublications;
+					await provider.resolveCustomTextEditor(document, panel, {} as any);
+					assert.ok(receiveHandler, `expected ${variant} message handler`);
+					await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+					if (scenario.migrated) {
+						await waitForCondition(() => {
+							try {
+								return JSON.parse(fs.readFileSync(persistedPath, 'utf8')).state.sections[0]
+									.kustoAccountPartition === accountPartition;
+							} catch {
+								return false;
+							}
+						}, `${variant} durable migration should settle`);
+					} else {
+						await waitForCondition(
+							() => completedPublications > publicationsBeforeOpen,
+							`${variant} deferred persistence repair should settle`,
+						);
+					}
+
+					const persistedBytes = fs.readFileSync(persistedPath, 'utf8');
+					const persistedSection = JSON.parse(persistedBytes).state.sections[0];
+					assert.strictEqual(persistedSection.resultJson, resultJson);
+					const projection = [...posted].reverse().find(message => message?.type === 'documentData' && message.ok === true);
+					assert.ok(projection, `expected ${variant} document projection`);
+					const projectedSection = projection.state.sections[0];
+					assert.strictEqual(projectedSection.resultJson, resultJson);
+					if (scenario.migrated) {
+						assert.strictEqual(persistedSection.kustoAccountPartition, accountPartition, `${variant} durable partition`);
+						assert.strictEqual(persistedSection.kustoLeaveNoTraceRevision, 0, `${variant} durable revision`);
+						assert.strictEqual(projectedSection.kustoAccountPartition, accountPartition, `${variant} projected partition`);
+						assert.strictEqual(projectedSection.kustoLeaveNoTraceRevision, 0, `${variant} projected revision`);
+						const firstMigratedBytes = persistedBytes;
+						await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+						assert.strictEqual(fs.readFileSync(persistedPath, 'utf8'), firstMigratedBytes);
+					} else {
+						assert.strictEqual(persistedBytes, originalBytes);
+						assert.ok(!Object.prototype.hasOwnProperty.call(persistedSection, 'kustoAccountPartition'));
+						assert.ok(!Object.prototype.hasOwnProperty.call(persistedSection, 'kustoLeaveNoTraceRevision'));
+						assert.ok(!Object.prototype.hasOwnProperty.call(projectedSection, 'kustoAccountPartition'));
+						assert.ok(!Object.prototype.hasOwnProperty.call(projectedSection, 'kustoLeaveNoTraceRevision'));
+					}
+				}
+			} finally {
+				(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+				(vscode.workspace as any).applyEdit = originalApplyEdit;
+				try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+			}
+		});
+	}
+
 	test('known-incompatible KQL and SQL companions open read-only without overwrite or byte changes', async () => {
 		const originalShowInformationMessage = vscode.window.showInformationMessage;
 		const originalShowWarningMessage = vscode.window.showWarningMessage;
@@ -6788,7 +6967,7 @@ suite('Sidecar .kql.json strategy', () => {
 		const state = { sections: [{
 			id: 'query_1', type: 'query', query: 'print value=1',
 			clusterUrl: 'https://cluster.kusto.windows.net', connectionIdHint: 'kusto-1', database: 'Db',
-			resultJson: 'KUSTO_RESULT',
+			resultJson: 'KUSTO_RESULT', kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0,
 		}] };
 		const text = JSON.stringify({ kind: 'kqlx', version: 1, state }, null, 2);
 		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
@@ -7295,14 +7474,14 @@ suite('Sidecar .kql.json strategy', () => {
 			kind: 'kqlx', version: 1,
 			state: { sections: [
 				{ id: 'sql_1', type: 'sql', query: 'SELECT 1', resultJson: 'PROTECTED_SQL_RESULT' },
-				{ id: 'query_1', type: 'query', query: 'print 1', resultJson: 'KEEP_KUSTO_RESULT' },
+				{ id: 'query_1', type: 'query', query: 'print 1', resultJson: 'KEEP_KUSTO_RESULT', kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0 },
 			] },
 		}, null, 2);
 		const latestText = JSON.stringify({
 			kind: 'kqlx', version: 1,
 			state: { sections: [
 				{ id: 'sql_1', type: 'sql', query: 'SELECT 2 AS latest_edit', resultJson: 'PROTECTED_SQL_RESULT' },
-				{ id: 'query_1', type: 'query', query: 'print 1', resultJson: 'KEEP_KUSTO_RESULT' },
+				{ id: 'query_1', type: 'query', query: 'print 1', resultJson: 'KEEP_KUSTO_RESULT', kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0 },
 			] },
 		}, null, 2);
 

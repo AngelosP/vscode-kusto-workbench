@@ -58,6 +58,7 @@ import {
 import { parseEditingPreferencesHostMessage } from '../shared/editingPreferences';
 
 type TestOpenFileSummary = NonNullable<Awaited<ReturnType<KustoWorkbenchToolOrchestrator['listSections']>>['openFiles']>[number];
+type TestKustoCopilotDelegationInput = Parameters<KustoWorkbenchToolOrchestrator['delegateToKustoWorkbenchCopilot']>[0];
 
 export async function clearAllKustoConnectionsAndFavorites(
 	context: Pick<vscode.ExtensionContext, 'globalState'>,
@@ -139,6 +140,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				'kustoWorkbench.test.assertNestedSqlComparisonRejected',
 				(query: string) => QueryEditorProvider.assertNestedSqlComparisonRejectedForTest(query),
 			),
+			vscode.commands.registerCommand(
+				'kustoWorkbench.test.configureCopilotDevelopmentModel',
+				responses => QueryEditorProvider.configureCopilotDevelopmentModelForTest(responses),
+			),
+			vscode.commands.registerCommand(
+				'kustoWorkbench.test.getCopilotDevelopmentModelSnapshot',
+				() => QueryEditorProvider.getCopilotDevelopmentModelSnapshotForTest(),
+			),
+			vscode.commands.registerCommand(
+				'kustoWorkbench.test.clearCopilotDevelopmentModel',
+				() => QueryEditorProvider.clearCopilotDevelopmentModelForTest(),
+			),
 		);
 	}
 	registerFirstLaunchTriggers(context, firstLaunchCoordinator);
@@ -187,6 +200,56 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 	const connectionManager = new ConnectionManager(context);
 	if (context.extensionMode !== vscode.ExtensionMode.Production) {
+		const copilotClarificationConnectionName = 'Kusto Copilot Clarification E2E';
+		const copilotClarificationCluster = 'https://copilot-clarification-e2e.invalid';
+		const copilotClarificationAccount = {
+			id: 'kusto-copilot-clarification-e2e-account',
+			label: 'Kusto Copilot clarification E2E account',
+		};
+		const copilotClarificationAuth = KustoAuthPreferenceService.getInstance(context);
+		context.subscriptions.push(
+			vscode.commands.registerCommand('kustoWorkbench.test.seedCopilotClarificationConnection', async () => {
+				await copilotClarificationAuth.waitForProviderAccountRefresh();
+				for (const connection of connectionManager.getConnections()) {
+					if (connection.name === copilotClarificationConnectionName) {
+						await connectionManager.removeConnection(connection.id);
+					}
+				}
+				const connection = await connectionManager.addConnection({
+					name: copilotClarificationConnectionName,
+					clusterUrl: copilotClarificationCluster,
+					database: 'ChecklistDb',
+				});
+				await copilotClarificationAuth.setExplicitAccount(connection.id, copilotClarificationAccount);
+				await copilotClarificationAuth.setTokenOverride(
+					connection.authorityId,
+					copilotClarificationAccount.id,
+					'kusto-copilot-clarification-e2e-token',
+					[connection.id],
+				);
+				await toolOrchestrator?.postToAllWebviews({
+					type: 'e2eCopilotClarificationConnection',
+					connection,
+					database: 'ChecklistDb',
+				});
+				return connection;
+			}),
+			vscode.commands.registerCommand('kustoWorkbench.test.removeCopilotClarificationConnection', async () => {
+				const connections = connectionManager.getConnections()
+					.filter(connection => connection.name === copilotClarificationConnectionName);
+				for (const connection of connections) {
+					await copilotClarificationAuth.clearTokenOverride(
+						connection.authorityId,
+						copilotClarificationAccount.id,
+						[connection.id],
+					);
+					await copilotClarificationAuth.removeConnection(connection.id);
+					if (connection.name === copilotClarificationConnectionName) {
+						await connectionManager.removeConnection(connection.id);
+					}
+				}
+			}),
+		);
 		const testPrefix = 'E2E Identity Checklist';
 		const textDiagnosticsTestName = 'E2E Text Diagnostics Seed';
 		const textDiagnosticsTestCluster = 'https://kw-diagnostics-seed.kusto.windows.net';
@@ -247,10 +310,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			if (!request || typeof request !== 'object' || Array.isArray(request)) {
 				throw new Error('Persisted-result fixture request must be an object.');
 			}
-			const candidate = request as { engine?: unknown; templatePath?: unknown; outputPath?: unknown };
+			const candidate = request as {
+				engine?: unknown; templatePath?: unknown; outputPath?: unknown; legacyKusto?: unknown;
+			};
 			const engine = String(candidate.engine || '').trim();
 			const templatePath = String(candidate.templatePath || '').trim();
 			const outputPath = String(candidate.outputPath || '').trim();
+			const legacyKusto = candidate.legacyKusto === true;
 			if ((engine !== 'kusto' && engine !== 'sql') || !templatePath || !outputPath) {
 				throw new Error('Persisted-result fixture requires engine, templatePath, and outputPath.');
 			}
@@ -299,12 +365,31 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 						accountPartition,
 					},
 				);
+				const parsedResult = JSON.parse(section.resultJson) as { metadata?: unknown };
+				if (!parsedResult || typeof parsedResult !== 'object' || Array.isArray(parsedResult)) {
+					throw new Error('Persisted-result Kusto template resultJson must contain an object.');
+				}
+				parsedResult.metadata = {
+					...(parsedResult.metadata && typeof parsedResult.metadata === 'object' && !Array.isArray(parsedResult.metadata)
+						? parsedResult.metadata as Record<string, unknown>
+						: {}),
+					cluster: connection.clusterUrl,
+					database: persistedResultKustoDatabase,
+				};
+				section.resultJson = JSON.stringify(parsedResult);
 				Object.assign(section, {
 					clusterUrl: connection.clusterUrl,
 					database: persistedResultKustoDatabase,
-					kustoAccountPartition: accountPartition,
-					kustoLeaveNoTraceRevision: connectionManager.getLeaveNoTraceRevision(connection.clusterUrl),
 				});
+				if (legacyKusto) {
+					delete section.kustoAccountPartition;
+					delete section.kustoLeaveNoTraceRevision;
+				} else {
+					Object.assign(section, {
+						kustoAccountPartition: accountPartition,
+						kustoLeaveNoTraceRevision: connectionManager.getLeaveNoTraceRevision(connection.clusterUrl),
+					});
+				}
 				delete section.connectionIdHint;
 				connectionId = connection.id;
 			} else {
@@ -1151,6 +1236,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		(connection, principal, revocation, dispatch) => sqlWorkbenchService!.dispatchSqlOwnerAllowed(connection, principal, revocation, dispatch),
 	);
 	context.subscriptions.push(
+		vscode.workspace.onWillRenameFiles((event) => {
+			event.waitUntil(toolOrchestrator?.prepareFilesRename(event.files) ?? Promise.resolve());
+		}),
 		vscode.workspace.onDidRenameFiles((event) => {
 			void toolOrchestrator?.handleFilesRenamed(event.files).catch(() => {
 				// Ignore rename bookkeeping failures; VS Code remains the source of truth.
@@ -1158,7 +1246,72 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		})
 	);
 	if (context.extensionMode !== vscode.ExtensionMode.Production) {
+		type DelegationRecord = {
+			status: 'running' | 'resolved' | 'rejected';
+			input: TestKustoCopilotDelegationInput;
+			result?: unknown;
+			error?: string;
+		};
+		const copilotDelegations = new Map<string, DelegationRecord>();
 		context.subscriptions.push(
+			vscode.commands.registerCommand(
+				'kustoWorkbench.test.startKustoCopilotDelegation',
+				async (key: string, input: TestKustoCopilotDelegationInput & { targetFileRelativePath?: string }) => {
+					const normalizedKey = String(key || '').trim();
+					if (!normalizedKey) throw new Error('A delegation result key is required.');
+					if (!input || typeof input !== 'object' || Array.isArray(input)) {
+						throw new Error('A Kusto Copilot delegation input object is required.');
+					}
+					if (copilotDelegations.get(normalizedKey)?.status === 'running') {
+						throw new Error(`Delegation ${normalizedKey} is already running.`);
+					}
+					const preparedInput = structuredClone(input) as TestKustoCopilotDelegationInput & { targetFileRelativePath?: string };
+					const targetFileRelativePath = String(preparedInput.targetFileRelativePath || '').trim();
+					delete preparedInput.targetFileRelativePath;
+					if (targetFileRelativePath) {
+						preparedInput.targetFileUri = vscode.Uri.joinPath(
+							context.extensionUri,
+							...targetFileRelativePath.replace(/\\/g, '/').split('/').filter(Boolean),
+						).toString();
+					}
+					if (!String(preparedInput.sectionId || '').trim()) {
+						const listed = await toolOrchestrator!.listSections();
+						const targetFileUri = String(preparedInput.targetFileUri || '');
+						const targetFile = targetFileUri
+							? (listed.openFiles || []).find(file => file.logicalUri === targetFileUri || file.uri === targetFileUri)
+							: (listed.openFiles || []).find(file => file.isActive && file.isLiveWorkbench);
+						const sections = targetFile?.sections || listed.sections || [];
+						const querySection = sections.find(section => section.type === 'query');
+						if (querySection?.id) preparedInput.sectionId = querySection.id;
+					}
+					const record: DelegationRecord = { status: 'running', input: preparedInput };
+					copilotDelegations.set(normalizedKey, record);
+					try {
+						const result = await toolOrchestrator!.delegateToKustoWorkbenchCopilot(preparedInput);
+						record.status = 'resolved';
+						record.result = result;
+						return result;
+					} catch (error) {
+						record.status = 'rejected';
+						record.error = error instanceof Error ? error.message : String(error);
+						throw error;
+					}
+				},
+			),
+			vscode.commands.registerCommand('kustoWorkbench.test.getKustoCopilotDelegationSnapshot', async () => {
+				const listed = await toolOrchestrator!.listSections();
+				return {
+					delegations: Object.fromEntries(copilotDelegations),
+					openFiles: listed.openFiles || [],
+				};
+			}),
+			vscode.commands.registerCommand('kustoWorkbench.test.clearKustoCopilotDelegations', () => {
+				const running = [...copilotDelegations.entries()].filter(([, record]) => record.status === 'running');
+				if (running.length > 0) {
+					throw new Error(`Cannot clear running delegations: ${running.map(([key]) => key).join(', ')}.`);
+				}
+				copilotDelegations.clear();
+			}),
 			vscode.commands.registerCommand('kustoWorkbench.test.runOpenFileTargetingScenario', async (modeOrWorkspacePath?: string, workspacePath?: string) => {
 				if (!toolOrchestrator) {
 					throw new Error('Kusto Workbench tools are not initialized.');

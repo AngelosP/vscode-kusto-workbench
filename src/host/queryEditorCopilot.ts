@@ -46,6 +46,29 @@ import type { DevelopmentNoteMutationPayload } from '../shared/developmentNoteMu
 
 export const SQL_COPILOT_OWNER_CHANGED_MESSAGE = 'SQL section owner changed. Retry the request.';
 
+type CopilotModelSelector = (
+	selector?: vscode.LanguageModelChatSelector,
+) => Thenable<vscode.LanguageModelChat[]>;
+
+export type CopilotDevelopmentModelResponse = Readonly<{
+	delayMs?: number;
+	text?: string;
+	toolCalls?: readonly Readonly<{
+		callId: string;
+		name: string;
+		input: Record<string, unknown>;
+	}>[];
+}>;
+
+type CopilotDevelopmentModelFixture = {
+	responses: CopilotDevelopmentModelResponse[];
+	nextResponseIndex: number;
+	requests: unknown[];
+	manualClarificationNotifications: number;
+	manualClarificationSelections: Array<string | null>;
+	model: vscode.LanguageModelChat;
+};
+
 /**
  * Interface that the CopilotService uses to call back into the host (QueryEditorProvider).
  */
@@ -182,9 +205,148 @@ export class CopilotService {
 	private _cachedInlineModel: vscode.LanguageModelChat | null = null;
 	private _cachedInlineModelAt = 0;
 	private readonly runningSqlInlineCompletionByBoxId = new Map<string, { connectionId: string; cts: vscode.CancellationTokenSource }>();
+	private developmentModelFixture?: CopilotDevelopmentModelFixture;
 	private static readonly INLINE_MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-	constructor(private readonly host: CopilotServiceHost) {}
+	constructor(
+		private readonly host: CopilotServiceHost,
+		private readonly selectChatModels: CopilotModelSelector = selector => vscode.lm.selectChatModels(selector),
+	) {}
+
+	configureDevelopmentModelForTest(responses: readonly CopilotDevelopmentModelResponse[]): void {
+		if (this.host.context.extensionMode === vscode.ExtensionMode.Production) {
+			throw new Error('The scripted Copilot model is available only in development hosts.');
+		}
+		if (!Array.isArray(responses) || responses.length === 0) {
+			throw new Error('At least one scripted Copilot response is required.');
+		}
+		const normalized = responses.map((response, responseIndex) => {
+			if (!response || typeof response !== 'object' || Array.isArray(response)) {
+				throw new Error(`Scripted Copilot response ${responseIndex} must be an object.`);
+			}
+			const delayMs = response.delayMs === undefined ? 0 : Number(response.delayMs);
+			if (!Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 30_000) {
+				throw new Error(`Scripted Copilot response ${responseIndex} has an invalid delay.`);
+			}
+			const text = response.text === undefined ? '' : String(response.text);
+			const toolCalls = response.toolCalls === undefined ? [] : response.toolCalls;
+			if (!Array.isArray(toolCalls)) {
+				throw new Error(`Scripted Copilot response ${responseIndex} toolCalls must be an array.`);
+			}
+			return Object.freeze({
+				delayMs,
+				text,
+				toolCalls: toolCalls.map((toolCall, toolCallIndex) => {
+					const callId = String(toolCall?.callId || '').trim();
+					const name = String(toolCall?.name || '').trim();
+					if (!callId || !name || !toolCall.input || typeof toolCall.input !== 'object' || Array.isArray(toolCall.input)) {
+						throw new Error(`Scripted Copilot response ${responseIndex} tool call ${toolCallIndex} is invalid.`);
+					}
+					return Object.freeze({ callId, name, input: structuredClone(toolCall.input) });
+				}),
+			});
+		});
+		const fixture = {} as CopilotDevelopmentModelFixture;
+		fixture.responses = normalized;
+		fixture.nextResponseIndex = 0;
+		fixture.requests = [];
+		fixture.manualClarificationNotifications = 0;
+		fixture.manualClarificationSelections = [];
+		fixture.model = {
+			id: 'kusto-workbench-scripted-e2e',
+			name: 'Kusto Workbench Scripted E2E',
+			vendor: 'copilot',
+			family: 'scripted-e2e',
+			version: '1',
+			maxInputTokens: 128_000,
+			countTokens: async value => typeof value === 'string'
+				? Math.ceil(value.length / 4)
+				: Math.ceil(JSON.stringify(this.snapshotDevelopmentMessages([value])).length / 4),
+			sendRequest: async (messages, _options, token) => {
+				const responseIndex = fixture.nextResponseIndex++;
+				const response = fixture.responses[responseIndex];
+				if (!response) throw new Error(`No scripted Copilot response remains for request ${responseIndex + 1}.`);
+				fixture.requests.push(this.snapshotDevelopmentMessages(messages));
+				const waitForDelay = async () => {
+					if (!response.delayMs) return;
+					if (token?.isCancellationRequested) throw new Error('Scripted Copilot request canceled.');
+					await new Promise<void>((resolve, reject) => {
+						const timer = setTimeout(() => {
+							subscription?.dispose();
+							resolve();
+						}, response.delayMs);
+						const subscription = token?.onCancellationRequested(() => {
+							clearTimeout(timer);
+							subscription?.dispose();
+							reject(new Error('Scripted Copilot request canceled.'));
+						});
+					});
+				};
+				return {
+					stream: (async function* () {
+						await waitForDelay();
+						if (response.text) yield new vscode.LanguageModelTextPart(response.text);
+						for (const toolCall of response.toolCalls || []) {
+							yield new vscode.LanguageModelToolCallPart(toolCall.callId, toolCall.name, toolCall.input);
+						}
+					})(),
+					text: (async function* () {
+						await waitForDelay();
+						if (response.text) yield response.text;
+					})(),
+				};
+			},
+		};
+		this.developmentModelFixture = fixture;
+		this._cachedInlineModel = null;
+		this._cachedInlineModelAt = 0;
+	}
+
+	clearDevelopmentModelForTest(): void {
+		this.developmentModelFixture = undefined;
+		this._cachedInlineModel = null;
+		this._cachedInlineModelAt = 0;
+	}
+
+	getDevelopmentModelSnapshotForTest(): unknown {
+		const fixture = this.developmentModelFixture;
+		return fixture ? {
+			configuredResponses: fixture.responses.length,
+			consumedResponses: fixture.nextResponseIndex,
+			remainingResponses: fixture.responses.length - fixture.nextResponseIndex,
+			requests: structuredClone(fixture.requests),
+			manualClarificationNotifications: fixture.manualClarificationNotifications,
+			manualClarificationSelections: [...fixture.manualClarificationSelections],
+		} : null;
+	}
+
+	private async selectAvailableChatModels(selector?: vscode.LanguageModelChatSelector): Promise<vscode.LanguageModelChat[]> {
+		return this.developmentModelFixture ? [this.developmentModelFixture.model] : this.selectChatModels(selector);
+	}
+
+	private snapshotDevelopmentMessages(messages: readonly vscode.LanguageModelChatMessage[]): unknown[] {
+		const boundedText = (value: string) => value.length <= 1_000 ? value : `${value.slice(0, 1_000)}…`;
+		return messages.map(message => ({
+			role: message.role,
+			parts: message.content.map(part => {
+				if (part instanceof vscode.LanguageModelTextPart) {
+					return { kind: 'text', value: boundedText(part.value) };
+				}
+				if (part instanceof vscode.LanguageModelToolCallPart) {
+					return { kind: 'tool-call', callId: part.callId, name: part.name, input: structuredClone(part.input) };
+				}
+				if (part instanceof vscode.LanguageModelToolResultPart) {
+					return {
+						kind: 'tool-result', callId: part.callId,
+						content: part.content.map(contentPart => contentPart instanceof vscode.LanguageModelTextPart
+							? { kind: 'text', value: boundedText(contentPart.value) }
+							: { kind: 'unknown' }),
+					};
+				}
+				return { kind: 'unknown' };
+			}),
+		}));
+	}
 
 	private createRunningCopilotWriteQuery(
 		boxId: string,
@@ -1044,7 +1206,7 @@ export class CopilotService {
 
 	async checkCopilotAvailability(boxId: string): Promise<void> {
 		try {
-			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			const models = await this.selectAvailableChatModels({ vendor: 'copilot' });
 			const available = models.length > 0;
 
 			this.host.postMessage({
@@ -1105,7 +1267,7 @@ export class CopilotService {
 			// Use cached model if available (avoids ~200-500ms selectChatModels latency per request).
 			let model = this._cachedInlineModel;
 			if (!model || Date.now() - this._cachedInlineModelAt > CopilotService.INLINE_MODEL_CACHE_TTL_MS) {
-				const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+				const models = await this.selectAvailableChatModels({ vendor: 'copilot' });
 				if (models.length === 0) {
 					postResult([], 'Copilot not available');
 					return;
@@ -1217,7 +1379,7 @@ Completion:`;
 			return;
 		}
 		try {
-			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			const models = await this.selectAvailableChatModels({ vendor: 'copilot' });
 			if (models.length === 0) {
 				this.host.postMessage({
 					type: 'copilotWriteQueryOptions',
@@ -1608,7 +1770,7 @@ Completion:`;
 		};
 
 		try {
-			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			const models = await this.selectAvailableChatModels({ vendor: 'copilot' });
 			assertActiveRequest();
 			if (models.length === 0) {
 				postRequestMessage({
@@ -1672,7 +1834,7 @@ Completion:`;
 			}
 
 			if (!this.copilotDevNotesSentPerBox.has(boxId)) {
-				const devNotesContent = await this.getDevNotesContent();
+				const devNotesContent = this.developmentModelFixture ? undefined : await this.getDevNotesContent();
 				assertActiveRequest();
 				if (devNotesContent) {
 					const devNotesEntryId = this.nextHistoryEntryId(boxId);
@@ -2576,10 +2738,13 @@ Completion:`;
 							// ignore
 						}
 
+						const developmentFixture = this.developmentModelFixture;
+						if (developmentFixture) developmentFixture.manualClarificationNotifications++;
 						vscode.window.showInformationMessage(
 							'Kusto Copilot has a clarifying question for you.',
 							'View'
 						).then(selection => {
+							if (developmentFixture) developmentFixture.manualClarificationSelections.push(selection ?? null);
 							if (selection === 'View') {
 								const owner = this.copilotConversationOwnerByBoxId.get(boxId);
 								if (owner?.flavor !== 'kusto' || !owner.kustoRequest
@@ -2778,7 +2943,7 @@ Completion:`;
 		this.runningOptimizeByBoxId.set(boxId, running);
 
 		try {
-			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			const models = await this.selectAvailableChatModels({ vendor: 'copilot' });
 			if (models.length === 0) {
 				if (!await this.postRunningOptimizeMessage(running, {
 					type: 'optimizeQueryError',
@@ -2869,7 +3034,7 @@ Completion:`;
 		};
 
 		try {
-			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			const models = await this.selectAvailableChatModels({ vendor: 'copilot' });
 			if (models.length === 0) {
 				vscode.window.showWarningMessage('GitHub Copilot is not available. Please enable Copilot to use query optimization.');
 				if (!await postOwnedMessage({
@@ -3282,7 +3447,7 @@ Completion:`;
 		try {
 			await assertActiveOwner();
 			// 1. Select model.
-			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			const models = await this.selectAvailableChatModels({ vendor: 'copilot' });
 			if (models.length === 0) {
 				await dispatchActiveOwner(boxId, () => {
 					postSqlMessage({ type: 'copilotWriteQueryDone', boxId, ok: false, message: 'GitHub Copilot is not available.' });

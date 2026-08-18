@@ -24,7 +24,8 @@ Feature: Capture refreshed Did you know tutorial media
     And I execute command "workbench.action.closeSidebar"
     And I execute command "workbench.action.closeAuxiliaryBar"
     And I execute command "workbench.action.closePanel"
-    When I open file "tests/vscode-extension-tester/e2e/default/tutorial-media-refresh/fixtures/results-showcase.kqlx" in the editor
+    When I execute command "kustoWorkbench.test.preparePersistedResultFixture" with args '[{"engine":"kusto","templatePath":"tests/vscode-extension-tester/e2e/default/tutorial-media-refresh/fixtures/results-showcase.kqlx","outputPath":"tests/vscode-extension-tester/runs/default/tutorial-media-refresh/results-showcase.kqlx"}]'
+    When I open file "tests/vscode-extension-tester/runs/default/tutorial-media-refresh/results-showcase.kqlx" in the editor
     And I wait 6 seconds
     When I wait for "kw-data-table" in the webview for 20 seconds
     When I evaluate "(async () => { const section = document.getElementById('query_results_showcase'); if (!section) throw new Error('Result query section not found'); section.scrollIntoView({ block: 'start' }); const table = section.shadowRoot?.querySelector('kw-data-table') || section.querySelector('kw-data-table') || document.querySelector('kw-data-table'); if (!table) throw new Error('Data table not found'); const search = table._searchCtrl; if (!search) throw new Error('Search controller not found'); search.visible = true; search.mode = 'wildcard'; search.setQuery('retryPolicy'); if (typeof search._execSearch === 'function') search._execSearch(); table.requestUpdate(); await table.updateComplete; const bar = table.shadowRoot?.querySelector('kw-search-bar'); if (!bar) throw new Error('Search bar not rendered'); await bar.updateComplete; const link = table.shadowRoot?.querySelector('td.mc.obj-cell .obj-link'); if (!link) throw new Error('Current JSON match with View link not visible'); return 'search matches=' + search.matches.length; })()" in the webview for 10 seconds
@@ -36,6 +37,9 @@ Feature: Capture refreshed Did you know tutorial media
     When I evaluate "(async () => { const table = document.querySelector('kw-query-section')?.shadowRoot?.querySelector('kw-data-table') || document.querySelector('kw-data-table'); if (!table) throw new Error('Data table not found'); const header = Array.from(table.shadowRoot?.querySelectorAll('th') || []).find(th => (th.textContent || '').includes('Details')); if (!header) throw new Error('Details column header not found'); const btn = header.querySelector('.cm-btn'); if (!btn) throw new Error('Column menu button not found'); btn.click(); table.requestUpdate(); await table.updateComplete; const menu = table.shadowRoot?.querySelector('.cm'); if (!menu || !menu.textContent.includes('Show unique values')) throw new Error('Column menu did not open with analysis actions'); return 'column menu opened'; })()" in the webview for 10 seconds
     And I wait 1 second
     Then I take a screenshot "04-results-column-menu"
+    When I execute command "workbench.action.closeAllEditors"
+    When I execute command "kustoWorkbench.test.cleanupPersistedResultFixture"
+    When I delete file "tests/vscode-extension-tester/runs/default/tutorial-media-refresh/results-showcase.kqlx"
 
   Scenario: Command Palette entry for the Kusto query editor
     Given the extension is in a clean state
@@ -109,7 +113,8 @@ Feature: Capture refreshed Did you know tutorial media
     And I execute command "workbench.action.closeSidebar"
     And I execute command "workbench.action.closeAuxiliaryBar"
     And I execute command "workbench.action.closePanel"
-    When I open file "tests/vscode-extension-tester/e2e/default/tutorial-media-refresh/fixtures/chart-showcase.kqlx" in the editor
+    When I execute command "kustoWorkbench.test.preparePersistedResultFixture" with args '[{"engine":"kusto","templatePath":"tests/vscode-extension-tester/e2e/default/tutorial-media-refresh/fixtures/chart-showcase.kqlx","outputPath":"tests/vscode-extension-tester/runs/default/tutorial-media-refresh/chart-showcase.kqlx"}]'
+    When I open file "tests/vscode-extension-tester/runs/default/tutorial-media-refresh/chart-showcase.kqlx" in the editor
     And I wait 7 seconds
     When I wait for "#chart_zoom_example_chart_zoom_select" in the webview for 20 seconds
     When I evaluate "(() => { const source = document.getElementById('query_zoom_series'); const chart = document.getElementById('chart_zoom_example'); if (!source || !chart) throw new Error('Expected source query and chart sections'); source.scrollIntoView({ block: 'start' }); return 'source and chart visible'; })()" in the webview
@@ -124,3 +129,6 @@ Feature: Capture refreshed Did you know tutorial media
     When I evaluate "(async () => { const chart = document.getElementById('chart_zoom_example'); if (!chart) throw new Error('Chart section not found'); if (typeof chart._closeAxisPopup === 'function') chart._closeAxisPopup(); chart.scrollIntoView({ block: 'start' }); await chart.updateComplete; const button = document.getElementById('chart_zoom_example_chart_zoom_select'); const controls = document.getElementById('chart_zoom_example_chart_zoom_controls'); if (!button || button.hidden) throw new Error('Zoom button is not available'); if (controls) { controls.style.opacity = '1'; controls.style.pointerEvents = 'auto'; } try { window.sessionStorage.removeItem('kustoWorkbench.chartZoomHintShown'); } catch {} delete window.__kustoZoomPanHintShown; button.focus(); button.click(); const hint = document.getElementById('chart_zoom_example_chart_zoom_hint'); if (!hint || hint.hidden || !hint.textContent.includes('Drag a rectangle')) throw new Error('Zoom hint did not appear'); return 'zoom control and hint visible'; })()" in the webview for 10 seconds
     And I wait 1 second
     Then I take a screenshot "12-chart-zoom"
+    When I execute command "workbench.action.closeAllEditors"
+    When I execute command "kustoWorkbench.test.cleanupPersistedResultFixture"
+    When I delete file "tests/vscode-extension-tester/runs/default/tutorial-media-refresh/chart-showcase.kqlx"

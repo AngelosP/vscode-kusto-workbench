@@ -39,7 +39,11 @@ import { getQueryEditorHtml } from './queryEditorHtml';
 import type { CompatibilityPersistenceEnvelope } from '../shared/compatibilityPersistenceProtocol';
 import { MAIN_WEBVIEW_DISPATCHER_READY_TYPE } from './mainWebviewStartupGateway';
 import { toolOrchestrator } from './extension';
-import { CopilotService, CopilotServiceHost } from './queryEditorCopilot';
+import {
+	CopilotService,
+	type CopilotDevelopmentModelResponse,
+	type CopilotServiceHost,
+} from './queryEditorCopilot';
 import { ConnectionService, ConnectionServiceHost } from './queryEditorConnection';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { SchemaService, SchemaServiceHost } from './queryEditorSchema';
@@ -237,6 +241,14 @@ import {
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
 	private static readonly activeProviders = new Set<QueryEditorProvider>();
 
+	private static developmentProvidersForTest(): QueryEditorProvider[] {
+		const providers = [...QueryEditorProvider.activeProviders]
+			.filter(provider => !provider._panelDisposed && !!provider.panel
+				&& provider.context.extensionMode !== vscode.ExtensionMode.Production);
+		if (providers.length === 0) throw new Error('No live Kusto Workbench editor is available.');
+		return providers;
+	}
+
 	private static activeProviderForTest(): QueryEditorProvider {
 		const candidates = [...QueryEditorProvider.activeProviders]
 			.filter(provider => !provider._panelDisposed && !!provider.panel
@@ -271,6 +283,31 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			throw error;
 		}
 		throw new Error('Nested SQL comparison preparation unexpectedly succeeded.');
+	}
+
+	static configureCopilotDevelopmentModelForTest(responses: readonly CopilotDevelopmentModelResponse[]): unknown {
+		const providers = QueryEditorProvider.developmentProvidersForTest();
+		for (const provider of providers) provider.copilot.configureDevelopmentModelForTest(responses);
+		return providers.map(provider => ({
+			documentUri: provider.documentUri || '',
+			active: provider.panel?.active === true,
+			visible: provider.panel?.visible === true,
+		}));
+	}
+
+	static clearCopilotDevelopmentModelForTest(): void {
+		for (const provider of QueryEditorProvider.developmentProvidersForTest()) {
+			provider.copilot.clearDevelopmentModelForTest();
+		}
+	}
+
+	static getCopilotDevelopmentModelSnapshotForTest(): unknown {
+		return QueryEditorProvider.developmentProvidersForTest().map(provider => ({
+			documentUri: provider.documentUri || '',
+			active: provider.panel?.active === true,
+			visible: provider.panel?.visible === true,
+			model: provider.copilot.getDevelopmentModelSnapshotForTest(),
+		}));
 	}
 
 	private panel?: vscode.WebviewPanel;
@@ -843,9 +880,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			invalidateConnections: connectionIds => {
 				this.kustoExecutionCoordinator.revokeConnections(connectionIds);
 				this.copilot.invalidateKustoConnections([...connectionIds]);
-				this.persistedResultSanitizationApplication.invalidateKustoPersistence();
 			},
 			invalidatePhysicalTargets: connectionIds => this.kustoExecutionCoordinator.invalidatePhysicalConnections(connectionIds),
+			invalidatePersistence: () => this.persistedResultSanitizationApplication.invalidateKustoPersistence(),
 			publishIdentityChange: connectionIds => this.postMessage({
 				type: 'kustoAuthIdentityChanged', connectionIds: [...connectionIds], reason: 'connection-mutated',
 			}),

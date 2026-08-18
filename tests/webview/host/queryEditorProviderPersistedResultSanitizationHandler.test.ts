@@ -6,7 +6,7 @@ import * as path from 'path';
 const sanitationEffects = vi.hoisted(() => ({
 	reconcileComparisonOwners: vi.fn(),
 	invalidateSqlPersistence: undefined as (() => void) | undefined,
-	invalidateKustoPersistence: undefined as ((connectionIds: readonly string[]) => void) | undefined,
+	invalidateKustoPersistence: undefined as (() => void) | undefined,
 }));
 
 vi.mock('../../../src/host/kustoExecutionCoordinator', () => ({
@@ -58,9 +58,9 @@ vi.mock('../../../src/host/queryEditorCopilot', () => ({
 vi.mock('../../../src/host/kustoConnectionLifecycle', () => ({
 	KustoConnectionLifecycle: class {
 		constructor(_connectionManager: unknown, effects: {
-			invalidateConnections: (connectionIds: readonly string[]) => void;
+			invalidatePersistence: () => void;
 		}) {
-			sanitationEffects.invalidateKustoPersistence = effects.invalidateConnections;
+			sanitationEffects.invalidateKustoPersistence = effects.invalidatePersistence;
 		}
 	},
 }));
@@ -290,7 +290,7 @@ describe('QueryEditorProvider persisted result sanitization application', () => 
 		createProvider(handler);
 
 		sanitationEffects.invalidateSqlPersistence?.();
-		sanitationEffects.invalidateKustoPersistence?.(['kusto-exact']);
+		sanitationEffects.invalidateKustoPersistence?.();
 
 		expect(handler.invalidateSqlPersistence).toHaveBeenCalledOnce();
 		expect(handler.invalidateKustoPersistence).toHaveBeenCalledOnce();

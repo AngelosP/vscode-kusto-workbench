@@ -21,6 +21,7 @@ Feature: Agent tool execution forces run mode to plain (Run Query)
     When I wait for "#queries-container" in the webview for 20 seconds
     When I evaluate "(() => { const existing = document.querySelector('kw-query-section'); if (existing) return 'ready: boxId=' + (existing.boxId || existing.id); const add = document.querySelector('button[data-add-kind=query]'); if (!add) throw new Error('Kusto add button not found'); add.click(); return 'clicked add Kusto section'; })()" in the webview
     When I wait for "kw-query-section" in the webview for 10 seconds
+    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (typeof el?.getConnectionId !== 'function' || typeof el?.getDatabase !== 'function') throw new Error('Kusto section public target APIs are missing'); el.__e2eOrigGetConnectionId = el.getConnectionId.bind(el); el.__e2eOrigGetDatabase = el.getDatabase.bind(el); el.getConnectionId = () => 'e2e-stub-conn'; el.getDatabase = () => 'StubDb'; return 'stubbed executable Kusto target'; })()" in the webview
 
     # ── Scroll run button into view ───────────────────────────────────────
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const btn = document.getElementById(el.boxId + '_run_btn'); if (btn) btn.scrollIntoView({ block: 'center' }); return 'scrolled'; })()" in the webview
@@ -30,7 +31,7 @@ Feature: Agent tool execution forces run mode to plain (Run Query)
     When I evaluate "window.__testSelectKustoRunMode('take100')" in the webview
     And I wait 1 second
 
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const mode = (window.runModesByBoxId || {})[el.boxId]; if (mode !== 'take100') throw new Error('Expected take100, got: ' + mode); const btn = document.getElementById(el.boxId + '_run_btn'); const label = btn?.querySelector('.run-btn-label')?.textContent?.trim() || ''; if (!label.includes('take 100')) throw new Error('Label should show take 100, got: ' + label); return 'BEFORE: mode=' + mode + ', label=' + label; })()" in the webview
+    Then I collect JSON artifact "01-before-take100-state" from webview expression "(() => { const el = document.querySelector('kw-query-section'); const mode = (window.runModesByBoxId || {})[el.boxId]; if (mode !== 'take100') throw new Error('Expected take100, got: ' + mode); const btn = document.getElementById(el.boxId + '_run_btn'); const label = btn?.querySelector('.run-btn-label')?.textContent?.trim() || ''; if (!label.includes('take 100')) throw new Error('Label should show take 100, got: ' + label); return { mode, label }; })()" in the webview "session.kqlx"
     Then I take a screenshot "01-before-take100"
 
     # ── Fire toolConfigureQuerySection with execute:true ───────────────────
@@ -43,9 +44,10 @@ Feature: Agent tool execution forces run mode to plain (Run Query)
     When I evaluate "(() => { const sections = Array.from(document.querySelectorAll('kw-query-section')); if (sections.length !== 1) throw new Error('Expected exactly 1 Kusto section, got: ' + sections.length); const el = sections[0]; const sectionId = el.boxId || el.id; if (!sectionId) throw new Error('Kusto section has no boxId/id'); const mode = (window.runModesByBoxId || {})[sectionId]; if (mode !== 'plain') throw new Error('FAIL: mode should be plain after agent execute, got: ' + mode); return 'PASS: mode = plain for ' + sectionId; })()" in the webview
 
     # ── ASSERT: button label updated ──────────────────────────────────────
-    When I evaluate "(() => { const sections = Array.from(document.querySelectorAll('kw-query-section')); if (sections.length !== 1) throw new Error('Expected exactly 1 Kusto section, got: ' + sections.length); const el = sections[0]; const sectionId = el.boxId || el.id; const btn = document.getElementById(sectionId + '_run_btn'); if (!btn) throw new Error('Run button not found for ' + sectionId); const label = btn.querySelector('.run-btn-label')?.textContent?.replace(/\s+/g, ' ').trim() || ''; const fullText = btn.textContent?.replace(/\s+/g, ' ').trim() || ''; if (label !== 'Run Query') throw new Error('FAIL: label should be exactly Run Query, got: ' + label + ' (button=' + fullText + ')'); return 'PASS: visible run label = ' + label; })()" in the webview
     And I wait 1 second
+    Then I collect JSON artifact "02-after-plain-state" from webview expression "(() => { const sections = Array.from(document.querySelectorAll('kw-query-section')); if (sections.length !== 1) throw new Error('Expected exactly 1 Kusto section, got: ' + sections.length); const el = sections[0]; const sectionId = el.boxId || el.id; const mode = (window.runModesByBoxId || {})[sectionId]; if (mode !== 'plain') throw new Error('FAIL: mode should be plain after agent execute, got: ' + mode); const btn = document.getElementById(sectionId + '_run_btn'); if (!btn) throw new Error('Run button not found for ' + sectionId); const label = btn.querySelector('.run-btn-label')?.textContent?.replace(/\s+/g, ' ').trim() || ''; const fullText = btn.textContent?.replace(/\s+/g, ' ').trim() || ''; if (label !== 'Run Query') throw new Error('FAIL: label should be exactly Run Query, got: ' + label + ' (button=' + fullText + ')'); return { mode, label }; })()" in the webview "session.kqlx"
     Then I take a screenshot "02-after-plain"
+    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (el?.__e2eOrigGetConnectionId) el.getConnectionId = el.__e2eOrigGetConnectionId; if (el?.__e2eOrigGetDatabase) el.getDatabase = el.__e2eOrigGetDatabase; delete el?.__e2eOrigGetConnectionId; delete el?.__e2eOrigGetDatabase; return 'restored Kusto target APIs'; })()" in the webview
     When I execute command "workbench.action.closeAllEditors"
 
   Scenario: configureKustoQuerySection execute forces sample100 to plain
@@ -54,6 +56,7 @@ Feature: Agent tool execution forces run mode to plain (Run Query)
     When I wait for "#queries-container" in the webview for 20 seconds
     When I evaluate "(() => { const existing = document.querySelector('kw-query-section'); if (existing) return 'ready: boxId=' + (existing.boxId || existing.id); const add = document.querySelector('button[data-add-kind=query]'); if (!add) throw new Error('Kusto add button not found'); add.click(); return 'clicked add Kusto section'; })()" in the webview
     When I wait for "kw-query-section" in the webview for 10 seconds
+    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (typeof el?.getConnectionId !== 'function' || typeof el?.getDatabase !== 'function') throw new Error('Kusto section public target APIs are missing'); el.__e2eOrigGetConnectionId = el.getConnectionId.bind(el); el.__e2eOrigGetDatabase = el.getDatabase.bind(el); el.getConnectionId = () => 'e2e-stub-conn'; el.getDatabase = () => 'StubDb'; return 'stubbed executable Kusto target'; })()" in the webview
 
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const btn = document.getElementById(el.boxId + '_run_btn'); if (btn) btn.scrollIntoView({ block: 'center' }); return 'scrolled'; })()" in the webview
     And I wait 1 second
@@ -62,7 +65,7 @@ Feature: Agent tool execution forces run mode to plain (Run Query)
     When I evaluate "window.__testSelectKustoRunMode('sample100')" in the webview
     And I wait 1 second
 
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const mode = (window.runModesByBoxId || {})[el.boxId]; if (mode !== 'sample100') throw new Error('Expected sample100, got: ' + mode); const btn = document.getElementById(el.boxId + '_run_btn'); const label = btn?.querySelector('.run-btn-label')?.textContent?.trim() || ''; if (!label.includes('sample 100')) throw new Error('Label should show sample 100, got: ' + label); return 'BEFORE: mode=' + mode + ', label=' + label; })()" in the webview
+    Then I collect JSON artifact "03-before-sample100-state" from webview expression "(() => { const el = document.querySelector('kw-query-section'); const mode = (window.runModesByBoxId || {})[el.boxId]; if (mode !== 'sample100') throw new Error('Expected sample100, got: ' + mode); const btn = document.getElementById(el.boxId + '_run_btn'); const label = btn?.querySelector('.run-btn-label')?.textContent?.trim() || ''; if (!label.includes('sample 100')) throw new Error('Label should show sample 100, got: ' + label); return { mode, label }; })()" in the webview "session.kqlx"
     Then I take a screenshot "03-before-sample100"
 
     # ── Fire toolConfigureQuerySection with execute:true ───────────────────
@@ -70,9 +73,10 @@ Feature: Agent tool execution forces run mode to plain (Run Query)
     And I wait 2 seconds
 
     # ── ASSERT ────────────────────────────────────────────────────────────
-    When I evaluate "(() => { const sections = Array.from(document.querySelectorAll('kw-query-section')); if (sections.length !== 1) throw new Error('Expected exactly 1 Kusto section, got: ' + sections.length); const el = sections[0]; const sectionId = el.boxId || el.id; if (!sectionId) throw new Error('Kusto section has no boxId/id'); const mode = (window.runModesByBoxId || {})[sectionId]; if (mode !== 'plain') throw new Error('FAIL: mode should be plain, got: ' + mode); const btn = document.getElementById(sectionId + '_run_btn'); if (!btn) throw new Error('Run button not found for ' + sectionId); const label = btn.querySelector('.run-btn-label')?.textContent?.replace(/\s+/g, ' ').trim() || ''; const fullText = btn.textContent?.replace(/\s+/g, ' ').trim() || ''; if (label !== 'Run Query') throw new Error('FAIL: label should be exactly Run Query, got: ' + label + ' (button=' + fullText + ')'); return 'PASS: mode=plain, visible run label=' + label; })()" in the webview
     And I wait 1 second
+    Then I collect JSON artifact "04-after-plain-from-sample-state" from webview expression "(() => { const sections = Array.from(document.querySelectorAll('kw-query-section')); if (sections.length !== 1) throw new Error('Expected exactly 1 Kusto section, got: ' + sections.length); const el = sections[0]; const sectionId = el.boxId || el.id; if (!sectionId) throw new Error('Kusto section has no boxId/id'); const mode = (window.runModesByBoxId || {})[sectionId]; if (mode !== 'plain') throw new Error('FAIL: mode should be plain, got: ' + mode); const btn = document.getElementById(sectionId + '_run_btn'); if (!btn) throw new Error('Run button not found for ' + sectionId); const label = btn.querySelector('.run-btn-label')?.textContent?.replace(/\s+/g, ' ').trim() || ''; const fullText = btn.textContent?.replace(/\s+/g, ' ').trim() || ''; if (label !== 'Run Query') throw new Error('FAIL: label should be exactly Run Query, got: ' + label + ' (button=' + fullText + ')'); return { mode, label }; })()" in the webview "session.kqlx"
     Then I take a screenshot "04-after-plain-from-sample"
+    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (el?.__e2eOrigGetConnectionId) el.getConnectionId = el.__e2eOrigGetConnectionId; if (el?.__e2eOrigGetDatabase) el.getDatabase = el.__e2eOrigGetDatabase; delete el?.__e2eOrigGetConnectionId; delete el?.__e2eOrigGetDatabase; return 'restored Kusto target APIs'; })()" in the webview
     When I execute command "workbench.action.closeAllEditors"
 
   Scenario: askKustoCopilot also forces mode to plain
@@ -95,8 +99,7 @@ Feature: Agent tool execution forces run mode to plain (Run Query)
     And I wait 2 seconds
 
     # ── ASSERT: mode is plain ─────────────────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const mode = (window.runModesByBoxId || {})[el.boxId]; if (mode !== 'plain') throw new Error('FAIL: mode should be plain, got: ' + mode); return 'PASS: mode = plain'; })()" in the webview
-    When I evaluate "(() => { if (window.__e2eCopilotSubmitCalled !== true) throw new Error('Expected delegate path to call public submitCopilotChatRequest'); return 'public atomic Copilot submit was called'; })()" in the webview
+    Then I collect JSON artifact "05-copilot-plain-state" from webview expression "(() => { const el = document.querySelector('kw-query-section'); const mode = (window.runModesByBoxId || {})[el.boxId]; if (mode !== 'plain') throw new Error('FAIL: mode should be plain, got: ' + mode); if (window.__e2eCopilotSubmitCalled !== true) throw new Error('Expected delegate path to call public submitCopilotChatRequest'); const label = document.getElementById(el.boxId + '_run_btn')?.querySelector('.run-btn-label')?.textContent?.replace(/\s+/g, ' ').trim() || ''; if (label !== 'Run Query') throw new Error('FAIL: label should be exactly Run Query, got: ' + label); return { mode, label, submitCalled: true }; })()" in the webview "session.kqlx"
     Then I take a screenshot "05-copilot-plain"
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (el.__e2eOrigGetConnectionId) el.getConnectionId = el.__e2eOrigGetConnectionId; if (el.__e2eOrigGetDatabase) el.getDatabase = el.__e2eOrigGetDatabase; if (el.__e2eOrigSubmitCopilotChatRequest) el.submitCopilotChatRequest = el.__e2eOrigSubmitCopilotChatRequest; delete el.__e2eOrigGetConnectionId; delete el.__e2eOrigGetDatabase; delete el.__e2eOrigSubmitCopilotChatRequest; delete window.__e2eCopilotSubmitCalled; return 'restored public API overrides'; })()" in the webview
     When I execute command "workbench.action.closeAllEditors"
@@ -117,6 +120,6 @@ Feature: Agent tool execution forces run mode to plain (Run Query)
     And I wait 2 seconds
 
     # ── ASSERT: mode is STILL take100 (not changed) ───────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const mode = (window.runModesByBoxId || {})[el.boxId]; if (mode !== 'take100') throw new Error('FAIL: mode should still be take100 when not executing, got: ' + mode); return 'PASS: mode still take100 (no change without execute)'; })()" in the webview
+    Then I collect JSON artifact "06-no-change-without-execute-state" from webview expression "(() => { const el = document.querySelector('kw-query-section'); const mode = (window.runModesByBoxId || {})[el.boxId]; if (mode !== 'take100') throw new Error('FAIL: mode should still be take100 when not executing, got: ' + mode); const label = document.getElementById(el.boxId + '_run_btn')?.querySelector('.run-btn-label')?.textContent?.trim() || ''; if (!label.includes('take 100')) throw new Error('Label should still show take 100, got: ' + label); return { mode, label }; })()" in the webview "session.kqlx"
     Then I take a screenshot "06-no-change-without-execute"
     When I execute command "workbench.action.closeAllEditors"
