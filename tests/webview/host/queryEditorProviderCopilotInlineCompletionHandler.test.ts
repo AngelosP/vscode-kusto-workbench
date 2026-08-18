@@ -238,6 +238,11 @@ describe('QueryEditorProvider Copilot inline-completion application', () => {
 		const sqlRouterSource = readSource('src/webview/core/sql-section-message-router.ts');
 		const protocolSource = readSource('src/shared/copilotInlineCompletionProtocol.ts');
 		const editingPreferencesSource = readSource('src/webview/core/editing-preferences.ts');
+		const inlineStart = copilotSource.indexOf('async handleCopilotInlineCompletionRequest(');
+		const inlineEnd = copilotSource.indexOf('async prepareCopilotWriteQuery(', inlineStart);
+		expect(inlineStart).toBeGreaterThanOrEqual(0);
+		expect(inlineEnd).toBeGreaterThan(inlineStart);
+		const inlineSource = copilotSource.slice(inlineStart, inlineEnd);
 
 		expect(providerSource).not.toContain("case 'requestCopilotInlineCompletion':");
 		expect(providerSource).not.toContain(
@@ -263,12 +268,13 @@ describe('QueryEditorProvider Copilot inline-completion application', () => {
 		expect(handlerSource).toContain('parseCopilotInlineCompletionHostMessage(message)');
 
 		expect(copilotSource).toContain('private readonly runningSqlInlineCompletionByBoxId');
-		expect(copilotSource).toContain('let model = this._cachedInlineModel;');
-		expect(copilotSource).toContain("vscode.lm.selectChatModels({ vendor: 'copilot' })");
-		expect(copilotSource).toContain('const maxBefore = 2000;');
-		expect(copilotSource).toContain('const maxAfter = 500;');
-		expect(copilotSource).toContain('setTimeout(() => cts.cancel(), 8000)');
-		expect(copilotSource).toContain('model.sendRequest(');
+		expect(inlineSource).toContain('let model = this._cachedInlineModel;');
+		expect(inlineSource).toContain("this.selectAvailableChatModels({ vendor: 'copilot' })");
+		expect(copilotSource).toContain('this.selectChatModels(selector)');
+		expect(inlineSource).toContain('const maxBefore = 2000;');
+		expect(inlineSource).toContain('const maxAfter = 500;');
+		expect(inlineSource).toContain('setTimeout(() => cts.cancel(), 8000)');
+		expect(inlineSource).toContain('model.sendRequest(');
 		expect(sqlOwnerSource).toContain('async assertOwnerToken(');
 		expect(sqlOwnerSource).toContain('private readonly ownerTokenByBoxId');
 

@@ -226,6 +226,11 @@ describe('QueryEditorProvider Copilot write-query preparation application', () =
 		const responseRouterSource = readSource('src/webview/core/message-handler.ts');
 		const hostTypesSource = readSource('src/host/queryEditorTypes.ts');
 		const webviewTypesSource = readSource('src/webview/shared/webview-messages.ts');
+		const preparationStart = copilotSource.indexOf('async prepareCopilotWriteQuery(');
+		const preparationEnd = copilotSource.indexOf('private async getExtendedSchemaToolResult(', preparationStart);
+		expect(preparationStart).toBeGreaterThanOrEqual(0);
+		expect(preparationEnd).toBeGreaterThan(preparationStart);
+		const preparationSource = copilotSource.slice(preparationStart, preparationEnd);
 
 		expect(providerSource).not.toContain("case 'prepareCopilotWriteQuery':");
 		expect(providerSource).toContain(
@@ -242,16 +247,17 @@ describe('QueryEditorProvider Copilot write-query preparation application', () =
 		expect(handlerSource).toContain("message.type !== 'prepareCopilotWriteQuery'");
 		expect(handlerSource).toContain('await this.options.prepareCopilotWriteQuery(message);');
 
-		expect(copilotSource).toContain('const boxId = String(message.boxId || \'\').trim();');
-		expect(copilotSource).toContain("vscode.lm.selectChatModels({ vendor: 'copilot' })");
-		expect(copilotSource).toContain('label: this.formatCopilotModelLabel(m)');
-		expect(copilotSource).toContain('.filter((m) => !!m.id)');
-		expect(copilotSource).toContain('.sort((a, b) => a.label.localeCompare(b.label))');
-		expect(copilotSource).toContain('STORAGE_KEYS.lastOptimizeCopilotModelId');
-		expect(copilotSource).toContain('findPreferredDefaultCopilotModel(models)?.id');
-		expect(copilotSource.match(/this\.getLocalToolsForFlavor\(message\.flavor\)/g)).toHaveLength(3);
-		expect(copilotSource.match(/type: 'copilotWriteQueryOptions'/g)).toHaveLength(3);
-		expect(copilotSource).toContain("type: 'copilotWriteQueryStatus'");
+		expect(preparationSource).toContain('const boxId = String(message.boxId || \'\').trim();');
+		expect(preparationSource).toContain("this.selectAvailableChatModels({ vendor: 'copilot' })");
+		expect(copilotSource).toContain('this.selectChatModels(selector)');
+		expect(preparationSource).toContain('label: this.formatCopilotModelLabel(m)');
+		expect(preparationSource).toContain('.filter((m) => !!m.id)');
+		expect(preparationSource).toContain('.sort((a, b) => a.label.localeCompare(b.label))');
+		expect(preparationSource).toContain('STORAGE_KEYS.lastOptimizeCopilotModelId');
+		expect(preparationSource).toContain('findPreferredDefaultCopilotModel(models)?.id');
+		expect(preparationSource.match(/this\.getLocalToolsForFlavor\(message\.flavor\)/g)).toHaveLength(3);
+		expect(preparationSource.match(/type: 'copilotWriteQueryOptions'/g)).toHaveLength(3);
+		expect(preparationSource).toContain("type: 'copilotWriteQueryStatus'");
 
 		expect(callerSource.match(/type: 'prepareCopilotWriteQuery'/g)).toHaveLength(2);
 		expect(callerSource.match(/flavor: this\.flavor\.id/g)).toHaveLength(2);

@@ -281,6 +281,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			label: 'Kusto Workbench persisted-result test account',
 		};
 		const cleanupPersistedResultFixtureState = async (): Promise<void> => {
+			await testAuthPreferences.waitForProviderAccountRefresh();
 			const kustoConnections = connectionManager.getConnections().filter(connection =>
 				String(connection.name || '').startsWith(persistedResultFixturePrefix)
 				|| kustoClusterKey(connection.clusterUrl) === kustoClusterKey(persistedResultKustoCluster));
@@ -321,6 +322,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				throw new Error('Persisted-result fixture requires engine, templatePath, and outputPath.');
 			}
 			await persistedResultFixtureStartupCleanup;
+			await testAuthPreferences.waitForProviderAccountRefresh();
 			await cleanupPersistedResultFixtureState();
 			const absoluteTemplatePath = path.isAbsolute(templatePath) ? templatePath : path.join(context.extensionPath, templatePath);
 			const absoluteOutputPath = path.isAbsolute(outputPath) ? outputPath : path.join(context.extensionPath, outputPath);
@@ -345,6 +347,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					[connection.id],
 				);
 				const accountPartition = testAuthPreferences.getAccountPartition(connection.authorityId, persistedResultAuthAccount.id);
+				if (testAuthPreferences.getPreferredAccountId(connection.id) !== persistedResultAuthAccount.id) {
+					throw new Error('Persisted-result Kusto fixture owner did not become resolvable.');
+				}
 				await testConnectionCache.setDatabases(connection.id, accountPartition, [persistedResultKustoDatabase]);
 				const schema = {
 					tables: ['PersistedFixture'],

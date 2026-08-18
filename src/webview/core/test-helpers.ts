@@ -5788,21 +5788,7 @@ async function e2eChartAssertTitleSyncAndHeatmapNumericCategories(): Promise<str
 	});
 	await e2eLayoutWaitFor(() => !!document.getElementById(sourceId), 'chart regression data section');
 	const source = e2eChartRegressionResult();
-	const csvBody = [
-		source.columns.map((column: any) => column.name).join(','),
-		...source.rows.map((row: unknown[]) => row.join(',')),
-	].join('\n');
-	const sourceSection = document.getElementById(sourceId) as any;
-	sourceSection._activeFetchRequest = {
-		requestId: 'e2e-chart-regression-url', url: 'https://example.invalid/chart-regression.csv',
-	};
-	window.dispatchEvent(new MessageEvent('message', { data: {
-		type: 'urlContent', boxId: sourceId, requestId: 'e2e-chart-regression-url',
-		requestedUrl: 'https://example.invalid/chart-regression.csv',
-		url: 'https://example.invalid/chart-regression.csv',
-		kind: 'csv', contentType: 'text/csv', status: 200, body: csvBody,
-		truncated: false, byteLength: new TextEncoder().encode(csvBody).byteLength,
-	} }));
+	displayResultForBox(source, sourceId, { label: 'Results' });
 	await e2eLayoutWaitFor(() => (getResultsState(sourceId)?.columns || []).length === 3, 'chart regression CSV data');
 
 	const chartId = e2eLayoutAddSection('addChartBox', {
@@ -5838,16 +5824,7 @@ async function e2eChartAssertTitleSyncAndHeatmapNumericCategories(): Promise<str
 	}
 	await e2eLayoutWaitFor(() => !!chartSection.shadowRoot, 'chart shadow root', 10000);
 	for (let attempt = 0; attempt < 5; attempt++) {
-		sourceSection._activeFetchRequest = {
-			requestId: `e2e-chart-regression-url-${attempt}`, url: 'https://example.invalid/chart-regression.csv',
-		};
-		window.dispatchEvent(new MessageEvent('message', { data: {
-			type: 'urlContent', boxId: sourceId, requestId: `e2e-chart-regression-url-${attempt}`,
-			requestedUrl: 'https://example.invalid/chart-regression.csv',
-			url: 'https://example.invalid/chart-regression.csv',
-			kind: 'csv', contentType: 'text/csv', status: 200, body: csvBody,
-			truncated: false, byteLength: new TextEncoder().encode(csvBody).byteLength,
-		} }));
+		displayResultForBox(source, sourceId, { label: 'Results' });
 		chartSection.syncFromGlobalState();
 		await e2eLayoutWaitForUpdate(chartSection as HTMLElement);
 		chartSection.refresh?.();

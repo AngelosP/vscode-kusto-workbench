@@ -202,6 +202,11 @@ describe('QueryEditorProvider Copilot availability application', () => {
 		const responseRouterSource = readSource('src/webview/core/message-handler.ts');
 		const hostTypesSource = readSource('src/host/queryEditorTypes.ts');
 		const webviewTypesSource = readSource('src/webview/shared/webview-messages.ts');
+		const availabilityStart = copilotSource.indexOf('async checkCopilotAvailability(boxId: string): Promise<void>');
+		const availabilityEnd = copilotSource.indexOf('async handleCopilotInlineCompletionRequest(', availabilityStart);
+		expect(availabilityStart).toBeGreaterThanOrEqual(0);
+		expect(availabilityEnd).toBeGreaterThan(availabilityStart);
+		const availabilitySource = copilotSource.slice(availabilityStart, availabilityEnd);
 
 		expect(providerSource).not.toContain("case 'checkCopilotAvailability':");
 		expect(providerSource).toContain(
@@ -219,10 +224,11 @@ describe('QueryEditorProvider Copilot availability application', () => {
 			'await this.options.checkCopilotAvailability(message.boxId);',
 		);
 
-		expect(copilotSource).toContain('async checkCopilotAvailability(boxId: string): Promise<void>');
-		expect(copilotSource).toContain("vscode.lm.selectChatModels({ vendor: 'copilot' })");
-		expect(copilotSource.match(/type: 'copilotAvailability'/g)).toHaveLength(2);
-		expect(copilotSource).toContain('available: false');
+		expect(availabilitySource).toContain('async checkCopilotAvailability(boxId: string): Promise<void>');
+		expect(availabilitySource).toContain("this.selectAvailableChatModels({ vendor: 'copilot' })");
+		expect(copilotSource).toContain('this.selectChatModels(selector)');
+		expect(availabilitySource.match(/type: 'copilotAvailability'/g)).toHaveLength(2);
+		expect(availabilitySource).toContain('available: false');
 		expect(globalCallerSource).toContain(
 			"postMessageToHost({ type: 'checkCopilotAvailability', boxId: '__kusto_global__' })",
 		);
