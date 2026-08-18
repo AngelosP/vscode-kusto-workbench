@@ -3,22 +3,24 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [5.0.0] - Unreleased
+## [5.0.0] - 2026.08.18
 
+* New first-launch setup helps you choose which file types Kusto Workbench should open and whether editing helpers such as schema autocomplete, Smart documentation, and Copilot inline suggestions should be enabled.
 * Default Copilot model changed to `gpt-5.6-sol@1.0` across Workbench and its custom agents.
-* First launch experience for configuring some key experience settings before your first edit.
-* [Support for additional Kusto authentication methods (e.g., your Entra ID is a guest on a tenant hosting the Kusto cluster).](https://github.com/AngelosP/vscode-kusto-workbench/issues/25)
-* Readiness indicator for each Kusto section as a thin progress line moving from left to right letting you know if things are still happening in the background.
-* Refactor of backend connection management and query execution for both Kusto and SQL for better performance and easier code maintenance.
+* [Added more Kusto sign-in options, including clusters that require a specific tenant or authority.](https://github.com/AngelosP/vscode-kusto-workbench/issues/25) This helps when your Entra ID account is a guest in the tenant that owns the Kusto cluster.
+* Kusto sections now show a thin readiness indicator so it is easier to tell when schema loading, preparation, or background work is still in progress.
+* SQL sections are more dependable in installed builds. Query execution, database browsing, schema loading, IntelliSense, and cancellation now use Microsoft's SQL Tools Service, which Kusto Workbench downloads and verifies automatically on first use.
+* Leave No Trace protections are stronger for SQL connections and saved results. Protected connections now block work that could retain data locally, cancel in-progress work when the policy changes, and avoid restoring protected cached results.
+* Existing `.kqlx` files and companion `.kql.json` result caches open more safely. Verified legacy cached results are restored automatically; unverified caches are kept intact but hidden instead of being erased.
+* Copilot conversations are easier to follow. When the Kusto Workbench agent asks a clarifying question, your reply now returns to the agent flow that asked it.
+* Kusto diagnostics and autocomplete are more accurate for existing `.kql` and `.csl` files, including fewer stale errors from old schema information and better handling of function result schemas.
+* Dashboard and Power BI export/publish flows are more resilient, with stronger validation before publishing and more reliable handling of generated report artifacts.
+* Connection handling, query execution, cancellation, and recovery paths for Kusto and SQL were rebuilt in several areas to reduce stale UI state and make future fixes faster.
 * Bugs
-	* Clarifying questions from Kusto Copilot now return to the Kusto Workbench agent that initiated the request, while manually initiated section-chat questions keep their existing purple card and VS Code notification.
-    * Legacy cached Kusto results in `.kqlx` and companion `.kql.json` files are adopted automatically when their current connection, account, target, and Leave No Trace policy can be verified; unresolved or invalid legacy caches remain intact and hidden instead of being erased on open.
-    * Better handling of Kusto URIs that can all look different but point to the same cluster. Some of the formats work better than others when embedded into HTML and URIs.
-    * No more stale errors being reported for .kql or .csl files, which used to depend on a stale schema instead of the live connection.
-    * SQL query execution, database discovery, schema loading, and cancellation now use the same first-use-downloaded Microsoft SQL Tools Service as SQL IntelliSense. This fixes SQL execution in installed VSIX builds where the previous external Node runtime was unavailable.
-    * SQL Tools Service downloads are SHA-256 verified, installed atomically, and shared safely across editor windows.
-    * SQL connections marked Leave No Trace now fail closed before SQL Tools Service or Copilot starts, propagate across VS Code windows, cancel active work, clear retained/dependent results and chat history, and block protected cached or persisted results from restoration.
-    * SQL Tools Service recovery now settles failed waiters, resets its retry budget after stable recovery, replaces exhausted process managers, and replays open SQL editor language sessions.
+    * Kusto cluster URLs that look different but point to the same cluster are now handled more consistently across embedded links, HTML, and saved files.
+    * SQL Tools Service downloads are integrity-checked, installed atomically, and shared safely across editor windows.
+    * SQL Tools Service recovery now handles failed startup attempts, retries cleanly after stable recovery, and restores open SQL editor language sessions when possible.
+    * SQL execution no longer depends on an external Node runtime that was missing from some installed VSIX scenarios.
 
 ## [4.7.4] - 2026.07.04
 

@@ -229,7 +229,7 @@ export class TutorialWebviewSession {
 		const configuration = workspaceFolder
 			? vscode.workspace.getConfiguration('kustoWorkbench', workspaceFolder.uri)
 			: vscode.workspace.getConfiguration('kustoWorkbench');
-		const target = resolveTutorialsEnabledConfigurationTarget(configuration.inspect<boolean>('didYouKnow.enabled'), workspaceFolder !== undefined);
+		const target = resolveTutorialsEnabledConfigurationTarget(configuration.inspect<boolean>('didYouKnow.enabled'));
 		await configuration.update('didYouKnow.enabled', enabled, target);
 	}
 

@@ -6142,12 +6142,13 @@ suite('Sidecar .kql.json strategy', () => {
 	test('rich session acknowledges only after its storage write succeeds', async () => {
 		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
 		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+		const originalOpen = fs.promises.open;
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-session-write-failure-'));
 		const storageUri = vscode.Uri.file(tmpDir);
 		const sessionUri = vscode.Uri.joinPath(storageUri, 'session.kqlx');
 		let storedText = JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [] } });
 		fs.writeFileSync(sessionUri.fsPath, storedText, 'utf8');
-		let failNextPublication = false;
+		let failNextSessionOpen = false;
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		const posted: any[] = [];
 
@@ -6155,9 +6156,14 @@ suite('Sidecar .kql.json strategy', () => {
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => state;
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
 				state: any, publish: (value: any) => Promise<unknown>,
-			) => {
-				if (failNextPublication) { failNextPublication = false; throw new Error('blocked publication'); }
-				return publish(state);
+			) => publish(state);
+			(fs.promises as any).open = async (...args: any[]) => {
+				const requestedPath = typeof args[0] === 'string' ? path.resolve(args[0]) : '';
+				if (failNextSessionOpen && requestedPath === path.resolve(sessionUri.fsPath) && args[1] === 'r+') {
+					failNextSessionOpen = false;
+					throw new Error('blocked session storage write');
+				}
+				return (originalOpen as any)(...args);
 			};
 
 			const provider = new (KqlxEditorProvider as any)(
@@ -6193,12 +6199,13 @@ suite('Sidecar .kql.json strategy', () => {
 			const sourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true).at(-1)?.sourceGeneration;
 			assert.ok(Number.isSafeInteger(sourceGeneration));
 			posted.length = 0;
-			failNextPublication = true;
+			failNextSessionOpen = true;
 			await Promise.resolve(receiveHandler!({
 				type: 'persistDocument', snapshotId: 'session-failed', sourceGeneration, editRevision: 1,
 				state: { sections: [{ id: 'query_1', type: 'query', query: 'print failed = 1' }] },
 			}));
 			await new Promise<void>(resolve => setTimeout(resolve, 50));
+			assert.strictEqual(failNextSessionOpen, false, 'the failed snapshot should reach its scoped storage write');
 			assert.ok(!posted.some(message => message?.type === 'persistDocumentAck' && message.snapshotId === 'session-failed'));
 
 			await Promise.resolve(receiveHandler!({
@@ -6206,7 +6213,7 @@ suite('Sidecar .kql.json strategy', () => {
 				state: { sections: [{ id: 'query_1', type: 'query', query: 'print retry = 2' }] },
 			}));
 			try {
-				await waitForCondition(() => posted.some(message => message?.type === 'persistDocumentAck' && message.snapshotId === 'session-retry'), 'session retry should acknowledge', 750);
+				await waitForCondition(() => posted.some(message => message?.type === 'persistDocumentAck' && message.snapshotId === 'session-retry'), 'session retry should acknowledge');
 			} catch {
 				assert.fail(JSON.stringify({ storedText: fs.readFileSync(sessionUri.fsPath, 'utf8'), posted }));
 			}
@@ -6241,6 +6248,7 @@ suite('Sidecar .kql.json strategy', () => {
 			storedText = fs.readFileSync(sessionUri.fsPath, 'utf8');
 			assert.strictEqual(JSON.parse(storedText).state.sections[0].query, 'EXTERNAL');
 		} finally {
+			(fs.promises as any).open = originalOpen;
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -9316,20 +9324,61 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
-	test('compatibility sidecar repair retries when an external write lands during sanitation', async () => {
+	test('compatibility sidecar repair retries when an external write lands before publication', async () => {
 		const invalidation = interceptSqlPersistenceInvalidation();
 		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
-		const restorePublisher = mirrorFreshSqlSanitizerIntoPublisher();
+		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
 		const variants = [
 			{ extension: '.kql', Provider: KqlCompatEditorProvider, firstType: 'query', kind: 'kqlx' },
 			{ extension: '.sql', Provider: SqlCompatEditorProvider, firstType: 'sql', kind: 'sqlx' },
 		] as const;
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-external-race-'));
+		let protectedMarker: string | undefined;
+		let activePublicationPause: {
+			marker: string;
+			markPaused: () => void;
+			gate: Promise<void>;
+		} | undefined;
 
 		try {
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async function (state: any) {
+				const serialized = JSON.stringify(state);
+				if (!protectedMarker || !serialized.includes(protectedMarker)) {
+					return originalSanitize.call(this, state);
+				}
+				return {
+					...state,
+					sections: state.sections.map((section: any) => {
+						if (section.type !== 'sql') return section;
+						const { result: _result, ...sanitized } = section;
+						return sanitized;
+					}),
+				};
+			};
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async function (
+				state: any,
+				publish: (sanitizedState: any) => Promise<unknown>,
+			) {
+				const serialized = JSON.stringify(state);
+				if (!protectedMarker || !serialized.includes(protectedMarker)) {
+					return originalPublish.call(this, state, publish);
+				}
+				const sanitized = await (this as any).sanitizeSqlLeaveNoTraceStateFresh(state);
+				const pause = activePublicationPause;
+				if (pause && serialized.includes(pause.marker)) {
+					activePublicationPause = undefined;
+					pause.markPaused();
+					await pause.gate;
+				}
+				return publish(sanitized);
+			};
+
 			for (const [index, variant] of variants.entries()) {
 				const sourcePath = path.join(tmpDir, `external-race-${index}${variant.extension}`);
 				const sidecarPath = `${sourcePath}.json`;
+				const variantMarker = `${path.basename(tmpDir)}-${index}`;
+				const baselineMarker = `BASELINE_A_${variantMarker}`;
+				const externalMarker = `EXTERNAL_B_${variantMarker}`;
 				const sidecar = (marker: string) => JSON.stringify({
 					kind: variant.kind, version: 1,
 					state: { sections: [
@@ -9339,29 +9388,7 @@ suite('Sidecar .kql.json strategy', () => {
 					] },
 				});
 				fs.writeFileSync(sourcePath, 'select 1', 'utf8');
-				fs.writeFileSync(sidecarPath, sidecar('BASELINE_A'), 'utf8');
-
-				let protectedNow = false;
-				let protectedSanitizeCalls = 0;
-				let markPaused!: () => void;
-				let release!: () => void;
-				const sanitizePaused = new Promise<void>(resolve => { markPaused = resolve; });
-				const sanitizeGate = new Promise<void>(resolve => { release = resolve; });
-				(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => {
-					if (protectedNow) protectedSanitizeCalls += 1;
-					if (protectedNow && protectedSanitizeCalls === 2 && JSON.stringify(state).includes('BASELINE_A')) {
-						markPaused();
-						await sanitizeGate;
-					}
-					return {
-						...state,
-						sections: state.sections.map((section: any) => {
-							if (!protectedNow || section.type !== 'sql') return section;
-							const { result: _result, ...sanitized } = section;
-							return sanitized;
-						}),
-					};
-				};
+				fs.writeFileSync(sidecarPath, sidecar(baselineMarker), 'utf8');
 
 				const provider = new (variant.Provider as any)(
 					{ subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined }, globalState: { get: () => undefined, update: async () => undefined } } as any,
@@ -9384,25 +9411,45 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any;
 
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
-				protectedNow = true;
-				invalidation.fire();
-				await sanitizePaused;
-				fs.writeFileSync(sidecarPath, sidecar('EXTERNAL_B'), 'utf8');
-				release();
-				await waitForCondition(() => {
-					const text = fs.readFileSync(sidecarPath, 'utf8');
-					return text.includes('EXTERNAL_B') && !text.includes('retained');
-				}, `${variant.extension} repair should sanitize the newer external commit`);
+				let releasePublication!: () => void;
+				const publicationGate = new Promise<void>(resolve => { releasePublication = resolve; });
+				let publicationPaused = false;
+				protectedMarker = variantMarker;
+				activePublicationPause = {
+					marker: baselineMarker,
+					markPaused: () => { publicationPaused = true; },
+					gate: publicationGate,
+				};
+				try {
+					invalidation.fire();
+					await waitForCondition(
+						() => publicationPaused,
+						`${variant.extension} repair publication should pause after sanitation`,
+						1_000,
+					);
+					fs.writeFileSync(sidecarPath, sidecar(externalMarker), 'utf8');
+					releasePublication();
+					await waitForCondition(() => {
+						const text = fs.readFileSync(sidecarPath, 'utf8');
+						return text.includes(externalMarker) && !text.includes('retained');
+					}, `${variant.extension} repair should sanitize the newer external commit`);
+				} finally {
+					releasePublication();
+					activePublicationPause = undefined;
+					protectedMarker = undefined;
+				}
 
 				const finalText = fs.readFileSync(sidecarPath, 'utf8');
-				assert.ok(finalText.includes('EXTERNAL_B'), `${variant.extension} repair must preserve the newer external commit`);
-				assert.ok(!finalText.includes('BASELINE_A'), `${variant.extension} repair must not republish its stale baseline`);
+				assert.ok(finalText.includes(externalMarker), `${variant.extension} repair must preserve the newer external commit`);
+				assert.ok(!finalText.includes(baselineMarker), `${variant.extension} repair must not republish its stale baseline`);
 				assert.ok(!finalText.includes('retained'), `${variant.extension} repair must sanitize the newer commit`);
 			}
 		} finally {
-			restorePublisher();
+			activePublicationPause = undefined;
+			protectedMarker = undefined;
 			invalidation.restore();
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});

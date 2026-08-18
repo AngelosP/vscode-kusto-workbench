@@ -10,7 +10,7 @@ on:
       vscodeExtTestPackage:
         description: 'vscode-ext-test npm tarball URL, or latest'
         required: false
-        default: 'latest'
+        default: 'https://github.com/AngelosP/vscode-extension-tester/releases/download/v0.1.22/vscode-ext-test-0.1.22.tgz'
       vscodeVersion:
         description: 'VS Code version, or latest'
         required: false
@@ -20,6 +20,10 @@ on:
 
 permissions:
   contents: read
+
+env:
+  E2E_VSCODE_EXT_TEST_PACKAGE: 'https://github.com/AngelosP/vscode-extension-tester/releases/download/v0.1.22/vscode-ext-test-0.1.22.tgz'
+  E2E_VSCODE_EXT_TEST_VERSION: '0.1.22'
 
 jobs:
   default-suite:
@@ -51,7 +55,7 @@ jobs:
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          VSCODE_EXT_TEST_PACKAGE: ${{ github.event.inputs.vscodeExtTestPackage || 'latest' }}
+          VSCODE_EXT_TEST_PACKAGE: ${{ github.event.inputs.vscodeExtTestPackage || env.E2E_VSCODE_EXT_TEST_PACKAGE }}
         run: |
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Stop'
@@ -92,6 +96,9 @@ jobs:
             exit $LASTEXITCODE
           }
           $installedVersion = $installedVersion.Trim()
+          if ($package -eq $env:E2E_VSCODE_EXT_TEST_PACKAGE -and $installedVersion -ne $env:E2E_VSCODE_EXT_TEST_VERSION) {
+            throw "Pinned vscode-ext-test package reported version '$installedVersion'; expected '$env:E2E_VSCODE_EXT_TEST_VERSION'."
+          }
           "E2E_VSCODE_EXT_TEST_VERSION=$installedVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "vscode-ext-test version: $installedVersion"
 

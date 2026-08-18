@@ -1150,7 +1150,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			const configuration = vscode.workspace.getConfiguration('kustoWorkbench');
 			const configurationTarget = resolveTutorialsEnabledConfigurationTarget(
 				configuration.inspect<boolean>('didYouKnow.enabled'),
-				(vscode.workspace.workspaceFolders?.length ?? 0) > 0,
 			);
 			await configuration.update('didYouKnow.enabled', true, configurationTarget);
 

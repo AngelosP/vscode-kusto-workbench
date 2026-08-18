@@ -34,9 +34,9 @@ describe('TutorialViewerPanel HTML template', () => {
 	});
 
 	it('updates the explicit workspace scope when Did you know is disabled there', () => {
-		expect(resolveTutorialsEnabledConfigurationTarget({ workspaceValue: false }, false)).toBe(vscode.ConfigurationTarget.Workspace);
-		expect(resolveTutorialsEnabledConfigurationTarget({ workspaceFolderValue: false, workspaceValue: true }, true)).toBe(vscode.ConfigurationTarget.WorkspaceFolder);
-		expect(resolveTutorialsEnabledConfigurationTarget({ globalValue: false }, false)).toBe(vscode.ConfigurationTarget.Global);
+		expect(resolveTutorialsEnabledConfigurationTarget({ workspaceValue: false })).toBe(vscode.ConfigurationTarget.Workspace);
+		expect(resolveTutorialsEnabledConfigurationTarget({ workspaceFolderValue: false, workspaceValue: false })).toBe(vscode.ConfigurationTarget.Workspace);
+		expect(resolveTutorialsEnabledConfigurationTarget({ globalValue: false })).toBe(vscode.ConfigurationTarget.Global);
 	});
 
 	it('writes the enabled setting back to workspace scope when that scope disabled it', async () => {

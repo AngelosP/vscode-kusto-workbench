@@ -41,12 +41,8 @@ interface InspectedTutorialsEnabledConfiguration {
 
 export function resolveTutorialsEnabledConfigurationTarget(
 	inspected: InspectedTutorialsEnabledConfiguration | undefined,
-	hasWorkspaceFolder: boolean,
 ): vscode.ConfigurationTarget {
-	if (hasWorkspaceFolder && inspected?.workspaceFolderValue !== undefined) {
-		return vscode.ConfigurationTarget.WorkspaceFolder;
-	}
-	if (inspected?.workspaceValue !== undefined) {
+	if (inspected?.workspaceValue !== undefined || inspected?.workspaceFolderValue !== undefined) {
 		return vscode.ConfigurationTarget.Workspace;
 	}
 	return vscode.ConfigurationTarget.Global;
@@ -249,7 +245,7 @@ export class TutorialViewerPanel {
 		const configuration = workspaceFolder
 			? vscode.workspace.getConfiguration('kustoWorkbench', workspaceFolder.uri)
 			: vscode.workspace.getConfiguration('kustoWorkbench');
-		const target = resolveTutorialsEnabledConfigurationTarget(configuration.inspect<boolean>('didYouKnow.enabled'), workspaceFolder !== undefined);
+		const target = resolveTutorialsEnabledConfigurationTarget(configuration.inspect<boolean>('didYouKnow.enabled'));
 		await configuration.update('didYouKnow.enabled', enabled, target);
 	}
 
