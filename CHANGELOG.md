@@ -7,6 +7,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 * Support for multiple results within a single query section (Run All).
 * Improvements to the 'Compare queries' and 'Optimize query' UX.
+* Kusto Copilot clarifications started by the Workbench agent are now answered and retried by that agent from available context. The user is asked only when a genuinely unresolved choice could materially change the result.
 
 ## [5.0.0] - 2026.08.18
 

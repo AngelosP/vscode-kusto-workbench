@@ -7,6 +7,17 @@ function readWorkspaceFile(relativePath: string): string {
 	return readFileSync(path.join(process.cwd(), relativePath), 'utf8');
 }
 
+function extractClarificationPolicy(content: string): string {
+	const marker = 'If `#askKustoCopilot` returns `outcome: "clarification-required"`';
+	const start = content.indexOf(marker);
+	expect(start).toBeGreaterThanOrEqual(0);
+	const remainder = content.slice(start);
+	const nextSection = remainder.slice(marker.length).search(/\n(?:### |4\. \*\*Collect all matches\.\*\*)/);
+	return nextSection < 0
+		? remainder
+		: remainder.slice(0, marker.length + nextSection);
+}
+
 describe('exported Kusto Workbench skill template', () => {
 	const template = readWorkspaceFile('media/skill-template.md');
 	const htmlDashboardRules = readWorkspaceFile('copilot-instructions/html-dashboard-rules.md');
@@ -15,10 +26,10 @@ describe('exported Kusto Workbench skill template', () => {
 	const exportedDashboardRules = exportedFiles.find(file => file.fileName === HTML_DASHBOARD_RULES_FILENAME)?.content ?? '';
 
 	it('is bumped to the current template version', () => {
-		expect(TEMPLATE_VERSION).toBe(16);
-		expect(template).toContain('# version: 16 - Auto-updated by Kusto Workbench. Do not remove this line.');
-		expect(isSkillTemplateCurrent(15)).toBe(false);
-		expect(isSkillTemplateCurrent(16)).toBe(true);
+		expect(TEMPLATE_VERSION).toBe(17);
+		expect(template).toContain('# version: 17 - Auto-updated by Kusto Workbench. Do not remove this line.');
+		expect(isSkillTemplateCurrent(16)).toBe(false);
+		expect(isSkillTemplateCurrent(17)).toBe(true);
 	});
 
 	it('exports the compact skill and dashboard rules sidecar separately', () => {
@@ -44,16 +55,22 @@ describe('exported Kusto Workbench skill template', () => {
 		}
 	});
 
-	it('requires clarification to return to the user and resume the exact section conversation', () => {
+	it('requires calling agents to answer clarifications before escalating to the user', () => {
 		for (const content of [
 			exportedSkill,
 			readWorkspaceFile('copilot-instructions/custom-agent.md'),
 			readWorkspaceFile('copilot-instructions/custom-subagent-search.md'),
 		]) {
-			expect(content).toContain('clarification-required');
-			expect(content).toContain('sectionId');
-			expect(content).toContain('openFileId');
-			expect(content).toMatch(/Do not (infer|guess)/);
+			const policy = extractClarificationPolicy(content);
+			expect(policy).toContain('returned `question` as addressed to you');
+			expect(policy).toContain('answer it yourself');
+			expect(policy).toContain('Use available tools');
+			expect(policy).toContain('Immediately call `#askKustoCopilot` again');
+			expect(policy).toContain('exact returned `sectionId` and `openFileId`');
+			expect(policy).toContain('Ask the user only');
+			expect(policy).toContain('genuinely user-owned choice');
+			expect(policy).toContain('reasonable assumption could materially change the result');
+			expect(policy).not.toMatch(/ask the returned\s+`?question`?\s+verbatim/i);
 		}
 	});
 

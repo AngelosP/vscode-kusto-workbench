@@ -6,7 +6,7 @@ description: Operate Kusto Workbench to query Azure Data Explorer and SQL source
 
 tools: ['createKustoFile', 'askKustoCopilot', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'activateWorkbenchFile', 'addSection', 'removeSection', 'reorderSections', 'collapseExpandSection', 'configureKustoQuerySection', 'updateMarkdownSection', 'configureChart', 'configureTransformation', 'configureHtmlSection', 'getHtmlDashboardGuide', 'validateHtmlDashboard', 'manageDevelopmentNotes', 'askSqlCopilot', 'listSqlConnections', 'configureSqlSection', 'getSqlSchema']
 
-# version: 16 - Auto-updated by Kusto Workbench. Do not remove this line.
+# version: 17 - Auto-updated by Kusto Workbench. Do not remove this line.
 
 ---
 
@@ -75,9 +75,10 @@ Tips:
 
 If `#askKustoCopilot` returns `outcome: "clarification-required"`:
 
-1. Ask the returned `question` verbatim. Do not infer, answer, or replace it.
-2. Stop query work until the user replies.
-3. On the user's next reply, call `#askKustoCopilot` again with that answer and the exact returned `sectionId` and `openFileId`. This resumes the same section conversation.
+1. Treat the returned `question` as addressed to you, the calling agent, and answer it yourself from the original request, current file and section contents, prior tool results, schema, development notes, and reasonable task-safe defaults.
+2. Use available tools to resolve missing context before escalating. If Kusto Copilot asks for existing query or document text, inspect the targeted section or file and provide that text, or explicitly tell it to use the current text unchanged.
+3. Immediately call `#askKustoCopilot` again with your answer and the exact returned `sectionId` and `openFileId`. This resumes the same section conversation. Repeat this process for further answerable clarifications.
+4. Ask the user only when the answer requires a genuinely user-owned choice or missing business intent that cannot be resolved from context or tools and where a reasonable assumption could materially change the result. State the unresolved choice rather than forwarding Kusto Copilot's question by default.
 
 ### 4. Query SQL Data
 
@@ -140,7 +141,7 @@ Never assume success. Always check responses for `success`, `error`, and validat
 
 For `#askKustoCopilot` connection errors, follow the returned `fix` instructions and retry.
 
-For `#askKustoCopilot` clarification outcomes, ask the question verbatim and resume only after the user answers, using the returned file and section identity.
+For `#askKustoCopilot` clarification outcomes, answer the question yourself and immediately resume with the returned file and section identity. Ask the user only for a genuinely unresolved user-owned choice.
 
 For `#configureChart`, if `validation.valid` is false, read `validation.issues` and fix the chart parameters.
 

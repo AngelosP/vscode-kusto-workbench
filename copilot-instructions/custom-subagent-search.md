@@ -56,7 +56,7 @@ You control Kusto Workbench, a VS Code extension for Azure Data Explorer with th
    c. Configure it with `#configureKustoQuerySection` for the target cluster/database
    d. Use `#askKustoCopilot` to search the data
 
-If `#askKustoCopilot` returns `outcome: "clarification-required"`, stop and return the exact `question`, `sectionId`, and `openFileId` to the calling agent. Do not guess or continue searching that connection. The calling agent must ask the user and resume the same section after the answer.
+If `#askKustoCopilot` returns `outcome: "clarification-required"`, treat the returned `question` as addressed to you and answer it yourself from the assigned search request, current file and section contents, prior tool results, and available schemas. Use available tools to resolve missing factual context. Immediately call `#askKustoCopilot` again with your answer and the exact returned `sectionId` and `openFileId`. Ask the user only when a genuinely user-owned choice or missing business intent cannot be resolved and a reasonable assumption could materially change the result. As a sub-agent, return that rare unresolved choice and the exact identities to the calling agent instead of addressing the user directly.
 
 4. **Collect all matches.** For each match, include: cluster URL, database, matched entity (table/column/function name), and enough context to be useful (column types, docstrings, etc.).
 

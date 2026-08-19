@@ -48,14 +48,21 @@ describe('tool manifest schemas', () => {
 		}
 	});
 
-	it('documents the Kusto Copilot clarification handoff for calling agents', () => {
+	it('directs calling agents to answer Kusto Copilot clarifications before escalating', () => {
 		const askKustoCopilot = getTools().find((tool: any) =>
 			tool.name === 'kusto-workbench_ask-kusto-copilot',
 		);
 
 		expect(askKustoCopilot?.modelDescription).toContain("outcome='clarification-required'");
-		expect(askKustoCopilot?.modelDescription).toContain('ask the returned question verbatim');
-		expect(askKustoCopilot?.modelDescription).toContain('same openFileId and sectionId');
+		expect(askKustoCopilot?.modelDescription).toContain('returned question as addressed to you');
+		expect(askKustoCopilot?.modelDescription).toContain('Answer it yourself');
+		expect(askKustoCopilot?.modelDescription).toContain('Use available tools');
+		expect(askKustoCopilot?.modelDescription).toContain('immediately call this tool again');
+		expect(askKustoCopilot?.modelDescription).toContain('exact openFileId and sectionId returned by this clarification result');
+		expect(askKustoCopilot?.modelDescription).toContain('Ask the user only');
+		expect(askKustoCopilot?.modelDescription).toContain('genuinely user-owned choice');
+		expect(askKustoCopilot?.modelDescription).toContain('reasonable assumption could materially change the result');
+		expect(askKustoCopilot?.modelDescription).not.toMatch(/ask the returned\s+`?question`?\s+verbatim/i);
 	});
 
 	it('exposes non-negative result indexes for chart and transformation sources', () => {
