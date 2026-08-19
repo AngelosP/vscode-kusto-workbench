@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { html, render, nothing } from 'lit';
 import '../../src/webview/components/kw-dropdown.js';
+import '../../src/webview/components/kw-copilot-chat.js';
 import '../../src/webview/sections/kw-query-section.js';
 import type { KwQuerySection } from '../../src/webview/sections/kw-query-section.js';
 import type { KwDropdown } from '../../src/webview/components/kw-dropdown.js';
@@ -42,7 +43,6 @@ import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-r
 import { pState } from '../../src/webview/shared/persistence-state.js';
 import { clearResultsState, displayResultForBox, getCurrentResultArtifact, getResultsState, setResultsState } from '../../src/webview/core/results-state.js';
 import { postMessageToHost } from '../../src/webview/shared/webview-messages.js';
-import { prepareKustoOptimizeQuery, toggleKustoOptimizeQuery } from '../../src/webview/sections/query-execution.controller.js';
 import { APPLIED_KUSTO_COPILOT_DONE_EVENT } from '../../src/webview/core/kusto-copilot-output-runtime.js';
 import { getKustoSchemaIdentityKey } from '../../src/shared/kustoAuth.js';
 
@@ -60,6 +60,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.useRealTimers();
 	render(nothing, container);
 	container.remove();
 	disposeKustoPreparation('test1');
@@ -72,6 +73,7 @@ afterEach(() => {
 	delete pState.queryResultJsonByBoxId.test1;
 	delete pState.resultArtifactByBoxId.test1;
 	delete pState.kustoResultOwnerByBoxId.test1;
+	delete pState.resultsVisibleByBoxId.test1;
 	clearResultsState('test1');
 	delete queryEditors.test1;
 	disposeKustoPreparation('comparison_1');
@@ -191,6 +193,75 @@ describe('kw-query-section loading states', () => {
 		expect(table.resultArtifactId).toBe(getCurrentResultArtifact(el.boxId)?.artifactId);
 		expect(table.resultArtifactTableToken).toBeTruthy();
 		expect(table.resultArtifactLiveCheck()).toBe(true);
+	});
+
+	it('auto-fits an initially hidden result table when it is revealed', async () => {
+		vi.useFakeTimers();
+		const el = createSection();
+		el.id = el.boxId;
+		pState.resultsVisibleByBoxId[el.boxId] = false;
+		expect(el.displayResult({
+			columns: [{ name: 'Value', type: 'int' }],
+			rows: [[1], [2], [3], [4]],
+			metadata: {},
+		})).toBe(true);
+		const table = el.querySelector('kw-data-table') as any;
+		await table.updateComplete;
+		const wrapper = document.getElementById(el.boxId + '_results_wrapper')!;
+		const resizer = document.getElementById(el.boxId + '_results_resizer')!;
+		table.getContentHeight = vi.fn(() => 180);
+		expect(wrapper.style.height).toBe('48px');
+
+		table.dispatchEvent(new CustomEvent('visibility-toggle', {
+			detail: { visible: true }, bubbles: true, composed: true,
+		}));
+
+		expect(wrapper.style.height).toBe('200px');
+		expect(resizer.style.display).toBe('');
+		expect(wrapper.dataset.kustoUserResized).not.toBe('true');
+		expect(el.serialize()).not.toHaveProperty('resultsHeightPx');
+
+		table.dispatchEvent(new CustomEvent('visibility-toggle', {
+			detail: { visible: false }, bubbles: true, composed: true,
+		}));
+		expect(wrapper.style.height).toBe('48px');
+		vi.advanceTimersByTime(200);
+		expect(wrapper.style.height).toBe('48px');
+	});
+
+	it('does not let a detached reveal timer resize a same-ID replacement', async () => {
+		vi.useFakeTimers();
+		const el = createSection();
+		el.id = el.boxId;
+		pState.resultsVisibleByBoxId[el.boxId] = false;
+		expect(el.displayResult({
+			columns: [{ name: 'Value', type: 'int' }], rows: [[1], [2]], metadata: {},
+		})).toBe(true);
+		const table = el.querySelector('kw-data-table') as any;
+		table.getContentHeight = vi.fn(() => 160);
+		table.dispatchEvent(new CustomEvent('visibility-toggle', {
+			detail: { visible: true }, bubbles: true, composed: true,
+		}));
+
+		el.remove();
+		const replacement = document.createElement('div');
+		replacement.id = 'test1';
+		const replacementWrapper = document.createElement('div');
+		replacementWrapper.id = 'test1_results_wrapper';
+		replacementWrapper.style.display = 'flex';
+		replacementWrapper.style.height = '333px';
+		const replacementResults = document.createElement('div');
+		replacementResults.id = 'test1_results';
+		const replacementTable = document.createElement('kw-data-table') as any;
+		replacementTable.getContentHeight = vi.fn(() => 80);
+		replacementResults.appendChild(replacementTable);
+		replacementWrapper.appendChild(replacementResults);
+		replacement.appendChild(replacementWrapper);
+		container.appendChild(replacement);
+
+		vi.advanceTimersByTime(200);
+
+		expect(replacementWrapper.style.height).toBe('333px');
 	});
 
 	it('does not let detached same-ID cleanup hide Save on the replacement table', async () => {
@@ -725,7 +796,7 @@ describe('kw-query-section loading states', () => {
 		expect(isSchemaWorkerApplyRequired('comparison_1')).toBe(true);
 	});
 
-	it('preserves same-target comparison Copilot and Optimize owners during schema-only invalidation', () => {
+	it('preserves the same-target comparison Copilot owner during schema-only invalidation', () => {
 		const source = createSection();
 		source.setConnectionId('connection-1');
 		source.setDatabase('Db');
@@ -741,14 +812,12 @@ describe('kw-query-section loading states', () => {
 		const copilotOwner = { boxId: 'comparison_1', copilotRequestId: 'copilot-same-target', ...lifecycle };
 		(comparison.copilotChatCtrl as any).activeKustoRequest = copilotOwner;
 		(comparison.copilotChatCtrl as any).kustoConversationOwner = copilotOwner;
-		const optimizeOwner = comparison.beginKustoOptimizeRequest()!;
 		optimizationMetadataByBoxId.test1 = { comparisonBoxId: 'comparison_1' };
 
 		invalidateLinkedComparisonSchemaForSource('test1');
 
 		expect(comparison.getSchemaLifecycleIdentity()).toEqual(lifecycle);
 		expect(comparison.admitKustoCopilotMessage(copilotOwner, 'copilotWriteQueryStatus')).toBe(true);
-		expect(comparison.admitKustoOptimizeMessage(optimizeOwner)).toBe(true);
 	});
 
 	it('selects the first configured connection when no desired current or last selection exists', async () => {
@@ -993,22 +1062,7 @@ describe('kw-query-section loading states', () => {
 		expect(el.getActiveKustoCopilotRequest()).toBeUndefined();
 	});
 
-	it('admits and retires only the exact standalone Optimize request', () => {
-		const el = createSection();
-		const owner = el.beginKustoOptimizeRequest();
-		expect(owner).toEqual(expect.objectContaining({
-			boxId: 'test1', optimizeRequestId: expect.stringMatching(/^kusto-optimize-/),
-			sectionInstanceId: expect.any(String), targetGeneration: expect.any(Number),
-		}));
-		expect(el.admitKustoOptimizeMessage({ ...owner, optimizeRequestId: 'stale' })).toBe(false);
-		expect(el.admitKustoOptimizeMessage(owner)).toBe(true);
-
-		expect(el.retireKustoOptimizeRequest()).toEqual(owner);
-		expect(el.getActiveKustoOptimizeRequest()).toBeUndefined();
-		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'cancelOptimizeQuery', ...owner });
-	});
-
-	it('uses one exact standalone Optimize owner from options preparation through execution', async () => {
+	it('opens embedded Copilot Chat and submits Optimize as an ordinary user request', async () => {
 		const el = createSection();
 		el.id = 'test1';
 		el.setConnections([{ id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net' }]);
@@ -1016,144 +1070,38 @@ describe('kw-query-section loading states', () => {
 		el.setSchemaLifecycleTarget('connection-1', 'Samples');
 		await el.updateComplete;
 		queryEditors.test1 = { getValue: () => 'print value=1' } as any;
-		expect(el.getConnectionId()).toBe('connection-1');
-		expect(el.getDatabase()).toBe('Samples');
-		expect(document.getElementById('test1')).toBe(el);
-
-		expect(prepareKustoOptimizeQuery('test1')).toBe(true);
-		const owner = el.getActiveKustoOptimizeRequest()!;
-		expect(postMessageToHost).toHaveBeenCalledWith({
-			type: 'prepareOptimizeQuery', query: 'print value=1', ...owner,
-		});
-		expect((document.getElementById('test1_optimize_config') as HTMLElement).style.display).toBe('block');
 		const optimizeButton = document.getElementById('test1_optimize_btn') as HTMLButtonElement;
-		expect(optimizeButton.classList.contains('is-active')).toBe(true);
-		expect(optimizeButton.getAttribute('aria-pressed')).toBe('true');
-
-		el.executionCtrl.applyOptimizeQueryOptions([
-			{ id: 'model-1', label: 'Model 1', maxInputTokens: 128_000 },
-		], 'model-1', 'Optimize this query');
-		const config = document.getElementById('test1_optimize_config') as HTMLElement;
-		expect(Array.from(config.querySelectorAll('.optimize-config-settings select')).map(select => select.id)).toEqual([
-			'test1_optimize_model', 'test1_optimize_effort', 'test1_optimize_context',
-		]);
-		const contextSelect = document.getElementById('test1_optimize_context') as HTMLSelectElement;
-		expect(Array.from(contextSelect.options).map(option => option.textContent)).toEqual([
-			'Model maximum (128K)', '16K', '32K', '64K',
-		]);
-		expect(contextSelect.value).toBe('128000');
-		expect(Array.from(config.querySelectorAll('.optimize-config-actions button')).map(button => button.textContent)).toEqual([
-			'Cancel', 'Optimize',
-		]);
-		(document.getElementById('test1_optimize_effort') as HTMLSelectElement).value = 'high';
-		contextSelect.value = '32000';
+		optimizeButton.disabled = false;
 		vi.mocked(postMessageToHost).mockClear();
-		window.__kustoRunOptimizeQueryWithOverrides('test1');
 
-		expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
-			type: 'optimizeQuery', query: 'print value=1', connectionId: 'connection-1', database: 'Samples',
-			modelId: 'model-1', thinkingEffort: 'high', contextSize: 32_000,
-			promptText: 'Optimize this query', ...owner,
+		optimizeButton.click();
+
+		expect(el.getCopilotChatVisible()).toBe(true);
+		expect(el.getCopilotChatEl()!.getMessages()).toContainEqual(expect.objectContaining({
+			kind: 'user', text: 'optimize the performance of this query',
 		}));
-		expect(el.getActiveKustoOptimizeRequest()).toEqual(owner);
-		expect(optimizeButton.classList.contains('is-active')).toBe(false);
-		expect(optimizeButton.getAttribute('aria-pressed')).toBe('false');
-	});
-
-	it('toggles the Optimize options closed through the same cancellation path as Cancel', async () => {
-		const el = createSection();
-		el.id = 'test1';
-		el.setConnections([{ id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net' }]);
-		el.setDatabases(['Samples'], 'Samples');
-		el.setSchemaLifecycleTarget('connection-1', 'Samples');
-		await el.updateComplete;
-		queryEditors.test1 = { getValue: () => 'print value=1' } as any;
-
-		expect(prepareKustoOptimizeQuery('test1')).toBe(true);
-		const owner = el.getActiveKustoOptimizeRequest()!;
-		vi.mocked(postMessageToHost).mockClear();
-
-		expect(toggleKustoOptimizeQuery('test1')).toBe(false);
-		expect((document.getElementById('test1_optimize_config') as HTMLElement).style.display).toBe('none');
-		expect((document.getElementById('test1_optimize_btn') as HTMLButtonElement).getAttribute('aria-pressed')).toBe('false');
-		expect(postMessageToHost).toHaveBeenCalledTimes(1);
-		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'cancelOptimizeQuery', ...owner });
-	});
-
-	it('shows one cancellation action that stops both Optimize and its active query', async () => {
-		const el = createSection();
-		el.id = 'test1';
-		el.setConnections([{ id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net' }]);
-		el.setDatabases(['Samples'], 'Samples');
-		el.setSchemaLifecycleTarget('connection-1', 'Samples');
-		await el.updateComplete;
-		const optimizeOwner = el.beginKustoOptimizeRequest()!;
-		el.executionCtrl.setOptimizeInProgress(true, 'Creating comparison…');
-		expect(el.beginQueryExecution('execution-1', 'comparison', undefined, undefined, undefined, optimizeOwner)).toBe(true);
-
-		expect((document.getElementById('test1_optimize_cancel') as HTMLElement).style.display).not.toBe('none');
-		expect((document.getElementById('test1_cancel_btn') as HTMLElement).style.display).toBe('none');
-		vi.mocked(postMessageToHost).mockClear();
-
-		window.__kustoCancelOptimizeQuery('test1');
-
 		expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
-			type: 'cancelQuery', boxId: 'test1', executionId: 'execution-1',
+			type: 'startCopilotWriteQuery', flavor: 'kusto',
+			request: 'optimize the performance of this query',
+			currentQuery: 'print value=1', requireToolUse: undefined,
 		}));
-		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'cancelOptimizeQuery', ...optimizeOwner });
-		expect((document.getElementById('test1_cancel_btn') as HTMLElement).style.display).toBe('none');
-		el.retireActiveQueryExecution();
+		expect(document.getElementById('test1_optimize_config')).toBeNull();
+		expect(document.getElementById('test1_optimize_cancel')).toBeNull();
 	});
 
-	it('does not cancel an unrelated manual query when closing Optimize options', async () => {
-		const el = createSection();
-		el.id = 'test1';
-		el.setConnections([{ id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net' }]);
-		el.setDatabases(['Samples'], 'Samples');
-		el.setSchemaLifecycleTarget('connection-1', 'Samples');
-		await el.updateComplete;
-		const optimizeOwner = el.beginKustoOptimizeRequest()!;
-		expect(el.beginQueryExecution('manual-execution', 'manual')).toBe(true);
-		vi.mocked(postMessageToHost).mockClear();
+	it('renders icon-first Compare and Optimize actions with accessible expanding labels', () => {
+		createSection();
+		const compareButton = document.getElementById('test1_compare_btn') as HTMLButtonElement;
+		const optimizeButton = document.getElementById('test1_optimize_btn') as HTMLButtonElement;
 
-		window.__kustoCancelOptimizeQuery('test1');
-
-		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'cancelOptimizeQuery', ...optimizeOwner });
-		expect(postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'cancelQuery' }));
-		expect(el.getActiveExecutionId()).toBe('manual-execution');
-		el.retireActiveQueryExecution();
-	});
-
-	it('does not cancel an unrelated comparison execution when closing Optimize options', async () => {
-		const el = createSection();
-		el.id = 'test1';
-		el.setConnections([{ id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net' }]);
-		el.setDatabases(['Samples'], 'Samples');
-		el.setSchemaLifecycleTarget('connection-1', 'Samples');
-		await el.updateComplete;
-		const optimizeOwner = el.beginKustoOptimizeRequest()!;
-		expect(el.beginQueryExecution('older-comparison', 'comparison')).toBe(true);
-		vi.mocked(postMessageToHost).mockClear();
-
-		window.__kustoCancelOptimizeQuery('test1');
-
-		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'cancelOptimizeQuery', ...optimizeOwner });
-		expect(postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'cancelQuery' }));
-		expect(el.getActiveExecutionId()).toBe('older-comparison');
-		el.retireActiveQueryExecution();
-	});
-
-	it('keeps standalone Optimize disabled after cleanup when Copilot is unavailable', () => {
-		const el = createSection();
-		el.id = 'test1';
-		const button = document.getElementById('test1_optimize_btn') as HTMLButtonElement;
-		button.dataset.kustoCopilotAvailable = '0';
-		button.disabled = true;
-
-		el.executionCtrl.hideOptimizePrompt();
-
-		expect(button.disabled).toBe(true);
-		expect(button.getAttribute('aria-disabled')).toBe('true');
+		expect(compareButton.textContent?.trim()).toBe('Compare');
+		expect(compareButton.querySelector('svg.compare-icon')).not.toBeNull();
+		expect(compareButton.querySelector('.optimize-query-label')?.getAttribute('aria-hidden')).toBe('true');
+		expect(compareButton.getAttribute('aria-label')).toBe('Compare queries');
+		expect(optimizeButton.textContent?.trim()).toBe('Optimize');
+		expect(optimizeButton.querySelector('svg.optimize-timer-icon')).not.toBeNull();
+		expect(optimizeButton.querySelector('.optimize-query-label')?.getAttribute('aria-hidden')).toBe('true');
+		expect(optimizeButton.getAttribute('aria-label')).toBe('Optimize query with GitHub Copilot');
 	});
 
 	it('clears the selected database when the same connection ID is repointed to another cluster', async () => {

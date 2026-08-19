@@ -192,6 +192,39 @@ describe('CopilotChatManagerController document capabilities', () => {
 		expect(controller.admitKustoCopilotConversationOwner(owner)).toBe(true);
 	});
 
+	it('does not reopen an already visible chat before an ordinary programmatic submission', () => {
+		const host = document.createElement('div') as HTMLElement & CopilotChatManagerHost;
+		host.boxId = 'query_source';
+		host.addController = vi.fn();
+		host.getCopilotConnectionId = () => 'connection-1';
+		host.getCopilotServerUrl = () => 'https://cluster.example';
+		host.getDatabase = () => 'Db';
+		host.getCopilotEditorValue = () => 'print source = 1';
+		host.getSchemaLifecycleIdentity = () => ({ sectionInstanceId: 'instance-1', targetGeneration: 2 });
+		host.layoutCopilotEditor = vi.fn();
+		const wrapper = document.createElement('div');
+		wrapper.className = 'query-editor-wrapper';
+		host.appendChild(wrapper);
+		document.body.appendChild(host);
+		const controller = new CopilotChatManagerController(host, kustoWebviewFlavor);
+		controller.setCopilotChatVisible(true, false);
+		const visibility = vi.spyOn(controller, 'setCopilotChatVisible');
+		mocks.postMessageToHost.mockClear();
+
+		const owner = controller.submitCopilotChatRequest('optimize the performance of this query', false);
+
+		expect(owner).toBeDefined();
+		expect(visibility).not.toHaveBeenCalled();
+		expect(controller.getCopilotChatEl()!.getMessages()).toContainEqual(expect.objectContaining({
+			kind: 'user', text: 'optimize the performance of this query',
+		}));
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'startCopilotWriteQuery',
+			request: 'optimize the performance of this query',
+			requireToolUse: undefined,
+		}));
+	});
+
 	it('emits retirement only after active ownership and running UI are cleared', () => {
 		const host = document.createElement('div') as HTMLElement & CopilotChatManagerHost;
 		host.boxId = 'query_source';

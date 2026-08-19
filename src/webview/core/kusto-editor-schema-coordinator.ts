@@ -475,6 +475,12 @@ export class KustoEditorSchemaCoordinator {
 		if (target && !targetsEqual(current.target, {
 			connectionId: normalizeId(target.connectionId),
 			...(normalizeId(target.database) ? { database: normalizeId(target.database) } : {}),
+			...(Number.isSafeInteger(target.connectionRevision) && Number(target.connectionRevision) >= 0
+				? { connectionRevision: Number(target.connectionRevision) }
+				: {}),
+			...(normalizeId(target.connectionIdentityKey)
+				? { connectionIdentityKey: normalizeId(target.connectionIdentityKey) }
+				: {}),
 		})) return false;
 		const token = normalizeId(requestToken);
 		return !token || current.schemaRequestToken === token;

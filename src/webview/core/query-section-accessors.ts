@@ -1,4 +1,5 @@
 import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
+import { getKustoPreparationState } from './state.js';
 
 export function __kustoGetConnectionId(boxId: unknown): string {
 	try {
@@ -33,10 +34,6 @@ export function __kustoGetQuerySectionElement(boxId: unknown): any | null {
 	return null;
 }
 
-export function retireKustoOptimizeForQueryEdit(boxId: unknown): void {
-	__kustoGetQuerySectionElement(boxId)?.retireKustoOptimizeRequest?.();
-}
-
 export function synchronizeKustoSectionTarget(sourceBoxId: unknown, targetBoxId: unknown): boolean {
 	const source = __kustoGetQuerySectionElement(sourceBoxId);
 	const target = __kustoGetQuerySectionElement(targetBoxId);
@@ -48,13 +45,29 @@ export function synchronizeKustoSectionTarget(sourceBoxId: unknown, targetBoxId:
 		const alreadySynchronized = String(target.getConnectionId?.() || '').trim() === connectionId
 			&& String(target.getDatabase?.() || '').trim().toLowerCase() === database.toLowerCase()
 			&& kustoClusterKey(String(target.getClusterUrl?.() || '')) === clusterKey;
-		if (alreadySynchronized) return true;
+		const completeDatabaseTransition = () => {
+			if (!database) return;
+			target.setDatabase?.(database);
+			target.clearDesiredDatabase?.();
+			target.dispatchEvent(new CustomEvent('database-changed', {
+				detail: { boxId: String(targetBoxId || ''), database, source: 'comparison-sync' },
+				bubbles: true,
+				composed: true,
+			}));
+		};
+		if (alreadySynchronized) {
+			const preparation = getKustoPreparationState(String(targetBoxId || ''));
+			if (preparation.status === 'preparing' && preparation.blockers.includes('databases')) {
+				completeDatabaseTransition();
+			}
+			return true;
+		}
 		target.clearTargetBoundState?.();
 		target.setConnectionId?.(connectionId);
 		if (database) target.setDesiredDatabase?.(database);
 		else target.clearDesiredDatabase?.();
-		target.setDatabase?.(database);
 		target.setSchemaLifecycleTarget?.(connectionId, database || undefined);
+		completeDatabaseTransition();
 	} catch (e) {
 		console.error('[kusto]', e);
 		return false;

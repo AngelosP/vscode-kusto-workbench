@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { DatabaseSchemaIndex } from './kustoClient';
 import type { KustoComparisonRunIdentity, KustoSectionExecutionTarget } from '../shared/kustoExecution';
 import type { KustoExecutionRequestIdentity } from '../shared/kustoExecution';
-import type { KustoCopilotRequestIdentity, KustoOptimizeRequestIdentity } from '../shared/kustoExecution';
+import type { KustoCopilotRequestIdentity } from '../shared/kustoExecution';
 import type { KustoSchemaWebviewMessage } from '../shared/kustoSchemaProtocol';
 import type { KustoDatabaseDiscoveryWebviewMessage } from '../shared/kustoDatabaseDiscoveryProtocol';
 import type { SqlDatabaseDiscoveryWebviewMessage } from '../shared/sqlDatabaseDiscoveryProtocol';
@@ -92,19 +92,6 @@ type StartCopilotWriteQueryMessageBase = {
 export type StartCopilotWriteQueryMessage =
 	| (StartCopilotWriteQueryMessageBase & KustoCopilotRequestIdentity & { flavor: 'kusto' })
 	| (StartCopilotWriteQueryMessageBase & { flavor: 'sql'; sqlOwnerToken?: string });
-
-export type OptimizeQueryMessage = KustoOptimizeRequestIdentity & {
-	type: 'optimizeQuery';
-	query: string;
-	connectionId: string;
-	database: string;
-	boxId: string;
-	queryName: string;
-	modelId?: string;
-	thinkingEffort?: 'low' | 'medium' | 'high';
-	contextSize?: number;
-	promptText?: string;
-};
 
 export type ExecuteQueryMessage = {
 	type: 'executeQuery';
@@ -273,9 +260,6 @@ export type IncomingWebviewMessage =
 	| ({ type: 'clearCopilotConversation'; flavor: 'kusto' } & KustoCopilotRequestIdentity)
 	| { type: 'clearCopilotConversation'; boxId: string; flavor?: 'sql' }
 	| { type: 'removeFromCopilotHistory'; boxId: string; entryId: string }
-	| ({ type: 'prepareOptimizeQuery'; query: string } & KustoOptimizeRequestIdentity)
-	| ({ type: 'cancelOptimizeQuery' } & KustoOptimizeRequestIdentity)
-	| OptimizeQueryMessage
 	| ExecuteQueryMessage
 	| SqlConnectionsProjectionWebviewMessage
 	| { type: 'sqlSectionOpen'; boxId: string; sectionInstanceId: string }

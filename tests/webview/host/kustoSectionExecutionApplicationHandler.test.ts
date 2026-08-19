@@ -206,6 +206,8 @@ describe('HostKustoSectionExecutionApplicationHandler', () => {
 		expect(harness.handler.getKustoSectionExecutionTarget('query-1')).toEqual({
 			engine: 'kusto', boxId: 'query-1', sectionInstanceId: 'instance-1',
 			targetGeneration: 1, connectionId: TEST_CONNECTION.id, database: 'Samples',
+			connectionRevision: DISPATCH.connectionRevision,
+			connectionIdentityKey: DISPATCH.connectionIdentityKey,
 		});
 
 		await harness.handler.handleMessage({

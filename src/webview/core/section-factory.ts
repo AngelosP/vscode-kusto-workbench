@@ -789,7 +789,7 @@ export function addQueryBox( options?: any) {
 /** Cap for fit-to-contents / double-click. Manual drag uses the full content-based max. */
 const FIT_CAP_PX = 400;
 
-export function __kustoAutoSizeResults( boxId: any) {
+export function __kustoAutoSizeResults(boxId: any, options?: { markUserResized?: boolean }) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	const w = document.getElementById(id + '_results_wrapper') as any;
@@ -805,7 +805,9 @@ export function __kustoAutoSizeResults( boxId: any) {
 			const sectionMaxH = contentH + 20;
 			w.style.height = Math.max(120, Math.min(FIT_CAP_PX, Math.ceil(sectionMaxH))) + 'px';
 			w.style.minHeight = '0';
-			try { if (w.dataset) { delete w.dataset.kustoRestoredHeight; delete w.dataset.kustoRestoredHeightPx; w.dataset.kustoUserResized = 'true'; } } catch (e) { console.error('[kusto]', e); }
+			if (options?.markUserResized !== false) {
+				try { if (w.dataset) { delete w.dataset.kustoRestoredHeight; delete w.dataset.kustoRestoredHeightPx; w.dataset.kustoUserResized = 'true'; } } catch (e) { console.error('[kusto]', e); }
+			}
 		}
 		return;
 	}
@@ -843,7 +845,9 @@ export function __kustoAutoSizeResults( boxId: any) {
 			const desiredPx = Math.max(24, Math.min(FIT_CAP_PX, Math.ceil(chrome + contentH + 8)));
 			w.style.height = desiredPx + 'px';
 			w.style.minHeight = '0';
-			try { if (w.dataset) { delete w.dataset.kustoRestoredHeight; delete w.dataset.kustoRestoredHeightPx; w.dataset.kustoUserResized = 'true'; } } catch (e) { console.error('[kusto]', e); }
+			if (options?.markUserResized !== false) {
+				try { if (w.dataset) { delete w.dataset.kustoRestoredHeight; delete w.dataset.kustoRestoredHeightPx; w.dataset.kustoUserResized = 'true'; } } catch (e) { console.error('[kusto]', e); }
+			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
@@ -1292,7 +1296,6 @@ export function removeQueryBox( boxId: any) {
 	try {
 		const querySection = __kustoGetQuerySectionElement(String(boxId || ''));
 		const retiredExecution = querySection?.retireActiveQueryExecution?.();
-		querySection?.retireKustoOptimizeRequest?.();
 		querySection?.disposeSchemaLifecycle?.();
 		if (retiredExecution) postMessageToHost({
 			type: 'cancelQuery', boxId: String(boxId), executionId: retiredExecution.executionId,

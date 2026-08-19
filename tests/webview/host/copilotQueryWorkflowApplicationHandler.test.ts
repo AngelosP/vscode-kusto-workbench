@@ -73,51 +73,11 @@ function createKustoCancelMessage(): Extract<IncomingWebviewMessage, {
 	};
 }
 
-function createOptimizeMessages(): [
-	Extract<IncomingWebviewMessage, { type: 'prepareOptimizeQuery' }>,
-	Extract<IncomingWebviewMessage, { type: 'cancelOptimizeQuery' }>,
-	Extract<IncomingWebviewMessage, { type: 'optimizeQuery' }>,
-] {
-	return [
-		{
-			type: 'prepareOptimizeQuery',
-			boxId: 'optimize-prepare-exact',
-			query: 'StormEvents | take 10',
-			optimizeRequestId: 'optimize-prepare-request-exact',
-			sectionInstanceId: 'optimize-prepare-section-exact',
-			targetGeneration: 17,
-		},
-		{
-			type: 'cancelOptimizeQuery',
-			boxId: 'optimize-cancel-exact',
-			optimizeRequestId: 'optimize-cancel-request-exact',
-			sectionInstanceId: 'optimize-cancel-section-exact',
-			targetGeneration: 19,
-		},
-		{
-			type: 'optimizeQuery',
-			boxId: 'optimize-run-exact',
-			query: 'StormEvents | summarize count() by State',
-			connectionId: 'kusto-optimize-connection-exact',
-			database: 'OptimizeDatabaseExact',
-			queryName: 'Optimize exact query',
-			modelId: 'optimize-model-exact',
-			promptText: 'Optimize this exact query',
-			optimizeRequestId: 'optimize-run-request-exact',
-			sectionInstanceId: 'optimize-run-section-exact',
-			targetGeneration: 23,
-		},
-	];
-}
-
 function createHarness(): {
 	handler: HostCopilotQueryWorkflowApplicationHandler;
 	copilot: {
 		startCopilotWriteQuery: ReturnType<typeof vi.fn>;
 		cancelCopilotWriteQuery: ReturnType<typeof vi.fn>;
-		prepareOptimizeQuery: ReturnType<typeof vi.fn>;
-		cancelOptimizeQuery: ReturnType<typeof vi.fn>;
-		optimizeQueryWithCopilot: ReturnType<typeof vi.fn>;
 	};
 	broker: {
 		reservePreflight: ReturnType<typeof vi.fn>;
@@ -145,9 +105,6 @@ function createHarness(): {
 	const copilot = {
 		startCopilotWriteQuery: vi.fn(async () => undefined),
 		cancelCopilotWriteQuery: vi.fn(),
-		prepareOptimizeQuery: vi.fn(async () => undefined),
-		cancelOptimizeQuery: vi.fn(),
-		optimizeQueryWithCopilot: vi.fn(async () => undefined),
 	};
 	const preflight = Object.freeze({
 		boxId: 'sql-start-exact',
@@ -427,40 +384,7 @@ describe('HostCopilotQueryWorkflowApplicationHandler', () => {
 		expect(harness.getSqlClient).not.toHaveBeenCalled();
 	});
 
-	it('awaits Optimize prepare and run while invoking exact cancellation synchronously', async () => {
-		const harness = createHarness();
-		const prepareSettlement = deferred<void>();
-		const runSettlement = deferred<void>();
-		harness.copilot.prepareOptimizeQuery.mockReturnValue(prepareSettlement.promise);
-		harness.copilot.optimizeQueryWithCopilot.mockReturnValue(runSettlement.promise);
-		const [prepareMessage, cancelMessage, runMessage] = createOptimizeMessages();
-
-		const prepare = harness.handler.handleMessage(prepareMessage);
-		const run = harness.handler.handleMessage(runMessage);
-		const cancel = harness.handler.handleMessage(cancelMessage);
-
-		expect(harness.copilot.prepareOptimizeQuery).toHaveBeenCalledWith(prepareMessage);
-		expect(harness.copilot.optimizeQueryWithCopilot).toHaveBeenCalledWith(runMessage);
-		expect(harness.copilot.cancelOptimizeQuery).toHaveBeenCalledWith(cancelMessage);
-		await expect(cancel).resolves.toBeUndefined();
-
-		let prepareSettled = false;
-		let runSettled = false;
-		void prepare?.finally(() => { prepareSettled = true; });
-		void run?.finally(() => { runSettled = true; });
-		await Promise.resolve();
-		expect([prepareSettled, runSettled]).toEqual([false, false]);
-
-		prepareSettlement.resolve();
-		await expect(prepare).resolves.toBeUndefined();
-		expect(prepareSettled).toBe(true);
-		expect(runSettled).toBe(false);
-		runSettlement.resolve();
-		await expect(run).resolves.toBeUndefined();
-		expect(runSettled).toBe(true);
-	});
-
-	it('preserves accepted settlement and exact rejection across disposal', async () => {
+	it('preserves accepted settlement across disposal', async () => {
 		const resolveHarness = createHarness();
 		const startSettlement = deferred<void>();
 		resolveHarness.copilot.startCopilotWriteQuery.mockReturnValue(startSettlement.promise);
@@ -468,38 +392,22 @@ describe('HostCopilotQueryWorkflowApplicationHandler', () => {
 		resolveHarness.handler.dispose();
 		startSettlement.resolve();
 		await expect(start).resolves.toBeUndefined();
-
-		const rejectHarness = createHarness();
-		const failure = new Error('accepted Optimize delegation failed exactly');
-		const runSettlement = deferred<void>();
-		rejectHarness.copilot.optimizeQueryWithCopilot.mockReturnValue(runSettlement.promise);
-		const run = rejectHarness.handler.handleMessage(createOptimizeMessages()[2]);
-		rejectHarness.handler.dispose();
-		runSettlement.reject(failure);
-		await expect(run).rejects.toBe(failure);
 	});
 
 	it('idempotently disposes, claims later workflow traffic, and suppresses every effect', async () => {
 		const harness = createHarness();
-		const [prepareMessage, cancelOptimizeMessage, runMessage] = createOptimizeMessages();
 		const messages: IncomingWebviewMessage[] = [
 			createSqlStartMessage(),
 			{ type: 'cancelCopilotWriteQuery', boxId: 'sql-start-exact', flavor: 'sql' },
-			prepareMessage,
-			cancelOptimizeMessage,
-			runMessage,
 		];
 
 		harness.handler.dispose();
 		harness.handler.dispose();
 		await expect(Promise.all(messages.map(message => harness.handler.handleMessage(message))))
-			.resolves.toEqual([undefined, undefined, undefined, undefined, undefined]);
+			.resolves.toEqual([undefined, undefined]);
 
 		expect(harness.copilot.startCopilotWriteQuery).not.toHaveBeenCalled();
 		expect(harness.copilot.cancelCopilotWriteQuery).not.toHaveBeenCalled();
-		expect(harness.copilot.prepareOptimizeQuery).not.toHaveBeenCalled();
-		expect(harness.copilot.cancelOptimizeQuery).not.toHaveBeenCalled();
-		expect(harness.copilot.optimizeQueryWithCopilot).not.toHaveBeenCalled();
 		expect(harness.broker.reservePreflight).not.toHaveBeenCalled();
 		expect(harness.broker.clearPreflight).not.toHaveBeenCalled();
 		expect(harness.broker.cancelExpected).not.toHaveBeenCalled();

@@ -144,6 +144,8 @@ When a query fails, Kusto Workbench surfaces helpful, human-friendly diagnostics
 
 If you have an existing query that you want to improve without changing its behavior and the results it returns, you can use the built-in functionality to compare its performance and to guarantee that the data returned is identical, even if the rows and columns might be out of order.
 
+Click **Optimize** to open the section's embedded Copilot Chat and submit `optimize the performance of this query`. The request remains visible in the conversation, so you can use the same wording yourself. When Copilot proposes and tries an optimized query, the existing A-vs-B comparison experience takes over.
+
 ![Performance optimization of an existing query](media/marketplace/perf-optimization.png)
 
 ### Share to Teams and Azure Data Explorer
@@ -299,13 +301,13 @@ The connection and query are handled by Microsoft's SQL Tools Service. SQL Login
 
 ### What gets sent to GitHub Copilot
 
-When you use **Optimize query performance** or the **integrated Copilot Chat**:
+When you use **Optimize** or the **integrated Copilot Chat**:
 
 * The extension sends the prompt (which includes your **query text** and **database schema**) to GitHub Copilot via VS Code's Language Model API (`vscode.lm`).
 * The extension does **not** send your Kusto credentials to Copilot.
 * Any result comparison happens by running queries against your Kusto cluster (not by executing anything inside Copilot).
 
-Important note: the prompt can be edited in the UI; anything you include there is part of what gets sent to Copilot.
+The Optimize message appears in the embedded chat like a message you sent yourself. Anything you submit in that conversation is part of what gets sent to Copilot.
 
 ### Python sections
 

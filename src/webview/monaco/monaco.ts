@@ -72,7 +72,7 @@ import {
 import { addPageScrollListener, escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../core/utils';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { ensureSchemaForBox } from '../sections/query-connection.controller';
-import { __kustoGetConnectionId, __kustoGetClusterUrl, __kustoGetDatabase, retireKustoOptimizeForQueryEdit } from '../core/query-section-accessors';
+import { __kustoGetConnectionId, __kustoGetClusterUrl, __kustoGetDatabase } from '../core/query-section-accessors';
 import { executeQuery } from '../sections/query-execution.controller';
 import { initToolbarOverflow } from '../sections/kw-query-toolbar';
 import { postMessageToHost } from '../shared/webview-messages';
@@ -7425,7 +7425,6 @@ function initQueryEditor(boxId: any) {
 		editor.onDidChangeModelContent((e: any) => {
 			syncPlaceholder();
 			scheduleDocUpdate();
-			try { retireKustoOptimizeForQueryEdit(boxId); } catch (e) { console.error('[kusto]', e); }
 			try {
 				if (typeof _win.__kustoOnQueryValueChanged === 'function') {
 					_win.__kustoOnQueryValueChanged(boxId, editor.getValue());

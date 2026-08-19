@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { retireKustoOptimizeForQueryEdit, synchronizeKustoSectionTarget } from '../../src/webview/core/query-section-accessors.js';
+import { synchronizeKustoSectionTarget } from '../../src/webview/core/query-section-accessors.js';
+import { beginKustoPreparation, setKustoPreparationIdle } from '../../src/webview/core/state.js';
 
 function section(id: string, connectionId: string, database: string, clusterUrl: string) {
 	const element = document.createElement('kw-query-section') as any;
@@ -46,14 +47,28 @@ describe('synchronizeKustoSectionTarget', () => {
 		expect(target.clearTargetBoundState).not.toHaveBeenCalled();
 	});
 
-	it('retires standalone Optimize when the source query changes', () => {
+	it('advances an already-matching comparison past database preparation', () => {
 		const source = section('query_source', 'connection-a', 'DbA', 'https://cluster-a.kusto.windows.net');
-		source.retireKustoOptimizeRequest = vi.fn();
+		const target = section('query_comparison', 'connection-a', 'DbA', 'https://cluster-a.kusto.windows.net');
+		const transitions: CustomEvent[] = [];
+		target.addEventListener('database-changed', event => transitions.push(event as CustomEvent));
+		beginKustoPreparation(target.id, {
+			stage: 'databases', blockers: ['databases'], target: { connectionId: 'connection-a' },
+		});
 
-		retireKustoOptimizeForQueryEdit(source.id);
-
-		expect(source.retireKustoOptimizeRequest).toHaveBeenCalledOnce();
+		try {
+			expect(synchronizeKustoSectionTarget(source.id, target.id)).toBe(true);
+			expect(target.setDatabase).toHaveBeenCalledWith('DbA');
+			expect(target.clearDesiredDatabase).toHaveBeenCalledOnce();
+			expect(transitions).toHaveLength(1);
+			expect(transitions[0].detail).toEqual({
+				boxId: 'query_comparison', database: 'DbA', source: 'comparison-sync',
+			});
+		} finally {
+			setKustoPreparationIdle(target.id);
+		}
 	});
+
 });
 
 function currentTarget(target: any, connectionId: string, clusterUrl: string): void {

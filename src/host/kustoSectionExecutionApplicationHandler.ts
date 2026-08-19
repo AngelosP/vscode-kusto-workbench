@@ -220,6 +220,10 @@ export class HostKustoSectionExecutionApplicationHandler
 			targetGeneration: owner.targetGeneration,
 			connectionId: owner.connectionId,
 			database: owner.database,
+			...(Number.isSafeInteger(owner.connectionRevision)
+				? { connectionRevision: owner.connectionRevision }
+				: {}),
+			...(owner.connectionIdentityKey ? { connectionIdentityKey: owner.connectionIdentityKey } : {}),
 		});
 	}
 
@@ -251,7 +255,12 @@ export class HostKustoSectionExecutionApplicationHandler
 		const boxId = String(target.boxId || '').trim();
 		const database = String(target.database || '').trim();
 		const request: KustoExecutionRequestIdentity = {
-			...target,
+			engine: 'kusto',
+			boxId,
+			sectionInstanceId: String(target.sectionInstanceId || '').trim(),
+			targetGeneration: Number(target.targetGeneration),
+			connectionId: String(target.connectionId || '').trim(),
+			database,
 			executionId: String(options.executionId || '').trim(),
 			producer: options.producer,
 			query: options.query,

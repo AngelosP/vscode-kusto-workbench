@@ -7,7 +7,7 @@
  */
 import type { KustoSectionExecutionTarget } from '../../shared/kustoExecution.js';
 import type { KustoExecutionRequestIdentity } from '../../shared/kustoExecution.js';
-import type { KustoCopilotRequestIdentity, KustoOptimizeRequestIdentity } from '../../shared/kustoExecution.js';
+import type { KustoCopilotRequestIdentity } from '../../shared/kustoExecution.js';
 import {
 	isDocumentViewWebviewMessageType,
 	stampDocumentViewWebviewMessage,
@@ -158,19 +158,6 @@ type OutgoingStartCopilotWriteQueryMessageBase = {
 export type OutgoingStartCopilotWriteQueryMessage =
 	| (OutgoingStartCopilotWriteQueryMessageBase & KustoCopilotRequestIdentity & { flavor: 'kusto' })
 	| (OutgoingStartCopilotWriteQueryMessageBase & { flavor: 'sql'; sqlOwnerToken?: string });
-
-export type OutgoingOptimizeQueryMessage = KustoOptimizeRequestIdentity & {
-	type: 'optimizeQuery';
-	query: string;
-	connectionId: string;
-	database: string;
-	boxId: string;
-	queryName: string;
-	modelId?: string;
-	thinkingEffort?: 'low' | 'medium' | 'high';
-	contextSize?: number;
-	promptText?: string;
-};
 
 // ── Connections & favorites ────────────────────────────────────────────────
 
@@ -323,11 +310,6 @@ export type OutgoingWebviewMessage =
 	| { type: 'removeFromCopilotHistory'; boxId: string; entryId: string }
 	| CopilotInlineCompletionWebviewMessage
 
-	// Optimize
-	| ({ type: 'prepareOptimizeQuery'; query: string } & KustoOptimizeRequestIdentity)
-	| ({ type: 'cancelOptimizeQuery' } & KustoOptimizeRequestIdentity)
-	| OutgoingOptimizeQueryMessage
-
 	// Python / URL
 	| PythonExecutionWebviewMessage
 	| UrlContentWebviewMessage
@@ -432,9 +414,6 @@ export const runtimeOutgoingWebviewMessageTypes = [
 	'clearCopilotConversation',
 	'removeFromCopilotHistory',
 	'requestCopilotInlineCompletion',
-	'prepareOptimizeQuery',
-	'cancelOptimizeQuery',
-	'optimizeQuery',
 	'executePython',
 	'fetchUrl',
 	'toolResponse',

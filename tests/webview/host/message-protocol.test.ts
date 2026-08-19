@@ -376,7 +376,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kustoConnectionOnboardingApplicationHandler.ts::testConnectionFromWebview::postMessage::189:4',
 	'src/host/kustoConnectionsProjectionApplicationHandler.ts::publishSnapshot::postMessage::122:4',
 	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::453:33',
-	'src/host/kustoSectionExecutionApplicationHandler.ts::claimKustoExecutionInWebview::postMessage::461:27',
+	'src/host/kustoSectionExecutionApplicationHandler.ts::claimKustoExecutionInWebview::postMessage::470:27',
 	'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::193:14',
 	'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::202:16',
 	'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::207:14',
@@ -506,9 +506,6 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'cancelCopilotWriteQuery',
 	'clearCopilotConversation',
 	'removeFromCopilotHistory',
-	'prepareOptimizeQuery',
-	'cancelOptimizeQuery',
-	'optimizeQuery',
 	'executeQuery',
 	'getSqlConnections',
 	'sqlSectionOpen',
@@ -658,11 +655,6 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	'removeFromCopilotHistory',
 	'requestCopilotInlineCompletion',
 
-	// Optimize
-	'prepareOptimizeQuery',
-	'cancelOptimizeQuery',
-	'optimizeQuery',
-
 	// Python / URL
 	'executePython',
 	'fetchUrl',
@@ -789,11 +781,7 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'sqlExecutionOwnerState',
 	'copilotChatFirstTimeResult',
 	'copilotAvailability',
-	'optimizeQueryStatus',
 	'compareQueryPerformanceWithQuery',
-	'optimizeQueryReady',
-	'optimizeQueryOptions',
-	'optimizeQueryError',
 	'copilotWriteQueryOptions',
 	'copilotWriteQueryStatus',
 	'copilotWriteQuerySetQuery',
@@ -898,10 +886,6 @@ const HOST_TO_WEBVIEW_TYPES = [
 	'revealSection',
 	'ensureResultsVisible',
 	'updateDevNotes',
-	'optimizeQueryStatus',
-	'optimizeQueryOptions',
-	'optimizeQueryError',
-	'optimizeQueryReady',
 
 	// Query Editor connection application handlers
 	'favoritesData',
@@ -2413,7 +2397,7 @@ describe('Message Protocol Contract', () => {
 			);
 			expect(extraction.types).toEqual([]);
 			expect(extraction.dynamicSites).toEqual([
-				'src/host/kustoSectionExecutionApplicationHandler.ts::claimKustoExecutionInWebview::postMessage::461:27',
+				'src/host/kustoSectionExecutionApplicationHandler.ts::claimKustoExecutionInWebview::postMessage::470:27',
 				'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::193:14',
 				'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::202:16',
 				'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::207:14',

@@ -36,6 +36,8 @@ describe('icon-registry', () => {
 			['connectionImport', ICONS.connectionImport],
 			['connectionExport', ICONS.connectionExport],
 			['importIcon', ICONS.importIcon],
+			['compare', ICONS.compare],
+			['optimize', ICONS.optimize],
 		];
 
 		for (const [name, icon] of svgIcons) {

@@ -1,44 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildOptimizeQueryPrompt, getCopilotLocalTools } from '../../../src/host/copilotPromptUtils';
-
-// ---------------------------------------------------------------------------
-// buildOptimizeQueryPrompt
-// ---------------------------------------------------------------------------
-
-describe('buildOptimizeQueryPrompt', () => {
-	it('includes the query in a kusto code block', () => {
-		const prompt = buildOptimizeQueryPrompt('T | take 10');
-		expect(prompt).toContain('```kusto\nT | take 10\n```');
-	});
-
-	it('includes the role instruction', () => {
-		const prompt = buildOptimizeQueryPrompt('T');
-		expect(prompt).toContain('senior Kusto Query Language (KQL) performance engineer');
-	});
-
-	it('includes optimization rules', () => {
-		const prompt = buildOptimizeQueryPrompt('T');
-		expect(prompt).toContain('Push the most selective filters');
-		expect(prompt).toContain('Consolidate transformations');
-		expect(prompt).toContain('Project away unused columns');
-	});
-
-	it('includes the output format instruction', () => {
-		const prompt = buildOptimizeQueryPrompt('T');
-		expect(prompt).toContain('Return **ONLY** the optimized query');
-	});
-
-	it('handles multi-line queries', () => {
-		const query = 'T\n| where x > 1\n| take 10';
-		const prompt = buildOptimizeQueryPrompt(query);
-		expect(prompt).toContain(query);
-	});
-
-	it('handles empty query', () => {
-		const prompt = buildOptimizeQueryPrompt('');
-		expect(prompt).toContain('```kusto\n\n```');
-	});
-});
+import { getCopilotLocalTools } from '../../../src/host/copilotPromptUtils';
 
 // ---------------------------------------------------------------------------
 // getCopilotLocalTools

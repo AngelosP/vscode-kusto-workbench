@@ -39,7 +39,7 @@ import type { KustoConnectionFormSubmitDetail } from '../components/kw-kusto-con
 import '../components/kw-kusto-connection-form.js';
 import { __kustoOpenShareModal, getRunModeForPersistence } from './kw-query-toolbar.js';
 import { optimizationMetadataByBoxId, subscribeKustoPreparation, type KustoPreparationState } from '../core/state.js';
-import { optimizeQueryWithCopilot, acceptOptimizations, toggleKustoOptimizeQuery } from './query-execution.controller.js';
+import { optimizeQueryWithCopilot, acceptOptimizations } from './query-execution.controller.js';
 import { QueryConnectionController } from './query-connection.controller.js';
 import { QueryExecutionController } from './query-execution.controller.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
@@ -125,9 +125,6 @@ const shareIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="
 
 
 // ── Light DOM SVG icons (for elements rendered into the host's light DOM) ─────
-
-/** Compare queries icon: "A vs B" label */
-const diffIconLightSvg = html`<span style="font-weight:600;font-size:11px;letter-spacing:0.5px;white-space:nowrap" aria-hidden="true">A vs B</span>`;
 
 /** Down chevron for run-mode split dropdown */
 const downChevronSvg = html`<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>`;
@@ -240,10 +237,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		copilotRequestId?: string,
 		expectedPredecessorExecutionId?: string,
 		comparisonRun?: import('../../shared/kustoExecution.js').KustoComparisonRunIdentity,
-		optimizeOwner?: import('../../shared/kustoExecution.js').KustoOptimizeRequestIdentity,
 	): boolean {
 		return this.executionCtrl.beginQueryExecution(
-			executionId, producer, copilotRequestId, expectedPredecessorExecutionId, comparisonRun, optimizeOwner,
+			executionId, producer, copilotRequestId, expectedPredecessorExecutionId, comparisonRun,
 		);
 	}
 	public getActiveExecutionId(): string { return this.executionCtrl.getActiveExecutionId(); }
@@ -262,24 +258,6 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	public retireActiveQueryExecution(): import('../../shared/kustoExecution.js').KustoExecutionRequestIdentity | undefined {
 		return this.executionCtrl.retireActiveQueryExecution();
 	}
-	public isActiveKustoOptimizeExecution(expected: unknown): boolean {
-		return this.executionCtrl.isActiveKustoOptimizeExecution(expected);
-	}
-	public beginKustoOptimizeRequest(): import('../../shared/kustoExecution.js').KustoOptimizeRequestIdentity | undefined {
-		return this.executionCtrl.beginKustoOptimizeRequest();
-	}
-	public getActiveKustoOptimizeRequest(): import('../../shared/kustoExecution.js').KustoOptimizeRequestIdentity | undefined {
-		return this.executionCtrl.getActiveKustoOptimizeRequest();
-	}
-	public admitKustoOptimizeMessage(identity: unknown): boolean {
-		return this.executionCtrl.admitKustoOptimizeMessage(identity);
-	}
-	public completeKustoOptimizeRequest(identity: unknown): boolean {
-		return this.executionCtrl.completeKustoOptimizeRequest(identity);
-	}
-	public retireKustoOptimizeRequest(): import('../../shared/kustoExecution.js').KustoOptimizeRequestIdentity | undefined {
-		return this.executionCtrl.retireKustoOptimizeRequest();
-	}
 	public setExternalQueryExecuting(executing: boolean, executionId: string): boolean {
 		return this.executionCtrl.setExternalQueryExecuting(executing, executionId);
 	}
@@ -297,6 +275,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		requireToolUse: boolean,
 	): import('../../shared/kustoExecution.js').KustoCopilotRequestIdentity | undefined {
 		return this.copilotChatCtrl.submitCopilotChatRequest(text, requireToolUse);
+	}
+	public optimizeWithCopilotChat(): import('../../shared/kustoExecution.js').KustoCopilotRequestIdentity | undefined {
+		return this.submitCopilotChatRequest('optimize the performance of this query', false);
 	}
 	public admitKustoCopilotConversationOwner(identity: unknown): boolean {
 		return this.copilotChatCtrl.admitKustoCopilotConversationOwner(identity);
@@ -535,20 +516,16 @@ export class KwQuerySection extends LitElement implements SectionElement {
 						<span class="optimize-inline" id="${id}_optimize_inline">
 							<button class="optimize-query-btn" id="${id}_compare_btn"
 								@click=${() => optimizeQueryWithCopilot(id, null, { skipExecute: true })}
-								title="Compare two queries (A vs B) to check if they return the same data and which one is faster to return results" aria-label="Compare two queries (A vs B)">
-								${diffIconLightSvg}
+								title="Compare two queries to check whether they return the same data and which is faster" aria-label="Compare queries">
+								${ICONS.compare}<span class="optimize-query-label" aria-hidden="true">Compare</span>
 							</button>
 							<button class="optimize-query-btn optimize-copilot-btn" id="${id}_optimize_btn"
-								@click=${() => toggleKustoOptimizeQuery(id)} disabled aria-pressed="false"
-								title="Optimize query with GitHub Copilot" aria-label="Optimize query with GitHub Copilot">Optimize</button>
+								@click=${() => this.optimizeWithCopilotChat()} disabled
+								title="Optimize query with GitHub Copilot" aria-label="Optimize query with GitHub Copilot">
+								${ICONS.optimize}<span class="optimize-query-label" aria-hidden="true">Optimize</span>
+							</button>
 						</span>
 					`}
-					<span class="query-exec-status" id="${id}_optimize_status" style="display: none;"></span>
-					<button class="refresh-btn cancel-btn" id="${id}_optimize_cancel"
-						@click=${() => callGlobal('__kustoCancelOptimizeQuery', id)}
-						style="display: none;" title="Cancel query optimization" aria-label="Cancel query optimization">
-						${cancelIconSvg}
-					</button>
 					<span class="query-exec-status" id="${id}_exec_status" style="display: none;">
 						<span class="query-spinner" aria-hidden="true"></span>
 						<span id="${id}_exec_elapsed">0:00</span>
@@ -587,7 +564,6 @@ export class KwQuerySection extends LitElement implements SectionElement {
 					</div>
 				</div>
 			</div>
-			<div class="optimize-config" id="${id}_optimize_config" style="display: none;"></div>
 			<div class="results-wrapper" id="${id}_results_wrapper" style="display: none;" data-kusto-no-editor-focus="true">
 				<div class="results" id="${id}_results"></div>
 			</div>
@@ -1460,6 +1436,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		// .table-container and _results_body which don't exist with <kw-data-table>.
 		dt.addEventListener('visibility-toggle', (e: CustomEvent) => {
 			const visible = e.detail?.visible ?? true;
+			let shouldAutoFit = false;
 			// Update the global map so serialize() picks up the correct value.
 			try {
 				if (!pState.resultsVisibleByBoxId || typeof pState.resultsVisibleByBoxId !== 'object') {
@@ -1485,13 +1462,31 @@ export class KwQuerySection extends LitElement implements SectionElement {
 				} else {
 					// Expand: restore previous height.
 					const prev = resultsWrapper.dataset.kustoPreviousHeight;
-					resultsWrapper.style.height = prev || '300px';
+					if (prev) {
+						resultsWrapper.style.height = prev;
+					} else {
+						resultsWrapper.style.height = '120px';
+						shouldAutoFit = true;
+					}
 					resultsWrapper.style.overflow = '';
 					delete resultsWrapper.dataset.kustoPreviousHeight;
 				}
 			}
 			// Show/hide the resize grip.
 			if (resizer) resizer.style.display = visible ? '' : 'none';
+			if (visible && shouldAutoFit) {
+				const autoFitRevealedResults = () => {
+					if (!this.isConnected || document.getElementById(this.boxId) !== this) return;
+					if (document.getElementById(this.boxId + '_results_wrapper') !== resultsWrapper) return;
+					if (document.getElementById(this.boxId + '_results') !== resultsDiv) return;
+					if (pState.resultsVisibleByBoxId?.[this.boxId] === false) return;
+					if (resultsDiv.querySelector('kw-data-table') !== dt) return;
+					__kustoAutoSizeResults(this.boxId, { markUserResized: false });
+				};
+				autoFitRevealedResults();
+				setTimeout(autoFitRevealedResults, 50);
+				setTimeout(autoFitRevealedResults, 150);
+			}
 			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		});
 
@@ -1776,7 +1771,6 @@ export class KwQuerySection extends LitElement implements SectionElement {
 				});
 			} catch (e) { console.error('[kusto]', e); }
 		}
-		this.executionCtrl.retireKustoOptimizeRequest();
 		clearResultsState(this.boxId);
 		delete pState.queryResultJsonByBoxId[this.boxId];
 		delete pState.resultArtifactByBoxId[this.boxId];

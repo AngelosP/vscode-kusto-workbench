@@ -28,10 +28,7 @@ export interface CopilotQueryWorkflowApplicationHandler {
 export type CopilotQueryWorkflowApplicationHandlerOptions = {
 	copilot: Pick<CopilotService,
 		'startCopilotWriteQuery'
-		| 'cancelCopilotWriteQuery'
-		| 'prepareOptimizeQuery'
-		| 'cancelOptimizeQuery'
-		| 'optimizeQueryWithCopilot'>;
+		| 'cancelCopilotWriteQuery'>;
 	sqlExecutionBroker: Pick<SqlExecutionBroker,
 		'reservePreflight' | 'clearPreflight' | 'cancelExpected'>;
 	sqlLifecycle: Pick<SqlEditorLifecycleCoordinator, 'assertOwnerToken' | 'getOwnerToken'>;
@@ -56,16 +53,6 @@ export class HostCopilotQueryWorkflowApplicationHandler
 				if (this.disposed) return Promise.resolve();
 				this.cancelCopilotWriteQuery(message);
 				return Promise.resolve();
-			case 'prepareOptimizeQuery':
-				if (this.disposed) return Promise.resolve();
-				return this.options.copilot.prepareOptimizeQuery(message);
-			case 'cancelOptimizeQuery':
-				if (this.disposed) return Promise.resolve();
-				this.options.copilot.cancelOptimizeQuery(message);
-				return Promise.resolve();
-			case 'optimizeQuery':
-				if (this.disposed) return Promise.resolve();
-				return this.options.copilot.optimizeQueryWithCopilot(message);
 			default:
 				return undefined;
 		}

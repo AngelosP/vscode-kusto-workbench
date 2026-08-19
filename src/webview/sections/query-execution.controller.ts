@@ -37,7 +37,7 @@ import {
 import { getRunMode, setRunMode, closeRunMenu, functionRunDialogOpenByBoxId } from './kw-query-toolbar';
 import { bindResultArtifactConsumer, clearResultsState, getCurrentResultArtifact, getResultArtifact, getResultArtifactByProducerExecution, retireResultsStateForRerun, unbindResultArtifactConsumer } from '../core/results-state';
 import {
-	optimizationMetadataByBoxId, queryEditors, pendingFavoriteSelectionByBoxId,
+	connections, optimizationMetadataByBoxId, queryEditors, pendingFavoriteSelectionByBoxId,
 	queryExecutionTimers, clearKustoEditorSchema, queryBoxes, favoritesModeByBoxId,
 } from '../core/state';
 import { __kustoParseFunction, __kustoParseParamList } from '../monaco/prettify';
@@ -48,15 +48,15 @@ function canExecuteKustoInCurrentHost(): boolean {
 	return (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode !== true;
 }
 import type { FunctionParam } from '../components/kw-function-params-dialog';
-import { hasKustoOptimizeRequestIdentity, kustoExecutionRequestIdentityEquals, kustoOptimizeRequestIdentityEquals, type KustoComparisonRunIdentity, type KustoExecutionProducer, type KustoExecutionRequestIdentity, type KustoOptimizeRequestIdentity } from '../../shared/kustoExecution.js';
+import { kustoExecutionRequestIdentityEquals, type KustoComparisonRunIdentity, type KustoExecutionProducer, type KustoExecutionRequestIdentity } from '../../shared/kustoExecution.js';
 import { synchronizeKustoSectionTarget } from '../core/query-section-accessors.js';
 import '../components/kw-function-params-dialog';
 
 export const lastRunCacheEnabledByBoxId: Record<string, boolean> = {};
 
 type ComparisonExecutionOptions =
-	| Readonly<{ role: 'source'; comparisonBoxId: string; optimizeOwner?: KustoOptimizeRequestIdentity }>
-	| Readonly<{ role: 'comparison'; comparisonRun: KustoComparisonRunIdentity; optimizeOwner?: KustoOptimizeRequestIdentity }>;
+	| Readonly<{ role: 'source'; comparisonBoxId: string }>
+	| Readonly<{ role: 'comparison'; comparisonRun: KustoComparisonRunIdentity }>;
 
 const _win = window;
 
@@ -72,15 +72,13 @@ export interface ExecutionSectionHost extends ReactiveControllerHost, HTMLElemen
 // ── ReactiveController ────────────────────────────────────────────────────────
 
 /**
- * Manages query execution, results visibility, comparison summary, optimization
- * prompt, and run-mode concerns for a single `<kw-query-section>` element.
+ * Manages query execution, results visibility, comparison summary, and run-mode
+ * concerns for a single `<kw-query-section>` element.
  */
 export class QueryExecutionController implements ReactiveController {
 	host: ExecutionSectionHost;
 	private activeExecution: KustoExecutionRequestIdentity | undefined;
-	private activeOptimizeExecutionOwner: KustoOptimizeRequestIdentity | undefined;
 	private readonly retiredExecutions: KustoExecutionRequestIdentity[] = [];
-	private activeOptimizeRequest: KustoOptimizeRequestIdentity | undefined;
 	private cancelling = false;
 
 	constructor(host: ExecutionSectionHost) {
@@ -95,46 +93,6 @@ export class QueryExecutionController implements ReactiveController {
 	hostDisconnected(): void {
 		// Reorder disconnect/reconnect is not disposal. The exact execution owner
 		// and elapsed timer remain valid until an explicit terminal or removal.
-	}
-
-	beginKustoOptimizeRequest(): KustoOptimizeRequestIdentity | undefined {
-		const lifecycle = this.host.getSchemaLifecycleIdentity();
-		if (!lifecycle) return undefined;
-		this.retireKustoOptimizeRequest();
-		this.activeOptimizeRequest = Object.freeze({
-			boxId: this.host.boxId,
-			...lifecycle,
-			optimizeRequestId: `kusto-optimize-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`,
-		});
-		return this.activeOptimizeRequest;
-	}
-
-	getActiveKustoOptimizeRequest(): KustoOptimizeRequestIdentity | undefined {
-		return this.activeOptimizeRequest;
-	}
-
-	admitKustoOptimizeMessage(identity: unknown): boolean {
-		if (!this.activeOptimizeRequest || !hasKustoOptimizeRequestIdentity(identity)
-			|| !kustoOptimizeRequestIdentityEquals(this.activeOptimizeRequest, identity)) return false;
-		const lifecycle = this.host.getSchemaLifecycleIdentity();
-		return !!lifecycle
-			&& lifecycle.sectionInstanceId === this.activeOptimizeRequest.sectionInstanceId
-			&& lifecycle.targetGeneration === this.activeOptimizeRequest.targetGeneration;
-	}
-
-	completeKustoOptimizeRequest(identity: unknown): boolean {
-		if (!this.admitKustoOptimizeMessage(identity)) return false;
-		this.activeOptimizeRequest = undefined;
-		return true;
-	}
-
-	retireKustoOptimizeRequest(): KustoOptimizeRequestIdentity | undefined {
-		const owner = this.activeOptimizeRequest;
-		if (!owner) return undefined;
-		this.activeOptimizeRequest = undefined;
-		try { postMessageToHost({ type: 'cancelOptimizeQuery', ...owner }); } catch (e) { console.error('[kusto]', e); }
-		try { this.hideOptimizePrompt(); } catch (e) { console.error('[kusto]', e); }
-		return owner;
 	}
 
 	// ── Results visibility ────────────────────────────────────────────────────
@@ -193,11 +151,31 @@ export class QueryExecutionController implements ReactiveController {
 		let hasTable = false;
 		try { hasTable = !!(resultsDiv && resultsDiv.querySelector && (resultsDiv.querySelector('.table-container') || resultsDiv.querySelector('kw-data-table'))); } catch (e) { console.error('[kusto]', e); }
 
-		if (resultsDiv && resultsDiv.querySelector && resultsDiv.querySelector('kw-data-table')) {
-			const dt = resultsDiv.querySelector('kw-data-table') as any;
-			let vis = true;
-			try { vis = !(pState.resultsVisibleByBoxId && pState.resultsVisibleByBoxId[boxId] === false); } catch (e) { console.error('[kusto]', e); }
-			if (dt && typeof dt.setBodyVisible === 'function') dt.setBodyVisible(vis, { emit: false });
+		const dataTable = resultsDiv?.querySelector?.('kw-data-table') as any;
+		if (dataTable) {
+			if (typeof dataTable.setBodyVisible === 'function') dataTable.setBodyVisible(visible, { emit: false });
+			wrapper.style.display = hasContent ? 'flex' : 'none';
+			const resizer = document.getElementById(boxId + '_results_resizer') as any;
+			if (resizer) resizer.style.display = visible ? '' : 'none';
+			if (!visible) {
+				const currentHeight = String(wrapper.style.height || '').trim();
+				if (currentHeight && currentHeight !== 'auto' && currentHeight !== '48px') {
+					wrapper.dataset.kustoPreviousHeight = currentHeight;
+				}
+				wrapper.style.height = '48px';
+				wrapper.style.minHeight = '0';
+				wrapper.style.overflow = 'hidden';
+			} else {
+				const currentHeight = String(wrapper.style.height || '').trim();
+				if (!currentHeight || currentHeight === 'auto' || currentHeight === '48px') {
+					wrapper.style.height = wrapper.dataset.kustoPreviousHeight
+						|| wrapper.dataset.kustoPrevSuccessHeight
+						|| '240px';
+				}
+				wrapper.style.minHeight = '0';
+				wrapper.style.overflow = '';
+				delete wrapper.dataset.kustoPreviousHeight;
+			}
 			return;
 		}
 
@@ -273,7 +251,6 @@ export class QueryExecutionController implements ReactiveController {
 		copilotRequestId?: string,
 		expectedPredecessorExecutionId?: string,
 		comparisonRun?: KustoComparisonRunIdentity,
-		optimizeOwner?: KustoOptimizeRequestIdentity,
 	): boolean {
 		const id = String(executionId || '').trim();
 		const lifecycle = this.host.getSchemaLifecycleIdentity();
@@ -304,14 +281,6 @@ export class QueryExecutionController implements ReactiveController {
 		}
 		if (previousExecution) this.rememberRetired(previousExecution);
 		this.activeExecution = nextExecution;
-		this.activeOptimizeExecutionOwner = hasKustoOptimizeRequestIdentity(optimizeOwner)
-			? Object.freeze({
-				boxId: optimizeOwner.boxId,
-				optimizeRequestId: optimizeOwner.optimizeRequestId,
-				sectionInstanceId: optimizeOwner.sectionInstanceId,
-				targetGeneration: optimizeOwner.targetGeneration,
-			})
-			: undefined;
 		this.cancelling = false;
 		return true;
 	}
@@ -325,7 +294,6 @@ export class QueryExecutionController implements ReactiveController {
 		}
 		if (this.activeExecution?.executionId !== id) return false;
 		this.activeExecution = undefined;
-		this.activeOptimizeExecutionOwner = undefined;
 		this.cancelling = false;
 		this.setQueryExecuting(false);
 		return true;
@@ -354,17 +322,8 @@ export class QueryExecutionController implements ReactiveController {
 	completeQueryExecution(executionId: string): boolean {
 		if (!this.acceptsQueryTerminal(executionId)) return false;
 		this.activeExecution = undefined;
-		this.activeOptimizeExecutionOwner = undefined;
 		this.cancelling = false;
 		return true;
-	}
-
-	isActiveKustoOptimizeExecution(expected: unknown): boolean {
-		return !!this.activeExecution
-			&& !!this.activeOptimizeExecutionOwner
-			&& !this.cancelling
-			&& hasKustoOptimizeRequestIdentity(expected)
-			&& kustoOptimizeRequestIdentityEquals(this.activeOptimizeExecutionOwner, expected);
 	}
 
 	requestCancelActiveQueryExecution(): KustoExecutionRequestIdentity | undefined {
@@ -382,7 +341,6 @@ export class QueryExecutionController implements ReactiveController {
 		if (!active) return undefined;
 		this.rememberRetired(active);
 		this.activeExecution = undefined;
-		this.activeOptimizeExecutionOwner = undefined;
 		this.cancelling = false;
 		this.setQueryExecuting(false);
 		return active;
@@ -408,7 +366,6 @@ export class QueryExecutionController implements ReactiveController {
 		const status = document.getElementById(boxId + '_exec_status') as any;
 		const elapsed = document.getElementById(boxId + '_exec_elapsed') as any;
 		const cancelBtn = document.getElementById(boxId + '_cancel_btn') as any;
-		const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
 
 		if (queryExecutionTimers[boxId]) {
 			clearInterval(queryExecutionTimers[boxId]);
@@ -420,7 +377,7 @@ export class QueryExecutionController implements ReactiveController {
 			if (runToggle) runToggle.disabled = true;
 			if (cancelBtn) {
 				cancelBtn.disabled = false;
-				cancelBtn.style.display = optimizeBtn?.dataset?.kustoOptimizeInProgress === '1' ? 'none' : 'flex';
+				cancelBtn.style.display = 'flex';
 			}
 			closeRunMenu(boxId);
 			if (status) status.style.display = 'inline-flex';
@@ -483,171 +440,6 @@ export class QueryExecutionController implements ReactiveController {
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
-	// ── Optimize prompt ───────────────────────────────────────────────────────
-
-	hideOptimizePrompt(): void {
-		const boxId = this.host.boxId;
-		const host = document.getElementById(boxId + '_optimize_config') as any;
-		if (host) {
-			host.style.display = 'none';
-			host.innerHTML = '';
-		}
-		try {
-			const pending = __kustoEnsureOptimizePrepByBoxId();
-			delete pending[boxId];
-		} catch (e) { console.error('[kusto]', e); }
-		try {
-			const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
-			if (optimizeBtn) {
-				setOptimizeButtonExpanded(boxId, false);
-				if (optimizeBtn.dataset && optimizeBtn.dataset.originalContent) {
-					optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent;
-					delete optimizeBtn.dataset.originalContent;
-				}
-			}
-		} catch (e) { console.error('[kusto]', e); }
-		try { this.setOptimizeInProgress(false, ''); } catch (e) { console.error('[kusto]', e); }
-		try { restoreKustoOptimizeButtonAvailability(boxId); } catch (e) { console.error('[kusto]', e); }
-		try {
-			if (typeof _win.__kustoUpdateRunEnabledForBox === 'function') _win.__kustoUpdateRunEnabledForBox(boxId);
-		} catch (e) { console.error('[kusto]', e); }
-	}
-
-	setOptimizeInProgress(inProgress: any, statusText: any): void {
-		const boxId = this.host.boxId;
-		try {
-			const statusEl = document.getElementById(boxId + '_optimize_status') as any;
-			const cancelBtn = document.getElementById(boxId + '_optimize_cancel') as any;
-			const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
-			const queryCancelBtn = document.getElementById(boxId + '_cancel_btn') as any;
-			if (!statusEl || !cancelBtn) return;
-			const on = !!inProgress;
-			try {
-				if (optimizeBtn && optimizeBtn.dataset) {
-					if (on) {
-						optimizeBtn.dataset.kustoOptimizeInProgress = '1';
-						optimizeBtn.disabled = true;
-					} else {
-						delete optimizeBtn.dataset.kustoOptimizeInProgress;
-					}
-				}
-			} catch (e) { console.error('[kusto]', e); }
-			statusEl.style.display = on ? '' : 'none';
-			cancelBtn.style.display = on ? '' : 'none';
-			if (queryCancelBtn) {
-				queryCancelBtn.style.display = on
-					? 'none'
-					: (this.activeExecution && !this.cancelling ? 'flex' : 'none');
-			}
-			if (on) {
-				statusEl.textContent = String(statusText || 'Optimizing…');
-				cancelBtn.disabled = false;
-				try {
-					const text = String(statusText || '');
-					const shouldStartSpinner = /waiting\s+for\s+copilot\s+response/i.test(text);
-					const spinnerAlreadyOn = !!(optimizeBtn && optimizeBtn.dataset && optimizeBtn.dataset.kustoOptimizeSpinnerActive === '1');
-					if (optimizeBtn && (shouldStartSpinner || spinnerAlreadyOn)) {
-						if (!optimizeBtn.dataset.originalContent) optimizeBtn.dataset.originalContent = optimizeBtn.innerHTML;
-						optimizeBtn.dataset.kustoOptimizeSpinnerActive = '1';
-						optimizeBtn.innerHTML = '<span class="query-spinner" aria-hidden="true"></span>';
-					}
-				} catch (e) { console.error('[kusto]', e); }
-			} else {
-				statusEl.textContent = '';
-				cancelBtn.disabled = false;
-				try {
-					if (optimizeBtn && optimizeBtn.dataset) {
-						delete optimizeBtn.dataset.kustoOptimizeSpinnerActive;
-						if (optimizeBtn.dataset.originalContent) {
-							optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent;
-							delete optimizeBtn.dataset.originalContent;
-						}
-					}
-				} catch (e) { console.error('[kusto]', e); }
-			}
-		} catch (e) { console.error('[kusto]', e); }
-	}
-
-	updateOptimizeStatus(statusText: any): void {
-		const boxId = this.host.boxId;
-		try {
-			const statusEl = document.getElementById(boxId + '_optimize_status') as any;
-			if (!statusEl) return;
-			statusEl.textContent = String(statusText || '');
-		} catch (e) { console.error('[kusto]', e); }
-	}
-
-	applyOptimizeQueryOptions(models: any, selectedModelId: any, promptText: any): void {
-		const boxId = this.host.boxId;
-		const host = document.getElementById(boxId + '_optimize_config') as any;
-		if (!host) return;
-		const safeModels = Array.isArray(models) ? models : [];
-		host.style.display = 'block';
-		host.innerHTML =
-			'<div class="optimize-config-inner">' +
-			'<div class="optimize-config-settings">' +
-			'<div class="optimize-config-row">' +
-			'<label class="optimize-config-label" for="' + boxId + '_optimize_model">Model</label>' +
-			'<select class="optimize-config-select" id="' + boxId + '_optimize_model"></select>' +
-			'</div>' +
-			'<div class="optimize-config-row">' +
-			'<label class="optimize-config-label" for="' + boxId + '_optimize_effort">Thinking effort</label>' +
-			'<select class="optimize-config-select" id="' + boxId + '_optimize_effort">' +
-			'<option value="">Default</option>' +
-			'<option value="low">Low</option>' +
-			'<option value="medium">Medium</option>' +
-			'<option value="high">High</option>' +
-			'</select>' +
-			'</div>' +
-			'<div class="optimize-config-row">' +
-			'<label class="optimize-config-label" for="' + boxId + '_optimize_context">Context size</label>' +
-			'<select class="optimize-config-select" id="' + boxId + '_optimize_context" title="Maximum prompt tokens sent for this optimization"></select>' +
-			'</div>' +
-			'</div>' +
-			'<div class="optimize-config-row">' +
-			'<label class="optimize-config-label" for="' + boxId + '_optimize_prompt">Prompt</label>' +
-			'<textarea class="optimize-config-textarea" id="' + boxId + '_optimize_prompt" spellcheck="false"></textarea>' +
-			'</div>' +
-			'<div class="optimize-config-actions">' +
-			'<button type="button" class="optimize-config-cancel-btn" onclick="__kustoCancelOptimizeQuery(\'' + boxId + '\')">Cancel</button>' +
-			'<button type="button" class="optimize-config-run-btn" onclick="__kustoRunOptimizeQueryWithOverrides(\'' + boxId + '\')">Optimize</button>' +
-			'</div>' +
-			'</div>';
-		setOptimizeButtonExpanded(boxId, true);
-		const selectEl = document.getElementById(boxId + '_optimize_model') as any;
-		if (selectEl) {
-			selectEl.innerHTML = '';
-			for (const m of safeModels) {
-				if (!m || !m.id) continue;
-				const opt = document.createElement('option');
-				opt.value = String(m.id);
-				const label = String(m.label || m.id);
-				const id = String(m.id);
-				opt.textContent = (label && label !== id) ? label + ' (' + id + ')' : id;
-				opt.setAttribute('data-short-label', label);
-				selectEl.appendChild(opt);
-			}
-			const preferredModelId = __kustoGetLastOptimizeModelId();
-			let preferredExists = false;
-			if (preferredModelId) {
-				for (let i = 0; i < selectEl.options.length; i++) {
-					if (selectEl.options[i].value === preferredModelId) { preferredExists = true; break; }
-				}
-			}
-			if (preferredExists) selectEl.value = preferredModelId;
-			else if (selectedModelId) selectEl.value = String(selectedModelId);
-			if (!selectEl.value && selectEl.options && selectEl.options.length > 0) selectEl.selectedIndex = 0;
-			const updateContextOptions = () => {
-				const model = safeModels.find(candidate => String(candidate?.id || '') === String(selectEl.value || ''));
-				populateOptimizeContextOptions(boxId, Number(model?.maxInputTokens));
-			};
-			selectEl.addEventListener('change', updateContextOptions);
-			updateContextOptions();
-		}
-		const promptEl = document.getElementById(boxId + '_optimize_prompt') as any;
-		if (promptEl) promptEl.value = String(promptText || '');
-	}
-
 	// ── Run readiness ─────────────────────────────────────────────────────────
 
 	isRunSelectionReady(): boolean {
@@ -693,61 +485,7 @@ export class QueryExecutionController implements ReactiveController {
 	}
 }
 
-export function restoreKustoOptimizeButtonAvailability(boxIdValue: unknown): void {
-	const boxId = String(boxIdValue || '').trim();
-	const button = document.getElementById(boxId + '_optimize_btn') as HTMLButtonElement | null;
-	if (!button || button.dataset.kustoOptimizeInProgress === '1') return;
-	button.disabled = button.dataset.kustoCopilotAvailable !== '1';
-	button.setAttribute('aria-disabled', String(button.disabled));
-}
-
 // ── Module-level helpers ──────────────────────────────────────────────────────
-
-function __kustoEnsureOptimizePrepByBoxId() {
-	try {
-		if (!_win.__kustoOptimizePrepByBoxId || typeof _win.__kustoOptimizePrepByBoxId !== 'object') {
-			_win.__kustoOptimizePrepByBoxId = {};
-		}
-		return _win.__kustoOptimizePrepByBoxId;
-	} catch { return {}; }
-}
-
-function setOptimizeButtonExpanded(boxId: string, expanded: boolean): void {
-	const button = document.getElementById(boxId + '_optimize_btn') as HTMLButtonElement | null;
-	if (!button) return;
-	button.classList.toggle('is-active', expanded);
-	button.setAttribute('aria-pressed', String(expanded));
-}
-
-function formatOptimizeTokenCount(value: number): string {
-	if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(1))}M`;
-	if (value >= 1_000) return `${Number((value / 1_000).toFixed(1))}K`;
-	return String(value);
-}
-
-function populateOptimizeContextOptions(boxId: string, rawMaxInputTokens: number): void {
-	const select = document.getElementById(boxId + '_optimize_context') as HTMLSelectElement | null;
-	if (!select) return;
-	const maxInputTokens = Number.isSafeInteger(rawMaxInputTokens) && rawMaxInputTokens > 0
-		? rawMaxInputTokens
-		: 0;
-	select.innerHTML = '';
-	const defaultOption = document.createElement('option');
-	defaultOption.value = maxInputTokens > 0 ? String(maxInputTokens) : '';
-	defaultOption.textContent = maxInputTokens > 0
-		? `Model maximum (${formatOptimizeTokenCount(maxInputTokens)})`
-		: 'Model default';
-	select.appendChild(defaultOption);
-	if (maxInputTokens === 0) return;
-	const sizes = [16_000, 32_000, 64_000, 128_000, 256_000, 512_000, 1_000_000]
-		.filter(size => size < maxInputTokens);
-	for (const size of sizes.sort((left, right) => left - right)) {
-		const option = document.createElement('option');
-		option.value = String(size);
-		option.textContent = formatOptimizeTokenCount(size);
-		select.appendChild(option);
-	}
-}
 
 function __kustoEnsureCacheBackupMap() {
 	if (!_win.__kustoCacheBackupByBoxId || typeof _win.__kustoCacheBackupByBoxId !== 'object') {
@@ -972,26 +710,6 @@ export function __kustoIsRunSelectionReady(boxId: any) {
 	const el = __kustoGetQuerySectionElement(boxId);
 	if (el?.executionCtrl) return el.executionCtrl.isRunSelectionReady();
 	return false;
-}
-
-export function __kustoHideOptimizePromptForBox(boxId: any) {
-	const el = __kustoGetQuerySectionElement(boxId);
-	if (el?.executionCtrl) { el.executionCtrl.hideOptimizePrompt(); return; }
-}
-
-export function __kustoSetOptimizeInProgress(boxId: any, inProgress: any, statusText: any) {
-	const el = __kustoGetQuerySectionElement(boxId);
-	if (el?.executionCtrl) { el.executionCtrl.setOptimizeInProgress(inProgress, statusText); return; }
-}
-
-export function __kustoUpdateOptimizeStatus(boxId: any, statusText: any) {
-	const el = __kustoGetQuerySectionElement(boxId);
-	if (el?.executionCtrl) { el.executionCtrl.updateOptimizeStatus(statusText); return; }
-}
-
-export function __kustoApplyOptimizeQueryOptions(boxId: any, models: any, selectedModelId: any, promptText: any) {
-	const el = __kustoGetQuerySectionElement(boxId);
-	if (el?.executionCtrl) { el.executionCtrl.applyOptimizeQueryOptions(models, selectedModelId, promptText); return; }
 }
 
 // ── Toggle functions ──────────────────────────────────────────────────────────
@@ -1268,145 +986,6 @@ export function displayComparisonSummary(sourceBoxId: any, comparisonBoxId: any)
 	try { __kustoApplyComparisonSummaryVisibility(comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
 }
 
-// ── Optimize prompt flow ──────────────────────────────────────────────────────
-
-function __kustoShowOptimizePromptLoading(boxId: any) {
-	const host = document.getElementById(boxId + '_optimize_config') as any;
-	if (!host) return;
-	host.style.display = 'block';
-	setOptimizeButtonExpanded(String(boxId || ''), true);
-	host.innerHTML =
-		'<div class="optimize-config-inner">' +
-		'<div class="optimize-config-loading">Loading optimization options…</div>' +
-		'<div class="optimize-config-actions">' +
-		'<button type="button" class="optimize-config-cancel-btn" onclick="__kustoCancelOptimizeQuery(\'' + boxId + '\')">Cancel</button>' +
-		'</div>' +
-		'</div>';
-}
-
-export function toggleKustoOptimizeQuery(boxIdValue: unknown): boolean {
-	const boxId = String(boxIdValue || '').trim();
-	const host = document.getElementById(boxId + '_optimize_config') as HTMLElement | null;
-	const section = __kustoGetQuerySectionElement(boxId);
-	if ((host && host.style.display !== 'none') || section?.getActiveKustoOptimizeRequest?.()) {
-		__kustoCancelOptimizeQuery(boxId);
-		return false;
-	}
-	return prepareKustoOptimizeQuery(boxId);
-}
-
-export function prepareKustoOptimizeQuery(boxIdValue: unknown): boolean {
-	const boxId = String(boxIdValue || '').trim();
-	const editor = queryEditors[boxId];
-	const query = String(editor?.getValue?.() || '').trim();
-	const connectionId = String(__kustoGetConnectionId(boxId) || '').trim();
-	const database = String(__kustoGetDatabase(boxId) || '').trim();
-	const section = __kustoGetQuerySectionElement(boxId);
-	if (!boxId || !query || !connectionId || !database || !section) {
-		try { postMessageToHost({ type: 'showInfo', message: !query ? 'No query to optimize' : 'Select a cluster and database before optimizing.' }); } catch (e) { console.error('[kusto]', e); }
-		return false;
-	}
-	const owner = section.beginKustoOptimizeRequest?.();
-	if (!owner) return false;
-	const pending = __kustoEnsureOptimizePrepByBoxId();
-	pending[boxId] = {
-		query,
-		connectionId,
-		database,
-		queryName: __kustoGetSectionName(boxId),
-		owner,
-	};
-	__kustoShowOptimizePromptLoading(boxId);
-	postMessageToHost({ type: 'prepareOptimizeQuery', query, ...owner });
-	return true;
-}
-
-function __kustoRunOptimizeQueryWithOverrides(boxId: any) {
-	const pending = __kustoEnsureOptimizePrepByBoxId();
-	const req = pending[boxId];
-	if (!req) {
-		try { postMessageToHost({ type: 'showInfo', message: 'Optimization request is no longer available. Please try again.' }); } catch (e) { console.error('[kusto]', e); }
-		__kustoHideOptimizePromptForBox(boxId);
-		return;
-	}
-	try {
-		let sourceName = __kustoGetSectionName(boxId);
-		if (!sourceName) {
-			sourceName = __kustoPickNextAvailableSectionLetterName(boxId);
-			__kustoSetSectionName(boxId, sourceName);
-			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
-		}
-		if (sourceName) req.queryName = sourceName;
-	} catch (e) { console.error('[kusto]', e); }
-	const modelId = (document.getElementById(boxId + '_optimize_model') as any || {}).value || '';
-	const thinkingEffort = String((document.getElementById(boxId + '_optimize_effort') as any || {}).value || '');
-	const contextSize = Number((document.getElementById(boxId + '_optimize_context') as any || {}).value || 0);
-	const promptText = (document.getElementById(boxId + '_optimize_prompt') as any || {}).value || '';
-	const section = __kustoGetQuerySectionElement(boxId);
-	const owner = req.owner;
-	if (!owner || section?.admitKustoOptimizeMessage?.(owner) !== true) {
-		try { postMessageToHost({ type: 'showInfo', message: 'The query target changed. Try optimization again.' }); } catch (e) { console.error('[kusto]', e); }
-		__kustoHideOptimizePromptForBox(boxId);
-		return;
-	}
-	try { __kustoSetLastOptimizeModelId(modelId); } catch (e) { console.error('[kusto]', e); }
-	try {
-		const host = document.getElementById(boxId + '_optimize_config') as any;
-		if (host) { host.style.display = 'none'; host.innerHTML = ''; }
-		setOptimizeButtonExpanded(String(boxId || ''), false);
-	} catch (e) { console.error('[kusto]', e); }
-	const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
-	if (optimizeBtn) {
-		optimizeBtn.disabled = true;
-		const originalContent = optimizeBtn.innerHTML;
-		optimizeBtn.dataset.originalContent = originalContent;
-	}
-	try { __kustoSetOptimizeInProgress(boxId, true, 'Starting optimization…'); } catch (e) { console.error('[kusto]', e); }
-	try {
-		postMessageToHost({
-			type: 'optimizeQuery',
-			query: String(req.query || ''),
-			connectionId: String(req.connectionId || ''),
-			database: String(req.database || ''),
-			boxId,
-			queryName: String(req.queryName || ''),
-			modelId: String(modelId || ''),
-			...(thinkingEffort === 'low' || thinkingEffort === 'medium' || thinkingEffort === 'high'
-				? { thinkingEffort }
-				: {}),
-			...(Number.isSafeInteger(contextSize) && contextSize > 0 ? { contextSize } : {}),
-			promptText: String(promptText || ''),
-			...owner,
-		});
-		delete pending[boxId];
-	} catch (err: any) {
-		console.error('Error sending optimization request:', err);
-		try { postMessageToHost({ type: 'showInfo', message: 'Failed to start query optimization' }); } catch (e) { console.error('[kusto]', e); }
-		if (optimizeBtn) {
-			if (optimizeBtn.dataset.originalContent) { optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent; delete optimizeBtn.dataset.originalContent; }
-		}
-		__kustoHideOptimizePromptForBox(boxId);
-	}
-}
-
-function __kustoCancelOptimizeQuery(boxId: any) {
-	try {
-		__kustoUpdateOptimizeStatus(boxId, 'Canceling…');
-		const cancelBtn = document.getElementById(boxId + '_optimize_cancel') as any;
-		if (cancelBtn) cancelBtn.disabled = true;
-	} catch (e) { console.error('[kusto]', e); }
-	try {
-		const optimizeOwner = __kustoGetQuerySectionElement(boxId)?.getActiveKustoOptimizeRequest?.();
-		const comparisonBoxId = String(optimizationMetadataByBoxId?.[boxId]?.comparisonBoxId || '').trim();
-		for (const activeBoxId of [String(boxId || '').trim(), comparisonBoxId].filter(Boolean)) {
-			const activeSection = __kustoGetQuerySectionElement(activeBoxId);
-			if (activeSection?.isActiveKustoOptimizeExecution?.(optimizeOwner) === true
-				&& typeof _win.cancelQuery === 'function') _win.cancelQuery(activeBoxId);
-		}
-	} catch (e) { console.error('[kusto]', e); }
-	try { __kustoGetQuerySectionElement(boxId)?.retireKustoOptimizeRequest?.(); } catch (e) { console.error('[kusto]', e); }
-}
-
 // ── optimizeQueryWithCopilot — cross-box, creates/reuses comparison sections ──
 
 export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverride: any, options?: any) {
@@ -1418,10 +997,6 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 	const shouldMarkAgentTouched = !!(options && options.agentTouched === true);
 	const sourceBeforeSignature = shouldMarkAgentTouched ? _win.__kustoGetSectionSerializedSignature?.(boxId) : undefined;
 	const isManualCompareOnly = !shouldExecute;
-	if (isManualCompareOnly) {
-		try { __kustoHideOptimizePromptForBox(boxId); } catch (e) { console.error('[kusto]', e); }
-		try { __kustoSetOptimizeInProgress(boxId, false, ''); } catch (e) { console.error('[kusto]', e); }
-	}
 	try { __kustoSetResultsVisible(boxId, false); } catch (e) { console.error('[kusto]', e); }
 	const query = model.getValue() || '';
 	if (!query.trim()) {
@@ -1440,18 +1015,33 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 	const isOptimizeScenario = ((comparisonQueryOverride != null) && !!overrideText.trim()) || isCompareButtonScenario;
 	let sourceNameForOptimize = '';
 	let desiredOptimizedName = '';
+	let sourceNeedsDefaultName = false;
 	if (isOptimizeScenario) {
 		try {
 			sourceNameForOptimize = __kustoGetSectionName(boxId);
 			const hadExistingName = !!sourceNameForOptimize;
 			if (!sourceNameForOptimize) {
-				sourceNameForOptimize = __kustoPickNextAvailableSectionLetterName(boxId);
-				__kustoSetSectionName(boxId, sourceNameForOptimize);
-				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+				sourceNameForOptimize = 'Original';
+				desiredOptimizedName = 'Optimized';
+				sourceNeedsDefaultName = true;
 			}
-			if (hadExistingName && sourceNameForOptimize) desiredOptimizedName = sourceNameForOptimize + ' (optimized)';
+			if (hadExistingName && sourceNameForOptimize) {
+				desiredOptimizedName = sourceNameForOptimize.trim().toUpperCase() === 'ORIGINAL'
+					? 'Optimized'
+					: sourceNameForOptimize + ' (optimized)';
+			}
 		} catch (e) { console.error('[kusto]', e); }
 	}
+	const assignSourceDefaultName = () => {
+		if (!sourceNeedsDefaultName) return;
+		sourceNeedsDefaultName = false;
+		try {
+			if (!__kustoGetSectionName(boxId)) {
+				__kustoSetSectionName(boxId, 'Original');
+				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	};
 	const connectionId = __kustoGetConnectionId(boxId);
 	const database = __kustoGetDatabase(boxId);
 	if (!connectionId) {
@@ -1476,6 +1066,7 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 					try { postMessageToHost({ type: 'showInfo', message: 'Comparison target is still updating. Try again in a moment.' }); } catch (e) { console.error('[kusto]', e); }
 					return '';
 				}
+				assignSourceDefaultName();
 				const beforeSignature = _win.__kustoGetSectionSerializedSignature?.(existingComparisonBoxId);
 				let nextComparisonQuery = overrideText.trim() ? overrideText : query;
 				try { if (typeof _win.__kustoPrettifyKustoText === 'function') nextComparisonQuery = _win.__kustoPrettifyKustoText(nextComparisonQuery); } catch (e) { console.error('[kusto]', e); }
@@ -1500,8 +1091,16 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 				try { if (typeof __kustoSetLinkedOptimizationMode === 'function') __kustoSetLinkedOptimizationMode(boxId, existingComparisonBoxId, true); } catch (e) { console.error('[kusto]', e); }
 				try {
 					if (desiredOptimizedName) {
-						__kustoSetSectionName(existingComparisonBoxId, desiredOptimizedName);
-						try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+						const currentName = String(__kustoGetSectionName(existingComparisonBoxId) || '').trim();
+						const currentUpper = currentName.toUpperCase();
+						const replaceable = !currentName
+							|| currentUpper === 'OPTIMIZED'
+							|| currentUpper.endsWith(' (COMPARISON)')
+							|| currentUpper.endsWith(' (OPTIMIZED)');
+						if (replaceable && currentName !== desiredOptimizedName) {
+							__kustoSetSectionName(existingComparisonBoxId, desiredOptimizedName);
+							try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+						}
 					} else {
 						const currentName = __kustoGetSectionName(existingComparisonBoxId);
 						let shouldReplace = !currentName;
@@ -1544,12 +1143,26 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 	try { if (typeof _win.__kustoPrettifyKustoText === 'function') comparisonQuery = _win.__kustoPrettifyKustoText(comparisonQuery); } catch (e) { console.error('[kusto]', e); }
 	let comparisonBoxId = '';
 	try {
+		const sourceConnection = connections.find(connection => String(connection?.id || '') === String(connectionId || ''));
+		const sourceIsKusto = !!__kustoGetQuerySectionElement(boxId);
+		if (sourceIsKusto && !sourceConnection) {
+			try { postMessageToHost({ type: 'showInfo', message: 'The source connection is no longer available. Select a connection and try again.' }); } catch (e) { console.error('[kusto]', e); }
+			return '';
+		}
+		const sourceClusterUrl = String(sourceConnection?.clusterUrl || __kustoGetCurrentClusterUrlForBox(boxId) || '').trim();
 		const creation = createSectionWithCapabilities('query', {
 			id: 'query_cmp_' + Date.now(), initialQuery: comparisonQuery, isComparison: true,
-			comparisonSourceBoxId: boxId, defaultResultsVisible: false,
+			comparisonSourceBoxId: boxId, defaultResultsVisible: false, afterBoxId: boxId,
+			...(sourceClusterUrl ? { clusterUrl: sourceClusterUrl } : {}),
+			...(String(sourceConnection?.authorityId || '').trim()
+				? { authorityId: String(sourceConnection?.authorityId || '').trim() }
+				: {}),
+			connectionIdHint: String(connectionId || ''),
+			database: String(database || ''),
 		});
 		if (!creation.ok) throw new Error(creation.error);
 		comparisonBoxId = creation.sectionId;
+		assignSourceDefaultName();
 	} catch (err: any) {
 		console.error('Error creating comparison box:', err);
 		try { postMessageToHost({ type: 'showInfo', message: 'Failed to create comparison section' }); } catch (e) { console.error('[kusto]', e); }
@@ -1571,11 +1184,9 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 	try {
 		const compKwEl = __kustoGetQuerySectionElement(comparisonBoxId);
 		if (compKwEl) {
-			if (typeof compKwEl.setConnectionId === 'function') compKwEl.setConnectionId(connectionId);
-			if (typeof compKwEl.setDesiredDatabase === 'function') compKwEl.setDesiredDatabase(database);
-			compKwEl.dispatchEvent(new CustomEvent('connection-changed', { detail: { boxId: comparisonBoxId, connectionId }, bubbles: true, composed: true }));
-			if (typeof compKwEl.setDatabase === 'function') compKwEl.setDatabase(database);
-			if (typeof compKwEl.setSchemaLifecycleTarget === 'function') compKwEl.setSchemaLifecycleTarget(connectionId, database);
+			if (!synchronizeKustoSectionTarget(boxId, comparisonBoxId)) {
+				throw new Error('Comparison target was not ready after creation.');
+			}
 			// Carry over favorites mode from source section.
 			const srcKwEl = __kustoGetQuerySectionElement(boxId);
 			if (srcKwEl && typeof srcKwEl.isFavoritesMode === 'function' && srcKwEl.isFavoritesMode()) {
@@ -1614,7 +1225,6 @@ const ADMITTED_KUSTO_TERMINAL_EVENT = 'kusto-workbench-query-terminal';
 export async function executeKustoComparisonPair(
 	sourceBoxId: string,
 	comparisonBoxId: string,
-	optimizeOwner?: KustoOptimizeRequestIdentity,
 ): Promise<boolean> {
 	let sourceExecutionId = '';
 	const sourceSucceeded = new Promise<boolean>(resolve => {
@@ -1626,7 +1236,7 @@ export async function executeKustoComparisonPair(
 		};
 		window.addEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener);
 		sourceExecutionId = executeQuery(sourceBoxId, undefined, 'comparison', {
-			role: 'source', comparisonBoxId, optimizeOwner,
+			role: 'source', comparisonBoxId,
 		}) || '';
 		if (!sourceExecutionId) {
 			window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener);
@@ -1634,14 +1244,9 @@ export async function executeKustoComparisonPair(
 		}
 	});
 	if (!await sourceSucceeded) return false;
-	if (optimizeOwner) {
-		const sourceSection = __kustoGetQuerySectionElement(sourceBoxId);
-		if (sourceSection?.admitKustoOptimizeMessage?.(optimizeOwner) !== true) return false;
-	}
 	const comparisonExecutionId = executeQuery(comparisonBoxId, undefined, 'comparison', {
 		role: 'comparison',
 		comparisonRun: { sourceBoxId, sourceExecutionId, comparisonBoxId },
-		optimizeOwner,
 	});
 	if (!comparisonExecutionId) {
 		unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId(comparisonBoxId));
@@ -1748,17 +1353,19 @@ export function executeQuery(
 				isComparisonBox = true;
 				sourceBoxIdForComparison = String(sourceBoxId || '');
 				isKustoComparisonBox = !__kustoGetSqlSectionElement(sourceBoxIdForComparison);
-				if (!synchronizeKustoSectionTarget(sourceBoxId, boxId)) {
-					try { postMessageToHost({ type: 'showInfo', message: 'Comparison target is still updating. Try again in a moment.' }); } catch (e) { console.error('[kusto]', e); }
-					return undefined;
-				}
-				connectionId = __kustoGetConnectionId(boxId);
-				database = __kustoGetDatabase(boxId);
-				const srcConnId = __kustoGetConnectionId(sourceBoxId);
-				const srcDb = __kustoGetDatabase(sourceBoxId);
-				if (connectionId !== srcConnId || database.toLowerCase() !== srcDb.toLowerCase()) {
-					try { postMessageToHost({ type: 'showInfo', message: 'Comparison target is still updating. Try again in a moment.' }); } catch (e) { console.error('[kusto]', e); }
-					return undefined;
+				if (isKustoComparisonBox) {
+					if (!synchronizeKustoSectionTarget(sourceBoxId, boxId)) {
+						try { postMessageToHost({ type: 'showInfo', message: 'Comparison target is still updating. Try again in a moment.' }); } catch (e) { console.error('[kusto]', e); }
+						return undefined;
+					}
+					connectionId = __kustoGetConnectionId(boxId);
+					database = __kustoGetDatabase(boxId);
+					const srcConnId = __kustoGetConnectionId(sourceBoxId);
+					const srcDb = __kustoGetDatabase(sourceBoxId);
+					if (connectionId !== srcConnId || database.toLowerCase() !== srcDb.toLowerCase()) {
+						try { postMessageToHost({ type: 'showInfo', message: 'Comparison target is still updating. Try again in a moment.' }); } catch (e) { console.error('[kusto]', e); }
+						return undefined;
+					}
 				}
 			}
 			const hasLinkedOptimization = !!(meta && meta.isComparison) || !!(optimizationMetadataByBoxId[boxId] && optimizationMetadataByBoxId[boxId].comparisonBoxId);
@@ -1838,9 +1445,7 @@ export function executeQuery(
 		return undefined;
 	}
 	if (typeof section?.beginQueryExecution !== 'function'
-		|| section.beginQueryExecution(
-			executionId, effectiveProducer, undefined, undefined, comparisonRun, comparisonOptions?.optimizeOwner,
-		) !== true) {
+		|| section.beginQueryExecution(executionId, effectiveProducer, undefined, undefined, comparisonRun) !== true) {
 		if (comparisonConsumerId) unbindResultArtifactConsumer(comparisonConsumerId);
 		return undefined;
 	}
@@ -2059,8 +1664,5 @@ _win.__kustoUpdateRunEnabledForAllBoxes = function () {
 	} catch (e) { console.error('[kusto]', e); }
 };
 
-_win.__kustoHideOptimizePromptForBox = __kustoHideOptimizePromptForBox;
-_win.__kustoRunOptimizeQueryWithOverrides = __kustoRunOptimizeQueryWithOverrides;
-_win.__kustoCancelOptimizeQuery = __kustoCancelOptimizeQuery;
 _win.toggleQueryResultsVisibility = toggleQueryResultsVisibility;
 _win.toggleComparisonSummaryVisibility = toggleComparisonSummaryVisibility;

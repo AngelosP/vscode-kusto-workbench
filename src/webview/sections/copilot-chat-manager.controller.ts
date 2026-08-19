@@ -606,8 +606,9 @@ export class CopilotChatManagerController implements ReactiveController {
 		text: string,
 		requireToolUse: boolean,
 	): KustoCopilotRequestIdentity | undefined {
-		if (this.flavor.id !== 'kusto' || this.isCopilotChatRunning()) return undefined;
-		this.setCopilotChatVisible(true, false);
+		if (this.flavor.id !== 'kusto') return undefined;
+		if (!this._copilotChatVisible) this.setCopilotChatVisible(true, false);
+		if (this.isCopilotChatRunning()) return undefined;
 		const chatEl = this.getCopilotChatEl();
 		if (!chatEl || this.activeKustoRequest || chatEl.isRunning()) return undefined;
 		if (!chatEl.submitProgrammaticRequest(text, requireToolUse)) return undefined;

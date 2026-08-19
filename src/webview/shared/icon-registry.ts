@@ -59,6 +59,8 @@ export const ICONS = {
 	connectionExport: svg(html`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path fill="none" d="M3 10.5v2h10v-2"/><path fill="none" d="M8 10V3"/><path fill="none" d="M5.25 5.75L8 3l2.75 2.75"/></svg>`),
 	importIcon: svg(html`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path fill="none" d="M3 10.5v2h10v-2"/><path fill="none" d="M8 2.5v7"/><path fill="none" d="M5.25 7.25L8 10l2.75-2.75"/></svg>`),
 	save: codicon('save'),
+	compare: svg(html`<svg class="compare-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><rect x="1.5" y="2.5" width="4.5" height="11" rx="0.8"/><rect x="10" y="2.5" width="4.5" height="11" rx="0.8"/><path d="M6.8 6h2.4M8.2 5l1 1-1 1"/><path d="M9.2 10H6.8M7.8 9l-1 1 1 1"/></svg>`),
+	optimize: svg(html`<svg class="optimize-timer-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M6 1.5h4M8 1.5v2"/><circle cx="8" cy="9" r="5"/><path d="M8 9V5.8M8 9l2.5-1.6"/><path d="M11.8 4.2l1-1"/></svg>`),
 
 	// ── Toolbar icons (from toolbar-icons.ts) ─────────────────────────────────
 

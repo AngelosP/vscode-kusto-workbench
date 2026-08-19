@@ -9,6 +9,7 @@ const testState = vi.hoisted(() => ({
 	claimedExecutions: [] as Array<Record<string, unknown>>,
 	getSchemaLifecycleIdentity: vi.fn(() => ({ sectionInstanceId: 'instance-query_1', targetGeneration: 7 })),
 	beginQueryExecution: vi.fn(),
+	synchronizeKustoSectionTarget: vi.fn(() => true),
 	getQuerySectionElement: vi.fn(),
 	getSqlSectionElement: vi.fn(),
 	getResultsState: vi.fn(() => null),
@@ -79,7 +80,7 @@ vi.mock('../../src/webview/core/utils.js', () => ({
 }));
 
 vi.mock('../../src/webview/core/query-section-accessors.js', () => ({
-	synchronizeKustoSectionTarget: vi.fn(() => true),
+	synchronizeKustoSectionTarget: testState.synchronizeKustoSectionTarget,
 }));
 
 vi.mock('../../src/webview/core/state.js', () => ({
@@ -246,6 +247,8 @@ describe('executeRunFunction', () => {
 		testState.getDatabase.mockReturnValue('Samples');
 		testState.getSqlSectionElement.mockReset();
 		testState.getSqlSectionElement.mockReturnValue(null);
+		testState.synchronizeKustoSectionTarget.mockReset();
+		testState.synchronizeKustoSectionTarget.mockReturnValue(true);
 		testState.getRunMode.mockReturnValue('runFunction');
 		testState.getResultsState.mockReset();
 		testState.getResultsState.mockReturnValue(null);
@@ -365,6 +368,46 @@ describe('executeRunFunction', () => {
 		expect(controller.admitQueryTerminal(controller.getActiveExecution()!)).toBe('active');
 	});
 
+	it('collapses a fixed-height results wrapper when data-table results are hidden', () => {
+		const wrapper = document.createElement('div');
+		wrapper.id = 'query_1_results_wrapper';
+		wrapper.style.display = 'flex';
+		wrapper.style.height = '480px';
+		wrapper.style.minHeight = '120px';
+		const results = document.createElement('div');
+		results.id = 'query_1_results';
+		const dataTable = document.createElement('kw-data-table') as any;
+		dataTable.setBodyVisible = vi.fn();
+		results.appendChild(dataTable);
+		wrapper.appendChild(results);
+		document.body.appendChild(wrapper);
+		const resizer = document.createElement('div');
+		resizer.id = 'query_1_results_resizer';
+		document.body.appendChild(resizer);
+		const controller = new QueryExecutionController({
+			boxId: 'query_1', addController: vi.fn(), requestUpdate: vi.fn(),
+		} as any);
+
+		controller.setResultsVisible(false);
+
+		expect(dataTable.setBodyVisible).toHaveBeenCalledWith(false, { emit: false });
+		expect(wrapper.dataset.kustoPreviousHeight).toBe('480px');
+		expect(wrapper.style.height).toBe('48px');
+		expect(wrapper.style.minHeight).toBe('0');
+		expect(wrapper.style.overflow).toBe('hidden');
+		expect(resizer.style.display).toBe('none');
+
+		controller.setResultsVisible(false);
+		controller.setResultsVisible(true);
+
+		expect(wrapper.dataset.kustoPreviousHeight).toBeUndefined();
+		expect(dataTable.setBodyVisible).toHaveBeenLastCalledWith(true, { emit: false });
+		expect(wrapper.style.height).toBe('480px');
+		expect(wrapper.style.minHeight).toBe('0');
+		expect(wrapper.style.overflow).toBe('');
+		expect(resizer.style.display).toBe('');
+	});
+
 	it('does not install or retire an execution owner when UI activation throws', () => {
 		const host = {
 			boxId: 'query_cmp_1', addController: vi.fn(), requestUpdate: vi.fn(),
@@ -404,6 +447,7 @@ describe('executeRunFunction', () => {
 		appendExecutionControls('query_cmp_1');
 		testState.optimizationMetadataByBoxId.query_cmp_1 = { sourceBoxId: 'sql_source', isComparison: true };
 		testState.getSqlSectionElement.mockImplementation((boxId: string) => boxId === 'sql_source' ? {} : null);
+		testState.synchronizeKustoSectionTarget.mockReturnValue(false);
 		testState.getQuerySectionElement.mockImplementation((boxId: string) => boxId === 'query_cmp_1' ? {
 			getSchemaLifecycleIdentity: () => ({ sectionInstanceId: 'instance-cmp', targetGeneration: 7 }),
 			beginQueryExecution: () => true,
@@ -416,6 +460,7 @@ describe('executeRunFunction', () => {
 			boxId: 'query_cmp_1', producer: 'manual',
 		}));
 		expect(getExecuteMessages()[0]).not.toHaveProperty('comparisonRun');
+		expect(testState.synchronizeKustoSectionTarget).not.toHaveBeenCalled();
 	});
 
 	it('starts the comparison only after the exact source terminal is admitted', async () => {
@@ -452,34 +497,6 @@ describe('executeRunFunction', () => {
 		expect(messages[1]).toEqual(expect.objectContaining({
 			boxId: 'query_cmp_1', producer: 'comparison', comparisonRun: sourceMessage.comparisonRun,
 		}));
-	});
-
-	it('does not start the comparison after its Optimize owner is replaced', async () => {
-		testState.getRunMode.mockReturnValue('plain');
-		testState.queryEditors.query_1 = makeEditor('print source=1');
-		testState.queryEditors.query_cmp_1 = makeEditor('print optimized=1');
-		appendExecutionControls('query_1');
-		appendExecutionControls('query_cmp_1');
-		let activeOptimizeRequestId = 'optimize-old';
-		testState.getQuerySectionElement.mockImplementation((boxId: string) => ({
-			getSchemaLifecycleIdentity: () => ({ sectionInstanceId: `instance-${boxId}`, targetGeneration: 7 }),
-			beginQueryExecution: () => true,
-			admitKustoOptimizeMessage: (owner: any) => owner.optimizeRequestId === activeOptimizeRequestId,
-		}));
-		const optimizeOwner = {
-			boxId: 'query_1', optimizeRequestId: 'optimize-old',
-			sectionInstanceId: 'instance-query_1', targetGeneration: 7,
-		};
-
-		const pair = executeKustoComparisonPair('query_1', 'query_cmp_1', optimizeOwner);
-		const sourceMessage = getExecuteMessages()[0] as any;
-		activeOptimizeRequestId = 'optimize-new';
-		window.dispatchEvent(new CustomEvent('kusto-workbench-query-terminal', { detail: {
-			type: 'queryResult', boxId: 'query_1', executionId: sourceMessage.executionId,
-		} }));
-
-		await expect(pair).resolves.toBe(false);
-		expect(getExecuteMessages()).toHaveLength(1);
 	});
 
 	it('releases the exact source pin when comparison dispatch cannot start', async () => {

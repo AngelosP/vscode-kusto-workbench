@@ -36,6 +36,23 @@ describe('KustoEditorSchemaCoordinator ownership', () => {
 		expect(coordinator.getSchemaRequestToken('query_1')).toBeUndefined();
 	});
 
+	it('compares stamped physical target identity without dropping its owner fields', () => {
+		const coordinator = new KustoEditorSchemaCoordinator();
+		const lease = coordinator.openSection('query_1', 'instance-1')!;
+		const identity = coordinator.setTarget(lease, 'connection-a', 'DbA', {
+			connectionRevision: 7, connectionIdentityKey: 'connection-a|revision-7',
+		})!;
+
+		expect(coordinator.isCurrent('query_1', identity, {
+			connectionId: 'connection-a', database: 'DbA',
+			connectionRevision: 7, connectionIdentityKey: 'connection-a|revision-7',
+		})).toBe(true);
+		expect(coordinator.isCurrent('query_1', identity, {
+			connectionId: 'connection-a', database: 'DbA',
+			connectionRevision: 8, connectionIdentityKey: 'connection-a|revision-8',
+		})).toBe(false);
+	});
+
 	it('atomically retires target-scoped state and waiters on target change', () => {
 		const coordinator = new KustoEditorSchemaCoordinator();
 		const lease = coordinator.openSection('query_1', 'instance-1')!;

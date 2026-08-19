@@ -256,11 +256,7 @@ declare global {
 		initToolbarOverflow: (boxId: string) => void;
 		setRunMode: (boxId: string, mode: string) => void;
 		closeAllRunMenus: () => void;
-		__kustoSetOptimizeInProgress: (boxId: string, inProgress: boolean, statusText: string) => void;
-		__kustoUpdateOptimizeStatus: (boxId: string, statusText: string) => void;
-		__kustoHideOptimizePromptForBox: (boxId: string) => void;
 		__kustoSetLinkedOptimizationMode: (sourceBoxId: string, comparisonBoxId: string, active: boolean) => void;
-		__kustoApplyOptimizeQueryOptions: (boxId: string, models: any[], selectedModelId: string, promptText: string) => void;
 		updateCaretDocsToggleButtons: () => void;
 		updateAutoTriggerAutocompleteToggleButtons: () => void;
 		toggleAutoTriggerAutocompleteEnabled: () => void;
@@ -321,13 +317,8 @@ declare global {
 		__kustoEnsureRunModeBackupMap: () => Record<string, any>;
 		__kustoBackupRunMode: (boxId: string) => void;
 		__kustoRestoreRunMode: (boxId: string) => void;
-		__kustoEnsureOptimizePrepByBoxId: () => Record<string, any>;
-		__kustoShowOptimizePromptLoading: (boxId: string) => void;
-		__kustoCancelOptimizeQuery: (boxId: string) => void;
-		__kustoRunOptimizeQueryWithOverrides: (boxId: string) => void;
 		__kustoCacheBackupByBoxId?: Record<string, any>;
 		__kustoRunModeBackupByBoxId?: Record<string, any>;
-		__kustoOptimizePrepByBoxId?: Record<string, any>;
 
 		// =====================================================================
 		// resultsTable.ts

@@ -106,7 +106,10 @@ function createHarness(sqlSource = true) {
 	const sqlWorkbench = { assertSqlConnectionAllowed: vi.fn(async () => undefined) };
 	const kustoExecutionCoordinator = {
 		openSection: vi.fn(() => true),
-		adoptTarget: vi.fn(() => true),
+		adoptTarget: vi.fn((target: KustoSectionExecutionTarget) => (
+			Number.isSafeInteger(target.connectionRevision)
+			&& !!String(target.connectionIdentityKey || '').trim()
+		)),
 		getActive: vi.fn(),
 		cancelExpected: vi.fn(() => false),
 	};
@@ -231,6 +234,8 @@ describe('HostComparisonPreparationApplicationHandler', () => {
 			targetGeneration: 9,
 			connectionId: 'kusto-connection',
 			database: 'Samples',
+			connectionRevision: 7,
+			connectionIdentityKey: 'kusto-connection|revision-7',
 		};
 		const preparation = harness.handler.ensureComparisonBoxInWebview(
 			'source', 'StormEvents | count', cancellation.token, 17, request,

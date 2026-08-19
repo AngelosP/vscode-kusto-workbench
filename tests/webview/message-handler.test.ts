@@ -119,8 +119,6 @@ const mocks = {
 	clearResultsState: vi.fn(),
 	retireResultsStateForRerun: vi.fn(),
 	setQueryExecuting: vi.fn(),
-	setOptimizeInProgress: vi.fn(),
-	hideOptimizePrompt: vi.fn(),
 	setResultsVisible: vi.fn(),
 	setConnections: vi.fn(),
 	setSqlConnections: vi.fn(),
@@ -278,6 +276,7 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 	__kustoPickNextAvailableSectionLetterName: vi.fn(() => 'A'),
 	__kustoGetConnectionId: mocks.getConnectionId,
 	__kustoGetClusterUrl: mocks.getClusterUrl,
+	__kustoGetCurrentClusterUrlForBox: vi.fn(() => ''),
 	__kustoGetDatabase: mocks.getDatabase,
 	__kustoLog: vi.fn(),
 	updateConnectionSelects: mocks.updateConnectionSelects,
@@ -371,9 +370,6 @@ vi.mock('../../src/webview/sections/query-execution.controller.js', async () => 
 		__kustoSetLinkedOptimizationMode: vi.fn(),
 		displayComparisonSummary: vi.fn(),
 		optimizeQueryWithCopilot: actual.optimizeQueryWithCopilot,
-		__kustoSetOptimizeInProgress: mocks.setOptimizeInProgress,
-		__kustoHideOptimizePromptForBox: mocks.hideOptimizePrompt,
-		__kustoApplyOptimizeQueryOptions: vi.fn(),
 	};
 });
 
@@ -1689,7 +1685,9 @@ describe('message-handler dispatch', () => {
 		mocks.getConnectionId.mockReturnValue('c1');
 		mocks.getDatabase.mockReturnValue('Samples');
 		const lease = kustoEditorSchemaCoordinator.openSection('query_1', 'instance-1')!;
-		kustoEditorSchemaCoordinator.setTarget(lease, 'c1', 'Samples');
+		const originalIdentity = kustoEditorSchemaCoordinator.setTarget(lease, 'c1', 'Samples', {
+			connectionRevision: 7, connectionIdentityKey: 'c1|revision-7',
+		})!;
 		const state = await import('../../src/webview/core/state.js');
 		state.schemaFetchInFlightByBoxId.query_1 = true;
 		state.lastSchemaRequestAtByBoxId.query_1 = Date.now();
@@ -1704,6 +1702,11 @@ describe('message-handler dispatch', () => {
 		expect(state.schemaFetchInFlightByBoxId.query_1).toBe(false);
 		expect(state.lastSchemaRequestAtByBoxId.query_1).toBe(0);
 		expect(state.getKustoPreparationState('query_1').status).toBe('idle');
+		expect(kustoEditorSchemaCoordinator.getIdentity('query_1')).toEqual(originalIdentity);
+		expect(kustoEditorSchemaCoordinator.getTarget('query_1')).toEqual({
+			connectionId: 'c1', database: 'Samples',
+			connectionRevision: 7, connectionIdentityKey: 'c1|revision-7',
+		});
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
 			type: 'toolStateResponse', requestId: 'tool-state-refresh',
 			sections: [expect.objectContaining({
@@ -6784,176 +6787,6 @@ describe('changedSections agent provenance', () => {
 		expect(shell.hasAttribute('agent-touched')).toBe(false);
 	});
 
-	it('marks reused optimized comparison sections as agent-touched when dirty', async () => {
-		let query = 'Old optimized query';
-		const { section: sourceSection } = createSectionWithShell('query_src', { id: 'query_src', type: 'query', query: 'Source query' });
-		const { section: comparisonSection, shell, setSerializedState } = createSectionWithShell('query_cmp', { id: 'query_cmp', type: 'query', query });
-		configureFakeKustoTarget(sourceSection, 'conn-1', 'Db');
-		configureFakeKustoTarget(comparisonSection, 'conn-old', 'OldDb');
-		handlerState.queryEditors.query_cmp = {
-			setValue: vi.fn((nextQuery: string) => {
-				query = String(nextQuery);
-				setSerializedState({ id: 'query_cmp', type: 'query', query });
-			}),
-		};
-		handlerState.queryEditors.query_src = { getValue: vi.fn(() => 'Source query') };
-		handlerState.optimizationMetadataByBoxId.query_src = { comparisonBoxId: 'query_cmp' };
-		const optimizeOwner = { boxId: 'query_src', optimizeRequestId: 'optimize-reused', sectionInstanceId: 'instance-source', targetGeneration: 1 };
-		Object.assign(sourceSection, {
-			admitKustoOptimizeMessage: vi.fn(() => true), completeKustoOptimizeRequest: vi.fn(() => true),
-		});
-		mocks.getQuerySectionElement.mockImplementation((boxId: string) =>
-			boxId === 'query_src' ? sourceSection : boxId === 'query_cmp' ? comparisonSection : null);
-
-		dispatchHostMessage({
-			type: 'optimizeQueryReady',
-			...optimizeOwner,
-			optimizedQuery: 'New optimized query',
-			queryName: 'Source',
-			connectionId: 'conn-1', database: 'Db',
-		});
-		await new Promise(resolve => setTimeout(resolve, 120));
-		expect(shell.agentTouched).toBe(false);
-
-		dispatchHostMessage({
-			type: 'changedSections',
-			changes: [{ id: 'query_cmp', status: 'modified', contentChanged: true, settingsChanged: false }],
-		});
-		await Promise.resolve();
-		await shell.updateComplete;
-
-		expect(shell.hasChanges).toBe('modified');
-		expect(shell.agentTouched).toBe(true);
-	});
-
-	it('does not let stale Optimize ready work hide or complete a reopened request after comparison startup', async () => {
-		let resolveComparison!: (value: boolean) => void;
-		const comparisonStarted = new Promise<boolean>(resolve => { resolveComparison = resolve; });
-		mocks.executeKustoComparisonPair.mockReturnValueOnce(comparisonStarted);
-		let activeOptimizeRequestId = 'optimize-old';
-		const { section: sourceSection } = createSectionWithShell('query_src', { id: 'query_src', type: 'query', query: 'Source query' });
-		const { section: comparisonSection } = createSectionWithShell('query_cmp', { id: 'query_cmp', type: 'query', query: 'Old optimized query' });
-		configureFakeKustoTarget(sourceSection, 'conn-1', 'Db');
-		configureFakeKustoTarget(comparisonSection, 'conn-1', 'Db');
-		handlerState.queryEditors.query_src = { getValue: vi.fn(() => 'Source query') };
-		handlerState.queryEditors.query_cmp = { setValue: vi.fn() };
-		handlerState.optimizationMetadataByBoxId.query_src = { comparisonBoxId: 'query_cmp' };
-		const complete = vi.fn(() => true);
-		const admit = vi.fn((message: any) => message.optimizeRequestId === activeOptimizeRequestId);
-		Object.assign(sourceSection, {
-			admitKustoOptimizeMessage: admit,
-			completeKustoOptimizeRequest: complete,
-		});
-		mocks.getQuerySectionElement.mockImplementation((boxId: string) =>
-			boxId === 'query_src' ? sourceSection : boxId === 'query_cmp' ? comparisonSection : null);
-		const oldOwner = {
-			boxId: 'query_src', optimizeRequestId: 'optimize-old',
-			sectionInstanceId: 'instance-source', targetGeneration: 1,
-		};
-
-		dispatchHostMessage({
-			type: 'optimizeQueryReady', ...oldOwner, optimizedQuery: 'Optimized query',
-			queryName: 'Source', connectionId: 'conn-1', database: 'Db',
-		});
-		await vi.waitFor(() => expect(mocks.executeKustoComparisonPair).toHaveBeenCalledWith(
-			'query_src', 'query_cmp', expect.objectContaining(oldOwner),
-		));
-		activeOptimizeRequestId = 'optimize-new';
-		resolveComparison(true);
-		await vi.waitFor(() => expect(admit).toHaveBeenCalledTimes(2));
-
-		expect(complete).not.toHaveBeenCalled();
-		expect(mocks.setOptimizeInProgress).not.toHaveBeenCalled();
-		expect(mocks.hideOptimizePrompt).not.toHaveBeenCalled();
-	});
-
-	it('keeps Optimize ownership live when ready application fails so the fallback error can settle it', async () => {
-		const { section: sourceSection } = createSectionWithShell('query_src', { id: 'query_src', type: 'query', query: 'Source query' });
-		configureFakeKustoTarget(sourceSection, 'conn-1', 'Db');
-		const optimizeOwner = { boxId: 'query_src', optimizeRequestId: 'optimize-failed-ready', sectionInstanceId: 'instance-source', targetGeneration: 1 };
-		const complete = vi.fn(() => true);
-		Object.assign(sourceSection, {
-			admitKustoOptimizeMessage: vi.fn(() => true),
-			completeKustoOptimizeRequest: complete,
-		});
-		handlerState.optimizationMetadataByBoxId.query_src = { comparisonBoxId: 'missing-comparison' };
-		mocks.getQuerySectionElement.mockImplementation((boxId: string) => boxId === 'query_src' ? sourceSection : null);
-
-		for (const message of [
-			{
-				publicationId: 'optimize-ready-publication',
-				payload: {
-					type: 'optimizeQueryReady', ...optimizeOwner, optimizedQuery: 'Optimized query',
-					queryName: 'Source', connectionId: 'conn-1', database: 'Db',
-				},
-				expected: false,
-			},
-			{
-				publicationId: 'optimize-error-publication',
-				payload: { type: 'optimizeQueryError', ...optimizeOwner, error: 'Comparison application failed' },
-				expected: true,
-			},
-		] as const) {
-			dispatchHostMessage({
-				type: 'kustoPublicationStage', publicationId: message.publicationId,
-				publicationDeadline: Date.now() + 1_000, payload: message.payload,
-			});
-			dispatchHostMessage({ type: 'kustoPublicationCommit', publicationId: message.publicationId });
-			await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
-				type: 'kustoPublicationAck', publicationId: message.publicationId,
-				phase: 'applied', accepted: message.expected,
-			}));
-			if (!message.expected) expect(complete).not.toHaveBeenCalled();
-		}
-
-		expect(complete).toHaveBeenCalledOnce();
-		expect(complete).toHaveBeenCalledWith(expect.objectContaining({
-			type: 'optimizeQueryError', ...optimizeOwner,
-		}));
-	});
-
-	it('marks newly created optimized comparison sections as agent-touched when new', async () => {
-		const { section: sourceSection } = createSectionWithShell('query_src', { id: 'query_src', type: 'query', query: 'Source query' });
-		const { section: comparisonSection, shell } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'New optimized query' });
-		configureFakeKustoTarget(sourceSection, 'conn-1', 'Db');
-		configureFakeKustoTarget(comparisonSection, 'conn-old', 'OldDb');
-		handlerState.queryEditors.query_src = { getValue: vi.fn(() => 'Source query') };
-		const optimizeOwner = { boxId: 'query_src', optimizeRequestId: 'optimize-new', sectionInstanceId: 'instance-source', targetGeneration: 1 };
-		Object.assign(sourceSection, {
-			admitKustoOptimizeMessage: vi.fn(() => true), completeKustoOptimizeRequest: vi.fn(() => true),
-		});
-		mocks.getQuerySectionElement.mockImplementation((boxId: string) =>
-			boxId === 'query_src' ? sourceSection : boxId === 'query_1' ? comparisonSection : null);
-
-		dispatchHostMessage({
-			type: 'optimizeQueryReady',
-			...optimizeOwner,
-			optimizedQuery: 'New optimized query',
-			queryName: 'Source',
-			connectionId: 'conn-1', database: 'Db',
-		});
-		await new Promise(resolve => setTimeout(resolve, 120));
-		expect(mocks.createSectionWithCapabilities).toHaveBeenCalledWith('query', expect.objectContaining({
-			isComparison: true,
-			comparisonSourceBoxId: 'query_src',
-		}));
-		expect((comparisonSection as any).getConnectionId()).toBe('conn-1');
-		expect((comparisonSection as any).getDatabase()).toBe('Db');
-		expect(mocks.executeKustoComparisonPair).toHaveBeenCalledWith('query_src', 'query_1', expect.objectContaining(optimizeOwner));
-		expect(mocks.executeQuery).not.toHaveBeenCalled();
-		expect(shell.agentTouched).toBe(false);
-
-		dispatchHostMessage({
-			type: 'changedSections',
-			changes: [{ id: 'query_1', status: 'new', contentChanged: true, settingsChanged: true }],
-		});
-		await Promise.resolve();
-		await shell.updateComplete;
-
-		expect(shell.hasChanges).toBe('new');
-		expect(shell.agentTouched).toBe(true);
-	});
-
 	it('marks tool-driven collapse changes as agent-touched when dirty', async () => {
 		let expanded = true;
 		const { section, shell, setSerializedState } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'print 1', expanded });
@@ -7067,6 +6900,13 @@ describe('changedSections agent provenance', () => {
 		handlerState.optimizationMetadataByBoxId.query_src = { comparisonBoxId: 'query_cmp' };
 		mocks.getConnectionId.mockReturnValue('conn-1');
 		mocks.getDatabase.mockReturnValue('db-1');
+		const comparisonLease = kustoEditorSchemaCoordinator.openSection('query_cmp', 'instance-query_cmp')!;
+		kustoEditorSchemaCoordinator.setTarget(comparisonLease, 'connection-old', 'OldDb', {
+			connectionRevision: 6, connectionIdentityKey: 'connection-old|revision-6',
+		});
+		kustoEditorSchemaCoordinator.setTarget(comparisonLease, 'conn-1', 'db-1', {
+			connectionRevision: 7, connectionIdentityKey: 'conn-1|revision-7',
+		});
 
 		dispatchHostMessage({ type: 'ensureComparisonBox', requestId: 'r-ensure', boxId: 'query_src', query: 'New comparison query', ...comparisonRequest });
 		await new Promise(resolve => setTimeout(resolve, 0));
@@ -7077,6 +6917,7 @@ describe('changedSections agent provenance', () => {
 			type: 'comparisonBoxEnsured', requestId: 'r-ensure', comparisonBoxId: 'query_cmp',
 			kustoTarget: expect.objectContaining({
 				boxId: 'query_cmp', connectionId: 'conn-1', database: 'db-1', targetGeneration: 2,
+				connectionRevision: 7, connectionIdentityKey: 'conn-1|revision-7',
 			}),
 		}));
 
@@ -8001,6 +7842,89 @@ describe('changedSections agent provenance', () => {
 		expect(shell.agentTouched).toBe(false);
 	});
 
+	it('names an unnamed optimization pair Original and Optimized', async () => {
+		createSectionWithShell('query_src', { id: 'query_src', type: 'query', query: 'Source query' });
+		createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'Optimized query' });
+		handlerState.queryEditors.query_src = {
+			getModel: vi.fn(() => ({ getValue: vi.fn(() => 'Source query') })),
+			getValue: vi.fn(() => 'Source query'),
+		};
+		mocks.getConnectionId.mockReturnValue('conn-1');
+		mocks.getDatabase.mockReturnValue('db-1');
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		const { optimizeQueryWithCopilot } = await import('../../src/webview/sections/query-execution.controller.js');
+
+		await optimizeQueryWithCopilot('query_src', 'Optimized query', { skipExecute: true });
+
+		expect(sectionFactory.__kustoSetSectionName).toHaveBeenCalledWith('query_src', 'Original');
+		expect(sectionFactory.__kustoSetSectionName).toHaveBeenCalledWith('query_1', 'Optimized');
+		expect(sectionFactory.__kustoPickNextAvailableSectionLetterName).not.toHaveBeenCalled();
+	});
+
+	it('preserves an explicit source name when naming its optimized comparison', async () => {
+		createSectionWithShell('query_src', { id: 'query_src', type: 'query', query: 'Source query', name: 'Latency' });
+		createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'Optimized query' });
+		handlerState.queryEditors.query_src = {
+			getModel: vi.fn(() => ({ getValue: vi.fn(() => 'Source query') })),
+			getValue: vi.fn(() => 'Source query'),
+		};
+		mocks.getConnectionId.mockReturnValue('conn-1');
+		mocks.getDatabase.mockReturnValue('db-1');
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		vi.mocked(sectionFactory.__kustoGetSectionName).mockReturnValueOnce('Latency');
+		const { optimizeQueryWithCopilot } = await import('../../src/webview/sections/query-execution.controller.js');
+
+		await optimizeQueryWithCopilot('query_src', 'Optimized query', { skipExecute: true });
+
+		expect(sectionFactory.__kustoSetSectionName).not.toHaveBeenCalledWith('query_src', expect.anything());
+		expect(sectionFactory.__kustoSetSectionName).toHaveBeenCalledWith('query_1', 'Latency (optimized)');
+	});
+
+	it('keeps the semantic default names when reusing an unnamed optimization pair', async () => {
+		createSectionWithShell('sql_source', { id: 'sql_source', type: 'sql', query: 'SELECT 1', name: 'Original' });
+		createSectionWithShell('query_cmp', { id: 'query_cmp', type: 'query', query: 'SELECT 2', name: 'Optimized' });
+		handlerState.queryEditors.sql_source = {
+			getModel: vi.fn(() => ({ getValue: vi.fn(() => 'SELECT 1') })),
+			getValue: vi.fn(() => 'SELECT 1'),
+		};
+		handlerState.queryEditors.query_cmp = { setValue: vi.fn(), getValue: vi.fn(() => 'SELECT 2') };
+		handlerState.optimizationMetadataByBoxId.sql_source = { comparisonBoxId: 'query_cmp' };
+		handlerState.optimizationMetadataByBoxId.query_cmp = { sourceBoxId: 'sql_source', isComparison: true };
+		mocks.getConnectionId.mockReturnValue('sql-connection');
+		mocks.getDatabase.mockReturnValue('Db');
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		vi.mocked(sectionFactory.__kustoGetSectionName).mockImplementation((boxId: string) =>
+			boxId === 'sql_source' ? 'Original' : boxId === 'query_cmp' ? 'Original (optimized)' : '');
+		const { optimizeQueryWithCopilot } = await import('../../src/webview/sections/query-execution.controller.js');
+
+		await optimizeQueryWithCopilot('sql_source', 'SELECT 3', { skipExecute: true });
+
+		expect(sectionFactory.__kustoSetSectionName).not.toHaveBeenCalledWith('sql_source', expect.anything());
+		expect(sectionFactory.__kustoSetSectionName).toHaveBeenCalledWith('query_cmp', 'Optimized');
+	});
+
+	it('preserves a manually renamed comparison when reusing an optimization pair', async () => {
+		createSectionWithShell('sql_source', { id: 'sql_source', type: 'sql', query: 'SELECT 1', name: 'Original' });
+		createSectionWithShell('query_cmp', { id: 'query_cmp', type: 'query', query: 'SELECT 2', name: 'Candidate' });
+		handlerState.queryEditors.sql_source = {
+			getModel: vi.fn(() => ({ getValue: vi.fn(() => 'SELECT 1') })),
+			getValue: vi.fn(() => 'SELECT 1'),
+		};
+		handlerState.queryEditors.query_cmp = { setValue: vi.fn(), getValue: vi.fn(() => 'SELECT 2') };
+		handlerState.optimizationMetadataByBoxId.sql_source = { comparisonBoxId: 'query_cmp' };
+		handlerState.optimizationMetadataByBoxId.query_cmp = { sourceBoxId: 'sql_source', isComparison: true };
+		mocks.getConnectionId.mockReturnValue('sql-connection');
+		mocks.getDatabase.mockReturnValue('Db');
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		vi.mocked(sectionFactory.__kustoGetSectionName).mockImplementation((boxId: string) =>
+			boxId === 'sql_source' ? 'Original' : boxId === 'query_cmp' ? 'Candidate' : '');
+		const { optimizeQueryWithCopilot } = await import('../../src/webview/sections/query-execution.controller.js');
+
+		await optimizeQueryWithCopilot('sql_source', 'SELECT 3', { skipExecute: true });
+
+		expect(sectionFactory.__kustoSetSectionName).not.toHaveBeenCalledWith('query_cmp', expect.anything());
+	});
+
 	it('reuses a SQL-derived comparison without Kusto target synchronization', async () => {
 		const { section: sourceSection } = createSectionWithShell('sql_source', { id: 'sql_source', type: 'sql', query: 'SELECT 1' });
 		const { section: comparisonSection } = createSectionWithShell('query_cmp', { id: 'query_cmp', type: 'query', query: 'SELECT 2' });
@@ -8043,9 +7967,18 @@ describe('changedSections agent provenance', () => {
 		};
 		mocks.getConnectionId.mockReturnValue('conn-1');
 		mocks.getDatabase.mockReturnValue('db-1');
+		handlerState.connections.push({
+			id: 'conn-1', clusterUrl: 'https://source.kusto.windows.net', authorityId: 'source-authority',
+			connectionRevision: 7, connectionIdentityKey: 'conn-1|revision-7',
+		});
 
 		dispatchHostMessage({ type: 'compareQueryPerformanceWithQuery', boxId: 'query_src', query: 'Comparison query' });
 		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(mocks.createSectionWithCapabilities).toHaveBeenCalledWith('query', expect.objectContaining({
+			initialQuery: 'Comparison query', isComparison: true, comparisonSourceBoxId: 'query_src',
+			afterBoxId: 'query_src', clusterUrl: 'https://source.kusto.windows.net',
+			authorityId: 'source-authority', connectionIdHint: 'conn-1', database: 'db-1',
+		}));
 		expect(shell.agentTouched).toBe(false);
 
 		dispatchHostMessage({
@@ -8058,6 +7991,30 @@ describe('changedSections agent provenance', () => {
 		expect(shell.hasChanges).toBe('new');
 		expect(shell.agentTouched).toBe(true);
 		await new Promise(resolve => setTimeout(resolve, 120));
+	});
+
+	it('does not create a Kusto comparison when the source connection disappeared', async () => {
+		const { section: sourceSection } = createSectionWithShell('query_src', { id: 'query_src', type: 'query', query: 'Source query' });
+		configureFakeKustoTarget(sourceSection, 'missing-connection', 'db-1');
+		handlerState.queryEditors.query_src = {
+			getModel: vi.fn(() => ({ getValue: vi.fn(() => 'Source query') })),
+			getValue: vi.fn(() => 'Source query'),
+		};
+		mocks.getQuerySectionElement.mockImplementation((boxId: string) => boxId === 'query_src' ? sourceSection : null);
+		mocks.getConnectionId.mockReturnValue('missing-connection');
+		mocks.getDatabase.mockReturnValue('db-1');
+		mocks.createSectionWithCapabilities.mockClear();
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({ type: 'compareQueryPerformanceWithQuery', boxId: 'query_src', query: 'Comparison query' });
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(mocks.createSectionWithCapabilities).not.toHaveBeenCalled();
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		expect(sectionFactory.__kustoSetSectionName).not.toHaveBeenCalledWith('query_src', 'Original');
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'showInfo', message: 'The source connection is no longer available. Select a connection and try again.',
+		});
 	});
 
 	it('marks accepted optimized source queries as agent-touched when dirty', async () => {

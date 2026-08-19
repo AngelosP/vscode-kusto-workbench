@@ -7,6 +7,8 @@ export type KustoSectionExecutionTarget = KustoEditorLifecycleIdentity & Readonl
 	boxId: string;
 	connectionId: string;
 	database: string;
+	connectionRevision?: number;
+	connectionIdentityKey?: string;
 }>;
 
 export type KustoComparisonRunIdentity = Readonly<{
@@ -50,11 +52,6 @@ export type KustoExecutionSuccessStamp = KustoExecutionReservation & Readonly<{
 export type KustoCopilotRequestIdentity = KustoEditorLifecycleIdentity & Readonly<{
 	boxId: string;
 	copilotRequestId: string;
-}>;
-
-export type KustoOptimizeRequestIdentity = KustoEditorLifecycleIdentity & Readonly<{
-	boxId: string;
-	optimizeRequestId: string;
 }>;
 
 export type KustoSectionExecutionOutcome<TResult = unknown> = Readonly<{
@@ -142,7 +139,6 @@ export function kustoExecutionIdentityEquals(
 		&& left.sectionInstanceId === right.sectionInstanceId
 		&& left.targetGeneration === right.targetGeneration;
 }
-
 export function kustoExecutionRequestIdentityEquals(
 	left: KustoExecutionRequestIdentity,
 	right: KustoExecutionRequestIdentity,
@@ -173,25 +169,6 @@ export function kustoCopilotRequestIdentityEquals(
 ): boolean {
 	return left.boxId === right.boxId
 		&& left.copilotRequestId === right.copilotRequestId
-		&& left.sectionInstanceId === right.sectionInstanceId
-		&& left.targetGeneration === right.targetGeneration;
-}
-
-export function hasKustoOptimizeRequestIdentity(value: unknown): value is KustoOptimizeRequestIdentity {
-	if (!value || typeof value !== 'object') return false;
-	const candidate = value as Record<string, unknown>;
-	return typeof candidate.boxId === 'string' && candidate.boxId.length > 0
-		&& typeof candidate.optimizeRequestId === 'string' && candidate.optimizeRequestId.length > 0
-		&& typeof candidate.sectionInstanceId === 'string' && candidate.sectionInstanceId.length > 0
-		&& Number.isSafeInteger(candidate.targetGeneration) && Number(candidate.targetGeneration) >= 0;
-}
-
-export function kustoOptimizeRequestIdentityEquals(
-	left: KustoOptimizeRequestIdentity,
-	right: KustoOptimizeRequestIdentity,
-): boolean {
-	return left.boxId === right.boxId
-		&& left.optimizeRequestId === right.optimizeRequestId
 		&& left.sectionInstanceId === right.sectionInstanceId
 		&& left.targetGeneration === right.targetGeneration;
 }

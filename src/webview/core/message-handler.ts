@@ -153,11 +153,9 @@ import {
 	restoreEditingPreferencesRuntime,
 } from './editing-preferences.js';
 import {
-	executeKustoComparisonPair, executeQuery, setQueryExecuting, __kustoSetResultsVisible,
+	executeQuery, setQueryExecuting, __kustoSetResultsVisible,
 	__kustoSetLinkedOptimizationMode, displayComparisonSummary,
-	optimizeQueryWithCopilot, __kustoSetOptimizeInProgress,
-	__kustoHideOptimizePromptForBox, __kustoApplyOptimizeQueryOptions,
-	restoreKustoOptimizeButtonAvailability,
+	optimizeQueryWithCopilot,
 } from '../sections/query-execution.controller';
 import {
 	schedulePersist, handleDocumentDataMessage, getKqlxState, flushCompatibilityPersist, acknowledgePersistDocument,
@@ -247,7 +245,7 @@ import {
 	parseKustoCopilotClarifyingQuestionMessageFromEnvelope,
 	type KustoCopilotClarifyingQuestionMessage,
 } from '../../shared/kustoCopilotClarificationProtocol.js';
-import { hasKustoCopilotRequestIdentity, hasKustoExecutionRequestIdentity, hasKustoExecutionTerminalStamp, hasKustoOptimizeRequestIdentity, kustoCopilotRequestIdentityEquals, kustoExecutionIdentityEquals, kustoExecutionRequestIdentityEquals, type KustoCopilotRequestIdentity, type KustoExecutionRequestIdentity } from '../../shared/kustoExecution.js';
+import { hasKustoCopilotRequestIdentity, hasKustoExecutionRequestIdentity, hasKustoExecutionTerminalStamp, kustoCopilotRequestIdentityEquals, kustoExecutionIdentityEquals, kustoExecutionRequestIdentityEquals, type KustoCopilotRequestIdentity, type KustoExecutionRequestIdentity } from '../../shared/kustoExecution.js';
 import { comparisonSourceArtifactConsumerId, createDerivedResultArtifactPublication, modelResultArtifactConsumerId, type ResultArtifactSourcePolicy } from '../../shared/resultArtifact.js';
 import { sqlConnectionTargetSignature } from '../../shared/sqlConnectionIdentity.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
@@ -1037,12 +1035,6 @@ const kustoCopilotOutputMessageTypes = new Set([
 	'copilotWriteQueryDone',
 	'updateDevNotes',
 	'revealSection',
-]);
-const kustoOptimizeOutputMessageTypes = new Set([
-	'optimizeQueryStatus',
-	'optimizeQueryOptions',
-	'optimizeQueryReady',
-	'optimizeQueryError',
 ]);
 const ADMITTED_KUSTO_TERMINAL_EVENT = 'kusto-workbench-query-terminal';
 const ADMITTED_KUSTO_EXECUTION_STARTED_EVENT = 'kusto-workbench-query-started';
@@ -2134,16 +2126,6 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		}
 		emitAdmittedKustoCopilotOutput(message);
 	}
-	let admittedKustoOptimizeSection: any | undefined;
-	if (kustoOptimizeOutputMessageTypes.has(messageType)) {
-		const section = __kustoGetQuerySectionElement(String(message.boxId || ''));
-		if (!section || !hasKustoOptimizeRequestIdentity(message)
-			|| section.admitKustoOptimizeMessage?.(message) !== true) {
-			acknowledgeKustoPublication(message, false);
-			return;
-		}
-		admittedKustoOptimizeSection = section;
-	}
 	switch (messageType) {
 		case 'requestArtifactCsvSaveData':
 			provideArtifactCsvSaveData(message);
@@ -2300,8 +2282,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					const comparisonSection = __kustoGetQuerySectionElement(comparisonBoxId);
 					const comparisonSqlSection = __kustoGetSqlSectionElement(comparisonBoxId);
 					const lifecycle = comparisonSection?.getSchemaLifecycleIdentity?.();
-					const connectionId = String(comparisonSection?.getConnectionId?.() || '');
-					const database = String(comparisonSection?.getDatabase?.() || '');
+					const lifecycleTarget = kustoEditorSchemaCoordinator.getTarget(comparisonBoxId);
+					const visibleConnectionId = String(comparisonSection?.getConnectionId?.() || '').trim();
+					const visibleDatabase = String(comparisonSection?.getDatabase?.() || '').trim();
+					const targetConnectionId = String(lifecycleTarget?.connectionId || '').trim();
+					const targetDatabase = String(lifecycleTarget?.database || '').trim();
+					const kustoTargetIsCoherent = !!comparisonBoxId && !!lifecycle
+						&& !!targetConnectionId && !!targetDatabase
+						&& visibleConnectionId === targetConnectionId
+						&& visibleDatabase.toLowerCase() === targetDatabase.toLowerCase();
 					postMessageToHost({
 						type: 'comparisonBoxEnsured',
 						engine: message.engine === 'sql' ? 'sql' : 'kusto',
@@ -2322,14 +2311,20 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							sectionInstanceId: message.sectionInstanceId,
 							targetGeneration: message.targetGeneration,
 						} : {}),
-						...(comparisonBoxId && lifecycle && connectionId && database ? {
+						...(kustoTargetIsCoherent ? {
 							kustoTarget: {
 								engine: 'kusto' as const,
 								boxId: comparisonBoxId,
 								sectionInstanceId: lifecycle.sectionInstanceId,
 								targetGeneration: lifecycle.targetGeneration,
-								connectionId,
-								database,
+								connectionId: targetConnectionId,
+								database: targetDatabase,
+								...(Number.isSafeInteger(lifecycleTarget?.connectionRevision)
+									? { connectionRevision: lifecycleTarget?.connectionRevision }
+									: {}),
+								...(String(lifecycleTarget?.connectionIdentityKey || '').trim()
+									? { connectionIdentityKey: lifecycleTarget?.connectionIdentityKey }
+									: {}),
 							},
 						} : {}),
 					});
@@ -3913,26 +3908,14 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					? document.querySelectorAll('.optimize-copilot-btn')
 					: [document.getElementById(boxId + '_optimize_btn')].filter(Boolean);
 				for (const optimizeBtn of optimizeButtons as any) {
-					const inProgress = optimizeBtn.dataset?.kustoOptimizeInProgress === '1';
 					optimizeBtn.dataset.kustoCopilotAvailable = available ? '1' : '0';
-					if (!inProgress) optimizeBtn.disabled = !available;
+					optimizeBtn.disabled = !available;
 					optimizeBtn.title = available
 						? 'Optimize query with GitHub Copilot'
 						: 'GitHub Copilot is required to optimize this query.';
 					optimizeBtn.setAttribute('aria-disabled', String(!available));
 				}
 			} catch (e) { console.error('[kusto]', e); }
-			break;
-		case 'optimizeQueryStatus':
-			try {
-				const boxId = message.boxId || '';
-				const status = message.status || '';
-				__kustoSetOptimizeInProgress(boxId, true, status);
-				acknowledgeKustoPublication(message, true);
-			} catch (e) {
-				console.error('[kusto]', e);
-				acknowledgeKustoPublication(message, false);
-			}
 			break;
 		case 'compareQueryPerformanceWithQuery':
 			try {
@@ -3942,246 +3925,6 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					Promise.resolve(optimizeQueryWithCopilot(boxId, query, { agentTouched: true }));
 				}
 			} catch (e) { console.error('[kusto]', e); }
-			break;
-		case 'optimizeQueryReady': {
-			let createdComparisonBoxId = '';
-			try {
-				const sourceBoxId = message.boxId || '';
-				const sourceBeforeSignature = getSectionSerializedSignature(sourceBoxId);
-				const finishReadyApplication = () => {
-					if (admittedKustoOptimizeSection?.admitKustoOptimizeMessage?.(message) !== true) {
-						throw new Error('Optimize request ownership changed before comparison application completed.');
-					}
-					__kustoSetOptimizeInProgress(sourceBoxId, false, '');
-					__kustoHideOptimizePromptForBox(sourceBoxId);
-					const optimizeBtn = document.getElementById(sourceBoxId + '_optimize_btn') as any;
-					if (optimizeBtn) {
-						if (optimizeBtn.dataset.originalContent) {
-							optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent;
-							delete optimizeBtn.dataset.originalContent;
-						}
-						restoreKustoOptimizeButtonAvailability(sourceBoxId);
-					}
-					if (admittedKustoOptimizeSection.completeKustoOptimizeRequest?.(message) !== true) {
-						throw new Error('Optimize request ownership changed before comparison application completed.');
-					}
-					acknowledgeKustoPublication(message, true);
-				};
-				const optimizedQuery = message.optimizedQuery || '';
-				let queryName = message.queryName || '';
-				// Ensure the source section has a name for optimization.
-				// If missing, assign the next unused letter (A, B, C, ...).
-				try {
-					const nameEl = document.getElementById(sourceBoxId + '_name') as any;
-					if (nameEl) {
-						let sourceName = String(nameEl.value || '').trim();
-						if (!sourceName && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
-							sourceName = window.__kustoPickNextAvailableSectionLetterName(sourceBoxId);
-							nameEl.value = sourceName;
-							try { schedulePersist && schedulePersist(); } catch (e) { console.error('[kusto]', e); }
-						}
-						if (sourceName) {
-							queryName = sourceName;
-						}
-					}
-				} catch (e) { console.error('[kusto]', e); }
-				// Fallback: if we still don't have a name (e.g. input missing), pick one.
-				if (!String(queryName || '').trim() && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
-					try {
-						queryName = window.__kustoPickNextAvailableSectionLetterName(sourceBoxId);
-					} catch (e) { console.error('[kusto]', e); }
-				}
-				const desiredOptimizedName = String(queryName || '').trim() ? (String(queryName || '').trim() + ' (optimized)') : '';
-				const connectionId = message.connectionId || '';
-				const database = message.database || '';
-				let prettifiedOptimizedQuery = optimizedQuery;
-				try {
-					if (typeof window.__kustoPrettifyKustoText === 'function') {
-						prettifiedOptimizedQuery = window.__kustoPrettifyKustoText(optimizedQuery);
-					}
-				} catch (e) { console.error('[kusto]', e); }
-				
-				// If a comparison box already exists for this source, reuse it.
-				if (optimizationMetadataByBoxId[sourceBoxId] && optimizationMetadataByBoxId[sourceBoxId].comparisonBoxId) {
-					const comparisonBoxId = optimizationMetadataByBoxId[sourceBoxId].comparisonBoxId;
-					const beforeSignature = getSectionSerializedSignature(comparisonBoxId);
-					const comparisonEditor = queryEditors && queryEditors[comparisonBoxId];
-					if (!comparisonBoxId || !comparisonEditor || typeof comparisonEditor.setValue !== 'function') {
-						throw new Error('Existing optimized comparison was not available.');
-					}
-					if (!synchronizeKustoSectionTarget(sourceBoxId, comparisonBoxId)) {
-						throw new Error('Comparison target was not ready for optimized query execution.');
-					}
-					comparisonEditor.setValue(prettifiedOptimizedQuery);
-					try { schedulePersist && schedulePersist(); } catch (e) { console.error('[kusto]', e); }
-						// Name the optimized section "<source name> (optimized)".
-						try {
-							const nameEl = document.getElementById(comparisonBoxId + '_name') as any;
-							if (nameEl) {
-								if (desiredOptimizedName) {
-									nameEl.value = desiredOptimizedName;
-									try { schedulePersist && schedulePersist(); } catch (e) { console.error('[kusto]', e); }
-								}
-							}
-						} catch (e) { console.error('[kusto]', e); }
-						try {
-							optimizationMetadataByBoxId[comparisonBoxId] = optimizationMetadataByBoxId[comparisonBoxId] || {};
-							optimizationMetadataByBoxId[comparisonBoxId].sourceBoxId = sourceBoxId;
-							optimizationMetadataByBoxId[comparisonBoxId].isComparison = true;
-							optimizationMetadataByBoxId[comparisonBoxId].originalQuery = queryEditors[sourceBoxId] ? queryEditors[sourceBoxId].getValue() : '';
-							optimizationMetadataByBoxId[comparisonBoxId].optimizedQuery = prettifiedOptimizedQuery;
-						} catch (e) { console.error('[kusto]', e); }
-						try {
-							{
-								__kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, true);
-							}
-						} catch (e) { console.error('[kusto]', e); }
-						markSectionAgentTouched(sourceBoxId, sourceBeforeSignature);
-						markSectionAgentTouched(comparisonBoxId, beforeSignature);
-						try {
-							{
-								__kustoSetResultsVisible(sourceBoxId, false);
-								__kustoSetResultsVisible(comparisonBoxId, false);
-							}
-						} catch (e) { console.error('[kusto]', e); }
-						try { await executeKustoComparisonPair(sourceBoxId, comparisonBoxId, message); } catch (e) { console.error('[kusto]', e); }
-					finishReadyApplication();
-					break;
-				}
-				
-				// Create a new query box below the source box for comparison
-				const comparisonCreation = createSectionWithCapabilities('query', {
-					id: 'query_opt_' + Date.now(), 
-					initialQuery: prettifiedOptimizedQuery,
-					isComparison: true,
-					comparisonSourceBoxId: sourceBoxId,
-					defaultResultsVisible: false
-				});
-				if (!comparisonCreation.ok) throw new Error(comparisonCreation.error);
-				const comparisonBoxId = comparisonCreation.sectionId;
-				if (!comparisonBoxId) throw new Error('Failed to create optimized comparison section.');
-				createdComparisonBoxId = comparisonBoxId;
-				markSectionAgentTouched(comparisonBoxId);
-				try {
-					{
-						__kustoSetResultsVisible(sourceBoxId, false);
-						__kustoSetResultsVisible(comparisonBoxId, false);
-					}
-				} catch (e) { console.error('[kusto]', e); }
-				try {
-					{
-						__kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, true);
-					}
-				} catch (e) { console.error('[kusto]', e); }
-				markSectionAgentTouched(sourceBoxId, sourceBeforeSignature);
-				
-				// Store optimization metadata
-				optimizationMetadataByBoxId[comparisonBoxId] = {
-					sourceBoxId: sourceBoxId,
-					isComparison: true,
-					originalQuery: queryEditors[sourceBoxId] ? queryEditors[sourceBoxId].getValue() : '',
-					optimizedQuery: prettifiedOptimizedQuery
-				};
-				optimizationMetadataByBoxId[sourceBoxId] = {
-					comparisonBoxId: comparisonBoxId
-				};
-				
-				// Position the comparison box right after the source box
-				try {
-					const sourceBox = document.getElementById(sourceBoxId) as any;
-					const comparisonBox = document.getElementById(comparisonBoxId) as any;
-					if (sourceBox && comparisonBox && sourceBox.parentNode && comparisonBox.parentNode) {
-						sourceBox.parentNode.insertBefore(comparisonBox, sourceBox.nextSibling);
-					}
-					// Scroll the new comparison box into view.
-					if (comparisonBox && typeof comparisonBox.scrollIntoView === 'function') {
-						comparisonBox.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-					}
-				} catch (e) { console.error('[kusto]', e); }
-				
-				// Set connection and database to match source
-				const compKwEl = __kustoGetQuerySectionElement(comparisonBoxId);
-				if (compKwEl) {
-					if (typeof compKwEl.setConnectionId === 'function') compKwEl.setConnectionId(connectionId);
-					compKwEl.dispatchEvent(new CustomEvent('connection-changed', {
-						detail: { boxId: comparisonBoxId, connectionId: connectionId },
-						bubbles: true, composed: true,
-					}));
-					if (!synchronizeKustoSectionTarget(sourceBoxId, comparisonBoxId)) {
-						throw new Error('Comparison target was not ready for optimized query execution.');
-					}
-					// Carry over favorites mode from source section so the comparison
-					// section uses the same connection UI (favorites vs cluster/db dropdowns).
-					try {
-						const sourceKwEl = __kustoGetQuerySectionElement(sourceBoxId);
-						if (sourceKwEl && typeof sourceKwEl.isFavoritesMode === 'function' && sourceKwEl.isFavoritesMode()) {
-							if (typeof compKwEl.setFavoritesMode === 'function') compKwEl.setFavoritesMode(true);
-							if (typeof favoritesModeByBoxId === 'object') favoritesModeByBoxId[comparisonBoxId] = true;
-						}
-					} catch (e) { console.error('[kusto]', e); }
-				} else throw new Error('Optimized comparison section was not ready.');
-				
-				// Set the query name
-				if (desiredOptimizedName) {
-					__kustoSetSectionName(comparisonBoxId, desiredOptimizedName);
-				}
-				
-				// Execute both queries against one exact source artifact revision.
-				await executeKustoComparisonPair(sourceBoxId, comparisonBoxId, message);
-				
-				finishReadyApplication();
-			} catch (err: any) {
-				console.error('Error creating comparison box:', err);
-				if (createdComparisonBoxId
-					&& admittedKustoOptimizeSection?.admitKustoOptimizeMessage?.(message) === true) {
-					try { removeQueryBox(createdComparisonBoxId); } catch (cleanupError) { console.error('[kusto]', cleanupError); }
-				}
-				acknowledgeKustoPublication(message, false);
-			}
-			break;
-		}
-		case 'optimizeQueryOptions':
-			try {
-				const boxId = message.boxId || '';
-				const models = message.models || [];
-				const selectedModelId = message.selectedModelId || '';
-				const promptText = message.promptText || '';
-				__kustoApplyOptimizeQueryOptions(boxId, models, selectedModelId, promptText);
-				acknowledgeKustoPublication(message, true);
-			} catch (e) {
-				console.error('[kusto]', e);
-				acknowledgeKustoPublication(message, false);
-			}
-			break;
-		case 'optimizeQueryError':
-			try {
-				const boxId = message.boxId || '';
-				try {
-					{
-						__kustoSetOptimizeInProgress(boxId, false, '');
-					}
-				} catch (e) { console.error('[kusto]', e); }
-				try {
-					{
-						__kustoHideOptimizePromptForBox(boxId);
-					}
-				} catch (e) { console.error('[kusto]', e); }
-				const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
-				if (optimizeBtn) {
-					if (optimizeBtn.dataset.originalContent) {
-						optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent;
-						delete optimizeBtn.dataset.originalContent;
-					}
-					restoreKustoOptimizeButtonAvailability(boxId);
-				}
-				if (admittedKustoOptimizeSection?.completeKustoOptimizeRequest?.(message) !== true) {
-					throw new Error('Optimize request ownership changed before error application completed.');
-				}
-				acknowledgeKustoPublication(message, true);
-			} catch (e) {
-				console.error('[kusto]', e);
-				acknowledgeKustoPublication(message, false);
-			}
 			break;
 		case 'copilotWriteQueryOptions':
 			try {
@@ -4511,7 +4254,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							&& boxId && database) {
 							const lease = kustoEditorSchemaCoordinator.getLease(boxId);
 							if (lease) {
-								kustoEditorSchemaCoordinator.setTarget(lease, connectionId, database);
+								const currentTarget = kustoEditorSchemaCoordinator.getTarget(boxId);
+								kustoEditorSchemaCoordinator.setTarget(lease, connectionId, database, {
+									connectionRevision: currentTarget?.connectionRevision,
+									connectionIdentityKey: currentTarget?.connectionIdentityKey,
+								});
 								requestToken = `schema_tool_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 								const request = kustoEditorSchemaCoordinator.beginSchemaRequest(lease, requestToken);
 								if (request) {
