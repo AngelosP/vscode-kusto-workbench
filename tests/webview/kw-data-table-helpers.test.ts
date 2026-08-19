@@ -10,6 +10,43 @@ import {
 	type DataTableColumn,
 	type CellValue,
 } from '../../src/webview/components/kw-data-table.js';
+import type { KwDataTable } from '../../src/webview/components/kw-data-table.js';
+
+describe('result-set picker', () => {
+	it('renders beside the result label and emits the selected ordinal', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.options = {
+			label: 'Results',
+			resultSets: [
+				{ resultIndex: 0, label: 'Result #1 - First' },
+				{ resultIndex: 1, label: 'Result #2 - Second' },
+			],
+			selectedResultIndex: 1,
+		};
+		table.columns = [{ name: 'Value' }];
+		table.rows = [[1]];
+		document.body.appendChild(table);
+		await table.updateComplete;
+		const picker = table.shadowRoot?.querySelector<HTMLSelectElement>(
+			'[data-testid="result-set-picker"]',
+		);
+		expect(picker).not.toBeNull();
+		expect([...picker!.options].map(option => [option.value, option.textContent])).toEqual([
+			['0', 'Result #1 - First'],
+			['1', 'Result #2 - Second'],
+		]);
+		expect(picker!.value).toBe('1');
+		let selected = -1;
+		table.addEventListener('result-set-change', event => {
+			selected = (event as CustomEvent).detail.resultIndex;
+		});
+
+		picker!.value = '0';
+		picker!.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+
+		expect(selected).toBe(0);
+	});
+});
 
 // ── tryParseNum ───────────────────────────────────────────────────────────────
 

@@ -15,10 +15,10 @@ describe('exported Kusto Workbench skill template', () => {
 	const exportedDashboardRules = exportedFiles.find(file => file.fileName === HTML_DASHBOARD_RULES_FILENAME)?.content ?? '';
 
 	it('is bumped to the current template version', () => {
-		expect(TEMPLATE_VERSION).toBe(15);
-		expect(template).toContain('# version: 15 - Auto-updated by Kusto Workbench. Do not remove this line.');
-		expect(isSkillTemplateCurrent(14)).toBe(false);
-		expect(isSkillTemplateCurrent(15)).toBe(true);
+		expect(TEMPLATE_VERSION).toBe(16);
+		expect(template).toContain('# version: 16 - Auto-updated by Kusto Workbench. Do not remove this line.');
+		expect(isSkillTemplateCurrent(15)).toBe(false);
+		expect(isSkillTemplateCurrent(16)).toBe(true);
 	});
 
 	it('exports the compact skill and dashboard rules sidecar separately', () => {
@@ -75,6 +75,10 @@ describe('exported Kusto Workbench skill template', () => {
 		expect(exportedDashboardRules).toContain('renders `0.68` as `68%`');
 		expect(exportedDashboardRules).toContain('`compute.name` must not collide with an existing fact column name or the `groupBy` output columns.');
 		expect(exportedDashboardRules).toContain('Power BI export');
+		expect(exportedDashboardRules).toContain('model.fact.resultIndex');
+		expect(exportedDashboardRules).toContain('Power BI/PBIP publishing supports Result 1 only');
+		expect(exportedSkill).toContain('dataSourceResultIndex');
+		expect(exportedSkill).toContain('joinRightDataSourceResultIndex');
 	});
 
 	it('copies the canonical HTML dashboard guide sections into the sidecar', () => {

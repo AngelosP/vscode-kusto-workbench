@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatQueryResultForCopilot } from '../../../src/host/copilotResultPreview';
+import { formatQueryResultForCopilot, summarizeQueryResultForCopilot } from '../../../src/host/copilotResultPreview';
 
 describe('formatQueryResultForCopilot', () => {
 	it('formats object column descriptors and wrapped SQL cells', () => {
@@ -38,5 +38,36 @@ describe('formatQueryResultForCopilot', () => {
 		expect(text).toContain('line1\\nline2\\t');
 		expect(text).toContain('[truncated]');
 		expect(text.length).toBeLessThanOrEqual(112);
+	});
+
+	it('formats every Kusto result under one fair aggregate row cap', () => {
+		const text = formatQueryResultForCopilot({
+			columns: ['First'], rows: [[1], [2], [3]], metadata: { resultName: 'One' },
+			additionalResults: {
+				version: 1,
+				sets: [{
+					resultIndex: 1, columns: ['Second'], rows: [['a'], ['b'], ['c']],
+					metadata: { resultName: 'Two' },
+				}],
+			},
+		}, 4);
+
+		expect(text).toContain('Result #1 - One');
+		expect(text).toContain('Result #2 - Two');
+		expect(text).toContain('1\n2');
+		expect(text).toContain('a\nb');
+		expect(text).not.toContain('\n3\n');
+		expect(text).not.toContain('\nc\n');
+	});
+
+	it('summarizes multi-result batches while preserving single-result wording', () => {
+		expect(summarizeQueryResultForCopilot({ columns: ['A'], rows: [[1]], metadata: {} }))
+			.toBe('1 rows');
+		expect(summarizeQueryResultForCopilot({
+			columns: ['A'], rows: [[1]], metadata: {},
+			additionalResults: { version: 1, sets: [{
+				resultIndex: 1, columns: ['B'], rows: [[2], [3]], metadata: {},
+			}] },
+		})).toBe('2 result sets, 3 rows');
 	});
 });

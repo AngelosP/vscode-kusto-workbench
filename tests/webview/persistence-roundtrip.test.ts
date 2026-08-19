@@ -33,6 +33,8 @@ const testState = vi.hoisted(() => {
 	const beginKustoPreparation = vi.fn((boxId: string) => ({ boxId, generation: 1, revision: 0 }));
 	const getKustoPreparationState = vi.fn(() => ({ status: 'idle', stage: 'idle', blockers: [] }));
 	const getCurrentResultArtifact = vi.fn(() => null as any);
+	const displayResultForBox = vi.fn();
+	const displayResultBatchForBox = vi.fn((...args: unknown[]) => displayResultForBox(...args));
 
 	const addQueryBox = vi.fn((options: { id?: string; clusterUrl?: string; authorityId?: string; connectionIdHint?: string; database?: string } = {}) => {
 		const id = options.id || `query_restored_${addQueryBox.mock.calls.length + 1}`;
@@ -157,6 +159,8 @@ const testState = vi.hoisted(() => {
 		beginKustoPreparation,
 		getKustoPreparationState,
 		getCurrentResultArtifact,
+		displayResultForBox,
+		displayResultBatchForBox,
 	};
 });
 
@@ -243,7 +247,8 @@ vi.mock('../../src/webview/core/results-state.js', () => ({
 	captureResultsRuntime: vi.fn(() => ({ token: 'results-runtime' })),
 	restoreResultsRuntime: vi.fn(),
 	displayResult: vi.fn(),
-	displayResultForBox: vi.fn(),
+	displayResultBatchForBox: testState.displayResultBatchForBox,
+	displayResultForBox: testState.displayResultForBox,
 	clearResultsState: vi.fn(),
 	getResultsState: vi.fn(() => null),
 	getResultsStateRevision: vi.fn(() => 0),
@@ -388,12 +393,13 @@ vi.mock('../../src/webview/monaco/monaco.js', () => ({
 
 import { createEmptyQueryEditorPendingAdds, pState } from '../../src/webview/shared/persistence-state.js';
 import { postMessageToHost } from '../../src/webview/shared/webview-messages.js';
-import { clearResultsState, displayResult, displayResultForBox } from '../../src/webview/core/results-state.js';
+import { clearResultsState, displayResult, displayResultBatchForBox, displayResultForBox } from '../../src/webview/core/results-state.js';
 import { optimizationMetadataByBoxId, sqlFavoritesModeByBoxId } from '../../src/webview/core/state.js';
 import { updateConnectionSelects, __kustoGetConnectionId, __kustoGetDatabase, __kustoGetQuerySectionElement, __kustoSetAutoEnterFavoritesForBox } from '../../src/webview/core/section-factory.js';
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
 import { __kustoCloseShareModal, setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
 import { addChartBox } from '../../src/webview/sections/kw-chart-section.js';
+import { addTransformationBox } from '../../src/webview/sections/kw-transformation-section.js';
 import { acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyBrowserViewerDocumentProjection, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, beginKustoLeaveNoTracePolicyApplication, captureKustoLeaveNoTracePolicyRuntime, createSectionWithCapabilities, discardPendingSqlResultRestores, finalizeDocumentDefaultsAfterAcknowledgement, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, installRuntimeAddSectionBridges, markKustoLeaveNoTracePolicyPending, resetDocumentPersistenceForTest, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, restoreKustoLeaveNoTracePolicyRuntime, schedulePersist, __kustoApplyDocumentCapabilities, __kustoClearStoredQueryResult, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
 import { createDerivedResultArtifactPublication, publicationFromPersistedResultArtifact, RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, RESULT_ARTIFACT_CSV_RESET_EVENT } from '../../src/shared/resultArtifact.js';
 import { sqlConnectionTargetSignature } from '../../src/shared/sqlConnectionIdentity.js';
@@ -449,6 +455,9 @@ describe('persistence round-trip', () => {
 		for (const k of Object.keys(optimizationMetadataByBoxId)) delete optimizationMetadataByBoxId[k];
 		vi.clearAllMocks();
 		vi.mocked(displayResultForBox).mockReset();
+		vi.mocked(displayResultBatchForBox).mockReset().mockImplementation(
+			(...args: unknown[]) => testState.displayResultForBox(...args),
+		);
 		testState.getCurrentResultArtifact.mockReset().mockReturnValue(null);
 		pState.compatibilityMode = false;
 		pState.documentKind = 'kqlx';
@@ -466,7 +475,8 @@ describe('persistence round-trip', () => {
 	it('restores all known Sankey and heatmap chart settings before serialization overlay', () => {
 		handleDocumentDataMessage({
 			type: 'documentData', ok: true, forceReload: true, documentKind: 'kqlx', state: { sections: [{
-				id: 'chart_restore_settings', type: 'chart', chartType: 'sankey', sankeyLeftMargin: 137,
+				id: 'chart_restore_settings', type: 'chart', dataSourceId: 'query_1', dataSourceResultIndex: 1,
+				sankeyLeftMargin: 137,
 				heatmapSettings: {
 					visualMapPosition: 'left', visualMapGap: 19, showCellLabels: true,
 					cellLabelMode: 'highest', cellLabelN: 7,
@@ -476,11 +486,29 @@ describe('persistence round-trip', () => {
 
 		expect(addChartBox).toHaveBeenCalledWith(expect.objectContaining({
 			id: 'chart_restore_settings',
+			dataSourceId: 'query_1',
+			dataSourceResultIndex: 1,
 			sankeyLeftMargin: 137,
 			heatmapSettings: {
 				visualMapPosition: 'left', visualMapGap: 19, showCellLabels: true,
 				cellLabelMode: 'highest', cellLabelN: 7,
 			},
+		}));
+	});
+
+	it('restores indexed transformation source references', () => {
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentKind: 'kqlx', state: { sections: [{
+				id: 'transform_restore_indexes', type: 'transformation', transformationType: 'join',
+				dataSourceId: 'query_1', dataSourceResultIndex: 1,
+				joinRightDataSourceId: 'query_1', joinRightDataSourceResultIndex: 2,
+			}] },
+		});
+
+		expect(addTransformationBox).toHaveBeenCalledWith(expect.objectContaining({
+			id: 'transform_restore_indexes',
+			dataSourceId: 'query_1', dataSourceResultIndex: 1,
+			joinRightDataSourceId: 'query_1', joinRightDataSourceResultIndex: 2,
 		}));
 	});
 
@@ -563,6 +591,41 @@ describe('persistence round-trip', () => {
 			expect(publication?.policy?.exposeToActiveContent).toBeUndefined();
 			expect(publication?.policy?.sendToModel).toBeUndefined();
 			expect(publication?.policy?.shareToClipboard).toBeUndefined();
+		} finally {
+			delete (window as any).__kustoReadOnlyMode;
+			vi.useRealTimers();
+		}
+	});
+
+	it('restores every persisted Kusto result set at the selected index in the browser viewer', () => {
+		vi.useFakeTimers();
+		(window as any).__kustoReadOnlyMode = true;
+		const result = {
+			columns: ['Value'], rows: [['first']], metadata: { resultName: 'First' },
+			additionalResults: {
+				version: 1,
+				sets: [
+					{ resultIndex: 1, columns: ['Value'], rows: [['second']], metadata: { resultName: 'Second' } },
+					{ resultIndex: 2, columns: ['Value'], rows: [['third']], metadata: { resultName: 'Third' } },
+				],
+			},
+		};
+		try {
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentUri: 'https://example.test/multi-result.kqlx', documentKind: 'kqlx',
+				state: { sections: [{
+					type: 'query', id: 'query_browser_multi', query: 'print 1; print 2; print 3',
+					resultJson: JSON.stringify(result), selectedResultIndex: 2, ...kustoResultOwner,
+				}] },
+			});
+			flushDeferredRestoreTimers();
+
+			expect(displayResultBatchForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ additionalResults: expect.objectContaining({ version: 1 }) }),
+				'query_browser_multi',
+				expect.objectContaining({ selectedResultIndex: 2 }),
+			);
 		} finally {
 			delete (window as any).__kustoReadOnlyMode;
 			vi.useRealTimers();

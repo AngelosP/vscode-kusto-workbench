@@ -43,6 +43,7 @@ export interface PersistedChartSectionState {
 	expanded?: boolean;
 	editorHeightPx?: number;
 	dataSourceId?: string;
+	dataSourceResultIndex?: number;
 	chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | 'sankey' | 'heatmap';
 	xColumn?: string;
 	yColumns?: string[];
@@ -143,6 +144,14 @@ function readNumberFields(input: JsonRecord, target: MutableChartState): string 
 			return `Chart field "${key}" must be a finite number.`;
 		}
 		setOwn(target, key, input[key]);
+	}
+	if (hasOwn(input, 'dataSourceResultIndex')) {
+		if (typeof input.dataSourceResultIndex !== 'number'
+			|| !Number.isSafeInteger(input.dataSourceResultIndex)
+			|| input.dataSourceResultIndex < 0) {
+			return 'Chart field "dataSourceResultIndex" must be a non-negative safe integer.';
+		}
+		setOwn(target, 'dataSourceResultIndex', input.dataSourceResultIndex);
 	}
 	return undefined;
 }

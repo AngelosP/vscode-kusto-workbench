@@ -1,4 +1,4 @@
-import type { QueryResult } from './kustoClient.js';
+import type { KustoQueryResult } from './kustoClient.js';
 import type { QueryRunCoordinator } from './queryRunCoordinator.js';
 import type {
 	KustoDispatchIdentity,
@@ -12,7 +12,7 @@ import { kustoExecutionIdentityEquals, kustoExecutionRequestIdentityEquals } fro
 
 type KustoCancelableExecution = Readonly<{
 	cancel: () => void;
-	promise: Promise<QueryResult>;
+	promise: Promise<KustoQueryResult>;
 }>;
  
 type KustoPhysicalConnectionOwner = Readonly<{
@@ -29,6 +29,12 @@ type ActiveExecution = {
 	dispatch?: KustoDispatchIdentity;
 };
 
+type SettlingSuccess = {
+	readonly active: ActiveExecution;
+	retired: boolean;
+	cancellationPublished: boolean;
+};
+
 export type KustoExecutionLease<T extends KustoCancelableExecution = KustoCancelableExecution> = Readonly<{
 	reservation: KustoExecutionReservation;
 	execution: T;
@@ -39,7 +45,7 @@ export type KustoExecutionLease<T extends KustoCancelableExecution = KustoCancel
 }>;
 
 export type KustoExecutionTerminal =
-	| (KustoExecutionSuccessStamp & Readonly<{ type: 'queryResult'; result: QueryResult; ensureResultsVisible?: boolean }>)
+	| (KustoExecutionSuccessStamp & Readonly<{ type: 'queryResult'; result: KustoQueryResult; ensureResultsVisible?: boolean }>)
 	| (KustoExecutionTerminalStamp & Readonly<{ type: 'queryError'; error: string; clientActivityId?: string }>)
 	| (KustoExecutionTerminalStamp & Readonly<{ type: 'queryCancelled'; reason?: 'cancelled' | 'superseded' | 'retired' }>);
 
@@ -80,6 +86,7 @@ export class KustoExecutionCoordinator {
 	private readonly lifecycleByBoxId = new Map<string, KustoSectionLifecycleOwner>();
 	private readonly closedSectionInstances = new Set<string>();
 	private readonly activeByBoxId = new Map<string, ActiveExecution>();
+	private readonly settlingSuccessByIdentity = new Map<string, SettlingSuccess>();
 	private reservationSequence = 0;
 	private disposed = false;
 
@@ -267,7 +274,7 @@ export class KustoExecutionCoordinator {
 		});
 	}
 
-	async succeed(reservation: KustoExecutionReservation, result: QueryResult, ensureResultsVisible = false): Promise<boolean> {
+	async succeed(reservation: KustoExecutionReservation, result: KustoQueryResult, ensureResultsVisible = false): Promise<boolean> {
 		const active = this.activeByBoxId.get(reservation.boxId);
 		if (!active || !kustoExecutionRequestIdentityEquals(active.reservation, reservation)
 			|| active.reservation.reservationSequence !== reservation.reservationSequence) return false;
@@ -288,15 +295,24 @@ export class KustoExecutionCoordinator {
 			...(ensureResultsVisible ? { ensureResultsVisible: true } : {}),
 		};
 		if (!this.finishActive(active)) return false;
+		const settling: SettlingSuccess = { active, retired: false, cancellationPublished: false };
+		const settlingKey = this.executionKey(active.reservation);
+		this.settlingSuccessByIdentity.set(settlingKey, settling);
 		const delivered = await this.deliver({
 			...terminal,
 		});
-		if (delivered) return true;
-		await this.deliver({
-			...this.terminalStamp(active),
-			type: 'queryCancelled',
-			reason: 'retired',
-		});
+		if (this.settlingSuccessByIdentity.get(settlingKey) === settling) {
+			this.settlingSuccessByIdentity.delete(settlingKey);
+		}
+		if (delivered && !settling.retired) return true;
+		if (!settling.cancellationPublished) {
+			settling.cancellationPublished = true;
+			await this.deliver({
+				...this.terminalStamp(active),
+				type: 'queryCancelled',
+				reason: 'retired',
+			});
+		}
 		return false;
 	}
 
@@ -322,6 +338,11 @@ export class KustoExecutionCoordinator {
 			if (ids.size > 0 && !ids.has(active.reservation.connectionId)) continue;
 			if (preserveAccountPartition && active.dispatch?.accountPartition === preserveAccountPartition) continue;
 			this.retireActive(active, 'retired');
+		}
+		for (const settling of [...this.settlingSuccessByIdentity.values()]) {
+			if (ids.size > 0 && !ids.has(settling.active.reservation.connectionId)) continue;
+			if (preserveAccountPartition && settling.active.dispatch?.accountPartition === preserveAccountPartition) continue;
+			this.retireSettlingSuccess(settling);
 		}
 	}
 
@@ -359,6 +380,7 @@ export class KustoExecutionCoordinator {
 		if (this.disposed) return;
 		this.disposed = true;
 		for (const active of [...this.activeByBoxId.values()]) this.retireActive(active, 'retired');
+		for (const settling of [...this.settlingSuccessByIdentity.values()]) this.retireSettlingSuccess(settling);
 		this.lifecycleByBoxId.clear();
 		this.closedSectionInstances.clear();
 	}
@@ -412,6 +434,31 @@ export class KustoExecutionCoordinator {
 	private retireBox(boxId: string, reason: 'superseded' | 'retired'): void {
 		const active = this.activeByBoxId.get(boxId);
 		if (active) this.retireActive(active, reason);
+		for (const settling of [...this.settlingSuccessByIdentity.values()]) {
+			if (settling.active.reservation.boxId === boxId) this.retireSettlingSuccess(settling);
+		}
+	}
+
+	private executionKey(reservation: KustoExecutionReservation): string {
+		return JSON.stringify([
+			reservation.boxId,
+			reservation.sectionInstanceId,
+			reservation.targetGeneration,
+			reservation.executionId,
+			reservation.reservationSequence,
+		]);
+	}
+
+	private retireSettlingSuccess(settling: SettlingSuccess): void {
+		if (settling.retired) return;
+		settling.retired = true;
+		if (settling.cancellationPublished) return;
+		settling.cancellationPublished = true;
+		void this.deliver({
+			...this.terminalStamp(settling.active),
+			type: 'queryCancelled',
+			reason: 'retired',
+		});
 	}
 
 	private retireActive(active: ActiveExecution, reason: 'cancelled' | 'superseded' | 'retired'): void {

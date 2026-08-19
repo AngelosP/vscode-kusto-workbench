@@ -17,6 +17,7 @@ import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
 import { MdCompatEditorProvider } from './mdCompatEditorProvider';
 import { SqlCompatEditorProvider } from './sqlCompatEditorProvider';
 import { QueryEditorProvider } from './queryEditorProvider';
+import { KustoResultPersistenceRegistry } from './kustoResultPersistenceOwner';
 import { KqlDiagnosticSeverity } from './kqlLanguageService/protocol';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { recordTextEditorSelection } from './selectionTracker';
@@ -1907,10 +1908,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		scheduleDiagnostics(doc, 0);
 	}
 
+	const kustoResultPersistenceRegistry = new KustoResultPersistenceRegistry();
+	context.subscriptions.push({ dispose: () => kustoResultPersistenceRegistry.dispose() });
 	// Register .kqlx custom editor
-	context.subscriptions.push(KqlxEditorProvider.register(context, context.extensionUri, connectionManager, sqlWorkbenchService, editorCursorStatusBar));
+	context.subscriptions.push(KqlxEditorProvider.register(
+		context, context.extensionUri, connectionManager, sqlWorkbenchService,
+		editorCursorStatusBar, kustoResultPersistenceRegistry,
+	));
 	// Register .kql/.csl compatibility custom editor
-	context.subscriptions.push(KqlCompatEditorProvider.register(context, context.extensionUri, connectionManager, sqlWorkbenchService, editorCursorStatusBar));
+	context.subscriptions.push(KqlCompatEditorProvider.register(
+		context, context.extensionUri, connectionManager, sqlWorkbenchService,
+		editorCursorStatusBar, kustoResultPersistenceRegistry,
+	));
 	// Register .md compatibility custom editor (upgrade to .mdx for multi-section)
 	context.subscriptions.push(MdCompatEditorProvider.register(context, context.extensionUri, connectionManager, editorCursorStatusBar));
 	// Register .sql compatibility custom editor (upgrade to .sqlx for multi-section)

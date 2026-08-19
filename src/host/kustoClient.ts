@@ -2,13 +2,13 @@ import { ConnectionManager, KustoConnection } from './connectionManager';
 import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
 import {
-	formatCellValue,
 	isLikelyCancellationError as isLikelyCancellationErrorFn,
 	isAuthError as isAuthErrorFn,
 	extractSchemaFromJson as extractSchemaFromJsonFn,
 	finalizeSchema as finalizeSchemeFn,
 	parseDatabaseSchemaResultWithRaw as parseDatabaseSchemaResultWithRawFn
 } from './kustoClientUtils';
+import { adaptKustoQueryResponse } from './kustoResultAdapter';
 import { exportKustoClusterEndpoint, kustoClusterKey } from '../shared/kustoClusterUrls';
 import { getWorkbenchLogger, type WorkbenchLogger } from './workbenchLogger';
 import {
@@ -18,6 +18,7 @@ import {
 	normalizeKustoAuthorityId,
 } from '../shared/kustoAuth';
 import type { KustoDispatchIdentity } from '../shared/kustoExecution.js';
+import type { KustoResultBatchV1 } from '../shared/kustoResultBatch.js';
 import { KustoAuthPreferenceService, type KustoAccountPreference } from './kustoAuthPreferenceService';
 import type { KustoLeaveNoTracePolicySnapshot } from './kustoLeaveNoTracePolicyStore';
 import { KustoConnectionCache, type KustoConnectionCacheGeneration } from './kustoConnectionCache';
@@ -61,6 +62,7 @@ export type KustoAuthenticatedDispatchGate = <T>(
  * may omit some of them. Extraction is always best-effort.
  */
 export interface ServerQueryStats {
+	[key: string]: unknown;
 	/** Server-reported total CPU time, e.g. "00:00:00.1406250" */
 	cpuTime?: string;
 	/** Server-reported total CPU time in milliseconds (parsed from cpuTime) */
@@ -89,31 +91,29 @@ export interface ServerQueryStats {
 	serverRowCount?: number;
 	/** Total table size in bytes as reported by the server */
 	serverTableSize?: number;
+	/** Per-primary-result row counts and table sizes in ADX result order. */
+	datasetStatistics?: Array<{ serverRowCount?: number; serverTableSize?: number }>;
 	/** The full raw resource_usage object for advanced inspection */
 	raw?: Record<string, unknown>;
 }
 
-export interface QueryResult {
-	columns: Array<string | { name: string; type: string }>;
-	rows: any[][];
-	metadata: {
-		cluster: string;
-		database: string;
-		executionTime: string;
-		clientActivityId?: string;
-		serverStats?: ServerQueryStats;
-	};
-}
+export type KustoQueryResult = KustoResultBatchV1;
+export type QueryResult = Readonly<{
+	columns: KustoResultBatchV1['columns'];
+	rows: KustoResultBatchV1['rows'];
+	metadata: KustoResultBatchV1['metadata'];
+	additionalResults?: never;
+}>;
 
 export interface QueryResultWithIdentity {
-	result: QueryResult;
+	result: KustoResultBatchV1;
 	accountPartition?: string;
 	leaveNoTraceRevision: number;
 	dispatchIdentity: KustoDispatchIdentity;
 }
 
 export interface CancelableQueryExecution {
-	promise: Promise<QueryResult>;
+	promise: Promise<KustoResultBatchV1>;
 	cancel: () => void;
 	clientActivityId: string;
 	getAccountPartition: () => string | undefined;
@@ -659,6 +659,13 @@ export class KustoQueryClient {
 				// Dataset statistics
 				const ds = payload?.dataset_statistics;
 				if (Array.isArray(ds) && ds.length > 0) {
+					stats.datasetStatistics = ds.map((entry: unknown) => {
+						const record = entry && typeof entry === 'object' ? entry as Record<string, unknown> : {};
+						return {
+							...(typeof record.table_row_count === 'number' ? { serverRowCount: record.table_row_count } : {}),
+							...(typeof record.table_size === 'number' ? { serverTableSize: record.table_size } : {}),
+						};
+					});
 					if (typeof ds[0].table_row_count === 'number') { stats.serverRowCount = ds[0].table_row_count; }
 					if (typeof ds[0].table_size === 'number') { stats.serverTableSize = ds[0].table_size; }
 				}
@@ -1659,7 +1666,7 @@ export class KustoQueryClient {
 		connection: KustoConnection,
 		database: string,
 		query: string
-	): Promise<QueryResult> {
+	): Promise<KustoResultBatchV1> {
 		return (await this.executeQueryWithIdentity(connection, database, query)).result;
 	}
 
@@ -1720,47 +1727,17 @@ export class KustoQueryClient {
 			const clientActivityId = this.extractClientActivityId(result);
 			const serverStats = this.extractServerStats(result);
 			
-			// Get the primary result
-			const primaryResults = result.primaryResults[0];
-			
-			// Extract column names and types
-			const columns = primaryResults.columns.map((col: any) => {
-				const name = col.name || col.type || 'Unknown';
-				const type = typeof col.type === 'string' ? col.type : '';
-				return type ? { name, type } : name;
+			const adapted = adaptKustoQueryResponse(result, {
+				cluster: connection.clusterUrl,
+				database,
+				executionTime,
+				...(clientActivityId ? { clientActivityId } : {}),
+				...(serverStats ? { serverStats } : {}),
 			});
-			
-			// Extract rows
-			const rows: any[][] = [];
-			for (const row of primaryResults.rows()) {
-				// Row might be an object or array, convert to array
-				const rowArray: any[] = [];
-				if (Array.isArray(row)) {
-					rowArray.push(...row);
-				} else {
-					// If it's an object, extract values based on column order
-					const rowObj = row as Record<string, unknown>;
-					for (const col of primaryResults.columns) {
-						const value = rowObj[col.name] ?? rowObj[col.ordinal];
-						rowArray.push(value);
-					}
-				}
-				rows.push(rowArray.map((cell: any) => formatCellValue(cell)));
-			}
-			
+			if (!adapted.ok) throw new QueryExecutionError(adapted.error, requestClientActivityId);
 			if (!dispatchIdentity) throw new QueryExecutionError('Kusto dispatch identity is unavailable.', requestClientActivityId);
 			return {
-				result: {
-					columns,
-					rows,
-					metadata: {
-						cluster: connection.clusterUrl,
-						database: database,
-						executionTime,
-						clientActivityId,
-						serverStats
-					}
-				},
+				result: adapted.value,
 				accountPartition: operationAuth?.accountPartition,
 				leaveNoTraceRevision,
 				dispatchIdentity,
@@ -1849,7 +1826,7 @@ export class KustoQueryClient {
 			startServerCancel();
 		};
 
-		const executeAsync = async (): Promise<QueryResult> => {
+		const executeAsync = async (): Promise<KustoResultBatchV1> => {
 			// If this run was cancelled before we even started, bail out early.
 			if (cancelled) {
 				throw new QueryCancelledError();
@@ -1934,39 +1911,15 @@ export class KustoQueryClient {
 				const responseClientActivityId = this.extractClientActivityId(result) || requestClientActivityId;
 				const serverStats = this.extractServerStats(result);
 
-				const primaryResults = result.primaryResults[0];
-				const columns = primaryResults.columns.map((col: any) => {
-					const name = col.name || col.type || 'Unknown';
-					const type = typeof col.type === 'string' ? col.type : '';
-					return type ? { name, type } : name;
+				const adapted = adaptKustoQueryResponse(result, {
+					cluster: connection.clusterUrl,
+					database,
+					executionTime,
+					...(responseClientActivityId ? { clientActivityId: responseClientActivityId } : {}),
+					...(serverStats ? { serverStats } : {}),
 				});
-
-				const rows: any[][] = [];
-				for (const row of primaryResults.rows()) {
-					const rowArray: any[] = [];
-					if (Array.isArray(row)) {
-						rowArray.push(...row);
-					} else {
-						const rowObj = row as Record<string, unknown>;
-						for (const col of primaryResults.columns) {
-							const value = rowObj[col.name] ?? rowObj[col.ordinal];
-							rowArray.push(value);
-						}
-					}
-					rows.push(rowArray.map((cell: any) => formatCellValue(cell)));
-				}
-
-				return {
-					columns,
-					rows,
-					metadata: {
-						cluster: connection.clusterUrl,
-						database: database,
-						executionTime,
-						clientActivityId: responseClientActivityId,
-						serverStats
-					}
-				};
+				if (!adapted.ok) throw new QueryExecutionError(adapted.error, requestClientActivityId);
+				return adapted.value;
 			} catch (error) {
 				if (cancelled || this.isLikelyCancellationError(error)) {
 					throw new QueryCancelledError();

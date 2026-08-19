@@ -11,6 +11,10 @@ import {
 	type ResultArtifactStoreSnapshot,
 	type ResultArtifactPublication,
 } from '../../shared/resultArtifact.js';
+import {
+	getKustoResultSets,
+	parseKustoResultBatch,
+} from '../../shared/kustoResultBatch.js';
 export type {
 	ResultArtifact,
 	ResultArtifactLineage,
@@ -22,12 +26,16 @@ export type {
 // ── Results state map ────────────────────────────────────────────────────────
 
 const _resultsByBoxId: Record<string, any> = {};
+const _resultBatchesByBoxId: Record<string, readonly any[]> = {};
+const _selectedResultIndexByBoxId: Record<string, number> = {};
 const _resultsRevisionByBoxId: Record<string, number> = {};
 const _resultArtifacts = new ResultArtifactStore();
 export let currentResult: any = null;
 
 export type ResultsRuntimeSnapshot = Readonly<{
 	states: Record<string, any>;
+	batchStates?: Record<string, readonly any[]>;
+	selectedResultIndices?: Record<string, number>;
 	revisions: Record<string, number>;
 	artifacts: ResultArtifactStoreSnapshot;
 	currentResult: any;
@@ -44,9 +52,24 @@ function replaceResultsRecord<T>(target: Record<string, T>, source: Record<strin
 	Object.defineProperties(target, Object.getOwnPropertyDescriptors(source));
 }
 
+function resultSetPresentationOptions(states: readonly any[]) {
+	return states.map((state, resultIndex) => {
+		const resolvedIndex = Number.isSafeInteger(state?.resultIndex) ? Number(state.resultIndex) : resultIndex;
+		const resultName = typeof state?.metadata?.resultName === 'string'
+			? state.metadata.resultName.trim()
+			: '';
+		return {
+			resultIndex: resolvedIndex,
+			label: `Result #${resolvedIndex + 1}${resultName ? ` - ${resultName}` : ''}`,
+		};
+	});
+}
+
 export function captureResultsRuntime(): ResultsRuntimeSnapshot {
 	return {
 		states: copyResultsRecord(_resultsByBoxId),
+		batchStates: copyResultsRecord(_resultBatchesByBoxId),
+		selectedResultIndices: copyResultsRecord(_selectedResultIndexByBoxId),
 		revisions: copyResultsRecord(_resultsRevisionByBoxId),
 		artifacts: _resultArtifacts.captureSnapshot(),
 		currentResult,
@@ -56,11 +79,27 @@ export function captureResultsRuntime(): ResultsRuntimeSnapshot {
 export function restoreResultsRuntime(snapshot: ResultsRuntimeSnapshot, restorePresentation = false): void {
 	const currentStates = copyResultsRecord(_resultsByBoxId);
 	const currentArtifactIds = new Map(
-		Object.keys(currentStates).map(boxId => [boxId, _resultArtifacts.getCurrent(boxId)?.artifactId]),
+		Object.keys(currentStates).map(boxId => [
+			boxId,
+			_resultArtifacts.getCurrent(boxId, _selectedResultIndexByBoxId[boxId] ?? 0)?.artifactId,
+		]),
 	);
-	const snapshotArtifactIds = new Map(snapshot.artifacts.currentArtifactIds);
+	const snapshotArtifactIds = new Map(Object.keys(snapshot.states).map(boxId => {
+		const selectedIndex = snapshot.selectedResultIndices?.[boxId] ?? 0;
+		const indexed = snapshot.artifacts.currentIndexedArtifactIds?.find(
+			([sourceBoxId, resultIndex]) => sourceBoxId === boxId && resultIndex === selectedIndex,
+		);
+		const primary = snapshot.artifacts.currentArtifactIds.find(([sourceBoxId]) => sourceBoxId === boxId);
+		return [boxId, indexed?.[2] ?? (selectedIndex === 0 ? primary?.[1] : undefined)] as const;
+	}));
 	const restoreState = () => {
 		replaceResultsRecord(_resultsByBoxId, snapshot.states);
+		replaceResultsRecord(_resultBatchesByBoxId, snapshot.batchStates ?? Object.fromEntries(
+			Object.entries(snapshot.states).map(([boxId, state]) => [boxId, [state]]),
+		));
+		replaceResultsRecord(_selectedResultIndexByBoxId, snapshot.selectedResultIndices ?? Object.fromEntries(
+			Object.keys(snapshot.states).map(boxId => [boxId, 0]),
+		));
 		replaceResultsRecord(_resultsRevisionByBoxId, snapshot.revisions);
 		_resultArtifacts.restoreSnapshot(snapshot.artifacts);
 		currentResult = snapshot.currentResult;
@@ -78,8 +117,13 @@ export function restoreResultsRuntime(snapshot: ResultsRuntimeSnapshot, restoreP
 			&& currentArtifactIds.get(boxId) === snapshotArtifactIds.get(boxId)) continue;
 		const section = document.getElementById(boxId) as any;
 		try {
-			section?.displayResult?.(state, { label: 'Results', showExecutionTime: true });
-			const artifact = _resultArtifacts.getCurrent(boxId);
+			const states = snapshot.batchStates?.[boxId] ?? [state];
+			const selectedResultIndex = snapshot.selectedResultIndices?.[boxId] ?? 0;
+			section?.displayResult?.(state, {
+				label: 'Results', showExecutionTime: true,
+				resultSets: resultSetPresentationOptions(states), selectedResultIndex,
+			});
+			const artifact = _resultArtifacts.getCurrent(boxId, selectedResultIndex);
 			if (artifact) section?.setResultArtifactForCsvExport?.(artifact.artifactId);
 		} catch (error) {
 			console.error('[kusto]', error);
@@ -93,11 +137,27 @@ export function resetCurrentResult() {
 	currentResult = null;
 }
 
-export function getResultsState(boxId: any) {
+export function getResultsState(boxId: any, resultIndex?: number) {
 	if (!boxId) {
 		return null;
 	}
+	if (resultIndex !== undefined) {
+		if (!Number.isSafeInteger(resultIndex) || resultIndex < 0) return null;
+		return _resultBatchesByBoxId[boxId]?.[resultIndex] ?? null;
+	}
 	return _resultsByBoxId[boxId] || null;
+}
+
+export function getResultsBatchState(boxId: unknown): readonly any[] {
+	const id = String(boxId || '').trim();
+	return id ? _resultBatchesByBoxId[id] ?? [] : [];
+}
+
+export function getSelectedResultIndex(boxId: unknown): number {
+	const id = String(boxId || '').trim();
+	return id && Number.isSafeInteger(_selectedResultIndexByBoxId[id])
+		? _selectedResultIndexByBoxId[id]
+		: 0;
 }
 
 export function getResultsStateRevision(boxId: any) {
@@ -111,12 +171,14 @@ export function getResultArtifact(artifactId: unknown) {
 	return _resultArtifacts.get(String(artifactId || '')) || null;
 }
 
-export function getCurrentResultArtifact(boxId: unknown) {
-	return _resultArtifacts.getCurrent(String(boxId || '')) || null;
+export function getCurrentResultArtifact(boxId: unknown, resultIndex = 0) {
+	return _resultArtifacts.getCurrent(String(boxId || ''), resultIndex) || null;
 }
 
-export function getResultArtifactByProducerExecution(boxId: unknown, executionId: unknown) {
-	return _resultArtifacts.getByProducerExecution(String(boxId || ''), String(executionId || '')) || null;
+export function getResultArtifactByProducerExecution(boxId: unknown, executionId: unknown, resultIndex = 0) {
+	return _resultArtifacts.getByProducerExecution(
+		String(boxId || ''), String(executionId || ''), resultIndex,
+	) || null;
 }
 
 export function bindResultArtifactConsumer(consumerId: unknown, sourceBoxId: unknown, artifactId?: unknown) {
@@ -127,8 +189,32 @@ export function bindResultArtifactConsumer(consumerId: unknown, sourceBoxId: unk
 	);
 }
 
+export function bindIndexedResultArtifactConsumer(
+	consumerId: unknown,
+	sourceBoxId: unknown,
+	resultIndex: number,
+	artifactId?: unknown,
+) {
+	return _resultArtifacts.bindIndexed(
+		String(consumerId || ''),
+		String(sourceBoxId || ''),
+		resultIndex,
+		artifactId === undefined ? undefined : String(artifactId || ''),
+	);
+}
+
 export function rebindResultArtifactConsumer(consumerId: unknown, sourceBoxId: unknown) {
 	const artifactId = bindResultArtifactConsumer(consumerId, sourceBoxId);
+	if (!artifactId) unbindResultArtifactConsumer(consumerId);
+	return artifactId;
+}
+
+export function rebindIndexedResultArtifactConsumer(
+	consumerId: unknown,
+	sourceBoxId: unknown,
+	resultIndex: number,
+) {
+	const artifactId = bindIndexedResultArtifactConsumer(consumerId, sourceBoxId, resultIndex);
 	if (!artifactId) unbindResultArtifactConsumer(consumerId);
 	return artifactId;
 }
@@ -145,25 +231,62 @@ export function unbindResultArtifactConsumer(consumerId: unknown) {
 }
 
 export function setResultsState(boxId: any, state: any, publication: ResultArtifactPublication = {}) {
+	return setResultsBatchState(boxId, [state], publication, 0)?.[0];
+}
+
+export function setResultsBatchState(
+	boxId: any,
+	states: readonly any[],
+	publication: ResultArtifactPublication = {},
+	selectedResultIndex = 0,
+	notifyDependents = true,
+) {
 	if (!boxId) {
 		return undefined;
 	}
-	const artifact = _resultArtifacts.publish(String(boxId), state || {}, publication);
-	if (!artifact) return undefined;
-	_resultsByBoxId[boxId] = state;
+	if (!Array.isArray(states) || states.length === 0
+		|| !Number.isSafeInteger(selectedResultIndex) || selectedResultIndex < 0
+		|| selectedResultIndex >= states.length) return undefined;
+	for (let resultIndex = 0; resultIndex < states.length; resultIndex++) {
+		if (states[resultIndex]?.resultIndex !== undefined
+			&& states[resultIndex].resultIndex !== resultIndex) return undefined;
+	}
+	const artifacts = _resultArtifacts.publishBatch(
+		String(boxId),
+		states.map((state, resultIndex) => ({ resultIndex, ...(state || {}) })),
+		publication,
+	);
+	if (!artifacts) return undefined;
+	_resultBatchesByBoxId[boxId] = Object.freeze([...states]);
+	_selectedResultIndexByBoxId[boxId] = selectedResultIndex;
+	_resultsByBoxId[boxId] = states[selectedResultIndex];
 	_resultsRevisionByBoxId[boxId] = (_resultsRevisionByBoxId[boxId] || 0) + 1;
 	// Backward-compat: keep the last rendered result as the "current" one.
-	currentResult = state;
+	currentResult = states[selectedResultIndex];
 	// Notify any dependent sections (charts/transformations) that this data source changed.
-	try { __kustoNotifyResultsUpdated(boxId); } catch (e) { console.error('[kusto]', e); }
-	return artifact;
+	if (notifyDependents) {
+		try { __kustoNotifyResultsUpdated(boxId); } catch (e) { console.error('[kusto]', e); }
+	}
+	return artifacts;
+}
+
+export function selectResultsState(boxId: unknown, resultIndex: number): boolean {
+	const id = String(boxId || '').trim();
+	const batch = id ? _resultBatchesByBoxId[id] : undefined;
+	if (!batch || !Number.isSafeInteger(resultIndex) || resultIndex < 0 || resultIndex >= batch.length) return false;
+	_selectedResultIndexByBoxId[id] = resultIndex;
+	_resultsByBoxId[id] = batch[resultIndex];
+	currentResult = batch[resultIndex];
+	return true;
 }
 
 export function retireResultsStateForRerun(boxId: unknown): void {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	_resultArtifacts.clearCurrent(id);
+	_resultArtifacts.clearCurrentBatch(id);
 	delete _resultsByBoxId[id];
+	delete _resultBatchesByBoxId[id];
+	delete _selectedResultIndexByBoxId[id];
 	_resultsRevisionByBoxId[id] = (_resultsRevisionByBoxId[id] || 0) + 1;
 	if (currentResult?.boxId === id) currentResult = null;
 	try { __kustoNotifyResultsUpdated(id); } catch (e) { console.error('[kusto]', e); }
@@ -181,6 +304,8 @@ export function clearResultsState(boxId: any) {
 	for (const affectedBoxId of affectedBoxIds) {
 		if (!_resultArtifacts.getCurrent(affectedBoxId)) {
 			delete _resultsByBoxId[affectedBoxId];
+			delete _resultBatchesByBoxId[affectedBoxId];
+			delete _selectedResultIndexByBoxId[affectedBoxId];
 			_resultsRevisionByBoxId[affectedBoxId] = (_resultsRevisionByBoxId[affectedBoxId] || 0) + 1;
 			if (currentResult?.boxId === affectedBoxId) currentResult = null;
 		}
@@ -220,6 +345,79 @@ export function ensureResultsShownForTool(boxId: any) {
 }
 
 // ── Lit-only display routing ─────────────────────────────────────────────────
+
+function createResultRuntimeState(boxId: string, resultIndex: number, result: any) {
+	const columns = Array.isArray(result?.columns) ? result.columns : [];
+	const sourceRows = Array.isArray(result?.rows) ? result.rows : [];
+	const rows = projectRowsToDeclaredColumns(columns, sourceRows);
+	const metadata = result?.metadata && typeof result.metadata === 'object' ? result.metadata : {};
+	const displayRowIndices = rows.map((_: unknown, index: number) => index);
+	return {
+		resultIndex,
+		boxId,
+		columns,
+		rows,
+		metadata,
+		selectedCell: null,
+		cellSelectionAnchor: null,
+		cellSelectionRange: null,
+		selectedRows: new Set(),
+		searchMatches: [],
+		currentSearchIndex: -1,
+		sortSpec: [],
+		columnFilters: {},
+		filteredRowIndices: null,
+		displayRowIndices,
+		rowIndexToDisplayIndex: [...displayRowIndices],
+	};
+}
+
+export function displayResultBatchForBox(result: unknown, boxIdValue: unknown, options: any): boolean {
+	const boxId = String(boxIdValue || '').trim();
+	if (!boxId) return false;
+	const parsed = parseKustoResultBatch(result);
+	if (!parsed.ok) return false;
+	const resultSets = getKustoResultSets(parsed.value);
+	const selectedResultIndex = options?.selectedResultIndex === undefined
+		? 0
+		: Number(options.selectedResultIndex);
+	if (!Number.isSafeInteger(selectedResultIndex) || selectedResultIndex < 0
+		|| selectedResultIndex >= resultSets.length) return false;
+	const section = document.getElementById(boxId) as any;
+	if (!section || typeof section.displayResult !== 'function') return false;
+	const snapshot = captureResultsRuntime();
+	let presentationSnapshot: unknown;
+	try { presentationSnapshot = section.captureResultPresentation?.(); } catch { return false; }
+	const states = resultSets.map(set => createResultRuntimeState(boxId, set.resultIndex, set));
+	const artifacts = setResultsBatchState(
+		boxId, states, options?.artifactPublication || {}, selectedResultIndex, false,
+	);
+	if (!artifacts) return false;
+	const resultSetOptions = resultSetPresentationOptions(resultSets);
+	let accepted = false;
+	try {
+		accepted = section.displayResult(states[selectedResultIndex], {
+			...options,
+			selectedResultIndex,
+			resultSets: resultSetOptions,
+			deferCsvRelease: true,
+		}) !== false;
+	} catch (error) {
+		console.error('[kusto] Failed to render Kusto result batch:', error);
+	}
+	if (!accepted) {
+		restoreResultsRuntime(snapshot, false);
+		try { section.restoreResultPresentation?.(presentationSnapshot); } catch (error) { console.error('[kusto]', error); }
+		return false;
+	}
+	try {
+		section.setResultArtifactForCsvExport?.(artifacts[selectedResultIndex].artifactId);
+	} catch (error) {
+		console.error('[kusto] Failed to register Kusto batch CSV artifact:', error);
+	}
+	try { __kustoNotifyResultsUpdated(boxId); } catch (error) { console.error('[kusto]', error); }
+	return true;
+}
 
 export function displayResultForBox(result: any, boxId: any, options: any): boolean {
 	if (!boxId) { return false; }

@@ -76,8 +76,19 @@ import {
 	unregisterSqlDerivedComparisonsForSource,
 } from './sql-section-message-router.js';
 import { retireSqlComparisonAdmission } from './sql-comparison-admission-runtime.js';
-import { clearResultsState, rebindResultArtifactConsumer, unbindResultArtifactConsumer } from './results-state';
-import { comparisonSourceArtifactConsumerId, htmlDashboardFactArtifactConsumerId } from '../../shared/resultArtifact.js';
+import {
+	clearResultsState,
+	getResultsBatchState,
+	rebindIndexedResultArtifactConsumer,
+	rebindResultArtifactConsumer,
+	unbindResultArtifactConsumer,
+} from './results-state';
+import {
+	comparisonSourceArtifactConsumerId,
+	formatResultSourceLabel,
+	htmlDashboardFactArtifactConsumerId,
+	resultSourceRefKey,
+} from '../../shared/resultArtifact.js';
 import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility, setQueryExecuting, __kustoSetLinkedOptimizationMode } from '../sections/query-execution.controller';
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
 import { buildSchemaInfo } from '../shared/schema-utils';
@@ -1635,7 +1646,14 @@ function __kustoRefreshDependentExtraBoxes( rootSourceId: any) {
 						if (!st || typeof st !== 'object') continue;
 						const ds = (typeof (st as any).dataSourceId === 'string') ? String((st as any).dataSourceId) : '';
 						if (ds !== sourceId) continue;
-						try { rebindResultArtifactConsumer(boxId, sourceId); } catch (e) { console.error('[kusto]', e); }
+						try {
+							rebindIndexedResultArtifactConsumer(
+								boxId, sourceId,
+								Number.isSafeInteger((st as any).dataSourceResultIndex)
+									&& (st as any).dataSourceResultIndex >= 0
+									? (st as any).dataSourceResultIndex : 0,
+							);
+						} catch (e) { console.error('[kusto]', e); }
 						try { __kustoUpdateChartBuilderUI(boxId); } catch (e) { console.error('[kusto]', e); }
 						try {
 							const chartEl = document.getElementById(boxId) as any;
@@ -1724,11 +1742,6 @@ export function __kustoGetChartDatasetsInDomOrder() {
 				}
 				// Only include sections that can be data sources
 				if (!['query', 'sql', 'url', 'transformation'].includes(kind)) continue;
-				const st = getCurrentResultArtifact(id);
-				if (!st || (st.producer?.boxId && st.producer.boxId !== id)) continue;
-				const cols = st && Array.isArray(st.columns) ? st.columns : [];
-				const rows = st && Array.isArray(st.rows) ? st.rows : [];
-				if (!cols.length) continue;
 				let name = '';
 				try {
 					name = typeof (child as any).getName === 'function'
@@ -1736,15 +1749,24 @@ export function __kustoGetChartDatasetsInDomOrder() {
 						: String(((document.getElementById(id + '_name') as any || {}).value || '')).trim();
 				} catch (e) { console.error('[kusto]', e); }
 				// Format: "<Name> [section #N]" if named, "Unnamed [section #N]" if not
-				const label = name
+				const baseLabel = name
 					? name + ' [section #' + sectionIndex + ']'
 					: 'Unnamed [section #' + sectionIndex + ']';
-				out.push({
-					id,
-					label,
-					columns: cols,
-					rows
-				});
+				const resultSetCount = Math.max(1, getResultsBatchState(id).length);
+				for (let resultIndex = 0; resultIndex < resultSetCount; resultIndex++) {
+					const artifact = getCurrentResultArtifact(id, resultIndex);
+					if (!artifact || (artifact.producer?.boxId && artifact.producer.boxId !== id)) continue;
+					const columns = Array.isArray(artifact.columns) ? artifact.columns : [];
+					if (!columns.length) continue;
+					out.push({
+						id,
+						resultIndex,
+						sourceKey: resultSourceRefKey({ sourceBoxId: id, resultIndex }),
+						label: formatResultSourceLabel(baseLabel, resultIndex, resultSetCount),
+						columns,
+						rows: Array.isArray(artifact.rows) ? artifact.rows : [],
+					});
+				}
 			} catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
@@ -1784,10 +1806,19 @@ function __kustoConfigureChartFromTool( boxId: any, config: any) {
 		// Ensure state object exists
 		const st = __kustoGetChartState(id);
 		if (!st) return false;
+		if (Object.prototype.hasOwnProperty.call(config, 'dataSourceResultIndex')
+			&& (typeof config.dataSourceResultIndex !== 'number'
+				|| !Number.isSafeInteger(config.dataSourceResultIndex)
+				|| config.dataSourceResultIndex < 0)) return false;
 		
 		// Apply configuration properties
 		if (typeof config.dataSourceId === 'string') {
 			st.dataSourceId = config.dataSourceId;
+		}
+		if (Object.prototype.hasOwnProperty.call(config, 'dataSourceResultIndex')) {
+			st.dataSourceResultIndex = config.dataSourceResultIndex;
+		} else if (typeof config.dataSourceId === 'string') {
+			st.dataSourceResultIndex = 0;
 		}
 		if (typeof config.chartType === 'string') {
 			st.chartType = config.chartType;
@@ -1926,7 +1957,9 @@ export function __kustoGetChartValidationStatus( boxId: any) {
 		let availableColumns: any[] = [];
 		if (dataSourceId) {
 			try {
-				const dsState = getCurrentResultArtifact(dataSourceId);
+				const dataSourceResultIndex = Number.isSafeInteger(st.dataSourceResultIndex)
+					&& st.dataSourceResultIndex >= 0 ? Number(st.dataSourceResultIndex) : 0;
+				const dsState = getCurrentResultArtifact(dataSourceId, dataSourceResultIndex);
 				if (dsState) {
 					dataSourceExists = true;
 					const cols = Array.isArray(dsState.columns) ? dsState.columns : [];

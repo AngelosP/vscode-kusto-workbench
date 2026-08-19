@@ -14,6 +14,7 @@ import {
 import {
 	captureResultsRuntime,
 	clearResultsState,
+	displayResultBatchForBox,
 	displayResultForBox,
 	getCurrentResultArtifact,
 	getResultsState,
@@ -31,6 +32,7 @@ import {
 	type PersistedResultArtifactV1,
 	type ResultArtifactPublication,
 } from '../../shared/resultArtifact.js';
+import { getKustoResultSets, parseKustoResultBatch } from '../../shared/kustoResultBatch.js';
 import {
 	addQueryBox, removeQueryBox, updateConnectionSelects, toggleCacheControls,
 	__kustoGetQuerySectionElement, __kustoSetSectionName, __kustoGetConnectionId, __kustoGetDatabase,
@@ -164,6 +166,7 @@ type DeferredRestoredResultJob = {
 	sqlOwnerSourceBoxId?: string;
 	kustoAccountPartition?: string;
 	kustoLeaveNoTraceRevision?: number;
+	selectedResultIndex?: number;
 	derivedSourceBoxId?: string;
 };
 type DeferredRestoredResultState = 'ready' | 'pending' | 'invalid';
@@ -1024,6 +1027,39 @@ function __kustoExpectedPersistedProducer(
 	return Object.keys(expected).length ? expected : undefined;
 }
 
+function __kustoNormalizeRestoredResultSet(value: unknown): Record<string, unknown> {
+	const record = value && typeof value === 'object' && !Array.isArray(value)
+		? value as Record<string, unknown>
+		: {};
+	const columns = Array.isArray(record.columns) ? record.columns : [];
+	const metadata = record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
+		? record.metadata as Record<string, unknown>
+		: {};
+	return {
+		...record,
+		columns,
+		rows: projectRowsToDeclaredColumns(columns, record.rows),
+		metadata: typeof metadata.executionTime === 'undefined'
+			? { ...metadata, executionTime: '' }
+			: metadata,
+	};
+}
+
+function __kustoNormalizeRestoredKustoBatch(value: Record<string, unknown>): Record<string, unknown> {
+	const root = __kustoNormalizeRestoredResultSet(value);
+	const envelope = value.additionalResults;
+	if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)
+		|| !Array.isArray((envelope as Record<string, unknown>).sets)) return root;
+	return {
+		...root,
+		additionalResults: {
+			...(envelope as Record<string, unknown>),
+			sets: ((envelope as Record<string, unknown>).sets as unknown[])
+				.map(__kustoNormalizeRestoredResultSet),
+		},
+	};
+}
+
 function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): void {
 	try {
 		if (!__kustoIsDeferredResultJobCurrent(job)) return;
@@ -1038,14 +1074,29 @@ function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): vo
 		}
 		if (!parsed || typeof parsed !== 'object') return;
 		if (!__kustoIsDeferredResultJobCurrent(job)) return;
-
-		if (!parsed.metadata || typeof parsed.metadata !== 'object') {
-			parsed.metadata = { executionTime: '' };
-		} else if (typeof parsed.metadata.executionTime === 'undefined') {
-			parsed.metadata.executionTime = '';
+		const isKustoBatchRestore = job.kind === 'query' && !job.sqlOwnerConnectionId;
+		let selectedResultIndex = 0;
+		if (isKustoBatchRestore) {
+			const batch = parseKustoResultBatch(__kustoNormalizeRestoredKustoBatch(parsed));
+			if (!batch.ok) {
+				__kustoDeleteStoredQueryResultJson(job.boxId);
+				return;
+			}
+			parsed = batch.value;
+			const requestedIndex = Number(job.selectedResultIndex ?? 0);
+			selectedResultIndex = Number.isSafeInteger(requestedIndex) && requestedIndex >= 0
+				&& requestedIndex < getKustoResultSets(batch.value).length
+				? requestedIndex
+				: 0;
+		} else {
+			if (!parsed.metadata || typeof parsed.metadata !== 'object') {
+				parsed.metadata = { executionTime: '' };
+			} else if (typeof parsed.metadata.executionTime === 'undefined') {
+				parsed.metadata.executionTime = '';
+			}
+			const parsedColumns = Array.isArray(parsed.columns) ? parsed.columns : [];
+			parsed.rows = projectRowsToDeclaredColumns(parsedColumns, parsed.rows);
 		}
-		const parsedColumns = Array.isArray(parsed.columns) ? parsed.columns : [];
-		parsed.rows = projectRowsToDeclaredColumns(parsedColumns, parsed.rows);
 
 		if (job.kind === 'sql') {
 			try {
@@ -1152,11 +1203,15 @@ function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): vo
 			__kustoDeleteStoredQueryResultJson(job.boxId);
 			return;
 		}
-		const resultAccepted = displayResultForBox(parsed, job.boxId, {
+		const displayOptions = {
 			label: 'Results',
 			showExecutionTime: true,
 			...(artifactPublication ? { artifactPublication } : {}),
-		});
+			...(selectedResultIndex > 0 ? { selectedResultIndex } : {}),
+		};
+		const resultAccepted = isKustoBatchRestore
+			? displayResultBatchForBox(parsed, job.boxId, displayOptions)
+			: displayResultForBox(parsed, job.boxId, displayOptions);
 		if (resultAccepted === false) {
 			__kustoDeleteStoredQueryResultJson(job.boxId);
 			return;
@@ -1189,7 +1244,7 @@ function __kustoDeferredRestoreComparableState(value: unknown, job: DeferredRest
 		if (String(section?.id || '').trim() !== job.boxId) continue;
 		for (const key of [
 			'resultJson', 'resultArtifact', 'kustoAccountPartition',
-			'kustoLeaveNoTraceRevision',
+			'kustoLeaveNoTraceRevision', 'selectedResultIndex',
 		]) delete section[key];
 		if (__kustoIsKustoOwnedRestore(job) && !String(job.kustoConnectionIdHint || '').trim()) {
 			delete section.connectionIdHint;
@@ -3278,6 +3333,7 @@ function applyKqlxState(
 								expectedQueryText: String(section.query || ''),
 								kustoAccountPartition: String(section.kustoAccountPartition || ''),
 								kustoLeaveNoTraceRevision: Number(section.kustoLeaveNoTraceRevision),
+								selectedResultIndex: Number(section.selectedResultIndex ?? 0),
 							} : {}),
 						});
 					}
@@ -3350,6 +3406,8 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					expanded: (typeof section.expanded === 'boolean') ? !!section.expanded : true,
 					editorHeightPx: (typeof section.editorHeightPx === 'number') ? section.editorHeightPx : undefined,
 					dataSourceId: (typeof section.dataSourceId === 'string') ? section.dataSourceId : undefined,
+					dataSourceResultIndex: Number.isSafeInteger(section.dataSourceResultIndex)
+						&& Number(section.dataSourceResultIndex) >= 0 ? Number(section.dataSourceResultIndex) : undefined,
 					chartType: (typeof section.chartType === 'string') ? section.chartType : undefined,
 					xColumn: (typeof section.xColumn === 'string') ? section.xColumn : undefined,
 					yColumns: (Array.isArray(section.yColumns) ? section.yColumns : undefined),
@@ -3434,6 +3492,8 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					expanded: (typeof section.expanded === 'boolean') ? !!section.expanded : true,
 					editorHeightPx: (typeof section.editorHeightPx === 'number') ? section.editorHeightPx : undefined,
 					dataSourceId: (typeof section.dataSourceId === 'string') ? section.dataSourceId : undefined,
+					dataSourceResultIndex: Number.isSafeInteger(section.dataSourceResultIndex)
+						&& Number(section.dataSourceResultIndex) >= 0 ? Number(section.dataSourceResultIndex) : undefined,
 					transformationType: (typeof section.transformationType === 'string') ? section.transformationType : undefined,
 					distinctColumn: (typeof section.distinctColumn === 'string') ? section.distinctColumn : undefined,
 					deriveColumns,
@@ -3445,6 +3505,9 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					pivotAggregation: (typeof section.pivotAggregation === 'string') ? section.pivotAggregation : undefined,
 					pivotMaxColumns: (typeof section.pivotMaxColumns === 'number') ? section.pivotMaxColumns : undefined,
 					joinRightDataSourceId: (typeof section.joinRightDataSourceId === 'string') ? section.joinRightDataSourceId : undefined,
+					joinRightDataSourceResultIndex: Number.isSafeInteger(section.joinRightDataSourceResultIndex)
+						&& Number(section.joinRightDataSourceResultIndex) >= 0
+						? Number(section.joinRightDataSourceResultIndex) : undefined,
 					joinKind: (typeof section.joinKind === 'string') ? section.joinKind : undefined,
 					joinKeys: Array.isArray(section.joinKeys)
 						? section.joinKeys

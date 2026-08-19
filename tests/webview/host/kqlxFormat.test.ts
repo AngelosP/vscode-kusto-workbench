@@ -494,6 +494,30 @@ describe('parseKqlxText edge cases', () => {
 		});
 	});
 
+	it('validates and removes selectedResultIndex as known query attachment metadata', () => {
+		const base = parseKqlxText(JSON.stringify({
+			kind: 'kqlx', version: 1,
+			state: { sections: [{
+				id: 'query_1', type: 'query', query: 'print 1', selectedResultIndex: 2,
+			}] },
+		}));
+		expect(base.ok).toBe(true);
+		if (!base.ok) return;
+
+		const overlaid = overlayKqlxFileState(base.file, {
+			sections: [{ id: 'query_1', type: 'query', query: 'print 2' }],
+		});
+		expect(overlaid.state.sections[0]).not.toHaveProperty('selectedResultIndex');
+		for (const selectedResultIndex of ['2', -1, 1.5]) {
+			const invalid = parseKqlxText(JSON.stringify({
+				kind: 'kqlx', version: 1,
+				state: { sections: [{ type: 'query', selectedResultIndex }] },
+			}));
+			expect(invalid.ok).toBe(false);
+			if (!invalid.ok) expect(invalid.error).toContain('selectedResultIndex');
+		}
+	});
+
 	it('preserves nested extensions while omitted known nested fields stay deleted', () => {
 		const base = parseKqlxText(JSON.stringify({
 			kind: 'kqlx', version: 1, state: { sections: [{

@@ -1055,6 +1055,7 @@ export class KwCopilotChat extends LitElement {
 			composed: true,
 			detail: {
 				query: msg.queryText || msg.detail || '',
+				result: msg.storedResult,
 			},
 		}));
 	}

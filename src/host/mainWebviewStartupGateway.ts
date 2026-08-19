@@ -24,6 +24,7 @@ import {
 	admitPowerBiPublishWebviewMessage,
 	admitPowerBiPublishWebviewMessageFromEnvelope,
 } from '../shared/powerBiPublishProtocol';
+import { parseKustoResultAttachmentWebviewMessageFromEnvelope } from '../shared/kustoResultAttachmentProtocol';
 import { captureRuntimeMessageEnvelope } from '../shared/runtimeMessageEnvelope';
 
 export const MAIN_WEBVIEW_DISPATCHER_READY_TYPE = 'mainWebviewDispatcherReady' as const;
@@ -254,6 +255,11 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 		const envelope = captureRuntimeMessageEnvelope(input);
 		if (!envelope.ok) return;
 		input = envelope.value;
+		if (envelope.value.type === 'selectKustoResult') {
+			const parsed = parseKustoResultAttachmentWebviewMessageFromEnvelope(envelope.descriptorSnapshot);
+			if (!parsed.ok) return;
+			input = parsed.value;
+		}
 		const publicationAdmission = admitKustoPublicationWebviewMessageFromEnvelope(
 			envelope.descriptorSnapshot,
 		);

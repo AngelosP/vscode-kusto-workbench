@@ -41,10 +41,19 @@ import {
 import { applyKustoLeaveNoTracePolicy, markKustoLeaveNoTracePolicyPending } from '../../src/webview/core/persistence.js';
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
 import { pState } from '../../src/webview/shared/persistence-state.js';
-import { clearResultsState, displayResultForBox, getCurrentResultArtifact, getResultsState, setResultsState } from '../../src/webview/core/results-state.js';
+import {
+	clearResultsState,
+	displayResultBatchForBox,
+	displayResultForBox,
+	getCurrentResultArtifact,
+	getResultsState,
+	getSelectedResultIndex,
+	setResultsState,
+} from '../../src/webview/core/results-state.js';
 import { postMessageToHost } from '../../src/webview/shared/webview-messages.js';
 import { APPLIED_KUSTO_COPILOT_DONE_EVENT } from '../../src/webview/core/kusto-copilot-output-runtime.js';
 import { getKustoSchemaIdentityKey } from '../../src/shared/kustoAuth.js';
+import { createKustoResultBatch } from '../../src/shared/kustoResultBatch.js';
 
 vi.mock('../../src/webview/shared/webview-messages.js', () => ({
 	postMessageToHost: vi.fn(),
@@ -128,6 +137,135 @@ function hasSpinner(el: KwQuerySection): boolean {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('kw-query-section loading states', () => {
+	it('renders Run All as a distinct non-mode split-menu action', async () => {
+		const el = createSection();
+		await el.updateComplete;
+
+		const item = el.querySelector(`#${el.boxId}_run_menu_all`) as HTMLElement | null;
+		expect(item?.textContent?.trim()).toBe('Run All');
+		expect(item?.dataset.runAction).toBe('all');
+		expect(item?.hasAttribute('data-run-mode')).toBe(false);
+	});
+
+	it('keeps the result picker available when the selected result set is empty', async () => {
+		const el = createSection();
+		el.id = el.boxId;
+		await el.updateComplete;
+
+		expect(el.displayResult({ columns: [], rows: [], metadata: {} }, {
+			label: 'Results',
+			resultSets: [
+				{ resultIndex: 0, label: 'Result #1' },
+				{ resultIndex: 1, label: 'Result #2' },
+			],
+			selectedResultIndex: 1,
+			deferCsvRelease: true,
+		})).toBe(true);
+		const table = el.querySelector('kw-data-table') as any;
+		expect(table).not.toBeNull();
+		expect(table.options.selectedResultIndex).toBe(1);
+		expect(table.options.resultSets).toHaveLength(2);
+		expect(document.getElementById(el.boxId + '_results')?.textContent).not.toContain('No results');
+	});
+
+	it('applies result picker changes only after the exact host selection is accepted', async () => {
+		const el = createSection();
+		el.id = el.boxId;
+		vi.spyOn(el, 'getSchemaLifecycleIdentity').mockReturnValue({
+			sectionInstanceId: 'instance-results', targetGeneration: 3,
+		});
+		await el.updateComplete;
+		const batch = createKustoResultBatch([
+			{ columns: ['Value'], rows: [['first']], metadata: { resultName: 'First' } },
+			{ columns: ['Value'], rows: [['second']], metadata: { resultName: 'Second' } },
+			{ columns: ['Value'], rows: [['third']], metadata: { resultName: 'Third' } },
+		]);
+		expect(batch.ok).toBe(true);
+		if (!batch.ok) return;
+		expect(displayResultBatchForBox(batch.value, el.boxId, {
+			label: 'Results', showExecutionTime: true,
+			artifactPublication: {
+				producer: { engine: 'kusto', boxId: el.boxId, executionId: 'execution-results' },
+				policy: { exportToCsv: true },
+			},
+		})).toBe(true);
+		const primaryArtifact = getCurrentResultArtifact(el.boxId, 0)!;
+		const initialTable = el.querySelector('kw-data-table') as any;
+
+		initialTable.dispatchEvent(new CustomEvent('result-set-change', { detail: { resultIndex: 1 } }));
+		initialTable.dispatchEvent(new CustomEvent('result-set-change', { detail: { resultIndex: 2 } }));
+		const requests = vi.mocked(postMessageToHost).mock.calls
+			.map(([message]) => message as any)
+			.filter(message => message.type === 'selectKustoResult');
+		expect(requests).toHaveLength(2);
+		expect(requests[1]).toMatchObject({
+			boxId: el.boxId,
+			sectionInstanceId: 'instance-results', targetGeneration: 3,
+			primaryArtifactId: primaryArtifact.artifactId, resultIndex: 2,
+		});
+
+		el.applyResultSelectionResponse({
+			type: 'kustoResultSelectionResult', requestId: requests[0].requestId,
+			boxId: el.boxId, primaryArtifactId: primaryArtifact.artifactId,
+			resultIndex: 1, accepted: true,
+		});
+		expect(getSelectedResultIndex(el.boxId)).toBe(0);
+		el.applyResultSelectionResponse({
+			type: 'kustoResultSelectionResult', requestId: requests[1].requestId,
+			boxId: el.boxId, primaryArtifactId: primaryArtifact.artifactId,
+			resultIndex: 2, accepted: false,
+		});
+		expect(getSelectedResultIndex(el.boxId)).toBe(0);
+
+		initialTable.dispatchEvent(new CustomEvent('result-set-change', { detail: { resultIndex: 2 } }));
+		const acceptedRequest = vi.mocked(postMessageToHost).mock.calls
+			.map(([message]) => message as any)
+			.filter(message => message.type === 'selectKustoResult').at(-1)!;
+		el.applyResultSelectionResponse({
+			type: 'kustoResultSelectionResult', requestId: acceptedRequest.requestId,
+			boxId: el.boxId, primaryArtifactId: primaryArtifact.artifactId,
+			resultIndex: 2, accepted: true,
+		});
+
+		expect(getSelectedResultIndex(el.boxId)).toBe(2);
+		expect(getResultsState(el.boxId, 2)?.rows).toEqual([['third']]);
+		const selectedTable = el.querySelector('kw-data-table') as any;
+		expect(selectedTable.options.selectedResultIndex).toBe(2);
+		expect(selectedTable.resultArtifactId).toBe(`${primaryArtifact.artifactId}:set:2`);
+		expect(selectedTable.rows).toEqual([['third']]);
+	});
+
+	it('switches restored result tabs locally in the read-only browser viewer', async () => {
+		(window as any).__kustoReadOnlyMode = true;
+		try {
+			const el = createSection();
+			el.id = el.boxId;
+			await el.updateComplete;
+			const batch = createKustoResultBatch([
+				{ columns: ['Value'], rows: [['first']], metadata: {} },
+				{ columns: ['Value'], rows: [['second']], metadata: {} },
+			]);
+			expect(batch.ok).toBe(true);
+			if (!batch.ok) return;
+			expect(displayResultBatchForBox(batch.value, el.boxId, {
+				artifactPublication: { policy: { exportToCsv: true } },
+			})).toBe(true);
+			vi.mocked(postMessageToHost).mockClear();
+
+			el.querySelector('kw-data-table')!.dispatchEvent(new CustomEvent('result-set-change', {
+				detail: { resultIndex: 1 },
+			}));
+
+			expect(getSelectedResultIndex(el.boxId)).toBe(1);
+			expect((el.querySelector('kw-data-table') as any).rows).toEqual([['second']]);
+			expect(postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({
+				type: 'selectKustoResult',
+			}));
+		} finally {
+			delete (window as any).__kustoReadOnlyMode;
+		}
+	});
+
 	it('focuses and restores the cluster trigger around the add-connection dialog', async () => {
 		const el = createSection();
 		await el.updateComplete;

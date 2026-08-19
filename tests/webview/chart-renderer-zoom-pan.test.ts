@@ -24,6 +24,13 @@ vi.mock('../../src/webview/core/results-state.js', () => ({
 		resultsState.boundArtifactIdByConsumer[consumerId] = artifactId;
 		return artifactId;
 	},
+	bindIndexedResultArtifactConsumer: (consumerId: string, sourceBoxId: string, resultIndex: number) => {
+		const artifactId = resultsState.currentArtifactIdBySource[sourceBoxId];
+		const artifact = resultsState.artifactById[artifactId];
+		if (!artifact || artifact.resultIndex !== resultIndex) return undefined;
+		resultsState.boundArtifactIdByConsumer[consumerId] = artifactId;
+		return artifactId;
+	},
 	getBoundResultArtifact: (consumerId: string, sourceBoxId?: string) => {
 		const artifact = resultsState.artifactById[resultsState.boundArtifactIdByConsumer[consumerId]];
 		return artifact && (!sourceBoxId || artifact.sourceBoxId === sourceBoxId) ? artifact : null;
@@ -205,6 +212,7 @@ describe('chart-renderer zoom/pan controls', () => {
 		resultsState.revisionById.q1 = (resultsState.revisionById.q1 || 0) + 1;
 		resultsState.artifactById[sourceArtifactId] = {
 			artifactId: sourceArtifactId, sourceBoxId: 'q1', revision: resultsState.revisionById.q1,
+			resultIndex: 0,
 			createdAt: resultsState.revisionById.q1, restored: false,
 			columns: resultsState.byId.q1.columns, rows: resultsState.byId.q1.rows,
 			metadata: {}, lineage: [],
@@ -265,10 +273,12 @@ describe('chart-renderer zoom/pan controls', () => {
 		const chartId = 'chart_bound_artifact';
 		resultsState.artifactById.artifact_a = {
 			artifactId: 'artifact_a', sourceBoxId: 'q1', revision: 1,
+			resultIndex: 0,
 			columns: ['Category', 'Value'], rows: [['artifact-a', 1]], metadata: {},
 		};
 		resultsState.artifactById.artifact_b = {
 			artifactId: 'artifact_b', sourceBoxId: 'q1', revision: 2,
+			resultIndex: 0,
 			columns: ['Category', 'Value'], rows: [['artifact-b', 2]], metadata: {},
 		};
 		resultsState.boundArtifactIdByConsumer[chartId] = 'artifact_a';

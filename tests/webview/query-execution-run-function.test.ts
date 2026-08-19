@@ -126,7 +126,7 @@ vi.mock('../../src/webview/components/kw-function-params-dialog', () => ({
 	KwFunctionParamsDialog: dialogState.TestFunctionParamsDialog,
 }));
 
-import { displayComparisonSummary, executeKustoComparisonPair, executeQuery, executeRunFunction, lastRunCacheEnabledByBoxId, QueryExecutionController } from '../../src/webview/sections/query-execution.controller.js';
+import { displayComparisonSummary, executeAllQueries, executeKustoComparisonPair, executeQuery, executeRunFunction, lastRunCacheEnabledByBoxId, QueryExecutionController } from '../../src/webview/sections/query-execution.controller.js';
 
 beforeAll(() => {
 	if (!customElements.get('kw-function-params-dialog')) {
@@ -277,6 +277,62 @@ describe('executeRunFunction', () => {
 		expect(executionId).toBeUndefined();
 		expect(testState.beginQueryExecution).not.toHaveBeenCalled();
 		expect(getExecuteMessages()).toHaveLength(0);
+	});
+
+	it('runs the full editor once in plain mode without changing the saved run mode', () => {
+		const query = 'print First=1;\nprint Second=2';
+		testState.getRunMode.mockReturnValue('sample100');
+		testState.queryEditors.query_1 = makeEditor(query, 1, 2, {
+			isEmpty: () => false,
+			startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 14,
+		});
+		appendExecutionControls('query_1');
+
+		const executionId = executeAllQueries('query_1');
+
+		expect(executionId).toMatch(/^kusto-run-/);
+		expect(getExecuteMessages()).toEqual([expect.objectContaining({
+			query, queryMode: 'plain', producer: 'manual',
+		})]);
+		expect(testState.getRunMode()).toBe('sample100');
+	});
+
+	it('canonicalizes standalone semicolon lines before Run All execution', () => {
+		const query = [
+			'print ResultSet = "First", Value = 1',
+			';',
+			'print ResultSet = "Second", Value = 2',
+			';',
+			'print ResultSet = "Third", Value = 3',
+		].join('\n');
+		testState.queryEditors.query_1 = makeEditor(query);
+		appendExecutionControls('query_1');
+
+		expect(executeAllQueries('query_1')).toMatch(/^kusto-run-/);
+		expect(getExecuteMessages()).toEqual([expect.objectContaining({
+			query: [
+				'print ResultSet = "First", Value = 1;',
+				'',
+				'print ResultSet = "Second", Value = 2;',
+				'',
+				'print ResultSet = "Third", Value = 3',
+			].join('\n'),
+			queryMode: 'plain',
+		})]);
+	});
+
+	it.each([
+		['management', '.show tables', 'Run All supports query statements only. Run management commands individually.'],
+		['mixed', '.show tables;\nprint Value=1', 'Run All cannot combine management commands and query statements.'],
+	] as const)('rejects %s Run All text before claiming an execution', (_label, query, error) => {
+		testState.queryEditors.query_1 = makeEditor(query);
+		appendExecutionControls('query_1');
+
+		expect(executeAllQueries('query_1')).toBeUndefined();
+
+		expect(testState.beginQueryExecution).not.toHaveBeenCalled();
+		expect(getExecuteMessages()).toEqual([]);
+		expect(getInfoMessages()).toContainEqual({ type: 'showInfo', message: error });
 	});
 
 	it('runs a no-parameter function definition after a leading comment', async () => {

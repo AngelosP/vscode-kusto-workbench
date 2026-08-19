@@ -209,6 +209,8 @@ export interface AddSectionInput extends TargetFields {
 	code?: string;
 	/** For chart sections: data source section ID */
 	dataSourceId?: string;
+	/** For chart sections: zero-based result set index from the source query */
+	dataSourceResultIndex?: number;
 	/** For chart sections: chart type */
 	chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | 'sankey' | 'heatmap';
 	/** Section name/title */
@@ -241,6 +243,25 @@ export interface ConfigureQuerySectionInput extends TargetFields {
 	execute?: boolean;
 }
 
+export type KustoToolResultSet = {
+	resultIndex: number;
+	resultName?: string;
+	rowCount: number;
+	columns: unknown[];
+	results: unknown[];
+	returnedRowCount: number;
+	truncated: boolean;
+};
+
+export type ConfigureQuerySectionResult = {
+	success: boolean;
+	rowCount?: number;
+	columns?: unknown[];
+	resultPreview?: string;
+	resultSets?: KustoToolResultSet[];
+	error?: string;
+};
+
 export interface UpdateMarkdownSectionInput extends TargetFields {
 	sectionId: string;
 	/** Optional name/title for the section */
@@ -256,6 +277,7 @@ export interface ConfigureChartInput extends TargetFields {
 	/** Optional name/title for the section */
 	name?: string;
 	dataSourceId?: string;
+	dataSourceResultIndex?: number;
 	chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | 'sankey' | 'heatmap';
 	xColumn?: string;
 	yColumns?: string[];
@@ -317,6 +339,7 @@ export interface ConfigureTransformationInput extends TargetFields {
 	/** Optional name/title for the section */
 	name?: string;
 	dataSourceId?: string;
+	dataSourceResultIndex?: number;
 	transformationType?: 'derive' | 'summarize' | 'distinct' | 'pivot' | 'join';
 	// For distinct
 	distinctColumn?: string;
@@ -332,6 +355,7 @@ export interface ConfigureTransformationInput extends TargetFields {
 	pivotAggregation?: 'sum' | 'avg' | 'count' | 'first';
 	// For join
 	joinRightDataSourceId?: string;
+	joinRightDataSourceResultIndex?: number;
 	joinKind?: 'inner' | 'leftouter' | 'rightouter' | 'fullouter' | 'leftanti' | 'rightanti' | 'leftsemi' | 'rightsemi';
 	joinKeys?: Array<{ left: string; right: string }>;
 	joinOmitDuplicateColumns?: boolean;
@@ -360,8 +384,9 @@ export type DelegateToKustoWorkbenchCopilotResult =
 		query?: string;
 		executed?: boolean;
 		rowCount?: number;
-		columns?: string[];
-		results?: Array<Record<string, unknown>>;
+		columns?: unknown[];
+		results?: unknown[];
+		resultSets?: KustoToolResultSet[];
 		maxResultRows?: number;
 		returnedRowCount?: number;
 		truncated?: string;
@@ -2457,7 +2482,7 @@ export class KustoWorkbenchToolOrchestrator {
 		return this.sendToWebview('toolReorderSections', { sectionIds: rest.sectionIds }, 30000, target);
 	}
 
-	async configureQuerySection(input: ConfigureQuerySectionInput, cancellationToken?: vscode.CancellationToken): Promise<{ success: boolean; resultPreview?: string }> {
+	async configureQuerySection(input: ConfigureQuerySectionInput, cancellationToken?: vscode.CancellationToken): Promise<ConfigureQuerySectionResult> {
 		const { target, rest } = this.splitTargetFields(input);
 		input = rest as ConfigureQuerySectionInput;
 		// Unescape literal \n sequences that LLMs frequently produce in query text
@@ -2465,7 +2490,7 @@ export class KustoWorkbenchToolOrchestrator {
 			input = { ...input, query: unescapeLLMText(input.query) };
 		}
 		const preflight = this.preflightKustoToolTarget(input);
-		if (!preflight.input) return { success: false, resultPreview: '', error: preflight.error } as { success: boolean; resultPreview?: string };
+		if (!preflight.input) return { success: false, resultPreview: '', error: preflight.error };
 		input = preflight.input;
 		const queryTimeoutMinutes = vscode.workspace.getConfiguration('kustoWorkbench').get<number>('queryTimeout', 20);
 		const timeoutMs = input.execute

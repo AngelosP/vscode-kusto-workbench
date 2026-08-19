@@ -8,6 +8,7 @@ import * as lockfile from 'proper-lockfile';
 
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
+import { KustoResultPersistenceRegistry } from './kustoResultPersistenceOwner';
 import type { SqlWorkbenchService } from './sql/sqlWorkbenchService';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { overlayKqlxFileState, parseKqlxText, stringifyKqlxFile, type KqlxFileKind, type KqlxFileV1, type KqlxSectionV1, type KqlxStateV1 } from './kqlxFormat';
@@ -938,7 +939,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		extensionUri: vscode.Uri,
 		connectionManager: ConnectionManager,
 		sqlWorkbench: SqlWorkbenchService,
-		editorCursorStatusBar?: EditorCursorStatusBar
+		editorCursorStatusBar?: EditorCursorStatusBar,
+		kustoResultPersistenceRegistry = new KustoResultPersistenceRegistry(),
 	): vscode.Disposable {
 		// Register the virtual document provider for section diffs (once).
 		if (!KqlxEditorProvider.sectionDiffProviderRegistered) {
@@ -952,7 +954,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			);
 		}
 
-		const provider = new KqlxEditorProvider(context, extensionUri, connectionManager, sqlWorkbench, editorCursorStatusBar);
+		const provider = new KqlxEditorProvider(
+			context, extensionUri, connectionManager, sqlWorkbench,
+			editorCursorStatusBar, kustoResultPersistenceRegistry,
+		);
 		return vscode.window.registerCustomEditorProvider(KqlxEditorProvider.viewType, provider, {
 			supportsMultipleEditorsPerDocument: false,
 			// VS Code supports a built-in Find widget for webviews.
@@ -966,7 +971,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		private readonly extensionUri: vscode.Uri,
 		private readonly connectionManager: ConnectionManager,
 		private readonly sqlWorkbench: SqlWorkbenchService,
-		private readonly editorCursorStatusBar?: EditorCursorStatusBar
+		private readonly editorCursorStatusBar?: EditorCursorStatusBar,
+		private readonly kustoResultPersistenceRegistry = new KustoResultPersistenceRegistry(),
 	) {
 		this.context.subscriptions.push(vscode.workspace.onDidCloseTextDocument(document => {
 			const key = normalizeWorkbenchUriKey(document.uri);
@@ -1277,7 +1283,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			localResourceRoots: [this.extensionUri, docDir, workspaceFolderUri].filter(Boolean) as vscode.Uri[]
 		};
 		fileOpenTrace.mark('webview.options.set', { localResourceRoots: [this.extensionUri, docDir, workspaceFolderUri].filter(Boolean).length });
+		const kustoResultLease = this.kustoResultPersistenceRegistry.acquire(
+			normalizeWorkbenchUriKey(document.uri),
+		);
+		const kustoResultOwner = kustoResultLease.owner;
+		const kustoResultPanelSession = kustoResultOwner.openPanel(viewSessionId);
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.sqlWorkbench, this.editorCursorStatusBar);
+		queryEditor.attachKustoResultPersistenceSession(kustoResultPanelSession);
 		queryEditor.fileOpenTrace = fileOpenTrace;
 		queryEditor.documentUri = document.uri.toString();
 		queryEditor.setMessageTransport(message => startupGateway.postMessage(message));
@@ -1297,6 +1309,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		try {
 			await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, initialDocumentLoading: true });
 		} catch (error) {
+			kustoResultPanelSession.dispose();
+			kustoResultLease.release();
 			documentViewSessionActive = false;
 			startupGateway.dispose();
 			outerDisposalSubscription.dispose();
@@ -1304,6 +1318,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			throw error;
 		}
 		if (outerDisposed && !isSessionFile) {
+			kustoResultPanelSession.dispose();
+			kustoResultLease.release();
 			documentViewSessionActive = false;
 			startupGateway.dispose();
 			outerDisposalSubscription.dispose();
@@ -2477,7 +2493,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				...parsed.file,
 				state: ensureProjectedSectionIds(parsed.file.state, baseText),
 			};
-			const file = overlayKqlxFileState(projectedBase, stateForDocument(state), documentKind);
+			const file = overlayKqlxFileState(
+				projectedBase,
+				kustoResultOwner.overlaySnapshot(stateForDocument(state)),
+				documentKind,
+			);
 			const candidateUnsafeReason = getUnsafeLinkedQueryReason(document.uri, file.state);
 			if (candidateUnsafeReason) throw new Error(`Cannot persist an unsafe linked query: ${candidateUnsafeReason}`);
 			return file;
@@ -2502,16 +2522,22 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const ownedDocumentEdits = new OwnedDocumentEditTracker();
 		let activeSourceMutations = 0;
 		const applyOwnedSourceEdit = async (edit: vscode.WorkspaceEdit, expectedText: string): Promise<boolean> => {
+			const expectedFingerprint = createHash('sha256').update(expectedText).digest('hex');
 			activeSourceMutations++;
 			ownedDocumentEdits.begin(expectedText);
 			const sharedMutationToken = claimSharedOwnedMutation(expectedText);
+			kustoResultOwner.markOwnedSourceFingerprint(expectedFingerprint);
 			try {
 				const applied = await vscode.workspace.applyEdit(edit);
 				if (!applied) {
+					kustoResultOwner.discardOwnedSourceFingerprint(expectedFingerprint);
 					ownedDocumentEdits.cancel(expectedText);
 					clearSharedOwnedMutation(sharedMutationToken);
 				}
 				return applied;
+			} catch (error) {
+				kustoResultOwner.discardOwnedSourceFingerprint(expectedFingerprint);
+				throw error;
 			} finally {
 				activeSourceMutations--;
 			}
@@ -3245,6 +3271,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 			let sanitizedState = ensureProjectedSectionIds(parsed.file.state, rawText);
 			sanitizedState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(sanitizedState);
+			kustoResultOwner.admitCanonicalSource(
+				createHash('sha256').update(rawText).digest('hex'),
+				sanitizedState,
+			);
+			sanitizedState = kustoResultOwner.overlaySnapshot(sanitizedState);
 			assertDocumentSectionKindsAllowed(documentKind, sanitizedState.sections);
 			if (outerDisposed || generation !== postDocumentGeneration || !await isProjectionSourceCurrent(rawText)) return false;
 			perfMark('host.kqlx.sanitize.done', { sections: Array.isArray(sanitizedState.sections) ? sanitizedState.sections.length : 0 });
@@ -3326,7 +3357,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (!outerDisposed) void postDocument({ forceReload: true });
 		};
 
-		const subscriptions: vscode.Disposable[] = [startupGateway, outerDisposalSubscription];
+		const subscriptions: vscode.Disposable[] = [
+			startupGateway,
+			outerDisposalSubscription,
+			{ dispose: () => kustoResultLease.release() },
+		];
 		const markdownBarrierRequests = new Map<string, {
 			sourceGeneration: number;
 			resolve: (lease: MarkdownSaveLease | undefined) => void;
@@ -3729,6 +3764,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							sanitizedText,
 						)];
 					if (edits.length > 0) {
+						kustoResultOwner.markOwnedSourceFingerprint(
+							createHash('sha256').update(sanitizedText).digest('hex'),
+						);
 						ownedDocumentEdits.begin(sanitizedText);
 						claimSharedOwnedMutation(sanitizedText);
 					}

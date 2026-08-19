@@ -30,7 +30,7 @@ import {
 	type DashboardTooltipSpec,
 } from './dashboardTooltips';
 
-export interface KwModelFact { sectionId: string; sectionName: string }
+export interface KwModelFact { sectionId: string; sectionName: string; resultIndex?: number }
 export interface KwModelDimension { column: string; label?: string; mode?: 'dropdown' | 'list' | 'between' }
 
 export interface KwProvenanceBinding {
@@ -50,6 +50,7 @@ export interface PortableDashboardColumn {
 
 export interface PortableDashboardDataSource {
 	sectionId: string;
+	resultIndex?: number;
 	columns: readonly PortableDashboardColumn[];
 }
 
@@ -184,11 +185,16 @@ function isNonEmptyText(value: unknown): value is string {
 function isPortableDashboardDataSource(value: unknown): value is PortableDashboardDataSource {
 	return isObjectRecord(value)
 		&& isNonEmptyText(value.sectionId)
+		&& (value.resultIndex === undefined
+			|| (typeof value.resultIndex === 'number'
+				&& Number.isSafeInteger(value.resultIndex) && value.resultIndex >= 0))
 		&& Array.isArray(value.columns)
-		&& value.columns.every(column =>
-			isObjectRecord(column)
-			&& isNonEmptyText(column.name)
-			&& typeof column.type === 'string');
+		&& value.columns.every(column => isObjectRecord(column) && isNonEmptyText(column.name) && typeof column.type === 'string');
+}
+
+function dataSourceMatchesFact(dataSource: PortableDashboardDataSource, fact: KwModelFact): boolean {
+	return dataSource.sectionId === fact.sectionId
+		&& (dataSource.resultIndex ?? 0) === (fact.resultIndex ?? 0);
 }
 
 function sourceRange(element: DefaultTreeAdapterTypes.Element): PortableDashboardSourceRange | undefined {
@@ -352,6 +358,11 @@ function parseKwProvenanceResult(
 		}
 		if (model.fact.sectionName !== undefined && typeof model.fact.sectionName !== 'string') {
 			return { provenance: null, invalidMessage: 'Dashboard provenance model.fact.sectionName must be a string.' };
+		}
+		if (model.fact.resultIndex !== undefined
+			&& (typeof model.fact.resultIndex !== 'number'
+				|| !Number.isSafeInteger(model.fact.resultIndex) || model.fact.resultIndex < 0)) {
+			return { provenance: null, invalidMessage: 'Dashboard provenance model.fact.resultIndex must be a non-negative safe integer.' };
 		}
 		if (!isObjectRecord(bindings)) return { provenance: null, invalidMessage: 'Dashboard provenance bindings must be an object.' };
 		let version = 1;
@@ -776,7 +787,7 @@ function validateSourceColumns(
 	targets: Map<string, DataKwBindTargetElement[]>,
 	dataSources: readonly PortableDashboardDataSource[],
 ): PortableDashboardDiagnostic[] {
-	const factDataSource = dataSources.find(dataSource => dataSource.sectionId === provenance.model.fact.sectionId);
+	const factDataSource = dataSources.find(dataSource => dataSourceMatchesFact(dataSource, provenance.model.fact));
 	if (!factDataSource) return [];
 	const factColumns = new Set(factDataSource.columns.map(column => column.name));
 	const factColumnTypes = new Map(factDataSource.columns.map(column => [column.name, column.type]));
@@ -1179,7 +1190,7 @@ export function compilePortableDashboard(input: CompilePortableDashboardInput): 
 	}
 	if (input.dataSources !== undefined
 		&& !diagnostics.some(item => item.code === 'invalid-source-schema')
-		&& !dataSources.some(dataSource => dataSource.sectionId === provenance.model.fact.sectionId)) {
+		&& !dataSources.some(dataSource => dataSourceMatchesFact(dataSource, provenance.model.fact))) {
 		diagnostics.push(diagnostic(
 			'missing-data-source',
 			`model.fact (missing data source ${provenance.model.fact.sectionId})`,
@@ -1235,7 +1246,7 @@ export function compilePortableDashboard(input: CompilePortableDashboardInput): 
 	]);
 	const hasFatalDiagnostic = unique.some(item => fatalDiagnosticCodes.has(item.code));
 	const rejectedBindings = new Set(unique.flatMap(item => item.bindingKey ? [item.bindingKey] : []));
-	const factDataSource = dataSources.find(dataSource => dataSource.sectionId === provenance.model.fact.sectionId);
+	const factDataSource = dataSources.find(dataSource => dataSourceMatchesFact(dataSource, provenance.model.fact));
 	const factColumns = factDataSource ? new Set(factDataSource.columns.map(column => column.name)) : undefined;
 	const dimensions = Array.isArray(provenance.model.dimensions)
 		? provenance.model.dimensions.filter(dimension =>
@@ -1274,6 +1285,9 @@ export function compilePortableDashboard(input: CompilePortableDashboardInput): 
 			provenanceSource: { ...htmlAnalysis.provenanceSource! },
 			fact: {
 				sectionId: provenance.model.fact.sectionId,
+				...(provenance.model.fact.resultIndex !== undefined
+					? { resultIndex: provenance.model.fact.resultIndex }
+					: {}),
 				sectionName: isNonEmptyText(provenance.model.fact.sectionName)
 					? provenance.model.fact.sectionName
 					: provenance.model.fact.sectionId,

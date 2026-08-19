@@ -99,12 +99,14 @@ import { canonicalSectionKind } from '../../shared/documentSectionCapabilities.j
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { safeRun } from '../shared/safe-run';
 import {
+	bindIndexedResultArtifactConsumer,
 	bindResultArtifactConsumer,
 	clearResultsState,
 	getBoundResultArtifact,
 	getCurrentResultArtifact,
 	getResultArtifact,
 	getResultArtifactByProducerExecution,
+	displayResultBatchForBox,
 	displayResultForBox,
 	displayResult,
 	displayCancelled,
@@ -246,7 +248,12 @@ import {
 	type KustoCopilotClarifyingQuestionMessage,
 } from '../../shared/kustoCopilotClarificationProtocol.js';
 import { hasKustoCopilotRequestIdentity, hasKustoExecutionRequestIdentity, hasKustoExecutionTerminalStamp, kustoCopilotRequestIdentityEquals, kustoExecutionIdentityEquals, kustoExecutionRequestIdentityEquals, type KustoCopilotRequestIdentity, type KustoExecutionRequestIdentity } from '../../shared/kustoExecution.js';
-import { comparisonSourceArtifactConsumerId, createDerivedResultArtifactPublication, modelResultArtifactConsumerId, type ResultArtifactSourcePolicy } from '../../shared/resultArtifact.js';
+import { comparisonSourceArtifactConsumerId, createDerivedResultArtifactPublication, modelResultArtifactConsumerId, publicationFromPersistedResultArtifact, type ResultArtifact, type ResultArtifactSourcePolicy } from '../../shared/resultArtifact.js';
+import { getKustoResultSets, parseKustoResultBatch } from '../../shared/kustoResultBatch.js';
+import {
+	parseKustoResultAttachmentHostMessage,
+	parseKustoResultAttachmentHostMessageFromEnvelope,
+} from '../../shared/kustoResultAttachmentProtocol.js';
 import { sqlConnectionTargetSignature } from '../../shared/sqlConnectionIdentity.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
 import {
@@ -300,6 +307,76 @@ function normalizeAskKustoCopilotMaxResultRows(value: unknown): number {
 		ASK_KUSTO_COPILOT_MIN_MAX_RESULT_ROWS,
 		Math.min(ASK_KUSTO_COPILOT_MAX_MAX_RESULT_ROWS, integerValue)
 	);
+}
+
+function indexedModelConsumerId(requestId: string, resultIndex: number): string {
+	const primary = modelResultArtifactConsumerId(requestId);
+	return resultIndex === 0 ? primary : `${primary}:set:${resultIndex}`;
+}
+
+function releaseModelResultConsumers(consumerIds: Set<string>): void {
+	for (const consumerId of consumerIds) {
+		try { unbindResultArtifactConsumer(consumerId); } catch { /* best effort */ }
+	}
+	consumerIds.clear();
+}
+
+function bindModelResultArtifacts(
+	requestId: string,
+	boxId: string,
+	executionId: string,
+	result: unknown,
+	consumerIds: Set<string>,
+): readonly ResultArtifact[] | undefined {
+	const parsed = parseKustoResultBatch(result);
+	if (!parsed.ok) return undefined;
+	const artifacts: ResultArtifact[] = [];
+	for (const set of getKustoResultSets(parsed.value)) {
+		const artifact = getResultArtifactByProducerExecution(boxId, executionId, set.resultIndex);
+		const consumerId = indexedModelConsumerId(requestId, set.resultIndex);
+		const boundId = artifact && (set.resultIndex === 0
+			? bindResultArtifactConsumer(consumerId, boxId, artifact.artifactId)
+			: bindIndexedResultArtifactConsumer(
+				consumerId, boxId, set.resultIndex, artifact.artifactId,
+			));
+		if (boundId) consumerIds.add(consumerId);
+		const bound = boundId ? getBoundResultArtifact(consumerId, boxId) : null;
+		if (!artifact || bound?.artifactId !== artifact.artifactId
+			|| (bound.resultIndex ?? 0) !== set.resultIndex
+			|| bound.producer?.executionId !== executionId
+			|| bound.policy?.sendToModel !== true) {
+			releaseModelResultConsumers(consumerIds);
+			return undefined;
+		}
+		artifacts.push(bound);
+	}
+	return artifacts;
+}
+
+function projectModelResultSets(artifacts: readonly ResultArtifact[], maxRows: number) {
+	const counts = Array(artifacts.length).fill(0);
+	let assigned = 0;
+	while (assigned < Math.max(0, maxRows)) {
+		let progressed = false;
+		for (let index = 0; index < artifacts.length && assigned < Math.max(0, maxRows); index++) {
+			if (counts[index] >= artifacts[index].rows.length) continue;
+			counts[index]++;
+			assigned++;
+			progressed = true;
+		}
+		if (!progressed) break;
+	}
+	return artifacts.map((artifact, index) => ({
+		resultIndex: artifact.resultIndex ?? index,
+		...(typeof artifact.metadata.resultName === 'string' && artifact.metadata.resultName.trim()
+			? { resultName: artifact.metadata.resultName.trim() }
+			: {}),
+		rowCount: artifact.rows.length,
+		columns: [...artifact.columns],
+		results: artifact.rows.slice(0, counts[index]).map(row => Array.isArray(row) ? [...row] : row),
+		returnedRowCount: counts[index],
+		truncated: counts[index] < artifact.rows.length,
+	}));
 }
 
 const _win = window;
@@ -1040,6 +1117,13 @@ const ADMITTED_KUSTO_TERMINAL_EVENT = 'kusto-workbench-query-terminal';
 const ADMITTED_KUSTO_EXECUTION_STARTED_EVENT = 'kusto-workbench-query-started';
 const stagedKustoPublications = new Map<string, { payload: unknown; deadline: number; timer: ReturnType<typeof setTimeout> }>();
 const completedKustoPublications = new Map<string, { accepted: boolean; timer: ReturnType<typeof setTimeout> }>();
+const pendingKustoResultAttachmentCommits = new Map<string, Readonly<{
+	boxId: string;
+	executionId: string;
+	sectionInstanceId: string;
+	targetGeneration: number;
+	primaryArtifactId: string;
+}>>();
 
 function attachKustoPublicationId(
 	payload: Record<string, unknown>,
@@ -1270,44 +1354,47 @@ function getKustoResultArtifactPublication(message: unknown): ResultArtifactPubl
 		|| String(sourceArtifact.producer?.database || '').toLowerCase() !== String(message.database || '').toLowerCase())) return undefined;
 	if (sourceArtifact && !comparisonSourcePolicyMatchesDispatch(sourceArtifact, dispatch)) return undefined;
 	const sourcePolicies = comparisonSourcePolicies(sourceArtifact);
-	return {
-		producer: {
-			engine: message.engine,
-			boxId: message.boxId,
-			executionId: message.executionId,
-			sectionInstanceId: message.sectionInstanceId,
-			targetGeneration: message.targetGeneration,
-			reservationSequence: message.reservationSequence,
+	const expectedPolicy = {
+		accountPartition: dispatch.accountPartition,
+		leaveNoTraceRevision: dispatch.leaveNoTraceRevision,
+		exposeToActiveContent: sourceArtifact
+			? sourceArtifact.policy?.exposeToActiveContent === true
+			: true,
+		sendToModel: sourceArtifact ? sourceArtifact.policy?.sendToModel === true : true,
+		shareToClipboard: sourceArtifact ? sourceArtifact.policy?.shareToClipboard === true : true,
+		exportToCsv: sourceArtifact ? sourceArtifact.policy?.exportToCsv === true : true,
+		expectedProducer: {
+			engine: 'kusto',
+			query: typeof message.query === 'string' ? message.query : undefined,
 			connectionId: message.connectionId,
 			database: message.database,
-			...(typeof message.query === 'string' ? { query: message.query } : {}),
-			producer: message.producer,
-			dispatch,
-		},
-		policy: {
-			accountPartition: dispatch.accountPartition,
-			authSessionGeneration: dispatch.authSessionGeneration,
-			leaveNoTraceRevision: dispatch.leaveNoTraceRevision,
-			connectionRevision: dispatch.connectionRevision,
-			connectionIdentityKey: dispatch.connectionIdentityKey,
-			exposeToActiveContent: sourceArtifact
-				? sourceArtifact.policy?.exposeToActiveContent === true
-				: true,
-			sendToModel: sourceArtifact
-				? sourceArtifact.policy?.sendToModel === true
-				: true,
-			shareToClipboard: sourceArtifact
-				? sourceArtifact.policy?.shareToClipboard === true
-				: true,
-			exportToCsv: sourceArtifact
-				? sourceArtifact.policy?.exportToCsv === true
-				: true,
-			...(sourcePolicies?.length ? { sourcePolicies } : {}),
 		},
 		...(sourceArtifact ? {
-			lineage: [{ sourceArtifactId: sourceArtifact.artifactId, role: 'comparison-source' }],
+			derivedLineage: [{ sourceArtifactId: sourceArtifact.artifactId, role: 'comparison-source' }],
+			derivedSourcePolicies: sourcePolicies ?? [],
 		} : {}),
 	};
+	const admitted = publicationFromPersistedResultArtifact(
+		(message as any).resultArtifactAssignment,
+		message.boxId,
+		expectedPolicy,
+	);
+	if (!admitted?.persistedIdentity || admitted.producer?.executionId !== message.executionId
+		|| admitted.producer?.sectionInstanceId !== message.sectionInstanceId
+		|| admitted.producer?.targetGeneration !== message.targetGeneration
+		|| admitted.producer?.reservationSequence !== message.reservationSequence
+		|| admitted.producer?.producer !== message.producer
+		|| JSON.stringify(admitted.producer?.dispatch ?? {}) !== JSON.stringify(dispatch)) return undefined;
+	const { persistedIdentity, ...publication } = admitted;
+	return { ...publication, assignedIdentity: persistedIdentity };
+}
+
+function admitKustoResultPayload(payload: Record<string, unknown>): Record<string, unknown> | null | undefined {
+	if (payload.type !== 'queryResult' || payload.engine !== 'kusto') return undefined;
+	const parsed = parseKustoResultBatch(payload.result);
+	if (!parsed.ok) return null;
+	const normalized = Object.freeze({ ...payload, result: parsed.value });
+	return getKustoResultArtifactPublication(normalized) ? normalized : null;
 }
 
 function getSqlResultArtifactPublication(message: any): ResultArtifactPublication | undefined {
@@ -1738,6 +1825,12 @@ const __kustoDispatchHostMessage = async (message: any) => {
 	const envelope = captureRuntimeMessageEnvelope(message);
 	if (!envelope.ok) return;
 	message = envelope.value;
+	if (message.type === 'kustoResultAttachmentCommitted'
+		|| message.type === 'kustoResultSelectionResult') {
+		const parsed = parseKustoResultAttachmentHostMessageFromEnvelope(envelope.descriptorSnapshot);
+		if (!parsed.ok) return;
+		message = parsed.value;
+	}
 	const rawKustoPublicationAdmission = admitKustoPublicationHostMessageFromEnvelope(
 		envelope.descriptorSnapshot,
 	);
@@ -1951,6 +2044,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		message = parsed.value;
 	}
 	}
+	const rawIncomingType = String(message.type || '');
+	if (rawIncomingType === 'kustoResultAttachmentCommitted'
+		|| rawIncomingType === 'kustoResultSelectionResult') {
+		const parsed = parseKustoResultAttachmentHostMessage(message);
+		if (!parsed.ok) return;
+		message = parsed.value;
+	}
 	const incomingType = String(message.type || '');
 	if (pState.documentRuntimeActive === false) {
 		if (incomingType === 'kustoPublicationStage') {
@@ -2013,6 +2113,12 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			}
 			payload = captured.value;
 		}
+		const kustoResultPayload = admitKustoResultPayload(payload);
+		if (kustoResultPayload === null) {
+			acknowledgeKustoPublication(message, false, 'staged');
+			return;
+		}
+		if (kustoResultPayload) payload = kustoResultPayload;
 		const previous = stagedKustoPublications.get(publicationId);
 		if (previous) clearTimeout(previous.timer);
 		const timer = setTimeout(() => {
@@ -2046,6 +2152,12 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			}
 			payload = captured.value;
 		}
+		const kustoResultPayload = admitKustoResultPayload(payload);
+		if (kustoResultPayload === null) {
+			acknowledgeKustoPublication(message, false, 'applied');
+			return;
+		}
+		if (kustoResultPayload) payload = kustoResultPayload;
 		message = attachKustoPublicationId(payload, publicationId);
 	}
 	if (message.type === 'kustoPublicationRevoke') {
@@ -3117,8 +3229,29 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		case 'importConnectionsXmlError':
 			try { postMessageToHost({ type: 'showInfo', message: 'Failed to import connections: ' + (message && message.error ? String(message.error) : 'Unknown error') }); } catch (e) { console.error('[kusto]', e); }
 			break;
+		case 'kustoResultAttachmentCommitted': {
+			const pending = pendingKustoResultAttachmentCommits.get(message.publicationId);
+			if (!pending
+				|| pending.boxId !== message.boxId
+				|| pending.executionId !== message.executionId
+				|| pending.sectionInstanceId !== message.sectionInstanceId
+				|| pending.targetGeneration !== message.targetGeneration
+				|| pending.primaryArtifactId !== message.primaryArtifactId) break;
+			pendingKustoResultAttachmentCommits.delete(message.publicationId);
+			try {
+				__kustoGetQuerySectionElement(message.boxId)?.applyCommittedResultAttachment?.(message);
+				schedulePersist('kusto-result-attachment-committed', true);
+			} catch (error) { console.error('[kusto]', error); }
+			break;
+		}
+		case 'kustoResultSelectionResult':
+			try {
+				__kustoGetQuerySectionElement(message.boxId)?.applyResultSelectionResponse?.(message);
+			} catch (error) { console.error('[kusto]', error); }
+			break;
 		case 'queryResult':
 			settleSqlTerminalExecution(message);
+			const isKustoResult = hasKustoExecutionTerminalStamp(message, true);
 			if (message.boxId && sqlPolicyBlockedBoxIds.has(String(message.boxId))) {
 				const blockedId = String(message.boxId);
 				const blockedMetadata = optimizationMetadataByBoxId[blockedId];
@@ -3135,6 +3268,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			let resultAccepted = !message.boxId;
 			const artifactPublication = getKustoResultArtifactPublication(message)
 				|| getSqlResultArtifactPublication(message);
+			if (isKustoResult && !artifactPublication) {
+				acknowledgeKustoPublication(message, false);
+				break;
+			}
 			const comparisonBoxId = String(message.comparisonRun?.comparisonBoxId || '').trim();
 			const comparisonMetadata = optimizationMetadataByBoxId[String(message.boxId || '')];
 			const comparisonSourceBoxId = comparisonMetadata?.isComparison
@@ -3146,9 +3283,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			const exactComparisonArtifactRequired = (comparisonBoxId && String(message.boxId || '') === comparisonBoxId)
 				|| !!comparisonSourceBoxId;
 			if (exactComparisonArtifactRequired && !artifactPublication?.lineage?.length) {
-				try { setQueryExecuting(message.boxId, false); } catch (e) { console.error('[kusto]', e); }
-				releaseComparisonSourceArtifact(message);
-				completeKustoTerminal(message);
+				if (!isKustoResult) {
+					try { setQueryExecuting(message.boxId, false); } catch (e) { console.error('[kusto]', e); }
+					releaseComparisonSourceArtifact(message);
+					completeKustoTerminal(message);
+				}
 				acknowledgeKustoPublication(message, false);
 				break;
 			}
@@ -3161,16 +3300,22 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				// Always target the concrete boxId when available (prevents races when
 				// multiple queries are running and keeps comparison summaries in sync).
 				if (message.boxId) {
-					try {
-						setQueryExecuting(message.boxId, false);
-					} catch (e) { console.error('[kusto]', e); }
-					resultAccepted = displayResultForBox(message.result, message.boxId, {
+					if (!isKustoResult) {
+						try { setQueryExecuting(message.boxId, false); } catch (e) { console.error('[kusto]', e); }
+					}
+					const displayOptions = {
 						label: 'Results', showExecutionTime: true,
 						...(message.executionId && (!sqlDerivedComparison || __kustoGetSqlSectionElement(String(message.boxId || '')))
 							? { executionId: String(message.executionId) }
 							: {}),
 						...(artifactPublication ? { artifactPublication } : {}),
-					}) !== false;
+					};
+					resultAccepted = (isKustoResult
+						? displayResultBatchForBox(message.result, message.boxId, {
+							...displayOptions,
+							selectedResultIndex: Number(message.selectedResultIndex ?? 0),
+						})
+						: displayResultForBox(message.result, message.boxId, displayOptions)) !== false;
 				} else {
 					displayResult(message.result);
 				}
@@ -3178,8 +3323,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				console.error('Failed to render query results:', e);
 			}
 			if (!resultAccepted) {
-				releaseComparisonSourceArtifact(message);
-				completeKustoTerminal(message);
+				if (!isKustoResult) {
+					releaseComparisonSourceArtifact(message);
+					completeKustoTerminal(message);
+				}
 				acknowledgeKustoPublication(message, false);
 				break;
 			}
@@ -3189,10 +3336,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				bindComparisonSourceArtifact(message.comparisonRun);
 			}
 			try {
-				if (message.boxId) {
+				if (message.boxId && !isKustoResult) {
 					__kustoOnQueryResult(message.boxId, message.result, message.dispatch);
-					if (message.ensureResultsVisible === true) __kustoSetResultsVisible(message.boxId, true);
 				}
+				if (message.boxId && message.ensureResultsVisible === true) __kustoSetResultsVisible(message.boxId, true);
 			} catch (e) { console.error('[kusto]', e); }
 			releaseComparisonSourceArtifact(message);
 			// Check if this is a comparison box result
@@ -3226,6 +3373,21 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			emitAdmittedKustoTerminal(message);
+			if (isKustoResult && message.publicationId && artifactPublication?.assignedIdentity) {
+				pendingKustoResultAttachmentCommits.set(String(message.publicationId), Object.freeze({
+					boxId: String(message.boxId),
+					executionId: String(message.executionId),
+					sectionInstanceId: String(message.sectionInstanceId),
+					targetGeneration: Number(message.targetGeneration),
+					primaryArtifactId: artifactPublication.assignedIdentity.artifactId,
+				}));
+				while (pendingKustoResultAttachmentCommits.size > 128) {
+					pendingKustoResultAttachmentCommits.delete(
+						pendingKustoResultAttachmentCommits.keys().next().value!,
+					);
+				}
+			}
+			try { if (isKustoResult) setQueryExecuting(message.boxId, false); } catch (e) { console.error('[kusto]', e); }
 			completeKustoTerminal(message);
 			acknowledgeKustoPublication(message, true);
 			break;
@@ -4039,12 +4201,21 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const boxId = String(message.boxId || '');
 				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotAppendExecutedQuery === 'function') {
+					let storedResult = message.result || null;
+					if (storedResult) {
+						const parsed = parseKustoResultBatch(storedResult);
+						if (!parsed.ok) {
+							acknowledgeKustoPublication(message, false);
+							break;
+						}
+						storedResult = parsed.value;
+					}
 					kwEl.copilotAppendExecutedQuery(
 						message.query || '',
 						message.resultSummary || '',
 						message.errorMessage || '',
 						message.entryId || '',
-						message.result || null
+						storedResult
 					);
 					copilotResultApplied = true;
 				} else {
@@ -4316,6 +4487,17 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					break;
 				}
 				const sectionType = admission.sectionKind;
+				if ((sectionType === 'chart' || sectionType === 'transformation')
+					&& Object.prototype.hasOwnProperty.call(input, 'dataSourceResultIndex')
+					&& (typeof input.dataSourceResultIndex !== 'number'
+						|| !Number.isSafeInteger(input.dataSourceResultIndex)
+						|| input.dataSourceResultIndex < 0)) {
+					postMessageToHost({
+						type: 'toolResponse', requestId, result: { sectionId: '', success: false },
+						error: 'dataSourceResultIndex must be a non-negative safe integer.',
+					});
+					break;
+				}
 				const textValue = input.text ?? input.content;
 				const creationOptions: Record<string, unknown> = sectionType === 'query'
 					? { ...(input.query ? { initialQuery: String(input.query) } : {}) }
@@ -4325,12 +4507,14 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							? {
 								...(input.name !== undefined ? { name: String(input.name) } : {}),
 								...(input.dataSourceId !== undefined ? { dataSourceId: String(input.dataSourceId) } : {}),
+								...(input.dataSourceResultIndex !== undefined ? { dataSourceResultIndex: input.dataSourceResultIndex } : {}),
 								...(input.chartType !== undefined ? { chartType: String(input.chartType) } : {}),
 							}
 						: sectionType === 'transformation'
 							? {
 								...(input.name !== undefined ? { name: String(input.name) } : {}),
 								...(input.dataSourceId !== undefined ? { dataSourceId: String(input.dataSourceId) } : {}),
+								...(input.dataSourceResultIndex !== undefined ? { dataSourceResultIndex: input.dataSourceResultIndex } : {}),
 							}
 						: sectionType === 'markdown'
 							? { ...(textValue !== undefined ? { text: String(textValue) } : {}) }
@@ -4595,13 +4779,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					deferResponse = true;
 					let responded = false;
 					let executionId = '';
-					const modelConsumerId = modelResultArtifactConsumerId(requestId);
+					const modelConsumerIds = new Set<string>([indexedModelConsumerId(requestId, 0)]);
 					const cleanup = () => {
 						try { window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, resultHandler as EventListener); } catch { /* best effort */ }
 						try { kustoToolExecutionOwnerByRequestId.delete(requestId); } catch { /* best effort */ }
 						try { kustoToolExecutionSettlementByRequestId.delete(requestId); } catch { /* best effort */ }
 						try { cancelledKustoToolRequestIds.delete(requestId); } catch { /* best effort */ }
-						try { unbindResultArtifactConsumer(modelConsumerId); } catch { /* best effort */ }
+						releaseModelResultConsumers(modelConsumerIds);
 					};
 					const respond = (result: unknown) => {
 						if (responded) return;
@@ -4614,21 +4798,21 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							const terminal = (event as CustomEvent).detail;
 							if (!executionId || terminal?.executionId !== executionId || terminal?.boxId !== sectionId) return;
 							if (terminal.type === 'queryResult') {
-								const artifact = getResultArtifactByProducerExecution(sectionId, executionId);
-								const bound = artifact && bindResultArtifactConsumer(
-									modelConsumerId, sectionId, artifact.artifactId,
-								) === artifact.artifactId;
-								const exactArtifact = bound ? getBoundResultArtifact(modelConsumerId, sectionId) : null;
-								if (!exactArtifact || exactArtifact.producer?.executionId !== executionId
-									|| exactArtifact.policy?.sendToModel !== true) {
+								const artifacts = bindModelResultArtifacts(
+									requestId, sectionId, executionId, terminal.result, modelConsumerIds,
+								);
+								if (!artifacts?.length) {
 									respond({ success: false, error: 'Query results are not permitted for model use.' });
 									return;
 								}
-								const rows = [...exactArtifact.rows];
-								const columns = [...exactArtifact.columns];
+								const resultSets = projectModelResultSets(artifacts, 5);
+								const primary = resultSets[0];
 								respond({
-									success: true, rowCount: rows.length, columns,
-									resultPreview: JSON.stringify({ columns, rows: rows.slice(0, 5), totalRows: rows.length }, null, 2),
+									success: true, rowCount: primary.rowCount, columns: primary.columns,
+									resultPreview: JSON.stringify({
+										columns: primary.columns, rows: primary.results, totalRows: primary.rowCount,
+									}, null, 2),
+									resultSets,
 								});
 							} else if (terminal.type === 'queryError') respond({ success: false, error: terminal.error || 'Query execution failed' });
 							else if (terminal.type === 'queryCancelled') respond({ success: false, error: 'Query was cancelled' });
@@ -4801,6 +4985,16 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				let validationStatus: any = null;
 				
 				try {
+					if (Object.prototype.hasOwnProperty.call(input, 'dataSourceResultIndex')
+						&& (typeof input.dataSourceResultIndex !== 'number'
+							|| !Number.isSafeInteger(input.dataSourceResultIndex)
+							|| input.dataSourceResultIndex < 0)) {
+						postMessageToHost({
+							type: 'toolResponse', requestId,
+							result: { success: false }, error: 'dataSourceResultIndex must be a non-negative safe integer.',
+						});
+						break;
+					}
 					// Validate that the target section is actually a chart
 					const chartEl = document.getElementById(sectionId);
 					if (!chartEl || chartEl.tagName !== 'KW-CHART-SECTION') {
@@ -4823,8 +5017,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					
 					// Apply chart configuration
 					if (typeof window.__kustoConfigureChart === 'function') {
-						window.__kustoConfigureChart(sectionId, input);
-						success = true;
+						success = window.__kustoConfigureChart(sectionId, input) === true;
 					} else {
 						// Fallback: store in pending state
 						window.__kustoPendingChartConfig = window.__kustoPendingChartConfig || {};
@@ -4861,6 +5054,21 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				let success = false;
 				
 				try {
+					let invalidResultIndexField = '';
+					for (const key of ['dataSourceResultIndex', 'joinRightDataSourceResultIndex'] as const) {
+						if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
+						if (typeof input[key] !== 'number' || !Number.isSafeInteger(input[key]) || input[key] < 0) {
+							invalidResultIndexField = key;
+							break;
+						}
+					}
+					if (invalidResultIndexField) {
+						postMessageToHost({
+							type: 'toolResponse', requestId, result: { success: false },
+							error: `${invalidResultIndexField} must be a non-negative safe integer.`,
+						});
+						break;
+					}
 					const transformationEl = document.getElementById(sectionId);
 					if (!transformationEl || transformationEl.tagName !== 'KW-TRANSFORMATION-SECTION') {
 						postMessageToHost({
@@ -5247,8 +5455,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				let expectedCopilotRequest: KustoCopilotRequestIdentity | undefined;
 				let pendingClarification: KustoCopilotClarifyingQuestionMessage | undefined;
 				let pendingQueryTerminal: any = null;
+				let boundModelArtifacts: readonly ResultArtifact[] = [];
 				let timeoutId: ReturnType<typeof setTimeout> | undefined;
-				const modelConsumerId = modelResultArtifactConsumerId(requestId);
+				const modelConsumerIds = new Set<string>([indexedModelConsumerId(requestId, 0)]);
 				const cleanup = () => {
 					try { window.removeEventListener(ADMITTED_KUSTO_COPILOT_EVENT, resultHandler as EventListener); } catch { /* best effort */ }
 					try { window.removeEventListener(APPLIED_KUSTO_COPILOT_DONE_EVENT, doneHandler as EventListener); } catch { /* best effort */ }
@@ -5257,7 +5466,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					try { if (timeoutId !== undefined) clearTimeout(timeoutId); } catch { /* best effort */ }
 					try { kustoCopilotToolOwnerByRequestId.delete(requestId); } catch { /* best effort */ }
 					try { cancelledKustoToolRequestIds.delete(requestId); } catch { /* best effort */ }
-					try { unbindResultArtifactConsumer(modelConsumerId); } catch { /* best effort */ }
+					releaseModelResultConsumers(modelConsumerIds);
 				};
 				cleanupDelegation = cleanup;
 
@@ -5293,9 +5502,12 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				// Helper to send a response from the exact bound artifact revision.
 				const sendSuccessResponse = () => {
 					if (responded) return;
-					const artifact = getBoundResultArtifact(modelConsumerId, sectionId);
-					if (!artifact || artifact.producer?.executionId !== expectedExecutionId
-						|| artifact.policy?.sendToModel !== true) {
+					if (!boundModelArtifacts.length || boundModelArtifacts.some(artifact => (
+						getBoundResultArtifact(indexedModelConsumerId(requestId, artifact.resultIndex ?? 0), sectionId)
+							?.artifactId !== artifact.artifactId
+						|| artifact.producer?.executionId !== expectedExecutionId
+						|| artifact.policy?.sendToModel !== true
+					))) {
 						sendModelResultFailure('Query results are not permitted for model use.');
 						return;
 					}
@@ -5303,13 +5515,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					// Don't call __kustoCopilotWriteQueryDone here — the regular
 					// 'copilotWriteQueryDone' handler already does it.
 					
-					const columns = [...artifact.columns];
-					const rows = [...artifact.rows];
-					const rowCount = rows.length;
-					
-					// Limit rows for response size
-					const truncated = rows.length > maxResultRows;
-					const responseRows = truncated ? rows.slice(0, maxResultRows) : rows;
+					const resultSets = projectModelResultSets(boundModelArtifacts, maxResultRows);
+					const primary = resultSets[0];
+					const anyTruncated = resultSets.some(set => set.truncated);
 					responded = true;
 					cleanup();
 					postMessageToHost({ 
@@ -5318,12 +5526,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						result: { 
 							success: true,
 							query: executedQuery || generatedQuery,
-							rowCount,
-							columns,
-							results: responseRows,
+							rowCount: primary.rowCount,
+							columns: primary.columns,
+							results: primary.results,
 							maxResultRows,
-							returnedRowCount: responseRows.length,
-							truncated: truncated ? `Results truncated to ${maxResultRows} rows` : undefined
+							returnedRowCount: primary.returnedRowCount,
+							resultSets,
+							truncated: anyTruncated
+								? `Results truncated to ${maxResultRows} rows${boundModelArtifacts.length > 1 ? ' across all result sets' : ''}`
+								: undefined
 						}
 					});
 				};
@@ -5421,16 +5632,16 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						const terminal = msg as KustoCopilotRequestIdentity & Record<string, any>;
 						if (!expectedExecutionId || String(terminal.executionId || '') !== expectedExecutionId) return;
 						if (terminal.type === 'queryResult') {
-							const artifact = getResultArtifactByProducerExecution(sectionId, expectedExecutionId);
-							const bound = artifact && bindResultArtifactConsumer(
-								modelConsumerId, sectionId, artifact.artifactId,
-							) === artifact.artifactId;
-							if (!bound || artifact.policy?.sendToModel !== true) {
+							const artifacts = bindModelResultArtifacts(
+								requestId, sectionId, expectedExecutionId, terminal.result, modelConsumerIds,
+							);
+							if (!artifacts?.length) {
 								const denied = { type: 'modelResultDenied', error: 'Query results are not permitted for model use.' };
 								if (queryGenerated) sendModelResultFailure(denied.error);
 								else pendingQueryTerminal = denied;
 								return;
 							}
+							boundModelArtifacts = artifacts;
 							if (queryGenerated) sendSuccessResponse();
 							else pendingQueryTerminal = terminal;
 							return;

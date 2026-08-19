@@ -53,6 +53,7 @@ import {
 export interface PowerBiDataSource {
 	name: string;
 	sectionId: string;
+	resultIndex?: number;
 	clusterUrl: string;
 	database: string;
 	query: string;

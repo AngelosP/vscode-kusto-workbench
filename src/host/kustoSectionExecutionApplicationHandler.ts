@@ -3,7 +3,7 @@ import {
 	QueryExecutionError,
 	type CancelableQueryExecution,
 	type KustoQueryClient,
-	type QueryResult,
+	type KustoQueryResult,
 } from './kustoClient';
 import type { ConnectionService } from './queryEditorConnection';
 import type { CacheUnit, IncomingWebviewMessage } from './queryEditorTypes';
@@ -29,6 +29,12 @@ import {
 	admitKustoPublicationWebviewMessage,
 	parseKustoPublicationHostMessage,
 } from '../shared/kustoPublicationProtocol';
+import type { KustoResultPanelSession } from './kustoResultPersistenceOwner';
+import {
+	createKustoResultAttachmentCommittedMessage,
+	createKustoResultSelectionResultMessage,
+	parseKustoResultAttachmentWebviewMessage,
+} from '../shared/kustoResultAttachmentProtocol';
 
 type PendingAcknowledgement = {
 	resolve: (accepted: boolean) => void;
@@ -67,7 +73,7 @@ export interface KustoSectionExecutionApplicationHandler {
 	): KustoConnection | undefined;
 	executeKustoSectionQuery(
 		options: KustoSectionQueryExecutionOptions,
-	): Promise<KustoSectionExecutionOutcome<QueryResult>>;
+	): Promise<KustoSectionExecutionOutcome<KustoQueryResult>>;
 	dispose(): void;
 }
 
@@ -101,17 +107,36 @@ export type KustoSectionExecutionApplicationHandlerOptions = {
 	isDisposed(): boolean;
 	createPublicationId(): string;
 	now(): number;
+	getKustoResultPersistenceSession?(): KustoResultPanelSession | undefined;
 };
 
 export class HostKustoSectionExecutionApplicationHandler
 	implements KustoSectionExecutionApplicationHandler {
 	private readonly pendingExecutionStartAcks = new Map<string, PendingAcknowledgement>();
 	private readonly pendingPublicationAcks = new Map<string, PendingAcknowledgement>();
+	private readonly ownedResultPublicationIds = new Set<string>();
 	private disposed = false;
 
 	constructor(private readonly options: KustoSectionExecutionApplicationHandlerOptions) {}
 
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
+		if (message.type === 'selectKustoResult') {
+			if (this.disposed) return Promise.resolve();
+			const parsed = parseKustoResultAttachmentWebviewMessage(message);
+			if (!parsed.ok) return Promise.resolve();
+			const selection = parsed.value;
+			const response = this.options.getKustoResultPersistenceSession?.()?.selectResult(selection)
+				?? { accepted: false as const };
+			const result = createKustoResultSelectionResultMessage({
+				requestId: selection.requestId,
+				boxId: selection.boxId,
+				primaryArtifactId: selection.primaryArtifactId,
+				resultIndex: selection.resultIndex,
+				accepted: response.accepted,
+			});
+			if (!result.ok) return Promise.resolve();
+			return Promise.resolve(this.options.postMessage(result.value)).then(() => undefined);
+		}
 		const executionStartAdmission = admitKustoExecutionStartWebviewMessage(message);
 		if (executionStartAdmission.recognized) {
 			if (this.disposed || !executionStartAdmission.parsed.ok) return Promise.resolve();
@@ -128,10 +153,14 @@ export class HostKustoSectionExecutionApplicationHandler
 			case 'kustoSectionOpen':
 				if (this.disposed) return Promise.resolve();
 				this.options.coordinator.openSection(message.boxId, message.sectionInstanceId);
+				this.options.getKustoResultPersistenceSession?.()?.openSection(
+					message.boxId, message.sectionInstanceId,
+				);
 				return Promise.resolve();
 			case 'kustoSectionTarget':
 				if (this.disposed) return Promise.resolve();
-				this.options.coordinator.adoptTarget({
+				{
+					const target = {
 					boxId: message.boxId,
 					sectionInstanceId: message.sectionInstanceId,
 					targetGeneration: message.targetGeneration,
@@ -139,12 +168,18 @@ export class HostKustoSectionExecutionApplicationHandler
 					database: message.database,
 					connectionRevision: message.connectionRevision,
 					connectionIdentityKey: message.connectionIdentityKey,
-				});
+					};
+					this.options.coordinator.adoptTarget(target);
+					this.options.getKustoResultPersistenceSession?.()?.adoptTarget(target);
+				}
 				return Promise.resolve();
 			case 'kustoSectionClose':
 				if (this.disposed) return Promise.resolve();
 				this.options.cancelKustoCopilotSection(message.boxId, message.sectionInstanceId);
 				this.options.coordinator.closeSection(message.boxId, message.sectionInstanceId);
+				this.options.getKustoResultPersistenceSession?.()?.closeSection(
+					message.boxId, message.sectionInstanceId,
+				);
 				return Promise.resolve();
 			case 'executeQuery':
 				if (this.disposed) return Promise.resolve();
@@ -167,16 +202,32 @@ export class HostKustoSectionExecutionApplicationHandler
 		if (this.disposed || this.options.isDisposed()) return false;
 		const publicationId = `kusto-publication-${this.options.createPublicationId()}`;
 		const publicationDeadline = this.options.now() + 5_000;
+		const resultSession = this.options.getKustoResultPersistenceSession?.();
+		const assignedMessage = resultSession?.stagePublication(publicationId, message);
+		const isKustoResult = !!message && typeof message === 'object'
+			&& (message as Record<string, unknown>).type === 'queryResult'
+			&& (message as Record<string, unknown>).engine === 'kusto';
+		if (resultSession && isKustoResult && !assignedMessage) return false;
+		if (assignedMessage) this.ownedResultPublicationIds.add(publicationId);
+		const publicationPayload = assignedMessage ?? message;
+		const abortOwnedPublication = () => {
+			if (!this.ownedResultPublicationIds.delete(publicationId)) return;
+			resultSession?.abortPublication(publicationId);
+		};
 		const stageMessage = parseKustoPublicationHostMessage({
-			type: 'kustoPublicationStage', publicationId, publicationDeadline, payload: message,
+			type: 'kustoPublicationStage', publicationId, publicationDeadline, payload: publicationPayload,
 		});
 		const commitMessage = parseKustoPublicationHostMessage({ type: 'kustoPublicationCommit', publicationId });
 		const revokeMessage = parseKustoPublicationHostMessage({ type: 'kustoPublicationRevoke', publicationId });
-		if (!stageMessage.ok || !commitMessage.ok || !revokeMessage.ok) return false;
+		if (!stageMessage.ok || !commitMessage.ok || !revokeMessage.ok) {
+			abortOwnedPublication();
+			return false;
+		}
 		const waitForAck = (phase: 'staged' | 'applied', timeoutMs?: number): Promise<boolean> => new Promise(resolve => {
 			const key = `${publicationId}:${phase}`;
 			const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
 				this.pendingPublicationAcks.delete(key);
+				abortOwnedPublication();
 				resolve(false);
 			}, timeoutMs);
 			this.pendingPublicationAcks.set(key, { resolve, ...(timer ? { timer } : {}) });
@@ -187,11 +238,15 @@ export class HostKustoSectionExecutionApplicationHandler
 			if (!pending) return;
 			this.pendingPublicationAcks.delete(key);
 			if (pending.timer) clearTimeout(pending.timer);
+			abortOwnedPublication();
 			pending.resolve(false);
 		};
 		const staged = waitForAck('staged', 5_000);
 		if (!await this.options.postMessage(stageMessage.value)) settleTransportFailure('staged');
-		if (!await staged) return false;
+		if (!await staged) {
+			abortOwnedPublication();
+			return false;
+		}
 		const applied = waitForAck('applied');
 		const appliedKey = `${publicationId}:applied`;
 		const appliedPending = this.pendingPublicationAcks.get(appliedKey);
@@ -207,7 +262,17 @@ export class HostKustoSectionExecutionApplicationHandler
 		if (!await this.options.postMessage(commitMessage.value)) {
 			settleTransportFailure('applied');
 		}
-		return applied;
+		const accepted = await applied;
+		if (!accepted) abortOwnedPublication();
+		if (accepted && assignedMessage) {
+			const summary = resultSession?.getCommittedSummary(assignedMessage.boxId);
+			const confirmation = summary ? createKustoResultAttachmentCommittedMessage({
+				publicationId,
+				...summary,
+			}) : undefined;
+			if (confirmation?.ok) await Promise.resolve(this.options.postMessage(confirmation.value));
+		}
+		return accepted;
 	}
 
 	getKustoSectionExecutionTarget(boxId: string): KustoSectionExecutionTarget | undefined {
@@ -250,7 +315,7 @@ export class HostKustoSectionExecutionApplicationHandler
 
 	async executeKustoSectionQuery(
 		options: KustoSectionQueryExecutionOptions,
-	): Promise<KustoSectionExecutionOutcome<QueryResult>> {
+	): Promise<KustoSectionExecutionOutcome<KustoQueryResult>> {
 		const { target } = options;
 		const boxId = String(target.boxId || '').trim();
 		const database = String(target.database || '').trim();
@@ -276,6 +341,11 @@ export class HostKustoSectionExecutionApplicationHandler
 				&& !this.options.coordinator.hasExactActiveRequest(request)) {
 				await this.options.coordinator.rejectPreclaimedRequest(request);
 			}
+			return { status: 'superseded', executionId: request.executionId };
+		}
+		const resultSession = this.options.getKustoResultPersistenceSession?.();
+		if (resultSession && !resultSession.beginExecution(reservation)) {
+			this.options.coordinator.cancelExpected(reservation);
 			return { status: 'superseded', executionId: request.executionId };
 		}
 		if (!options.preclaimedByWebview && (options.producer === 'copilot' || options.producer === 'comparison')
@@ -403,6 +473,11 @@ export class HostKustoSectionExecutionApplicationHandler
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		const resultSession = this.options.getKustoResultPersistenceSession?.();
+		for (const publicationId of this.ownedResultPublicationIds) {
+			resultSession?.abortPublication(publicationId);
+		}
+		this.ownedResultPublicationIds.clear();
 		this.settleAll(this.pendingExecutionStartAcks);
 		this.settleAll(this.pendingPublicationAcks);
 	}
@@ -498,7 +573,18 @@ export class HostKustoSectionExecutionApplicationHandler
 		if (!pending) return;
 		this.pendingPublicationAcks.delete(key);
 		if (pending.timer) clearTimeout(pending.timer);
-		pending.resolve(message.accepted === true);
+		let accepted = message.accepted === true;
+		if (this.ownedResultPublicationIds.has(message.publicationId)) {
+			const resultSession = this.options.getKustoResultPersistenceSession?.();
+			if (message.phase === 'applied' && accepted) {
+				accepted = resultSession?.commitPublication(message.publicationId) === true;
+			}
+			if (!accepted) resultSession?.abortPublication(message.publicationId);
+			if (message.phase === 'applied' || !accepted) {
+				this.ownedResultPublicationIds.delete(message.publicationId);
+			}
+		}
+		pending.resolve(accepted);
 	}
 
 	getCurrentKustoConnectionForDispatch(

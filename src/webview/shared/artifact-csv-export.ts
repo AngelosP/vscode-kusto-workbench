@@ -5,8 +5,9 @@ import {
 	RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT,
 } from '../../shared/resultArtifact.js';
 import {
-	bindResultArtifactConsumer,
+	bindIndexedResultArtifactConsumer,
 	getBoundResultArtifact,
+	getResultArtifact,
 	unbindResultArtifactConsumer,
 } from '../core/results-state.js';
 import {
@@ -36,6 +37,14 @@ function nextId(prefix: string): string {
 	return `${prefix}-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
 }
 
+function bindExactArtifactConsumer(consumerId: string, sourceBoxId: string, artifactId: string): boolean {
+	const artifact = getResultArtifact(artifactId);
+	return !!artifact && artifact.sourceBoxId === sourceBoxId
+		&& bindIndexedResultArtifactConsumer(
+			consumerId, sourceBoxId, artifact.resultIndex, artifactId,
+		) === artifactId;
+}
+
 export function registerArtifactResultTable(
 	sourceBoxId: unknown,
 	artifactId: unknown,
@@ -44,7 +53,7 @@ export function registerArtifactResultTable(
 	const artifact = String(artifactId || '').trim();
 	const consumerId = csvTableArtifactConsumerId(source);
 	releaseArtifactCsvTable(source);
-	const bound = source && artifact && bindResultArtifactConsumer(consumerId, source, artifact) === artifact;
+	const bound = !!source && !!artifact && bindExactArtifactConsumer(consumerId, source, artifact);
 	const resultArtifact = bound ? getBoundResultArtifact(consumerId, source) : null;
 	if (!resultArtifact) {
 		unbindResultArtifactConsumer(consumerId);
@@ -165,9 +174,9 @@ export function provideArtifactCsvSaveData(message: unknown): void {
 	const matches = activeTableMatches(pending);
 	const consumerId = csvSaveArtifactConsumerId(pending.sourceBoxId);
 	try {
-		const bound = matches && bindResultArtifactConsumer(
+		const bound = matches && bindExactArtifactConsumer(
 			consumerId, pending.sourceBoxId, pending.artifactId,
-		) === pending.artifactId;
+		);
 		const artifact = bound ? getBoundResultArtifact(consumerId, pending.sourceBoxId) : null;
 		const accepted = !!artifact && artifact.policy?.exportToCsv === true;
 		const response: ArtifactCsvSaveDataMessage = accepted

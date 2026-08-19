@@ -4,6 +4,7 @@ import {
 	clearResultsState,
 	getBoundResultArtifact,
 	getCurrentResultArtifact,
+	setResultsBatchState,
 	setResultsState,
 } from '../../src/webview/core/results-state';
 import { htmlDashboardFactArtifactConsumerId } from '../../src/shared/resultArtifact';
@@ -51,10 +52,10 @@ function makeProvenanceHtml(dimensions: object[]): string {
 	})}</script><main>Dashboard content</main>`;
 }
 
-function makeFactHtml(sectionId: string): string {
+function makeFactHtml(sectionId: string, resultIndex?: number): string {
 	return `<script type="application/kw-provenance">${JSON.stringify({
 		version: 1,
-		model: { fact: { sectionId, sectionName: 'Fact Events' } },
+		model: { fact: { sectionId, sectionName: 'Fact Events', ...(resultIndex === undefined ? {} : { resultIndex }) } },
 		bindings: {},
 	})}</script><main>Dashboard content</main>`;
 }
@@ -195,6 +196,48 @@ describe('generated slicer layout', () => {
 });
 
 describe('HTML dashboard artifact bridge ownership', () => {
+	it('binds live preview to the explicit secondary fact result', () => {
+		const sourceId = 'query_html_multi_fact';
+		setResultsBatchState(sourceId, [
+			{ columns: ['Value'], rows: [['first']], metadata: {} },
+			{ columns: ['Value'], rows: [['second']], metadata: {} },
+		], { policy: { exposeToActiveContent: true } });
+		const section = new KwHtmlSection() as BridgeSection;
+		section.boxId = 'html_multi_fact';
+		section.setCode(makeFactHtml(sourceId, 1));
+
+		const bridge = section._buildDataBridgeScript();
+
+		expect(bridge).toContain('"rows":[["second"]]');
+		expect(bridge).not.toContain('"rows":[["first"]]');
+		expect(getBoundResultArtifact(
+			htmlDashboardFactArtifactConsumerId(section.boxId), sourceId,
+		)?.resultIndex).toBe(1);
+		clearResultsState(sourceId);
+	});
+
+	it('rejects a secondary fact before opening Power BI publish UI', async () => {
+		const sourceId = 'query_html_secondary_publish';
+		setResultsBatchState(sourceId, [
+			{ columns: ['Value'], rows: [[1]], metadata: {} },
+			{ columns: ['Value'], rows: [[2]], metadata: {} },
+		], { policy: { exposeToActiveContent: true } });
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		section.id = 'html_secondary_publish';
+		section.boxId = section.id;
+		section.setCode(makeFactHtml(sourceId, 1));
+		const openPublishDialog = vi.fn();
+		section._openPublishDialog = openPublishDialog;
+		document.body.appendChild(section);
+		await section.updateComplete;
+
+		await section._publishToPowerBI();
+
+		expect(openPublishDialog).not.toHaveBeenCalled();
+		section.remove();
+		clearResultsState(sourceId);
+	});
+
 	it('uses the Power BI missing-column diagnostic during preview preflight', () => {
 		pState.htmlPowerBiCompatibilityCheckEnabled = true;
 		const section = new KwHtmlSection() as unknown as HeightSection;

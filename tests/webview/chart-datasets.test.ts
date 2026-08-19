@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { __kustoGetChartDatasetsInDomOrder, __kustoRefreshAllDataSourceDropdowns, removeHtmlBox } from '../../src/webview/core/section-factory';
+import { __kustoGetChartDatasetsInDomOrder, __kustoGetChartValidationStatus, __kustoRefreshAllDataSourceDropdowns, removeHtmlBox } from '../../src/webview/core/section-factory';
 import { htmlDashboardFactArtifactConsumerId, toPersistedResultArtifact } from '../../src/shared/resultArtifact.js';
 import {
 	HostPersistedResultSanitizationApplicationHandler,
@@ -24,6 +24,7 @@ import {
 	clearResultsState,
 	getBoundResultArtifact,
 	getCurrentResultArtifact,
+	setResultsBatchState,
 	setResultsState,
 } from '../../src/webview/core/results-state';
 import { rebindChartResultArtifactBinding } from '../../src/webview/shared/chart-renderer.js';
@@ -61,7 +62,10 @@ function setFakeResults(id: string) {
 // ── __kustoGetChartDatasetsInDomOrder ─────────────────────────────────────────
 
 describe('__kustoGetChartDatasetsInDomOrder', () => {
-	afterEach(() => teardownDom());
+	afterEach(() => {
+		teardownDom();
+		delete (window as any).chartStateByBoxId?.chart_indexed;
+	});
 
 	// ── BUG: section name is ignored for Lit components ───────────────────────
 
@@ -130,6 +134,23 @@ describe('__kustoGetChartDatasetsInDomOrder', () => {
 		expect(datasets).toHaveLength(0);
 	});
 
+	it('validates columns against the explicitly indexed result set', () => {
+		setupDom([{ id: 'query_indexed', name: 'Indexed' }]);
+		setResultsBatchState('query_indexed', [
+			{ resultIndex: 0, columns: ['FirstOnly'], rows: [[1]], metadata: {} },
+			{ resultIndex: 1, columns: ['Category', 'Value'], rows: [['A', 2]], metadata: {} },
+		], {}, 0);
+		(window as any).chartStateByBoxId.chart_indexed = {
+			dataSourceId: 'query_indexed', dataSourceResultIndex: 1,
+			chartType: 'bar', xColumn: 'Category', yColumns: ['Value'],
+		};
+
+		expect(__kustoGetChartValidationStatus('chart_indexed')).toMatchObject({
+			valid: true,
+			availableColumns: ['Category', 'Value'],
+		});
+	});
+
 	it('includes SQL sections with results as chart data sources', () => {
 		setupDom([
 			{ id: 'sql_1', name: 'A' },
@@ -142,6 +163,41 @@ describe('__kustoGetChartDatasetsInDomOrder', () => {
 		expect(datasets).toHaveLength(1);
 		expect(datasets[0].id).toBe('sql_1');
 		expect(datasets[0].label).toBe('A [section #1]');
+	});
+
+	it('emits one structured dataset entry per Kusto result set', () => {
+		setupDom([{ id: 'query_multi', name: 'Multi', tag: 'kw-query-section' }]);
+		setResultsBatchState('query_multi', [
+			{ columns: ['First'], rows: [[1]], metadata: {} },
+			{ columns: ['Second'], rows: [[2]], metadata: {} },
+		], { producer: { engine: 'kusto', boxId: 'query_multi' } });
+
+		const datasets = __kustoGetChartDatasetsInDomOrder();
+
+		expect(datasets.map(dataset => ({
+			id: dataset.id, resultIndex: dataset.resultIndex, sourceKey: dataset.sourceKey, label: dataset.label,
+		}))).toEqual([
+			{
+				id: 'query_multi', resultIndex: 0, sourceKey: '["query_multi",0]',
+				label: 'Multi [section #1] (Result #1)',
+			},
+			{
+				id: 'query_multi', resultIndex: 1, sourceKey: '["query_multi",1]',
+				label: 'Multi [section #1] (Result #2)',
+			},
+		]);
+	});
+
+	it('binds a chart to its explicit secondary result index', () => {
+		setResultsBatchState('query_chart_multi', [
+			{ columns: ['First'], rows: [[1]], metadata: {} },
+			{ columns: ['Second'], rows: [[2]], metadata: {} },
+		], { producer: { engine: 'kusto', boxId: 'query_chart_multi' } });
+
+		rebindChartResultArtifactBinding('chart_multi', 'query_chart_multi', 1);
+
+		expect(getBoundResultArtifact('chart_multi', 'query_chart_multi'))
+			.toBe(getCurrentResultArtifact('query_chart_multi', 1));
 	});
 
 	it('discovers opaque data-source IDs from section ownership', () => {

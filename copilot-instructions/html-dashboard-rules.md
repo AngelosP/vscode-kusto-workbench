@@ -7,7 +7,7 @@ Use this guide whenever you create, edit, repair, validate, or upgrade an HTML d
 1. Start from an event-grain fact query. The query that feeds the dashboard should return raw rows with dimensions and measures, not a set of already-specialized widget queries. Use `summarize`, `make-series`, or top-N shaping only when the resulting grain is still the intended reusable fact model.
 2. Keep one fact query as the primary model whenever possible. A dashboard may have supporting query sections, but every exportable value must trace back through the provenance contract.
 3. Add or repair a `<script type="application/kw-provenance">` block before finalizing dashboard code.
-4. Use `version: 1`, a `model.fact.sectionId`, optional `model.dimensions`, and a `bindings` object. Each binding must define a `display` object with a supported `type` and the fields required by that display shape.
+4. Use `version: 1`, a `model.fact.sectionId`, optional zero-based `model.fact.resultIndex` (default `0`), optional `model.dimensions`, and a `bindings` object. Each binding must define a `display` object with a supported `type` and the fields required by that display shape.
 5. Add matching `data-kw-bind="bindingId"` attributes for every exportable scalar, table, repeated table, pivot, bar, pie, and line visual.
 6. Render exportable data through the dashboard bridge: `KustoWorkbench.bind(bindingId, value)`, `KustoWorkbench.renderChart(bindingId)`, `KustoWorkbench.renderTable(bindingId)`, and `KustoWorkbench.renderRepeatedTable(bindingId)`. Use `bindHtml()` only for preview-only custom HTML that is not expected to survive Power BI export.
 7. Use only supported display types for Power BI export: `scalar`, `table`, `repeatedTable`, `pivot`, `bar`, `pie`, and `line`.
@@ -156,6 +156,7 @@ Required shape:
     "fact": {
       "sectionId": "query-section-id",
       "sectionName": "Fact Query Name",
+      "resultIndex": 0,
       "grain": "event"
     },
     "dimensions": [
@@ -174,6 +175,7 @@ Rules:
 
 - Every exportable DOM target must have `data-kw-bind="bindingId"` and a matching provenance binding.
 - Every provenance binding that should appear in the dashboard should have one matching DOM target.
+- `model.fact.resultIndex` is a non-negative zero-based integer. Omit it for Result 1. Secondary results are supported by live HTML preview and standalone HTML export, but Power BI/PBIP publishing supports Result 1 only.
 - Keep binding IDs stable and descriptive. They are used by preview code and the export path.
 - Do not create bindings for decoration-only UI.
 

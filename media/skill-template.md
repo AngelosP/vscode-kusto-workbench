@@ -6,7 +6,7 @@ description: Operate Kusto Workbench to query Azure Data Explorer and SQL source
 
 tools: ['createKustoFile', 'askKustoCopilot', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'activateWorkbenchFile', 'addSection', 'removeSection', 'reorderSections', 'collapseExpandSection', 'configureKustoQuerySection', 'updateMarkdownSection', 'configureChart', 'configureTransformation', 'configureHtmlSection', 'getHtmlDashboardGuide', 'validateHtmlDashboard', 'manageDevelopmentNotes', 'askSqlCopilot', 'listSqlConnections', 'configureSqlSection', 'getSqlSchema']
 
-# version: 15 - Auto-updated by Kusto Workbench. Do not remove this line.
+# version: 16 - Auto-updated by Kusto Workbench. Do not remove this line.
 
 ---
 
@@ -70,6 +70,7 @@ Tips:
 
 - Pass `sectionId` to target an existing query section.
 - Specify date ranges when they matter.
+- A Kusto execution can return ordered Result 1..N tables. Result 1 remains the default; use explicit zero-based result indexes when configuring downstream charts, transformations, or HTML provenance.
 - For cross-cluster or cross-database joins, provide fully qualified names because `#askKustoCopilot` cannot infer them by itself.
 
 If `#askKustoCopilot` returns `outcome: "clarification-required"`:
@@ -90,14 +91,14 @@ Use SQL tools for SQL Server/T-SQL work.
 
 1. Run the source query first; charts need data.
 2. Add or identify a chart section.
-3. Call `#configureChart` with the correct data source and chart parameters.
+3. Call `#configureChart` with the correct `dataSourceId` and optional zero-based `dataSourceResultIndex` (default `0`) plus chart parameters.
 4. Check `validation.valid`. If false, read `validation.issues` and fix parameters before calling the chart complete.
 
 ### 6. Transform Data
 
 1. Ensure the source section has results.
 2. Add or identify a transformation section.
-3. Call `#configureTransformation` to link sources and configure the operation.
+3. Call `#configureTransformation` to link sources and configure the operation. Use `dataSourceResultIndex` and, for joins, `joinRightDataSourceResultIndex` when a source query has multiple results.
 4. Reorder sections so the transformed flow reads clearly.
 
 ### 7. Author HTML Dashboards
@@ -107,7 +108,7 @@ Use HTML sections for interactive dashboards, rich reports, and Power BI-ready d
 1. Read `./html-dashboard-rules.md` from this skill folder for the full exportable HTML dashboard and Power BI contract, then call `#getHtmlDashboardGuide` with `mode: "checklist"` before creating, editing, repairing, or upgrading a dashboard. Use `full` for complex repairs and `template` for a starter dashboard.
 2. Create or identify an event-grain fact query with `#askKustoCopilot`. It should return all columns needed for KPIs, tables, charts, and slicers.
 3. Add or identify the HTML section.
-4. Configure HTML with a `<script type="application/kw-provenance">` block, matching `data-kw-bind` attributes, `KustoWorkbench.agg()`, `bind()`, `renderChart()`, `renderTable()`, and `renderRepeatedTable()`.
+4. Configure HTML with a `<script type="application/kw-provenance">` block, matching `data-kw-bind` attributes, `KustoWorkbench.agg()`, `bind()`, `renderChart()`, `renderTable()`, and `renderRepeatedTable()`. Set optional zero-based `model.fact.resultIndex` for secondary live-preview facts; Power BI/PBIP requires Result 1 (`0`), while standalone HTML export may use secondary results.
 5. Use only supported export display types: `scalar`, `table`, `repeatedTable`, `pivot`, `bar`, `pie`, and `line`.
 6. Use `KustoWorkbench.renderChart(bindingId)` for exportable charts, `KustoWorkbench.renderTable(bindingId)` for exportable tables, and `KustoWorkbench.renderRepeatedTable(bindingId)` for exportable repeated grouped table sections. Manual SVG, canvas, ECharts, D3, generated `<td>` cells, or `bindHtml()` visuals are preview-only unless represented by provenance bindings.
 7. For dashboard bar charts, use `segments` for multi-color status bars, `scale: "normalized100"` plus `variant: "distribution"` for compact 100% distribution bars, `thresholdBands` for fixed numeric ranges, and `colorRules` for whole-bar conditional color. Keep these in provenance and render them with `KustoWorkbench.renderChart(bindingId)`.

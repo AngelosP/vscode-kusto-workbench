@@ -68,6 +68,8 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 import {
 	clearResultsState,
 	getBoundResultArtifact,
+	selectResultsState,
+	setResultsBatchState,
 	setResultsState,
 } from '../../src/webview/core/results-state.js';
 import { shareClipboardArtifactConsumerId } from '../../src/shared/resultArtifact.js';
@@ -123,6 +125,30 @@ describe('query share modal result artifacts', () => {
 		testState.sqlBoxes.splice(0, testState.sqlBoxes.length);
 		for (const key of Object.keys(testState.queryEditors)) delete testState.queryEditors[key];
 		for (const key of Object.keys(testState.optimizationMetadataByBoxId)) delete testState.optimizationMetadataByBoxId[key];
+	});
+
+	it('shares the currently visible result set from a Kusto batch', () => {
+		const boxId = 'query_share_multi';
+		testState.queryEditors[boxId] = { getValue: () => 'print 1; print 2' };
+		setResultsBatchState(boxId, [
+			{ columns: ['First'], rows: [['first']], metadata: {} },
+			{ columns: ['Second'], rows: [['second']], metadata: {} },
+		], {
+			producer: {
+				engine: 'kusto', boxId, executionId: 'execution-multi', query: 'print 1; print 2',
+				connectionId: 'connection-multi', database: 'DatabaseMulti',
+			},
+			policy: { shareToClipboard: true },
+		});
+		expect(selectResultsState(boxId, 1)).toBe(true);
+
+		__kustoOpenShareModal(boxId);
+		expect(getBoundResultArtifact(shareClipboardArtifactConsumerId(), boxId)?.resultIndex).toBe(1);
+		__kustoShareCopyToClipboard();
+
+		expect(clipboardMessages()[0]).toMatchObject({
+			columns: ['Second'], rowsData: [['second']], totalRows: 1,
+		});
 	});
 
 	it('pins artifact A and its query target snapshot until close, then reopening binds B', () => {

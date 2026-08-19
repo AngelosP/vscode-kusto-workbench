@@ -7,7 +7,7 @@ import {
 } from './state';
 import { __kustoGetQuerySectionElement } from './section-factory';
 import { __kustoEnsureAllEditorsWritableSoon } from '../monaco/writable';
-import { executeQuery } from '../sections/query-execution.controller';
+import { executeAllQueries, executeQuery } from '../sections/query-execution.controller';
 import { safeRun } from '../shared/safe-run';
 import { scrollPageBy } from './utils';
 
@@ -577,8 +577,8 @@ document.addEventListener('copy', (event: any) => {
 	void __kustoCopyOrCutFocusedMonaco(event, false);
 }, true);
 
-// Ctrl+Enter / Ctrl+Shift+Enter (Cmd+Enter / Cmd+Shift+Enter on macOS) runs the active query box,
-// same as clicking the main run button. Also submits Copilot Chat if focused.
+// Ctrl+Enter runs the focused statement. Ctrl+Shift+Enter runs the full focused Kusto editor.
+// Ctrl+Enter also submits Copilot Chat if its input is focused.
 document.addEventListener('keydown', (event: any) => {
 	// Some environments report Enter via `code` more reliably than `key`.
 	const isEnter = (event.key === 'Enter') || (event.code === 'Enter');
@@ -611,6 +611,7 @@ document.addEventListener('keydown', (event: any) => {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	if (activeEl && activeEl.id === activeQueryEditorBoxId + '_copilot_input') {
+		if (event.shiftKey) return;
 		event.preventDefault();
 		event.stopPropagation();
 		if (typeof event.stopImmediatePropagation === 'function') {
@@ -624,6 +625,12 @@ document.addEventListener('keydown', (event: any) => {
 		} catch (e) { console.error('[kusto]', e); }
 		return;
 	}
+	if (event.shiftKey) {
+		const editor = queryEditors[activeQueryEditorBoxId];
+		let hasTextFocus = false;
+		try { hasTextFocus = editor?.hasTextFocus?.() === true; } catch { hasTextFocus = false; }
+		if (!hasTextFocus) return;
+	}
 
 	// Prevent Monaco's default Ctrl/Cmd+Enter behavior (typically "insert line below")
 	// from running in addition to executing the query.
@@ -633,7 +640,8 @@ document.addEventListener('keydown', (event: any) => {
 		event.stopImmediatePropagation();
 	}
 	try {
-		executeQuery(activeQueryEditorBoxId);
+		if (event.shiftKey) executeAllQueries(activeQueryEditorBoxId);
+		else executeQuery(activeQueryEditorBoxId);
 	} catch (e) { console.error('[kusto]', e); }
 }, true);
 

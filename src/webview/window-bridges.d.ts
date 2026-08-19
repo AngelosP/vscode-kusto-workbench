@@ -266,6 +266,7 @@ declare global {
 		onQueryEditorToolbarAction: (boxId: string, action: string) => void;
 		__kustoShareCopyToClipboard: () => void;
 		__kustoApplyRunModeFromMenu: (boxId: string, mode: string) => void;
+		__kustoRunAllFromMenu: (boxId: string) => void;
 		getRunModeLabelText: (mode: string) => string;
 		closeRunMenu: (boxId: string) => void;
 		toggleRunMenu: (boxId: string) => void;
@@ -274,6 +275,7 @@ declare global {
 		// queryBoxes-execution.ts
 		// =====================================================================
 		executeQuery: (boxId: string, mode?: string) => void;
+		executeAllQueries: (boxId: string) => void;
 		optimizeQueryWithCopilot: (boxId: string, query?: string, options?: any) => Promise<string>;
 		displayResult: (result: any) => void;
 		displayResultForBox: (result: any, boxId: string, options?: any) => void;

@@ -202,6 +202,60 @@ describe('HostDashboardApplicationHandler Power BI workflows', () => {
 		expect(writeFile).not.toHaveBeenCalled();
 	});
 
+	it('rejects a secondary fact before PBIP project writes', async () => {
+		const provider = createProviderHarness();
+		vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue(vscode.Uri.file('C:/tmp/secondary.pbip'));
+		const showWarningMessage = vi.spyOn(vscode.window, 'showWarningMessage');
+		const createDirectory = vi.spyOn(vscode.workspace.fs, 'createDirectory');
+		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile');
+
+		await provider.handleMessage({
+			type: 'exportDashboard', requestId: 'export-secondary', boxId: 'html_publish',
+			html: validPublishHtmlCode, suggestedFileName: 'Secondary',
+			dataSources: [{ ...validPublishDataSources()[0], resultIndex: 1 }],
+		});
+
+		expect(showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('Result 1 only'));
+		expect(createDirectory).not.toHaveBeenCalled();
+		expect(writeFile).not.toHaveBeenCalled();
+	});
+
+	it('still exports standalone HTML for a secondary fact', async () => {
+		const provider = createProviderHarness();
+		const target = vscode.Uri.file('C:/tmp/secondary.html');
+		vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue(target);
+		const showWarningMessage = vi.spyOn(vscode.window, 'showWarningMessage');
+		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+		await provider.handleMessage({
+			type: 'exportDashboard', requestId: 'export-secondary-html', boxId: 'html_publish',
+			html: '<main>Secondary dashboard</main>', suggestedFileName: 'Secondary',
+			dataSources: [{ ...validPublishDataSources()[0], resultIndex: 1 }],
+		});
+
+		expect(writeFile).toHaveBeenCalledWith(target, expect.any(Uint8Array));
+		expect(showWarningMessage).not.toHaveBeenCalledWith(expect.stringContaining('Result 1 only'));
+	});
+
+	it('rejects a secondary fact before calling the Power BI service', async () => {
+		const provider = createProviderHarness();
+
+		await provider.handleMessage({
+			type: 'publishToPowerBI', requestId: 'publish-secondary', boxId: 'html_publish',
+			workspaceId: 'workspace-1', reportName: 'Dashboard', pageWidth: 1280, pageHeight: 720,
+			htmlCode: validPublishHtmlCode,
+			dataSources: [{ ...validPublishDataSources()[0], resultIndex: 1 }],
+			dataMode: 'import',
+		});
+
+		expect(powerBiPublishMocks.publishToPowerBIService).not.toHaveBeenCalled();
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'publishToPowerBIResult', requestId: 'publish-secondary',
+			boxId: 'html_publish', ok: false,
+			error: expect.stringContaining('Result 1 only'),
+		}));
+	});
+
 	it('returns the unchanged successful publish response and retains its application lease until ack', async () => {
 		const provider = createProviderHarness();
 		powerBiPublishMocks.publishToPowerBIService.mockResolvedValue({

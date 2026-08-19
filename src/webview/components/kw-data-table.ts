@@ -34,6 +34,10 @@ export interface DataTableOptions {
 	initialBodyVisible?: boolean;
 	/** Query metadata — client activity ID and server stats shown in a hover tooltip. */
 	metadata?: { clientActivityId?: string; serverStats?: Record<string, unknown> };
+	/** Ordered result sets available from the same query execution. */
+	resultSets?: readonly Readonly<{ resultIndex: number; label: string }>[];
+	/** Currently displayed result set ordinal. */
+	selectedResultIndex?: number;
 }
 export type CellValue = string | number | boolean | null | undefined | { display?: string; full?: unknown; isObject?: boolean; isNull?: boolean };
 export interface CellRange { rowMin: number; rowMax: number; colMin: number; colMax: number; }
@@ -965,8 +969,25 @@ export class KwDataTable extends LitElement {
 			: `${totalRows} row${totalRows !== 1 ? 's' : ''}`;
 		const meta = this.options.metadata;
 		const hasTooltip = !!(meta && (meta.clientActivityId || meta.serverStats));
+		const resultSets = Array.isArray(this.options.resultSets) ? this.options.resultSets : [];
+		const showResultSetPicker = resultSets.length > 1;
 		return html`<div class="hbar">
-			<span class="hinfo"><span class="hinfo-text${hasTooltip ? ' hinfo-anchor' : ''}" @mouseenter=${hasTooltip ? this._showMetaTooltip : nothing} @mouseleave=${hasTooltip ? this._scheduleHideMetaTooltip : nothing}>${this.options.label ? html`<strong>${this.options.label}:</strong> ` : nothing}${rowSummary} / ${this.columns.length} col${this.columns.length !== 1 ? 's' : ''}${this.options.executionTime && this.options.showExecutionTime ? html` <span class="et">(${this.options.executionTime})</span>` : nothing}</span>${showVis ? html` <button class="tbtn vis-toggle ${this._bodyVisible ? 'act' : ''}" title="${this._bodyVisible ? 'Hide results' : 'Show results'}" @click=${this._toggleBody}>${ICON.eye}</button>${!this._bodyVisible ? html`<span class="hidden-hint" @click=${this._toggleBody}>(results hidden from view, click to show them)</span>` : nothing}` : nothing}</span>
+			<span class="hinfo">
+				${this.options.label ? html`<strong>${this.options.label}:</strong>` : nothing}
+				${showResultSetPicker ? html`<select
+					class="result-set-picker"
+					data-testid="result-set-picker"
+					aria-label="Displayed query result"
+					.value=${String(this.options.selectedResultIndex ?? 0)}
+					@change=${this._onResultSetChange}>
+					${resultSets.map(resultSet => html`<option
+						value=${String(resultSet.resultIndex)}
+						?selected=${resultSet.resultIndex === (this.options.selectedResultIndex ?? 0)}
+					>${resultSet.label}</option>`)}
+				</select>` : nothing}
+				<span class="hinfo-text${hasTooltip ? ' hinfo-anchor' : ''}" @mouseenter=${hasTooltip ? this._showMetaTooltip : nothing} @mouseleave=${hasTooltip ? this._scheduleHideMetaTooltip : nothing}>${rowSummary} / ${this.columns.length} col${this.columns.length !== 1 ? 's' : ''}${this.options.executionTime && this.options.showExecutionTime ? html` <span class="et">(${this.options.executionTime})</span>` : nothing}</span>
+				${showVis ? html` <button class="tbtn vis-toggle ${this._bodyVisible ? 'act' : ''}" title="${this._bodyVisible ? 'Hide results' : 'Show results'}" @click=${this._toggleBody}>${ICON.eye}</button>${!this._bodyVisible ? html`<span class="hidden-hint" @click=${this._toggleBody}>(results hidden from view, click to show them)</span>` : nothing}` : nothing}
+			</span>
 			${(showToolbar && this._bodyVisible) ? html`<div class="tb">
 				<button class="tbtn ${this._searchCtrl.visible ? 'act' : ''}" title="Search data" @click=${() => this._toggleSearch()}>${ICON.search}</button>
 				<button class="tbtn ${this._rowJumpCtrl.visible ? 'act' : ''}" title="Scroll to row" @click=${() => this._toggleRowJump(totalRows)}>${ICON.scrollToRow}</button>
@@ -980,6 +1001,14 @@ export class KwDataTable extends LitElement {
 			${this._metaTooltipVisible && hasTooltip ? this._renderMetaTooltip() : nothing}
 		</div>`;
 	}
+
+	private _onResultSetChange = (event: Event): void => {
+		const resultIndex = Number((event.currentTarget as HTMLSelectElement).value);
+		if (!Number.isSafeInteger(resultIndex) || resultIndex < 0) return;
+		this.dispatchEvent(new CustomEvent('result-set-change', {
+			detail: { resultIndex }, bubbles: true, composed: true,
+		}));
+	};
 
 	// ── Metadata tooltip (Client Activity ID + Server Stats) ──
 

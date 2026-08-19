@@ -5,11 +5,12 @@ import { schedulePersist } from '../core/persistence';
 import { isDarkTheme } from '../monaco/theme';
 import { escapeHtml } from '../core/utils';
 import {
-	bindResultArtifactConsumer,
+	bindIndexedResultArtifactConsumer,
 	getBoundResultArtifact,
-	rebindResultArtifactConsumer,
+	rebindIndexedResultArtifactConsumer,
 	unbindResultArtifactConsumer,
 } from '../core/results-state';
+import { parseResultSourceRefKey } from '../../shared/resultArtifact.js';
 import { ensureEchartsLoaded } from './lazy-vendor.js';
 import {
 	handleTooltipFormatter,
@@ -887,6 +888,7 @@ function getZoomPanSignature(st: any, chartType: any, colNames: any[], rows: any
 	return JSON.stringify({
 		chartType: String(chartType || ''),
 		dataSourceId: String(st && st.dataSourceId || ''),
+		dataSourceResultIndex: Number(st && st.dataSourceResultIndex || 0),
 		xColumn: String(st && st.xColumn || ''),
 		yColumn: String(st && st.yColumn || ''),
 		yColumns: Array.isArray(st && st.yColumns) ? st.yColumns.map((column: any) => String(column || '')) : [],
@@ -1114,11 +1116,17 @@ export function releaseChartResultArtifactBinding(boxId: unknown): void {
 	unbindResultArtifactConsumer(String(boxId || ''));
 }
 
-export function rebindChartResultArtifactBinding(boxId: unknown, sourceBoxId: unknown): void {
+export function rebindChartResultArtifactBinding(
+	boxId: unknown,
+	sourceBoxId: unknown,
+	resultIndex = 0,
+): void {
 	const id = String(boxId || '');
 	const sourceId = String(sourceBoxId || '');
 	if (!id) return;
-	if (sourceId) rebindResultArtifactConsumer(id, sourceId);
+	if (sourceId && Number.isSafeInteger(resultIndex) && resultIndex >= 0) {
+		rebindIndexedResultArtifactConsumer(id, sourceId, resultIndex);
+	}
 	else unbindResultArtifactConsumer(id);
 }
 
@@ -1167,7 +1175,9 @@ export function renderChart(boxId: any) {
 	try {
 		const dsEl = document.getElementById(id + '_chart_ds') as any;
 		if (dsEl && dsEl.value) {
-			st.dataSourceId = String(dsEl.value || '');
+			const source = parseResultSourceRefKey(String(dsEl.value || ''));
+			st.dataSourceId = source?.sourceBoxId ?? String(dsEl.value || '');
+			st.dataSourceResultIndex = source?.resultIndex ?? 0;
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
@@ -1206,14 +1216,18 @@ export function renderChart(boxId: any) {
 	let dsRevision = 0;
 	try {
 		if (typeof st.dataSourceId === 'string' && st.dataSourceId) {
+			const resultIndex = Number.isSafeInteger(st.dataSourceResultIndex) && st.dataSourceResultIndex >= 0
+				? st.dataSourceResultIndex : 0;
 			const previousArtifact = getBoundResultArtifact(id);
 			let artifact = getBoundResultArtifact(id, st.dataSourceId);
-			if (!artifact) {
-				const boundArtifactId = bindResultArtifactConsumer(id, st.dataSourceId);
-				if (!boundArtifactId && previousArtifact?.sourceBoxId !== st.dataSourceId) {
+			if (!artifact || artifact.resultIndex !== resultIndex) {
+				const boundArtifactId = bindIndexedResultArtifactConsumer(id, st.dataSourceId, resultIndex);
+				if (!boundArtifactId && (previousArtifact?.sourceBoxId !== st.dataSourceId
+					|| previousArtifact?.resultIndex !== resultIndex)) {
 					unbindResultArtifactConsumer(id);
 				}
 				artifact = getBoundResultArtifact(id, st.dataSourceId);
+				if (artifact?.resultIndex !== resultIndex) artifact = null;
 			}
 			dsState = artifact;
 			dsRevision = artifact?.revision || 0;

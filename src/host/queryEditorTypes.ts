@@ -24,6 +24,7 @@ import type { DevelopmentNoteMutationWebviewMessage } from '../shared/developmen
 import type { ToolStateSnapshotWebviewMessage } from '../shared/toolStateSnapshotProtocol';
 import type { KustoExecutionStartWebviewMessage } from '../shared/kustoExecutionStartProtocol';
 import type { PublishToPowerBIAckMessage } from '../shared/powerBiPublishProtocol';
+import type { KustoResultAttachmentWebviewMessage } from '../shared/kustoResultAttachmentProtocol';
 
 export type { PublishToPowerBIAckMessage } from '../shared/powerBiPublishProtocol';
 
@@ -149,7 +150,7 @@ export type ExportDashboardMessage = {
 	html: string;
 	suggestedFileName?: string;
 	previewHeight?: number;
-	dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>;
+	dataSources: Array<{ name: string; sectionId: string; resultIndex?: number; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>;
 };
 export type GetPbiWorkspacesMessage = { type: 'getPbiWorkspaces'; requestId: string; boxId: string };
 export type CheckPbiItemExistsMessage = {
@@ -191,7 +192,7 @@ export type PublishToPowerBIMessage = {
 	pageWidth: number;
 	pageHeight: number;
 	htmlCode: string;
-	dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>;
+	dataSources: Array<{ name: string; sectionId: string; resultIndex?: number; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>;
 	dataMode?: PowerBiDataMode;
 	/** Present when updating an existing publish (republish). */
 	semanticModelId?: string;
@@ -218,6 +219,7 @@ export type EditorCursorStatusSnapshotRequestMessage = {
 
 export type IncomingWebviewMessage =
 	| KustoConnectionsProjectionWebviewMessage
+	| KustoResultAttachmentWebviewMessage
 	| KustoPublicationWebviewMessage
 	| { type: 'fileOpenTrace'; event: string; timeMs?: number; sequence?: number; detail?: unknown }
 	| EditorCursorPositionChangedMessage

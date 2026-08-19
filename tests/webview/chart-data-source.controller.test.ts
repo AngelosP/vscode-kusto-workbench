@@ -24,6 +24,7 @@ function defaultYAxis(): YAxisSettings {
 interface HostState {
 	boxId: string;
 	dataSourceId: string;
+	dataSourceResultIndex: number;
 	datasets: DatasetEntry[];
 	xColumn: string; yColumns: string[]; legendColumn: string;
 	labelColumn: string; valueColumn: string;
@@ -36,6 +37,7 @@ function createMockHost(overrides: Partial<HostState> = {}): ChartSectionHost {
 	const state: HostState = {
 		boxId: 'box1',
 		dataSourceId: '',
+		dataSourceResultIndex: 0,
 		datasets: [],
 		xColumn: '', yColumns: [], legendColumn: '',
 		labelColumn: '', valueColumn: '',
@@ -54,7 +56,15 @@ function createMockHost(overrides: Partial<HostState> = {}): ChartSectionHost {
 		updateComplete: Promise.resolve(true),
 		schedulePersist: vi.fn(),
 		getDataSourceId: () => state.dataSourceId,
-		setDataSourceId: (id: string) => { state.dataSourceId = id; },
+		getDataSourceResultIndex: () => state.dataSourceResultIndex,
+		setDataSourceId: (id: string) => {
+			state.dataSourceId = id;
+			state.dataSourceResultIndex = 0;
+		},
+		setDataSourceRef: (id: string, resultIndex: number) => {
+			state.dataSourceId = id;
+			state.dataSourceResultIndex = resultIndex;
+		},
 		getDatasets: () => state.datasets,
 		setDatasets: (ds: DatasetEntry[]) => { state.datasets = ds; },
 		getXColumn: () => state.xColumn,

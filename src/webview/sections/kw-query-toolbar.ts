@@ -22,8 +22,9 @@ import { getRunModeLabelText } from '../shared/comparisonUtils.js';
 import { __kustoHasFunctionDefinition } from '../monaco/prettify.js';
 import { postMessageToHost } from '../shared/webview-messages.js';
 import {
-	bindResultArtifactConsumer,
+	bindIndexedResultArtifactConsumer,
 	getBoundResultArtifact,
+	getSelectedResultIndex,
 	unbindResultArtifactConsumer,
 } from '../core/results-state.js';
 import {
@@ -35,7 +36,7 @@ import {
 	fullyQualifyTablesInEditor,
 	sqlBoxes,
 } from '../core/section-factory.js';
-import { executeQuery, __kustoIsRunSelectionReady } from './query-execution.controller.js';
+import { executeAllQueries, executeQuery, __kustoIsRunSelectionReady } from './query-execution.controller.js';
 import { closeAllMenus } from '../core/dropdown.js';
 import { schedulePersist } from '../core/persistence.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
@@ -347,7 +348,9 @@ export function __kustoOpenShareModal(boxId: any): void {
 	registerActiveShareModal(id, __kustoCloseShareModal);
 
 	const consumerId = shareClipboardArtifactConsumerId();
-	const artifactId = bindResultArtifactConsumer(consumerId, id);
+	const artifactId = bindIndexedResultArtifactConsumer(
+		consumerId, id, sqlSection ? 0 : getSelectedResultIndex(id),
+	);
 	const artifact = artifactId ? getBoundResultArtifact(consumerId, id) : null;
 	if (artifact?.producer?.engine === 'sql') engine = 'sql';
 	const artifactQuery = typeof artifact?.producer?.query === 'string' ? artifact.producer.query : '';
@@ -693,6 +696,15 @@ function __kustoApplyRunModeFromMenu(boxId: any, mode: any): void {
 	try { closeRunMenu(id); } catch (e) { console.error('[kusto]', e); }
 }
 
+export function runAllQueriesFromMenu(boxId: unknown): void {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	try {
+		if (__kustoIsRunSelectionReady(id)) executeAllQueries(id);
+	} catch (e) { console.error('[kusto]', e); }
+	try { closeRunMenu(id); } catch (e) { console.error('[kusto]', e); }
+}
+
 export function getRunMode(boxId: any): string {
 	return runModesByBoxId[boxId] || 'take100';
 }
@@ -835,6 +847,7 @@ window.__kustoCloseShareModal = __kustoCloseShareModal;
 window.__kustoShareCopyToClipboard = __kustoShareCopyToClipboard;
 window.initToolbarOverflow = initToolbarOverflow;
 window.__kustoApplyRunModeFromMenu = __kustoApplyRunModeFromMenu;
+window.__kustoRunAllFromMenu = runAllQueriesFromMenu;
 window.setRunMode = setRunMode;
 window.closeRunMenu = closeRunMenu;
 window.closeAllRunMenus = closeAllRunMenus;

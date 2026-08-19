@@ -22,6 +22,8 @@ import {
 	type KustoCopilotRequestIdentity,
 } from '../../shared/kustoExecution.js';
 import { emitAppliedKustoCopilotDone } from '../core/kusto-copilot-output-runtime.js';
+import { displayResultBatchForBox } from '../core/results-state.js';
+import { parseKustoResultBatch } from '../../shared/kustoResultBatch.js';
 
 // ── Host interface (avoids circular import with kw-query-section.ts) ──────────
 
@@ -462,6 +464,7 @@ export class CopilotChatManagerController implements ReactiveController {
 					const scrollContainer = document.documentElement;
 					const savedScroll = scrollContainer.scrollTop;
 					const isSql = this.flavor.id === 'sql';
+					const storedKustoBatch = !isSql ? parseKustoResultBatch(e.detail.result) : undefined;
 
 					// For SQL queries, extract a leading -- comment as the section name.
 					let queryText = String(e.detail.query || '');
@@ -501,6 +504,17 @@ export class CopilotChatManagerController implements ReactiveController {
 						window.__kustoMarkSectionAgentTouched?.(newBoxId);
 						setTimeout(() => {
 							if (!isSql) setQueryText(newBoxId, e.detail.query);
+							if (!isSql && storedKustoBatch?.ok) {
+								displayResultBatchForBox(storedKustoBatch.value, newBoxId, {
+									label: 'Results', showExecutionTime: true,
+									artifactPublication: {
+										producer: {
+											engine: 'kusto', boxId: newBoxId,
+											query: queryText, producer: 'copilot-insert',
+										},
+									},
+								});
+							}
 							const newBox = document.getElementById(newBoxId);
 							if (newBox) newBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 						}, 100);

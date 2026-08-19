@@ -1,13 +1,174 @@
 import { describe, expect, it } from 'vitest';
 import {
 	createDerivedResultArtifactPublication,
+	createResultSourceRef,
 	createRestoredKustoResultArtifactPublication,
+	formatResultSourceLabel,
+	parseResultSourceRefKey,
 	publicationFromPersistedResultArtifact,
+	resultSourceRefKey,
 	ResultArtifactStore,
 	toPersistedResultArtifact,
 } from '../../src/shared/resultArtifact.js';
 
 describe('ResultArtifactStore', () => {
+	it('round-trips structured source references and labels only multi-result siblings', () => {
+		const source = createResultSourceRef('query_1', 2);
+		expect(source).toEqual({ sourceBoxId: 'query_1', resultIndex: 2 });
+		const key = resultSourceRefKey(source!);
+		expect(parseResultSourceRefKey(key)).toEqual(source);
+		expect(createResultSourceRef('query_1', -1)).toBeUndefined();
+		expect(parseResultSourceRefKey('["query_1",-1]')).toBeUndefined();
+		expect(formatResultSourceLabel('Sales [section #1]', 0, 1)).toBe('Sales [section #1]');
+		expect(formatResultSourceLabel('Sales [section #1]', 1, 3)).toBe('Sales [section #1] (Result #2)');
+	});
+
+	it('publishes indexed siblings atomically under one source revision', () => {
+		const store = new ResultArtifactStore();
+
+		const artifacts = store.publishBatch('query_batch', [
+			{ resultIndex: 0, columns: ['First'], rows: [[1]], metadata: {} },
+			{ resultIndex: 1, columns: ['Second'], rows: [[2]], metadata: {} },
+		], {
+			producer: { engine: 'kusto', boxId: 'query_batch', executionId: 'execution-1' },
+			policy: { accountPartition: 'partition-a', leaveNoTraceRevision: 2 },
+		});
+
+		expect(artifacts).toHaveLength(2);
+		expect(artifacts?.map(artifact => ({
+			artifactId: artifact.artifactId,
+			resultIndex: artifact.resultIndex,
+			revision: artifact.revision,
+		}))).toEqual([
+			{ artifactId: 'result:query_batch:1', resultIndex: 0, revision: 1 },
+			{ artifactId: 'result:query_batch:1:set:1', resultIndex: 1, revision: 1 },
+		]);
+		expect(store.getCurrent('query_batch')).toBe(artifacts?.[0]);
+		expect(store.getCurrent('query_batch', 1)).toBe(artifacts?.[1]);
+		expect(store.getByProducerExecution('query_batch', 'execution-1', 1)).toBe(artifacts?.[1]);
+	});
+
+	it('accepts an exact host-assigned live batch revision after an existing current result', () => {
+		const store = new ResultArtifactStore();
+		store.publish('query_assigned', { columns: ['Value'], rows: [['local']], metadata: {} });
+
+		const assigned = store.publishBatch('query_assigned', [
+			{ resultIndex: 0, columns: ['First'], rows: [[1]], metadata: {} },
+			{ resultIndex: 1, columns: ['Second'], rows: [[2]], metadata: {} },
+		], {
+			assignedIdentity: {
+				artifactId: 'result:query_assigned:7', sourceBoxId: 'query_assigned',
+				revision: 7, createdAt: 123,
+			},
+		});
+
+		expect(assigned?.map(artifact => ({
+			artifactId: artifact.artifactId, revision: artifact.revision,
+			createdAt: artifact.createdAt, restored: artifact.restored,
+		}))).toEqual([
+			{ artifactId: 'result:query_assigned:7', revision: 7, createdAt: 123, restored: false },
+			{ artifactId: 'result:query_assigned:7:set:1', revision: 7, createdAt: 123, restored: false },
+		]);
+		expect(store.publish('query_assigned', {
+			columns: ['Value'], rows: [['next']], metadata: {},
+		})?.revision).toBe(8);
+	});
+
+	it('rejects stale or noncanonical host assignments without mutation', () => {
+		const store = new ResultArtifactStore();
+		const current = store.publish('query_assigned_reject', {
+			columns: ['Value'], rows: [['current']], metadata: {},
+		})!;
+		const snapshot = store.captureSnapshot();
+
+		for (const assignedIdentity of [
+			{
+				artifactId: 'result:query_assigned_reject:1', sourceBoxId: 'query_assigned_reject',
+				revision: 1, createdAt: 123,
+			},
+			{
+				artifactId: 'result:other:2', sourceBoxId: 'query_assigned_reject',
+				revision: 2, createdAt: 123,
+			},
+		]) {
+			expect(store.publishBatch('query_assigned_reject', [
+				{ resultIndex: 0, columns: ['Value'], rows: [['rejected']], metadata: {} },
+			], { assignedIdentity })).toBeUndefined();
+			expect(store.captureSnapshot()).toEqual(snapshot);
+			expect(store.getCurrent('query_assigned_reject')).toBe(current);
+		}
+	});
+
+	it('rejects an invalid batch without changing current artifacts or revisions', () => {
+		const store = new ResultArtifactStore();
+		const before = store.publish('query_atomic', { columns: ['Value'], rows: [['before']], metadata: {} })!;
+		const snapshot = store.captureSnapshot();
+
+		const rejected = store.publishBatch('query_atomic', [
+			{ resultIndex: 0, columns: ['Value'], rows: [['new']], metadata: {} },
+			{ resultIndex: 2, columns: ['Skipped'], rows: [['invalid']], metadata: {} },
+		]);
+
+		expect(rejected).toBeUndefined();
+		expect(store.getCurrent('query_atomic')).toBe(before);
+		expect(store.captureSnapshot()).toEqual(snapshot);
+		const after = store.publish('query_atomic', { columns: ['Value'], rows: [['after']], metadata: {} })!;
+		expect(after.revision).toBe(2);
+	});
+
+	it('retires every current sibling without pruning pinned history', () => {
+		const store = new ResultArtifactStore();
+		const first = store.publishBatch('query_rerun', [
+			{ resultIndex: 0, columns: ['Value'], rows: [['first-0']], metadata: {} },
+			{ resultIndex: 1, columns: ['Value'], rows: [['first-1']], metadata: {} },
+		])!;
+		store.bindIndexed('chart:result-1', 'query_rerun', 1, first[1].artifactId);
+
+		store.clearCurrentBatch('query_rerun');
+
+		expect(store.getCurrent('query_rerun')).toBeUndefined();
+		expect(store.getCurrent('query_rerun', 1)).toBeUndefined();
+		expect(store.get(first[0].artifactId)).toBeUndefined();
+		expect(store.get(first[1].artifactId)).toBe(first[1]);
+		expect(store.getBound('chart:result-1', 'query_rerun')).toBe(first[1]);
+	});
+
+	it('removes missing current indexes on the next complete batch while preserving configured pins', () => {
+		const store = new ResultArtifactStore();
+		const first = store.publishBatch('query_fewer', [
+			{ resultIndex: 0, columns: ['Value'], rows: [['first-0']], metadata: {} },
+			{ resultIndex: 1, columns: ['Value'], rows: [['first-1']], metadata: {} },
+		])!;
+		store.bindIndexed('transform:secondary', 'query_fewer', 1, first[1].artifactId);
+
+		const next = store.publishBatch('query_fewer', [
+			{ resultIndex: 0, columns: ['Value'], rows: [['next-0']], metadata: {} },
+		])!;
+
+		expect(store.getCurrent('query_fewer')).toBe(next[0]);
+		expect(store.getCurrent('query_fewer', 1)).toBeUndefined();
+		expect(store.getBound('transform:secondary', 'query_fewer')).toBe(first[1]);
+	});
+
+	it('restores indexed currents and bindings from a runtime snapshot', () => {
+		const store = new ResultArtifactStore();
+		const first = store.publishBatch('query_snapshot_batch', [
+			{ resultIndex: 0, columns: ['Value'], rows: [['zero']], metadata: {} },
+			{ resultIndex: 1, columns: ['Value'], rows: [['one']], metadata: {} },
+		])!;
+		store.bindIndexed('chart:snapshot-secondary', 'query_snapshot_batch', 1);
+		const snapshot = store.captureSnapshot();
+		store.publishBatch('query_snapshot_batch', [
+			{ resultIndex: 0, columns: ['Value'], rows: [['replacement']], metadata: {} },
+		]);
+
+		store.restoreSnapshot(snapshot);
+
+		expect(store.getCurrent('query_snapshot_batch')).toBe(first[0]);
+		expect(store.getCurrent('query_snapshot_batch', 1)).toBe(first[1]);
+		expect(store.getBound('chart:snapshot-secondary', 'query_snapshot_batch')).toBe(first[1]);
+	});
+
 	it('creates only conservative Kusto ownership for a descriptorless restored result', () => {
 		const publication = createRestoredKustoResultArtifactPublication(
 			{ engine: 'kusto', boxId: 'query_legacy', query: 'print Value=1' },
@@ -494,7 +655,11 @@ describe('ResultArtifactStore', () => {
 	it('accepts persisted derived ancestry only when it matches locally reconstructed sources', () => {
 		const store = new ResultArtifactStore();
 		const source = store.publish('query_source', { columns: [], rows: [[1]], metadata: {} }, {
-			policy: { accountPartition: 'partition-a', exposeToActiveContent: true, sendToModel: true },
+			policy: {
+				accountPartition: 'partition-a', authSessionGeneration: 3, leaveNoTraceRevision: 4,
+				connectionRevision: 5, connectionIdentityKey: 'cluster|authority',
+				exposeToActiveContent: true, sendToModel: true,
+			},
 		})!;
 		const trusted = createDerivedResultArtifactPublication(
 			{ engine: 'kusto', boxId: 'query_comparison', producer: 'comparison' },

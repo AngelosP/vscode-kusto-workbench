@@ -59,6 +59,21 @@ export type KqlSourceAnalysis = Readonly<{
 	physicalTableReferences: readonly KqlSourceReference[];
 }>;
 
+export type KqlSourceClassification = 'empty' | 'query' | 'management' | 'mixed';
+
+export type KqlFullQueryAdmission =
+	| Readonly<{
+		ok: true;
+		classification: 'query' | 'management';
+		analysis: KqlSourceAnalysis;
+		executionText: string;
+	}>
+	| Readonly<{
+		ok: false;
+		classification: Exclude<KqlSourceClassification, 'query'>;
+		error: string;
+	}>;
+
 const IGNORED_SOURCE_NAMES = new Set([
 	'let',
 	'set',
@@ -1026,6 +1041,83 @@ export const analyzeKqlSource = (text: string): KqlSourceAnalysis => {
 		parameterScopes: parsedBindings.parameterScopes,
 		physicalTableReferences
 	});
+};
+
+export const classifyKqlSource = (analysis: KqlSourceAnalysis): KqlSourceClassification => {
+	let queryCount = 0;
+	let managementCount = 0;
+	for (const statement of analysis.statements) {
+		const executable = statement.maskedText.trimStart();
+		if (!executable) continue;
+		if (executable.startsWith('.')) managementCount++;
+		else queryCount++;
+	}
+	if (!queryCount && !managementCount) return 'empty';
+	if (queryCount && managementCount) return 'mixed';
+	return managementCount ? 'management' : 'query';
+};
+
+const separatorInsertionOffset = (
+	analysis: KqlSourceAnalysis,
+	statement: KqlSourceStatement,
+): number => {
+	let offset = statement.endOffset;
+	while (offset > statement.startOffset) {
+		while (offset > statement.startOffset && /\s/.test(analysis.text[offset - 1])) offset--;
+		const trailingComment = analysis.commentRanges.find(range =>
+			range.startOffset >= statement.startOffset && range.endOffset === offset
+		);
+		if (!trailingComment) break;
+		offset = trailingComment.startOffset;
+	}
+	return offset;
+};
+
+export const canonicalizeKqlQueryStatementSeparators = (analysis: KqlSourceAnalysis): string => {
+	const edits: Array<{ startOffset: number; endOffset: number; text: string }> = [];
+	const executableStatements = analysis.statements.filter(statement => statement.maskedText.trim().length > 0);
+	for (let index = 0; index < executableStatements.length; index++) {
+		const statement = executableStatements[index];
+		const hasDelimiter = analysis.text[statement.endOffset] === ';';
+		if (!hasDelimiter && index === executableStatements.length - 1) continue;
+		const insertionOffset = separatorInsertionOffset(analysis, statement);
+		if (hasDelimiter && insertionOffset === statement.endOffset) continue;
+		if (hasDelimiter) {
+			edits.push({ startOffset: statement.endOffset, endOffset: statement.endOffset + 1, text: '' });
+		}
+		edits.push({ startOffset: insertionOffset, endOffset: insertionOffset, text: ';' });
+	}
+	let result = analysis.text;
+	for (const edit of edits.sort((left, right) => right.startOffset - left.startOffset
+		|| right.endOffset - left.endOffset)) {
+		result = result.slice(0, edit.startOffset) + edit.text + result.slice(edit.endOffset);
+	}
+	return result;
+};
+
+export const admitKqlFullQueryText = (
+	text: string,
+	options: Readonly<{ operation?: string; allowManagement?: boolean }> = {},
+): KqlFullQueryAdmission => {
+	const analysis = analyzeKqlSource(text);
+	const classification = classifyKqlSource(analysis);
+	if (classification === 'query' || (classification === 'management' && options.allowManagement === true)) {
+		return Object.freeze({
+			ok: true,
+			classification,
+			analysis,
+			executionText: classification === 'query'
+				? canonicalizeKqlQueryStatementSeparators(analysis)
+				: analysis.text,
+		});
+	}
+	const operation = String(options.operation || 'Run All').trim() || 'Run All';
+	const error = classification === 'management'
+		? `${operation} supports query statements only. Run management commands individually.`
+		: classification === 'mixed'
+			? `${operation} cannot combine management commands and query statements.`
+			: `${operation} requires at least one query statement.`;
+	return Object.freeze({ ok: false, classification, error });
 };
 
 export const isKqlTabularNameInScope = (

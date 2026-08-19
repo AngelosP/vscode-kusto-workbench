@@ -73,7 +73,7 @@ import { addPageScrollListener, escapeHtml, getScrollY, maybeAutoScrollWhileDrag
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { ensureSchemaForBox } from '../sections/query-connection.controller';
 import { __kustoGetConnectionId, __kustoGetClusterUrl, __kustoGetDatabase } from '../core/query-section-accessors';
-import { executeQuery } from '../sections/query-execution.controller';
+import { executeAllQueries, executeQuery } from '../sections/query-execution.controller';
 import { initToolbarOverflow } from '../sections/kw-query-toolbar';
 import { postMessageToHost } from '../shared/webview-messages';
 import { createMonacoCursorStatusPublisher } from '../shared/editor-cursor-status';
@@ -6948,7 +6948,7 @@ function initQueryEditor(boxId: any) {
 			});
 		} catch (e) { console.error('[kusto]', e); }
 
-		// Ctrl+Enter / Ctrl+Shift+Enter should execute the query (same as the Run button).
+		// Ctrl+Enter runs the focused statement; Ctrl+Shift+Enter runs the full editor.
 		// NOTE: We install this at the Monaco level so Monaco can't consume Ctrl+Shift+Enter before
 		// our document-level capture handler runs.
 		try {
@@ -6958,8 +6958,13 @@ function initQueryEditor(boxId: any) {
 						executeQuery(boxId);
 					} catch (e) { console.error('[kusto]', e); }
 				};
+				const __kustoRunAllThisQueryBox = () => {
+					try {
+						executeAllQueries(boxId);
+					} catch (e) { console.error('[kusto]', e); }
+				};
 				editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, __kustoRunThisQueryBox);
-				editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter, __kustoRunThisQueryBox);
+				editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter, __kustoRunAllThisQueryBox);
 			}
 		} catch (e) { console.error('[kusto]', e); }
 

@@ -76,6 +76,7 @@ export type KqlxSectionV1 =
 			resultArtifact?: PersistedResultArtifactV1;
 			kustoAccountPartition?: string;
 			kustoLeaveNoTraceRevision?: number;
+			selectedResultIndex?: number;
 			runMode?: string;
 			cacheEnabled?: boolean;
 			cacheValue?: number;
@@ -105,6 +106,7 @@ export type KqlxSectionV1 =
 			resultArtifact?: PersistedResultArtifactV1;
 			kustoAccountPartition?: string;
 			kustoLeaveNoTraceRevision?: number;
+			selectedResultIndex?: number;
 			runMode?: string;
 			cacheEnabled?: boolean;
 			cacheValue?: number;
@@ -270,6 +272,13 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 			return { ok: false, error: `Invalid .kqlx: section ${index} "id" must be a string.` };
 		}
 		const canonicalKind = canonicalSectionKind(section.type);
+		if (canonicalKind === 'query'
+			&& Object.prototype.hasOwnProperty.call(sectionRecord, 'selectedResultIndex')
+			&& sectionRecord.selectedResultIndex !== undefined
+			&& (!Number.isSafeInteger(sectionRecord.selectedResultIndex)
+				|| Number(sectionRecord.selectedResultIndex) < 0)) {
+			return { ok: false, error: `Invalid .kqlx: section ${index} "selectedResultIndex" must be a non-negative safe integer.` };
+		}
 		const supportsLinkedPrimary = canonicalKind === 'query' || canonicalKind === 'sql';
 		if (supportsLinkedPrimary
 			&& Object.prototype.hasOwnProperty.call(section, 'linkedQueryPath')

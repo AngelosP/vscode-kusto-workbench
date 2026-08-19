@@ -14,8 +14,10 @@ const mockRefreshAllDataSourceDropdowns = vi.fn();
 const mockRenderChart = vi.fn();
 const mockSetResultsState = vi.fn();
 const mockGetBoundResultArtifact = vi.fn();
+const mockGetResultArtifact = vi.fn();
 const mockBindResultArtifactConsumer = vi.fn();
 const mockRebindResultArtifactConsumer = vi.fn();
+const mockRebindIndexedResultArtifactConsumer = vi.fn();
 const mockUnbindResultArtifactConsumer = vi.fn();
 const mockClearResultsState = vi.fn();
 const mockNormalizeResultsColumnName = vi.fn((c: string) => c);
@@ -34,8 +36,13 @@ vi.mock('../../src/webview/core/persistence.js', () => ({
 vi.mock('../../src/webview/core/results-state.js', () => ({
 	setResultsState: mockSetResultsState,
 	bindResultArtifactConsumer: mockBindResultArtifactConsumer,
+	bindIndexedResultArtifactConsumer: (
+		consumerId: string, sourceBoxId: string, _resultIndex: number, artifactId: string,
+	) => mockBindResultArtifactConsumer(consumerId, sourceBoxId, artifactId),
 	getResultsStateRevision: vi.fn(() => 0),
 	getBoundResultArtifact: mockGetBoundResultArtifact,
+	getResultArtifact: mockGetResultArtifact,
+	rebindIndexedResultArtifactConsumer: mockRebindIndexedResultArtifactConsumer,
 	rebindResultArtifactConsumer: mockRebindResultArtifactConsumer,
 	unbindResultArtifactConsumer: mockUnbindResultArtifactConsumer,
 	clearResultsState: mockClearResultsState,
@@ -76,11 +83,17 @@ beforeEach(() => {
 	mockGetChartDatasetsInDomOrder.mockReturnValue([]);
 	mockSchedulePersist.mockClear();
 	mockSetResultsState.mockClear();
-	mockSetResultsState.mockImplementation((boxId: string, state: any, publication: any) => ({
-		artifactId: `result:${boxId}:output`, sourceBoxId: boxId, revision: 1, createdAt: 1,
-		restored: false, columns: state.columns, rows: state.rows, metadata: state.metadata,
-		producer: publication.producer, policy: publication.policy, lineage: publication.lineage || [],
-	}));
+	mockSetResultsState.mockImplementation((boxId: string, state: any, publication: any) => {
+		const artifact = {
+			artifactId: `result:${boxId}:output`, sourceBoxId: boxId, resultIndex: 0,
+			revision: 1, createdAt: 1, restored: false,
+			columns: state.columns, rows: state.rows, metadata: state.metadata,
+			producer: publication.producer, policy: publication.policy, lineage: publication.lineage || [],
+		};
+		currentArtifacts.set(boxId, artifact);
+		currentArtifacts.set(`${boxId}:0`, artifact);
+		return artifact;
+	});
 	mockBindResultArtifactConsumer.mockReset();
 	mockBindResultArtifactConsumer.mockImplementation((consumerId: string, sourceBoxId: string, artifactId: string) => {
 		const artifact = {
@@ -97,6 +110,13 @@ beforeEach(() => {
 		const artifact = boundArtifacts.get(consumerId);
 		return !sourceBoxId || artifact?.sourceBoxId === sourceBoxId ? artifact || null : null;
 	});
+	mockGetResultArtifact.mockReset();
+	mockGetResultArtifact.mockImplementation((artifactId: string) => {
+		for (const artifact of [...currentArtifacts.values(), ...boundArtifacts.values()]) {
+			if (artifact?.artifactId === artifactId) return artifact;
+		}
+		return null;
+	});
 	mockRebindResultArtifactConsumer.mockReset();
 	mockRebindResultArtifactConsumer.mockImplementation((consumerId: string, sourceBoxId: string) => {
 		let artifact = currentArtifacts.get(sourceBoxId);
@@ -110,6 +130,18 @@ beforeEach(() => {
 				currentArtifacts.set(sourceBoxId, artifact);
 			}
 		}
+		if (artifact) boundArtifacts.set(consumerId, artifact);
+		else boundArtifacts.delete(consumerId);
+		return artifact?.artifactId;
+	});
+	mockRebindIndexedResultArtifactConsumer.mockReset();
+	mockRebindIndexedResultArtifactConsumer.mockImplementation((
+		consumerId: string, sourceBoxId: string, resultIndex: number,
+	) => {
+		if (resultIndex === 0) return mockRebindResultArtifactConsumer(consumerId, sourceBoxId);
+		const artifact = currentArtifacts.get(`${sourceBoxId}:${resultIndex}`)
+			?? mockGetChartDatasetsInDomOrder()
+				.find(candidate => candidate.id === sourceBoxId && (candidate.resultIndex ?? 0) === resultIndex);
 		if (artifact) boundArtifacts.set(consumerId, artifact);
 		else boundArtifacts.delete(consumerId);
 		return artifact?.artifactId;
@@ -178,6 +210,7 @@ function fakeArtifact(sourceBoxId: string, revision: number, rows: unknown[][], 
 	return {
 		artifactId: `result:${sourceBoxId}:${revision}`,
 		sourceBoxId,
+		resultIndex: 0,
 		revision,
 		createdAt: revision,
 		restored: false,
@@ -192,6 +225,61 @@ function fakeArtifact(sourceBoxId: string, revision: number, rows: unknown[][], 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('transformation-join', () => {
+	it('binds and persists explicit left and right result indexes independently', () => {
+		const left = { ...fakeArtifact('query_multi', 7, [[1]]), resultIndex: 0 };
+		const right = {
+			...fakeArtifact('query_multi', 7, [[2]]), resultIndex: 1,
+			artifactId: 'result:query_multi:7:set:1',
+		};
+		currentArtifacts.set('query_multi:0', left);
+		currentArtifacts.set('query_multi:1', right);
+		mockGetChartDatasetsInDomOrder.mockReturnValue([
+			{ id: 'query_multi', resultIndex: 0, sourceKey: '["query_multi",0]', label: 'Multi (Result #1)', columns: ['Value'], rows: [[1]] },
+			{ id: 'query_multi', resultIndex: 1, sourceKey: '["query_multi",1]', label: 'Multi (Result #2)', columns: ['Value'], rows: [[2]] },
+		]);
+		const el = createSection();
+
+		expect(el.configure({
+			dataSourceId: 'query_multi', dataSourceResultIndex: 0,
+			joinRightDataSourceId: 'query_multi', joinRightDataSourceResultIndex: 1,
+			joinKeys: [{ left: 'Value', right: 'Value' }],
+		})).toBe(true);
+
+		expect(mockRebindIndexedResultArtifactConsumer).toHaveBeenCalledWith(
+			'transformation_test:input:primary', 'query_multi', 0,
+		);
+		expect(mockRebindIndexedResultArtifactConsumer).toHaveBeenCalledWith(
+			'transformation_test:input:join-right', 'query_multi', 1,
+		);
+		expect(el.serialize()).toMatchObject({
+			dataSourceId: 'query_multi',
+			joinRightDataSourceId: 'query_multi', joinRightDataSourceResultIndex: 1,
+		});
+	});
+
+	it('rejects same-source join inputs from different batch revisions', () => {
+		const left = { ...fakeArtifact('query_multi', 7, [[1]]), resultIndex: 0 };
+		const right = {
+			...fakeArtifact('query_multi', 8, [[2]]), resultIndex: 1,
+			artifactId: 'result:query_multi:8:set:1',
+		};
+		currentArtifacts.set('query_multi:0', left);
+		currentArtifacts.set('query_multi:1', right);
+		mockGetChartDatasetsInDomOrder.mockReturnValue([
+			{ id: 'query_multi', resultIndex: 0, label: 'Multi 1', columns: ['Value'], rows: [[1]] },
+			{ id: 'query_multi', resultIndex: 1, label: 'Multi 2', columns: ['Value'], rows: [[2]] },
+		]);
+		const el = createSection();
+
+		el.configure({
+			dataSourceId: 'query_multi', dataSourceResultIndex: 0,
+			joinRightDataSourceId: 'query_multi', joinRightDataSourceResultIndex: 1,
+			joinKeys: [{ left: 'Value', right: 'Value' }],
+		});
+
+		expect((el as any)._resultError).toContain('same result batch');
+	});
+
 	it('binds its derived output artifact for CSV export only when the source permits it', () => {
 		const source = fakeArtifact('query_source', 1, [['revision-a']], { exportToCsv: true });
 		currentArtifacts.set('query_source', source);

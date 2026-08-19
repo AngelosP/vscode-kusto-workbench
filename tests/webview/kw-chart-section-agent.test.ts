@@ -226,6 +226,16 @@ describe('kw-chart-section agent configuration', () => {
 		expect((el as any)._zoomPanEnabled).toBeUndefined();
 	});
 
+	it('persists an explicit data source result index and rejects invalid values', async () => {
+		const el = createChartSection();
+		await el.updateComplete;
+
+		expect(el.configure({ dataSourceId: 'q1', dataSourceResultIndex: 2 })).toBe(true);
+		expect(el.serialize()).toMatchObject({ dataSourceId: 'q1', dataSourceResultIndex: 2 });
+		expect(el.configure({ dataSourceResultIndex: -1 })).toBe(false);
+		expect(el.serialize()).toMatchObject({ dataSourceResultIndex: 2 });
+	});
+
 	it('configure drops nested stale zoom fields while keeping known settings', async () => {
 		const el = createChartSection();
 		await el.updateComplete;

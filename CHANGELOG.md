@@ -3,6 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [5.1.0] - 2026.08.19
+
+* Support for multiple results within a single query section (Run All).
+* Improvements to the 'Compare queries' and 'Optimize query' UX.
+
 ## [5.0.0] - 2026.08.18
 
 * New first-launch setup helps you choose which file types Kusto Workbench should open and whether editing helpers such as schema autocomplete, Smart documentation, and Copilot inline suggestions should be enabled.

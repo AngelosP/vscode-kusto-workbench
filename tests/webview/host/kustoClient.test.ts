@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { KustoQueryClient, QueryCancelledError, QueryExecutionError, parseKustoTimespan, normalizeClusterEndpoint } from '../../../src/host/kustoClient';
 import type { KustoConnection } from '../../../src/host/connectionManager';
+import { getKustoResultSets } from '../../../src/shared/kustoResultBatch';
 
 const TEST_CONNECTION: KustoConnection = {
 	id: 'conn-1',
@@ -722,6 +723,43 @@ describe('metadata disposal fencing', () => {
 // ── executeQueryCancelable ───────────────────────────────────────────────────
 
 describe('executeQueryCancelable', () => {
+	it('returns every ADX primary result table from one physical execution', async () => {
+		const { kustoClient, fakeSdkClient } = createCancelableClientHarness();
+		fakeSdkClient.execute.mockResolvedValueOnce({
+			primaryResults: [
+				{
+					name: 'ResultTable_0', id: 0, kind: 'PrimaryResult',
+					columns: [{ name: 'First', type: 'long', ordinal: 0 }],
+					rows: function* rows() { yield { First: 1 }; },
+				},
+				{
+					name: 'ResultTable_1', id: 1, kind: 'PrimaryResult',
+					columns: [{ name: 'Second', type: 'string', ordinal: 0 }],
+					rows: function* rows() { yield { Second: 'two' }; },
+				},
+			],
+		});
+
+		const result = await kustoClient.executeQueryCancelable(
+			TEST_CONNECTION, 'Samples', 'print First=1; print Second="two"', 'box::conn',
+		).promise;
+
+		expect(getKustoResultSets(result).map(set => ({
+			name: set.metadata.resultName,
+			columns: set.columns,
+			rows: set.rows,
+		}))).toEqual([
+			{
+				name: 'ResultTable_0', columns: [{ name: 'First', type: 'long' }],
+				rows: [[{ display: '1', full: '1' }]],
+			},
+			{
+				name: 'ResultTable_1', columns: [{ name: 'Second', type: 'string' }],
+				rows: [[{ display: 'two', full: 'two' }]],
+			},
+		]);
+	});
+
 	it('captures the current Leave No Trace revision in the physical dispatch identity', async () => {
 		const { kustoClient } = createCancelableClientHarness();
 		(kustoClient as any).connectionManager = {

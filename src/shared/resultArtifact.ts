@@ -52,6 +52,12 @@ export type ResultArtifactPublication = Readonly<{
 	producer?: ResultArtifactProducer;
 	policy?: ResultArtifactPolicy;
 	lineage?: readonly ResultArtifactLineage[];
+	assignedIdentity?: Readonly<{
+		artifactId: string;
+		sourceBoxId: string;
+		revision: number;
+		createdAt: number;
+	}>;
 	persistedIdentity?: Readonly<{
 		artifactId: string;
 		sourceBoxId: string;
@@ -63,6 +69,7 @@ export type ResultArtifactPublication = Readonly<{
 export type ResultArtifact = Readonly<{
 	artifactId: string;
 	sourceBoxId: string;
+	resultIndex: number;
 	revision: number;
 	createdAt: number;
 	restored: boolean;
@@ -78,6 +85,51 @@ export type DerivedResultArtifactInput = Readonly<{
 	artifact: ResultArtifact;
 	role?: string;
 }>;
+
+export type ResultSourceRef = Readonly<{
+	sourceBoxId: string;
+	resultIndex: number;
+}>;
+
+export function createResultSourceRef(
+	sourceBoxIdValue: unknown,
+	resultIndexValue: unknown = 0,
+): ResultSourceRef | undefined {
+	const sourceBoxId = typeof sourceBoxIdValue === 'string' ? sourceBoxIdValue.trim() : '';
+	if (!sourceBoxId || sourceBoxId.length > 4096
+		|| typeof resultIndexValue !== 'number'
+		|| !Number.isSafeInteger(resultIndexValue) || resultIndexValue < 0) return undefined;
+	return Object.freeze({ sourceBoxId, resultIndex: resultIndexValue });
+}
+
+export function resultSourceRefKey(value: ResultSourceRef): string {
+	const source = createResultSourceRef(value?.sourceBoxId, value?.resultIndex);
+	return source ? JSON.stringify([source.sourceBoxId, source.resultIndex]) : '';
+}
+
+export function parseResultSourceRefKey(value: unknown): ResultSourceRef | undefined {
+	if (typeof value !== 'string' || !value || value.length > 8192) return undefined;
+	try {
+		const parsed = JSON.parse(value);
+		if (!Array.isArray(parsed) || parsed.length !== 2) return undefined;
+		const source = createResultSourceRef(parsed[0], parsed[1]);
+		return source && resultSourceRefKey(source) === value ? source : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+export function formatResultSourceLabel(
+	baseLabelValue: unknown,
+	resultIndex: number,
+	resultSetCount: number,
+): string {
+	const baseLabel = String(baseLabelValue || '');
+	return Number.isSafeInteger(resultIndex) && resultIndex >= 0
+		&& Number.isSafeInteger(resultSetCount) && resultSetCount > 1
+		? `${baseLabel} (Result #${resultIndex + 1})`
+		: baseLabel;
+}
 
 export const RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT = 'kusto-workbench-result-artifact-consumers-revoked';
 export const RESULT_ARTIFACT_CSV_RESET_EVENT = 'kusto-workbench-result-artifact-csv-reset';
@@ -157,8 +209,27 @@ function encodeArtifactSourceId(sourceBoxId: string): string {
 	}
 }
 
-function canonicalResultArtifactId(sourceBoxId: string, revision: number): string {
-	return `result:${encodeArtifactSourceId(sourceBoxId)}:${revision}`;
+function canonicalResultArtifactId(sourceBoxId: string, revision: number, resultIndex = 0): string {
+	const primaryId = `result:${encodeArtifactSourceId(sourceBoxId)}:${revision}`;
+	return resultIndex === 0 ? primaryId : `${primaryId}:set:${resultIndex}`;
+}
+
+export function createPrimaryResultArtifactIdentity(
+	sourceBoxId: unknown,
+	revisionValue: unknown,
+	createdAtValue: unknown,
+): Readonly<{ artifactId: string; sourceBoxId: string; revision: number; createdAt: number }> | undefined {
+	const sourceBoxIdText = String(sourceBoxId || '').trim();
+	const revision = Number(revisionValue);
+	const createdAt = Number(createdAtValue);
+	if (!sourceBoxIdText || !Number.isSafeInteger(revision) || revision <= 0
+		|| revision >= Number.MAX_SAFE_INTEGER || !Number.isFinite(createdAt) || createdAt < 0) return undefined;
+	return Object.freeze({
+		artifactId: canonicalResultArtifactId(sourceBoxIdText, revision),
+		sourceBoxId: sourceBoxIdText,
+		revision,
+		createdAt,
+	});
 }
 
 export function projectRowsToDeclaredColumns(columns: unknown, rows: unknown): unknown[][] {
@@ -314,7 +385,7 @@ function parsePersistedPolicy(value: Record<string, unknown>): ResultArtifactPol
 }
 
 export function toPersistedResultArtifact(artifact: ResultArtifact | null | undefined): PersistedResultArtifactV1 | undefined {
-	if (!artifact) return undefined;
+	if (!artifact || artifact.resultIndex !== 0) return undefined;
 	return deepFreeze({
 		version: 1,
 		artifactId: artifact.artifactId,
@@ -396,9 +467,16 @@ export function publicationFromPersistedResultArtifact(
 			sourceArtifactId: String(sourcePolicy.sourceArtifactId || '').trim(),
 			...policyStamp(sourcePolicy),
 		})) || [];
+		const actualSourcePolicies = policy?.sourcePolicies || [];
+		const sourcePoliciesMatch = actualSourcePolicies.length === expectedSourcePolicies.length
+			&& actualSourcePolicies.every((sourcePolicy, index) => (
+				sourcePolicy.sourceArtifactId === expectedSourcePolicies[index]?.sourceArtifactId
+				&& JSON.stringify(policyStamp(sourcePolicy) || {})
+					=== JSON.stringify(policyStamp(expectedSourcePolicies[index]) || {})
+			));
 		if (expectedLineage.length === 0 || expectedSourcePolicies.length === 0
 			|| JSON.stringify(lineage || []) !== JSON.stringify(expectedLineage)
-			|| JSON.stringify(policy?.sourcePolicies || []) !== JSON.stringify(expectedSourcePolicies)) {
+			|| !sourcePoliciesMatch) {
 			return undefined;
 		}
 	}
@@ -460,94 +538,168 @@ export function publicationFromPersistedResultArtifact(
 export type ResultArtifactStoreSnapshot = Readonly<{
 	artifacts: readonly (readonly [string, ResultArtifact])[];
 	currentArtifactIds: readonly (readonly [string, string])[];
+	currentIndexedArtifactIds?: readonly (readonly [string, number, string])[];
 	nextRevisions: readonly (readonly [string, number])[];
 	consumerArtifactIds: readonly (readonly [string, string])[];
 }>;
 
 export class ResultArtifactStore {
 	private readonly artifacts = new Map<string, ResultArtifact>();
-	private readonly currentArtifactIdBySource = new Map<string, string>();
+	private readonly currentArtifactIdBySourceResult = new Map<string, string>();
 	private readonly nextRevisionBySource = new Map<string, number>();
 	private readonly artifactIdByConsumer = new Map<string, string>();
+
+	private sourceResultKey(sourceBoxId: string, resultIndex: number): string {
+		return JSON.stringify([sourceBoxId, resultIndex]);
+	}
 
 	publish(
 		sourceBoxId: string,
 		state: { columns?: unknown; rows?: unknown; metadata?: unknown },
 		publication: ResultArtifactPublication = {},
 	): ResultArtifact | undefined {
+		return this.publishBatch(sourceBoxId, [{ resultIndex: 0, ...state }], publication)?.[0];
+	}
+
+	publishBatch(
+		sourceBoxId: string,
+		states: readonly Readonly<{
+			resultIndex: number;
+			columns?: unknown;
+			rows?: unknown;
+			metadata?: unknown;
+		}>[],
+		publication: ResultArtifactPublication = {},
+	): readonly ResultArtifact[] | undefined {
 		const sourceId = String(sourceBoxId || '').trim();
-		if (!sourceId) return undefined;
+		if (!sourceId || !Array.isArray(states) || states.length === 0 || states.length > 256) return undefined;
+		for (let resultIndex = 0; resultIndex < states.length; resultIndex++) {
+			if (states[resultIndex]?.resultIndex !== resultIndex) return undefined;
+		}
 		const previousRevision = this.nextRevisionBySource.get(sourceId) || 0;
 		const persisted = publication.persistedIdentity;
+		const assigned = publication.assignedIdentity;
+		if (persisted && assigned) return undefined;
+		const canAssignIdentity = !!assigned
+			&& assigned.sourceBoxId === sourceId
+			&& Number.isSafeInteger(assigned.revision)
+			&& assigned.revision > previousRevision
+			&& assigned.revision < Number.MAX_SAFE_INTEGER
+			&& Number.isFinite(assigned.createdAt)
+			&& assigned.createdAt >= 0
+			&& assigned.artifactId === canonicalResultArtifactId(sourceId, assigned.revision)
+			&& !states.some(state => this.artifacts.has(
+				canonicalResultArtifactId(sourceId, assigned.revision, state.resultIndex),
+			));
+		if (assigned && !canAssignIdentity) return undefined;
 		const canRestoreIdentity = !!persisted
 			&& persisted.sourceBoxId === sourceId
 			&& Number.isSafeInteger(persisted.revision)
 			&& persisted.revision > 0
 			&& persisted.revision < Number.MAX_SAFE_INTEGER
 			&& persisted.artifactId === canonicalResultArtifactId(sourceId, persisted.revision)
-			&& !this.currentArtifactIdBySource.has(sourceId)
-			&& !this.artifacts.has(persisted.artifactId);
+			&& !states.some(state => this.currentArtifactIdBySourceResult.has(
+				this.sourceResultKey(sourceId, state.resultIndex),
+			))
+			&& !states.some(state => this.artifacts.has(
+				canonicalResultArtifactId(sourceId, persisted.revision, state.resultIndex),
+			));
 		const nextRevision = previousRevision + 1;
-		if (!canRestoreIdentity && (!Number.isSafeInteger(nextRevision) || nextRevision <= previousRevision)) return undefined;
-		let revision = canRestoreIdentity ? persisted!.revision : nextRevision;
-		let artifactId = canRestoreIdentity ? persisted!.artifactId : canonicalResultArtifactId(sourceId, revision);
-		while (!canRestoreIdentity && this.artifacts.has(artifactId)) {
+		if (!canRestoreIdentity && !canAssignIdentity
+			&& (!Number.isSafeInteger(nextRevision) || nextRevision <= previousRevision)) return undefined;
+		let revision = canAssignIdentity ? assigned!.revision : canRestoreIdentity ? persisted!.revision : nextRevision;
+		let artifactIds = states.map(state => canonicalResultArtifactId(sourceId, revision, state.resultIndex));
+		while (!canRestoreIdentity && !canAssignIdentity && artifactIds.some(artifactId => this.artifacts.has(artifactId))) {
 			if (revision >= Number.MAX_SAFE_INTEGER) return undefined;
 			revision++;
-			artifactId = canonicalResultArtifactId(sourceId, revision);
+			artifactIds = states.map(state => canonicalResultArtifactId(sourceId, revision, state.resultIndex));
 		}
+		const createdAt = canAssignIdentity ? assigned!.createdAt : canRestoreIdentity ? persisted!.createdAt : Date.now();
+		let artifacts: ResultArtifact[];
+		try {
+			artifacts = states.map((state, index) => {
+				const columns = deepFreeze(cloneValue(Array.isArray(state.columns) ? state.columns : []) as unknown[]);
+				const rows = deepFreeze(cloneValue(projectRowsToDeclaredColumns(columns, state.rows)) as unknown[]);
+				const metadataValue = state.metadata && typeof state.metadata === 'object' && !Array.isArray(state.metadata)
+					? state.metadata as Record<string, unknown>
+					: {};
+				return Object.freeze({
+					artifactId: artifactIds[index],
+					sourceBoxId: sourceId,
+					resultIndex: state.resultIndex,
+					revision,
+					createdAt,
+					restored: canRestoreIdentity,
+					columns,
+					rows,
+					metadata: deepFreeze(cloneValue(metadataValue) as Record<string, unknown>),
+					...(publication.producer ? { producer: snapshotRecord(publication.producer)! } : {}),
+					...(publication.policy ? { policy: snapshotRecord(publication.policy)! } : {}),
+					lineage: snapshotLineage(publication.lineage),
+				});
+			});
+		} catch {
+			return undefined;
+		}
+		const previousArtifactIds = [...this.currentArtifactIdBySourceResult.values()].filter(artifactId =>
+			this.artifacts.get(artifactId)?.sourceBoxId === sourceId
+		);
 		this.nextRevisionBySource.set(sourceId, Math.max(previousRevision, revision));
-		const previousArtifactId = this.currentArtifactIdBySource.get(sourceId);
-		const columns = deepFreeze(cloneValue(Array.isArray(state.columns) ? state.columns : []) as unknown[]);
-		const rows = deepFreeze(cloneValue(projectRowsToDeclaredColumns(columns, state.rows)) as unknown[]);
-		const metadataValue = state.metadata && typeof state.metadata === 'object' && !Array.isArray(state.metadata)
-			? state.metadata as Record<string, unknown>
-			: {};
-		const artifact: ResultArtifact = Object.freeze({
-			artifactId,
-			sourceBoxId: sourceId,
-			revision,
-			createdAt: canRestoreIdentity ? persisted!.createdAt : Date.now(),
-			restored: canRestoreIdentity,
-			columns,
-			rows,
-			metadata: deepFreeze(cloneValue(metadataValue) as Record<string, unknown>),
-			...(publication.producer ? { producer: snapshotRecord(publication.producer)! } : {}),
-			...(publication.policy ? { policy: snapshotRecord(publication.policy)! } : {}),
-			lineage: snapshotLineage(publication.lineage),
-		});
-		this.artifacts.set(artifactId, artifact);
-		this.currentArtifactIdBySource.set(sourceId, artifactId);
-		if (previousArtifactId) this.pruneIfUnreferenced(previousArtifactId);
-		return artifact;
+		for (const [key, artifactId] of [...this.currentArtifactIdBySourceResult]) {
+			if (this.artifacts.get(artifactId)?.sourceBoxId === sourceId) {
+				this.currentArtifactIdBySourceResult.delete(key);
+			}
+		}
+		for (const artifact of artifacts) {
+			this.artifacts.set(artifact.artifactId, artifact);
+			this.currentArtifactIdBySourceResult.set(
+				this.sourceResultKey(sourceId, artifact.resultIndex), artifact.artifactId,
+			);
+		}
+		for (const artifactId of previousArtifactIds) this.pruneIfUnreferenced(artifactId);
+		return Object.freeze(artifacts);
 	}
 
 	get(artifactId: string): ResultArtifact | undefined {
 		return this.artifacts.get(String(artifactId || '').trim());
 	}
 
-	getCurrent(sourceBoxId: string): ResultArtifact | undefined {
+	getCurrent(sourceBoxId: string, resultIndex = 0): ResultArtifact | undefined {
 		const source = String(sourceBoxId || '').trim();
-		const artifactId = this.currentArtifactIdBySource.get(source);
+		if (!Number.isSafeInteger(resultIndex) || resultIndex < 0) return undefined;
+		const artifactId = this.currentArtifactIdBySourceResult.get(this.sourceResultKey(source, resultIndex));
 		const artifact = artifactId ? this.artifacts.get(artifactId) : undefined;
-		return artifact?.sourceBoxId === source ? artifact : undefined;
+		return artifact?.sourceBoxId === source && artifact.resultIndex === resultIndex ? artifact : undefined;
 	}
 
-	getByProducerExecution(sourceBoxId: string, executionId: string): ResultArtifact | undefined {
+	getByProducerExecution(sourceBoxId: string, executionId: string, resultIndex = 0): ResultArtifact | undefined {
 		const source = String(sourceBoxId || '').trim();
 		const execution = String(executionId || '').trim();
-		if (!source || !execution) return undefined;
-		return [...this.artifacts.values()].find(artifact => (
-			artifact.sourceBoxId === source && artifact.producer?.executionId === execution
-		));
+		if (!source || !execution || !Number.isSafeInteger(resultIndex) || resultIndex < 0) return undefined;
+		const current = this.getCurrent(source, resultIndex);
+		if (current?.producer?.executionId === execution) return current;
+		return [...this.artifacts.values()]
+			.filter(artifact => artifact.sourceBoxId === source
+				&& artifact.resultIndex === resultIndex
+				&& artifact.producer?.executionId === execution)
+			.sort((left, right) => right.revision - left.revision)[0];
 	}
 
 	bind(consumerId: string, sourceBoxId: string, artifactId?: string): string | undefined {
+		return this.bindIndexed(consumerId, sourceBoxId, 0, artifactId);
+	}
+
+	bindIndexed(
+		consumerId: string,
+		sourceBoxId: string,
+		resultIndex: number,
+		artifactId?: string,
+	): string | undefined {
 		const consumer = String(consumerId || '').trim();
 		const source = String(sourceBoxId || '').trim();
-		if (!consumer || !source) return undefined;
-		const artifact = artifactId ? this.get(artifactId) : this.getCurrent(source);
-		if (!artifact || artifact.sourceBoxId !== source) return undefined;
+		if (!consumer || !source || !Number.isSafeInteger(resultIndex) || resultIndex < 0) return undefined;
+		const artifact = artifactId ? this.get(artifactId) : this.getCurrent(source, resultIndex);
+		if (!artifact || artifact.sourceBoxId !== source || artifact.resultIndex !== resultIndex) return undefined;
 		const previousArtifactId = this.artifactIdByConsumer.get(consumer);
 		this.artifactIdByConsumer.set(consumer, artifact.artifactId);
 		if (previousArtifactId && previousArtifactId !== artifact.artifactId) this.pruneIfUnreferenced(previousArtifactId);
@@ -583,12 +735,26 @@ export class ResultArtifactStore {
 		for (const artifactId of releasedArtifactIds) this.pruneIfUnreferenced(artifactId);
 	}
 
-	clearCurrent(sourceBoxId: string): void {
+	clearCurrent(sourceBoxId: string, resultIndex = 0): void {
 		const source = String(sourceBoxId || '').trim();
-		const artifactId = this.currentArtifactIdBySource.get(source);
+		if (!Number.isSafeInteger(resultIndex) || resultIndex < 0) return;
+		const key = this.sourceResultKey(source, resultIndex);
+		const artifactId = this.currentArtifactIdBySourceResult.get(key);
 		if (!artifactId) return;
-		this.currentArtifactIdBySource.delete(source);
+		this.currentArtifactIdBySourceResult.delete(key);
 		this.pruneIfUnreferenced(artifactId);
+	}
+
+	clearCurrentBatch(sourceBoxId: string): void {
+		const source = String(sourceBoxId || '').trim();
+		if (!source) return;
+		const released: string[] = [];
+		for (const [key, artifactId] of [...this.currentArtifactIdBySourceResult]) {
+			if (this.artifacts.get(artifactId)?.sourceBoxId !== source) continue;
+			this.currentArtifactIdBySourceResult.delete(key);
+			released.push(artifactId);
+		}
+		for (const artifactId of released) this.pruneIfUnreferenced(artifactId);
 	}
 
 	revokeSource(sourceBoxId: string): Readonly<{
@@ -617,9 +783,9 @@ export class ResultArtifactStore {
 			const artifact = this.artifacts.get(artifactId);
 			if (artifact) affectedSourceIds.add(artifact.sourceBoxId);
 		}
-		for (const [candidateSourceId, currentArtifactId] of this.currentArtifactIdBySource) {
+		for (const [candidateSourceId, currentArtifactId] of this.currentArtifactIdBySourceResult) {
 			if (!revokedArtifactIds.has(currentArtifactId)) continue;
-			this.currentArtifactIdBySource.delete(candidateSourceId);
+			this.currentArtifactIdBySourceResult.delete(candidateSourceId);
 		}
 		const revokedConsumerIds: string[] = [];
 		for (const [consumerId, artifactId] of this.artifactIdByConsumer) {
@@ -645,15 +811,23 @@ export class ResultArtifactStore {
 
 	clear(): void {
 		this.artifacts.clear();
-		this.currentArtifactIdBySource.clear();
+		this.currentArtifactIdBySourceResult.clear();
 		this.nextRevisionBySource.clear();
 		this.artifactIdByConsumer.clear();
 	}
 
 	captureSnapshot(): ResultArtifactStoreSnapshot {
+		const currentArtifacts = [...this.currentArtifactIdBySourceResult.values()]
+			.map(artifactId => this.artifacts.get(artifactId))
+			.filter((artifact): artifact is ResultArtifact => !!artifact);
 		return {
 			artifacts: [...this.artifacts.entries()],
-			currentArtifactIds: [...this.currentArtifactIdBySource.entries()],
+			currentArtifactIds: currentArtifacts
+				.filter(artifact => artifact.resultIndex === 0)
+				.map(artifact => [artifact.sourceBoxId, artifact.artifactId] as const),
+			currentIndexedArtifactIds: currentArtifacts.map(artifact => [
+				artifact.sourceBoxId, artifact.resultIndex, artifact.artifactId,
+			] as const),
 			nextRevisions: [...this.nextRevisionBySource.entries()],
 			consumerArtifactIds: [...this.artifactIdByConsumer.entries()],
 		};
@@ -662,8 +836,11 @@ export class ResultArtifactStore {
 	restoreSnapshot(snapshot: ResultArtifactStoreSnapshot): void {
 		this.clear();
 		for (const [artifactId, artifact] of snapshot.artifacts) this.artifacts.set(artifactId, artifact);
-		for (const [sourceBoxId, artifactId] of snapshot.currentArtifactIds) {
-			this.currentArtifactIdBySource.set(sourceBoxId, artifactId);
+		const indexed = snapshot.currentIndexedArtifactIds ?? snapshot.currentArtifactIds.map(
+			([sourceBoxId, artifactId]) => [sourceBoxId, 0, artifactId] as const,
+		);
+		for (const [sourceBoxId, resultIndex, artifactId] of indexed) {
+			this.currentArtifactIdBySourceResult.set(this.sourceResultKey(sourceBoxId, resultIndex), artifactId);
 		}
 		for (const [sourceBoxId, revision] of snapshot.nextRevisions) {
 			this.nextRevisionBySource.set(sourceBoxId, revision);
@@ -676,7 +853,7 @@ export class ResultArtifactStore {
 	private pruneIfUnreferenced(artifactId: string, visited = new Set<string>()): void {
 		if (visited.has(artifactId)) return;
 		visited.add(artifactId);
-		if ([...this.currentArtifactIdBySource.values()].includes(artifactId)) return;
+		if ([...this.currentArtifactIdBySourceResult.values()].includes(artifactId)) return;
 		if ([...this.artifactIdByConsumer.values()].includes(artifactId)) return;
 		if ([...this.artifacts.values()].some(artifact => (
 			artifact.artifactId !== artifactId

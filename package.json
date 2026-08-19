@@ -633,6 +633,11 @@
               "type": "string",
               "description": "For chart/transformation sections: the ID of the query section to use as data source"
             },
+            "dataSourceResultIndex": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "For chart sections: zero-based result set index from the source query (default 0)"
+            },
             "chartType": {
               "type": "string",
               "enum": [
@@ -923,6 +928,11 @@
             "dataSourceId": {
               "type": "string",
               "description": "The ID of the query section to use as data source"
+            },
+            "dataSourceResultIndex": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Zero-based result set index from the source query (default 0)"
             },
             "chartType": {
               "type": "string",
@@ -1277,6 +1287,11 @@
               "type": "string",
               "description": "The ID of the query section to use as data source"
             },
+            "dataSourceResultIndex": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Zero-based result set index for the primary data source (default 0)"
+            },
             "transformationType": {
               "type": "string",
               "enum": [
@@ -1365,6 +1380,11 @@
             "joinRightDataSourceId": {
               "type": "string",
               "description": "For join: the ID of the right-side data source (query or transformation section)"
+            },
+            "joinRightDataSourceResultIndex": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "For join: zero-based result set index for the right-side data source (default 0)"
             },
             "joinKind": {
               "type": "string",

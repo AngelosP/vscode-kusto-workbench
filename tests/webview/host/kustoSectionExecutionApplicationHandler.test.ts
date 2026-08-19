@@ -10,6 +10,7 @@ import type { KustoQueryClient, QueryResult } from '../../../src/host/kustoClien
 import type { IncomingWebviewMessage } from '../../../src/host/queryEditorTypes';
 import type { KustoConnection } from '../../../src/host/connectionManager';
 import { getKustoConnectionIdentityKey } from '../../../src/shared/kustoAuth';
+import { KustoResultPersistenceOwner } from '../../../src/host/kustoResultPersistenceOwner';
 
 const TEST_CONNECTION: KustoConnection = {
 	id: 'connection-1',
@@ -101,6 +102,8 @@ function createHarness() {
 	const logQueryExecutionError = vi.fn();
 	let hostDisposed = false;
 	let handler!: HostKustoSectionExecutionApplicationHandler;
+	const resultOwner = new KustoResultPersistenceOwner('file:///handler.kqlx', { now: () => 123 });
+	const resultSession = resultOwner.openPanel('panel-1');
 	const connectionManager = {
 		getConnections: vi.fn(() => [TEST_CONNECTION]),
 		getConnectionIncarnation: vi.fn(() => DISPATCH.connectionRevision),
@@ -136,6 +139,7 @@ function createHarness() {
 		isDisposed: () => hostDisposed,
 		createPublicationId: () => 'publication-exact',
 		now: () => Date.now(),
+		getKustoResultPersistenceSession: () => resultSession,
 	});
 
 	const openAndTarget = async () => {
@@ -163,6 +167,8 @@ function createHarness() {
 		cancelKustoCopilotSection,
 		showErrorMessage,
 		logQueryExecutionError,
+		resultOwner,
+		resultSession,
 		openAndTarget,
 		setHostDisposed(value: boolean) { hostDisposed = value; },
 	};
@@ -364,6 +370,75 @@ describe('HostKustoSectionExecutionApplicationHandler', () => {
 			phase: 'applied', accepted: false,
 		});
 		expect(harness.transport).toHaveBeenCalledTimes(2);
+	});
+
+	it('commits the host result attachment before resolving applied success', async () => {
+		const harness = createHarness();
+		await harness.openAndTarget();
+		const fullTerminal = {
+			type: 'queryResult' as const,
+			engine: 'kusto' as const,
+			boxId: 'query-1', sectionInstanceId: 'instance-1', targetGeneration: 1,
+			executionId: 'execution-owned', connectionId: TEST_CONNECTION.id, database: 'Samples',
+			producer: 'manual' as const, query: 'print x=1', reservationSequence: 1,
+			dispatch: DISPATCH,
+			result: queryResult('owned'),
+		};
+		expect(harness.resultSession.beginExecution(fullTerminal)).toBe(true);
+		const publishing = harness.handler.postKustoPublication(fullTerminal);
+		await vi.waitFor(() => expect(harness.transport).toHaveBeenCalledOnce());
+		const stage = harness.transport.mock.calls[0][0] as {
+			publicationId: string;
+			payload: { resultArtifactAssignment?: { artifactId?: string } };
+		};
+		expect(stage.payload.resultArtifactAssignment?.artifactId).toBe('result:query-1:1');
+
+		await harness.handler.handleMessage({
+			type: 'kustoPublicationAck', publicationId: stage.publicationId,
+			phase: 'staged', accepted: true,
+		});
+		await harness.handler.handleMessage({
+			type: 'kustoPublicationAck', publicationId: stage.publicationId,
+			phase: 'applied', accepted: true,
+		});
+
+		await expect(publishing).resolves.toBe(true);
+		const section = harness.resultOwner.overlaySnapshot({
+			sections: [{ id: 'query-1', type: 'query' }],
+		}).sections?.[0] as Record<string, unknown>;
+		expect(section.resultArtifact).toMatchObject({ artifactId: 'result:query-1:1' });
+		expect(section.resultJson).toEqual(expect.any(String));
+	});
+
+	it('aborts the staged host attachment when applied publication is rejected', async () => {
+		const harness = createHarness();
+		await harness.openAndTarget();
+		const fullTerminal = {
+			type: 'queryResult' as const,
+			engine: 'kusto' as const,
+			boxId: 'query-1', sectionInstanceId: 'instance-1', targetGeneration: 1,
+			executionId: 'execution-rejected', connectionId: TEST_CONNECTION.id, database: 'Samples',
+			producer: 'manual' as const, query: 'print x=1', reservationSequence: 1,
+			dispatch: DISPATCH,
+			result: queryResult('rejected'),
+		};
+		expect(harness.resultSession.beginExecution(fullTerminal)).toBe(true);
+		const publishing = harness.handler.postKustoPublication(fullTerminal);
+		await vi.waitFor(() => expect(harness.transport).toHaveBeenCalledOnce());
+		const stage = harness.transport.mock.calls[0][0] as { publicationId: string };
+		await harness.handler.handleMessage({
+			type: 'kustoPublicationAck', publicationId: stage.publicationId,
+			phase: 'staged', accepted: true,
+		});
+		await harness.handler.handleMessage({
+			type: 'kustoPublicationAck', publicationId: stage.publicationId,
+			phase: 'applied', accepted: false,
+		});
+
+		await expect(publishing).resolves.toBe(false);
+		expect(harness.resultOwner.overlaySnapshot({
+			sections: [{ id: 'query-1', type: 'query' }],
+		}).sections?.[0]).not.toHaveProperty('resultJson');
 	});
 
 	it('keeps the applied publication waiter and deadline live after a malformed matching acknowledgement', async () => {

@@ -22,6 +22,7 @@ export interface PersistedTransformationSectionState {
 	expanded?: boolean;
 	editorHeightPx?: number;
 	dataSourceId?: string;
+	dataSourceResultIndex?: number;
 	transformationType?: 'derive' | 'summarize' | 'distinct' | 'pivot' | 'join';
 	distinctColumn?: string;
 	groupByColumns?: string[];
@@ -35,6 +36,7 @@ export interface PersistedTransformationSectionState {
 	pivotAggregation?: 'sum' | 'avg' | 'count' | 'first';
 	pivotMaxColumns?: number;
 	joinRightDataSourceId?: string;
+	joinRightDataSourceResultIndex?: number;
 	joinKind?: 'inner' | 'leftouter' | 'rightouter' | 'fullouter' | 'leftanti' | 'rightanti' | 'leftsemi' | 'rightsemi';
 	joinKeys?: TransformationJoinKeyState[];
 	joinOmitDuplicateColumns?: boolean;
@@ -65,7 +67,9 @@ const stringFields = [
 	'pivotValueColumn', 'pivotAggregation', 'joinRightDataSourceId', 'joinKind',
 ] as const;
 const booleanFields = ['expanded', 'joinOmitDuplicateColumns'] as const;
-const numberFields = ['editorHeightPx', 'pivotMaxColumns'] as const;
+const numberFields = [
+	'editorHeightPx', 'pivotMaxColumns', 'dataSourceResultIndex', 'joinRightDataSourceResultIndex',
+] as const;
 const configurationKeys = new Set<string>([
 	...stringFields,
 	...booleanFields,
@@ -115,6 +119,12 @@ function readScalarFields(input: JsonRecord, target: MutableTransformationState)
 			return `Transformation field "${key}" must be a finite number.`;
 		}
 		setOwn(target, key, input[key]);
+	}
+	for (const key of ['dataSourceResultIndex', 'joinRightDataSourceResultIndex'] as const) {
+		if (!hasOwn(input, key)) continue;
+		if (!Number.isSafeInteger(input[key]) || Number(input[key]) < 0) {
+			return `Transformation field "${key}" must be a non-negative safe integer.`;
+		}
 	}
 	return undefined;
 }

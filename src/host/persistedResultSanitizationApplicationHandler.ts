@@ -134,6 +134,7 @@ export class HostPersistedResultSanitizationApplicationHandler
 				const clone = { ...record };
 				delete clone.resultJson;
 				delete clone.resultArtifact;
+				delete clone.selectedResultIndex;
 				return clone;
 			}
 			const derivedOwner = boxId ? this.options.sqlLifecycle.getComparisonOwner(boxId) : undefined;
@@ -178,6 +179,7 @@ export class HostPersistedResultSanitizationApplicationHandler
 			const clone = { ...record };
 			delete clone.resultJson;
 			delete clone.resultArtifact;
+			delete clone.selectedResultIndex;
 			return clone;
 		});
 		return this.stripOrphanedSqlPrincipalFingerprints(changed ? { ...state, sections: sanitized } : state);
@@ -420,6 +422,7 @@ export class HostPersistedResultSanitizationApplicationHandler
 			delete clone.resultArtifact;
 			delete clone.kustoAccountPartition;
 			delete clone.kustoLeaveNoTraceRevision;
+			delete clone.selectedResultIndex;
 			return clone;
 		});
 		return changed ? { ...state, sections: sanitized } : state;
@@ -441,13 +444,15 @@ export class HostPersistedResultSanitizationApplicationHandler
 			if (!section || typeof section !== 'object') return section;
 			const record = section as Record<string, unknown>;
 			const orphanedArtifact = 'resultArtifact' in record && !String(record.resultJson || '');
+			const orphanedSelection = 'selectedResultIndex' in record && !String(record.resultJson || '');
 			const orphanedSqlPrincipal = String(record.type || '') === 'sql'
 				&& ('principalFingerprint' in record || 'revocationGeneration' in record)
 				&& !String(record.resultJson || '');
-			if (!orphanedArtifact && !orphanedSqlPrincipal) return section;
+			if (!orphanedArtifact && !orphanedSelection && !orphanedSqlPrincipal) return section;
 			changed = true;
 			const clone = { ...record };
 			if (orphanedArtifact) delete clone.resultArtifact;
+			if (orphanedSelection) delete clone.selectedResultIndex;
 			if (orphanedSqlPrincipal) {
 				delete clone.principalFingerprint;
 				delete clone.revocationGeneration;
@@ -481,6 +486,7 @@ export class HostPersistedResultSanitizationApplicationHandler
 			const clone = { ...record };
 			delete clone.resultJson;
 			delete clone.resultArtifact;
+			delete clone.selectedResultIndex;
 			return clone;
 		});
 		return this.stripOrphanedSqlPrincipalFingerprints(changed ? { ...state, sections: sanitized } : state);
@@ -534,6 +540,7 @@ export class HostPersistedResultSanitizationApplicationHandler
 			const clone = { ...record };
 			delete clone.resultJson;
 			delete clone.resultArtifact;
+			delete clone.selectedResultIndex;
 			return clone;
 		});
 		return this.stripOrphanedSqlPrincipalFingerprints(changed ? { ...state, sections: sanitized } : state);

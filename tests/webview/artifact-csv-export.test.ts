@@ -19,6 +19,7 @@ import {
 	bindResultArtifactConsumer,
 	getBoundResultArtifact,
 	getCurrentResultArtifact,
+	setResultsBatchState,
 	setResultsState,
 } from '../../src/webview/core/results-state.js';
 import {
@@ -81,6 +82,37 @@ describe('artifact CSV export gate', () => {
 		});
 		expect(getCurrentResultArtifact(boxId)?.producer?.executionId).toBe('execution-b');
 		expect(getBoundResultArtifact(csvTableArtifactConsumerId(boxId), boxId)).toBe(artifactA);
+		releaseArtifactCsvTable(boxId, tableToken);
+	});
+
+	it('exports an exact secondary result artifact through the host challenge', () => {
+		const boxId = 'query_csv_secondary';
+		const artifacts = setResultsBatchState(boxId, [
+			{ columns: ['Value'], rows: [['first']], metadata: {} },
+			{ columns: ['Value'], rows: [['second']], metadata: {} },
+		], {
+			producer: { engine: 'kusto', boxId, executionId: 'execution-batch' },
+			policy: { exportToCsv: true },
+		}, 1)!;
+		const artifact = artifacts[1];
+		const tableToken = registerArtifactCsvTable(boxId, artifact.artifactId)!;
+
+		expect(saveArtifactCsv({
+			sourceBoxId: boxId, artifactId: artifact.artifactId, tableToken, csv: 'Value\nsecond',
+		})).toBe(true);
+		const intent = mocks.postMessageToHost.mock.calls
+			.map(call => call[0])
+			.find(message => message.type === 'requestArtifactCsvSave');
+		provideArtifactCsvSaveData({
+			type: 'requestArtifactCsvSaveData', requestId: 'secondary-host-nonce',
+			exportId: intent.requestId, boxId, artifactId: artifact.artifactId,
+		});
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'artifactCsvSaveData', requestId: 'secondary-host-nonce', boxId,
+			artifactId: artifact.artifactId, accepted: true, csv: 'Value\nsecond',
+		});
+		expect(getBoundResultArtifact(csvTableArtifactConsumerId(boxId), boxId)).toBe(artifact);
 		releaseArtifactCsvTable(boxId, tableToken);
 	});
 

@@ -290,6 +290,48 @@ describe('KustoExecutionCoordinator', () => {
 		})]);
 	});
 
+	it('retires a pending successful delivery exactly once when its target changes', async () => {
+		let settleResult!: (delivered: boolean) => void;
+		const resultDelivery = new Promise<boolean>(resolve => { settleResult = resolve; });
+		const postMessage = vi.fn()
+			.mockImplementationOnce(() => resultDelivery)
+			.mockResolvedValue(true);
+		const coordinator = new KustoExecutionCoordinator({
+			queryRuns: new QueryRunCoordinator(), postMessage,
+		});
+		coordinator.openSection('query_1', 'instance-1');
+		coordinator.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'instance-1', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Samples',
+		});
+		const reservation = coordinator.reserve(request('execution-settling'));
+		const lease = coordinator.start(reservation, () => ({ cancel: vi.fn(), promise: Promise.resolve(result('ok')) }));
+		lease.captureDispatch({
+			dispatchAttempt: 1, connectionRevision: 1, leaveNoTraceRevision: 0,
+			connectionIdentityKey: 'cluster|authority', clusterEndpoint: 'https://cluster.kusto.windows.net',
+			accountPartition: 'partition-a', clientActivityId: 'KW.execute_query;settling',
+		});
+		const success = coordinator.succeed(reservation, result('ok'));
+		await Promise.resolve();
+
+		coordinator.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'instance-1', targetGeneration: 2,
+			connectionId: 'connection-1', database: 'Other',
+		});
+		await vi.waitFor(() => expect(postMessage).toHaveBeenCalledTimes(2));
+		expect(postMessage.mock.calls[1][0]).toMatchObject({
+			type: 'queryCancelled', executionId: 'execution-settling', reason: 'retired',
+		});
+		settleResult(false);
+
+		await expect(success).resolves.toBe(false);
+		const cancellations = postMessage.mock.calls
+			.map(call => call[0])
+			.filter(message => message.type === 'queryCancelled' && message.executionId === 'execution-settling');
+		expect(cancellations).toHaveLength(1);
+		expect(cancellations[0]).toMatchObject({ reason: 'retired' });
+	});
+
 	it('rejects a closed same-ID section incarnation', () => {
 		const harness = createHarness();
 		expect(harness.coordinator.closeSection('query_1', 'instance-1')).toBe(true);

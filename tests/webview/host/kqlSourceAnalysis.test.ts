@@ -2,12 +2,86 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
 import {
+	admitKqlFullQueryText,
 	analyzeKqlSource,
+	classifyKqlSource,
 	isKqlTabularNameInScope,
 	resolveKqlLetSourceName
 } from '../../../src/host/kqlLanguageService/sourceAnalysis';
 
 describe('analyzeKqlSource', () => {
+	it('classifies full query, management, mixed, and empty source without scanning protected text', () => {
+		expect(classifyKqlSource(analyzeKqlSource('print Value=".show tables";\nprint Other=2'))).toBe('query');
+		expect(classifyKqlSource(analyzeKqlSource('// comment\n.show tables'))).toBe('management');
+		expect(classifyKqlSource(analyzeKqlSource('.show tables;\nprint Value=1'))).toBe('mixed');
+		expect(classifyKqlSource(analyzeKqlSource('// comment only'))).toBe('empty');
+	});
+
+	it('admits only full query text and returns actionable management errors', () => {
+		expect(admitKqlFullQueryText('print One=1; print Two=2')).toMatchObject({ ok: true });
+		expect(admitKqlFullQueryText('.show tables')).toEqual({
+			ok: false, classification: 'management',
+			error: 'Run All supports query statements only. Run management commands individually.',
+		});
+		expect(admitKqlFullQueryText('.show tables; print Value=1')).toEqual({
+			ok: false, classification: 'mixed',
+			error: 'Run All cannot combine management commands and query statements.',
+		});
+		expect(admitKqlFullQueryText('.show tables', {
+			operation: 'Copilot query execution', allowManagement: true,
+		})).toMatchObject({ ok: true, classification: 'management' });
+		expect(admitKqlFullQueryText('.show tables; print Value=1', {
+			operation: 'Copilot query execution', allowManagement: true,
+		})).toEqual({
+			ok: false, classification: 'mixed',
+			error: 'Copilot query execution cannot combine management commands and query statements.',
+		});
+	});
+
+	it('canonicalizes standalone Run All separators without swallowing trailing comments', () => {
+		const admission = admitKqlFullQueryText([
+			'print First=1 // keep this comment',
+			';',
+			'print Second=2',
+			';',
+			'print Third=3',
+		].join('\n'));
+
+		expect(admission).toMatchObject({ ok: true, classification: 'query' });
+		if (!admission.ok) return;
+		expect(admission.executionText).toBe([
+			'print First=1; // keep this comment',
+			'',
+			'print Second=2;',
+			'',
+			'print Third=3',
+		].join('\n'));
+	});
+
+	it('does not insert separators into comment-only blocks', () => {
+		const admission = admitKqlFullQueryText([
+			'// leading comment',
+			'',
+			'print First=1',
+			'',
+			'// between statements',
+			'',
+			'print Second=2',
+		].join('\n'));
+
+		expect(admission).toMatchObject({ ok: true, classification: 'query' });
+		if (!admission.ok) return;
+		expect(admission.executionText).toBe([
+			'// leading comment',
+			'',
+			'print First=1;',
+			'',
+			'// between statements',
+			'',
+			'print Second=2',
+		].join('\n'));
+	});
+
 	it('returns one immutable offset-preserving analysis', () => {
 		const text = [
 			'let X = TableA;',

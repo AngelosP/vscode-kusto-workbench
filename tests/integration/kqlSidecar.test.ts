@@ -9,6 +9,7 @@ import { KqlCompatEditorProvider } from '../../src/host/kqlCompatEditorProvider'
 import { KqlxEditorProvider } from '../../src/host/kqlxEditorProvider';
 import { MdCompatEditorProvider } from '../../src/host/mdCompatEditorProvider';
 import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
+import { KustoResultPersistenceRegistry } from '../../src/host/kustoResultPersistenceOwner';
 import { KustoAuthPreferenceService } from '../../src/host/kustoAuthPreferenceService';
 import { stringifyKqlxFile } from '../../src/host/kqlxFormat';
 import { SqlCompatEditorProvider } from '../../src/host/sqlCompatEditorProvider';
@@ -17,6 +18,7 @@ import { CompatSidecarSession } from '../../src/host/compatSidecarSession';
 import { CompatSidecarCloseCoordinator } from '../../src/host/compatSidecarCloseCoordinator';
 import { CompatSidecarProjectionCoordinator } from '../../src/host/compatSidecarProjectionCoordinator';
 import { parseCompatibilityPersistenceWebviewMessage } from '../../src/shared/compatibilityPersistenceProtocol';
+import { normalizeWorkbenchUriKey } from '../../src/host/workbenchFileTypes';
 import {
 	adaptCompatibilityPersistenceTestPanel,
 	adaptMainWebviewStartupTestPanel,
@@ -1241,11 +1243,17 @@ suite('Sidecar .kql.json strategy', () => {
 			const accountPartition = KustoAuthPreferenceService.getInstance(fakeContext)
 				.getAccountPartition(undefined, selectedAccountId);
 
+			const resultRegistry = new KustoResultPersistenceRegistry();
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				connectionManagerStub({ getConnections: () => [selectedConnection] }),
-				sqlWorkbenchStub()
+				sqlWorkbenchStub(),
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				resultRegistry,
 			) as KqlCompatEditorProvider;
 
 			const document: vscode.TextDocument = {
@@ -1280,28 +1288,32 @@ suite('Sidecar .kql.json strategy', () => {
 			const selectedDatabase = 'MyDb';
 			const resultObj = { columns: [{ name: 'x', type: 'int' }], rows: [[1]] };
 			const resultJson = JSON.stringify(resultObj);
+			const persistedState = {
+				sections: [
+					{
+						type: 'query',
+						id: 'compat_primary_query',
+						favoritesMode: true,
+						query: 'StormEvents | take 1',
+						clusterUrl: selectedClusterUrl,
+						connectionIdHint: selectedConnection.id,
+						database: selectedDatabase,
+						resultJson,
+						kustoAccountPartition: accountPartition,
+						kustoLeaveNoTraceRevision: 0,
+					},
+				],
+			};
 
 			await Promise.resolve(
 				receiveHandler!(withProjectedCompatPrimary(posted, {
 					type: 'persistDocument',
-					state: {
-						sections: [
-							{
-								type: 'query',
-								id: 'q1',
-								favoritesMode: true,
-								query: 'StormEvents | take 1',
-								clusterUrl: selectedClusterUrl,
-								connectionIdHint: selectedConnection.id,
-								database: selectedDatabase,
-								resultJson,
-								kustoAccountPartition: accountPartition,
-								kustoLeaveNoTraceRevision: 0,
-							}
-						]
-					}
+					state: persistedState,
 				}, { replaceExistingId: true }))
 			);
+			const resultOwner = resultRegistry.get(normalizeWorkbenchUriKey(document.uri));
+			assert.ok(resultOwner);
+			resultOwner.admitCanonicalSource('sidecar-host-owned-result', persistedState);
 
 			await Promise.resolve(receiveHandler!({ type: 'requestUpgradeToKqlx', addKind: 'chart', editRevision: 0 }));
 
@@ -1322,7 +1334,7 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
-	test('upgrading to sidecar right after execution preserves results (state included in upgrade request)', async () => {
+	test('upgrading to sidecar right after execution preserves host-owned results with fresh editor state', async () => {
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		const posted: any[] = [];
 
@@ -1352,11 +1364,13 @@ suite('Sidecar .kql.json strategy', () => {
 			const accountPartition = KustoAuthPreferenceService.getInstance(fakeContext)
 				.getAccountPartition(undefined, selectedAccountId);
 
+			const resultRegistry = new KustoResultPersistenceRegistry();
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				connectionManagerStub({ getConnections: () => [selectedConnection] }),
-				sqlWorkbenchStub()
+				sqlWorkbenchStub(),
+				undefined, undefined, undefined, undefined, resultRegistry,
 			) as KqlCompatEditorProvider;
 
 			const document: vscode.TextDocument = {
@@ -1393,6 +1407,14 @@ suite('Sidecar .kql.json strategy', () => {
 			const selectedDatabase = 'MyDb';
 			const resultObj = { columns: [{ name: 'x', type: 'int' }], rows: [[1]] };
 			const resultJson = JSON.stringify(resultObj);
+			const resultOwner = resultRegistry.get(normalizeWorkbenchUriKey(document.uri));
+			assert.ok(resultOwner);
+			resultOwner.admitCanonicalSource('immediate-upgrade-host-result', {
+				sections: [{
+					type: 'query', id: 'compat_primary_query', resultJson,
+					kustoAccountPartition: accountPartition, kustoLeaveNoTraceRevision: 0,
+				}],
+			});
 
 			await Promise.resolve(
 				receiveHandler!({
@@ -1403,14 +1425,11 @@ suite('Sidecar .kql.json strategy', () => {
 						sections: [
 							{
 								type: 'query',
-								id: 'q1',
+								id: 'compat_primary_query',
 								query: 'StormEvents | take 1',
 								clusterUrl: selectedClusterUrl,
 								connectionIdHint: selectedConnection.id,
 								database: selectedDatabase,
-								resultJson,
-								kustoAccountPartition: accountPartition,
-								kustoLeaveNoTraceRevision: 0,
 							}
 						]
 					}
@@ -6813,6 +6832,7 @@ suite('Sidecar .kql.json strategy', () => {
 		const disposeHandlers: Array<() => void> = [];
 		let releaseCanonicalPublish!: () => void;
 		const canonicalPublishGate = new Promise<void>(resolve => { releaseCanonicalPublish = resolve; });
+		let gateCanonicalPublish = false;
 		const state = {
 			sections: [
 				{ id: 'sql_1', type: 'sql', query: 'SELECT 1', resultJson: 'PROTECTED_SQL_RESULT' },
@@ -6855,7 +6875,7 @@ suite('Sidecar .kql.json strategy', () => {
 			let canonicalPublishCalls = 0;
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (value: any, publish: (sanitized: any) => Promise<unknown>) => {
 				canonicalPublishCalls++;
-				await canonicalPublishGate;
+				if (gateCanonicalPublish) await canonicalPublishGate;
 				return publish({
 					...value,
 					sections: value.sections.map((section: any) => {
@@ -6897,6 +6917,10 @@ suite('Sidecar .kql.json strategy', () => {
 				webview: {
 					options: {},
 					postMessage: async (message: any) => {
+						if (message?.reloadRequestId) await Promise.resolve(receiveHandler?.({
+							type: 'documentReloadResult', requestId: message.reloadRequestId,
+							applied: true, editRevision: Number(message.editRevision || 0),
+						}));
 						if (message?.type === 'requestFinalPersist') {
 							void Promise.resolve().then(() => receiveHandler?.({
 								type: 'persistDocument', state,
@@ -6915,7 +6939,10 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any;
 
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
-			assert.ok(willSaveHandler && didSaveHandler);
+			assert.ok(willSaveHandler && didSaveHandler && receiveHandler);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await new Promise<void>(resolve => setImmediate(resolve));
+			const publicationsBeforeNativeSave = canonicalPublishCalls;
 			let barrier: Promise<vscode.TextEdit[]> | undefined;
 			const startedAt = Date.now();
 			willSaveHandler!({
@@ -6929,7 +6956,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const replacement = edits[0].newText;
 			assert.ok(!replacement.includes('PROTECTED_SQL_RESULT'));
 			assert.ok(!replacement.includes('KEEP_KUSTO_RESULT'));
-			assert.strictEqual(canonicalPublishCalls, 0);
+			assert.strictEqual(canonicalPublishCalls, publicationsBeforeNativeSave);
 			currentText = replacement;
 			diskText = replacement;
 			dirty = false;
@@ -6939,8 +6966,12 @@ suite('Sidecar .kql.json strategy', () => {
 				false,
 				'immediate close must wait for onDidSave to queue canonical restoration',
 			);
+			gateCanonicalPublish = true;
 			await Promise.resolve(didSaveHandler!(document));
-			await waitForCondition(() => canonicalPublishCalls === 1, 'canonical public-row admission should start');
+			await waitForCondition(
+				() => canonicalPublishCalls > publicationsBeforeNativeSave,
+				'canonical public-row admission should start',
+			);
 			releaseCanonicalPublish();
 			await waitForCondition(
 				() => currentText.includes('KEEP_KUSTO_RESULT')
@@ -7114,6 +7145,10 @@ suite('Sidecar .kql.json strategy', () => {
 			const panel = {
 				webview: {
 					options: {}, postMessage: async (message: any) => {
+						if (message?.reloadRequestId) await Promise.resolve(receiveHandler?.({
+							type: 'documentReloadResult', requestId: message.reloadRequestId,
+							applied: true, editRevision: Number(message.editRevision || 0),
+						}));
 						if (message?.type === 'requestFinalPersist') void Promise.resolve().then(() => receiveHandler?.({
 							type: 'persistDocument', state, flush: true, reason: 'save', editRevision: 0,
 							snapshotId: 'restore-failure', flushRequestId: message.requestId,
@@ -7126,7 +7161,8 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any;
 
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
-			assert.ok(willSaveHandler && didSaveHandler);
+			assert.ok(willSaveHandler && didSaveHandler && receiveHandler);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 			let barrier: Promise<vscode.TextEdit[]> | undefined;
 			willSaveHandler!({ document, waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { barrier = Promise.resolve(thenable); } } as any);
 			const edits = await barrier!;
@@ -7164,6 +7200,8 @@ suite('Sidecar .kql.json strategy', () => {
 		let dirty = true;
 		let version = 1;
 		let publishCalls = 0;
+		let gateFirstRestore = false;
+		let restorePublishCalls = 0;
 		let releaseFirst!: () => void;
 		const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
 		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
@@ -7184,12 +7222,14 @@ suite('Sidecar .kql.json strategy', () => {
 			});
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (value: unknown, publish: (state: unknown) => Promise<unknown>) => {
 				publishCalls++;
-				if (publishCalls === 1) await firstGate;
+				if (gateFirstRestore && ++restorePublishCalls === 1) await firstGate;
 				return publish(value);
 			};
+			const resultRegistry = new KustoResultPersistenceRegistry();
 			const provider = new (KqlxEditorProvider as any)(
 				{ subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined }, globalState: { get: () => undefined, update: async () => undefined }, globalStorageUri: vscode.Uri.file(tmpDir) } as any,
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				undefined, resultRegistry,
 			) as KqlxEditorProvider;
 			const document = {
 				uri: vscode.Uri.file(filePath), getText: () => currentText, get version() { return version; }, get isDirty() { return dirty; },
@@ -7203,6 +7243,10 @@ suite('Sidecar .kql.json strategy', () => {
 			const panel = {
 				webview: {
 					options: {}, postMessage: async (message: any) => {
+						if (message?.reloadRequestId) await Promise.resolve(receiveHandler?.({
+							type: 'documentReloadResult', requestId: message.reloadRequestId,
+							applied: true, editRevision: Number(message.editRevision || 0),
+						}));
 						if (message?.type === 'requestFinalPersist') void Promise.resolve().then(() => receiveHandler?.({ type: 'persistDocument', state: requestedState, flush: true, reason: 'save', editRevision: 0, snapshotId: `overlap-${publishCalls}`, flushRequestId: message.requestId }));
 						return true;
 					},
@@ -7211,7 +7255,12 @@ suite('Sidecar .kql.json strategy', () => {
 				onDidDispose: () => ({ dispose() {} }),
 			} as any;
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
-			assert.ok(willSaveHandler && didSaveHandler);
+			assert.ok(willSaveHandler && didSaveHandler && receiveHandler);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await new Promise<void>(resolve => setImmediate(resolve));
+			gateFirstRestore = true;
+			const resultOwner = resultRegistry.get(normalizeWorkbenchUriKey(document.uri));
+			assert.ok(resultOwner);
 			const runNativeSave = async () => {
 				let barrier: Promise<vscode.TextEdit[]> | undefined;
 				willSaveHandler!({ document, waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { barrier = Promise.resolve(thenable); } } as any);
@@ -7221,6 +7270,7 @@ suite('Sidecar .kql.json strategy', () => {
 			};
 			await runNativeSave();
 			requestedState = makeState('RESULT_TWO');
+			resultOwner.admitCanonicalSource('overlap-result-two', requestedState);
 			await runNativeSave();
 			releaseFirst();
 			await waitForCondition(() => diskText.includes('RESULT_TWO'), 'newest result generation should reach disk');

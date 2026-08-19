@@ -5,6 +5,7 @@ import * as path from 'path';
 
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
+import { KustoResultPersistenceRegistry } from './kustoResultPersistenceOwner';
 import { hasDeferredLegacyKustoResults } from './persistedResultSanitizationApplicationHandler';
 import { hasSqlOwnedDocumentState } from './kqlxEditorProvider';
 import type { SqlWorkbenchService } from './sql/sqlWorkbenchService';
@@ -130,9 +131,13 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		extensionUri: vscode.Uri,
 		connectionManager: ConnectionManager,
 		sqlWorkbench: SqlWorkbenchService,
-		editorCursorStatusBar?: EditorCursorStatusBar
+		editorCursorStatusBar?: EditorCursorStatusBar,
+		kustoResultPersistenceRegistry = new KustoResultPersistenceRegistry(),
 	): vscode.Disposable {
-		const provider = new KqlCompatEditorProvider(context, extensionUri, connectionManager, sqlWorkbench, editorCursorStatusBar);
+		const provider = new KqlCompatEditorProvider(
+			context, extensionUri, connectionManager, sqlWorkbench, editorCursorStatusBar,
+			undefined, undefined, undefined, kustoResultPersistenceRegistry,
+		);
 		return vscode.window.registerCustomEditorProvider(KqlCompatEditorProvider.viewType, provider, {
 			webviewOptions: { retainContextWhenHidden: true }
 		});
@@ -147,6 +152,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		private readonly closeCoordinatorFactory: CompatSidecarCloseCoordinatorFactory = options => new CompatSidecarCloseCoordinator(options),
 		private readonly projectionCoordinatorFactory: CompatSidecarProjectionCoordinatorFactory = options => new CompatSidecarProjectionCoordinator(options),
 		private readonly persistCoordinatorFactory: CompatSidecarPersistCoordinatorFactory = options => new CompatSidecarPersistCoordinator(options),
+		private readonly kustoResultPersistenceRegistry = new KustoResultPersistenceRegistry(),
 	) {}
 
 	/**
@@ -422,6 +428,13 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				lastWrittenSidecarIdentity = repaired.identity;
 			}
 		}
+		const kustoResultLease = !sidecarLoadError
+			? this.kustoResultPersistenceRegistry.acquire(normalizeWorkbenchUriKey(document.uri))
+			: undefined;
+		const kustoResultOwner = kustoResultLease?.owner;
+		const kustoResultPanelSession = kustoResultOwner?.openPanel(viewSessionId);
+		if (kustoResultPanelSession) queryEditor.attachKustoResultPersistenceSession(kustoResultPanelSession);
+		if (kustoResultLease) subscriptions.push({ dispose: () => kustoResultLease.release() });
 
 		const getSidecarDisplayName = (): string => {
 			try {
@@ -600,6 +613,15 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					};
 				}
 				state = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(state);
+				if (kustoResultOwner) {
+					const sourceFingerprint = crypto.createHash('sha256')
+						.update(queryText)
+						.update('\u0000')
+						.update(effectiveSidecarFile ? stringifyKqlxFile(effectiveSidecarFile) : 'no-sidecar')
+						.digest('hex');
+					kustoResultOwner.admitCanonicalSource(sourceFingerprint, state);
+					state = kustoResultOwner.overlaySnapshot(state);
+				}
 				if (!projection.isCurrent()) return false;
 				const reloadRequestId = projection.reserveReload();
 				if (!reloadRequestId) return false;
@@ -725,7 +747,13 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				getWorkbenchLogger().warn('[kusto] KQL metadata snapshot unavailable during save; saving primary text only.');
 			},
 			adapter: {
-				captureState: state => ({
+				captureState: state => kustoResultOwner?.overlaySnapshot({
+					caretDocsEnabled: typeof state.caretDocsEnabled === 'boolean' ? state.caretDocsEnabled : undefined,
+					autoTriggerAutocompleteEnabled: typeof state.autoTriggerAutocompleteEnabled === 'boolean'
+						? state.autoTriggerAutocompleteEnabled
+						: undefined,
+					sections: state.sections as KqlxStateV1['sections'],
+				}) ?? ({
 					caretDocsEnabled: typeof state.caretDocsEnabled === 'boolean' ? state.caretDocsEnabled : undefined,
 					autoTriggerAutocompleteEnabled: typeof state.autoTriggerAutocompleteEnabled === 'boolean'
 						? state.autoTriggerAutocompleteEnabled
@@ -741,7 +769,9 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					}
 					KqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, state, sidecarFile);
 				},
-				sanitizeState: state => queryEditor.sanitizeSqlLeaveNoTraceStateFresh<KqlxStateV1>(state),
+				sanitizeState: state => queryEditor.sanitizeSqlLeaveNoTraceStateFresh<KqlxStateV1>(
+					kustoResultOwner?.overlaySnapshot(state) ?? state,
+				),
 				prepareMaterializedDraft: state => sidecarUri && sidecarFile
 					? KqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, state, sidecarFile)
 					: undefined,
@@ -947,7 +977,9 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					}
 
 					if (lastKnownSidecarState) {
-						lastKnownSidecarState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(lastKnownSidecarState);
+						lastKnownSidecarState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(
+							kustoResultOwner?.overlaySnapshot(lastKnownSidecarState) ?? lastKnownSidecarState,
+						);
 					}
 					const enabled = await this.enableSidecarKqlxForCompat(
 						document,

@@ -457,11 +457,11 @@ async function main() {
 			}
 		}
 		const BASELINES = {
-			'extension.js':                                        2239,
-			'webview/webview.bundle.js':                           3139,
-			'webview/md-editor.bundle.js':                          289,
+			'extension.js':                                        2267,
+			'webview/webview.bundle.js':                           3175,
+			'webview/md-editor.bundle.js':                          292,
 			'webview/tutorial-viewer.bundle.js':                    154,
-			'webview/first-launch-setup.bundle.js':                  40,
+			'webview/first-launch-setup.bundle.js':                  41,
 			'queryEditor/vendor/echarts/echarts.webview.js':        646,
 			'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
 			'monaco/':                                            11445,

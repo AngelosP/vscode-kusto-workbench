@@ -12,12 +12,16 @@ import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import {
 	clearResultsState,
 	getBoundResultArtifact,
-	rebindResultArtifactConsumer,
+	rebindIndexedResultArtifactConsumer,
 	setResultsState,
 	unbindResultArtifactConsumer,
 	type ResultArtifact,
 } from '../core/results-state.js';
-import { createDerivedResultArtifactPublication, RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT } from '../../shared/resultArtifact.js';
+import {
+	createDerivedResultArtifactPublication,
+	resultSourceRefKey,
+	RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT,
+} from '../../shared/resultArtifact.js';
 import {
 	ARTIFACT_CSV_TABLE_RELEASED_EVENT,
 	isArtifactResultTableLive,
@@ -83,6 +87,8 @@ export interface TransformationSectionData extends PersistedTransformationSectio
 /** Data source entry from queries-container. */
 interface DatasetEntry {
 	id: string;
+	resultIndex?: number;
+	sourceKey?: string;
 	label: string;
 	columns: string[];
 	rows: unknown[][];
@@ -246,6 +252,8 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 			? Math.round(options.editorHeightPx)
 			: st.editorHeightPx;
 		st.dataSourceId = typeof options.dataSourceId === 'string' ? String(options.dataSourceId) : (st.dataSourceId || '');
+		st.dataSourceResultIndex = Number.isSafeInteger(options.dataSourceResultIndex)
+			&& Number(options.dataSourceResultIndex) >= 0 ? Number(options.dataSourceResultIndex) : 0;
 		st.transformationType = typeof options.transformationType === 'string' ? String(options.transformationType) : (st.transformationType || 'derive');
 		st.distinctColumn = typeof options.distinctColumn === 'string' ? String(options.distinctColumn) : (st.distinctColumn || '');
 		st.deriveColumns = Array.isArray(options.deriveColumns)
@@ -273,6 +281,9 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 			? options.pivotMaxColumns
 			: (typeof st.pivotMaxColumns === 'number' ? st.pivotMaxColumns : 100);
 		st.joinRightDataSourceId = typeof options.joinRightDataSourceId === 'string' ? String(options.joinRightDataSourceId) : (st.joinRightDataSourceId || '');
+		st.joinRightDataSourceResultIndex = Number.isSafeInteger(options.joinRightDataSourceResultIndex)
+			&& Number(options.joinRightDataSourceResultIndex) >= 0
+			? Number(options.joinRightDataSourceResultIndex) : 0;
 		st.joinKind = typeof options.joinKind === 'string' ? String(options.joinKind) : (st.joinKind || 'inner');
 		st.joinKeys = Array.isArray(options.joinKeys)
 			? options.joinKeys
@@ -335,6 +346,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	@state() private _expanded = true;
 	@state() private _transformationType: TransformationType = 'derive';
 	@state() private _dataSourceId = '';
+	@state() private _dataSourceResultIndex = 0;
 
 	// Derive
 	@state() private _deriveColumns: DeriveColumn[] = [{ name: '', expression: '' }];
@@ -355,6 +367,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	// Join
 	@state() private _joinRightDataSourceId = '';
+	@state() private _joinRightDataSourceResultIndex = 0;
 	@state() private _joinKind: JoinKind = 'inner';
 	@state() private _joinKeys: JoinKey[] = [{ left: '', right: '' }];
 	@state() private _joinOmitDuplicateColumns = true;
@@ -490,19 +503,21 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		}
 
 		const triggers = [
-			'_transformationType', '_dataSourceId', '_deriveColumns',
+			'_transformationType', '_dataSourceId', '_dataSourceResultIndex', '_deriveColumns',
 			'_distinctColumn', '_groupByColumns', '_aggregations',
 			'_pivotRowKeyColumn', '_pivotColumnKeyColumn', '_pivotValueColumn',
 			'_pivotAggregation',
-			'_joinRightDataSourceId', '_joinKind', '_joinKeys', '_joinOmitDuplicateColumns',
+			'_joinRightDataSourceId', '_joinRightDataSourceResultIndex', '_joinKind', '_joinKeys', '_joinOmitDuplicateColumns',
 		];
-		const primaryInputChanged = changed.has('_dataSourceId');
-		const rightInputChanged = changed.has('_joinRightDataSourceId') || changed.has('_transformationType');
-		if (primaryInputChanged) this._rebindInput('primary', this._dataSourceId);
+		const primaryInputChanged = changed.has('_dataSourceId') || changed.has('_dataSourceResultIndex');
+		const rightInputChanged = changed.has('_joinRightDataSourceId')
+			|| changed.has('_joinRightDataSourceResultIndex') || changed.has('_transformationType');
+		if (primaryInputChanged) this._rebindInput('primary', this._dataSourceId, this._dataSourceResultIndex);
 		if (rightInputChanged) {
 			this._rebindInput(
 				'join-right',
 				this._transformationType === 'join' ? this._joinRightDataSourceId : '',
+				this._joinRightDataSourceResultIndex,
 			);
 		}
 		if (primaryInputChanged || rightInputChanged) {
@@ -633,7 +648,8 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	}
 
 	private _renderDataSource(): TemplateResult {
-		const selected = this._datasets.find(d => d.id === this._dataSourceId);
+		const selected = this._datasets.find(d => d.id === this._dataSourceId
+			&& (d.resultIndex ?? 0) === this._dataSourceResultIndex);
 		const label = selected?.label || '(select)';
 		const rowLabel = this._transformationType === 'join' ? 'Left' : 'Data';
 
@@ -652,8 +668,9 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 							@mousedown=${(e: Event) => e.stopPropagation()}
 							@click=${(e: Event) => e.stopPropagation()}>
 							${this._datasets.map(d => html`
-								<div class="dropdown-item ${d.id === this._dataSourceId ? 'is-selected' : ''}"
-									@click=${() => this._selectDataSource(d.id)}>
+								<div class="dropdown-item ${d.id === this._dataSourceId
+									&& (d.resultIndex ?? 0) === this._dataSourceResultIndex ? 'is-selected' : ''}"
+									@click=${() => this._selectDataSource(d.id, d.resultIndex ?? 0)}>
 									${d.label}
 								</div>
 							`)}
@@ -947,7 +964,8 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	// ── Join rendering ────────────────────────────────────────────────────────
 
 	private _renderJoin(leftColNames: string[]): TemplateResult {
-		const rightDs = this._datasets.find(d => d.id === this._joinRightDataSourceId);
+		const rightDs = this._datasets.find(d => d.id === this._joinRightDataSourceId
+			&& (d.resultIndex ?? 0) === this._joinRightDataSourceResultIndex);
 		const rightLabel = rightDs?.label || '(select)';
 		const rightColNames = rightDs
 			? (rightDs.columns || []).map((c: string) => normalizeResultsColumnName(c)).filter((c: string) => c)
@@ -970,8 +988,9 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 							@mousedown=${(e: Event) => e.stopPropagation()}
 							@click=${(e: Event) => e.stopPropagation()}>
 							${this._datasets.map(d => html`
-								<div class="dropdown-item ${d.id === this._joinRightDataSourceId ? 'is-selected' : ''}"
-									@click=${() => this._selectJoinRightDataSource(d.id)}>
+								<div class="dropdown-item ${d.id === this._joinRightDataSourceId
+									&& (d.resultIndex ?? 0) === this._joinRightDataSourceResultIndex ? 'is-selected' : ''}"
+									@click=${() => this._selectJoinRightDataSource(d.id, d.resultIndex ?? 0)}>
 									${d.label}
 								</div>
 							`)}
@@ -1250,8 +1269,9 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		this._schedulePersist();
 	}
 
-	private _selectDataSource(id: string): void {
+	private _selectDataSource(id: string, resultIndex: number): void {
 		this._dataSourceId = id;
+		this._dataSourceResultIndex = resultIndex;
 		this._openDropdownId = '';
 		document.removeEventListener('mousedown', this._closeDropdownBound);
 		this._schedulePersist();
@@ -1688,8 +1708,9 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	// ── Join handlers ─────────────────────────────────────────────────────────
 
-	private _selectJoinRightDataSource(id: string): void {
+	private _selectJoinRightDataSource(id: string, resultIndex: number): void {
 		this._joinRightDataSourceId = id;
+		this._joinRightDataSourceResultIndex = resultIndex;
 		this._openDropdownId = '';
 		document.removeEventListener('mousedown', this._closeDropdownBound);
 		this._schedulePersist();
@@ -1808,6 +1829,8 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		if (typeof st.expanded === 'boolean') this._expanded = st.expanded;
 		if (typeof st.transformationType === 'string') this._transformationType = st.transformationType as TransformationType;
 		if (typeof st.dataSourceId === 'string') this._dataSourceId = st.dataSourceId;
+		this._dataSourceResultIndex = Number.isSafeInteger(st.dataSourceResultIndex)
+			&& st.dataSourceResultIndex >= 0 ? st.dataSourceResultIndex : 0;
 		if (typeof st.distinctColumn === 'string') this._distinctColumn = st.distinctColumn;
 		if (Array.isArray(st.deriveColumns)) this._deriveColumns = st.deriveColumns.map((c: any) => ({ name: String(c?.name || ''), expression: String(c?.expression || '') }));
 		if (Array.isArray(st.groupByColumns)) {
@@ -1821,6 +1844,8 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		if (typeof st.pivotAggregation === 'string') this._pivotAggregation = st.pivotAggregation;
 		if (typeof st.pivotMaxColumns === 'number') this._pivotMaxColumns = st.pivotMaxColumns;
 		if (typeof st.joinRightDataSourceId === 'string') this._joinRightDataSourceId = st.joinRightDataSourceId;
+		this._joinRightDataSourceResultIndex = Number.isSafeInteger(st.joinRightDataSourceResultIndex)
+			&& st.joinRightDataSourceResultIndex >= 0 ? st.joinRightDataSourceResultIndex : 0;
 		if (typeof st.joinKind === 'string') this._joinKind = st.joinKind as JoinKind;
 		if (Array.isArray(st.joinKeys)) this._joinKeys = st.joinKeys.map((k: any) => ({ left: String(k?.left || ''), right: String(k?.right || '') }));
 		if (typeof st.joinOmitDuplicateColumns === 'boolean') this._joinOmitDuplicateColumns = st.joinOmitDuplicateColumns;
@@ -1835,6 +1860,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		st.expanded = this._expanded;
 		st.transformationType = this._transformationType;
 		st.dataSourceId = this._dataSourceId;
+		st.dataSourceResultIndex = this._dataSourceResultIndex;
 		st.distinctColumn = this._distinctColumn;
 		st.deriveColumns = this._deriveColumns.map(c => ({ name: c.name, expression: c.expression }));
 		// Keep legacy fields in sync
@@ -1849,6 +1875,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		st.pivotAggregation = this._pivotAggregation;
 		st.pivotMaxColumns = this._pivotMaxColumns;
 		st.joinRightDataSourceId = this._joinRightDataSourceId;
+		st.joinRightDataSourceResultIndex = this._joinRightDataSourceResultIndex;
 		st.joinKind = this._joinKind;
 		st.joinKeys = this._joinKeys.map(k => ({ left: k.left, right: k.right }));
 		st.joinOmitDuplicateColumns = this._joinOmitDuplicateColumns;
@@ -1862,31 +1889,44 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		return transformationInputConsumerId(this.boxId, role);
 	}
 
-	private _rebindInput(role: 'primary' | 'join-right', sourceBoxId: string): void {
+	private _rebindInput(role: 'primary' | 'join-right', sourceBoxId: string, resultIndex: number): void {
 		if (!this._ownsLiveState()) return;
 		const consumerId = this._inputConsumerId(role);
-		if (sourceBoxId) rebindResultArtifactConsumer(consumerId, sourceBoxId);
+		if (sourceBoxId) rebindIndexedResultArtifactConsumer(consumerId, sourceBoxId, resultIndex);
 		else unbindResultArtifactConsumer(consumerId);
 	}
 
 	private _rebindInputArtifacts(): void {
-		this._rebindInput('primary', this._dataSourceId);
+		this._rebindInput('primary', this._dataSourceId, this._dataSourceResultIndex);
 		this._rebindInput(
 			'join-right',
 			this._transformationType === 'join' ? this._joinRightDataSourceId : '',
+			this._joinRightDataSourceResultIndex,
 		);
 	}
 
-	private _boundInputArtifact(role: 'primary' | 'join-right', sourceBoxId: string): ResultArtifact | null {
+	private _boundInputArtifact(
+		role: 'primary' | 'join-right',
+		sourceBoxId: string,
+		resultIndex: number,
+	): ResultArtifact | null {
 		if (!sourceBoxId) return null;
-		return getBoundResultArtifact(this._inputConsumerId(role), sourceBoxId);
+		const artifact = getBoundResultArtifact(this._inputConsumerId(role), sourceBoxId);
+		return artifact?.resultIndex === resultIndex ? artifact : null;
 	}
 
-	private _datasetFromArtifact(sourceBoxId: string, role: 'primary' | 'join-right', fallback?: DatasetEntry): DatasetEntry | null {
-		const artifact = this._boundInputArtifact(role, sourceBoxId);
+	private _datasetFromArtifact(
+		sourceBoxId: string,
+		resultIndex: number,
+		role: 'primary' | 'join-right',
+		fallback?: DatasetEntry,
+	): DatasetEntry | null {
+		const artifact = this._boundInputArtifact(role, sourceBoxId, resultIndex);
 		if (!artifact) return null;
 		return {
 			id: sourceBoxId,
+			resultIndex,
+			sourceKey: resultSourceRefKey({ sourceBoxId, resultIndex }),
 			label: fallback?.label || sourceBoxId,
 			columns: artifact.columns.map(column => normalizeResultsColumnName(column)).filter(Boolean),
 			rows: artifact.rows as unknown[][],
@@ -1895,17 +1935,22 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	private _withBoundInputDatasets(all: DatasetEntry[]): DatasetEntry[] {
 		const next = all.filter(dataset => dataset.id !== (this.boxId || this.id));
-		const replaceInput = (role: 'primary' | 'join-right', sourceBoxId: string) => {
+		const replaceInput = (role: 'primary' | 'join-right', sourceBoxId: string, resultIndex: number) => {
 			if (!sourceBoxId) return;
-			const index = next.findIndex(dataset => dataset.id === sourceBoxId);
-			const fallback = index >= 0 ? next[index] : this._datasets.find(dataset => dataset.id === sourceBoxId);
-			const bound = this._datasetFromArtifact(sourceBoxId, role, fallback);
+			const index = next.findIndex(dataset => dataset.id === sourceBoxId
+				&& (dataset.resultIndex ?? 0) === resultIndex);
+			const fallback = index >= 0 ? next[index] : this._datasets.find(dataset => (
+				dataset.id === sourceBoxId && (dataset.resultIndex ?? 0) === resultIndex
+			));
+			const bound = this._datasetFromArtifact(sourceBoxId, resultIndex, role, fallback);
 			if (bound && index >= 0) next[index] = bound;
 			else if (bound) next.push(bound);
 			else if (index >= 0) next.splice(index, 1);
 		};
-		replaceInput('primary', this._dataSourceId);
-		if (this._transformationType === 'join') replaceInput('join-right', this._joinRightDataSourceId);
+		replaceInput('primary', this._dataSourceId, this._dataSourceResultIndex);
+		if (this._transformationType === 'join') {
+			replaceInput('join-right', this._joinRightDataSourceId, this._joinRightDataSourceResultIndex);
+		}
 		return next;
 	}
 
@@ -1938,7 +1983,8 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 			const ai = a[i];
 			const bi = b[i];
 			if (!ai || !bi) return false;
-			if (ai.id !== bi.id || ai.label !== bi.label) return false;
+			if (ai.id !== bi.id || ai.label !== bi.label
+				|| (ai.resultIndex ?? 0) !== (bi.resultIndex ?? 0)) return false;
 			// Compare column definitions so refreshed query results propagate.
 			const aCols = ai.columns;
 			const bCols = bi.columns;
@@ -1953,7 +1999,8 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	}
 
 	private _getColumnNames(): string[] {
-		const ds = this._datasets.find(d => d.id === this._dataSourceId);
+		const ds = this._datasets.find(d => d.id === this._dataSourceId
+			&& (d.resultIndex ?? 0) === this._dataSourceResultIndex);
 		if (!ds) return [];
 		const cols = Array.isArray(ds.columns) ? ds.columns : [];
 		return cols.map((c: string) => normalizeResultsColumnName(c)).filter((c: string) => c);
@@ -1979,9 +2026,13 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	private _syncResultsToGlobal(): void {
 		if (!this._ownsLiveState()) return;
 		try {
-			const primaryArtifact = this._boundInputArtifact('primary', this._dataSourceId);
+			const primaryArtifact = this._boundInputArtifact(
+				'primary', this._dataSourceId, this._dataSourceResultIndex,
+			);
 			const rightArtifact = this._transformationType === 'join'
-				? this._boundInputArtifact('join-right', this._joinRightDataSourceId)
+				? this._boundInputArtifact(
+					'join-right', this._joinRightDataSourceId, this._joinRightDataSourceResultIndex,
+				)
 				: null;
 			if (!primaryArtifact || (this._transformationType === 'join' && this._joinRightDataSourceId && !rightArtifact)) {
 				this._releaseCsvResultArtifact();
@@ -2042,7 +2093,8 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	private _computeTransformationImpl(): void {
 
 		this._refreshDatasets();
-		const ds = this._datasets.find(d => d.id === this._dataSourceId);
+		const ds = this._datasets.find(d => d.id === this._dataSourceId
+			&& (d.resultIndex ?? 0) === this._dataSourceResultIndex);
 		if (!ds) {
 			this._resultColumns = [];
 			this._resultRows = [];
@@ -2050,6 +2102,21 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 				? 'Data source not found.'
 				: 'Select a data source (a query, CSV URL, or transformation section with results).';
 			return;
+		}
+		if (this._transformationType === 'join'
+			&& this._dataSourceId === this._joinRightDataSourceId) {
+			const leftArtifact = this._boundInputArtifact(
+				'primary', this._dataSourceId, this._dataSourceResultIndex,
+			);
+			const rightArtifact = this._boundInputArtifact(
+				'join-right', this._joinRightDataSourceId, this._joinRightDataSourceResultIndex,
+			);
+			if (!leftArtifact || !rightArtifact || leftArtifact.revision !== rightArtifact.revision) {
+				this._resultError = 'Join inputs from the same section must come from the same result batch.';
+				this._resultColumns = [];
+				this._resultRows = [];
+				return;
+			}
 		}
 
 		const colNames = (ds.columns || []).map((c: string) => normalizeResultsColumnName(c)).filter((c: string) => c);
@@ -2345,7 +2412,8 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 			this._resultRows = [];
 			return;
 		}
-		const rightDs = this._datasets.find(d => d.id === rightDsId);
+		const rightDs = this._datasets.find(d => d.id === rightDsId
+			&& (d.resultIndex ?? 0) === this._joinRightDataSourceResultIndex);
 		if (!rightDs) {
 			this._resultError = 'Right data source not found.';
 			this._resultColumns = [];
@@ -2588,6 +2656,9 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		};
 
 		if (this._dataSourceId) data.dataSourceId = this._dataSourceId;
+		if (this._dataSourceId && this._dataSourceResultIndex > 0) {
+			data.dataSourceResultIndex = this._dataSourceResultIndex;
+		}
 		if (this._transformationType) data.transformationType = this._transformationType;
 		if (this._distinctColumn) data.distinctColumn = this._distinctColumn;
 
@@ -2629,6 +2700,9 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 		// Join
 		if (this._joinRightDataSourceId) data.joinRightDataSourceId = this._joinRightDataSourceId;
+		if (this._joinRightDataSourceId && this._joinRightDataSourceResultIndex > 0) {
+			data.joinRightDataSourceResultIndex = this._joinRightDataSourceResultIndex;
+		}
 		if (this._joinKind) data.joinKind = this._joinKind;
 		const joinKeys = this._joinKeys.filter(k => k && typeof k === 'object');
 		if (joinKeys.length) data.joinKeys = joinKeys.map(k => ({ left: String(k.left || ''), right: String(k.right || '') }));
@@ -2709,6 +2783,12 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 				value => { this._dataSourceId = value; },
 				true,
 			);
+			primaryInputChanged = assign(
+				this._dataSourceResultIndex,
+				section.dataSourceResultIndex ?? 0,
+				value => { this._dataSourceResultIndex = value; },
+				true,
+			) || primaryInputChanged;
 			assign(this._deriveColumns, nextDeriveColumns, value => { this._deriveColumns = value; }, true);
 			assign(this._distinctColumn, section.distinctColumn ?? '', value => { this._distinctColumn = value; }, true);
 			assign(this._groupByColumns, nextGroupByColumns, value => { this._groupByColumns = value; }, true);
@@ -2749,6 +2829,12 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 				value => { this._joinRightDataSourceId = value; },
 				true,
 			);
+			rightInputChanged = assign(
+				this._joinRightDataSourceResultIndex,
+				section.joinRightDataSourceResultIndex ?? 0,
+				value => { this._joinRightDataSourceResultIndex = value; },
+				true,
+			) || rightInputChanged;
 			assign(
 				this._joinKind,
 				(section.joinKind ?? 'inner') as JoinKind,
@@ -2778,9 +2864,14 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 			if (!anyChanged) return;
 			this._updateHostClasses();
 			this._writeToGlobalState();
-			if (primaryInputChanged) this._rebindInput('primary', this._dataSourceId);
+			if (primaryInputChanged) {
+				this._rebindInput('primary', this._dataSourceId, this._dataSourceResultIndex);
+			}
 			if (rightInputChanged || typeChanged) {
-				this._rebindInput('join-right', nextType === 'join' ? this._joinRightDataSourceId : '');
+				this._rebindInput(
+					'join-right', nextType === 'join' ? this._joinRightDataSourceId : '',
+					this._joinRightDataSourceResultIndex,
+				);
 			}
 			if (primaryInputChanged || rightInputChanged || typeChanged) this._forceRefreshDatasets();
 			if (computationChanged || (expandedChanged && nextExpanded)) {
@@ -2807,6 +2898,8 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		if (typeof options.expanded === 'boolean') this._expanded = options.expanded;
 		if (typeof options.transformationType === 'string') this._transformationType = options.transformationType as TransformationType;
 		if (typeof options.dataSourceId === 'string') this._dataSourceId = options.dataSourceId;
+		this._dataSourceResultIndex = Number.isSafeInteger(options.dataSourceResultIndex)
+			&& Number(options.dataSourceResultIndex) >= 0 ? Number(options.dataSourceResultIndex) : 0;
 		if (typeof options.distinctColumn === 'string') this._distinctColumn = options.distinctColumn;
 		if (Array.isArray(options.deriveColumns)) {
 			this._deriveColumns = (options.deriveColumns as DeriveColumn[]).map(c => ({
@@ -2831,6 +2924,9 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		if (typeof options.pivotAggregation === 'string') this._pivotAggregation = options.pivotAggregation;
 		if (typeof options.pivotMaxColumns === 'number') this._pivotMaxColumns = options.pivotMaxColumns;
 		if (typeof options.joinRightDataSourceId === 'string') this._joinRightDataSourceId = options.joinRightDataSourceId;
+		this._joinRightDataSourceResultIndex = Number.isSafeInteger(options.joinRightDataSourceResultIndex)
+			&& Number(options.joinRightDataSourceResultIndex) >= 0
+			? Number(options.joinRightDataSourceResultIndex) : 0;
 		if (typeof options.joinKind === 'string') this._joinKind = options.joinKind as JoinKind;
 		if (Array.isArray(options.joinKeys)) {
 			this._joinKeys = (options.joinKeys as JoinKey[]).map(k => ({
@@ -2888,10 +2984,25 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	public configure(config: Record<string, unknown>): boolean {
 		try {
 			if (!this._ownsLiveState()) return false;
+			for (const key of ['dataSourceResultIndex', 'joinRightDataSourceResultIndex'] as const) {
+				if (!Object.prototype.hasOwnProperty.call(config, key)) continue;
+				if (typeof config[key] !== 'number' || !Number.isSafeInteger(config[key])
+					|| Number(config[key]) < 0) return false;
+			}
 			const previousDataSourceId = this._dataSourceId;
+			const previousDataSourceResultIndex = this._dataSourceResultIndex;
 			const previousJoinRightDataSourceId = this._joinRightDataSourceId;
+			const previousJoinRightDataSourceResultIndex = this._joinRightDataSourceResultIndex;
 			const previousTransformationType = this._transformationType;
-			if (typeof config.dataSourceId === 'string') this._dataSourceId = config.dataSourceId;
+			if (typeof config.dataSourceId === 'string') {
+				this._dataSourceId = config.dataSourceId;
+				if (!Object.prototype.hasOwnProperty.call(config, 'dataSourceResultIndex')) {
+					this._dataSourceResultIndex = 0;
+				}
+			}
+			if (typeof config.dataSourceResultIndex === 'number') {
+				this._dataSourceResultIndex = config.dataSourceResultIndex;
+			}
 			if (typeof config.transformationType === 'string') this._transformationType = config.transformationType as TransformationType;
 			if (Array.isArray(config.deriveColumns)) {
 				this._deriveColumns = (config.deriveColumns as DeriveColumn[]).map(c => ({
@@ -2916,7 +3027,15 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 			if (typeof config.pivotValueColumn === 'string') this._pivotValueColumn = config.pivotValueColumn;
 			if (typeof config.pivotAggregation === 'string') this._pivotAggregation = config.pivotAggregation;
 			if (typeof config.pivotMaxColumns === 'number') this._pivotMaxColumns = config.pivotMaxColumns;
-			if (typeof config.joinRightDataSourceId === 'string') this._joinRightDataSourceId = config.joinRightDataSourceId;
+			if (typeof config.joinRightDataSourceId === 'string') {
+				this._joinRightDataSourceId = config.joinRightDataSourceId;
+				if (!Object.prototype.hasOwnProperty.call(config, 'joinRightDataSourceResultIndex')) {
+					this._joinRightDataSourceResultIndex = 0;
+				}
+			}
+			if (typeof config.joinRightDataSourceResultIndex === 'number') {
+				this._joinRightDataSourceResultIndex = config.joinRightDataSourceResultIndex;
+			}
 			if (typeof config.joinKind === 'string') this._joinKind = config.joinKind as JoinKind;
 			if (Array.isArray(config.joinKeys)) {
 				this._joinKeys = (config.joinKeys as JoinKey[]).map(k => ({
@@ -2927,14 +3046,19 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 			if (typeof config.joinOmitDuplicateColumns === 'boolean') this._joinOmitDuplicateColumns = config.joinOmitDuplicateColumns;
 
 			this._writeToGlobalState();
-			const primaryInputChanged = previousDataSourceId !== this._dataSourceId;
+			const primaryInputChanged = previousDataSourceId !== this._dataSourceId
+				|| previousDataSourceResultIndex !== this._dataSourceResultIndex;
 			const rightInputChanged = previousJoinRightDataSourceId !== this._joinRightDataSourceId
+				|| previousJoinRightDataSourceResultIndex !== this._joinRightDataSourceResultIndex
 				|| previousTransformationType !== this._transformationType;
-			if (primaryInputChanged) this._rebindInput('primary', this._dataSourceId);
+			if (primaryInputChanged) {
+				this._rebindInput('primary', this._dataSourceId, this._dataSourceResultIndex);
+			}
 			if (rightInputChanged) {
 				this._rebindInput(
 					'join-right',
 					this._transformationType === 'join' ? this._joinRightDataSourceId : '',
+					this._joinRightDataSourceResultIndex,
 				);
 			}
 			if (primaryInputChanged || rightInputChanged) {

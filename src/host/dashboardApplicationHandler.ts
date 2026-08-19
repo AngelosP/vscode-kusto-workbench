@@ -108,6 +108,12 @@ export class HostDashboardApplicationHandler implements DashboardApplicationHand
 		return this.postMessage(message);
 	}
 
+	private secondaryResultReason(dataSources: readonly { resultIndex?: number }[]): string | undefined {
+		return dataSources.some(source => Number(source.resultIndex ?? 0) !== 0)
+			? 'Power BI export and publishing support Result 1 only.'
+			: undefined;
+	}
+
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined {
 		switch (message.type) {
 			case 'showPowerBiPublishHelp':
@@ -291,7 +297,6 @@ export class HostDashboardApplicationHandler implements DashboardApplicationHand
 				vscode.window.showInformationMessage('No HTML content to export.');
 				return;
 			}
-
 			const baseName = String(message.suggestedFileName || '').trim() || 'dashboard';
 			const fileName = baseName.toLowerCase().endsWith('.html') || baseName.toLowerCase().endsWith('.htm')
 				? baseName
@@ -311,6 +316,11 @@ export class HostDashboardApplicationHandler implements DashboardApplicationHand
 
 			const lower = picked.fsPath.toLowerCase();
 			if (lower.endsWith('.pbip')) {
+				const secondaryResultReason = this.secondaryResultReason(message.dataSources || []);
+				if (secondaryResultReason) {
+					vscode.window.showWarningMessage(secondaryResultReason);
+					return;
+				}
 				validatePowerBiHtmlBindings(htmlContent, message.dataSources || []);
 				if (!message.dataSources || message.dataSources.length === 0) {
 					vscode.window.showWarningMessage('No data bindings found. Add a provenance block with data source references before exporting to Power BI.');
@@ -395,6 +405,14 @@ export class HostDashboardApplicationHandler implements DashboardApplicationHand
 		const workflow = this.beginWorkflow(message.requestId);
 		if (!workflow) return;
 		try {
+			const secondaryResultReason = this.secondaryResultReason(message.dataSources);
+			if (secondaryResultReason) {
+				const response = createPublishToPowerBIFailureResultMessage(
+					message.requestId, message.boxId, secondaryResultReason,
+				);
+				if (response.ok) this.postPowerBiPublishResult(response.value);
+				return;
+			}
 			validatePowerBiHtmlBindings(message.htmlCode, message.dataSources);
 			const hasExistingIds = !!(message.semanticModelId && message.reportId);
 			const dataMode: PowerBiDataMode = normalizePowerBiDataMode(

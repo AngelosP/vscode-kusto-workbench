@@ -6,7 +6,7 @@ import type { SqlConnectionManager } from './sqlConnectionManager';
 import type { SqlSchemaService } from './sqlEditorSchema';
 import type { SqlQueryClient } from './sqlClient';
 import { SqlQueryCancelledError } from './sqlClient';
-import { formatQueryResultForCopilot } from './copilotResultPreview';
+import { formatQueryResultForCopilot, summarizeQueryResultForCopilot } from './copilotResultPreview';
 import { sanitizeStsLogText } from './sql/stsLogSanitizer';
 import type { SqlExecutionBroker } from './sql/sqlExecutionBroker';
 import { SqlLeaveNoTraceBlockedError } from './sql/sqlLeaveNoTrace';
@@ -33,6 +33,7 @@ import { convertKustoFunctionDefinitionsToInline } from '../shared/kustoFunction
 import type { WorkbenchLogger } from './workbenchLogger';
 import type { KustoComparisonRunIdentity, KustoCopilotRequestIdentity, KustoDispatchIdentity, KustoExecutionProducer, KustoSectionExecutionOutcome, KustoSectionExecutionTarget, PreparedComparisonSection } from '../shared/kustoExecution.js';
 import { kustoCopilotRequestIdentityEquals } from '../shared/kustoExecution.js';
+import { admitKqlFullQueryText } from './kqlLanguageService/sourceAnalysis.js';
 import {
 	parseCopilotInlineCompletionHostMessage,
 	type CopilotInlineCompletion,
@@ -98,7 +99,7 @@ export interface CopilotServiceHost {
 		cacheValue?: number;
 		cacheUnit?: CacheUnit | string;
 		ensureResultsVisible?: boolean;
-	}): Promise<KustoSectionExecutionOutcome<import('./kustoClient.js').QueryResult>>;
+	}): Promise<KustoSectionExecutionOutcome<import('./kustoClient.js').KustoQueryResult>>;
 	cancelKustoSectionExecution(target: KustoSectionExecutionTarget, executionId: string): boolean;
 	getKustoSectionExecutionAccountPartition(target: KustoSectionExecutionTarget, executionId: string): string | undefined;
 	getCurrentKustoConnectionForDispatch(connectionId: string, dispatch: KustoDispatchIdentity): KustoConnection | undefined;
@@ -2073,6 +2074,10 @@ Completion:`;
 							continue;
 						}
 						try {
+							const admission = admitKqlFullQueryText(effectiveQuery, {
+								operation: 'Copilot query execution', allowManagement: true,
+							});
+							if (!admission.ok) throw new Error(admission.error);
 							const isControl = this.host.isControlCommand(effectiveQuery);
 							const queryWithLimit = this.host.appendQueryMode(effectiveQuery, copilotQueryMode);
 							const cacheDirective = isControl ? '' : this.host.buildCacheDirective(true, 1, 'days');
@@ -2116,14 +2121,13 @@ Completion:`;
 									if (!isActive() || cts.token.isCancellationRequested
 										|| !admittedConnection
 										|| this.host.kustoClient.getAccountPartition(admittedConnection) !== producingAccountPartition) return false;
-									const rows = result.rows || [];
 									const execEntryId = this.nextHistoryEntryId(boxId);
 									const delivery = await this.host.postKustoPublication({
 										type: 'copilotExecutedQuery',
 										...kustoRequest,
 										entryId: execEntryId,
 										query: effectiveQuery,
-										resultSummary: rows.length > 0 ? `${rows.length} rows` : 'No results',
+										resultSummary: summarizeQueryResultForCopilot(result),
 										result,
 									});
 									if (delivery === false || !isActive() || cts.token.isCancellationRequested) return false;
@@ -2499,6 +2503,10 @@ Completion:`;
 							shouldRetryAttempt = true;
 							break;
 						}
+						const admission = admitKqlFullQueryText(effectiveQuery, {
+							operation: 'Copilot query execution', allowManagement: true,
+						});
+						if (!admission.ok) throw new Error(admission.error);
 
 						try {
 							postRequestMessage({ type: 'copilotWriteQuerySetQuery', boxId, query: effectiveQuery });

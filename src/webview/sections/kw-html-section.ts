@@ -31,7 +31,7 @@ import {
 import {
 	getBoundResultArtifact,
 	getRawCellValue,
-	rebindResultArtifactConsumer,
+	rebindIndexedResultArtifactConsumer,
 	unbindResultArtifactConsumer,
 } from '../core/results-state.js';
 import {
@@ -91,7 +91,15 @@ export interface HtmlSectionData {
 	powerBiUpgradeNotice?: PowerBiUpgradeNoticeState;
 }
 
-type PowerBiPublishDataSource = { name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> };
+type PowerBiPublishDataSource = {
+	name: string;
+	sectionId: string;
+	resultIndex?: number;
+	clusterUrl: string;
+	database: string;
+	query: string;
+	columns: Array<{ name: string; type: string }>;
+};
 
 type PendingPowerBiPartialPublish = {
 	requestId: string;
@@ -161,7 +169,7 @@ export interface HtmlDashboardExportContext {
 	previewHeight?: number;
 	hasProvenance: boolean;
 	bindingCount: number;
-	dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>;
+	dataSources: PowerBiPublishDataSource[];
 	factColumns: Array<{ name: string; type: string }>;
 }
 
@@ -266,6 +274,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _themeFingerprint: string | null = null;
 	/** Provenance fact source currently owned by the immutable artifact binding. */
 	private _boundFactSourceId = '';
+	private _boundFactResultIndex = 0;
 	private _ownsLiveState(): boolean {
 		const current = document.getElementById(this.boxId);
 		if (this.isConnected) return current === this || (!this.id && current === null);
@@ -314,9 +323,11 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		this._disconnectGeneration++;
 		window.addEventListener('message', this._onMessage);
 		window.addEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, this._onArtifactConsumersRevoked);
-		if (this._boundFactSourceId && !getBoundResultArtifact(
+		const boundFact = this._boundFactSourceId ? getBoundResultArtifact(
 			htmlDashboardFactArtifactConsumerId(this.boxId), this._boundFactSourceId,
-		)) {
+		) : null;
+		if (this._boundFactSourceId
+			&& (!boundFact || boundFact.resultIndex !== this._boundFactResultIndex)) {
 			this._retireDashboardWorkflows();
 			this._revokePreviewDataBridge();
 			this._boundFactSourceId = '';
@@ -354,6 +365,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			if (!current) {
 				unbindResultArtifactConsumer(htmlDashboardFactArtifactConsumerId(this.boxId));
 				this._boundFactSourceId = '';
+				this._boundFactResultIndex = 0;
 			}
 			this._disposeEditor();
 		});
@@ -593,18 +605,24 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _syncFactArtifactBinding(force = false): void {
 		if (!this.boxId || !this._ownsLiveState()) return;
 		const sourceId = String(this._provenance?.model?.fact?.sectionId || '').trim();
-		const sourceChanged = this._boundFactSourceId !== sourceId;
+		const resultIndex = this._provenance?.model?.fact?.resultIndex ?? 0;
+		const sourceChanged = this._boundFactSourceId !== sourceId
+			|| this._boundFactResultIndex !== resultIndex;
 		if (force || sourceChanged) this._retireDashboardWorkflows();
 		if (!sourceId) {
 			if (this._boundFactSourceId) this._revokePreviewDataBridge();
 			unbindResultArtifactConsumer(htmlDashboardFactArtifactConsumerId(this.boxId));
 			this._boundFactSourceId = '';
+			this._boundFactResultIndex = 0;
 			return;
 		}
-		if (!force && this._boundFactSourceId === sourceId) return;
-		if (this._boundFactSourceId && this._boundFactSourceId !== sourceId) this._revokePreviewDataBridge();
+		if (!force && !sourceChanged) return;
+		if (this._boundFactSourceId && sourceChanged) this._revokePreviewDataBridge();
 		this._boundFactSourceId = sourceId;
-		rebindResultArtifactConsumer(htmlDashboardFactArtifactConsumerId(this.boxId), sourceId);
+		this._boundFactResultIndex = resultIndex;
+		rebindIndexedResultArtifactConsumer(
+			htmlDashboardFactArtifactConsumerId(this.boxId), sourceId, resultIndex,
+		);
 	}
 
 	private _revokePreviewDataBridge(): void {
@@ -629,10 +647,12 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		if (!provenance?.model?.fact?.sectionId) return [];
 
 		const dsId = provenance.model.fact.sectionId;
+		const resultIndex = provenance.model.fact.resultIndex ?? 0;
 		const el = document.getElementById(dsId) as any;
 		if (!el || String(el.tagName || '').toLowerCase() !== 'kw-query-section') return [];
 		const artifact = getBoundResultArtifact(htmlDashboardFactArtifactConsumerId(this.boxId), dsId);
-		if (!artifact || !artifact.columns.length || artifact.producer?.engine !== 'kusto'
+		if (!artifact || artifact.resultIndex !== resultIndex
+			|| !artifact.columns.length || artifact.producer?.engine !== 'kusto'
 			|| artifact.producer.boxId !== dsId) return [];
 
 		let resolvedCluster = '';
@@ -660,7 +680,11 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			type: typeof c === 'object' ? (c?.type || 'string') : 'string',
 		}));
 
-		return [{ name: sectionName, sectionId: dsId, clusterUrl: resolvedCluster, database: artifactDatabase, query: artifactQuery, columns }];
+		return [{
+			name: sectionName, sectionId: dsId,
+			...(resultIndex > 0 ? { resultIndex } : {}),
+			clusterUrl: resolvedCluster, database: artifactDatabase, query: artifactQuery, columns,
+		}];
 	}
 
 	/** Measure the current preview height for PBI page sizing. */
@@ -811,6 +835,16 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		const code = this._getCodeText();
 		if (!code.trim()) {
 			try { postMessageToHost({ type: 'showInfo', message: 'Write some HTML content before publishing to Power BI.' }); } catch (e) { console.error('[kusto]', e); }
+			return;
+		}
+		const factResultIndex = parseKwProvenance(code)?.model?.fact?.resultIndex ?? 0;
+		if (factResultIndex > 0) {
+			try {
+				postMessageToHost({
+					type: 'showInfo',
+					message: 'Power BI publishing supports Result 1 only. Change model.fact.resultIndex to 0 before publishing.',
+				});
+			} catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
@@ -1281,11 +1315,13 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _buildDataBridgeScript(): string {
 		const factSectionId = this._provenance?.model?.fact?.sectionId;
 		if (!factSectionId) return '';
+		const factResultIndex = this._provenance?.model?.fact?.resultIndex ?? 0;
 
 		const artifact = getBoundResultArtifact(
 			htmlDashboardFactArtifactConsumerId(this.boxId), factSectionId,
 		);
-		if (!artifact || artifact.policy?.exposeToActiveContent !== true || !artifact.columns) return '';
+		if (!artifact || artifact.resultIndex !== factResultIndex
+			|| artifact.policy?.exposeToActiveContent !== true || !artifact.columns) return '';
 
 		const MAX_ROWS = 10_000;
 		const columns = (artifact.columns || []).map((c: any) => ({
@@ -1294,7 +1330,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		}));
 		const portableDashboard = compilePortableDashboard({
 			htmlCode: this._getCodeText(),
-			dataSources: [{ sectionId: factSectionId, columns }],
+			dataSources: [{ sectionId: factSectionId, resultIndex: factResultIndex, columns }],
 		});
 		if (!portableDashboard.ir) return '';
 		const portableProvenance = portableDashboardIrToProvenance(portableDashboard.ir);

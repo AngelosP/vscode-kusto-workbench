@@ -97,6 +97,15 @@ describe('parseKwProvenance', () => {
 		expect(p!.model.dimensions![1].mode).toBe('between');
 		expect(p!.model.dimensions![2].label).toBe('Country');
 	});
+
+	it('accepts a non-negative fact result index and rejects invalid indexes', () => {
+		const html = (resultIndex: unknown) => `<script type="application/kw-provenance">${JSON.stringify({
+			version: 1, model: { fact: { sectionId: 'q1', sectionName: 'F', resultIndex } }, bindings: {},
+		})}</script>`;
+
+		expect(parseKwProvenance(html(2))?.model.fact.resultIndex).toBe(2);
+		for (const invalid of [-1, 1.5, '1']) expect(parseKwProvenance(html(invalid))).toBeNull();
+	});
 });
 
 describe('findUnsupportedPowerBiBindings', () => {

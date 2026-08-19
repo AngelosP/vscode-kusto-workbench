@@ -5191,6 +5191,17 @@ function e2eQueryApi(kind: E2eSectionKind) {
 			button.click();
 			return `${kind} run clicked`;
 		},
+		runAll: () => {
+			if (kind !== 'kusto') throw new Error('runAll is only implemented for Kusto sections');
+			const section = e2eSection('kusto');
+			const boxId = String(section.boxId || section.id || '');
+			if (!boxId || typeof _win.executeAllQueries !== 'function') {
+				throw new Error('Kusto Run All is unavailable');
+			}
+			const executionId = _win.executeAllQueries(boxId);
+			if (!executionId) throw new Error('Kusto Run All was not accepted');
+			return `kusto run all clicked: ${executionId}`;
+		},
 		assertHasResults: () => e2eAssertState(kind, 'testHasResults', 'true'),
 		assertHasError: () => e2eAssertState(kind, 'testHasError', 'true'),
 		assertNoError: () => e2eAssertState(kind, 'testHasError', 'false'),

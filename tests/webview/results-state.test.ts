@@ -30,18 +30,24 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 import {
 	captureResultsRuntime,
 	displayResultForBox,
+	displayResultBatchForBox,
 	getRawCellValue,
 	getResultsState,
+	getResultsBatchState,
+	getSelectedResultIndex,
 	getResultsStateRevision,
 	getCurrentResultArtifact,
 	getResultArtifact,
 	bindResultArtifactConsumer,
+	bindIndexedResultArtifactConsumer,
 	getBoundResultArtifact,
 	rebindResultArtifactConsumer,
 	retireResultsStateForRerun,
 	unbindResultArtifactConsumer,
 	clearResultsState,
 	setResultsState,
+	setResultsBatchState,
+	selectResultsState,
 	resetCurrentResult,
 	restoreResultsRuntime,
 	currentResult,
@@ -103,6 +109,152 @@ describe('results-state displayResultForBox', () => {
 		expect(getResultsStateRevision('query_1')).toBeGreaterThan(0);
 	});
 
+	it('publishes one indexed batch and notifies dependents exactly once', () => {
+		const states = [
+			{ resultIndex: 0, boxId: 'query_batch', columns: ['First'], rows: [[1]], metadata: {} },
+			{ resultIndex: 1, boxId: 'query_batch', columns: ['Second'], rows: [[2]], metadata: {} },
+		];
+
+		const artifacts = setResultsBatchState('query_batch', states, {
+			producer: { engine: 'kusto', boxId: 'query_batch', executionId: 'execution-1' },
+		}, 1);
+
+		expect(artifacts).toHaveLength(2);
+		expect(getResultsBatchState('query_batch')).toEqual(states);
+		expect(getSelectedResultIndex('query_batch')).toBe(1);
+		expect(getResultsState('query_batch')).toBe(states[1]);
+		expect(getResultsState('query_batch', 0)).toBe(states[0]);
+		expect(getResultsState('query_batch', 1)).toBe(states[1]);
+		expect(getCurrentResultArtifact('query_batch', 1)).toBe(artifacts?.[1]);
+		expect(mocks.notifyResultsUpdated).toHaveBeenCalledTimes(1);
+		expect(mocks.notifyResultsUpdated).toHaveBeenCalledWith('query_batch');
+	});
+
+	it('renders the selected result from a batch and registers its exact artifact', () => {
+		const section = document.createElement('div') as HTMLDivElement & {
+			displayResult: ReturnType<typeof vi.fn>;
+			setResultArtifactForCsvExport: ReturnType<typeof vi.fn>;
+			captureResultPresentation: ReturnType<typeof vi.fn>;
+		};
+		section.id = 'query_display_batch';
+		section.displayResult = vi.fn(() => true);
+		section.setResultArtifactForCsvExport = vi.fn();
+		section.captureResultPresentation = vi.fn(() => ({ token: 'before' }));
+		document.body.appendChild(section);
+
+		const accepted = displayResultBatchForBox({
+			columns: ['First'], rows: [[1]], metadata: { resultName: 'First table' },
+			additionalResults: {
+				version: 1,
+				sets: [{ resultIndex: 1, columns: ['Second'], rows: [[2]], metadata: { resultName: 'Second table' } }],
+			},
+		}, section.id, {
+			label: 'Results', selectedResultIndex: 1,
+			artifactPublication: { producer: { engine: 'kusto', boxId: section.id, executionId: 'execution-1' } },
+		});
+
+		expect(accepted).toBe(true);
+		expect(section.displayResult).toHaveBeenCalledWith(
+			expect.objectContaining({ columns: ['Second'], rows: [[2]] }),
+			expect.objectContaining({
+				label: 'Results', selectedResultIndex: 1, deferCsvRelease: true,
+				resultSets: [
+					{ resultIndex: 0, label: 'Result #1 - First table' },
+					{ resultIndex: 1, label: 'Result #2 - Second table' },
+				],
+			}),
+		);
+		expect(section.setResultArtifactForCsvExport).toHaveBeenCalledWith('result:query_display_batch:1:set:1');
+		expect(getCurrentResultArtifact(section.id, 0)?.rows).toEqual([[1]]);
+		expect(getCurrentResultArtifact(section.id, 1)?.rows).toEqual([[2]]);
+		expect(mocks.notifyResultsUpdated).toHaveBeenCalledTimes(1);
+	});
+
+	it('rolls back the exact prior batch when selected presentation rejects', () => {
+		const section = document.createElement('div') as HTMLDivElement & {
+			displayResult: ReturnType<typeof vi.fn>;
+			setResultArtifactForCsvExport: ReturnType<typeof vi.fn>;
+			captureResultPresentation: ReturnType<typeof vi.fn>;
+			restoreResultPresentation: ReturnType<typeof vi.fn>;
+		};
+		section.id = 'query_display_rollback';
+		section.displayResult = vi.fn(() => true);
+		section.setResultArtifactForCsvExport = vi.fn();
+		section.captureResultPresentation = vi.fn(() => ({ token: 'before' }));
+		section.restoreResultPresentation = vi.fn();
+		document.body.appendChild(section);
+		displayResultForBox(
+			{ columns: ['Old'], rows: [['old']], metadata: {} }, section.id, { label: 'Results' },
+		);
+		const oldArtifact = getCurrentResultArtifact(section.id);
+		const oldState = getResultsState(section.id);
+		const oldRevision = getResultsStateRevision(section.id);
+		mocks.notifyResultsUpdated.mockClear();
+		section.displayResult.mockImplementationOnce(() => false);
+
+		const accepted = displayResultBatchForBox({
+			columns: ['New'], rows: [['new']], metadata: {},
+			additionalResults: { version: 1, sets: [{ resultIndex: 1, columns: ['Other'], rows: [['other']], metadata: {} }] },
+		}, section.id, { label: 'Results', selectedResultIndex: 1 });
+
+		expect(accepted).toBe(false);
+		expect(getResultsState(section.id)).toBe(oldState);
+		expect(getCurrentResultArtifact(section.id)).toBe(oldArtifact);
+		expect(getResultsStateRevision(section.id)).toBe(oldRevision);
+		expect(section.restoreResultPresentation).toHaveBeenCalledWith({ token: 'before' });
+		expect(mocks.notifyResultsUpdated).not.toHaveBeenCalled();
+	});
+
+	it('switches selected presentation without publishing or notifying', () => {
+		const states = [
+			{ resultIndex: 0, boxId: 'query_select', columns: ['First'], rows: [[1]], metadata: {} },
+			{ resultIndex: 1, boxId: 'query_select', columns: ['Second'], rows: [[2]], metadata: {} },
+		];
+		const artifacts = setResultsBatchState('query_select', states, {}, 0)!;
+		const revision = getResultsStateRevision('query_select');
+		mocks.notifyResultsUpdated.mockClear();
+
+		expect(selectResultsState('query_select', 1)).toBe(true);
+
+		expect(getSelectedResultIndex('query_select')).toBe(1);
+		expect(getResultsState('query_select')).toBe(states[1]);
+		expect(getResultsStateRevision('query_select')).toBe(revision);
+		expect(getCurrentResultArtifact('query_select', 0)).toBe(artifacts[0]);
+		expect(getCurrentResultArtifact('query_select', 1)).toBe(artifacts[1]);
+		expect(mocks.notifyResultsUpdated).not.toHaveBeenCalled();
+		expect(selectResultsState('query_select', 2)).toBe(false);
+	});
+
+	it('binds an explicit result index without changing Result 1 defaults', () => {
+		const artifacts = setResultsBatchState('query_bind_index', [
+			{ resultIndex: 0, columns: ['First'], rows: [[1]], metadata: {} },
+			{ resultIndex: 1, columns: ['Second'], rows: [[2]], metadata: {} },
+		])!;
+
+		expect(bindResultArtifactConsumer('chart:default', 'query_bind_index')).toBe(artifacts[0].artifactId);
+		expect(bindIndexedResultArtifactConsumer('chart:secondary', 'query_bind_index', 1))
+			.toBe(artifacts[1].artifactId);
+		expect(getBoundResultArtifact('chart:default', 'query_bind_index')).toBe(artifacts[0]);
+		expect(getBoundResultArtifact('chart:secondary', 'query_bind_index')).toBe(artifacts[1]);
+	});
+
+	it('restores indexed batch and selected presentation from a runtime snapshot', () => {
+		const states = [
+			{ resultIndex: 0, boxId: 'query_batch_snapshot', columns: ['First'], rows: [[1]], metadata: {} },
+			{ resultIndex: 1, boxId: 'query_batch_snapshot', columns: ['Second'], rows: [[2]], metadata: {} },
+		];
+		setResultsBatchState('query_batch_snapshot', states, {}, 1);
+		const snapshot = captureResultsRuntime();
+		setResultsState('query_batch_snapshot', { columns: ['Replacement'], rows: [[3]], metadata: {} });
+
+		restoreResultsRuntime(snapshot);
+
+		expect(getResultsBatchState('query_batch_snapshot')).toEqual(states);
+		expect(getSelectedResultIndex('query_batch_snapshot')).toBe(1);
+		expect(getResultsState('query_batch_snapshot')).toBe(states[1]);
+		expect(getCurrentResultArtifact('query_batch_snapshot', 1)?.rows).toEqual([[2]]);
+	});
+
 	it('restores exact result state, artifact identity, bindings, and presentation', () => {
 		const section = document.createElement('div') as HTMLDivElement & {
 			displayResult: ReturnType<typeof vi.fn>;
@@ -112,9 +264,13 @@ describe('results-state displayResultForBox', () => {
 		section.displayResult = vi.fn();
 		section.setResultArtifactForCsvExport = vi.fn();
 		document.body.appendChild(section);
-		setResultsState(section.id, { columns: ['Value'], rows: [['before']], metadata: {} });
-		const first = getCurrentResultArtifact(section.id)!;
-		bindResultArtifactConsumer('chart:runtime-snapshot', section.id, first.artifactId);
+		const beforeStates = [
+			{ resultIndex: 0, boxId: section.id, columns: ['Value'], rows: [['first']], metadata: { resultName: 'First' } },
+			{ resultIndex: 1, boxId: section.id, columns: ['Value'], rows: [['before']], metadata: { resultName: 'Second' } },
+		];
+		setResultsBatchState(section.id, beforeStates, {}, 1);
+		const first = getCurrentResultArtifact(section.id, 1)!;
+		bindIndexedResultArtifactConsumer('chart:runtime-snapshot', section.id, 1, first.artifactId);
 		const firstRevision = getResultsStateRevision(section.id);
 		const snapshot = captureResultsRuntime();
 		const transientSection = document.createElement('div') as HTMLDivElement & {
@@ -132,11 +288,17 @@ describe('results-state displayResultForBox', () => {
 
 		expect(getResultsState(section.id)?.rows).toEqual([['before']]);
 		expect(getResultsStateRevision(section.id)).toBe(firstRevision);
-		expect(getCurrentResultArtifact(section.id)).toBe(first);
+		expect(getCurrentResultArtifact(section.id, 1)).toBe(first);
 		expect(getBoundResultArtifact('chart:runtime-snapshot', section.id)).toBe(first);
 		expect(section.displayResult).toHaveBeenCalledWith(
 			expect.objectContaining({ rows: [['before']] }),
-			{ label: 'Results', showExecutionTime: true },
+			{
+				label: 'Results', showExecutionTime: true, selectedResultIndex: 1,
+				resultSets: [
+					{ resultIndex: 0, label: 'Result #1 - First' },
+					{ resultIndex: 1, label: 'Result #2 - Second' },
+				],
+			},
 		);
 		expect(section.setResultArtifactForCsvExport).toHaveBeenCalledWith(first.artifactId);
 		expect(transientSection.clearResults).toHaveBeenCalledOnce();

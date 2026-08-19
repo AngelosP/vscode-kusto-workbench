@@ -9,6 +9,10 @@ import type { KustoSectionExecutionTarget } from '../../shared/kustoExecution.js
 import type { KustoExecutionRequestIdentity } from '../../shared/kustoExecution.js';
 import type { KustoCopilotRequestIdentity } from '../../shared/kustoExecution.js';
 import {
+	parseKustoResultAttachmentWebviewMessageFromEnvelope,
+	type KustoResultAttachmentWebviewMessage,
+} from '../../shared/kustoResultAttachmentProtocol.js';
+import {
 	isDocumentViewWebviewMessageType,
 	stampDocumentViewWebviewMessage,
 	type DocumentViewWebviewMessage,
@@ -213,6 +217,7 @@ export type OutgoingPowerBiPartialPublishWarningMessage = {
 export type OutgoingWebviewMessage =
 	| { type: 'fileOpenTrace'; event: string; timeMs?: number; sequence?: number; detail?: unknown }
 	| KustoPublicationWebviewMessage
+	| KustoResultAttachmentWebviewMessage
 	// Connection & database
 	| KustoConnectionsProjectionWebviewMessage
 	| { type: 'kustoSectionOpen'; boxId: string; sectionInstanceId: string }
@@ -249,11 +254,11 @@ export type OutgoingWebviewMessage =
 	| ArtifactCsvSaveWebviewMessage
 	| { type: 'cancelDashboardWorkflow'; requestId: string }
 	| PowerBiPublishWebviewMessage
-	| { type: 'exportDashboard'; requestId: string; boxId: string; html: string; suggestedFileName?: string; previewHeight?: number; dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> }
+	| { type: 'exportDashboard'; requestId: string; boxId: string; html: string; suggestedFileName?: string; previewHeight?: number; dataSources: Array<{ name: string; sectionId: string; resultIndex?: number; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> }
 	| OutgoingHtmlDashboardUpgradeWithCopilotMessage
 	| { type: 'getPbiWorkspaces'; requestId: string; boxId: string }
 	| { type: 'checkPbiItemExists'; requestId: string; boxId: string; workspaceId: string; reportId: string }
-	| { type: 'publishToPowerBI'; requestId: string; boxId: string; workspaceId: string; reportName: string; pageWidth: number; pageHeight: number; htmlCode: string; dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>; dataMode?: 'import' | 'directQuery'; semanticModelId?: string; reportId?: string; existingReportName?: string; workspaceName?: string; isPersonalWorkspace?: boolean }
+	| { type: 'publishToPowerBI'; requestId: string; boxId: string; workspaceId: string; reportName: string; pageWidth: number; pageHeight: number; htmlCode: string; dataSources: Array<{ name: string; sectionId: string; resultIndex?: number; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>; dataMode?: 'import' | 'directQuery'; semanticModelId?: string; reportId?: string; existingReportName?: string; workspaceName?: string; isPersonalWorkspace?: boolean }
 
 	// Settings
 	| EditingPreferencesWebviewMessage
@@ -340,6 +345,7 @@ export const runtimeOutgoingWebviewMessageTypes = [
 	'fileOpenTrace',
 	'getConnections',
 	'kustoPublicationAck',
+	'selectKustoResult',
 	'kustoSectionOpen',
 	'kustoSectionTarget',
 	'kustoSectionClose',
@@ -450,6 +456,14 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 		return;
 	}
 	let message = envelope.value as unknown as OutgoingWebviewMessage;
+	if (message.type === 'selectKustoResult') {
+		const parsed = parseKustoResultAttachmentWebviewMessageFromEnvelope(envelope.descriptorSnapshot);
+		if (!parsed.ok) {
+			console.error('[kusto] Rejected invalid Kusto result selection request:', parsed.error);
+			return;
+		}
+		message = parsed.value;
+	}
 	const rawKustoPublicationAdmission = admitKustoPublicationWebviewMessageFromEnvelope(
 		envelope.descriptorSnapshot,
 	);

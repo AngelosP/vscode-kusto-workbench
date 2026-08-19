@@ -52,11 +52,11 @@ export class KwPublishPbiDialog extends LitElement {
 	private _workspaceRequestId = '';
 	private _itemExistsRequestId = '';
 	private _publishRequestId = '';
-	private _dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> = [];
+	private _dataSources: Array<{ name: string; sectionId: string; resultIndex?: number; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> = [];
 	private _dismiss = () => this._cancel();
 
 	show(
-		dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>,
+		dataSources: Array<{ name: string; sectionId: string; resultIndex?: number; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>,
 		htmlCode: string,
 		suggestedName: string,
 		previewHeight?: number,

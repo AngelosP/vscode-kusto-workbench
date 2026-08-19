@@ -57,5 +57,20 @@ describe('tool manifest schemas', () => {
 		expect(askKustoCopilot?.modelDescription).toContain('ask the returned question verbatim');
 		expect(askKustoCopilot?.modelDescription).toContain('same openFileId and sectionId');
 	});
+
+	it('exposes non-negative result indexes for chart and transformation sources', () => {
+		const tools = getTools();
+		const addSection = tools.find((tool: any) => tool.name === 'kusto-workbench_add-section');
+		const chart = tools.find((tool: any) => tool.name === 'kusto-workbench_configure-chart');
+		const transformation = tools.find((tool: any) => tool.name === 'kusto-workbench_configure-transformation');
+		for (const schema of [
+			addSection?.inputSchema?.properties?.dataSourceResultIndex,
+			chart?.inputSchema?.properties?.dataSourceResultIndex,
+			transformation?.inputSchema?.properties?.dataSourceResultIndex,
+			transformation?.inputSchema?.properties?.joinRightDataSourceResultIndex,
+		]) {
+			expect(schema).toMatchObject({ type: 'integer', minimum: 0 });
+		}
+	});
 });
 

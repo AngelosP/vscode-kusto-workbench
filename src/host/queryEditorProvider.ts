@@ -18,6 +18,7 @@ import {
 	admitPowerBiPublishWebviewMessage,
 	admitPowerBiPublishWebviewMessageFromEnvelope,
 } from '../shared/powerBiPublishProtocol';
+import { parseKustoResultAttachmentWebviewMessageFromEnvelope } from '../shared/kustoResultAttachmentProtocol';
 import { captureRuntimeMessageEnvelope } from '../shared/runtimeMessageEnvelope';
 import * as crypto from 'crypto';
 import * as path from 'path';
@@ -34,6 +35,7 @@ import {
 import { SqlEditorLifecycleCoordinator } from './sql/sqlEditorLifecycleCoordinator';
 import { sanitizeStsLogText } from './sql/stsLogSanitizer';
 import { KustoConnectionLifecycle } from './kustoConnectionLifecycle';
+import type { KustoResultPanelSession } from './kustoResultPersistenceOwner';
 import { getOwnedSqlDatabaseCacheEntry, SQL_DATABASE_CACHE_STORAGE_KEY } from './sqlDatabaseCache';
 import { getQueryEditorHtml } from './queryEditorHtml';
 import type { CompatibilityPersistenceEnvelope } from '../shared/compatibilityPersistenceProtocol';
@@ -313,6 +315,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private panel?: vscode.WebviewPanel;
 	private panelDisposalSubscription?: vscode.Disposable;
 	private _panelDisposed = true;
+	private kustoResultPersistenceSession?: KustoResultPanelSession;
 	readonly kustoClient: KustoQueryClient;
 	readonly output: WorkbenchLogger = getWorkbenchLogger();
 	readonly connection: ConnectionService;
@@ -365,6 +368,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
+	}
+
+	attachKustoResultPersistenceSession(session: KustoResultPanelSession): void {
+		if (this.kustoResultPersistenceSession && this.kustoResultPersistenceSession !== session) {
+			throw new Error('Kusto result persistence session is already attached.');
+		}
+		this.kustoResultPersistenceSession = session;
 	}
 
 	private get kustoExecutionCoordinator(): KustoExecutionCoordinator {
@@ -850,6 +860,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				isDisposed: () => this._panelDisposed,
 				createPublicationId: () => crypto.randomUUID(),
 				now: () => Date.now(),
+				getKustoResultPersistenceSession: () => this.kustoResultPersistenceSession,
 			});
 		this.comparisonPreparationApplication = comparisonPreparationApplication
 			?? new HostComparisonPreparationApplicationHandler({
@@ -879,6 +890,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
 			invalidateConnections: connectionIds => {
 				this.kustoExecutionCoordinator.revokeConnections(connectionIds);
+				this.kustoResultPersistenceSession?.revokeConnections(connectionIds);
 				this.copilot.invalidateKustoConnections([...connectionIds]);
 			},
 			invalidatePhysicalTargets: connectionIds => this.kustoExecutionCoordinator.invalidatePhysicalConnections(connectionIds),
@@ -900,6 +912,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				change.connectionIds,
 				establishingAccountPartition,
 			);
+			if (!establishingAccountPartition) {
+				this.kustoResultPersistenceSession?.revokeConnections(change.connectionIds);
+			}
 			this.copilot.invalidateKustoConnections(change.connectionIds, {
 				preserveEstablishingAccountPartition: establishingAccountPartition,
 			});
@@ -1074,6 +1089,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const envelope = captureRuntimeMessageEnvelope(input);
 		if (!envelope.ok) return;
 		input = envelope.value;
+		if (envelope.value.type === 'selectKustoResult') {
+			const parsed = parseKustoResultAttachmentWebviewMessageFromEnvelope(envelope.descriptorSnapshot);
+			if (!parsed.ok) return;
+			input = parsed.value;
+		}
 		const publicationAdmission = admitKustoPublicationWebviewMessageFromEnvelope(
 			envelope.descriptorSnapshot,
 		);
@@ -1476,6 +1496,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.kustoConnectionsProjectionApplication.dispose();
 		this.copilotQueryWorkflowApplication.dispose();
 		this.kustoSectionExecutionApplication.dispose();
+		this.kustoResultPersistenceSession?.dispose();
+		this.kustoResultPersistenceSession = undefined;
 		this.comparisonPreparationApplication.dispose();
 		this.sqlSectionExecutionApplication.dispose();
 		this.sqlEditorLifecycleApplication.dispose();

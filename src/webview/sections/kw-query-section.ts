@@ -17,7 +17,14 @@ import '../components/kw-section-shell.js';
 import { CopilotChatManagerController } from './copilot-chat-manager.controller.js';
 import { kustoWebviewFlavor } from './copilot-chat-flavor.js';
 import { canPersistKustoResult, schedulePersist } from '../core/persistence.js';
-import { clearResultsState, getCurrentResultArtifact, unbindResultArtifactConsumer } from '../core/results-state.js';
+import {
+	clearResultsState,
+	getCurrentResultArtifact,
+	getResultsState,
+	getSelectedResultIndex,
+	selectResultsState,
+	unbindResultArtifactConsumer,
+} from '../core/results-state.js';
 import { comparisonSourceArtifactConsumerId } from '../../shared/resultArtifact.js';
 import { toPersistedResultArtifact, type PersistedResultArtifactV1 } from '../../shared/resultArtifact.js';
 import {
@@ -37,7 +44,7 @@ import {
 } from '../core/section-factory.js';
 import type { KustoConnectionFormSubmitDetail } from '../components/kw-kusto-connection-form.js';
 import '../components/kw-kusto-connection-form.js';
-import { __kustoOpenShareModal, getRunModeForPersistence } from './kw-query-toolbar.js';
+import { __kustoCloseShareModalForOwner, __kustoOpenShareModal, getRunModeForPersistence } from './kw-query-toolbar.js';
 import { optimizationMetadataByBoxId, subscribeKustoPreparation, type KustoPreparationState } from '../core/state.js';
 import { optimizeQueryWithCopilot, acceptOptimizations } from './query-execution.controller.js';
 import { QueryConnectionController } from './query-connection.controller.js';
@@ -49,6 +56,11 @@ import { resolveKustoConnection } from '../../shared/kustoAuth.js';
 import type { KustoEditorLifecycleIdentity } from '../../shared/kustoSchemaLifecycle.js';
 import type { KustoEditorSectionLease } from '../core/kusto-editor-schema-coordinator.js';
 import { kustoEditorSchemaCoordinator } from '../core/kusto-editor-schema-runtime.js';
+import {
+	createKustoResultSelectionRequest,
+	type KustoResultAttachmentCommittedMessage,
+	type KustoResultSelectionResultMessage,
+} from '../../shared/kustoResultAttachmentProtocol.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -71,6 +83,7 @@ export interface QuerySectionData {
 	resultsVisible: boolean;
 	resultJson?: string;
 	resultArtifact?: PersistedResultArtifactV1;
+	selectedResultIndex?: number;
 	runMode: string;
 	cacheEnabled: boolean;
 	cacheValue: number;
@@ -226,6 +239,11 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	private _csvResultArtifactId = '';
 	private _csvResultTableToken = '';
 	private _csvExportAllowed = false;
+	private _pendingResultSelection?: Readonly<{
+		requestId: string;
+		resultIndex: number;
+		primaryArtifactId: string;
+	}>;
 
 	// ── ReactiveControllers ──────────────────────────────────────────────────
 	public connectionCtrl = new QueryConnectionController(this as any);
@@ -380,7 +398,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		if (String(detail.sourceBoxId || '') !== this.boxId
 			|| String(detail.tableToken || '') !== this._csvResultTableToken) return;
 		const table = this.querySelector('kw-data-table') as any;
-		if (table) {
+		const tableOwnsReleasedGeneration = !!table
+			&& String(table.resultArtifactTableToken || '') === String(detail.tableToken || '');
+		if (tableOwnsReleasedGeneration) {
 			table.revokeResultArtifactGeneration?.();
 			if (typeof table.purgeDataImmediately === 'function') table.purgeDataImmediately();
 			else {
@@ -397,9 +417,11 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		this._csvResultArtifactId = '';
 		this._csvResultTableToken = '';
 		this._csvExportAllowed = false;
-		this._testHasResults = false;
-		const wrapper = document.getElementById(this.boxId + '_results_wrapper');
-		if (wrapper) wrapper.style.display = 'none';
+		if (tableOwnsReleasedGeneration) {
+			this._testHasResults = false;
+			const wrapper = document.getElementById(this.boxId + '_results_wrapper');
+			if (wrapper) wrapper.style.display = 'none';
+		}
 	};
 
 	private _reflectPreparationState(state: KustoPreparationState): void {
@@ -494,6 +516,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 							@click=${(e: Event) => { callGlobal('toggleRunMenu', id); e.stopPropagation(); }}
 							aria-label="Run query options" title="Run query options">${downChevronSvg}</button>
 						<div class="unified-btn-split-menu" id="${id}_run_menu" role="menu">
+							<div class="unified-btn-split-menu-item" id="${id}_run_menu_all" role="menuitem"
+								data-run-action="all"
+								title="Run all query statements (Ctrl+Shift+Enter)"
+								@click=${() => callGlobal('__kustoRunAllFromMenu', id)}>Run All</div>
 							<div class="unified-btn-split-menu-item unified-btn-split-menu-fn" id="${id}_run_menu_runFunction" role="menuitem"
 								data-run-mode="runFunction"
 								style="display:none"
@@ -1366,7 +1392,14 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	 */
 	public displayResult(
 		result: { columns?: { name: string; type?: string }[]; rows?: unknown[][]; metadata?: Record<string, unknown> },
-		options?: { label?: string; showExecutionTime?: boolean; executionId?: string }
+		options?: {
+			label?: string;
+			showExecutionTime?: boolean;
+			executionId?: string;
+			resultSets?: readonly Readonly<{ resultIndex: number; label: string }>[];
+			selectedResultIndex?: number;
+			deferCsvRelease?: boolean;
+		}
 	): boolean {
 		if (options?.executionId && !this.acceptsQueryTerminal(options.executionId)) return false;
 		this._testExecuting = false;
@@ -1386,13 +1419,13 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		const resultsWrapper = document.getElementById(this.boxId + '_results_wrapper');
 		const resizer = document.getElementById(this.boxId + '_results_resizer');
 		if (!resultsDiv) return false;
-		this._releaseCsvResultArtifact();
+		if (!options?.deferCsvRelease) this._releaseCsvResultArtifact();
 
 		// Remove stale overlay — fresh results are arriving.
 		try { resultsDiv.classList.remove('is-stale'); } catch (e) { console.error('[kusto]', e); }
 		resultsDiv.innerHTML = '';
 
-		if (!columns.length && !rows.length) {
+		if (!columns.length && !rows.length && (options?.resultSets?.length ?? 0) <= 1) {
 			resultsDiv.innerHTML = '<div class="results-header"><span class="results-title">No results</span></div>';
 			if (resultsWrapper) { resultsWrapper.style.display = 'block'; resultsWrapper.style.height = ''; }
 			if (resizer) resizer.style.display = 'none';
@@ -1419,6 +1452,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 				clientActivityId: typeof metadata.clientActivityId === 'string' ? metadata.clientActivityId : undefined,
 				serverStats: (metadata.serverStats && typeof metadata.serverStats === 'object') ? metadata.serverStats as Record<string, unknown> : undefined,
 			},
+			...(options?.resultSets ? { resultSets: options.resultSets } : {}),
+			...(options?.selectedResultIndex !== undefined
+				? { selectedResultIndex: options.selectedResultIndex }
+				: {}),
 		} as DataTableOptions;
 		dt.columns = columns;
 		dt.rows = rows;
@@ -1429,6 +1466,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 				tableToken: String(dt.resultArtifactTableToken || ''),
 				csv: e.detail.csv, suggestedFileName: e.detail.suggestedFileName,
 			}); } catch (e) { console.error('[kusto]', e); }
+		});
+		dt.addEventListener('result-set-change', (event: Event) => {
+			const resultIndex = Number((event as CustomEvent).detail?.resultIndex);
+			this._requestResultSelection(resultIndex);
 		});
 
 		// Handle visibility toggle: shrink/expand the wrapper directly.
@@ -1704,6 +1745,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	}
 
 	public clearResults(): void {
+		this._pendingResultSelection = undefined;
 		this._releaseCsvResultArtifact();
 		this._testExecuting = false;
 		this._testHasError = false;
@@ -1721,6 +1763,122 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			resultsWrapper.style.overflow = '';
 		}
 		if (resizer) resizer.style.display = 'none';
+	}
+
+	public applyCommittedResultAttachment(message: KustoResultAttachmentCommittedMessage): void {
+		if (message.boxId !== this.boxId) return;
+		const primary = getCurrentResultArtifact(this.boxId, 0);
+		if (primary?.artifactId !== message.primaryArtifactId) return;
+		if (getSelectedResultIndex(this.boxId) !== message.selectedResultIndex) {
+			selectResultsState(this.boxId, message.selectedResultIndex);
+		}
+	}
+
+	private _requestResultSelection(resultIndex: number): void {
+		if (!Number.isSafeInteger(resultIndex) || resultIndex < 0
+			|| resultIndex === getSelectedResultIndex(this.boxId)
+			|| !getResultsState(this.boxId, resultIndex)) return;
+		if ((window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode === true) {
+			this._applyResultSelection(resultIndex, false);
+			return;
+		}
+		const lifecycle = this.getSchemaLifecycleIdentity();
+		const primary = getCurrentResultArtifact(this.boxId, 0);
+		if (!lifecycle || !primary) return;
+		const requestId = `kusto-result-selection-${globalThis.crypto?.randomUUID?.()
+			?? `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
+		const request = createKustoResultSelectionRequest({
+			requestId,
+			boxId: this.boxId,
+			sectionInstanceId: lifecycle.sectionInstanceId,
+			targetGeneration: lifecycle.targetGeneration,
+			primaryArtifactId: primary.artifactId,
+			resultIndex,
+		});
+		if (!request.ok) return;
+		this._pendingResultSelection = Object.freeze({
+			requestId, resultIndex, primaryArtifactId: primary.artifactId,
+		});
+		postMessageToHost(request.value);
+	}
+
+	public applyResultSelectionResponse(message: KustoResultSelectionResultMessage): void {
+		const pending = this._pendingResultSelection;
+		if (!pending || message.boxId !== this.boxId || message.requestId !== pending.requestId
+			|| message.primaryArtifactId !== pending.primaryArtifactId
+			|| message.resultIndex !== pending.resultIndex) return;
+		this._pendingResultSelection = undefined;
+		if (!message.accepted) {
+			this.querySelector<any>('kw-data-table')?.requestUpdate?.();
+			return;
+		}
+		this._applyResultSelection(message.resultIndex, true);
+	}
+
+	private _applyResultSelection(resultIndex: number, persistSelection: boolean): boolean {
+		const state = getResultsState(this.boxId, resultIndex);
+		const artifact = getCurrentResultArtifact(this.boxId, resultIndex);
+		const currentTable = this.querySelector<any>('kw-data-table');
+		const resultSets = currentTable?.options?.resultSets;
+		if (!state || !artifact || !selectResultsState(this.boxId, resultIndex)) return false;
+		__kustoCloseShareModalForOwner(this.boxId);
+		if (!this.displayResult(state, {
+			label: 'Results', showExecutionTime: true,
+			resultSets, selectedResultIndex: resultIndex,
+		})) return false;
+		this.setResultArtifactForCsvExport(artifact.artifactId);
+		if (persistSelection) {
+			try { schedulePersist('kusto-result-selection', true); } catch (error) { console.error('[kusto]', error); }
+		}
+		return true;
+	}
+
+	public captureResultPresentation(): unknown {
+		const resultsDiv = document.getElementById(this.boxId + '_results');
+		const resultsWrapper = document.getElementById(this.boxId + '_results_wrapper');
+		const resizer = document.getElementById(this.boxId + '_results_resizer');
+		return {
+			children: resultsDiv ? [...resultsDiv.childNodes] : [],
+			resultsClassName: resultsDiv?.className ?? '',
+			wrapperStyle: resultsWrapper?.getAttribute('style') ?? '',
+			wrapperDataset: resultsWrapper ? { ...resultsWrapper.dataset } : {},
+			resizerStyle: resizer?.getAttribute('style') ?? '',
+			testExecuting: this._testExecuting,
+			testHasResults: this._testHasResults,
+			testHasError: this._testHasError,
+		};
+	}
+
+	public restoreResultPresentation(snapshotInput: unknown): void {
+		if (!snapshotInput || typeof snapshotInput !== 'object') return;
+		const snapshot = snapshotInput as {
+			children?: Node[];
+			resultsClassName?: string;
+			wrapperStyle?: string;
+			wrapperDataset?: Record<string, string>;
+			resizerStyle?: string;
+			testExecuting?: boolean;
+			testHasResults?: boolean;
+			testHasError?: boolean;
+		};
+		const resultsDiv = document.getElementById(this.boxId + '_results');
+		const resultsWrapper = document.getElementById(this.boxId + '_results_wrapper');
+		const resizer = document.getElementById(this.boxId + '_results_resizer');
+		if (resultsDiv && Array.isArray(snapshot.children)) {
+			resultsDiv.replaceChildren(...snapshot.children);
+			resultsDiv.className = snapshot.resultsClassName ?? 'results';
+		}
+		if (resultsWrapper) {
+			resultsWrapper.setAttribute('style', snapshot.wrapperStyle ?? '');
+			for (const key of Object.keys(resultsWrapper.dataset)) delete resultsWrapper.dataset[key];
+			for (const [key, value] of Object.entries(snapshot.wrapperDataset ?? {})) {
+				resultsWrapper.dataset[key] = value;
+			}
+		}
+		if (resizer) resizer.setAttribute('style', snapshot.resizerStyle ?? '');
+		this._testExecuting = snapshot.testExecuting === true;
+		this._testHasResults = snapshot.testHasResults === true;
+		this._testHasError = snapshot.testHasError === true;
 	}
 
 	public setResultArtifactForCsvExport(artifactId: unknown): void {

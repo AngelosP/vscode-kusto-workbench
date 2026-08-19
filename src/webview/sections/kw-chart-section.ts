@@ -64,7 +64,7 @@ import '../components/kw-section-shell.js';
 import '../components/kw-popover.js';
 import type { PopoverAnchorRect } from '../components/kw-popover.js';
 import { ChartDataSourceController, type DatasetEntry } from './chart-data-source.controller.js';
-import { RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT } from '../../shared/resultArtifact.js';
+import { RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, resultSourceRefKey } from '../../shared/resultArtifact.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -83,6 +83,7 @@ export interface ChartSectionData {
 	mode: ChartMode;
 	expanded: boolean;
 	dataSourceId?: string;
+	dataSourceResultIndex?: number;
 	chartType?: Exclude<ChartType, ''>;
 	xColumn?: string;
 	yColumn?: string;
@@ -236,6 +237,8 @@ export class KwChartSection extends LitElement implements SectionElement {
 		st.mode = (typeof options.mode === 'string' && String(options.mode).toLowerCase() === 'preview') ? 'preview' : 'edit';
 		st.expanded = typeof options.expanded === 'boolean' ? !!options.expanded : true;
 		st.dataSourceId = typeof options.dataSourceId === 'string' ? String(options.dataSourceId) : (st.dataSourceId || '');
+		st.dataSourceResultIndex = Number.isSafeInteger(options.dataSourceResultIndex)
+			&& Number(options.dataSourceResultIndex) >= 0 ? Number(options.dataSourceResultIndex) : 0;
 		st.chartType = typeof options.chartType === 'string' ? String(options.chartType) : (st.chartType || 'area');
 		st.xColumn = typeof options.xColumn === 'string' ? String(options.xColumn) : (st.xColumn || '');
 		st.yColumn = typeof options.yColumn === 'string' ? String(options.yColumn) : (st.yColumn || '');
@@ -472,6 +475,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 	@state() private _expanded = true;
 	@state() private _chartType: ChartType = 'area';
 	@state() private _dataSourceId = '';
+	@state() private _dataSourceResultIndex = 0;
 	@state() private _xColumn = '';
 	@state() private _yColumns: string[] = [];
 	@state() private _legendColumn = '';
@@ -551,11 +555,17 @@ export class KwChartSection extends LitElement implements SectionElement {
 
 	// ── ChartSectionHost interface for dataSourceCtrl ──────────────────────────
 	getDataSourceId(): string { return this._dataSourceId; }
+	getDataSourceResultIndex(): number { return this._dataSourceResultIndex; }
 	setDataSourceId(id: string): void {
-		if (this._dataSourceId === id) return;
+		this.setDataSourceRef(id, 0);
+	}
+	setDataSourceRef(id: string, resultIndex: number): void {
+		if (!Number.isSafeInteger(resultIndex) || resultIndex < 0) return;
+		if (this._dataSourceId === id && this._dataSourceResultIndex === resultIndex) return;
 		this._dataSourceId = id;
+		this._dataSourceResultIndex = resultIndex;
 		if (this.isConnected && document.getElementById(this.boxId) === this) {
-			try { rebindChartResultArtifactBinding(this.boxId, id); } catch (e) { console.error('[kusto]', e); }
+			try { rebindChartResultArtifactBinding(this.boxId, id, resultIndex); } catch (e) { console.error('[kusto]', e); }
 		}
 	}
 	getDatasets(): DatasetEntry[] { return this._datasets; }
@@ -661,7 +671,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 
 		// Re-render chart when key properties change
 		const chartTriggers = [
-			'_chartType', '_dataSourceId', '_xColumn', '_yColumns', '_legendColumn',
+			'_chartType', '_dataSourceId', '_dataSourceResultIndex', '_xColumn', '_yColumns', '_legendColumn',
 			'_legendPosition', '_stackMode', '_legendSettings', '_labelColumn', '_valueColumn', '_showDataLabels',
 			'_labelMode', '_labelDensity', '_tooltipColumns', '_sortColumn',
 			'_sortDirection', '_xAxisSettings', '_yAxisSettings', '_heatmapSettings',
@@ -755,7 +765,10 @@ export class KwChartSection extends LitElement implements SectionElement {
 												@focus=${() => this.dataSourceCtrl.refreshDatasets()}>
 												<option value="">(select)</option>
 												${this._datasets.map(ds => html`
-													<option value=${ds.id} ?selected=${this._dataSourceId === ds.id}>${ds.label}</option>
+													<option
+														value=${ds.sourceKey || resultSourceRefKey({ sourceBoxId: ds.id, resultIndex: ds.resultIndex ?? 0 })}
+														?selected=${this._dataSourceId === ds.id
+															&& this._dataSourceResultIndex === (ds.resultIndex ?? 0)}>${ds.label}</option>
 												`)}
 											</select>
 										</div>
@@ -2072,7 +2085,18 @@ export class KwChartSection extends LitElement implements SectionElement {
 	/** Configure chart programmatically (used by LLM tools). */
 	public configure(config: Record<string, unknown>): boolean {
 		try {
-			if (typeof config.dataSourceId === 'string') this.setDataSourceId(config.dataSourceId);
+			if (Object.prototype.hasOwnProperty.call(config, 'dataSourceResultIndex')
+				&& (typeof config.dataSourceResultIndex !== 'number'
+					|| !Number.isSafeInteger(config.dataSourceResultIndex)
+					|| config.dataSourceResultIndex < 0)) return false;
+			if (typeof config.dataSourceId === 'string'
+				|| Object.prototype.hasOwnProperty.call(config, 'dataSourceResultIndex')) {
+				const nextId = typeof config.dataSourceId === 'string' ? config.dataSourceId : this._dataSourceId;
+				const nextResultIndex = typeof config.dataSourceResultIndex === 'number'
+					? config.dataSourceResultIndex
+					: (typeof config.dataSourceId === 'string' ? 0 : this._dataSourceResultIndex);
+				this.setDataSourceRef(nextId, nextResultIndex);
+			}
 			if (typeof config.chartType === 'string') this._chartType = config.chartType as ChartType;
 			if (typeof config.xColumn === 'string') this._xColumn = config.xColumn;
 			if (Array.isArray(config.yColumns)) this._yColumns = (config.yColumns as string[]).filter(c => c);
@@ -2144,7 +2168,13 @@ export class KwChartSection extends LitElement implements SectionElement {
 		if (typeof st.mode === 'string') this._mode = st.mode as ChartMode;
 		if (typeof st.expanded === 'boolean') this._expanded = st.expanded;
 		if (typeof st.chartType === 'string') this._chartType = st.chartType as ChartType;
-		if (typeof st.dataSourceId === 'string') this.setDataSourceId(st.dataSourceId);
+		if (typeof st.dataSourceId === 'string') {
+			this.setDataSourceRef(
+				st.dataSourceId,
+				Number.isSafeInteger(st.dataSourceResultIndex) && st.dataSourceResultIndex >= 0
+					? st.dataSourceResultIndex : 0,
+			);
+		}
 		if (typeof st.xColumn === 'string') this._xColumn = st.xColumn;
 		if (Array.isArray(st.yColumns)) this._yColumns = st.yColumns.filter((c: unknown) => c);
 		else if (typeof st.yColumn === 'string' && st.yColumn) this._yColumns = [st.yColumn];
@@ -2200,6 +2230,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 		st.expanded = this._expanded;
 		st.chartType = this._chartType;
 		st.dataSourceId = this._dataSourceId;
+		st.dataSourceResultIndex = this._dataSourceResultIndex;
 		st.xColumn = this._xColumn;
 		st.yColumn = this._yColumns.length ? this._yColumns[0] : '';
 		st.yColumns = [...this._yColumns];
@@ -2237,7 +2268,10 @@ export class KwChartSection extends LitElement implements SectionElement {
 	 */
 	public refresh(): void {
 		this.dataSourceCtrl.refreshDatasets();
-		const sourceExists = !!this._dataSourceId && this._datasets.some(dataset => dataset.id === this._dataSourceId);
+		const sourceExists = !!this._dataSourceId && this._datasets.some(dataset => (
+			dataset.id === this._dataSourceId
+			&& (dataset.resultIndex ?? 0) === this._dataSourceResultIndex
+		));
 		if (!sourceExists || !this._expanded) {
 			try { purgeChartEcharts(this.boxId); } catch (e) { console.error('[kusto]', e); }
 			this._isChartRendering = false;
@@ -2262,7 +2296,8 @@ export class KwChartSection extends LitElement implements SectionElement {
 	/** Get unique values of the legend column from the current dataset, respecting topN. */
 	private _getLegendValues(): string[] {
 		if (!this._legendColumn || !this._dataSourceId) return [];
-		const ds = this._datasets.find(d => d.id === this._dataSourceId);
+		const ds = this._datasets.find(d => d.id === this._dataSourceId
+			&& (d.resultIndex ?? 0) === this._dataSourceResultIndex);
 		if (!ds || !Array.isArray(ds.columns) || !Array.isArray(ds.rows)) return [];
 		const colNames = ds.columns.map((c: unknown) => {
 			if (typeof c === 'string') return c;
@@ -2342,6 +2377,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 	private _syncRenderingState(): void {
 		const st = (window as any).chartStateByBoxId?.[this.boxId];
 		const rendering = !!(st && st.__wasRendering);
+		this.dataset.testChartRendering = String(rendering);
 		if (this._isChartRendering !== rendering) {
 			this._isChartRendering = rendering;
 		}
@@ -2387,6 +2423,9 @@ export class KwChartSection extends LitElement implements SectionElement {
 		};
 
 		if (this._dataSourceId) data.dataSourceId = this._dataSourceId;
+		if (this._dataSourceId && this._dataSourceResultIndex > 0) {
+			data.dataSourceResultIndex = this._dataSourceResultIndex;
+		}
 		if (this._chartType) data.chartType = this._chartType;
 		if (this._xColumn) data.xColumn = this._xColumn;
 		// Include yColumn for backward compatibility
@@ -2508,7 +2547,14 @@ export class KwChartSection extends LitElement implements SectionElement {
 				manualRenderChanged = true;
 			}
 			assign(this._chartType, nextChartType, value => { this._chartType = value; }, true);
-			assign(this._dataSourceId, section.dataSourceId ?? '', value => this.setDataSourceId(value), true);
+			const nextDataSourceId = section.dataSourceId ?? '';
+			const nextDataSourceResultIndex = section.dataSourceResultIndex ?? 0;
+			if (this._dataSourceId !== nextDataSourceId
+				|| this._dataSourceResultIndex !== nextDataSourceResultIndex) {
+				this.setDataSourceRef(nextDataSourceId, nextDataSourceResultIndex);
+				anyChanged = true;
+				manualRenderChanged = true;
+			}
 			assign(this._xColumn, section.xColumn ?? '', value => { this._xColumn = value; }, true);
 			assign(this._yColumns, nextYColumns, value => { this._yColumns = value; }, true);
 			assign(this._legendColumn, section.legendColumn ?? '', value => { this._legendColumn = value; }, true);
@@ -2600,6 +2646,8 @@ export class KwChartSection extends LitElement implements SectionElement {
 		if (typeof options.expanded === 'boolean') this._expanded = options.expanded;
 		if (typeof options.chartType === 'string') this._chartType = options.chartType as ChartType;
 		if (typeof options.dataSourceId === 'string') this._dataSourceId = options.dataSourceId;
+		this._dataSourceResultIndex = Number.isSafeInteger(options.dataSourceResultIndex)
+			&& Number(options.dataSourceResultIndex) >= 0 ? Number(options.dataSourceResultIndex) : 0;
 		if (typeof options.xColumn === 'string') this._xColumn = options.xColumn;
 		if (Array.isArray(options.yColumns)) this._yColumns = (options.yColumns as string[]).filter(c => c);
 		else if (typeof options.yColumn === 'string' && options.yColumn) this._yColumns = [options.yColumn as string];

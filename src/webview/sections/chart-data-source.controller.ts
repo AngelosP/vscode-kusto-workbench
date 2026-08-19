@@ -6,12 +6,15 @@ import {
 	__kustoGetChartDatasetsInDomOrder,
 } from '../core/section-factory.js';
 import type { XAxisSettings, YAxisSettings } from '../shared/chart-utils.js';
+import { createResultSourceRef, parseResultSourceRefKey, resultSourceRefKey } from '../../shared/resultArtifact.js';
 
 // ── Host interface ────────────────────────────────────────────────────────────
 
 /** Dataset entry shape. */
 export interface DatasetEntry {
 	id: string;
+	resultIndex?: number;
+	sourceKey?: string;
 	label: string;
 	columns: string[];
 	rows: unknown[][];
@@ -32,7 +35,9 @@ export interface ChartSectionHost extends ReactiveControllerHost, HTMLElement {
 	boxId: string;
 	// Data source
 	getDataSourceId(): string;
+	getDataSourceResultIndex(): number;
 	setDataSourceId(id: string): void;
+	setDataSourceRef(id: string, resultIndex: number): void;
 	getDatasets(): DatasetEntry[];
 	setDatasets(ds: DatasetEntry[]): void;
 	// Column selections
@@ -76,12 +81,19 @@ export class ChartDataSourceController implements ReactiveController {
 
 	onDataSourceChanged(e: Event): void {
 		const oldId = this.host.getDataSourceId();
-		const newId = (e.target as HTMLSelectElement).value;
+		const oldResultIndex = this.host.getDataSourceResultIndex();
+		const selectedValue = (e.target as HTMLSelectElement).value;
+		const selectedDataset = this.host.getDatasets().find(dataset => this._datasetKey(dataset) === selectedValue);
+		const nextRef = selectedDataset
+			? createResultSourceRef(selectedDataset.id, selectedDataset.resultIndex ?? 0)
+			: parseResultSourceRefKey(selectedValue) ?? createResultSourceRef(selectedValue, 0);
+		const newId = nextRef?.sourceBoxId ?? '';
+		const newResultIndex = nextRef?.resultIndex ?? 0;
 		// Save current column config + wrapper height for the old data source.
 		if (oldId) {
 			const wrapper = document.getElementById(this.host.boxId + '_chart_wrapper');
 			const h = wrapper?.style.height?.trim() || '';
-			this._columnMemory.set(oldId, {
+			this._columnMemory.set(resultSourceRefKey({ sourceBoxId: oldId, resultIndex: oldResultIndex }), {
 				xColumn: this.host.getXColumn(),
 				yColumns: [...this.host.getYColumns()],
 				legendColumn: this.host.getLegendColumn(),
@@ -96,10 +108,12 @@ export class ChartDataSourceController implements ReactiveController {
 				yAxisSettings: { ...this.host.getYAxisSettings() },
 			});
 		}
-		this.host.setDataSourceId(newId);
+		this.host.setDataSourceRef(newId, newResultIndex);
 		this.refreshDatasets();
 		// Try to restore saved column config for the new data source.
-		const saved = this._columnMemory.get(newId);
+		const saved = this._columnMemory.get(resultSourceRefKey({
+			sourceBoxId: newId, resultIndex: newResultIndex,
+		}));
 		if (saved) {
 			const cols = new Set(this.getColumnNames());
 			this.host.setXColumn(saved.xColumn && cols.has(saved.xColumn) ? saved.xColumn : '');
@@ -145,6 +159,7 @@ export class ChartDataSourceController implements ReactiveController {
 		if (a.length !== b.length) return false;
 		for (let i = 0; i < a.length; i++) {
 			if (a[i].id !== b[i].id || a[i].label !== b[i].label ||
+				(a[i].resultIndex ?? 0) !== (b[i].resultIndex ?? 0) ||
 				(a[i].rows?.length ?? 0) !== (b[i].rows?.length ?? 0)) return false;
 			const aCols = a[i].columns;
 			const bCols = b[i].columns;
@@ -184,7 +199,9 @@ export class ChartDataSourceController implements ReactiveController {
 
 	/** Get column names from the currently selected dataset. */
 	getColumnNames(): string[] {
-		const ds = this.host.getDatasets().find(d => d.id === this.host.getDataSourceId());
+		const sourceId = this.host.getDataSourceId();
+		const resultIndex = this.host.getDataSourceResultIndex();
+		const ds = this.host.getDatasets().find(d => d.id === sourceId && (d.resultIndex ?? 0) === resultIndex);
 		if (!ds || !Array.isArray(ds.columns)) return [];
 		return ds.columns.map(c => {
 			if (typeof c === 'string') return c;
@@ -193,5 +210,11 @@ export class ChartDataSourceController implements ReactiveController {
 			}
 			return '';
 		}).filter(Boolean);
+	}
+
+	private _datasetKey(dataset: DatasetEntry): string {
+		return dataset.sourceKey || resultSourceRefKey({
+			sourceBoxId: dataset.id, resultIndex: dataset.resultIndex ?? 0,
+		});
 	}
 }

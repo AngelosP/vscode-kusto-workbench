@@ -43,6 +43,7 @@ import {
 import { __kustoParseFunction, __kustoParseParamList } from '../monaco/prettify';
 import { findKustoFunctionDefinitionAtOffset, getSingleKustoCodeFenceBodyRange, hasKustoFunctionDefinition, normalizeKustoText } from '../../shared/kustoFunctionDefinitions.js';
 import { comparisonSourceArtifactConsumerId } from '../../shared/resultArtifact.js';
+import { admitKqlFullQueryText } from '../../host/kqlLanguageService/sourceAnalysis.js';
 
 function canExecuteKustoInCurrentHost(): boolean {
 	return (window as unknown as { __kustoReadOnlyMode?: boolean }).__kustoReadOnlyMode !== true;
@@ -1260,9 +1261,11 @@ export function executeQuery(
 	mode?: any,
 	producer: KustoExecutionProducer = 'manual',
 	comparisonOptions?: ComparisonExecutionOptions,
+	scope: 'focused' | 'all' = 'focused',
 ): string | undefined {
 	if (!canExecuteKustoInCurrentHost()) return undefined;
-	const effectiveMode = mode || getRunMode(boxId);
+	const runAll = scope === 'all';
+	const effectiveMode = runAll ? 'plain' : (mode || getRunMode(boxId));
 	// Run Function mode — divert to the dedicated async handler.
 	if (effectiveMode === 'runFunction') {
 		executeRunFunction(String(boxId || '').trim());
@@ -1309,9 +1312,17 @@ export function executeQuery(
 	};
 	const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
 	let query = editor ? editor.getValue() : '';
+	if (runAll) {
+		const admission = admitKqlFullQueryText(query);
+		if (!admission.ok) {
+			try { postMessageToHost({ type: 'showInfo', message: admission.error }); } catch (e) { console.error('[kusto]', e); }
+			return undefined;
+		}
+		query = admission.executionText;
+	}
 	let usedSelection = false;
 	try {
-		if (editor && typeof editor.getSelection === 'function' && typeof editor.getModel === 'function') {
+		if (!runAll && editor && typeof editor.getSelection === 'function' && typeof editor.getModel === 'function') {
 			const sel = editor.getSelection();
 			if (sel && !sel.isEmpty()) {
 				const model = editor.getModel();
@@ -1323,7 +1334,7 @@ export function executeQuery(
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
-		if (editor && !usedSelection) {
+		if (!runAll && editor && !usedSelection) {
 			const model = editor.getModel && editor.getModel();
 			const blocks = (model && typeof _win.__kustoGetStatementBlocksFromModel === 'function') ? _win.__kustoGetStatementBlocksFromModel(model) : [];
 			const hasMultipleStatements = blocks && blocks.length > 1;
@@ -1458,6 +1469,13 @@ export function executeQuery(
 		producer: effectiveProducer, ...(comparisonRun ? { comparisonRun } : {}), cacheEnabled, cacheValue, cacheUnit,
 	});
 	return executionId;
+}
+
+export function executeAllQueries(
+	boxId: string,
+	producer: KustoExecutionProducer = 'manual',
+): string | undefined {
+	return executeQuery(boxId, 'plain', producer, undefined, 'all');
 }
 
 // ── executeQueryDirect — execute an arbitrary query string for a given box ─────
@@ -1650,6 +1668,7 @@ _win.cancelQuery = function cancelQuery(boxId: any) {
 };
 
 _win.executeQuery = executeQuery;
+_win.executeAllQueries = executeAllQueries;
 
 _win.__kustoUpdateRunEnabledForBox = function (boxId: any) {
 	const el = __kustoGetQuerySectionElement(boxId);
