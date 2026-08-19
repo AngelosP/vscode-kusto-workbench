@@ -167,6 +167,8 @@ export type OutgoingOptimizeQueryMessage = KustoOptimizeRequestIdentity & {
 	boxId: string;
 	queryName: string;
 	modelId?: string;
+	thinkingEffort?: 'low' | 'medium' | 'high';
+	contextSize?: number;
 	promptText?: string;
 };
 

@@ -2954,7 +2954,13 @@ Completion:`;
 			}
 
 			const modelOptions = models
-				.map(m => ({ id: String(m.id), label: this.formatCopilotModelLabel(m) }))
+				.map(m => ({
+					id: String(m.id),
+					label: this.formatCopilotModelLabel(m),
+					maxInputTokens: Number.isSafeInteger(m.maxInputTokens) && m.maxInputTokens > 0
+						? m.maxInputTokens
+						: 0,
+				}))
 				.filter(m => !!m.id)
 				.sort((a, b) => a.label.localeCompare(b.label));
 
@@ -3023,6 +3029,11 @@ Completion:`;
 			const current = this.runningOptimizeByBoxId.get(id);
 			return current === running && kustoOptimizeRequestIdentityEquals(current.owner, owner);
 		};
+		const assertActive = () => {
+			if (!isActive() || cts.token.isCancellationRequested) {
+				throw new Error('Optimization canceled');
+			}
+		};
 		const postOwnedMessage = (payload: Record<string, unknown>) => this.postRunningOptimizeMessage(running!, payload);
 
 		const postStatus = async (status: string) => {
@@ -3035,6 +3046,7 @@ Completion:`;
 
 		try {
 			const models = await this.selectAvailableChatModels({ vendor: 'copilot' });
+			assertActive();
 			if (models.length === 0) {
 				vscode.window.showWarningMessage('GitHub Copilot is not available. Please enable Copilot to use query optimization.');
 				if (!await postOwnedMessage({
@@ -3056,6 +3068,7 @@ Completion:`;
 			} catch {
 				// ignore
 			}
+			assertActive();
 
 			if (!await postStatus('Sending request to Copilot…')) {
 				await this.settleRejectedOptimizePublication(running, 'Optimization canceled because the query target or privacy state changed.');
@@ -3063,10 +3076,33 @@ Completion:`;
 			}
 
 			const effectivePromptText = String(promptText || '').trim() || this.buildOptimizeQueryPrompt(query);
+			const requestedContextSize = Number(message.contextSize);
+			const modelContextSize = Number.isSafeInteger(model.maxInputTokens) && model.maxInputTokens > 0
+				? model.maxInputTokens
+				: 0;
+			const contextSize = Number.isSafeInteger(requestedContextSize) && requestedContextSize > 0 && modelContextSize > 0
+				? Math.min(requestedContextSize, modelContextSize)
+				: undefined;
+			if (contextSize !== undefined) {
+				const promptTokens = await model.countTokens(effectivePromptText, cts.token);
+				assertActive();
+				if (promptTokens > contextSize) {
+					throw new Error(`The optimization prompt needs ${promptTokens.toLocaleString()} tokens, which exceeds the selected ${contextSize.toLocaleString()}-token context size.`);
+				}
+			}
+			const thinkingEffort = message.thinkingEffort === 'low'
+				|| message.thinkingEffort === 'medium'
+				|| message.thinkingEffort === 'high'
+				? message.thinkingEffort
+				: undefined;
+			const requestOptions: vscode.LanguageModelChatRequestOptions = thinkingEffort
+				? { modelOptions: { reasoning_effort: thinkingEffort } }
+				: {};
+			assertActive();
 
 			const response = await model.sendRequest(
 				[vscode.LanguageModelChatMessage.User(effectivePromptText)],
-				{},
+				requestOptions,
 				cts.token
 			);
 

@@ -454,6 +454,34 @@ describe('executeRunFunction', () => {
 		}));
 	});
 
+	it('does not start the comparison after its Optimize owner is replaced', async () => {
+		testState.getRunMode.mockReturnValue('plain');
+		testState.queryEditors.query_1 = makeEditor('print source=1');
+		testState.queryEditors.query_cmp_1 = makeEditor('print optimized=1');
+		appendExecutionControls('query_1');
+		appendExecutionControls('query_cmp_1');
+		let activeOptimizeRequestId = 'optimize-old';
+		testState.getQuerySectionElement.mockImplementation((boxId: string) => ({
+			getSchemaLifecycleIdentity: () => ({ sectionInstanceId: `instance-${boxId}`, targetGeneration: 7 }),
+			beginQueryExecution: () => true,
+			admitKustoOptimizeMessage: (owner: any) => owner.optimizeRequestId === activeOptimizeRequestId,
+		}));
+		const optimizeOwner = {
+			boxId: 'query_1', optimizeRequestId: 'optimize-old',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 7,
+		};
+
+		const pair = executeKustoComparisonPair('query_1', 'query_cmp_1', optimizeOwner);
+		const sourceMessage = getExecuteMessages()[0] as any;
+		activeOptimizeRequestId = 'optimize-new';
+		window.dispatchEvent(new CustomEvent('kusto-workbench-query-terminal', { detail: {
+			type: 'queryResult', boxId: 'query_1', executionId: sourceMessage.executionId,
+		} }));
+
+		await expect(pair).resolves.toBe(false);
+		expect(getExecuteMessages()).toHaveLength(1);
+	});
+
 	it('releases the exact source pin when comparison dispatch cannot start', async () => {
 		testState.getRunMode.mockReturnValue('plain');
 		testState.queryEditors.query_1 = makeEditor('print source=1');

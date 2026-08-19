@@ -39,7 +39,7 @@ import type { KustoConnectionFormSubmitDetail } from '../components/kw-kusto-con
 import '../components/kw-kusto-connection-form.js';
 import { __kustoOpenShareModal, getRunModeForPersistence } from './kw-query-toolbar.js';
 import { optimizationMetadataByBoxId, subscribeKustoPreparation, type KustoPreparationState } from '../core/state.js';
-import { optimizeQueryWithCopilot, acceptOptimizations, prepareKustoOptimizeQuery } from './query-execution.controller.js';
+import { optimizeQueryWithCopilot, acceptOptimizations, toggleKustoOptimizeQuery } from './query-execution.controller.js';
 import { QueryConnectionController } from './query-connection.controller.js';
 import { QueryExecutionController } from './query-execution.controller.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
@@ -240,9 +240,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		copilotRequestId?: string,
 		expectedPredecessorExecutionId?: string,
 		comparisonRun?: import('../../shared/kustoExecution.js').KustoComparisonRunIdentity,
+		optimizeOwner?: import('../../shared/kustoExecution.js').KustoOptimizeRequestIdentity,
 	): boolean {
 		return this.executionCtrl.beginQueryExecution(
-			executionId, producer, copilotRequestId, expectedPredecessorExecutionId, comparisonRun,
+			executionId, producer, copilotRequestId, expectedPredecessorExecutionId, comparisonRun, optimizeOwner,
 		);
 	}
 	public getActiveExecutionId(): string { return this.executionCtrl.getActiveExecutionId(); }
@@ -260,6 +261,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	}
 	public retireActiveQueryExecution(): import('../../shared/kustoExecution.js').KustoExecutionRequestIdentity | undefined {
 		return this.executionCtrl.retireActiveQueryExecution();
+	}
+	public isActiveKustoOptimizeExecution(expected: unknown): boolean {
+		return this.executionCtrl.isActiveKustoOptimizeExecution(expected);
 	}
 	public beginKustoOptimizeRequest(): import('../../shared/kustoExecution.js').KustoOptimizeRequestIdentity | undefined {
 		return this.executionCtrl.beginKustoOptimizeRequest();
@@ -535,7 +539,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 								${diffIconLightSvg}
 							</button>
 							<button class="optimize-query-btn optimize-copilot-btn" id="${id}_optimize_btn"
-								@click=${() => prepareKustoOptimizeQuery(id)} disabled
+								@click=${() => toggleKustoOptimizeQuery(id)} disabled aria-pressed="false"
 								title="Optimize query with GitHub Copilot" aria-label="Optimize query with GitHub Copilot">Optimize</button>
 						</span>
 					`}

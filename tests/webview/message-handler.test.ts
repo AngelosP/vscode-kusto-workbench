@@ -119,6 +119,8 @@ const mocks = {
 	clearResultsState: vi.fn(),
 	retireResultsStateForRerun: vi.fn(),
 	setQueryExecuting: vi.fn(),
+	setOptimizeInProgress: vi.fn(),
+	hideOptimizePrompt: vi.fn(),
 	setResultsVisible: vi.fn(),
 	setConnections: vi.fn(),
 	setSqlConnections: vi.fn(),
@@ -369,8 +371,8 @@ vi.mock('../../src/webview/sections/query-execution.controller.js', async () => 
 		__kustoSetLinkedOptimizationMode: vi.fn(),
 		displayComparisonSummary: vi.fn(),
 		optimizeQueryWithCopilot: actual.optimizeQueryWithCopilot,
-		__kustoSetOptimizeInProgress: vi.fn(),
-		__kustoHideOptimizePromptForBox: vi.fn(),
+		__kustoSetOptimizeInProgress: mocks.setOptimizeInProgress,
+		__kustoHideOptimizePromptForBox: mocks.hideOptimizePrompt,
 		__kustoApplyOptimizeQueryOptions: vi.fn(),
 	};
 });
@@ -6824,6 +6826,47 @@ describe('changedSections agent provenance', () => {
 		expect(shell.agentTouched).toBe(true);
 	});
 
+	it('does not let stale Optimize ready work hide or complete a reopened request after comparison startup', async () => {
+		let resolveComparison!: (value: boolean) => void;
+		const comparisonStarted = new Promise<boolean>(resolve => { resolveComparison = resolve; });
+		mocks.executeKustoComparisonPair.mockReturnValueOnce(comparisonStarted);
+		let activeOptimizeRequestId = 'optimize-old';
+		const { section: sourceSection } = createSectionWithShell('query_src', { id: 'query_src', type: 'query', query: 'Source query' });
+		const { section: comparisonSection } = createSectionWithShell('query_cmp', { id: 'query_cmp', type: 'query', query: 'Old optimized query' });
+		configureFakeKustoTarget(sourceSection, 'conn-1', 'Db');
+		configureFakeKustoTarget(comparisonSection, 'conn-1', 'Db');
+		handlerState.queryEditors.query_src = { getValue: vi.fn(() => 'Source query') };
+		handlerState.queryEditors.query_cmp = { setValue: vi.fn() };
+		handlerState.optimizationMetadataByBoxId.query_src = { comparisonBoxId: 'query_cmp' };
+		const complete = vi.fn(() => true);
+		const admit = vi.fn((message: any) => message.optimizeRequestId === activeOptimizeRequestId);
+		Object.assign(sourceSection, {
+			admitKustoOptimizeMessage: admit,
+			completeKustoOptimizeRequest: complete,
+		});
+		mocks.getQuerySectionElement.mockImplementation((boxId: string) =>
+			boxId === 'query_src' ? sourceSection : boxId === 'query_cmp' ? comparisonSection : null);
+		const oldOwner = {
+			boxId: 'query_src', optimizeRequestId: 'optimize-old',
+			sectionInstanceId: 'instance-source', targetGeneration: 1,
+		};
+
+		dispatchHostMessage({
+			type: 'optimizeQueryReady', ...oldOwner, optimizedQuery: 'Optimized query',
+			queryName: 'Source', connectionId: 'conn-1', database: 'Db',
+		});
+		await vi.waitFor(() => expect(mocks.executeKustoComparisonPair).toHaveBeenCalledWith(
+			'query_src', 'query_cmp', expect.objectContaining(oldOwner),
+		));
+		activeOptimizeRequestId = 'optimize-new';
+		resolveComparison(true);
+		await vi.waitFor(() => expect(admit).toHaveBeenCalledTimes(2));
+
+		expect(complete).not.toHaveBeenCalled();
+		expect(mocks.setOptimizeInProgress).not.toHaveBeenCalled();
+		expect(mocks.hideOptimizePrompt).not.toHaveBeenCalled();
+	});
+
 	it('keeps Optimize ownership live when ready application fails so the fallback error can settle it', async () => {
 		const { section: sourceSection } = createSectionWithShell('query_src', { id: 'query_src', type: 'query', query: 'Source query' });
 		configureFakeKustoTarget(sourceSection, 'conn-1', 'Db');
@@ -6896,7 +6939,7 @@ describe('changedSections agent provenance', () => {
 		}));
 		expect((comparisonSection as any).getConnectionId()).toBe('conn-1');
 		expect((comparisonSection as any).getDatabase()).toBe('Db');
-		expect(mocks.executeKustoComparisonPair).toHaveBeenCalledWith('query_src', 'query_1');
+		expect(mocks.executeKustoComparisonPair).toHaveBeenCalledWith('query_src', 'query_1', expect.objectContaining(optimizeOwner));
 		expect(mocks.executeQuery).not.toHaveBeenCalled();
 		expect(shell.agentTouched).toBe(false);
 

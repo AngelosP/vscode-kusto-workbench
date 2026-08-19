@@ -2486,6 +2486,113 @@ describe('Kusto Copilot function execution', () => {
 		expectInlineFilterRowsQuery(readyMessages[0].optimizedQuery);
 	});
 
+	it('applies the selected thinking effort and context budget to standalone Optimize', async () => {
+		const model = {
+			...createTextModel('```kusto\nprint optimized=1\n```'),
+			maxInputTokens: 128_000,
+			countTokens: vi.fn(async () => 4_096),
+		};
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+
+		await service.optimizeQueryWithCopilot({
+			type: 'optimizeQuery', boxId: 'query_1', optimizeRequestId: 'optimize-controls',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+			query: 'print source=1', queryName: 'Source', connectionId: TEST_CONNECTION.id, database: 'Samples',
+			thinkingEffort: 'high', contextSize: 32_000, promptText: 'Optimize exactly this query.',
+		});
+
+		expect(model.countTokens).toHaveBeenCalledWith('Optimize exactly this query.', expect.anything());
+		expect(model.sendRequest).toHaveBeenCalledWith(
+			[expect.objectContaining({})],
+			{ modelOptions: { reasoning_effort: 'high' } },
+			expect.anything(),
+		);
+		expect(hostMessagesOfType(host, 'optimizeQueryReady')).toHaveLength(1);
+	});
+
+	it('does not dispatch standalone Optimize when the prompt exceeds the selected context budget', async () => {
+		const model = {
+			...createTextModel('unused'),
+			maxInputTokens: 128_000,
+			countTokens: vi.fn(async () => 32_001),
+		};
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+
+		await service.optimizeQueryWithCopilot({
+			type: 'optimizeQuery', boxId: 'query_1', optimizeRequestId: 'optimize-context-cap',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+			query: 'print source=1', queryName: 'Source', connectionId: TEST_CONNECTION.id, database: 'Samples',
+			contextSize: 32_000,
+		});
+
+		expect(model.sendRequest).not.toHaveBeenCalled();
+		expect(hostMessagesOfType(host, 'optimizeQueryError')).toEqual([
+			expect.objectContaining({
+				optimizeRequestId: 'optimize-context-cap',
+				error: 'The optimization prompt needs 32,001 tokens, which exceeds the selected 32,000-token context size.',
+			}),
+		]);
+	});
+
+	it('does not start model work after Optimize is canceled during model selection', async () => {
+		const models = deferred<any[]>();
+		vscodeMocks.selectChatModels.mockReturnValue(models.promise);
+		const model = {
+			...createTextModel('unused'),
+			maxInputTokens: 128_000,
+			countTokens: vi.fn(async () => 1),
+		};
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		const owner = {
+			boxId: 'query_1', optimizeRequestId: 'optimize-cancel-model-selection',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		};
+
+		const optimizing = service.optimizeQueryWithCopilot({
+			type: 'optimizeQuery', ...owner, query: 'print source=1', queryName: 'Source',
+			connectionId: TEST_CONNECTION.id, database: 'Samples', contextSize: 32_000,
+		});
+		await vi.waitFor(() => expect(vscodeMocks.selectChatModels).toHaveBeenCalledOnce());
+		service.cancelOptimizeQuery(owner);
+		models.resolve([model]);
+		await optimizing;
+
+		expect(model.countTokens).not.toHaveBeenCalled();
+		expect(model.sendRequest).not.toHaveBeenCalled();
+	});
+
+	it('does not start model work after Optimize is canceled during token counting', async () => {
+		const tokenCount = deferred<number>();
+		const model = {
+			...createTextModel('unused'),
+			maxInputTokens: 128_000,
+			countTokens: vi.fn(() => tokenCount.promise),
+		};
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		const owner = {
+			boxId: 'query_1', optimizeRequestId: 'optimize-cancel-token-count',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		};
+
+		const optimizing = service.optimizeQueryWithCopilot({
+			type: 'optimizeQuery', ...owner, query: 'print source=1', queryName: 'Source',
+			connectionId: TEST_CONNECTION.id, database: 'Samples', contextSize: 32_000,
+		});
+		await vi.waitFor(() => expect(model.countTokens).toHaveBeenCalledOnce());
+		service.cancelOptimizeQuery(owner);
+		tokenCount.resolve(1);
+		await optimizing;
+
+		expect(model.sendRequest).not.toHaveBeenCalled();
+	});
+
 	it('emits an exact fallback error when Optimize ready application is rejected', async () => {
 		vscodeMocks.selectChatModels.mockResolvedValue([createTextModel('```kusto\nprint optimized=1\n```')]);
 		const host = createHost([]);
@@ -2562,7 +2669,7 @@ describe('Kusto Copilot function execution', () => {
 	});
 
 	it('allows Optimize preparation to adopt the first established account partition', async () => {
-		const model = createTextModel('print optimized=1');
+		const model = { ...createTextModel('print optimized=1'), maxInputTokens: 128_000 };
 		vscodeMocks.selectChatModels.mockResolvedValue([model]);
 		const host = createHost([]);
 		let partition: string | undefined;
@@ -2580,7 +2687,11 @@ describe('Kusto Copilot function execution', () => {
 			optimizeRequestId: 'optimize-first-account', sectionInstanceId: 'instance-query_1', targetGeneration: 1,
 		});
 
-		expect(hostMessagesOfType(host, 'optimizeQueryOptions')).toHaveLength(1);
+		expect(hostMessagesOfType(host, 'optimizeQueryOptions')).toEqual([
+			expect.objectContaining({
+				models: [expect.objectContaining({ id: 'test-model', maxInputTokens: 128_000 })],
+			}),
+		]);
 	});
 
 	it('settles Optimize preparation when the account partition remains unavailable', async () => {

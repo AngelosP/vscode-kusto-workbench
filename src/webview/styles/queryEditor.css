@@ -2455,6 +2455,11 @@
 			opacity: 1;
 		}
 
+		.optimize-query-btn.is-active:not(:disabled) {
+			background: var(--vscode-button-secondaryBackground);
+			border-color: var(--vscode-focusBorder);
+		}
+
 		.optimize-query-btn:focus-visible:not(:disabled) {
 			background: var(--vscode-button-secondaryBackground);
 			border-color: var(--vscode-focusBorder);
@@ -2567,11 +2572,23 @@
 			margin-bottom: 10px;
 		}
 
+		.optimize-config-settings {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+			gap: 10px;
+			margin-bottom: 10px;
+		}
+
 		.optimize-config-row {
 			display: flex;
 			flex-direction: column;
 			gap: 6px;
 			margin-bottom: 10px;
+		}
+
+		.optimize-config-settings .optimize-config-row {
+			margin-bottom: 0;
+			min-width: 0;
 		}
 
 		.optimize-config-label {
@@ -2581,6 +2598,8 @@
 
 		.optimize-config-select {
 			width: 100%;
+			max-width: 100%;
+			min-width: 0;
 			background: var(--vscode-input-background);
 			color: var(--vscode-input-foreground);
 			border: 1px solid var(--vscode-input-border);

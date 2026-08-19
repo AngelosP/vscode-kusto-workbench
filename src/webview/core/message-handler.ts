@@ -3949,6 +3949,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const sourceBoxId = message.boxId || '';
 				const sourceBeforeSignature = getSectionSerializedSignature(sourceBoxId);
 				const finishReadyApplication = () => {
+					if (admittedKustoOptimizeSection?.admitKustoOptimizeMessage?.(message) !== true) {
+						throw new Error('Optimize request ownership changed before comparison application completed.');
+					}
 					__kustoSetOptimizeInProgress(sourceBoxId, false, '');
 					__kustoHideOptimizePromptForBox(sourceBoxId);
 					const optimizeBtn = document.getElementById(sourceBoxId + '_optimize_btn') as any;
@@ -3959,7 +3962,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						}
 						restoreKustoOptimizeButtonAvailability(sourceBoxId);
 					}
-					if (admittedKustoOptimizeSection?.completeKustoOptimizeRequest?.(message) !== true) {
+					if (admittedKustoOptimizeSection.completeKustoOptimizeRequest?.(message) !== true) {
 						throw new Error('Optimize request ownership changed before comparison application completed.');
 					}
 					acknowledgeKustoPublication(message, true);
@@ -4041,7 +4044,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 								__kustoSetResultsVisible(comparisonBoxId, false);
 							}
 						} catch (e) { console.error('[kusto]', e); }
-						try { await executeKustoComparisonPair(sourceBoxId, comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
+						try { await executeKustoComparisonPair(sourceBoxId, comparisonBoxId, message); } catch (e) { console.error('[kusto]', e); }
 					finishReadyApplication();
 					break;
 				}
@@ -4124,12 +4127,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 				
 				// Execute both queries against one exact source artifact revision.
-				await executeKustoComparisonPair(sourceBoxId, comparisonBoxId);
+				await executeKustoComparisonPair(sourceBoxId, comparisonBoxId, message);
 				
 				finishReadyApplication();
 			} catch (err: any) {
 				console.error('Error creating comparison box:', err);
-				if (createdComparisonBoxId) {
+				if (createdComparisonBoxId
+					&& admittedKustoOptimizeSection?.admitKustoOptimizeMessage?.(message) === true) {
 					try { removeQueryBox(createdComparisonBoxId); } catch (cleanupError) { console.error('[kusto]', cleanupError); }
 				}
 				acknowledgeKustoPublication(message, false);

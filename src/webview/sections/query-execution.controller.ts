@@ -55,8 +55,8 @@ import '../components/kw-function-params-dialog';
 export const lastRunCacheEnabledByBoxId: Record<string, boolean> = {};
 
 type ComparisonExecutionOptions =
-	| Readonly<{ role: 'source'; comparisonBoxId: string }>
-	| Readonly<{ role: 'comparison'; comparisonRun: KustoComparisonRunIdentity }>;
+	| Readonly<{ role: 'source'; comparisonBoxId: string; optimizeOwner?: KustoOptimizeRequestIdentity }>
+	| Readonly<{ role: 'comparison'; comparisonRun: KustoComparisonRunIdentity; optimizeOwner?: KustoOptimizeRequestIdentity }>;
 
 const _win = window;
 
@@ -78,6 +78,7 @@ export interface ExecutionSectionHost extends ReactiveControllerHost, HTMLElemen
 export class QueryExecutionController implements ReactiveController {
 	host: ExecutionSectionHost;
 	private activeExecution: KustoExecutionRequestIdentity | undefined;
+	private activeOptimizeExecutionOwner: KustoOptimizeRequestIdentity | undefined;
 	private readonly retiredExecutions: KustoExecutionRequestIdentity[] = [];
 	private activeOptimizeRequest: KustoOptimizeRequestIdentity | undefined;
 	private cancelling = false;
@@ -272,6 +273,7 @@ export class QueryExecutionController implements ReactiveController {
 		copilotRequestId?: string,
 		expectedPredecessorExecutionId?: string,
 		comparisonRun?: KustoComparisonRunIdentity,
+		optimizeOwner?: KustoOptimizeRequestIdentity,
 	): boolean {
 		const id = String(executionId || '').trim();
 		const lifecycle = this.host.getSchemaLifecycleIdentity();
@@ -302,6 +304,14 @@ export class QueryExecutionController implements ReactiveController {
 		}
 		if (previousExecution) this.rememberRetired(previousExecution);
 		this.activeExecution = nextExecution;
+		this.activeOptimizeExecutionOwner = hasKustoOptimizeRequestIdentity(optimizeOwner)
+			? Object.freeze({
+				boxId: optimizeOwner.boxId,
+				optimizeRequestId: optimizeOwner.optimizeRequestId,
+				sectionInstanceId: optimizeOwner.sectionInstanceId,
+				targetGeneration: optimizeOwner.targetGeneration,
+			})
+			: undefined;
 		this.cancelling = false;
 		return true;
 	}
@@ -315,6 +325,7 @@ export class QueryExecutionController implements ReactiveController {
 		}
 		if (this.activeExecution?.executionId !== id) return false;
 		this.activeExecution = undefined;
+		this.activeOptimizeExecutionOwner = undefined;
 		this.cancelling = false;
 		this.setQueryExecuting(false);
 		return true;
@@ -343,8 +354,17 @@ export class QueryExecutionController implements ReactiveController {
 	completeQueryExecution(executionId: string): boolean {
 		if (!this.acceptsQueryTerminal(executionId)) return false;
 		this.activeExecution = undefined;
+		this.activeOptimizeExecutionOwner = undefined;
 		this.cancelling = false;
 		return true;
+	}
+
+	isActiveKustoOptimizeExecution(expected: unknown): boolean {
+		return !!this.activeExecution
+			&& !!this.activeOptimizeExecutionOwner
+			&& !this.cancelling
+			&& hasKustoOptimizeRequestIdentity(expected)
+			&& kustoOptimizeRequestIdentityEquals(this.activeOptimizeExecutionOwner, expected);
 	}
 
 	requestCancelActiveQueryExecution(): KustoExecutionRequestIdentity | undefined {
@@ -362,6 +382,7 @@ export class QueryExecutionController implements ReactiveController {
 		if (!active) return undefined;
 		this.rememberRetired(active);
 		this.activeExecution = undefined;
+		this.activeOptimizeExecutionOwner = undefined;
 		this.cancelling = false;
 		this.setQueryExecuting(false);
 		return active;
@@ -387,6 +408,7 @@ export class QueryExecutionController implements ReactiveController {
 		const status = document.getElementById(boxId + '_exec_status') as any;
 		const elapsed = document.getElementById(boxId + '_exec_elapsed') as any;
 		const cancelBtn = document.getElementById(boxId + '_cancel_btn') as any;
+		const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
 
 		if (queryExecutionTimers[boxId]) {
 			clearInterval(queryExecutionTimers[boxId]);
@@ -398,7 +420,7 @@ export class QueryExecutionController implements ReactiveController {
 			if (runToggle) runToggle.disabled = true;
 			if (cancelBtn) {
 				cancelBtn.disabled = false;
-				cancelBtn.style.display = 'flex';
+				cancelBtn.style.display = optimizeBtn?.dataset?.kustoOptimizeInProgress === '1' ? 'none' : 'flex';
 			}
 			closeRunMenu(boxId);
 			if (status) status.style.display = 'inline-flex';
@@ -477,6 +499,7 @@ export class QueryExecutionController implements ReactiveController {
 		try {
 			const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
 			if (optimizeBtn) {
+				setOptimizeButtonExpanded(boxId, false);
 				if (optimizeBtn.dataset && optimizeBtn.dataset.originalContent) {
 					optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent;
 					delete optimizeBtn.dataset.originalContent;
@@ -496,6 +519,7 @@ export class QueryExecutionController implements ReactiveController {
 			const statusEl = document.getElementById(boxId + '_optimize_status') as any;
 			const cancelBtn = document.getElementById(boxId + '_optimize_cancel') as any;
 			const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
+			const queryCancelBtn = document.getElementById(boxId + '_cancel_btn') as any;
 			if (!statusEl || !cancelBtn) return;
 			const on = !!inProgress;
 			try {
@@ -510,6 +534,11 @@ export class QueryExecutionController implements ReactiveController {
 			} catch (e) { console.error('[kusto]', e); }
 			statusEl.style.display = on ? '' : 'none';
 			cancelBtn.style.display = on ? '' : 'none';
+			if (queryCancelBtn) {
+				queryCancelBtn.style.display = on
+					? 'none'
+					: (this.activeExecution && !this.cancelling ? 'flex' : 'none');
+			}
 			if (on) {
 				statusEl.textContent = String(statusText || 'Optimizing…');
 				cancelBtn.disabled = false;
@@ -556,19 +585,35 @@ export class QueryExecutionController implements ReactiveController {
 		host.style.display = 'block';
 		host.innerHTML =
 			'<div class="optimize-config-inner">' +
+			'<div class="optimize-config-settings">' +
 			'<div class="optimize-config-row">' +
 			'<label class="optimize-config-label" for="' + boxId + '_optimize_model">Model</label>' +
 			'<select class="optimize-config-select" id="' + boxId + '_optimize_model"></select>' +
+			'</div>' +
+			'<div class="optimize-config-row">' +
+			'<label class="optimize-config-label" for="' + boxId + '_optimize_effort">Thinking effort</label>' +
+			'<select class="optimize-config-select" id="' + boxId + '_optimize_effort">' +
+			'<option value="">Default</option>' +
+			'<option value="low">Low</option>' +
+			'<option value="medium">Medium</option>' +
+			'<option value="high">High</option>' +
+			'</select>' +
+			'</div>' +
+			'<div class="optimize-config-row">' +
+			'<label class="optimize-config-label" for="' + boxId + '_optimize_context">Context size</label>' +
+			'<select class="optimize-config-select" id="' + boxId + '_optimize_context" title="Maximum prompt tokens sent for this optimization"></select>' +
+			'</div>' +
 			'</div>' +
 			'<div class="optimize-config-row">' +
 			'<label class="optimize-config-label" for="' + boxId + '_optimize_prompt">Prompt</label>' +
 			'<textarea class="optimize-config-textarea" id="' + boxId + '_optimize_prompt" spellcheck="false"></textarea>' +
 			'</div>' +
 			'<div class="optimize-config-actions">' +
-			'<button type="button" class="optimize-config-run-btn" onclick="__kustoRunOptimizeQueryWithOverrides(\'' + boxId + '\')">Optimize</button>' +
 			'<button type="button" class="optimize-config-cancel-btn" onclick="__kustoCancelOptimizeQuery(\'' + boxId + '\')">Cancel</button>' +
+			'<button type="button" class="optimize-config-run-btn" onclick="__kustoRunOptimizeQueryWithOverrides(\'' + boxId + '\')">Optimize</button>' +
 			'</div>' +
 			'</div>';
+		setOptimizeButtonExpanded(boxId, true);
 		const selectEl = document.getElementById(boxId + '_optimize_model') as any;
 		if (selectEl) {
 			selectEl.innerHTML = '';
@@ -592,6 +637,12 @@ export class QueryExecutionController implements ReactiveController {
 			if (preferredExists) selectEl.value = preferredModelId;
 			else if (selectedModelId) selectEl.value = String(selectedModelId);
 			if (!selectEl.value && selectEl.options && selectEl.options.length > 0) selectEl.selectedIndex = 0;
+			const updateContextOptions = () => {
+				const model = safeModels.find(candidate => String(candidate?.id || '') === String(selectEl.value || ''));
+				populateOptimizeContextOptions(boxId, Number(model?.maxInputTokens));
+			};
+			selectEl.addEventListener('change', updateContextOptions);
+			updateContextOptions();
 		}
 		const promptEl = document.getElementById(boxId + '_optimize_prompt') as any;
 		if (promptEl) promptEl.value = String(promptText || '');
@@ -659,6 +710,43 @@ function __kustoEnsureOptimizePrepByBoxId() {
 		}
 		return _win.__kustoOptimizePrepByBoxId;
 	} catch { return {}; }
+}
+
+function setOptimizeButtonExpanded(boxId: string, expanded: boolean): void {
+	const button = document.getElementById(boxId + '_optimize_btn') as HTMLButtonElement | null;
+	if (!button) return;
+	button.classList.toggle('is-active', expanded);
+	button.setAttribute('aria-pressed', String(expanded));
+}
+
+function formatOptimizeTokenCount(value: number): string {
+	if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(1))}M`;
+	if (value >= 1_000) return `${Number((value / 1_000).toFixed(1))}K`;
+	return String(value);
+}
+
+function populateOptimizeContextOptions(boxId: string, rawMaxInputTokens: number): void {
+	const select = document.getElementById(boxId + '_optimize_context') as HTMLSelectElement | null;
+	if (!select) return;
+	const maxInputTokens = Number.isSafeInteger(rawMaxInputTokens) && rawMaxInputTokens > 0
+		? rawMaxInputTokens
+		: 0;
+	select.innerHTML = '';
+	const defaultOption = document.createElement('option');
+	defaultOption.value = maxInputTokens > 0 ? String(maxInputTokens) : '';
+	defaultOption.textContent = maxInputTokens > 0
+		? `Model maximum (${formatOptimizeTokenCount(maxInputTokens)})`
+		: 'Model default';
+	select.appendChild(defaultOption);
+	if (maxInputTokens === 0) return;
+	const sizes = [16_000, 32_000, 64_000, 128_000, 256_000, 512_000, 1_000_000]
+		.filter(size => size < maxInputTokens);
+	for (const size of sizes.sort((left, right) => left - right)) {
+		const option = document.createElement('option');
+		option.value = String(size);
+		option.textContent = formatOptimizeTokenCount(size);
+		select.appendChild(option);
+	}
 }
 
 function __kustoEnsureCacheBackupMap() {
@@ -1186,6 +1274,7 @@ function __kustoShowOptimizePromptLoading(boxId: any) {
 	const host = document.getElementById(boxId + '_optimize_config') as any;
 	if (!host) return;
 	host.style.display = 'block';
+	setOptimizeButtonExpanded(String(boxId || ''), true);
 	host.innerHTML =
 		'<div class="optimize-config-inner">' +
 		'<div class="optimize-config-loading">Loading optimization options…</div>' +
@@ -1193,6 +1282,17 @@ function __kustoShowOptimizePromptLoading(boxId: any) {
 		'<button type="button" class="optimize-config-cancel-btn" onclick="__kustoCancelOptimizeQuery(\'' + boxId + '\')">Cancel</button>' +
 		'</div>' +
 		'</div>';
+}
+
+export function toggleKustoOptimizeQuery(boxIdValue: unknown): boolean {
+	const boxId = String(boxIdValue || '').trim();
+	const host = document.getElementById(boxId + '_optimize_config') as HTMLElement | null;
+	const section = __kustoGetQuerySectionElement(boxId);
+	if ((host && host.style.display !== 'none') || section?.getActiveKustoOptimizeRequest?.()) {
+		__kustoCancelOptimizeQuery(boxId);
+		return false;
+	}
+	return prepareKustoOptimizeQuery(boxId);
 }
 
 export function prepareKustoOptimizeQuery(boxIdValue: unknown): boolean {
@@ -1239,6 +1339,8 @@ function __kustoRunOptimizeQueryWithOverrides(boxId: any) {
 		if (sourceName) req.queryName = sourceName;
 	} catch (e) { console.error('[kusto]', e); }
 	const modelId = (document.getElementById(boxId + '_optimize_model') as any || {}).value || '';
+	const thinkingEffort = String((document.getElementById(boxId + '_optimize_effort') as any || {}).value || '');
+	const contextSize = Number((document.getElementById(boxId + '_optimize_context') as any || {}).value || 0);
 	const promptText = (document.getElementById(boxId + '_optimize_prompt') as any || {}).value || '';
 	const section = __kustoGetQuerySectionElement(boxId);
 	const owner = req.owner;
@@ -1251,6 +1353,7 @@ function __kustoRunOptimizeQueryWithOverrides(boxId: any) {
 	try {
 		const host = document.getElementById(boxId + '_optimize_config') as any;
 		if (host) { host.style.display = 'none'; host.innerHTML = ''; }
+		setOptimizeButtonExpanded(String(boxId || ''), false);
 	} catch (e) { console.error('[kusto]', e); }
 	const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
 	if (optimizeBtn) {
@@ -1268,6 +1371,10 @@ function __kustoRunOptimizeQueryWithOverrides(boxId: any) {
 			boxId,
 			queryName: String(req.queryName || ''),
 			modelId: String(modelId || ''),
+			...(thinkingEffort === 'low' || thinkingEffort === 'medium' || thinkingEffort === 'high'
+				? { thinkingEffort }
+				: {}),
+			...(Number.isSafeInteger(contextSize) && contextSize > 0 ? { contextSize } : {}),
 			promptText: String(promptText || ''),
 			...owner,
 		});
@@ -1287,6 +1394,15 @@ function __kustoCancelOptimizeQuery(boxId: any) {
 		__kustoUpdateOptimizeStatus(boxId, 'Canceling…');
 		const cancelBtn = document.getElementById(boxId + '_optimize_cancel') as any;
 		if (cancelBtn) cancelBtn.disabled = true;
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		const optimizeOwner = __kustoGetQuerySectionElement(boxId)?.getActiveKustoOptimizeRequest?.();
+		const comparisonBoxId = String(optimizationMetadataByBoxId?.[boxId]?.comparisonBoxId || '').trim();
+		for (const activeBoxId of [String(boxId || '').trim(), comparisonBoxId].filter(Boolean)) {
+			const activeSection = __kustoGetQuerySectionElement(activeBoxId);
+			if (activeSection?.isActiveKustoOptimizeExecution?.(optimizeOwner) === true
+				&& typeof _win.cancelQuery === 'function') _win.cancelQuery(activeBoxId);
+		}
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoGetQuerySectionElement(boxId)?.retireKustoOptimizeRequest?.(); } catch (e) { console.error('[kusto]', e); }
 }
@@ -1495,7 +1611,11 @@ function createKustoExecutionId(): string {
 
 const ADMITTED_KUSTO_TERMINAL_EVENT = 'kusto-workbench-query-terminal';
 
-export async function executeKustoComparisonPair(sourceBoxId: string, comparisonBoxId: string): Promise<boolean> {
+export async function executeKustoComparisonPair(
+	sourceBoxId: string,
+	comparisonBoxId: string,
+	optimizeOwner?: KustoOptimizeRequestIdentity,
+): Promise<boolean> {
 	let sourceExecutionId = '';
 	const sourceSucceeded = new Promise<boolean>(resolve => {
 		const terminalHandler = (event: Event) => {
@@ -1506,7 +1626,7 @@ export async function executeKustoComparisonPair(sourceBoxId: string, comparison
 		};
 		window.addEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener);
 		sourceExecutionId = executeQuery(sourceBoxId, undefined, 'comparison', {
-			role: 'source', comparisonBoxId,
+			role: 'source', comparisonBoxId, optimizeOwner,
 		}) || '';
 		if (!sourceExecutionId) {
 			window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener);
@@ -1514,9 +1634,14 @@ export async function executeKustoComparisonPair(sourceBoxId: string, comparison
 		}
 	});
 	if (!await sourceSucceeded) return false;
+	if (optimizeOwner) {
+		const sourceSection = __kustoGetQuerySectionElement(sourceBoxId);
+		if (sourceSection?.admitKustoOptimizeMessage?.(optimizeOwner) !== true) return false;
+	}
 	const comparisonExecutionId = executeQuery(comparisonBoxId, undefined, 'comparison', {
 		role: 'comparison',
 		comparisonRun: { sourceBoxId, sourceExecutionId, comparisonBoxId },
+		optimizeOwner,
 	});
 	if (!comparisonExecutionId) {
 		unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId(comparisonBoxId));
@@ -1713,7 +1838,9 @@ export function executeQuery(
 		return undefined;
 	}
 	if (typeof section?.beginQueryExecution !== 'function'
-		|| section.beginQueryExecution(executionId, effectiveProducer, undefined, undefined, comparisonRun) !== true) {
+		|| section.beginQueryExecution(
+			executionId, effectiveProducer, undefined, undefined, comparisonRun, comparisonOptions?.optimizeOwner,
+		) !== true) {
 		if (comparisonConsumerId) unbindResultArtifactConsumer(comparisonConsumerId);
 		return undefined;
 	}

@@ -42,7 +42,7 @@ import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-r
 import { pState } from '../../src/webview/shared/persistence-state.js';
 import { clearResultsState, displayResultForBox, getCurrentResultArtifact, getResultsState, setResultsState } from '../../src/webview/core/results-state.js';
 import { postMessageToHost } from '../../src/webview/shared/webview-messages.js';
-import { prepareKustoOptimizeQuery } from '../../src/webview/sections/query-execution.controller.js';
+import { prepareKustoOptimizeQuery, toggleKustoOptimizeQuery } from '../../src/webview/sections/query-execution.controller.js';
 import { APPLIED_KUSTO_COPILOT_DONE_EVENT } from '../../src/webview/core/kusto-copilot-output-runtime.js';
 import { getKustoSchemaIdentityKey } from '../../src/shared/kustoAuth.js';
 
@@ -1026,16 +1026,121 @@ describe('kw-query-section loading states', () => {
 			type: 'prepareOptimizeQuery', query: 'print value=1', ...owner,
 		});
 		expect((document.getElementById('test1_optimize_config') as HTMLElement).style.display).toBe('block');
+		const optimizeButton = document.getElementById('test1_optimize_btn') as HTMLButtonElement;
+		expect(optimizeButton.classList.contains('is-active')).toBe(true);
+		expect(optimizeButton.getAttribute('aria-pressed')).toBe('true');
 
-		el.executionCtrl.applyOptimizeQueryOptions([{ id: 'model-1', label: 'Model 1' }], 'model-1', 'Optimize this query');
+		el.executionCtrl.applyOptimizeQueryOptions([
+			{ id: 'model-1', label: 'Model 1', maxInputTokens: 128_000 },
+		], 'model-1', 'Optimize this query');
+		const config = document.getElementById('test1_optimize_config') as HTMLElement;
+		expect(Array.from(config.querySelectorAll('.optimize-config-settings select')).map(select => select.id)).toEqual([
+			'test1_optimize_model', 'test1_optimize_effort', 'test1_optimize_context',
+		]);
+		const contextSelect = document.getElementById('test1_optimize_context') as HTMLSelectElement;
+		expect(Array.from(contextSelect.options).map(option => option.textContent)).toEqual([
+			'Model maximum (128K)', '16K', '32K', '64K',
+		]);
+		expect(contextSelect.value).toBe('128000');
+		expect(Array.from(config.querySelectorAll('.optimize-config-actions button')).map(button => button.textContent)).toEqual([
+			'Cancel', 'Optimize',
+		]);
+		(document.getElementById('test1_optimize_effort') as HTMLSelectElement).value = 'high';
+		contextSelect.value = '32000';
 		vi.mocked(postMessageToHost).mockClear();
 		window.__kustoRunOptimizeQueryWithOverrides('test1');
 
 		expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'optimizeQuery', query: 'print value=1', connectionId: 'connection-1', database: 'Samples',
-			modelId: 'model-1', promptText: 'Optimize this query', ...owner,
+			modelId: 'model-1', thinkingEffort: 'high', contextSize: 32_000,
+			promptText: 'Optimize this query', ...owner,
 		}));
 		expect(el.getActiveKustoOptimizeRequest()).toEqual(owner);
+		expect(optimizeButton.classList.contains('is-active')).toBe(false);
+		expect(optimizeButton.getAttribute('aria-pressed')).toBe('false');
+	});
+
+	it('toggles the Optimize options closed through the same cancellation path as Cancel', async () => {
+		const el = createSection();
+		el.id = 'test1';
+		el.setConnections([{ id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net' }]);
+		el.setDatabases(['Samples'], 'Samples');
+		el.setSchemaLifecycleTarget('connection-1', 'Samples');
+		await el.updateComplete;
+		queryEditors.test1 = { getValue: () => 'print value=1' } as any;
+
+		expect(prepareKustoOptimizeQuery('test1')).toBe(true);
+		const owner = el.getActiveKustoOptimizeRequest()!;
+		vi.mocked(postMessageToHost).mockClear();
+
+		expect(toggleKustoOptimizeQuery('test1')).toBe(false);
+		expect((document.getElementById('test1_optimize_config') as HTMLElement).style.display).toBe('none');
+		expect((document.getElementById('test1_optimize_btn') as HTMLButtonElement).getAttribute('aria-pressed')).toBe('false');
+		expect(postMessageToHost).toHaveBeenCalledTimes(1);
+		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'cancelOptimizeQuery', ...owner });
+	});
+
+	it('shows one cancellation action that stops both Optimize and its active query', async () => {
+		const el = createSection();
+		el.id = 'test1';
+		el.setConnections([{ id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net' }]);
+		el.setDatabases(['Samples'], 'Samples');
+		el.setSchemaLifecycleTarget('connection-1', 'Samples');
+		await el.updateComplete;
+		const optimizeOwner = el.beginKustoOptimizeRequest()!;
+		el.executionCtrl.setOptimizeInProgress(true, 'Creating comparison…');
+		expect(el.beginQueryExecution('execution-1', 'comparison', undefined, undefined, undefined, optimizeOwner)).toBe(true);
+
+		expect((document.getElementById('test1_optimize_cancel') as HTMLElement).style.display).not.toBe('none');
+		expect((document.getElementById('test1_cancel_btn') as HTMLElement).style.display).toBe('none');
+		vi.mocked(postMessageToHost).mockClear();
+
+		window.__kustoCancelOptimizeQuery('test1');
+
+		expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'cancelQuery', boxId: 'test1', executionId: 'execution-1',
+		}));
+		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'cancelOptimizeQuery', ...optimizeOwner });
+		expect((document.getElementById('test1_cancel_btn') as HTMLElement).style.display).toBe('none');
+		el.retireActiveQueryExecution();
+	});
+
+	it('does not cancel an unrelated manual query when closing Optimize options', async () => {
+		const el = createSection();
+		el.id = 'test1';
+		el.setConnections([{ id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net' }]);
+		el.setDatabases(['Samples'], 'Samples');
+		el.setSchemaLifecycleTarget('connection-1', 'Samples');
+		await el.updateComplete;
+		const optimizeOwner = el.beginKustoOptimizeRequest()!;
+		expect(el.beginQueryExecution('manual-execution', 'manual')).toBe(true);
+		vi.mocked(postMessageToHost).mockClear();
+
+		window.__kustoCancelOptimizeQuery('test1');
+
+		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'cancelOptimizeQuery', ...optimizeOwner });
+		expect(postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'cancelQuery' }));
+		expect(el.getActiveExecutionId()).toBe('manual-execution');
+		el.retireActiveQueryExecution();
+	});
+
+	it('does not cancel an unrelated comparison execution when closing Optimize options', async () => {
+		const el = createSection();
+		el.id = 'test1';
+		el.setConnections([{ id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net' }]);
+		el.setDatabases(['Samples'], 'Samples');
+		el.setSchemaLifecycleTarget('connection-1', 'Samples');
+		await el.updateComplete;
+		const optimizeOwner = el.beginKustoOptimizeRequest()!;
+		expect(el.beginQueryExecution('older-comparison', 'comparison')).toBe(true);
+		vi.mocked(postMessageToHost).mockClear();
+
+		window.__kustoCancelOptimizeQuery('test1');
+
+		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'cancelOptimizeQuery', ...optimizeOwner });
+		expect(postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'cancelQuery' }));
+		expect(el.getActiveExecutionId()).toBe('older-comparison');
+		el.retireActiveQueryExecution();
 	});
 
 	it('keeps standalone Optimize disabled after cleanup when Copilot is unavailable', () => {
