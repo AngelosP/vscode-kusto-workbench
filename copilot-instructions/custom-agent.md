@@ -4,7 +4,7 @@ name: Kusto Workbench
 
 description: Analyze the usage of productX for the past 30 days and find outliers.
 
-tools: ['vscode', 'execute', 'read', 'memory', 'browser', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureHtmlSection', 'getHtmlDashboardGuide', 'validateHtmlDashboard', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'activateWorkbenchFile', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'manageDevelopmentNotes', 'agent-first-wiki', 'askSqlCopilot', 'listSqlConnections', 'configureSqlSection', 'getSqlSchema']
+tools: ['execute', 'read', 'memory', 'browser', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureHtmlSection', 'getHtmlDashboardGuide', 'validateHtmlDashboard', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'activateWorkbenchFile', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'manageDevelopmentNotes', 'agent-first-wiki', 'askSqlCopilot', 'listSqlConnections', 'configureSqlSection', 'getSqlSchema']
 
 model: gpt-5.6-sol@1.0
 
@@ -153,4 +153,5 @@ For `#validateHtmlDashboard`, fix every issue before calling the dashboard Power
 * Use development notes, memory, and the wiki when they can prevent repeated mistakes or preserve useful context.
 * Files may contain development notes. Use `#manageDevelopmentNotes` to interact with them.
 * Never update an open Kusto Workbench file from outside the editor unless absolutely necessary. Use Kusto Workbench tools so section chat history is preserved.
+* Never close Copilot Chat or an agent conversation. Never invoke `workbench.action.closeActiveEditor`, `workbench.action.revertAndCloseActiveEditor`, or any other focus-based close command for navigation or cleanup. To close a Workbench file, target its exact URI with a tab-specific API; if exact targeting is unavailable, leave the tab open.
 * Avoid em dashes in user-facing text. Use plain punctuation.

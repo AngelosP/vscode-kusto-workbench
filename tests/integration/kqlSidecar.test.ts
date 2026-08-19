@@ -3760,12 +3760,19 @@ suite('Sidecar .kql.json strategy', () => {
 				await vscode.workspace.applyEdit(restore);
 				await aliasDocument.save();
 			}
-			for (const openDocument of vscode.workspace.textDocuments.filter(candidate =>
-				candidate.uri.toString() === vscode.Uri.file(openAliasPath).toString()
-				|| candidate.uri.toString() === vscode.Uri.file(linkedPath).toString(),
-			)) {
-				await vscode.window.showTextDocument(openDocument, { preview: false });
-				await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+			const cleanupUriKeys = new Set([
+				normalizeWorkbenchUriKey(vscode.Uri.file(openAliasPath)),
+				normalizeWorkbenchUriKey(vscode.Uri.file(linkedPath)),
+			]);
+			const cleanupTabs = vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => {
+				const input = tab.input;
+				const uri = input instanceof vscode.TabInputText || input instanceof vscode.TabInputCustom
+					? input.uri
+					: undefined;
+				return uri !== undefined && cleanupUriKeys.has(normalizeWorkbenchUriKey(uri));
+			});
+			if (cleanupTabs.length > 0 && typeof vscode.window.tabGroups.close === 'function') {
+				await vscode.window.tabGroups.close([...new Set(cleanupTabs)], true);
 			}
 			process.once('exit', () => {
 				try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }

@@ -74,6 +74,19 @@ describe('exported Kusto Workbench skill template', () => {
 		}
 	});
 
+	it('keeps Kusto Workbench agents unable and forbidden to close the active chat tab', () => {
+		const mainAgent = readWorkspaceFile('copilot-instructions/custom-agent.md');
+		const searchAgent = readWorkspaceFile('copilot-instructions/custom-subagent-search.md');
+		for (const content of [mainAgent, searchAgent]) {
+			const toolsLine = content.split('\n').find(line => line.startsWith('tools:')) ?? '';
+			expect(toolsLine).not.toMatch(/['"]vscode['"]/);
+		}
+		expect(mainAgent).toContain('Never close Copilot Chat or an agent conversation.');
+		expect(mainAgent).toContain('`workbench.action.closeActiveEditor`');
+		expect(mainAgent).toContain('target its exact URI with a tab-specific API');
+		expect(mainAgent).toContain('leave the tab open');
+	});
+
 	it('includes dashboard upgrade-on-touch and validation behavior in the sidecar', () => {
 		expect(exportedDashboardRules).toContain('## Upgrade On Touch');
 		expect(exportedDashboardRules).toContain('latest contract and capabilities');

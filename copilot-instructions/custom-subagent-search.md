@@ -4,7 +4,7 @@ name: Kusto Workbench Search
 description: Search for Kusto data
 user-invokable: false
 
-tools: ['vscode', 'execute', 'read', 'memory', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'activateWorkbenchFile', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections', 'manageDevelopmentNotes']
+tools: ['execute', 'read', 'memory', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'activateWorkbenchFile', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections', 'manageDevelopmentNotes']
 
 model: gpt-5.6-sol@1.0
 

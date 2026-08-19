@@ -21,6 +21,10 @@ Read `ARCHITECTURE.md` to understand the system structure. Read `CONTRIBUTING.md
 
 Use subagents to parallelize independent tasks wherever possible — research, file reads, code searches, reviews — as long as it does not compromise the quality of the end result. When tasks have dependencies between them, run them sequentially; when they don't, run them in parallel. Even write tasks, as long as they are across different files.
 
+## Tab Safety
+
+Never use `workbench.action.closeActiveEditor`, `workbench.action.revertAndCloseActiveEditor`, or another focus-based close command for targeted cleanup. It can close Copilot Chat or an unrelated user tab if focus changes. Close only tabs opened by the task, identify them by exact URI, and use `vscode.window.tabGroups.close`; if exact URI targeting is unavailable, leave the tab open. Never close Copilot Chat or an agent conversation.
+
 ## Copilot Prompt Files
 
 The `copilot-instructions/` directory contains prompt files used by the extension's own Copilot integration features (query generation, optimization). These are runtime resources, not development instructions.
