@@ -19,7 +19,7 @@ import {
 	getPowerBiHtmlValidationDiagnostics,
 	type PowerBiDataSource,
 } from './powerBiExport';
-import { getLegacyDashboardWarnings } from '../shared/htmlDashboardUpgrade';
+import { getLegacyDashboardWarnings, parseKwProvenance } from '../shared/htmlDashboardUpgrade';
 import type { PortableDashboardDiagnostic } from '../shared/portableDashboardCompiler';
 import { classifyWorkbenchUri, classifyWorkbenchUriString, type WorkbenchFileInfo, type WorkbenchFileKind } from './workbenchFileTypes';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
@@ -2611,13 +2611,20 @@ export class KustoWorkbenchToolOrchestrator {
 		fileName = file?.fileName;
 
 		const uniqueIssues = uniqueStrings(issues);
+		const warnings = getLegacyDashboardWarnings(code);
+		const factResultIndex = parseKwProvenance(code)?.model?.fact?.resultIndex ?? 0;
+		if (factResultIndex > 0) {
+			warnings.push(
+				`Dashboard preview uses Result ${factResultIndex + 1} (index ${factResultIndex}), but Power BI publishing supports Result 1 only.`,
+			);
+		}
 		return {
 			success: !!context.success,
 			valid: !!context.success && uniqueIssues.length === 0,
 			sectionId,
 			issues: uniqueIssues,
 			diagnostics,
-			warnings: uniqueStrings(getLegacyDashboardWarnings(code)),
+			warnings: uniqueStrings(warnings),
 			hasProvenance: !!context.hasProvenance,
 			bindingCount: context.bindingCount || 0,
 			dataSourceCount: dataSources.length,

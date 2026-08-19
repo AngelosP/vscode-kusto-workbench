@@ -619,6 +619,21 @@ function getSectionSerializedSignature(sectionId: string): string {
 	}
 }
 
+function getUnavailableResultIndexError(
+	field: 'dataSourceResultIndex' | 'joinRightDataSourceResultIndex',
+	sourceId: unknown,
+	resultIndex: unknown,
+): string | undefined {
+	if (typeof resultIndex !== 'number') return undefined;
+	const normalizedSourceId = String(sourceId || '').trim();
+	if (!normalizedSourceId) {
+		return `${field} requires a corresponding data source ID.`;
+	}
+	if (getCurrentResultArtifact(normalizedSourceId, resultIndex)) return undefined;
+	if (resultIndex === 0 || !getCurrentResultArtifact(normalizedSourceId, 0)) return undefined;
+	return `Result ${resultIndex + 1} (index ${resultIndex}) is not available for data source '${normalizedSourceId}'. Run the source query or choose an available result.`;
+}
+
 function getCompatibilityPersistedContent(section: Record<string, unknown>): Record<string, unknown> {
 	const rawType = String(section.type || pState.compatibilitySingleKind || 'query');
 	const sectionType = canonicalSectionKind(rawType) ?? rawType;
@@ -5008,6 +5023,22 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						});
 						break;
 					}
+					const chartState = typeof (chartEl as any).serialize === 'function'
+						? (chartEl as any).serialize()
+						: {};
+					const unavailableResultError = Object.prototype.hasOwnProperty.call(input, 'dataSourceResultIndex')
+						? getUnavailableResultIndexError(
+							'dataSourceResultIndex', input.dataSourceId ?? chartState.dataSourceId,
+							input.dataSourceResultIndex,
+						)
+						: undefined;
+					if (unavailableResultError) {
+						postMessageToHost({
+							type: 'toolResponse', requestId,
+							result: { success: false }, error: unavailableResultError,
+						});
+						break;
+					}
 
 					// Update section name if provided
 					if (input.name !== undefined) {
@@ -5075,6 +5106,31 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							type: 'toolResponse', requestId,
 							result: { success: false },
 							error: `Section '${sectionId}' is not a transformation section.`,
+						});
+						break;
+					}
+					const transformationState = typeof (transformationEl as any).serialize === 'function'
+						? (transformationEl as any).serialize()
+						: {};
+					let unavailableResultError: string | undefined;
+					if (Object.prototype.hasOwnProperty.call(input, 'dataSourceResultIndex')) {
+						unavailableResultError = getUnavailableResultIndexError(
+							'dataSourceResultIndex', input.dataSourceId ?? transformationState.dataSourceId,
+							input.dataSourceResultIndex,
+						);
+					}
+					if (!unavailableResultError
+						&& Object.prototype.hasOwnProperty.call(input, 'joinRightDataSourceResultIndex')) {
+						unavailableResultError = getUnavailableResultIndexError(
+							'joinRightDataSourceResultIndex',
+							input.joinRightDataSourceId ?? transformationState.joinRightDataSourceId,
+							input.joinRightDataSourceResultIndex,
+						);
+					}
+					if (unavailableResultError) {
+						postMessageToHost({
+							type: 'toolResponse', requestId,
+							result: { success: false }, error: unavailableResultError,
 						});
 						break;
 					}

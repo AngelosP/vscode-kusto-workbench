@@ -945,10 +945,11 @@ function createTransformationPatch(section: TransformationSectionState): Transfo
 	const patch: TransformationSectionPatch = {};
 	const patchRecord = patch as unknown as Record<string, unknown>;
 	for (const key of [
-		'name', 'mode', 'expanded', 'editorHeightPx', 'dataSourceId', 'transformationType',
+		'name', 'mode', 'expanded', 'editorHeightPx', 'dataSourceId', 'dataSourceResultIndex', 'transformationType',
 		'distinctColumn', 'groupByColumns', 'aggregations', 'deriveColumns', 'deriveColumnName',
 		'deriveExpression', 'pivotRowKeyColumn', 'pivotColumnKeyColumn', 'pivotValueColumn',
-		'pivotAggregation', 'pivotMaxColumns', 'joinRightDataSourceId', 'joinKind', 'joinKeys',
+		'pivotAggregation', 'pivotMaxColumns', 'joinRightDataSourceId', 'joinRightDataSourceResultIndex',
+		'joinKind', 'joinKeys',
 		'joinOmitDuplicateColumns',
 	] as const) {
 		patchRecord[key] = snapshot[key] === undefined ? null : snapshot[key];

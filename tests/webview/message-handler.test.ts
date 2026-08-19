@@ -2465,6 +2465,44 @@ describe('message-handler dispatch', () => {
 		expect(mocks.handleCrossClusterSchemaData).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		['toolConfigureChart', 'chart_unavailable_index', 'dataSourceResultIndex', 'dataSourceId'],
+		['toolConfigureTransformation', 'transformation_unavailable_index', 'joinRightDataSourceResultIndex', 'joinRightDataSourceId'],
+	] as const)('reports %s unavailable result index precisely', async (type, sectionId, field, sourceField) => {
+		const section = document.createElement('div') as HTMLDivElement & { serialize?: () => Record<string, unknown> };
+		Object.defineProperty(section, 'tagName', {
+			value: type === 'toolConfigureChart' ? 'KW-CHART-SECTION' : 'KW-TRANSFORMATION-SECTION',
+			configurable: true,
+		});
+		section.id = sectionId;
+		section.serialize = () => ({ id: sectionId, type: type === 'toolConfigureChart' ? 'chart' : 'transformation' });
+		document.body.appendChild(section);
+		mocks.getCurrentResultArtifact.mockImplementation((_sourceId: string, resultIndex = 0) =>
+			resultIndex === 0 ? { artifactId: 'result:query_source:1', resultIndex: 0 } : null,
+		);
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		const setSectionName = sectionFactory.__kustoSetSectionName as unknown as ReturnType<typeof vi.fn>;
+		mocks.postMessageToHost.mockClear();
+		setSectionName.mockClear();
+		try {
+			dispatchHostMessage({
+				type, requestId: `request-${sectionId}`,
+				input: { sectionId, name: 'Must not apply', [sourceField]: 'query_source', [field]: 4 },
+			});
+			await new Promise(resolve => setTimeout(resolve, 50));
+
+			expect(setSectionName).not.toHaveBeenCalled();
+			expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+				type: 'toolResponse', requestId: `request-${sectionId}`,
+				result: { success: false },
+				error: "Result 5 (index 4) is not available for data source 'query_source'. Run the source query or choose an available result.",
+			});
+		} finally {
+			section.remove();
+			mocks.getCurrentResultArtifact.mockReturnValue(null);
+		}
+	});
+
 	it('drops stale cross-cluster schema responses before applying schema', async () => {
 		const monacoModule = await import('../../src/webview/monaco/monaco.js');
 		(monacoModule.__kustoIsCurrentCrossClusterRequest as unknown as ReturnType<typeof vi.fn>).mockReturnValueOnce(false);

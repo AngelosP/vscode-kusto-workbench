@@ -94,4 +94,35 @@ describe('Kusto Workbench HTML dashboard agent validation', () => {
 		expect(result.issues).toEqual([]);
 		expect(result.valid).toBe(true);
 	});
+
+	it('warns when preview uses a result Power BI cannot publish', async () => {
+		const htmlCode = `<script type="application/kw-provenance">${JSON.stringify({
+			version: 1,
+			model: { fact: { sectionId: 'query_fact', sectionName: 'Fact Events', resultIndex: 2 } },
+			bindings: {},
+		})}</script><main>Dashboard</main>`;
+		const orchestrator = Object.create(
+			KustoWorkbenchToolOrchestrator.prototype,
+		) as DashboardValidationHarness;
+		orchestrator.sendToWebview = vi.fn(async () => ({
+			success: true, sectionId: 'html_dashboard', name: 'Dashboard', code: htmlCode,
+			hasProvenance: true, bindingCount: 0,
+			dataSources: [{
+				name: 'Fact Events', sectionId: 'query_fact', resultIndex: 2,
+				clusterUrl: 'https://cluster.kusto.windows.net', database: 'db', query: 'FactEvents',
+				columns: [{ name: 'Value', type: 'long' }],
+			}],
+			factColumns: [{ name: 'Value', type: 'long' }],
+		}));
+		orchestrator.resolveToolTarget = vi.fn(() => ({
+			openFiles: [], hasActiveUnsupportedFile: false, explicitTargetRequested: false,
+		}));
+
+		const result = await orchestrator.validateHtmlDashboard({ sectionId: 'html_dashboard' });
+
+		expect(result.valid).toBe(true);
+		expect(result.warnings).toContain(
+			'Dashboard preview uses Result 3 (index 2), but Power BI publishing supports Result 1 only.',
+		);
+	});
 });

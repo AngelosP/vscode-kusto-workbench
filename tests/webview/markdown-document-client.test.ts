@@ -508,8 +508,8 @@ describe('host-owned Markdown command client', () => {
 
 		const afterState = {
 			id: 'transform-any-id', type: 'transformation', name: 'After', mode: 'preview',
-			expanded: false, editorHeightPx: 460, dataSourceId: 'query_left',
-			transformationType: 'join', joinRightDataSourceId: 'query_right',
+			expanded: false, editorHeightPx: 460, dataSourceId: 'query_left', dataSourceResultIndex: 1,
+			transformationType: 'join', joinRightDataSourceId: 'query_right', joinRightDataSourceResultIndex: 2,
 			joinKind: 'fullouter', joinKeys: [{ left: 'CustomerId', right: 'AccountId' }],
 			joinOmitDuplicateColumns: true,
 		} as const;
@@ -524,8 +524,9 @@ describe('host-owned Markdown command client', () => {
 				type: 'patch', sectionId: 'transform-any-id', expectedSectionRevision: 0,
 				patch: {
 					name: 'After', mode: 'preview', expanded: false, editorHeightPx: 460,
-					dataSourceId: 'query_left', transformationType: 'join',
-					joinRightDataSourceId: 'query_right', joinKind: 'fullouter',
+					dataSourceId: 'query_left', dataSourceResultIndex: 1, transformationType: 'join',
+					joinRightDataSourceId: 'query_right', joinRightDataSourceResultIndex: 2,
+					joinKind: 'fullouter',
 					joinKeys: [{ left: 'CustomerId', right: 'AccountId' }],
 					joinOmitDuplicateColumns: true,
 				},
