@@ -52,7 +52,7 @@ export const styles = css`
 		td{background:var(--vscode-editor-background)}
 		th{font-weight:600;background:var(--vscode-list-hoverBackground);cursor:pointer;user-select:none}
 		th:hover{background:var(--vscode-list-activeSelectionBackground)}th.sorted{font-weight:700}
-		.thc{display:flex;align-items:center;gap:4px;flex-wrap:nowrap}.thn{display:flex;align-items:center;gap:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;min-width:0;white-space:nowrap}
+		.thc{display:flex;align-items:center;gap:4px;flex-wrap:nowrap}.thn{display:flex;align-items:center;gap:0;flex:1 1 auto;overflow:hidden;min-width:0;white-space:nowrap}.th-label{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.type-glyph{display:inline-flex;align-items:center;justify-content:center;flex:0 0 11px;width:11px;min-width:11px;height:13px;margin-left:3px;transform:translateY(1px);border:1px solid var(--vscode-keybindingLabel-border,var(--vscode-contrastBorder,rgba(127,127,127,.35)));border-radius:2px;background:var(--vscode-keybindingLabel-background,rgba(127,127,127,.16));font-family:var(--vscode-editor-font-family,monospace);font-size:9px;font-weight:600;line-height:1;text-transform:lowercase;color:var(--vscode-keybindingLabel-foreground,var(--vscode-foreground))}
 		.filtered-link{font-size:11px;color:var(--vscode-textLink-foreground);text-decoration:underline;cursor:pointer;flex-shrink:0;margin-left:5px}
 		.filtered-link:hover{color:var(--vscode-textLink-activeForeground)}
 		.si2{font-size:11px;opacity:.85;flex-shrink:0;line-height:1;margin-left:3px}.si2 sup{font-size:8px;margin-left:2px}
@@ -100,6 +100,7 @@ export const styles = css`
 		/* Compact mode overrides */
 		.compact th,.compact td{padding:4px 6px;font-size:11px;height:21px}.compact .hbar{padding:7px 0;font-size:11px}
 		.compact .rn{font-size:10px;width:32px;min-width:32px;max-width:32px;padding:4px 2px}.compact .rn-h{width:32px;min-width:32px;max-width:32px;padding:4px 2px}
+		@media (forced-colors:active){.type-glyph{border-color:ButtonText;background:ButtonFace;color:ButtonText}}
 
 		/* Metadata tooltip (Client Activity ID + Server Stats) */
 		.hinfo-anchor{cursor:default}

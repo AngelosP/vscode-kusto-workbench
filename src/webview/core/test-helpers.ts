@@ -497,6 +497,7 @@ _win.__testSelectKustoRunMode = (mode: string, selector: string = 'kw-query-sect
 
 	const labelByMode: Record<string, string> = {
 		plain: 'Run Query',
+		runAll: 'Run All',
 		take100: 'Run Query (take 100)',
 		sample100: 'Run Query (sample 100)',
 	};
@@ -6521,6 +6522,17 @@ async function e2eHtmlAssertEqualDocumentProjection(sectionId: string): Promise<
 	};
 }
 
+async function e2eForceDocumentReload(): Promise<{ before: number; after: number }> {
+	const before = Number(pState.documentDataApplyCount || 0);
+	postMessageToHost({ type: 'requestDocument' });
+	await e2eLayoutWaitFor(
+		() => Number(pState.documentDataApplyCount || 0) > before && pState.restoreInProgress !== true,
+		'same-document forced reload',
+		10000,
+	);
+	return { before, after: Number(pState.documentDataApplyCount || 0) };
+}
+
 function e2eHtmlBeginSaveBarrierCapture(sectionId: string): void {
 	const id = String(sectionId || '').trim();
 	if (!id) throw new Error('DOC-6 Save barrier capture requires a section ID');
@@ -7948,6 +7960,7 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		beginDocumentCommandCapture: e2eBeginDocumentCommandCapture,
 		waitForDocumentCommands: e2eWaitForDocumentCommands,
 		waitForPersistedResult: e2eWaitForPersistedResult,
+		forceDocumentReload: e2eForceDocumentReload,
 		assertMigratedResultChart: e2eAssertMigratedResultChart,
 		enableIsolatedKustoConnections: e2eEnableIsolatedKustoConnections,
 		assertIsolatedKustoConnections: e2eAssertIsolatedKustoConnections,

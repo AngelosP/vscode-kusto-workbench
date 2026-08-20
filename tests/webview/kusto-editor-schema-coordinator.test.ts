@@ -21,6 +21,22 @@ describe('KustoEditorSchemaCoordinator ownership', () => {
 		})).toBe(true);
 	});
 
+	it('marks projection teardown so result attachment ownership can survive recreation', () => {
+		const coordinator = new KustoEditorSchemaCoordinator();
+		const events: any[] = [];
+		coordinator.subscribeLifecycle(event => events.push(event));
+		const lease = coordinator.openSection('query_reload', 'instance-before')!;
+		coordinator.setTarget(lease, 'connection-a', 'DbA');
+
+		expect(coordinator.closeSection(lease, { preserveResultAttachment: true })).toBe(true);
+
+		expect(events.at(-1)).toEqual({
+			type: 'closed',
+			owner: { boxId: 'query_reload', sectionInstanceId: 'instance-before' },
+			preserveResultAttachment: true,
+		});
+	});
+
 	it('rotates target generation and retires the prior request on target change', () => {
 		const coordinator = new KustoEditorSchemaCoordinator();
 		const lease = coordinator.openSection('query_1', 'instance-1')!;

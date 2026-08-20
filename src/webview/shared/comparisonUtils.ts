@@ -361,6 +361,7 @@ export function indexToAlphaName(index: any): string {
 export function getRunModeLabelText(mode: any): string {
 	switch ((mode || '').toLowerCase()) {
 		case 'plain': return 'Run Query';
+		case 'runall': return 'Run All';
 		case 'sample100': return 'Run Query (sample 100)';
 		case 'runfunction': return 'Run Function';
 		case 'top100': return 'Run Query (TOP 100)';

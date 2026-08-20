@@ -6,8 +6,12 @@ const testState = vi.hoisted(() => ({
 	getDatabase: vi.fn(() => 'DatabaseA'),
 	getSectionName: vi.fn(() => 'Section A'),
 	getSqlSectionElement: vi.fn(() => null),
+	executeAllQueries: vi.fn(),
+	isRunSelectionReady: vi.fn(() => true),
+	schedulePersist: vi.fn(),
 	queryEditors: {} as Record<string, any>,
 	sqlBoxes: [] as string[],
+	runModesByBoxId: {} as Record<string, string>,
 	optimizationMetadataByBoxId: {} as Record<string, any>,
 }));
 
@@ -28,16 +32,19 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 
 vi.mock('../../src/webview/sections/query-execution.controller.js', () => ({
 	executeQuery: vi.fn(),
-	__kustoIsRunSelectionReady: vi.fn(() => true),
+	executeAllQueries: testState.executeAllQueries,
+	__kustoIsRunSelectionReady: testState.isRunSelectionReady,
 	__kustoSetResultsVisible: vi.fn(),
 	setQueryExecuting: vi.fn(),
 }));
 
 vi.mock('../../src/webview/core/dropdown.js', () => ({ closeAllMenus: vi.fn() }));
-vi.mock('../../src/webview/core/persistence.js', () => ({ schedulePersist: vi.fn() }));
+vi.mock('../../src/webview/core/persistence.js', () => ({ schedulePersist: testState.schedulePersist }));
 vi.mock('../../src/webview/core/page-scroll-dismiss.js', () => ({ registerPageScrollDismissable: vi.fn() }));
 vi.mock('../../src/webview/monaco/prettify.js', () => ({ __kustoHasFunctionDefinition: vi.fn(() => false) }));
-vi.mock('../../src/webview/shared/comparisonUtils.js', () => ({ getRunModeLabelText: vi.fn(() => 'Run Query') }));
+vi.mock('../../src/webview/shared/comparisonUtils.js', () => ({
+	getRunModeLabelText: vi.fn((mode: string) => mode === 'runAll' ? 'Run All' : 'Run Query'),
+}));
 vi.mock('../../src/webview/core/editing-preferences.js', () => ({
 	applyCaretDocsPresentation: vi.fn(),
 	updateAutoTriggerAutocompleteToggleButtons: vi.fn(),
@@ -48,7 +55,7 @@ vi.mock('../../src/webview/shared/icon-registry.js', () => new Proxy({}, { get: 
 vi.mock('../../src/webview/core/state.js', () => ({
 	activeQueryEditorBoxId: '',
 	qualifyTablesInFlightByBoxId: {},
-	runModesByBoxId: {},
+	runModesByBoxId: testState.runModesByBoxId,
 	optimizationMetadataByBoxId: testState.optimizationMetadataByBoxId,
 	caretDocsEnabled: true,
 	setCaretDocsEnabled: vi.fn(),
@@ -76,8 +83,10 @@ import { shareClipboardArtifactConsumerId } from '../../src/shared/resultArtifac
 import {
 	__kustoCloseShareModal,
 	__kustoCloseShareModalForOwner,
+	getRunModeForPersistence,
 	__kustoOpenShareModal,
 	__kustoShareCopyToClipboard,
+	runAllQueriesFromMenu,
 } from '../../src/webview/sections/kw-query-toolbar.js';
 
 function installShareModal(): void {
@@ -122,9 +131,31 @@ describe('query share modal result artifacts', () => {
 		testState.getDatabase.mockReturnValue('DatabaseA');
 		testState.getSectionName.mockReturnValue('Section A');
 		testState.getSqlSectionElement.mockReturnValue(null);
+		testState.executeAllQueries.mockClear();
+		testState.isRunSelectionReady.mockReset();
+		testState.isRunSelectionReady.mockReturnValue(true);
+		testState.schedulePersist.mockClear();
 		testState.sqlBoxes.splice(0, testState.sqlBoxes.length);
 		for (const key of Object.keys(testState.queryEditors)) delete testState.queryEditors[key];
+		for (const key of Object.keys(testState.runModesByBoxId)) delete testState.runModesByBoxId[key];
 		for (const key of Object.keys(testState.optimizationMetadataByBoxId)) delete testState.optimizationMetadataByBoxId[key];
+	});
+
+	it('stores Run All as the persistent section mode before executing it', () => {
+		const boxId = 'query_run_all';
+		document.body.insertAdjacentHTML('beforeend', `
+			<button id="${boxId}_run_btn"><span class="run-btn-label"> Run Query (take 100)</span></button>
+			<div id="${boxId}_run_menu" style="display:block"></div>`);
+
+		runAllQueriesFromMenu(boxId);
+
+		expect(testState.runModesByBoxId[boxId]).toBe('runAll');
+		expect(getRunModeForPersistence(boxId)).toBe('runAll');
+		expect(document.querySelector(`#${boxId}_run_btn .run-btn-label`)?.textContent).toBe(' Run All');
+		expect(testState.schedulePersist).toHaveBeenCalledOnce();
+		expect(testState.executeAllQueries).toHaveBeenCalledOnce();
+		expect(testState.executeAllQueries).toHaveBeenCalledWith(boxId);
+		expect((document.getElementById(`${boxId}_run_menu`) as HTMLElement).style.display).toBe('none');
 	});
 
 	it('shares the currently visible result set from a Kusto batch', () => {

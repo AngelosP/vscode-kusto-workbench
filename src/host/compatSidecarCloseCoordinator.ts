@@ -22,13 +22,16 @@ export type CompatSidecarCloseFinalization = Readonly<{
 	recoverDraft(draft: CompatSidecarCloseDraft): Promise<vscode.Uri>;
 	notifyRecovered(uri: vscode.Uri): void;
 	notifySaveFailed(error: unknown): void;
+	drainRetiredInbound?(): Promise<void>;
 	repair(): Promise<void>;
 	drainStore(): Promise<void>;
+	disposeNestedProvider?(): void;
 }>;
 
 export type CompatSidecarCloseCoordinatorOptions = Readonly<{
 	session: CompatSidecarSession;
 	yieldTurn?: () => Promise<void>;
+	allowKustoOwnerMessages?: boolean;
 }>;
 
 export type CompatSidecarCloseFailureCleanup = Readonly<{
@@ -60,9 +63,12 @@ export class CompatSidecarCloseCoordinator implements CompatSidecarCloseCoordina
 	constructor(private readonly options: CompatSidecarCloseCoordinatorOptions) {}
 
 	allowRetiredInbound(message: unknown): boolean {
-		if (!this.retiredAdmissionOpen || !isPersistDocumentMessage(message)) return false;
-		if (String(message.reason || '') === 'beforeunload') return true;
-		return this.options.session.hasPendingFinalPersistRequest(String(message.flushRequestId || ''));
+		if (!this.retiredAdmissionOpen) return false;
+		if (isPersistDocumentMessage(message)) {
+			if (String(message.reason || '') === 'beforeunload') return true;
+			return this.options.session.hasPendingFinalPersistRequest(String(message.flushRequestId || ''));
+		}
+		return this.options.allowKustoOwnerMessages === true && isKustoOwnerCloseMessage(message);
 	}
 
 	isPendingFinalPersistReply(message: unknown): boolean {
@@ -107,6 +113,7 @@ export class CompatSidecarCloseCoordinator implements CompatSidecarCloseCoordina
 			} else {
 				await (this.options.yieldTurn?.() ?? new Promise<void>(resolve => setImmediate(resolve)));
 			}
+			try { await finalization.drainRetiredInbound?.(); } catch { /* continue close */ }
 			this.retiredAdmissionOpen = false;
 			await finalization.gateway.closeRetiredInboundAdmission();
 			this.options.session.beginClose();
@@ -151,6 +158,7 @@ export class CompatSidecarCloseCoordinator implements CompatSidecarCloseCoordina
 		} catch {
 			// The sidecar may already be unavailable.
 		} finally {
+			try { finalization.disposeNestedProvider?.(); } catch { /* continue terminal cleanup */ }
 			this.options.session.settleClose();
 			this.disposeSubscriptions(finalization.subscriptions);
 		}
@@ -188,4 +196,14 @@ function isPersistDocumentMessage(message: unknown): message is Record<string, u
 		&& typeof message === 'object'
 		&& !Array.isArray(message)
 		&& (message as Record<string, unknown>).type === 'persistDocument';
+}
+
+function isKustoOwnerCloseMessage(message: unknown): boolean {
+	if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+	return new Set([
+		'kustoPublicationAck',
+		'kustoSectionTarget',
+		'kustoSectionClose',
+		'selectKustoResult',
+	]).has(String((message as Record<string, unknown>).type || ''));
 }

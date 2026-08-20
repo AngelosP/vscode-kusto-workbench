@@ -688,7 +688,7 @@ function createChartPatch(section: ChartSectionState): ChartSectionPatch {
 	const patch: ChartSectionPatch = {};
 	const patchRecord = patch as unknown as Record<string, unknown>;
 	for (const key of [
-		'name', 'mode', 'expanded', 'editorHeightPx', 'dataSourceId', 'chartType', 'xColumn',
+		'name', 'mode', 'expanded', 'editorHeightPx', 'dataSourceId', 'dataSourceResultIndex', 'chartType', 'xColumn',
 		'yColumns', 'yColumn', 'tooltipColumns', 'legendColumn', 'legendPosition', 'stackMode',
 		'labelColumn', 'valueColumn', 'sourceColumn', 'targetColumn', 'orient', 'sankeyLeftMargin',
 		'showDataLabels', 'labelMode', 'labelDensity', 'sortColumn', 'sortDirection', 'xAxisSettings',

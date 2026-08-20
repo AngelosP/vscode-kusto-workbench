@@ -97,6 +97,7 @@ describe('Kusto schema ownership boundaries', () => {
 		const removeBody = factory.match(/export function removeQueryBox[\s\S]*?unregisterSqlDerivedComparisonSession/)?.[0] || '';
 		const chatBody = factory.match(/window\.__kustoToggleCopilotChatForBox[\s\S]*?window\.addCopilotQueryBox/)?.[0] || '';
 		expect(removeBody).toContain('__kustoCancelMonacoInitRetry');
+		expect(factory).toContain('preserveResultAttachment: pinnedSectionRemovalBypassDepth > 0');
 		expect(chatBody).not.toContain('__kustoCancelMonacoInitRetry');
 	});
 

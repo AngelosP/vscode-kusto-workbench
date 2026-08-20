@@ -10,6 +10,32 @@ on every `vscode-ext-test init` to stay current with framework updates),
 Read this file before every test session. Update it after every session with
 anything new you learned. Structure it however makes sense for this repo.
 
+## Coverage Planning Gate
+
+Before adding, changing, or claiming completeness for E2E coverage, read and
+follow [`../test-coverage-planning/SKILL.md`](../test-coverage-planning/SKILL.md).
+Create a coverage ledger that maps the exact composed user lifecycle, state and
+transition dimensions, owning modules/protocols, existing exact assertions,
+included cases, and explicitly justified exclusions. Do this before scenario
+editing and update it after failures expose new branches.
+
+E2E scenarios must use the rendered user control for the interaction under
+test. Direct APIs may prepare unrelated state but may not set the value being
+verified. A passing test that injects `dataSourceResultIndex`, run mode,
+selection, or another control-owned value directly is not evidence for the
+corresponding dropdown/menu/button path. Persistence scenarios must assert live
+state, durable bytes, reopened state, and a post-reopen interaction. Existing
+coverage counts only when its exact setup, action, lifecycle, and oracle match;
+test names and nearby assertions are not enough.
+
+`session.kqlx` lives under profile-global `vscode-userdata`, not the workspace.
+Multiple F5 Development Host windows that use the same VS Code profile therefore
+share one session file and can exercise cross-window autosave conflict handling.
+Do not infer the session contract from a single-window fixture alone. Keep the
+cross-window write-lock test, and drive the reopened multi-result picker with
+native click/keyboard input; assigning `picker.value` and dispatching `change`
+only proves the backing handler.
+
 ## Extension Commands
 
 <!-- List the command IDs this extension registers and what they do -->
@@ -56,6 +82,9 @@ anything new you learned. Structure it however makes sense for this repo.
 - v0.1.18 persists target-extension output through CDP fallback when controller interception is empty. Verify `_capture-manifest.json` reports `source: "cdp-fallback"`, then read the scenario-specific `Kusto_Workbench.log` artifact.
 - A live `.show databases` request can exceed 30 seconds. Database-list Trace E2E uses a 45-second output wait and should run with `--timeout 60000` so cluster latency does not mask log-capture behavior.
 - `kusto-execution-contract` is the native EXA ownership gate for normal execution, immediate same-target replacement, and database retarget. Keep immediate replacement low-resource (`print` followed by `print`): the true-long cancellation query can leave shared ADX under `E_LOW_MEMORY_CONDITION` and contaminate a same-database follow-up. Physical long-run cancellation remains in `query-cancel`.
+- `kusto-run-all-session-persistence` is the exact scratch-session durability gate. It starts with a Favorites-backed runtime target deliberately absent from authored section state, selects sticky Run All from the real menu, selects Result #3, closes immediately without Save, reopens on Result #3, then switches to Result #2 and verifies its row. It reruns from the sticky main button and repeats the same Result #3 close/reopen to Result #2 transition, which also proves revision-2 artifact restoration. Do not replace it with a pre-seeded `resultJson` fixture or add chart/transformation edits that can mask result-commit persistence.
+- Multi-result persistence coverage must combine non-primary selection, close/reopen, restored selection, and a post-reopen switch in one lifecycle scenario. Separate selection-only and restore-only tests are insufficient because stale local artifact revisions can render rows correctly while host selection authorization fails.
+- `kusto-selected-result-chart-independence` is the cross-surface multi-result gate: the query displays Result #2 while the rendered Chart Data dropdown selects Result #1 and the real Preview button is clicked. Both indexes are asserted in durable bytes; close/reopen must preserve `second / 2` in the query, `first / 1` in the Chart, and the same chart dropdown option, while the reopened query picker must still switch away and back without changing the Chart binding. Do not replace the chart dropdown event with direct `dataSourceResultIndex` injection.
 - The first normal-run scenario in `kusto-execution-contract` has once timed out with a genuinely stuck spinner while the two later scenarios passed; an unchanged rerun passed 3/3. Keep this in the flake ledger, inspect the failure screenshot and per-scenario logs, and never report the rerun as a clean first attempt.
 - Persisted multi-section startup must be tested from a real `.kqlx` copy. Restored logical targets can exist before `connectionsData` supplies `connectionRevision`/`connectionIdentityKey`; sections must republish the stamped target, schema prewarm must use the section API, and exact-generation schema responses must compare the logical connection/database target rather than requiring those host-only stamps in the response envelope.
 - `legacy-result-migration` is the native markerless Kusto cache gate. `kustoWorkbench.test.preparePersistedResultFixture` accepts `legacyKusto: true`, creates a current offline owner and matching embedded result target without either provenance marker, and leaves an elevated legacy descriptor for migration to remove. The scenario proves durable stamps, three restored rows, exact Chart binding with policy limited to account partition/revision, descriptor removal, and byte-stable reopen. Reviewed run `20260817-075850` passed 1/1 with two foreground-valid `1280x1000` screenshots and four matching JSON artifacts.
@@ -65,6 +94,7 @@ anything new you learned. Structure it however makes sense for this repo.
 - `kustoWorkbench.test.runAuthorityLiveFixture` is development-only. It seeds two same-endpoint connections with different authorities, uses one exact prepared-profile account, and asserts the target database is visible only through the resource authority. Always pair it with `kustoWorkbench.test.cleanupAuthorityLiveFixture`.
 - VS Code 1.129 requires the framework custom-tab fix: activating `TabInputCustom` must use `vscode.openWith(uri, viewType, ...)`, never `showTextDocument`, or a raw-text twin is created and title-targeted webview steps hit the wrong tab.
 - Kusto Workbench custom editors use a generic HTML title. After tab-label activation, the framework may target the unique visible webview; multiple visible webviews must fail as ambiguous rather than choosing one.
+- Screenshot-generator runs can attach a later `I evaluate` step to an outer custom-editor frame even after a shadow-piercing selector wait found the inner table. Prefer persisted fixtures plus selector-driven capture after restore; when JavaScript is unavoidable, keep setup and assertions in one evaluation that already proved it owns the target DOM.
 - `document-capabilities` is the native COD-2 gate. It covers actionable read-only MDX incompatibility, exact MDX add controls, opaque-only Save, and SQLX comparison create/save/reopen/remove/recreate/save/reopen with exactly one `sql` comparison retaining `comparisonSourceBoxId`.
 - `host-owned-markdown-lifecycle` is the native DOC-1/DOC-2/DOC-3 gate. It covers one host-owned Markdown + URL + Python command stream, stale rejection, throwing component serializers, Save/close/reopen, exact mixed order, Python's five persisted fields, and lossless root/state/known-section/opaque preservation. Default URL `imageSizeMode: "fill"` is canonicalized by omission, so strict JSON artifacts should emit `null` for that optional field. DOC-3 run `20260803-124847` produced a trustworthy `1280x1000` screenshot plus serializer, immediate-buffer, and durable-file JSON artifacts.
 - `python-execution-application-handler` is the isolated native HST-3 gate. It uses only built-in Python, clicks the real `.run-btn`, requires exact visible `HST3:24`, saves, closes/reopens, and verifies raw durable Windows stdout (`HST3:24\r\n`) plus normalized output and `dirty:false`. Final reviewed-build run `20260805-194937` passed first attempt with a clean foreground `1280x1000` screenshot and two reviewed JSON artifacts.

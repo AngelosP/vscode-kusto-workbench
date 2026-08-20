@@ -329,6 +329,143 @@ describe('kw-data-table visibility lifecycle', () => {
 		expect(table.shadowRoot?.querySelector('[title="Clear sort"]')).toBeTruthy();
 	});
 
+	it('renders declared type glyphs beside labels without changing column behavior', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [
+			{ name: 'Name', type: 'string' },
+			{ name: 'Untyped' },
+			{ name: 'Unknown', type: 'unknown' },
+		];
+		table.rows = [['bravo', 2, 'b'], ['alpha', 1, 'a']];
+		document.body.appendChild(table);
+		await settleTable(table);
+
+		const glyphs = table.shadowRoot?.querySelectorAll<HTMLElement>('[data-testid="column-type-glyph"]');
+		expect(glyphs).toHaveLength(1);
+		const glyph = glyphs?.[0];
+		expect(glyph?.textContent).toBe('s');
+		expect(glyph?.title).toBe('Data type: string');
+		expect(glyph?.getAttribute('role')).toBe('img');
+		expect(glyph?.getAttribute('aria-label')).toBe('Data type: string');
+		expect(Array.from(glyph?.parentElement?.children ?? []).map(element => element.className)).toEqual([
+			'th-label', 'type-glyph',
+		]);
+		expect(table.shadowRoot?.querySelector('[aria-label="Column menu for Name"]')).toBeTruthy();
+
+		glyph?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		await settleTable(table);
+
+		expect((table as any)._sorting).toEqual([{ id: '0', desc: false }]);
+		expect(renderedCellText(table).slice(0, 3)).toEqual(['alpha', '1', 'a']);
+		const sortedParts = Array.from(table.shadowRoot?.querySelector('th[data-column-index="0"] .thn')?.children ?? [])
+			.map(element => element.className);
+		expect(sortedParts).toEqual(['th-label', 'type-glyph', 'si2']);
+	});
+
+	it('recomputes glyphs and reserves only their fixed header width after column reassignment', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		const name = 'ModeratelyLongColumnName';
+		table.columns = [{ name, type: 'string' }, { name }];
+		table.rows = [];
+		document.body.appendChild(table);
+		await settleTable(table);
+
+		const widths = (table as any)._columnWidths as number[];
+		expect(widths[0] - widths[1]).toBe(14);
+		expect(table.shadowRoot?.querySelector('[title="Data type: string"]')?.textContent).toBe('s');
+
+		table.columns = [{ name, type: 'datetime' }, { name }];
+		await settleTable(table);
+
+		expect(table.shadowRoot?.querySelector('[title="Data type: datetime"]')?.textContent).toBe('d');
+		expect(table.shadowRoot?.querySelector('[title="Data type: string"]')).toBeNull();
+	});
+
+	it('retains the datatype indicator cache across row-only updates', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Value', type: 'long' }];
+		table.rows = [[1]];
+		document.body.appendChild(table);
+		await settleTable(table);
+		const indicators = (table as any)._columnTypeIndicators;
+
+		table.rows = [[2], [3]];
+		await settleTable(table);
+
+		expect((table as any)._columnTypeIndicators).toBe(indicators);
+		expect(table.shadowRoot?.querySelector('[title="Data type: long"]')?.textContent).toBe('l');
+	});
+
+	it('keeps the glyph before sort and filter indicators', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Value', type: 'long' }];
+		table.rows = [[2], [1]];
+		document.body.appendChild(table);
+		await settleTable(table);
+		(table as any)._sorting = [{ id: '0', desc: false }];
+		(table as any)._setColumnFilters([{ id: '0', value: { kind: 'values', allowedValues: ['1'] } }]);
+		(table as any)._table.setOptions((previous: any) => ({
+			...previous,
+			state: { ...previous.state, sorting: (table as any)._sorting },
+		}));
+		table.requestUpdate();
+		await table.updateComplete;
+
+		const header = table.shadowRoot?.querySelector('th[data-column-index="0"]');
+		expect(Array.from(header?.querySelector('.thn')?.children ?? []).map(element => element.className)).toEqual([
+			'th-label', 'type-glyph', 'si2', 'filtered-link',
+		]);
+		expect(header?.querySelector('.cm-btn')).toBeTruthy();
+	});
+
+	it('preserves every column menu action and label in order', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Value', type: 'long' }, { name: 'Category', type: 'string' }];
+		table.rows = [[2, 'b'], [1, 'a']];
+		document.body.appendChild(table);
+		await settleTable(table);
+		(table as any)._sorting = [{ id: '0', desc: false }];
+		(table as any)._table.setOptions((previous: any) => ({
+			...previous,
+			state: { ...previous.state, sorting: (table as any)._sorting },
+		}));
+		(table as any)._openColumnMenuAt(0, 100, 100);
+		await table.updateComplete;
+
+		const actions = Array.from(table.shadowRoot?.querySelectorAll<HTMLElement>('.cmi') ?? [])
+			.map(item => [item.dataset.action, item.textContent?.trim()]);
+		expect(actions).toEqual([
+			['sort-ascending', 'Sort ascending'],
+			['sort-descending', 'Sort descending'],
+			['remove-sort', 'Remove sort'],
+			['filter', 'Filter...'],
+			['copy-column', 'Copy column values'],
+			['unique-values', 'Show unique values'],
+			['unique-count', 'Unique count by column'],
+		]);
+	});
+
+	it('shows a type glyph only for the synthetic count in compact Unique Values tables', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Category', type: 'string' }];
+		table.rows = [['a'], ['a'], ['b']];
+		document.body.appendChild(table);
+		await settleTable(table);
+		(table as any)._openUniqueValues(0, 'unique-values');
+		await table.updateComplete;
+
+		const dialog = table.shadowRoot?.querySelector('kw-unique-values-dialog') as any;
+		await dialog.updateComplete;
+		const nestedTable = dialog.shadowRoot?.querySelector('kw-data-table') as KwDataTable;
+		await settleTable(nestedTable);
+
+		const nestedGlyphs = nestedTable.shadowRoot?.querySelectorAll<HTMLElement>('[data-testid="column-type-glyph"]');
+		expect(nestedTable.options.compact).toBe(true);
+		expect(nestedGlyphs).toHaveLength(1);
+		expect(nestedGlyphs?.[0].textContent).toBe('l');
+		expect(nestedGlyphs?.[0].closest('th')?.getAttribute('data-column-index')).toBe('1');
+	});
+
 	it('cancels deferred column-menu listeners when disconnected', async () => {
 		const table = document.createElement('kw-data-table') as KwDataTable;
 		table.columns = [{ name: 'Name' }];

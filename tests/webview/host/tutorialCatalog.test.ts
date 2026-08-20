@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
 	searchTutorials,
 	validateTutorialCatalog,
@@ -87,6 +89,16 @@ describe('tutorial catalog validation', () => {
 
 	it('treats placeholder extension versions as permissive', () => {
 		expect(isExtensionVersionCompatible('0.0.0-placeholder', '99.0.0')).toBe(true);
+	});
+
+	it('gates datatype-glyph tutorial updates to extension 5.1.0', () => {
+		const actual = JSON.parse(readFileSync(resolve('media/tutorials/catalog.v1.json'), 'utf8')) as TutorialCatalog;
+		const byId = new Map(actual.content.map(item => [item.id, item]));
+		expect(byId.get('results-search-json')?.minExtensionVersion).toBe('5.1.0');
+		expect(byId.get('results-column-tools')?.minExtensionVersion).toBe('5.1.0');
+		expect(byId.get('results-search-json')?.updateToken).toBe('results-search-json-2026-08-19');
+		expect(byId.get('results-column-tools')?.updateToken).toBe('results-column-tools-2026-08-19');
+		expect(actual.generatedAt).toBe('2026-08-19T00:00:00.000Z');
 	});
 });
 

@@ -224,6 +224,30 @@ describe('HostKustoSectionExecutionApplicationHandler', () => {
 		expect(harness.coordinator.getTarget('query-1')).toBeUndefined();
 	});
 
+	it('preserves the committed attachment for projection-only section close', async () => {
+		const harness = createHarness();
+		await harness.openAndTarget();
+		const previous = {
+			type: 'queryResult' as const, engine: 'kusto' as const,
+			boxId: 'query-1', sectionInstanceId: 'instance-1', targetGeneration: 1,
+			executionId: 'projection-result', connectionId: TEST_CONNECTION.id, database: 'Samples',
+			producer: 'manual' as const, query: 'print previous=1', reservationSequence: 1,
+			dispatch: DISPATCH, result: queryResult('projection-result'),
+		};
+		expect(harness.resultSession.beginExecution(previous)).toBe(true);
+		expect(harness.resultSession.stagePublication('projection-publication', previous)).toBeTruthy();
+		expect(harness.resultSession.commitPublication('projection-publication')).toBe(true);
+
+		await harness.handler.handleMessage({
+			type: 'kustoSectionClose', boxId: 'query-1', sectionInstanceId: 'instance-1',
+			preserveResultAttachment: true,
+		});
+
+		expect(harness.resultOwner.overlaySnapshot({
+			sections: [{ id: 'query-1', type: 'query' }],
+		}).sections?.[0]).toHaveProperty('resultJson');
+	});
+
 	it('requires the exact execution-start acknowledgement before dispatch', async () => {
 		const harness = createHarness();
 		await harness.openAndTarget();
@@ -258,6 +282,75 @@ describe('HostKustoSectionExecutionApplicationHandler', () => {
 			status: 'success', executionId: 'copilot-execution', result,
 		});
 		expect(harness.executeQueryCancelable).toHaveBeenCalledOnce();
+	});
+
+	it('preserves the committed attachment when a host-originated start is rejected', async () => {
+		const harness = createHarness();
+		await harness.openAndTarget();
+		const previous = {
+			type: 'queryResult' as const, engine: 'kusto' as const,
+			boxId: 'query-1', sectionInstanceId: 'instance-1', targetGeneration: 1,
+			executionId: 'previous-execution', connectionId: TEST_CONNECTION.id, database: 'Samples',
+			producer: 'manual' as const, query: 'print previous=1', reservationSequence: 1,
+			dispatch: DISPATCH, result: queryResult('previous'),
+		};
+		expect(harness.resultSession.beginExecution(previous)).toBe(true);
+		expect(harness.resultSession.stagePublication('previous-publication', previous)).toBeTruthy();
+		expect(harness.resultSession.commitPublication('previous-publication')).toBe(true);
+
+		const running = harness.handler.executeKustoSectionQuery({
+			target: harness.handler.getKustoSectionExecutionTarget('query-1')!,
+			executionId: 'rejected-copilot', producer: 'copilot', query: 'print next=1',
+		});
+		await vi.waitFor(() => expect(harness.transport).toHaveBeenCalledOnce());
+		const started = harness.transport.mock.calls[0][0] as any;
+		await harness.handler.handleMessage({
+			type: 'kustoExecutionStartedAck', boxId: started.boxId,
+			executionId: started.executionId, sectionInstanceId: started.sectionInstanceId,
+			targetGeneration: started.targetGeneration, accepted: false,
+		});
+
+		await expect(running).resolves.toMatchObject({ status: 'superseded' });
+		expect(harness.resultOwner.overlaySnapshot({
+			sections: [{ id: 'query-1', type: 'query' }],
+		}).sections?.[0]).toHaveProperty('resultJson');
+		expect(harness.executeQueryCancelable).not.toHaveBeenCalled();
+	});
+
+	it('clears the committed attachment only after a host-originated start is accepted', async () => {
+		const harness = createHarness();
+		await harness.openAndTarget();
+		const previous = {
+			type: 'queryResult' as const, engine: 'kusto' as const,
+			boxId: 'query-1', sectionInstanceId: 'instance-1', targetGeneration: 1,
+			executionId: 'previous-execution', connectionId: TEST_CONNECTION.id, database: 'Samples',
+			producer: 'manual' as const, query: 'print previous=1', reservationSequence: 1,
+			dispatch: DISPATCH, result: queryResult('previous'),
+		};
+		expect(harness.resultSession.beginExecution(previous)).toBe(true);
+		expect(harness.resultSession.stagePublication('previous-publication', previous)).toBeTruthy();
+		expect(harness.resultSession.commitPublication('previous-publication')).toBe(true);
+		const execution = deferred<QueryResult>();
+		harness.executeQueryCancelable.mockImplementationOnce(dispatchingExecution(execution.promise));
+
+		const running = harness.handler.executeKustoSectionQuery({
+			target: harness.handler.getKustoSectionExecutionTarget('query-1')!,
+			executionId: 'accepted-copilot', producer: 'copilot', query: 'print next=1',
+		});
+		await vi.waitFor(() => expect(harness.transport).toHaveBeenCalledOnce());
+		const started = harness.transport.mock.calls[0][0] as any;
+		await harness.handler.handleMessage({
+			type: 'kustoExecutionStartedAck', boxId: started.boxId,
+			executionId: started.executionId, sectionInstanceId: started.sectionInstanceId,
+			targetGeneration: started.targetGeneration, accepted: true,
+		});
+		await vi.waitFor(() => expect(harness.executeQueryCancelable).toHaveBeenCalledOnce());
+
+		expect(harness.resultOwner.overlaySnapshot({
+			sections: [{ id: 'query-1', type: 'query' }],
+		}).sections?.[0]).not.toHaveProperty('resultJson');
+		execution.resolve(queryResult('next'));
+		await expect(running).resolves.toMatchObject({ status: 'success' });
 	});
 
 	it('keeps the exact execution-start waiter and deadline live after a malformed matching acknowledgement', async () => {
@@ -372,6 +465,47 @@ describe('HostKustoSectionExecutionApplicationHandler', () => {
 		expect(harness.transport).toHaveBeenCalledTimes(2);
 	});
 
+	it('keeps the publication drain pending until the applied acknowledgement settles', async () => {
+		const harness = createHarness();
+		const publishing = harness.handler.postKustoPublication({ type: 'queryResult', marker: 'close-drain' });
+		await vi.waitFor(() => expect(harness.transport).toHaveBeenCalledOnce());
+		const stage = harness.transport.mock.calls[0][0] as { publicationId: string };
+		await harness.handler.handleMessage({
+			type: 'kustoPublicationAck', publicationId: stage.publicationId,
+			phase: 'staged', accepted: true,
+		});
+		await vi.waitFor(() => expect(harness.transport).toHaveBeenCalledTimes(2));
+
+		let drained = false;
+		const drain = harness.handler.waitForPendingPublications().then(() => { drained = true; });
+		await flushPromises();
+		expect(drained).toBe(false);
+
+		await harness.handler.handleMessage({
+			type: 'kustoPublicationAck', publicationId: stage.publicationId,
+			phase: 'applied', accepted: true,
+		});
+		await expect(publishing).resolves.toBe(true);
+		await drain;
+		expect(drained).toBe(true);
+	});
+
+	it('bounds a never-settling publication transport by the publication deadline', async () => {
+		vi.useFakeTimers();
+		try {
+			const harness = createHarness();
+			(harness.transport as any).mockImplementation(() => new Promise<boolean>(() => undefined));
+
+			const publishing = harness.handler.postKustoPublication({ type: 'showInfo', message: 'bounded' });
+			await vi.advanceTimersByTimeAsync(5_001);
+
+			await expect(publishing).resolves.toBe(false);
+			expect(harness.transport).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('commits the host result attachment before resolving applied success', async () => {
 		const harness = createHarness();
 		await harness.openAndTarget();
@@ -463,7 +597,6 @@ describe('HostKustoSectionExecutionApplicationHandler', () => {
 			const pending = pendingPublicationAcks.get(appliedKey);
 			expect(pending).toBeDefined();
 			const deadline = pending?.timer;
-			const timerCount = vi.getTimerCount();
 
 			await harness.handler.handleMessage({
 				type: 'kustoPublicationAck', publicationId: [stage.publicationId] as unknown as string,
@@ -473,7 +606,6 @@ describe('HostKustoSectionExecutionApplicationHandler', () => {
 			expect(settled).toBe(false);
 			expect(pendingPublicationAcks.get(appliedKey)).toBe(pending);
 			expect(pendingPublicationAcks.get(appliedKey)?.timer).toBe(deadline);
-			expect(vi.getTimerCount()).toBe(timerCount);
 
 			await harness.handler.handleMessage({
 				type: 'kustoPublicationAck', publicationId: stage.publicationId,

@@ -33,6 +33,7 @@ import {
 	type ResultArtifactPublication,
 } from '../../shared/resultArtifact.js';
 import { getKustoResultSets, parseKustoResultBatch } from '../../shared/kustoResultBatch.js';
+import { admitKqlFullQueryText } from '../../host/kqlLanguageService/sourceAnalysis.js';
 import {
 	addQueryBox, removeQueryBox, updateConnectionSelects, toggleCacheControls,
 	__kustoGetQuerySectionElement, __kustoSetSectionName, __kustoGetConnectionId, __kustoGetDatabase,
@@ -1005,7 +1006,19 @@ function __kustoTrustedRestoredResultProducer(job: DeferredRestoredResultJob): R
 	if (job.sqlOwnerConnectionId) return liveSqlProducer;
 	const section = document.getElementById(job.derivedSourceBoxId || job.boxId) as any;
 	const engine = 'kusto';
-	const query = __kustoCurrentRestoredQueryText(job);
+	const currentQuery = __kustoCurrentRestoredQueryText(job);
+	const persistedProducer = job.resultArtifact && typeof job.resultArtifact === 'object'
+		&& !Array.isArray(job.resultArtifact)
+		? (job.resultArtifact as { producer?: unknown }).producer
+		: undefined;
+	const persistedQuery = persistedProducer && typeof persistedProducer === 'object'
+		&& !Array.isArray(persistedProducer)
+		? String((persistedProducer as Record<string, unknown>).query ?? '')
+		: '';
+	const fullQueryAdmission = admitKqlFullQueryText(currentQuery);
+	const query = fullQueryAdmission.ok && persistedQuery === fullQueryAdmission.executionText
+		? fullQueryAdmission.executionText
+		: currentQuery;
 	const connectionId = String(section?.getConnectionId?.() || '').trim();
 	const database = String(job.expectedResultDatabase || job.kustoDatabase || section?.getDatabase?.() || '').trim();
 	return query.trim() && connectionId && database ? { engine, query, connectionId, database } : undefined;
@@ -2331,9 +2344,12 @@ let __kustoLastPersistRevision = 0;
 let __kustoLastSentPersistSignature = '';
 let __kustoLastSentPersistRevision = 0;
 let __kustoPersistSnapshotSequence = 0;
+let __kustoHostResultMutationRevision = 0;
+let __kustoAcknowledgedHostResultMutationRevision = 0;
 const __kustoPendingPersistSnapshots = new Map<string, {
 	signature: string;
 	revision: number;
+	hostResultMutationRevision: number;
 	runtimeSourceSections: Record<string, any>;
 }>();
 const MAX_PENDING_PERSIST_SNAPSHOTS = 32;
@@ -2356,6 +2372,7 @@ function __kustoSeedPersistSignatureFromCurrentState(): void {
 			__kustoLastSentPersistRevision = pState.documentEditRevision;
 		}
 		__kustoPendingPersistSnapshots.clear();
+		__kustoAcknowledgedHostResultMutationRevision = __kustoHostResultMutationRevision;
 	} catch (e) { console.error('[kusto]', e); }
 }
 
@@ -2364,6 +2381,7 @@ function trackPendingPersistSnapshot(
 	signature: string,
 	revision: number,
 	state?: unknown,
+	hostResultMutationRevision = __kustoHostResultMutationRevision,
 ): void {
 	const stateRecord = state && typeof state === 'object' ? state as Record<string, unknown> : undefined;
 	const sections = Array.isArray(stateRecord?.sections) ? stateRecord.sections : [];
@@ -2376,7 +2394,9 @@ function trackPendingPersistSnapshot(
 			? [[id, JSON.parse(JSON.stringify(record))] as const]
 			: [];
 	}));
-	__kustoPendingPersistSnapshots.set(snapshotId, { signature, revision, runtimeSourceSections });
+	__kustoPendingPersistSnapshots.set(snapshotId, {
+		signature, revision, hostResultMutationRevision, runtimeSourceSections,
+	});
 	while (__kustoPendingPersistSnapshots.size > MAX_PENDING_PERSIST_SNAPSHOTS) {
 		const oldest = __kustoPendingPersistSnapshots.keys().next().value;
 		if (typeof oldest !== 'string') break;
@@ -2450,6 +2470,8 @@ export function resetDocumentPersistenceForTest(): void {
 	pState.documentMutationAllowed = true;
 	pState.documentRuntimeActive = true;
 	pState.documentDefaultsFinalizedApplyCount = -1;
+	__kustoHostResultMutationRevision = 0;
+	__kustoAcknowledgedHostResultMutationRevision = 0;
 	resetHostOwnedMarkdownDocument();
 	__kustoClearMalformedDocumentLock();
 }
@@ -2461,6 +2483,12 @@ export function schedulePersist(reason?: any, immediate?: any) {
 	try {
 		const r = (typeof reason === 'string' && reason) ? reason : '';
 		const persistImmediately = immediate || r === 'reorder';
+		const hostResultMutation = r === 'kusto-result-attachment-committed'
+			|| r === 'kusto-execution-started'
+			|| r === 'kusto-result-selection';
+		if (hostResultMutation) __kustoHostResultMutationRevision++;
+		const hostResultStatePending = __kustoHostResultMutationRevision
+			> __kustoAcknowledgedHostResultMutationRevision;
 		const tracksEditRevision = pState.documentKind === 'kql' || pState.documentKind === 'sql';
 		if (__kustoPersistTimer) {
 			clearTimeout(__kustoPersistTimer);
@@ -2505,7 +2533,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 			});
 			if (!prepared) return;
 			const { state, signature: sig } = prepared;
-			if (sig && sig === __kustoLastPersistSignature
+			if (!hostResultStatePending && sig && sig === __kustoLastPersistSignature
 				&& __kustoLastPersistRevision === pState.documentEditRevision) {
 				return;
 			}
@@ -2535,7 +2563,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 					__kustoLastSentPersistRevision = pState.documentEditRevision;
 					return;
 				}
-				if (sig && sig === __kustoLastPersistSignature) {
+				if (!hostResultStatePending && sig && sig === __kustoLastPersistSignature) {
 					return;
 				}
 
@@ -2689,6 +2717,10 @@ export function acknowledgePersistDocument(
 	);
 	__kustoLastPersistSignature = pending.signature;
 	__kustoLastPersistRevision = revision;
+	__kustoAcknowledgedHostResultMutationRevision = Math.max(
+		__kustoAcknowledgedHostResultMutationRevision,
+		pending.hostResultMutationRevision,
+	);
 	for (const [pendingId, snapshot] of __kustoPendingPersistSnapshots) {
 		if (snapshot.revision <= revision) __kustoPendingPersistSnapshots.delete(pendingId);
 	}
@@ -2720,7 +2752,9 @@ try {
 			}
 			const state = __kustoGetPersistenceSnapshotState();
 			const sig = __kustoGetPersistSignature(state);
-			if (sig && sig === __kustoLastPersistSignature) {
+			const hostResultStatePending = __kustoHostResultMutationRevision
+				> __kustoAcknowledgedHostResultMutationRevision;
+			if (!hostResultStatePending && sig && sig === __kustoLastPersistSignature) {
 				return;
 			}
 			const editRevision = preparePersistRevision(sig);
@@ -3795,7 +3829,10 @@ function __kustoApplyPendingAdds() {
 	return true;
 }
 
-function __kustoSetMalformedDocumentLock(error?: unknown): void {
+function __kustoSetMalformedDocumentLock(
+	error?: unknown,
+	options: Readonly<{ preserveResultAttachments?: boolean }> = {},
+): void {
 	__kustoPersistenceEnabled = false;
 	pState.documentMutationAllowed = false;
 	pState.documentRuntimeActive = false;
@@ -3813,10 +3850,17 @@ function __kustoSetMalformedDocumentLock(error?: unknown): void {
 				postMessageToHost({
 					type: 'kustoSectionClose', boxId,
 					sectionInstanceId: lifecycle.sectionInstanceId,
+					...(options.preserveResultAttachments === true
+						? { preserveResultAttachment: true }
+						: {}),
 				});
 			} catch (e) { console.error('[kusto]', e); }
 		}
-		try { section?.disposeSchemaLifecycle?.(); } catch (e) { console.error('[kusto]', e); }
+		try {
+			section?.disposeSchemaLifecycle?.({
+				preserveResultAttachment: options.preserveResultAttachments === true,
+			});
+		} catch (e) { console.error('[kusto]', e); }
 	}
 	for (const boxId of [...sqlBoxes]) {
 		try { __kustoGetSqlSectionElement(boxId)?.retireForDocumentInvalidation?.(); } catch (e) { console.error('[kusto]', e); }
@@ -4024,7 +4068,11 @@ export function handleDocumentDataMessage(message: any): boolean {
 		});
 	} catch (error) {
 		console.error('[kusto]', error);
-		__kustoSetMalformedDocumentLock(error);
+		__kustoSetMalformedDocumentLock(error, {
+			preserveResultAttachments: __kustoHasAppliedDocument
+				&& !!incomingDocumentUri
+				&& incomingDocumentUri === __kustoLastAppliedDocumentUri,
+		});
 		return false;
 	} finally {
 		__kustoSetDocumentLoading(false);

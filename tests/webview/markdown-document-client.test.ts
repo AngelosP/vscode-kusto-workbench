@@ -440,7 +440,7 @@ describe('host-owned Markdown command client', () => {
 
 		const afterState = {
 			id: 'chart_1', type: 'chart', name: 'After', mode: 'preview', expanded: false,
-			dataSourceId: 'query_2', chartType: 'line', xColumn: 'Day', yColumns: ['Cost'],
+			dataSourceId: 'query_2', dataSourceResultIndex: 1, chartType: 'line', xColumn: 'Day', yColumns: ['Cost'],
 			xAxisSettings: { customLabel: 'Date' }, chartTitle: 'Host chart',
 		} as const;
 		expect(requestHostOwnedChartPatch(afterState)).toBe(true);
@@ -454,17 +454,47 @@ describe('host-owned Markdown command client', () => {
 				type: 'patch', sectionId: 'chart_1', expectedSectionRevision: 0,
 				patch: {
 					name: 'After', mode: 'preview', expanded: false, dataSourceId: 'query_2',
-					chartType: 'line', xColumn: 'Day', yColumns: ['Cost'],
+					dataSourceResultIndex: 1, chartType: 'line', xColumn: 'Day', yColumns: ['Cost'],
 					xAxisSettings: { customLabel: 'Date' }, chartTitle: 'Host chart',
 				},
 			},
 		});
+		const defaultResultState = { ...afterState } as typeof afterState & { dataSourceResultIndex?: number };
+		delete defaultResultState.dataSourceResultIndex;
+		expect(requestHostOwnedChartPatch(defaultResultState)).toBe(true);
+		const chartDefaultPatch = await waitForPostedMessage(2);
+		expect(chartDefaultPatch).toMatchObject({
+			expectedDocumentRevision: 1,
+			command: { type: 'patch', sectionId: 'chart_1', expectedSectionRevision: 1 },
+		});
+		expect(chartDefaultPatch.command.patch).toMatchObject({ dataSourceResultIndex: null });
+
 		handleHostOwnedMarkdownCommandResult({
 			type: 'markdownDocumentCommandResult', commandId: chartPatch.commandId, ok: true,
 			sourceGeneration: 14,
 			projection: {
 				documentRevision: 1,
 				sectionRevisions: { markdown_1: 0, chart_1: 1 },
+				markdownSectionRevisions: { markdown_1: 0 },
+				chartSections: [{
+					id: 'chart_1', type: 'chart', name: 'After', mode: 'preview', expanded: false,
+					dataSourceId: 'query_2', dataSourceResultIndex: 1,
+					chartType: 'line', xColumn: 'Day', yColumns: ['Cost'],
+					xAxisSettings: { customLabel: 'Date' }, chartTitle: 'Host chart',
+				}],
+				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'before' }],
+				pythonSections: [],
+				urlSections: [],
+				orderedSectionIds: ['markdown_1', 'chart_1'],
+			},
+		});
+
+		handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: chartDefaultPatch.commandId, ok: true,
+			sourceGeneration: 14,
+			projection: {
+				documentRevision: 2,
+				sectionRevisions: { markdown_1: 0, chart_1: 2 },
 				markdownSectionRevisions: { markdown_1: 0 },
 				chartSections: [{
 					id: 'chart_1', type: 'chart', name: 'After', mode: 'preview', expanded: false,
@@ -479,10 +509,10 @@ describe('host-owned Markdown command client', () => {
 		});
 
 		expect(requestHostOwnedChartRemove('chart_1')).toBe(true);
-		const chartRemove = await waitForPostedMessage(2);
-		expect(chartRemove).toMatchObject({
-			expectedDocumentRevision: 1,
-			command: { type: 'remove', sectionId: 'chart_1', expectedSectionRevision: 1 },
+		const finalChartRemove = await waitForPostedMessage(3);
+		expect(finalChartRemove).toMatchObject({
+			expectedDocumentRevision: 2,
+			command: { type: 'remove', sectionId: 'chart_1', expectedSectionRevision: 2 },
 		});
 	});
 

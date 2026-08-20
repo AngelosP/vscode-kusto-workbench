@@ -3144,6 +3144,26 @@ describe('message-handler dispatch', () => {
 		}
 	});
 
+	it('replays a completed applied acknowledgement after the first send is lost', () => {
+		const publicationId = 'publication-beforeunload-replay';
+		dispatchHostMessage({
+			type: 'kustoPublicationStage', publicationId,
+			publicationDeadline: Date.now() + 1_000,
+			payload: kustoConnectionsSnapshot(9_999_999, 'replay-connection'),
+		});
+		dispatchHostMessage({ type: 'kustoPublicationCommit', publicationId });
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoPublicationAck', publicationId, phase: 'applied', accepted: true,
+		});
+		mocks.postMessageToHost.mockClear();
+
+		messageHandlerModule.replayCompletedKustoPublicationAcknowledgements();
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoPublicationAck', publicationId, phase: 'applied', accepted: true,
+		});
+	});
+
 	it('rejects an unstamped terminal aimed at a registered Kusto section', async () => {
 		const resultsState = await import('../../src/webview/core/results-state.js');
 		const persistence = await import('../../src/webview/core/persistence.js');
@@ -3406,6 +3426,36 @@ describe('message-handler dispatch', () => {
 		expect(controller.getActiveExecution()).toEqual(expect.objectContaining({
 			executionId: 'manual-current', producer: 'manual',
 		}));
+	});
+
+	it('clears and persists the prior result after accepting a host-originated start', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		const section = {
+			getSchemaLifecycleIdentity: vi.fn(() => ({
+				sectionInstanceId: 'instance-accepted', targetGeneration: 2,
+			})),
+			getConnectionId: vi.fn(() => 'connection-accepted'),
+			getDatabase: vi.fn(() => 'Samples'),
+			getActiveExecution: vi.fn(() => undefined),
+			beginQueryExecution: vi.fn(() => true),
+		};
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.clearStoredQueryResult.mockClear();
+		vi.mocked(persistence.schedulePersist).mockClear();
+
+		dispatchHostMessage({
+			type: 'kustoExecutionStarted', engine: 'kusto', boxId: 'query-accepted',
+			executionId: 'copilot-accepted', sectionInstanceId: 'instance-accepted', targetGeneration: 2,
+			connectionId: 'connection-accepted', database: 'Samples', producer: 'copilot',
+			reservationSequence: 1, query: 'print Value=1',
+		});
+
+		expect(mocks.clearStoredQueryResult).toHaveBeenCalledWith('query-accepted');
+		expect(persistence.schedulePersist).toHaveBeenCalledWith('kusto-execution-started', true);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoExecutionStartedAck', boxId: 'query-accepted', executionId: 'copilot-accepted',
+			sectionInstanceId: 'instance-accepted', targetGeneration: 2, accepted: true,
+		});
 	});
 
 	it('rejects malformed execution-start traffic before section and artifact effects', () => {

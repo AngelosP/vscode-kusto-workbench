@@ -3,11 +3,12 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [5.1.0] - 2026.08.19
+## [5.1.0] - 2026.08.20
 
 * Support for multiple results within a single query section (Run All).
 * Improvements to the 'Compare queries' and 'Optimize query' UX.
 * Kusto Copilot clarifications started by the Workbench agent are now answered and retried by that agent from available context. The user is asked only when a genuinely unresolved choice could materially change the result.
+* Result-table headers now show compact datatype glyphs with the full declared type available on hover.
 
 ## [5.0.0] - 2026.08.18
 

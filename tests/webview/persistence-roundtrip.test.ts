@@ -40,7 +40,16 @@ const testState = vi.hoisted(() => {
 		const id = options.id || `query_restored_${addQueryBox.mock.calls.length + 1}`;
 		queryBoxes.push(id);
 		queryEditors[id] = { getValue: () => '' };
-		const el = document.createElement('kw-query-section') as HTMLElement & { serialize?: () => unknown; getClusterUrl?: () => string; getConnectionId?: () => string; getDatabase?: () => string; clearResults?: ReturnType<typeof vi.fn> };
+		const el = document.createElement('kw-query-section') as HTMLElement & {
+			serialize?: () => unknown;
+			getClusterUrl?: () => string;
+			getConnectionId?: () => string;
+			getDatabase?: () => string;
+			clearResults?: ReturnType<typeof vi.fn>;
+			clearTargetBoundState?: ReturnType<typeof vi.fn>;
+			getSchemaLifecycleIdentity?: () => { sectionInstanceId: string; targetGeneration: number };
+			disposeSchemaLifecycle?: ReturnType<typeof vi.fn>;
+		};
 		el.id = id;
 		el.getClusterUrl = () => String(options.clusterUrl || '');
 		el.getConnectionId = () => {
@@ -51,6 +60,9 @@ const testState = vi.hoisted(() => {
 		};
 		el.getDatabase = () => String(options.database || '');
 		el.clearResults = vi.fn();
+		el.clearTargetBoundState = vi.fn();
+		el.getSchemaLifecycleIdentity = () => ({ sectionInstanceId: `instance-${id}`, targetGeneration: 1 });
+		el.disposeSchemaLifecycle = vi.fn();
 		el.serialize = () => ({
 			id,
 			type: 'query',
@@ -526,6 +538,28 @@ describe('persistence round-trip', () => {
 		expect(applied).toBe(false);
 		expect(pState.sourceGeneration).toBe(7);
 		expect(document.getElementById('kusto-malformed-document-banner')?.textContent).toContain('injected chart restore failure');
+	});
+
+	it('does not preserve a query attachment when the initial projection fails', () => {
+		vi.mocked(postMessageToHost).mockClear();
+		vi.mocked(addChartBox).mockImplementationOnce(() => { throw new Error('injected initial projection failure'); });
+
+		expect(handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, sourceGeneration: 1,
+			documentUri: 'file:///tmp/initial-projection-failure.kqlx', documentKind: 'kqlx',
+			state: { sections: [
+				{ id: 'query_initial_failure', type: 'query', query: 'print Value=1' },
+				{ id: 'chart_initial_failure', type: 'chart', chartType: 'bar', dataSourceId: 'query_initial_failure' },
+			] },
+		})).toBe(false);
+
+		const close = vi.mocked(postMessageToHost).mock.calls
+			.map(([message]) => message as any)
+			.find(message => message.type === 'kustoSectionClose' && message.boxId === 'query_initial_failure');
+		expect(close).toEqual(expect.objectContaining({
+			type: 'kustoSectionClose', boxId: 'query_initial_failure',
+		}));
+		expect(close).not.toHaveProperty('preserveResultAttachment');
 	});
 
 	it('does not acknowledge a newer rich source generation through the already-applied fast path', () => {
@@ -2611,6 +2645,83 @@ describe('persistence round-trip', () => {
 		expect(postMessageToHost).toHaveBeenCalledTimes(2);
 	});
 
+	it.each([
+		['kqlx', 'file:///tmp/run-all-result.kqlx', 'kusto-result-attachment-committed'],
+		['kqlx', 'file:///tmp/run-all-started.kqlx', 'kusto-execution-started'],
+		['kqlx', 'file:///tmp/run-all-selection.kqlx', 'kusto-result-selection'],
+		['kql', 'file:///tmp/run-all-result.kql', 'kusto-result-attachment-committed'],
+		['kql', 'file:///tmp/run-all-started.kql', 'kusto-execution-started'],
+		['kql', 'file:///tmp/run-all-selection.kql', 'kusto-result-selection'],
+	] as const)('persists host result mutation %s for %s after unchanged Run All state was acknowledged', (documentKind, documentUri, mutationReason) => {
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind, documentUri,
+			state: { sections: [{ type: 'query', id: 'query_run_all', query: 'print 1', runMode: 'take100' }] },
+		});
+		document.body.innerHTML = '';
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		const query = document.createElement('div') as HTMLElement & { serialize: () => unknown };
+		query.id = 'query_run_all';
+		query.serialize = () => ({
+			id: 'query_run_all', type: 'query', query: 'print 1', runMode: 'runAll',
+		});
+		container.appendChild(query);
+		document.body.appendChild(container);
+		pState.documentKind = documentKind;
+		pState.compatibilityMode = false;
+		vi.mocked(postMessageToHost).mockClear();
+
+		schedulePersist('run-mode', true);
+		const modeSnapshot = vi.mocked(postMessageToHost).mock.calls[0][0] as any;
+		acknowledgePersistDocument(modeSnapshot.snapshotId, modeSnapshot.editRevision);
+		vi.mocked(postMessageToHost).mockClear();
+
+		schedulePersist(mutationReason, true);
+		schedulePersist('retry-host-result-mutation', true);
+
+		const messages = vi.mocked(postMessageToHost).mock.calls.map(call => call[0] as any);
+		expect(messages).toHaveLength(2);
+		expect(messages[0]).toMatchObject({
+			type: 'persistDocument', reason: mutationReason,
+			state: { sections: [{ id: 'query_run_all', runMode: 'runAll' }] },
+		});
+		acknowledgePersistDocument(messages[1].snapshotId, messages[1].editRevision);
+		schedulePersist('after-host-result-ack', true);
+		expect(postMessageToHost).toHaveBeenCalledTimes(2);
+	});
+
+	it('replays an unacknowledged host result mutation during session beforeunload', () => {
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, isSessionFile: true,
+			documentKind: 'kqlx', documentUri: 'file:///tmp/session.kqlx',
+			state: { sections: [{ type: 'query', id: 'query_run_all', query: 'print 1', runMode: 'runAll' }] },
+		});
+		document.body.innerHTML = '';
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		const query = document.createElement('div') as HTMLElement & { serialize: () => unknown };
+		query.id = 'query_run_all';
+		query.serialize = () => ({ id: 'query_run_all', type: 'query', query: 'print 1', runMode: 'runAll' });
+		container.appendChild(query);
+		document.body.appendChild(container);
+		pState.documentKind = 'kqlx';
+		pState.compatibilityMode = false;
+		pState.isSessionFile = true;
+		adoptCurrentStateAsCleanForTest();
+		vi.mocked(postMessageToHost).mockClear();
+
+		schedulePersist('kusto-result-selection', true);
+		window.dispatchEvent(new Event('beforeunload'));
+
+		const persistMessages = vi.mocked(postMessageToHost).mock.calls
+			.map(call => call[0] as any)
+			.filter(message => message.type === 'persistDocument');
+		expect(persistMessages.map(message => message.reason)).toEqual([
+			'kusto-result-selection', 'beforeunload',
+		]);
+	});
+
 	it('persists a change to a __proto__ series color', () => {
 		document.body.innerHTML = '';
 		const container = document.createElement('div');
@@ -3990,6 +4101,66 @@ describe('persistence round-trip', () => {
 		}
 	});
 
+	it('restores a revision-2 Run All artifact with standalone separator formatting', () => {
+		vi.useFakeTimers();
+		try {
+			testState.kustoConnections.push(ownedKustoConnection({
+				id: 'public-run-all', clusterUrl: 'https://public.kusto.windows.net',
+			}));
+			markKustoLeaveNoTracePolicyPending();
+			const editorQuery = "print ResultSet = 'first', Value = 1\n;\nprint ResultSet = 'second', Value = 2\n;\nprint ResultSet = 'third', Value = 3";
+			const executionQuery = "print ResultSet = 'first', Value = 1;\n\nprint ResultSet = 'second', Value = 2;\n\nprint ResultSet = 'third', Value = 3";
+			const resultJson = JSON.stringify({
+				columns: ['ResultSet', 'Value'], rows: [['first', 1]], metadata: {},
+				additionalResults: { version: 1, sets: [
+					{ resultIndex: 1, columns: ['ResultSet', 'Value'], rows: [['second', 2]], metadata: {} },
+					{ resultIndex: 2, columns: ['ResultSet', 'Value'], rows: [['third', 3]], metadata: {} },
+				] },
+			});
+			const resultArtifact = {
+				version: 1, artifactId: 'result:query_run_all_restore:2',
+				sourceBoxId: 'query_run_all_restore', revision: 2, createdAt: 1234,
+				producer: {
+					engine: 'kusto', boxId: 'query_run_all_restore', executionId: 'execution-run-all',
+					query: executionQuery, connectionId: 'public-run-all', database: 'Db',
+				},
+				policy: {
+					accountPartition: 'partition-a', leaveNoTraceRevision: 0,
+					exposeToActiveContent: true, sendToModel: true,
+					shareToClipboard: true, exportToCsv: true,
+				},
+			};
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentUri: 'file:///tmp/run-all-restore.kqlx', state: { sections: [{
+					type: 'query', id: 'query_run_all_restore', query: editorQuery,
+					clusterUrl: 'https://public.kusto.windows.net', connectionIdHint: 'public-run-all',
+					database: 'Db', runMode: 'runAll', resultJson, resultArtifact,
+					selectedResultIndex: 2, ...kustoResultOwner,
+				}] },
+			});
+			flushDeferredRestoreTimers();
+			expect(displayResultBatchForBox).not.toHaveBeenCalled();
+			applyKustoLeaveNoTracePolicy([], false);
+			flushDeferredRestoreTimers();
+
+			expect(displayResultBatchForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ additionalResults: expect.objectContaining({ version: 1 }) }),
+				'query_run_all_restore',
+				expect.objectContaining({
+					selectedResultIndex: 2,
+					artifactPublication: expect.objectContaining({
+						persistedIdentity: expect.objectContaining({
+							artifactId: resultArtifact.artifactId, revision: 2,
+						}),
+					}),
+				}),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('rejects restored Kusto comparison rows with forged artifact ancestry', () => {
 		vi.useFakeTimers();
 		try {
@@ -4922,6 +5093,7 @@ describe('persistence round-trip', () => {
 		expect(handleDocumentDataMessage(projection(1, stableState, { transform_failed_handoff: 0 }))).toBe(true);
 		const query = document.getElementById('query_failed_handoff');
 		const sql = document.getElementById('sql_failed_handoff');
+		vi.mocked(postMessageToHost).mockClear();
 		vi.mocked(addChartBox).mockImplementationOnce(() => { throw new Error('injected handoff failure'); });
 		const failedState = { sections: [
 			...stableState.sections,
@@ -4932,6 +5104,11 @@ describe('persistence round-trip', () => {
 			transform_failed_handoff: 0, chart_failed_handoff: 0,
 		}))).toBe(false);
 		expect(pState.documentRuntimeActive).toBe(false);
+		expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'kustoSectionClose',
+			boxId: 'query_failed_handoff',
+			preserveResultAttachment: true,
+		}));
 
 		expect(handleDocumentDataMessage(projection(3, stableState, { transform_failed_handoff: 0 }))).toBe(true);
 		expect(document.getElementById('query_failed_handoff')).not.toBe(query);

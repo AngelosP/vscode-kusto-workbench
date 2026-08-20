@@ -251,7 +251,7 @@ export type IncomingWebviewMessage =
 	| UrlContentWebviewMessage
 	| { type: 'kustoSectionOpen'; boxId: string; sectionInstanceId: string }
 	| { type: 'kustoSectionTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number; connectionId?: string; database?: string; connectionRevision?: number; connectionIdentityKey?: string }
-	| { type: 'kustoSectionClose'; boxId: string; sectionInstanceId: string }
+	| { type: 'kustoSectionClose'; boxId: string; sectionInstanceId: string; preserveResultAttachment?: boolean }
 	| KustoExecutionStartWebviewMessage
 	| { type: 'cancelQuery'; boxId: string; executionId: string; sectionInstanceId: string; targetGeneration: number }
 	| { type: 'checkCopilotAvailability'; boxId: string }

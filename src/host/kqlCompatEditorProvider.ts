@@ -267,7 +267,10 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			viewSessionId,
 		});
 		const sidecarSession = new CompatSidecarSession(webviewPanel.visible === true, 'KQL');
-		const closeCoordinator = this.closeCoordinatorFactory({ session: sidecarSession });
+		const closeCoordinator = this.closeCoordinatorFactory({
+			session: sidecarSession,
+			allowKustoOwnerMessages: true,
+		});
 		const startupGateway = new MainWebviewStartupGateway<IncomingWebviewMessage>({
 			panel: webviewPanel,
 			admitInbound: input => {
@@ -316,11 +319,13 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			void closeCoordinator.disposePanel();
 		});
 		const subscriptions: vscode.Disposable[] = [startupGateway, outerDisposalSubscription];
+		let releaseKustoResultLease = () => undefined;
 		try {
 		perfMark('host.kqlCompat.initializeWebview.start');
 		fileOpenTrace.mark('initializeWebviewPanel.start');
 		await queryEditor.initializeWebviewPanel(webviewPanel, {
 			registerMessageHandler: false,
+			registerDisposalHandler: false,
 			initialDocumentLoading: true,
 			compatibilityPersistence,
 		});
@@ -433,8 +438,15 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			: undefined;
 		const kustoResultOwner = kustoResultLease?.owner;
 		const kustoResultPanelSession = kustoResultOwner?.openPanel(viewSessionId);
+		let kustoResultLeaseReleased = false;
+		releaseKustoResultLease = () => {
+			if (kustoResultLeaseReleased) return;
+			kustoResultLeaseReleased = true;
+			kustoResultLease?.release();
+		};
+		let canonicalSourceFingerprint = '';
+		let canonicalSourceRevision = 0;
 		if (kustoResultPanelSession) queryEditor.attachKustoResultPersistenceSession(kustoResultPanelSession);
-		if (kustoResultLease) subscriptions.push({ dispose: () => kustoResultLease.release() });
 
 		const getSidecarDisplayName = (): string => {
 			try {
@@ -619,7 +631,15 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						.update('\u0000')
 						.update(effectiveSidecarFile ? stringifyKqlxFile(effectiveSidecarFile) : 'no-sidecar')
 						.digest('hex');
-					kustoResultOwner.admitCanonicalSource(sourceFingerprint, state);
+					if (sourceFingerprint !== canonicalSourceFingerprint) {
+						canonicalSourceFingerprint = sourceFingerprint;
+						canonicalSourceRevision++;
+					}
+					kustoResultOwner.admitCanonicalSource(
+						sourceFingerprint,
+						state,
+						String(canonicalSourceRevision),
+					);
 					state = kustoResultOwner.overlaySnapshot(state);
 				}
 				if (!projection.isCurrent()) return false;
@@ -909,15 +929,34 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			notifySaveFailed: error => {
 				void vscode.window.showErrorMessage(`Failed to save companion metadata: ${error instanceof Error ? error.message : String(error)}`);
 			},
+			drainRetiredInbound: () => queryEditor.waitForPendingKustoPublications(),
 			repair: async () => {
 				if (!sidecarUri) return;
 				const repaired = await repairPersistedSidecar(sidecarUri);
 				if (!repaired) return;
 				sidecarFile = repaired.file;
+				lastKnownSidecarState = repaired.file.state;
 				lastWrittenSidecarText = repaired.text;
 				lastWrittenSidecarIdentity = repaired.identity;
+				if (kustoResultOwner?.hasCanonicalResultState()) {
+					const authoritativeState = kustoResultOwner.overlaySnapshot(repaired.file.state);
+					const materialized = await writeFreshSidecar(
+						sidecarUri,
+						authoritativeState,
+						repaired.text,
+					);
+					sidecarFile = materialized.file;
+					lastKnownSidecarState = materialized.file.state;
+					lastWrittenSidecarText = materialized.text;
+					lastWrittenSidecarIdentity = materialized.identity;
+					sidecarSession.markClean();
+				}
 			},
 			drainStore: () => sidecarStore.drain(),
+			disposeNestedProvider: () => {
+				try { queryEditor.disposePanel(webviewPanel); }
+				finally { releaseKustoResultLease(); }
+			},
 		};
 
 		handleIncomingWebviewMessage = async (message: IncomingWebviewMessage) => {
@@ -1143,6 +1182,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		closeCoordinator.configure(closeFinalization);
 		} catch (error) {
 			try { queryEditor.disposePanel(webviewPanel); } catch { /* continue compatibility cleanup */ }
+			releaseKustoResultLease();
 			await closeCoordinator.failInitialization({
 				gateway: startupGateway,
 				subscriptions,

@@ -164,6 +164,7 @@ import {
 	__kustoSetCompatibilityMode, __kustoApplyDocumentCapabilities,
 	__kustoRequestAddSection, createSectionWithCapabilities, __kustoOnQueryResult, __kustoScheduleLocalSchemaPrewarm,
 	__kustoSetHtmlPowerBiCompatibilityCheckEnabled,
+	__kustoClearStoredQueryResult,
 	resolvePendingSqlResultRestores,
 	resolvePendingKustoResultRestores,
 	discardPendingSqlResultRestores,
@@ -1474,6 +1475,17 @@ function acknowledgeKustoPublication(message: any, accepted: boolean, phase: 'st
 	}
 	postMessageToHost(acknowledgement);
 }
+
+export function replayCompletedKustoPublicationAcknowledgements(): void {
+	for (const [publicationId, completed] of completedKustoPublications) {
+		postMessageToHost({
+			type: 'kustoPublicationAck', publicationId,
+			phase: 'applied', accepted: completed.accepted,
+		});
+	}
+}
+
+window.addEventListener('beforeunload', replayCompletedKustoPublicationAcknowledgements);
 
 const SQL_COMPARISON_ADMISSION_ATTRIBUTE = 'data-sql-comparison-admission-request-id';
 type SqlComparisonMutationSnapshot = {
@@ -2822,6 +2834,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			);
 			if (acknowledgement.ok) postMessageToHost(acknowledgement.value);
 			if (accepted) {
+				try { __kustoClearStoredQueryResult(boxId); } catch (error) { console.error('[kusto]', error); }
+				try { schedulePersist('kusto-execution-started', true); } catch (error) { console.error('[kusto]', error); }
 				window.dispatchEvent(new CustomEvent(ADMITTED_KUSTO_EXECUTION_STARTED_EVENT, { detail: message }));
 			}
 			break;

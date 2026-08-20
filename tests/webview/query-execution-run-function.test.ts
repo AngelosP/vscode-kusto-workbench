@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const testState = vi.hoisted(() => ({
 	postMessageToHost: vi.fn(),
+	schedulePersist: vi.fn(),
 	getConnectionId: vi.fn(() => 'conn-1'),
 	getDatabase: vi.fn(() => 'Samples'),
 	getRunMode: vi.fn(() => 'runFunction'),
@@ -57,7 +58,7 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 }));
 
 vi.mock('../../src/webview/core/persistence.js', () => ({
-	schedulePersist: vi.fn(),
+	schedulePersist: testState.schedulePersist,
 }));
 
 vi.mock('../../src/webview/core/results-state.js', () => ({
@@ -249,6 +250,7 @@ describe('executeRunFunction', () => {
 		testState.getSqlSectionElement.mockReturnValue(null);
 		testState.synchronizeKustoSectionTarget.mockReset();
 		testState.synchronizeKustoSectionTarget.mockReturnValue(true);
+		testState.schedulePersist.mockClear();
 		testState.getRunMode.mockReturnValue('runFunction');
 		testState.getResultsState.mockReset();
 		testState.getResultsState.mockReturnValue(null);
@@ -295,6 +297,7 @@ describe('executeRunFunction', () => {
 			query, queryMode: 'plain', producer: 'manual',
 		})]);
 		expect(testState.getRunMode()).toBe('sample100');
+		expect(testState.schedulePersist).toHaveBeenCalledWith('kusto-execution-started', true);
 	});
 
 	it('canonicalizes standalone semicolon lines before Run All execution', () => {
@@ -318,6 +321,21 @@ describe('executeRunFunction', () => {
 				'print ResultSet = "Third", Value = 3',
 			].join('\n'),
 			queryMode: 'plain',
+		})]);
+	});
+
+	it('runs the full editor in plain transport mode when Run All is selected', () => {
+		const query = 'print First=1;\nprint Second=2';
+		testState.getRunMode.mockReturnValue('runAll');
+		testState.queryEditors.query_1 = makeEditor(query, 1, 2, {
+			isEmpty: () => false,
+			startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 14,
+		});
+		appendExecutionControls('query_1');
+
+		expect(executeQuery('query_1')).toMatch(/^kusto-run-/);
+		expect(getExecuteMessages()).toEqual([expect.objectContaining({
+			query, queryMode: 'plain', producer: 'manual',
 		})]);
 	});
 

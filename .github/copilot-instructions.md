@@ -21,6 +21,10 @@ Read `ARCHITECTURE.md` to understand the system structure. Read `CONTRIBUTING.md
 
 Use subagents to parallelize independent tasks wherever possible — research, file reads, code searches, reviews — as long as it does not compromise the quality of the end result. When tasks have dependencies between them, run them sequentially; when they don't, run them in parallel. Even write tasks, as long as they are across different files.
 
+## Test Coverage Planning
+
+For every observable behavior change, bug fix, first-time capability, persistence/lifecycle change, or coverage/completion claim, read and follow [`skills/test-coverage-planning/SKILL.md`](skills/test-coverage-planning/SKILL.md). Build a coverage ledger before declaring the work complete: include the exact composed acceptance path, map owners and state transitions, cite existing setup/action/oracle evidence exactly, exercise real user controls in E2E, and justify every excluded or deferred permutation. Separate tests for individual steps do not replace a composed lifecycle when their interaction is the risk.
+
 ## Tab Safety
 
 Never use `workbench.action.closeActiveEditor`, `workbench.action.revertAndCloseActiveEditor`, or another focus-based close command for targeted cleanup. It can close Copilot Chat or an unrelated user tab if focus changes. Close only tabs opened by the task, identify them by exact URI, and use `vscode.window.tabGroups.close`; if exact URI targeting is unavailable, leave the tab open. Never close Copilot Chat or an agent conversation.

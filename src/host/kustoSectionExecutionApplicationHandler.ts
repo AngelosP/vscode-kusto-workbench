@@ -61,6 +61,7 @@ export type KustoSectionQueryExecutionOptions = {
 export interface KustoSectionExecutionApplicationHandler {
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined;
 	postKustoPublication(message: unknown): Promise<boolean>;
+	waitForPendingPublications(): Promise<void>;
 	getKustoSectionExecutionTarget(boxId: string): KustoSectionExecutionTarget | undefined;
 	cancelKustoSectionExecution(target: KustoSectionExecutionTarget, executionId: string): boolean;
 	getKustoSectionExecutionAccountPartition(
@@ -114,6 +115,7 @@ export class HostKustoSectionExecutionApplicationHandler
 	implements KustoSectionExecutionApplicationHandler {
 	private readonly pendingExecutionStartAcks = new Map<string, PendingAcknowledgement>();
 	private readonly pendingPublicationAcks = new Map<string, PendingAcknowledgement>();
+	private readonly pendingPublications = new Set<Promise<boolean>>();
 	private readonly ownedResultPublicationIds = new Set<string>();
 	private disposed = false;
 
@@ -179,6 +181,7 @@ export class HostKustoSectionExecutionApplicationHandler
 				this.options.coordinator.closeSection(message.boxId, message.sectionInstanceId);
 				this.options.getKustoResultPersistenceSession?.()?.closeSection(
 					message.boxId, message.sectionInstanceId,
+					message.preserveResultAttachment === true,
 				);
 				return Promise.resolve();
 			case 'executeQuery':
@@ -198,7 +201,20 @@ export class HostKustoSectionExecutionApplicationHandler
 		}
 	}
 
-	async postKustoPublication(message: unknown): Promise<boolean> {
+	postKustoPublication(message: unknown): Promise<boolean> {
+		const publication = this.publishKustoMessage(message);
+		this.pendingPublications.add(publication);
+		void publication.finally(() => this.pendingPublications.delete(publication)).catch(() => undefined);
+		return publication;
+	}
+
+	async waitForPendingPublications(): Promise<void> {
+		while (this.pendingPublications.size > 0) {
+			await Promise.allSettled([...this.pendingPublications]);
+		}
+	}
+
+	private async publishKustoMessage(message: unknown): Promise<boolean> {
 		if (this.disposed || this.options.isDisposed()) return false;
 		const publicationId = `kusto-publication-${this.options.createPublicationId()}`;
 		const publicationDeadline = this.options.now() + 5_000;
@@ -232,6 +248,20 @@ export class HostKustoSectionExecutionApplicationHandler
 			}, timeoutMs);
 			this.pendingPublicationAcks.set(key, { resolve, ...(timer ? { timer } : {}) });
 		});
+		const postBeforeDeadline = async (payload: unknown, deadline: number): Promise<boolean> => {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const timeout = new Promise<boolean>(resolve => {
+				timer = setTimeout(() => resolve(false), Math.max(1, deadline - this.options.now()));
+			});
+			const delivery = Promise.resolve()
+				.then(() => this.options.postMessage(payload))
+				.then(delivered => delivered !== false, () => false);
+			try {
+				return await Promise.race([delivery, timeout]);
+			} finally {
+				if (timer) clearTimeout(timer);
+			}
+		};
 		const settleTransportFailure = (phase: 'staged' | 'applied') => {
 			const key = `${publicationId}:${phase}`;
 			const pending = this.pendingPublicationAcks.get(key);
@@ -242,7 +272,7 @@ export class HostKustoSectionExecutionApplicationHandler
 			pending.resolve(false);
 		};
 		const staged = waitForAck('staged', 5_000);
-		if (!await this.options.postMessage(stageMessage.value)) settleTransportFailure('staged');
+		if (!await postBeforeDeadline(stageMessage.value, publicationDeadline)) settleTransportFailure('staged');
 		if (!await staged) {
 			abortOwnedPublication();
 			return false;
@@ -254,12 +284,12 @@ export class HostKustoSectionExecutionApplicationHandler
 			appliedPending.timer = setTimeout(async () => {
 				if (this.pendingPublicationAcks.get(appliedKey) !== appliedPending) return;
 				appliedPending.timer = setTimeout(() => settleTransportFailure('applied'), 1_000);
-				if (!await this.options.postMessage(revokeMessage.value)) {
+				if (!await postBeforeDeadline(revokeMessage.value, this.options.now() + 1_000)) {
 					settleTransportFailure('applied');
 				}
 			}, Math.max(1, publicationDeadline - this.options.now()));
 		}
-		if (!await this.options.postMessage(commitMessage.value)) {
+		if (!await postBeforeDeadline(commitMessage.value, publicationDeadline)) {
 			settleTransportFailure('applied');
 		}
 		const accepted = await applied;
@@ -270,7 +300,9 @@ export class HostKustoSectionExecutionApplicationHandler
 				publicationId,
 				...summary,
 			}) : undefined;
-			if (confirmation?.ok) await Promise.resolve(this.options.postMessage(confirmation.value));
+			if (confirmation?.ok) {
+				await postBeforeDeadline(confirmation.value, this.options.now() + 1_000);
+			}
 		}
 		return accepted;
 	}
@@ -344,12 +376,14 @@ export class HostKustoSectionExecutionApplicationHandler
 			return { status: 'superseded', executionId: request.executionId };
 		}
 		const resultSession = this.options.getKustoResultPersistenceSession?.();
-		if (resultSession && !resultSession.beginExecution(reservation)) {
+		const requiresWebviewClaim = !options.preclaimedByWebview
+			&& (options.producer === 'copilot' || options.producer === 'comparison');
+		if (requiresWebviewClaim
+			&& !await this.claimKustoExecutionInWebview(reservation, options.query, expectedPredecessorExecutionId)) {
 			this.options.coordinator.cancelExpected(reservation);
 			return { status: 'superseded', executionId: request.executionId };
 		}
-		if (!options.preclaimedByWebview && (options.producer === 'copilot' || options.producer === 'comparison')
-			&& !await this.claimKustoExecutionInWebview(reservation, options.query, expectedPredecessorExecutionId)) {
+		if (resultSession && !resultSession.beginExecution(reservation)) {
 			this.options.coordinator.cancelExpected(reservation);
 			return { status: 'superseded', executionId: request.executionId };
 		}

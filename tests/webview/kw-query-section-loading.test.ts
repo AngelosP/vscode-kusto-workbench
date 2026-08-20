@@ -137,14 +137,13 @@ function hasSpinner(el: KwQuerySection): boolean {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('kw-query-section loading states', () => {
-	it('renders Run All as a distinct non-mode split-menu action', async () => {
+	it('renders Run All as a sticky split-menu mode', async () => {
 		const el = createSection();
 		await el.updateComplete;
 
 		const item = el.querySelector(`#${el.boxId}_run_menu_all`) as HTMLElement | null;
 		expect(item?.textContent?.trim()).toBe('Run All');
-		expect(item?.dataset.runAction).toBe('all');
-		expect(item?.hasAttribute('data-run-mode')).toBe(false);
+		expect(item?.dataset.runMode).toBe('runAll');
 	});
 
 	it('keeps the result picker available when the selected result set is empty', async () => {

@@ -12,7 +12,7 @@ import { CachedValuesViewerV2 } from './cachedValuesViewer';
 import { ConnectionManagerViewerV2 } from './connectionManagerViewer';
 import { SqlWorkbenchService } from './sql/sqlWorkbenchService';
 import { KqlCompatEditorProvider } from './kqlCompatEditorProvider';
-import { KqlxEditorProvider } from './kqlxEditorProvider';
+import { KqlxEditorProvider, withKqlxDocumentWriteLock } from './kqlxEditorProvider';
 import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
 import { MdCompatEditorProvider } from './mdCompatEditorProvider';
 import { SqlCompatEditorProvider } from './sqlCompatEditorProvider';
@@ -2227,15 +2227,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			// Open the persistent session file (survives restarts/crashes).
 			await vscode.workspace.fs.createDirectory(context.globalStorageUri);
 			const sessionUri = vscode.Uri.joinPath(context.globalStorageUri, 'session.kqlx');
-			if (testIsolateKustoConnections) {
-				await vscode.workspace.fs.writeFile(sessionUri, new TextEncoder().encode(''));
-			}
-			try {
-				await vscode.workspace.fs.stat(sessionUri);
-			} catch {
-				// Create empty file; webview will initialize with a default query box and persist.
-				await vscode.workspace.fs.writeFile(sessionUri, new TextEncoder().encode(''));
-			}
+			await withKqlxDocumentWriteLock(sessionUri, async () => {
+				if (testIsolateKustoConnections) {
+					await vscode.workspace.fs.writeFile(sessionUri, new TextEncoder().encode(''));
+					return;
+				}
+				try {
+					await vscode.workspace.fs.stat(sessionUri);
+				} catch (error) {
+					const code = String((error as { code?: unknown } | undefined)?.code || '');
+					if (code !== 'FileNotFound' && code !== 'ENOENT') throw error;
+					// Create empty file; webview will initialize with a default query box and persist.
+					await vscode.workspace.fs.writeFile(sessionUri, new TextEncoder().encode(''));
+				}
+			});
 
 			await revealOrOpenQueryEditorSession(sessionUri);
 		}))
@@ -2439,7 +2444,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			vscode.commands.registerCommand('kustoWorkbench.test.closeQueryEditorSession', async () => {
 				const sessionUri = vscode.Uri.joinPath(context.globalStorageUri, 'session.kqlx');
 				await closeQueryEditorSessionTabs(sessionUri);
-				await vscode.workspace.fs.writeFile(sessionUri, new TextEncoder().encode(''));
+				await withKqlxDocumentWriteLock(sessionUri, async () => {
+					await vscode.workspace.fs.writeFile(sessionUri, new TextEncoder().encode(''));
+				});
 			}),
 		);
 	}

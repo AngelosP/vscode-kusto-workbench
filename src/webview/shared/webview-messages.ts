@@ -222,7 +222,7 @@ export type OutgoingWebviewMessage =
 	| KustoConnectionsProjectionWebviewMessage
 	| { type: 'kustoSectionOpen'; boxId: string; sectionInstanceId: string }
 	| { type: 'kustoSectionTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number; connectionId?: string; database?: string; connectionRevision?: number; connectionIdentityKey?: string }
-	| { type: 'kustoSectionClose'; boxId: string; sectionInstanceId: string }
+	| { type: 'kustoSectionClose'; boxId: string; sectionInstanceId: string; preserveResultAttachment?: boolean }
 	| KustoExecutionStartWebviewMessage
 	| OutgoingEditorCursorPositionChangedMessage
 	| OutgoingEditorCursorStatusSnapshotRequestMessage

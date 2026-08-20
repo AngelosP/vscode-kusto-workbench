@@ -21,6 +21,7 @@ import {
 	type KustoSectionLifecycleOwner,
 } from '../shared/kustoExecution.js';
 import { canonicalSectionKind } from '../shared/documentSectionCapabilities.js';
+import { kustoClusterKey } from '../shared/kustoClusterUrls.js';
 import type { KustoExecutionTerminal } from './kustoExecutionCoordinator.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -58,8 +59,12 @@ type ResultAttachment = Readonly<{
 	selectedResultIndex: number;
 	resultSetCount: number;
 	executionId: string;
+	clusterUrl: string;
+	authorityId: string;
 	connectionId: string;
 	database: string;
+	connectionRevision?: number;
+	connectionIdentityKey: string;
 	sectionInstanceId: string;
 	targetGeneration: number;
 }>;
@@ -208,6 +213,69 @@ function removeAttachmentFields(record: JsonRecord): JsonRecord {
 	return clone;
 }
 
+function removeAttachmentTargetFields(record: JsonRecord): JsonRecord {
+	const clone = { ...record };
+	for (const key of ['clusterUrl', 'authorityId', 'connectionIdHint', 'database']) delete clone[key];
+	return clone;
+}
+
+function attachmentMatchesTarget(
+	attachment: ResultAttachment,
+	target: KustoSectionLifecycleOwner,
+): boolean {
+	if (normalize(target.connectionId) !== attachment.connectionId
+		|| normalize(target.database).toLowerCase() !== attachment.database.toLowerCase()) return false;
+	if (Number.isSafeInteger(target.connectionRevision)
+		&& target.connectionRevision !== attachment.connectionRevision) return false;
+	const connectionIdentityKey = normalize(target.connectionIdentityKey);
+	return !connectionIdentityKey || connectionIdentityKey === attachment.connectionIdentityKey;
+}
+
+function recordTargetConflictsAttachment(record: JsonRecord, attachment: ResultAttachment): boolean {
+	const connectionId = normalize(record.connectionIdHint);
+	if (connectionId && connectionId !== attachment.connectionId) return true;
+	const database = normalize(record.database);
+	if (database && database.toLowerCase() !== attachment.database.toLowerCase()) return true;
+	const clusterUrl = normalize(record.clusterUrl);
+	if (clusterUrl && attachment.clusterUrl
+		&& kustoClusterKey(clusterUrl) !== kustoClusterKey(attachment.clusterUrl)) return true;
+	if (Object.prototype.hasOwnProperty.call(record, 'authorityId')) {
+		return normalize(record.authorityId).toLowerCase() !== attachment.authorityId.toLowerCase();
+	}
+	return false;
+}
+
+function persistedArtifactMatchesRecordTarget(
+	record: JsonRecord,
+	artifact: KustoResultArtifactAssignment,
+): boolean {
+	const producer = artifact.producer;
+	const dispatch = isRecord(producer?.dispatch) ? producer.dispatch : undefined;
+	const policy = artifact.policy;
+	const connectionId = normalize(producer?.connectionId);
+	const database = normalize(producer?.database);
+	const clusterUrl = normalize(record.clusterUrl);
+	const dispatchClusterUrl = normalize(dispatch?.clusterEndpoint);
+	const connectionIdentityKey = normalize(dispatch?.connectionIdentityKey);
+	const accountPartition = normalize(dispatch?.accountPartition);
+	const connectionRevision = Number(dispatch?.connectionRevision);
+	const leaveNoTraceRevision = Number(dispatch?.leaveNoTraceRevision);
+	if (!producer || !dispatch || !policy || !connectionId || !database
+		|| !dispatchClusterUrl || !connectionIdentityKey || !accountPartition
+		|| !Number.isSafeInteger(connectionRevision) || connectionRevision < 0
+		|| !Number.isSafeInteger(leaveNoTraceRevision) || leaveNoTraceRevision < 0) return false;
+	if (normalize(record.connectionIdHint) !== connectionId
+		|| normalize(record.database).toLowerCase() !== database.toLowerCase()
+		|| !clusterUrl || kustoClusterKey(clusterUrl) !== kustoClusterKey(dispatchClusterUrl)
+		|| normalize(record.authorityId).toLowerCase() !== normalize(dispatch.authorityId).toLowerCase()) return false;
+	return normalize(record.kustoAccountPartition) === accountPartition
+		&& Number(record.kustoLeaveNoTraceRevision) === leaveNoTraceRevision
+		&& normalize(policy.accountPartition) === accountPartition
+		&& Number(policy.leaveNoTraceRevision) === leaveNoTraceRevision
+		&& Number(policy.connectionRevision) === connectionRevision
+		&& normalize(policy.connectionIdentityKey) === connectionIdentityKey;
+}
+
 function sectionTypes(state: ResultState): Map<string, string> {
 	return new Map((Array.isArray(state.sections) ? state.sections : [])
 		.filter(isRecord)
@@ -228,8 +296,10 @@ export class KustoResultPersistenceOwner {
 	private readonly assignmentByExecution = new Map<string, KustoResultArtifactAssignment>();
 	private readonly nextRevisionByBoxId = new Map<string, number>();
 	private readonly selectedPreferenceByBoxId = new Map<string, number>();
-	private readonly ownedSourceFingerprints = new Set<string>();
-	private lastCanonicalFingerprint = '';
+	private readonly ownedSourceFingerprints = new Map<string, number>();
+	private ownerMutationRevision = 0;
+	private lastCanonicalSourceRevision = '';
+	private lastCanonicalSourceFingerprint = '';
 
 	constructor(
 		readonly documentKey: string,
@@ -253,11 +323,26 @@ export class KustoResultPersistenceOwner {
 		}
 	}
 
-	admitCanonicalSource(fingerprintInput: unknown, state: ResultState): void {
+	admitCanonicalSource(
+		fingerprintInput: unknown,
+		state: ResultState,
+		sourceRevisionInput: unknown = fingerprintInput,
+	): void {
 		const fingerprint = normalize(fingerprintInput);
-		if (!fingerprint || fingerprint === this.lastCanonicalFingerprint) return;
-		this.lastCanonicalFingerprint = fingerprint;
-		if (this.ownedSourceFingerprints.delete(fingerprint)) return;
+		const sourceRevision = normalize(sourceRevisionInput);
+		if (!fingerprint || !sourceRevision
+			|| (sourceRevision === this.lastCanonicalSourceRevision
+				&& fingerprint === this.lastCanonicalSourceFingerprint)) return;
+		this.lastCanonicalSourceRevision = sourceRevision;
+		this.lastCanonicalSourceFingerprint = fingerprint;
+		const ownedMutationRevision = this.ownedSourceFingerprints.get(fingerprint);
+		if (ownedMutationRevision !== undefined) {
+			this.ownedSourceFingerprints.delete(fingerprint);
+			if (ownedMutationRevision === this.ownerMutationRevision) {
+				return;
+			}
+		}
+		this.ownerMutationRevision++;
 		const types = sectionTypes(state);
 		const nextIds = new Set<string>();
 		for (const value of Array.isArray(state.sections) ? state.sections : []) {
@@ -272,6 +357,35 @@ export class KustoResultPersistenceOwner {
 				&& value.kustoAccountPartition.trim().length > 0;
 			const hasRevision = Number.isSafeInteger(value.kustoLeaveNoTraceRevision)
 				&& Number(value.kustoLeaveNoTraceRevision) >= 0;
+			const incomingArtifact = isRecord(value.resultArtifact)
+				? value.resultArtifact as unknown as KustoResultArtifactAssignment
+				: undefined;
+			const incomingRevision = Number(incomingArtifact?.revision);
+			const parsedIncomingResult = hasResult ? parseResultJson(String(value.resultJson)) : undefined;
+			const validIncomingArtifact = !!incomingArtifact
+				&& parsedIncomingResult?.ok === true
+				&& hasAccount && hasRevision
+				&& incomingArtifact.version === 1
+				&& incomingArtifact.sourceBoxId === boxId
+				&& typeof incomingArtifact.artifactId === 'string'
+				&& Number.isSafeInteger(incomingRevision);
+			const coherentIncomingArtifact = validIncomingArtifact
+				&& persistedArtifactMatchesRecordTarget(value, incomingArtifact!);
+			if (currentCommitted
+				&& recordTargetConflictsAttachment(value, currentCommitted)
+				&& (!coherentIncomingArtifact
+					|| incomingRevision <= currentCommitted.resultArtifact.revision)) {
+				this.committedByBoxId.delete(boxId);
+				this.selectedPreferenceByBoxId.delete(boxId);
+				this.canonicalSections.set(boxId, Object.freeze({ kind: 'managed' }));
+				continue;
+			}
+			if (currentCommitted
+				&& incomingRevision > currentCommitted.resultArtifact.revision
+				&& !coherentIncomingArtifact) {
+				this.canonicalSections.set(boxId, Object.freeze({ kind: 'managed', attachment: currentCommitted }));
+				continue;
+			}
 			if (!hasResult) {
 				this.committedByBoxId.delete(boxId);
 				this.selectedPreferenceByBoxId.delete(boxId);
@@ -289,9 +403,9 @@ export class KustoResultPersistenceOwner {
 				this.committedByBoxId.delete(boxId);
 				continue;
 			}
-			if (hasResult && hasAccount && hasRevision && isRecord(value.resultArtifact)) {
+			if (coherentIncomingArtifact && incomingArtifact) {
 				const resultArtifact = value.resultArtifact as unknown as KustoResultArtifactAssignment;
-				const parsed = parseResultJson(String(value.resultJson));
+				const parsed = parsedIncomingResult;
 				if (parsed?.ok && resultArtifact.version === 1
 					&& resultArtifact.sourceBoxId === boxId
 					&& typeof resultArtifact.artifactId === 'string'
@@ -314,8 +428,14 @@ export class KustoResultPersistenceOwner {
 						selectedResultIndex,
 						resultSetCount: getKustoResultSets(parsed.value).length,
 						executionId: normalize(resultArtifact.producer?.executionId),
+						clusterUrl: normalize(value.clusterUrl),
+						authorityId: normalize(value.authorityId),
 						connectionId: normalize(resultArtifact.producer?.connectionId),
 						database: normalize(resultArtifact.producer?.database),
+						...(Number.isSafeInteger(resultArtifact.policy?.connectionRevision)
+							? { connectionRevision: Number(resultArtifact.policy?.connectionRevision) }
+							: {}),
+						connectionIdentityKey: normalize(resultArtifact.policy?.connectionIdentityKey),
 						sectionInstanceId: normalize(resultArtifact.producer?.sectionInstanceId),
 						targetGeneration: Number(resultArtifact.producer?.targetGeneration ?? 0),
 					});
@@ -353,7 +473,7 @@ export class KustoResultPersistenceOwner {
 
 	markOwnedSourceFingerprint(fingerprintInput: unknown): void {
 		const fingerprint = normalize(fingerprintInput);
-		if (fingerprint) addBounded(this.ownedSourceFingerprints, fingerprint);
+		if (fingerprint) setBounded(this.ownedSourceFingerprints, fingerprint, this.ownerMutationRevision);
 	}
 
 	discardOwnedSourceFingerprint(fingerprintInput: unknown): void {
@@ -375,7 +495,11 @@ export class KustoResultPersistenceOwner {
 			let next = base;
 			if (committed) {
 				next = {
-					...base,
+					...removeAttachmentTargetFields(base),
+					...(committed.clusterUrl ? { clusterUrl: committed.clusterUrl } : {}),
+					...(committed.authorityId ? { authorityId: committed.authorityId } : {}),
+					...(committed.connectionId ? { connectionIdHint: committed.connectionId } : {}),
+					...(committed.database ? { database: committed.database } : {}),
 					resultJson: committed.resultJson,
 					resultArtifact: committed.resultArtifact,
 					kustoAccountPartition: committed.kustoAccountPartition,
@@ -445,8 +569,12 @@ export class KustoResultPersistenceOwner {
 			selectedResultIndex,
 			resultSetCount: getKustoResultSets(parsed.value).length,
 			executionId: normalize(terminalRecord.executionId),
+			clusterUrl: normalize((terminalRecord.dispatch as JsonRecord).clusterEndpoint),
+			authorityId: normalize((terminalRecord.dispatch as JsonRecord).authorityId),
 			connectionId: normalize(terminalRecord.connectionId),
 			database: normalize(terminalRecord.database),
+			connectionRevision: Number(policy.connectionRevision),
+			connectionIdentityKey: normalize(policy.connectionIdentityKey),
 			sectionInstanceId: normalize(terminalRecord.sectionInstanceId),
 			targetGeneration: Number(terminalRecord.targetGeneration),
 		}) : undefined;
@@ -474,6 +602,7 @@ export class KustoResultPersistenceOwner {
 		}
 		this.stagedByPublicationId.delete(publicationId);
 		if (staged.attachment) {
+			this.ownerMutationRevision++;
 			this.committedByBoxId.set(staged.boxId, staged.attachment);
 			this.canonicalSections.set(staged.boxId, Object.freeze({ kind: 'managed', attachment: staged.attachment }));
 			this.selectedPreferenceByBoxId.set(staged.boxId, staged.attachment.selectedResultIndex);
@@ -495,6 +624,7 @@ export class KustoResultPersistenceOwner {
 	}
 
 	clearForExecution(boxId: string): void {
+		this.ownerMutationRevision++;
 		this.committedByBoxId.delete(boxId);
 		this.canonicalSections.set(boxId, Object.freeze({ kind: 'managed' }));
 		for (const [publicationId, staged] of [...this.stagedByPublicationId]) {
@@ -529,6 +659,7 @@ export class KustoResultPersistenceOwner {
 			|| !Number.isSafeInteger(request.resultIndex) || request.resultIndex < 0
 			|| request.resultIndex >= attachment.resultSetCount) return { accepted: false };
 		const updated = Object.freeze({ ...attachment, selectedResultIndex: request.resultIndex });
+		this.ownerMutationRevision++;
 		this.committedByBoxId.set(request.boxId, updated);
 		this.canonicalSections.set(request.boxId, Object.freeze({ kind: 'managed', attachment: updated }));
 		this.selectedPreferenceByBoxId.set(request.boxId, request.resultIndex);
@@ -547,6 +678,19 @@ export class KustoResultPersistenceOwner {
 			resultSetCount: attachment.resultSetCount,
 			selectedResultIndex: attachment.selectedResultIndex,
 		}) : undefined;
+	}
+
+	matchesCommittedTarget(boxIdInput: unknown, target: KustoSectionLifecycleOwner): boolean {
+		const attachment = this.committedByBoxId.get(normalize(boxIdInput));
+		return !!attachment && attachmentMatchesTarget(attachment, target);
+	}
+
+	hasCommittedAttachments(): boolean {
+		return this.committedByBoxId.size > 0;
+	}
+
+	hasCanonicalResultState(): boolean {
+		return this.canonicalSections.size > 0;
 	}
 }
 
@@ -580,22 +724,44 @@ export class KustoResultPanelSession {
 			|| !Number.isSafeInteger(target.targetGeneration) || target.targetGeneration < current.targetGeneration) return false;
 		const changed = target.targetGeneration > current.targetGeneration
 			|| normalize(target.connectionId) !== normalize(current.connectionId)
-			|| normalize(target.database).toLowerCase() !== normalize(current.database).toLowerCase();
+			|| normalize(target.database).toLowerCase() !== normalize(current.database).toLowerCase()
+			|| target.connectionRevision !== current.connectionRevision
+			|| normalize(target.connectionIdentityKey) !== normalize(current.connectionIdentityKey);
 		if (changed) {
-			this.owner.revokeBox(target.boxId);
+			const initialAdoption = current.targetGeneration === 0
+				&& !normalize(current.connectionId)
+				&& !normalize(current.database);
+			const physicalEnrichment = target.targetGeneration === current.targetGeneration + 1
+				&& normalize(target.connectionId) === normalize(current.connectionId)
+				&& normalize(target.database).toLowerCase() === normalize(current.database).toLowerCase()
+				&& (current.connectionRevision === undefined
+					|| current.connectionRevision === target.connectionRevision)
+				&& (!normalize(current.connectionIdentityKey)
+					|| normalize(current.connectionIdentityKey) === normalize(target.connectionIdentityKey))
+				&& Number.isSafeInteger(target.connectionRevision)
+				&& !!normalize(target.connectionIdentityKey)
+				&& (current.connectionRevision === undefined || !normalize(current.connectionIdentityKey));
+			if (!this.owner.matchesCommittedTarget(target.boxId, target)
+				|| (!initialAdoption && !physicalEnrichment)) {
+				this.owner.revokeBox(target.boxId);
+			}
 			this.activeByBoxId.delete(target.boxId);
 		}
 		this.targets.set(target.boxId, Object.freeze({ ...target }));
 		return true;
 	}
 
-	closeSection(boxIdInput: unknown, sectionInstanceIdInput: unknown): boolean {
+	closeSection(
+		boxIdInput: unknown,
+		sectionInstanceIdInput: unknown,
+		preserveResultAttachment = false,
+	): boolean {
 		const boxId = normalize(boxIdInput);
 		const current = this.targets.get(boxId);
 		if (!current || current.sectionInstanceId !== normalize(sectionInstanceIdInput)) return false;
 		this.targets.delete(boxId);
 		this.activeByBoxId.delete(boxId);
-		this.owner.revokeBox(boxId);
+		if (!preserveResultAttachment) this.owner.revokeBox(boxId);
 		return true;
 	}
 

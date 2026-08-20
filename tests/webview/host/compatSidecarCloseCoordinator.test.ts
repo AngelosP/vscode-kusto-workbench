@@ -178,6 +178,51 @@ describe('CompatSidecarCloseCoordinator', () => {
 		expect(coordinator.allowRetiredInbound({ type: 'persistDocument', flushRequestId: requestId })).toBe(false);
 	});
 
+	it('drains exact Kusto owner messages before disposing the nested provider', async () => {
+		const session = new CompatSidecarSession(false, 'KQL');
+		const events: string[] = [];
+		const publicationGate = deferred<void>();
+		const coordinator = new CompatSidecarCloseCoordinator({
+			session,
+			allowKustoOwnerMessages: true,
+			yieldTurn: async () => undefined,
+		});
+		const options = finalization(undefined, {
+			drainRetiredInbound: vi.fn(async () => {
+				events.push('publication-drain-started');
+				await publicationGate.promise;
+				events.push('publication-drained');
+			}),
+			gateway: {
+				closeRetiredInboundAdmission: vi.fn(async () => { events.push('admission-closed'); }),
+			},
+			repair: vi.fn(async () => { events.push('repaired'); }),
+			drainStore: vi.fn(async () => { events.push('store-drained'); }),
+			disposeNestedProvider: vi.fn(() => { events.push('provider-disposed'); }),
+		});
+		coordinator.configure(options);
+
+		for (const type of [
+			'kustoPublicationAck', 'kustoSectionTarget', 'kustoSectionClose', 'selectKustoResult',
+		]) {
+			expect(coordinator.allowRetiredInbound({ type })).toBe(true);
+		}
+		expect(coordinator.allowRetiredInbound({ type: 'executeQuery' })).toBe(false);
+
+		const close = coordinator.disposePanel();
+		await vi.waitFor(() => expect(events).toContain('publication-drain-started'));
+		expect(coordinator.allowRetiredInbound({ type: 'kustoPublicationAck' })).toBe(true);
+		expect(options.gateway.closeRetiredInboundAdmission).not.toHaveBeenCalled();
+		publicationGate.resolve();
+		await close;
+
+		expect(events).toEqual([
+			'publication-drain-started', 'publication-drained', 'admission-closed',
+			'repaired', 'store-drained', 'provider-disposed',
+		]);
+		expect(coordinator.allowRetiredInbound({ type: 'kustoPublicationAck' })).toBe(false);
+	});
+
 	it('recovers the exact attempted draft and drains the store when repair fails', async () => {
 		const session = new CompatSidecarSession(false, 'SQL');
 		const closeDraft = draft('recover-me');

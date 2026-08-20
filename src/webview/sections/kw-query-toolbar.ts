@@ -699,6 +699,7 @@ function __kustoApplyRunModeFromMenu(boxId: any, mode: any): void {
 export function runAllQueriesFromMenu(boxId: unknown): void {
 	const id = String(boxId || '').trim();
 	if (!id) return;
+	setRunMode(id, 'runAll');
 	try {
 		if (__kustoIsRunSelectionReady(id)) executeAllQueries(id);
 	} catch (e) { console.error('[kusto]', e); }
@@ -806,7 +807,7 @@ export function updateFunctionDetection(boxId: any, text: any): void {
 	}
 }
 
-/** Returns the user's "real" run mode for persistence (never `runFunction`). */
+/** Returns the user's persistent run mode (never the transient `runFunction` mode). */
 export function getRunModeForPersistence(boxId: any): string {
 	const mode = getRunMode(boxId);
 	return mode === 'runFunction' ? 'take100' : mode;

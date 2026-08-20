@@ -30,7 +30,10 @@ kustoEditorSchemaCoordinator.subscribeLifecycle(event => {
 		return;
 	}
 	if (event.type === 'closed') {
-		postMessageToHost({ type: 'kustoSectionClose', ...event.owner });
+		postMessageToHost({
+			type: 'kustoSectionClose', ...event.owner,
+			...(event.preserveResultAttachment ? { preserveResultAttachment: true } : {}),
+		});
 		return;
 	}
 	postMessageToHost({

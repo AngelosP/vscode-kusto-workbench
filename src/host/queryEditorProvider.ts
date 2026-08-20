@@ -930,6 +930,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		panel: vscode.WebviewPanel,
 		options?: {
 			registerMessageHandler?: boolean;
+			registerDisposalHandler?: boolean;
 			hideFooterControls?: boolean;
 			initialDocumentLoading?: boolean;
 			compatibilityPersistence?: CompatibilityPersistenceEnvelope;
@@ -944,7 +945,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.panel = panel;
 		this.editorCursorStatusApplication.setPanelVisible(panel.visible);
 		QueryEditorProvider.activeProviders.add(this);
-		this.registerPanelDisposal(panel);
+		if (options?.registerDisposalHandler !== false) this.registerPanelDisposal(panel);
 		// Do NOT set panel.iconPath here — this method is called for custom editors
 		// where VS Code owns the panel. Setting iconPath on a custom-editor panel
 		// can crash VS Code's renderer-side editor integration ("Unexpected type"
@@ -1459,6 +1460,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 			return Promise.resolve(false);
 		}
+	}
+
+	waitForPendingKustoPublications(): Promise<void> {
+		return this.kustoSectionExecutionApplication.waitForPendingPublications();
 	}
 
 	private registerPanelDisposal(panel: vscode.WebviewPanel): void {

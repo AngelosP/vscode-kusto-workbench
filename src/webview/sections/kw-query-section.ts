@@ -377,9 +377,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		return kustoEditorSchemaCoordinator.getIdentity(this.boxId);
 	}
 
-	public disposeSchemaLifecycle(): void {
+	public disposeSchemaLifecycle(options: Readonly<{ preserveResultAttachment?: boolean }> = {}): void {
 		if (!this._schemaSectionLease) return;
-		kustoEditorSchemaCoordinator.closeSection(this._schemaSectionLease);
+		kustoEditorSchemaCoordinator.closeSection(this._schemaSectionLease, options);
 		this._schemaSectionLease = undefined;
 	}
 
@@ -517,7 +517,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 							aria-label="Run query options" title="Run query options">${downChevronSvg}</button>
 						<div class="unified-btn-split-menu" id="${id}_run_menu" role="menu">
 							<div class="unified-btn-split-menu-item" id="${id}_run_menu_all" role="menuitem"
-								data-run-action="all"
+								data-run-mode="runAll"
 								title="Run all query statements (Ctrl+Shift+Enter)"
 								@click=${() => callGlobal('__kustoRunAllFromMenu', id)}>Run All</div>
 							<div class="unified-btn-split-menu-item unified-btn-split-menu-fn" id="${id}_run_menu_runFunction" role="menuitem"

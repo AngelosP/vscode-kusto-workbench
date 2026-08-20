@@ -376,12 +376,9 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kustoConnectionOnboardingApplicationHandler.ts::testConnectionFromWebview::postMessage::189:4',
 	'src/host/kustoConnectionsProjectionApplicationHandler.ts::publishSnapshot::postMessage::122:4',
 	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::500:33',
-	'src/host/kustoSectionExecutionApplicationHandler.ts::claimKustoExecutionInWebview::postMessage::545:27',
-	'src/host/kustoSectionExecutionApplicationHandler.ts::handleMessage::postMessage::138:27',
-	'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::245:14',
-	'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::257:16',
-	'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::262:14',
-	'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::273:48',
+	'src/host/kustoSectionExecutionApplicationHandler.ts::claimKustoExecutionInWebview::postMessage::579:27',
+	'src/host/kustoSectionExecutionApplicationHandler.ts::handleMessage::postMessage::140:27',
+	'src/host/kustoSectionExecutionApplicationHandler.ts::postBeforeDeadline::postMessage::257:17',
 	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::424:33',
 	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::93:10',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::447:27',
@@ -413,8 +410,8 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/queryEditorProvider.ts::<module>::postMessage::846:29',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::871:29',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::886:29',
-	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::969:15',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::1449:21',
+	'src/host/queryEditorProvider.ts::initializeWebviewPanel::postMessage::970:15',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::1450:21',
 	'src/host/querySharingApplicationHandler.ts::postMessage::postMessage::36:22',
 	'src/host/resourceUriApplicationHandler.ts::postMessage::postMessage::56:3',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1806:13',
@@ -2407,12 +2404,9 @@ describe('Message Protocol Contract', () => {
 			);
 			expect(extraction.types).toEqual([]);
 			expect(extraction.dynamicSites).toEqual([
-				'src/host/kustoSectionExecutionApplicationHandler.ts::claimKustoExecutionInWebview::postMessage::545:27',
-				'src/host/kustoSectionExecutionApplicationHandler.ts::handleMessage::postMessage::138:27',
-				'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::245:14',
-				'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::257:16',
-				'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::262:14',
-				'src/host/kustoSectionExecutionApplicationHandler.ts::postKustoPublication::postMessage::273:48',
+				'src/host/kustoSectionExecutionApplicationHandler.ts::claimKustoExecutionInWebview::postMessage::579:27',
+				'src/host/kustoSectionExecutionApplicationHandler.ts::handleMessage::postMessage::140:27',
+				'src/host/kustoSectionExecutionApplicationHandler.ts::postBeforeDeadline::postMessage::257:17',
 			]);
 			expect(extractTypeDiscriminants(
 				'src/shared/kustoExecutionStartProtocol.ts',

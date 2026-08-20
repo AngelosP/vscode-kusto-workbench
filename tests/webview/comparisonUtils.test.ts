@@ -398,6 +398,10 @@ describe('getRunModeLabelText', () => {
 		expect(getRunModeLabelText('plain')).toBe('Run Query');
 	});
 
+	it('returns correct text for runAll mode', () => {
+		expect(getRunModeLabelText('runAll')).toBe('Run All');
+	});
+
 	it('returns correct text for take100 mode', () => {
 		expect(getRunModeLabelText('take100')).toBe('Run Query (take 100)');
 	});

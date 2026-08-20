@@ -1307,7 +1307,9 @@ export function removeQueryBox( boxId: any) {
 	try {
 		const querySection = __kustoGetQuerySectionElement(String(boxId || ''));
 		const retiredExecution = querySection?.retireActiveQueryExecution?.();
-		querySection?.disposeSchemaLifecycle?.();
+		querySection?.disposeSchemaLifecycle?.({
+			preserveResultAttachment: pinnedSectionRemovalBypassDepth > 0,
+		});
 		if (retiredExecution) postMessageToHost({
 			type: 'cancelQuery', boxId: String(boxId), executionId: retiredExecution.executionId,
 			sectionInstanceId: retiredExecution.sectionInstanceId,

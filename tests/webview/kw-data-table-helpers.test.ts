@@ -3,6 +3,7 @@ import {
 	tryParseNum,
 	tryParseDateMs,
 	kustoTypeToSortType,
+	getColumnTypeIndicator,
 	inferColumnTypes,
 	getCellDisplayValue,
 	getCellSortValue,
@@ -204,6 +205,46 @@ describe('kustoTypeToSortType', () => {
 
 	it('undefined → null', () => {
 		expect(kustoTypeToSortType(undefined)).toBeNull();
+	});
+});
+
+// ── getColumnTypeIndicator ───────────────────────────────────────────────────
+
+describe('getColumnTypeIndicator', () => {
+	it.each([
+		['string', 's'], ['int', 'i'], ['long', 'l'], ['real', 'r'], ['decimal', 'n'],
+		['bool', 'b'], ['datetime', 'd'], ['timespan', 't'], ['dynamic', 'j'], ['guid', 'g'],
+	])('maps Kusto type %s to %s', (type, glyph) => {
+		expect(getColumnTypeIndicator(type)).toEqual([glyph, type]);
+	});
+
+	it.each([
+		['nvarchar(50)', 's'], ['BIGINT', 'l'], ['decimal(28, 9)', 'n'], ['datetimeoffset(7)', 'd'],
+		['time(7)', 't'], ['bit', 'b'], ['uniqueidentifier', 'g'], ['varbinary(max)', 'x'],
+		['timestamp', 'x'], ['rowversion', 'x'], ['xml', 'm'], ['hierarchyid', 'h'],
+		['geography', 'p'], ['vector(1536)', 'v'],
+	])('maps SQL type %s to %s', (type, glyph) => {
+		expect(getColumnTypeIndicator(type)?.[0]).toBe(glyph);
+	});
+
+	it.each([
+		['System.Int32', 'i'], ['System.Int64', 'l'], ['System.DateTime', 'd'],
+		['System.Object', 'j'], ['System.Byte[]', 'x'], ['System.SByte', 'b'],
+		['System.Nullable<System.Int32>', 'i'],
+	])('maps CLR type %s to %s', (type, glyph) => {
+		expect(getColumnTypeIndicator(type)?.[0]).toBe(glyph);
+	});
+
+	it('preserves the exact trimmed type in its tooltip', () => {
+		expect(getColumnTypeIndicator('  NVARCHAR(50)  ')).toEqual(['s', 'NVARCHAR(50)']);
+	});
+
+	it.each([undefined, '', '   ', 'unknown', ' UNKNOWN '])('omits missing type %s', type => {
+		expect(getColumnTypeIndicator(type)).toBeNull();
+	});
+
+	it('keeps unfamiliar explicit types discoverable', () => {
+		expect(getColumnTypeIndicator('custom_type')).toEqual(['?', 'custom_type']);
 	});
 });
 

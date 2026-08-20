@@ -21,6 +21,7 @@ import { TableSelectionController } from './table-selection.controller.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 
 export interface DataTableColumn { name: string; type?: string; }
+export type ColumnTypeIndicator = readonly [glyph: string, type: string];
 export interface DataTableOptions {
 	label?: string; showExecutionTime?: boolean; executionTime?: string;
 	compact?: boolean; showToolbar?: boolean;
@@ -101,6 +102,34 @@ export function buildClipboardText(
 // ── Column type inference for sorting ──
 
 export type ColumnSortType = 'string' | 'number' | 'date' | 'boolean';
+
+const COLUMN_TYPE_GLYPH_PATTERN = /^(?:(string|n?(?:var)?char|n?text|sysname)|(int(?:eger|16|32)?|smallint|tinyint|short)|(long|bigint|int64)|(u(?:int(?:8|16|32|64)?|long)|byte)|(real|double(?: precision)?|float|single)|(decimal|numeric|(?:small)?money|sqldecimal|data\.sqltypes\.sqldecimal)|(bool(?:ean)?|bit|sbyte)|(date(?:time(?:2|offset)?)?|smalldatetime)|(time(?:span)?|interval|duration)|(dynamic|jsonb?|object|variant|sql_variant|newtonsoft\.json\..*)|(guid|uniqueid(?:entifier)?|uuid)|(binary|varbinary|image|rowversion|timestamp|blob|byte\[\])|(xml)|(hierarchyid)|(geography|geometry|spatial)|(vector))$/;
+const COLUMN_TYPE_GLYPHS = 'silurnbdtjgxmhpv';
+
+function columnTypeLookupKey(type: string): string {
+	let key = type.toLowerCase().replace(/\s+/g, ' ').trim();
+	if (key.endsWith('?')) key = key.slice(0, -1).trim();
+	const nullableMatch = /^(?:system\.)?nullable\s*[<(]\s*(.+?)\s*[>)]$/.exec(key);
+	if (nullableMatch) key = nullableMatch[1].trim();
+	if (key.startsWith('system.')) key = key.slice(7);
+	const parameterIndex = key.indexOf('(');
+	return parameterIndex > 0 ? key.slice(0, parameterIndex).trim() : key;
+}
+
+export function getColumnTypeIndicator(type: string | undefined): ColumnTypeIndicator | null {
+	const declaredType = typeof type === 'string' ? type.trim() : '';
+	if (!declaredType) return null;
+	const lookupKey = columnTypeLookupKey(declaredType);
+	if (!lookupKey || lookupKey === 'unknown') return null;
+	const match = COLUMN_TYPE_GLYPH_PATTERN.exec(lookupKey);
+	let glyph = '?';
+	if (match) {
+		for (let index = 1; index < match.length; index++) {
+			if (match[index]) { glyph = COLUMN_TYPE_GLYPHS[index - 1]; break; }
+		}
+	}
+	return [glyph, declaredType];
+}
 
 const _numRx = /^[+-]?(?:\d+\.?\d*|\d*\.?\d+)(?:[eE][+-]?\d+)?$/;
 
@@ -232,6 +261,8 @@ const ROW_HEIGHT = 24, OVERSCAN = 10;
 const ROW_NUMBER_WIDTH = 40;
 const MIN_COL_WIDTH = 60;
 const MAX_COL_WIDTH = 520;
+const TYPE_INDICATOR_WIDTH_PX = 11;
+const TYPE_INDICATOR_GAP_PX = 3;
 
 /* SVG icon templates */
 const ICON = {
@@ -291,6 +322,7 @@ export class KwDataTable extends LitElement {
 
 	private _table: Table<CellValue[]> | null = null;
 	private _columnWidths: number[] = [];
+	private _columnTypeIndicators: Array<ColumnTypeIndicator | null> = [];
 	private _measureCanvas: HTMLCanvasElement | null = null;
 	private _lastVisibleRowCount = -1;
 	private _prevChromeHeight = 0;
@@ -400,6 +432,7 @@ export class KwDataTable extends LitElement {
 		this._table = null;
 		this._columnTypes = [];
 		this._columnWidths = [];
+		this._columnTypeIndicators = [];
 		this._sorting = [];
 		this._columnFilters = [];
 		this._searchCtrl.reset();
@@ -489,6 +522,9 @@ export class KwDataTable extends LitElement {
 	// ── Lifecycle ──
 
 	protected willUpdate(changed: PropertyValues): void {
+		if (changed.has('columns')) {
+			this._columnTypeIndicators = this.columns.map(column => getColumnTypeIndicator(column.type));
+		}
 		if (changed.has('columns') || changed.has('rows')) {
 			this._initTable();
 			this._searchCtrl.reset();
@@ -709,7 +745,7 @@ export class KwDataTable extends LitElement {
 	private _computeColumnWidths(): number[] {
 		return this.columns.map((col, ci) => {
 			const headerLabel = isColumnFiltered(ci, this._columnFilters) ? `${col.name} (filtered)` : col.name;
-			let width = this._measureHeaderWidth(headerLabel);
+			let width = this._measureHeaderWidth(headerLabel, !!this._columnTypeIndicators[ci]);
 			for (let ri = 0; ri < this.rows.length; ri++) {
 				const row = this.rows[ri];
 				if (!row) continue;
@@ -721,9 +757,10 @@ export class KwDataTable extends LitElement {
 		});
 	}
 
-	private _measureHeaderWidth(text: string): number {
+	private _measureHeaderWidth(text: string, hasTypeIndicator: boolean): number {
 		// Header includes label + sort indicator/menu button chrome from legacy table UI.
-		return this._measureTextWidth(text) + 48;
+		return this._measureTextWidth(text) + 48
+			+ (hasTypeIndicator ? TYPE_INDICATOR_WIDTH_PX + TYPE_INDICATOR_GAP_PX : 0);
 	}
 
 	private _measureCellWidth(text: string): number {
@@ -1190,10 +1227,12 @@ export class KwDataTable extends LitElement {
 	private _renderTh(h: any): TemplateResult {
 		const col = h.column as Column<CellValue[]>, sd = col.getIsSorted(), si = this._sorting.findIndex(s => s.id === col.id), ci = parseInt(col.id);
 		const isFiltered = isColumnFiltered(ci, this._columnFilters);
+		const typeIndicator = this._columnTypeIndicators[ci] ?? null;
+		const typeTooltip = typeIndicator ? `Data type: ${typeIndicator[1]}` : '';
 		return html`<th data-column-index=${ci} @click=${(e: MouseEvent) => { if (!(e.target as HTMLElement).closest('.cm-btn') && !(e.target as HTMLElement).closest('.filtered-link')) col.toggleSorting(undefined, e.shiftKey); }}
 			@contextmenu=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openColumnMenuAt(ci, e.clientX, e.clientY); }}
 			class="${sd ? 'sorted' : ''}">
-			<div class="thc"><span class="thn">${col.columnDef.header}${sd ? html`<span class="si2">${sd === 'asc' ? '↑' : '↓'}${this._sorting.length > 1 ? html`<sup>${si + 1}</sup>` : nothing}</span>` : nothing}${isFiltered ? html`<a href="#" class="filtered-link" @click=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openFilterDialog(ci); }}>(filtered)</a>` : nothing}</span>
+			<div class="thc"><span class="thn"><span class="th-label">${col.columnDef.header}</span>${typeIndicator ? html`<span class="type-glyph" data-testid="column-type-glyph" title=${typeTooltip} role="img" aria-label=${typeTooltip}>${typeIndicator[0]}</span>` : nothing}${sd ? html`<span class="si2">${sd === 'asc' ? '↑' : '↓'}${this._sorting.length > 1 ? html`<sup>${si + 1}</sup>` : nothing}</span>` : nothing}${isFiltered ? html`<a href="#" class="filtered-link" @click=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openFilterDialog(ci); }}>(filtered)</a>` : nothing}</span>
 				<button class="cm-btn" data-column-index=${ci} title="Column menu for ${col.columnDef.header}" aria-label="Column menu for ${col.columnDef.header}" @click=${(e: MouseEvent) => { e.stopPropagation(); this._openColumnMenu(ci, e); }}>☰</button>
 			</div>
 		</th>`;

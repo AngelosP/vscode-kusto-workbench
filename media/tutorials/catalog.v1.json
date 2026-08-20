@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-05-04T00:00:00.000Z",
+  "generatedAt": "2026-08-19T00:00:00.000Z",
   "categories": [
     {
       "id": "agent",
@@ -99,15 +99,15 @@
       "id": "results-search-json",
       "categoryId": "results",
       "contentUrl": "content/results-search-json.md",
-      "minExtensionVersion": "0.0.0",
-      "updateToken": "results-search-json-2026-05-04"
+      "minExtensionVersion": "5.1.0",
+      "updateToken": "results-search-json-2026-08-19"
     },
     {
       "id": "results-column-tools",
       "categoryId": "results",
       "contentUrl": "content/results-column-tools.md",
-      "minExtensionVersion": "0.0.0",
-      "updateToken": "results-column-tools-2026-05-04"
+      "minExtensionVersion": "5.1.0",
+      "updateToken": "results-column-tools-2026-08-19"
     },
     {
       "id": "results-csv-url",

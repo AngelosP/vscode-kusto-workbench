@@ -29,7 +29,7 @@ export type KustoEditorOwnedStateSnapshot = Readonly<Partial<Record<KustoEditorO
 export type KustoEditorLifecycleEvent =
 	| Readonly<{ type: 'opened'; owner: KustoEditorSectionLease }>
 	| Readonly<{ type: 'target'; owner: KustoEditorSectionLease & KustoEditorLifecycleIdentity; target?: KustoEditorSchemaTarget }>
-	| Readonly<{ type: 'closed'; owner: KustoEditorSectionLease }>;
+	| Readonly<{ type: 'closed'; owner: KustoEditorSectionLease; preserveResultAttachment?: true }>;
 
 export type KustoEditorSchemaDebugEntry = Readonly<{
 	boxId: string;
@@ -133,7 +133,10 @@ export class KustoEditorSchemaCoordinator {
 		return lease;
 	}
 
-	closeSection(lease: KustoEditorSectionLease): boolean {
+	closeSection(
+		lease: KustoEditorSectionLease,
+		options: Readonly<{ preserveResultAttachment?: boolean }> = {},
+	): boolean {
 		const current = this.getRecord(lease);
 		if (!current) return false;
 		this.retireRecord(current);
@@ -142,7 +145,7 @@ export class KustoEditorSchemaCoordinator {
 		this.publishLifecycle({ type: 'closed', owner: Object.freeze({
 			boxId: current.boxId,
 			sectionInstanceId: current.sectionInstanceId,
-		}) });
+		}), ...(options.preserveResultAttachment === true ? { preserveResultAttachment: true } : {}) });
 		return true;
 	}
 

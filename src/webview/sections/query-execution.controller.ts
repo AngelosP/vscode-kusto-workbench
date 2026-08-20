@@ -1264,8 +1264,9 @@ export function executeQuery(
 	scope: 'focused' | 'all' = 'focused',
 ): string | undefined {
 	if (!canExecuteKustoInCurrentHost()) return undefined;
-	const runAll = scope === 'all';
-	const effectiveMode = runAll ? 'plain' : (mode || getRunMode(boxId));
+	const selectedMode = mode || getRunMode(boxId);
+	const runAll = scope === 'all' || selectedMode === 'runAll';
+	const effectiveMode = runAll ? 'plain' : selectedMode;
 	// Run Function mode — divert to the dedicated async handler.
 	if (effectiveMode === 'runFunction') {
 		executeRunFunction(String(boxId || '').trim());
@@ -1468,6 +1469,7 @@ export function executeQuery(
 		sectionInstanceId: lifecycle.sectionInstanceId, targetGeneration: lifecycle.targetGeneration,
 		producer: effectiveProducer, ...(comparisonRun ? { comparisonRun } : {}), cacheEnabled, cacheValue, cacheUnit,
 	});
+	try { schedulePersist('kusto-execution-started', true); } catch (e) { console.error('[kusto]', e); }
 	return executionId;
 }
 
@@ -1504,6 +1506,7 @@ export function executeQueryDirect(boxId: string, query: string): string | undef
 		sectionInstanceId: lifecycle.sectionInstanceId, targetGeneration: lifecycle.targetGeneration,
 		producer: 'manual', cacheEnabled: false, cacheValue: 1, cacheUnit: 'h',
 	});
+	try { schedulePersist('kusto-execution-started', true); } catch (e) { console.error('[kusto]', e); }
 	return executionId;
 }
 
