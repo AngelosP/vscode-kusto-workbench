@@ -2654,7 +2654,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				if (process.env.VSCODE_EXT_TESTER_PORT) {
 					getWorkbenchLogger().info('[session-sync] direct write', JSON.stringify({
 						nextHasResult: nextText.includes('"resultJson"'), allowDisposed,
-						stack: new Error().stack?.split('\n').slice(1, 4),
+						stack: new Error().stack?.split('\n').slice(1, 10),
 					}));
 				}
 				if (document.uri.scheme === 'file' && (!expectedIdentity

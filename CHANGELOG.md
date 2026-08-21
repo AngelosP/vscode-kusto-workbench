@@ -10,6 +10,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Kusto Copilot clarifications started by the Workbench agent are now answered and retried by that agent from available context. The user is asked only when a genuinely unresolved choice could materially change the result.
 * Result-table headers now show compact datatype glyphs with the full declared type available on hover.
 * Result tables can show complete complex-value text beside each existing `View` action, enable it from the toolbar or an eligible column menu, configure that column's existing width cap, and highlight table-search matches inside the preview.
+* Sorting columns now keeps the button toggled 'on'.
 
 ## [5.0.0] - 2026.08.18
 
