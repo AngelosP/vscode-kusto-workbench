@@ -241,10 +241,10 @@ describe('kw-data-table visibility lifecycle', () => {
 		expect(toggle.getAttribute('aria-pressed')).toBe('true');
 		const controls = table.shadowRoot?.querySelector('[data-testid="complex-preview-controls"]') as Element;
 		expect(getComputedStyle(controls).backgroundColor).toBe('transparent');
-		expect(getComputedStyle(controls).paddingLeft).toBe('50px');
-		expect(getComputedStyle(controls).paddingRight).toBe('50px');
+		expect(getComputedStyle(controls).paddingLeft).toBe('0px');
+		expect(getComputedStyle(controls).paddingRight).toBe('0px');
 		expect(controls.querySelector('.complex-preview-label')).toBeNull();
-		expect(controls.textContent?.trim()).toBe('Max characters');
+		expect(controls.textContent?.trim()).toBe('Max characters for complex column preview');
 		const close = table.shadowRoot?.querySelector('[data-testid="complex-preview-close"]') as Element;
 		expect(getComputedStyle(close).marginLeft).toBe('auto');
 		const input = table.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')!;
@@ -327,6 +327,103 @@ describe('kw-data-table visibility lifecycle', () => {
 		input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
 		await settleTable(table);
 		expect((table as any)._columnWidths[0]).toBe(227);
+	});
+
+	it('caps complex columns while ordinary columns absorb spare viewport width without rescanning rows', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Complex' }, { name: 'Plain' }];
+		table.rows = [[
+			{ display: '[object]', full: `{"payload":"${'x'.repeat(1000)}"}`, isObject: true },
+			'short',
+		]];
+		document.body.appendChild(table);
+		await settleTable(table);
+		table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-toggle"]')?.click();
+		await settleTable(table);
+
+		const internal = table as any;
+		const baseWidths = [...internal._columnWidths];
+		internal._vScrollCtrl.viewportW = 1200;
+		const rowScan = vi.spyOn(table.rows, 'some');
+		const complexColumnMaxWidth = vi.spyOn(internal, '_complexPreviewColumnMaxWidth');
+		const layout = internal._layoutColumns();
+
+		expect(rowScan).not.toHaveBeenCalled();
+		expect(complexColumnMaxWidth).not.toHaveBeenCalled();
+		expect(layout.widths[0]).toBe(baseWidths[0]);
+		expect(layout.widths[1]).toBeGreaterThan(baseWidths[1]);
+		expect(layout.tableWidth).toBe(40 + layout.widths[0] + layout.widths[1]);
+	});
+
+	it('computes the complex text cap once for an entire multi-row width pass', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Complex' }];
+		table.rows = Array.from({ length: 50 }, (_, index) => [{
+			display: '[object]',
+			full: `{"index":${index}}`,
+			isObject: true,
+		}]);
+		document.body.appendChild(table);
+		await settleTable(table);
+		const internal = table as any;
+		internal._complexPreviewEnabled = true;
+		const complexColumnMaxWidth = vi.spyOn(internal, '_complexPreviewColumnMaxWidth');
+
+		internal._computeColumnWidths();
+
+		expect(complexColumnMaxWidth).toHaveBeenCalledTimes(1);
+	});
+
+	it('uses the preview monospace fallback when the editor font variable is absent', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Complex' }];
+		table.rows = [[{ display: '[object]', full: `{"payload":"${'x'.repeat(1000)}"}`, isObject: true }]];
+		document.body.appendChild(table);
+		await settleTable(table);
+		const internal = table as any;
+		const context = { font: '', measureText: () => ({ width: 7 }) };
+		internal._measureCanvas = { getContext: () => context };
+		internal._complexPreviewColumnMaxWidth();
+		expect(context.font).toContain('monospace');
+	});
+
+	it('keeps every complex column capped when no ordinary column can fill a wide viewport', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'First' }, { name: 'Second' }];
+		table.rows = [[
+			{ display: '[object]', full: `{"payload":"${'x'.repeat(1000)}"}`, isObject: true },
+			{ display: '[object]', full: `{"payload":"${'y'.repeat(1000)}"}`, isObject: true },
+		]];
+		document.body.appendChild(table);
+		await settleTable(table);
+		table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-toggle"]')?.click();
+		await settleTable(table);
+
+		const internal = table as any;
+		const baseWidths = [...internal._columnWidths];
+		internal._vScrollCtrl.viewportW = 1800;
+		const layout = internal._layoutColumns();
+
+		expect(layout.widths).toEqual(baseWidths);
+		expect(layout.tableWidth).toBe(40 + baseWidths[0] + baseWidths[1]);
+		expect(layout.tableWidth).toBeLessThan(1800);
+	});
+
+	it('uses compact preview geometry without increasing compact row height', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.options = { compact: true };
+		table.columns = [{ name: 'Complex' }];
+		table.rows = [[{ display: '[object]', full: `{"payload":"${'x'.repeat(1000)}"}`, isObject: true }]];
+		document.body.appendChild(table);
+		await settleTable(table);
+		const internal = table as any;
+		const measureTextWidth = vi.spyOn(internal, '_measureTextWidth');
+		table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-toggle"]')?.click();
+		await settleTable(table);
+
+		expect(internal._estimatedRowHeight()).toBe(21);
+		expect(internal._columnWidths[0]).toBe(internal._complexPreviewColumnMaxWidth());
+		expect(measureTextWidth).toHaveBeenCalledWith('M'.repeat(75), 10);
 	});
 
 	it('recomputes widths once when a character-cap edit is committed', async () => {
@@ -608,12 +705,25 @@ describe('kw-data-table visibility lifecycle', () => {
 		expect(internal._selectionCtrl.selectionRange).toBeNull();
 	});
 
-	it('renders sort-dialog row order and the Clear Sort control', async () => {
+	it('keeps the Sort icon active while sorting and clears through the dialog', async () => {
 		const table = document.createElement('kw-data-table') as KwDataTable;
 		table.columns = [{ name: 'Name' }, { name: 'Score', type: 'long' }];
 		table.rows = [['alpha', 1], ['bravo', 3], ['charlie', 2]];
 		document.body.appendChild(table);
 		await settleTable(table);
+		const sortButton = table.shadowRoot?.querySelector<HTMLButtonElement>('[title="Sort"]')!;
+		expect(sortButton.classList.contains('act')).toBe(false);
+		expect(sortButton.getAttribute('aria-pressed')).toBe('false');
+		sortButton.click();
+		await table.updateComplete;
+		expect(sortButton.classList.contains('act')).toBe(true);
+		expect(sortButton.getAttribute('aria-pressed')).toBe('true');
+		const initialDialog = table.shadowRoot?.querySelector('kw-sort-dialog') as HTMLElement & { updateComplete: Promise<unknown> };
+		await initialDialog.updateComplete;
+		(initialDialog.shadowRoot?.querySelector<HTMLButtonElement>('[title="Close"]'))?.click();
+		await settleTable(table);
+		expect(sortButton.classList.contains('act')).toBe(false);
+		expect(sortButton.getAttribute('aria-pressed')).toBe('false');
 
 		(table as any)._onSortChange(new CustomEvent('sort-change', {
 			detail: { sorting: [{ id: '1', desc: true }] },
@@ -621,7 +731,20 @@ describe('kw-data-table visibility lifecycle', () => {
 		await settleTable(table);
 
 		expect(renderedCellText(table)).toEqual(['bravo', '3', 'charlie', '2', 'alpha', '1']);
-		expect(table.shadowRoot?.querySelector('[title="Clear sort"]')).toBeTruthy();
+		expect(sortButton.classList.contains('act')).toBe(true);
+		expect(sortButton.getAttribute('aria-pressed')).toBe('true');
+		expect(table.shadowRoot?.querySelector('[title="Clear sort"]')).toBeNull();
+
+		sortButton.click();
+		await table.updateComplete;
+		const dialog = table.shadowRoot?.querySelector('kw-sort-dialog') as HTMLElement & { updateComplete: Promise<unknown> };
+		await dialog.updateComplete;
+		(dialog.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="sort-remove"]'))?.click();
+		await settleTable(table);
+
+		expect(renderedCellText(table)).toEqual(['alpha', '1', 'bravo', '3', 'charlie', '2']);
+		expect(sortButton.classList.contains('act')).toBe(false);
+		expect(sortButton.getAttribute('aria-pressed')).toBe('false');
 	});
 
 	it('renders declared type glyphs beside labels without changing column behavior', async () => {
@@ -659,13 +782,16 @@ describe('kw-data-table visibility lifecycle', () => {
 
 	it('recomputes glyphs and reserves only their fixed header width after column reassignment', async () => {
 		const table = document.createElement('kw-data-table') as KwDataTable;
+		const internal = table as any;
+		vi.spyOn(internal, '_measureTextWidth').mockReturnValue(100);
 		const name = 'ModeratelyLongColumnName';
 		table.columns = [{ name, type: 'string' }, { name }];
 		table.rows = [];
 		document.body.appendChild(table);
 		await settleTable(table);
 
-		const widths = (table as any)._columnWidths as number[];
+		const widths = internal._columnWidths as number[];
+		expect(widths).toEqual([155, 141]);
 		expect(widths[0] - widths[1]).toBe(14);
 		expect(table.shadowRoot?.querySelector('[title="Data type: string"]')?.textContent).toBe('s');
 
@@ -674,6 +800,41 @@ describe('kw-data-table visibility lifecycle', () => {
 
 		expect(table.shadowRoot?.querySelector('[title="Data type: datetime"]')?.textContent).toBe('d');
 		expect(table.shadowRoot?.querySelector('[title="Data type: string"]')).toBeNull();
+	});
+
+	it('measures UI text and budgets the current sort indicator without permanent column slack', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		const internal = table as any;
+		vi.spyOn(internal, '_measureTextWidth').mockReturnValue(250);
+		internal._measureUiTextWidth = vi.fn((text: string, fontWeight = 400) => {
+			if (text === 'Measureements') return fontWeight === 700 ? 86 : 82;
+			if (text === 'ClientCountryOrRegion') return fontWeight === 700 ? 126 : 120;
+			if (text === 'Democratic Republic Of The Congo') return 180;
+			if (text === '↑' || text === '↓') return 8;
+			return text.length * 5;
+		});
+		table.columns = [
+			{ name: 'Measureements', type: 'dynamic' },
+			{ name: 'ClientCountryOrRegion', type: 'string' },
+		];
+		table.rows = [[null, 'Democratic Republic Of The Congo']];
+		document.body.appendChild(table);
+		await settleTable(table);
+
+		expect(internal._columnWidths).toEqual([137, 198]);
+
+		table.shadowRoot?.querySelector<HTMLElement>('th[data-column-index="0"]')?.click();
+		await settleTable(table);
+		expect(internal._sorting).toEqual([{ id: '0', desc: true }]);
+		expect(internal._columnWidths).toEqual([152, 198]);
+
+		table.shadowRoot?.querySelector<HTMLElement>('th[data-column-index="1"]')?.click();
+		await settleTable(table);
+		expect(internal._sorting).toEqual([{ id: '1', desc: false }]);
+		expect(internal._columnWidths).toEqual([137, 198]);
+
+		internal._sorting = [{ id: '0', desc: true }, { id: '1', desc: false }];
+		expect(internal._computeColumnWidths()).toEqual([159, 199]);
 	});
 
 	it('retains the datatype indicator cache across row-only updates', async () => {
@@ -738,6 +899,86 @@ describe('kw-data-table visibility lifecycle', () => {
 			['unique-values', 'Show unique values'],
 			['unique-count', 'Unique count by column'],
 		]);
+	});
+
+	it('toggles the table-level complex preview from eligible column menus only', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Details', type: 'dynamic' }, { name: 'Name', type: 'string' }];
+		table.rows = [[
+			{ display: '[object]', full: '{"name":"alpha"}', isObject: true },
+			'alpha',
+		]];
+		document.body.appendChild(table);
+		await settleTable(table);
+
+		(table as any)._openColumnMenuAt(1, 100, 100);
+		await table.updateComplete;
+		expect(table.shadowRoot?.querySelector('[data-action="toggle-complex-preview"]')).toBeNull();
+		(table as any)._closeColumnMenu();
+
+		const trigger = table.shadowRoot?.querySelector<HTMLButtonElement>('[aria-label="Column menu for Details"]')!;
+		trigger.focus();
+		trigger.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }));
+		await table.updateComplete;
+		const enable = table.shadowRoot?.querySelector<HTMLElement>('[data-action="toggle-complex-preview"]');
+		expect(Array.from(table.shadowRoot?.querySelectorAll<HTMLElement>('.cmi') ?? [])
+			.map(item => item.dataset.action)).toEqual([
+				'sort-ascending', 'sort-descending', 'filter', 'copy-column',
+				'toggle-complex-preview', 'unique-values', 'unique-count',
+			]);
+		expect(enable?.textContent?.trim()).toBe('Preview complex values');
+		expect(enable?.getAttribute('role')).toBe('menuitemcheckbox');
+		expect(enable?.getAttribute('tabindex')).toBe('0');
+		expect(enable?.getAttribute('aria-checked')).toBe('false');
+		expect(table.shadowRoot?.activeElement).toBe(enable);
+		enable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await settleTable(table);
+
+		expect(table.captureComplexPreviewState()).toEqual({ enabled: true, maxCharacters: 75 });
+		expect((table as any)._columnMenuOpen).toBeNull();
+		expect(table.shadowRoot?.activeElement).toBe(trigger);
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-value-preview"]')?.textContent).toBe('{"name":"alpha"}');
+
+		trigger.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }));
+		await table.updateComplete;
+		const disable = table.shadowRoot?.querySelector<HTMLElement>('[data-action="toggle-complex-preview"]');
+		expect(disable?.textContent?.trim()).toBe('Hide complex value previews');
+		expect(disable?.getAttribute('aria-checked')).toBe('true');
+		expect(table.shadowRoot?.activeElement).toBe(disable);
+		disable?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+		await settleTable(table);
+
+		expect(table.captureComplexPreviewState()).toEqual({ enabled: false, maxCharacters: 75 });
+		expect(table.shadowRoot?.activeElement).toBe(trigger);
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-value-preview"]')).toBeNull();
+	});
+
+	it('keeps the column-menu preview route inert after governed result revocation', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Details', type: 'dynamic' }];
+		table.rows = [[{ display: '[object]', full: '{"secret":true}', isObject: true }]];
+		table.resultArtifactGoverned = true;
+		table.resultArtifactSourceBoxId = 'query_menu_preview';
+		table.resultArtifactId = 'result:query_menu_preview:1';
+		table.resultArtifactTableToken = 'token-1';
+		table.resultArtifactLiveCheck = () => true;
+		document.body.appendChild(table);
+		await settleTable(table);
+
+		table.revokeResultArtifactGeneration();
+		await table.updateComplete;
+		(table as any)._openColumnMenuAt(0, 100, 100);
+		await table.updateComplete;
+		const action = table.shadowRoot?.querySelector<HTMLElement>('[data-action="toggle-complex-preview"]');
+		expect(action?.textContent?.trim()).toBe('Preview complex values');
+		action?.click();
+		await settleTable(table);
+
+		expect(table.canCopyRows()).toBe(false);
+		expect(table.captureComplexPreviewState()).toEqual({ enabled: false, maxCharacters: 75 });
+		expect((table as any)._columnMenuOpen).toBeNull();
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-preview-controls"]')).toBeNull();
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-value-preview"]')).toBeNull();
 	});
 
 	it('shows a type glyph only for the synthetic count in compact Unique Values tables', async () => {

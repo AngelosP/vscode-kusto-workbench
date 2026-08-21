@@ -73,7 +73,9 @@ Feature: Kusto surrounding UX controls
     When I click "[data-testid='sort-apply']" in the webview
     And I wait 1 second
     When I evaluate "window.__e2e.kusto.ux.assertFirstRow('DurationMs', '211')" in the webview
-    When I evaluate "(() => { const table = document.querySelector('kw-query-section kw-data-table'); table?._clearSort(); return 'sort dialog state cleaned up'; })()" in the webview
+    When I evaluate "(() => { const root = document.querySelector('kw-query-section kw-data-table')?.shadowRoot; const sort = root?.querySelector('[title=Sort]'); if (!sort?.classList.contains('act') || sort.getAttribute('aria-pressed') !== 'true' || root.querySelector('[title=\"Clear sort\"]')) throw new Error('Sort icon did not retain active state'); return 'sort icon active'; })()" in the webview
+    When I click "button[title='Sort']" in the webview
+    When I click "[data-testid='sort-remove']" in the webview
     And I wait 1 second
     When I evaluate "window.__e2e.kusto.ux.assertFirstRow('User', 'alex')" in the webview
 
@@ -84,7 +86,9 @@ Feature: Kusto surrounding UX controls
     And I wait 1 second
     When I evaluate "window.__e2e.kusto.ux.assertFirstRow('User', 'chen')" in the webview
     Then I take a screenshot "05-column-sort-applied"
-    When I click "button[title='Clear sort']" in the webview
+    When I evaluate "(() => { const root = document.querySelector('kw-query-section kw-data-table')?.shadowRoot; const sort = root?.querySelector('[title=Sort]'); if (!sort?.classList.contains('act') || sort.getAttribute('aria-pressed') !== 'true' || root.querySelector('[title=\"Clear sort\"]')) throw new Error('Column sort did not activate the Sort icon'); return 'column sort icon active'; })()" in the webview
+    When I click "button[title='Sort']" in the webview
+    When I click "[data-testid='sort-remove']" in the webview
     And I wait 1 second
     When I evaluate "window.__e2e.kusto.ux.assertFirstRow('User', 'alex')" in the webview
 

@@ -346,6 +346,7 @@ export class KwDataTable extends LitElement {
 	@state() private _complexPreviewEnabled = false;
 	@state() private _complexCellMaxCharacters = DEFAULT_COMPLEX_CELL_MAX_CHARACTERS;
 	@state() private _complexCellMaxCharactersDraft = String(DEFAULT_COMPLEX_CELL_MAX_CHARACTERS);
+	private _viewableObjectColumns: boolean[] = [];
 	private _metaTooltipPos = { top: 0, left: 0 };
 	private _metaHideTimer: ReturnType<typeof setTimeout> | null = null;
 	private _metaCopyDone = false;
@@ -375,6 +376,7 @@ export class KwDataTable extends LitElement {
 	private _prevComplexPreviewControlsVis = false;
 	private _chromeRafPending = false;
 	private _columnMenuListenerRaf = 0;
+	private _columnMenuReturnFocus: HTMLElement | null = null;
 	private _sortDialogReturnFocus: HTMLElement | null = null;
 	private _filterDialogReturnFocus: HTMLElement | null = null;
 
@@ -589,7 +591,8 @@ export class KwDataTable extends LitElement {
 			this._columnTypeIndicators = this.columns.map(column => getColumnTypeIndicator(column.type));
 		}
 		if (changed.has('columns') || changed.has('rows')) {
-			this._hasViewableObjectCells = this._containsViewableObjectCell();
+			this._viewableObjectColumns = this._computeViewableObjectColumns();
+			this._hasViewableObjectCells = this._viewableObjectColumns.some(Boolean);
 			this._initTable();
 			this._searchCtrl.reset();
 			this._rowJumpCtrl.reset();
@@ -782,7 +785,13 @@ export class KwDataTable extends LitElement {
 		this._table = createTable({ columns: defs, data: this.rows,
 			state: { sorting: this._sorting, columnFilters: this._columnFilters, rowSelection: this._selectionCtrl.rowSelection, columnPinning: { left: [], right: [] }, columnVisibility: {}, columnOrder: [] },
 			onStateChange: () => {}, renderFallbackValue: null,
-			onSortingChange: (u) => { this._sorting = typeof u === 'function' ? u(this._sorting) : u; this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: this._sorting } })); this._vScrollCtrl.updateCount(); },
+			onSortingChange: (u) => {
+				this._sorting = typeof u === 'function' ? u(this._sorting) : u;
+				this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: this._sorting } }));
+				this._columnWidths = this._computeColumnWidths();
+				this._vScrollCtrl.updateCount();
+				this.requestUpdate();
+			},
 			onColumnFiltersChange: (u) => { this._columnFilters = typeof u === 'function' ? u(this._columnFilters) : u; this._table?.setOptions(p => ({ ...p, state: { ...p.state, columnFilters: this._columnFilters } })); this._columnWidths = this._computeColumnWidths(); this._vScrollCtrl.updateCount(); this.requestUpdate(); },
 			onRowSelectionChange: (u) => { this._selectionCtrl.rowSelection = typeof u === 'function' ? u(this._selectionCtrl.rowSelection) : u; this._table?.setOptions(p => ({ ...p, state: { ...p.state, rowSelection: this._selectionCtrl.rowSelection } })); },
 			getCoreRowModel: getCoreRowModel(), getSortedRowModel: getSortedRowModel(), getFilteredRowModel: getFilteredRowModel(), enableMultiSort: true,
@@ -810,18 +819,20 @@ export class KwDataTable extends LitElement {
 	// ── Stable table layout ──
 
 	private _computeColumnWidths(): number[] {
+		const complexColumnMaxWidth = this._complexPreviewColumnMaxWidth();
+		const complexTextMaxWidth = Math.max(0, complexColumnMaxWidth - OBJECT_CELL_CHROME_WIDTH_PX);
 		return this.columns.map((col, ci) => {
 			const isComplexPreviewColumn = this._isComplexPreviewColumn(ci);
-			const complexColumnMaxWidth = isComplexPreviewColumn ? this._complexPreviewColumnMaxWidth() : MAX_COL_WIDTH;
 			const maxWidth = isComplexPreviewColumn ? complexColumnMaxWidth : MAX_COL_WIDTH;
 			const headerLabel = isColumnFiltered(ci, this._columnFilters) ? `${col.name} (filtered)` : col.name;
-			let width = Math.min(MAX_COL_WIDTH, this._measureHeaderWidth(headerLabel, !!this._columnTypeIndicators[ci]));
+			const sortIndex = this._sorting.findIndex(sort => sort.id === String(ci));
+			let width = Math.min(MAX_COL_WIDTH, this._measureHeaderWidth(headerLabel, !!this._columnTypeIndicators[ci], sortIndex));
 			for (let ri = 0; ri < this.rows.length; ri++) {
 				const row = this.rows[ri];
 				if (!row) continue;
 				const cell = row[ci];
 				const cellWidth = isComplexPreviewColumn && isViewableObjectCell(cell)
-					? this._measureComplexCellWidth(cell)
+					? this._measureComplexCellWidth(cell, complexTextMaxWidth)
 					: Math.min(MAX_COL_WIDTH, this._measureCellWidth(fmtCell(cell)));
 				width = Math.max(width, cellWidth);
 				if (width >= maxWidth) return maxWidth;
@@ -831,8 +842,7 @@ export class KwDataTable extends LitElement {
 	}
 
 	private _isComplexPreviewColumn(columnIndex: number): boolean {
-		return this._complexPreviewEnabled
-			&& this.rows.some(row => Array.isArray(row) && isViewableObjectCell(row[columnIndex]));
+		return this._complexPreviewEnabled && this._viewableObjectColumns[columnIndex] === true;
 	}
 
 	private _complexPreviewTextMaxWidth(): number {
@@ -847,9 +857,9 @@ export class KwDataTable extends LitElement {
 		);
 	}
 
-	private _measureComplexCellWidth(cell: ObjectCellValue): number {
+	private _measureComplexCellWidth(cell: ObjectCellValue, textMaxWidth = this._complexPreviewTextMaxWidth()): number {
 		const previewWidth = Math.min(
-			this._complexPreviewTextMaxWidth(),
+			textMaxWidth,
 			this._measureTextWidth(getViewableObjectCellText(cell)),
 		);
 		return Math.ceil(previewWidth + OBJECT_CELL_CHROME_WIDTH_PX);
@@ -860,36 +870,63 @@ export class KwDataTable extends LitElement {
 		this._columnWidths = this._computeColumnWidths();
 	}
 
-	private _containsViewableObjectCell(): boolean {
+	private _computeViewableObjectColumns(): boolean[] {
+		const columns = this.columns.map(() => false);
+		let remaining = columns.length;
 		for (const row of this.rows) {
 			if (!Array.isArray(row)) continue;
 			for (let columnIndex = 0; columnIndex < this.columns.length; columnIndex++) {
-				if (isViewableObjectCell(row[columnIndex])) return true;
+				if (!columns[columnIndex] && isViewableObjectCell(row[columnIndex])) {
+					columns[columnIndex] = true;
+					remaining--;
+					if (remaining === 0) return columns;
+				}
 			}
 		}
-		return false;
+		return columns;
 	}
 
-	private _measureHeaderWidth(text: string, hasTypeIndicator: boolean): number {
-		// Header includes label + sort indicator/menu button chrome from legacy table UI.
-		return this._measureTextWidth(text) + 48
+	private _measureHeaderWidth(text: string, hasTypeIndicator: boolean, sortIndex = -1): number {
+		// Header includes label + cell padding, menu button, flex gap, and collapsed border.
+		const isSorted = sortIndex >= 0;
+		let width = this._measureUiTextWidth(text, isSorted ? 700 : 600) + 41
 			+ (hasTypeIndicator ? TYPE_INDICATOR_WIDTH_PX + TYPE_INDICATOR_GAP_PX : 0);
+		if (isSorted) {
+			width += 3 + this._measureUiTextWidth(this._sorting[sortIndex]?.desc ? '↓' : '↑', 700, 11);
+			if (this._sorting.length > 1) {
+				width += 2 + this._measureUiTextWidth(String(sortIndex + 1), 700, 8);
+			}
+		}
+		return width;
 	}
 
 	private _measureCellWidth(text: string): number {
 		// Cell text plus left/right padding from table CSS.
-		return this._measureTextWidth(text) + 18;
+		return this._measureUiTextWidth(text) + 18;
 	}
 
-	private _measureTextWidth(text: string, fontSize = (this.options.compact ?? false) ? 11 : 12): number {
+	private _measureUiTextWidth(
+		text: string,
+		fontWeight = 400,
+		fontSize = (this.options.compact ?? false) ? 11 : 12,
+	): number {
+		return this._measureTextWidth(text, fontSize, fontWeight, 'ui');
+	}
+
+	private _measureTextWidth(
+		text: string,
+		fontSize = (this.options.compact ?? false) ? 11 : 12,
+		fontWeight = 400,
+		fontRole: 'ui' | 'editor' = 'editor',
+	): number {
 		const canvas = this._measureCanvas ?? (this._measureCanvas = document.createElement('canvas'));
 		const ctx = canvas.getContext('2d');
 		const measuredText = text.slice(0, 500);
 		if (!ctx) return Math.max(MIN_COL_WIDTH, measuredText.length * 7);
 		const cs = getComputedStyle(this);
-		const fontFamilyVar = cs.getPropertyValue('--vscode-editor-font-family').trim();
-		const fontFamily = fontFamilyVar || cs.fontFamily || 'Segoe WPC, Segoe UI, sans-serif';
-		ctx.font = `400 ${fontSize}px ${fontFamily}`;
+		const fontFamilyVar = cs.getPropertyValue(fontRole === 'ui' ? '--vscode-font-family' : '--vscode-editor-font-family').trim();
+		const fontFamily = fontFamilyVar || (fontRole === 'ui' ? cs.fontFamily || 'sans-serif' : 'monospace');
+		ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
 		return ctx.measureText(measuredText).width;
 	}
 
@@ -916,7 +953,6 @@ export class KwDataTable extends LitElement {
 		// Fit mode: everything can fit. Let one uncapped column absorb remaining space.
 		const widths = [...base];
 		const extra = available - baseTotal;
-		let filledViewport = false;
 		if (extra > 0) {
 			let flexIdx = -1;
 			let maxW = -1;
@@ -929,12 +965,10 @@ export class KwDataTable extends LitElement {
 			if (flexIdx >= 0) {
 				const scrollbarSlack = 2;
 				widths[flexIdx] += Math.max(0, extra - scrollbarSlack);
-				filledViewport = true;
 			}
 		}
 		const contentWidth = ROW_NUMBER_WIDTH + widths.reduce((sum, w) => sum + w, 0);
-		const tableWidth = filledViewport ? Math.max(contentWidth, viewport - 1) : contentWidth;
-		return { widths, tableWidth };
+		return { widths, tableWidth: contentWidth };
 	}
 
 	// ── Filter (delegated to <kw-filter-dialog>) ──
@@ -1135,6 +1169,7 @@ export class KwDataTable extends LitElement {
 		const hasTooltip = !!(meta && (meta.clientActivityId || meta.serverStats));
 		const resultSets = Array.isArray(this.options.resultSets) ? this.options.resultSets : [];
 		const showResultSetPicker = resultSets.length > 1;
+		const sortActive = this._sortDialogOpen || this._sorting.length > 0;
 		return html`<div class="hbar">
 			<span class="hinfo">
 				${this.options.label ? html`<strong>${this.options.label}:</strong>` : nothing}
@@ -1157,11 +1192,10 @@ export class KwDataTable extends LitElement {
 				${this._hasViewableObjectCells ? html`<button class="tbtn ${this._complexPreviewEnabled ? 'act' : ''}" data-testid="complex-preview-toggle" title="Preview complex values" aria-label="Preview complex values" aria-pressed=${String(this._complexPreviewEnabled)} aria-controls="complex-preview-controls" @click=${this._toggleComplexPreview}>${ICON.complexPreview}</button>` : nothing}
 				<button class="tbtn ${this._rowJumpCtrl.visible ? 'act' : ''}" title="Scroll to row" @click=${() => this._toggleRowJump(totalRows)}>${ICON.scrollToRow}</button>
 				<button class="tbtn ${this._colJumpOpen ? 'act' : ''}" title="Scroll to column" @click=${() => { this._colJumpOpen = !this._colJumpOpen; this._colJumpQuery = ''; }}>${ICON.scrollToCol}</button>
-				<button class="tbtn ${this._sortDialogOpen ? 'act' : ''}" title="Sort" @click=${this._toggleSortDialog}>${ICON.sort}</button>
+				<button class="tbtn ${sortActive ? 'act' : ''}" title="Sort" aria-pressed=${String(sortActive)} @click=${this._toggleSortDialog}>${ICON.sort}</button>
 				<span class="sep"></span>
 				${this.options.showSave !== false ? html`<button class="tbtn" data-testid="data-table-save" title="Save results to file" @click=${() => this._save()}>${ICON.save}</button>` : nothing}
 				<button class="tbtn" title="Copy (Ctrl+C)" @click=${() => this._selectionCtrl.copy()}>${ICON.copy}</button>
-				${this._sorting.length > 0 ? html`<button class="tbtn tbtn-text" title="Clear sort" @click=${this._clearSort}>✕ Sort</button>` : nothing}
 			</div>` : nothing}
 			${this._metaTooltipVisible && hasTooltip ? this._renderMetaTooltip() : nothing}
 		</div>`;
@@ -1174,7 +1208,7 @@ export class KwDataTable extends LitElement {
 
 	private _renderComplexPreviewControls(): TemplateResult {
 		return html`<div class="sbar complex-preview-controls" id="complex-preview-controls" data-testid="complex-preview-controls">
-			<label class="complex-preview-length-label" for="complex-preview-length">Max characters</label>
+			<label class="complex-preview-length-label" for="complex-preview-length">Max characters for complex column preview</label>
 			<input id="complex-preview-length" class="complex-preview-length" data-testid="complex-preview-length"
 				aria-label="Maximum complex column characters"
 				type="number" min=${MIN_COMPLEX_CELL_MAX_CHARACTERS} max=${MAX_COMPLEX_CELL_MAX_CHARACTERS} step="1"
@@ -1414,7 +1448,7 @@ export class KwDataTable extends LitElement {
 		const typeIndicator = this._columnTypeIndicators[ci] ?? null;
 		const typeTooltip = typeIndicator ? `Data type: ${typeIndicator[1]}` : '';
 		return html`<th data-column-index=${ci} @click=${(e: MouseEvent) => { if (!(e.target as HTMLElement).closest('.cm-btn') && !(e.target as HTMLElement).closest('.filtered-link')) col.toggleSorting(undefined, e.shiftKey); }}
-			@contextmenu=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openColumnMenuAt(ci, e.clientX, e.clientY); }}
+			@contextmenu=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openColumnMenuAt(ci, e.clientX, e.clientY, this.shadowRoot?.querySelector(`button.cm-btn[data-column-index='${ci}']`) as HTMLElement | null); }}
 			class="${sd ? 'sorted' : ''}">
 			<div class="thc"><span class="thn"><span class="th-label">${col.columnDef.header}</span>${typeIndicator ? html`<span class="type-glyph" data-testid="column-type-glyph" title=${typeTooltip} role="img" aria-label=${typeTooltip}>${typeIndicator[0]}</span>` : nothing}${sd ? html`<span class="si2">${sd === 'asc' ? '↑' : '↓'}${this._sorting.length > 1 ? html`<sup>${si + 1}</sup>` : nothing}</span>` : nothing}${isFiltered ? html`<a href="#" class="filtered-link" @click=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openFilterDialog(ci); }}>(filtered)</a>` : nothing}</span>
 				<button class="cm-btn" data-column-index=${ci} title="Column menu for ${col.columnDef.header}" aria-label="Column menu for ${col.columnDef.header}" @click=${(e: MouseEvent) => { e.stopPropagation(); this._openColumnMenu(ci, e); }}>☰</button>
@@ -1426,12 +1460,19 @@ export class KwDataTable extends LitElement {
 		if (this._columnMenuOpen === ci) { this._closeColumnMenu(); return; }
 		const btn = e.currentTarget as HTMLElement;
 		const rect = btn.getBoundingClientRect();
-		this._openColumnMenuAt(ci, rect.right, rect.bottom + 2);
+		this._openColumnMenuAt(ci, rect.right, rect.bottom + 2, btn);
+		if (e.detail === 0) {
+			void this.updateComplete.then(() => {
+				if (this._columnMenuOpen !== ci) return;
+				(this.shadowRoot?.querySelector('[data-action="toggle-complex-preview"]') as HTMLElement | null)?.focus({ preventScroll: true });
+			});
+		}
 	}
 
-	private _openColumnMenuAt(ci: number, x: number, y: number): void {
+	private _openColumnMenuAt(ci: number, x: number, y: number, returnFocus: HTMLElement | null = null): void {
 		if (this._columnMenuOpen === ci) { this._closeColumnMenu(); return; }
 		this._columnMenuPos = { x, y };
+		this._columnMenuReturnFocus = returnFocus;
 		this._columnMenuOpen = ci;
 		// Defer so this click doesn't immediately trigger the close handler
 		if (this._columnMenuListenerRaf) cancelAnimationFrame(this._columnMenuListenerRaf);
@@ -1442,13 +1483,29 @@ export class KwDataTable extends LitElement {
 		});
 	}
 
-	private _closeColumnMenu(): void {
+	private _closeColumnMenu(restoreFocus = false): void {
 		if (this._columnMenuListenerRaf) {
 			cancelAnimationFrame(this._columnMenuListenerRaf);
 			this._columnMenuListenerRaf = 0;
 		}
+		const returnFocus = restoreFocus ? this._columnMenuReturnFocus : null;
+		const returnFocusColumnIndex = restoreFocus ? this._columnMenuOpen : null;
+		this._columnMenuReturnFocus = null;
 		this._columnMenuOpen = null;
 		document.removeEventListener('mousedown', this._onDocMouseDown);
+		if (returnFocus || returnFocusColumnIndex !== null) {
+			const focusReturnTarget = (): void => {
+				const target = returnFocus?.isConnected
+					? returnFocus
+					: this.shadowRoot?.querySelector(`button.cm-btn[data-column-index='${returnFocusColumnIndex}']`) as HTMLElement | null;
+				target?.focus({ preventScroll: true });
+			};
+			focusReturnTarget();
+			void this.updateComplete.then(() => {
+				const activeColumnIndex = this.shadowRoot?.activeElement?.getAttribute('data-column-index');
+				if (activeColumnIndex !== String(returnFocusColumnIndex)) focusReturnTarget();
+			});
+		}
 	}
 
 	private _onDocMouseDown = (e: MouseEvent) => {
@@ -1463,6 +1520,7 @@ export class KwDataTable extends LitElement {
 		const ci = this._columnMenuOpen!;
 		const col = this._table?.getHeaderGroups()[0]?.headers[ci]?.column as Column<CellValue[]> | undefined;
 		if (!col) return html``;
+		const canToggleComplexPreview = this._viewableObjectColumns[ci] === true;
 		return html`<div class="cm" role="menu" data-column-index=${ci} style="left:${this._columnMenuPos.x}px;top:${this._columnMenuPos.y}px;" @click=${(e: Event) => e.stopPropagation()}>
 			<div class="cmi" role="menuitem" data-action="sort-ascending" @click=${() => { col.toggleSorting(false, false); this._closeColumnMenu(); }}>Sort ascending</div>
 			<div class="cmi" role="menuitem" data-action="sort-descending" @click=${() => { col.toggleSorting(true, false); this._closeColumnMenu(); }}>Sort descending</div>
@@ -1470,11 +1528,24 @@ export class KwDataTable extends LitElement {
 			<div class="cmi" role="menuitem" data-action="filter" @click=${() => this._openFilterDialog(ci)}>Filter...</div>
 			<div class="cms"></div>
 			<div class="cmi" role="menuitem" data-action="copy-column" @click=${() => { this._copyCol(ci); this._closeColumnMenu(); }}>Copy column values</div>
+			${canToggleComplexPreview ? html`<div class="cmi" role="menuitemcheckbox" tabindex="0" aria-checked=${String(this._complexPreviewEnabled)} data-action="toggle-complex-preview" @click=${this._toggleComplexPreviewFromColumnMenu} @keydown=${this._onComplexPreviewMenuKeydown}>${this._complexPreviewEnabled ? 'Hide complex value previews' : 'Preview complex values'}</div>` : nothing}
 			<div class="cms"></div>
 			<div class="cmi" role="menuitem" data-action="unique-values" @click=${() => this._openUniqueValues(ci, 'unique-values')}>Show unique values</div>
 			${this.columns.length >= 2 ? html`<div class="cmi" role="menuitem" data-action="unique-count" @click=${() => this._openUniqueValues(ci, 'unique-count')}>Unique count by column</div>` : nothing}
 		</div>`;
 	}
+
+	private _toggleComplexPreviewFromColumnMenu = (): void => {
+		this._toggleComplexPreview();
+		this._closeColumnMenu(true);
+	};
+
+	private _onComplexPreviewMenuKeydown = (event: KeyboardEvent): void => {
+		if (event.key !== 'Enter' && event.key !== ' ') return;
+		event.preventDefault();
+		event.stopPropagation();
+		this._toggleComplexPreviewFromColumnMenu();
+	};
 
 
 	// ── Events (delegated to controllers) ──
@@ -1534,7 +1605,6 @@ export class KwDataTable extends LitElement {
 		this._vScrollCtrl.updateCount();
 		this._closeSortDialog();
 	};
-	private _clearSort(): void { this._sorting = []; this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: [] } })); this._sortDialogOpen = false; this._vScrollCtrl.updateCount(); }
 	private _scrollToCol(ci: number): void {
 		const el = this._getScrollElement();
 		if (!el) return;

@@ -14,7 +14,7 @@ The results table is more than just a grid, it has powerful tools for exploring 
 ## Row & cell inspection
 
 * **Search across the entire dataset:** Even inside JSON objects, any string can be searched across the entire dataset.
-* **Complex values** (JSON objects, dynamic arrays) keep their **View** action for the complete interactive viewer. Use **Preview complex values** and **Max characters** to expand or contract the table's existing complex-column width cap.
+* **Complex values** (JSON objects, dynamic arrays) keep their **View** action for the complete interactive viewer. Use **Preview complex values** and **Max characters for complex column preview** to expand or contract the table's existing complex-column width cap.
 * **Double click on any cell:** you get a nice viewer with search for it.
 * **Navigate to any column by name** when the results have a bunch of them.
 

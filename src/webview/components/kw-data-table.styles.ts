@@ -16,10 +16,9 @@ export const styles = css`
 		.tbtn:hover{background:var(--vscode-list-hoverBackground)}.tbtn.act{color:var(--vscode-foreground);background:var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)))}.tbtn svg{display:block}
 		.tbtn:focus-visible,.close-mini:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}
 		.tbtn.vis-toggle{width:28px;height:28px;padding:0;justify-content:center;border-radius:4px}
-		.tbtn.tbtn-text{width:auto;min-width:auto;padding:0 8px;gap:4px;line-height:1.4}
 		.hidden-hint{font-size:11px;color:var(--vscode-disabledForeground,var(--vscode-descriptionForeground));font-style:italic;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex-shrink:999}
 		.hidden-hint:hover{color:var(--vscode-foreground);text-decoration:underline}
-		.sbar.complex-preview-controls{justify-content:flex-start;min-width:0;background:transparent;padding-left:50px;padding-right:50px}.complex-preview-length-label{color:var(--vscode-descriptionForeground);white-space:nowrap}.complex-preview-length{width:72px;height:24px;padding:2px 6px;border:1px solid var(--vscode-input-border);border-radius:2px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);font:inherit;outline:none}.complex-preview-length:focus{border-color:var(--vscode-focusBorder)}
+		.sbar.complex-preview-controls{justify-content:flex-start;min-width:0;background:transparent}.complex-preview-length-label{color:var(--vscode-descriptionForeground);white-space:nowrap}.complex-preview-length{width:72px;height:24px;padding:2px 6px;border:1px solid var(--vscode-input-border);border-radius:2px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);font:inherit;outline:none}.complex-preview-length:focus{border-color:var(--vscode-focusBorder)}
 
 		/* Search bar */
 		.sbar{display:flex;align-items:center;gap:6px;padding:4px 0;font-size:12px;background:var(--vscode-editor-background);flex-shrink:0}
@@ -78,7 +77,7 @@ export const styles = css`
 
 		/* Column menu */
 		.cm{position:fixed;z-index:10000;background:var(--vscode-menu-background,var(--vscode-editor-background));border:1px solid var(--vscode-menu-border,var(--vscode-panel-border));border-radius:0;padding:4px 0;min-width:160px;box-shadow:0 4px 12px rgba(0,0,0,.3);transform:translateX(-100%)}
-		.cmi{padding:4px 12px;font-size:12px;cursor:pointer;white-space:nowrap}.cmi:hover{background:var(--vscode-menu-selectionBackground,var(--vscode-list-hoverBackground))}
+		.cmi{padding:4px 12px;font-size:12px;cursor:pointer;white-space:nowrap;outline:none}.cmi:hover,.cmi:focus-visible{background:var(--vscode-menu-selectionBackground,var(--vscode-list-hoverBackground))}.cmi:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}
 		.cms{height:1px;background:var(--vscode-menu-separatorBackground,var(--vscode-panel-border));margin:4px 0}
 
 		/* Spacer rows */
