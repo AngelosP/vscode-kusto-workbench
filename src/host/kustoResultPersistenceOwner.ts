@@ -231,6 +231,20 @@ function attachmentMatchesTarget(
 	return !connectionIdentityKey || connectionIdentityKey === attachment.connectionIdentityKey;
 }
 
+function attachmentMatchesPartialTarget(
+	attachment: ResultAttachment,
+	target: KustoSectionLifecycleOwner,
+): boolean {
+	const connectionId = normalize(target.connectionId);
+	const database = normalize(target.database);
+	if ((connectionId && connectionId !== attachment.connectionId)
+		|| (database && database.toLowerCase() !== attachment.database.toLowerCase())) return false;
+	if (Number.isSafeInteger(target.connectionRevision)
+		&& target.connectionRevision !== attachment.connectionRevision) return false;
+	const connectionIdentityKey = normalize(target.connectionIdentityKey);
+	return !connectionIdentityKey || connectionIdentityKey === attachment.connectionIdentityKey;
+}
+
 function recordTargetConflictsAttachment(record: JsonRecord, attachment: ResultAttachment): boolean {
 	const connectionId = normalize(record.connectionIdHint);
 	if (connectionId && connectionId !== attachment.connectionId) return true;
@@ -685,6 +699,11 @@ export class KustoResultPersistenceOwner {
 		return !!attachment && attachmentMatchesTarget(attachment, target);
 	}
 
+	matchesCommittedPartialTarget(boxIdInput: unknown, target: KustoSectionLifecycleOwner): boolean {
+		const attachment = this.committedByBoxId.get(normalize(boxIdInput));
+		return !!attachment && attachmentMatchesPartialTarget(attachment, target);
+	}
+
 	hasCommittedAttachments(): boolean {
 		return this.committedByBoxId.size > 0;
 	}
@@ -731,6 +750,9 @@ export class KustoResultPanelSession {
 			const initialAdoption = current.targetGeneration === 0
 				&& !normalize(current.connectionId)
 				&& !normalize(current.database);
+			const currentIncomplete = !normalize(current.connectionId) || !normalize(current.database);
+			const targetIncomplete = !normalize(target.connectionId) || !normalize(target.database);
+			const completingStartupTarget = currentIncomplete && !targetIncomplete;
 			const physicalEnrichment = target.targetGeneration === current.targetGeneration + 1
 				&& normalize(target.connectionId) === normalize(current.connectionId)
 				&& normalize(target.database).toLowerCase() === normalize(current.database).toLowerCase()
@@ -741,8 +763,13 @@ export class KustoResultPanelSession {
 				&& Number.isSafeInteger(target.connectionRevision)
 				&& !!normalize(target.connectionIdentityKey)
 				&& (current.connectionRevision === undefined || !normalize(current.connectionIdentityKey));
-			if (!this.owner.matchesCommittedTarget(target.boxId, target)
-				|| (!initialAdoption && !physicalEnrichment)) {
+			const compatiblePartialStartupTarget = currentIncomplete && targetIncomplete
+				&& this.owner.matchesCommittedPartialTarget(target.boxId, target);
+			const shouldRevoke = !compatiblePartialStartupTarget && (
+				!this.owner.matchesCommittedTarget(target.boxId, target)
+				|| (!initialAdoption && !physicalEnrichment && !completingStartupTarget)
+			);
+			if (shouldRevoke) {
 				this.owner.revokeBox(target.boxId);
 			}
 			this.activeByBoxId.delete(target.boxId);

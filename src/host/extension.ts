@@ -41,8 +41,9 @@ import { STORAGE_KEYS } from './queryEditorTypes';
 import { deleteCachedSchemasForConnections, getSchemaCacheFileUri, SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk } from './schemaCache';
 import { KustoAuthPreferenceService } from './kustoAuthPreferenceService';
 import { KustoConnectionCache } from './kustoConnectionCache';
-import { normalizeKustoAuthorityId } from '../shared/kustoAuth';
+import { getKustoConnectionIdentityKey, normalizeKustoAuthorityId } from '../shared/kustoAuth';
 import { sqlConnectionTargetSignature } from '../shared/sqlConnectionIdentity';
+import { createPrimaryResultArtifactIdentity } from '../shared/resultArtifact';
 import { setNextDevelopmentCsvSaveTarget } from './developmentCsvSaveTarget';
 
 import { getWorkbenchLogger, registerWorkbenchLogger } from './workbenchLogger';
@@ -314,19 +315,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			}
 			const candidate = request as {
 				engine?: unknown; templatePath?: unknown; outputPath?: unknown; legacyKusto?: unknown;
+				sessionFile?: unknown; existingClusterIncludes?: unknown; database?: unknown; includeChart?: unknown;
 			};
 			const engine = String(candidate.engine || '').trim();
 			const templatePath = String(candidate.templatePath || '').trim();
 			const outputPath = String(candidate.outputPath || '').trim();
 			const legacyKusto = candidate.legacyKusto === true;
-			if ((engine !== 'kusto' && engine !== 'sql') || !templatePath || !outputPath) {
+			const sessionFile = candidate.sessionFile === true;
+			const existingClusterIncludes = String(candidate.existingClusterIncludes || '').trim().toLowerCase();
+			if ((engine !== 'kusto' && engine !== 'sql') || !templatePath || (!sessionFile && !outputPath)) {
 				throw new Error('Persisted-result fixture requires engine, templatePath, and outputPath.');
 			}
 			await persistedResultFixtureStartupCleanup;
 			await testAuthPreferences.waitForProviderAccountRefresh();
 			await cleanupPersistedResultFixtureState();
 			const absoluteTemplatePath = path.isAbsolute(templatePath) ? templatePath : path.join(context.extensionPath, templatePath);
-			const absoluteOutputPath = path.isAbsolute(outputPath) ? outputPath : path.join(context.extensionPath, outputPath);
+			const absoluteOutputPath = sessionFile
+				? vscode.Uri.joinPath(context.globalStorageUri, 'session.kqlx').fsPath
+				: (path.isAbsolute(outputPath) ? outputPath : path.join(context.extensionPath, outputPath));
 			const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(absoluteTemplatePath));
 			const fixture = JSON.parse(Buffer.from(bytes).toString('utf8')) as { state?: { sections?: Array<Record<string, unknown>> } };
 			const section = fixture.state?.sections?.[0];
@@ -335,42 +341,52 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			}
 			let connectionId = '';
 			if (engine === 'kusto') {
-				const connection = await connectionManager.addConnection({
+				const existingConnection = existingClusterIncludes
+					? connectionManager.getConnections().find(connection =>
+						String(connection.clusterUrl || '').toLowerCase().includes(existingClusterIncludes))
+					: undefined;
+				const connection = existingConnection ?? await connectionManager.addConnection({
 					name: `${persistedResultFixturePrefix} Kusto`,
 					clusterUrl: persistedResultKustoCluster,
 					database: persistedResultKustoDatabase,
 				});
-				await testAuthPreferences.setExplicitAccount(connection.id, persistedResultAuthAccount);
-				await testAuthPreferences.setTokenOverride(
-					connection.authorityId,
-					persistedResultAuthAccount.id,
-					'kusto-workbench-offline-e2e-token',
-					[connection.id],
-				);
-				const accountPartition = testAuthPreferences.getAccountPartition(connection.authorityId, persistedResultAuthAccount.id);
-				if (testAuthPreferences.getPreferredAccountId(connection.id) !== persistedResultAuthAccount.id) {
-					throw new Error('Persisted-result Kusto fixture owner did not become resolvable.');
+				const targetDatabase = String(candidate.database || '').trim()
+					|| (existingConnection ? String(connection.database || '').trim() : persistedResultKustoDatabase);
+				if (!targetDatabase) throw new Error('Persisted-result Kusto fixture requires a database.');
+				let accountPartition = '';
+				if (existingConnection) {
+					const accountId = testAuthPreferences.getPreferredAccountId(connection.id);
+					accountPartition = accountId
+						? testAuthPreferences.getAccountPartition(connection.authorityId, accountId)
+						: '';
+					if (!accountPartition) throw new Error('Existing persisted-result Kusto owner is unresolved.');
+				} else {
+					await testAuthPreferences.setExplicitAccount(connection.id, persistedResultAuthAccount);
+					await testAuthPreferences.setTokenOverride(
+						connection.authorityId,
+						persistedResultAuthAccount.id,
+						'kusto-workbench-offline-e2e-token',
+						[connection.id],
+					);
+					accountPartition = testAuthPreferences.getAccountPartition(connection.authorityId, persistedResultAuthAccount.id);
+					if (testAuthPreferences.getPreferredAccountId(connection.id) !== persistedResultAuthAccount.id) {
+						throw new Error('Persisted-result Kusto fixture owner did not become resolvable.');
+					}
+					await testConnectionCache.setDatabases(connection.id, accountPartition, [targetDatabase]);
+					const schema = {
+						tables: ['PersistedFixture'],
+						columnTypesByTable: { PersistedFixture: { RowId: 'long' } },
+					};
+					await writeCachedSchemaToDisk(
+						context.globalStorageUri,
+						schemaCacheKey(connection.clusterUrl, targetDatabase, connection.id, accountPartition),
+						{
+							schema, timestamp: Date.now(), version: SCHEMA_CACHE_VERSION,
+							clusterUrl: connection.clusterUrl, database: targetDatabase,
+							connectionId: connection.id, accountPartition,
+						},
+					);
 				}
-				await testConnectionCache.setDatabases(connection.id, accountPartition, [persistedResultKustoDatabase]);
-				const schema = {
-					tables: ['PersistedFixture'],
-					columnTypesByTable: {
-						PersistedFixture: { RowId: 'long' },
-					},
-				};
-				await writeCachedSchemaToDisk(
-					context.globalStorageUri,
-					schemaCacheKey(connection.clusterUrl, persistedResultKustoDatabase, connection.id, accountPartition),
-					{
-						schema,
-						timestamp: Date.now(),
-						version: SCHEMA_CACHE_VERSION,
-						clusterUrl: connection.clusterUrl,
-						database: persistedResultKustoDatabase,
-						connectionId: connection.id,
-						accountPartition,
-					},
-				);
 				const parsedResult = JSON.parse(section.resultJson) as { metadata?: unknown };
 				if (!parsedResult || typeof parsedResult !== 'object' || Array.isArray(parsedResult)) {
 					throw new Error('Persisted-result Kusto template resultJson must contain an object.');
@@ -380,23 +396,64 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 						? parsedResult.metadata as Record<string, unknown>
 						: {}),
 					cluster: connection.clusterUrl,
-					database: persistedResultKustoDatabase,
+					database: targetDatabase,
 				};
 				section.resultJson = JSON.stringify(parsedResult);
 				Object.assign(section, {
 					clusterUrl: connection.clusterUrl,
-					database: persistedResultKustoDatabase,
+					authorityId: String(connection.authorityId || ''),
+					database: targetDatabase,
 				});
+				const leaveNoTraceRevision = connectionManager.getLeaveNoTraceRevision(connection.clusterUrl);
 				if (legacyKusto) {
 					delete section.kustoAccountPartition;
 					delete section.kustoLeaveNoTraceRevision;
+					delete section.resultArtifact;
 				} else {
 					Object.assign(section, {
 						kustoAccountPartition: accountPartition,
-						kustoLeaveNoTraceRevision: connectionManager.getLeaveNoTraceRevision(connection.clusterUrl),
+						kustoLeaveNoTraceRevision: leaveNoTraceRevision,
 					});
 				}
-				delete section.connectionIdHint;
+				if (existingConnection) {
+					section.connectionIdHint = connection.id;
+					const connectionRevision = connectionManager.getConnectionIncarnation(connection.id);
+					const connectionIdentityKey = getKustoConnectionIdentityKey(
+						connection.clusterUrl,
+						connection.authorityId,
+					);
+					const artifactIdentity = createPrimaryResultArtifactIdentity(
+						String(section.id || ''), 1, Date.now(),
+					);
+					if (!artifactIdentity) throw new Error('Persisted-result fixture artifact identity is invalid.');
+					const authSessionGeneration = testAuthPreferences.getConnectionSessionGeneration(connection.id);
+					section.resultArtifact = {
+						version: 1,
+						...artifactIdentity,
+						producer: {
+							engine: 'kusto', boxId: String(section.id || ''),
+							executionId: 'persisted-result-fixture-execution',
+							sectionInstanceId: 'persisted-result-fixture-section', targetGeneration: 1,
+							reservationSequence: 1, query: String(section.query || ''), producer: 'manual',
+							connectionId: connection.id, database: targetDatabase,
+							dispatch: {
+								clusterEndpoint: connection.clusterUrl,
+								authorityId: String(connection.authorityId || ''),
+								accountPartition, authSessionGeneration, leaveNoTraceRevision,
+								connectionRevision, connectionIdentityKey,
+							},
+						},
+						policy: {
+							accountPartition, authSessionGeneration, leaveNoTraceRevision,
+							connectionRevision, connectionIdentityKey,
+							exposeToActiveContent: true, sendToModel: true,
+							shareToClipboard: true, exportToCsv: true,
+						},
+						lineage: [],
+					};
+				} else {
+					delete section.connectionIdHint;
+				}
 				connectionId = connection.id;
 			} else {
 				await sqlWorkbenchService!.ready();
@@ -417,6 +474,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					revocationGeneration: sqlWorkbenchService!.leaveNoTracePolicy.getRevocationGeneration(connection.id),
 				});
 				connectionId = connection.id;
+			}
+			if (candidate.includeChart === true && fixture.state?.sections) {
+				fixture.state.sections.push({
+					id: 'chart_persisted_results', type: 'chart', name: 'Persisted Result Chart',
+					dataSourceId: String(section.id || ''), chartType: 'bar',
+					xColumn: 'Label', yColumns: ['Amount'], expanded: true,
+				});
 			}
 			await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(absoluteOutputPath)));
 			await vscode.workspace.fs.writeFile(

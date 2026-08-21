@@ -2497,6 +2497,111 @@ describe('persistence round-trip', () => {
 		}
 	});
 
+	it('preserves a pending restored result when another section persists during startup', () => {
+		vi.useFakeTimers();
+		const clusterUrl = 'https://restart-race.kusto.windows.net';
+		const resultJson = JSON.stringify({
+			columns: [{ name: 'Value', type: 'long' }],
+			rows: [[42]],
+			metadata: { executionTime: '00:00:00.001' },
+		});
+		try {
+			markKustoLeaveNoTracePolicyPending();
+			const container = document.createElement('div');
+			container.id = 'queries-container';
+			document.body.appendChild(container);
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentUri: 'file:///tmp/session.kqlx',
+				state: { sections: [
+					{
+						id: 'query_pending_restart', type: 'query', query: 'print Value=42',
+						clusterUrl, connectionIdHint: 'restart-owner', database: 'Db',
+						resultJson, ...kustoResultOwner,
+					},
+					{ id: 'query_startup_neighbor', type: 'query', query: 'print Neighbor=1' },
+				] },
+			});
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
+			expect(displayResultForBox).not.toHaveBeenCalled();
+
+			const pending = document.getElementById('query_pending_restart') as any;
+			pending.serialize = () => ({
+				id: 'query_pending_restart', type: 'query', query: 'print Value=42',
+				clusterUrl, connectionIdHint: 'restart-owner', database: 'Db',
+			});
+			const neighbor = document.getElementById('query_startup_neighbor') as any;
+			neighbor.serialize = () => ({
+				id: 'query_startup_neighbor', type: 'query', query: 'print Neighbor=2',
+			});
+			vi.mocked(postMessageToHost).mockClear();
+			schedulePersist('startup-neighbor-initialized', true);
+
+			const persist = vi.mocked(postMessageToHost).mock.calls
+				.map(([message]) => message as any)
+				.find(message => message.type === 'persistDocument');
+			expect(persist?.state.sections.find((section: any) => section.id === 'query_pending_restart'))
+				.toMatchObject({ resultJson, ...kustoResultOwner });
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
+
+			testState.kustoConnections.push(ownedKustoConnection({ id: 'restart-owner', clusterUrl }));
+			applyKustoLeaveNoTracePolicy([], false);
+			resolvePendingKustoResultRestores();
+
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [[42]] }),
+				'query_pending_restart',
+				expect.anything(),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('retires a pending restored result when its own query changes during startup', () => {
+		vi.useFakeTimers();
+		const clusterUrl = 'https://restart-stale.kusto.windows.net';
+		const resultJson = JSON.stringify({
+			columns: [{ name: 'Value', type: 'long' }], rows: [[42]], metadata: {},
+		});
+		try {
+			markKustoLeaveNoTracePolicyPending();
+			const container = document.createElement('div');
+			container.id = 'queries-container';
+			document.body.appendChild(container);
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentUri: 'file:///tmp/session.kqlx',
+				state: { sections: [{
+					id: 'query_stale_restart', type: 'query', query: 'print Value=42',
+					clusterUrl, connectionIdHint: 'stale-owner', database: 'Db',
+					resultJson, ...kustoResultOwner,
+				}] },
+			});
+			const section = document.getElementById('query_stale_restart') as any;
+			section.serialize = () => ({
+				id: 'query_stale_restart', type: 'query', query: 'print Value=43',
+				clusterUrl, connectionIdHint: 'stale-owner', database: 'Db',
+			});
+			testState.queryEditors.query_stale_restart.getValue = () => 'print Value=43';
+			vi.mocked(postMessageToHost).mockClear();
+
+			schedulePersist('query-edit', true);
+
+			const persist = vi.mocked(postMessageToHost).mock.calls
+				.map(([message]) => message as any)
+				.find(message => message.type === 'persistDocument');
+			expect(persist?.state.sections[0]).not.toHaveProperty('resultJson');
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+			testState.kustoConnections.push(ownedKustoConnection({ id: 'stale-owner', clusterUrl }));
+			applyKustoLeaveNoTracePolicy([], false);
+			resolvePendingKustoResultRestores();
+			expect(displayResultForBox).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it.each([
 		['KQLX', 'kqlx', 'file:///tmp/migrated-reopen.kqlx'],
 		['KQL sidecar', 'kql', 'file:///tmp/migrated-reopen.kql'],
@@ -3305,7 +3410,7 @@ describe('persistence round-trip', () => {
 	it.each([
 		['KQLX', 'kqlx', 'file:///tmp/missing-owner-edit.kqlx'],
 		['KQL sidecar', 'kql', 'file:///tmp/missing-owner-edit.kql'],
-	] as const)('persists an authored edit after retiring a missing-owner restored result in %s', (_label, documentKind, documentUri) => {
+	] as const)('persists an authored edit while preserving a host-admitted owner pending projection in %s', (_label, documentKind, documentUri) => {
 		vi.useFakeTimers();
 		try {
 			const resultJson = JSON.stringify({ columns: ['Value'], rows: [['private']], metadata: {} });
@@ -3327,7 +3432,13 @@ describe('persistence round-trip', () => {
 			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
 			const container = document.createElement('div');
 			container.id = 'queries-container';
-			container.appendChild(document.getElementById('query_missing_owner_edit')!);
+			const pendingOwner = document.getElementById('query_missing_owner_edit') as any;
+			pendingOwner.serialize = () => ({
+				id: 'query_missing_owner_edit', type: 'query', query: 'print Value=1',
+				clusterUrl: 'https://missing-owner.kusto.windows.net', database: 'Db',
+				connectionIdHint: 'missing-owner',
+			});
+			container.appendChild(pendingOwner);
 			container.appendChild(document.getElementById('query_authored_peer')!);
 			document.body.appendChild(container);
 
@@ -3345,16 +3456,16 @@ describe('persistence round-trip', () => {
 				.at(-1);
 			expect(persisted?.state.sections.find((section: any) => section.id === 'query_authored_peer'))
 				.toMatchObject({ query: 'print After=2' });
-			expect(persisted?.state.sections.find((section: any) => section.id === 'query_missing_owner_edit')?.resultJson)
-				.toBeUndefined();
-			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+			expect(persisted?.state.sections.find((section: any) => section.id === 'query_missing_owner_edit'))
+				.toMatchObject({ resultJson, ...kustoResultOwner });
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
 
 			testState.kustoConnections.push(ownedKustoConnection({
 				id: 'missing-owner', clusterUrl: 'https://missing-owner.kusto.windows.net',
 			}));
 			resolvePendingKustoResultRestores();
 			flushDeferredRestoreTimers();
-			expect(displayResultForBox).not.toHaveBeenCalledWith(
+			expect(displayResultForBox).toHaveBeenCalledWith(
 				expect.objectContaining({ rows: [['private']] }),
 				'query_missing_owner_edit',
 				expect.anything(),

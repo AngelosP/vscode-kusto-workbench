@@ -150,6 +150,61 @@ describe('KustoResultPersistenceOwner', () => {
 		}).sections?.[0]).toMatchObject({ selectedResultIndex: 1, resultJson: expect.any(String) });
 	});
 
+	it('preserves a restored attachment through partial startup target adoption', () => {
+		const first = createOwner();
+		first.session.beginExecution(terminal());
+		first.session.stagePublication('publication-1', terminal());
+		first.session.commitPublication('publication-1');
+		const persisted = first.owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		});
+
+		const owner = new KustoResultPersistenceOwner('file:///reopened-partial-target.kqlx');
+		owner.admitCanonicalSource('reopened-source', persisted);
+		const session = owner.openPanel('reopened-panel');
+		session.openSection('query_1', 'reopened-instance');
+
+		expect(session.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'reopened-instance', targetGeneration: 1,
+			connectionId: 'connection-1', database: '',
+		})).toBe(true);
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		}).sections?.[0]).toHaveProperty('resultJson');
+
+		expect(session.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'reopened-instance', targetGeneration: 2,
+			connectionId: 'connection-1', database: 'Db', connectionRevision: 4,
+			connectionIdentityKey: 'https://cluster|',
+		})).toBe(true);
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		}).sections?.[0]).toHaveProperty('resultJson');
+	});
+
+	it('revokes a restored attachment when a partial startup target already conflicts', () => {
+		const first = createOwner();
+		first.session.beginExecution(terminal());
+		first.session.stagePublication('publication-1', terminal());
+		first.session.commitPublication('publication-1');
+		const persisted = first.owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		});
+
+		const owner = new KustoResultPersistenceOwner('file:///reopened-partial-mismatch.kqlx');
+		owner.admitCanonicalSource('reopened-source', persisted);
+		const session = owner.openPanel('reopened-panel');
+		session.openSection('query_1', 'reopened-instance');
+		session.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'reopened-instance', targetGeneration: 1,
+			connectionId: 'other-connection', database: '',
+		});
+
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		}).sections?.[0]).not.toHaveProperty('resultJson');
+	});
+
 	it('revokes a restored attachment when physical target enrichment mismatches', () => {
 		const first = createOwner();
 		first.session.beginExecution(terminal());

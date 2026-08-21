@@ -35,6 +35,10 @@ Feature: Complex values can be previewed without changing their View behavior
     When I click ".cm [data-action='sort-descending']" in the webview "complex-preview.kqlx"
     And I wait 1 second
     Then I collect JSON artifact "active-sort-icon" from webview expression "(() => { const root = document.getElementById('query_complex_preview')?.querySelector('kw-data-table')?.shadowRoot; const sort = root?.querySelector('[title=Sort]'); if (!sort?.classList.contains('act') || sort.getAttribute('aria-pressed') !== 'true' || root.querySelector('.tbtn-text')) throw new Error('Applied sort did not toggle the Sort icon cleanly'); return { active: true, ariaPressed: sort.getAttribute('aria-pressed'), legacyControlPresent: false }; })()"
+    When I click "button[title='Sort']" in the webview "complex-preview.kqlx"
+    When I click "[data-testid='sort-apply']" in the webview "complex-preview.kqlx"
+    And I wait 1 second
+    Then I collect JSON artifact "dialog-applied-sort-icon" from webview expression "(() => { const table = document.getElementById('query_complex_preview')?.querySelector('kw-data-table'); const root = table?.shadowRoot; const sort = root?.querySelector('[title=Sort]'); const firstPreview = root?.querySelector('[data-testid=complex-value-preview]')?.textContent || ''; if (!sort?.classList.contains('act') || sort.getAttribute('aria-pressed') !== 'true' || root.querySelector('.tbtn-text') || !firstPreview.includes('R-1003')) throw new Error('Sort dialog Apply did not preserve descending order and active icon'); return { active: true, ariaPressed: sort.getAttribute('aria-pressed'), legacyControlPresent: false, descendingOrderPreserved: true }; })()"
     When I execute command "workbench.action.focusActiveEditorGroup"
     And I move the mouse to 30, 700
     And I click

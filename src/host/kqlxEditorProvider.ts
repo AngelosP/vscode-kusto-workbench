@@ -252,6 +252,11 @@ export class OwnedSessionWriteTracker {
 		return this.latestText;
 	}
 
+	adopt(text: string): void {
+		this.latestText = text;
+		this.pendingTexts.clear();
+	}
+
 	begin(text: string): { text: string; previous: string } {
 		const token = { text, previous: this.latestText };
 		this.latestText = text;
@@ -2577,6 +2582,53 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				activeSourceMutations--;
 			}
 		};
+		const reconcileSessionDocumentBuffer = async (): Promise<void> => {
+			if (!isSessionFile) return;
+			await withKqlxDocumentWriteLock(document.uri, async () => {
+				const authoritativeText = new TextDecoder().decode(
+					await vscode.workspace.fs.readFile(document.uri),
+				);
+				if (process.env.VSCODE_EXT_TESTER_PORT) {
+					getWorkbenchLogger().info('[session-sync] reconcile', JSON.stringify({
+						mismatch: document.getText() !== authoritativeText,
+						bufferHasResult: document.getText().includes('"resultJson"'),
+						diskHasResult: authoritativeText.includes('"resultJson"'),
+					}));
+				}
+				if (document.getText() !== authoritativeText) {
+					const edit = new vscode.WorkspaceEdit();
+					edit.replace(
+						document.uri,
+						new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
+						authoritativeText,
+					);
+					if (!await vscode.workspace.applyEdit(edit) || document.getText() !== authoritativeText) {
+						throw new Error('Kusto Workbench could not synchronize the session buffer with its durable state.');
+					}
+					const currentDiskText = new TextDecoder().decode(
+						await vscode.workspace.fs.readFile(document.uri),
+					);
+					if (currentDiskText !== authoritativeText
+						|| typeof document.save !== 'function'
+						|| !await document.save()) {
+						throw new Error('Kusto Workbench could not settle the synchronized session buffer.');
+					}
+					const savedText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
+					if (document.getText() !== authoritativeText || savedText !== authoritativeText) {
+						throw new Error('Kusto Workbench session synchronization did not preserve durable state.');
+					}
+				}
+				if (!commitCurrentAuthorityText(activeProjectionAuthorityToken, authoritativeText)) {
+					throw new Error('Kusto Workbench session synchronization lost source authority.');
+				}
+				lastSavedText = authoritativeText;
+				lastSavedEol = document.eol;
+				lastSavedIdentity = await getLocalFileIdentity(document.uri);
+				ownedSessionWrites.adopt(authoritativeText);
+				rebuildSavedSectionCache(authoritativeText);
+			});
+		};
+		await reconcileSessionDocumentBuffer();
 		let persistRequestGeneration = 0;
 		let persistDecisionTail: Promise<void> = Promise.resolve();
 		let sourceReloadEpoch = 0;
@@ -2599,6 +2651,12 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			const expectedIdentity = lastSavedIdentity;
 			await withKqlxDocumentWriteLock(document.uri, async () => {
+				if (process.env.VSCODE_EXT_TESTER_PORT) {
+					getWorkbenchLogger().info('[session-sync] direct write', JSON.stringify({
+						nextHasResult: nextText.includes('"resultJson"'), allowDisposed,
+						stack: new Error().stack?.split('\n').slice(1, 4),
+					}));
+				}
 				if (document.uri.scheme === 'file' && (!expectedIdentity
 					|| !localFileIdentityEquals(expectedIdentity, await getLocalFileIdentity(document.uri)))) {
 					throw new Error('The Kusto Workbench session changed physical identity before publication.');
@@ -4022,6 +4080,12 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const matchesSharedOwnedMutation = observeSharedOwnedMutation(currentText);
 					const matchesLocalOwnedMutation = ownedDocumentEdits.observe(currentText);
 					const matchesOwnedDocumentEdit = matchesSharedOwnedMutation || matchesLocalOwnedMutation;
+					if (isSessionFile && process.env.VSCODE_EXT_TESTER_PORT) {
+						getWorkbenchLogger().info('[session-sync] document changed', JSON.stringify({
+							hasResult: currentText.includes('"resultJson"'), matchesSharedOwnedMutation,
+							matchesLocalOwnedMutation, contentChangeCount: e.contentChanges.length,
+						}));
+					}
 					if (!webviewInitialized && e.contentChanges.length > 0) {
 						if (initialProjectionRecovery) initialProjectionRestartRequested = true;
 						else void ensureInitialDocument();
@@ -4549,6 +4613,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const persistProjectionGeneration = activeProjectionGeneration;
 					const reloadEpochAtAdmission = sourceReloadEpoch;
 					const persistReason = String((message as any).reason || '');
+					if (isSessionFile && process.env.VSCODE_EXT_TESTER_PORT) {
+						getWorkbenchLogger().info('[session-sync] persist request', JSON.stringify({
+							persistReason,
+							incomingHasResult: incomingState.sections.some(section =>
+								!!section && typeof section === 'object' && 'resultJson' in section),
+						}));
+					}
 					const materializeKustoResultAttachment = persistReason === 'kusto-result-attachment-committed';
 					const allowDisposedPersist = isSessionFile && persistReason === 'beforeunload';
 					const isPersistCurrent = () => (allowDisposedPersist || !outerDisposed)

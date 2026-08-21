@@ -1809,11 +1809,12 @@ function __kustoSettleReadyRestoredResultsForPersist(): void {
 	}
 }
 
-function __kustoRetirePendingRestoredResultsForPersist(): void {
+function __kustoReconcilePendingRestoredResultsForPersist(): void {
 	const documentUri = String(pState.documentUri || '');
 	__kustoDeferredRestoredResultJobs = __kustoDeferredRestoredResultJobs.filter(job => {
 		if (!__kustoIsDeferredResultJobDocumentCurrent(job)) return false;
-		if (__kustoGetDeferredResultJobState(job) === 'ready') return true;
+		const state = __kustoGetDeferredResultJobState(job);
+		if (state === 'ready' || (state === 'pending' && __kustoIsKustoOwnedRestore(job))) return true;
 		if (getResultsStateRevision(job.boxId) === job.initialResultsRevision
 			&& pState.queryResultJsonByBoxId?.[job.boxId] === job.resultJson) {
 			__kustoDeleteStoredQueryResultJson(job.boxId);
@@ -1822,6 +1823,15 @@ function __kustoRetirePendingRestoredResultsForPersist(): void {
 	});
 	__kustoPendingSqlOwnedRestores = __kustoPendingSqlOwnedRestores.filter(job =>
 		job.generation !== __kustoRestoreResultGeneration || job.documentUri !== documentUri);
+}
+
+function __kustoAdvancePersistenceEpoch(): void {
+	const retainedPendingKustoJobs = __kustoDeferredRestoredResultJobs.filter(job =>
+		__kustoIsDeferredResultJobDocumentCurrent(job)
+		&& __kustoIsKustoOwnedRestore(job)
+		&& __kustoGetDeferredResultJobState(job) === 'pending');
+	__kustoPersistenceEpoch++;
+	for (const job of retainedPendingKustoJobs) job.persistenceEpoch = __kustoPersistenceEpoch;
 }
 
 export function __kustoTryStoreQueryResult(boxId: any, result: any, kustoOwner?: unknown) {
@@ -2264,7 +2274,7 @@ export function getKqlxState() {
 	};
 }
 
-function __kustoDeferredLegacyConfigurationMatches(
+function __kustoDeferredResultConfigurationMatches(
 	current: Record<string, unknown>,
 	baseline: Record<string, unknown>,
 ): boolean {
@@ -2312,12 +2322,26 @@ function __kustoGetPersistenceSnapshotState(): ReturnType<typeof getKqlxState> {
 		const current = section as Record<string, unknown>;
 		const id = String(current.id || '').trim();
 		const baseline = id ? __kustoAcknowledgedRuntimeSourceSections[id] as Record<string, unknown> | undefined : undefined;
+		const hasAccountPartition = !!baseline
+			&& Object.prototype.hasOwnProperty.call(baseline, 'kustoAccountPartition');
+		const hasLeaveNoTraceRevision = !!baseline
+			&& Object.prototype.hasOwnProperty.call(baseline, 'kustoLeaveNoTraceRevision');
+		const modernRestore = hasAccountPartition && hasLeaveNoTraceRevision
+			? __kustoDeferredRestoredResultJobs.find(job =>
+				__kustoIsDeferredResultJobDocumentCurrent(job)
+				&& __kustoIsKustoOwnedRestore(job)
+				&& job.boxId === id
+				&& job.resultJson === String(baseline?.resultJson || '')
+				&& String(job.kustoAccountPartition || '') === String(baseline?.kustoAccountPartition || '')
+				&& Number(job.kustoLeaveNoTraceRevision) === Number(baseline?.kustoLeaveNoTraceRevision)
+				&& __kustoGetDeferredResultJobState(job) === 'pending')
+			: undefined;
 		if (!baseline || canonicalSectionKind(baseline.type) !== 'query'
 			|| !Object.prototype.hasOwnProperty.call(baseline, 'resultJson')
-			|| Object.prototype.hasOwnProperty.call(baseline, 'kustoAccountPartition')
-			|| Object.prototype.hasOwnProperty.call(baseline, 'kustoLeaveNoTraceRevision')
+			|| hasAccountPartition !== hasLeaveNoTraceRevision
+			|| (hasAccountPartition && !modernRestore)
 			|| Object.prototype.hasOwnProperty.call(current, 'resultJson')
-			|| !__kustoDeferredLegacyConfigurationMatches(current, baseline)) return section;
+			|| !__kustoDeferredResultConfigurationMatches(current, baseline)) return section;
 		const sourceBoxId = String(baseline.comparisonSourceBoxId || '').trim();
 		if (sourceBoxId) {
 			const baselineSource = __kustoAcknowledgedRuntimeSourceSections[sourceBoxId] as Record<string, unknown> | undefined;
@@ -2325,7 +2349,7 @@ function __kustoGetPersistenceSnapshotState(): ReturnType<typeof getKqlxState> {
 			if (canonicalSectionKind(baselineSource?.type) === 'sql'
 				|| (!!baselineSource !== !!currentSource)
 				|| (baselineSource && currentSource
-					&& !__kustoDeferredLegacyConfigurationMatches(currentSource, baselineSource))) return section;
+					&& !__kustoDeferredResultConfigurationMatches(currentSource, baselineSource))) return section;
 		}
 		changed = true;
 		return {
@@ -2333,6 +2357,13 @@ function __kustoGetPersistenceSnapshotState(): ReturnType<typeof getKqlxState> {
 			resultJson: baseline.resultJson,
 			...(Object.prototype.hasOwnProperty.call(baseline, 'resultArtifact')
 				? { resultArtifact: baseline.resultArtifact }
+				: {}),
+			...(modernRestore ? {
+				kustoAccountPartition: baseline.kustoAccountPartition,
+				kustoLeaveNoTraceRevision: baseline.kustoLeaveNoTraceRevision,
+			} : {}),
+			...(Object.prototype.hasOwnProperty.call(baseline, 'selectedResultIndex')
+				? { selectedResultIndex: baseline.selectedResultIndex }
 				: {}),
 		};
 	});
@@ -2520,7 +2551,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 					waitForPending();
 					return undefined;
 				}
-				__kustoRetirePendingRestoredResultsForPersist();
+				__kustoReconcilePendingRestoredResultsForPersist();
 				state = __kustoGetPersistenceSnapshotState();
 				signatureState = __kustoBuildPersistSignatureState(state);
 				signature = JSON.stringify(signatureState);
@@ -2538,7 +2569,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 				return;
 			}
 			const editRevision = preparePersistRevision(sig);
-			if (r !== 'kusto-leave-no-trace-policy' && r !== 'kusto-leave-no-trace-restore') __kustoPersistenceEpoch++;
+			if (r !== 'kusto-leave-no-trace-policy' && r !== 'kusto-leave-no-trace-restore') __kustoAdvancePersistenceEpoch();
 			const snapshotId = `compat-snapshot-${Date.now()}-${++__kustoPersistSnapshotSequence}`;
 			trackPendingPersistSnapshot(snapshotId, sig, editRevision, state);
 			postMessageToHost({
@@ -2602,7 +2633,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 					} catch (e) { console.error('[kusto]', e); }
 				}
 
-				if (r !== 'kusto-leave-no-trace-policy' && r !== 'kusto-leave-no-trace-restore') __kustoPersistenceEpoch++;
+				if (r !== 'kusto-leave-no-trace-policy' && r !== 'kusto-leave-no-trace-restore') __kustoAdvancePersistenceEpoch();
 				if (pState.documentKind === 'kqlx' || pState.documentKind === 'sqlx' || pState.documentKind === 'mdx') {
 					const editRevision = preparePersistRevision(sig);
 					const snapshotId = `document-snapshot-${Date.now()}-${++__kustoPersistSnapshotSequence}`;
@@ -2655,11 +2686,11 @@ export function flushCompatibilityPersist(requestId?: string, reason = 'flush'):
 		}
 		__kustoSettleReadyRestoredResultsForPersist();
 		if (__kustoHasPendingRestoredResultsForCurrentDocument()) {
-			__kustoRetirePendingRestoredResultsForPersist();
+			__kustoReconcilePendingRestoredResultsForPersist();
 		}
 		const state = __kustoGetPersistenceSnapshotState();
 		if (pState.documentKind !== 'kql' && pState.documentKind !== 'sql') {
-			__kustoPersistenceEpoch++;
+			__kustoAdvancePersistenceEpoch();
 			postMessageToHost({
 				type: 'persistDocument', state,
 				sourceGeneration: pState.sourceGeneration,
@@ -2668,7 +2699,7 @@ export function flushCompatibilityPersist(requestId?: string, reason = 'flush'):
 			return;
 		}
 		if (__kustoPersistenceSuppressedForTest) {
-			__kustoPersistenceEpoch++;
+			__kustoAdvancePersistenceEpoch();
 			const snapshotId = `compat-snapshot-${Date.now()}-${++__kustoPersistSnapshotSequence}`;
 			const sig = __kustoGetPersistSignature(state);
 			trackPendingPersistSnapshot(snapshotId, sig, pState.documentEditRevision, state);
@@ -2682,7 +2713,7 @@ export function flushCompatibilityPersist(requestId?: string, reason = 'flush'):
 		}
 		const sig = __kustoGetPersistSignature(state);
 		const editRevision = preparePersistRevision(sig);
-		__kustoPersistenceEpoch++;
+		__kustoAdvancePersistenceEpoch();
 		const snapshotId = `compat-snapshot-${Date.now()}-${++__kustoPersistSnapshotSequence}`;
 		trackPendingPersistSnapshot(snapshotId, sig, editRevision, state);
 		postMessageToHost({
@@ -2748,7 +2779,7 @@ try {
 			}
 			__kustoSettleReadyRestoredResultsForPersist();
 			if (__kustoHasPendingRestoredResultsForCurrentDocument()) {
-				__kustoRetirePendingRestoredResultsForPersist();
+				__kustoReconcilePendingRestoredResultsForPersist();
 			}
 			const state = __kustoGetPersistenceSnapshotState();
 			const sig = __kustoGetPersistSignature(state);
@@ -2760,7 +2791,7 @@ try {
 			const editRevision = preparePersistRevision(sig);
 			const snapshotId = `document-snapshot-${Date.now()}-${++__kustoPersistSnapshotSequence}`;
 			trackPendingPersistSnapshot(snapshotId, sig, editRevision, state);
-			__kustoPersistenceEpoch++;
+			__kustoAdvancePersistenceEpoch();
 			postMessageToHost({
 				type: 'persistDocument', state, flush: true, reason: 'beforeunload',
 				sourceGeneration: pState.sourceGeneration, editRevision, snapshotId,
