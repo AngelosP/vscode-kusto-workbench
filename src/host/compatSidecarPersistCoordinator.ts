@@ -118,6 +118,7 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 		}
 
 		const snapshotId = this.nonEmptyTrimmed(message.snapshotId);
+		await projection.waitForAcknowledgedProjection(message.sourceGeneration);
 		const rawState = adapter.captureState(message.state);
 		try {
 			adapter.validateState(rawState, session.hasPendingUpgrade);

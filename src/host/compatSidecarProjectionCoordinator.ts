@@ -20,6 +20,7 @@ export type CompatSidecarProjectionAttempt = Readonly<{
 	context?: unknown;
 	isCurrent: () => boolean;
 	reserveReload: () => string | undefined;
+	commitActivation: () => boolean;
 }>;
 
 export type CompatSidecarReloadResult = Readonly<{
@@ -40,6 +41,10 @@ export interface CompatSidecarProjectionCoordinatorOptions {
 	readonly readSourceText: () => string;
 	readonly isDisposed: () => boolean;
 	readonly postProjection: (attempt: CompatSidecarProjectionAttempt) => Promise<boolean>;
+	readonly onProjectionSettled?: (
+		attempt: CompatSidecarProjectionAttempt,
+		applied: boolean,
+	) => boolean | void | Promise<boolean | void>;
 	readonly initialProjectionMaxAttempts?: number;
 	readonly createRequestId?: () => string;
 	readonly sameSourceText?: (left: string, right: string) => boolean;
@@ -54,6 +59,7 @@ export interface CompatSidecarProjectionCoordinatorContract {
 	requestSourceReload(): Promise<boolean>;
 	ensureInitialProjection(requestId?: string): Promise<boolean>;
 	completeReload(result: CompatSidecarReloadResult): boolean;
+	waitForAcknowledgedProjection(sourceGeneration: unknown): Promise<void>;
 	admitPersist(admission: CompatSidecarPersistAdmission): boolean;
 	captureSourceReloadEpoch(): number;
 	rollbackSupersededSourceEdit(
@@ -82,6 +88,8 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 	private activeSourceText: string;
 	private pendingProjection: ProjectionIdentity | undefined;
 	private pendingReloadRequestId: string | undefined;
+	private readonly projectionSettlements = new Map<number, Promise<boolean>>();
+	private acknowledgedProjectionGeneration: number | undefined;
 	private initialized = false;
 	private initialProjectionRecovery: Promise<boolean> | undefined;
 	private initialProjectionRestartRequested = false;
@@ -116,7 +124,24 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 		return this.rollbackFailed;
 	}
 
-	async project(request: CompatSidecarProjectionRequest = {}): Promise<boolean> {
+	project(request: CompatSidecarProjectionRequest = {}): Promise<boolean> {
+		if (this.options.isDisposed()) return Promise.resolve(false);
+		const projection = this.runProjection(request);
+		const generation = this.projectionGeneration;
+		this.projectionSettlements.set(generation, projection);
+		const release = () => {
+			if (this.projectionSettlements.get(generation) === projection) {
+				this.projectionSettlements.delete(generation);
+			}
+			if (this.acknowledgedProjectionGeneration === generation) {
+				this.acknowledgedProjectionGeneration = undefined;
+			}
+		};
+		void projection.then(release, release);
+		return projection;
+	}
+
+	private async runProjection(request: CompatSidecarProjectionRequest): Promise<boolean> {
 		if (this.options.isDisposed()) return false;
 		const sourceText = this.options.readSourceText();
 		if (request.retirePersists) {
@@ -139,6 +164,16 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 		});
 		this.pendingProjection = identity;
 		let reload: ReturnType<CompatSidecarSession['createReloadRequest']> | undefined;
+		let activationCommitted = false;
+		const commitActivation = (): boolean => {
+			if (activationCommitted) return true;
+			if (!this.isProjectionCurrent(identity)) return false;
+			this.activeGeneration = identity.generation;
+			this.activeSourceText = identity.sourceText;
+			if (this.pendingProjection === identity) this.pendingProjection = undefined;
+			activationCommitted = true;
+			return true;
+		};
 		const attempt: CompatSidecarProjectionAttempt = Object.freeze({
 			generation,
 			requestId: request.requestId ?? this.createRequestId(),
@@ -156,6 +191,7 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 				}
 				return reload.requestId;
 			},
+			commitActivation,
 		});
 
 		let delivered: boolean;
@@ -163,9 +199,13 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 			delivered = await this.options.postProjection(attempt);
 		} catch (error) {
 			if (reload) this.options.session.failReload(reload.requestId);
+			await this.options.onProjectionSettled?.(attempt, false);
 			throw error;
 		}
-		if (!reload) return false;
+		if (!reload) {
+			await this.options.onProjectionSettled?.(attempt, false);
+			return false;
+		}
 		if (!delivered || !this.isProjectionCurrent(identity)) {
 			this.options.session.failReload(reload.requestId);
 		}
@@ -174,11 +214,15 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 			this.pendingReloadRequestId = undefined;
 		}
 		const appliedCurrent = applied && this.isProjectionCurrent(identity);
-		if (!appliedCurrent) return false;
-		this.activeGeneration = identity.generation;
-		this.activeSourceText = identity.sourceText;
-		if (this.pendingProjection === identity) this.pendingProjection = undefined;
-		return true;
+		if (!appliedCurrent) {
+			await this.options.onProjectionSettled?.(attempt, false);
+			return false;
+		}
+		if (await this.options.onProjectionSettled?.(attempt, true) === false) {
+			if (this.pendingProjection === identity) this.pendingProjection = undefined;
+			return false;
+		}
+		return activationCommitted || commitActivation();
 	}
 
 	async requestDocument(requestId: string): Promise<boolean> {
@@ -209,11 +253,20 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 			this.options.session.failReload(result.requestId);
 			return false;
 		}
-		return this.options.session.completeReload(
+		const completed = this.options.session.completeReload(
 			result.requestId,
 			result.applied,
 			result.editRevision,
 		);
+		if (completed && result.applied) this.acknowledgedProjectionGeneration = pending.generation;
+		return completed;
+	}
+
+	async waitForAcknowledgedProjection(sourceGeneration: unknown): Promise<void> {
+		const generation = Number(sourceGeneration);
+		if (!Number.isSafeInteger(generation)
+			|| this.acknowledgedProjectionGeneration !== generation) return;
+		await this.projectionSettlements.get(generation)?.catch(() => false);
 	}
 
 	admitPersist(admission: CompatSidecarPersistAdmission): boolean {

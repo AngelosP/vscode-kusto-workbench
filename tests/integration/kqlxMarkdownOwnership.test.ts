@@ -5,8 +5,10 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { CompatSidecarSession } from '../../src/host/compatSidecarSession';
-import { KqlxEditorProvider } from '../../src/host/kqlxEditorProvider';
+import { KqlxEditorProvider, withKqlxDocumentWriteLock } from '../../src/host/kqlxEditorProvider';
+import { KustoResultPersistenceRegistry } from '../../src/host/kustoResultPersistenceOwner';
 import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
+import { normalizeWorkbenchUriKey } from '../../src/host/workbenchFileTypes';
 import { adaptMainWebviewStartupTestPanel } from './mainWebviewStartupTestAdapter';
 
 type DisposableLike = { dispose(): void };
@@ -407,6 +409,49 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
+	test('panel disposal cancels a never-settling native webview initialization', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-native-init-dispose-'));
+		const filePath = path.join(tmpDir, 'blocked.kqlx');
+		const text = JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [] } });
+		const disposeHandlers: Array<() => void> = [];
+		try {
+			fs.writeFileSync(filePath, text, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = () => new Promise<void>(() => undefined);
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => text, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+			} as any;
+			const panel = {
+				webview: { options: {}, postMessage: async () => true, onDidReceiveMessage: () => ({ dispose() {} }) },
+				onDidDispose: (handler: () => void) => {
+					disposeHandlers.push(handler);
+					return { dispose() {} };
+				},
+			} as any;
+
+			const resolving = provider.resolveCustomTextEditor(document, panel, {} as any);
+			await new Promise<void>(resolve => setImmediate(resolve));
+			for (const dispose of disposeHandlers) dispose();
+			assert.strictEqual(await Promise.race([
+				resolving.then(() => true),
+				new Promise<false>(resolve => setTimeout(() => resolve(false), 250)),
+			]), true);
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 500), true);
+		} finally {
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('Python-only Save before projection acknowledgement fails closed', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
@@ -593,6 +638,72 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		} finally {
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
 			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('initial projection recovery shares one bounded retry budget', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-initial-projection-budget-'));
+		const filePath = path.join(tmpDir, 'bounded.kqlx');
+		const currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', query: 'print Value=1' },
+			] },
+		});
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let latestProjection: any;
+		let projectionCount = 0;
+		const disposeHandlers: Array<() => void> = [];
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+			} as any;
+			const panel = {
+				webview: {
+					options: {}, postMessage: async (message: any) => {
+						if (message?.type === 'documentData') {
+							projectionCount++;
+							latestProjection = message;
+						}
+						if (message?.reloadRequestId) {
+							await Promise.resolve(receiveHandler?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: false, editRevision: 0,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => {
+					disposeHandlers.push(handler);
+					return { dispose() {} };
+				},
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			assert.strictEqual(projectionCount, 3, 'one initial request must share a three-attempt total budget');
+			for (const dispose of disposeHandlers) dispose();
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 2_000), true);
+		} finally {
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});
@@ -1973,6 +2084,157 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
 			(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSave;
 			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('session Chart removal uses the durable baseline when the open TextDocument is stale', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-session-stale-buffer-remove-'));
+		const filePath = path.join(tmpDir, 'session.kqlx');
+		const querySection = { id: 'query_session', type: 'query', query: 'print Value=1' };
+		const staleBufferText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [querySection] },
+		}, null, 2) + '\n';
+		const durableText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				querySection,
+				{
+					id: 'chart_session', type: 'chart', dataSourceId: 'query_session',
+					chartType: 'bar', xColumn: 'Value', yColumns: ['Value'], expanded: true,
+				},
+			] },
+		}, null, 2) + '\n';
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let latestProjection: any;
+		const posted: any[] = [];
+		const disposeHandlers: Array<() => void> = [];
+
+		try {
+			fs.writeFileSync(filePath, durableText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(tmpDir), extensionMode: vscode.ExtensionMode.Test,
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
+				connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => staleBufferText, eol: vscode.EndOfLine.LF,
+				positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: false, version: 1,
+			} as any;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') latestProjection = message;
+						if (message?.reloadRequestId) {
+							await Promise.resolve(receiveHandler?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: Number(message.editRevision || 0),
+								markdownCommandBarrierSupported: true,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => {
+					disposeHandlers.push(handler);
+					return { dispose() {} };
+				},
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			assert.deepStrictEqual(
+				latestProjection.state.sections.map((section: any) => section.id),
+				['query_session', 'chart_session'],
+			);
+			await Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommand', commandId: 'remove-stale-buffer-chart',
+				sourceGeneration: latestProjection.sourceGeneration,
+				expectedDocumentRevision: latestProjection.documentRevision,
+				command: {
+					type: 'remove', sectionId: 'chart_session',
+					expectedSectionRevision: latestProjection.sectionRevisions.chart_session,
+				},
+			}));
+			const result = posted.find(message => message?.type === 'markdownDocumentCommandResult'
+				&& message.commandId === 'remove-stale-buffer-chart');
+			assert.strictEqual(result?.ok, true, JSON.stringify(result));
+			assert.deepStrictEqual(
+				JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections.map((section: any) => section.id),
+				['query_session'],
+			);
+			for (const dispose of disposeHandlers) dispose();
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 2_000), true);
+		} finally {
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('session projection reads fail closed instead of using a stale TextDocument', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-session-read-failure-'));
+		const missingPath = path.join(tmpDir, 'session.kqlx');
+		const staleText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'chart_stale', type: 'chart', chartType: 'bar' },
+			] },
+		});
+		try {
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(tmpDir), extensionMode: vscode.ExtensionMode.Test,
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
+				connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(missingPath), getText: () => staleText,
+			} as vscode.TextDocument;
+
+			await assert.rejects(
+				(provider as any).readProjectionSourceTextForDocument(document, true),
+				/ENOENT|no such file|changed physical identity before projection|changed physical identity before reading/i,
+			);
+			assert.strictEqual(
+				await (provider as any).readProjectionSourceTextForDocument(document, false),
+				staleText,
+			);
+
+			const durablePath = path.join(tmpDir, 'durable-session.kqlx');
+			const durableUri = vscode.Uri.file(durablePath);
+			fs.writeFileSync(durablePath, staleText, 'utf8');
+			let releaseWrite!: () => void;
+			let markLocked!: () => void;
+			const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+			const locked = new Promise<void>(resolve => { markLocked = resolve; });
+			const writer = withKqlxDocumentWriteLock(durableUri, async () => {
+				markLocked();
+				await writeGate;
+			});
+			await locked;
+			let readSettled = false;
+			const lockedRead = (provider as any).readProjectionSourceTextForDocument({
+				uri: durableUri, getText: () => 'stale buffer',
+			} as vscode.TextDocument, true).finally(() => { readSettled = true; });
+			await new Promise<void>(resolve => setTimeout(resolve, 50));
+			assert.strictEqual(readSettled, false, 'session projection read must wait for the document write lock');
+			releaseWrite();
+			await writer;
+			assert.strictEqual(await lockedRead, staleText);
+		} finally {
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});
@@ -3731,6 +3993,494 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			(vscode.workspace as any).applyEdit = originalApplyEdit;
 			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
 			(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSave;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('rejected native projection does not mutate Kusto result authority', async function () {
+		this.timeout(10_000);
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-rejected-kusto-source-'));
+		const filePath = path.join(tmpDir, 'rejected-source.kqlx');
+		const resultJson = JSON.stringify({
+			columns: [{ name: 'Value', type: 'long' }], rows: [[1]],
+			metadata: { cluster: 'cluster', database: 'Db' },
+		});
+		const resultState = {
+			kind: 'kqlx', version: 1, state: { sections: [{
+				id: 'query_1', type: 'query', query: 'print Value=1',
+				clusterUrl: 'https://cluster.kusto.windows.net', database: 'Db', resultJson,
+			}] },
+		};
+		const rowFreeState = {
+			kind: 'kqlx', version: 1, state: { sections: [{
+				id: 'query_1', type: 'query', query: 'print Value=2',
+				clusterUrl: 'https://cluster.kusto.windows.net', database: 'Db',
+			}] },
+		};
+		let currentText = JSON.stringify(resultState);
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let latestProjection: any;
+		const heldReloadRequestIds: string[] = [];
+		let holdReload = false;
+		let autoRejectReloads = 0;
+		const disposeHandlers: Array<() => void> = [];
+		const registry = new KustoResultPersistenceRegistry();
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => state;
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
+				connectionManagerStub(), sqlWorkbenchStub(), undefined, registry,
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: false,
+			} as any;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						if (message?.type === 'documentData') latestProjection = message;
+						if (message?.reloadRequestId) {
+							if (autoRejectReloads > 0) {
+								autoRejectReloads--;
+								await Promise.resolve(receiveHandler?.({
+									type: 'documentReloadResult', requestId: message.reloadRequestId,
+									applied: false, editRevision: 0,
+								}));
+								return true;
+							}
+							if (holdReload) {
+								heldReloadRequestIds.push(message.reloadRequestId);
+								return true;
+							}
+							await Promise.resolve(receiveHandler?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: 0,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => {
+					disposeHandlers.push(handler);
+					return { dispose() {} };
+				},
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const owner = registry.get(normalizeWorkbenchUriKey(document.uri));
+			assert.ok(owner);
+			assert.strictEqual(
+				(owner!.overlaySnapshot(rowFreeState.state).sections?.[0] as any).resultJson,
+				resultJson,
+			);
+
+			currentText = JSON.stringify(rowFreeState);
+			autoRejectReloads = 2;
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			autoRejectReloads = 0;
+
+			assert.strictEqual(
+				(owner!.overlaySnapshot(rowFreeState.state).sections?.[0] as any).resultJson,
+				resultJson,
+			);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+
+			const resultSession = owner!.openPanel('concurrent-result-panel');
+			resultSession.openSection('query_1', 'concurrent-result-instance');
+			resultSession.adoptTarget({
+				boxId: 'query_1', sectionInstanceId: 'concurrent-result-instance', targetGeneration: 1,
+				connectionId: 'connection-1', database: 'Db',
+			});
+			const newerTerminal = {
+				type: 'queryResult' as const, engine: 'kusto' as const, boxId: 'query_1',
+				sectionInstanceId: 'concurrent-result-instance', targetGeneration: 1,
+				executionId: 'concurrent-result-execution', connectionId: 'connection-1', database: 'Db',
+				producer: 'manual' as const, query: 'print Value=2', reservationSequence: 1,
+				dispatch: {
+					dispatchAttempt: 1, connectionRevision: 1, leaveNoTraceRevision: 0,
+					connectionIdentityKey: 'https://cluster.kusto.windows.net|authority',
+					clusterEndpoint: 'https://cluster.kusto.windows.net', authorityId: 'authority',
+					accountPartition: 'partition-a', authSessionGeneration: 1,
+					clientActivityId: 'concurrent-result',
+				},
+				result: { columns: ['Value'], rows: [[2]], metadata: {} },
+			};
+			assert.strictEqual(resultSession.beginExecution(newerTerminal), true);
+			holdReload = true;
+			const heldBeforeConflict = heldReloadRequestIds.length;
+			const conflictedProjection = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await waitForCondition(
+				() => heldReloadRequestIds.length === heldBeforeConflict + 1,
+				'conflicted reload should be posted',
+			);
+			assert.ok(resultSession.stagePublication('concurrent-result-publication', newerTerminal));
+			assert.strictEqual(resultSession.commitPublication('concurrent-result-publication'), true);
+			holdReload = false;
+			await Promise.resolve(receiveHandler!({
+				type: 'documentReloadResult', requestId: heldReloadRequestIds[heldBeforeConflict],
+				applied: true, editRevision: 0,
+			}));
+			await conflictedProjection;
+			await waitForCondition(() => {
+				const ownerResult = (owner!.overlaySnapshot(rowFreeState.state).sections?.[0] as any).resultJson;
+				const projectedSection = latestProjection?.state?.sections?.find((value: any) => value.id === 'query_1');
+				try {
+					return JSON.parse(String(ownerResult || '')).rows?.[0]?.[0] === 2
+						&& JSON.parse(String(projectedSection?.resultJson || '')).rows?.[0]?.[0] === 2;
+				} catch {
+					return false;
+				}
+			}, 'native conflict retry should activate the newer host result');
+			const currentResult = (owner!.overlaySnapshot(rowFreeState.state).sections?.[0] as any).resultJson;
+			assert.strictEqual(JSON.parse(currentResult).rows[0][0], 2);
+			const projectedSection = latestProjection?.state?.sections?.find((value: any) => value.id === 'query_1');
+			const projectedResult = projectedSection?.resultJson
+				? JSON.parse(projectedSection.resultJson)
+				: undefined;
+			assert.strictEqual(
+				projectedResult?.rows?.[0]?.[0],
+				2,
+				`fresh projection should carry the newer host result: ${JSON.stringify({
+					projectedSection,
+					ownerResult: JSON.parse(currentResult),
+				})}`,
+			);
+			for (const dispose of disposeHandlers) dispose();
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 2_000), true);
+		} finally {
+			registry.dispose();
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('fresh native sanitation revokes a same-source Kusto attachment before projection and persistence', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kusto-privacy-owner-'));
+		const filePath = path.join(tmpDir, 'privacy-owner.kqlx');
+		const documentUri = vscode.Uri.file(filePath);
+		const registry = new KustoResultPersistenceRegistry();
+		const seedLease = registry.acquire(normalizeWorkbenchUriKey(documentUri));
+		const owner = seedLease.owner;
+		const rowFreeState = {
+			sections: [{ id: 'query_1', type: 'query', query: 'print Value=1' }],
+		};
+		const seedSession = owner.openPanel('privacy-seed-panel');
+		seedSession.openSection('query_1', 'privacy-seed-instance');
+		seedSession.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'privacy-seed-instance', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Db',
+		});
+		const terminal = {
+			type: 'queryResult' as const, engine: 'kusto' as const, boxId: 'query_1',
+			sectionInstanceId: 'privacy-seed-instance', targetGeneration: 1,
+			executionId: 'privacy-seed-execution', connectionId: 'connection-1', database: 'Db',
+			producer: 'manual' as const, query: 'print Value=1', reservationSequence: 1,
+			dispatch: {
+				dispatchAttempt: 1, connectionRevision: 1, leaveNoTraceRevision: 0,
+				connectionIdentityKey: 'https://cluster.kusto.windows.net|authority',
+				clusterEndpoint: 'https://cluster.kusto.windows.net', authorityId: 'authority',
+				accountPartition: 'partition-a', authSessionGeneration: 1,
+				clientActivityId: 'privacy-seed',
+			},
+			result: { columns: ['Value'], rows: [[1]], metadata: {} },
+		};
+		assert.strictEqual(seedSession.beginExecution(terminal), true);
+		assert.ok(seedSession.stagePublication('privacy-seed-publication', terminal));
+		assert.strictEqual(seedSession.commitPublication('privacy-seed-publication'), true);
+		let currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: owner.overlaySnapshot(rowFreeState),
+		});
+		let protectedNow = false;
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let latestProjection: any;
+		const disposeHandlers: Array<() => void> = [];
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (
+				state: any,
+				onKustoSanitized?: (before: any, after: any, context: any) => void,
+			) => {
+				if (!protectedNow) return state;
+				const sanitized = {
+					...state,
+					sections: state.sections.map((section: any) => {
+						if (section.id !== 'query_1') return section;
+						const {
+							resultJson: _resultJson,
+							resultArtifact: _resultArtifact,
+							kustoAccountPartition: _accountPartition,
+							kustoLeaveNoTraceRevision: _leaveNoTraceRevision,
+							selectedResultIndex: _selectedResultIndex,
+							...clean
+						} = section;
+						return clean;
+					}),
+				};
+				onKustoSanitized?.(state, sanitized, {
+					snapshot: {
+						clusterKeys: ['cluster.kusto.windows.net'], globallyBlocked: true,
+						version: 1, revocationGenerations: { 'cluster.kusto.windows.net': 1 },
+					},
+				});
+				return sanitized;
+			};
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+				if (typeof replacement !== 'string') return false;
+				currentText = replacement;
+				fs.writeFileSync(filePath, replacement, 'utf8');
+				return true;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
+				connectionManagerStub(), sqlWorkbenchStub(), undefined, registry,
+			) as KqlxEditorProvider;
+			const document = {
+				uri: documentUri, getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: false,
+			} as any;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						if (message?.type === 'documentData') latestProjection = message;
+						if (message?.reloadRequestId) {
+							await Promise.resolve(receiveHandler?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: 0,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => {
+					disposeHandlers.push(handler);
+					return { dispose() {} };
+				},
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			seedLease.release();
+			assert.ok(latestProjection.state.sections[0].resultJson);
+			protectedNow = true;
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			assert.ok(!latestProjection.state.sections[0].resultJson);
+			assert.strictEqual(owner.hasCommittedAttachments(), false);
+			assert.ok(!(owner.overlaySnapshot(rowFreeState).sections?.[0] as any).resultJson);
+
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', sourceGeneration: latestProjection.sourceGeneration,
+				state: latestProjection.state,
+			}));
+			assert.ok(!currentText.includes('resultJson'));
+			assert.ok(!fs.readFileSync(filePath, 'utf8').includes('resultJson'));
+			for (const dispose of disposeHandlers) dispose();
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 2_000), true);
+		} finally {
+			seedLease.release();
+			registry.dispose();
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('session policy revocation retries a cold result admission into an active writable projection', async function () {
+		this.timeout(10_000);
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kusto-held-policy-'));
+		const filePath = path.join(tmpDir, 'session.kqlx');
+		const documentUri = vscode.Uri.file(filePath);
+		const sourceRegistry = new KustoResultPersistenceRegistry();
+		const sourceLease = sourceRegistry.acquire('fixture://held-policy');
+		const sourceSession = sourceLease.owner.openPanel('fixture-panel');
+		sourceSession.openSection('query_1', 'fixture-instance');
+		sourceSession.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'fixture-instance', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Db',
+		});
+		const terminal = {
+			type: 'queryResult' as const, engine: 'kusto' as const, boxId: 'query_1',
+			sectionInstanceId: 'fixture-instance', targetGeneration: 1,
+			executionId: 'fixture-execution', connectionId: 'connection-1', database: 'Db',
+			producer: 'manual' as const, query: 'print Value=1', reservationSequence: 1,
+			dispatch: {
+				dispatchAttempt: 1, connectionRevision: 1, leaveNoTraceRevision: 0,
+				connectionIdentityKey: 'https://cluster.kusto.windows.net|authority',
+				clusterEndpoint: 'https://cluster.kusto.windows.net', authorityId: 'authority',
+				accountPartition: 'partition-a', authSessionGeneration: 1, clientActivityId: 'fixture',
+			},
+			result: { columns: ['Value'], rows: [[1]], metadata: {} },
+		};
+		assert.strictEqual(sourceSession.beginExecution(terminal), true);
+		assert.ok(sourceSession.stagePublication('fixture-publication', terminal));
+		assert.strictEqual(sourceSession.commitPublication('fixture-publication'), true);
+		const persistedState = sourceLease.owner.overlaySnapshot({
+			sections: [
+				{ id: 'query_1', type: 'query', query: 'print Value=1' },
+				{ id: 'markdown_retry', type: 'markdown', text: 'remove after retry' },
+			],
+		});
+		const rowFreeState = {
+			sections: [
+				{ id: 'query_1', type: 'query', query: 'print Value=1' },
+				{ id: 'markdown_retry', type: 'markdown', text: 'remove after retry' },
+			],
+		};
+		const currentText = JSON.stringify({ kind: 'kqlx', version: 1, state: persistedState });
+		const registry = new KustoResultPersistenceRegistry();
+		let protectedNow = false;
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let latestProjection: any;
+		const commandResults: any[] = [];
+		let heldReloadRequestId = '';
+		let holdReload = true;
+		const disposeHandlers: Array<() => void> = [];
+		let canonicalPolicySnapshot = {
+			clusterKeys: [] as string[], globallyBlocked: false, version: 1,
+			revocationGenerations: { 'cluster.kusto.windows.net': 0 },
+		};
+		const connectionManager = {
+			...connectionManagerStub(),
+			runWithLeaveNoTraceSnapshotLock: async (run: (snapshot: typeof canonicalPolicySnapshot) => unknown) =>
+				await run(canonicalPolicySnapshot),
+		};
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (
+				state: any,
+				onKustoSanitized?: (before: any, after: any, context: any) => void,
+			) => {
+				const sanitized = protectedNow ? {
+					...state,
+					sections: state.sections.map((section: any) => {
+						if (section.id !== 'query_1') return section;
+						const {
+							resultJson: _resultJson, resultArtifact: _resultArtifact,
+							kustoAccountPartition: _partition,
+							kustoLeaveNoTraceRevision: _revision,
+							selectedResultIndex: _selection, ...clean
+						} = section;
+						return clean;
+					}),
+				} : state;
+				onKustoSanitized?.(state, sanitized, { snapshot: canonicalPolicySnapshot });
+				return sanitized;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(tmpDir),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
+				connectionManager, sqlWorkbenchStub(), undefined, registry,
+			) as KqlxEditorProvider;
+			const document = {
+				uri: documentUri, getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: false,
+			} as any;
+			const panel = {
+				webview: {
+					options: {}, postMessage: async (message: any) => {
+						if (message?.type === 'documentData') latestProjection = message;
+						if (message?.type === 'markdownDocumentCommandResult') commandResults.push(message);
+						if (!message?.reloadRequestId) return true;
+						if (holdReload) { heldReloadRequestId = message.reloadRequestId; return true; }
+						await Promise.resolve(receiveHandler?.({
+							type: 'documentReloadResult', requestId: message.reloadRequestId,
+							applied: true, editRevision: 0,
+						}));
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			const projection = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await waitForCondition(() => !!heldReloadRequestId, 'cold result admission should await acknowledgement');
+			assert.ok(latestProjection.state.sections[0].resultJson);
+			const owner = registry.get(normalizeWorkbenchUriKey(document.uri));
+			assert.ok(owner && !owner.hasCommittedAttachments());
+			protectedNow = true;
+			canonicalPolicySnapshot = {
+				clusterKeys: ['cluster.kusto.windows.net'], globallyBlocked: true, version: 2,
+				revocationGenerations: { 'cluster.kusto.windows.net': 1 },
+			};
+			holdReload = false;
+			await Promise.resolve(receiveHandler!({
+				type: 'documentReloadResult', requestId: heldReloadRequestId,
+				applied: true, editRevision: 0,
+			}));
+			await projection;
+			await waitForCondition(() => !latestProjection.state.sections[0].resultJson,
+				'policy conflict retry should project row-free state');
+			assert.ok(!(owner!.overlaySnapshot(rowFreeState).sections?.[0] as any).resultJson);
+			assert.strictEqual((owner as any).preparedSourceOwnerRevisionByIdentity.size, 0);
+			await Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommand', commandId: 'remove-after-policy-retry',
+				sourceGeneration: latestProjection.sourceGeneration,
+				expectedDocumentRevision: latestProjection.documentRevision,
+				command: {
+					type: 'remove', sectionId: 'markdown_retry',
+					expectedSectionRevision: latestProjection.sectionRevisions.markdown_retry,
+				},
+			}));
+			const removal = commandResults.find(result => result.commandId === 'remove-after-policy-retry');
+			assert.strictEqual(removal?.ok, true, JSON.stringify(removal));
+			assert.deepStrictEqual(
+				JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections.map((section: any) => section.id),
+				['query_1'],
+			);
+			for (const dispose of disposeHandlers) dispose();
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 5_000), true);
+		} finally {
+			sourceLease.release();
+			sourceRegistry.dispose();
+			registry.dispose();
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});

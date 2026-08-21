@@ -183,6 +183,8 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 
 		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
 		let outerDisposed = false;
+		let signalOuterDisposal!: () => void;
+		const outerDisposalSignal = new Promise<void>(resolve => { signalOuterDisposal = resolve; });
 		const viewSessionId = randomUUID();
 		const compatibilityPersistence = Object.freeze({
 			protocolVersion: COMPATIBILITY_PERSISTENCE_PROTOCOL_VERSION,
@@ -236,16 +238,30 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		queryEditor.setMessageTransport(message => startupGateway.postMessage(message));
 		const outerDisposalSubscription = webviewPanel.onDidDispose(() => {
 			outerDisposed = true;
+			signalOuterDisposal();
 			void closeCoordinator.disposePanel();
 		});
 		const subscriptions: vscode.Disposable[] = [startupGateway, outerDisposalSubscription];
 		try {
 		fileOpenTrace.mark('initializeWebviewPanel.start');
-		await queryEditor.initializeWebviewPanel(webviewPanel, {
+		const initialization = queryEditor.initializeWebviewPanel(webviewPanel, {
 			registerMessageHandler: false,
 			initialDocumentLoading: true,
 			compatibilityPersistence,
-		});
+		}).then(
+			() => ({ kind: 'initialized' as const }),
+			error => ({ kind: 'error' as const, error }),
+		);
+		const initializationOutcome = await Promise.race([
+			initialization,
+			outerDisposalSignal.then(() => ({ kind: 'disposed' as const })),
+		]);
+		if (initializationOutcome.kind === 'disposed') {
+			try { queryEditor.disposePanel(webviewPanel); } catch { /* continue compatibility cleanup */ }
+			await closeCoordinator.failInitialization({ gateway: startupGateway, subscriptions });
+			return;
+		}
+		if (initializationOutcome.kind === 'error') throw initializationOutcome.error;
 		fileOpenTrace.mark('initializeWebviewPanel.done');
 
 		// Sidecar support: if there is a sibling .sql.json file that links back to this .sql,

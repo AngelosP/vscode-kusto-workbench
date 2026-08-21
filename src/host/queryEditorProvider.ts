@@ -225,6 +225,7 @@ import {
 } from './sqlConnectionsProjectionApplicationHandler';
 import {
 	HostPersistedResultSanitizationApplicationHandler,
+	type KustoSanitizationObserver,
 	type PersistedResultSanitizationApplicationHandler,
 } from './persistedResultSanitizationApplicationHandler';
 import {
@@ -1577,19 +1578,40 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		return this.persistedResultSanitizationApplication.sanitizeSqlLeaveNoTraceState(state);
 	}
 
-	public sanitizeSqlLeaveNoTraceStateFresh<T extends { sections?: unknown[] }>(state: T): Promise<T> {
-		return this.persistedResultSanitizationApplication.sanitizeSqlLeaveNoTraceStateFresh(state);
+	public sanitizeSqlLeaveNoTraceStateFresh<T extends { sections?: unknown[] }>(
+		state: T,
+		onKustoSanitized?: KustoSanitizationObserver,
+	): Promise<T> {
+		return this.persistedResultSanitizationApplication.sanitizeSqlLeaveNoTraceStateFresh(
+			state,
+			onKustoSanitized,
+		);
 	}
 
 	public sanitizeSqlLeaveNoTraceStateFailClosed<T extends { sections?: unknown[] }>(state: T): T {
 		return this.persistedResultSanitizationApplication.sanitizeSqlLeaveNoTraceStateFailClosed(state);
 	}
 
+	public commitKustoSourceAdmissionFresh(
+		expectedPolicyFingerprint: string,
+		commit: () => boolean | Promise<boolean>,
+	): Promise<boolean> {
+		return this.persistedResultSanitizationApplication.commitKustoSourceAdmissionFresh(
+			expectedPolicyFingerprint,
+			commit,
+		);
+	}
+
 	public publishSqlLeaveNoTraceStateFresh<T extends { sections?: unknown[] }, R>(
 		state: T,
 		publish: (sanitizedState: T) => Promise<R>,
+		onKustoSanitized?: KustoSanitizationObserver,
 	): Promise<R> {
-		return this.persistedResultSanitizationApplication.publishSqlLeaveNoTraceStateFresh(state, publish);
+		return this.persistedResultSanitizationApplication.publishSqlLeaveNoTraceStateFresh(
+			state,
+			publish,
+			onKustoSanitized,
+		);
 	}
 
 	buildCacheDirective(

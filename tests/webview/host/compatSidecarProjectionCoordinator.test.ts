@@ -92,6 +92,186 @@ describe('CompatSidecarProjectionCoordinator', () => {
 		expect(session.currentEditRevision).toBe(2);
 	});
 
+	it('settles owner candidates false for a superseded projection and true only for its accepted successor', async () => {
+		const attempts: RecordedProjectionAttempt[] = [];
+		const settled: Array<{ generation: number; applied: boolean }> = [];
+		let sourceText = 'A';
+		const coordinator = new CompatSidecarProjectionCoordinator({
+			session: new CompatSidecarSession(true, 'KQL'),
+			readSourceText: () => sourceText,
+			isDisposed: () => false,
+			onProjectionSettled: (attempt, applied) => {
+				settled.push({ generation: attempt.generation, applied });
+			},
+			postProjection: async attempt => recordProjectionAttempt(attempt, attempts),
+		});
+
+		const projectionA = coordinator.project();
+		await waitFor(() => attempts.length === 1);
+		sourceText = 'B';
+		const projectionB = coordinator.project();
+		await waitFor(() => attempts.length === 2);
+		coordinator.completeReload({
+			requestId: attempts[1].reloadRequestId, applied: true, editRevision: 1,
+		});
+
+		expect(await projectionA).toBe(false);
+		expect(await projectionB).toBe(true);
+		expect(settled).toEqual([
+			{ generation: attempts[0].generation, applied: false },
+			{ generation: attempts[1].generation, applied: true },
+		]);
+	});
+
+	it('rejects activation when owner compare-and-commit conflicts', async () => {
+		let attempt: RecordedProjectionAttempt | undefined;
+		const settled: boolean[] = [];
+		const coordinator = new CompatSidecarProjectionCoordinator({
+			session: new CompatSidecarSession(true, 'KQL'),
+			readSourceText: () => 'source',
+			isDisposed: () => false,
+			onProjectionSettled: (_attempt, applied) => {
+				settled.push(applied);
+				return applied ? false : true;
+			},
+			postProjection: async value => {
+				const reloadRequestId = value.reserveReload();
+				if (!reloadRequestId) return false;
+				attempt = { ...value, reloadRequestId };
+				return true;
+			},
+		});
+
+		const projection = coordinator.project();
+		await waitFor(() => !!attempt);
+		coordinator.completeReload({ requestId: attempt!.reloadRequestId, applied: true, editRevision: 1 });
+
+		expect(await projection).toBe(false);
+		expect(coordinator.activeSourceGeneration).toBe(0);
+		expect(settled).toEqual([true]);
+		expect(coordinator.admitPersist({
+			sourceGeneration: 0, editRevision: 1,
+			requireCurrentGeneration: true, allowMissingSourceGeneration: false,
+		})).toBe(true);
+	});
+
+	it('does not commit owner state when source changes during awaited settlement', async () => {
+		let sourceText = 'A';
+		let attempt: RecordedProjectionAttempt | undefined;
+		let markSettlementStarted!: () => void;
+		let releaseSettlement!: () => void;
+		const settlementStarted = new Promise<void>(resolve => { markSettlementStarted = resolve; });
+		const settlementGate = new Promise<void>(resolve => { releaseSettlement = resolve; });
+		let ownerCommits = 0;
+		const coordinator = new CompatSidecarProjectionCoordinator({
+			session: new CompatSidecarSession(true, 'KQL'),
+			readSourceText: () => sourceText,
+			isDisposed: () => false,
+			onProjectionSettled: async (candidate, applied) => {
+				if (!applied) return true;
+				markSettlementStarted();
+				await settlementGate;
+				if (!candidate.isCurrent()) return false;
+				ownerCommits++;
+				return candidate.commitActivation();
+			},
+			postProjection: async value => {
+				const reloadRequestId = value.reserveReload();
+				if (!reloadRequestId) return false;
+				attempt = { ...value, reloadRequestId };
+				return true;
+			},
+		});
+
+		const projection = coordinator.project();
+		await waitFor(() => !!attempt);
+		coordinator.completeReload({ requestId: attempt!.reloadRequestId, applied: true, editRevision: 1 });
+		await settlementStarted;
+		sourceText = 'B';
+		releaseSettlement();
+
+		expect(await projection).toBe(false);
+		expect(ownerCommits).toBe(0);
+		expect(coordinator.activeSourceGeneration).toBe(0);
+	});
+
+	it('waits for acknowledged projection authority before persistence admission', async () => {
+		let attempt: RecordedProjectionAttempt | undefined;
+		const coordinator = new CompatSidecarProjectionCoordinator({
+			session: new CompatSidecarSession(true, 'KQL'),
+			readSourceText: () => 'source',
+			isDisposed: () => false,
+			postProjection: async value => {
+				const reloadRequestId = value.reserveReload();
+				if (!reloadRequestId) return false;
+				attempt = { ...value, reloadRequestId };
+				return true;
+			},
+		});
+
+		const projection = coordinator.project();
+		await waitFor(() => !!attempt);
+		expect(coordinator.completeReload({
+			requestId: attempt!.reloadRequestId,
+			applied: true,
+			editRevision: 2,
+		})).toBe(true);
+		await coordinator.waitForAcknowledgedProjection(attempt!.generation);
+
+		expect(coordinator.activeSourceGeneration).toBe(attempt!.generation);
+		expect(await projection).toBe(true);
+	});
+
+	it('settles no-reservation and thrown projections exactly once', async () => {
+		for (const mode of ['no-reservation', 'throw'] as const) {
+			const settled: boolean[] = [];
+			const coordinator = new CompatSidecarProjectionCoordinator({
+				session: new CompatSidecarSession(true, 'KQL'),
+				readSourceText: () => 'source',
+				isDisposed: () => false,
+				onProjectionSettled: (_attempt, applied) => { settled.push(applied); },
+				postProjection: async () => {
+					if (mode === 'throw') throw new Error('projection failed');
+					return true;
+				},
+			});
+
+			if (mode === 'throw') await expect(coordinator.project()).rejects.toThrow('projection failed');
+			else await expect(coordinator.project()).resolves.toBe(false);
+			expect(settled).toEqual([false]);
+		}
+	});
+
+	it('settles timeout and disposal terminals exactly once', async () => {
+		for (const mode of ['timeout', 'disposal'] as const) {
+			const session = new CompatSidecarSession(true, 'KQL');
+			const reload = Promise.withResolvers<boolean>();
+			vi.spyOn(session, 'createReloadRequest').mockReturnValueOnce({
+				requestId: `${mode}-reload`, result: reload.promise,
+			});
+			let disposed = false;
+			let attempt: CompatSidecarProjectionAttempt | undefined;
+			const settled: boolean[] = [];
+			const coordinator = new CompatSidecarProjectionCoordinator({
+				session,
+				readSourceText: () => 'source',
+				isDisposed: () => disposed,
+				onProjectionSettled: (_attempt, applied) => { settled.push(applied); },
+				postProjection: async value => {
+					attempt = value;
+					return !!value.reserveReload();
+				},
+			});
+
+			const projection = coordinator.project();
+			await waitFor(() => !!attempt);
+			if (mode === 'disposal') disposed = true;
+			reload.resolve(false);
+			expect(await projection).toBe(false);
+			expect(settled).toEqual([false]);
+		}
+	});
+
 	it('recovers after a current request reload fails without letting superseded A demote B', async () => {
 		const session = new CompatSidecarSession(true, 'SQL');
 		const attempts: RecordedProjectionAttempt[] = [];

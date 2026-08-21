@@ -17,6 +17,7 @@ import { CompatSidecarStore, readCompatSidecarSnapshot } from '../../src/host/co
 import { CompatSidecarSession } from '../../src/host/compatSidecarSession';
 import { CompatSidecarCloseCoordinator } from '../../src/host/compatSidecarCloseCoordinator';
 import { CompatSidecarProjectionCoordinator } from '../../src/host/compatSidecarProjectionCoordinator';
+import { CompatSidecarPersistCoordinator } from '../../src/host/compatSidecarPersistCoordinator';
 import { parseCompatibilityPersistenceWebviewMessage } from '../../src/shared/compatibilityPersistenceProtocol';
 import { normalizeWorkbenchUriKey } from '../../src/host/workbenchFileTypes';
 import {
@@ -741,7 +742,13 @@ suite('Sidecar .kql.json strategy', () => {
 
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
-				const documentData = posted.filter(message => message?.type === 'documentData').at(-1);
+				const documentDataMessages = posted.filter(message => message?.type === 'documentData');
+				assert.strictEqual(
+					documentDataMessages.length,
+					1,
+					`${variant.extension} incompatible companion should apply one stable error projection`,
+				);
+				const documentData = documentDataMessages[0];
 				const persistenceMode = posted.filter(message => message?.type === 'persistenceMode').at(-1);
 				assert.strictEqual(documentData?.ok, false);
 				assert.ok(String(documentData?.error || '').includes(variant.invalidId));
@@ -9518,14 +9525,27 @@ suite('Sidecar .kql.json strategy', () => {
 				let receiveHandler: ((message: any) => unknown) | undefined;
 				let rejectedDeliveries = 0;
 				const posted: any[] = [];
-				const provider = new (variant.Provider as any)(
+				const resultRegistry = variant.primaryType === 'query'
+					? new KustoResultPersistenceRegistry()
+					: undefined;
+				const provider = variant.primaryType === 'query'
+					? new (KqlCompatEditorProvider as any)(
+						{
+							subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+							globalState: { get: () => undefined, update: async () => undefined },
+							globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-${index}`)),
+						} as any,
+						vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+						undefined, undefined, undefined, undefined, resultRegistry,
+					)
+					: new (SqlCompatEditorProvider as any)(
 					{
 						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
 						globalState: { get: () => undefined, update: async () => undefined },
 						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-${index}`)),
 					} as any,
-					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
-				);
+						vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+					);
 				const document = {
 					uri: vscode.Uri.file(sourcePath), getText: () => primaryText, lineCount: 1,
 					lineAt: () => ({ text: primaryText }), eol: vscode.EndOfLine.LF, isDirty: false,
@@ -9554,10 +9574,45 @@ suite('Sidecar .kql.json strategy', () => {
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 				const initialGeneration = Number(posted.find(message => message?.type === 'documentData')?.sourceGeneration);
 				assert.ok(Number.isSafeInteger(initialGeneration));
+				let kustoResultOwner: ReturnType<KustoResultPersistenceRegistry['get']>;
+				if (resultRegistry) {
+					const projection = posted.find(message => message?.type === 'documentData' && message.ok === true);
+					const boxId = String(projection?.state?.sections?.[0]?.id || '');
+					kustoResultOwner = resultRegistry.get(normalizeWorkbenchUriKey(document.uri));
+					assert.ok(kustoResultOwner && boxId);
+					const session = kustoResultOwner!.openPanel('rejected-compat-result');
+					session.openSection(boxId, 'rejected-compat-instance');
+					session.adoptTarget({
+						boxId, sectionInstanceId: 'rejected-compat-instance', targetGeneration: 1,
+						connectionId: 'connection-1', database: 'Db',
+					});
+					const terminal = {
+						type: 'queryResult' as const, engine: 'kusto' as const, boxId,
+						sectionInstanceId: 'rejected-compat-instance', targetGeneration: 1,
+						executionId: 'rejected-compat-execution', connectionId: 'connection-1', database: 'Db',
+						producer: 'manual' as const, query: primaryText, reservationSequence: 1,
+						dispatch: {
+							dispatchAttempt: 1, connectionRevision: 1, leaveNoTraceRevision: 0,
+							connectionIdentityKey: 'https://cluster.kusto.windows.net|authority',
+							clusterEndpoint: 'https://cluster.kusto.windows.net', authorityId: 'authority',
+							accountPartition: 'partition-a', authSessionGeneration: 1,
+							clientActivityId: 'rejected-compat',
+						},
+						result: { columns: ['Value'], rows: [[1]], metadata: {} },
+					};
+					assert.strictEqual(session.beginExecution(terminal), true);
+					assert.ok(session.stagePublication('rejected-compat-publication', terminal));
+					assert.strictEqual(session.commitPublication('rejected-compat-publication'), true);
+				}
 
 				rejectedDeliveries = 1;
 				primaryText = variant.primaryType === 'sql' ? 'select external' : 'print external = 1';
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				if (kustoResultOwner) {
+					assert.ok((kustoResultOwner.overlaySnapshot({ sections: [{
+						id: 'primary_1', type: 'query', query: primaryText,
+					}] }).sections?.[0] as any).resultJson);
+				}
 				await Promise.resolve(receiveHandler!({
 					type: 'persistDocument', snapshotId: `stale-${index}`, sourceGeneration: initialGeneration,
 					editRevision: 1, state: { sections: [
@@ -9577,8 +9632,504 @@ suite('Sidecar .kql.json strategy', () => {
 				assert.strictEqual(recoveryAttempts.length, 2, `${variant.extension} should retry after a current reload failure`);
 				assert.strictEqual(recoveryAttempts.at(-1)?.state?.sections?.[0]?.query,
 					variant.primaryType === 'sql' ? 'select external' : 'print external = 1');
+				if (kustoResultOwner) {
+					assert.strictEqual((kustoResultOwner.overlaySnapshot({ sections: [{
+						id: 'primary_1', type: 'query', query: primaryText,
+					}] }).sections?.[0] as any).resultJson, undefined);
+				}
+				resultRegistry?.dispose();
 			}
 		} finally {
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('compatibility owner conflict reprojects the newer Kusto result before accepting edits', async function () {
+		this.timeout(10_000);
+		const prototype = (QueryEditorProvider as any).prototype;
+		const originalSanitize = prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-compat-owner-conflict-'));
+		const sourcePath = path.join(tmpDir, 'owner-conflict.kql');
+		const sidecarPath = `${sourcePath}.json`;
+		const queryText = 'print Value=1';
+		const registry = new KustoResultPersistenceRegistry();
+		const persistTerminals: string[] = [];
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
+		let heldReloadRequestId = '';
+		let holdReload = false;
+
+		try {
+			prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => state;
+			fs.writeFileSync(sourcePath, queryText, 'utf8');
+			fs.writeFileSync(sidecarPath, JSON.stringify({
+				kind: 'kqlx', version: 1, state: { sections: [
+					{ id: 'primary_1', type: 'query', linkedQueryPath: path.basename(sourcePath) },
+					{ id: 'markdown_1', type: 'markdown', text: 'before conflict' },
+				] },
+			}), 'utf8');
+			const provider = new (KqlCompatEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				undefined, undefined, undefined,
+				(options: ConstructorParameters<typeof CompatSidecarPersistCoordinator>[0]) => {
+					const coordinator = new CompatSidecarPersistCoordinator(options);
+					return {
+						persist: async (message: Parameters<typeof coordinator.persist>[0]) => {
+							const result = await coordinator.persist(message);
+							persistTerminals.push(result.terminal);
+							return result;
+						},
+					};
+				},
+				registry,
+			) as KqlCompatEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(sourcePath), getText: () => queryText, lineCount: 1,
+				lineAt: () => ({ text: queryText }), eol: vscode.EndOfLine.LF, isDirty: false,
+			} as any;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						posted.push(message);
+						if (!message?.reloadRequestId) return true;
+						if (holdReload) {
+							heldReloadRequestId = message.reloadRequestId;
+							return true;
+						}
+						await Promise.resolve(receiveHandler?.({
+							type: 'documentReloadResult', requestId: message.reloadRequestId,
+							applied: true, editRevision: Number(message.editRevision || 0),
+						}));
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = handler;
+						return { dispose() {} };
+					},
+				},
+				visible: true,
+				onDidChangeViewState: () => ({ dispose() {} }),
+				onDidDispose: () => ({ dispose() {} }),
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const initialProjection = posted.filter(message => message?.type === 'documentData' && message.ok === true).at(-1);
+			const boxId = String(initialProjection?.state?.sections?.[0]?.id || '');
+			const owner = registry.get(normalizeWorkbenchUriKey(document.uri));
+			assert.ok(owner && boxId);
+			const session = owner!.openPanel('compat-owner-conflict-panel');
+			session.openSection(boxId, 'compat-owner-conflict-instance');
+			session.adoptTarget({
+				boxId, sectionInstanceId: 'compat-owner-conflict-instance', targetGeneration: 1,
+				connectionId: 'connection-1', database: 'Db',
+			});
+			const terminal = (executionId: string, reservationSequence: number, value: number) => ({
+				type: 'queryResult' as const, engine: 'kusto' as const, boxId,
+				sectionInstanceId: 'compat-owner-conflict-instance', targetGeneration: 1,
+				executionId, connectionId: 'connection-1', database: 'Db',
+				producer: 'manual' as const, query: queryText, reservationSequence,
+				dispatch: {
+					dispatchAttempt: 1, connectionRevision: 1, leaveNoTraceRevision: 0,
+					connectionIdentityKey: 'https://cluster.kusto.windows.net|authority',
+					clusterEndpoint: 'https://cluster.kusto.windows.net', authorityId: 'authority',
+					accountPartition: 'partition-a', authSessionGeneration: 1,
+					clientActivityId: executionId,
+				},
+				result: { columns: ['Value'], rows: [[value]], metadata: {} },
+			});
+			const first = terminal('compat-owner-result-1', 1, 1);
+			assert.strictEqual(session.beginExecution(first), true);
+			assert.ok(session.stagePublication('compat-owner-publication-1', first));
+			assert.strictEqual(session.commitPublication('compat-owner-publication-1'), true);
+
+			const projectionCountBeforeConflict = posted.filter(message => message?.type === 'documentData').length;
+			holdReload = true;
+			const conflictedRequest = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await waitForCondition(() => !!heldReloadRequestId, 'compatibility conflict candidate should be posted');
+			const conflictedProjection = posted.filter(message => message?.type === 'documentData').at(-1);
+			const second = terminal('compat-owner-result-2', 2, 2);
+			assert.strictEqual(session.beginExecution(second), true);
+			assert.ok(session.stagePublication('compat-owner-publication-2', second));
+			assert.strictEqual(session.commitPublication('compat-owner-publication-2'), true);
+			holdReload = false;
+			await Promise.resolve(receiveHandler!({
+				type: 'documentReloadResult', requestId: heldReloadRequestId,
+				applied: true, editRevision: Number(conflictedProjection?.editRevision || 0),
+			}));
+			await conflictedRequest;
+
+			await waitForCondition(() => {
+				const projections = posted.filter(message => message?.type === 'documentData' && message.ok === true);
+				if (projections.length < projectionCountBeforeConflict + 2) return false;
+				const section = projections.at(-1)?.state?.sections?.find((candidate: any) => candidate.id === boxId);
+				try { return JSON.parse(String(section?.resultJson || '')).rows?.[0]?.[0] === 2; }
+				catch { return false; }
+			}, 'compatibility conflict retry should project the newer host result');
+			const settledProjections = posted.filter(message => message?.type === 'documentData' && message.ok === true);
+			assert.strictEqual(settledProjections.length, projectionCountBeforeConflict + 2);
+			const retryProjection = settledProjections.at(-1);
+			assert.ok(retryProjection.sourceGeneration > conflictedProjection.sourceGeneration);
+			const editedState = {
+				...retryProjection.state,
+				sections: retryProjection.state.sections.map((section: any) => section.id === 'markdown_1'
+					? { ...section, text: 'after conflict' }
+					: section),
+			};
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', snapshotId: 'compat-owner-conflict-edit',
+				sourceGeneration: retryProjection.sourceGeneration,
+				editRevision: Number(retryProjection.editRevision || 0) + 1,
+				state: editedState,
+			}));
+			assert.deepStrictEqual(persistTerminals, ['applied']);
+			assert.ok(posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'compat-owner-conflict-edit'));
+			assert.strictEqual(owner!.getCommittedSummary(boxId)?.executionId, 'compat-owner-result-2');
+		} finally {
+			prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			registry.dispose();
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('compatibility policy revocation rejects a cold result admission awaiting acknowledgement', async function () {
+		this.timeout(10_000);
+		const prototype = (QueryEditorProvider as any).prototype;
+		const originalSanitize = prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const originalPublish = prototype.publishSqlLeaveNoTraceStateFresh;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-compat-held-policy-'));
+		const sourcePath = path.join(tmpDir, 'held-policy.kql');
+		const sidecarPath = `${sourcePath}.json`;
+		const queryText = 'print Value=1';
+		const sourceRegistry = new KustoResultPersistenceRegistry();
+		const sourceLease = sourceRegistry.acquire('fixture://compat-held-policy');
+		const sourceSession = sourceLease.owner.openPanel('fixture-panel');
+		sourceSession.openSection('primary_1', 'fixture-instance');
+		sourceSession.adoptTarget({
+			boxId: 'primary_1', sectionInstanceId: 'fixture-instance', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Db',
+		});
+		const terminal = {
+			type: 'queryResult' as const, engine: 'kusto' as const, boxId: 'primary_1',
+			sectionInstanceId: 'fixture-instance', targetGeneration: 1,
+			executionId: 'fixture-execution', connectionId: 'connection-1', database: 'Db',
+			producer: 'manual' as const, query: queryText, reservationSequence: 1,
+			dispatch: {
+				dispatchAttempt: 1, connectionRevision: 1, leaveNoTraceRevision: 0,
+				connectionIdentityKey: 'https://cluster.kusto.windows.net|authority',
+				clusterEndpoint: 'https://cluster.kusto.windows.net', authorityId: 'authority',
+				accountPartition: 'partition-a', authSessionGeneration: 1, clientActivityId: 'fixture',
+			},
+			result: { columns: ['Value'], rows: [[1]], metadata: {} },
+		};
+		assert.strictEqual(sourceSession.beginExecution(terminal), true);
+		assert.ok(sourceSession.stagePublication('fixture-publication', terminal));
+		assert.strictEqual(sourceSession.commitPublication('fixture-publication'), true);
+		const persistedState = sourceLease.owner.overlaySnapshot({
+			sections: [{ id: 'primary_1', type: 'query', linkedQueryPath: path.basename(sourcePath) }],
+		});
+		const rowFreeState = {
+			sections: [{ id: 'primary_1', type: 'query', query: queryText }],
+		};
+		const registry = new KustoResultPersistenceRegistry();
+		let protectedNow = false;
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let latestProjection: any;
+		let heldReloadRequestId = '';
+		let holdReload = true;
+		const posted: any[] = [];
+		let canonicalPolicySnapshot = {
+			clusterKeys: [] as string[], globallyBlocked: false, version: 1,
+			revocationGenerations: { 'cluster.kusto.windows.net': 0 },
+		};
+		const connectionManager = connectionManagerStub({
+			runWithLeaveNoTraceSnapshotLock: async (run: (snapshot: typeof canonicalPolicySnapshot) => unknown) =>
+				await run(canonicalPolicySnapshot),
+		});
+
+		try {
+			fs.writeFileSync(sourcePath, queryText, 'utf8');
+			fs.writeFileSync(sidecarPath, JSON.stringify({ kind: 'kqlx', version: 1, state: persistedState }), 'utf8');
+			prototype.sanitizeSqlLeaveNoTraceStateFresh = async (
+				state: any,
+				onKustoSanitized?: (before: any, after: any, context: any) => void,
+			) => {
+				const sanitized = protectedNow ? {
+					...state,
+					sections: state.sections.map((section: any) => {
+						if (section.id !== 'primary_1') return section;
+						const {
+							resultJson: _resultJson, resultArtifact: _resultArtifact,
+							kustoAccountPartition: _partition,
+							kustoLeaveNoTraceRevision: _revision,
+							selectedResultIndex: _selection, ...clean
+						} = section;
+						return clean;
+					}),
+				} : state;
+				onKustoSanitized?.(state, sanitized, { snapshot: canonicalPolicySnapshot });
+				return sanitized;
+			};
+			prototype.publishSqlLeaveNoTraceStateFresh = async function (
+				this: QueryEditorProvider,
+				state: any,
+				publish: (sanitizedState: any) => Promise<unknown>,
+				onKustoSanitized?: (before: any, after: any, context: any) => void,
+			) {
+				return publish(await (this as any).sanitizeSqlLeaveNoTraceStateFresh(
+					state,
+					onKustoSanitized,
+				));
+			};
+			const provider = new (KqlCompatEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManager, sqlWorkbenchStub(),
+				undefined, undefined, undefined, undefined, registry,
+			) as KqlCompatEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(sourcePath), getText: () => queryText, lineCount: 1,
+				lineAt: () => ({ text: queryText }), eol: vscode.EndOfLine.LF, isDirty: false,
+			} as any;
+			const panel = {
+				webview: {
+					options: {}, postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') latestProjection = message;
+						if (!message?.reloadRequestId) return true;
+						if (holdReload) { heldReloadRequestId = message.reloadRequestId; return true; }
+						await Promise.resolve(receiveHandler?.({
+							type: 'documentReloadResult', requestId: message.reloadRequestId,
+							applied: true, editRevision: Number(message.editRevision || 0),
+						}));
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+				},
+				visible: true, onDidChangeViewState: () => ({ dispose() {} }), onDidDispose: () => ({ dispose() {} }),
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			const projection = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await waitForCondition(() => !!heldReloadRequestId, 'cold compatibility result should await acknowledgement');
+			assert.ok(
+				latestProjection.state.sections[0].resultJson,
+				`cold compatibility projection lost fixture result: ${JSON.stringify(latestProjection.state)}`,
+			);
+			const projectionCountWithCandidate = posted.filter(
+				message => message?.type === 'documentData' && message.ok === true,
+			).length;
+			const owner = registry.get(normalizeWorkbenchUriKey(document.uri));
+			assert.ok(owner && !owner.hasCommittedAttachments());
+			protectedNow = true;
+			canonicalPolicySnapshot = {
+				clusterKeys: ['cluster.kusto.windows.net'], globallyBlocked: true, version: 2,
+				revocationGenerations: { 'cluster.kusto.windows.net': 1 },
+			};
+			holdReload = false;
+			await Promise.resolve(receiveHandler!({
+				type: 'documentReloadResult', requestId: heldReloadRequestId,
+				applied: true, editRevision: Number(latestProjection.editRevision || 0),
+			}));
+			await projection;
+			await waitForCondition(() => {
+				const section = latestProjection?.state?.sections?.find((candidate: any) => candidate.id === 'primary_1');
+				return section && !section.resultJson;
+			}, 'policy conflict retry should project row-free compatibility state');
+			assert.strictEqual(
+				posted.filter(message => message?.type === 'documentData' && message.ok === true).length,
+				projectionCountWithCandidate + 1,
+			);
+			assert.ok(!(owner!.overlaySnapshot(rowFreeState).sections?.[0] as any).resultJson);
+			assert.strictEqual((owner as any).preparedSourceOwnerRevisionByIdentity.size, 0);
+		} finally {
+			sourceLease.release();
+			sourceRegistry.dispose();
+			registry.dispose();
+			prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('fresh compatibility sanitation revokes a same-source Kusto attachment before projection and persistence', async function () {
+		this.timeout(10_000);
+		const prototype = (QueryEditorProvider as any).prototype;
+		const originalSanitize = prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const originalPublish = prototype.publishSqlLeaveNoTraceStateFresh;
+		const originalOnDidSave = vscode.workspace.onDidSaveTextDocument;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-compat-kusto-privacy-owner-'));
+		const sourcePath = path.join(tmpDir, 'privacy-owner.kql');
+		const sidecarPath = `${sourcePath}.json`;
+		const queryText = 'print Value=1';
+		const documentUri = vscode.Uri.file(sourcePath);
+		const resultRegistry = new KustoResultPersistenceRegistry();
+		const seedLease = resultRegistry.acquire(normalizeWorkbenchUriKey(documentUri));
+		const owner = seedLease.owner;
+		const sidecarState = {
+			sections: [{
+				id: 'primary_1', type: 'query', linkedQueryPath: path.basename(sourcePath),
+			}],
+		};
+		const seedSession = owner.openPanel('compat-privacy-seed-panel');
+		seedSession.openSection('primary_1', 'compat-privacy-seed-instance');
+		seedSession.adoptTarget({
+			boxId: 'primary_1', sectionInstanceId: 'compat-privacy-seed-instance', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Db',
+		});
+		const terminal = {
+			type: 'queryResult' as const, engine: 'kusto' as const, boxId: 'primary_1',
+			sectionInstanceId: 'compat-privacy-seed-instance', targetGeneration: 1,
+			executionId: 'compat-privacy-seed-execution', connectionId: 'connection-1', database: 'Db',
+			producer: 'manual' as const, query: queryText, reservationSequence: 1,
+			dispatch: {
+				dispatchAttempt: 1, connectionRevision: 1, leaveNoTraceRevision: 0,
+				connectionIdentityKey: 'https://cluster.kusto.windows.net|authority',
+				clusterEndpoint: 'https://cluster.kusto.windows.net', authorityId: 'authority',
+				accountPartition: 'partition-a', authSessionGeneration: 1,
+				clientActivityId: 'compat-privacy-seed',
+			},
+			result: { columns: ['Value'], rows: [[1]], metadata: {} },
+		};
+		assert.strictEqual(seedSession.beginExecution(terminal), true);
+		assert.ok(seedSession.stagePublication('compat-privacy-seed-publication', terminal));
+		assert.strictEqual(seedSession.commitPublication('compat-privacy-seed-publication'), true);
+		let protectedNow = false;
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
+		const posted: any[] = [];
+		const disposeHandlers: Array<() => void> = [];
+		let canonicalPolicySnapshot = {
+			clusterKeys: [] as string[], globallyBlocked: false, version: 0,
+			revocationGenerations: {} as Record<string, number>,
+		};
+		const connectionManager = connectionManagerStub({
+			runWithLeaveNoTraceSnapshotLock: async (run: (snapshot: typeof canonicalPolicySnapshot) => unknown) =>
+				await run(canonicalPolicySnapshot),
+		});
+
+		try {
+			fs.writeFileSync(sourcePath, queryText, 'utf8');
+			fs.writeFileSync(sidecarPath, JSON.stringify({
+				kind: 'kqlx', version: 1, state: owner.overlaySnapshot(sidecarState),
+			}), 'utf8');
+			prototype.sanitizeSqlLeaveNoTraceStateFresh = async (
+				state: any,
+				onKustoSanitized?: (before: any, after: any, context: any) => void,
+			) => {
+				if (!protectedNow) return state;
+				const sanitized = {
+					...state,
+					sections: state.sections.map((section: any) => {
+						if (section.id !== 'primary_1') return section;
+						const {
+							resultJson: _resultJson,
+							resultArtifact: _resultArtifact,
+							kustoAccountPartition: _accountPartition,
+							kustoLeaveNoTraceRevision: _leaveNoTraceRevision,
+							selectedResultIndex: _selectedResultIndex,
+							...clean
+						} = section;
+						return clean;
+					}),
+				};
+				onKustoSanitized?.(state, sanitized, {
+					snapshot: canonicalPolicySnapshot,
+				});
+				return sanitized;
+			};
+			prototype.publishSqlLeaveNoTraceStateFresh = async function (
+				this: QueryEditorProvider,
+				state: any,
+				publish: (sanitizedState: any) => Promise<unknown>,
+				onKustoSanitized?: (before: any, after: any, context: any) => void,
+			) {
+				return publish(await (this as any).sanitizeSqlLeaveNoTraceStateFresh(
+					state,
+					onKustoSanitized,
+				));
+			};
+			(vscode.workspace as any).onDidSaveTextDocument = (
+				handler: (document: vscode.TextDocument) => unknown,
+			) => {
+				didSaveHandler = handler;
+				return { dispose() {} };
+			};
+			const provider = new (KqlCompatEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManager, sqlWorkbenchStub(),
+				undefined, undefined, undefined, undefined, resultRegistry,
+			) as KqlCompatEditorProvider;
+			const document = {
+				uri: documentUri, getText: () => queryText, lineCount: 1,
+				lineAt: () => ({ text: queryText }), eol: vscode.EndOfLine.LF, isDirty: false,
+			} as any;
+			const panel = {
+				webview: {
+					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = handler;
+						return { dispose() {} };
+					},
+				},
+				visible: true,
+				onDidChangeViewState: () => ({ dispose() {} }),
+				onDidDispose: (handler: () => void) => {
+					disposeHandlers.push(handler);
+					return { dispose() {} };
+				},
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			seedLease.release();
+			let projection = posted.filter(message => message?.type === 'documentData' && message.ok === true).at(-1);
+			assert.ok(projection?.state?.sections?.[0]?.resultJson);
+			protectedNow = true;
+			canonicalPolicySnapshot = {
+				clusterKeys: ['cluster.kusto.windows.net'], globallyBlocked: true, version: 1,
+				revocationGenerations: { 'cluster.kusto.windows.net': 1 },
+			};
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			projection = posted.filter(message => message?.type === 'documentData' && message.ok === true).at(-1);
+			assert.ok(!projection?.state?.sections?.[0]?.resultJson);
+			assert.strictEqual(owner.hasCommittedAttachments(), false);
+			assert.ok(!(owner.overlaySnapshot(sidecarState).sections?.[0] as any).resultJson);
+
+			await Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
+				type: 'persistDocument', snapshotId: 'compat-privacy-persist',
+				sourceGeneration: projection.sourceGeneration, editRevision: 1,
+				state: projection.state,
+			})));
+			assert.ok(posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'compat-privacy-persist'));
+			assert.ok(didSaveHandler);
+			await Promise.resolve(didSaveHandler!(document));
+			await waitForCondition(
+				() => !fs.readFileSync(sidecarPath, 'utf8').includes('resultJson'),
+				'compatibility privacy sanitation should remove sidecar result bytes',
+			);
+			for (const dispose of disposeHandlers) dispose();
+		} finally {
+			seedLease.release();
+			resultRegistry.dispose();
+			prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+			(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSave;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});
@@ -12930,7 +13481,7 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
-	test('compatibility initialization failure settles an already disposed panel', async () => {
+	test('compatibility panel disposal cancels a never-settling initialization', async () => {
 		const prototype = (QueryEditorProvider as any).prototype;
 		const originalInitialize = prototype.initializeWebviewPanel;
 		const variants = [KqlCompatEditorProvider, SqlCompatEditorProvider] as const;
@@ -12940,10 +13491,7 @@ suite('Sidecar .kql.json strategy', () => {
 			for (const [index, Provider] of variants.entries()) {
 				let initializationStarted!: () => void;
 				const started = new Promise<void>(resolve => { initializationStarted = resolve; });
-				let rejectInitialization!: () => void;
-				const initialization = new Promise<void>((_resolve, reject) => {
-					rejectInitialization = () => reject(new Error(`compat init failed ${index}`));
-				});
+				const initialization = new Promise<void>(() => undefined);
 				prototype.initializeWebviewPanel = async () => {
 					initializationStarted();
 					await initialization;
@@ -12979,8 +13527,10 @@ suite('Sidecar .kql.json strategy', () => {
 				const opening = provider.resolveCustomTextEditor(document, panel, {} as any);
 				await started;
 				for (const dispose of disposeHandlers) dispose();
-				rejectInitialization();
-				await assert.rejects(opening, new RegExp(`compat init failed ${index}`));
+				assert.strictEqual(await Promise.race([
+					opening.then(() => true),
+					new Promise<false>(resolve => setTimeout(() => resolve(false), 250)),
+				]), true, `compatibility initialization ${index} should cancel on disposal`);
 
 				assert.strictEqual(inboundDisposals, 1);
 				assert.strictEqual(panelSubscriptionDisposals, 2);

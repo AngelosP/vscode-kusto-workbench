@@ -129,6 +129,7 @@ function createHarness(options: Partial<HarnessBehavior & { sourceText: string }
 		requestSourceReload: async () => true,
 		ensureInitialProjection: async () => true,
 		completeReload: () => true,
+		waitForAcknowledgedProjection: async () => undefined,
 		admitPersist: admission => {
 			calls.push(`admit:${String(admission.sourceGeneration)}:${String(admission.editRevision)}`);
 			return behavior.admitPersist;
@@ -252,6 +253,19 @@ async function observeRejection(result: Promise<void>): Promise<Error> {
 		error => error instanceof Error ? error : new Error(String(error)),
 	);
 }
+
+describe('CompatSidecarPersistCoordinator authority capture ordering', () => {
+	it('waits for the acknowledged generation before capturing mutable owner state', async () => {
+		const harness = createHarness();
+		harness.projection.waitForAcknowledgedProjection = async generation => {
+			harness.calls.push(`wait:${String(generation)}`);
+		};
+
+		await expect(harness.coordinator.persist(snapshot())).resolves.toMatchObject({ terminal: 'applied' });
+
+		expect(harness.calls.indexOf('wait:1')).toBeLessThan(harness.calls.indexOf('capture-state'));
+	});
+});
 
 describe('CompatSidecarPersistCoordinator', () => {
 	it('ignores unknown and already-settled final requests before every application effect', async () => {

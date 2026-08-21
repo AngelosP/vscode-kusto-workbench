@@ -27,6 +27,19 @@ import type { KustoExecutionTerminal } from './kustoExecutionCoordinator.js';
 type JsonRecord = Record<string, unknown>;
 type ResultState = { sections?: unknown[] };
 type KustoResultTerminal = Extract<KustoExecutionTerminal, Readonly<{ result: unknown }>>;
+type KustoPolicySnapshot = Readonly<{
+	clusterKeys: readonly string[];
+	globallyBlocked: boolean;
+	version?: number;
+	revocationGenerations?: Readonly<Record<string, number>>;
+}>;
+
+export type KustoCanonicalSourceAdmission<T> = Readonly<{
+	projectedState: T;
+	commit(): boolean;
+	discard(): void;
+	abandonRetry(): void;
+}>;
 
 export type KustoResultArtifactAssignment = PersistedResultArtifactV1;
 
@@ -92,6 +105,12 @@ type StagedPublication = Readonly<{
 }>;
 
 type ActiveExecution = Readonly<KustoExecutionRequestIdentity & { reservationSequence: number }>;
+type PreparedSourceObservation = {
+	ownerMutationRevision: number;
+	activeAdmissions: number;
+	nextRetryToken: number;
+	retryClaims: Map<number, string>;
+};
 
 const MAX_OWNER_HISTORY = 256;
 
@@ -105,6 +124,15 @@ const attachmentKeys = [
 
 function isRecord(value: unknown): value is JsonRecord {
 	return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function cloneResultState<T extends ResultState>(state: T): T | undefined {
+	try {
+		const serialized = JSON.stringify(state);
+		return serialized ? JSON.parse(serialized) as T : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 function normalize(value: unknown): string {
@@ -219,26 +247,29 @@ function removeAttachmentTargetFields(record: JsonRecord): JsonRecord {
 	return clone;
 }
 
+function withCommittedAttachment(record: JsonRecord, committed: ResultAttachment): JsonRecord {
+	return {
+		...removeAttachmentTargetFields(removeAttachmentFields(record)),
+		...(committed.clusterUrl ? { clusterUrl: committed.clusterUrl } : {}),
+		...(committed.authorityId ? { authorityId: committed.authorityId } : {}),
+		...(committed.connectionId ? { connectionIdHint: committed.connectionId } : {}),
+		...(committed.database ? { database: committed.database } : {}),
+		resultJson: committed.resultJson,
+		resultArtifact: committed.resultArtifact,
+		kustoAccountPartition: committed.kustoAccountPartition,
+		kustoLeaveNoTraceRevision: committed.kustoLeaveNoTraceRevision,
+		...(committed.selectedResultIndex > 0
+			? { selectedResultIndex: committed.selectedResultIndex }
+			: {}),
+	};
+}
+
 function attachmentMatchesTarget(
 	attachment: ResultAttachment,
 	target: KustoSectionLifecycleOwner,
 ): boolean {
 	if (normalize(target.connectionId) !== attachment.connectionId
 		|| normalize(target.database).toLowerCase() !== attachment.database.toLowerCase()) return false;
-	if (Number.isSafeInteger(target.connectionRevision)
-		&& target.connectionRevision !== attachment.connectionRevision) return false;
-	const connectionIdentityKey = normalize(target.connectionIdentityKey);
-	return !connectionIdentityKey || connectionIdentityKey === attachment.connectionIdentityKey;
-}
-
-function attachmentMatchesPartialTarget(
-	attachment: ResultAttachment,
-	target: KustoSectionLifecycleOwner,
-): boolean {
-	const connectionId = normalize(target.connectionId);
-	const database = normalize(target.database);
-	if ((connectionId && connectionId !== attachment.connectionId)
-		|| (database && database.toLowerCase() !== attachment.database.toLowerCase())) return false;
 	if (Number.isSafeInteger(target.connectionRevision)
 		&& target.connectionRevision !== attachment.connectionRevision) return false;
 	const connectionIdentityKey = normalize(target.connectionIdentityKey);
@@ -257,6 +288,17 @@ function recordTargetConflictsAttachment(record: JsonRecord, attachment: ResultA
 		return normalize(record.authorityId).toLowerCase() !== attachment.authorityId.toLowerCase();
 	}
 	return false;
+}
+
+function recordMatchesAttachment(record: JsonRecord, attachment: ResultAttachment): boolean {
+	if (record.resultJson !== attachment.resultJson
+		|| record.kustoAccountPartition !== attachment.kustoAccountPartition
+		|| Number(record.kustoLeaveNoTraceRevision) !== attachment.kustoLeaveNoTraceRevision) return false;
+	const artifact = isRecord(record.resultArtifact) ? record.resultArtifact : undefined;
+	return artifact?.version === attachment.resultArtifact.version
+		&& artifact.artifactId === attachment.resultArtifact.artifactId
+		&& Number(artifact.revision) === attachment.resultArtifact.revision
+		&& artifact.sourceBoxId === attachment.resultArtifact.sourceBoxId;
 }
 
 function persistedArtifactMatchesRecordTarget(
@@ -302,18 +344,42 @@ function isSqlDerivedQuery(record: JsonRecord, types: ReadonlyMap<string, string
 	return !!sourceBoxId && types.get(sourceBoxId) === 'sql';
 }
 
+export function getRemovedKustoResultSectionIds(before: ResultState, after: ResultState): string[] {
+	const beforeSections = Array.isArray(before.sections) ? before.sections : [];
+	const afterSections = Array.isArray(after.sections) ? after.sections : [];
+	const beforeTypes = sectionTypes(before);
+	const afterById = new Map(afterSections
+		.filter(isRecord)
+		.map(section => [normalize(section.id), section] as const)
+		.filter(([id]) => !!id));
+	return beforeSections.flatMap(section => {
+		if (!isRecord(section) || canonicalSectionKind(section.type) !== 'query'
+			|| isSqlDerivedQuery(section, beforeTypes)
+			|| typeof section.resultJson !== 'string' || !section.resultJson) return [];
+		const boxId = normalize(section.id);
+		const current = afterById.get(boxId);
+		return boxId && (!current || typeof current.resultJson !== 'string' || !current.resultJson)
+			? [boxId]
+			: [];
+	});
+}
+
 export class KustoResultPersistenceOwner {
 	private readonly panels = new Map<string, KustoResultPanelSession>();
 	private readonly canonicalSections = new Map<string, CanonicalSectionState>();
 	private readonly committedByBoxId = new Map<string, ResultAttachment>();
+	private readonly attachmentOwnerPanelByBoxId = new Map<string, string>();
 	private readonly stagedByPublicationId = new Map<string, StagedPublication>();
 	private readonly assignmentByExecution = new Map<string, KustoResultArtifactAssignment>();
 	private readonly nextRevisionByBoxId = new Map<string, number>();
 	private readonly selectedPreferenceByBoxId = new Map<string, number>();
 	private readonly ownedSourceFingerprints = new Map<string, number>();
+	private readonly preparedSourceOwnerRevisionByIdentity = new Map<string, PreparedSourceObservation>();
 	private ownerMutationRevision = 0;
+	private canonicalAuthorityEstablished = false;
 	private lastCanonicalSourceRevision = '';
 	private lastCanonicalSourceFingerprint = '';
+	private lastPolicySnapshotFingerprint: string | undefined;
 
 	constructor(
 		readonly documentKey: string,
@@ -335,18 +401,40 @@ export class KustoResultPersistenceOwner {
 		for (const [publicationId, staged] of [...this.stagedByPublicationId]) {
 			if (staged.panelId === panelId) this.stagedByPublicationId.delete(publicationId);
 		}
+		for (const [sourceIdentity, observation] of this.preparedSourceOwnerRevisionByIdentity) {
+			for (const [token, claimPanelId] of observation.retryClaims) {
+				if (claimPanelId === panelId) observation.retryClaims.delete(token);
+			}
+			if (observation.activeAdmissions <= 0 && observation.retryClaims.size === 0) {
+				this.preparedSourceOwnerRevisionByIdentity.delete(sourceIdentity);
+			}
+		}
 	}
 
 	admitCanonicalSource(
 		fingerprintInput: unknown,
 		state: ResultState,
 		sourceRevisionInput: unknown = fingerprintInput,
+		panelIdInput?: unknown,
 	): void {
 		const fingerprint = normalize(fingerprintInput);
 		const sourceRevision = normalize(sourceRevisionInput);
-		if (!fingerprint || !sourceRevision
-			|| (sourceRevision === this.lastCanonicalSourceRevision
-				&& fingerprint === this.lastCanonicalSourceFingerprint)) return;
+		const panelId = normalize(panelIdInput);
+		if (!fingerprint || !sourceRevision || !Array.isArray(state.sections)) return;
+		this.canonicalAuthorityEstablished = true;
+		if (sourceRevision === this.lastCanonicalSourceRevision
+			&& fingerprint === this.lastCanonicalSourceFingerprint) {
+			if (panelId) {
+				for (const value of state.sections) {
+					if (!isRecord(value) || canonicalSectionKind(value.type) !== 'query') continue;
+					const boxId = normalize(value.id);
+					if (boxId && this.committedByBoxId.has(boxId)) {
+						this.attachmentOwnerPanelByBoxId.set(boxId, panelId);
+					}
+				}
+			}
+			return;
+		}
 		this.lastCanonicalSourceRevision = sourceRevision;
 		this.lastCanonicalSourceFingerprint = fingerprint;
 		const ownedMutationRevision = this.ownedSourceFingerprints.get(fingerprint);
@@ -481,8 +569,194 @@ export class KustoResultPersistenceOwner {
 			if (nextIds.has(boxId)) continue;
 			this.canonicalSections.delete(boxId);
 			this.committedByBoxId.delete(boxId);
+			this.attachmentOwnerPanelByBoxId.delete(boxId);
 			this.selectedPreferenceByBoxId.delete(boxId);
 		}
+		for (const boxId of nextIds) {
+			if (!this.committedByBoxId.has(boxId)) this.attachmentOwnerPanelByBoxId.delete(boxId);
+		}
+		if (panelId) {
+			for (const boxId of nextIds) {
+				if (this.committedByBoxId.has(boxId)) this.attachmentOwnerPanelByBoxId.set(boxId, panelId);
+			}
+		}
+	}
+
+	prepareCanonicalSource<T extends ResultState>(
+		fingerprintInput: unknown,
+		state: T,
+		sourceRevisionInput: unknown = fingerprintInput,
+		panelIdInput?: unknown,
+	): KustoCanonicalSourceAdmission<T> | undefined {
+		const fingerprint = normalize(fingerprintInput);
+		const sourceRevision = normalize(sourceRevisionInput);
+		const panelId = normalize(panelIdInput);
+		if (!fingerprint || !sourceRevision || !Array.isArray(state.sections)) return undefined;
+		if (panelId && !this.panels.has(panelId)) return undefined;
+		const sourceIdentity = `${sourceRevision}\u0000${fingerprint}`;
+		this.retireOtherPanelRetryClaims(panelId, sourceIdentity);
+		let observation = this.preparedSourceOwnerRevisionByIdentity.get(sourceIdentity);
+		if (!observation) {
+			observation = {
+				ownerMutationRevision: this.ownerMutationRevision,
+				activeAdmissions: 0,
+				nextRetryToken: 0,
+				retryClaims: new Map(),
+			};
+			this.preparedSourceOwnerRevisionByIdentity.set(sourceIdentity, observation);
+		}
+		observation.activeAdmissions++;
+		const releaseObservation = () => {
+			observation.activeAdmissions--;
+			if (observation.activeAdmissions <= 0 && observation.retryClaims.size === 0
+				&& this.preparedSourceOwnerRevisionByIdentity.get(sourceIdentity) === observation) {
+				this.preparedSourceOwnerRevisionByIdentity.delete(sourceIdentity);
+			}
+		};
+		let candidateState = cloneResultState(state);
+		if (candidateState && observation.ownerMutationRevision !== this.ownerMutationRevision) {
+			candidateState = this.rebaseCandidateOnCurrentOwner(candidateState);
+		}
+		const previewState = candidateState ? cloneResultState(candidateState) : undefined;
+		if (!candidateState || !previewState || !Array.isArray(candidateState.sections)) {
+			releaseObservation();
+			return undefined;
+		}
+		const expectedOwnerMutationRevision = this.ownerMutationRevision;
+		const preview = this.cloneForCanonicalPreview();
+		preview.admitCanonicalSource(fingerprint, previewState, sourceRevision);
+		for (const [boxId, attachment] of preview.committedByBoxId) {
+			if (!this.currentTargetsAllowAttachment(panelId, boxId, attachment)) preview.revokeBox(boxId);
+		}
+		const projectedState = preview.overlaySnapshot(previewState);
+		const openingAttachments = new Map(preview.committedByBoxId);
+		candidateState = cloneResultState(projectedState);
+		if (!candidateState) {
+			releaseObservation();
+			return undefined;
+		}
+		let committed = false;
+		let conflictRetryToken: number | undefined;
+		return Object.freeze({
+			projectedState,
+			commit: () => {
+				if (committed) return false;
+				committed = true;
+				observation.activeAdmissions--;
+				if (this.ownerMutationRevision !== expectedOwnerMutationRevision
+					|| !this.preparedAttachmentsMatchCurrentTargets(panelId, openingAttachments)) {
+					conflictRetryToken = ++observation.nextRetryToken;
+					observation.retryClaims.set(conflictRetryToken, panelId);
+					return false;
+				}
+				this.admitCanonicalSource(fingerprint, candidateState, sourceRevision, panelId);
+				this.retireOtherPanelRetryClaims(panelId, sourceIdentity);
+				for (const [token, claimPanelId] of observation.retryClaims) {
+					if (claimPanelId === panelId) observation.retryClaims.delete(token);
+				}
+				if (observation.activeAdmissions <= 0 && observation.retryClaims.size === 0
+					&& this.preparedSourceOwnerRevisionByIdentity.get(sourceIdentity) === observation) {
+					this.preparedSourceOwnerRevisionByIdentity.delete(sourceIdentity);
+				}
+				return true;
+			},
+			discard: () => {
+				if (!committed) {
+					releaseObservation();
+				}
+				committed = true;
+			},
+			abandonRetry: () => {
+				if (conflictRetryToken === undefined
+					|| this.preparedSourceOwnerRevisionByIdentity.get(sourceIdentity) !== observation) return;
+				observation.retryClaims.delete(conflictRetryToken);
+				if (observation.activeAdmissions <= 0 && observation.retryClaims.size === 0) {
+					this.preparedSourceOwnerRevisionByIdentity.delete(sourceIdentity);
+				}
+			},
+		});
+	}
+
+	private retireOtherPanelRetryClaims(panelId: string, retainedSourceIdentity: string): void {
+		if (!panelId) return;
+		for (const [sourceIdentity, observation] of this.preparedSourceOwnerRevisionByIdentity) {
+			if (sourceIdentity === retainedSourceIdentity) continue;
+			for (const [token, claimPanelId] of observation.retryClaims) {
+				if (claimPanelId === panelId) observation.retryClaims.delete(token);
+			}
+			if (observation.activeAdmissions <= 0 && observation.retryClaims.size === 0) {
+				this.preparedSourceOwnerRevisionByIdentity.delete(sourceIdentity);
+			}
+		}
+	}
+
+	private currentTargetsAllowAttachment(
+		panelId: string,
+		boxId: string,
+		attachment: ResultAttachment,
+	): boolean {
+		const sessions = panelId ? [this.panels.get(panelId)] : [...this.panels.values()];
+		if (panelId && !sessions[0]) return false;
+		for (const session of sessions) {
+			if (!session) continue;
+			const target = session.getTarget(boxId);
+			if (!target) continue;
+			const unresolved = target.targetGeneration === 0
+				&& !normalize(target.connectionId)
+				&& !normalize(target.database);
+			if (!unresolved && !attachmentMatchesTarget(attachment, target)) return false;
+		}
+		return true;
+	}
+
+	private preparedAttachmentsMatchCurrentTargets(
+		panelId: string,
+		attachments: ReadonlyMap<string, ResultAttachment>,
+	): boolean {
+		for (const [boxId, attachment] of attachments) {
+			if (!this.currentTargetsAllowAttachment(panelId, boxId, attachment)) return false;
+		}
+		return true;
+	}
+
+	private cloneForCanonicalPreview(): KustoResultPersistenceOwner {
+		const preview = new KustoResultPersistenceOwner(this.documentKey, this.options);
+		preview.canonicalAuthorityEstablished = this.canonicalAuthorityEstablished;
+		preview.ownerMutationRevision = this.ownerMutationRevision;
+		preview.lastCanonicalSourceRevision = this.lastCanonicalSourceRevision;
+		preview.lastCanonicalSourceFingerprint = this.lastCanonicalSourceFingerprint;
+		for (const [key, value] of this.canonicalSections) preview.canonicalSections.set(key, value);
+		for (const [key, value] of this.committedByBoxId) preview.committedByBoxId.set(key, value);
+		for (const [key, value] of this.attachmentOwnerPanelByBoxId) {
+			preview.attachmentOwnerPanelByBoxId.set(key, value);
+		}
+		for (const [key, value] of this.assignmentByExecution) preview.assignmentByExecution.set(key, value);
+		for (const [key, value] of this.nextRevisionByBoxId) preview.nextRevisionByBoxId.set(key, value);
+		for (const [key, value] of this.selectedPreferenceByBoxId) preview.selectedPreferenceByBoxId.set(key, value);
+		for (const [key, value] of this.ownedSourceFingerprints) preview.ownedSourceFingerprints.set(key, value);
+		return preview;
+	}
+
+	private rebaseCandidateOnCurrentOwner<T extends ResultState>(state: T): T {
+		if (!Array.isArray(state.sections) || !this.canonicalAuthorityEstablished) return state;
+		const types = sectionTypes(state);
+		const sections = state.sections.map(value => {
+			if (!isRecord(value) || canonicalSectionKind(value.type) !== 'query'
+				|| isSqlDerivedQuery(value, types)) return value;
+			const boxId = normalize(value.id);
+			if (!boxId) return value;
+			const committed = this.committedByBoxId.get(boxId);
+			if (committed && !recordTargetConflictsAttachment(value, committed)) {
+				return withCommittedAttachment(value, committed);
+			}
+			const canonical = this.canonicalSections.get(boxId);
+			if (canonical?.kind === 'managed' && !canonical.attachment) return removeAttachmentFields(value);
+			if (canonical?.kind === 'inert') {
+				return { ...removeAttachmentFields(value), ...canonical.fields };
+			}
+			return value;
+		});
+		return { ...state, sections };
 	}
 
 	markOwnedSourceFingerprint(fingerprintInput: unknown): void {
@@ -495,7 +769,7 @@ export class KustoResultPersistenceOwner {
 	}
 
 	overlaySnapshot<T extends ResultState>(state: T): T {
-		if (!Array.isArray(state.sections)) return state;
+		if (!Array.isArray(state.sections) || !this.canonicalAuthorityEstablished) return state;
 		const types = sectionTypes(state);
 		let changed = false;
 		const sections = state.sections.map(value => {
@@ -508,20 +782,7 @@ export class KustoResultPersistenceOwner {
 			const committed = this.committedByBoxId.get(boxId);
 			let next = base;
 			if (committed) {
-				next = {
-					...removeAttachmentTargetFields(base),
-					...(committed.clusterUrl ? { clusterUrl: committed.clusterUrl } : {}),
-					...(committed.authorityId ? { authorityId: committed.authorityId } : {}),
-					...(committed.connectionId ? { connectionIdHint: committed.connectionId } : {}),
-					...(committed.database ? { database: committed.database } : {}),
-					resultJson: committed.resultJson,
-					resultArtifact: committed.resultArtifact,
-					kustoAccountPartition: committed.kustoAccountPartition,
-					kustoLeaveNoTraceRevision: committed.kustoLeaveNoTraceRevision,
-					...(committed.selectedResultIndex > 0
-						? { selectedResultIndex: committed.selectedResultIndex }
-						: {}),
-				};
+				next = withCommittedAttachment(value, committed);
 			} else if (canonical?.kind === 'inert') {
 				next = { ...base, ...canonical.fields };
 			}
@@ -529,6 +790,61 @@ export class KustoResultPersistenceOwner {
 			return next;
 		});
 		return changed ? { ...state, sections } : state;
+	}
+
+	revokeSanitizedAttachments(before: ResultState, after: ResultState): void {
+		const removedIds = getRemovedKustoResultSectionIds(before, after);
+		if (removedIds.length === 0 || !Array.isArray(before.sections)) return;
+		const revisionBeforeRemoval = this.ownerMutationRevision;
+		const beforeById = new Map(before.sections
+			.filter(isRecord)
+			.map(section => [normalize(section.id), section] as const)
+			.filter(([id]) => !!id));
+		for (const boxId of removedIds) {
+			const attachment = this.committedByBoxId.get(boxId);
+			const canonical = this.canonicalSections.get(boxId);
+			const record = beforeById.get(boxId);
+			const exactCommitted = !!attachment && !!record && recordMatchesAttachment(record, attachment);
+			const exactInert = canonical?.kind === 'inert' && !!record
+				&& JSON.stringify(attachmentFields(record)) === JSON.stringify(canonical.fields);
+			if (exactCommitted || exactInert) this.revokeBox(boxId);
+		}
+		if (this.ownerMutationRevision === revisionBeforeRemoval) this.ownerMutationRevision++;
+	}
+
+	revokePolicyIncompatibleAttachments(snapshot: KustoPolicySnapshot): void {
+		const protectedClusters = new Set(snapshot.clusterKeys.map(kustoClusterKey).filter(Boolean));
+		const policyFingerprint = JSON.stringify({
+			version: Number(snapshot.version ?? 0),
+			globallyBlocked: snapshot.globallyBlocked,
+			clusterKeys: [...protectedClusters].sort(),
+			revocationGenerations: Object.entries(snapshot.revocationGenerations ?? {})
+				.map(([cluster, revision]) => [kustoClusterKey(cluster), Number(revision)] as const)
+				.filter(([cluster]) => !!cluster)
+				.sort(([left], [right]) => left.localeCompare(right)),
+		});
+		if (this.lastPolicySnapshotFingerprint === undefined) {
+			this.lastPolicySnapshotFingerprint = policyFingerprint;
+		} else if (this.lastPolicySnapshotFingerprint !== policyFingerprint) {
+			this.lastPolicySnapshotFingerprint = policyFingerprint;
+			this.ownerMutationRevision++;
+		}
+		const incompatible = (attachment: ResultAttachment): boolean => {
+			const clusterKey = kustoClusterKey(attachment.clusterUrl);
+			const currentRevision = Number(snapshot.revocationGenerations?.[clusterKey] ?? 0);
+			return snapshot.globallyBlocked
+				|| (!!clusterKey && protectedClusters.has(clusterKey))
+				|| !Number.isSafeInteger(currentRevision)
+				|| currentRevision !== attachment.kustoLeaveNoTraceRevision;
+		};
+		for (const [boxId, attachment] of [...this.committedByBoxId]) {
+			if (incompatible(attachment)) this.revokeBox(boxId);
+		}
+		for (const [publicationId, staged] of [...this.stagedByPublicationId]) {
+			if (staged.attachment && incompatible(staged.attachment)) {
+				this.stagedByPublicationId.delete(publicationId);
+			}
+		}
 	}
 
 	stage(panelId: string, publicationId: string, terminalInput: unknown): KustoAssignedResultTerminal | undefined {
@@ -618,9 +934,11 @@ export class KustoResultPersistenceOwner {
 		if (staged.attachment) {
 			this.ownerMutationRevision++;
 			this.committedByBoxId.set(staged.boxId, staged.attachment);
+			this.attachmentOwnerPanelByBoxId.set(staged.boxId, panelId);
 			this.canonicalSections.set(staged.boxId, Object.freeze({ kind: 'managed', attachment: staged.attachment }));
 			this.selectedPreferenceByBoxId.set(staged.boxId, staged.attachment.selectedResultIndex);
 		}
+		this.canonicalAuthorityEstablished = true;
 		const executionId = normalize(staged.terminal.executionId);
 		if (executionId) {
 			setBounded(
@@ -640,6 +958,7 @@ export class KustoResultPersistenceOwner {
 	clearForExecution(boxId: string): void {
 		this.ownerMutationRevision++;
 		this.committedByBoxId.delete(boxId);
+		this.attachmentOwnerPanelByBoxId.delete(boxId);
 		this.canonicalSections.set(boxId, Object.freeze({ kind: 'managed' }));
 		for (const [publicationId, staged] of [...this.stagedByPublicationId]) {
 			if (staged.boxId === boxId) this.stagedByPublicationId.delete(publicationId);
@@ -652,6 +971,8 @@ export class KustoResultPersistenceOwner {
 	}
 
 	revokeConnections(connectionIds: ReadonlySet<string>): void {
+		if (connectionIds.size === 0) return;
+		const revisionBeforeRevocation = this.ownerMutationRevision;
 		for (const [boxId, attachment] of [...this.committedByBoxId]) {
 			if (connectionIds.has(attachment.connectionId)) this.revokeBox(boxId);
 		}
@@ -660,6 +981,7 @@ export class KustoResultPersistenceOwner {
 				this.stagedByPublicationId.delete(publicationId);
 			}
 		}
+		if (this.ownerMutationRevision === revisionBeforeRevocation) this.ownerMutationRevision++;
 	}
 
 	select(panelId: string, request: KustoResultSelectionRequest): KustoResultSelectionResponse {
@@ -699,9 +1021,11 @@ export class KustoResultPersistenceOwner {
 		return !!attachment && attachmentMatchesTarget(attachment, target);
 	}
 
-	matchesCommittedPartialTarget(boxIdInput: unknown, target: KustoSectionLifecycleOwner): boolean {
-		const attachment = this.committedByBoxId.get(normalize(boxIdInput));
-		return !!attachment && attachmentMatchesPartialTarget(attachment, target);
+	canPanelRevokeAttachment(panelId: string, boxId: string): boolean {
+		const ownerPanelId = this.attachmentOwnerPanelByBoxId.get(boxId);
+		if (ownerPanelId) return ownerPanelId === panelId;
+		const panelsWithTarget = [...this.panels.values()].filter(session => !!session.getTarget(boxId));
+		return panelsWithTarget.length === 1 && panelsWithTarget[0]?.panelId === panelId;
 	}
 
 	hasCommittedAttachments(): boolean {
@@ -709,7 +1033,7 @@ export class KustoResultPersistenceOwner {
 	}
 
 	hasCanonicalResultState(): boolean {
-		return this.canonicalSections.size > 0;
+		return this.canonicalAuthorityEstablished;
 	}
 }
 
@@ -750,9 +1074,6 @@ export class KustoResultPanelSession {
 			const initialAdoption = current.targetGeneration === 0
 				&& !normalize(current.connectionId)
 				&& !normalize(current.database);
-			const currentIncomplete = !normalize(current.connectionId) || !normalize(current.database);
-			const targetIncomplete = !normalize(target.connectionId) || !normalize(target.database);
-			const completingStartupTarget = currentIncomplete && !targetIncomplete;
 			const physicalEnrichment = target.targetGeneration === current.targetGeneration + 1
 				&& normalize(target.connectionId) === normalize(current.connectionId)
 				&& normalize(target.database).toLowerCase() === normalize(current.database).toLowerCase()
@@ -763,13 +1084,10 @@ export class KustoResultPanelSession {
 				&& Number.isSafeInteger(target.connectionRevision)
 				&& !!normalize(target.connectionIdentityKey)
 				&& (current.connectionRevision === undefined || !normalize(current.connectionIdentityKey));
-			const compatiblePartialStartupTarget = currentIncomplete && targetIncomplete
-				&& this.owner.matchesCommittedPartialTarget(target.boxId, target);
-			const shouldRevoke = !compatiblePartialStartupTarget && (
-				!this.owner.matchesCommittedTarget(target.boxId, target)
-				|| (!initialAdoption && !physicalEnrichment && !completingStartupTarget)
-			);
-			if (shouldRevoke) {
+			const freshInitialAdoption = initialAdoption && !this.owner.hasCanonicalResultState();
+			if (this.owner.canPanelRevokeAttachment(this.panelId, target.boxId)
+				&& ((!freshInitialAdoption && !this.owner.matchesCommittedTarget(target.boxId, target))
+				|| (!initialAdoption && !physicalEnrichment))) {
 				this.owner.revokeBox(target.boxId);
 			}
 			this.activeByBoxId.delete(target.boxId);
@@ -788,7 +1106,9 @@ export class KustoResultPanelSession {
 		if (!current || current.sectionInstanceId !== normalize(sectionInstanceIdInput)) return false;
 		this.targets.delete(boxId);
 		this.activeByBoxId.delete(boxId);
-		if (!preserveResultAttachment) this.owner.revokeBox(boxId);
+		if (!preserveResultAttachment && this.owner.canPanelRevokeAttachment(this.panelId, boxId)) {
+			this.owner.revokeBox(boxId);
+		}
 		return true;
 	}
 
@@ -800,6 +1120,8 @@ export class KustoResultPanelSession {
 			|| target.targetGeneration !== execution.targetGeneration
 			|| normalize(target.connectionId) !== execution.connectionId
 			|| normalize(target.database).toLowerCase() !== execution.database.toLowerCase()) return false;
+		if (this.owner.getCommittedSummary(execution.boxId)
+			&& !this.owner.canPanelRevokeAttachment(this.panelId, execution.boxId)) return false;
 		this.owner.clearForExecution(execution.boxId);
 		this.activeByBoxId.set(execution.boxId, Object.freeze({ ...execution }));
 		return true;

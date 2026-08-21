@@ -5,7 +5,10 @@ import * as path from 'path';
 
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
-import { KustoResultPersistenceRegistry } from './kustoResultPersistenceOwner';
+import {
+	KustoResultPersistenceRegistry,
+	type KustoCanonicalSourceAdmission,
+} from './kustoResultPersistenceOwner';
 import { hasDeferredLegacyKustoResults } from './persistedResultSanitizationApplicationHandler';
 import { hasSqlOwnedDocumentState } from './kqlxEditorProvider';
 import type { SqlWorkbenchService } from './sql/sqlWorkbenchService';
@@ -17,6 +20,7 @@ import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTyp
 import { perfBegin, perfMark } from './perfTrace';
 import { getWorkbenchLogger } from './workbenchLogger';
 import { createFileOpenTrace } from './fileOpenTrace';
+import { kustoLeaveNoTracePolicyFingerprint } from './kustoLeaveNoTracePolicyStore';
 import { isMainWebviewCorrelatedReply, MainWebviewStartupGateway } from './mainWebviewStartupGateway';
 import { addableSectionKindsForDocument, canonicalAddableSectionKind, defaultSectionKindForDocument } from '../shared/documentSectionCapabilities';
 import {
@@ -260,6 +264,8 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 
 		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
 		let outerDisposed = false;
+		let signalOuterDisposal!: () => void;
+		const outerDisposalSignal = new Promise<void>(resolve => { signalOuterDisposal = resolve; });
 		const viewSessionId = crypto.randomUUID();
 		const compatibilityPersistence = Object.freeze({
 			protocolVersion: COMPATIBILITY_PERSISTENCE_PROTOCOL_VERSION,
@@ -316,6 +322,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		queryEditor.setMessageTransport(message => startupGateway.postMessage(message));
 		const outerDisposalSubscription = webviewPanel.onDidDispose(() => {
 			outerDisposed = true;
+			signalOuterDisposal();
 			void closeCoordinator.disposePanel();
 		});
 		const subscriptions: vscode.Disposable[] = [startupGateway, outerDisposalSubscription];
@@ -323,12 +330,26 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		try {
 		perfMark('host.kqlCompat.initializeWebview.start');
 		fileOpenTrace.mark('initializeWebviewPanel.start');
-		await queryEditor.initializeWebviewPanel(webviewPanel, {
+		const initialization = queryEditor.initializeWebviewPanel(webviewPanel, {
 			registerMessageHandler: false,
 			registerDisposalHandler: false,
 			initialDocumentLoading: true,
 			compatibilityPersistence,
-		});
+		}).then(
+			() => ({ kind: 'initialized' as const }),
+			error => ({ kind: 'error' as const, error }),
+		);
+		const initializationOutcome = await Promise.race([
+			initialization,
+			outerDisposalSignal.then(() => ({ kind: 'disposed' as const })),
+		]);
+		if (initializationOutcome.kind === 'disposed') {
+			try { queryEditor.disposePanel(webviewPanel); } catch { /* continue compatibility cleanup */ }
+			releaseKustoResultLease();
+			await closeCoordinator.failInitialization({ gateway: startupGateway, subscriptions });
+			return;
+		}
+		if (initializationOutcome.kind === 'error') throw initializationOutcome.error;
 		perfMark('host.kqlCompat.initializeWebview.done');
 		fileOpenTrace.mark('initializeWebviewPanel.done');
 
@@ -405,6 +426,55 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		}
 		perfMark('host.kqlCompat.sidecar.done', { found: !!sidecarFile });
 
+		const kustoResultLease = !sidecarLoadError
+			? this.kustoResultPersistenceRegistry.acquire(normalizeWorkbenchUriKey(document.uri))
+			: undefined;
+		const kustoResultOwner = kustoResultLease?.owner;
+		const kustoResultPanelSession = kustoResultOwner?.openPanel(viewSessionId);
+		let kustoResultLeaseReleased = false;
+		releaseKustoResultLease = () => {
+			if (kustoResultLeaseReleased) return;
+			kustoResultLeaseReleased = true;
+			kustoResultLease?.release();
+		};
+		let canonicalSourceFingerprint = '';
+		let canonicalSourceRevision = 0;
+		if (kustoResultPanelSession) queryEditor.attachKustoResultPersistenceSession(kustoResultPanelSession);
+		const revokeSanitizedKustoAttachments = (
+			before: { sections?: unknown[] },
+			after: { sections?: unknown[] },
+			context: { snapshot: Parameters<NonNullable<typeof kustoResultOwner>['revokePolicyIncompatibleAttachments']>[0] },
+		) => {
+			kustoResultOwner?.revokeSanitizedAttachments(before, after);
+			kustoResultOwner?.revokePolicyIncompatibleAttachments(context.snapshot);
+		};
+		const sanitizeObservedKustoStateFresh = <T extends { sections?: unknown[] }>(state: T): Promise<T> =>
+			queryEditor.sanitizeSqlLeaveNoTraceStateFresh(state, revokeSanitizedKustoAttachments);
+		const sanitizeObservedKustoStateFreshWithPolicy = async <T extends { sections?: unknown[] }>(state: T) => {
+			let policyFingerprint = '';
+			const sanitizedState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(
+				state,
+				(before, after, context) => {
+					revokeSanitizedKustoAttachments(before, after, context);
+					policyFingerprint = kustoLeaveNoTracePolicyFingerprint(context.snapshot);
+				},
+			);
+			if (!policyFingerprint && this.context.extensionMode !== vscode.ExtensionMode.Production) {
+				await this.connectionManager.runWithLeaveNoTraceSnapshotLock(async snapshot => {
+					policyFingerprint = kustoLeaveNoTracePolicyFingerprint(snapshot);
+				});
+			}
+			if (!policyFingerprint) throw new Error('Kusto result sanitation did not capture a policy snapshot.');
+			return { sanitizedState, policyFingerprint };
+		};
+		const publishObservedKustoStateFresh = <T extends { sections?: unknown[] }, R>(
+			state: T,
+			publish: (sanitizedState: T) => Promise<R>,
+		): Promise<R> => queryEditor.publishSqlLeaveNoTraceStateFresh(
+			state,
+			publish,
+			revokeSanitizedKustoAttachments,
+		);
 		let lastKnownSidecarState: KqlxStateV1 | undefined = sidecarFile?.state;
 		const sidecarStore = new CompatSidecarStore({
 			compatUri: document.uri,
@@ -413,8 +483,8 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				return parsed.ok ? parsed.file : undefined;
 			},
 			isLinked: (uri, file) => KqlCompatEditorProvider.isLinkedSidecarForCompatFile(uri, file, document.uri),
-			sanitizeFresh: state => queryEditor.sanitizeSqlLeaveNoTraceStateFresh(state),
-			publishFresh: (state, publish) => queryEditor.publishSqlLeaveNoTraceStateFresh(state, publish),
+			sanitizeFresh: sanitizeObservedKustoStateFresh,
+			publishFresh: publishObservedKustoStateFresh,
 			preserveUnchangedRepairText: hasDeferredLegacyKustoResults,
 			buildFile: (state, baseFile) => KqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, state, baseFile),
 			stringify: stringifyKqlxFile,
@@ -433,21 +503,6 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				lastWrittenSidecarIdentity = repaired.identity;
 			}
 		}
-		const kustoResultLease = !sidecarLoadError
-			? this.kustoResultPersistenceRegistry.acquire(normalizeWorkbenchUriKey(document.uri))
-			: undefined;
-		const kustoResultOwner = kustoResultLease?.owner;
-		const kustoResultPanelSession = kustoResultOwner?.openPanel(viewSessionId);
-		let kustoResultLeaseReleased = false;
-		releaseKustoResultLease = () => {
-			if (kustoResultLeaseReleased) return;
-			kustoResultLeaseReleased = true;
-			kustoResultLease?.release();
-		};
-		let canonicalSourceFingerprint = '';
-		let canonicalSourceRevision = 0;
-		if (kustoResultPanelSession) queryEditor.attachKustoResultPersistenceSession(kustoResultPanelSession);
-
 		const getSidecarDisplayName = (): string => {
 			try {
 				const u = KqlCompatEditorProvider.getSidecarKqlxUriForCompat(document.uri);
@@ -577,11 +632,71 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 
 		type KqlProjectionRequest = CompatSidecarProjectionRequest & Readonly<{
 			sidecarFileOverride?: KqlxFileV1;
+			ownerConflictRetryCount?: number;
 		}>;
+		let postDocument: (options?: KqlProjectionRequest) => Promise<boolean>;
+		const pendingKustoSourceAdmissions = new Map<number, Readonly<{
+			admission: KustoCanonicalSourceAdmission<KqlxStateV1>;
+			fingerprint: string;
+			revision: number;
+			policyFingerprint: string;
+		}>>();
 		const projectionCoordinator = this.projectionCoordinatorFactory({
 			session: sidecarSession,
 			readSourceText: () => document.getText(),
 			isDisposed: () => outerDisposed,
+			onProjectionSettled: async (projection, applied) => {
+				const pending = pendingKustoSourceAdmissions.get(projection.generation);
+				pendingKustoSourceAdmissions.delete(projection.generation);
+				if (!pending) return true;
+				if (!applied) {
+					pending.admission.discard();
+					return true;
+				}
+				let committed = false;
+				try {
+					committed = await queryEditor.commitKustoSourceAdmissionFresh(
+						pending.policyFingerprint,
+						() => {
+							if (!projection.isCurrent() || document.getText() !== projection.sourceText
+								|| !pending.admission.commit()) return false;
+							if (!projection.commitActivation()) return false;
+							canonicalSourceFingerprint = pending.fingerprint;
+							canonicalSourceRevision = pending.revision;
+							return true;
+						},
+					);
+				} catch {
+					committed = false;
+				}
+				if (!committed) {
+					pending.admission.discard();
+					const requestContext = projection.context as Readonly<{
+						sidecarFileOverride?: KqlxFileV1;
+						ownerConflictRetryCount?: number;
+					}> | undefined;
+					const retryCount = Number(requestContext?.ownerConflictRetryCount ?? 0);
+					if (!outerDisposed && retryCount < 1 && projectionCoordinator.isInitialized) {
+						const retry = postDocument({
+							forceReload: true,
+							retirePersists: true,
+							sidecarFileOverride: requestContext?.sidecarFileOverride,
+							ownerConflictRetryCount: retryCount + 1,
+						});
+						void retry.then(acceptedRetry => {
+							if (acceptedRetry || outerDisposed) pending.admission.abandonRetry();
+						}, () => {
+							if (outerDisposed) pending.admission.abandonRetry();
+						});
+					} else if (projectionCoordinator.isInitialized || outerDisposed || retryCount >= 1) {
+						if (outerDisposed || document.getText() !== projection.sourceText) {
+							pending.admission.abandonRetry();
+						}
+					}
+					return false;
+				}
+				return true;
+			},
 			postProjection: async projection => {
 				const requestContext = projection.context as Readonly<{ sidecarFileOverride?: KqlxFileV1 }> | undefined;
 				const forceReload = projection.forceReload;
@@ -624,23 +739,30 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						]
 					};
 				}
-				state = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(state);
+				const sanitation = await sanitizeObservedKustoStateFreshWithPolicy(state);
+				state = sanitation.sanitizedState;
 				if (kustoResultOwner) {
 					const sourceFingerprint = crypto.createHash('sha256')
 						.update(queryText)
 						.update('\u0000')
 						.update(effectiveSidecarFile ? stringifyKqlxFile(effectiveSidecarFile) : 'no-sidecar')
 						.digest('hex');
-					if (sourceFingerprint !== canonicalSourceFingerprint) {
-						canonicalSourceFingerprint = sourceFingerprint;
-						canonicalSourceRevision++;
-					}
-					kustoResultOwner.admitCanonicalSource(
+					const sourceRevision = sourceFingerprint === canonicalSourceFingerprint
+						? canonicalSourceRevision
+						: canonicalSourceRevision + 1;
+					const admission = kustoResultOwner.prepareCanonicalSource(
 						sourceFingerprint,
 						state,
-						String(canonicalSourceRevision),
+						String(sourceRevision),
+						kustoResultPanelSession?.panelId,
 					);
-					state = kustoResultOwner.overlaySnapshot(state);
+					if (!admission) throw new Error('Kusto result source admission could not be prepared.');
+					pendingKustoSourceAdmissions.get(projection.generation)?.admission.discard();
+					pendingKustoSourceAdmissions.set(projection.generation, {
+						admission, fingerprint: sourceFingerprint, revision: sourceRevision,
+						policyFingerprint: sanitation.policyFingerprint,
+					});
+					state = admission.projectedState;
 				}
 				if (!projection.isCurrent()) return false;
 				const reloadRequestId = projection.reserveReload();
@@ -677,13 +799,16 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				return delivered;
 			},
 		});
-		const postDocument = (options?: KqlProjectionRequest): Promise<boolean> => {
+		postDocument = (options?: KqlProjectionRequest): Promise<boolean> => {
 			const request: CompatSidecarProjectionRequest = {
 				forceReload: options?.forceReload,
 				requestId: options?.requestId,
 				expectedEditRevision: options?.expectedEditRevision,
 				retirePersists: options?.retirePersists,
-				context: { sidecarFileOverride: options?.sidecarFileOverride },
+				context: {
+					sidecarFileOverride: options?.sidecarFileOverride,
+					ownerConflictRetryCount: options?.ownerConflictRetryCount,
+				},
 			};
 			return projectionCoordinator.project(request);
 		};
@@ -711,7 +836,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			const repairEditRevision = sidecarSession.currentEditRevision;
 			void sidecarSession.enqueueAfterPersists(async () => {
 				const [sanitizedDraft, repaired] = await Promise.all([
-					queryEditor.sanitizeSqlLeaveNoTraceStateFresh(draftState),
+					sanitizeObservedKustoStateFresh(draftState),
 					repairPersistedSidecar(repairUri),
 				]);
 				const draftUnchanged = sidecarSession.generation === draftGeneration && lastKnownSidecarState === draftState;
@@ -789,9 +914,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					}
 					KqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, state, sidecarFile);
 				},
-				sanitizeState: state => queryEditor.sanitizeSqlLeaveNoTraceStateFresh<KqlxStateV1>(
-					kustoResultOwner?.overlaySnapshot(state) ?? state,
-				),
+				sanitizeState: sanitizeObservedKustoStateFresh,
 				prepareMaterializedDraft: state => sidecarUri && sidecarFile
 					? KqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, state, sidecarFile)
 					: undefined,
@@ -1016,7 +1139,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					}
 
 					if (lastKnownSidecarState) {
-						lastKnownSidecarState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(
+						lastKnownSidecarState = await sanitizeObservedKustoStateFresh(
 							kustoResultOwner?.overlaySnapshot(lastKnownSidecarState) ?? lastKnownSidecarState,
 						);
 					}
@@ -1024,7 +1147,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						document,
 						inferredSelection,
 						lastKnownSidecarState,
-						(state, publish) => queryEditor.publishSqlLeaveNoTraceStateFresh(state, publish),
+						publishObservedKustoStateFresh,
 					);
 					if (!enabled) {
 						return;

@@ -12,7 +12,11 @@ import { CachedValuesViewerV2 } from './cachedValuesViewer';
 import { ConnectionManagerViewerV2 } from './connectionManagerViewer';
 import { SqlWorkbenchService } from './sql/sqlWorkbenchService';
 import { KqlCompatEditorProvider } from './kqlCompatEditorProvider';
-import { KqlxEditorProvider, withKqlxDocumentWriteLock } from './kqlxEditorProvider';
+import {
+	KqlxEditorProvider,
+	readKqlxDocumentSnapshotLocked,
+	withKqlxDocumentWriteLock,
+} from './kqlxEditorProvider';
 import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
 import { MdCompatEditorProvider } from './mdCompatEditorProvider';
 import { SqlCompatEditorProvider } from './sqlCompatEditorProvider';
@@ -315,16 +319,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			}
 			const candidate = request as {
 				engine?: unknown; templatePath?: unknown; outputPath?: unknown; legacyKusto?: unknown;
-				sessionFile?: unknown; existingClusterIncludes?: unknown; database?: unknown; includeChart?: unknown;
+				sessionFile?: unknown; existingConnectionId?: unknown; existingClusterIncludes?: unknown;
+				database?: unknown; includeChart?: unknown;
 			};
 			const engine = String(candidate.engine || '').trim();
 			const templatePath = String(candidate.templatePath || '').trim();
 			const outputPath = String(candidate.outputPath || '').trim();
 			const legacyKusto = candidate.legacyKusto === true;
 			const sessionFile = candidate.sessionFile === true;
+			const existingConnectionId = String(candidate.existingConnectionId || '').trim();
 			const existingClusterIncludes = String(candidate.existingClusterIncludes || '').trim().toLowerCase();
 			if ((engine !== 'kusto' && engine !== 'sql') || !templatePath || (!sessionFile && !outputPath)) {
-				throw new Error('Persisted-result fixture requires engine, templatePath, and outputPath.');
+				throw new Error('Persisted-result fixture requires engine and templatePath, plus outputPath unless sessionFile is true.');
 			}
 			await persistedResultFixtureStartupCleanup;
 			await testAuthPreferences.waitForProviderAccountRefresh();
@@ -341,10 +347,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			}
 			let connectionId = '';
 			if (engine === 'kusto') {
-				const existingConnection = existingClusterIncludes
-					? connectionManager.getConnections().find(connection =>
-						String(connection.clusterUrl || '').toLowerCase().includes(existingClusterIncludes))
-					: undefined;
+				const existingConnections = connectionManager.getConnections().filter(connection =>
+					existingConnectionId
+						? connection.id === existingConnectionId
+						: !!existingClusterIncludes
+							&& String(connection.clusterUrl || '').toLowerCase().includes(existingClusterIncludes));
+				if (existingConnections.length > 1) {
+					throw new Error('Persisted-result fixture connection selection is ambiguous.');
+				}
+				const existingConnection = existingConnections[0];
 				const connection = existingConnection ?? await connectionManager.addConnection({
 					name: `${persistedResultFixturePrefix} Kusto`,
 					clusterUrl: persistedResultKustoCluster,
@@ -828,6 +839,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		context.subscriptions.push(
 			vscode.commands.registerCommand('kustoWorkbench.test.runAuthorityLiveFixture', runAuthorityLiveFixture),
 			vscode.commands.registerCommand('kustoWorkbench.test.preparePersistedResultFixture', preparePersistedResultFixture),
+			vscode.commands.registerCommand('kustoWorkbench.test.readQueryEditorSessionSnapshot', async () => {
+				const sessionUri = vscode.Uri.joinPath(context.globalStorageUri, 'session.kqlx');
+				const snapshot = await readKqlxDocumentSnapshotLocked(sessionUri);
+				const file = JSON.parse(snapshot.text) as { state?: { sections?: Array<{ id?: unknown }> } };
+				return {
+					text: snapshot.text,
+					sectionIds: Array.isArray(file.state?.sections)
+						? file.state.sections.map(section => String(section?.id || ''))
+						: [],
+					bytes: new TextEncoder().encode(snapshot.text).byteLength,
+				};
+			}),
 			vscode.commands.registerCommand('kustoWorkbench.test.cleanupPersistedResultFixture', async () => {
 				await persistedResultFixtureStartupCleanup;
 				await cleanupPersistedResultFixtureState();

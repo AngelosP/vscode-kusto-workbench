@@ -45,6 +45,18 @@ export type KustoLeaveNoTracePolicyChange = Readonly<{
 	globallyBlocked: boolean;
 }>;
 
+export function kustoLeaveNoTracePolicyFingerprint(snapshot: KustoLeaveNoTracePolicySnapshot): string {
+	return JSON.stringify({
+		version: Number(snapshot.version),
+		globallyBlocked: snapshot.globallyBlocked,
+		clusterKeys: normalizeKeys(snapshot.clusterKeys),
+		revocationGenerations: Object.entries(snapshot.revocationGenerations)
+			.map(([cluster, revision]) => [kustoClusterKey(cluster), Number(revision)] as const)
+			.filter(([cluster]) => !!cluster)
+			.sort(([left], [right]) => left.localeCompare(right)),
+	});
+}
+
 function normalizeKeys(value: unknown): string[] {
 	return Array.isArray(value)
 		? [...new Set(value.map(candidate => kustoClusterKey(String(candidate || ''))).filter(Boolean))].sort()

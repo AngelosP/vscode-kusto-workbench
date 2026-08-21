@@ -6595,15 +6595,65 @@ async function e2eHtmlAssertEqualDocumentProjection(sectionId: string): Promise<
 	};
 }
 
-async function e2eForceDocumentReload(): Promise<{ before: number; after: number }> {
+async function e2eForceDocumentReload(): Promise<{
+	before: number;
+	after: number;
+	requestId: string;
+	delivery: { reloadRequestId: string; sourceGeneration: number };
+	acknowledgement: { requestId: string; applied: boolean };
+}> {
 	const before = Number(pState.documentDataApplyCount || 0);
-	postMessageToHost({ type: 'requestDocument' });
-	await e2eLayoutWaitFor(
-		() => Number(pState.documentDataApplyCount || 0) > before && pState.restoreInProgress !== true,
-		'same-document forced reload',
-		10000,
-	);
-	return { before, after: Number(pState.documentDataApplyCount || 0) };
+	const requestId = `e2e-force-reload-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+	const deliveries: any[] = [];
+	const acknowledgements: any[] = [];
+	const previousCapture = _win.__e2eCaptureHostMessage;
+	_win.__e2eCaptureHostMessage = (message: any) => {
+		if (message?.type === 'documentReloadResult') {
+			acknowledgements.push(JSON.parse(JSON.stringify(message)));
+		}
+		return typeof previousCapture === 'function' ? previousCapture(message) !== false : true;
+	};
+	const onMessage = (event: MessageEvent) => {
+		if (event.data?.type === 'documentData' && event.data?.requestId === requestId) {
+			deliveries.push(JSON.parse(JSON.stringify(event.data)));
+		}
+	};
+	window.addEventListener('message', onMessage);
+	try {
+		postMessageToHost({ type: 'requestDocument', requestId });
+		await e2eLayoutWaitFor(() => {
+			const delivery = deliveries.at(-1);
+			return Number(pState.documentDataApplyCount || 0) > before
+				&& pState.restoreInProgress !== true
+				&& !!delivery
+				&& acknowledgements.some(message => message.requestId === delivery.reloadRequestId
+					&& message.applied === true);
+		}, 'correlated same-document forced reload', 10000);
+	} finally {
+		window.removeEventListener('message', onMessage);
+		if (typeof previousCapture === 'function') _win.__e2eCaptureHostMessage = previousCapture;
+		else delete _win.__e2eCaptureHostMessage;
+	}
+	const delivery = deliveries.at(-1);
+	const acknowledgement = acknowledgements.find(message => message.requestId === delivery?.reloadRequestId);
+	if (!delivery || acknowledgement?.applied !== true) {
+		throw new Error(`Forced document reload was not correlated: ${JSON.stringify({
+			requestId, deliveries, acknowledgements,
+		})}`);
+	}
+	return {
+		before,
+		after: Number(pState.documentDataApplyCount || 0),
+		requestId,
+		delivery: {
+			reloadRequestId: delivery.reloadRequestId,
+			sourceGeneration: delivery.sourceGeneration,
+		},
+		acknowledgement: {
+			requestId: acknowledgement.requestId,
+			applied: acknowledgement.applied,
+		},
+	};
 }
 
 function e2eHtmlBeginSaveBarrierCapture(sectionId: string): void {

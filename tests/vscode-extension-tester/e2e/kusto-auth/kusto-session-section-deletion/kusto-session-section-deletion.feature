@@ -1,0 +1,34 @@
+Feature: Deleted session sections stay deleted
+
+  Background:
+    Given the extension is in a clean state
+    And I capture the output channel "Kusto Workbench"
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 1100x900
+    And I execute command "workbench.action.closeSidebar"
+    And I execute command "workbench.action.closeAuxiliaryBar"
+    And I execute command "workbench.action.closePanel"
+
+  Scenario: Deleted section stays absent after autosave and window reload
+    When I execute command "kustoWorkbench.test.closeQueryEditorSession"
+    When I execute command "kustoWorkbench.test.preparePersistedResultFixture" with args '[{"engine":"kusto","templatePath":"tests/vscode-extension-tester/e2e/default/persisted-results-restore/fixtures/persisted-results.kqlx","sessionFile":true,"existingClusterIncludes":"1es.kusto.windows.net","database":"Liquid","includeChart":true}]'
+    And I execute command "kusto.openQueryEditor"
+    When I wait for "#query_persisted_results" in the webview "session.kqlx" for 20 seconds
+    When I wait for "#chart_persisted_results" in the webview "session.kqlx" for 20 seconds
+    When I evaluate "window.__e2e.workbench.waitForPersistedResult('query_persisted_results', 20000)" in the webview "session.kqlx" for 24 seconds
+    When I evaluate "window.__e2e.workbench.beginDocumentCommandCapture()" in the webview "session.kqlx"
+    When I evaluate "window.__e2e.workbench.removeSection('#chart_persisted_results')" in the webview "session.kqlx"
+    Then I collect JSON artifact "session-section-remove-command" from webview expression "(async () => { const capture = await window.__e2e.workbench.waitForDocumentCommands(1, 10000); const command = capture.commands.find(candidate => candidate.type === 'remove' && candidate.sectionId === 'chart_persisted_results'); const result = command && capture.results.find(candidate => candidate.commandId === command.commandId); if (!command || result?.ok !== true || result.orderedSectionIds.includes('chart_persisted_results')) throw new Error('Exact Chart remove command was not accepted: ' + JSON.stringify(capture)); return capture; })()"
+    Then I collect JSON artifact "session-section-autosave-timeline" from extension host expression "(async () => { const document = vscode.workspace.textDocuments.find(candidate => candidate.uri.path.replace(/\\/g, '/').endsWith('/session.kqlx')); if (!document) throw new Error('Session document is unavailable'); const ids = text => JSON.parse(text).state.sections.map(candidate => candidate.id); const transitions = []; let previous = ''; const started = Date.now(); for (let sample = 0; sample < 40; sample++) { const snapshot = await vscode.commands.executeCommand('kustoWorkbench.test.readQueryEditorSessionSnapshot'); const current = { elapsedMs: Date.now() - started, buffer: ids(document.getText()), disk: snapshot.sectionIds }; if (current.buffer.includes('chart_persisted_results') || current.disk.includes('chart_persisted_results')) throw new Error('Deleted Chart reappeared during the autosave window: ' + JSON.stringify(current)); const signature = JSON.stringify({ buffer: current.buffer, disk: current.disk }); if (signature !== previous) { transitions.push(current); previous = signature; } await new Promise(resolve => setTimeout(resolve, 100)); } return transitions; })()"
+    When I evaluate "window.__e2e.workbench.waitForPersistedResult('query_persisted_results', 12000)" in the webview "session.kqlx" for 15 seconds
+    Then I collect JSON artifact "deleted-section-after-autosave" from webview expression "(() => { const query = document.getElementById('query_persisted_results'); const chart = document.getElementById('chart_persisted_results'); if (!query) throw new Error('Sibling query disappeared after deleting the Chart'); if (chart) throw new Error('Deleted Chart returned after session autosave'); return { queryPresent: true, chartPresent: false, sectionIds: Array.from(document.querySelectorAll('[id]')).map(element => element.id).filter(id => id === 'query_persisted_results' || id === 'chart_persisted_results') }; })()"
+    Then I collect JSON artifact "deleted-section-durable-state" from extension host expression "(async () => { const raw = value => value && typeof value === 'object' ? value.full ?? value.display : value; const snapshot = await vscode.commands.executeCommand('kustoWorkbench.test.readQueryEditorSessionSnapshot'); const file = JSON.parse(snapshot.text); const sectionIds = snapshot.sectionIds; const query = file.state.sections.find(candidate => candidate.id === 'query_persisted_results'); const result = query?.resultJson ? JSON.parse(query.resultJson) : undefined; if (!sectionIds.includes('query_persisted_results')) throw new Error('Sibling query was not preserved in session.kqlx'); if (sectionIds.includes('chart_persisted_results')) throw new Error('Deleted Chart was restored into session.kqlx'); if (Number(raw(result?.rows?.[0]?.[0])) !== 1 || raw(result?.rows?.[0]?.[1]) !== 'persist_row_01') throw new Error('Sibling query result was lost from session.kqlx'); if (!query?.resultArtifact?.artifactId) throw new Error('Sibling query artifact was lost from session.kqlx'); return { sectionIds, row: result.rows[0].map(raw), artifactId: query.resultArtifact.artifactId, bytes: snapshot.bytes }; })()"
+
+    When I start command "workbench.action.reloadWindow"
+    And I wait 8 seconds
+    When I wait for "#query_persisted_results" in the webview "session.kqlx" for 30 seconds
+    When I evaluate "window.__e2e.workbench.waitForPersistedResult('query_persisted_results', 20000)" in the webview "session.kqlx" for 24 seconds
+    Then I collect JSON artifact "deleted-section-after-reload" from webview expression "(() => { const raw = value => value && typeof value === 'object' ? value.full ?? value.display : value; const query = document.getElementById('query_persisted_results'); const chart = document.getElementById('chart_persisted_results'); const table = query?.querySelector('kw-data-table'); const columns = (table?.columns || []).map(column => typeof column === 'string' ? column : column.name); const row = table?.rows?.[0] || []; if (!query) throw new Error('Sibling query did not reopen'); if (chart) throw new Error('Deleted Chart returned after window reload'); if (Number(raw(row[columns.indexOf('RowId')])) !== 1 || raw(row[columns.indexOf('Label')]) !== 'persist_row_01') throw new Error('Sibling query result did not reopen'); if (table?.resultArtifactId !== 'result:query_persisted_results:1') throw new Error('Sibling result artifact did not reopen: ' + String(table?.resultArtifactId)); return { queryPresent: true, chartPresent: false, row: row.map(raw), artifactId: table.resultArtifactId }; })()"
+    And I move the mouse to 30, 700
+    And I click
+    Then I take a screenshot "01-session-section-stays-deleted"

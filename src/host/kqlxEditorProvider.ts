@@ -8,7 +8,10 @@ import * as lockfile from 'proper-lockfile';
 
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
-import { KustoResultPersistenceRegistry } from './kustoResultPersistenceOwner';
+import {
+	KustoResultPersistenceRegistry,
+	type KustoCanonicalSourceAdmission,
+} from './kustoResultPersistenceOwner';
 import type { SqlWorkbenchService } from './sql/sqlWorkbenchService';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { overlayKqlxFileState, parseKqlxText, stringifyKqlxFile, type KqlxFileKind, type KqlxFileV1, type KqlxSectionV1, type KqlxStateV1 } from './kqlxFormat';
@@ -20,6 +23,7 @@ import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { getKustoConnectionIdentityKey, normalizeKustoAuthorityId } from '../shared/kustoAuth';
 import { getWorkbenchLogger } from './workbenchLogger';
 import { createFileOpenTrace } from './fileOpenTrace';
+import { kustoLeaveNoTracePolicyFingerprint } from './kustoLeaveNoTracePolicyStore';
 import { isMainWebviewCorrelatedReply, MainWebviewStartupGateway } from './mainWebviewStartupGateway';
 import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
 import { CompatSidecarSession } from './compatSidecarSession';
@@ -52,8 +56,21 @@ const normalizeClusterUrlKey = (url: string): string => {
 const NON_PERSISTENCE_CLOSE_WAIT_MS = 2_000;
 const NATIVE_SAVE_COMMIT_LEASE_TIMEOUT_MS = 5_000;
 const INITIAL_PROJECTION_MAX_ATTEMPTS = 4;
+const MAX_PROJECTION_RETRIES = 2;
 const LINKED_NATIVE_SAVE_RECONCILE_MS = 1_000;
 const PLAIN_LINKED_QUERY_EXTENSIONS = ['.kql', '.csl'] as const;
+
+export type KqlxProjectionAttemptBudget = { remainingAttempts: number };
+
+export function createKqlxProjectionAttemptBudget(): KqlxProjectionAttemptBudget {
+	return { remainingAttempts: MAX_PROJECTION_RETRIES + 1 };
+}
+
+export function consumeKqlxProjectionAttempt(budget: KqlxProjectionAttemptBudget): boolean {
+	if (!Number.isSafeInteger(budget.remainingAttempts) || budget.remainingAttempts <= 0) return false;
+	budget.remainingAttempts--;
+	return true;
+}
 
 const escapeHtmlText = (value: unknown): string => String(value ?? '')
 	.replace(/&/g, '&amp;')
@@ -110,7 +127,7 @@ async function samePhysicalLocalFile(left: vscode.Uri, right: vscode.Uri): Promi
 	}
 }
 
-type LocalFileIdentity = Readonly<{ realPathKey: string; device: number; inode: number }>;
+export type LocalFileIdentity = Readonly<{ realPathKey: string; device: number; inode: number }>;
 
 async function getLocalFileIdentity(uri: vscode.Uri): Promise<LocalFileIdentity | undefined> {
 	if (uri.scheme !== 'file') return undefined;
@@ -168,6 +185,27 @@ export async function withKqlxDocumentWriteLock<T>(
 	} finally {
 		await release();
 	}
+}
+
+export async function readKqlxDocumentSnapshotLocked(
+	uri: vscode.Uri,
+): Promise<Readonly<{ text: string; identity?: LocalFileIdentity }>> {
+	const expectedIdentity = await getLocalFileIdentity(uri);
+	if (uri.scheme === 'file' && !expectedIdentity) {
+		throw new Error('The Kusto Workbench document changed physical identity before reading.');
+	}
+	return withKqlxDocumentWriteLock(uri, async () => {
+		if (uri.scheme === 'file'
+			&& !localFileIdentityEquals(expectedIdentity, await getLocalFileIdentity(uri))) {
+			throw new Error('The Kusto Workbench document changed physical identity before reading.');
+		}
+		const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+		const identityAfterRead = await getLocalFileIdentity(uri);
+		if (uri.scheme === 'file' && !localFileIdentityEquals(expectedIdentity, identityAfterRead)) {
+			throw new Error('The Kusto Workbench document changed physical identity while reading.');
+		}
+		return { text, identity: identityAfterRead };
+	}, expectedIdentity);
 }
 
 async function getUnsafeLinkedQueryReasonFresh(documentUri: vscode.Uri, state: KqlxStateV1): Promise<string | undefined> {
@@ -250,11 +288,6 @@ export class OwnedSessionWriteTracker {
 
 	get latest(): string {
 		return this.latestText;
-	}
-
-	adopt(text: string): void {
-		this.latestText = text;
-		this.pendingTexts.clear();
 	}
 
 	begin(text: string): { text: string; previous: string } {
@@ -702,7 +735,7 @@ export const formatSectionDiffContent = (
 };
 
 type IncomingWebviewMessage =
-	| { type: 'requestDocument' }
+	| { type: 'requestDocument'; requestId?: string }
 	| { type: 'persistDocument'; state: KqlxStateV1; sourceGeneration?: number; flush?: boolean; flushRequestId?: string; flushUnavailableReason?: string }
 	| DocumentViewWebviewMessage
 	| { type: string; [key: string]: unknown };
@@ -1039,11 +1072,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		isSessionFile: boolean,
 	): Promise<string> {
 		if (!isSessionFile) return document.getText();
-		try {
-			return new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
-		} catch {
-			return document.getText();
-		}
+		return (await readKqlxDocumentSnapshotLocked(document.uri)).text;
 	}
 
 	/**
@@ -1260,7 +1289,35 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				);
 			},
 		});
-		const initialParse = parseKqlxText(document.getText(), {
+		let initialSourceSnapshot: Readonly<{ text: string; identity?: LocalFileIdentity }>;
+		try {
+			const snapshotPromise = isSessionFile
+				? readKqlxDocumentSnapshotLocked(document.uri)
+				: getLocalFileIdentity(document.uri).then(identity => ({ text: document.getText(), identity }));
+			const acquisition = await Promise.race([
+				snapshotPromise.then(
+					value => ({ kind: 'snapshot' as const, value }),
+					error => ({ kind: 'error' as const, error }),
+				),
+				outerDisposalSignal.then(() => ({ kind: 'disposed' as const })),
+			]);
+			if (acquisition.kind === 'disposed') {
+				documentViewSessionActive = false;
+				startupGateway.dispose();
+				outerDisposalSubscription.dispose();
+				openEditorRegistration.finishClosing();
+				return;
+			}
+			if (acquisition.kind === 'error') throw acquisition.error;
+			initialSourceSnapshot = acquisition.value;
+		} catch (error) {
+			documentViewSessionActive = false;
+			startupGateway.dispose();
+			outerDisposalSubscription.dispose();
+			openEditorRegistration.dispose();
+			throw error;
+		}
+		const initialParse = parseKqlxText(initialSourceSnapshot.text, {
 			allowedKinds: [documentKindForPerf],
 			defaultKind: documentKindForPerf,
 		});
@@ -1338,6 +1395,31 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const kustoResultPanelSession = kustoResultOwner.openPanel(viewSessionId);
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.sqlWorkbench, this.editorCursorStatusBar);
 		queryEditor.attachKustoResultPersistenceSession(kustoResultPanelSession);
+		const revokeSanitizedKustoAttachments = (
+			before: { sections?: unknown[] },
+			after: { sections?: unknown[] },
+			context: { snapshot: Parameters<typeof kustoResultOwner.revokePolicyIncompatibleAttachments>[0] },
+		) => {
+			kustoResultOwner.revokeSanitizedAttachments(before, after);
+			kustoResultOwner.revokePolicyIncompatibleAttachments(context.snapshot);
+		};
+		const sanitizeKustoStateFreshWithPolicy = async <T extends { sections?: unknown[] }>(state: T) => {
+			let policyFingerprint = '';
+			const sanitizedState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(
+				state,
+				(before, after, context) => {
+					revokeSanitizedKustoAttachments(before, after, context);
+					policyFingerprint = kustoLeaveNoTracePolicyFingerprint(context.snapshot);
+				},
+			);
+			if (!policyFingerprint && this.context.extensionMode !== vscode.ExtensionMode.Production) {
+				await this.connectionManager.runWithLeaveNoTraceSnapshotLock(async snapshot => {
+					policyFingerprint = kustoLeaveNoTracePolicyFingerprint(snapshot);
+				});
+			}
+			if (!policyFingerprint) throw new Error('Kusto result sanitation did not capture a policy snapshot.');
+			return { sanitizedState, policyFingerprint };
+		};
 		queryEditor.fileOpenTrace = fileOpenTrace;
 		queryEditor.documentUri = document.uri.toString();
 		queryEditor.setMessageTransport(message => startupGateway.postMessage(message));
@@ -1354,20 +1436,36 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 		if (outerDisposed) handleOuterDisposal();
 		fileOpenTrace.mark('initializeWebviewPanel.start');
-		try {
-			await queryEditor.initializeWebviewPanel(webviewPanel, {
+		const initialization = queryEditor.initializeWebviewPanel(webviewPanel, {
 				registerMessageHandler: false,
 				registerDisposalHandler: false,
 				initialDocumentLoading: true,
-			});
-		} catch (error) {
+			}).then(
+				() => ({ kind: 'initialized' as const }),
+				error => ({ kind: 'error' as const, error }),
+			);
+		const initializationOutcome = await Promise.race([
+			initialization,
+			outerDisposalSignal.then(() => ({ kind: 'disposed' as const })),
+		]);
+		if (initializationOutcome.kind === 'disposed') {
+			try { queryEditor.disposePanel(webviewPanel); } catch { /* continue startup cleanup */ }
+			kustoResultPanelSession.dispose();
+			kustoResultLease.release();
+			documentViewSessionActive = false;
+			startupGateway.dispose();
+			outerDisposalSubscription.dispose();
+			openEditorRegistration.finishClosing();
+			return;
+		}
+		if (initializationOutcome.kind === 'error') {
 			kustoResultPanelSession.dispose();
 			kustoResultLease.release();
 			documentViewSessionActive = false;
 			startupGateway.dispose();
 			outerDisposalSubscription.dispose();
 			openEditorRegistration.dispose();
-			throw error;
+			throw initializationOutcome.error;
 		}
 		if (outerDisposed && !isSessionFile) {
 			kustoResultPanelSession.dispose();
@@ -1420,8 +1518,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 		let pendingAddKindDelivered = false;
 		let saveTimer: NodeJS.Timeout | undefined;
-		let lastSavedText = document.getText();
-		let lastSavedIdentity = await getLocalFileIdentity(document.uri);
+		let lastSavedText = initialSourceSnapshot.text;
+		let lastSavedIdentity = initialSourceSnapshot.identity;
 		let lastSavedEol = document.eol;
 
 		// ── Section-level unsaved-changes tracking ──────────────────────────
@@ -2016,7 +2114,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			const pending = pendingLinkedNativeSave;
 			if (!pending || document.uri.scheme !== 'file') return false;
 			if (pending.notebookCandidateText === pending.notebookPriorDurableText) return false;
-			const notebookDiskText = await tryReadTextFile(document.uri);
+			const notebookDiskText = isSessionFile
+				? (await readKqlxDocumentSnapshotLocked(document.uri)).text
+				: await tryReadTextFile(document.uri);
 			if (notebookDiskText !== pending.notebookCandidateText) return false;
 			return true;
 		};
@@ -2459,7 +2559,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				text,
 				documentKind,
 				document.eol,
-				(state, publish) => queryEditor.publishSqlLeaveNoTraceStateFresh(state, publish),
+				(state, publish) => queryEditor.publishSqlLeaveNoTraceStateFresh(
+					state, publish, revokeSanitizedKustoAttachments,
+				),
 				async sanitizedText => sanitizedText,
 			);
 		};
@@ -2479,7 +2581,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			text,
 			documentKind,
 			document.eol,
-			(state, publish) => queryEditor.publishSqlLeaveNoTraceStateFresh(state, publish),
+			(state, publish) => queryEditor.publishSqlLeaveNoTraceStateFresh(
+				state, publish, revokeSanitizedKustoAttachments,
+			),
 			publishText,
 		);
 		const publishSerializedNotebookTextWithKustoResultsFresh = <R>(
@@ -2490,8 +2594,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			documentKind,
 			document.eol,
 			(state, publish) => queryEditor.publishSqlLeaveNoTraceStateFresh(
-				kustoResultOwner.overlaySnapshot(state),
-				publish,
+				kustoResultOwner.overlaySnapshot(state), publish, revokeSanitizedKustoAttachments,
 			),
 			publishText,
 		);
@@ -2582,53 +2685,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				activeSourceMutations--;
 			}
 		};
-		const reconcileSessionDocumentBuffer = async (): Promise<void> => {
-			if (!isSessionFile) return;
-			await withKqlxDocumentWriteLock(document.uri, async () => {
-				const authoritativeText = new TextDecoder().decode(
-					await vscode.workspace.fs.readFile(document.uri),
-				);
-				if (process.env.VSCODE_EXT_TESTER_PORT) {
-					getWorkbenchLogger().info('[session-sync] reconcile', JSON.stringify({
-						mismatch: document.getText() !== authoritativeText,
-						bufferHasResult: document.getText().includes('"resultJson"'),
-						diskHasResult: authoritativeText.includes('"resultJson"'),
-					}));
-				}
-				if (document.getText() !== authoritativeText) {
-					const edit = new vscode.WorkspaceEdit();
-					edit.replace(
-						document.uri,
-						new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
-						authoritativeText,
-					);
-					if (!await vscode.workspace.applyEdit(edit) || document.getText() !== authoritativeText) {
-						throw new Error('Kusto Workbench could not synchronize the session buffer with its durable state.');
-					}
-					const currentDiskText = new TextDecoder().decode(
-						await vscode.workspace.fs.readFile(document.uri),
-					);
-					if (currentDiskText !== authoritativeText
-						|| typeof document.save !== 'function'
-						|| !await document.save()) {
-						throw new Error('Kusto Workbench could not settle the synchronized session buffer.');
-					}
-					const savedText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
-					if (document.getText() !== authoritativeText || savedText !== authoritativeText) {
-						throw new Error('Kusto Workbench session synchronization did not preserve durable state.');
-					}
-				}
-				if (!commitCurrentAuthorityText(activeProjectionAuthorityToken, authoritativeText)) {
-					throw new Error('Kusto Workbench session synchronization lost source authority.');
-				}
-				lastSavedText = authoritativeText;
-				lastSavedEol = document.eol;
-				lastSavedIdentity = await getLocalFileIdentity(document.uri);
-				ownedSessionWrites.adopt(authoritativeText);
-				rebuildSavedSectionCache(authoritativeText);
-			});
-		};
-		await reconcileSessionDocumentBuffer();
 		let persistRequestGeneration = 0;
 		let persistDecisionTail: Promise<void> = Promise.resolve();
 		let sourceReloadEpoch = 0;
@@ -2651,12 +2707,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			const expectedIdentity = lastSavedIdentity;
 			await withKqlxDocumentWriteLock(document.uri, async () => {
-				if (process.env.VSCODE_EXT_TESTER_PORT) {
-					getWorkbenchLogger().info('[session-sync] direct write', JSON.stringify({
-						nextHasResult: nextText.includes('"resultJson"'), allowDisposed,
-						stack: new Error().stack?.split('\n').slice(1, 10),
-					}));
-				}
 				if (document.uri.scheme === 'file' && (!expectedIdentity
 					|| !localFileIdentityEquals(expectedIdentity, await getLocalFileIdentity(document.uri)))) {
 					throw new Error('The Kusto Workbench session changed physical identity before publication.');
@@ -2714,7 +2764,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						const authorityText = getStaleAuthorityText();
 						if (authorityText === undefined || authorityText === candidateText) return;
 						try {
-							const durableText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
+							const durableText = (await readKqlxDocumentSnapshotLocked(document.uri)).text;
 							if (durableText === candidateText && lastSavedText === candidateText) {
 								await writeOwnedSessionText(authorityText, allowDisposed);
 							}
@@ -2732,7 +2782,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						let currentDiskText: string | undefined;
 						if (sanitizedText === ownedSessionWrites.latest) {
 							try {
-								currentDiskText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
+								currentDiskText = (await readKqlxDocumentSnapshotLocked(document.uri)).text;
 							} catch {
 								currentDiskText = undefined;
 							}
@@ -2893,7 +2943,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (isSessionFile) {
 				let diskText: string;
 				try {
-					diskText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
+					diskText = (await readKqlxDocumentSnapshotLocked(document.uri)).text;
 				} catch {
 					return {};
 				}
@@ -2912,7 +2962,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				}
 				let publishedText: string;
 				try {
-					publishedText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
+					publishedText = (await readKqlxDocumentSnapshotLocked(document.uri)).text;
 				} catch {
 					return {};
 				}
@@ -3275,8 +3325,16 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			owner?: MarkdownDocumentOwnerEntry;
 			authorityToken: number;
 			authorityEpoch: number;
+			retryBudget: KqlxProjectionAttemptBudget;
+			requestId?: string;
+			policyFingerprint?: string;
+			kustoSourceAdmission?: KustoCanonicalSourceAdmission<KqlxStateV1>;
 		}>();
 		let projectionActivationTail: Promise<void> = Promise.resolve();
+		let pendingProjectionRecovery: Readonly<{
+			originGeneration: number;
+			promise: Promise<boolean>;
+		}> | undefined;
 		let markdownCommandBarrierSupported = false;
 		const createProjectionReload = (
 			generation: number,
@@ -3284,19 +3342,33 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			owner?: MarkdownDocumentOwnerEntry,
 			authorityToken = activeProjectionAuthorityToken,
 			authorityEpoch = markdownDocumentQueue.sourceObservationSequence,
+			kustoSourceAdmission?: KustoCanonicalSourceAdmission<KqlxStateV1>,
+			retryBudget = createKqlxProjectionAttemptBudget(),
+			requestId?: string,
+			policyFingerprint?: string,
 		) => {
 			const reload = projectionSession.createReloadRequest();
-			const activation = { generation, sourceText, owner, authorityToken, authorityEpoch };
+			const activation = {
+				generation, sourceText, owner, authorityToken, authorityEpoch,
+				retryBudget, requestId, policyFingerprint, kustoSourceAdmission,
+			};
 			pendingProjectionActivations.set(reload.requestId, activation);
-			void reload.result.then(() => {
+			void reload.result.then(applied => {
+				if (!applied) activation.kustoSourceAdmission?.discard();
 				if (pendingProjectionActivations.get(reload.requestId) === activation) {
 					pendingProjectionActivations.delete(reload.requestId);
 				}
 			});
 			return reload;
 		};
-		const postDocument = async (options?: { forceReload?: boolean; retryCount?: number }): Promise<boolean> => {
+		const postDocument = async (options?: {
+			forceReload?: boolean;
+			retryBudget?: KqlxProjectionAttemptBudget;
+			requestId?: string;
+		}): Promise<boolean> => {
 			if (outerDisposed) return false;
+			const retryBudget = options?.retryBudget ?? createKqlxProjectionAttemptBudget();
+			if (!consumeKqlxProjectionAttempt(retryBudget)) return false;
 			const generation = ++postDocumentGeneration;
 			const sourceObservation = ++panelSourceObservationSequence;
 			const forceReload = options?.forceReload ?? false;
@@ -3324,6 +3396,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (!parsed.ok) {
 				const reload = createProjectionReload(
 					generation, rawText, undefined, authorityToken, authorityEpoch,
+					undefined, retryBudget,
 				);
 				const delivered = await deliverWebviewMessage({
 					type: 'documentData',
@@ -3347,12 +3420,16 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					&& markdownDocumentQueue.latestAuthority?.token === authorityToken
 					&& markdownDocumentQueue.sourceObservationSequence === authorityEpoch
 					&& await isProjectionSourceCurrent(rawText);
-				if (!accepted && (options?.retryCount ?? 0) < 1
+				if (!accepted && retryBudget.remainingAttempts > 0
 					&& authorityToken !== activeProjectionAuthorityToken
 					&& generation === postDocumentGeneration
 					&& markdownDocumentQueue.latestAuthority?.token === authorityToken
 					&& await isProjectionSourceCurrent(rawText)) {
-					return postDocument({ forceReload: true, retryCount: (options?.retryCount ?? 0) + 1 });
+					return postDocument({
+						forceReload: true,
+						retryBudget,
+						requestId: options?.requestId,
+					});
 				}
 				return accepted;
 			}
@@ -3367,6 +3444,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				linkedQueryPhysicalIdentity = undefined;
 				const reload = createProjectionReload(
 					generation, rawText, undefined, authorityToken, authorityEpoch,
+					undefined, retryBudget,
 				);
 				const delivered = await deliverWebviewMessage({
 					type: 'documentData', ok: false, forceReload, sourceGeneration: generation,
@@ -3384,24 +3462,22 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					&& markdownDocumentQueue.latestAuthority?.token === authorityToken
 					&& markdownDocumentQueue.sourceObservationSequence === authorityEpoch
 					&& await isProjectionSourceCurrent(rawText);
-				if (!accepted && (options?.retryCount ?? 0) < 1
+				if (!accepted && retryBudget.remainingAttempts > 0
 					&& authorityToken !== activeProjectionAuthorityToken
 					&& generation === postDocumentGeneration
 					&& markdownDocumentQueue.latestAuthority?.token === authorityToken
 					&& await isProjectionSourceCurrent(rawText)) {
-					return postDocument({ forceReload: true, retryCount: (options?.retryCount ?? 0) + 1 });
+					return postDocument({
+						forceReload: true,
+						retryBudget,
+						requestId: options?.requestId,
+					});
 				}
 				return accepted;
 			}
 
 			let sanitizedState = ensureProjectedSectionIds(parsed.file.state, rawText);
-			sanitizedState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(sanitizedState);
-			kustoResultOwner.admitCanonicalSource(
-				createHash('sha256').update(rawText).digest('hex'),
-				sanitizedState,
-				String(authorityToken),
-			);
-			sanitizedState = kustoResultOwner.overlaySnapshot(sanitizedState);
+			sanitizedState = (await sanitizeKustoStateFreshWithPolicy(sanitizedState)).sanitizedState;
 			assertDocumentSectionKindsAllowed(documentKind, sanitizedState.sections);
 			if (outerDisposed || generation !== postDocumentGeneration || !await isProjectionSourceCurrent(rawText)) return false;
 			perfMark('host.kqlx.sanitize.done', { sections: Array.isArray(sanitizedState.sections) ? sanitizedState.sections.length : 0 });
@@ -3410,29 +3486,69 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (!hydratedState || outerDisposed || generation !== postDocumentGeneration || !await isProjectionSourceCurrent(rawText)) return false;
 			perfMark('host.kqlx.injectLinkedQuery.done', { sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
 			fileOpenTrace.mark('postDocument.injectLinkedQuery.done', { sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
-			const sanitizedOutboundState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(hydratedState);
+			const finalSanitation = await sanitizeKustoStateFreshWithPolicy(hydratedState);
+			const finalSanitizedState = finalSanitation.sanitizedState;
 			if (outerDisposed || generation !== postDocumentGeneration || !await isProjectionSourceCurrent(rawText)) return false;
-			const markdownOwner = ensureMarkdownDocumentOwner(rawText, sanitizedOutboundState, false);
-			const outboundState = overlayOwnedMarkdownState(sanitizedOutboundState, markdownOwner.document);
-			const markdownProjection = markdownOwner.document.projection();
-
-			const reload = createProjectionReload(
-				generation, rawText, markdownOwner, authorityToken, authorityEpoch,
+			const kustoSourceAdmission = kustoResultOwner.prepareCanonicalSource(
+				createHash('sha256').update(rawText).digest('hex'),
+				finalSanitizedState,
+				String(authorityToken),
+				kustoResultPanelSession.panelId,
 			);
-			const delivered = await deliverWebviewMessage({
-				type: 'documentData',
-				ok: true,
-				reloadRequestId: reload.requestId,
-				sourceGeneration: generation,
-				forceReload,
-				documentUri: document.uri.toString(),
-				suppressPersistenceForTest,
-				htmlPowerBiCompatibilityCheckEnabled,
-				state: outboundState
-				, documentRevision: markdownProjection.documentRevision
-				, sectionRevisions: markdownProjection.sectionRevisions
-				, markdownSectionRevisions: markdownProjection.markdownSectionRevisions
-			});
+			if (!kustoSourceAdmission) throw new Error('Kusto result source admission could not be prepared.');
+			const prepareProjection = () => {
+				const sanitizedOutboundState = kustoSourceAdmission.projectedState;
+				assertDocumentSectionKindsAllowed(documentKind, sanitizedOutboundState.sections);
+				const markdownOwner = ensureMarkdownDocumentOwner(rawText, sanitizedOutboundState, false);
+				const outboundState = overlayOwnedMarkdownState(sanitizedOutboundState, markdownOwner.document);
+				const markdownProjection = markdownOwner.document.projection();
+				return { markdownOwner, outboundState, markdownProjection };
+			};
+			let preparedProjection: ReturnType<typeof prepareProjection>;
+			try {
+				preparedProjection = prepareProjection();
+			} catch (error) {
+				kustoSourceAdmission.discard();
+				throw error;
+			}
+			const { markdownOwner, outboundState, markdownProjection } = preparedProjection;
+
+			let reload: ReturnType<typeof createProjectionReload>;
+			try {
+				reload = createProjectionReload(
+					generation, rawText, markdownOwner, authorityToken, authorityEpoch,
+					kustoSourceAdmission,
+					retryBudget,
+					options?.requestId,
+					finalSanitation.policyFingerprint,
+				);
+			} catch (error) {
+				kustoSourceAdmission.discard();
+				throw error;
+			}
+			let delivered: boolean;
+			try {
+				delivered = await deliverWebviewMessage({
+					type: 'documentData',
+					ok: true,
+					requestId: options?.requestId,
+					reloadRequestId: reload.requestId,
+					sourceGeneration: generation,
+					forceReload,
+					documentUri: document.uri.toString(),
+					suppressPersistenceForTest,
+					htmlPowerBiCompatibilityCheckEnabled,
+					state: outboundState
+					, documentRevision: markdownProjection.documentRevision
+					, sectionRevisions: markdownProjection.sectionRevisions
+					, markdownSectionRevisions: markdownProjection.markdownSectionRevisions
+				});
+			} catch (error) {
+				pendingProjectionActivations.delete(reload.requestId);
+				kustoSourceAdmission.discard();
+				projectionSession.failReload(reload.requestId);
+				throw error;
+			}
 			perfMark('host.kqlx.documentData.posted', { sections: Array.isArray(outboundState.sections) ? outboundState.sections.length : 0 });
 			fileOpenTrace.mark('postDocument.documentData.posted', { ok: true, forceReload, sections: Array.isArray(outboundState.sections) ? outboundState.sections.length : 0 });
 
@@ -3470,12 +3586,20 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				&& activeMarkdownOwnerEntry && activeMarkdownOwnerEntry !== markdownOwner) {
 				this.markdownDocuments.set(markdownDocumentKey, activeMarkdownOwnerEntry);
 			}
-			if (!accepted && (options?.retryCount ?? 0) < 1
+			const ownerRecovery = pendingProjectionRecovery;
+			if (!accepted && ownerRecovery?.originGeneration === generation) {
+				return ownerRecovery.promise;
+			}
+			if (!accepted && retryBudget.remainingAttempts > 0
 				&& authorityToken !== activeProjectionAuthorityToken
 				&& generation === postDocumentGeneration
 				&& markdownDocumentQueue.latestAuthority?.token === authorityToken
 				&& await isProjectionSourceCurrent(rawText)) {
-				return postDocument({ forceReload: true, retryCount: (options?.retryCount ?? 0) + 1 });
+				return postDocument({
+					forceReload: true,
+					retryBudget,
+					requestId: options?.requestId,
+				});
 			}
 			return accepted;
 		};
@@ -4035,10 +4159,12 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		let webviewInitialized = false;
 		let initialProjectionRecovery: Promise<boolean> | undefined;
 		let initialProjectionRestartRequested = false;
-		const postInitialDocument = async (): Promise<boolean> => {
+		let initialProjectionRetryBudget: KqlxProjectionAttemptBudget | undefined;
+		const postInitialDocument = async (retryBudget: KqlxProjectionAttemptBudget): Promise<boolean> => {
 			for (let attempt = 0; attempt < INITIAL_PROJECTION_MAX_ATTEMPTS && !outerDisposed; attempt++) {
-				const delivered = await postDocument({ forceReload: attempt > 0 });
+				const delivered = await postDocument({ forceReload: attempt > 0, retryBudget });
 				if (delivered) return true;
+				if (retryBudget.remainingAttempts <= 0) break;
 			}
 			return false;
 		};
@@ -4048,7 +4174,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				initialProjectionRestartRequested = true;
 				return initialProjectionRecovery;
 			}
-			const run = postInitialDocument().then(delivered => {
+			const retryBudget = initialProjectionRetryBudget ?? createKqlxProjectionAttemptBudget();
+			initialProjectionRetryBudget = retryBudget;
+			const run = postInitialDocument(retryBudget).then(delivered => {
 				if (delivered) webviewInitialized = true;
 				return delivered;
 			});
@@ -4057,7 +4185,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				initialProjectionRecovery = undefined;
 				const restart = !webviewInitialized && initialProjectionRestartRequested && allowFollowUp && !outerDisposed;
 				initialProjectionRestartRequested = false;
-				if (restart) void ensureInitialDocument(false);
+				if (restart && retryBudget.remainingAttempts > 0) void ensureInitialDocument(false);
+				else initialProjectionRetryBudget = undefined;
 			};
 			void run.then(settleInitialProjection, settleInitialProjection);
 			return initialProjectionRecovery;
@@ -4080,12 +4209,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const matchesSharedOwnedMutation = observeSharedOwnedMutation(currentText);
 					const matchesLocalOwnedMutation = ownedDocumentEdits.observe(currentText);
 					const matchesOwnedDocumentEdit = matchesSharedOwnedMutation || matchesLocalOwnedMutation;
-					if (isSessionFile && process.env.VSCODE_EXT_TESTER_PORT) {
-						getWorkbenchLogger().info('[session-sync] document changed', JSON.stringify({
-							hasResult: currentText.includes('"resultJson"'), matchesSharedOwnedMutation,
-							matchesLocalOwnedMutation, contentChangeCount: e.contentChanges.length,
-						}));
-					}
 					if (!webviewInitialized && e.contentChanges.length > 0) {
 						if (initialProjectionRecovery) initialProjectionRestartRequested = true;
 						else void ensureInitialDocument();
@@ -4195,22 +4318,77 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			switch (message.type) {
 				case 'documentReloadResult': {
 						const priorActivation = projectionActivationTail;
+						let retryAfterActivation: (() => void) | undefined;
 						const activationOperation = priorActivation.catch(() => undefined).then(async () => {
 							const requestId = String((message as any).requestId || '');
 							const applied = (message as any).applied === true;
 							const activation = pendingProjectionActivations.get(requestId);
 							if (!activation || !projectionSession.hasPendingReloadRequest(requestId)) {
+								activation?.kustoSourceAdmission?.discard();
 								pendingProjectionActivations.delete(requestId);
 								return;
 							}
-							const accepted = applied
-								&& !outerDisposed
+							const activationIsCurrent = () => !outerDisposed
 								&& activation.generation === postDocumentGeneration
 								&& markdownDocumentQueue.latestAuthority?.token === activation.authorityToken
 								&& markdownDocumentQueue.sourceObservationSequence === activation.authorityEpoch
-								&& await isProjectionSourceCurrent(activation.sourceText)
 								&& pendingProjectionActivations.get(requestId) === activation
 								&& projectionSession.hasPendingReloadRequest(requestId);
+							let accepted = applied
+								&& activationIsCurrent()
+								&& await isProjectionSourceCurrent(activation.sourceText)
+								&& activationIsCurrent();
+							let ownerCommitConflict = false;
+							if (accepted && activation.kustoSourceAdmission) {
+								let sourceAdmissionCommitted = false;
+								try {
+									sourceAdmissionCommitted = await queryEditor.commitKustoSourceAdmissionFresh(
+										activation.policyFingerprint ?? '',
+										async () => {
+											const expectedIdentity = await getLocalFileIdentity(document.uri);
+											const commitCurrentSource = async () => {
+												if (!activationIsCurrent()) return false;
+												if (document.uri.scheme === 'file' && !expectedIdentity) return false;
+												if (document.uri.scheme === 'file'
+													&& !localFileIdentityEquals(expectedIdentity, await getLocalFileIdentity(document.uri))) return false;
+												const sourceIsCurrent = isSessionFile
+													? new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri))
+														=== activation.sourceText
+													: document.getText() === activation.sourceText;
+												if (document.uri.scheme === 'file'
+													&& !localFileIdentityEquals(expectedIdentity, await getLocalFileIdentity(document.uri))) return false;
+												if (!sourceIsCurrent || !activationIsCurrent()
+													|| !activation.kustoSourceAdmission!.commit()) return false;
+												activateProjection(
+													activation.generation,
+													activation.sourceText,
+													activation.owner,
+													activation.authorityToken,
+												);
+												return true;
+											};
+											return withKqlxDocumentWriteLock(
+												document.uri,
+												commitCurrentSource,
+												expectedIdentity,
+											);
+										},
+									);
+								} catch {
+									sourceAdmissionCommitted = false;
+								}
+								const stillCurrent = activationIsCurrent();
+								accepted = sourceAdmissionCommitted;
+								if (!sourceAdmissionCommitted) activation.kustoSourceAdmission.discard();
+								ownerCommitConflict = !sourceAdmissionCommitted && stillCurrent;
+							}
+							const retryEligible = applied
+								&& !outerDisposed
+								&& activation.generation === postDocumentGeneration
+								&& markdownDocumentQueue.latestAuthority?.token === activation.authorityToken
+								&& pendingProjectionActivations.get(requestId) === activation
+								&& projectionSession.hasPendingReloadRequest(requestId)
+								&& await isProjectionSourceCurrent(activation.sourceText);
 							const completed = projectionSession.completeReload(
 								requestId,
 								accepted,
@@ -4222,23 +4400,55 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								markdownCommandBarrierSupported = true;
 							}
 							if (accepted) {
-								activateProjection(
-									activation.generation,
-									activation.sourceText,
-									activation.owner,
-									activation.authorityToken,
-								);
+								webviewInitialized = true;
 								if (markdownDocumentQueue.privacyRepairNeeded) {
 									void repairPersistedSqlState().catch(() => undefined);
 								}
-							} else if (applied
-								&& activation.generation === postDocumentGeneration
-								&& markdownDocumentQueue.latestAuthority?.token === activation.authorityToken) {
-								void postDocument({ forceReload: true });
+							} else if (retryEligible) {
+								if (ownerCommitConflict && activation.kustoSourceAdmission) {
+									if (activation.retryBudget.remainingAttempts > 0) {
+										let settleRecovery!: (accepted: boolean) => void;
+										const recovery = {
+											originGeneration: activation.generation,
+											promise: new Promise<boolean>(resolve => { settleRecovery = resolve; }),
+										};
+										pendingProjectionRecovery = recovery;
+										retryAfterActivation = () => {
+											const retry = postDocument({
+												forceReload: true,
+												retryBudget: activation.retryBudget,
+												requestId: activation.requestId,
+											});
+											void retry.then(async acceptedRetry => {
+												if (acceptedRetry || outerDisposed
+													|| !await isProjectionSourceCurrent(activation.sourceText)) {
+													activation.kustoSourceAdmission?.abandonRetry();
+												}
+												settleRecovery(acceptedRetry);
+											}, () => {
+												if (outerDisposed) activation.kustoSourceAdmission?.abandonRetry();
+												settleRecovery(false);
+											});
+											void recovery.promise.finally(() => {
+												if (pendingProjectionRecovery === recovery) pendingProjectionRecovery = undefined;
+											});
+										};
+									} else if (outerDisposed
+										|| !await isProjectionSourceCurrent(activation.sourceText)) {
+										activation.kustoSourceAdmission.abandonRetry();
+									}
+								} else {
+									retryAfterActivation = () => {
+										void postDocument({ forceReload: true, retryBudget: activation.retryBudget });
+									};
+								}
+							} else if (ownerCommitConflict && activation.kustoSourceAdmission) {
+								activation.kustoSourceAdmission.abandonRetry();
 							}
 						});
 						projectionActivationTail = activationOperation.then(() => undefined, () => undefined);
 						await activationOperation;
+						retryAfterActivation?.();
 					return;
 				}
 				case 'requestDocument':
@@ -4247,11 +4457,16 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					// Re-send mode/capabilities in response to a request (the webview is guaranteed to be listening).
 					postPersistenceMode();
 					// Only load from disk when explicitly requested by the webview.
+					const requestGenerationFloor = postDocumentGeneration + 1;
 					const delivered = webviewInitialized
-						? await postDocument({ forceReload: true })
+						? await postDocument({
+							forceReload: true,
+							requestId: String((message as any).requestId || '') || undefined,
+						})
 						: await ensureInitialDocument();
 					if (outerDisposed) return;
-					webviewInitialized = delivered;
+					webviewInitialized = delivered
+						|| activeProjectionGeneration >= requestGenerationFloor;
 					void repairPersistedSqlState().catch(() => undefined);
 					perfMark('host.kqlx.requestDocument.completed');
 					fileOpenTrace.mark('requestDocument.completed');
@@ -4613,13 +4828,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const persistProjectionGeneration = activeProjectionGeneration;
 					const reloadEpochAtAdmission = sourceReloadEpoch;
 					const persistReason = String((message as any).reason || '');
-					if (isSessionFile && process.env.VSCODE_EXT_TESTER_PORT) {
-						getWorkbenchLogger().info('[session-sync] persist request', JSON.stringify({
-							persistReason,
-							incomingHasResult: incomingState.sections.some(section =>
-								!!section && typeof section === 'object' && 'resultJson' in section),
-						}));
-					}
 					const materializeKustoResultAttachment = persistReason === 'kusto-result-attachment-committed';
 					const allowDisposedPersist = isSessionFile && persistReason === 'beforeunload';
 					const isPersistCurrent = () => (allowDisposedPersist || !outerDisposed)
@@ -4757,7 +4965,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					// session), try reading from disk/workspace FS.
 					if (!materializeKustoResultAttachment && !nextText) {
 						try {
-							const bytes = await vscode.workspace.fs.readFile(document.uri);
+							const bytes = isSessionFile
+								? new TextEncoder().encode((await readKqlxDocumentSnapshotLocked(document.uri)).text)
+								: await vscode.workspace.fs.readFile(document.uri);
 							if (!isPersistCurrent()) return;
 							const diskText = normalizeTextToEol(new TextDecoder('utf-8').decode(bytes), document.eol);
 							const parsedDisk = parseKqlxText(diskText, {
@@ -4798,7 +5008,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					// identical to disk so we can safely clear VS Code's dirty flag without saving changes.
 					if (!incomingMatchesDisk && persistReason === 'reorder' && nextText) {
 						try {
-							const bytes = await vscode.workspace.fs.readFile(document.uri);
+							const bytes = isSessionFile
+								? new TextEncoder().encode((await readKqlxDocumentSnapshotLocked(document.uri)).text)
+								: await vscode.workspace.fs.readFile(document.uri);
 							if (!isPersistCurrent()) return;
 							const diskText = normalizeTextToEol(new TextDecoder('utf-8').decode(bytes), document.eol);
 							if (diskText && diskText === nextText) {
@@ -4878,7 +5090,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					}
 
 					// The snapshot is still pending until this fresh policy pass and publication succeed.
-					const freshState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(state);
+					const freshState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(
+						state,
+						revokeSanitizedKustoAttachments,
+					);
 					assertDocumentSectionKindsAllowed(documentKind, freshState.sections);
 					if (!isPersistCurrent()) return;
 					const policyChangedState = !deepEqual(
@@ -5035,7 +5250,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 									let observedText: string | undefined;
 									try {
 										observedText = isSessionFile
-											? new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri))
+											? (await readKqlxDocumentSnapshotLocked(document.uri)).text
 											: document.getText();
 									} catch {
 										observedText = undefined;

@@ -11,9 +11,24 @@ import { canonicalSectionKind } from '../shared/documentSectionCapabilities';
 import { resolveKustoConnection } from '../shared/kustoAuth';
 import { kustoClusterKey, kustoDatabaseKey } from '../shared/kustoClusterUrls';
 import { sqlConnectionTargetSignatureMatches } from '../shared/sqlConnectionIdentity';
-import type { KustoLeaveNoTracePolicySnapshot } from './kustoLeaveNoTracePolicyStore';
+import {
+	kustoLeaveNoTracePolicyFingerprint,
+	type KustoLeaveNoTracePolicySnapshot,
+} from './kustoLeaveNoTracePolicyStore';
 
 type PersistedResultState = { sections?: unknown[] };
+export type KustoSanitizationContext = Readonly<{
+	snapshot: KustoLeaveNoTracePolicySnapshot;
+}>;
+export type KustoSanitizationObserver = (
+	before: PersistedResultState,
+	after: PersistedResultState,
+	context: KustoSanitizationContext,
+) => void;
+
+class KustoSanitizationObserverError {
+	constructor(readonly cause: unknown) {}
+}
 
 function hasOwn(record: Record<string, unknown>, key: string): boolean {
 	return Object.prototype.hasOwnProperty.call(record, key);
@@ -69,11 +84,19 @@ export interface PersistedResultSanitizationApplicationHandler {
 	readonly onDidInvalidateSqlPersistence: vscode.Event<void>;
 	readonly onDidInvalidateKustoPersistence: vscode.Event<void>;
 	sanitizeSqlLeaveNoTraceState<T extends PersistedResultState>(state: T): T;
-	sanitizeSqlLeaveNoTraceStateFresh<T extends PersistedResultState>(state: T): Promise<T>;
+	sanitizeSqlLeaveNoTraceStateFresh<T extends PersistedResultState>(
+		state: T,
+		onKustoSanitized?: KustoSanitizationObserver,
+	): Promise<T>;
 	sanitizeSqlLeaveNoTraceStateFailClosed<T extends PersistedResultState>(state: T): T;
+	commitKustoSourceAdmissionFresh(
+		expectedPolicyFingerprint: string,
+		commit: () => boolean | Promise<boolean>,
+	): Promise<boolean>;
 	publishSqlLeaveNoTraceStateFresh<T extends PersistedResultState, R>(
 		state: T,
 		publish: (sanitizedState: T) => Promise<R>,
+		onKustoSanitized?: KustoSanitizationObserver,
 	): Promise<R>;
 	invalidateSqlPersistence(): void;
 	invalidateKustoPersistence(): void;
@@ -185,12 +208,27 @@ export class HostPersistedResultSanitizationApplicationHandler
 		return this.stripOrphanedSqlPrincipalFingerprints(changed ? { ...state, sections: sanitized } : state);
 	}
 
-	async sanitizeSqlLeaveNoTraceStateFresh<T extends PersistedResultState>(state: T): Promise<T> {
+	async sanitizeSqlLeaveNoTraceStateFresh<T extends PersistedResultState>(
+		state: T,
+		onKustoSanitized?: KustoSanitizationObserver,
+	): Promise<T> {
 		state = this.stripLegacyResultPayloads(state);
+		const notifyKustoSanitized = (
+			before: PersistedResultState,
+			after: PersistedResultState,
+			context: KustoSanitizationContext,
+		) => {
+			try {
+				onKustoSanitized?.(before, after, context);
+			} catch (error) {
+				throw new KustoSanitizationObserverError(error);
+			}
+		};
 		try {
 			return await this.options.sqlWorkbench.retrySqlOwnerSnapshotAcquisition(async () => {
 				return this.options.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoSnapshot => {
 					const kustoSanitized = this.sanitizeKustoLeaveNoTraceStateFromSnapshot(state, kustoSnapshot);
+					notifyKustoSanitized(state, kustoSanitized, { snapshot: kustoSnapshot });
 					const locallySanitized = this.sanitizeSqlLeaveNoTraceState(kustoSanitized);
 					if (!this.hasSqlOwnedState(locallySanitized)) {
 						return { acquired: true as const, value: locallySanitized };
@@ -199,10 +237,24 @@ export class HostPersistedResultSanitizationApplicationHandler
 						this.sanitizeSqlPrincipalOwnedResultsFromSnapshot(locallySanitized, snapshot));
 				});
 			});
-		} catch {
-			return this.stripAllSqlOwnedResults(
-				this.stripAllKustoOwnedResults(this.sanitizeSqlLeaveNoTraceState(state)),
-			);
+		} catch (error) {
+			if (error instanceof KustoSanitizationObserverError) throw error.cause;
+			try {
+				return await this.options.connectionManager.runWithLeaveNoTraceSnapshotLock(async () => {
+					const sanitized = this.stripAllSqlOwnedResults(
+						this.stripAllKustoOwnedResults(this.sanitizeSqlLeaveNoTraceState(state)),
+					);
+					notifyKustoSanitized(state, sanitized, {
+						snapshot: {
+							clusterKeys: [], globallyBlocked: true, version: 0, revocationGenerations: {},
+						},
+					});
+					return sanitized;
+				});
+			} catch (fallbackError) {
+				if (fallbackError instanceof KustoSanitizationObserverError) throw fallbackError.cause;
+				throw error;
+			}
 		}
 	}
 
@@ -214,14 +266,27 @@ export class HostPersistedResultSanitizationApplicationHandler
 			: locallySanitized;
 	}
 
+	commitKustoSourceAdmissionFresh(
+		expectedPolicyFingerprint: string,
+		commit: () => boolean | Promise<boolean>,
+	): Promise<boolean> {
+		return this.options.connectionManager.runWithLeaveNoTraceSnapshotLock(async snapshot => {
+			if (!expectedPolicyFingerprint
+				|| kustoLeaveNoTracePolicyFingerprint(snapshot) !== expectedPolicyFingerprint) return false;
+			return await commit();
+		});
+	}
+
 	publishSqlLeaveNoTraceStateFresh<T extends PersistedResultState, R>(
 		state: T,
 		publish: (sanitizedState: T) => Promise<R>,
+		onKustoSanitized?: KustoSanitizationObserver,
 	): Promise<R> {
 		state = this.stripLegacyResultPayloads(state);
 		return this.options.sqlWorkbench.retrySqlOwnerSnapshotAcquisition(async () => {
 			return this.options.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoSnapshot => {
 				const kustoSanitized = this.sanitizeKustoLeaveNoTraceStateFromSnapshot(state, kustoSnapshot);
+				onKustoSanitized?.(state, kustoSanitized, { snapshot: kustoSnapshot });
 				const locallySanitized = this.sanitizeSqlLeaveNoTraceState(kustoSanitized);
 				if (!this.hasSqlOwnedState(locallySanitized)) {
 					return { acquired: true as const, value: await publish(locallySanitized) };

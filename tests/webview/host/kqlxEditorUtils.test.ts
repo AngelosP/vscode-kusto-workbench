@@ -12,6 +12,8 @@ import {
 	stripDiffNoise,
 	hasSqlOwnedDocumentState,
 	OwnedSessionWriteTracker,
+	consumeKqlxProjectionAttempt,
+	createKqlxProjectionAttemptBudget,
 	publishKqlxTextFresh,
 	resolveLinkedQueryUri,
 	shouldReloadKqlxAfterDocumentChange,
@@ -187,6 +189,17 @@ describe('OwnedSessionWriteTracker', () => {
 
 		expect(tracker.latest).toBe('initial');
 		expect(tracker.observe('failed')).toBe(false);
+	});
+});
+
+describe('KqlxProjectionAttemptBudget', () => {
+	it('shares one bounded budget across every projection retry reason', () => {
+		const budget = createKqlxProjectionAttemptBudget();
+		expect(consumeKqlxProjectionAttempt(budget)).toBe(true);
+		expect(consumeKqlxProjectionAttempt(budget)).toBe(true);
+		expect(consumeKqlxProjectionAttempt(budget)).toBe(true);
+		expect(consumeKqlxProjectionAttempt(budget)).toBe(false);
+		expect(budget.remainingAttempts).toBe(0);
 	});
 });
 

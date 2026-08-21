@@ -4,6 +4,7 @@ import {
 	HostPersistedResultSanitizationApplicationHandler,
 	type PersistedResultSanitizationApplicationHandlerOptions,
 } from '../../../src/host/persistedResultSanitizationApplicationHandler';
+import { kustoLeaveNoTracePolicyFingerprint } from '../../../src/host/kustoLeaveNoTracePolicyStore';
 import { sqlSchemaPrincipalFingerprintForPrincipal } from '../../../src/host/sqlEditorSchema';
 import { sqlConnectionTargetSignature } from '../../../src/shared/sqlConnectionIdentity';
 
@@ -179,6 +180,36 @@ describe('HostPersistedResultSanitizationApplicationHandler', () => {
 		expect(sanitized).toBe(state);
 		expect(reconcileComparisonOwners).toHaveBeenCalledWith(state.sections);
 		expect(tryDispatchSqlOwnerSnapshot).toHaveBeenCalledOnce();
+	});
+
+	it('reports Kusto sanitation inside its policy lock before SQL acquisition', async () => {
+		const harness = createHandler();
+		const state = admittedState();
+		harness.kustoSnapshot.globallyBlocked = true;
+		const observer = vi.fn((before, after) => {
+			harness.order.push('kusto-observer');
+			expect(before).toBe(state);
+			expect(after.sections[0]).not.toHaveProperty('resultJson');
+			expect(after.sections[1]).toHaveProperty('resultJson');
+			expect(harness.tryDispatchSqlOwnerSnapshot).not.toHaveBeenCalled();
+		});
+
+		const sanitized = await harness.handler.sanitizeSqlLeaveNoTraceStateFresh(state, observer);
+
+		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(observer).toHaveBeenCalledOnce();
+		expect(harness.order).toEqual(['retry', 'kusto-enter', 'kusto-observer', 'kusto-exit']);
+	});
+
+	it('propagates a Kusto sanitation observer failure exactly once', async () => {
+		const harness = createHandler();
+		const failure = new Error('owner observer failed');
+		const observer = vi.fn(() => { throw failure; });
+
+		await expect(harness.handler.sanitizeSqlLeaveNoTraceStateFresh(admittedState(), observer))
+			.rejects.toBe(failure);
+		expect(observer).toHaveBeenCalledOnce();
+		expect(harness.runWithLeaveNoTraceSnapshotLock).toHaveBeenCalledOnce();
 	});
 
 	it('adopts an eligible legacy Kusto result without changing its serialized payload', async () => {
@@ -474,15 +505,36 @@ describe('HostPersistedResultSanitizationApplicationHandler', () => {
 	});
 
 	it('uses the same fail-closed result when fresh owner acquisition fails', async () => {
-		const { handler, retrySqlOwnerSnapshotAcquisition } = createHandler();
+		const { handler, order, retrySqlOwnerSnapshotAcquisition } = createHandler();
 		const state = admittedState();
 		retrySqlOwnerSnapshotAcquisition.mockRejectedValueOnce(new Error('policy unavailable'));
+		const observer = vi.fn((_before, after, context) => {
+			order.push('fallback-observer');
+			expect(after.sections[0]).not.toHaveProperty('resultJson');
+			expect(context.snapshot.globallyBlocked).toBe(true);
+			expect(order).toEqual(['kusto-enter', 'fallback-observer']);
+		});
 
-		const sanitized = await handler.sanitizeSqlLeaveNoTraceStateFresh(state);
+		const sanitized = await handler.sanitizeSqlLeaveNoTraceStateFresh(state, observer);
 
 		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
 		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
 		expect(sanitized.sections[2]).toHaveProperty('result', { opaque: true });
+		expect(observer).toHaveBeenCalledOnce();
+		expect(order).toEqual(['kusto-enter', 'fallback-observer', 'kusto-exit']);
+	});
+
+	it('does not invoke fail-closed owner revocation when Kusto lock reacquisition fails', async () => {
+		const harness = createHandler();
+		const state = admittedState();
+		const failure = new Error('policy unavailable');
+		harness.retrySqlOwnerSnapshotAcquisition.mockRejectedValueOnce(failure);
+		harness.runWithLeaveNoTraceSnapshotLock.mockRejectedValueOnce(new Error('Kusto lock unavailable'));
+		const observer = vi.fn();
+
+		await expect(harness.handler.sanitizeSqlLeaveNoTraceStateFresh(state, observer))
+			.rejects.toBe(failure);
+		expect(observer).not.toHaveBeenCalled();
 	});
 
 	it('holds Kusto then SQL owner locks through exact publication settlement', async () => {
@@ -506,6 +558,71 @@ describe('HostPersistedResultSanitizationApplicationHandler', () => {
 		expect(order).toEqual([
 			'retry', 'kusto-enter', 'sql-enter', 'publish', 'sql-exit', 'kusto-exit',
 		]);
+	});
+
+	it('reports Kusto sanitation before entering the SQL publication lock', async () => {
+		const harness = createHandler();
+		const state = admittedState();
+		harness.kustoSnapshot.globallyBlocked = true;
+		const observer = vi.fn(() => harness.order.push('kusto-observer'));
+		const publish = vi.fn(async (sanitized: typeof state) => {
+			harness.order.push('publish');
+			expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+			return 'published';
+		});
+
+		await expect(harness.handler.publishSqlLeaveNoTraceStateFresh(
+			state,
+			publish,
+			observer,
+		)).resolves.toBe('published');
+
+		expect(harness.order).toEqual([
+			'retry', 'kusto-enter', 'kusto-observer', 'sql-enter', 'publish', 'sql-exit', 'kusto-exit',
+		]);
+	});
+
+	it('commits a Kusto source admission only under the same canonical policy fingerprint', async () => {
+		const harness = createHandler();
+		const commit = vi.fn(() => true);
+		const fingerprint = kustoLeaveNoTracePolicyFingerprint(harness.kustoSnapshot);
+
+		await expect(harness.handler.commitKustoSourceAdmissionFresh(fingerprint, commit))
+			.resolves.toBe(true);
+		expect(commit).toHaveBeenCalledOnce();
+		expect(harness.order).toEqual(['kusto-enter', 'kusto-exit']);
+	});
+
+	it('awaits an asynchronous Kusto source admission under the policy lock', async () => {
+		const harness = createHandler();
+		let releaseCommit!: () => void;
+		const commitGate = new Promise<void>(resolve => { releaseCommit = resolve; });
+		const fingerprint = kustoLeaveNoTracePolicyFingerprint(harness.kustoSnapshot);
+		const commit = vi.fn(async () => {
+			harness.order.push('commit-start');
+			await commitGate;
+			harness.order.push('commit-end');
+			return true;
+		});
+
+		const pending = harness.handler.commitKustoSourceAdmissionFresh(fingerprint, commit);
+		await vi.waitFor(() => expect(harness.order).toEqual(['kusto-enter', 'commit-start']));
+		releaseCommit();
+
+		await expect(pending).resolves.toBe(true);
+		expect(harness.order).toEqual(['kusto-enter', 'commit-start', 'commit-end', 'kusto-exit']);
+	});
+
+	it('rejects a Kusto source admission when canonical policy changed without a watcher event', async () => {
+		const harness = createHandler();
+		const commit = vi.fn(() => true);
+		const fingerprint = kustoLeaveNoTracePolicyFingerprint(harness.kustoSnapshot);
+		harness.kustoSnapshot.version = 2;
+		harness.kustoSnapshot.globallyBlocked = true;
+
+		await expect(harness.handler.commitKustoSourceAdmissionFresh(fingerprint, commit))
+			.resolves.toBe(false);
+		expect(commit).not.toHaveBeenCalled();
 	});
 
 	it('owns invalidation events and disposal without disabling close sanitation', async () => {
