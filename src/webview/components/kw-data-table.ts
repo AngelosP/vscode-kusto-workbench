@@ -838,7 +838,7 @@ export class KwDataTable extends LitElement {
 	private _complexPreviewColumnMaxWidth(): number {
 		return Math.max(
 			MIN_COL_WIDTH,
-			Math.ceil(MAX_COL_WIDTH * this._complexCellMaxCharacters / DEFAULT_COMPLEX_CELL_MAX_CHARACTERS),
+			Math.ceil(this._measureTextWidth('M'.repeat(this._complexCellMaxCharacters)) + OBJECT_CELL_CHROME_WIDTH_PX),
 		);
 	}
 

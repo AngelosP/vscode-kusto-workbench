@@ -238,6 +238,8 @@ describe('kw-data-table visibility lifecycle', () => {
 		expect(toggle.getAttribute('aria-pressed')).toBe('true');
 		const controls = table.shadowRoot?.querySelector('[data-testid="complex-preview-controls"]') as Element;
 		expect(getComputedStyle(controls).backgroundColor).toBe('transparent');
+		expect(getComputedStyle(controls).paddingLeft).toBe('50px');
+		expect(getComputedStyle(controls).paddingRight).toBe('50px');
 		const close = table.shadowRoot?.querySelector('[data-testid="complex-preview-close"]') as Element;
 		expect(getComputedStyle(close).marginLeft).toBe('auto');
 		const input = table.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')!;
@@ -265,7 +267,7 @@ describe('kw-data-table visibility lifecycle', () => {
 		table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-toggle"]')?.click();
 		await settleTable(table);
 		const defaultComplexWidth = (table as any)._columnWidths[0];
-		expect(defaultComplexWidth).toBe(520);
+		expect(defaultComplexWidth).toBe(577);
 		expect((table as any)._columnWidths[0]).toBeGreaterThan(widthBefore);
 		const input = table.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')!;
 		input.value = '150';
@@ -308,7 +310,7 @@ describe('kw-data-table visibility lifecycle', () => {
 		input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
 		await settleTable(table);
 
-		expect((table as any)._columnWidths[0]).toBe(1040);
+		expect((table as any)._columnWidths[0]).toBe(1102);
 		expect(table.shadowRoot?.querySelector('.cell-text')?.textContent).toBe('p'.repeat(1000));
 		expect(table.shadowRoot?.querySelector('.th-label')?.textContent).toBe(`Mixed_${'h'.repeat(200)}`);
 		expect(getComputedStyle(table.shadowRoot?.querySelector('.cell-text') as Element).maxWidth).toBe('520px');
@@ -317,7 +319,7 @@ describe('kw-data-table visibility lifecycle', () => {
 		input.value = '25';
 		input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
 		await settleTable(table);
-		expect((table as any)._columnWidths[0]).toBe(174);
+		expect((table as any)._columnWidths[0]).toBe(227);
 	});
 
 	it('recomputes widths once when a character-cap edit is committed', async () => {
@@ -456,7 +458,7 @@ describe('kw-data-table visibility lifecycle', () => {
 		capInput.value = '150';
 		capInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
 		await settleTable(table);
-		expect(internal._columnWidths[0]).toBe(1040);
+		expect(internal._columnWidths[0]).toBe(1102);
 		expect(table.shadowRoot?.querySelector('[data-testid="complex-value-preview"]')).toBeTruthy();
 		internal._selectionCtrl.setSelectedCell({ row: 0, col: 0 });
 		internal._openObjectViewer(0, 0);
