@@ -132,3 +132,46 @@ Feature: Capture refreshed Did you know tutorial media
     When I execute command "workbench.action.closeAllEditors"
     When I execute command "kustoWorkbench.test.cleanupPersistedResultFixture"
     When I delete file "tests/vscode-extension-tester/runs/default/tutorial-media-refresh/chart-showcase.kqlx"
+
+  Scenario: Column datatype glyphs and configurable complex value preview
+    Given the extension is in a clean state
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 980 by 620
+    And I execute command "workbench.action.closeSidebar"
+    And I execute command "workbench.action.closeAuxiliaryBar"
+    And I execute command "workbench.action.closePanel"
+    When I execute command "kustoWorkbench.test.preparePersistedResultFixture" with args '[{"engine":"kusto","templatePath":"tests/vscode-extension-tester/e2e/default/tutorial-media-refresh/fixtures/results-showcase.kqlx","outputPath":"tests/vscode-extension-tester/runs/default/tutorial-media-refresh/results-datatypes.kqlx"}]'
+    And I wait 1 second
+    When I open file "tests/vscode-extension-tester/runs/default/tutorial-media-refresh/results-datatypes.kqlx" in the editor
+    And I wait 6 seconds
+    When I wait for "kw-data-table" in the webview for 20 seconds
+    When I evaluate "(async () => { const table = document.getElementById('query_results_showcase')?.querySelector('kw-data-table'); if (!table) throw new Error('Data table not found'); table.scrollIntoView({ block: 'start' }); await table.updateComplete; const glyphs = Array.from(table.shadowRoot?.querySelectorAll('[data-testid=column-type-glyph]') || []); const tooltips = glyphs.map(glyph => glyph.getAttribute('title')); if (glyphs.map(glyph => glyph.textContent).join('|') !== 'd|s|s|j|l') throw new Error('Unexpected datatype glyphs: ' + glyphs.map(glyph => glyph.textContent).join(',')); if (tooltips.join('|') !== 'Data type: datetime|Data type: string|Data type: string|Data type: dynamic|Data type: long') throw new Error('Unexpected datatype tooltips: ' + tooltips.join(',')); for (const glyph of glyphs) { glyph.style.outline = '2px solid var(--vscode-focusBorder)'; glyph.style.outlineOffset = '2px'; } return tooltips.join(','); })()" in the webview for 10 seconds
+    And I wait 1 second
+    Then I take a screenshot "13-results-column-datatypes"
+    When I evaluate "(async () => { const table = document.getElementById('query_results_showcase')?.querySelector('kw-data-table'); if (!table) throw new Error('Data table not found'); for (const glyph of table.shadowRoot?.querySelectorAll('[data-testid=column-type-glyph]') || []) { glyph.style.outline = ''; glyph.style.outlineOffset = ''; } await table.updateComplete; return 'datatype highlight cleared'; })()" in the webview for 10 seconds
+    When I click "[data-testid='complex-preview-toggle']" in the webview
+    When I wait for "[data-testid='complex-preview-controls']" in the webview for 10 seconds
+    When I evaluate "(async () => { const table = document.getElementById('query_results_showcase')?.querySelector('kw-data-table'); if (!table) throw new Error('Data table not found'); const root = table.shadowRoot; const input = root?.querySelector('[data-testid=complex-preview-length]'); if (!input) throw new Error('Complex preview length input not found'); input.value = '110'; input.dispatchEvent(new Event('input', { bubbles: true, composed: true })); input.dispatchEvent(new Event('change', { bubbles: true, composed: true })); await table.updateComplete; const previews = root.querySelectorAll('[data-testid=complex-value-preview]'); const links = root.querySelectorAll('.obj-link'); if (previews.length !== 3 || links.length !== 3) throw new Error('Complex previews did not render beside every View link: ' + previews.length + '/' + links.length); return 'complex preview enabled at ' + input.value; })()" in the webview for 10 seconds
+    And I wait 1 second
+    Then I take a screenshot "14-results-complex-preview"
+    When I execute command "workbench.action.closeAllEditors"
+    When I execute command "kustoWorkbench.test.cleanupPersistedResultFixture"
+    When I delete file "tests/vscode-extension-tester/runs/default/tutorial-media-refresh/results-datatypes.kqlx"
+
+  Scenario: Result picker for a multi-statement Run All query
+    Given the extension is in a clean state
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 980 by 620
+    And I execute command "workbench.action.closeSidebar"
+    And I execute command "workbench.action.closeAuxiliaryBar"
+    And I execute command "workbench.action.closePanel"
+    When I execute command "kustoWorkbench.test.preparePersistedResultFixture" with args '[{"engine":"kusto","templatePath":"tests/vscode-extension-tester/e2e/default/tutorial-media-refresh/fixtures/multi-result-showcase.kqlx","outputPath":"tests/vscode-extension-tester/runs/default/tutorial-media-refresh/multi-result-showcase.kqlx"}]'
+    When I open file "tests/vscode-extension-tester/runs/default/tutorial-media-refresh/multi-result-showcase.kqlx" in the editor
+    And I wait 6 seconds
+    When I wait for "[data-testid='result-set-picker']" in the webview for 20 seconds
+    When I evaluate "(async () => { const section = document.getElementById('query_multi_result_showcase'); const table = section?.querySelector('kw-data-table'); if (!table) throw new Error('Data table not found'); section.scrollIntoView({ block: 'start' }); await table.updateComplete; const picker = table.shadowRoot?.querySelector('[data-testid=result-set-picker]'); const options = [...(picker?.options || [])].map(option => option.textContent); const columns = (table.columns || []).map(column => typeof column === 'string' ? column : column.name); if (options.length !== 3 || picker.value !== '1' || table.options?.selectedResultIndex !== 1 || columns.join(',') !== 'Service,AvgDurationMs,MaxDurationMs') throw new Error('Restored multi-result state is wrong: ' + JSON.stringify({ options, value: picker?.value, selectedResultIndex: table.options?.selectedResultIndex, columns })); return options.join(' | '); })()" in the webview for 10 seconds
+    And I wait 1 second
+    Then I take a screenshot "15-results-multiple-result-sets"
+    When I execute command "workbench.action.closeAllEditors"
+    When I execute command "kustoWorkbench.test.cleanupPersistedResultFixture"
+    When I delete file "tests/vscode-extension-tester/runs/default/tutorial-media-refresh/multi-result-showcase.kqlx"

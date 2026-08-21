@@ -180,6 +180,9 @@ describe('kw-data-table visibility lifecycle', () => {
 		expect(toggle).toBeTruthy();
 		expect(toggle?.querySelector('svg[data-icon="preview-pane"] rect')).toBeTruthy();
 		expect(toggle?.querySelector('circle')).toBeNull();
+		const toolbar = table.shadowRoot?.querySelector('.tb') as Element;
+		expect(getComputedStyle(toolbar).justifyContent).toBe('flex-start');
+		expect(getComputedStyle(toolbar.firstElementChild as Element).marginLeft).toBe('auto');
 		expect(toggle?.getAttribute('aria-pressed')).toBe('false');
 		expect(table.shadowRoot?.querySelector('[data-testid="complex-preview-controls"]')).toBeNull();
 		expect(table.shadowRoot?.querySelectorAll('.obj-link')).toHaveLength(1);
@@ -240,6 +243,8 @@ describe('kw-data-table visibility lifecycle', () => {
 		expect(getComputedStyle(controls).backgroundColor).toBe('transparent');
 		expect(getComputedStyle(controls).paddingLeft).toBe('50px');
 		expect(getComputedStyle(controls).paddingRight).toBe('50px');
+		expect(controls.querySelector('.complex-preview-label')).toBeNull();
+		expect(controls.textContent?.trim()).toBe('Max characters');
 		const close = table.shadowRoot?.querySelector('[data-testid="complex-preview-close"]') as Element;
 		expect(getComputedStyle(close).marginLeft).toBe('auto');
 		const input = table.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')!;
@@ -269,6 +274,8 @@ describe('kw-data-table visibility lifecycle', () => {
 		const defaultComplexWidth = (table as any)._columnWidths[0];
 		expect(defaultComplexWidth).toBe(577);
 		expect((table as any)._columnWidths[0]).toBeGreaterThan(widthBefore);
+		(table as any)._vScrollCtrl.viewportW = 1000;
+		expect((table as any)._layoutColumns().widths[0]).toBe(defaultComplexWidth);
 		const input = table.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')!;
 		input.value = '150';
 		input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));

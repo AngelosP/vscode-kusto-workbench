@@ -3,7 +3,7 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [5.1.0] - 2026.08.20
+## [5.1.0] - 2026.08.21
 
 * Support for multiple results within a single query section (Run All).
 * Improvements to the 'Compare queries' and 'Optimize query' UX.

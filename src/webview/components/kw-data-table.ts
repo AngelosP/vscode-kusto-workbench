@@ -811,8 +811,7 @@ export class KwDataTable extends LitElement {
 
 	private _computeColumnWidths(): number[] {
 		return this.columns.map((col, ci) => {
-			const isComplexPreviewColumn = this._complexPreviewEnabled
-				&& this.rows.some(row => Array.isArray(row) && isViewableObjectCell(row[ci]));
+			const isComplexPreviewColumn = this._isComplexPreviewColumn(ci);
 			const complexColumnMaxWidth = isComplexPreviewColumn ? this._complexPreviewColumnMaxWidth() : MAX_COL_WIDTH;
 			const maxWidth = isComplexPreviewColumn ? complexColumnMaxWidth : MAX_COL_WIDTH;
 			const headerLabel = isColumnFiltered(ci, this._columnFilters) ? `${col.name} (filtered)` : col.name;
@@ -831,14 +830,20 @@ export class KwDataTable extends LitElement {
 		});
 	}
 
+	private _isComplexPreviewColumn(columnIndex: number): boolean {
+		return this._complexPreviewEnabled
+			&& this.rows.some(row => Array.isArray(row) && isViewableObjectCell(row[columnIndex]));
+	}
+
 	private _complexPreviewTextMaxWidth(): number {
 		return Math.max(0, this._complexPreviewColumnMaxWidth() - OBJECT_CELL_CHROME_WIDTH_PX);
 	}
 
 	private _complexPreviewColumnMaxWidth(): number {
+		const previewFontSize = (this.options.compact ?? false) ? 10 : 11;
 		return Math.max(
 			MIN_COL_WIDTH,
-			Math.ceil(this._measureTextWidth('M'.repeat(this._complexCellMaxCharacters)) + OBJECT_CELL_CHROME_WIDTH_PX),
+			Math.ceil(this._measureTextWidth('M'.repeat(this._complexCellMaxCharacters), previewFontSize) + OBJECT_CELL_CHROME_WIDTH_PX),
 		);
 	}
 
@@ -876,7 +881,7 @@ export class KwDataTable extends LitElement {
 		return this._measureTextWidth(text) + 18;
 	}
 
-	private _measureTextWidth(text: string): number {
+	private _measureTextWidth(text: string, fontSize = (this.options.compact ?? false) ? 11 : 12): number {
 		const canvas = this._measureCanvas ?? (this._measureCanvas = document.createElement('canvas'));
 		const ctx = canvas.getContext('2d');
 		const measuredText = text.slice(0, 500);
@@ -884,7 +889,6 @@ export class KwDataTable extends LitElement {
 		const cs = getComputedStyle(this);
 		const fontFamilyVar = cs.getPropertyValue('--vscode-editor-font-family').trim();
 		const fontFamily = fontFamilyVar || cs.fontFamily || 'Segoe WPC, Segoe UI, sans-serif';
-		const fontSize = (this.options.compact ?? false) ? 11 : 12;
 		ctx.font = `400 ${fontSize}px ${fontFamily}`;
 		return ctx.measureText(measuredText).width;
 	}
@@ -909,22 +913,27 @@ export class KwDataTable extends LitElement {
 			return { widths: base, tableWidth: ROW_NUMBER_WIDTH + baseTotal };
 		}
 
-		// Fit mode: everything can fit. Keep fit widths and let one column absorb remaining space.
+		// Fit mode: everything can fit. Let one uncapped column absorb remaining space.
 		const widths = [...base];
 		const extra = available - baseTotal;
+		let filledViewport = false;
 		if (extra > 0) {
-			let flexIdx = 0;
-			let maxW = widths[0] ?? 0;
-			for (let i = 1; i < widths.length; i++) {
-				if (widths[i] >= maxW) {
+			let flexIdx = -1;
+			let maxW = -1;
+			for (let i = 0; i < widths.length; i++) {
+				if (!this._isComplexPreviewColumn(i) && widths[i] >= maxW) {
 					maxW = widths[i];
 					flexIdx = i;
 				}
 			}
-			const scrollbarSlack = 2;
-			widths[flexIdx] += Math.max(0, extra - scrollbarSlack);
+			if (flexIdx >= 0) {
+				const scrollbarSlack = 2;
+				widths[flexIdx] += Math.max(0, extra - scrollbarSlack);
+				filledViewport = true;
+			}
 		}
-		const tableWidth = Math.max(ROW_NUMBER_WIDTH + widths.reduce((sum, w) => sum + w, 0), viewport - 1);
+		const contentWidth = ROW_NUMBER_WIDTH + widths.reduce((sum, w) => sum + w, 0);
+		const tableWidth = filledViewport ? Math.max(contentWidth, viewport - 1) : contentWidth;
 		return { widths, tableWidth };
 	}
 
@@ -1165,7 +1174,6 @@ export class KwDataTable extends LitElement {
 
 	private _renderComplexPreviewControls(): TemplateResult {
 		return html`<div class="sbar complex-preview-controls" id="complex-preview-controls" data-testid="complex-preview-controls">
-			<span class="complex-preview-label">Complex preview</span>
 			<label class="complex-preview-length-label" for="complex-preview-length">Max characters</label>
 			<input id="complex-preview-length" class="complex-preview-length" data-testid="complex-preview-length"
 				aria-label="Maximum complex column characters"

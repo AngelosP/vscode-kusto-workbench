@@ -1,0 +1,22 @@
+{
+  "kind": "kqlx",
+  "version": 1,
+  "state": {
+    "caretDocsEnabled": true,
+    "autoTriggerAutocompleteEnabled": false,
+    "sections": [
+      {
+        "id": "query_multi_result_showcase",
+        "type": "query",
+        "name": "Run All with three statements",
+        "query": "let Runs = datatable(Service:string, DurationMs:long, Failed:bool)['checkout', 138, false, 'search', 82, false, 'export', 211, true, 'checkout', 164, false, 'search', 96, true, 'export', 187, false];\nRuns | summarize Calls = count() by Service;\nRuns | summarize AvgDurationMs = avg(DurationMs), MaxDurationMs = max(DurationMs) by Service;\nRuns | summarize Failures = countif(Failed) by Service",
+        "expanded": true,
+        "resultsVisible": true,
+        "editorHeightPx": 150,
+        "resultsHeightPx": 260,
+        "selectedResultIndex": 1,
+        "resultJson": "{\"columns\":[{\"name\":\"Service\",\"type\":\"string\"},{\"name\":\"Calls\",\"type\":\"long\"}],\"rows\":[[\"checkout\",2],[\"search\",2],[\"export\",2]],\"metadata\":{\"executionTime\":\"00:00:00.061\",\"clientActivityId\":\"did-you-know-multi-result\",\"resultName\":\"PrimaryResult\"},\"additionalResults\":{\"version\":1,\"sets\":[{\"resultIndex\":1,\"columns\":[{\"name\":\"Service\",\"type\":\"string\"},{\"name\":\"AvgDurationMs\",\"type\":\"real\"},{\"name\":\"MaxDurationMs\",\"type\":\"long\"}],\"rows\":[[\"checkout\",151,164],[\"search\",89,96],[\"export\",199,211]],\"metadata\":{\"executionTime\":\"00:00:00.061\",\"clientActivityId\":\"did-you-know-multi-result\",\"resultName\":\"PrimaryResult\"}},{\"resultIndex\":2,\"columns\":[{\"name\":\"Service\",\"type\":\"string\"},{\"name\":\"Failures\",\"type\":\"long\"}],\"rows\":[[\"checkout\",0],[\"search\",1],[\"export\",1]],\"metadata\":{\"executionTime\":\"00:00:00.061\",\"clientActivityId\":\"did-you-know-multi-result\",\"resultName\":\"PrimaryResult\"}}]}}"
+      }
+    ]
+  }
+}

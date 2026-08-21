@@ -97,10 +97,14 @@ describe('tutorial catalog validation', () => {
 		expect(byId.get('results-search-json')?.minExtensionVersion).toBe('5.1.0');
 		expect(byId.get('results-complex-preview')?.minExtensionVersion).toBe('5.1.0');
 		expect(byId.get('results-column-tools')?.minExtensionVersion).toBe('5.1.0');
+		expect(byId.get('results-multiple-result-sets')?.minExtensionVersion).toBe('5.1.0');
+		expect(byId.get('results-column-datatypes')?.minExtensionVersion).toBe('5.1.0');
 		expect(byId.get('results-search-json')?.updateToken).toBe('results-search-json-2026-08-19');
-		expect(byId.get('results-complex-preview')?.updateToken).toBe('results-complex-preview-2026-08-20');
-		expect(byId.get('results-column-tools')?.updateToken).toBe('results-column-tools-2026-08-19');
-		expect(actual.generatedAt).toBe('2026-08-20T00:00:00.000Z');
+		expect(byId.get('results-complex-preview')?.updateToken).toBe('results-complex-preview-2026-08-21');
+		expect(byId.get('results-column-tools')?.updateToken).toBe('results-column-tools-2026-08-21');
+		expect(byId.get('results-multiple-result-sets')?.updateToken).toBe('results-multiple-result-sets-2026-08-21');
+		expect(byId.get('results-column-datatypes')?.updateToken).toBe('results-column-datatypes-2026-08-21');
+		expect(actual.generatedAt).toBe('2026-08-21T00:00:00.000Z');
 	});
 });
 
