@@ -93,6 +93,40 @@ describe('KustoEditorSchemaCoordinator ownership', () => {
 		});
 	});
 
+	it('publishes worker readiness revocation when a physical target owner rotates', () => {
+		const coordinator = new KustoEditorSchemaCoordinator();
+		const lease = coordinator.openSection('query_1', 'instance-1')!;
+		coordinator.setTarget(lease, 'connection-a', 'DbA', {
+			connectionRevision: 1,
+			connectionIdentityKey: 'owner-1',
+		});
+		coordinator.setOwnedState('query_1', 'workerReady', { status: 'ready' });
+		const readinessEvents: unknown[] = [];
+		coordinator.subscribeOwnedState('query_1', 'workerReady', state => readinessEvents.push(state));
+
+		coordinator.setTarget(lease, 'connection-a', 'DbA', {
+			connectionRevision: 2,
+			connectionIdentityKey: 'owner-2',
+		});
+
+		expect(readinessEvents).toEqual([undefined]);
+		expect(coordinator.getOwnedState('query_1', 'workerReady')).toBeUndefined();
+	});
+
+	it('publishes worker readiness revocation before closing a mounted lifecycle owner', () => {
+		const coordinator = new KustoEditorSchemaCoordinator();
+		const lease = coordinator.openSection('query_1', 'instance-1')!;
+		coordinator.setTarget(lease, 'connection-a', 'DbA');
+		coordinator.setOwnedState('query_1', 'workerReady', { status: 'ready' });
+		const readinessEvents: unknown[] = [];
+		coordinator.subscribeOwnedState('query_1', 'workerReady', state => readinessEvents.push(state));
+
+		coordinator.closeSection(lease);
+
+		expect(readinessEvents).toEqual([undefined]);
+		expect(coordinator.getOwnedState('query_1', 'workerReady')).toBeUndefined();
+	});
+
 	it('rotates identity when the current target is explicitly invalidated', () => {
 		const coordinator = new KustoEditorSchemaCoordinator();
 		const lease = coordinator.openSection('query_1', 'instance-1')!;

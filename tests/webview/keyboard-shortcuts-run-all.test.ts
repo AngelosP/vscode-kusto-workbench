@@ -4,17 +4,19 @@ const mocks = vi.hoisted(() => ({
 	executeQuery: vi.fn(),
 	executeAllQueries: vi.fn(),
 	hasTextFocus: vi.fn(() => true),
+	focus: vi.fn(),
+	setActiveQueryEditorBoxId: vi.fn(),
 }));
 
 vi.mock('../../src/webview/core/state.js', () => ({
 	activeMonacoEditor: null,
 	activeQueryEditorBoxId: 'query_1',
-	setActiveQueryEditorBoxId: vi.fn(),
+	setActiveQueryEditorBoxId: mocks.setActiveQueryEditorBoxId,
 	queryEditors: {
 		query_1: {
 			hasTextFocus: mocks.hasTextFocus,
 			hasWidgetFocus: () => false,
-			focus: vi.fn(),
+			focus: mocks.focus,
 		},
 	},
 	caretDocOverlaysByBoxId: {},
@@ -50,6 +52,8 @@ describe('Kusto execution keyboard shortcuts', () => {
 		mocks.executeQuery.mockClear();
 		mocks.executeAllQueries.mockClear();
 		mocks.hasTextFocus.mockReturnValue(true);
+		mocks.focus.mockClear();
+		mocks.setActiveQueryEditorBoxId.mockClear();
 		delete (window as any).__kustoReadOnlyMode;
 	});
 
@@ -85,5 +89,24 @@ describe('Kusto execution keyboard shortcuts', () => {
 
 		expect(mocks.executeAllQueries).not.toHaveBeenCalled();
 		expect(mocks.executeQuery).not.toHaveBeenCalled();
+	});
+
+	it('returns toolbar click focus through Monaco without preassigning active ownership', () => {
+		vi.useFakeTimers();
+		try {
+			document.body.innerHTML = `
+				<div id="query_1" class="query-box">
+					<div class="query-editor-toolbar"><button id="toolbar-action">Action</button></div>
+				</div>`;
+			const button = document.getElementById('toolbar-action')!;
+
+			button.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }));
+			vi.runAllTimers();
+
+			expect(mocks.focus).toHaveBeenCalledOnce();
+			expect(mocks.setActiveQueryEditorBoxId).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

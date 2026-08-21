@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { filterResolvableCrossClusterMarkers } from '../../src/webview/shared/kusto-diagnostic-marker-filter';
 import { kustoDatabaseKey } from '../../src/shared/kustoClusterUrls';
+import { getKustoSchemaIdentityKey } from '../../src/shared/kustoAuth';
+import { KustoSupplementalSchemaCoordinator, supplementalStateIdentity } from '../../src/webview/shared/kusto-supplemental-schema-coordinator';
 
 type Marker = {
 	code?: unknown;
@@ -70,6 +72,73 @@ describe('filterResolvableCrossClusterMarkers', () => {
 
 		expect(result).toEqual([]);
 		expect(trace).toHaveBeenCalledWith({ event: 'suppress-supplemental-diagnostic', code: 'KS207', schemaKey: kustoDatabaseKey('Remote', 'Telemetry') });
+	});
+
+	it('uses the principal-aware production key while supplemental acquisition is scheduled', () => {
+		const text = `cluster('remote.kusto.windows.net').database('Telemetry').Events`;
+		const marker = markerOn(text, 'remote.kusto.windows.net');
+		const schemaKey = getKustoSchemaIdentityKey(
+			'connection-remote',
+			'partition-a',
+			'https://remote.kusto.windows.net',
+			'Telemetry',
+		);
+		const coordinator = new KustoSupplementalSchemaCoordinator();
+		coordinator.syncReferences({
+			boxId: 'query_1',
+			modelUri,
+			modelVersion: 1,
+			references: [{
+				schemaKey,
+				clusterName: 'remote.kusto.windows.net',
+				database: 'Telemetry',
+			}],
+			now: 10,
+		});
+		const resolvedKeys: string[] = [];
+
+		const result = filterResolvableCrossClusterMarkers(text, [marker], {
+			modelUri,
+			currentContext,
+			getOffsetAt: position => offsetAt(text, position),
+			resolveSchemaKey: (clusterName, database) => {
+				resolvedKeys.push(`${clusterName}|${database}`);
+				return schemaKey;
+			},
+			shouldSuppressDiagnostic: (resolvedSchemaKey, uri) => coordinator.shouldSuppressDiagnostic(uri, resolvedSchemaKey, 20),
+		});
+
+		expect(schemaKey).toContain('connection-remote');
+		expect(resolvedKeys).toEqual(['remote.kusto.windows.net|Telemetry']);
+		expect(result).toEqual([]);
+	});
+
+	it('suppresses an existing KS207 immediately when failed acquisition is retried', () => {
+		const text = `cluster('remote.kusto.windows.net').database('Telemetry').Events`;
+		const marker = markerOn(text, 'remote.kusto.windows.net');
+		const schemaKey = getKustoSchemaIdentityKey('connection-remote', 'partition-a', 'https://remote.kusto.windows.net', 'Telemetry');
+		const coordinator = new KustoSupplementalSchemaCoordinator();
+		const scheduled = coordinator.syncReferences({
+			boxId: 'query_1', modelUri, modelVersion: 1,
+			references: [{ schemaKey, clusterName: 'remote.kusto.windows.net', database: 'Telemetry' }],
+			now: 10,
+		}).added[0];
+		coordinator.markFetching(supplementalStateIdentity(scheduled), {
+			requestToken: 'failed-request', requestSource: 'background', deadlineAt: 100, now: 20,
+		});
+		coordinator.markRequestFailed('failed-request', 'fetch-failed', 30);
+		const filter = () => filterResolvableCrossClusterMarkers(text, [marker], {
+			modelUri,
+			currentContext,
+			getOffsetAt: position => offsetAt(text, position),
+			resolveSchemaKey: () => schemaKey,
+			shouldSuppressDiagnostic: (resolvedSchemaKey, uri) => coordinator.shouldSuppressDiagnostic(uri, resolvedSchemaKey, 40),
+		});
+
+		expect(filter()).toEqual([marker]);
+		const failed = coordinator.getState(modelUri, schemaKey)!;
+		coordinator.escalateToAutocomplete(supplementalStateIdentity(failed), 40);
+		expect(filter()).toEqual([]);
 	});
 
 	it('keeps KS207 when the schema is not loaded for the model', () => {

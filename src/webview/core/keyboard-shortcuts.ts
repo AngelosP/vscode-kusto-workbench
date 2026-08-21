@@ -2,7 +2,7 @@
 // Registers document-level keyboard event listeners for paste, cut/copy,
 // autocomplete triggers, execute query, modal dismiss, and focus management.
 import {
-	activeMonacoEditor, activeQueryEditorBoxId, setActiveQueryEditorBoxId,
+	activeMonacoEditor, activeQueryEditorBoxId,
 	queryEditors, caretDocOverlaysByBoxId,
 } from './state';
 import { __kustoGetQuerySectionElement } from './section-factory';
@@ -355,7 +355,6 @@ function __kustoGetFocusedMonacoEditor() {
 			const box = t ? t.closest('.query-box') : null;
 			const boxId = box && typeof box.id === 'string' ? box.id : '';
 			if (boxId && queryEditors && queryEditors[boxId] && typeof queryEditors[boxId].focus === 'function') {
-				try { setActiveQueryEditorBoxId(boxId); } catch (e) { console.error('[kusto]', e); }
 				queryEditors[boxId].focus();
 				return;
 			}

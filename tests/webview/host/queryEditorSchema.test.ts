@@ -195,7 +195,7 @@ describe('SchemaService cross-cluster schema requests', () => {
 		}));
 	});
 
-	it('keeps stale supplemental fallback loaded when silent refresh fails', async () => {
+	it('keeps stale supplemental fallback loaded and publishes a refresh terminal when silent refresh fails', async () => {
 		const connection: KustoConnection = { id: 'stale', name: 'Stale', clusterUrl: 'https://stale.kusto.windows.net' };
 		const { service, messages, getDatabaseSchema } = createService(connection);
 		vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue({
@@ -208,7 +208,12 @@ describe('SchemaService cross-cluster schema requests', () => {
 		await service.handleCrossClusterSchemaRequest('stale', 'TelemetryDb', 'query_5', 'token_5', 'background', 'trace-5');
 
 		expect(messages).toContainEqual(expect.objectContaining({ type: 'crossClusterSchemaData', deliverySource: 'disk-cache-stale', requestToken: 'token_5' }));
-		expect(messages).not.toContainEqual(expect.objectContaining({ type: 'crossClusterSchemaError', requestToken: 'token_5' }));
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'crossClusterSchemaError',
+			requestToken: 'token_5',
+			requestSource: 'background',
+			failureKind: 'fetch-failed',
+		}));
 		expect(getDatabaseSchema).toHaveBeenCalledWith(connection, 'TelemetryDb', true, expect.objectContaining({ allowInteractive: false }));
 	});
 
@@ -284,6 +289,38 @@ describe('SchemaService primary schema preparation', () => {
 				hasUsableFallback: true,
 			}));
 		});
+	});
+
+	it('posts a terminal when stale primary refresh resolves under a different account partition', async () => {
+		const { service, messages, getDatabaseSchema } = createService(connection);
+		vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue({
+			schema: {
+				tables: ['Events'],
+				columnTypesByTable: { Events: { TIMESTAMP: 'datetime' } },
+				rawSchemaJson: makeRawSchema('TelemetryDb'),
+			},
+			timestamp: Date.now() - SCHEMA_CACHE_TTL_MS - 1000,
+			version: SCHEMA_CACHE_VERSION,
+		});
+		getDatabaseSchema.mockResolvedValueOnce({
+			schema: { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: makeRawSchema('TelemetryDb') },
+			fromCache: false,
+			accountPartition: 'rotated-partition',
+		});
+
+		await service.prefetchSchema('primary', 'TelemetryDb', 'query_rotated', false, 'schema_rotated', {}, {
+			sectionInstanceId: 'instance-rotated', targetGeneration: 7,
+		});
+
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'schemaData', boxId: 'query_rotated', requestToken: 'schema_rotated',
+			schemaMeta: expect.objectContaining({ refreshState: 'scheduled' }),
+		}));
+		await vi.waitFor(() => expect(messages).toContainEqual(expect.objectContaining({
+			type: 'schemaError', boxId: 'query_rotated', requestToken: 'schema_rotated',
+			sectionInstanceId: 'instance-rotated', targetGeneration: 7,
+			refreshState: 'failed', hasUsableFallback: true,
+		})));
 	});
 
 	it('upgrades a compact disk cache when a forced refresh fails', async () => {

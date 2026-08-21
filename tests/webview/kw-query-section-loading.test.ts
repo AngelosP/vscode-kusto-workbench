@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { html, render, nothing } from 'lit';
 import '../../src/webview/components/kw-dropdown.js';
 import '../../src/webview/components/kw-copilot-chat.js';
+import '../../src/webview/components/kw-data-table.js';
 import '../../src/webview/sections/kw-query-section.js';
 import type { KwQuerySection } from '../../src/webview/sections/kw-query-section.js';
 import type { KwDropdown } from '../../src/webview/components/kw-dropdown.js';
@@ -234,6 +235,96 @@ describe('kw-query-section loading states', () => {
 		expect(selectedTable.rows).toEqual([['third']]);
 	});
 
+	it('preserves complex preview state across accepted result tabs but not a fresh result table', async () => {
+		const el = createSection();
+		el.id = el.boxId;
+		vi.spyOn(el, 'getSchemaLifecycleIdentity').mockReturnValue({
+			sectionInstanceId: 'instance-complex-preview', targetGeneration: 4,
+		});
+		await el.updateComplete;
+		const batch = createKustoResultBatch([
+			{
+				columns: [{ name: 'Details', type: 'dynamic' }],
+				rows: [[{ display: '[object]', full: '{"set":"first","secret":"one"}', isObject: true }]],
+				metadata: { resultName: 'First' },
+			},
+			{
+				columns: [{ name: 'Details', type: 'dynamic' }],
+				rows: [['{"set":"second","plain":true}']],
+				metadata: { resultName: 'Second' },
+			},
+			{
+				columns: [{ name: 'Details', type: 'dynamic' }],
+				rows: [[{ display: '{...}', full: { set: 'third', secret: 'three' }, isObject: true }]],
+				metadata: { resultName: 'Third' },
+			},
+		]);
+		expect(batch.ok).toBe(true);
+		if (!batch.ok) return;
+		expect(displayResultBatchForBox(batch.value, el.boxId, {
+			artifactPublication: {
+				producer: { engine: 'kusto', boxId: el.boxId, executionId: 'execution-complex-preview' },
+				policy: { exportToCsv: true },
+			},
+		})).toBe(true);
+		let table = el.querySelector('kw-data-table') as any;
+		await table.updateComplete;
+		table.shadowRoot.querySelector('[data-testid="complex-preview-toggle"]').click();
+		await table.updateComplete;
+		const lengthInput = table.shadowRoot.querySelector('[data-testid="complex-preview-length"]') as HTMLInputElement;
+		lengthInput.value = '9';
+		lengthInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+		await table.updateComplete;
+
+		const selectAndAccept = (resultIndex: number) => {
+			table.dispatchEvent(new CustomEvent('result-set-change', { detail: { resultIndex } }));
+			const request = vi.mocked(postMessageToHost).mock.calls
+				.map(([message]) => message as any)
+				.filter(message => message.type === 'selectKustoResult').at(-1)!;
+			el.applyResultSelectionResponse({
+				type: 'kustoResultSelectionResult', requestId: request.requestId,
+				boxId: el.boxId, primaryArtifactId: request.primaryArtifactId,
+				resultIndex, accepted: true,
+			});
+			table = el.querySelector('kw-data-table') as any;
+		};
+
+		table.dispatchEvent(new CustomEvent('result-set-change', { detail: { resultIndex: 1 } }));
+		const rejectedRequest = vi.mocked(postMessageToHost).mock.calls
+			.map(([message]) => message as any)
+			.filter(message => message.type === 'selectKustoResult').at(-1)!;
+		el.applyResultSelectionResponse({
+			type: 'kustoResultSelectionResult', requestId: rejectedRequest.requestId,
+			boxId: el.boxId, primaryArtifactId: rejectedRequest.primaryArtifactId,
+			resultIndex: 1, accepted: false,
+		});
+		expect(el.querySelector('kw-data-table')).toBe(table);
+		expect(table.captureComplexPreviewState()).toEqual({ enabled: true, maxCharacters: 9 });
+
+		selectAndAccept(1);
+		expect(table.rows).toEqual([['{"set":"second","plain":true}']]);
+		expect(table.shadowRoot.querySelector('[data-testid="complex-preview-toggle"]')).toBeNull();
+		expect(table.captureComplexPreviewState()).toEqual({ enabled: true, maxCharacters: 9 });
+
+		selectAndAccept(2);
+		await table.updateComplete;
+		expect(table.shadowRoot.querySelector('[data-testid="complex-preview-toggle"]')?.getAttribute('aria-pressed')).toBe('true');
+		expect(table.shadowRoot.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')?.value).toBe('9');
+		expect(table.captureComplexPreviewState()).toEqual({ enabled: true, maxCharacters: 9 });
+		expect(table.canCopyRows()).toBe(true);
+		expect(table.rows[0][0]).toEqual(expect.objectContaining({ isObject: true }));
+
+		expect(el.displayResult({
+			columns: [{ name: 'Details', type: 'dynamic' }],
+			rows: [[{ display: '[object]', full: '{"fresh":true}', isObject: true }]],
+			metadata: {},
+		})).toBe(true);
+		table = el.querySelector('kw-data-table') as any;
+		await table.updateComplete;
+		expect(table.shadowRoot.querySelector('[data-testid="complex-preview-toggle"]')?.getAttribute('aria-pressed')).toBe('false');
+		expect(table.shadowRoot.querySelector('[data-testid="complex-preview-controls"]')).toBeNull();
+	});
+
 	it('switches restored result tabs locally in the read-only browser viewer', async () => {
 		(window as any).__kustoReadOnlyMode = true;
 		try {
@@ -241,8 +332,16 @@ describe('kw-query-section loading states', () => {
 			el.id = el.boxId;
 			await el.updateComplete;
 			const batch = createKustoResultBatch([
-				{ columns: ['Value'], rows: [['first']], metadata: {} },
-				{ columns: ['Value'], rows: [['second']], metadata: {} },
+				{
+					columns: [{ name: 'Value', type: 'dynamic' }],
+					rows: [[{ display: '[object]', full: '{"value":"first"}', isObject: true }]],
+					metadata: {},
+				},
+				{
+					columns: [{ name: 'Value', type: 'dynamic' }],
+					rows: [[{ display: '[object]', full: '{"value":"second"}', isObject: true }]],
+					metadata: {},
+				},
 			]);
 			expect(batch.ok).toBe(true);
 			if (!batch.ok) return;
@@ -250,13 +349,19 @@ describe('kw-query-section loading states', () => {
 				artifactPublication: { policy: { exportToCsv: true } },
 			})).toBe(true);
 			vi.mocked(postMessageToHost).mockClear();
+			let table = el.querySelector('kw-data-table') as any;
+			await table.updateComplete;
+			table.shadowRoot.querySelector('[data-testid="complex-preview-toggle"]').click();
+			await table.updateComplete;
 
-			el.querySelector('kw-data-table')!.dispatchEvent(new CustomEvent('result-set-change', {
+			table.dispatchEvent(new CustomEvent('result-set-change', {
 				detail: { resultIndex: 1 },
 			}));
 
 			expect(getSelectedResultIndex(el.boxId)).toBe(1);
-			expect((el.querySelector('kw-data-table') as any).rows).toEqual([['second']]);
+			table = el.querySelector('kw-data-table') as any;
+			expect(table.rows[0][0]).toEqual(expect.objectContaining({ full: '{"value":"second"}' }));
+			expect(table.captureComplexPreviewState()).toEqual({ enabled: true, maxCharacters: 75 });
 			expect(postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({
 				type: 'selectKustoResult',
 			}));
@@ -641,6 +746,93 @@ describe('kw-query-section loading states', () => {
 		} finally {
 			delete schemaByConnDb[schemaKey];
 			delete schemaMetaByConnDb[schemaKey];
+			setStateConnections([]);
+		}
+	});
+
+	it('revokes diagnostic readiness immediately when refreshing a usable schema', async () => {
+		const connection = {
+			id: 'c1',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			accountPartition: 'partition-a',
+		};
+		setStateConnections([connection]);
+		const el = createSection();
+		el.id = 'test1';
+		el.setConnections([connection]);
+		el.setConnectionId('c1');
+		el.setDatabases(['Db'], 'Db');
+		await el.updateComplete;
+		el.setSchemaLifecycleTarget('c1', 'Db');
+		setKustoEditorSchema('test1', { tables: ['Events'], rawSchemaJson: { Databases: { Db: {} } } });
+		beginKustoPreparation('test1', {
+			stage: 'ready',
+			blockers: [],
+			target: { connectionId: 'c1', database: 'Db' },
+			usableFallback: true,
+		});
+
+		try {
+			expect(el.getConnectionId()).toBe('c1');
+			expect(el.getDatabase()).toBe('Db');
+			expect(getKustoEditorSchema('test1')?.rawSchemaJson).toBeTruthy();
+			expect(getKustoPreparationState('test1')).toMatchObject({ status: 'ready', target: { connectionId: 'c1', database: 'Db' } });
+			el.connectionCtrl.ensureSchema(true);
+
+			expect(getKustoPreparationState('test1')).toMatchObject({
+				status: 'preparing',
+				stage: 'refreshing',
+				blockers: ['refresh'],
+				usableFallback: true,
+			});
+			expect(schemaFetchInFlightByBoxId.test1).toBe(true);
+			expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({ type: 'prefetchSchema', forceRefresh: true }));
+		} finally {
+			setStateConnections([]);
+		}
+	});
+
+	it('starts a live refresh when stale cache-only prewarm is already ready on first focus', async () => {
+		const connection = {
+			id: 'c1',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			accountPartition: 'partition-a',
+		};
+		setStateConnections([connection]);
+		const el = createSection();
+		el.id = 'test1';
+		el.setConnections([connection]);
+		el.setConnectionId('c1');
+		el.setDatabases(['Db'], 'Db');
+		await el.updateComplete;
+		el.setSchemaLifecycleTarget('c1', 'Db');
+		setKustoEditorSchema('test1', { tables: ['Events'], rawSchemaJson: { Databases: { Db: {} } } });
+		setKustoSchemaMetadata('test1', {
+			schemaSignature: 'sig-stale', fromCache: true, cacheState: 'stale', isStale: true,
+			refreshState: 'none', cacheOnly: true,
+		});
+		beginKustoPreparation('test1', {
+			stage: 'ready', blockers: [],
+			target: { connectionId: 'c1', database: 'Db', schemaSignature: 'sig-stale' },
+			usableFallback: true,
+		});
+		schemaFetchInFlightByBoxId.test1 = false;
+		lastSchemaRequestAtByBoxId.test1 = 0;
+		delete schemaRequestTokenByBoxId.test1;
+		vi.mocked(postMessageToHost).mockClear();
+
+		try {
+			el.connectionCtrl.ensureSchema(false);
+
+			expect(getKustoPreparationState('test1')).toMatchObject({
+				status: 'preparing', stage: 'refreshing', blockers: ['refresh'], usableFallback: true,
+			});
+			expect(schemaFetchInFlightByBoxId.test1).toBe(true);
+			expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'prefetchSchema', connectionId: 'c1', database: 'Db', boxId: 'test1',
+				forceRefresh: false,
+			}));
+		} finally {
 			setStateConnections([]);
 		}
 	});
@@ -1258,6 +1450,26 @@ describe('kw-query-section loading states', () => {
 		expect(el.getClusterUrl()).toBe('https://new.kusto.windows.net');
 		expect(connectionEvents).toHaveLength(1);
 		expect(connectionEvents[0].detail).toMatchObject({ connectionId: 'c1', database: 'Samples' });
+	});
+
+	it('emits explicit selection intent when the user confirms the already selected target', () => {
+		const el = createSection();
+		el.setConnections([{ id: 'c1', clusterUrl: 'https://cluster.kusto.windows.net' }]);
+		el.setDatabases(['Samples'], 'Samples');
+		const intents: CustomEvent[] = [];
+		const targetChanges: CustomEvent[] = [];
+		el.addEventListener('target-selection-intent', event => intents.push(event as CustomEvent));
+		el.addEventListener('connection-changed', event => targetChanges.push(event as CustomEvent));
+		el.addEventListener('database-changed', event => targetChanges.push(event as CustomEvent));
+
+		(el as any)._onClusterSelected(new CustomEvent('selected', { detail: { id: 'c1' } }));
+		(el as any)._onDatabaseSelected(new CustomEvent('selected', { detail: { id: 'Samples' } }));
+
+		expect(intents.map(event => event.detail)).toEqual([
+			{ boxId: 'test1', kind: 'connection', connectionId: 'c1', source: 'user' },
+			{ boxId: 'test1', kind: 'database', database: 'Samples', source: 'user' },
+		]);
+		expect(targetChanges).toEqual([]);
 	});
 
 	it('preserves restored cluster intent until the saved cluster is auto-added', async () => {

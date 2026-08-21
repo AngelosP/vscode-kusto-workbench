@@ -7,7 +7,7 @@ import { sectionGlowStyles } from '../shared/section-glow.styles.js';
 import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import { osStyles } from '../shared/os-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
-import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
+import type { ComplexPreviewState, DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 import type { DropdownItem, DropdownAction } from '../components/kw-dropdown.js';
 import type { KwCopilotChat } from '../components/kw-copilot-chat.js';
 import type { KwSchemaInfo } from '../components/kw-schema-info.js';
@@ -914,6 +914,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	private _onClusterSelected(e: CustomEvent): void {
 		const connectionId = e.detail?.id;
 		if (!connectionId) return;
+		this.dispatchEvent(new CustomEvent('target-selection-intent', {
+			detail: { boxId: this.boxId, kind: 'connection', connectionId, source: 'user' },
+			bubbles: true, composed: true,
+		}));
 		const prev = this._connectionId;
 		this._connectionId = connectionId;
 		this._persistConnectionSelection = true;
@@ -935,6 +939,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	private _onDatabaseSelected(e: CustomEvent): void {
 		const database = e.detail?.id;
 		if (!database) return;
+		this.dispatchEvent(new CustomEvent('target-selection-intent', {
+			detail: { boxId: this.boxId, kind: 'database', database, source: 'user' },
+			bubbles: true, composed: true,
+		}));
 		const prev = this._database;
 		this._database = database;
 		this._persistConnectionSelection = true;
@@ -1399,6 +1407,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			resultSets?: readonly Readonly<{ resultIndex: number; label: string }>[];
 			selectedResultIndex?: number;
 			deferCsvRelease?: boolean;
+			complexPreviewState?: Readonly<ComplexPreviewState>;
 		}
 	): boolean {
 		if (options?.executionId && !this.acceptsQueryTerminal(options.executionId)) return false;
@@ -1459,6 +1468,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		} as DataTableOptions;
 		dt.columns = columns;
 		dt.rows = rows;
+		if (options?.complexPreviewState) dt.restoreComplexPreviewState(options.complexPreviewState);
 
 		dt.addEventListener('save', (e: CustomEvent) => {
 			try { saveArtifactCsv({
@@ -1820,11 +1830,12 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		const artifact = getCurrentResultArtifact(this.boxId, resultIndex);
 		const currentTable = this.querySelector<any>('kw-data-table');
 		const resultSets = currentTable?.options?.resultSets;
+		const complexPreviewState = currentTable?.captureComplexPreviewState?.();
 		if (!state || !artifact || !selectResultsState(this.boxId, resultIndex)) return false;
 		__kustoCloseShareModalForOwner(this.boxId);
 		if (!this.displayResult(state, {
 			label: 'Results', showExecutionTime: true,
-			resultSets, selectedResultIndex: resultIndex,
+			resultSets, selectedResultIndex: resultIndex, complexPreviewState,
 		})) return false;
 		this.setResultArtifactForCsvExport(artifact.artifactId);
 		if (persistSelection) {

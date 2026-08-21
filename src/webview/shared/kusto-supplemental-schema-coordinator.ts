@@ -1,4 +1,5 @@
 export type KustoSupplementalRequestSource = 'background' | 'autocomplete';
+export type KustoSupplementalRecoveryTrigger = 'focus' | 'edit' | 'connection-recovery' | 'autocomplete';
 
 export type KustoSupplementalSchemaStatus =
 	| 'scheduled'
@@ -40,6 +41,7 @@ export type KustoSupplementalSchemaState = Readonly<{
 	fetchedAvailable: boolean;
 	deadlineAt?: number;
 	failureKind?: KustoSupplementalFailureKind;
+	automaticRetryCount: number;
 	updatedAt: number;
 }>;
 
@@ -71,6 +73,7 @@ type MutableState = {
 	fetchedAvailable: boolean;
 	deadlineAt?: number;
 	failureKind?: KustoSupplementalFailureKind;
+	automaticRetryTriggers: Set<KustoSupplementalRecoveryTrigger>;
 	updatedAt: number;
 };
 
@@ -108,7 +111,8 @@ export function kustoSupplementalTraceId(value: string): string {
 }
 
 function freezeState(state: MutableState): KustoSupplementalSchemaState {
-	return Object.freeze({ ...state });
+	const { automaticRetryTriggers, ...snapshot } = state;
+	return Object.freeze({ ...snapshot, automaticRetryCount: automaticRetryTriggers.size });
 }
 
 function normalizeReference(reference: KustoSupplementalReference): KustoSupplementalReference | null {
@@ -203,6 +207,7 @@ export class KustoSupplementalSchemaCoordinator {
 				status: 'scheduled',
 				requestSource: 'background',
 				fetchedAvailable: false,
+				automaticRetryTriggers: new Set(),
 				updatedAt: now,
 			};
 			model.references.set(reference.schemaKey, state);
@@ -267,12 +272,16 @@ export class KustoSupplementalSchemaCoordinator {
 		deadlineAt: number;
 		preserveFetchedAvailable?: boolean;
 		includeFetching?: boolean;
+		includeFailed?: boolean;
 		now?: number;
 	}): KustoSupplementalSchemaState[] {
 		const rebound: KustoSupplementalSchemaState[] = [];
 		for (const state of this.getStatesForSchemaKey(schemaKey)) {
-			if (state.status !== 'scheduled' && !(args.includeFetching && state.status === 'fetching')) continue;
-			const next = this.markFetching(supplementalStateIdentity(state), args);
+			if (state.status !== 'scheduled'
+				&& !(args.includeFetching && state.status === 'fetching')
+				&& !(args.includeFailed && state.status === 'failed')) continue;
+			const requestSource = state.requestSource === 'autocomplete' ? 'autocomplete' : args.requestSource;
+			const next = this.markFetching(supplementalStateIdentity(state), { ...args, requestSource });
 			if (next) rebound.push(next);
 		}
 		return rebound;
@@ -283,8 +292,12 @@ export class KustoSupplementalSchemaCoordinator {
 		if (!state) return this.stale(identity);
 		const wasBackgroundFetch = state.status === 'fetching' && state.requestSource === 'background';
 		state.requestSource = 'autocomplete';
+		if (state.status === 'failed') {
+			if (!this.rearmFailedMutable(state, 'autocomplete', 'autocomplete', now)) state.updatedAt = now;
+			return freezeState(state);
+		}
 		state.failureKind = undefined;
-		if (state.status === 'failed' || wasBackgroundFetch) {
+		if (wasBackgroundFetch) {
 			state.requestToken = undefined;
 			state.deadlineAt = undefined;
 			state.fetchedAvailable = false;
@@ -293,6 +306,20 @@ export class KustoSupplementalSchemaCoordinator {
 			state.updatedAt = now;
 		}
 		return freezeState(state);
+	}
+
+	rearmFailedForModel(
+		modelUri: string,
+		trigger: Exclude<KustoSupplementalRecoveryTrigger, 'autocomplete'>,
+		now: number = Date.now(),
+	): KustoSupplementalSchemaState[] {
+		const model = this.models.get(String(modelUri || '').trim());
+		if (!model) return [];
+		const changed: KustoSupplementalSchemaState[] = [];
+		for (const state of model.references.values()) {
+			if (this.rearmFailedMutable(state, trigger, 'background', now)) changed.push(freezeState(state));
+		}
+		return changed;
 	}
 
 	refreshWithAutocomplete(identity: KustoSupplementalStateIdentity, now: number = Date.now()): KustoSupplementalSchemaState | undefined {
@@ -310,7 +337,11 @@ export class KustoSupplementalSchemaCoordinator {
 		const token = String(requestToken || '').trim();
 		const changed: KustoSupplementalSchemaState[] = [];
 		for (const state of this.getStatesForSchemaKey(schemaKey)) {
-			const mutable = this.getMutable(this.identity(state as MutableState));
+			const mutable = this.getMutable({
+				modelUri: state.modelUri,
+				schemaKey: state.schemaKey,
+				referenceGeneration: state.referenceGeneration,
+			});
 			if (!mutable || (token && mutable.requestToken !== token)) continue;
 			const model = this.models.get(mutable.modelUri);
 			mutable.fetchedAvailable = true;
@@ -369,8 +400,32 @@ export class KustoSupplementalSchemaCoordinator {
 		if (!state || !state.fetchedAvailable) return this.stale(identity);
 		state.deadlineAt = undefined;
 		state.failureKind = undefined;
+		state.automaticRetryTriggers.clear();
 		this.transitionMutable(state, 'loaded', now);
 		return freezeState(state);
+	}
+
+	adoptSharedApplication(schemaKey: string, excludeModelUri: string = '', now: number = Date.now()): KustoSupplementalSchemaState[] {
+		const key = String(schemaKey || '').trim();
+		const excluded = String(excludeModelUri || '').trim();
+		if (!key) return [];
+		const changed: KustoSupplementalSchemaState[] = [];
+		for (const model of this.models.values()) {
+			if (model.modelUri === excluded) continue;
+			const state = model.references.get(key);
+			if (!state) continue;
+			state.fetchedAvailable = true;
+			state.deadlineAt = undefined;
+			state.failureKind = undefined;
+			if (model.primaryReady) {
+				state.automaticRetryTriggers.clear();
+				this.transitionMutable(state, 'loaded', now);
+			} else {
+				this.transitionMutable(state, 'waiting-primary', now);
+			}
+			changed.push(freezeState(state));
+		}
+		return changed;
 	}
 
 	markFailed(identity: KustoSupplementalStateIdentity, failureKind: KustoSupplementalFailureKind, now: number = Date.now()): KustoSupplementalSchemaState | undefined {
@@ -543,6 +598,23 @@ export class KustoSupplementalSchemaCoordinator {
 
 	private identity(state: MutableState): KustoSupplementalStateIdentity {
 		return Object.freeze({ modelUri: state.modelUri, schemaKey: state.schemaKey, referenceGeneration: state.referenceGeneration });
+	}
+
+	private rearmFailedMutable(
+		state: MutableState,
+		trigger: KustoSupplementalRecoveryTrigger,
+		requestSource: KustoSupplementalRequestSource,
+		now: number,
+	): boolean {
+		if (state.status !== 'failed' || state.automaticRetryTriggers.has(trigger)) return false;
+		state.automaticRetryTriggers.add(trigger);
+		state.requestSource = requestSource;
+		state.requestToken = undefined;
+		state.deadlineAt = undefined;
+		state.failureKind = undefined;
+		state.fetchedAvailable = false;
+		this.transitionMutable(state, 'scheduled', now);
+		return true;
 	}
 
 	private transitionMutable(state: MutableState, status: KustoSupplementalSchemaStatus, now: number): void {

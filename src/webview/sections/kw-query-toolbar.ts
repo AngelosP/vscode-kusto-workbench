@@ -58,7 +58,6 @@ import {
 	setAutoTriggerAutocompleteEnabled,
 	copilotInlineCompletionsEnabled,
 	setCopilotInlineCompletionsEnabled,
-	setActiveQueryEditorBoxId,
 	queryBoxes,
 	queryEditors,
 	connections,
@@ -154,7 +153,6 @@ export function toggleCaretDocsEnabled(): void {
 
 export function onQueryEditorToolbarAction(boxId: any, action: any): void {
 	try {
-		setActiveQueryEditorBoxId(boxId);
 		if (queryEditors[boxId]) queryEditors[boxId].focus();
 	} catch (e) { console.error('[kusto]', e); }
 

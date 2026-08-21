@@ -420,7 +420,8 @@ export class KustoEditorSchemaCoordinator {
 		if (!id) return;
 		const record = this.getOrCreateRecord(id);
 		if (!record) return;
-		record.ownedState[slot] = value;
+		if (value === undefined) delete record.ownedState[slot];
+		else record.ownedState[slot] = value;
 		for (const listener of Array.from(record.listeners.get(slot) || [])) {
 			listener(value);
 		}
@@ -555,6 +556,7 @@ export class KustoEditorSchemaCoordinator {
 
 	private retireRecord(record: KustoEditorRecord): void {
 		this.settleWorkerWaiters(record);
+		this.revokeWorkerReady(record);
 		for (const key of Object.keys(record.ownedState) as KustoEditorOwnedStateSlot[]) {
 			delete record.ownedState[key];
 		}
@@ -572,7 +574,19 @@ export class KustoEditorSchemaCoordinator {
 			'workerApplyRequired',
 			'workerReadyWaiters',
 		] satisfies KustoEditorOwnedStateSlot[]) {
+			if (slot === 'workerReady') {
+				this.revokeWorkerReady(record);
+				continue;
+			}
 			delete record.ownedState[slot];
+		}
+	}
+
+	private revokeWorkerReady(record: KustoEditorRecord): void {
+		if (!('workerReady' in record.ownedState)) return;
+		delete record.ownedState.workerReady;
+		for (const listener of Array.from(record.listeners.get('workerReady') || [])) {
+			listener(undefined);
 		}
 	}
 

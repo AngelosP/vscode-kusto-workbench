@@ -9,6 +9,7 @@ import {
 	getSchemaEnhancementReadyState,
 	getSchemaWorkerReadyState,
 	isSchemaWorkerReady,
+	invalidateSchemaWorkerReadinessForBox,
 	isKustoPreparationCurrent,
 	isSchemaEnhancementFailed,
 	isSchemaEnhancementPending,
@@ -27,6 +28,7 @@ import {
 	requestKustoSchemaApplyForBox,
 	setPendingSchemaWorkerUpdate,
 	reviseKustoPreparation,
+	subscribeSchemaWorkerReadyState,
 	subscribeKustoPreparation,
 	updateKustoPreparation,
 	waitForSchemaWorkerReady,
@@ -119,6 +121,17 @@ describe('schema worker readiness state', () => {
 		expect(Object.isFrozen(getKustoPreparationState('query_subscribed'))).toBe(true);
 	});
 
+	it('publishes pending, ready, and revoked worker readiness transitions', () => {
+		const statuses: Array<string | undefined> = [];
+		const unsubscribe = subscribeSchemaWorkerReadyState('query_worker_events', state => statuses.push(state?.status));
+		markSchemaWorkerApplyPending('query_worker_events', 'cluster|db', 'sig-1', 'inmemory://model/1');
+		markSchemaWorkerReady('query_worker_events', 'cluster|db', 'sig-1', 'inmemory://model/1');
+		invalidateSchemaWorkerReadinessForBox('query_worker_events', false, false);
+		unsubscribe();
+
+		expect(statuses).toEqual([undefined, 'pending', 'ready', undefined]);
+	});
+
 	it('ties worker facts to the matching preparation transaction', () => {
 		const token = beginKustoPreparation('query_worker', {
 			stage: 'waiting-worker',
@@ -130,6 +143,24 @@ describe('schema worker readiness state', () => {
 
 		expect(getKustoPreparationState('query_worker').status).toBe('ready');
 		expect(isSchemaWorkerReady('query_worker', 'cluster|db', 'inmemory://model/1')).toBe(true);
+	});
+
+	it('keeps diagnostics non-ready while a reusable worker waits for fresh schema', () => {
+		const token = beginKustoPreparation('query_refresh', {
+			stage: 'refreshing',
+			blockers: ['refresh', 'worker'],
+			target: { schemaKey: 'cluster|db', schemaSignature: 'sig-stale', modelUri: 'inmemory://model/1' },
+			usableFallback: true,
+		})!;
+
+		markSchemaWorkerReady('query_refresh', 'cluster|db', 'sig-stale', 'inmemory://model/1', token);
+
+		expect(getKustoPreparationState('query_refresh')).toMatchObject({
+			status: 'preparing',
+			stage: 'refreshing',
+			blockers: ['refresh'],
+			usableFallback: true,
+		});
 	});
 
 	it('clears schema and worker blockers when an already-loaded schema is adopted by the exact model', () => {

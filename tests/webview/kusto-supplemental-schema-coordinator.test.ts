@@ -79,6 +79,30 @@ describe('KustoSupplementalSchemaCoordinator', () => {
 		expect(coordinator.shouldSuppressDiagnostic('model://1', remote.schemaKey, 40)).toBe(true);
 	});
 
+	it('rearms a failed reference once per recovery trigger and resets after a successful load', () => {
+		const coordinator = new KustoSupplementalSchemaCoordinator();
+		const state = coordinator.syncReferences({ boxId: 'query_1', modelUri: 'model://1', modelVersion: 1, references: [remote], now: 10 }).added[0];
+		coordinator.markFailed(supplementalStateIdentity(state), 'missing-connection', 20);
+
+		const focused = coordinator.rearmFailedForModel('model://1', 'focus', 30)[0];
+		expect(focused).toMatchObject({ status: 'scheduled', automaticRetryCount: 1 });
+		coordinator.markFailed(supplementalStateIdentity(focused), 'fetch-failed', 40);
+		expect(coordinator.rearmFailedForModel('model://1', 'focus', 50)).toEqual([]);
+
+		const edited = coordinator.rearmFailedForModel('model://1', 'edit', 60)[0];
+		expect(edited).toMatchObject({ status: 'scheduled', automaticRetryCount: 2 });
+		coordinator.markFetched(supplementalStateIdentity(edited), 70);
+		coordinator.setPrimaryReady('model://1', true, 71);
+		const candidate = coordinator.getApplyCandidates(remote.schemaKey)[0];
+		coordinator.markLoaded(supplementalStateIdentity(candidate), 72);
+		coordinator.markFailed(supplementalStateIdentity(candidate), 'apply-failed', 80);
+
+		expect(coordinator.rearmFailedForModel('model://1', 'focus', 90)[0]).toMatchObject({
+			status: 'scheduled',
+			automaticRetryCount: 1,
+		});
+	});
+
 	it('allows autocomplete to supersede a still-pending silent background fetch', () => {
 		const coordinator = new KustoSupplementalSchemaCoordinator();
 		const state = coordinator.syncReferences({ boxId: 'query_1', modelUri: 'model://1', modelVersion: 1, references: [remote], now: 10 }).added[0];
@@ -86,6 +110,74 @@ describe('KustoSupplementalSchemaCoordinator', () => {
 
 		const escalated = coordinator.escalateToAutocomplete(supplementalStateIdentity(state), 30)!;
 		expect(escalated).toMatchObject({ status: 'scheduled', requestSource: 'autocomplete', requestToken: undefined });
+	});
+
+	it('joins autocomplete back to the existing physical background token', () => {
+		const coordinator = new KustoSupplementalSchemaCoordinator();
+		const state = coordinator.syncReferences({ boxId: 'query_1', modelUri: 'model://1', modelVersion: 1, references: [remote], now: 10 }).added[0];
+		coordinator.markFetching(supplementalStateIdentity(state), {
+			requestToken: 'background-physical', requestSource: 'background', deadlineAt: 100, now: 20,
+		});
+		const escalated = coordinator.escalateToAutocomplete(supplementalStateIdentity(state), 30)!;
+
+		coordinator.bindSchemaRequest(remote.schemaKey, {
+			requestToken: 'background-physical',
+			requestSource: 'autocomplete',
+			deadlineAt: 100,
+			includeFetching: true,
+			now: 40,
+		});
+
+		expect(coordinator.getState('model://1', remote.schemaKey)).toMatchObject({
+			status: 'fetching', requestToken: 'background-physical', requestSource: 'autocomplete',
+		});
+		expect(coordinator.markFetchedByRequest('background-physical', 50)).toHaveLength(1);
+		expect(coordinator.getState('model://1', remote.schemaKey)?.status).toBe('waiting-primary');
+		expect(escalated.referenceGeneration).toBe(state.referenceGeneration);
+	});
+
+	it('enrolls a failed old-token model when another model starts a new same-key broker attempt', () => {
+		const coordinator = new KustoSupplementalSchemaCoordinator();
+		const failed = coordinator.syncReferences({ boxId: 'query_1', modelUri: 'model://1', modelVersion: 1, references: [remote], now: 10 }).added[0];
+		const scheduled = coordinator.syncReferences({ boxId: 'query_2', modelUri: 'model://2', modelVersion: 1, references: [remote], now: 10 }).added[0];
+		coordinator.markFailed(supplementalStateIdentity(failed), 'fetch-failed', 20);
+
+		const enrolled = coordinator.bindSchemaRequest(remote.schemaKey, {
+			requestToken: 'new-physical-token', requestSource: 'background', deadlineAt: 100,
+			includeFailed: true, now: 30,
+		});
+
+		expect(enrolled).toHaveLength(2);
+		expect(coordinator.getState('model://1', remote.schemaKey)).toMatchObject({
+			status: 'fetching', requestToken: 'new-physical-token', failureKind: undefined,
+		});
+		expect(coordinator.getState('model://2', remote.schemaKey)).toMatchObject({
+			status: 'fetching', requestToken: 'new-physical-token',
+		});
+		expect(coordinator.shouldSuppressDiagnostic('model://1', remote.schemaKey, 30)).toBe(true);
+		expect(coordinator.markFetchedByRequest('new-physical-token', 40)).toHaveLength(2);
+	});
+
+	it('recovers a failed sibling when another model applies the shared revision successfully', () => {
+		const coordinator = new KustoSupplementalSchemaCoordinator();
+		const failed = coordinator.syncReferences({ boxId: 'query_1', modelUri: 'model://1', modelVersion: 1, references: [remote], now: 10 }).added[0];
+		const successful = coordinator.syncReferences({ boxId: 'query_2', modelUri: 'model://2', modelVersion: 1, references: [remote], now: 10 }).added[0];
+		coordinator.setPrimaryReady('model://1', true, 11);
+		coordinator.setPrimaryReady('model://2', true, 11);
+		coordinator.markFailed(supplementalStateIdentity(failed), 'apply-failed', 20);
+		coordinator.markFetched(supplementalStateIdentity(successful), 21);
+		const successfulCandidate = coordinator.getApplyCandidates(remote.schemaKey)
+			.find(state => state.modelUri === 'model://2')!;
+		coordinator.markApplying(supplementalStateIdentity(successfulCandidate), 100, 22);
+		coordinator.markLoaded(supplementalStateIdentity(successfulCandidate), 23);
+
+		const adopted = coordinator.adoptSharedApplication(remote.schemaKey, 'model://2', 24);
+
+		expect(adopted).toHaveLength(1);
+		expect(coordinator.getState('model://1', remote.schemaKey)).toMatchObject({
+			status: 'loaded', fetchedAvailable: true, failureKind: undefined,
+		});
+		expect(coordinator.shouldSuppressDiagnostic('model://1', remote.schemaKey, 24)).toBe(true);
 	});
 
 	it('does not downgrade autocomplete ownership when adopting a background broker', () => {
@@ -246,6 +338,27 @@ describe('KustoSupplementalSchemaCoordinator', () => {
 		coordinator.markLoaded(supplementalStateIdentity(candidate), 33);
 
 		expect(coordinator.markSchemaRefreshed(remote.schemaKey, 'fetch-1', 40)[0].status).toBe('fetched');
+	});
+
+	it('transitions every same-key model back to fetched when the accepted broker revision advances', () => {
+		const coordinator = new KustoSupplementalSchemaCoordinator();
+		const first = coordinator.syncReferences({ boxId: 'query_1', modelUri: 'model://1', modelVersion: 1, references: [remote], now: 10 }).added[0];
+		const second = coordinator.syncReferences({ boxId: 'query_2', modelUri: 'model://2', modelVersion: 1, references: [remote], now: 10 }).added[0];
+		coordinator.markFetching(supplementalStateIdentity(first), { requestToken: 'old-first', requestSource: 'background', deadlineAt: 100, now: 20 });
+		coordinator.markFetching(supplementalStateIdentity(second), { requestToken: 'old-second', requestSource: 'background', deadlineAt: 100, now: 20 });
+		coordinator.markFetchedByRequest('old-first', 21);
+		coordinator.markFetchedByRequest('old-second', 21);
+		coordinator.setPrimaryReady('model://1', true, 22);
+		coordinator.setPrimaryReady('model://2', true, 22);
+		for (const candidate of coordinator.getApplyCandidates(remote.schemaKey)) {
+			coordinator.markApplying(supplementalStateIdentity(candidate), 90, 23);
+			coordinator.markLoaded(supplementalStateIdentity(candidate), 24);
+		}
+
+		const refreshed = coordinator.markSchemaRefreshed(remote.schemaKey, undefined, 30);
+
+		expect(refreshed).toHaveLength(2);
+		expect(coordinator.getStatesForSchemaKey(remote.schemaKey).every(state => state.status === 'fetched')).toBe(true);
 	});
 
 	it('rearms exact-token failed and applying subscribers for a fresh schema revision', () => {

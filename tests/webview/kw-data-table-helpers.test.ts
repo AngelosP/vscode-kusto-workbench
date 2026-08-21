@@ -8,10 +8,46 @@ import {
 	getCellDisplayValue,
 	getCellSortValue,
 	buildClipboardText,
+	isViewableObjectCell,
+	getViewableObjectCellText,
+	normalizeComplexCellMaxCharacters,
 	type DataTableColumn,
 	type CellValue,
 } from '../../src/webview/components/kw-data-table.js';
 import type { KwDataTable } from '../../src/webview/components/kw-data-table.js';
+
+describe('complex value preview helpers', () => {
+	it('uses exactly the existing View-link eligibility contract', () => {
+		const inheritedMarker = Object.assign(Object.create({ isObject: true }), { full: '{"inherited":true}' });
+
+		expect(isViewableObjectCell({ isObject: true, full: '{"marked":true}' })).toBe(true);
+		expect(isViewableObjectCell(inheritedMarker as CellValue)).toBe(true);
+		expect(isViewableObjectCell({ isObject: false, full: '{"marked":false}' })).toBe(false);
+		expect(isViewableObjectCell({ full: '{"jsonLooking":true}' })).toBe(false);
+		expect(isViewableObjectCell('{"jsonLooking":true}')).toBe(false);
+		expect(isViewableObjectCell(null)).toBe(false);
+	});
+
+	it('uses the same complete text for string and object-backed View cells', () => {
+		expect(getViewableObjectCellText({
+			display: '[object]', full: '{\n  "requestId": "R-1"\n}', isObject: true,
+		})).toBe('{\n  "requestId": "R-1"\n}');
+		expect(getViewableObjectCellText({
+			display: '{...}', full: { requestId: 'R-2', flags: ['a', 'b'] }, isObject: true,
+		})).toBe('{"requestId":"R-2","flags":["a","b"]}');
+		expect(getViewableObjectCellText({ display: 'fallback', isObject: true })).toBe('fallback');
+	});
+
+	it('exposes the existing 75-character table cap as a bounded integer', () => {
+		expect(normalizeComplexCellMaxCharacters(undefined)).toBe(75);
+		expect(normalizeComplexCellMaxCharacters(1)).toBe(1);
+		expect(normalizeComplexCellMaxCharacters(142.9)).toBe(142);
+		expect(normalizeComplexCellMaxCharacters(0)).toBe(1);
+		expect(normalizeComplexCellMaxCharacters(501)).toBe(500);
+		expect(normalizeComplexCellMaxCharacters('', 80)).toBe(80);
+		expect(normalizeComplexCellMaxCharacters(Number.NaN, 90)).toBe(90);
+	});
+});
 
 describe('result-set picker', () => {
 	it('renders beside the result label and emits the selected ordinal', async () => {

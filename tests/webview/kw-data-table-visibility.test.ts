@@ -166,10 +166,282 @@ describe('kw-data-table visibility lifecycle', () => {
 		expect(table.shadowRoot?.querySelector('[title="Save results to file"]')).toBeTruthy();
 	});
 
+	it('offers complex previews only when the exact View-link predicate is present', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Marked', type: 'dynamic' }, { name: 'Unmarked', type: 'dynamic' }];
+		table.rows = [[
+			{ display: '[object]', full: '{"marked":true}', isObject: true },
+			{ display: '{...}', full: '{"unmarked":true}' },
+		]];
+		document.body.appendChild(table);
+		await settleTable(table);
+
+		const toggle = table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-toggle"]');
+		expect(toggle).toBeTruthy();
+		expect(toggle?.querySelector('svg[data-icon="preview-pane"] rect')).toBeTruthy();
+		expect(toggle?.querySelector('circle')).toBeNull();
+		expect(toggle?.getAttribute('aria-pressed')).toBe('false');
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-preview-controls"]')).toBeNull();
+		expect(table.shadowRoot?.querySelectorAll('.obj-link')).toHaveLength(1);
+		expect(table.shadowRoot?.querySelectorAll('[data-testid="complex-value-preview"]')).toHaveLength(0);
+		expect(renderedCellText(table)).toEqual(['View', '{...}']);
+	});
+
+	it('does not read complete complex values while previews remain off', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		let fullReads = 0;
+		const cell = { display: '[object]', isObject: true } as Record<string, unknown>;
+		Object.defineProperty(cell, 'full', {
+			enumerable: true,
+			get: () => {
+				fullReads++;
+				return '{"hidden":"until-enabled"}';
+			},
+		});
+		table.columns = [{ name: 'Details', type: 'dynamic' }];
+		table.rows = [[cell as any]];
+		document.body.appendChild(table);
+		await settleTable(table);
+
+		fullReads = 0;
+		table.requestUpdate();
+		await settleTable(table);
+		expect(fullReads).toBe(0);
+		table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-toggle"]')?.click();
+		await settleTable(table);
+		expect(fullReads).toBeGreaterThan(0);
+	});
+
+	it('does not offer previews for JSON-looking or typed cells without View links', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'JsonText', type: 'json' }, { name: 'DynamicText', type: 'dynamic' }];
+		table.rows = [['{"plain":true}', { display: '{...}', full: '{"wrapped":true}' }]];
+		document.body.appendChild(table);
+		await settleTable(table);
+
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-preview-toggle"]')).toBeNull();
+		expect(table.shadowRoot?.querySelector('.obj-link')).toBeNull();
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-value-preview"]')).toBeNull();
+	});
+
+	it('configures a preview beside View while the viewer retains the complete value', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		const full = '{"requestId":"R-1001","secret":"beyond-preview"}';
+		table.columns = [{ name: 'Details', type: 'dynamic' }];
+		table.rows = [[{ display: '[object]', full, isObject: true }]];
+		document.body.appendChild(table);
+		await settleTable(table);
+
+		const toggle = table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-toggle"]')!;
+		toggle.click();
+		await settleTable(table);
+		expect(toggle.getAttribute('aria-pressed')).toBe('true');
+		const controls = table.shadowRoot?.querySelector('[data-testid="complex-preview-controls"]') as Element;
+		expect(getComputedStyle(controls).backgroundColor).toBe('transparent');
+		const close = table.shadowRoot?.querySelector('[data-testid="complex-preview-close"]') as Element;
+		expect(getComputedStyle(close).marginLeft).toBe('auto');
+		const input = table.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')!;
+		expect(input.value).toBe('75');
+
+		input.value = '5';
+		input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+		await settleTable(table);
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-value-preview"]')?.textContent).toBe(full);
+
+		table.shadowRoot?.querySelector<HTMLAnchorElement>('.obj-link')?.click();
+		const viewer = table.shadowRoot?.querySelector('kw-object-viewer') as any;
+		expect(viewer?.open).toBe(true);
+		expect(viewer?.jsonText).toBe(full);
+	});
+
+	it('uses the configurable value to expand the existing complex-column cap', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Details', type: 'dynamic' }];
+		table.rows = [[{ display: '[object]', full: `{"payload":"${'x'.repeat(1000)}"}`, isObject: true }]];
+		document.body.appendChild(table);
+		await settleTable(table);
+		const widthBefore = (table as any)._columnWidths[0];
+
+		table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-toggle"]')?.click();
+		await settleTable(table);
+		const defaultComplexWidth = (table as any)._columnWidths[0];
+		expect(defaultComplexWidth).toBe(520);
+		expect((table as any)._columnWidths[0]).toBeGreaterThan(widthBefore);
+		const input = table.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')!;
+		input.value = '150';
+		input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+		await settleTable(table);
+		expect(input.value).toBe('150');
+		expect(table.captureComplexPreviewState()).toEqual({ enabled: true, maxCharacters: 150 });
+		expect((table as any)._columnWidths[0]).toBeGreaterThan(defaultComplexWidth);
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-value-preview"]')?.textContent)
+			.toBe(`{"payload":"${'x'.repeat(1000)}"}`);
+
+		input.value = '25';
+		input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+		await settleTable(table);
+		expect((table as any)._columnWidths[0]).toBeLessThan(defaultComplexWidth);
+		expect(table.captureComplexPreviewState()).toEqual({ enabled: true, maxCharacters: 25 });
+
+		table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-close"]')?.click();
+		await settleTable(table);
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-preview-controls"]')).toBeNull();
+		expect(table.captureComplexPreviewState()).toEqual({ enabled: false, maxCharacters: 25 });
+		table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-toggle"]')?.click();
+		await settleTable(table);
+		expect(table.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')?.value).toBe('25');
+	});
+
+	it('caps plain and header content inside a genuinely expanded mixed column', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: `Mixed_${'h'.repeat(200)}` }];
+		table.rows = [
+			[{ display: '[object]', full: `{"complex":"${'x'.repeat(1000)}"}`, isObject: true }],
+			['p'.repeat(1000)],
+		];
+		document.body.appendChild(table);
+		await settleTable(table);
+		table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-toggle"]')?.click();
+		await settleTable(table);
+		const input = table.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')!;
+		input.value = '150';
+		input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+		await settleTable(table);
+
+		expect((table as any)._columnWidths[0]).toBe(1040);
+		expect(table.shadowRoot?.querySelector('.cell-text')?.textContent).toBe('p'.repeat(1000));
+		expect(table.shadowRoot?.querySelector('.th-label')?.textContent).toBe(`Mixed_${'h'.repeat(200)}`);
+		expect(getComputedStyle(table.shadowRoot?.querySelector('.cell-text') as Element).maxWidth).toBe('520px');
+		expect(getComputedStyle(table.shadowRoot?.querySelector('.th-label') as Element).maxWidth).toBe('520px');
+
+		input.value = '25';
+		input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+		await settleTable(table);
+		expect((table as any)._columnWidths[0]).toBe(174);
+	});
+
+	it('recomputes widths once when a character-cap edit is committed', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Details' }];
+		table.rows = [[{ display: '[object]', full: `{"payload":"${'x'.repeat(1000)}"}`, isObject: true }]];
+		document.body.appendChild(table);
+		await settleTable(table);
+		table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-toggle"]')?.click();
+		await settleTable(table);
+		const internal = table as any;
+		const recompute = vi.spyOn(internal, '_recomputeColumnWidths');
+		const input = table.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')!;
+
+		input.value = '150';
+		input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+		expect(recompute).not.toHaveBeenCalled();
+		input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+		input.dispatchEvent(new FocusEvent('blur', { bubbles: true, composed: true }));
+
+		expect(recompute).toHaveBeenCalledTimes(1);
+	});
+
+	it('keeps search, copy, and CSV on their existing values while preview is enabled', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Details', type: 'dynamic' }];
+		table.rows = [[{
+			display: '[object]', full: '{"prefix":"shown","secret":"search-beyond-preview"}', isObject: true,
+		}]];
+		document.body.appendChild(table);
+		await settleTable(table);
+		table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-toggle"]')?.click();
+		await settleTable(table);
+		const input = table.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')!;
+		input.value = '5';
+		input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+		await settleTable(table);
+
+		const internal = table as any;
+		internal._searchCtrl.query = 'search-beyond-preview';
+		internal._searchCtrl._execSearch();
+		expect(internal._searchCtrl.matches).toEqual([{ row: 0, col: 0 }]);
+
+		const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+		const writeText = vi.fn(() => Promise.resolve());
+		Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+		try {
+			internal._selectionCtrl.setSelectedCell({ row: 0, col: 0 });
+			internal._selectionCtrl.copy();
+			expect(writeText).toHaveBeenCalledWith('[object]');
+		} finally {
+			if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
+			else delete (navigator as any).clipboard;
+		}
+
+		let saved: any;
+		table.addEventListener('save', event => { saved = (event as CustomEvent).detail; });
+		internal._save();
+		expect(saved.csv).toBe('Details\n[object]');
+	});
+
+	it('highlights search matches inside enabled complex previews without changing their full text', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		const first = '{"flag":false,"name":"first"}';
+		const second = '{"flag":false,"name":"second"}';
+		table.columns = [{ name: 'Details', type: 'dynamic' }];
+		table.rows = [
+			[{ display: '[object]', full: first, isObject: true }],
+			[{ display: '[object]', full: second, isObject: true }],
+		];
+		document.body.appendChild(table);
+		await settleTable(table);
+		table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-toggle"]')?.click();
+		await settleTable(table);
+
+		const search = (table as any)._searchCtrl;
+		search.query = 'false';
+		search._execSearch();
+		await settleTable(table);
+
+		const previews = Array.from(table.shadowRoot?.querySelectorAll<HTMLElement>('[data-testid="complex-value-preview"]') ?? []);
+		expect(previews.map(preview => preview.textContent)).toEqual([first, second]);
+		expect(previews[0].querySelector('mark.hl-cur')?.textContent).toBe('false');
+		expect(previews[1].querySelector('mark.hl')?.textContent).toBe('false');
+
+		search.nextMatch();
+		await settleTable(table);
+		expect(previews[0].querySelector('mark.hl')?.textContent).toBe('false');
+		expect(previews[1].querySelector('mark.hl-cur')?.textContent).toBe('false');
+	});
+
+	it('retains preview state across hide/show and temporary loss of View cells', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Details', type: 'dynamic' }];
+		table.rows = [[{ display: '[object]', full: '{"marked":"first"}', isObject: true }]];
+		document.body.appendChild(table);
+		await settleTable(table);
+		table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-toggle"]')?.click();
+		await settleTable(table);
+		const input = table.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')!;
+		input.value = '7';
+		input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+		await settleTable(table);
+
+		table.setBodyVisible(false);
+		await table.updateComplete;
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-preview-controls"]')).toBeNull();
+		table.setBodyVisible(true);
+		await settleTable(table);
+		expect(table.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')?.value).toBe('7');
+
+		table.rows = [['{"unmarked":true}']];
+		await settleTable(table);
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-preview-toggle"]')).toBeNull();
+		table.rows = [[{ display: '[object]', full: '{"marked":"again"}', isObject: true }]];
+		await settleTable(table);
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-preview-toggle"]')?.getAttribute('aria-pressed')).toBe('true');
+		expect(table.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')?.value).toBe('7');
+	});
+
 	it('revokes governed copy selection and closes its object viewer', async () => {
 		const table = document.createElement('kw-data-table') as KwDataTable;
 		table.columns = [{ name: 'Value' }];
-		table.rows = [[{ full: '{"secret":1}', display: 'object', isObject: true } as any]];
+		table.rows = [[{ full: `{"secret":"${'x'.repeat(1000)}"}`, display: 'object', isObject: true } as any]];
 		table.resultArtifactGoverned = true;
 		table.resultArtifactSourceBoxId = 'query_copy';
 		table.resultArtifactId = 'result:query_copy:1';
@@ -178,17 +450,31 @@ describe('kw-data-table visibility lifecycle', () => {
 		document.body.appendChild(table);
 		await settleTable(table);
 		const internal = table as any;
+		table.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="complex-preview-toggle"]')?.click();
+		await settleTable(table);
+		const capInput = table.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="complex-preview-length"]')!;
+		capInput.value = '150';
+		capInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+		await settleTable(table);
+		expect(internal._columnWidths[0]).toBe(1040);
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-value-preview"]')).toBeTruthy();
 		internal._selectionCtrl.setSelectedCell({ row: 0, col: 0 });
 		internal._openObjectViewer(0, 0);
 		const viewer = table.shadowRoot?.querySelector('kw-object-viewer') as any;
 		expect(viewer?.open).toBe(true);
 
+		const computeColumnWidths = vi.spyOn(internal, '_computeColumnWidths');
 		table.revokeResultArtifactGeneration();
 		await table.updateComplete;
 
+		expect(computeColumnWidths).not.toHaveBeenCalled();
 		expect(table.canCopyRows()).toBe(false);
 		expect(internal._selectionCtrl.selectedCell).toBeNull();
 		expect(viewer?.open).toBe(false);
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-preview-controls"]')).toBeNull();
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-value-preview"]')).toBeNull();
+		expect(table.shadowRoot?.querySelector('[data-testid="complex-preview-toggle"]')?.getAttribute('aria-pressed')).toBe('false');
+		expect(internal._columnWidths[0]).toBeLessThanOrEqual(520);
 	});
 
 	it('keeps local copy available for a live governed table without Save', async () => {

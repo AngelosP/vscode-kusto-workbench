@@ -1,5 +1,7 @@
 // Pure schema utility functions.
 // No DOM access, no window globals. Extracted from schema.ts.
+import { getKustoConnectionIdentityKey } from '../../shared/kustoAuth.js';
+import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
 
 export interface SchemaInfoData {
 	status: 'not-loaded' | 'loading' | 'loaded' | 'cached' | 'error';
@@ -23,6 +25,56 @@ export function shouldStartKustoSchemaPrewarm(args: {
 		&& (!token || token.startsWith('schema_prewarm_'))
 		&& args.preparationStatus !== 'preparing'
 		&& args.preparationStatus !== 'deferred';
+}
+
+type KustoConnectionKeyspaceEntry = Readonly<{
+	id?: unknown;
+	clusterUrl?: unknown;
+	authorityId?: unknown;
+	accountPartition?: unknown;
+}>;
+
+function kustoConnectionPrincipalKey(connection: KustoConnectionKeyspaceEntry): string {
+	const id = String(connection?.id || '').trim();
+	const accountPartition = String(connection?.accountPartition || '').trim();
+	const identity = getKustoConnectionIdentityKey(connection?.clusterUrl, connection?.authorityId);
+	return id && identity ? `${encodeURIComponent(id)}|${accountPartition}|${identity}` : '';
+}
+
+function kustoConnectionClusterCounts(connections: readonly KustoConnectionKeyspaceEntry[]): Map<string, number> {
+	const counts = new Map<string, number>();
+	for (const connection of connections || []) {
+		const clusterKey = kustoClusterKey(connection?.clusterUrl);
+		if (clusterKey) counts.set(clusterKey, (counts.get(clusterKey) || 0) + 1);
+	}
+	return counts;
+}
+
+export function classifyKustoConnectionKeyspaceChange(
+	previousConnections: readonly KustoConnectionKeyspaceEntry[],
+	nextConnections: readonly KustoConnectionKeyspaceEntry[],
+): Readonly<{ changed: boolean; invalidated: boolean }> {
+	try {
+		const previous = new Set((previousConnections || []).map(kustoConnectionPrincipalKey).filter(Boolean));
+		const next = new Set((nextConnections || []).map(kustoConnectionPrincipalKey).filter(Boolean));
+		const previousClusterCounts = kustoConnectionClusterCounts(previousConnections);
+		const nextClusterCounts = kustoConnectionClusterCounts(nextConnections);
+		const clusterCardinalityChanged = previousClusterCounts.size !== nextClusterCounts.size
+			|| Array.from(previousClusterCounts).some(([key, count]) => nextClusterCounts.get(key) !== count);
+		const changed = previous.size !== next.size
+			|| Array.from(previous).some(key => !next.has(key))
+			|| clusterCardinalityChanged;
+		const invalidated = Array.from(previous).some(key => !next.has(key))
+			|| Array.from(previousClusterCounts).some(([key, count]) => count === 1 && (nextClusterCounts.get(key) || 0) > 1);
+		return Object.freeze({ changed, invalidated });
+	} catch {
+		return Object.freeze({ changed: true, invalidated: true });
+	}
+}
+
+export function isExplicitKustoTargetSelectionSource(source: unknown): boolean {
+	const value = String(source || '').trim();
+	return value === 'user' || value === 'tool';
 }
 
 export function shouldForceKustoFocusedSchemaApply(args: {

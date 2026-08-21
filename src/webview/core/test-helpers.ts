@@ -6,6 +6,7 @@ import { postMessageToHost } from '../shared/webview-messages.js';
 import { getKustoPreparationState, isSchemaEnhancementReady, isSchemaWorkerReady, requestKustoSchemaApplyForBox, requireSchemaWorkerApply, schemaDiagnosticsTrustedByBoxId, setActiveMonacoEditor, setActiveQueryEditorBoxId } from './state.js';
 import { getKustoEditorSchema, getKustoEditorSchemaIds, getSqlEditorSchema } from './schema-catalogs.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
+import { schemaRequestTokenByBoxId } from './kusto-schema-request-state.js';
 import { getSqlSectionSession } from './sql-section-message-router.js';
 import { pState } from '../shared/persistence-state.js';
 import { DOCUMENT_VIEW_CHANNEL, DOCUMENT_VIEW_PROTOCOL_VERSION } from '../../shared/documentViewProtocol.js';
@@ -1285,7 +1286,25 @@ async function e2eWaitForKustoSupplementalState(sectionIndex: number, status: st
 		latest = __kustoGetSupplementalSchemaSnapshot(modelUri);
 		if (latest.length > 0 && latest.every(state => state.status === status)) {
 			stableLoadedSamples++;
-			if (stableLoadedSamples >= 3) return `section ${sectionIndex} supplemental states=${latest.length} status=${status} stable=${stableLoadedSamples}`;
+			if (stableLoadedSamples >= 3) {
+				let acquisitionProof = '';
+				if (latest.length > 16) {
+					const trace = typeof _win.__kustoGetCrossClusterTrace === 'function' ? _win.__kustoGetCrossClusterTrace() : [];
+					const decisions = trace.filter((entry: any) => entry?.event === 'request-posted' || entry?.event === 'request-joined-existing');
+					const decisionCounts = new Map<string, number>();
+					for (const entry of decisions) {
+						const schemaId = String(entry?.schemaId || '');
+						if (schemaId) decisionCounts.set(schemaId, (decisionCounts.get(schemaId) || 0) + 1);
+					}
+					const duplicateDecisions = Array.from(decisionCounts.values()).filter(count => count !== 1).length;
+					const replacementCount = trace.filter((entry: any) => entry?.event === 'request-escalated').length;
+					if (decisions.length !== latest.length || decisionCounts.size !== latest.length || duplicateDecisions !== 0 || replacementCount !== 0) {
+						throw new Error(`Supplemental acquisition mismatch: states=${latest.length} decisions=${decisions.length} schemas=${decisionCounts.size} duplicates=${duplicateDecisions} replacements=${replacementCount}`);
+					}
+					acquisitionProof = ` acquisitions=${decisions.length} replacements=${replacementCount}`;
+				}
+				return `section ${sectionIndex} supplemental states=${latest.length} status=${status} stable=${stableLoadedSamples}${acquisitionProof}`;
+			}
 			await e2eDelay(100);
 			continue;
 		}
@@ -4027,11 +4046,13 @@ async function e2eAdmitKustoSchemaFixture(args: {
 	database: string;
 	schema: any;
 	schemaSignature: string;
+	requireEnhancement?: boolean;
 }): Promise<void> {
 	const requestToken = `e2e-schema-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 	const lifecycle = args.section.setSchemaLifecycleTarget?.(args.connectionId, args.database);
 	const request = args.section.beginSchemaLifecycleRequest?.(requestToken);
 	if (!lifecycle || !request) throw new Error('Kusto fixture could not claim current schema lifecycle ownership.');
+	schemaRequestTokenByBoxId[args.boxId] = requestToken;
 	requireSchemaWorkerApply(args.boxId);
 	window.dispatchEvent(new MessageEvent('message', { data: {
 		type: 'schemaData',
@@ -4066,7 +4087,7 @@ async function e2eAdmitKustoSchemaFixture(args: {
 			throw new Error(`Kusto fixture schema admission failed at ${preparation.stage}.`);
 		}
 		if (isSchemaWorkerReady(args.boxId, schemaKey, args.modelUri)
-			&& isSchemaEnhancementReady(args.boxId, schemaKey, args.schemaSignature, args.modelUri)) return;
+			&& (args.requireEnhancement === false || isSchemaEnhancementReady(args.boxId, schemaKey, args.schemaSignature, args.modelUri))) return;
 		await e2eDelay(50);
 	}
 	throw new Error('Kusto fixture schema admission did not reach exact worker readiness.');
@@ -4391,36 +4412,88 @@ function e2eSetKustoQueryWithCaretMarkerStrict(queryWithMarker: string, marker: 
 	return `strict set kusto query with caret at ${lineNumber}:${column}`;
 }
 
-function e2eScheduleNoContextAutocompleteRetryFixture(delayMs: number = 1800): string {
+async function e2eScheduleNoContextAutocompleteRetryFixture(
+	delayMs: number = 1800,
+	referenceCount: number = 1,
+	authoritativePrimary: boolean = false,
+): Promise<string> {
 	const section = e2eSection('kusto');
 	const boxId = String(section.boxId || section.id || '').trim();
 	if (!boxId) throw new Error('Kusto section is unavailable for delayed supplemental retry');
-	const clusterName = 'delayed-supplemental.westus.kusto.windows.net';
-	const clusterUrl = `https://${clusterName}`;
-	const database = 'TelemetryDb';
-	const connection = {
-		id: 'e2e-delayed-supplemental-connection',
-		name: 'E2E Delayed Supplemental',
-		clusterUrl,
-		accountPartition: 'e2e-delayed-supplemental-partition',
-	};
+	const count = Math.max(1, Math.min(32, Math.floor(Number(referenceCount) || 1)));
 	const existingConnections = Array.isArray(_win.connections) ? _win.connections : [];
-	if (!existingConnections.some((candidate: any) => candidate?.id === connection.id)) existingConnections.push(connection);
-	e2eSetKustoQueryWithCaretMarkerStrict(`cluster('${clusterName}').database('${database}').RemoteEvents\n| where ⟦caret⟧`);
-	const rawSchemaJson = e2eBuildShowSchema(database, {
-		RemoteEvents: { TIMESTAMP: 'datetime', RemoteOnlyColumn: 'string' },
-	});
-	if (!__kustoScheduleSupplementalSchemaForTest({
-		clusterName,
-		clusterUrl,
-		database,
-		boxId,
-		rawSchemaJson,
-		delayMs: Math.max(1300, Number(delayMs) || 0),
-	})) {
-		throw new Error('Failed to schedule delayed supplemental retry fixture');
+	if (authoritativePrimary) {
+		const editor = e2eEditor('kusto');
+		const modelUri = String(editor.getModel?.()?.uri?.toString?.() || '');
+		if (!modelUri) throw new Error('Kusto model is unavailable for authoritative delayed supplemental diagnostics');
+		const primaryConnection = {
+			id: 'e2e-delayed-supplemental-primary',
+			name: 'E2E Delayed Supplemental Primary',
+			clusterUrl: 'https://delayed-supplemental-primary.westus.kusto.windows.net',
+			accountPartition: 'e2e-delayed-supplemental-primary-partition',
+		};
+		const primaryDatabase = 'PrimaryDb';
+		if (!existingConnections.some((candidate: any) => candidate?.id === primaryConnection.id)) existingConnections.push(primaryConnection);
+		const previousRestoreInProgress = !!pState.restoreInProgress;
+		try {
+			pState.restoreInProgress = true;
+			section.setConnections?.(existingConnections, { lastConnectionId: primaryConnection.id });
+			section.setConnectionId?.(primaryConnection.id);
+			section.setDesiredClusterUrl?.(primaryConnection.clusterUrl);
+			section.setDatabases?.([primaryDatabase], primaryDatabase);
+			section.setDatabase?.(primaryDatabase);
+		} finally {
+			pState.restoreInProgress = previousRestoreInProgress;
+		}
+		try { editor.focus?.(); } catch { /* ignore */ }
+		setActiveQueryEditorBoxId(boxId);
+		setActiveMonacoEditor(editor);
+		const primaryTables = { PrimaryEvents: { TIMESTAMP: 'datetime', PrimaryOnlyColumn: 'string' } };
+		const primaryRawSchema = e2eBuildShowSchema(primaryDatabase, primaryTables);
+		await e2eAdmitKustoSchemaFixture({
+			section,
+			boxId,
+			modelUri,
+			connectionId: primaryConnection.id,
+			accountPartition: primaryConnection.accountPartition,
+			clusterUrl: primaryConnection.clusterUrl,
+			database: primaryDatabase,
+			schema: e2eCompactSchemaFromTables(primaryTables, primaryRawSchema),
+			schemaSignature: 'e2e-delayed-supplemental-primary',
+			requireEnhancement: false,
+		});
+		schemaDiagnosticsTrustedByBoxId[boxId] = true;
 	}
-	return `delayed supplemental retry fixture scheduled for ${Math.max(1300, Number(delayMs) || 0)}ms`;
+	const fixtures = Array.from({ length: count }, (_, index) => {
+		const suffix = count === 1 ? '' : `-${index + 1}`;
+		const clusterName = `delayed-supplemental${suffix}.westus.kusto.windows.net`;
+		const clusterUrl = `https://${clusterName}`;
+		const database = count === 1 ? 'TelemetryDb' : `TelemetryDb${index + 1}`;
+		const connection = {
+			id: `e2e-delayed-supplemental-connection${suffix}`,
+			name: `E2E Delayed Supplemental${suffix}`,
+			clusterUrl,
+			accountPartition: `e2e-delayed-supplemental-partition${suffix}`,
+		};
+		if (!existingConnections.some((candidate: any) => candidate?.id === connection.id)) existingConnections.push(connection);
+		return { clusterName, clusterUrl, database };
+	});
+	const references = fixtures.map(fixture => `cluster('${fixture.clusterName}').database('${fixture.database}').RemoteEvents`);
+	e2eSetKustoQueryWithCaretMarkerStrict(`union ${references.join(',\n')}\n| where ⟦caret⟧`);
+	for (const fixture of fixtures) {
+		const rawSchemaJson = e2eBuildShowSchema(fixture.database, {
+			RemoteEvents: { TIMESTAMP: 'datetime', RemoteOnlyColumn: 'string' },
+		});
+		if (!__kustoScheduleSupplementalSchemaForTest({
+			...fixture,
+			boxId,
+			rawSchemaJson,
+			delayMs: Math.max(1300, Number(delayMs) || 0),
+		})) {
+			throw new Error(`Failed to schedule delayed supplemental retry fixture ${fixture.database}`);
+		}
+	}
+	return `${count} delayed supplemental retry fixture(s) scheduled for ${Math.max(1300, Number(delayMs) || 0)}ms; authoritativePrimary=${authoritativePrimary}`;
 }
 
 async function e2eAssertKustoSemanticSuggestAt(queryWithMarker: string, expectedCsv: string, context: string, timeoutMs: number = 7000): Promise<string> {
@@ -8263,7 +8336,7 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		},
 		setCurrentClusterWorkflowScenario: () => e2eSetCurrentClusterWorkflowScenario(),
 		setMissingRemoteSchemaScenario: () => e2eSetKustoQueryWithCaretMarker(e2eKustoMissingRemoteSchemaQuery()) + ' for missing remote schema timeout',
-		scheduleNoContextAutocompleteRetryFixture: (delayMs: number = 1800) => e2eScheduleNoContextAutocompleteRetryFixture(delayMs),
+		scheduleNoContextAutocompleteRetryFixture: (delayMs: number = 1800, referenceCount: number = 1, authoritativePrimary: boolean = false) => e2eScheduleNoContextAutocompleteRetryFixture(delayMs, referenceCount, authoritativePrimary),
 		assertSemanticSuggestAt: (queryWithMarker: string, expectedCsv: string, context: string, timeoutMs?: number) => e2eAssertKustoSemanticSuggestAt(queryWithMarker, expectedCsv, context, timeoutMs),
 		assertSemanticScenario: (scenario: KustoSemanticCompletionScenario, timeoutMs?: number) => e2eAssertKustoSemanticScenario(scenario, timeoutMs),
 		assertSemanticScenarioVisible: (scenario: KustoSemanticCompletionScenario, timeoutMs?: number) => e2eAssertKustoSemanticScenarioVisible(scenario, timeoutMs),

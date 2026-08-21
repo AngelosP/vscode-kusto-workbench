@@ -91,6 +91,7 @@ const mocks = {
 	handleCrossClusterSchemaError: vi.fn(() => true),
 	traceFileOpen: vi.fn(),
 	retryPrimarySchemaEnhancement: vi.fn(() => true),
+	resyncSupplementalReferencesForConnections: vi.fn(),
 	releaseStaleCrossClusterResponse: vi.fn(),
 	handleDocumentDataMessage: vi.fn(() => true),
 	flushCompatibilityPersist: vi.fn(),
@@ -222,7 +223,8 @@ vi.mock('../../src/webview/shared/artifact-csv-export.js', () => ({
 	cancelArtifactCsvSave: mocks.cancelArtifactCsvSave,
 }));
 
-vi.mock('../../src/webview/shared/schema-utils.js', () => ({
+vi.mock('../../src/webview/shared/schema-utils.js', async (importOriginal) => ({
+	...await importOriginal<typeof import('../../src/webview/shared/schema-utils.js')>(),
 	buildSchemaInfo: vi.fn((text: string, isError: boolean, meta?: unknown) => ({ text, isError, meta })),
 }));
 
@@ -416,6 +418,7 @@ vi.mock('../../src/webview/monaco/monaco.js', () => ({
 	__kustoRetryPrimarySchemaEnhancement: mocks.retryPrimarySchemaEnhancement,
 	__kustoTraceCrossCluster: vi.fn(),
 	invalidateKustoSchemaIdentityState: vi.fn(),
+	resyncKustoSupplementalReferencesForConnections: mocks.resyncSupplementalReferencesForConnections,
 }));
 
 vi.mock('../../src/webview/monaco/suggest.js', () => ({
@@ -434,7 +437,10 @@ vi.mock('../../src/webview/core/state.js', async () => {
 	...actual,
 	get activeQueryEditorBoxId() { return handlerState.activeQueryEditorBoxId; },
 	connections: handlerState.connections,
-	setConnections: mocks.setConnections,
+	setConnections: vi.fn((connections: Array<Record<string, unknown>>) => {
+		mocks.setConnections(connections);
+		handlerState.connections.splice(0, handlerState.connections.length, ...connections);
+	}),
 	sqlConnections: handlerState.sqlConnections,
 	setSqlConnections: vi.fn((connections: Array<Record<string, unknown>>) => {
 		mocks.setSqlConnections(connections);
@@ -497,6 +503,10 @@ vi.mock('../../src/webview/core/state.js', async () => {
 	markSchemaWorkerReady: vi.fn(),
 	schemaWorkerReadyByBoxId: handlerState.schemaWorkerReadyByBoxId,
 	getSchemaWorkerReadyState: (boxId: string) => handlerState.schemaWorkerReadyByBoxId[boxId],
+	invalidateSchemaWorkerReadinessForBox: vi.fn((boxId: string, resetPreparation?: boolean, resetEnhancement?: boolean) => {
+		delete handlerState.schemaWorkerReadyByBoxId[boxId];
+		actual.invalidateSchemaWorkerReadinessForBox(boxId, resetPreparation, resetEnhancement);
+	}),
 	schemaWorkerReadyWaitersByBoxId: {},
 	pendingSchemaWorkerUpdateByBoxId: handlerState.pendingSchemaWorkerUpdateByBoxId,
 	getPendingSchemaWorkerUpdate: (boxId: string) => handlerState.pendingSchemaWorkerUpdateByBoxId[boxId],
@@ -1815,6 +1825,30 @@ describe('message-handler dispatch', () => {
 			type: 'editingPreferencesData',
 			caretDocsEnabled: true,
 		}));
+		expect(mocks.resyncSupplementalReferencesForConnections).toHaveBeenCalledWith({ invalidateWorker: false });
+	});
+
+	it('invalidates stale supplemental principal state when an account partition changes', () => {
+		dispatchHostMessage({
+			...kustoConnectionsSnapshot(500, 'c1'),
+			connectionsRevision: undefined,
+			connections: [{
+				...kustoConnectionsSnapshot(500, 'c1').connections[0],
+				accountPartition: 'partition-a',
+			}],
+		});
+		mocks.resyncSupplementalReferencesForConnections.mockClear();
+
+		dispatchHostMessage({
+			...kustoConnectionsSnapshot(501, 'c1'),
+			connectionsRevision: undefined,
+			connections: [{
+				...kustoConnectionsSnapshot(501, 'c1').connections[0],
+				accountPartition: 'partition-b',
+			}],
+		});
+
+		expect(mocks.resyncSupplementalReferencesForConnections).toHaveBeenCalledWith({ invalidateWorker: true });
 	});
 
 	it('treats Kusto connection revision zero as a present canonical revision', () => {
@@ -4029,6 +4063,40 @@ describe('message-handler dispatch', () => {
 		});
 	});
 
+	it('emits tool selection intent when confirming an unchanged Kusto target', () => {
+		const events: CustomEvent[] = [];
+		const section = {
+			getConnectionId: () => 'connection-1',
+			getDatabase: () => 'Samples',
+			setConnectionId: vi.fn(),
+			setDesiredConnectionIdentity: vi.fn(),
+			setDesiredClusterUrl: vi.fn(),
+			dispatchEvent: vi.fn((event: CustomEvent) => { events.push(event); return true; }),
+		};
+		handlerState.connections.push({
+			id: 'connection-1',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			accountPartition: 'partition-1',
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-same-target',
+			input: {
+				sectionId: 'query_1',
+				clusterUrl: 'https://cluster.kusto.windows.net',
+				connectionId: 'connection-1',
+				database: 'Samples',
+			},
+		});
+
+		expect(events).toHaveLength(1);
+		expect(events[0].type).toBe('target-selection-intent');
+		expect(events[0].detail).toEqual({
+			boxId: 'query_1', kind: 'connection', connectionId: 'connection-1', database: 'Samples', source: 'tool',
+		});
+	});
+
 	it('rejects configure-and-execute on an unconfigured section before query or name mutation', async () => {
 		const sectionFactory = await import('../../src/webview/core/section-factory.js');
 		const setValue = vi.fn();
@@ -5256,11 +5324,27 @@ describe('message-handler dispatch', () => {
 
 	it('settles a failed background refresh to ready when the prepared fallback remains usable', async () => {
 		const state = await import('../../src/webview/core/state.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
+		const clusterUrl = 'https://cluster.kusto.windows.net';
+		const database = 'Samples';
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
+		handlerState.connections.push({ id: 'c1', clusterUrl, accountPartition: 'partition-1' });
+		handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/current' } })) };
+		mocks.getConnectionId.mockReturnValue('c1');
+		mocks.getClusterUrl.mockReturnValue(clusterUrl);
+		mocks.getDatabase.mockReturnValue(database);
+		state.setKustoSchemaMetadata('query_1', { schemaSignature: 'sig-stale', refreshState: 'scheduled', isStale: true });
+		handlerState.schemaWorkerReadyByBoxId.query_1 = {
+			status: 'ready', schemaKey, schemaSignature: 'sig-stale', modelUri: 'inmemory://model/current', updatedAt: Date.now(),
+		};
 		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_refresh';
 		state.beginKustoPreparation('query_1', {
 			stage: 'refreshing',
 			blockers: ['refresh'],
-			target: { connectionId: 'c1', database: 'Samples', requestToken: 'schema_refresh' },
+			target: {
+				connectionId: 'c1', database, requestToken: 'schema_refresh', schemaKey,
+				schemaSignature: 'sig-stale', modelUri: 'inmemory://model/current',
+			},
 			usableFallback: true,
 		});
 
@@ -5268,7 +5352,7 @@ describe('message-handler dispatch', () => {
 			type: 'schemaError',
 			boxId: 'query_1',
 			connectionId: 'c1',
-			database: 'Samples',
+			database,
 			requestToken: 'schema_refresh',
 			silent: true,
 			isBackgroundRefresh: true,
@@ -5280,7 +5364,127 @@ describe('message-handler dispatch', () => {
 		expect(state.getKustoPreparationState('query_1')).toMatchObject({ status: 'ready', stage: 'ready', blockers: [] });
 	});
 
-	it('does not keep refresh as a blocker while stale cached schema is being applied', async () => {
+	it('fails closed when a refresh error claims a fallback without an exact ready worker', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_refresh_missing';
+		state.beginKustoPreparation('query_1', {
+			stage: 'refreshing',
+			blockers: ['refresh'],
+			target: { connectionId: 'c1', database: 'Samples', requestToken: 'schema_refresh_missing' },
+			usableFallback: true,
+		});
+
+		dispatchHostMessage({
+			type: 'schemaError',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database: 'Samples',
+			requestToken: 'schema_refresh_missing',
+			silent: true,
+			isBackgroundRefresh: true,
+			refreshState: 'failed',
+			hasUsableFallback: true,
+			error: 'Background schema refresh failed.',
+		});
+
+		expect(state.getKustoPreparationState('query_1')).toMatchObject({ status: 'error', stage: 'error', blockers: [] });
+	});
+
+	it('retains a queued exact fallback and revalidates when its refresh fails before worker hydration', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
+		const clusterUrl = 'https://cluster.kusto.windows.net';
+		const database = 'Samples';
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
+		handlerState.connections.push({ id: 'c1', clusterUrl, accountPartition: 'partition-1' });
+		handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/current' } })) };
+		mocks.getConnectionId.mockReturnValue('c1');
+		mocks.getClusterUrl.mockReturnValue(clusterUrl);
+		mocks.getDatabase.mockReturnValue(database);
+		state.setKustoSchemaMetadata('query_1', { schemaSignature: 'sig-stale', refreshState: 'scheduled', isStale: true });
+		handlerState.schemaByBoxId.query_1 = { rawSchemaJson: { Databases: { Samples: {} } } };
+		handlerState.pendingSchemaWorkerUpdateByBoxId.query_1 = {
+			rawSchemaJson: { Databases: { Samples: {} } },
+			clusterUrl,
+			database,
+			connectionId: 'c1',
+			accountPartition: 'partition-1',
+			schemaKey,
+			schemaSignature: 'sig-stale',
+		};
+		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_refresh_pending';
+		const token = state.beginKustoPreparation('query_1', {
+			stage: 'waiting-focus',
+			blockers: ['refresh'],
+			target: {
+				connectionId: 'c1', database, requestToken: 'schema_refresh_pending', schemaKey,
+				schemaSignature: 'sig-stale', modelUri: 'inmemory://model/current',
+			},
+			usableFallback: true,
+		})!;
+		state.updateKustoPreparation(token, { status: 'deferred', stage: 'waiting-focus', replaceBlockers: ['refresh'] });
+		(window as any).__kustoTriggerRevalidation = vi.fn();
+
+		dispatchHostMessage({
+			type: 'schemaError', boxId: 'query_1', connectionId: 'c1', database,
+			requestToken: 'schema_refresh_pending', silent: true, isBackgroundRefresh: true,
+			refreshState: 'failed', hasUsableFallback: true, error: 'Background schema refresh failed.',
+		});
+
+		expect(state.getKustoPreparationState('query_1')).toMatchObject({
+			status: 'deferred',
+			stage: 'waiting-focus',
+			blockers: [],
+			usableFallback: true,
+		});
+		expect(handlerState.pendingSchemaWorkerUpdateByBoxId.query_1).toBeDefined();
+		expect(state.getKustoSchemaMetadata('query_1')).toMatchObject({ refreshState: 'failed', schemaSignature: 'sig-stale' });
+		expect((window as any).__kustoTriggerRevalidation).toHaveBeenCalledWith('query_1');
+	});
+
+	it('retains an exact in-flight fallback apply when its background refresh fails', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
+		const clusterUrl = 'https://cluster.kusto.windows.net';
+		const database = 'Samples';
+		const modelUri = 'inmemory://model/current';
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
+		handlerState.connections.push({ id: 'c1', clusterUrl, accountPartition: 'partition-1' });
+		handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => modelUri } })) };
+		mocks.getConnectionId.mockReturnValue('c1');
+		mocks.getClusterUrl.mockReturnValue(clusterUrl);
+		mocks.getDatabase.mockReturnValue(database);
+		handlerState.schemaByBoxId.query_1 = { rawSchemaJson: { Databases: { Samples: {} } } };
+		state.setKustoSchemaMetadata('query_1', { schemaSignature: 'sig-stale', refreshState: 'scheduled', isStale: true });
+		handlerState.schemaWorkerReadyByBoxId.query_1 = {
+			status: 'pending', schemaKey, schemaSignature: 'sig-stale', modelUri, updatedAt: Date.now(),
+		};
+		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_refresh_applying';
+		const token = state.beginKustoPreparation('query_1', {
+			stage: 'waiting-worker', blockers: ['refresh', 'worker'],
+			target: {
+				connectionId: 'c1', database, requestToken: 'schema_refresh_applying', schemaKey,
+				schemaSignature: 'sig-stale', modelUri,
+			},
+			usableFallback: true,
+		})!;
+
+		dispatchHostMessage({
+			type: 'schemaError', boxId: 'query_1', connectionId: 'c1', database,
+			requestToken: 'schema_refresh_applying', silent: true, isBackgroundRefresh: true,
+			refreshState: 'failed', hasUsableFallback: true, error: 'Background schema refresh failed.',
+		});
+
+		expect(state.isKustoPreparationCurrent(token)).toBe(true);
+		expect(state.getKustoPreparationState('query_1')).toMatchObject({
+			status: 'preparing', stage: 'waiting-worker', blockers: ['worker'], usableFallback: true,
+		});
+		expect(handlerState.schemaWorkerReadyByBoxId.query_1).toMatchObject({
+			status: 'pending', schemaKey, schemaSignature: 'sig-stale', modelUri,
+		});
+	});
+
+	it('keeps refresh as a diagnostic blocker while stale cached schema is being applied', async () => {
 		const state = await import('../../src/webview/core/state.js');
 		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
 		const clusterUrl = 'https://cluster.kusto.windows.net';
@@ -5320,7 +5524,7 @@ describe('message-handler dispatch', () => {
 
 		expect(state.getKustoPreparationState('query_1')).toMatchObject({
 			status: 'preparing',
-			blockers: ['worker'],
+			blockers: ['refresh', 'worker'],
 			target: { schemaKey, schemaSignature: 'sig-stale' },
 		});
 	});
@@ -5374,6 +5578,106 @@ describe('message-handler dispatch', () => {
 		await vi.waitFor(() => expect(setSchema).toHaveBeenCalled());
 		expect(state.getKustoPreparationState('query_1')).toMatchObject({ status: 'ready', blockers: [] });
 		expect(state.markSchemaWorkerApplyPending).not.toHaveBeenCalled();
+	});
+
+	it('fences a pending cached apply when fresh schema advances the signature', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
+		const clusterUrl = 'https://cluster.kusto.windows.net';
+		const database = 'Samples';
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
+		handlerState.activeQueryEditorBoxId = 'query_1';
+		handlerState.queryBoxes.push('query_1');
+		handlerState.connections.push({ id: 'c1', clusterUrl, accountPartition: 'partition-1' });
+		mocks.getConnectionId.mockReturnValue('c1');
+		mocks.getClusterUrl.mockReturnValue(clusterUrl);
+		mocks.getDatabase.mockReturnValue(database);
+		handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/current' } })) };
+		const cachedToken = state.beginKustoPreparation('query_1', {
+			stage: 'waiting-worker', blockers: ['worker'],
+			target: {
+				connectionId: 'c1', database, schemaKey, schemaSignature: 'sig-cached',
+				modelUri: 'inmemory://model/current', requestToken: 'schema_refresh',
+			},
+			usableFallback: true,
+		})!;
+		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_refresh';
+		handlerState.schemaWorkerReadyByBoxId.query_1 = {
+			status: 'pending', schemaKey, schemaSignature: 'sig-cached', modelUri: 'inmemory://model/current', updatedAt: Date.now(),
+		};
+		(window as any).__kustoSetMonacoKustoSchema = vi.fn(async () => true);
+
+		dispatchHostMessage({
+			type: 'schemaData', boxId: 'query_1', connectionId: 'c1', accountPartition: 'partition-1',
+			database, clusterUrl, requestToken: 'schema_refresh',
+			schema: { tables: ['FreshEvents'], columnTypesByTable: {}, rawSchemaJson: { Databases: { Samples: {} } } },
+			schemaMeta: {
+				schemaSignature: 'sig-fresh', workerUpdateNeeded: true, isBackgroundRefresh: true,
+				refreshState: 'completed', autocompleteChanged: true,
+			},
+		});
+
+		expect(state.isKustoPreparationCurrent(cachedToken)).toBe(false);
+		expect(state.getKustoPreparationState('query_1')).toMatchObject({
+			status: 'ready',
+			blockers: [],
+			target: { schemaKey, schemaSignature: 'sig-fresh', modelUri: 'inmemory://model/current' },
+		});
+		await vi.waitFor(() => expect((window as any).__kustoSetMonacoKustoSchema).toHaveBeenCalled());
+		expect((window as any).__kustoSetMonacoKustoSchema.mock.calls[0][7]).toBeUndefined();
+	});
+
+	it('retains a changed background update and revokes old readiness after retries exhaust', async () => {
+		vi.useFakeTimers();
+		try {
+			const state = await import('../../src/webview/core/state.js');
+			const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
+			const clusterUrl = 'https://cluster.kusto.windows.net';
+			const database = 'Samples';
+			const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
+			handlerState.activeQueryEditorBoxId = 'query_1';
+			handlerState.queryBoxes.push('query_1');
+			mocks.getConnectionId.mockReturnValue('c1');
+			mocks.getClusterUrl.mockReturnValue(clusterUrl);
+			mocks.getDatabase.mockReturnValue(database);
+			handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/current' } })) };
+			state.beginKustoPreparation('query_1', {
+				stage: 'ready', blockers: [],
+				target: { connectionId: 'c1', database, schemaKey, schemaSignature: 'sig-old', modelUri: 'inmemory://model/current', requestToken: 'schema_refresh' },
+				usableFallback: true,
+			});
+			handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_refresh';
+			handlerState.schemaWorkerReadyByBoxId.query_1 = {
+				status: 'ready', schemaKey, schemaSignature: 'sig-old', modelUri: 'inmemory://model/current', updatedAt: Date.now(),
+			};
+			const setSchema = vi.fn(async () => false);
+			(window as any).__kustoSetMonacoKustoSchema = setSchema;
+
+			dispatchHostMessage({
+				type: 'schemaData', boxId: 'query_1', connectionId: 'c1', accountPartition: 'partition-1',
+				database, clusterUrl, requestToken: 'schema_refresh',
+				schema: { tables: ['Events', 'NewEvents'], columnTypesByTable: {}, rawSchemaJson: { Databases: { Samples: {} } } },
+				schemaMeta: {
+					schemaSignature: 'sig-new', workerUpdateNeeded: true, isBackgroundRefresh: true,
+					refreshState: 'completed', autocompleteChanged: true,
+				},
+			});
+
+			await vi.advanceTimersByTimeAsync(5_000);
+
+			expect(setSchema).toHaveBeenCalledTimes(6);
+			expect(state.getPendingSchemaWorkerUpdate('query_1')).toEqual(expect.objectContaining({
+				schemaKey,
+				schemaSignature: 'sig-new',
+				reason: 'background-retry-exhausted',
+				backgroundOnly: true,
+			}));
+			expect(state.isSchemaWorkerApplyRequired('query_1')).toBe(true);
+			expect(handlerState.schemaWorkerReadyByBoxId.query_1).toBeUndefined();
+			expect(state.invalidateSchemaWorkerReadinessForBox).toHaveBeenCalledWith('query_1', false, false);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('rejects background worker completion after same-ID section recreation', async () => {
@@ -6029,6 +6333,8 @@ describe('message-handler dispatch', () => {
 			schemaMeta: { schemaSignature: 'sig-1', workerUpdateNeeded: true },
 		});
 		await vi.waitFor(() => expect((window as any).__kustoTriggerRevalidation).toHaveBeenCalledWith('query_1'));
+		expect(state.markSchemaWorkerReady.mock.invocationCallOrder[0])
+			.toBeLessThan((window as any).__kustoTriggerRevalidation.mock.invocationCallOrder[0]);
 
 		expect(state.markSchemaWorkerApplyPending).toHaveBeenCalledWith('query_1', schemaKey, 'sig-1', 'inmemory://model/open', expect.any(Object));
 		expect((window as any).__kustoSetMonacoKustoSchema).toHaveBeenCalledWith(
@@ -6086,6 +6392,43 @@ describe('message-handler dispatch', () => {
 		expect(state.markSchemaWorkerApplyPending).not.toHaveBeenCalled();
 		expect((window as any).__kustoSetMonacoKustoSchema).not.toHaveBeenCalled();
 		expect((window as any).__kustoTriggerRevalidation).not.toHaveBeenCalled();
+	});
+
+	it('retains the refresh blocker when stale schema waits for focus', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		const clusterUrl = 'https://cluster.kusto.windows.net';
+		const database = 'Samples';
+		handlerState.activeQueryEditorBoxId = 'query_active';
+		handlerState.queryBoxes.push('query_active', 'query_1');
+		handlerState.connections.push({ id: 'c1', clusterUrl, accountPartition: 'partition-1' });
+		mocks.getConnectionId.mockReturnValue('c1');
+		mocks.getClusterUrl.mockReturnValue(clusterUrl);
+		mocks.getDatabase.mockReturnValue(database);
+		handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/inactive' } })) };
+		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_stale_inactive';
+		state.beginKustoPreparation('query_1', {
+			stage: 'refreshing', blockers: ['refresh', 'worker'],
+			target: { connectionId: 'c1', database, requestToken: 'schema_stale_inactive' },
+			usableFallback: true,
+		});
+
+		dispatchHostMessage({
+			type: 'schemaData', boxId: 'query_1', connectionId: 'c1', accountPartition: 'partition-1',
+			database, clusterUrl, requestToken: 'schema_stale_inactive',
+			schema: { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: { Databases: { Samples: {} } } },
+			schemaMeta: {
+				schemaSignature: 'sig-stale', workerUpdateNeeded: true, isBackgroundRefresh: true,
+				refreshState: 'scheduled', isStale: true,
+			},
+		});
+
+		expect(state.getPendingSchemaWorkerUpdate('query_1')).toBeDefined();
+		expect(state.getKustoPreparationState('query_1')).toMatchObject({
+			status: 'deferred',
+			stage: 'waiting-focus',
+			blockers: ['refresh'],
+			usableFallback: true,
+		});
 	});
 
 	it('queues inactive force-refresh schema data instead of stealing context', async () => {

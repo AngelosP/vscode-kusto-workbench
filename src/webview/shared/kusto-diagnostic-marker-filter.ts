@@ -45,6 +45,7 @@ export function filterResolvableCrossClusterMarkers<T extends KustoDiagnosticMar
 		modelUri: string;
 		currentContext?: CrossClusterSchemaContext | null;
 		getOffsetAt(position: { lineNumber: number; column: number }): number;
+		resolveSchemaKey?(clusterName: string, database: string): string;
 		shouldSuppressDiagnostic(schemaKey: string, modelUri: string): boolean;
 		trace?: (event: KustoMarkerFilterTrace) => void;
 	}
@@ -83,7 +84,9 @@ export function filterResolvableCrossClusterMarkers<T extends KustoDiagnosticMar
 			if (!targetRange || !rangeContains(targetRange, markerRange)) {
 				continue;
 			}
-			const schemaKey = kustoDatabaseKey(ref.clusterName, ref.database);
+			const schemaKey = options.resolveSchemaKey
+				? options.resolveSchemaKey(ref.clusterName, ref.database)
+				: kustoDatabaseKey(ref.clusterName, ref.database);
 			if (schemaKey && options.shouldSuppressDiagnostic(schemaKey, options.modelUri)) {
 				options.trace?.({ event: 'suppress-supplemental-diagnostic', code, schemaKey });
 				return false;

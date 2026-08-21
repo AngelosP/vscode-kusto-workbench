@@ -172,7 +172,14 @@ export class QueryConnectionController implements ReactiveController {
 		}
 		const hasRawFallback = !!getKustoEditorSchema(boxId)?.rawSchemaJson;
 		if (forceRefresh && targetMatches && current.status === 'ready' && hasRawFallback) {
-			return getKustoPreparationToken(boxId);
+			const token = getKustoPreparationToken(boxId);
+			updateKustoPreparation(token, {
+				status: 'preparing',
+				stage: 'refreshing',
+				addBlockers: ['refresh'],
+				usableFallback: true,
+			});
+			return token;
 		}
 		return beginKustoPreparation(boxId, {
 			stage: forceRefresh ? 'refreshing' : 'schema',
@@ -644,14 +651,15 @@ export class QueryConnectionController implements ReactiveController {
 		this.host.setSchemaLifecycleTarget(connectionId, database);
 		let preparationToken = this.ensureSchemaPreparation(connectionId, database, !!forceRefresh);
 		const preparationState = getKustoPreparationState(boxId);
+		const schemaMeta = getKustoSchemaMetadata(boxId) || {};
+		const needsRefresh = !!schemaMeta.isStale || schemaMeta.cacheState === 'stale' || schemaMeta.cacheState === 'outdated';
 		if (!forceRefresh && preparationState.status === 'ready'
 			&& preparationState.target.connectionId === connectionId
-			&& preparationState.target.database === database) {
+			&& preparationState.target.database === database
+			&& !needsRefresh) {
 			return;
 		}
 		if (!forceRefresh && getKustoEditorSchema(boxId)?.rawSchemaJson) {
-			const meta = getKustoSchemaMetadata(boxId) || {};
-			const needsRefresh = !!meta.isStale || meta.cacheState === 'stale' || meta.cacheState === 'outdated';
 			if (!needsRefresh) {
 				if (preparationToken) {
 					updateKustoPreparation(preparationToken, {
@@ -659,10 +667,19 @@ export class QueryConnectionController implements ReactiveController {
 						stage: 'waiting-focus',
 						replaceBlockers: [],
 						usableFallback: true,
-						target: { schemaSignature: meta.schemaSignature },
+						target: { schemaSignature: schemaMeta.schemaSignature },
 					});
 				}
 				return;
+			}
+			if (preparationToken) {
+				updateKustoPreparation(preparationToken, {
+					status: 'preparing',
+					stage: 'refreshing',
+					addBlockers: ['refresh'],
+					usableFallback: true,
+					target: { schemaSignature: schemaMeta.schemaSignature },
+				});
 			}
 		}
 		if (schemaFetchInFlightByBoxId[boxId]) return;

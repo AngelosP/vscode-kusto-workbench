@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, nothing, html } from 'lit';
+import '../../../src/webview/components/kw-data-table.js';
 import '../../../src/webview/viewers/connection-manager/kw-connection-manager.js';
 import type { KwConnectionManager } from '../../../src/webview/viewers/connection-manager/kw-connection-manager.js';
 import type { SearchResult, SearchState } from '../../../src/webview/viewers/connection-manager/connection-manager-search.controller.js';
@@ -1567,6 +1568,47 @@ describe('kw-connection-manager', () => {
 			// Has both refresh and dismiss buttons
 			const buttons = previewHeader?.querySelectorAll('.preview-result-dismiss');
 			expect(buttons?.length).toBeGreaterThanOrEqual(2);
+		});
+
+		it('Kusto: compact table previews expose the same complex preview control without changing row height', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot());
+			await el.updateComplete;
+			(el.shadowRoot!.querySelector('.explorer-list-item') as HTMLElement).click();
+			await el.updateComplete;
+			const dbRow = Array.from(el.shadowRoot!.querySelectorAll('.explorer-list-item'))
+				.find(row => row.textContent?.includes('db1')) as HTMLElement | undefined;
+			dbRow?.click();
+			await el.updateComplete;
+			sendSchemaLoaded(el, 'c1', 'db1', {
+				tables: ['TestTable'], columnTypesByTable: { TestTable: { Details: 'dynamic' } },
+			});
+			await el.updateComplete;
+			const tables = Array.from(el.shadowRoot!.querySelectorAll('.explorer-list-item'))
+				.find(row => row.textContent?.includes('Tables')) as HTMLElement | undefined;
+			tables?.click();
+			await el.updateComplete;
+			const tableRow = Array.from(el.shadowRoot!.querySelectorAll('.explorer-list-item'))
+				.find(row => row.textContent?.includes('TestTable')) as HTMLElement | undefined;
+			tableRow?.click();
+			await el.updateComplete;
+
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'tablePreviewResult', connectionId: 'c1', database: 'db1', tableName: 'TestTable',
+				success: true, columns: [{ name: 'Details', type: 'dynamic' }],
+				rows: [[{ display: '[object]', full: '{"requestId":"R-1"}', isObject: true }]], rowCount: 1,
+			} }));
+			await el.updateComplete;
+			const table = el.shadowRoot!.querySelector('kw-data-table') as any;
+			await table.updateComplete;
+			expect(table.options.compact).toBe(true);
+			expect(table.getEstimatedRowHeight()).toBe(21);
+			table.shadowRoot.querySelector('[data-testid="complex-preview-toggle"]').click();
+			await table.updateComplete;
+			expect(table.shadowRoot.querySelector('[data-testid="complex-preview-controls"]')).toBeTruthy();
+			expect(table.captureComplexPreviewState()).toEqual({ enabled: true, maxCharacters: 75 });
+			expect(table.rows[0][0]).toEqual(expect.objectContaining({ isObject: true }));
+			expect(table.getEstimatedRowHeight()).toBe(21);
 		});
 	});
 

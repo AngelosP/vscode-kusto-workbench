@@ -26,6 +26,7 @@ import {
 } from '../../shared/pythonExecutionProtocol.js';
 import { consumePythonExecutionTerminal } from './python-execution-admission.js';
 import { perfMark } from './perf.js';
+import { isExplicitKustoTargetSelectionSource } from '../shared/schema-utils.js';
 import {
 	cachedDatabases,
 	connections,
@@ -379,9 +380,19 @@ export function addQueryBox( options?: any) {
 				comparisonBoxId: id,
 			};
 		}
+		kwEl.addEventListener('target-selection-intent', (e: any) => {
+			const detail = e.detail || {};
+			const boxId = detail.boxId || id;
+			if (!isExplicitKustoTargetSelectionSource(detail.source)) return;
+			schemaDiagnosticsTrustedByBoxId[boxId] = true;
+			try { ensureSchemaForBox(String(boxId), false); } catch (error) { console.error('[kusto]', error); }
+		});
 		kwEl.addEventListener('connection-changed', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
+			if (isExplicitKustoTargetSelectionSource(detail.source)) {
+				schemaDiagnosticsTrustedByBoxId[boxId] = true;
+			}
 			kwEl.setSchemaLifecycleTarget?.(
 				String(detail.connectionId || ''),
 				String(detail.database || '').trim() || undefined,
@@ -454,7 +465,7 @@ export function addQueryBox( options?: any) {
 			const boxId = detail.boxId || id;
 			try {
 				const source = String(detail.source || '');
-				if (source !== 'global-last' && source !== 'auto-single') {
+				if (isExplicitKustoTargetSelectionSource(source)) {
 					schemaDiagnosticsTrustedByBoxId[boxId] = true;
 				}
 			} catch (e) { console.error('[kusto]', e); }

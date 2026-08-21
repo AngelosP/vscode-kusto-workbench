@@ -40,8 +40,18 @@ export interface DataTableOptions {
 	/** Currently displayed result set ordinal. */
 	selectedResultIndex?: number;
 }
-export type CellValue = string | number | boolean | null | undefined | { display?: string; full?: unknown; isObject?: boolean; isNull?: boolean };
+export interface ObjectCellValue { display?: string; full?: unknown; isObject?: boolean; isNull?: boolean; }
+export type CellValue = string | number | boolean | null | undefined | ObjectCellValue;
 export interface CellRange { rowMin: number; rowMax: number; colMin: number; colMax: number; }
+export interface ComplexPreviewState { enabled: boolean; maxCharacters: number; }
+
+export const DEFAULT_COMPLEX_CELL_MAX_CHARACTERS = 75;
+export const MIN_COMPLEX_CELL_MAX_CHARACTERS = 1;
+export const MAX_COMPLEX_CELL_MAX_CHARACTERS = 500;
+
+export function isViewableObjectCell(cell: CellValue): cell is ObjectCellValue {
+	return typeof cell === 'object' && cell !== null && 'isObject' in cell && !!cell.isObject;
+}
 
 export function getCellDisplayValue(cell: CellValue): string {
 	if (cell === null || cell === undefined) return '';
@@ -53,6 +63,33 @@ export function getCellDisplayValue(cell: CellValue): string {
 	}
 	try { return JSON.stringify(cell); } catch { return String(cell); }
 }
+
+export function getViewableObjectCellText(cell: ObjectCellValue): string {
+	if ('full' in cell && cell.full !== undefined) {
+		if (typeof cell.full === 'string') return cell.full;
+		try {
+			const serialized = JSON.stringify(cell.full);
+			if (serialized !== undefined) return serialized;
+		} catch {
+			return String(cell.full);
+		}
+	}
+	return getCellDisplayValue(cell);
+}
+
+export function normalizeComplexCellMaxCharacters(
+	value: unknown,
+	fallback = DEFAULT_COMPLEX_CELL_MAX_CHARACTERS,
+): number {
+	const normalizedFallback = Number.isFinite(fallback)
+		? Math.max(MIN_COMPLEX_CELL_MAX_CHARACTERS, Math.min(MAX_COMPLEX_CELL_MAX_CHARACTERS, Math.trunc(fallback)))
+		: DEFAULT_COMPLEX_CELL_MAX_CHARACTERS;
+	if (typeof value === 'string' && value.trim() === '') return normalizedFallback;
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed)) return normalizedFallback;
+	return Math.max(MIN_COMPLEX_CELL_MAX_CHARACTERS, Math.min(MAX_COMPLEX_CELL_MAX_CHARACTERS, Math.trunc(parsed)));
+}
+
 export function getCellSortValue(cell: CellValue): string | number | boolean | null {
 	if (cell === null || cell === undefined) return null;
 	if (typeof cell === 'string' || typeof cell === 'number' || typeof cell === 'boolean') return cell;
@@ -261,12 +298,14 @@ const ROW_HEIGHT = 24, OVERSCAN = 10;
 const ROW_NUMBER_WIDTH = 40;
 const MIN_COL_WIDTH = 60;
 const MAX_COL_WIDTH = 520;
+const OBJECT_CELL_CHROME_WIDTH_PX = 52;
 const TYPE_INDICATOR_WIDTH_PX = 11;
 const TYPE_INDICATOR_GAP_PX = 3;
 
 /* SVG icon templates */
 const ICON = {
 	search: html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.4 10.4L14 14"/></svg>`,
+	complexPreview: html`<svg data-icon="preview-pane" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="2.5" width="11" height="11" rx="1.2"/><path d="M8.5 2.5v11M4.5 5.5h2M4.5 8h2M4.5 10.5h2M10.5 6.5h1M10.5 9.5h1"/></svg>`,
 	scrollToCol: html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.5h11"/><path d="M2.5 8h11"/><path d="M2.5 11.5h7"/><path d="M9.5 10.5L13 8l-3.5-2.5"/></svg>`,
 	scrollToRow: html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3.5h10"/><path d="M3 6.5h10"/><path d="M3 9.5h6"/><path d="M3 12.5h6"/><path d="M12.5 8v5"/><path d="M11 11.5l1.5 1.5 1.5-1.5"/></svg>`,
 	sort: html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3v10"/><path d="M2 11l2 2 2-2"/><path d="M8 3h5"/><path d="M8 6h4"/><path d="M8 9h3"/></svg>`,
@@ -304,6 +343,9 @@ export class KwDataTable extends LitElement {
 	private _uniqueValuesMode: UniqueValuesMode = 'unique-values';
 	@state() private _bodyVisible = true;
 	@state() private _metaTooltipVisible = false;
+	@state() private _complexPreviewEnabled = false;
+	@state() private _complexCellMaxCharacters = DEFAULT_COMPLEX_CELL_MAX_CHARACTERS;
+	@state() private _complexCellMaxCharactersDraft = String(DEFAULT_COMPLEX_CELL_MAX_CHARACTERS);
 	private _metaTooltipPos = { top: 0, left: 0 };
 	private _metaHideTimer: ReturnType<typeof setTimeout> | null = null;
 	private _metaCopyDone = false;
@@ -323,12 +365,14 @@ export class KwDataTable extends LitElement {
 	private _table: Table<CellValue[]> | null = null;
 	private _columnWidths: number[] = [];
 	private _columnTypeIndicators: Array<ColumnTypeIndicator | null> = [];
+	private _hasViewableObjectCells = false;
 	private _measureCanvas: HTMLCanvasElement | null = null;
 	private _lastVisibleRowCount = -1;
 	private _prevChromeHeight = 0;
 	private _prevSearchVis = false;
 	private _prevRowJumpVis = false;
 	private _prevColJumpVis = false;
+	private _prevComplexPreviewControlsVis = false;
 	private _chromeRafPending = false;
 	private _columnMenuListenerRaf = 0;
 	private _sortDialogReturnFocus: HTMLElement | null = null;
@@ -337,6 +381,23 @@ export class KwDataTable extends LitElement {
 	/** Visible row count after current sort/filter state is applied. */
 	public getVisibleRowCount(): number {
 		return this._table?.getRowModel().rows.length ?? this.rows.length;
+	}
+
+	public captureComplexPreviewState(): Readonly<ComplexPreviewState> {
+		return Object.freeze({
+			enabled: this._complexPreviewEnabled,
+			maxCharacters: this._complexCellMaxCharacters,
+		});
+	}
+
+	public restoreComplexPreviewState(value: unknown): void {
+		if (!value || typeof value !== 'object') return;
+		const state = value as Partial<ComplexPreviewState>;
+		this._complexPreviewEnabled = state.enabled === true;
+		this._complexCellMaxCharacters = normalizeComplexCellMaxCharacters(state.maxCharacters);
+		this._complexCellMaxCharactersDraft = String(this._complexCellMaxCharacters);
+		this._recomputeColumnWidths();
+		this.requestUpdate();
 	}
 
 	/**
@@ -420,11 +481,13 @@ export class KwDataTable extends LitElement {
 		this.resultArtifactId = '';
 		this.resultArtifactTableToken = '';
 		this.resultArtifactLiveCheck = undefined;
+		this._resetComplexPreview(false);
 		this.shadowRoot?.querySelector<any>('kw-unique-values-dialog')?.purgeDataImmediately?.();
 		this.clearRowInteractions();
 	}
 
 	purgeDataImmediately(): void {
+		this._resetComplexPreview(false);
 		this.clearRowInteractions();
 		this.shadowRoot?.querySelector<any>('kw-unique-values-dialog')?.purgeDataImmediately?.();
 		this.rows = [];
@@ -526,6 +589,7 @@ export class KwDataTable extends LitElement {
 			this._columnTypeIndicators = this.columns.map(column => getColumnTypeIndicator(column.type));
 		}
 		if (changed.has('columns') || changed.has('rows')) {
+			this._hasViewableObjectCells = this._containsViewableObjectCell();
 			this._initTable();
 			this._searchCtrl.reset();
 			this._rowJumpCtrl.reset();
@@ -588,11 +652,14 @@ export class KwDataTable extends LitElement {
 		const sVis = this._searchCtrl.visible;
 		const rVis = this._rowJumpCtrl.visible;
 		const cVis = this._colJumpOpen;
-		const chromeChanged = sVis !== this._prevSearchVis || rVis !== this._prevRowJumpVis || cVis !== this._prevColJumpVis;
+		const pVis = this._complexPreviewControlsVisible();
+		const chromeChanged = sVis !== this._prevSearchVis || rVis !== this._prevRowJumpVis
+			|| cVis !== this._prevColJumpVis || pVis !== this._prevComplexPreviewControlsVis;
 		this._prevSearchVis = sVis;
 		this._prevRowJumpVis = rVis;
 		this._prevColJumpVis = cVis;
-		if (chromeChanged && !this._chromeRafPending) {
+		this._prevComplexPreviewControlsVis = pVis;
+		if (chromeChanged && !changed.has('_bodyVisible') && !this._chromeRafPending) {
 			this._chromeRafPending = true;
 			requestAnimationFrame(() => {
 				this._chromeRafPending = false;
@@ -744,17 +811,58 @@ export class KwDataTable extends LitElement {
 
 	private _computeColumnWidths(): number[] {
 		return this.columns.map((col, ci) => {
+			const isComplexPreviewColumn = this._complexPreviewEnabled
+				&& this.rows.some(row => Array.isArray(row) && isViewableObjectCell(row[ci]));
+			const complexColumnMaxWidth = isComplexPreviewColumn ? this._complexPreviewColumnMaxWidth() : MAX_COL_WIDTH;
+			const maxWidth = isComplexPreviewColumn ? complexColumnMaxWidth : MAX_COL_WIDTH;
 			const headerLabel = isColumnFiltered(ci, this._columnFilters) ? `${col.name} (filtered)` : col.name;
-			let width = this._measureHeaderWidth(headerLabel, !!this._columnTypeIndicators[ci]);
+			let width = Math.min(MAX_COL_WIDTH, this._measureHeaderWidth(headerLabel, !!this._columnTypeIndicators[ci]));
 			for (let ri = 0; ri < this.rows.length; ri++) {
 				const row = this.rows[ri];
 				if (!row) continue;
-				const value = fmtCell(row[ci]);
-				width = Math.max(width, this._measureCellWidth(value));
-				if (width >= MAX_COL_WIDTH) return MAX_COL_WIDTH;
+				const cell = row[ci];
+				const cellWidth = isComplexPreviewColumn && isViewableObjectCell(cell)
+					? this._measureComplexCellWidth(cell)
+					: Math.min(MAX_COL_WIDTH, this._measureCellWidth(fmtCell(cell)));
+				width = Math.max(width, cellWidth);
+				if (width >= maxWidth) return maxWidth;
 			}
-			return Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, Math.ceil(width)));
+			return Math.max(MIN_COL_WIDTH, Math.min(maxWidth, Math.ceil(width)));
 		});
+	}
+
+	private _complexPreviewTextMaxWidth(): number {
+		return Math.max(0, this._complexPreviewColumnMaxWidth() - OBJECT_CELL_CHROME_WIDTH_PX);
+	}
+
+	private _complexPreviewColumnMaxWidth(): number {
+		return Math.max(
+			MIN_COL_WIDTH,
+			Math.ceil(MAX_COL_WIDTH * this._complexCellMaxCharacters / DEFAULT_COMPLEX_CELL_MAX_CHARACTERS),
+		);
+	}
+
+	private _measureComplexCellWidth(cell: ObjectCellValue): number {
+		const previewWidth = Math.min(
+			this._complexPreviewTextMaxWidth(),
+			this._measureTextWidth(getViewableObjectCellText(cell)),
+		);
+		return Math.ceil(previewWidth + OBJECT_CELL_CHROME_WIDTH_PX);
+	}
+
+	private _recomputeColumnWidths(): void {
+		if (!this.columns.length) return;
+		this._columnWidths = this._computeColumnWidths();
+	}
+
+	private _containsViewableObjectCell(): boolean {
+		for (const row of this.rows) {
+			if (!Array.isArray(row)) continue;
+			for (let columnIndex = 0; columnIndex < this.columns.length; columnIndex++) {
+				if (isViewableObjectCell(row[columnIndex])) return true;
+			}
+		}
+		return false;
 	}
 
 	private _measureHeaderWidth(text: string, hasTypeIndicator: boolean): number {
@@ -771,13 +879,14 @@ export class KwDataTable extends LitElement {
 	private _measureTextWidth(text: string): number {
 		const canvas = this._measureCanvas ?? (this._measureCanvas = document.createElement('canvas'));
 		const ctx = canvas.getContext('2d');
-		if (!ctx) return Math.min(MAX_COL_WIDTH, Math.max(MIN_COL_WIDTH, text.length * 7));
+		const measuredText = text.slice(0, 500);
+		if (!ctx) return Math.max(MIN_COL_WIDTH, measuredText.length * 7);
 		const cs = getComputedStyle(this);
 		const fontFamilyVar = cs.getPropertyValue('--vscode-editor-font-family').trim();
 		const fontFamily = fontFamilyVar || cs.fontFamily || 'Segoe WPC, Segoe UI, sans-serif';
 		const fontSize = (this.options.compact ?? false) ? 11 : 12;
 		ctx.font = `400 ${fontSize}px ${fontFamily}`;
-		return ctx.measureText(text.slice(0, 500)).width;
+		return ctx.measureText(measuredText).width;
 	}
 
 	private _viewportWidth(): number {
@@ -913,13 +1022,16 @@ export class KwDataTable extends LitElement {
 
 		const sel = this._selectionCtrl;
 		const search = this._searchCtrl;
+		const canRevealComplexValues = this.canCopyRows();
 
 		return html`
-		<div class="dt ${compact ? 'compact' : ''} ${hideTopBorder ? 'no-top-border' : ''}">
+		<div class="dt ${compact ? 'compact' : ''} ${hideTopBorder ? 'no-top-border' : ''}"
+			style="--kw-complex-preview-text-max-width:${this._complexPreviewTextMaxWidth()}px">
 			${this._renderHeader(totalRows, showToolbar)}
 			${search.visible ? this._renderSearch() : nothing}
 			${this._rowJumpCtrl.visible ? this._renderRowJump(totalRows) : nothing}
 			${this._colJumpOpen ? this._renderColJump() : nothing}
+			${this._complexPreviewControlsVisible() ? this._renderComplexPreviewControls() : nothing}
 			${this._bodyVisible ? html`
 			<div class="vscroll" @keydown=${this._onKeydown} tabindex="0"
 				@scroll=${this._onBodyScroll}
@@ -951,7 +1063,7 @@ export class KwDataTable extends LitElement {
 								${row.getVisibleCells().map((cell, ci) => {
 							const raw = cell.getValue() as CellValue, display = fmtCell(raw);
 								const isNull = isCellNull(raw);
-								const isObj = typeof raw === 'object' && raw !== null && 'isObject' in raw && raw.isObject;
+								const isObj = isViewableObjectCell(raw);
 								const isFocus = sel.selectedCell?.row === index && sel.selectedCell?.col === ci;
 								const isInRng = inRange(sel.selectionRange, index, ci);
 								const isM = search.matches.length > 0 && search.isMatch(index, ci);
@@ -960,10 +1072,16 @@ export class KwDataTable extends LitElement {
 								if (isCM) cls += ' mc'; else if (isM) cls += ' mh';
 								if (isNull) cls += ' null-cell';
 								if (isObj) {
-									return html`<td class="${cls} obj-cell" title="${escHtml(getCellDisplayValue(raw))}"><a class="obj-link" href="#" @click=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openObjectViewer(index, ci); }}>View</a></td>`;
+									let preview: TemplateResult | typeof nothing = nothing;
+									if (this._complexPreviewEnabled && canRevealComplexValues) {
+										const previewText = getViewableObjectCellText(raw);
+										const previewContent = isM && search.searchRegex ? highlightMatches(previewText, search.searchRegex, isCM ? 'hl-cur' : 'hl') : previewText;
+										preview = html`<span class="obj-preview" data-testid="complex-value-preview">${previewContent}</span>`;
+									}
+									return html`<td class="${cls} obj-cell" title="${escHtml(getCellDisplayValue(raw))}"><span class="obj-content"><a class="obj-link" href="#" aria-label="View complete value for ${this.columns[ci]?.name ?? `column ${ci + 1}`}, row ${index + 1}" @click=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openObjectViewer(index, ci); }}>View</a>${preview}</span></td>`;
 								}
 								const cellContent = isNull ? 'null' : isM && search.searchRegex ? highlightMatches(display, search.searchRegex, isCM ? 'hl-cur' : 'hl') : display;
-								return html`<td class="${cls}" title="${escHtml(isNull ? 'null' : getCellDisplayValue(raw))}" @dblclick=${(e: MouseEvent) => { if (this._isCellObject(index, ci)) { e.stopPropagation(); this._openObjectViewer(index, ci); } }}>${cellContent}</td>`;
+								return html`<td class="${cls}" title="${escHtml(isNull ? 'null' : getCellDisplayValue(raw))}" @dblclick=${(e: MouseEvent) => { if (this._isCellObject(index, ci)) { e.stopPropagation(); this._openObjectViewer(index, ci); } }}><span class="cell-text">${cellContent}</span></td>`;
 								})}
 							</tr>`;
 						})}
@@ -1027,6 +1145,7 @@ export class KwDataTable extends LitElement {
 			</span>
 			${(showToolbar && this._bodyVisible) ? html`<div class="tb">
 				<button class="tbtn ${this._searchCtrl.visible ? 'act' : ''}" title="Search data" @click=${() => this._toggleSearch()}>${ICON.search}</button>
+				${this._hasViewableObjectCells ? html`<button class="tbtn ${this._complexPreviewEnabled ? 'act' : ''}" data-testid="complex-preview-toggle" title="Preview complex values" aria-label="Preview complex values" aria-pressed=${String(this._complexPreviewEnabled)} aria-controls="complex-preview-controls" @click=${this._toggleComplexPreview}>${ICON.complexPreview}</button>` : nothing}
 				<button class="tbtn ${this._rowJumpCtrl.visible ? 'act' : ''}" title="Scroll to row" @click=${() => this._toggleRowJump(totalRows)}>${ICON.scrollToRow}</button>
 				<button class="tbtn ${this._colJumpOpen ? 'act' : ''}" title="Scroll to column" @click=${() => { this._colJumpOpen = !this._colJumpOpen; this._colJumpQuery = ''; }}>${ICON.scrollToCol}</button>
 				<button class="tbtn ${this._sortDialogOpen ? 'act' : ''}" title="Sort" @click=${this._toggleSortDialog}>${ICON.sort}</button>
@@ -1037,6 +1156,63 @@ export class KwDataTable extends LitElement {
 			</div>` : nothing}
 			${this._metaTooltipVisible && hasTooltip ? this._renderMetaTooltip() : nothing}
 		</div>`;
+	}
+
+	private _complexPreviewControlsVisible(): boolean {
+		return this.options.showToolbar !== false && this._bodyVisible
+			&& this._hasViewableObjectCells && this._complexPreviewEnabled;
+	}
+
+	private _renderComplexPreviewControls(): TemplateResult {
+		return html`<div class="sbar complex-preview-controls" id="complex-preview-controls" data-testid="complex-preview-controls">
+			<span class="complex-preview-label">Complex preview</span>
+			<label class="complex-preview-length-label" for="complex-preview-length">Max characters</label>
+			<input id="complex-preview-length" class="complex-preview-length" data-testid="complex-preview-length"
+				aria-label="Maximum complex column characters"
+				type="number" min=${MIN_COMPLEX_CELL_MAX_CHARACTERS} max=${MAX_COMPLEX_CELL_MAX_CHARACTERS} step="1"
+				.value=${this._complexCellMaxCharactersDraft}
+				@input=${this._onComplexPreviewLengthInput}
+				@change=${this._commitComplexPreviewLength}
+				@keydown=${this._onComplexPreviewLengthKeydown} />
+			<button class="close-mini" data-testid="complex-preview-close" title="Close complex preview" aria-label="Close complex preview" @click=${this._toggleComplexPreview}>${ICON.closeLarge}</button>
+		</div>`;
+	}
+
+	private _toggleComplexPreview = (): void => {
+		if (!this._hasViewableObjectCells || (!this._complexPreviewEnabled && !this.canCopyRows())) return;
+		this._complexPreviewEnabled = !this._complexPreviewEnabled;
+		this._recomputeColumnWidths();
+	};
+
+	private _onComplexPreviewLengthInput = (event: Event): void => {
+		this._complexCellMaxCharactersDraft = (event.currentTarget as HTMLInputElement).value;
+	};
+
+	private _commitComplexPreviewLength = (event?: Event): void => {
+		if (event?.currentTarget instanceof HTMLInputElement) {
+			this._complexCellMaxCharactersDraft = event.currentTarget.value;
+		}
+		this._complexCellMaxCharacters = normalizeComplexCellMaxCharacters(
+			this._complexCellMaxCharactersDraft,
+			this._complexCellMaxCharacters,
+		);
+		this._complexCellMaxCharactersDraft = String(this._complexCellMaxCharacters);
+		this._recomputeColumnWidths();
+	};
+
+	private _onComplexPreviewLengthKeydown = (event: KeyboardEvent): void => {
+		if (event.key !== 'Enter') return;
+		this._commitComplexPreviewLength();
+		(event.currentTarget as HTMLInputElement).select();
+		event.preventDefault();
+	};
+
+	private _resetComplexPreview(recomputeWidths = true): void {
+		this._complexPreviewEnabled = false;
+		this._complexCellMaxCharacters = DEFAULT_COMPLEX_CELL_MAX_CHARACTERS;
+		this._complexCellMaxCharactersDraft = String(DEFAULT_COMPLEX_CELL_MAX_CHARACTERS);
+		if (recomputeWidths) this._recomputeColumnWidths();
+		else this._columnWidths = this._columnWidths.map(width => Math.min(width, MAX_COL_WIDTH));
 	}
 
 	private _onResultSetChange = (event: Event): void => {
@@ -1378,8 +1554,8 @@ export class KwDataTable extends LitElement {
 		const cell = row.original[colIdx] as CellValue;
 		const colName = this.columns[colIdx]?.name ?? `Column ${colIdx}`;
 		let jsonText: string;
-		if (typeof cell === 'object' && cell !== null && 'full' in cell) {
-			jsonText = typeof cell.full === 'string' ? cell.full : JSON.stringify(cell.full);
+		if (typeof cell === 'object' && cell !== null) {
+			jsonText = getViewableObjectCellText(cell);
 		} else {
 			jsonText = getCellDisplayValue(cell);
 		}

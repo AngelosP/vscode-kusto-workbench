@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { buildSchemaInfo, shouldForceKustoFocusedSchemaApply, shouldScheduleKustoSupplementalSchemaEnhancement, shouldStartKustoSchemaPrewarm } from '../../src/webview/shared/schema-utils';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { buildSchemaInfo, classifyKustoConnectionKeyspaceChange, isExplicitKustoTargetSelectionSource, shouldForceKustoFocusedSchemaApply, shouldScheduleKustoSupplementalSchemaEnhancement, shouldStartKustoSchemaPrewarm } from '../../src/webview/shared/schema-utils';
 
 describe('buildSchemaInfo', () => {
 	it('returns not-loaded when text is empty', () => {
@@ -119,6 +121,60 @@ describe('shouldStartKustoSchemaPrewarm', () => {
 			authoritativeRequestToken: 'schema_prewarm_current',
 			preparationStatus: 'deferred',
 		})).toBe(false);
+	});
+});
+
+describe('classifyKustoConnectionKeyspaceChange', () => {
+	const original = { id: 'remote', clusterUrl: 'https://remote.kusto.windows.net', authorityId: 'common', accountPartition: 'account-a' };
+
+	it('treats a newly resolvable connection as additive without invalidating old state', () => {
+		expect(classifyKustoConnectionKeyspaceChange([], [original])).toEqual({ changed: true, invalidated: false });
+	});
+
+	it('invalidates when adding a same-cluster principal makes cluster-only resolution ambiguous', () => {
+		const secondPrincipal = { ...original, id: 'remote-two', authorityId: 'organizations', accountPartition: 'account-b' };
+
+		expect(classifyKustoConnectionKeyspaceChange([original], [original, secondPrincipal])).toEqual({ changed: true, invalidated: true });
+	});
+
+	it('fails closed when either projection contains a malformed authority', () => {
+		const malformed = { ...original, authorityId: 'not a valid authority!' };
+
+		expect(classifyKustoConnectionKeyspaceChange([original], [malformed])).toEqual({ changed: true, invalidated: true });
+		expect(classifyKustoConnectionKeyspaceChange([malformed], [malformed])).toEqual({ changed: true, invalidated: true });
+	});
+
+	it.each([
+		['account establishment', { ...original, accountPartition: 'account-b' }],
+		['authority change', { ...original, authorityId: 'organizations' }],
+		['cluster change', { ...original, clusterUrl: 'https://other.kusto.windows.net' }],
+	] as const)('invalidates principal-aware supplemental state on %s', (_label, replacement) => {
+		expect(classifyKustoConnectionKeyspaceChange([original], [replacement])).toEqual({ changed: true, invalidated: true });
+	});
+
+	it('does nothing for an equivalent projection', () => {
+		expect(classifyKustoConnectionKeyspaceChange([original], [{ ...original }])).toEqual({ changed: false, invalidated: false });
+	});
+});
+
+describe('isExplicitKustoTargetSelectionSource', () => {
+	it.each(['user', 'tool'])('promotes trust for %s selection', source => {
+		expect(isExplicitKustoTargetSelectionSource(source)).toBe(true);
+	});
+
+	it.each(['', 'auto-single', 'global-last'])('does not promote trust for %s selection', source => {
+		expect(isExplicitKustoTargetSelectionSource(source)).toBe(false);
+	});
+
+	it('promotes connection trust before database loading can emit auto-single', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/core/section-factory.ts'), 'utf8');
+		const connectionIndex = source.indexOf("kwEl.addEventListener('connection-changed'");
+		const trustIndex = source.indexOf('isExplicitKustoTargetSelectionSource(detail.source)', connectionIndex);
+		const preparationIndex = source.indexOf('beginKustoPreparation(boxId', trustIndex);
+
+		expect(connectionIndex).toBeGreaterThan(-1);
+		expect(trustIndex).toBeGreaterThan(connectionIndex);
+		expect(preparationIndex).toBeGreaterThan(trustIndex);
 	});
 });
 

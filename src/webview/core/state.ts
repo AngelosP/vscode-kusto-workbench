@@ -217,11 +217,24 @@ export function getSchemaWorkerReadyStateIds(): string[] {
 }
 
 export function setSchemaWorkerReadyState(boxId: string, state: SchemaWorkerReadyState): void {
-	kustoEditorSchemaCoordinator.setOwnedState(boxId, 'workerReady', state);
+	kustoEditorSchemaCoordinator.publishOwnedState(boxId, 'workerReady', state);
 }
 
 export function clearSchemaWorkerReadyState(boxId: string): boolean {
-	return kustoEditorSchemaCoordinator.deleteOwnedState(boxId, 'workerReady');
+	if (!getSchemaWorkerReadyState(boxId)) return false;
+	kustoEditorSchemaCoordinator.publishOwnedState<SchemaWorkerReadyState | undefined>(boxId, 'workerReady', undefined);
+	return true;
+}
+
+export function subscribeSchemaWorkerReadyState(
+	boxId: string,
+	listener: (state: SchemaWorkerReadyState | undefined) => void,
+): () => void {
+	const id = String(boxId || '').trim();
+	if (!id) return () => undefined;
+	const unsubscribe = kustoEditorSchemaCoordinator.subscribeOwnedState<SchemaWorkerReadyState | undefined>(id, 'workerReady', listener);
+	listener(getSchemaWorkerReadyState(id));
+	return unsubscribe;
 }
 
 export function getSchemaEnhancementReadyState(boxId: string): SchemaEnhancementReadyState | undefined {
@@ -559,9 +572,8 @@ export function markSchemaWorkerReady(boxId: string, schemaKey: string, schemaSi
 		// The base worker schema is the user-visible readiness boundary. Function
 		// output inference continues in the background and must not hold the toolbar
 		// progress indicator after Monaco can already serve semantic completions.
+		// A schema refresh remains an independent diagnostic-readiness blocker.
 		updateKustoPreparation(preparationToken, {
-			status: 'ready',
-			stage: 'ready',
 			removeBlockers: ['schema', 'worker', 'enhancement'],
 		});
 	}

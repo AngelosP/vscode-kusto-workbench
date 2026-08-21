@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { __kustoAreEquivalentMonacoMarkers, __kustoAutocompleteSchemaTargetIdentityMatches, __kustoDetectStringPrefix, __kustoDisableMonacoKustoWorkerHover, __kustoFindLatestLetAssignmentEnd, __kustoGetColumnCompletionPipelineContext, __kustoGetColumnsByTable, __kustoLimitSupplementalReferences } from '../../src/webview/monaco/monaco.js';
+import { __kustoAreEquivalentMonacoMarkers, __kustoAutocompleteSchemaTargetIdentityMatches, __kustoComputeWebviewFocus, __kustoDetectStringPrefix, __kustoDiagnosticContextMatches, __kustoDiagnosticReadinessMatches, __kustoDisableMonacoKustoWorkerHover, __kustoFindLatestLetAssignmentEnd, __kustoGetColumnCompletionPipelineContext, __kustoGetColumnsByTable, __kustoIsPrimaryDiagnosticSchemaFresh, __kustoIsSupplementalDiagnosticStateReady, __kustoIsSupplementalNetworkRequestActive, __kustoIsTrueWindowFocusEvent, __kustoMergeFocusMarkerIntent, __kustoPlanDiagnosticPublication, __kustoPlanPreparationDiagnostics, __kustoPlanSupplementalBrokerRetirement, __kustoPlanSupplementalExpiration, __kustoShouldApplySupplementalRefresh, __kustoShouldJoinSupplementalBroker, __kustoShouldPublishDiagnostics, __kustoShouldReplayFocusedDiagnostics, __kustoTrackSupplementalReferences, KustoDiagnosticMarkerOwnership, KustoDiagnosticRevalidationCoordinator, KustoDiagnosticValidationRetryPolicy } from '../../src/webview/monaco/monaco.js';
 import { __kustoNormalizeCollapsedMonacoMarkers } from '../../src/webview/monaco/marker-ranges.js';
 import { getKustoSchemaIdentityKey } from '../../src/shared/kustoAuth.js';
+import { KustoSupplementalSchemaCoordinator, supplementalStateIdentity } from '../../src/webview/shared/kusto-supplemental-schema-coordinator.js';
 
 function makeMonacoModel(text: string) {
 	const lines = text.split('\n');
@@ -133,11 +134,89 @@ let submcpinvoked=cluster('aoaiagents1.westus').database('prod').Log
 	});
 });
 
-describe('__kustoLimitSupplementalReferences', () => {
-	it('tracks at most sixteen references and leaves overflow for fallback-only behavior', () => {
+describe('__kustoTrackSupplementalReferences', () => {
+	it('tracks every parsed reference so diagnostics own reference seventeen and beyond', () => {
 		const references = Array.from({ length: 17 }, (_, index) => `remote-${index + 1}`);
 
-		expect(__kustoLimitSupplementalReferences(references)).toEqual(references.slice(0, 16));
+		expect(__kustoTrackSupplementalReferences(references)).toEqual(references);
+	});
+
+	it('bounds active network fetches after complete reference ownership is established', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const syncIndex = source.indexOf('const refs = __kustoTrackSupplementalReferences(', source.indexOf('function __kustoSyncSupplementalReferencesForBox'));
+		const coordinatorIndex = source.indexOf('__kustoSupplementalCoordinator.syncReferences({', syncIndex);
+		const requestIndex = source.indexOf('__kustoRequestCrossClusterSchema = function', coordinatorIndex);
+		const activeFetchIndex = source.indexOf('activeFetchCount >= CROSS_CLUSTER_SCHEMA_MAX_ACTIVE_FETCHES', requestIndex);
+
+		expect(syncIndex).toBeGreaterThan(-1);
+		expect(coordinatorIndex).toBeGreaterThan(syncIndex);
+		expect(activeFetchIndex).toBeGreaterThan(requestIndex);
+	});
+
+	it('joins autocomplete to a pending physical broker before creating another token', () => {
+		expect(__kustoShouldJoinSupplementalBroker({ status: 'pending', requestToken: 'background' })).toBe(true);
+		expect(__kustoShouldJoinSupplementalBroker({ status: 'loaded', refreshState: 'pending', requestToken: 'stale-refresh' })).toBe(true);
+		expect(__kustoShouldJoinSupplementalBroker({ status: 'loaded', refreshState: 'failed', requestToken: 'stale-refresh' })).toBe(false);
+
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const requestIndex = source.indexOf('__kustoRequestCrossClusterSchema = function');
+		const pendingIndex = source.indexOf('if (__kustoShouldJoinSupplementalBroker(existing))', requestIndex);
+		const joinIndex = source.indexOf("__kustoTraceCrossCluster('request-joined-existing'", pendingIndex);
+		const returnIndex = source.indexOf('return;', joinIndex);
+		const tokenIndex = source.indexOf("const requestToken = 'crosscluster_'", returnIndex);
+		const escalationIndex = source.indexOf("__kustoTraceCrossCluster('request-escalated'", pendingIndex);
+
+		expect(pendingIndex).toBeGreaterThan(requestIndex);
+		expect(joinIndex).toBeGreaterThan(pendingIndex);
+		expect(returnIndex).toBeGreaterThan(joinIndex);
+		expect(tokenIndex).toBeGreaterThan(returnIndex);
+		expect(escalationIndex === -1 || escalationIndex > tokenIndex).toBe(true);
+	});
+
+	it('enrolls failed same-key models and broadcasts accepted non-stale revisions', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const requestIndex = source.indexOf('__kustoRequestCrossClusterSchema = function');
+		const joinIndex = source.indexOf('if (__kustoShouldJoinSupplementalBroker(existing))', requestIndex);
+		const joinedFailedIndex = source.indexOf('includeFailed: true', joinIndex);
+		const createIndex = source.indexOf("const requestToken = 'crosscluster_'", joinedFailedIndex);
+		const createdFailedIndex = source.indexOf('includeFailed: true', createIndex);
+		const handlerIndex = source.indexOf('export function __kustoHandleCrossClusterSchemaData');
+		const broadcastIndex = source.indexOf('__kustoSupplementalCoordinator.markSchemaRefreshed(key)', handlerIndex);
+
+		expect(joinedFailedIndex).toBeGreaterThan(joinIndex);
+		expect(createdFailedIndex).toBeGreaterThan(createIndex);
+		expect(broadcastIndex).toBeGreaterThan(handlerIndex);
+		expect(__kustoShouldApplySupplementalRefresh(undefined, 'fresh')).toBe(true);
+		expect(__kustoShouldApplySupplementalRefresh(undefined, 'client-cache')).toBe(true);
+		expect(__kustoShouldApplySupplementalRefresh(undefined, 'disk-cache-stale')).toBe(false);
+	});
+
+	it('recovers failed siblings after a shared worker application succeeds', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const successIndex = source.indexOf('if (appliedCount > 0 && requestedUri && appliedToRequestedModel)');
+		const loadedIndex = source.indexOf('__kustoSupplementalCoordinator.markLoaded({ modelUri: requestedUri', successIndex);
+		const sharedIndex = source.indexOf('__kustoSupplementalCoordinator.adoptSharedApplication(key, requestedUri)', loadedIndex);
+		const refilterIndex = source.indexOf('__kustoRefilterCurrentSupplementalMarkers(adopted.modelUri)', sharedIndex);
+		const revalidateIndex = source.indexOf("__kustoRevalidateSupplementalModel(adopted.modelUri, 'supplemental-shared-loaded')", refilterIndex);
+
+		expect(loadedIndex).toBeGreaterThan(successIndex);
+		expect(sharedIndex).toBeGreaterThan(loadedIndex);
+		expect(refilterIndex).toBeGreaterThan(sharedIndex);
+		expect(revalidateIndex).toBeGreaterThan(refilterIndex);
+	});
+
+	it('rearms failed references from edit, focus, and connection recovery before pumping', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const helperIndex = source.indexOf('function __kustoRearmFailedSupplementalReferences(');
+		const refilterIndex = source.indexOf('__kustoRefilterCurrentSupplementalMarkers(modelUri)', helperIndex);
+		const editIndex = source.indexOf("__kustoRearmFailedSupplementalReferences(modelUri, 'edit')", helperIndex);
+		const focusIndex = source.indexOf("__kustoRearmFailedSupplementalReferences(modelUri, 'focus')", editIndex);
+		const connectionIndex = source.indexOf("__kustoRearmFailedSupplementalReferences(modelUri, 'connection-recovery')", helperIndex);
+
+		expect(refilterIndex).toBeGreaterThan(helperIndex);
+		expect(editIndex).toBeGreaterThan(helperIndex);
+		expect(focusIndex).toBeGreaterThan(editIndex);
+		expect(connectionIndex).toBeGreaterThan(helperIndex);
 	});
 
 	it('admits a retry key only after finding its synchronized coordinator state', () => {
@@ -380,34 +459,679 @@ describe('__kustoAreEquivalentMonacoMarkers', () => {
 		expect(__kustoAreEquivalentMonacoMarkers(null, [])).toBe(false);
 	});
 
-	it('only skips repeated empty Kusto marker writes before forwarding to Monaco', () => {
+	it('routes untagged ordinary Kusto marker payloads through exact revalidation', () => {
 		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
 		const interceptorIndex = source.indexOf("monaco.editor.setModelMarkers = function(model: any, owner: any, markers: any)");
-		const normalizeIndex = source.indexOf('__kustoNormalizeCollapsedMonacoMarkers(model, markers)', interceptorIndex);
-		const emptyGuardIndex = source.indexOf('normalizedMarkers.length === 0 && __kustoAreEquivalentMonacoMarkers(currentMarkers, normalizedMarkers)', interceptorIndex);
-		const guardIndex = source.indexOf('__kustoAreEquivalentMonacoMarkers(currentMarkers, normalizedMarkers)', interceptorIndex);
-		const forwardIndex = source.indexOf('return originalSetModelMarkers.call(this, model, owner, normalizedMarkers)', interceptorIndex);
+		const planIndex = source.indexOf("__kustoPlanDiagnosticPublication('ordinary', canPublishKustoMarkers(model))", interceptorIndex);
+		const refreshIndex = source.indexOf("__kustoScheduleSupplementalRevalidation(uri, 'ordinary-marker-refresh', 0)", planIndex);
+		const stopIndex = source.indexOf('return;', refreshIndex);
+		const nonKustoForwardIndex = source.indexOf('return originalSetModelMarkers.call(this, model, owner, markers)', stopIndex);
 
 		expect(interceptorIndex).toBeGreaterThan(-1);
-		expect(normalizeIndex).toBeGreaterThan(interceptorIndex);
-		expect(emptyGuardIndex).toBeGreaterThan(normalizeIndex);
-		expect(guardIndex).toBeGreaterThan(normalizeIndex);
-		expect(forwardIndex).toBeGreaterThan(guardIndex);
+		expect(planIndex).toBeGreaterThan(interceptorIndex);
+		expect(refreshIndex).toBeGreaterThan(planIndex);
+		expect(stopIndex).toBeGreaterThan(refreshIndex);
+		expect(nonKustoForwardIndex).toBeGreaterThan(stopIndex);
 	});
 
-	it('defers focus-gated marker clearing so transient Monaco blur does not erase diagnostics', () => {
+	it('clears markers immediately after confirming a real Monaco widget blur', () => {
 		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
-		const delayIndex = source.indexOf('KUSTO_MARKER_BLUR_CLEAR_DELAY_MS');
-		const schedulerIndex = source.indexOf('__kustoScheduleDisableMarkersForModel = function(modelUri: any)');
-		const cancelIndex = source.indexOf('clearTimeout(__kustoMarkerBlurClearTimers[uri])', source.indexOf('__kustoEnableMarkersForModel = function(modelUri: any)'));
 		const blurHandlerIndex = source.indexOf('editor.onDidBlurEditorWidget(() => {');
-		const scheduledBlurIndex = source.indexOf('__kustoScheduleDisableMarkersForModel!(model.uri)', blurHandlerIndex);
+		const deferredCheckIndex = source.indexOf('setTimeout(() => {', blurHandlerIndex);
+		const confirmedBlurIndex = source.indexOf('if (!stillFocused) {', deferredCheckIndex);
+		const disableIndex = source.indexOf('__kustoDisableMarkersForModel(model.uri)', confirmedBlurIndex);
+		const releaseOwnerIndex = source.indexOf('setActiveQueryEditorBoxId(null)', disableIndex);
 
-		expect(delayIndex).toBeGreaterThan(-1);
-		expect(schedulerIndex).toBeGreaterThan(delayIndex);
-		expect(cancelIndex).toBeGreaterThan(delayIndex);
 		expect(blurHandlerIndex).toBeGreaterThan(-1);
-		expect(scheduledBlurIndex).toBeGreaterThan(blurHandlerIndex);
+		expect(deferredCheckIndex).toBeGreaterThan(blurHandlerIndex);
+		expect(confirmedBlurIndex).toBeGreaterThan(deferredCheckIndex);
+		expect(disableIndex).toBeGreaterThan(confirmedBlurIndex);
+		expect(releaseOwnerIndex).toBeGreaterThan(disableIndex);
+		expect(source).not.toContain('__kustoScheduleDisableMarkersForModel');
+	});
+
+	it('revokes every marker owner on webview blur and gates restoration through exact revalidation', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const helperIndex = source.indexOf('function __kustoApplyWebviewFocusState(focused: boolean)');
+		const disableIndex = source.indexOf('__kustoDisableMarkersForModel(modelUri)', helperIndex);
+		const focusScheduleIndex = source.indexOf('setTimeout(() => {', disableIndex);
+		const revalidateIndex = source.indexOf('__kustoTriggerRevalidation?.(boxId)', focusScheduleIndex);
+		const installIndex = source.indexOf('function __kustoInstallWebviewFocusListeners()', revalidateIndex);
+		const blurIndex = source.indexOf("window.addEventListener('blur'", installIndex);
+		const blurGuardIndex = source.indexOf('if (!__kustoIsTrueWindowFocusEvent(event.target, window)) return;', blurIndex);
+		const blurStateIndex = source.indexOf('__kustoWindowHasFocus = __kustoReadDocumentHasFocus()', blurGuardIndex);
+		const blurRefreshIndex = source.indexOf('__kustoRefreshWebviewFocusState()', blurStateIndex);
+		const focusIndex = source.indexOf("window.addEventListener('focus'", blurRefreshIndex);
+		const focusGuardIndex = source.indexOf('if (!__kustoIsTrueWindowFocusEvent(event.target, window)) return;', focusIndex);
+		const focusStateIndex = source.indexOf('__kustoWindowHasFocus = __kustoReadDocumentHasFocus()', focusGuardIndex);
+		const focusRefreshIndex = source.indexOf('__kustoRefreshWebviewFocusState()', focusStateIndex);
+
+		expect(helperIndex).toBeGreaterThan(-1);
+		expect(disableIndex).toBeGreaterThan(helperIndex);
+		expect(focusScheduleIndex).toBeGreaterThan(disableIndex);
+		expect(revalidateIndex).toBeGreaterThan(focusScheduleIndex);
+		expect(installIndex).toBeGreaterThan(revalidateIndex);
+		expect(blurIndex).toBeGreaterThan(installIndex);
+		expect(blurGuardIndex).toBeGreaterThan(blurIndex);
+		expect(blurStateIndex).toBeGreaterThan(blurGuardIndex);
+		expect(blurRefreshIndex).toBeGreaterThan(blurStateIndex);
+		expect(focusIndex).toBeGreaterThan(blurRefreshIndex);
+		expect(focusGuardIndex).toBeGreaterThan(focusIndex);
+		expect(focusStateIndex).toBeGreaterThan(focusGuardIndex);
+		expect(focusRefreshIndex).toBeGreaterThan(focusStateIndex);
+	});
+
+	it('ignores descendant blur when cancelling an autocomplete retry', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const helperIndex = source.indexOf('function __kustoSubscribeAutocompleteRetryCancellation');
+		const blurHandlerIndex = source.indexOf('const cancelOnWindowBlur = (event: FocusEvent) => {', helperIndex);
+		const guardIndex = source.indexOf('if (!__kustoIsTrueWindowFocusEvent(event.target, window)) return;', blurHandlerIndex);
+		const deferredIndex = source.indexOf('cancelIfUnfocused();', guardIndex);
+		const webviewGateIndex = source.indexOf('if (!focused && !__kustoWebviewHasFocus) listener();', helperIndex);
+
+		expect(blurHandlerIndex).toBeGreaterThan(helperIndex);
+		expect(guardIndex).toBeGreaterThan(blurHandlerIndex);
+		expect(deferredIndex).toBeGreaterThan(guardIndex);
+		expect(webviewGateIndex).toBeGreaterThan(helperIndex);
+	});
+
+	it('routes ordinary and exact Kusto marker publication through the focus and readiness gate', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const gateIndex = source.indexOf('const canPublishKustoMarkers = (model: any): boolean =>');
+		const exactPublisherIndex = source.indexOf('__kustoPublishExactKustoMarkers = (model: any, markers: any[]) =>', gateIndex);
+		const exactGateIndex = source.indexOf("__kustoPlanDiagnosticPublication('exact', canPublishKustoMarkers(model))", exactPublisherIndex);
+		const exactPublishIndex = source.indexOf("publication === 'publish' ? markers : []", exactGateIndex);
+		const interceptorIndex = source.indexOf('monaco.editor.setModelMarkers = function(model: any, owner: any, markers: any)', exactPublishIndex);
+		const ordinaryGateIndex = source.indexOf("__kustoPlanDiagnosticPublication('ordinary', canPublishKustoMarkers(model))", interceptorIndex);
+
+		expect(gateIndex).toBeGreaterThan(-1);
+		expect(exactPublisherIndex).toBeGreaterThan(gateIndex);
+		expect(exactGateIndex).toBeGreaterThan(exactPublisherIndex);
+		expect(exactPublishIndex).toBeGreaterThan(exactGateIndex);
+		expect(interceptorIndex).toBeGreaterThan(exactPublishIndex);
+		expect(ordinaryGateIndex).toBeGreaterThan(interceptorIndex);
+	});
+
+	it('enables and revalidates focused diagnostics only after exact worker readiness', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const updaterIndex = source.indexOf('__kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = true)');
+		const readinessGateIndex = source.indexOf('isSchemaWorkerReady(boxId, expectedSchemaKey, focusedModelUri!)', updaterIndex);
+		const enableIndex = source.indexOf('__kustoEnableMarkersForBox!(boxId)', readinessGateIndex);
+		const revalidateIndex = source.indexOf('void __kustoRevalidateSupplementalModel(focusedModelUri!, reason)', enableIndex);
+
+		expect(updaterIndex).toBeGreaterThan(-1);
+		expect(readinessGateIndex).toBeGreaterThan(updaterIndex);
+		expect(enableIndex).toBeGreaterThan(readinessGateIndex);
+		expect(revalidateIndex).toBeGreaterThan(enableIndex);
+	});
+
+	it('retains the strongest marker intent across concurrent focus updates', () => {
+		expect(__kustoMergeFocusMarkerIntent(undefined, false)).toBe(false);
+		expect(__kustoMergeFocusMarkerIntent(false, true)).toBe(true);
+		expect(__kustoMergeFocusMarkerIntent(true, false)).toBe(true);
+
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const updaterIndex = source.indexOf('__kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = true)');
+		const pendingIndex = source.indexOf('__kustoMergeFocusMarkerIntent(__kustoFocusUpdateRerunByBoxId[rerunKey], enableMarkers)', updaterIndex);
+		const consumeIndex = source.indexOf('const rerunEnableMarkers = __kustoFocusUpdateRerunByBoxId[rerunKey]', pendingIndex);
+		const rerunIndex = source.indexOf('__kustoUpdateSchemaForFocusedBox?.(boxId, rerunEnableMarkers)', consumeIndex);
+
+		expect(pendingIndex).toBeGreaterThan(updaterIndex);
+		expect(consumeIndex).toBeGreaterThan(pendingIndex);
+		expect(rerunIndex).toBeGreaterThan(consumeIndex);
+	});
+
+	it('repumps fresh supplemental work after a stale apply releases its key lock', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const applyIndex = source.indexOf('function __kustoScheduleCrossClusterSchemaApply');
+		const settleIndex = source.indexOf("}).then(lease => {", applyIndex);
+		const catchIndex = source.indexOf('}).catch((e: any) => {', settleIndex);
+		const settleBlock = source.slice(settleIndex, catchIndex);
+		const finishIndex = settleBlock.lastIndexOf('finishJob();');
+		const pumpIndex = settleBlock.indexOf('__kustoScheduleSupplementalPump(0);', finishIndex);
+		const catchEndIndex = source.indexOf('\n\t\t});', catchIndex);
+		const catchBlock = source.slice(catchIndex, catchEndIndex);
+		const catchFinishIndex = catchBlock.indexOf('finishJob();');
+		const catchPumpIndex = catchBlock.indexOf('__kustoScheduleSupplementalPump(0);', catchFinishIndex);
+
+		expect(settleIndex).toBeGreaterThan(applyIndex);
+		expect(finishIndex).toBeGreaterThan(-1);
+		expect(pumpIndex).toBeGreaterThan(finishIndex);
+		expect(catchIndex).toBeGreaterThan(settleIndex);
+		expect(catchFinishIndex).toBeGreaterThan(-1);
+		expect(catchPumpIndex).toBeGreaterThan(catchFinishIndex);
+	});
+
+	it('clears the previous editor markers before switching active diagnostic ownership', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const activateIndex = source.indexOf('const activateEditorFocus = () => {');
+		const previousIndex = source.indexOf('const previousBoxId = activeQueryEditorBoxId', activateIndex);
+		const disableIndex = source.indexOf('__kustoDisableMarkersForModel(previousModel.uri)', previousIndex);
+		const setActiveIndex = source.indexOf('setActiveQueryEditorBoxId(boxId)', disableIndex);
+
+		expect(activateIndex).toBeGreaterThan(-1);
+		expect(previousIndex).toBeGreaterThan(activateIndex);
+		expect(disableIndex).toBeGreaterThan(previousIndex);
+		expect(setActiveIndex).toBeGreaterThan(disableIndex);
+	});
+
+	it('re-enters focused diagnostic publication after asynchronous preparation becomes ready', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const subscriptionIndex = source.indexOf('subscribeKustoPreparation(String(boxId), (preparation) => {');
+		const readyIndex = source.indexOf("if (preparation.status === 'ready')", subscriptionIndex);
+		const replayGateIndex = source.indexOf('__kustoShouldReplayFocusedDiagnostics({', readyIndex);
+		const scheduleIndex = source.indexOf('setTimeout(() => {', replayGateIndex);
+		const updateIndex = source.indexOf('__kustoTriggerRevalidation?.(boxId)', scheduleIndex);
+
+		expect(subscriptionIndex).toBeGreaterThan(-1);
+		expect(readyIndex).toBeGreaterThan(subscriptionIndex);
+		expect(replayGateIndex).toBeGreaterThan(readyIndex);
+		expect(scheduleIndex).toBeGreaterThan(replayGateIndex);
+		expect(updateIndex).toBeGreaterThan(scheduleIndex);
+	});
+
+	it('revokes marker ownership whenever preparation is not ready', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const subscriptionIndex = source.indexOf('subscribeKustoPreparation(String(boxId), (preparation) => {');
+		const notReadyTraceIndex = source.indexOf("__kustoTraceCrossCluster('preparation.primary-not-ready'", subscriptionIndex);
+		const disableIndex = source.indexOf('__kustoDisableMarkersForModel(modelUri)', notReadyTraceIndex);
+
+		expect(subscriptionIndex).toBeGreaterThan(-1);
+		expect(notReadyTraceIndex).toBeGreaterThan(subscriptionIndex);
+		expect(disableIndex).toBeGreaterThan(notReadyTraceIndex);
+	});
+
+	it('clears stale markers while retaining focus ownership on a ready signature mismatch', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const subscriptionIndex = source.indexOf('subscribeKustoPreparation(String(boxId), (preparation) => {');
+		const mismatchIndex = source.indexOf("diagnosticPlan === 'clear-retain-focus'", subscriptionIndex);
+		const clearIndex = source.indexOf('__kustoClearMarkersForModel(modelUri)', mismatchIndex);
+		const disableIndex = source.indexOf('__kustoDisableMarkersForModel(modelUri)', mismatchIndex);
+		const readyIndex = source.indexOf("__kustoTraceCrossCluster('preparation.primary-ready'", mismatchIndex);
+
+		expect(mismatchIndex).toBeGreaterThan(subscriptionIndex);
+		expect(clearIndex).toBeGreaterThan(mismatchIndex);
+		expect(readyIndex).toBeGreaterThan(clearIndex);
+		expect(disableIndex).toBeGreaterThan(readyIndex);
+	});
+
+	it('explicitly revalidates only after exact worker readiness', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const triggerIndex = source.indexOf('__kustoTriggerRevalidation = function(boxId: any)');
+		const readinessIndex = source.indexOf('__kustoIsSupplementalPrimaryReady(modelUri)', triggerIndex);
+		const enableIndex = source.indexOf('__kustoEnableMarkersForModel(modelUri)', readinessIndex);
+		const exactValidationIndex = source.indexOf("__kustoRevalidateSupplementalModel(modelUri, 'explicit-worker-ready')", enableIndex);
+
+		expect(triggerIndex).toBeGreaterThan(-1);
+		expect(readinessIndex).toBeGreaterThan(triggerIndex);
+		expect(enableIndex).toBeGreaterThan(readinessIndex);
+		expect(exactValidationIndex).toBeGreaterThan(enableIndex);
+	});
+
+	it('commits pending worker readiness before requesting exact revalidation', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const flushIndex = source.indexOf('async function __kustoFlushPendingSchemaWorkerUpdateForBox');
+		const readyIndex = source.indexOf('markSchemaWorkerReady(boxId, pending.schemaKey, pending.schemaSignature, modelUri, preparationToken)', flushIndex);
+		const triggerIndex = source.indexOf('__kustoTriggerRevalidation(boxId)', readyIndex);
+
+		expect(flushIndex).toBeGreaterThan(-1);
+		expect(readyIndex).toBeGreaterThan(flushIndex);
+		expect(triggerIndex).toBeGreaterThan(readyIndex);
+	});
+
+	it('requires the exact worker signature on the focused schema fast path', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const updaterIndex = source.indexOf('__kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = true)');
+		const workerIndex = source.indexOf('const workerReadyState = getSchemaWorkerReadyState(String(boxId))', updaterIndex);
+		const signatureIndex = source.indexOf('workerReadyState.schemaSignature === schemaSignature', workerIndex);
+		const fastPathIndex = source.indexOf('if (!workerApplyRequired && baseWorkerReady && workerContextMatches)', signatureIndex);
+
+		expect(updaterIndex).toBeGreaterThan(-1);
+		expect(workerIndex).toBeGreaterThan(updaterIndex);
+		expect(signatureIndex).toBeGreaterThan(workerIndex);
+		expect(fastPathIndex).toBeGreaterThan(signatureIndex);
+	});
+
+	it('requires a committed model context instead of accepting global context alone on focus', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const updaterIndex = source.indexOf('__kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = true)');
+		const contextCheckIndex = source.indexOf('__kustoCommittedDiagnosticContextMatches(focusedModelUri, schemaKey)', updaterIndex);
+		const switchIndex = source.indexOf('__kustoQueueDatabaseContextSwitch(', contextCheckIndex);
+
+		expect(updaterIndex).toBeGreaterThan(-1);
+		expect(contextCheckIndex).toBeGreaterThan(updaterIndex);
+		expect(switchIndex).toBeGreaterThan(contextCheckIndex);
+	});
+
+	it('stamps same-database context adoption for the target identity and visibility generation', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const setterIndex = source.indexOf('__kustoSetDatabaseInContext = async function');
+		const noOpIndex = source.indexOf('currentContext.database?.toLowerCase() === database?.toLowerCase()', setterIndex);
+		const stampIndex = source.indexOf('const committedContext = {', noOpIndex);
+		const schemaKeyIndex = source.indexOf('schemaKey: targetSchemaKey', stampIndex);
+		const generationIndex = source.indexOf('visibilityGeneration: __kustoSchemaClearGeneration', schemaKeyIndex);
+		const modelStampIndex = source.indexOf('__kustoMonacoDatabaseInContextByModel[modelKey] = committedContext', generationIndex);
+		const globalStampIndex = source.indexOf('__kustoSchemaTracker.databaseInContext = committedContext', modelStampIndex);
+		const returnIndex = source.indexOf('return true;', globalStampIndex);
+
+		expect(setterIndex).toBeGreaterThan(-1);
+		expect(noOpIndex).toBeGreaterThan(setterIndex);
+		expect(stampIndex).toBeGreaterThan(noOpIndex);
+		expect(schemaKeyIndex).toBeGreaterThan(stampIndex);
+		expect(generationIndex).toBeGreaterThan(schemaKeyIndex);
+		expect(modelStampIndex).toBeGreaterThan(generationIndex);
+		expect(globalStampIndex).toBeGreaterThan(modelStampIndex);
+		expect(returnIndex).toBeGreaterThan(globalStampIndex);
+	});
+
+	it('revokes on worker readiness loss and revalidates on an exact ready commit', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const subscriptionIndex = source.indexOf('subscribeSchemaWorkerReadyState(String(boxId), (worker) => {');
+		const exactGateIndex = source.indexOf('const exactReady =', subscriptionIndex);
+		const disableIndex = source.indexOf('__kustoDisableMarkersForModel(modelUri)', exactGateIndex);
+		const enableIndex = source.indexOf('__kustoEnableMarkersForModel(modelUri)', disableIndex);
+		const revalidateIndex = source.indexOf("__kustoRevalidateSupplementalModel(modelUri, 'worker-readiness-committed')", enableIndex);
+
+		expect(subscriptionIndex).toBeGreaterThan(-1);
+		expect(exactGateIndex).toBeGreaterThan(subscriptionIndex);
+		expect(disableIndex).toBeGreaterThan(exactGateIndex);
+		expect(enableIndex).toBeGreaterThan(disableIndex);
+		expect(revalidateIndex).toBeGreaterThan(enableIndex);
+	});
+});
+
+describe('__kustoDiagnosticReadinessMatches', () => {
+	const ready = {
+		modelUri: 'inmemory://model/1',
+		contextSchemaKey: 'cluster|db',
+		preparationStatus: 'ready',
+		preparationSchemaKey: 'cluster|db',
+		preparationSchemaSignature: 'sig-2',
+		preparationModelUri: 'inmemory://model/1',
+		workerStatus: 'ready',
+		workerSchemaKey: 'cluster|db',
+		workerSchemaSignature: 'sig-2',
+		workerModelUri: 'inmemory://model/1',
+	};
+
+	it('requires the exact ready preparation and worker identity', () => {
+		expect(__kustoDiagnosticReadinessMatches(ready)).toBe(true);
+	});
+
+	it.each([
+		['preparation pending', { preparationStatus: 'preparing' }],
+		['old worker signature', { workerSchemaSignature: 'sig-1' }],
+		['wrong worker model', { workerModelUri: 'inmemory://model/old' }],
+		['wrong preparation schema', { preparationSchemaKey: 'cluster|other' }],
+	] as const)('rejects %s', (_label, override) => {
+		expect(__kustoDiagnosticReadinessMatches({ ...ready, ...override })).toBe(false);
+	});
+});
+
+describe('__kustoDiagnosticContextMatches', () => {
+	const committed = {
+		documentVisible: true,
+		expectedSchemaKey: 'cluster|db',
+		globalContextSchemaKey: 'cluster|db',
+		modelContextSchemaKey: 'cluster|db',
+		visibilityGeneration: 4,
+		modelContextVisibilityGeneration: 4,
+	};
+
+	it('requires the actual global and model context from the current visibility generation', () => {
+		expect(__kustoDiagnosticContextMatches(committed)).toBe(true);
+	});
+
+	it.each([
+		['hidden document', { documentVisible: false }],
+		['wrong global context', { globalContextSchemaKey: 'cluster|other' }],
+		['wrong model context', { modelContextSchemaKey: 'cluster|other' }],
+		['stale visibility generation', { modelContextVisibilityGeneration: 3 }],
+	] as const)('rejects %s', (_label, override) => {
+		expect(__kustoDiagnosticContextMatches({ ...committed, ...override })).toBe(false);
+	});
+
+	it('rechecks readiness after the physical hidden-worker clear settles', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const visibilityIndex = source.indexOf("document.addEventListener('visibilitychange'");
+		const clearIndex = source.indexOf("kind: 'visibility-clear'", visibilityIndex);
+		const finallyIndex = source.indexOf('finally {', clearIndex);
+		const revokeIndex = source.indexOf('__kustoForgetAllSchemaWorkerReady(false)', finallyIndex);
+
+		expect(visibilityIndex).toBeGreaterThan(-1);
+		expect(clearIndex).toBeGreaterThan(visibilityIndex);
+		expect(finallyIndex).toBeGreaterThan(clearIndex);
+		expect(revokeIndex).toBeGreaterThan(finallyIndex);
+	});
+});
+
+describe('__kustoComputeWebviewFocus', () => {
+	it('requires both OS window focus and document visibility', () => {
+		expect(__kustoComputeWebviewFocus(true, true)).toBe(true);
+		expect(__kustoComputeWebviewFocus(false, true)).toBe(false);
+		expect(__kustoComputeWebviewFocus(true, false)).toBe(false);
+		expect(__kustoComputeWebviewFocus(false, false)).toBe(false);
+	});
+
+	it('accepts only focus events targeting the window itself', () => {
+		const windowTarget = {};
+		expect(__kustoIsTrueWindowFocusEvent(windowTarget, windowTarget)).toBe(true);
+		expect(__kustoIsTrueWindowFocusEvent({}, windowTarget)).toBe(false);
+		expect(__kustoIsTrueWindowFocusEvent(null, windowTarget)).toBe(false);
+	});
+
+	it('installs fail-closed focus listeners before query editor initialization', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const initialWindowIndex = source.indexOf('let __kustoWindowHasFocus = false');
+		const initialVisibilityIndex = source.indexOf('let __kustoDocumentVisible = false', initialWindowIndex);
+		const installIndex = source.indexOf('__kustoInstallWebviewFocusListeners();', initialVisibilityIndex);
+		const editorInitIndex = source.indexOf('function initQueryEditor(boxId: any)');
+
+		expect(initialWindowIndex).toBeGreaterThan(-1);
+		expect(initialVisibilityIndex).toBeGreaterThan(initialWindowIndex);
+		expect(installIndex).toBeGreaterThan(initialVisibilityIndex);
+		expect(editorInitIndex).toBeGreaterThan(installIndex);
+	});
+});
+
+describe('__kustoPlanPreparationDiagnostics', () => {
+	it('retains focused ownership but clears markers for a ready signature mismatch', () => {
+		expect(__kustoPlanPreparationDiagnostics('ready', false)).toBe('clear-retain-focus');
+	});
+
+	it('disables ownership for every non-ready preparation state', () => {
+		for (const status of ['idle', 'preparing', 'deferred', 'error']) {
+			expect(__kustoPlanPreparationDiagnostics(status, false)).toBe('clear-disable');
+		}
+	});
+
+	it('admits diagnostics only for exact ready state', () => {
+		expect(__kustoPlanPreparationDiagnostics('ready', true)).toBe('ready');
+	});
+});
+
+describe('KustoDiagnosticMarkerOwnership', () => {
+	it('clears an old-signature marker while retaining focused publication ownership', () => {
+		const markers = new Map([['model', ['old schema error']]]);
+		const ownership = new KustoDiagnosticMarkerOwnership(modelUri => markers.set(modelUri, []));
+		ownership.enable('model');
+
+		ownership.clear('model');
+
+		expect(markers.get('model')).toEqual([]);
+		expect(ownership.isEnabled('model')).toBe(true);
+	});
+
+	it('clears markers and revokes publication ownership on non-ready state or blur', () => {
+		const markers = new Map([['model', ['visible error']]]);
+		const ownership = new KustoDiagnosticMarkerOwnership(modelUri => markers.set(modelUri, []));
+		ownership.enable('model');
+
+		ownership.disable('model');
+
+		expect(markers.get('model')).toEqual([]);
+		expect(ownership.isEnabled('model')).toBe(false);
+	});
+});
+
+describe('KustoDiagnosticRevalidationCoordinator', () => {
+	it('runs one validation at a time and performs one rerun with the latest reason', async () => {
+		const coordinator = new KustoDiagnosticRevalidationCoordinator();
+		let finishFirst!: (value: boolean) => void;
+		const reasons: string[] = [];
+		const run = vi.fn((reason: string) => {
+			reasons.push(reason);
+			if (reasons.length === 1) return new Promise<boolean>(resolve => { finishFirst = resolve; });
+			return Promise.resolve(true);
+		});
+
+		const first = coordinator.request('model', 'first', run, () => true);
+		const second = coordinator.request('model', 'second', run, () => true);
+		const latest = coordinator.request('model', 'latest', run, () => true);
+
+		expect(second).toBe(first);
+		expect(latest).toBe(first);
+		expect(reasons).toEqual(['first']);
+		finishFirst(true);
+		await first;
+		await Promise.resolve();
+
+		expect(reasons).toEqual(['first', 'latest']);
+	});
+
+	it('drops a queued rerun when its model is disposed', async () => {
+		const coordinator = new KustoDiagnosticRevalidationCoordinator();
+		let finishFirst!: (value: boolean) => void;
+		const run = vi.fn(() => new Promise<boolean>(resolve => { finishFirst = resolve; }));
+		const first = coordinator.request('model', 'first', run, () => true);
+		coordinator.request('model', 'queued', run, () => true);
+
+		coordinator.dispose('model');
+		finishFirst(true);
+		await first;
+		await Promise.resolve();
+
+		expect(run).toHaveBeenCalledOnce();
+	});
+});
+
+describe('KustoDiagnosticValidationRetryPolicy', () => {
+	it('bounds retries for one identity and resets the budget for a new identity', () => {
+		const policy = new KustoDiagnosticValidationRetryPolicy();
+
+		expect(policy.nextDelay('model', 'identity-1', true)).toBe(100);
+		expect(policy.nextDelay('model', 'identity-1', true)).toBe(300);
+		expect(policy.nextDelay('model', 'identity-1', true)).toBe(700);
+		expect(policy.nextDelay('model', 'identity-1', true)).toBeUndefined();
+		expect(policy.nextDelay('model', 'identity-2', true)).toBe(100);
+	});
+
+	it('cancels and resets retries when focus or exact readiness is lost', () => {
+		const policy = new KustoDiagnosticValidationRetryPolicy();
+		expect(policy.nextDelay('model', 'identity', true)).toBe(100);
+
+		expect(policy.nextDelay('model', 'identity', false)).toBeUndefined();
+		expect(policy.nextDelay('model', 'identity', true)).toBe(100);
+	});
+
+	it('restarts an exhausted retry budget after an edit reset', () => {
+		const policy = new KustoDiagnosticValidationRetryPolicy();
+		for (const expected of [100, 300, 700]) {
+			expect(policy.nextDelay('model', 'schema|version:1', true)).toBe(expected);
+		}
+		expect(policy.nextDelay('model', 'schema|version:1', true)).toBeUndefined();
+
+		policy.reset('model');
+
+		expect(policy.nextDelay('model', 'schema|version:2', true)).toBe(100);
+	});
+
+	it('wires validation failures to bounded scheduled retries', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const validationIndex = source.indexOf('async function __kustoRunSupplementalModelValidation');
+		const catchIndex = source.indexOf("__kustoTraceCrossCluster('revalidation.error'", validationIndex);
+		const policyIndex = source.indexOf('__kustoDiagnosticValidationRetryPolicy.nextDelay(', catchIndex);
+		const scheduleIndex = source.indexOf("__kustoScheduleSupplementalRevalidation(modelUri, 'validation-error-retry', retryDelay)", policyIndex);
+
+		expect(validationIndex).toBeGreaterThan(-1);
+		expect(catchIndex).toBeGreaterThan(validationIndex);
+		expect(policyIndex).toBeGreaterThan(catchIndex);
+		expect(scheduleIndex).toBeGreaterThan(policyIndex);
+	});
+
+	it('resets delayed retries and schedules exact validation for focused-ready edited content', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const changeIndex = source.indexOf('editor.onDidChangeModelContent((e: any) => {');
+		const cancelIndex = source.indexOf('delete __kustoSupplementalRevalidationTimeoutByModel[modelUri]', changeIndex);
+		const resetIndex = source.indexOf('__kustoDiagnosticValidationRetryPolicy.reset(modelUri)', cancelIndex);
+		const clearIndex = source.indexOf('__kustoClearMarkersForModel(modelUri)', resetIndex);
+		const readinessIndex = source.indexOf('__kustoIsSupplementalPrimaryReady(modelUri)', clearIndex);
+		const scheduleIndex = source.indexOf("__kustoScheduleSupplementalRevalidation(modelUri, 'content-changed', 0)", readinessIndex);
+
+		expect(changeIndex).toBeGreaterThan(-1);
+		expect(cancelIndex).toBeGreaterThan(changeIndex);
+		expect(resetIndex).toBeGreaterThan(cancelIndex);
+		expect(clearIndex).toBeGreaterThan(resetIndex);
+		expect(readinessIndex).toBeGreaterThan(clearIndex);
+		expect(scheduleIndex).toBeGreaterThan(readinessIndex);
+	});
+});
+
+describe('__kustoPlanDiagnosticPublication', () => {
+	it('publishes only exact diagnostics after the gate passes', () => {
+		expect(__kustoPlanDiagnosticPublication('exact', true)).toBe('publish');
+		expect(__kustoPlanDiagnosticPublication('ordinary', true)).toBe('revalidate');
+	});
+
+	it('actively clears both publication paths when the gate fails', () => {
+		expect(__kustoPlanDiagnosticPublication('exact', false)).toBe('clear');
+		expect(__kustoPlanDiagnosticPublication('ordinary', false)).toBe('clear');
+	});
+});
+
+describe('__kustoShouldReplayFocusedDiagnostics', () => {
+	const ready = {
+		focused: true,
+		isActiveBox: true,
+		readinessIdentity: '[1,2,"schema","model"]',
+		lastReplayedIdentity: '',
+	};
+
+	it('accepts a ready identity once and rejects its equivalent replay', () => {
+		expect(__kustoShouldReplayFocusedDiagnostics(ready)).toBe(true);
+		expect(__kustoShouldReplayFocusedDiagnostics({
+			...ready,
+			lastReplayedIdentity: ready.readinessIdentity,
+		})).toBe(false);
+	});
+
+	it.each([
+		['unfocused editor', { focused: false }],
+		['inactive box', { isActiveBox: false }],
+		['missing readiness identity', { readinessIdentity: '' }],
+	] as const)('rejects %s', (_label, override) => {
+		expect(__kustoShouldReplayFocusedDiagnostics({ ...ready, ...override })).toBe(false);
+	});
+});
+
+describe('__kustoShouldPublishDiagnostics', () => {
+	const ready = {
+		boxId: 'query_1', modelUri: 'inmemory://query_1.kusto', activeBoxId: 'query_1',
+		webviewFocused: true,
+		diagnosticsTrusted: true, markersEnabled: true, editorOwnsModel: true,
+		editorFocused: true, schemaKey: 'connection|account|cluster|database', workerReady: true,
+		schemaFresh: true, supplementalReady: true,
+	};
+
+	it('allows diagnostics only for the focused exact-schema model', () => {
+		expect(__kustoShouldPublishDiagnostics(ready)).toBe(true);
+	});
+
+	it.each([
+		['blurred webview', { webviewFocused: false }],
+		['unfocused section', { activeBoxId: 'query_2' }],
+		['unfocused editor', { editorFocused: false }],
+		['untrusted target', { diagnosticsTrusted: false }],
+		['markers not enabled', { markersEnabled: false }],
+		['replaced model', { editorOwnsModel: false }],
+		['schema context missing', { schemaKey: '' }],
+		['schema worker pending', { workerReady: false }],
+		['primary refresh pending', { schemaFresh: false }],
+		['supplemental schema pending', { supplementalReady: false }],
+	] as const)('suppresses diagnostics for %s', (_label, override) => {
+		expect(__kustoShouldPublishDiagnostics({ ...ready, ...override })).toBe(false);
+	});
+});
+
+describe('Kusto diagnostic freshness', () => {
+	it('keeps stale primary cache usable but not diagnostic-ready until refresh reaches a terminal state', () => {
+		expect(__kustoIsPrimaryDiagnosticSchemaFresh({ refreshState: 'scheduled', isStale: true }, false)).toBe(false);
+		expect(__kustoIsPrimaryDiagnosticSchemaFresh({ refreshState: 'completed' }, false)).toBe(true);
+		expect(__kustoIsPrimaryDiagnosticSchemaFresh({ refreshState: 'failed', isStale: true }, false)).toBe(true);
+		expect(__kustoIsPrimaryDiagnosticSchemaFresh({ refreshState: 'completed' }, true)).toBe(false);
+	});
+
+	it('requires every supplemental schema or refresh to reach loaded or terminal failure', () => {
+		const loaded = { status: 'loaded' } as const;
+		expect(__kustoIsSupplementalDiagnosticStateReady(loaded, { status: 'loaded', deliverySource: 'disk-cache-fresh' })).toBe(true);
+		expect(__kustoIsSupplementalDiagnosticStateReady(loaded, { status: 'loaded', deliverySource: 'disk-cache-stale', refreshState: 'pending' })).toBe(false);
+		expect(__kustoIsSupplementalDiagnosticStateReady(loaded, { status: 'loaded', deliverySource: 'disk-cache-stale', refreshState: 'failed' })).toBe(true);
+		expect(__kustoIsSupplementalDiagnosticStateReady({ status: 'failed' }, undefined)).toBe(true);
+		expect(__kustoIsSupplementalDiagnosticStateReady({ status: 'fetching' }, { status: 'pending' })).toBe(false);
+	});
+
+	it('counts stale-cache refreshes as active network requests after fallback delivery', () => {
+		expect(__kustoIsSupplementalNetworkRequestActive({ status: 'pending' })).toBe(true);
+		expect(__kustoIsSupplementalNetworkRequestActive({ status: 'loaded', refreshState: 'pending' })).toBe(true);
+		expect(__kustoIsSupplementalNetworkRequestActive({ status: 'loaded', refreshState: 'completed' })).toBe(false);
+		expect(__kustoIsSupplementalNetworkRequestActive({ status: 'loaded', refreshState: 'failed' })).toBe(false);
+	});
+
+	it('terminalizes timed-out stale fallback and reapplies a late fresh response', () => {
+		const coordinator = new KustoSupplementalSchemaCoordinator();
+		const reference = { schemaKey: 'remote|telemetry', clusterName: 'remote', database: 'Telemetry' };
+		const scheduled = coordinator.syncReferences({
+			boxId: 'query_1', modelUri: 'model://1', modelVersion: 1,
+			primarySchemaKey: 'primary|db', references: [reference], now: 10,
+		}).added[0];
+		coordinator.markFetching(supplementalStateIdentity(scheduled), {
+			requestToken: 'stale-load', requestSource: 'background', deadlineAt: 20, now: 11,
+		});
+		coordinator.markFetchedByRequest('stale-load', 12);
+		coordinator.setPrimaryReady('model://1', true, 13);
+		const initialCandidate = coordinator.getApplyCandidates(reference.schemaKey)[0];
+		coordinator.markApplying(supplementalStateIdentity(initialCandidate), 30, 14);
+		coordinator.markLoaded(supplementalStateIdentity(initialCandidate), 15);
+		const refresh = coordinator.refreshWithAutocomplete(supplementalStateIdentity(initialCandidate), 16)!;
+		coordinator.markFetching(supplementalStateIdentity(refresh), {
+			requestToken: 'refresh-token', requestSource: 'autocomplete', deadlineAt: 50,
+			preserveFetchedAvailable: true, now: 17,
+		});
+
+		expect(coordinator.expire(50)[0]).toMatchObject({ status: 'loaded', fetchedAvailable: true });
+		const retirement = __kustoPlanSupplementalBrokerRetirement({
+			status: 'pending', deadlineAt: 50, hasLiveSubscriber: false, hasFallback: true, now: 50,
+		});
+		expect(retirement).toEqual({ action: 'retain-terminal-fallback', failureKind: 'fetch-timeout' });
+		const broker = {
+			status: 'loaded', refreshState: 'failed', requestToken: 'refresh-token',
+			rawSchemaJson: { Databases: {} }, deliverySource: 'disk-cache-stale',
+		} as const;
+		expect(__kustoIsSupplementalDiagnosticStateReady(coordinator.getState('model://1', reference.schemaKey)!, broker)).toBe(true);
+		expect(__kustoIsSupplementalNetworkRequestActive(broker)).toBe(false);
+		expect(__kustoShouldApplySupplementalRefresh(broker, 'fresh')).toBe(true);
+		expect(coordinator.markSchemaRefreshed(reference.schemaKey, undefined, 60)[0]).toMatchObject({
+			status: 'fetched', fetchedAvailable: true,
+		});
+
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const handlerIndex = source.indexOf('export function __kustoHandleCrossClusterSchemaData');
+		const detectIndex = source.indexOf('const refreshesRetainedFallback = __kustoShouldApplySupplementalRefresh', handlerIndex);
+		const overwriteIndex = source.indexOf('broker.deliverySource = message.deliverySource', detectIndex);
+		const refreshIndex = source.indexOf('__kustoSupplementalCoordinator.markSchemaRefreshed(key)', overwriteIndex);
+		expect(detectIndex).toBeGreaterThan(handlerIndex);
+		expect(overwriteIndex).toBeGreaterThan(detectIndex);
+		expect(refreshIndex).toBeGreaterThan(overwriteIndex);
+	});
+
+	it('fences apply timeout behind worker recovery while other terminals revalidate immediately', () => {
+		expect(__kustoPlanSupplementalExpiration('apply-timeout')).toBe('fence-recovery');
+		expect(__kustoPlanSupplementalExpiration('fetch-timeout')).toBe('revalidate');
+		expect(__kustoPlanSupplementalExpiration('fetch-failed')).toBe('revalidate');
+	});
+
+	it('orders apply-timeout marker recovery after detached worker recovery', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const timeoutIndex = source.indexOf('onTimeout: () => {', source.indexOf('function __kustoScheduleCrossClusterSchemaApply'));
+		const fenceIndex = source.indexOf('__kustoFenceSupplementalApplyRecovery(modelUri', timeoutIndex);
+		const detachedIndex = source.indexOf('onDetachedSettled: async recoveryTransaction => {', fenceIndex);
+		const recoverIndex = source.indexOf('await __kustoRecoverPrimarySchemaAfterDetachedMutation', detachedIndex);
+		const revalidateIndex = source.indexOf("__kustoRevalidateSupplementalModel(modelUri, 'apply-timeout-recovered')", recoverIndex);
+
+		expect(fenceIndex).toBeGreaterThan(timeoutIndex);
+		expect(detachedIndex).toBeGreaterThan(fenceIndex);
+		expect(recoverIndex).toBeGreaterThan(detachedIndex);
+		expect(revalidateIndex).toBeGreaterThan(recoverIndex);
 	});
 });
 

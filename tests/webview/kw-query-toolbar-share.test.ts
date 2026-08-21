@@ -13,6 +13,7 @@ const testState = vi.hoisted(() => ({
 	sqlBoxes: [] as string[],
 	runModesByBoxId: {} as Record<string, string>,
 	optimizationMetadataByBoxId: {} as Record<string, any>,
+	setActiveQueryEditorBoxId: vi.fn(),
 }));
 
 vi.mock('../../src/webview/shared/webview-messages.js', () => ({
@@ -63,7 +64,7 @@ vi.mock('../../src/webview/core/state.js', () => ({
 	setAutoTriggerAutocompleteEnabled: vi.fn(),
 	copilotInlineCompletionsEnabled: true,
 	setCopilotInlineCompletionsEnabled: vi.fn(),
-	setActiveQueryEditorBoxId: vi.fn(),
+	setActiveQueryEditorBoxId: testState.setActiveQueryEditorBoxId,
 	queryBoxes: [],
 	queryEditors: testState.queryEditors,
 	connections: [],
@@ -86,6 +87,7 @@ import {
 	getRunModeForPersistence,
 	__kustoOpenShareModal,
 	__kustoShareCopyToClipboard,
+	onQueryEditorToolbarAction,
 	runAllQueriesFromMenu,
 } from '../../src/webview/sections/kw-query-toolbar.js';
 
@@ -135,10 +137,23 @@ describe('query share modal result artifacts', () => {
 		testState.isRunSelectionReady.mockReset();
 		testState.isRunSelectionReady.mockReturnValue(true);
 		testState.schedulePersist.mockClear();
+		testState.setActiveQueryEditorBoxId.mockClear();
 		testState.sqlBoxes.splice(0, testState.sqlBoxes.length);
 		for (const key of Object.keys(testState.queryEditors)) delete testState.queryEditors[key];
 		for (const key of Object.keys(testState.runModesByBoxId)) delete testState.runModesByBoxId[key];
 		for (const key of Object.keys(testState.optimizationMetadataByBoxId)) delete testState.optimizationMetadataByBoxId[key];
+	});
+
+	it('lets Monaco transfer active ownership when a toolbar action focuses another editor', () => {
+		const focus = vi.fn();
+		const trigger = vi.fn();
+		testState.queryEditors.query_2 = { focus, trigger };
+
+		onQueryEditorToolbarAction('query_2', 'undo');
+
+		expect(focus).toHaveBeenCalledOnce();
+		expect(trigger).toHaveBeenCalledWith('toolbar', 'undo', null);
+		expect(testState.setActiveQueryEditorBoxId).not.toHaveBeenCalled();
 	});
 
 	it('stores Run All as the persistent section mode before executing it', () => {

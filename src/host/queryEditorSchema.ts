@@ -161,7 +161,9 @@ export class SchemaService {
 				});
 				if (!this.isConnectionIdentityCurrent(listener.connectionId, listener.connectionIdentity)) return;
 				const accountPartition = result.accountPartition;
-				if (!accountPartition || accountPartition !== listener.accountPartition) return;
+				if (!accountPartition || accountPartition !== listener.accountPartition) {
+					throw new Error('Background schema refresh returned a different account identity.');
+				}
 				const schema = requireWorkerReadySchema(result.schema, listener.database);
 				const timestamp = result.fromCache
 					? Date.now() - (result.cacheAgeMs ?? 0)
@@ -727,7 +729,9 @@ export class SchemaService {
 						if (!isConnectionCurrent()) return;
 						const freshSchema = requireWorkerReadySchema(result.schema, database);
 						const resolvedAccountPartition = result.accountPartition;
-						if (!resolvedAccountPartition || resolvedAccountPartition !== initialAccountPartition) return;
+						if (!resolvedAccountPartition || resolvedAccountPartition !== initialAccountPartition) {
+							throw new Error('Supplemental schema refresh returned a different account identity.');
+						}
 						const timestamp = result.fromCache
 							? Date.now() - (result.cacheAgeMs ?? 0)
 							: Date.now();
@@ -762,7 +766,18 @@ export class SchemaService {
 						}
 					} catch (refreshError) {
 						if (!isConnectionCurrent()) return;
-						trace('refresh.failed', { failureKind: supplementalFailureKind(refreshError, candidate => this.host.kustoClient.isAuthenticationError?.(candidate) === true) });
+						const failureKind = supplementalFailureKind(refreshError, candidate => this.host.kustoClient.isAuthenticationError?.(candidate) === true);
+						trace('refresh.failed', { failureKind });
+						this.host.postMessage({
+							type: 'crossClusterSchemaError',
+							clusterName,
+							database,
+							boxId,
+							requestToken,
+							requestSource,
+							failureKind,
+							error: `Failed to refresh schema for ${clusterName}.${database}. Using cached schema for autocomplete.`,
+						});
 					}
 				})();
 				return;
