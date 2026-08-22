@@ -21,7 +21,11 @@ import { perfBegin, perfMark } from './perfTrace';
 import { getWorkbenchLogger } from './workbenchLogger';
 import { createFileOpenTrace } from './fileOpenTrace';
 import { kustoLeaveNoTracePolicyFingerprint } from './kustoLeaveNoTracePolicyStore';
-import { isMainWebviewCorrelatedReply, MainWebviewStartupGateway } from './mainWebviewStartupGateway';
+import {
+	isMainWebviewCorrelatedReply,
+	MainWebviewStartupGateway,
+	waitForRetainedStartupInitialization,
+} from './mainWebviewStartupGateway';
 import { addableSectionKindsForDocument, canonicalAddableSectionKind, defaultSectionKindForDocument } from '../shared/documentSectionCapabilities';
 import {
 	COMPATIBILITY_PERSISTENCE_CHANNEL,
@@ -277,6 +281,12 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			session: sidecarSession,
 			allowKustoOwnerMessages: true,
 		});
+		let retainedCloseTrafficObserved = false;
+		const allowRetiredInbound = (message: unknown): boolean => {
+			const allowed = closeCoordinator.allowRetiredInbound(message);
+			if (allowed) retainedCloseTrafficObserved = true;
+			return allowed;
+		};
 		const startupGateway = new MainWebviewStartupGateway<IncomingWebviewMessage>({
 			panel: webviewPanel,
 			admitInbound: input => {
@@ -302,7 +312,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				return parsed.value;
 			},
 			allowReentrantInbound: message => isMainWebviewCorrelatedReply(message) || closeCoordinator.isPendingFinalPersistReply(message),
-			allowRetiredInbound: message => closeCoordinator.allowRetiredInbound(message),
+			allowRetiredInbound,
 			trace: (event, message, queuedCount) => {
 				if (event === 'received') {
 					fileOpenTrace.mark('webview.message.received', {
@@ -339,10 +349,14 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			() => ({ kind: 'initialized' as const }),
 			error => ({ kind: 'error' as const, error }),
 		);
-		const initializationOutcome = await Promise.race([
+		let initializationOutcome = await Promise.race([
 			initialization,
 			outerDisposalSignal.then(() => ({ kind: 'disposed' as const })),
 		]);
+		if (initializationOutcome.kind === 'disposed' && retainedCloseTrafficObserved) {
+			const retainedInitialization = await waitForRetainedStartupInitialization(initialization);
+			if (retainedInitialization.settled) initializationOutcome = retainedInitialization.value;
+		}
 		if (initializationOutcome.kind === 'disposed') {
 			try { queryEditor.disposePanel(webviewPanel); } catch { /* continue compatibility cleanup */ }
 			releaseKustoResultLease();
@@ -683,15 +697,12 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 							sidecarFileOverride: requestContext?.sidecarFileOverride,
 							ownerConflictRetryCount: retryCount + 1,
 						});
-						void retry.then(acceptedRetry => {
-							if (acceptedRetry || outerDisposed) pending.admission.abandonRetry();
-						}, () => {
-							if (outerDisposed) pending.admission.abandonRetry();
-						});
-					} else if (projectionCoordinator.isInitialized || outerDisposed || retryCount >= 1) {
-						if (outerDisposed || document.getText() !== projection.sourceText) {
-							pending.admission.abandonRetry();
-						}
+						void retry.then(
+							() => { pending.admission.abandonRetry(); },
+							() => { pending.admission.abandonRetry(); },
+						);
+					} else {
+						pending.admission.abandonRetry();
 					}
 					return false;
 				}
@@ -1301,8 +1312,8 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			}
 		};
 
-		await startupGateway.setInboundHandler(handleIncomingWebviewMessage);
 		closeCoordinator.configure(closeFinalization);
+		await startupGateway.setInboundHandler(handleIncomingWebviewMessage);
 		} catch (error) {
 			try { queryEditor.disposePanel(webviewPanel); } catch { /* continue compatibility cleanup */ }
 			releaseKustoResultLease();

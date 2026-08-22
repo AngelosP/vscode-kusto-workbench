@@ -28,6 +28,28 @@ import { parseKustoResultAttachmentWebviewMessageFromEnvelope } from '../shared/
 import { captureRuntimeMessageEnvelope } from '../shared/runtimeMessageEnvelope';
 
 export const MAIN_WEBVIEW_DISPATCHER_READY_TYPE = 'mainWebviewDispatcherReady' as const;
+export const RETAINED_STARTUP_INITIALIZATION_TIMEOUT_MS = 2_000;
+
+export type BoundedStartupSettlement<T> =
+	| Readonly<{ settled: true; value: T }>
+	| Readonly<{ settled: false }>;
+
+export async function waitForRetainedStartupInitialization<T>(
+	initialization: Promise<T>,
+	timeoutMs = RETAINED_STARTUP_INITIALIZATION_TIMEOUT_MS,
+): Promise<BoundedStartupSettlement<T>> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			initialization.then(value => ({ settled: true as const, value })),
+			new Promise<Readonly<{ settled: false }>>(resolve => {
+				timer = setTimeout(() => resolve({ settled: false }), Math.max(0, timeoutMs));
+			}),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
 
 type GatewayTraceEvent = 'received' | 'queued' | 'flushQueued';
 

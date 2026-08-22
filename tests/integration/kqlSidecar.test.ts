@@ -87,8 +87,9 @@ function mirrorFreshSqlSanitizerIntoPublisher(): () => void {
 		this: QueryEditorProvider,
 		state: any,
 		publish: (sanitizedState: any) => Promise<unknown>,
+		onKustoSanitized?: (before: any, after: any, context: { snapshot: any }) => void,
 	) {
-		return publish(await (this as any).sanitizeSqlLeaveNoTraceStateFresh(state));
+		return publish(await (this as any).sanitizeSqlLeaveNoTraceStateFresh(state, onKustoSanitized));
 	};
 	return () => { prototype.publishSqlLeaveNoTraceStateFresh = originalPublish; };
 }
@@ -4378,7 +4379,15 @@ suite('Sidecar .kql.json strategy', () => {
 
 		try {
 			fs.writeFileSync(filePath, initialText, 'utf8');
-			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => state;
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (
+				state: any,
+				onKustoSanitized?: (before: any, after: any, context: { snapshot: any }) => void,
+			) => {
+				onKustoSanitized?.(state, state, {
+					snapshot: { clusterKeys: [], version: 0, globallyBlocked: false, revocationGenerations: {} },
+				});
+				return state;
+			};
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
 				state: any, publish: (value: any) => Promise<unknown>,
 			) => publish({
@@ -4895,7 +4904,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const finalSections = JSON.parse(currentText).state.sections;
 			assert.strictEqual(finalSections.find((section: any) => section.id === 'sql_1').resultJson, undefined);
-			const commandResult = posted.find(message => message?.commandId === 'transform-during-privacy-repair');
+			let commandResult = posted.find(message => message?.commandId === 'transform-during-privacy-repair');
 			const queue = [...(provider as any).markdownDocumentQueues.values()][0];
 			try {
 				await waitForCondition(
@@ -4918,21 +4927,26 @@ suite('Sidecar .kql.json strategy', () => {
 			assert.strictEqual(JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections
 				.find((section: any) => section.id === 'sql_1').resultJson, undefined);
 			if (commandResult?.ok !== true) {
+				await queue.tail;
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				await waitForCondition(
+					() => Number(projection?.sourceGeneration) > Number(commandResult?.sourceGeneration),
+					'privacy replacement should publish a newer command owner',
+				);
+				const commandProjection = projection;
 				await Promise.resolve(receiveHandler!({
 					type: 'markdownDocumentCommand', commandId: 'transform-after-privacy-replacement',
-					sourceGeneration: projection.sourceGeneration,
-					expectedDocumentRevision: projection.documentRevision,
+					sourceGeneration: commandProjection.sourceGeneration,
+					expectedDocumentRevision: commandProjection.documentRevision,
 					command: {
 						type: 'patch', sectionId: 'transform_1',
-						expectedSectionRevision: projection.sectionRevisions.transform_1,
+						expectedSectionRevision: commandProjection.sectionRevisions.transform_1,
 						patch: { name: 'After' },
 					},
 				}));
-				assert.strictEqual(
-					posted.find(message => message?.commandId === 'transform-after-privacy-replacement')?.ok,
-					true,
-				);
+				commandResult = posted.find(message => message?.commandId === 'transform-after-privacy-replacement');
 			}
+			assert.strictEqual(commandResult?.ok, true);
 			assert.strictEqual(JSON.parse(currentText).state.sections
 				.find((section: any) => section.id === 'transform_1').name, 'After');
 		} finally {
@@ -8686,7 +8700,15 @@ suite('Sidecar .kql.json strategy', () => {
 		] as const;
 
 		try {
-			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => state;
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (
+				state: any,
+				onKustoSanitized?: (before: any, after: any, context: { snapshot: any }) => void,
+			) => {
+				onKustoSanitized?.(state, state, {
+					snapshot: { clusterKeys: [], version: 0, globallyBlocked: false, revocationGenerations: {} },
+				});
+				return state;
+			};
 			(vscode.window as any).showWarningMessage = async () => 'Save';
 			for (const [index, variant] of variants.entries()) {
 				let markInitializeEntered!: () => void;
@@ -8920,6 +8942,76 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('non-session startup close drains Kusto owner traffic and drops ordinary traffic', async () => {
+		const previousInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const previousHandle = (QueryEditorProvider as any).prototype.handleWebviewMessage;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-rich-kusto-owner-close-'));
+		const filePath = path.join(tmpDir, 'ordinary.kqlx');
+		const text = JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [] } });
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const disposeHandlers: Array<() => void> = [];
+		const handledTypes: string[] = [];
+		let markInitializeEntered!: () => void;
+		let releaseInitialize!: () => void;
+		const initializeEntered = new Promise<void>(resolve => { markInitializeEntered = resolve; });
+		const initializeGate = new Promise<void>(resolve => { releaseInitialize = resolve; });
+
+		try {
+			fs.writeFileSync(filePath, text, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async function (panel: vscode.WebviewPanel) {
+				(this as any).panel = panel;
+				(this as any)._panelDisposed = false;
+				markInitializeEntered();
+				await initializeGate;
+			};
+			(QueryEditorProvider as any).prototype.handleWebviewMessage = async (message: any) => {
+				handledTypes.push(String(message?.type || ''));
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			);
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => text, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+			} as any;
+			const panel = {
+				visible: true, active: true,
+				webview: {
+					options: {}, postMessage: async () => true,
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+						receiveHandler = handler;
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+			deferMainWebviewReadyForTest(panel);
+
+			const resolving = Promise.resolve(provider.resolveCustomTextEditor(document, panel, {} as any));
+			await initializeEntered;
+			await Promise.resolve(receiveHandler!({ type: 'showInfo', message: 'drop ordinary startup traffic' }));
+			await Promise.resolve(receiveHandler!({
+				type: 'kustoSectionClose', boxId: 'query-1', sectionInstanceId: 'section-1',
+			}));
+			for (const dispose of [...disposeHandlers]) dispose();
+			releaseInitialize();
+			await resolving;
+			await waitForCondition(() => handledTypes.includes('kustoSectionClose'), 'Kusto close traffic should drain');
+			assert.deepStrictEqual(handledTypes, ['kustoSectionClose']);
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 1_000), true);
+		} finally {
+			releaseInitialize?.();
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = previousInitialize;
+			(QueryEditorProvider as any).prototype.handleWebviewMessage = previousHandle;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('native close during initial file identity lookup completes close tracking', async () => {
 		const originalRealpath = fs.promises.realpath;
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-native-identity-close-'));
@@ -9104,6 +9196,10 @@ suite('Sidecar .kql.json strategy', () => {
 				const newerProjection = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 				releaseOld();
 				await Promise.all([oldProjection, newerProjection]);
+				await waitForCondition(
+					() => posted.some(message => message?.type === 'documentData' && message.ok === true),
+					`${variant.extension} should publish the newer source after sanitation retires the old request`,
+				);
 
 				const projections = posted.filter(message => message?.type === 'documentData' && message.ok === true);
 				assert.ok(projections.length >= 1);
@@ -9116,7 +9212,7 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
-	test('initial projections retry automatically when source changes during sanitation', async () => {
+	test('initial projections leave a second changed source eligible after automatic recovery', async () => {
 		const originalOnDidChange = vscode.workspace.onDidChangeTextDocument;
 		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
 		const variants = [
@@ -9129,7 +9225,8 @@ suite('Sidecar .kql.json strategy', () => {
 		try {
 			for (const [index, variant] of variants.entries()) {
 				const oldQuery = variant.type === 'sql' ? 'select old' : 'print old = 1';
-				const newQuery = variant.type === 'sql' ? 'select new' : 'print new = 2';
+				const middleQuery = variant.type === 'sql' ? 'select middle' : 'print middle = 2';
+				const finalQuery = variant.type === 'sql' ? 'select final' : 'print final = 3';
 				const wrap = (query: string) => variant.wrapped
 					? JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [
 						{ id: 'query_1', type: variant.type, query },
@@ -9140,12 +9237,27 @@ suite('Sidecar .kql.json strategy', () => {
 				let changeHandler: ((event: vscode.TextDocumentChangeEvent) => unknown) | undefined;
 				let markOldStarted!: () => void;
 				let releaseOld!: () => void;
+				let markMiddleStarted!: () => void;
+				let releaseMiddle!: () => void;
 				const oldStarted = new Promise<void>(resolve => { markOldStarted = resolve; });
 				const oldGate = new Promise<void>(resolve => { releaseOld = resolve; });
-				(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => {
-					if (String(state.sections?.[0]?.query || '') === oldQuery) {
+				const middleStarted = new Promise<void>(resolve => { markMiddleStarted = resolve; });
+				const middleGate = new Promise<void>(resolve => { releaseMiddle = resolve; });
+				(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (
+					state: any,
+					onKustoSanitized?: (before: any, after: any, context: { snapshot: any }) => void,
+				) => {
+					onKustoSanitized?.(state, state, {
+						snapshot: { clusterKeys: [], version: 0, globallyBlocked: false, revocationGenerations: {} },
+					});
+					const query = String(state.sections?.[0]?.query || '');
+					if (query === oldQuery) {
 						markOldStarted();
 						await oldGate;
+					}
+					if (query === middleQuery) {
+						markMiddleStarted();
+						await middleGate;
 					}
 					return state;
 				};
@@ -9183,14 +9295,24 @@ suite('Sidecar .kql.json strategy', () => {
 				assert.ok(changeHandler);
 				const initialRequest = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 				await oldStarted;
-				sourceText = wrap(newQuery);
+				sourceText = wrap(middleQuery);
 				await Promise.resolve(changeHandler!({ document, contentChanges: [{}] } as any));
 				releaseOld();
-				await initialRequest;
+				await middleStarted;
+				sourceText = wrap(finalQuery);
+				await Promise.resolve(changeHandler!({ document, contentChanges: [{}] } as any));
+				const finalCoalescedRequest = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				releaseMiddle();
+				await Promise.all([initialRequest, finalCoalescedRequest]);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				await waitForCondition(
+					() => posted.some(message => message?.type === 'documentData' && message.ok === true),
+					`${variant.extension} should leave the second changed source eligible`,
+				);
 
 				const projections = posted.filter(message => message?.type === 'documentData' && message.ok === true);
 				assert.strictEqual(projections.length, 1, `${variant.extension} should publish exactly one initial projection`);
-				assert.strictEqual(projections[0].state.sections[0].query, newQuery);
+				assert.strictEqual(projections[0].state.sections[0].query, finalQuery);
 			}
 		} finally {
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
@@ -9799,6 +9921,143 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('native conflict exhaustion releases retry lineage and gives changed bytes a fresh projection', async function () {
+		this.timeout(10_000);
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-native-owner-conflict-exhaustion-'));
+		const filePath = path.join(tmpDir, 'owner-conflict.kqlx');
+		const queryText = 'print Value=1';
+		let documentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', query: queryText },
+			] },
+		});
+		const changedQueryText = 'print Value=2';
+		const changedDocumentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', query: changedQueryText },
+			] },
+		});
+		const finalQueryText = 'print Value=3';
+		const finalDocumentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', query: finalQueryText },
+			] },
+		});
+		const registry = new KustoResultPersistenceRegistry();
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let conflictPhase: 'none' | 'exhaust-a' | 'conflict-b-first' | 'drift-b-second' = 'none';
+		let conflictProjectionCount = 0;
+		let bProjectionCount = 0;
+		let publicationSequence = 0;
+		let ownerSession: any;
+		const disposeHandlers: Array<() => void> = [];
+		const posted: any[] = [];
+
+		try {
+			fs.writeFileSync(filePath, documentText, 'utf8');
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				undefined, registry,
+			);
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => documentText, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+			} as any;
+			const terminal = (sequence: number, query = queryText) => ({
+				type: 'queryResult' as const, engine: 'kusto' as const, boxId: 'query_1',
+				sectionInstanceId: 'native-owner-conflict-instance', targetGeneration: 1,
+				executionId: `native-owner-conflict-${sequence}`, connectionId: 'connection-1', database: 'Db',
+				producer: 'manual' as const, query, reservationSequence: sequence,
+				dispatch: {
+					dispatchAttempt: 1, connectionRevision: 1, leaveNoTraceRevision: 0,
+					connectionIdentityKey: 'https://cluster.kusto.windows.net|authority',
+					clusterEndpoint: 'https://cluster.kusto.windows.net', authorityId: 'authority',
+					accountPartition: 'partition-a', authSessionGeneration: 1,
+					clientActivityId: `native-owner-conflict-${sequence}`,
+				},
+				result: { columns: ['Value'], rows: [[sequence]], metadata: {} },
+			});
+			const panel = {
+				webview: {
+					options: {}, postMessage: async (message: any) => {
+						posted.push(message);
+						if (!message?.reloadRequestId) return true;
+						if (conflictPhase !== 'none') {
+							const deliveredConflictPhase = conflictPhase;
+							if (deliveredConflictPhase === 'exhaust-a') conflictProjectionCount++;
+							else bProjectionCount++;
+							if (deliveredConflictPhase !== 'drift-b-second') {
+								publicationSequence++;
+								const next = terminal(
+									publicationSequence,
+									deliveredConflictPhase === 'conflict-b-first' ? changedQueryText : queryText,
+								);
+								assert.strictEqual(ownerSession.beginExecution(next), true);
+								assert.ok(ownerSession.stagePublication(`native-conflict-${publicationSequence}`, next));
+								assert.strictEqual(ownerSession.commitPublication(`native-conflict-${publicationSequence}`), true);
+							}
+							if (deliveredConflictPhase === 'exhaust-a' && conflictProjectionCount === 3) {
+								documentText = changedDocumentText;
+								conflictPhase = 'conflict-b-first';
+							} else if (deliveredConflictPhase === 'conflict-b-first') {
+								conflictPhase = 'drift-b-second';
+							} else if (deliveredConflictPhase === 'drift-b-second') {
+								documentText = finalDocumentText;
+								conflictPhase = 'none';
+							}
+						}
+						await Promise.resolve(receiveHandler?.({
+							type: 'documentReloadResult', requestId: message.reloadRequestId,
+							applied: true, editRevision: Number(message.editRevision || 0),
+						}));
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const owner = registry.get(normalizeWorkbenchUriKey(document.uri));
+			assert.ok(owner);
+			ownerSession = owner!.openPanel('native-owner-conflict-panel');
+			ownerSession.openSection('query_1', 'native-owner-conflict-instance');
+			ownerSession.adoptTarget({
+				boxId: 'query_1', sectionInstanceId: 'native-owner-conflict-instance', targetGeneration: 1,
+				connectionId: 'connection-1', database: 'Db',
+			});
+
+			conflictPhase = 'exhaust-a';
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await waitForCondition(() => posted.some(message => message?.type === 'documentData'
+				&& message?.ok === true && message?.state?.sections?.[0]?.query === changedQueryText),
+			'native source drift should receive one fresh projection budget');
+			await waitForCondition(() => bProjectionCount === 2, 'B should conflict once before its retry drifts to C');
+			await waitForCondition(
+				() => (owner as any).preparedSourceOwnerRevisionByIdentity.size === 0,
+				'exhausted B-to-C drift should release retry lineage',
+			);
+
+			assert.strictEqual(conflictProjectionCount, 3);
+			assert.strictEqual(bProjectionCount, 2);
+			assert.ok(!posted.some(message => message?.type === 'documentData'
+				&& message?.ok === true && message?.state?.sections?.[0]?.query === finalQueryText));
+			assert.strictEqual((owner as any).preparedSourceOwnerRevisionByIdentity.size, 0);
+		} finally {
+			ownerSession?.dispose?.();
+			for (const dispose of disposeHandlers) dispose();
+			await KqlxEditorProvider.waitForOpenEditorsClosed(vscode.Uri.file(filePath), 2_000);
+			registry.dispose();
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('compatibility policy revocation rejects a cold result admission awaiting acknowledgement', async function () {
 		this.timeout(10_000);
 		const prototype = (QueryEditorProvider as any).prototype;
@@ -10349,17 +10608,15 @@ suite('Sidecar .kql.json strategy', () => {
 				let sourceText = wrap(`revision 0`);
 				let receiveHandler: ((message: any) => unknown) | undefined;
 				let changeHandler: ((event: vscode.TextDocumentChangeEvent) => unknown) | undefined;
-				let sanitizeCalls = 0;
-				let churn = true;
-				(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => {
-					sanitizeCalls++;
-					if (churn) {
-						sourceText = wrap(`revision ${sanitizeCalls}`);
-						if (sanitizeCalls === 4) {
-							churn = false;
-							changeHandler?.({ document, contentChanges: [{}] } as any);
-						}
-					}
+				let projectionAttempts = 0;
+				let acceptProjection = false;
+				(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (
+					state: any,
+					onKustoSanitized?: (before: any, after: any, context: { snapshot: any }) => void,
+				) => {
+					onKustoSanitized?.(state, state, {
+						snapshot: { clusterKeys: [], version: 0, globallyBlocked: false, revocationGenerations: {} },
+					});
 					return state;
 				};
 				(vscode.workspace as any).onDidChangeTextDocument = (
@@ -10381,7 +10638,17 @@ suite('Sidecar .kql.json strategy', () => {
 				const posted: any[] = [];
 				const panel = {
 					webview: {
-						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+						options: {}, postMessage: async (message: any) => {
+							posted.push(message);
+							if (message?.type === 'documentData' && message?.ok === true) projectionAttempts++;
+							if (message?.reloadRequestId) {
+								await Promise.resolve(receiveHandler?.({
+									type: 'documentReloadResult', requestId: message.reloadRequestId,
+									applied: acceptProjection, editRevision: 0,
+								}));
+							}
+							return true;
+						},
 						onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
 					},
 					visible: true,
@@ -10394,17 +10661,26 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any;
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				assert.strictEqual(projectionAttempts, 3, `${variant.extension} should exhaust one three-attempt budget`);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				assert.strictEqual(
+					projectionAttempts,
+					3,
+					`${variant.extension} duplicate request must not reset an exhausted source budget`,
+				);
+
+				acceptProjection = true;
+				sourceText = wrap('revision 4');
+				await Promise.resolve(changeHandler?.({ document, contentChanges: [{}] } as any));
 
 				await waitForCondition(
-					() => posted.some(message => message?.type === 'documentData' && message.ok === true),
-					`${variant.extension} should recover from a change during the fourth attempt`,
+					() => [...posted].reverse().some(message => message?.type === 'documentData' && message.ok === true
+						&& message.state?.sections?.[0]?.query === 'revision 4'),
+					`${variant.extension} should recover after a subsequent source edit`,
 				);
-				assert.strictEqual(
-					sanitizeCalls,
-					variant.wrapped ? 6 : 5,
-					`${variant.extension} should use one bounded follow-up projection`,
-				);
-				const projection = posted.find(message => message?.type === 'documentData' && message.ok === true);
+				assert.strictEqual(projectionAttempts, 4, `${variant.extension} should use one fresh recovery attempt`);
+				const projection = [...posted].reverse().find(message => message?.type === 'documentData'
+					&& message.ok === true && message.state?.sections?.[0]?.query === 'revision 4');
 				assert.strictEqual(projection.state.sections[0].query, 'revision 4');
 			}
 		} finally {
@@ -11950,7 +12226,13 @@ suite('Sidecar .kql.json strategy', () => {
 					let release!: () => void;
 					const paused = new Promise<void>(resolve => { markPaused = resolve; });
 					const gate = new Promise<void>(resolve => { release = resolve; });
-					(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => {
+					(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (
+						state: any,
+						onKustoSanitized?: (before: any, after: any, context: { snapshot: any }) => void,
+					) => {
+						onKustoSanitized?.(state, state, {
+							snapshot: { clusterKeys: [], version: 0, globallyBlocked: false, revocationGenerations: {} },
+						});
 						if (JSON.stringify(state).includes('REVISION_ONE')) {
 							revisionOneCalls += 1;
 							if (revisionOneCalls === 2) {

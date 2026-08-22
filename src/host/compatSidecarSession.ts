@@ -5,6 +5,12 @@ export type CompatUpgradeLease = Readonly<{
 	finish: () => void;
 }>;
 
+export type CompatPersistAdmissionLease = Readonly<{
+	waitForTurn: () => Promise<void>;
+	queue: <T>(work: (isCurrent: () => boolean) => Promise<T>) => Promise<T>;
+	settle: () => void;
+}>;
+
 type PendingFinalPersist = {
 	resolve: (value: unknown) => void;
 	reject: (error: Error) => void;
@@ -21,6 +27,10 @@ export class CompatSidecarSession {
 	private draftBaseText: string | undefined;
 	private draftGeneration = 0;
 	private persistSequence = 0;
+	private persistEpoch = 0;
+	private readonly latestPersistSequenceByEpoch = new Map<number, number>();
+	private pendingPersistAdmissionCount = 0;
+	private persistOperationTail: Promise<void> = Promise.resolve();
 	private persistTail: Promise<void> = Promise.resolve();
 	private upgradeTail: Promise<void> = Promise.resolve();
 	private pendingUpgradeCount = 0;
@@ -73,7 +83,8 @@ export class CompatSidecarSession {
 	}
 
 	retirePersists(): void {
-		this.persistSequence += 1;
+		this.persistEpoch += 1;
+		this.latestPersistSequenceByEpoch.clear();
 		this.draftGeneration += 1;
 	}
 
@@ -98,16 +109,46 @@ export class CompatSidecarSession {
 		if (this.dirty && this.draftBaseText === inputText) this.draftBaseText = replacementText;
 	}
 
+	reservePersistAdmission(incomingRevision: number): CompatPersistAdmissionLease {
+		this.pendingPersistAdmissionCount++;
+		const operation = this.reservePersistOperation();
+		const currentness = this.reservePersistCurrentness(incomingRevision);
+		const applicableUpgradeTail = this.upgradeTail;
+		let settled = false;
+		return Object.freeze({
+			waitForTurn: operation.waitForTurn,
+			queue: work => this.queuePersistWithCurrentness(
+				currentness.isCurrent,
+				work,
+				applicableUpgradeTail,
+			),
+			settle: () => {
+				if (settled) return;
+				settled = true;
+				this.pendingPersistAdmissionCount--;
+				currentness.settle();
+				operation.settle();
+			},
+		});
+	}
+
 	queuePersist<T>(
 		incomingRevision: number,
 		work: (isCurrent: () => boolean) => Promise<T>,
 	): Promise<T> {
 		if (this.closing) return Promise.reject(new Error(`The ${this.label} metadata session is closing.`));
-		const sequence = ++this.persistSequence;
-		this.draftGeneration += 1;
+		const currentness = this.reservePersistCurrentness(incomingRevision);
+		const run = this.queuePersistWithCurrentness(currentness.isCurrent, work);
+		void run.then(currentness.settle, currentness.settle);
+		return run;
+	}
+
+	private queuePersistWithCurrentness<T>(
+		isCurrent: () => boolean,
+		work: (isCurrent: () => boolean) => Promise<T>,
+		upgrades = this.upgradeTail,
+	): Promise<T> {
 		const priorPersist = this.persistTail;
-		const upgrades = this.upgradeTail;
-		const isCurrent = () => sequence === this.persistSequence && incomingRevision >= this.editRevision;
 		const run = Promise.all([
 			priorPersist.catch(() => undefined),
 			upgrades.catch(() => undefined),
@@ -118,32 +159,107 @@ export class CompatSidecarSession {
 
 	enqueueAfterPersists<T>(work: () => Promise<T>): Promise<T> {
 		if (this.closing) return Promise.reject(new Error(`The ${this.label} metadata session is closing.`));
-		const run = this.persistTail.catch(() => undefined).then(work);
+		this.persistEpoch += 1;
+		if (this.pendingPersistAdmissionCount === 0 && this.pendingUpgradeCount === 0) {
+			return this.enqueueAfterPersistTail(work);
+		}
+		const operation = this.reservePersistOperation();
+		const applicablePersistTail = this.persistTail;
+		const applicableUpgradeTail = this.upgradeTail;
+		return (async () => {
+			try {
+				await operation.waitForTurn();
+				if (this.closing) throw new Error(`The ${this.label} metadata session is closing.`);
+				return await this.enqueueAfterPersistTail(
+					work,
+					applicablePersistTail,
+					applicableUpgradeTail,
+				);
+			} finally {
+				operation.settle();
+			}
+		})();
+	}
+
+	private enqueueAfterPersistTail<T>(
+		work: () => Promise<T>,
+		persists = this.persistTail,
+		upgrades = this.upgradeTail,
+	): Promise<T> {
+		const run = Promise.all([
+			persists.catch(() => undefined),
+			upgrades.catch(() => undefined),
+		]).then(work);
 		this.persistTail = run.then(() => undefined, () => undefined);
 		return run;
 	}
 
 	async waitForPersists(): Promise<void> {
 		for (;;) {
+			const operations = this.persistOperationTail;
 			const persists = this.persistTail;
 			const upgrades = this.upgradeTail;
 			await Promise.all([
+				operations,
 				persists,
 				upgrades.catch(() => undefined),
 			]);
-			if (persists === this.persistTail && upgrades === this.upgradeTail) return;
+			if (operations === this.persistOperationTail
+				&& persists === this.persistTail
+				&& upgrades === this.upgradeTail) return;
 		}
+	}
+
+	private reservePersistOperation(): Readonly<{ waitForTurn: () => Promise<void>; settle: () => void }> {
+		const priorOperation = this.persistOperationTail;
+		let settleOperation!: () => void;
+		const operationDone = new Promise<void>(resolve => { settleOperation = resolve; });
+		this.persistOperationTail = priorOperation.catch(() => undefined).then(() => operationDone);
+		let settled = false;
+		return Object.freeze({
+			waitForTurn: () => priorOperation.catch(() => undefined),
+			settle: () => {
+				if (settled) return;
+				settled = true;
+				settleOperation();
+			},
+		});
+	}
+
+	private reservePersistCurrentness(incomingRevision: number): Readonly<{
+		isCurrent: () => boolean;
+		settle: () => void;
+	}> {
+		const epoch = this.persistEpoch;
+		const sequence = ++this.persistSequence;
+		this.latestPersistSequenceByEpoch.set(epoch, sequence);
+		this.draftGeneration += 1;
+		let settled = false;
+		return Object.freeze({
+			isCurrent: () => this.latestPersistSequenceByEpoch.get(epoch) === sequence
+				&& incomingRevision >= this.editRevision,
+			settle: () => {
+				if (settled) return;
+				settled = true;
+				if (this.latestPersistSequenceByEpoch.get(epoch) === sequence) {
+					this.latestPersistSequenceByEpoch.delete(epoch);
+				}
+			},
+		});
 	}
 
 	async beginUpgrade(revision: number): Promise<CompatUpgradeLease | undefined> {
 		if (this.closing) return undefined;
+		this.persistEpoch += 1;
 		this.pendingUpgradeCount += 1;
+		const priorOperations = this.persistOperationTail;
 		const priorPersist = this.persistTail;
 		const priorUpgrade = this.upgradeTail;
 		let release!: () => void;
 		const leaseDone = new Promise<void>(resolve => { release = resolve; });
 		this.upgradeTail = priorUpgrade.catch(() => undefined).then(() => leaseDone);
 		await Promise.all([
+			priorOperations.catch(() => undefined),
 			priorUpgrade.catch(() => undefined),
 			priorPersist.catch(() => undefined),
 		]);

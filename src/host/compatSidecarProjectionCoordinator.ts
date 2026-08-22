@@ -79,7 +79,7 @@ type ProjectionIdentity = Readonly<{
 	expectedEditRevision?: number;
 }>;
 
-const DEFAULT_INITIAL_PROJECTION_MAX_ATTEMPTS = 4;
+const DEFAULT_INITIAL_PROJECTION_MAX_ATTEMPTS = 3;
 const SOURCE_ROLLBACK_MAX_ATTEMPTS = 3;
 
 export class CompatSidecarProjectionCoordinator implements CompatSidecarProjectionCoordinatorContract {
@@ -92,6 +92,8 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 	private acknowledgedProjectionGeneration: number | undefined;
 	private initialized = false;
 	private initialProjectionRecovery: Promise<boolean> | undefined;
+	private initialProjectionRecoverySourceText: string | undefined;
+	private initialProjectionExhaustedSourceText: string | undefined;
 	private initialProjectionRestartRequested = false;
 	private sourceReloadEpoch = 0;
 	private sourceReloadAuthority: Readonly<{ epoch: number; text: string }> | undefined;
@@ -323,32 +325,63 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 	private ensureInitialProjectionRun(requestId: string | undefined, allowFollowUp: boolean): Promise<boolean> {
 		if (this.initialized) return Promise.resolve(true);
 		if (this.initialProjectionRecovery) {
-			this.initialProjectionRestartRequested = true;
+			const sourceText = this.readSourceTextSafely();
+			if (sourceText !== undefined && this.initialProjectionRecoverySourceText !== undefined
+				&& sourceText !== this.initialProjectionRecoverySourceText) {
+				this.initialProjectionRestartRequested = true;
+			}
 			return this.initialProjectionRecovery;
 		}
-		const run = this.postInitialProjection(requestId).then(delivered => {
-			if (delivered) this.initialized = true;
+		const sourceText = this.readSourceTextSafely();
+		if (sourceText === undefined) return Promise.resolve(false);
+		if (this.initialProjectionExhaustedSourceText !== undefined
+			&& sourceText === this.initialProjectionExhaustedSourceText) {
+			return Promise.resolve(false);
+		}
+		this.initialProjectionRecoverySourceText = sourceText;
+		const run = this.postInitialProjection(sourceText, requestId).then(delivered => {
+			if (delivered) {
+				this.initialized = true;
+				this.initialProjectionExhaustedSourceText = undefined;
+			}
 			return delivered;
 		});
 		this.initialProjectionRecovery = run;
 		const settle = () => {
 			if (this.initialProjectionRecovery !== run) return;
+			const settledSourceText = this.readSourceTextSafely() ?? sourceText;
 			this.initialProjectionRecovery = undefined;
+			this.initialProjectionRecoverySourceText = undefined;
 			const restart = !this.initialized
 				&& this.initialProjectionRestartRequested
+				&& sourceText !== settledSourceText
 				&& allowFollowUp
 				&& !this.options.isDisposed();
 			this.initialProjectionRestartRequested = false;
-			if (restart) void this.ensureInitialProjectionRun(undefined, false).catch(() => undefined);
+			if (!this.initialized) this.initialProjectionExhaustedSourceText = sourceText;
+			if (restart) {
+				this.initialProjectionExhaustedSourceText = undefined;
+				void this.ensureInitialProjectionRun(undefined, false).catch(() => undefined);
+			}
 		};
 		void run.then(settle, settle);
 		return run;
 	}
 
-	private async postInitialProjection(requestId?: string): Promise<boolean> {
+	private readSourceTextSafely(): string | undefined {
+		try {
+			return this.options.readSourceText();
+		} catch {
+			return undefined;
+		}
+	}
+
+	private async postInitialProjection(sourceText: string, requestId?: string): Promise<boolean> {
 		for (let attempt = 0;
 			attempt < this.initialProjectionMaxAttempts && !this.options.isDisposed();
 			attempt++) {
+			const currentSourceText = this.readSourceTextSafely();
+			if (currentSourceText === undefined || sourceText !== currentSourceText) return false;
 			if (await this.project({ forceReload: true, requestId, retirePersists: true })) return true;
 		}
 		return false;

@@ -24,7 +24,11 @@ import { getKustoConnectionIdentityKey, normalizeKustoAuthorityId } from '../sha
 import { getWorkbenchLogger } from './workbenchLogger';
 import { createFileOpenTrace } from './fileOpenTrace';
 import { kustoLeaveNoTracePolicyFingerprint } from './kustoLeaveNoTracePolicyStore';
-import { isMainWebviewCorrelatedReply, MainWebviewStartupGateway } from './mainWebviewStartupGateway';
+import {
+	isMainWebviewCorrelatedReply,
+	MainWebviewStartupGateway,
+	waitForRetainedStartupInitialization,
+} from './mainWebviewStartupGateway';
 import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
 import { CompatSidecarSession } from './compatSidecarSession';
 import { publishOwnedFileText } from './ownedFilePublication';
@@ -1211,6 +1215,12 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const isSessionCloseCriticalMessage = (message: IncomingWebviewMessage): boolean =>
 			delayedBeforeUnloadAdmissionOpen && !closeFinalizationAbandoned
 			&& isSessionCloseCriticalShape(message);
+		let retainedCloseTrafficObserved = false;
+		const allowRetiredInbound = (message: IncomingWebviewMessage): boolean => {
+			const allowed = isSessionCloseCriticalMessage(message);
+			if (allowed) retainedCloseTrafficObserved = true;
+			return allowed;
+		};
 		const isPendingFinalPersistReply = (message: IncomingWebviewMessage): boolean =>
 			message.type === 'persistDocument'
 			&& finalPersistSession.hasPendingFinalPersistRequest(String((message as any).flushRequestId || ''));
@@ -1257,7 +1267,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			const message = input as Record<string, unknown>;
 			if (typeof message.type !== 'string') return undefined;
 			const admitted = message as IncomingWebviewMessage;
-			if (outerDisposed && !isSessionCloseCriticalMessage(admitted)) return undefined;
+			if (outerDisposed && !allowRetiredInbound(admitted)) return undefined;
 			return admitted;
 		};
 		const prepareOutgoingWebviewMessage = (message: unknown): unknown | undefined => {
@@ -1275,7 +1285,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			admitInbound: admitIncomingWebviewMessage,
 			prepareOutbound: prepareOutgoingWebviewMessage,
 			allowReentrantInbound: message => isMainWebviewCorrelatedReply(message) || isPendingFinalPersistReply(message),
-			allowRetiredInbound: isSessionCloseCriticalMessage,
+			allowRetiredInbound,
 			trace: (event, message, queuedCount) => {
 				if (event === 'received') {
 					fileOpenTrace.mark('webview.message.received', {
@@ -1444,10 +1454,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				() => ({ kind: 'initialized' as const }),
 				error => ({ kind: 'error' as const, error }),
 			);
-		const initializationOutcome = await Promise.race([
+		let initializationOutcome = await Promise.race([
 			initialization,
 			outerDisposalSignal.then(() => ({ kind: 'disposed' as const })),
 		]);
+		if (initializationOutcome.kind === 'disposed' && retainedCloseTrafficObserved) {
+			const retainedInitialization = await waitForRetainedStartupInitialization(initialization);
+			if (retainedInitialization.settled) initializationOutcome = retainedInitialization.value;
+		}
 		if (initializationOutcome.kind === 'disposed') {
 			try { queryEditor.disposePanel(webviewPanel); } catch { /* continue startup cleanup */ }
 			kustoResultPanelSession.dispose();
@@ -1467,7 +1481,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			openEditorRegistration.dispose();
 			throw initializationOutcome.error;
 		}
-		if (outerDisposed && !isSessionFile) {
+		if (outerDisposed && !isSessionFile && !retainedCloseTrafficObserved) {
 			kustoResultPanelSession.dispose();
 			kustoResultLease.release();
 			documentViewSessionActive = false;
@@ -3328,6 +3342,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			retryBudget: KqlxProjectionAttemptBudget;
 			requestId?: string;
 			policyFingerprint?: string;
+			sourceChangeFollowUpAvailable: boolean;
 			kustoSourceAdmission?: KustoCanonicalSourceAdmission<KqlxStateV1>;
 		}>();
 		let projectionActivationTail: Promise<void> = Promise.resolve();
@@ -3346,11 +3361,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			retryBudget = createKqlxProjectionAttemptBudget(),
 			requestId?: string,
 			policyFingerprint?: string,
+			sourceChangeFollowUpAvailable = true,
 		) => {
 			const reload = projectionSession.createReloadRequest();
 			const activation = {
 				generation, sourceText, owner, authorityToken, authorityEpoch,
-				retryBudget, requestId, policyFingerprint, kustoSourceAdmission,
+				retryBudget, requestId, policyFingerprint, sourceChangeFollowUpAvailable,
+				kustoSourceAdmission,
 			};
 			pendingProjectionActivations.set(reload.requestId, activation);
 			void reload.result.then(applied => {
@@ -3365,9 +3382,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			forceReload?: boolean;
 			retryBudget?: KqlxProjectionAttemptBudget;
 			requestId?: string;
+			sourceChangeFollowUpAvailable?: boolean;
 		}): Promise<boolean> => {
 			if (outerDisposed) return false;
 			const retryBudget = options?.retryBudget ?? createKqlxProjectionAttemptBudget();
+			const sourceChangeFollowUpAvailable = options?.sourceChangeFollowUpAvailable ?? true;
 			if (!consumeKqlxProjectionAttempt(retryBudget)) return false;
 			const generation = ++postDocumentGeneration;
 			const sourceObservation = ++panelSourceObservationSequence;
@@ -3396,7 +3415,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (!parsed.ok) {
 				const reload = createProjectionReload(
 					generation, rawText, undefined, authorityToken, authorityEpoch,
-					undefined, retryBudget,
+					undefined, retryBudget, undefined, undefined, sourceChangeFollowUpAvailable,
 				);
 				const delivered = await deliverWebviewMessage({
 					type: 'documentData',
@@ -3429,6 +3448,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						forceReload: true,
 						retryBudget,
 						requestId: options?.requestId,
+						sourceChangeFollowUpAvailable,
 					});
 				}
 				return accepted;
@@ -3444,7 +3464,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				linkedQueryPhysicalIdentity = undefined;
 				const reload = createProjectionReload(
 					generation, rawText, undefined, authorityToken, authorityEpoch,
-					undefined, retryBudget,
+					undefined, retryBudget, undefined, undefined, sourceChangeFollowUpAvailable,
 				);
 				const delivered = await deliverWebviewMessage({
 					type: 'documentData', ok: false, forceReload, sourceGeneration: generation,
@@ -3471,6 +3491,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						forceReload: true,
 						retryBudget,
 						requestId: options?.requestId,
+						sourceChangeFollowUpAvailable,
 					});
 				}
 				return accepted;
@@ -3521,6 +3542,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					retryBudget,
 					options?.requestId,
 					finalSanitation.policyFingerprint,
+					sourceChangeFollowUpAvailable,
 				);
 			} catch (error) {
 				kustoSourceAdmission.discard();
@@ -3599,6 +3621,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					forceReload: true,
 					retryBudget,
 					requestId: options?.requestId,
+					sourceChangeFollowUpAvailable,
 				});
 			}
 			return accepted;
@@ -4158,10 +4181,15 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		// This helps us avoid refreshing the webview for changes that originated from the webview itself.
 		let webviewInitialized = false;
 		let initialProjectionRecovery: Promise<boolean> | undefined;
+		let initialProjectionRecoverySourceText: string | undefined;
+		let initialProjectionExhaustedSourceText: string | undefined;
 		let initialProjectionRestartRequested = false;
-		let initialProjectionRetryBudget: KqlxProjectionAttemptBudget | undefined;
-		const postInitialDocument = async (retryBudget: KqlxProjectionAttemptBudget): Promise<boolean> => {
+		const postInitialDocument = async (
+			retryBudget: KqlxProjectionAttemptBudget,
+			sourceText: string,
+		): Promise<boolean> => {
 			for (let attempt = 0; attempt < INITIAL_PROJECTION_MAX_ATTEMPTS && !outerDisposed; attempt++) {
+				if (await readProjectionSourceText() !== sourceText) return false;
 				const delivered = await postDocument({ forceReload: attempt > 0, retryBudget });
 				if (delivered) return true;
 				if (retryBudget.remainingAttempts <= 0) break;
@@ -4170,25 +4198,49 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 		const ensureInitialDocument = (allowFollowUp = true): Promise<boolean> => {
 			if (webviewInitialized) return Promise.resolve(true);
-			if (initialProjectionRecovery) {
-				initialProjectionRestartRequested = true;
-				return initialProjectionRecovery;
-			}
-			const retryBudget = initialProjectionRetryBudget ?? createKqlxProjectionAttemptBudget();
-			initialProjectionRetryBudget = retryBudget;
-			const run = postInitialDocument(retryBudget).then(delivered => {
-				if (delivered) webviewInitialized = true;
+			if (initialProjectionRecovery) return initialProjectionRecovery;
+			const run = (async () => {
+				const sourceText = await readProjectionSourceText();
+				if (initialProjectionExhaustedSourceText !== undefined
+					&& sourceText === initialProjectionExhaustedSourceText) return false;
+				initialProjectionRecoverySourceText = sourceText;
+				const delivered = await postInitialDocument(createKqlxProjectionAttemptBudget(), sourceText);
+				if (delivered) {
+					webviewInitialized = true;
+					initialProjectionExhaustedSourceText = undefined;
+				}
 				return delivered;
-			});
+			})();
 			initialProjectionRecovery = run;
-			const settleInitialProjection = () => {
+			const settleInitialProjection = async () => {
+				if (initialProjectionRecovery !== run) return;
+				let settledSourceText = initialProjectionRecoverySourceText;
+				try {
+					settledSourceText = await readProjectionSourceText();
+				} catch {
+					// Keep the source captured when this bounded run began.
+				}
 				initialProjectionRecovery = undefined;
-				const restart = !webviewInitialized && initialProjectionRestartRequested && allowFollowUp && !outerDisposed;
+				const recoverySourceText = initialProjectionRecoverySourceText;
+				initialProjectionRecoverySourceText = undefined;
+				const restart = !webviewInitialized
+					&& initialProjectionRestartRequested
+					&& recoverySourceText !== undefined
+					&& settledSourceText !== undefined
+					&& recoverySourceText !== settledSourceText
+					&& allowFollowUp
+					&& !outerDisposed;
 				initialProjectionRestartRequested = false;
-				if (restart && retryBudget.remainingAttempts > 0) void ensureInitialDocument(false);
-				else initialProjectionRetryBudget = undefined;
+				if (!webviewInitialized) initialProjectionExhaustedSourceText = recoverySourceText;
+				if (restart) {
+					initialProjectionExhaustedSourceText = undefined;
+					void ensureInitialDocument(false);
+				}
 			};
-			void run.then(settleInitialProjection, settleInitialProjection);
+			void run.then(
+				() => settleInitialProjection(),
+				() => settleInitialProjection(),
+			);
 			return initialProjectionRecovery;
 		};
 
@@ -4210,7 +4262,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const matchesLocalOwnedMutation = ownedDocumentEdits.observe(currentText);
 					const matchesOwnedDocumentEdit = matchesSharedOwnedMutation || matchesLocalOwnedMutation;
 					if (!webviewInitialized && e.contentChanges.length > 0) {
-						if (initialProjectionRecovery) initialProjectionRestartRequested = true;
+						if (initialProjectionRecovery) {
+							initialProjectionRestartRequested = initialProjectionRecoverySourceText !== currentText;
+						}
 						else void ensureInitialDocument();
 						return;
 					}
@@ -4387,15 +4441,28 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								&& activation.generation === postDocumentGeneration
 								&& markdownDocumentQueue.latestAuthority?.token === activation.authorityToken
 								&& pendingProjectionActivations.get(requestId) === activation
-								&& projectionSession.hasPendingReloadRequest(requestId)
-								&& await isProjectionSourceCurrent(activation.sourceText);
+								&& projectionSession.hasPendingReloadRequest(requestId);
+							let retrySourceCurrent = false;
+							if (retryEligible) {
+								try {
+									retrySourceCurrent = await isProjectionSourceCurrent(activation.sourceText);
+								} catch {
+									retrySourceCurrent = false;
+								}
+							}
+							if (!accepted && activation.kustoSourceAdmission && !ownerCommitConflict) {
+								activation.kustoSourceAdmission.discard();
+							}
 							const completed = projectionSession.completeReload(
 								requestId,
 								accepted,
 								Number((message as any).editRevision),
 							);
 							pendingProjectionActivations.delete(requestId);
-							if (!completed) return;
+							if (!completed) {
+								if (ownerCommitConflict) activation.kustoSourceAdmission?.abandonRetry();
+								return;
+							}
 							if ((message as any).markdownCommandBarrierSupported === true) {
 								markdownCommandBarrierSupported = true;
 							}
@@ -4405,8 +4472,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 									void repairPersistedSqlState().catch(() => undefined);
 								}
 							} else if (retryEligible) {
-								if (ownerCommitConflict && activation.kustoSourceAdmission) {
-									if (activation.retryBudget.remainingAttempts > 0) {
+								if (ownerCommitConflict && activation.kustoSourceAdmission
+									&& retrySourceCurrent && activation.retryBudget.remainingAttempts > 0) {
 										let settleRecovery!: (accepted: boolean) => void;
 										const recovery = {
 											originGeneration: activation.generation,
@@ -4418,29 +4485,35 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 												forceReload: true,
 												retryBudget: activation.retryBudget,
 												requestId: activation.requestId,
+												sourceChangeFollowUpAvailable: activation.sourceChangeFollowUpAvailable,
 											});
-											void retry.then(async acceptedRetry => {
-												if (acceptedRetry || outerDisposed
-													|| !await isProjectionSourceCurrent(activation.sourceText)) {
-													activation.kustoSourceAdmission?.abandonRetry();
-												}
+											const settleRetry = (acceptedRetry: boolean) => {
+												activation.kustoSourceAdmission?.abandonRetry();
 												settleRecovery(acceptedRetry);
-											}, () => {
-												if (outerDisposed) activation.kustoSourceAdmission?.abandonRetry();
-												settleRecovery(false);
-											});
+											};
+											void retry.then(settleRetry, () => { settleRetry(false); });
 											void recovery.promise.finally(() => {
 												if (pendingProjectionRecovery === recovery) pendingProjectionRecovery = undefined;
 											});
 										};
-									} else if (outerDisposed
-										|| !await isProjectionSourceCurrent(activation.sourceText)) {
-										activation.kustoSourceAdmission.abandonRetry();
-									}
 								} else {
-									retryAfterActivation = () => {
-										void postDocument({ forceReload: true, retryBudget: activation.retryBudget });
-									};
+									if (ownerCommitConflict) activation.kustoSourceAdmission?.abandonRetry();
+									const retryOptions = retrySourceCurrent
+										? (activation.retryBudget.remainingAttempts > 0 ? {
+											forceReload: true,
+											retryBudget: activation.retryBudget,
+											sourceChangeFollowUpAvailable: activation.sourceChangeFollowUpAvailable,
+										} : undefined)
+										: (activation.sourceChangeFollowUpAvailable ? {
+											forceReload: true,
+											retryBudget: createKqlxProjectionAttemptBudget(),
+											sourceChangeFollowUpAvailable: false,
+										} : undefined);
+									if (retryOptions) {
+										retryAfterActivation = () => {
+											void postDocument(retryOptions).catch(() => undefined);
+										};
+									}
 								}
 							} else if (ownerCommitConflict && activation.kustoSourceAdmission) {
 								activation.kustoSourceAdmission.abandonRetry();

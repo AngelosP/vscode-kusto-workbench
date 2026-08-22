@@ -7,6 +7,7 @@ import {
 	isMainWebviewCorrelatedReply,
 	MAIN_WEBVIEW_DISPATCHER_READY_TYPE,
 	MainWebviewStartupGateway,
+	waitForRetainedStartupInitialization,
 } from '../../../src/host/mainWebviewStartupGateway';
 import {
 	admitDevelopmentNoteMutationWebviewMessage,
@@ -62,6 +63,29 @@ function admitTestMessage(input: unknown): TestMessage | undefined {
 }
 
 describe('MainWebviewStartupGateway', () => {
+	it('settles retained startup on completion or a bounded timeout', async () => {
+		vi.useFakeTimers();
+		try {
+			const completed = Promise.withResolvers<string>();
+			const completion = waitForRetainedStartupInitialization(completed.promise, 2_000);
+			completed.resolve('ready');
+			await expect(completion).resolves.toEqual({ settled: true, value: 'ready' });
+			expect(vi.getTimerCount()).toBe(0);
+
+			const pending = new Promise<string>(() => undefined);
+			const timeout = waitForRetainedStartupInitialization(pending, 2_000);
+			await vi.advanceTimersByTimeAsync(1_999);
+			let timedOut = false;
+			void timeout.then(() => { timedOut = true; });
+			await Promise.resolve();
+			expect(timedOut).toBe(false);
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(timeout).resolves.toEqual({ settled: false });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('recognizes every identity-shaped waiter reply and all SQL comparison phases', () => {
 		const replies: TestMessage[] = [
 			{

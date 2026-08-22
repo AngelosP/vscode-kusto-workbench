@@ -13,7 +13,11 @@ import { normalizeSection, computeChangedSections, formatSectionDiffContent, Kql
 import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTypes';
 import { getWorkbenchLogger } from './workbenchLogger';
 import { createFileOpenTrace } from './fileOpenTrace';
-import { isMainWebviewCorrelatedReply, MainWebviewStartupGateway } from './mainWebviewStartupGateway';
+import {
+	isMainWebviewCorrelatedReply,
+	MainWebviewStartupGateway,
+	waitForRetainedStartupInitialization,
+} from './mainWebviewStartupGateway';
 import { addableSectionKindsForDocument, canonicalAddableSectionKind, defaultSectionKindForDocument } from '../shared/documentSectionCapabilities';
 import {
 	COMPATIBILITY_PERSISTENCE_CHANNEL,
@@ -193,6 +197,12 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		});
 		const sidecarSession = new CompatSidecarSession(webviewPanel.visible === true, 'SQL');
 		const closeCoordinator = this.closeCoordinatorFactory({ session: sidecarSession });
+		let retainedCloseTrafficObserved = false;
+		const allowRetiredInbound = (message: unknown): boolean => {
+			const allowed = closeCoordinator.allowRetiredInbound(message);
+			if (allowed) retainedCloseTrafficObserved = true;
+			return allowed;
+		};
 		const startupGateway = new MainWebviewStartupGateway<IncomingWebviewMessage>({
 			panel: webviewPanel,
 			admitInbound: input => {
@@ -218,7 +228,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				return parsed.value;
 			},
 			allowReentrantInbound: message => isMainWebviewCorrelatedReply(message) || closeCoordinator.isPendingFinalPersistReply(message),
-			allowRetiredInbound: message => closeCoordinator.allowRetiredInbound(message),
+			allowRetiredInbound,
 			trace: (event, message, queuedCount) => {
 				if (event === 'received') {
 					fileOpenTrace.mark('webview.message.received', {
@@ -252,10 +262,14 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			() => ({ kind: 'initialized' as const }),
 			error => ({ kind: 'error' as const, error }),
 		);
-		const initializationOutcome = await Promise.race([
+		let initializationOutcome = await Promise.race([
 			initialization,
 			outerDisposalSignal.then(() => ({ kind: 'disposed' as const })),
 		]);
+		if (initializationOutcome.kind === 'disposed' && retainedCloseTrafficObserved) {
+			const retainedInitialization = await waitForRetainedStartupInitialization(initialization);
+			if (retainedInitialization.settled) initializationOutcome = retainedInitialization.value;
+		}
 		if (initializationOutcome.kind === 'disposed') {
 			try { queryEditor.disposePanel(webviewPanel); } catch { /* continue compatibility cleanup */ }
 			await closeCoordinator.failInitialization({ gateway: startupGateway, subscriptions });
@@ -947,8 +961,8 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			}
 		};
 
-		await startupGateway.setInboundHandler(handleIncomingWebviewMessage);
 		closeCoordinator.configure(closeFinalization);
+		await startupGateway.setInboundHandler(handleIncomingWebviewMessage);
 		} catch (error) {
 			try { queryEditor.disposePanel(webviewPanel); } catch { /* continue compatibility cleanup */ }
 			await closeCoordinator.failInitialization({

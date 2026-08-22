@@ -31,6 +31,8 @@ type HarnessBehavior = {
 	retireDuringApply: boolean;
 	rollbackResult: boolean;
 	rollbackRestoresSource: boolean;
+	sourceReadFailureAt?: number;
+	sourceTextOnReadFailure?: string;
 	live: boolean;
 	ackMode: AckMode;
 };
@@ -81,7 +83,10 @@ function fileFor(state: KqlxStateV1): KqlxFileV1 {
 	return { kind: 'kqlx', version: 1, state };
 }
 
-function createHarness(options: Partial<HarnessBehavior & { sourceText: string }> = {}) {
+function createHarness(options: Partial<HarnessBehavior & {
+	sourceText: string;
+	languageLabel: 'KQL' | 'SQL';
+}> = {}) {
 	const calls: string[] = [];
 	const acknowledgements: Array<Readonly<{ snapshotId: string; editRevision: number }>> = [];
 	const behavior: HarnessBehavior = {
@@ -98,6 +103,7 @@ function createHarness(options: Partial<HarnessBehavior & { sourceText: string }
 		...options,
 	};
 	let sourceText = options.sourceText ?? 'CURRENT';
+	let sourceReadCalls = 0;
 	let validationCalls = 0;
 	let knownState: KqlxStateV1 | undefined;
 	let materializedSidecar: KqlxFileV1 | undefined;
@@ -148,7 +154,7 @@ function createHarness(options: Partial<HarnessBehavior & { sourceText: string }
 	const coordinator = new CompatSidecarPersistCoordinator({
 		session,
 		projection,
-		languageLabel: 'KQL',
+		languageLabel: options.languageLabel ?? 'KQL',
 		getLoadError: () => behavior.loadError,
 		allowMissingSourceGeneration: false,
 		allowTestOnlyNoop: true,
@@ -194,7 +200,16 @@ function createHarness(options: Partial<HarnessBehavior & { sourceText: string }
 			serializeMaterialized: file => JSON.stringify(file),
 			getLastWrittenMaterializedText: () => 'BASELINE',
 			getPrimaryText: state => String((state.sections[0] as { query?: unknown } | undefined)?.query ?? ''),
-			readSourceText: () => sourceText,
+			readSourceText: () => {
+				sourceReadCalls++;
+				if (behavior.sourceReadFailureAt === sourceReadCalls) {
+					if (behavior.sourceTextOnReadFailure !== undefined) {
+						sourceText = behavior.sourceTextOnReadFailure;
+					}
+					throw new Error(`source read ${sourceReadCalls} failed`);
+				}
+				return sourceText;
+			},
 			applySourceText: async text => {
 				calls.push(`apply-source:${text}`);
 				if (behavior.applyResult && behavior.applyMutatesSource) sourceText = text;
@@ -441,6 +456,52 @@ describe('CompatSidecarPersistCoordinator', () => {
 		expect(drifted.acknowledgements).toEqual([]);
 	});
 
+	it.each(['KQL', 'SQL'] as const)('fails closed on %s source reads before and after writing', async languageLabel => {
+		const beforeWrite = createHarness({
+			languageLabel,
+			sourceText: 'CURRENT',
+			sourceReadFailureAt: 1,
+		});
+		const beforeResult = await beforeWrite.coordinator.persist(snapshot('NEXT'));
+		expect(beforeResult.terminal).toBe('failed');
+		expect(beforeResult.error?.message).toContain(`Failed to read the ${languageLabel} source`);
+		expect(beforeWrite.getSourceText()).toBe('CURRENT');
+		expect(beforeWrite.calls.some(call => call.startsWith('apply-source:'))).toBe(false);
+		expect(beforeWrite.getKnownState()).toBeUndefined();
+		expect(beforeWrite.acknowledgements).toEqual([]);
+
+		const afterWrite = createHarness({
+			languageLabel,
+			sourceText: 'CURRENT',
+			sourceReadFailureAt: 2,
+		});
+		const afterResult = await afterWrite.coordinator.persist(snapshot('NEXT'));
+		expect(afterResult.terminal).toBe('failed');
+		expect(afterResult.error?.message).toContain('was restored');
+		expect(afterWrite.calls).toContain('apply-source:NEXT');
+		expect(afterWrite.calls).toContain('apply-source:CURRENT');
+		expect(afterWrite.calls).toContain('request-source-reload');
+		expect(afterWrite.getSourceText()).toBe('CURRENT');
+		expect(afterWrite.getKnownState()).toBeUndefined();
+		expect(afterWrite.acknowledgements).toEqual([]);
+
+		const replacedAfterWrite = createHarness({
+			languageLabel,
+			sourceText: 'CURRENT',
+			sourceReadFailureAt: 2,
+			sourceTextOnReadFailure: 'NEWER',
+		});
+		const replacedResult = await replacedAfterWrite.coordinator.persist(snapshot('NEXT'));
+		expect(replacedResult.terminal).toBe('rollback-failed');
+		expect(replacedResult.error?.message).toContain('no longer owns the document');
+		expect(replacedAfterWrite.calls).toContain('apply-source:NEXT');
+		expect(replacedAfterWrite.calls).not.toContain('apply-source:CURRENT');
+		expect(replacedAfterWrite.calls).toContain('request-source-reload');
+		expect(replacedAfterWrite.getSourceText()).toBe('NEWER');
+		expect(replacedAfterWrite.getKnownState()).toBeUndefined();
+		expect(replacedAfterWrite.acknowledgements).toEqual([]);
+	});
+
 	it.each([
 		{ rollbackResult: true, rollbackRestoresSource: true, terminal: 'superseded', expectedSource: 'AUTHORITATIVE' },
 		{ rollbackResult: false, rollbackRestoresSource: false, terminal: 'rollback-failed', expectedSource: 'NEW' },
@@ -544,7 +605,8 @@ describe('CompatSidecarPersistCoordinator', () => {
 		const coordinatorSource = fs.readFileSync(path.join(
 			process.cwd(), 'src', 'host', 'compatSidecarPersistCoordinator.ts',
 		), 'utf8');
-		expect(coordinatorSource).toContain('session.queuePersist');
+		expect(coordinatorSource).toContain('session.reservePersistAdmission');
+		expect(coordinatorSource).toContain('persistAdmission.queue');
 		expect(coordinatorSource).toContain('projection.admitPersist');
 		expect(coordinatorSource).toContain('projection.rollbackSupersededSourceEdit');
 		expect(coordinatorSource).toContain("type: 'persistDocumentAck'");

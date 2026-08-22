@@ -100,6 +100,9 @@ suite('KQL compat editor - inferred cluster/db wiring', () => {
 				{
 					getConnections: () => [],
 					onDidChangeConnections: changeEmitter.event,
+					runWithLeaveNoTraceSnapshotLock: async (run: (snapshot: unknown) => unknown) => await run({
+						clusterKeys: [], version: 0, globallyBlocked: false, revocationGenerations: {},
+					}),
 				} as any,
 				sqlWorkbench
 			) as KqlCompatEditorProvider;

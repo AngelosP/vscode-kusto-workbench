@@ -379,7 +379,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kustoSectionExecutionApplicationHandler.ts::claimKustoExecutionInWebview::postMessage::579:27',
 	'src/host/kustoSectionExecutionApplicationHandler.ts::handleMessage::postMessage::140:27',
 	'src/host/kustoSectionExecutionApplicationHandler.ts::postBeforeDeadline::postMessage::257:17',
-	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::424:33',
+	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::446:33',
 	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::93:10',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::448:27',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::580:28',

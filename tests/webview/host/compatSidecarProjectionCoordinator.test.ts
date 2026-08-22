@@ -488,13 +488,14 @@ describe('CompatSidecarProjectionCoordinator', () => {
 		expect(coordinator.completeReload({ requestId: reloadRequestId, applied: true, editRevision: 1 })).toBe(false);
 	});
 
-	it('bounds and coalesces initial recovery with one requested follow-up', async () => {
+	it('bounds initial recovery per source and resets only after source changes', async () => {
 		const session = new CompatSidecarSession(true, 'KQL');
+		let sourceText = 'A';
 		let attempts = 0;
 		const firstAttempt = Promise.withResolvers<void>();
 		const coordinator = new CompatSidecarProjectionCoordinator({
 			session,
-			readSourceText: () => 'source',
+			readSourceText: () => sourceText,
 			isDisposed: () => false,
 			initialProjectionMaxAttempts: 2,
 			postProjection: async () => {
@@ -506,12 +507,83 @@ describe('CompatSidecarProjectionCoordinator', () => {
 
 		const first = coordinator.ensureInitialProjection('initial-request');
 		await waitFor(() => attempts === 1);
-		const coalesced = coordinator.ensureInitialProjection('coalesced-request');
+		const sameSource = coordinator.ensureInitialProjection('same-source-request');
+		sourceText = 'B';
+		const changedSource = coordinator.ensureInitialProjection('changed-source-request');
 		firstAttempt.resolve();
 		expect(await first).toBe(false);
-		expect(await coalesced).toBe(false);
-		await waitFor(() => attempts === 4);
+		expect(await sameSource).toBe(false);
+		expect(await changedSource).toBe(false);
+		await waitFor(() => attempts === 3);
+
+		expect(await coordinator.ensureInitialProjection('duplicate-B')).toBe(false);
+		expect(attempts).toBe(3);
+
+		sourceText = 'C';
+		expect(await coordinator.ensureInitialProjection('changed-to-C')).toBe(false);
+		expect(attempts).toBe(5);
 		expect(coordinator.isInitialized).toBe(false);
+	});
+
+	it('leaves unseen C eligible when A changes to B and then C during the follow-up', async () => {
+		const gates = {
+			A: Promise.withResolvers<void>(),
+			B: Promise.withResolvers<void>(),
+		};
+		let sourceText = 'A';
+		const attemptedSources: string[] = [];
+		const coordinator = new CompatSidecarProjectionCoordinator({
+			session: new CompatSidecarSession(true, 'KQL'),
+			readSourceText: () => sourceText,
+			isDisposed: () => false,
+			initialProjectionMaxAttempts: 1,
+			postProjection: async attempt => {
+				attemptedSources.push(attempt.sourceText);
+				if (attempt.sourceText === 'A') await gates.A.promise;
+				if (attempt.sourceText === 'B') await gates.B.promise;
+				return false;
+			},
+		});
+
+		const initial = coordinator.ensureInitialProjection('A-request');
+		await waitFor(() => attemptedSources.includes('A'));
+		sourceText = 'B';
+		const coalesced = coordinator.ensureInitialProjection('B-request');
+		gates.A.resolve();
+		await initial;
+		await coalesced;
+		await waitFor(() => attemptedSources.includes('B'));
+		sourceText = 'C';
+		const cCoalesced = coordinator.ensureInitialProjection('C-coalesced');
+		gates.B.resolve();
+		await cCoalesced;
+
+		await coordinator.ensureInitialProjection('C-explicit');
+		expect(attemptedSources).toEqual(['A', 'B', 'C']);
+		expect(await coordinator.ensureInitialProjection('C-duplicate')).toBe(false);
+		expect(attemptedSources).toEqual(['A', 'B', 'C']);
+	});
+
+	it('treats CRLF and LF as distinct initial recovery bytes', async () => {
+		let sourceText = 'line 1\r\nline 2';
+		const attemptedSources: string[] = [];
+		const coordinator = new CompatSidecarProjectionCoordinator({
+			session: new CompatSidecarSession(true, 'KQL'),
+			readSourceText: () => sourceText,
+			isDisposed: () => false,
+			initialProjectionMaxAttempts: 1,
+			postProjection: async attempt => {
+				attemptedSources.push(attempt.sourceText);
+				return false;
+			},
+		});
+
+		await coordinator.ensureInitialProjection('crlf');
+		expect(await coordinator.ensureInitialProjection('crlf-duplicate')).toBe(false);
+		sourceText = 'line 1\nline 2';
+		await coordinator.ensureInitialProjection('lf');
+
+		expect(attemptedSources).toEqual(['line 1\r\nline 2', 'line 1\nline 2']);
 	});
 
 	it('owns source rollback retries and keeps terminal failure fenced until source authority changes', async () => {

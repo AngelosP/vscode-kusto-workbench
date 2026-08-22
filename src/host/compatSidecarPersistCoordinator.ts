@@ -117,6 +117,9 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 			return { terminal: 'unavailable' };
 		}
 
+		const persistAdmission = session.reservePersistAdmission(message.editRevision);
+		try {
+		await persistAdmission.waitForTurn();
 		const snapshotId = this.nonEmptyTrimmed(message.snapshotId);
 		await projection.waitForAcknowledgedProjection(message.sourceGeneration);
 		const rawState = adapter.captureState(message.state);
@@ -168,7 +171,7 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 
 		const incomingEditRevision = message.editRevision;
 		const reloadEpochAtAdmission = projection.captureSourceReloadEpoch();
-		const run = session.queuePersist(incomingEditRevision, async persistIsCurrent => {
+		const run = persistAdmission.queue(async persistIsCurrent => {
 			if (!persistIsCurrent()) return this.supersededOutcome();
 			try {
 				adapter.validateState(rawState, false);
@@ -196,8 +199,9 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 				validatedDraft = adapter.prepareMaterializedDraft(state);
 				materializedSidecar = await adapter.materializeState(state);
 			} catch (error) {
-				if (validatedDraft && persistIsCurrent()
-					&& this.sameSourceText(adapter.getPrimaryText(state), this.readSourceTextOrEmpty())) {
+				const sourceRead = this.tryReadSourceText();
+				if (validatedDraft && persistIsCurrent() && sourceRead.ok
+					&& this.sameSourceText(adapter.getPrimaryText(state), sourceRead.text)) {
 					adapter.setKnownState(state);
 					session.setStateRevision(incomingEditRevision);
 					const lastWrittenText = adapter.getLastWrittenMaterializedText();
@@ -214,7 +218,9 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 			if (!persistIsCurrent()) return this.supersededOutcome();
 
 			const nextText = adapter.getPrimaryText(state);
-			const currentText = this.readSourceTextOrEmpty();
+			const sourceRead = this.tryReadSourceText();
+			if (!sourceRead.ok) return this.failedOutcome('failed', sourceRead.error);
+			const currentText = sourceRead.text;
 			const textActuallyChanged = !this.sameSourceText(nextText, currentText);
 			const wouldBlankFile = !nextText.trim() && !!currentText.trim();
 			if (textActuallyChanged && !wouldBlankFile) {
@@ -224,7 +230,11 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 						new Error(`VS Code rejected the final ${this.options.languageLabel} text update.`),
 					);
 				}
-				if (!this.sameSourceText(adapter.readSourceText(), nextText)) {
+				const verification = this.tryReadSourceText();
+				if (!verification.ok) {
+					return this.recoverUnreadableAppliedSource(nextText, currentText, verification.error);
+				}
+				if (!this.sameSourceText(verification.text, nextText)) {
 					adapter.requestSourceReload();
 					return this.failedOutcome('source-drift', this.supersededError());
 				}
@@ -271,6 +281,9 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 			settleFinal(failure);
 			return { terminal: 'failed', error: failure };
 		}
+		} finally {
+			persistAdmission.settle();
+		}
 	}
 
 	private attemptAcknowledgement(snapshotId: string, editRevision: number): void {
@@ -286,12 +299,50 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 		}
 	}
 
-	private readSourceTextOrEmpty(): string {
+	private tryReadSourceText():
+		| Readonly<{ ok: true; text: string }>
+		| Readonly<{ ok: false; error: Error }> {
 		try {
-			return this.options.adapter.readSourceText();
-		} catch {
-			return '';
+			return { ok: true, text: this.options.adapter.readSourceText() };
+		} catch (error) {
+			return {
+				ok: false,
+				error: new Error(
+					`Failed to read the ${this.options.languageLabel} source before metadata admission: ${this.errorMessage(error)}`,
+				),
+			};
 		}
+	}
+
+	private async recoverUnreadableAppliedSource(
+		candidateText: string,
+		priorText: string,
+		readError: Error,
+	): Promise<WorkOutcome> {
+		this.options.adapter.requestSourceReload();
+		const ownership = this.tryReadSourceText();
+		if (!ownership.ok || !this.sameSourceText(ownership.text, candidateText)) {
+			return this.failedOutcome(
+				'rollback-failed',
+				new Error(`${readError.message} The candidate ${this.options.languageLabel} source no longer owns the document.`),
+			);
+		}
+		let restored = false;
+		try {
+			restored = await this.options.adapter.applySourceText(priorText);
+			const verification = restored ? this.tryReadSourceText() : undefined;
+			restored = !!verification?.ok && this.sameSourceText(verification.text, priorText);
+		} catch {
+			restored = false;
+		}
+		return this.failedOutcome(
+			restored ? 'failed' : 'rollback-failed',
+			new Error(
+				`${readError.message} The candidate ${this.options.languageLabel} source ${
+					restored ? 'was restored.' : `could not be restored after writing ${candidateText.length} characters.`
+				}`,
+			),
+		);
 	}
 
 	private sameSourceText(left: string, right: string): boolean {

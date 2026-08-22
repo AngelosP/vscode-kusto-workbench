@@ -116,9 +116,9 @@ export class CompatSidecarCloseCoordinator implements CompatSidecarCloseCoordina
 			try { await finalization.drainRetiredInbound?.(); } catch { /* continue close */ }
 			this.retiredAdmissionOpen = false;
 			await finalization.gateway.closeRetiredInboundAdmission();
-			this.options.session.beginClose();
 			this.disposeSubscriptions(finalization.subscriptions);
 			await this.options.session.waitForPersists();
+			this.options.session.beginClose();
 
 			const draft = this.options.session.isDirty ? finalization.captureDraft() : undefined;
 			if (draft) {
@@ -170,13 +170,13 @@ export class CompatSidecarCloseCoordinator implements CompatSidecarCloseCoordina
 		} catch {
 			// Initialization already failed; continue terminal cleanup.
 		}
-		this.options.session.beginClose();
 		this.disposeSubscriptions(cleanup.subscriptions);
 		try {
 			await this.options.session.waitForPersists();
 		} catch {
 			// Persist failures cannot prevent terminal settlement.
 		} finally {
+			this.options.session.beginClose();
 			this.options.session.settleClose();
 			this.disposeSubscriptions(cleanup.subscriptions);
 		}

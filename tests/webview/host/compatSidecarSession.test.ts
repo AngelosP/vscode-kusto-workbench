@@ -44,6 +44,58 @@ describe('CompatSidecarSession', () => {
 		expect(work).toHaveBeenCalledOnce();
 	});
 
+	it.each(['KQL', 'SQL'])('lets a reserved %s persist finish before a later upgrade', async label => {
+		const session = new CompatSidecarSession(true, label);
+		const admission = session.reservePersistAdmission(1);
+		let firstWasCurrent = false;
+		let upgradeSettled = false;
+		const upgrade = session.beginUpgrade(2).then(value => {
+			upgradeSettled = true;
+			return value;
+		});
+		const laterAdmission = session.reservePersistAdmission(3);
+		let laterRan = false;
+		const laterPersist = (async () => {
+			try {
+				await laterAdmission.waitForTurn();
+				await laterAdmission.queue(async () => { laterRan = true; });
+			} finally {
+				laterAdmission.settle();
+			}
+		})();
+		await Promise.resolve();
+		expect(upgradeSettled).toBe(false);
+		expect(laterRan).toBe(false);
+
+		await admission.waitForTurn();
+		await admission.queue(async isCurrent => { firstWasCurrent = isCurrent(); });
+		admission.settle();
+		const lease = await upgrade;
+
+		expect(firstWasCurrent).toBe(true);
+		expect(lease?.revision).toBe(2);
+		expect(laterRan).toBe(false);
+		lease?.finish();
+		await laterPersist;
+		expect(laterRan).toBe(true);
+		await expect(session.waitForPersists()).resolves.toBeUndefined();
+	});
+
+	it.each(['KQL', 'SQL'])('holds %s Save behind an already-active upgrade', async label => {
+		const session = new CompatSidecarSession(true, label);
+		const upgrade = await session.beginUpgrade(1);
+		expect(upgrade).toBeDefined();
+		const work = vi.fn();
+		const save = session.enqueueAfterPersists(async () => { work(); });
+
+		await Promise.resolve();
+		expect(work).not.toHaveBeenCalled();
+		upgrade?.finish();
+		await save;
+
+		expect(work).toHaveBeenCalledOnce();
+	});
+
 	it('tracks dirty baselines and rebases only the matching draft', () => {
 		const session = new CompatSidecarSession(true, 'SQL');
 		session.markDirty('baseline-a');
@@ -73,6 +125,39 @@ describe('CompatSidecarSession', () => {
 		repairGate.resolve();
 		await Promise.all([repair, save]);
 		expect(observedBaselines).toEqual(['repaired']);
+	});
+
+	it('orders persist A, Save, then persist B by invocation watermark', async () => {
+		const session = new CompatSidecarSession(true, 'KQL');
+		const firstGate = deferred<void>();
+		const order: string[] = [];
+		const firstAdmission = session.reservePersistAdmission(1);
+		const firstPersist = (async () => {
+			try {
+				await firstAdmission.waitForTurn();
+				await firstGate.promise;
+				await firstAdmission.queue(async () => { order.push('persist-A'); });
+			} finally {
+				firstAdmission.settle();
+				firstAdmission.settle();
+			}
+		})();
+		const save = session.enqueueAfterPersists(async () => { order.push('save'); });
+		const secondAdmission = session.reservePersistAdmission(2);
+		const secondPersist = (async () => {
+			try {
+				await secondAdmission.waitForTurn();
+				await secondAdmission.queue(async () => { order.push('persist-B'); });
+			} finally {
+				secondAdmission.settle();
+			}
+		})();
+		await Promise.resolve();
+		expect(order).toEqual([]);
+		firstGate.resolve();
+
+		await Promise.all([firstPersist, save, secondPersist]);
+		expect(order).toEqual(['persist-A', 'save', 'persist-B']);
 	});
 
 	it('lets a local persist queued during repair notification use the repaired baseline', async () => {
