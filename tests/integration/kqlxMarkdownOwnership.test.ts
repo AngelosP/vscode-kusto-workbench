@@ -4091,7 +4091,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			);
 
 			currentText = JSON.stringify(rowFreeState);
-			autoRejectReloads = 2;
+			autoRejectReloads = 3;
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 			autoRejectReloads = 0;
 
