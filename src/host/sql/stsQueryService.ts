@@ -263,6 +263,10 @@ export class StsQueryService {
 
 	private createOperation(connection: SqlConnection, database: string, timeoutMs: number | undefined, passwordOverride?: string, allowUncommittedTarget = false): StsExecutionOperation {
 		if (this.disposed) throw new SqlQueryExecutionError('SQL query service is disposed.');
+		const predecessorSettlement = Promise.allSettled([...this.activeOperations]
+			.filter(operation => operation.connectionId === connection.id && operation.isRetiring())
+			.map(operation => operation.whenDisposed()))
+			.then(() => undefined);
 		const protectedExecution = this.leaveNoTracePolicy.isProtected(connection.id);
 		if (protectedExecution && !this.createProtectedRuntime) assertSqlConnectionMayUseSts(this.context, connection.id);
 		const operation = new StsExecutionOperation(
@@ -280,6 +284,8 @@ export class StsQueryService {
 			protectedExecution,
 			this.createProtectedRuntime,
 			this.dispatchSqlOwnerProtection,
+			predecessorSettlement,
+			() => this.disposed,
 		);
 		this.activeOperations.add(operation);
 		return operation;
@@ -327,6 +333,8 @@ class StsExecutionOperation {
 		private readonly protectedExecution = false,
 		private readonly createProtectedRuntime?: ProtectedStsRuntimeFactory,
 		private readonly dispatchSqlOwnerProtection?: SqlOwnerProtectionDispatcher,
+		private readonly predecessorSettlement: Promise<void> = Promise.resolve(),
+		private readonly serviceIsDisposing: () => boolean = () => false,
 	) {
 		this.revocationGeneration = this.leaveNoTracePolicy.getRevocationGeneration?.(this.connection.id) ?? 0;
 		this.cancelSignal.promise.catch(() => { /* consumed by execution race */ });
@@ -372,6 +380,7 @@ class StsExecutionOperation {
 		if (this.cancelled || this.phase === 'done') return;
 		this.cancelled = true;
 		this.cancelSignal.reject(new SqlQueryCancelledError());
+		if (this.process) void this.ensureCleanup();
 	}
 
 	dispose(): Promise<void> {
@@ -381,6 +390,10 @@ class StsExecutionOperation {
 
 	whenDisposed(): Promise<void> {
 		return this.cleanupComplete.promise;
+	}
+
+	isRetiring(): boolean {
+		return this.cancelled || this.phase === 'cleaning' || this.phase === 'done';
 	}
 
 	private async executeCore(query: string): Promise<QueryResult> {
@@ -542,16 +555,17 @@ class StsExecutionOperation {
 		const previousPhase = this.phase;
 		this.phase = 'cleaning';
 		const process = this.process;
+		let cleanupFailed = false;
 		try {
 			if (process && process.epoch === this.epoch) {
 				if (this.connectSubmitted && !this.connectCompleted) {
-					await this.bestEffort(process, STS_METHODS.cancelConnect, { ownerUri: this.ownerUri });
+					cleanupFailed = !await this.bestEffort(process, STS_METHODS.cancelConnect, { ownerUri: this.ownerUri }) || cleanupFailed;
 				} else if (this.submitted && !this.queryCompleted && previousPhase === 'executing') {
-					await this.bestEffort(process, STS_METHODS.queryCancel, { ownerUri: this.ownerUri });
+					cleanupFailed = !await this.bestEffort(process, STS_METHODS.queryCancel, { ownerUri: this.ownerUri }) || cleanupFailed;
 				}
-				if (this.submitted) await this.bestEffort(process, STS_METHODS.queryDispose, { ownerUri: this.ownerUri });
+				if (this.submitted) cleanupFailed = !await this.bestEffort(process, STS_METHODS.queryDispose, { ownerUri: this.ownerUri }) || cleanupFailed;
 				if (this.connected || this.connectSubmitted || previousPhase === 'connecting') {
-					await this.bestEffort(process, STS_METHODS.disconnect, { ownerUri: this.ownerUri });
+					cleanupFailed = !await this.bestEffort(process, STS_METHODS.disconnect, { ownerUri: this.ownerUri }) || cleanupFailed;
 				}
 			}
 		} finally {
@@ -563,6 +577,12 @@ class StsExecutionOperation {
 			if (this.protectedExecution && this.operationRuntime) {
 				try { await this.operationRuntime.dispose(); }
 				catch (error) { runtimeError = error; }
+			} else if (cleanupFailed && !this.serviceIsDisposing() && this.operationRuntime?.restart) {
+				try { await this.operationRuntime.restart(); }
+				catch (error) {
+					this.output.warn(`[sts] Shared runtime recovery failed: ${sanitizeStsLogText(error instanceof Error ? error.message : error)}`);
+					runtimeError = error;
+				}
 			}
 			this.operationRuntime = undefined;
 			this.cleanupComplete.resolve(undefined);
@@ -572,7 +592,11 @@ class StsExecutionOperation {
 
 	private startOperation<T>(operation: () => Promise<T>): Promise<T> {
 		if (this.quiescencePromise) throw new SqlQueryExecutionError('SQL operation has already started.');
-		const completion = operation().finally(() => this.ensureCleanup());
+		const completion = (async () => {
+			await this.predecessorSettlement;
+			this.throwIfCancelled();
+			return operation();
+		})().finally(() => this.ensureCleanup());
 		this.quiescencePromise = completion.then(() => undefined, () => undefined);
 		return Promise.race([completion, this.cancelSignal.promise]);
 	}
@@ -582,13 +606,15 @@ class StsExecutionOperation {
 		return this.cleanupPromise;
 	}
 
-	private async bestEffort(process: StsProcessManager, method: string, params: unknown): Promise<void> {
+	private async bestEffort(process: StsProcessManager, method: string, params: unknown): Promise<boolean> {
 		try {
 			await process.sendRequest(method, params, { timeoutMs: CLEANUP_TIMEOUT_MS, expectedEpoch: this.epoch });
+			return true;
 		} catch (error) {
 			this.output.warn(this.protectedExecution
 				? `[sql-lnt] Isolated STS cleanup request failed (${method}).`
 				: `[sts] Cleanup request failed (${method}): ${sanitizeStsLogText(error instanceof Error ? error.message : error)}`);
+			return false;
 		}
 	}
 

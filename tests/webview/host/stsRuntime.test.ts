@@ -160,6 +160,75 @@ describe('StsRuntime', () => {
 		]);
 	});
 
+	it('restarts a running manager on demand and publishes the replacement', async () => {
+		const first = {
+			epoch: 1, isRunning: true, isFailed: false, ready: Promise.resolve(),
+			start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined),
+			onDidFail: vi.fn(() => ({ dispose: vi.fn() })),
+		} as any;
+		const second = {
+			epoch: 1, isRunning: true, isFailed: false, ready: Promise.resolve(),
+			start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined),
+			onDidFail: vi.fn(() => ({ dispose: vi.fn() })),
+		} as any;
+		const dependencies = {
+			ensureSts: vi.fn(async () => 'sts-binary'),
+			invalidateStsCache: vi.fn(async () => undefined),
+			createProcessManager: vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second),
+		};
+		const runtime = new StsRuntime({
+			globalStorageUri: { fsPath: 'storage' }, logUri: { fsPath: 'logs' },
+		} as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any, dependencies as any);
+		const changes: any[] = [];
+		runtime.onDidChangeProcessManager(change => changes.push(change));
+
+		expect(await runtime.getProcessManager()).toBe(first);
+		await runtime.restart();
+
+		expect(first.stop).toHaveBeenCalledOnce();
+		expect(await runtime.getProcessManager()).toBe(second);
+		expect(changes).toEqual([
+			{ previous: undefined, current: first },
+			{ previous: first },
+			{ previous: undefined, current: second },
+		]);
+	});
+
+	it('holds manager acquisition until the old manager finishes stopping', async () => {
+		const stopGate = deferred<void>();
+		const first = {
+			epoch: 1, isRunning: true, isFailed: false, ready: Promise.resolve(),
+			start: vi.fn(async () => undefined), stop: vi.fn(async () => stopGate.promise),
+			onDidFail: vi.fn(() => ({ dispose: vi.fn() })),
+		} as any;
+		const second = {
+			epoch: 1, isRunning: true, isFailed: false, ready: Promise.resolve(),
+			start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined),
+			onDidFail: vi.fn(() => ({ dispose: vi.fn() })),
+		} as any;
+		const dependencies = {
+			ensureSts: vi.fn(async () => 'sts-binary'),
+			invalidateStsCache: vi.fn(async () => undefined),
+			createProcessManager: vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second),
+		};
+		const runtime = new StsRuntime({
+			globalStorageUri: { fsPath: 'storage' }, logUri: { fsPath: 'logs' },
+		} as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any, dependencies as any);
+		expect(await runtime.getProcessManager()).toBe(first);
+
+		const restart = runtime.restart();
+		const acquisition = runtime.getProcessManager();
+		let acquired = false;
+		void acquisition.then(() => { acquired = true; });
+		await Promise.resolve();
+		expect(acquired).toBe(false);
+		expect(dependencies.createProcessManager).toHaveBeenCalledOnce();
+
+		stopGate.resolve(undefined);
+		await restart;
+		await expect(acquisition).resolves.toBe(second);
+	});
+
 	it('quarantines and reinstalls once when a cached runtime fails before initialization', async () => {
 		const broken = {
 			epoch: 0, isRunning: false, isFailed: true, ready: Promise.reject(new Error('support file missing')),

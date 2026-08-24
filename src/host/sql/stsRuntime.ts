@@ -9,6 +9,7 @@ import { StsProcessManager, type StsProcessLaunchOptions } from './stsProcessMan
 export interface StsRuntimeLike {
 	getProcessManager(): Promise<StsProcessManager>;
 	dispose(): Promise<void>;
+	restart?(): Promise<void>;
 }
 
 export interface StsRuntimeManagerChange {
@@ -181,6 +182,7 @@ export async function createProtectedStsRuntime(
 export class StsRuntime implements StsRuntimeLike {
 	private processManager: StsProcessManager | undefined;
 	private startPromise: Promise<StsProcessManager> | undefined;
+	private restartPromise: Promise<void> | undefined;
 	private managerFailureSubscription: vscode.Disposable | undefined;
 	private readonly managerChangeEmitter = new vscode.EventEmitter<StsRuntimeManagerChange>();
 	readonly onDidChangeProcessManager = this.managerChangeEmitter.event;
@@ -194,6 +196,7 @@ export class StsRuntime implements StsRuntimeLike {
 
 	getProcessManager(): Promise<StsProcessManager> {
 		if (this.disposed) return Promise.reject(new Error('SQL Tools Service runtime is disposed.'));
+		if (this.restartPromise) return this.restartPromise.then(() => this.getProcessManager());
 		if (this.startPromise) return this.startPromise;
 		if (this.processManager && !this.processManager.isFailed) {
 			const manager = this.processManager;
@@ -223,6 +226,35 @@ export class StsRuntime implements StsRuntimeLike {
 		this.managerFailureSubscription = undefined;
 		if (manager) await manager.stop();
 		this.managerChangeEmitter.dispose();
+	}
+
+	restart(): Promise<void> {
+		if (this.disposed) return Promise.reject(new Error('SQL Tools Service runtime is disposed.'));
+		if (this.restartPromise) return this.restartPromise;
+		this.restartPromise = this.restartCore().finally(() => {
+			this.restartPromise = undefined;
+		});
+		return this.restartPromise;
+	}
+
+	private async restartCore(): Promise<void> {
+		let manager = this.processManager;
+		if (!manager && this.startPromise) {
+			try { manager = await this.startPromise; } catch { /* a fresh start below reports failure */ }
+		}
+		if (manager && this.processManager === manager) {
+			this.processManager = undefined;
+			this.managerFailureSubscription?.dispose();
+			this.managerFailureSubscription = undefined;
+			this.managerChangeEmitter.fire({ previous: manager });
+		}
+		if (manager) await manager.stop();
+		if (!this.disposed) {
+			this.startPromise = this.startCore().finally(() => {
+				this.startPromise = undefined;
+			});
+			await this.startPromise;
+		}
 	}
 
 	private async startCore(): Promise<StsProcessManager> {

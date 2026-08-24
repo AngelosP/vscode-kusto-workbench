@@ -501,6 +501,7 @@ describe('StsQueryService', () => {
 		await waitForRequest(process, STS_METHODS.executeString);
 
 		execution.cancel();
+		expect(process.requests.filter(request => request.method === STS_METHODS.queryCancel)).toHaveLength(1);
 		await expect(execution.promise).rejects.toMatchObject({ isCancelled: true });
 		await waitForRequest(process, STS_METHODS.disconnect);
 		expect(process.requests.filter(request => request.method === STS_METHODS.queryCancel)).toHaveLength(1);
@@ -509,6 +510,74 @@ describe('StsQueryService', () => {
 
 		process.emit(STS_METHODS.queryComplete, { ownerUri, batchSummaries: [] });
 		expect(process.requests.filter(request => request.method === STS_METHODS.disconnect)).toHaveLength(1);
+	});
+
+	it('waits for canceled same-connection cleanup before starting recovery', async () => {
+		const { process, service, connection } = createHarness();
+		const disconnectGate = deferred<void>();
+		process.onRequest = async method => {
+			if (method === STS_METHODS.disconnect) await disconnectGate.promise;
+			return {};
+		};
+		const first = service.executeQueryCancelable(connection, 'Db', "WAITFOR DELAY '00:00:30'", 60_000);
+		const firstConnect = await waitForRequest(process, STS_METHODS.connect);
+		completeConnection(process, firstConnect[0].params.ownerUri);
+		await waitForRequest(process, STS_METHODS.executeString);
+
+		first.cancel();
+		await expect(first.promise).rejects.toMatchObject({ isCancelled: true });
+		await waitForRequest(process, STS_METHODS.disconnect);
+		const recovery = service.executeQueryCancelable(connection, 'Db', 'SELECT 1', 20_000);
+		await Promise.resolve();
+		expect(process.requests.filter(request => request.method === STS_METHODS.connect)).toHaveLength(1);
+
+		disconnectGate.resolve();
+		const recoveryConnects = await waitForRequest(process, STS_METHODS.connect, 2);
+		completeConnection(process, recoveryConnects[1].params.ownerUri);
+		await waitForRequest(process, STS_METHODS.executeString, 2);
+		process.emit(STS_METHODS.queryComplete, {
+			ownerUri: recoveryConnects[1].params.ownerUri,
+			batchSummaries: [],
+		});
+
+		await expect(recovery.promise).resolves.toMatchObject({ rows: [] });
+	});
+
+	it('restarts the shared runtime when operation cleanup fails', async () => {
+		const { process, runtime, service, connection } = createHarness();
+		const restart = vi.fn(async () => undefined);
+		(runtime as any).restart = restart;
+		process.onRequest = async method => {
+			if (method === STS_METHODS.disconnect) throw new Error('disconnect failed');
+			return {};
+		};
+		const promise = service.executeQuery(connection, 'Db', 'SELECT 1', 20_000);
+		const connect = await waitForRequest(process, STS_METHODS.connect);
+		const ownerUri = connect[0].params.ownerUri;
+		completeConnection(process, ownerUri);
+		await waitForRequest(process, STS_METHODS.executeString);
+		process.emit(STS_METHODS.queryComplete, { ownerUri, batchSummaries: [] });
+
+		await expect(promise).resolves.toMatchObject({ rows: [] });
+		expect(restart).toHaveBeenCalledOnce();
+	});
+
+	it('does not restart the shared runtime while service disposal is underway', async () => {
+		const { process, runtime, service, connection } = createHarness();
+		const restart = vi.fn(async () => undefined);
+		(runtime as any).restart = restart;
+		process.onRequest = async method => {
+			if (method === STS_METHODS.disconnect) throw new Error('disconnect failed');
+			return {};
+		};
+		const execution = service.executeQueryCancelable(connection, 'Db', "WAITFOR DELAY '00:00:30'", 60_000);
+		const connect = await waitForRequest(process, STS_METHODS.connect);
+		completeConnection(process, connect[0].params.ownerUri);
+		await waitForRequest(process, STS_METHODS.executeString);
+
+		await service.dispose();
+		await expect(execution.promise).rejects.toMatchObject({ isCancelled: true });
+		expect(restart).not.toHaveBeenCalled();
 	});
 
 	it('fails an active operation when the STS process epoch ends', async () => {
