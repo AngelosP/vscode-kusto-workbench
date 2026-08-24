@@ -197,6 +197,9 @@ describe('CompatSidecarStore lossless baseline', () => {
 		const format: CompatSidecarFormat = {
 			primaryKind: 'query', sidecarKind: 'kqlx',
 		};
+		let publicationCount = 0;
+		let releasePublications!: () => void;
+		const publicationsReady = new Promise<void>(resolve => { releasePublications = resolve; });
 		const createStore = () => new CompatSidecarStore({
 			compatUri,
 			parse: value => {
@@ -205,7 +208,12 @@ describe('CompatSidecarStore lossless baseline', () => {
 			},
 			isLinked: () => true,
 			sanitizeFresh: async state => state,
-			publishFresh: async (state, publish) => publish(state),
+			publishFresh: async (state, publish) => {
+				publicationCount++;
+				if (publicationCount === 2) releasePublications();
+				await publicationsReady;
+				return publish(state);
+			},
 			buildFile: (state, baseFile) => buildCompatSidecarFile(compatUri, state, format, baseFile),
 			stringify: stringifyKqlxFile,
 		});
