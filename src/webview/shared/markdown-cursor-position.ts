@@ -40,6 +40,29 @@ export function getCodeMirrorCursorPosition(root: ParentNode): MarkdownCursorPos
 	return { line: Math.floor(cursor.line) + 1, column: Math.floor(cursor.ch) + 1 };
 }
 
+export function getToastUiMarkdownCursorPosition(editor: unknown): MarkdownCursorPosition | null {
+	const toastEditor = editor as {
+		getSelection?: () => unknown;
+		convertPosToMatchEditorMode?: (start: number, end: number, mode: 'markdown') => unknown;
+	} | null;
+	let selection = toastEditor?.getSelection?.();
+	if (Array.isArray(selection)
+		&& typeof selection[0] === 'number'
+		&& typeof selection[1] === 'number'
+		&& typeof toastEditor?.convertPosToMatchEditorMode === 'function') {
+		try {
+			selection = toastEditor.convertPosToMatchEditorMode(selection[0], selection[1], 'markdown');
+		} catch {
+			return null;
+		}
+	}
+	if (!Array.isArray(selection) || !Array.isArray(selection[0])) return null;
+	const [line, column] = selection[0];
+	if (typeof line !== 'number' || typeof column !== 'number'
+		|| !Number.isFinite(line) || !Number.isFinite(column) || line < 1 || column < 1) return null;
+	return { line: Math.floor(line), column: Math.floor(column) };
+}
+
 export function getDomSelectionCursorPosition(root: Node, selection: Selection | null): MarkdownCursorPosition | null {
 	if (!selection || selection.rangeCount === 0 || !selection.anchorNode || !root.contains(selection.anchorNode)) {
 		return null;

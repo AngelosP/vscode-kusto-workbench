@@ -475,6 +475,27 @@ describe('KustoAuthPreferenceService', () => {
 		}]);
 	});
 
+	it('restarts write quiescence when a preference write is admitted', async () => {
+		vi.useFakeTimers();
+		try {
+			const test = harness();
+			let settled = false;
+			const settlement = test.service.waitForWriteSettlement(100)
+				.then(() => { settled = true; });
+
+			await vi.advanceTimersByTimeAsync(50);
+			await test.service.setExplicitAccount('conn-during-quiet', { id: 'account-1', label: 'one@example.com' });
+			await vi.advanceTimersByTimeAsync(99);
+			expect(settled).toBe(false);
+
+			await vi.advanceTimersByTimeAsync(101);
+			await settlement;
+			expect(test.service.getPreferredAccountId('conn-during-quiet')).toBe('account-1');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('isolates account partitions and token overrides by authority', async () => {
 		const test = harness();
 		const homePartition = test.service.getAccountPartition(undefined, 'account-1');

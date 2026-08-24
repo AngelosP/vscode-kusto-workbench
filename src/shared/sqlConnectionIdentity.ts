@@ -124,3 +124,27 @@ export function sqlConnectionTargetSignatureMatches(connection: SqlConnectionTar
 	return !!legacyTarget
 		&& sqlConnectionTargetWithoutRevisionSignature(connection) === sqlConnectionTargetWithoutRevisionSignature(legacyTarget);
 }
+
+export type SqlConnectionTargetResolution<T extends SqlConnectionTargetIdentity & { id: string }> =
+	| Readonly<{ kind: 'matched'; connection: T }>
+	| Readonly<{ kind: 'missing' }>
+	| Readonly<{ kind: 'mismatch'; connection: T }>
+	| Readonly<{ kind: 'ambiguous'; connections: readonly T[] }>;
+
+export function resolveSqlConnectionTarget<T extends SqlConnectionTargetIdentity & { id: string }>(
+	connections: readonly T[],
+	connectionIdHint: unknown,
+	expectedSignature: unknown,
+): SqlConnectionTargetResolution<T> {
+	const hint = String(connectionIdHint || '').trim();
+	const signature = String(expectedSignature || '');
+	if (!signature) return { kind: 'missing' };
+	const hinted = hint ? connections.find(connection => String(connection.id || '') === hint) : undefined;
+	if (hinted && sqlConnectionTargetSignatureMatches(hinted, signature)) {
+		return { kind: 'matched', connection: hinted };
+	}
+	const matches = connections.filter(connection => sqlConnectionTargetSignatureMatches(connection, signature));
+	if (matches.length === 1) return { kind: 'matched', connection: matches[0] };
+	if (matches.length > 1) return { kind: 'ambiguous', connections: matches };
+	return hinted ? { kind: 'mismatch', connection: hinted } : { kind: 'missing' };
+}

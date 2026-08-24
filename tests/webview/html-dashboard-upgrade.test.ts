@@ -190,6 +190,28 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 		});
 	});
 
+	it('checks actionable initial content without requiring a later edit', async () => {
+		vi.useFakeTimers();
+		const section = new KwHtmlSection();
+		section.id = 'html_initial_upgrade';
+		section.boxId = section.id;
+		section.initialCode = fixableTableTargetHtml();
+		(section as unknown as { _initEditor(): void })._initEditor = vi.fn();
+
+		try {
+			document.body.appendChild(section);
+			await section.updateComplete;
+			vi.advanceTimersByTime(250);
+			await section.updateComplete;
+
+			expect(section.shadowRoot?.querySelector('.power-bi-upgrade-notice')?.textContent)
+				.toContain('Power BI export needs an update');
+		} finally {
+			section.remove();
+			vi.useRealTimers();
+		}
+	});
+
 	it('offers upgrade help for typed invalid-target diagnostics without message matching', () => {
 		const section = new KwHtmlSection();
 		section.boxId = 'html_form_boundary';

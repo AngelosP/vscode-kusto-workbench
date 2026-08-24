@@ -118,6 +118,20 @@ export function unregisterSqlDerivedComparisonsForSource(sourceBoxId: string): v
 	}
 }
 
+export function commitSqlDerivedComparisonExecution(boxId: string, executionId: string): boolean {
+	const id = String(boxId || '').trim();
+	const execution = String(executionId || '').trim();
+	const comparison = derivedComparisonByBoxId.get(id);
+	if (!comparison || !execution || (comparison.executionId && comparison.executionId !== execution)) return false;
+	comparison.executionId = execution;
+	return true;
+}
+
+export function rollbackSqlDerivedComparisonExecution(boxId: string, executionId: string): void {
+	const comparison = derivedComparisonByBoxId.get(String(boxId || '').trim());
+	if (comparison?.executionId === String(executionId || '').trim()) comparison.executionId = '';
+}
+
 function getMessageTarget(
 	boxId: string,
 	effects: SqlSectionMessageRouterEffects,
@@ -161,7 +175,6 @@ function admitOwnerSensitiveMessage(
 		if (!executionId) return false;
 		if (message.executing === true) {
 			if (comparison.executionId && comparison.executionId !== executionId) return false;
-			comparison.executionId = executionId;
 			return true;
 		}
 		if (comparison.executionId !== executionId) return false;

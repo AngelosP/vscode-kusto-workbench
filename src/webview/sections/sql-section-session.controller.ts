@@ -63,6 +63,7 @@ export interface SqlDatabaseChangedDetail {
 type PendingToolRun = {
 	executionId: string;
 	query?: string;
+	queryMode?: string;
 	owner?: SqlToolExecutionOwner;
 	resolve: (result: SqlToolRunResult) => void;
 	reject: (error: Error) => void;
@@ -359,15 +360,18 @@ export class SqlSectionSessionController implements ReactiveController, SqlSecti
 		});
 	}
 
-	capturePendingToolQuery(executionId: string, query: string): boolean {
+	capturePendingToolQuery(executionId: string, query: string, queryMode: string): boolean {
 		if (!this.pendingToolRun || this.pendingToolRun.executionId !== executionId) return false;
 		const text = String(query || '');
-		if (!text.trim()) return false;
+		const mode = String(queryMode || '').trim();
+		if (!text.trim() || !mode) return false;
 		this.pendingToolRun.query = text;
+		this.pendingToolRun.queryMode = mode;
 		return true;
 	}
 
 	get pendingToolQuery(): string { return this.pendingToolRun?.query ?? ''; }
+	get pendingToolQueryMode(): string { return this.pendingToolRun?.queryMode ?? ''; }
 
 	capturePendingToolOwner(connectionId: string, database: string): boolean {
 		if (!this.pendingToolRun || !this._ownerToken) return false;

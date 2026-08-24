@@ -5,7 +5,7 @@ Feature: SQL Copilot inline completions without SQL authentication
     And I capture the output channel "Kusto Workbench"
     And I wait 2 seconds
 
-  Scenario: Inline completions toggle and request plumbing in SQL sections
+  Scenario: Inline completions toggle and offline suppression in SQL sections
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
@@ -54,8 +54,8 @@ Feature: SQL Copilot inline completions without SQL authentication
     And I wait 3 seconds
     Then I take a screenshot "07-after-ctrl-shift-space"
 
-    When I evaluate "window.__e2e.inline.assertCapturedRequest('sql', 'SELECT')" in the webview
-    Then I take a screenshot "08-inline-request-verified"
+    When I evaluate "(() => { const messages = window.__e2eInlineReqCapture; if (!Array.isArray(messages)) throw new Error('SQL inline request capture was not armed'); if (messages.length !== 0) throw new Error('Offline SQL must suppress inline request posting, captured: ' + JSON.stringify(messages)); return 'offline SQL inline request posting suppressed: captured=0'; })()" in the webview
+    Then I take a screenshot "08-inline-request-suppressed"
 
     When I evaluate "window.__e2e.inline.restoreRequestCapture()" in the webview
 

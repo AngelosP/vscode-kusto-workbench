@@ -27,6 +27,7 @@ const selectionMocks = vi.hoisted(() => ({
 
 const copilotMocks = vi.hoisted(() => ({
 	cancelKustoCopilotSection: vi.fn(),
+	settleSqlExecutionStartAckForHost: vi.fn(),
 }));
 
 vi.mock('../../../src/host/kustoExecutionCoordinator', () => ({
@@ -77,6 +78,7 @@ vi.mock('../../../src/host/sql/sqlEditorLifecycleCoordinator', () => ({
 
 vi.mock('../../../src/host/queryEditorCopilot', () => ({
 	CopilotService: class {
+		static readonly settleSqlExecutionStartAckForHost = copilotMocks.settleSqlExecutionStartAckForHost;
 		readonly cancelKustoCopilotSection = copilotMocks.cancelKustoCopilotSection;
 	},
 }));
@@ -388,6 +390,40 @@ describe('QueryEditorProvider Kusto section execution application', () => {
 		const delivered = kustoSectionExecutionApplication.handleMessage.mock.calls[0][0];
 		expect(delivered).toEqual({ ...identity, accepted: true });
 		expect(Object.isFrozen(delivered)).toBe(true);
+	});
+
+	it('keeps SQL start settlement pending after malformed matching acknowledgement identities', async () => {
+		const kustoSectionExecutionApplication: StructuralKustoSectionExecutionHandler = {
+			handleMessage: vi.fn(() => Promise.resolve()),
+			dispose: vi.fn(),
+		};
+		const { provider } = createProvider(kustoSectionExecutionApplication);
+		const handlePanelMessage = (provider as unknown as {
+			handlePanelWebviewMessage(input: unknown): void | Promise<void>;
+		}).handlePanelWebviewMessage.bind(provider);
+
+		await handlePanelMessage({
+			type: 'copilotWriteQueryExecutionAck', boxId: ['sql-1'],
+			executionId: ['execution-1'], accepted: true,
+		});
+		await provider.handleWebviewMessage({
+			type: 'copilotWriteQueryExecutionAck', boxId: ' sql-1 ',
+			executionId: 'execution-1', accepted: true,
+		} as unknown as IncomingWebviewMessage);
+		expect(copilotMocks.settleSqlExecutionStartAckForHost).not.toHaveBeenCalled();
+
+		await handlePanelMessage({
+			type: 'copilotWriteQueryExecutionAck', boxId: 'sql-1',
+			executionId: 'execution-1', accepted: true,
+		});
+		expect(copilotMocks.settleSqlExecutionStartAckForHost).toHaveBeenCalledOnce();
+		expect(copilotMocks.settleSqlExecutionStartAckForHost).toHaveBeenCalledWith(
+			provider,
+			expect.objectContaining({
+				type: 'copilotWriteQueryExecutionAck', boxId: 'sql-1',
+				executionId: 'execution-1', accepted: true,
+			}),
+		);
 	});
 
 	it('deletes seven provider cases and all displaced execution and acknowledgement authority', () => {

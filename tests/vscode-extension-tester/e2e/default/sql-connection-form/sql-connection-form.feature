@@ -9,7 +9,7 @@ Feature: SQL connection form - inline add-connection UI
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
-    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
+    When I evaluate "(() => { window.__e2e.workbench.clearSections(); return 'sections cleared'; })()" in the webview
     And I wait 2 seconds
 
     When I wait for "button[data-add-kind='sql']" in the webview for 20 seconds
@@ -29,7 +29,7 @@ Feature: SQL connection form - inline add-connection UI
     When I evaluate "(() => { __testSelect('sql-conn-auth', 'sql-login'); return 'switched to sql-login'; })()" in the webview
     And I wait 1 second
 
-    When I evaluate "(() => { const form = __testFind('sql-conn-name')?.closest('form') || document.querySelector('kw-sql-connection-form')?.shadowRoot; if (!form) throw new Error('Form element not found for SQL login field check'); const userField = __testFind('sql-conn-username') || form.querySelector('input[type=text]'); const passField = __testFind('sql-conn-password') || form.querySelector('input[type=password]'); const checks = []; if (!userField) checks.push('username field not visible'); if (!passField) checks.push('password field not visible'); if (checks.length) throw new Error(checks.join(', ')); return 'SQL Login fields visible'; })()" in the webview
+    When I evaluate "(() => { const userField = __testFind('sql-conn-username'); const passField = __testFind('sql-conn-password'); const checks = []; if (!userField) checks.push('username field not visible'); if (!passField) checks.push('password field not visible'); if (checks.length) throw new Error(checks.join(', ')); return 'SQL Login fields visible'; })()" in the webview
     Then I take a screenshot "03-sql-login-fields"
 
     When I evaluate "(() => { __testClick('sql-conn-cancel'); return 'cancel clicked'; })()" in the webview

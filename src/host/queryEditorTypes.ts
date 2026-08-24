@@ -253,6 +253,7 @@ export type IncomingWebviewMessage =
 	| { type: 'kustoSectionTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number; connectionId?: string; database?: string; connectionRevision?: number; connectionIdentityKey?: string }
 	| { type: 'kustoSectionClose'; boxId: string; sectionInstanceId: string; preserveResultAttachment?: boolean }
 	| KustoExecutionStartWebviewMessage
+	| { type: 'copilotWriteQueryExecutionAck'; boxId: string; executionId: string; accepted: boolean }
 	| { type: 'cancelQuery'; boxId: string; executionId: string; sectionInstanceId: string; targetGeneration: number }
 	| { type: 'checkCopilotAvailability'; boxId: string }
 	| { type: 'prepareCopilotWriteQuery'; boxId: string; flavor?: 'kusto' | 'sql' }

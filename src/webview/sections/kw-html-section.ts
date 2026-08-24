@@ -384,6 +384,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		// Parse provenance eagerly so slicers work when the section loads
 		// directly in preview mode (editor init is skipped in that path).
 		this._refreshProvenance();
+		this._refreshPowerBiCompatibilityNoticeAfterCodeChange();
 
 		// Restore user-set editor heights from persisted state.
 		if (this.editorHeightPx !== undefined) {

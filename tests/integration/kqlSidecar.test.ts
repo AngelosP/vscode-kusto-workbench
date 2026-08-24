@@ -11,7 +11,7 @@ import { MdCompatEditorProvider } from '../../src/host/mdCompatEditorProvider';
 import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
 import { KustoResultPersistenceRegistry } from '../../src/host/kustoResultPersistenceOwner';
 import { KustoAuthPreferenceService } from '../../src/host/kustoAuthPreferenceService';
-import { stringifyKqlxFile } from '../../src/host/kqlxFormat';
+import { parseKqlxText, stringifyKqlxFile } from '../../src/host/kqlxFormat';
 import { SqlCompatEditorProvider } from '../../src/host/sqlCompatEditorProvider';
 import { CompatSidecarStore, readCompatSidecarSnapshot } from '../../src/host/compatSidecarStore';
 import { CompatSidecarSession } from '../../src/host/compatSidecarSession';
@@ -3732,6 +3732,116 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('native save preserves multiple near-limit results and metadata edits across reopen', async () => {
+		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
+		const originalOnDidSave = vscode.workspace.onDidSaveTextDocument;
+		const originalSanitizeSync = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceState;
+		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kqlx-large-native-save-'));
+		const filePath = path.join(tmpDir, 'large.kqlx');
+		const largeCell = 'x'.repeat(4_100_000);
+		const resultJson = JSON.stringify({
+			columns: [{ name: 'Payload', type: 'string' }], rows: [[largeCell]],
+		});
+		const initialState = { sections: [
+			{ id: 'query_1', type: 'query', name: 'Before Save', query: 'print One=1', resultJson },
+			{ id: 'query_2', type: 'query', name: 'Second', query: 'print Two=2', resultJson },
+		] };
+		const finalState = { sections: [
+			{ ...initialState.sections[0], name: 'After Save' },
+			initialState.sections[1],
+		] };
+		let currentText = JSON.stringify({ kind: 'kqlx', version: 1, state: initialState });
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+		let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceState = (value: unknown) => value;
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (value: unknown) => value;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
+				value: unknown, publish: (state: unknown) => Promise<unknown>,
+			) => publish(value);
+			(vscode.workspace as any).onWillSaveTextDocument = (
+				handler: (event: vscode.TextDocumentWillSaveEvent) => unknown,
+			) => {
+				willSaveHandler = handler;
+				return { dispose() {} };
+			};
+			(vscode.workspace as any).onDidSaveTextDocument = (
+				handler: (document: vscode.TextDocument) => unknown,
+			) => {
+				didSaveHandler = handler;
+				return { dispose() {} };
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: true,
+			} as any;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						if (message?.reloadRequestId) {
+							await Promise.resolve(receiveHandler?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: Number(message.editRevision || 0),
+							}));
+						}
+						if (message?.type === 'requestFinalPersist') {
+							void Promise.resolve().then(() => receiveHandler!({
+								type: 'persistDocument', state: finalState,
+								sourceGeneration: 1, flush: true, reason: 'save',
+								flushRequestId: message.requestId,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+				},
+				onDidDispose: () => ({ dispose() {} }),
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+
+			let saveBarrier: Promise<vscode.TextEdit[]> | undefined;
+			willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { saveBarrier = Promise.resolve(thenable); },
+			} as any);
+			const edits = await saveBarrier!;
+			if (edits.length > 0) currentText = edits[edits.length - 1].newText;
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			await Promise.resolve(didSaveHandler?.(document));
+
+			const reopened = parseKqlxText(fs.readFileSync(filePath, 'utf8'));
+			if (!reopened.ok) assert.fail(reopened.error);
+			const first = reopened.file.state.sections[0] as { name?: string; resultJson?: string };
+			const second = reopened.file.state.sections[1] as { resultJson?: string };
+			assert.strictEqual(first.name, 'After Save');
+			assert.strictEqual(reopened.file.state.sections.length, 2);
+			assert.strictEqual(first.resultJson?.length, resultJson.length);
+			assert.strictEqual(second.resultJson?.length, resultJson.length);
+		} finally {
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceState = originalSanitizeSync;
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
+			(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSave;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('same-path linked target replacement after hydration is rejected before edit', async () => {
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-linked-identity-replacement-'));
 		const filePath = path.join(tmpDir, 'session.kqlx');
@@ -6362,6 +6472,37 @@ suite('Sidecar .kql.json strategy', () => {
 			const sourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true).at(-1)?.sourceGeneration;
 			assert.ok(Number.isSafeInteger(sourceGeneration));
 			posted.length = 0;
+			const initialBytes = fs.readFileSync(sessionUri.fsPath, 'utf8');
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', snapshotId: 'session-malformed', sourceGeneration, editRevision: 1,
+				state: {},
+			}));
+			let accessorReads = 0;
+			const accessorState = Object.defineProperty({}, 'sections', {
+				enumerable: true,
+				get: () => { accessorReads++; return []; },
+			});
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', snapshotId: 'session-accessor', sourceGeneration, editRevision: 1,
+				state: accessorState,
+			}));
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', snapshotId: ['session-aliased'],
+				sourceGeneration: String(sourceGeneration), editRevision: '1',
+				state: { sections: [{ id: 'query_1', type: 'query', query: 'MUST_NOT_PERSIST' }] },
+			}));
+			await Promise.resolve(receiveHandler!(new Proxy({
+				type: 'persistDocument', snapshotId: 'session-proxy',
+				sourceGeneration, editRevision: 1,
+				state: { sections: [{ id: 'query_1', type: 'query', query: 'MUST_NOT_PERSIST_PROXY' }] },
+			}, {})));
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(accessorReads, 0, 'native persistence admission must not invoke state accessors');
+			assert.strictEqual(fs.readFileSync(sessionUri.fsPath, 'utf8'), initialBytes);
+			assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+				&& (message.snapshotId === 'session-malformed' || message.snapshotId === 'session-accessor'
+					|| message.snapshotId === 'session-aliased' || message.snapshotId === 'session-proxy')));
+
 			failNextSessionOpen = true;
 			await Promise.resolve(receiveHandler!({
 				type: 'persistDocument', snapshotId: 'session-failed', sourceGeneration, editRevision: 1,

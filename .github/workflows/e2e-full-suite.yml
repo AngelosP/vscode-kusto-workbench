@@ -10,7 +10,7 @@ on:
       vscodeExtTestPackage:
         description: 'vscode-ext-test npm tarball URL, or latest'
         required: false
-        default: 'https://github.com/AngelosP/vscode-extension-tester/releases/download/v0.1.22/vscode-ext-test-0.1.22.tgz'
+        default: 'https://github.com/AngelosP/vscode-extension-tester/releases/download/v0.1.23/vscode-ext-test-0.1.23.tgz'
       vscodeVersion:
         description: 'VS Code version, or latest'
         required: false
@@ -22,8 +22,8 @@ permissions:
   contents: read
 
 env:
-  E2E_VSCODE_EXT_TEST_PACKAGE: 'https://github.com/AngelosP/vscode-extension-tester/releases/download/v0.1.22/vscode-ext-test-0.1.22.tgz'
-  E2E_VSCODE_EXT_TEST_VERSION: '0.1.22'
+  E2E_VSCODE_EXT_TEST_PACKAGE: 'https://github.com/AngelosP/vscode-extension-tester/releases/download/v0.1.23/vscode-ext-test-0.1.23.tgz'
+  E2E_VSCODE_EXT_TEST_VERSION: '0.1.23'
 
 jobs:
   default-suite:

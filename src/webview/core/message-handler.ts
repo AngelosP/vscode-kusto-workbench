@@ -148,19 +148,22 @@ import {
 	removeTransformationBox,
 } from '../sections/kw-transformation-section';
 
-import { setRunMode } from '../sections/kw-query-toolbar';
+import { getRunMode, setRunMode } from '../sections/kw-query-toolbar';
 import {
 	applyEditingPreferencesData,
 	captureEditingPreferencesRuntime,
 	restoreEditingPreferencesRuntime,
 } from './editing-preferences.js';
 import {
-	executeQuery, setQueryExecuting, __kustoSetResultsVisible,
+	acquireKustoToolExecutionFence, canAdmitKustoHostExecutionStart,
+	executeQuery, releaseKustoToolExecutionFence,
+	setQueryExecuting, __kustoSetResultsVisible,
 	__kustoSetLinkedOptimizationMode, displayComparisonSummary,
 	optimizeQueryWithCopilot,
 } from '../sections/query-execution.controller';
 import {
-	schedulePersist, handleDocumentDataMessage, getKqlxState, flushCompatibilityPersist, acknowledgePersistDocument,
+	schedulePersist, persistDocumentAndWaitForAck, reconcileDocumentWithHost, acknowledgeDocumentReconciliation,
+	handleDocumentDataMessage, getKqlxState, flushCompatibilityPersist, acknowledgePersistDocument,
 	__kustoSetCompatibilityMode, __kustoApplyDocumentCapabilities,
 	__kustoRequestAddSection, createSectionWithCapabilities, __kustoOnQueryResult, __kustoScheduleLocalSchemaPrewarm,
 	__kustoSetHtmlPowerBiCompatibilityCheckEnabled,
@@ -169,6 +172,7 @@ import {
 	resolvePendingKustoResultRestores,
 	discardPendingSqlResultRestores,
 	applyKustoLeaveNoTracePolicy,
+	lockDocumentAfterPersistenceFailure,
 	beginKustoLeaveNoTracePolicyApplication,
 	captureKustoLeaveNoTracePolicyRuntime,
 	restoreKustoLeaveNoTracePolicyRuntime,
@@ -201,14 +205,18 @@ import { __kustoFindSuggestWidgetForEditor, __kustoIsElementVisibleForSuggest } 
 import {
 	handleStsResponse, handleStsDiagnostics,
 } from '../monaco/sql-sts-providers.js';
-import { routeSqlSectionMessage } from './sql-section-message-router.js';
+import {
+	commitSqlDerivedComparisonExecution,
+	rollbackSqlDerivedComparisonExecution,
+	routeSqlSectionMessage,
+} from './sql-section-message-router.js';
 import {
 	activeQueryEditorBoxId,
 	connections, setConnections, setLastConnectionId, setLastDatabase,
 	lastConnectionId, lastDatabase,
 	kustoFavorites, setKustoFavorites, leaveNoTraceClusters, setLeaveNoTraceClusters,
 	caretDocsEnabled, autoTriggerAutocompleteEnabled, copilotInlineCompletionsEnabled,
-	queryEditors, cachedDatabases, optimizationMetadataByBoxId,
+	queryEditors, waitForQueryEditorReady, cachedDatabases, optimizationMetadataByBoxId,
 	queryBoxes,
 	schemaByConnDb,
 	sqlSchemaByBoxId,
@@ -258,6 +266,10 @@ import {
 	parseKustoResultAttachmentHostMessageFromEnvelope,
 } from '../../shared/kustoResultAttachmentProtocol.js';
 import { sqlConnectionTargetSignature } from '../../shared/sqlConnectionIdentity.js';
+import {
+	SQL_COPILOT_PERSIST_ACK_TIMEOUT_MS,
+	SQL_COPILOT_START_RETIREMENT_TTL_MS,
+} from '../../shared/copilotExecutionStart.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
 import {
 	ADMITTED_KUSTO_COPILOT_EVENT,
@@ -280,7 +292,79 @@ const ASK_KUSTO_COPILOT_MAX_MAX_RESULT_ROWS = 1000;
 const kustoToolExecutionOwnerByRequestId = new Map<string, import('../../shared/kustoExecution.js').KustoExecutionRequestIdentity>();
 const kustoToolExecutionSettlementByRequestId = new Map<string, () => void>();
 const cancelledKustoToolRequestIds = new Set<string>();
+const retiredSqlCopilotStarts = new Map<string, ReturnType<typeof setTimeout>>();
 const kustoCopilotToolOwnerByRequestId = new Map<string, KustoCopilotRequestIdentity>();
+const kustoToolConfigureTailBySectionId = new Map<string, Promise<void>>();
+const sqlToolConfigureTailBySectionId = new Map<string, Promise<void>>();
+let kustoToolConfigureRuntimeEpoch = 0;
+
+function reserveKustoToolConfigureLease(sectionId: string): Readonly<{
+	waitForTurn(): Promise<void> | undefined;
+	settle(): void;
+}> {
+	const prior = kustoToolConfigureTailBySectionId.get(sectionId);
+	let release!: () => void;
+	const done = new Promise<void>(resolve => { release = resolve; });
+	const tail = prior ? prior.catch(() => undefined).then(() => done) : done;
+	kustoToolConfigureTailBySectionId.set(sectionId, tail);
+	let settled = false;
+	return Object.freeze({
+		waitForTurn: () => prior?.catch(() => undefined),
+		settle: () => {
+			if (settled) return;
+			settled = true;
+			release();
+			if (kustoToolConfigureTailBySectionId.get(sectionId) === tail) {
+				kustoToolConfigureTailBySectionId.delete(sectionId);
+			}
+		},
+	});
+}
+
+function sqlCopilotStartKey(boxId: unknown, executionId: unknown): string {
+	return `${String(boxId || '').trim()}\u0000${String(executionId || '').trim()}`;
+}
+
+function retireSqlCopilotStart(boxId: unknown, executionId: unknown): void {
+	const key = sqlCopilotStartKey(boxId, executionId);
+	if (key === '\u0000') return;
+	const previous = retiredSqlCopilotStarts.get(key);
+	if (previous) clearTimeout(previous);
+	const timer = setTimeout(() => retiredSqlCopilotStarts.delete(key), SQL_COPILOT_START_RETIREMENT_TTL_MS);
+	retiredSqlCopilotStarts.set(key, timer);
+}
+
+function consumeRetiredSqlCopilotStart(boxId: unknown, executionId: unknown): boolean {
+	const key = sqlCopilotStartKey(boxId, executionId);
+	const timer = retiredSqlCopilotStarts.get(key);
+	if (!timer) return false;
+	clearTimeout(timer);
+	retiredSqlCopilotStarts.delete(key);
+	return true;
+}
+
+function reserveSqlToolConfigureLease(sectionId: string): Readonly<{
+	waitForTurn(): Promise<void> | undefined;
+	settle(): void;
+}> {
+	const prior = sqlToolConfigureTailBySectionId.get(sectionId);
+	let release!: () => void;
+	const done = new Promise<void>(resolve => { release = resolve; });
+	const tail = prior ? prior.catch(() => undefined).then(() => done) : done;
+	sqlToolConfigureTailBySectionId.set(sectionId, tail);
+	let settled = false;
+	return Object.freeze({
+		waitForTurn: () => prior?.catch(() => undefined),
+		settle: () => {
+			if (settled) return;
+			settled = true;
+			release();
+			if (sqlToolConfigureTailBySectionId.get(sectionId) === tail) {
+				sqlToolConfigureTailBySectionId.delete(sectionId);
+			}
+		},
+	});
+}
 
 function isSyntheticConnectionOwnerCurrent(
 	metadata: { connectionId: string; accountPartition: string; connectionIdentity: string },
@@ -593,7 +677,9 @@ function applyToolKustoTarget(sectionId: string, input: any): { success: boolean
 			}));
 		}
 	}
-	if (requestedDatabase && currentDatabase.toLowerCase() !== requestedDatabase.toLowerCase()) {
+	if (requestedDatabase && (resolved.connection
+		&& currentConnectionId !== String(resolved.connection.id || '').trim()
+		|| currentDatabase.toLowerCase() !== requestedDatabase.toLowerCase())) {
 		kwEl.setDesiredDatabase?.(requestedDatabase);
 		kwEl.setDatabase?.(requestedDatabase);
 		kwEl.dispatchEvent(new CustomEvent('database-changed', {
@@ -633,6 +719,69 @@ function getSectionSerializedSignature(sectionId: string): string {
 		console.error('[kusto]', e);
 		return '';
 	}
+}
+
+type ToolOperationalState = Readonly<{
+	owner: any;
+	incarnation: string;
+	connectionId: string;
+	endpoint: string;
+	database: string;
+	query: string;
+	runMode: string;
+}>;
+
+function captureKustoToolOperationalState(sectionId: string): ToolOperationalState | undefined {
+	const owner = __kustoGetQuerySectionElement(sectionId);
+	if (!owner) return undefined;
+	const lifecycle = owner.getSchemaLifecycleIdentity?.();
+	const editor = queryEditors?.[sectionId];
+	const serialized = typeof owner.serialize === 'function' ? owner.serialize() : undefined;
+	return {
+		owner,
+		incarnation: String(lifecycle?.sectionInstanceId || ''),
+		connectionId: String(owner.getConnectionId?.() || ''),
+		endpoint: String(owner.getClusterUrl?.() || ''),
+		database: String(owner.getDatabase?.() || ''),
+		query: String(editor?.getValue?.() ?? owner.getCopilotEditorValue?.() ?? serialized?.query ?? ''),
+		runMode: String(getRunMode(sectionId)),
+	};
+}
+
+function captureSqlToolOperationalState(sectionId: string): ToolOperationalState | undefined {
+	const owner = __kustoGetSqlSectionElement(sectionId);
+	if (!owner) return undefined;
+	const serialized = typeof owner.serialize === 'function' ? owner.serialize() : undefined;
+	return {
+		owner,
+		incarnation: String(owner.getCopilotOwnerToken?.() || ''),
+		connectionId: String(owner.getSqlConnectionId?.() || owner.getConnectionId?.() || ''),
+		endpoint: String(owner.getServerUrl?.() || ''),
+		database: String(owner.getDatabase?.() || ''),
+		query: String(owner.getQuery?.() ?? serialized?.query ?? ''),
+		runMode: String(getRunMode(sectionId)),
+	};
+}
+
+function sameToolOperationalConfiguration(
+	left: ToolOperationalState | undefined,
+	right: ToolOperationalState | undefined,
+): boolean {
+	return !!left && !!right
+		&& left.connectionId === right.connectionId
+		&& left.endpoint === right.endpoint
+		&& left.database === right.database
+		&& left.query === right.query
+		&& left.runMode === right.runMode;
+}
+
+function sameToolOperationalState(
+	left: ToolOperationalState | undefined,
+	right: ToolOperationalState | undefined,
+): boolean {
+	return sameToolOperationalConfiguration(left, right)
+		&& left?.owner === right?.owner
+		&& left?.incarnation === right?.incarnation;
 }
 
 function getUnavailableResultIndexError(
@@ -1303,23 +1452,42 @@ function rollbackComparisonSourceBinding(binding: ComparisonSourceBinding): void
 	if (binding.retentionConsumerId) unbindResultArtifactConsumer(binding.retentionConsumerId);
 }
 
-function bindSqlComparisonSourceArtifact(comparisonBoxId: string, message: any): boolean {
+function beginSqlComparisonSourceBinding(
+	comparisonBoxId: string,
+	message: any,
+): ComparisonSourceBinding | undefined {
 	const consumerId = comparisonSourceArtifactConsumerId(comparisonBoxId);
-	unbindResultArtifactConsumer(consumerId);
 	const metadata = optimizationMetadataByBoxId[comparisonBoxId];
 	const sourceBoxId = metadata?.isComparison ? String(metadata.sourceBoxId || '').trim() : '';
 	const messageSourceBoxId = String(message?.sourceBoxId || '').trim();
 	const sourceExecutionId = String(message?.sourceExecutionId || '').trim();
 	if (!sourceBoxId || sourceBoxId !== messageSourceBoxId || !sourceExecutionId
-		|| !__kustoGetSqlSectionElement(sourceBoxId)) return false;
+		|| !__kustoGetSqlSectionElement(sourceBoxId)) return undefined;
 	const sourceArtifact = getResultArtifactByProducerExecution(sourceBoxId, sourceExecutionId);
 	if (!sourceArtifact || sourceArtifact.sourceBoxId !== sourceBoxId
 		|| sourceArtifact.producer?.engine !== 'sql'
 		|| sourceArtifact.producer.boxId !== sourceBoxId
-		|| sourceArtifact.producer.executionId !== sourceExecutionId) return false;
-	return bindResultArtifactConsumer(
-		consumerId, sourceBoxId, sourceArtifact.artifactId,
-	) === sourceArtifact.artifactId;
+		|| sourceArtifact.producer.executionId !== sourceExecutionId) return undefined;
+	const previous = getBoundResultArtifact(consumerId);
+	const retentionConsumerId = previous && previous.artifactId !== sourceArtifact.artifactId
+		? `${consumerId}:pending-sql:${String(message.executionId || '').trim()}`
+		: undefined;
+	if (retentionConsumerId && previous
+		&& bindResultArtifactConsumer(
+			retentionConsumerId, previous.sourceBoxId, previous.artifactId,
+		) !== previous.artifactId) return undefined;
+	if (bindResultArtifactConsumer(consumerId, sourceBoxId, sourceArtifact.artifactId) !== sourceArtifact.artifactId) {
+		if (retentionConsumerId) unbindResultArtifactConsumer(retentionConsumerId);
+		return undefined;
+	}
+	return {
+		consumerId,
+		artifactId: sourceArtifact.artifactId,
+		...(retentionConsumerId ? { retentionConsumerId } : {}),
+		...(previous ? {
+			previous: { sourceBoxId: previous.sourceBoxId, artifactId: previous.artifactId },
+		} : {}),
+	};
 }
 
 function releaseComparisonSourceArtifact(message: any): void {
@@ -1859,6 +2027,7 @@ function stageSqlComparisonAdmission(
 }
 
 window.addEventListener(DOCUMENT_RUNTIME_INVALIDATED_EVENT, () => {
+	kustoToolConfigureRuntimeEpoch++;
 	retireAllPythonExecutions();
 	for (const pending of [...pendingSqlComparisonAdmissionByRequestId.values()]) {
 		const message = {
@@ -2226,6 +2395,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		return;
 	}
 	const messageType = String(message.type || '');
+	if (messageType === 'copilotWriteQueryExecuting' && message.executing === false) {
+		retireSqlCopilotStart(message.boxId, message.executionId);
+	}
 	const kustoTerminalAdmission = admitKustoTerminal(message);
 	if (kustoTerminalAdmission === 'rejected') {
 		acknowledgeKustoPublication(message, false);
@@ -2269,7 +2441,16 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		handleStsDiagnostics,
 		clearPolicyBox: clearSqlPolicyBox,
 	}) : 'not-sql';
-	if (sqlRoute !== 'not-sql') return;
+	if (sqlRoute !== 'not-sql') {
+		if (messageType === 'copilotWriteQueryExecuting' && message.executing === true) {
+			postMessageToHost({
+				type: 'copilotWriteQueryExecutionAck',
+				boxId: String(message.boxId || ''), executionId: String(message.executionId || ''),
+				accepted: false,
+			});
+		}
+		return;
+	}
 	if (messageType === 'copilotClarifyingQuestion'
 		&& __kustoGetQuerySectionElement(String(message.boxId || ''))) {
 		const clarification = parseKustoCopilotClarifyingQuestionMessageFromEnvelope(
@@ -2832,7 +3013,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			const boxId = message.boxId;
 			const section = __kustoGetQuerySectionElement(boxId);
 			const lifecycle = section?.getSchemaLifecycleIdentity?.();
-			const targetMatches = !!section
+			const liveQuery = String(
+				queryEditors?.[boxId]?.getValue?.()
+				?? section?.getCopilotEditorValue?.()
+				?? section?.serialize?.()?.query
+				?? '',
+			);
+			const targetMatches = canAdmitKustoHostExecutionStart(String(boxId || ''))
+				&& !!section
+				&& liveQuery === String(message.query || '')
 				&& lifecycle?.sectionInstanceId === message.sectionInstanceId
 				&& lifecycle?.targetGeneration === message.targetGeneration
 				&& String(section.getConnectionId?.() || '') === message.connectionId
@@ -3135,6 +3324,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		case 'documentData':
 			if (message.expectedEditRevision !== undefined
 				&& Number(message.expectedEditRevision) !== pState.documentEditRevision) {
+				acknowledgeDocumentReconciliation(message.requestId, false);
 				if (message.reloadRequestId) {
 					postMessageToHost({
 						type: 'documentReloadResult', requestId: String(message.reloadRequestId),
@@ -3172,6 +3362,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					markdownCommandBarrierSupported: true,
 				});
 			}
+			acknowledgeDocumentReconciliation(message.requestId, applied);
 			if (applied
 				&& message.channel === COMPATIBILITY_PERSISTENCE_CHANNEL
 				&& message.requestSource === 'webview') {
@@ -4239,12 +4430,14 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const boxId = String(message.boxId || '');
 				const beforeSignature = getSectionSerializedSignature(boxId);
 				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
-				if (kwEl && typeof kwEl.copilotWriteQuerySetQuery === 'function') {
+				if (kwEl && canAdmitKustoHostExecutionStart(boxId)
+					&& typeof kwEl.copilotWriteQuerySetQuery === 'function') {
 					kwEl.copilotWriteQuerySetQuery(message.query || '');
 					markSectionAgentTouched(boxId, beforeSignature);
 				} else {
 					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
-					if (sqlEl && typeof sqlEl.copilotWriteQuerySetQuery === 'function') {
+					if (sqlEl && sqlEl.canAcceptExternalQueryMutation?.() !== false
+						&& typeof sqlEl.copilotWriteQuerySetQuery === 'function') {
 						sqlEl.copilotWriteQuerySetQuery(message.query || '');
 						markSectionAgentTouched(boxId, beforeSignature);
 					}
@@ -4255,28 +4448,110 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			try {
 				const boxId = String(message.boxId || '');
 				const executing = !!message.executing;
+				let accepted = false;
 				if (boxId) {
 					const executionId = String(message.executionId || '');
+					const startDeadline = Number(message.startDeadline);
+					if (executing && (consumeRetiredSqlCopilotStart(boxId, executionId)
+						|| (Number.isFinite(startDeadline) && startDeadline <= Date.now()))) {
+						postMessageToHost({
+							type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted: false,
+						});
+						break;
+					}
 					const metadata = optimizationMetadataByBoxId[boxId];
 					const sqlDerivedComparison = !!metadata?.isComparison
 						&& !!__kustoGetSqlSectionElement(String(metadata.sourceBoxId || '').trim());
 					const sqlEl = __kustoGetSqlSectionElement(boxId);
+					const queryEl = __kustoGetQuerySectionElement(boxId);
+					const expectedQuery = String(message.query || '');
+					const currentQuery = () => String(
+						sqlEl?.getQuery?.()
+						?? queryEditors?.[boxId]?.getValue?.()
+						?? queryEl?.getCopilotEditorValue?.()
+						?? queryEl?.serialize?.()?.query
+						?? '',
+					);
+					if (executing) {
+						const mutationAllowed = sqlEl
+							? sqlEl.canAcceptExternalQueryMutation?.() !== false
+							: canAdmitKustoHostExecutionStart(boxId);
+						if (!expectedQuery || !mutationAllowed || currentQuery() !== expectedQuery
+							|| !await persistDocumentAndWaitForAck(
+								'copilot-sql-query-start', SQL_COPILOT_PERSIST_ACK_TIMEOUT_MS,
+							)) {
+							postMessageToHost({
+								type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted: false,
+							});
+							break;
+						}
+						const stillAllowed = sqlEl
+							? sqlEl.canAcceptExternalQueryMutation?.() !== false
+							: canAdmitKustoHostExecutionStart(boxId);
+						if (consumeRetiredSqlCopilotStart(boxId, executionId)
+							|| (Number.isFinite(startDeadline) && startDeadline <= Date.now())
+							|| !stillAllowed || currentQuery() !== expectedQuery) {
+							postMessageToHost({
+								type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted: false,
+							});
+							break;
+						}
+					}
+					if (executing && sqlDerivedComparison && !canAdmitKustoHostExecutionStart(boxId)) {
+						postMessageToHost({
+							type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted: false,
+						});
+						break;
+					}
 					if (sqlEl && typeof sqlEl.setExternalQueryExecuting === 'function'
-						&& !sqlEl.setExternalQueryExecuting(executing, executionId)) break;
+						&& !sqlEl.setExternalQueryExecuting(executing, executionId)) {
+						if (executing) postMessageToHost({
+							type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted: false,
+						});
+						break;
+					}
 					if (sqlDerivedComparison) {
 						if (executing) {
+							const binding = beginSqlComparisonSourceBinding(boxId, message);
+							const claimCommitted = !!binding
+								&& commitSqlDerivedComparisonExecution(boxId, executionId);
+							if (!binding || !claimCommitted) {
+								if (binding) rollbackComparisonSourceBinding(binding);
+								rollbackSqlDerivedComparisonExecution(boxId, executionId);
+								if (sqlEl?.setExternalQueryExecuting) {
+									sqlEl.setExternalQueryExecuting(false, executionId);
+								} else {
+									setQueryExecuting(boxId, false);
+								}
+								postMessageToHost({
+									type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted: false,
+								});
+								break;
+							}
+							commitComparisonSourceBinding(binding);
 							retireResultsStateForRerun(boxId);
-							bindSqlComparisonSourceArtifact(boxId, message);
 						} else {
 							releaseComparisonSourceArtifact(message);
 						}
 						setQueryExecuting(boxId, executing);
+						accepted = true;
+						if (executing) postMessageToHost({
+							type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted,
+						});
 						break;
 					}
-					const queryEl = __kustoGetQuerySectionElement(boxId);
 					if (queryEl && typeof queryEl.setExternalQueryExecuting === 'function'
-						&& !queryEl.setExternalQueryExecuting(executing, executionId)) break;
+						&& !queryEl.setExternalQueryExecuting(executing, executionId)) {
+						if (executing) postMessageToHost({
+							type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted: false,
+						});
+						break;
+					}
 					if (!queryEl) setQueryExecuting(boxId, executing);
+					accepted = !!sqlEl || !!queryEl;
+					if (executing) postMessageToHost({
+						type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted,
+					});
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -4857,114 +5132,220 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			const requestId = String(message.requestId || '');
 			const input = message.input || {};
 			const sectionId = String(input.sectionId || '');
-			const beforeSignature = getSectionSerializedSignature(sectionId);
+			const configureRuntimeEpoch = kustoToolConfigureRuntimeEpoch;
+			const configureLease = reserveKustoToolConfigureLease(sectionId);
 			let success = false;
 			let deferResponse = false;
 			let failureError = '';
+			let executionFenceHeld = false;
+			const priorConfigure = configureLease.waitForTurn();
+			if (priorConfigure) await priorConfigure;
+			const runtimeIsCurrent = () => configureRuntimeEpoch === kustoToolConfigureRuntimeEpoch
+				&& isDocumentMutationAllowed();
+			let sectionOwner = __kustoGetQuerySectionElement(sectionId);
+			const beforeSignature = getSectionSerializedSignature(sectionId);
+			const persistedMutationRequested = input.name !== undefined || input.query !== undefined
+				|| !!(input.clusterUrl || input.connectionId || input.database);
+			const throwIfCancelled = () => {
+				if (cancelledKustoToolRequestIds.delete(requestId)) {
+					throw new Error('Query was cancelled');
+				}
+			};
+			const sectionIsCurrent = () => !!sectionOwner
+				&& runtimeIsCurrent()
+				&& __kustoGetQuerySectionElement(sectionId) === sectionOwner;
+			const ensureConfigurationOwned = async (
+				expectedSignature: string,
+			): Promise<'accepted' | 'reconciled' | undefined> => {
+				const persisted = await persistDocumentAndWaitForAck('tool-configure-query');
+				if (!runtimeIsCurrent()) return undefined;
+				if (persisted) {
+					return sectionIsCurrent() && getSectionSerializedSignature(sectionId) === expectedSignature
+						? 'accepted'
+						: undefined;
+				}
+				const rejectedRevision = pState.documentEditRevision;
+				if (!sectionIsCurrent() || getSectionSerializedSignature(sectionId) !== expectedSignature) return undefined;
+				const reconciled = await reconcileDocumentWithHost(10000, rejectedRevision);
+				if (!runtimeIsCurrent()) return undefined;
+				if (!reconciled) {
+					if (pState.documentEditRevision === rejectedRevision
+						&& sectionIsCurrent()
+						&& getSectionSerializedSignature(sectionId) === expectedSignature) {
+						lockDocumentAfterPersistenceFailure();
+					}
+					return undefined;
+				}
+				sectionOwner = __kustoGetQuerySectionElement(sectionId);
+				return !!sectionOwner && getSectionSerializedSignature(sectionId) === expectedSignature
+					? 'reconciled'
+					: undefined;
+			};
 			try {
-				if (input.execute) {
-					const requestedRetarget = !!(input.clusterUrl || input.connectionId);
-					if (requestedRetarget && !String(input.database || '').trim()) {
-						throw new Error('database is required when retargeting and executing a Kusto query section.');
+				try {
+					if (!runtimeIsCurrent()) throw new Error('The document runtime changed before configuration could start.');
+					throwIfCancelled();
+					if (input.name !== undefined && pState.compatibilityMode
+						&& (pState.documentKind === 'kql' || pState.documentKind === 'sql')) {
+						throw new Error('Section names require a companion metadata file. Upgrade this compatibility document before setting a name.');
 					}
-					const resolved = resolveToolKustoConnection(input);
-					if (resolved.error) throw new Error(resolved.error);
-					const effectiveConnectionId = String(resolved.connection?.id || __kustoGetConnectionId(sectionId) || '').trim();
-					const effectiveDatabase = String(input.database || __kustoGetDatabase(sectionId) || '').trim();
-					if (!effectiveConnectionId || !effectiveDatabase) {
-						throw new Error('A cluster connection and database are required before executing a Kusto query section.');
+					if (input.execute) {
+						const requestedRetarget = !!(input.clusterUrl || input.connectionId);
+						if (requestedRetarget && !String(input.database || '').trim()) {
+							throw new Error('database is required when retargeting and executing a Kusto query section.');
+						}
+						const resolved = resolveToolKustoConnection(input);
+						if (resolved.error) throw new Error(resolved.error);
+						const effectiveConnectionId = String(resolved.connection?.id || __kustoGetConnectionId(sectionId) || '').trim();
+						const effectiveDatabase = String(input.database || __kustoGetDatabase(sectionId) || '').trim();
+						if (!effectiveConnectionId || !effectiveDatabase) {
+							throw new Error('A cluster connection and database are required before executing a Kusto query section.');
+						}
 					}
-				}
-				const editor = queryEditors?.[sectionId];
-				if (input.name !== undefined) { __kustoSetSectionName(sectionId, input.name); success = true; }
-				if (input.query !== undefined && editor?.setValue) { editor.setValue(String(input.query)); success = true; }
-				if (input.clusterUrl || input.connectionId || input.database) {
-					const applied = applyToolKustoTarget(sectionId, input);
-					if (!applied.success) throw new Error(applied.error);
-					success = true;
-				}
-				if (input.execute) {
-					setRunMode(sectionId, 'plain');
-					deferResponse = true;
-					let responded = false;
-					let executionId = '';
-					const modelConsumerIds = new Set<string>([indexedModelConsumerId(requestId, 0)]);
-					const cleanup = () => {
-						try { window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, resultHandler as EventListener); } catch { /* best effort */ }
-						try { kustoToolExecutionOwnerByRequestId.delete(requestId); } catch { /* best effort */ }
-						try { kustoToolExecutionSettlementByRequestId.delete(requestId); } catch { /* best effort */ }
-						try { cancelledKustoToolRequestIds.delete(requestId); } catch { /* best effort */ }
-						releaseModelResultConsumers(modelConsumerIds);
-					};
-					const respond = (result: unknown) => {
-						if (responded) return;
-						responded = true;
-						cleanup();
-						postMessageToHost({ type: 'toolResponse', requestId, result });
-					};
-					const resultHandler = (event: Event) => {
-						try {
-							const terminal = (event as CustomEvent).detail;
-							if (!executionId || terminal?.executionId !== executionId || terminal?.boxId !== sectionId) return;
-							if (terminal.type === 'queryResult') {
-								const artifacts = bindModelResultArtifacts(
-									requestId, sectionId, executionId, terminal.result, modelConsumerIds,
-								);
-								if (!artifacts?.length) {
-									respond({ success: false, error: 'Query results are not permitted for model use.' });
-									return;
-								}
-								const resultSets = projectModelResultSets(artifacts, 5);
-								const primary = resultSets[0];
-								respond({
-									success: true, rowCount: primary.rowCount, columns: primary.columns,
-									resultPreview: JSON.stringify({
-										columns: primary.columns, rows: primary.results, totalRows: primary.rowCount,
-									}, null, 2),
-									resultSets,
-								});
-							} else if (terminal.type === 'queryError') respond({ success: false, error: terminal.error || 'Query execution failed' });
-							else if (terminal.type === 'queryCancelled') respond({ success: false, error: 'Query was cancelled' });
-						} catch (error) {
-							respond({ success: false, error: error instanceof Error ? error.message : String(error) });
-							}
-					};
-					kustoToolExecutionSettlementByRequestId.set(requestId, () => {
-						respond({ success: false, error: 'Query was cancelled' });
-					});
-					window.addEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, resultHandler as EventListener);
-					try {
-						executionId = executeQuery(sectionId, undefined, 'tool') || '';
-						const owner = __kustoGetQuerySectionElement(sectionId)?.getActiveExecution?.();
-						if (!executionId || !owner) respond({ success: false, error: 'Query execution did not start.' });
-						else {
-							kustoToolExecutionOwnerByRequestId.set(requestId, owner);
-							postMessageToHost({ type: 'toolExecutionStarted', requestId, owner });
-							if (cancelledKustoToolRequestIds.delete(requestId)) {
-								try { (window as any).cancelQuery?.(owner.boxId); }
-								finally { kustoToolExecutionSettlementByRequestId.get(requestId)?.(); }
+					if (!sectionOwner) throw new Error(`Query section "${sectionId}" was not found.`);
+					if (optimizationMetadataByBoxId[sectionId]?.isComparison
+						&& (input.clusterUrl || input.connectionId || input.database)) {
+						throw new Error('A Kusto comparison target is owned by its source section and cannot be retargeted independently.');
+					}
+					if (input.execute) {
+						if (!acquireKustoToolExecutionFence(sectionId, requestId)) {
+							throw new Error('Another query configuration is still settling for this section.');
+						}
+						executionFenceHeld = true;
+					}
+					const resolvedTarget = resolveToolKustoConnection(input);
+					if (resolvedTarget.error) throw new Error(resolvedTarget.error);
+					let editor = queryEditors?.[sectionId];
+					if (input.query !== undefined) {
+						if (!editor?.setValue) editor = await waitForQueryEditorReady(sectionId, 10000, sectionOwner);
+						if (!runtimeIsCurrent()) throw new Error('The document runtime changed while the query editor was becoming ready.');
+						throwIfCancelled();
+						if (!sectionIsCurrent()) throw new Error(`Query section "${sectionId}" changed before its editor became ready.`);
+						if (!editor?.setValue) throw new Error(`Query section "${sectionId}" editor is not ready.`);
+					}
+					throwIfCancelled();
+					if (!sectionIsCurrent()) throw new Error(`Query section "${sectionId}" changed before configuration could apply.`);
+					if (input.name !== undefined) { __kustoSetSectionName(sectionId, input.name); success = true; }
+					if (input.query !== undefined) {
+						editor.setValue(String(input.query));
+						success = true;
+					}
+					if (input.clusterUrl || input.connectionId || input.database) {
+						const applied = applyToolKustoTarget(sectionId, input);
+						if (!applied.success) throw new Error(applied.error);
+						success = true;
+					}
+					if (input.execute) {
+						setRunMode(sectionId, 'plain');
+						const configuredSignature = getSectionSerializedSignature(sectionId);
+						const configuredOperationalState = captureKustoToolOperationalState(sectionId);
+						const configurationChanged = persistedMutationRequested || configuredSignature !== beforeSignature;
+						if (configurationChanged) {
+							const ownership = await ensureConfigurationOwned(configuredSignature);
+							if (!ownership) throw new Error('The configured query was not accepted by the document host.');
+							if (ownership === 'reconciled') {
+								editor = await waitForQueryEditorReady(sectionId, 10000, sectionOwner);
+								if (!editor) throw new Error('The reconciled query editor is not ready.');
 							}
 						}
-						success = true;
-					} catch (error) {
-						failureError = error instanceof Error ? error.message : String(error);
-						respond({ success: false, error: failureError });
+						throwIfCancelled();
+						const dispatchOperationalState = captureKustoToolOperationalState(sectionId);
+						if (!sectionIsCurrent()
+							|| getSectionSerializedSignature(sectionId) !== configuredSignature
+							|| !sameToolOperationalConfiguration(configuredOperationalState, dispatchOperationalState)
+							|| !sameToolOperationalState(
+								dispatchOperationalState,
+								captureKustoToolOperationalState(sectionId),
+							)) {
+							throw new Error('The query section changed before execution could start.');
+						}
+						deferResponse = true;
+						let responded = false;
+						let executionId = '';
+						const modelConsumerIds = new Set<string>([indexedModelConsumerId(requestId, 0)]);
+						const cleanup = () => {
+							try { window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, resultHandler as EventListener); } catch { /* best effort */ }
+							try { kustoToolExecutionOwnerByRequestId.delete(requestId); } catch { /* best effort */ }
+							try { kustoToolExecutionSettlementByRequestId.delete(requestId); } catch { /* best effort */ }
+							try { cancelledKustoToolRequestIds.delete(requestId); } catch { /* best effort */ }
+							releaseModelResultConsumers(modelConsumerIds);
+						};
+						const respond = (result: unknown) => {
+							if (responded) return;
+							responded = true;
+							cleanup();
+							postMessageToHost({ type: 'toolResponse', requestId, result });
+						};
+						const resultHandler = (event: Event) => {
+							try {
+								const terminal = (event as CustomEvent).detail;
+								if (!executionId || terminal?.executionId !== executionId || terminal?.boxId !== sectionId) return;
+								if (terminal.type === 'queryResult') {
+									const artifacts = bindModelResultArtifacts(
+										requestId, sectionId, executionId, terminal.result, modelConsumerIds,
+									);
+									if (!artifacts?.length) {
+										respond({ success: false, error: 'Query results are not permitted for model use.' });
+										return;
+									}
+									const resultSets = projectModelResultSets(artifacts, 5);
+									const primary = resultSets[0];
+									respond({
+										success: true, rowCount: primary.rowCount, columns: primary.columns,
+										resultPreview: JSON.stringify({
+											columns: primary.columns, rows: primary.results, totalRows: primary.rowCount,
+										}, null, 2),
+										resultSets,
+									});
+								} else if (terminal.type === 'queryError') respond({ success: false, error: terminal.error || 'Query execution failed' });
+								else if (terminal.type === 'queryCancelled') respond({ success: false, error: 'Query was cancelled' });
+							} catch (error) {
+								respond({ success: false, error: error instanceof Error ? error.message : String(error) });
+							}
+						};
+						kustoToolExecutionSettlementByRequestId.set(requestId, () => {
+							respond({ success: false, error: 'Query was cancelled' });
+						});
+						window.addEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, resultHandler as EventListener);
+						try {
+							executionId = executeQuery(
+								sectionId, undefined, 'tool', undefined, 'all', requestId,
+							) || '';
+							const owner = __kustoGetQuerySectionElement(sectionId)?.getActiveExecution?.();
+							if (!executionId || !owner) respond({ success: false, error: 'Query execution did not start.' });
+							else {
+								kustoToolExecutionOwnerByRequestId.set(requestId, owner);
+								postMessageToHost({ type: 'toolExecutionStarted', requestId, owner });
+							}
+							success = true;
+						} catch (error) {
+							failureError = error instanceof Error ? error.message : String(error);
+							respond({ success: false, error: failureError });
+						}
+					}
+				} catch (error) {
+					console.error('[Kusto Tools] Error configuring query section:', error);
+					success = false;
+					failureError = error instanceof Error ? error.message : String(error);
+				}
+				if (success) markSectionAgentTouched(sectionId, beforeSignature);
+				if (!deferResponse && success) {
+					const configuredSignature = getSectionSerializedSignature(sectionId);
+					if (!await ensureConfigurationOwned(configuredSignature)) {
+						success = false;
+						failureError = 'The configured query was not accepted by the document host.';
 					}
 				}
-			} catch (error) {
-				console.error('[Kusto Tools] Error configuring query section:', error);
-				success = false;
-				failureError = error instanceof Error ? error.message : String(error);
-			}
-			if (success) {
-				markSectionAgentTouched(sectionId, beforeSignature);
-			}
-			try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
-			if (!deferResponse) {
-				postMessageToHost({
-					type: 'toolResponse', requestId, result: { success, resultPreview: '' },
-					error: success ? undefined : (failureError || 'Failed to configure query section'),
-				});
+				if (!deferResponse) {
+					postMessageToHost({
+						type: 'toolResponse', requestId, result: { success, resultPreview: '' },
+						error: success ? undefined : (failureError || 'Failed to configure query section'),
+					});
+				}
+			} finally {
+				if (executionFenceHeld) releaseKustoToolExecutionFence(sectionId, requestId);
+				configureLease.settle();
+				if (!deferResponse) cancelledKustoToolRequestIds.delete(requestId);
 			}
 			break;
 		}
@@ -5341,66 +5722,122 @@ const __kustoDispatchHostMessage = async (message: any) => {
 
 		// ── SQL tool messages ───────────────────────────────────────────
 
-		case 'toolConfigureSqlSection':
+		case 'toolConfigureSqlSection': {
+			const requestId = String(message.requestId || '');
+			const input = message.input || {};
+			const sectionId = String(input.sectionId || '');
+			const executionId = String(input.executionId || '').trim();
+			const configureRuntimeEpoch = kustoToolConfigureRuntimeEpoch;
+			const configureLease = reserveSqlToolConfigureLease(sectionId);
 			let reservedSqlElement: any;
-			let reservedExecutionId = '';
 			let reservedExecution: Promise<any> | undefined;
+			const configuredSqlElements = new Set<any>();
+			let success = false;
 			try {
-				const requestId = String(message.requestId || '');
-				const input = message.input || {};
-				const sectionId = String(input.sectionId || '');
-				let success = false;
-				const sqlEl = __kustoGetSqlSectionElement(sectionId);
-				const beforeSignature = getSectionSerializedSignature(sectionId);
+				const priorConfigure = configureLease.waitForTurn();
+				if (priorConfigure) await priorConfigure;
+				const runtimeIsCurrent = () => configureRuntimeEpoch === kustoToolConfigureRuntimeEpoch
+					&& isDocumentMutationAllowed();
+				const throwIfCancelled = () => {
+					if (cancelledKustoToolRequestIds.delete(requestId)) throw new Error('Query was cancelled');
+				};
+				let sqlEl = __kustoGetSqlSectionElement(sectionId);
+				const sectionIsCurrent = () => !!sqlEl && runtimeIsCurrent()
+					&& __kustoGetSqlSectionElement(sectionId) === sqlEl;
+				const ensureConfigurationOwned = async (
+					expectedSignature: string,
+				): Promise<'accepted' | 'reconciled' | undefined> => {
+					const persisted = await persistDocumentAndWaitForAck('tool-configure-sql');
+					if (!runtimeIsCurrent()) return undefined;
+					if (persisted) {
+						return sectionIsCurrent() && getSectionSerializedSignature(sectionId) === expectedSignature
+							? 'accepted'
+							: undefined;
+					}
+					const rejectedRevision = pState.documentEditRevision;
+					if (!sectionIsCurrent() || getSectionSerializedSignature(sectionId) !== expectedSignature) return undefined;
+					const reconciled = await reconcileDocumentWithHost(10000, rejectedRevision);
+					if (!runtimeIsCurrent()) return undefined;
+					if (!reconciled) {
+						if (pState.documentEditRevision === rejectedRevision && sectionIsCurrent()
+							&& getSectionSerializedSignature(sectionId) === expectedSignature) {
+							lockDocumentAfterPersistenceFailure();
+						}
+						return undefined;
+					}
+					sqlEl = __kustoGetSqlSectionElement(sectionId);
+					return !!sqlEl && getSectionSerializedSignature(sectionId) === expectedSignature
+						? 'reconciled'
+						: undefined;
+				};
+
+				if (!runtimeIsCurrent()) throw new Error('The document runtime changed before SQL configuration could start.');
+				throwIfCancelled();
+				if (input.name !== undefined && pState.compatibilityMode
+					&& (pState.documentKind === 'kql' || pState.documentKind === 'sql')) {
+					throw new Error('Section names require a companion metadata file. Upgrade this compatibility document before setting a name.');
+				}
 				if (!sqlEl) throw new Error(`SQL section "${sectionId}" was not found.`);
+				if (sqlEl.isComparisonAdmissionPending?.() === true) {
+					throw new Error('SQL comparison admission is still settling.');
+				}
 				if (input.execute) {
-					reservedExecutionId = String(input.executionId || '').trim();
-					if (typeof sqlEl.reserveToolRun !== 'function' || typeof sqlEl.startReservedToolRun !== 'function') {
+					if (!executionId || typeof sqlEl.beginToolConfiguration !== 'function'
+						|| typeof sqlEl.reserveToolRun !== 'function'
+						|| typeof sqlEl.startReservedToolRun !== 'function') {
 						throw new Error('SQL section does not support tool execution reservation.');
 					}
-					reservedSqlElement = sqlEl;
-					const execution = sqlEl.reserveToolRun(reservedExecutionId) as Promise<any>;
-					reservedExecution = execution;
-					void execution.catch(() => undefined);
+					sqlEl.beginToolConfiguration(executionId);
+					configuredSqlElements.add(sqlEl);
 				}
+				let requestedConnection: any;
 				if (input.connectionId || input.serverUrl || (input.execute && input.resolvedConnection)) {
 					const requestedConnectionId = String(input.connectionId || input.resolvedConnection?.id || '');
-					const conn = (Array.isArray(sqlConnections) ? sqlConnections : []).find((candidate: any) =>
+					requestedConnection = (Array.isArray(sqlConnections) ? sqlConnections : []).find((candidate: any) =>
 						candidate && (requestedConnectionId
 							? String(candidate.id || '') === requestedConnectionId
 							: String(candidate.serverUrl || '').toLowerCase().includes(String(input.serverUrl).toLowerCase()))
 					) || (input.resolvedConnection && String(input.resolvedConnection.id || '') === requestedConnectionId
 						? input.resolvedConnection
 						: undefined);
-					if (!conn || (requestedConnectionId && String(conn.id || '') !== requestedConnectionId)) {
+					if (!requestedConnection || (requestedConnectionId && String(requestedConnection.id || '') !== requestedConnectionId)) {
 						throw new Error('The exact requested SQL connection is not available in this editor.');
 					}
-					if (input.requestedTargetSignature && sqlConnectionTargetSignature(conn) !== String(input.requestedTargetSignature)) {
+					if (input.requestedTargetSignature
+						&& sqlConnectionTargetSignature(requestedConnection) !== String(input.requestedTargetSignature)) {
 						throw new Error('The requested SQL connection target changed before adoption.');
 					}
-					if (typeof sqlEl.configureToolTarget !== 'function') throw new Error('SQL section does not support exact tool targeting.');
+					if (typeof sqlEl.configureToolTarget !== 'function') {
+						throw new Error('SQL section does not support exact tool targeting.');
+					}
+				}
+				throwIfCancelled();
+				const beforeSignature = getSectionSerializedSignature(sectionId);
+				if (requestedConnection) {
 					sqlEl.configureToolTarget(
-						conn,
+						requestedConnection,
 						input.database !== undefined ? String(input.database) : undefined,
 						input.execute ? input.expectedExecutionOwner : undefined,
 					);
 					success = true;
 				}
-				if (input.execute && input.expectedExecutionOwner && !input.connectionId && !input.serverUrl && !input.resolvedConnection) {
-					if (typeof sqlEl.setToolExpectedOwner !== 'function') throw new Error('SQL section does not support exact tool ownership.');
+				if (input.execute && input.expectedExecutionOwner
+					&& !input.connectionId && !input.serverUrl && !input.resolvedConnection) {
+					if (typeof sqlEl.setToolExpectedOwner !== 'function') {
+						throw new Error('SQL section does not support exact tool ownership.');
+					}
 					sqlEl.setToolExpectedOwner(input.expectedExecutionOwner);
 				}
-
-				if (input.name !== undefined && sqlEl && typeof sqlEl.setName === 'function') {
+				if (input.name !== undefined && typeof sqlEl.setName === 'function') {
 					sqlEl.setName(String(input.name));
 					success = true;
 				}
-				if (input.query !== undefined && sqlEl && typeof sqlEl.setQuery === 'function') {
+				if (input.query !== undefined && typeof sqlEl.setQuery === 'function') {
 					sqlEl.setQuery(String(input.query));
 					success = true;
 				}
-				if (input.database && !input.connectionId && !input.serverUrl && !input.execute && sqlEl && typeof sqlEl.setDatabase === 'function') {
-					if (input.serverUrl) await new Promise((r: any) => setTimeout(r, 500));
+				if (input.database && !input.connectionId && !input.serverUrl && !input.execute
+					&& typeof sqlEl.setDatabase === 'function') {
 					sqlEl.setDatabase(String(input.database));
 					sqlEl.dispatchEvent(new CustomEvent('sql-database-changed', {
 						detail: { boxId: sectionId, database: input.database, source: 'tool' },
@@ -5408,38 +5845,82 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					}));
 					success = true;
 				}
-				if (input.execute && sqlEl) {
-					// Force 'Run Query' mode (plain) — agent-generated queries must not
-					// have TOP 100 limits silently appended.
-					try { setRunMode(sectionId, 'plain'); } catch (e) { console.error('[kusto]', e); }
-					sqlEl.startReservedToolRun(reservedExecutionId);
-					const execution = await reservedExecution!;
-					(message as any).__resultPreview = `${execution.rowCount} row${execution.rowCount === 1 ? '' : 's'}`;
-					(message as any).__executionOwner = execution.owner;
-					(message as any).__executionId = execution.executionId;
-					success = true;
+				if (input.execute) {
+					try { setRunMode(sectionId, 'plain'); } catch (error) { console.error('[kusto]', error); }
 				}
-				if (success) {
-					markSectionAgentTouched(sectionId, beforeSignature);
-					try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
+				const configuredSignature = getSectionSerializedSignature(sectionId);
+				const configuredOperationalState = captureSqlToolOperationalState(sectionId);
+				const configurationChanged = success || configuredSignature !== beforeSignature;
+				if (configurationChanged) {
+					const ownership = await ensureConfigurationOwned(configuredSignature);
+					if (!ownership) throw new Error('The configured SQL query was not accepted by the document host.');
+					if (ownership === 'reconciled' && input.execute) {
+						if (!sqlEl || typeof sqlEl.beginToolConfiguration !== 'function'
+							|| typeof sqlEl.reserveToolRun !== 'function'
+							|| typeof sqlEl.startReservedToolRun !== 'function') {
+							throw new Error('The reconciled SQL section does not support tool execution reservation.');
+						}
+						sqlEl.beginToolConfiguration(executionId);
+						configuredSqlElements.add(sqlEl);
+						if (input.expectedExecutionOwner) {
+							if (typeof sqlEl.setToolExpectedOwner !== 'function') {
+								throw new Error('The reconciled SQL section does not support exact tool ownership.');
+							}
+							sqlEl.setToolExpectedOwner(input.expectedExecutionOwner);
+						}
+					}
+				}
+				throwIfCancelled();
+				const dispatchOperationalState = captureSqlToolOperationalState(sectionId);
+				if (!sectionIsCurrent()
+					|| getSectionSerializedSignature(sectionId) !== configuredSignature
+					|| !sameToolOperationalConfiguration(configuredOperationalState, dispatchOperationalState)
+					|| !sameToolOperationalState(
+						dispatchOperationalState,
+						captureSqlToolOperationalState(sectionId),
+					)) {
+					throw new Error('The SQL section changed before execution could start.');
+				}
+				if (configurationChanged) markSectionAgentTouched(sectionId, beforeSignature);
+				let execution: any;
+				if (input.execute) {
+					reservedSqlElement = sqlEl;
+					reservedExecution = sqlEl.reserveToolRun(executionId) as Promise<any>;
+					void reservedExecution.catch(() => undefined);
+					sqlEl.startReservedToolRun(executionId);
+					execution = await reservedExecution!;
+					success = true;
 				}
 				postMessageToHost({
 					type: 'toolResponse', requestId,
 					result: {
 						success,
-						...((message as any).__resultPreview ? { resultPreview: (message as any).__resultPreview } : {}),
-						...((message as any).__executionOwner ? { executionOwner: (message as any).__executionOwner } : {}),
-						...((message as any).__executionId ? { executionId: (message as any).__executionId } : {}),
+						...(execution ? {
+							resultPreview: `${execution.rowCount} row${execution.rowCount === 1 ? '' : 's'}`,
+							executionOwner: execution.owner,
+							executionId: execution.executionId,
+						} : {}),
 					},
 				});
-			} catch (err: any) {
-				reservedSqlElement?.abortReservedToolRun?.(reservedExecutionId, err);
-				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+			} catch (error) {
+				reservedSqlElement?.abortReservedToolRun?.(executionId, error);
+				for (const element of configuredSqlElements) element?.clearToolExpectedOwner?.();
+				postMessageToHost({
+					type: 'toolResponse', requestId, result: { success: false },
+					error: error instanceof Error ? error.message : String(error),
+				});
+			} finally {
+				for (const element of configuredSqlElements) element?.endToolConfiguration?.(executionId);
+				configureLease.settle();
+				cancelledKustoToolRequestIds.delete(requestId);
 			}
 			break;
+		}
 
 		case 'toolCancelSqlExecution':
 			try {
+				const requestId = String(message.requestId || '');
+				if (requestId) cancelledKustoToolRequestIds.add(requestId);
 				const sqlEl = __kustoGetSqlSectionElement(String(message.sectionId || ''));
 				if (typeof sqlEl?.cancelToolRun === 'function') sqlEl.cancelToolRun(String(message.executionId || ''));
 			} catch (e) { console.error('[kusto]', e); }

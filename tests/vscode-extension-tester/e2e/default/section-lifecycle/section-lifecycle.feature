@@ -23,7 +23,7 @@ Feature: Section lifecycle — add, rename, collapse, expand, remove all section
     Then I take a screenshot "01-kql-added"
 
     # ── TEST 2: Rename KQL section ────────────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const shell = el.shadowRoot?.querySelector('kw-section-shell'); if (!shell) throw new Error('No section shell'); const nameInput = shell.shadowRoot?.querySelector('input.section-name'); if (!nameInput) throw new Error('No name input found'); nameInput.value = 'My KQL Test'; nameInput.dispatchEvent(new Event('input', { bubbles: true })); nameInput.dispatchEvent(new Event('change', { bubbles: true })); return 'renamed ✓'; })()" in the webview
+    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (!el) throw new Error('No KQL section found'); const shell = el.shadowRoot?.querySelector('kw-section-shell'); if (!shell) throw new Error('No KQL section shell found'); const nameInput = shell.shadowRoot?.querySelector('input.query-name'); if (!(nameInput instanceof HTMLInputElement)) throw new Error('No .query-name input found'); nameInput.focus(); nameInput.value = 'My KQL Test'; nameInput.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: 'My KQL Test' })); nameInput.dispatchEvent(new Event('change', { bubbles: true })); return 'renamed KQL section through .query-name ✓'; })()" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const data = el.serialize(); if (data.name !== 'My KQL Test') throw new Error('Expected name=My KQL Test, got: ' + data.name); return 'name persisted: ' + data.name + ' ✓'; })()" in the webview

@@ -50,6 +50,9 @@ Feature: Webview editor cursor status bar
     When I evaluate "window.__e2e.cursorStatus.focusMarkdown(1, 3)" in the webview for 10 seconds
     Then I evaluate "window.__e2e.cursorStatus.assertVisible('markdown', 1, 3)" in the webview for 10 seconds
     And I evaluate "window.__e2e.cursorStatus.assertStatusBarVisible('markdown', 1, 3)" in the webview for 10 seconds
+    When I evaluate "window.__e2e.cursorStatus.focusMarkdownWysiwyg(3, 3)" in the webview for 10 seconds
+    Then I evaluate "window.__e2e.cursorStatus.assertVisible('markdown', 3, 3)" in the webview for 10 seconds
+    And I evaluate "window.__e2e.cursorStatus.assertStatusBarVisible('markdown', 3, 3)" in the webview for 10 seconds
     When I evaluate "window.__e2e.cursorStatus.setMarkdownPreview()" in the webview for 10 seconds
     Then I evaluate "window.__e2e.cursorStatus.assertHidden('markdown')" in the webview for 10 seconds
     And I evaluate "window.__e2e.cursorStatus.assertStatusBarHidden()" in the webview for 10 seconds

@@ -21,12 +21,14 @@ Feature: Kusto worker schema replacement
     When I evaluate "window.__e2e.suggest.kusto.hide()" in the webview
     When I evaluate "window.__e2e.suggest.kusto.trigger()" in the webview
     When I evaluate "window.__e2e.suggest.kusto.assertRenderedSnapshotsIncludeAndExcludeColumns('worker schema A columns', 'VersionOnlyOld', 'VersionOnlyNew', 3000, 100)" in the webview for 10 seconds
+    And I wait 1 second
 
     When I evaluate "window.__e2e.kusto.applySchemaReplacementFixture('B')" in the webview
     When I evaluate "window.__e2e.kusto.setQueryWithCaretMarkerStrict('Events\n| project VersionOnly⟦caret⟧')" in the webview
     When I evaluate "window.__e2e.suggest.kusto.hide()" in the webview
     When I evaluate "window.__e2e.suggest.kusto.trigger()" in the webview
-    When I evaluate "window.__e2e.suggest.kusto.assertRenderedSnapshotsIncludeAndExcludeColumns('worker schema B replaces A', 'VersionOnlyNew', 'VersionOnlyOld', 3000, 100)" in the webview for 10 seconds
+    When I evaluate "window.__e2e.suggest.kusto.waitExistingAllColumnsVisible('worker schema B replaces A', 'VersionOnlyNew', 5000)" in the webview for 10 seconds
+    When I evaluate "window.__e2e.suggest.kusto.assertRenderedSnapshotsExcludeColumns('worker schema B removed old columns', 'VersionOnlyOld', 1500, 100)" in the webview for 10 seconds
     When I evaluate "window.__e2e.suggest.kusto.hide()" in the webview
     When I evaluate "window.__e2e.suggest.kusto.trigger()" in the webview
     When I evaluate "window.__e2e.suggest.kusto.waitExistingAllColumnsVisible('worker schema B acceptance', 'VersionOnlyNew', 5000)" in the webview for 10 seconds

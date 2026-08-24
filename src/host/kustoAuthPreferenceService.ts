@@ -80,6 +80,7 @@ export class KustoAuthPreferenceService implements vscode.Disposable {
 	private readonly changeEmitter = new vscode.EventEmitter<KustoAuthPreferenceChange>();
 	readonly onDidChange = this.changeEmitter.event;
 	private writeChain: Promise<unknown> = Promise.resolve();
+	private writeAdmissionRevision = 0;
 	private readonly authSubscription: vscode.Disposable | undefined;
 	private providerAccountIds = new Set<string>();
 	private providerAccountsInitialized = false;
@@ -253,6 +254,19 @@ export class KustoAuthPreferenceService implements vscode.Disposable {
 
 	async waitForProviderAccountRefresh(): Promise<void> {
 		await this.providerAccountRefresh;
+	}
+
+	async waitForWriteSettlement(quietMs = 0): Promise<void> {
+		const requiredQuietMs = Math.max(0, Number.isFinite(quietMs) ? quietMs : 0);
+		while (true) {
+			const settlement = this.writeChain;
+			const revision = this.writeAdmissionRevision;
+			await settlement;
+			if (settlement !== this.writeChain || revision !== this.writeAdmissionRevision) continue;
+			if (requiredQuietMs === 0) return;
+			await new Promise(resolve => setTimeout(resolve, requiredQuietMs));
+			if (settlement === this.writeChain && revision === this.writeAdmissionRevision) return;
+		}
 	}
 
 	private invalidateUncertainProviderChange(event?: ProviderSessionChange): void {
@@ -529,6 +543,7 @@ export class KustoAuthPreferenceService implements vscode.Disposable {
 	}
 
 	private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+		this.writeAdmissionRevision++;
 		const next = this.writeChain.then(operation, operation);
 		this.writeChain = next.catch(() => undefined);
 		return next;

@@ -214,6 +214,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	private _queryRevision = 0;
 	private _comparisonPersistenceSnapshot?: SqlSectionData;
 	private _comparisonAdmissionPending = false;
+	private _toolConfigurationExecutionId = '';
 
 	private _editorResizeObserver: ResizeObserver | null = null;
 
@@ -568,6 +569,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	private _syncActionBar(): void {
 		const id = this.boxId;
 		const runBtn = document.getElementById(id + '_sql_run_btn') as HTMLButtonElement | null;
+		const runToggle = document.getElementById(id + '_sql_run_toggle') as HTMLButtonElement | null;
 		const cancelBtn = document.getElementById(id + '_sql_cancel_btn') as HTMLButtonElement | null;
 		const execStatus = document.getElementById(id + '_sql_exec_status') as HTMLElement | null;
 		const elapsedSpan = document.getElementById(id + '_sql_elapsed') as HTMLElement | null;
@@ -576,7 +578,8 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (runBtn) {
 			const protectedByLeaveNoTrace = this._leaveNoTraceConnectionIds.has(this._sqlConnectionId);
 			const waitingForOwner = !!this._sqlConnectionId && !!this._database && !this._ownerToken;
-			runBtn.disabled = this._comparisonAdmissionPending
+			runBtn.disabled = this._comparisonAdmissionPending || !!this._toolConfigurationExecutionId
+				|| this.sqlSession.hasPendingToolRun
 				|| !this._sqlConnectionId || !this._database || !this._ownerToken || this._executing;
 			const labelText = this._getSqlRunModeLabel();
 			const labelSpan = runBtn.querySelector('.run-btn-label');
@@ -590,6 +593,9 @@ export class KwSqlSection extends LitElement implements SectionElement {
 				: 'Select a server and database first (or select a favorite)';
 			runBtn.title = labelText + (runBtn.disabled ? `\n${disabledReason}` : '');
 		}
+		if (runToggle) runToggle.disabled = this._comparisonAdmissionPending
+			|| !!this._toolConfigurationExecutionId
+			|| this.sqlSession.hasPendingToolRun || this._executing;
 		if (cancelBtn) cancelBtn.style.display = this._executing ? '' : 'none';
 		if (execStatus) execStatus.style.display = this._executing ? '' : 'none';
 		if (elapsedSpan) elapsedSpan.textContent = this._elapsedText || '0:00';
@@ -1561,6 +1567,31 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		try { this._editor?.updateOptions({ readOnly, domReadOnly: readOnly }); } catch (e) { console.error('[kusto]', e); }
 		this._syncActionBar();
 	}
+	public isComparisonAdmissionPending(): boolean { return this._comparisonAdmissionPending; }
+	public canAcceptExternalQueryMutation(): boolean {
+		return !this._comparisonAdmissionPending
+			&& !this._toolConfigurationExecutionId
+			&& !this.sqlSession.hasPendingToolRun;
+	}
+	public beginToolConfiguration(executionId: string): void {
+		const id = String(executionId || '').trim();
+		if (!id) throw new Error('SQL tool execution ID is unavailable.');
+		if (this._comparisonAdmissionPending) throw new Error('SQL comparison admission is still settling.');
+		if (this._executing || this._activeQueryExecutionId) {
+			throw new Error('A SQL query is already running for this section.');
+		}
+		if (this.sqlSession.hasPendingToolRun || (this._toolConfigurationExecutionId && this._toolConfigurationExecutionId !== id)) {
+			throw new Error('A SQL tool query is already running for this section.');
+		}
+		this._toolConfigurationExecutionId = id;
+		this._syncActionBar();
+	}
+	public endToolConfiguration(executionId: string): void {
+		if (this._toolConfigurationExecutionId !== String(executionId || '').trim()) return;
+		this._toolConfigurationExecutionId = '';
+		this._syncActionBar();
+	}
+	public clearToolExpectedOwner(): void { this.sqlSession.clearToolExpectedOwner(); }
 	public getActiveQueryExecutionId(): string { return this._activeQueryExecutionId; }
 	public isQueryExecuting(): boolean { return this._executing; }
 	public retireForDocumentInvalidation(): void {
@@ -2493,10 +2524,19 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	public reserveToolRun(executionId: string): Promise<SqlToolRunResult> {
 		if (this._isReadOnlyBrowserHost()) throw new Error('SQL execution is unavailable in the read-only browser viewer.');
 		if (this._comparisonAdmissionPending) throw new Error('SQL comparison admission is still settling.');
+		if (this._executing || this._activeQueryExecutionId) {
+			throw new Error('A SQL query is already running for this section.');
+		}
 		if (this.sqlSession.hasPendingToolRun) throw new Error('A SQL tool query is already running for this section.');
 		const id = String(executionId || '').trim();
 		if (!id) throw new Error('SQL tool execution ID is unavailable.');
-		return this.sqlSession.beginToolRun(id);
+		if (this._toolConfigurationExecutionId && this._toolConfigurationExecutionId !== id) {
+			throw new Error('Another SQL tool configuration is still settling for this section.');
+		}
+		const result = this.sqlSession.beginToolRun(id);
+		if (this._toolConfigurationExecutionId === id) this._toolConfigurationExecutionId = '';
+		this._syncActionBar();
+		return result;
 	}
 
 	public startReservedToolRun(executionId: string): void {
@@ -2511,10 +2551,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			);
 			throw new Error('Select a SQL connection and database and provide a query before executing.');
 		}
-		if (!this.sqlSession.capturePendingToolQuery(id, this._getQueryText())) {
+		if (!this.sqlSession.capturePendingToolQuery(id, this._getQueryText(), getRunMode(this.boxId))) {
 			throw new Error('SQL tool execution reservation changed before query admission.');
 		}
 		this._connectStsIfReady('tool-execution');
+		this._syncActionBar();
 		this._startPendingToolRunIfReady();
 	}
 
@@ -2523,6 +2564,8 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			error instanceof Error ? error : new Error(String(error)),
 			String(executionId || '').trim(),
 		);
+		this.sqlSession.clearToolExpectedOwner();
+		this._syncActionBar();
 	}
 
 	public runForTool(executionId: string): Promise<SqlToolRunResult> {
@@ -2549,15 +2592,30 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	private _startPendingToolRunIfReady(): void {
 		if (!this.sqlSession.hasPendingToolRun || !this._ownerToken || this._executing) return;
 		if (!this.sqlSession.capturePendingToolOwner(this._sqlConnectionId, this._database)) return;
-		if (!this._runQuery()) {
+		if (!this._runReservedToolQuery()) {
 			this.sqlSession.rejectPendingToolRun(new Error('SQL query could not start.'));
 		}
 	}
 
 	public cancelToolRun(expectedExecutionId?: string): void {
-		if (expectedExecutionId !== undefined && this.sqlSession.pendingToolExecutionId !== expectedExecutionId) return;
+		const expected = String(expectedExecutionId || '').trim();
+		if (expected) {
+			if (this.sqlSession.pendingToolExecutionId === expected) {
+				if (this._executing && this._activeQueryExecutionId === expected) this._cancelQuery();
+				else {
+					this.sqlSession.rejectPendingToolRun(new Error('SQL query was cancelled.'), expected);
+					this._rememberCancelledExecution(expected);
+					this._syncActionBar();
+				}
+				return;
+			}
+			if (this._executing && this._activeQueryExecutionId === expected) {
+				this._cancelQuery();
+				this.notifyToolRunCancelled(expected);
+			}
+			return;
+		}
 		this._cancelQuery();
-		this.notifyToolRunCancelled(expectedExecutionId);
 	}
 
 	public acceptsQueryTerminal(executionId?: string): boolean {
@@ -2571,7 +2629,8 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	public setExternalQueryExecuting(executing: boolean, executionId?: string): boolean {
 		const id = String(executionId || '').trim();
 		if (executing) {
-			if (this._comparisonAdmissionPending) return false;
+			if (this._comparisonAdmissionPending || !!this._toolConfigurationExecutionId
+				|| this.sqlSession.hasPendingToolRun) return false;
 			if (!id) return false;
 			if (!this.sqlSession.beginExecution(id)) return false;
 			this._retireResultDataForRerun();
@@ -2609,6 +2668,18 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	}
 
 	private _runQuery(): boolean {
+		if (this._toolConfigurationExecutionId || this.sqlSession.hasPendingToolRun) return false;
+		return this._runQueryCore();
+	}
+
+	private _runReservedToolQuery(): boolean {
+		if (!this.sqlSession.hasPendingToolRun
+			|| !this.sqlSession.pendingToolQuery
+			|| !this.sqlSession.pendingToolQueryMode) return false;
+		return this._runQueryCore();
+	}
+
+	private _runQueryCore(): boolean {
 		if (this._isReadOnlyBrowserHost()) return false;
 		if (this._comparisonAdmissionPending || this._executing || !this._sqlConnectionId || !this._database) {
 			return false;
@@ -2662,7 +2733,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			database: this._database,
 			boxId: this.boxId,
 			sectionInstanceId: this.sqlSession.instanceId,
-			queryMode: getRunMode(this.boxId),
+			queryMode: this.sqlSession.pendingToolQueryMode || getRunMode(this.boxId),
 			ownerToken: this._ownerToken,
 			executionId,
 			...comparisonSourceIdentity,
@@ -2684,6 +2755,8 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	}
 
 	private _toggleSqlRunMenu(): void {
+		if (this._toolConfigurationExecutionId || this.sqlSession.hasPendingToolRun
+			|| this._executing || this._comparisonAdmissionPending) return;
 		const menu = document.getElementById(this.boxId + '_sql_run_menu') as HTMLElement | null;
 		if (!menu) return;
 		const next = menu.style.display === 'block' ? 'none' : 'block';
@@ -2710,6 +2783,8 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	}
 
 	private _applySqlRunMode(mode: string): void {
+		if (this._toolConfigurationExecutionId || this.sqlSession.hasPendingToolRun
+			|| this._executing || this._comparisonAdmissionPending) return;
 		setRunMode(this.boxId, mode);
 		this._syncActionBar();
 		try {

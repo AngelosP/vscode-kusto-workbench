@@ -4,6 +4,7 @@ import {
 	getDomSelectionCursorPosition,
 	getMarkdownCursorPosition,
 	getTextareaCursorPosition,
+	getToastUiMarkdownCursorPosition,
 	offsetToMarkdownCursorPosition,
 } from '../../../src/webview/shared/markdown-cursor-position';
 
@@ -51,6 +52,23 @@ describe('markdown cursor position helpers', () => {
 		codeMirror.CodeMirror = { getCursor: () => ({ line: Number.NaN, ch: 4 }) };
 		expect(getCodeMirrorCursorPosition(root)).toBeNull();
 		root.remove();
+	});
+
+	it('reads one-based Toast UI Markdown selections', () => {
+		expect(getToastUiMarkdownCursorPosition({ getSelection: () => [[1, 3], [1, 3]] })).toEqual({ line: 1, column: 3 });
+		expect(getToastUiMarkdownCursorPosition({ getSelection: () => [2, 4] })).toBeNull();
+		expect(getToastUiMarkdownCursorPosition({ getSelection: () => [[0, 1], [0, 1]] })).toBeNull();
+	});
+
+	it('converts Toast UI WYSIWYG offsets to Markdown positions', () => {
+		const convertPosToMatchEditorMode = (start: number, end: number, mode: string) => {
+			expect({ start, end, mode }).toEqual({ start: 17, end: 17, mode: 'markdown' });
+			return [[3, 5], [3, 5]];
+		};
+		expect(getToastUiMarkdownCursorPosition({
+			getSelection: () => [17, 17],
+			convertPosToMatchEditorMode,
+		})).toEqual({ line: 3, column: 5 });
 	});
 
 	it('reads DOM selection cursor positions inside a root', () => {

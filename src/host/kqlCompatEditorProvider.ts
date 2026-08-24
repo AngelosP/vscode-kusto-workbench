@@ -1114,7 +1114,9 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					// In Explorer single-click preview mode, VS Code can reuse the same webview
 					// panel for different files. Force reload here so documentData is always
 					// re-applied for the current document.
-					await projectionCoordinator.requestDocument(String(message.requestId));
+					await projectionCoordinator.requestDocument(
+						String(message.requestId), Number((message as any).expectedEditRevision),
+					);
 					perfMark('host.kqlCompat.requestDocument.completed');
 					fileOpenTrace.mark('requestDocument.completed');
 					return;

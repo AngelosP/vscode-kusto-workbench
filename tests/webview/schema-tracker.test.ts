@@ -205,6 +205,19 @@ describe('SchemaTracker', () => {
 
 	// ── Force refresh ────────────────────────────────────────────────────
 	describe('force refresh', () => {
+		it('replaces an already-loaded schema for the active database', async () => {
+			await tracker.processSchema(input({ modelUri: MODEL_1, database: DB_1 }), worker);
+			worker.calls.length = 0;
+
+			const r = await tracker.processSchema(
+				input({ modelUri: MODEL_1, database: DB_1, forceRefresh: true, rawSchemaJson: makeSchema(DB_1) }),
+				worker,
+			);
+
+			expect(r.operation).toEqual({ action: 'replace', reason: 'force-refresh' });
+			expect(r.workerCall).toBe('setSchemaFromShowSchema');
+		});
+
 		it('uses add path even when database differs (no disruption)', async () => {
 			await tracker.processSchema(input({ modelUri: MODEL_1, database: DB_1 }), worker);
 

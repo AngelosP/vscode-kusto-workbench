@@ -21,8 +21,7 @@ Feature: KQL companion metadata close
     When I wait for "button[data-add-kind='markdown']" in the webview for 10 seconds
     And I click "button[data-add-kind='markdown']" in the webview
     And I wait 2 seconds
-    When I evaluate "(() => { const section = document.querySelector('kw-markdown-section'); if (!section) throw new Error('Markdown section was not added'); section.setText('Saved from close prompt'); section.setName('Close prompt note'); section.commitDocumentState(); window.schedulePersist('close-prompt-e2e', true); return section.id; })()" in the webview
-    And I wait 1 second
+    When I evaluate "(async () => { const section = document.querySelector('kw-markdown-section'); if (!section) throw new Error('Markdown section was not added'); section.setText('Saved from close prompt'); section.setName('Close prompt note'); section.commitDocumentState(); const snapshotId = await window.__e2e.workbench.persistAndWait('close-prompt-e2e'); return { sectionId: section.id, snapshotId }; })()" in the webview for 20 seconds
     Then I collect JSON artifact "sidecar-dirty-before-close" from extension host expression "(async () => { const document = vscode.workspace.textDocuments.find(candidate => candidate.uri.path.replace(/\\/g, '/').endsWith('/tests/vscode-extension-tester/e2e/default/kql-companion-close/sidecar-close.kql')); if (!document) throw new Error('Open sidecar-close.kql document is unavailable'); const uri = document.uri.with({ path: document.uri.path + '.json' }); const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri)); if (text.includes('Saved from close prompt')) throw new Error('Dirty sidecar was written before close'); return { persistedBeforeClose: false, bytes: text.length }; })()"
     When I start command "workbench.action.closeActiveEditor"
     And I wait 1 second
@@ -59,8 +58,7 @@ Feature: KQL companion metadata close
     When I wait for "button[data-add-kind='markdown']" in the webview for 10 seconds
     And I click "button[data-add-kind='markdown']" in the webview
     And I wait 2 seconds
-    When I evaluate "(() => { const section = document.querySelector('kw-markdown-section'); if (!section) throw new Error('Markdown section was not added'); section.setText('Must be discarded'); section.setName('Discarded note'); section.commitDocumentState(); window.schedulePersist('discard-close-e2e', true); return section.id; })()" in the webview
-    And I wait 1 second
+    When I evaluate "(async () => { const section = document.querySelector('kw-markdown-section'); if (!section) throw new Error('Markdown section was not added'); section.setText('Must be discarded'); section.setName('Discarded note'); section.commitDocumentState(); const snapshotId = await window.__e2e.workbench.persistAndWait('discard-close-e2e'); return { sectionId: section.id, snapshotId }; })()" in the webview for 20 seconds
     When I start command "workbench.action.closeActiveEditor"
     And I wait 1 second
     When I click "Discard" on the "Visual Studio Code" dialog

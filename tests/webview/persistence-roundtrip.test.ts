@@ -405,14 +405,14 @@ vi.mock('../../src/webview/monaco/monaco.js', () => ({
 
 import { createEmptyQueryEditorPendingAdds, pState } from '../../src/webview/shared/persistence-state.js';
 import { postMessageToHost } from '../../src/webview/shared/webview-messages.js';
-import { clearResultsState, displayResult, displayResultBatchForBox, displayResultForBox } from '../../src/webview/core/results-state.js';
+import { clearResultsState, displayResult, displayResultBatchForBox, displayResultForBox, getResultsStateRevision } from '../../src/webview/core/results-state.js';
 import { optimizationMetadataByBoxId, sqlFavoritesModeByBoxId } from '../../src/webview/core/state.js';
 import { updateConnectionSelects, __kustoGetConnectionId, __kustoGetDatabase, __kustoGetQuerySectionElement, __kustoSetAutoEnterFavoritesForBox } from '../../src/webview/core/section-factory.js';
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
 import { __kustoCloseShareModal, setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
 import { addChartBox } from '../../src/webview/sections/kw-chart-section.js';
 import { addTransformationBox } from '../../src/webview/sections/kw-transformation-section.js';
-import { acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyBrowserViewerDocumentProjection, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, beginKustoLeaveNoTracePolicyApplication, captureKustoLeaveNoTracePolicyRuntime, createSectionWithCapabilities, discardPendingSqlResultRestores, finalizeDocumentDefaultsAfterAcknowledgement, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, installRuntimeAddSectionBridges, markKustoLeaveNoTracePolicyPending, resetDocumentPersistenceForTest, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, restoreKustoLeaveNoTracePolicyRuntime, schedulePersist, __kustoApplyDocumentCapabilities, __kustoClearStoredQueryResult, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
+import { acknowledgeDocumentReconciliation, acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyBrowserViewerDocumentProjection, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, beginKustoLeaveNoTracePolicyApplication, captureKustoLeaveNoTracePolicyRuntime, createSectionWithCapabilities, discardPendingSqlResultRestores, finalizeDocumentDefaultsAfterAcknowledgement, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, installRuntimeAddSectionBridges, lockDocumentAfterPersistenceFailure, markKustoLeaveNoTracePolicyPending, persistDocumentAndWaitForAck, reconcileDocumentWithHost, resetDocumentPersistenceForTest, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, restoreKustoLeaveNoTracePolicyRuntime, schedulePersist, suppressPersistenceForTest, waitForPersistDocumentAck, __kustoApplyDocumentCapabilities, __kustoClearStoredQueryResult, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
 import { createDerivedResultArtifactPublication, publicationFromPersistedResultArtifact, RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, RESULT_ARTIFACT_CSV_RESET_EVENT } from '../../src/shared/resultArtifact.js';
 import { sqlConnectionTargetSignature } from '../../src/shared/sqlConnectionIdentity.js';
 
@@ -467,6 +467,7 @@ describe('persistence round-trip', () => {
 		for (const k of Object.keys(optimizationMetadataByBoxId)) delete optimizationMetadataByBoxId[k];
 		vi.clearAllMocks();
 		vi.mocked(displayResultForBox).mockReset();
+		vi.mocked(getResultsStateRevision).mockReturnValue(0);
 		vi.mocked(displayResultBatchForBox).mockReset().mockImplementation(
 			(...args: unknown[]) => testState.displayResultForBox(...args),
 		);
@@ -926,10 +927,10 @@ describe('persistence round-trip', () => {
 		vi.advanceTimersByTime(25);
 	}
 
-	function createRevisionedQueryHarness(uri: string, initialQuery: string) {
+	function createRevisionedQueryHarness(uri: string, initialQuery: string, documentKind = 'kql') {
 		handleDocumentDataMessage({
 			type: 'documentData', ok: true, forceReload: true, editRevision: 0,
-			documentKind: 'kql', compatibilityMode: false, documentUri: uri,
+			documentKind, compatibilityMode: false, documentUri: uri,
 			state: { sections: [{ type: 'query', id: 'query_ack_flow', query: initialQuery }] },
 		});
 		const queryId = testState.queryBoxes.at(-1)!;
@@ -1611,6 +1612,352 @@ describe('persistence round-trip', () => {
 		expect(pState.queryResultJsonByBoxId.sql_cold).toBe(resultJson);
 	});
 
+	it('preserves cold-owner SQL result bytes across an unrelated save without rendering them', () => {
+		document.body.innerHTML = '<div id="queries-container"></div>';
+		const connection = {
+			id: 'sql-cold-save', name: 'Cold save', dialect: 'mssql', serverUrl: 'cold-save.example',
+			database: 'Db', authType: 'aad', username: '', principalFingerprint: 'principal-a',
+			revocationGeneration: 3,
+		};
+		const targetSignature = sqlConnectionTargetSignature(connection);
+		const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['preserved']] });
+		const resultArtifact = {
+			version: 1, artifactId: 'result:sql_cold_save:1', sourceBoxId: 'sql_cold_save', revision: 1, createdAt: 123,
+			producer: {
+				engine: 'sql', boxId: 'sql_cold_save', executionId: 'sql-execution',
+				query: 'SELECT 1', connectionId: connection.id, database: 'Db',
+			},
+			policy: { exposeToActiveContent: true, shareToClipboard: true, exportToCsv: true },
+		};
+
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/cold-save.sqlx',
+			state: { sections: [{
+				type: 'sql', id: 'sql_cold_save', name: 'Before', serverUrl: connection.serverUrl,
+				database: 'Db', connectionIdHint: connection.id, targetSignature,
+				principalFingerprint: connection.principalFingerprint,
+				revocationGeneration: connection.revocationGeneration,
+				query: 'SELECT 1', resultJson, resultArtifact,
+			}] },
+		});
+		const section = testState.sqlElements.sql_cold_save;
+		section.serialize = () => ({
+			type: 'sql', id: 'sql_cold_save', name: 'After', serverUrl: connection.serverUrl,
+			database: 'Db', connectionIdHint: connection.id, targetSignature, query: 'SELECT 1', expanded: true,
+		});
+		vi.mocked(postMessageToHost).mockClear();
+
+		schedulePersist('section-name', true);
+
+		const persisted = vi.mocked(postMessageToHost).mock.calls
+			.map(([message]) => message as any)
+			.find(message => message.type === 'persistDocument');
+		expect(persisted?.state.sections).toContainEqual(expect.objectContaining({
+			type: 'sql', id: 'sql_cold_save', name: 'After', resultJson, resultArtifact,
+			principalFingerprint: connection.principalFingerprint,
+			revocationGeneration: connection.revocationGeneration,
+		}));
+		expect(pState.queryResultJsonByBoxId.sql_cold_save).toBeUndefined();
+		expect(displayResultForBox).not.toHaveBeenCalled();
+	});
+
+	it('does not poll persistence while unchanged SQL result ownership is unresolved', () => {
+		vi.useFakeTimers();
+		try {
+			const connection = {
+				id: 'sql-cold-poll', name: 'Cold poll', dialect: 'mssql', serverUrl: 'cold-poll.example',
+				database: 'Db', authType: 'sql-login', username: 'User',
+			};
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/cold-poll.sqlx',
+				state: { sections: [{
+					type: 'sql', id: 'sql_cold_poll', serverUrl: connection.serverUrl, database: 'Db',
+					connectionIdHint: connection.id, targetSignature: sqlConnectionTargetSignature(connection),
+					query: 'SELECT 1', resultJson: JSON.stringify({ columns: [{ name: 'Value' }], rows: [[1]] }),
+				}] },
+			});
+			vi.mocked(postMessageToHost).mockClear();
+			const timersBeforePersist = vi.getTimerCount();
+
+			schedulePersist('unchanged-cold-owner', true);
+
+			expect(postMessageToHost).not.toHaveBeenCalled();
+			expect(vi.getTimerCount()).toBe(timersBeforePersist);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it('restores SQL results through a uniquely recreated connection with the same target identity', () => {
+		const originalConnection = {
+			id: 'sql-original', name: 'Original', dialect: 'mssql', serverUrl: 'recreated.example',
+			database: 'Db', authType: 'aad', username: '', principalFingerprint: 'principal-a',
+			revocationGeneration: 2,
+		};
+		const recreatedConnection = { ...originalConnection, id: 'sql-recreated', name: 'Recreated' };
+		const targetSignature = sqlConnectionTargetSignature(originalConnection);
+		const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['recreated']] });
+
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/recreated.sqlx',
+			state: { sections: [{
+				type: 'sql', id: 'sql_recreated', serverUrl: originalConnection.serverUrl, database: 'Db',
+				connectionIdHint: originalConnection.id, targetSignature,
+				principalFingerprint: originalConnection.principalFingerprint,
+				revocationGeneration: originalConnection.revocationGeneration,
+				query: 'SELECT 1', resultJson,
+			}] },
+		});
+		testState.sqlConnections.push(recreatedConnection);
+		testState.sqlElements.sql_recreated.getConnectionId = () => recreatedConnection.id;
+		testState.sqlElements.sql_recreated.getSqlConnectionId = () => recreatedConnection.id;
+
+		resolvePendingSqlResultRestores();
+
+		expect(pState.queryResultJsonByBoxId.sql_recreated).toBe(resultJson);
+	});
+
+	it('does not overwrite a newer SQL result when the persisted owner resolves late', () => {
+		const connection = {
+			id: 'sql-late-newer', name: 'Late newer', dialect: 'mssql', serverUrl: 'late-newer.example',
+			database: 'Db', authType: 'sql-login', username: 'User',
+		};
+		const oldResultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['old']] });
+		const newResultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['new']] });
+
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/late-newer.sqlx',
+			state: { sections: [{
+				type: 'sql', id: 'sql_late_newer', serverUrl: connection.serverUrl, database: 'Db',
+				connectionIdHint: connection.id, targetSignature: sqlConnectionTargetSignature(connection),
+				query: 'SELECT 1', resultJson: oldResultJson,
+			}] },
+		});
+		pState.queryResultJsonByBoxId.sql_late_newer = newResultJson;
+		vi.mocked(getResultsStateRevision).mockReturnValue(1);
+		testState.sqlConnections.push(connection);
+		testState.sqlElements.sql_late_newer.getConnectionId = () => connection.id;
+		testState.sqlElements.sql_late_newer.getSqlConnectionId = () => connection.id;
+
+		resolvePendingSqlResultRestores();
+
+		expect(pState.queryResultJsonByBoxId.sql_late_newer).toBe(newResultJson);
+		expect(displayResultForBox).not.toHaveBeenCalledWith(
+			expect.objectContaining({ rows: [['old']] }),
+			'sql_late_newer',
+			expect.anything(),
+		);
+	});
+
+	it.each([
+		['query', (id: string) => { pState.pendingSqlQueryByBoxId[id] = 'SELECT changed=1'; }],
+		['database', (id: string) => { testState.sqlElements[id].getDatabase = () => 'OtherDb'; }],
+	] as const)('drops pending SQL rows when the %s changes before owner resolution', (_label, mutate) => {
+		const connection = {
+			id: 'sql-late-config', name: 'Late config', dialect: 'mssql', serverUrl: 'late-config.example',
+			database: 'Db', authType: 'sql-login', username: 'User',
+		};
+		const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['old']] });
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: `file:///tmp/late-${_label}.sqlx`,
+			state: { sections: [{
+				type: 'sql', id: 'sql_late_config', serverUrl: connection.serverUrl, database: 'Db',
+				connectionIdHint: connection.id, targetSignature: sqlConnectionTargetSignature(connection),
+				query: 'SELECT 1', resultJson,
+			}] },
+		});
+		mutate('sql_late_config');
+		testState.sqlConnections.push(connection);
+		testState.sqlElements.sql_late_config.getConnectionId = () => connection.id;
+		testState.sqlElements.sql_late_config.getSqlConnectionId = () => connection.id;
+
+		resolvePendingSqlResultRestores();
+
+		expect(pState.queryResultJsonByBoxId.sql_late_config).toBeUndefined();
+	});
+
+	it('retires a pending SQL comparison when a newer source result wins before owner resolution', () => {
+		const connection = {
+			id: 'sql-late-lineage', name: 'Late lineage', dialect: 'mssql', serverUrl: 'late-lineage.example',
+			database: 'Db', authType: 'sql-login', username: 'User',
+		};
+		const oldSourceResult = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['old-source']] });
+		const newSourceResult = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['new-source']] });
+		const comparisonResult = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['old-comparison']] });
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/late-lineage.sqlx',
+			state: { sections: [
+				{
+					type: 'sql', id: 'sql_late_lineage', serverUrl: connection.serverUrl, database: 'Db',
+					connectionIdHint: connection.id, targetSignature: sqlConnectionTargetSignature(connection),
+					query: 'SELECT 1', resultJson: oldSourceResult,
+				},
+				{
+					type: 'query', id: 'query_late_lineage', comparisonSourceBoxId: 'sql_late_lineage',
+					query: 'SELECT 2', resultJson: comparisonResult,
+				},
+			] },
+		});
+		pState.queryResultJsonByBoxId.sql_late_lineage = newSourceResult;
+		vi.mocked(getResultsStateRevision).mockImplementation(boxId => boxId === 'sql_late_lineage' ? 1 : 0);
+		testState.sqlConnections.push(connection);
+		testState.sqlElements.sql_late_lineage.getConnectionId = () => connection.id;
+		testState.sqlElements.sql_late_lineage.getSqlConnectionId = () => connection.id;
+
+		resolvePendingSqlResultRestores();
+
+		expect(pState.queryResultJsonByBoxId.sql_late_lineage).toBe(newSourceResult);
+		expect(pState.queryResultJsonByBoxId.query_late_lineage).toBeUndefined();
+	});
+
+	it('renders warm SQL results through a uniquely recreated connection with the same target identity', () => {
+		vi.useFakeTimers();
+		try {
+			const originalConnection = {
+				id: 'sql-warm-original', name: 'Original', dialect: 'mssql', serverUrl: 'warm-recreated.example',
+				database: 'Db', authType: 'sql-login', username: 'User', revocationGeneration: 0,
+			};
+			const recreatedConnection = { ...originalConnection, id: 'sql-warm-recreated', name: 'Recreated' };
+			testState.sqlConnections.push(recreatedConnection);
+			const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['warm-recreated']] });
+			const resultArtifact = {
+				version: 1, artifactId: 'result:sql_warm_recreated:1', sourceBoxId: 'sql_warm_recreated',
+				revision: 1, createdAt: 123,
+				producer: {
+					engine: 'sql', boxId: 'sql_warm_recreated', executionId: 'sql-original-execution',
+					query: 'SELECT 1', connectionId: originalConnection.id, database: 'Db',
+				},
+				policy: {
+					exposeToActiveContent: true, sendToModel: true, shareToClipboard: true, exportToCsv: true,
+				},
+			};
+
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/warm-recreated.sqlx',
+				state: { sections: [{
+					type: 'sql', id: 'sql_warm_recreated', serverUrl: originalConnection.serverUrl, database: 'Db',
+					connectionIdHint: originalConnection.id,
+					targetSignature: sqlConnectionTargetSignature(originalConnection),
+					revocationGeneration: originalConnection.revocationGeneration,
+					query: 'SELECT 1', resultJson, resultArtifact,
+				}] },
+			});
+			flushDeferredRestoreTimers();
+
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['warm-recreated']] }),
+				'sql_warm_recreated',
+				expect.objectContaining({
+					artifactPublication: expect.objectContaining({
+						producer: expect.objectContaining({ connectionId: recreatedConnection.id }),
+						policy: expect.objectContaining({
+							exposeToActiveContent: true, sendToModel: true,
+							shareToClipboard: true, exportToCsv: true,
+						}),
+					}),
+				}),
+			);
+			expect(pState.resultArtifactByBoxId.sql_warm_recreated).toMatchObject({
+				producer: { connectionId: recreatedConnection.id },
+				policy: { exposeToActiveContent: true, sendToModel: true, shareToClipboard: true, exportToCsv: true },
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
+		{ label: 'padded persisted owner', recreate: true, producerConnectionId: ' sql-warm-hostile-original ' as unknown },
+		{ label: 'padded current owner', recreate: true, producerConnectionId: ' sql-warm-hostile-recreated ' as unknown },
+		{ label: 'non-string owner', recreate: true, producerConnectionId: 42 as unknown },
+		{ label: 'padded unchanged owner', recreate: false, producerConnectionId: ' sql-warm-hostile-original ' as unknown },
+	])('does not trust a $label in persisted SQL producer identity', ({ recreate, producerConnectionId }) => {
+		vi.useFakeTimers();
+		try {
+			const originalConnection = {
+				id: 'sql-warm-hostile-original', name: 'Original', dialect: 'mssql', serverUrl: 'warm-hostile.example',
+				database: 'Db', authType: 'sql-login', username: 'User', revocationGeneration: 0,
+			};
+			const recreatedConnection = { ...originalConnection, id: 'sql-warm-hostile-recreated', name: 'Recreated' };
+			testState.sqlConnections.push(recreate ? recreatedConnection : originalConnection);
+			const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['visible']] });
+			const resultArtifact = {
+				version: 1, artifactId: 'result:sql_warm_hostile:1', sourceBoxId: 'sql_warm_hostile',
+				revision: 1, createdAt: 123,
+				producer: {
+					engine: 'sql', boxId: 'sql_warm_hostile', executionId: 'sql-hostile-execution',
+					query: 'SELECT 1', connectionId: producerConnectionId, database: 'Db',
+				},
+				policy: {
+					exposeToActiveContent: true, sendToModel: true, shareToClipboard: true, exportToCsv: true,
+				},
+			};
+
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/warm-hostile.sqlx',
+				state: { sections: [{
+					type: 'sql', id: 'sql_warm_hostile', serverUrl: originalConnection.serverUrl, database: 'Db',
+					connectionIdHint: originalConnection.id,
+					targetSignature: sqlConnectionTargetSignature(originalConnection),
+					revocationGeneration: originalConnection.revocationGeneration,
+					query: 'SELECT 1', resultJson, resultArtifact,
+				}] },
+			});
+			flushDeferredRestoreTimers();
+
+			const display = vi.mocked(displayResultForBox).mock.calls.find(([, boxId]) => boxId === 'sql_warm_hostile');
+			expect(display?.[0]).toEqual(expect.objectContaining({ rows: [['visible']] }));
+			expect(display?.[2]?.artifactPublication).toBeUndefined();
+			expect(pState.resultArtifactByBoxId.sql_warm_hostile).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('retains a complete-owner SQL result across an unrelated connection snapshot', () => {
+		vi.useFakeTimers();
+		try {
+			const connection = {
+				id: 'sql-late-owner', name: 'Late owner', dialect: 'mssql', serverUrl: 'late.example',
+				database: 'Db', authType: 'sql-login', username: 'LateUser',
+			};
+			const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['late']] });
+			testState.sqlConnections.push({
+				id: 'sql-unrelated', name: 'Unrelated', dialect: 'mssql', serverUrl: 'other.example',
+				database: 'OtherDb', authType: 'sql-login', username: 'OtherUser',
+			});
+
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/late-owner.sqlx',
+				state: { sections: [{
+					type: 'sql', id: 'sql_late_owner', serverUrl: connection.serverUrl, database: 'Db',
+					connectionIdHint: connection.id, targetSignature: sqlConnectionTargetSignature(connection),
+					query: 'SELECT 1', resultJson,
+				}] },
+			});
+			expect(pState.queryResultJsonByBoxId.sql_late_owner).toBeUndefined();
+
+			resolvePendingSqlResultRestores();
+			expect(pState.queryResultJsonByBoxId.sql_late_owner).toBeUndefined();
+
+			testState.sqlConnections.push(connection);
+			testState.sqlElements.sql_late_owner.getConnectionId = () => connection.id;
+			testState.sqlElements.sql_late_owner.getDatabase = () => '';
+			resolvePendingSqlResultRestores();
+			flushDeferredRestoreTimers();
+
+			expect(pState.queryResultJsonByBoxId.sql_late_owner).toBe(resultJson);
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['late']] }),
+				'sql_late_owner',
+				expect.anything(),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('preserves safe pending SQL results when another connection is Leave No Trace', () => {
 		const safe = {
 			id: 'sql-safe', name: 'Safe', dialect: 'mssql', serverUrl: 'safe.example',
@@ -1843,17 +2190,25 @@ describe('persistence round-trip', () => {
 		expect(pState.queryResultJsonByBoxId.query_cmp).toBeUndefined();
 	});
 
-	it.each(['source-first', 'comparison-first'] as const)(
-		'restores a warm lineage-bearing SQL comparison in %s order',
-		(order) => {
+	it.each([
+		{ label: 'source-first order', order: 'source-first' as const, recreated: false },
+		{ label: 'comparison-first order', order: 'comparison-first' as const, recreated: false },
+		{ label: 'recreated-owner source-first order', order: 'source-first' as const, recreated: true },
+		{ label: 'recreated-owner comparison-first order', order: 'comparison-first' as const, recreated: true },
+	])(
+		'restores a warm lineage-bearing SQL comparison in $label',
+		({ order, recreated }) => {
 		vi.useFakeTimers();
 		try {
-			const connection = {
-				id: 'sql-warm-order', name: 'Warm', dialect: 'mssql', serverUrl: 'warm-order.example',
+			const persistedConnection = {
+				id: 'sql-warm-order-original', name: 'Warm original', dialect: 'mssql', serverUrl: 'warm-order.example',
 				database: 'Db', authType: 'sql-login', username: 'User',
 			};
+			const connection = recreated
+				? { ...persistedConnection, id: 'sql-warm-order-recreated', name: 'Warm recreated' }
+				: persistedConnection;
 			testState.sqlConnections.push(connection);
-			const targetSignature = sqlConnectionTargetSignature(connection);
+			const targetSignature = sqlConnectionTargetSignature(persistedConnection);
 			const sourceResult = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
 			const comparisonResult = JSON.stringify({ columns: ['Value'], rows: [[2]], metadata: {} });
 			const sourceArtifact = {
@@ -1869,7 +2224,7 @@ describe('persistence round-trip', () => {
 			const sourceDescriptor = {
 				version: 1, artifactId: sourceArtifact.artifactId, sourceBoxId: sourceArtifact.sourceBoxId,
 				revision: sourceArtifact.revision, createdAt: sourceArtifact.createdAt,
-				producer: sourceArtifact.producer, policy: sourceArtifact.policy,
+				producer: { ...sourceArtifact.producer, connectionId: persistedConnection.id }, policy: sourceArtifact.policy,
 			};
 			const comparisonPublication = createDerivedResultArtifactPublication(
 				{
@@ -1883,7 +2238,7 @@ describe('persistence round-trip', () => {
 				revision: 2, createdAt: 125,
 				producer: {
 					engine: 'sql', boxId: 'query_warm_cmp', executionId: 'sql-comparison-execution',
-					query: 'SELECT 2 AS Value', connectionId: connection.id, database: 'Db', producer: 'comparison',
+					query: 'SELECT 2 AS Value', connectionId: persistedConnection.id, database: 'Db', producer: 'comparison',
 				},
 				policy: comparisonPublication.policy,
 				lineage: comparisonPublication.lineage,
@@ -1891,7 +2246,9 @@ describe('persistence round-trip', () => {
 			let sourceRendered = false;
 			let comparisonRendered = false;
 			const comparisonArtifact = {
-				...comparisonDescriptor, restored: true, columns: ['Value'], rows: [[2]], metadata: {},
+				...comparisonDescriptor,
+				producer: { ...comparisonDescriptor.producer, connectionId: connection.id },
+				restored: true, columns: ['Value'], rows: [[2]], metadata: {},
 			};
 			vi.mocked(displayResultForBox).mockImplementation((_result, boxId) => {
 				if (boxId === 'sql_warm_source') sourceRendered = true;
@@ -1904,8 +2261,8 @@ describe('persistence round-trip', () => {
 				return null;
 			});
 			const sourceSection = {
-				type: 'sql', id: 'sql_warm_source', query: 'SELECT 1 AS Value', serverUrl: connection.serverUrl,
-				connectionIdHint: connection.id, targetSignature, database: 'Db',
+				type: 'sql', id: 'sql_warm_source', query: 'SELECT 1 AS Value', serverUrl: persistedConnection.serverUrl,
+				connectionIdHint: persistedConnection.id, targetSignature, database: 'Db',
 				resultJson: sourceResult, resultArtifact: sourceDescriptor,
 			};
 			const comparisonSection = {
@@ -1930,12 +2287,16 @@ describe('persistence round-trip', () => {
 				expect.objectContaining({ rows: [[2]] }), 'query_warm_cmp',
 				expect.objectContaining({
 					artifactPublication: expect.objectContaining({
+						producer: expect.objectContaining({ connectionId: connection.id }),
 						lineage: comparisonDescriptor.lineage,
 						policy: expect.objectContaining({ shareToClipboard: true, exportToCsv: true }),
 					}),
 				}),
 			);
-			expect(pState.resultArtifactByBoxId.query_warm_cmp).toEqual(comparisonDescriptor);
+			expect(pState.resultArtifactByBoxId.query_warm_cmp).toMatchObject({
+				...comparisonDescriptor,
+				producer: { ...comparisonDescriptor.producer, connectionId: connection.id },
+			});
 		} finally {
 			vi.useRealTimers();
 		}
@@ -2895,6 +3256,174 @@ describe('persistence round-trip', () => {
 		acknowledgePersistDocument(retry.snapshotId, retry.editRevision);
 		schedulePersist('after-ack', true);
 		expect(postMessageToHost).toHaveBeenCalledTimes(2);
+	});
+
+	it('settles an exact persistence acknowledgement waiter', async () => {
+		const harness = createRevisionedQueryHarness('file:///tmp/wait-exact.kql', 'print value=1');
+		harness.setQuery('print value=2');
+		const snapshotId = schedulePersist('wait-exact', true);
+		const message = vi.mocked(postMessageToHost).mock.calls[0][0] as any;
+		const accepted = waitForPersistDocumentAck(snapshotId, 1000);
+
+		acknowledgePersistDocument(message.snapshotId, message.editRevision);
+
+		await expect(accepted).resolves.toBe(true);
+	});
+
+	it('accepts a current state that the host already owns without posting another snapshot', async () => {
+		createRevisionedQueryHarness('file:///tmp/wait-current.kql', 'print value=1');
+
+		await expect(persistDocumentAndWaitForAck('already-current', 1000)).resolves.toBe(true);
+		expect(postMessageToHost).not.toHaveBeenCalled();
+	});
+
+	it('rejects persistence completion while persistence is unavailable', async () => {
+		createRevisionedQueryHarness('file:///tmp/wait-unavailable.kql', 'print value=1');
+		suppressPersistenceForTest(true);
+
+		await expect(persistDocumentAndWaitForAck('unavailable', 1000)).resolves.toBe(false);
+		expect(postMessageToHost).not.toHaveBeenCalled();
+	});
+
+	it('settles a correlated authoritative document reconciliation', async () => {
+		pState.documentEditRevision = 7;
+		const reconciled = reconcileDocumentWithHost(1000);
+		const request = vi.mocked(postMessageToHost).mock.calls[0][0] as any;
+		expect(request).toMatchObject({ type: 'requestDocument', expectedEditRevision: 7 });
+		expect(request.requestId).toMatch(/^persistence-reconcile-/);
+
+		acknowledgeDocumentReconciliation(request.requestId, true);
+
+		await expect(reconciled).resolves.toBe(true);
+	});
+
+	it('locks editing and persistence after an indeterminate host persistence failure', () => {
+		createRevisionedQueryHarness('file:///tmp/indeterminate.kqlx', 'print value=1', 'kqlx');
+
+		lockDocumentAfterPersistenceFailure();
+
+		expect(pState.documentMutationAllowed).toBe(false);
+		expect(pState.documentRuntimeActive).toBe(false);
+		expect(schedulePersist('blocked-after-failure', true)).toBeUndefined();
+		expect(document.getElementById('kusto-malformed-document-banner')?.textContent)
+			.toContain('Editing and saving are disabled to prevent data loss');
+	});
+
+	it('rejects an older waiter when a newer different revision supersedes it', async () => {
+		const harness = createRevisionedQueryHarness('file:///tmp/wait-superseded.kql', 'print value=0');
+		harness.setQuery('print value=1');
+		const firstSnapshotId = schedulePersist('first', true);
+		const firstAccepted = waitForPersistDocumentAck(firstSnapshotId, 1000);
+		harness.setQuery('print value=2');
+		schedulePersist('second', true);
+		const second = vi.mocked(postMessageToHost).mock.calls[1][0] as any;
+
+		acknowledgePersistDocument(second.snapshotId, second.editRevision);
+
+		await expect(firstAccepted).resolves.toBe(false);
+	});
+
+	it('settles an older waiter when a newer acknowledged snapshot has the same signature', async () => {
+		const harness = createRevisionedQueryHarness('file:///tmp/wait-same-signature.kql', 'print value=0');
+		harness.setQuery('print value=1');
+		const firstSnapshotId = schedulePersist('first', true);
+		const firstAccepted = waitForPersistDocumentAck(firstSnapshotId, 1000);
+		schedulePersist('same-state-retry', true);
+		const second = vi.mocked(postMessageToHost).mock.calls[1][0] as any;
+
+		acknowledgePersistDocument(second.snapshotId, second.editRevision);
+
+		await expect(firstAccepted).resolves.toBe(true);
+	});
+
+	it('posts a newer rich-document snapshot when state returns past an in-flight change', async () => {
+		const harness = createRevisionedQueryHarness('file:///tmp/wait-aba.kqlx', 'print value=0', 'kqlx');
+		harness.setQuery('print value=1');
+		const changedSnapshotId = schedulePersist('changed', true);
+		const changed = vi.mocked(postMessageToHost).mock.calls[0][0] as any;
+		expect(changed.snapshotId).toBe(changedSnapshotId);
+
+		harness.setQuery('print value=0');
+		const restored = persistDocumentAndWaitForAck('restored', 1000);
+		const restoredMessage = vi.mocked(postMessageToHost).mock.calls[1][0] as any;
+		expect(restoredMessage.editRevision).toBeGreaterThan(changed.editRevision);
+		acknowledgePersistDocument(restoredMessage.snapshotId, restoredMessage.editRevision);
+
+		await expect(restored).resolves.toBe(true);
+	});
+
+	it('advances a rich-document edit revision before debounced persistence runs', () => {
+		vi.useFakeTimers();
+		try {
+			const harness = createRevisionedQueryHarness('file:///tmp/debounced-revision.kqlx', 'print value=0', 'kqlx');
+			harness.setQuery('print value=1');
+
+			schedulePersist('debounced-rich-edit');
+
+			expect(pState.documentEditRevision).toBe(1);
+			expect(postMessageToHost).not.toHaveBeenCalled();
+			vi.advanceTimersByTime(400);
+			const persisted = vi.mocked(postMessageToHost).mock.calls[0][0] as any;
+			expect(persisted.editRevision).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('retires an awaited snapshot when a host projection replaces local state', async () => {
+		const harness = createRevisionedQueryHarness('file:///tmp/wait-reload.kqlx', 'print value=0', 'kqlx');
+		harness.setQuery('print value=1');
+		const snapshotId = schedulePersist('pending', true);
+		const accepted = waitForPersistDocumentAck(snapshotId, 1000);
+
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, editRevision: 0,
+			documentKind: 'kqlx', compatibilityMode: false,
+			documentUri: 'file:///tmp/wait-reload.kqlx',
+			state: { sections: [{ type: 'query', id: 'query_ack_flow', query: 'print host=1' }] },
+		});
+
+		await expect(accepted).resolves.toBe(false);
+	});
+
+	it('preserves an awaited snapshot through pending snapshot eviction', async () => {
+		const harness = createRevisionedQueryHarness('file:///tmp/wait-eviction.kql', 'print value=0');
+		harness.setQuery('print value=1');
+		const firstSnapshotId = schedulePersist('first', true);
+		const firstAccepted = waitForPersistDocumentAck(firstSnapshotId, 1000);
+
+		for (let retry = 2; retry <= 40; retry++) {
+			schedulePersist(`retry-${retry}`, true);
+		}
+		const calls = vi.mocked(postMessageToHost).mock.calls;
+		const latest = calls[calls.length - 1][0] as any;
+		acknowledgePersistDocument(latest.snapshotId, latest.editRevision);
+
+		await expect(firstAccepted).resolves.toBe(true);
+	});
+
+	it('bounds concurrent waiters by retiring the oldest and retaining the newest snapshot', async () => {
+		const harness = createRevisionedQueryHarness('file:///tmp/wait-cap.kql', 'print value=0');
+		const settlements: Array<Promise<boolean>> = [];
+		let latest: any;
+		for (let value = 1; value <= 33; value++) {
+			harness.setQuery(`print value=${value}`);
+			const snapshotId = schedulePersist(`revision-${value}`, true);
+			settlements.push(waitForPersistDocumentAck(snapshotId, 1000));
+			latest = vi.mocked(postMessageToHost).mock.calls.at(-1)![0] as any;
+		}
+		let newestSettled = false;
+		void settlements[32].then(() => { newestSettled = true; });
+		await expect(settlements[0]).resolves.toBe(false);
+		await Promise.resolve();
+		expect(newestSettled).toBe(false);
+
+		acknowledgePersistDocument(latest.snapshotId, latest.editRevision);
+
+		await expect(Promise.all(settlements)).resolves.toEqual([
+			...Array.from({ length: 32 }, () => false),
+			true,
+		]);
 	});
 
 	it('does not let an older acknowledgement replace a newer acknowledged snapshot', () => {

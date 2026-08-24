@@ -51,6 +51,7 @@ import {
 	stampDocumentViewHostMessage,
 	type DocumentViewWebviewMessage,
 } from '../shared/documentViewProtocol';
+import { capturePersistDocumentState, parsePersistDocumentMessage } from '../shared/persistDocumentState';
 
 
 const normalizeClusterUrlKey = (url: string): string => {
@@ -58,6 +59,27 @@ const normalizeClusterUrlKey = (url: string): string => {
 };
 
 const NON_PERSISTENCE_CLOSE_WAIT_MS = 2_000;
+
+export function parseNativePersistDocumentState(
+	input: unknown,
+	documentKind: KqlxFileKind,
+): KqlxStateV1 | undefined {
+	const captured = capturePersistDocumentState(input);
+	if (!captured.ok) return undefined;
+	try {
+		const parsed = parseKqlxText(JSON.stringify({
+			kind: documentKind,
+			version: 1,
+			state: captured.value,
+		}), {
+			allowedKinds: [documentKind],
+			defaultKind: documentKind,
+		});
+		return parsed.ok ? parsed.file.state : undefined;
+	} catch {
+		return undefined;
+	}
+}
 const NATIVE_SAVE_COMMIT_LEASE_TIMEOUT_MS = 5_000;
 const INITIAL_PROJECTION_MAX_ATTEMPTS = 4;
 const MAX_PROJECTION_RETRIES = 2;
@@ -739,7 +761,7 @@ export const formatSectionDiffContent = (
 };
 
 type IncomingWebviewMessage =
-	| { type: 'requestDocument'; requestId?: string }
+	| { type: 'requestDocument'; requestId?: string; expectedEditRevision?: number }
 	| { type: 'persistDocument'; state: KqlxStateV1; sourceGeneration?: number; flush?: boolean; flushRequestId?: string; flushUnavailableReason?: string }
 	| DocumentViewWebviewMessage
 	| { type: string; [key: string]: unknown };
@@ -1266,9 +1288,12 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			const message = input as Record<string, unknown>;
 			if (typeof message.type !== 'string') return undefined;
-			const admitted = message as IncomingWebviewMessage;
-			if (outerDisposed && !allowRetiredInbound(admitted)) return undefined;
-			return admitted;
+			const admitted = message.type === 'persistDocument'
+				? parsePersistDocumentMessage(message)
+				: { ok: true as const, value: message };
+			if (!admitted.ok) return undefined;
+			if (outerDisposed && !allowRetiredInbound(admitted.value as IncomingWebviewMessage)) return undefined;
+			return admitted.value as IncomingWebviewMessage;
 		};
 		const prepareOutgoingWebviewMessage = (message: unknown): unknown | undefined => {
 			if (!isDocumentViewHostMessageType(message)) return message;
@@ -3382,6 +3407,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			forceReload?: boolean;
 			retryBudget?: KqlxProjectionAttemptBudget;
 			requestId?: string;
+			expectedEditRevision?: number;
 			sourceChangeFollowUpAvailable?: boolean;
 		}): Promise<boolean> => {
 			if (outerDisposed) return false;
@@ -3415,11 +3441,15 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (!parsed.ok) {
 				const reload = createProjectionReload(
 					generation, rawText, undefined, authorityToken, authorityEpoch,
-					undefined, retryBudget, undefined, undefined, sourceChangeFollowUpAvailable,
+					undefined, retryBudget, options?.requestId, undefined, sourceChangeFollowUpAvailable,
 				);
 				const delivered = await deliverWebviewMessage({
 					type: 'documentData',
 					ok: false,
+					requestId: options?.requestId,
+					...(Number.isSafeInteger(options?.expectedEditRevision)
+						? { expectedEditRevision: options?.expectedEditRevision }
+						: {}),
 					reloadRequestId: reload.requestId,
 					sourceGeneration: generation,
 					forceReload,
@@ -3448,6 +3478,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						forceReload: true,
 						retryBudget,
 						requestId: options?.requestId,
+						expectedEditRevision: options?.expectedEditRevision,
 						sourceChangeFollowUpAvailable,
 					});
 				}
@@ -3464,10 +3495,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				linkedQueryPhysicalIdentity = undefined;
 				const reload = createProjectionReload(
 					generation, rawText, undefined, authorityToken, authorityEpoch,
-					undefined, retryBudget, undefined, undefined, sourceChangeFollowUpAvailable,
+					undefined, retryBudget, options?.requestId, undefined, sourceChangeFollowUpAvailable,
 				);
 				const delivered = await deliverWebviewMessage({
 					type: 'documentData', ok: false, forceReload, sourceGeneration: generation,
+					requestId: options?.requestId,
+					...(Number.isSafeInteger(options?.expectedEditRevision)
+						? { expectedEditRevision: options?.expectedEditRevision }
+						: {}),
 					reloadRequestId: reload.requestId,
 					documentUri: document.uri.toString(), suppressPersistenceForTest,
 					error: unsafeReason, htmlPowerBiCompatibilityCheckEnabled,
@@ -3491,6 +3526,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						forceReload: true,
 						retryBudget,
 						requestId: options?.requestId,
+						expectedEditRevision: options?.expectedEditRevision,
 						sourceChangeFollowUpAvailable,
 					});
 				}
@@ -3554,6 +3590,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					type: 'documentData',
 					ok: true,
 					requestId: options?.requestId,
+						...(Number.isSafeInteger(options?.expectedEditRevision)
+							? { expectedEditRevision: options?.expectedEditRevision }
+							: {}),
 					reloadRequestId: reload.requestId,
 					sourceGeneration: generation,
 					forceReload,
@@ -3621,6 +3660,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					forceReload: true,
 					retryBudget,
 					requestId: options?.requestId,
+					expectedEditRevision: options?.expectedEditRevision,
 					sourceChangeFollowUpAvailable,
 				});
 			}
@@ -4531,10 +4571,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					postPersistenceMode();
 					// Only load from disk when explicitly requested by the webview.
 					const requestGenerationFloor = postDocumentGeneration + 1;
-					const delivered = webviewInitialized
+					const expectedEditRevision = Number((message as any).expectedEditRevision);
+					const hasExpectedEditRevision = Number.isSafeInteger(expectedEditRevision)
+						&& expectedEditRevision >= 0;
+					const delivered = webviewInitialized || hasExpectedEditRevision
 						? await postDocument({
 							forceReload: true,
 							requestId: String((message as any).requestId || '') || undefined,
+							...(hasExpectedEditRevision ? { expectedEditRevision } : {}),
 						})
 						: await ensureInitialDocument();
 					if (outerDisposed) return;
@@ -4798,13 +4842,16 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					return;
 				}
 				case 'persistDocument': {
-					const flushRequestId = (message as any).flushRequestId;
+					const persistMessage = parsePersistDocumentMessage(message);
+					if (!persistMessage.ok) return;
+					message = persistMessage.value as IncomingWebviewMessage;
+					const flushRequestId = persistMessage.value.flushRequestId;
 					if (flushRequestId && !finalPersistSession.hasPendingFinalPersistRequest(String(flushRequestId))) return;
 					await projectionActivationTail;
-					const flushUnavailableReason = (message as any).flushUnavailableReason;
-					const snapshotId = String((message as any).snapshotId || '').trim();
-					const incomingSourceGeneration = Number((message as any).sourceGeneration);
-					const sourceGenerationMissing = !Number.isSafeInteger(incomingSourceGeneration);
+					const flushUnavailableReason = persistMessage.value.flushUnavailableReason;
+					const snapshotId = persistMessage.value.snapshotId || '';
+					const incomingSourceGeneration = persistMessage.value.sourceGeneration;
+					const sourceGenerationMissing = false;
 					const persistAuthorityToken = activeProjectionAuthorityToken;
 					if (markdownDocumentQueue.latestAuthority?.token !== persistAuthorityToken) {
 						if (flushRequestId) {
@@ -4825,7 +4872,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						}
 						return;
 					}
-					const incomingEditRevision = Number((message as any).editRevision);
+					const rawState = parseNativePersistDocumentState(persistMessage.value.state, documentKind);
+					if (!rawState) return;
+					const incomingEditRevision = persistMessage.value.editRevision;
 					finalPersistSession.markBeforeUnload((message as any).reason);
 					if (flushRequestId) {
 						persistRequestGeneration++;
@@ -4837,15 +4886,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						);
 						return;
 					}
-					const rawState = (message as any).state;
 					const incomingState = queryEditor.sanitizeSqlLeaveNoTraceState<KqlxStateV1>({
 						caretDocsEnabled:
-							rawState && typeof rawState.caretDocsEnabled === 'boolean' ? rawState.caretDocsEnabled : undefined,
+							typeof rawState.caretDocsEnabled === 'boolean' ? rawState.caretDocsEnabled : undefined,
 						autoTriggerAutocompleteEnabled:
-							rawState && typeof rawState.autoTriggerAutocompleteEnabled === 'boolean'
+							typeof rawState.autoTriggerAutocompleteEnabled === 'boolean'
 								? rawState.autoTriggerAutocompleteEnabled
 								: undefined,
-						sections: rawState && Array.isArray(rawState.sections) ? rawState.sections : []
+						sections: rawState.sections
 					});
 					assertDocumentSectionKindsAllowed(documentKind, incomingState.sections);
 					const markdownOwner = activeMarkdownOwnerEntry

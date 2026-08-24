@@ -103,6 +103,14 @@ describe('MainWebviewStartupGateway', () => {
 				type: 'kustoExecutionStartedAck', boxId: 'query-1', executionId: 'execution-1',
 				sectionInstanceId: 'section-1', targetGeneration: 1, accepted: true,
 			},
+			{
+				type: 'copilotWriteQueryExecutionAck', boxId: 'sql-1',
+				executionId: 'sql-execution-1', accepted: true,
+			},
+			{
+				type: 'persistDocument', snapshotId: 'snapshot-1', sourceGeneration: 1,
+				editRevision: 2, state: { sections: [] },
+			},
 			{ type: 'kustoPublicationAck', publicationId: 'publication-1', phase: 'staged', accepted: true },
 			{ type: 'kustoPublicationAck', publicationId: 'publication-1', phase: 'applied', accepted: false },
 			...['staged', 'committed', 'finalized', 'completed', 'rolledBack'].map(phase => ({
@@ -113,6 +121,52 @@ describe('MainWebviewStartupGateway', () => {
 
 		for (const reply of replies) expect(isMainWebviewCorrelatedReply(reply)).toBe(true);
 		expect(isMainWebviewCorrelatedReply({ type: 'persistDocument' })).toBe(false);
+		expect(isMainWebviewCorrelatedReply({
+			type: 'copilotWriteQueryExecutionAck', boxId: 'sql-1',
+			executionId: 'sql-execution-1', accepted: 'yes',
+		})).toBe(false);
+		expect(isMainWebviewCorrelatedReply({
+			type: 'copilotWriteQueryExecutionAck', boxId: ['sql-1'],
+			executionId: ['sql-execution-1'], accepted: true,
+		})).toBe(false);
+		expect(isMainWebviewCorrelatedReply({
+			type: 'copilotWriteQueryExecutionAck', boxId: ' sql-1 ',
+			executionId: 'sql-execution-1', accepted: true,
+		})).toBe(false);
+		expect(isMainWebviewCorrelatedReply(new Proxy({
+			type: 'copilotWriteQueryExecutionAck', boxId: 'sql-1',
+			executionId: 'sql-execution-1', accepted: true,
+		}, {}))).toBe(false);
+		expect(isMainWebviewCorrelatedReply({
+			type: 'persistDocument', snapshotId: 'snapshot-1', sourceGeneration: 1,
+			editRevision: 2,
+		})).toBe(false);
+		expect(isMainWebviewCorrelatedReply({
+			type: 'persistDocument', snapshotId: 'snapshot-1', sourceGeneration: '1',
+			editRevision: 2, state: { sections: [] },
+		})).toBe(false);
+		expect(isMainWebviewCorrelatedReply({
+			type: 'persistDocument', snapshotId: ['snapshot-1'], sourceGeneration: 1,
+			editRevision: '2', state: { sections: [] },
+		})).toBe(false);
+		expect(isMainWebviewCorrelatedReply(new Proxy({
+			type: 'persistDocument', snapshotId: 'snapshot-1', sourceGeneration: 1,
+			editRevision: 2, state: { sections: [] },
+		}, {}))).toBe(false);
+		expect(isMainWebviewCorrelatedReply({
+			type: 'persistDocument', snapshotId: 'snapshot-1', sourceGeneration: 1,
+			editRevision: 2, state: {},
+		})).toBe(false);
+		let accessorReads = 0;
+		const accessorState = Object.defineProperty({}, 'sections', {
+			enumerable: true,
+			get: () => { accessorReads++; return []; },
+		});
+		expect(isMainWebviewCorrelatedReply({
+			type: 'persistDocument', snapshotId: 'snapshot-1', sourceGeneration: 1,
+			editRevision: 2, state: accessorState,
+		})).toBe(false);
+		expect(accessorReads).toBe(0);
 		expect(isMainWebviewCorrelatedReply({
 			type: 'artifactCsvSaveData', requestId: 'csv-1', boxId: ['query-1'],
 			artifactId: 'artifact-1', accepted: true, csv: 'forged',
@@ -453,6 +507,61 @@ describe('MainWebviewStartupGateway', () => {
 		await drain;
 		expect(events).toEqual(['request:start', 'ack', 'request:end']);
 		expect(clearTimeoutSpy).toHaveBeenCalledOnce();
+	});
+
+	it('admits nested persistence and SQL start acknowledgement during blocked startup', async () => {
+		const harness = createPanelHarness();
+		const events: string[] = [];
+		let releaseFirst!: () => void;
+		const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel,
+			admitInbound: admitTestMessage,
+			allowReentrantInbound: isMainWebviewCorrelatedReply,
+		});
+		void harness.receive({ type: 'request', sequence: 1 });
+		const drain = gateway.setInboundHandler(async message => {
+			if (message.type === 'request') {
+				events.push('request:start');
+				await firstGate;
+				events.push('request:end');
+				return;
+			}
+			events.push(message.type);
+			if (message.type === 'copilotWriteQueryExecutionAck') releaseFirst();
+		});
+
+		await vi.waitFor(() => expect(events).toEqual(['request:start']));
+		await Promise.resolve(harness.receive({
+			type: 'persistDocument', snapshotId: ['snapshot-1'], sourceGeneration: '1',
+			editRevision: '2', state: { sections: [] },
+		}));
+		await Promise.resolve(harness.receive({
+			type: 'copilotWriteQueryExecutionAck', boxId: ['sql-1'],
+			executionId: ['sql-execution-1'], accepted: true,
+		}));
+		await Promise.resolve(harness.receive(new Proxy({
+			type: 'persistDocument', snapshotId: 'snapshot-proxy', sourceGeneration: 1,
+			editRevision: 2, state: { sections: [] },
+		}, {})));
+		await Promise.resolve(harness.receive(new Proxy({
+			type: 'copilotWriteQueryExecutionAck', boxId: 'sql-1',
+			executionId: 'sql-execution-1', accepted: true,
+		}, {})));
+		expect(events).toEqual(['request:start']);
+		await Promise.resolve(harness.receive({
+			type: 'persistDocument', snapshotId: 'snapshot-1', sourceGeneration: 1,
+			editRevision: 2, state: { sections: [] },
+		}));
+		await Promise.resolve(harness.receive({
+			type: 'copilotWriteQueryExecutionAck', boxId: 'sql-1',
+			executionId: 'sql-execution-1', accepted: true,
+		}));
+		await drain;
+
+		expect(events).toEqual([
+			'request:start', 'persistDocument', 'copilotWriteQueryExecutionAck', 'request:end',
+		]);
 	});
 
 	it('rejects a captured proxied execution-start acknowledgement before reentrancy or routing', async () => {

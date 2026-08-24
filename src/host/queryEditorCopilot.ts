@@ -10,6 +10,10 @@ import { formatQueryResultForCopilot, summarizeQueryResultForCopilot } from './c
 import { sanitizeStsLogText } from './sql/stsLogSanitizer';
 import type { SqlExecutionBroker } from './sql/sqlExecutionBroker';
 import { SqlLeaveNoTraceBlockedError } from './sql/sqlLeaveNoTrace';
+import {
+	parseSqlCopilotExecutionStartAck,
+	SQL_COPILOT_START_ACK_TIMEOUT_MS,
+} from '../shared/copilotExecutionStart';
 import { ConversationHistoryEntry, sanitizeConversationHistory, insertMissingToolCallResults, decideNonToolResponse, groupConversationHistoryForProvider, type ToolCallHistoryEntry } from './copilotConversationUtils';
 import { schemaCacheKey, schemaPrincipalIdentity, searchCachedSchemas } from './schemaCache';
 import { kustoDatabaseKey } from '../shared/kustoClusterUrls';
@@ -143,6 +147,7 @@ type RunningCopilotWriteQuery = {
 	queryCancelsByTargetBoxId: Map<string, Set<() => void>>;
 	kustoAccountPartitionGetters: Set<() => string | undefined>;
 	kustoFinalRun?: { target: KustoSectionExecutionTarget; executionId: string; getAccountPartition: () => string | undefined };
+	sqlPendingStart?: { executionId: string; retire: () => void };
 	sqlFinalRun?: { isCurrent: () => boolean; settleExecution: () => void };
 	cleanupCurrentToolTurn?: () => void;
 	cleanupCurrentRequestHistory?: () => void;
@@ -176,6 +181,7 @@ class CopilotExecutionQueryError extends Error {
 }
 
 export class CopilotService {
+	private static readonly serviceByHost = new WeakMap<object, CopilotService>();
 	private copilotWriteSeq = 0;
 	private copilotHistoryEntrySeq = 0;
 	private readonly runningCopilotWriteQueryByBoxId = new Map<string, RunningCopilotWriteQuery>();
@@ -184,6 +190,10 @@ export class CopilotService {
 	private readonly copilotConversationHistoryByBoxId = new Map<string, ConversationHistoryEntry[]>();
 	private readonly copilotConversationOwnerByBoxId = new Map<string, CopilotConversationOwner>();
 	private readonly copilotExtendedSchemaCache = new Map<string, { timestamp: number; result: string; label: string }>();
+	private readonly pendingSqlExecutionStartAcks = new Map<string, {
+		resolve: (accepted: boolean) => boolean;
+		timer: ReturnType<typeof setTimeout>;
+	}>();
 	private readonly SCHEMA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 	// Cache for Copilot model selection — avoids calling selectChatModels() on every inline completion request.
@@ -196,7 +206,18 @@ export class CopilotService {
 	constructor(
 		private readonly host: CopilotServiceHost,
 		private readonly selectChatModels: CopilotModelSelector = selector => vscode.lm.selectChatModels(selector),
-	) {}
+	) {
+		CopilotService.serviceByHost.set(host as object, this);
+	}
+
+	static settleSqlExecutionStartAckForHost(
+		host: CopilotServiceHost,
+		message: unknown,
+	): void {
+		const parsed = parseSqlCopilotExecutionStartAck(message);
+		if (!parsed.ok) return;
+		CopilotService.serviceByHost.get(host as object)?.settleSqlExecutionStartAck(parsed.value);
+	}
 
 	configureDevelopmentModelForTest(responses: readonly CopilotDevelopmentModelResponse[]): void {
 		if (this.host.context.extensionMode === vscode.ExtensionMode.Production) {
@@ -377,7 +398,83 @@ export class CopilotService {
 		if (delivered === false) throw new Error('Copilot write-query canceled');
 	}
 
+	private sqlExecutionStartAckKey(boxId: string, executionId: string): string {
+		return `${boxId}\u0000${executionId}`;
+	}
+
+	settleSqlExecutionStartAck(message: {
+		boxId: string;
+		executionId: string;
+		accepted: boolean;
+	}): void {
+		if (typeof message.boxId !== 'string' || !message.boxId || message.boxId.trim() !== message.boxId
+			|| typeof message.executionId !== 'string' || !message.executionId
+			|| message.executionId.trim() !== message.executionId
+			|| typeof message.accepted !== 'boolean') return;
+		const key = this.sqlExecutionStartAckKey(message.boxId, message.executionId);
+		const pending = this.pendingSqlExecutionStartAcks.get(key);
+		if (!pending) return;
+		pending.resolve(message.accepted === true);
+	}
+
+	private claimSqlExecutionInWebview(message: {
+		type: 'copilotWriteQueryExecuting';
+		boxId: string;
+		executing: true;
+		executionId: string;
+		ownerToken: string;
+		query: string;
+		sourceBoxId?: string;
+		sourceExecutionId?: string;
+	}, registerRetirement?: (retire: () => void) => void): Promise<boolean> {
+		const key = this.sqlExecutionStartAckKey(message.boxId, message.executionId);
+		const startDeadline = Date.now() + SQL_COPILOT_START_ACK_TIMEOUT_MS;
+		const startMessage = { ...message, startDeadline };
+		const previous = this.pendingSqlExecutionStartAcks.get(key);
+		if (previous) {
+			this.pendingSqlExecutionStartAcks.delete(key);
+			clearTimeout(previous.timer);
+			previous.resolve(false);
+		}
+		let resolveResult!: (accepted: boolean) => void;
+		let timer!: ReturnType<typeof setTimeout>;
+		let settled = false;
+		const result = new Promise<boolean>(resolve => { resolveResult = resolve; });
+		const settle = (accepted: boolean): boolean => {
+			if (settled) return false;
+			settled = true;
+			if (this.pendingSqlExecutionStartAcks.get(key)?.timer === timer) {
+				this.pendingSqlExecutionStartAcks.delete(key);
+			}
+			clearTimeout(timer);
+			resolveResult(accepted);
+			return true;
+		};
+		const retire = this.createOneShotCancel(() => {
+			if (!settle(false)) return;
+			try {
+				void Promise.resolve(this.host.postMessage({
+					...startMessage, executing: false,
+				})).catch(() => undefined);
+			} catch { /* best effort retirement */ }
+		});
+		timer = setTimeout(retire, SQL_COPILOT_START_ACK_TIMEOUT_MS);
+		this.pendingSqlExecutionStartAcks.set(key, { resolve: settle, timer });
+		registerRetirement?.(retire);
+		try {
+			void Promise.resolve(this.host.postMessage(startMessage)).then(delivered => {
+				if (delivered === false) retire();
+			}, retire);
+		} catch {
+			retire();
+		}
+		return result;
+	}
+
 	private settleOwnedCopilotExecutions(running: RunningCopilotWriteQuery): void {
+		const sqlPendingStart = running.sqlPendingStart;
+		running.sqlPendingStart = undefined;
+		sqlPendingStart?.retire();
 		const kustoFinalRun = running.kustoFinalRun;
 		if (kustoFinalRun) this.host.cancelKustoSectionExecution(kustoFinalRun.target, kustoFinalRun.executionId);
 		if (running.sqlFinalRun?.isCurrent()) running.sqlFinalRun.settleExecution();
@@ -1135,6 +1232,7 @@ export class CopilotService {
 			affectedBoxIds.push(boxId);
 			const running = this.runningCopilotWriteQueryByBoxId.get(boxId);
 			if (running) {
+				this.settleOwnedCopilotExecutions(running);
 				this.cancelTrackedCopilotQueries(running);
 				this.host.sqlExecutionBroker.supersede(boxId, { notifyWebview: true });
 				try { running.cts.cancel(); } catch { /* ignore */ }
@@ -3046,11 +3144,29 @@ Completion:`;
 				const admission = this.host.sqlExecutionBroker.promotePreflight(preflight);
 				if (!admission) throw new Error('SQL Copilot write-query canceled');
 				if (publishedQuery !== undefined) {
-					await dispatchActiveOwner(targetBoxId, () => this.postRequiredMessage({
-						type: 'copilotWriteQueryExecuting', boxId: targetBoxId, executing: true,
-						executionId, ownerToken, query: publishedQuery,
-						...(comparisonSource || {}),
-					}));
+					let pendingStart: RunningCopilotWriteQuery['sqlPendingStart'];
+					let accepted: boolean;
+					try {
+						accepted = await dispatchActiveOwner(targetBoxId, () => this.claimSqlExecutionInWebview({
+							type: 'copilotWriteQueryExecuting', boxId: targetBoxId, executing: true,
+							executionId, ownerToken, query: publishedQuery,
+							...(comparisonSource || {}),
+						}, retire => {
+							const runningRequest = this.runningCopilotWriteQueryByBoxId.get(boxId);
+							if (runningRequest?.cts !== cts || runningRequest.seq !== seq) {
+								retire();
+								return;
+							}
+							pendingStart = { executionId, retire };
+							runningRequest.sqlPendingStart = pendingStart;
+						}));
+					} finally {
+						const runningRequest = this.runningCopilotWriteQueryByBoxId.get(boxId);
+						if (runningRequest && runningRequest.sqlPendingStart === pendingStart) {
+							runningRequest.sqlPendingStart = undefined;
+						}
+					}
+					if (!accepted) throw new Error('SQL Copilot execution was rejected by the editor.');
 					publishedStart = true;
 					await assertActiveOwner(targetBoxId);
 					if (!this.host.sqlExecutionBroker.isPendingCurrent(admission)) {

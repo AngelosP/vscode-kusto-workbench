@@ -46,6 +46,18 @@ describe('decideSchemaOperation', () => {
 			expect(result.action).toBe('skip');
 		});
 
+		it('refreshes an already-loaded schema for the same database', () => {
+			const result = decideSchemaOperation(input({
+				perModelLoaded: true,
+				currentClusterUrl: CLUSTER_A,
+				currentDatabase: DB_A,
+				newClusterUrl: CLUSTER_A,
+				newDatabase: DB_A,
+				forceRefresh: true,
+			}));
+			expect(result).toEqual({ action: 'replace', reason: 'force-refresh' });
+		});
+
 		it('skips when perModelLoaded and setAsContext=false', () => {
 			const result = decideSchemaOperation(input({
 				perModelLoaded: true,

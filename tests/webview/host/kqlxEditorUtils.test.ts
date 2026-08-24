@@ -12,6 +12,7 @@ import {
 	stripDiffNoise,
 	hasSqlOwnedDocumentState,
 	OwnedSessionWriteTracker,
+	parseNativePersistDocumentState,
 	consumeKqlxProjectionAttempt,
 	createKqlxProjectionAttemptBudget,
 	publishKqlxTextFresh,
@@ -20,6 +21,39 @@ import {
 } from '../../../src/host/kqlxEditorProvider';
 import { assertDocumentSectionKindsAllowed } from '../../../src/shared/documentSectionCapabilities';
 import * as vscode from 'vscode';
+
+describe('parseNativePersistDocumentState', () => {
+	it('rejects malformed and accessor-backed state before accepting a canonical follow-up', () => {
+		expect(parseNativePersistDocumentState({}, 'kqlx')).toBeUndefined();
+		let accessorReads = 0;
+		const accessorState = Object.defineProperty({}, 'sections', {
+			enumerable: true,
+			get: () => { accessorReads++; return []; },
+		});
+		expect(parseNativePersistDocumentState(accessorState, 'kqlx')).toBeUndefined();
+		expect(accessorReads).toBe(0);
+
+		expect(parseNativePersistDocumentState({
+			sections: [{ id: 'query_1', type: 'query', query: 'print Value=1' }],
+		}, 'kqlx')).toEqual({
+			sections: [{ id: 'query_1', type: 'query', query: 'print Value=1' }],
+		});
+	});
+
+	it('accepts multiple individually valid near-limit persisted results without a document-wide cap', () => {
+		const resultJson = 'x'.repeat(4_100_000);
+		const state = parseNativePersistDocumentState({
+			sections: [
+				{ id: 'query_1', type: 'query', query: 'print One=1', resultJson },
+				{ id: 'query_2', type: 'query', query: 'print Two=2', resultJson },
+			],
+		}, 'kqlx');
+
+		expect(state?.sections).toHaveLength(2);
+		expect((state?.sections[0] as { resultJson?: string }).resultJson).toHaveLength(4_100_000);
+		expect((state?.sections[1] as { resultJson?: string }).resultJson).toHaveLength(4_100_000);
+	});
+});
 
 describe('resolveLinkedQueryUri', () => {
 	const documentUri = vscode.Uri.file('C:/work/notebook.kqlx');

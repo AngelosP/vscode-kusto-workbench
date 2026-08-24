@@ -13,7 +13,7 @@ import '../components/kw-section-shell.js';
 import { getScrollY, maybeAutoScrollWhileDragging, setPageScrollTop } from '../core/utils.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { ensureToastUiLoaded } from '../shared/lazy-vendor.js';
-import { getMarkdownCursorPosition } from '../shared/markdown-cursor-position.js';
+import { getMarkdownCursorPosition, getToastUiMarkdownCursorPosition } from '../shared/markdown-cursor-position.js';
 import type { MarkdownSectionState } from '../../shared/markdownSectionDefinition.js';
 import {
 	requestHostOwnedMarkdownAdd,
@@ -1097,7 +1097,8 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 			if (!this._markdownMouseInside && !editorContainer.contains(document.activeElement) && !editorContainer.contains(window.getSelection()?.anchorNode ?? null)) {
 				return;
 			}
-			const position = getMarkdownCursorPosition(editorContainer);
+			const position = getToastUiMarkdownCursorPosition(this._editorApi?._toastui)
+				?? getMarkdownCursorPosition(editorContainer);
 			if (!position) {
 				return;
 			}

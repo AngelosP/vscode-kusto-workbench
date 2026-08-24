@@ -136,6 +136,8 @@ export interface ConnectionServiceHost {
 export class ConnectionService {
 	private static readonly zeroResultRecoveryByCluster = new Map<string, Promise<ZeroResultRecoveryOutcome>>();
 	private static readonly databaseCacheSettlementByCluster = new Map<string, Promise<void>>();
+	private static lastSelectionSettlement: Promise<void> = Promise.resolve();
+	private static lastSelectionAdmissionRevision = 0;
 
 	private lastConnectionId?: string;
 	private lastDatabase?: string;
@@ -165,6 +167,26 @@ export class ConnectionService {
 		}
 	}
 
+	private static enqueueLastSelectionSave(operation: () => Promise<void>): Promise<void> {
+		this.lastSelectionAdmissionRevision++;
+		const save = this.lastSelectionSettlement.catch(() => undefined).then(operation);
+		this.lastSelectionSettlement = save.catch(() => undefined);
+		return save;
+	}
+
+	static async waitForLastSelectionSettlement(quietMs = 0): Promise<void> {
+		const requiredQuietMs = Math.max(0, Number.isFinite(quietMs) ? quietMs : 0);
+		while (true) {
+			const settlement = this.lastSelectionSettlement;
+			const revision = this.lastSelectionAdmissionRevision;
+			await settlement;
+			if (settlement !== this.lastSelectionSettlement || revision !== this.lastSelectionAdmissionRevision) continue;
+			if (requiredQuietMs === 0) return;
+			await new Promise(resolve => setTimeout(resolve, requiredQuietMs));
+			if (settlement === this.lastSelectionSettlement && revision === this.lastSelectionAdmissionRevision) return;
+		}
+	}
+
 	constructor(private readonly host: ConnectionServiceHost) {
 		this.connectionCache = new KustoConnectionCache(host.context);
 		this.authPreferences = KustoAuthPreferenceService.getInstance(host.context);
@@ -189,8 +211,10 @@ export class ConnectionService {
 	async saveLastSelection(connectionId: string, database?: string): Promise<void> {
 		this.lastConnectionId = connectionId;
 		this.lastDatabase = database;
-		await this.host.context.globalState.update(STORAGE_KEYS.lastConnectionId, connectionId);
-		await this.host.context.globalState.update(STORAGE_KEYS.lastDatabase, database);
+		await ConnectionService.enqueueLastSelectionSave(async () => {
+			await this.host.context.globalState.update(STORAGE_KEYS.lastConnectionId, connectionId);
+			await this.host.context.globalState.update(STORAGE_KEYS.lastDatabase, database);
+		});
 	}
 
 	getLastConnectionId(): string | undefined {

@@ -18,6 +18,11 @@ describe('lazy vendor loading', () => {
 		});
 		delete (window as any).echarts;
 		delete (window as any).toastui;
+		delete (window as any).marked;
+		delete (window as any).DOMPurify;
+		delete (window as any).define;
+		delete (window as any).module;
+		delete (window as any).exports;
 		(window as any).__kustoQueryEditorConfig = {
 			echartsUrl: 'https://example.test/echarts.webview.js',
 			markedUrl: 'https://example.test/marked.min.js',
@@ -37,20 +42,63 @@ describe('lazy vendor loading', () => {
 		const p2 = ensureMarkdownPreviewLibsLoaded();
 		expect(p1).not.toBe(p2);
 
-		const scripts = appendedNodes.filter((n) => n.tagName === 'SCRIPT') as HTMLScriptElement[];
-		expect(scripts).toHaveLength(2);
+		let scripts: HTMLScriptElement[] = [];
+		await vi.waitFor(() => {
+			scripts = appendedNodes.filter((n) => n.tagName === 'SCRIPT') as HTMLScriptElement[];
+			expect(scripts).toHaveLength(1);
+		});
 		expect(scripts[0].src).toContain('marked.min.js');
-		expect(scripts[1].src).toContain('purify.min.js');
 
 		(window as any).marked = { parse: () => '' };
-		(window as any).DOMPurify = { sanitize: () => '' };
 		scripts[0].onload?.(new Event('load'));
+		await vi.waitFor(() => {
+			scripts = appendedNodes.filter((n) => n.tagName === 'SCRIPT') as HTMLScriptElement[];
+			expect(scripts).toHaveLength(2);
+		});
+		expect(scripts[1].src).toContain('purify.min.js');
+		(window as any).DOMPurify = { sanitize: () => '' };
 		scripts[1].onload?.(new Event('load'));
 		await expect(p1).resolves.toBeUndefined();
 		await expect(p2).resolves.toBeUndefined();
 
 		await expect(ensureMarkdownPreviewLibsLoaded()).resolves.toBeUndefined();
 		expect(appendedNodes.filter((n) => n.tagName === 'SCRIPT')).toHaveLength(2);
+	});
+
+	it('serializes TOAST UI and Markdown scripts through one AMD suppression gate', async () => {
+		const savedDefine = { amd: { enabled: true } };
+		(window as any).define = savedDefine;
+		const { ensureMarkdownPreviewLibsLoaded, ensureToastUiLoaded } = await importLazyVendor();
+
+		const toastLoading = ensureToastUiLoaded();
+		const markdownLoading = ensureMarkdownPreviewLibsLoaded();
+		let scripts: HTMLScriptElement[] = [];
+		await vi.waitFor(() => {
+			scripts = appendedNodes.filter((n) => n.tagName === 'SCRIPT') as HTMLScriptElement[];
+			expect(scripts).toHaveLength(1);
+		});
+		expect(scripts[0].src).toContain('toastui.webview.js');
+
+		(window as any).toastui = { Editor: function Editor() {} };
+		scripts[0].onload?.(new Event('load'));
+		await toastLoading;
+		await vi.waitFor(() => {
+			scripts = appendedNodes.filter((n) => n.tagName === 'SCRIPT') as HTMLScriptElement[];
+			expect(scripts).toHaveLength(2);
+		});
+		expect(scripts[1].src).toContain('marked.min.js');
+		(window as any).marked = { parse: () => '' };
+		scripts[1].onload?.(new Event('load'));
+		await vi.waitFor(() => {
+			scripts = appendedNodes.filter((n) => n.tagName === 'SCRIPT') as HTMLScriptElement[];
+			expect(scripts).toHaveLength(3);
+		});
+		expect(scripts[2].src).toContain('purify.min.js');
+		(window as any).DOMPurify = { sanitize: () => '' };
+		scripts[2].onload?.(new Event('load'));
+
+		await markdownLoading;
+		expect((window as any).define.amd).toBe(savedDefine.amd);
 	});
 
 	it('ensureEchartsLoaded is idempotent and injects one script', async () => {
@@ -60,8 +108,11 @@ describe('lazy vendor loading', () => {
 		const p2 = ensureEchartsLoaded();
 		expect(p1).toBe(p2);
 
-		const scripts = appendedNodes.filter((n) => n.tagName === 'SCRIPT') as HTMLScriptElement[];
-		expect(scripts).toHaveLength(1);
+		let scripts: HTMLScriptElement[] = [];
+		await vi.waitFor(() => {
+			scripts = appendedNodes.filter((n) => n.tagName === 'SCRIPT') as HTMLScriptElement[];
+			expect(scripts).toHaveLength(1);
+		});
 		expect(scripts[0].src).toContain('echarts.webview.js');
 
 		(window as any).echarts = { init: vi.fn() };
@@ -76,13 +127,20 @@ describe('lazy vendor loading', () => {
 		const { ensureEchartsLoaded } = await importLazyVendor();
 
 		const p1 = ensureEchartsLoaded();
-		const first = appendedNodes.find((n) => n.tagName === 'SCRIPT') as HTMLScriptElement;
-		first.onerror?.(new Event('error'));
+		let first: HTMLScriptElement | undefined;
+		await vi.waitFor(() => {
+			first = appendedNodes.find((n) => n.tagName === 'SCRIPT') as HTMLScriptElement | undefined;
+			expect(first).toBeDefined();
+		});
+		first!.onerror?.(new Event('error'));
 		await expect(p1).rejects.toThrow('Failed to load ECharts');
 
 		const p2 = ensureEchartsLoaded();
-		const scripts = appendedNodes.filter((n) => n.tagName === 'SCRIPT') as HTMLScriptElement[];
-		expect(scripts).toHaveLength(2);
+		let scripts: HTMLScriptElement[] = [];
+		await vi.waitFor(() => {
+			scripts = appendedNodes.filter((n) => n.tagName === 'SCRIPT') as HTMLScriptElement[];
+			expect(scripts).toHaveLength(2);
+		});
 
 		(window as any).echarts = { init: vi.fn() };
 		scripts[1].onload?.(new Event('load'));
@@ -105,8 +163,11 @@ describe('lazy vendor loading', () => {
 		expect(links[0].href).toContain('toastui-a.css');
 		expect(links[1].href).toContain('toastui-b.css');
 
-		const scripts = appendedNodes.filter((n) => n.tagName === 'SCRIPT') as HTMLScriptElement[];
-		expect(scripts).toHaveLength(1);
+		let scripts: HTMLScriptElement[] = [];
+		await vi.waitFor(() => {
+			scripts = appendedNodes.filter((n) => n.tagName === 'SCRIPT') as HTMLScriptElement[];
+			expect(scripts).toHaveLength(1);
+		});
 		expect(scripts[0].src).toContain('toastui.webview.js');
 
 		(window as any).toastui = { Editor: function Editor() {} };
@@ -127,8 +188,12 @@ describe('lazy vendor loading', () => {
 		const { ensureToastUiLoaded } = await importLazyVendor();
 		const p1 = ensureToastUiLoaded();
 
-		const first = appendedNodes.find((n) => n.tagName === 'SCRIPT') as HTMLScriptElement;
-		first.onerror?.(new Event('error'));
+		let first: HTMLScriptElement | undefined;
+		await vi.waitFor(() => {
+			first = appendedNodes.find((n) => n.tagName === 'SCRIPT') as HTMLScriptElement | undefined;
+			expect(first).toBeDefined();
+		});
+		first!.onerror?.(new Event('error'));
 		await expect(p1).rejects.toThrow('Failed to load TOAST UI Editor');
 
 		expect((window as any).define.amd).toBe(savedDefine.amd);
@@ -136,8 +201,11 @@ describe('lazy vendor loading', () => {
 		expect((window as any).exports).toEqual({ e: 1 });
 
 		const p2 = ensureToastUiLoaded();
-		const scripts = appendedNodes.filter((n) => n.tagName === 'SCRIPT') as HTMLScriptElement[];
-		expect(scripts).toHaveLength(2);
+		let scripts: HTMLScriptElement[] = [];
+		await vi.waitFor(() => {
+			scripts = appendedNodes.filter((n) => n.tagName === 'SCRIPT') as HTMLScriptElement[];
+			expect(scripts).toHaveLength(2);
+		});
 
 		(window as any).toastui = { Editor: function Editor() {} };
 		scripts[1].onload?.(new Event('load'));

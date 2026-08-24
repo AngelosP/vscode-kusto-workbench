@@ -6,6 +6,7 @@ import type { DropdownItem } from '../components/kw-dropdown.js';
 import { buildSearchRegex, navigateMatch, type SearchMode } from '../components/search-utils.js';
 import { OverlayScrollbarsController } from '../components/overlay-scrollbars.controller.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
+import { ensureMarkdownPreviewLibsLoaded } from '../shared/lazy-vendor.js';
 import { osLibrarySheet } from '../shared/os-library-styles.js';
 import { osThemeSheet } from '../shared/os-theme-styles.js';
 import { scrollbarSheet } from '../shared/scrollbar-styles.js';
@@ -62,6 +63,13 @@ function clamp(value: number, min: number, max: number): number {
 	return Math.min(Math.max(value, min), max);
 }
 
+const TUTORIAL_MARKDOWN_ALLOWED_TAGS = [
+	'a', 'blockquote', 'br', 'code', 'del', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'img',
+	'li', 'ol', 'p', 'pre', 's', 'strong', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul',
+];
+const TUTORIAL_MARKDOWN_ALLOWED_ATTRIBUTES = ['alt', 'class', 'href', 'rel', 'src', 'target', 'title'];
+const TUTORIAL_MARKDOWN_FORBIDDEN_ATTRIBUTES = ['action', 'background', 'formaction', 'poster', 'srcset', 'style'];
+
 @customElement('kw-tutorial-viewer')
 export class KwTutorialViewer extends LitElement {
 	static styles = [iconRegistryStyles, scrollbarSheet, osLibrarySheet, osThemeSheet, tutorialViewerStyles];
@@ -95,6 +103,7 @@ export class KwTutorialViewer extends LitElement {
 	private compactPointerAnchorTimer: number | undefined;
 	private compactLayoutObserver: ResizeObserver | undefined;
 	private muteMenuCloseTimer: number | undefined;
+	private contentRenderGeneration = 0;
 
 	connectedCallback(): void {
 		super.connectedCallback();
@@ -106,6 +115,7 @@ export class KwTutorialViewer extends LitElement {
 
 	disconnectedCallback(): void {
 		super.disconnectedCallback();
+		this.contentRenderGeneration++;
 		window.removeEventListener('message', this.onHostMessage);
 		window.removeEventListener('pointerdown', this.onGlobalPointerDown, true);
 		window.removeEventListener('keydown', this.onGlobalKeyDown, true);
@@ -672,12 +682,16 @@ export class KwTutorialViewer extends LitElement {
 		if (content.tutorialId !== this.selectedTutorialId) {
 			return;
 		}
-		this.selectedTutorialId = content.tutorialId;
+		const generation = ++this.contentRenderGeneration;
+		const renderedMarkdown = await this.sanitizeMarkdown(content.markdown || '');
+		if (generation !== this.contentRenderGeneration
+			|| content.tutorialId !== this.selectedTutorialId
+			|| !this.isConnected) return;
 		this.loadedTutorialId = content.tutorialId;
 		this.loadingTutorialId = null;
 		this.contentErrors = content.errors ?? [];
 		this.rememberContentTitle(content.tutorialId, content.markdown || '');
-		this.renderedMarkdown = await this.sanitizeMarkdown(content.markdown || '');
+		this.renderedMarkdown = renderedMarkdown;
 		this.scheduleCompactPointerAdjustment();
 	}
 
@@ -698,6 +712,9 @@ export class KwTutorialViewer extends LitElement {
 	}
 
 	private async sanitizeMarkdown(markdown: string): Promise<string> {
+		if (typeof window.marked?.parse !== 'function' || typeof window.DOMPurify?.sanitize !== 'function') {
+			try { await ensureMarkdownPreviewLibsLoaded(); } catch { /* safe escaped fallback below */ }
+		}
 		const marked = window.marked as { parse(markdown: string): string | Promise<string> } | undefined;
 		const purify = window.DOMPurify as { sanitize(value: string, options?: Record<string, unknown>): string } | undefined;
 		if (!purify) {
@@ -705,11 +722,19 @@ export class KwTutorialViewer extends LitElement {
 		}
 		const parsed = marked ? await marked.parse(markdown) : this.escapeHtml(markdown).replace(/\n/g, '<br>');
 		const sanitized = purify.sanitize(String(parsed), {
+			ALLOWED_TAGS: TUTORIAL_MARKDOWN_ALLOWED_TAGS,
+			ALLOWED_ATTR: TUTORIAL_MARKDOWN_ALLOWED_ATTRIBUTES,
+			ALLOW_DATA_ATTR: false,
+			FORBID_ATTR: TUTORIAL_MARKDOWN_FORBIDDEN_ATTRIBUTES,
 			ADD_ATTR: ['target', 'rel'],
 			FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form'],
 		});
 		const template = document.createElement('template');
 		template.innerHTML = sanitized;
+		template.content.querySelectorAll('audio, math, picture, source, svg, track, video').forEach(element => element.remove());
+		template.content.querySelectorAll('*').forEach(element => {
+			for (const attribute of TUTORIAL_MARKDOWN_FORBIDDEN_ATTRIBUTES) element.removeAttribute(attribute);
+		});
 		template.content.querySelectorAll('a').forEach(anchor => {
 			const href = anchor.getAttribute('href') ?? '';
 			if (!/^(https?:|mailto:)/i.test(href)) {
@@ -1361,6 +1386,7 @@ export class KwTutorialViewer extends LitElement {
 	}
 
 	private clearTutorialContent(): void {
+		this.contentRenderGeneration++;
 		this.loadingTutorialId = null;
 		this.loadedTutorialId = null;
 		this.renderedMarkdown = '';

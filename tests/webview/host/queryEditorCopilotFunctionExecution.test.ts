@@ -30,6 +30,10 @@ import { appendQueryMode, buildCacheDirective, isControlCommand, normalizeContro
 import { QueryRunCoordinator } from '../../../src/host/queryRunCoordinator.js';
 import { SqlExecutionBroker } from '../../../src/host/sql/sqlExecutionBroker.js';
 import { SqlLeaveNoTraceBlockedError } from '../../../src/host/sql/sqlLeaveNoTrace.js';
+import {
+	SQL_COPILOT_PERSIST_ACK_TIMEOUT_MS,
+	SQL_COPILOT_START_ACK_TIMEOUT_MS,
+} from '../../../src/shared/copilotExecutionStart.js';
 
 const TEST_CONNECTION: KustoConnection = {
 	id: 'conn-1',
@@ -83,7 +87,16 @@ function createTextModel(text: string): any {
 
 function createHost(capturedQueries: string[], executeError?: Error): CopilotServiceHost {
 	let runSeq = 0;
-	const postMessage = vi.fn();
+	let host: any;
+	const postMessage = vi.fn((message: any) => {
+		if (message?.type === 'copilotWriteQueryExecuting' && message.executing === true) {
+			queueMicrotask(() => CopilotService.settleSqlExecutionStartAckForHost(host, {
+				type: 'copilotWriteQueryExecutionAck',
+				boxId: message.boxId, executionId: message.executionId, accepted: true,
+			}));
+		}
+		return true;
+	});
 	const kustoTarget = {
 		engine: 'kusto' as const,
 		boxId: 'query_1',
@@ -98,7 +111,7 @@ function createHost(capturedQueries: string[], executeError?: Error): CopilotSer
 		getOwnerToken: () => 'owner-token',
 		postMessage,
 	});
-	const host: any = {
+	host = {
 		extensionUri: vscode.Uri.file('/extension'),
 		context: {
 			globalState: {
@@ -412,6 +425,71 @@ function startMessage(queryMode = 'plain') {
 }
 
 describe('Kusto Copilot function execution', () => {
+	it('retires an unacknowledged SQL start after the ordered host deadline', async () => {
+		vi.useFakeTimers();
+		try {
+			expect(SQL_COPILOT_START_ACK_TIMEOUT_MS).toBeGreaterThan(SQL_COPILOT_PERSIST_ACK_TIMEOUT_MS);
+			const host = createHost([]);
+			const service = new CopilotService(host);
+			(host.postMessage as any).mockImplementation((message: any) =>
+				message?.executing === true ? new Promise<boolean>(() => undefined) : true);
+			const claim = (service as any).claimSqlExecutionInWebview({
+				type: 'copilotWriteQueryExecuting', boxId: 'sql-timeout', executing: true,
+				executionId: 'sql-timeout-execution', ownerToken: 'owner-timeout', query: 'SELECT 1',
+			}) as Promise<boolean>;
+
+			await vi.advanceTimersByTimeAsync(SQL_COPILOT_START_ACK_TIMEOUT_MS - 1);
+			let settled = false;
+			void claim.then(() => { settled = true; });
+			await Promise.resolve();
+			expect(settled).toBe(false);
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(claim).resolves.toBe(false);
+			expect(host.postMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+				type: 'copilotWriteQueryExecuting', boxId: 'sql-timeout',
+				executionId: 'sql-timeout-execution', executing: false,
+				startDeadline: expect.any(Number),
+			}));
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('accepts an exact SQL start acknowledgement without waiting for transport settlement', async () => {
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		(host.postMessage as any).mockImplementation((message: any) =>
+			message?.executing === true ? new Promise<boolean>(() => undefined) : true);
+		const claim = (service as any).claimSqlExecutionInWebview({
+			type: 'copilotWriteQueryExecuting', boxId: 'sql-ack', executing: true,
+			executionId: 'sql-ack-execution', ownerToken: 'owner-ack', query: 'SELECT 1',
+		}) as Promise<boolean>;
+		await vi.waitFor(() => expect(hostMessagesOfType(host, 'copilotWriteQueryExecuting'))
+			.toContainEqual(expect.objectContaining({ executing: true, executionId: 'sql-ack-execution' })));
+		CopilotService.settleSqlExecutionStartAckForHost(host, {
+			type: 'copilotWriteQueryExecutionAck',
+			boxId: ['sql-ack'], executionId: ['sql-ack-execution'], accepted: true,
+		});
+		CopilotService.settleSqlExecutionStartAckForHost(host, new Proxy({
+			type: 'copilotWriteQueryExecutionAck',
+			boxId: 'sql-ack', executionId: 'sql-ack-execution', accepted: true,
+		}, {}));
+		let settled = false;
+		void claim.then(() => { settled = true; });
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		CopilotService.settleSqlExecutionStartAckForHost(host, {
+			type: 'copilotWriteQueryExecutionAck',
+			boxId: 'sql-ack', executionId: 'sql-ack-execution', accepted: true,
+		});
+
+		await expect(claim).resolves.toBe(true);
+		expect(hostMessagesOfType(host, 'copilotWriteQueryExecuting')).not.toContainEqual(expect.objectContaining({
+			executing: false, executionId: 'sql-ack-execution',
+		}));
+	});
+
 	it('discovers Copilot models and publishes exact availability', async () => {
 		const model = createTextModel('unused');
 		vscodeMocks.selectChatModels.mockReset();
@@ -1176,12 +1254,74 @@ describe('Kusto Copilot function execution', () => {
 			.toContainEqual(expect.objectContaining({ boxId: 'sql-source', executing: true })));
 
 		service.cancelCopilotWriteQuery('sql-source');
-		startDelivery.resolve(true);
 		await request;
 
 		expect(sqlClient.executeQueryCancelable).not.toHaveBeenCalled();
 		expect(hostMessagesOfType(host, 'copilotWriteQueryExecuting')).toContainEqual(expect.objectContaining({
 			boxId: 'sql-source', executing: false,
+		}));
+	});
+
+	it('retires a pending SQL start when SQL owners are disposed', async () => {
+		const model = createModel([[
+			new vscode.LanguageModelToolCallPart('final-call', 'respond_to_sql_query', { query: 'SELECT 1 AS Value' }),
+		]]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		(host.postMessage as any).mockImplementation((message: any) =>
+			message?.type === 'copilotWriteQueryExecuting' && message.executing === true
+				? new Promise<boolean>(() => undefined)
+				: true);
+		const sqlClient = { executeQueryCancelable: vi.fn() } as any;
+		const service = new CopilotService(host);
+		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
+		const request = service.startSqlCopilotWriteQuery({
+			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db',
+			request: 'Write and run a query.', currentQuery: 'SELECT 1', enabledTools: ['respond_to_sql_query'],
+		}, { getConnection: vi.fn(() => sqlConnection) } as any, {
+			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
+		} as any, sqlClient);
+		await vi.waitFor(() => expect(hostMessagesOfType(host, 'copilotWriteQueryExecuting'))
+			.toContainEqual(expect.objectContaining({ boxId: 'sql-source', executing: true })));
+
+		service.invalidateSqlConnections([]);
+		await request;
+
+		expect(sqlClient.executeQueryCancelable).not.toHaveBeenCalled();
+		expect(hostMessagesOfType(host, 'copilotWriteQueryExecuting')).toContainEqual(expect.objectContaining({
+			boxId: 'sql-source', executing: false,
+		}));
+	});
+
+	it('does not start SQL transport when the editor rejects the execution claim', async () => {
+		const model = createModel([[
+			new vscode.LanguageModelToolCallPart('final-call', 'respond_to_sql_query', { query: 'UPDATE Secret SET Value=1' }),
+		]]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		(host.postMessage as any).mockImplementation((message: any) => {
+			if (message?.type === 'copilotWriteQueryExecuting' && message.executing === true) {
+				queueMicrotask(() => CopilotService.settleSqlExecutionStartAckForHost(host, {
+					type: 'copilotWriteQueryExecutionAck',
+					boxId: message.boxId, executionId: message.executionId, accepted: false,
+				}));
+			}
+			return true;
+		});
+		const sqlClient = { executeQueryCancelable: vi.fn() } as any;
+		const service = new CopilotService(host);
+		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
+
+		await service.startSqlCopilotWriteQuery({
+			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db',
+			request: 'Run this query.', currentQuery: 'SELECT 1', enabledTools: ['respond_to_sql_query'],
+		}, { getConnection: vi.fn(() => sqlConnection) } as any, {
+			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
+		} as any, sqlClient);
+
+		expect(sqlClient.executeQueryCancelable).not.toHaveBeenCalled();
+		expect(hostMessagesOfType(host, 'copilotWriteQueryExecuting')).toContainEqual(expect.objectContaining({
+			boxId: 'sql-source', executing: true, query: 'UPDATE Secret SET Value=1',
 		}));
 	});
 

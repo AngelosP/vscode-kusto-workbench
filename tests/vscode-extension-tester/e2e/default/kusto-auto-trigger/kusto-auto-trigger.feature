@@ -8,7 +8,7 @@ Feature: Kusto auto-trigger autocomplete without authentication
     When I execute command "workbench.action.closeAuxiliaryBar"
     And I wait 2 seconds
 
-  Scenario: Kusto auto-trigger suggestions respect typing context and toolbar state without schema
+  Scenario: Kusto auto-trigger toggle and suppression respect offline context without schema
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
@@ -34,15 +34,16 @@ Feature: Kusto auto-trigger autocomplete without authentication
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.kusto.hide()" in the webview
     When I evaluate "window.__e2e.suggest.kusto.assertHidden('before enabled pipe auto-trigger')" in the webview
-    When I evaluate "window.__e2e.kusto.setQueryAt('print marker = 1\n|', 2, 2)" in the webview
+    When I evaluate "window.__e2e.kusto.setQueryWithCaretMarkerStrict('print marker = 1\n|⟦caret⟧')" in the webview
     When I evaluate "window.__e2e.suggest.kusto.typeText(' ')" in the webview
-    When I evaluate "window.__e2e.suggest.kusto.waitExistingAllVisible('kusto pipe operator auto-trigger without schema', 'where,project', 5000)" in the webview
+    And I wait 2 seconds
+    When I evaluate "window.__e2e.suggest.kusto.waitVisible('enabled offline Kusto pipe operators', 'where,project', 5000)" in the webview
 
     When I press "Escape"
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.kusto.assertHidden('escape hides kusto suggestions')" in the webview
 
-    When I evaluate "window.__e2e.kusto.setQueryAt('print marker = ', 1, 16)" in the webview
+    When I evaluate "window.__e2e.kusto.setQueryWithCaretMarkerStrict('print marker = ⟦caret⟧')" in the webview
     When I evaluate "window.__e2e.suggest.kusto.typeText('x')" in the webview
     And I wait 2 seconds
     When I evaluate "window.__e2e.suggest.kusto.assertHidden('kusto end-of-word suppression without schema')" in the webview
@@ -51,7 +52,7 @@ Feature: Kusto auto-trigger autocomplete without authentication
     And I wait 1 second
     When I evaluate "window.__e2e.autoTrigger.assertEnabled(false)" in the webview
 
-    When I evaluate "window.__e2e.kusto.setQueryAt('print marker = 1\n|', 2, 2)" in the webview
+    When I evaluate "window.__e2e.kusto.setQueryWithCaretMarkerStrict('print marker = 1\n|⟦caret⟧')" in the webview
     When I evaluate "window.__e2e.suggest.kusto.typeText(' ')" in the webview
     And I wait 2 seconds
     When I evaluate "window.__e2e.suggest.kusto.assertHidden('kusto disabled auto-trigger without schema')" in the webview
@@ -66,9 +67,10 @@ Feature: Kusto auto-trigger autocomplete without authentication
     When I evaluate "window.__e2e.suggest.kusto.assertHidden('before re-enabled pipe auto-trigger')" in the webview
     Then I take a screenshot "06-toggle-on"
 
-    When I evaluate "window.__e2e.kusto.setQueryAt('print marker = 1\n|', 2, 2)" in the webview
+    When I evaluate "window.__e2e.kusto.setQueryWithCaretMarkerStrict('print marker = 1\n|⟦caret⟧')" in the webview
     When I evaluate "window.__e2e.suggest.kusto.typeText(' ')" in the webview
-    When I evaluate "window.__e2e.suggest.kusto.waitExistingAllVisible('re-enabled kusto pipe operator auto-trigger without schema', 'where,project', 5000)" in the webview
-    Then I take a screenshot "07-reenabled-pipe-suggestions"
+    And I wait 2 seconds
+    When I evaluate "window.__e2e.suggest.kusto.waitVisible('re-enabled offline Kusto pipe operators', 'where,project', 5000)" in the webview
+    Then I take a screenshot "07-reenabled-offline-suggestions"
 
     When I execute command "workbench.action.closeAllEditors"

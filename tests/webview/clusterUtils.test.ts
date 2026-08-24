@@ -16,6 +16,7 @@ import {
 	exportAzureDataExplorerClusterPath,
 	exportKustoClusterEndpoint,
 	exportKustoClusterForKql,
+	getKustoClusterAliases,
 	isCompleteKustoClusterUrl,
 	kustoClusterKey,
 	kustoDatabaseKey,
@@ -96,6 +97,45 @@ describe('Kusto cluster identity helpers', () => {
 			'https://aoaiagents1.westus.kusto.windows.net/'
 		];
 		expect(new Set(variants.map(kustoClusterKey))).toEqual(new Set(['aoaiagents1.westus']));
+	});
+
+	it('expands public regional short and full forms into worker aliases', () => {
+		const fromShort = getKustoClusterAliases('aoaiagents1.westus');
+		const fromFull = getKustoClusterAliases('https://aoaiagents1.westus.kusto.windows.net');
+
+		for (const aliases of [fromShort, fromFull]) {
+			expect(aliases).toEqual(expect.arrayContaining([
+				'aoaiagents1.westus',
+				'https://aoaiagents1.westus',
+				'aoaiagents1.westus.kusto.windows.net',
+				'https://aoaiagents1.westus.kusto.windows.net',
+			]));
+		}
+	});
+
+
+	it.each([
+		['cluster.chinaeast2', 'cluster.chinaeast2.kusto.chinacloudapi.cn'],
+		['cluster.usgovvirginia', 'cluster.usgovvirginia.kusto.usgovcloudapi.net'],
+	] as const)('preserves unsupported sovereign hosts instead of synthesizing endpoints for %s', (shortHost, endpointHost) => {
+		expect(parseKustoClusterRef(shortHost)).toMatchObject({
+			key: shortHost, endpointHost: shortHost, endpointUrl: `https://${shortHost}`, isPublicKusto: false,
+		});
+		expect(parseKustoClusterRef(endpointHost)).toMatchObject({
+			key: endpointHost, endpointHost, endpointUrl: `https://${endpointHost}`, isPublicKusto: false,
+		});
+		expect(getKustoClusterAliases(shortHost)).not.toContain(`${shortHost}.kusto.windows.net`);
+	});
+
+	it('does not expand a custom multi-label host whose final label is an Azure region', () => {
+		const host = 'adx.contoso.westus';
+		expect(parseKustoClusterRef(host)).toMatchObject({
+			key: host,
+			endpointHost: host,
+			endpointUrl: `https://${host}`,
+			isPublicKusto: false,
+		});
+		expect(getKustoClusterAliases(host)).not.toContain(`${host}.kusto.windows.net`);
 	});
 
 	it('preserves custom dotted domains as exact logical hosts', () => {

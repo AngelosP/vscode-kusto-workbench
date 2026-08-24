@@ -7,6 +7,7 @@ import type {
 } from '../../shared/firstLaunchSetup';
 import type { FirstLaunchPanelOutcome, FirstLaunchPanelRequest } from './firstLaunchCoordinator';
 
+const BOOTSTRAP_TIMEOUT_MS = 20_000;
 const READY_TIMEOUT_MS = 10_000;
 
 export class FirstLaunchSetupPanel {
@@ -54,7 +55,6 @@ export class FirstLaunchSetupPanel {
 		),
 	) {
 		this.result = new Promise(resolve => { this.resolveResult = resolve; });
-		this.panel.webview.html = this.buildHtml(this.panel.webview);
 		this.disposables.push(
 			this.panel.webview.onDidReceiveMessage((message: FirstLaunchSetupWebviewMessage) => {
 				this.messageQueue = this.messageQueue.then(() => this.handleMessage(message)).catch(error => {
@@ -69,14 +69,25 @@ export class FirstLaunchSetupPanel {
 				});
 			}),
 		);
-		this.readyTimer = setTimeout(() => {
-			this.settle('operational-failure');
-		}, READY_TIMEOUT_MS);
 		this.context.subscriptions.push(...this.disposables);
+		this.armReadyTimer(BOOTSTRAP_TIMEOUT_MS);
+		this.initializeWebview();
+	}
+
+	private initializeWebview(): void {
+		try {
+			this.panel.webview.html = this.buildHtml(this.panel.webview);
+		} catch {
+			this.settle('operational-failure');
+		}
 	}
 
 	private async handleMessage(message: FirstLaunchSetupWebviewMessage): Promise<void> {
 		if (this.terminal || !message || typeof message.type !== 'string') {
+			return;
+		}
+		if (message.type === 'bootstrapReady') {
+			this.armReadyTimer(READY_TIMEOUT_MS);
 			return;
 		}
 		if (message.type === 'ready' || message.type === 'requestSnapshot') {
@@ -185,6 +196,13 @@ export class FirstLaunchSetupPanel {
 			clearTimeout(this.readyTimer);
 			this.readyTimer = undefined;
 		}
+	}
+
+	private armReadyTimer(timeoutMs: number): void {
+		this.clearReadyTimer();
+		this.readyTimer = setTimeout(() => {
+			this.settle('operational-failure');
+		}, timeoutMs);
 	}
 
 	private buildHtml(webview: vscode.Webview): string {

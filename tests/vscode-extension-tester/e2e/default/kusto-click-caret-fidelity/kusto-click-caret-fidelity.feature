@@ -13,7 +13,7 @@ Feature: Kusto editor click caret fidelity
     And I wait for "#queries-container" in the webview for 20 seconds
     And I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 1 second
-    When I evaluate "window.__e2e.kusto.assertClickCaretFidelityWithHtmlSection()" in the webview for 20 seconds
+    When I evaluate "window.__e2e.kusto.assertClickCaretFidelityWithHtmlSection()" in the webview "session.kqlx" for 20 seconds
     When I click at 30, 700
     Then I take a screenshot "01-kusto-click-caret-fidelity"
 
@@ -23,7 +23,7 @@ Feature: Kusto editor click caret fidelity
     And I wait for "#queries-container" in the webview for 20 seconds
     And I wait for "kw-html-section" in the webview for 20 seconds
     And I wait for "kw-query-section" in the webview for 20 seconds
-    When I evaluate "window.__e2e.kusto.assertClickCaretFidelityAfterRestoredHtmlPreviewScroll()" in the webview for 25 seconds
+    When I evaluate "window.__e2e.kusto.assertClickCaretFidelityAfterRestoredHtmlPreviewScroll()" in the webview "restored-html-preview-click.kqlx" for 25 seconds
     When I click at 30, 700
     Then I take a screenshot "02-restored-html-preview-kusto-click-caret-fidelity"
 
@@ -37,11 +37,11 @@ Feature: Kusto editor click caret fidelity
     And I wait for "#queries-container" in the webview for 20 seconds
     And I wait for "kw-html-section" in the webview for 20 seconds
     And I wait for "kw-query-section" in the webview for 20 seconds
-    When I evaluate "window.__e2e.kusto.prepareRestoredHtmlPreviewNativeClickTarget()" in the webview for 25 seconds
-    And I move the mouse to 193, 650
+    When I evaluate "window.__e2e.kusto.prepareRestoredHtmlPreviewNativeClickTarget()" in the webview "native-typing.kqlx" for 25 seconds
+    And I move the mouse to 241, 650
     And I click
-    And I type "NATIVE_TYPED"
-    When I evaluate "window.__e2e.kusto.assertRestoredHtmlPreviewNativeTyping('NATIVE_TYPED')" in the webview for 10 seconds
+    And I type natively "NATIVE_TYPED"
+    When I evaluate "window.__e2e.kusto.assertRestoredHtmlPreviewNativeTyping('NATIVE_TYPED')" in the webview "native-typing.kqlx" for 10 seconds
     When I click at 30, 700
     Then I take a screenshot "03-restored-html-preview-native-click-and-typing"
     When I execute command "workbench.action.revertAndCloseActiveEditor"

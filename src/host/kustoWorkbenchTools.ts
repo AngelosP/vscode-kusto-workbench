@@ -2186,6 +2186,9 @@ export class KustoWorkbenchToolOrchestrator {
 			await this.refreshSqlLeaveNoTracePolicy?.();
 			await this.assertSqlConnectionAllowed?.(matching[0].id);
 		}
+		if (input.execute && requestedConnectionId && !String(input.database || '').trim()) {
+			throw new Error('database is required when retargeting and executing a SQL section.');
+		}
 		if (!existingConnectionId && !requestedConnectionId) {
 			throw new Error(`SQL section "${input.sectionId}" has no live connection owner. Pass connectionId from list-sql-connections.`);
 		}
@@ -2255,7 +2258,10 @@ export class KustoWorkbenchToolOrchestrator {
 			input.execute ? executionTimeoutMs : 30_000,
 			target,
 			input.execute
-				? connection => { connection.poster({ type: 'toolCancelSqlExecution', sectionId: input.sectionId, executionId }); }
+				? (connection, requestId) => { connection.poster({
+					type: 'toolCancelSqlExecution', requestId,
+					sectionId: input.sectionId, executionId,
+				}); }
 				: undefined,
 			capturedConnection,
 			cancellationToken,

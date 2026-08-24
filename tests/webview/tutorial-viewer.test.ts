@@ -729,6 +729,33 @@ describe('kw-tutorial-viewer', () => {
 		expect(viewer.shadowRoot!.textContent).toContain('fresh tutorial');
 	});
 
+	it('does not commit an earlier tutorial when Markdown parsing resolves out of order', async () => {
+		const viewer = createViewer();
+		await sendSnapshot(viewer);
+		let resolveFirst!: (value: string) => void;
+		let resolveSecond!: (value: string) => void;
+		const first = new Promise<string>(resolve => { resolveFirst = resolve; });
+		const second = new Promise<string>(resolve => { resolveSecond = resolve; });
+		(window as any).marked = { parse: (markdown: string) => markdown === 'first pending' ? first : second };
+
+		window.dispatchEvent(new MessageEvent('message', { data: {
+			type: 'tutorialContent', content: { tutorialId: 'agent-start', markdown: 'first pending', source: 'cache', errors: [] },
+		} }));
+		(viewer.shadowRoot!.querySelector('[data-tutorial-id="agent-next"]') as HTMLButtonElement).click();
+		await settle(viewer);
+		window.dispatchEvent(new MessageEvent('message', { data: {
+			type: 'tutorialContent', content: { tutorialId: 'agent-next', markdown: 'second pending', source: 'cache', errors: [] },
+		} }));
+
+		resolveSecond('<p>second rendered</p>');
+		await settle(viewer);
+		resolveFirst('<p>first stale</p>');
+		await settle(viewer);
+
+		expect(viewer.shadowRoot!.textContent).toContain('second rendered');
+		expect(viewer.shadowRoot!.textContent).not.toContain('first stale');
+	});
+
 	it('sanitizes command links, remote images, and direct webview resource images from markdown', async () => {
 		const viewer = createViewer();
 		await sendSnapshot(viewer);
@@ -739,6 +766,23 @@ describe('kw-tutorial-viewer', () => {
 		expect(viewer.shadowRoot!.innerHTML).not.toContain('vscode-resource:/secret.png');
 		expect(viewer.shadowRoot!.innerHTML).toContain('https://file+.vscode-resource.vscode-cdn.net/cached.png');
 		expect(viewer.shadowRoot!.textContent).toContain('safe');
+	});
+
+	it('removes unsupported media and URL-bearing presentation attributes', async () => {
+		const viewer = createViewer();
+		await sendSnapshot(viewer);
+		(window as any).marked = { parse: () => [
+			'<picture><source srcset="https://example.com/a.png"><img src="https://file+.vscode-resource.vscode-cdn.net/cached.png" srcset="https://example.com/b.png" style="background:url(https://example.com/c.png)" alt="cached"></picture>',
+			'<video poster="https://example.com/poster.png"><source src="https://example.com/movie.mp4"></video>',
+			'<p style="background:url(https://example.com/d.png)">safe</p>',
+		].join('') };
+		await sendTutorialContent(viewer, 'agent-start', 'ignored');
+
+		const markdown = viewer.shadowRoot!.querySelector('.markdown')!;
+		expect(markdown.querySelector('picture, source, video')).toBeNull();
+		expect(markdown.querySelector('[srcset], [poster], [style]')).toBeNull();
+		expect(markdown.innerHTML).not.toContain('example.com');
+		expect(markdown.textContent).toContain('safe');
 	});
 
 	it('escapes markdown when DOMPurify is unavailable', async () => {

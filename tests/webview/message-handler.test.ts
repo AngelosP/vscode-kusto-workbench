@@ -94,6 +94,9 @@ const mocks = {
 	resyncSupplementalReferencesForConnections: vi.fn(),
 	releaseStaleCrossClusterResponse: vi.fn(),
 	handleDocumentDataMessage: vi.fn(() => true),
+	acknowledgeDocumentReconciliation: vi.fn(),
+	lockDocumentAfterPersistenceFailure: vi.fn(),
+	waitForQueryEditorReady: vi.fn(async (boxId: string) => handlerState.queryEditors[boxId]),
 	flushCompatibilityPersist: vi.fn(),
 	acknowledgePersistDocument: vi.fn(),
 	updateConnectionSelects: vi.fn(),
@@ -138,7 +141,11 @@ const mocks = {
 	setAutoTriggerAutocompleteEnabled: vi.fn(),
 	setCopilotInlineCompletionsEnabled: vi.fn(),
 	setRunMode: vi.fn(),
+	getRunMode: vi.fn(() => 'all'),
 	executeQuery: vi.fn(),
+	acquireKustoToolExecutionFence: vi.fn(() => true),
+	canAdmitKustoHostExecutionStart: vi.fn(() => true),
+	releaseKustoToolExecutionFence: vi.fn(),
 	executeKustoComparisonPair: vi.fn(async () => true),
 	updateCaretDocsToggleButtons: vi.fn(),
 	updateAutoTriggerAutocompleteToggleButtons: vi.fn(),
@@ -355,7 +362,7 @@ vi.mock('../../src/webview/sections/kw-query-toolbar.js', () => ({
 	updateCaretDocsToggleButtons: mocks.updateCaretDocsToggleButtons,
 	updateAutoTriggerAutocompleteToggleButtons: mocks.updateAutoTriggerAutocompleteToggleButtons,
 	updateCopilotInlineCompletionsToggleButtons: mocks.updateCopilotInlineCompletionsToggleButtons,
-	getRunMode: vi.fn(() => 'all'),
+	getRunMode: mocks.getRunMode,
 	setRunMode: mocks.setRunMode,
 	closeRunMenu: vi.fn(),
 	functionRunDialogOpenByBoxId: {},
@@ -372,6 +379,9 @@ vi.mock('../../src/webview/sections/query-execution.controller.js', async () => 
 	return {
 		...actual,
 		executeQuery: mocks.executeQuery,
+		acquireKustoToolExecutionFence: mocks.acquireKustoToolExecutionFence,
+		canAdmitKustoHostExecutionStart: mocks.canAdmitKustoHostExecutionStart,
+		releaseKustoToolExecutionFence: mocks.releaseKustoToolExecutionFence,
 		executeKustoComparisonPair: mocks.executeKustoComparisonPair,
 		setQueryExecuting: mocks.setQueryExecuting,
 		__kustoSetResultsVisible: mocks.setResultsVisible,
@@ -384,6 +394,10 @@ vi.mock('../../src/webview/sections/query-execution.controller.js', async () => 
 vi.mock('../../src/webview/core/persistence.js', () => ({
 	DOCUMENT_RUNTIME_INVALIDATED_EVENT: 'kusto-document-runtime-invalidated',
 	schedulePersist: vi.fn(),
+	persistDocumentAndWaitForAck: vi.fn(async () => true),
+	reconcileDocumentWithHost: vi.fn(async () => true),
+	acknowledgeDocumentReconciliation: mocks.acknowledgeDocumentReconciliation,
+	lockDocumentAfterPersistenceFailure: mocks.lockDocumentAfterPersistenceFailure,
 	__kustoClearStoredQueryResult: mocks.clearStoredQueryResult,
 	handleDocumentDataMessage: mocks.handleDocumentDataMessage,
 	getKqlxState: vi.fn(() => ({ sections: [] })),
@@ -474,6 +488,7 @@ vi.mock('../../src/webview/core/state.js', async () => {
 	setAutoTriggerAutocompleteEnabled: mocks.setAutoTriggerAutocompleteEnabled,
 	setCopilotInlineCompletionsEnabled: mocks.setCopilotInlineCompletionsEnabled,
 	queryEditors: handlerState.queryEditors,
+	waitForQueryEditorReady: mocks.waitForQueryEditorReady,
 	queryBoxes: handlerState.queryBoxes,
 	queryExecutionTimers: {},
 	pendingFavoriteSelectionByBoxId: {},
@@ -891,6 +906,7 @@ describe('message-handler dispatch', () => {
 		kustoSyntheticDatabaseRequests.clearForTests();
 		const state = await import('../../src/webview/core/state.js');
 		const monaco = await import('../../src/webview/monaco/monaco.js');
+		const persistence = await import('../../src/webview/core/persistence.js');
 		document.body.innerHTML = '';
 		for (const key of Object.keys(monaco.__kustoControlCommandDocCache)) {
 			delete monaco.__kustoControlCommandDocCache[key];
@@ -926,12 +942,16 @@ describe('message-handler dispatch', () => {
 		delete (window as any).__kustoReadOnlyMode;
 		delete (window as any).__kustoSetMonacoKustoSchema;
 		vi.clearAllMocks();
+		vi.mocked(persistence.persistDocumentAndWaitForAck).mockReset().mockResolvedValue(true);
 		getResultsStateMock.mockReturnValue(null);
 		mocks.getQuerySectionElement.mockReturnValue(null);
 		mocks.getConnectionId.mockReturnValue('');
 		mocks.getClusterUrl.mockReturnValue('');
 		mocks.getDatabase.mockReturnValue('');
 		mocks.getSqlSectionElement.mockReturnValue(null);
+		mocks.canAdmitKustoHostExecutionStart.mockReturnValue(true);
+		mocks.getRunMode.mockReturnValue('all');
+		mocks.waitForQueryEditorReady.mockImplementation(async (boxId: string) => handlerState.queryEditors[boxId]);
 		mocks.isHostOwnedDevelopmentNoteDocument.mockReturnValue(true);
 		mocks.getOptimisticHostOwnedDevelopmentNoteSections.mockImplementation(
 			() => structuredClone(handlerState.developmentNoteSections),
@@ -1637,7 +1657,8 @@ describe('message-handler dispatch', () => {
 		handlerState.pState.documentEditRevision = 7;
 		const message = {
 			type: 'documentData', ok: true, forceReload: true, expectedEditRevision: 6,
-			editRevision: 6, reloadRequestId: 'reload-1', state: { sections: [{ type: 'markdown', text: 'external' }] },
+			requestId: 'reconcile-stale', editRevision: 6, reloadRequestId: 'reload-1',
+			state: { sections: [{ type: 'markdown', text: 'external' }] },
 		};
 
 		dispatchHostMessage(message);
@@ -1648,13 +1669,15 @@ describe('message-handler dispatch', () => {
 			type: 'documentReloadResult', requestId: 'reload-1', applied: false, editRevision: 7,
 			markdownCommandBarrierSupported: true,
 		});
+		expect(mocks.acknowledgeDocumentReconciliation).toHaveBeenCalledWith('reconcile-stale', false);
 	});
 
 	it('acknowledges and applies a current revision-conditional document reload', async () => {
 		handlerState.pState.documentEditRevision = 7;
 		const message = {
 			type: 'documentData', ok: true, forceReload: true, expectedEditRevision: 7,
-			editRevision: 7, reloadRequestId: 'reload-2', state: { sections: [{ type: 'markdown', text: 'external' }] },
+			requestId: 'reconcile-current', editRevision: 7, reloadRequestId: 'reload-2',
+			state: { sections: [{ type: 'markdown', text: 'external' }] },
 		};
 
 		dispatchHostMessage(message);
@@ -1665,6 +1688,7 @@ describe('message-handler dispatch', () => {
 			type: 'documentReloadResult', requestId: 'reload-2', applied: true, editRevision: 7,
 			markdownCommandBarrierSupported: true,
 		});
+		expect(mocks.acknowledgeDocumentReconciliation).toHaveBeenCalledWith('reconcile-current', true);
 	});
 
 	it('rejects malformed tool-state requests before snapshot and schema-owner effects', async () => {
@@ -2653,6 +2677,146 @@ describe('message-handler dispatch', () => {
 		expect(mocks.setQueryExecuting).not.toHaveBeenCalledWith('sql_1', false);
 	});
 
+	it('acknowledges an admitted SQL Copilot execution start', async () => {
+		const sqlEl = createFakeSqlSection() as FakeSqlSection & {
+			getCopilotOwnerToken: ReturnType<typeof vi.fn>;
+			getQuery: ReturnType<typeof vi.fn>;
+			setExternalQueryExecuting: ReturnType<typeof vi.fn>;
+		};
+		sqlEl.getCopilotOwnerToken = vi.fn(() => 'owner-current');
+		sqlEl.getQuery = vi.fn(() => 'SELECT 1');
+		sqlEl.setExternalQueryExecuting = vi.fn(() => true);
+		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'copilotWriteQueryExecuting', boxId: 'sql_1', ownerToken: 'owner-current',
+			executing: true, executionId: 'sql-copilot-start', query: 'SELECT 1',
+		});
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'copilotWriteQueryExecutionAck', boxId: 'sql_1',
+			executionId: 'sql-copilot-start', accepted: true,
+		}));
+	});
+
+	it('rejects a SQL Copilot execution start while a tool fence is held', async () => {
+		const sqlEl = createFakeSqlSection() as FakeSqlSection & {
+			getCopilotOwnerToken: ReturnType<typeof vi.fn>;
+			setExternalQueryExecuting: ReturnType<typeof vi.fn>;
+		};
+		sqlEl.getCopilotOwnerToken = vi.fn(() => 'owner-current');
+		sqlEl.setExternalQueryExecuting = vi.fn(() => false);
+		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'copilotWriteQueryExecuting', boxId: 'sql_1', ownerToken: 'owner-current',
+			executing: true, executionId: 'sql-copilot-blocked', query: 'UPDATE Secret SET Value=1',
+		});
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'copilotWriteQueryExecutionAck', boxId: 'sql_1',
+			executionId: 'sql-copilot-blocked', accepted: false,
+		});
+	});
+
+	it('suppresses delayed Copilot query mutations while tool fences are held', () => {
+		const kustoSetQuery = vi.fn();
+		const sqlSetQuery = vi.fn();
+		mocks.getQuerySectionElement.mockReturnValue({ copilotWriteQuerySetQuery: kustoSetQuery });
+		mocks.canAdmitKustoHostExecutionStart.mockReturnValue(false);
+		dispatchHostMessage({
+			type: 'copilotWriteQuerySetQuery', boxId: 'query-fenced', query: 'print stale=1',
+		});
+		expect(kustoSetQuery).not.toHaveBeenCalled();
+
+		mocks.getQuerySectionElement.mockReturnValue(null);
+		mocks.getSqlSectionElement.mockReturnValue({
+			canAcceptExternalQueryMutation: () => false,
+			copilotWriteQuerySetQuery: sqlSetQuery,
+		});
+		dispatchHostMessage({
+			type: 'copilotWriteQuerySetQuery', boxId: 'sql-fenced', query: 'UPDATE stale SET value=1',
+		});
+		expect(sqlSetQuery).not.toHaveBeenCalled();
+	});
+
+	it('rejects SQL Copilot start when its fenced mutation was suppressed before the fence released', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		let fenced = true;
+		let editorQuery = 'SELECT A';
+		const setQuery = vi.fn((query: string) => { editorQuery = query; });
+		const setExternalQueryExecuting = vi.fn(() => true);
+		const sqlEl = {
+			getCopilotOwnerToken: () => 'owner-current',
+			canAcceptExternalQueryMutation: () => !fenced,
+			copilotWriteQuerySetQuery: setQuery,
+			getQuery: () => editorQuery,
+			setExternalQueryExecuting,
+		};
+		mocks.getQuerySectionElement.mockReturnValue(null);
+		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'copilotWriteQuerySetQuery', boxId: 'sql-race', query: 'SELECT B',
+		});
+		expect(setQuery).not.toHaveBeenCalled();
+		fenced = false;
+		dispatchHostMessage({
+			type: 'copilotWriteQueryExecuting', boxId: 'sql-race', ownerToken: 'owner-current',
+			executing: true, executionId: 'sql-race-b', query: 'SELECT B',
+		});
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'copilotWriteQueryExecutionAck', boxId: 'sql-race',
+			executionId: 'sql-race-b', accepted: false,
+		}));
+		expect(editorQuery).toBe('SELECT A');
+		expect(setExternalQueryExecuting).not.toHaveBeenCalled();
+		expect(persistence.persistDocumentAndWaitForAck).not.toHaveBeenCalled();
+	});
+
+	it('does not activate a SQL start retired while persistence acknowledgement is pending', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		let settlePersistence!: (accepted: boolean) => void;
+		vi.mocked(persistence.persistDocumentAndWaitForAck).mockImplementationOnce(
+			() => new Promise(resolve => { settlePersistence = resolve; }),
+		);
+		const sqlEl = createFakeSqlSection() as FakeSqlSection & {
+			getCopilotOwnerToken: ReturnType<typeof vi.fn>;
+			canAcceptExternalQueryMutation: ReturnType<typeof vi.fn>;
+			getQuery: ReturnType<typeof vi.fn>;
+			setExternalQueryExecuting: ReturnType<typeof vi.fn>;
+		};
+		sqlEl.getCopilotOwnerToken = vi.fn(() => 'owner-current');
+		sqlEl.canAcceptExternalQueryMutation = vi.fn(() => true);
+		sqlEl.getQuery = vi.fn(() => 'SELECT delayed');
+		sqlEl.setExternalQueryExecuting = vi.fn(() => true);
+		mocks.getQuerySectionElement.mockReturnValue(null);
+		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'copilotWriteQueryExecuting', boxId: 'sql-delayed', ownerToken: 'owner-current',
+			executing: true, executionId: 'sql-delayed-execution', query: 'SELECT delayed',
+			startDeadline: Date.now() + 20_000,
+		});
+		await vi.waitFor(() => expect(persistence.persistDocumentAndWaitForAck).toHaveBeenCalledOnce());
+		dispatchHostMessage({
+			type: 'copilotWriteQueryExecuting', boxId: 'sql-delayed', ownerToken: 'owner-current',
+			executing: false, executionId: 'sql-delayed-execution',
+		});
+		settlePersistence(true);
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'copilotWriteQueryExecutionAck', boxId: 'sql-delayed',
+			executionId: 'sql-delayed-execution', accepted: false,
+		}));
+		expect(sqlEl.setExternalQueryExecuting).not.toHaveBeenCalledWith(true, 'sql-delayed-execution');
+	});
+
 	it('preserves the existing SQL owner-token clarification path', async () => {
 		const sqlEl = createFakeSqlSection() as FakeSqlSection & {
 			getCopilotOwnerToken: ReturnType<typeof vi.fn>;
@@ -2712,11 +2876,13 @@ describe('message-handler dispatch', () => {
 		let activeExecutionId = 'manual-old';
 		const sqlEl = createFakeSqlSection() as FakeSqlSection & {
 			getCopilotOwnerToken: ReturnType<typeof vi.fn>;
+			getQuery: ReturnType<typeof vi.fn>;
 			acceptsQueryTerminal: ReturnType<typeof vi.fn>;
 			notifyToolRunCancelled: ReturnType<typeof vi.fn>;
 			setExternalQueryExecuting: ReturnType<typeof vi.fn>;
 		};
 		sqlEl.getCopilotOwnerToken = vi.fn(() => 'owner-current');
+		sqlEl.getQuery = vi.fn(() => 'SELECT newer');
 		sqlEl.acceptsQueryTerminal = vi.fn((executionId?: string) => executionId === activeExecutionId);
 		sqlEl.notifyToolRunCancelled = vi.fn((executionId?: string) => {
 			if (executionId === activeExecutionId) activeExecutionId = '';
@@ -2735,9 +2901,9 @@ describe('message-handler dispatch', () => {
 		});
 		dispatchHostMessage({
 			type: 'copilotWriteQueryExecuting', boxId: 'sql_1', ownerToken: 'owner-current',
-			executing: true, executionId: 'copilot-new',
+			executing: true, executionId: 'copilot-new', query: 'SELECT newer',
 		});
-		await Promise.resolve();
+		await vi.waitFor(() => expect(sqlEl.setExternalQueryExecuting).toHaveBeenCalledWith(true, 'copilot-new'));
 
 		expect(sqlEl.notifyToolRunCancelled).toHaveBeenCalledWith('manual-old');
 		expect(sqlEl.setExternalQueryExecuting).toHaveBeenCalledWith(true, 'copilot-new');
@@ -2746,15 +2912,20 @@ describe('message-handler dispatch', () => {
 	});
 
 	it('routes an unstamped SQL-derived comparison result through SQL ownership before rendering', async () => {
-		const { registerSqlDerivedComparisonSession, registerSqlSectionSession } = await import('../../src/webview/core/sql-section-message-router.js');
+		const {
+			registerSqlDerivedComparisonSession, registerSqlSectionSession,
+			unregisterSqlDerivedComparisonSession,
+		} = await import('../../src/webview/core/sql-section-message-router.js');
 		const resultsState = await import('../../src/webview/core/results-state.js');
 		const source = createFakeSqlSection();
 		source.id = 'sql_source';
 		(source as any).getCopilotOwnerToken = vi.fn(() => 'owner-current');
 		(source.sqlSession as any).ownerToken = 'owner-current';
 		(source.sqlSession as any).admitOwnedMessage = vi.fn((message: any) => message.ownerToken === 'owner-current');
+		unregisterSqlDerivedComparisonSession('query_comparison');
 		registerSqlSectionSession(source.sqlSession as any);
 		registerSqlDerivedComparisonSession('query_comparison', 'sql_source');
+		handlerState.queryEditors.query_comparison = { getValue: () => 'select optimized' };
 		mocks.getSqlSectionElement.mockImplementation((boxId: string) => boxId === 'sql_source' ? source : null);
 		handlerState.optimizationMetadataByBoxId.query_comparison = { sourceBoxId: 'sql_source', isComparison: true };
 		vi.mocked(resultsState.displayResultForBox).mockClear();
@@ -2773,14 +2944,21 @@ describe('message-handler dispatch', () => {
 		};
 		mocks.getCurrentResultArtifact.mockReturnValue(sourceArtifact);
 		mocks.getResultArtifactByProducerExecution.mockReturnValue(sourceArtifact);
-		mocks.bindResultArtifactConsumer.mockReturnValue(sourceArtifact.artifactId);
+		mocks.bindResultArtifactConsumer.mockImplementation(
+			(_consumerId: string, _sourceBoxId: string, artifactId: string) => artifactId,
+		);
 		mocks.getBoundResultArtifact.mockReturnValue(sourceArtifact);
 
 		dispatchHostMessage({
 			type: 'copilotWriteQueryExecuting', boxId: 'query_comparison', ownerToken: 'owner-current',
 			executionId: 'sql-comparison-1', executing: true,
+			query: 'select optimized',
 			sourceBoxId: 'sql_source', sourceExecutionId: 'sql-source-a',
 		});
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'copilotWriteQueryExecutionAck', boxId: 'query_comparison',
+			executionId: 'sql-comparison-1', accepted: true,
+		}));
 		const sourceArtifactB = {
 			...sourceArtifact,
 			artifactId: 'result:sql_source:2', revision: 2, rows: [[99]],
@@ -2821,8 +2999,12 @@ describe('message-handler dispatch', () => {
 		dispatchHostMessage({
 			type: 'copilotWriteQueryExecuting', boxId: 'query_comparison', ownerToken: 'owner-current',
 			executionId: 'sql-comparison-2', executing: true,
+			query: 'select optimized',
 			sourceBoxId: 'sql_source', sourceExecutionId: 'sql-source-a',
 		});
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'copilotWriteQueryExecutionAck', executionId: 'sql-comparison-2', accepted: true,
+		})));
 		dispatchHostMessage({
 			type: 'copilotWriteQueryExecuting', boxId: 'query_comparison', ownerToken: 'owner-current',
 			executionId: 'sql-comparison-2', executing: false,
@@ -2853,6 +3035,7 @@ describe('message-handler dispatch', () => {
 			activeExecutionId = '';
 			return true;
 		});
+		(comparison as any).getQuery = vi.fn(() => 'SELECT optimized');
 		registerSqlSectionSession(source.sqlSession as any);
 		registerSqlSectionSession(comparison.sqlSession as any);
 		registerSqlDerivedComparisonSession('sql_comparison', 'sql_source');
@@ -2899,10 +3082,10 @@ describe('message-handler dispatch', () => {
 
 		dispatchHostMessage({
 			type: 'copilotWriteQueryExecuting', boxId: 'sql_comparison', ownerToken: 'source-owner',
-			executionId: 'copilot-after-direct', executing: true,
+			executionId: 'copilot-after-direct', executing: true, query: 'SELECT optimized',
 			sourceBoxId: 'sql_source', sourceExecutionId: 'source-direct-1',
 		});
-		expect(activeExecutionId).toBe('copilot-after-direct');
+		await vi.waitFor(() => expect(activeExecutionId).toBe('copilot-after-direct'));
 		expect(mocks.bindResultArtifactConsumer).toHaveBeenCalledWith(
 			'comparison:sql_comparison:source', 'sql_source', sourceArtifact.artifactId,
 		);
@@ -2945,6 +3128,7 @@ describe('message-handler dispatch', () => {
 			activeExecutionId = '';
 			return true;
 		});
+		(comparison as any).getQuery = vi.fn(() => 'SELECT retry');
 		registerSqlSectionSession(source.sqlSession as any);
 		registerSqlSectionSession(comparison.sqlSession as any);
 		registerSqlDerivedComparisonSession('sql_comparison', 'sql_source');
@@ -2958,7 +3142,9 @@ describe('message-handler dispatch', () => {
 			producer: { engine: 'sql', boxId: 'sql_source', executionId: 'source-retry' },
 		};
 		mocks.getResultArtifactByProducerExecution.mockReturnValue(sourceArtifact);
-		mocks.bindResultArtifactConsumer.mockReturnValue(sourceArtifact.artifactId);
+		mocks.bindResultArtifactConsumer.mockImplementation(
+			(_consumerId: string, _sourceBoxId: string, artifactId: string) => artifactId,
+		);
 		vi.mocked(errorRenderer.__kustoRenderErrorUx).mockClear();
 
 		dispatchHostMessage({
@@ -2972,13 +3158,81 @@ describe('message-handler dispatch', () => {
 
 		dispatchHostMessage({
 			type: 'copilotWriteQueryExecuting', boxId: 'sql_comparison', ownerToken: 'source-owner',
-			executionId: 'copilot-after-error', executing: true,
+			executionId: 'copilot-after-error', executing: true, query: 'SELECT retry',
 			sourceBoxId: 'sql_source', sourceExecutionId: 'source-retry',
 		});
-		expect(activeExecutionId).toBe('copilot-after-error');
+		await vi.waitFor(() => expect(activeExecutionId).toBe('copilot-after-error'));
 		expect(mocks.bindResultArtifactConsumer).toHaveBeenCalledWith(
 			'comparison:sql_comparison:source', 'sql_source', sourceArtifact.artifactId,
 		);
+	});
+
+	it('rolls back a SQL comparison start when exact source lineage cannot bind and admits a retry', async () => {
+		const {
+			registerSqlDerivedComparisonSession, registerSqlSectionSession,
+			unregisterSqlDerivedComparisonSession,
+		} = await import('../../src/webview/core/sql-section-message-router.js');
+		const source = createFakeSqlSection();
+		const comparison = createFakeSqlSection();
+		let activeExecutionId = '';
+		source.id = 'sql_source';
+		comparison.id = 'sql_comparison';
+		(source.sqlSession as any).ownerToken = 'source-owner';
+		(comparison.sqlSession as any).ownerToken = 'comparison-owner';
+		(comparison as any).setExternalQueryExecuting = vi.fn((executing: boolean, executionId: string) => {
+			if (executing) {
+				if (activeExecutionId && activeExecutionId !== executionId) return false;
+				activeExecutionId = executionId;
+				return true;
+			}
+			if (activeExecutionId !== executionId) return false;
+			activeExecutionId = '';
+			return true;
+		});
+		(comparison as any).getQuery = vi.fn(() => 'SELECT lineage');
+		unregisterSqlDerivedComparisonSession('sql_comparison');
+		registerSqlSectionSession(source.sqlSession as any);
+		registerSqlSectionSession(comparison.sqlSession as any);
+		registerSqlDerivedComparisonSession('sql_comparison', 'sql_source');
+		mocks.getSqlSectionElement.mockImplementation((boxId: string) => ({
+			sql_source: source, sql_comparison: comparison,
+		} as Record<string, FakeSqlSection>)[boxId] || null);
+		handlerState.optimizationMetadataByBoxId.sql_comparison = { sourceBoxId: 'sql_source', isComparison: true };
+		const sourceArtifact = {
+			artifactId: 'result:sql_source:lineage', sourceBoxId: 'sql_source', revision: 1,
+			producer: { engine: 'sql', boxId: 'sql_source', executionId: 'source-lineage' },
+		};
+		mocks.getResultArtifactByProducerExecution.mockReset();
+		mocks.getBoundResultArtifact.mockReset();
+		mocks.bindResultArtifactConsumer.mockReset();
+		mocks.getResultArtifactByProducerExecution.mockReturnValue(sourceArtifact);
+		mocks.getBoundResultArtifact.mockReturnValue(null);
+		mocks.bindResultArtifactConsumer.mockReturnValue(undefined);
+		mocks.postMessageToHost.mockClear();
+
+		const start = {
+			type: 'copilotWriteQueryExecuting', boxId: 'sql_comparison', ownerToken: 'source-owner',
+			executionId: 'comparison-lineage', executing: true,
+			query: 'SELECT lineage',
+			sourceBoxId: 'sql_source', sourceExecutionId: 'source-lineage',
+		};
+		dispatchHostMessage(start);
+		expect(activeExecutionId).toBe('');
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'copilotWriteQueryExecutionAck', boxId: 'sql_comparison',
+			executionId: 'comparison-lineage', accepted: false,
+		}));
+
+		mocks.postMessageToHost.mockClear();
+		mocks.bindResultArtifactConsumer.mockImplementation(
+			(_consumerId: string, _sourceBoxId: string, artifactId: string) => artifactId,
+		);
+		dispatchHostMessage(start);
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'copilotWriteQueryExecutionAck', boxId: 'sql_comparison',
+			executionId: 'comparison-lineage', accepted: true,
+		}));
+		expect(activeExecutionId).toBe('comparison-lineage');
 	});
 
 	it('routes one queryResult through rendering and the persistence owner once', async () => {
@@ -3316,6 +3570,7 @@ describe('message-handler dispatch', () => {
 			getSchemaLifecycleIdentity: vi.fn(() => ({ sectionInstanceId: 'instance-1', targetGeneration: 1 })),
 			getConnectionId: vi.fn(() => 'connection-1'),
 			getDatabase: vi.fn(() => 'Samples'),
+			getCopilotEditorValue: vi.fn(() => 'print Value=1'),
 			beginQueryExecution: vi.fn(() => true),
 			admitQueryTerminal: vi.fn(() => 'active'),
 			completeQueryExecution: vi.fn(() => true),
@@ -3470,6 +3725,7 @@ describe('message-handler dispatch', () => {
 			})),
 			getConnectionId: vi.fn(() => 'connection-accepted'),
 			getDatabase: vi.fn(() => 'Samples'),
+			getCopilotEditorValue: vi.fn(() => 'print Value=1'),
 			getActiveExecution: vi.fn(() => undefined),
 			beginQueryExecution: vi.fn(() => true),
 		};
@@ -3492,6 +3748,35 @@ describe('message-handler dispatch', () => {
 		});
 	});
 
+	it('rejects a host-originated Kusto start while a tool execution fence is held', () => {
+		const section = {
+			getSchemaLifecycleIdentity: vi.fn(() => ({
+				sectionInstanceId: 'instance-fenced', targetGeneration: 2,
+			})),
+			getConnectionId: vi.fn(() => 'connection-fenced'),
+			getDatabase: vi.fn(() => 'Samples'),
+			getCopilotEditorValue: vi.fn(() => 'print Value=2'),
+			getActiveExecution: vi.fn(() => undefined),
+			beginQueryExecution: vi.fn(() => true),
+		};
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.canAdmitKustoHostExecutionStart.mockReturnValue(false);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'kustoExecutionStarted', engine: 'kusto', boxId: 'query-fenced',
+			executionId: 'copilot-fenced', sectionInstanceId: 'instance-fenced', targetGeneration: 2,
+			connectionId: 'connection-fenced', database: 'Samples', producer: 'copilot',
+			reservationSequence: 1, query: '.drop table Dangerous',
+		});
+
+		expect(section.beginQueryExecution).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoExecutionStartedAck', boxId: 'query-fenced', executionId: 'copilot-fenced',
+			sectionInstanceId: 'instance-fenced', targetGeneration: 2, accepted: false,
+		});
+	});
+
 	it('rejects malformed execution-start traffic before section and artifact effects', () => {
 		const section = {
 			getSchemaLifecycleIdentity: vi.fn(() => ({
@@ -3499,6 +3784,7 @@ describe('message-handler dispatch', () => {
 			})),
 			getConnectionId: vi.fn(() => 'connection-protocol'),
 			getDatabase: vi.fn(() => 'Samples'),
+			getCopilotEditorValue: vi.fn(() => 'print Value=1'),
 			beginQueryExecution: vi.fn(() => true),
 		};
 		mocks.getQuerySectionElement.mockReset();
@@ -3576,6 +3862,7 @@ describe('message-handler dispatch', () => {
 			})),
 			getConnectionId: vi.fn(() => 'connection-current'),
 			getDatabase: vi.fn(() => 'Samples'),
+			getCopilotEditorValue: vi.fn(() => 'print Value=2'),
 			getActiveExecution: vi.fn(() => activeExecution),
 			beginQueryExecution: vi.fn(() => false),
 		};
@@ -3672,6 +3959,7 @@ describe('message-handler dispatch', () => {
 		const host = {
 			boxId: 'query-comparison', addController: vi.fn(), requestUpdate: vi.fn(),
 			getConnectionId: () => 'connection-current', getDatabase: () => 'Samples',
+			getCopilotEditorValue: () => 'print Value=2',
 			getSchemaLifecycleIdentity: () => ({ sectionInstanceId: 'instance-current', targetGeneration: 4 }),
 		} as any;
 		const controller = new executionModule.QueryExecutionController(host);
@@ -3905,6 +4193,7 @@ describe('message-handler dispatch', () => {
 	});
 
 	it('toolConfigureQuerySection settles when executeQuery throws after response deferral starts', async () => {
+		mocks.getQuerySectionElement.mockReturnValue({});
 		mocks.getConnectionId.mockReturnValue('connection-1');
 		mocks.getDatabase.mockReturnValue('Samples');
 		mocks.executeQuery.mockImplementationOnce(() => { throw new Error('synthetic execution failure'); });
@@ -3980,7 +4269,7 @@ describe('message-handler dispatch', () => {
 			.filter(message => message.type === 'toolResponse' && message.requestId === 'tool-query-pre-cancelled');
 		expect(immediateResponses).toEqual([{
 			type: 'toolResponse', requestId: 'tool-query-pre-cancelled',
-			result: { success: false, error: 'Query was cancelled' },
+			result: { success: false, resultPreview: '' }, error: 'Query was cancelled',
 		}]);
 		dispatchHostMessage({
 			type: 'queryCancelled', engine: 'kusto', boxId: 'query_1', executionId: 'execution-pre-cancelled',
@@ -3990,15 +4279,16 @@ describe('message-handler dispatch', () => {
 		});
 		delete (window as any).cancelQuery;
 
-		expect(cancelQuery).toHaveBeenCalledWith('query_1');
+		expect(cancelQuery).not.toHaveBeenCalled();
 		const responses = mocks.postMessageToHost.mock.calls
 			.map(([message]) => message as any)
 			.filter(message => message.type === 'toolResponse' && message.requestId === 'tool-query-pre-cancelled');
 		expect(responses).toEqual([{
 			type: 'toolResponse', requestId: 'tool-query-pre-cancelled',
-			result: { success: false, error: 'Query was cancelled' },
+			result: { success: false, resultPreview: '' }, error: 'Query was cancelled',
 		}]);
-		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('model:tool-query-pre-cancelled:result');
+		expect(mocks.executeQuery).not.toHaveBeenCalled();
+		expect(mocks.unbindResultArtifactConsumer).not.toHaveBeenCalledWith('model:tool-query-pre-cancelled:result');
 	});
 
 	it('toolConfigureQuerySection settles when its terminal artifact lookup throws', async () => {
@@ -4063,6 +4353,425 @@ describe('message-handler dispatch', () => {
 		});
 	});
 
+	it('withholds non-executing configure success until document persistence is accepted', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		let settlePersistence!: (accepted: boolean) => void;
+		vi.mocked(persistence.persistDocumentAndWaitForAck).mockImplementationOnce(
+			() => new Promise(resolve => { settlePersistence = resolve; }),
+		);
+		handlerState.queryEditors.query_persist_pending = { setValue: vi.fn() };
+		mocks.getQuerySectionElement.mockReturnValue({});
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-persist-pending',
+			input: { sectionId: 'query_persist_pending', query: 'print accepted=1' },
+		});
+
+		expect(mocks.postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'tool-persist-pending',
+		}));
+		settlePersistence(true);
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'tool-persist-pending',
+			result: { success: true, resultPreview: '' }, error: undefined,
+		}));
+		expect(persistence.persistDocumentAndWaitForAck).toHaveBeenCalledWith('tool-configure-query');
+	});
+
+	it('waits for the query editor before applying the first configure request', async () => {
+		let resolveEditor!: (editor: { setValue: ReturnType<typeof vi.fn> }) => void;
+		const setValue = vi.fn();
+		mocks.waitForQueryEditorReady.mockImplementationOnce(
+			() => new Promise(resolve => { resolveEditor = resolve; }),
+		);
+		mocks.getQuerySectionElement.mockReturnValue({});
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-editor-readiness',
+			input: { sectionId: 'query_editor_readiness', query: 'print ready=1' },
+		});
+
+		expect(setValue).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'tool-editor-readiness',
+		}));
+		resolveEditor({ setValue });
+
+		await vi.waitFor(() => expect(setValue).toHaveBeenCalledWith('print ready=1'));
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'tool-editor-readiness',
+			result: { success: true, resultPreview: '' }, error: undefined,
+		}));
+	});
+
+	it('fails a non-executing configure request when document persistence is rejected', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		vi.mocked(persistence.persistDocumentAndWaitForAck).mockResolvedValueOnce(false);
+		vi.mocked(persistence.reconcileDocumentWithHost).mockResolvedValueOnce(false);
+		handlerState.queryEditors.query_persist_rejected = { setValue: vi.fn() };
+		mocks.getQuerySectionElement.mockReturnValue({});
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-persist-rejected',
+			input: { sectionId: 'query_persist_rejected', query: 'print rejected=1' },
+		});
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'tool-persist-rejected',
+			result: { success: false, resultPreview: '' },
+			error: 'The configured query was not accepted by the document host.',
+		}));
+		expect(persistence.reconcileDocumentWithHost).toHaveBeenCalledOnce();
+		expect(persistence.lockDocumentAfterPersistenceFailure).toHaveBeenCalledOnce();
+	});
+
+	it('does not start configure-and-execute until changed configuration is host-owned', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		let settlePersistence!: (accepted: boolean) => void;
+		vi.mocked(persistence.persistDocumentAndWaitForAck).mockImplementationOnce(
+			() => new Promise(resolve => { settlePersistence = resolve; }),
+		);
+		const setValue = vi.fn();
+		handlerState.queryEditors.query_execute_persisted = { setValue };
+		mocks.getConnectionId.mockReturnValue('connection-1');
+		mocks.getDatabase.mockReturnValue('Samples');
+		mocks.executeQuery.mockReturnValue('execution-persisted');
+		mocks.getQuerySectionElement.mockReturnValue({
+			getActiveExecution: () => ({
+				engine: 'kusto', boxId: 'query_execute_persisted', executionId: 'execution-persisted',
+				sectionInstanceId: 'instance-persisted', targetGeneration: 1,
+				connectionId: 'connection-1', database: 'Samples', producer: 'tool',
+			}),
+		});
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-execute-persisted',
+			input: { sectionId: 'query_execute_persisted', query: 'print accepted=1', execute: true },
+		});
+
+		expect(setValue).toHaveBeenCalledWith('print accepted=1');
+		expect(mocks.executeQuery).not.toHaveBeenCalled();
+		settlePersistence(true);
+		await vi.waitFor(() => expect(mocks.executeQuery).toHaveBeenCalledWith(
+			'query_execute_persisted', undefined, 'tool', undefined, 'all', 'tool-execute-persisted',
+		));
+		expect(persistence.persistDocumentAndWaitForAck).toHaveBeenCalledWith('tool-configure-query');
+	});
+
+	it('reconciles rejected changed configuration without starting execution', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		vi.mocked(persistence.persistDocumentAndWaitForAck).mockResolvedValueOnce(false);
+		vi.mocked(persistence.reconcileDocumentWithHost).mockResolvedValueOnce(false);
+		handlerState.queryEditors.query_execute_rejected = { setValue: vi.fn() };
+		mocks.getQuerySectionElement.mockReturnValue({});
+		mocks.getConnectionId.mockReturnValue('connection-1');
+		mocks.getDatabase.mockReturnValue('Samples');
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-execute-rejected',
+			input: { sectionId: 'query_execute_rejected', query: 'print rejected=1', execute: true },
+		});
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'tool-execute-rejected',
+			result: { success: false, resultPreview: '' },
+			error: 'The configured query was not accepted by the document host.',
+		}));
+		expect(persistence.reconcileDocumentWithHost).toHaveBeenCalledWith(10000, 0);
+		expect(persistence.lockDocumentAfterPersistenceFailure).toHaveBeenCalledOnce();
+		expect(mocks.executeQuery).not.toHaveBeenCalled();
+	});
+
+	it('serializes overlapping configure-and-execute requests through exact dispatch text', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		let settleFirst!: (accepted: boolean) => void;
+		let settleSecond!: (accepted: boolean) => void;
+		vi.mocked(persistence.persistDocumentAndWaitForAck)
+			.mockImplementationOnce(() => new Promise(resolve => { settleFirst = resolve; }))
+			.mockImplementationOnce(() => new Promise(resolve => { settleSecond = resolve; }));
+		let currentQuery = '';
+		const editor = { setValue: vi.fn((query: string) => { currentQuery = query; }) };
+		handlerState.queryEditors.query_overlap = editor;
+		const owners = [
+			{
+				engine: 'kusto' as const, boxId: 'query_overlap', executionId: 'execution-a',
+				sectionInstanceId: 'instance-overlap', targetGeneration: 1,
+				connectionId: 'connection-1', database: 'Samples', producer: 'tool' as const,
+			},
+			{
+				engine: 'kusto' as const, boxId: 'query_overlap', executionId: 'execution-b',
+				sectionInstanceId: 'instance-overlap', targetGeneration: 1,
+				connectionId: 'connection-1', database: 'Samples', producer: 'tool' as const,
+			},
+		];
+		let activeOwner: (typeof owners)[number] | undefined;
+		const section = { getActiveExecution: () => activeOwner };
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.getConnectionId.mockReturnValue('connection-1');
+		mocks.getDatabase.mockReturnValue('Samples');
+		const dispatchedQueries: string[] = [];
+		mocks.executeQuery
+			.mockImplementationOnce(() => {
+				dispatchedQueries.push(currentQuery);
+				activeOwner = owners[0];
+				return owners[0].executionId;
+			})
+			.mockImplementationOnce(() => {
+				dispatchedQueries.push(currentQuery);
+				activeOwner = owners[1];
+				return owners[1].executionId;
+			});
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-overlap-a',
+			input: { sectionId: 'query_overlap', query: 'print request="A"', execute: true },
+		});
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-overlap-b',
+			input: { sectionId: 'query_overlap', query: 'print request="B"', execute: true },
+		});
+
+		expect(editor.setValue).toHaveBeenCalledTimes(1);
+		expect(mocks.executeQuery).not.toHaveBeenCalled();
+		settleFirst(true);
+		await vi.waitFor(() => expect(dispatchedQueries).toEqual(['print request="A"']));
+		await vi.waitFor(() => expect(editor.setValue).toHaveBeenCalledTimes(2));
+		expect(mocks.executeQuery).toHaveBeenCalledTimes(1);
+		settleSecond(true);
+		await vi.waitFor(() => expect(dispatchedQueries).toEqual([
+			'print request="A"', 'print request="B"',
+		]));
+
+		dispatchHostMessage({ type: 'toolCancelKustoExecution', requestId: 'tool-overlap-a', owner: owners[0] });
+		dispatchHostMessage({ type: 'toolCancelKustoExecution', requestId: 'tool-overlap-b', owner: owners[1] });
+	});
+
+	it('consumes cancellation during persistence before query dispatch', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		let settlePersistence!: (accepted: boolean) => void;
+		vi.mocked(persistence.persistDocumentAndWaitForAck).mockImplementationOnce(
+			() => new Promise(resolve => { settlePersistence = resolve; }),
+		);
+		handlerState.queryEditors.query_cancel_pending = { setValue: vi.fn() };
+		mocks.getQuerySectionElement.mockReturnValue({});
+		mocks.getConnectionId.mockReturnValue('connection-1');
+		mocks.getDatabase.mockReturnValue('Samples');
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-cancel-pending',
+			input: { sectionId: 'query_cancel_pending', query: 'print cancelled=1', execute: true },
+		});
+		dispatchHostMessage({ type: 'toolCancelKustoExecution', requestId: 'tool-cancel-pending' });
+		settlePersistence(true);
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'tool-cancel-pending',
+			result: { success: false, resultPreview: '' }, error: 'Query was cancelled',
+		}));
+		expect(mocks.executeQuery).not.toHaveBeenCalled();
+	});
+
+	it('cancels a mutate-only request during editor readiness without partial mutation', async () => {
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		let resolveEditor!: (editor: { setValue: ReturnType<typeof vi.fn> }) => void;
+		const setValue = vi.fn();
+		mocks.waitForQueryEditorReady.mockImplementationOnce(
+			() => new Promise(resolve => { resolveEditor = resolve; }),
+		);
+		mocks.getQuerySectionElement.mockReturnValue({});
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-cancel-mutate-only',
+			input: { sectionId: 'query_cancel_mutate', name: 'Must not apply', query: 'print cancelled=1' },
+		});
+		dispatchHostMessage({ type: 'toolCancelKustoExecution', requestId: 'tool-cancel-mutate-only' });
+		resolveEditor({ setValue });
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'tool-cancel-mutate-only',
+			result: { success: false, resultPreview: '' }, error: 'Query was cancelled',
+		}));
+		expect(setValue).not.toHaveBeenCalled();
+		expect(sectionFactory.__kustoSetSectionName).not.toHaveBeenCalledWith(
+			'query_cancel_mutate', 'Must not apply',
+		);
+	});
+
+	it('retires queued configure work when the document runtime is invalidated', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		let settleFirst!: (accepted: boolean) => void;
+		vi.mocked(persistence.persistDocumentAndWaitForAck).mockImplementationOnce(
+			() => new Promise(resolve => { settleFirst = resolve; }),
+		);
+		const setValue = vi.fn();
+		handlerState.queryEditors.query_runtime_queue = { setValue };
+		mocks.getQuerySectionElement.mockReturnValue({});
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-runtime-first',
+			input: { sectionId: 'query_runtime_queue', query: 'print first=1' },
+		});
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-runtime-queued',
+			input: { sectionId: 'query_runtime_queue', query: 'print queued=1' },
+		});
+		expect(setValue).toHaveBeenCalledTimes(1);
+
+		window.dispatchEvent(new Event('kusto-document-runtime-invalidated'));
+		settleFirst(true);
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'tool-runtime-queued',
+			result: { success: false, resultPreview: '' },
+		})));
+		expect(setValue).toHaveBeenCalledTimes(1);
+	});
+
+	it('rejects a plain KQL section name before any query mutation', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		handlerState.pState.compatibilityMode = true;
+		handlerState.pState.documentKind = 'kql';
+		const setValue = vi.fn();
+		handlerState.queryEditors.compat_query_name = { setValue };
+		mocks.getQuerySectionElement.mockReturnValue({});
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'compat-query-name',
+			input: {
+				sectionId: 'compat_query_name', name: 'Not durable', query: 'print mutated=1',
+			},
+		});
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'compat-query-name',
+			result: { success: false, resultPreview: '' },
+			error: 'Section names require a companion metadata file. Upgrade this compatibility document before setting a name.',
+		}));
+		expect(setValue).not.toHaveBeenCalled();
+		expect(persistence.persistDocumentAndWaitForAck).not.toHaveBeenCalled();
+	});
+
+	it('rejects Kusto execution when its target drifts during persistence acknowledgement', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		let settlePersistence!: (accepted: boolean) => void;
+		vi.mocked(persistence.persistDocumentAndWaitForAck).mockImplementationOnce(
+			() => new Promise(resolve => { settlePersistence = resolve; }),
+		);
+		const { section, setSerializedState } = createSectionWithShell(
+			'query_target_drift', { id: 'query_target_drift', type: 'query', query: 'print initial=1' },
+		);
+		let query = 'print initial=1';
+		let database = 'Samples';
+		const editor = {
+			getValue: () => query,
+			setValue: vi.fn((value: string) => {
+				query = value;
+				setSerializedState({ id: 'query_target_drift', type: 'query', query: value });
+			}),
+		};
+		handlerState.queryEditors.query_target_drift = editor;
+		Object.assign(section as any, {
+			getSchemaLifecycleIdentity: () => ({ sectionInstanceId: 'instance-target-drift' }),
+			getConnectionId: () => 'connection-1',
+			getClusterUrl: () => 'https://cluster.kusto.windows.net',
+			getDatabase: () => database,
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.getConnectionId.mockReturnValue('connection-1');
+		mocks.getDatabase.mockReturnValue('Samples');
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-target-drift',
+			input: { sectionId: 'query_target_drift', query: 'print configured=1', execute: true },
+		});
+		database = 'OtherDatabase';
+		settlePersistence(true);
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'tool-target-drift',
+			result: { success: false, resultPreview: '' },
+			error: 'The query section changed before execution could start.',
+		}));
+		expect(mocks.executeQuery).not.toHaveBeenCalled();
+	});
+
+	it('reacquires a recreated Kusto editor after successful reconciliation before execution', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		vi.mocked(persistence.persistDocumentAndWaitForAck).mockResolvedValueOnce(false);
+		const { section, setSerializedState } = createSectionWithShell(
+			'query_reconciled_execute', { id: 'query_reconciled_execute', type: 'query', query: 'print initial=1' },
+		);
+		let query = 'print initial=1';
+		const oldEditor = {
+			getValue: () => query,
+			setValue: vi.fn((value: string) => {
+				query = value;
+				setSerializedState({ id: 'query_reconciled_execute', type: 'query', query: value });
+			}),
+		};
+		const newEditor = { getValue: () => query, setValue: vi.fn() };
+		handlerState.queryEditors.query_reconciled_execute = oldEditor;
+		const executionOwner = {
+			engine: 'kusto' as const, boxId: 'query_reconciled_execute', executionId: 'execution-reconciled',
+			sectionInstanceId: 'instance-new', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Samples', producer: 'tool' as const,
+		};
+		const commonOwner = {
+			getConnectionId: () => 'connection-1',
+			getClusterUrl: () => 'https://cluster.kusto.windows.net',
+			getDatabase: () => 'Samples',
+		};
+		const oldOwner = {
+			...commonOwner,
+			getSchemaLifecycleIdentity: () => ({ sectionInstanceId: 'instance-old' }),
+		};
+		const newOwner = {
+			...commonOwner,
+			getSchemaLifecycleIdentity: () => ({ sectionInstanceId: 'instance-new' }),
+			getActiveExecution: () => executionOwner,
+		};
+		let currentOwner: any = oldOwner;
+		mocks.getQuerySectionElement.mockImplementation(() => currentOwner);
+		mocks.getConnectionId.mockReturnValue('connection-1');
+		mocks.getDatabase.mockReturnValue('Samples');
+		vi.mocked(persistence.reconcileDocumentWithHost).mockImplementationOnce(async () => {
+			currentOwner = newOwner;
+			handlerState.queryEditors.query_reconciled_execute = newEditor;
+			return true;
+		});
+		mocks.waitForQueryEditorReady.mockImplementationOnce(async () => newEditor);
+		mocks.executeQuery.mockReturnValue('execution-reconciled');
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-reconciled-execute',
+			input: { sectionId: 'query_reconciled_execute', query: 'print configured=1', execute: true },
+		});
+
+		await vi.waitFor(() => expect(mocks.executeQuery).toHaveBeenCalledWith(
+			'query_reconciled_execute', undefined, 'tool', undefined, 'all', 'tool-reconciled-execute',
+		));
+		expect(mocks.waitForQueryEditorReady).toHaveBeenCalledWith(
+			'query_reconciled_execute', 10000, newOwner,
+		);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolExecutionStarted', requestId: 'tool-reconciled-execute', owner: executionOwner,
+		});
+		dispatchHostMessage({
+			type: 'toolCancelKustoExecution', requestId: 'tool-reconciled-execute', owner: executionOwner,
+		});
+	});
+
 	it('emits tool selection intent when confirming an unchanged Kusto target', () => {
 		const events: CustomEvent[] = [];
 		const section = {
@@ -4095,6 +4804,82 @@ describe('message-handler dispatch', () => {
 		expect(events[0].detail).toEqual({
 			boxId: 'query_1', kind: 'connection', connectionId: 'connection-1', database: 'Samples', source: 'tool',
 		});
+	});
+
+	it('restarts database lifecycle when changing connections with the same database name', () => {
+		const events: CustomEvent[] = [];
+		const section = {
+			getConnectionId: () => 'connection-1',
+			getDatabase: () => 'Samples',
+			setConnectionId: vi.fn(),
+			setDesiredConnectionIdentity: vi.fn(),
+			setDesiredClusterUrl: vi.fn(),
+			setDesiredDatabase: vi.fn(),
+			setDatabase: vi.fn(),
+			dispatchEvent: vi.fn((event: CustomEvent) => { events.push(event); return true; }),
+		};
+		handlerState.connections.push({
+			id: 'connection-2',
+			clusterUrl: 'https://other.kusto.windows.net',
+			accountPartition: 'partition-1',
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-new-connection-same-database',
+			input: {
+				sectionId: 'query_1',
+				clusterUrl: 'https://other.kusto.windows.net',
+				connectionId: 'connection-2',
+				database: 'Samples',
+			},
+		});
+
+		expect(events.map(event => event.type)).toEqual([
+			'target-selection-intent', 'connection-changed', 'database-changed',
+		]);
+		expect(events[2].detail).toEqual({
+			boxId: 'query_1', database: 'Samples', source: 'tool',
+		});
+	});
+
+	it('rejects independent Kusto comparison retargeting before query or target mutation', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		const setValue = vi.fn();
+		handlerState.queryEditors.query_comparison_retarget = { setValue };
+		handlerState.optimizationMetadataByBoxId.query_comparison_retarget = {
+			isComparison: true, sourceBoxId: 'query_source',
+		};
+		handlerState.connections.push({
+			id: 'connection-b', clusterUrl: 'https://cluster-b.kusto.windows.net', accountPartition: 'partition-b',
+		});
+		const section = {
+			getConnectionId: () => 'connection-a',
+			getDatabase: () => 'DbA',
+			setConnectionId: vi.fn(),
+			setDatabase: vi.fn(),
+			dispatchEvent: vi.fn(),
+		};
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-comparison-retarget',
+			input: {
+				sectionId: 'query_comparison_retarget', query: 'print changed=1',
+				clusterUrl: 'https://cluster-b.kusto.windows.net', connectionId: 'connection-b', database: 'DbB',
+			},
+		});
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'tool-comparison-retarget',
+			result: { success: false, resultPreview: '' },
+			error: 'A Kusto comparison target is owned by its source section and cannot be retargeted independently.',
+		}));
+		expect(setValue).not.toHaveBeenCalled();
+		expect(section.setConnectionId).not.toHaveBeenCalled();
+		expect(section.setDatabase).not.toHaveBeenCalled();
+		expect(persistence.persistDocumentAndWaitForAck).not.toHaveBeenCalled();
 	});
 
 	it('rejects configure-and-execute on an unconfigured section before query or name mutation', async () => {
@@ -9268,6 +10053,13 @@ describe('changedSections agent provenance', () => {
 			dispatchHostMessage({
 				...owner,
 			});
+			if (options.advanceQueryBeforeStart) {
+				dispatchHostMessage({
+					type: 'copilotWriteQueryDone', boxId: 'query_1', ok: false,
+					message: 'The editor changed before execution could start.', ...copilotOwner,
+				});
+				return;
+			}
 			const queryResultMessage = {
 				...owner, type: 'queryResult', dispatch: kustoDispatch('delegated-copilot'), result: { rows, columns, metadata: {} },
 			};
@@ -9394,16 +10186,18 @@ describe('changedSections agent provenance', () => {
 		});
 	});
 
-	it('returns the host-captured query when the editor advances before execution start', async () => {
+	it('rejects the host-captured query when the editor advances before execution start', async () => {
 		const result = await runDelegatedKustoCopilotResponseTest({
 			rowCount: 3, resultBeforeDone: true, advanceQueryBeforeStart: true,
 		});
 
 		expect(result).toMatchObject({
-			success: true,
-			query: 'range Index from 1 to 10 step 1',
-			results: [[1], [2], [3]],
+			success: false,
+			error: 'The editor changed before execution could start.',
 		});
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'kustoExecutionStartedAck', executionId: 'delegated-kusto-execution', accepted: false,
+		}));
 	});
 
 	it('settles delegated Kusto Copilot when terminal artifact lookup throws', async () => {
@@ -9606,6 +10400,8 @@ describe('tool section name persistence', () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		handlerState.pState.compatibilityMode = false;
+		handlerState.pState.documentKind = 'kqlx';
 		mocks.getQuerySectionElement.mockReturnValue(null);
 		mocks.getConnectionId.mockReturnValue('');
 		mocks.getDatabase.mockReturnValue('');
@@ -9615,6 +10411,7 @@ describe('tool section name persistence', () => {
 	});
 
 	it('toolConfigureQuerySection calls __kustoSetSectionName', async () => {
+		mocks.getQuerySectionElement.mockReturnValue({});
 		dispatchHostMessage({
 			type: 'toolConfigureQuerySection',
 			requestId: 'r1',
@@ -9748,7 +10545,7 @@ describe('tool section name persistence', () => {
 		}
 	});
 
-	it('toolConfigureSqlSection schedules persistence after a name update', async () => {
+	it('toolConfigureSqlSection awaits acknowledged persistence after a name update', async () => {
 		const { section, setSerializedState } = createSectionWithShell('sql_1', { id: 'sql_1', type: 'sql', query: 'select 1', name: 'Original' });
 		(section as any).setName = vi.fn((name: string) => {
 			setSerializedState({ id: 'sql_1', type: 'sql', query: 'select 1', name });
@@ -9764,7 +10561,8 @@ describe('tool section name persistence', () => {
 		await new Promise(r => setTimeout(r, 50));
 
 		expect((section as any).setName).toHaveBeenCalledWith('Renamed SQL');
-		expect(persistence.schedulePersist).toHaveBeenCalledWith(undefined, true);
+		expect(persistence.persistDocumentAndWaitForAck).toHaveBeenCalledWith('tool-configure-sql');
+		expect(persistence.schedulePersist).not.toHaveBeenCalled();
 	});
 
 	it('toolConfigureSqlSection marks a database-only target change as authored', async () => {
@@ -9795,34 +10593,327 @@ describe('tool section name persistence', () => {
 		});
 	});
 
-	it('rejects an overlapping SQL tool execution before mutating its query', async () => {
-		const { section } = createSectionWithShell('sql_overlap', { id: 'sql_overlap', type: 'sql', query: 'select A' });
+	it('serializes overlapping SQL tool executions with their exact query text', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		let settleFirstPersist!: (accepted: boolean) => void;
+		let settleSecondPersist!: (accepted: boolean) => void;
+		vi.mocked(persistence.persistDocumentAndWaitForAck)
+			.mockImplementationOnce(() => new Promise(resolve => { settleFirstPersist = resolve; }))
+			.mockImplementationOnce(() => new Promise(resolve => { settleSecondPersist = resolve; }));
+		const { section, setSerializedState } = createSectionWithShell(
+			'sql_overlap', { id: 'sql_overlap', type: 'sql', query: 'select initial' },
+		);
 		let resolveFirst!: (value: unknown) => void;
+		let resolveSecond!: (value: unknown) => void;
 		const firstResult = new Promise(resolve => { resolveFirst = resolve; });
+		const secondResult = new Promise(resolve => { resolveSecond = resolve; });
 		(section as any).reserveToolRun = vi.fn()
 			.mockReturnValueOnce(firstResult)
-			.mockImplementationOnce(() => { throw new Error('A SQL tool query is already running for this section.'); });
-		(section as any).startReservedToolRun = vi.fn();
+			.mockReturnValueOnce(secondResult);
+		let currentQuery = 'select initial';
+		const dispatchedQueries: string[] = [];
+		(section as any).startReservedToolRun = vi.fn(() => { dispatchedQueries.push(currentQuery); });
 		(section as any).abortReservedToolRun = vi.fn();
-		(section as any).setQuery = vi.fn();
+		(section as any).beginToolConfiguration = vi.fn();
+		(section as any).endToolConfiguration = vi.fn();
+		(section as any).clearToolExpectedOwner = vi.fn();
+		(section as any).setQuery = vi.fn((query: string) => {
+			currentQuery = query;
+			setSerializedState({ id: 'sql_overlap', type: 'sql', query });
+		});
 		mocks.getSqlSectionElement.mockReturnValue(section);
 
 		dispatchHostMessage({
 			type: 'toolConfigureSqlSection', requestId: 'sql-tool-a',
 			input: { sectionId: 'sql_overlap', query: 'select A', execute: true, executionId: 'execution-a' },
 		});
-		await Promise.resolve();
+		expect((section as any).setQuery).toHaveBeenCalledTimes(1);
+		expect((section as any).startReservedToolRun).not.toHaveBeenCalled();
 		dispatchHostMessage({
 			type: 'toolConfigureSqlSection', requestId: 'sql-tool-b',
-			input: { sectionId: 'sql_overlap', query: 'update B', execute: true, executionId: 'execution-b' },
+			input: { sectionId: 'sql_overlap', query: 'select B', execute: true, executionId: 'execution-b' },
 		});
-		await Promise.resolve();
-
 		expect((section as any).setQuery).toHaveBeenCalledTimes(1);
-		expect((section as any).setQuery).toHaveBeenCalledWith('select A');
-		expect((section as any).startReservedToolRun).toHaveBeenCalledOnce();
-		resolveFirst({ rowCount: 0, executionId: 'execution-a', owner: {} });
-		await Promise.resolve();
+
+		settleFirstPersist(true);
+		await vi.waitFor(() => expect(dispatchedQueries).toEqual(['select A']));
+		resolveFirst({ rowCount: 1, executionId: 'execution-a', owner: {} });
+		await vi.waitFor(() => expect((section as any).setQuery).toHaveBeenCalledTimes(2));
+		expect((section as any).startReservedToolRun).toHaveBeenCalledTimes(1);
+		settleSecondPersist(true);
+		await vi.waitFor(() => expect(dispatchedQueries).toEqual(['select A', 'select B']));
+		resolveSecond({ rowCount: 1, executionId: 'execution-b', owner: {} });
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'sql-tool-b',
+			result: expect.objectContaining({ success: true, executionId: 'execution-b' }),
+		})));
+	});
+
+	it('does not start SQL execution when configured persistence is rejected', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		vi.mocked(persistence.persistDocumentAndWaitForAck).mockResolvedValueOnce(false);
+		vi.mocked(persistence.reconcileDocumentWithHost).mockResolvedValueOnce(false);
+		const { section, setSerializedState } = createSectionWithShell(
+			'sql_persist_rejected', { id: 'sql_persist_rejected', type: 'sql', query: 'select initial' },
+		);
+		let rejectExecution!: (error: Error) => void;
+		const execution = new Promise((_resolve, reject) => { rejectExecution = reject; });
+		(section as any).reserveToolRun = vi.fn(() => execution);
+		(section as any).startReservedToolRun = vi.fn();
+		(section as any).abortReservedToolRun = vi.fn((_executionId: string, error: Error) => rejectExecution(error));
+		(section as any).beginToolConfiguration = vi.fn();
+		(section as any).endToolConfiguration = vi.fn();
+		(section as any).clearToolExpectedOwner = vi.fn();
+		(section as any).setQuery = vi.fn((query: string) => {
+			setSerializedState({ id: 'sql_persist_rejected', type: 'sql', query });
+		});
+		mocks.getSqlSectionElement.mockReturnValue(section);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureSqlSection', requestId: 'sql-persist-rejected',
+			input: {
+				sectionId: 'sql_persist_rejected', query: 'select rejected',
+				execute: true, executionId: 'execution-rejected',
+			},
+		});
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'sql-persist-rejected', result: { success: false },
+			error: 'The configured SQL query was not accepted by the document host.',
+		}));
+		expect((section as any).startReservedToolRun).not.toHaveBeenCalled();
+		expect(persistence.reconcileDocumentWithHost).toHaveBeenCalledWith(10000, 0);
+		expect(persistence.lockDocumentAfterPersistenceFailure).toHaveBeenCalledOnce();
+	});
+
+	it('cancels SQL execution before dispatch while persistence is pending', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		let settlePersistence!: (accepted: boolean) => void;
+		vi.mocked(persistence.persistDocumentAndWaitForAck).mockImplementationOnce(
+			() => new Promise(resolve => { settlePersistence = resolve; }),
+		);
+		const { section, setSerializedState } = createSectionWithShell(
+			'sql_cancel_pending', { id: 'sql_cancel_pending', type: 'sql', query: 'select initial' },
+		);
+		let rejectExecution!: (error: Error) => void;
+		const execution = new Promise((_resolve, reject) => { rejectExecution = reject; });
+		(section as any).reserveToolRun = vi.fn(() => execution);
+		(section as any).startReservedToolRun = vi.fn();
+		(section as any).abortReservedToolRun = vi.fn((_executionId: string, error: Error) => rejectExecution(error));
+		(section as any).beginToolConfiguration = vi.fn();
+		(section as any).endToolConfiguration = vi.fn();
+		(section as any).clearToolExpectedOwner = vi.fn();
+		(section as any).cancelToolRun = vi.fn();
+		(section as any).setQuery = vi.fn((query: string) => {
+			setSerializedState({ id: 'sql_cancel_pending', type: 'sql', query });
+		});
+		mocks.getSqlSectionElement.mockReturnValue(section);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureSqlSection', requestId: 'sql-cancel-pending',
+			input: {
+				sectionId: 'sql_cancel_pending', query: 'select cancelled',
+				execute: true, executionId: 'execution-cancelled',
+			},
+		});
+		dispatchHostMessage({
+			type: 'toolCancelSqlExecution', requestId: 'sql-cancel-pending',
+			sectionId: 'sql_cancel_pending', executionId: 'execution-cancelled',
+		});
+		settlePersistence(true);
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'sql-cancel-pending', result: { success: false },
+			error: 'Query was cancelled',
+		}));
+		expect((section as any).startReservedToolRun).not.toHaveBeenCalled();
+	});
+
+	it('rejects a plain SQL section name before any query mutation', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		handlerState.pState.compatibilityMode = true;
+		handlerState.pState.documentKind = 'sql';
+		const { section } = createSectionWithShell(
+			'compat_sql_name', { id: 'compat_sql_name', type: 'sql', query: 'select 1' },
+		);
+		(section as any).setName = vi.fn();
+		(section as any).setQuery = vi.fn();
+		mocks.getSqlSectionElement.mockReturnValue(section);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureSqlSection', requestId: 'compat-sql-name',
+			input: { sectionId: 'compat_sql_name', name: 'Not durable', query: 'select mutated' },
+		});
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'compat-sql-name', result: { success: false },
+			error: 'Section names require a companion metadata file. Upgrade this compatibility document before setting a name.',
+		}));
+		expect((section as any).setName).not.toHaveBeenCalled();
+		expect((section as any).setQuery).not.toHaveBeenCalled();
+		expect(persistence.persistDocumentAndWaitForAck).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{ execute: false, requestId: 'sql-comparison-pending-mutate' },
+		{ execute: true, requestId: 'sql-comparison-pending-execute' },
+	])('rejects $requestId before reservation or mutation', async ({ execute, requestId }) => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		const { section } = createSectionWithShell(
+			'sql_comparison_pending', { id: 'sql_comparison_pending', type: 'sql', query: 'select original' },
+		);
+		Object.assign(section as any, {
+			isComparisonAdmissionPending: () => true,
+			setName: vi.fn(),
+			setQuery: vi.fn(),
+			reserveToolRun: vi.fn(),
+			startReservedToolRun: vi.fn(),
+		});
+		mocks.getSqlSectionElement.mockReturnValue(section);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureSqlSection', requestId,
+			input: {
+				sectionId: 'sql_comparison_pending', name: 'Must not apply', query: 'select changed',
+				...(execute ? { execute: true, executionId: 'comparison-pending-execution' } : {}),
+			},
+		});
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId, result: { success: false },
+			error: 'SQL comparison admission is still settling.',
+		}));
+		expect((section as any).setName).not.toHaveBeenCalled();
+		expect((section as any).setQuery).not.toHaveBeenCalled();
+		expect((section as any).reserveToolRun).not.toHaveBeenCalled();
+		expect((section as any).startReservedToolRun).not.toHaveBeenCalled();
+		expect(persistence.persistDocumentAndWaitForAck).not.toHaveBeenCalled();
+	});
+
+	it('rejects SQL execution when run mode drifts during persistence acknowledgement', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		let settlePersistence!: (accepted: boolean) => void;
+		vi.mocked(persistence.persistDocumentAndWaitForAck).mockImplementationOnce(
+			() => new Promise(resolve => { settlePersistence = resolve; }),
+		);
+		const { section, setSerializedState } = createSectionWithShell(
+			'sql_run_mode_drift', { id: 'sql_run_mode_drift', type: 'sql', query: 'select initial' },
+		);
+		let query = 'select initial';
+		let rejectExecution!: (error: Error) => void;
+		const execution = new Promise((_resolve, reject) => { rejectExecution = reject; });
+		Object.assign(section as any, {
+			getCopilotOwnerToken: () => 'sql-owner-drift',
+			getSqlConnectionId: () => 'sql-connection-1',
+			getServerUrl: () => 'sql.example.net',
+			getDatabase: () => 'Warehouse',
+			getQuery: () => query,
+			setQuery: vi.fn((value: string) => {
+				query = value;
+				setSerializedState({ id: 'sql_run_mode_drift', type: 'sql', query: value });
+			}),
+			reserveToolRun: vi.fn(() => execution),
+			startReservedToolRun: vi.fn(),
+			abortReservedToolRun: vi.fn((_executionId: string, error: Error) => rejectExecution(error)),
+			beginToolConfiguration: vi.fn(),
+			endToolConfiguration: vi.fn(),
+			clearToolExpectedOwner: vi.fn(),
+		});
+		mocks.getSqlSectionElement.mockReturnValue(section);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureSqlSection', requestId: 'sql-run-mode-drift',
+			input: {
+				sectionId: 'sql_run_mode_drift', query: 'select configured',
+				execute: true, executionId: 'execution-run-mode-drift',
+			},
+		});
+		mocks.getRunMode.mockReturnValue('take100');
+		settlePersistence(true);
+
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'sql-run-mode-drift', result: { success: false },
+			error: 'The SQL section changed before execution could start.',
+		}));
+		expect((section as any).startReservedToolRun).not.toHaveBeenCalled();
+	});
+
+	it('re-reserves a recreated SQL section after successful reconciliation before execution', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		vi.mocked(persistence.persistDocumentAndWaitForAck).mockResolvedValueOnce(false);
+		const { setSerializedState } = createSectionWithShell(
+			'sql_reconciled_execute', { id: 'sql_reconciled_execute', type: 'sql', query: 'select initial' },
+		);
+		let query = 'select initial';
+		let rejectOld!: (error: Error) => void;
+		let resolveNew!: (value: unknown) => void;
+		const oldExecution = new Promise((_resolve, reject) => { rejectOld = reject; });
+		const newExecution = new Promise(resolve => { resolveNew = resolve; });
+		const commonOwner = {
+			getSqlConnectionId: () => 'sql-connection-1',
+			getServerUrl: () => 'sql.example.net',
+			getDatabase: () => 'Warehouse',
+			getQuery: () => query,
+		};
+		const oldOwner = {
+			...commonOwner,
+			getCopilotOwnerToken: () => 'sql-owner-old',
+			setQuery: vi.fn((value: string) => {
+				query = value;
+				setSerializedState({ id: 'sql_reconciled_execute', type: 'sql', query: value });
+			}),
+			reserveToolRun: vi.fn(() => oldExecution),
+			startReservedToolRun: vi.fn(),
+			abortReservedToolRun: vi.fn((_executionId: string, error: Error) => rejectOld(error)),
+			beginToolConfiguration: vi.fn(),
+			endToolConfiguration: vi.fn(),
+			clearToolExpectedOwner: vi.fn(),
+		};
+		const newOwner = {
+			...commonOwner,
+			getCopilotOwnerToken: () => 'sql-owner-new',
+			reserveToolRun: vi.fn(() => newExecution),
+			startReservedToolRun: vi.fn(),
+			abortReservedToolRun: vi.fn(),
+			beginToolConfiguration: vi.fn(),
+			endToolConfiguration: vi.fn(),
+			clearToolExpectedOwner: vi.fn(),
+		};
+		let currentOwner: any = oldOwner;
+		mocks.getSqlSectionElement.mockImplementation(() => currentOwner);
+		vi.mocked(persistence.reconcileDocumentWithHost).mockImplementationOnce(async () => {
+			currentOwner = newOwner;
+			return true;
+		});
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureSqlSection', requestId: 'sql-reconciled-execute',
+			input: {
+				sectionId: 'sql_reconciled_execute', query: 'select configured',
+				execute: true, executionId: 'execution-reconciled-sql',
+			},
+		});
+
+		await vi.waitFor(() => expect(newOwner.startReservedToolRun).toHaveBeenCalledWith(
+			'execution-reconciled-sql',
+		));
+		expect(oldOwner.reserveToolRun).not.toHaveBeenCalled();
+		expect(oldOwner.abortReservedToolRun).not.toHaveBeenCalled();
+		expect(newOwner.reserveToolRun).toHaveBeenCalledWith('execution-reconciled-sql');
+		resolveNew({
+			rowCount: 1, executionId: 'execution-reconciled-sql',
+			owner: { connectionId: 'sql-connection-1', database: 'Warehouse' },
+		});
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'sql-reconciled-execute',
+			result: expect.objectContaining({ success: true, executionId: 'execution-reconciled-sql' }),
+		})));
 	});
 
 	it('toolConfigureHtmlSection auto-fits when code changes', async () => {

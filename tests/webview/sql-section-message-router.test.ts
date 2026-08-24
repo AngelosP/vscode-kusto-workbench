@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
 	clearSqlSectionSessionsForTest,
+	commitSqlDerivedComparisonExecution,
 	registerSqlDerivedComparisonSession,
 	registerSqlSectionSession,
 	routeSqlSectionMessage,
@@ -379,6 +380,7 @@ describe('routeSqlSectionMessage', () => {
 			type: 'copilotWriteQueryExecuting', boxId: 'query-comparison', ownerToken: 'owner-current',
 			executionId: 'comparison-1', executing: true,
 		}, effects)).toBe('not-sql');
+		expect(commitSqlDerivedComparisonExecution('query-comparison', 'comparison-1')).toBe(true);
 		expect(routeSqlSectionMessage({
 			type: 'queryResult', boxId: 'query-comparison', ownerToken: 'owner-old', executionId: 'comparison-1',
 		}, effects)).toBe('rejected');
@@ -408,6 +410,7 @@ describe('routeSqlSectionMessage', () => {
 			type: 'copilotWriteQueryExecuting', boxId: 'sql-comparison', ownerToken: 'source-owner',
 			executionId: 'comparison-1', executing: true,
 		}, effects)).toBe('not-sql');
+		expect(commitSqlDerivedComparisonExecution('sql-comparison', 'comparison-1')).toBe(true);
 		expect(routeSqlSectionMessage({
 			type: 'queryResult', boxId: 'sql-comparison', ownerToken: 'source-owner', executionId: 'comparison-1',
 		}, effects)).toBe('not-sql');

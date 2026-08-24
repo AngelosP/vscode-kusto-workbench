@@ -21,6 +21,7 @@ import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
 import { MdCompatEditorProvider } from './mdCompatEditorProvider';
 import { SqlCompatEditorProvider } from './sqlCompatEditorProvider';
 import { QueryEditorProvider } from './queryEditorProvider';
+import { ConnectionService } from './queryEditorConnection';
 import { KustoResultPersistenceRegistry } from './kustoResultPersistenceOwner';
 import { KqlDiagnosticSeverity } from './kqlLanguageService/protocol';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
@@ -206,6 +207,41 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 	const connectionManager = new ConnectionManager(context);
 	if (context.extensionMode !== vscode.ExtensionMode.Production) {
+		const favoritesSyncConnectionPrefix = 'Kusto Favorites Sync E2E';
+		const cleanupFavoritesSyncConnection = async (): Promise<{ removed: number }> => {
+			const connections = connectionManager.getConnections()
+				.filter(connection => String(connection.name || '').startsWith(favoritesSyncConnectionPrefix));
+			const connectionIds = new Set(connections.map(connection => connection.id));
+			const favorites = context.globalState.get<unknown>(STORAGE_KEYS.favorites);
+			if (Array.isArray(favorites) && connectionIds.size > 0) {
+				await context.globalState.update(STORAGE_KEYS.favorites, favorites.filter((favorite: any) =>
+					!connectionIds.has(String(favorite?.connectionId || ''))
+				));
+			}
+			for (const connection of connections) await connectionManager.removeConnection(connection.id);
+			HostKustoFavoritesApplicationHandler.broadcastKustoFavoritesData(context);
+			return { removed: connections.length };
+		};
+		context.subscriptions.push(
+			vscode.commands.registerCommand(
+				'kustoWorkbench.test.seedKustoFavoritesSyncConnection',
+				async (clusterUrlRaw: unknown, databaseRaw: unknown) => {
+					const clusterUrl = String(clusterUrlRaw || '').trim();
+					const database = String(databaseRaw || '').trim();
+					if (!clusterUrl || !database) throw new Error('Favorites sync connection requires clusterUrl and database.');
+					await cleanupFavoritesSyncConnection();
+					return connectionManager.addConnection({
+						name: `${favoritesSyncConnectionPrefix} ${database}`,
+						clusterUrl,
+						database,
+					});
+				},
+			),
+			vscode.commands.registerCommand(
+				'kustoWorkbench.test.clearKustoFavoritesSyncConnection',
+				cleanupFavoritesSyncConnection,
+			),
+		);
 		const copilotClarificationConnectionName = 'Kusto Copilot Clarification E2E';
 		const copilotClarificationCluster = 'https://copilot-clarification-e2e.invalid';
 		const copilotClarificationAccount = {
@@ -320,7 +356,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			const candidate = request as {
 				engine?: unknown; templatePath?: unknown; outputPath?: unknown; legacyKusto?: unknown;
 				sessionFile?: unknown; existingConnectionId?: unknown; existingClusterIncludes?: unknown;
-				database?: unknown; includeChart?: unknown;
+				database?: unknown; includeChart?: unknown; recreateSqlOwner?: unknown;
 			};
 			const engine = String(candidate.engine || '').trim();
 			const templatePath = String(candidate.templatePath || '').trim();
@@ -468,23 +504,52 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				connectionId = connection.id;
 			} else {
 				await sqlWorkbenchService!.ready();
-				const connection = await sqlWorkbenchService!.connectionManager.addConnection({
+				const connectionInput = {
 					name: `${persistedResultFixturePrefix} SQL`,
 					dialect: 'mssql',
 					serverUrl: persistedResultSqlServer,
 					database: persistedResultSqlDatabase,
 					authType: 'sql-login',
 					username: 'persisted_results_e2e',
-				}, 'persisted-results-e2e-only');
-				await sqlWorkbenchService!.setLeaveNoTraceConnection(connection.id, false);
+				} as const;
+				const persistedConnection = await sqlWorkbenchService!.connectionManager.addConnection(
+					connectionInput,
+					'persisted-results-e2e-only',
+				);
+				let activeConnection = persistedConnection;
+				if (candidate.recreateSqlOwner === true) {
+					await sqlWorkbenchService!.connectionManager.removeConnection(persistedConnection.id);
+					activeConnection = await sqlWorkbenchService!.connectionManager.addConnection(
+						connectionInput,
+						'persisted-results-e2e-only',
+					);
+				}
+				await sqlWorkbenchService!.setLeaveNoTraceConnection(activeConnection.id, false);
 				Object.assign(section, {
-					serverUrl: connection.serverUrl,
-					connectionIdHint: connection.id,
-					targetSignature: sqlConnectionTargetSignature(connection),
+					serverUrl: persistedConnection.serverUrl,
+					connectionIdHint: persistedConnection.id,
+					targetSignature: sqlConnectionTargetSignature(persistedConnection),
 					database: persistedResultSqlDatabase,
-					revocationGeneration: sqlWorkbenchService!.leaveNoTracePolicy.getRevocationGeneration(connection.id),
+					revocationGeneration: sqlWorkbenchService!.leaveNoTracePolicy.getRevocationGeneration(activeConnection.id),
 				});
-				connectionId = connection.id;
+				const artifactIdentity = createPrimaryResultArtifactIdentity(String(section.id || ''), 1, Date.now());
+				if (!artifactIdentity) throw new Error('Persisted SQL result fixture artifact identity is invalid.');
+				section.resultArtifact = {
+					version: 1,
+					...artifactIdentity,
+					producer: {
+						engine: 'sql', boxId: String(section.id || ''),
+						executionId: 'persisted-sql-result-fixture-execution',
+						query: String(section.query || ''), connectionId: persistedConnection.id,
+						database: persistedResultSqlDatabase,
+					},
+					policy: {
+						exposeToActiveContent: true, sendToModel: true,
+						shareToClipboard: true, exportToCsv: true,
+					},
+					lineage: [],
+				};
+				connectionId = activeConnection.id;
 			}
 			if (candidate.includeChart === true && fixture.state?.sections) {
 				fixture.state.sections.push({
@@ -761,9 +826,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			const lastDatabase = context.globalState.get<string | undefined>(STORAGE_KEYS.lastDatabase);
 			return {
 				lastConnectionId,
-				lastConnectionIdPresent: keys?.has(STORAGE_KEYS.lastConnectionId) ?? lastConnectionId !== undefined,
+				lastConnectionIdPresent: (keys?.has(STORAGE_KEYS.lastConnectionId) ?? false) || lastConnectionId !== undefined,
 				lastDatabase,
-				lastDatabasePresent: keys?.has(STORAGE_KEYS.lastDatabase) ?? lastDatabase !== undefined,
+				lastDatabasePresent: (keys?.has(STORAGE_KEYS.lastDatabase) ?? false) || lastDatabase !== undefined,
 			};
 		};
 		const restoreIdentitySelection = async (selection: IdentityChecklistPreviousSelection): Promise<void> => {
@@ -797,7 +862,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				return { connectionId: connection.id, accountPartition, databases };
 			});
 		};
-		const cleanupIdentityChecklistState = async (): Promise<void> => {
+		const cleanupIdentityChecklistState = async (closedFixtureRelativePath?: string): Promise<void> => {
+			const fixturePath = String(closedFixtureRelativePath || '').trim();
+			if (fixturePath) {
+				const fixtureUri = vscode.Uri.joinPath(
+					context.extensionUri,
+					...fixturePath.replace(/\\/g, '/').split('/').filter(Boolean),
+				);
+				if (!await KqlxEditorProvider.waitForOpenEditorsClosed(fixtureUri)) {
+					throw new Error(`Identity checklist fixture did not finish closing: ${fixtureUri.toString()}`);
+				}
+			}
+			await ConnectionService.waitForLastSelectionSettlement();
 			const removedConnectionIds = new Set<string>();
 			for (const connection of connectionManager.getConnections()) {
 				if (String(connection.name || '').startsWith(testPrefix) || isTestCluster(connection.clusterUrl)) {
@@ -826,10 +902,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				await connectionManager.removeLeaveNoTrace(cluster);
 			}
 			await testAuthPreferences.clearTokenOverride(undefined, testAuthAccount.id);
+			await testAuthPreferences.waitForWriteSettlement(250);
+			await ConnectionService.waitForLastSelectionSettlement(250);
 			const previousSelection = identityChecklistPreviousSelection;
 			identityChecklistPreviousSelection = undefined;
 			if (previousSelection) {
 				await restoreIdentitySelection(previousSelection);
+				const restoredSelection = captureIdentitySelection();
+				if (JSON.stringify(restoredSelection) !== JSON.stringify(previousSelection)) {
+					throw new Error(`Identity checklist cleanup did not restore its captured selection: expected=${JSON.stringify(previousSelection)} actual=${JSON.stringify(restoredSelection)}`);
+				}
 			} else if (removedConnectionIds.has(String(context.globalState.get(STORAGE_KEYS.lastConnectionId) || ''))) {
 				await context.globalState.update(STORAGE_KEYS.lastConnectionId, undefined);
 				await context.globalState.update(STORAGE_KEYS.lastDatabase, undefined);
@@ -861,6 +943,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			}),
 			vscode.commands.registerCommand('kustoWorkbench.test.cleanupKustoIdentityChecklist', cleanupIdentityChecklistState),
 			vscode.commands.registerCommand('kustoWorkbench.test.prepareKustoIdentitySelectionBaseline', async () => {
+				await supplementalStartupCleanup;
 				await cleanupIdentityChecklistState();
 				for (const connection of connectionManager.getConnections()) {
 					if (connection.name !== identitySelectionBaselineName
@@ -922,6 +1005,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				);
 				if (!schemaWritten) throw new Error('Identity selection baseline schema cache write was superseded.');
 				await testAuthPreferences.setExplicitAccounts([baseline.id], identitySelectionBaselineAccount);
+				await ConnectionService.waitForLastSelectionSettlement(250);
 				await context.globalState.update(STORAGE_KEYS.lastConnectionId, baseline.id);
 				await context.globalState.update(STORAGE_KEYS.lastDatabase, identitySelectionBaselineDatabase);
 				return { connectionId: baseline.id, database: identitySelectionBaselineDatabase };
@@ -1080,6 +1164,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			vscode.commands.registerCommand('kustoWorkbench.test.seedKustoIdentityChecklist', async () => {
 				await testAuthPreferences.waitForProviderAccountRefresh();
 				await cleanupIdentityChecklistState();
+				await testAuthPreferences.waitForWriteSettlement(250);
 				identityChecklistPreviousSelection = captureIdentitySelection();
 				await vscode.env.clipboard.writeText(identityClipboardSentinel);
 				const assertExplicitAccounts = (connections: readonly { id: string; name: string }[], stage: string) => {
@@ -1178,6 +1263,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 						throw new Error(`Identity checklist schema cache write was superseded for ${connection.name}.`);
 					}
 				}
+				await testAuthPreferences.waitForWriteSettlement(250);
 				assertExplicitAccounts(added, 'fixture-complete');
 				const readiness = await assertIdentityChecklistReady();
 				return { added, cachedKey: kustoClusterKey('identityadx.westus'), readiness };
@@ -1216,7 +1302,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	const tutorialNotificationService = new TutorialNotificationService(context, tutorialCatalogService, tutorialSubscriptionService, openTutorialPopup);
 	registerTutorialNotificationTriggers(context, tutorialNotificationService, () => firstLaunchCoordinator.waitForAutomaticSetup());
 	if (context.extensionMode !== vscode.ExtensionMode.Production) {
-		const getActiveTutorialTriggerDocument = async (): Promise<vscode.TextDocument | undefined> => {
+		const getActiveTutorialTriggerDocument = async (documentPath?: string): Promise<vscode.TextDocument | undefined> => {
+			const explicitPath = String(documentPath || '').trim();
+			if (explicitPath) {
+				const explicitUri = vscode.Uri.file(path.isAbsolute(explicitPath)
+					? explicitPath
+					: path.join(context.extensionPath, explicitPath));
+				const explicitDocument = vscode.workspace.textDocuments.find(document =>
+					normalizeWorkbenchUriKey(document.uri) === normalizeWorkbenchUriKey(explicitUri)
+				) ?? await vscode.workspace.openTextDocument(explicitUri);
+				if (isKustoTutorialTriggerDocument(explicitDocument)) return explicitDocument;
+			}
 			const activeDocument = vscode.window.activeTextEditor?.document;
 			const activeTabInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
 			const activeTabUri = activeTabInput instanceof vscode.TabInputText || activeTabInput instanceof vscode.TabInputCustom
@@ -1234,7 +1330,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			return vscode.workspace.textDocuments.find(doc => isKustoTutorialTriggerDocument(doc));
 		};
 
-		const resetDidYouKnowState = async (options?: { openIfKustoFileOpen?: boolean; silent?: boolean }) => {
+		const resetDidYouKnowState = async (options?: { openIfKustoFileOpen?: boolean; silent?: boolean; documentPath?: string }) => {
 			const configuration = vscode.workspace.getConfiguration('kustoWorkbench');
 			const configurationTarget = resolveTutorialsEnabledConfigurationTarget(
 				configuration.inspect<boolean>('didYouKnow.enabled'),
@@ -1244,18 +1340,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			const result = await resetDidYouKnowDevelopmentState(context, tutorialCatalogService);
 			tutorialNotificationService.reloadPendingPopups();
 
-			const triggerDocument = await getActiveTutorialTriggerDocument();
-			const openedCompact = options?.openIfKustoFileOpen === true && triggerDocument !== undefined;
-			if (openedCompact) {
-				await tutorialNotificationService.checkOnKustoFileOpen(triggerDocument);
-			}
+			const triggerDocument = await getActiveTutorialTriggerDocument(options?.documentPath);
+			const openedCompact = options?.openIfKustoFileOpen === true && triggerDocument !== undefined
+				? await openTutorialPopup(undefined, 'compact', triggerDocument)
+				: false;
 
 			if (options?.silent !== true) {
 				void vscode.window.showInformationMessage(
 					`Reset Did you know state: ${result.contentCount} unread item${result.contentCount === 1 ? '' : 's'} across ${result.categoryCount} categor${result.categoryCount === 1 ? 'y' : 'ies'}.`,
 				);
 			}
-			return { ...result, openedCompact };
+			return { ...result, openedCompact, triggerDocumentUri: triggerDocument?.uri.toString() };
 		};
 
 		context.subscriptions.push(
@@ -1446,15 +1541,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 					const activeUri = vscode.Uri.joinPath(scenarioDir, 'active-real.kqlx');
 					const targetUri = vscode.Uri.joinPath(scenarioDir, 'target-real.kqlx');
+					const sentinelUri = vscode.Uri.joinPath(scenarioDir, 'sentinel.txt');
 					const activeLogicalUri = activeUri.toString();
 					const targetLogicalUri = targetUri.toString();
 					const activeInitialText = stringifyKqlxFile(buildFile('print "active original"', 'Active real'));
 					const targetInitialText = stringifyKqlxFile(buildFile('print "target original"', 'Target real'));
 					await vscode.workspace.fs.writeFile(activeUri, new TextEncoder().encode(activeInitialText));
 					await vscode.workspace.fs.writeFile(targetUri, new TextEncoder().encode(targetInitialText));
+					await vscode.workspace.fs.writeFile(sentinelUri, new TextEncoder().encode('sentinel'));
 
 					const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-					await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+					const tabsForUris = (uris: readonly vscode.Uri[]) => {
+						const keys = new Set(uris.map(uri => uri.toString()));
+						return vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => {
+							const uri = (tab.input as { uri?: vscode.Uri } | undefined)?.uri;
+							return !!uri && keys.has(uri.toString());
+						});
+					};
+					const staleFixtureTabs = tabsForUris([activeUri, targetUri, sentinelUri]);
+					if (staleFixtureTabs.length > 0) await vscode.window.tabGroups.close(staleFixtureTabs, true);
+					const sentinelDocument = await vscode.workspace.openTextDocument(sentinelUri);
+					await vscode.window.showTextDocument(sentinelDocument, { preview: false, preserveFocus: false });
 					await vscode.commands.executeCommand('vscode.openWith', activeUri, KqlxEditorProvider.viewType, { viewColumn: vscode.ViewColumn.One, preview: false, preserveFocus: false });
 					await vscode.commands.executeCommand('vscode.openWith', targetUri, KqlxEditorProvider.viewType, { viewColumn: vscode.ViewColumn.Beside, preview: false, preserveFocus: false });
 					await vscode.commands.executeCommand('vscode.openWith', activeUri, KqlxEditorProvider.viewType, { viewColumn: vscode.ViewColumn.One, preview: false, preserveFocus: false });
@@ -1499,17 +1606,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 						let configureResult: { success: boolean; resultPreview?: string } | undefined;
 						let configureError = '';
-						for (let attempt = 0; attempt < 20; attempt++) {
-							try {
-								configureResult = await toolOrchestrator.configureQuerySection({ sectionId: targetQuerySectionId, query: 'print "target updated"', openFileId: targetFile.openFileId });
-								if (configureResult.success) {
-									break;
-								}
-								configureError = 'configureQuerySection returned success=false';
-							} catch (err) {
-								configureError = err instanceof Error ? err.message : String(err);
-							}
-							await delay(250);
+						try {
+							configureResult = await toolOrchestrator.configureQuerySection({ sectionId: targetQuerySectionId, query: 'print "target updated"', openFileId: targetFile.openFileId });
+							if (!configureResult.success) configureError = 'configureQuerySection returned success=false';
+						} catch (err) {
+							configureError = err instanceof Error ? err.message : String(err);
 						}
 						if (!configureResult?.success) {
 							await writeRealResult({
@@ -1521,17 +1622,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 								targetFile,
 								listed,
 							});
-							throw new Error('Target configureQuerySection did not report success.');
+							throw new Error(`Target configureQuerySection did not report success: ${configureError || 'unknown error'}`);
 						}
 
-						let targetDocument = vscode.workspace.textDocuments.find(document => document.uri.toString() === targetUri.toString());
-						for (let attempt = 0; attempt < 20; attempt++) {
-							targetDocument = vscode.workspace.textDocuments.find(document => document.uri.toString() === targetUri.toString());
-							if (targetDocument && parseQuery(targetDocument.getText()) === 'print "target updated"') {
-								break;
-							}
-							await delay(250);
-						}
+						const targetDocument = vscode.workspace.textDocuments.find(document => document.uri.toString() === targetUri.toString());
 						if (!targetDocument || parseQuery(targetDocument.getText()) !== 'print "target updated"') {
 							await writeRealResult({
 								scenario: 'real-editors',
@@ -1596,7 +1690,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 								// Best-effort cleanup; closeAllEditors still runs below.
 							}
 						}
-						await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+						const fixtureTabs = tabsForUris([activeUri, targetUri]);
+						if (fixtureTabs.length > 0) await vscode.window.tabGroups.close(fixtureTabs, true);
+						const fixtureCloseDeadline = Date.now() + 5000;
+						while (tabsForUris([activeUri, targetUri]).length > 0 && Date.now() < fixtureCloseDeadline) {
+							await delay(50);
+						}
+						const cleanupSentinelPreserved = tabsForUris([sentinelUri]).length === 1;
 						if (mode === 'real-editors-forced-failure') {
 							let cleanupActiveFileDiskUnchanged = false;
 							let cleanupTargetFileDiskChanged = false;
@@ -1622,7 +1722,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 								}
 								cleanupOpenFiles = Array.isArray(cleanupListed.openFiles) ? cleanupListed.openFiles : [];
 								const tempFiles = cleanupOpenFiles.filter(file => file.logicalUri === activeLogicalUri || file.logicalUri === targetLogicalUri);
-								cleanupClosedEditors = tempFiles.length === 0;
+								cleanupClosedEditors = tabsForUris([activeUri, targetUri]).length === 0;
 								cleanupNoLiveEditors = tempFiles.length === 0 || tempFiles.every(file => file.isLiveWorkbench === false);
 								if (cleanupNoLiveEditors) {
 									break;
@@ -1637,12 +1737,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 								cleanupTargetFileDiskChanged,
 								cleanupClosedEditors,
 								cleanupNoLiveEditors,
+								cleanupSentinelPreserved,
 								cleanupListError,
 								cleanupOpenFiles,
 							};
 							await writeRealResult(cleanupResult);
+							const sentinelTabs = tabsForUris([sentinelUri]);
+							if (sentinelTabs.length > 0) await vscode.window.tabGroups.close(sentinelTabs, true);
+							try { await vscode.workspace.fs.delete(sentinelUri); } catch { /* ignore cleanup */ }
 							return cleanupResult;
 						}
+						const sentinelTabs = tabsForUris([sentinelUri]);
+						if (sentinelTabs.length > 0) await vscode.window.tabGroups.close(sentinelTabs, true);
+						try { await vscode.workspace.fs.delete(sentinelUri); } catch { /* ignore cleanup */ }
 					}
 				}
 
@@ -2603,6 +2710,7 @@ export async function closeQueryEditorSessionTabs(sessionUri: vscode.Uri): Promi
 
 // This method is called when your extension is deactivated
 export async function deactivate() {
+	await ConnectionService.waitForLastSelectionSettlement();
 	const service = sqlWorkbenchService;
 	sqlWorkbenchService = undefined;
 	if (service) await service.dispose();

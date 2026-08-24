@@ -32,8 +32,8 @@ Feature: Cached Values Viewer — UI structure, kind switching, sections
     # ── TEST 5: Auth section ──────────────────────────────────────────────
     When I evaluate "(() => { const sr = document.querySelector('kw-cached-values')?.shadowRoot; const sections = sr?.querySelectorAll('section') || []; const auth = Array.from(sections).find(s => s.querySelector('header strong')?.textContent?.toLowerCase()?.includes('auth')); if (!auth) throw new Error('Auth section not found'); return 'auth section found'; })()" in the webview
 
-    # ── TEST 6: Cluster map section ───────────────────────────────────────
-    When I evaluate "(() => { const sr = document.querySelector('kw-cached-values')?.shadowRoot; const sections = sr?.querySelectorAll('section') || []; const clusterMap = Array.from(sections).find(s => s.querySelector('header strong')?.textContent?.toLowerCase()?.includes('cluster')); if (!clusterMap) throw new Error('Cluster map section not found'); return 'cluster map section found'; })()" in the webview
+    # ── TEST 6: Connection authentication preferences section ────────────
+    When I evaluate "(() => { const sr = document.querySelector('kw-cached-values')?.shadowRoot; const sections = sr?.querySelectorAll('section') || []; const preferences = Array.from(sections).find(s => s.querySelector('header strong')?.textContent?.trim() === 'Connection authentication preferences'); if (!preferences) throw new Error('Connection authentication preferences section not found'); return 'connection authentication preferences section found'; })()" in the webview
 
     # ── TEST 7: Databases section with clear button ───────────────────────
     When I evaluate "(() => { const sr = document.querySelector('kw-cached-values')?.shadowRoot; const sections = sr?.querySelectorAll('section') || []; const dbSection = Array.from(sections).find(s => s.querySelector('header strong')?.textContent?.toLowerCase()?.includes('database')); if (!dbSection) throw new Error('Database section not found'); const clearBtn = dbSection.querySelector('.rowActions button'); return 'databases section, clear button: ' + (clearBtn ? 'present' : 'absent'); })()" in the webview

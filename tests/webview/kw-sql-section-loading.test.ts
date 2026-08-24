@@ -51,6 +51,17 @@ function createSection(boxId = 'sql_test1'): KwSqlSection {
 }
 
 describe('kw-sql-section loading states', () => {
+	it('blocks external query mutation for the full comparison admission lifecycle', () => {
+		const el = createSection();
+		expect(el.canAcceptExternalQueryMutation()).toBe(true);
+
+		el.setComparisonAdmissionPending(true);
+		expect(el.canAcceptExternalQueryMutation()).toBe(false);
+
+		el.setComparisonAdmissionPending(false);
+		expect(el.canAcceptExternalQueryMutation()).toBe(true);
+	});
+
 	it('correlates CSV save events to the exact admitted result artifact', async () => {
 		const el = createSection();
 		el.id = el.boxId;
@@ -952,6 +963,138 @@ describe('kw-sql-section loading states', () => {
 		}
 	});
 
+	it('captures plain tool mode before delayed readiness and disables run-mode controls', async () => {
+		const el = createSection();
+		el.setConnections([
+			{ id: 'sql-a', name: 'SQL', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad' },
+		], { lastConnectionId: 'sql-a' });
+		el.setDatabase('Db');
+		el.setQuery('SELECT 1 AS Value');
+		el.setToolExpectedOwner({
+			connectionId: 'sql-a', database: 'Db', targetSignature: 'target-a',
+			principalFingerprint: 'principal-a', revocationGeneration: 0,
+		});
+		setRunMode('sql_test1', 'plain');
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+
+		try {
+			const run = el.runForTool('tool-delayed-mode');
+			const runButton = document.getElementById('sql_test1_sql_run_btn') as HTMLButtonElement;
+			const runToggle = document.getElementById('sql_test1_sql_run_toggle') as HTMLButtonElement;
+			expect(runButton.disabled).toBe(true);
+			expect(runToggle.disabled).toBe(true);
+
+			setRunMode('sql_test1', 'top100');
+			el.setStsReady(true, 'owner-token');
+			await Promise.resolve();
+
+			expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'executeSqlQuery', executionId: 'tool-delayed-mode',
+				query: 'SELECT 1 AS Value', queryMode: 'plain', toolExecution: true,
+			}));
+			el.displayResult({ columns: [], rows: [[1]], metadata: {} }, { executionId: 'tool-delayed-mode' });
+			await expect(run).resolves.toMatchObject({ executionId: 'tool-delayed-mode', rowCount: 1 });
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('blocks the manual SQL dispatch path while a tool reservation is pending', async () => {
+		const el = createSection();
+		el.setConnections([
+			{ id: 'sql-a', name: 'SQL', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad' },
+		], { lastConnectionId: 'sql-a' });
+		el.setDatabase('Db');
+		el.setQuery('SELECT 1 AS Value');
+		el.setStsReady(true, 'owner-token');
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		const reserved = el.reserveToolRun('tool-manual-fence');
+		void reserved.catch(() => undefined);
+
+		try {
+			expect((el as any)._runQuery()).toBe(false);
+			expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'executeSqlQuery' }));
+			postMessage.mockClear();
+			el.cancelToolRun('tool-manual-fence');
+			await expect(reserved).rejects.toThrow('cancelled');
+			expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'cancelSqlQuery' }));
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('retargets before reservation and dispatches the exact tool query on the new SQL owner', async () => {
+		const el = createSection();
+		const connectionA = {
+			id: 'sql-a', name: 'SQL A', serverUrl: 'a.sql.example.test', dialect: 'mssql', authType: 'aad',
+		};
+		const connectionB = {
+			id: 'sql-b', name: 'SQL B', serverUrl: 'b.sql.example.test', dialect: 'mssql', authType: 'aad',
+		};
+		el.setConnections([connectionA, connectionB], { lastConnectionId: 'sql-a' });
+		el.setDatabase('DbA');
+		el.setQuery('SELECT old_value');
+		el.setStsReady(true, 'owner-a');
+		const expectedOwner = {
+			connectionId: 'sql-b', database: 'DbB', targetSignature: sqlConnectionTargetSignature(connectionB),
+			principalFingerprint: 'principal-b', revocationGeneration: 0,
+		};
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+
+		try {
+			el.beginToolConfiguration('tool-retarget-b');
+			el.configureToolTarget(connectionB, 'DbB', expectedOwner);
+			el.setQuery('SELECT marker_from_b');
+			setRunMode('sql_test1', 'plain');
+			const run = el.reserveToolRun('tool-retarget-b');
+			el.startReservedToolRun('tool-retarget-b');
+			expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'executeSqlQuery' }));
+
+			el.setStsReady(true, 'owner-b');
+			await Promise.resolve();
+			expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'executeSqlQuery', executionId: 'tool-retarget-b',
+				sqlConnectionId: 'sql-b', database: 'DbB', query: 'SELECT marker_from_b',
+				queryMode: 'plain', expectedOwner,
+			}));
+			el.displayResult({ columns: [], rows: [[1]], metadata: {} }, { executionId: 'tool-retarget-b' });
+			await expect(run).resolves.toMatchObject({
+				executionId: 'tool-retarget-b',
+				owner: { connectionId: 'sql-b', database: 'DbB', ownerToken: 'owner-b' },
+			});
+		} finally {
+			el.endToolConfiguration('tool-retarget-b');
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('rejects a tool configuration and reservation while a manual SQL run is active', () => {
+		const el = createSection();
+		el.setConnections([
+			{ id: 'sql-a', name: 'SQL', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad' },
+		], { lastConnectionId: 'sql-a' });
+		el.setDatabase('Db');
+		el.setQuery('WAITFOR DELAY');
+		el.setStsReady(true, 'owner-token');
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			expect((el as any)._runQuery()).toBe(true);
+			expect(() => el.beginToolConfiguration('tool-during-manual')).toThrow('already running');
+			expect(() => el.reserveToolRun('tool-during-manual')).toThrow('already running');
+		} finally {
+			(el as any)._cancelQuery();
+			window.vscode = previousVsCode;
+		}
+	});
+
 	it('emits a manual SQL run ID without claiming tool ownership', () => {
 		const el = createSection();
 		el.setConnections([
@@ -1448,6 +1591,7 @@ describe('kw-sql-section loading states', () => {
 		window.vscode = { postMessage } as any;
 		try {
 			const run = el.sqlSession.beginToolRun('tool-timeout', 25, 50);
+			expect(el.sqlSession.capturePendingToolQuery('tool-timeout', 'WAITFOR DELAY', 'plain')).toBe(true);
 			(el as any)._startPendingToolRunIfReady();
 			const completion = expect(run).rejects.toThrow('terminal response');
 			await vi.advanceTimersByTimeAsync(50);

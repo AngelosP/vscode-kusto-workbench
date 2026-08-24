@@ -10,7 +10,7 @@ import type { SqlOwnerSnapshot, SqlWorkbenchService } from './sql/sqlWorkbenchSe
 import { canonicalSectionKind } from '../shared/documentSectionCapabilities';
 import { resolveKustoConnection } from '../shared/kustoAuth';
 import { kustoClusterKey, kustoDatabaseKey } from '../shared/kustoClusterUrls';
-import { sqlConnectionTargetSignatureMatches } from '../shared/sqlConnectionIdentity';
+import { resolveSqlConnectionTarget } from '../shared/sqlConnectionIdentity';
 import {
 	kustoLeaveNoTracePolicyFingerprint,
 	type KustoLeaveNoTracePolicySnapshot,
@@ -174,13 +174,16 @@ export class HostPersistedResultSanitizationApplicationHandler
 			const persistedTargetSignature = String(
 				persistedSqlSource?.targetSignature || record.targetSignature || '',
 			);
-			let restoredConnectionId: string | undefined;
-			if (persistedConnectionId && persistedTargetSignature) {
-				const hintedConnection = this.options.sqlConnectionManager.getConnection(persistedConnectionId);
-				if (hintedConnection && sqlConnectionTargetSignatureMatches(hintedConnection, persistedTargetSignature)) {
-					restoredConnectionId = hintedConnection.id;
-				}
-			}
+			const restoredResolution = persistedConnectionId && persistedTargetSignature
+				? resolveSqlConnectionTarget(
+					this.options.sqlConnectionManager.getConnections(),
+					persistedConnectionId,
+					persistedTargetSignature,
+				)
+				: undefined;
+			const restoredConnectionId = restoredResolution?.kind === 'matched'
+				? restoredResolution.connection.id
+				: undefined;
 			const hasPersistedOwner = !!persistedConnectionId || !!persistedTargetSignature;
 			const requiresPersistedOwner = sectionType === 'sql' || !!persistedSqlSource;
 			const effectiveConnectionId = requiresPersistedOwner || hasPersistedOwner
@@ -565,7 +568,6 @@ export class HostPersistedResultSanitizationApplicationHandler
 		const sectionsById = new Map(sections
 			.filter((section): section is Record<string, unknown> => !!section && typeof section === 'object')
 			.map(section => [String(section.id || '').trim(), section] as const));
-		const connectionsById = new Map(snapshot.connections.map(connection => [connection.id, connection]));
 		const protectedIds = snapshot.policy.globallyBlocked
 			? new Set(snapshot.connections.map(connection => connection.id))
 			: new Set(snapshot.policy.connectionIds);
@@ -581,13 +583,14 @@ export class HostPersistedResultSanitizationApplicationHandler
 			const targetSignature = String(owner.targetSignature || '');
 			const persistedPrincipalFingerprint = String(owner.principalFingerprint || '').trim();
 			const persistedRevocationGeneration = Number(owner.revocationGeneration ?? 0);
-			const connection = connectionsById.get(connectionId);
+			const resolution = resolveSqlConnectionTarget(snapshot.connections, connectionId, targetSignature);
+			const connection = resolution.kind === 'matched' ? resolution.connection : undefined;
+			const resolvedConnectionId = String(connection?.id || '');
 			let ownerMatches = !!connection
-				&& !protectedIds.has(connectionId)
+				&& !protectedIds.has(resolvedConnectionId)
 				&& !!targetSignature
-				&& sqlConnectionTargetSignatureMatches(connection, targetSignature)
 				&& Number.isSafeInteger(persistedRevocationGeneration)
-				&& persistedRevocationGeneration === (snapshot.policy.revocationGenerations[connectionId] ?? 0);
+				&& persistedRevocationGeneration === (snapshot.policy.revocationGenerations[resolvedConnectionId] ?? 0);
 			if (ownerMatches && connection) {
 				const authType = String(connection.authType || '').trim().toLowerCase();
 				const principal = authType === 'aad'

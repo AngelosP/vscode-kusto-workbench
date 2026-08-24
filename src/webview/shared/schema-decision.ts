@@ -61,7 +61,7 @@ export function decideSchemaOperation(input: SchemaDecisionInput): SchemaOperati
 		: !!input.currentPrincipalIdentity && input.currentPrincipalIdentity === input.newPrincipalIdentity;
 
 	// ── Already loaded? ──────────────────────────────────────────────────
-	if (input.perModelLoaded) {
+	if (input.perModelLoaded && !input.forceRefresh) {
 		if (!input.setAsContext) {
 			return { action: 'skip', reason: 'already-loaded-no-context-switch' };
 		}
@@ -80,10 +80,13 @@ export function decideSchemaOperation(input: SchemaDecisionInput): SchemaOperati
 	// ── Subsequent loads ─────────────────────────────────────────────────
 	// When setAsContext is true and database differs, we MUST use
 	// setSchemaFromShowSchema (replace) to guarantee autocomplete switches.
-	// forceRefresh deliberately uses the ADD path to avoid disrupting context.
-	const needsReplace = input.setAsContext && !isSameDatabase && (!input.forceRefresh || !isSameCluster || !isSamePrincipal);
+	// A forced refresh of the active schema must replace it; addDatabaseToSchema
+	// does not remove columns that disappeared from an existing database.
+	const needsReplace = input.setAsContext && (isSameDatabase
+		? input.forceRefresh
+		: (!input.forceRefresh || !isSameCluster || !isSamePrincipal));
 	if (needsReplace) {
-		const reason = !isSamePrincipal ? 'different-principal' : !isSameCluster ? 'different-cluster' : 'different-database';
+		const reason = isSameDatabase ? 'force-refresh' : !isSamePrincipal ? 'different-principal' : !isSameCluster ? 'different-cluster' : 'different-database';
 		return { action: 'replace', reason };
 	}
 

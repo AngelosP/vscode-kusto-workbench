@@ -106,12 +106,13 @@ import {
 } from '../shared/kusto-function-output-schema';
 import { filterResolvableCrossClusterMarkers } from '../shared/kusto-diagnostic-marker-filter';
 import { decideKustoSupplementalCompletionPolicy } from '../shared/kusto-supplemental-completion-policy';
-import { kustoClusterKey, kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
+import { getKustoClusterAliases, kustoClusterKey, kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
 import { getKustoSchemaIdentityKey, resolveKustoConnection } from '../../shared/kustoAuth.js';
 import type { CopilotInlineCompletion } from '../../shared/copilotInlineCompletionProtocol.js';
 import { handleCopilotInlineCompletionResult } from './copilot-inline-completion-runtime.js';
 import {
 	connections,
+	advanceKustoSchemaCompletionGeneration,
 	monacoReadyPromise,
 	setMonacoReadyPromise,
 	activeQueryEditorBoxId,
@@ -121,6 +122,7 @@ import {
 	copilotInlineCompletionsEnabled,
 	caretDocsEnabled,
 	queryEditors,
+	notifyQueryEditorReady,
 	queryBoxes,
 	queryEditorBoxByModelUri,
 	getKustoEditorSchema,
@@ -139,6 +141,7 @@ import {
 	isSchemaWorkerReady,
 	getKustoPreparationState,
 	getKustoPreparationToken,
+	beginKustoPreparation,
 	invalidateSchemaWorkerReadiness,
 	invalidateSchemaWorkerReadinessForBox,
 	isKustoPreparationCurrent,
@@ -712,6 +715,14 @@ let __kustoClearMarkersForModel: ((modelUri: any) => void) | null = null;
 let __kustoDisableMarkersForModel: ((modelUri: any) => void) | null = null;
 let __kustoGetHoverInfoAt: ((model: any, position: any, boxId?: string, options?: { inferPipeOperatorContext?: boolean }) => any) | null = null;
 const __kustoWorkerMutations = new KustoWorkerMutationPort();
+export function __kustoCommitWorkerMutation(
+	transaction: KustoWorkerMutationTransaction,
+	options?: { destructive?: boolean },
+): boolean {
+	if (!transaction.commit(options)) return false;
+	advanceKustoSchemaCompletionGeneration();
+	return true;
+}
 let __kustoSetMonacoKustoSchemaInternal: ((...args: any[]) => Promise<any>) | null = null;
 let __kustoSetDatabaseInContext: ((...args: any[]) => Promise<boolean>) | null = null;
 let __kustoSchemaEnhancementToken = 0;
@@ -815,7 +826,7 @@ async function __kustoRecoverPrimarySchemaAfterDetachedMutation(
 			if (!transaction.isActive()) return false;
 			if (worker?.setSchema) {
 				await worker.setSchema({ cluster: { connectionString: '', databases: [] } });
-				if (!transaction.commit({ destructive: true })) return false;
+				if (!__kustoCommitWorkerMutation(transaction, { destructive: true })) return false;
 				cleared = true;
 			}
 		}
@@ -1018,7 +1029,7 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 					cancelOwned();
 					return false;
 				}
-				if (!transaction.commit()) {
+				if (!__kustoCommitWorkerMutation(transaction)) {
 					cancelOwned();
 					return false;
 				}
@@ -1464,7 +1475,17 @@ function __kustoQueueAutocompleteRetryForPrimarySchema(request: KustoAutocomplet
 }
 
 function tryHideSuggestWidget(ed: any): void {
+	try { ed?.getContribution?.('editor.contrib.suggestController')?.cancelSuggestWidget?.(); } catch (e) { console.error('[kusto]', e); }
 	try { ed?.trigger?.('keyboard', 'hideSuggestWidget', {}); } catch (e) { console.error('[kusto]', e); }
+}
+
+async function setKustoWorkerSchemaFromShowSchema(worker: any, schema: any, clusterUrl: string, database: string): Promise<void> {
+	if (typeof worker?.normalizeSchema === 'function' && typeof worker?.setSchema === 'function') {
+		const normalized = await worker.normalizeSchema(schema, clusterUrl, database);
+		await worker.setSchema(normalized);
+		return;
+	}
+	await worker.setSchemaFromShowSchema(schema, clusterUrl, database);
 }
 
 function __kustoGetAutocompleteTraceIdForModel(modelUri: any): string {
@@ -1961,7 +1982,7 @@ export function invalidateKustoSchemaIdentityState(): void {
 				const worker = await workerAccessor(model.uri);
 				if (transaction.isActive() && worker?.setSchema) {
 					await worker.setSchema({ cluster: { connectionString: '', databases: [] } });
-					transaction.commit({ destructive: true });
+					__kustoCommitWorkerMutation(transaction, { destructive: true });
 				}
 			} catch { /* best effort */ }
 		}
@@ -2719,37 +2740,7 @@ function __kustoNormalizeCrossClusterClusterName(clusterName: any): string {
 }
 
 function __kustoGetCrossClusterClusterAliases(clusterName: any, clusterUrl?: any): string[] {
-	const candidates = [clusterName, clusterUrl].map(value => String(value || '').trim()).filter(Boolean);
-	const aliases: string[] = [];
-	const addAlias = (value: string, keepScheme = false) => {
-		const raw = String(value || '').trim().replace(/\/+$/g, '');
-		const trimmed = keepScheme ? raw : raw.replace(/^https?:\/\//i, '');
-		if (!trimmed) return;
-		const lower = trimmed.toLowerCase();
-		if (!aliases.some(alias => alias.toLowerCase() === lower)) {
-			aliases.push(trimmed);
-		}
-	};
-	for (const candidate of candidates) {
-		addAlias(candidate);
-		if (!/^https?:\/\//i.test(candidate)) {
-			addAlias(`https://${candidate}`, true);
-		} else {
-			addAlias(candidate, true);
-		}
-		try {
-			const canonical = __kustoNormalizeCrossClusterClusterName(candidate);
-			addAlias(canonical);
-			addAlias(`https://${canonical}`, true);
-			if (canonical.toLowerCase().endsWith('.kusto.windows.net')) {
-				addAlias(canonical.slice(0, -'.kusto.windows.net'.length));
-				addAlias(`https://${canonical.slice(0, -'.kusto.windows.net'.length)}`, true);
-			}
-		} catch {
-			// ignore non-public/custom endpoints
-		}
-	}
-	return aliases;
+	return getKustoClusterAliases(clusterName, clusterUrl);
 }
 
 async function __kustoAddDatabaseAliasesToWorker(
@@ -2880,7 +2871,7 @@ async function __kustoAddDatabaseAliasesToWorker(
 		for (const alias of __kustoGetCrossClusterClusterAliases(clusterName, clusterUrl)) {
 			if (!canMutate()) return 0;
 			await worker.addDatabaseToSchema(modelUri, alias, databaseSchema);
-			if (!transaction.commit()) return 0;
+			if (!__kustoCommitWorkerMutation(transaction)) return 0;
 			if (!canMutate()) return 0;
 			count++;
 		}
@@ -4350,8 +4341,8 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 												if (!isOperationCurrent()) return false;
 												if (setAsContext && !isContextIntentCurrent()) return false;
 												traceFileOpen('monaco.schema.worker.setSchemaFromShowSchema.start', { schemaKey, action: operation.action });
-												await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
-												if (!transaction.commit({ destructive: true })) return false;
+												await setKustoWorkerSchemaFromShowSchema(worker, schemaObj, clusterUrl, databaseInContext);
+												if (!__kustoCommitWorkerMutation(transaction, { destructive: true })) return false;
 												invalidateSchemaWorkerReadiness(preparationBoxId);
 												__kustoInvalidateSupplementalApplicationsAfterWorkerReplace('primary-first-load');
 												if (!isOperationCurrent()) return false;
@@ -4373,9 +4364,10 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 											try {
 												if (!isOperationCurrent()) return false;
 												if (setAsContext && !isContextIntentCurrent()) return false;
+												tryHideSuggestWidget(queryEditors?.[preparationBoxId]);
 												traceFileOpen('monaco.schema.worker.setSchemaFromShowSchema.start', { schemaKey, action: operation.action });
-												await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
-												if (!transaction.commit({ destructive: true })) return false;
+												await setKustoWorkerSchemaFromShowSchema(worker, schemaObj, clusterUrl, databaseInContext);
+												if (!__kustoCommitWorkerMutation(transaction, { destructive: true })) return false;
 												invalidateSchemaWorkerReadiness(preparationBoxId);
 												__kustoInvalidateSupplementalApplicationsAfterWorkerReplace('primary-replace');
 												if (!isOperationCurrent()) return false;
@@ -4386,6 +4378,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 												const otherKeys = __kustoSchemaTracker.recordReplace(modelKey, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj);
 												__kustoMonacoInitializedByModel[modelKey] = true;
 												__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext, connectionId, accountPartition, schemaKey, visibilityGeneration: __kustoSchemaClearGeneration };
+												tryHideSuggestWidget(queryEditors?.[preparationBoxId]);
 												applied = true;
 
 												// ── Schema diagnostics: replace completed ──
@@ -4414,7 +4407,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 															if (databaseSchema) {
 																if (!isOperationCurrent()) return false;
 																await worker.addDatabaseToSchema(modelKey, cached.clusterUrl, databaseSchema);
-																if (!transaction.commit()) return false;
+																if (!__kustoCommitWorkerMutation(transaction)) return false;
 															}
 														} catch (readdError) { console.error('[kusto]', readdError); }
 													}
@@ -4473,7 +4466,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 													if (!isOperationCurrent()) return false;
 													traceFileOpen('monaco.schema.worker.addDatabaseToSchema.start', { schemaKey });
 													await worker.addDatabaseToSchema(modelKey, clusterUrl, databaseSchema);
-													if (!transaction.commit()) return false;
+													if (!__kustoCommitWorkerMutation(transaction)) return false;
 													if (!isOperationCurrent()) return false;
 													traceFileOpen('monaco.schema.worker.addDatabaseToSchema.done', { schemaKey });
 													recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-add', { modelKey, clusterUrl, database: databaseInContext });
@@ -4494,7 +4487,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 																if (!isOperationCurrent()) return false;
 																if (isContextIntentCurrent()) {
 																	await worker.setSchema({ ...currentSchema, cluster: { ...(currentSchema?.cluster || {}), databases: nextDatabases }, database: databaseSchema });
-																	if (!transaction.commit({ destructive: true })) return false;
+																	if (!__kustoCommitWorkerMutation(transaction, { destructive: true })) return false;
 																	__kustoInvalidateSupplementalApplicationsAfterWorkerReplace('primary-add-context');
 																	await __kustoRestoreOtherPrimaryApplicationsAfterWorkerReplace(worker, modelKey, 'primary-add-context', transaction);
 																	if (isContextIntentCurrent() && isOperationCurrent()) {
@@ -4514,8 +4507,8 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 											if (typeof worker.setSchemaFromShowSchema === 'function') {
 												try {
 													if (!isOperationCurrent()) return false;
-													await worker.setSchemaFromShowSchema(__kustoPrepareSchemaForKustoWorker(schemaObj), clusterUrl, databaseInContext);
-													if (!transaction.commit({ destructive: true })) return false;
+															await setKustoWorkerSchemaFromShowSchema(worker, __kustoPrepareSchemaForKustoWorker(schemaObj), clusterUrl, databaseInContext);
+															if (!__kustoCommitWorkerMutation(transaction, { destructive: true })) return false;
 													invalidateSchemaWorkerReadiness(preparationBoxId);
 													__kustoInvalidateSupplementalApplicationsAfterWorkerReplace('primary-fallback');
 													if (!isOperationCurrent()) return false;
@@ -4650,7 +4643,7 @@ __kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, tr
 							};
 							if (!isCurrent()) return false;
 							await worker.setSchema(updatedSchema);
-							if (!transaction.commit({ destructive: true })) return false;
+							if (!__kustoCommitWorkerMutation(transaction, { destructive: true })) return false;
 							__kustoInvalidateSupplementalApplicationsAfterWorkerReplace('primary-context-switch');
 							await __kustoRestoreOtherPrimaryApplicationsAfterWorkerReplace(worker, modelKey, 'primary-context-switch', transaction);
 							if (!isCurrent()) return false;
@@ -4800,10 +4793,25 @@ const connectionId = __kustoGetConnectionId(ownerId);
 							const rawSchemaJson = schema && schema.rawSchemaJson ? schema.rawSchemaJson : null;
 							const schemaKey = expectedSchemaKey;
 							const schemaSignature = getKustoSchemaMetadata(boxId)?.schemaSignature;
-							const preparationToken = getKustoPreparationToken(boxId);
+							let preparationToken = getKustoPreparationToken(boxId);
+							let preparationState = getKustoPreparationState(boxId);
+							const preparationTargetMatches = preparationState.target.connectionId === connectionId
+								&& preparationState.target.database === database;
+							if (!preparationToken || !preparationTargetMatches
+								|| preparationState.status === 'idle' || preparationState.status === 'error') {
+								preparationToken = beginKustoPreparation(boxId, {
+									stage: 'waiting-worker',
+									blockers: ['worker'],
+									target: {
+										connectionId, database, schemaKey,
+										schemaSignature, modelUri: focusedModelUri,
+									},
+									usableFallback: !!rawSchemaJson,
+								});
+								preparationState = getKustoPreparationState(boxId);
+							}
 							let preparationDeadlineOwner: KustoPreparationToken | undefined;
 							if (preparationToken) {
-								const preparationState = getKustoPreparationState(boxId);
 								if (preparationState.status === 'preparing') preparationDeadlineOwner = preparationToken;
 								if (preparationState.status === 'preparing'
 									&& preparationState.target.database === database
@@ -5698,7 +5706,7 @@ try {
 										const worker = await workerAccessor(model.uri);
 										if (transaction.isActive() && worker && typeof worker.setSchema === 'function') {
 											await worker.setSchema({ cluster: { connectionString: '', databases: [] } });
-											transaction.commit({ destructive: true });
+											__kustoCommitWorkerMutation(transaction, { destructive: true });
 										}
 									} catch (e) { console.error('[kusto]', e); }
 								}
@@ -6685,6 +6693,7 @@ function initQueryEditor(boxId: any) {
 			return;
 		}
 		queryEditors[boxId] = editor;
+		notifyQueryEditorReady(String(boxId || ''), editor, expectedSectionElement);
 		__kustoCancelMonacoInitRetry(String(boxId || ''));
 		registerKustoSchemaApplyRequester(__kustoRegisteredSchemaApplyRequester);
 		let unsubscribeSupplementalPreparation: (() => void) | null = null;

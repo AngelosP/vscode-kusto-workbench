@@ -55,7 +55,7 @@ export interface CompatSidecarProjectionCoordinatorContract {
 	readonly activeSourceGeneration: number;
 	readonly sourceRollbackFailed: boolean;
 	project(request?: CompatSidecarProjectionRequest): Promise<boolean>;
-	requestDocument(requestId: string): Promise<boolean>;
+	requestDocument(requestId: string, expectedEditRevision?: number): Promise<boolean>;
 	requestSourceReload(): Promise<boolean>;
 	ensureInitialProjection(requestId?: string): Promise<boolean>;
 	completeReload(result: CompatSidecarReloadResult): boolean;
@@ -227,10 +227,12 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 		return activationCommitted || commitActivation();
 	}
 
-	async requestDocument(requestId: string): Promise<boolean> {
+	async requestDocument(requestId: string, expectedEditRevision?: number): Promise<boolean> {
 		if (!this.initialized) return this.ensureInitialProjection(requestId);
 		const requestGeneration = this.projectionGeneration + 1;
-		const applied = await this.project({ forceReload: true, requestId, retirePersists: true });
+		const applied = await this.project({
+			forceReload: true, requestId, expectedEditRevision, retirePersists: true,
+		});
 		if (!applied && this.projectionGeneration === requestGeneration) this.initialized = false;
 		return applied;
 	}

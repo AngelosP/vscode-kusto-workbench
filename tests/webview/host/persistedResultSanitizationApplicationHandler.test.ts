@@ -36,6 +36,7 @@ function createHandler() {
 		version: 1,
 		revocationGenerations: {} as Record<string, number>,
 	};
+	const sqlConnections = [sqlConnection];
 	const sqlSnapshot = {
 		policy: {
 			connectionIds: [] as string[],
@@ -43,7 +44,7 @@ function createHandler() {
 			globallyBlocked: false,
 			revocationGenerations: {} as Record<string, number>,
 		},
-		connections: [sqlConnection],
+		connections: sqlConnections,
 		connectionVersion: 1,
 		accountsByServer: { 'server.example': 'account-a' },
 		principalVersion: 1,
@@ -59,8 +60,8 @@ function createHandler() {
 	});
 	const getAccountPartition = vi.fn(() => 'partition-a');
 	const getSqlConnection = vi.fn((connectionId: string) =>
-		connectionId === sqlConnection.id ? sqlConnection : undefined);
-	const getSqlConnections = vi.fn(() => [sqlConnection]);
+		sqlConnections.find(connection => connection.id === connectionId));
+	const getSqlConnections = vi.fn(() => [...sqlConnections]);
 	const reconcileComparisonOwners = vi.fn();
 	const getComparisonOwner = vi.fn(() => undefined);
 	const getConnectionId = vi.fn(() => undefined);
@@ -113,6 +114,7 @@ function createHandler() {
 		order,
 		kustoSnapshot,
 		sqlSnapshot,
+		sqlConnections,
 		getKustoConnections,
 		runWithLeaveNoTraceSnapshotLock,
 		getAccountPartition,
@@ -180,6 +182,44 @@ describe('HostPersistedResultSanitizationApplicationHandler', () => {
 		expect(sanitized).toBe(state);
 		expect(reconcileComparisonOwners).toHaveBeenCalledWith(state.sections);
 		expect(tryDispatchSqlOwnerSnapshot).toHaveBeenCalledOnce();
+	});
+
+	it('preserves SQL results through a uniquely recreated connection identity', async () => {
+		const harness = createHandler();
+		const recreated = { ...sqlConnection, id: 'sql-recreated' };
+		harness.sqlConnections.splice(0, harness.sqlConnections.length, recreated);
+		const state = admittedState();
+
+		const sanitized = await harness.handler.sanitizeSqlLeaveNoTraceStateFresh(state);
+
+		expect(sanitized.sections[1]).toHaveProperty('resultJson', '{"sql":true}');
+	});
+
+	it('strips SQL results when a recreated target identity is ambiguous', async () => {
+		const harness = createHandler();
+		harness.sqlConnections.splice(
+			0,
+			harness.sqlConnections.length,
+			{ ...sqlConnection, id: 'sql-recreated-a' },
+			{ ...sqlConnection, id: 'sql-recreated-b' },
+		);
+		const state = admittedState();
+
+		const sanitized = await harness.handler.sanitizeSqlLeaveNoTraceStateFresh(state);
+
+		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
+	});
+
+	it('strips SQL results when the uniquely recreated connection is Leave No Trace', async () => {
+		const harness = createHandler();
+		const recreated = { ...sqlConnection, id: 'sql-recreated-protected' };
+		harness.sqlConnections.splice(0, harness.sqlConnections.length, recreated);
+		harness.isLeaveNoTraceConnection.mockImplementation(connectionId => connectionId === recreated.id);
+		const state = admittedState();
+
+		const sanitized = await harness.handler.sanitizeSqlLeaveNoTraceStateFresh(state);
+
+		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
 	});
 
 	it('reports Kusto sanitation inside its policy lock before SQL acquisition', async () => {

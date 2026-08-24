@@ -11,6 +11,7 @@
 	<div id="first-launch-scroll">
 		<kw-first-launch-setup logo-uri="{{kustoWorkbenchLogoUri}}"></kw-first-launch-setup>
 	</div>
+	<script nonce="{{nonce}}">window.vscode = window.vscode || acquireVsCodeApi(); window.vscode.postMessage({ type: 'bootstrapReady' });</script>
 	<script nonce="{{nonce}}" src="{{firstLaunchSetupBundleUri}}"></script>
 </body>
 </html>

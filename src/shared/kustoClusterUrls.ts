@@ -3,7 +3,7 @@ const PUBLIC_KUSTO_SUFFIX = '.kusto.windows.net';
 
 // Public ADX short regional names use `<cluster>.<azure-region>` and are
 // logically equivalent to `<cluster>.<azure-region>.kusto.windows.net`.
-const AZURE_REGION_KEYS = new Set([
+const PUBLIC_AZURE_REGION_KEYS = new Set([
 	'australiacentral', 'australiacentral2', 'australiaeast', 'australiasoutheast',
 	'brazilsouth', 'brazilsoutheast',
 	'canadacentral', 'canadaeast',
@@ -23,8 +23,6 @@ const AZURE_REGION_KEYS = new Set([
 	'spaincentral', 'swedencentral', 'swedensouth', 'switzerlandnorth', 'switzerlandwest',
 	'uaecentral', 'uaenorth', 'uksouth', 'ukwest',
 	'westcentralus', 'westeurope', 'westindia', 'westus', 'westus2', 'westus3',
-	'usgovarizona', 'usgoviowa', 'usgovtexas', 'usgovvirginia',
-	'chinaeast', 'chinaeast2', 'chinaeast3', 'chinanorth', 'chinanorth2', 'chinanorth3'
 ]);
 
 export interface KustoClusterRef {
@@ -68,15 +66,11 @@ function emptyClusterRef(raw: string = ''): KustoClusterRef {
 	return { raw, host: '', key: '', endpointHost: '', endpointUrl: '', isPublicKusto: false, isEmpty: true };
 }
 
-function publicClusterKeyFromHost(host: string): string {
-	return host.toLowerCase().endsWith(PUBLIC_KUSTO_SUFFIX)
-		? host.slice(0, -PUBLIC_KUSTO_SUFFIX.length)
-		: host;
-}
-
 function isPublicRegionalShortHost(host: string): boolean {
 	const parts = host.split('.').filter(Boolean);
-	return parts.length >= 2 && AZURE_REGION_KEYS.has(parts[parts.length - 1]);
+	return parts.length === 2
+		&& SIMPLE_CLUSTER_HOST_RE.test(parts[0])
+		&& PUBLIC_AZURE_REGION_KEYS.has(parts[1]);
 }
 
 function normalizeClusterHost(value: unknown): { raw: string; host: string } {
@@ -131,8 +125,11 @@ export function parseKustoClusterRef(value: unknown): KustoClusterRef {
 	if (!host) return emptyClusterRef(raw);
 
 	if (host.endsWith(PUBLIC_KUSTO_SUFFIX)) {
-		const key = publicClusterKeyFromHost(host);
-		return { raw, host, key, endpointHost: host, endpointUrl: `https://${host}`, isPublicKusto: true, isEmpty: false };
+		const key = host.slice(0, -PUBLIC_KUSTO_SUFFIX.length);
+		return {
+			raw, host, key, endpointHost: host, endpointUrl: `https://${host}`,
+			isPublicKusto: true, isEmpty: false,
+		};
 	}
 
 	if (host.includes('.kusto.')) {
@@ -156,6 +153,28 @@ export function parseKustoClusterRef(value: unknown): KustoClusterRef {
 
 export function kustoClusterKey(value: unknown): string {
 	return parseKustoClusterRef(value).key;
+}
+
+export function getKustoClusterAliases(...values: unknown[]): string[] {
+	const aliases: string[] = [];
+	const addAlias = (value: unknown, keepScheme = false) => {
+		const raw = textValue(value).replace(/\/+$/g, '');
+		const normalized = keepScheme ? raw : raw.replace(/^https?:\/\//i, '');
+		if (!normalized || aliases.some(alias => alias.toLowerCase() === normalized.toLowerCase())) return;
+		aliases.push(normalized);
+	};
+	for (const value of values) {
+		const raw = textValue(value);
+		if (!raw) continue;
+		addAlias(raw);
+		addAlias(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`, true);
+		const parsed = parseKustoClusterRef(raw);
+		addAlias(parsed.key);
+		addAlias(`https://${parsed.key}`, true);
+		addAlias(parsed.endpointHost);
+		addAlias(parsed.endpointUrl, true);
+	}
+	return aliases;
 }
 
 export function kustoDatabaseKey(cluster: unknown, database: unknown): string {

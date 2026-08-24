@@ -27,6 +27,61 @@ export const cachedDatabases: Record<string, any> = {};
 export const favoritesModeByBoxId: Record<string, any> = {};
 export const pendingFavoriteSelectionByBoxId: Record<string, any> = {};
 export const queryEditors: Record<string, any> = {};
+const queryEditorReadyWaiters = new Map<string, Set<{
+	owner?: unknown;
+	resolve: (editor: any | undefined) => void;
+	timer: ReturnType<typeof setTimeout>;
+}>>();
+
+export function notifyQueryEditorReady(boxId: string, editor: any, owner?: unknown): void {
+	const id = String(boxId || '').trim();
+	if (!id || !editor) return;
+	const waiters = queryEditorReadyWaiters.get(id);
+	if (!waiters) return;
+	for (const waiter of [...waiters]) {
+		if (waiter.owner !== undefined && waiter.owner !== owner) continue;
+		waiters.delete(waiter);
+		clearTimeout(waiter.timer);
+		waiter.resolve(editor);
+	}
+	if (waiters.size === 0) queryEditorReadyWaiters.delete(id);
+}
+
+export function retireQueryEditorReady(boxId: string, owner?: unknown): void {
+	const id = String(boxId || '').trim();
+	const waiters = id ? queryEditorReadyWaiters.get(id) : undefined;
+	if (!waiters) return;
+	for (const waiter of [...waiters]) {
+		if (owner !== undefined && waiter.owner !== undefined && waiter.owner !== owner) continue;
+		waiters.delete(waiter);
+		clearTimeout(waiter.timer);
+		waiter.resolve(undefined);
+	}
+	if (waiters.size === 0) queryEditorReadyWaiters.delete(id);
+}
+
+export function waitForQueryEditorReady(boxId: string, timeoutMs = 10000, owner?: unknown): Promise<any | undefined> {
+	const id = String(boxId || '').trim();
+	if (!id) return Promise.resolve(undefined);
+	if (queryEditors[id] && (owner === undefined || document.getElementById(id) === owner)) {
+		return Promise.resolve(queryEditors[id]);
+	}
+	return new Promise(resolve => {
+		const waiter = {
+			owner,
+			resolve,
+			timer: setTimeout(() => {
+				const waiters = queryEditorReadyWaiters.get(id);
+				waiters?.delete(waiter);
+				if (waiters?.size === 0) queryEditorReadyWaiters.delete(id);
+				resolve(undefined);
+			}, Math.max(1, timeoutMs)),
+		};
+		const waiters = queryEditorReadyWaiters.get(id) ?? new Set();
+		waiters.add(waiter);
+		queryEditorReadyWaiters.set(id, waiters);
+	});
+}
 export const queryEditorResizeObservers: Record<string, any> = {};
 export const queryEditorVisibilityObservers: Record<string, any> = {};
 export const queryEditorVisibilityMutationObservers: Record<string, any> = {};
@@ -562,10 +617,18 @@ export function markSchemaWorkerApplyPending(boxId: string, schemaKey: string, s
 	}
 }
 
+export function advanceKustoSchemaCompletionGeneration(): number {
+	const generation = Number((globalThis as any).__kustoSchemaCompletionGeneration || 0);
+	const nextGeneration = Number.isSafeInteger(generation) ? generation + 1 : 1;
+	(globalThis as any).__kustoSchemaCompletionGeneration = nextGeneration;
+	return nextGeneration;
+}
+
 export function markSchemaWorkerReady(boxId: string, schemaKey: string, schemaSignature?: string, modelUri?: string, preparationToken?: KustoPreparationToken): void {
 	const id = String(boxId || '').trim();
 	if (!id || (preparationToken && !isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri }))) return;
 	setSchemaWorkerReadyState(id, { status: 'ready', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() });
+	advanceKustoSchemaCompletionGeneration();
 	kustoEditorSchemaCoordinator.deleteOwnedState(id, 'workerApplyRequired');
 	resolveSchemaWorkerWaiters(id, true, schemaKey, modelUri);
 	if (preparationToken) {
@@ -606,6 +669,7 @@ export function markSchemaEnhancementReady(boxId: string, schemaKey: string, sch
 	const id = String(boxId || '').trim();
 	if (!id || (preparationToken && !isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri }))) return;
 	setSchemaEnhancementReadyState(id, { status: 'ready', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() });
+	advanceKustoSchemaCompletionGeneration();
 	if (preparationToken) updateKustoPreparation(preparationToken, { removeBlockers: ['enhancement'] });
 }
 

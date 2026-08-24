@@ -800,7 +800,9 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				case 'requestDocument':
 					fileOpenTrace.mark('requestDocument.received');
 					postPersistenceMode();
-					await projectionCoordinator.requestDocument(String(message.requestId));
+					await projectionCoordinator.requestDocument(
+						String(message.requestId), Number((message as any).expectedEditRevision),
+					);
 					fileOpenTrace.mark('requestDocument.completed');
 					return;
 				case 'requestUpgradeToSqlx': {

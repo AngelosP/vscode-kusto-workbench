@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { __kustoAreEquivalentMonacoMarkers, __kustoAutocompleteSchemaTargetIdentityMatches, __kustoComputeWebviewFocus, __kustoDetectStringPrefix, __kustoDiagnosticContextMatches, __kustoDiagnosticReadinessMatches, __kustoDisableMonacoKustoWorkerHover, __kustoFindLatestLetAssignmentEnd, __kustoGetColumnCompletionPipelineContext, __kustoGetColumnsByTable, __kustoIsPrimaryDiagnosticSchemaFresh, __kustoIsSupplementalDiagnosticStateReady, __kustoIsSupplementalNetworkRequestActive, __kustoIsTrueWindowFocusEvent, __kustoMergeFocusMarkerIntent, __kustoPlanDiagnosticPublication, __kustoPlanPreparationDiagnostics, __kustoPlanSupplementalBrokerRetirement, __kustoPlanSupplementalExpiration, __kustoShouldApplySupplementalRefresh, __kustoShouldJoinSupplementalBroker, __kustoShouldPublishDiagnostics, __kustoShouldReplayFocusedDiagnostics, __kustoTrackSupplementalReferences, KustoDiagnosticMarkerOwnership, KustoDiagnosticRevalidationCoordinator, KustoDiagnosticValidationRetryPolicy } from '../../src/webview/monaco/monaco.js';
+import { __kustoAreEquivalentMonacoMarkers, __kustoAutocompleteSchemaTargetIdentityMatches, __kustoCommitWorkerMutation, __kustoComputeWebviewFocus, __kustoDetectStringPrefix, __kustoDiagnosticContextMatches, __kustoDiagnosticReadinessMatches, __kustoDisableMonacoKustoWorkerHover, __kustoFindLatestLetAssignmentEnd, __kustoGetColumnCompletionPipelineContext, __kustoGetColumnsByTable, __kustoIsPrimaryDiagnosticSchemaFresh, __kustoIsSupplementalDiagnosticStateReady, __kustoIsSupplementalNetworkRequestActive, __kustoIsTrueWindowFocusEvent, __kustoMergeFocusMarkerIntent, __kustoPlanDiagnosticPublication, __kustoPlanPreparationDiagnostics, __kustoPlanSupplementalBrokerRetirement, __kustoPlanSupplementalExpiration, __kustoShouldApplySupplementalRefresh, __kustoShouldJoinSupplementalBroker, __kustoShouldPublishDiagnostics, __kustoShouldReplayFocusedDiagnostics, __kustoTrackSupplementalReferences, KustoDiagnosticMarkerOwnership, KustoDiagnosticRevalidationCoordinator, KustoDiagnosticValidationRetryPolicy } from '../../src/webview/monaco/monaco.js';
 import { __kustoNormalizeCollapsedMonacoMarkers } from '../../src/webview/monaco/marker-ranges.js';
 import { getKustoSchemaIdentityKey } from '../../src/shared/kustoAuth.js';
 import { KustoSupplementalSchemaCoordinator, supplementalStateIdentity } from '../../src/webview/shared/kusto-supplemental-schema-coordinator.js';
@@ -13,6 +13,19 @@ function makeMonacoModel(text: string) {
 		getLineContent: (lineNumber: number) => lines[lineNumber - 1] ?? '',
 	};
 }
+
+describe('__kustoCommitWorkerMutation', () => {
+	it('advances completion generation only for a successful worker commit', () => {
+		(window as any).__kustoSchemaCompletionGeneration = 0;
+		const commit = vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(false);
+		const transaction = { commit } as any;
+
+		expect(__kustoCommitWorkerMutation(transaction, { destructive: true })).toBe(true);
+		expect((window as any).__kustoSchemaCompletionGeneration).toBe(1);
+		expect(__kustoCommitWorkerMutation(transaction)).toBe(false);
+		expect((window as any).__kustoSchemaCompletionGeneration).toBe(1);
+	});
+});
 
 // ── __kustoGetColumnsByTable ──────────────────────────────────────────────────
 
@@ -690,6 +703,18 @@ describe('__kustoAreEquivalentMonacoMarkers', () => {
 		expect(workerIndex).toBeGreaterThan(updaterIndex);
 		expect(signatureIndex).toBeGreaterThan(workerIndex);
 		expect(fastPathIndex).toBeGreaterThan(signatureIndex);
+	});
+
+	it('rebuilds incomplete preparation ownership before the focused worker fast path', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const updaterIndex = source.indexOf('__kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = true)');
+		const targetMatchIndex = source.indexOf('const preparationTargetMatches = preparationState.target.connectionId === connectionId', updaterIndex);
+		const restartIndex = source.indexOf('preparationToken = beginKustoPreparation(boxId, {', targetMatchIndex);
+		const workerIndex = source.indexOf('const workerReadyState = getSchemaWorkerReadyState(String(boxId))', restartIndex);
+
+		expect(targetMatchIndex).toBeGreaterThan(updaterIndex);
+		expect(restartIndex).toBeGreaterThan(targetMatchIndex);
+		expect(workerIndex).toBeGreaterThan(restartIndex);
 	});
 
 	it('requires a committed model context instead of accepting global context alone on focus', () => {

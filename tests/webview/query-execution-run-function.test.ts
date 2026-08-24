@@ -127,7 +127,7 @@ vi.mock('../../src/webview/components/kw-function-params-dialog', () => ({
 	KwFunctionParamsDialog: dialogState.TestFunctionParamsDialog,
 }));
 
-import { displayComparisonSummary, executeAllQueries, executeKustoComparisonPair, executeQuery, executeRunFunction, lastRunCacheEnabledByBoxId, QueryExecutionController } from '../../src/webview/sections/query-execution.controller.js';
+import { acquireKustoToolExecutionFence, displayComparisonSummary, executeAllQueries, executeKustoComparisonPair, executeQuery, executeRunFunction, lastRunCacheEnabledByBoxId, QueryExecutionController, releaseKustoToolExecutionFence } from '../../src/webview/sections/query-execution.controller.js';
 
 beforeAll(() => {
 	if (!customElements.get('kw-function-params-dialog')) {
@@ -279,6 +279,33 @@ describe('executeRunFunction', () => {
 		expect(executionId).toBeUndefined();
 		expect(testState.beginQueryExecution).not.toHaveBeenCalled();
 		expect(getExecuteMessages()).toHaveLength(0);
+	});
+
+	it('blocks manual execution while admitting only the exact fenced tool dispatch', () => {
+		testState.getRunMode.mockReturnValue('plain');
+		const fullQuery = 'print First=1;\nprint Second=2';
+		testState.queryEditors.query_1 = makeEditor(fullQuery, 1, 4, {
+			isEmpty: () => false,
+			startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 15,
+		});
+		appendExecutionControls('query_1');
+		expect(acquireKustoToolExecutionFence('query_1', 'tool-request-1')).toBe(true);
+		try {
+			expect(executeQuery('query_1', 'plain')).toBeUndefined();
+			expect(executeQuery(
+				'query_1', 'plain', 'tool', undefined, 'focused', 'wrong-tool-request',
+			)).toBeUndefined();
+			expect(getExecuteMessages()).toEqual([]);
+
+			expect(executeQuery(
+				'query_1', 'plain', 'tool', undefined, 'all', 'tool-request-1',
+			)).toMatch(/^kusto-run-/);
+			expect(getExecuteMessages()).toEqual([expect.objectContaining({
+				query: fullQuery, producer: 'tool', queryMode: 'plain',
+			})]);
+		} finally {
+			releaseKustoToolExecutionFence('query_1', 'tool-request-1');
+		}
 	});
 
 	it('runs the full editor once in plain mode without changing the saved run mode', () => {

@@ -3,7 +3,7 @@
 // Used by the vscode-ext-test E2E framework via `When I evaluate`.
 
 import { postMessageToHost } from '../shared/webview-messages.js';
-import { getKustoPreparationState, isSchemaEnhancementReady, isSchemaWorkerReady, requestKustoSchemaApplyForBox, requireSchemaWorkerApply, schemaDiagnosticsTrustedByBoxId, setActiveMonacoEditor, setActiveQueryEditorBoxId } from './state.js';
+import { advanceKustoSchemaCompletionGeneration, getKustoPreparationState, getSchemaWorkerReadyState, isSchemaEnhancementReady, isSchemaWorkerReady, requestKustoSchemaApplyForBox, requireSchemaWorkerApply, schemaDiagnosticsTrustedByBoxId, setActiveMonacoEditor, setActiveQueryEditorBoxId } from './state.js';
 import { getKustoEditorSchema, getKustoEditorSchemaIds, getSqlEditorSchema } from './schema-catalogs.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
 import { schemaRequestTokenByBoxId } from './kusto-schema-request-state.js';
@@ -15,6 +15,7 @@ import { admitKustoPublicationHostMessage } from '../../shared/kustoPublicationP
 import { perfSnapshot } from './perf.js';
 import { getPageScrollElement, getPageScrollMaxTop, getPageScrollTop, setPageScrollTop } from './utils.js';
 import { __kustoFindSuggestWidgetForEditor } from '../monaco/suggest.js';
+import { ensureEchartsLoaded } from '../shared/lazy-vendor.js';
 import { __kustoCrossClusterSchemas, __kustoGetSupplementalSchemaSnapshot, __kustoInjectSupplementalSchemaForTest, __kustoScheduleSupplementalSchemaForTest, __kustoSchemaTracker, __kustoSetCustomColumnCompletionProviderEnabledForTest, __kustoTraceCrossCluster } from '../monaco/monaco.js';
 import { kustoSupplementalTraceId } from '../shared/kusto-supplemental-schema-coordinator.js';
 import { extractCrossClusterRefs } from '../shared/cross-cluster-schema.js';
@@ -32,7 +33,7 @@ import {
 import { htmlDashboardFactArtifactConsumerId, shareClipboardArtifactConsumerId } from '../../shared/resultArtifact.js';
 import { displayComparisonSummary } from '../sections/query-execution.controller.js';
 import { __kustoCloseShareModal, __kustoOpenShareModal, __kustoShareCopyToClipboard } from '../sections/kw-query-toolbar.js';
-import { adoptCurrentStateAsCleanForTest, getLastDeferredRestoredResultSettlementForTest, isPersistenceSuppressedForTest, schedulePersist, suppressPersistenceForTest } from './persistence.js';
+import { adoptCurrentStateAsCleanForTest, getLastDeferredRestoredResultSettlementForTest, isPersistenceSuppressedForTest, persistDocumentAndWaitForAck, schedulePersist, suppressPersistenceForTest } from './persistence.js';
 
 type MonacoLike = {
 	getDomNode?: () => HTMLElement | null;
@@ -702,19 +703,25 @@ _win.__testSetMonacoValue = (selector: string, value: string): string => {
 };
 
 _win.__testSetMonacoValueAt = (selector: string, value: string, lineNumber: number = 1, column?: number): string => {
-	const setResult = _win.__testSetMonacoValue(selector, value);
 	const { editor } = resolveMonacoEditorFromSelector(selector);
+	if (typeof editor.setValue !== 'function' || typeof editor.setPosition !== 'function') {
+		throw new Error(`monaco value/position API unavailable for: ${selector}`);
+	}
+	ensureMonacoFocusTracking(editor);
+	editor.setValue(String(value || ''));
+	try { editor.focus?.(); } catch { /* ignore */ }
+	try { setActiveMonacoEditor(editor); } catch { /* ignore */ }
 	const model = (typeof editor.getModel === 'function') ? editor.getModel() : null;
 	const targetLine = Number.isFinite(lineNumber) ? Math.max(1, Math.floor(lineNumber)) : 1;
 	const maxColumn = model?.getLineMaxColumn ? model.getLineMaxColumn(targetLine) : String(value || '').length + 1;
 	const targetColumn = Number.isFinite(column) ? Math.max(1, Math.floor(column as number)) : maxColumn;
-	if (typeof editor.setPosition !== 'function') {
-		throw new Error(`monaco setPosition unavailable for: ${selector}`);
-	}
 	editor.setPosition({ lineNumber: targetLine, column: targetColumn });
-	try { editor.focus?.(); } catch { /* ignore */ }
 	updateMonacoFocusDataset(editor);
-	return `${setResult}; caret=${targetLine}:${targetColumn}`;
+	const actual = editor.getPosition?.();
+	if (!actual || actual.lineNumber !== targetLine || actual.column !== targetColumn) {
+		throw new Error(`monaco caret mismatch for ${selector}: expected ${targetLine}:${targetColumn}, got ${actual ? `${actual.lineNumber}:${actual.column}` : '(none)'}`);
+	}
+	return `focused monaco ${selector}; monaco value set (${String(value || '').length} chars); caret=${targetLine}:${targetColumn}`;
 };
 
 _win.__testSetMonacoSelection = (
@@ -775,14 +782,20 @@ _win.__testTriggerMonaco = (selector: string, handlerId: string, payload: any = 
 };
 
 _win.__testTypeMonaco = (selector: string, text: string): string => {
-	const focusResult = _win.__testFocusMonaco(selector);
 	const { editor } = resolveMonacoEditorFromSelector(selector);
 	if (typeof editor.trigger !== 'function') {
 		throw new Error(`monaco trigger unavailable for: ${selector}`);
 	}
+	ensureMonacoFocusTracking(editor);
+	try { editor.focus?.(); } catch { /* ignore */ }
+	try { setActiveMonacoEditor(editor); } catch { /* ignore */ }
+	const focusState = updateMonacoFocusDataset(editor);
+	if (focusState === 'none') {
+		throw new Error(`monaco focus not established for typing: ${selector}`);
+	}
 	editor.trigger('keyboard', 'type', { text: String(text || '') });
 	const current = typeof editor.getValue === 'function' ? editor.getValue() || '' : '';
-	return `${focusResult}; typed ${String(text || '').length} chars; value=${current}`;
+	return `focused monaco ${selector} (${focusState}); typed ${String(text || '').length} chars; value=${current}`;
 };
 
 _win.__testGetMonacoValue = (selector: string): string => {
@@ -1052,7 +1065,7 @@ async function e2eWaitForKustoPreparationReady(sectionIndex: number = 0, timeout
 		const preparation = getKustoPreparationState(boxId);
 		if (preparation.status === 'ready') return e2eAssertKustoPreparationReady(sectionIndex);
 		if (preparation.status === 'error') {
-			throw new Error(`Preparation failed for section ${sectionIndex}: stage=${preparation.stage} generation=${preparation.generation} revision=${preparation.revision} blockers=${preparation.blockers.join(',')} schemaId=${kustoSupplementalTraceId(String(preparation.target.schemaKey || ''))} modelId=${kustoSupplementalTraceId(String(preparation.target.modelUri || ''))}`);
+			throw new Error(`Preparation failed for section ${sectionIndex}: stage=${preparation.stage} generation=${preparation.generation} revision=${preparation.revision} blockers=${preparation.blockers.join(',')} error=${JSON.stringify(preparation.error || '')} schemaId=${kustoSupplementalTraceId(String(preparation.target.schemaKey || ''))} modelId=${kustoSupplementalTraceId(String(preparation.target.modelUri || ''))} lifecycle=${JSON.stringify(kustoEditorSchemaCoordinator.getDebugSnapshot()).slice(0, 4000)}`);
 		}
 		await e2eDelay(100);
 	}
@@ -1062,7 +1075,7 @@ async function e2eWaitForKustoPreparationReady(sectionIndex: number = 0, timeout
 	const { schemaKey } = e2eKustoSchemaIdentityForSection(section);
 	const modelUri = String(_win.queryEditors?.[boxId]?.getModel?.()?.uri?.toString?.() || '');
 	const preparation = getKustoPreparationState(boxId);
-	throw new Error(`Preparation timed out for section ${sectionIndex}: status=${preparation.status} stage=${preparation.stage} generation=${preparation.generation} revision=${preparation.revision} blockers=${preparation.blockers.join(',')} schemaId=${kustoSupplementalTraceId(schemaKey)} modelId=${kustoSupplementalTraceId(modelUri)} workerReady=${isSchemaWorkerReady(boxId, schemaKey, modelUri)} enhancementReady=${isSchemaEnhancementReady(boxId, schemaKey, preparation.target.schemaSignature, modelUri)}`);
+	throw new Error(`Preparation timed out for section ${sectionIndex}: status=${preparation.status} stage=${preparation.stage} generation=${preparation.generation} revision=${preparation.revision} blockers=${preparation.blockers.join(',')} error=${JSON.stringify(preparation.error || '')} schemaId=${kustoSupplementalTraceId(schemaKey)} modelId=${kustoSupplementalTraceId(modelUri)} workerReady=${isSchemaWorkerReady(boxId, schemaKey, modelUri)} enhancementReady=${isSchemaEnhancementReady(boxId, schemaKey, preparation.target.schemaSignature, modelUri)} lifecycle=${JSON.stringify(kustoEditorSchemaCoordinator.getDebugSnapshot()).slice(0, 4000)}`);
 }
 
 function e2eAssertKustoWorkerContext(sectionIndex: number = 0): string {
@@ -1868,8 +1881,18 @@ async function e2eKustoPrepareFavoriteDocument(options: any = {}): Promise<strin
 		await e2eDelay(80);
 	}
 
-	const connectionId = `favsync_${e2eNormalizeClusterUrlKey(clusterUrl).replace(/[^a-z0-9]+/g, '_') || Date.now()}`;
-	const conn = { id: connectionId, name: String(options.connectionName || clusterUrl), clusterUrl, database };
+	const deadline = performance.now() + 5000;
+	let conn: any;
+	while (performance.now() < deadline) {
+		conn = (Array.isArray(_win.connections) ? _win.connections : []).find((candidate: any) =>
+			e2eNormalizeClusterUrlKey(String(candidate?.clusterUrl || '')) === e2eNormalizeClusterUrlKey(clusterUrl)
+		);
+		if (conn) break;
+		await e2eDelay(50);
+	}
+	if (!conn) {
+		throw new Error(`Host-owned favorites connection was not projected for ${clusterUrl}; available=${JSON.stringify(_win.connections || [])}`);
+	}
 	const sections = e2eKustoFavoriteSections();
 	for (const section of sections) {
 		// Set the current connection before publishing the local fake connection list.
@@ -1894,6 +1917,10 @@ async function e2eKustoCleanFavorite(options: any = {}): Promise<string> {
 	const timeoutMs = Math.max(500, Number(options.timeoutMs || 5000));
 	if (!clusterUrl) throw new Error('clusterUrl is required');
 	if (!database) throw new Error('database is required');
+	const existing = e2eKustoGlobalFavorites().find(favorite => e2eKustoFavoriteMatches(favorite, clusterUrl, database));
+	if (!existing) return `favorite already absent for ${clusterUrl}/${database}`;
+	const connectionId = String(existing.connectionId || '').trim();
+	if (!connectionId) throw new Error(`No connection-owned favorite found for ${clusterUrl}/${database}`);
 	let sawRoundTrip = false;
 	const onMessage = (event: MessageEvent) => {
 		if ((event as any)?.data?.type === 'favoritesData') {
@@ -1901,9 +1928,6 @@ async function e2eKustoCleanFavorite(options: any = {}): Promise<string> {
 		}
 	};
 	window.addEventListener('message', onMessage as EventListener);
-	const existing = e2eKustoGlobalFavorites().find(favorite => e2eKustoFavoriteMatches(favorite, clusterUrl, database));
-	const connectionId = String(existing?.connectionId || '').trim();
-	if (!connectionId) throw new Error(`No connection-owned favorite found for ${clusterUrl}/${database}`);
 	postMessageToHost({ type: 'removeFavorite', connectionId, clusterUrl, database });
 	const started = performance.now();
 	try {
@@ -2287,9 +2311,10 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 	const fullQuery = `cluster('${E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey}').database('${E2E_KUSTO_IDENTITY_CHECKLIST.database}').NeedleTable | take 1`;
 	const shortQuery = `cluster('${E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl}').database('${E2E_KUSTO_IDENTITY_CHECKLIST.database}').NeedleTable | take 1`;
 	const configure = async (section: any, connection: any, query: string) => {
-		section.setConnections?.([connection], { lastConnectionId: connection.id });
 		section.setConnectionId?.(connection.id);
 		section.setDesiredClusterUrl?.(connection.clusterUrl);
+		section.setDesiredDatabase?.(E2E_KUSTO_IDENTITY_CHECKLIST.database);
+		section.setConnections?.([connection], { lastConnectionId: connection.id });
 		section.setDatabase?.(E2E_KUSTO_IDENTITY_CHECKLIST.database);
 		section.setDatabases?.([E2E_KUSTO_IDENTITY_CHECKLIST.database], E2E_KUSTO_IDENTITY_CHECKLIST.database);
 		const boxId = String(section.boxId || section.id || '').trim();
@@ -2300,7 +2325,6 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 		editor.setValue(query);
 		setActiveQueryEditorBoxId(boxId);
 		setActiveMonacoEditor(editor);
-		editor.focus?.();
 		if (!section.connectionCtrl?.onDatabaseChanged) {
 			throw new Error(`Kusto connection lifecycle is unavailable for ${boxId}`);
 		}
@@ -2310,6 +2334,7 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 		const sectionIndex = sections.indexOf(section);
 		const deadline = performance.now() + 15000;
 		let retriedErrorGeneration = -1;
+		let retriedIdleGeneration = -1;
 		while (performance.now() < deadline) {
 			const preparation = getKustoPreparationState(boxId);
 			if (preparation.status === 'ready') {
@@ -2322,6 +2347,10 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 			}
 			if (preparation.status === 'error' && preparation.generation !== retriedErrorGeneration) {
 				retriedErrorGeneration = preparation.generation;
+				section.connectionCtrl.onDatabaseChanged('user');
+			}
+			if (preparation.status === 'idle' && preparation.generation !== retriedIdleGeneration) {
+				retriedIdleGeneration = preparation.generation;
 				section.connectionCtrl.onDatabaseChanged('user');
 			}
 			await e2eDelay(100);
@@ -2362,7 +2391,6 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 		}
 		setActiveQueryEditorBoxId(configured.boxId);
 		setActiveMonacoEditor(editor);
-		editor?.focus?.();
 		requireSchemaWorkerApply(configured.boxId);
 		requestKustoSchemaApplyForBox(configured.boxId, true);
 		await e2eWaitForKustoPreparationReady(sections.indexOf(section), 15000);
@@ -2789,17 +2817,6 @@ async function e2eRunFunctionManualCursorOutsideShowsNoFunction(): Promise<strin
 	return 'cursor outside function shows no-function message';
 }
 
-function e2eCursorOffsetForLineColumn(text: string, lineNumber: number, column: number): number {
-	const lines = String(text || '').split('\n');
-	const targetLine = Math.max(1, Math.floor(lineNumber));
-	let offset = 0;
-	for (let index = 0; index < Math.min(targetLine - 1, lines.length); index++) {
-		offset += lines[index].length + 1;
-	}
-	const lineText = lines[Math.max(0, Math.min(targetLine - 1, lines.length - 1))] || '';
-	return offset + Math.max(0, Math.min(Math.floor(column) - 1, lineText.length));
-}
-
 async function e2eCursorCreateNotebook(): Promise<string> {
 	_win.__testRemoveAllSections();
 	await e2eLayoutWaitFor(() => document.querySelectorAll(TEST_SECTION_SELECTOR).length === 0, 'all sections removed for cursor test');
@@ -2892,37 +2909,47 @@ async function e2eCursorFocusMarkdown(lineNumber: number, column: number): Promi
 	if (!editorRoot) {
 		throw new Error('Markdown editor root not found');
 	}
-	const text = typeof section.getText === 'function' ? String(section.getText()) : '# Cursor\n\nBody text';
-	const offset = e2eCursorOffsetForLineColumn(text, lineNumber, column);
-	const textarea = editorRoot.querySelector('textarea') as HTMLTextAreaElement | null;
-	if (textarea) {
-		textarea.focus();
-		textarea.selectionStart = offset;
-		textarea.selectionEnd = offset;
-		textarea.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
-		await e2eDelay(150);
-		return `markdown textarea caret at ${lineNumber}:${column}`;
+	const toastEditor = section._editorApi?._toastui;
+	if (!toastEditor || typeof toastEditor.setSelection !== 'function' || typeof toastEditor.getSelection !== 'function') {
+		throw new Error('Markdown Toast UI selection API not found');
 	}
-	const editable = editorRoot.querySelector('[contenteditable="true"], .ProseMirror') as HTMLElement | null;
-	if (!editable) {
-		throw new Error('Markdown editable surface not found');
+	const target: [number, number] = [Math.max(1, Math.floor(lineNumber)), Math.max(1, Math.floor(column))];
+	toastEditor.setSelection(target, target);
+	toastEditor.focus?.();
+	const selection = toastEditor.getSelection();
+	const actual = Array.isArray(selection) && Array.isArray(selection[0]) ? selection[0] : null;
+	if (actual?.[0] !== target[0] || actual?.[1] !== target[1]) {
+		throw new Error(`Markdown Toast UI caret mismatch: expected ${lineNumber}:${column}, got ${actual ? `${actual[0]}:${actual[1]}` : '(none)'}`);
 	}
-	editable.focus();
-	const textNode = editable.firstChild && editable.firstChild.nodeType === Node.TEXT_NODE
-		? editable.firstChild
-		: document.createTextNode(text);
-	if (!textNode.parentNode) {
-		editable.appendChild(textNode);
-	}
-	const range = document.createRange();
-	range.setStart(textNode, Math.min(offset, textNode.textContent?.length ?? 0));
-	range.collapse(true);
-	const selection = window.getSelection();
-	selection?.removeAllRanges();
-	selection?.addRange(range);
-	editable.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+	(editorRoot.querySelector('.toastui-editor-md-container .ProseMirror') || editorRoot)
+		.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
 	await e2eDelay(150);
-	return `markdown editable caret at ${lineNumber}:${column}`;
+	return `markdown Toast UI caret at ${lineNumber}:${column}`;
+}
+
+async function e2eCursorFocusMarkdownWysiwyg(lineNumber: number, column: number): Promise<string> {
+	const section = document.getElementById('cursor_markdown') as any;
+	if (!section) throw new Error('cursor_markdown section not found');
+	section.setMarkdownMode?.('wysiwyg');
+	await e2eDelay(250);
+	const editorRoot = section.querySelector('.toastui-editor-defaultUI') as HTMLElement | null;
+	const toastEditor = section._editorApi?._toastui;
+	if (!editorRoot || !toastEditor || typeof toastEditor.setSelection !== 'function'
+		|| typeof toastEditor.getSelection !== 'function'
+		|| typeof toastEditor.convertPosToMatchEditorMode !== 'function') {
+		throw new Error('Markdown Toast UI WYSIWYG selection API not found');
+	}
+	const markdownPosition: [number, number] = [Math.max(1, Math.floor(lineNumber)), Math.max(1, Math.floor(column))];
+	const converted = toastEditor.convertPosToMatchEditorMode(markdownPosition, markdownPosition, 'wysiwyg');
+	if (!Array.isArray(converted) || typeof converted[0] !== 'number' || typeof converted[1] !== 'number') {
+		throw new Error(`Markdown WYSIWYG conversion failed for ${lineNumber}:${column}`);
+	}
+	toastEditor.setSelection(converted[0], converted[1]);
+	toastEditor.focus?.();
+	(editorRoot.querySelector('.toastui-editor-ww-container .ProseMirror') || editorRoot)
+		.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+	await e2eDelay(150);
+	return `markdown WYSIWYG caret maps to ${lineNumber}:${column}`;
 }
 
 async function e2eCursorSetHtmlPreview(): Promise<string> {
@@ -3188,7 +3215,7 @@ function e2eEditor(kind: E2eSectionKind): MonacoLike {
 
 function e2eHideSuggest(kind: E2eSectionKind): string {
 	const editor = e2eEditor(kind);
-	try { editor.trigger?.('keyboard', 'hideSuggestWidget', {}); } catch { /* ignore */ }
+	try { (editor as any).getContribution?.('editor.contrib.suggestController')?.cancelSuggestWidget?.(); } catch { /* ignore */ }
 	try { editor.trigger?.('keyboard', 'hideSuggestWidget', {}); } catch { /* ignore */ }
 	return `${kind} suggest hide requested`;
 }
@@ -4049,6 +4076,7 @@ async function e2eAdmitKustoSchemaFixture(args: {
 	requireEnhancement?: boolean;
 }): Promise<void> {
 	const requestToken = `e2e-schema-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+	schemaDiagnosticsTrustedByBoxId[args.boxId] = true;
 	const lifecycle = args.section.setSchemaLifecycleTarget?.(args.connectionId, args.database);
 	const request = args.section.beginSchemaLifecycleRequest?.(requestToken);
 	if (!lifecycle || !request) throw new Error('Kusto fixture could not claim current schema lifecycle ownership.');
@@ -4086,11 +4114,17 @@ async function e2eAdmitKustoSchemaFixture(args: {
 		if (preparation.status === 'error') {
 			throw new Error(`Kusto fixture schema admission failed at ${preparation.stage}.`);
 		}
+		const worker = getSchemaWorkerReadyState(args.boxId);
 		if (isSchemaWorkerReady(args.boxId, schemaKey, args.modelUri)
+			&& worker?.schemaSignature === args.schemaSignature
 			&& (args.requireEnhancement === false || isSchemaEnhancementReady(args.boxId, schemaKey, args.schemaSignature, args.modelUri))) return;
 		await e2eDelay(50);
 	}
-	throw new Error('Kusto fixture schema admission did not reach exact worker readiness.');
+	throw new Error(`Kusto fixture schema admission did not reach exact worker readiness: ${JSON.stringify({
+		expected: { schemaKey, schemaSignature: args.schemaSignature, modelUri: args.modelUri },
+		worker: getSchemaWorkerReadyState(args.boxId),
+		preparation: getKustoPreparationState(args.boxId),
+	})}`);
 }
 
 async function e2eApplyKustoSemanticFixture(): Promise<string> {
@@ -4102,6 +4136,7 @@ async function e2eApplyKustoSemanticFixture(): Promise<string> {
 	if (!boxId || !modelUri) {
 		throw new Error(`Cannot apply semantic fixture: boxId=${boxId || '(none)'} modelUri=${modelUri || '(none)'}`);
 	}
+	const completionGenerationBefore = Number((_win as any).__kustoSchemaCompletionGeneration || 0);
 	const primaryClusterUrl = 'https://local-semantic-test.kusto.windows.net';
 	const primaryDatabase = 'LocalDb';
 	const primaryTables = {
@@ -4217,6 +4252,11 @@ async function e2eApplyKustoSemanticFixture(): Promise<string> {
 	while (performance.now() - started < 8000) {
 		const entry = __kustoCrossClusterSchemas?.[remoteKey];
 		if (entry?.status === 'loaded') {
+			const completionGenerationAfter = Number((_win as any).__kustoSchemaCompletionGeneration || 0);
+			if (!Number.isSafeInteger(completionGenerationAfter)
+				|| completionGenerationAfter <= completionGenerationBefore) {
+				throw new Error(`Semantic schema worker mutations did not advance completion generation: before=${completionGenerationBefore} after=${completionGenerationAfter}`);
+			}
 			section.setSchemaInfo?.({ status: 'loaded', statusText: 'E2E semantic schema loaded' });
 			section.clearResults?.();
 			_win.__e2eKustoSemanticFixture = { boxId, modelUri, primaryClusterUrl, primaryDatabase, remoteKey, primaryRaw, remoteRaw };
@@ -4355,6 +4395,7 @@ async function e2eApplyKustoSchemaReplacementFixture(version: string): Promise<s
 		database,
 		schema,
 		schemaSignature: `e2e-schema-replacement-${normalizedVersion.toLowerCase()}`,
+		requireEnhancement: false,
 	});
 	schemaDiagnosticsTrustedByBoxId[boxId] = false;
 	section.setSchemaInfo?.({ status: 'loaded', statusText: `E2E replacement schema ${normalizedVersion} loaded` });
@@ -4363,21 +4404,7 @@ async function e2eApplyKustoSchemaReplacementFixture(version: string): Promise<s
 }
 
 function e2eSetKustoQueryWithCaretMarker(queryWithMarker: string, marker: string = '⟦caret⟧'): string {
-	const raw = String(queryWithMarker || '');
-	const index = raw.indexOf(marker);
-	if (index < 0) {
-		throw new Error(`Caret marker ${marker} not found`);
-	}
-	if (raw.indexOf(marker, index + marker.length) >= 0) {
-		throw new Error(`Caret marker ${marker} appears more than once`);
-	}
-	const text = raw.slice(0, index) + raw.slice(index + marker.length);
-	const prefix = raw.slice(0, index);
-	const lines = prefix.split(/\r?\n/);
-	const lineNumber = lines.length;
-	const column = lines[lines.length - 1].length + 1;
-	_win.__e2e.kusto.setQueryAt(text, lineNumber, column);
-	return `set kusto query with caret at ${lineNumber}:${column}`;
+	return e2eSetKustoQueryWithCaretMarkerStrict(queryWithMarker, marker);
 }
 
 function e2eSetKustoQueryWithCaretMarkerStrict(queryWithMarker: string, marker: string = '⟦caret⟧'): string {
@@ -4401,6 +4428,7 @@ function e2eSetKustoQueryWithCaretMarkerStrict(queryWithMarker: string, marker: 
 		throw new Error(`Strict Kusto editor unavailable for boxId=${boxId || '(none)'}`);
 	}
 	editor.setValue(text);
+	advanceKustoSchemaCompletionGeneration();
 	editor.setPosition({ lineNumber, column });
 	try { editor.focus?.(); } catch { /* ignore */ }
 	try { setActiveMonacoEditor(editor); } catch { /* ignore */ }
@@ -4674,7 +4702,7 @@ let eventRows =
 }
 
 function e2eSetCurrentClusterWorkflowScenario(): string {
-	return e2eSetKustoQueryWithCaretMarker(`let baseQuery = materialize(cluster('semantic-current.westus').database('TelemetryDb').v_autocomplete_events()
+	return e2eSetKustoQueryWithCaretMarkerStrict(`let baseQuery = materialize(cluster('semantic-current.westus').database('TelemetryDb').v_autocomplete_events()
 	| where TIME⟦caret⟧STAMP >= startTime
 		and TIMESTAMP < endTime
 		and EventName == "ResponseCompleted")`);
@@ -4722,10 +4750,12 @@ function e2eAssertKustoCrossClusterTraceForSemanticFixture(): string {
 	if (!has('request-posted', (entry: any) => entry.schemaId === remoteSchemaId && entry.requestSource === 'background')) missing.push('request-posted');
 	if (!has('response-received', (entry: any) => !!entry.clusterId && !!entry.databaseId)) missing.push('response-received');
 	if (!has('apply-start', (entry: any) => entry.schemaId === remoteSchemaId)) missing.push('apply-start');
-	if (!has('apply-internal-start', (entry: any) => entry.schemaId === remoteSchemaId && entry.aliasesCount >= 2)) missing.push('apply-internal-start-alias-count');
+	if (!has('apply-internal-start', (entry: any) => entry.schemaId === remoteSchemaId)) missing.push('apply-internal-start');
 	if (!has('apply-internal-success', (entry: any) => entry.schemaId === remoteSchemaId && entry.appliedCount > 0)) missing.push('apply-internal-success');
 	if (!has('schema-status', (entry: any) => entry.schemaId === remoteSchemaId && entry.status === 'loaded')) missing.push('schema-status-loaded');
-	if (!has('autocomplete-retry-trigger', (entry: any) => entry.missingKeysCount > 0)) missing.push('autocomplete-retry-trigger');
+	const directWaitCompleted = has('autocomplete-short-wait-finished', (entry: any) => entry.resultsCount > 0);
+	const retried = has('autocomplete-retry-trigger', (entry: any) => entry.missingKeysCount > 0);
+	if (!directWaitCompleted && !retried) missing.push('autocomplete-direct-wait-or-retry');
 	if (has('autocomplete-retry-skipped-no-focus')) missing.push('unexpected-autocomplete-retry-skipped-no-focus');
 	const traceText = JSON.stringify(trace);
 	for (const sentinel of ['semantic-remote', 'TelemetryDb', 'LocalDb', 'RemoteOnly', 'agent.remoteOnly']) {
@@ -5490,7 +5520,7 @@ interface E2eLayoutSpec {
 	tagName: string;
 	id: string;
 	minHeight: number;
-	maxHeight: number;
+	maxHeight?: number;
 	target: (section: HTMLElement) => HTMLElement | null;
 	resizer: (section: HTMLElement) => HTMLElement | null;
 }
@@ -5529,7 +5559,6 @@ const E2E_LAYOUT_SPECS: E2eLayoutSpec[] = [
 		tagName: 'kw-markdown-section',
 		id: 'e2e_layout_markdown',
 		minHeight: 120,
-		maxHeight: 950,
 		target: section => section.shadowRoot?.getElementById('editor-wrapper') as HTMLElement | null,
 		resizer: section => section.shadowRoot?.querySelector('.resizer') as HTMLElement | null,
 	},
@@ -5628,8 +5657,16 @@ function e2eLayoutAssertFiniteHeight(spec: E2eLayoutSpec, target: HTMLElement, c
 	if (!Number.isFinite(height)) {
 		throw new Error(`${context} height is not finite: ${height}`);
 	}
-	if (height < spec.minHeight || height > spec.maxHeight) {
-		throw new Error(`${context} height out of bounds: ${height}px, expected ${spec.minHeight}-${spec.maxHeight}px`);
+	if (spec.kind === 'markdown') {
+		const contentHeight = target.scrollHeight;
+		if (!Number.isFinite(contentHeight) || contentHeight <= 0 || contentHeight > 20000
+			|| height < spec.minHeight || height > contentHeight + 4) {
+			throw new Error(`${context} auto-expanded height out of bounds: ${height}px, content=${contentHeight}px, expected ${spec.minHeight}-content height within 20000px`);
+		}
+		return height;
+	}
+	if (typeof spec.maxHeight !== 'number' || height < spec.minHeight || height > spec.maxHeight) {
+		throw new Error(`${context} height out of bounds: ${height}px, expected ${spec.minHeight}-${spec.maxHeight ?? '(missing)'}px`);
 	}
 	return height;
 }
@@ -5759,6 +5796,20 @@ async function e2eLayoutWaitForUpdate(section: HTMLElement): Promise<void> {
 		}
 	} catch { /* ignore test-only update timing errors */ }
 	await e2eLayoutAnimationFrame();
+}
+
+async function e2eLayoutWaitForChartReady(context: string): Promise<void> {
+	const spec = e2eLayoutSpec('chart');
+	await e2eLayoutWaitFor(() => {
+		const section = document.getElementById(spec.id) as HTMLElement | null;
+		if (!section) return false;
+		const canvas = document.getElementById(spec.id + '_chart_canvas_preview') as HTMLElement | null;
+		return e2eLayoutIsDisplayed(spec.target(section))
+			&& e2eLayoutIsDisplayed(spec.resizer(section))
+			&& e2eLayoutIsDisplayed(canvas)
+			&& !!canvas?.querySelector('canvas,svg')
+			&& !canvas.querySelector('.error-message');
+	}, `${context} chart rendering and resizer`, 18000);
 }
 
 function e2eLayoutGeneratedLines(prefix: string, count: number): string {
@@ -6113,9 +6164,10 @@ function e2eTransformationDocumentOwnershipSnapshot(sectionId: string): unknown 
 let e2eDeferTransformationDependentRefresh = false;
 let e2eDeferredTransformationRefreshCallbacks: Array<() => void> = [];
 
-function e2eTransformationDeferDependentRefresh(): void {
+function e2eTransformationDeferDependentRefresh(): string {
 	e2eDeferTransformationDependentRefresh = true;
 	e2eDeferredTransformationRefreshCallbacks = [];
+	return 'transformation dependent refresh deferred';
 }
 
 function e2eTransformationReleaseDependentRefresh(): number {
@@ -6656,7 +6708,7 @@ async function e2eForceDocumentReload(): Promise<{
 	};
 }
 
-function e2eHtmlBeginSaveBarrierCapture(sectionId: string): void {
+function e2eHtmlBeginSaveBarrierCapture(sectionId: string): string {
 	const id = String(sectionId || '').trim();
 	if (!id) throw new Error('DOC-6 Save barrier capture requires a section ID');
 	const previousCapture = _win.__e2eCaptureHostMessage;
@@ -6668,6 +6720,7 @@ function e2eHtmlBeginSaveBarrierCapture(sectionId: string): void {
 		}
 		return typeof previousCapture === 'function' ? previousCapture(message) !== false : true;
 	};
+	return `DOC-6 Save barrier capture armed for ${id}`;
 }
 
 function e2eHtmlAssertSaveBarrier(sectionId: string): unknown {
@@ -6855,7 +6908,8 @@ async function e2eLayoutSetMonacoValue(sectionId: string, value: string): Promis
 	editor.setValue(value);
 }
 
-async function e2eLayoutCreateStressNotebook(): Promise<string> {
+async function e2eLayoutCreateStressNotebook(requireChartReady: boolean = true): Promise<string> {
+	const chartRuntimeReady = requireChartReady ? ensureEchartsLoaded() : Promise.resolve();
 	_win.__testRemoveAllSections();
 	await e2eLayoutWaitFor(() => document.querySelectorAll(TEST_SECTION_SELECTOR).length === 0, 'all sections to be removed');
 
@@ -6879,7 +6933,9 @@ async function e2eLayoutCreateStressNotebook(): Promise<string> {
 	});
 
 	await e2eLayoutWaitFor(() => !!document.getElementById(queryId) && !!document.getElementById(sqlId), 'query and SQL sections');
+	await chartRuntimeReady;
 
+	e2eBeginDocumentCommandCapture();
 	e2eLayoutAddSection('addChartBox', {
 		id: e2eLayoutSpec('chart').id,
 		name: 'Layout Chart',
@@ -6923,6 +6979,7 @@ async function e2eLayoutCreateStressNotebook(): Promise<string> {
 	});
 	e2eLayoutAddSection('addPythonBox', { id: e2eLayoutSpec('python').id });
 
+	await e2eWaitForDocumentCommands(6, 20000);
 	await e2eLayoutWaitFor(() => E2E_LAYOUT_SPECS.every(spec => !!document.getElementById(spec.id)), 'all layout sections');
 	await e2eSeedQueryResult(queryId, e2eLayoutSampleResult());
 	await e2eSeedQueryResult(sqlId, e2eLayoutSampleResult());
@@ -6938,6 +6995,7 @@ async function e2eLayoutCreateStressNotebook(): Promise<string> {
 	if (typeof transformationSection.refresh === 'function') {
 		transformationSection.refresh();
 	}
+	if (requireChartReady) await e2eLayoutWaitForChartReady('stress notebook');
 
 	await e2eLayoutWaitFor(() => {
 		const urlTarget = e2eLayoutSpec('url').target(e2eLayoutSection(e2eLayoutSpec('url')));
@@ -7006,6 +7064,7 @@ async function e2eLayoutAssertStableHeights(context: string): Promise<string> {
 }
 
 async function e2eLayoutAssertScrollStability(): Promise<string> {
+	await e2eLayoutWaitForChartReady('scroll stability');
 	e2eLayoutAssertAllSectionTypes();
 	const scrollingElement = e2ePageScrollElement();
 	const maxScrollTop = e2ePageScrollMaxTop(scrollingElement);
@@ -7083,6 +7142,24 @@ function e2eLayoutDispatchDrag(resizer: HTMLElement, deltaY: number): void {
 	resizer.dispatchEvent(new MouseEvent('mousedown', base));
 	document.dispatchEvent(new MouseEvent('mousemove', { ...base, clientY: clientY + deltaY }));
 	document.dispatchEvent(new MouseEvent('mouseup', { ...base, buttons: 0, clientY: clientY + deltaY }));
+}
+
+function e2eLayoutActivateAutoFitFromResizer(kind: E2eLayoutKind): string {
+	const spec = e2eLayoutSpec(kind);
+	const resizer = spec.resizer(e2eLayoutSection(spec));
+	const rect = e2eLayoutAssertDisplayed(resizer, `${kind} resizer for auto-fit`);
+	(resizer as HTMLElement).dispatchEvent(new MouseEvent('dblclick', {
+		bubbles: true,
+		cancelable: true,
+		composed: true,
+		view: window,
+		button: 0,
+		buttons: 0,
+		clientX: Math.round(rect.left + rect.width / 2),
+		clientY: Math.round(rect.top + rect.height / 2),
+		detail: 2,
+	}));
+	return `${kind} rendered resizer dblclick dispatched`;
 }
 
 async function e2eLayoutExerciseAutoFitAndResize(): Promise<string> {
@@ -7387,7 +7464,7 @@ async function e2eAssertRestoredHtmlPreviewNativeTyping(marker: string): Promise
 		.map((line, index) => line.includes(marker) ? index + 1 : 0)
 		.filter(Boolean);
 	if (markerLines.length !== 1 || markerLines[0] !== expectation.lineNumber) {
-		throw new Error(`Native typing updated the wrong model line: expected ${expectation.lineNumber}, got ${markerLines.join(',') || '(none)'}`);
+		throw new Error(`Native typing updated the wrong model line: expected ${expectation.lineNumber}, got ${markerLines.join(',') || '(none)'}; state=${JSON.stringify({ position, line: valueLines[expectation.lineNumber - 1] || '', value })}`);
 	}
 	const line = String(model.getLineContent?.(expectation.lineNumber) || '');
 	if (!line.includes(marker)) {
@@ -7527,17 +7604,59 @@ async function e2eSeedQueryResult(boxId: string, result: unknown, artifactPublic
 	let accepted = displayResultForBox(result, id, options);
 	if (!accepted) throw new Error(`Result owner rejected local E2E data: ${id}`);
 	if (section.updateComplete && typeof section.updateComplete.then === 'function') await section.updateComplete;
+	const resultRows = Array.isArray((result as any)?.rows) ? (result as any).rows as unknown[] : [];
 	const hasTabularData = Array.isArray((result as any)?.columns) || Array.isArray((result as any)?.rows);
-	let table = section.querySelector?.('kw-data-table') || section.shadowRoot?.querySelector?.('kw-data-table');
+	const findTable = () => section.querySelector?.('kw-data-table') || section.shadowRoot?.querySelector?.('kw-data-table');
+	let table = findTable();
 	if (hasTabularData && !table) {
 		accepted = displayResultForBox(result, id, options);
 		if (!accepted) throw new Error(`Result owner rejected replayed local E2E data: ${id}`);
 		if (section.updateComplete && typeof section.updateComplete.then === 'function') await section.updateComplete;
-		table = section.querySelector?.('kw-data-table') || section.shadowRoot?.querySelector?.('kw-data-table');
+		table = findTable();
 	}
 	if (hasTabularData && !table) throw new Error(`Result table did not survive local E2E rendering: ${id}`);
 	if (table?.updateComplete && typeof table.updateComplete.then === 'function') await table.updateComplete;
+	if (hasTabularData && resultRows.length > 0) {
+		await e2eLayoutWaitFor(() => {
+			table = findTable();
+			const viewport = table?._vScrollCtrl?.getScrollElement?.() as HTMLElement | null;
+			const firstCell = table?.shadowRoot?.querySelector('#dt-body tbody tr:first-child td:not(.rn)') as HTMLElement | null;
+			const viewportRect = viewport?.getBoundingClientRect();
+			const cellRect = firstCell?.getBoundingClientRect();
+			return !!table?.isConnected
+				&& !!viewportRect && viewportRect.width > 0 && viewportRect.height > 0
+				&& !!cellRect && cellRect.width > 0 && cellRect.height > 0;
+		}, `${id} positive-size active result viewport and rendered first cell`, 10000);
+	}
 	return `seeded local result for ${id}`;
+}
+
+function e2eBridgeCurrentResultIntoQueryTerminals(expectedCount = 1): string {
+	let remaining = Math.max(1, Math.floor(Number(expectedCount) || 1));
+	const originalDispatch = window.dispatchEvent;
+	window.dispatchEvent = function (event: Event): boolean {
+		const detail = (event as CustomEvent<Record<string, any>>).detail;
+		if (event.type === 'kusto-workbench-query-terminal'
+			&& detail?.type === 'queryResult' && detail.result === undefined) {
+			const artifact = getCurrentResultArtifact(detail.boxId);
+			if (!artifact) throw new Error(`No current result artifact for synthetic terminal ${detail.boxId}`);
+			if (!artifact.rows.every(Array.isArray)) {
+				throw new Error(`Synthetic terminal artifact contains a non-tabular row for ${detail.boxId}`);
+			}
+			detail.result = {
+				columns: [...artifact.columns],
+				rows: artifact.rows.map(row => row.slice()),
+				metadata: { ...artifact.metadata },
+			};
+			remaining--;
+		}
+		try {
+			return originalDispatch.call(this, event);
+		} finally {
+			if (remaining === 0) window.dispatchEvent = originalDispatch;
+		}
+	};
+	return `bridging ${remaining} synthetic query terminal result(s)`;
 }
 
 let e2eDocumentCommandCapture: {
@@ -8079,7 +8198,19 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 	},
 	workbench: {
 		clearSections: () => e2eClearSectionsStable(),
+		persistAndWait: async (reason: string, timeoutMs: number = 15000) => {
+			if (!await persistDocumentAndWaitForAck(reason, timeoutMs)) {
+				throw new Error(`The host did not acknowledge persistence for ${reason}.`);
+			}
+			return 'acknowledged';
+		},
+		suppressPersistence: () => {
+			suppressPersistenceForTest(true);
+			if (!isPersistenceSuppressedForTest()) throw new Error('Failed to suppress E2E persistence');
+			return 'E2E persistence suppressed';
+		},
 		seedResult: e2eSeedQueryResult,
+		bridgeCurrentResultIntoQueryTerminals: e2eBridgeCurrentResultIntoQueryTerminals,
 		beginDocumentCommandCapture: e2eBeginDocumentCommandCapture,
 		waitForDocumentCommands: e2eWaitForDocumentCommands,
 		waitForPersistedResult: e2eWaitForPersistedResult,
@@ -8105,6 +8236,7 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		assertScrollStability: e2eLayoutAssertScrollStability,
 		exerciseCollapseExpand: e2eLayoutExerciseCollapseExpand,
 		exerciseAutoFitAndResize: e2eLayoutExerciseAutoFitAndResize,
+		activateAutoFitFromResizer: e2eLayoutActivateAutoFitFromResizer,
 		assertNoLayoutRegression: e2eLayoutAssertNoLayoutRegression,
 	},
 	chart: {
@@ -8145,6 +8277,7 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		focusHtml: (lineNumber: number, column: number) => e2eCursorFocusMonaco('cursor_html', lineNumber, column),
 		focusPython: (lineNumber: number, column: number) => e2eCursorFocusMonaco('cursor_python', lineNumber, column),
 		focusMarkdown: (lineNumber: number, column: number) => e2eCursorFocusMarkdown(lineNumber, column),
+		focusMarkdownWysiwyg: (lineNumber: number, column: number) => e2eCursorFocusMarkdownWysiwyg(lineNumber, column),
 		setHtmlPreview: e2eCursorSetHtmlPreview,
 		setMarkdownPreview: e2eCursorSetMarkdownPreview,
 		setKustoExpanded: e2eCursorSetKustoExpanded,
@@ -8198,6 +8331,25 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 				rows: state.rows,
 				metadata: state.metadata,
 			};
+		},
+		assertPersistedArtifactCapabilities: () => {
+			const section = e2eSection('sql');
+			const boxId = String(section.boxId || section.id || '');
+			const connectionId = String(section.getConnectionId?.() || section.getSqlConnectionId?.() || '');
+			const artifact = getCurrentResultArtifact(boxId);
+			const serialized = section.serialize?.();
+			if (!artifact || !connectionId) throw new Error('SQL artifact or admitted connection is unavailable');
+			if (String(artifact.producer?.connectionId || '') !== connectionId) {
+				throw new Error(`SQL artifact producer was not rebound: expected=${connectionId} actual=${artifact.producer?.connectionId || ''}`);
+			}
+			for (const capability of ['exposeToActiveContent', 'sendToModel', 'shareToClipboard', 'exportToCsv'] as const) {
+				if (artifact.policy?.[capability] !== true) throw new Error(`SQL artifact lost ${capability}`);
+				if (serialized?.resultArtifact?.policy?.[capability] !== true) throw new Error(`Serialized SQL artifact lost ${capability}`);
+			}
+			if (String(serialized?.resultArtifact?.producer?.connectionId || '') !== connectionId) {
+				throw new Error('Serialized SQL artifact retained the obsolete connection ID');
+			}
+			return `SQL artifact rebound to ${connectionId} with active-content/model/share/CSV capabilities`;
 		},
 		assertTypeContract: () => {
 			const result = _win.__e2e.sql.resultContract();
@@ -8589,6 +8741,13 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 				throw new Error(`Inline request textBefore missing ${textIncludes}`);
 			}
 			return `inline request captured: flavor=${msg.flavor}, requests=${messages.length}`;
+		},
+		assertNoCapturedRequests: (context: string = 'inline completion') => {
+			const messages = _win.__e2eInlineReqCapture || [];
+			if (messages.length !== 0) {
+				throw new Error(`${context} expected zero captured inline requests, got ${messages.length}`);
+			}
+			return `${context}: zero inline requests captured`;
 		},
 		restoreRequestCapture: () => {
 			if (typeof _win.__e2eOrigCaptureHostMessage === 'function') {

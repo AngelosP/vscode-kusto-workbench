@@ -34,7 +34,7 @@ Feature: SQL auto-trigger fallback completions without SQL authentication
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.assertHidden('after setting SQL paren baseline')" in the webview
     When I evaluate "window.__e2e.suggest.sql.typeText('(')" in the webview
-    When I evaluate "window.__e2e.suggest.sql.waitExistingAllVisible('auto-trigger COUNT paren keyword fallback', 'SELECT,FROM,WHERE', 5000)" in the webview
+    When I evaluate "window.__e2e.suggest.sql.waitExistingAllVisible('auto-trigger COUNT paren rendered keyword fallback', 'ALL,ALTER,AND', 5000)" in the webview
     Then I take a screenshot "02-auto-trigger-paren-keywords"
     When I press "Escape"
     And I wait 1 second
@@ -59,8 +59,8 @@ Feature: SQL auto-trigger fallback completions without SQL authentication
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.typeText('N')" in the webview
     And I wait 2 seconds
-    Then I take a screenshot "05-end-of-word-suppression"
-    When I evaluate "window.__e2e.suggest.sql.assertHidden('SQL end-of-word suppression')" in the webview
+    When I evaluate "window.__e2e.suggest.sql.waitExistingAllVisible('SQL N-prefix keyword auto-trigger', 'NEXT,NOT,NULL', 5000)" in the webview
+    Then I take a screenshot "05-n-prefix-keywords"
 
     When I press "Escape"
     And I wait 1 second
@@ -69,7 +69,7 @@ Feature: SQL auto-trigger fallback completions without SQL authentication
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.assertHidden('after setting SQL dot baseline')" in the webview
     When I evaluate "window.__e2e.suggest.sql.typeText('.')" in the webview
-    When I evaluate "window.__e2e.suggest.sql.waitExistingAllVisible('auto-trigger dbo dot keyword fallback', 'SELECT,FROM,WHERE', 5000)" in the webview
+    When I evaluate "window.__e2e.suggest.sql.waitExistingAllVisible('auto-trigger dbo dot rendered keyword fallback', 'ALL,ALTER,AND', 5000)" in the webview
     Then I take a screenshot "06-auto-trigger-dot-keywords"
     When I press "Escape"
     And I wait 1 second

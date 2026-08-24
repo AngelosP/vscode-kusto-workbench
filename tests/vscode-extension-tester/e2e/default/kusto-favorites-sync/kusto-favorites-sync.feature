@@ -27,8 +27,10 @@ Feature: Kusto favorites synchronize across sections and open files
   Scenario Outline: One open file updates every Kusto section in that file
     When I open file "<filePath>" in the editor
     And I wait for "kw-query-section" in the webview "<title>" for 20 seconds
+    Then I collect JSON artifact "seed-<favoriteName>" from extension host expression "(async () => { const connection = await vscode.commands.executeCommand('kustoWorkbench.test.seedKustoFavoritesSyncConnection', '<clusterUrl>', '<database>'); if (!connection?.id || connection.clusterUrl !== '<clusterUrl>') throw new Error('Favorites connection seed failed: ' + JSON.stringify(connection)); return { id: connection.id, clusterUrl: connection.clusterUrl, database: connection.database || '' }; })()"
+    When I evaluate "window.__e2e.workbench.suppressPersistence()" in the webview "<title>"
     When I evaluate "window.__e2e.kusto.favorites.prepareDocument({ clusterUrl: '<clusterUrl>', database: '<database>', sectionCount: 3 })" in the webview "<title>" for 15 seconds
-    And I evaluate "window.__e2e.kusto.favorites.clean({ clusterUrl: '<clusterUrl>', database: '<database>' })" in the webview "<title>" for 10 seconds
+    And I evaluate "(async () => { const options = { clusterUrl: '<clusterUrl>', database: '<database>' }; try { return await window.__e2e.kusto.favorites.clean(options); } catch (error) { const message = String(error?.message || error); const alreadyAbsent = 'No connection-owned favorite found for ' + options.clusterUrl + '/' + options.database; if (message !== alreadyAbsent) throw error; return 'favorite already absent for ' + options.clusterUrl + '/' + options.database; } })()" in the webview "<title>" for 10 seconds
     And I evaluate "window.__e2e.kusto.favorites.assertAbsentInAllSections('<favoriteName>', 3)" in the webview "<title>" for 10 seconds
     When I evaluate "window.__e2e.kusto.favorites.addFromSection(0)" in the webview "<title>" for 10 seconds
     And I type "<favoriteName>" into the InputBox
@@ -37,6 +39,7 @@ Feature: Kusto favorites synchronize across sections and open files
     And I evaluate "window.__e2e.kusto.favorites.clean({ clusterUrl: '<clusterUrl>', database: '<database>' })" in the webview "<title>" for 10 seconds
     And I evaluate "window.__e2e.kusto.favorites.assertAbsentInAllSections('<favoriteName>', 3, 10000)" in the webview "<title>" for 12 seconds
     When I execute command "workbench.action.closeAllEditors"
+    Then I collect JSON artifact "cleanup-<favoriteName>" from extension host expression "vscode.commands.executeCommand('kustoWorkbench.test.clearKustoFavoritesSyncConnection')"
 
     Examples:
       | filePath                                                                                     | title                    | clusterUrl                                       | database   | favoriteName           |
@@ -47,14 +50,17 @@ Feature: Kusto favorites synchronize across sections and open files
   Scenario Outline: Favorite added in one open file appears in another already-open one-section file
     When I open file "<targetPath>" in the editor
     And I wait for "kw-query-section" in the webview "<targetTitle>" for 20 seconds
+    Then I collect JSON artifact "seed-<favoriteName>" from extension host expression "(async () => { const connection = await vscode.commands.executeCommand('kustoWorkbench.test.seedKustoFavoritesSyncConnection', '<clusterUrl>', '<database>'); if (!connection?.id || connection.clusterUrl !== '<clusterUrl>') throw new Error('Favorites connection seed failed: ' + JSON.stringify(connection)); return { id: connection.id, clusterUrl: connection.clusterUrl, database: connection.database || '' }; })()"
+    When I evaluate "window.__e2e.workbench.suppressPersistence()" in the webview "<targetTitle>"
     When I evaluate "window.__e2e.kusto.favorites.prepareDocument({ clusterUrl: '<clusterUrl>', database: '<database>', sectionCount: 1 })" in the webview "<targetTitle>" for 15 seconds
-    And I evaluate "window.__e2e.kusto.favorites.clean({ clusterUrl: '<clusterUrl>', database: '<database>' })" in the webview "<targetTitle>" for 10 seconds
+    And I evaluate "(async () => { const options = { clusterUrl: '<clusterUrl>', database: '<database>' }; try { return await window.__e2e.kusto.favorites.clean(options); } catch (error) { const message = String(error?.message || error); const alreadyAbsent = 'No connection-owned favorite found for ' + options.clusterUrl + '/' + options.database; if (message !== alreadyAbsent) throw error; return 'favorite already absent for ' + options.clusterUrl + '/' + options.database; } })()" in the webview "<targetTitle>" for 10 seconds
     And I evaluate "window.__e2e.kusto.favorites.assertAbsentInAllSections('<favoriteName>', 1)" in the webview "<targetTitle>" for 10 seconds
     And I evaluate "window.__favsyncProbeToken = window.__e2e.kusto.favorites.setProbe('<favoriteName>')" in the webview "<targetTitle>" for 5 seconds
     When I open file "<sourcePath>" in the editor
     And I wait for "kw-query-section" in the webview "<sourceTitle>" for 20 seconds
+    When I evaluate "window.__e2e.workbench.suppressPersistence()" in the webview "<sourceTitle>"
     When I evaluate "window.__e2e.kusto.favorites.prepareDocument({ clusterUrl: '<clusterUrl>', database: '<database>', sectionCount: 1 })" in the webview "<sourceTitle>" for 15 seconds
-    And I evaluate "window.__e2e.kusto.favorites.clean({ clusterUrl: '<clusterUrl>', database: '<database>' })" in the webview "<sourceTitle>" for 10 seconds
+    And I evaluate "(async () => { const options = { clusterUrl: '<clusterUrl>', database: '<database>' }; try { return await window.__e2e.kusto.favorites.clean(options); } catch (error) { const message = String(error?.message || error); const alreadyAbsent = 'No connection-owned favorite found for ' + options.clusterUrl + '/' + options.database; if (message !== alreadyAbsent) throw error; return 'favorite already absent for ' + options.clusterUrl + '/' + options.database; } })()" in the webview "<sourceTitle>" for 10 seconds
     And I evaluate "window.__e2e.kusto.favorites.assertAbsentInAllSections('<favoriteName>', 1)" in the webview "<sourceTitle>" for 10 seconds
     When I evaluate "window.__e2e.kusto.favorites.addFromSection(0)" in the webview "<sourceTitle>" for 10 seconds
     And I type "<favoriteName>" into the InputBox
@@ -66,6 +72,7 @@ Feature: Kusto favorites synchronize across sections and open files
     And I evaluate "window.__e2e.kusto.favorites.assertAbsentInAllSections('<favoriteName>', 1, 10000)" in the webview "<sourceTitle>" for 12 seconds
     And I evaluate "window.__e2e.kusto.favorites.assertAbsentInAllSections('<favoriteName>', 1, 10000)" in the webview "<targetTitle>" for 12 seconds
     When I execute command "workbench.action.closeAllEditors"
+    Then I collect JSON artifact "cleanup-<favoriteName>" from extension host expression "vscode.commands.executeCommand('kustoWorkbench.test.clearKustoFavoritesSyncConnection')"
 
     # The full 5x5 provider matrix is covered in kustoFavoritesApplicationHandler.test.ts.
     Examples:
@@ -79,14 +86,17 @@ Feature: Kusto favorites synchronize across sections and open files
   Scenario Outline: Favorite added in one open file appears in another already-open many-section file
     When I open file "<targetPath>" in the editor
     And I wait for "kw-query-section" in the webview "<targetTitle>" for 20 seconds
+    Then I collect JSON artifact "seed-<favoriteName>" from extension host expression "(async () => { const connection = await vscode.commands.executeCommand('kustoWorkbench.test.seedKustoFavoritesSyncConnection', '<clusterUrl>', '<database>'); if (!connection?.id || connection.clusterUrl !== '<clusterUrl>') throw new Error('Favorites connection seed failed: ' + JSON.stringify(connection)); return { id: connection.id, clusterUrl: connection.clusterUrl, database: connection.database || '' }; })()"
+    When I evaluate "window.__e2e.workbench.suppressPersistence()" in the webview "<targetTitle>"
     When I evaluate "window.__e2e.kusto.favorites.prepareDocument({ clusterUrl: '<clusterUrl>', database: '<database>', sectionCount: 3 })" in the webview "<targetTitle>" for 15 seconds
-    And I evaluate "window.__e2e.kusto.favorites.clean({ clusterUrl: '<clusterUrl>', database: '<database>' })" in the webview "<targetTitle>" for 10 seconds
+    And I evaluate "(async () => { const options = { clusterUrl: '<clusterUrl>', database: '<database>' }; try { return await window.__e2e.kusto.favorites.clean(options); } catch (error) { const message = String(error?.message || error); const alreadyAbsent = 'No connection-owned favorite found for ' + options.clusterUrl + '/' + options.database; if (message !== alreadyAbsent) throw error; return 'favorite already absent for ' + options.clusterUrl + '/' + options.database; } })()" in the webview "<targetTitle>" for 10 seconds
     And I evaluate "window.__e2e.kusto.favorites.assertAbsentInAllSections('<favoriteName>', 3)" in the webview "<targetTitle>" for 10 seconds
     And I evaluate "window.__favsyncProbeToken = window.__e2e.kusto.favorites.setProbe('<favoriteName>')" in the webview "<targetTitle>" for 5 seconds
     When I open file "<sourcePath>" in the editor
     And I wait for "kw-query-section" in the webview "<sourceTitle>" for 20 seconds
+    When I evaluate "window.__e2e.workbench.suppressPersistence()" in the webview "<sourceTitle>"
     When I evaluate "window.__e2e.kusto.favorites.prepareDocument({ clusterUrl: '<clusterUrl>', database: '<database>', sectionCount: 3 })" in the webview "<sourceTitle>" for 15 seconds
-    And I evaluate "window.__e2e.kusto.favorites.clean({ clusterUrl: '<clusterUrl>', database: '<database>' })" in the webview "<sourceTitle>" for 10 seconds
+    And I evaluate "(async () => { const options = { clusterUrl: '<clusterUrl>', database: '<database>' }; try { return await window.__e2e.kusto.favorites.clean(options); } catch (error) { const message = String(error?.message || error); const alreadyAbsent = 'No connection-owned favorite found for ' + options.clusterUrl + '/' + options.database; if (message !== alreadyAbsent) throw error; return 'favorite already absent for ' + options.clusterUrl + '/' + options.database; } })()" in the webview "<sourceTitle>" for 10 seconds
     And I evaluate "window.__e2e.kusto.favorites.assertAbsentInAllSections('<favoriteName>', 3)" in the webview "<sourceTitle>" for 10 seconds
     When I evaluate "window.__e2e.kusto.favorites.addFromSection(0)" in the webview "<sourceTitle>" for 10 seconds
     And I type "<favoriteName>" into the InputBox
@@ -98,6 +108,7 @@ Feature: Kusto favorites synchronize across sections and open files
     And I evaluate "window.__e2e.kusto.favorites.assertAbsentInAllSections('<favoriteName>', 3, 10000)" in the webview "<sourceTitle>" for 12 seconds
     And I evaluate "window.__e2e.kusto.favorites.assertAbsentInAllSections('<favoriteName>', 3, 10000)" in the webview "<targetTitle>" for 12 seconds
     When I execute command "workbench.action.closeAllEditors"
+    Then I collect JSON artifact "cleanup-<favoriteName>" from extension host expression "vscode.commands.executeCommand('kustoWorkbench.test.clearKustoFavoritesSyncConnection')"
 
     # The full 3x3 many-section provider matrix is covered in kustoFavoritesApplicationHandler.test.ts.
     Examples:

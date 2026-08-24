@@ -20,6 +20,7 @@ import {
 } from '../shared/powerBiPublishProtocol';
 import { parseKustoResultAttachmentWebviewMessageFromEnvelope } from '../shared/kustoResultAttachmentProtocol';
 import { captureRuntimeMessageEnvelope } from '../shared/runtimeMessageEnvelope';
+import { parseSqlCopilotExecutionStartAck } from '../shared/copilotExecutionStart';
 import * as crypto from 'crypto';
 import * as path from 'path';
 
@@ -1131,6 +1132,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			if (!powerBiPublishAdmission.parsed.ok) return;
 			input = powerBiPublishAdmission.parsed.value;
 		}
+		if (envelope.value.type === 'copilotWriteQueryExecutionAck') {
+			const parsed = parseSqlCopilotExecutionStartAck(envelope.value);
+			if (!parsed.ok) return;
+			input = parsed.value;
+		}
 		if (this.handleDevelopmentNoteMutationResponse(input)) return;
 		if (input && typeof input === 'object'
 			&& (input as Record<string, unknown>).type === MAIN_WEBVIEW_DISPATCHER_READY_TYPE) return;
@@ -1157,6 +1163,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			&& this.handleDevelopmentNoteMutationResponse(message)) return;
 		if (message?.type === 'fileOpenTrace') {
 			this.fileOpenTrace?.mark(`webview.${message.event}`, { timeMs: message.timeMs, sequence: message.sequence, detail: message.detail });
+			return;
+		}
+		if (message?.type === 'copilotWriteQueryExecutionAck') {
+			const parsed = parseSqlCopilotExecutionStartAck(message);
+			if (!parsed.ok) return;
+			CopilotService.settleSqlExecutionStartAckForHost(this, parsed.value);
 			return;
 		}
 		if (this.embeddedTutorialHost?.handleMessage(message)) {

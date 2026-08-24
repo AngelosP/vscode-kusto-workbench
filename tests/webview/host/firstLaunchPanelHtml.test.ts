@@ -24,6 +24,8 @@ describe('first-launch setup panel template', () => {
 		expect(host).toContain("'media', 'images', 'kusto-workbench-logo.png'");
 		expect(host).toContain('.replace(/{{kustoWorkbenchLogoUri}}/g, String(logoUri))');
 		expect(host).toContain('READY_TIMEOUT_MS');
+		expect(host).toContain('BOOTSTRAP_TIMEOUT_MS');
+		expect(template).toContain("window.vscode.postMessage({ type: 'bootstrapReady' })");
 		expect(entry).toContain("import { OverlayScrollbars } from 'overlayscrollbars'");
 		expect(entry).toContain('osLibrarySheet');
 		expect(entry).toContain('osThemeSheet');
@@ -31,5 +33,18 @@ describe('first-launch setup panel template', () => {
 		expect(entry).toContain("setup?.addEventListener('first-launch-layout-change', refreshScrollbars)");
 		expect(entry).toContain('new ResizeObserver(refreshScrollbars).observe(setup)');
 		expect(entry).toContain('scrollbars.update(true)');
+	});
+
+	it('registers the listener and arms its timeout before the webview can send ready', () => {
+		const host = readFileSync(join(
+			process.cwd(), 'src', 'host', 'firstLaunch', 'firstLaunchSetupPanel.ts',
+		), 'utf8');
+		const listenerRegistration = host.indexOf('this.panel.webview.onDidReceiveMessage');
+		const readyTimerAssignment = host.indexOf('this.armReadyTimer(BOOTSTRAP_TIMEOUT_MS)');
+		const htmlInitialization = host.indexOf('this.initializeWebview();');
+
+		expect(listenerRegistration).toBeGreaterThan(-1);
+		expect(readyTimerAssignment).toBeGreaterThan(listenerRegistration);
+		expect(htmlInitialization).toBeGreaterThan(readyTimerAssignment);
 	});
 });

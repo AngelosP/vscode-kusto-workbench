@@ -3,6 +3,7 @@
 // Multiple calls return the same promise (idempotent).
 
 const _win = window as any;
+let _amdDisabledScriptSettlement: Promise<void> = Promise.resolve();
 
 function loadGlobalScriptOnce(
 	url: string,
@@ -17,7 +18,7 @@ function loadGlobalScriptOnce(
 	if (existing) return existing;
 	if (!url) return Promise.resolve();
 
-	const promise = new Promise<void>((resolve, reject) => {
+	const load = () => new Promise<void>((resolve, reject) => {
 		let restore: (() => void) | null = null;
 		if (options?.disableAmd) {
 			try {
@@ -39,7 +40,12 @@ function loadGlobalScriptOnce(
 		el.src = url;
 		el.onload = () => {
 			try { restore?.(); } catch { /* ignore */ }
-			resolve();
+			if (isAvailable()) {
+				resolve();
+			} else {
+				setPromise(null);
+				reject(new Error(`Failed to load ${name}: expected global was not registered`));
+			}
 		};
 		el.onerror = () => {
 			try { restore?.(); } catch { /* ignore */ }
@@ -48,6 +54,10 @@ function loadGlobalScriptOnce(
 		};
 		(document.head || document.documentElement).appendChild(el);
 	});
+	const promise = options?.disableAmd
+		? _amdDisabledScriptSettlement.catch(() => undefined).then(load)
+		: load();
+	if (options?.disableAmd) _amdDisabledScriptSettlement = promise.catch(() => undefined);
 	setPromise(promise);
 	return promise;
 }
@@ -112,38 +122,14 @@ export function ensureToastUiLoaded(): Promise<void> {
 		}
 	}
 
-	_toastUiPromise = new Promise<void>((resolve, reject) => {
-		// TOAST UI embeds tui-color-picker which is a UMD bundle containing
-		// `define.amd` checks. Temporarily disable AMD so it takes the globals path.
-		let restore: (() => void) | null = null;
-		try {
-			const saved = {
-				defineAmd: _win.define?.amd,
-				module: _win.module,
-				exports: _win.exports,
-			};
-			try { if (_win.define?.amd) _win.define.amd = undefined; } catch { /* ignore */ }
-			try { _win.module = undefined; _win.exports = undefined; } catch { /* ignore */ }
-			restore = () => {
-				try { if (_win.define) _win.define.amd = saved.defineAmd; } catch { /* ignore */ }
-				try { _win.module = saved.module; _win.exports = saved.exports; } catch { /* ignore */ }
-			};
-		} catch { restore = null; }
-
-		const el = document.createElement('script');
-		el.src = url;
-		el.onload = () => {
-			try { restore?.(); } catch { /* ignore */ }
-			resolve();
-		};
-		el.onerror = () => {
-			try { restore?.(); } catch { /* ignore */ }
-			_toastUiPromise = null; // allow retry
-			reject(new Error('Failed to load TOAST UI Editor'));
-		};
-		(document.head || document.documentElement).appendChild(el);
-	});
-	return _toastUiPromise;
+	return loadGlobalScriptOnce(
+		url,
+		'TOAST UI Editor',
+		() => !!_win.toastui?.Editor,
+		(promise) => { _toastUiPromise = promise; },
+		() => _toastUiPromise,
+		{ disableAmd: true },
+	);
 }
 
 // ── Markdown helpers (marked + DOMPurify) ────────────────────────────────────
@@ -171,5 +157,6 @@ export function ensureDomPurifyLoaded(): Promise<void> {
 }
 
 export async function ensureMarkdownPreviewLibsLoaded(): Promise<void> {
-	await Promise.all([ensureMarkedLoaded(), ensureDomPurifyLoaded()]);
+	await ensureMarkedLoaded();
+	await ensureDomPurifyLoaded();
 }

@@ -94,6 +94,8 @@ describe('first-launch integration inventory', () => {
 			extensionSource.indexOf("registerCommand('kustoWorkbench.test.prepareKustoIdentitySelectionBaseline'"),
 			extensionSource.indexOf("registerCommand('kustoWorkbench.test.assertAndCleanupKustoIdentitySelectionBaseline'"),
 		);
+		expect(baseline.indexOf('await supplementalStartupCleanup'))
+			.toBeLessThan(baseline.indexOf('await cleanupIdentityChecklistState()'));
 		expect(baseline.indexOf('await cleanupIdentityChecklistState()'))
 			.toBeLessThan(baseline.indexOf('identitySelectionBaselinePreviousSelection = captureIdentitySelection()'));
 		expect(extensionSource).toContain("rawSchemaJson: {");
@@ -157,12 +159,25 @@ describe('first-launch integration inventory', () => {
 			.toBeGreaterThan(bootstrap.indexOf('throw error;'));
 	});
 
+	it('drains accepted Kusto selection writes during extension deactivation', () => {
+		expect(extensionSource).toMatch(/export async function deactivate\(\) \{\s+await ConnectionService\.waitForLastSelectionSettlement\(\);/);
+	});
+
 	it('registers the setup artifact in initial copy, watch copy, bundle, and both size tools', () => {
 		const artifact = 'first-launch-setup.bundle.js';
 		expect(esbuildSource.match(new RegExp(artifact.replaceAll('.', '\\.'), 'g'))?.length).toBeGreaterThanOrEqual(2);
 		expect(esbuildSource.match(/first-launch-setup\.html/g)?.length).toBeGreaterThanOrEqual(4);
 		expect(sizeReportSource).toContain(artifact);
 		expect(sizeGateSource).toContain(artifact);
+	});
+
+	it('loads Markdown UMD globals before Monaco establishes AMD in the query editor', () => {
+		const queryEditorTemplate = readFileSync(join(process.cwd(), 'src', 'webview', 'queryEditor.html'), 'utf8');
+		expect(queryEditorTemplate.indexOf('<script src="{{markedUrl}}"></script>')).toBeGreaterThan(-1);
+		expect(queryEditorTemplate.indexOf('<script src="{{purifyUrl}}"></script>'))
+			.toBeGreaterThan(queryEditorTemplate.indexOf('<script src="{{markedUrl}}"></script>'));
+		expect(queryEditorTemplate.indexOf('<script src="{{monacoLoaderUri}}"></script>'))
+			.toBeGreaterThan(queryEditorTemplate.indexOf('<script src="{{purifyUrl}}"></script>'));
 	});
 
 	it('cleans production output and makes first-launch bundle failures fatal', () => {

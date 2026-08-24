@@ -224,6 +224,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'kustoSectionTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number; connectionId?: string; database?: string; connectionRevision?: number; connectionIdentityKey?: string }
 	| { type: 'kustoSectionClose'; boxId: string; sectionInstanceId: string; preserveResultAttachment?: boolean }
 	| KustoExecutionStartWebviewMessage
+	| { type: 'copilotWriteQueryExecutionAck'; boxId: string; executionId: string; accepted: boolean }
 	| OutgoingEditorCursorPositionChangedMessage
 	| OutgoingEditorCursorStatusSnapshotRequestMessage
 	| KustoDatabaseDiscoveryWebviewMessage
@@ -334,7 +335,7 @@ export type OutgoingWebviewMessage =
 
 	// Provider messages (kqlx, kqlCompat, mdCompat editors)
 	| { type: 'mainWebviewDispatcherReady' }
-	| { type: 'requestDocument'; requestId?: string }
+	| { type: 'requestDocument'; requestId?: string; expectedEditRevision?: number }
 	| { type: 'persistDocument'; state: unknown; sourceGeneration?: number; flush?: boolean; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; flushUnavailableReason?: string; testOnlyNoop?: boolean }
 	| DocumentViewWebviewMessageInput
 	| { type: 'requestUpgradeToKqlx'; addKind?: string; state?: unknown; editRevision?: number }
@@ -350,6 +351,7 @@ export const runtimeOutgoingWebviewMessageTypes = [
 	'kustoSectionTarget',
 	'kustoSectionClose',
 	'kustoExecutionStartedAck',
+	'copilotWriteQueryExecutionAck',
 	'editorCursorPositionChanged',
 	'getEditorCursorStatusSnapshot',
 	'getDatabases',
@@ -615,6 +617,10 @@ export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 				requestId: typeof message.requestId === 'string' && message.requestId.trim()
 					? message.requestId.trim()
 					: createCompatibilityDocumentRequestId(),
+				...(Number.isSafeInteger(Number(message.expectedEditRevision))
+					&& Number(message.expectedEditRevision) >= 0
+					? { expectedEditRevision: Number(message.expectedEditRevision) }
+					: {}),
 			}
 			: message as unknown as CompatibilityPersistenceWebviewMessageInput;
 		const parsed = stampCompatibilityPersistenceWebviewMessage(

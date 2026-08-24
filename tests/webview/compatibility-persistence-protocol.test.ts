@@ -24,7 +24,7 @@ const state = {
 describe('compatibility persistence protocol', () => {
 	it('runtime-validates every webview-to-host lifecycle message', () => {
 		const messages = [
-			{ ...envelope, type: 'requestDocument', requestId: 'document-request-1' },
+			{ ...envelope, type: 'requestDocument', requestId: 'document-request-1', expectedEditRevision: 4 },
 			{
 				...envelope, type: 'persistDocument', state, sourceGeneration: 3,
 				editRevision: 4, snapshotId: 'snapshot-1', reason: 'edit',
@@ -79,6 +79,9 @@ describe('compatibility persistence protocol', () => {
 		expect(parseCompatibilityPersistenceEnvelope({ ...envelope, protocolVersion: '1' }).ok).toBe(false);
 		expect(parseCompatibilityPersistenceWebviewMessage({
 			...envelope, type: 'requestDocument', requestId: '',
+		}).ok).toBe(false);
+		expect(parseCompatibilityPersistenceWebviewMessage({
+			...envelope, type: 'requestDocument', requestId: 'request-invalid-revision', expectedEditRevision: -1,
 		}).ok).toBe(false);
 		expect(parseCompatibilityPersistenceWebviewMessage({
 			...envelope, type: 'documentReloadResult', requestId: 'reload-1', applied: 'true', editRevision: 0,

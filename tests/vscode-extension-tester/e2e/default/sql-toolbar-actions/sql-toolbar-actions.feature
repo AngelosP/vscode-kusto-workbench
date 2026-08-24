@@ -37,7 +37,7 @@ Feature: SQL toolbar actions - prettify, comment toggle, undo, redo, search
     When I evaluate "(() => { const btn = document.querySelector('kw-sql-toolbar button[aria-label=Prettify]'); if (!btn) throw new Error('Prettify toolbar button not found'); btn.click(); return 'prettify clicked'; })()" in the webview
     And I wait 2 seconds
 
-    When I evaluate "(() => { const val = window.__testGetMonacoValue('kw-sql-section .query-editor'); if (val === `select * from mytable where id=1 and name='test'`) throw new Error('SQL was not prettified - still equals original'); const lines = val.split('\\n'); if (lines.length < 2) throw new Error('Prettified SQL should be multi-line, got ' + lines.length + ' lines: ' + val.substring(0, 80)); return 'prettified (' + lines.length + ' lines): ' + val.substring(0, 80); })()" in the webview
+    When I evaluate "(() => { const val = window.__testGetMonacoValue('kw-sql-section .query-editor'); if (val === `select * from mytable where id=1 and name='test'`) throw new Error('SQL was not prettified - still equals original'); const lines = val.split(String.fromCharCode(10)); if (lines.length < 2) throw new Error('Prettified SQL should be multi-line, got ' + lines.length + ' lines: ' + val.substring(0, 80)); return 'prettified (' + lines.length + ' lines): ' + val.substring(0, 80); })()" in the webview
     When I execute command "workbench.action.focusActiveEditorGroup"
     And I move the mouse to 30, 700
     And I click
@@ -92,7 +92,7 @@ Feature: SQL toolbar actions - prettify, comment toggle, undo, redo, search
     And I resize the Dev Host to 700 by 900
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
-    When I evaluate "window.__e2e.layout.createStressNotebook()" in the webview for 20 seconds
+    When I evaluate "window.__e2e.layout.createStressNotebook(false)" in the webview for 20 seconds
     And I evaluate "(async () => { const section = document.getElementById('e2e_layout_query'); if (!section) throw new Error('Layout Kusto section is missing'); section.setCopilotChatVisible(true); section.setCopilotChatWidthPx(1000); const toolbar = section.querySelector('kw-query-toolbar'); const surface = toolbar?.querySelector('.query-editor-toolbar'); const split = document.getElementById('e2e_layout_query_copilot_split'); if (!toolbar || !surface || !split || split.classList.contains('kusto-copilot-chat-hidden')) throw new Error('Real Kusto Copilot split did not open'); section.scrollIntoView({ block: 'start' }); window.__e2e.kusto.setQuery(`datatable(id:long, name:string) [1, 'test']`); toolbar.setOverflowStartIndex(3); await toolbar.updateComplete; return { toolbarWidth: toolbar.getBoundingClientRect().width, surfaceWidth: surface.getBoundingClientRect().width, splitWidth: split.getBoundingClientRect().width, overflowStartIndex: toolbar.getOverflowStartIndex() }; })()" in the webview
     And I wait 2 seconds
     When I wait for "kw-query-toolbar [data-testid='toolbar-overflow-button']" in the webview for 10 seconds

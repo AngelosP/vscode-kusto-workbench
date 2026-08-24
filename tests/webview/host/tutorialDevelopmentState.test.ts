@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import type * as vscode from 'vscode';
 import type { TutorialCatalog } from '../../../src/shared/tutorials/tutorialCatalog.js';
 import { resetDidYouKnowDevelopmentState } from '../../../src/host/tutorials/tutorialDevelopmentState.js';
@@ -60,6 +62,18 @@ function catalog(): TutorialCatalog {
 }
 
 describe('resetDidYouKnowDevelopmentState', () => {
+	it('uses the imperative embedded-open path when the development command requests it', () => {
+		const extensionSource = readFileSync(join(process.cwd(), 'src', 'host', 'extension.ts'), 'utf8');
+		const command = extensionSource.slice(
+			extensionSource.indexOf('const resetDidYouKnowState = async'),
+			extensionSource.indexOf('context.subscriptions.push(', extensionSource.indexOf('const resetDidYouKnowState = async')),
+		);
+
+		expect(command).toContain("await openTutorialPopup(undefined, 'compact', triggerDocument)");
+		expect(command).toContain('getActiveTutorialTriggerDocument(options?.documentPath)');
+		expect(command).not.toContain('tutorialNotificationService.checkOnKustoFileOpen');
+	});
+
 	it('subscribes all categories to file-open popups and clears seen/check state', async () => {
 		const context = createContext({
 			[AUTOMATIC_CHECK_DATE_KEY]: '2026-05-04',

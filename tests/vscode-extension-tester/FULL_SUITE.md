@@ -152,7 +152,7 @@ The orchestrator also seeds named profiles with quiet host settings such as `ext
 
 ## Scheduling
 
-The scheduled workflow `.github/workflows/e2e-full-suite.yml` runs four fail-independent shards on GitHub-hosted `windows-latest`; no self-hosted runner or custom `kusto-workbench-e2e` label is required for the current CI signal. It executes the unauthenticated `default` profile only and intentionally skips `sql-auth` and `kusto-auth` because those named profiles require prepared authentication state. Each shard has a unique artifact and a 60-minute ceiling. Before each shard runs, the workflow queries the official VS Code stable release endpoint, semver-sorts the returned stable versions, validates the newest version against `package.json`'s VS Code engine minimum, and passes the resolved numeric version to `vscode-ext-test` via `--vscode-version`. The workflow also queries the latest `vscode-extension-tester` GitHub release and installs the `vscode-ext-test-*.tgz` asset before running the suite:
+The scheduled workflow `.github/workflows/e2e-full-suite.yml` runs four fail-independent shards on GitHub-hosted `windows-latest`; no self-hosted runner or custom `kusto-workbench-e2e` label is required for the current CI signal. It executes the unauthenticated `default` profile only and intentionally skips `sql-auth` and `kusto-auth` because those named profiles require prepared authentication state. Each shard has a unique artifact and a 60-minute ceiling. Before each shard runs, the workflow queries the official VS Code stable release endpoint, semver-sorts the returned stable versions, validates the newest version against `package.json`'s VS Code engine minimum, and passes the resolved numeric version to `vscode-ext-test` via `--vscode-version`. The workflow installs the pinned `vscode-ext-test` release asset declared by `E2E_VSCODE_EXT_TEST_PACKAGE`; a separate discovery step reports the latest release for compatibility visibility.
 
 ```powershell
 $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/AngelosP/vscode-extension-tester/releases/latest'
@@ -160,7 +160,7 @@ $package = ($release.assets | Where-Object name -match '^vscode-ext-test-\d+\.\d
 npm install -g $package
 ```
 
-Do not rely on a local symlink or a preinstalled global CLI for scheduled runs. Scheduled runs use the latest released framework and latest stable VS Code by default so compatibility drift remains visible. For diagnosis, run the workflow manually with `vscodeExtTestPackage` set to a specific tarball URL and/or `vscodeVersion` set to a numeric version. These inputs do not change the scheduled defaults.
+Do not rely on a local symlink or a preinstalled global CLI for scheduled runs. Scheduled runs use the pinned framework and latest stable VS Code by default. The latest-release discovery reports framework drift without changing the tested runner. For diagnosis, run the workflow manually with `vscodeExtTestPackage` set to a specific tarball URL and/or `vscodeVersion` set to a numeric version. These inputs do not change the scheduled defaults.
 
 Authenticated coverage remains opt-in for local or future prepared self-hosted runs with `npm run test:e2e:full:behavior`.
 

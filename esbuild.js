@@ -5,6 +5,17 @@ const path = require('path');
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
 
+async function patchMonacoKustoCompletionCache(kustoModePath) {
+	const source = await fs.promises.readFile(kustoModePath, 'utf8');
+	const original = 'this.completionCacheManager=function(t){var e,r,n;return{getCompletionItems:function(o,i,a){return(!n||n.line!==a.line||!r||!o||!(null!=o&&o.includes(r)))&&(e=t(i,a)),r=o,n=a,e}}}(n)';
+	const patched = 'this.completionCacheManager=function(t){var e,r,n,u=-1;return{getCompletionItems:function(o,i,a){var c=Number(globalThis.__kustoSchemaCompletionGeneration||0);return(u!==c||!n||n.line!==a.line||!r||!o||!(null!=o&&o.includes(r)))&&(e=t(i,a),u=c),r=o,n=a,e}}}(n)';
+	const occurrences = source.split(original).length - 1;
+	if (occurrences !== 1) {
+		throw new Error(`Expected one Monaco Kusto completion cache implementation, found ${occurrences}.`);
+	}
+	await fs.promises.writeFile(kustoModePath, source.replace(original, patched), 'utf8');
+}
+
 /**
  * @type {import('esbuild').Plugin}
  */
@@ -158,10 +169,17 @@ async function main() {
 		await fs.promises.mkdir(monacoKustoDest, { recursive: true });
 		if (fs.promises.cp) {
 			await fs.promises.cp(monacoKustoSrc, monacoKustoDest, { recursive: true, force: true });
+			await patchMonacoKustoCompletionCache(path.join(monacoKustoDest, 'kustoMode.js'));
 		} else {
+			if (production) {
+				throw new Error('fs.promises.cp is required to package Monaco-Kusto assets.');
+			}
 			console.warn('[watch] fs.promises.cp not available; Monaco-Kusto assets may be missing');
 		}
 	} catch (e) {
+		if (production) {
+			throw e;
+		}
 		console.warn('[watch] failed to copy Monaco-Kusto assets:', e && e.message ? e.message : e);
 	}
 
@@ -457,9 +475,9 @@ async function main() {
 			}
 		}
 		const BASELINES = {
-			'extension.js':                                        2297,
-			'webview/webview.bundle.js':                           3207,
-			'webview/md-editor.bundle.js':                          292,
+			'extension.js':                                        2310,
+			'webview/webview.bundle.js':                           3232,
+			'webview/md-editor.bundle.js':                          294,
 			'webview/tutorial-viewer.bundle.js':                    154,
 			'webview/first-launch-setup.bundle.js':                  41,
 			'queryEditor/vendor/echarts/echarts.webview.js':        646,

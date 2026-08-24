@@ -29,4 +29,6 @@ Feature: Agent open file targeting
     And the file "tests/vscode-extension-tester/runs/default/agent-open-file-targeting-real-result.json" should contain "cleanupSavedDirtyDocs:true"
     And the file "tests/vscode-extension-tester/runs/default/agent-open-file-targeting-real-result.json" should contain "cleanupActiveFileDiskUnchanged:true"
     And the file "tests/vscode-extension-tester/runs/default/agent-open-file-targeting-real-result.json" should contain "cleanupTargetFileDiskChanged:true"
+    And the file "tests/vscode-extension-tester/runs/default/agent-open-file-targeting-real-result.json" should contain "cleanupClosedEditors:true"
     And the file "tests/vscode-extension-tester/runs/default/agent-open-file-targeting-real-result.json" should contain "cleanupNoLiveEditors:true"
+    And the file "tests/vscode-extension-tester/runs/default/agent-open-file-targeting-real-result.json" should contain "cleanupSentinelPreserved:true"

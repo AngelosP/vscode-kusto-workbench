@@ -23,6 +23,7 @@ export interface FirstLaunchSetupSnapshot {
 }
 
 export type FirstLaunchSetupWebviewMessage =
+	| { type: 'bootstrapReady' }
 	| { type: 'ready' }
 	| { type: 'requestSnapshot' }
 	| { type: 'save'; filePreferences: FirstLaunchFilePreferences; editingPreferences: FirstLaunchEditingPreferences }

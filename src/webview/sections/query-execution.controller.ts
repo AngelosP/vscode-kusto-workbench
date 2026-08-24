@@ -1222,6 +1222,29 @@ function createKustoExecutionId(): string {
 }
 
 const ADMITTED_KUSTO_TERMINAL_EVENT = 'kusto-workbench-query-terminal';
+const kustoToolExecutionFenceByBoxId = new Map<string, string>();
+
+export function acquireKustoToolExecutionFence(boxId: string, requestId: string): boolean {
+	const id = String(boxId || '').trim();
+	const token = String(requestId || '').trim();
+	if (!id || !token) return false;
+	const existing = kustoToolExecutionFenceByBoxId.get(id);
+	if (existing && existing !== token) return false;
+	kustoToolExecutionFenceByBoxId.set(id, token);
+	return true;
+}
+
+export function releaseKustoToolExecutionFence(boxId: string, requestId: string): void {
+	const id = String(boxId || '').trim();
+	const token = String(requestId || '').trim();
+	if (id && token && kustoToolExecutionFenceByBoxId.get(id) === token) {
+		kustoToolExecutionFenceByBoxId.delete(id);
+	}
+}
+
+export function canAdmitKustoHostExecutionStart(boxId: string): boolean {
+	return !kustoToolExecutionFenceByBoxId.has(String(boxId || '').trim());
+}
 
 export async function executeKustoComparisonPair(
 	sourceBoxId: string,
@@ -1262,8 +1285,11 @@ export function executeQuery(
 	producer: KustoExecutionProducer = 'manual',
 	comparisonOptions?: ComparisonExecutionOptions,
 	scope: 'focused' | 'all' = 'focused',
+	toolExecutionFenceToken?: string,
 ): string | undefined {
 	if (!canExecuteKustoInCurrentHost()) return undefined;
+	const executionFence = kustoToolExecutionFenceByBoxId.get(String(boxId || '').trim());
+	if (executionFence && (producer !== 'tool' || toolExecutionFenceToken !== executionFence)) return undefined;
 	const selectedMode = mode || getRunMode(boxId);
 	const runAll = scope === 'all' || selectedMode === 'runAll';
 	const effectiveMode = runAll ? 'plain' : selectedMode;

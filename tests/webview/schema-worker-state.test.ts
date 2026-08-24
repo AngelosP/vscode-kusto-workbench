@@ -26,12 +26,16 @@ import {
 	requireSchemaWorkerApply,
 	registerKustoSchemaApplyRequester,
 	requestKustoSchemaApplyForBox,
+	notifyQueryEditorReady,
+	queryEditors,
+	retireQueryEditorReady,
 	setPendingSchemaWorkerUpdate,
 	reviseKustoPreparation,
 	subscribeSchemaWorkerReadyState,
 	subscribeKustoPreparation,
 	updateKustoPreparation,
 	waitForSchemaWorkerReady,
+	waitForQueryEditorReady,
 } from '../../src/webview/core/state';
 import { kustoEditorSchemaCoordinator } from '../../src/webview/core/kusto-editor-schema-runtime.js';
 import {
@@ -41,6 +45,55 @@ import {
 describe('schema worker readiness state', () => {
 	beforeEach(() => {
 		kustoEditorSchemaCoordinator.clear();
+		retireQueryEditorReady('query_editor_ready');
+		delete queryEditors.query_editor_ready;
+		(window as any).__kustoSchemaCompletionGeneration = 0;
+	});
+
+	it('resolves editor readiness only for the exact section incarnation', async () => {
+		const owner = document.createElement('kw-query-section');
+		owner.id = 'query_editor_ready';
+		document.body.appendChild(owner);
+		const replacement = document.createElement('kw-query-section');
+		const editor = { getValue: () => 'print ready=1' };
+		let settled = false;
+		const waiting = waitForQueryEditorReady('query_editor_ready', 1000, owner)
+			.then(value => { settled = true; return value; });
+
+		notifyQueryEditorReady('query_editor_ready', editor, replacement);
+		await Promise.resolve();
+		expect(settled).toBe(false);
+		notifyQueryEditorReady('query_editor_ready', editor, owner);
+
+		await expect(waiting).resolves.toBe(editor);
+		owner.remove();
+	});
+
+	it('retires an editor-ready waiter with its removed section incarnation', async () => {
+		const owner = document.createElement('kw-query-section');
+		owner.id = 'query_editor_ready';
+		document.body.appendChild(owner);
+		const waiting = waitForQueryEditorReady('query_editor_ready', 1000, owner);
+
+		retireQueryEditorReady('query_editor_ready', owner);
+
+		await expect(waiting).resolves.toBeUndefined();
+		owner.remove();
+	});
+
+	it('advances the completion-cache generation when a worker schema becomes ready', () => {
+		markSchemaWorkerReady('query_1', 'cluster|db', 'sig-1', 'inmemory://model/1');
+		expect((window as any).__kustoSchemaCompletionGeneration).toBe(1);
+
+		markSchemaWorkerReady('query_1', 'cluster|db', 'sig-2', 'inmemory://model/1');
+		expect((window as any).__kustoSchemaCompletionGeneration).toBe(2);
+	});
+
+	it('advances the completion-cache generation when background schema enhancement becomes ready', () => {
+		markSchemaEnhancementPending('query_1', 'cluster|db', 'sig-1', 'inmemory://model/1');
+		markSchemaEnhancementReady('query_1', 'cluster|db', 'sig-1', 'inmemory://model/1');
+
+		expect((window as any).__kustoSchemaCompletionGeneration).toBe(1);
 	});
 
 	it('matches schema readiness by model URI when provided', () => {

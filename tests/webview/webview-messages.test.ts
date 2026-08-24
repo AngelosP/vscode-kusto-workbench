@@ -53,7 +53,7 @@ describe('webview document-view transport', () => {
 
 	it('stamps compatibility document requests and tracks their correlation', () => {
 		pState.compatibilityPersistenceViewSessionId = 'compatibility-session-1';
-		postMessageToHost({ type: 'requestDocument' });
+		postMessageToHost({ type: 'requestDocument', expectedEditRevision: 7 });
 
 		const message = postMessage.mock.calls[0]?.[0];
 		expect(message).toEqual(expect.objectContaining({
@@ -61,6 +61,7 @@ describe('webview document-view transport', () => {
 			channel: 'compatibility-persistence',
 			viewSessionId: 'compatibility-session-1',
 			type: 'requestDocument',
+			expectedEditRevision: 7,
 		}));
 		expect(typeof message.requestId).toBe('string');
 		expect(pState.compatibilityPersistenceDocumentRequestIds.has(message.requestId)).toBe(true);

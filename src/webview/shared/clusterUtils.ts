@@ -6,6 +6,7 @@ export {
 	exportAzureDataExplorerClusterPath,
 	exportKustoClusterEndpoint,
 	exportKustoClusterForKql,
+	getKustoClusterAliases,
 	ensureKustoClusterUrlScheme,
 	isCompleteKustoClusterUrl,
 	kustoClusterKey,

@@ -26,23 +26,21 @@ Feature: KQL companion sidecar — .kql with existing .kql.json skips upgrade pr
     And I wait 1 second
     When I select "Kusto Query (Compatibility Mode)" from the QuickPick
     And I wait 5 seconds
-    When I click at 30, 700
-    Then I take a screenshot "01-kql-opened-with-sidecar"
 
     # ── TEST 1: Verify the query section exists ─────────────────────────
     When I wait for "kw-query-section" in the webview for 10 seconds
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (!el) throw new Error('No kw-query-section found'); return 'query-section-present'; })()" in the webview
+    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (!el) throw new Error('No kw-query-section found'); return 'query-section-present'; })()" in the webview "sidecar-test.kql"
+    Then I take a screenshot "01-kql-opened-with-sidecar"
 
     # ── TEST 2: Verify add-section buttons are visible (sidecar mode) ───
     When I wait for "button[data-add-kind='markdown']" in the webview for 10 seconds
-    When I evaluate "(() => { const btn = document.querySelector('button[data-add-kind=' + String.fromCharCode(34) + 'markdown' + String.fromCharCode(34) + ']'); if (!btn) throw new Error('Markdown add button not found'); const wrapper = btn.closest('.add-control-wrapper'); const title = String(wrapper?.getAttribute('title') || ''); if (title.includes('companion metadata file') || title.includes('create a companion')) throw new Error('Expected existing sidecar mode, but markdown add control still has compatibility tooltip: ' + title); return 'sidecar-add-control-ready'; })()" in the webview
-    When I click at 30, 700
+    When I evaluate "(() => { const btn = document.querySelector('button[data-add-kind=' + String.fromCharCode(34) + 'markdown' + String.fromCharCode(34) + ']'); if (!btn) throw new Error('Markdown add button not found'); const wrapper = btn.closest('.add-control-wrapper'); const title = String(wrapper?.getAttribute('title') || ''); if (title.includes('companion metadata file') || title.includes('create a companion')) throw new Error('Expected existing sidecar mode, but markdown add control still has compatibility tooltip: ' + title); return 'sidecar-add-control-ready'; })()" in the webview "sidecar-test.kql"
     Then I take a screenshot "02-add-buttons-visible"
 
     # ── TEST 3: Add a markdown section — should NOT trigger upgrade ─────
     When I click "button[data-add-kind='markdown']" in the webview
     And I wait 3 seconds
-    When I click at 30, 700
+    When I evaluate "(() => { const md = document.querySelector('kw-markdown-section'); if (!md) throw new Error('Markdown section was NOT added — expected it to be present after clicking add'); return 'markdown-section-present'; })()" in the webview "sidecar-test.kql"
     Then I take a screenshot "03-after-add-markdown"
 
     # ── TEST 4: Verify NO upgrade notification appeared ─────────────────
@@ -50,7 +48,7 @@ Feature: KQL companion sidecar — .kql with existing .kql.json skips upgrade pr
     And I should not see notification "Create companion file"
 
     # ── TEST 5: Verify the markdown section was actually added ──────────
-    When I evaluate "(() => { const md = document.querySelector('kw-markdown-section'); if (!md) throw new Error('Markdown section was NOT added — expected it to be present after clicking add'); return 'markdown-section-present'; })()" in the webview
+    When I evaluate "(() => { const md = document.querySelector('kw-markdown-section'); if (!md) throw new Error('Markdown section was NOT added — expected it to be present after clicking add'); return 'markdown-section-present'; })()" in the webview "sidecar-test.kql"
 
     # ── TEST 6: Verify we now have 2 sections total ─────────────────────
     When I evaluate "(() => { const tags = ['kw-query-section','kw-sql-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const all = document.querySelectorAll(tags.join(',')); if (all.length !== 2) throw new Error('Expected 2 sections, found ' + all.length); const types = [...all].map(e => e.tagName.toLowerCase()); return 'sections: ' + types.join(', '); })()" in the webview

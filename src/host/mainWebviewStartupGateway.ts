@@ -26,6 +26,8 @@ import {
 } from '../shared/powerBiPublishProtocol';
 import { parseKustoResultAttachmentWebviewMessageFromEnvelope } from '../shared/kustoResultAttachmentProtocol';
 import { captureRuntimeMessageEnvelope } from '../shared/runtimeMessageEnvelope';
+import { parsePersistDocumentMessage } from '../shared/persistDocumentState';
+import { parseSqlCopilotExecutionStartAck } from '../shared/copilotExecutionStart';
 
 export const MAIN_WEBVIEW_DISPATCHER_READY_TYPE = 'mainWebviewDispatcherReady' as const;
 export const RETAINED_STARTUP_INITIALIZATION_TIMEOUT_MS = 2_000;
@@ -139,6 +141,13 @@ export function isMainWebviewCorrelatedReply(input: unknown): boolean {
 	const typeInspection = safelyInspectProperty(input, 'type');
 	if (typeInspection?.kind !== 'data' || typeof typeInspection.value !== 'string') return false;
 	const type = typeInspection.value;
+	if (type === 'copilotWriteQueryExecutionAck') {
+		return parseSqlCopilotExecutionStartAck(input).ok;
+	}
+	if (type === 'persistDocument') {
+		const parsed = parsePersistDocumentMessage(input);
+		return parsed.ok && parsed.value.snapshotId !== undefined;
+	}
 	if (type === 'toolResponse') {
 		const mutationAdmission = admitDevelopmentNoteMutationWebviewMessage(input);
 		if (!mutationAdmission.recognized) return false;
@@ -316,6 +325,16 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 		if (powerBiPublishAdmission.recognized) {
 			if (!powerBiPublishAdmission.parsed.ok) return;
 			input = powerBiPublishAdmission.parsed.value;
+		}
+		if (envelope.value.type === 'persistDocument') {
+			const parsed = parsePersistDocumentMessage(envelope.value);
+			if (!parsed.ok) return;
+			input = parsed.value;
+		}
+		if (envelope.value.type === 'copilotWriteQueryExecutionAck') {
+			const parsed = parseSqlCopilotExecutionStartAck(envelope.value);
+			if (!parsed.ok) return;
+			input = parsed.value;
 		}
 		if (isDispatcherReadyMessage(input)) return this.markDispatcherReady();
 

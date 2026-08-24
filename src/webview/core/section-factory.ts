@@ -33,6 +33,7 @@ import {
 	favoritesModeByBoxId,
 	pendingFavoriteSelectionByBoxId,
 	queryEditors,
+	retireQueryEditorReady,
 	queryEditorResizeObservers,
 	queryEditorVisibilityObservers,
 	queryEditorVisibilityMutationObservers,
@@ -1309,6 +1310,7 @@ export function isPinnedFirstSection(boxId: unknown): boolean {
 
 export function removeQueryBox( boxId: any) {
 	if (isPinnedFirstSection(boxId)) return;
+	retireQueryEditorReady(String(boxId || ''), document.getElementById(String(boxId || '')));
 	try { window.closeRunMenu?.(String(boxId || '')); } catch (e) { console.error('[kusto]', e); }
 	try { closeShareModalForOwner(boxId); } catch (e) { console.error('[kusto]', e); }
 	__kustoCancelMonacoInitRetry(String(boxId || ''));

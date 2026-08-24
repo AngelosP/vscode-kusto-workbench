@@ -22,6 +22,7 @@ export type CompatibilityPersistenceDocumentKind = 'kql' | 'sql';
 export type CompatibilityPersistenceRequestDocument = CompatibilityPersistenceEnvelope & Readonly<{
 	type: 'requestDocument';
 	requestId: string;
+	expectedEditRevision?: number;
 }>;
 
 export type CompatibilityPersistencePersistSnapshot = CompatibilityPersistenceEnvelope & Readonly<{
@@ -247,6 +248,8 @@ export function parseCompatibilityPersistenceWebviewMessage(
 
 	if (input.type === 'requestDocument') {
 		if (!nonEmptyString(input.requestId)) return failure('Document request ID must be a non-empty string.');
+		const expectedRevisionError = validateOptionalRevision(input, 'expectedEditRevision');
+		if (expectedRevisionError) return failure(expectedRevisionError);
 		return { ok: true, value: input as unknown as CompatibilityPersistenceRequestDocument };
 	}
 	if (input.type === 'documentReloadResult') {

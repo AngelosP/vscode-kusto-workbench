@@ -16,6 +16,8 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	(ConnectionService as any).zeroResultRecoveryByCluster?.clear?.();
 	(ConnectionService as any).databaseCacheSettlementByCluster?.clear?.();
+	(ConnectionService as any).lastSelectionSettlement = Promise.resolve();
+	(ConnectionService as any).lastSelectionAdmissionRevision = 0;
 });
 
 describe('ensureHttpsUrl', () => {
@@ -223,6 +225,60 @@ describe('ConnectionService — saveLastSelection & getters', () => {
 		await svc.saveLastSelection('conn-456', 'db2');
 		expect(host._globalState.get(STORAGE_KEYS.lastConnectionId)).toBe('conn-456');
 		expect(host._globalState.get(STORAGE_KEYS.lastDatabase)).toBe('db2');
+	});
+
+	it('serializes overlapping selection writes and exposes their settlement', async () => {
+		const host = makeMockHost();
+		const firstWriteStarted = deferred<void>();
+		const releaseFirstWrite = deferred<void>();
+		const update = vi.fn(async (key: string, value: unknown) => {
+			if (key === STORAGE_KEYS.lastConnectionId && value === 'conn-old') {
+				firstWriteStarted.resolve();
+				await releaseFirstWrite.promise;
+			}
+			host._globalState.set(key, value);
+		});
+		host.context.globalState.update = update;
+		const svc = new ConnectionService(host as any);
+
+		const oldSave = svc.saveLastSelection('conn-old', 'OldDb');
+		await firstWriteStarted.promise;
+		const newSave = svc.saveLastSelection('conn-new', 'NewDb');
+		let settled = false;
+		const settlement = ConnectionService.waitForLastSelectionSettlement().then(() => { settled = true; });
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		releaseFirstWrite.resolve();
+		await Promise.all([oldSave, newSave, settlement]);
+
+		expect(host._globalState.get(STORAGE_KEYS.lastConnectionId)).toBe('conn-new');
+		expect(host._globalState.get(STORAGE_KEYS.lastDatabase)).toBe('NewDb');
+		expect(svc.getLastConnectionId()).toBe('conn-new');
+		expect(svc.getLastDatabase()).toBe('NewDb');
+	});
+
+	it('restarts a quiescence window when a new selection write is admitted', async () => {
+		vi.useFakeTimers();
+		try {
+			const host = makeMockHost();
+			const svc = new ConnectionService(host as any);
+			let settled = false;
+			const settlement = ConnectionService.waitForLastSelectionSettlement(100)
+				.then(() => { settled = true; });
+
+			await vi.advanceTimersByTimeAsync(50);
+			await svc.saveLastSelection('conn-during-quiet', 'QuietDb');
+			await vi.advanceTimersByTimeAsync(99);
+			expect(settled).toBe(false);
+
+			await vi.advanceTimersByTimeAsync(101);
+			await settlement;
+			expect(host._globalState.get(STORAGE_KEYS.lastConnectionId)).toBe('conn-during-quiet');
+			expect(host._globalState.get(STORAGE_KEYS.lastDatabase)).toBe('QuietDb');
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 

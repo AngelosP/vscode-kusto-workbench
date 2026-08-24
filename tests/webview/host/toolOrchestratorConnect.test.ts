@@ -1283,7 +1283,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		);
 		vi.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({ get: vi.fn(() => 0) } as any);
 
-		const request = orch.configureSqlSection({ sectionId: 'sql_1', connectionId: 'sql-test', query: 'WAITFOR DELAY', execute: true });
+		const request = orch.configureSqlSection({ sectionId: 'sql_1', connectionId: 'sql-test', database: 'Db', query: 'WAITFOR DELAY', execute: true });
 		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
 		orch.disconnectIfOwner(token);
 
@@ -1302,7 +1302,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		);
 		vi.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({ get: vi.fn(() => 0) } as any);
 
-		const request = orch.configureSqlSection({ sectionId: 'sql_1', connectionId: 'sql-test', query: 'WAITFOR DELAY', execute: true });
+		const request = orch.configureSqlSection({ sectionId: 'sql_1', connectionId: 'sql-test', database: 'Db', query: 'WAITFOR DELAY', execute: true });
 		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
 		orch.activateConnection(token);
 		const message = poster.mock.calls[0][0] as any;
@@ -1324,7 +1324,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const cancellation = cancellationToken();
 
 		const request = orch.configureSqlSection({
-			sectionId: 'sql_1', connectionId: 'sql-test', query: 'WAITFOR DELAY', execute: true,
+			sectionId: 'sql_1', connectionId: 'sql-test', database: 'Db', query: 'WAITFOR DELAY', execute: true,
 		}, cancellation.token);
 		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
 		const configureMessage = poster.mock.calls[0][0] as any;
@@ -1332,8 +1332,25 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 
 		await expect(request).rejects.toMatchObject({ name: 'Canceled' });
 		expect(poster).toHaveBeenCalledWith({
-			type: 'toolCancelSqlExecution', sectionId: 'sql_1', executionId: configureMessage.input.executionId,
+			type: 'toolCancelSqlExecution', requestId: configureMessage.requestId,
+			sectionId: 'sql_1', executionId: configureMessage.input.executionId,
 		});
+	});
+
+	it('rejects SQL retarget-and-execute without a database before webview dispatch', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient);
+		const poster = vi.fn(() => true);
+		orch.connect(
+			poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'DbA' }]), vi.fn(), undefined,
+			() => 'sql-other', () => ({ connectionId: 'sql-other', database: 'DbA', ownerToken: 'owner-a', generation: 1 }),
+		);
+
+		await expect(orch.configureSqlSection({
+			sectionId: 'sql_1', connectionId: 'sql-test', query: 'SELECT 1', execute: true,
+		})).rejects.toThrow('database is required when retargeting and executing a SQL section.');
+		expect(poster).not.toHaveBeenCalled();
 	});
 
 	it('omits protected SQL connections and sections from tool inventory', async () => {
