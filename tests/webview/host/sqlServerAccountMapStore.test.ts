@@ -8,13 +8,34 @@ import {
 	establishCanonicalSqlServerAccount,
 	readCurrentSqlServerAccountMap,
 	setCanonicalSqlServerAccount,
-	SqlServerAccountMapStore,
+	SqlServerAccountMapStore as SqlServerAccountMapStoreImplementation,
 } from '../../../src/host/sql/sqlServerAccountMapStore';
+import { withSqlStateFileLock } from '../../../src/host/sql/sqlStateTransaction';
 
 const tempDirectories: string[] = [];
+const trackedStores = new Set<SqlServerAccountMapStoreImplementation>();
+const accountMapWriteSequence = [
+	'sql-server-account-map.backup.v1.json',
+	'sql-server-account-map.v1.json',
+	'sql-server-account-map.commit.v1.json',
+	'sql-server-account-map-migrated.v1',
+] as const;
 
-afterEach(() => {
-	for (const directory of tempDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
+class SqlServerAccountMapStore extends SqlServerAccountMapStoreImplementation {
+	constructor(context: any, storeOutput: any) {
+		super(context, storeOutput);
+		trackedStores.add(this);
+	}
+}
+
+afterEach(async () => {
+	const stores = [...trackedStores];
+	trackedStores.clear();
+	for (const store of stores) store.dispose();
+	await Promise.all(stores.map(store => store.waitForRefreshSettlement()));
+	for (const directory of tempDirectories.splice(0)) {
+		await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+	}
 });
 
 function createContext(directory: string) {
@@ -250,6 +271,12 @@ describe('SqlServerAccountMapStore', () => {
 
 		try {
 			await Promise.all([writer.ready(), observer.ready()]);
+			fs.unwatchFile(
+				path.join(directory, 'sql-server-account-map.v1.json'),
+				(observer as any).watcherListener,
+			);
+			await observer.waitForRefreshSettlement();
+			changes.length = 0;
 			await setCanonicalSqlServerAccount(writerContext, 'server.example', 'account-a');
 			await setCanonicalSqlServerAccount(writerContext, 'server.example', 'account-b');
 			await observer.refresh();
@@ -442,6 +469,135 @@ describe('SqlServerAccountMapStore', () => {
 		} finally {
 			restarted.dispose();
 		}
+	});
+
+	it('does not recreate canonical files when a lock-waiting refresh resumes after disposal', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-disposed-refresh-'));
+		tempDirectories.push(directory);
+		const context = createContext(directory);
+		const store = new SqlServerAccountMapStore(context, output());
+		let releaseLock!: () => void;
+		let markLockHeld!: () => void;
+		const lockHeld = new Promise<void>(resolve => { markLockHeld = resolve; });
+		const lockGate = new Promise<void>(resolve => { releaseLock = resolve; });
+		const lockTarget = path.join(directory, 'sql-server-account-map.v1.json.write');
+		let heldLock: Promise<void> | undefined;
+		try {
+			await store.ready();
+			await setCanonicalSqlServerAccount(context, 'server.example', 'account-a');
+			await store.refresh();
+			await store.waitForRefreshSettlement();
+			heldLock = withSqlStateFileLock(lockTarget, async () => {
+				markLockHeld();
+				await lockGate;
+			});
+			await lockHeld;
+			const refreshOnce = vi.spyOn(store as any, 'refreshOnce');
+			let refreshSettled = false;
+			await fs.promises.utimes(
+				path.join(directory, 'sql-server-account-map.v1.json'),
+				new Date(),
+				new Date(Date.now() + 2_000),
+			);
+			await vi.waitFor(() => expect(refreshOnce).toHaveBeenCalled(), { timeout: 5000 });
+			void (store as any).refreshTail.finally(() => { refreshSettled = true; });
+			expect(refreshSettled).toBe(false);
+			store.dispose();
+			for (const name of [
+				'sql-server-account-map.v1.json',
+				'sql-server-account-map.backup.v1.json',
+				'sql-server-account-map.backup.v1.json.slot1',
+				'sql-server-account-map.commit.v1.json',
+			]) fs.rmSync(path.join(directory, name), { force: true });
+			releaseLock();
+			await heldLock;
+			await store.waitForRefreshSettlement();
+
+			expect(fs.existsSync(path.join(directory, 'sql-server-account-map.v1.json'))).toBe(false);
+			expect(store.getAccountsByServer()).toEqual({ 'server.example': 'account-a' });
+		} finally {
+			releaseLock?.();
+			await Promise.allSettled([heldLock].filter(Boolean) as Promise<unknown>[]);
+			store.dispose();
+			await store.waitForRefreshSettlement();
+		}
+	});
+
+	it('does not create canonical files when lock-waiting initialization resumes after disposal', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-disposed-initialize-'));
+		tempDirectories.push(directory);
+		const lockTarget = path.join(directory, 'sql-server-account-map.v1.json.write');
+		let releaseLock!: () => void;
+		let markLockHeld!: () => void;
+		const lockHeld = new Promise<void>(resolve => { markLockHeld = resolve; });
+		const lockGate = new Promise<void>(resolve => { releaseLock = resolve; });
+		const heldLock = withSqlStateFileLock(lockTarget, async () => {
+			markLockHeld();
+			await lockGate;
+		});
+		await lockHeld;
+		const store = new SqlServerAccountMapStore(createContext(directory), output());
+		store.dispose();
+
+		releaseLock();
+		await heldLock;
+		await store.ready();
+		await store.waitForRefreshSettlement();
+
+		for (const fileName of accountMapWriteSequence) {
+			expect(fs.existsSync(path.join(directory, fileName))).toBe(false);
+		}
+	});
+
+	it.each(accountMapWriteSequence)(
+		'stops initialization after the %s transaction mutation when disposed',
+		async stopAfter => {
+			const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-disposed-transaction-'));
+			tempDirectories.push(directory);
+			const renamedFiles: string[] = [];
+			const realRename = fs.promises.rename.bind(fs.promises);
+			let store: SqlServerAccountMapStore | undefined;
+			const renameSpy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (oldPath, newPath) => {
+				await realRename(oldPath, newPath);
+				const fileName = path.basename(String(newPath));
+				if (!accountMapWriteSequence.includes(fileName as typeof accountMapWriteSequence[number])) return;
+				renamedFiles.push(fileName);
+				if (fileName === stopAfter) store?.dispose();
+			});
+			try {
+				store = new SqlServerAccountMapStore(createContext(directory), output());
+				await store.ready();
+				await store.waitForRefreshSettlement();
+
+				const stopIndex = accountMapWriteSequence.indexOf(stopAfter);
+				expect(renamedFiles).toEqual(accountMapWriteSequence.slice(0, stopIndex + 1));
+				expect((store as any).snapshot.version).toBe(0);
+				expect(fs.existsSync(path.join(directory, stopAfter))).toBe(true);
+				for (const fileName of accountMapWriteSequence.slice(stopIndex + 1)) {
+					expect(fs.existsSync(path.join(directory, fileName))).toBe(false);
+				}
+			} finally {
+				renameSpy.mockRestore();
+				store?.dispose();
+			}
+		},
+	);
+
+	it('keeps a same-path observer active when a peer store is disposed', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-watcher-owner-'));
+		tempDirectories.push(directory);
+		const context = createContext(directory);
+		const disposedPeer = new SqlServerAccountMapStore(createContext(directory), output());
+		const survivor = new SqlServerAccountMapStore(context, output());
+		await Promise.all([disposedPeer.ready(), survivor.ready()]);
+
+		disposedPeer.dispose();
+		await disposedPeer.waitForRefreshSettlement();
+		await setCanonicalSqlServerAccount(context, 'server.example', 'account-a');
+
+		await vi.waitFor(() => expect(survivor.getAccountsByServer()).toEqual({
+			'server.example': 'account-a',
+		}), { timeout: 5000 });
 	});
 
 	it('keeps unknown servers blocked after one explicit repair from empty-mirror recovery', async () => {

@@ -8,6 +8,13 @@ import { STS_METHODS } from '../../../src/host/sql/stsProtocol';
 
 type NotificationHandler = (params: any, epoch: number) => void;
 
+function deferred<T>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+	return { promise, resolve, reject };
+}
+
 class FakeProcessManager {
 	epoch = 1;
 	isRunning = true;
@@ -131,6 +138,36 @@ describe('StsQueryService', () => {
 		expect(createProtectedRuntime).toHaveBeenCalledOnce();
 		expect(protectedRuntime.dispose).toHaveBeenCalledOnce();
 		expect(policy.assertAllowed).not.toHaveBeenCalled();
+	});
+
+	it('waits for delayed protected runtime acquisition and disposes it before shutdown settles', async () => {
+		const policy = {
+			getConnectionIds: () => ['sql-1'],
+			getRevocationGeneration: () => 4,
+			isProtected: () => true,
+			refresh: vi.fn(async () => ['sql-1']),
+			assertAllowed: vi.fn(async () => { throw new Error('shared STS must stay blocked'); }),
+		};
+		const protectedProcess = new FakeProcessManager();
+		const protectedRuntime = {
+			getProcessManager: vi.fn(async () => protectedProcess),
+			dispose: vi.fn(async () => undefined),
+		};
+		const runtimeGate = deferred<any>();
+		const createProtectedRuntime = vi.fn(() => runtimeGate.promise);
+		const { service, connection } = createHarness(policy, undefined, createProtectedRuntime);
+		const execution = service.executeQuery(connection, 'Db', 'SELECT 42', 20_000);
+		await vi.waitFor(() => expect(createProtectedRuntime).toHaveBeenCalledOnce());
+		let disposed = false;
+		const disposing = service.dispose().finally(() => { disposed = true; });
+		await Promise.resolve();
+		expect(disposed).toBe(false);
+
+		runtimeGate.resolve(protectedRuntime);
+		await disposing;
+		await expect(execution).rejects.toThrow(/cancel/i);
+		expect(protectedRuntime.getProcessManager).not.toHaveBeenCalled();
+		expect(protectedRuntime.dispose).toHaveBeenCalledOnce();
 	});
 
 	it('returns the first final-summary result set and pages all announced rows', async () => {

@@ -5,9 +5,25 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ConnectionManager } from '../../../src/host/connectionManager';
 import { KustoLeaveNoTracePolicyStore } from '../../../src/host/kustoLeaveNoTracePolicyStore';
+import { withSqlStateFileLock } from '../../../src/host/sql/sqlStateTransaction';
 
 const disposables: Array<{ dispose(): void }> = [];
 const tempDirectories: string[] = [];
+const kustoPolicyWriteSequence = [
+	'kusto-leave-no-trace-policy.backup.v1.json',
+	'kusto-leave-no-trace-policy.v1.json',
+	'kusto-leave-no-trace-policy.commit.v1.json',
+	'kusto-leave-no-trace-policy-migrated.v1',
+] as const;
+
+async function removeKustoPolicyArtifacts(root: string): Promise<void> {
+	for (const fileName of [
+		'kusto-leave-no-trace-policy.v1.json',
+		'kusto-leave-no-trace-policy.backup.v1.json',
+		'kusto-leave-no-trace-policy.backup.v1.json.slot1',
+		'kusto-leave-no-trace-policy.commit.v1.json',
+	]) await fs.promises.rm(path.join(root, fileName), { force: true });
+}
 
 function context(root: string, initial: Record<string, unknown> = {}) {
 	const values = new Map(Object.entries(initial));
@@ -39,7 +55,13 @@ async function sharedStores() {
 }
 
 afterEach(async () => {
-	for (const disposable of disposables.splice(0)) disposable.dispose();
+	const currentDisposables = disposables.splice(0);
+	for (const disposable of currentDisposables) disposable.dispose();
+	await Promise.all(currentDisposables.map(disposable => {
+		if (disposable instanceof KustoLeaveNoTracePolicyStore) return disposable.waitForRefreshSettlement();
+		if (disposable instanceof ConnectionManager) return disposable.waitForLeaveNoTraceRefreshSettlement();
+		return Promise.resolve();
+	}));
 	for (const directory of tempDirectories.splice(0)) {
 		await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 	}
@@ -149,13 +171,10 @@ describe('KustoLeaveNoTracePolicyStore', () => {
 		disposables.push(first);
 		await first.refresh();
 		first.dispose();
+		await first.waitForRefreshSettlement();
 		disposables.splice(disposables.indexOf(first), 1);
 
-		for (const entry of await fs.promises.readdir(root)) {
-			if (entry.includes('policy') && !entry.includes('migrated')) {
-				await fs.promises.rm(path.join(root, entry), { recursive: true, force: true });
-			}
-		}
+		await removeKustoPolicyArtifacts(root);
 		const restarted = new KustoLeaveNoTracePolicyStore(firstContext, logger());
 		disposables.push(restarted);
 		await restarted.refresh();
@@ -181,12 +200,9 @@ describe('KustoLeaveNoTracePolicyStore', () => {
 		await live.setCluster('cluster-a', true);
 
 		const policyPath = path.join(root, 'kusto-leave-no-trace-policy.v1.json');
-		fs.unwatchFile(policyPath);
-		for (const entry of await fs.promises.readdir(root)) {
-			if (entry.includes('policy') && !entry.includes('migrated')) {
-				await fs.promises.rm(path.join(root, entry), { recursive: true, force: true });
-			}
-		}
+		fs.unwatchFile(policyPath, (live as any).watcherListener);
+		await live.waitForRefreshSettlement();
+		await removeKustoPolicyArtifacts(root);
 
 		const recovering = new KustoLeaveNoTracePolicyStore(context(root), logger());
 		disposables.push(recovering);
@@ -197,6 +213,174 @@ describe('KustoLeaveNoTracePolicyStore', () => {
 		expect(live.isGloballyBlocked()).toBe(true);
 		await expect(live.admitRevision('cluster-a', live.getRevocationGeneration('cluster-a'), () => 'rows'))
 			.resolves.toEqual({ admitted: false });
+	});
+
+	it('does not recreate policy files when a lock-waiting refresh resumes after disposal', async () => {
+		const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'kw-kusto-lnt-disposed-refresh-'));
+		tempDirectories.push(root);
+		const store = new KustoLeaveNoTracePolicyStore(context(root), logger());
+		let releaseLock!: () => void;
+		let markLockHeld!: () => void;
+		const lockHeld = new Promise<void>(resolve => { markLockHeld = resolve; });
+		const lockGate = new Promise<void>(resolve => { releaseLock = resolve; });
+		const lockTarget = path.join(root, 'kusto-leave-no-trace-policy.v1.json.write');
+		const canonicalArtifacts = [
+			'kusto-leave-no-trace-policy.v1.json',
+			'kusto-leave-no-trace-policy.backup.v1.json',
+			'kusto-leave-no-trace-policy.backup.v1.json.slot1',
+			'kusto-leave-no-trace-policy.commit.v1.json',
+		];
+		let heldLock: Promise<void> | undefined;
+		try {
+			await store.refresh();
+			await store.setCluster('cluster-a', true);
+			await store.waitForRefreshSettlement();
+			heldLock = withSqlStateFileLock(lockTarget, async () => {
+				markLockHeld();
+				await lockGate;
+			});
+			await lockHeld;
+			const refreshOnce = vi.spyOn(store as any, 'refreshOnce');
+			let refreshSettled = false;
+			await fs.promises.utimes(
+				path.join(root, 'kusto-leave-no-trace-policy.v1.json'),
+				new Date(),
+				new Date(Date.now() + 2_000),
+			);
+			await vi.waitFor(() => expect(refreshOnce).toHaveBeenCalled(), { timeout: 5000 });
+			void (store as any).refreshTail.finally(() => { refreshSettled = true; });
+			expect(refreshSettled).toBe(false);
+			expect(fs.existsSync(`${lockTarget}.lock`)).toBe(true);
+			store.dispose();
+			for (const artifact of canonicalArtifacts) {
+				await fs.promises.rm(path.join(root, artifact), { force: true });
+			}
+			expect(fs.existsSync(`${lockTarget}.lock`)).toBe(true);
+			releaseLock();
+			await heldLock;
+			await store.waitForRefreshSettlement();
+
+			for (const artifact of canonicalArtifacts) {
+				expect(fs.existsSync(path.join(root, artifact))).toBe(false);
+			}
+		} finally {
+			releaseLock?.();
+			await Promise.allSettled([heldLock].filter(Boolean) as Promise<unknown>[]);
+			store.dispose();
+			await store.waitForRefreshSettlement();
+		}
+	});
+
+	it('does not create policy files when lock-waiting initialization resumes after disposal', async () => {
+		const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'kw-kusto-lnt-disposed-initialize-'));
+		tempDirectories.push(root);
+		const lockTarget = path.join(root, 'kusto-leave-no-trace-policy.v1.json.write');
+		let releaseLock!: () => void;
+		let markLockHeld!: () => void;
+		const lockHeld = new Promise<void>(resolve => { markLockHeld = resolve; });
+		const lockGate = new Promise<void>(resolve => { releaseLock = resolve; });
+		const heldLock = withSqlStateFileLock(lockTarget, async () => {
+			markLockHeld();
+			await lockGate;
+		});
+		await lockHeld;
+		const store = new KustoLeaveNoTracePolicyStore(context(root), logger());
+		disposables.push(store);
+		store.dispose();
+
+		releaseLock();
+		await heldLock;
+		await store.refresh();
+		await store.waitForRefreshSettlement();
+
+		for (const fileName of kustoPolicyWriteSequence) {
+			expect(fs.existsSync(path.join(root, fileName))).toBe(false);
+		}
+	});
+
+	it('waits for an accepted lock-blocked mutation after disposal', async () => {
+		const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'kw-kusto-lnt-disposed-mutation-'));
+		tempDirectories.push(root);
+		const store = new KustoLeaveNoTracePolicyStore(context(root), logger());
+		disposables.push(store);
+		await store.refresh();
+		const lockTarget = path.join(root, 'kusto-leave-no-trace-policy.v1.json.write');
+		let releaseLock!: () => void;
+		let markLockHeld!: () => void;
+		const lockHeld = new Promise<void>(resolve => { markLockHeld = resolve; });
+		const lockGate = new Promise<void>(resolve => { releaseLock = resolve; });
+		const heldLock = withSqlStateFileLock(lockTarget, async () => {
+			markLockHeld();
+			await lockGate;
+		});
+		await lockHeld;
+		const mutation = store.setCluster('cluster-sensitive', true);
+		await new Promise<void>(resolve => setImmediate(resolve));
+		store.dispose();
+		let settled = false;
+		const settlement = store.waitForRefreshSettlement().finally(() => { settled = true; });
+		await new Promise<void>(resolve => setImmediate(resolve));
+		expect(settled).toBe(false);
+
+		releaseLock();
+		await Promise.all([heldLock, mutation, settlement]);
+
+		const persisted = JSON.parse(await fs.promises.readFile(
+			path.join(root, 'kusto-leave-no-trace-policy.v1.json'),
+			'utf8',
+		));
+		expect(persisted.clusterKeys).toEqual(['cluster-sensitive']);
+	});
+
+	it.each(kustoPolicyWriteSequence)(
+		'stops initialization after the %s transaction mutation when disposed',
+		async stopAfter => {
+			const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'kw-kusto-lnt-disposed-transaction-'));
+			tempDirectories.push(root);
+			const renamedFiles: string[] = [];
+			const realRename = fs.promises.rename.bind(fs.promises);
+			let store: KustoLeaveNoTracePolicyStore | undefined;
+			const renameSpy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (oldPath, newPath) => {
+				await realRename(oldPath, newPath);
+				const fileName = path.basename(String(newPath));
+				if (!kustoPolicyWriteSequence.includes(fileName as typeof kustoPolicyWriteSequence[number])) return;
+				renamedFiles.push(fileName);
+				if (fileName === stopAfter) store?.dispose();
+			});
+			try {
+				store = new KustoLeaveNoTracePolicyStore(context(root), logger());
+				disposables.push(store);
+				await store.refresh();
+				await store.waitForRefreshSettlement();
+
+				const stopIndex = kustoPolicyWriteSequence.indexOf(stopAfter);
+				expect(renamedFiles).toEqual(kustoPolicyWriteSequence.slice(0, stopIndex + 1));
+				expect((store as any).snapshot.version).toBe(0);
+				expect(fs.existsSync(path.join(root, stopAfter))).toBe(true);
+				for (const fileName of kustoPolicyWriteSequence.slice(stopIndex + 1)) {
+					expect(fs.existsSync(path.join(root, fileName))).toBe(false);
+				}
+			} finally {
+				renameSpy.mockRestore();
+				store?.dispose();
+			}
+		},
+	);
+
+	it('keeps a same-path policy observer active when a peer store is disposed', async () => {
+		const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'kw-kusto-lnt-watcher-owner-'));
+		tempDirectories.push(root);
+		const writer = new KustoLeaveNoTracePolicyStore(context(root), logger());
+		const disposedPeer = new KustoLeaveNoTracePolicyStore(context(root), logger());
+		const survivor = new KustoLeaveNoTracePolicyStore(context(root), logger());
+		disposables.push(writer, disposedPeer, survivor);
+		await Promise.all([writer.refresh(), disposedPeer.refresh(), survivor.refresh()]);
+
+		disposedPeer.dispose();
+		await disposedPeer.waitForRefreshSettlement();
+		await writer.setCluster('cluster-sensitive', true);
+
+		await vi.waitFor(() => expect(survivor.isProtected('cluster-sensitive')).toBe(true), { timeout: 5000 });
 	});
 
 	it('marks every current manager connection protected while recovery is globally blocked', async () => {
@@ -212,12 +396,9 @@ describe('KustoLeaveNoTracePolicyStore', () => {
 		disposables.push(manager);
 		await manager.refreshLeaveNoTracePolicy();
 		manager.dispose();
+		await manager.waitForLeaveNoTraceRefreshSettlement();
 		disposables.splice(disposables.indexOf(manager), 1);
-		for (const entry of await fs.promises.readdir(root)) {
-			if (entry.includes('policy') && !entry.includes('migrated')) {
-				await fs.promises.rm(path.join(root, entry), { recursive: true, force: true });
-			}
-		}
+		await removeKustoPolicyArtifacts(root);
 		const restarted = new ConnectionManager(managerContext);
 		disposables.push(restarted);
 		await restarted.refreshLeaveNoTracePolicy();

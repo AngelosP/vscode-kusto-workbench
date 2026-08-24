@@ -27,6 +27,13 @@ const POLICY_COMMIT_FILENAME = 'sql-leave-no-trace-policy.commit.v1.json';
 const POLICY_MIGRATION_FILENAME = 'sql-leave-no-trace-policy-migrated.v1';
 const POLICY_LOCK_STALE_MS = 30_000;
 
+class SqlPolicyLifecycleCanceledError extends Error {}
+
+function isSqlPolicyLifecycleCanceled(error: unknown): boolean {
+	return error instanceof SqlPolicyLifecycleCanceledError
+		|| (error instanceof Error && error.cause instanceof SqlPolicyLifecycleCanceledError);
+}
+
 type PolicySnapshot = {
 	schemaVersion: typeof POLICY_SCHEMA_VERSION;
 	version: number;
@@ -106,9 +113,11 @@ export class SqlLeaveNoTracePolicyStore implements SqlLeaveNoTracePolicy, vscode
 	private readonly commitPath: string | undefined;
 	private readonly migrationPath: string | undefined;
 	private readonly lockTarget: string | undefined;
-	private readonly watcher: fs.StatWatcher | undefined;
+	private readonly watcherListener: ((current: fs.Stats, previous: fs.Stats) => void) | undefined;
 	private snapshot: PolicySnapshot;
 	private readonly readyPromise: Promise<void>;
+	private refreshTail: Promise<void> = Promise.resolve();
+	private mutationTail: Promise<void> = Promise.resolve();
 	private recoveryBlocked = false;
 	private disposed = false;
 
@@ -133,11 +142,13 @@ export class SqlLeaveNoTracePolicyStore implements SqlLeaveNoTracePolicy, vscode
 		this.lockTarget = this.policyPath ? `${this.policyPath}.write` : undefined;
 		this.readyPromise = this.initialize();
 		if (this.policyPath) {
-			this.watcher = fs.watchFile(this.policyPath, { interval: 250, persistent: false }, () => {
+			this.watcherListener = () => {
+				if (this.disposed) return;
 				void this.refresh().catch(error => {
 					this.output.warn(`[sql-lnt] Failed to refresh shared policy: ${error instanceof Error ? error.message : String(error)}`);
 				});
-			});
+			};
+			fs.watchFile(this.policyPath, { interval: 250, persistent: false }, this.watcherListener);
 		}
 	}
 
@@ -332,92 +343,135 @@ export class SqlLeaveNoTracePolicyStore implements SqlLeaveNoTracePolicy, vscode
 	}
 
 	async refresh(): Promise<string[]> {
-		await this.readyPromise;
-		if (!this.policyPath) return this.getConnectionIds();
-		const disk = await this.readSnapshot();
-		if (disk.kind === 'valid') await this.applySnapshot(disk.snapshot);
-		else if (disk.kind === 'corrupt') await this.applySnapshot(await this.recoverCorruptPolicy());
-		else await this.applySnapshot(await this.recoverMissingPolicy());
+		const run = this.refreshTail.catch(() => undefined).then(() => this.refreshOnce());
+		this.refreshTail = run.then(() => undefined, () => undefined);
+		await run;
 		return this.getConnectionIds();
+	}
+
+	async waitForRefreshSettlement(): Promise<void> {
+		await this.readyPromise.catch(() => undefined);
+		for (;;) {
+			const refreshTail = this.refreshTail;
+			const mutationTail = this.mutationTail;
+			await Promise.all([refreshTail, mutationTail]);
+			if (refreshTail === this.refreshTail && mutationTail === this.mutationTail) return;
+		}
 	}
 
 	async setConnection(connectionId: string, enabled: boolean): Promise<void> {
 		const id = String(connectionId || '').trim();
-		if (!id) return;
-		await this.readyPromise;
-		if (!this.policyPath || !this.lockTarget) {
-			const ids = enabled
-				? normalizeIds([...this.snapshot.connectionIds, id])
-				: this.snapshot.connectionIds.filter(candidate => candidate !== id);
-			await this.applySnapshot({
-				schemaVersion: POLICY_SCHEMA_VERSION,
-				version: this.snapshot.version + 1,
-				connectionIds: ids,
-				revocationGenerations: enabled && !this.snapshot.connectionIds.includes(id)
-					? { ...this.snapshot.revocationGenerations, [id]: (this.snapshot.revocationGenerations[id] ?? 0) + 1 }
-					: { ...this.snapshot.revocationGenerations },
-				updatedAt: new Date().toISOString(),
-				recoveryBlocked: this.snapshot.recoveryBlocked,
-			});
-			return;
-		}
-
-		await fs.promises.mkdir(path.dirname(this.policyPath), { recursive: true });
-		const next = await withSqlStateFileLock(this.lockTarget, async () => {
-			const read = await this.readSnapshot();
-			const current = read.kind === 'valid'
-				? read.snapshot
-				: read.kind === 'corrupt'
-					? await this.recoverCorruptPolicyUnderLock()
-					: await this.recoverMissingPolicyUnderLock();
-			const ids = enabled
-				? normalizeIds([...current.connectionIds, id])
-				: current.connectionIds.filter(candidate => candidate !== id);
-			if (sameIds(ids, current.connectionIds)) {
-				return current;
+		if (!id || this.disposed) return;
+		const mutation = (async () => {
+			await this.readyPromise;
+			if (!this.policyPath || !this.lockTarget) {
+				const ids = enabled
+					? normalizeIds([...this.snapshot.connectionIds, id])
+					: this.snapshot.connectionIds.filter(candidate => candidate !== id);
+				await this.applySnapshot({
+					schemaVersion: POLICY_SCHEMA_VERSION,
+					version: this.snapshot.version + 1,
+					connectionIds: ids,
+					revocationGenerations: enabled && !this.snapshot.connectionIds.includes(id)
+						? { ...this.snapshot.revocationGenerations, [id]: (this.snapshot.revocationGenerations[id] ?? 0) + 1 }
+						: { ...this.snapshot.revocationGenerations },
+					updatedAt: new Date().toISOString(),
+					recoveryBlocked: this.snapshot.recoveryBlocked,
+				});
+				return;
 			}
-			const updated: PolicySnapshot = {
-				schemaVersion: POLICY_SCHEMA_VERSION,
-				version: current.version + 1,
-				connectionIds: ids,
-				revocationGenerations: enabled && !current.connectionIds.includes(id)
-					? { ...current.revocationGenerations, [id]: (current.revocationGenerations[id] ?? 0) + 1 }
-					: { ...current.revocationGenerations },
-				updatedAt: new Date().toISOString(),
-				recoveryBlocked: current.recoveryBlocked,
-			};
-			await this.writeSnapshot(updated);
-			return updated;
-		}, { staleMs: POLICY_LOCK_STALE_MS, retryUntilStale: true });
-		await this.applySnapshot(next);
+
+			await fs.promises.mkdir(path.dirname(this.policyPath), { recursive: true });
+			const next = await withSqlStateFileLock(this.lockTarget, async () => {
+				const read = await this.readSnapshot();
+				const current = read.kind === 'valid'
+					? read.snapshot
+					: read.kind === 'corrupt'
+						? await this.recoverCorruptPolicyUnderLock()
+						: await this.recoverMissingPolicyUnderLock();
+				const ids = enabled
+					? normalizeIds([...current.connectionIds, id])
+					: current.connectionIds.filter(candidate => candidate !== id);
+				if (sameIds(ids, current.connectionIds)) {
+					return current;
+				}
+				const updated: PolicySnapshot = {
+					schemaVersion: POLICY_SCHEMA_VERSION,
+					version: current.version + 1,
+					connectionIds: ids,
+					revocationGenerations: enabled && !current.connectionIds.includes(id)
+						? { ...current.revocationGenerations, [id]: (current.revocationGenerations[id] ?? 0) + 1 }
+						: { ...current.revocationGenerations },
+					updatedAt: new Date().toISOString(),
+					recoveryBlocked: current.recoveryBlocked,
+				};
+				await this.writeSnapshot(updated);
+				return updated;
+			}, { staleMs: POLICY_LOCK_STALE_MS, retryUntilStale: true });
+			await this.applySnapshot(next);
+		})();
+		this.trackMutation(mutation);
+		await mutation;
 	}
 
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		if (this.policyPath) fs.unwatchFile(this.policyPath);
-		this.watcher?.removeAllListeners();
+		if (this.policyPath && this.watcherListener) fs.unwatchFile(this.policyPath, this.watcherListener);
 		this.changeEmitter.dispose();
 	}
 
-	private async initialize(): Promise<void> {
-		if (!this.policyPath || !this.lockTarget) return;
-		await fs.promises.mkdir(path.dirname(this.policyPath), { recursive: true });
-		const snapshot = await withSqlStateFileLock(this.lockTarget, async () => {
-			const allowLegacyPrimary = !!this.migrationPath && !fs.existsSync(this.migrationPath);
-			const read = await this.readSnapshot(allowLegacyPrimary);
-			if (read.kind === 'valid') {
-				await this.writeSnapshot(read.snapshot);
-				return read.snapshot;
-			}
-			return read.kind === 'corrupt'
-				? this.recoverCorruptPolicyUnderLock()
-				: this.recoverMissingPolicyUnderLock(true);
-		}, { staleMs: POLICY_LOCK_STALE_MS, retryUntilStale: true });
-		await this.applySnapshot(snapshot, false);
+	private async refreshOnce(): Promise<void> {
+		await this.readyPromise;
+		if (this.disposed || !this.policyPath || !this.lockTarget) return;
+		await withSqlStateFileLock(this.lockTarget, async () => {
+			if (this.disposed) return;
+			const current = () => !this.disposed;
+			const read = await this.readSnapshot(false, current);
+			if (!read || this.disposed) return;
+			const snapshot = read.kind === 'valid'
+				? read.snapshot
+				: read.kind === 'corrupt'
+					? await this.recoverCorruptPolicyUnderLock(current)
+					: await this.recoverMissingPolicyUnderLock(false, current);
+			if (snapshot && !this.disposed) await this.applySnapshot(snapshot);
+		}, { staleMs: POLICY_LOCK_STALE_MS });
 	}
 
-	private async readSnapshot(allowUncommittedPrimary = false): Promise<PolicyReadResult> {
+	private trackMutation(mutation: Promise<void>): void {
+		const previous = this.mutationTail;
+		this.mutationTail = Promise.allSettled([previous, mutation]).then(() => undefined);
+	}
+
+	private async initialize(): Promise<void> {
+		if (this.disposed || !this.policyPath || !this.lockTarget) return;
+		await fs.promises.mkdir(path.dirname(this.policyPath), { recursive: true });
+		if (this.disposed) return;
+		await withSqlStateFileLock(this.lockTarget, async () => {
+			if (this.disposed) return;
+			const current = () => !this.disposed;
+			const allowLegacyPrimary = !!this.migrationPath && !fs.existsSync(this.migrationPath);
+			const read = await this.readSnapshot(allowLegacyPrimary, current);
+			if (!read || this.disposed) return;
+			if (read.kind === 'valid') {
+				if (!await this.writeSnapshot(read.snapshot, current)) return;
+				if (!this.disposed) await this.applySnapshot(read.snapshot, false);
+				return;
+			}
+			const snapshot = read.kind === 'corrupt'
+				? await this.recoverCorruptPolicyUnderLock(current)
+				: await this.recoverMissingPolicyUnderLock(true, current);
+			if (snapshot && !this.disposed) await this.applySnapshot(snapshot, false);
+		}, { staleMs: POLICY_LOCK_STALE_MS, retryUntilStale: true });
+	}
+
+	private async readSnapshot(allowUncommittedPrimary?: boolean): Promise<PolicyReadResult>;
+	private async readSnapshot(allowUncommittedPrimary: boolean, isCurrent: () => boolean): Promise<PolicyReadResult | undefined>;
+	private async readSnapshot(
+		allowUncommittedPrimary = false,
+		isCurrent: () => boolean = () => true,
+	): Promise<PolicyReadResult | undefined> {
+		if (!isCurrent()) return undefined;
 		if (!this.policyPath) return { kind: 'missing' };
 		if (!this.backupPath || !this.commitPath) return { kind: 'corrupt' };
 		const read = await readRecoverableSqlStateSnapshot({
@@ -428,9 +482,18 @@ export class SqlLeaveNoTracePolicyStore implements SqlLeaveNoTracePolicy, vscode
 			getIdentity: snapshot => ({ schemaVersion: snapshot.schemaVersion, version: snapshot.version }),
 			allowUncommittedPrimary,
 		});
+		if (!isCurrent()) return undefined;
 		if (read.kind === 'valid' && read.source === 'backup') {
-			if (read.primaryState === 'invalid') await quarantineCorruptSqlStateFile(this.policyPath);
-			await this.writeAtomic(this.policyPath, read.text);
+			try {
+				if (read.primaryState === 'invalid') {
+					if (!isCurrent()) return undefined;
+					await quarantineCorruptSqlStateFile(this.policyPath);
+				}
+				await this.writeAtomic(this.policyPath, read.text, isCurrent);
+			} catch (error) {
+				if (isSqlPolicyLifecycleCanceled(error)) return undefined;
+				throw error;
+			}
 		}
 		return read.kind === 'valid'
 			? { kind: 'valid', snapshot: read.value }
@@ -455,9 +518,13 @@ export class SqlLeaveNoTracePolicyStore implements SqlLeaveNoTracePolicy, vscode
 		}, { staleMs: POLICY_LOCK_STALE_MS });
 	}
 
-	private async recoverCorruptPolicyUnderLock(): Promise<PolicySnapshot> {
+	private async recoverCorruptPolicyUnderLock(): Promise<PolicySnapshot>;
+	private async recoverCorruptPolicyUnderLock(isCurrent: () => boolean): Promise<PolicySnapshot | undefined>;
+	private async recoverCorruptPolicyUnderLock(isCurrent: () => boolean = () => true): Promise<PolicySnapshot | undefined> {
+		if (!isCurrent()) return undefined;
 		if (this.policyPath) await quarantineCorruptSqlStateFile(this.policyPath);
 		const committed = await this.readCommittedBackup();
+		if (!isCurrent()) return undefined;
 		const recovered: PolicySnapshot = committed ?? {
 			schemaVersion: POLICY_SCHEMA_VERSION,
 			version: Math.max(Date.now(), this.snapshot.version + 1),
@@ -466,18 +533,28 @@ export class SqlLeaveNoTracePolicyStore implements SqlLeaveNoTracePolicy, vscode
 			updatedAt: new Date().toISOString(),
 			recoveryBlocked: true,
 		};
+		if (!await this.writeSnapshot(recovered, isCurrent)) return undefined;
 		this.recoveryBlocked = recovered.recoveryBlocked;
-		await this.writeSnapshot(recovered);
 		this.output.warn(committed
 			? '[sql-lnt] Quarantined a malformed shared policy file and restored its committed redundant snapshot.'
 			: '[sql-lnt] Quarantined a malformed shared policy file. SQL access remains blocked because no committed redundant snapshot was available.');
 		return recovered;
 	}
 
-	private async recoverMissingPolicyUnderLock(allowLegacyMigration = false): Promise<PolicySnapshot> {
+	private async recoverMissingPolicyUnderLock(allowLegacyMigration?: boolean): Promise<PolicySnapshot>;
+	private async recoverMissingPolicyUnderLock(
+		allowLegacyMigration: boolean,
+		isCurrent: () => boolean,
+	): Promise<PolicySnapshot | undefined>;
+	private async recoverMissingPolicyUnderLock(
+		allowLegacyMigration = false,
+		isCurrent: () => boolean = () => true,
+	): Promise<PolicySnapshot | undefined> {
+		if (!isCurrent()) return undefined;
 		const committed = await this.readCommittedBackup();
+		if (!isCurrent()) return undefined;
 		if (committed) {
-			await this.writeSnapshot(committed);
+			if (!await this.writeSnapshot(committed, isCurrent)) return undefined;
 			return committed;
 		}
 		const migrationCompleted = !!this.migrationPath && fs.existsSync(this.migrationPath);
@@ -496,7 +573,7 @@ export class SqlLeaveNoTracePolicyStore implements SqlLeaveNoTracePolicy, vscode
 			updatedAt: new Date().toISOString(),
 			recoveryBlocked: !mayMigrateLegacy,
 		};
-		await this.writeSnapshot(recovered);
+		if (!await this.writeSnapshot(recovered, isCurrent)) return undefined;
 		return recovered;
 	}
 
@@ -510,25 +587,41 @@ export class SqlLeaveNoTracePolicyStore implements SqlLeaveNoTracePolicy, vscode
 		});
 	}
 
-	private async writeSnapshot(snapshot: PolicySnapshot): Promise<void> {
-		if (!this.policyPath || !this.backupPath || !this.commitPath || !this.migrationPath) return;
+	private async writeSnapshot(snapshot: PolicySnapshot, isCurrent: () => boolean = () => true): Promise<boolean> {
+		if (!this.policyPath || !this.backupPath || !this.commitPath || !this.migrationPath || !isCurrent()) return false;
 		const snapshotText = `${JSON.stringify(snapshot, null, 2)}\n`;
-		await writeRecoverableSqlStateSnapshot({
-			primaryPath: this.policyPath,
-			backupPath: this.backupPath,
-			commitPath: this.commitPath,
-			migrationPath: this.migrationPath,
-			text: snapshotText,
-			identity: { schemaVersion: snapshot.schemaVersion, version: snapshot.version },
-			writeAtomic: (filePath, contents) => this.writeAtomic(filePath, contents),
+		try {
+			await writeRecoverableSqlStateSnapshot({
+				primaryPath: this.policyPath,
+				backupPath: this.backupPath,
+				commitPath: this.commitPath,
+				migrationPath: this.migrationPath,
+				text: snapshotText,
+				identity: { schemaVersion: snapshot.schemaVersion, version: snapshot.version },
+				writeAtomic: (filePath, contents) => this.writeAtomic(filePath, contents, isCurrent),
+				removeFile: async filePath => {
+					if (!isCurrent()) throw new SqlPolicyLifecycleCanceledError();
+					await fs.promises.rm(filePath, { force: true });
+				},
+			});
+			return isCurrent();
+		} catch (error) {
+			if (isSqlPolicyLifecycleCanceled(error)) return false;
+			throw error;
+		}
+	}
+
+	private async writeAtomic(filePath: string, contents: string, isCurrent: () => boolean = () => true): Promise<void> {
+		if (!isCurrent()) throw new SqlPolicyLifecycleCanceledError();
+		await atomicReplaceSqlStateFile(filePath, contents, {
+			assertCurrent: () => {
+				if (!isCurrent()) throw new SqlPolicyLifecycleCanceledError();
+			},
 		});
 	}
 
-	private async writeAtomic(filePath: string, contents: string): Promise<void> {
-		await atomicReplaceSqlStateFile(filePath, contents);
-	}
-
 	private async applySnapshot(snapshot: PolicySnapshot, emit: boolean = true): Promise<void> {
+		if (this.disposed) return;
 		const previous = this.snapshot;
 		if (snapshot.version < previous.version || (snapshot.version === previous.version
 			&& sameIds(snapshot.connectionIds, previous.connectionIds)

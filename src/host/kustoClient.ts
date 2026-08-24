@@ -305,12 +305,19 @@ export class KustoQueryClient {
 				}
 				this.invalidateClients(change.connectionIds, change.accountId);
 				if (change.reason === 'override' && change.accountPartition) {
-					void this.connectionCache?.clearAccountPartition(change.accountPartition);
-					if (this.context) void deleteCachedSchemasForAccountPartitions(this.context.globalStorageUri, new Set([change.accountPartition]));
+					this.trackLifecycleSideEffect(Promise.allSettled([
+						this.connectionCache?.clearAccountPartition(change.accountPartition),
+						this.context
+							? deleteCachedSchemasForAccountPartitions(this.context.globalStorageUri, new Set([change.accountPartition]))
+							: undefined,
+					]));
 				}
 			}));
 		}
 		if (connectionManager) {
+			if (typeof connectionManager.registerLifecycleFinalizer === 'function') {
+				this.subscriptions.push(connectionManager.registerLifecycleFinalizer(() => this.dispose()));
+			}
 			this.subscriptions.push(connectionManager.onDidChangeConnections(change => {
 				const ids = change.type === 'cleared'
 					? change.connections.map(connection => connection.id)
@@ -320,17 +327,43 @@ export class KustoQueryClient {
 				for (const id of ids) this.bumpConnectionRevision(id);
 				this.invalidateClients(ids);
 				if (change.type !== 'added') {
-					for (const id of ids) void this.connectionCache?.clearConnection(id);
-					if (context) void deleteCachedSchemasForConnections(context.globalStorageUri, new Set(ids));
+					this.trackLifecycleSideEffect(Promise.allSettled([
+						...ids.map(id => this.connectionCache?.clearConnection(id)),
+						context ? deleteCachedSchemasForConnections(context.globalStorageUri, new Set(ids)) : undefined,
+					]));
 				}
-				if (change.type === 'removed') void this.authPreferences?.removeConnection(change.connection.id);
+				if (change.type === 'removed') {
+					this.trackLifecycleSideEffect(this.authPreferences?.removeConnection(change.connection.id));
+				}
 				if (change.type === 'cleared') {
-					for (const connection of change.connections) void this.authPreferences?.removeConnection(connection.id);
+					this.trackLifecycleSideEffect(Promise.allSettled(
+						change.connections.map(connection => this.authPreferences?.removeConnection(connection.id)),
+					));
 				}
 			}));
-			void this.authPreferences?.migrateLegacyMappings(connectionManager.getConnections());
-			void this.connectionCache?.migrateLegacy(connectionManager.getConnections());
+			this.trackLifecycleSideEffect(Promise.allSettled([
+				this.authPreferences?.migrateLegacyMappings(connectionManager.getConnections()),
+				this.connectionCache?.migrateLegacy(connectionManager.getConnections()),
+			]));
 		}
+	}
+
+	private trackLifecycleSideEffect(operation: PromiseLike<unknown> | undefined): void {
+		if (!operation) return;
+		const track = (this.connectionManager as Partial<ConnectionManager> | undefined)?.trackLifecycleSideEffect;
+		if (typeof track === 'function') {
+			track.call(this.connectionManager, operation);
+			return;
+		}
+		void Promise.resolve(operation).catch(() => undefined);
+	}
+
+	private runLifecycleOperation<T>(operation: () => Promise<T>): Promise<T> {
+		this.assertNotDisposed();
+		if (this.connectionManager && typeof this.connectionManager.runLifecycleOperation === 'function') {
+			return this.connectionManager.runLifecycleOperation(operation);
+		}
+		return operation();
 	}
 
 	private static readonly APPLICATION_NAME = 'KustoWorkbench';
@@ -706,7 +739,15 @@ export class KustoQueryClient {
 			?? { mode: 'automatic' };
 	}
 
-	public async withTransientAuthPreference<T>(
+	public withTransientAuthPreference<T>(
+		connection: KustoConnection,
+		preference: KustoAccountPreference,
+		operation: () => Promise<T>,
+	): Promise<T> {
+		return this.runLifecycleOperation(() => this.withTransientAuthPreferenceCore(connection, preference, operation));
+	}
+
+	private async withTransientAuthPreferenceCore<T>(
 		connection: KustoConnection,
 		preference: KustoAccountPreference,
 		operation: () => Promise<T>,
@@ -812,10 +853,18 @@ export class KustoQueryClient {
 	 * Forces an interactive auth prompt for the given connection and refreshes the cached client.
 	 * Useful for explicit user actions like "Refresh databases" when the current account has no access.
 	 */
-	public async reauthenticate(
+	public reauthenticate(
 		connection: KustoConnection,
 		promptMode: 'clearPreference' | 'forceNewSession' = 'clearPreference',
 		traceId?: string
+	): Promise<void> {
+		return this.runLifecycleOperation(() => this.reauthenticateCore(connection, promptMode, traceId));
+	}
+
+	private async reauthenticateCore(
+		connection: KustoConnection,
+		promptMode: 'clearPreference' | 'forceNewSession',
+		traceId?: string,
 	): Promise<void> {
 		this.assertNotDisposed();
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
@@ -1463,7 +1512,11 @@ export class KustoQueryClient {
 		await this.authPreferences?.waitForProviderAccountRefresh();
 	}
 
-	async getDatabasesWithIdentity(connection: KustoConnection, forceRefresh: boolean = false, opts?: DatabaseDiscoveryOptions): Promise<KustoDatabaseDiscoveryResult> {
+	getDatabasesWithIdentity(connection: KustoConnection, forceRefresh: boolean = false, opts?: DatabaseDiscoveryOptions): Promise<KustoDatabaseDiscoveryResult> {
+		return this.runLifecycleOperation(() => this.getDatabasesWithIdentityCore(connection, forceRefresh, opts));
+	}
+
+	private async getDatabasesWithIdentityCore(connection: KustoConnection, forceRefresh: boolean, opts?: DatabaseDiscoveryOptions): Promise<KustoDatabaseDiscoveryResult> {
 		this.assertNotDisposed();
 		if (opts?.dispatchAuthenticated && !this.connectionManager) {
 			throw new Error('Authenticated metadata dispatch requires a connection manager.');
@@ -1670,7 +1723,18 @@ export class KustoQueryClient {
 		return (await this.executeQueryWithIdentity(connection, database, query)).result;
 	}
 
-	async executeQueryWithIdentity(
+	executeQueryWithIdentity(
+		connection: KustoConnection,
+		database: string,
+		query: string,
+		dispatchAuthenticated?: KustoAuthenticatedDispatchGate,
+	): Promise<QueryResultWithIdentity> {
+		return this.runLifecycleOperation(() => this.executeQueryWithIdentityCore(
+			connection, database, query, dispatchAuthenticated,
+		));
+	}
+
+	private async executeQueryWithIdentityCore(
 		connection: KustoConnection,
 		database: string,
 		query: string,
@@ -1792,7 +1856,7 @@ export class KustoQueryClient {
 			for (const attempt of submittedAttempts) {
 				if (serverCancelStarted.has(attempt.clientActivityId)) continue;
 				serverCancelStarted.add(attempt.clientActivityId);
-				void this.cancelQueryByClientActivityId(
+				const cancellation = this.cancelQueryByClientActivityId(
 					connection,
 					database,
 					attempt.clientActivityId,
@@ -1801,6 +1865,7 @@ export class KustoQueryClient {
 				).catch(() => {
 					// Server-side cancellation is best-effort. Local cancellation already won.
 				});
+				this.trackLifecycleSideEffect(cancellation);
 			}
 		};
 
@@ -1947,18 +2012,27 @@ export class KustoQueryClient {
 
 		// Race the actual execution against the cancel promise so that calling
 		// cancel() causes the outer promise to reject immediately.
-		const promise = Promise.race([executeAsync(), cancelPromise]).finally(() => {
+		const promise = this.runLifecycleOperation(() => Promise.race([executeAsync(), cancelPromise]).finally(() => {
 			settled = true;
-		});
+		}));
 
 		return { promise, cancel, clientActivityId, getAccountPartition: () => capturedAuth?.accountPartition };
 	}
 
-	async getDatabaseSchema(
+	getDatabaseSchema(
 		connection: KustoConnection,
 		database: string,
 		forceRefresh: boolean = false,
 		opts?: SchemaDiscoveryOptions
+	): Promise<DatabaseSchemaResult> {
+		return this.runLifecycleOperation(() => this.getDatabaseSchemaCore(connection, database, forceRefresh, opts));
+	}
+
+	private async getDatabaseSchemaCore(
+		connection: KustoConnection,
+		database: string,
+		forceRefresh: boolean,
+		opts?: SchemaDiscoveryOptions,
 	): Promise<DatabaseSchemaResult> {
 		this.assertNotDisposed();
 		if (opts?.dispatchAuthenticated && !this.connectionManager) {

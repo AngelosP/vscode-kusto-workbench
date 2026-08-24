@@ -40,6 +40,7 @@ export interface SqlStateLockOptions {
 
 export interface AtomicReplaceSqlStateFileOptions {
 	retryDelaysMs?: readonly number[];
+	assertCurrent?: () => void;
 }
 
 export function isSqlStateLockContentionError(error: unknown): boolean {
@@ -54,6 +55,7 @@ export interface RecoverableSqlStateSnapshotOptions {
 	text: string;
 	identity: SqlStateCommitIdentity;
 	writeAtomic?: (filePath: string, contents: string) => Promise<void>;
+	removeFile?: (filePath: string) => Promise<void>;
 }
 
 export async function withSqlStateFileLock<T>(
@@ -90,12 +92,14 @@ export async function atomicReplaceSqlStateFile(
 	contents: string | Uint8Array,
 	options: AtomicReplaceSqlStateFileOptions = {},
 ): Promise<void> {
+	options.assertCurrent?.();
 	await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
 	const tempPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
 	await fs.promises.writeFile(tempPath, contents);
 	try {
 		const retryDelays = options.retryDelaysMs ?? DEFAULT_RENAME_RETRY_DELAYS_MS;
 		for (let attempt = 0; ; attempt += 1) {
+			options.assertCurrent?.();
 			try {
 				await fs.promises.rename(tempPath, filePath);
 				return;
@@ -166,6 +170,7 @@ export async function readCommittedSqlStateBackup<T>(options: {
 
 export async function writeRecoverableSqlStateSnapshot(options: RecoverableSqlStateSnapshotOptions): Promise<void> {
 	const writeAtomic = options.writeAtomic ?? atomicReplaceSqlStateFile;
+	const removeFile = options.removeFile ?? (filePath => fs.promises.rm(filePath, { force: true }));
 	const previousCommitted = await readVerifiedSqlStateBackup(options.backupPath, options.commitPath);
 	const activeSlot = previousCommitted?.slot;
 	const nextSlot: 0 | 1 = activeSlot === 0 ? 1 : 0;
@@ -178,7 +183,7 @@ export async function writeRecoverableSqlStateSnapshot(options: RecoverableSqlSt
 	} catch (commitError) {
 		try {
 			if (previousPrimary !== undefined) await writeAtomic(options.primaryPath, previousPrimary);
-			else await fs.promises.rm(options.primaryPath, { force: true });
+			else await removeFile(options.primaryPath);
 		} catch (rollbackError) {
 			throw new Error(`Failed to publish SQL state commit and restore the previous primary: ${String(rollbackError)}`, { cause: commitError });
 		}

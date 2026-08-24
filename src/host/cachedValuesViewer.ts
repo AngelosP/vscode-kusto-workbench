@@ -297,7 +297,9 @@ export class CachedValuesViewerV2 {
 			void this.sendSnapshotToWebview();
 		});
 		if (sqlConnectionSubscription) this.disposables.push(sqlConnectionSubscription);
-		this.panel.webview.onDidReceiveMessage((msg: IncomingMessage) => void this.onMessage(msg), null, this.disposables);
+		this.panel.webview.onDidReceiveMessage((msg: IncomingMessage) => {
+			void this.connectionManager.runLifecycleOperation(() => this.onMessage(msg)).catch(() => undefined);
+		}, null, this.disposables);
 		this.panel.webview.html = this.buildHtml(this.panel.webview);
 	}
 

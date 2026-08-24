@@ -3,10 +3,25 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Uri } from 'vscode';
-import { SqlLeaveNoTracePolicyStore } from '../../../src/host/sql/sqlLeaveNoTracePolicyStore';
+import { SqlLeaveNoTracePolicyStore as SqlLeaveNoTracePolicyStoreImplementation } from '../../../src/host/sql/sqlLeaveNoTracePolicyStore';
 import { SQL_LEAVE_NO_TRACE_STORAGE_KEY } from '../../../src/host/sql/sqlLeaveNoTrace';
+import { withSqlStateFileLock } from '../../../src/host/sql/sqlStateTransaction';
 
 const tempDirectories: string[] = [];
+const trackedStores = new Set<SqlLeaveNoTracePolicyStoreImplementation>();
+const sqlPolicyWriteSequence = [
+	'sql-leave-no-trace-policy.backup.v1.json',
+	'sql-leave-no-trace-policy.v1.json',
+	'sql-leave-no-trace-policy.commit.v1.json',
+	'sql-leave-no-trace-policy-migrated.v1',
+] as const;
+
+class SqlLeaveNoTracePolicyStore extends SqlLeaveNoTracePolicyStoreImplementation {
+	constructor(context: any, storeOutput: any) {
+		super(context, storeOutput);
+		trackedStores.add(this);
+	}
+}
 
 function deferred<T>() {
 	let resolve!: (value: T | PromiseLike<T>) => void;
@@ -14,9 +29,14 @@ function deferred<T>() {
 	return { promise, resolve };
 }
 
-afterEach(() => {
+
+afterEach(async () => {
+	const stores = [...trackedStores];
+	trackedStores.clear();
+	for (const store of stores) store.dispose();
+	await Promise.all(stores.map(store => store.waitForRefreshSettlement()));
 	for (const directory of tempDirectories.splice(0)) {
-		fs.rmSync(directory, { recursive: true, force: true });
+		await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 	}
 });
 
@@ -577,6 +597,132 @@ describe('SqlLeaveNoTracePolicyStore', () => {
 		} finally {
 			store.dispose();
 		}
+	});
+
+	it('does not recreate policy files when a watcher refresh resumes after disposal', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-lnt-disposed-refresh-'));
+		tempDirectories.push(directory);
+		const store = new SqlLeaveNoTracePolicyStore(createContext(directory), createOutput());
+		const lockTarget = path.join(directory, 'sql-leave-no-trace-policy.v1.json.write');
+		let releaseLock!: () => void;
+		let markLockHeld!: () => void;
+		const lockHeld = new Promise<void>(resolve => { markLockHeld = resolve; });
+		const lockGate = new Promise<void>(resolve => { releaseLock = resolve; });
+		let heldLock: Promise<void> | undefined;
+		try {
+			await store.refresh();
+			await store.setConnection('sql-sensitive', true);
+			await store.waitForRefreshSettlement();
+			heldLock = withSqlStateFileLock(lockTarget, async () => {
+				markLockHeld();
+				await lockGate;
+			});
+			await lockHeld;
+			const refreshOnce = vi.spyOn(store as any, 'refreshOnce');
+			let refreshSettled = false;
+			await fs.promises.utimes(
+				path.join(directory, 'sql-leave-no-trace-policy.v1.json'),
+				new Date(),
+				new Date(Date.now() + 2_000),
+			);
+			await vi.waitFor(() => expect(refreshOnce).toHaveBeenCalled(), { timeout: 5000 });
+			void (store as any).refreshTail.finally(() => { refreshSettled = true; });
+			expect(refreshSettled).toBe(false);
+
+			store.dispose();
+			for (const fileName of [
+				'sql-leave-no-trace-policy.v1.json',
+				'sql-leave-no-trace-policy.backup.v1.json',
+				'sql-leave-no-trace-policy.backup.v1.json.slot1',
+				'sql-leave-no-trace-policy.commit.v1.json',
+			]) fs.rmSync(path.join(directory, fileName), { force: true });
+			releaseLock();
+			await heldLock;
+			await store.waitForRefreshSettlement();
+
+			expect(fs.existsSync(path.join(directory, 'sql-leave-no-trace-policy.v1.json'))).toBe(false);
+			expect(store.isProtected('sql-sensitive')).toBe(true);
+		} finally {
+			releaseLock?.();
+			await Promise.allSettled([heldLock].filter(Boolean) as Promise<unknown>[]);
+			store.dispose();
+			await store.waitForRefreshSettlement();
+		}
+	});
+
+	it('does not create policy files when lock-waiting initialization resumes after disposal', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-lnt-disposed-initialize-'));
+		tempDirectories.push(directory);
+		const lockTarget = path.join(directory, 'sql-leave-no-trace-policy.v1.json.write');
+		let releaseLock!: () => void;
+		let markLockHeld!: () => void;
+		const lockHeld = new Promise<void>(resolve => { markLockHeld = resolve; });
+		const lockGate = new Promise<void>(resolve => { releaseLock = resolve; });
+		const heldLock = withSqlStateFileLock(lockTarget, async () => {
+			markLockHeld();
+			await lockGate;
+		});
+		await lockHeld;
+		const store = new SqlLeaveNoTracePolicyStore(createContext(directory), createOutput());
+		store.dispose();
+
+		releaseLock();
+		await heldLock;
+		await store.refresh();
+		await store.waitForRefreshSettlement();
+
+		for (const fileName of sqlPolicyWriteSequence) {
+			expect(fs.existsSync(path.join(directory, fileName))).toBe(false);
+		}
+	});
+
+	it.each(sqlPolicyWriteSequence)(
+		'stops initialization after the %s transaction mutation when disposed',
+		async stopAfter => {
+			const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-lnt-disposed-transaction-'));
+			tempDirectories.push(directory);
+			const renamedFiles: string[] = [];
+			const realRename = fs.promises.rename.bind(fs.promises);
+			let store: SqlLeaveNoTracePolicyStore | undefined;
+			const renameSpy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (oldPath, newPath) => {
+				await realRename(oldPath, newPath);
+				const fileName = path.basename(String(newPath));
+				if (!sqlPolicyWriteSequence.includes(fileName as typeof sqlPolicyWriteSequence[number])) return;
+				renamedFiles.push(fileName);
+				if (fileName === stopAfter) store?.dispose();
+			});
+			try {
+				store = new SqlLeaveNoTracePolicyStore(createContext(directory), createOutput());
+				await store.refresh();
+				await store.waitForRefreshSettlement();
+
+				const stopIndex = sqlPolicyWriteSequence.indexOf(stopAfter);
+				expect(renamedFiles).toEqual(sqlPolicyWriteSequence.slice(0, stopIndex + 1));
+				expect((store as any).snapshot.version).toBe(0);
+				expect(fs.existsSync(path.join(directory, stopAfter))).toBe(true);
+				for (const fileName of sqlPolicyWriteSequence.slice(stopIndex + 1)) {
+					expect(fs.existsSync(path.join(directory, fileName))).toBe(false);
+				}
+			} finally {
+				renameSpy.mockRestore();
+				store?.dispose();
+			}
+		},
+	);
+
+	it('keeps a same-path policy observer active when a peer store is disposed', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-lnt-watcher-owner-'));
+		tempDirectories.push(directory);
+		const writer = new SqlLeaveNoTracePolicyStore(createContext(directory), createOutput());
+		const disposedPeer = new SqlLeaveNoTracePolicyStore(createContext(directory), createOutput());
+		const survivor = new SqlLeaveNoTracePolicyStore(createContext(directory), createOutput());
+		await Promise.all([writer.refresh(), disposedPeer.refresh(), survivor.refresh()]);
+
+		disposedPeer.dispose();
+		await disposedPeer.waitForRefreshSettlement();
+		await writer.setConnection('sql-sensitive', true);
+
+		await vi.waitFor(() => expect(survivor.isProtected('sql-sensitive')).toBe(true), { timeout: 5000 });
 	});
 
 	it.each(['{}', JSON.stringify({ schemaVersion: 1, version: 1, updatedAt: '' })])('persists fail-closed recovery across restart for structural corruption: %s', async contents => {

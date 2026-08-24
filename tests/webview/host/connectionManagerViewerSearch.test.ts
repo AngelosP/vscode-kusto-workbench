@@ -576,6 +576,19 @@ describe('ConnectionManagerViewerV2 new KQLX files', () => {
 });
 
 describe('ConnectionManagerViewerV2 mutation completion', () => {
+	it('admits each complete webview message through the manager lifecycle', async () => {
+		const viewer = createViewerHarness();
+		const message = { type: 'requestSnapshot' };
+		const onMessage = vi.spyOn(viewer, 'onMessage').mockResolvedValue(undefined);
+		viewer.connectionManager = {
+			runLifecycleOperation: vi.fn(async (operation: () => Promise<unknown>) => operation()),
+		};
+
+		viewer.handleWebviewMessage(message);
+		await vi.waitFor(() => expect(onMessage).toHaveBeenCalledWith(message));
+		expect(viewer.connectionManager.runLifecycleOperation).toHaveBeenCalledOnce();
+	});
+
 	it('posts the final snapshot only after explicit account persistence settles', async () => {
 		let settlePreference!: () => void;
 		const preferenceGate = new Promise<void>(resolve => { settlePreference = resolve; });

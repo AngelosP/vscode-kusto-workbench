@@ -41,6 +41,13 @@ const ORPHAN_CLEANUP_FILENAME = 'sql-orphan-secret-cleanup.v1.json';
 const LOCK_STALE_MS = 30_000;
 const MUTATION_LEASE_MS = 2 * 60_000;
 
+class SqlConnectionLifecycleCanceledError extends Error {}
+
+function isSqlConnectionLifecycleCanceled(error: unknown): boolean {
+	return error instanceof SqlConnectionLifecycleCanceledError
+		|| (error instanceof Error && error.cause instanceof SqlConnectionLifecycleCanceledError);
+}
+
 type MutationLease = {
 	operationId: string;
 	expiresAt: number;
@@ -233,6 +240,8 @@ export class SqlConnectionManager implements vscode.Disposable {
 	private readonly lockTarget: string | undefined;
 	private readonly orphanCleanupPath: string | undefined;
 	private readonly readyPromise: Promise<void>;
+	private readonly watcherListener: ((current: fs.Stats, previous: fs.Stats) => void) | undefined;
+	private refreshTail: Promise<void> = Promise.resolve();
 	private disposed = false;
 
 	constructor(private readonly context: vscode.ExtensionContext) {
@@ -246,9 +255,11 @@ export class SqlConnectionManager implements vscode.Disposable {
 		this.orphanCleanupPath = storageRoot ? path.join(storageRoot, ORPHAN_CLEANUP_FILENAME) : undefined;
 		this.readyPromise = this.initialize();
 		if (this.snapshotPath) {
-			fs.watchFile(this.snapshotPath, { interval: 250, persistent: false }, () => {
+			this.watcherListener = () => {
+				if (this.disposed) return;
 				void this.refresh().catch(() => undefined);
-			});
+			};
+			fs.watchFile(this.snapshotPath, { interval: 250, persistent: false }, this.watcherListener);
 		}
 	}
 
@@ -430,6 +441,7 @@ export class SqlConnectionManager implements vscode.Disposable {
 	}
 
 	async assertConnectionCurrent(connection: SqlConnection): Promise<void> {
+		this.assertActive();
 		await this.readyPromise;
 		await this.withSnapshotLock(async snapshot => {
 			this.assertSnapshotOwner(snapshot, connection);
@@ -440,6 +452,7 @@ export class SqlConnectionManager implements vscode.Disposable {
 		connection: SqlConnection,
 		prepare: () => Promise<SqlDispatchHandle<T>>,
 	): Promise<SqlDispatchHandle<T>> {
+		this.assertActive();
 		await this.readyPromise;
 		return this.withSnapshotLock(async snapshot => {
 			this.assertSnapshotOwner(snapshot, connection);
@@ -451,6 +464,7 @@ export class SqlConnectionManager implements vscode.Disposable {
 		prepare: (snapshot: { connections: readonly SqlConnection[]; version: number }) => Promise<SqlDispatchHandle<T>>,
 		lockOptions: SqlStateLockOptions = {},
 	): Promise<SqlDispatchHandle<T>> {
+		this.assertActive();
 		await this.readyPromise;
 		return this.withSnapshotLock(async snapshot => prepare({
 			connections: snapshot.connections.map(connection => ({ ...connection })),
@@ -459,6 +473,7 @@ export class SqlConnectionManager implements vscode.Disposable {
 	}
 
 	async awaitSnapshotLockReady(): Promise<void> {
+		this.assertActive();
 		await this.readyPromise;
 		if (!this.lockTarget) return;
 		await withSqlStateFileLock(this.lockTarget, async () => undefined, {
@@ -471,6 +486,7 @@ export class SqlConnectionManager implements vscode.Disposable {
 		run: (snapshot: { connections: readonly SqlConnection[]; version: number }) => Promise<T>,
 		lockOptions: SqlStateLockOptions = {},
 	): Promise<T> {
+		this.assertActive();
 		await this.readyPromise;
 		return this.withSnapshotLock(async snapshot => run({
 			connections: snapshot.connections.map(connection => ({ ...connection })),
@@ -479,6 +495,7 @@ export class SqlConnectionManager implements vscode.Disposable {
 	}
 
 	async getPasswordForConnection(connection: SqlConnection): Promise<string | undefined> {
+		this.assertActive();
 		await this.readyPromise;
 		return this.withSnapshotLock(async snapshot => {
 			this.assertSnapshotOwner(snapshot, connection);
@@ -486,54 +503,90 @@ export class SqlConnectionManager implements vscode.Disposable {
 		});
 	}
 
+	async waitForRefreshSettlement(): Promise<void> {
+		await this.readyPromise.catch(() => undefined);
+		for (;;) {
+			const mutationTail = this.mutationTail;
+			const refreshTail = this.refreshTail;
+			await Promise.all([mutationTail, refreshTail]);
+			if (mutationTail === this.mutationTail && refreshTail === this.refreshTail) return;
+		}
+	}
+
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		if (this.snapshotPath) fs.unwatchFile(this.snapshotPath);
+		if (this.snapshotPath && this.watcherListener) fs.unwatchFile(this.snapshotPath, this.watcherListener);
 		this.changeEmitter.dispose();
 	}
 
 	private async initialize(): Promise<void> {
+		const isCurrent = () => !this.disposed;
+		try {
 		await this.withSnapshotLock(async snapshot => {
+			if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 			let current = snapshot;
-			const orphanJournalIds = await this.readOrphanCleanupIds();
+			const orphanJournalIds = await this.readOrphanCleanupIds(isCurrent);
+			if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 			const orphanedFailedLeaseIds = [...new Set([...Object.entries(current.mutationLeases)
 				.filter(([connectionId, lease]) => lease.failed === true && !current.connections.some(connection => connection.id === connectionId))
 				.map(([connectionId]) => connectionId), ...orphanJournalIds])];
 			const remainingOrphanIds = new Set(orphanJournalIds);
 			for (const connectionId of orphanedFailedLeaseIds) {
+				if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 				try {
 					await this.deletePasswordRaw(connectionId);
+					if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 					remainingOrphanIds.delete(connectionId);
 					const mutationLeases = { ...current.mutationLeases };
 					delete mutationLeases[connectionId];
 					current = { ...current, version: current.version + 1, mutationLeases };
-				} catch { /* keep the failed cleanup tombstone */ }
+				} catch (error) {
+					if (isSqlConnectionLifecycleCanceled(error)) throw error;
+					// Keep the failed cleanup tombstone.
+				}
 			}
-			await this.writeOrphanCleanupIds([...remainingOrphanIds]);
+			if (!await this.writeOrphanCleanupIds([...remainingOrphanIds], isCurrent)) return;
 			if (snapshot.version === 0 && this.snapshotPath) {
 				current = { ...snapshot, version: 1, connections: snapshot.connections.length > 0 ? snapshot.connections : [...this.connections] };
 			}
 			if (current !== snapshot) {
-				await this.writeSnapshotFile(current);
+				if (!await this.writeSnapshotFile(current, isCurrent)) return;
+				if (!isCurrent()) return;
 				try { await this.mirrorConnections(current.connections); } catch { /* canonical file is authoritative */ }
 			} else if (this.snapshotPath) {
-				await this.writeSnapshotFile(current);
+				if (!await this.writeSnapshotFile(current, isCurrent)) return;
 			}
-			this.applySnapshot(current);
-		}, true, true);
+			if (isCurrent()) this.applySnapshot(current);
+		}, true, true, {}, isCurrent);
+		} catch (error) {
+			if (!isSqlConnectionLifecycleCanceled(error)) throw error;
+		}
 	}
 
 	private async refresh(): Promise<void> {
+		const run = this.refreshTail.catch(() => undefined).then(() => this.refreshOnce());
+		this.refreshTail = run.then(() => undefined, () => undefined);
+		await run;
+	}
+
+	private async refreshOnce(): Promise<void> {
 		await this.readyPromise;
+		if (this.disposed) return;
+		const isCurrent = () => !this.disposed;
+		try {
 		await this.withSnapshotLock(async snapshot => {
+			if (!isCurrent()) return;
 			let current = snapshot;
 			if (snapshot.version === 0 && this.snapshotPath) {
 				current = { ...snapshot, version: Math.max(1, this.snapshotVersion + 1), connections: snapshot.connections.length > 0 ? snapshot.connections : this.connections };
-				await this.writeSnapshotFile(current);
+				if (!await this.writeSnapshotFile(current, isCurrent)) return;
 			}
-			this.applySnapshot(current);
-		});
+			if (isCurrent()) this.applySnapshot(current);
+		}, false, false, {}, isCurrent);
+		} catch (error) {
+			if (!isSqlConnectionLifecycleCanceled(error)) throw error;
+		}
 	}
 
 	private assertSnapshotOwner(snapshot: ConnectionSnapshot, connection: SqlConnection): void {
@@ -600,6 +653,7 @@ export class SqlConnectionManager implements vscode.Disposable {
 	}
 
 	private applySnapshot(snapshot: ConnectionSnapshot): void {
+		if (this.disposed) return;
 		if (snapshot.version < this.snapshotVersion) return;
 		const changed = !sameConnections(this.connections, snapshot.connections);
 		this.snapshotVersion = snapshot.version;
@@ -622,15 +676,20 @@ export class SqlConnectionManager implements vscode.Disposable {
 		allowLegacyMigration = false,
 		retryUntilStale = false,
 		lockOptions: SqlStateLockOptions = {},
+		isCurrent: () => boolean = () => true,
 	): Promise<T> {
 		if (this.snapshotPath && this.lockTarget) {
 			return withSqlStateFileLock(this.lockTarget, async () => {
-				const snapshot = await this.readSnapshot(allowLegacyMigration);
+				if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
+				const snapshot = await this.readSnapshot(allowLegacyMigration, isCurrent);
+				if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 				const recovered = this.failSurvivingMutationLeases(snapshot);
 				if (recovered !== snapshot) {
-					await this.writeSnapshotFile(recovered);
+					if (!await this.writeSnapshotFile(recovered, isCurrent)) throw new SqlConnectionLifecycleCanceledError();
+					if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 					this.applySnapshot(recovered);
 				}
+				if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 				return await action(recovered);
 			}, { staleMs: LOCK_STALE_MS, retryUntilStale, ...lockOptions });
 		}
@@ -638,6 +697,7 @@ export class SqlConnectionManager implements vscode.Disposable {
 		const previous = runtime.tail;
 		let result!: T;
 		const current = previous.catch(() => undefined).then(async () => {
+			if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 			const fallback = normalizeConnections(this.context.globalState.get<unknown>(STORAGE_KEYS.connections));
 			result = await action(runtime.snapshot ?? parseSnapshot(undefined, fallback));
 		});
@@ -646,12 +706,16 @@ export class SqlConnectionManager implements vscode.Disposable {
 		return result;
 	}
 
-	private async readSnapshot(allowLegacyMigration = false): Promise<ConnectionSnapshot> {
+	private async readSnapshot(
+		allowLegacyMigration = false,
+		isCurrent: () => boolean = () => true,
+	): Promise<ConnectionSnapshot> {
+		if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 		if (!this.snapshotPath) {
 			const runtime = memoryRuntime(this.context.globalState as object);
 			return runtime.snapshot ?? parseSnapshot(undefined, normalizeConnections(this.context.globalState.get<unknown>(STORAGE_KEYS.connections)));
 		}
-		if (!this.snapshotBackupPath || !this.snapshotCommitPath) return this.recoverMissingSnapshot();
+		if (!this.snapshotBackupPath || !this.snapshotCommitPath) return this.recoverMissingSnapshot(isCurrent);
 		const migrationCompleted = !!this.snapshotMigrationPath && fs.existsSync(this.snapshotMigrationPath);
 		const read = await readRecoverableSqlStateSnapshot({
 			primaryPath: this.snapshotPath,
@@ -661,17 +725,22 @@ export class SqlConnectionManager implements vscode.Disposable {
 			getIdentity: snapshot => ({ schemaVersion: snapshot.schemaVersion, version: snapshot.version }),
 			allowUncommittedPrimary: allowLegacyMigration && !migrationCompleted,
 		});
+		if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 		if (read.kind === 'valid') {
 			if (read.source === 'backup') {
-				if (read.primaryState === 'invalid') await quarantineCorruptSqlStateFile(this.snapshotPath);
-				await this.writeAtomic(this.snapshotPath, read.text);
+				if (read.primaryState === 'invalid') {
+					if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
+					await quarantineCorruptSqlStateFile(this.snapshotPath);
+				}
+				await this.writeAtomic(this.snapshotPath, read.text, isCurrent);
 			}
 			return read.value;
 		}
-		if (read.kind === 'invalid') return this.recoverCorruptSnapshot();
+		if (read.kind === 'invalid') return this.recoverCorruptSnapshot(isCurrent);
 		const committed = await this.readCommittedSnapshotBackup();
+		if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 		if (committed) {
-			await this.writeSnapshotFile(committed);
+			if (!await this.writeSnapshotFile(committed, isCurrent)) throw new SqlConnectionLifecycleCanceledError();
 			return committed;
 		}
 		if (allowLegacyMigration && !migrationCompleted) {
@@ -681,39 +750,43 @@ export class SqlConnectionManager implements vscode.Disposable {
 				connections: normalizeConnections(this.context.globalState.get<unknown>(STORAGE_KEYS.connections)),
 				mutationLeases: {},
 			};
-			await this.writeSnapshotFile(migrated);
+			if (!await this.writeSnapshotFile(migrated, isCurrent)) throw new SqlConnectionLifecycleCanceledError();
 			return migrated;
 		}
-		return this.recoverMissingSnapshot();
+		return this.recoverMissingSnapshot(isCurrent);
 	}
 
-	private async recoverCorruptSnapshot(): Promise<ConnectionSnapshot> {
+	private async recoverCorruptSnapshot(isCurrent: () => boolean = () => true): Promise<ConnectionSnapshot> {
+		if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 		const committed = await this.readCommittedSnapshotBackup();
+		if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 		if (committed) {
 			if (this.snapshotPath) await quarantineCorruptSqlStateFile(this.snapshotPath);
-			await this.writeSnapshotFile(committed);
+			if (!await this.writeSnapshotFile(committed, isCurrent)) throw new SqlConnectionLifecycleCanceledError();
 			return committed;
 		}
 		if (this.snapshotPath) await quarantineCorruptSqlStateFile(this.snapshotPath);
-		return this.recoverMissingSnapshot();
+		return this.recoverMissingSnapshot(isCurrent);
 	}
 
-	private async recoverMissingSnapshot(): Promise<ConnectionSnapshot> {
+	private async recoverMissingSnapshot(isCurrent: () => boolean = () => true): Promise<ConnectionSnapshot> {
+		if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 		const legacyConnections = normalizeConnections(this.context.globalState.get<unknown>(STORAGE_KEYS.connections));
 		const mutationLeases: Record<string, MutationLease> = {};
 		for (const connection of legacyConnections) {
 			mutationLeases[connection.id] = { operationId: 'missing-snapshot-recovery', expiresAt: Number.MAX_SAFE_INTEGER, failed: true };
 		}
-		for (const connectionId of await this.readOrphanCleanupIds()) {
+		for (const connectionId of await this.readOrphanCleanupIds(isCurrent)) {
 			mutationLeases[connectionId] = { operationId: 'orphan-secret-cleanup', expiresAt: Number.MAX_SAFE_INTEGER, failed: true };
 		}
+		if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 		const recovered: ConnectionSnapshot = {
 			schemaVersion: SNAPSHOT_SCHEMA_VERSION,
 			version: Math.max(Date.now(), this.snapshotVersion + 1),
 			connections: [],
 			mutationLeases,
 		};
-		await this.writeSnapshotFile(recovered);
+		if (!await this.writeSnapshotFile(recovered, isCurrent)) throw new SqlConnectionLifecycleCanceledError();
 		return recovered;
 	}
 
@@ -727,16 +800,20 @@ export class SqlConnectionManager implements vscode.Disposable {
 		});
 	}
 
-	private async readOrphanCleanupIds(): Promise<string[]> {
+	private async readOrphanCleanupIds(isCurrent: () => boolean = () => true): Promise<string[]> {
+		if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 		if (!this.orphanCleanupPath) return [];
 		try {
 			const parsed = JSON.parse(await fs.promises.readFile(this.orphanCleanupPath, 'utf8')) as { connectionIds?: unknown };
+			if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 			if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.connectionIds)) {
 				throw new Error('Invalid SQL orphan-secret cleanup journal.');
 			}
 			return [...new Set(parsed.connectionIds.map(id => String(id || '').trim()).filter(Boolean))];
 		} catch (error) {
+			if (isSqlConnectionLifecycleCanceled(error)) throw error;
 			if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
+			if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
 			try { await quarantineCorruptSqlStateFile(this.orphanCleanupPath); } catch { /* canonical failed leases remain authoritative */ }
 			return [];
 		}
@@ -748,31 +825,63 @@ export class SqlConnectionManager implements vscode.Disposable {
 		await this.writeOrphanCleanupIds([...ids]);
 	}
 
-	private async writeOrphanCleanupIds(connectionIds: readonly string[]): Promise<void> {
-		if (!this.orphanCleanupPath) return;
-		await this.writeAtomic(this.orphanCleanupPath, `${JSON.stringify({ connectionIds: [...new Set(connectionIds)] })}\n`);
+	private async writeOrphanCleanupIds(
+		connectionIds: readonly string[],
+		isCurrent: () => boolean = () => true,
+	): Promise<boolean> {
+		if (!this.orphanCleanupPath || !isCurrent()) return false;
+		try {
+			await this.writeAtomic(
+				this.orphanCleanupPath,
+				`${JSON.stringify({ connectionIds: [...new Set(connectionIds)] })}\n`,
+				isCurrent,
+			);
+			return isCurrent();
+		} catch (error) {
+			if (isSqlConnectionLifecycleCanceled(error)) return false;
+			throw error;
+		}
 	}
 
-	private async writeSnapshotFile(snapshot: ConnectionSnapshot): Promise<void> {
+	private async writeSnapshotFile(
+		snapshot: ConnectionSnapshot,
+		isCurrent: () => boolean = () => true,
+	): Promise<boolean> {
+		if (!isCurrent()) return false;
 		if (!this.snapshotPath) {
 			memoryRuntime(this.context.globalState as object).snapshot = structuredClone(snapshot);
-			return;
+			return isCurrent();
 		}
-		if (!this.snapshotBackupPath || !this.snapshotCommitPath || !this.snapshotMigrationPath) return;
+		if (!this.snapshotBackupPath || !this.snapshotCommitPath || !this.snapshotMigrationPath) return false;
 		const snapshotText = `${JSON.stringify(snapshot, null, 2)}\n`;
-		await writeRecoverableSqlStateSnapshot({
-			primaryPath: this.snapshotPath,
-			backupPath: this.snapshotBackupPath,
-			commitPath: this.snapshotCommitPath,
-			migrationPath: this.snapshotMigrationPath,
-			text: snapshotText,
-			identity: { schemaVersion: snapshot.schemaVersion, version: snapshot.version },
-			writeAtomic: (filePath, contents) => this.writeAtomic(filePath, contents),
-		});
+		try {
+			await writeRecoverableSqlStateSnapshot({
+				primaryPath: this.snapshotPath,
+				backupPath: this.snapshotBackupPath,
+				commitPath: this.snapshotCommitPath,
+				migrationPath: this.snapshotMigrationPath,
+				text: snapshotText,
+				identity: { schemaVersion: snapshot.schemaVersion, version: snapshot.version },
+				writeAtomic: (filePath, contents) => this.writeAtomic(filePath, contents, isCurrent),
+				removeFile: async filePath => {
+					if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
+					await fs.promises.rm(filePath, { force: true });
+				},
+			});
+			return isCurrent();
+		} catch (error) {
+			if (isSqlConnectionLifecycleCanceled(error)) return false;
+			throw error;
+		}
 	}
 
-	private async writeAtomic(filePath: string, contents: string): Promise<void> {
-		await atomicReplaceSqlStateFile(filePath, contents);
+	private async writeAtomic(filePath: string, contents: string, isCurrent: () => boolean = () => true): Promise<void> {
+		if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
+		await atomicReplaceSqlStateFile(filePath, contents, {
+			assertCurrent: () => {
+				if (!isCurrent()) throw new SqlConnectionLifecycleCanceledError();
+			},
+		});
 	}
 
 	private async mirrorConnections(connections: readonly SqlConnection[]): Promise<void> {
@@ -802,11 +911,16 @@ export class SqlConnectionManager implements vscode.Disposable {
 	}
 
 	private enqueueMutation<T>(mutation: () => Promise<T>): Promise<T> {
+		if (this.disposed) return Promise.reject(new Error('SQL connection manager is disposed.'));
 		const result = this.mutationTail.catch(() => undefined).then(async () => {
 			await this.readyPromise;
 			return mutation();
 		});
 		this.mutationTail = result.then(() => undefined, () => undefined);
 		return result;
+	}
+
+	private assertActive(): void {
+		if (this.disposed) throw new Error('SQL connection manager is disposed.');
 	}
 }

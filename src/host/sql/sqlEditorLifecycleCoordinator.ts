@@ -602,6 +602,21 @@ export class SqlEditorLifecycleCoordinator {
 			targetGeneration?: number;
 		},
 	): Promise<void> {
+		return this.runLifecycleOperation(() => this.handleLanguageRequestCore(requestId, method, params));
+	}
+
+	private async handleLanguageRequestCore(
+		requestId: string,
+		method: string,
+		params: {
+			boxId: string;
+			sectionInstanceId: string;
+			line: number;
+			column: number;
+			ownerToken?: string;
+			targetGeneration?: number;
+		},
+	): Promise<void> {
 		const sessionEpoch = this.sessionEpoch;
 		const languageEpoch = this.languageEpoch;
 		const isSessionSectionCurrent = () => this.isSessionEpochCurrent(sessionEpoch)
@@ -753,6 +768,10 @@ export class SqlEditorLifecycleCoordinator {
 	}
 
 	async didChange(boxId: string, sectionInstanceId: string, text: string): Promise<void> {
+		return this.runLifecycleOperation(() => this.didChangeCore(boxId, sectionInstanceId, text));
+	}
+
+	private async didChangeCore(boxId: string, sectionInstanceId: string, text: string): Promise<void> {
 		const sessionEpoch = this.sessionEpoch;
 		const languageEpoch = this.languageEpoch;
 		const isCurrent = () => this.isLanguageEpochCurrent(sessionEpoch, languageEpoch)
@@ -830,6 +849,25 @@ export class SqlEditorLifecycleCoordinator {
 	}
 
 	async connect(
+		boxId: string,
+		sectionInstanceId: string,
+		connectionId: string,
+		database: string,
+		targetGeneration: number,
+		expectedOwner?: {
+			connectionId: string;
+			database: string;
+			targetSignature: string;
+			principalFingerprint: string;
+			revocationGeneration: number;
+		},
+	): Promise<void> {
+		return this.runLifecycleOperation(() => this.connectRoute(
+			boxId, sectionInstanceId, connectionId, database, targetGeneration, expectedOwner,
+		));
+	}
+
+	private async connectRoute(
 		boxId: string,
 		sectionInstanceId: string,
 		connectionId: string,
@@ -1574,7 +1612,7 @@ export class SqlEditorLifecycleCoordinator {
 			return currentInitialization.promise;
 		}
 		let createdService: SqlEditorLanguageService | undefined;
-		const promise = (async () => {
+		const promise = this.runLifecycleOperation(async () => {
 			try {
 				const processManager = await this.options.sqlWorkbench.runtime.getProcessManager();
 				if (!this.isLanguageEpochCurrent(sessionEpoch, languageEpoch) || !this.options.hasWebview()) return null;
@@ -1588,6 +1626,9 @@ export class SqlEditorLifecycleCoordinator {
 						this.options.sqlWorkbench.leaveNoTracePolicy,
 						(connection, principal, revocation, dispatch) =>
 							this.options.sqlWorkbench.dispatchSqlOwnerAllowed(connection, principal, revocation, dispatch),
+						operation => this.runLifecycleOperation(operation),
+						operation => this.trackLifecycleCleanup(operation),
+						finalize => this.registerLifecycleFinalizer(finalize),
 					);
 				if (!this.isLanguageEpochCurrent(sessionEpoch, languageEpoch)) {
 					try { createdService.dispose(); } catch { /* ignore */ }
@@ -1622,7 +1663,7 @@ export class SqlEditorLifecycleCoordinator {
 				}
 				return null;
 			}
-		})();
+		});
 		const initialization: SqlLanguageServiceInitialization = { sessionEpoch, languageEpoch, promise };
 		this.languageServiceInit = initialization;
 		try {
@@ -1630,6 +1671,29 @@ export class SqlEditorLifecycleCoordinator {
 		} finally {
 			if (this.languageServiceInit === initialization) this.languageServiceInit = undefined;
 		}
+	}
+
+	private runLifecycleOperation<T>(operation: () => Promise<T>): Promise<T> {
+		return typeof this.options.sqlWorkbench.runLifecycleOperation === 'function'
+			? this.options.sqlWorkbench.runLifecycleOperation(operation)
+			: operation();
+	}
+
+	private trackLifecycleCleanup(operation: PromiseLike<unknown>): void {
+		const track = (this.options.sqlWorkbench as SqlWorkbenchService & {
+			trackLifecycleCleanup?: (cleanup: PromiseLike<unknown>) => void;
+		}).trackLifecycleCleanup;
+		if (typeof track === 'function') track.call(this.options.sqlWorkbench, operation);
+		else void Promise.resolve(operation).catch(() => undefined);
+	}
+
+	private registerLifecycleFinalizer(finalize: () => void): vscode.Disposable {
+		const register = (this.options.sqlWorkbench as SqlWorkbenchService & {
+			registerLifecycleFinalizer?: (cleanup: () => void) => vscode.Disposable;
+		}).registerLifecycleFinalizer;
+		return typeof register === 'function'
+			? register.call(this.options.sqlWorkbench, finalize)
+			: { dispose: () => undefined };
 	}
 
 	private getExpectedStsOwner(boxId: string, owner: SqlResultOwner | undefined): StsExpectedOwner | undefined {

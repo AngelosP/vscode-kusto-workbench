@@ -278,6 +278,20 @@ describe('HostSqlConnectionOnboardingApplicationHandler', () => {
 		expect(JSON.stringify(harness.postMessage.mock.calls)).not.toContain('direct-secret');
 	});
 
+	it('admits the complete add, selection, and acknowledgement workflow once', async () => {
+		const runLifecycleOperation = vi.fn(async <T>(operation: () => Promise<T>) => operation());
+		const harness = createHarness({ runLifecycleOperation });
+
+		await harness.handler.handleMessage({
+			type: 'addSqlConnection', name: 'SQL', serverUrl: 'sql.example', dialect: 'mssql', authType: 'aad',
+		});
+
+		expect(runLifecycleOperation).toHaveBeenCalledOnce();
+		expect(harness.addConnection).toHaveBeenCalledOnce();
+		expect(harness.updateLastConnectionId).toHaveBeenCalledOnce();
+		expect(harness.postMessage).toHaveBeenCalledOnce();
+	});
+
 	it.each(['manager', 'selection', 'connections', 'transport'] as const)(
 		'propagates the exact %s rejection and stops later effects', async stage => {
 		const failure = new Error(`${stage} rejected`);

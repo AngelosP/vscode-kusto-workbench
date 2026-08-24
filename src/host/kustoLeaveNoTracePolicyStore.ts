@@ -20,6 +20,13 @@ const MIGRATION_FILENAME = 'kusto-leave-no-trace-policy-migrated.v1';
 const LEGACY_STORAGE_KEY = 'kusto.leaveNoTraceClusters';
 const POLICY_LOCK_OPTIONS = { retries: 480, retryDelayMs: 25 } as const;
 
+class KustoPolicyLifecycleCanceledError extends Error {}
+
+function isKustoPolicyLifecycleCanceled(error: unknown): boolean {
+	return error instanceof KustoPolicyLifecycleCanceledError
+		|| (error instanceof Error && error.cause instanceof KustoPolicyLifecycleCanceledError);
+}
+
 type PolicySnapshot = Readonly<{
 	schemaVersion: typeof SCHEMA_VERSION;
 	version: number;
@@ -103,9 +110,11 @@ export class KustoLeaveNoTracePolicyStore implements vscode.Disposable {
 	private readonly commitPath: string | undefined;
 	private readonly migrationPath: string | undefined;
 	private readonly lockTarget: string | undefined;
-	private readonly watcher: fs.StatWatcher | undefined;
+	private readonly watcherListener: ((current: fs.Stats, previous: fs.Stats) => void) | undefined;
 	private snapshot: PolicySnapshot;
 	private readonly readyPromise: Promise<void>;
+	private refreshTail: Promise<void> = Promise.resolve();
+	private mutationTail: Promise<void> = Promise.resolve();
 	private disposed = false;
 
 	constructor(
@@ -129,11 +138,13 @@ export class KustoLeaveNoTracePolicyStore implements vscode.Disposable {
 		this.lockTarget = this.policyPath ? `${this.policyPath}.write` : undefined;
 		this.readyPromise = this.initialize();
 		if (this.policyPath) {
-			this.watcher = fs.watchFile(this.policyPath, { interval: 250, persistent: false }, () => {
+			this.watcherListener = () => {
+				if (this.disposed) return;
 				void this.refresh().catch(error => {
 					this.output.warn(`[kusto-lnt] Failed to refresh shared policy: ${error instanceof Error ? error.message : String(error)}`);
 				});
-			});
+			};
+			fs.watchFile(this.policyPath, { interval: 250, persistent: false }, this.watcherListener);
 		}
 	}
 
@@ -154,33 +165,46 @@ export class KustoLeaveNoTracePolicyStore implements vscode.Disposable {
 	}
 
 	async refresh(): Promise<void> {
-		await this.readyPromise;
-		if (!this.policyPath || !this.lockTarget) return;
-		const snapshot = await withSqlStateFileLock(this.lockTarget, () => this.readOrRecoverUnderLock(false), POLICY_LOCK_OPTIONS);
-		await this.applySnapshot(snapshot);
+		const run = this.refreshTail.catch(() => undefined).then(() => this.refreshOnce());
+		this.refreshTail = run.then(() => undefined, () => undefined);
+		await run;
+	}
+
+	async waitForRefreshSettlement(): Promise<void> {
+		await this.readyPromise.catch(() => undefined);
+		for (;;) {
+			const refreshTail = this.refreshTail;
+			const mutationTail = this.mutationTail;
+			await Promise.all([refreshTail, mutationTail]);
+			if (refreshTail === this.refreshTail && mutationTail === this.mutationTail) return;
+		}
 	}
 
 	async setCluster(clusterUrl: string, enabled: boolean): Promise<void> {
 		const key = kustoClusterKey(clusterUrl);
-		if (!key) return;
-		await this.readyPromise;
-		if (!this.policyPath || !this.lockTarget) {
-			const current = new Set(this.snapshot.clusterKeys);
-			if (current.has(key) === enabled) return;
-			enabled ? current.add(key) : current.delete(key);
-			await this.applySnapshot(this.nextSnapshot(this.snapshot, [...current].sort(), key));
-			return;
-		}
-		const snapshot = await withSqlStateFileLock(this.lockTarget, async () => {
-			const current = await this.readOrRecoverUnderLock(false);
-			const keys = new Set(current.clusterKeys);
-			if (keys.has(key) === enabled) return current;
-			enabled ? keys.add(key) : keys.delete(key);
-			const next = this.nextSnapshot(current, [...keys].sort(), key);
-			await this.writeSnapshot(next);
-			return next;
-		}, { ...POLICY_LOCK_OPTIONS, retryUntilStale: true });
-		await this.applySnapshot(snapshot);
+		if (!key || this.disposed) return;
+		const mutation = (async () => {
+			await this.readyPromise;
+			if (!this.policyPath || !this.lockTarget) {
+				const current = new Set(this.snapshot.clusterKeys);
+				if (current.has(key) === enabled) return;
+				enabled ? current.add(key) : current.delete(key);
+				await this.applySnapshot(this.nextSnapshot(this.snapshot, [...current].sort(), key));
+				return;
+			}
+			const snapshot = await withSqlStateFileLock(this.lockTarget, async () => {
+				const current = await this.readOrRecoverUnderLock(false);
+				const keys = new Set(current.clusterKeys);
+				if (keys.has(key) === enabled) return current;
+				enabled ? keys.add(key) : keys.delete(key);
+				const next = this.nextSnapshot(current, [...keys].sort(), key);
+				await this.writeSnapshot(next);
+				return next;
+			}, { ...POLICY_LOCK_OPTIONS, retryUntilStale: true });
+			await this.applySnapshot(snapshot);
+		})();
+		this.trackMutation(mutation);
+		await mutation;
 	}
 
 	async prepareDispatch<T>(clusterUrl: string, start: (revocationGeneration: number) => T): Promise<{ value: T; revocationGeneration: number }> {
@@ -223,9 +247,23 @@ export class KustoLeaveNoTracePolicyStore implements vscode.Disposable {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		if (this.policyPath) fs.unwatchFile(this.policyPath);
-		this.watcher?.removeAllListeners();
+		if (this.policyPath && this.watcherListener) fs.unwatchFile(this.policyPath, this.watcherListener);
 		this.changeEmitter.dispose();
+	}
+
+	private async refreshOnce(): Promise<void> {
+		await this.readyPromise;
+		if (this.disposed || !this.policyPath || !this.lockTarget) return;
+		await withSqlStateFileLock(this.lockTarget, async () => {
+			if (this.disposed) return;
+			const snapshot = await this.readOrRecoverUnderLock(false, () => !this.disposed);
+			if (snapshot && !this.disposed) await this.applySnapshot(snapshot);
+		}, POLICY_LOCK_OPTIONS);
+	}
+
+	private trackMutation(mutation: Promise<void>): void {
+		const previous = this.mutationTail;
+		this.mutationTail = Promise.allSettled([previous, mutation]).then(() => undefined);
 	}
 
 	private publicSnapshot(snapshot: PolicySnapshot): KustoLeaveNoTracePolicySnapshot {
@@ -252,21 +290,33 @@ export class KustoLeaveNoTracePolicyStore implements vscode.Disposable {
 	}
 
 	private async initialize(): Promise<void> {
-		if (!this.policyPath || !this.lockTarget) return;
+		if (this.disposed || !this.policyPath || !this.lockTarget) return;
 		await fs.promises.mkdir(path.dirname(this.policyPath), { recursive: true });
+		if (this.disposed) return;
 		const allowLegacyMigration = !!this.migrationPath && !fs.existsSync(this.migrationPath);
-		const snapshot = await withSqlStateFileLock(this.lockTarget, () => this.readOrRecoverUnderLock(allowLegacyMigration), {
+		await withSqlStateFileLock(this.lockTarget, async () => {
+			if (this.disposed) return;
+			const snapshot = await this.readOrRecoverUnderLock(allowLegacyMigration, () => !this.disposed);
+			if (snapshot && !this.disposed) await this.applySnapshot(snapshot, false);
+		}, {
 			retryUntilStale: true,
 		});
-		await this.applySnapshot(snapshot, false);
 	}
 
-	private async readOrRecoverUnderLock(allowLegacyMigration: boolean): Promise<PolicySnapshot> {
+	private async readOrRecoverUnderLock(allowLegacyMigration: boolean): Promise<PolicySnapshot>;
+	private async readOrRecoverUnderLock(allowLegacyMigration: boolean, isCurrent: () => boolean): Promise<PolicySnapshot | undefined>;
+	private async readOrRecoverUnderLock(
+		allowLegacyMigration: boolean,
+		isCurrent: () => boolean = () => true,
+	): Promise<PolicySnapshot | undefined> {
+		if (!isCurrent()) return undefined;
 		const read = await this.readSnapshot(allowLegacyMigration);
+		if (!isCurrent()) return undefined;
 		if (read) return read;
 		const committed = await this.readCommittedBackup();
+		if (!isCurrent()) return undefined;
 		if (committed) {
-			await this.writeSnapshot(committed);
+			if (!await this.writeSnapshot(committed, isCurrent)) return undefined;
 			return committed;
 		}
 		const migrationComplete = !!this.migrationPath && fs.existsSync(this.migrationPath);
@@ -280,7 +330,7 @@ export class KustoLeaveNoTracePolicyStore implements vscode.Disposable {
 			updatedAt: new Date().toISOString(),
 			recoveryBlocked: !mayMigrate,
 		}) satisfies PolicySnapshot;
-		await this.writeSnapshot(recovered);
+		if (!await this.writeSnapshot(recovered, isCurrent)) return undefined;
 		if (recovered.recoveryBlocked) this.output.warn('[kusto-lnt] Shared policy recovery failed closed.');
 		return recovered;
 	}
@@ -308,20 +358,38 @@ export class KustoLeaveNoTracePolicyStore implements vscode.Disposable {
 		});
 	}
 
-	private async writeSnapshot(snapshot: PolicySnapshot): Promise<void> {
-		if (!this.policyPath || !this.backupPath || !this.commitPath || !this.migrationPath) return;
-		await writeRecoverableSqlStateSnapshot({
-			primaryPath: this.policyPath,
-			backupPath: this.backupPath,
-			commitPath: this.commitPath,
-			migrationPath: this.migrationPath,
-			text: `${JSON.stringify(snapshot, null, 2)}\n`,
-			identity: { schemaVersion: snapshot.schemaVersion, version: snapshot.version },
-			writeAtomic: atomicReplaceSqlStateFile,
-		});
+	private async writeSnapshot(snapshot: PolicySnapshot, isCurrent: () => boolean = () => true): Promise<boolean> {
+		if (!this.policyPath || !this.backupPath || !this.commitPath || !this.migrationPath || !isCurrent()) return false;
+		try {
+			await writeRecoverableSqlStateSnapshot({
+				primaryPath: this.policyPath,
+				backupPath: this.backupPath,
+				commitPath: this.commitPath,
+				migrationPath: this.migrationPath,
+				text: `${JSON.stringify(snapshot, null, 2)}\n`,
+				identity: { schemaVersion: snapshot.schemaVersion, version: snapshot.version },
+				writeAtomic: async (filePath, contents) => {
+					if (!isCurrent()) throw new KustoPolicyLifecycleCanceledError();
+					await atomicReplaceSqlStateFile(filePath, contents, {
+						assertCurrent: () => {
+							if (!isCurrent()) throw new KustoPolicyLifecycleCanceledError();
+						},
+					});
+				},
+				removeFile: async filePath => {
+					if (!isCurrent()) throw new KustoPolicyLifecycleCanceledError();
+					await fs.promises.rm(filePath, { force: true });
+				},
+			});
+			return isCurrent();
+		} catch (error) {
+			if (isKustoPolicyLifecycleCanceled(error)) return false;
+			throw error;
+		}
 	}
 
 	private async applySnapshot(snapshot: PolicySnapshot, emit = true): Promise<void> {
+		if (this.disposed) return;
 		const previous = this.snapshot;
 		if ((previous.recoveryBlocked && !snapshot.recoveryBlocked)
 			|| (!snapshot.recoveryBlocked && snapshot.version < previous.version)

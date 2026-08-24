@@ -300,6 +300,7 @@ class StsExecutionOperation {
 	private submitted = false;
 	private queryCompleted = false;
 	private cleanupPromise: Promise<void> | undefined;
+	private quiescencePromise: Promise<void> | undefined;
 	private readonly subscriptions: vscode.Disposable[] = [];
 	private readonly connectComplete = deferred<StsConnectionCompleteParams>();
 	private readonly queryComplete = deferred<StsQueryCompleteParams>();
@@ -343,13 +344,14 @@ class StsExecutionOperation {
 	}
 
 	async execute(query: string): Promise<QueryResult> {
-		const run = this.executeCore(query).finally(() => this.dispose());
-		return Promise.race([run, this.cancelSignal.promise]);
+		return this.startOperation(() => this.executeCore(query));
 	}
 
 	async runRequest<T>(method: string, params: unknown, timeoutMs: number): Promise<T> {
-		await this.connect();
-		return this.runGuardedRequest<T>(method, params, timeoutMs);
+		return this.startOperation(async () => {
+			await this.connect();
+			return this.runGuardedRequest<T>(method, params, timeoutMs);
+		});
 	}
 
 	private async runGuardedRequest<T>(method: string, params: unknown, timeoutMs: number): Promise<T> {
@@ -370,13 +372,11 @@ class StsExecutionOperation {
 		if (this.cancelled || this.phase === 'done') return;
 		this.cancelled = true;
 		this.cancelSignal.reject(new SqlQueryCancelledError());
-		void this.dispose();
 	}
 
 	dispose(): Promise<void> {
-		if (this.cleanupPromise) return this.cleanupPromise;
-		this.cleanupPromise = this.cleanup();
-		return this.cleanupPromise;
+		this.cancel();
+		return this.quiescencePromise ?? this.ensureCleanup();
 	}
 
 	whenDisposed(): Promise<void> {
@@ -465,6 +465,7 @@ class StsExecutionOperation {
 		this.operationRuntime = this.protectedExecution
 			? await this.createProtectedRuntime!()
 			: this.runtime;
+		this.throwIfCancelled();
 		const process = await this.operationRuntime.getProcessManager();
 		await this.assertAllowed();
 		this.process = process;
@@ -567,6 +568,18 @@ class StsExecutionOperation {
 			this.cleanupComplete.resolve(undefined);
 			if (runtimeError) throw runtimeError;
 		}
+	}
+
+	private startOperation<T>(operation: () => Promise<T>): Promise<T> {
+		if (this.quiescencePromise) throw new SqlQueryExecutionError('SQL operation has already started.');
+		const completion = operation().finally(() => this.ensureCleanup());
+		this.quiescencePromise = completion.then(() => undefined, () => undefined);
+		return Promise.race([completion, this.cancelSignal.promise]);
+	}
+
+	private ensureCleanup(): Promise<void> {
+		if (!this.cleanupPromise) this.cleanupPromise = this.cleanup();
+		return this.cleanupPromise;
 	}
 
 	private async bestEffort(process: StsProcessManager, method: string, params: unknown): Promise<void> {

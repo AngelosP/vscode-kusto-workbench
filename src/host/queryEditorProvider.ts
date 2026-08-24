@@ -641,6 +641,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.kustoConnectionOnboardingApplication = kustoConnectionOnboardingApplication
 			?? new HostKustoConnectionOnboardingApplicationHandler({
 				connectionManager: this.connectionManager,
+				runLifecycleOperation: operation => this.connectionManager.runLifecycleOperation(operation),
 				authPreferences: KustoAuthPreferenceService.getInstance(this.context),
 				kustoClient: this.kustoClient,
 				saveLastSelection: (connectionId, database) => this.connection.saveLastSelection(connectionId, database),
@@ -655,6 +656,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.sqlConnectionOnboardingApplication = sqlConnectionOnboardingApplication
 			?? new HostSqlConnectionOnboardingApplicationHandler({
 				connectionManager: this.sqlConnectionManager,
+				runLifecycleOperation: operation => this.sqlWorkbench.runLifecycleOperation(operation),
 				globalState: this.context.globalState,
 				postMessage: message => this.postMessage(message),
 			});

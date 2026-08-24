@@ -8,6 +8,7 @@ import type { SqlConnection } from '../sqlConnectionManager';
 import { startSqlDispatch, type SqlDispatchHandle } from './sqlDispatch';
 import { quarantineCorruptSqlStateFile } from './sqlStateFile';
 import {
+	atomicReplaceSqlStateFile,
 	readCommittedSqlStateBackup,
 	readRecoverableSqlStateSnapshot,
 	type SqlStateLockOptions,
@@ -23,6 +24,13 @@ const SNAPSHOT_COMMIT_FILENAME = 'sql-server-account-map.commit.v1.json';
 const SNAPSHOT_MIGRATION_FILENAME = 'sql-server-account-map-migrated.v1';
 const SNAPSHOT_SCHEMA_VERSION = 1;
 const LOCK_STALE_MS = 30_000;
+
+class AccountMapLifecycleCanceledError extends Error {}
+
+function isAccountMapLifecycleCanceled(error: unknown): boolean {
+	return error instanceof AccountMapLifecycleCanceledError
+		|| (error instanceof Error && error.cause instanceof AccountMapLifecycleCanceledError);
+}
 
 type AccountMapContext = Pick<vscode.ExtensionContext, 'globalState' | 'globalStorageUri'>;
 
@@ -131,7 +139,9 @@ async function readSnapshotFile(
 	fallback: Record<string, string> = {},
 	minimumRecoveryVersion = 1,
 	allowUncommittedPrimary = false,
-): Promise<AccountMapSnapshot> {
+	isCurrent: () => boolean = () => true,
+): Promise<AccountMapSnapshot | undefined> {
+	if (!isCurrent()) return undefined;
 	const migrationCompleted = fs.existsSync(resolved.migrationPath);
 	const read = await readRecoverableSqlStateSnapshot({
 		primaryPath: resolved.snapshotPath,
@@ -141,40 +151,65 @@ async function readSnapshotFile(
 		getIdentity: snapshot => ({ schemaVersion: snapshot.schemaVersion, version: snapshot.version }),
 		allowUncommittedPrimary,
 	});
-	if (read.kind === 'valid') {
-		if (read.source === 'backup') {
-			if (read.primaryState === 'invalid') await quarantineCorruptSqlStateFile(resolved.snapshotPath);
-			await writeSnapshotFile(resolved, read.value);
-		} else if (!read.committed) {
-			await writeSnapshotFile(resolved, read.value);
+	if (!isCurrent()) return undefined;
+	try {
+		if (read.kind === 'valid') {
+			if (read.source === 'backup') {
+				if (read.primaryState === 'invalid') {
+					if (!isCurrent()) return undefined;
+					await quarantineCorruptSqlStateFile(resolved.snapshotPath);
+				}
+				if (!await writeSnapshotFile(resolved, read.value, isCurrent)) return undefined;
+			} else if (!read.committed) {
+				if (!await writeSnapshotFile(resolved, read.value, isCurrent)) return undefined;
+			}
+			await writeSqlStateMarkerIfMissing(resolved.migrationPath, 'migrated\n', async (filePath, contents) => {
+				if (!isCurrent()) throw new AccountMapLifecycleCanceledError();
+				await atomicReplaceSqlStateFile(filePath, contents, {
+					assertCurrent: () => {
+						if (!isCurrent()) throw new AccountMapLifecycleCanceledError();
+					},
+				});
+			});
+			return read.value;
 		}
-		await writeSqlStateMarkerIfMissing(resolved.migrationPath);
-		return read.value;
+		if (read.kind === 'invalid') {
+			if (!isCurrent()) return undefined;
+			await quarantineCorruptSqlStateFile(resolved.snapshotPath);
+		}
+		const committed = await readCommittedSqlStateBackup({
+			backupPath: resolved.backupPath,
+			commitPath: resolved.commitPath,
+			parseSnapshot,
+			getIdentity: snapshot => ({ schemaVersion: snapshot.schemaVersion, version: snapshot.version }),
+		});
+		if (!isCurrent()) return undefined;
+		if (committed) {
+			if (!await writeSnapshotFile(resolved, committed, isCurrent)) return undefined;
+			return committed;
+		}
+		const mayMigrateLegacy = read.kind === 'missing' && !migrationCompleted;
+		const recovered: AccountMapSnapshot = {
+			schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+			version: Math.max(1, mayMigrateLegacy ? 1 : Date.now(), minimumRecoveryVersion),
+			accountsByServer: mayMigrateLegacy ? fallback : {},
+			recoveryBlocked: !mayMigrateLegacy && Object.keys(fallback).length === 0,
+			blockedServerUrls: mayMigrateLegacy ? [] : Object.keys(fallback).map(normalizeServerUrl).sort(),
+		};
+		if (!await writeSnapshotFile(resolved, recovered, isCurrent)) return undefined;
+		return recovered;
+	} catch (error) {
+		if (isAccountMapLifecycleCanceled(error)) return undefined;
+		throw error;
 	}
-	if (read.kind === 'invalid') await quarantineCorruptSqlStateFile(resolved.snapshotPath);
-	const committed = await readCommittedSqlStateBackup({
-		backupPath: resolved.backupPath,
-		commitPath: resolved.commitPath,
-		parseSnapshot,
-		getIdentity: snapshot => ({ schemaVersion: snapshot.schemaVersion, version: snapshot.version }),
-	});
-	if (committed) {
-		await writeSnapshotFile(resolved, committed);
-		return committed;
-	}
-	const mayMigrateLegacy = read.kind === 'missing' && !migrationCompleted;
-	const recovered: AccountMapSnapshot = {
-		schemaVersion: SNAPSHOT_SCHEMA_VERSION,
-		version: Math.max(1, mayMigrateLegacy ? 1 : Date.now(), minimumRecoveryVersion),
-		accountsByServer: mayMigrateLegacy ? fallback : {},
-		recoveryBlocked: !mayMigrateLegacy && Object.keys(fallback).length === 0,
-		blockedServerUrls: mayMigrateLegacy ? [] : Object.keys(fallback).map(normalizeServerUrl).sort(),
-	};
-	await writeSnapshotFile(resolved, recovered);
-	return recovered;
 }
 
-async function writeSnapshotFile(resolved: AccountMapPaths, snapshot: AccountMapSnapshot): Promise<void> {
+async function writeSnapshotFile(
+	resolved: AccountMapPaths,
+	snapshot: AccountMapSnapshot,
+	isCurrent: () => boolean = () => true,
+): Promise<boolean> {
+	if (!isCurrent()) return false;
 	const text = `${JSON.stringify(snapshot, null, 2)}\n`;
 	await writeRecoverableSqlStateSnapshot({
 		primaryPath: resolved.snapshotPath,
@@ -183,7 +218,20 @@ async function writeSnapshotFile(resolved: AccountMapPaths, snapshot: AccountMap
 		migrationPath: resolved.migrationPath,
 		text,
 		identity: { schemaVersion: snapshot.schemaVersion, version: snapshot.version },
+		writeAtomic: async (filePath, contents) => {
+			if (!isCurrent()) throw new AccountMapLifecycleCanceledError();
+			await atomicReplaceSqlStateFile(filePath, contents, {
+				assertCurrent: () => {
+					if (!isCurrent()) throw new AccountMapLifecycleCanceledError();
+				},
+			});
+		},
+		removeFile: async filePath => {
+			if (!isCurrent()) throw new AccountMapLifecycleCanceledError();
+			await fs.promises.rm(filePath, { force: true });
+		},
 	});
+	return isCurrent();
 }
 
 async function withSnapshotLock<T>(
@@ -206,6 +254,7 @@ async function withSnapshotLock<T>(
 			options.minimumRecoveryVersion ?? 1,
 			options.allowUncommittedPrimary ?? false,
 		);
+		if (!snapshot) throw new AccountMapLifecycleCanceledError();
 		return await action(snapshot, resolved.snapshotPath);
 	}, { staleMs: LOCK_STALE_MS, retryUntilStale: options.retryUntilStale, ...options.lockOptions });
 }
@@ -303,17 +352,21 @@ export class SqlServerAccountMapStore implements vscode.Disposable {
 	private snapshot = emptySnapshot();
 	private readonly snapshotPath: string | undefined;
 	private readonly readyPromise: Promise<void>;
+	private readonly watcherListener: ((current: fs.Stats, previous: fs.Stats) => void) | undefined;
+	private refreshTail: Promise<void> = Promise.resolve();
 	private disposed = false;
 
 	constructor(private readonly context: vscode.ExtensionContext, private readonly output: WorkbenchLogger) {
 		this.snapshotPath = snapshotPaths(context)?.snapshotPath;
 		this.readyPromise = this.initialize();
 		if (this.snapshotPath) {
-			fs.watchFile(this.snapshotPath, { interval: 250, persistent: false }, () => {
+			this.watcherListener = () => {
+				if (this.disposed) return;
 				void this.refresh().catch(error => {
 					this.output.warn(`[sql-auth] Failed to refresh shared account map: ${error instanceof Error ? error.message : String(error)}`);
 				});
-			});
+			};
+			fs.watchFile(this.snapshotPath, { interval: 250, persistent: false }, this.watcherListener);
 		}
 	}
 
@@ -386,34 +439,73 @@ export class SqlServerAccountMapStore implements vscode.Disposable {
 	}
 
 	async refresh(): Promise<Record<string, string>> {
-		await this.readyPromise;
-		if (!this.snapshotPath) return this.getAccountsByServer();
-		await withSnapshotLock(this.context, snapshot => this.applySnapshot(snapshot), {
-			minimumRecoveryVersion: this.snapshot.version + 1,
-		});
+		const run = this.refreshTail.catch(() => undefined).then(() => this.refreshOnce());
+		this.refreshTail = run.then(() => undefined, () => undefined);
+		await run;
 		return this.getAccountsByServer();
+	}
+
+	async waitForRefreshSettlement(): Promise<void> {
+		await this.readyPromise.catch(() => undefined);
+		for (;;) {
+			const tail = this.refreshTail;
+			await tail;
+			if (tail === this.refreshTail) return;
+		}
 	}
 
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		if (this.snapshotPath) fs.unwatchFile(this.snapshotPath);
+		if (this.snapshotPath && this.watcherListener) fs.unwatchFile(this.snapshotPath, this.watcherListener);
 		this.changeEmitter.dispose();
 	}
 
+	private async refreshOnce(): Promise<void> {
+		await this.readyPromise;
+		const resolved = snapshotPaths(this.context);
+		if (this.disposed || !resolved) return;
+		await withSqlStateFileLock(resolved.lockTarget, async () => {
+			if (this.disposed) return;
+			const legacy = normalizeMap(this.context.globalState.get<unknown>(STORAGE_KEY));
+			const snapshot = await readSnapshotFile(
+				resolved,
+				legacy,
+				this.snapshot.version + 1,
+				false,
+				() => !this.disposed,
+			);
+			if (snapshot && !this.disposed) await this.applySnapshot(snapshot);
+		}, { staleMs: LOCK_STALE_MS });
+	}
+
 	private async initialize(): Promise<void> {
-		await withSnapshotLock(this.context, async (snapshot, snapshotPath) => {
+		const resolved = snapshotPaths(this.context);
+		if (!resolved) {
+			if (!this.disposed) await this.applySnapshot(emptySnapshot(normalizeMap(this.context.globalState.get<unknown>(STORAGE_KEY))), false);
+			return;
+		}
+		await withSqlStateFileLock(resolved.lockTarget, async () => {
+			if (this.disposed) return;
+			const snapshot = await readSnapshotFile(
+				resolved,
+				normalizeMap(this.context.globalState.get<unknown>(STORAGE_KEY)),
+				1,
+				true,
+				() => !this.disposed,
+			);
+			if (!snapshot || this.disposed) return;
 			let current = snapshot;
-			if (snapshot.version === 0 && snapshotPath) {
+			if (snapshot.version === 0) {
 				current = { ...snapshot, version: 1 };
-				const resolved = snapshotPaths(this.context);
-				if (resolved) await writeSnapshotFile(resolved, current);
+				if (!await writeSnapshotFile(resolved, current, () => !this.disposed)) return;
 			}
-			await this.applySnapshot(current, false);
-		}, { minimumRecoveryVersion: 1, allowUncommittedPrimary: true, retryUntilStale: true });
+			if (!this.disposed) await this.applySnapshot(current, false);
+		}, { staleMs: LOCK_STALE_MS, retryUntilStale: true });
 	}
 
 	private async applySnapshot(snapshot: AccountMapSnapshot, emit = true): Promise<void> {
+		if (this.disposed) return;
 		if (snapshot.version < this.snapshot.version) return;
 		const previousVersion = this.snapshot.version;
 		const previous = this.snapshot.accountsByServer;

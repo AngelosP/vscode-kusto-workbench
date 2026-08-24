@@ -52,6 +52,27 @@ describe('SQL state transactions', () => {
 		expect(fs.readdirSync(directory).filter(name => name.endsWith('.tmp'))).toEqual([]);
 	});
 
+	it('cancels after staging a temp file without replacing the canonical file', async () => {
+		const directory = createDirectory();
+		const filePath = path.join(directory, 'state.json');
+		fs.writeFileSync(filePath, 'previous\n', 'utf8');
+		const realWriteFile = fs.promises.writeFile.bind(fs.promises);
+		let current = true;
+		vi.spyOn(fs.promises, 'writeFile').mockImplementation(async (target, contents, options) => {
+			await (realWriteFile as any)(target, contents, options);
+			if (String(target).startsWith(`${filePath}.`) && String(target).endsWith('.tmp')) current = false;
+		});
+
+		await expect(atomicReplaceSqlStateFile(filePath, 'next\n', {
+			assertCurrent: () => {
+				if (!current) throw new Error('lifecycle canceled');
+			},
+		})).rejects.toThrow('lifecycle canceled');
+
+		expect(fs.readFileSync(filePath, 'utf8')).toBe('previous\n');
+		expect(fs.readdirSync(directory).filter(name => name.endsWith('.tmp'))).toEqual([]);
+	});
+
 	it('classifies missing, malformed, structurally invalid, and valid JSON state', async () => {
 		const directory = createDirectory();
 		const filePath = path.join(directory, 'state.json');
@@ -185,6 +206,33 @@ describe('SQL state transactions', () => {
 			backupPath, commitPath, parseSnapshot: parse,
 			getIdentity: value => ({ schemaVersion: value.schemaVersion, version: value.version }),
 		})).toEqual(first);
+	});
+
+	it('uses the injected remove operation when a first commit rolls back its primary', async () => {
+		const directory = createDirectory();
+		const primaryPath = path.join(directory, 'state.json');
+		const backupPath = path.join(directory, 'state.backup.json');
+		const commitPath = path.join(directory, 'state.commit.json');
+		const removed: string[] = [];
+
+		await expect(writeRecoverableSqlStateSnapshot({
+			primaryPath,
+			backupPath,
+			commitPath,
+			text: '{"schemaVersion":1,"version":1}\n',
+			identity: { schemaVersion: 1, version: 1 },
+			writeAtomic: async (filePath, contents) => {
+				if (filePath === commitPath) throw new Error('commit failed');
+				await atomicReplaceSqlStateFile(filePath, contents);
+			},
+			removeFile: async filePath => {
+				removed.push(filePath);
+				await fs.promises.rm(filePath, { force: true });
+			},
+		})).rejects.toThrow('commit failed');
+
+		expect(removed).toEqual([primaryPath]);
+		expect(fs.existsSync(primaryPath)).toBe(false);
 	});
 
 	it('returns the pointed backup after a crash replaces primary before pointer advancement', async () => {

@@ -17,6 +17,232 @@ function deferred<T>() {
 }
 
 describe('SqlWorkbenchService global privacy recovery', () => {
+	it('waits for startup sandbox cleanup before disposal completes', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-workbench-startup-cleanup-'));
+		const values = new Map<string, unknown>();
+		const context = {
+			globalStorageUri: vscode.Uri.file(directory),
+			logUri: vscode.Uri.file(path.join(directory, 'logs')),
+			globalState: {
+				get: vi.fn((key: string) => values.get(key)),
+				update: vi.fn(async (key: string, value: unknown) => { values.set(key, value); }),
+			},
+			secrets: {
+				get: vi.fn(async () => undefined),
+				store: vi.fn(async () => undefined),
+				delete: vi.fn(async () => undefined),
+			},
+		} as any;
+		const cleanup = deferred<void>();
+		const cleanupProtectedSandboxes = vi.fn(() => cleanup.promise);
+		const service = new SqlWorkbenchService(
+			context,
+			{ trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
+			cleanupProtectedSandboxes,
+		);
+		try {
+			await service.ready();
+			let disposed = false;
+			const disposing = service.dispose().finally(() => { disposed = true; });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			expect(cleanupProtectedSandboxes).toHaveBeenCalledOnce();
+			expect(disposed).toBe(false);
+
+			cleanup.resolve();
+			await disposing;
+			expect(disposed).toBe(true);
+		} finally {
+			cleanup.resolve();
+			await service.dispose();
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('waits for an accepted external lifecycle operation before disposal completes', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-workbench-external-operation-'));
+		const values = new Map<string, unknown>();
+		const context = {
+			globalStorageUri: vscode.Uri.file(directory),
+			logUri: vscode.Uri.file(path.join(directory, 'logs')),
+			globalState: {
+				get: vi.fn((key: string) => values.get(key)),
+				update: vi.fn(async (key: string, value: unknown) => { values.set(key, value); }),
+			},
+			secrets: {
+				get: vi.fn(async () => undefined),
+				store: vi.fn(async () => undefined),
+				delete: vi.fn(async () => undefined),
+			},
+		} as any;
+		const operation = deferred<void>();
+		const service = new SqlWorkbenchService(
+			context,
+			{ trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
+			async () => undefined,
+		);
+		try {
+			await service.ready();
+			const runtimeDispose = vi.spyOn(service.runtime, 'dispose').mockResolvedValue(undefined);
+			const accepted = service.runLifecycleOperation(() => operation.promise);
+			let disposed = false;
+			const disposing = service.dispose().finally(() => { disposed = true; });
+			await Promise.resolve();
+			expect(disposed).toBe(false);
+			expect(runtimeDispose).not.toHaveBeenCalled();
+
+			operation.resolve();
+			await Promise.all([accepted, disposing]);
+			expect(runtimeDispose).toHaveBeenCalledOnce();
+		} finally {
+			operation.resolve();
+			await service.dispose();
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('waits for every shared-state owner to settle before disposal completes', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-workbench-dispose-settlement-'));
+		const values = new Map<string, unknown>();
+		const context = {
+			globalStorageUri: vscode.Uri.file(directory),
+			logUri: vscode.Uri.file(path.join(directory, 'logs')),
+			globalState: {
+				get: vi.fn((key: string) => values.get(key)),
+				update: vi.fn(async (key: string, value: unknown) => { values.set(key, value); }),
+			},
+			secrets: {
+				get: vi.fn(async () => undefined),
+				store: vi.fn(async () => undefined),
+				delete: vi.fn(async () => undefined),
+			},
+		} as any;
+		const output = { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any;
+		const service = new SqlWorkbenchService(context, output);
+		const settlement = deferred<void>();
+		try {
+			await service.ready();
+			vi.spyOn(service.queryService, 'dispose').mockResolvedValue(undefined);
+			vi.spyOn(service.runtime, 'dispose').mockResolvedValue(undefined);
+			const policySettlement = vi.spyOn(service.leaveNoTracePolicy, 'waitForRefreshSettlement')
+				.mockReturnValue(settlement.promise);
+			const accountSettlement = vi.spyOn(service.serverAccountMap, 'waitForRefreshSettlement')
+				.mockReturnValue(settlement.promise);
+			const connectionSettlement = vi.spyOn(service.connectionManager, 'waitForRefreshSettlement')
+				.mockReturnValue(settlement.promise);
+			let disposed = false;
+			const disposal = service.dispose();
+			expect(service.dispose()).toBe(disposal);
+			const disposing = disposal.finally(() => { disposed = true; });
+
+			await vi.waitFor(() => {
+				expect(policySettlement).toHaveBeenCalledOnce();
+				expect(accountSettlement).toHaveBeenCalledOnce();
+				expect(connectionSettlement).toHaveBeenCalledOnce();
+			});
+			expect(disposed).toBe(false);
+			settlement.resolve();
+			await disposing;
+			expect(disposed).toBe(true);
+		} finally {
+			settlement.resolve();
+			await service.dispose();
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('waits for an accepted lock-blocked privacy mutation before disposal completes', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-workbench-dispose-mutation-'));
+		const values = new Map<string, unknown>();
+		const context = {
+			globalStorageUri: vscode.Uri.file(directory),
+			logUri: vscode.Uri.file(path.join(directory, 'logs')),
+			globalState: {
+				get: vi.fn((key: string) => values.get(key)),
+				update: vi.fn(async (key: string, value: unknown) => { values.set(key, value); }),
+			},
+			secrets: {
+				get: vi.fn(async () => undefined),
+				store: vi.fn(async () => undefined),
+				delete: vi.fn(async () => undefined),
+			},
+		} as any;
+		const output = { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any;
+		const service = new SqlWorkbenchService(context, output);
+		const lockTarget = path.join(directory, 'sql-leave-no-trace-policy.v1.json.write');
+		const releaseLock = deferred<void>();
+		const lockHeld = deferred<void>();
+		let heldLock: Promise<void> | undefined;
+		try {
+			await service.ready();
+			heldLock = withSqlStateFileLock(lockTarget, async () => {
+				lockHeld.resolve();
+				await releaseLock.promise;
+			});
+			await lockHeld.promise;
+			const mutation = service.leaveNoTracePolicy.setConnection('sql-sensitive', true);
+			await new Promise<void>(resolve => setImmediate(resolve));
+			let disposed = false;
+			const disposing = service.dispose().finally(() => { disposed = true; });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			expect(disposed).toBe(false);
+
+			releaseLock.resolve();
+			await Promise.all([heldLock, mutation, disposing]);
+
+			const persisted = JSON.parse(await fs.promises.readFile(
+				path.join(directory, 'sql-leave-no-trace-policy.v1.json'),
+				'utf8',
+			));
+			expect(persisted.connectionIds).toEqual(['sql-sensitive']);
+		} finally {
+			releaseLock.resolve();
+			await heldLock?.catch(() => undefined);
+			await service.dispose();
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('rejects retained service operations after disposal without dispatch or policy writes', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-workbench-post-disposal-'));
+		const connection = {
+			id: 'sql-a', name: 'A', dialect: 'mssql', serverUrl: 'a.example', authType: 'aad',
+		};
+		const values = new Map<string, unknown>([['sql.connections', [connection]]]);
+		const context = {
+			globalStorageUri: vscode.Uri.file(directory),
+			logUri: vscode.Uri.file(path.join(directory, 'logs')),
+			globalState: {
+				get: vi.fn((key: string) => values.get(key)),
+				update: vi.fn(async (key: string, value: unknown) => { values.set(key, value); }),
+			},
+			secrets: {
+				get: vi.fn(async () => undefined),
+				store: vi.fn(async () => undefined),
+				delete: vi.fn(async () => undefined),
+			},
+		} as any;
+		const output = { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any;
+		const service = new SqlWorkbenchService(context, output);
+		try {
+			await service.ready();
+			await service.dispose();
+			const policyPath = path.join(directory, 'sql-leave-no-trace-policy.v1.json');
+			const before = fs.readFileSync(policyPath, 'utf8');
+			const dispatch = vi.fn(() => 'rows');
+
+			await expect(service.refreshLeaveNoTracePolicy()).rejects.toThrow('disposed');
+			await expect(service.setLeaveNoTraceConnection('sql-a', true)).rejects.toThrow('disposed');
+			await expect(service.dispatchSqlConnectionAllowed('sql-a', dispatch)).rejects.toThrow('disposed');
+			await expect(service.dispatchCurrentSqlOwnerAllowed(connection, 'aad-pending', dispatch)).rejects.toThrow('disposed');
+
+			expect(dispatch).not.toHaveBeenCalled();
+			expect(fs.readFileSync(policyPath, 'utf8')).toBe(before);
+		} finally {
+			await service.dispose();
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it('admits first-AAD pending ownership only before a canonical account mapping exists', async () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-first-aad-composite-'));
 		const connection = { id: 'sql-a', name: 'AAD', dialect: 'mssql', serverUrl: 'aad.example', authType: 'aad' };
@@ -100,6 +326,7 @@ describe('SqlWorkbenchService global privacy recovery', () => {
 			expect(cancelConnection).toHaveBeenCalledWith('sql-a');
 		} finally {
 			other.dispose();
+			await other.waitForRefreshSettlement();
 			await service.dispose();
 			fs.rmSync(directory, { recursive: true, force: true });
 		}

@@ -57,6 +57,34 @@ describe('KustoConnectionLifecycle', () => {
 		lifecycle.dispose();
 	});
 
+	it('registers the queued projection refresh with manager settlement', async () => {
+		const events = new FakeEvent<KustoConnectionChange>();
+		const tracked: PromiseLike<unknown>[] = [];
+		let releaseRefresh!: () => void;
+		const refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve; });
+		const manager = {
+			onDidChangeConnections: events.event,
+			trackLifecycleSideEffect: vi.fn((operation: PromiseLike<unknown>) => tracked.push(operation)),
+		} as any;
+		const lifecycle = new KustoConnectionLifecycle(manager, {
+			invalidateConnections: vi.fn(),
+			publishIdentityChange: vi.fn(async () => undefined),
+			refreshConnections: vi.fn(async () => refreshGate),
+		});
+
+		events.fire({ type: 'added', connection: original });
+		expect(manager.trackLifecycleSideEffect).toHaveBeenCalledOnce();
+		let settled = false;
+		void Promise.resolve(tracked[0]).finally(() => { settled = true; });
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		releaseRefresh();
+		await tracked[0];
+		expect(settled).toBe(true);
+		lifecycle.dispose();
+	});
+
 	it('retries deferred persistence on connection addition without revoking executions', async () => {
 		const events = new FakeEvent<KustoConnectionChange>();
 		const invalidateConnections = vi.fn();

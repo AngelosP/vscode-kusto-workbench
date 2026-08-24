@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
 	normalizeClusterUrl,
 	pruneExpiredFileConnectionsSync,
@@ -118,6 +118,51 @@ describe('normalizeClusterUrl', () => {
 });
 
 describe('ConnectionManager authority identity', () => {
+	it('waits for an accepted connection write and rejects writes after disposal', async () => {
+		const values = new Map<string, unknown>([['kusto.connections', []]]);
+		let releaseWrite!: () => void;
+		let markWriteStarted!: () => void;
+		const writeStarted = new Promise<void>(resolve => { markWriteStarted = resolve; });
+		const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+		const update = vi.fn(async (key: string, value: unknown) => {
+			if (key === 'kusto.connections') {
+				markWriteStarted();
+				await writeGate;
+			}
+			values.set(key, structuredClone(value));
+		});
+		const manager = new ConnectionManager({
+			globalState: {
+				get: <T>(key: string) => values.get(key) as T,
+				update,
+			},
+		} as any);
+		const accepted = manager.addConnection({ name: 'Accepted', clusterUrl: 'accepted.kusto.windows.net' });
+		await writeStarted;
+		manager.dispose();
+		let settled = false;
+		const settlement = manager.waitForSettlement().finally(() => { settled = true; });
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		releaseWrite();
+		const connection = await accepted;
+		await settlement;
+		const persisted = structuredClone(values.get('kusto.connections'));
+		const updateCalls = update.mock.calls.length;
+
+		await expect(manager.addConnection({ name: 'Late', clusterUrl: 'late.kusto.windows.net' }))
+			.rejects.toThrow('disposed');
+		await expect(manager.updateConnection(connection.id, { name: 'Late update' })).rejects.toThrow('disposed');
+		await expect(manager.removeConnection(connection.id)).rejects.toThrow('disposed');
+		await expect(manager.clearConnections()).rejects.toThrow('disposed');
+		await expect(manager.setFileConnection('late.kql', 'late.kusto.windows.net', 'Db')).rejects.toThrow('disposed');
+		await expect(manager.addLeaveNoTrace('late.kusto.windows.net')).rejects.toThrow('disposed');
+
+		expect(values.get('kusto.connections')).toEqual(persisted);
+		expect(update).toHaveBeenCalledTimes(updateCalls);
+	});
+
 	it('normalizes authority on add and emits a connection mutation', async () => {
 		const test = connectionManagerHarness();
 		const changes: unknown[] = [];

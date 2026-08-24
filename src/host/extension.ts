@@ -79,6 +79,8 @@ export async function clearAllKustoConnectionsAndFavorites(
 // Export the tool orchestrator instance so other modules can access it
 export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
 let sqlWorkbenchService: SqlWorkbenchService | undefined;
+let kustoConnectionManager: ConnectionManager | undefined;
+let kustoAuthPreferenceService: KustoAuthPreferenceService | undefined;
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
@@ -206,6 +208,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	}
 
 	const connectionManager = new ConnectionManager(context);
+	kustoConnectionManager = connectionManager;
+	kustoAuthPreferenceService = KustoAuthPreferenceService.getInstance(context);
 	if (context.extensionMode !== vscode.ExtensionMode.Production) {
 		const favoritesSyncConnectionPrefix = 'Kusto Favorites Sync E2E';
 		const cleanupFavoritesSyncConnection = async (): Promise<{ removed: number }> => {
@@ -2712,6 +2716,15 @@ export async function closeQueryEditorSessionTabs(sessionUri: vscode.Uri): Promi
 export async function deactivate() {
 	await ConnectionService.waitForLastSelectionSettlement();
 	const service = sqlWorkbenchService;
+	const connectionManager = kustoConnectionManager;
+	const authPreferences = kustoAuthPreferenceService;
 	sqlWorkbenchService = undefined;
-	if (service) await service.dispose();
+	kustoConnectionManager = undefined;
+	kustoAuthPreferenceService = undefined;
+	connectionManager?.dispose();
+	await Promise.all([
+		service?.dispose(),
+		connectionManager?.waitForSettlement(),
+		authPreferences?.waitForWriteSettlement(),
+	]);
 }

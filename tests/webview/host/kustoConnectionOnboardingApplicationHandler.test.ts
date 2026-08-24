@@ -182,6 +182,27 @@ describe('HostKustoConnectionOnboardingApplicationHandler', () => {
 		expect(order).toEqual(['add', 'accounts', 'account', 'selection', 'refresh', 'read-selection', 'post']);
 	});
 
+	it('admits the complete add, account, selection, and refresh workflow once', async () => {
+		const admitted: Array<() => Promise<unknown>> = [];
+		const runLifecycleOperation = vi.fn(async <T>(operation: () => Promise<T>) => {
+			admitted.push(operation);
+			return operation();
+		});
+		const harness = createHarness({ runLifecycleOperation });
+
+		await harness.handler.handleMessage({
+			type: 'addConnection', name: 'Cluster', clusterUrl: 'cluster.kusto.windows.net',
+			accountId: 'account-known',
+		});
+
+		expect(runLifecycleOperation).toHaveBeenCalledOnce();
+		expect(admitted).toHaveLength(1);
+		expect(harness.addConnection).toHaveBeenCalledOnce();
+		expect(harness.setExplicitAccount).toHaveBeenCalledOnce();
+		expect(harness.saveLastSelection).toHaveBeenCalledOnce();
+		expect(harness.refreshConnections).toHaveBeenCalledOnce();
+	});
+
 	it('uses normalized defaults and a fallback explicit account without changing account ownership', async () => {
 		const harness = createHarness();
 		harness.getAccounts.mockResolvedValue([]);

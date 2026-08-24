@@ -45,6 +45,7 @@ export interface KustoConnectionOnboardingApplicationHandler {
 
 export type KustoConnectionOnboardingApplicationHandlerOptions = {
 	connectionManager: Pick<ConnectionManager, 'addConnection'>;
+	runLifecycleOperation?: <T>(operation: () => Promise<T>) => Promise<T>;
 	authPreferences: Pick<KustoAuthPreferenceService, 'getAccounts' | 'setExplicitAccount'>;
 	kustoClient: KustoConnectionTestClient;
 	saveLastSelection: (connectionId: string, database?: string) => Promise<void>;
@@ -69,7 +70,9 @@ export class HostKustoConnectionOnboardingApplicationHandler implements KustoCon
 				return undefined;
 		}
 		if (this.disposed) return Promise.resolve();
-		return this.handleOnboardingMessage(message);
+		return this.options.runLifecycleOperation
+			? this.options.runLifecycleOperation(() => this.handleOnboardingMessage(message))
+			: this.handleOnboardingMessage(message);
 	}
 
 	dispose(): void {

@@ -76,10 +76,17 @@ export class SqlWorkbenchService {
 	readonly onDidChangeSqlConnections = this.sqlConnectionEmitter.event;
 	private readonly readyPromise: Promise<void>;
 	private sqlConnectionSignatures = new Map<string, string>();
+	private sideEffectTail: Promise<void> = Promise.resolve();
+	private readonly lifecycleFinalizers = new Set<() => void>();
+	private disposePromise: Promise<void> | undefined;
 	private disposed = false;
 
-	constructor(private readonly context: vscode.ExtensionContext, private readonly output: WorkbenchLogger) {
-		void cleanupAbandonedProtectedStsSandboxes(output);
+	constructor(
+		private readonly context: vscode.ExtensionContext,
+		private readonly output: WorkbenchLogger,
+		cleanupProtectedSandboxes: (output?: WorkbenchLogger) => Promise<void> = cleanupAbandonedProtectedStsSandboxes,
+	) {
+		this.trackSideEffect(cleanupProtectedSandboxes(output));
 		this.connectionManager = new SqlConnectionManager(context);
 		this.leaveNoTracePolicy = new SqlLeaveNoTracePolicyStore(context, output);
 		this.serverAccountMap = new SqlServerAccountMapStore(context, output);
@@ -103,7 +110,9 @@ export class SqlWorkbenchService {
 				.filter(connectionId => this.sqlConnectionSignatures.get(connectionId) !== next.get(connectionId));
 			this.sqlConnectionSignatures = next;
 			if (changedIds.length > 0) {
-				for (const connectionId of changedIds) void this.queryService.cancelConnection(connectionId);
+				this.trackSideEffect(Promise.allSettled(
+					changedIds.map(connectionId => this.queryService.cancelConnection(connectionId)),
+				).then(() => undefined));
 				this.sqlConnectionEmitter.fire({ connectionIds: changedIds, version: this.connectionManager.getVersion() });
 			}
 		});
@@ -112,7 +121,9 @@ export class SqlWorkbenchService {
 			const protectedConnectionIds = change.globallyBlocked ? allConnectionIds : change.connectionIds;
 			const enabledConnectionIds = change.globallyBlocked ? allConnectionIds : change.enabledConnectionIds;
 			const invalidatedConnectionIds = change.globallyBlocked ? allConnectionIds : change.invalidatedConnectionIds;
-			for (const connectionId of invalidatedConnectionIds) void this.queryService.cancelConnection(connectionId);
+			this.trackSideEffect(Promise.allSettled(
+				invalidatedConnectionIds.map(connectionId => this.queryService.cancelConnection(connectionId)),
+			).then(() => undefined));
 			this.leaveNoTraceEmitter.fire({
 				connectionIds: protectedConnectionIds,
 				changedConnectionId: invalidatedConnectionIds[0] ?? change.disabledConnectionIds[0] ?? '',
@@ -134,14 +145,16 @@ export class SqlWorkbenchService {
 				.filter(connection => established.has(String(connection.serverUrl || '').trim().toLowerCase()));
 			const invalidatedConnections = changedConnections
 				.filter(connection => invalidated.has(String(connection.serverUrl || '').trim().toLowerCase()));
-			for (const connection of invalidatedConnections) void this.queryService.cancelConnection(connection.id);
+			this.trackSideEffect(Promise.allSettled(
+				invalidatedConnections.map(connection => this.queryService.cancelConnection(connection.id)),
+			).then(() => undefined));
 			this.sqlPrincipalEmitter.fire({
 				serverUrls: change.changedServerUrls,
 				connectionIds: changedConnections.map(connection => connection.id),
 				establishedConnectionIds: establishedConnections.map(connection => connection.id),
 				version: change.version,
 			});
-			void (async () => {
+			this.trackSideEffect((async () => {
 				for (const connection of invalidatedConnections) {
 					try { await blockSqlDatabaseCacheConnection(this.context, SQL_DATABASE_CACHE_STORAGE_KEY, connection.id); } catch (error) {
 						this.output.warn(`[sql-auth] Failed to block database cache after principal change for ${connection.id}: ${error instanceof Error ? error.message : String(error)}`);
@@ -157,7 +170,7 @@ export class SqlWorkbenchService {
 						this.output.warn(`[sql-auth] Failed to rebase database cache after principal change for ${connection.id}: ${error instanceof Error ? error.message : String(error)}`);
 					}
 				}
-			})();
+			})());
 		});
 		this.readyPromise = Promise.all([
 			this.connectionManager.ready(),
@@ -186,7 +199,7 @@ export class SqlWorkbenchService {
 	}
 
 	async refreshLeaveNoTracePolicy(): Promise<string[]> {
-		await this.readyPromise;
+		await this.awaitReadyActive();
 		await this.leaveNoTracePolicy.refresh();
 		return this.getLeaveNoTraceConnectionIds();
 	}
@@ -200,12 +213,12 @@ export class SqlWorkbenchService {
 	}
 
 	async assertSqlConnectionAllowed(connectionId: string): Promise<void> {
-		await this.readyPromise;
+		await this.awaitReadyActive();
 		await this.leaveNoTracePolicy.assertAllowed(connectionId);
 	}
 
 	async dispatchSqlConnectionAllowed<T>(connectionId: string, dispatch: () => T | PromiseLike<T>): Promise<T> {
-		await this.readyPromise;
+		await this.awaitReadyActive();
 		if (this.leaveNoTracePolicy.dispatchAllowed) {
 			return this.leaveNoTracePolicy.dispatchAllowed(connectionId, dispatch);
 		}
@@ -219,6 +232,7 @@ export class SqlWorkbenchService {
 		expectedRevocationGeneration: number,
 		dispatch: () => T | PromiseLike<T>,
 	): Promise<T> {
+		this.assertActive();
 		const handle = await this.leaveNoTracePolicy.prepareDispatchAllowed(connection.id, async () =>
 			this.connectionManager.prepareDispatchCurrent(connection, async () =>
 				this.serverAccountMap.preparePrincipalDispatch(connection, expectedPrincipalFingerprint, dispatch)), expectedRevocationGeneration);
@@ -232,6 +246,7 @@ export class SqlWorkbenchService {
 		expectedProtected: boolean,
 		dispatch: () => T | PromiseLike<T>,
 	): Promise<T> {
+		this.assertActive();
 		const handle = await this.leaveNoTracePolicy.prepareDispatchProtectionMode(
 			connection.id,
 			expectedProtected,
@@ -247,6 +262,7 @@ export class SqlWorkbenchService {
 		expectedPrincipalFingerprint: string,
 		dispatch: () => T | PromiseLike<T>,
 	): Promise<T> {
+		this.assertActive();
 		return this.dispatchSqlOwnerAllowed(
 			connection,
 			expectedPrincipalFingerprint,
@@ -261,7 +277,7 @@ export class SqlWorkbenchService {
 		globallyBlocked: boolean;
 		revocationGenerations: Readonly<Record<string, number>>;
 	}) => T | PromiseLike<T>): Promise<T> {
-		await this.readyPromise;
+		await this.awaitReadyActive();
 		if (this.leaveNoTracePolicy.dispatchSnapshot) return this.leaveNoTracePolicy.dispatchSnapshot(dispatch);
 		await this.leaveNoTracePolicy.refresh();
 		return await dispatch({
@@ -273,15 +289,17 @@ export class SqlWorkbenchService {
 	}
 
 	async dispatchSqlOwnerSnapshot<T>(dispatch: (snapshot: SqlOwnerSnapshot) => T | PromiseLike<T>): Promise<T> {
+		this.assertActive();
 		return this.retrySqlOwnerSnapshotAcquisition(() => this.tryDispatchSqlOwnerSnapshot(dispatch));
 	}
 
 	async runWithSqlOwnerSnapshotLock<T>(run: (snapshot: SqlOwnerSnapshot) => Promise<T>): Promise<T> {
+		this.assertActive();
 		return this.retrySqlOwnerSnapshotAcquisition(() => this.tryRunWithSqlOwnerSnapshotLock(run));
 	}
 
 	async tryDispatchSqlOwnerSnapshot<T>(dispatch: (snapshot: SqlOwnerSnapshot) => T | PromiseLike<T>): Promise<SqlOwnerSnapshotLockAttempt<T>> {
-		await this.readyPromise;
+		await this.awaitReadyActive();
 		const lockOptions = { retries: 0 } as const;
 		let handle;
 		try {
@@ -303,7 +321,7 @@ export class SqlWorkbenchService {
 	}
 
 	async tryRunWithSqlOwnerSnapshotLock<T>(run: (snapshot: SqlOwnerSnapshot) => Promise<T>): Promise<SqlOwnerSnapshotLockAttempt<T>> {
-		await this.readyPromise;
+		await this.awaitReadyActive();
 		const lockOptions = { retries: 0 } as const;
 		try {
 			const value = await this.leaveNoTracePolicy.runWithSnapshotLock(async policy =>
@@ -331,6 +349,7 @@ export class SqlWorkbenchService {
 
 	async retrySqlOwnerSnapshotAcquisition<T>(attempt: () => Promise<SqlOwnerSnapshotLockAttempt<T>>): Promise<T> {
 		for (let retry = 0; ; retry += 1) {
+			this.assertActive();
 			const result = await attempt();
 			if (result.acquired) return result.value;
 			if (retry >= SQL_OWNER_SNAPSHOT_LOCK_RETRIES) {
@@ -343,21 +362,101 @@ export class SqlWorkbenchService {
 	async setLeaveNoTraceConnection(connectionId: string, enabled: boolean): Promise<void> {
 		const id = String(connectionId || '').trim();
 		if (!id) return;
-		await this.readyPromise;
+		await this.awaitReadyActive();
 		await this.leaveNoTracePolicy.setConnection(id, enabled);
+		this.assertActive();
 		if (enabled) await this.queryService.cancelConnection(id);
 	}
 
-	async dispose(): Promise<void> {
-		if (this.disposed) return;
+	runLifecycleOperation<T>(operation: () => Promise<T>): Promise<T> {
+		this.assertActive();
+		let accepted: Promise<T>;
+		try {
+			accepted = operation();
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		this.trackSideEffect(accepted.then(() => undefined, () => undefined));
+		return accepted;
+	}
+
+	trackLifecycleCleanup(operation: PromiseLike<unknown>): void {
+		this.trackSideEffect(Promise.resolve(operation).then(() => undefined, () => undefined));
+	}
+
+	registerLifecycleFinalizer(finalize: () => void): vscode.Disposable {
+		if (this.disposed) {
+			finalize();
+			return { dispose: () => undefined };
+		}
+		this.lifecycleFinalizers.add(finalize);
+		return { dispose: () => this.lifecycleFinalizers.delete(finalize) };
+	}
+
+	dispose(): Promise<void> {
+		if (this.disposePromise) return this.disposePromise;
 		this.disposed = true;
-		await this.queryService.dispose();
-		await this.runtime.dispose();
 		this.leaveNoTracePolicy.dispose();
 		this.serverAccountMap.dispose();
 		this.connectionManager.dispose();
-		this.leaveNoTraceEmitter.dispose();
-		this.sqlPrincipalEmitter.dispose();
-		this.sqlConnectionEmitter.dispose();
+		this.disposePromise = this.finishDisposal();
+		return this.disposePromise;
+	}
+
+	private async finishDisposal(): Promise<void> {
+		let disposalError: unknown;
+		try {
+			const queryDisposal = this.queryService.dispose();
+			for (;;) {
+				this.drainLifecycleFinalizers();
+				const sideEffectTail = this.sideEffectTail;
+				const operationResults = await Promise.allSettled([queryDisposal, sideEffectTail]);
+				disposalError ??= operationResults.find(result => result.status === 'rejected')?.reason;
+				if (this.lifecycleFinalizers.size === 0 && sideEffectTail === this.sideEffectTail) break;
+			}
+			const runtimeResult = await Promise.allSettled([this.runtime.dispose()]);
+			disposalError ??= runtimeResult.find(result => result.status === 'rejected')?.reason;
+		} finally {
+			await Promise.all([
+				this.leaveNoTracePolicy.waitForRefreshSettlement(),
+				this.serverAccountMap.waitForRefreshSettlement(),
+				this.connectionManager.waitForRefreshSettlement(),
+				this.waitForSideEffectSettlement(),
+			]);
+			this.leaveNoTraceEmitter.dispose();
+			this.sqlPrincipalEmitter.dispose();
+			this.sqlConnectionEmitter.dispose();
+		}
+		if (disposalError !== undefined) throw disposalError;
+	}
+
+	private drainLifecycleFinalizers(): void {
+		for (const finalize of [...this.lifecycleFinalizers]) {
+			this.lifecycleFinalizers.delete(finalize);
+			try { finalize(); } catch { /* best-effort language cleanup */ }
+		}
+	}
+
+	private async awaitReadyActive(): Promise<void> {
+		this.assertActive();
+		await this.readyPromise;
+		this.assertActive();
+	}
+
+	private assertActive(): void {
+		if (this.disposed) throw new Error('SQL workbench service is disposed.');
+	}
+
+	private trackSideEffect(operation: Promise<void>): void {
+		const previous = this.sideEffectTail;
+		this.sideEffectTail = Promise.allSettled([previous, operation]).then(() => undefined);
+	}
+
+	private async waitForSideEffectSettlement(): Promise<void> {
+		for (;;) {
+			const tail = this.sideEffectTail;
+			await tail;
+			if (tail === this.sideEffectTail) return;
+		}
 	}
 }

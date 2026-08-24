@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { KustoQueryClient, QueryCancelledError, QueryExecutionError, parseKustoTimespan, normalizeClusterEndpoint } from '../../../src/host/kustoClient';
-import type { KustoConnection } from '../../../src/host/connectionManager';
+import { ConnectionManager, type KustoConnection } from '../../../src/host/connectionManager';
 import { getKustoResultSets } from '../../../src/shared/kustoResultBatch';
 
 const TEST_CONNECTION: KustoConnection = {
@@ -612,6 +612,125 @@ describe('getDatabaseSchema discovery policy', () => {
 		await flushPromises();
 		expect(clearConnection).toHaveBeenCalledWith(TEST_CONNECTION.id);
 		client.dispose();
+	});
+
+	it('keeps manager settlement pending for listener-triggered cache cleanup', async () => {
+		const values = new Map<string, unknown>([['kusto.connections', [TEST_CONNECTION]]]);
+		const manager = new ConnectionManager({
+			globalState: {
+				get: <T>(key: string) => values.get(key) as T,
+				update: async (key: string, value: unknown) => { values.set(key, value); },
+			},
+		} as any);
+		const client = new KustoQueryClient(undefined, undefined, manager);
+		const cleanup = deferred<void>();
+		const clearConnection = vi.fn(() => cleanup.promise);
+		(client as any).connectionCache = { clearConnection };
+		try {
+			await manager.removeConnection(TEST_CONNECTION.id);
+			expect(clearConnection).toHaveBeenCalledWith(TEST_CONNECTION.id);
+			manager.dispose();
+			client.dispose();
+			let settled = false;
+			const settlement = manager.waitForSettlement().finally(() => { settled = true; });
+			await Promise.resolve();
+			expect(settled).toBe(false);
+
+			cleanup.resolve();
+			await settlement;
+			expect(settled).toBe(true);
+		} finally {
+			cleanup.resolve();
+			client.dispose();
+			manager.dispose();
+			await manager.waitForSettlement();
+		}
+	});
+
+	it('keeps cleanup listeners alive until an accepted removal and its cleanup settle', async () => {
+		const values = new Map<string, unknown>([['kusto.connections', [TEST_CONNECTION]]]);
+		const persistStarted = deferred<void>();
+		const persistGate = deferred<void>();
+		const cleanupGate = deferred<void>();
+		const manager = new ConnectionManager({
+			globalState: {
+				get: <T>(key: string) => values.get(key) as T,
+				update: async (key: string, value: unknown) => {
+					if (key === 'kusto.connections') {
+						persistStarted.resolve();
+						await persistGate.promise;
+					}
+					values.set(key, value);
+				},
+			},
+		} as any);
+		const client = new KustoQueryClient(undefined, undefined, manager);
+		const clearConnection = vi.fn(() => cleanupGate.promise);
+		(client as any).connectionCache = { clearConnection };
+		try {
+			const removal = manager.removeConnection(TEST_CONNECTION.id);
+			await persistStarted.promise;
+			manager.dispose();
+			let settled = false;
+			const settlement = manager.waitForSettlement().finally(() => { settled = true; });
+			await Promise.resolve();
+			expect(settled).toBe(false);
+
+			persistGate.resolve();
+			await removal;
+			expect(clearConnection).toHaveBeenCalledWith(TEST_CONNECTION.id);
+			expect(settled).toBe(false);
+
+			cleanupGate.resolve();
+			await settlement;
+			expect(values.get('kusto.connections')).toEqual([]);
+		} finally {
+			persistGate.resolve();
+			cleanupGate.resolve();
+			client.dispose();
+			manager.dispose();
+			await manager.waitForSettlement();
+		}
+	});
+
+	it('waits when an accepted operation reaches cache cleanup after retirement begins', async () => {
+		const values = new Map<string, unknown>();
+		const manager = new ConnectionManager({
+			globalState: {
+				get: <T>(key: string) => values.get(key) as T,
+				update: async (key: string, value: unknown) => { values.set(key, value); },
+			},
+		} as any);
+		const client = new KustoQueryClient(undefined, undefined, manager);
+		const operationGate = deferred<void>();
+		const cleanupGate = deferred<void>();
+		const clearConnection = vi.fn(() => cleanupGate.promise);
+		(client as any).connectionCache = { clearConnection };
+		try {
+			const operation = client.withTransientAuthPreference(
+				TEST_CONNECTION,
+				{ mode: 'automatic' },
+				() => operationGate.promise,
+			);
+			manager.dispose();
+			let settled = false;
+			const settlement = manager.waitForSettlement().finally(() => { settled = true; });
+			await Promise.resolve();
+			expect(settled).toBe(false);
+
+			operationGate.resolve();
+			await vi.waitFor(() => expect(clearConnection).toHaveBeenCalledWith(TEST_CONNECTION.id));
+			expect(settled).toBe(false);
+
+			cleanupGate.resolve();
+			await Promise.all([operation, settlement]);
+		} finally {
+			operationGate.resolve();
+			cleanupGate.resolve();
+			client.dispose();
+			manager.dispose();
+			await manager.waitForSettlement();
+		}
 	});
 
 	it('fails closed before warm metadata cache lookup when a dispatch gate has no manager', async () => {

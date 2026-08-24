@@ -275,7 +275,9 @@ describe('QueryEditorProvider Kusto connection-onboarding application', () => {
 		expect(handlerSource).toContain('await this.options.saveLastSelection(newConnection.id, newConnection.database);');
 		expect(managerSource).toContain("this.changeEmitter.fire({ type: 'added', connection: { ...newConnection } });");
 		expect(authSource).toContain('setExplicitAccount(connectionId: string, account: vscode.AuthenticationSessionAccountInformation)');
-		expect(clientSource).toContain('public async withTransientAuthPreference<T>(');
+		expect(clientSource).toContain('public withTransientAuthPreference<T>(');
+		expect(clientSource).toContain('return this.runLifecycleOperation(() => this.withTransientAuthPreferenceCore(');
+		expect(clientSource).toContain('private async withTransientAuthPreferenceCore<T>(');
 		expect(clientSource).toContain('async getDatabases(connection: KustoConnection');
 		expect(traceSource).toContain('export function traceDatabaseList(');
 		expect(sectionFactorySource).toContain("type: 'testKustoConnection'");

@@ -21,6 +21,7 @@ export interface SqlConnectionOnboardingApplicationHandler {
 
 export type SqlConnectionOnboardingApplicationHandlerOptions = {
 	connectionManager: Pick<SqlConnectionManager, 'addConnection' | 'getConnections'>;
+	runLifecycleOperation?: <T>(operation: () => Promise<T>) => Promise<T>;
 	globalState: Pick<vscode.Memento, 'update'>;
 	postMessage: (message: SqlConnectionAddedResponse) => PromiseLike<boolean> | void;
 };
@@ -39,7 +40,9 @@ export class HostSqlConnectionOnboardingApplicationHandler implements SqlConnect
 				return undefined;
 		}
 		if (this.disposed) return Promise.resolve();
-		return this.handleOnboardingMessage(message);
+		return this.options.runLifecycleOperation
+			? this.options.runLifecycleOperation(() => this.handleOnboardingMessage(message))
+			: this.handleOnboardingMessage(message);
 	}
 
 	dispose(): void {

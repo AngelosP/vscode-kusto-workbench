@@ -1,9 +1,40 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
 import { SqlConnectionManager } from '../../../src/host/sqlConnectionManager';
+import { withSqlStateFileLock } from '../../../src/host/sql/sqlStateTransaction';
+
+const sqlConnectionWriteSequence = [
+	'sql-connections.backup.v1.json',
+	'sql-connections.v1.json',
+	'sql-connections.commit.v1.json',
+	'sql-connections-migrated.v1',
+] as const;
+const trackedManagers = new Set<SqlConnectionManager>();
+const trackedDirectories = new Set<string>();
+
+async function disposeTrackedManagers(): Promise<void> {
+	const managers = [...trackedManagers];
+	trackedManagers.clear();
+	for (const manager of managers) manager.dispose();
+	await Promise.all(managers.map(manager => manager.waitForRefreshSettlement()));
+}
+
+async function disposeTrackedManagersAndRemove(directory: string): Promise<void> {
+	await disposeTrackedManagers();
+	trackedDirectories.delete(directory);
+	await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+}
+
+afterEach(async () => {
+	await disposeTrackedManagers();
+	for (const directory of trackedDirectories) {
+		await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+	}
+	trackedDirectories.clear();
+});
 
 function deferred<T>() {
 	let resolve!: (value: T | PromiseLike<T>) => void;
@@ -32,6 +63,8 @@ function createHarness(initialConnections: any[] = [], initialPasswords: Record<
 		},
 	} as any;
 	const manager = new SqlConnectionManager(context);
+	trackedManagers.add(manager);
+	if (globalStoragePath) trackedDirectories.add(globalStoragePath);
 	return { manager, context, passwords, globalStateUpdate, secretStore, secretDelete, getPersisted: () => structuredClone(connections) };
 }
 
@@ -237,6 +270,7 @@ describe('SqlConnectionManager transactions', () => {
 			const orphanedKey = [...first.passwords.keys()].find(key => key.startsWith('sql.password.'))!;
 			expect(orphanedKey).toBeTruthy();
 			first.manager.dispose();
+			await first.manager.waitForRefreshSettlement();
 
 			const second = createHarness([], { [orphanedKey]: 'password' }, directory);
 			await second.manager.ready();
@@ -244,7 +278,7 @@ describe('SqlConnectionManager transactions', () => {
 			expect(JSON.parse(fs.readFileSync(path.join(directory, 'sql-connections.v1.json'), 'utf8')).mutationLeases).toEqual({});
 			second.manager.dispose();
 		} finally {
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
 		}
 	});
 
@@ -271,7 +305,7 @@ describe('SqlConnectionManager transactions', () => {
 			expect(fs.readdirSync(directory).some(name => name.startsWith('sql-orphan-secret-cleanup.v1.json.corrupt-'))).toBe(true);
 			harness.manager.dispose();
 		} finally {
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
 		}
 	});
 
@@ -445,7 +479,7 @@ describe('SqlConnectionManager transactions', () => {
 			second.manager.dispose();
 			third.manager.dispose();
 		} finally {
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
 		}
 	});
 
@@ -467,7 +501,7 @@ describe('SqlConnectionManager transactions', () => {
 			first.manager.dispose();
 			second.manager.dispose();
 		} finally {
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
 		}
 	});
 
@@ -495,6 +529,7 @@ describe('SqlConnectionManager transactions', () => {
 				.rejects.toThrow(`${failedFile} failed`);
 			expect(first.passwords.get('sql.password.sql-1')).toBe('old-password');
 			first.manager.dispose();
+			await first.manager.waitForRefreshSettlement();
 
 			const second = createHarness([], { 'sql.password.sql-1': 'old-password' }, directory);
 			await second.manager.ready();
@@ -502,7 +537,7 @@ describe('SqlConnectionManager transactions', () => {
 			await expect(second.manager.getPasswordForConnection(ORIGINAL)).resolves.toBe('old-password');
 			second.manager.dispose();
 		} finally {
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
 		}
 	});
 
@@ -523,6 +558,7 @@ describe('SqlConnectionManager transactions', () => {
 			expect(first.manager.getConnection('sql-1')).toEqual(ORIGINAL);
 			expect(first.passwords.get('sql.password.sql-1')).toBe('old-password');
 			first.manager.dispose();
+			await first.manager.waitForRefreshSettlement();
 
 			const second = createHarness([], { 'sql.password.sql-1': 'old-password' }, directory);
 			await second.manager.ready();
@@ -530,7 +566,7 @@ describe('SqlConnectionManager transactions', () => {
 			await expect(second.manager.getPasswordForConnection(ORIGINAL)).resolves.toBe('old-password');
 			second.manager.dispose();
 		} finally {
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
 		}
 	});
 
@@ -554,13 +590,14 @@ describe('SqlConnectionManager transactions', () => {
 			expect(harness.passwords.get('sql.password.sql-1')).toBe('new-password');
 			expect(fs.existsSync(path.join(directory, 'sql-connections-migrated.v1'))).toBe(false);
 			harness.manager.dispose();
+			await harness.manager.waitForRefreshSettlement();
 
 			const restarted = createHarness([], { 'sql.password.sql-1': 'new-password' }, directory);
 			await restarted.manager.ready();
 			expect(restarted.manager.getConnection('sql-1')).toEqual(updated);
 			restarted.manager.dispose();
 		} finally {
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
 		}
 	});
 
@@ -582,7 +619,7 @@ describe('SqlConnectionManager transactions', () => {
 			expect(fs.existsSync(path.join(directory, 'sql-connections-migrated.v1'))).toBe(false);
 			harness.manager.dispose();
 		} finally {
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
 		}
 	});
 
@@ -600,7 +637,7 @@ describe('SqlConnectionManager transactions', () => {
 			expect(JSON.parse(await fs.promises.readFile(path.join(directory, 'sql-connections.v1.json'), 'utf8')).connections).toEqual([]);
 			harness.manager.dispose();
 		} finally {
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
 		}
 	});
 
@@ -614,7 +651,7 @@ describe('SqlConnectionManager transactions', () => {
 			expect(JSON.parse(fs.readFileSync(path.join(directory, 'sql-connections.v1.json'), 'utf8')).connections).toEqual([]);
 			harness.manager.dispose();
 		} finally {
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
 		}
 	});
 
@@ -624,6 +661,7 @@ describe('SqlConnectionManager transactions', () => {
 			const first = createHarness([ORIGINAL], { 'sql.password.sql-1': 'old-password' }, directory);
 			await first.manager.ready();
 			first.manager.dispose();
+			await first.manager.waitForRefreshSettlement();
 			const snapshotPath = path.join(directory, 'sql-connections.v1.json');
 			const snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
 			snapshot.mutationLeases['sql-1'] = { operationId: '', expiresAt: 'invalid' };
@@ -635,7 +673,7 @@ describe('SqlConnectionManager transactions', () => {
 			expect(fs.readdirSync(directory).some(name => name.startsWith('sql-connections.v1.json.corrupt-'))).toBe(true);
 			second.manager.dispose();
 		} finally {
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
 		}
 	});
 
@@ -659,7 +697,7 @@ describe('SqlConnectionManager transactions', () => {
 			expect(fs.readdirSync(directory).some(name => name.startsWith('sql-connections.v1.json.corrupt-'))).toBe(true);
 			harness.manager.dispose();
 		} finally {
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
 		}
 	});
 
@@ -669,6 +707,7 @@ describe('SqlConnectionManager transactions', () => {
 			const first = createHarness([ORIGINAL], { 'sql.password.sql-1': 'old-password' }, directory);
 			await first.manager.ready();
 			first.manager.dispose();
+			await first.manager.waitForRefreshSettlement();
 			const snapshotPath = path.join(directory, 'sql-connections.v1.json');
 			const uncommitted = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
 			uncommitted.version += 1;
@@ -682,7 +721,7 @@ describe('SqlConnectionManager transactions', () => {
 			expect(JSON.parse(fs.readFileSync(snapshotPath, 'utf8')).connections).toEqual([ORIGINAL]);
 			second.manager.dispose();
 		} finally {
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
 		}
 	});
 
@@ -695,6 +734,7 @@ describe('SqlConnectionManager transactions', () => {
 			await first.manager.removeConnection('sql-1');
 			expect(first.getPersisted()).toEqual([ORIGINAL]);
 			first.manager.dispose();
+			await first.manager.waitForRefreshSettlement();
 			fs.unlinkSync(path.join(directory, 'sql-connections.v1.json'));
 
 			const second = createHarness([ORIGINAL], {}, directory);
@@ -703,7 +743,176 @@ describe('SqlConnectionManager transactions', () => {
 			expect(JSON.parse(fs.readFileSync(path.join(directory, 'sql-connections.v1.json'), 'utf8')).connections).toEqual([]);
 			second.manager.dispose();
 		} finally {
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
+		}
+	});
+
+	it('does not create connection state when lock-waiting initialization resumes after disposal', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-connections-disposed-initialize-'));
+		const lockTarget = path.join(directory, 'sql-connections.v1.json.write');
+		let releaseLock!: () => void;
+		let markLockHeld!: () => void;
+		const lockHeld = new Promise<void>(resolve => { markLockHeld = resolve; });
+		const lockGate = new Promise<void>(resolve => { releaseLock = resolve; });
+		const heldLock = withSqlStateFileLock(lockTarget, async () => {
+			markLockHeld();
+			await lockGate;
+		});
+		await lockHeld;
+		const harness = createHarness([ORIGINAL], { 'sql.password.sql-1': 'old-password' }, directory);
+		try {
+			harness.manager.dispose();
+			releaseLock();
+			await heldLock;
+			await harness.manager.ready();
+			await harness.manager.waitForRefreshSettlement();
+
+			for (const fileName of [...sqlConnectionWriteSequence, 'sql-orphan-secret-cleanup.v1.json']) {
+				expect(fs.existsSync(path.join(directory, fileName))).toBe(false);
+			}
+		} finally {
+			releaseLock?.();
+			await Promise.allSettled([heldLock]);
+			harness.manager.dispose();
+			await harness.manager.waitForRefreshSettlement();
+			await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+		}
+	});
+
+	it('rejects connection and credential work after settled disposal without side effects', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-connections-post-disposal-'));
+		const harness = createHarness([ORIGINAL], { 'sql.password.sql-1': 'old-password' }, directory);
+		try {
+			await harness.manager.ready();
+			harness.manager.dispose();
+			await harness.manager.waitForRefreshSettlement();
+			const snapshotPath = path.join(directory, 'sql-connections.v1.json');
+			const before = fs.readFileSync(snapshotPath, 'utf8');
+			const stores = harness.secretStore.mock.calls.length;
+			const deletes = harness.secretDelete.mock.calls.length;
+			const callback = vi.fn(async () => undefined);
+
+			await expect(harness.manager.addConnection({
+				name: 'Late', dialect: 'mssql', serverUrl: 'late.example', authType: 'aad',
+			})).rejects.toThrow('disposed');
+			await expect(harness.manager.updateConnection('sql-1', { name: 'Late update' })).rejects.toThrow('disposed');
+			await expect(harness.manager.removeConnection('sql-1')).rejects.toThrow('disposed');
+			await expect(harness.manager.clearConnections()).rejects.toThrow('disposed');
+			await expect(harness.manager.runWithSnapshotLock(callback)).rejects.toThrow('disposed');
+
+			expect(callback).not.toHaveBeenCalled();
+			expect(fs.readFileSync(snapshotPath, 'utf8')).toBe(before);
+			expect(harness.secretStore).toHaveBeenCalledTimes(stores);
+			expect(harness.secretDelete).toHaveBeenCalledTimes(deletes);
+		} finally {
+			await disposeTrackedManagersAndRemove(directory);
+		}
+	});
+
+	it.each(sqlConnectionWriteSequence)(
+		'stops initialization after the %s transaction mutation when disposed',
+		async stopAfter => {
+			const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-connections-disposed-transaction-'));
+			const renamedFiles: string[] = [];
+			const realRename = fs.promises.rename.bind(fs.promises);
+			let manager: SqlConnectionManager | undefined;
+			const renameSpy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (oldPath, newPath) => {
+				await realRename(oldPath, newPath);
+				const fileName = path.basename(String(newPath));
+				if (!sqlConnectionWriteSequence.includes(fileName as typeof sqlConnectionWriteSequence[number])) return;
+				renamedFiles.push(fileName);
+				if (fileName === stopAfter) manager?.dispose();
+			});
+			try {
+				manager = createHarness([ORIGINAL], { 'sql.password.sql-1': 'old-password' }, directory).manager;
+				await manager.ready();
+				await manager.waitForRefreshSettlement();
+
+				const stopIndex = sqlConnectionWriteSequence.indexOf(stopAfter);
+				expect(renamedFiles).toEqual(sqlConnectionWriteSequence.slice(0, stopIndex + 1));
+				expect(manager.getVersion()).toBe(0);
+				expect(fs.existsSync(path.join(directory, stopAfter))).toBe(true);
+				for (const fileName of sqlConnectionWriteSequence.slice(stopIndex + 1)) {
+					expect(fs.existsSync(path.join(directory, fileName))).toBe(false);
+				}
+			} finally {
+				renameSpy.mockRestore();
+				manager?.dispose();
+				await manager?.waitForRefreshSettlement();
+				await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+			}
+		},
+	);
+
+	it('does not recreate connection files when a watcher refresh resumes after disposal', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-connections-disposed-refresh-'));
+		const harness = createHarness([ORIGINAL], { 'sql.password.sql-1': 'old-password' }, directory);
+		const lockTarget = path.join(directory, 'sql-connections.v1.json.write');
+		let releaseLock!: () => void;
+		let markLockHeld!: () => void;
+		const lockHeld = new Promise<void>(resolve => { markLockHeld = resolve; });
+		const lockGate = new Promise<void>(resolve => { releaseLock = resolve; });
+		let heldLock: Promise<void> | undefined;
+		try {
+			await harness.manager.ready();
+			await harness.manager.waitForRefreshSettlement();
+			heldLock = withSqlStateFileLock(lockTarget, async () => {
+				markLockHeld();
+				await lockGate;
+			});
+			await lockHeld;
+			const refreshOnce = vi.spyOn(harness.manager as any, 'refreshOnce');
+			let refreshSettled = false;
+			await fs.promises.utimes(
+				path.join(directory, 'sql-connections.v1.json'),
+				new Date(),
+				new Date(Date.now() + 2_000),
+			);
+			await vi.waitFor(() => expect(refreshOnce).toHaveBeenCalled(), { timeout: 5000 });
+			void (harness.manager as any).refreshTail.finally(() => { refreshSettled = true; });
+			expect(refreshSettled).toBe(false);
+
+			harness.manager.dispose();
+			for (const fileName of [
+				'sql-connections.v1.json',
+				'sql-connections.backup.v1.json',
+				'sql-connections.backup.v1.json.slot1',
+				'sql-connections.commit.v1.json',
+			]) fs.rmSync(path.join(directory, fileName), { force: true });
+			releaseLock();
+			await heldLock;
+			await harness.manager.waitForRefreshSettlement();
+
+			expect(fs.existsSync(path.join(directory, 'sql-connections.v1.json'))).toBe(false);
+			expect(harness.manager.getConnection('sql-1')).toEqual(ORIGINAL);
+		} finally {
+			releaseLock?.();
+			await Promise.allSettled([heldLock].filter(Boolean) as Promise<unknown>[]);
+			harness.manager.dispose();
+			await harness.manager.waitForRefreshSettlement();
+			await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+		}
+	});
+
+	it('keeps a same-path connection observer active when a peer manager is disposed', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-connections-watcher-owner-'));
+		const writer = createHarness([], {}, directory);
+		const disposedPeer = createHarness([], {}, directory);
+		const survivor = createHarness([], {}, directory);
+		try {
+			await Promise.all([writer.manager.ready(), disposedPeer.manager.ready(), survivor.manager.ready()]);
+			disposedPeer.manager.dispose();
+			await disposedPeer.manager.waitForRefreshSettlement();
+			await writer.manager.addConnection({
+				name: 'Surviving watcher', dialect: 'mssql', serverUrl: 'watcher.example', authType: 'aad',
+			});
+
+			await vi.waitFor(() => expect(survivor.manager.getConnections().map(connection => connection.name))
+				.toEqual(['Surviving watcher']), { timeout: 5000 });
+		} finally {
+			for (const harness of [writer, disposedPeer, survivor]) harness.manager.dispose();
+			await Promise.all([writer, disposedPeer, survivor].map(harness => harness.manager.waitForRefreshSettlement()));
+			await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 		}
 	});
 
@@ -723,14 +932,14 @@ describe('SqlConnectionManager transactions', () => {
 			await harness.manager.ready();
 
 			await expect(harness.manager.getPasswordForConnection(ORIGINAL)).rejects.toThrow('SQL connection is changing');
-			await vi.advanceTimersByTimeAsync(10 * 60_000);
+			vi.setSystemTime(Date.now() + (10 * 60_000));
 			await expect(harness.manager.getPasswordForConnection(ORIGINAL)).rejects.toThrow('SQL connection is changing');
 			const persisted = JSON.parse(fs.readFileSync(path.join(directory, 'sql-connections.v1.json'), 'utf8'));
 			expect(persisted.mutationLeases['sql-1']).toMatchObject({ failed: true, expiresAt: Number.MAX_SAFE_INTEGER });
 			harness.manager.dispose();
 		} finally {
 			vi.useRealTimers();
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
 		}
 	}, 15_000);
 
@@ -763,7 +972,7 @@ describe('SqlConnectionManager transactions', () => {
 			first.manager.dispose();
 			second.manager.dispose();
 		} finally {
-			fs.rmSync(directory, { recursive: true, force: true });
+			await disposeTrackedManagersAndRemove(directory);
 		}
 	}, 15_000);
 });

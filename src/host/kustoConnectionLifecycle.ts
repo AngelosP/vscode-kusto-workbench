@@ -44,7 +44,7 @@ export class KustoConnectionLifecycle implements vscode.Disposable {
 	private disposed = false;
 
 	constructor(
-		connectionManager: ConnectionManager,
+		private readonly connectionManager: ConnectionManager,
 		private readonly effects: KustoConnectionLifecycleEffects,
 	) {
 		this.subscription = connectionManager.onDidChangeConnections(change => {
@@ -76,6 +76,9 @@ export class KustoConnectionLifecycle implements vscode.Disposable {
 	private enqueue(run: () => Promise<void>): void {
 		const next = this.tail.then(run, run);
 		this.tail = next.catch(() => undefined);
+		if (typeof this.connectionManager.trackLifecycleSideEffect === 'function') {
+			this.connectionManager.trackLifecycleSideEffect(this.tail);
+		}
 	}
 
 	private async handleChange(invalidated: readonly string[]): Promise<void> {

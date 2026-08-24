@@ -188,6 +188,9 @@ export class StsLanguageService {
 		sessionId: string = crypto.randomUUID(),
 		leaveNoTracePolicy?: SqlLeaveNoTracePolicy,
 		private readonly dispatchSqlOwnerAllowed?: SqlOwnerDispatcher,
+		private readonly runLifecycleOperation?: <T>(operation: () => Promise<T>) => Promise<T>,
+		private readonly trackLifecycleCleanup?: (operation: PromiseLike<unknown>) => void,
+		registerLifecycleFinalizer?: (finalize: () => void) => vscode.Disposable,
 	) {
 		this._process = process;
 		this._connectionManager = connectionManager;
@@ -205,6 +208,9 @@ export class StsLanguageService {
 			},
 			refresh: async () => getSqlLeaveNoTraceConnectionIds(context),
 		};
+		if (registerLifecycleFinalizer) {
+			this._subscriptions.push(registerLifecycleFinalizer(() => this.dispose()));
+		}
 
 		// Subscribe to connection completion notifications
 		this._subscriptions.push(this._process.onNotification(STS_METHODS.connectComplete, (params: any) => {
@@ -372,14 +378,16 @@ export class StsLanguageService {
 		const cancelIncompleteConnect = this._connectOperationsByUri.has(uri) && !this._connectedUris.has(uri);
 		this._cleanupUri(uri, error);
 		this._closedUris.add(uri);
-		void Promise.resolve(this._process.sendNotification('textDocument/didClose', { textDocument: { uri } }))
-			.catch(() => undefined);
+		const cleanup = (async () => {
+			try { await this._process.sendNotification('textDocument/didClose', { textDocument: { uri } }); } catch { /* stale document */ }
+			if (cancelIncompleteConnect) await this._cancelConnectUri(uri);
+			await this._disconnectUri(uri);
+		})();
+		this.trackCleanup(cleanup);
 		if (this._documentUriByBoxId.get(boxId) === uri) this._documentUriByBoxId.delete(boxId);
 		this._boxIdByDocumentUri.delete(uri);
 		this._principalFingerprintByUri.delete(uri);
 		this._expectedOwnerByDocumentUri.delete(uri);
-		if (cancelIncompleteConnect) void this._cancelConnectUri(uri);
-		void this._disconnectUri(uri);
 	}
 
 	private async _replaceDocumentUri(boxId: string, previousUri: string, connection: SqlConnection): Promise<string> {
@@ -400,8 +408,7 @@ export class StsLanguageService {
 	private async _abandonConnectAttempt(boxId: string, uri: string, error: Error, connectCompleted: boolean): Promise<void> {
 		this._cleanupUri(uri, error);
 		this._closedUris.add(uri);
-		void Promise.resolve(this._process.sendNotification('textDocument/didClose', { textDocument: { uri } }))
-			.catch(() => undefined);
+		try { await this._process.sendNotification('textDocument/didClose', { textDocument: { uri } }); } catch { /* stale document */ }
 		this._boxIdByDocumentUri.delete(uri);
 		this._principalFingerprintByUri.delete(uri);
 		this._expectedOwnerByDocumentUri.delete(uri);
@@ -574,7 +581,9 @@ export class StsLanguageService {
 		}
 		bindUriOwner(uri);
 
-		const fullPromise = this._connectDocumentCore(boxId, uri, key, connection, database);
+		const fullPromise = this.runLifecycleOperation
+			? this.runLifecycleOperation(() => this._connectDocumentCore(boxId, uri, key, connection, database))
+			: this._connectDocumentCore(boxId, uri, key, connection, database);
 		this._operationCancelReasonByUri.delete(uri);
 		this._connectOperationsByUri.set(uri, { key, promise: fullPromise });
 		this._connectPromiseByUri.set(uri, fullPromise);
@@ -705,9 +714,10 @@ export class StsLanguageService {
 
 	private _replayDocumentsAfterRestart(): void {
 		if (this._disposed) return;
-		void this._replayDocumentsAfterRestartGuarded().catch(error => {
+		const replay = this._replayDocumentsAfterRestartGuarded().catch(error => {
 			this._output.warn(`[sts] SQL language replay failed: ${sanitizeStsLogText(error instanceof Error ? error.message : error)}`);
 		});
+		this.trackCleanup(replay);
 	}
 
 	private async _replayDocumentsAfterRestartGuarded(): Promise<void> {
@@ -768,6 +778,14 @@ export class StsLanguageService {
 		this._targetGenerationByBoxId.clear();
 		for (const subscription of this._subscriptions.splice(0)) subscription.dispose();
 		this._diagnosticsHandler = undefined;
+	}
+
+	private trackCleanup(operation: PromiseLike<unknown>): void {
+		if (this.trackLifecycleCleanup) {
+			this.trackLifecycleCleanup(operation);
+			return;
+		}
+		void Promise.resolve(operation).catch(() => undefined);
 	}
 
 	// ── IntelliSense requests ──────────────────────────────────────────

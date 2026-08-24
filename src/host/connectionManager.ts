@@ -82,6 +82,10 @@ export class ConnectionManager implements vscode.Disposable {
 	readonly onDidChangeLeaveNoTrace = this.leaveNoTraceChangeEmitter.event;
 	private readonly leaveNoTracePolicy: KustoLeaveNoTracePolicyStore;
 	private readonly leaveNoTraceSubscription: vscode.Disposable;
+	private mutationTail: Promise<void> = Promise.resolve();
+	private sideEffectTail: Promise<void> = Promise.resolve();
+	private readonly lifecycleFinalizers = new Set<() => void>();
+	private disposePromise: Promise<void> | undefined;
 	private disposed = false;
 
 	constructor(private context: vscode.ExtensionContext) {
@@ -175,6 +179,7 @@ export class ConnectionManager implements vscode.Disposable {
 	 * Mark a cluster as "Leave no trace".
 	 */
 	async addLeaveNoTrace(clusterUrl: string): Promise<void> {
+		this.assertActive();
 		await this.leaveNoTracePolicy.setCluster(clusterUrl, true);
 	}
 
@@ -182,30 +187,92 @@ export class ConnectionManager implements vscode.Disposable {
 	 * Remove a cluster from "Leave no trace".
 	 */
 	async removeLeaveNoTrace(clusterUrl: string): Promise<void> {
+		this.assertActive();
 		await this.leaveNoTracePolicy.setCluster(clusterUrl, false);
 	}
 
 	prepareLeaveNoTraceDispatch<T>(clusterUrl: string, start: (revocationGeneration: number) => T): Promise<{ value: T; revocationGeneration: number }> {
+		this.assertActive();
 		return this.leaveNoTracePolicy.prepareDispatch(clusterUrl, start);
 	}
 
 	admitLeaveNoTraceRevision<T>(clusterUrl: string, expectedGeneration: number, admit: () => T | PromiseLike<T>): Promise<{ admitted: boolean; value?: Awaited<T> }> {
+		this.assertActive();
 		return this.leaveNoTracePolicy.admitRevision(clusterUrl, expectedGeneration, admit);
 	}
 
 	runWithLeaveNoTraceSnapshotLock<T>(run: (snapshot: KustoLeaveNoTracePolicySnapshot) => Promise<T>): Promise<T> {
+		this.assertActive();
 		return this.leaveNoTracePolicy.runWithSnapshotLock(run);
 	}
 
 	async refreshLeaveNoTracePolicy(): Promise<void> {
+		this.assertActive();
 		await this.leaveNoTracePolicy.refresh();
 	}
 
+	async waitForLeaveNoTraceRefreshSettlement(): Promise<void> {
+		await this.waitForSettlement();
+	}
+
+	async waitForSettlement(): Promise<void> {
+		if (this.disposePromise) return this.disposePromise;
+		await this.waitForWorkSettlement();
+	}
+
+	private async waitForWorkSettlement(): Promise<void> {
+		for (;;) {
+			const mutationTail = this.mutationTail;
+			const sideEffectTail = this.sideEffectTail;
+			await Promise.all([
+				mutationTail,
+				sideEffectTail,
+				this.leaveNoTracePolicy.waitForRefreshSettlement(),
+			]);
+			if (mutationTail === this.mutationTail && sideEffectTail === this.sideEffectTail) return;
+		}
+	}
+
+	trackLifecycleSideEffect(operation: PromiseLike<unknown>): void {
+		const previous = this.sideEffectTail;
+		this.sideEffectTail = Promise.allSettled([previous, Promise.resolve(operation)]).then(() => undefined);
+	}
+
+	runLifecycleOperation<T>(operation: () => Promise<T>): Promise<T> {
+		this.assertActive();
+		let accepted: Promise<T>;
+		try {
+			accepted = operation();
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		this.trackLifecycleSideEffect(accepted);
+		return accepted;
+	}
+
+	registerLifecycleFinalizer(finalize: () => void): vscode.Disposable {
+		if (this.disposed) {
+			finalize();
+			return { dispose: () => undefined };
+		}
+		this.lifecycleFinalizers.add(finalize);
+		return { dispose: () => this.lifecycleFinalizers.delete(finalize) };
+	}
+
 	dispose(): void {
-		if (this.disposed) return;
+		if (this.disposePromise) return;
 		this.disposed = true;
-		this.leaveNoTraceSubscription.dispose();
 		this.leaveNoTracePolicy.dispose();
+		this.disposePromise = this.finishDisposal();
+	}
+
+	private async finishDisposal(): Promise<void> {
+		await this.waitForWorkSettlement();
+		for (const finalize of [...this.lifecycleFinalizers]) {
+			try { finalize(); } catch { /* best-effort resource finalization */ }
+		}
+		this.lifecycleFinalizers.clear();
+		this.leaveNoTraceSubscription.dispose();
 		this.leaveNoTraceChangeEmitter.dispose();
 		this.changeEmitter.dispose();
 	}
@@ -233,7 +300,9 @@ export class ConnectionManager implements vscode.Disposable {
 		const now = Date.now();
 		if (typeof entry.lastAccessedAt === 'number' && (now - entry.lastAccessedAt) > FILE_CONNECTION_MAX_AGE_MS) {
 			// Entry expired — remove it (and prune any other stale entries).
-			void this.pruneExpiredFileConnections(cache, now);
+			if (!this.disposed) {
+				void this.enqueueMutation(() => this.pruneExpiredFileConnections(cache, now)).catch(() => undefined);
+			}
 			return undefined;
 		}
 
@@ -262,25 +331,26 @@ export class ConnectionManager implements vscode.Disposable {
 		database: string,
 		options?: { authorityId?: string; connectionIdHint?: string },
 	): Promise<void> {
-		const key = this.normalizeFilePath(filePath);
-		if (!key) return;
-		const trimmedCluster = String(clusterUrl || '').trim();
-		const trimmedDb = String(database || '').trim();
-		if (!trimmedCluster) return;
-		const cache = this.context.globalState.get<Record<string, FileConnectionCacheEntry>>(this.fileConnectionCacheKey) || {};
-		const now = Date.now();
-		const authorityId = normalizeKustoAuthorityId(options?.authorityId);
-		const connectionIdHint = String(options?.connectionIdHint || '').trim() || undefined;
-		cache[key] = {
-			clusterUrl: trimmedCluster,
-			database: trimmedDb,
-			lastAccessedAt: now,
-			...(authorityId ? { authorityId } : {}),
-			...(connectionIdHint ? { connectionIdHint } : {}),
-		};
-		// Opportunistically prune expired entries on write.
-		this.pruneExpiredFileConnectionsSync(cache, now);
-		await this.context.globalState.update(this.fileConnectionCacheKey, cache);
+		await this.enqueueMutation(async () => {
+			const key = this.normalizeFilePath(filePath);
+			if (!key) return;
+			const trimmedCluster = String(clusterUrl || '').trim();
+			const trimmedDb = String(database || '').trim();
+			if (!trimmedCluster) return;
+			const cache = this.context.globalState.get<Record<string, FileConnectionCacheEntry>>(this.fileConnectionCacheKey) || {};
+			const now = Date.now();
+			const authorityId = normalizeKustoAuthorityId(options?.authorityId);
+			const connectionIdHint = String(options?.connectionIdHint || '').trim() || undefined;
+			cache[key] = {
+				clusterUrl: trimmedCluster,
+				database: trimmedDb,
+				lastAccessedAt: now,
+				...(authorityId ? { authorityId } : {}),
+				...(connectionIdHint ? { connectionIdHint } : {}),
+			};
+			this.pruneExpiredFileConnectionsSync(cache, now);
+			await this.context.globalState.update(this.fileConnectionCacheKey, cache);
+		});
 	}
 
 	/**
@@ -318,52 +388,71 @@ export class ConnectionManager implements vscode.Disposable {
 	}
 
 	async addConnection(connection: Omit<KustoConnection, 'id'>): Promise<KustoConnection> {
-		const authorityId = normalizeKustoAuthorityId(connection.authorityId);
-		const newConnection: KustoConnection = {
-			...connection,
-			...(authorityId ? { authorityId } : { authorityId: undefined }),
-			id: `conn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-		};
-		this.bumpConnectionIncarnation(newConnection.id);
-		this.connections.push(newConnection);
-		await this.saveConnections();
-		this.changeEmitter.fire({ type: 'added', connection: { ...newConnection } });
-		return newConnection;
+		return this.enqueueMutation(async () => {
+			const authorityId = normalizeKustoAuthorityId(connection.authorityId);
+			const newConnection: KustoConnection = {
+				...connection,
+				...(authorityId ? { authorityId } : { authorityId: undefined }),
+				id: `conn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+			};
+			this.bumpConnectionIncarnation(newConnection.id);
+			this.connections.push(newConnection);
+			await this.saveConnections();
+			this.changeEmitter.fire({ type: 'added', connection: { ...newConnection } });
+			return newConnection;
+		});
 	}
 
 	async removeConnection(id: string): Promise<void> {
-		const removed = this.connections.find(c => c.id === id);
-		if (removed) this.bumpConnectionIncarnation(id);
-		this.connections = this.connections.filter(c => c.id !== id);
-		await this.saveConnections();
-		if (removed) this.changeEmitter.fire({ type: 'removed', connection: { ...removed } });
+		await this.enqueueMutation(async () => {
+			const removed = this.connections.find(c => c.id === id);
+			if (removed) this.bumpConnectionIncarnation(id);
+			this.connections = this.connections.filter(c => c.id !== id);
+			await this.saveConnections();
+			if (removed) this.changeEmitter.fire({ type: 'removed', connection: { ...removed } });
+		});
 	}
 
 	async clearConnections(): Promise<number> {
-		const previous = this.connections.map(connection => ({ ...connection }));
-		const removed = previous.length;
-		for (const connection of previous) this.bumpConnectionIncarnation(connection.id);
-		this.connections = [];
-		await this.saveConnections();
-		if (previous.length) this.changeEmitter.fire({ type: 'cleared', connections: previous });
-		return removed;
+		return this.enqueueMutation(async () => {
+			const previous = this.connections.map(connection => ({ ...connection }));
+			const removed = previous.length;
+			for (const connection of previous) this.bumpConnectionIncarnation(connection.id);
+			this.connections = [];
+			await this.saveConnections();
+			if (previous.length) this.changeEmitter.fire({ type: 'cleared', connections: previous });
+			return removed;
+		});
 	}
 
 	async updateConnection(id: string, updates: Partial<KustoConnection>): Promise<void> {
-		const index = this.connections.findIndex(c => c.id === id);
-		if (index !== -1) {
-			const previous = { ...this.connections[index] };
-			const authorityId = Object.prototype.hasOwnProperty.call(updates, 'authorityId')
-				? normalizeKustoAuthorityId(updates.authorityId)
-				: previous.authorityId;
-			this.connections[index] = { ...previous, ...updates, ...(authorityId ? { authorityId } : { authorityId: undefined }) };
-			if (getKustoConnectionIdentityKey(previous.clusterUrl, previous.authorityId)
-				!== getKustoConnectionIdentityKey(this.connections[index].clusterUrl, this.connections[index].authorityId)) {
-				this.bumpConnectionIncarnation(id);
+		await this.enqueueMutation(async () => {
+			const index = this.connections.findIndex(c => c.id === id);
+			if (index !== -1) {
+				const previous = { ...this.connections[index] };
+				const authorityId = Object.prototype.hasOwnProperty.call(updates, 'authorityId')
+					? normalizeKustoAuthorityId(updates.authorityId)
+					: previous.authorityId;
+				this.connections[index] = { ...previous, ...updates, ...(authorityId ? { authorityId } : { authorityId: undefined }) };
+				if (getKustoConnectionIdentityKey(previous.clusterUrl, previous.authorityId)
+					!== getKustoConnectionIdentityKey(this.connections[index].clusterUrl, this.connections[index].authorityId)) {
+					this.bumpConnectionIncarnation(id);
+				}
+				await this.saveConnections();
+				this.changeEmitter.fire({ type: 'updated', connection: { ...this.connections[index] }, previous });
 			}
-			await this.saveConnections();
-			this.changeEmitter.fire({ type: 'updated', connection: { ...this.connections[index] }, previous });
-		}
+		});
+	}
+
+	private enqueueMutation<T>(mutation: () => Promise<T>): Promise<T> {
+		if (this.disposed) return Promise.reject(new Error('Kusto connection manager is disposed.'));
+		const result = this.mutationTail.catch(() => undefined).then(mutation);
+		this.mutationTail = result.then(() => undefined, () => undefined);
+		return result;
+	}
+
+	private assertActive(): void {
+		if (this.disposed) throw new Error('Kusto connection manager is disposed.');
 	}
 
 }

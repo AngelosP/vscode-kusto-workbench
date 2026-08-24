@@ -308,7 +308,7 @@ export class ConnectionManagerViewerV2 {
 				void this.sendSnapshotToWebview();
 			}
 		}, null, this.disposables);
-		this.panel.webview.onDidReceiveMessage((msg: IncomingMessage) => void this.onMessage(msg), null, this.disposables);
+		this.panel.webview.onDidReceiveMessage((msg: IncomingMessage) => this.handleWebviewMessage(msg), null, this.disposables);
 		this.panel.webview.html = this.buildHtml(this.panel.webview);
 		this.watchAlternatingRowColorSetting();
 	}
@@ -327,6 +327,10 @@ export class ConnectionManagerViewerV2 {
 			if (pending.timer) clearTimeout(pending.timer);
 			pending.resolve(false);
 		}
+	}
+
+	private handleWebviewMessage(message: IncomingMessage): void {
+		void this.connectionManager.runLifecycleOperation(() => this.onMessage(message)).catch(() => undefined);
 	}
 
 	private handleKustoAuthPreferenceChange(change: KustoAuthPreferenceChange): void {
