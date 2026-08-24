@@ -198,6 +198,7 @@ const mocks = {
 		return Promise.resolve(true);
 	}),
 	waitForHostOwnedMarkdownCommands: vi.fn(async () => true),
+	getHostOwnedDocumentSectionStatus: vi.fn(() => 'absent'),
 	handleHostOwnedMarkdownCommandResult: vi.fn(() => ({ handled: false, accepted: false })),
 	reconcileHostOwnedChartProjection: vi.fn(),
 	reconcileHostOwnedHtmlProjection: vi.fn(),
@@ -251,6 +252,7 @@ vi.mock('../../src/webview/core/markdown-document-client.js', () => ({
 	requestHostOwnedDevelopmentNoteAdd: mocks.requestHostOwnedDevelopmentNoteAdd,
 	requestHostOwnedDevelopmentNotePatch: mocks.requestHostOwnedDevelopmentNotePatch,
 	waitForHostOwnedMarkdownCommands: mocks.waitForHostOwnedMarkdownCommands,
+	getHostOwnedDocumentSectionStatus: mocks.getHostOwnedDocumentSectionStatus,
 	handleHostOwnedMarkdownCommandResult: mocks.handleHostOwnedMarkdownCommandResult,
 }));
 
@@ -7495,6 +7497,165 @@ describe('changedSections agent provenance', () => {
 		}
 	});
 
+	it('removes a tool-created Markdown section when the host rejects its add command', async () => {
+		const markdownModule = await import('../../src/webview/sections/kw-markdown-section.js');
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		mocks.isHostOwnedMarkdownDocument.mockReturnValue(true);
+		mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(false);
+		vi.mocked(markdownModule.removeMarkdownBox).mockImplementationOnce(sectionId => {
+			document.getElementById(String(sectionId))?.remove();
+		});
+		mocks.createSectionWithCapabilities.mockImplementationOnce(() => {
+			const section = document.createElement('kw-markdown-section');
+			section.id = 'markdown_rejected';
+			container.appendChild(section);
+			return { ok: true, sectionId: section.id };
+		});
+		try {
+			dispatchHostMessage({
+				type: 'toolAddSection', requestId: 'tool-markdown-rejected',
+				input: { type: 'markdown', text: 'must not remain' },
+			});
+			await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'toolResponse', requestId: 'tool-markdown-rejected',
+				result: { sectionId: '', success: false },
+			})));
+
+			expect(markdownModule.removeMarkdownBox).toHaveBeenCalledWith('markdown_rejected');
+			expect(document.getElementById('markdown_rejected')).toBeNull();
+			dispatchHostMessage({
+				type: 'toolReorderSections', requestId: 'reorder-after-rejected-add', sectionIds: [],
+			});
+			await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+				type: 'toolResponse', requestId: 'reorder-after-rejected-add',
+				result: { success: true, error: undefined }, error: undefined,
+			}));
+		} finally {
+			mocks.isHostOwnedMarkdownDocument.mockReturnValue(false);
+			mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(true);
+			container.remove();
+		}
+	});
+
+	it('preserves a host-accepted tool add when an unrelated queued command fails', async () => {
+		const markdownModule = await import('../../src/webview/sections/kw-markdown-section.js');
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		mocks.isHostOwnedMarkdownDocument.mockReturnValue(true);
+		mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(false);
+		mocks.getHostOwnedDocumentSectionStatus.mockReturnValue('present');
+		mocks.createSectionWithCapabilities.mockImplementationOnce(() => {
+			const section = document.createElement('kw-markdown-section');
+			section.id = 'markdown_host_accepted';
+			container.appendChild(section);
+			return { ok: true, sectionId: section.id };
+		});
+		try {
+			dispatchHostMessage({
+				type: 'toolAddSection', requestId: 'tool-markdown-host-accepted',
+				input: { type: 'markdown', text: 'keep me' },
+			});
+			await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'toolResponse', requestId: 'tool-markdown-host-accepted',
+				result: {
+					sectionId: 'markdown_host_accepted', success: false,
+					error: 'A concurrent host document section command failed after the section was added.',
+				},
+				error: undefined,
+			})));
+			expect(markdownModule.removeMarkdownBox).not.toHaveBeenCalledWith('markdown_host_accepted');
+			expect(document.getElementById('markdown_host_accepted')).not.toBeNull();
+		} finally {
+			mocks.isHostOwnedMarkdownDocument.mockReturnValue(false);
+			mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(true);
+			mocks.getHostOwnedDocumentSectionStatus.mockReturnValue('absent');
+			container.remove();
+		}
+	});
+
+	it('preserves a tool add while host authority reloads after a concurrent failure', async () => {
+		const markdownModule = await import('../../src/webview/sections/kw-markdown-section.js');
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		mocks.isHostOwnedMarkdownDocument.mockReturnValue(true);
+		mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(false);
+		mocks.getHostOwnedDocumentSectionStatus.mockReturnValue('unknown');
+		mocks.createSectionWithCapabilities.mockImplementationOnce(() => {
+			const section = document.createElement('kw-markdown-section');
+			section.id = 'markdown_authority_reloading';
+			container.appendChild(section);
+			return { ok: true, sectionId: section.id };
+		});
+		try {
+			dispatchHostMessage({
+				type: 'toolAddSection', requestId: 'tool-markdown-authority-reloading',
+				input: { type: 'markdown', text: 'await projection' },
+			});
+			await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'toolResponse', requestId: 'tool-markdown-authority-reloading',
+				result: {
+					sectionId: 'markdown_authority_reloading', success: false,
+					error: 'The host document is reloading after a concurrent section command failed.',
+				},
+				error: undefined,
+			})));
+			expect(markdownModule.removeMarkdownBox).not.toHaveBeenCalledWith('markdown_authority_reloading');
+			expect(document.getElementById('markdown_authority_reloading')).not.toBeNull();
+		} finally {
+			mocks.isHostOwnedMarkdownDocument.mockReturnValue(false);
+			mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(true);
+			mocks.getHostOwnedDocumentSectionStatus.mockReturnValue('absent');
+			container.remove();
+		}
+	});
+
+	it.each([
+		['python', 'kw-python-section'],
+		['url', 'kw-url-section'],
+		['html', 'kw-html-section'],
+		['chart', 'kw-chart-section'],
+		['transformation', 'kw-transformation-section'],
+	] as const)('compensates a rejected host-owned %s tool add', async (sectionType, tagName) => {
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		const chartModule = await import('../../src/webview/sections/kw-chart-section.js');
+		const transformationModule = await import('../../src/webview/sections/kw-transformation-section.js');
+		const removeSection = sectionType === 'python' ? sectionFactory.removePythonBox
+			: sectionType === 'url' ? sectionFactory.removeUrlBox
+				: sectionType === 'html' ? sectionFactory.removeHtmlBox
+					: sectionType === 'chart' ? chartModule.removeChartBox
+						: transformationModule.removeTransformationBox;
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		mocks.isHostOwnedMarkdownDocument.mockReturnValue(true);
+		mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(false);
+		mocks.createSectionWithCapabilities.mockImplementationOnce(() => {
+			const section = document.createElement(tagName);
+			section.id = `${sectionType}_rejected`;
+			container.appendChild(section);
+			return { ok: true, sectionId: section.id };
+		});
+		try {
+			dispatchHostMessage({
+				type: 'toolAddSection', requestId: `tool-${sectionType}-rejected`,
+				input: { type: sectionType },
+			});
+			await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'toolResponse', requestId: `tool-${sectionType}-rejected`,
+				result: { sectionId: '', success: false },
+			})));
+			expect(removeSection).toHaveBeenCalledWith(`${sectionType}_rejected`);
+		} finally {
+			mocks.isHostOwnedMarkdownDocument.mockReturnValue(false);
+			mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(true);
+			container.remove();
+		}
+	});
+
 	it('rejects tool-added sections in compatibility mode before mutation', async () => {
 		handlerState.pState.documentKind = 'kql';
 		handlerState.pState.compatibilityMode = true;
@@ -7508,6 +7669,22 @@ describe('changedSections agent provenance', () => {
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'toolResponse', requestId: 'compat-add', result: { sectionId: '', success: false },
 			error: expect.stringContaining('requires upgrading'),
+		}));
+	});
+
+	it('returns an empty section ID when tool section creation throws', async () => {
+		mocks.createSectionWithCapabilities.mockImplementationOnce(() => {
+			throw new Error('synthetic section factory failure');
+		});
+
+		dispatchHostMessage({
+			type: 'toolAddSection', requestId: 'tool-add-factory-failure',
+			input: { type: 'markdown', text: 'unavailable' },
+		});
+		await vi.waitFor(() => expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'tool-add-factory-failure',
+			result: { sectionId: '', success: false },
+			error: 'synthetic section factory failure',
 		}));
 	});
 
@@ -9959,6 +10136,7 @@ describe('changedSections agent provenance', () => {
 		advanceQueryBeforeDone?: boolean;
 		advanceQueryBeforeStart?: boolean;
 		artifactLookupThrows?: boolean;
+		failedDoneAfterStart?: boolean;
 	}) {
 		if (!getResultsStateMock) {
 			const resultsState = await import('../../src/webview/core/results-state.js');
@@ -10057,6 +10235,13 @@ describe('changedSections agent provenance', () => {
 				dispatchHostMessage({
 					type: 'copilotWriteQueryDone', boxId: 'query_1', ok: false,
 					message: 'The editor changed before execution could start.', ...copilotOwner,
+				});
+				return;
+			}
+			if (options.failedDoneAfterStart) {
+				dispatchHostMessage({
+					type: 'copilotWriteQueryDone', boxId: 'query_1', ok: false,
+					message: '', ...copilotOwner,
 				});
 				return;
 			}
@@ -10198,6 +10383,17 @@ describe('changedSections agent provenance', () => {
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'kustoExecutionStartedAck', executionId: 'delegated-kusto-execution', accepted: false,
 		}));
+	});
+
+	it('attributes an empty Copilot failure after execution start to result admission', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({
+			rowCount: 3, failedDoneAfterStart: true,
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			error: 'Query execution ended before its results could be applied.',
+		});
 	});
 
 	it('settles delegated Kusto Copilot when terminal artifact lookup throws', async () => {

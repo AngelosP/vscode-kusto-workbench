@@ -30,6 +30,7 @@ import {
 	traceDatabaseList,
 } from './databaseListTrace';
 import { ensureRawSchemaJson } from './schemaIndexUtils';
+import { isControlCommand } from './queryEditorUtils';
 
 type DatabaseDiscoveryOptions = {
 	allowInteractive?: boolean;
@@ -244,6 +245,7 @@ type AuthOperationOptions<T> = {
 };
 
 export class KustoQueryClient {
+	private static readonly RESULT_ROW_LIMIT = 5_000;
 	private clients: Map<string, CachedClientEntry> = new Map();
 	// Dedicated clients used for cancelable query execution. Keyed by box/run context to
 	// (a) support cancellation without impacting other editors, and (b) improve server-side
@@ -512,6 +514,12 @@ export class KustoQueryClient {
 			props.setClientTimeout(clientTimeoutMs);
 		}
 		return props;
+	}
+
+	private applyQueryResultRowLimit(props: any, query: string): void {
+		if (!isControlCommand(query)) {
+			props.setOption('query_take_max_records', KustoQueryClient.RESULT_ROW_LIMIT);
+		}
 	}
 
 	private static quoteKustoStringLiteral(value: string): string {
@@ -1751,6 +1759,7 @@ export class KustoQueryClient {
 			const queryTimeoutMin = vscode.workspace.getConfiguration('kustoWorkbench').get<number>('queryTimeout', 20);
 			const clientTimeoutMs = queryTimeoutMin > 0 ? queryTimeoutMin * 60 * 1000 : undefined;
 			const props = await this.createRequestProperties('execute_query', clientTimeoutMs);
+			this.applyQueryResultRowLimit(props, query);
 			requestClientActivityId = props.clientRequestId;
 			const result = await this.executeWithAuthRetry<any>(connection, async (client, auth) => {
 				if (!auth) throw new QueryExecutionError('Kusto dispatch identity is unavailable.', requestClientActivityId);
@@ -1931,6 +1940,7 @@ export class KustoQueryClient {
 						const clientTimeoutMs = queryTimeoutMin > 0 ? queryTimeoutMin * 60 * 1000 : undefined;
 						const props = await this.createRequestProperties('execute_query', clientTimeoutMs, attemptClientActivityId);
 						if (cancelled) throw new QueryCancelledError();
+						this.applyQueryResultRowLimit(props, query);
 						const submittedClientActivityId = String(props.clientRequestId || attemptClientActivityId);
 						requestClientActivityId = submittedClientActivityId;
 						const start = (leaveNoTraceRevision: number) => {

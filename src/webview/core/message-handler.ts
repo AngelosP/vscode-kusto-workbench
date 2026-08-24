@@ -183,6 +183,7 @@ import {
 import {
 	getOptimisticHostOwnedDevelopmentNoteSections,
 	getOptimisticHostOwnedDocumentSectionOrder,
+	getHostOwnedDocumentSectionStatus,
 	handleHostOwnedMarkdownCommandResult,
 	isHostOwnedDevelopmentNoteDocument,
 	isHostOwnedMarkdownDocument,
@@ -847,6 +848,15 @@ function clearAllSectionAgentTouched(): void {
 			shell.agentTouched = false;
 		}
 	}
+}
+
+function removeRejectedToolSection(sectionType: string, sectionId: string): void {
+	if (sectionType === 'chart') removeChartBox(sectionId);
+	else if (sectionType === 'transformation') removeTransformationBox(sectionId);
+	else if (sectionType === 'markdown') removeMarkdownBox(sectionId);
+	else if (sectionType === 'python') removePythonBox(sectionId);
+	else if (sectionType === 'url') removeUrlBox(sectionId);
+	else if (sectionType === 'html') removeHtmlBox(sectionId);
 }
 
 function reconcileSectionAgentTouched(sectionId: string, status: '' | 'modified' | 'new', shell: any): void {
@@ -4916,6 +4926,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const sectionId = creation.ok ? creation.sectionId : '';
 				let success = creation.ok;
 				let creationError = creation.ok ? undefined : creation.error;
+				let hostSectionStatus: 'present' | 'absent' | 'unknown' = 'absent';
 				if (sectionId && input.name && sectionType !== 'url') __kustoSetSectionName(sectionId, input.name);
 				if (success && sectionType === 'query' && (input.clusterUrl || input.connectionId || input.database)) {
 					const applied = applyToolKustoTarget(sectionId, input);
@@ -4932,15 +4943,31 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					|| sectionType === 'python' || sectionType === 'url')
 					&& isHostOwnedMarkdownDocument()) {
 					success = await waitForHostOwnedMarkdownCommands();
-					if (!success) creationError = 'The host rejected the document section command.';
+					if (!success) {
+						hostSectionStatus = getHostOwnedDocumentSectionStatus(sectionId);
+						creationError = hostSectionStatus === 'present'
+							? 'A concurrent host document section command failed after the section was added.'
+							: hostSectionStatus === 'unknown'
+								? 'The host document is reloading after a concurrent section command failed.'
+								: 'The host rejected the document section command.';
+						if (hostSectionStatus === 'absent') {
+							agentTouchedStateBySectionId.delete(sectionId);
+							removeRejectedToolSection(sectionType, sectionId);
+						}
+					}
 				}
+				const retainedAfterFailure = !success && hostSectionStatus !== 'absent';
 				postMessageToHost({
-					type: 'toolResponse', requestId, result: { sectionId, success },
-					error: success ? undefined : creationError || 'Failed to add section',
+					type: 'toolResponse', requestId,
+					result: {
+						sectionId: success || retainedAfterFailure ? sectionId : '', success,
+						...(retainedAfterFailure ? { error: creationError || 'Failed to add section' } : {}),
+					},
+					error: success || retainedAfterFailure ? undefined : creationError || 'Failed to add section',
 				});
 			} catch (err: any) {
 				console.error('[Kusto Tools] Error in toolAddSection:', err);
-				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { sectionId: '', success: false }, error: err.message || String(err) });
 			}
 			break;
 		
@@ -6223,7 +6250,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 								type: 'toolResponse', requestId,
 								result: {
 									success: false,
-									error: done.message || 'Copilot failed to generate query',
+									error: done.message || (expectedExecutionId
+										? 'Query execution ended before its results could be applied.'
+										: 'Copilot failed to generate query'),
 									query: generatedQuery || undefined,
 								},
 							});

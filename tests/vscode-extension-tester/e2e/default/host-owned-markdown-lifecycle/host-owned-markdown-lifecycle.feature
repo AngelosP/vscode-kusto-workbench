@@ -7,6 +7,31 @@ Feature: Host-owned Markdown, URL, Python, Chart, Transformation, and HTML secti
     When I resize the Dev Host to 1280x1000
     When I execute command "workbench.action.closeAuxiliaryBar"
 
+  Scenario: Rejected tool add leaves no ghost section in the view or document
+    Given a file "tests/vscode-extension-tester/runs/default/host-owned-markdown-lifecycle/rejected-tool-add.kqlx" exists with content:
+      """
+      {"kind":"kqlx","version":1,"state":{"sections":[{"id":"query_base","type":"query","query":"print baseline=1"}]}}
+      """
+    And I wait 1 second
+
+    When I open file "tests/vscode-extension-tester/runs/default/host-owned-markdown-lifecycle/rejected-tool-add.kqlx" in the editor
+    When I wait for "#query_base" in the webview for 20 seconds
+    And I wait 1 second
+    Then I collect JSON artifact "rejected-tool-add-live" from webview expression "window.__e2e.workbench.assertRejectedToolAddLifecycle('query_base')"
+    Then I collect JSON artifact "rejected-tool-add-host-buffer" from extension host expression "(async () => { const suffix = '/tests/vscode-extension-tester/runs/default/host-owned-markdown-lifecycle/rejected-tool-add.kqlx'; const document = vscode.workspace.textDocuments.find(candidate => candidate.uri.path.replace(/\\/g, '/').endsWith(suffix)); if (!document) throw new Error('Rejected-add document is not open'); const file = JSON.parse(document.getText()); const ids = file.state.sections.map(section => section.id); if (ids.join('|') !== 'query_base' || document.isDirty) throw new Error('Rejected add changed the host document: ' + document.getText()); return { dirty: document.isDirty, sectionIds: ids }; })()"
+    When I execute command "workbench.action.files.save"
+    When I execute command "workbench.action.closeAllEditors"
+    When I open file "tests/vscode-extension-tester/runs/default/host-owned-markdown-lifecycle/rejected-tool-add.kqlx" in the editor
+    When I wait for "#query_base" in the webview for 20 seconds
+    Then I collect JSON artifact "rejected-tool-add-reopened" from webview expression "(() => { const visibleSectionIds = Array.from(document.querySelectorAll('#queries-container > [id]')).map(element => element.id); if (visibleSectionIds.join('|') !== 'query_base') throw new Error('Rejected section returned after reopen: ' + visibleSectionIds.join(',')); return { visibleSectionIds }; })()"
+    When I move the Dev Host to 0, 0
+    When I resize the Dev Host to 1280x1000
+    When I execute command "workbench.action.focusActiveEditorGroup"
+    When I click at 30, 700
+    Then I take a screenshot "00-rejected-tool-add-clean-reopen"
+    When I execute command "workbench.action.closeAllEditors"
+    When I delete file "tests/vscode-extension-tester/runs/default/host-owned-markdown-lifecycle/rejected-tool-add.kqlx"
+
   Scenario: Markdown, URL, and Python commands survive stale view state, save, and view recreation
     Given a file "tests/vscode-extension-tester/runs/default/host-owned-markdown-lifecycle/host-owned-markdown.kqlx" exists with content:
       """

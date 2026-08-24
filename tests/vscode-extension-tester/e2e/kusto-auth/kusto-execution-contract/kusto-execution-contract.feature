@@ -28,6 +28,17 @@ Feature: Kusto execution remains isolated from SQL Tools Service
     Then I take a screenshot "01-exact-normal-result"
     When I execute command "workbench.action.closeAllEditors"
 
+  Scenario: Plain execution caps result transfer at 5000 rows
+    When I evaluate "window.__e2e.kusto.selectRunMode('plain')" in the webview
+    When I evaluate "window.__e2e.kusto.setCacheEnabled(false)" in the webview
+    When I evaluate "window.__e2e.kusto.setQuery(['set notruncation;', 'range RowId from 1 to 5001 step 1 | order by RowId asc'].join(String.fromCharCode(10)))" in the webview
+    When I evaluate "window.__e2e.kusto.run()" in the webview
+    When I wait for "kw-query-section[data-test-executing='false'][data-test-has-results='true']" in the webview for 30 seconds
+    When I evaluate "(() => { window.__e2e.kusto.assertResultColumns('RowId'); window.__e2e.kusto.assertRowCount(5000); return window.__e2e.kusto.assertNoError(); })()" in the webview
+    When I execute command "notifications.clearAll"
+    Then I take a screenshot "02-plain-result-transfer-capped"
+    When I execute command "workbench.action.closeAllEditors"
+
   Scenario: Immediate rerun supersedes only the exact prior execution
     When I evaluate "window.__e2e.kusto.selectRunMode('plain')" in the webview
     When I evaluate "window.__e2e.kusto.setCacheEnabled(false)" in the webview

@@ -63,6 +63,7 @@ function createCancelableClientHarness() {
 		clientRequestId: clientRequestId || `KW.${activityPrefix};generated`,
 		application: 'KustoWorkbench',
 		setClientTimeout: vi.fn(),
+		setOption: vi.fn(),
 	}));
 	const getOrCreateCancelableClient = vi.fn(async () => fakeSdkClient);
 	const executeWithAuthRetry = vi.fn(async (_connection: KustoConnection, operation: (client: any, operationAuth: typeof auth) => Promise<unknown>) => operation(fakeSdkClient, auth));
@@ -140,6 +141,17 @@ describe('parseKustoTimespan', () => {
 		const ms = parseKustoTimespan('00:00:00.1406250');
 		expect(ms).toBeDefined();
 		expect(ms!).toBeCloseTo(140.625, 1);
+	});
+});
+
+describe('Kusto request result limits', () => {
+	it('serializes the 5000-row query cap through the installed SDK', async () => {
+		const kustoClient = new KustoQueryClient();
+		const props = await (kustoClient as any).createRequestProperties('execute_query');
+
+		(kustoClient as any).applyQueryResultRowLimit(props, 'range RowId from 1 to 5001 step 1');
+
+		expect(props.toJSON()).toEqual({ Options: { query_take_max_records: 5000 } });
 	});
 });
 
@@ -841,6 +853,41 @@ describe('metadata disposal fencing', () => {
 
 // ── executeQueryCancelable ───────────────────────────────────────────────────
 
+describe('executeQueryWithIdentity', () => {
+	it('applies the 5000-row transfer cap before non-cancelable query execution', async () => {
+		const { kustoClient, createRequestProperties, fakeSdkClient } = createCancelableClientHarness();
+		const setOption = vi.fn();
+		createRequestProperties.mockResolvedValueOnce({
+			clientRequestId: 'KW.execute_query;non-cancelable',
+			application: 'KustoWorkbench',
+			setClientTimeout: vi.fn(),
+			setOption,
+		});
+
+		await kustoClient.executeQueryWithIdentity(TEST_CONNECTION, 'Samples', 'range RowId from 1 to 5001 step 1');
+
+		expect(setOption).toHaveBeenCalledWith('query_take_max_records', 5000);
+		expect(fakeSdkClient.execute).toHaveBeenCalledWith(
+			'Samples', 'range RowId from 1 to 5001 step 1', expect.objectContaining({ setOption }),
+		);
+	});
+
+	it('does not apply the query row cap to non-cancelable control commands', async () => {
+		const { kustoClient, createRequestProperties } = createCancelableClientHarness();
+		const setOption = vi.fn();
+		createRequestProperties.mockResolvedValueOnce({
+			clientRequestId: 'KW.execute_query;non-cancelable-control',
+			application: 'KustoWorkbench',
+			setClientTimeout: vi.fn(),
+			setOption,
+		});
+
+		await kustoClient.executeQueryWithIdentity(TEST_CONNECTION, 'Samples', '// inspect current operations\n.show queries');
+
+		expect(setOption).not.toHaveBeenCalled();
+	});
+});
+
 describe('executeQueryCancelable', () => {
 	it('returns every ADX primary result table from one physical execution', async () => {
 		const { kustoClient, fakeSdkClient } = createCancelableClientHarness();
@@ -913,6 +960,46 @@ describe('executeQueryCancelable', () => {
 		expect(createRequestProperties).toHaveBeenCalledWith('execute_query', undefined, handle.clientActivityId);
 		expect(result.metadata.clientActivityId).toBe('KW.execute_query;server');
 		expect(result.rows[0][0]).toEqual({ display: '42', full: '42' });
+	});
+
+	it('caps result transfer at 5000 rows before executing the Kusto request', async () => {
+		const { kustoClient, createRequestProperties, fakeSdkClient } = createCancelableClientHarness();
+		const setOption = vi.fn();
+		const query = 'set notruncation;\nLargeFacts | order by Timestamp asc';
+		createRequestProperties.mockResolvedValueOnce({
+			clientRequestId: 'KW.execute_query;bounded',
+			application: 'KustoWorkbench',
+			setClientTimeout: vi.fn(),
+			setOption,
+		});
+
+		const handle = kustoClient.executeQueryCancelable(
+			TEST_CONNECTION, 'Samples', query, 'box::conn',
+		);
+		await handle.promise;
+
+		expect(setOption).toHaveBeenCalledWith('query_take_max_records', 5000);
+		expect(fakeSdkClient.execute).toHaveBeenCalledWith(
+			'Samples', query, expect.objectContaining({ setOption }),
+		);
+	});
+
+	it('does not apply the query row limit to Kusto control commands', async () => {
+		const { kustoClient, createRequestProperties } = createCancelableClientHarness();
+		const setOption = vi.fn();
+		createRequestProperties.mockResolvedValueOnce({
+			clientRequestId: 'KW.execute_query;control',
+			application: 'KustoWorkbench',
+			setClientTimeout: vi.fn(),
+			setOption,
+		});
+
+		const handle = kustoClient.executeQueryCancelable(
+			TEST_CONNECTION, 'Samples', '// inspect current operations\n.show queries', 'box::conn',
+		);
+		await handle.promise;
+
+		expect(setOption).not.toHaveBeenCalled();
 	});
 
 	it('cancels before client acquisition without executing or issuing server cancel', async () => {

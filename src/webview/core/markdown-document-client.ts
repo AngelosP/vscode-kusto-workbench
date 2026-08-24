@@ -616,6 +616,13 @@ export function getHostOwnedDocumentSectionOrder(): readonly string[] {
 	return [...authoritativeProjection.orderedSectionIds];
 }
 
+export function getHostOwnedDocumentSectionStatus(sectionId: string): 'present' | 'absent' | 'unknown' {
+	const id = String(sectionId || '').trim();
+	if (!id) return 'absent';
+	if (queueBlocked) return 'unknown';
+	return authoritativeProjection.orderedSectionIds.includes(id) ? 'present' : 'absent';
+}
+
 export function getOptimisticHostOwnedDevelopmentNoteSections(): readonly DevelopmentNoteSectionState[] {
 	return optimisticProjection.developmentNoteSections.map(cloneDevelopmentNoteSection);
 }

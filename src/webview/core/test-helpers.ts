@@ -2553,6 +2553,86 @@ function e2eCapturedHostMessages(): any[] {
 	return Array.isArray(capture?.messages) ? capture.messages : [];
 }
 
+async function e2eAssertRejectedToolAddLifecycle(baselineSectionId: string): Promise<any> {
+	const baselineId = String(baselineSectionId || '').trim();
+	if (!baselineId || !document.getElementById(baselineId)) {
+		throw new Error(`Baseline section is unavailable: ${baselineId}`);
+	}
+	const requestId = 'e2e-rejected-tool-add';
+	const reorderRequestId = 'e2e-reorder-after-rejected-add';
+	let addTampered = false;
+	e2eBeginHostMessageCapture();
+	const captureHostMessage = _win.__e2eCaptureHostMessage;
+	_win.__e2eCaptureHostMessage = (message: any) => {
+		const captureResult = typeof captureHostMessage === 'function' ? captureHostMessage(message) : undefined;
+		if (!addTampered && message?.type === 'markdownDocumentCommand' && message.command?.type === 'add') {
+			addTampered = true;
+			_win.vscode.postMessage({
+				...message,
+				expectedDocumentRevision: Number(message.expectedDocumentRevision) + 100,
+			});
+			return false;
+		}
+		return captureResult;
+	};
+	try {
+		window.dispatchEvent(new MessageEvent('message', {
+			data: { type: 'toolAddSection', requestId, input: { type: 'markdown', text: 'must not survive' } },
+		}));
+		const deadline = performance.now() + 10_000;
+		let response: any;
+		let addCommand: any;
+		while (performance.now() < deadline) {
+			const messages = e2eCapturedHostMessages();
+			response = messages.find(message => message?.type === 'toolResponse' && message.requestId === requestId);
+			addCommand = messages.find(message => message?.type === 'markdownDocumentCommand' && message.command?.type === 'add');
+			if (response && addCommand) break;
+			await e2eDelay(50);
+		}
+		const sectionId = String(addCommand?.command?.section?.id || '');
+		if (!addTampered || !response || response.result?.success !== false
+			|| response.result?.sectionId !== '' || !sectionId) {
+			throw new Error(`Rejected tool add did not settle correctly: ${JSON.stringify({ addTampered, response, addCommand })}`);
+		}
+		if (document.getElementById(sectionId)) {
+			throw new Error(`Rejected tool add left a ghost DOM section: ${sectionId}`);
+		}
+		const duplicateRemoves = e2eCapturedHostMessages().filter(message =>
+			message?.type === 'markdownDocumentCommand'
+			&& message.command?.type === 'remove'
+			&& message.command?.sectionId === sectionId);
+		if (duplicateRemoves.length) {
+			throw new Error(`Rejected add emitted a duplicate host remove: ${JSON.stringify(duplicateRemoves)}`);
+		}
+
+		window.dispatchEvent(new MessageEvent('message', {
+			data: { type: 'toolReorderSections', requestId: reorderRequestId, sectionIds: [baselineId] },
+		}));
+		const reorderDeadline = performance.now() + 10_000;
+		let reorderResponse: any;
+		while (performance.now() < reorderDeadline) {
+			reorderResponse = e2eCapturedHostMessages()
+				.find(message => message?.type === 'toolResponse' && message.requestId === reorderRequestId);
+			if (reorderResponse) break;
+			await e2eDelay(50);
+		}
+		if (reorderResponse?.result?.success !== true) {
+			throw new Error(`Rejected add still blocked baseline reorder: ${JSON.stringify(reorderResponse)}`);
+		}
+		const visibleSectionIds = Array.from(document.querySelectorAll('#queries-container > [id]'))
+			.map(element => (element as HTMLElement).id);
+		if (visibleSectionIds.join('|') !== baselineId) {
+			throw new Error(`Rejected add changed visible sections: ${visibleSectionIds.join(',')}`);
+		}
+		return JSON.parse(JSON.stringify({
+			sectionId, addResponse: response, reorderResponse, visibleSectionIds,
+			duplicateRemoveCount: duplicateRemoves.length,
+		}));
+	} finally {
+		e2eRestoreHostMessageCapture();
+	}
+}
+
 async function e2eAssertHostMessageCaptured(type: string, boxId: string = '', timeoutMs: number = 5000): Promise<string> {
 	const wantedType = String(type || '').trim();
 	const wantedBoxId = String(boxId || '').trim();
@@ -8229,6 +8309,7 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 			sectionRevisions: { ...pState.documentSectionRevisions },
 			recentProjectionRequestIds: [...pState.documentViewProjectionRequestIds],
 		}),
+		assertRejectedToolAddLifecycle: e2eAssertRejectedToolAddLifecycle,
 	},
 	layout: {
 		createStressNotebook: e2eLayoutCreateStressNotebook,

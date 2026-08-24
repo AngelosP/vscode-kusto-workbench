@@ -10,6 +10,7 @@ import {
 	adoptHostOwnedMarkdownDocument,
 	getHostOwnedDevelopmentNoteSections,
 	getOptimisticHostOwnedDevelopmentNoteSections,
+	getHostOwnedDocumentSectionStatus,
 	handleHostOwnedMarkdownCommandResult,
 	requestHostOwnedChartPatch,
 	requestHostOwnedChartRemove,
@@ -55,6 +56,26 @@ describe('host-owned Markdown command client', () => {
 	});
 
 	afterEach(() => resetHostOwnedMarkdownDocument());
+
+	it('reports section presence from the authoritative projection', () => {
+		expect(getHostOwnedDocumentSectionStatus('markdown_1')).toBe('present');
+		expect(getHostOwnedDocumentSectionStatus('markdown_missing')).toBe('absent');
+	});
+
+	it('reports section authority as unknown while a failed command forces reload', async () => {
+		expect(requestHostOwnedMarkdownPatch({
+			id: 'markdown_1', type: 'markdown', text: 'after', expanded: true, mode: 'wysiwyg', tab: 'edit',
+		})).toBe(true);
+		const patch = await waitForPostedMessage(1);
+
+		handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: patch.commandId, ok: false,
+			sourceGeneration: 7,
+		});
+
+		expect(getHostOwnedDocumentSectionStatus('markdown_1')).toBe('unknown');
+		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'requestDocument' });
+	});
 
 	it('sequences commands from acknowledged document and section revisions', async () => {
 		expect(requestHostOwnedMarkdownPatch({
