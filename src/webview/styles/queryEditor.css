@@ -1763,7 +1763,7 @@
 
 		/* Primary Kusto schema/autocomplete preparation. The normal toolbar border
 		   remains underneath so completion returns to the default solid edge. */
-		kw-query-section[data-preparation-state="preparing"] > .query-editor-wrapper > kw-query-toolbar > .query-editor-toolbar::after {
+		kw-query-section[aria-busy="true"] > .query-editor-wrapper > kw-query-toolbar > .query-editor-toolbar::after {
 			content: '';
 			position: absolute;
 			left: 0;
@@ -1790,14 +1790,14 @@
 		}
 
 		@media (prefers-reduced-motion: reduce) {
-			kw-query-section[data-preparation-state="preparing"] > .query-editor-wrapper > kw-query-toolbar > .query-editor-toolbar::after {
+			kw-query-section[aria-busy="true"] > .query-editor-wrapper > kw-query-toolbar > .query-editor-toolbar::after {
 				animation: none;
 				background: var(--vscode-progressBar-background, #0e70c0);
 			}
 		}
 
 		@media (forced-colors: active) {
-			kw-query-section[data-preparation-state="preparing"] > .query-editor-wrapper > kw-query-toolbar > .query-editor-toolbar::after {
+			kw-query-section[aria-busy="true"] > .query-editor-wrapper > kw-query-toolbar > .query-editor-toolbar::after {
 				animation: none;
 				background: Highlight;
 			}

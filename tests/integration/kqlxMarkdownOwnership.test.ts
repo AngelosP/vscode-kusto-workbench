@@ -2421,7 +2421,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			}));
 			await commandStarted;
 			const finalSnapshot = Promise.resolve(receiveHandler!({
-				type: 'persistDocument', reason: 'beforeunload', editRevision: 1,
+				type: 'persistDocument', reason: 'beforeunload', snapshotId: 'session-close-chain', editRevision: 1,
 				sourceGeneration: latestProjection.sourceGeneration,
 				state: { sections: [
 					{ id: 'query_session', type: 'query', query: 'print adapter = "after"' },
@@ -3167,9 +3167,11 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			} as any;
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const activeSourceGeneration = latestProjection.sourceGeneration;
 			let survivingPersistSettled = false;
 			const survivingPersist = Promise.resolve(receiveHandler!({
-				type: 'persistDocument', state: { sections: [
+				type: 'persistDocument', snapshotId: 'survives-rejected-reload', editRevision: 1,
+				sourceGeneration: activeSourceGeneration, state: { sections: [
 					{ id: 'query_1', type: 'query', query: 'print survives rejection = 1' },
 					{ id: 'markdown_1', type: 'markdown', text: 'adapter markdown' },
 				] },
@@ -3189,7 +3191,8 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			await Promise.all([survivingPersist, rejectedReload]);
 			assert.strictEqual(JSON.parse(currentText).state.sections[0].query, 'print survives rejection = 1');
 			const stalePersist = Promise.resolve(receiveHandler!({
-				type: 'persistDocument', state: { sections: [
+				type: 'persistDocument', snapshotId: 'stale-before-accepted-reload', editRevision: 2,
+				sourceGeneration: activeSourceGeneration, state: { sections: [
 					{ id: 'query_1', type: 'query', query: 'print stale = 1' },
 					{ id: 'markdown_1', type: 'markdown', text: 'stale adapter markdown' },
 				] },
@@ -3356,13 +3359,16 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			const reload = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 			await candidatePosted;
 			const stalePersist = Promise.resolve(receiveHandler!({
-				type: 'persistDocument', sourceGeneration: initialProjection.sourceGeneration,
+				type: 'persistDocument', snapshotId: 'pending-projection-stale', editRevision: 1,
+				sourceGeneration: initialProjection.sourceGeneration,
 				state: { sections: [
 					{ id: 'query_1', type: 'query', query: 'print stale adapter = 1' },
 					{ id: 'markdown_1', type: 'markdown', text: 'stale adapter markdown' },
 				] },
 			}));
 			await stalePersist;
+			assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'pending-projection-stale'));
 			assert.strictEqual(staleApplyCalls, 0, 'pending source authority must reject stale persistence before applyEdit');
 			const ownerBeforeActivation = [...((provider as any).markdownDocuments.values())][0];
 			assert.strictEqual(ownerBeforeActivation.queue.activePersistenceLeases.size, 0);
@@ -4213,7 +4219,20 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		let protectedNow = false;
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		let latestProjection: any;
+		let acknowledgedSourceGeneration = 0;
+		const posted: any[] = [];
 		const disposeHandlers: Array<() => void> = [];
+		let policySnapshot: {
+			clusterKeys: string[];
+			globallyBlocked: boolean;
+			version: number;
+			revocationGenerations: Record<string, number>;
+		} = { clusterKeys: [], globallyBlocked: false, version: 0, revocationGenerations: {} };
+		const connectionManager = {
+			...connectionManagerStub(),
+			runWithLeaveNoTraceSnapshotLock: async (run: (snapshot: typeof policySnapshot) => unknown) =>
+				await run(policySnapshot),
+		};
 
 		try {
 			fs.writeFileSync(filePath, currentText, 'utf8');
@@ -4239,10 +4258,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 					}),
 				};
 				onKustoSanitized?.(state, sanitized, {
-					snapshot: {
-						clusterKeys: ['cluster.kusto.windows.net'], globallyBlocked: true,
-						version: 1, revocationGenerations: { 'cluster.kusto.windows.net': 1 },
-					},
+					snapshot: policySnapshot,
 				});
 				return sanitized;
 			};
@@ -4260,7 +4276,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
 				} as any,
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
-				connectionManagerStub(), sqlWorkbenchStub(), undefined, registry,
+				connectionManager, sqlWorkbenchStub(), undefined, registry,
 			) as KqlxEditorProvider;
 			const document = {
 				uri: documentUri, getText: () => currentText, eol: vscode.EndOfLine.LF,
@@ -4270,12 +4286,14 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				webview: {
 					options: {},
 					postMessage: async (message: any) => {
+						posted.push(message);
 						if (message?.type === 'documentData') latestProjection = message;
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
 								type: 'documentReloadResult', requestId: message.reloadRequestId,
 								applied: true, editRevision: 0,
 							}));
+							acknowledgedSourceGeneration = message.sourceGeneration;
 						}
 						return true;
 					},
@@ -4292,18 +4310,32 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const initialSourceGeneration = latestProjection.sourceGeneration;
 			seedLease.release();
 			assert.ok(latestProjection.state.sections[0].resultJson);
 			protectedNow = true;
+			policySnapshot = {
+				clusterKeys: ['cluster.kusto.windows.net'], globallyBlocked: true,
+				version: 1, revocationGenerations: { 'cluster.kusto.windows.net': 1 },
+			};
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			assert.ok(acknowledgedSourceGeneration > initialSourceGeneration);
+			assert.strictEqual(acknowledgedSourceGeneration, latestProjection.sourceGeneration);
 			assert.ok(!latestProjection.state.sections[0].resultJson);
 			assert.strictEqual(owner.hasCommittedAttachments(), false);
 			assert.ok(!(owner.overlaySnapshot(rowFreeState).sections?.[0] as any).resultJson);
 
-			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument', sourceGeneration: latestProjection.sourceGeneration,
+			const revokedAttachmentPersist = {
+				type: 'persistDocument', snapshotId: 'revoked-attachment', editRevision: 1,
+				sourceGeneration: latestProjection.sourceGeneration,
 				state: latestProjection.state,
-			}));
+			};
+			await Promise.resolve(receiveHandler!(revokedAttachmentPersist));
+			await waitForCondition(
+				() => posted.some(message => message?.type === 'persistDocumentAck'
+					&& message.snapshotId === 'revoked-attachment'),
+				'revoked attachment persistence should acknowledge',
+			);
 			assert.ok(!currentText.includes('resultJson'));
 			assert.ok(!fs.readFileSync(filePath, 'utf8').includes('resultJson'));
 			for (const dispose of disposeHandlers) dispose();
@@ -4707,6 +4739,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}, null, 2) + '\n';
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		let projection: any;
+		const posted: any[] = [];
 		let markCommandApplied!: () => void;
 		let releaseCommand!: () => void;
 		const commandApplied = new Promise<void>(resolve => { markCommandApplied = resolve; });
@@ -4743,6 +4776,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				webview: {
 					options: {},
 					postMessage: async (message: any) => {
+						posted.push(message);
 						if (message?.type === 'documentData') projection = message;
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
@@ -4772,18 +4806,25 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				},
 			}));
 			await commandApplied;
-			let adapterSettled = false;
 			const adapter = Promise.resolve(receiveHandler!({
-				type: 'persistDocument', sourceGeneration: projection.sourceGeneration,
+				type: 'persistDocument', snapshotId: 'adapter-after-command', editRevision: 1,
+				sourceGeneration: projection.sourceGeneration,
 				state: { sections: [
 					{ id: 'query_1', type: 'query', query: 'print adapter = 1' },
 					{ id: 'markdown_1', type: 'markdown', text: 'stale adapter' },
 				] },
-			})).then(() => { adapterSettled = true; });
+			}));
 			await new Promise<void>(resolve => setImmediate(resolve));
-			assert.strictEqual(adapterSettled, false, 'adapter persistence must wait for the in-flight command owner');
+			assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'adapter-after-command'));
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].query, 'print before = 0');
 			releaseCommand();
 			await Promise.all([command, adapter]);
+			await waitForCondition(
+				() => posted.some(message => message?.type === 'persistDocumentAck'
+					&& message.snapshotId === 'adapter-after-command'),
+				'adapter persistence should acknowledge after the Markdown command settles',
+			);
 			const finalFile = JSON.parse(currentText);
 			assert.strictEqual(finalFile.state.sections[0].query, 'print adapter = 1');
 			assert.strictEqual(finalFile.state.sections[1].text, 'command markdown');

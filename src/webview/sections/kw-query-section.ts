@@ -45,7 +45,14 @@ import {
 import type { KustoConnectionFormSubmitDetail } from '../components/kw-kusto-connection-form.js';
 import '../components/kw-kusto-connection-form.js';
 import { __kustoCloseShareModalForOwner, __kustoOpenShareModal, getRunModeForPersistence } from './kw-query-toolbar.js';
-import { optimizationMetadataByBoxId, subscribeKustoPreparation, type KustoPreparationState } from '../core/state.js';
+import {
+	getKustoPreparationState,
+	getSchemaWorkerReadyState,
+	optimizationMetadataByBoxId,
+	subscribeKustoPreparation,
+	subscribeSchemaWorkerReadyState,
+	type KustoPreparationState,
+} from '../core/state.js';
 import { optimizeQueryWithCopilot, acceptOptimizations } from './query-execution.controller.js';
 import { QueryConnectionController } from './query-connection.controller.js';
 import { QueryExecutionController } from './query-execution.controller.js';
@@ -204,6 +211,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	// disconnect/reconnect (e.g. section reorder).
 	private _lightDomCreated = false;
 	private _unsubscribePreparation: (() => void) | null = null;
+	private _unsubscribeWorkerReady: (() => void) | null = null;
 	private readonly _schemaSectionInstanceId = globalThis.crypto?.randomUUID?.()
 		?? `kusto-instance-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 	private _schemaSectionLease?: KustoEditorSectionLease;
@@ -330,6 +338,12 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		if (!this._unsubscribePreparation && this.boxId) {
 			this._unsubscribePreparation = subscribeKustoPreparation(this.boxId, state => this._reflectPreparationState(state));
 		}
+		if (!this._unsubscribeWorkerReady && this.boxId) {
+			this._unsubscribeWorkerReady = subscribeSchemaWorkerReadyState(
+				this.boxId,
+				() => this._reflectPreparationState(getKustoPreparationState(this.boxId)),
+			);
+		}
 		// Create the light DOM body once. See _lightDomCreated guard comment above.
 		if (!this._lightDomCreated && this.boxId) {
 			this._lightDomCreated = true;
@@ -387,6 +401,8 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		window.removeEventListener(ARTIFACT_CSV_TABLE_RELEASED_EVENT, this._onArtifactCsvTableReleased);
 		this._unsubscribePreparation?.();
 		this._unsubscribePreparation = null;
+		this._unsubscribeWorkerReady?.();
+		this._unsubscribeWorkerReady = null;
 		super.disconnectedCallback();
 		queueMicrotask(() => {
 			if (!this.isConnected) this._releaseCsvResultArtifact();
@@ -425,12 +441,21 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	};
 
 	private _reflectPreparationState(state: KustoPreparationState): void {
+		const worker = getSchemaWorkerReadyState(this.boxId);
+		const hasCurrentWorkerFallback = state.usableFallback
+			&& !!state.target.schemaKey
+			&& !!state.target.modelUri
+			&& worker?.status === 'ready'
+			&& worker.schemaKey === state.target.schemaKey
+			&& worker.schemaSignature === state.target.schemaSignature
+			&& worker.modelUri === state.target.modelUri;
+		const visiblyBusy = state.status === 'preparing' && !hasCurrentWorkerFallback;
 		this.setAttribute('data-preparation-state', state.status);
 		this.setAttribute('data-preparation-stage', state.stage);
 		this.dataset.testPreparationState = state.status;
 		this.dataset.testPreparationStage = state.stage;
 		this.dataset.testPreparationBlockers = state.blockers.join(',');
-		this.setAttribute('aria-busy', state.status === 'preparing' ? 'true' : 'false');
+		this.setAttribute('aria-busy', visiblyBusy ? 'true' : 'false');
 	}
 
 	override updated(changedProps: Map<string, unknown>): void {

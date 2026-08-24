@@ -1898,6 +1898,7 @@ suite('Sidecar .kql.json strategy', () => {
 			] },
 		});
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
 
 		try {
 			fs.writeFileSync(linkedPath, 'StormEvents\r\n| take 5', 'utf8');
@@ -1913,19 +1914,26 @@ suite('Sidecar .kql.json strategy', () => {
 			) as KqlxEditorProvider;
 			const panel = {
 				webview: {
-					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler),
+					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
 					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
 				},
 				onDidDispose: () => ({ dispose() {} }),
 			} as any;
 			await provider.resolveCustomTextEditor(notebookDocument, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const activeProjection = () => [...posted].reverse().find(message => message?.type === 'documentData');
 
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument', state: { sections: [
+				type: 'persistDocument', snapshotId: 'linked-crlf-5', editRevision: 1,
+				sourceGeneration: activeProjection().sourceGeneration, state: { sections: [
 					{ id: 'query_1', type: 'query', query: 'StormEvents\n| take 5' },
 				] },
 			}));
+			await waitForCondition(
+				() => posted.some(message => message?.type === 'persistDocumentAck'
+					&& message.snapshotId === 'linked-crlf-5'),
+				'linked CRLF no-op persistence should acknowledge',
+			);
 			assert.strictEqual(fs.readFileSync(linkedPath, 'utf8'), 'StormEvents\r\n| take 5');
 			const linkedUri = vscode.Uri.file(linkedPath);
 			const residentLinkedDocument = vscode.workspace.textDocuments.find(document => document.uri.toString() === linkedUri.toString());
@@ -1938,12 +1946,19 @@ suite('Sidecar .kql.json strategy', () => {
 				);
 			}
 
-			for (const count of [6, 7]) {
+			for (const [index, count] of [6, 7].entries()) {
+				const snapshotId = `linked-crlf-${count}`;
 				await Promise.resolve(receiveHandler!({
-					type: 'persistDocument', state: { sections: [
+					type: 'persistDocument', snapshotId, editRevision: index + 2,
+					sourceGeneration: activeProjection().sourceGeneration, state: { sections: [
 						{ id: 'query_1', type: 'query', query: `StormEvents\n| take ${count}` },
 					] },
 				}));
+				await waitForCondition(
+					() => posted.some(message => message?.type === 'persistDocumentAck'
+						&& message.snapshotId === snapshotId),
+					`linked edit ${count} should acknowledge`,
+				);
 				const linkedDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(linkedPath));
 				await waitForCondition(() => linkedDocument.getText().includes(`take ${count}`), `linked edit ${count} should apply`);
 			}
@@ -1969,6 +1984,7 @@ suite('Sidecar .kql.json strategy', () => {
 				] },
 			});
 			fs.writeFileSync(kqlxPath, kqlxText, 'utf8');
+			const document = await vscode.workspace.openTextDocument(vscode.Uri.file(kqlxPath));
 
 			const provider = new (KqlxEditorProvider as any)(
 				{
@@ -1981,11 +1997,6 @@ suite('Sidecar .kql.json strategy', () => {
 				connectionManagerStub(),
 				sqlWorkbenchStub(),
 			) as KqlxEditorProvider;
-			const document = {
-				uri: vscode.Uri.file(kqlxPath),
-				getText: () => kqlxText,
-				eol: vscode.EndOfLine.LF,
-			} as any;
 			const webview = {
 				options: {},
 				postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
@@ -2009,14 +2020,21 @@ suite('Sidecar .kql.json strategy', () => {
 			assert.strictEqual(documentData.state.sections[1].id, 'query_linked');
 			assert.strictEqual(documentData.state.sections[1].query, 'StormEvents | take 17');
 			assert.strictEqual(documentData.state.sections[2].query, 'print other = 1');
+			const activeProjection = () => posted.filter(message => message?.type === 'documentData').at(-1);
 
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument',
+				type: 'persistDocument', snapshotId: 'opaque-linked-update', editRevision: 1,
+				sourceGeneration: activeProjection().sourceGeneration,
 				state: { sections: [
 					{ id: 'query_other', type: 'query', query: 'print other = 99' },
 					{ id: 'query_linked', type: 'query', query: 'StormEvents | take 23' },
 				] },
 			}));
+			await waitForCondition(
+				() => posted.some(message => message?.type === 'persistDocumentAck'
+					&& message.snapshotId === 'opaque-linked-update'),
+				'opaque linked-query update should acknowledge',
+			);
 
 			const linkedDocument = vscode.workspace.textDocuments.find(candidate =>
 				candidate.uri.toString() === vscode.Uri.file(linkedKqlPath).toString(),
@@ -2037,12 +2055,15 @@ suite('Sidecar .kql.json strategy', () => {
 			);
 			assert.strictEqual(await vscode.workspace.applyEdit(externalEdit), true);
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument',
+				type: 'persistDocument', snapshotId: 'opaque-linked-conflict', editRevision: 2,
+				sourceGeneration: activeProjection().sourceGeneration,
 				state: { sections: [
 					{ id: 'query_other', type: 'query', query: 'print other = 100' },
 					{ id: 'query_linked', type: 'query', query: 'StormEvents | take 31' },
 				] },
 			}));
+			assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'opaque-linked-conflict'));
 			assert.strictEqual(linkedDocument.getText(), 'StormEvents | take 999');
 		} finally {
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -2095,7 +2116,8 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
-	test('missing linked query cannot overwrite a file that appears before reload', async () => {
+	test('missing linked query cannot overwrite a file that appears before reload', async function () {
+		this.timeout(5_000);
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-missing-link-'));
 		const filePath = path.join(tmpDir, 'session.kqlx');
 		const linkedPath = path.join(tmpDir, 'recovered.kql');
@@ -2105,6 +2127,7 @@ suite('Sidecar .kql.json strategy', () => {
 			] },
 		});
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
 		try {
 			fs.writeFileSync(filePath, documentText, 'utf8');
 			const provider = new (KqlxEditorProvider as any)(
@@ -2117,7 +2140,7 @@ suite('Sidecar .kql.json strategy', () => {
 			) as KqlxEditorProvider;
 			const panel = {
 				webview: {
-					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler),
+					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
 					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
 				},
 				onDidDispose: () => ({ dispose() {} }),
@@ -2126,13 +2149,17 @@ suite('Sidecar .kql.json strategy', () => {
 				uri: vscode.Uri.file(filePath), getText: () => documentText, eol: vscode.EndOfLine.LF,
 			} as any, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const sourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true)
+				.at(-1)?.sourceGeneration;
 			fs.writeFileSync(linkedPath, 'RECOVERED_SENTINEL', 'utf8');
 
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument',
+				type: 'persistDocument', snapshotId: 'missing-link-appeared', sourceGeneration, editRevision: 1,
 				state: { sections: [{ id: 'query_1', type: 'query', query: 'not allowed' }] },
 			}));
 
+			assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'missing-link-appeared'));
 			assert.strictEqual(fs.readFileSync(linkedPath, 'utf8'), 'RECOVERED_SENTINEL');
 		} finally {
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -2151,6 +2178,7 @@ suite('Sidecar .kql.json strategy', () => {
 			] },
 		});
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
 		let openAttempts = 0;
 		let applyEditCalls = 0;
 		const applyEdit = async () => { applyEditCalls++; return true; };
@@ -2177,18 +2205,23 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any;
 			const panel = {
 				webview: {
-					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler),
+					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
 					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
 				},
 				onDidDispose: () => ({ dispose() {} }),
 			} as any;
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const sourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true)
+				.at(-1)?.sourceGeneration;
 
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument', state: { sections: [{ id: 'query_1', type: 'query', query: 'STALE_WRITE' }] },
+				type: 'persistDocument', snapshotId: 'failed-hydration-stale', sourceGeneration, editRevision: 1,
+				state: { sections: [{ id: 'query_1', type: 'query', query: 'STALE_WRITE' }] },
 			}));
 
+			assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'failed-hydration-stale'));
 			assert.strictEqual(openAttempts, 1, 'unowned persistence must not retry document hydration');
 			assert.strictEqual(applyEditCalls, 0, 'stale linked write must not reach applyEdit');
 			assert.strictEqual(fs.readFileSync(linkedPath, 'utf8'), 'OLD_BASELINE');
@@ -2212,6 +2245,7 @@ suite('Sidecar .kql.json strategy', () => {
 		}, null, 2) + '\n';
 		let documentText = notebook('old.kql');
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
 		let markApplyStarted!: () => void;
 		let releaseApply!: () => void;
 		const applyStarted = new Promise<void>(resolve => { markApplyStarted = resolve; });
@@ -2238,13 +2272,14 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any;
 			const panel = {
 				webview: {
-					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler),
+					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
 					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
 				},
 				onDidDispose: () => ({ dispose() {} }),
 			} as any;
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const activeProjection = () => posted.filter(message => message?.type === 'documentData').at(-1);
 
 			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
 				const target = edit.entries()[0]?.[0];
@@ -2266,7 +2301,8 @@ suite('Sidecar .kql.json strategy', () => {
 				candidate.uri.toString() === vscode.Uri.file(oldLinkedPath).toString(),
 			);
 			const stalePersist = Promise.resolve(receiveHandler!({
-				type: 'persistDocument', state: { sections: [
+				type: 'persistDocument', snapshotId: 'delayed-old-target', editRevision: 1,
+				sourceGeneration: activeProjection().sourceGeneration, state: { sections: [
 					{ id: 'query_1', type: 'query', query: 'STALE_WRITE' },
 				] },
 			}));
@@ -2297,14 +2333,21 @@ suite('Sidecar .kql.json strategy', () => {
 			assert.strictEqual(oldLinkedDocument.isDirty, false, 'stale rollback must not leave the old target dirty');
 			assert.strictEqual(rejectFirstRollback, false, 'stale rollback should retry one rejected edit');
 			assert.strictEqual(fs.readFileSync(oldLinkedPath, 'utf8'), 'OLD_BASELINE');
+			const newTargetSnapshotId = 'delayed-new-target';
 			await Promise.race([
 				Promise.resolve(receiveHandler!({
-					type: 'persistDocument', state: { sections: [
+					type: 'persistDocument', snapshotId: newTargetSnapshotId, editRevision: 2,
+					sourceGeneration: activeProjection().sourceGeneration, state: { sections: [
 						{ id: 'query_1', type: 'query', query: 'NEW_WRITE' },
 					] },
 				})),
 				new Promise<never>((_, reject) => setTimeout(() => reject(new Error('new-target linked persist did not settle')), 2_000)),
 			]);
+			await waitForCondition(
+				() => posted.some(message => message?.type === 'persistDocumentAck'
+					&& message.snapshotId === newTargetSnapshotId),
+				'new-target linked persistence should acknowledge',
+			);
 			assert.strictEqual(fs.readFileSync(oldLinkedPath, 'utf8'), 'OLD_BASELINE');
 			const newLinkedDocument = vscode.workspace.textDocuments.find(candidate =>
 				candidate.uri.toString() === vscode.Uri.file(newLinkedPath).toString(),
@@ -2318,7 +2361,8 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
-	test('stale linked rollback never overwrites a same-path physical replacement', async () => {
+	test('stale linked rollback never overwrites a same-path physical replacement', async function () {
+		this.timeout(5_000);
 		const originalApplyEdit = vscode.workspace.applyEdit;
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-stale-rollback-retarget-'));
 		const notebookPath = path.join(tmpDir, 'notebook.kqlx');
@@ -2328,6 +2372,7 @@ suite('Sidecar .kql.json strategy', () => {
 			{ id: 'query_1', type: 'query', linkedQueryPath: 'linked.kql' },
 		] } }, null, 2) + '\n';
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
 		let releaseApply!: () => void;
 		let markApplyStarted!: () => void;
 		const applyStarted = new Promise<void>(resolve => { markApplyStarted = resolve; });
@@ -2342,7 +2387,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const document = { uri: vscode.Uri.file(notebookPath), getText: () => notebookText, eol: vscode.EndOfLine.LF, positionAt: () => new vscode.Position(0, 0), isDirty: false } as any;
 			const panel = {
 				webview: {
-					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler),
+					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
 					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
 				}, onDidDispose: () => ({ dispose() {} }),
 			} as any;
@@ -2360,7 +2405,11 @@ suite('Sidecar .kql.json strategy', () => {
 				}
 				return originalApplyEdit(edit);
 			};
-			const stalePersist = Promise.resolve(receiveHandler!({ type: 'persistDocument', state: { sections: [{ id: 'query_1', type: 'query', query: 'STALE' }] } }));
+			const sourceGeneration = posted.find(message => message?.type === 'documentData')?.sourceGeneration;
+			const stalePersist = Promise.resolve(receiveHandler!({
+				type: 'persistDocument', snapshotId: 'physical-replacement-stale', editRevision: 1,
+				sourceGeneration, state: { sections: [{ id: 'query_1', type: 'query', query: 'STALE' }] },
+			}));
 			await applyStarted;
 			notebookText = JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [{ id: 'query_1', type: 'query', query: 'DETACHED' }] } });
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
@@ -2454,7 +2503,9 @@ suite('Sidecar .kql.json strategy', () => {
 		let notebookText = notebook('a.kql');
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		let willSaveHandler: ((event: any) => unknown) | undefined;
+		let sourceGeneration = 0;
 		let finalRequestId = '';
+		let finalRequestSourceGeneration = 0;
 		let markFinalRequested!: () => void;
 		const finalRequested = new Promise<void>(resolve => { markFinalRequested = resolve; });
 		try {
@@ -2481,6 +2532,7 @@ suite('Sidecar .kql.json strategy', () => {
 				webview: {
 					options: {},
 					postMessage: async (message: any) => {
+						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
 								type: 'documentReloadResult', requestId: message.reloadRequestId,
@@ -2489,6 +2541,7 @@ suite('Sidecar .kql.json strategy', () => {
 						}
 						if (message?.type === 'requestFinalPersist') {
 							finalRequestId = String(message.requestId || '');
+							finalRequestSourceGeneration = sourceGeneration;
 							markFinalRequested();
 						}
 						return true;
@@ -2507,6 +2560,7 @@ suite('Sidecar .kql.json strategy', () => {
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 			await Promise.resolve(receiveHandler!({
 				type: 'persistDocument', flushRequestId: finalRequestId, snapshotId: 'stale-final', editRevision: 1,
+				sourceGeneration: finalRequestSourceGeneration,
 				state: { sections: [{ id: 'query_1', type: 'query', query: 'A_STALE' }] },
 			}));
 
@@ -2536,6 +2590,8 @@ suite('Sidecar .kql.json strategy', () => {
 		let linkedAText = 'A_BASELINE';
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		let willSaveHandler: ((event: any) => unknown) | undefined;
+		let sourceGeneration = 0;
+		let finalPersistRequests = 0;
 		let linkedApplyCalls = 0;
 		const linkedAUri = vscode.Uri.file(linkedAPath);
 		const linkedBUri = vscode.Uri.file(linkedBPath);
@@ -2577,6 +2633,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const panel = {
 				webview: {
 					options: {}, postMessage: async (message: any) => {
+						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
 								type: 'documentReloadResult', requestId: message.reloadRequestId,
@@ -2584,9 +2641,10 @@ suite('Sidecar .kql.json strategy', () => {
 							}));
 						}
 						if (message?.type === 'requestFinalPersist') {
+							finalPersistRequests++;
 							void Promise.resolve().then(() => receiveHandler!({
 								type: 'persistDocument', flushRequestId: message.requestId,
-								snapshotId: 'failed-retarget-open', sourceGeneration: message.sourceGeneration,
+								snapshotId: 'failed-retarget-open', sourceGeneration,
 								editRevision: 1,
 								state: { sections: [{ id: 'query_1', type: 'query', query: 'STALE_A_QUERY' }] },
 							}));
@@ -2605,6 +2663,7 @@ suite('Sidecar .kql.json strategy', () => {
 			let waited: Promise<unknown> | undefined;
 			willSaveHandler!({ document, waitUntil: (value: Promise<unknown>) => { waited = value; } });
 			await assert.rejects(waited!, /linked query file could not be updated/);
+			assert.strictEqual(finalPersistRequests, 0, 'failed retarget hydration must reject before final persistence');
 			assert.strictEqual(linkedApplyCalls, 0, 'failed retarget hydration must not edit either target');
 			assert.strictEqual(linkedAText, 'A_BASELINE');
 			assert.strictEqual(fs.readFileSync(linkedAPath, 'utf8'), 'A_BASELINE');
@@ -2636,6 +2695,7 @@ suite('Sidecar .kql.json strategy', () => {
 		let linkedBText = 'B_BASELINE';
 		let linkedADirty = false;
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		let sourceGeneration = 0;
 		let willSaveHandler: ((event: any) => unknown) | undefined;
 		let markLinkedSaveStarted!: () => void;
 		let releaseLinkedSave!: () => void;
@@ -2704,6 +2764,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const panel = {
 				webview: {
 					options: {}, postMessage: async (message: any) => {
+						if (message?.type === 'documentData') sourceGeneration = message.sourceGeneration;
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
 								type: 'documentReloadResult', requestId: message.reloadRequestId,
@@ -2713,7 +2774,8 @@ suite('Sidecar .kql.json strategy', () => {
 						if (message?.type === 'requestFinalPersist') {
 							void Promise.resolve().then(() => receiveHandler!({
 								type: 'persistDocument', flushRequestId: message.requestId,
-								snapshotId: 'durable-retarget', editRevision: 1,
+								snapshotId: 'durable-retarget', sourceGeneration,
+								editRevision: 1,
 								state: { sections: [{ id: 'query_1', type: 'query', query: 'A_CANDIDATE' }] },
 							}));
 						}
@@ -2765,9 +2827,10 @@ suite('Sidecar .kql.json strategy', () => {
 		let linkedDirty = false;
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		let willSaveHandler: ((event: any) => unknown) | undefined;
+		let sourceGeneration = 0;
 		let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
 		let newerPersist: Promise<unknown> | undefined;
-		let sourceGeneration = 0;
+		const posted: any[] = [];
 		const linkedUri = vscode.Uri.file(linkedPath);
 		const linkedDocument = {
 			uri: linkedUri, getText: () => linkedText,
@@ -2796,7 +2859,8 @@ suite('Sidecar .kql.json strategy', () => {
 				linkedDirty = true;
 				if (replacement === 'CANDIDATE' && !newerPersist) {
 					newerPersist = Promise.resolve().then(() => receiveHandler!({
-						type: 'persistDocument', state: { sections: [
+						type: 'persistDocument', snapshotId: 'content-owner-newer', editRevision: 2,
+						sourceGeneration, state: { sections: [
 							{ id: 'query_1', type: 'query', query: 'NEWER' },
 						] },
 					}));
@@ -2818,6 +2882,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const panel = {
 				webview: {
 					options: {}, postMessage: async (message: any) => {
+						posted.push(message);
 						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
@@ -2845,6 +2910,11 @@ suite('Sidecar .kql.json strategy', () => {
 			willSaveHandler!({ document, waitUntil: (value: Promise<unknown>) => { waited = value; } });
 			const notebookEdits = await waited! as vscode.TextEdit[];
 			await newerPersist;
+			await waitForCondition(
+				() => posted.some(message => message?.type === 'persistDocumentAck'
+					&& message.snapshotId === 'content-owner-newer'),
+				'newer queued linked edit should acknowledge',
+			);
 			const committedNotebookText = notebookEdits[0]?.newText ?? notebookText;
 			fs.writeFileSync(notebookPath, committedNotebookText, 'utf8');
 			await new Promise<void>(resolve => setTimeout(resolve, 1_100));
@@ -3002,6 +3072,7 @@ suite('Sidecar .kql.json strategy', () => {
 		let linkedDirty = false;
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		let willSaveHandler: ((event: any) => unknown) | undefined;
+		let sourceGeneration = 0;
 		let markLinkedSaveStarted!: () => void;
 		let releaseLinkedSave!: () => void;
 		const linkedSaveStarted = new Promise<void>(resolve => { markLinkedSaveStarted = resolve; });
@@ -3054,6 +3125,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const panel = {
 				webview: {
 					options: {}, postMessage: async (message: any) => {
+						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
 								type: 'documentReloadResult', requestId: message.reloadRequestId,
@@ -3063,7 +3135,7 @@ suite('Sidecar .kql.json strategy', () => {
 						if (message?.type === 'requestFinalPersist') {
 							void Promise.resolve().then(() => receiveHandler!({
 								type: 'persistDocument', flushRequestId: message.requestId,
-								snapshotId: 'physical-retarget', editRevision: 1,
+								snapshotId: 'physical-retarget', sourceGeneration, editRevision: 1,
 								state: { sections: [{ id: 'query_1', type: 'query', query: 'CANDIDATE' }] },
 							}));
 						}
@@ -3111,6 +3183,7 @@ suite('Sidecar .kql.json strategy', () => {
 		}, null, 2) + '\n';
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		let willSaveHandler: ((event: any) => unknown) | undefined;
+		let sourceGeneration = 0;
 		let applyCalls = 0;
 		const linkedUri = vscode.Uri.file(linkedPath);
 		const linkedDocument = {
@@ -3143,6 +3216,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const panel = {
 				webview: {
 					options: {}, postMessage: async (message: any) => {
+						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
 								type: 'documentReloadResult', requestId: message.reloadRequestId,
@@ -3152,7 +3226,7 @@ suite('Sidecar .kql.json strategy', () => {
 						if (message?.type === 'requestFinalPersist') {
 							void Promise.resolve().then(() => receiveHandler!({
 								type: 'persistDocument', flushRequestId: message.requestId,
-								snapshotId: 'byte-cas', sourceGeneration: message.sourceGeneration, editRevision: 1,
+								snapshotId: 'byte-cas', sourceGeneration, editRevision: 1,
 								state: { sections: [{ id: 'query_1', type: 'query', query: 'CANDIDATE' }] },
 							}));
 						}
@@ -3197,6 +3271,8 @@ suite('Sidecar .kql.json strategy', () => {
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		let willSaveHandler: ((event: any) => unknown) | undefined;
 		let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
+		let sourceGeneration = 0;
+		const posted: any[] = [];
 		const disposeHandlers: Array<() => void> = [];
 		const linkedUri = vscode.Uri.file(linkedPath);
 		const linkedDocument = {
@@ -3245,6 +3321,8 @@ suite('Sidecar .kql.json strategy', () => {
 			const panel = {
 				webview: {
 					options: {}, postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
 								type: 'documentReloadResult', requestId: message.reloadRequestId,
@@ -3254,7 +3332,7 @@ suite('Sidecar .kql.json strategy', () => {
 						if (message?.type === 'requestFinalPersist') {
 							void Promise.resolve().then(() => receiveHandler!({
 								type: 'persistDocument', flushRequestId: message.requestId,
-								snapshotId: 'abandoned-save', editRevision: 1,
+								snapshotId: 'abandoned-save', sourceGeneration, editRevision: 1,
 								state: { sections: [{ id: 'query_1', type: 'query', query: 'CANDIDATE' }] },
 							}));
 						}
@@ -3272,10 +3350,16 @@ suite('Sidecar .kql.json strategy', () => {
 			assert.strictEqual(fs.readFileSync(linkedPath, 'utf8'), 'CANDIDATE');
 
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument', state: { sections: [
+				type: 'persistDocument', snapshotId: 'abandoned-save-newer', editRevision: 2,
+				sourceGeneration, state: { sections: [
 					{ id: 'query_1', type: 'query', query: 'NEWER' },
 				] },
 			}));
+			await waitForCondition(
+				() => posted.some(message => message?.type === 'persistDocumentAck'
+					&& message.snapshotId === 'abandoned-save-newer'),
+				'abandoned Save successor edit should acknowledge',
+			);
 			assert.strictEqual(linkedText, 'NEWER');
 			await waitForCondition(
 				() => fs.readFileSync(linkedPath, 'utf8') === 'BASELINE' && linkedText === 'NEWER',
@@ -3430,6 +3514,7 @@ suite('Sidecar .kql.json strategy', () => {
 			] },
 		});
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
 		let markApplyStarted!: () => void;
 		let releaseApply!: () => void;
 		const applyStarted = new Promise<void>(resolve => { markApplyStarted = resolve; });
@@ -3465,17 +3550,20 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any;
 			const panel = {
 				webview: {
-					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler),
+					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
 					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
 				},
 				onDidDispose: () => ({ dispose() {} }),
 			} as any;
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const sourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true)
+				.at(-1)?.sourceGeneration;
 			applyCalls = 0;
 			delayNextApply = true;
 			const oldPersist = Promise.resolve(receiveHandler!({
-				type: 'persistDocument', state: { sections: [
+				type: 'persistDocument', snapshotId: 'delayed-old-edit', editRevision: 1,
+				sourceGeneration, state: { sections: [
 					{ id: 'query_1', type: 'query', query: 'print old = 1' },
 				] },
 			}));
@@ -3484,7 +3572,8 @@ suite('Sidecar .kql.json strategy', () => {
 				new Promise<never>((_, reject) => setTimeout(() => reject(new Error('old persistence edit did not start')), 2_000)),
 			]);
 			const baselinePersist = Promise.resolve(receiveHandler!({
-				type: 'persistDocument', state: { sections: [
+				type: 'persistDocument', snapshotId: 'newer-baseline-repair', editRevision: 2,
+				sourceGeneration, state: { sections: [
 					{ id: 'query_1', type: 'query', query: baselineQuery },
 				] },
 			}));
@@ -3493,6 +3582,11 @@ suite('Sidecar .kql.json strategy', () => {
 				Promise.all([oldPersist, baselinePersist]),
 				new Promise<never>((_, reject) => setTimeout(() => reject(new Error('serialized persistence requests did not settle')), 2_000)),
 			]);
+			await waitForCondition(
+				() => posted.some(message => message?.type === 'persistDocumentAck'
+					&& message.snapshotId === 'newer-baseline-repair'),
+				'newer baseline repair should acknowledge',
+			);
 
 			assert.strictEqual(JSON.parse(currentText).state.sections[0].query, baselineQuery);
 			assert.strictEqual(applyCalls, 2, 'newer baseline must repair the older applied text');
@@ -3599,6 +3693,7 @@ suite('Sidecar .kql.json strategy', () => {
 		let currentText = JSON.stringify({ kind: 'kqlx', version: 1, state }, null, 2);
 		let dirty = true;
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		let sourceGeneration = 0;
 		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
 		let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
 		const changeHandlers: Array<(event: vscode.TextDocumentChangeEvent) => unknown> = [];
@@ -3677,6 +3772,7 @@ suite('Sidecar .kql.json strategy', () => {
 				webview: {
 					options: {},
 					postMessage: async (message: any) => {
+						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
 								type: 'documentReloadResult', requestId: message.reloadRequestId,
@@ -3686,7 +3782,7 @@ suite('Sidecar .kql.json strategy', () => {
 						if (message?.type === 'requestFinalPersist') {
 							void Promise.resolve().then(() => receiveHandler!({
 								type: 'persistDocument', state, flush: true, reason: 'save',
-								flushRequestId: message.requestId,
+								flushRequestId: message.requestId, sourceGeneration,
 							}));
 						}
 						return true;
@@ -3701,7 +3797,8 @@ suite('Sidecar .kql.json strategy', () => {
 			pausePersist = true;
 			const changedState = { sections: [{ ...state.sections[0], query: 'print value = 2' }] };
 			const activePersist = Promise.resolve(receiveHandler!({
-				type: 'persistDocument', state: changedState, reason: 'edit',
+				type: 'persistDocument', snapshotId: 'reentrant-active-edit', editRevision: 1,
+				sourceGeneration, state: changedState, reason: 'edit',
 			}));
 			await persistStarted;
 			await Promise.race([
@@ -3732,7 +3829,8 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
-	test('native save preserves multiple near-limit results and metadata edits across reopen', async () => {
+	test('native save preserves multiple near-limit results and metadata edits across reopen', async function () {
+		this.timeout(10_000);
 		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
 		const originalOnDidSave = vscode.workspace.onDidSaveTextDocument;
 		const originalSanitizeSync = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceState;
@@ -3754,8 +3852,10 @@ suite('Sidecar .kql.json strategy', () => {
 		] };
 		let currentText = JSON.stringify({ kind: 'kqlx', version: 1, state: initialState });
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		let sourceGeneration = 0;
 		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
 		let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
+		const disposeHandlers: Array<() => void> = [];
 
 		try {
 			fs.writeFileSync(filePath, currentText, 'utf8');
@@ -3792,6 +3892,7 @@ suite('Sidecar .kql.json strategy', () => {
 				webview: {
 					options: {},
 					postMessage: async (message: any) => {
+						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
 								type: 'documentReloadResult', requestId: message.reloadRequestId,
@@ -3801,7 +3902,7 @@ suite('Sidecar .kql.json strategy', () => {
 						if (message?.type === 'requestFinalPersist') {
 							void Promise.resolve().then(() => receiveHandler!({
 								type: 'persistDocument', state: finalState,
-								sourceGeneration: 1, flush: true, reason: 'save',
+								sourceGeneration, flush: true, reason: 'save',
 								flushRequestId: message.requestId,
 							}));
 						}
@@ -3809,7 +3910,10 @@ suite('Sidecar .kql.json strategy', () => {
 					},
 					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
 				},
-				onDidDispose: () => ({ dispose() {} }),
+				onDidDispose: (handler: () => void) => {
+					disposeHandlers.push(handler);
+					return { dispose() {} };
+				},
 			} as any;
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
@@ -3832,6 +3936,8 @@ suite('Sidecar .kql.json strategy', () => {
 			assert.strictEqual(reopened.file.state.sections.length, 2);
 			assert.strictEqual(first.resultJson?.length, resultJson.length);
 			assert.strictEqual(second.resultJson?.length, resultJson.length);
+			for (const dispose of disposeHandlers) dispose();
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 5_000), true);
 		} finally {
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceState = originalSanitizeSync;
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
@@ -3852,6 +3958,7 @@ suite('Sidecar .kql.json strategy', () => {
 			] },
 		});
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
 		try {
 			fs.writeFileSync(filePath, documentText, 'utf8');
 			fs.writeFileSync(linkedPath, 'LINKED_BASELINE', 'utf8');
@@ -3865,7 +3972,7 @@ suite('Sidecar .kql.json strategy', () => {
 			) as KqlxEditorProvider;
 			const panel = {
 				webview: {
-					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler),
+					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
 					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
 				},
 				onDidDispose: () => ({ dispose() {} }),
@@ -3878,12 +3985,17 @@ suite('Sidecar .kql.json strategy', () => {
 			fs.writeFileSync(linkedPath, 'REPLACEMENT_SENTINEL', 'utf8');
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 
+			const sourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true)
+				.at(-1)?.sourceGeneration;
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument', state: { sections: [
+				type: 'persistDocument', snapshotId: 'same-path-replacement', editRevision: 1,
+				sourceGeneration, state: { sections: [
 					{ id: 'query_1', type: 'query', query: 'MUST_NOT_WRITE' },
 				] },
 			}));
 
+			assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'same-path-replacement'));
 			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), documentText);
 			assert.strictEqual(fs.readFileSync(linkedPath, 'utf8'), 'REPLACEMENT_SENTINEL');
 		} finally {
@@ -3904,6 +4016,7 @@ suite('Sidecar .kql.json strategy', () => {
 		});
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+		let sourceGeneration = 0;
 		let aliasDocument: vscode.TextDocument | undefined;
 		const disposeHandlers: Array<() => void> = [];
 
@@ -3942,6 +4055,7 @@ suite('Sidecar .kql.json strategy', () => {
 				webview: {
 					options: {},
 					postMessage: async (message: any) => {
+						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
 								type: 'documentReloadResult', requestId: message.reloadRequestId,
@@ -3951,7 +4065,7 @@ suite('Sidecar .kql.json strategy', () => {
 						if (message?.type === 'requestFinalPersist') {
 							void Promise.resolve().then(() => receiveHandler?.({
 								type: 'persistDocument', flushRequestId: message.requestId,
-								snapshotId: 'dirty-alias-save', editRevision: 1,
+								snapshotId: 'dirty-alias-save', sourceGeneration, editRevision: 1,
 								state: { sections: [{ id: 'query_1', type: 'query', query: 'CANDIDATE' }] },
 							}));
 						}
@@ -4035,6 +4149,7 @@ suite('Sidecar .kql.json strategy', () => {
 				});
 				fs.writeFileSync(filePath, currentText, 'utf8');
 				let receiveHandler: ((message: any) => unknown) | undefined;
+				const posted: any[] = [];
 				let gatePersists = false;
 				let markOldStarted!: () => void;
 				let releaseOld!: () => void;
@@ -4070,27 +4185,36 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any;
 				const panel = {
 					webview: {
-						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler),
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
 						onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
 					},
 					onDidDispose: () => ({ dispose() {} }),
 				} as any;
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const sourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true)
+					.at(-1)?.sourceGeneration;
 				gatePersists = true;
 				const oldPersist = Promise.resolve(receiveHandler!({
-					type: 'persistDocument', state: { sections: [
+					type: 'persistDocument', snapshotId: `${variant}-old-sanitization`, editRevision: 1,
+					sourceGeneration, state: { sections: [
 						{ id: 'query_1', type: 'query', query: 'print old = 1' },
 					] },
 				}));
 				await oldStarted;
 				const newestPersist = Promise.resolve(receiveHandler!({
-					type: 'persistDocument', state: { sections: [
+					type: 'persistDocument', snapshotId: `${variant}-newest-sanitization`, editRevision: 2,
+					sourceGeneration, state: { sections: [
 						{ id: 'query_1', type: 'query', query: 'print newest = 2' },
 					] },
 				}));
 				releaseOld();
 				await Promise.all([oldPersist, newestPersist]);
+				await waitForCondition(
+					() => posted.some(message => message?.type === 'persistDocumentAck'
+						&& message.snapshotId === `${variant}-newest-sanitization`),
+					`${variant} newest sanitation should acknowledge`,
+				);
 				const finalText = variant === 'session' ? fs.readFileSync(filePath, 'utf8') : currentText;
 				assert.strictEqual(JSON.parse(finalText).state.sections[0].query, 'print newest = 2');
 			}
@@ -4286,11 +4410,13 @@ suite('Sidecar .kql.json strategy', () => {
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 			await new Promise<void>(resolve => setTimeout(resolve, 100));
+			const sourceGeneration = posted.find(message => message?.type === 'documentData' && message.ok === true)
+				?.sourceGeneration;
 			posted.length = 0;
 			applyCalls = 0;
 
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument', snapshotId: 'rich-retry-1', editRevision: 1,
+				type: 'persistDocument', snapshotId: 'rich-retry-1', sourceGeneration, editRevision: 1,
 				state: { sections: [
 					{
 						id: 'transform_1', type: 'transformation', dataSourceId: 'query_1',
@@ -4337,7 +4463,7 @@ suite('Sidecar .kql.json strategy', () => {
 			directText = JSON.stringify(directFile);
 			driftAfterApply = true;
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument', snapshotId: 'rich-drift-2', editRevision: 2,
+				type: 'persistDocument', snapshotId: 'rich-drift-2', sourceGeneration, editRevision: 2,
 				state: { sections: [
 					{
 						id: 'transform_1', type: 'transformation', dataSourceId: 'query_1',
@@ -4370,6 +4496,7 @@ suite('Sidecar .kql.json strategy', () => {
 			] },
 		});
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
 		let gatePersist = false;
 		let markPersistStarted!: () => void;
 		let releasePersist!: () => void;
@@ -4408,17 +4535,20 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any;
 			const panel = {
 				webview: {
-					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler),
+					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
 					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
 				},
 				onDidDispose: () => ({ dispose() {} }),
 			} as any;
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const sourceGeneration = posted.find(message => message?.type === 'documentData' && message.ok === true)
+				?.sourceGeneration;
 			applyCalls = 0;
 			gatePersist = true;
 			const stalePersist = Promise.resolve(receiveHandler!({
-				type: 'persistDocument', state: { sections: [
+				type: 'persistDocument', snapshotId: 'external-reload-stale', editRevision: 1,
+				sourceGeneration, state: { sections: [
 					{ id: 'query_1', type: 'query', query: 'print stale = 1' },
 				] },
 			}));
@@ -5474,7 +5604,7 @@ suite('Sidecar .kql.json strategy', () => {
 				await requestB;
 				await Promise.resolve(receiveHandler!({
 					type: 'persistDocument', snapshotId: `current-b-${index}`,
-					sourceGeneration: projectionB.sourceGeneration, editRevision: 52,
+					sourceGeneration: projectionB.sourceGeneration, editRevision: 3,
 					state: { sections: [
 						{ id: variant.primaryId, type: variant.primaryType, query: 'B' },
 						{ id: 'markdown_1', type: 'markdown', text: 'B_AUTHORITATIVE' },
@@ -5822,10 +5952,13 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any;
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const sourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true)
+					.at(-1)?.sourceGeneration;
 				delayStaleEdit = true;
 				let stalePersistSettled = false;
 				const stalePersist = Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
-					type: 'persistDocument', editRevision: 1,
+					type: 'persistDocument', snapshotId: `stale-rollback-${index}`,
+					sourceGeneration, editRevision: 1,
 					state: { sections: [{ id: 'primary_1', type: variant.type, query: 'stale' }] },
 				}, { replaceExistingId: !variant.wrapped }))).finally(() => { stalePersistSettled = true; });
 				await waitForCondition(() => staleStarted, `${variant.extension} stale edit should start`, 1_000);
@@ -5914,8 +6047,10 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any;
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const sourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true)
+					.at(-1)?.sourceGeneration;
 				await Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
-					type: 'persistDocument', snapshotId: `direct-${index}`, editRevision: 1,
+					type: 'persistDocument', snapshotId: `direct-${index}`, sourceGeneration, editRevision: 1,
 					state: { sections: [{ id: 'primary_1', type: variant.type, query: 'STALE_CANDIDATE' }] },
 				}, { replaceExistingId: !variant.wrapped })));
 				await waitForCondition(() => variant.wrapped
@@ -6011,8 +6146,10 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any;
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const sourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true)
+					.at(-1)?.sourceGeneration;
 				const persist = Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
-					type: 'persistDocument', snapshotId: `owned-${index}`, editRevision: 1,
+					type: 'persistDocument', snapshotId: `owned-${index}`, sourceGeneration, editRevision: 1,
 					state: { sections: [{ id: 'primary_1', type: variant.type, query: 'OWNED_CANDIDATE' }] },
 				}, { replaceExistingId: !variant.wrapped })));
 				await ownedApplied;
@@ -6134,6 +6271,7 @@ suite('Sidecar .kql.json strategy', () => {
 			] },
 		}, null, 2) + '\n';
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
 		let linkedText = 'BASELINE';
 		let rollbackCalls = 0;
 		const linkedUri = vscode.Uri.file(linkedPath);
@@ -6164,7 +6302,7 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any;
 			const panel = {
 				webview: {
-					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler),
+					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
 					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
 				},
 				onDidDispose: () => ({ dispose() {} }),
@@ -6185,12 +6323,17 @@ suite('Sidecar .kql.json strategy', () => {
 				return true;
 			};
 
+			const sourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true)
+				.at(-1)?.sourceGeneration;
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument', state: { sections: [
+				type: 'persistDocument', snapshotId: 'linked-direct-newer', editRevision: 1,
+				sourceGeneration, state: { sections: [
 					{ id: 'query_1', type: 'query', query: 'STALE_CANDIDATE' },
 				] },
 			}));
 			assert.strictEqual(linkedText, 'DIRECT_NEWER');
+			assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'linked-direct-newer'));
 			assert.strictEqual(rollbackCalls, 0, 'a newer direct linked edit must never be rolled back');
 		} finally {
 			(vscode.workspace as any).applyEdit = originalApplyEdit;
@@ -6211,6 +6354,7 @@ suite('Sidecar .kql.json strategy', () => {
 		});
 		let currentText = wrap('initial');
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
 		let willSaveHandler: ((event: any) => unknown) | undefined;
 		let markStaleStarted!: () => void;
 		let releaseStale!: () => void;
@@ -6252,6 +6396,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const panel = {
 				webview: {
 					options: {}, postMessage: async (message: any) => {
+						posted.push(message);
 						if (expectReloadDelivery && message?.type === 'documentData') markReloadDelivered();
 						if (message?.reloadRequestId) {
 							void Promise.resolve().then(() => receiveHandler?.({
@@ -6266,8 +6411,11 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any;
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const sourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true)
+				.at(-1)?.sourceGeneration;
 			const stalePersist = Promise.resolve(receiveHandler!({
-				type: 'persistDocument', state: { sections: [{ id: 'query_1', type: 'query', query: 'stale' }] },
+				type: 'persistDocument', snapshotId: 'exhausted-source-rollback', editRevision: 1,
+				sourceGeneration, state: { sections: [{ id: 'query_1', type: 'query', query: 'stale' }] },
 			}));
 			await staleStarted;
 			currentText = wrap('external');
@@ -6615,10 +6763,12 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any;
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const sourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true)
+				.at(-1)?.sourceGeneration;
 			posted.length = 0;
 
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument', snapshotId: 'result-b', editRevision: 1,
+				type: 'persistDocument', snapshotId: 'result-b', sourceGeneration, editRevision: 1,
 				state: { sections: [{
 					id: 'sql_1', type: 'sql', query: 'select 1', resultJson: '{"rows":[["B"]]}',
 					resultArtifact: {
@@ -6633,7 +6783,7 @@ suite('Sidecar .kql.json strategy', () => {
 			assert.strictEqual(JSON.parse(currentText).state.sections[0].resultJson, '{"rows":[["B"]]}');
 
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument', snapshotId: 'result-cleared', editRevision: 2,
+				type: 'persistDocument', snapshotId: 'result-cleared', sourceGeneration, editRevision: 2,
 				state: { sections: [{ id: 'sql_1', type: 'sql', query: 'select 1' }] },
 			}));
 			await waitForCondition(() => posted.some(message => message?.type === 'persistDocumentAck' && message.snapshotId === 'result-cleared'), 'result removal should acknowledge');
@@ -7271,6 +7421,7 @@ suite('Sidecar .kql.json strategy', () => {
 		fs.writeFileSync(sessionPath, sessionText, 'utf8');
 		fs.writeFileSync(linkedPath, 'BASELINE', 'utf8');
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		let sourceGeneration = 0;
 		let ackSawLinkedText = '';
 		let conflictAcknowledged = false;
 		const warnings: string[] = [];
@@ -7296,6 +7447,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const panel = {
 				webview: {
 					options: {}, postMessage: async (message: any) => {
+						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
 								type: 'documentReloadResult', requestId: message.reloadRequestId,
@@ -7319,10 +7471,11 @@ suite('Sidecar .kql.json strategy', () => {
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument', snapshotId: 'linked-session', editRevision: 1,
+				type: 'persistDocument', snapshotId: 'linked-session', sourceGeneration, editRevision: 1,
 				state: { sections: [{ id: 'query_1', type: 'query', query: 'DURABLE_LINKED' }] },
 			}));
-			await new Promise<void>(resolve => setTimeout(resolve, 500));
+			await waitForCondition(() => ackSawLinkedText === 'DURABLE_LINKED',
+				'linked bytes should be durable before acknowledgement');
 			const liveLinkedDocument = vscode.workspace.textDocuments.find(candidate => candidate.uri.fsPath === linkedPath);
 			assert.strictEqual(ackSawLinkedText, 'DURABLE_LINKED', `linked bytes should be durable before acknowledgement; linkedDisk=${fs.readFileSync(linkedPath, 'utf8')}; sessionDisk=${fs.readFileSync(sessionPath, 'utf8')}; linkedBuffer=${liveLinkedDocument?.getText() ?? '(missing)'}`);
 			sessionText = fs.readFileSync(sessionPath, 'utf8');
@@ -7333,7 +7486,7 @@ suite('Sidecar .kql.json strategy', () => {
 			});
 			fs.writeFileSync(sessionPath, externalSession, 'utf8');
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument', snapshotId: 'linked-session-conflict', editRevision: 2,
+				type: 'persistDocument', snapshotId: 'linked-session-conflict', sourceGeneration, editRevision: 2,
 				state: { sections: [{ id: 'query_1', type: 'query', query: 'MUST_ROLLBACK' }] },
 			}));
 			await new Promise<void>(resolve => setTimeout(resolve, 50));
@@ -7731,6 +7884,7 @@ suite('Sidecar .kql.json strategy', () => {
 		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
 		let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		let sourceGeneration = 0;
 		const disposeHandlers: Array<() => void> = [];
 		let releaseCanonicalPublish!: () => void;
 		const canonicalPublishGate = new Promise<void>(resolve => { releaseCanonicalPublish = resolve; });
@@ -7819,6 +7973,7 @@ suite('Sidecar .kql.json strategy', () => {
 				webview: {
 					options: {},
 					postMessage: async (message: any) => {
+						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
 						if (message?.reloadRequestId) await Promise.resolve(receiveHandler?.({
 							type: 'documentReloadResult', requestId: message.reloadRequestId,
 							applied: true, editRevision: Number(message.editRevision || 0),
@@ -7827,7 +7982,8 @@ suite('Sidecar .kql.json strategy', () => {
 							void Promise.resolve().then(() => receiveHandler?.({
 								type: 'persistDocument', state,
 								flush: true, reason: 'save', editRevision: 0,
-								snapshotId: 'save-budget-snapshot', flushRequestId: message.requestId,
+								snapshotId: 'save-budget-snapshot', sourceGeneration,
+								flushRequestId: message.requestId,
 							}));
 						}
 						return true;
@@ -7910,11 +8066,14 @@ suite('Sidecar .kql.json strategy', () => {
 			clusterUrl: 'https://cluster.kusto.windows.net', connectionIdHint: 'kusto-1', database: 'Db',
 			resultJson: 'KUSTO_RESULT', kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0,
 		}] };
+		const finalState = { sections: [{ ...state.sections[0], name: 'Saved Metadata' }] };
 		const text = JSON.stringify({ kind: 'kqlx', version: 1, state }, null, 2);
 		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
 		let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		let canonicalPublishCalls = 0;
+		let sourceGeneration = 0;
+		const disposeHandlers: Array<() => void> = [];
 
 		try {
 			fs.writeFileSync(filePath, text, 'utf8');
@@ -7947,10 +8106,11 @@ suite('Sidecar .kql.json strategy', () => {
 			const panel = {
 				webview: {
 					options: {}, postMessage: async (message: any) => {
+						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
 						if (message?.type === 'requestFinalPersist') {
 							void Promise.resolve().then(() => receiveHandler?.({
-								type: 'persistDocument', state, flush: true, reason: 'save', editRevision: 0,
-								snapshotId: 'kusto-save-lock', flushRequestId: message.requestId,
+								type: 'persistDocument', state: finalState, flush: true, reason: 'save', editRevision: 0,
+								snapshotId: 'kusto-save-lock', sourceGeneration, flushRequestId: message.requestId,
 							}));
 						}
 						return true;
@@ -7960,7 +8120,10 @@ suite('Sidecar .kql.json strategy', () => {
 						return { dispose() {} };
 					},
 				},
-				onDidDispose: () => ({ dispose() {} }),
+				onDidDispose: (handler: () => void) => {
+					disposeHandlers.push(handler);
+					return { dispose() {} };
+				},
 			} as any;
 
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
@@ -7974,8 +8137,13 @@ suite('Sidecar .kql.json strategy', () => {
 			const edits = await saveBarrier!;
 			assert.strictEqual(edits.length, 1);
 			assert.ok(!edits[0].newText.includes('KUSTO_RESULT'));
+			const saved = parseKqlxText(edits[0].newText);
+			assert.strictEqual(saved.ok, true, saved.ok ? undefined : saved.error);
+			assert.strictEqual((saved.ok ? saved.file.state.sections[0] as any : undefined)?.name, 'Saved Metadata');
 			assert.strictEqual(canonicalPublishCalls, 0);
 			await Promise.resolve(didSaveHandler!(document));
+			for (const dispose of disposeHandlers) dispose();
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 2_000), true);
 		} finally {
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
 			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSaveTextDocument;
@@ -8005,6 +8173,7 @@ suite('Sidecar .kql.json strategy', () => {
 		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
 		let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		let sourceGeneration = 0;
 
 		try {
 			fs.writeFileSync(filePath, candidateText, 'utf8');
@@ -8047,13 +8216,14 @@ suite('Sidecar .kql.json strategy', () => {
 			const panel = {
 				webview: {
 					options: {}, postMessage: async (message: any) => {
+						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
 						if (message?.reloadRequestId) await Promise.resolve(receiveHandler?.({
 							type: 'documentReloadResult', requestId: message.reloadRequestId,
 							applied: true, editRevision: Number(message.editRevision || 0),
 						}));
 						if (message?.type === 'requestFinalPersist') void Promise.resolve().then(() => receiveHandler?.({
 							type: 'persistDocument', state, flush: true, reason: 'save', editRevision: 0,
-							snapshotId: 'restore-failure', flushRequestId: message.requestId,
+							snapshotId: 'restore-failure', sourceGeneration, flushRequestId: message.requestId,
 						}));
 						return true;
 					},
@@ -8109,6 +8279,7 @@ suite('Sidecar .kql.json strategy', () => {
 		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
 		let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		let sourceGeneration = 0;
 
 		try {
 			fs.writeFileSync(filePath, currentText, 'utf8');
@@ -8145,11 +8316,12 @@ suite('Sidecar .kql.json strategy', () => {
 			const panel = {
 				webview: {
 					options: {}, postMessage: async (message: any) => {
+						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
 						if (message?.reloadRequestId) await Promise.resolve(receiveHandler?.({
 							type: 'documentReloadResult', requestId: message.reloadRequestId,
 							applied: true, editRevision: Number(message.editRevision || 0),
 						}));
-						if (message?.type === 'requestFinalPersist') void Promise.resolve().then(() => receiveHandler?.({ type: 'persistDocument', state: requestedState, flush: true, reason: 'save', editRevision: 0, snapshotId: `overlap-${publishCalls}`, flushRequestId: message.requestId }));
+						if (message?.type === 'requestFinalPersist') void Promise.resolve().then(() => receiveHandler?.({ type: 'persistDocument', state: requestedState, flush: true, reason: 'save', editRevision: 0, snapshotId: `overlap-${publishCalls}`, sourceGeneration, flushRequestId: message.requestId }));
 						return true;
 					},
 					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
@@ -8706,6 +8878,7 @@ suite('Sidecar .kql.json strategy', () => {
 				assert.ok(projection);
 				const message = {
 					type: 'persistDocument', flushRequestId: `expired-flush-${index}`,
+					snapshotId: `expired-snapshot-${index}`,
 					sourceGeneration: projection.sourceGeneration, editRevision: 1,
 					state: { sections: [{
 						id: projection.state.sections[0].id,
@@ -9063,7 +9236,8 @@ suite('Sidecar .kql.json strategy', () => {
 			resolveEditor = Promise.resolve(provider.resolveCustomTextEditor(document, panel, {} as any));
 			await initializeEntered;
 			const inbound = Promise.resolve(receiveHandler!({
-				type: 'persistDocument', reason: 'beforeunload', snapshotId: 'early-close', editRevision: 1,
+				type: 'persistDocument', reason: 'beforeunload', snapshotId: 'early-close',
+				sourceGeneration: 0, editRevision: 1,
 				state: { sections: [{ id: 'query_early', type: 'query', query: 'EARLY_FINAL_STATE' }] },
 			}));
 			for (const dispose of [...disposeHandlers]) dispose();
@@ -10712,10 +10886,13 @@ suite('Sidecar .kql.json strategy', () => {
 			const bufferBeforeMutation = bufferText;
 			const notebookEditsBeforeMutation = notebookApplyEdits;
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument', state: { sections: [
+				type: 'persistDocument', snapshotId: 'remote-linked-write',
+				sourceGeneration: projection.sourceGeneration, editRevision: 1, state: { sections: [
 					{ id: 'query_1', type: 'query', query: 'MUST_NOT_WRITE' },
 				] },
 			}));
+			assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'remote-linked-write'));
 			assert.strictEqual(
 				writes.filter(uri => uri === linkedUri.toString()).length,
 				linkedWritesBeforeMutation,
@@ -14088,6 +14265,7 @@ suite('Sidecar .kql.json strategy', () => {
 		const initialText = JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [] } });
 		fs.writeFileSync(sessionPath, initialText, 'utf8');
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		let sourceGeneration = 0;
 		const disposeHandlers: Array<() => void> = [];
 		let webviewDisposed = false;
 		let postsAfterDispose = 0;
@@ -14112,6 +14290,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const panel = {
 				webview: {
 					options: {}, postMessage: async (message: any) => {
+						if (message?.type === 'documentData') sourceGeneration = Number(message.sourceGeneration || 0);
 						if (webviewDisposed) { postsAfterDispose++; throw new Error('disposed'); }
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
@@ -14132,7 +14311,8 @@ suite('Sidecar .kql.json strategy', () => {
 			webviewDisposed = true;
 			setTimeout(() => {
 				void Promise.resolve(receiveHandler!({
-					type: 'persistDocument', reason: 'beforeunload', snapshotId: 'rich-beforeunload', editRevision: 1,
+					type: 'persistDocument', reason: 'beforeunload', snapshotId: 'rich-beforeunload',
+					sourceGeneration, editRevision: 1,
 					state: { sections: [{ id: 'query_1', type: 'query', query: 'FINAL_RICH_CLOSE' }] },
 				})).finally(settleInbound);
 			}, 50);
@@ -14155,6 +14335,7 @@ suite('Sidecar .kql.json strategy', () => {
 		const initialText = JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [] } });
 		fs.writeFileSync(sessionPath, initialText, 'utf8');
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
 		const disposeHandlers: Array<() => void> = [];
 		try {
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => state;
@@ -14175,18 +14356,21 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any;
 			const panel = {
 				webview: {
-					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler),
+					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
 					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
 				},
 				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
 			} as any;
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const sourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true)
+				.at(-1)?.sourceGeneration;
 			for (const dispose of disposeHandlers) dispose();
 			await new Promise<void>(resolve => setTimeout(resolve, 600));
 
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument', reason: 'beforeunload', snapshotId: 'expired-beforeunload', editRevision: 1,
+				type: 'persistDocument', reason: 'beforeunload', snapshotId: 'expired-beforeunload',
+				sourceGeneration, editRevision: 1,
 				state: { sections: [{ id: 'query_1', type: 'query', query: 'TOO_LATE' }] },
 			}));
 			await new Promise<void>(resolve => setTimeout(resolve, 50));

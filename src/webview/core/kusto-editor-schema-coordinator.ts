@@ -55,6 +55,7 @@ export type KustoEditorSchemaDebugEntry = Readonly<{
 		hasSchemaKey: boolean;
 		hasSchemaSignature: boolean;
 		modelMatches: boolean;
+		preparationMatches: boolean;
 	}>;
 	pending?: Readonly<{ reason?: string; backgroundOnly: boolean }>;
 }>;
@@ -342,6 +343,7 @@ export class KustoEditorSchemaCoordinator {
 			.map(record => {
 				const schema = this.asRecord(record.ownedState.schema);
 				const preparation = this.asRecord(record.ownedState.preparation);
+				const preparationTarget = this.asRecord(preparation?.target);
 				const worker = this.asRecord(record.ownedState.workerReady);
 				const pending = this.asRecord(record.ownedState.pendingWorkerUpdate);
 				const tables = Array.isArray(schema?.tables) ? schema.tables.length : 0;
@@ -379,6 +381,12 @@ export class KustoEditorSchemaCoordinator {
 							hasSchemaKey: typeof worker.schemaKey === 'string' && worker.schemaKey.length > 0,
 							hasSchemaSignature: typeof worker.schemaSignature === 'string' && worker.schemaSignature.length > 0,
 							modelMatches: !!record.modelUri && worker.modelUri === record.modelUri,
+							preparationMatches: worker.status === 'ready'
+								&& typeof preparationTarget?.schemaKey === 'string'
+								&& typeof preparationTarget?.modelUri === 'string'
+								&& worker.schemaKey === preparationTarget.schemaKey
+								&& worker.schemaSignature === preparationTarget.schemaSignature
+								&& worker.modelUri === preparationTarget.modelUri,
 						}),
 					} : {}),
 					...(pending ? {

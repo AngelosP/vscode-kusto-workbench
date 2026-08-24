@@ -14,6 +14,7 @@ import {
 	getPendingSchemaWorkerUpdate,
 	getSchemaEnhancementReadyState,
 	getSchemaWorkerReadyState,
+	clearSchemaWorkerReadyState,
 	isSchemaWorkerApplyRequired,
 	lastSchemaRequestAtByBoxId,
 	optimizationMetadataByBoxId,
@@ -709,6 +710,105 @@ describe('kw-query-section loading states', () => {
 		expect(el.getAttribute('aria-busy')).toBe('false');
 	});
 
+	it('keeps progress visible when cached schema exists but the current worker is not ready', async () => {
+		const el = createSection();
+		await el.updateComplete;
+		beginKustoPreparation('test1', {
+			stage: 'waiting-worker',
+			blockers: ['refresh', 'worker'],
+			target: { schemaKey: 'cluster|db', schemaSignature: 'sig-1', modelUri: 'inmemory://model/1' },
+			usableFallback: true,
+		});
+
+		expect(el.dataset.testPreparationState).toBe('preparing');
+		expect(el.dataset.testPreparationBlockers).toBe('refresh,worker');
+		expect(el.getAttribute('aria-busy')).toBe('true');
+	});
+
+	it('tracks exact worker readiness through ready, revoked, and recovered transitions', async () => {
+		const el = createSection();
+		await el.updateComplete;
+		beginKustoPreparation('test1', {
+			stage: 'refreshing',
+			blockers: ['refresh', 'worker'],
+			target: { schemaKey: 'cluster|db', schemaSignature: 'sig-1', modelUri: 'inmemory://model/1' },
+			usableFallback: true,
+		});
+
+		expect(el.dataset.testPreparationState).toBe('preparing');
+		expect(el.dataset.testPreparationBlockers).toBe('refresh,worker');
+		expect(el.getAttribute('aria-busy')).toBe('true');
+
+		setSchemaWorkerReadyState('test1', {
+			status: 'ready', schemaKey: 'cluster|db', schemaSignature: 'sig-1',
+			modelUri: 'inmemory://model/1', updatedAt: Date.now(),
+		});
+
+		expect(el.getAttribute('aria-busy')).toBe('false');
+
+		clearSchemaWorkerReadyState('test1');
+
+		expect(el.getAttribute('aria-busy')).toBe('true');
+
+		setSchemaWorkerReadyState('test1', {
+			status: 'ready', schemaKey: 'cluster|db', schemaSignature: 'sig-1',
+			modelUri: 'inmemory://model/1', updatedAt: Date.now(),
+		});
+
+		expect(el.getAttribute('aria-busy')).toBe('false');
+	});
+
+	it.each([
+		['schema key', 'other|db', 'sig-1', 'inmemory://model/1', true],
+		['schema signature', 'cluster|db', 'sig-old', 'inmemory://model/1', true],
+		['model URI', 'cluster|db', 'sig-1', 'inmemory://model/other', true],
+		['fallback flag', 'cluster|db', 'sig-1', 'inmemory://model/1', false],
+	] as const)('keeps progress visible when the ready worker mismatches by %s', async (
+		_name, workerSchemaKey, workerSignature, workerModelUri, usableFallback,
+	) => {
+		const el = createSection();
+		await el.updateComplete;
+		setSchemaWorkerReadyState('test1', {
+			status: 'ready', schemaKey: workerSchemaKey, schemaSignature: workerSignature,
+			modelUri: workerModelUri, updatedAt: Date.now(),
+		});
+		beginKustoPreparation('test1', {
+			stage: 'waiting-worker',
+			blockers: ['refresh', 'worker'],
+			target: { schemaKey: 'cluster|db', schemaSignature: 'sig-1', modelUri: 'inmemory://model/1' },
+			usableFallback,
+		});
+
+		expect(el.getAttribute('aria-busy')).toBe('true');
+	});
+
+	it('resubscribes to worker readiness after disconnect and reconnect', async () => {
+		const el = createSection();
+		await el.updateComplete;
+		beginKustoPreparation('test1', {
+			stage: 'refreshing', blockers: ['refresh', 'worker'], usableFallback: true,
+			target: { schemaKey: 'cluster|db', schemaSignature: 'sig-1', modelUri: 'inmemory://model/1' },
+		});
+		setSchemaWorkerReadyState('test1', {
+			status: 'ready', schemaKey: 'cluster|db', schemaSignature: 'sig-1',
+			modelUri: 'inmemory://model/1', updatedAt: Date.now(),
+		});
+		expect(el.getAttribute('aria-busy')).toBe('false');
+
+		el.remove();
+		clearSchemaWorkerReadyState('test1');
+		expect(el.getAttribute('aria-busy')).toBe('false');
+
+		container.appendChild(el);
+		expect(el.getAttribute('aria-busy')).toBe('true');
+
+		setSchemaWorkerReadyState('test1', {
+			status: 'ready', schemaKey: 'cluster|db', schemaSignature: 'sig-1',
+			modelUri: 'inmemory://model/1', updatedAt: Date.now(),
+		});
+		expect(el.getAttribute('aria-busy')).toBe('false');
+	});
+
 	it('settles shared cached schema adoption while worker hydration waits for focus', async () => {
 		const connection = {
 			id: 'c1',
@@ -792,7 +892,7 @@ describe('kw-query-section loading states', () => {
 		}
 	});
 
-	it('starts a live refresh when stale cache-only prewarm is already ready on first focus', async () => {
+	it('keeps stale cache-only prewarm busy until a concrete worker fallback is correlated', async () => {
 		const connection = {
 			id: 'c1',
 			clusterUrl: 'https://cluster.kusto.windows.net',
@@ -827,6 +927,9 @@ describe('kw-query-section loading states', () => {
 			expect(getKustoPreparationState('test1')).toMatchObject({
 				status: 'preparing', stage: 'refreshing', blockers: ['refresh'], usableFallback: true,
 			});
+			expect(el.dataset.testPreparationState).toBe('preparing');
+			expect(el.dataset.testPreparationBlockers).toBe('refresh');
+			expect(el.getAttribute('aria-busy')).toBe('true');
 			expect(schemaFetchInFlightByBoxId.test1).toBe(true);
 			expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
 				type: 'prefetchSchema', connectionId: 'c1', database: 'Db', boxId: 'test1',

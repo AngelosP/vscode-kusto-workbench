@@ -164,7 +164,10 @@ describe('KustoEditorSchemaCoordinator ownership', () => {
 		expect(snapshot.sections).toEqual([expect.objectContaining({
 			boxId: 'query_1', targetGeneration: 1, hasConnection: true, hasDatabase: true,
 			catalog: { tables: 1, functions: 1, hasRawSchema: true },
-			worker: { status: 'pending', hasSchemaKey: true, hasSchemaSignature: true, modelMatches: true },
+			worker: {
+				status: 'pending', hasSchemaKey: true, hasSchemaSignature: true,
+				modelMatches: true, preparationMatches: false,
+			},
 		})]);
 		expect(JSON.stringify(snapshot)).not.toContain('not exposed');
 		expect(JSON.stringify(snapshot)).not.toContain('sensitive-key');
