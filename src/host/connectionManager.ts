@@ -301,7 +301,10 @@ export class ConnectionManager implements vscode.Disposable {
 		if (typeof entry.lastAccessedAt === 'number' && (now - entry.lastAccessedAt) > FILE_CONNECTION_MAX_AGE_MS) {
 			// Entry expired — remove it (and prune any other stale entries).
 			if (!this.disposed) {
-				void this.enqueueMutation(() => this.pruneExpiredFileConnections(cache, now)).catch(() => undefined);
+				this.pruneExpiredFileConnectionsSync(cache, now);
+				void this.enqueueMutation(async () => {
+					await this.context.globalState.update(this.fileConnectionCacheKey, cache);
+				}).catch(() => undefined);
 			}
 			return undefined;
 		}
@@ -361,9 +364,7 @@ export class ConnectionManager implements vscode.Disposable {
 		await this.context.globalState.update(this.fileConnectionCacheKey, cache);
 	}
 
-	/**
-	 * Remove expired entries from the cache object in-place.
-	 */
+	/** Remove expired entries from the cache object in-place. */
 	private pruneExpiredFileConnectionsSync(cache: Record<string, FileConnectionCacheEntry>, now: number): void {
 		pruneExpiredFileConnectionsSync(cache, now);
 	}
