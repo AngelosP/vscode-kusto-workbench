@@ -3952,6 +3952,7 @@ suite('Sidecar .kql.json strategy', () => {
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-linked-identity-replacement-'));
 		const filePath = path.join(tmpDir, 'session.kqlx');
 		const linkedPath = path.join(tmpDir, 'linked.kql');
+		const documentUri = vscode.Uri.file(filePath);
 		const documentText = JSON.stringify({
 			kind: 'kqlx', version: 1, state: { sections: [
 				{ id: 'query_1', type: 'query', linkedQueryPath: 'linked.kql' },
@@ -3959,6 +3960,7 @@ suite('Sidecar .kql.json strategy', () => {
 		});
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		const posted: any[] = [];
+		const disposeHandlers: Array<() => void> = [];
 		try {
 			fs.writeFileSync(filePath, documentText, 'utf8');
 			fs.writeFileSync(linkedPath, 'LINKED_BASELINE', 'utf8');
@@ -3975,13 +3977,13 @@ suite('Sidecar .kql.json strategy', () => {
 					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
 					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
 				},
-				onDidDispose: () => ({ dispose() {} }),
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
 			} as any;
 			await provider.resolveCustomTextEditor({
-				uri: vscode.Uri.file(filePath), getText: () => documentText, eol: vscode.EndOfLine.LF,
+				uri: documentUri, getText: () => documentText, eol: vscode.EndOfLine.LF,
 			} as any, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
-			fs.unlinkSync(linkedPath);
+			fs.renameSync(linkedPath, path.join(tmpDir, 'linked-original.kql'));
 			fs.writeFileSync(linkedPath, 'REPLACEMENT_SENTINEL', 'utf8');
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 
@@ -3999,6 +4001,179 @@ suite('Sidecar .kql.json strategy', () => {
 			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), documentText);
 			assert.strictEqual(fs.readFileSync(linkedPath, 'utf8'), 'REPLACEMENT_SENTINEL');
 		} finally {
+			for (const dispose of disposeHandlers) dispose();
+			await KqlxEditorProvider.waitForOpenEditorsClosed(documentUri, 2_000);
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('in-place linked target change after hydration is rejected before edit', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-linked-content-replacement-'));
+		const filePath = path.join(tmpDir, 'session.kqlx');
+		const linkedPath = path.join(tmpDir, 'linked.kql');
+		const documentUri = vscode.Uri.file(filePath);
+		const documentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', linkedQueryPath: 'linked.kql' },
+			] },
+		});
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
+		const disposeHandlers: Array<() => void> = [];
+		try {
+			fs.writeFileSync(filePath, documentText, 'utf8');
+			fs.writeFileSync(linkedPath, 'LINKED_BASELINE', 'utf8');
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const panel = {
+				webview: {
+					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+			await provider.resolveCustomTextEditor({
+				uri: documentUri, getText: () => documentText, eol: vscode.EndOfLine.LF,
+			} as any, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			fs.writeFileSync(linkedPath, 'EXTERNAL_IN_PLACE', 'utf8');
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+
+			const sourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true)
+				.at(-1)?.sourceGeneration;
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', snapshotId: 'in-place-replacement', editRevision: 1,
+				sourceGeneration, state: { sections: [
+					{ id: 'query_1', type: 'query', query: 'MUST_NOT_WRITE' },
+				] },
+			}));
+
+			assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'in-place-replacement'));
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), documentText);
+			assert.strictEqual(fs.readFileSync(linkedPath, 'utf8'), 'EXTERNAL_IN_PLACE');
+		} finally {
+			for (const dispose of disposeHandlers) dispose();
+			await KqlxEditorProvider.waitForOpenEditorsClosed(documentUri, 2_000);
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('linked save completing during hydration advances the durable baseline', async () => {
+		const originalOpenTextDocument = vscode.workspace.openTextDocument;
+		const originalOnDidSave = vscode.workspace.onDidSaveTextDocument;
+		const originalRealpath = fs.promises.realpath;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-linked-hydration-save-'));
+		const globalStoragePath = path.join(tmpDir, 'global-storage');
+		const filePath = path.join(globalStoragePath, 'session.kqlx');
+		const linkedPath = path.join(globalStoragePath, 'linked.kql');
+		const documentUri = vscode.Uri.file(filePath);
+		const linkedUri = vscode.Uri.file(linkedPath);
+		const documentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', linkedQueryPath: 'linked.kql' },
+			] },
+		});
+		let linkedText = 'LINKED_BASELINE';
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
+		let blockLinkedSnapshot = false;
+		let linkedSnapshotBlocked = false;
+		let markLinkedSnapshotStarted!: () => void;
+		let releaseLinkedSnapshot!: () => void;
+		const linkedSnapshotStarted = new Promise<void>(resolve => { markLinkedSnapshotStarted = resolve; });
+		const linkedSnapshotGate = new Promise<void>(resolve => { releaseLinkedSnapshot = resolve; });
+		const posted: any[] = [];
+		const disposeHandlers: Array<() => void> = [];
+		const linkedDocument = {
+			uri: linkedUri,
+			getText: () => linkedText,
+			positionAt: (_offset: number) => new vscode.Position(0, 0),
+			isDirty: false,
+			save: async () => true,
+		} as any;
+
+		try {
+			fs.mkdirSync(globalStoragePath, { recursive: true });
+			fs.writeFileSync(filePath, documentText, 'utf8');
+			fs.writeFileSync(linkedPath, linkedText, 'utf8');
+			(vscode.workspace as any).openTextDocument = async (uri: vscode.Uri) =>
+				normalizeWorkbenchUriKey(uri) === normalizeWorkbenchUriKey(linkedUri)
+					? linkedDocument
+					: originalOpenTextDocument(uri);
+			(vscode.workspace as any).onDidSaveTextDocument = (
+				handler: (document: vscode.TextDocument) => unknown,
+			) => {
+				didSaveHandler = handler;
+				return { dispose() {} };
+			};
+			(fs.promises as any).realpath = async (target: fs.PathLike) => {
+				if (blockLinkedSnapshot && !linkedSnapshotBlocked
+					&& path.resolve(String(target)).toLowerCase() === path.resolve(linkedPath).toLowerCase()) {
+					linkedSnapshotBlocked = true;
+					markLinkedSnapshotStarted();
+					await linkedSnapshotGate;
+				}
+				return originalRealpath(target);
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(globalStoragePath),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: documentUri, getText: () => documentText, eol: vscode.EndOfLine.LF,
+				positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: false,
+			} as any;
+			const panel = {
+				webview: {
+					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			assert.ok(didSaveHandler);
+
+			blockLinkedSnapshot = true;
+			const rehydration = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await linkedSnapshotStarted;
+			linkedText = 'SAVED_DURING_HYDRATION';
+			fs.writeFileSync(linkedPath, linkedText, 'utf8');
+			await Promise.resolve(didSaveHandler!(linkedDocument));
+			releaseLinkedSnapshot();
+			await rehydration;
+
+			const latestProjection = posted.filter(message => message?.type === 'documentData' && message.ok === true).at(-1);
+			assert.strictEqual(latestProjection?.state?.sections?.[0]?.query, linkedText);
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', snapshotId: 'save-during-hydration', editRevision: 1,
+				sourceGeneration: latestProjection?.sourceGeneration,
+				state: latestProjection?.state,
+			}));
+			await waitForCondition(
+				() => posted.some(message => message?.type === 'persistDocumentAck'
+					&& message.snapshotId === 'save-during-hydration'),
+				'persist should acknowledge the baseline advanced by the overlapping linked save',
+			);
+			assert.strictEqual(fs.readFileSync(linkedPath, 'utf8'), linkedText);
+		} finally {
+			releaseLinkedSnapshot();
+			(vscode.workspace as any).openTextDocument = originalOpenTextDocument;
+			(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSave;
+			(fs.promises as any).realpath = originalRealpath;
+			for (const dispose of disposeHandlers) dispose();
+			await KqlxEditorProvider.waitForOpenEditorsClosed(documentUri, 2_000);
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});

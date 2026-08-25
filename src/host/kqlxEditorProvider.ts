@@ -1638,6 +1638,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		let activeProjectionSourceText = document.getText();
 		let linkedQueryDocument: vscode.TextDocument | undefined;
 		let lastSavedLinkedQueryText = '';
+		let linkedDurableBaselineRevision = 0;
 		let hydratedLinkedQueryText: string | undefined;
 		let linkedContentRevision = 0;
 		let linkedQueryHydrationFailed = false;
@@ -1647,6 +1648,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const sameLinkedUri = (left: vscode.Uri | undefined, right: vscode.Uri | undefined): boolean => !!left && !!right
 			&& normalizeWorkbenchUriKey(left) === normalizeWorkbenchUriKey(right);
 		const sameLinkedText = (left: string, right: string) => left.replace(/\r\n?/g, '\n') === right.replace(/\r\n?/g, '\n');
+		const setLastSavedLinkedQueryText = (text: string): void => {
+			const changed = lastSavedLinkedQueryText !== text;
+			lastSavedLinkedQueryText = text;
+			if (changed) linkedDurableBaselineRevision++;
+		};
 		const setHydratedLinkedQueryText = (text: string | undefined): void => {
 			const changed = hydratedLinkedQueryText === undefined || text === undefined
 				? hydratedLinkedQueryText !== text
@@ -1721,6 +1727,23 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			} catch {
 				return undefined;
 			}
+		};
+		const readStableLinkedQueryTarget = async (uri: vscode.Uri): Promise<{
+			text: string | undefined;
+			physicalIdentity: LocalFileIdentity | undefined;
+			baselineRevision: number;
+		} | undefined> => {
+			for (let attempt = 0; attempt < 3; attempt++) {
+				const baselineRevision = linkedDurableBaselineRevision;
+				const [text, physicalIdentity] = await Promise.all([
+					tryReadTextFile(uri),
+					getLocalFileIdentity(uri),
+				]);
+				if (baselineRevision === linkedDurableBaselineRevision) {
+					return { text, physicalIdentity, baselineRevision };
+				}
+			}
+			return undefined;
 		};
 		const hasDirtyOpenPhysicalAlias = async (
 			identity: LocalFileIdentity,
@@ -1915,7 +1938,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				|| !localFileIdentityEquals(targetIdentity, await getLocalFileIdentity(targetUri))) return false;
 			const durableText = await tryReadTextFile(targetUri);
 			if (durableText !== expectedText) return false;
-			lastSavedLinkedQueryText = expectedText;
+			setLastSavedLinkedQueryText(expectedText);
 			return true;
 		};
 		const restoreLinkedSaveSnapshot = async (
@@ -1952,7 +1975,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (durableRestored && sameLinkedUri(linkedQueryUri, uri)
 				&& linkedQueryDocument === targetDocument
 				&& localFileIdentityEquals(linkedQueryPhysicalIdentity, identity)) {
-				lastSavedLinkedQueryText = priorDurableText;
+				setLastSavedLinkedQueryText(priorDurableText);
 				setHydratedLinkedQueryText(targetDocument.getText());
 				if (restored) linkedRollbackFailed = false;
 			}
@@ -2049,7 +2072,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							&& sameLinkedText(owner.document.getText(), owner.bufferText);
 						if (bufferRestored) setHydratedLinkedQueryText(owner.bufferText);
 					}
-					if (durableRestored) lastSavedLinkedQueryText = priorDurableText;
+					if (durableRestored) setLastSavedLinkedQueryText(priorDurableText);
 					if (!durableRestored || !bufferRestored) linkedRollbackFailed = true;
 				};
 				try {
@@ -2104,7 +2127,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						await rollback();
 						return { ok: false, reason: 'save-failed' };
 					}
-					lastSavedLinkedQueryText = candidateText;
+					setLastSavedLinkedQueryText(candidateText);
 					return { ok: true, transaction: {
 						uri: owner.uri, identity: owner.identity, document: owner.document,
 						candidateText, priorBufferText: owner.bufferText, priorDurableText,
@@ -2252,10 +2275,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			const previousLinkedDocument = linkedQueryDocument;
 			const previousPhysicalIdentity = linkedQueryPhysicalIdentity;
-			let [text, physicalIdentity] = await Promise.all([
-				tryReadTextFile(descriptor.uri),
-				getLocalFileIdentity(descriptor.uri),
-			]);
+			const previousLastSavedLinkedQueryText = lastSavedLinkedQueryText;
+			const previousBaselineRevision = linkedDurableBaselineRevision;
+			let linkedTarget = await readStableLinkedQueryTarget(descriptor.uri);
+			if (!linkedTarget) return undefined;
+			let { text, physicalIdentity, baselineRevision } = linkedTarget;
 			if (generation !== postDocumentGeneration || !await isProjectionSourceCurrent(rawText)) return undefined;
 			linkedQueryUri = descriptor.uri;
 			linkedQueryPathRaw = descriptor.path;
@@ -2272,8 +2296,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				}
 				return state;
 			}
-			// Record last-saved linked query so dirty-state comparison can be stable.
-			lastSavedLinkedQueryText = text;
 			try {
 				// Keep an in-memory TextDocument so we can mark it dirty and save it alongside the .kqlx.
 				const linkedDocument = await getOrOpenLinkedQueryDocument(descriptor.uri);
@@ -2283,16 +2305,38 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					return state;
 				}
 				if (linkedDocument) {
-					const bufferText = linkedDocument.getText();
-					const identityRemainedBound = previousLinkedDocument === linkedDocument
-						&& localFileIdentityEquals(previousPhysicalIdentity, physicalIdentity);
-					if (!identityRemainedBound && !sameLinkedText(bufferText, text)) {
+					let bufferText = linkedDocument.getText();
+					if (baselineRevision !== linkedDurableBaselineRevision) {
+						linkedTarget = await readStableLinkedQueryTarget(descriptor.uri);
+						if (!linkedTarget) return undefined;
+						({ text, physicalIdentity, baselineRevision } = linkedTarget);
+						linkedQueryPhysicalIdentity = physicalIdentity;
+						bufferText = linkedDocument.getText();
+					}
+					if (typeof text !== 'string' || (descriptor.uri.scheme === 'file' && !physicalIdentity)) {
 						linkedQueryHydrationFailed = true;
 						setHydratedLinkedQueryText(undefined);
 						linkedQueryDocument = undefined;
 						return state;
 					}
+					const durableText = text;
+					const identityRemainedBound = previousLinkedDocument === linkedDocument
+						&& localFileIdentityEquals(previousPhysicalIdentity, physicalIdentity);
+					const durableBaselineAdvanced = baselineRevision !== previousBaselineRevision
+						&& sameLinkedText(lastSavedLinkedQueryText, durableText);
+					const durableBaselineChanged = identityRemainedBound
+						&& !sameLinkedText(previousLastSavedLinkedQueryText, durableText)
+						&& !durableBaselineAdvanced;
+					if (durableBaselineChanged || (!identityRemainedBound && !sameLinkedText(bufferText, durableText))) {
+						linkedQueryHydrationFailed = true;
+						setHydratedLinkedQueryText(undefined);
+						linkedQueryDocument = undefined;
+						return state;
+					}
+					setLastSavedLinkedQueryText(durableText);
 					text = bufferText;
+				} else {
+					setLastSavedLinkedQueryText(text);
 				}
 			} catch {
 				// ignore
@@ -4128,7 +4172,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				try {
 					if (normalizeWorkbenchUriKey(saved.uri) !== normalizeWorkbenchUriKey(document.uri)) {
 						if (sameLinkedUri(linkedQueryUri, saved.uri)) {
-							lastSavedLinkedQueryText = saved.getText();
+							setLastSavedLinkedQueryText(saved.getText());
 						}
 						return;
 					}

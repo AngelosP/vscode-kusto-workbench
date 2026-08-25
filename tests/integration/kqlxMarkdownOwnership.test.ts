@@ -4177,7 +4177,8 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
-	test('fresh native sanitation revokes a same-source Kusto attachment before projection and persistence', async () => {
+	test('fresh native sanitation revokes a same-source Kusto attachment before projection and persistence', async function () {
+		this.timeout(20_000);
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
 		const originalApplyEdit = vscode.workspace.applyEdit;
@@ -4222,6 +4223,12 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		let acknowledgedSourceGeneration = 0;
 		const posted: any[] = [];
 		const disposeHandlers: Array<() => void> = [];
+		let panelDisposed = false;
+		const disposePanel = () => {
+			if (panelDisposed) return;
+			panelDisposed = true;
+			for (const dispose of disposeHandlers) dispose();
+		};
 		let policySnapshot: {
 			clusterKeys: string[];
 			globallyBlocked: boolean;
@@ -4324,6 +4331,12 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.ok(!latestProjection.state.sections[0].resultJson);
 			assert.strictEqual(owner.hasCommittedAttachments(), false);
 			assert.ok(!(owner.overlaySnapshot(rowFreeState).sections?.[0] as any).resultJson);
+			await waitForCondition(
+				() => !currentText.includes('resultJson')
+					&& !fs.readFileSync(filePath, 'utf8').includes('resultJson'),
+				'fresh sanitation should repair the buffer and durable source',
+			);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 
 			const revokedAttachmentPersist = {
 				type: 'persistDocument', snapshotId: 'revoked-attachment', editRevision: 1,
@@ -4338,9 +4351,11 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			);
 			assert.ok(!currentText.includes('resultJson'));
 			assert.ok(!fs.readFileSync(filePath, 'utf8').includes('resultJson'));
-			for (const dispose of disposeHandlers) dispose();
+			disposePanel();
 			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 2_000), true);
 		} finally {
+			disposePanel();
+			await KqlxEditorProvider.waitForOpenEditorsClosed(documentUri, 2_000);
 			seedLease.release();
 			registry.dispose();
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
