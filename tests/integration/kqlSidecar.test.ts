@@ -2429,20 +2429,22 @@ suite('Sidecar .kql.json strategy', () => {
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-linked-save-snapshot-'));
 		const notebookPath = path.join(tmpDir, 'notebook.kqlx');
 		const linkedPath = path.join(tmpDir, 'linked.kql');
+		const documentUri = vscode.Uri.file(notebookPath);
 		let notebookText = JSON.stringify({
 			kind: 'kqlx', version: 1, state: { sections: [
 				{ id: 'query_1', type: 'query', linkedQueryPath: 'linked.kql' },
 			] },
 		});
-		let willSaveHandler: ((event: any) => unknown) | undefined;
+		const willSaveHandlers: Array<(event: any) => unknown> = [];
 		let receiveHandler: ((message: any) => unknown) | undefined;
+		const disposeHandlers: Array<() => void> = [];
 		try {
 			fs.writeFileSync(notebookPath, notebookText, 'utf8');
 			fs.writeFileSync(linkedPath, 'BASELINE', 'utf8');
 			(vscode.window as any).showErrorMessage = async () => undefined;
 			const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
 			(vscode.workspace as any).onWillSaveTextDocument = (handler: any) => {
-				willSaveHandler = handler;
+				willSaveHandlers.push(handler);
 				return { dispose() {} };
 			};
 			try {
@@ -2455,7 +2457,7 @@ suite('Sidecar .kql.json strategy', () => {
 					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
 				) as KqlxEditorProvider;
 				const document = {
-					uri: vscode.Uri.file(notebookPath), getText: () => notebookText, eol: vscode.EndOfLine.LF,
+					uri: documentUri, getText: () => notebookText, eol: vscode.EndOfLine.LF,
 					positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: true,
 				} as any;
 				const panel = {
@@ -2471,20 +2473,27 @@ suite('Sidecar .kql.json strategy', () => {
 						},
 						onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
 					},
-					onDidDispose: () => ({ dispose() {} }),
+					onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
 				} as any;
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
-				assert.ok(willSaveHandler);
-				let waited: Promise<unknown> | undefined;
-				willSaveHandler!({ document, waitUntil: (value: Promise<unknown>) => { waited = value; } });
-				await assert.rejects(waited!, /Cannot save a linked-query notebook without its final editor snapshot/);
+				assert.ok(willSaveHandlers.length > 0);
+				const waited: Promise<unknown>[] = [];
+				const event = { document, waitUntil: (value: Promise<unknown>) => { waited.push(Promise.resolve(value)); } };
+				for (const handler of willSaveHandlers) handler(event);
+				assert.ok(waited.length > 0, 'native Save should contribute a preparation barrier');
+				await assert.rejects(
+					Promise.all(waited),
+					/Cannot save a linked-query notebook without its final editor snapshot/,
+				);
 				assert.strictEqual(fs.readFileSync(linkedPath, 'utf8'), 'BASELINE');
 			} finally {
 				(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
 			}
 		} finally {
 			(vscode.window as any).showErrorMessage = originalShowErrorMessage;
+			for (const dispose of disposeHandlers) dispose();
+			await KqlxEditorProvider.waitForOpenEditorsClosed(documentUri, 2_000);
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});
