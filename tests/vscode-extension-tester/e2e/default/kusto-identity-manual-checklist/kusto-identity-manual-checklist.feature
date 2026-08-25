@@ -18,10 +18,10 @@ Feature: Kusto identity manual checklist
       {"kind":"kqlx","version":1,"state":{"sections":[{"id":"query_identity_checklist","type":"query","name":"Identity checklist","query":"print identity_checklist = 1","expanded":true}]}}
       """
     When I open file "tests/vscode-extension-tester/runs/default/kusto-identity-manual-checklist/identity-checklist.kqlx" in the editor
-    When I wait for "kw-query-section" in the webview for 15 seconds
-    When I evaluate "window.__e2e.workbench.persistAndWait('e2e-identity-baseline', 25000)" in the webview for 28 seconds
+    When I wait for "kw-query-section .monaco-editor" in the webview "identity-checklist.kqlx" for 20 seconds
+    When I evaluate "window.__e2e.workbench.persistAndWait('e2e-identity-baseline', 25000)" in the webview "identity-checklist.kqlx" for 28 seconds
 
-    Then I collect JSON artifact "kusto-identity-manual-checklist" from webview expression "window.__e2e.kusto.manualIdentityChecklist.run()"
+    Then I collect JSON artifact "kusto-identity-manual-checklist" from webview expression "window.__e2e.kusto.manualIdentityChecklist.run()" in the webview "identity-checklist.kqlx"
     When I execute command "kustoWorkbench.test.assertClipboardContains" with args '["https://dataexplorer.azure.com/clusters/identityadx.westus/databases/ChecklistDb?query="]'
 
     When I execute command "workbench.action.files.save"
