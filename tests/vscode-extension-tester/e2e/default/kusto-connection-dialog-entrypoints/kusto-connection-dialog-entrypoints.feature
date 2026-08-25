@@ -2,6 +2,9 @@ Feature: Kusto connection dialog entry points
 
   Background:
     Given the extension is in a clean state
+    And I execute command "workbench.action.closeSidebar"
+    And I execute command "workbench.action.closeAuxiliaryBar"
+    And I execute command "workbench.action.closePanel"
     And I capture the output channel "Kusto Workbench"
     And I wait 2 seconds
 

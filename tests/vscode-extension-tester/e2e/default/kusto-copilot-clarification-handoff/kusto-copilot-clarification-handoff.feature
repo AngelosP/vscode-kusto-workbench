@@ -21,7 +21,7 @@ Feature: Kusto Copilot clarification handoff
 
   Scenario: Manual clarification keeps its card, toast, reveal, scroll, and deferred focus
     When I move the Dev Host to 0, 0
-    And I resize the Dev Host to 1280x1000
+    And I resize the Dev Host to 1000 by 700
     When I execute command "kustoWorkbench.test.configureCopilotDevelopmentModel" with args '[[{"toolCalls":[{"callId":"manual-time","name":"ask_user_clarifying_question","input":{"question":"Which time range should I use?"}}]}]]'
     And I evaluate "window.__e2e.clarification.submitManual('Create an event trend but ask me for the time range first')" in the webview
     Then I collect JSON artifact "01-manual-clarification" from webview expression "window.__e2e.clarification.assertManual('Which time range should I use?')"
@@ -29,7 +29,7 @@ Feature: Kusto Copilot clarification handoff
     Then I take a screenshot "01-manual-purple-card-focused"
 
     When I evaluate "window.__e2e.clarification.collapseAndBlur()" in the webview
-    And I click at 1235, 940
+    And I click at 955, 635
     And I wait 2 seconds
     Then I collect JSON artifact "02-current-view-reveals" from webview expression "(() => { const snapshot = window.__e2e.clarification.snapshot('kusto'); if (!snapshot.expanded || !snapshot.inputFocused || snapshot.questionCount !== 1) throw new Error('Current View did not reveal and focus the owned clarification: ' + JSON.stringify(snapshot)); return snapshot; })()"
     Then I collect JSON artifact "02-current-view-selection" from extension host expression "(async () => { const providers = await vscode.commands.executeCommand('kustoWorkbench.test.getCopilotDevelopmentModelSnapshot'); const model = providers.map(provider => provider.model).find(candidate => candidate); if (JSON.stringify(model?.manualClarificationSelections) !== JSON.stringify(['View'])) throw new Error('Native View action was not returned to Kusto Copilot: ' + JSON.stringify(providers)); return model; })()"
@@ -40,6 +40,8 @@ Feature: Kusto Copilot clarification handoff
     And I execute command "kustoWorkbench.test.removeCopilotClarificationConnection"
 
   Scenario: Delayed View is inert after exact conversation Clear
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 1000 by 700
     When I execute command "kustoWorkbench.test.configureCopilotDevelopmentModel" with args '[[{"toolCalls":[{"callId":"manual-clear","name":"ask_user_clarifying_question","input":{"question":"Which environment should I use?"}}]}]]'
     And I evaluate "window.__e2e.clarification.submitManual('Ask me which environment to use')" in the webview
     And I evaluate "window.__e2e.clarification.assertManual('Which environment should I use?')" in the webview for 15 seconds
@@ -48,7 +50,7 @@ Feature: Kusto Copilot clarification handoff
     When I evaluate "window.__e2e.clarification.clear('kusto')" in the webview
     And I wait 1 second
     And I evaluate "window.__e2e.clarification.collapseAndBlur()" in the webview
-    And I click at 1235, 940
+    And I click at 955, 635
     And I wait 2 seconds
     Then I collect JSON artifact "03-cleared-view-inert" from webview expression "window.__e2e.clarification.assertClearedViewNoop()"
     Then I collect JSON artifact "03-cleared-view-selection" from extension host expression "(async () => { const providers = await vscode.commands.executeCommand('kustoWorkbench.test.getCopilotDevelopmentModelSnapshot'); const model = providers.map(provider => provider.model).find(candidate => candidate); if (JSON.stringify(model?.manualClarificationSelections) !== JSON.stringify(['View'])) throw new Error('Delayed native View action was not delivered: ' + JSON.stringify(providers)); return model; })()"
