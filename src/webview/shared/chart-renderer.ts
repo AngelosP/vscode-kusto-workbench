@@ -1880,6 +1880,7 @@ export function renderChart(boxId: any) {
 
 				const maxValue = data.length > 0 ? Math.max(...data.map((d: any) => d.value)) : 1;
 				const showLabels = !!st.showDataLabels;
+				const funnelTop = _chartTitleSpace + (legendPosition === 'top' ? 50 : 20);
 				option = {
 					...(buildChartTitleOption() ? { title: buildChartTitleOption() } : {}),
 					backgroundColor: 'transparent',
@@ -1908,7 +1909,7 @@ export function renderChart(boxId: any) {
 					series: [{
 						type: 'funnel',
 						left: '10%',
-						top: 30,
+						top: funnelTop,
 						bottom: 30,
 						width: '80%',
 						minSize: '0%',

@@ -546,6 +546,16 @@ describe('chart-renderer zoom/pan controls', () => {
 		expect(controls.controls.hidden).toBe(true);
 	});
 
+	it('positions funnel content below the title, subtitle, and top legend', () => {
+		const scenario = renderScenario('funnel', {
+			chartTitle: 'New-entrant activation funnel',
+			chartSubtitle: 'Cumulative funnel for product-active machines',
+		});
+
+		expect(scenario.option.legend.top).toBe(48);
+		expect(scenario.option.series[0].top).toBe(98);
+	});
+
 	it('hides floating controls in preview mode while keeping dataZoom available', () => {
 		const scenario = renderScenario('line', { mode: 'preview', legendColumn: 'Category' });
 		const controls = getControls(scenario.id);
