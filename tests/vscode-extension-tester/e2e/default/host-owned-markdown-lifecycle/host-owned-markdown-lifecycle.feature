@@ -7,6 +7,31 @@ Feature: Host-owned Markdown, URL, Python, Chart, Transformation, and HTML secti
     When I resize the Dev Host to 1280x1000
     When I execute command "workbench.action.closeAuxiliaryBar"
 
+  Scenario: Fresh empty notebook tools add, list, reorder, and remove without ghost IDs
+    Given a file "tests/vscode-extension-tester/runs/default/host-owned-markdown-lifecycle/fresh-empty-tools.kqlx" exists with content:
+      """
+      {"kind":"kqlx","version":1,"state":{"sections":[]}}
+      """
+    And I wait 1 second
+
+    When I open file "tests/vscode-extension-tester/runs/default/host-owned-markdown-lifecycle/fresh-empty-tools.kqlx" in the editor
+    When I wait for "kw-query-section" in the webview for 20 seconds
+    Then I collect JSON artifact "fresh-empty-tool-lifecycle" from extension host expression "(async () => { const options = input => ({ toolInvocationToken: undefined, input }); const invoke = async (name, input) => { const result = await vscode.lm.invokeTool(name, options(input)); const text = String(result.content.find(part => typeof part?.value === 'string')?.value || ''); if (!text || text.startsWith('Error:')) throw new Error(name + ' failed: ' + text); return JSON.parse(text); }; const before = await invoke('kusto-workbench_list-sections', {}); const added = await invoke('kusto-workbench_add-section', { type: 'markdown', text: 'temporary fresh-empty section' }); if (added.success !== true || !added.sectionId) throw new Error('Fresh-empty add failed: ' + JSON.stringify(added)); const afterAdd = await invoke('kusto-workbench_list-sections', {}); const listedIds = afterAdd.sections.map(section => section.id); if (!listedIds.includes(added.sectionId)) throw new Error('Added section was hidden from listSections: ' + JSON.stringify({ added, afterAdd })); const reorderedIds = [...listedIds].reverse(); const reordered = await invoke('kusto-workbench_reorder-sections', { sectionIds: reorderedIds }); if (reordered.success !== true) throw new Error('Fresh-empty reorder failed: ' + JSON.stringify({ before, added, afterAdd, reorderedIds, reordered })); const removed = await invoke('kusto-workbench_remove-section', { sectionId: added.sectionId }); if (removed.success !== true) throw new Error('Fresh-empty removal failed: ' + JSON.stringify({ added, afterAdd, removed })); const afterRemove = await invoke('kusto-workbench_list-sections', {}); if (afterRemove.sections.some(section => section.id === added.sectionId)) throw new Error('Removed section remained listed: ' + JSON.stringify(afterRemove)); return { beforeIds: before.sections.map(section => section.id), addedId: added.sectionId, listedIds, reorderedIds, afterRemoveIds: afterRemove.sections.map(section => section.id) }; })()"
+    Then I collect JSON artifact "fresh-empty-tool-dom" from webview expression "(() => { const sections = Array.from(document.querySelectorAll('#queries-container > kw-query-section, #queries-container > kw-sql-section, #queries-container > kw-chart-section, #queries-container > kw-markdown-section, #queries-container > kw-transformation-section, #queries-container > kw-python-section, #queries-container > kw-url-section, #queries-container > kw-html-section')); const domIds = sections.map(element => element.id); const markdownIds = sections.filter(element => element.tagName.toLowerCase() === 'kw-markdown-section').map(element => element.id); if (markdownIds.length) throw new Error('Removed fresh-empty Markdown remained in DOM: ' + JSON.stringify({ domIds, markdownIds })); return { domIds, markdownIds }; })()"
+    When I execute command "workbench.action.files.save"
+    When I execute command "workbench.action.closeAllEditors"
+    When I open file "tests/vscode-extension-tester/runs/default/host-owned-markdown-lifecycle/fresh-empty-tools.kqlx" in the editor
+    When I wait for "#queries-container" in the webview for 20 seconds
+    And I wait 1 second
+    Then I collect JSON artifact "fresh-empty-tool-reopened" from webview expression "(() => { const sections = Array.from(document.querySelectorAll('#queries-container > kw-query-section, #queries-container > kw-sql-section, #queries-container > kw-chart-section, #queries-container > kw-markdown-section, #queries-container > kw-transformation-section, #queries-container > kw-python-section, #queries-container > kw-url-section, #queries-container > kw-html-section')); const domIds = sections.map(element => element.id); const markdownIds = sections.filter(element => element.tagName.toLowerCase() === 'kw-markdown-section').map(element => element.id); if (markdownIds.length) throw new Error('Removed fresh-empty Markdown returned after reopen: ' + JSON.stringify({ domIds, markdownIds })); return { domIds, markdownIds }; })()"
+    When I move the Dev Host to 0, 0
+    When I resize the Dev Host to 1280x1000
+    When I execute command "workbench.action.focusActiveEditorGroup"
+    When I click at 30, 700
+    Then I take a screenshot "00-fresh-empty-tools-clean"
+    When I execute command "workbench.action.closeAllEditors"
+    When I delete file "tests/vscode-extension-tester/runs/default/host-owned-markdown-lifecycle/fresh-empty-tools.kqlx"
+
   Scenario: Rejected tool add leaves no ghost section in the view or document
     Given a file "tests/vscode-extension-tester/runs/default/host-owned-markdown-lifecycle/rejected-tool-add.kqlx" exists with content:
       """

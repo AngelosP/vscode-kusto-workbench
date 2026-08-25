@@ -43,6 +43,7 @@ import {
 	getBoundResultArtifact,
 	rebindResultArtifactConsumer,
 	retireResultsStateForRerun,
+	invalidateResultsStateForSourceEdit,
 	unbindResultArtifactConsumer,
 	clearResultsState,
 	setResultsState,
@@ -495,6 +496,30 @@ describe('results-state displayResultForBox', () => {
 		expect(getBoundResultArtifact('share:clipboard:result', id)).toBeNull();
 	});
 
+	it('revokes a pinned pre-rerun artifact when its source query is edited', () => {
+		const id = 'sql_rerun_then_edit';
+		const consumerId = 'chart_sql_rerun_then_edit';
+		setResultsState(id, { columns: ['Value'], rows: [['old']], metadata: {} }, {
+			producer: { engine: 'sql', boxId: id, executionId: 'execution-old' },
+		});
+		const artifact = getCurrentResultArtifact(id)!;
+		bindResultArtifactConsumer(consumerId, id, artifact.artifactId);
+		retireResultsStateForRerun(id);
+
+		expect(invalidateResultsStateForSourceEdit(id)).toBe(true);
+		expect(getBoundResultArtifact(consumerId, id)).toBeNull();
+		expect(getResultArtifact(artifact.artifactId)).toBeNull();
+	});
+
+	it('does not invalidate or notify for a source edit with no result authority', () => {
+		const id = 'sql_result_free_edit';
+		const revision = getResultsStateRevision(id);
+
+		expect(invalidateResultsStateForSourceEdit(id)).toBe(false);
+		expect(getResultsStateRevision(id)).toBe(revision);
+		expect(mocks.notifyResultsUpdated).not.toHaveBeenCalledWith(id);
+	});
+
 	it('keeps a derived consumer on its immutable revision until explicit rebind', () => {
 		const sourceBoxId = 'query_artifact_source';
 		const consumerId = 'chart_artifact_consumer';
@@ -628,6 +653,32 @@ describe('results-state displayResultForBox', () => {
 		expect(getCurrentResultArtifact(derivedBoxId)).toBe(derivedB);
 		expect(getResultsState(derivedBoxId)?.rows).toEqual([['from-b']]);
 		expect(mocks.notifyResultsUpdated).toHaveBeenCalledWith(derivedBoxId);
+	});
+
+	it('preserves a retargeted current derived revision when source edit revokes its old lineage', () => {
+		const sourceAId = 'query_edit_retarget_source_a';
+		const sourceBId = 'query_edit_retarget_source_b';
+		const derivedBoxId = 'transformation_edit_retargeted';
+		const oldConsumerId = 'chart_edit_pinned_old_derived';
+		setResultsState(sourceAId, { columns: ['Value'], rows: [['a']] });
+		const sourceA = getCurrentResultArtifact(sourceAId)!;
+		setResultsState(derivedBoxId, { columns: ['Value'], rows: [['from-a']] }, {
+			lineage: [{ sourceArtifactId: sourceA.artifactId, role: 'primary' }],
+		});
+		const derivedA = getCurrentResultArtifact(derivedBoxId)!;
+		bindResultArtifactConsumer(oldConsumerId, derivedBoxId);
+		setResultsState(sourceBId, { columns: ['Value'], rows: [['b']] });
+		const sourceB = getCurrentResultArtifact(sourceBId)!;
+		setResultsState(derivedBoxId, { columns: ['Value'], rows: [['from-b']] }, {
+			lineage: [{ sourceArtifactId: sourceB.artifactId, role: 'primary' }],
+		});
+		const derivedB = getCurrentResultArtifact(derivedBoxId)!;
+
+		expect(invalidateResultsStateForSourceEdit(sourceAId)).toBe(true);
+		expect(getResultArtifact(derivedA.artifactId)).toBeNull();
+		expect(getBoundResultArtifact(oldConsumerId, derivedBoxId)).toBeNull();
+		expect(getCurrentResultArtifact(derivedBoxId)).toBe(derivedB);
+		expect(getResultsState(derivedBoxId)?.rows).toEqual([['from-b']]);
 	});
 });
 

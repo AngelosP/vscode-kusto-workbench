@@ -69,7 +69,11 @@ export function registerArtifactCsvTable(sourceBoxId: unknown, artifactId: unkno
 	return registration?.exportToCsv ? registration.tableToken : undefined;
 }
 
-export function releaseArtifactCsvTable(sourceBoxId: unknown, tableToken?: unknown): void {
+export function releaseArtifactCsvTable(
+	sourceBoxId: unknown,
+	tableToken?: unknown,
+	options: Readonly<{ preservePresentation?: boolean }> = {},
+): void {
 	const source = String(sourceBoxId || '').trim();
 	if (!source) return;
 	const active = activeTableBySource.get(source);
@@ -84,7 +88,11 @@ export function releaseArtifactCsvTable(sourceBoxId: unknown, tableToken?: unkno
 	}
 	if (active) {
 		window.dispatchEvent(new CustomEvent(ARTIFACT_CSV_TABLE_RELEASED_EVENT, {
-			detail: { sourceBoxId: source, tableToken: active.tableToken },
+			detail: {
+				sourceBoxId: source,
+				tableToken: active.tableToken,
+				...(options.preservePresentation ? { preservePresentation: true } : {}),
+			},
 		}));
 	}
 }

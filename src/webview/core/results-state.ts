@@ -292,6 +292,29 @@ export function retireResultsStateForRerun(boxId: unknown): void {
 	try { __kustoNotifyResultsUpdated(id); } catch (e) { console.error('[kusto]', e); }
 }
 
+export function invalidateResultsStateForSourceEdit(boxId: unknown): boolean {
+	const id = String(boxId || '').trim();
+	if (!id || (!_resultArtifacts.hasSourceArtifacts(id)
+		&& !Object.prototype.hasOwnProperty.call(_resultsByBoxId, id))) return false;
+	const revocation = _resultArtifacts.revokeSource(id);
+	if (revocation.revokedConsumerIds.length) {
+		window.dispatchEvent(new CustomEvent(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, {
+			detail: { sourceBoxId: id, consumerIds: revocation.revokedConsumerIds },
+		}));
+	}
+	for (const affectedBoxId of revocation.affectedSourceIds) {
+		if (!_resultArtifacts.getCurrent(affectedBoxId)) {
+			delete _resultsByBoxId[affectedBoxId];
+			delete _resultBatchesByBoxId[affectedBoxId];
+			delete _selectedResultIndexByBoxId[affectedBoxId];
+			_resultsRevisionByBoxId[affectedBoxId] = (_resultsRevisionByBoxId[affectedBoxId] || 0) + 1;
+			if (currentResult?.boxId === affectedBoxId) currentResult = null;
+		}
+		try { __kustoNotifyResultsUpdated(affectedBoxId); } catch (e) { console.error('[kusto]', e); }
+	}
+	return true;
+}
+
 export function clearResultsState(boxId: any) {
 	if (!boxId) return;
 	const revocation = _resultArtifacts.revokeSource(String(boxId));

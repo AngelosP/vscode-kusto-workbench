@@ -10137,6 +10137,14 @@ describe('changedSections agent provenance', () => {
 		advanceQueryBeforeStart?: boolean;
 		artifactLookupThrows?: boolean;
 		failedDoneAfterStart?: boolean;
+		failedDoneAfterStartThenCancel?: boolean;
+		errorBeforeFailedDone?: boolean;
+		resultBeforeFailedDone?: boolean;
+		failedDoneBeforeStartThenCancel?: boolean;
+		failedDoneBeforeStartWithoutTerminal?: boolean;
+		emptyEditorBeforeFailedDone?: boolean;
+		preexistingEditorOnlyBeforeFailedDone?: boolean;
+		advanceEditorAfterQuerySetBeforeFailedDone?: boolean;
 	}) {
 		if (!getResultsStateMock) {
 			const resultsState = await import('../../src/webview/core/results-state.js');
@@ -10213,6 +10221,42 @@ describe('changedSections agent provenance', () => {
 			activeCopilotOwner = copilotOwner;
 			queueMicrotask(() => {
 			const executionId = 'delegated-kusto-execution';
+			if (options.failedDoneBeforeStartWithoutTerminal) {
+				if (options.preexistingEditorOnlyBeforeFailedDone) {
+					// Keep the existing editor query but emit no request-scoped query signal.
+				} else if (!options.emptyEditorBeforeFailedDone) {
+					window.dispatchEvent(new CustomEvent('kusto-workbench-copilot-query-set', {
+						detail: {
+							type: 'copilotWriteQuerySetQuery', query: executedQuery, ...copilotOwner,
+						},
+					}));
+				} else {
+					getEditorQuery.mockReturnValue('');
+				}
+				if (options.advanceEditorAfterQuerySetBeforeFailedDone) {
+					getEditorQuery.mockReturnValue('print user_edit_after_query_set=2');
+				}
+				dispatchHostMessage({
+					type: 'copilotWriteQueryDone', boxId: 'query_1', ok: false,
+					message: '', ...copilotOwner,
+				});
+				return;
+			}
+			if (options.failedDoneBeforeStartThenCancel) {
+				dispatchHostMessage({
+					type: 'copilotWriteQueryDone', boxId: 'query_1', ok: false,
+					message: '', ...copilotOwner,
+				});
+				window.dispatchEvent(new CustomEvent('kusto-workbench-query-terminal', {
+					detail: {
+						type: 'queryCancelled', engine: 'kusto', boxId: 'query_1', executionId,
+						...lifecycle, connectionId: 'conn-1', database: 'db-1', producer: 'copilot',
+						copilotRequestId: copilotOwner.copilotRequestId, reservationSequence: 1,
+						reason: 'cancelled',
+					},
+				}));
+				return;
+			}
 			if (options.oldTerminalBeforeStart) {
 				window.dispatchEvent(new CustomEvent('kusto-workbench-query-terminal', {
 					detail: {
@@ -10238,13 +10282,6 @@ describe('changedSections agent provenance', () => {
 				});
 				return;
 			}
-			if (options.failedDoneAfterStart) {
-				dispatchHostMessage({
-					type: 'copilotWriteQueryDone', boxId: 'query_1', ok: false,
-					message: '', ...copilotOwner,
-				});
-				return;
-			}
 			const queryResultMessage = {
 				...owner, type: 'queryResult', dispatch: kustoDispatch('delegated-copilot'), result: { rows, columns, metadata: {} },
 			};
@@ -10252,6 +10289,29 @@ describe('changedSections agent provenance', () => {
 				`publication-delegated-${++kustoResultFixtureSequence}`,
 				withKustoResultAssignment(queryResultMessage),
 			);
+			if (options.resultBeforeFailedDone) {
+				publishQueryResult();
+				dispatchHostMessage({
+					type: 'copilotWriteQueryDone', boxId: 'query_1', ok: false,
+					message: '', ...copilotOwner,
+				});
+				return;
+			}
+			if (options.errorBeforeFailedDone) {
+				dispatchHostMessage({
+					...owner, type: 'queryError', error: 'Exact execution terminal failure',
+				});
+			}
+			if (options.failedDoneAfterStart || options.failedDoneAfterStartThenCancel || options.errorBeforeFailedDone) {
+				dispatchHostMessage({
+					type: 'copilotWriteQueryDone', boxId: 'query_1', ok: false,
+					message: '', ...copilotOwner,
+				});
+				if (options.failedDoneAfterStartThenCancel) {
+					dispatchHostMessage({ ...owner, type: 'queryCancelled', reason: 'cancelled' });
+				}
+				return;
+			}
 			const doneMessage = { type: 'copilotWriteQueryDone', boxId: 'query_1', ok: true, ...copilotOwner };
 			if (options.cancelBeforeDone) {
 				dispatchHostMessage({ ...owner, type: 'queryCancelled', reason: 'cancelled' });
@@ -10281,7 +10341,11 @@ describe('changedSections agent provenance', () => {
 
 		mocks.postMessageToHost.mockClear();
 		dispatchHostMessage({ type: 'toolDelegateToKustoWorkbenchCopilot', requestId: 'r-kusto-copilot-results', input });
-		await new Promise(resolve => setTimeout(resolve, 140));
+		await new Promise(resolve => setTimeout(
+			resolve,
+			options.failedDoneBeforeStartWithoutTerminal || options.failedDoneAfterStart
+				|| options.resultBeforeFailedDone ? 320 : 140,
+		));
 
 		const response = mocks.postMessageToHost.mock.calls
 			.map(([message]) => message as any)
@@ -10392,6 +10456,104 @@ describe('changedSections agent provenance', () => {
 
 		expect(result).toMatchObject({
 			success: false,
+			error: 'Query execution ended before its results could be applied.',
+		});
+	});
+
+	it('attributes cancellation when empty failed-done follows execution start', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({
+			rowCount: 3, failedDoneAfterStartThenCancel: true,
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			error: 'Query execution was cancelled.',
+		});
+	});
+
+	it('uses an exact terminal error that arrives before empty failed-done', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({
+			rowCount: 3, errorBeforeFailedDone: true,
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			error: 'Exact execution terminal failure',
+		});
+	});
+
+	it('uses an exact result that arrives before empty failed-done', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({
+			rowCount: 3, resultBeforeFailedDone: true,
+		});
+
+		expect(result).toMatchObject({
+			success: true,
+			query: 'range Index from 1 to 10 step 1',
+			rowCount: 3,
+			results: [[1], [2], [3]],
+		});
+		expect(mocks.postMessageToHost.mock.calls.filter(([message]) =>
+			message.type === 'toolResponse' && message.requestId === 'r-kusto-copilot-results',
+		)).toHaveLength(1);
+	});
+
+	it('attributes cancellation when empty failed-done arrives before its terminal', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({
+			rowCount: 3, failedDoneBeforeStartThenCancel: true,
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			error: 'Query execution was cancelled.',
+		});
+	});
+
+	it('attributes empty failed-done with a generated query to execution after terminal grace', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({
+			rowCount: 3, failedDoneBeforeStartWithoutTerminal: true,
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			error: 'Query execution ended before its results could be applied.',
+		});
+	});
+
+	it('retains generation failure wording when empty failed-done has no query', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({
+			rowCount: 3, failedDoneBeforeStartWithoutTerminal: true, emptyEditorBeforeFailedDone: true,
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			error: 'Copilot failed to generate query',
+		});
+		expect(result).not.toHaveProperty('query');
+	});
+
+	it('does not treat pre-existing editor text as request-scoped query generation', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({
+			rowCount: 3, failedDoneBeforeStartWithoutTerminal: true,
+			preexistingEditorOnlyBeforeFailedDone: true,
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			error: 'Copilot failed to generate query',
+		});
+		expect(result).not.toHaveProperty('query');
+	});
+
+	it('does not replace request-scoped query provenance with a later editor edit', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({
+			rowCount: 3, failedDoneBeforeStartWithoutTerminal: true,
+			advanceEditorAfterQuerySetBeforeFailedDone: true,
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			query: 'range Index from 1 to 10 step 1',
 			error: 'Query execution ended before its results could be applied.',
 		});
 	});

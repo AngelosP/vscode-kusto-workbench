@@ -315,6 +315,79 @@ describe('kw-sql-section loading states', () => {
 		unbindResultArtifactConsumer('share:clipboard:result');
 	});
 
+	it('revokes SQL result and chart artifact authority when query text changes without execution', async () => {
+		const el = createSection();
+		el.id = el.boxId;
+		await el.updateComplete;
+		el.setQuery('SELECT 1 AS Value');
+		expect(displayResultForBox(
+			{ columns: ['Value'], rows: [[1]], metadata: {} }, el.boxId, {
+				artifactPublication: {
+					producer: {
+						engine: 'sql', boxId: el.boxId, executionId: 'sql-before-edit',
+						query: 'SELECT 1 AS Value', connectionId: 'sql-a', database: 'Db',
+					},
+					policy: { shareToClipboard: true },
+				},
+			},
+		)).toBe(true);
+		const artifact = getCurrentResultArtifact(el.boxId)!;
+		expect(bindResultArtifactConsumer('chart_sql_stale', el.boxId, artifact.artifactId)).toBe(artifact.artifactId);
+		const table = el.querySelector('kw-data-table') as any;
+		const wrapper = document.getElementById(el.boxId + '_sql_results_wrapper')!;
+
+		(el as any)._markResultsStale();
+
+		expect(wrapper.classList.contains('is-stale')).toBe(true);
+		expect(table.rows).toEqual([[1]]);
+		expect(getCurrentResultArtifact(el.boxId)).toBeNull();
+		expect(getBoundResultArtifact('chart_sql_stale', el.boxId)).toBeNull();
+	});
+
+	it('clears persisted SQL result ownership on edit without a current runtime artifact', () => {
+		const el = createSection();
+		pState.queryResultJsonByBoxId[el.boxId] = '{"rows":[["restored"]]}';
+
+		(el as any)._markResultsStale();
+
+		expect(pState.queryResultJsonByBoxId[el.boxId]).toBeUndefined();
+		expect(el.serialize()).not.toHaveProperty('resultJson');
+	});
+
+	it('retires the exact active SQL execution during source-edit invalidation', async () => {
+		const el = createSection();
+		const connection = {
+			id: 'sql-edit-active', name: 'SQL', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad',
+		};
+		el.setConnections([connection], { lastConnectionId: connection.id });
+		el.setDatabase('Db');
+		el.setQuery('SELECT 1 AS Value');
+		el.setStsReady(true, 'owner-token');
+		await el.updateComplete;
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			expect((el as any)._runQuery()).toBe(true);
+			const execution = postMessage.mock.calls
+				.map(([message]) => message)
+				.find(message => message.type === 'executeSqlQuery');
+			expect(execution?.executionId).toBeTruthy();
+			postMessage.mockClear();
+
+			(el as any)._markResultsStale();
+
+			expect(postMessage).toHaveBeenCalledWith({
+				type: 'cancelSqlQuery', boxId: el.boxId, sectionInstanceId: el.sqlSession.instanceId,
+				executionId: execution.executionId,
+			});
+			expect(el.acceptsQueryTerminal(execution.executionId)).toBe(false);
+			expect(el.isQueryExecuting()).toBe(false);
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
 	it('preserves a bound result artifact across an external Copilot rerun and cancellation', () => {
 		const el = createSection();
 		setResultsState(el.boxId, { columns: ['Value'], rows: [[1]], metadata: {} }, {

@@ -42,6 +42,7 @@ import {
 	bindResultArtifactConsumer,
 	clearResultsState,
 	getCurrentResultArtifact,
+	invalidateResultsStateForSourceEdit,
 	retireResultsStateForRerun,
 	unbindResultArtifactConsumer,
 } from '../core/results-state.js';
@@ -329,12 +330,14 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		const table = this.querySelector('kw-data-table') as any;
 		if (table) {
 			table.revokeResultArtifactGeneration?.();
-			if (typeof table.purgeDataImmediately === 'function') table.purgeDataImmediately();
-			else {
-				table.rows = [];
-				table.columns = [];
+			if (detail.preservePresentation !== true) {
+				if (typeof table.purgeDataImmediately === 'function') table.purgeDataImmediately();
+				else {
+					table.rows = [];
+					table.columns = [];
+				}
+				table.style.visibility = 'hidden';
 			}
-			table.style.visibility = 'hidden';
 			table.resultArtifactId = '';
 			table.resultArtifactTableToken = '';
 			table.resultArtifactLiveCheck = undefined;
@@ -344,9 +347,13 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		this._csvResultArtifactId = '';
 		this._csvResultTableToken = '';
 		this._csvExportAllowed = false;
-		this._hasResults = false;
-		const wrapper = document.getElementById(this.boxId + '_sql_results_wrapper');
-		if (wrapper) wrapper.style.display = 'none';
+		if (detail.preservePresentation !== true) {
+			this._hasResults = false;
+			const wrapper = document.getElementById(this.boxId + '_sql_results_wrapper');
+			if (wrapper) wrapper.style.display = 'none';
+		}
+		this._syncTestStateAttrs();
+		this._syncActionBar();
 	};
 
 	private _disposeDisconnectedSection(): void {
@@ -1411,6 +1418,17 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (wrapper && wrapper.style.display !== 'none') {
 			wrapper.classList.add('is-stale');
 		}
+		try {
+			if (this._executing || this._activeQueryExecutionId || this.sqlSession.hasPendingToolRun) {
+				this._cancelQuery();
+				this._syncActionBar();
+			}
+			if (getCurrentResultArtifact(this.boxId)) {
+				this._releaseCsvResultArtifact({ preservePresentation: true });
+			}
+			invalidateResultsStateForSourceEdit(this.boxId);
+			__kustoClearStoredQueryResult(this.boxId);
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _clearResultsStale(): void {
@@ -2491,7 +2509,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		}
 	}
 
-	private _releaseCsvResultArtifact(): void {
+	private _releaseCsvResultArtifact(options: Readonly<{ preservePresentation?: boolean }> = {}): void {
 		const table = this.querySelector('kw-data-table') as any;
 		if (table) {
 			table.revokeResultArtifactGeneration?.();
@@ -2501,7 +2519,9 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			table.options = { ...table.options, showSave: false };
 			table.requestUpdate?.();
 		}
-		if (this._csvResultTableToken) releaseArtifactCsvTable(this.boxId, this._csvResultTableToken);
+		if (this._csvResultTableToken) {
+			releaseArtifactCsvTable(this.boxId, this._csvResultTableToken, options);
+		}
 		this._csvResultArtifactId = '';
 		this._csvResultTableToken = '';
 		this._csvExportAllowed = false;

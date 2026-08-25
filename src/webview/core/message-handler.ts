@@ -1317,6 +1317,7 @@ const kustoCopilotOutputMessageTypes = new Set([
 	'revealSection',
 ]);
 const ADMITTED_KUSTO_TERMINAL_EVENT = 'kusto-workbench-query-terminal';
+const ADMITTED_KUSTO_COPILOT_QUERY_SET_EVENT = 'kusto-workbench-copilot-query-set';
 const ADMITTED_KUSTO_EXECUTION_STARTED_EVENT = 'kusto-workbench-query-started';
 const stagedKustoPublications = new Map<string, { payload: unknown; deadline: number; timer: ReturnType<typeof setTimeout> }>();
 const completedKustoPublications = new Map<string, { accepted: boolean; timer: ReturnType<typeof setTimeout> }>();
@@ -4444,6 +4445,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					&& typeof kwEl.copilotWriteQuerySetQuery === 'function') {
 					kwEl.copilotWriteQuerySetQuery(message.query || '');
 					markSectionAgentTouched(boxId, beforeSignature);
+					if (hasKustoCopilotRequestIdentity(message)) {
+						window.dispatchEvent(new CustomEvent(ADMITTED_KUSTO_COPILOT_QUERY_SET_EVENT, {
+							detail: message,
+						}));
+					}
 				} else {
 					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
 					if (sqlEl && sqlEl.canAcceptExternalQueryMutation?.() !== false
@@ -6106,27 +6112,48 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				
 				// Set up listeners before the atomic request submission.
 				let responded = false;
-				let generatedQuery = '';
+				let requestGeneratedQuery = '';
 				let queryGenerated = false;
 				let expectedExecutionId = '';
 				let executedQuery = '';
+				const getRequestScopedQuery = () => executedQuery || requestGeneratedQuery;
+				const getRequestScopedQueryField = () => {
+					const query = getRequestScopedQuery();
+					return query ? { query } : {};
+				};
 				let expectedCopilotRequest: KustoCopilotRequestIdentity | undefined;
 				let pendingClarification: KustoCopilotClarifyingQuestionMessage | undefined;
 				let pendingQueryTerminal: any = null;
 				let boundModelArtifacts: readonly ResultArtifact[] = [];
 				let timeoutId: ReturnType<typeof setTimeout> | undefined;
+				let failedDoneTimer: ReturnType<typeof setTimeout> | undefined;
 				const modelConsumerIds = new Set<string>([indexedModelConsumerId(requestId, 0)]);
 				const cleanup = () => {
 					try { window.removeEventListener(ADMITTED_KUSTO_COPILOT_EVENT, resultHandler as EventListener); } catch { /* best effort */ }
+					try { window.removeEventListener(ADMITTED_KUSTO_COPILOT_QUERY_SET_EVENT, querySetHandler as EventListener); } catch { /* best effort */ }
 					try { window.removeEventListener(APPLIED_KUSTO_COPILOT_DONE_EVENT, doneHandler as EventListener); } catch { /* best effort */ }
 					try { window.removeEventListener(ADMITTED_KUSTO_EXECUTION_STARTED_EVENT, startedHandler as EventListener); } catch { /* best effort */ }
 					try { window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener); } catch { /* best effort */ }
 					try { if (timeoutId !== undefined) clearTimeout(timeoutId); } catch { /* best effort */ }
+					try { if (failedDoneTimer !== undefined) clearTimeout(failedDoneTimer); } catch { /* best effort */ }
 					try { kustoCopilotToolOwnerByRequestId.delete(requestId); } catch { /* best effort */ }
 					try { cancelledKustoToolRequestIds.delete(requestId); } catch { /* best effort */ }
 					releaseModelResultConsumers(modelConsumerIds);
 				};
 				cleanupDelegation = cleanup;
+
+				const querySetHandler = (event: Event) => {
+					try {
+						const output = (event as CustomEvent).detail;
+						if (!output || !expectedCopilotRequest
+							|| !hasKustoCopilotRequestIdentity(output)
+							|| !kustoCopilotRequestIdentityEquals(expectedCopilotRequest, output)) return;
+						const querySet = output as KustoCopilotRequestIdentity & Record<string, unknown>;
+						requestGeneratedQuery = typeof querySet.query === 'string' ? querySet.query : '';
+					} catch (error) {
+						sendModelResultFailure(error instanceof Error ? error.message : String(error));
+					}
+				};
 
 				const startedHandler = (event: Event) => {
 					try {
@@ -6141,7 +6168,6 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							sendModelResultFailure('Query provenance is unavailable for model use.');
 							return;
 						}
-						generatedQuery = executedQuery;
 					} catch (error) {
 						sendModelResultFailure(error instanceof Error ? error.message : String(error));
 					}
@@ -6153,7 +6179,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					cleanup();
 					postMessageToHost({
 						type: 'toolResponse', requestId,
-						result: { success: false, query: generatedQuery || undefined, error },
+						result: { success: false, ...getRequestScopedQueryField(), error },
 					});
 				};
 
@@ -6183,7 +6209,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						requestId, 
 						result: { 
 							success: true,
-							query: executedQuery || generatedQuery,
+							query: getRequestScopedQuery(),
 							rowCount: primary.rowCount,
 							columns: primary.columns,
 							results: primary.results,
@@ -6238,24 +6264,40 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						}
 						pendingClarification = undefined;
 						queryGenerated = true;
-						try {
-							const editor = queryEditors && queryEditors[sectionId];
-							generatedQuery = executedQuery
-								|| (editor && typeof editor.getValue === 'function' ? editor.getValue() : '');
-						} catch (e) { console.error('[kusto]', e); }
 						if (!done.ok) {
-							responded = true;
-							cleanup();
-							postMessageToHost({
-								type: 'toolResponse', requestId,
-								result: {
-									success: false,
-									error: done.message || (expectedExecutionId
-										? 'Query execution ended before its results could be applied.'
-										: 'Copilot failed to generate query'),
-									query: generatedQuery || undefined,
-								},
-							});
+							if (!done.message && pendingQueryTerminal?.type === 'queryResult') {
+								sendSuccessResponse();
+								return;
+							}
+							if (!done.message && pendingQueryTerminal?.type === 'modelResultDenied') {
+								sendModelResultFailure(pendingQueryTerminal.error);
+								return;
+							}
+							if (!done.message && pendingQueryTerminal?.type === 'queryError') {
+								sendModelResultFailure(pendingQueryTerminal.error || 'Query execution failed');
+								return;
+							}
+							const settleFailedDone = () => {
+								if (responded) return;
+								responded = true;
+								cleanup();
+								postMessageToHost({
+									type: 'toolResponse', requestId,
+									result: {
+										success: false,
+										...getRequestScopedQueryField(),
+										error: done.message || (expectedExecutionId || requestGeneratedQuery.trim()
+											? 'Query execution ended before its results could be applied.'
+											: 'Copilot failed to generate query'),
+									},
+								});
+							};
+							if (!done.message) {
+								if (failedDoneTimer !== undefined) return;
+								failedDoneTimer = setTimeout(settleFailedDone, 250);
+							} else {
+								settleFailedDone();
+							}
 							return;
 						}
 						if (pendingQueryTerminal?.type === 'queryResult') {
@@ -6272,7 +6314,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							postMessageToHost({
 								type: 'toolResponse', requestId,
 								result: {
-									success: false, query: generatedQuery || undefined,
+									success: false, ...getRequestScopedQueryField(),
 									error: pendingQueryTerminal.error || 'Query execution failed',
 								},
 							});
@@ -6290,7 +6332,17 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							|| !hasKustoCopilotRequestIdentity(msg)
 							|| !kustoCopilotRequestIdentityEquals(expectedCopilotRequest, msg)) return;
 						const terminal = msg as KustoCopilotRequestIdentity & Record<string, any>;
-						if (!expectedExecutionId || String(terminal.executionId || '') !== expectedExecutionId) return;
+						const terminalExecutionId = String(terminal.executionId || '');
+						if (terminal.type === 'queryCancelled') {
+							if (expectedExecutionId && terminalExecutionId !== expectedExecutionId) return;
+							sendModelResultFailure('Query execution was cancelled.');
+							return;
+						}
+						if (terminal.type === 'queryError' && !expectedExecutionId) {
+							sendModelResultFailure(terminal.error || 'Query execution failed');
+							return;
+						}
+						if (!expectedExecutionId || terminalExecutionId !== expectedExecutionId) return;
 						if (terminal.type === 'queryResult') {
 							const artifacts = bindModelResultArtifacts(
 								requestId, sectionId, expectedExecutionId, terminal.result, modelConsumerIds,
@@ -6316,14 +6368,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							postMessageToHost({
 								type: 'toolResponse', requestId,
 								result: {
-									success: false, query: generatedQuery || undefined,
+									success: false, ...getRequestScopedQueryField(),
 									error: terminal.error || 'Query execution failed',
 								},
 							});
 							return;
-						}
-						if (terminal.type === 'queryCancelled') {
-							sendModelResultFailure('Query execution was cancelled.');
 						}
 					} catch (error) {
 						sendModelResultFailure(error instanceof Error ? error.message : String(error));
@@ -6331,6 +6380,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				};
 				
 				window.addEventListener(ADMITTED_KUSTO_COPILOT_EVENT, resultHandler as EventListener);
+				window.addEventListener(ADMITTED_KUSTO_COPILOT_QUERY_SET_EVENT, querySetHandler as EventListener);
 				window.addEventListener(APPLIED_KUSTO_COPILOT_DONE_EVENT, doneHandler as EventListener);
 				window.addEventListener(ADMITTED_KUSTO_EXECUTION_STARTED_EVENT, startedHandler as EventListener);
 				window.addEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener);
@@ -6356,7 +6406,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							result: { 
 								success: false,
 								timedOut: true,
-								query: generatedQuery || undefined,
+								...getRequestScopedQueryField(),
 								error: 'Request timed out after 3 minutes'
 							}
 						});

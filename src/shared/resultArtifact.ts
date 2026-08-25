@@ -664,6 +664,12 @@ export class ResultArtifactStore {
 		return this.artifacts.get(String(artifactId || '').trim());
 	}
 
+	hasSourceArtifacts(sourceBoxId: string): boolean {
+		const source = String(sourceBoxId || '').trim();
+		if (!source) return false;
+		return [...this.artifacts.values()].some(artifact => artifact.sourceBoxId === source);
+	}
+
 	getCurrent(sourceBoxId: string, resultIndex = 0): ResultArtifact | undefined {
 		const source = String(sourceBoxId || '').trim();
 		if (!Number.isSafeInteger(resultIndex) || resultIndex < 0) return undefined;
