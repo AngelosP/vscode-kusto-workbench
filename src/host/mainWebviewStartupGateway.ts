@@ -157,6 +157,7 @@ export function isMainWebviewCorrelatedReply(input: unknown): boolean {
 	switch (type) {
 		case 'comparisonBoxEnsured':
 		case 'documentReloadResult':
+		case 'embeddedTutorialViewerShown':
 		case 'markdownDocumentCommandBarrierResult':
 		case 'toolExecutionStarted':
 			return hasDescriptorCorrelationId(input, 'requestId');

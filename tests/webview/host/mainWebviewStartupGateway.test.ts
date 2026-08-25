@@ -94,6 +94,7 @@ describe('MainWebviewStartupGateway', () => {
 			},
 			{ type: 'comparisonBoxEnsured', requestId: 'comparison-1' },
 			{ type: 'documentReloadResult', requestId: 'reload-1' },
+			{ type: 'embeddedTutorialViewerShown', requestId: 'embedded-1' },
 			{ type: 'markdownDocumentCommandBarrierResult', requestId: 'barrier-1' },
 			{ type: 'publishToPowerBIAck', requestId: 'publish-1', accepted: true },
 			{ type: 'toolExecutionStarted', requestId: 'tool-start-1' },
@@ -121,6 +122,7 @@ describe('MainWebviewStartupGateway', () => {
 
 		for (const reply of replies) expect(isMainWebviewCorrelatedReply(reply)).toBe(true);
 		expect(isMainWebviewCorrelatedReply({ type: 'persistDocument' })).toBe(false);
+		expect(isMainWebviewCorrelatedReply({ type: 'embeddedTutorialViewerShown', requestId: '' })).toBe(false);
 		expect(isMainWebviewCorrelatedReply({
 			type: 'copilotWriteQueryExecutionAck', boxId: 'sql-1',
 			executionId: 'sql-execution-1', accepted: 'yes',
@@ -457,6 +459,44 @@ describe('MainWebviewStartupGateway', () => {
 			'end:request:1',
 			'start:request:2',
 			'end:request:2',
+		]);
+	});
+
+	it('routes an embedded tutorial acknowledgement during a blocked startup drain', async () => {
+		const harness = createPanelHarness();
+		const events: string[] = [];
+		let markFirstStarted!: () => void;
+		let releaseFirst!: () => void;
+		const firstStarted = new Promise<void>(resolve => { markFirstStarted = resolve; });
+		const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel,
+			admitInbound: admitTestMessage,
+			allowReentrantInbound: isMainWebviewCorrelatedReply,
+		});
+		void harness.receive({ type: 'request', sequence: 1 });
+		const drain = gateway.setInboundHandler(async message => {
+			if (message.type === 'request') {
+				events.push('request:start');
+				markFirstStarted();
+				await firstGate;
+				events.push('request:end');
+				return;
+			}
+			const correlated = String(message.requestId || '').trim().length > 0;
+			events.push(correlated ? 'embedded:ack' : 'embedded:queued-malformed');
+			if (correlated) releaseFirst();
+		});
+
+		await firstStarted;
+		await Promise.resolve(harness.receive({ type: 'embeddedTutorialViewerShown', requestId: '' }));
+		expect(events).toEqual(['request:start']);
+		await Promise.resolve(harness.receive({
+			type: 'embeddedTutorialViewerShown', requestId: 'embedded-1',
+		}));
+		await drain;
+		expect(events).toEqual([
+			'request:start', 'embedded:ack', 'request:end', 'embedded:queued-malformed',
 		]);
 	});
 

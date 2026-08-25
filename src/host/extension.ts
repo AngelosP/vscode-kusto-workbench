@@ -43,7 +43,7 @@ import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { createEmptyKqlxFile, stringifyKqlxFile, parseKqlxText, type KqlxFileV1 } from './kqlxFormat';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { STORAGE_KEYS } from './queryEditorTypes';
-import { deleteCachedSchemasForConnections, getSchemaCacheFileUri, SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk } from './schemaCache';
+import { deleteCachedSchemasForConnections, getSchemaCacheFileUri, readCachedSchemaFromDiskByCluster, SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk } from './schemaCache';
 import { KustoAuthPreferenceService } from './kustoAuthPreferenceService';
 import { KustoConnectionCache } from './kustoConnectionCache';
 import { getKustoConnectionIdentityKey, normalizeKustoAuthorityId } from '../shared/kustoAuth';
@@ -386,6 +386,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				throw new Error('Persisted-result template must contain one section with resultJson.');
 			}
 			let connectionId = '';
+			let assertKustoFixtureReady: (() => Promise<void>) | undefined;
 			if (engine === 'kusto') {
 				const existingConnections = connectionManager.getConnections().filter(connection =>
 					existingConnectionId
@@ -419,16 +420,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 						'kusto-workbench-offline-e2e-token',
 						[connection.id],
 					);
+					await testAuthPreferences.waitForWriteSettlement();
+					await connectionManager.waitForSettlement();
 					accountPartition = testAuthPreferences.getAccountPartition(connection.authorityId, persistedResultAuthAccount.id);
 					if (testAuthPreferences.getPreferredAccountId(connection.id) !== persistedResultAuthAccount.id) {
 						throw new Error('Persisted-result Kusto fixture owner did not become resolvable.');
 					}
-					await testConnectionCache.setDatabases(connection.id, accountPartition, [targetDatabase]);
+					if (!await testConnectionCache.setDatabases(connection.id, accountPartition, [targetDatabase])) {
+						throw new Error('Persisted-result Kusto fixture database cache write was superseded.');
+					}
 					const schema = {
 						tables: ['PersistedFixture'],
 						columnTypesByTable: { PersistedFixture: { RowId: 'long' } },
 					};
-					await writeCachedSchemaToDisk(
+					const schemaWritten = await writeCachedSchemaToDisk(
 						context.globalStorageUri,
 						schemaCacheKey(connection.clusterUrl, targetDatabase, connection.id, accountPartition),
 						{
@@ -437,7 +442,54 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 							connectionId: connection.id, accountPartition,
 						},
 					);
+					if (!schemaWritten) {
+						throw new Error('Persisted-result Kusto fixture schema cache write was superseded.');
+					}
 				}
+				const expectedConnectionIncarnation = connectionManager.getConnectionIncarnation(connection.id);
+				const requireCachedSchema = !existingConnection;
+				assertKustoFixtureReady = () => connectionManager.runWithLeaveNoTraceSnapshotLock(async snapshot => {
+					const cachedSchema = await readCachedSchemaFromDiskByCluster(
+						context.globalStorageUri,
+						connection.clusterUrl,
+						targetDatabase,
+						connection.id,
+						accountPartition,
+					);
+					const identityKey = getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId);
+					const matchingOwners = connectionManager.getConnections().filter(candidateConnection =>
+						getKustoConnectionIdentityKey(candidateConnection.clusterUrl, candidateConnection.authorityId) === identityKey
+					);
+					const preferredAccountId = testAuthPreferences.getPreferredAccountId(connection.id);
+					const currentPartition = preferredAccountId
+						? testAuthPreferences.getAccountPartition(connection.authorityId, preferredAccountId)
+						: '';
+					const currentConnectionIncarnation = connectionManager.getConnectionIncarnation(connection.id);
+					const clusterKey = kustoClusterKey(connection.clusterUrl);
+					const leaveNoTraceRevision = snapshot.revocationGenerations[clusterKey] ?? 0;
+					const protectedResult = snapshot.globallyBlocked || snapshot.clusterKeys.includes(clusterKey);
+					const cachedDatabases = testConnectionCache.getDatabases(connection.id, accountPartition, false);
+					if (matchingOwners.length !== 1 || matchingOwners[0].id !== connection.id
+						|| currentConnectionIncarnation !== expectedConnectionIncarnation
+						|| currentPartition !== accountPartition || leaveNoTraceRevision !== 0 || protectedResult
+						|| !cachedDatabases.some(database => database.toLowerCase() === targetDatabase.toLowerCase())
+						|| (requireCachedSchema && !cachedSchema)) {
+						throw new Error(`Persisted-result Kusto fixture owner did not settle: ${JSON.stringify({
+							matchingOwnerIds: matchingOwners.map(owner => owner.id),
+							preferredAccountId,
+							partitionMatches: currentPartition === accountPartition,
+							connectionIncarnationMatches: currentConnectionIncarnation === expectedConnectionIncarnation,
+							leaveNoTraceRevision,
+							protectedResult,
+							cachedDatabases,
+							requireCachedSchema,
+							hasCachedSchema: !!cachedSchema,
+						})}`);
+					}
+				});
+				await testAuthPreferences.waitForWriteSettlement();
+				await connectionManager.waitForSettlement();
+				await assertKustoFixtureReady();
 				const parsedResult = JSON.parse(section.resultJson) as { metadata?: unknown };
 				if (!parsedResult || typeof parsedResult !== 'object' || Array.isArray(parsedResult)) {
 					throw new Error('Persisted-result Kusto template resultJson must contain an object.');
@@ -562,11 +614,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					xColumn: 'Label', yColumns: ['Amount'], expanded: true,
 				});
 			}
+			const outputUri = vscode.Uri.file(absoluteOutputPath);
 			await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(absoluteOutputPath)));
-			await vscode.workspace.fs.writeFile(
-				vscode.Uri.file(absoluteOutputPath),
-				Buffer.from(`${JSON.stringify(fixture, null, 2)}\n`, 'utf8'),
-			);
+			await assertKustoFixtureReady?.();
+			await vscode.workspace.fs.writeFile(outputUri, Buffer.from(`${JSON.stringify(fixture, null, 2)}\n`, 'utf8'));
+			try {
+				await assertKustoFixtureReady?.();
+			} catch (error) {
+				try { await vscode.workspace.fs.delete(outputUri, { recursive: false, useTrash: false }); } catch { /* ignore */ }
+				throw error;
+			}
 			return { outputPath: absoluteOutputPath, connectionId };
 		};
 		const authorityLivePrefix = 'E2E Authority ID Live';

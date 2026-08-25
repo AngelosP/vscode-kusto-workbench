@@ -89,13 +89,18 @@ export class TutorialWebviewSession {
 		return this.messageQueue;
 	}
 
-	async postSnapshot(options: { forceRefresh?: boolean } = {}): Promise<void> {
-		if (this.disposed) {
-			return;
+	async postSnapshot(
+		options: { forceRefresh?: boolean } = {},
+		isCurrent: () => boolean = () => true,
+	): Promise<boolean> {
+		if (this.disposed || !isCurrent()) {
+			return false;
 		}
 		const revision = ++this.snapshotRevision;
 		const resolved = await this.options.catalogService.getViewerCatalog(options);
+		if (this.disposed || !isCurrent()) return false;
 		const catalog = await this.options.catalogService.getCatalog();
+		if (this.disposed || !isCurrent()) return false;
 		const settings = this.options.catalogService.getSettings();
 		const unseenTutorialIds = this.options.subscriptionService.getUnseenTutorialIds(catalog.catalog);
 		const snapshot: TutorialViewerSnapshot = {
@@ -110,7 +115,7 @@ export class TutorialWebviewSession {
 			selectedCategoryId: this.selectedCategoryId,
 			selectedTutorialId: this.selectedTutorialId,
 		};
-		await this.postMessage({ type: 'snapshot', snapshot, revision });
+		return this.postMessage({ type: 'snapshot', snapshot, revision }, isCurrent);
 	}
 
 	dispose(): void {
@@ -233,16 +238,17 @@ export class TutorialWebviewSession {
 		await configuration.update('didYouKnow.enabled', enabled, target);
 	}
 
-	private async postMessage(message: unknown): Promise<void> {
+	private async postMessage(message: unknown, isCurrent: () => boolean = () => true): Promise<boolean> {
 		const webview = this.options.webview();
-		if (!webview || this.disposed) {
-			return;
+		if (!webview || this.disposed || !isCurrent()) {
+			return false;
 		}
 		if (this.options.postMessage) {
-			await this.options.postMessage(message);
-			return;
+			const delivered = await this.options.postMessage(message);
+			return delivered !== false && !this.disposed && isCurrent();
 		}
-		await webview.postMessage(message);
+		const delivered = await webview.postMessage(message);
+		return delivered !== false && !this.disposed && isCurrent();
 	}
 
 	private defaultPreferredMode(): TutorialViewerMode {

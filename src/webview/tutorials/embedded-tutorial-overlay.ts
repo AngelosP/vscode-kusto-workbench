@@ -2,6 +2,7 @@ import './kw-tutorial-viewer.js';
 
 const HOST_ID = 'kw-embedded-tutorial-viewer-host';
 const STYLE_ID = 'kw-embedded-tutorial-viewer-style';
+let activeShowRequestId = '';
 
 function ensureOverlayStyle(): void {
 	if (document.getElementById(STYLE_ID)) {
@@ -25,7 +26,7 @@ function ensureOverlayStyle(): void {
 	document.head.appendChild(style);
 }
 
-export async function showEmbeddedTutorialViewer(): Promise<void> {
+export async function showEmbeddedTutorialViewer(requestId = ''): Promise<void> {
 	ensureOverlayStyle();
 	let host = document.getElementById(HOST_ID);
 	if (!host) {
@@ -37,10 +38,14 @@ export async function showEmbeddedTutorialViewer(): Promise<void> {
 		host.appendChild(viewer);
 		document.body.appendChild(host);
 	}
+	activeShowRequestId = String(requestId || '').trim();
 }
 
-export function hideEmbeddedTutorialViewer(): void {
+export function hideEmbeddedTutorialViewer(requestId = ''): void {
+	const expectedRequestId = String(requestId || '').trim();
+	if (expectedRequestId && expectedRequestId !== activeShowRequestId) return;
 	document.getElementById(HOST_ID)?.remove();
+	activeShowRequestId = '';
 }
 
 window.addEventListener('message', event => {
@@ -50,8 +55,13 @@ window.addEventListener('message', event => {
 	}
 	const type = String((message as { type?: unknown }).type ?? '');
 	if (type === 'showEmbeddedTutorialViewer') {
-		void showEmbeddedTutorialViewer().catch(error => console.error('[kusto] embedded tutorial viewer failed:', error));
+		const requestId = String((message as { requestId?: unknown }).requestId ?? '').trim();
+		void showEmbeddedTutorialViewer(requestId).then(() => {
+			if (requestId) {
+				(window as any).vscode.postMessage({ type: 'embeddedTutorialViewerShown', requestId });
+			}
+		}).catch(error => console.error('[kusto] embedded tutorial viewer failed:', error));
 	} else if (type === 'hideEmbeddedTutorialViewer') {
-		hideEmbeddedTutorialViewer();
+		hideEmbeddedTutorialViewer(String((message as { requestId?: unknown }).requestId ?? '').trim());
 	}
 });

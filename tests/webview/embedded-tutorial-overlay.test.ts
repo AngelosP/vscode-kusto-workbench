@@ -35,14 +35,42 @@ describe('embedded tutorial overlay', () => {
 	});
 
 	it('responds to host show and hide messages', async () => {
-		window.dispatchEvent(new MessageEvent('message', { data: { type: 'showEmbeddedTutorialViewer' } }));
+		window.dispatchEvent(new MessageEvent('message', {
+			data: { type: 'showEmbeddedTutorialViewer', requestId: 'show-1' },
+		}));
 		await Promise.resolve();
 		await Promise.resolve();
 
 		expect(document.getElementById(HOST_ID)).toBeTruthy();
+		expect((window as any).vscode.postMessage).toHaveBeenCalledWith({
+			type: 'embeddedTutorialViewerShown',
+			requestId: 'show-1',
+		});
+		expect((window as any).vscode.postMessage).not.toHaveBeenCalledWith({ type: 'requestSnapshot' });
 
 		window.dispatchEvent(new MessageEvent('message', { data: { type: 'hideEmbeddedTutorialViewer' } }));
 
+		expect(document.getElementById(HOST_ID)).toBeNull();
+	});
+
+	it('ignores cleanup for a superseded show request', async () => {
+		window.dispatchEvent(new MessageEvent('message', {
+			data: { type: 'showEmbeddedTutorialViewer', requestId: 'show-old' },
+		}));
+		await Promise.resolve();
+		window.dispatchEvent(new MessageEvent('message', {
+			data: { type: 'showEmbeddedTutorialViewer', requestId: 'show-new' },
+		}));
+		await Promise.resolve();
+
+		window.dispatchEvent(new MessageEvent('message', {
+			data: { type: 'hideEmbeddedTutorialViewer', requestId: 'show-old' },
+		}));
+		expect(document.getElementById(HOST_ID)).toBeTruthy();
+
+		window.dispatchEvent(new MessageEvent('message', {
+			data: { type: 'hideEmbeddedTutorialViewer', requestId: 'show-new' },
+		}));
 		expect(document.getElementById(HOST_ID)).toBeNull();
 	});
 });

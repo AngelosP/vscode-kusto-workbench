@@ -110,7 +110,9 @@ export class KwTutorialViewer extends LitElement {
 		window.addEventListener('message', this.onHostMessage);
 		window.addEventListener('pointerdown', this.onGlobalPointerDown, true);
 		window.addEventListener('keydown', this.onGlobalKeyDown, true);
-		this.vscode.postMessage({ type: 'requestSnapshot' });
+		if (!this.hasAttribute('embedded')) {
+			this.vscode.postMessage({ type: 'requestSnapshot' });
+		}
 	}
 
 	disconnectedCallback(): void {
