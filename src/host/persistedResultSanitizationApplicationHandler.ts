@@ -10,6 +10,10 @@ import type { SqlOwnerSnapshot, SqlWorkbenchService } from './sql/sqlWorkbenchSe
 import { canonicalSectionKind } from '../shared/documentSectionCapabilities';
 import { resolveKustoConnection } from '../shared/kustoAuth';
 import { kustoClusterKey, kustoDatabaseKey } from '../shared/kustoClusterUrls';
+import {
+	legacyKustoResultTargetMatches,
+	resolveLegacyKustoEffectiveTarget,
+} from '../shared/legacyKustoResult';
 import { resolveSqlConnectionTarget } from '../shared/sqlConnectionIdentity';
 import {
 	kustoLeaveNoTracePolicyFingerprint,
@@ -32,23 +36,6 @@ class KustoSanitizationObserverError {
 
 function hasOwn(record: Record<string, unknown>, key: string): boolean {
 	return Object.prototype.hasOwnProperty.call(record, key);
-}
-
-function legacyKustoResultTargetMatches(resultJson: unknown, clusterUrl: string, database: string): boolean {
-	if (typeof resultJson !== 'string' || !resultJson.trim()) return false;
-	try {
-		const parsed = JSON.parse(resultJson) as { metadata?: unknown };
-		if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
-			|| !parsed.metadata || typeof parsed.metadata !== 'object' || Array.isArray(parsed.metadata)) {
-			return false;
-		}
-		const metadata = parsed.metadata as Record<string, unknown>;
-		if (typeof metadata.cluster !== 'string' || typeof metadata.database !== 'string') return false;
-		const persistedTarget = kustoDatabaseKey(metadata.cluster, metadata.database);
-		return !!persistedTarget && persistedTarget === kustoDatabaseKey(clusterUrl, database);
-	} catch {
-		return false;
-	}
 }
 
 function isParseablePersistedResultJson(resultJson: unknown): boolean {
@@ -396,22 +383,15 @@ export class HostPersistedResultSanitizationApplicationHandler
 						return decision;
 					}
 				}
-				const sourceOwnsComparison = !!sourceBoxId && !!kustoSource;
-				const clusterUrl = String(sourceOwnsComparison ? kustoSource.clusterUrl : record.clusterUrl || '').trim();
-				const database = String(sourceOwnsComparison ? kustoSource.database : record.database || '').trim();
-				const authorityId = sourceOwnsComparison ? kustoSource.authorityId : record.authorityId;
-				const connectionIdHint = sourceOwnsComparison ? kustoSource.connectionIdHint : record.connectionIdHint;
-				const hasExplicitComparisonOwner = !!String(
-					record.clusterUrl || record.authorityId || record.connectionIdHint || record.database || '',
-				).trim();
-				const comparisonOwnerMatches = !sourceOwnsComparison || !hasExplicitComparisonOwner || (
-					kustoClusterKey(record.clusterUrl) === kustoClusterKey(kustoSource.clusterUrl)
-						&& String(record.authorityId || '').trim().toLowerCase()
-							=== String(kustoSource.authorityId || '').trim().toLowerCase()
-						&& String(record.connectionIdHint || '').trim() === String(kustoSource.connectionIdHint || '').trim()
-						&& String(record.database || '').trim().toLowerCase()
-							=== String(kustoSource.database || '').trim().toLowerCase()
-				);
+				const effectiveTargetResolution = resolveLegacyKustoEffectiveTarget(record, sectionsById);
+				if (!effectiveTargetResolution || effectiveTargetResolution.kind !== 'kusto') {
+					const decision = legacy
+						? { kind: 'preserve', restorable: false } as const
+						: { kind: 'strip', restorable: false } as const;
+					decisions.set(record, decision);
+					return decision;
+				}
+				const { clusterUrl, database, authorityId, connectionIdHint } = effectiveTargetResolution.target;
 				let ownerMatches = false;
 				let currentAccountPartition = '';
 				let currentLeaveNoTraceRevision = -1;
@@ -437,8 +417,7 @@ export class HostPersistedResultSanitizationApplicationHandler
 				const protectedResult = snapshot.globallyBlocked || protectedClusters.has(kustoClusterKey(clusterUrl));
 				let decision: KustoResultDecision;
 				if (legacy) {
-					const canAdoptLegacyResult = comparisonOwnerMatches
-						&& ownerMatches
+					const canAdoptLegacyResult = ownerMatches
 						&& !!currentAccountPartition
 						&& currentLeaveNoTraceRevision === 0
 						&& !protectedResult
@@ -458,7 +437,7 @@ export class HostPersistedResultSanitizationApplicationHandler
 						&& Number.isSafeInteger(persistedLeaveNoTraceRevision)
 						&& persistedLeaveNoTraceRevision >= 0
 						&& persistedLeaveNoTraceRevision === currentLeaveNoTraceRevision;
-					decision = comparisonOwnerMatches && ownerMatches && resultOwnerMatches && !protectedResult
+					decision = ownerMatches && resultOwnerMatches && !protectedResult
 						? { kind: 'keep', restorable: isParseablePersistedResultJson(record.resultJson) }
 						: { kind: 'strip', restorable: false };
 				}
@@ -482,6 +461,12 @@ export class HostPersistedResultSanitizationApplicationHandler
 				};
 				delete adopted.resultArtifact;
 				return adopted;
+			}
+			if (decision.kind === 'preserve' && hasOwn(record, 'resultArtifact')) {
+				changed = true;
+				const preserved = { ...record };
+				delete preserved.resultArtifact;
+				return preserved;
 			}
 			if (decision.kind !== 'strip') return section;
 			changed = true;

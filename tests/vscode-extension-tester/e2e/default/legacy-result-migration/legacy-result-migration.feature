@@ -9,6 +9,7 @@ Feature: Legacy persisted Kusto result migration
   Scenario: Markerless result is adopted once and powers its chart after reopen
     When I delete file "tests/vscode-extension-tester/runs/default/legacy-result-migration/legacy-chart.kqlx"
     When I execute command "kustoWorkbench.test.preparePersistedResultFixture" with args '[{"engine":"kusto","legacyKusto":true,"templatePath":"tests/vscode-extension-tester/e2e/default/legacy-result-migration/fixtures/legacy-chart.kqlx","outputPath":"tests/vscode-extension-tester/runs/default/legacy-result-migration/legacy-chart.kqlx"}]'
+    Then I collect JSON artifact "legacy-migration-baseline" from extension host expression "(async () => { const extension = vscode.extensions.getExtension('angelos-petropoulos.vscode-kusto-workbench'); if (!extension) throw new Error('Kusto Workbench extension unavailable'); const uri = vscode.Uri.joinPath(extension.extensionUri, 'tests', 'vscode-extension-tester', 'runs', 'default', 'legacy-result-migration', 'legacy-chart.kqlx'); const section = JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(uri))).state.sections.find(entry => entry.id === 'query_legacy_migration'); if (!section?.resultJson || section.kustoAccountPartition !== undefined || section.kustoLeaveNoTraceRevision !== undefined || section.resultArtifact?.policy?.exportToCsv !== true || section.resultArtifact?.policy?.exposeToActiveContent !== true) throw new Error('Verified legacy baseline did not retain its privileged descriptor: ' + JSON.stringify(section)); return { markerless: true, hasResult: true, privilegedDescriptor: true }; })()"
     When I open file "tests/vscode-extension-tester/runs/default/legacy-result-migration/legacy-chart.kqlx" in the editor
     When I wait for "kw-query-section" in the webview "legacy-chart.kqlx" for 20 seconds
     When I evaluate "(() => { if (!window.__e2e?.workbench) throw new Error('Workbench E2E bridge unavailable'); return window.__e2e.workbench.waitForPersistedResult('query_legacy_migration', 19000); })()" in the webview "legacy-chart.kqlx" for 20 seconds
@@ -18,7 +19,6 @@ Feature: Legacy persisted Kusto result migration
     And I move the mouse to 30, 700
     And I click
     Then I take a screenshot "01-legacy-result-migrated"
-
     When I execute command "workbench.action.closeAllEditors"
     And I wait 2 seconds
     When I open file "tests/vscode-extension-tester/runs/default/legacy-result-migration/legacy-chart.kqlx" in the editor
@@ -30,7 +30,6 @@ Feature: Legacy persisted Kusto result migration
     And I move the mouse to 30, 700
     And I click
     Then I take a screenshot "02-legacy-result-reopened"
-
     When I execute command "workbench.action.closeAllEditors"
     When I execute command "kustoWorkbench.test.cleanupPersistedResultFixture"
     When I delete file "tests/vscode-extension-tester/runs/default/legacy-result-migration/legacy-chart.kqlx"

@@ -334,6 +334,29 @@ describe('HostPersistedResultSanitizationApplicationHandler', () => {
 		expect(sanitized.sections[0]).not.toHaveProperty('kustoLeaveNoTraceRevision');
 	});
 
+	it('removes a privileged descriptor while preserving an unresolved legacy payload', async () => {
+		const harness = createHandler();
+		harness.getKustoConnections.mockReturnValue([]);
+		const state = legacyKustoState({
+			resultArtifact: {
+				version: 1, artifactId: 'result:legacy-query:9', sourceBoxId: 'legacy-query',
+				revision: 9, createdAt: 1,
+				policy: {
+					exposeToActiveContent: true, sendToModel: true,
+					shareToClipboard: true, exportToCsv: true,
+				},
+			},
+		});
+
+		const sanitized = await harness.handler.sanitizeSqlLeaveNoTraceStateFresh(state);
+
+		expect(sanitized).not.toBe(state);
+		expect(sanitized.sections[0]).toHaveProperty('resultJson', state.sections[0].resultJson);
+		expect(sanitized.sections[0]).not.toHaveProperty('resultArtifact');
+		expect(sanitized.sections[0]).not.toHaveProperty('kustoAccountPartition');
+		expect(sanitized.sections[0]).not.toHaveProperty('kustoLeaveNoTraceRevision');
+	});
+
 	it('defers ambiguous Kusto ownership without modifying the legacy source', async () => {
 		const harness = createHandler();
 		harness.getKustoConnections.mockReturnValue([
@@ -431,6 +454,37 @@ describe('HostPersistedResultSanitizationApplicationHandler', () => {
 			kustoAccountPartition: 'partition-a',
 			kustoLeaveNoTraceRevision: 0,
 		});
+	});
+
+	it('adopts nested legacy Kusto comparisons through the ultimate source target', async () => {
+		const { handler } = createHandler();
+		const state = {
+			sections: [
+				{
+					id: 'legacy-source', type: 'query', clusterUrl: kustoConnection.clusterUrl,
+					connectionIdHint: kustoConnection.id, database: 'Db', query: 'T',
+					resultJson: legacyResultJson(),
+				},
+				{
+					id: 'legacy-comparison-b', type: 'query', comparisonSourceBoxId: 'legacy-source',
+					query: 'T | count', resultJson: legacyResultJson(),
+				},
+				{
+					id: 'legacy-comparison-c', type: 'query', comparisonSourceBoxId: 'legacy-comparison-b',
+					query: 'T | summarize count()', resultJson: legacyResultJson(),
+				},
+			],
+		};
+
+		const sanitized = await handler.sanitizeSqlLeaveNoTraceStateFresh(state);
+
+		for (const section of sanitized.sections) {
+			expect(section).toMatchObject({
+				resultJson: expect.any(String),
+				kustoAccountPartition: 'partition-a',
+				kustoLeaveNoTraceRevision: 0,
+			});
+		}
 	});
 
 	it('keeps a markerless comparison inert when its query source has no cached result', async () => {

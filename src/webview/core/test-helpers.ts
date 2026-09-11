@@ -33,7 +33,7 @@ import {
 import { htmlDashboardFactArtifactConsumerId, shareClipboardArtifactConsumerId } from '../../shared/resultArtifact.js';
 import { displayComparisonSummary } from '../sections/query-execution.controller.js';
 import { __kustoCloseShareModal, __kustoOpenShareModal, __kustoShareCopyToClipboard } from '../sections/kw-query-toolbar.js';
-import { adoptCurrentStateAsCleanForTest, getLastDeferredRestoredResultSettlementForTest, isPersistenceSuppressedForTest, persistDocumentAndWaitForAck, schedulePersist, suppressPersistenceForTest } from './persistence.js';
+import { adoptCurrentStateAsCleanForTest, getDeferredRestoredResultJobCountForTest, getLastDeferredRestoredResultSettlementForTest, getPendingKustoLeaveNoTracePolicyRequestIdForTest, isPersistenceSuppressedForTest, persistDocumentAndWaitForAck, schedulePersist, suppressPersistenceForTest } from './persistence.js';
 
 type MonacoLike = {
 	getDomNode?: () => HTMLElement | null;
@@ -7830,7 +7830,15 @@ async function e2eWaitForPersistedResult(boxId: string, timeoutMs: number): Prom
 		if (section?.dataset.testHasResults === 'true') return `persisted result restored for ${id}`;
 		await e2eDelay(100);
 	}
-	throw new Error(`Timed out waiting for persisted result ${id}: ${JSON.stringify(getLastDeferredRestoredResultSettlementForTest())}`);
+	const section = document.getElementById(id) as any;
+	throw new Error(`Timed out waiting for persisted result ${id}: ${JSON.stringify({
+		settlement: getLastDeferredRestoredResultSettlementForTest(),
+		deferredJobs: getDeferredRestoredResultJobCountForTest(),
+		pendingPolicyRequestId: getPendingKustoLeaveNoTracePolicyRequestIdForTest() || null,
+		clusterUrl: String(section?.getClusterUrl?.() || ''),
+		database: String(section?.getDatabase?.() || ''),
+		storedResult: typeof pState.queryResultJsonByBoxId?.[id] === 'string',
+	})}`);
 }
 
 async function e2eAssertMigratedResultChart(

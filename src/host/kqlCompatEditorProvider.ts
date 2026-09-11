@@ -909,7 +909,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						? state.autoTriggerAutocompleteEnabled
 						: undefined,
 					sections: state.sections as KqlxStateV1['sections'],
-				}) ?? ({
+				}, kustoResultPanelSession?.panelId) ?? ({
 					caretDocsEnabled: typeof state.caretDocsEnabled === 'boolean' ? state.caretDocsEnabled : undefined,
 					autoTriggerAutocompleteEnabled: typeof state.autoTriggerAutocompleteEnabled === 'boolean'
 						? state.autoTriggerAutocompleteEnabled
@@ -1073,7 +1073,9 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				lastWrittenSidecarText = repaired.text;
 				lastWrittenSidecarIdentity = repaired.identity;
 				if (kustoResultOwner?.hasCanonicalResultState()) {
-					const authoritativeState = kustoResultOwner.overlaySnapshot(repaired.file.state);
+					const authoritativeState = kustoResultOwner.overlaySnapshot(
+						repaired.file.state, kustoResultPanelSession?.panelId,
+					);
 					const materialized = await writeFreshSidecar(
 						sidecarUri,
 						authoritativeState,
@@ -1153,7 +1155,9 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 
 					if (lastKnownSidecarState) {
 						lastKnownSidecarState = await sanitizeObservedKustoStateFresh(
-							kustoResultOwner?.overlaySnapshot(lastKnownSidecarState) ?? lastKnownSidecarState,
+							kustoResultOwner?.overlaySnapshot(
+								lastKnownSidecarState, kustoResultPanelSession?.panelId,
+							) ?? lastKnownSidecarState,
 						);
 					}
 					const enabled = await this.enableSidecarKqlxForCompat(

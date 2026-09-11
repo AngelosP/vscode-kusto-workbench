@@ -77,6 +77,7 @@ type StructuralPersistedResultSanitizationHandler = {
 	sanitizeSqlLeaveNoTraceState: ReturnType<typeof vi.fn>;
 	sanitizeSqlLeaveNoTraceStateFresh: ReturnType<typeof vi.fn>;
 	sanitizeSqlLeaveNoTraceStateFailClosed: ReturnType<typeof vi.fn>;
+	commitKustoSourceAdmissionFresh: ReturnType<typeof vi.fn>;
 	publishSqlLeaveNoTraceStateFresh: ReturnType<typeof vi.fn>;
 	onDidInvalidateSqlPersistence: vscode.Event<void>;
 	onDidInvalidateKustoPersistence: vscode.Event<void>;
@@ -181,6 +182,7 @@ describe('QueryEditorProvider persisted result sanitization application', () => 
 			sanitizeSqlLeaveNoTraceState: vi.fn(),
 			sanitizeSqlLeaveNoTraceStateFresh: vi.fn(),
 			sanitizeSqlLeaveNoTraceStateFailClosed: vi.fn(),
+			commitKustoSourceAdmissionFresh: vi.fn(),
 			publishSqlLeaveNoTraceStateFresh: vi.fn((candidateState, candidatePublish) =>
 				candidateState === state && candidatePublish === publish
 					? settlement.promise
@@ -239,6 +241,7 @@ describe('QueryEditorProvider persisted result sanitization application', () => 
 			sanitizeSqlLeaveNoTraceState: vi.fn(() => synchronousResult),
 			sanitizeSqlLeaveNoTraceStateFresh: vi.fn(async () => freshResult),
 			sanitizeSqlLeaveNoTraceStateFailClosed: vi.fn(() => failClosedResult),
+			commitKustoSourceAdmissionFresh: vi.fn(),
 			publishSqlLeaveNoTraceStateFresh: vi.fn(),
 			onDidInvalidateSqlPersistence: sqlEvent,
 			onDidInvalidateKustoPersistence: kustoEvent,
@@ -275,11 +278,52 @@ describe('QueryEditorProvider persisted result sanitization application', () => 
 		expect(tryRunWithSqlOwnerSnapshotLock).not.toHaveBeenCalled();
 	});
 
+	it('reference-identically forwards and awaits Kusto source admission commits', async () => {
+		const settlement = deferred<boolean>();
+		const fingerprint = 'policy-fingerprint';
+		const commit = vi.fn(async () => true);
+		const rejection = new Error('commit admission failed');
+		const handler: StructuralPersistedResultSanitizationHandler = {
+			sanitizeSqlLeaveNoTraceState: vi.fn(),
+			sanitizeSqlLeaveNoTraceStateFresh: vi.fn(),
+			sanitizeSqlLeaveNoTraceStateFailClosed: vi.fn(),
+			commitKustoSourceAdmissionFresh: vi.fn()
+				.mockImplementationOnce((candidateFingerprint, candidateCommit) =>
+					candidateFingerprint === fingerprint && candidateCommit === commit
+						? settlement.promise
+						: Promise.reject(new Error('Provider changed the source-admission arguments.')))
+				.mockRejectedValueOnce(rejection),
+			publishSqlLeaveNoTraceStateFresh: vi.fn(),
+			onDidInvalidateSqlPersistence: emptyEvent(),
+			onDidInvalidateKustoPersistence: emptyEvent(),
+			invalidateSqlPersistence: vi.fn(),
+			invalidateKustoPersistence: vi.fn(),
+			dispose: vi.fn(),
+		};
+		const { provider } = createProvider(handler);
+		let settled = false;
+		const admission = provider.commitKustoSourceAdmissionFresh(fingerprint, commit);
+		void admission.finally(() => { settled = true; });
+		await Promise.resolve();
+
+		expect(handler.commitKustoSourceAdmissionFresh).toHaveBeenCalledOnce();
+		expect(handler.commitKustoSourceAdmissionFresh.mock.calls[0][0]).toBe(fingerprint);
+		expect(handler.commitKustoSourceAdmissionFresh.mock.calls[0][1]).toBe(commit);
+		expect(commit).not.toHaveBeenCalled();
+		expect(settled).toBe(false);
+
+		settlement.resolve(true);
+		await expect(admission).resolves.toBe(true);
+		expect(settled).toBe(true);
+		await expect(provider.commitKustoSourceAdmissionFresh(fingerprint, commit)).rejects.toBe(rejection);
+	});
+
 	it('routes SQL and Kusto lifecycle invalidation through the same owner', () => {
 		const handler: StructuralPersistedResultSanitizationHandler = {
 			sanitizeSqlLeaveNoTraceState: vi.fn(),
 			sanitizeSqlLeaveNoTraceStateFresh: vi.fn(),
 			sanitizeSqlLeaveNoTraceStateFailClosed: vi.fn(),
+			commitKustoSourceAdmissionFresh: vi.fn(),
 			publishSqlLeaveNoTraceStateFresh: vi.fn(),
 			onDidInvalidateSqlPersistence: emptyEvent(),
 			onDidInvalidateKustoPersistence: emptyEvent(),

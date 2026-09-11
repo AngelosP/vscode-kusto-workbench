@@ -45,6 +45,64 @@ function expectDeeplyFrozen(value: unknown, seen = new Set<unknown>()): void {
 }
 
 describe('BrowserViewerRoot', () => {
+	it('projects a markerless Kusto comparison and Chart losslessly for shared browser presentation', () => {
+		const sourceId = 'query_browser_owned';
+		const comparisonId = 'query_browser_markerless';
+		const chartId = 'chart_browser_markerless';
+		const clusterUrl = 'https://browser-root.kusto.windows.net';
+		const comparisonResultJson = ` {
+			"columns": ["Value"],
+			"rows": [["comparison"]],
+			"metadata": { "cluster": "browser-root", "database": "Db" }
+		} `;
+		const coordinator = new BrowserFileLoadCoordinator();
+		const presented: BrowserViewerProjection[] = [];
+		const root = new BrowserViewerRoot({
+			isCurrent: snapshot => coordinator.isCurrent(snapshot),
+			present: projection => presented.push(projection),
+		});
+		const loaded = loadedFile(coordinator, detectedFile('markerless.kqlx'), JSON.stringify({
+			kind: 'kqlx', version: 1,
+			state: { sections: [
+				{
+					id: sourceId, type: 'query', query: 'T', clusterUrl, database: 'Db',
+					resultJson: JSON.stringify({ columns: ['Value'], rows: [['source']], metadata: {} }),
+					kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
+				},
+				{
+					id: comparisonId, type: 'query', query: 'T | count',
+					comparisonSourceBoxId: sourceId,
+					resultJson: comparisonResultJson,
+					resultArtifact: {
+						version: 1, artifactId: `result:${comparisonId}:7`, sourceBoxId: comparisonId,
+						revision: 7, createdAt: 1,
+						policy: { exposeToActiveContent: true, exportToCsv: true },
+					},
+				},
+				{
+					id: chartId, type: 'chart', dataSourceId: comparisonId,
+					chartType: 'bar', xColumn: 'Value', yColumns: ['Value'], mode: 'preview',
+				},
+			] },
+		}));
+
+		expect(root.adopt(loaded)).toMatchObject({ ok: true });
+		expect(presented).toHaveLength(1);
+		const sections = presented[0].presentationState.sections as Array<Record<string, unknown>>;
+		const comparison = sections.find(section => section.id === comparisonId);
+		const chart = sections.find(section => section.id === chartId);
+		expect(comparison).toMatchObject({
+			type: 'query', comparisonSourceBoxId: sourceId, resultJson: comparisonResultJson,
+			resultArtifact: expect.objectContaining({
+				policy: { exposeToActiveContent: true, exportToCsv: true },
+			}),
+		});
+		expect(comparison).not.toHaveProperty('kustoAccountPartition');
+		expect(comparison).not.toHaveProperty('kustoLeaveNoTraceRevision');
+		expect(chart).toMatchObject({ type: 'chart', dataSourceId: comparisonId, mode: 'preview' });
+		expectDeeplyFrozen(presented[0]);
+	});
+
 	it('adopts one native KQLX payload as an immutable read-only projection without mutating codec state', () => {
 		const coordinator = new BrowserFileLoadCoordinator();
 		const presented: BrowserViewerProjection[] = [];

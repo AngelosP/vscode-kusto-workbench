@@ -26,6 +26,7 @@ import {
 } from '../../src/webview/shared/clusterUtils';
 import { parseKustoExplorerConnectionsXml } from '../../src/webview/sections/query-connection.controller';
 import { stringifyKustoExplorerConnectionsXml } from '../../src/shared/kustoExplorerConnections';
+import { legacyKustoResultTargetMatches } from '../../src/shared/legacyKustoResult';
 
 // ── formatClusterDisplayName ──────────────────────────────────────────────
 
@@ -44,6 +45,16 @@ describe('formatClusterDisplayName', () => {
 
 	it('falls back to name', () => {
 		expect(formatClusterDisplayName({ name: 'MyCluster' })).toBe('MyCluster');
+	});
+
+	it('matches a legacy payload whose metadata carries the full authored cluster URL', () => {
+		const clusterUrl = 'https://unresolved-legacy-e2e.kusto.windows.net';
+		const resultJson = JSON.stringify({
+			columns: ['Value'], rows: [[1]],
+			metadata: { cluster: clusterUrl, database: 'PersistedDb' },
+		});
+
+		expect(legacyKustoResultTargetMatches(resultJson, clusterUrl, 'PersistedDb')).toBe(true);
 	});
 });
 

@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { __kustoGetChartDatasetsInDomOrder, __kustoGetChartValidationStatus, __kustoRefreshAllDataSourceDropdowns, removeHtmlBox } from '../../src/webview/core/section-factory';
-import { htmlDashboardFactArtifactConsumerId, toPersistedResultArtifact } from '../../src/shared/resultArtifact.js';
+import {
+	createUnverifiedLegacyResultArtifactPublication,
+	htmlDashboardFactArtifactConsumerId,
+	toPersistedResultArtifact,
+} from '../../src/shared/resultArtifact.js';
 import {
 	HostPersistedResultSanitizationApplicationHandler,
 	type PersistedResultSanitizationApplicationHandlerOptions,
@@ -149,6 +153,31 @@ describe('__kustoGetChartDatasetsInDomOrder', () => {
 			valid: true,
 			availableColumns: ['Category', 'Value'],
 		});
+	});
+
+	it('exposes display-only legacy rows to Charts without creating a persisted descriptor', () => {
+		setupDom([{ id: 'query_unverified_legacy', name: 'Legacy' }]);
+		const artifact = setResultsState('query_unverified_legacy', {
+			columns: ['Category', 'Value'], rows: [['A', 2]], metadata: {},
+		}, createUnverifiedLegacyResultArtifactPublication({
+			engine: 'kusto', boxId: 'query_unverified_legacy', query: 'print Category="A", Value=2',
+		}));
+		(window as any).chartStateByBoxId.chart_unverified_legacy = {
+			dataSourceId: 'query_unverified_legacy', chartType: 'bar',
+			xColumn: 'Category', yColumns: ['Value'],
+		};
+
+		expect(__kustoGetChartValidationStatus('chart_unverified_legacy')).toMatchObject({
+			valid: true,
+			dataSourceExists: true,
+			dataSourceHasData: true,
+			availableColumns: ['Category', 'Value'],
+		});
+		expect(artifact?.policy).toEqual({});
+		expect(toPersistedResultArtifact(artifact)).toBeUndefined();
+
+		clearResultsState('query_unverified_legacy');
+		delete (window as any).chartStateByBoxId.chart_unverified_legacy;
 	});
 
 	it('includes SQL sections with results as chart data sources', () => {

@@ -3,12 +3,15 @@ import {
 	createDerivedResultArtifactPublication,
 	createResultSourceRef,
 	createRestoredKustoResultArtifactPublication,
+	createUnverifiedLegacyResultArtifactPublication,
 	formatResultSourceLabel,
+	isUnverifiedLegacyResultArtifact,
 	parseResultSourceRefKey,
 	publicationFromPersistedResultArtifact,
 	resultSourceRefKey,
 	ResultArtifactStore,
 	toPersistedResultArtifact,
+	UNVERIFIED_LEGACY_RESULT_PRODUCER,
 } from '../../src/shared/resultArtifact.js';
 
 describe('ResultArtifactStore', () => {
@@ -254,6 +257,60 @@ describe('ResultArtifactStore', () => {
 		};
 
 		expect(publicationFromPersistedResultArtifact(descriptor, 'query_2')).toBeUndefined();
+	});
+
+	it('rejects forged legacy-unverified producer text outside the runtime-only helper', () => {
+		const source = new ResultArtifactStore();
+		const original = source.publish('query_forged_legacy', {
+			columns: ['Value'], rows: [['trusted']], metadata: {},
+		}, {
+			producer: {
+				engine: 'kusto', boxId: 'query_forged_legacy', executionId: 'execution-trusted',
+				producer: 'manual',
+			},
+			policy: { accountPartition: 'partition-a', leaveNoTraceRevision: 0 },
+		})!;
+		const descriptor = toPersistedResultArtifact(original)!;
+		const forgedDescriptor = {
+			...descriptor,
+			producer: {
+				...descriptor.producer,
+				producer: UNVERIFIED_LEGACY_RESULT_PRODUCER,
+			},
+		};
+
+		expect(publicationFromPersistedResultArtifact(
+			forgedDescriptor, 'query_forged_legacy',
+		)).toBeUndefined();
+		const unbranded = new ResultArtifactStore();
+		expect(unbranded.publish('query_forged_legacy', {
+			columns: ['Value'], rows: [['forged']], metadata: {},
+		}, {
+			producer: {
+				engine: 'kusto', boxId: 'query_forged_legacy',
+				producer: UNVERIFIED_LEGACY_RESULT_PRODUCER,
+			},
+			policy: {},
+		})).toBeUndefined();
+
+		const runtimeStore = new ResultArtifactStore();
+		const runtimeOnly = runtimeStore.publish('query_forged_legacy', {
+			columns: ['Value'], rows: [['display-only']], metadata: {},
+		}, createUnverifiedLegacyResultArtifactPublication({
+			engine: 'kusto', boxId: 'query_forged_legacy', query: 'print Value=1',
+		}));
+		expect(runtimeOnly).toBeDefined();
+		expect(isUnverifiedLegacyResultArtifact(runtimeOnly)).toBe(true);
+		expect(toPersistedResultArtifact(runtimeOnly)).toBeUndefined();
+		const snapshot = runtimeStore.captureSnapshot();
+		runtimeStore.clear();
+		runtimeStore.restoreSnapshot(snapshot);
+		expect(isUnverifiedLegacyResultArtifact(
+			runtimeStore.getCurrent('query_forged_legacy'),
+		)).toBe(true);
+		expect(toPersistedResultArtifact(
+			runtimeStore.getCurrent('query_forged_legacy'),
+		)).toBeUndefined();
 	});
 
 	it('rejects noncanonical persisted IDs and prevents cross-source collisions', () => {

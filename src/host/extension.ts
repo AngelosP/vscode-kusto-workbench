@@ -387,6 +387,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			}
 			let connectionId = '';
 			let assertKustoFixtureReady: (() => Promise<void>) | undefined;
+			let ensureSyntheticKustoOwner: (() => Promise<void>) | undefined;
 			if (engine === 'kusto') {
 				const existingConnections = connectionManager.getConnections().filter(connection =>
 					existingConnectionId
@@ -413,19 +414,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 						: '';
 					if (!accountPartition) throw new Error('Existing persisted-result Kusto owner is unresolved.');
 				} else {
-					await testAuthPreferences.setExplicitAccount(connection.id, persistedResultAuthAccount);
-					await testAuthPreferences.setTokenOverride(
-						connection.authorityId,
-						persistedResultAuthAccount.id,
-						'kusto-workbench-offline-e2e-token',
-						[connection.id],
-					);
-					await testAuthPreferences.waitForWriteSettlement();
-					await connectionManager.waitForSettlement();
-					accountPartition = testAuthPreferences.getAccountPartition(connection.authorityId, persistedResultAuthAccount.id);
-					if (testAuthPreferences.getPreferredAccountId(connection.id) !== persistedResultAuthAccount.id) {
+					ensureSyntheticKustoOwner = async () => {
+						for (let attempt = 0; attempt < 3; attempt++) {
+							await testAuthPreferences.setExplicitAccount(connection.id, persistedResultAuthAccount);
+							await testAuthPreferences.setTokenOverride(
+								connection.authorityId,
+								persistedResultAuthAccount.id,
+								'kusto-workbench-offline-e2e-token',
+								[connection.id],
+							);
+							await testAuthPreferences.waitForWriteSettlement();
+							await connectionManager.waitForSettlement();
+							if (testAuthPreferences.getPreferredAccountId(connection.id)
+								=== persistedResultAuthAccount.id) return;
+						}
 						throw new Error('Persisted-result Kusto fixture owner did not become resolvable.');
-					}
+					};
+					await ensureSyntheticKustoOwner();
+					accountPartition = testAuthPreferences.getAccountPartition(connection.authorityId, persistedResultAuthAccount.id);
 					if (!await testConnectionCache.setDatabases(connection.id, accountPartition, [targetDatabase])) {
 						throw new Error('Persisted-result Kusto fixture database cache write was superseded.');
 					}
@@ -448,7 +454,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				}
 				const expectedConnectionIncarnation = connectionManager.getConnectionIncarnation(connection.id);
 				const requireCachedSchema = !existingConnection;
-				assertKustoFixtureReady = () => connectionManager.runWithLeaveNoTraceSnapshotLock(async snapshot => {
+				assertKustoFixtureReady = async () => {
+					if (ensureSyntheticKustoOwner
+						&& testAuthPreferences.getPreferredAccountId(connection.id) !== persistedResultAuthAccount.id) {
+						await ensureSyntheticKustoOwner();
+					}
+					if (!existingConnection
+						&& !testConnectionCache.getDatabases(connection.id, accountPartition, false)
+							.some(database => database.toLowerCase() === targetDatabase.toLowerCase())) {
+						if (!await testConnectionCache.setDatabases(connection.id, accountPartition, [targetDatabase])) {
+							throw new Error('Persisted-result Kusto fixture database cache repair was superseded.');
+						}
+					}
+					return connectionManager.runWithLeaveNoTraceSnapshotLock(async snapshot => {
 					const cachedSchema = await readCachedSchemaFromDiskByCluster(
 						context.globalStorageUri,
 						connection.clusterUrl,
@@ -486,7 +504,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 							hasCachedSchema: !!cachedSchema,
 						})}`);
 					}
-				});
+					});
+				};
 				await testAuthPreferences.waitForWriteSettlement();
 				await connectionManager.waitForSettlement();
 				await assertKustoFixtureReady();
@@ -511,7 +530,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				if (legacyKusto) {
 					delete section.kustoAccountPartition;
 					delete section.kustoLeaveNoTraceRevision;
-					delete section.resultArtifact;
 				} else {
 					Object.assign(section, {
 						kustoAccountPartition: accountPartition,

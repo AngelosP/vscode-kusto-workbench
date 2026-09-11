@@ -56,6 +56,7 @@ import { postMessageToHost } from '../../src/webview/shared/webview-messages.js'
 import { APPLIED_KUSTO_COPILOT_DONE_EVENT } from '../../src/webview/core/kusto-copilot-output-runtime.js';
 import { getKustoSchemaIdentityKey } from '../../src/shared/kustoAuth.js';
 import { createKustoResultBatch } from '../../src/shared/kustoResultBatch.js';
+import { createUnverifiedLegacyResultArtifactPublication } from '../../src/shared/resultArtifact.js';
 
 vi.mock('../../src/webview/shared/webview-messages.js', () => ({
 	postMessageToHost: vi.fn(),
@@ -369,6 +370,60 @@ describe('kw-query-section loading states', () => {
 		} finally {
 			delete (window as any).__kustoReadOnlyMode;
 		}
+	});
+
+	it('switches unverified legacy result tabs locally without persisting authority', async () => {
+		const el = createSection();
+		el.id = el.boxId;
+		await el.updateComplete;
+		const resultJson = '{\r\n  "columns": ["Value"],\r\n  "rows": [["first"]],\r\n  "metadata": {"cluster": "legacy", "database": "Db"},\r\n  "additionalResults": {"version": 1, "sets": [{"resultIndex": 1, "columns": ["Value"], "rows": [["second"]], "metadata": {}}]}\r\n}';
+		const batch = createKustoResultBatch([
+			{ columns: ['Value'], rows: [['first']], metadata: {} },
+			{ columns: ['Value'], rows: [['second']], metadata: {} },
+		]);
+		expect(batch.ok).toBe(true);
+		if (!batch.ok) return;
+		pState.queryResultJsonByBoxId[el.boxId] = resultJson;
+		expect(displayResultBatchForBox(batch.value, el.boxId, {
+			artifactPublication: createUnverifiedLegacyResultArtifactPublication({
+				engine: 'kusto', boxId: el.boxId, query: 'print Value=1',
+			}),
+		})).toBe(true);
+		vi.mocked(postMessageToHost).mockClear();
+		const table = el.querySelector('kw-data-table') as any;
+
+		table.dispatchEvent(new CustomEvent('result-set-change', {
+			detail: { resultIndex: 1 },
+		}));
+
+		expect(getSelectedResultIndex(el.boxId)).toBe(1);
+		expect((el.querySelector('kw-data-table') as any).rows).toEqual([['second']]);
+		expect(postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'selectKustoResult',
+		}));
+		expect(pState.queryResultJsonByBoxId[el.boxId]).toBe(resultJson);
+		expect(pState.resultArtifactByBoxId[el.boxId]).toBeUndefined();
+		expect(pState.kustoResultOwnerByBoxId[el.boxId]).toBeUndefined();
+		expect(el.serialize()).not.toHaveProperty('selectedResultIndex');
+	});
+
+	it('serializes only authored partial target fields over an inherited runtime target', async () => {
+		const el = createSection();
+		el.id = el.boxId;
+		await el.updateComplete;
+		el.setDesiredClusterUrl('https://source.kusto.windows.net');
+		el.setDesiredConnectionIdentity('tenant-a.example.com', 'source-connection');
+		el.setDesiredDatabase('Db');
+		el.setPersistConnectionSelection(true, {
+			authorityId: 'tenant-b.example.com',
+		});
+
+		const serialized = el.serialize();
+
+		expect(serialized.authorityId).toBe('tenant-b.example.com');
+		expect(serialized.clusterUrl).toBe('');
+		expect(serialized.database).toBe('');
+		expect(serialized.connectionIdHint).toBeUndefined();
 	});
 
 	it('focuses and restores the cluster trigger around the add-connection dialog', async () => {

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { KustoResultPersistenceOwner } from '../../../src/host/kustoResultPersistenceOwner.js';
 import { createKustoResultBatch } from '../../../src/shared/kustoResultBatch.js';
+import { getKustoConnectionIdentityKey } from '../../../src/shared/kustoAuth.js';
+import { UNVERIFIED_LEGACY_RESULT_PRODUCER } from '../../../src/shared/resultArtifact.js';
 
 function batch() {
 	const created = createKustoResultBatch([
@@ -663,6 +665,35 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(owner.getCommittedSummary('query_1')?.executionId).toBe('execution-1');
 	});
 
+	it('keeps committed rows scoped to each panel target after retarget', () => {
+		const { owner, session: firstPanel } = createOwner();
+		expect(firstPanel.beginExecution(terminal())).toBe(true);
+		expect(firstPanel.stagePublication('publication-1', terminal())).toBeTruthy();
+		expect(firstPanel.commitPublication('publication-1')).toBe(true);
+		const secondPanel = owner.openPanel('panel-2');
+		expect(secondPanel.openSection('query_1', 'section-instance-2')).toBe(true);
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'section-instance-2', targetGeneration: 1,
+			connectionId: 'connection-2', database: 'OtherDb',
+			connectionIdentityKey: 'https://other-cluster|',
+		})).toBe(true);
+		const targetBState = { sections: [{
+			id: 'query_1', type: 'query', clusterUrl: 'https://other-cluster',
+			connectionIdHint: 'connection-2', database: 'OtherDb',
+		}] };
+
+		const secondOverlay = owner.overlaySnapshot(targetBState, 'panel-2').sections?.[0] as Record<string, unknown>;
+
+		expect(secondOverlay).not.toHaveProperty('resultJson');
+		expect(secondOverlay.clusterUrl).toBe('https://other-cluster');
+		expect(secondOverlay.connectionIdHint).toBe('connection-2');
+		expect(secondOverlay.database).toBe('OtherDb');
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		}, 'panel-1').sections?.[0]).toHaveProperty('resultJson');
+		expect(owner.getCommittedSummary('query_1')).toBeTruthy();
+	});
+
 	it('revokes a restored attachment when physical target enrichment mismatches', () => {
 		const first = createOwner();
 		first.session.beginExecution(terminal());
@@ -676,11 +707,19 @@ describe('KustoResultPersistenceOwner', () => {
 		owner.admitCanonicalSource('reopened-source', persisted);
 		const session = owner.openPanel('reopened-panel');
 		session.openSection('query_1', 'reopened-instance');
-		session.adoptTarget({
+		expect(session.adoptTarget({
 			boxId: 'query_1', sectionInstanceId: 'reopened-instance', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Db',
+		})).toBe(true);
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		}).sections?.[0]).toHaveProperty('resultJson');
+
+		expect(session.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'reopened-instance', targetGeneration: 2,
 			connectionId: 'connection-1', database: 'Db', connectionRevision: 5,
 			connectionIdentityKey: 'https://cluster|other-authority',
-		});
+		})).toBe(true);
 
 		expect(owner.overlaySnapshot({
 			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
@@ -734,6 +773,39 @@ describe('KustoResultPersistenceOwner', () => {
 		}).sections?.[0] as Record<string, unknown>;
 
 		expect(overlaid.database).toBe('OtherDb');
+		expect(overlaid).not.toHaveProperty('resultJson');
+		expect(overlaid).not.toHaveProperty('resultArtifact');
+	});
+
+	it('rejects a modern attachment forged with the runtime-only legacy producer', () => {
+		const source = createOwner();
+		source.session.beginExecution(terminal());
+		source.session.stagePublication('publication-1', terminal());
+		source.session.commitPublication('publication-1');
+		const persisted = source.owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		});
+		const section = persisted.sections?.[0] as Record<string, unknown>;
+		const resultArtifact = section.resultArtifact as Record<string, unknown>;
+		const owner = new KustoResultPersistenceOwner('file:///forged-runtime-producer.kqlx');
+
+		owner.admitCanonicalSource('forged-runtime-producer', {
+			sections: [{
+				...section,
+				resultArtifact: {
+					...resultArtifact,
+					producer: {
+						...(resultArtifact.producer as Record<string, unknown>),
+						producer: UNVERIFIED_LEGACY_RESULT_PRODUCER,
+					},
+				},
+			}],
+		});
+
+		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
+		const overlaid = owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		}).sections?.[0] as Record<string, unknown>;
 		expect(overlaid).not.toHaveProperty('resultJson');
 		expect(overlaid).not.toHaveProperty('resultArtifact');
 	});
@@ -1120,22 +1192,1156 @@ describe('KustoResultPersistenceOwner', () => {
 		expect((session as any).selectionResponses.size).toBeLessThanOrEqual(256);
 	});
 
-	it('preserves markerless legacy attachments as inert canonical source data', () => {
+	it('preserves markerless legacy payloads without retaining a privileged descriptor', () => {
 		const owner = new KustoResultPersistenceOwner('file:///legacy.kqlx');
+		owner.openPanel('panel-legacy');
 		const legacy = {
 			sections: [{
 				id: 'query_legacy', type: 'query', query: 'print Value=1',
 				resultJson: JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} }),
+				resultArtifact: {
+					version: 1, artifactId: 'result:query_legacy:7', sourceBoxId: 'query_legacy',
+					revision: 7, createdAt: 1,
+					policy: { exposeToActiveContent: true, exportToCsv: true },
+				},
 			}],
 		};
-		owner.admitCanonicalSource('fingerprint-a', legacy);
-
-		const overlaid = owner.overlaySnapshot({
-			sections: [{ id: 'query_legacy', type: 'query', query: 'print Value=2' }],
+		const sanitized = {
+			sections: [{
+				id: 'query_legacy', type: 'query', query: 'print Value=1',
+				resultJson: legacy.sections[0].resultJson,
+			}],
+		};
+		owner.revokeSanitizedAttachments(legacy, sanitized);
+		owner.revokePolicyIncompatibleAttachments({
+			clusterKeys: [], globallyBlocked: false, version: 1, revocationGenerations: {},
 		});
+		const admission = owner.prepareCanonicalSource(
+			'fingerprint-a', sanitized, 'source-revision-a', 'panel-legacy',
+		);
+		expect(admission).toBeDefined();
+
+		const overlaid = admission!.projectedState;
 
 		expect((overlaid.sections?.[0] as Record<string, unknown>).resultJson)
 			.toBe(legacy.sections[0].resultJson);
+		expect(overlaid.sections?.[0]).not.toHaveProperty('resultArtifact');
+	});
+
+	it('preserves markerless payloads when an owned row-free write starts before initial admission commits', () => {
+		const owner = new KustoResultPersistenceOwner('file:///legacy-race.kqlx');
+		owner.openPanel('panel-legacy-race');
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		const admission = owner.prepareCanonicalSource(
+			'initial-fingerprint',
+			{ sections: [{ id: 'query_legacy', type: 'query', resultJson }] },
+			'initial-source-revision',
+			'panel-legacy-race',
+		);
+		expect(admission).toBeDefined();
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_legacy', type: 'query' }],
+		}, 'panel-legacy-race').sections?.[0]).toHaveProperty('resultJson', resultJson);
+		owner.markOwnedSourceFingerprint('owned-row-free-fingerprint');
+
+		expect(admission!.commit()).toBe(true);
+		owner.admitCanonicalSource(
+			'owned-row-free-fingerprint',
+			{ sections: [{ id: 'query_legacy', type: 'query' }] },
+		);
+
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_legacy', type: 'query' }],
+		}).sections?.[0]).toHaveProperty('resultJson', resultJson);
+	});
+
+	it('admits an owned markerless source after the initial admission is superseded', () => {
+		const owner = new KustoResultPersistenceOwner('file:///legacy-owned-retry.kqlx');
+		owner.openPanel('panel-legacy-owned-retry');
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		const source = { sections: [{ id: 'query_legacy', type: 'query', resultJson }] };
+		const initial = owner.prepareCanonicalSource(
+			'initial-markerless-fingerprint', source, 'initial-source-revision',
+			'panel-legacy-owned-retry',
+		);
+		initial?.discard();
+		owner.markOwnedSourceFingerprint('owned-markerless-fingerprint');
+
+		const retry = owner.prepareCanonicalSource(
+			'owned-markerless-fingerprint', source, 'owned-source-revision',
+			'panel-legacy-owned-retry',
+		);
+
+		expect(retry?.projectedState.sections?.[0]).toHaveProperty('resultJson', resultJson);
+		expect(retry?.commit()).toBe(true);
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_legacy', type: 'query' }],
+		}).sections?.[0]).toHaveProperty('resultJson', resultJson);
+	});
+
+	it('rebases covered queries while admitting uncovered owned markerless state', () => {
+		const { owner, session } = createOwner();
+		expect(session.beginExecution(terminal())).toBe(true);
+		expect(session.stagePublication('publication-1', terminal())).toBeTruthy();
+		expect(session.commitPublication('publication-1')).toBe(true);
+		const existingResultJson = (owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		}).sections?.[0] as Record<string, unknown>).resultJson;
+		const newResultJson = JSON.stringify({ columns: ['New'], rows: [[2]], metadata: {} });
+		const sqlComparisonResultJson = JSON.stringify({ columns: ['Sql'], rows: [[3]], metadata: {} });
+		const source = { sections: [
+			{ id: 'query_1', type: 'query', query: 'print First=1' },
+			{ id: 'query_new', type: 'query', query: 'print New=2', resultJson: newResultJson },
+			{ id: 'sql_1', type: 'sql', query: 'select 3' },
+			{
+				id: 'query_sql_comparison', type: 'query', comparisonSourceBoxId: 'sql_1',
+				resultJson: sqlComparisonResultJson,
+			},
+		] };
+		owner.markOwnedSourceFingerprint('owned-expanded-fingerprint');
+
+		const admission = owner.prepareCanonicalSource(
+			'owned-expanded-fingerprint', source, 'owned-expanded-source', 'panel-1',
+		);
+
+		expect(admission?.projectedState.sections?.[0]).toHaveProperty('resultJson', existingResultJson);
+		expect(admission?.projectedState.sections?.[1]).toHaveProperty('resultJson', newResultJson);
+		expect(admission?.projectedState.sections?.[3]).toHaveProperty('resultJson', sqlComparisonResultJson);
+		expect(admission?.commit()).toBe(true);
+		expect(owner.hasMarkerlessInertState('query_sql_comparison')).toBe(false);
+		const overlaid = owner.overlaySnapshot({
+			sections: [
+				{ id: 'query_1', type: 'query' },
+				{ id: 'query_new', type: 'query' },
+				{ id: 'sql_1', type: 'sql' },
+				{
+					id: 'query_sql_comparison', type: 'query', comparisonSourceBoxId: 'sql_1',
+					resultJson: sqlComparisonResultJson,
+				},
+			],
+		});
+		expect(overlaid.sections?.[0]).toHaveProperty('resultJson', existingResultJson);
+		expect(overlaid.sections?.[1]).toHaveProperty('resultJson', newResultJson);
+		expect(overlaid.sections?.[3]).toHaveProperty('resultJson', sqlComparisonResultJson);
+		const rowFreeComparison = owner.overlaySnapshot({
+			sections: [
+				{ id: 'sql_1', type: 'sql' },
+				{ id: 'query_sql_comparison', type: 'query', comparisonSourceBoxId: 'sql_1' },
+			],
+		});
+		expect(rowFreeComparison.sections?.[1]).not.toHaveProperty('resultJson');
+	});
+
+	it('retires canonical queries omitted by a fully covered owned source', () => {
+		const owner = new KustoResultPersistenceOwner('file:///legacy-owned-contraction.kqlx');
+		const firstResultJson = JSON.stringify({ columns: ['First'], rows: [[1]], metadata: {} });
+		const secondResultJson = JSON.stringify({ columns: ['Second'], rows: [[2]], metadata: {} });
+		owner.admitCanonicalSource('initial-two-query-source', {
+			sections: [
+				{ id: 'query_first', type: 'query', resultJson: firstResultJson },
+				{ id: 'query_second', type: 'query', resultJson: secondResultJson },
+			],
+		});
+		owner.markOwnedSourceFingerprint('owned-contracted-fingerprint');
+
+		const admission = owner.prepareCanonicalSource(
+			'owned-contracted-fingerprint',
+			{ sections: [{ id: 'query_first', type: 'query' }] },
+			'owned-contracted-source',
+		);
+
+		expect(admission?.projectedState.sections?.[0]).toHaveProperty('resultJson', firstResultJson);
+		expect(admission?.commit()).toBe(true);
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_second', type: 'query' }],
+		}).sections?.[0]).not.toHaveProperty('resultJson');
+	});
+
+	it('retires omitted queries from an exact-pair source', () => {
+		const owner = new KustoResultPersistenceOwner('file:///legacy-exact-contraction.kqlx');
+		const firstResultJson = JSON.stringify({ columns: ['First'], rows: [[1]], metadata: {} });
+		const secondResultJson = JSON.stringify({ columns: ['Second'], rows: [[2]], metadata: {} });
+		owner.admitCanonicalSource('same-fingerprint', {
+			sections: [
+				{ id: 'query_first', type: 'query', resultJson: firstResultJson },
+				{ id: 'query_second', type: 'query', resultJson: secondResultJson },
+			],
+		}, 'same-source-revision');
+
+		const admission = owner.prepareCanonicalSource(
+			'same-fingerprint',
+			{ sections: [{ id: 'query_first', type: 'query' }] },
+			'same-source-revision',
+		);
+
+		expect(admission?.projectedState.sections?.[0]).toHaveProperty('resultJson', firstResultJson);
+		expect(admission?.commit()).toBe(true);
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_second', type: 'query' }],
+		}).sections?.[0]).not.toHaveProperty('resultJson');
+	});
+
+	it('admits uncovered queries from an exact-pair source', () => {
+		const owner = new KustoResultPersistenceOwner('file:///legacy-exact-expansion.kqlx');
+		const firstResultJson = JSON.stringify({ columns: ['First'], rows: [[1]], metadata: {} });
+		const secondResultJson = JSON.stringify({ columns: ['Second'], rows: [[2]], metadata: {} });
+		owner.admitCanonicalSource('same-fingerprint', {
+			sections: [{ id: 'query_first', type: 'query', resultJson: firstResultJson }],
+		}, 'same-source-revision');
+
+		const admission = owner.prepareCanonicalSource(
+			'same-fingerprint',
+			{ sections: [
+				{ id: 'query_first', type: 'query' },
+				{ id: 'query_second', type: 'query', resultJson: secondResultJson },
+			] },
+			'same-source-revision',
+		);
+
+		expect(admission?.projectedState.sections?.[0]).toHaveProperty('resultJson', firstResultJson);
+		expect(admission?.projectedState.sections?.[1]).toHaveProperty('resultJson', secondResultJson);
+		expect(admission?.commit()).toBe(true);
+		expect(owner.hasMarkerlessInertState('query_second')).toBe(true);
+	});
+
+	it('retires canonical queries when an owned source has no Kusto sections', () => {
+		const owner = new KustoResultPersistenceOwner('file:///legacy-owned-empty.kqlx');
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		owner.admitCanonicalSource('initial-kusto-source', {
+			sections: [{ id: 'query_legacy', type: 'query', resultJson }],
+		});
+		owner.markOwnedSourceFingerprint('owned-sql-only-fingerprint');
+
+		const admission = owner.prepareCanonicalSource(
+			'owned-sql-only-fingerprint',
+			{ sections: [{ id: 'sql_1', type: 'sql', query: 'select 1' }] },
+			'owned-sql-only-source',
+		);
+
+		expect(admission?.commit()).toBe(true);
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_legacy', type: 'query' }],
+		}).sections?.[0]).not.toHaveProperty('resultJson');
+	});
+
+	it('clears committed selection when an owned source drops its final Kusto query', () => {
+		const { owner, session } = createOwner();
+		owner.admitCanonicalSource('initial-row-free-source', {
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		});
+		expect(session.beginExecution(terminal())).toBe(true);
+		const staged = session.stagePublication('publication-1', terminal())!;
+		expect(session.commitPublication('publication-1')).toBe(true);
+		expect(session.selectResult({
+			requestId: 'select-second', boxId: 'query_1', sectionInstanceId: 'section-instance-1',
+			targetGeneration: 1, primaryArtifactId: staged.resultArtifactAssignment.artifactId,
+			resultIndex: 1,
+		})).toEqual({ accepted: true, resultIndex: 1 });
+		owner.markOwnedSourceFingerprint('owned-drop-final-fingerprint');
+
+		const admission = owner.prepareCanonicalSource(
+			'owned-drop-final-fingerprint',
+			{ sections: [{ id: 'sql_1', type: 'sql', query: 'select 1' }] },
+			'owned-drop-final-source',
+			'panel-1',
+		);
+
+		expect(admission?.commit()).toBe(true);
+		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query' }],
+		}).sections?.[0]).not.toHaveProperty('resultJson');
+		const rerun = terminal('execution-2');
+		expect(session.beginExecution(rerun)).toBe(true);
+		expect(session.stagePublication('publication-2', rerun)).toBeTruthy();
+		expect(session.commitPublication('publication-2')).toBe(true);
+		expect(owner.getCommittedSummary('query_1')?.selectedResultIndex).toBe(0);
+	});
+
+	it('hands a fully covered owned source to the admitting panel', () => {
+		const { owner, session: firstPanel } = createOwner();
+		expect(firstPanel.beginExecution(terminal())).toBe(true);
+		expect(firstPanel.stagePublication('publication-1', terminal())).toBeTruthy();
+		expect(firstPanel.commitPublication('publication-1')).toBe(true);
+		const secondPanel = owner.openPanel('panel-2');
+		expect(secondPanel.openSection('query_1', 'section-instance-1')).toBe(true);
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'section-instance-1', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Db',
+		})).toBe(true);
+		owner.markOwnedSourceFingerprint('panel-2-owned-fingerprint');
+
+		const admission = owner.prepareCanonicalSource(
+			'panel-2-owned-fingerprint',
+			{ sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }] },
+			'panel-2-owned-source',
+			'panel-2',
+		);
+
+		expect(admission?.commit()).toBe(true);
+		owner.closePanel('panel-1');
+		expect(secondPanel.beginExecution(terminal('execution-2'))).toBe(true);
+	});
+
+	it('does not restore an exact-pair attachment rejected by the admitting panel target', () => {
+		const { owner, session: firstPanel } = createOwner();
+		const rowFreeState = {
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		};
+		owner.admitCanonicalSource('same-source-fingerprint', rowFreeState, 'same-source-revision');
+		expect(firstPanel.beginExecution(terminal())).toBe(true);
+		expect(firstPanel.stagePublication('publication-1', terminal())).toBeTruthy();
+		expect(firstPanel.commitPublication('publication-1')).toBe(true);
+		const secondPanel = owner.openPanel('panel-2');
+		expect(secondPanel.openSection('query_1', 'section-instance-2')).toBe(true);
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'section-instance-2', targetGeneration: 1,
+			connectionId: 'connection-2', database: 'OtherDb',
+		})).toBe(true);
+
+		const admission = owner.prepareCanonicalSource(
+			'same-source-fingerprint', rowFreeState, 'same-source-revision', 'panel-2',
+		);
+
+		expect(admission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(admission?.commit()).toBe(true);
+		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
+		const overlaid = owner.overlaySnapshot({
+			sections: [{
+				id: 'query_1', type: 'query', connectionIdHint: 'connection-2', database: 'OtherDb',
+			}],
+		}, 'panel-2').sections?.[0] as Record<string, unknown>;
+		expect(overlaid).not.toHaveProperty('resultJson');
+		expect(overlaid.connectionIdHint).toBe('connection-2');
+		expect(overlaid.database).toBe('OtherDb');
+	});
+
+	it('does not restore an owned attachment rejected by the admitting panel target', () => {
+		const { owner, session: firstPanel } = createOwner();
+		const rowFreeState = {
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		};
+		owner.admitCanonicalSource('initial-source-fingerprint', rowFreeState, 'initial-source-revision');
+		expect(firstPanel.beginExecution(terminal())).toBe(true);
+		expect(firstPanel.stagePublication('publication-1', terminal())).toBeTruthy();
+		expect(firstPanel.commitPublication('publication-1')).toBe(true);
+		const secondPanel = owner.openPanel('panel-2');
+		expect(secondPanel.openSection('query_1', 'section-instance-2')).toBe(true);
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'section-instance-2', targetGeneration: 1,
+			connectionId: 'connection-2', database: 'OtherDb',
+		})).toBe(true);
+		owner.markOwnedSourceFingerprint('owned-mismatched-fingerprint');
+
+		const admission = owner.prepareCanonicalSource(
+			'owned-mismatched-fingerprint', rowFreeState, 'owned-mismatched-source', 'panel-2',
+		);
+
+		expect(admission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(admission?.commit()).toBe(true);
+		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
+		const overlaid = owner.overlaySnapshot({
+			sections: [{
+				id: 'query_1', type: 'query', connectionIdHint: 'connection-2', database: 'OtherDb',
+			}],
+		}, 'panel-2').sections?.[0] as Record<string, unknown>;
+		expect(overlaid).not.toHaveProperty('resultJson');
+		expect(overlaid.connectionIdHint).toBe('connection-2');
+		expect(overlaid.database).toBe('OtherDb');
+	});
+
+	it('retries an exact-pair admission when a rejected target becomes compatible', () => {
+		const { owner, session: firstPanel } = createOwner();
+		const rowFreeState = {
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		};
+		owner.admitCanonicalSource('same-source-fingerprint', rowFreeState, 'same-source-revision');
+		expect(firstPanel.beginExecution(terminal())).toBe(true);
+		expect(firstPanel.stagePublication('publication-1', terminal())).toBeTruthy();
+		expect(firstPanel.commitPublication('publication-1')).toBe(true);
+		const secondPanel = owner.openPanel('panel-2');
+		expect(secondPanel.openSection('query_1', 'section-instance-2')).toBe(true);
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'section-instance-2', targetGeneration: 1,
+			connectionId: 'connection-2', database: 'OtherDb',
+		})).toBe(true);
+		const firstAdmission = owner.prepareCanonicalSource(
+			'same-source-fingerprint', rowFreeState, 'same-source-revision', 'panel-2',
+		);
+		expect(firstAdmission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'section-instance-2', targetGeneration: 2,
+			connectionId: 'connection-1', database: 'Db',
+		})).toBe(true);
+
+		expect(firstAdmission?.commit()).toBe(false);
+		const retry = owner.prepareCanonicalSource(
+			'same-source-fingerprint', rowFreeState, 'same-source-revision', 'panel-2',
+		);
+		expect(retry?.projectedState.sections?.[0]).toHaveProperty('resultJson');
+		expect(retry?.commit()).toBe(true);
+		expect(owner.getCommittedSummary('query_1')).toBeTruthy();
+	});
+
+	it('retries an owned admission when a rejected target becomes compatible', () => {
+		const { owner, session: firstPanel } = createOwner();
+		const rowFreeState = {
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		};
+		owner.admitCanonicalSource('initial-source-fingerprint', rowFreeState, 'initial-source-revision');
+		expect(firstPanel.beginExecution(terminal())).toBe(true);
+		expect(firstPanel.stagePublication('publication-1', terminal())).toBeTruthy();
+		expect(firstPanel.commitPublication('publication-1')).toBe(true);
+		const secondPanel = owner.openPanel('panel-2');
+		expect(secondPanel.openSection('query_1', 'section-instance-2')).toBe(true);
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'section-instance-2', targetGeneration: 1,
+			connectionId: 'connection-2', database: 'OtherDb',
+		})).toBe(true);
+		owner.markOwnedSourceFingerprint('owned-target-reversal-fingerprint');
+		const firstAdmission = owner.prepareCanonicalSource(
+			'owned-target-reversal-fingerprint', rowFreeState,
+			'owned-target-reversal-source', 'panel-2',
+		);
+		expect(firstAdmission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'section-instance-2', targetGeneration: 2,
+			connectionId: 'connection-1', database: 'Db',
+		})).toBe(true);
+
+		expect(firstAdmission?.commit()).toBe(false);
+		const retry = owner.prepareCanonicalSource(
+			'owned-target-reversal-fingerprint', rowFreeState,
+			'owned-target-reversal-source', 'panel-2',
+		);
+		expect(retry?.projectedState.sections?.[0]).toHaveProperty('resultJson');
+		expect(retry?.commit()).toBe(true);
+		expect(owner.getCommittedSummary('query_1')).toBeTruthy();
+	});
+
+	it('rejects a descriptorless migrated result after mismatched initial target adoption', () => {
+		const owner = new KustoResultPersistenceOwner('file:///descriptorless-initial-mismatch.kqlx');
+		const panel = owner.openPanel('panel-descriptorless');
+		expect(panel.openSection('query_legacy', 'section-descriptorless')).toBe(true);
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		const source = { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+			resultJson, kustoAccountPartition: 'partition-a',
+			kustoLeaveNoTraceRevision: 0,
+		}] };
+		const firstAdmission = owner.prepareCanonicalSource(
+			'descriptorless-source', source, 'descriptorless-revision', 'panel-descriptorless',
+		);
+		expect(firstAdmission?.projectedState.sections?.[0]).toHaveProperty('resultJson', resultJson);
+		expect(panel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-descriptorless', targetGeneration: 1,
+			connectionId: 'connection-b', database: 'DbB',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-b.kusto.windows.net', 'tenant-b.example.com',
+			),
+		})).toBe(true);
+
+		expect(firstAdmission?.commit()).toBe(false);
+		const retry = owner.prepareCanonicalSource(
+			'descriptorless-source', source, 'descriptorless-revision', 'panel-descriptorless',
+		);
+		expect(retry?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(retry?.commit()).toBe(true);
+		expect(owner.overlaySnapshot({
+			sections: [{
+				id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-b.kusto.windows.net',
+				authorityId: 'tenant-b.example.com', connectionIdHint: 'connection-b', database: 'DbB',
+			}],
+		}, 'panel-descriptorless').sections?.[0]).not.toHaveProperty('resultJson');
+	});
+
+	it.each([
+		['connection hint', {
+			connectionId: 'connection-b',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-a.example.com',
+			),
+		}],
+		['authority', {
+			connectionId: 'connection-a',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-b.example.com',
+			),
+		}],
+	] as const)('rejects a descriptorless migrated result with a mismatched %s', (_label, mismatch) => {
+		const owner = new KustoResultPersistenceOwner(`file:///descriptorless-${_label}.kqlx`);
+		const panel = owner.openPanel('panel-descriptorless');
+		expect(panel.openSection('query_legacy', 'section-descriptorless')).toBe(true);
+		expect(panel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-descriptorless', targetGeneration: 1,
+			database: 'DbA', ...mismatch,
+		})).toBe(true);
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		const source = { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+			resultJson, kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
+		}] };
+
+		const admission = owner.prepareCanonicalSource(
+			'descriptorless-source', source, 'descriptorless-revision', 'panel-descriptorless',
+		);
+
+		expect(admission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(admission?.commit()).toBe(true);
+	});
+
+	it('retries a descriptorless migrated result when a rejected target becomes compatible', () => {
+		const owner = new KustoResultPersistenceOwner('file:///descriptorless-rejected-compatible.kqlx');
+		const firstPanel = owner.openPanel('panel-a');
+		const secondPanel = owner.openPanel('panel-b');
+		expect(firstPanel.openSection('query_legacy', 'section-a')).toBe(true);
+		expect(secondPanel.openSection('query_legacy', 'section-b')).toBe(true);
+		expect(firstPanel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-a', targetGeneration: 1,
+			connectionId: 'connection-a', database: 'DbA',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-a.example.com',
+			),
+		})).toBe(true);
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-b', targetGeneration: 1,
+			connectionId: 'connection-b', database: 'DbB',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-b.kusto.windows.net', 'tenant-b.example.com',
+			),
+		})).toBe(true);
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		const source = { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+			resultJson, kustoAccountPartition: 'partition-a',
+			kustoLeaveNoTraceRevision: 0,
+		}] };
+		owner.admitCanonicalSource('descriptorless-source', source, 'descriptorless-revision');
+		const firstAdmission = owner.prepareCanonicalSource(
+			'descriptorless-source', source, 'descriptorless-revision', 'panel-b',
+		);
+		expect(firstAdmission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-b', targetGeneration: 2,
+			connectionId: 'connection-a', database: 'DbA',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-a.example.com',
+			),
+		})).toBe(true);
+
+		expect(firstAdmission?.commit()).toBe(false);
+		const retry = owner.prepareCanonicalSource(
+			'descriptorless-source', source, 'descriptorless-revision', 'panel-b',
+		);
+		expect(retry?.projectedState.sections?.[0]).toHaveProperty('resultJson', resultJson);
+		expect(retry?.commit()).toBe(true);
+	});
+
+	it('retries a descriptorless migrated result when an allowed target becomes incompatible', () => {
+		const owner = new KustoResultPersistenceOwner('file:///descriptorless-allowed-rejected.kqlx');
+		const firstPanel = owner.openPanel('panel-a');
+		const secondPanel = owner.openPanel('panel-b');
+		expect(firstPanel.openSection('query_legacy', 'section-a')).toBe(true);
+		expect(secondPanel.openSection('query_legacy', 'section-b')).toBe(true);
+		expect(firstPanel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-a', targetGeneration: 1,
+			connectionId: 'connection-a', database: 'DbA',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-a.example.com',
+			),
+		})).toBe(true);
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-b', targetGeneration: 1,
+			connectionId: 'connection-a', database: 'DbA',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-a.example.com',
+			),
+		})).toBe(true);
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		const source = { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+			resultJson, kustoAccountPartition: 'partition-a',
+			kustoLeaveNoTraceRevision: 0,
+		}] };
+		owner.admitCanonicalSource('descriptorless-source', source, 'descriptorless-revision');
+		const firstAdmission = owner.prepareCanonicalSource(
+			'descriptorless-source', source, 'descriptorless-revision', 'panel-b',
+		);
+		expect(firstAdmission?.projectedState.sections?.[0]).toHaveProperty('resultJson', resultJson);
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-b', targetGeneration: 2,
+			connectionId: 'connection-b', database: 'DbB',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-b.kusto.windows.net', 'tenant-b.example.com',
+			),
+		})).toBe(true);
+
+		expect(firstAdmission?.commit()).toBe(false);
+		const retry = owner.prepareCanonicalSource(
+			'descriptorless-source', source, 'descriptorless-revision', 'panel-b',
+		);
+		expect(retry?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(retry?.commit()).toBe(true);
+	});
+
+	it('keeps descriptorless migrated rows scoped to each panel target after commit', () => {
+		const owner = new KustoResultPersistenceOwner('file:///descriptorless-multi-panel.kqlx');
+		const firstPanel = owner.openPanel('panel-a');
+		const secondPanel = owner.openPanel('panel-b');
+		expect(firstPanel.openSection('query_legacy', 'section-a')).toBe(true);
+		expect(secondPanel.openSection('query_legacy', 'section-b')).toBe(true);
+		const targetA = {
+			connectionId: 'connection-a', database: 'DbA',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-a.example.com',
+			),
+		};
+		expect(firstPanel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-a', targetGeneration: 1, ...targetA,
+		})).toBe(true);
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-b', targetGeneration: 1, ...targetA,
+		})).toBe(true);
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		owner.admitCanonicalSource('descriptorless-source', { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+			resultJson, kustoAccountPartition: 'partition-a',
+			kustoLeaveNoTraceRevision: 0,
+		}] }, 'descriptorless-revision');
+		const rowFreeTargetA = { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+		}] };
+		expect(owner.overlaySnapshot(rowFreeTargetA, 'panel-a').sections?.[0])
+			.toHaveProperty('resultJson', resultJson);
+		expect(owner.overlaySnapshot(rowFreeTargetA, 'panel-b').sections?.[0])
+			.toHaveProperty('resultJson', resultJson);
+
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-b', targetGeneration: 2,
+			connectionId: 'connection-b', database: 'DbB',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-b.kusto.windows.net', 'tenant-b.example.com',
+			),
+		})).toBe(true);
+		const rowFreeTargetB = { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-b.kusto.windows.net',
+			authorityId: 'tenant-b.example.com', connectionIdHint: 'connection-b', database: 'DbB',
+		}] };
+
+		const secondOverlay = owner.overlaySnapshot(rowFreeTargetB, 'panel-b').sections?.[0] as Record<string, unknown>;
+		expect(secondOverlay).not.toHaveProperty('resultJson');
+		expect(secondOverlay.clusterUrl).toBe('https://cluster-b.kusto.windows.net');
+		expect(secondOverlay.connectionIdHint).toBe('connection-b');
+		expect(secondOverlay.database).toBe('DbB');
+		expect(owner.overlaySnapshot(rowFreeTargetA, 'panel-a').sections?.[0])
+			.toHaveProperty('resultJson', resultJson);
+	});
+
+	it('keeps an owned row-free candidate hidden from a mismatched panel target', () => {
+		const owner = new KustoResultPersistenceOwner('file:///descriptorless-owned-row-free.kqlx');
+		const firstPanel = owner.openPanel('panel-a');
+		const secondPanel = owner.openPanel('panel-b');
+		expect(firstPanel.openSection('query_legacy', 'section-a')).toBe(true);
+		expect(secondPanel.openSection('query_legacy', 'section-b')).toBe(true);
+		expect(firstPanel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-a', targetGeneration: 1,
+			connectionId: 'connection-a', database: 'DbA',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-a.example.com',
+			),
+		})).toBe(true);
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-b', targetGeneration: 1,
+			connectionId: 'connection-b', database: 'DbB',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-b.kusto.windows.net', 'tenant-b.example.com',
+			),
+		})).toBe(true);
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		owner.admitCanonicalSource('descriptorless-source', { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+			resultJson, kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
+		}] }, 'descriptorless-revision');
+		owner.markOwnedSourceFingerprint('owned-row-free-fingerprint');
+		const rowFreeTargetA = { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+		}] };
+
+		const admission = owner.prepareCanonicalSource(
+			'owned-row-free-fingerprint', rowFreeTargetA, 'owned-row-free-source', 'panel-b',
+		);
+
+		expect(admission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(admission?.commit()).toBe(true);
+		expect(owner.overlaySnapshot(rowFreeTargetA, 'panel-b').sections?.[0])
+			.not.toHaveProperty('resultJson');
+		expect(owner.overlaySnapshot(rowFreeTargetA, 'panel-a').sections?.[0])
+			.toHaveProperty('resultJson', resultJson);
+	});
+
+	it.each([
+		['policy generation', (owner: KustoResultPersistenceOwner) => owner.revokePolicyIncompatibleAttachments({
+			clusterKeys: [], globallyBlocked: false,
+			revocationGenerations: { 'cluster-a': 1 },
+		})],
+		['connection invalidation', (owner: KustoResultPersistenceOwner) => owner.revokeConnections(
+			new Set(['connection-a']),
+		)],
+	] as const)('revokes target-bound descriptorless rows after a row-free panel save on %s', (_label, revoke) => {
+		const owner = new KustoResultPersistenceOwner(`file:///descriptorless-${_label}.kqlx`);
+		const firstPanel = owner.openPanel('panel-a');
+		const secondPanel = owner.openPanel('panel-b');
+		for (const [panel, sectionInstanceId] of [
+			[firstPanel, 'section-a'], [secondPanel, 'section-b'],
+		] as const) {
+			expect(panel.openSection('query_legacy', sectionInstanceId)).toBe(true);
+			expect(panel.adoptTarget({
+				boxId: 'query_legacy', sectionInstanceId, targetGeneration: 1,
+				connectionId: 'connection-a', database: 'DbA',
+				connectionIdentityKey: getKustoConnectionIdentityKey(
+					'https://cluster-a.kusto.windows.net', 'tenant-a.example.com',
+				),
+			})).toBe(true);
+		}
+		const descriptorlessResultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		const markerlessResultJson = JSON.stringify({ columns: ['Local'], rows: [[2]], metadata: {} });
+		owner.admitCanonicalSource('descriptorless-source', { sections: [
+			{
+				id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+				authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+				resultJson: descriptorlessResultJson,
+				kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
+			},
+			{ id: 'query_markerless', type: 'query', resultJson: markerlessResultJson },
+		] }, 'descriptorless-revision');
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-b', targetGeneration: 2,
+			connectionId: 'connection-b', database: 'DbB',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-b.kusto.windows.net', 'tenant-b.example.com',
+			),
+		})).toBe(true);
+		owner.markOwnedSourceFingerprint('owned-row-free-fingerprint');
+		const rowFreeState = { sections: [
+			{
+				id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+				authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+			},
+			{ id: 'query_markerless', type: 'query', resultJson: markerlessResultJson },
+		] };
+		const admission = owner.prepareCanonicalSource(
+			'owned-row-free-fingerprint', rowFreeState, 'owned-row-free-source', 'panel-b',
+		);
+		expect(admission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(admission?.commit()).toBe(true);
+		expect(owner.overlaySnapshot(rowFreeState, 'panel-a').sections?.[0])
+			.toHaveProperty('resultJson', descriptorlessResultJson);
+
+		revoke(owner);
+
+		const afterRevocation = owner.overlaySnapshot(rowFreeState, 'panel-a');
+		expect(afterRevocation.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(afterRevocation.sections?.[1]).toHaveProperty('resultJson', markerlessResultJson);
+	});
+
+	it('retains descriptorless comparison rows at generation zero using the Kusto source target', () => {
+		const owner = new KustoResultPersistenceOwner('file:///descriptorless-comparison-policy.kqlx');
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		const rowFree = { sections: [
+			{
+				id: 'query_source', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+				authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+			},
+			{ id: 'query_comparison', type: 'query', comparisonSourceBoxId: 'query_source' },
+		] };
+		owner.admitCanonicalSource('descriptorless-comparison', { sections: [
+			rowFree.sections[0],
+			{
+				...rowFree.sections[1], resultJson,
+				kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
+			},
+		] }, 'descriptorless-comparison-revision');
+		expect(owner.overlaySnapshot(rowFree).sections?.[1]).toHaveProperty('resultJson', resultJson);
+
+		owner.revokePolicyIncompatibleAttachments({
+			clusterKeys: [], globallyBlocked: false,
+			revocationGenerations: { 'cluster-a': 0 },
+		});
+
+		expect(owner.overlaySnapshot(rowFree).sections?.[1]).toHaveProperty('resultJson', resultJson);
+	});
+
+	it('revokes a hintless descriptorless result through its unique runtime connection', () => {
+		const owner = new KustoResultPersistenceOwner('file:///descriptorless-hintless.kqlx');
+		const panel = owner.openPanel('panel-hintless');
+		expect(panel.openSection('query_legacy', 'section-hintless')).toBe(true);
+		expect(panel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-hintless', targetGeneration: 1,
+			connectionId: 'connection-a', database: 'DbA',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-a.example.com',
+			),
+		})).toBe(true);
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		const rowFree = { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			authorityId: 'tenant-a.example.com', database: 'DbA',
+		}] };
+		owner.admitCanonicalSource('descriptorless-hintless', { sections: [{
+			...rowFree.sections[0], resultJson,
+			kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
+		}] }, 'descriptorless-hintless-revision');
+		expect(owner.overlaySnapshot(rowFree, 'panel-hintless').sections?.[0])
+			.toHaveProperty('resultJson', resultJson);
+
+		owner.revokeConnections(new Set(['connection-a']));
+
+		expect(owner.overlaySnapshot(rowFree, 'panel-hintless').sections?.[0])
+			.not.toHaveProperty('resultJson');
+	});
+
+	it('preserves an authority-less descriptorless result through unique tenant enrichment', () => {
+		const owner = new KustoResultPersistenceOwner('file:///descriptorless-tenant-unique.kqlx');
+		const panel = owner.openPanel('panel-tenant');
+		expect(panel.openSection('query_legacy', 'section-tenant')).toBe(true);
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		const rowFree = { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			database: 'DbA',
+		}] };
+		owner.admitCanonicalSource('descriptorless-tenant-unique', { sections: [{
+			...rowFree.sections[0], resultJson,
+			kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
+		}] }, 'descriptorless-tenant-unique-revision');
+
+		expect(panel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-tenant', targetGeneration: 1,
+			connectionId: 'connection-tenant', database: 'DbA',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-a.example.com',
+			),
+		})).toBe(true);
+
+		expect(owner.overlaySnapshot(rowFree, 'panel-tenant').sections?.[0])
+			.toHaveProperty('resultJson', resultJson);
+	});
+
+	it('keeps an authority-less descriptorless result hidden across ambiguous tenant aliases', () => {
+		const owner = new KustoResultPersistenceOwner('file:///descriptorless-tenant-ambiguous.kqlx');
+		const first = owner.openPanel('panel-tenant-a');
+		const second = owner.openPanel('panel-tenant-b');
+		for (const [panel, sectionInstanceId, connectionId, authorityId] of [
+			[first, 'section-tenant-a', 'connection-tenant-a', 'tenant-a.example.com'],
+			[second, 'section-tenant-b', 'connection-tenant-b', 'tenant-b.example.com'],
+		] as const) {
+			expect(panel.openSection('query_legacy', sectionInstanceId)).toBe(true);
+			expect(panel.adoptTarget({
+				boxId: 'query_legacy', sectionInstanceId, targetGeneration: 1,
+				connectionId, database: 'DbA',
+				connectionIdentityKey: getKustoConnectionIdentityKey(
+					'https://cluster-a.kusto.windows.net', authorityId,
+				),
+			})).toBe(true);
+		}
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		const rowFree = { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			database: 'DbA',
+		}] };
+		owner.admitCanonicalSource('descriptorless-tenant-ambiguous', { sections: [{
+			...rowFree.sections[0], resultJson,
+			kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
+		}] }, 'descriptorless-tenant-ambiguous-revision');
+
+		expect(owner.overlaySnapshot(rowFree, 'panel-tenant-a').sections?.[0])
+			.not.toHaveProperty('resultJson');
+		expect(owner.overlaySnapshot(rowFree, 'panel-tenant-b').sections?.[0])
+			.not.toHaveProperty('resultJson');
+	});
+
+	it('revokes inert descriptorless state before closing its sole section target', () => {
+		const owner = new KustoResultPersistenceOwner('file:///descriptorless-close-reopen.kqlx');
+		const panel = owner.openPanel('panel-close-reopen');
+		expect(panel.openSection('query_legacy', 'section-first')).toBe(true);
+		const target = {
+			connectionId: 'connection-a', database: 'DbA',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-a.example.com',
+			),
+		};
+		expect(panel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-first', targetGeneration: 1, ...target,
+		})).toBe(true);
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		const rowFree = { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+		}] };
+		owner.admitCanonicalSource('descriptorless-close-source', { sections: [{
+			...rowFree.sections[0], resultJson,
+			kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
+		}] }, 'descriptorless-close-revision');
+		expect(owner.overlaySnapshot(rowFree, 'panel-close-reopen').sections?.[0])
+			.toHaveProperty('resultJson', resultJson);
+
+		expect(panel.closeSection('query_legacy', 'section-first')).toBe(true);
+		expect(panel.openSection('query_legacy', 'section-second')).toBe(true);
+		expect(panel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-second', targetGeneration: 1, ...target,
+		})).toBe(true);
+
+		expect(owner.overlaySnapshot(rowFree, 'panel-close-reopen').sections?.[0])
+			.not.toHaveProperty('resultJson');
+	});
+
+	it('revokes previously enriched hintless state when a second alias arrives later', () => {
+		const owner = new KustoResultPersistenceOwner('file:///descriptorless-late-alias.kqlx');
+		const first = owner.openPanel('panel-late-alias-a');
+		expect(first.openSection('query_legacy', 'section-late-alias-a')).toBe(true);
+		expect(first.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-late-alias-a', targetGeneration: 1,
+			connectionId: 'connection-tenant-a', database: 'DbA',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-a.example.com',
+			),
+		})).toBe(true);
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		const rowFree = { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net', database: 'DbA',
+		}] };
+		owner.admitCanonicalSource('descriptorless-late-alias', { sections: [{
+			...rowFree.sections[0], resultJson,
+			kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
+		}] }, 'descriptorless-late-alias-revision');
+		expect(owner.overlaySnapshot(rowFree, 'panel-late-alias-a').sections?.[0])
+			.toHaveProperty('resultJson', resultJson);
+
+		const second = owner.openPanel('panel-late-alias-b');
+		expect(second.openSection('query_legacy', 'section-late-alias-b')).toBe(true);
+		expect(second.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-late-alias-b', targetGeneration: 1,
+			connectionId: 'connection-tenant-b', database: 'DbA',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-b.example.com',
+			),
+		})).toBe(true);
+
+		expect(owner.overlaySnapshot(rowFree, 'panel-late-alias-a').sections?.[0])
+			.not.toHaveProperty('resultJson');
+		expect(owner.overlaySnapshot(rowFree, 'panel-late-alias-b').sections?.[0])
+			.not.toHaveProperty('resultJson');
+	});
+
+	it('preserves matching descriptorless state while reconciling a rejected committed attachment', () => {
+		const { owner, session: firstPanel } = createOwner();
+		expect(firstPanel.openSection('query_legacy', 'section-legacy-a')).toBe(true);
+		expect(firstPanel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-legacy-a', targetGeneration: 1,
+			connectionId: 'connection-a', database: 'DbA',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-a.example.com',
+			),
+		})).toBe(true);
+		const descriptorlessResultJson = JSON.stringify({
+			columns: ['Legacy'], rows: [[2]], metadata: {},
+		});
+		owner.admitCanonicalSource('mixed-initial-source', { sections: [
+			{ id: 'query_1', type: 'query', query: 'print First=1' },
+			{
+				id: 'query_legacy', type: 'query',
+				clusterUrl: 'https://cluster-a.kusto.windows.net',
+				authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a',
+				database: 'DbA', resultJson: descriptorlessResultJson,
+				kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
+			},
+		] }, 'mixed-initial-revision');
+		expect(firstPanel.beginExecution(terminal())).toBe(true);
+		expect(firstPanel.stagePublication('publication-1', terminal())).toBeTruthy();
+		expect(firstPanel.commitPublication('publication-1')).toBe(true);
+		expect(owner.getCommittedSummary('query_1')).toBeTruthy();
+		expect(owner.hasMarkerlessInertState('query_legacy')).toBe(false);
+		const secondPanel = owner.openPanel('panel-b');
+		expect(secondPanel.openSection('query_1', 'section-b')).toBe(true);
+		expect(secondPanel.openSection('query_legacy', 'section-legacy-b')).toBe(true);
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'section-b', targetGeneration: 1,
+			connectionId: 'connection-b', database: 'OtherDb',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-b.kusto.windows.net', 'tenant-b.example.com',
+			),
+		})).toBe(true);
+		expect(secondPanel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-legacy-b', targetGeneration: 1,
+			connectionId: 'connection-b', database: 'OtherDb',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-b.kusto.windows.net', 'tenant-b.example.com',
+			),
+		})).toBe(true);
+		owner.markOwnedSourceFingerprint('mixed-owned-row-free');
+		const rowFreeState = { sections: [
+			{ id: 'query_1', type: 'query', query: 'print First=1' },
+			{
+				id: 'query_legacy', type: 'query',
+				clusterUrl: 'https://cluster-a.kusto.windows.net',
+				authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a',
+				database: 'DbA',
+			},
+		] };
+
+		const admission = owner.prepareCanonicalSource(
+			'mixed-owned-row-free', rowFreeState, 'mixed-owned-revision', 'panel-b',
+		);
+
+		expect(admission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(admission?.projectedState.sections?.[1]).not.toHaveProperty('resultJson');
+		expect(admission?.commit()).toBe(true);
+		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
+		expect(owner.overlaySnapshot(rowFreeState, 'panel-b').sections?.[1])
+			.not.toHaveProperty('resultJson');
+		expect(owner.overlaySnapshot(rowFreeState, 'panel-1').sections?.[1])
+			.toHaveProperty('resultJson', descriptorlessResultJson);
+	});
+
+	it('preserves descriptorless migrated rows on matching sole-panel initial adoption', () => {
+		const owner = new KustoResultPersistenceOwner('file:///descriptorless-initial-adoption.kqlx');
+		const panel = owner.openPanel('panel-descriptorless');
+		expect(panel.openSection('query_legacy', 'section-descriptorless')).toBe(true);
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		owner.admitCanonicalSource('descriptorless-source', { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+			resultJson, kustoAccountPartition: 'partition-a',
+			kustoLeaveNoTraceRevision: 0,
+		}] }, 'descriptorless-revision');
+
+		expect(panel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-descriptorless', targetGeneration: 1,
+			connectionId: 'connection-a', database: 'DbA',
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-a.example.com',
+			),
+		})).toBe(true);
+
+		expect(owner.overlaySnapshot({ sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+		}] }, 'panel-descriptorless').sections?.[0]).toHaveProperty('resultJson', resultJson);
+	});
+
+	it('preserves descriptorless migrated rows on matching physical enrichment', () => {
+		const owner = new KustoResultPersistenceOwner('file:///descriptorless-enrichment.kqlx');
+		const panel = owner.openPanel('panel-descriptorless');
+		expect(panel.openSection('query_legacy', 'section-descriptorless')).toBe(true);
+		expect(panel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-descriptorless', targetGeneration: 1,
+			connectionId: 'connection-a', database: 'DbA',
+		})).toBe(true);
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		owner.admitCanonicalSource('descriptorless-source', { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+			resultJson, kustoAccountPartition: 'partition-a',
+			kustoLeaveNoTraceRevision: 0,
+		}] }, 'descriptorless-revision');
+
+		expect(panel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-descriptorless', targetGeneration: 2,
+			connectionId: 'connection-a', database: 'DbA', connectionRevision: 4,
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-a.kusto.windows.net', 'tenant-a.example.com',
+			),
+		})).toBe(true);
+
+		expect(owner.overlaySnapshot({ sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+		}] }, 'panel-descriptorless').sections?.[0]).toHaveProperty('resultJson', resultJson);
+	});
+
+	it('revokes descriptorless migrated rows on mismatching physical enrichment', () => {
+		const owner = new KustoResultPersistenceOwner('file:///descriptorless-mismatched-enrichment.kqlx');
+		const panel = owner.openPanel('panel-descriptorless');
+		expect(panel.openSection('query_legacy', 'section-descriptorless')).toBe(true);
+		expect(panel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-descriptorless', targetGeneration: 1,
+			connectionId: 'connection-a', database: 'DbA',
+		})).toBe(true);
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		owner.admitCanonicalSource('descriptorless-source', { sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-a.kusto.windows.net',
+			authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+			resultJson, kustoAccountPartition: 'partition-a',
+			kustoLeaveNoTraceRevision: 0,
+		}] }, 'descriptorless-revision');
+
+		expect(panel.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-descriptorless', targetGeneration: 2,
+			connectionId: 'connection-a', database: 'DbA', connectionRevision: 4,
+			connectionIdentityKey: getKustoConnectionIdentityKey(
+				'https://cluster-b.kusto.windows.net', 'tenant-b.example.com',
+			),
+		})).toBe(true);
+
+		expect(owner.overlaySnapshot({ sections: [{
+			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-b.kusto.windows.net',
+			authorityId: 'tenant-b.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+		}] }, 'panel-descriptorless').sections?.[0]).not.toHaveProperty('resultJson');
+	});
+
+	it('retains markerless inert payloads across initial and changed section targets', () => {
+		const owner = new KustoResultPersistenceOwner('file:///legacy-targets.kqlx');
+		const session = owner.openPanel('panel-legacy-targets');
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		owner.admitCanonicalSource('markerless-target-source', {
+			sections: [{ id: 'query_legacy', type: 'query', resultJson }],
+		});
+		expect(session.openSection('query_legacy', 'section-legacy')).toBe(true);
+
+		expect(session.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-legacy', targetGeneration: 1,
+			connectionId: 'connection-a', database: 'DbA',
+		})).toBe(true);
+		expect(session.adoptTarget({
+			boxId: 'query_legacy', sectionInstanceId: 'section-legacy', targetGeneration: 2,
+			connectionId: 'connection-b', database: 'DbB',
+		})).toBe(true);
+
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_legacy', type: 'query' }],
+		}).sections?.[0]).toHaveProperty('resultJson', resultJson);
+	});
+
+	it('restores a current markerless source on retry after a row-free admission conflict', () => {
+		const owner = new KustoResultPersistenceOwner('file:///legacy-retry.kqlx');
+		owner.openPanel('panel-legacy-retry');
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		const source = { sections: [{ id: 'query_legacy', type: 'query', resultJson }] };
+		const first = owner.prepareCanonicalSource(
+			'markerless-fingerprint', source, 'markerless-source-revision', 'panel-legacy-retry',
+		);
+		expect(first).toBeDefined();
+		owner.admitCanonicalSource(
+			'row-free-fingerprint',
+			{ sections: [{ id: 'query_legacy', type: 'query' }] },
+			'row-free-source-revision',
+		);
+		expect(owner.overlaySnapshot(source).sections?.[0]).toHaveProperty('resultJson', resultJson);
+		expect(first!.commit()).toBe(false);
+		owner.markOwnedSourceFingerprint('markerless-fingerprint');
+
+		const retry = owner.prepareCanonicalSource(
+			'markerless-fingerprint', source, 'markerless-source-revision', 'panel-legacy-retry',
+		);
+
+		expect(retry?.projectedState.sections?.[0]).toHaveProperty('resultJson', resultJson);
 	});
 
 	it('preserves adopted legacy attachments without minting an artifact descriptor', () => {
@@ -1143,19 +2349,39 @@ describe('KustoResultPersistenceOwner', () => {
 		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
 		owner.admitCanonicalSource('fingerprint-a', {
 			sections: [{
-				id: 'query_legacy', type: 'query', resultJson,
+				id: 'query_legacy', type: 'query',
+				clusterUrl: 'https://cluster-a.kusto.windows.net',
+				authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+				resultJson,
 				kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
 			}],
 		});
 
 		const overlaid = owner.overlaySnapshot({
-			sections: [{ id: 'query_legacy', type: 'query', query: 'print Value=2' }],
+			sections: [{
+				id: 'query_legacy', type: 'query', query: 'print Value=2',
+				clusterUrl: 'https://cluster-a.kusto.windows.net',
+				authorityId: 'tenant-a.example.com', connectionIdHint: 'connection-a', database: 'DbA',
+			}],
 		});
 		const section = overlaid.sections?.[0] as Record<string, unknown>;
 		expect(section.resultJson).toBe(resultJson);
 		expect(section.kustoAccountPartition).toBe('partition-a');
 		expect(section.kustoLeaveNoTraceRevision).toBe(0);
 		expect(section.resultArtifact).toBeUndefined();
+	});
+
+	it('rejects marker-bearing descriptorless rows without an effective target', () => {
+		const owner = new KustoResultPersistenceOwner('file:///targetless-adopted-legacy.kqlx');
+		owner.admitCanonicalSource('targetless-adopted-source', { sections: [{
+			id: 'query_legacy', type: 'query',
+			resultJson: JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} }),
+			kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
+		}] });
+
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_legacy', type: 'query' }],
+		}).sections?.[0]).not.toHaveProperty('resultJson');
 	});
 
 	it('does not retire an attachment for a host-owned row-free source observation', () => {

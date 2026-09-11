@@ -86,6 +86,19 @@ export type DerivedResultArtifactInput = Readonly<{
 	role?: string;
 }>;
 
+export const UNVERIFIED_LEGACY_RESULT_PRODUCER = 'legacy-unverified';
+
+const unverifiedLegacyResultPublications = new WeakSet<object>();
+const unverifiedLegacyResultArtifacts = new WeakSet<object>();
+
+function isUnverifiedLegacyResultPublication(value: unknown): boolean {
+	return !!value && typeof value === 'object' && unverifiedLegacyResultPublications.has(value);
+}
+
+export function isUnverifiedLegacyResultArtifact(value: unknown): boolean {
+	return !!value && typeof value === 'object' && unverifiedLegacyResultArtifacts.has(value);
+}
+
 export type ResultSourceRef = Readonly<{
 	sourceBoxId: string;
 	resultIndex: number;
@@ -337,6 +350,19 @@ export function createRestoredKustoResultArtifactPublication(
 	});
 }
 
+export function createUnverifiedLegacyResultArtifactPublication(
+	producer: ResultArtifactProducer,
+	lineage: readonly ResultArtifactLineage[] = [],
+): ResultArtifactPublication {
+	const publication = deepFreeze({
+		producer: snapshotRecord({ ...producer, producer: UNVERIFIED_LEGACY_RESULT_PRODUCER })!,
+		...(lineage.length ? { lineage: snapshotLineage(lineage) } : {}),
+		policy: deepFreeze({}),
+	});
+	unverifiedLegacyResultPublications.add(publication);
+	return publication;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -385,7 +411,9 @@ function parsePersistedPolicy(value: Record<string, unknown>): ResultArtifactPol
 }
 
 export function toPersistedResultArtifact(artifact: ResultArtifact | null | undefined): PersistedResultArtifactV1 | undefined {
-	if (!artifact || artifact.resultIndex !== 0) return undefined;
+	if (!artifact || artifact.resultIndex !== 0
+		|| isUnverifiedLegacyResultArtifact(artifact)
+		|| artifact.producer?.producer === UNVERIFIED_LEGACY_RESULT_PRODUCER) return undefined;
 	return deepFreeze({
 		version: 1,
 		artifactId: artifact.artifactId,
@@ -430,6 +458,7 @@ export function publicationFromPersistedResultArtifact(
 		|| !Number.isFinite(createdAt) || createdAt < 0) return undefined;
 	const producer = isRecord(value.producer) ? value.producer as ResultArtifactProducer : undefined;
 	if (producer && String(producer.boxId || '').trim() !== expectedSource) return undefined;
+	if (producer?.producer === UNVERIFIED_LEGACY_RESULT_PRODUCER) return undefined;
 	if (expectedPolicy?.expectedProducer) {
 		if (!producer) return undefined;
 		const expectedProducer = expectedPolicy.expectedProducer;
@@ -573,6 +602,9 @@ export class ResultArtifactStore {
 	): readonly ResultArtifact[] | undefined {
 		const sourceId = String(sourceBoxId || '').trim();
 		if (!sourceId || !Array.isArray(states) || states.length === 0 || states.length > 256) return undefined;
+		const unverifiedLegacyPublication = isUnverifiedLegacyResultPublication(publication);
+		if (publication.producer?.producer === UNVERIFIED_LEGACY_RESULT_PRODUCER
+			&& !unverifiedLegacyPublication) return undefined;
 		for (let resultIndex = 0; resultIndex < states.length; resultIndex++) {
 			if (states[resultIndex]?.resultIndex !== resultIndex) return undefined;
 		}
@@ -640,6 +672,9 @@ export class ResultArtifactStore {
 			});
 		} catch {
 			return undefined;
+		}
+		if (unverifiedLegacyPublication) {
+			for (const artifact of artifacts) unverifiedLegacyResultArtifacts.add(artifact);
 		}
 		const previousArtifactIds = [...this.currentArtifactIdBySourceResult.values()].filter(artifactId =>
 			this.artifacts.get(artifactId)?.sourceBoxId === sourceId

@@ -2677,7 +2677,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			documentKind,
 			document.eol,
 			(state, publish) => queryEditor.publishSqlLeaveNoTraceStateFresh(
-				kustoResultOwner.overlaySnapshot(state), publish, revokeSanitizedKustoAttachments,
+				kustoResultOwner.overlaySnapshot(state, kustoResultPanelSession.panelId),
+				publish,
+				revokeSanitizedKustoAttachments,
 			),
 			publishText,
 		);
@@ -2721,7 +2723,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			};
 			const file = overlayKqlxFileState(
 				projectedBase,
-				kustoResultOwner.overlaySnapshot(stateForDocument(state)),
+				kustoResultOwner.overlaySnapshot(
+					stateForDocument(state), kustoResultPanelSession.panelId,
+				),
 				documentKind,
 			);
 			const candidateUnsafeReason = getUnsafeLinkedQueryReason(document.uri, file.state);

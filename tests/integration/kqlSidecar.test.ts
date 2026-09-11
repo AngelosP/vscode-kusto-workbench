@@ -1535,6 +1535,8 @@ suite('Sidecar .kql.json strategy', () => {
 			resultOwner.admitCanonicalSource('immediate-upgrade-host-result', {
 				sections: [{
 					type: 'query', id: 'compat_primary_query', resultJson,
+					clusterUrl: selectedClusterUrl, connectionIdHint: selectedConnection.id,
+					database: selectedDatabase,
 					kustoAccountPartition: accountPartition, kustoLeaveNoTraceRevision: 0,
 				}],
 			});

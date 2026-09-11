@@ -25,7 +25,7 @@ import {
 	selectResultsState,
 	unbindResultArtifactConsumer,
 } from '../core/results-state.js';
-import { comparisonSourceArtifactConsumerId } from '../../shared/resultArtifact.js';
+import { comparisonSourceArtifactConsumerId, isUnverifiedLegacyResultArtifact } from '../../shared/resultArtifact.js';
 import { toPersistedResultArtifact, type PersistedResultArtifactV1 } from '../../shared/resultArtifact.js';
 import {
 	ARTIFACT_CSV_TABLE_RELEASED_EVENT,
@@ -225,6 +225,12 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	private _connectionIdHint = '';
 	private _desiredClusterUrlPendingMatch = false;
 	private _persistConnectionSelection = false;
+	private _authoredConnectionSelection?: Readonly<{
+		clusterUrl?: string;
+		authorityId?: string;
+		connectionIdHint?: string;
+		database?: string;
+	}>;
 	@state() private _databases: string[] = [];
 	@state() private _database = '';
 	@state() private _desiredDatabase = '';
@@ -936,6 +942,11 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		this._desiredClusterUrlPendingMatch = false;
 	}
 
+	private _markConnectionSelectionForPersistence(): void {
+		this._persistConnectionSelection = true;
+		this._authoredConnectionSelection = undefined;
+	}
+
 	private _onClusterSelected(e: CustomEvent): void {
 		const connectionId = e.detail?.id;
 		if (!connectionId) return;
@@ -945,7 +956,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		}));
 		const prev = this._connectionId;
 		this._connectionId = connectionId;
-		this._persistConnectionSelection = true;
+		this._markConnectionSelectionForPersistence();
 		const conn = this._connections.find(c => c.id === connectionId);
 		if (conn) {
 			this._syncDesiredConnectionIdentity(conn);
@@ -970,7 +981,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		}));
 		const prev = this._database;
 		this._database = database;
-		this._persistConnectionSelection = true;
+		this._markConnectionSelectionForPersistence();
 		this._desiredDatabase = '';
 		if (prev !== database) {
 			this.dispatchEvent(new CustomEvent('database-changed', {
@@ -1009,7 +1020,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		const conn = this._connections.find(c => c.id === fav.connectionId);
 		if (conn) {
 			this._connectionId = conn.id;
-			this._persistConnectionSelection = true;
+			this._markConnectionSelectionForPersistence();
 			this._syncDesiredConnectionIdentity(conn);
 			this._desiredDatabase = fav.database;
 			// Clear current database and list so schema/autocomplete reloads.
@@ -1147,7 +1158,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		this._desiredClusterUrl = url;
 		this._desiredClusterUrlPendingMatch = !!String(url || '').trim();
 		if (String(url || '').trim()) {
-			this._persistConnectionSelection = true;
+			this._markConnectionSelectionForPersistence();
 		}
 	}
 
@@ -1160,7 +1171,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	public setDesiredDatabase(db: string): void {
 		this._desiredDatabase = db;
 		if (String(db || '').trim()) {
-			this._persistConnectionSelection = true;
+			this._markConnectionSelectionForPersistence();
 		}
 	}
 
@@ -1390,8 +1401,19 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		this._database = database;
 	}
 
-	public setPersistConnectionSelection(persist: boolean): void {
+	public setPersistConnectionSelection(
+		persist: boolean,
+		authoredSelection?: Readonly<{
+			clusterUrl?: string;
+			authorityId?: string;
+			connectionIdHint?: string;
+			database?: string;
+		}>,
+	): void {
 		this._persistConnectionSelection = !!persist;
+		this._authoredConnectionSelection = persist && authoredSelection
+			? Object.freeze({ ...authoredSelection })
+			: undefined;
 	}
 
 	// ── Private helpers ───────────────────────────────────────────────────────
@@ -1819,6 +1841,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		}
 		const lifecycle = this.getSchemaLifecycleIdentity();
 		const primary = getCurrentResultArtifact(this.boxId, 0);
+		if (isUnverifiedLegacyResultArtifact(primary)) {
+			this._applyResultSelection(resultIndex, false);
+			return;
+		}
 		if (!lifecycle || !primary) return;
 		const requestId = `kusto-result-selection-${globalThis.crypto?.randomUUID?.()
 			?? `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
@@ -1997,11 +2023,20 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		let resultsVisible = true;
 		try { const m = pState.resultsVisibleByBoxId; resultsVisible = !(m && m[b] === false); } catch (e) { console.error('[kusto]', e); }
 
-		const clusterUrl = this._persistConnectionSelection ? (this.getClusterUrl() || this._desiredClusterUrl) : '';
+		const authoredConnectionSelection = this._authoredConnectionSelection;
+		const clusterUrl = authoredConnectionSelection
+			? String(authoredConnectionSelection.clusterUrl || '')
+			: this._persistConnectionSelection ? (this.getClusterUrl() || this._desiredClusterUrl) : '';
 		const selectedConnection = this._connections.find(connection => connection.id === connectionId);
-		const authorityId = this._persistConnectionSelection ? (selectedConnection?.authorityId || this._desiredAuthorityId) : '';
-		const connectionIdHint = this._persistConnectionSelection ? (connectionId || this._connectionIdHint) : '';
-		const databaseForPersistence = this._persistConnectionSelection ? database : '';
+		const authorityId = authoredConnectionSelection
+			? String(authoredConnectionSelection.authorityId || '')
+			: this._persistConnectionSelection ? (selectedConnection?.authorityId || this._desiredAuthorityId) : '';
+		const connectionIdHint = authoredConnectionSelection
+			? String(authoredConnectionSelection.connectionIdHint || '')
+			: this._persistConnectionSelection ? (connectionId || this._connectionIdHint) : '';
+		const databaseForPersistence = authoredConnectionSelection
+			? String(authoredConnectionSelection.database || '')
+			: this._persistConnectionSelection ? database : '';
 
 		let query = '';
 		try {
