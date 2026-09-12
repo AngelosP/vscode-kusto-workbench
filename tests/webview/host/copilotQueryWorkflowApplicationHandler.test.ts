@@ -7,6 +7,7 @@ import {
 import type { IncomingWebviewMessage } from '../../../src/host/queryEditorTypes';
 
 const SQL_PREFLIGHT_EXECUTION_ID = 'sql-copilot-owner-preflight';
+const sqlPreflightExecutionId = (requestId: string) => `${SQL_PREFLIGHT_EXECUTION_ID}:${requestId}`;
 
 function deferred<T>() {
 	let resolve!: (value: T | PromiseLike<T>) => void;
@@ -57,6 +58,7 @@ function createSqlStartMessage(): Extract<IncomingWebviewMessage, {
 		requireToolUse: true,
 		flavor: 'sql',
 		sqlOwnerToken: 'sql-owner-token-exact',
+		sqlCopilotRequestId: 'sql-copilot-request-exact',
 	};
 }
 
@@ -109,7 +111,7 @@ function createHarness(): {
 	const preflight = Object.freeze({
 		boxId: 'sql-start-exact',
 		generation: 7,
-		executionId: SQL_PREFLIGHT_EXECUTION_ID,
+		executionId: sqlPreflightExecutionId('sql-copilot-request-exact'),
 		ownerToken: 'sql-owner-token-exact',
 	});
 	const broker = {
@@ -243,7 +245,7 @@ describe('HostCopilotQueryWorkflowApplicationHandler', () => {
 		expect(order).toEqual(['reserve', 'assert']);
 		expect(harness.broker.reservePreflight).toHaveBeenCalledWith(
 			message.boxId,
-			SQL_PREFLIGHT_EXECUTION_ID,
+			sqlPreflightExecutionId(message.sqlCopilotRequestId),
 			message.sqlOwnerToken,
 		);
 		expect(harness.lifecycle.assertOwnerToken).toHaveBeenCalledWith(
@@ -291,6 +293,7 @@ describe('HostCopilotQueryWorkflowApplicationHandler', () => {
 			ok: false,
 			message: 'SQL section owner changed. Retry the request.',
 			ownerToken: message.sqlOwnerToken,
+			sqlCopilotRequestId: message.sqlCopilotRequestId,
 		});
 		expect(JSON.stringify(harness.postMessage.mock.calls)).not.toContain('sql-policy.lock');
 		expect(harness.copilot.startCopilotWriteQuery).not.toHaveBeenCalled();
@@ -314,6 +317,7 @@ describe('HostCopilotQueryWorkflowApplicationHandler', () => {
 			type: 'cancelCopilotWriteQuery',
 			boxId: startMessage.boxId,
 			flavor: 'sql',
+			sqlCopilotRequestId: startMessage.sqlCopilotRequestId,
 		} satisfies IncomingWebviewMessage;
 
 		const start = harness.handler.handleMessage(startMessage);
@@ -322,7 +326,7 @@ describe('HostCopilotQueryWorkflowApplicationHandler', () => {
 
 		expect(harness.broker.cancelExpected).toHaveBeenCalledWith(
 			startMessage.boxId,
-			SQL_PREFLIGHT_EXECUTION_ID,
+			sqlPreflightExecutionId(startMessage.sqlCopilotRequestId),
 			false,
 		);
 		expect(harness.lifecycle.getOwnerToken).toHaveBeenCalledWith(startMessage.boxId);
@@ -332,8 +336,11 @@ describe('HostCopilotQueryWorkflowApplicationHandler', () => {
 			ok: false,
 			message: 'Canceled.',
 			ownerToken: 'sql-owner-token-exact',
+			sqlCopilotRequestId: startMessage.sqlCopilotRequestId,
 		});
-		expect(harness.copilot.cancelCopilotWriteQuery).toHaveBeenCalledWith(startMessage.boxId);
+		expect(harness.copilot.cancelCopilotWriteQuery).toHaveBeenCalledWith(
+			startMessage.boxId, undefined, undefined, startMessage.sqlCopilotRequestId,
+		);
 		await expect(cancel).resolves.toBeUndefined();
 
 		ownerValidation.resolve({
@@ -365,6 +372,7 @@ describe('HostCopilotQueryWorkflowApplicationHandler', () => {
 			type: 'cancelCopilotWriteQuery',
 			boxId: startMessage.boxId,
 			flavor: 'sql',
+			sqlCopilotRequestId: startMessage.sqlCopilotRequestId,
 		} satisfies IncomingWebviewMessage;
 
 		const start = harness.handler.handleMessage(startMessage);
@@ -382,6 +390,56 @@ describe('HostCopilotQueryWorkflowApplicationHandler', () => {
 		expect(harness.getSqlConnectionManager).not.toHaveBeenCalled();
 		expect(harness.getSqlSchemaService).not.toHaveBeenCalled();
 		expect(harness.getSqlClient).not.toHaveBeenCalled();
+	});
+
+	it('does not let a delayed request A cancellation retire request B preflight', async () => {
+		const harness = createHarness();
+		const ownerA = deferred<{ token: string; owner: { connectionId: string; database: string } }>();
+		const ownerB = deferred<{ token: string; owner: { connectionId: string; database: string } }>();
+		let generation = 0;
+		let currentExecutionId = '';
+		harness.lifecycle.assertOwnerToken
+			.mockImplementationOnce(() => ownerA.promise)
+			.mockImplementationOnce(() => ownerB.promise);
+		harness.broker.reservePreflight.mockImplementation((boxId: string, executionId: string, ownerToken: string) => {
+			currentExecutionId = executionId;
+			return Object.freeze({ boxId, executionId, ownerToken, generation: ++generation });
+		});
+		harness.broker.clearPreflight.mockImplementation((preflight: { executionId: string }) => {
+			if (preflight.executionId !== currentExecutionId) return false;
+			currentExecutionId = '';
+			return true;
+		});
+		harness.broker.cancelExpected.mockImplementation((_boxId: string, executionId: string) => {
+			if (executionId !== currentExecutionId) return false;
+			currentExecutionId = '';
+			return true;
+		});
+		const requestA = { ...createSqlStartMessage(), sqlCopilotRequestId: 'sql-request-a' };
+		const requestB = { ...createSqlStartMessage(), sqlCopilotRequestId: 'sql-request-b' };
+
+		const startA = harness.handler.handleMessage(requestA);
+		await Promise.resolve();
+		const startB = harness.handler.handleMessage(requestB);
+		await Promise.resolve();
+		await harness.handler.handleMessage({
+			type: 'cancelCopilotWriteQuery', boxId: requestA.boxId, flavor: 'sql',
+			sqlCopilotRequestId: requestA.sqlCopilotRequestId,
+		});
+
+		expect(currentExecutionId).toBe(sqlPreflightExecutionId(requestB.sqlCopilotRequestId));
+		ownerB.resolve({ token: 'owner-b', owner: { connectionId: requestB.connectionId, database: requestB.database } });
+		await Promise.resolve();
+		ownerA.resolve({ token: 'owner-a', owner: { connectionId: requestA.connectionId, database: requestA.database } });
+		await Promise.all([startA, startB]);
+
+		expect(harness.copilot.startCopilotWriteQuery).toHaveBeenCalledTimes(1);
+		expect(harness.copilot.startCopilotWriteQuery).toHaveBeenCalledWith(
+			requestB, harness.sqlConnectionManager, harness.sqlSchemaService, harness.sqlClient,
+		);
+		expect(harness.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+			sqlCopilotRequestId: requestB.sqlCopilotRequestId, message: 'Canceled.',
+		}));
 	});
 
 	it('preserves accepted settlement across disposal', async () => {

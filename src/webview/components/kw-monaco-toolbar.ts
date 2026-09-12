@@ -39,6 +39,8 @@ export interface MonacoToolbarItem {
 	extraClasses?: string;
 	/** ID suffix appended to `boxId` for the button element. */
 	idSuffix?: string;
+	/** Stable selector for end-to-end interaction. */
+	testId?: string;
 	/** Toggle key identifier (for toggle items). */
 	toggleKey?: string;
 	/** Sub-items for submenu dropdown buttons. */
@@ -183,6 +185,7 @@ export class KwMonacoToolbar extends LitElement implements ToolbarOverflowHost {
 		return html`<button
 			class=${classMap(classes)}
 			type="button"
+			data-testid=${item.testId ?? ''}
 			title=${item.title ?? ''}
 			aria-label=${item.label ?? ''}
 			?disabled=${!!item.disabled}
@@ -202,6 +205,7 @@ export class KwMonacoToolbar extends LitElement implements ToolbarOverflowHost {
 		return html`
 			<button type="button"
 				id=${item.idSuffix ? this.boxId + item.idSuffix : ''}
+				data-testid=${item.testId ?? ''}
 				class=${classMap(classes)}
 				title=${item.title ?? ''}
 				aria-label=${item.label ?? ''}

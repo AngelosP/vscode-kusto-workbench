@@ -44,7 +44,8 @@ function createTarget(boxId = 'sql-1'): SqlSectionSessionTarget {
 		setStsReady: vi.fn((ready: boolean, token = '') => { ownerToken = ready ? token : ''; return true; }),
 		setExecutionOwner: vi.fn((token: string) => { ownerToken = token; return !!token; }),
 		requestSts: vi.fn(() => Promise.resolve(null)),
-		admitOwnedMessage: vi.fn(message => ownerToken === String(message.ownerToken || '')),
+		admitOwnedMessage: vi.fn(message =>
+			typeof message.ownerToken === 'string' && ownerToken === message.ownerToken),
 		resolveStsResponse: vi.fn(() => true),
 		clear: vi.fn(),
 	};
@@ -62,6 +63,7 @@ function createEffects(target: SqlSectionSessionTarget) {
 		setSchemaInfo: vi.fn(),
 		setStsReady: vi.fn(),
 		setExecutionOwner: vi.fn(),
+		admitSqlCopilotMessage: vi.fn(() => true),
 	};
 	const effects: SqlSectionMessageRouterEffects = {
 		getSection: vi.fn(() => section),
@@ -73,7 +75,7 @@ function createEffects(target: SqlSectionSessionTarget) {
 		handleStsDiagnostics: vi.fn(),
 		clearPolicyBox: vi.fn(),
 	};
-	return { effects };
+	return { effects, section };
 }
 
 describe('routeSqlSectionMessage', () => {
@@ -206,6 +208,133 @@ describe('routeSqlSectionMessage', () => {
 		target.setStsReady(true, 'owner-new', 0);
 		expect(routeSqlSectionMessage({ type: 'queryResult', boxId: 'sql-1', ownerToken: 'owner-old' }, effects)).toBe('rejected');
 		expect(routeSqlSectionMessage({ type: 'queryResult', boxId: 'sql-1', ownerToken: 'owner-new' }, effects)).toBe('not-sql');
+	});
+
+	it('rejects SQL Copilot messages from an older request on the current owner', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		const { effects, section } = createEffects(target);
+		target.setStsReady(true, 'owner-current', 0);
+		section.admitSqlCopilotMessage.mockImplementation(message =>
+			message.sqlCopilotRequestId === 'sql-request-current');
+
+		expect(routeSqlSectionMessage({
+			type: 'copilotWriteQueryStatus', boxId: 'sql-1', ownerToken: 'owner-current',
+			sqlCopilotRequestId: 'sql-request-stale', status: 'LATE_STATUS', role: 'progress',
+		}, effects)).toBe('rejected');
+		expect(routeSqlSectionMessage({
+			type: 'ensureResultsVisible', boxId: 'sql-1', ownerToken: 'owner-current',
+			sqlCopilotRequestId: 'sql-request-stale',
+		}, effects)).toBe('rejected');
+		expect(routeSqlSectionMessage({
+			type: 'copilotWriteQueryDone', boxId: 'sql-1', ownerToken: 'owner-current',
+			sqlCopilotRequestId: 'sql-request-current', ok: true, message: '',
+		}, effects)).toBe('not-sql');
+		expect(section.admitSqlCopilotMessage).toHaveBeenCalledTimes(3);
+	});
+
+	it('admits fixed availability status without an active SQL request', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		const { effects, section } = createEffects(target);
+		section.admitSqlCopilotMessage.mockReturnValue(false);
+
+		expect(routeSqlSectionMessage({
+			type: 'copilotWriteQueryStatus', boxId: 'sql-1', role: 'availability',
+			status: 'GitHub Copilot is not available.',
+		}, effects)).toBe('not-sql');
+		expect(target.admitOwnedMessage).not.toHaveBeenCalled();
+		expect(section.admitSqlCopilotMessage).not.toHaveBeenCalled();
+	});
+
+	it('rejects array-shaped SQL owner and request identities', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		const { effects, section } = createEffects(target);
+		target.setStsReady(true, 'owner-current', 0);
+		section.admitSqlCopilotMessage.mockImplementation(message =>
+			typeof message.sqlCopilotRequestId === 'string'
+			&& message.sqlCopilotRequestId === 'sql-request-current');
+
+		expect(routeSqlSectionMessage({
+			type: 'copilotWriteQueryDone', boxId: 'sql-1', ownerToken: ['owner-current'],
+			sqlCopilotRequestId: 'sql-request-current', ok: true, message: '',
+		}, effects)).toBe('rejected');
+		expect(routeSqlSectionMessage({
+			type: 'copilotWriteQueryDone', boxId: 'sql-1', ownerToken: 'owner-current',
+			sqlCopilotRequestId: ['sql-request-current'], ok: true, message: '',
+		}, effects)).toBe('rejected');
+	});
+
+	it('rejects non-string SQL section identities before section lookup', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		const { effects, section } = createEffects(target);
+		target.setStsReady(true, 'owner-current', 0);
+		section.admitSqlCopilotMessage.mockReturnValue(true);
+
+		for (const boxId of [['sql-1'], { toString: () => 'sql-1' }]) {
+			expect(routeSqlSectionMessage({
+				type: 'copilotWriteQueryDone', boxId, ownerToken: 'owner-current',
+				sqlCopilotRequestId: 'sql-request-current', ok: true, message: '',
+			}, effects)).toBe('rejected');
+		}
+		expect(section.admitSqlCopilotMessage).not.toHaveBeenCalled();
+	});
+
+	it('rejects malformed SQL Copilot execution identity before section admission', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		const { effects, section } = createEffects(target);
+		target.setStsReady(true, 'owner-current', 0);
+		section.admitSqlCopilotMessage.mockReturnValue(true);
+
+		for (const malformed of [
+			{ executionId: ['sql-execution'], executing: false },
+			{ executionId: { value: 'sql-execution' }, executing: false },
+			{ executionId: '   ', executing: false },
+			{ executionId: 'sql-execution', executing: 'false' },
+		]) {
+			expect(routeSqlSectionMessage({
+				type: 'copilotWriteQueryExecuting', boxId: 'sql-1', ownerToken: 'owner-current',
+				sqlCopilotRequestId: 'sql-request-current', ...malformed,
+			}, effects)).toBe('rejected');
+		}
+		expect(section.admitSqlCopilotMessage).not.toHaveBeenCalled();
+	});
+
+	it('rejects missing and blank SQL Copilot execution targets', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		const { effects, section } = createEffects(target);
+
+		for (const boxId of [undefined, '', '   ']) {
+			expect(routeSqlSectionMessage({
+				type: 'copilotWriteQueryExecuting', boxId,
+				ownerToken: 'owner-current', sqlCopilotRequestId: 'sql-request-current',
+				executionId: 'sql-execution', executing: true,
+			}, effects)).toBe('rejected');
+		}
+		expect(section.admitSqlCopilotMessage).not.toHaveBeenCalled();
+	});
+
+	it('rejects whitespace-padded SQL Copilot execution identities', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		const { effects, section } = createEffects(target);
+		target.setStsReady(true, 'owner-current', 0);
+		section.admitSqlCopilotMessage.mockReturnValue(true);
+
+		for (const message of [
+			{ boxId: ' sql-1 ', executionId: 'sql-execution' },
+			{ boxId: 'sql-1', executionId: ' sql-execution ' },
+		]) {
+			expect(routeSqlSectionMessage({
+				type: 'copilotWriteQueryExecuting', ownerToken: 'owner-current',
+				sqlCopilotRequestId: 'sql-request-current', executing: true, ...message,
+			}, effects)).toBe('rejected');
+		}
+		expect(section.admitSqlCopilotMessage).not.toHaveBeenCalled();
 	});
 
 	it('rejects malformed inline completion ownership before owned-message admission', () => {
@@ -390,6 +519,27 @@ describe('routeSqlSectionMessage', () => {
 		expect(routeSqlSectionMessage({
 			type: 'queryResult', boxId: 'query-comparison', ownerToken: 'owner-current', executionId: 'comparison-1',
 		}, effects)).toBe('not-sql');
+	});
+
+	it('reserves a derived SQL comparison start so its exact pending stop is admitted', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		registerSqlDerivedComparisonSession('query-comparison', 'sql-1');
+		const { effects } = createEffects(target);
+		const sourceSection = effects.getSection('sql-1');
+		(effects.getSection as ReturnType<typeof vi.fn>).mockImplementation((boxId: string) =>
+			boxId === 'sql-1' ? sourceSection : boxId === 'query-comparison' ? {} : null);
+		target.setStsReady(true, 'owner-current', 0);
+
+		expect(routeSqlSectionMessage({
+			type: 'copilotWriteQueryExecuting', boxId: 'query-comparison', ownerToken: 'owner-current',
+			executionId: 'comparison-pending', executing: true,
+		}, effects)).toBe('not-sql');
+		expect(routeSqlSectionMessage({
+			type: 'copilotWriteQueryExecuting', boxId: 'query-comparison', ownerToken: 'owner-current',
+			executionId: 'comparison-pending', executing: false,
+		}, effects)).toBe('not-sql');
+		expect(commitSqlDerivedComparisonExecution('query-comparison', 'comparison-pending')).toBe(false);
 	});
 
 	it('uses the source owner when the derived comparison has its own SQL session', () => {

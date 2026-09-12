@@ -3,6 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [5.1.1] - 2026.09.12
+
+* Bugs
+    * SQL Copilot now renders conversational replies, shows advancing model rounds, honors tool selections, and reliably responds to Stop and Escape. Agent-delegated SQL requests no longer overwrite drafts or return stale editor queries.
+
 ## [5.1.0] - 2026.08.21
 
 * Support for multiple results within a single query section (Run All).

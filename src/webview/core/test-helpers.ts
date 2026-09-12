@@ -1728,6 +1728,133 @@ function e2eSection(kind: E2eSectionKind): any {
 	return section;
 }
 
+type E2eCopilotObservation = {
+	kind: E2eSectionKind;
+	startedAt: number;
+	lastMutationAt: number;
+	mutationCount: number;
+	progressValues: string[];
+	longTaskCount: number;
+	totalLongTaskMs: number;
+	maxLongTaskMs: number;
+	mutationObserver: MutationObserver;
+	longTaskObserver?: PerformanceObserver;
+};
+
+let e2eCopilotObservation: E2eCopilotObservation | undefined;
+
+function e2eCopilotChat(kind: E2eSectionKind): any {
+	const chat = e2eSection(kind).getCopilotChatEl?.();
+	if (!chat?.shadowRoot) throw new Error(`${kind} Copilot chat is unavailable`);
+	return chat;
+}
+
+function e2eCopilotSnapshot(kind: E2eSectionKind): any {
+	const chat = e2eCopilotChat(kind);
+	const progress = chat.shadowRoot.querySelector('[data-testid="copilot-chat-progress"]')?.textContent?.trim() || '';
+	const messages = Array.from(chat.getMessages?.() || []).map((message: any) => ({
+		kind: String(message?.kind || ''),
+		text: String(message?.text || ''),
+		toolName: message?.toolName ? String(message.toolName) : null,
+	}));
+	const input = chat.shadowRoot.querySelector('[data-testid="copilot-chat-input"]') as HTMLTextAreaElement | null;
+	return {
+		kind,
+		running: chat.isRunning?.() === true,
+		progress: progress || null,
+		messages,
+		enabledTools: chat.getEnabledTools?.() ?? null,
+		inputValue: input?.value || '',
+		inputFocused: chat.shadowRoot.activeElement === input,
+		inputReadOnly: input?.readOnly === true,
+		sendAction: chat.shadowRoot.querySelector('[data-testid="copilot-chat-send-stop"]')?.getAttribute('aria-label') || null,
+		tools: Array.from(chat.shadowRoot.querySelectorAll('.tool-checkbox')).map((checkbox: any) => ({
+			name: String(checkbox.getAttribute('data-testid') || '').replace('copilot-chat-tool-', ''),
+			label: checkbox.getAttribute('aria-label') || null,
+			checked: checkbox.checked === true,
+		})),
+	};
+}
+
+function e2eBeginCopilotObservation(kind: E2eSectionKind): any {
+	e2eCopilotObservation?.mutationObserver.disconnect();
+	e2eCopilotObservation?.longTaskObserver?.disconnect();
+	const chat = e2eCopilotChat(kind);
+	const startedAt = performance.now();
+	const observation: E2eCopilotObservation = {
+		kind,
+		startedAt,
+		lastMutationAt: startedAt,
+		mutationCount: 0,
+		progressValues: [],
+		longTaskCount: 0,
+		totalLongTaskMs: 0,
+		maxLongTaskMs: 0,
+		mutationObserver: new MutationObserver(() => {
+			observation.mutationCount++;
+			observation.lastMutationAt = performance.now();
+			const value = chat.shadowRoot?.querySelector('[data-testid="copilot-chat-progress"]')?.textContent?.trim();
+			if (value && observation.progressValues.at(-1) !== value) observation.progressValues.push(value);
+		}),
+	};
+	observation.mutationObserver.observe(chat.shadowRoot, { childList: true, subtree: true, characterData: true, attributes: true });
+	try {
+		if (typeof PerformanceObserver !== 'undefined'
+			&& PerformanceObserver.supportedEntryTypes?.includes('longtask')) {
+			observation.longTaskObserver = new PerformanceObserver(entries => {
+				for (const entry of entries.getEntries()) {
+					observation.longTaskCount++;
+					observation.totalLongTaskMs += entry.duration;
+					observation.maxLongTaskMs = Math.max(observation.maxLongTaskMs, entry.duration);
+				}
+			});
+			observation.longTaskObserver.observe({ entryTypes: ['longtask'] });
+		}
+	} catch { /* long-task observation is optional */ }
+	e2eCopilotObservation = observation;
+	return e2eCopilotSnapshot(kind);
+}
+
+async function e2eFinishCopilotObservation(expectedAssistantText: string, timeoutMs = 15_000): Promise<any> {
+	const observation = e2eCopilotObservation;
+	if (!observation) throw new Error('Copilot observation is not active');
+	try {
+		const deadline = performance.now() + timeoutMs;
+		let snapshot = e2eCopilotSnapshot(observation.kind);
+		while (performance.now() < deadline) {
+			snapshot = e2eCopilotSnapshot(observation.kind);
+			const answerCount = snapshot.messages.filter((message: any) =>
+				message.kind === 'assistant' && message.text === expectedAssistantText).length;
+			if (answerCount === 1 && !snapshot.running && !snapshot.progress) break;
+			await new Promise(resolve => setTimeout(resolve, 25));
+		}
+		const answerCount = snapshot.messages.filter((message: any) =>
+			message.kind === 'assistant' && message.text === expectedAssistantText).length;
+		if (answerCount !== 1 || snapshot.running || snapshot.progress) {
+			throw new Error(`Copilot did not settle exactly once: ${JSON.stringify({ expectedAssistantText, answerCount, snapshot })}`);
+		}
+		const quietDeadline = performance.now() + 3_000;
+		while (performance.now() < quietDeadline && performance.now() - observation.lastMutationAt < 250) {
+			await new Promise(resolve => setTimeout(resolve, 25));
+		}
+		return {
+			...snapshot,
+			answerCount,
+			durationMs: performance.now() - observation.startedAt,
+			mutationCount: observation.mutationCount,
+			progressValues: [...observation.progressValues],
+			longTaskCount: observation.longTaskCount,
+			totalLongTaskMs: observation.totalLongTaskMs,
+			maxLongTaskMs: observation.maxLongTaskMs,
+			quietForMs: performance.now() - observation.lastMutationAt,
+		};
+	} finally {
+		observation.mutationObserver.disconnect();
+		observation.longTaskObserver?.disconnect();
+		if (e2eCopilotObservation === observation) e2eCopilotObservation = undefined;
+	}
+}
+
 function e2eKustoElementId(section: any, suffix: string): string {
 	const boxId = String(section?.boxId || section?.id || '').trim();
 	if (!boxId) {
@@ -8263,15 +8390,31 @@ async function e2eClarificationInjectSql(question: string): Promise<any> {
 	const ownerToken = String(section.getCopilotOwnerToken?.() || '');
 	if (!ownerToken) throw new Error('SQL clarification owner token is unavailable');
 	const boxId = String(section.boxId || section.id || '');
+	const priorCapture = _win.__e2eCaptureHostMessage;
+	_win.__e2eCaptureHostMessage = (message: any) => {
+		priorCapture?.(message);
+		if (message?.type === 'startCopilotWriteQuery' && message.flavor === 'sql' && message.boxId === boxId) {
+			return false;
+		}
+		return undefined;
+	};
+	let sqlCopilotRequestId = '';
+	try {
+		sqlCopilotRequestId = String(section.submitSqlCopilotChatRequest?.('Synthetic SQL clarification', false) || '');
+	} finally {
+		_win.__e2eCaptureHostMessage = priorCapture;
+	}
+	if (!sqlCopilotRequestId) throw new Error('SQL clarification request identity is unavailable');
 	window.postMessage({
 		type: 'copilotClarifyingQuestion', boxId, entryId: 'sql-e2e-clarification', question, ownerToken,
+		sqlCopilotRequestId,
 	}, '*');
-	window.postMessage({ type: 'copilotWriteQueryDone', boxId, ok: true, message: '', ownerToken }, '*');
+	window.postMessage({ type: 'copilotWriteQueryDone', boxId, ok: true, message: '', ownerToken, sqlCopilotRequestId }, '*');
 	const snapshot = await e2eAssertManualClarification(question, 1, 'sql');
 	const kustoHandoff = snapshot.capturedToolResponses.find((response: any) =>
 		response?.result?.outcome === 'clarification-required');
 	if (kustoHandoff) throw new Error(`SQL clarification emitted a Kusto handoff: ${JSON.stringify(kustoHandoff)}`);
-	return { ...snapshot, ownerToken };
+	return { ...snapshot, ownerToken, sqlCopilotRequestId };
 }
 
 if (document.body.dataset.kustoE2eEnabled === 'true') {
@@ -8396,6 +8539,11 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		waitForHeldDone: e2eClarificationWaitForHeldDone,
 		releaseHeldDone: e2eClarificationReleaseHeldDone,
 		injectSql: e2eClarificationInjectSql,
+	},
+	copilot: {
+		snapshot: e2eCopilotSnapshot,
+		beginObservation: e2eBeginCopilotObservation,
+		finishObservation: e2eFinishCopilotObservation,
 	},
 	sql: {
 		...e2eQueryApi('sql'),

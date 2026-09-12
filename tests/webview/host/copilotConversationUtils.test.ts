@@ -437,60 +437,65 @@ describe('sanitizeConversationHistory – complex interleaving', () => {
 
 describe('decideNonToolResponse', () => {
 	it('rejects non-tool response when requireToolUse is true', () => {
-		const decision = decideNonToolResponse(true);
-		expect(decision.accept).toBe(false);
-		expect(decision.priorAttemptError).toBeTruthy();
-		expect(decision.statusMessage).toBeTruthy();
+		expect(decideNonToolResponse(true, 'I answered without a tool.')).toEqual({
+			kind: 'retry',
+			reason: 'tool-required',
+			priorAttemptError: 'Copilot did not call any tools. The model should use the available tools to respond.',
+			statusMessage: 'Copilot returned a non-tool response. Retrying\u2026',
+			narrative: 'I answered without a tool.',
+		});
 	});
 
 	it('returns a meaningful error message when rejecting', () => {
-		const decision = decideNonToolResponse(true);
+		const decision = decideNonToolResponse(true, 'Narrative');
+		expect(decision.kind).toBe('retry');
+		if (decision.kind !== 'retry') throw new Error('Expected retry decision');
 		expect(decision.priorAttemptError).toContain('tools');
 		expect(decision.statusMessage).toContain('non-tool response');
 	});
 
 	it('accepts non-tool response when requireToolUse is false', () => {
-		const decision = decideNonToolResponse(false);
-		expect(decision.accept).toBe(true);
-		expect(decision.priorAttemptError).toBeUndefined();
-		expect(decision.statusMessage).toBeUndefined();
+		expect(decideNonToolResponse(false, '  A conversational answer.  ')).toEqual({
+			kind: 'accept-narrative',
+			narrative: 'A conversational answer.',
+		});
 	});
 
 	it('does not include rejection fields when accepting', () => {
-		const decision = decideNonToolResponse(false);
-		expect(decision.priorAttemptError).toBeUndefined();
-		expect(decision.statusMessage).toBeUndefined();
+		const decision = decideNonToolResponse(false, 'Answer');
+		expect(decision).not.toHaveProperty('priorAttemptError');
+		expect(decision).not.toHaveProperty('statusMessage');
 	});
 
-	// ── suppressNarrative — prevents duplicate message rendering ──────────
-
-	it('suppresses narrative when accepting (prevents duplicate text)', () => {
-		const decision = decideNonToolResponse(false);
-		expect(decision.suppressNarrative).toBe(true);
+	it('returns accepted narrative explicitly for single rendering', () => {
+		expect(decideNonToolResponse(false, 'Answer')).toEqual({
+			kind: 'accept-narrative', narrative: 'Answer',
+		});
 	});
 
-	it('does NOT suppress narrative when rejecting (user should see what model said)', () => {
-		const decision = decideNonToolResponse(true);
-		expect(decision.suppressNarrative).toBe(false);
+	it('returns rejected narrative so the caller can show it before retrying', () => {
+		const decision = decideNonToolResponse(true, 'Visible rejected narrative');
+		expect(decision).toMatchObject({
+			kind: 'retry', reason: 'tool-required', narrative: 'Visible rejected narrative',
+		});
 	});
 
-	it('accepted response: suppressNarrative=true ensures text is sent only once via done message', () => {
-		// When accept=true and suppressNarrative=true, the caller should:
-		// 1. NOT call postNarrative (because suppressNarrative is true)
-		// 2. Call postNarrative AFTER the check (one explicit call in the accept path)
-		// 3. Send copilotWriteQueryDone with empty message
-		// This ensures the text appears exactly once (via postNarrative in the accept branch).
-		const decision = decideNonToolResponse(false);
-		expect(decision.accept).toBe(true);
-		expect(decision.suppressNarrative).toBe(true);
-		// If both accept and suppressNarrative are set, the caller knows to post
-		// narrative once in the accept path and NOT repeat in the done message.
+	it('preserves the exact accepted narrative for one final message', () => {
+		const decision = decideNonToolResponse(false, 'Render exactly once');
+		expect(decision).toEqual({ kind: 'accept-narrative', narrative: 'Render exactly once' });
 	});
 
 	it('rejected response: allows narrative so user sees model output before retry', () => {
-		const decision = decideNonToolResponse(true);
-		expect(decision.accept).toBe(false);
-		expect(decision.suppressNarrative).toBe(false);
-		// The caller posts narrative (model text visible), then retries.
+		const decision = decideNonToolResponse(true, 'Show before retry');
+		expect(decision).toMatchObject({ kind: 'retry', narrative: 'Show before retry' });
+	});
+
+	it.each([false, true])('retries a blank response when requireToolUse is %s', requireToolUse => {
+		expect(decideNonToolResponse(requireToolUse, ' \r\n\t ')).toEqual({
+			kind: 'retry',
+			reason: 'empty-response',
+			priorAttemptError: 'Copilot returned an empty response.',
+			statusMessage: 'Copilot returned an empty response. Retrying\u2026',
+		});
 	});
 });

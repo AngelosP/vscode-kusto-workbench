@@ -96,6 +96,7 @@ describe('kw-sql-toolbar', () => {
 
 		const disabledButton = getButton(el, 'Copilot');
 		expect(disabledButton.disabled).toBe(true);
+		expect(disabledButton.dataset.testid).toBe('sql-copilot-chat-toggle');
 		disabledButton.click();
 		expect(toggleCount).toBe(0);
 

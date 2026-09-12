@@ -208,9 +208,15 @@ import {
 } from '../monaco/sql-sts-providers.js';
 import {
 	commitSqlDerivedComparisonExecution,
+	isSqlCopilotRequestMessage,
 	rollbackSqlDerivedComparisonExecution,
+	rollbackSqlDerivedComparisonExecutionReservation,
 	routeSqlSectionMessage,
 } from './sql-section-message-router.js';
+import {
+	SQL_COPILOT_OUTPUT_ADMITTED_EVENT,
+	SQL_COPILOT_REQUEST_RETIRED_EVENT,
+} from '../shared/sql-copilot-events.js';
 import {
 	activeQueryEditorBoxId,
 	connections, setConnections, setLastConnectionId, setLastDatabase,
@@ -322,13 +328,17 @@ function reserveKustoToolConfigureLease(sectionId: string): Readonly<{
 	});
 }
 
-function sqlCopilotStartKey(boxId: unknown, executionId: unknown): string {
-	return `${String(boxId || '').trim()}\u0000${String(executionId || '').trim()}`;
+function sqlCopilotStartKey(boxId: unknown, executionId: unknown): string | undefined {
+	if (typeof boxId !== 'string' || typeof executionId !== 'string') return undefined;
+	const normalizedBoxId = boxId.trim();
+	const normalizedExecutionId = executionId.trim();
+	if (!normalizedBoxId || !normalizedExecutionId) return undefined;
+	return `${normalizedBoxId}\u0000${normalizedExecutionId}`;
 }
 
 function retireSqlCopilotStart(boxId: unknown, executionId: unknown): void {
 	const key = sqlCopilotStartKey(boxId, executionId);
-	if (key === '\u0000') return;
+	if (!key) return;
 	const previous = retiredSqlCopilotStarts.get(key);
 	if (previous) clearTimeout(previous);
 	const timer = setTimeout(() => retiredSqlCopilotStarts.delete(key), SQL_COPILOT_START_RETIREMENT_TTL_MS);
@@ -337,6 +347,7 @@ function retireSqlCopilotStart(boxId: unknown, executionId: unknown): void {
 
 function consumeRetiredSqlCopilotStart(boxId: unknown, executionId: unknown): boolean {
 	const key = sqlCopilotStartKey(boxId, executionId);
+	if (!key) return false;
 	const timer = retiredSqlCopilotStarts.get(key);
 	if (!timer) return false;
 	clearTimeout(timer);
@@ -2406,9 +2417,14 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		return;
 	}
 	const messageType = String(message.type || '');
-	if (messageType === 'copilotWriteQueryExecuting' && message.executing === false) {
-		retireSqlCopilotStart(message.boxId, message.executionId);
-	}
+	const sqlCopilotExecutionIdentity = messageType === 'copilotWriteQueryExecuting'
+		&& typeof message.boxId === 'string' && message.boxId.trim()
+		&& message.boxId === message.boxId.trim()
+		&& typeof message.executionId === 'string' && message.executionId.trim()
+		&& message.executionId === message.executionId.trim()
+		&& typeof message.executing === 'boolean'
+		? { boxId: message.boxId.trim(), executionId: message.executionId.trim() }
+		: undefined;
 	const kustoTerminalAdmission = admitKustoTerminal(message);
 	if (kustoTerminalAdmission === 'rejected') {
 		acknowledgeKustoPublication(message, false);
@@ -2453,14 +2469,25 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		clearPolicyBox: clearSqlPolicyBox,
 	}) : 'not-sql';
 	if (sqlRoute !== 'not-sql') {
-		if (messageType === 'copilotWriteQueryExecuting' && message.executing === true) {
+		if (sqlCopilotExecutionIdentity && message.executing === true) {
 			postMessageToHost({
 				type: 'copilotWriteQueryExecutionAck',
-				boxId: String(message.boxId || ''), executionId: String(message.executionId || ''),
+				...sqlCopilotExecutionIdentity,
 				accepted: false,
 			});
 		}
 		return;
+	}
+	if (sqlCopilotExecutionIdentity && message.executing === false
+		&& __kustoGetSqlSectionElement(sqlCopilotExecutionIdentity.boxId)) {
+		retireSqlCopilotStart(
+			sqlCopilotExecutionIdentity.boxId,
+			sqlCopilotExecutionIdentity.executionId,
+		);
+	}
+	if (isSqlCopilotRequestMessage(message)
+		&& __kustoGetSqlSectionElement(String(message.boxId || ''))) {
+		window.dispatchEvent(new CustomEvent(SQL_COPILOT_OUTPUT_ADMITTED_EVENT, { detail: message }));
 	}
 	if (messageType === 'copilotClarifyingQuestion'
 		&& __kustoGetQuerySectionElement(String(message.boxId || ''))) {
@@ -2470,7 +2497,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		if (!clarification.ok) return;
 		message = clarification.value;
 	}
-	if (kustoCopilotOutputMessageTypes.has(messageType)) {
+	const isRequestIndependentCopilotAvailability = messageType === 'copilotWriteQueryStatus'
+		&& message.role === 'availability';
+	if (kustoCopilotOutputMessageTypes.has(messageType) && !isRequestIndependentCopilotAvailability) {
 		const section = __kustoGetQuerySectionElement(String(message.boxId || ''));
 		const admitted = messageType === 'revealSection'
 			? section?.admitKustoCopilotConversationOwner?.(message)
@@ -4467,12 +4496,16 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				let accepted = false;
 				if (boxId) {
 					const executionId = String(message.executionId || '');
-					const startDeadline = Number(message.startDeadline);
-					if (executing && (consumeRetiredSqlCopilotStart(boxId, executionId)
-						|| (Number.isFinite(startDeadline) && startDeadline <= Date.now()))) {
+					const rejectPendingStart = () => {
+						rollbackSqlDerivedComparisonExecutionReservation(boxId, executionId);
 						postMessageToHost({
 							type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted: false,
 						});
+					};
+					const startDeadline = Number(message.startDeadline);
+					if (executing && (consumeRetiredSqlCopilotStart(boxId, executionId)
+						|| (Number.isFinite(startDeadline) && startDeadline <= Date.now()))) {
+						rejectPendingStart();
 						break;
 					}
 					const metadata = optimizationMetadataByBoxId[boxId];
@@ -4496,9 +4529,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							|| !await persistDocumentAndWaitForAck(
 								'copilot-sql-query-start', SQL_COPILOT_PERSIST_ACK_TIMEOUT_MS,
 							)) {
-							postMessageToHost({
-								type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted: false,
-							});
+							rejectPendingStart();
 							break;
 						}
 						const stillAllowed = sqlEl
@@ -4507,23 +4538,17 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						if (consumeRetiredSqlCopilotStart(boxId, executionId)
 							|| (Number.isFinite(startDeadline) && startDeadline <= Date.now())
 							|| !stillAllowed || currentQuery() !== expectedQuery) {
-							postMessageToHost({
-								type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted: false,
-							});
+							rejectPendingStart();
 							break;
 						}
 					}
 					if (executing && sqlDerivedComparison && !canAdmitKustoHostExecutionStart(boxId)) {
-						postMessageToHost({
-							type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted: false,
-						});
+						rejectPendingStart();
 						break;
 					}
 					if (sqlEl && typeof sqlEl.setExternalQueryExecuting === 'function'
 						&& !sqlEl.setExternalQueryExecuting(executing, executionId)) {
-						if (executing) postMessageToHost({
-							type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted: false,
-						});
+						if (executing) rejectPendingStart();
 						break;
 					}
 					if (sqlDerivedComparison) {
@@ -4558,9 +4583,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					}
 					if (queryEl && typeof queryEl.setExternalQueryExecuting === 'function'
 						&& !queryEl.setExternalQueryExecuting(executing, executionId)) {
-						if (executing) postMessageToHost({
-							type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted: false,
-						});
+						if (executing) rejectPendingStart();
 						break;
 					}
 					if (!queryEl) setQueryExecuting(boxId, executing);
@@ -4569,7 +4592,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted,
 					});
 				}
-			} catch (e) { console.error('[kusto]', e); }
+			} catch (e) {
+				if (message.executing === true
+					&& typeof message.boxId === 'string' && typeof message.executionId === 'string') {
+					rollbackSqlDerivedComparisonExecutionReservation(message.boxId, message.executionId);
+				}
+				console.error('[kusto]', e);
+			}
 			break;
 		case 'copilotWriteQueryToolResult':
 			try {
@@ -4778,6 +4807,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
 					if (sqlEl && typeof sqlEl.copilotWriteQueryDone === 'function') {
 						sqlEl.copilotWriteQueryDone(!!message.ok, message.message || '');
+						sqlEl.completeSqlCopilotRequest?.(message);
 					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -6489,10 +6519,14 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						return;
 					}
 					let responded = false;
-					let resultHandler: ((event: any) => void) | undefined;
+					let submittedSqlCopilotRequestId = '';
+					let generatedQuery = '';
+					let resultHandler: ((event: Event) => void) | undefined;
+					let retirementHandler: ((event: Event) => void) | undefined;
 					let timeoutId: ReturnType<typeof setTimeout> | undefined;
 					const cleanupDelegation = () => {
-						if (resultHandler) window.removeEventListener('message', resultHandler);
+						if (resultHandler) window.removeEventListener(SQL_COPILOT_OUTPUT_ADMITTED_EVENT, resultHandler);
+						if (retirementHandler) window.removeEventListener(SQL_COPILOT_REQUEST_RETIRED_EVENT, retirementHandler);
 						if (timeoutId) clearTimeout(timeoutId);
 						if (sqlCopilotToolCancellationByRequestId.get(requestId) === cancelDelegation) {
 							sqlCopilotToolCancellationByRequestId.delete(requestId);
@@ -6502,68 +6536,48 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						if (responded) return;
 						responded = true;
 						cleanupDelegation();
-						if (ownerIsCurrent()) sqlEl.copilotWriteQueryCancel?.();
+						if (ownerIsCurrent() && submittedSqlCopilotRequestId) {
+							sqlEl.cancelSqlCopilotRequest?.(submittedSqlCopilotRequestId);
+						}
 					};
 					sqlCopilotToolCancellationByRequestId.set(requestId, cancelDelegation);
-					
-					// Ensure copilot chat is visible
-					if (typeof sqlEl.setCopilotChatVisible === 'function') {
-						sqlEl.setCopilotChatVisible(true);
-					}
 
-					// Force 'Run Query' mode (plain) — agent-generated queries must not
-					// have TOP 100 limits silently appended.
-					const beforeSignature = getSectionSerializedSignature(sectionId);
-					try { setRunMode(sectionId, 'plain'); } catch (e) { console.error('[kusto]', e); }
-					markSectionAgentTouched(sectionId, beforeSignature);
-
-					await new Promise((r: any) => setTimeout(r, 150));
-					if (responded) return;
-					if (!ownerIsCurrent()) {
-						cleanupDelegation();
-						postOwnedFailure('SQL Copilot owner changed before dispatch.');
-						return;
-					}
-					
-					// Find the chat element
-					const chatEl = typeof sqlEl.getCopilotChatEl === 'function' ? sqlEl.getCopilotChatEl() : null;
-					if (!chatEl || typeof chatEl.setInputText !== 'function') {
+					if (typeof sqlEl.submitSqlCopilotChatRequest !== 'function') {
 						cleanupDelegation();
 						postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'SQL Copilot chat not available. Is Copilot enabled?' } });
 						return;
 					}
-					
-					if (!ownerIsCurrent()) {
-						cleanupDelegation();
-						postOwnedFailure('SQL Copilot owner changed before dispatch.');
-						return;
-					}
-					chatEl.setInputText(question);
-					
-					// Listen for results
-					let generatedQuery = '';
-					
-					resultHandler = (event: any) => {
+
+					resultHandler = (event: Event) => {
 						try {
-							const msg = event && event.data;
+							const msg = (event as CustomEvent).detail;
 							if (!msg || responded) return;
+							if (msg.type === 'copilotWriteQuerySetQuery' && msg.boxId === sectionId
+								&& typeof msg.ownerToken === 'string' && msg.ownerToken === expectedOwnerToken
+								&& typeof msg.sqlCopilotRequestId === 'string'
+								&& msg.sqlCopilotRequestId === submittedSqlCopilotRequestId
+								&& ownerIsCurrent()) {
+								generatedQuery = String(msg.query || '');
+								return;
+							}
 							if (msg.type === 'copilotWriteQueryDone' && msg.boxId === sectionId
-								&& String(msg.ownerToken || '') === expectedOwnerToken
-								&& String(sqlEl.getCopilotOwnerToken?.() || '') === expectedOwnerToken) {
+								&& typeof msg.ownerToken === 'string' && msg.ownerToken === expectedOwnerToken
+								&& typeof msg.sqlCopilotRequestId === 'string'
+								&& msg.sqlCopilotRequestId === submittedSqlCopilotRequestId
+								&& ownerIsCurrent()) {
 								responded = true;
 								cleanupDelegation();
-								try {
-									if (typeof sqlEl.getCopilotEditorValue === 'function') {
-										generatedQuery = sqlEl.getCopilotEditorValue() || '';
-									}
-								} catch (e) { console.error('[kusto]', e); }
+								const success = msg.ok === true && !!generatedQuery.trim();
+								const error = msg.ok === true
+									? 'SQL Copilot completed without generating a query.'
+									: String(msg.message || 'Failed');
 								postMessageToHost({
 									type: 'toolResponse', requestId,
 									result: {
-										success: !!msg.ok,
-										answer: msg.ok ? 'Query generated successfully.' : (msg.message || 'Failed'),
-										query: generatedQuery || undefined,
-										error: msg.ok ? undefined : (msg.message || 'Failed'),
+										success,
+										answer: success ? 'Query generated successfully.' : error,
+										query: success ? generatedQuery : undefined,
+										error: success ? undefined : error,
 										owner: {
 											connectionId: typeof sqlEl.getConnectionId === 'function' ? String(sqlEl.getConnectionId() || '') : '',
 											database: typeof sqlEl.getDatabase === 'function' ? String(sqlEl.getDatabase() || '') : '',
@@ -6574,8 +6588,20 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							}
 						} catch (err: any) { console.error('[kusto]', err); }
 					};
-					
-					window.addEventListener('message', resultHandler);
+					retirementHandler = (event: Event) => {
+						const detail = (event as CustomEvent).detail;
+						if (responded || !detail || detail.boxId !== sectionId
+							|| typeof detail.sqlCopilotRequestId !== 'string'
+							|| detail.sqlCopilotRequestId !== submittedSqlCopilotRequestId) return;
+						responded = true;
+						cleanupDelegation();
+						postOwnedFailure(typeof detail.reason === 'string' && detail.reason
+							? detail.reason
+							: 'SQL Copilot request was canceled.');
+					};
+
+					window.addEventListener(SQL_COPILOT_OUTPUT_ADMITTED_EVENT, resultHandler);
+					window.addEventListener(SQL_COPILOT_REQUEST_RETIRED_EVENT, retirementHandler);
 					timeoutId = setTimeout(() => {
 						if (!responded) {
 							cancelDelegation();
@@ -6583,23 +6609,29 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						}
 					}, 180000);
 					
-					// Send the message
-					const sendBtn = chatEl.shadowRoot?.querySelector('.send-btn') as HTMLElement | null;
+					if (typeof sqlEl.setCopilotChatVisible === 'function') sqlEl.setCopilotChatVisible(true);
 					if (!ownerIsCurrent()) {
 						cleanupDelegation();
 						postOwnedFailure('SQL Copilot owner changed before dispatch.');
-					} else if (sendBtn) sendBtn.click();
-					else {
-						cleanupDelegation();
-						postOwnedFailure('Could not find send button');
+						return;
 					}
+					submittedSqlCopilotRequestId = String(sqlEl.submitSqlCopilotChatRequest(question, true) || '');
+					if (!submittedSqlCopilotRequestId) {
+						cleanupDelegation();
+						postOwnedFailure('SQL Copilot request did not start. The section may already be busy.');
+						return;
+					}
+
+					const beforeSignature = getSectionSerializedSignature(sectionId);
+					try { setRunMode(sectionId, 'plain'); } catch (e) { console.error('[kusto]', e); }
+					markSectionAgentTouched(sectionId, beforeSignature);
 				} catch (err: any) {
 					console.error('[kusto]', err);
 					postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false, error: err.message || String(err) } });
 				}
 			})();
 			break;
-		
+
 		case 'changedSections':
 			// Update per-section unsaved-change indicators.
 			// Message shape: ChangedSectionsMessage { type, changes: SectionChangeInfo[] }

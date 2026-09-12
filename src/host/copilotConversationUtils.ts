@@ -254,16 +254,18 @@ export function groupConversationHistoryForProvider(
 // decideNonToolResponse
 // ---------------------------------------------------------------------------
 
-export interface NonToolResponseDecision {
-	/** If true the text-only response is accepted as-is; if false the caller should retry. */
-	accept: boolean;
-	/** When true the caller should NOT post the response text as a narrative — the done message will carry it. Prevents duplicate rendering. */
-	suppressNarrative: boolean;
-	/** Error string to push into priorAttempts when rejecting. */
-	priorAttemptError?: string;
-	/** Status string to show the user when rejecting. */
-	statusMessage?: string;
-}
+export type NonToolResponseDecision =
+	| Readonly<{
+		kind: 'accept-narrative';
+		narrative: string;
+	}>
+	| Readonly<{
+		kind: 'retry';
+		reason: 'tool-required' | 'empty-response';
+		priorAttemptError: string;
+		statusMessage: string;
+		narrative?: string;
+	}>;
 
 /**
  * Decides whether a text-only (no tool calls) LLM response should be accepted
@@ -276,14 +278,24 @@ export interface NonToolResponseDecision {
  * a text-only answer is perfectly valid — the user might be asking a general
  * question that doesn't need a KQL query.
  */
-export function decideNonToolResponse(requireToolUse: boolean): NonToolResponseDecision {
-	if (requireToolUse) {
+export function decideNonToolResponse(requireToolUse: boolean, responseText: string): NonToolResponseDecision {
+	const narrative = String(responseText || '').trim();
+	if (!narrative) {
 		return {
-			accept: false,
-			suppressNarrative: false,
-			priorAttemptError: 'Copilot did not call any tools. The model should use the available tools to respond.',
-			statusMessage: 'Copilot returned a non-tool response. Retrying\u2026'
+			kind: 'retry',
+			reason: 'empty-response',
+			priorAttemptError: 'Copilot returned an empty response.',
+			statusMessage: 'Copilot returned an empty response. Retrying\u2026',
 		};
 	}
-	return { accept: true, suppressNarrative: true };
+	if (requireToolUse) {
+		return {
+			kind: 'retry',
+			reason: 'tool-required',
+			priorAttemptError: 'Copilot did not call any tools. The model should use the available tools to respond.',
+			statusMessage: 'Copilot returned a non-tool response. Retrying\u2026',
+			narrative,
+		};
+	}
+	return { kind: 'accept-narrative', narrative };
 }

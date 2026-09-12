@@ -55,7 +55,8 @@ describe('kw-copilot-chat — initialization', () => {
 		await waitUpdate(el);
 		const title = getShadowEl(el, '.chat-title span');
 		expect(title?.textContent).toBe('CHAT');
-		expect(getShadowEl(el, '.clear-btn')).toBeTruthy();
+		expect(getShadowEl(el, '[data-testid="copilot-chat-clear"]')?.getAttribute('aria-label'))
+			.toBe('Clear conversation history');
 		expect(getShadowEl(el, '.close-btn')).toBeTruthy();
 	});
 
@@ -71,6 +72,7 @@ describe('kw-copilot-chat — initialization', () => {
 		const ta = getShadowEl(el, 'textarea') as HTMLTextAreaElement;
 		expect(ta).toBeTruthy();
 		expect(ta.placeholder).toBe('Ask Copilot\u2026');
+		expect(ta.dataset.testid).toBe('copilot-chat-input');
 	});
 
 	it('renders the send button', async () => {
@@ -234,16 +236,20 @@ describe('kw-copilot-chat — message appending', () => {
 });
 
 describe('kw-copilot-chat — running state', () => {
-	it('sets running state and disables input', async () => {
+	it('sets running state while keeping the input focusable and read-only', async () => {
 		const el = createChat();
 		await waitUpdate(el);
 		el.setRunning(true);
 		await waitUpdate(el);
 		expect(el.isRunning()).toBe(true);
 		const ta = getShadowEl(el, 'textarea') as HTMLTextAreaElement;
-		expect(ta.disabled).toBe(true);
+		expect(ta.disabled).toBe(false);
+		expect(ta.readOnly).toBe(true);
+		ta.focus();
+		expect(el.shadowRoot?.activeElement).toBe(ta);
 		const sendBtn = getShadowEl(el, '.send-btn');
 		expect(sendBtn!.classList.contains('is-running')).toBe(true);
+		expect(sendBtn?.getAttribute('aria-label')).toBe('Stop Copilot request');
 	});
 
 	it('clears running state', async () => {
@@ -266,6 +272,27 @@ describe('kw-copilot-chat — running state', () => {
 		const last = msgs[msgs.length - 1];
 		expect(last.kind).toBe('notification');
 		expect(last.text).toBe('Processing...');
+	});
+
+	it('replaces transient progress without appending chat history and clears it on completion', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		const initialMessages = getMessages(el).length;
+		el.setRunning(true);
+		el.setProgress('Generating response (round 1)\u2026');
+		el.setProgress('Generating response (round 2)\u2026');
+		await waitUpdate(el);
+
+		const progress = getShadowEl(el, '[data-testid="copilot-chat-progress"]');
+		expect(progress?.textContent).toBe('Generating response (round 2)\u2026');
+		expect(getMessages(el)).toHaveLength(initialMessages);
+
+		el.setRunning(false);
+		await waitUpdate(el);
+		expect(getShadowEl(el, '[data-testid="copilot-chat-progress"]')).toBeNull();
+		el.setProgress('LATE_PROGRESS');
+		await waitUpdate(el);
+		expect(el.shadowRoot?.textContent).not.toContain('LATE_PROGRESS');
 	});
 });
 
@@ -498,6 +525,71 @@ describe('kw-copilot-chat — tools', () => {
 		expect(el.shadowRoot?.activeElement).toBe(toolsButton);
 	});
 
+	it('keeps the tools panel open for native mousedown paths inside its shadow tree', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.applyOptions([], '', sampleTools);
+		await waitUpdate(el);
+		getShadowEl(el, '.tools-btn')!.click();
+		await waitUpdate(el);
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		for (const target of [
+			getShadowEl(el, '.tool-checkbox'),
+			getShadowEl(el, '.tool-item'),
+			getShadowEl(el, '.tool-name'),
+		]) {
+			target!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+			await waitUpdate(el);
+			expect(getShadowEl(el, '.tools-panel')).toBeTruthy();
+		}
+
+		document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+		await waitUpdate(el);
+		expect(getShadowEl(el, '.tools-panel')).toBeNull();
+	});
+
+	it('uses the composed path when a document capture event is retargeted to the component host', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.applyOptions([], '', sampleTools);
+		await waitUpdate(el);
+		getShadowEl(el, '.tools-btn')!.click();
+		await waitUpdate(el);
+		const panel = getShadowEl(el, '.tools-panel')!;
+		const checkbox = getShadowEl(el, '.tool-checkbox')!;
+
+		(el as any)._onOutsideClickToolsPanel({
+			target: el,
+			composedPath: () => [checkbox, panel, el.shadowRoot, el, document.body, document, window],
+		});
+		await waitUpdate(el);
+
+		expect(getShadowEl(el, '.tools-panel')).toBeTruthy();
+	});
+
+	it('dismisses the tools popup before Escape cancels a running request', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.applyOptions([], '', sampleTools);
+		el.setRunning(true);
+		await waitUpdate(el);
+		getShadowEl(el, '.tools-btn')!.click();
+		await waitUpdate(el);
+		const cancel = vi.fn();
+		el.addEventListener('copilot-cancel', cancel as any);
+
+		document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+		await waitUpdate(el);
+		expect(getShadowEl(el, '.tools-panel')).toBeNull();
+		expect(cancel).not.toHaveBeenCalled();
+
+		const stop = getShadowEl(el, '.send-btn') as HTMLButtonElement;
+		stop.focus();
+		stop.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
+		expect(cancel).toHaveBeenCalledOnce();
+	});
+
 	it('renders tool items with checkboxes in correct groups', async () => {
 		const el = createChat();
 		await waitUpdate(el);
@@ -636,10 +728,51 @@ describe('kw-copilot-chat — keyboard', () => {
 		el.setRunning(true);
 		await waitUpdate(el);
 		const ta = getShadowEl(el, 'textarea') as HTMLTextAreaElement;
+		ta.focus();
+		expect(ta.readOnly).toBe(true);
 		const handler = vi.fn();
 		el.addEventListener('copilot-cancel', handler as any);
 		ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 		expect(handler).toHaveBeenCalledTimes(1);
+	});
+
+	it('Escape cancels when the running Stop button owns focus', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.setRunning(true);
+		await waitUpdate(el);
+		const stop = getShadowEl(el, '.send-btn') as HTMLButtonElement;
+		stop.focus();
+		const handler = vi.fn();
+		el.addEventListener('copilot-cancel', handler as any);
+
+		stop.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
+
+		expect(handler).toHaveBeenCalledOnce();
+	});
+
+	it.each([
+		{ ctrlKey: false, shiftKey: false },
+		{ ctrlKey: true, shiftKey: false },
+		{ ctrlKey: false, shiftKey: true },
+	])('does not send, cancel, or edit on Enter while running: %o', async modifiers => {
+		const el = createChat();
+		await waitUpdate(el);
+		const ta = getShadowEl(el, 'textarea') as HTMLTextAreaElement;
+		ta.value = 'draft remains';
+		el.setRunning(true);
+		await waitUpdate(el);
+		const send = vi.fn();
+		const cancel = vi.fn();
+		el.addEventListener('copilot-send', send as any);
+		el.addEventListener('copilot-cancel', cancel as any);
+		const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...modifiers });
+		ta.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(send).not.toHaveBeenCalled();
+		expect(cancel).not.toHaveBeenCalled();
+		expect(ta.value).toBe('draft remains');
 	});
 });
 
@@ -826,6 +959,27 @@ describe('kw-copilot-chat — tool toggle', () => {
 		const enabled = el.getEnabledTools();
 		expect(enabled.length).toBe(2);
 	});
+
+	it('distinguishes options not loaded from an explicit all-off selection', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		expect(el.getEnabledTools()).toBeUndefined();
+
+		el.applyOptions([], '', sampleTools);
+		await waitUpdate(el);
+		getShadowEl(el, '.tools-btn')!.click();
+		await waitUpdate(el);
+		for (const checkbox of getAllShadowEls(el, '.tool-checkbox') as HTMLInputElement[]) checkbox.click();
+		await waitUpdate(el);
+
+		expect(el.getEnabledTools()).toEqual([]);
+		const send = vi.fn();
+		el.addEventListener('copilot-send', send as any);
+		const ta = getShadowEl(el, 'textarea') as HTMLTextAreaElement;
+		ta.value = 'Answer without tools';
+		(getShadowEl(el, '.send-btn') as HTMLButtonElement).click();
+		expect((send.mock.calls[0][0] as CustomEvent).detail.enabledTools).toEqual([]);
+	});
 });
 
 describe('kw-copilot-chat — system message actions', () => {
@@ -920,12 +1074,13 @@ describe('kw-copilot-chat — clarifying question rendering', () => {
 
 		el.appendClarifyingQuestion('What table?', 'cq-running');
 		await waitUpdate(el);
-		expect(textarea.disabled).toBe(true);
+		expect(textarea.disabled).toBe(false);
+		expect(textarea.readOnly).toBe(true);
 		expect(el.shadowRoot?.activeElement).not.toBe(textarea);
 
 		el.setRunning(false);
 		await waitUpdate(el);
-		expect(textarea.disabled).toBe(false);
+		expect(textarea.readOnly).toBe(false);
 		expect(el.shadowRoot?.activeElement).toBe(textarea);
 	});
 

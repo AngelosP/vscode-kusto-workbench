@@ -70,6 +70,7 @@ export class KwSqlToolbar extends KwMonacoToolbar {
 			},
 			{
 				type: 'button', label: 'Copilot',
+				testId: 'sql-copilot-chat-toggle',
 				title: 'Copilot chat\nGenerate and run a query with GitHub Copilot',
 				icon: this._copilotIcon,
 				isActive: this.copilotChatActive,

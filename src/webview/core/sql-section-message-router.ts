@@ -59,6 +59,7 @@ interface SqlSectionElement {
 	notifyStsConnectionError?(error: string): void;
 	setStsReady?(ready: boolean, ownerToken?: string, targetGeneration?: number): void;
 	setExecutionOwner?(ownerToken: string, targetGeneration?: number): void;
+	admitSqlCopilotMessage?(message: unknown): boolean;
 }
 
 export interface SqlSectionMessageRouterEffects {
@@ -81,8 +82,29 @@ const SQL_OWNER_SENSITIVE_MESSAGE_TYPES = new Set([
 	'copilotClarifyingQuestion', 'copilotWriteQueryDone', 'copilotInlineCompletionResult',
 ]);
 
+const SQL_COPILOT_REQUEST_MESSAGE_TYPES = new Set([
+	'copilotWriteQueryStatus', 'copilotWriteQueryToolResult', 'copilotExecutedQuery',
+	'copilotGeneralQueryRulesLoaded', 'copilotUserQuerySnapshot', 'copilotWriteQuerySetQuery',
+	'copilotWriteQueryExecuting', 'copilotDevNotesContextLoaded', 'copilotDevNoteToolCall',
+	'copilotClarifyingQuestion', 'copilotWriteQueryDone', 'ensureResultsVisible',
+]);
+
+function isSqlCopilotAvailabilityMessage(message: Record<string, unknown>): boolean {
+	return message.type === 'copilotWriteQueryStatus' && message.role === 'availability';
+}
+
+export function isSqlCopilotRequestMessage(message: Record<string, unknown>): boolean {
+	return typeof message.type === 'string'
+		&& SQL_COPILOT_REQUEST_MESSAGE_TYPES.has(message.type)
+		&& !isSqlCopilotAvailabilityMessage(message);
+}
+
 const sessionsByBoxId = new Map<string, SqlSectionSessionTarget>();
-const derivedComparisonByBoxId = new Map<string, { sourceBoxId: string; executionId: string }>();
+const derivedComparisonByBoxId = new Map<string, {
+	sourceBoxId: string;
+	executionId: string;
+	pendingExecutionId: string;
+}>();
 
 export function registerSqlSectionSession(target: SqlSectionSessionTarget): void {
 	const boxId = String(target.boxId || '').trim();
@@ -104,7 +126,7 @@ export function registerSqlDerivedComparisonSession(boxId: string, sourceBoxId: 
 	if (!id || !sourceId || id === sourceId) return;
 	const current = derivedComparisonByBoxId.get(id);
 	if (current?.sourceBoxId === sourceId) return;
-	derivedComparisonByBoxId.set(id, { sourceBoxId: sourceId, executionId: '' });
+	derivedComparisonByBoxId.set(id, { sourceBoxId: sourceId, executionId: '', pendingExecutionId: '' });
 }
 
 export function unregisterSqlDerivedComparisonSession(boxId: string): void {
@@ -122,14 +144,25 @@ export function commitSqlDerivedComparisonExecution(boxId: string, executionId: 
 	const id = String(boxId || '').trim();
 	const execution = String(executionId || '').trim();
 	const comparison = derivedComparisonByBoxId.get(id);
-	if (!comparison || !execution || (comparison.executionId && comparison.executionId !== execution)) return false;
+	if (!comparison || !execution || comparison.pendingExecutionId !== execution
+		|| (comparison.executionId && comparison.executionId !== execution)) return false;
+	comparison.pendingExecutionId = '';
 	comparison.executionId = execution;
 	return true;
 }
 
 export function rollbackSqlDerivedComparisonExecution(boxId: string, executionId: string): void {
 	const comparison = derivedComparisonByBoxId.get(String(boxId || '').trim());
-	if (comparison?.executionId === String(executionId || '').trim()) comparison.executionId = '';
+	const execution = String(executionId || '').trim();
+	if (comparison?.pendingExecutionId === execution) comparison.pendingExecutionId = '';
+	if (comparison?.executionId === execution) comparison.executionId = '';
+}
+
+export function rollbackSqlDerivedComparisonExecutionReservation(boxId: string, executionId: string): void {
+	const comparison = derivedComparisonByBoxId.get(String(boxId || '').trim());
+	if (comparison?.pendingExecutionId === String(executionId || '').trim()) {
+		comparison.pendingExecutionId = '';
+	}
 }
 
 function getMessageTarget(
@@ -161,25 +194,44 @@ function admitOwnerSensitiveMessage(
 			comparison = derivedComparisonByBoxId.get(boxId);
 		}
 	}
-	if (!comparison) return session ? session.admitOwnedMessage(message) : !section && !message.ownerToken;
-	if (session?.ownerToken && session.ownerToken === String(message.ownerToken || '')) {
-		return session.admitOwnedMessage(message);
+	if (!comparison && !section && !session) return !message.ownerToken;
+	if (typeof message.ownerToken !== 'string' || !message.ownerToken) return false;
+	if (!comparison) {
+		const ownerAdmitted = session?.admitOwnedMessage(message) === true;
+		return ownerAdmitted
+			&& (!isSqlCopilotRequestMessage(message)
+				|| section?.admitSqlCopilotMessage?.(message) === true);
 	}
-	const sourceSession = getSqlSectionSession(comparison.sourceBoxId)
-		?? effects.getSection(comparison.sourceBoxId)?.sqlSession;
-	if (!sourceSession?.ownerToken || sourceSession.ownerToken !== String(message.ownerToken || '')) return false;
+	if (session?.ownerToken && session.ownerToken === message.ownerToken) {
+		return session.admitOwnedMessage(message)
+			&& (!isSqlCopilotRequestMessage(message)
+				|| section?.admitSqlCopilotMessage?.(message) === true);
+	}
+	const sourceSection = effects.getSection(comparison.sourceBoxId);
+	const sourceSession = getSqlSectionSession(comparison.sourceBoxId) ?? sourceSection?.sqlSession;
+	if (!sourceSession?.ownerToken || sourceSession.ownerToken !== message.ownerToken) return false;
+	if (isSqlCopilotRequestMessage(message)
+		&& sourceSection?.admitSqlCopilotMessage?.(message) !== true) return false;
 
 	const type = String(message.type || '');
 	const executionId = String(message.executionId || '').trim();
 	if (type === 'copilotWriteQueryExecuting') {
 		if (!executionId) return false;
 		if (message.executing === true) {
-			if (comparison.executionId && comparison.executionId !== executionId) return false;
+			if ((comparison.executionId && comparison.executionId !== executionId)
+				|| (comparison.pendingExecutionId && comparison.pendingExecutionId !== executionId)) return false;
+			comparison.pendingExecutionId = executionId;
 			return true;
 		}
-		if (comparison.executionId !== executionId) return false;
-		comparison.executionId = '';
-		return true;
+		if (comparison.executionId === executionId) {
+			comparison.executionId = '';
+			return true;
+		}
+		if (comparison.pendingExecutionId === executionId) {
+			comparison.pendingExecutionId = '';
+			return true;
+		}
+		return false;
 	}
 	if (type === 'queryResult' || type === 'queryError' || type === 'queryCancelled') {
 		if (!executionId || comparison.executionId !== executionId) return false;
@@ -219,8 +271,15 @@ export function routeSqlSectionMessage(
 		message = parsed.value as unknown as Record<string, unknown>;
 	}
 	const type = String(message.type || '');
-	const boxId = String(message.boxId || '').trim();
-	if (boxId && SQL_OWNER_SENSITIVE_MESSAGE_TYPES.has(type)) {
+	if (message.boxId !== undefined && typeof message.boxId !== 'string') return 'rejected';
+	const boxId = typeof message.boxId === 'string' ? message.boxId.trim() : '';
+	if (type === 'copilotWriteQueryExecuting'
+		&& (typeof message.boxId !== 'string' || !boxId || message.boxId !== boxId
+			|| typeof message.executionId !== 'string' || !message.executionId.trim()
+			|| message.executionId !== message.executionId.trim()
+			|| typeof message.executing !== 'boolean')) return 'rejected';
+	if (boxId && SQL_OWNER_SENSITIVE_MESSAGE_TYPES.has(type)
+		&& !isSqlCopilotAvailabilityMessage(message)) {
 		if (!admitOwnerSensitiveMessage(boxId, message, effects)) return 'rejected';
 	}
 

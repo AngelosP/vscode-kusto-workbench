@@ -16,6 +16,7 @@ vi.mock('vscode', async () => {
 		...actual,
 		CancellationTokenSource,
 		LanguageModelError,
+		LanguageModelChatToolMode: { Required: 'required' },
 		lm: {
 			selectChatModels: vscodeMocks.selectChatModels,
 		},
@@ -617,6 +618,7 @@ describe('Kusto Copilot function execution', () => {
 		expect(host.postMessage).toHaveBeenNthCalledWith(2, {
 			type: 'copilotWriteQueryStatus',
 			boxId: 'prepare-empty',
+			role: 'availability',
 			status: 'GitHub Copilot is not available. Enable Copilot in VS Code to use this feature.',
 		});
 		expect(host.postMessage).toHaveBeenNthCalledWith(3, {
@@ -845,6 +847,247 @@ describe('Kusto Copilot function execution', () => {
 		expect(vscodeMocks.selectChatModels).not.toHaveBeenCalled();
 		expect(hostMessagesOfType(host, 'copilotWriteQueryDone')).toContainEqual(expect.objectContaining({
 			boxId: 'sql-source', ok: false, ownerToken: 'owner-token', message: 'Canceled.',
+		}));
+	});
+
+	it('does not cancel a SQL Copilot request with a mismatched request ID', async () => {
+		const releaseStream = deferred<void>();
+		let requestToken: { isCancellationRequested: boolean } | undefined;
+		const model = createModel([[]]);
+		model.sendRequest.mockImplementation(async (_messages: unknown, _options: unknown, token: { isCancellationRequested: boolean }) => {
+			requestToken = token;
+			return {
+				stream: (async function* () {
+					await releaseStream.promise;
+					yield new vscode.LanguageModelTextPart('REQUEST_REMAINED_ACTIVE');
+				})(),
+			};
+		});
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
+
+		const request = service.startSqlCopilotWriteQuery({
+			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db', request: 'Answer in chat.',
+			sqlCopilotRequestId: 'sql-request-current',
+		} as any, { getConnection: vi.fn(() => sqlConnection) } as any, {
+			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
+		} as any, undefined);
+		await vi.waitFor(() => expect(model.sendRequest).toHaveBeenCalledOnce());
+
+		service.cancelCopilotWriteQuery('sql-source', undefined, undefined, 'sql-request-stale');
+		const canceledByStaleRequest = requestToken?.isCancellationRequested === true;
+		releaseStream.resolve();
+		await request;
+
+		expect(canceledByStaleRequest).toBe(false);
+		expect(hostMessagesOfType(host, 'copilotWriteQueryStatus')).toContainEqual(expect.objectContaining({
+			status: 'REQUEST_REMAINED_ACTIVE', role: 'assistant', sqlCopilotRequestId: 'sql-request-current',
+		}));
+	});
+
+	it('renders a conversational SQL response that contains no tool calls', async () => {
+		const model = createModel([[new vscode.LanguageModelTextPart('CONVERSATIONAL_SQL_ANSWER')]]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
+
+		await service.startSqlCopilotWriteQuery({
+			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db',
+			request: 'Answer this in chat.', currentQuery: 'SELECT 1',
+			sqlCopilotRequestId: 'sql-request-prose',
+		} as any, { getConnection: vi.fn(() => sqlConnection) } as any, {
+			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
+		} as any, undefined);
+
+		expect(hostMessagesOfType(host, 'copilotWriteQueryStatus')).toContainEqual(expect.objectContaining({
+			boxId: 'sql-source', role: 'assistant', status: 'CONVERSATIONAL_SQL_ANSWER',
+			sqlCopilotRequestId: 'sql-request-prose',
+		}));
+		expect(hostMessagesOfType(host, 'copilotWriteQueryDone')).toContainEqual(expect.objectContaining({
+			boxId: 'sql-source', ok: true, message: '', sqlCopilotRequestId: 'sql-request-prose',
+		}));
+	});
+
+	it('preserves required-tool semantics through the public SQL entry point', async () => {
+		const model = createModel([
+			[new vscode.LanguageModelTextPart('REJECTED_REQUIRED_SQL_NARRATIVE')],
+			[new vscode.LanguageModelToolCallPart('clarify-call', 'ask_user_clarifying_question', { question: 'Which range?' })],
+		]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
+
+		await service.startCopilotWriteQuery({
+			type: 'startCopilotWriteQuery', boxId: 'sql-source', flavor: 'sql',
+			connectionId: 'sql-a', serverUrl: 'server.example', database: 'Db',
+			request: 'Generate a query.', currentQuery: 'SELECT 1', sqlOwnerToken: 'owner-token',
+			requireToolUse: true, enabledTools: ['ask_user_clarifying_question'],
+		} as any, { getConnection: vi.fn(() => sqlConnection) } as any, {
+			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
+		} as any, { executeQueryCancelable: vi.fn() } as any);
+
+		expect(model.sendRequest).toHaveBeenCalledTimes(2);
+		expect(hostMessagesOfType(host, 'copilotWriteQueryStatus')).toContainEqual(expect.objectContaining({
+			role: 'assistant', status: 'REJECTED_REQUIRED_SQL_NARRATIVE',
+		}));
+		expect(hostMessagesOfType(host, 'copilotClarifyingQuestion')).toContainEqual(expect.objectContaining({
+			boxId: 'sql-source', question: 'Which range?',
+		}));
+	});
+
+	it('retries an empty SQL response before accepting conversational prose', async () => {
+		const model = createModel([[], [new vscode.LanguageModelTextPart('ANSWER_AFTER_EMPTY_SQL_RESPONSE')]]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
+
+		await service.startSqlCopilotWriteQuery({
+			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db', request: 'Answer in chat.',
+		}, { getConnection: vi.fn(() => sqlConnection) } as any, {
+			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
+		} as any, undefined);
+
+		expect(model.sendRequest).toHaveBeenCalledTimes(2);
+		expect(hostMessagesOfType(host, 'copilotWriteQueryStatus')).toContainEqual(expect.objectContaining({
+			role: 'assistant', status: 'ANSWER_AFTER_EMPTY_SQL_RESPONSE',
+		}));
+	});
+
+	it('reports advancing model rounds across an optional SQL tool turn', async () => {
+		const model = createModel([
+			[new vscode.LanguageModelToolCallPart('schema-call', 'get_sql_schema', {})],
+			[new vscode.LanguageModelTextPart('ANSWER_AFTER_SQL_SCHEMA')],
+		]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
+
+		await service.startSqlCopilotWriteQuery({
+			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db', request: 'Inspect the schema.',
+			enabledTools: ['get_sql_schema'],
+		}, { getConnection: vi.fn(() => sqlConnection) } as any, {
+			getSchema: vi.fn(async () => ({ schema: { tables: ['T'], columnsByTable: { T: { Id: 'int' } } } })),
+		} as any, undefined);
+
+		const progress = hostMessagesOfType(host, 'copilotWriteQueryStatus')
+			.filter(message => message.role === 'progress')
+			.map(message => message.status);
+		expect(progress).toContain('Generating response (round 1)\u2026');
+		expect(progress).toContain('Generating response (round 2)\u2026');
+	});
+
+	it('offers no SQL tools when the user explicitly disables every tool', async () => {
+		const model = createModel([[new vscode.LanguageModelTextPart('NO_TOOLS_ANSWER')]]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
+
+		await service.startSqlCopilotWriteQuery({
+			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db', request: 'Answer without tools.',
+			enabledTools: [],
+		}, { getConnection: vi.fn(() => sqlConnection) } as any, {
+			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
+		} as any, undefined);
+
+		expect(model.sendRequest).toHaveBeenCalledOnce();
+		expect(model.sendRequest.mock.calls[0][1]).toMatchObject({ tools: [] });
+	});
+
+	it('resolves omitted, empty, and exact tool selections against the matching flavor', () => {
+		const service = new CopilotService(createHost([]));
+
+		expect(service.getSqlCopilotChatTools(undefined).map(tool => tool.name)).toEqual([
+			'get_sql_schema',
+			'get_query_optimization_best_practices',
+			'execute_sql_query',
+			'respond_to_query_performance_optimization_request',
+			'respond_to_sql_query',
+			'ask_user_clarifying_question',
+		]);
+		expect(service.getSqlCopilotChatTools([])).toEqual([]);
+		expect(service.getSqlCopilotChatTools([' EXECUTE_SQL_QUERY ', 'unknown', 'execute_sql_query']).map(tool => tool.name))
+			.toEqual(['execute_sql_query']);
+		expect(service.getCopilotChatTools([])).toEqual([]);
+		expect(service.getCopilotChatTools([' GET_EXTENDED_SCHEMA ', 'unknown']).map(tool => tool.name))
+			.toEqual(['get_extended_schema']);
+	});
+
+	it('fails a required SQL tool request without calling the model when every tool is disabled', async () => {
+		const model = createModel([[new vscode.LanguageModelTextPart('MUST_NOT_RUN')]]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
+
+		await service.startSqlCopilotWriteQuery({
+			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db', request: 'Generate a query.',
+			enabledTools: [], requireToolUse: true,
+		}, { getConnection: vi.fn(() => sqlConnection) } as any, {
+			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
+		} as any, undefined);
+
+		expect(model.sendRequest).not.toHaveBeenCalled();
+		expect(hostMessagesOfType(host, 'copilotWriteQueryDone')).toContainEqual(expect.objectContaining({
+			boxId: 'sql-source', ok: false,
+			message: 'At least one Copilot tool must be enabled for this request.',
+		}));
+	});
+
+	it('terminates an optional SQL tool loop at exactly 100 model rounds', async () => {
+		const model = createModel([[
+			new vscode.LanguageModelToolCallPart('schema-call', 'get_sql_schema', {}),
+		]]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
+
+		await service.startSqlCopilotWriteQuery({
+			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db', request: 'Keep inspecting.',
+			enabledTools: ['get_sql_schema'],
+		}, { getConnection: vi.fn(() => sqlConnection) } as any, {
+			getSchema: vi.fn(async () => ({ schema: { tables: ['T'], columnsByTable: {} } })),
+		} as any, undefined);
+
+		expect(model.sendRequest).toHaveBeenCalledTimes(100);
+		expect(hostMessagesOfType(host, 'copilotWriteQueryDone')).toContainEqual(expect.objectContaining({
+			boxId: 'sql-source', ok: false,
+			message: 'Copilot used too many model rounds without a final response.',
+		}));
+	});
+
+	it('rejects a mixed SQL tool batch before an unoffered tool can execute', async () => {
+		const model = createModel([
+			[
+				new vscode.LanguageModelToolCallPart('schema-call', 'get_sql_schema', {}),
+				new vscode.LanguageModelToolCallPart('disabled-execute', 'execute_sql_query', { query: 'SELECT Secret FROM T' }),
+			],
+			[new vscode.LanguageModelTextPart('ANSWER_AFTER_REJECTED_TOOL_BATCH')],
+		]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
+		const sqlClient = { executeQueryCancelable: vi.fn() } as any;
+
+		await service.startSqlCopilotWriteQuery({
+			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db', request: 'Use schema only.',
+			enabledTools: ['get_sql_schema'],
+		}, { getConnection: vi.fn(() => sqlConnection) } as any, {
+			getSchema: vi.fn(async () => ({ schema: { tables: ['T'], columnsByTable: {} } })),
+		} as any, sqlClient);
+
+		expect(sqlClient.executeQueryCancelable).not.toHaveBeenCalled();
+		expect(model.sendRequest).toHaveBeenCalledTimes(2);
+		expect(hostMessagesOfType(host, 'copilotWriteQueryStatus')).toContainEqual(expect.objectContaining({
+			status: 'Copilot called a tool that is not enabled. Retrying\u2026', role: 'progress',
 		}));
 	});
 
@@ -1935,6 +2178,38 @@ describe('Kusto Copilot function execution', () => {
 		notification.mockRestore();
 	});
 
+	it('records content-free timing and offered-tool telemetry for scripted SQL model rounds', async () => {
+		const host = createHost([]);
+		const service = new CopilotService(host, vi.fn(async () => []));
+		service.configureDevelopmentModelForTest([
+			{ toolCalls: [{ callId: 'schema-call', name: 'get_sql_schema', input: {} }] },
+			{ text: 'SQL_TELEMETRY_FINAL_ANSWER' },
+		]);
+		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
+
+		await service.startSqlCopilotWriteQuery({
+			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db', request: 'Inspect schema.',
+			enabledTools: ['get_sql_schema'], sqlCopilotRequestId: 'sql-telemetry-request',
+		}, { getConnection: vi.fn(() => sqlConnection) } as any, {
+			getSchema: vi.fn(async () => ({ schema: { tables: ['T'], columnsByTable: {} } })),
+		} as any, undefined);
+
+		const snapshot = service.getDevelopmentModelSnapshotForTest() as any;
+		expect(snapshot.rounds).toHaveLength(2);
+		expect(snapshot.rounds.map((round: any) => round.offeredToolNames)).toEqual([
+			['get_sql_schema'], ['get_sql_schema'],
+		]);
+		for (const [index, round] of snapshot.rounds.entries()) {
+			expect(round.responseIndex).toBe(index);
+			expect(round.requestStartedMs).toEqual(expect.any(Number));
+			expect(round.firstPartAtMs).toBeGreaterThanOrEqual(round.requestStartedMs);
+			expect(round.completedAtMs).toBeGreaterThanOrEqual(round.firstPartAtMs);
+			expect(round.canceledAtMs).toBeNull();
+			expect(round).not.toHaveProperty('messages');
+			expect(JSON.stringify(round)).not.toContain('SQL_TELEMETRY_FINAL_ANSWER');
+		}
+	});
+
 	it('ignores a delayed manual clarification View action after exact conversation Clear', async () => {
 		const model = createModel([[
 			new vscode.LanguageModelToolCallPart(
@@ -2385,6 +2660,72 @@ describe('Kusto Copilot function execution', () => {
 		expectInlineFilterRowsQuery(comparisonQueries[0]);
 		expect(capturedQueries.length).toBeGreaterThanOrEqual(2);
 		expectInlineFilterRowsQuery(capturedQueries[capturedQueries.length - 1]);
+	});
+
+	it('advances the visible model round for a nested Kusto optimization repair request', async () => {
+		const model = createModel([
+			[new vscode.LanguageModelToolCallPart(
+				'opt-call', 'respond_to_query_performance_optimization_request', { query: 'print bad=1' },
+			)],
+			[new vscode.LanguageModelToolCallPart(
+				'fix-call', 'respond_to_query_performance_optimization_request', { query: 'print fixed=1' },
+			)],
+		]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const executionQueries: string[] = [];
+		(host.executeKustoSectionQuery as any).mockImplementation(async ({ query, executionId }: any) => {
+			executionQueries.push(query);
+			return /\bbad\s*=\s*1\b/.test(query)
+				? { status: 'failed', executionId, error: 'synthetic repair request' }
+				: { status: 'success', executionId, result: { columns: ['x'], rows: [[1]], metadata: {} } };
+		});
+		const service = new CopilotService(host);
+
+		await service.startCopilotWriteQuery({
+			...startMessage(), currentQuery: 'print source=1', request: 'Optimize this query.',
+		});
+
+		expect(model.sendRequest, JSON.stringify({ executionQueries, done: hostMessagesOfType(host, 'copilotWriteQueryDone') }))
+			.toHaveBeenCalledTimes(2);
+		const progress = hostMessagesOfType(host, 'copilotWriteQueryStatus')
+			.filter(message => message.role === 'progress')
+			.map(message => message.status);
+		expect(progress).toContain('Generating response (round 1)\u2026');
+		expect(progress).toContain('Generating response (round 2)\u2026');
+	});
+
+	it('does not start a nested Kusto repair after the 100th model call', async () => {
+		const responses = Array.from({ length: 99 }, (_, index) => [
+			new vscode.LanguageModelToolCallPart(`rules-${index}`, 'get_query_optimization_best_practices', {}),
+		]);
+		responses.push([
+			new vscode.LanguageModelToolCallPart(
+				'opt-call', 'respond_to_query_performance_optimization_request', { query: 'print bad=1' },
+			),
+		]);
+		const model = createModel(responses);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		(host.executeKustoSectionQuery as any).mockImplementation(async ({ query, executionId }: any) =>
+			/\bbad\s*=\s*1\b/.test(query)
+				? { status: 'failed', executionId, error: 'synthetic repair request' }
+				: { status: 'success', executionId, result: { columns: ['x'], rows: [[1]], metadata: {} } });
+		const service = new CopilotService(host);
+
+		await service.startCopilotWriteQuery({
+			...startMessage(), currentQuery: 'print source=1', request: 'Optimize this query.',
+			enabledTools: [
+				'get_query_optimization_best_practices',
+				'respond_to_query_performance_optimization_request',
+			],
+		});
+
+		expect(model.sendRequest).toHaveBeenCalledTimes(100);
+		expect(hostMessagesOfType(host, 'copilotWriteQueryDone')).toContainEqual(expect.objectContaining({
+			boxId: 'query_1', ok: false,
+			message: 'Copilot used too many model rounds without a final response.',
+		}));
 	});
 
 	it('does not execute a Copilot comparison against a different source data target', async () => {

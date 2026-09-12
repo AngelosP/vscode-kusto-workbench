@@ -175,6 +175,14 @@ export const styles = css`
 		margin-bottom: 0;
 	}
 
+	.chat-progress {
+		flex: 0 0 auto;
+		padding: 0 12px 6px;
+		color: var(--vscode-descriptionForeground);
+		font-size: 11px;
+		font-style: italic;
+	}
+
 	.msg-notification {
 		align-self: flex-start;
 		background: transparent;

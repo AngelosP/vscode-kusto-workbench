@@ -2211,6 +2211,18 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	// ── Copilot public API (called from message-handler.ts) ───────────────────
 
 	public getCopilotChatEl() { return this.copilotCtrl.getCopilotChatEl(); }
+	public submitSqlCopilotChatRequest(text: string, requireToolUse: boolean): string | undefined {
+		return this.copilotCtrl.submitSqlCopilotChatRequest(text, requireToolUse);
+	}
+	public admitSqlCopilotMessage(message: unknown): boolean {
+		return this.copilotCtrl.admitSqlCopilotMessage(message);
+	}
+	public completeSqlCopilotRequest(message: unknown): boolean {
+		return this.copilotCtrl.completeSqlCopilotRequest(message);
+	}
+	public cancelSqlCopilotRequest(requestId?: string): boolean {
+		return this.copilotCtrl.cancelSqlCopilotRequest(requestId);
+	}
 	public getCopilotChatVisible(): boolean { return this.copilotCtrl.getCopilotChatVisible(); }
 	public getCopilotChatWidthPx(): number | undefined { return this.copilotCtrl.getCopilotChatWidthPx(); }
 	public setCopilotChatWidthPx(widthPx: number): void { this.copilotCtrl.setCopilotChatWidthPx(widthPx); }

@@ -20,6 +20,10 @@ type CancelCopilotWriteQueryMessage = Extract<IncomingWebviewMessage, {
 
 const SQL_COPILOT_PREFLIGHT_EXECUTION_ID = 'sql-copilot-owner-preflight';
 
+function sqlCopilotPreflightExecutionId(requestId: string): string {
+	return `${SQL_COPILOT_PREFLIGHT_EXECUTION_ID}:${requestId}`;
+}
+
 export interface CopilotQueryWorkflowApplicationHandler {
 	handleMessage(message: IncomingWebviewMessage): Promise<void> | undefined;
 	dispose(): void;
@@ -66,7 +70,7 @@ export class HostCopilotQueryWorkflowApplicationHandler
 		if (message.flavor === 'sql') {
 			const preflight = this.options.sqlExecutionBroker.reservePreflight(
 				message.boxId,
-				SQL_COPILOT_PREFLIGHT_EXECUTION_ID,
+				sqlCopilotPreflightExecutionId(message.sqlCopilotRequestId),
 				message.sqlOwnerToken,
 			);
 			try {
@@ -79,6 +83,7 @@ export class HostCopilotQueryWorkflowApplicationHandler
 						ok: false,
 						message: SQL_COPILOT_OWNER_CHANGED_MESSAGE,
 						ownerToken: String(message.sqlOwnerToken || ''),
+						sqlCopilotRequestId: message.sqlCopilotRequestId,
 					});
 				}
 				return;
@@ -106,9 +111,12 @@ export class HostCopilotQueryWorkflowApplicationHandler
 			return;
 		}
 
+		const exactPreflightExecutionId = message.sqlCopilotRequestId
+			? sqlCopilotPreflightExecutionId(message.sqlCopilotRequestId)
+			: undefined;
 		const canceledPreflight = this.options.sqlExecutionBroker.cancelExpected(
 			message.boxId,
-			SQL_COPILOT_PREFLIGHT_EXECUTION_ID,
+			exactPreflightExecutionId,
 			false,
 		);
 		if (canceledPreflight) {
@@ -119,8 +127,11 @@ export class HostCopilotQueryWorkflowApplicationHandler
 				ok: false,
 				message: 'Canceled.',
 				...(ownerToken ? { ownerToken } : {}),
+				...(message.sqlCopilotRequestId ? { sqlCopilotRequestId: message.sqlCopilotRequestId } : {}),
 			});
 		}
-		this.options.copilot.cancelCopilotWriteQuery(message.boxId);
+		this.options.copilot.cancelCopilotWriteQuery(
+			message.boxId, undefined, undefined, message.sqlCopilotRequestId,
+		);
 	}
 }

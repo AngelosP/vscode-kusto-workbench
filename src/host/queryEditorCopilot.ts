@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
+import { performance } from 'perf_hooks';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient } from './kustoClient';
 import type { SqlConnectionManager } from './sqlConnectionManager';
@@ -68,6 +69,14 @@ type CopilotDevelopmentModelFixture = {
 	requests: unknown[];
 	manualClarificationNotifications: number;
 	manualClarificationSelections: Array<string | null>;
+	rounds: Array<{
+		responseIndex: number;
+		offeredToolNames: string[];
+		requestStartedMs: number;
+		firstPartAtMs?: number;
+		completedAtMs?: number;
+		canceledAtMs?: number;
+	}>;
 	model: vscode.LanguageModelChat;
 };
 
@@ -143,6 +152,7 @@ type RunningCopilotWriteQuery = {
 	cts: vscode.CancellationTokenSource;
 	seq: number;
 	kustoRequest?: KustoCopilotRequestIdentity;
+	sqlCopilotRequestId?: string;
 	queryCancels: Set<() => void>;
 	queryCancelsByTargetBoxId: Map<string, Set<() => void>>;
 	kustoAccountPartitionGetters: Set<() => string | undefined>;
@@ -258,6 +268,7 @@ export class CopilotService {
 		fixture.requests = [];
 		fixture.manualClarificationNotifications = 0;
 		fixture.manualClarificationSelections = [];
+		fixture.rounds = [];
 		fixture.model = {
 			id: 'kusto-workbench-scripted-e2e',
 			name: 'Kusto Workbench Scripted E2E',
@@ -268,14 +279,26 @@ export class CopilotService {
 			countTokens: async value => typeof value === 'string'
 				? Math.ceil(value.length / 4)
 				: Math.ceil(JSON.stringify(this.snapshotDevelopmentMessages([value])).length / 4),
-			sendRequest: async (messages, _options, token) => {
+			sendRequest: async (messages, options, token) => {
 				const responseIndex = fixture.nextResponseIndex++;
 				const response = fixture.responses[responseIndex];
 				if (!response) throw new Error(`No scripted Copilot response remains for request ${responseIndex + 1}.`);
 				fixture.requests.push(this.snapshotDevelopmentMessages(messages));
+				const round = {
+					responseIndex,
+					offeredToolNames: (options?.tools || []).map(tool => String(tool.name || '')),
+					requestStartedMs: performance.now(),
+				} as CopilotDevelopmentModelFixture['rounds'][number];
+				fixture.rounds.push(round);
+				if (fixture.rounds.length > 128) fixture.rounds.splice(0, fixture.rounds.length - 128);
+				const markFirstPart = () => { round.firstPartAtMs ??= performance.now(); };
+				const markCompleted = () => { round.completedAtMs ??= performance.now(); };
 				const waitForDelay = async () => {
+					if (token?.isCancellationRequested) {
+						round.canceledAtMs ??= performance.now();
+						throw new Error('Scripted Copilot request canceled.');
+					}
 					if (!response.delayMs) return;
-					if (token?.isCancellationRequested) throw new Error('Scripted Copilot request canceled.');
 					await new Promise<void>((resolve, reject) => {
 						const timer = setTimeout(() => {
 							subscription?.dispose();
@@ -284,21 +307,37 @@ export class CopilotService {
 						const subscription = token?.onCancellationRequested(() => {
 							clearTimeout(timer);
 							subscription?.dispose();
+							round.canceledAtMs ??= performance.now();
 							reject(new Error('Scripted Copilot request canceled.'));
 						});
 					});
 				};
 				return {
 					stream: (async function* () {
-						await waitForDelay();
-						if (response.text) yield new vscode.LanguageModelTextPart(response.text);
-						for (const toolCall of response.toolCalls || []) {
-							yield new vscode.LanguageModelToolCallPart(toolCall.callId, toolCall.name, toolCall.input);
+						try {
+							await waitForDelay();
+							if (response.text) {
+								markFirstPart();
+								yield new vscode.LanguageModelTextPart(response.text);
+							}
+							for (const toolCall of response.toolCalls || []) {
+								markFirstPart();
+								yield new vscode.LanguageModelToolCallPart(toolCall.callId, toolCall.name, toolCall.input);
+							}
+						} finally {
+							markCompleted();
 						}
 					})(),
 					text: (async function* () {
-						await waitForDelay();
-						if (response.text) yield response.text;
+						try {
+							await waitForDelay();
+							if (response.text) {
+								markFirstPart();
+								yield response.text;
+							}
+						} finally {
+							markCompleted();
+						}
 					})(),
 				};
 			},
@@ -321,6 +360,14 @@ export class CopilotService {
 			consumedResponses: fixture.nextResponseIndex,
 			remainingResponses: fixture.responses.length - fixture.nextResponseIndex,
 			requests: structuredClone(fixture.requests),
+			rounds: fixture.rounds.map(round => ({
+				responseIndex: round.responseIndex,
+				offeredToolNames: [...round.offeredToolNames],
+				requestStartedMs: round.requestStartedMs,
+				firstPartAtMs: round.firstPartAtMs ?? null,
+				completedAtMs: round.completedAtMs ?? null,
+				canceledAtMs: round.canceledAtMs ?? null,
+			})),
 			manualClarificationNotifications: fixture.manualClarificationNotifications,
 			manualClarificationSelections: [...fixture.manualClarificationSelections],
 		} : null;
@@ -359,11 +406,13 @@ export class CopilotService {
 		cts: vscode.CancellationTokenSource,
 		seq: number,
 		kustoRequest?: KustoCopilotRequestIdentity,
+		sqlCopilotRequestId?: string,
 	): RunningCopilotWriteQuery {
 		const running: RunningCopilotWriteQuery = {
 			cts,
 			seq,
 			...(kustoRequest ? { kustoRequest } : {}),
+			...(sqlCopilotRequestId ? { sqlCopilotRequestId } : {}),
 			queryCancels: new Set(),
 			queryCancelsByTargetBoxId: new Map(),
 			kustoAccountPartitionGetters: new Set(),
@@ -423,6 +472,7 @@ export class CopilotService {
 		executing: true;
 		executionId: string;
 		ownerToken: string;
+		sqlCopilotRequestId: string;
 		query: string;
 		sourceBoxId?: string;
 		sourceExecutionId?: string;
@@ -519,12 +569,12 @@ export class CopilotService {
 		return flavor === 'sql' ? this.getSqlCopilotLocalTools() : this.getCopilotLocalTools();
 	}
 
-	getCopilotChatTools(enabledTools: string[]): vscode.LanguageModelChatTool[] {
+	getCopilotChatTools(enabledTools?: readonly string[]): vscode.LanguageModelChatTool[] {
 		const localTools = this.getCopilotLocalTools();
 		const tools: vscode.LanguageModelChatTool[] = [];
 
 		for (const t of localTools) {
-			if (!this.isCopilotToolEnabled(t.name, enabledTools)) {
+			if (!this.isCopilotToolEnabled(t.name, enabledTools, localTools)) {
 				continue;
 			}
 			const n = this.normalizeToolName(t.name);
@@ -661,12 +711,12 @@ export class CopilotService {
 		return tools;
 	}
 
-	getSqlCopilotChatTools(enabledTools: string[]): vscode.LanguageModelChatTool[] {
+	getSqlCopilotChatTools(enabledTools?: readonly string[]): vscode.LanguageModelChatTool[] {
 		const localTools = this.getSqlCopilotLocalTools();
 		const tools: vscode.LanguageModelChatTool[] = [];
 
 		for (const t of localTools) {
-			if (!this.isCopilotToolEnabled(t.name, enabledTools)) continue;
+			if (!this.isCopilotToolEnabled(t.name, enabledTools, localTools)) continue;
 			const n = this.normalizeToolName(t.name);
 			if (n === 'get_sql_schema') {
 				tools.push({
@@ -781,15 +831,35 @@ export class CopilotService {
 		}
 	}
 
-	isCopilotToolEnabled(toolName: string, enabledTools: string[]): boolean {
+	isCopilotToolEnabled(
+		toolName: string,
+		enabledTools: readonly string[] | undefined,
+		localTools: readonly CopilotLocalTool[] = this.getCopilotLocalTools(),
+	): boolean {
 		const name = this.normalizeToolName(toolName);
 		if (!name) return false;
-		const tools = this.getCopilotLocalTools();
-		if (!Array.isArray(enabledTools) || enabledTools.length === 0) {
-			const def = tools.find((t) => this.normalizeToolName(t.name) === name);
+		if (enabledTools === undefined) {
+			const def = localTools.find((t) => this.normalizeToolName(t.name) === name);
 			return def ? def.enabledByDefault !== false : false;
 		}
-		return enabledTools.includes(name);
+		return enabledTools.some(tool => this.normalizeToolName(tool) === name);
+	}
+
+	private normalizeEnabledTools(value: unknown): string[] | undefined {
+		if (value === undefined) return undefined;
+		if (!Array.isArray(value)) return undefined;
+		return [...new Set(value.map(tool => this.normalizeToolName(tool)).filter(Boolean))];
+	}
+
+	private hasUnofferedToolCall(
+		nativeToolCalls: readonly vscode.LanguageModelToolCallPart[],
+		tools: readonly vscode.LanguageModelChatTool[],
+	): boolean {
+		const offered = new Set(tools.map(tool => this.normalizeToolName(tool.name)).filter(Boolean));
+		return nativeToolCalls.some(toolCall => {
+			const name = this.normalizeToolName(toolCall.name);
+			return !!name && !offered.has(name);
+		});
 	}
 
 	normalizeToolName(value: unknown): string {
@@ -1074,7 +1144,12 @@ export class CopilotService {
 		return sanitized;
 	}
 
-	cancelCopilotWriteQuery(boxId: string, expectedSequence?: number, expectedKustoRequest?: KustoCopilotRequestIdentity): void {
+	cancelCopilotWriteQuery(
+		boxId: string,
+		expectedSequence?: number,
+		expectedKustoRequest?: KustoCopilotRequestIdentity,
+		expectedSqlCopilotRequestId?: string,
+	): void {
 		const id = String(boxId || '').trim();
 		if (!id) {
 			return;
@@ -1082,7 +1157,9 @@ export class CopilotService {
 		const running = this.runningCopilotWriteQueryByBoxId.get(id);
 		if (!running || (expectedSequence !== undefined && running.seq !== expectedSequence)
 			|| (expectedKustoRequest && (!running.kustoRequest
-				|| !kustoCopilotRequestIdentityEquals(running.kustoRequest, expectedKustoRequest)))) {
+				|| !kustoCopilotRequestIdentityEquals(running.kustoRequest, expectedKustoRequest)))
+			|| (expectedSqlCopilotRequestId !== undefined
+				&& running.sqlCopilotRequestId !== expectedSqlCopilotRequestId)) {
 			return;
 		}
 		running.cleanupCurrentToolTurn?.();
@@ -1091,6 +1168,7 @@ export class CopilotService {
 			this.host.postMessage({
 				type: 'copilotWriteQueryStatus', boxId: id, status: 'Canceling…',
 				...(running.kustoRequest || {}),
+				...(running.sqlCopilotRequestId ? { sqlCopilotRequestId: running.sqlCopilotRequestId } : {}),
 			});
 		} catch {
 			// ignore
@@ -1454,6 +1532,7 @@ Completion:`;
 				this.host.postMessage({
 					type: 'copilotWriteQueryStatus',
 					boxId,
+					role: 'availability',
 					status:
 						'GitHub Copilot is not available. Enable Copilot in VS Code to use this feature.'
 				});
@@ -1694,8 +1773,7 @@ Completion:`;
 		const currentQuery = String(message.currentQuery || '').trim();
 		const requestedModelId = String(message.modelId || '').trim();
 		const copilotQueryMode = String(message.queryMode || 'take100').trim();
-		const enabledToolsRaw = Array.isArray(message.enabledTools) ? message.enabledTools : [];
-		const enabledTools = enabledToolsRaw.map((t) => this.normalizeToolName(t)).filter(Boolean);
+		const enabledTools = this.normalizeEnabledTools(message.enabledTools);
 		const requireToolUse = message.requireToolUse === true;
 		const kustoRequest: KustoCopilotRequestIdentity | undefined = message.flavor === 'kusto'
 			? Object.freeze({
@@ -1737,7 +1815,11 @@ Completion:`;
 		// If this is a SQL-flavored request, delegate to the SQL flow
 		if (message.flavor === 'sql' && sqlConnectionManager && sqlSchemaService && sqlClient) {
 			await this.startSqlCopilotWriteQuery(
-				{ boxId, sqlConnectionId: connectionId, database, request, currentQuery, modelId: requestedModelId, enabledTools, sqlOwnerToken: message.sqlOwnerToken } as any,
+				{
+					boxId, sqlConnectionId: connectionId, database, request, currentQuery,
+					modelId: requestedModelId, enabledTools, sqlOwnerToken: message.sqlOwnerToken,
+					requireToolUse, sqlCopilotRequestId: message.sqlCopilotRequestId,
+				},
 				sqlConnectionManager,
 				sqlSchemaService,
 				sqlClient
@@ -1816,7 +1898,7 @@ Completion:`;
 
 		const postStatus = (status: string, detail?: string) => {
 			try {
-				postRequestMessage({ type: 'copilotWriteQueryStatus', boxId, status, detail: detail || '' });
+				postRequestMessage({ type: 'copilotWriteQueryStatus', boxId, status, detail: detail || '', role: 'progress' });
 			} catch {
 				// ignore
 			}
@@ -1947,15 +2029,34 @@ Completion:`;
 
 			const priorAttempts: Array<{ attempt: number; query?: string; error?: string }> = [];
 			const tools = this.getCopilotChatTools(enabledTools);
+			if (requireToolUse && tools.length === 0) {
+				postRequestMessage({
+					type: 'copilotWriteQueryDone', boxId, ok: false,
+					message: 'At least one Copilot tool must be enabled for this request.',
+				});
+				return;
+			}
 
 			const maxAttempts = 6;
-			const maxToolTurns = 100;
-			let toolTurnCount = 0;
+			const maxModelRounds = 100;
+			let modelRound = 0;
+			const beginModelRound = (): boolean => {
+				if (modelRound >= maxModelRounds) {
+					postRequestMessage({
+						type: 'copilotWriteQueryDone', boxId, ok: false,
+						message: 'Copilot used too many model rounds without a final response.',
+					});
+					return false;
+				}
+				modelRound++;
+				postStatus(`Generating response (round ${modelRound})…`);
+				return true;
+			};
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 				if (!isActive() || cts.token.isCancellationRequested) {
 					throw new Error('Copilot write-query canceled');
 				}
-				postStatus(`Generating query (attempt ${attempt}/${maxAttempts})…`);
+				if (!beginModelRound()) return;
 
 				const messages = this.buildMessagesFromHistory({
 					boxId,
@@ -1985,33 +2086,21 @@ Completion:`;
 				}
 
 				if (nativeToolCalls.length === 0) {
-					const decision = decideNonToolResponse(requireToolUse);
-
-					// Post narrative only if the decision allows it (rejected attempts
-					// show what the model said; accepted text-only responses use the
-					// narrative as the final display so postNarrative is also allowed).
-					if (responseText.trim() && !decision.suppressNarrative) {
-						postNarrative(responseText.trim());
-					}
-
-					if (!decision.accept) {
-						priorAttempts.push({ attempt, error: decision.priorAttemptError! });
-						postStatus(decision.statusMessage!, responseText);
+					const decision = decideNonToolResponse(requireToolUse, responseText);
+					if (decision.kind === 'retry') {
+						if (decision.narrative) postNarrative(decision.narrative);
+						priorAttempts.push({ attempt, error: decision.priorAttemptError });
+						postStatus(decision.statusMessage, decision.narrative);
 						continue;
 					}
 
-					// Accept the text-only response (manual user chat).
-					// Post the narrative as the final rendered message, and send a
-					// done signal with empty message to avoid duplicate rendering.
-					if (responseText.trim()) {
-						postNarrative(responseText.trim());
-					}
+					postNarrative(decision.narrative);
 
 					const textEntryId = this.nextHistoryEntryId(boxId);
 					history.push({
 						type: 'assistant-message',
 						id: textEntryId,
-						text: responseText,
+						text: decision.narrative,
 						toolCalls: [],
 						timestamp: Date.now()
 					});
@@ -2026,8 +2115,18 @@ Completion:`;
 				}
 
 				const historyToolCalls = this.toHistoryToolCalls(nativeToolCalls, tools);
+				if (this.hasUnofferedToolCall(nativeToolCalls, tools)) {
+					priorAttempts.push({ attempt, error: 'Copilot called a tool that was not enabled for this request.' });
+					postStatus('Copilot called a tool that is not enabled. Retrying…');
+					continue;
+				}
 				if (historyToolCalls.length === 0) {
 					priorAttempts.push({ attempt, error: 'Copilot returned malformed tool calls without valid tool names.' });
+					postStatus('Copilot returned malformed tool calls. Retrying…');
+					continue;
+				}
+				if (historyToolCalls.length !== nativeToolCalls.length) {
+					priorAttempts.push({ attempt, error: 'Copilot returned malformed tool calls.' });
 					postStatus('Copilot returned malformed tool calls. Retrying…');
 					continue;
 				}
@@ -2553,6 +2652,7 @@ Completion:`;
 										)
 									];
 
+									if (!beginModelRound()) return;
 									const fixResponse = await model.sendRequest(
 										fixMessages,
 										{ tools: [fixTool], toolMode: vscode.LanguageModelChatToolMode.Required },
@@ -2853,12 +2953,6 @@ Completion:`;
 				}
 
 				if (hasOptionalToolCalls) {
-					toolTurnCount++;
-					if (toolTurnCount >= maxToolTurns) {
-						priorAttempts.push({ attempt, error: 'Too many tool turns without a final response.' });
-						postStatus('Too many tool turns. Retrying…');
-						continue;
-					}
 					attempt--;
 					continue;
 				}
@@ -3015,6 +3109,8 @@ Completion:`;
 			modelId?: string;
 			enabledTools?: string[];
 			sqlOwnerToken?: string;
+			requireToolUse?: boolean;
+			sqlCopilotRequestId?: string;
 		},
 		sqlConnectionManager: SqlConnectionManager,
 		sqlSchemaService: SqlSchemaService,
@@ -3026,10 +3122,13 @@ Completion:`;
 		const request = String(message.request || '').trim();
 		const currentQuery = String(message.currentQuery || '').trim();
 		const requestedModelId = String(message.modelId || '').trim();
-		const enabledToolsRaw = Array.isArray(message.enabledTools) ? message.enabledTools : [];
-		const enabledTools = enabledToolsRaw.map((t) => this.normalizeToolName(t)).filter(Boolean);
+		const enabledTools = this.normalizeEnabledTools(message.enabledTools);
+		const requireToolUse = message.requireToolUse === true;
 		const ownerToken = String(message.sqlOwnerToken || '');
-		const postSqlMessage = (outgoing: Record<string, unknown>) => this.host.postMessage({ ...outgoing, ownerToken });
+		const sqlCopilotRequestId = String(message.sqlCopilotRequestId || '').trim() || `sql-copilot-request-${randomUUID()}`;
+		const postSqlMessage = (outgoing: Record<string, unknown>) => this.host.postMessage({
+			...outgoing, ownerToken, sqlCopilotRequestId,
+		});
 		if (!boxId || !sqlConnectionId || !database || !request) {
 			postSqlMessage({
 				type: 'copilotWriteQueryDone', boxId,
@@ -3050,7 +3149,7 @@ Completion:`;
 		} catch { /* ignore */ }
 		const cts = new vscode.CancellationTokenSource();
 		const seq = ++this.copilotWriteSeq;
-		this.createRunningCopilotWriteQuery(boxId, cts, seq);
+		this.createRunningCopilotWriteQuery(boxId, cts, seq, undefined, sqlCopilotRequestId);
 		const isActive = () => {
 			const current = this.runningCopilotWriteQueryByBoxId.get(boxId);
 			return !!current && current.cts === cts && current.seq === seq;
@@ -3135,7 +3234,7 @@ Completion:`;
 				try {
 					this.host.postMessage({
 						type: 'copilotWriteQueryExecuting', boxId: targetBoxId, executing: false,
-						executionId, ownerToken,
+						executionId, ownerToken, sqlCopilotRequestId,
 					});
 				} catch { /* best effort */ }
 			};
@@ -3149,7 +3248,7 @@ Completion:`;
 					try {
 						accepted = await dispatchActiveOwner(targetBoxId, () => this.claimSqlExecutionInWebview({
 							type: 'copilotWriteQueryExecuting', boxId: targetBoxId, executing: true,
-							executionId, ownerToken, query: publishedQuery,
+							executionId, ownerToken, sqlCopilotRequestId, query: publishedQuery,
 							...(comparisonSource || {}),
 						}, retire => {
 							const runningRequest = this.runningCopilotWriteQueryByBoxId.get(boxId);
@@ -3212,7 +3311,7 @@ Completion:`;
 
 		const postStatus = (text: string, detail?: string) => {
 			void dispatchActiveOwner(boxId, () => {
-				try { postSqlMessage({ type: 'copilotWriteQueryStatus', boxId, status: text, detail: detail || '' }); } catch { /* ignore */ }
+				try { postSqlMessage({ type: 'copilotWriteQueryStatus', boxId, status: text, detail: detail || '', role: 'progress' }); } catch { /* ignore */ }
 			}).catch(() => undefined);
 		};
 		const postNarrative = (text: string) => {
@@ -3319,18 +3418,41 @@ Completion:`;
 
 			// 5. Build tools and run agentic loop.
 			const tools = this.getSqlCopilotChatTools(enabledTools);
+			if (requireToolUse && tools.length === 0) {
+				await dispatchActiveOwner(boxId, () => {
+					postSqlMessage({
+						type: 'copilotWriteQueryDone', boxId, ok: false,
+						message: 'At least one Copilot tool must be enabled for this request.',
+					});
+				});
+				return;
+			}
 			const priorAttempts: Array<{ attempt: number; query?: string; error?: string }> = [];
 			const serverUrl = connection?.serverUrl || '(unknown)';
 
 			const maxAttempts = 6;
-			const maxToolTurns = 100;
-			let toolTurnCount = 0;
+			const maxModelRounds = 100;
+			let modelRound = 0;
+			const beginModelRound = async (): Promise<boolean> => {
+				if (modelRound >= maxModelRounds) {
+					await commitRequestHistory(() => {
+						postSqlMessage({
+							type: 'copilotWriteQueryDone', boxId, ok: false,
+							message: 'Copilot used too many model rounds without a final response.',
+						});
+					});
+					return false;
+				}
+				modelRound++;
+				postStatus(`Generating response (round ${modelRound})…`);
+				return true;
+			};
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 				await assertActiveOwner();
 				if (!isActive() || cts.token.isCancellationRequested) {
 					throw new Error('SQL Copilot write-query canceled');
 				}
-				postStatus(`Generating query (attempt ${attempt}/${maxAttempts})…`);
+				if (!await beginModelRound()) return;
 
 				const messages = this.buildSqlMessagesFromHistory({
 					boxId, serverUrl, database, schemaText, priorAttempts
@@ -3358,13 +3480,20 @@ Completion:`;
 				await assertActiveOwner();
 
 				if (nativeToolCalls.length === 0) {
-					// No tool calls — accept the text response
-					const decision = decideNonToolResponse(false);
+					const decision = decideNonToolResponse(requireToolUse, responseText);
+					if (decision.kind === 'retry') {
+						if (decision.narrative) {
+							await dispatchActiveOwner(boxId, () => postNarrative(decision.narrative!));
+						}
+						priorAttempts.push({ attempt, error: decision.priorAttemptError });
+						postStatus(decision.statusMessage, decision.narrative);
+						continue;
+					}
 					const assistantEntryId = this.nextHistoryEntryId(boxId);
 					await dispatchActiveOwner(boxId, () => {
-						if (responseText.trim() && !decision.suppressNarrative) postNarrative(responseText.trim());
+						postNarrative(decision.narrative);
 						history.push({
-							type: 'assistant-message', id: assistantEntryId, text: responseText, timestamp: Date.now(),
+							type: 'assistant-message', id: assistantEntryId, text: decision.narrative, timestamp: Date.now(),
 						});
 						this.copilotConversationHistoryByBoxId.set(boxId, history);
 						if (requestIncludesGeneralRules) this.copilotGeneralRulesSentPerBox.add(boxId);
@@ -3374,8 +3503,18 @@ Completion:`;
 				}
 
 				const historyToolCalls = this.toHistoryToolCalls(nativeToolCalls, tools);
+				if (this.hasUnofferedToolCall(nativeToolCalls, tools)) {
+					priorAttempts.push({ attempt, error: 'Copilot called a tool that was not enabled for this request.' });
+					postStatus('Copilot called a tool that is not enabled. Retrying…');
+					continue;
+				}
 				if (historyToolCalls.length === 0) {
 					priorAttempts.push({ attempt, error: 'Copilot returned malformed tool calls without valid tool names.' });
+					postStatus('Copilot returned malformed tool calls. Retrying…');
+					continue;
+				}
+				if (historyToolCalls.length !== nativeToolCalls.length) {
+					priorAttempts.push({ attempt, error: 'Copilot returned malformed tool calls.' });
 					postStatus('Copilot returned malformed tool calls. Retrying…');
 					continue;
 				}
@@ -3741,7 +3880,7 @@ Completion:`;
 									this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query }, `Query execution error: ${errorMessage}`);
 									try {
 										postSqlMessage({
-											type: 'copilotWriteQueryStatus', boxId, status: 'Query failed to execute. Retrying…', detail: '',
+											type: 'copilotWriteQueryStatus', boxId, status: 'Query failed to execute. Retrying…', detail: '', role: 'progress',
 										});
 									} catch { /* ignore */ }
 								});
@@ -3795,12 +3934,6 @@ Completion:`;
 				}
 
 				if (hasOptionalToolCalls) {
-					toolTurnCount++;
-					if (toolTurnCount >= maxToolTurns) {
-						priorAttempts.push({ attempt, error: 'Too many tool turns without a final response.' });
-						postStatus('Too many tool turns. Retrying…');
-						continue;
-					}
 					attempt--;
 					continue;
 				}

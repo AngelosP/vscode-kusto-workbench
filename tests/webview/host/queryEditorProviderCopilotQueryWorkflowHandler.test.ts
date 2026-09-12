@@ -317,11 +317,15 @@ describe('QueryEditorProvider Copilot query workflow application', () => {
 		expect(handlerSource).toContain(
 			'this.options.copilot.cancelCopilotWriteQuery(message.boxId, undefined, expectedRequest);',
 		);
+		expect(handlerSource).toContain(
+			'message.boxId, undefined, undefined, message.sqlCopilotRequestId,',
+		);
 		expect(handlerSource).toContain('this.options.getSqlConnectionManager()');
 		expect(handlerSource).toContain('this.options.getSqlSchemaService()');
 		expect(handlerSource).toContain('this.options.getSqlClient()');
 		expect(copilotSource).toContain('async startCopilotWriteQuery(');
-		expect(copilotSource).toContain('cancelCopilotWriteQuery(boxId: string');
+		expect(copilotSource).toContain('cancelCopilotWriteQuery(');
+		expect(copilotSource).toContain('expectedSqlCopilotRequestId?: string,');
 		expect(brokerSource).toContain('reservePreflight(');
 		expect(brokerSource).toContain('clearPreflight(');
 		expect(brokerSource).toContain('cancelExpected(');
@@ -329,5 +333,6 @@ describe('QueryEditorProvider Copilot query workflow application', () => {
 		expect(lifecycleSource).toContain('getOwnerToken(boxId: string)');
 		expect(typesSource).toContain("type: 'startCopilotWriteQuery';");
 		expect(typesSource).toContain("type: 'cancelCopilotWriteQuery'; boxId: string; flavor: 'kusto'");
+		expect(typesSource).toContain("flavor?: 'sql'; sqlCopilotRequestId?: string");
 	});
 });

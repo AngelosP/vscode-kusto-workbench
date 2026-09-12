@@ -119,6 +119,7 @@ export class KwCopilotChat extends LitElement {
 	@state() private _userModifiedTools = false;
 	@state() private _toolsPanelOpen = false;
 	@state() private _inputHeight = 32;
+	@state() private _progressText = '';
 
 	// ── Private non-reactive fields ───────────────────────────────────────────
 
@@ -143,6 +144,12 @@ export class KwCopilotChat extends LitElement {
 	private _removeToolsPanelScrollListener: (() => void) | null = null;
 	private _toolsPanelListenerTimer: ReturnType<typeof setTimeout> | null = null;
 	private _markdownPreviewLibsRequested = false;
+	private _toolsLoaded = false;
+	private readonly _onComponentKeydown = (event: KeyboardEvent): void => {
+		if (event.defaultPrevented || event.key !== 'Escape' || !this._running) return;
+		event.preventDefault();
+		this.dispatchEvent(new CustomEvent('copilot-cancel', { bubbles: true, composed: true }));
+	};
 
 	@query('.messages') private _messagesHost!: HTMLDivElement;
 	@query('textarea') private _textarea!: HTMLTextAreaElement;
@@ -151,6 +158,7 @@ export class KwCopilotChat extends LitElement {
 
 	override connectedCallback(): void {
 		super.connectedCallback();
+		this.addEventListener('keydown', this._onComponentKeydown);
 		// Seed the initial tip message before the first render.
 		if (this._messages.length === 0 && this.tipHtml) {
 			this._messages = [{
@@ -162,6 +170,7 @@ export class KwCopilotChat extends LitElement {
 	}
 
 	override disconnectedCallback(): void {
+		this.removeEventListener('keydown', this._onComponentKeydown);
 		super.disconnectedCallback();
 		this._cleanupTooltips();
 		this._closeToolsPanel();
@@ -316,6 +325,7 @@ export class KwCopilotChat extends LitElement {
 	/** Set running state. */
 	setRunning(running: boolean, statusText = ''): void {
 		this._running = running;
+		this._progressText = '';
 		if (!running && this._focusInputAfterRunning) {
 			this._focusInputAfterRunning = false;
 			this.updateComplete.then(() => {
@@ -327,9 +337,15 @@ export class KwCopilotChat extends LitElement {
 		}
 	}
 
+	setProgress(text: string): void {
+		if (!this._running) return;
+		this._progressText = String(text || '').trim();
+	}
+
 	/** Apply model + tools options from the extension host. */
 	applyOptions(models: unknown[], selectedModelId: string, tools: CopilotTool[]): void {
 		this._tools = Array.isArray(tools) ? tools.filter(t => t && t.name) : [];
+		this._toolsLoaded = true;
 		if (!this._userModifiedTools) {
 			this._enabledTools = this._getDefaultEnabledTools();
 		} else {
@@ -353,6 +369,7 @@ export class KwCopilotChat extends LitElement {
 		this._userModifiedTools = false;
 		this._enabledTools = this._getDefaultEnabledTools();
 		this._running = false;
+		this._progressText = '';
 		this._focusInputAfterRunning = false;
 		this._messages = [{
 			id: this._nextId(),
@@ -362,7 +379,8 @@ export class KwCopilotChat extends LitElement {
 	}
 
 	/** Get the list of enabled tool names for the next message. */
-	getEnabledTools(): string[] {
+	getEnabledTools(): string[] | undefined {
+		if (!this._toolsLoaded) return undefined;
 		const known = new Set(this._tools.map(t => t.name));
 		return this._enabledTools.filter(n => known.has(n));
 	}
@@ -390,8 +408,7 @@ export class KwCopilotChat extends LitElement {
 		if (this._running) return false;
 		const request = String(text || '').trim();
 		if (!request) return false;
-		this._dispatchSend(request, requireToolUse);
-		return true;
+		return this._dispatchSend(request, requireToolUse);
 	}
 
 	/** Get all current messages (for testing/inspection). */
@@ -412,6 +429,8 @@ export class KwCopilotChat extends LitElement {
 				<div class="chat-title"><span>CHAT</span></div>
 				<div class="chat-header-actions">
 					<button type="button" class="icon-btn clear-btn"
+						data-testid="copilot-chat-clear"
+						aria-label="Clear conversation history"
 						title="Clear conversation history"
 						@click=${this._onClear}>
 						${ICONS.clearAll}
@@ -427,16 +446,19 @@ export class KwCopilotChat extends LitElement {
 			<div class="messages" aria-live="polite" @scroll=${this._onMessagesScroll}>
 				${this._messages.map(m => this._renderMessage(m))}
 			</div>
+			${this._running && this._progressText ? html`<div class="chat-progress"
+				data-testid="copilot-chat-progress" role="status" aria-live="polite">${this._progressText}</div>` : nothing}
 			<div class="resizer input-resizer"
 				title="Drag to resize input area"
 				@mousedown=${this._onInputResizerMouseDown}></div>
 			<div class="input-area">
 				<textarea
+					data-testid="copilot-chat-input"
 					rows="1"
 					style="height:${this._inputHeight}px"
 					placeholder="Ask Copilot\u2026"
 					spellcheck="true"
-					?disabled=${this._running}
+					.readOnly=${this._running}
 					@keydown=${this._onTextareaKeydown}
 					@input=${this._onTextareaInput}></textarea>
 				<div class="input-bar">
@@ -457,6 +479,8 @@ export class KwCopilotChat extends LitElement {
 					</div>
 					<button type="button"
 						class="send-btn ${this._running ? 'is-running' : ''}"
+						data-testid="copilot-chat-send-stop"
+						aria-label=${this._running ? 'Stop Copilot request' : 'Send Copilot request'}
 						title=${this._running ? 'Stop (Esc)' : 'Send (Enter)'}
 						@click=${this._onSendOrCancel}>
 						<span class="icon-send codicon codicon-arrow-up"></span>
@@ -701,6 +725,8 @@ export class KwCopilotChat extends LitElement {
 		return html`
 			<label class="tool-item">
 				<input type="checkbox" class="tool-checkbox"
+					data-testid=${`copilot-chat-tool-${tool.name}`}
+					aria-label=${`Enable ${label}`}
 					.checked=${enabledSet.has(tool.name)}
 					@change=${(e: Event) => this._onToolToggle(tool.name, (e.target as HTMLInputElement).checked)} />
 				<span class="tool-text">
@@ -860,22 +886,34 @@ export class KwCopilotChat extends LitElement {
 			this.appendMessage('notification', 'Type what you want the query to do, then press Send.');
 			return;
 		}
-		this.appendMessage('user', text);
+		if (!this._dispatchSend(text, false)) return;
 		textarea.value = '';
 		this._inputHeight = 32;
-		this._dispatchSend(text, false, false);
 	}
 
-	private _dispatchSend(text: string, requireToolUse: boolean, appendUserMessage = true): void {
-		if (appendUserMessage) this.appendMessage('user', text);
-		this.dispatchEvent(new CustomEvent('copilot-send', {
+	private _dispatchSend(text: string, requireToolUse: boolean, appendUserMessage = true): boolean {
+		const accepted = this.dispatchEvent(new CustomEvent('copilot-send', {
 			bubbles: true,
 			composed: true,
+			cancelable: true,
 			detail: { text, enabledTools: this.getEnabledTools(), requireToolUse },
 		}));
+		if (accepted && appendUserMessage) this.appendMessage('user', text);
+		return accepted;
 	}
 
 	private _onTextareaKeydown(e: KeyboardEvent): void {
+		if (this._running) {
+			if (e.key === 'Escape') {
+				e.preventDefault();
+				this.dispatchEvent(new CustomEvent('copilot-cancel', { bubbles: true, composed: true }));
+				return;
+			}
+			if (e.key === 'Enter') {
+				e.preventDefault();
+				return;
+			}
+		}
 		if (e.key === 'Enter' && e.ctrlKey) {
 			e.preventDefault();
 			const ta = this._textarea;
@@ -891,10 +929,6 @@ export class KwCopilotChat extends LitElement {
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
 			this._onSendOrCancel();
-		}
-		if (e.key === 'Escape' && this._running) {
-			e.preventDefault();
-			this.dispatchEvent(new CustomEvent('copilot-cancel', { bubbles: true, composed: true }));
 		}
 	}
 
@@ -1011,7 +1045,9 @@ export class KwCopilotChat extends LitElement {
 	private _onOutsideClickToolsPanel(e: Event): void {
 		const panel = this.shadowRoot?.querySelector('.tools-panel');
 		const btn = this.shadowRoot?.querySelector('.tools-btn');
-		if (panel?.contains(e.target as Node) || btn?.contains(e.target as Node)) return;
+		const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+		if (path.includes(panel as EventTarget) || path.includes(btn as EventTarget)
+			|| panel?.contains(e.target as Node) || btn?.contains(e.target as Node)) return;
 		this._closeToolsPanel();
 	}
 

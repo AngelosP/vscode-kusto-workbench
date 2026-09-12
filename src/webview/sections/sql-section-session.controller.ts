@@ -479,7 +479,8 @@ export class SqlSectionSessionController implements ReactiveController, SqlSecti
 	}
 
 	admitOwnedMessage(message: { ownerToken?: unknown; executionId?: unknown; type?: unknown }): boolean {
-		if (!this._ownerToken || this._ownerToken !== String(message.ownerToken || '')) return false;
+		if (!this._ownerToken || typeof message.ownerToken !== 'string'
+			|| this._ownerToken !== message.ownerToken) return false;
 		return !SQL_TERMINAL_TYPES.has(String(message.type || ''))
 			|| this.acceptsExecutionTerminal(String(message.executionId || ''));
 	}

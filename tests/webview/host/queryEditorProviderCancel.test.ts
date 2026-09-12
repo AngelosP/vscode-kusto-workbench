@@ -1136,7 +1136,9 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		await start;
 
 		expect(provider.copilot.startCopilotWriteQuery).not.toHaveBeenCalled();
-		expect(provider.copilot.cancelCopilotWriteQuery).toHaveBeenCalledWith('sql_1');
+		expect(provider.copilot.cancelCopilotWriteQuery).toHaveBeenCalledWith(
+			'sql_1', undefined, undefined, undefined,
+		);
 		expect(provider.postMessage).toHaveBeenCalledWith({
 			type: 'copilotWriteQueryDone', boxId: 'sql_1', ok: false, message: 'Canceled.', ownerToken: 'owner-token',
 		});

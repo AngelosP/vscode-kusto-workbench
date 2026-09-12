@@ -18,6 +18,9 @@ Feature files should prefer the semantic `window.__e2e` API over long inline Jav
 - `window.__e2e.autoTrigger.assertEnabled(true)`
 - `window.__e2e.autoTrigger.clickSqlToggle()`
 - `window.__e2e.inline.beginRequestCapture('sql', 'SELECT ...', 1, 50)`
+- `window.__e2e.copilot.snapshot('sql')`
+- `window.__e2e.copilot.beginObservation('sql')`
+- `window.__e2e.copilot.finishObservation('Expected assistant text', 15000)`
 - `window.__e2e.persistence.assertSectionOrder('query,markdown,sql')`
 - `window.__e2e.persistence.assertQuerySection('query_1', { queryIncludes: 'StormEvents', clusterUrl: 'https://...', database: 'Samples' })`
 - `window.__e2e.persistence.assertSqlSection('sql_1', { queryIncludes: 'SELECT', serverUrl: 'server.example', database: 'master' })`
@@ -35,6 +38,8 @@ Feature files should prefer the semantic `window.__e2e` API over long inline Jav
 ## Boundary
 
 Use raw `When I evaluate "..." in the webview` only when the assertion is genuinely bespoke for that scenario. Do not use private section fields such as `_editor`, `_database`, `_databases`, or `_sqlConnectionId` in behavioral tests. Screenshot-generator features may keep targeted setup shortcuts when they are only arranging visual state for README capture.
+
+Copilot observation helpers are inspection-only. They may assert rendered messages, running/progress state, enabled tools, mutation quiescence, and browser long-task timing, but tests must use the rendered textarea, tool checkboxes, Send/Stop button, and native keyboard input for user actions.
 
 ## Why
 

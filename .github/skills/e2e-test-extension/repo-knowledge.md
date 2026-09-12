@@ -54,6 +54,7 @@ only proves the backing handler.
 - Python's shadow-root Run control is reliably clickable as `.run-btn`; the compound selector `#<python-id> .run-btn` does not cross that shadow boundary in the current framework.
 - Kusto preparation is observable on `kw-query-section` through `data-test-preparation-state`, `data-test-preparation-stage`, and `data-test-preparation-blockers`. The toolbar animation can be asserted with `getComputedStyle(toolbar, '::after').animationName`.
 - Supplemental fully qualified schema state is exposed through `window.__e2e.kusto.waitForSupplementalState`, `assertNoSupplementalWarnings`, `assertSupplementalBackgroundTrace`, and `suggestDiagnostics(context, sectionIndex)`.
+- SQL Copilot's toolbar action is `[data-testid='sql-copilot-chat-toggle']`; chat controls are `[data-testid='copilot-chat-input']`, `[data-testid='copilot-chat-tools']`, and `[data-testid='copilot-chat-send-stop']`. Tool checkboxes use `data-testid='copilot-chat-tool-<tool-name>'` and accessible names beginning with `Enable`.
 
 ## Activation & Setup Quirks
 
@@ -125,6 +126,7 @@ only proves the backing handler.
 - After closing and reopening the same custom editor, wait one second before reopening so the retired CDP webview target is disposed; otherwise unqualified evaluation can attach to the predecessor target.
 - The full suite supports deterministic round-robin sharding through paired one-based `--shard-index` and `--shard-count` flags. Scheduled default-profile CI runs four fail-independent shards.
 - `kusto-favorites-sync` keeps 11 representative native scenarios covering every real file host in source and target roles. The complete 5x5 one-section and 3x3 many-section provider matrices remain in `kustoFavoritesApplicationHandler.test.ts` (34 direct permutations).
+- `sql-copilot-chat` is the composed SQL Copilot regression gate. It uses the real SQL-auth owner and rendered controls with the development scripted model; toggles `execute_sql_query` through native interaction, covers prose-only and schema/execution tool rounds, registered agent delegation with a preserved manual draft, and real Escape/Stop cancellation. `window.__e2e.copilot` is inspection-only. Review its content-free round timing, long-task/mutation quiescence artifacts, and both screenshots; do not treat them as direct GPU-process measurements.
 
 ## Testability Recommendations
 

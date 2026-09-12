@@ -161,7 +161,7 @@ type OutgoingStartCopilotWriteQueryMessageBase = {
 
 export type OutgoingStartCopilotWriteQueryMessage =
 	| (OutgoingStartCopilotWriteQueryMessageBase & KustoCopilotRequestIdentity & { flavor: 'kusto' })
-	| (OutgoingStartCopilotWriteQueryMessageBase & { flavor: 'sql'; sqlOwnerToken?: string });
+	| (OutgoingStartCopilotWriteQueryMessageBase & { flavor: 'sql'; sqlOwnerToken: string; sqlCopilotRequestId: string });
 
 // ── Connections & favorites ────────────────────────────────────────────────
 
@@ -310,7 +310,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'prepareCopilotWriteQuery'; boxId: string; flavor?: 'kusto' | 'sql' }
 	| OutgoingStartCopilotWriteQueryMessage
 	| ({ type: 'cancelCopilotWriteQuery'; boxId: string; flavor: 'kusto' } & KustoCopilotRequestIdentity)
-	| { type: 'cancelCopilotWriteQuery'; boxId: string; flavor?: 'sql' }
+	| { type: 'cancelCopilotWriteQuery'; boxId: string; flavor?: 'sql'; sqlCopilotRequestId?: string }
 	| ({ type: 'clearCopilotConversation'; flavor: 'kusto' } & KustoCopilotRequestIdentity)
 	| { type: 'clearCopilotConversation'; boxId: string; flavor?: 'sql' }
 	| { type: 'removeFromCopilotHistory'; boxId: string; entryId: string }

@@ -24,6 +24,10 @@ import {
 import { emitAppliedKustoCopilotDone } from '../core/kusto-copilot-output-runtime.js';
 import { displayResultBatchForBox } from '../core/results-state.js';
 import { parseKustoResultBatch } from '../../shared/kustoResultBatch.js';
+import {
+	SQL_COPILOT_REQUEST_RETIRED_EVENT,
+	type SqlCopilotRequestRetiredDetail,
+} from '../shared/sql-copilot-events.js';
 
 // ── Host interface (avoids circular import with kw-query-section.ts) ──────────
 
@@ -159,6 +163,8 @@ export class CopilotChatManagerController implements ReactiveController {
 	private activeKustoRequest: KustoCopilotRequestIdentity | undefined;
 	private kustoConversationOwner: KustoCopilotRequestIdentity | undefined;
 	private cancellingKustoRequest: KustoCopilotRequestIdentity | undefined;
+	private activeSqlCopilotRequestId: string | undefined;
+	private cancellingSqlCopilotRequestId: string | undefined;
 
 	constructor(host: CopilotChatManagerHost, flavor: WebviewCopilotFlavor) {
 		this.host = host;
@@ -277,7 +283,7 @@ export class CopilotChatManagerController implements ReactiveController {
 		if (!id) return;
 		this.retireKustoCopilotRequest();
 		if (this.flavor.id === 'sql') {
-			try { postMessageToHost({ type: 'cancelCopilotWriteQuery', boxId: id, flavor: 'sql' }); } catch (e) { console.error('[kusto]', e); }
+			this.retireSqlCopilotRequest();
 		}
 		if (this._copilotSplitObserver) {
 			this._copilotSplitObserver.disconnect();
@@ -383,8 +389,29 @@ export class CopilotChatManagerController implements ReactiveController {
 			const { text, enabledTools, requireToolUse } = e.detail;
 			const connectionId = this.host.getCopilotConnectionId();
 			const database = this.host.getDatabase();
-			if (!connectionId) { chatEl.appendMessage('notification', this.flavor.noConnectionMessage); return; }
-			if (!database) { chatEl.appendMessage('notification', 'Select a database first.'); return; }
+			if (!connectionId) {
+				e.preventDefault();
+				chatEl.appendMessage('notification', this.flavor.noConnectionMessage);
+				return;
+			}
+			if (!database) {
+				e.preventDefault();
+				chatEl.appendMessage('notification', 'Select a database first.');
+				return;
+			}
+			if (this.flavor.id === 'sql' && this.activeSqlCopilotRequestId) {
+				e.preventDefault();
+				chatEl.appendMessage('notification', 'A SQL Copilot request is already running.');
+				return;
+			}
+			const sqlOwnerToken = this.flavor.id === 'sql'
+				? String(this.host.getCopilotOwnerToken?.() || '')
+				: '';
+			if (this.flavor.id === 'sql' && !sqlOwnerToken.trim()) {
+				e.preventDefault();
+				chatEl.appendMessage('notification', 'SQL Tools Service is still connecting. Try again when the connection is ready.');
+				return;
+			}
 			let currentQuery = '';
 			if (this.flavor.includesQueryContext) {
 				try { currentQuery = this.host.getCopilotEditorValue(); } catch (e) { console.error('[kusto]', e); }
@@ -392,9 +419,13 @@ export class CopilotChatManagerController implements ReactiveController {
 			const modelId = ((document.getElementById(boxId + '_copilot_model') || {}) as any).value || '';
 			try { __kustoSetLastOptimizeModelId(modelId); } catch (e) { console.error('[kusto]', e); }
 			chatEl.setRunning(true);
+			let previousKustoConversationOwner: KustoCopilotRequestIdentity | undefined;
+			let startedKustoCopilotRequest: KustoCopilotRequestIdentity | undefined;
+			let startedSqlCopilotRequestId: string | undefined;
 			try {
 				const lifecycle = this.flavor.id === 'kusto' ? this.host.getSchemaLifecycleIdentity?.() : undefined;
 				if (this.flavor.id === 'kusto' && !lifecycle) {
+					e.preventDefault();
 					chatEl.setRunning(false, 'The query section target changed. Try again.');
 					return;
 				}
@@ -411,25 +442,45 @@ export class CopilotChatManagerController implements ReactiveController {
 					requireToolUse: requireToolUse || undefined,
 				} as const;
 				if (this.flavor.id === 'kusto' && lifecycle) {
+					if (!this.activeKustoRequest) previousKustoConversationOwner = this.kustoConversationOwner;
 					if (this.activeKustoRequest) this.retireKustoCopilotRequest();
 					const copilotRequestId = `kusto-copilot-request-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
-					this.activeKustoRequest = Object.freeze({ boxId: String(boxId), ...lifecycle, copilotRequestId });
-					this.kustoConversationOwner = this.activeKustoRequest;
-					postMessageToHost({ ...baseMessage, flavor: 'kusto', ...this.activeKustoRequest });
+					startedKustoCopilotRequest = Object.freeze({ boxId: String(boxId), ...lifecycle, copilotRequestId });
+					this.activeKustoRequest = startedKustoCopilotRequest;
+					this.kustoConversationOwner = startedKustoCopilotRequest;
+					postMessageToHost({ ...baseMessage, flavor: 'kusto', ...startedKustoCopilotRequest });
 				} else {
-					const sqlOwnerToken = this.host.getCopilotOwnerToken?.();
+					startedSqlCopilotRequestId = `sql-copilot-request-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
+					this.activeSqlCopilotRequestId = startedSqlCopilotRequestId;
+					this.cancellingSqlCopilotRequestId = undefined;
 					postMessageToHost({
 						...baseMessage,
 						flavor: 'sql',
-						...(sqlOwnerToken ? { sqlOwnerToken } : {}),
+						sqlCopilotRequestId: startedSqlCopilotRequestId,
+						sqlOwnerToken,
 					});
 				}
-			} catch { chatEl.setRunning(false, 'Failed to start Copilot request.'); }
+			} catch {
+				e.preventDefault();
+				if (startedKustoCopilotRequest
+					&& this.activeKustoRequest === startedKustoCopilotRequest) {
+					this.activeKustoRequest = undefined;
+				}
+				if (startedKustoCopilotRequest
+					&& this.kustoConversationOwner === startedKustoCopilotRequest) {
+					this.kustoConversationOwner = previousKustoConversationOwner;
+				}
+				if (startedSqlCopilotRequestId === this.activeSqlCopilotRequestId) {
+					this.activeSqlCopilotRequestId = undefined;
+					this.cancellingSqlCopilotRequestId = undefined;
+				}
+				chatEl.setRunning(false, 'Failed to start Copilot request.');
+			}
 		}) as EventListener);
 
 		chatEl.addEventListener('copilot-cancel', () => {
 			if (this.flavor.id === 'kusto') this.requestKustoCopilotCancellation();
-			else try { postMessageToHost({ type: 'cancelCopilotWriteQuery', boxId, flavor: 'sql' }); } catch (e) { console.error('[kusto]', e); }
+			else this.cancelSqlCopilotRequest(this.activeSqlCopilotRequestId);
 		});
 
 		chatEl.addEventListener('copilot-clear', () => {
@@ -584,7 +635,9 @@ export class CopilotChatManagerController implements ReactiveController {
 
 	copilotWriteQueryStatus(text: string, detail: string, role: string): void {
 		const chatEl = this.getCopilotChatEl();
-		if (chatEl) chatEl.appendMessage((role === 'assistant' ? 'assistant' : 'notification') as 'assistant' | 'notification', text, detail);
+		if (!chatEl) return;
+		if (role === 'progress') chatEl.setProgress(text);
+		else chatEl.appendMessage(role === 'assistant' ? 'assistant' : 'notification', text, detail);
 	}
 
 	copilotWriteQuerySetQuery(queryText: string): void {
@@ -613,7 +666,75 @@ export class CopilotChatManagerController implements ReactiveController {
 	}
 
 	isCopilotChatRunning(): boolean {
-		return !!this.activeKustoRequest || this.getCopilotChatEl()?.isRunning() === true;
+		return !!this.activeKustoRequest || !!this.activeSqlCopilotRequestId
+			|| this.getCopilotChatEl()?.isRunning() === true;
+	}
+
+	submitSqlCopilotChatRequest(text: string, requireToolUse: boolean): string | undefined {
+		if (this.flavor.id !== 'sql') return undefined;
+		if (!this._copilotChatVisible) this.setCopilotChatVisible(true, false);
+		if (this.activeSqlCopilotRequestId || this.getCopilotChatEl()?.isRunning()) return undefined;
+		const chatEl = this.getCopilotChatEl();
+		if (!chatEl?.submitProgrammaticRequest(text, requireToolUse)) return undefined;
+		return this.activeSqlCopilotRequestId;
+	}
+
+	admitSqlCopilotMessage(identity: unknown): boolean {
+		if (this.flavor.id !== 'sql' || !this.activeSqlCopilotRequestId
+			|| !identity || typeof identity !== 'object') return false;
+		const requestId = (identity as { sqlCopilotRequestId?: unknown }).sqlCopilotRequestId;
+		return typeof requestId === 'string' && requestId.length > 0
+			&& requestId === this.activeSqlCopilotRequestId;
+	}
+
+	completeSqlCopilotRequest(identity: unknown): boolean {
+		if (!this.admitSqlCopilotMessage(identity)) return false;
+		this.activeSqlCopilotRequestId = undefined;
+		this.cancellingSqlCopilotRequestId = undefined;
+		return true;
+	}
+
+	cancelSqlCopilotRequest(expectedRequestId?: string): boolean {
+		const requestId = this.activeSqlCopilotRequestId;
+		if (!requestId || (expectedRequestId !== undefined
+			&& (typeof expectedRequestId !== 'string' || expectedRequestId !== requestId))) return false;
+		if (this.cancellingSqlCopilotRequestId === requestId) return true;
+		try {
+			postMessageToHost({
+				type: 'cancelCopilotWriteQuery', boxId: this.host.boxId, flavor: 'sql',
+				sqlCopilotRequestId: requestId,
+			});
+			this.cancellingSqlCopilotRequestId = requestId;
+			this.getCopilotChatEl()?.setProgress('Canceling\u2026');
+			return true;
+		} catch (e) {
+			console.error('[kusto]', e);
+			return false;
+		}
+	}
+
+	private retireSqlCopilotRequest(): string | undefined {
+		const requestId = this.activeSqlCopilotRequestId;
+		if (!requestId) return undefined;
+		const cancelAlreadyPosted = this.cancellingSqlCopilotRequestId === requestId;
+		this.activeSqlCopilotRequestId = undefined;
+		this.cancellingSqlCopilotRequestId = undefined;
+		this.getCopilotChatEl()?.setRunning(false);
+		const detail: SqlCopilotRequestRetiredDetail = {
+			boxId: this.host.boxId,
+			sqlCopilotRequestId: requestId,
+			reason: 'Canceled.',
+		};
+		window.dispatchEvent(new CustomEvent(SQL_COPILOT_REQUEST_RETIRED_EVENT, { detail }));
+		if (!cancelAlreadyPosted) {
+			try {
+				postMessageToHost({
+					type: 'cancelCopilotWriteQuery', boxId: this.host.boxId, flavor: 'sql',
+					sqlCopilotRequestId: requestId,
+				});
+			} catch (e) { console.error('[kusto]', e); }
+		}
+		return requestId;
 	}
 
 	submitCopilotChatRequest(
@@ -753,6 +874,7 @@ export class CopilotChatManagerController implements ReactiveController {
 					this.clearKustoCopilotConversationOwner(owner);
 				}
 			}
+			if (this.flavor.id === 'sql') this.retireSqlCopilotRequest();
 			chatEl.clearConversation();
 			try {
 				if (owner) postMessageToHost({ type: 'clearCopilotConversation', flavor: 'kusto', ...owner });
@@ -778,6 +900,6 @@ export class CopilotChatManagerController implements ReactiveController {
 		const chatEl = this.getCopilotChatEl();
 		if (chatEl && !chatEl.isRunning()) return;
 		if (this.flavor.id === 'kusto') this.requestKustoCopilotCancellation();
-		else try { postMessageToHost({ type: 'cancelCopilotWriteQuery', boxId: this.host.boxId, flavor: 'sql' }); } catch (e) { console.error('[kusto]', e); }
+		else this.cancelSqlCopilotRequest(this.activeSqlCopilotRequestId);
 	}
 }
