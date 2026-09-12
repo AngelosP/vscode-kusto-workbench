@@ -12,7 +12,6 @@ import {
 	__kustoSetSectionName,
 } from '../core/section-factory.js';
 import { __kustoGetLastOptimizeModelId, __kustoSetLastOptimizeModelId } from './query-execution.controller.js';
-import { __kustoPrettifyKustoTextWithSemicolonStatements } from '../monaco/prettify.js';
 import type { WebviewCopilotFlavor } from './copilot-chat-flavor.js';
 import { connections, sqlConnections } from '../core/state.js';
 import { sqlConnectionTargetSignature } from '../../shared/sqlConnectionIdentity.js';
@@ -90,9 +89,7 @@ function setQueryText(boxId: string, queryText: string): void {
 		if (!editor) return;
 		const model = editor.getModel?.();
 		if (!model) return;
-		let next = String(queryText || '');
-		try { next = __kustoPrettifyKustoTextWithSemicolonStatements(next); } catch (e) { console.error('[kusto]', e); }
-		editor.executeEdits('copilot', [{ range: model.getFullModelRange(), text: next }]);
+		editor.executeEdits('copilot', [{ range: model.getFullModelRange(), text: String(queryText || '') }]);
 		editor.focus();
 		try { schedulePersist('copilotWriteQuery'); } catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }

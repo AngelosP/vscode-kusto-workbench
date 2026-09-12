@@ -4,12 +4,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import {
-	createEmptyKqlxOrMdxFile,
+	createKqlxOrMdxFileWithDefaultSection,
 	type DevNoteEntry,
 	type KqlxFileKind,
-	type KqlxSectionV1,
 } from './kqlxFormat';
-import { defaultSectionKindForDocument } from '../shared/documentSectionCapabilities';
 import { captureSchemaCacheGeneration, readAllCachedSchemasFromDisk, readCachedSchemaFromDiskByCluster, searchCachedSchemas, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey, schemaPrincipalIdentity, type SchemaCacheGeneration } from './schemaCache';
 import { KustoConnectionCache, type KustoConnectionCacheGeneration } from './kustoConnectionCache';
 import type { SqlConnection, SqlConnectionManager } from './sqlConnectionManager';
@@ -779,9 +777,17 @@ export class KustoWorkbenchToolOrchestrator {
 		return this.connectionToken;
 	}
 
-	activateConnection(token: number): void {
+	activateConnection(token: number): boolean {
 		const connection = this.liveConnections.get(token);
-		if (connection) this.applyLatestConnection(connection);
+		if (!connection) return false;
+		this.applyLatestConnection(connection);
+		return true;
+	}
+
+	evictActiveConnectionForTest(): boolean {
+		if (this.latestConnectionToken === undefined) return false;
+		this.disconnectIfOwner(this.latestConnectionToken);
+		return true;
 	}
 
 	/**
@@ -2904,20 +2910,7 @@ export class KustoWorkbenchToolOrchestrator {
 			let content: string;
 			
 			if (kqlxKind) {
-				// Create kqlx/mdx notebook
-				const file = createEmptyKqlxOrMdxFile(kqlxKind);
-				
-				// Add initial content as a section if provided
-				if (initialContent) {
-					const initialSectionKind = defaultSectionKindForDocument(kqlxKind);
-					const initialSection = {
-						type: initialSectionKind,
-						expanded: true,
-						...(initialSectionKind === 'markdown' ? { text: initialContent } : { query: initialContent }),
-					} as KqlxSectionV1;
-					file.state.sections.push(initialSection);
-				}
-				
+				const file = createKqlxOrMdxFileWithDefaultSection(kqlxKind, initialContent || '');
 				content = JSON.stringify(file, null, 2);
 			} else if (fileType === 'md') {
 				// Plain markdown file

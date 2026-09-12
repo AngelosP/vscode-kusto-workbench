@@ -1104,12 +1104,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			if (!editor) return;
 			const model = editor.getModel?.();
 			if (!model) return;
-			let next = String(text || '');
-			try {
-				const { __kustoPrettifyKustoTextWithSemicolonStatements } = require('../monaco/prettify.js');
-				next = __kustoPrettifyKustoTextWithSemicolonStatements(next);
-			} catch (e) { console.error('[kusto]', e); }
-			editor.executeEdits('copilot', [{ range: model.getFullModelRange(), text: next }]);
+			editor.executeEdits('copilot', [{ range: model.getFullModelRange(), text: String(text || '') }]);
 			editor.focus();
 			try { schedulePersist('copilotWriteQuery'); } catch (e) { console.error('[kusto]', e); }
 		} catch (e) { console.error('[kusto]', e); }

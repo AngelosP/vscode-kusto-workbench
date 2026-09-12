@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { KustoWorkbenchToolOrchestrator } from '../../../src/host/kustoWorkbenchTools';
+import { HostWorkbenchToolSessionApplicationHandler } from '../../../src/host/workbenchToolSessionApplicationHandler';
 import { classifyWorkbenchUri } from '../../../src/host/workbenchFileTypes';
 import { kustoClusterKey } from '../../../src/shared/kustoClusterUrls';
 import { SCHEMA_CACHE_VERSION } from '../../../src/host/schemaCache';
@@ -106,6 +107,94 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect(stateGetter).toHaveBeenCalledTimes(1);
 		expect(result.sections).toHaveLength(1);
 		expect(result.sections[0].id).toBe('q1');
+	});
+
+	it.each([
+		['kqlx', 'query', 'query'],
+		['sqlx', 'sql', 'query'],
+		['mdx', 'markdown', 'text'],
+	] as const)('createFile writes and opens a fresh %s with its explicit %s starter', async (
+		fileType, sectionType, contentField,
+	) => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const requestedPath = `/work/fresh-${fileType}`;
+
+		const result = await orchestrator.createFile({ fileType, filePath: requestedPath });
+
+		expect(result).toEqual({ success: true, filePath: expect.stringContaining(`fresh-${fileType}.${fileType}`) });
+		const uri = vscode.Uri.file(`${requestedPath}.${fileType}`);
+		const text = (vscode as any).__mockFileSystem.readText(uri);
+		const file = JSON.parse(text);
+		expect(file).toMatchObject({
+			kind: fileType,
+			version: 1,
+			state: { sections: [{ type: sectionType, expanded: true, [contentField]: '' }] },
+		});
+		expect(file.state.sections).toHaveLength(1);
+		expect((vscode as any).__mockCommandCalls).toContainEqual({
+			command: 'vscode.openWith', args: [uri, 'kusto.kqlxEditor'],
+		});
+	});
+
+	it('reconnects an evicted live bridge and returns a 3-row by 4-column askKustoCopilot result', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/reactivated-result.kqlx');
+		setActiveCustomTab(uri, 'kusto.kqlxEditor');
+		const postMessage = vi.fn(() => true);
+		const handler = new HostWorkbenchToolSessionApplicationHandler({
+			getOrchestrator: () => orch,
+			postMessage,
+			isAvailable: () => true,
+			getDocumentUri: () => uri.toString(),
+			connectionManager: fakeConnectionManager,
+			schema: { refreshSchemaForTools: vi.fn(async () => ({ schemas: [] })) } as any,
+			sqlLifecycle: {
+				getConnectionId: vi.fn(), getFirstConnectionId: vi.fn(),
+				getReadyToolOwner: vi.fn(), reconcileComparisonOwners: vi.fn(),
+			} as any,
+		});
+		handler.activate();
+		expect(orch.evictActiveConnectionForTest()).toBe(true);
+		handler.activate();
+		const columns = [
+			{ name: 'Timestamp', type: 'datetime' },
+			{ name: 'Category', type: 'string' },
+			{ name: 'Count', type: 'long' },
+			{ name: 'Ratio', type: 'real' },
+		];
+		const results = [
+			['2026-09-10T00:00:00Z', 'alpha', 10, 0.5],
+			['2026-09-11T00:00:00Z', 'beta', 20, 0.75],
+			['2026-09-12T00:00:00Z', 'gamma', 30, 1],
+		];
+
+		const pending = orch.delegateToKustoWorkbenchCopilot({ question: 'Return the 3 by 4 result.' });
+		const request = postMessage.mock.calls.find(([message]) =>
+			(message as any)?.type === 'toolDelegateToKustoWorkbenchCopilot')?.[0] as any;
+		expect(request).toBeTruthy();
+		orch.handleWebviewResponse(request.requestId, {
+			success: true,
+			query: 'datatable(Timestamp:datetime, Category:string, Count:long, Ratio:real)[]',
+			rowCount: 3,
+			columns,
+			results,
+			maxResultRows: 100,
+			returnedRowCount: 3,
+			resultSets: [{
+				resultIndex: 0, rowCount: 3, columns, results,
+				returnedRowCount: 3, truncated: false,
+			}],
+		});
+
+		await expect(pending).resolves.toMatchObject({
+			success: true, rowCount: 3, columns, results, returnedRowCount: 3,
+		});
+		handler.dispose();
 	});
 
 	it('keeps the agent development-note waiter live until an exact canonical response arrives', async () => {

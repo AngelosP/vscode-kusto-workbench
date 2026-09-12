@@ -60,7 +60,7 @@ only proves the backing handler.
 
 <!-- E.g. "needs a .kql file open before commands are available" -->
 
-- Opening an empty `.kqlx` initializes one default Kusto section. Tests that need exact section counts should remove it first and assert the workbench is empty before setup.
+- Opening a persisted empty `.kqlx` keeps it empty and byte-stable. Explicit fresh-document producers create the appropriate starter section; tests that need exact section counts should assert which ownership path created the document.
 - For reliable multi-line strings inside `I evaluate` steps, build newlines with `String.fromCharCode(10)` rather than relying on `\n` escaping through Gherkin and JavaScript string layers.
 - In default launch mode, SQL sections may show `No SQL connections configured.`. This is expected unless the test uses a prepared profile or attach mode with SQL auth state.
 - `kustoWorkbench.test.seedSupplementalSchemaDiagnosticsState` creates two synthetic Kusto connections and current-version raw schema caches without network/auth. Always call `kustoWorkbench.test.cleanupSupplementalSchemaDiagnosticsState` after closing fixture editors; it removes only synthetic cluster/cache/file-pin state and restores the previous selection.
@@ -127,6 +127,7 @@ only proves the backing handler.
 - The full suite supports deterministic round-robin sharding through paired one-based `--shard-index` and `--shard-count` flags. Scheduled default-profile CI runs four fail-independent shards.
 - `kusto-favorites-sync` keeps 11 representative native scenarios covering every real file host in source and target roles. The complete 5x5 one-section and 3x3 many-section provider matrices remain in `kustoFavoritesApplicationHandler.test.ts` (34 direct permutations).
 - `sql-copilot-chat` is the composed SQL Copilot regression gate. It uses the real SQL-auth owner and rendered controls with the development scripted model; toggles `execute_sql_query` through native interaction, covers prose-only and schema/execution tool rounds, registered agent delegation with a preserved manual draft, and real Escape/Stop cancellation. `window.__e2e.copilot` is inspection-only. Review its content-free round timing, long-task/mutation quiescence artifacts, and both screenshots; do not treat them as direct GPU-process measurements.
+- `kusto-copilot-result-bridge` is the composed authenticated Kusto bridge gate. While the notebook is hidden it invokes the development-only `kustoWorkbench.test.evictActiveToolSessionConnection` command, then reactivates the tab and requires `askKustoCopilot` to reconnect, preserve a formatter-sensitive two-space string literal exactly through editor/start/terminal/tool-result identities, and render the complete 3-row by 4-column result. Use `--timeout 180000` and 120-second result waits because first live Kusto client creation has exceeded 60 seconds without a product failure.
 
 ## Testability Recommendations
 

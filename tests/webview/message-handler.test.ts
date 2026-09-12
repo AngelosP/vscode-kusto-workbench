@@ -13,6 +13,7 @@ import {
 	publicationFromPersistedResultArtifact,
 	ResultArtifactStore,
 } from '../../src/shared/resultArtifact.js';
+import { __kustoPrettifyKustoTextWithSemicolonStatements } from '../../src/webview/monaco/prettify.js';
 
 const handlerState = vi.hoisted(() => ({
 	activeQueryEditorBoxId: '',
@@ -3889,6 +3890,70 @@ describe('message-handler dispatch', () => {
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
 			type: 'kustoExecutionStartedAck', boxId: 'query-accepted', executionId: 'copilot-accepted',
 			sectionInstanceId: 'instance-accepted', targetGeneration: 2, accepted: true,
+		});
+	});
+
+	it('accepts an exact Kusto query with normalized line endings', () => {
+		const sourceQuery = 'print Value=1\n| extend Label = "A  B", Other = Value';
+		const liveQuery = sourceQuery.replace(/\n/g, '\r\n');
+		const section = {
+			getSchemaLifecycleIdentity: vi.fn(() => ({
+				sectionInstanceId: 'instance-line-endings', targetGeneration: 2,
+			})),
+			getConnectionId: vi.fn(() => 'connection-line-endings'),
+			getDatabase: vi.fn(() => 'Samples'),
+			getCopilotEditorValue: vi.fn(() => liveQuery),
+			getActiveExecution: vi.fn(() => undefined),
+			beginQueryExecution: vi.fn(() => true),
+		};
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'kustoExecutionStarted', engine: 'kusto', boxId: 'query-line-endings',
+			executionId: 'copilot-line-endings', sectionInstanceId: 'instance-line-endings', targetGeneration: 2,
+			connectionId: 'connection-line-endings', database: 'Samples', producer: 'copilot',
+			reservationSequence: 1, query: sourceQuery,
+		});
+
+		expect(section.beginQueryExecution).toHaveBeenCalledWith(
+			'copilot-line-endings', 'copilot', undefined, '', undefined,
+		);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoExecutionStartedAck', boxId: 'query-line-endings', executionId: 'copilot-line-endings',
+			sectionInstanceId: 'instance-line-endings', targetGeneration: 2, accepted: true,
+		});
+	});
+
+	it('rejects formatter-altered Kusto literal content', () => {
+		const sourceQuery = 'print Value=1\n| extend Label = "A  B", Other = Value';
+		const liveQuery = __kustoPrettifyKustoTextWithSemicolonStatements(sourceQuery);
+		expect(liveQuery).toContain('"A B"');
+		expect(liveQuery).not.toContain('"A  B"');
+		const section = {
+			getSchemaLifecycleIdentity: vi.fn(() => ({
+				sectionInstanceId: 'instance-altered-literal', targetGeneration: 2,
+			})),
+			getConnectionId: vi.fn(() => 'connection-altered-literal'),
+			getDatabase: vi.fn(() => 'Samples'),
+			getCopilotEditorValue: vi.fn(() => liveQuery),
+			getActiveExecution: vi.fn(() => undefined),
+			beginQueryExecution: vi.fn(() => true),
+		};
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'kustoExecutionStarted', engine: 'kusto', boxId: 'query-altered-literal',
+			executionId: 'copilot-altered', sectionInstanceId: 'instance-altered-literal', targetGeneration: 2,
+			connectionId: 'connection-altered-literal', database: 'Samples', producer: 'copilot',
+			reservationSequence: 1, query: sourceQuery,
+		});
+
+		expect(section.beginQueryExecution).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoExecutionStartedAck', boxId: 'query-altered-literal', executionId: 'copilot-altered',
+			sectionInstanceId: 'instance-altered-literal', targetGeneration: 2, accepted: false,
 		});
 	});
 
@@ -10290,6 +10355,8 @@ describe('changedSections agent provenance', () => {
 	async function runDelegatedKustoCopilotResponseTest(options: {
 		maxResultRows?: unknown;
 		rowCount: number;
+		columns?: unknown[];
+		rows?: unknown[][];
 		resultBeforeDone?: boolean;
 		oldTerminalBeforeStart?: boolean;
 		cancelBeforeDone?: boolean;
@@ -10361,8 +10428,9 @@ describe('changedSections agent provenance', () => {
 		const getEditorQuery = vi.fn(() => executedQuery);
 		handlerState.queryEditors.query_1 = { getValue: getEditorQuery };
 
-		const rows = Array.from({ length: options.rowCount }, (_unused, index) => [index + 1]);
-		const columns = ['Index'];
+		const rows = options.rows
+			?? Array.from({ length: options.rowCount }, (_unused, index) => [index + 1]);
+		const columns = options.columns ?? ['Index'];
 		getResultsStateMock.mockReturnValue({ columns, rows } as any);
 		const resultArtifact = {
 			artifactId: 'result:query_1:delegated', sourceBoxId: 'query_1', revision: 1, createdAt: 1,
@@ -10521,6 +10589,47 @@ describe('changedSections agent provenance', () => {
 		const result = await runDelegatedKustoCopilotResponseTest({ rowCount: 3, oldTerminalBeforeStart: true });
 
 		expect(result).toMatchObject({ success: true, rowCount: 3, results: [[1], [2], [3]] });
+	});
+
+	it('applies a real-shaped 3-row by 4-column result through askKustoCopilot', async () => {
+		const columns = [
+			{ name: 'Timestamp', type: 'datetime' },
+			{ name: 'Category', type: 'string' },
+			{ name: 'Count', type: 'long' },
+			{ name: 'Ratio', type: 'real' },
+		];
+		const rows = [
+			[
+				{ display: '2026-09-10 00:00:00.0000000', full: '2026-09-10T00:00:00.0000000Z' },
+				{ display: 'alpha', full: 'alpha' },
+				{ display: '10', full: '10' },
+				{ display: '0.5', full: '0.5' },
+			],
+			[
+				{ display: '2026-09-11 00:00:00.0000000', full: '2026-09-11T00:00:00.0000000Z' },
+				{ display: 'beta', full: 'beta' },
+				{ display: '20', full: '20' },
+				{ display: '0.75', full: '0.75' },
+			],
+			[
+				{ display: '2026-09-12 00:00:00.0000000', full: '2026-09-12T00:00:00.0000000Z' },
+				{ display: 'gamma', full: 'gamma' },
+				{ display: '30', full: '30' },
+				{ display: '1', full: '1' },
+			],
+		];
+
+		const result = await runDelegatedKustoCopilotResponseTest({
+			rowCount: rows.length, columns, rows,
+		});
+
+		expect(result).toMatchObject({
+			success: true,
+			rowCount: 3,
+			returnedRowCount: 3,
+			columns,
+			results: rows,
+		});
 	});
 
 	it('defaults delegated Kusto Copilot tool results to 100 rows', async () => {

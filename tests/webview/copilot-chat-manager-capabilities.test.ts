@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
 	setSectionName: vi.fn(),
 	emitAppliedDone: vi.fn(),
 	displayResultBatchForBox: vi.fn(),
+	prettifyKusto: vi.fn((value: string) => value),
 }));
 
 vi.mock('../../src/webview/core/persistence.js', () => ({
@@ -37,7 +38,7 @@ vi.mock('../../src/webview/core/state.js', () => ({
 }));
 
 vi.mock('../../src/webview/monaco/prettify.js', () => ({
-	__kustoPrettifyKustoTextWithSemicolonStatements: vi.fn((value: string) => value),
+	__kustoPrettifyKustoTextWithSemicolonStatements: mocks.prettifyKusto,
 }));
 
 vi.mock('../../src/webview/core/kusto-copilot-output-runtime.js', () => ({
@@ -149,6 +150,46 @@ describe('CopilotChatManagerController document capabilities', () => {
 				},
 			}),
 		);
+	});
+
+	it('writes exact generated Kusto into a newly inserted query section', async () => {
+		mocks.createSectionWithCapabilities.mockReturnValue({ ok: true, sectionId: 'query_exact_insert' });
+		const host = document.createElement('div') as HTMLElement & CopilotChatManagerHost;
+		host.boxId = 'query_source';
+		host.addController = vi.fn();
+		host.getCopilotConnectionId = () => 'connection-1';
+		host.getCopilotServerUrl = () => 'https://cluster.example';
+		host.getDatabase = () => 'Db';
+		host.getCopilotEditorValue = () => '';
+		host.layoutCopilotEditor = vi.fn();
+		const wrapper = document.createElement('div');
+		wrapper.className = 'query-editor-wrapper';
+		host.appendChild(wrapper);
+		document.body.appendChild(host);
+		const range = { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 };
+		const executeEdits = vi.fn();
+		const previousQueryEditors = window.queryEditors;
+		window.queryEditors = {
+			query_exact_insert: {
+				getModel: () => ({ getFullModelRange: () => range }),
+				executeEdits,
+				focus: vi.fn(),
+			},
+		};
+		const query = 'print Value=1 | extend Label = "A  B", Other = Value';
+		mocks.prettifyKusto.mockReturnValueOnce('print Value=1\n| extend Label = "A B", Other = Value');
+
+		try {
+			new CopilotChatManagerController(host, kustoWebviewFlavor).installCopilotChat();
+			host.querySelector('kw-copilot-chat')!.dispatchEvent(new CustomEvent('copilot-insert-query', {
+				detail: { query },
+			}));
+			await new Promise(resolve => setTimeout(resolve, 120));
+
+			expect(executeEdits).toHaveBeenCalledWith('copilot', [{ range, text: query }]);
+		} finally {
+			window.queryEditors = previousQueryEditors;
+		}
 	});
 
 	it('emits exact Kusto and SQL preparation messages when installing each chat manager', () => {

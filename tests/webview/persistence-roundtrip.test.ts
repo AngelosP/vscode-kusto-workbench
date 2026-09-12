@@ -207,10 +207,10 @@ vi.mock('../../src/webview/shared/webview-messages.js', () => ({
 
 vi.mock('../../src/webview/shared/persistence-state.js', () => {
 	const queryEditorPendingAddKinds = [
-		'query', 'chart', 'transformation', 'markdown', 'python', 'url',
+		'query', 'sql', 'chart', 'transformation', 'markdown', 'python', 'url', 'html',
 	] as const;
 	const createEmptyQueryEditorPendingAdds = () => ({
-		query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0,
+		query: 0, sql: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0, html: 0,
 	});
 	return {
 		queryEditorPendingAddKinds,
@@ -382,6 +382,7 @@ vi.mock('../../src/webview/sections/kw-markdown-section.js', () => ({
 	removeMarkdownBox: vi.fn((id: string) => {
 		const idx = testState.markdownBoxes.indexOf(id);
 		if (idx >= 0) testState.markdownBoxes.splice(idx, 1);
+		document.getElementById(id)?.remove();
 	}),
 	markdownBoxes: testState.markdownBoxes,
 	markdownEditors: testState.markdownEditors,
@@ -529,10 +530,12 @@ describe('persistence round-trip', () => {
 
 	it('does not activate a source generation when a known section fails to restore', () => {
 		pState.sourceGeneration = 7;
+		pState.queryEditorPendingAdds.markdown = 1;
 		vi.mocked(addChartBox).mockImplementationOnce(() => { throw new Error('injected chart restore failure'); });
 
 		const applied = handleDocumentDataMessage({
 			type: 'documentData', ok: true, forceReload: true, sourceGeneration: 8,
+			documentUri: 'file:///tmp/failed-restore-with-pending-add.kqlx',
 			documentKind: 'kqlx', state: { sections: [
 				{ id: 'chart_restore_failure', type: 'chart', chartType: 'bar' },
 			] },
@@ -541,6 +544,17 @@ describe('persistence round-trip', () => {
 		expect(applied).toBe(false);
 		expect(pState.sourceGeneration).toBe(7);
 		expect(document.getElementById('kusto-malformed-document-banner')?.textContent).toContain('injected chart restore failure');
+
+		const repairedState = { sections: [] };
+		expect(handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, sourceGeneration: 8,
+			documentUri: 'file:///tmp/failed-restore-with-pending-add.kqlx',
+			documentKind: 'kqlx', state: repairedState,
+		})).toBe(true);
+		finalizeDocumentDefaultsAfterAcknowledgement(repairedState);
+
+		expect(testState.markdownBoxes).toHaveLength(0);
+		expect(pState.queryEditorPendingAdds).toEqual(createEmptyQueryEditorPendingAdds());
 	});
 
 	it('does not preserve a query attachment when the initial projection fails', () => {
@@ -4035,7 +4049,7 @@ describe('persistence round-trip', () => {
 		expect(testState.urlBoxes).toEqual([]);
 	});
 
-	it('adopts a preload Markdown Add exactly once before default finalization', () => {
+	it('adopts preload Markdown, SQL, and HTML Adds exactly once before finalization', () => {
 		const emptyPendingAdds = createEmptyQueryEditorPendingAdds();
 		const runtimeWindow = window as unknown as Record<string, unknown>;
 		const preloadBridgeNames = [
@@ -4059,28 +4073,34 @@ describe('persistence round-trip', () => {
 			const preloadRequestAddSection = runtimeWindow.__kustoRequestAddSection;
 			(window as unknown as { __kustoRequestAddSection: (kind: string) => void })
 				.__kustoRequestAddSection('markdown');
+			(window as unknown as { __kustoRequestAddSection: (kind: string) => void })
+				.__kustoRequestAddSection('sql');
+			(window as unknown as { __kustoRequestAddSection: (kind: string) => void })
+				.__kustoRequestAddSection('html');
 			expect(runtimeWindow.__kustoQueryEditorPendingAdds).toEqual({
-				...emptyPendingAdds, markdown: 1,
+				...emptyPendingAdds, markdown: 1, sql: 1, html: 1,
 			});
 
 			installRuntimeAddSectionBridges();
 			expect(runtimeWindow.__kustoRequestAddSection).not.toBe(preloadRequestAddSection);
 			installRuntimeAddSectionBridges();
 			expect(pState.queryEditorPendingAdds).toEqual({
-				...emptyPendingAdds, markdown: 1,
+				...emptyPendingAdds, markdown: 1, sql: 1, html: 1,
 			});
 
 			const state = { sections: [] };
 			expect(handleDocumentDataMessage({
 				type: 'documentData', ok: true, forceReload: true,
 				documentKind: 'kqlx', documentUri: 'file:///tmp/preload-add-handoff.kqlx',
-				allowedSectionKinds: ['query', 'markdown'], defaultSectionKind: 'query', state,
+				allowedSectionKinds: ['query', 'markdown', 'sql', 'html'], defaultSectionKind: 'query', state,
 			})).toBe(true);
 
 			finalizeDocumentDefaultsAfterAcknowledgement(state);
 			finalizeDocumentDefaultsAfterAcknowledgement(state);
 
 			expect(testState.markdownBoxes).toHaveLength(1);
+			expect(testState.sqlBoxes).toHaveLength(1);
+			expect(testState.htmlBoxes).toHaveLength(1);
 			expect(testState.queryBoxes).toHaveLength(0);
 			expect(pState.queryEditorPendingAdds).toEqual(emptyPendingAdds);
 			expect(runtimeWindow.__kustoQueryEditorPendingAdds).toEqual(emptyPendingAdds);
@@ -4088,6 +4108,195 @@ describe('persistence round-trip', () => {
 			Object.assign(runtimeWindow, runtimeBridges);
 			delete runtimeWindow.__kustoQueryEditorPendingAdds;
 		}
+	});
+
+	it('does not insert a blank query section into an explicitly empty persisted KQLX', () => {
+		const state = { sections: [] };
+		expect(handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri: 'file:///tmp/v4-edge-case-test.kqlx',
+			allowedSectionKinds: ['query', 'markdown'], defaultSectionKind: 'query', state,
+		})).toBe(true);
+
+		finalizeDocumentDefaultsAfterAcknowledgement(state);
+		finalizeDocumentDefaultsAfterAcknowledgement(state);
+
+		expect(testState.queryBoxes).toHaveLength(0);
+		expect(testState.markdownBoxes).toHaveLength(0);
+		expect(getKqlxState().sections).toEqual([]);
+	});
+
+	it('applies a queued Add exactly once after restoring a populated document', () => {
+		const pending = createEmptyQueryEditorPendingAdds();
+		pending.markdown = 1;
+		pState.queryEditorPendingAdds = pending;
+		const state = { sections: [{
+			id: 'query_existing', type: 'query', query: 'print Existing=1',
+		}] };
+
+		expect(handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri: 'file:///tmp/populated-pending-add.kqlx',
+			allowedSectionKinds: ['query', 'markdown'], defaultSectionKind: 'query', state,
+		})).toBe(true);
+
+		finalizeDocumentDefaultsAfterAcknowledgement(state);
+		finalizeDocumentDefaultsAfterAcknowledgement(state);
+
+		expect(testState.queryBoxes).toEqual(['query_existing']);
+		expect(testState.markdownBoxes).toHaveLength(1);
+		expect(pState.queryEditorPendingAdds).toEqual(createEmptyQueryEditorPendingAdds());
+	});
+
+	it('automatically retries queued Adds when section creation throws', async () => {
+		vi.useFakeTimers();
+		const pending = createEmptyQueryEditorPendingAdds();
+		pending.markdown = 2;
+		pState.queryEditorPendingAdds = pending;
+		const state = { sections: [] };
+		const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		let failedId = '';
+		vi.mocked(testState.addMarkdownBox).mockImplementationOnce((options: { id?: string } = {}) => {
+			failedId = String(options.id || '');
+			testState.markdownBoxes.push(failedId);
+			const element = document.createElement('kw-markdown-section');
+			element.id = failedId;
+			(document.getElementById('queries-container') || document.body).appendChild(element);
+			throw new Error('transient Markdown creation failure');
+		});
+
+		try {
+			expect(handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind: 'kqlx', documentUri: 'file:///tmp/retry-pending-add.kqlx',
+				allowedSectionKinds: ['query', 'markdown'], defaultSectionKind: 'query', state,
+			})).toBe(true);
+
+			finalizeDocumentDefaultsAfterAcknowledgement(state);
+			expect(testState.markdownBoxes).toHaveLength(0);
+			expect(document.getElementById(failedId)).toBeNull();
+			expect(pState.queryEditorPendingAdds.markdown).toBe(2);
+
+			await vi.runOnlyPendingTimersAsync();
+			expect(testState.markdownBoxes).toHaveLength(2);
+			expect(pState.queryEditorPendingAdds).toEqual(createEmptyQueryEditorPendingAdds());
+		} finally {
+			consoleError.mockRestore();
+		}
+	});
+
+	it('drops a failed queued Add when a successor document projection arrives', async () => {
+		vi.useFakeTimers();
+		const pending = createEmptyQueryEditorPendingAdds();
+		pending.markdown = 1;
+		pState.queryEditorPendingAdds = pending;
+		const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		vi.mocked(testState.addMarkdownBox).mockImplementationOnce(() => {
+			throw new Error('old projection Markdown creation failure');
+		});
+
+		try {
+			const firstState = { sections: [] };
+			expect(handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind: 'kqlx', documentUri: 'file:///tmp/old-pending-add.kqlx',
+				allowedSectionKinds: ['query', 'markdown'], defaultSectionKind: 'query', state: firstState,
+			})).toBe(true);
+			finalizeDocumentDefaultsAfterAcknowledgement(firstState);
+			expect(pState.queryEditorPendingAdds.markdown).toBe(1);
+
+			const successorState = { sections: [] };
+			expect(handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind: 'kqlx', documentUri: 'file:///tmp/successor-pending-add.kqlx',
+				allowedSectionKinds: ['query', 'markdown'], defaultSectionKind: 'query', state: successorState,
+			})).toBe(true);
+			finalizeDocumentDefaultsAfterAcknowledgement(successorState);
+			await vi.runAllTimersAsync();
+
+			expect(testState.markdownBoxes).toHaveLength(0);
+			expect(pState.queryEditorPendingAdds).toEqual(createEmptyQueryEditorPendingAdds());
+		} finally {
+			consoleError.mockRestore();
+		}
+	});
+
+	it('preserves a failed queued Add across a same-document force reload', async () => {
+		vi.useFakeTimers();
+		const pending = createEmptyQueryEditorPendingAdds();
+		pending.markdown = 1;
+		pState.queryEditorPendingAdds = pending;
+		const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		vi.mocked(testState.addMarkdownBox).mockImplementationOnce(() => {
+			throw new Error('same-document Markdown creation failure');
+		});
+
+		try {
+			const firstState = { sections: [] };
+			expect(handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind: 'kqlx', documentUri: 'file:///tmp/same-pending-add.kqlx',
+				allowedSectionKinds: ['query', 'markdown'], defaultSectionKind: 'query', state: firstState,
+			})).toBe(true);
+			finalizeDocumentDefaultsAfterAcknowledgement(firstState);
+			expect(pState.queryEditorPendingAdds.markdown).toBe(1);
+
+			const reloadedState = { sections: [] };
+			expect(handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind: 'kqlx', documentUri: 'file:///tmp/same-pending-add.kqlx',
+				allowedSectionKinds: ['query', 'markdown'], defaultSectionKind: 'query', state: reloadedState,
+			})).toBe(true);
+			finalizeDocumentDefaultsAfterAcknowledgement(reloadedState);
+			await vi.runAllTimersAsync();
+
+			expect(testState.markdownBoxes).toHaveLength(1);
+			expect(pState.queryEditorPendingAdds).toEqual(createEmptyQueryEditorPendingAdds());
+		} finally {
+			consoleError.mockRestore();
+		}
+	});
+
+	it('assigns distinct identities to synchronous queued Adds under a fixed clock', () => {
+		vi.spyOn(Date, 'now').mockReturnValue(1234567890);
+		const pending = createEmptyQueryEditorPendingAdds();
+		pending.markdown = 2;
+		pState.queryEditorPendingAdds = pending;
+		const state = { sections: [] };
+
+		expect(handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri: 'file:///tmp/distinct-pending-adds.kqlx',
+			allowedSectionKinds: ['query', 'markdown'], defaultSectionKind: 'query', state,
+		})).toBe(true);
+
+		finalizeDocumentDefaultsAfterAcknowledgement(state);
+
+		const ids = vi.mocked(testState.addMarkdownBox).mock.calls.map(([options]) => options?.id);
+		expect(ids).toHaveLength(2);
+		expect(ids.every(id => typeof id === 'string' && id.length > 0)).toBe(true);
+		expect(new Set(ids).size).toBe(2);
+	});
+
+	it('avoids a restored section identity when replaying a queued Add', () => {
+		vi.spyOn(Date, 'now').mockReturnValue(1234567890);
+		const pending = createEmptyQueryEditorPendingAdds();
+		pending.markdown = 1;
+		pState.queryEditorPendingAdds = pending;
+		const state = { sections: [{
+			id: 'markdown_1234567890_1', type: 'markdown', text: 'existing',
+		}] };
+
+		expect(handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri: 'file:///tmp/colliding-pending-add.kqlx',
+			allowedSectionKinds: ['query', 'markdown'], defaultSectionKind: 'query', state,
+		})).toBe(true);
+		finalizeDocumentDefaultsAfterAcknowledgement(state);
+
+		expect(testState.markdownBoxes).toHaveLength(2);
+		expect(new Set(testState.markdownBoxes).size).toBe(2);
+		expect(testState.markdownBoxes).toContain('markdown_1234567890_1');
 	});
 
 	it('hides controls and inserts no default for an explicit empty capability set', () => {

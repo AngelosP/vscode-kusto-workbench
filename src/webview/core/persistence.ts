@@ -10,6 +10,7 @@ import {
 	createEmptyQueryEditorPendingAdds,
 	pState,
 	queryEditorPendingAddKinds,
+	type QueryEditorPendingAddKind,
 } from '../shared/persistence-state';
 import {
 	captureResultsRuntime,
@@ -128,6 +129,14 @@ let __kustoPersistenceEnabled = false;
 let __kustoPersistenceSuppressedForTest = false;
 let __kustoPersistTimer: any = null;
 let __kustoDocumentDataApplyCount = 0;
+let __kustoPendingAddIdentitySequence = 0;
+let __kustoPendingAddRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let __kustoPendingAddRetryApplyCount = -1;
+let __kustoPendingAddRetryAttempt = 0;
+let __kustoPendingAddRetryToken = 0;
+let __kustoPendingAddOwnerApplyCount = -1;
+let __kustoPendingAddOwnerDocumentKey = '';
+const __kustoPendingAddRetryDelaysMs = [0, 50, 250] as const;
 let __kustoHasAppliedDocument = false;
 let __kustoLastAppliedDocumentUri = '';
 let __kustoLastAppliedProjectionState: any = undefined;
@@ -1531,7 +1540,7 @@ export function __kustoScheduleHtmlPowerBiCompatibilityCheck(_reason: string = '
 
 // Document capabilities (set by extension host via the persistenceMode message).
 // - allowedSectionKinds controls which add buttons are shown/enabled.
-// - defaultSectionKind controls which section we create for an empty document.
+// - defaultSectionKind identifies the starter kind for explicit fresh-document producers.
 // - upgradeRequestType controls which message we send when in compatibility mode.
 // Defaults are set in pState (shared/persistence-state.ts).
 
@@ -1601,7 +1610,7 @@ export function __kustoSetCompatibilityMode(enabled: any) {
 		// accidentally create extra sections that can't be persisted.
 		if (enabled) {
 			try {
-				pState.queryEditorPendingAdds = { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 };
+				pState.queryEditorPendingAdds = createEmptyQueryEditorPendingAdds();
 			} catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
@@ -2894,6 +2903,11 @@ export function resetDocumentPersistenceForTest(): void {
 	pState.documentMutationAllowed = true;
 	pState.documentRuntimeActive = true;
 	pState.documentDefaultsFinalizedApplyCount = -1;
+	__kustoCancelPendingAddRetry();
+	__kustoPendingAddIdentitySequence = 0;
+	__kustoPendingAddOwnerApplyCount = -1;
+	__kustoPendingAddOwnerDocumentKey = '';
+	pState.queryEditorPendingAdds = createEmptyQueryEditorPendingAdds();
 	__kustoHostResultMutationRevision = 0;
 	__kustoAcknowledgedHostResultMutationRevision = 0;
 	resetHostOwnedMarkdownDocument();
@@ -4264,43 +4278,129 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 	}
 }
 
-function __kustoApplyPendingAdds() {
+function __kustoApplyPendingAdds(): boolean {
 	const pendingAdds = (pState.queryEditorPendingAdds && typeof (pState.queryEditorPendingAdds) === 'object')
 		? pState.queryEditorPendingAdds
 		: createEmptyQueryEditorPendingAdds();
-	// Reset counts so they don't replay on reload.
 	pState.queryEditorPendingAdds = createEmptyQueryEditorPendingAdds();
-
-	const pendingTotal =
-		(pendingAdds.query || 0) +
-		(pendingAdds.chart || 0) +
-		(pendingAdds.transformation || 0) +
-		(pendingAdds.markdown || 0) +
-		(pendingAdds.python || 0) +
-		(pendingAdds.url || 0);
-	if (pendingTotal <= 0) {
-		return false;
-	}
 	const allowed = getAllowedAddSectionKinds();
-	if (allowed.includes('query')) {
-		for (let i = 0; i < (pendingAdds.query || 0); i++) addQueryBox();
+	const apply = (
+		kind: QueryEditorPendingAddKind,
+		create: (options: { id: string }) => unknown,
+		rollback: (id: string) => void,
+	): void => {
+		const count = __kustoPendingAddCount(pendingAdds[kind]);
+		if (!allowed.includes(kind)) return;
+		for (let index = 0; index < count; index++) {
+			const id = __kustoAllocatePendingAddIdentity(kind);
+			try {
+				create({ id });
+			} catch (error) {
+				console.error('[kusto]', error);
+				__kustoRollbackPendingAdd(id, rollback);
+				pState.queryEditorPendingAdds[kind] += count - index;
+				break;
+			}
+		}
+	};
+	apply('query', options => addQueryBox(options), id => removeQueryBox(id));
+	apply('sql', options => addSqlBox(options), id => removeSqlBox(id));
+	apply('chart', options => addChartBox(options), id => removeChartBox(id));
+	apply('transformation', options => addTransformationBox(options), id => removeTransformationBox(id));
+	apply('markdown', options => addMarkdownBox(options), id => removeMarkdownBox(id));
+	apply('python', options => addPythonBox(options), id => removePythonBox(id));
+	apply('url', options => addUrlBox(options), id => removeUrlBox(id));
+	apply('html', options => addHtmlBox(options), id => removeHtmlBox(id));
+	return queryEditorPendingAddKinds.every(kind => __kustoPendingAddCount(pState.queryEditorPendingAdds[kind]) === 0);
+}
+
+function __kustoRollbackPendingAdd(id: string, rollback: (id: string) => void): void {
+	const previousRestoreState = pState.restoreInProgress;
+	const previousProjectionState = pState.applyingHostMarkdownProjection;
+	pState.restoreInProgress = true;
+	pState.applyingHostMarkdownProjection = true;
+	try {
+		__kustoWithPinnedSectionRemovalBypass(() => rollback(id));
+	} catch (error) {
+		console.error('[kusto]', error);
+	} finally {
+		pState.applyingHostMarkdownProjection = previousProjectionState;
+		pState.restoreInProgress = previousRestoreState;
 	}
-	if (allowed.includes('chart')) {
-		for (let i = 0; i < (pendingAdds.chart || 0); i++) addChartBox();
+}
+
+function __kustoPendingAddIdentityInUse(id: string): boolean {
+	if (document.getElementById(id)) return true;
+	const liveSectionIds = [
+		queryBoxes, sqlBoxes, chartBoxes, transformationBoxes,
+		markdownBoxes, pythonBoxes, urlBoxes, htmlBoxes,
+	];
+	if (liveSectionIds.some(ids => ids.some(candidate => String(candidate) === id))) return true;
+	const projectedSections = Array.isArray(__kustoLastAppliedProjectionState?.sections)
+		? __kustoLastAppliedProjectionState.sections
+		: [];
+	return projectedSections.some((section: unknown) => String((section as { id?: unknown })?.id || '') === id);
+}
+
+function __kustoAllocatePendingAddIdentity(kind: QueryEditorPendingAddKind): string {
+	let id = '';
+	do {
+		__kustoPendingAddIdentitySequence++;
+		id = `${kind}_${Date.now()}_${__kustoPendingAddIdentitySequence}`;
+	} while (__kustoPendingAddIdentityInUse(id));
+	return id;
+}
+
+function __kustoCancelPendingAddRetry(): void {
+	if (__kustoPendingAddRetryTimer) clearTimeout(__kustoPendingAddRetryTimer);
+	__kustoPendingAddRetryTimer = undefined;
+	__kustoPendingAddRetryApplyCount = -1;
+	__kustoPendingAddRetryAttempt = 0;
+	__kustoPendingAddRetryToken++;
+}
+
+function __kustoSchedulePendingAddRetry(state: unknown, applyCount: number): void {
+	if (__kustoPendingAddRetryApplyCount !== applyCount) {
+		__kustoCancelPendingAddRetry();
+		__kustoPendingAddRetryApplyCount = applyCount;
 	}
-	if (allowed.includes('transformation')) {
-		for (let i = 0; i < (pendingAdds.transformation || 0); i++) addTransformationBox();
+	if (__kustoPendingAddRetryTimer || __kustoPendingAddRetryAttempt >= __kustoPendingAddRetryDelaysMs.length) return;
+	const delay = __kustoPendingAddRetryDelaysMs[__kustoPendingAddRetryAttempt++];
+	const retryToken = __kustoPendingAddRetryToken;
+	__kustoPendingAddRetryTimer = setTimeout(() => {
+		if (retryToken !== __kustoPendingAddRetryToken
+			|| __kustoPendingAddRetryApplyCount !== applyCount) return;
+		__kustoPendingAddRetryTimer = undefined;
+		if (pState.documentDataApplyCount !== applyCount
+			|| pState.documentDefaultsFinalizedApplyCount === applyCount
+			|| !pState.documentRuntimeActive) {
+			__kustoCancelPendingAddRetry();
+			return;
+		}
+		finalizeDocumentDefaultsAfterAcknowledgement(state);
+	}, delay);
+}
+
+function __kustoBindPendingAddsToProjection(applyCount: number, documentKey: string): void {
+	const hasPendingAdds = queryEditorPendingAddKinds
+		.some(kind => __kustoPendingAddCount(pState.queryEditorPendingAdds?.[kind]) > 0);
+	if (__kustoPendingAddOwnerDocumentKey
+		&& __kustoPendingAddOwnerDocumentKey !== documentKey) {
+		pState.queryEditorPendingAdds = createEmptyQueryEditorPendingAdds();
+		__kustoPendingAddOwnerApplyCount = -1;
+		__kustoPendingAddOwnerDocumentKey = '';
+		__kustoCancelPendingAddRetry();
+		return;
 	}
-	if (allowed.includes('markdown')) {
-		for (let i = 0; i < (pendingAdds.markdown || 0); i++) addMarkdownBox();
+	if (hasPendingAdds && !__kustoPendingAddOwnerDocumentKey) {
+		__kustoPendingAddOwnerDocumentKey = documentKey;
+		__kustoPendingAddOwnerApplyCount = applyCount;
+		return;
 	}
-	if (allowed.includes('python')) {
-		for (let i = 0; i < (pendingAdds.python || 0); i++) addPythonBox();
+	if (hasPendingAdds && __kustoPendingAddOwnerApplyCount !== applyCount) {
+		__kustoCancelPendingAddRetry();
+		__kustoPendingAddOwnerApplyCount = applyCount;
 	}
-	if (allowed.includes('url')) {
-		for (let i = 0; i < (pendingAdds.url || 0); i++) addUrlBox();
-	}
-	return true;
 }
 
 function __kustoSetMalformedDocumentLock(
@@ -4310,6 +4410,10 @@ function __kustoSetMalformedDocumentLock(
 	__kustoPersistenceEnabled = false;
 	pState.documentMutationAllowed = false;
 	pState.documentRuntimeActive = false;
+	pState.queryEditorPendingAdds = createEmptyQueryEditorPendingAdds();
+	__kustoPendingAddOwnerApplyCount = -1;
+	__kustoPendingAddOwnerDocumentKey = '';
+	__kustoCancelPendingAddRetry();
 	__kustoLastAppliedProjectionState = undefined;
 	__kustoAcknowledgedRuntimeSourceSections = {};
 	resetHostOwnedMarkdownDocument();
@@ -4415,6 +4519,10 @@ export function handleDocumentDataMessage(message: any): boolean {
 			return Number.isSafeInteger(incomingGeneration) && incomingGeneration === pState.sourceGeneration;
 		}
 	} catch (e) { console.error('[kusto]', e); }
+	const pendingAddDocumentKey = incomingDocumentUri
+		|| __kustoLastAppliedDocumentUri
+		|| String(message?.viewSessionId || 'current-document');
+	__kustoBindPendingAddsToProjection(__kustoDocumentDataApplyCount, pendingAddDocumentKey);
 	window.dispatchEvent(new Event(RESULT_ARTIFACT_CSV_RESET_EVENT));
 	__kustoCloseShareModal();
 	try { window.closeDiffView?.(); } catch (e) { console.error('[kusto]', e); }
@@ -4594,16 +4702,15 @@ export function finalizeDocumentDefaultsAfterAcknowledgement(state: unknown): vo
 	if (!pState.documentRuntimeActive || pState.restoreInProgress) return;
 	try {
 		if (pState.documentDefaultsFinalizedApplyCount === pState.documentDataApplyCount) return;
-		pState.documentDefaultsFinalizedApplyCount = pState.documentDataApplyCount;
-		const stateRecord = state && typeof state === 'object' ? state as Record<string, unknown> : {};
-		const persistedSections = Array.isArray(stateRecord.sections) ? stateRecord.sections : [];
-		if (persistedSections.length !== 0) return;
-		const applied = __kustoApplyPendingAdds();
-		if (applied) return;
-		const kind = getDefaultAddSectionKind();
-		if (kind === 'markdown') addMarkdownBox();
-		else if (kind === 'sql') addSqlBox();
-		else if (kind === 'query') addQueryBox();
+		void state;
+		if (__kustoApplyPendingAdds()) {
+			pState.documentDefaultsFinalizedApplyCount = pState.documentDataApplyCount;
+			__kustoPendingAddOwnerApplyCount = -1;
+			__kustoPendingAddOwnerDocumentKey = '';
+			__kustoCancelPendingAddRetry();
+		} else {
+			__kustoSchedulePendingAddRetry(state, pState.documentDataApplyCount);
+		}
 	} catch (error) {
 		console.error('[kusto]', error);
 	}

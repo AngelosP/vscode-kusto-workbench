@@ -13,10 +13,11 @@ function createHarness(options?: {
 	connections?: KustoConnection[];
 	isAvailable?: () => boolean;
 	postMessage?: (message: unknown) => boolean | PromiseLike<boolean>;
+	activateConnection?: (token: number) => boolean;
 }) {
 	const postMessage = vi.fn(options?.postMessage ?? (() => true));
 	const connect = vi.fn((..._args: ConnectArgs) => 73);
-	const activateConnection = vi.fn();
+	const activateConnection = vi.fn(options?.activateConnection ?? (() => true));
 	const disconnectIfOwner = vi.fn();
 	const handleKustoExecutionStarted = vi.fn();
 	const handleDevelopmentNoteMutationResponse = vi.fn(() => false);
@@ -134,6 +135,18 @@ describe('HostWorkbenchToolSessionApplicationHandler', () => {
 		expect(harness.connect).toHaveBeenCalledOnce();
 		expect(harness.activateConnection).toHaveBeenCalledOnce();
 		expect(harness.activateConnection).toHaveBeenCalledWith(73);
+	});
+
+	it('reconnects when reactivation finds that its cached bridge token was lost', () => {
+		const harness = createHarness({ activateConnection: () => false });
+
+		harness.handler.activate();
+		harness.handler.activate();
+
+		expect(harness.activateConnection).toHaveBeenCalledOnce();
+		expect(harness.activateConnection).toHaveBeenCalledWith(73);
+		expect(harness.connect).toHaveBeenCalledTimes(2);
+		expect(harness.disconnectIfOwner).toHaveBeenCalledWith(73);
 	});
 
 	it('publishes exact state requests, correlates responses, and reconciles SQL owners', async () => {

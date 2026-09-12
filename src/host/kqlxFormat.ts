@@ -3,6 +3,7 @@ import {
 	findIncompatibleKnownSection,
 	formatIncompatibleKnownSection,
 	canonicalSectionKind,
+	defaultSectionKindForDocument,
 	type WorkbenchDocumentKind,
 } from '../shared/documentSectionCapabilities';
 import { getInvalidKqlxKnownFieldShape } from './kqlxOverlay';
@@ -200,6 +201,22 @@ export function createEmptyKqlxOrMdxFile(kind: KqlxFileKind): KqlxFileV1 {
 			sections: []
 		}
 	};
+}
+
+export function createKqlxOrMdxFileWithDefaultSection(
+	kind: KqlxFileKind,
+	initialContent = '',
+): KqlxFileV1 {
+	const file = createEmptyKqlxOrMdxFile(kind);
+	const sectionKind = defaultSectionKindForDocument(kind);
+	file.state.sections.push({
+		type: sectionKind,
+		expanded: true,
+		...(sectionKind === 'markdown'
+			? { text: initialContent }
+			: { query: initialContent }),
+	} as KqlxSectionV1);
+	return file;
 }
 
 

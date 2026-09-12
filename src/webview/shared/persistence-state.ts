@@ -31,13 +31,13 @@ const initialCompatibilityRequestId = compatibilityPersistenceBootstrap.ok
 	: '';
 
 export const queryEditorPendingAddKinds = [
-	'query', 'chart', 'transformation', 'markdown', 'python', 'url',
+	'query', 'sql', 'chart', 'transformation', 'markdown', 'python', 'url', 'html',
 ] as const;
 export type QueryEditorPendingAddKind = typeof queryEditorPendingAddKinds[number];
 export type QueryEditorPendingAdds = Record<QueryEditorPendingAddKind, number>;
 
 export function createEmptyQueryEditorPendingAdds(): QueryEditorPendingAdds {
-	return { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 };
+	return { query: 0, sql: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0, html: 0 };
 }
 
 export const pState = {
@@ -146,7 +146,7 @@ export const pState = {
 	/** Which section kinds the add-controls buttons allow. */
 	allowedSectionKinds: [...addableSectionKindsForDocument('kqlx')] as string[],
 
-	/** Default section kind for empty documents. */
+	/** Starter section kind used by explicit fresh-document producers. */
 	defaultSectionKind: defaultSectionKindForDocument('kqlx') as string,
 
 	/** Single section kind for compatibility mode (.kql → 'query', .md → 'markdown'). */

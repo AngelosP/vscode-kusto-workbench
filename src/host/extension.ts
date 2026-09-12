@@ -40,7 +40,13 @@ import { resetDidYouKnowDevelopmentState } from './tutorials/tutorialDevelopment
 import { EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWebviewHost';
 import type { TutorialViewerMode } from '../shared/tutorials/tutorialCatalog';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
-import { createEmptyKqlxFile, stringifyKqlxFile, parseKqlxText, type KqlxFileV1 } from './kqlxFormat';
+import {
+	createEmptyKqlxFile,
+	createKqlxOrMdxFileWithDefaultSection,
+	stringifyKqlxFile,
+	parseKqlxText,
+	type KqlxFileV1,
+} from './kqlxFormat';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { STORAGE_KEYS } from './queryEditorTypes';
 import { deleteCachedSchemasForConnections, getSchemaCacheFileUri, readCachedSchemaFromDiskByCluster, SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk } from './schemaCache';
@@ -160,6 +166,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			vscode.commands.registerCommand(
 				'kustoWorkbench.test.clearCopilotDevelopmentModel',
 				() => QueryEditorProvider.clearCopilotDevelopmentModelForTest(),
+			),
+			vscode.commands.registerCommand(
+				'kustoWorkbench.test.evictActiveToolSessionConnection',
+				() => toolOrchestrator?.evictActiveConnectionForTest() === true,
 			),
 		);
 	}
@@ -2459,7 +2469,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 								title: 'Create new .kqlx file'
 							});
 							if (uri) {
-								await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(''));
+								const content = stringifyKqlxFile(createKqlxOrMdxFileWithDefaultSection('kqlx'));
+								await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(content));
 								await vscode.commands.executeCommand('vscode.openWith', uri, 'kusto.kqlxEditor');
 							}
 							break;
@@ -2510,8 +2521,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				} catch (error) {
 					const code = String((error as { code?: unknown } | undefined)?.code || '');
 					if (code !== 'FileNotFound' && code !== 'ENOENT') throw error;
-					// Create empty file; webview will initialize with a default query box and persist.
-					await vscode.workspace.fs.writeFile(sessionUri, new TextEncoder().encode(''));
+					const content = stringifyKqlxFile(createKqlxOrMdxFileWithDefaultSection('kqlx'));
+					await vscode.workspace.fs.writeFile(sessionUri, new TextEncoder().encode(content));
 				}
 			});
 

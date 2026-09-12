@@ -3053,15 +3053,17 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			const boxId = message.boxId;
 			const section = __kustoGetQuerySectionElement(boxId);
 			const lifecycle = section?.getSchemaLifecycleIdentity?.();
+			const requestedQuery = String(message.query || '');
 			const liveQuery = String(
 				queryEditors?.[boxId]?.getValue?.()
 				?? section?.getCopilotEditorValue?.()
 				?? section?.serialize?.()?.query
 				?? '',
 			);
+			const normalizeLineEndings = (value: string) => value.replace(/\r\n?/g, '\n');
 			const targetMatches = canAdmitKustoHostExecutionStart(String(boxId || ''))
 				&& !!section
-				&& liveQuery === String(message.query || '')
+				&& normalizeLineEndings(liveQuery) === normalizeLineEndings(requestedQuery)
 				&& lifecycle?.sectionInstanceId === message.sectionInstanceId
 				&& lifecycle?.targetGeneration === message.targetGeneration
 				&& String(section.getConnectionId?.() || '') === message.connectionId

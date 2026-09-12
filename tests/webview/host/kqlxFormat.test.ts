@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
 	createEmptyKqlxFile,
 	createEmptyKqlxOrMdxFile,
+	createKqlxOrMdxFileWithDefaultSection,
 	overlayKqlxFileState,
 	parseKqlxText,
 	stringifyKqlxFile,
@@ -43,6 +44,35 @@ describe('createEmptyKqlxOrMdxFile', () => {
 		expect(file.kind).toBe('mdx');
 		expect(file.version).toBe(1);
 		expect(file.state.sections).toEqual([]);
+	});
+});
+
+describe('createKqlxOrMdxFileWithDefaultSection', () => {
+	it.each([
+		['kqlx', 'query', 'print Value=1'],
+		['sqlx', 'sql', 'SELECT 1 AS Value'],
+		['mdx', 'markdown', '# Notes'],
+	] as const)('creates a fresh %s with its explicit %s starter', (kind, sectionKind, content) => {
+		const file = createKqlxOrMdxFileWithDefaultSection(kind, content);
+
+		expect(file).toEqual({
+			kind,
+			version: 1,
+			state: {
+				sections: [{
+					type: sectionKind,
+					expanded: true,
+					...(sectionKind === 'markdown' ? { text: content } : { query: content }),
+				}],
+			},
+		});
+	});
+
+	it('creates a blank starter without changing empty-file parsing semantics', () => {
+		expect(createKqlxOrMdxFileWithDefaultSection('kqlx').state.sections).toEqual([
+			{ type: 'query', expanded: true, query: '' },
+		]);
+		expect(parseKqlxText('').ok && parseKqlxText('').file.state.sections).toEqual([]);
 	});
 });
 

@@ -45,14 +45,14 @@
 	// queue those clicks and replay them once initialization completes. This is a
 	// preload-only buffer; runtime takeover atomically adopts and clears it.
 	if (!window.__kustoQueryEditorPendingAdds || typeof window.__kustoQueryEditorPendingAdds !== 'object') {
-		window.__kustoQueryEditorPendingAdds = { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 };
+		window.__kustoQueryEditorPendingAdds = { query: 0, sql: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0, html: 0 };
 	}
 	const pendingAdds = window.__kustoQueryEditorPendingAdds;
 	if (typeof window.__kustoRequestAddSection !== 'function') {
 		window.__kustoRequestAddSection = function (kind) {
 			const k = String(kind || '').trim();
 			if (!k) return;
-			if (k === 'query' || k === 'chart' || k === 'transformation' || k === 'markdown' || k === 'python' || k === 'url') {
+			if (k === 'query' || k === 'sql' || k === 'chart' || k === 'transformation' || k === 'markdown' || k === 'python' || k === 'url' || k === 'html') {
 				pendingAdds[k] = (pendingAdds[k] || 0) + 1;
 			}
 		};
@@ -60,6 +60,11 @@
 	if (typeof window.addQueryBox !== 'function') {
 		window.addQueryBox = function () {
 			pendingAdds.query = (pendingAdds.query || 0) + 1;
+		};
+	}
+	if (typeof window.addSqlBox !== 'function') {
+		window.addSqlBox = function () {
+			pendingAdds.sql = (pendingAdds.sql || 0) + 1;
 		};
 	}
 	if (typeof window.addMarkdownBox !== 'function') {
@@ -85,6 +90,11 @@
 	if (typeof window.addUrlBox !== 'function') {
 		window.addUrlBox = function () {
 			pendingAdds.url = (pendingAdds.url || 0) + 1;
+		};
+	}
+	if (typeof window.addHtmlBox !== 'function') {
+		window.addHtmlBox = function () {
+			pendingAdds.html = (pendingAdds.html || 0) + 1;
 		};
 	}
 	if (typeof window.addCopilotQueryBox !== 'function') {

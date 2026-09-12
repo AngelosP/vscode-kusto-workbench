@@ -98,6 +98,22 @@ function createSection(boxId = 'test1'): KwQuerySection {
 	return container.querySelector('kw-query-section')! as KwQuerySection;
 }
 
+it('writes exact Copilot KQL without changing quoted literal whitespace', () => {
+	const section = createSection();
+	const range = { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 };
+	const executeEdits = vi.fn();
+	queryEditors.test1 = {
+		getModel: () => ({ getFullModelRange: () => range }),
+		executeEdits,
+		focus: vi.fn(),
+	} as any;
+	const query = 'print Value=1 | extend Label = "A  B", Other = Value';
+
+	section.setCopilotQueryText(query);
+
+	expect(executeEdits).toHaveBeenCalledWith('copilot', [{ range, text: query }]);
+});
+
 it('continues selector reconciliation after one section throws', () => {
 	render(html`
 		<kw-query-section box-id="selector_first"></kw-query-section>

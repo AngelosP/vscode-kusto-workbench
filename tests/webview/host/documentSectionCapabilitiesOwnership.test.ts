@@ -116,10 +116,10 @@ describe('document section capability ownership', () => {
 
 		expect(Object.fromEntries([...directCalls].sort())).toEqual({
 			addChartBox: 3,
-			addHtmlBox: 2,
-			addMarkdownBox: 5,
+			addHtmlBox: 3,
+			addMarkdownBox: 4,
 			addPythonBox: 3,
-			addQueryBox: 5,
+			addQueryBox: 4,
 			addSqlBox: 4,
 			addTransformationBox: 3,
 			addUrlBox: 3,

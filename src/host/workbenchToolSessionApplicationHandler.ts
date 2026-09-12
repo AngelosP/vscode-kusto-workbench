@@ -41,7 +41,7 @@ export interface WorkbenchToolSessionOrchestrator {
 		sqlConnectionResolver?: (sectionId?: string) => string | undefined,
 		sqlOwnerResolver?: (sectionId: string) => SqlReadyToolOwner | undefined,
 	): number;
-	activateConnection(token: number): void;
+	activateConnection(token: number): boolean;
 	disconnectIfOwner(token: number): void;
 	handleKustoExecutionStarted(requestId: string, owner: KustoExecutionRequestIdentity): void;
 	handleDevelopmentNoteMutationResponse(message: unknown): boolean;
@@ -95,8 +95,7 @@ implements WorkbenchToolSessionApplicationHandler {
 		const orchestrator = this.options.getOrchestrator();
 		if (!orchestrator) return;
 		if (this.connectionToken !== undefined && this.connectedOrchestrator === orchestrator) {
-			orchestrator.activateConnection(this.connectionToken);
-			return;
+			if (orchestrator.activateConnection(this.connectionToken)) return;
 		}
 		this.disconnect();
 		const token = orchestrator.connect(

@@ -437,8 +437,8 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/tutorials/tutorialWebviewSession.ts::postMessage::postMessage::247:28',
 	'src/host/tutorials/tutorialWebviewSession.ts::postMessage::postMessage::250:27',
 	'src/host/urlContentApplicationHandler.ts::postMessage::postMessage::111:3',
-	'src/host/workbenchToolSessionApplicationHandler.ts::activate::postMessage::103:15',
-	'src/host/workbenchToolSessionApplicationHandler.ts::requestSectionsFromWebview::postMessage::175:16',
+	'src/host/workbenchToolSessionApplicationHandler.ts::activate::postMessage::102:15',
+	'src/host/workbenchToolSessionApplicationHandler.ts::requestSectionsFromWebview::postMessage::174:16',
 ] as const;
 
 function extractDataTypeComparisons(relativePath: string): string[] {
@@ -2369,7 +2369,7 @@ describe('Message Protocol Contract', () => {
 			);
 			expect(extraction.types).not.toContain('requestToolState');
 			expect(extraction.dynamicSites).toContain(
-				'src/host/workbenchToolSessionApplicationHandler.ts::requestSectionsFromWebview::postMessage::175:16',
+				'src/host/workbenchToolSessionApplicationHandler.ts::requestSectionsFromWebview::postMessage::174:16',
 			);
 			expect(extractTypeDiscriminants(
 				'src/shared/toolStateSnapshotProtocol.ts',
