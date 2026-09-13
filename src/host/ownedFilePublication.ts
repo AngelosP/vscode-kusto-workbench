@@ -1,9 +1,23 @@
 import * as fs from 'fs';
 
 export type OwnedFileIdentity = Readonly<{
-	device: number;
-	inode: number;
+	device: number | string;
+	inode: number | string;
 }>;
+
+async function ownedFileIdentityMatches(
+	handle: fs.promises.FileHandle,
+	expectedIdentity: OwnedFileIdentity,
+): Promise<boolean> {
+	if (typeof expectedIdentity.device === 'string' || typeof expectedIdentity.inode === 'string') {
+		const stat = await handle.stat({ bigint: true });
+		return stat.dev.toString() === String(expectedIdentity.device)
+			&& (String(expectedIdentity.inode) === '0' || stat.ino.toString() === String(expectedIdentity.inode));
+	}
+	const stat = await handle.stat();
+	return stat.dev === expectedIdentity.device
+		&& (expectedIdentity.inode === 0 || stat.ino === expectedIdentity.inode);
+}
 
 async function replaceHandleBytes(handle: fs.promises.FileHandle, bytes: Buffer): Promise<void> {
 	await handle.truncate(0);
@@ -23,8 +37,7 @@ export async function publishOwnedFileText(
 	expectedText: string | undefined,
 	nextText: string,
 ): Promise<void> {
-	const stat = await handle.stat();
-	if (stat.dev !== expectedIdentity.device || (expectedIdentity.inode !== 0 && stat.ino !== expectedIdentity.inode)) {
+	if (!await ownedFileIdentityMatches(handle, expectedIdentity)) {
 		throw new Error('The owned file changed physical identity before publication.');
 	}
 	const baseline = await handle.readFile({ encoding: 'utf8' });

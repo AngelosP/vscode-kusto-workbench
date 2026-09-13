@@ -7,6 +7,8 @@ import * as path from 'path';
 import { buildCompatSidecarFile, type CompatSidecarFormat } from '../../../src/host/compatSidecarFormat';
 import {
 	CompatSidecarStore,
+	hasDirtyCompatSidecarPhysicalAlias,
+	hasOpenCompatSidecarPhysicalAlias,
 	readCompatSidecarSnapshot,
 	withCompatSidecarLock,
 	writeCompatSidecarTextOwned,
@@ -16,6 +18,160 @@ import { parseKqlxText, stringifyKqlxFile } from '../../../src/host/kqlxFormat';
 afterEach(() => vi.restoreAllMocks());
 
 describe('CompatSidecarStore lossless baseline', () => {
+	it('captures local file device and inode identities without number precision loss', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-exact-identity-'));
+		const sidecarPath = path.join(tmpDir, 'sample.kql.json');
+		try {
+			fs.writeFileSync(sidecarPath, '{}', 'utf8');
+			const snapshot = await readCompatSidecarSnapshot(vscode.Uri.file(sidecarPath));
+
+			expect(snapshot.identity).toMatchObject({
+				device: expect.any(String),
+				inode: expect.any(String),
+			});
+			expect(snapshot.identity?.device).toMatch(/^\d+$/);
+			expect(snapshot.identity?.inode).toMatch(/^\d+$/);
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it('preserves exact device and inode values above Number.MAX_SAFE_INTEGER', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-large-identity-'));
+		const sidecarPath = path.join(tmpDir, 'sample.kql.json');
+		const originalOpen = fs.promises.open.bind(fs.promises);
+		const originalStat = fs.promises.stat.bind(fs.promises);
+		try {
+			fs.writeFileSync(sidecarPath, '{}', 'utf8');
+			vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+				const handle = await originalOpen(...args as [any, any]);
+				if (String(args[0]) === sidecarPath && args[1] === 'r') {
+					(handle as any).stat = async () => ({
+						dev: 9007199254740993n,
+						ino: 9007199254740995n,
+					});
+				}
+				return handle;
+			});
+			vi.spyOn(fs.promises, 'stat').mockImplementation(async (...args: Parameters<typeof fs.promises.stat>) => {
+				if (String(args[0]) === sidecarPath) {
+					return { dev: 0n, ino: 9007199254740995n } as any;
+				}
+				return originalStat(...args as [any, any]);
+			});
+			vi.spyOn(fs.promises, 'realpath').mockResolvedValue(sidecarPath);
+
+			const snapshot = await readCompatSidecarSnapshot(vscode.Uri.file(sidecarPath));
+
+			expect(snapshot.identity?.device).toBe('9007199254740993');
+			expect(snapshot.identity?.inode).toBe('9007199254740995');
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it('fails closed when an inode-zero file has no canonical realpath', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-zero-inode-realpath-'));
+		const sidecarPath = path.join(tmpDir, 'sample.kql.json');
+		const originalOpen = fs.promises.open.bind(fs.promises);
+		try {
+			fs.writeFileSync(sidecarPath, '{}', 'utf8');
+			vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+				const handle = await originalOpen(...args as [any, any]);
+				if (String(args[0]) === sidecarPath && args[1] === 'r') {
+					(handle as any).stat = async () => ({ device: 1n, dev: 1n, ino: 0n });
+				}
+				return handle;
+			});
+			vi.spyOn(fs.promises, 'realpath').mockRejectedValue(new Error('canonical path unavailable'));
+
+			await expect(readCompatSidecarSnapshot(vscode.Uri.file(sidecarPath)))
+				.rejects.toThrow(/canonical physical path/);
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it('rejects a pathname replacement when realpath is unavailable', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-no-realpath-retarget-'));
+		const sidecarPath = path.join(tmpDir, 'sample.kql.json');
+		const displacedPath = path.join(tmpDir, 'displaced.kql.json');
+		const originalOpen = fs.promises.open.bind(fs.promises);
+		let readOpenCount = 0;
+		try {
+			fs.writeFileSync(sidecarPath, 'BASELINE', 'utf8');
+			vi.spyOn(fs.promises, 'realpath').mockRejectedValue(new Error('canonical path unavailable'));
+			vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+				if (String(args[0]) === sidecarPath && args[1] === 'r') {
+					readOpenCount++;
+					if (readOpenCount === 2) {
+						fs.renameSync(sidecarPath, displacedPath);
+						fs.writeFileSync(sidecarPath, 'REPLACEMENT', 'utf8');
+					}
+				}
+				return originalOpen(...args as [any, any]);
+			});
+
+			await expect(readCompatSidecarSnapshot(vscode.Uri.file(sidecarPath)))
+				.rejects.toThrow(/physical identity during capture/);
+			expect(fs.readFileSync(displacedPath, 'utf8')).toBe('BASELINE');
+			expect(fs.readFileSync(sidecarPath, 'utf8')).toBe('REPLACEMENT');
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it('rejects a symlink retarget that occurs during snapshot capture', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-capture-retarget-'));
+		const firstPath = path.join(tmpDir, 'first.json');
+		const secondPath = path.join(tmpDir, 'second.json');
+		const aliasPath = path.join(tmpDir, 'alias.json');
+		const originalRealpath = fs.promises.realpath.bind(fs.promises);
+		try {
+			fs.writeFileSync(firstPath, 'SAME', 'utf8');
+			fs.writeFileSync(secondPath, 'SAME', 'utf8');
+			fs.symlinkSync(firstPath, aliasPath, 'file');
+			let aliasRealpathCalls = 0;
+			vi.spyOn(fs.promises, 'realpath').mockImplementation(async (...args: Parameters<typeof fs.promises.realpath>) => {
+				if (String(args[0]) !== aliasPath) return originalRealpath(...args as [any]);
+				aliasRealpathCalls++;
+				if (aliasRealpathCalls === 1) return firstPath;
+				fs.unlinkSync(aliasPath);
+				fs.symlinkSync(secondPath, aliasPath, 'file');
+				return secondPath;
+			});
+
+			await expect(readCompatSidecarSnapshot(vscode.Uri.file(aliasPath)))
+				.rejects.toThrow(/physical identity during capture/);
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it('detects a dirty hard-link alias of the accepted sidecar identity', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-dirty-alias-'));
+		const sidecarPath = path.join(tmpDir, 'sample.kql.json');
+		const aliasPath = path.join(tmpDir, 'alias.json');
+		try {
+			fs.writeFileSync(sidecarPath, '{}', 'utf8');
+			fs.linkSync(sidecarPath, aliasPath);
+			const accepted = await readCompatSidecarSnapshot(vscode.Uri.file(sidecarPath));
+
+			await expect(hasDirtyCompatSidecarPhysicalAlias(
+				vscode.Uri.file(sidecarPath),
+				accepted.identity,
+				[{ uri: vscode.Uri.file(aliasPath), isDirty: true }],
+			)).resolves.toBe(true);
+			await expect(hasOpenCompatSidecarPhysicalAlias(
+				vscode.Uri.file(sidecarPath),
+				accepted.identity,
+				[{ uri: vscode.Uri.file(aliasPath), isDirty: false }],
+			)).resolves.toBe(true);
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
 	it('uses exclusive creation when no sidecar baseline exists', async () => {
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-exclusive-create-'));
 		const sidecarPath = path.join(tmpDir, 'sample.kql.json');
@@ -117,6 +273,52 @@ describe('CompatSidecarStore lossless baseline', () => {
 			expect(fs.readFileSync(sidecarPath, 'utf8')).toBe('CREATOR');
 		} finally {
 			releaseCreator();
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it('serializes canonical and symlink aliases when inode identity is unavailable', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-zero-inode-lock-'));
+		const primaryPath = path.join(tmpDir, 'sample.kql.json');
+		const aliasPath = path.join(tmpDir, 'alias.kql.json');
+		const originalOpen = fs.promises.open.bind(fs.promises);
+		let releaseFirst!: () => void;
+		let markFirstEntered!: () => void;
+		const firstEntered = new Promise<void>(resolve => { markFirstEntered = resolve; });
+		const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+		try {
+			fs.writeFileSync(primaryPath, 'BASELINE', 'utf8');
+			fs.symlinkSync(primaryPath, aliasPath, 'file');
+			vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+				const handle = await originalOpen(...args as [any, any]);
+				if ((String(args[0]) === primaryPath || String(args[0]) === aliasPath) && args[1] === 'r') {
+					(handle as any).stat = async () => ({ dev: 0n, ino: 0n });
+				}
+				return handle;
+			});
+			const realPath = path.normalize(await fs.promises.realpath(primaryPath));
+			const identity = {
+				device: '0',
+				inode: '0',
+				realPathKey: process.platform === 'win32' ? realPath.toLowerCase() : realPath,
+			};
+			let secondEntered = false;
+			const first = withCompatSidecarLock(vscode.Uri.file(primaryPath), identity, async () => {
+				markFirstEntered();
+				await firstGate;
+			});
+			await firstEntered;
+			const second = withCompatSidecarLock(vscode.Uri.file(aliasPath), identity, async () => {
+				secondEntered = true;
+			});
+
+			await new Promise(resolve => setTimeout(resolve, 75));
+			expect(secondEntered).toBe(false);
+			releaseFirst();
+			await Promise.all([first, second]);
+			expect(secondEntered).toBe(true);
+		} finally {
+			releaseFirst();
 			fs.rmSync(tmpDir, { recursive: true, force: true });
 		}
 	});
@@ -331,6 +533,41 @@ describe('CompatSidecarStore lossless baseline', () => {
 			}, accepted.text, accepted.identity)).rejects.toThrow(/physical identity/);
 			expect(fs.readFileSync(sidecarPath, 'utf8')).toBe(baselineText);
 			expect(fs.readFileSync(displacedPath, 'utf8')).toBe(baselineText);
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it('runs a tool veto under the sidecar lock immediately before publication', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-publication-veto-'));
+		const sidecarPath = path.join(tmpDir, 'sample.kql.json');
+		const compatUri = vscode.Uri.file(path.join(tmpDir, 'sample.kql'));
+		const baselineText = stringifyKqlxFile({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', linkedQueryPath: 'sample.kql', name: 'Baseline' },
+			] },
+		} as any);
+		try {
+			fs.writeFileSync(sidecarPath, baselineText, 'utf8');
+			const store = new CompatSidecarStore({
+				compatUri,
+				parse: value => {
+					const parsed = parseKqlxText(value);
+					return parsed.ok ? parsed.file : undefined;
+				},
+				isLinked: () => true,
+				sanitizeFresh: async state => state,
+				publishFresh: async (state, publish) => publish(state),
+				buildFile: (state, baseFile) => buildCompatSidecarFile(compatUri, state, { primaryKind: 'query', sidecarKind: 'kqlx' }, baseFile),
+				stringify: stringifyKqlxFile,
+			});
+			const beforePublish = vi.fn(async () => { throw new Error('dirty physical alias'); });
+
+			await expect(store.writeFresh(vscode.Uri.file(sidecarPath), {
+				sections: [{ id: 'query_1', type: 'query', name: 'LOCAL_EDIT' }],
+			}, baselineText, undefined, beforePublish)).rejects.toThrow('dirty physical alias');
+			expect(beforePublish).toHaveBeenCalledOnce();
+			expect(fs.readFileSync(sidecarPath, 'utf8')).toBe(baselineText);
 		} finally {
 			fs.rmSync(tmpDir, { recursive: true, force: true });
 		}

@@ -26,10 +26,10 @@ describe('exported Kusto Workbench skill template', () => {
 	const exportedDashboardRules = exportedFiles.find(file => file.fileName === HTML_DASHBOARD_RULES_FILENAME)?.content ?? '';
 
 	it('is bumped to the current template version', () => {
-		expect(TEMPLATE_VERSION).toBe(18);
-		expect(template).toContain('# version: 18 - Auto-updated by Kusto Workbench. Do not remove this line.');
-		expect(isSkillTemplateCurrent(17)).toBe(false);
-		expect(isSkillTemplateCurrent(18)).toBe(true);
+		expect(TEMPLATE_VERSION).toBe(19);
+		expect(template).toContain('# version: 19 - Auto-updated by Kusto Workbench. Do not remove this line.');
+		expect(isSkillTemplateCurrent(18)).toBe(false);
+		expect(isSkillTemplateCurrent(19)).toBe(true);
 	});
 
 	it('exports the compact skill and dashboard rules sidecar separately', () => {
@@ -86,6 +86,13 @@ describe('exported Kusto Workbench skill template', () => {
 		expect(mainAgent).toContain('`workbench.action.closeActiveEditor`');
 		expect(mainAgent).toContain('`#closeWorkbenchFile` with the exact `openFileId`');
 		expect(mainAgent).toContain('`saveChanges: true` only when the user requested saving dirty changes');
+		expect(exportedSkill).toContain('only when the user requested saving dirty changes');
+		const manifest = JSON.parse(readWorkspaceFile('package.json'));
+		const closeTool = manifest.contributes.languageModelTools.find((tool: { name: string }) =>
+			tool.name === 'kusto-workbench_close-workbench-file');
+		expect(closeTool.modelDescription).toContain('only when the user requested saving dirty changes');
+		expect(closeTool.inputSchema.properties.saveChanges.description)
+			.toContain('only when the user requested saving dirty changes');
 	});
 
 	it('includes dashboard upgrade-on-touch and validation behavior in the sidecar', () => {

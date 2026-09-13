@@ -18,8 +18,8 @@ export type CompatSidecarRepair = Readonly<{
 }>;
 
 export type CompatSidecarFileIdentity = Readonly<{
-	device: number;
-	inode: number;
+	device: string;
+	inode: string;
 	realPathKey: string;
 }>;
 
@@ -43,8 +43,9 @@ export const compatSidecarFileIdentityEquals = (
 	right: CompatSidecarFileIdentity | undefined,
 ): boolean => {
 	if (!left || !right) return left === right;
-	if (left.inode !== 0 && right.inode !== 0) return left.device === right.device && left.inode === right.inode;
-	return left.realPathKey === right.realPathKey;
+	if ((left.inode === '0') !== (right.inode === '0')) return false;
+	if (left.inode !== '0') return left.device === right.device && left.inode === right.inode;
+	return left.device === right.device && left.realPathKey === right.realPathKey;
 };
 
 const normalizePhysicalPath = (value: string): string => {
@@ -52,24 +53,100 @@ const normalizePhysicalPath = (value: string): string => {
 	return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 };
 
+function compatSidecarIdentityFromStat(
+	stat: Readonly<{ dev: bigint; ino: bigint }>,
+	realPath: string,
+): CompatSidecarFileIdentity {
+	return {
+		device: stat.dev.toString(),
+		inode: stat.ino.toString(),
+		realPathKey: normalizePhysicalPath(realPath),
+	};
+}
+
+async function resolveCompatSidecarRealPath(filePath: string): Promise<string | undefined> {
+	try { return await fs.promises.realpath(filePath); }
+	catch { return undefined; }
+}
+
 export async function readCompatSidecarSnapshot(uri: vscode.Uri): Promise<CompatSidecarSnapshot> {
 	if (uri.scheme !== 'file') {
 		return { text: new TextDecoder().decode(await vscode.workspace.fs.readFile(uri)) };
 	}
-	const handle = await fs.promises.open(uri.fsPath, 'r');
+	const realPathBeforeOpen = await resolveCompatSidecarRealPath(uri.fsPath);
+	const handle = await fs.promises.open(realPathBeforeOpen ?? uri.fsPath, 'r');
 	try {
-		const [stat, text, realPath] = await Promise.all([
-			handle.stat(),
+		const [stat, text] = await Promise.all([
+			handle.stat({ bigint: true }),
 			handle.readFile({ encoding: 'utf8' }),
-			fs.promises.realpath(uri.fsPath).catch(() => uri.fsPath),
 		]);
+		if (!realPathBeforeOpen && stat.ino === 0n) {
+			throw new CompatSidecarCasError('The companion sidecar canonical physical path is unavailable.');
+		}
+		const realPath = realPathBeforeOpen ?? uri.fsPath;
+		const identity = compatSidecarIdentityFromStat(stat, realPath);
+		const realPathAfterRead = await resolveCompatSidecarRealPath(uri.fsPath);
+		if (realPathBeforeOpen
+			&& (!realPathAfterRead || normalizePhysicalPath(realPathAfterRead) !== identity.realPathKey)) {
+			throw new CompatSidecarCasError('The companion sidecar changed physical identity during capture.');
+		}
+		const pathHandle = await fs.promises.open(uri.fsPath, 'r');
+		try {
+			const pathStat = await pathHandle.stat({ bigint: true });
+			const pathIdentity = compatSidecarIdentityFromStat(pathStat, realPathAfterRead ?? uri.fsPath);
+			if (!compatSidecarFileIdentityEquals(identity, pathIdentity)) {
+				throw new CompatSidecarCasError('The companion sidecar changed physical identity during capture.');
+			}
+		} finally {
+			await pathHandle.close();
+		}
 		return {
 			text,
-			identity: { device: stat.dev, inode: stat.ino, realPathKey: normalizePhysicalPath(realPath) },
+			identity,
 		};
 	} finally {
 		await handle.close();
 	}
+}
+
+async function hasCompatSidecarPhysicalAlias(
+	uri: vscode.Uri,
+	expectedIdentity: CompatSidecarFileIdentity | undefined,
+	candidates: readonly Pick<vscode.TextDocument, 'uri' | 'isDirty'>[],
+	dirtyOnly: boolean,
+): Promise<boolean> {
+	const uriKey = uri.scheme === 'file' ? normalizePhysicalPath(uri.fsPath) : uri.toString();
+	for (const candidate of candidates) {
+		if (dirtyOnly && !candidate.isDirty) continue;
+		const candidateKey = candidate.uri.scheme === 'file'
+			? normalizePhysicalPath(candidate.uri.fsPath)
+			: candidate.uri.toString();
+		if (candidateKey === uriKey) return true;
+		if (!expectedIdentity || candidate.uri.scheme !== 'file') continue;
+		try {
+			const candidateIdentity = (await readCompatSidecarSnapshot(candidate.uri)).identity;
+			if (compatSidecarFileIdentityEquals(expectedIdentity, candidateIdentity)) return true;
+		} catch {
+			// An unrelated dirty document that cannot be identified is not a proven alias.
+		}
+	}
+	return false;
+}
+
+export function hasDirtyCompatSidecarPhysicalAlias(
+	uri: vscode.Uri,
+	expectedIdentity: CompatSidecarFileIdentity | undefined,
+	candidates: readonly Pick<vscode.TextDocument, 'uri' | 'isDirty'>[] = vscode.workspace.textDocuments,
+): Promise<boolean> {
+	return hasCompatSidecarPhysicalAlias(uri, expectedIdentity, candidates, true);
+}
+
+export function hasOpenCompatSidecarPhysicalAlias(
+	uri: vscode.Uri,
+	expectedIdentity: CompatSidecarFileIdentity | undefined,
+	candidates: readonly Pick<vscode.TextDocument, 'uri' | 'isDirty'>[] = vscode.workspace.textDocuments,
+): Promise<boolean> {
+	return hasCompatSidecarPhysicalAlias(uri, expectedIdentity, candidates, false);
 }
 
 const sidecarLockKeys = (uri: vscode.Uri, identity?: CompatSidecarFileIdentity): string[] => {
@@ -77,10 +154,8 @@ const sidecarLockKeys = (uri: vscode.Uri, identity?: CompatSidecarFileIdentity):
 		? `path:${normalizePhysicalPath(uri.fsPath)}`
 		: `uri:${uri.toString()}`;
 	const keys = [pathKey];
-	if (identity?.inode) keys.push(`inode:${identity.device}:${identity.inode}`);
-	else if (identity?.realPathKey && identity.realPathKey !== normalizePhysicalPath(uri.fsPath)) {
-		keys.push(`realpath:${identity.realPathKey}`);
-	}
+	if (identity?.realPathKey) keys.push(`realpath:${identity.realPathKey}`);
+	if (identity?.inode && identity.inode !== '0') keys.push(`inode:${identity.device}:${identity.inode}`);
 	return [...new Set(keys)].sort();
 };
 
@@ -134,12 +209,12 @@ export async function writeCompatSidecarTextOwned(
 		try {
 			handle = await fs.promises.open(uri.fsPath, 'wx');
 			created = true;
-			const createdStat = await handle.stat();
-			createdIdentity = {
-				device: createdStat.dev,
-				inode: createdStat.ino,
-				realPathKey: normalizePhysicalPath(await fs.promises.realpath(uri.fsPath).catch(() => uri.fsPath)),
-			};
+			const createdStat = await handle.stat({ bigint: true });
+			const createdRealPath = await resolveCompatSidecarRealPath(uri.fsPath);
+			if (!createdRealPath && createdStat.ino === 0n) {
+				throw new CompatSidecarCasError('The companion sidecar canonical physical path is unavailable.');
+			}
+			createdIdentity = compatSidecarIdentityFromStat(createdStat, createdRealPath ?? uri.fsPath);
 			await handle.writeFile(text, { encoding: 'utf8' });
 			await handle.sync();
 			await handle.close();
@@ -171,14 +246,14 @@ export async function writeCompatSidecarTextOwned(
 		}
 		return verifiedIdentity;
 	}
-	const handle = await fs.promises.open(uri.fsPath, 'r+');
+	const handle = await fs.promises.open(expectedIdentity.inode === '0' ? expectedIdentity.realPathKey : uri.fsPath, 'r+');
 	try {
-		const stat = await handle.stat();
-		const currentIdentity: CompatSidecarFileIdentity = {
-			device: stat.dev,
-			inode: stat.ino,
-			realPathKey: normalizePhysicalPath(await fs.promises.realpath(uri.fsPath).catch(() => uri.fsPath)),
-		};
+		const stat = await handle.stat({ bigint: true });
+		const currentRealPath = await resolveCompatSidecarRealPath(uri.fsPath);
+		if (!currentRealPath && stat.ino === 0n) {
+			throw new CompatSidecarCasError('The companion sidecar canonical physical path is unavailable.');
+		}
+		const currentIdentity = compatSidecarIdentityFromStat(stat, currentRealPath ?? uri.fsPath);
 		if (!compatSidecarFileIdentityEquals(expectedIdentity, currentIdentity)) {
 			throw new CompatSidecarCasError('The companion sidecar changed physical identity before publication.');
 		}
@@ -219,6 +294,7 @@ export class CompatSidecarStore {
 		state: KqlxStateV1,
 		expectedCurrentText?: string,
 		expectedIdentity?: CompatSidecarFileIdentity,
+		beforePublish?: () => Promise<void>,
 	): Promise<{ file: KqlxFileV1; text: string; identity?: CompatSidecarFileIdentity }> {
 		return this.serialize(async () => {
 			const baseline = await readCompatSidecarSnapshot(uri);
@@ -239,6 +315,7 @@ export class CompatSidecarStore {
 				const text = this.options.stringify(file);
 				const beforeWrite = await readCompatSidecarSnapshot(uri);
 				if (!compatSidecarFileIdentityEquals(baseline.identity, beforeWrite.identity) || beforeWrite.text !== baselineText) throw this.changedError();
+				await beforePublish?.();
 				await writeCompatSidecarTextOwned(uri, text, baseline.identity, baselineText);
 				return { file, text, identity: baseline.identity };
 			}));

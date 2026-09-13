@@ -11639,7 +11639,10 @@ suite('Sidecar .kql.json strategy', () => {
 				await upgrade;
 
 				assert.strictEqual(fs.readFileSync(sidecarPath, 'utf8'), externalText, `${variant.extension} must preserve the external sidecar`);
-				assert.ok(errors.some(message => message.includes('changed while it was being created')));
+				assert.ok(
+					errors.some(message => message.includes('changed while it was being created')),
+					`${variant.extension} unexpected companion creation errors: ${JSON.stringify(errors)}`,
+				);
 				errors.length = 0;
 			}
 		} finally {
@@ -13645,10 +13648,10 @@ suite('Sidecar .kql.json strategy', () => {
 					] },
 				}));
 				await promptSeen;
-				for (let attempt = 0; attempt < 50 && !fs.readFileSync(sidecarPath, 'utf8').includes('FINAL_IN_TRANSIT'); attempt += 1) {
-					await new Promise<void>(resolve => setImmediate(resolve));
-				}
-				assert.ok(fs.readFileSync(sidecarPath, 'utf8').includes('FINAL_IN_TRANSIT'));
+				await waitForCondition(
+					() => fs.readFileSync(sidecarPath, 'utf8').includes('FINAL_IN_TRANSIT'),
+					`${variant.extension} final in-transit snapshot was not durable after disposal`,
+				);
 				assert.strictEqual(postsAfterDispose, 0, `${variant.extension} disposal must not post to the destroyed webview`);
 			}
 		} finally {

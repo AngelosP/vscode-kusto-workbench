@@ -33,6 +33,32 @@ export interface ClassifyWorkbenchUriOptions {
 	includeOptionalPlainText?: boolean;
 }
 
+export function getWorkbenchTabInputUris(input: unknown): vscode.Uri[] {
+	const uris: vscode.Uri[] = [];
+	const add = (candidate: unknown) => {
+		if (candidate && typeof (candidate as vscode.Uri).toString === 'function') {
+			uris.push(candidate as vscode.Uri);
+		}
+	};
+	try {
+		if (input instanceof vscode.TabInputTextDiff) {
+			add(input.original);
+			add(input.modified);
+		} else if (input instanceof vscode.TabInputText || input instanceof vscode.TabInputCustom) {
+			add(input.uri);
+		}
+	} catch {
+		// Fall through to structural checks for test doubles and older typings.
+	}
+	if (uris.length === 0) {
+		const candidate = input as { uri?: unknown; original?: unknown; modified?: unknown } | undefined;
+		add(candidate?.uri);
+		add(candidate?.original);
+		add(candidate?.modified);
+	}
+	return [...new Map(uris.map(uri => [uri.toString(), uri])).values()];
+}
+
 const KQL_COMPAT_VIEW_TYPE = 'kusto.kqlCompatEditor';
 const KQLX_VIEW_TYPE = 'kusto.kqlxEditor';
 const MD_COMPAT_VIEW_TYPE = 'kusto.mdCompatEditor';

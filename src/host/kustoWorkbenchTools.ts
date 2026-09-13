@@ -39,6 +39,7 @@ import {
 } from '../shared/developmentNoteMutationProtocol.js';
 import type { ToolStateSection } from '../shared/toolStateSnapshotProtocol.js';
 import { isRuntimeProxy } from '../shared/runtimeMessageEnvelope.js';
+import type { WorkbenchFileCloseLifecycle } from './workbenchToolSessionApplicationHandler.js';
 
 export type TargetFields = {
 	openFileId?: string;
@@ -632,6 +633,7 @@ interface LiveWorkbenchConnection {
 		ownerToken: string;
 		generation: number;
 	} | undefined;
+	closeLifecycle?: WorkbenchFileCloseLifecycle;
 	documentUri?: string;
 	documentInfo?: WorkbenchFileInfo;
 	logicalUriKey?: string;
@@ -773,6 +775,7 @@ export class KustoWorkbenchToolOrchestrator {
 		documentUri?: string,
 		sqlConnectionResolver?: (sectionId?: string) => string | undefined,
 		sqlOwnerResolver?: LiveWorkbenchConnection['sqlOwnerResolver'],
+		closeLifecycle?: WorkbenchFileCloseLifecycle,
 	): number {
 		this.connectionToken++;
 		const classifiedDocumentInfo = documentUri
@@ -788,6 +791,7 @@ export class KustoWorkbenchToolOrchestrator {
 			schemaRefresher,
 			...(sqlConnectionResolver ? { sqlConnectionResolver } : {}),
 			...(sqlOwnerResolver ? { sqlOwnerResolver } : {}),
+			...(closeLifecycle ? { closeLifecycle } : {}),
 			...(documentUri ? { documentUri } : {}),
 			...(documentInfo ? { documentInfo, logicalUriKey: documentInfo.logicalUriKey } : {}),
 			sequence: this.connectionToken,
@@ -2833,6 +2837,15 @@ export class KustoWorkbenchToolOrchestrator {
 	}
 
 	async closeWorkbenchFile(input: CloseWorkbenchFileInput): Promise<CloseWorkbenchFileResult> {
+		const openFileId = typeof input.openFileId === 'string' ? input.openFileId.trim() : '';
+		const targetFileUri = typeof input.targetFileUri === 'string' ? input.targetFileUri.trim() : '';
+		if (!openFileId && !targetFileUri) {
+			return {
+				success: false,
+				closed: false,
+				error: 'Closing a Workbench file requires an explicit openFileId or targetFileUri from #listSections.',
+			};
+		}
 		let target: ReturnType<KustoWorkbenchToolOrchestrator['resolveToolTarget']>;
 		try {
 			target = this.resolveToolTarget(input);
@@ -2848,21 +2861,30 @@ export class KustoWorkbenchToolOrchestrator {
 			};
 		}
 
-		const tabs: vscode.Tab[] = [];
-		const tabUris: vscode.Uri[] = [];
-		for (const group of vscode.window.tabGroups.all || []) {
-			for (const tab of group.tabs || []) {
-				const tabInput = this.getTabInputUri(tab.input);
-				if (!tabInput) continue;
-				const tabInfo = classifyWorkbenchUri(tabInput.uri, {
-					viewType: tabInput.viewType,
-					includeOptionalPlainText: true,
-				});
-				if (!tabInfo || tabInfo.logicalUriKey !== file.logicalUriKey) continue;
-				tabs.push(tab);
-				tabUris.push(tabInput.uri);
+		const collectMatchingEditors = (): { tabs: vscode.Tab[]; documents: vscode.TextDocument[] } => {
+			const matchingTabs: vscode.Tab[] = [];
+			const tabUris: vscode.Uri[] = [];
+			for (const group of vscode.window.tabGroups.all || []) {
+				for (const tab of group.tabs || []) {
+					const tabInput = this.getTabInputUri(tab.input);
+					if (!tabInput) continue;
+					const tabInfo = classifyWorkbenchUri(tabInput.uri, {
+						viewType: tabInput.viewType,
+						includeOptionalPlainText: true,
+					});
+					if (!tabInfo || tabInfo.logicalUriKey !== file.logicalUriKey) continue;
+					matchingTabs.push(tab);
+					tabUris.push(tabInput.uri);
+				}
 			}
-		}
+			return {
+				tabs: matchingTabs,
+				documents: vscode.workspace.textDocuments.filter(document =>
+					tabUris.some(uri => this.isSameUriExact(document.uri, uri))),
+			};
+		};
+		const initialEditors = collectMatchingEditors();
+		const { tabs, documents } = initialEditors;
 		const metadata = {
 			openFileId: file.openFileId,
 			uri: file.uri,
@@ -2874,10 +2896,49 @@ export class KustoWorkbenchToolOrchestrator {
 		if (tabs.length === 0) {
 			return { success: false, closed: false, ...metadata, error: 'The targeted Kusto Workbench file is not open as an editor tab.' };
 		}
+		const requiresCloseLifecycle = tabs.some(tab => {
+			const viewType = this.getTabInputUri(tab.input)?.viewType;
+			return viewType === 'kusto.kqlCompatEditor' || viewType === 'kusto.sqlCompatEditor';
+		});
+		if (requiresCloseLifecycle && !target.connection?.closeLifecycle) {
+			return {
+				success: false, closed: false, ...metadata,
+				error: 'The targeted compatibility editor close state is unavailable. Reactivate the file and retry.',
+			};
+		}
 
-		const documents = vscode.workspace.textDocuments.filter(document =>
-			tabUris.some(uri => this.isSameUriExact(document.uri, uri)));
-		const wasDirty = tabs.some(tab => tab.isDirty) || documents.some(document => document.isDirty);
+		const hasDirtyCompanionEditor = () => (vscode.window.tabGroups.all || []).some(group =>
+			(group.tabs || []).some(tab => {
+				const tabInput = this.getTabInputUri(tab.input);
+				const tabInfo = tabInput ? classifyWorkbenchUri(tabInput.uri, {
+					viewType: tabInput.viewType,
+					includeOptionalPlainText: true,
+				}) : undefined;
+				return tabInfo?.logicalUriKey === file.logicalUriKey && tabInfo.isSidecar && tab.isDirty;
+			})) || vscode.workspace.textDocuments.some(document => {
+			const documentInfo = classifyWorkbenchUri(document.uri, { includeOptionalPlainText: true });
+			return documentInfo?.logicalUriKey === file.logicalUriKey && documentInfo.isSidecar && document.isDirty;
+		});
+		const competingCompanionResult = (): CloseWorkbenchFileResult => ({
+			success: false, closed: false, wasDirty: true, ...metadata,
+			error: 'The companion metadata editor has unsaved changes. Resolve that editor manually before closing the Workbench file.',
+		});
+		if (requiresCloseLifecycle && hasDirtyCompanionEditor()) {
+			return competingCompanionResult();
+		}
+		let lifecycleDirty = false;
+		try {
+			lifecycleDirty = await target.connection?.closeLifecycle?.inspectDirty() ?? false;
+		} catch (error) {
+			return {
+				success: false, closed: false, ...metadata,
+				error: `The targeted Workbench file's close state could not be verified: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+		if (requiresCloseLifecycle && hasDirtyCompanionEditor()) {
+			return competingCompanionResult();
+		}
+		const wasDirty = lifecycleDirty || tabs.some(tab => tab.isDirty) || documents.some(document => document.isDirty);
 		if (wasDirty && input.saveChanges !== true) {
 			return {
 				success: false,
@@ -2890,8 +2951,20 @@ export class KustoWorkbenchToolOrchestrator {
 
 		let saved = false;
 		if (wasDirty) {
+			if (target.connection?.closeLifecycle) {
+				if (hasDirtyCompanionEditor()) return competingCompanionResult();
+				try {
+					await target.connection.closeLifecycle.save();
+				} catch (error) {
+					return {
+						success: false, closed: false, wasDirty: true, ...metadata,
+						error: `The targeted Workbench file could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+					};
+				}
+				if (hasDirtyCompanionEditor()) return competingCompanionResult();
+			}
 			const dirtyDocuments = documents.filter(document => document.isDirty);
-			if (dirtyDocuments.length === 0) {
+			if (dirtyDocuments.length === 0 && !target.connection?.closeLifecycle) {
 				return {
 					success: false, closed: false, wasDirty: true, ...metadata,
 					error: 'The targeted Workbench tab is dirty, but its backing document is unavailable for an exact save.',
@@ -2912,11 +2985,50 @@ export class KustoWorkbenchToolOrchestrator {
 					};
 				}
 			}
+			let remainsLifecycleDirty = false;
+			try {
+				remainsLifecycleDirty = await target.connection?.closeLifecycle?.inspectDirty() ?? false;
+			} catch (error) {
+				return {
+					success: false, closed: false, wasDirty: true, ...metadata,
+					error: `The targeted Workbench file's saved state could not be verified: ${error instanceof Error ? error.message : String(error)}`,
+				};
+			}
+			if (requiresCloseLifecycle && hasDirtyCompanionEditor()) return competingCompanionResult();
+			const settledEditors = collectMatchingEditors();
+			if (settledEditors.tabs.length === 0) {
+				return {
+					success: false, closed: false, saved, wasDirty: true, ...metadata,
+					error: 'The targeted Workbench file closed before its saved state could be verified.',
+				};
+			}
+			if (remainsLifecycleDirty || settledEditors.tabs.some(tab => tab.isDirty)
+				|| settledEditors.documents.some(document => document.isDirty)) {
+				return {
+					success: false, closed: false, wasDirty: true, ...metadata,
+					error: 'The targeted Workbench file remained dirty after saving, so it was not closed.',
+				};
+			}
 			saved = true;
 		}
 
 		try {
-			const uniqueTabs = [...new Set(tabs)];
+			if (requiresCloseLifecycle && hasDirtyCompanionEditor()) return competingCompanionResult();
+			const closingEditors = collectMatchingEditors();
+			if (closingEditors.tabs.length === 0) {
+				return {
+					success: false, closed: false, saved, wasDirty, ...metadata,
+					error: 'The targeted Kusto Workbench file is no longer open as an editor tab.',
+				};
+			}
+			if (closingEditors.tabs.some(tab => tab.isDirty)
+				|| closingEditors.documents.some(document => document.isDirty)) {
+				return {
+					success: false, closed: false, saved, wasDirty: true, ...metadata,
+					error: 'The targeted Workbench file changed while closing, so it was left open.',
+				};
+			}
+			const uniqueTabs = [...new Set(closingEditors.tabs)];
 			const closed = await vscode.window.tabGroups.close(uniqueTabs, true);
 			return closed
 				? { success: true, closed: true, closedTabCount: uniqueTabs.length, saved, wasDirty, ...metadata }

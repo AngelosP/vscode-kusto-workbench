@@ -40,6 +40,8 @@ import {
 import {
 	CompatSidecarStore,
 	compatSidecarFileIdentityEquals,
+	hasDirtyCompatSidecarPhysicalAlias,
+	hasOpenCompatSidecarPhysicalAlias,
 	readCompatSidecarSnapshot,
 	withCompatSidecarLock,
 	writeCompatSidecarTextOwned,
@@ -58,9 +60,12 @@ import {
 } from './compatSidecarProjectionCoordinator';
 import {
 	CompatSidecarPersistCoordinator,
+	requireAvailableCompatSidecarFinalPersist,
+	type CompatSidecarFinalPersistResult,
 	type CompatSidecarPersistCoordinatorFactory,
 	type CompatSidecarPersistMessage,
 } from './compatSidecarPersistCoordinator';
+import { getWorkbenchTabInputUris } from './workbenchFileTypes';
 
 const SQL_COMPAT_SIDECAR_FORMAT: CompatSidecarFormat = {
 	primaryKind: 'sql',
@@ -243,6 +248,10 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			},
 		});
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.sqlWorkbench, this.editorCursorStatusBar);
+		queryEditor.setWorkbenchFileCloseLifecycle({
+			inspectDirty: () => closeCoordinator.inspectToolDirty(),
+			save: () => closeCoordinator.saveToolChanges(),
+		});
 		queryEditor.fileOpenTrace = fileOpenTrace;
 		queryEditor.documentUri = document.uri.toString();
 		queryEditor.setMessageTransport(
@@ -324,8 +333,12 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			stringify: stringifyKqlxFile,
 		});
 		const freshSidecarFile = (state: KqlxStateV1) => sidecarStore.buildFresh(state, sidecarFile);
-		const writeFreshSidecar = (uri: vscode.Uri, state: KqlxStateV1, expectedCurrentText?: string) =>
-			sidecarStore.writeFresh(uri, state, expectedCurrentText, lastWrittenSidecarIdentity);
+		const writeFreshSidecar = (
+			uri: vscode.Uri,
+			state: KqlxStateV1,
+			expectedCurrentText?: string,
+			beforePublish?: () => Promise<void>,
+		) => sidecarStore.writeFresh(uri, state, expectedCurrentText, lastWrittenSidecarIdentity, beforePublish);
 		const repairPersistedSidecar = (uri: vscode.Uri) => sidecarStore.repair(uri, lastWrittenSidecarIdentity);
 		const writeDraftRecoveryFile = (uri: vscode.Uri, state: KqlxStateV1) => sidecarStore.writeRecovery(uri, state);
 		if (sidecarUri && sidecarFile && lastWrittenSidecarText !== undefined) {
@@ -545,8 +558,12 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			};
 			return projectionCoordinator.project(request);
 		};
-		const requestFinalPersist = (reason: string, timeoutMs = 2_000): Promise<void> => {
-			return sidecarSession.requestFinalPersist(message => startupGateway.postMessage(message), reason, timeoutMs);
+		const requestFinalPersist = (reason: string, timeoutMs = 2_000): Promise<CompatSidecarFinalPersistResult> => {
+			return sidecarSession.requestFinalPersist<CompatSidecarFinalPersistResult>(message => startupGateway.postMessage(message), reason, timeoutMs);
+		};
+		const requireAvailableFinalPersist = async (reason: string): Promise<void> => {
+			const result = await requestFinalPersist(reason);
+			requireAvailableCompatSidecarFinalPersist(result, 'SQL');
 		};
 
 		// Track if the webview has initialized and whether it's currently being edited by the user.
@@ -698,6 +715,73 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			})
 		);
 
+		let toolCloseSidecarGuard: (() => Promise<void>) | undefined;
+		const getOpenSidecarDocumentCandidates = (): vscode.TextDocument[] => {
+			const openUris = new Set<string>();
+			for (const group of vscode.window.tabGroups.all || []) {
+				for (const tab of group.tabs || []) {
+					for (const uri of getWorkbenchTabInputUris(tab.input)) openUris.add(uri.toString());
+				}
+			}
+			return vscode.workspace.textDocuments.filter(candidate =>
+				candidate !== document && openUris.has(candidate.uri.toString()));
+		};
+		const hasDirtyOpenSidecarAlias = (): Promise<boolean> => !sidecarUri
+			? Promise.resolve(false)
+			: hasDirtyCompatSidecarPhysicalAlias(
+				sidecarUri,
+				lastWrittenSidecarIdentity,
+				getOpenSidecarDocumentCandidates(),
+			);
+		const assertNoDirtyOpenSidecarAlias = async (): Promise<void> => {
+			if (await hasDirtyOpenSidecarAlias()) {
+				throw new Error('The companion metadata editor has unsaved changes. Resolve that editor manually before closing the Workbench file.');
+			}
+		};
+		const assertNoOpenSidecarAlias = async (): Promise<void> => {
+			if (!sidecarUri) return;
+			if (await hasOpenCompatSidecarPhysicalAlias(
+				sidecarUri,
+				lastWrittenSidecarIdentity,
+				getOpenSidecarDocumentCandidates(),
+			)) {
+				throw new Error('The companion metadata editor is open separately. Close that editor before saving and closing the Workbench file.');
+			}
+		};
+		const persistCompanionAfterPrimarySave = (
+			saved: vscode.TextDocument,
+			beforeSidecarPublish?: () => Promise<void>,
+		): Promise<void> => {
+			if (sidecarSession.isClosing || saved.uri.toString() !== document.uri.toString()) {
+				return Promise.resolve();
+			}
+			return sidecarSession.enqueueAfterPersists(async () => {
+				savedSqlText = saved.getText();
+				if (!sidecarUri || !sidecarFile) {
+					postChangedSections([]);
+					return;
+				}
+				if (!lastKnownSidecarState) return;
+				if (!sidecarSession.isDirty) {
+					rebuildSavedCache();
+					postChangedSections([]);
+					return;
+				}
+				const { file: persisted, text, identity } = await writeFreshSidecar(
+					sidecarUri,
+					lastKnownSidecarState,
+					sidecarSession.baseText ?? lastWrittenSidecarText,
+					beforeSidecarPublish,
+				);
+				sidecarFile = persisted;
+				lastWrittenSidecarText = text;
+				lastWrittenSidecarIdentity = identity;
+				sidecarSession.markClean();
+				rebuildSavedCache();
+				postChangedSections([]);
+			});
+		};
+
 		// When the user explicitly saves the .sql file, also save the companion .json metadata.
 		subscriptions.push(
 			vscode.workspace.onWillSaveTextDocument((event) => {
@@ -706,42 +790,22 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					event.waitUntil(Promise.reject(new Error('Cannot save because a source update is still settling or an external reload could not be restored. Reload the file and try again.')));
 					return;
 				}
-				event.waitUntil(requestFinalPersist('save').then(() => sidecarSession.waitForPersists()).then(
+				event.waitUntil(requestFinalPersist('save')
+					.then(() => sidecarSession.waitForPersists())
+					.then(() => toolCloseSidecarGuard?.())
+					.then(
 					() => [] as vscode.TextEdit[],
 					error => {
 						void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
 						throw error;
 					},
-				));
+					));
 			})
 		);
 		subscriptions.push(
 			vscode.workspace.onDidSaveTextDocument(async (saved) => {
 				try {
-					if (sidecarSession.isClosing || saved.uri.toString() !== document.uri.toString()) {
-						return;
-					}
-					const saveWork = sidecarSession.enqueueAfterPersists(async () => {
-						savedSqlText = saved.getText();
-						if (!sidecarUri || !sidecarFile) {
-							postChangedSections([]);
-							return;
-						}
-						if (!lastKnownSidecarState) return;
-						if (!sidecarSession.isDirty) {
-							rebuildSavedCache();
-							postChangedSections([]);
-							return;
-						}
-						const { file: persisted, text, identity } = await writeFreshSidecar(sidecarUri, lastKnownSidecarState, sidecarSession.baseText ?? lastWrittenSidecarText);
-						sidecarFile = persisted;
-						lastWrittenSidecarText = text;
-						lastWrittenSidecarIdentity = identity;
-						sidecarSession.markClean();
-						rebuildSavedCache();
-						postChangedSections([]);
-					});
-					await saveWork;
+					await persistCompanionAfterPrimarySave(saved, toolCloseSidecarGuard);
 				} catch (error) {
 					void vscode.window.showErrorMessage(`Failed to save companion metadata: ${error instanceof Error ? error.message : String(error)}`);
 				}
@@ -751,6 +815,37 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		const closeFinalization: CompatSidecarCloseFinalization = {
 			gateway: startupGateway,
 			subscriptions: [...disposables, ...subscriptions],
+			inspectToolDirty: async () => {
+				await requireAvailableFinalPersist('tool-close-inspect');
+				await sidecarSession.waitForPersists();
+				if (projectionCoordinator.sourceRollbackFailed || activeSourceMutations > 0) {
+					throw new Error('The SQL compatibility editor is still settling a source update.');
+				}
+				return document.isDirty || sidecarSession.isDirty || await hasDirtyOpenSidecarAlias();
+			},
+			saveToolChanges: async () => {
+				toolCloseSidecarGuard = assertNoDirtyOpenSidecarAlias;
+				try {
+					await requireAvailableFinalPersist('tool-close-save');
+					await sidecarSession.waitForPersists();
+					await assertNoDirtyOpenSidecarAlias();
+					if (projectionCoordinator.sourceRollbackFailed || activeSourceMutations > 0) {
+						throw new Error('The SQL compatibility editor is still settling a source update.');
+					}
+					await assertNoOpenSidecarAlias();
+					if (document.isDirty && !await document.save()) {
+						throw new Error('VS Code rejected the SQL source save.');
+					}
+					await persistCompanionAfterPrimarySave(document, assertNoDirtyOpenSidecarAlias);
+					await sidecarSession.waitForPersists();
+					await assertNoDirtyOpenSidecarAlias();
+					if (document.isDirty || sidecarSession.isDirty) {
+						throw new Error('The SQL source or companion metadata remained dirty after saving.');
+					}
+				} finally {
+					toolCloseSidecarGuard = undefined;
+				}
+			},
 			captureDraft: () => sidecarUri && sidecarFile && lastKnownSidecarState
 				? { uri: sidecarUri, state: lastKnownSidecarState, displayName: getSidecarDisplayName() }
 				: undefined,

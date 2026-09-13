@@ -200,6 +200,9 @@ describe('compatibility coordinator ownership', () => {
 			expect(source).not.toContain('projectionCoordinator.rollbackSupersededSourceEdit');
 			expect(source).toContain('hydrateCompatSidecarState');
 			expect(source).toContain('applyOwnedSourceEdit');
+			expect(source).toContain(".then(() => toolCloseSidecarGuard?.())");
+			expect(source.indexOf(".then(() => toolCloseSidecarGuard?.())"))
+				.toBeLessThan(source.indexOf("() => [] as vscode.TextEdit[]"));
 		}
 
 		const persistCoordinator = fs.readFileSync(path.join(

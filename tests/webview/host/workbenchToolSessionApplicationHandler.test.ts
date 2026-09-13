@@ -14,6 +14,7 @@ function createHarness(options?: {
 	isAvailable?: () => boolean;
 	postMessage?: (message: unknown) => boolean | PromiseLike<boolean>;
 	activateConnection?: (token: number) => boolean;
+	closeLifecycle?: { inspectDirty(): Promise<boolean>; save(): Promise<void> };
 }) {
 	const postMessage = vi.fn(options?.postMessage ?? (() => true));
 	const connect = vi.fn((..._args: ConnectArgs) => 73);
@@ -54,6 +55,7 @@ function createHarness(options?: {
 		postMessage,
 		isAvailable: options?.isAvailable ?? (() => true),
 		getDocumentUri: () => 'file:///C:/workspace/exact.kqlx',
+		getCloseLifecycle: () => options?.closeLifecycle,
 		connectionManager: { getConnections: () => options?.connections ?? [] },
 		schema: { refreshSchemaForTools },
 		sqlLifecycle: {
@@ -107,13 +109,17 @@ describe('HostWorkbenchToolSessionApplicationHandler', () => {
 		vi.restoreAllMocks();
 	});
 
-	it('connects once, reactivates its exact token, and supplies transport plus SQL callbacks', () => {
-		const harness = createHarness();
+	it('connects once, reactivates its exact token, and supplies transport plus lifecycle callbacks', () => {
+		const closeLifecycle = {
+			inspectDirty: vi.fn(async () => false),
+			save: vi.fn(async () => undefined),
+		};
+		const harness = createHarness({ closeLifecycle });
 
 		harness.handler.activate();
 
 		expect(harness.connect).toHaveBeenCalledOnce();
-		const [poster, _stateGetter, _schemaRefresher, documentUri, sqlConnectionResolver, sqlOwnerResolver]
+		const [poster, _stateGetter, _schemaRefresher, documentUri, sqlConnectionResolver, sqlOwnerResolver, connectedCloseLifecycle]
 			= getConnectArgs(harness.connect);
 		expect(documentUri).toBe('file:///C:/workspace/exact.kqlx');
 		const outbound = { type: 'exact-outbound' };
@@ -129,6 +135,7 @@ describe('HostWorkbenchToolSessionApplicationHandler', () => {
 		expect(sqlOwnerResolver?.('  sql-owner-section  ')).toBe(harness.readyOwner);
 		expect(harness.getReadyToolOwner).toHaveBeenCalledWith('sql-owner-section');
 		expect(sqlOwnerResolver?.('   ')).toBeUndefined();
+		expect(connectedCloseLifecycle).toBe(closeLifecycle);
 
 		harness.handler.activate();
 

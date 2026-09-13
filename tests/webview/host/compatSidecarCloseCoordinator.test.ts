@@ -30,6 +30,8 @@ function finalization(
 	return {
 		gateway: { closeRetiredInboundAdmission: vi.fn(async () => undefined) },
 		subscriptions: [],
+		inspectToolDirty: vi.fn(async () => false),
+		saveToolChanges: vi.fn(async () => undefined),
 		captureDraft: vi.fn(() => closeDraft),
 		promptSave: vi.fn(async () => 'Save'),
 		saveDraft: vi.fn(async () => undefined),
@@ -43,6 +45,29 @@ function finalization(
 }
 
 describe('CompatSidecarCloseCoordinator', () => {
+	it('fails closed before tool lifecycle callbacks are configured', async () => {
+		const coordinator = new CompatSidecarCloseCoordinator({
+			session: new CompatSidecarSession(true, 'KQL'),
+		});
+
+		await expect(coordinator.inspectToolDirty()).rejects.toThrow('not ready');
+		await expect(coordinator.saveToolChanges()).rejects.toThrow('not ready');
+	});
+
+	it('delegates non-prompting tool inspection and save to the configured provider owner', async () => {
+		const coordinator = new CompatSidecarCloseCoordinator({
+			session: new CompatSidecarSession(true, 'SQL'),
+		});
+		const inspectToolDirty = vi.fn(async () => true);
+		const saveToolChanges = vi.fn(async () => undefined);
+		coordinator.configure(finalization(undefined, { inspectToolDirty, saveToolChanges }));
+
+		await expect(coordinator.inspectToolDirty()).resolves.toBe(true);
+		await expect(coordinator.saveToolChanges()).resolves.toBeUndefined();
+		expect(inspectToolDirty).toHaveBeenCalledOnce();
+		expect(saveToolChanges).toHaveBeenCalledOnce();
+	});
+
 	it('defers early disposal until configured and starts exactly once', async () => {
 		const session = new CompatSidecarSession(false, 'KQL');
 		const closeDraft = draft('latest');

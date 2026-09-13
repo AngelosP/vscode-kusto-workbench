@@ -193,6 +193,7 @@ import {
 } from './copilotChatFirstTimeApplicationHandler';
 import {
 	HostWorkbenchToolSessionApplicationHandler,
+	type WorkbenchFileCloseLifecycle,
 	type WorkbenchToolSessionApplicationHandler,
 } from './workbenchToolSessionApplicationHandler';
 import {
@@ -354,6 +355,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly copilotHistoryRemovalApplication: CopilotHistoryRemovalApplicationHandler;
 	readonly copilotChatFirstTimeApplication: CopilotChatFirstTimeApplicationHandler;
 	readonly workbenchToolSessionApplication: WorkbenchToolSessionApplicationHandler;
+	private workbenchFileCloseLifecycle?: WorkbenchFileCloseLifecycle;
 	readonly kustoConnectionBrowsingApplication: KustoConnectionBrowsingApplicationHandler;
 	readonly copilotQueryWorkflowApplication: CopilotQueryWorkflowApplicationHandler;
 	readonly kustoSectionExecutionApplication: KustoSectionExecutionApplicationHandler;
@@ -820,6 +822,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				postMessage: message => this.postMessage(message),
 				isAvailable: () => !!this.panel,
 				getDocumentUri: () => this.documentUri,
+				getCloseLifecycle: () => this.workbenchFileCloseLifecycle,
 				connectionManager: this.connectionManager,
 				schema: this.schema,
 				sqlLifecycle: this.sqlLifecycle,
@@ -1018,6 +1021,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	/** URI string of the backing document (set by custom editor providers before initializeWebviewPanel). */
 	documentUri?: string;
+	setWorkbenchFileCloseLifecycle(lifecycle: WorkbenchFileCloseLifecycle): void {
+		this.workbenchFileCloseLifecycle = lifecycle;
+	}
+
 	async requestSectionsFromWebview(purpose?: 'schema-refresh', targetConnectionId?: string): Promise<unknown[] | undefined> {
 		return this.workbenchToolSessionApplication.requestSectionsFromWebview(purpose, targetConnectionId);
 	}

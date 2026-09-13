@@ -1909,6 +1909,271 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect((vscode.window.tabGroups.all[0] as any).tabs).toEqual([activeTab]);
 	});
 
+	it.each([
+		{},
+		{ openFileId: '   ' },
+		{ targetFileUri: '\t' },
+	])('closeWorkbenchFile refuses to infer a target from the active editor for %j', async input => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const activeUri = vscode.Uri.file('/work/active.kqlx');
+		const activeTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(activeUri, 'kusto.kqlxEditor'), label: 'active.kqlx' };
+		setTabGroups({ activeTab, tabs: [activeTab], isActive: true });
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await (orch as any).closeWorkbenchFile(input);
+
+		expect(result).toMatchObject({ success: false, closed: false });
+		expect(result.error).toContain('openFileId or targetFileUri');
+		expect(close).not.toHaveBeenCalled();
+	});
+
+	it('closeWorkbenchFile refuses conflicting exact targets', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const targetUri = vscode.Uri.file('/work/target.kqlx');
+		const otherUri = vscode.Uri.file('/work/other.kqlx');
+		const targetTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlxEditor'), label: 'target.kqlx' };
+		setTabGroups({ activeTab: targetTab, tabs: [targetTab], isActive: true });
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await (orch as any).closeWorkbenchFile({
+			openFileId: classifyWorkbenchUri(targetUri)!.openFileId,
+			targetFileUri: otherUri.toString(),
+		});
+
+		expect(result).toMatchObject({ success: false, closed: false });
+		expect(result.error).toContain('different Workbench files');
+		expect(close).not.toHaveBeenCalled();
+	});
+
+	it('closeWorkbenchFile refuses authoritative compatibility dirtiness even when the backing document is clean', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const targetUri = vscode.Uri.file('/work/metadata-dirty.kql');
+		const targetTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlCompatEditor'), label: 'metadata-dirty.kql' };
+		setTabGroups({ activeTab: targetTab, tabs: [targetTab], isActive: true });
+		const closeLifecycle = {
+			inspectDirty: vi.fn(async () => true),
+			save: vi.fn(async () => undefined),
+		};
+		orch.connect(vi.fn(), vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), targetUri.toString(), undefined, undefined, closeLifecycle);
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await (orch as any).closeWorkbenchFile({
+			openFileId: classifyWorkbenchUri(targetUri)!.openFileId,
+		});
+
+		expect(closeLifecycle.inspectDirty).toHaveBeenCalledOnce();
+		expect(closeLifecycle.save).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ success: false, closed: false, wasDirty: true });
+		expect(close).not.toHaveBeenCalled();
+	});
+
+	it('closeWorkbenchFile leaves the compatibility tab open when final snapshot inspection is unavailable', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const targetUri = vscode.Uri.file('/work/restore-in-progress.kql');
+		const targetTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlCompatEditor'), label: 'restore-in-progress.kql' };
+		setTabGroups({ activeTab: targetTab, tabs: [targetTab], isActive: true });
+		const closeLifecycle = {
+			inspectDirty: vi.fn(async () => { throw new Error('The final KQL metadata snapshot is unavailable: restore-in-progress.'); }),
+			save: vi.fn(async () => undefined),
+		};
+		orch.connect(vi.fn(), vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), targetUri.toString(), undefined, undefined, closeLifecycle);
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await (orch as any).closeWorkbenchFile({ targetFileUri: targetUri.toString() });
+
+		expect(result).toMatchObject({ success: false, closed: false });
+		expect(result.error).toContain('restore-in-progress');
+		expect(closeLifecycle.save).not.toHaveBeenCalled();
+		expect(close).not.toHaveBeenCalled();
+	});
+
+	it('closeWorkbenchFile refuses a dirty companion text buffer before either authority saves', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const targetUri = vscode.Uri.file('/work/competing.kql');
+		const sidecarUri = vscode.Uri.file('/work/competing.kql.json');
+		const targetTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlCompatEditor'), label: 'competing.kql' };
+		const sidecarTab = { isActive: false, isDirty: true, input: new vscode.TabInputText(sidecarUri), label: 'competing.kql.json' };
+		setTabGroups({ activeTab: targetTab, tabs: [targetTab, sidecarTab], isActive: true });
+		const sidecarDocument = { uri: sidecarUri, isDirty: true, save: vi.fn(async () => true) };
+		(vscode.workspace as any).textDocuments = [sidecarDocument];
+		const closeLifecycle = {
+			inspectDirty: vi.fn(async () => true),
+			save: vi.fn(async () => undefined),
+		};
+		orch.connect(vi.fn(), vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), targetUri.toString(), undefined, undefined, closeLifecycle);
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await (orch as any).closeWorkbenchFile({
+			targetFileUri: targetUri.toString(),
+			saveChanges: true,
+		});
+
+		expect(result).toMatchObject({ success: false, closed: false, wasDirty: true });
+		expect(result.error).toContain('companion metadata editor');
+		expect(closeLifecycle.inspectDirty).not.toHaveBeenCalled();
+		expect(closeLifecycle.save).not.toHaveBeenCalled();
+		expect(sidecarDocument.save).not.toHaveBeenCalled();
+		expect(close).not.toHaveBeenCalled();
+	});
+
+	it.each(['inspection', 'lifecycle save', 'final inspection'] as const)(
+		'closeWorkbenchFile refuses a companion text buffer that becomes dirty during %s',
+		async dirtyPhase => {
+			const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+			const targetUri = vscode.Uri.file(`/work/competing-${dirtyPhase.replace(' ', '-')}.kql`);
+			const sidecarUri = vscode.Uri.file(`${targetUri.fsPath}.json`);
+			const targetTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlCompatEditor'), label: 'target.kql' };
+			const sidecarTab = { isActive: false, isDirty: false, input: new vscode.TabInputText(sidecarUri), label: 'target.kql.json' };
+			const activeGroup = { activeTab: targetTab, tabs: dirtyPhase === 'lifecycle save' ? [targetTab, sidecarTab] : [targetTab], isActive: true };
+			setTabGroups(activeGroup);
+			const sidecarDocument = { uri: sidecarUri, isDirty: false, save: vi.fn(async () => true) };
+			(vscode.workspace as any).textDocuments = dirtyPhase === 'lifecycle save' ? [sidecarDocument] : [];
+			const dirtyCompanion = () => {
+				if (!activeGroup.tabs.includes(sidecarTab)) activeGroup.tabs.push(sidecarTab);
+				if (!(vscode.workspace.textDocuments as any[]).includes(sidecarDocument)) {
+					(vscode.workspace as any).textDocuments = [...vscode.workspace.textDocuments, sidecarDocument];
+				}
+				sidecarTab.isDirty = true;
+				sidecarDocument.isDirty = true;
+			};
+			let inspectionCount = 0;
+			const closeLifecycle = {
+				inspectDirty: vi.fn(async () => {
+					inspectionCount++;
+					if (dirtyPhase === 'inspection' && inspectionCount === 1) dirtyCompanion();
+					if (dirtyPhase === 'final inspection' && inspectionCount === 2) dirtyCompanion();
+					return inspectionCount === 1;
+				}),
+				save: vi.fn(async () => {
+					if (dirtyPhase === 'lifecycle save') dirtyCompanion();
+				}),
+			};
+			orch.connect(vi.fn(), vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), targetUri.toString(), undefined, undefined, closeLifecycle);
+			const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+			const result = await (orch as any).closeWorkbenchFile({
+				targetFileUri: targetUri.toString(),
+				saveChanges: true,
+			});
+
+			expect(result).toMatchObject({ success: false, closed: false, wasDirty: true });
+			expect(result.error).toContain('companion metadata editor');
+			expect(closeLifecycle.save).toHaveBeenCalledTimes(dirtyPhase === 'inspection' ? 0 : 1);
+			expect(sidecarDocument.save).not.toHaveBeenCalled();
+			expect(close).not.toHaveBeenCalled();
+		},
+	);
+
+	it('closeWorkbenchFile includes a clean matching tab opened during final inspection', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const targetUri = vscode.Uri.file('/work/late-clean.kql');
+		const sidecarUri = vscode.Uri.file('/work/late-clean.kql.json');
+		const targetTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlCompatEditor'), label: 'late-clean.kql' };
+		const sidecarTab = { isActive: false, isDirty: false, input: new vscode.TabInputText(sidecarUri), label: 'late-clean.kql.json' };
+		const activeGroup = { activeTab: targetTab, tabs: [targetTab], isActive: true };
+		setTabGroups(activeGroup);
+		let inspectionCount = 0;
+		const closeLifecycle = {
+			inspectDirty: vi.fn(async () => {
+				inspectionCount++;
+				if (inspectionCount === 2) activeGroup.tabs.push(sidecarTab);
+				return inspectionCount === 1;
+			}),
+			save: vi.fn(async () => undefined),
+		};
+		orch.connect(vi.fn(), vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), targetUri.toString(), undefined, undefined, closeLifecycle);
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await (orch as any).closeWorkbenchFile({
+			targetFileUri: targetUri.toString(),
+			saveChanges: true,
+		});
+
+		expect(result).toMatchObject({ success: true, closed: true, closedTabCount: 2 });
+		expect(close).toHaveBeenCalledWith([targetTab, sidecarTab], true);
+	});
+
+	it('closeWorkbenchFile refuses a compatibility tab whose authoritative lifecycle is unavailable', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const targetUri = vscode.Uri.file('/work/disconnected.kql');
+		const targetTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlCompatEditor'), label: 'disconnected.kql' };
+		setTabGroups({ activeTab: targetTab, tabs: [targetTab], isActive: true });
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await (orch as any).closeWorkbenchFile({ targetFileUri: targetUri.toString() });
+
+		expect(result).toMatchObject({ success: false, closed: false });
+		expect(result.error).toContain('close state');
+		expect(close).not.toHaveBeenCalled();
+	});
+
+	it('closeWorkbenchFile awaits authoritative compatibility save and clean revalidation', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const targetUri = vscode.Uri.file('/work/metadata-save.kql');
+		const targetTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlCompatEditor'), label: 'metadata-save.kql' };
+		setTabGroups({ activeTab: targetTab, tabs: [targetTab], isActive: true });
+		const closeLifecycle = {
+			inspectDirty: vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false),
+			save: vi.fn(async () => undefined),
+		};
+		orch.connect(vi.fn(), vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), targetUri.toString(), undefined, undefined, closeLifecycle);
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await (orch as any).closeWorkbenchFile({
+			openFileId: classifyWorkbenchUri(targetUri)!.openFileId,
+			saveChanges: true,
+		});
+
+		expect(closeLifecycle.save).toHaveBeenCalledOnce();
+		expect(closeLifecycle.inspectDirty).toHaveBeenCalledTimes(2);
+		expect(close).toHaveBeenCalledWith([targetTab], true);
+		expect(result).toMatchObject({ success: true, closed: true, saved: true, wasDirty: true });
+	});
+
+	it('closeWorkbenchFile leaves the compatibility tab open when authoritative save fails', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const targetUri = vscode.Uri.file('/work/metadata-save-failed.sql');
+		const targetTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.sqlCompatEditor'), label: 'metadata-save-failed.sql' };
+		setTabGroups({ activeTab: targetTab, tabs: [targetTab], isActive: true });
+		const closeLifecycle = {
+			inspectDirty: vi.fn(async () => true),
+			save: vi.fn(async () => { throw new Error('companion write failed'); }),
+		};
+		orch.connect(vi.fn(), vi.fn(async () => [{ id: 'sql_1', type: 'sql' }]), vi.fn(), targetUri.toString(), undefined, undefined, closeLifecycle);
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await (orch as any).closeWorkbenchFile({
+			targetFileUri: targetUri.toString(),
+			saveChanges: true,
+		});
+
+		expect(result).toMatchObject({ success: false, closed: false, wasDirty: true });
+		expect(result.error).toContain('companion write failed');
+		expect(close).not.toHaveBeenCalled();
+	});
+
+	it('closeWorkbenchFile leaves the compatibility tab open when save resolves but remains dirty', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const targetUri = vscode.Uri.file('/work/still-dirty.sql');
+		const targetTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.sqlCompatEditor'), label: 'still-dirty.sql' };
+		setTabGroups({ activeTab: targetTab, tabs: [targetTab], isActive: true });
+		const closeLifecycle = {
+			inspectDirty: vi.fn(async () => true),
+			save: vi.fn(async () => undefined),
+		};
+		orch.connect(vi.fn(), vi.fn(async () => [{ id: 'sql_1', type: 'sql' }]), vi.fn(), targetUri.toString(), undefined, undefined, closeLifecycle);
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await (orch as any).closeWorkbenchFile({
+			targetFileUri: targetUri.toString(),
+			saveChanges: true,
+		});
+
+		expect(result).toMatchObject({ success: false, closed: false, wasDirty: true });
+		expect(result.error).toContain('remained dirty');
+		expect(close).not.toHaveBeenCalled();
+	});
+
 	it('closeWorkbenchFile refuses a dirty target unless saveChanges is explicit', async () => {
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 		const targetUri = vscode.Uri.file('/work/dirty.kqlx');
@@ -1931,7 +2196,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const document = {
 			uri: targetUri,
 			isDirty: true,
-			save: vi.fn(async function (this: { isDirty: boolean }) { this.isDirty = false; return true; }),
+			save: vi.fn(async function (this: { isDirty: boolean }) { this.isDirty = false; targetTab.isDirty = false; return true; }),
 		};
 		(vscode.workspace as any).textDocuments = [document];
 		const close = vi.spyOn(vscode.window.tabGroups, 'close');

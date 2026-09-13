@@ -16,6 +16,8 @@ export type CompatSidecarCloseDraft = Readonly<{
 export type CompatSidecarCloseFinalization = Readonly<{
 	gateway: CloseGateway;
 	subscriptions: readonly vscode.Disposable[];
+	inspectToolDirty(): Promise<boolean>;
+	saveToolChanges(): Promise<void>;
 	captureDraft(): CompatSidecarCloseDraft | undefined;
 	promptSave(displayName: string): PromiseLike<'Save' | 'Discard' | undefined>;
 	saveDraft(draft: CompatSidecarCloseDraft): Promise<void>;
@@ -42,6 +44,8 @@ export type CompatSidecarCloseFailureCleanup = Readonly<{
 export interface CompatSidecarCloseCoordinatorPort {
 	allowRetiredInbound(message: unknown): boolean;
 	isPendingFinalPersistReply(message: unknown): boolean;
+	inspectToolDirty(): Promise<boolean>;
+	saveToolChanges(): Promise<void>;
 	configure(finalization: CompatSidecarCloseFinalization): void;
 	failInitialization(cleanup: CompatSidecarCloseFailureCleanup): Promise<void>;
 	disposePanel(): Promise<void>;
@@ -74,6 +78,20 @@ export class CompatSidecarCloseCoordinator implements CompatSidecarCloseCoordina
 	isPendingFinalPersistReply(message: unknown): boolean {
 		return isPersistDocumentMessage(message)
 			&& this.options.session.hasPendingFinalPersistRequest(String(message.flushRequestId || ''));
+	}
+
+	inspectToolDirty(): Promise<boolean> {
+		if (!this.finalization || this.panelDisposed || this.closeStarted) {
+			return Promise.reject(new Error('The compatibility editor close lifecycle is not ready.'));
+		}
+		return this.finalization.inspectToolDirty();
+	}
+
+	saveToolChanges(): Promise<void> {
+		if (!this.finalization || this.panelDisposed || this.closeStarted) {
+			return Promise.reject(new Error('The compatibility editor close lifecycle is not ready.'));
+		}
+		return this.finalization.saveToolChanges();
 	}
 
 	configure(finalization: CompatSidecarCloseFinalization): void {

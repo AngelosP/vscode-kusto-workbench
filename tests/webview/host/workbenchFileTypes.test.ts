@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as vscode from 'vscode';
-import { classifyWorkbenchUri, normalizeWorkbenchUriKey } from '../../../src/host/workbenchFileTypes';
+import { classifyWorkbenchUri, getWorkbenchTabInputUris, normalizeWorkbenchUriKey } from '../../../src/host/workbenchFileTypes';
 
 describe('workbenchFileTypes', () => {
 	it('classifies core notebook and query file types', () => {
@@ -62,5 +62,13 @@ describe('workbenchFileTypes', () => {
 		expect(upper).toBe('vscode-remote://ssh-remote+host/work/Query.kqlx');
 		expect(lower).toBe('vscode-remote://ssh-remote+host/work/query.kqlx');
 		expect(upper).not.toBe(lower);
+	});
+
+	it('enumerates both sides of a text diff tab', () => {
+		const original = vscode.Uri.file('/work/original.kql.json');
+		const modified = vscode.Uri.file('/work/modified.kql.json');
+
+		expect(getWorkbenchTabInputUris(new vscode.TabInputTextDiff(original, modified)))
+			.toEqual([original, modified]);
 	});
 });

@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
 	CompatSidecarPersistCoordinator,
+	requireAvailableCompatSidecarFinalPersist,
+	type CompatSidecarFinalPersistResult,
 	type CompatSidecarPersistMessage,
 } from '../../../src/host/compatSidecarPersistCoordinator';
 import type { CompatSidecarProjectionCoordinatorContract } from '../../../src/host/compatSidecarProjectionCoordinator';
@@ -253,7 +255,7 @@ function createHarness(options: Partial<HarnessBehavior & {
 
 async function createPendingFinal(harness: Harness) {
 	let requestId = '';
-	const result = harness.session.requestFinalPersist(message => {
+	const result = harness.session.requestFinalPersist<CompatSidecarFinalPersistResult>(message => {
 		requestId = String((message as { requestId?: unknown }).requestId ?? '');
 		return true;
 	}, 'save', 10_000);
@@ -283,6 +285,14 @@ describe('CompatSidecarPersistCoordinator authority capture ordering', () => {
 });
 
 describe('CompatSidecarPersistCoordinator', () => {
+	it('requires an available final snapshot for tool-driven compatibility lifecycle work', () => {
+		expect(() => requireAvailableCompatSidecarFinalPersist({ available: true }, 'KQL')).not.toThrow();
+		expect(() => requireAvailableCompatSidecarFinalPersist({
+			available: false,
+			reason: 'restore-in-progress',
+		}, 'SQL')).toThrow('final SQL metadata snapshot is unavailable: restore-in-progress');
+	});
+
 	it('ignores unknown and already-settled final requests before every application effect', async () => {
 		const harness = createHarness();
 		const unknown = await harness.coordinator.persist(snapshot('NEXT', { flushRequestId: 'unknown-final' }));
@@ -316,7 +326,10 @@ describe('CompatSidecarPersistCoordinator', () => {
 		const unavailableRequest = await createPendingFinal(unavailable);
 		const unavailableResult = await unavailable.coordinator.persist(unavailableFinal(unavailableRequest.requestId));
 		expect(unavailableResult.terminal).toBe('unavailable');
-		await expect(unavailableRequest.result).resolves.toBeUndefined();
+		await expect(unavailableRequest.result).resolves.toEqual({
+			available: false,
+			reason: 'restore-in-progress',
+		});
 		expect(unavailable.calls).toEqual(['warn-unavailable']);
 		expect(unavailable.completeFinalPersistSpy).toHaveBeenCalledTimes(1);
 	});
@@ -357,7 +370,7 @@ describe('CompatSidecarPersistCoordinator', () => {
 			flushRequestId: noopFinal.requestId,
 		}));
 		expect(noopResult.terminal).toBe('noop');
-		await expect(noopFinal.result).resolves.toBeUndefined();
+		await expect(noopFinal.result).resolves.toEqual({ available: true });
 		expect(noop.session.currentEditRevision).toBe(4);
 		expect(noop.acknowledgements).toEqual([{
 			type: 'persistDocumentAck', snapshotId: 'snapshot-1', editRevision: 4,
@@ -548,7 +561,7 @@ describe('CompatSidecarPersistCoordinator', () => {
 				flushRequestId: pending.requestId,
 			}));
 			expect(result.terminal).toBe('applied');
-			await expect(pending.result).resolves.toBeUndefined();
+			await expect(pending.result).resolves.toEqual({ available: true });
 			await Promise.resolve();
 			expect(harness.acknowledgements).toHaveLength(1);
 			expect(finalSettlements).toBe(1);
@@ -563,7 +576,7 @@ describe('CompatSidecarPersistCoordinator', () => {
 			flushRequestId: pending.requestId,
 		}));
 		expect(result.terminal).toBe('applied');
-		await expect(pending.result).resolves.toBeUndefined();
+		await expect(pending.result).resolves.toEqual({ available: true });
 		expect(harness.acknowledgements).toEqual([]);
 		expect(harness.completeFinalPersistSpy).toHaveBeenCalledTimes(1);
 	});
@@ -576,7 +589,7 @@ describe('CompatSidecarPersistCoordinator', () => {
 			reason: 'save',
 		}));
 		expect(result.terminal).toBe('applied');
-		await expect(pending.result).resolves.toBeUndefined();
+		await expect(pending.result).resolves.toEqual({ available: true });
 		expect(harness.getSourceText()).toBe('NEW');
 		expect(harness.getKnownState()).toBeDefined();
 		expect(harness.getMaterializedSidecar()).toBeDefined();

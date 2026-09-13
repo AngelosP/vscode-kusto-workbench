@@ -34,6 +34,18 @@ export type CompatSidecarPersistResult = Readonly<{
 	error?: Error;
 }>;
 
+export type CompatSidecarFinalPersistResult =
+	| Readonly<{ available: true }>
+	| Readonly<{ available: false; reason: string }>;
+
+export function requireAvailableCompatSidecarFinalPersist(
+	result: CompatSidecarFinalPersistResult,
+	languageLabel: 'KQL' | 'SQL',
+): void {
+	if (result.available) return;
+	throw new Error(`The final ${languageLabel} metadata snapshot is unavailable: ${result.reason}.`);
+}
+
 export type CompatSidecarPersistAcknowledgement = Readonly<{
 	type: 'persistDocumentAck';
 	snapshotId: string;
@@ -96,10 +108,13 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 		const adapter = this.options.adapter;
 		const flushRequestId = this.nonEmptyTrimmed(message.flushRequestId);
 		let finalSettlementAttempted = false;
-		const settleFinal = (error?: Error): boolean => {
+		const settleFinal = (
+			error?: Error,
+			result: CompatSidecarFinalPersistResult = { available: true },
+		): boolean => {
 			if (!flushRequestId || finalSettlementAttempted) return false;
 			finalSettlementAttempted = true;
-			return session.completeFinalPersist(flushRequestId, error);
+			return session.completeFinalPersist(flushRequestId, error, result);
 		};
 
 		if (flushRequestId && !session.hasPendingFinalPersistRequest(flushRequestId)) {
@@ -113,7 +128,7 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 		}
 		if ('flushUnavailableReason' in message) {
 			this.options.warnUnavailable();
-			settleFinal();
+			settleFinal(undefined, { available: false, reason: message.flushUnavailableReason });
 			return { terminal: 'unavailable' };
 		}
 
