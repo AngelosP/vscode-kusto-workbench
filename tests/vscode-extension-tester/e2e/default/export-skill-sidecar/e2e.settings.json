@@ -1,6 +1,7 @@
 {
-  "workspaceSettings": {
-    "git.openRepositoryInParentFolders": "never",
-    "workbench.secondarySideBar.defaultVisibility": "hidden"
+  "managedWorkspacePath": "${TEMP}/vscode-kusto-workbench-export-skill-sidecar",
+  "managedWorkspaceOwner": {
+    "markerName": ".kusto-workbench-e2e-owner",
+    "content": "export-skill-sidecar-v1\n"
   }
 }

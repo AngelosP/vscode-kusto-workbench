@@ -4,18 +4,26 @@ import { spawnSync } from 'node:child_process';
 import {
 	appendFileSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
-	renameSync,
 	statSync,
 	writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+	cleanupOwnedManagedWorkspace,
+	findManagedWorkspaceStorageEntries,
+	movePathWithCrossDeviceFallback,
+	normalizeManagedWorkspaceOwner,
+	repairResidueEntries,
+	resolveManagedWorkspacePath,
+	runWithGuaranteedCleanup,
 	selectE2eShard,
 	shouldRetryVscodeBootstrapFailure,
+	validateE2eWorkspaceConfiguration,
 } from './e2e-full-suite-support.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -202,6 +210,10 @@ function relativePath(filePath) {
 	return normalizeSlashes(path.relative(repoRoot, filePath));
 }
 
+function errorMessage(error) {
+	return error instanceof Error ? error.message : String(error);
+}
+
 function shellForPlatform() {
 	return process.platform === 'win32';
 }
@@ -252,6 +264,8 @@ function discoverCases(options, quarantineEntries) {
 				category,
 				featureFiles: featureFiles.map(name => relativePath(path.join(testDir, name))),
 				workspaceSettings: testSettings.workspaceSettings,
+				managedWorkspacePath: testSettings.managedWorkspacePath,
+				managedWorkspaceOwner: testSettings.managedWorkspaceOwner,
 				env: testSettings.env,
 				timeout: testSettings.timeout,
 				optIn: testSettings.optIn,
@@ -278,7 +292,7 @@ function discoverCases(options, quarantineEntries) {
 function readTestSettings(testDir) {
 	const configPath = path.join(testDir, perTestConfigFile);
 	if (!existsSync(configPath)) {
-		return { workspaceSettings: null, env: null, timeout: '', optIn: false };
+		return { workspaceSettings: null, managedWorkspacePath: null, managedWorkspaceOwner: null, env: null, timeout: '', optIn: false };
 	}
 
 	const config = readJson(configPath, {});
@@ -288,6 +302,28 @@ function readTestSettings(testDir) {
 			throw new Error(`${relativePath(configPath)} property workspaceSettings must be an object.`);
 		}
 		workspaceSettings = config.workspaceSettings;
+	}
+
+	let managedWorkspacePath = null;
+	if (config.managedWorkspacePath !== undefined) {
+		try {
+			managedWorkspacePath = resolveManagedWorkspacePath(config.managedWorkspacePath);
+		} catch (error) {
+			throw new Error(`${relativePath(configPath)} property managedWorkspacePath is invalid: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+	let managedWorkspaceOwner = null;
+	if (config.managedWorkspaceOwner !== undefined) {
+		try {
+			managedWorkspaceOwner = normalizeManagedWorkspaceOwner(config.managedWorkspaceOwner);
+		} catch (error) {
+			throw new Error(`${relativePath(configPath)} property managedWorkspaceOwner is invalid: ${errorMessage(error)}`);
+		}
+	}
+	try {
+		validateE2eWorkspaceConfiguration({ workspaceSettings, managedWorkspacePath, managedWorkspaceOwner });
+	} catch (error) {
+		throw new Error(`${relativePath(configPath)} workspace configuration is invalid: ${error instanceof Error ? error.message : String(error)}`);
 	}
 
 	let env = null;
@@ -316,7 +352,7 @@ function readTestSettings(testDir) {
 		optIn = config.optIn;
 	}
 
-	return { workspaceSettings, env, timeout, optIn };
+	return { workspaceSettings, managedWorkspacePath, managedWorkspaceOwner, env, timeout, optIn };
 }
 
 function findQuarantine(entries, profile, testId) {
@@ -369,6 +405,14 @@ function profileSettingsPath(profile) {
 	return path.join(e2eRoot, 'profiles', profile, 'user-data', 'User', 'settings.json');
 }
 
+function listWorkspaceStorageEntryNames(profile) {
+	const storageRoot = profileWorkspaceStorageRoot(profile);
+	if (!existsSync(storageRoot)) {
+		return new Set();
+	}
+	return new Set(readdirSync(storageRoot, { withFileTypes: true }).map(entry => entry.name));
+}
+
 function ensureQuietProfileSettings(profile) {
 	if (profile === 'default' && !existsSync(path.join(e2eRoot, 'profiles', profile))) {
 		return null;
@@ -414,58 +458,23 @@ function listProfileResidue(profile) {
 		}));
 }
 
-function listManagedWorkspaceStorage(profile, workspaceDir) {
-	if (!workspaceDir) {
-		return [];
-	}
+function listManagedWorkspaceStorage(profile, workspaceDir, entryNamesBefore) {
 	const storageRoot = profileWorkspaceStorageRoot(profile);
-	if (!existsSync(storageRoot)) {
-		return [];
-	}
-	const comparablePath = value => {
-		const resolved = path.resolve(value);
-		return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
-	};
-	const expected = comparablePath(workspaceDir);
-	return readdirSync(storageRoot, { withFileTypes: true })
-		.filter(entry => entry.isDirectory() && !workspaceStorageAllowlist.has(entry.name))
-		.filter(entry => {
-			const workspacePath = path.join(storageRoot, entry.name, 'workspace.json');
-			const metadata = readJson(workspacePath, {});
-			if (typeof metadata.folder !== 'string') {
-				return false;
-			}
-			try {
-				return comparablePath(fileURLToPath(metadata.folder)) === expected;
-			} catch {
-				return false;
-			}
-		})
-		.map(entry => ({
-			profile,
-			name: entry.name,
-			path: path.join(storageRoot, entry.name),
-			kind: 'directory',
-		}));
+	return findManagedWorkspaceStorageEntries({
+		profile,
+		storageRoot,
+		workspaceDir,
+		allowlist: workspaceStorageAllowlist,
+		entryNamesBefore,
+	});
 }
 
 function repairProfileResidue(residueEntries, backupRoot) {
-	if (residueEntries.length === 0) {
-		return [];
-	}
-
-	const repaired = [];
-	for (const residue of residueEntries) {
-		if (!existsSync(residue.path)) {
-			continue;
-		}
-		const profileBackupRoot = path.join(backupRoot, residue.profile);
-		mkdirSync(profileBackupRoot, { recursive: true });
-		const target = path.join(profileBackupRoot, residue.name);
-		renameSync(residue.path, target);
-		repaired.push({ ...residue, repairedTo: target });
-	}
-	return repaired;
+	return repairResidueEntries(residueEntries, backupRoot, {
+		lstatSync,
+		mkdirSync,
+		movePathWithCrossDeviceFallback,
+	});
 }
 
 function runCommand(command, args, outputFile, envOverrides = {}) {
@@ -883,13 +892,19 @@ function printCaseList(cases, selectedBeforeSharding, excludedScreenshotGenerato
 	}
 }
 
-function profileResidueRecord(profile, phase, residues, severity, repaired) {
+function profileResidueRecord(profile, phase, residues, severity, repaired, repairErrors = []) {
 	return {
 		profile,
 		phase,
 		severity,
 		entries: residues.map(entry => ({ name: entry.name, kind: entry.kind, path: relativePath(entry.path) })),
 		repairedTo: repaired.map(entry => relativePath(entry.repairedTo)),
+		repairErrors: repairErrors.map(entry => ({
+			name: entry.name,
+			path: relativePath(entry.path),
+			target: relativePath(entry.target),
+			error: entry.error,
+		})),
 	};
 }
 
@@ -921,8 +936,13 @@ function main() {
 
 		const residues = listProfileResidue(profile);
 		if (residues.length > 0) {
-			const repaired = options.repairProfileResidue ? repairProfileResidue(residues, path.join(residueBackupRoot, 'pre-run')) : [];
-			profileResidueRecords.push(profileResidueRecord(profile, 'pre-run', residues, options.allowProfileResidue || options.repairProfileResidue ? 'warning' : 'failure', repaired));
+			const repair = options.repairProfileResidue
+				? repairProfileResidue(residues, path.join(residueBackupRoot, 'pre-run'))
+				: { repaired: [], errors: [] };
+			const severity = repair.errors.length > 0
+				? 'failure'
+				: (options.allowProfileResidue || options.repairProfileResidue ? 'warning' : 'failure');
+			profileResidueRecords.push(profileResidueRecord(profile, 'pre-run', residues, severity, repair.repaired, repair.errors));
 		}
 	}
 
@@ -1028,21 +1048,104 @@ function main() {
 		if (preparedWorkspace) {
 			console.log(`Seeded per-test VS Code workspace settings for ${testCase.profile}/${testCase.testId}: ${relativePath(preparedWorkspace.settingsPath)}`);
 		}
+		const workspaceStorageEntriesBefore = listWorkspaceStorageEntryNames(testCase.profile);
 
 		const outputFile = path.join(commandLogDir, `${testCase.profile}__${testCase.testId}.log`);
-		const result = runE2eCommandWithBootstrapRetry(args, outputFile, envOverrides);
-		const runDir = artifactDirFromOutput(result.combinedOutput, testCase.profile, testCase.testId);
-		const artifacts = summarizeArtifacts(runDir);
-		const resultFailed = result.status !== 0 || (artifacts.results?.totalFailed || 0) > 0;
+		let result = {
+			status: 1,
+			error: '',
+			durationMs: 0,
+			combinedOutput: '',
+			attempts: [],
+			bootstrapRetries: 0,
+		};
+		let runDir = '';
+		let artifacts = summarizeArtifacts('');
+		const postRun = runWithGuaranteedCleanup(
+			() => {
+				result = runE2eCommandWithBootstrapRetry(args, outputFile, envOverrides);
+				runDir = artifactDirFromOutput(result.combinedOutput, testCase.profile, testCase.testId);
+				artifacts = summarizeArtifacts(runDir);
+			},
+			() => {
+				const cleanupErrors = [];
+				let managedWorkspaceStorage = [];
+				let managedWorkspaceBackups = [];
+				let managedWorkspaceRepairErrors = [];
+				let managedWorkspaceCleanup = { removed: false, reason: 'not-configured' };
+				try {
+					managedWorkspaceStorage = listManagedWorkspaceStorage(
+						testCase.profile,
+						preparedWorkspace?.workspaceDir ?? testCase.managedWorkspacePath,
+						workspaceStorageEntriesBefore,
+					);
+					const managedRepair = repairProfileResidue(
+						managedWorkspaceStorage,
+						path.join(residueBackupRoot, 'managed-workspace-storage', testCase.profile, testCase.testId),
+					);
+					managedWorkspaceBackups = managedRepair.repaired;
+					managedWorkspaceRepairErrors = managedRepair.errors;
+					cleanupErrors.push(...managedWorkspaceRepairErrors.map(entry => `Managed workspace cleanup failed for ${entry.name}: ${entry.error}`));
+				} catch (error) {
+					cleanupErrors.push(`Managed workspace cleanup failed: ${errorMessage(error)}`);
+				}
+				try {
+					managedWorkspaceCleanup = cleanupOwnedManagedWorkspace({
+						workspaceDir: testCase.managedWorkspacePath,
+						owner: testCase.managedWorkspaceOwner,
+						protectedRoot: repoRoot,
+					});
+				} catch (error) {
+					const message = errorMessage(error);
+					managedWorkspaceCleanup = {
+						removed: false,
+						path: testCase.managedWorkspacePath,
+						error: message,
+					};
+					cleanupErrors.push(`Managed workspace content cleanup failed: ${message}`);
+				}
+
+				try {
+					const residues = listProfileResidue(testCase.profile);
+					if (residues.length > 0) {
+						const repair = options.repairProfileResidue
+							? repairProfileResidue(residues, path.join(residueBackupRoot, 'post-run', testCase.profile, testCase.testId))
+							: { repaired: [], errors: [] };
+						const severity = repair.errors.length > 0
+							? 'failure'
+							: (options.allowProfileResidue || options.repairProfileResidue ? 'warning' : 'failure');
+						profileResidueRecords.push(profileResidueRecord(testCase.profile, `post-run:${testCase.testId}`, residues, severity, repair.repaired, repair.errors));
+					}
+				} catch (error) {
+					cleanupErrors.push(`Profile residue check failed: ${errorMessage(error)}`);
+				}
+
+				return {
+					cleanupErrors,
+					managedWorkspaceStorage,
+					managedWorkspaceBackups,
+					managedWorkspaceRepairErrors,
+					managedWorkspaceCleanup,
+				};
+			},
+		);
+		const postRunErrors = [
+			...(postRun.operationError ? [`E2E execution or artifact processing failed: ${errorMessage(postRun.operationError)}`] : []),
+			...(postRun.cleanupError ? [`Post-run cleanup failed: ${errorMessage(postRun.cleanupError)}`] : []),
+			...(postRun.cleanupValue?.cleanupErrors ?? []),
+		];
+		const resultFailed = postRunErrors.length > 0 || result.status !== 0 || (artifacts.results?.totalFailed || 0) > 0;
 		const allowedFailure = testCase.quarantine?.mode === 'allowed-failure';
-		const status = resultFailed ? (allowedFailure ? 'allowed-failure' : 'failed') : 'passed';
+		const status = postRunErrors.length > 0
+			? 'failed'
+			: resultFailed ? (allowedFailure ? 'allowed-failure' : 'failed') : 'passed';
 
 		runRecords.push({
 			...testCase,
 			status,
 			allowedFailure,
 			exitCode: result.status,
-			error: result.error,
+			error: [result.error, ...postRunErrors].filter(Boolean).join('\n'),
 			durationMs: result.durationMs,
 			completedAt: new Date().toISOString(),
 			runDir,
@@ -1051,22 +1154,23 @@ function main() {
 			screenshots: artifacts.screenshots,
 			failureScreenshots: artifacts.failureScreenshots,
 			outputChannels: artifacts.outputChannels,
-			failures: artifacts.failures,
+			failures: [
+				...artifacts.failures,
+				...postRunErrors.map(message => ({
+					feature: 'E2E runner',
+					scenario: `${testCase.profile}/${testCase.testId}`,
+					step: 'Post-run processing',
+					message,
+				})),
+			],
 			commandOutput: outputFile,
 			attempts: result.attempts,
 			bootstrapRetries: result.bootstrapRetries,
+			managedWorkspaceStorage: postRun.cleanupValue?.managedWorkspaceStorage ?? [],
+			managedWorkspaceBackups: postRun.cleanupValue?.managedWorkspaceBackups ?? [],
+			managedWorkspaceRepairErrors: postRun.cleanupValue?.managedWorkspaceRepairErrors ?? [],
+			managedWorkspaceCleanup: postRun.cleanupValue?.managedWorkspaceCleanup ?? { removed: false, reason: 'not-run' },
 		});
-
-		const managedWorkspaceStorage = listManagedWorkspaceStorage(testCase.profile, preparedWorkspace?.workspaceDir);
-		repairProfileResidue(
-			managedWorkspaceStorage,
-			path.join(residueBackupRoot, 'managed-workspace-storage', testCase.profile, testCase.testId),
-		);
-		const residues = listProfileResidue(testCase.profile);
-		if (residues.length > 0) {
-			const repaired = options.repairProfileResidue ? repairProfileResidue(residues, path.join(residueBackupRoot, 'post-run', testCase.profile, testCase.testId)) : [];
-			profileResidueRecords.push(profileResidueRecord(testCase.profile, `post-run:${testCase.testId}`, residues, options.allowProfileResidue || options.repairProfileResidue ? 'warning' : 'failure', repaired));
-		}
 	}
 
 	const ledger = updateLedger(options.outputDir, runRecords);

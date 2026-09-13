@@ -103,6 +103,14 @@ Tests can include an `e2e.settings.json` file next to their `.feature` file with
 
 The same file may include an `env` object whose values are non-secret strings passed only to that test's launched VS Code process. Do not put credentials, tokens, or other secrets in tracked E2E settings.
 
+Tests that add their own external workspace can declare `managedWorkspacePath`. The path must resolve to an absolute path after `${ENVIRONMENT_VARIABLE}` expansion. This field does not launch or create the workspace; it lets the suite move that exact workspace's reusable-profile storage into the run artifacts after the test, including when the output directory is on another volume. Unreadable metadata is left for the normal residue report rather than aborting summary generation. The feature must validate the canonical external path, reject links in every path it will mutate, create or add the directory itself, and verify it is the intended first workspace before any file-writing product action. A `managedWorkspaceOwner` with exact `markerName` and `content` authorizes the runner to remove that workspace after the VS Code child exits.
+
+`workspaceSettings` and `managedWorkspacePath` are mutually exclusive. The runner handles both direct folder metadata and VS Code's generated untitled-workspace metadata, but moves an untitled entry only when its canonical folder set contains exactly the declared managed workspace.
+
+VS Code may delete the generated untitled-workspace file during shutdown while leaving workspaceStorage behind. For that case, the runner snapshots entry names before this serial test and may move only a newly created tombstone whose missing workspace file was under the same profile's `user-data/Workspaces` root. Reusable profiles must not be opened concurrently while the suite owns them.
+
+Managed cleanup and the ordinary residue check run even when command artifact parsing fails. Each run record retains the matched workspaceStorage entries, backup destinations, and structured repair errors with source, attempted target, and message, plus any execution, artifact-processing, or cleanup errors. Multi-entry backup is per-entry: an earlier successful move remains recorded when a later inspect or move fails. A fixed external workspace must use an exact ownership marker: refuse an existing unmarked root and validate marker and target file type/link count before mutation. Runner cleanup rejects managed roots that are inside or contain the repository, and records structured path/error details on rejection. Raw runs remove generated content and retain only the marker because Windows keeps the active workspace root open. The full-suite runner validates that marker again and removes the complete root after the child exits, including failed E2E or artifact-processing paths.
+
 After any failure, inspect in this order:
 
 1. `tests/vscode-extension-tester/history/latest-summary.md`
