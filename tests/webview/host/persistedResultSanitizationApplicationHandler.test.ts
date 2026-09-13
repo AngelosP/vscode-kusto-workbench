@@ -173,6 +173,51 @@ function legacyKustoState(section: Record<string, unknown> = {}) {
 }
 
 describe('HostPersistedResultSanitizationApplicationHandler', () => {
+	it('bypasses policy snapshot locks when state has no persisted results', async () => {
+		const harness = createHandler();
+		const state = {
+			sections: [
+				{ id: 'query-1', type: 'query', query: 'print Value=1' },
+				{ id: 'markdown-1', type: 'markdown', text: 'notes' },
+			],
+		};
+
+		const sanitized = await harness.handler.sanitizeSqlLeaveNoTraceStateFresh(state);
+
+		expect(sanitized).toBe(state);
+		expect(harness.reconcileComparisonOwners).toHaveBeenCalledWith(state.sections);
+		expect(harness.runWithLeaveNoTraceSnapshotLock).not.toHaveBeenCalled();
+		expect(harness.retrySqlOwnerSnapshotAcquisition).not.toHaveBeenCalled();
+		expect(harness.tryDispatchSqlOwnerSnapshot).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		['empty', ''],
+		['undefined', undefined],
+	] as const)('retains policy locking for an own %s resultJson field', async (_label, resultJson) => {
+		const harness = createHandler();
+		const state = {
+			sections: [{ id: 'query-1', type: 'query', query: 'print Value=1', resultJson }],
+		};
+
+		await harness.handler.sanitizeSqlLeaveNoTraceStateFresh(state);
+
+		expect(harness.runWithLeaveNoTraceSnapshotLock).toHaveBeenCalledOnce();
+		expect(harness.retrySqlOwnerSnapshotAcquisition).toHaveBeenCalledOnce();
+	});
+
+	it('retains policy locking when a Kusto sanitation observer is requested', async () => {
+		const harness = createHandler();
+		const state = { sections: [{ id: 'query-1', type: 'query', query: 'print Value=1' }] };
+		const observer = vi.fn();
+
+		await harness.handler.sanitizeSqlLeaveNoTraceStateFresh(state, observer);
+
+		expect(harness.runWithLeaveNoTraceSnapshotLock).toHaveBeenCalledOnce();
+		expect(harness.retrySqlOwnerSnapshotAcquisition).toHaveBeenCalledOnce();
+		expect(observer).toHaveBeenCalledOnce();
+	});
+
 	it('preserves exact admitted Kusto and SQL owners through fresh sanitation', async () => {
 		const { handler, reconcileComparisonOwners, tryDispatchSqlOwnerSnapshot } = createHandler();
 		const state = admittedState();

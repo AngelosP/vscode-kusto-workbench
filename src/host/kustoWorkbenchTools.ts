@@ -187,6 +187,11 @@ export interface ListSectionsInput {
 	// No input required
 }
 
+export interface CloseWorkbenchFileInput extends TargetFields {
+	/** Save the exact dirty backing document before closing. Dirty files are refused by default. */
+	saveChanges?: boolean;
+}
+
 export interface AddSectionInput extends TargetFields {
 	type: 'query' | 'markdown' | 'chart' | 'transformation' | 'url' | 'python' | 'html' | 'sql';
 	/** For query sections: initial query text */
@@ -597,6 +602,21 @@ type ActivationResult = {
 	fileName?: string;
 	isLiveWorkbench?: boolean;
 	isReadOnlyFallback?: boolean;
+	error?: string;
+};
+
+type CloseWorkbenchFileResult = {
+	success: boolean;
+	closed: boolean;
+	closedTabCount?: number;
+	saved?: boolean;
+	wasDirty?: boolean;
+	openFileId?: string;
+	uri?: string;
+	logicalUri?: string;
+	fileKind?: WorkbenchFileKind;
+	filePath?: string;
+	fileName?: string;
 	error?: string;
 };
 
@@ -2812,6 +2832,103 @@ export class KustoWorkbenchToolOrchestrator {
 		};
 	}
 
+	async closeWorkbenchFile(input: CloseWorkbenchFileInput): Promise<CloseWorkbenchFileResult> {
+		let target: ReturnType<KustoWorkbenchToolOrchestrator['resolveToolTarget']>;
+		try {
+			target = this.resolveToolTarget(input);
+		} catch (error) {
+			return { success: false, closed: false, error: error instanceof Error ? error.message : String(error) };
+		}
+		const file = target.explicitTarget ?? target.activeFile;
+		if (!file) {
+			return {
+				success: false,
+				closed: false,
+				error: 'No open Kusto Workbench file was found. Use #listSections and pass openFileId or targetFileUri.',
+			};
+		}
+
+		const tabs: vscode.Tab[] = [];
+		const tabUris: vscode.Uri[] = [];
+		for (const group of vscode.window.tabGroups.all || []) {
+			for (const tab of group.tabs || []) {
+				const tabInput = this.getTabInputUri(tab.input);
+				if (!tabInput) continue;
+				const tabInfo = classifyWorkbenchUri(tabInput.uri, {
+					viewType: tabInput.viewType,
+					includeOptionalPlainText: true,
+				});
+				if (!tabInfo || tabInfo.logicalUriKey !== file.logicalUriKey) continue;
+				tabs.push(tab);
+				tabUris.push(tabInput.uri);
+			}
+		}
+		const metadata = {
+			openFileId: file.openFileId,
+			uri: file.uri,
+			logicalUri: file.logicalUri,
+			fileKind: file.fileKind,
+			...(file.filePath ? { filePath: file.filePath } : {}),
+			...(file.fileName ? { fileName: file.fileName } : {}),
+		};
+		if (tabs.length === 0) {
+			return { success: false, closed: false, ...metadata, error: 'The targeted Kusto Workbench file is not open as an editor tab.' };
+		}
+
+		const documents = vscode.workspace.textDocuments.filter(document =>
+			tabUris.some(uri => this.isSameUriExact(document.uri, uri)));
+		const wasDirty = tabs.some(tab => tab.isDirty) || documents.some(document => document.isDirty);
+		if (wasDirty && input.saveChanges !== true) {
+			return {
+				success: false,
+				closed: false,
+				wasDirty: true,
+				...metadata,
+				error: 'The targeted Workbench file has unsaved changes. Pass saveChanges=true to save that exact file before closing.',
+			};
+		}
+
+		let saved = false;
+		if (wasDirty) {
+			const dirtyDocuments = documents.filter(document => document.isDirty);
+			if (dirtyDocuments.length === 0) {
+				return {
+					success: false, closed: false, wasDirty: true, ...metadata,
+					error: 'The targeted Workbench tab is dirty, but its backing document is unavailable for an exact save.',
+				};
+			}
+			for (const document of dirtyDocuments) {
+				try {
+					if (!await document.save()) {
+						return {
+							success: false, closed: false, wasDirty: true, ...metadata,
+							error: 'The targeted Workbench file could not be saved, so it was not closed.',
+						};
+					}
+				} catch (error) {
+					return {
+						success: false, closed: false, wasDirty: true, ...metadata,
+						error: `The targeted Workbench file could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+					};
+				}
+			}
+			saved = true;
+		}
+
+		try {
+			const uniqueTabs = [...new Set(tabs)];
+			const closed = await vscode.window.tabGroups.close(uniqueTabs, true);
+			return closed
+				? { success: true, closed: true, closedTabCount: uniqueTabs.length, saved, wasDirty, ...metadata }
+				: { success: false, closed: false, saved, wasDirty, ...metadata, error: 'VS Code did not close the targeted Workbench file.' };
+		} catch (error) {
+			return {
+				success: false, closed: false, saved, wasDirty, ...metadata,
+				error: `VS Code could not close the targeted Workbench file: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+	}
+
 	async createFile(input: CreateFileInput): Promise<{
 		success: boolean;
 		filePath?: string;
@@ -3175,6 +3292,30 @@ export class ActivateWorkbenchFileTool implements vscode.LanguageModelTool<Targe
 		const input = getToolInput(options);
 		return {
 			invocationMessage: `Activating Workbench file ${input?.openFileId || input?.targetFileUri || ''}...`
+		};
+	}
+}
+
+export class CloseWorkbenchFileTool implements vscode.LanguageModelTool<CloseWorkbenchFileInput> {
+	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
+
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<CloseWorkbenchFileInput>,
+		_token: vscode.CancellationToken,
+	): Promise<vscode.LanguageModelToolResult> {
+		const result = await this.orchestrator.closeWorkbenchFile(getToolInput(options));
+		return new vscode.LanguageModelToolResult([
+			new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2)),
+		]);
+	}
+
+	async prepareInvocation(
+		options: vscode.LanguageModelToolInvocationPrepareOptions<CloseWorkbenchFileInput>,
+		_token: vscode.CancellationToken,
+	): Promise<vscode.PreparedToolInvocation> {
+		const input = getToolInput(options);
+		return {
+			invocationMessage: `Closing Workbench file ${input?.openFileId || input?.targetFileUri || ''}...`,
 		};
 	}
 }
@@ -3657,6 +3798,7 @@ export function registerKustoWorkbenchTools(
 		vscode.lm.registerTool('kusto-workbench_search-cached-schemas', new SearchCachedSchemasTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_list-sections', new ListSectionsTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_activate-workbench-file', new ActivateWorkbenchFileTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_close-workbench-file', new CloseWorkbenchFileTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_add-section', new AddSectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_remove-section', new RemoveSectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_collapse-section', new CollapseSectionTool(orchestrator)),

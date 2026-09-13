@@ -1020,6 +1020,18 @@ describe('message-handler dispatch', () => {
 		)).toHaveLength(0);
 	});
 
+	it('answers a dispatcher probe with its challenge and runtime identity while inactive', () => {
+		handlerState.pState.documentRuntimeActive = false;
+
+		dispatchHostMessage({ type: 'mainWebviewDispatcherProbe', probeId: 'probe-exact' });
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'mainWebviewDispatcherReady',
+			probeId: 'probe-exact',
+			runtimeId: expect.any(String),
+		}));
+	});
+
 	it('snapshots URL delivery proxies before dispatcher field reads', () => {
 		for (const delivery of [
 			{

@@ -24,6 +24,7 @@ import { getKustoConnectionIdentityKey, normalizeKustoAuthorityId } from '../sha
 import { getWorkbenchLogger } from './workbenchLogger';
 import { createFileOpenTrace } from './fileOpenTrace';
 import { kustoLeaveNoTracePolicyFingerprint } from './kustoLeaveNoTracePolicyStore';
+import { hasPersistedResultJson } from './persistedResultSanitizationApplicationHandler';
 import {
 	isMainWebviewCorrelatedReply,
 	MainWebviewStartupGateway,
@@ -1457,7 +1458,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 		queryEditor.fileOpenTrace = fileOpenTrace;
 		queryEditor.documentUri = document.uri.toString();
-		queryEditor.setMessageTransport(message => startupGateway.postMessage(message));
+		queryEditor.setMessageTransport(
+			message => startupGateway.postMessage(message),
+			() => startupGateway.beginDispatcherRevalidation(),
+		);
 		const postWebviewMessage = (message: unknown): boolean => {
 			return startupGateway.postMessageFireAndForget(message);
 		};
@@ -2642,9 +2646,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				text,
 				documentKind,
 				document.eol,
-				(state, publish) => queryEditor.publishSqlLeaveNoTraceStateFresh(
-					state, publish, revokeSanitizedKustoAttachments,
-				),
+				(state, publish) => hasPersistedResultJson(state)
+					? queryEditor.publishSqlLeaveNoTraceStateFresh(
+						state, publish, revokeSanitizedKustoAttachments,
+					)
+					: publish(queryEditor.sanitizeSqlLeaveNoTraceState(state)),
 				async sanitizedText => sanitizedText,
 			);
 		};
@@ -4331,7 +4337,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			);
 			return initialProjectionRecovery;
 		};
-
 		// Serialization chain: each applyEdit waits for the previous one to finish.
 		// This prevents concurrent applyEdit calls that cause VS Code's
 		// "has changed in the meantime" validation error.
@@ -5261,7 +5266,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					// The snapshot is still pending until this fresh policy pass and publication succeed.
 					const freshState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(
 						state,
-						revokeSanitizedKustoAttachments,
+						hasPersistedResultJson(state) ? revokeSanitizedKustoAttachments : undefined,
 					);
 					assertDocumentSectionKindsAllowed(documentKind, freshState.sections);
 					if (!isPersistCurrent()) return;

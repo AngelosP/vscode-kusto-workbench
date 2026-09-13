@@ -180,11 +180,13 @@ export class KustoEditorSchemaCoordinator {
 			current.schemaRequestToken = undefined;
 		}
 		const identity = this.getIdentity(current.boxId);
-		if (identity) this.publishLifecycle({
-			type: 'target',
-			owner: Object.freeze({ boxId: current.boxId, ...identity }),
-			...(current.target ? { target: Object.freeze({ ...current.target }) } : {}),
-		});
+		if (identity) {
+			this.publishLifecycle({
+				type: 'target',
+				owner: Object.freeze({ boxId: current.boxId, ...identity }),
+				...(current.target ? { target: Object.freeze({ ...current.target }) } : {}),
+			});
+		}
 		return identity;
 	}
 
@@ -206,11 +208,13 @@ export class KustoEditorSchemaCoordinator {
 		current.databaseRequestToken = undefined;
 		current.schemaRequestToken = undefined;
 		const identity = this.getIdentity(current.boxId);
-		if (identity && current.sectionInstanceId) this.publishLifecycle({
-			type: 'target',
-			owner: Object.freeze({ boxId: current.boxId, ...identity }),
-			...(current.target ? { target: Object.freeze({ ...current.target }) } : {}),
-		});
+		if (identity && current.sectionInstanceId) {
+			this.publishLifecycle({
+				type: 'target',
+				owner: Object.freeze({ boxId: current.boxId, ...identity }),
+				...(current.target ? { target: Object.freeze({ ...current.target }) } : {}),
+			});
+		}
 		return identity;
 	}
 

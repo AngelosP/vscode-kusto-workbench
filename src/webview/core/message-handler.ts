@@ -2309,6 +2309,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		}
 		const recoveryMessages = new Set([
 			'documentData', 'persistenceMode', 'requestFinalPersist', 'persistDocumentAck',
+			'mainWebviewDispatcherProbe',
 			'pythonResult', 'pythonError',
 			'settingsUpdate', 'sqlComparisonAdmissionRollback', 'sqlComparisonAdmissionComplete',
 			'sqlComparisonAdmissionRelease',
@@ -4578,9 +4579,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						}
 						setQueryExecuting(boxId, executing);
 						accepted = true;
-						if (executing) postMessageToHost({
-							type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted,
-						});
+						if (executing) {
+							postMessageToHost({
+								type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted,
+							});
+						}
 						break;
 					}
 					if (queryEl && typeof queryEl.setExternalQueryExecuting === 'function'
@@ -4590,9 +4593,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					}
 					if (!queryEl) setQueryExecuting(boxId, executing);
 					accepted = !!sqlEl || !!queryEl;
-					if (executing) postMessageToHost({
-						type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted,
-					});
+					if (executing) {
+						postMessageToHost({
+							type: 'copilotWriteQueryExecutionAck', boxId, executionId, accepted,
+						});
+					}
 				}
 			} catch (e) {
 				if (message.executing === true
@@ -4831,6 +4836,12 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		// VS Code Copilot Chat Tool Orchestrator Messages
 		// ─────────────────────────────────────────────────────────────────────────
 		
+		case 'mainWebviewDispatcherProbe':
+			if (typeof message.probeId === 'string' && message.probeId.trim()) {
+				publishMainWebviewDispatcherReady(message.probeId.trim());
+			}
+			break;
+
 		case 'requestToolState':
 			// Extension is requesting the current sections state
 			try {
@@ -6744,6 +6755,16 @@ export async function drainBufferedHostMessages(): Promise<void> {
 }
 
 let mainWebviewMessageDispatcherStarted = false;
+const mainWebviewRuntimeId = globalThis.crypto?.randomUUID?.()
+	?? `main_webview_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
+function publishMainWebviewDispatcherReady(probeId?: string): void {
+	postMessageToHost({
+		type: 'mainWebviewDispatcherReady',
+		runtimeId: mainWebviewRuntimeId,
+		...(probeId ? { probeId } : {}),
+	});
+}
 
 export async function startMainWebviewMessageDispatcher(): Promise<void> {
 	if (mainWebviewMessageDispatcherStarted) return;
@@ -6754,5 +6775,5 @@ export async function startMainWebviewMessageDispatcher(): Promise<void> {
 	});
 	(window as any).__kustoHostMessageDispatcherReady = true;
 	await drainBufferedHostMessages();
-	postMessageToHost({ type: 'mainWebviewDispatcherReady' });
+	publishMainWebviewDispatcherReady();
 }

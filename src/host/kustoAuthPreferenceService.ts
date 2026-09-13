@@ -380,9 +380,11 @@ export class KustoAuthPreferenceService implements vscode.Disposable {
 				}
 			}
 			await this.upsertKnownAccount(account);
-			if (preferenceChanged) this.changeEmitter.fire({
-				connectionIds: [id], reason: 'success', accountId, accountPartition, firstEstablishment,
-			});
+			if (preferenceChanged) {
+				this.changeEmitter.fire({
+					connectionIds: [id], reason: 'success', accountId, accountPartition, firstEstablishment,
+				});
+			}
 			return preferenceChanged;
 		});
 	}

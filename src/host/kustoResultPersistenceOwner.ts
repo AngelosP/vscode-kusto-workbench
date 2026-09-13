@@ -821,9 +821,11 @@ export class KustoResultPersistenceOwner {
 				|| Object.prototype.hasOwnProperty.call(value, 'kustoAccountPartition')
 				|| Object.prototype.hasOwnProperty.call(value, 'kustoLeaveNoTraceRevision')) continue;
 			const boxId = normalize(value.id);
-			if (boxId) observation.provisionalInertFieldsByBoxId.set(
-				boxId, Object.freeze(attachmentFields(value)),
-			);
+			if (boxId) {
+				observation.provisionalInertFieldsByBoxId.set(
+					boxId, Object.freeze(attachmentFields(value)),
+				);
+			}
 		}
 		if (panelId) this.latestPreparedSourceIdentityByPanel.set(panelId, sourceIdentity);
 		const openingAttachments = new Map(preview.committedByBoxId);

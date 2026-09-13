@@ -30,6 +30,9 @@ import { parsePersistDocumentMessage } from '../shared/persistDocumentState';
 import { parseSqlCopilotExecutionStartAck } from '../shared/copilotExecutionStart';
 
 export const MAIN_WEBVIEW_DISPATCHER_READY_TYPE = 'mainWebviewDispatcherReady' as const;
+export const MAIN_WEBVIEW_DISPATCHER_PROBE_TYPE = 'mainWebviewDispatcherProbe' as const;
+export const MAIN_WEBVIEW_DISPATCHER_REVALIDATION_TIMEOUT_MS = 4_000;
+export const MAIN_WEBVIEW_DISPATCHER_REVALIDATION_RETRY_MS = 250;
 export const RETAINED_STARTUP_INITIALIZATION_TIMEOUT_MS = 2_000;
 
 export type BoundedStartupSettlement<T> =
@@ -62,6 +65,8 @@ export interface MainWebviewStartupGatewayOptions<TInbound> {
 	allowReentrantInbound?(message: TInbound): boolean;
 	allowRetiredInbound?(message: TInbound): boolean;
 	trace?(event: GatewayTraceEvent, message: TInbound, queuedCount: number): void;
+	dispatcherRevalidationTimeoutMs?: number;
+	dispatcherRevalidationRetryMs?: number;
 }
 
 type PendingOutbound = {
@@ -175,9 +180,18 @@ export function isMainWebviewCorrelatedReply(input: unknown): boolean {
 	}
 }
 
-function isDispatcherReadyMessage(input: unknown): boolean {
+type DispatcherReadySignal = Readonly<{ runtimeId?: string; probeId?: string }>;
+function parseDispatcherReadyMessage(input: unknown): DispatcherReadySignal | undefined {
 	const type = safelyInspectProperty(input, 'type');
-	return type?.kind === 'data' && type.value === MAIN_WEBVIEW_DISPATCHER_READY_TYPE;
+	if (type?.kind !== 'data' || type.value !== MAIN_WEBVIEW_DISPATCHER_READY_TYPE) return undefined;
+	const runtimeId = safelyInspectProperty(input, 'runtimeId');
+	const probeId = safelyInspectProperty(input, 'probeId');
+	if (runtimeId && (runtimeId.kind !== 'data' || typeof runtimeId.value !== 'string' || !runtimeId.value.trim())) return undefined;
+	if (probeId && (probeId.kind !== 'data' || typeof probeId.value !== 'string' || !probeId.value.trim())) return undefined;
+	return {
+		...(runtimeId?.kind === 'data' ? { runtimeId: String(runtimeId.value).trim() } : {}),
+		...(probeId?.kind === 'data' ? { probeId: String(probeId.value).trim() } : {}),
+	};
 }
 
 export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
@@ -190,6 +204,12 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 	private retiredInboundDrain: Promise<void> = Promise.resolve();
 	private outboundDrain?: Promise<void>;
 	private dispatcherReady = false;
+	private dispatcherRuntimeId = '';
+	private dispatcherRevalidationProbeId = '';
+	private dispatcherRevalidationFailed = false;
+	private dispatcherRevalidationTimer?: ReturnType<typeof setTimeout>;
+	private dispatcherProbeRetryTimer?: ReturnType<typeof setTimeout>;
+	private dispatcherProbeSequence = 0;
 	private retired = false;
 	private retiredInboundAdmissionOpen = true;
 	private disposed = false;
@@ -250,6 +270,23 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 		return queued.accepted;
 	}
 
+	beginDispatcherRevalidation(): void {
+		if (this.retired || this.disposed
+			|| (!this.dispatcherReady && !this.dispatcherRevalidationFailed)
+			|| (this.dispatcherRevalidationProbeId && !this.dispatcherRevalidationFailed)) return;
+		this.clearDispatcherRevalidationTimer();
+		this.dispatcherReady = false;
+		this.dispatcherRevalidationFailed = false;
+		const probeId = `dispatcher_probe_${++this.dispatcherProbeSequence}_${Date.now()}`;
+		this.dispatcherRevalidationProbeId = probeId;
+		const timeoutMs = Math.max(0, this.options.dispatcherRevalidationTimeoutMs
+			?? MAIN_WEBVIEW_DISPATCHER_REVALIDATION_TIMEOUT_MS);
+		this.dispatcherRevalidationTimer = setTimeout(() => {
+			this.failDispatcherRevalidation(probeId);
+		}, timeoutMs);
+		this.sendDispatcherProbe(probeId);
+	}
+
 	async closeRetiredInboundAdmission(): Promise<void> {
 		this.retiredInboundAdmissionOpen = false;
 		for (;;) {
@@ -262,6 +299,7 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 	retire(): void {
 		if (this.retired) return;
 		this.retired = true;
+		this.clearDispatcherRevalidationTimer();
 		for (const pending of this.outboundQueue.splice(0)) pending.resolve(false);
 		const retained = this.inboundQueue.splice(0)
 			.filter(pending => pending.retirementEligible);
@@ -337,7 +375,8 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 			if (!parsed.ok) return;
 			input = parsed.value;
 		}
-		if (isDispatcherReadyMessage(input)) return this.markDispatcherReady();
+		const dispatcherReady = parseDispatcherReadyMessage(input);
+		if (dispatcherReady) return this.markDispatcherReady(dispatcherReady);
 
 		const message = this.options.admitInbound(input);
 		if (message === undefined) return;
@@ -375,14 +414,53 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 		return delivery;
 	}
 
-	private async markDispatcherReady(): Promise<void> {
-		if (this.retired || this.dispatcherReady) return;
+	private async markDispatcherReady(signal: DispatcherReadySignal): Promise<void> {
+		if (this.retired) return;
+		if (this.dispatcherRevalidationProbeId) {
+			if (signal.probeId !== this.dispatcherRevalidationProbeId) return;
+		} else if (this.dispatcherReady) {
+			if (signal.runtimeId) this.dispatcherRuntimeId = signal.runtimeId;
+			return;
+		}
+		this.clearDispatcherRevalidationTimer();
+		this.dispatcherRevalidationProbeId = '';
+		this.dispatcherRevalidationFailed = false;
+		if (signal.runtimeId) this.dispatcherRuntimeId = signal.runtimeId;
 		this.dispatcherReady = true;
 		await this.drainOutbound();
 	}
 
+	private clearDispatcherRevalidationTimer(): void {
+		if (this.dispatcherRevalidationTimer) clearTimeout(this.dispatcherRevalidationTimer);
+		this.dispatcherRevalidationTimer = undefined;
+		this.clearDispatcherProbeRetryTimer();
+	}
+
+	private clearDispatcherProbeRetryTimer(): void {
+		if (this.dispatcherProbeRetryTimer) clearTimeout(this.dispatcherProbeRetryTimer);
+		this.dispatcherProbeRetryTimer = undefined;
+	}
+
+	private sendDispatcherProbe(probeId: string): void {
+		if (this.retired || this.disposed || this.dispatcherRevalidationProbeId !== probeId
+			|| this.dispatcherRevalidationFailed) return;
+		const retryMs = Math.max(1, this.options.dispatcherRevalidationRetryMs
+			?? MAIN_WEBVIEW_DISPATCHER_REVALIDATION_RETRY_MS);
+		this.clearDispatcherProbeRetryTimer();
+		this.dispatcherProbeRetryTimer = setTimeout(() => this.sendDispatcherProbe(probeId), retryMs);
+		void this.deliver({ type: MAIN_WEBVIEW_DISPATCHER_PROBE_TYPE, probeId });
+	}
+
+	private failDispatcherRevalidation(probeId: string): void {
+		if (this.retired || this.dispatcherRevalidationProbeId !== probeId) return;
+		this.clearDispatcherRevalidationTimer();
+		this.dispatcherReady = false;
+		this.dispatcherRevalidationFailed = true;
+		for (const pending of this.outboundQueue.splice(0)) pending.resolve(false);
+	}
+
 	private enqueueOutbound(message: unknown): { accepted: boolean; delivery: Promise<boolean> } {
-		if (this.retired || this.disposed) {
+		if (this.retired || this.disposed || this.dispatcherRevalidationFailed) {
 			return { accepted: false, delivery: Promise.resolve(false) };
 		}
 		const executionStartAdmission = admitKustoExecutionStartHostMessage(message);
@@ -440,7 +518,7 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 		if (this.outboundDrain) return this.outboundDrain;
 
 		const drain = (async () => {
-			while (this.outboundQueue.length > 0) {
+			while (this.dispatcherReady && this.outboundQueue.length > 0) {
 				const pending = this.outboundQueue.shift()!;
 				if (this.retired) {
 					pending.resolve(false);

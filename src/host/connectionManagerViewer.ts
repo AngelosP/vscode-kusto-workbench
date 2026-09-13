@@ -1451,9 +1451,11 @@ export class ConnectionManagerViewerV2 {
 					const partition = String(discovery.accountPartition || '').trim();
 					const databases = discovery.databases;
 					const admitted = await this.admitKustoMetadataOwner(owner, partition, async current => {
-						if (databases.length === 0) return this.postKustoPublication({
-							type: 'databasesLoaded', connectionId, databases: cachedBefore.length > 0 ? cachedBefore : [], warning: true,
-						});
+						if (databases.length === 0) {
+							return this.postKustoPublication({
+								type: 'databasesLoaded', connectionId, databases: cachedBefore.length > 0 ? cachedBefore : [], warning: true,
+							});
+						}
 						const wrote = await this.connectionCache.setDatabases(
 							current.id, partition, databases,
 							discovery.cacheGeneration ?? owner.databaseCacheGeneration,

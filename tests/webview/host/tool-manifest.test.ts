@@ -21,6 +21,11 @@ describe('tool manifest schemas', () => {
 		const tools = getTools();
 		const toolByName = new Map(tools.map((tool: any) => [tool.name, tool]));
 		expect(toolByName.has('kusto-workbench_activate-workbench-file')).toBe(true);
+		expect(toolByName.has('kusto-workbench_close-workbench-file')).toBe(true);
+		const closeFile = toolByName.get('kusto-workbench_close-workbench-file') as any;
+		expect(closeFile.inputSchema?.properties?.openFileId).toBeTruthy();
+		expect(closeFile.inputSchema?.properties?.targetFileUri).toBeTruthy();
+		expect(closeFile.inputSchema?.properties?.saveChanges).toMatchObject({ type: 'boolean', default: false });
 
 		const targetableToolNames = [
 			'kusto-workbench_add-section',

@@ -600,9 +600,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 				: 'Select a server and database first (or select a favorite)';
 			runBtn.title = labelText + (runBtn.disabled ? `\n${disabledReason}` : '');
 		}
-		if (runToggle) runToggle.disabled = this._comparisonAdmissionPending
-			|| !!this._toolConfigurationExecutionId
-			|| this.sqlSession.hasPendingToolRun || this._executing;
+		if (runToggle) {
+			runToggle.disabled = this._comparisonAdmissionPending
+				|| !!this._toolConfigurationExecutionId
+				|| this.sqlSession.hasPendingToolRun || this._executing;
+		}
 		if (cancelBtn) cancelBtn.style.display = this._executing ? '' : 'none';
 		if (execStatus) execStatus.style.display = this._executing ? '' : 'none';
 		if (elapsedSpan) elapsedSpan.textContent = this._elapsedText || '0:00';

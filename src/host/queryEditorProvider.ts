@@ -494,10 +494,16 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private embeddedTutorialHost?: EmbeddedTutorialWebviewHost;
 	private embeddedTutorialRegistration?: vscode.Disposable;
 	private messageTransport?: (message: unknown) => Thenable<boolean>;
+	private messageTransportRevalidator?: () => void;
+	private panelVisible: boolean | undefined;
 	fileOpenTrace?: FileOpenTrace;
 
-	setMessageTransport(transport: ((message: unknown) => Thenable<boolean>) | undefined): void {
+	setMessageTransport(
+		transport: ((message: unknown) => Thenable<boolean>) | undefined,
+		revalidate?: () => void,
+	): void {
 		this.messageTransport = transport;
+		this.messageTransportRevalidator = revalidate;
 	}
 
 	getErrorMessage(error: unknown): string {
@@ -947,7 +953,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.kustoFavoritesApplication.activate();
 		this.fileOpenTrace?.mark('queryEditorProvider.connection.activate.done');
 		this.panel = panel;
-		this.editorCursorStatusApplication.setPanelVisible(panel.visible);
+		this.panelVisible = panel.visible === true;
+		this.editorCursorStatusApplication.setPanelVisible(this.panelVisible);
 		QueryEditorProvider.activeProviders.add(this);
 		if (options?.registerDisposalHandler !== false) this.registerPanelDisposal(panel);
 		// Do NOT set panel.iconPath here — this method is called for custom editors
@@ -964,7 +971,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			compatibilityPersistence: options?.compatibilityPersistence,
 		});
 		if (this._panelDisposed || this.panel !== panel) return;
-		this.editorCursorStatusApplication.setPanelVisible(panel.visible);
+		this.panelVisible = panel.visible === true;
+		this.editorCursorStatusApplication.setPanelVisible(this.panelVisible);
 		webview.html = html;
 		perfMark('host.queryEditorProvider.htmlAssigned');
 		this.fileOpenTrace?.mark('queryEditorProvider.html.assigned');
@@ -993,8 +1001,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.panel.onDidChangeViewState(() => {
 			this.fileOpenTrace?.mark('queryEditorProvider.viewState.changed', { visible: this.panel?.visible, active: this.panel?.active });
 			const visible = this.panel?.visible === true;
+			const wasVisible = this.panelVisible;
+			this.panelVisible = visible;
 			this.editorCursorStatusApplication.setPanelVisible(visible);
 			if (visible) {
+				if (wasVisible === false) this.messageTransportRevalidator?.();
 				this.workbenchToolSessionApplication.activate();
 			}
 		});
@@ -1035,7 +1046,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 		);
 		const panel = this.panel;
-		this.editorCursorStatusApplication.setPanelVisible(panel.visible);
+		this.panelVisible = panel.visible === true;
+		this.editorCursorStatusApplication.setPanelVisible(this.panelVisible);
 		this.registerPanelDisposal(panel);
 		try {
 			const light = vscode.Uri.joinPath(this.extensionUri, 'media', 'images', 'kusto-file-light.svg');
@@ -1048,7 +1060,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const webview = panel.webview;
 		const html = await getQueryEditorHtml(webview, this.extensionUri, this.context);
 		if (this._panelDisposed || this.panel !== panel) return;
-		this.editorCursorStatusApplication.setPanelVisible(panel.visible);
+		this.panelVisible = panel.visible === true;
+		this.editorCursorStatusApplication.setPanelVisible(this.panelVisible);
 		webview.html = html;
 
 
@@ -1060,8 +1073,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		// Reconnect the orchestrator when this panel becomes visible again
 		this.panel.onDidChangeViewState(() => {
 			const visible = this.panel?.visible === true;
+			const wasVisible = this.panelVisible;
+			this.panelVisible = visible;
 			this.editorCursorStatusApplication.setPanelVisible(visible);
 			if (visible) {
+				if (wasVisible === false) this.messageTransportRevalidator?.();
 				this.workbenchToolSessionApplication.activate();
 			}
 		});
@@ -1489,6 +1505,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	disposePanel(panel: vscode.WebviewPanel): void {
 		if (this.panel !== panel || this._panelDisposed) return;
 		this._panelDisposed = true;
+		this.panelVisible = undefined;
 		QueryEditorProvider.activeProviders.delete(this);
 		this.panelDisposalSubscription?.dispose();
 		this.panelDisposalSubscription = undefined;

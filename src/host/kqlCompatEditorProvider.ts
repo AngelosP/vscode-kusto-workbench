@@ -329,7 +329,10 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.sqlWorkbench, this.editorCursorStatusBar);
 		queryEditor.fileOpenTrace = fileOpenTrace;
 		queryEditor.documentUri = document.uri.toString();
-		queryEditor.setMessageTransport(message => startupGateway.postMessage(message));
+		queryEditor.setMessageTransport(
+			message => startupGateway.postMessage(message),
+			() => startupGateway.beginDispatcherRevalidation(),
+		);
 		const outerDisposalSubscription = webviewPanel.onDidDispose(() => {
 			outerDisposed = true;
 			signalOuterDisposal();

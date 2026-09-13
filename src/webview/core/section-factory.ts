@@ -1323,11 +1323,13 @@ export function removeQueryBox( boxId: any) {
 		querySection?.disposeSchemaLifecycle?.({
 			preserveResultAttachment: pinnedSectionRemovalBypassDepth > 0,
 		});
-		if (retiredExecution) postMessageToHost({
-			type: 'cancelQuery', boxId: String(boxId), executionId: retiredExecution.executionId,
-			sectionInstanceId: retiredExecution.sectionInstanceId,
-			targetGeneration: retiredExecution.targetGeneration,
-		});
+		if (retiredExecution) {
+			postMessageToHost({
+				type: 'cancelQuery', boxId: String(boxId), executionId: retiredExecution.executionId,
+				sectionInstanceId: retiredExecution.sectionInstanceId,
+				targetGeneration: retiredExecution.targetGeneration,
+			});
+		}
 	} catch (e) { console.error('[kusto]', e); }
 
 	// Dispose Copilot chat state for this query box (if present).

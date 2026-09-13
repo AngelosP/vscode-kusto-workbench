@@ -567,6 +567,41 @@
         }
       },
       {
+        "name": "kusto-workbench_close-workbench-file",
+        "tags": [
+          "kusto",
+          "workbench",
+          "file",
+          "close",
+          "editor"
+        ],
+        "toolReferenceName": "closeWorkbenchFile",
+        "displayName": "Close Workbench File",
+        "modelDescription": "Closes one exact Kusto Workbench editor returned by #listSections. Pass openFileId when available, or targetFileUri. This tool targets editor tabs by logical URI and never uses the active-editor close command. Dirty files are refused unless saveChanges=true; no discard option is available.",
+        "userDescription": "Close a specific Kusto Workbench editor safely.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(close)",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "openFileId": {
+              "type": "string",
+              "description": "Optional exact open Workbench file ID returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional exact Workbench file URI or path. Sidecar URIs resolve to their primary logical file."
+            },
+            "saveChanges": {
+              "type": "boolean",
+              "default": false,
+              "description": "When true, save the exact dirty backing document before closing. When false or omitted, dirty files are not closed."
+            }
+          }
+        }
+      },
+      {
         "name": "kusto-workbench_add-section",
         "tags": [
           "kusto",

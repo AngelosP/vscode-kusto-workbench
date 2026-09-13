@@ -1885,6 +1885,99 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect(openCall.args[1]).toBe('kusto.kqlCompatEditor');
 	});
 
+	it('closeWorkbenchFile closes only the exact targeted Workbench tab', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const activeUri = vscode.Uri.file('/work/active.kqlx');
+		const targetUri = vscode.Uri.file('/work/target.kqlx');
+		const activeTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(activeUri, 'kusto.kqlxEditor'), label: 'active.kqlx' };
+		const targetTab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlxEditor'), label: 'target.kqlx' };
+		setTabGroups(
+			{ activeTab, tabs: [activeTab], isActive: true },
+			{ activeTab: targetTab, tabs: [targetTab], isActive: false },
+		);
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await (orch as any).closeWorkbenchFile({
+			openFileId: classifyWorkbenchUri(targetUri)!.openFileId,
+		});
+
+		expect(result).toMatchObject({
+			success: true, closed: true, closedTabCount: 1,
+			openFileId: classifyWorkbenchUri(targetUri)!.openFileId,
+		});
+		expect(close).toHaveBeenCalledWith([targetTab], true);
+		expect((vscode.window.tabGroups.all[0] as any).tabs).toEqual([activeTab]);
+	});
+
+	it('closeWorkbenchFile refuses a dirty target unless saveChanges is explicit', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const targetUri = vscode.Uri.file('/work/dirty.kqlx');
+		const targetTab = { isActive: true, isDirty: true, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlxEditor'), label: 'dirty.kqlx' };
+		setTabGroups({ activeTab: targetTab, tabs: [targetTab], isActive: true });
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await (orch as any).closeWorkbenchFile({ targetFileUri: targetUri.toString() });
+
+		expect(result).toMatchObject({ success: false, closed: false, wasDirty: true });
+		expect(result.error).toContain('saveChanges');
+		expect(close).not.toHaveBeenCalled();
+	});
+
+	it('closeWorkbenchFile saves the exact dirty document before closing when requested', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const targetUri = vscode.Uri.file('/work/save-before-close.kqlx');
+		const targetTab = { isActive: true, isDirty: true, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlxEditor'), label: 'save-before-close.kqlx' };
+		setTabGroups({ activeTab: targetTab, tabs: [targetTab], isActive: true });
+		const document = {
+			uri: targetUri,
+			isDirty: true,
+			save: vi.fn(async function (this: { isDirty: boolean }) { this.isDirty = false; return true; }),
+		};
+		(vscode.workspace as any).textDocuments = [document];
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await (orch as any).closeWorkbenchFile({
+			targetFileUri: targetUri.toString(), saveChanges: true,
+		});
+
+		expect(document.save).toHaveBeenCalledOnce();
+		expect(close).toHaveBeenCalledWith([targetTab], true);
+		expect(result).toMatchObject({
+			success: true, closed: true, saved: true, wasDirty: true, closedTabCount: 1,
+		});
+	});
+
+	it('closeWorkbenchFile leaves the exact dirty tab open when its save fails', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const targetUri = vscode.Uri.file('/work/save-failed.kqlx');
+		const targetTab = { isActive: true, isDirty: true, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlxEditor'), label: 'save-failed.kqlx' };
+		setTabGroups({ activeTab: targetTab, tabs: [targetTab], isActive: true });
+		const document = { uri: targetUri, isDirty: true, save: vi.fn(async () => false) };
+		(vscode.workspace as any).textDocuments = [document];
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await (orch as any).closeWorkbenchFile({
+			targetFileUri: targetUri.toString(), saveChanges: true,
+		});
+
+		expect(document.save).toHaveBeenCalledOnce();
+		expect(close).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ success: false, closed: false, wasDirty: true });
+		expect(result.error).toContain('could not be saved');
+	});
+
+	it('closeWorkbenchFile reports a supported target that is not open', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const targetUri = vscode.Uri.file('/work/not-open.kqlx');
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await (orch as any).closeWorkbenchFile({ targetFileUri: targetUri.toString() });
+
+		expect(result).toMatchObject({ success: false, closed: false });
+		expect(result.error).toContain('not open');
+		expect(close).not.toHaveBeenCalled();
+	});
+
 	it('listSections omits filePath and fileName when no documentUri is provided', async () => {
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 		orch.connect(

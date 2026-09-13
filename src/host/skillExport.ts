@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 
 /** Bump this when you change skill-template.md in a way that requires re-export. */
-export const TEMPLATE_VERSION = 17;
+export const TEMPLATE_VERSION = 18;
 
 export function isSkillTemplateCurrent(templateVersion: number): boolean {
 	return templateVersion === TEMPLATE_VERSION;

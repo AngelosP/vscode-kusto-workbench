@@ -26,10 +26,10 @@ describe('exported Kusto Workbench skill template', () => {
 	const exportedDashboardRules = exportedFiles.find(file => file.fileName === HTML_DASHBOARD_RULES_FILENAME)?.content ?? '';
 
 	it('is bumped to the current template version', () => {
-		expect(TEMPLATE_VERSION).toBe(17);
-		expect(template).toContain('# version: 17 - Auto-updated by Kusto Workbench. Do not remove this line.');
-		expect(isSkillTemplateCurrent(16)).toBe(false);
-		expect(isSkillTemplateCurrent(17)).toBe(true);
+		expect(TEMPLATE_VERSION).toBe(18);
+		expect(template).toContain('# version: 18 - Auto-updated by Kusto Workbench. Do not remove this line.');
+		expect(isSkillTemplateCurrent(17)).toBe(false);
+		expect(isSkillTemplateCurrent(18)).toBe(true);
 	});
 
 	it('exports the compact skill and dashboard rules sidecar separately', () => {
@@ -42,6 +42,7 @@ describe('exported Kusto Workbench skill template', () => {
 
 	it('documents the current tool surface including dashboards, SQL, and development notes', () => {
 		for (const toolName of [
+			'closeWorkbenchFile',
 			'configureHtmlSection',
 			'getHtmlDashboardGuide',
 			'validateHtmlDashboard',
@@ -74,7 +75,7 @@ describe('exported Kusto Workbench skill template', () => {
 		}
 	});
 
-	it('keeps Kusto Workbench agents unable and forbidden to close the active chat tab', () => {
+	it('keeps exact Workbench closing available without exposing focus-based close commands', () => {
 		const mainAgent = readWorkspaceFile('copilot-instructions/custom-agent.md');
 		const searchAgent = readWorkspaceFile('copilot-instructions/custom-subagent-search.md');
 		for (const content of [mainAgent, searchAgent]) {
@@ -83,8 +84,8 @@ describe('exported Kusto Workbench skill template', () => {
 		}
 		expect(mainAgent).toContain('Never close Copilot Chat or an agent conversation.');
 		expect(mainAgent).toContain('`workbench.action.closeActiveEditor`');
-		expect(mainAgent).toContain('target its exact URI with a tab-specific API');
-		expect(mainAgent).toContain('leave the tab open');
+		expect(mainAgent).toContain('`#closeWorkbenchFile` with the exact `openFileId`');
+		expect(mainAgent).toContain('`saveChanges: true` only when the user requested saving dirty changes');
 	});
 
 	it('includes dashboard upgrade-on-touch and validation behavior in the sidecar', () => {
@@ -134,7 +135,7 @@ describe('exported Kusto Workbench skill template', () => {
 	});
 });
 
-describe('dashboard language model tool wiring', () => {
+describe('language model tool wiring', () => {
 	it('keeps manifest, registration, and main prompt names aligned', () => {
 		const manifest = JSON.parse(readWorkspaceFile('package.json'));
 		const contributedTools = manifest.contributes.languageModelTools as Array<{ name: string; toolReferenceName: string }>;
@@ -142,6 +143,7 @@ describe('dashboard language model tool wiring', () => {
 		const prompt = readWorkspaceFile('copilot-instructions/custom-agent.md');
 
 		for (const expected of [
+			{ name: 'kusto-workbench_close-workbench-file', toolReferenceName: 'closeWorkbenchFile' },
 			{ name: 'kusto-workbench_get-html-dashboard-guide', toolReferenceName: 'getHtmlDashboardGuide' },
 			{ name: 'kusto-workbench_validate-html-dashboard', toolReferenceName: 'validateHtmlDashboard' },
 		]) {

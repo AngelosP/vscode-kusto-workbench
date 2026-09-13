@@ -208,6 +208,10 @@ describe('QueryEditorProvider editor cursor-status application', () => {
 		};
 		const postMessage = vi.fn(async () => true);
 		const provider = createProvider(editorCursorStatusBar, cursorStatusApplication, postMessage);
+		const revalidateTransport = vi.fn();
+		(provider as any).setMessageTransport(postMessage, revalidateTransport);
+		const activateToolSession = vi.fn();
+		(provider as any).workbenchToolSessionApplication = { activate: activateToolSession };
 		provider.documentUri = 'file:///tmp/favorites-source.kqlx';
 		let onDidChangeViewState!: () => void;
 		const panel = {
@@ -227,6 +231,7 @@ describe('QueryEditorProvider editor cursor-status application', () => {
 		} as unknown as vscode.WebviewPanel;
 
 		await provider.initializeWebviewPanel(panel, { registerMessageHandler: false });
+		activateToolSession.mockClear();
 
 		expect(getQueryEditorHtml).toHaveBeenCalledWith(
 			panel.webview,
@@ -239,5 +244,17 @@ describe('QueryEditorProvider editor cursor-status application', () => {
 		(panel as unknown as { visible: boolean }).visible = false;
 		onDidChangeViewState();
 		expect(cursorStatusApplication.setPanelVisible).toHaveBeenLastCalledWith(false);
+		expect(revalidateTransport).not.toHaveBeenCalled();
+
+		(panel as unknown as { visible: boolean }).visible = true;
+		onDidChangeViewState();
+		expect(revalidateTransport).toHaveBeenCalledOnce();
+		expect(activateToolSession).toHaveBeenCalledOnce();
+		expect(revalidateTransport.mock.invocationCallOrder[0])
+			.toBeLessThan(activateToolSession.mock.invocationCallOrder[0]);
+
+		onDidChangeViewState();
+		expect(revalidateTransport).toHaveBeenCalledOnce();
+		expect(activateToolSession).toHaveBeenCalledTimes(2);
 	});
 });

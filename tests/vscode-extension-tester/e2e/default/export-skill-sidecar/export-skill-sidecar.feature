@@ -2,6 +2,9 @@ Feature: Exported skill includes dashboard rules sidecar
 
   Background:
     Given the extension is in a clean state
+    When I add folder "${VSCODE_EXT_TEST_WORKSPACE}" to the workspace
+    When I delete file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\SKILL.md"
+    When I delete file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\html-dashboard-rules.md"
     And I wait 2 seconds
 
   Scenario: Export Agent Skill writes SKILL.md and html-dashboard-rules.md
@@ -12,7 +15,7 @@ Feature: Exported skill includes dashboard rules sidecar
 
     Then the file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\SKILL.md" should exist
     And the file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\html-dashboard-rules.md" should exist
-    And the file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\SKILL.md" should contain "# version: 17"
+    And the file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\SKILL.md" should contain "# version: 18"
     And the file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\SKILL.md" should contain "./html-dashboard-rules.md"
     And the file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\SKILL.md" should contain "# Kusto Workbench Skill"
     And the file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\html-dashboard-rules.md" should contain "# Kusto Workbench HTML Dashboard Rules"

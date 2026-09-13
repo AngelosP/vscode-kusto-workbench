@@ -415,6 +415,217 @@ describe('MainWebviewStartupGateway', () => {
 		]);
 	});
 
+	it('holds reactivation traffic until the current dispatcher answers a direct probe', async () => {
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel,
+			admitInbound: admitTestMessage,
+		});
+		await Promise.resolve(harness.receive({
+			type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1',
+		}));
+		await expect(gateway.postMessage({ type: 'projection', sequence: 1 })).resolves.toBe(true);
+
+		gateway.beginDispatcherRevalidation();
+		const probe = harness.posted.at(-1) as TestMessage;
+		expect(probe).toMatchObject({ type: 'mainWebviewDispatcherProbe' });
+		expect(probe.probeId).toEqual(expect.any(String));
+		const pending = gateway.postMessage({ type: 'projection', sequence: 2 });
+		let settled = false;
+		void pending.then(() => { settled = true; });
+		await Promise.resolve();
+
+		expect(harness.posted).toEqual([
+			{ type: 'projection', sequence: 1 },
+			probe,
+		]);
+		expect(settled).toBe(false);
+
+		await Promise.resolve(harness.receive({
+			type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE,
+			runtimeId: 'runtime-1', probeId: 'stale-probe',
+		}));
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		await Promise.resolve(harness.receive({
+			type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE,
+			runtimeId: 'runtime-1', probeId: probe.probeId,
+		}));
+		await expect(pending).resolves.toBe(true);
+		expect(harness.posted).toEqual([
+			{ type: 'projection', sequence: 1 },
+			probe,
+			{ type: 'projection', sequence: 2 },
+		]);
+	});
+
+	it('retries the same dispatcher challenge when the first probe is lost during resume', async () => {
+		vi.useFakeTimers();
+		try {
+			const harness = createPanelHarness();
+			const gateway = new MainWebviewStartupGateway<TestMessage>({
+				panel: harness.panel,
+				admitInbound: admitTestMessage,
+				dispatcherRevalidationTimeoutMs: 100,
+				dispatcherRevalidationRetryMs: 20,
+			});
+			await Promise.resolve(harness.receive({
+				type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1',
+			}));
+			gateway.beginDispatcherRevalidation();
+			const firstProbe = harness.posted.at(-1) as TestMessage;
+			const pending = gateway.postMessage({ type: 'mutation', sequence: 1 });
+
+			await vi.advanceTimersByTimeAsync(20);
+			const retryProbe = harness.posted.at(-1) as TestMessage;
+			expect(retryProbe).toEqual(firstProbe);
+			expect(harness.posted.filter(message =>
+				(message as TestMessage).type === 'mainWebviewDispatcherProbe')).toHaveLength(2);
+
+			await Promise.resolve(harness.receive({
+				type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE,
+				runtimeId: 'runtime-1', probeId: retryProbe.probeId,
+			}));
+			await expect(pending).resolves.toBe(true);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('clears the retry timer when probe delivery receives a synchronous acknowledgement', async () => {
+		vi.useFakeTimers();
+		try {
+			const harness = createPanelHarness();
+			const gateway = new MainWebviewStartupGateway<TestMessage>({
+				panel: harness.panel,
+				admitInbound: admitTestMessage,
+				dispatcherRevalidationTimeoutMs: 100,
+				dispatcherRevalidationRetryMs: 20,
+			});
+			await Promise.resolve(harness.receive({
+				type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1',
+			}));
+			const postMessage = vi.mocked(harness.panel.webview.postMessage);
+			postMessage.mockImplementation(async (message: TestMessage) => {
+				harness.posted.push(message);
+				if (message.type === 'mainWebviewDispatcherProbe') {
+					await Promise.resolve(harness.receive({
+						type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE,
+						runtimeId: 'runtime-1', probeId: message.probeId,
+					}));
+				}
+				return true;
+			});
+
+			gateway.beginDispatcherRevalidation();
+			await vi.waitFor(() => expect(vi.getTimerCount()).toBe(0));
+			await expect(gateway.postMessage({ type: 'mutation', sequence: 1 })).resolves.toBe(true);
+			await vi.advanceTimersByTimeAsync(100);
+			expect(harness.posted.filter(message =>
+				(message as TestMessage).type === 'mainWebviewDispatcherProbe')).toHaveLength(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('clears dispatcher probe retries and rejects queued traffic on disposal', async () => {
+		vi.useFakeTimers();
+		try {
+			const harness = createPanelHarness();
+			const gateway = new MainWebviewStartupGateway<TestMessage>({
+				panel: harness.panel,
+				admitInbound: admitTestMessage,
+				dispatcherRevalidationTimeoutMs: 100,
+				dispatcherRevalidationRetryMs: 20,
+			});
+			await Promise.resolve(harness.receive({
+				type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1',
+			}));
+			gateway.beginDispatcherRevalidation();
+			const pending = gateway.postMessage({ type: 'mutation', sequence: 1 });
+
+			harness.disposePanel();
+
+			await expect(pending).resolves.toBe(false);
+			expect(vi.getTimerCount()).toBe(0);
+			await vi.advanceTimersByTimeAsync(100);
+			expect(harness.posted.filter(message =>
+				(message as TestMessage).type === 'mainWebviewDispatcherProbe')).toHaveLength(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('requires the current challenge even from a runtime that started during revalidation', async () => {
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel,
+			admitInbound: admitTestMessage,
+		});
+		await Promise.resolve(harness.receive({
+			type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-old',
+		}));
+		gateway.beginDispatcherRevalidation();
+		const pending = gateway.postMessage({ type: 'projection', sequence: 1 });
+
+		await Promise.resolve(harness.receive({
+			type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-new',
+		}));
+		let settled = false;
+		void pending.then(() => { settled = true; });
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		const probe = harness.posted.find(message =>
+			(message as TestMessage).type === 'mainWebviewDispatcherProbe') as TestMessage;
+		await Promise.resolve(harness.receive({
+			type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE,
+			runtimeId: 'runtime-new', probeId: probe.probeId,
+		}));
+
+		await expect(pending).resolves.toBe(true);
+		expect(harness.posted.at(-1)).toEqual({ type: 'projection', sequence: 1 });
+	});
+
+	it('rejects queued traffic when dispatcher revalidation expires', async () => {
+		vi.useFakeTimers();
+		try {
+			const harness = createPanelHarness();
+			const gateway = new MainWebviewStartupGateway<TestMessage>({
+				panel: harness.panel,
+				admitInbound: admitTestMessage,
+				dispatcherRevalidationTimeoutMs: 100,
+			});
+			await Promise.resolve(harness.receive({
+				type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1',
+			}));
+			gateway.beginDispatcherRevalidation();
+			const probe = harness.posted.at(-1) as TestMessage;
+			const pending = gateway.postMessage({ type: 'mutation', sequence: 1 });
+
+			await vi.advanceTimersByTimeAsync(100);
+
+			await expect(pending).resolves.toBe(false);
+			expect(harness.posted).not.toContainEqual({ type: 'mutation', sequence: 1 });
+			await expect(gateway.postMessage({ type: 'mutation', sequence: 2 })).resolves.toBe(false);
+
+			gateway.beginDispatcherRevalidation();
+			const retryProbe = harness.posted.at(-1) as TestMessage;
+			expect(retryProbe).toMatchObject({ type: 'mainWebviewDispatcherProbe' });
+			expect(retryProbe.probeId).not.toBe(probe.probeId);
+			await Promise.resolve(harness.receive({
+				type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE,
+				runtimeId: 'runtime-1', probeId: retryProbe.probeId,
+			}));
+			await expect(gateway.postMessage({ type: 'mutation', sequence: 3 })).resolves.toBe(true);
+			expect(harness.posted).toContainEqual({ type: 'mutation', sequence: 3 });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('keeps ordinary handoff traffic ordered while allowing an explicit correlated reply', async () => {
 		const harness = createPanelHarness();
 		const events: string[] = [];

@@ -38,6 +38,14 @@ function hasOwn(record: Record<string, unknown>, key: string): boolean {
 	return Object.prototype.hasOwnProperty.call(record, key);
 }
 
+export function hasPersistedResultJson(state: PersistedResultState): boolean {
+	const sections = Array.isArray(state?.sections) ? state.sections : [];
+	return sections.some(section => !!section
+		&& typeof section === 'object'
+		&& !Array.isArray(section)
+		&& hasOwn(section as Record<string, unknown>, 'resultJson'));
+}
+
 function isParseablePersistedResultJson(resultJson: unknown): boolean {
 	if (typeof resultJson !== 'string' || !resultJson.trim()) return false;
 	try {
@@ -203,6 +211,9 @@ export class HostPersistedResultSanitizationApplicationHandler
 		onKustoSanitized?: KustoSanitizationObserver,
 	): Promise<T> {
 		state = this.stripLegacyResultPayloads(state);
+		if (!onKustoSanitized && !hasPersistedResultJson(state)) {
+			return this.sanitizeSqlLeaveNoTraceState(state);
+		}
 		const notifyKustoSanitized = (
 			before: PersistedResultState,
 			after: PersistedResultState,
