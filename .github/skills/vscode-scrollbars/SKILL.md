@@ -11,8 +11,13 @@ description: >
 
 # vscode-scrollbars
 
-Implement VS Code-style scrollbars: rectangular thumbs, no arrow buttons,
+Implement VS Code-style scrollbars: rounded thumbs, no arrow buttons,
 transparent tracks, theme-aware colors via `--vscode-scrollbarSlider-*` tokens.
+
+VS Code 1.137's modern UI rounds scrollbar sliders with
+`var(--vscode-cornerRadius-small)`. Webviews should use
+`var(--vscode-cornerRadius-small, 4px)` so the current shape is preserved even
+when the host does not expose the non-color corner-radius token.
 
 ## Critical Lessons Learned
 
@@ -59,7 +64,7 @@ or any scrollable container where you need full visual control (no arrows,
 overlay behavior, auto-hide).
 
 **Key files:**
-- `src/webview/core/overlay-scrollbars.ts` — initialization + scroll patching
+- `src/webview/core/overlay-scrollbars.ts` — initialization + write-only scroll compatibility
 - `node_modules/overlayscrollbars/styles/overlayscrollbars.min.css` — library CSS (14KB)
 - `src/host/queryEditorHtml.ts` — inlines library CSS into the `<style>` tag
 - `esbuild.js` — copies library CSS to `dist/webview/styles/`
@@ -71,19 +76,21 @@ overlay behavior, auto-hide).
 4. Initializes `OverlayScrollbars(wrapper, { ... })` on the wrapper
 5. The library sets `scrollbar-width: none` on its internal viewport element,
    hiding the native scrollbar, and renders its own DOM-based scrollbar
-6. Patches `window.scrollBy`, `window.scrollTo`, `window.scrollY`,
-   `window.pageYOffset`, and `document.documentElement.scrollTop` to
-   delegate to the wrapper element — preserving compatibility with 20+
-   existing call sites
+6. Patches only `window.scrollBy` and `window.scrollTo` to delegate writes to
+  the wrapper. Native `window.scrollY`, `window.pageYOffset`, and
+  `document.documentElement.scrollTop` reads remain untouched so Monaco and
+  browser mouse geometry stay in the native coordinate system. Application
+  reads use the explicit page-scroll helpers in `src/webview/core/utils.ts`.
 
 **VS Code theme CSS (applied via adoptedStyleSheets):**
 ```css
+.os-scrollbar { --os-padding-perpendicular: 3px; }
 .os-scrollbar-vertical { width: 14px; }
 .os-scrollbar-horizontal { height: 14px; }
 .os-scrollbar .os-scrollbar-track { background: transparent; }
 .os-scrollbar .os-scrollbar-handle {
   background: var(--vscode-scrollbarSlider-background);
-  border-radius: 0;
+  border-radius: var(--vscode-cornerRadius-small, 4px);
 }
 .os-scrollbar .os-scrollbar-handle:hover {
   background: var(--vscode-scrollbarSlider-hoverBackground);
@@ -101,7 +108,7 @@ OverlayScrollbars(element, {
     visibility: 'auto',
     autoHide: 'move',
     autoHideDelay: 800,
-    autoHideSuspend: true,
+    autoHideSuspend: false,
   },
   overflow: {
     x: 'hidden',   // or 'scroll' if horizontal scroll needed
@@ -135,12 +142,22 @@ themed scrollbars but **will have arrows on Windows with classic scrollbars**.
 
 **Current CSS (`::-webkit-scrollbar` only — no `scrollbar-width`/`scrollbar-color`):**
 ```css
-::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar { width: 14px; height: 14px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); }
-::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
-::-webkit-scrollbar-thumb:active { background: var(--vscode-scrollbarSlider-activeBackground); }
+::-webkit-scrollbar-thumb {
+  background-color: var(--vscode-scrollbarSlider-background);
+  background-clip: content-box;
+  border: 3px solid transparent;
+  border-radius: calc(var(--vscode-cornerRadius-small, 4px) + 3px);
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--vscode-scrollbarSlider-hoverBackground); }
+::-webkit-scrollbar-thumb:active { background-color: var(--vscode-scrollbarSlider-activeBackground); }
 ::-webkit-scrollbar-corner { background: transparent; }
+
+/* Bundled Monaco versions may predate VS Code's modern rounded slider rule. */
+.monaco-scrollable-element > .scrollbar > .slider {
+  border-radius: var(--vscode-cornerRadius-small, 4px);
+}
 ```
 
 > **Note:** On Chromium 134+ this CSS has **no visible effect** because the
@@ -153,9 +170,11 @@ themed scrollbars but **will have arrows on Windows with classic scrollbars**.
 
 | Property | Value |
 |----------|-------|
-| Vertical width | 14px |
-| Horizontal height | 14px |
-| Thumb border-radius | 0 (rectangular) |
+| Overlay/CSS rail width | 14px |
+| Overlay/CSS visible thumb | 8px (3px inset per side) |
+| Monaco rail width | 10px |
+| Monaco visible slider | 8px (1px inset per side) |
+| Thumb border-radius | `var(--vscode-cornerRadius-small, 4px)` |
 | Track background | transparent |
 | Thumb resting | `--vscode-scrollbarSlider-background` |
 | Thumb hover | `--vscode-scrollbarSlider-hoverBackground` |
@@ -163,24 +182,27 @@ themed scrollbars but **will have arrows on Windows with classic scrollbars**.
 
 ### Monaco Editor Scrollbar Size ≠ CSS/OverlayScrollbar Size
 
-Monaco's `verticalScrollbarSize` / `horizontalScrollbarSize` options measure
-the **full scrollbar track width** including internal padding around the
-thumb. CSS `::-webkit-scrollbar { width }` and OverlayScrollbars
-`.os-scrollbar-vertical { width }` measure the **visible element width**
-which maps more directly to the rendered thumb area.
+Monaco separates rail dimensions (`verticalScrollbarSize` /
+`horizontalScrollbarSize`) from visible slider dimensions
+(`verticalSliderSize` / `horizontalSliderSize`). OverlayScrollbars and the CSS
+fallback use a 14px rail plus a 3px perpendicular inset on both sides.
 
 **To achieve visually matching scrollbar widths across all three systems,
 use different numeric values:**
 
-| System | Code value | Visual result |
-|--------|-----------|---------------|
-| Monaco editor options | **10px** | Matches VS Code scrollbar width |
-| CSS `::-webkit-scrollbar` | **14px** | Matches VS Code scrollbar width |
-| OverlayScrollbars theme CSS | **14px** | Matches VS Code scrollbar width |
+| System | Rail | Visible thumb |
+|--------|------|---------------|
+| Monaco editor options | **10px** | **8px** via `verticalSliderSize` / `horizontalSliderSize` |
+| CSS `::-webkit-scrollbar` | **14px** | **8px** via a transparent 3px border and `background-clip: content-box` |
+| OverlayScrollbars theme CSS | **14px** | **8px** via `--os-padding-perpendicular: 3px` |
 
-Setting all three to the same number (e.g. 14px) produces Monaco scrollbars
-that are visually **wider** than the page/CSS scrollbars. The ~4px difference
-compensates for Monaco's internal track padding.
+Do not shrink the rails to make the thumb thinner. Keeping the existing rails
+preserves layout and pointer hit targets; only the painted slider is inset.
+
+Monaco's bundled scrollbar stylesheet may not yet contain VS Code's modern UI
+radius rule. Keep the shared `.monaco-scrollable-element > .scrollbar >
+.slider` override alongside the CSS fallback, and add the same rule to any
+standalone Monaco webview that does not load `scrollbarSheet`.
 
 **All 6 Monaco editor creation sites** set scrollbar sizes inline — there is
 no shared options object:
@@ -191,12 +213,22 @@ no shared options object:
 - `src/webview/sections/kw-sql-section.ts` — SQL editor (also sets `horizontal: 'hidden'`)
 - `src/host/diffViewerUtils.ts` — Diff editor (webview panel, string-injected JS)
 
+### Rounded thumb coverage
+
+- `osThemeSheet` rounds every OverlayScrollbars handle.
+- `scrollbarSheet` rounds CSS fallback thumbs and Monaco sliders in the main,
+  Markdown, tutorial, Connection Manager, Cached Values, and browser webviews.
+- `queryEditor.css` mirrors those rules for the light-DOM/preload path and
+  rounds the custom plain-Markdown WYSIWYG/Preview thumb.
+- `diffViewerUtils.ts` carries the same Monaco slider rule because its
+  standalone webview does not load `scrollbarSheet`.
+
 ## Converted Scrollbars
 
 ### Body-level page scroll (main .kqlx/.kql webview)
 - **Strategy:** A (DOM Overlay via OverlayScrollbars)
 - **Files:** `overlay-scrollbars.ts`, `queryEditorHtml.ts`, `esbuild.js`
-- **Result:** Full VS Code-style overlay scrollbar, no arrows, auto-hide on idle
+- **Result:** Full rounded VS Code-style overlay scrollbar, no arrows, auto-hide on idle
 
 ### All Lit Shadow DOM components (29 components)
 - **Strategy:** B (CSS-only via `scrollbarSheet`)
@@ -224,7 +256,7 @@ no shared options object:
   Instance destroyed in `disconnectedCallback()`. Re-initialized when
   `_bodyVisible` toggles to `true` (conditional rendering).
 - **Result:** Full VS Code-style overlay scrollbar on both axes, no arrows,
-  compatible with virtual scrolling.
+  rounded thumbs, compatible with virtual scrolling.
 
 ### Removed redundant per-component scrollbar CSS
 - `queryEditor-chart-builder.css` — removed `.kusto-chart-controls-scroll` scrollbar block
@@ -257,7 +289,7 @@ inside the shadow boundary.
 | Sheet | File | Purpose |
 |-------|------|---------|
 | `osLibrarySheet` | `src/webview/shared/os-library-styles.ts` | Full OverlayScrollbars CSS (14KB) — structural positioning, `scrollbar-width: none`, visibility transitions. **Auto-generated** by `scripts/generate-os-library-styles.mjs` from the npm package CSS. |
-| `osThemeSheet` | `src/webview/shared/os-theme-styles.ts` | VS Code theme overrides — 14px width, transparent track, theme-colored thumb. Hand-written, small. |
+| `osThemeSheet` | `src/webview/shared/os-theme-styles.ts` | VS Code theme overrides — 14px rail, 8px rounded thumb, transparent track, theme-aware color. Hand-written, small. |
 
 Both must be in the component's `static styles` array for OverlayScrollbars
 to work inside Shadow DOM.
@@ -283,7 +315,7 @@ to work inside Shadow DOM.
    protected firstUpdated(): void {
      const el = this.shadowRoot!.querySelector('.my-scroll-container')!;
      this._osInstance = OverlayScrollbars(el, {
-       scrollbars: { visibility: 'auto', autoHide: 'move', autoHideDelay: 800, autoHideSuspend: true },
+      scrollbars: { visibility: 'auto', autoHide: 'move', autoHideDelay: 800, autoHideSuspend: false },
        overflow: { x: 'hidden', y: 'scroll' },
      });
    }
@@ -362,6 +394,9 @@ upgrading the `overlayscrollbars` npm package.
 - **Don't initialize OverlayScrollbars on `<body>` directly** if the codebase
   reads `document.documentElement.scrollTop` — the library moves scroll to an
   internal viewport div. Use the wrapper strategy instead and patch scroll APIs.
+- **Don't set `autoHideSuspend: true` for the page scrollbar** — that keeps a
+  newly usable thumb visible until the first scroll, even after pointer movement
+  stops. Use `autoHide: 'move'`, the 800ms delay, and `autoHideSuspend: false`.
 - **Don't hand-write the OverlayScrollbars CSS** — the library's own CSS is
   complex (200+ rules) and handles edge cases like RTL, resize observers, and
   scrollbar hiding across browsers. Always use the official minified CSS.

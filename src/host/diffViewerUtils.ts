@@ -488,6 +488,9 @@ export function getDiffHtml(opts: DiffHtmlOptions): string {
 			width: 100%;
 			min-height: 0;
 		}
+		.monaco-scrollable-element > .scrollbar > .slider {
+			border-radius: var(--vscode-cornerRadius-small, 4px);
+		}
 		.loading {
 			display: flex;
 			align-items: center;
@@ -563,7 +566,9 @@ export function getDiffHtml(opts: DiffHtmlOptions): string {
 					renderLineHighlight: 'all',
 					scrollbar: {
 						verticalScrollbarSize: 10,
-						horizontalScrollbarSize: 10
+						verticalSliderSize: 8,
+						horizontalScrollbarSize: 10,
+						horizontalSliderSize: 8
 					}
 				});
 

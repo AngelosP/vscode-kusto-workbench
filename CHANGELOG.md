@@ -5,8 +5,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [5.1.1] - 2026.09.12
 
+* Scrollbar styling matches new VS Code scrollbar styling.
 * Bugs
-    * SQL Copilot now renders conversational replies, shows advancing model rounds, honors tool selections, and reliably responds to Stop and Escape. Agent-delegated SQL requests no longer overwrite drafts or return stale editor queries.
+    * SQL Copilot now renders conversational replies, shows advancing model rounds, honors tool selections, and reliably responds to Stop and Escape. 
+    * Agent-delegated SQL requests no longer overwrite drafts or return stale editor queries.
 
 ## [5.1.0] - 2026.08.21
 

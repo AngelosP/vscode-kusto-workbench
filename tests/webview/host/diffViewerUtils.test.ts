@@ -564,4 +564,20 @@ describe('getDiffHtml', () => {
 
 	expect(html).toContain('<title>Diff: a&amp;b&lt;c&gt;.md</title>');
  });
+
+	it('uses the current VS Code rounded Monaco scrollbar treatment', () => {
+		const html = getDiffHtml({
+			originalContent: 'before',
+			modifiedContent: 'after',
+			language: 'plaintext',
+			fileName: 'query.kql',
+		});
+
+		expect(html).toContain('.monaco-scrollable-element > .scrollbar > .slider');
+		expect(html).toContain('border-radius: var(--vscode-cornerRadius-small, 4px);');
+		expect(html).toContain('verticalScrollbarSize: 10');
+		expect(html).toContain('verticalSliderSize: 8');
+		expect(html).toContain('horizontalScrollbarSize: 10');
+		expect(html).toContain('horizontalSliderSize: 8');
+	});
 });

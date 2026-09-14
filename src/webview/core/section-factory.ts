@@ -2470,7 +2470,7 @@ function initPythonEditor( boxId: any) {
 			readOnly,
 			domReadOnly: readOnly,
 			automaticLayout: true,
-			scrollbar: { alwaysConsumeMouseWheel: false, verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
+			scrollbar: { alwaysConsumeMouseWheel: false, verticalScrollbarSize: 10, verticalSliderSize: 8, horizontalScrollbarSize: 10, horizontalSliderSize: 8 },
 			fixedOverflowWidgets: true,
 			minimap: { enabled: false },
 			scrollBeyondLastLine: false,

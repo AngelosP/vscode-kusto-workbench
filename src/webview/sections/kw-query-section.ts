@@ -363,11 +363,50 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 	public setSchemaLifecycleTarget(connectionId: string, database?: string): KustoEditorLifecycleIdentity | undefined {
 		const currentTarget = kustoEditorSchemaCoordinator.getTarget(this.boxId);
-		const targetChanged = !!currentTarget
-			&& (String(currentTarget.connectionId || '') !== String(connectionId || '')
-				|| String(currentTarget.database || '').toLowerCase() !== String(database || '').toLowerCase());
-		if (targetChanged) this.clearTargetBoundState();
-		const selectedConnection = this._connections.find(connection => connection.id === String(connectionId || ''));
+		const currentConnectionId = String(currentTarget?.connectionId || '');
+		const nextConnectionId = String(connectionId || '');
+		const currentDatabase = String(currentTarget?.database || '').toLowerCase();
+		const nextDatabase = String(database || '').toLowerCase();
+		const selectedConnection = this._connections.find(connection => connection.id === nextConnectionId);
+		const currentConnectionRevision = currentTarget?.connectionRevision;
+		const nextConnectionRevision = selectedConnection?.connectionRevision;
+		const currentConnectionIdentityKey = String(currentTarget?.connectionIdentityKey || '');
+		const nextConnectionIdentityKey = String(selectedConnection?.connectionIdentityKey || '');
+		const logicalTargetSame = currentConnectionId === nextConnectionId
+			&& currentDatabase === nextDatabase;
+		const pendingDatabaseCompletion = currentConnectionId === nextConnectionId
+			&& !currentDatabase
+			&& !!nextDatabase;
+		const physicalTargetSame = currentConnectionRevision === nextConnectionRevision
+			&& currentConnectionIdentityKey === nextConnectionIdentityKey;
+		const physicalTargetEnrichment = !(
+			Number.isSafeInteger(currentConnectionRevision) && currentConnectionIdentityKey
+		) && Number.isSafeInteger(nextConnectionRevision) && !!nextConnectionIdentityKey
+			&& (currentConnectionRevision === undefined
+				|| currentConnectionRevision === nextConnectionRevision)
+			&& (!currentConnectionIdentityKey
+				|| currentConnectionIdentityKey === nextConnectionIdentityKey);
+		const currentArtifact = getCurrentResultArtifact(this.boxId, 0);
+		const artifactMatchesNextTarget = !!currentArtifact
+			&& String(currentArtifact.producer?.connectionId || '') === nextConnectionId
+			&& String(currentArtifact.producer?.database || '').toLowerCase() === nextDatabase
+			&& Number.isSafeInteger(currentArtifact.policy?.connectionRevision)
+			&& currentArtifact.policy?.connectionRevision === nextConnectionRevision
+			&& !!String(currentArtifact.policy?.connectionIdentityKey || '')
+			&& currentArtifact.policy?.connectionIdentityKey === nextConnectionIdentityKey;
+		const artifactHasPhysicalOwner = !!currentArtifact && (
+			Number.isSafeInteger(currentArtifact.policy?.connectionRevision)
+			|| !!String(currentArtifact.policy?.connectionIdentityKey || '')
+		);
+		const artifactAllowsPhysicalEnrichment = !artifactHasPhysicalOwner
+			|| artifactMatchesNextTarget;
+		const targetChanged = !!currentTarget && (!logicalTargetSame || !physicalTargetSame);
+		const compatibleTargetCompletion = (logicalTargetSame && physicalTargetEnrichment
+			&& artifactAllowsPhysicalEnrichment)
+			|| ((logicalTargetSame || pendingDatabaseCompletion)
+				&& (physicalTargetSame || physicalTargetEnrichment)
+				&& (!currentArtifact || artifactMatchesNextTarget));
+		if (targetChanged && !compatibleTargetCompletion) this.clearTargetBoundState();
 		const next = this._schemaSectionLease
 			? kustoEditorSchemaCoordinator.setTarget(this._schemaSectionLease, connectionId, database, selectedConnection)
 			: undefined;

@@ -1464,6 +1464,34 @@ describe('kw-query-section loading states', () => {
 		}));
 	});
 
+	it('clears a stamped restored artifact when initial physical enrichment resolves to another owner', () => {
+		const el = createSection();
+		el.id = el.boxId;
+		el.setConnections([{
+			id: 'c1', clusterUrl: 'https://cluster.kusto.windows.net',
+		}]);
+		el.setDatabases(['Db'], 'Db');
+		el.setSchemaLifecycleTarget('c1', 'Db');
+		displayResultForBox({ columns: ['marker'], rows: [['RESTORED']], metadata: {} }, 'test1', {
+			artifactPublication: {
+				producer: {
+					engine: 'kusto', boxId: 'test1', executionId: 'restored-execution',
+					connectionId: 'c1', database: 'Db',
+				},
+				policy: { connectionRevision: 4, connectionIdentityKey: 'cluster|tenant-a' },
+			},
+		});
+		pState.queryResultJsonByBoxId.test1 = JSON.stringify({ columns: ['marker'], rows: [['RESTORED']] });
+
+		el.setConnections([{
+			id: 'c1', clusterUrl: 'https://cluster.kusto.windows.net',
+			connectionRevision: 5, connectionIdentityKey: 'cluster|tenant-b',
+		}]);
+
+		expect(getResultsState('test1')).toBeNull();
+		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
+	});
+
 	it('clears rows, persisted output, comparison summary, and Copilot state when its target retires', () => {
 		const el = createSection();
 		el.displayResult({ columns: ['value'], rows: [['old-target']], metadata: {} });
@@ -1523,6 +1551,117 @@ describe('kw-query-section loading states', () => {
 			sectionInstanceId: oldExecution.sectionInstanceId,
 			targetGeneration: oldExecution.targetGeneration,
 		});
+	});
+
+	it('keeps restored rows when completing a pending database on the same connection', () => {
+		const el = createSection();
+		el.id = el.boxId;
+		el.setConnections([{
+			id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net',
+			connectionRevision: 4, connectionIdentityKey: 'cluster|',
+		}]);
+		el.setConnectionId('connection-1');
+		const connectionOnly = el.setSchemaLifecycleTarget('connection-1');
+		displayResultForBox({ columns: ['marker'], rows: [['RESTORED']], metadata: {} }, 'test1', {
+			artifactPublication: {
+				producer: {
+					engine: 'kusto', boxId: 'test1', executionId: 'restored-execution',
+					connectionId: 'connection-1', database: 'DbA',
+				},
+				policy: { connectionRevision: 4, connectionIdentityKey: 'cluster|' },
+			},
+		});
+		pState.queryResultJsonByBoxId.test1 = JSON.stringify({ columns: ['marker'], rows: [['RESTORED']] });
+
+		const completed = el.setSchemaLifecycleTarget('connection-1', 'DbA');
+
+		expect(completed?.targetGeneration).toBeGreaterThan(connectionOnly!.targetGeneration);
+		expect(getResultsState('test1')?.rows).toEqual([['RESTORED']]);
+		expect(pState.queryResultJsonByBoxId.test1).toContain('RESTORED');
+		expect(el.querySelector('kw-data-table')).not.toBeNull();
+	});
+
+	it('clears restored rows when a pending target completes with another database', () => {
+		const el = createSection();
+		el.id = el.boxId;
+		el.setConnections([{
+			id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net',
+			connectionRevision: 4, connectionIdentityKey: 'cluster|',
+		}]);
+		el.setConnectionId('connection-1');
+		el.setSchemaLifecycleTarget('connection-1');
+		displayResultForBox({ columns: ['marker'], rows: [['RESTORED']], metadata: {} }, 'test1', {
+			artifactPublication: {
+				producer: {
+					engine: 'kusto', boxId: 'test1', executionId: 'restored-execution',
+					connectionId: 'connection-1', database: 'DbA',
+				},
+				policy: { connectionRevision: 4, connectionIdentityKey: 'cluster|' },
+			},
+		});
+		pState.queryResultJsonByBoxId.test1 = JSON.stringify({ columns: ['marker'], rows: [['RESTORED']] });
+
+		el.setSchemaLifecycleTarget('connection-1', 'OtherDb');
+
+		expect(getResultsState('test1')).toBeNull();
+		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
+	});
+
+	it('clears restored rows when pending database completion uses another physical owner', () => {
+		const el = createSection();
+		el.id = el.boxId;
+		el.setConnections([{
+			id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net',
+			connectionRevision: 4, connectionIdentityKey: 'cluster|tenant-a',
+		}]);
+		el.setConnectionId('connection-1');
+		el.setSchemaLifecycleTarget('connection-1');
+		displayResultForBox({ columns: ['marker'], rows: [['RESTORED']], metadata: {} }, 'test1', {
+			artifactPublication: {
+				producer: {
+					engine: 'kusto', boxId: 'test1', executionId: 'restored-execution',
+					connectionId: 'connection-1', database: 'DbA',
+				},
+				policy: { connectionRevision: 4, connectionIdentityKey: 'cluster|tenant-a' },
+			},
+		});
+		pState.queryResultJsonByBoxId.test1 = JSON.stringify({ columns: ['marker'], rows: [['RESTORED']] });
+		el.setConnections([{
+			id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net',
+			connectionRevision: 5, connectionIdentityKey: 'cluster|tenant-b',
+		}]);
+
+		expect(getResultsState('test1')).toBeNull();
+		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
+	});
+
+	it('clears restored rows immediately when a complete target changes physical owner', () => {
+		const el = createSection();
+		el.id = el.boxId;
+		el.setConnections([{
+			id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net',
+			connectionRevision: 4, connectionIdentityKey: 'cluster|tenant-a',
+		}]);
+		el.setConnectionId('connection-1');
+		el.setSchemaLifecycleTarget('connection-1', 'DbA');
+		displayResultForBox({ columns: ['marker'], rows: [['RESTORED']], metadata: {} }, 'test1', {
+			artifactPublication: {
+				producer: {
+					engine: 'kusto', boxId: 'test1', executionId: 'restored-execution',
+					connectionId: 'connection-1', database: 'DbA',
+				},
+				policy: { connectionRevision: 4, connectionIdentityKey: 'cluster|tenant-a' },
+			},
+		});
+		pState.queryResultJsonByBoxId.test1 = JSON.stringify({ columns: ['marker'], rows: [['RESTORED']] });
+
+		el.setConnections([{
+			id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net',
+			connectionRevision: 5, connectionIdentityKey: 'cluster|tenant-b',
+		}]);
+
+		expect(getResultsState('test1')).toBeNull();
+		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
 	});
 
 	it('keeps a canceled Copilot owner admissible until its exact done terminal', () => {

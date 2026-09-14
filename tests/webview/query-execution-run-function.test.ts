@@ -9,6 +9,7 @@ const testState = vi.hoisted(() => ({
 	sectionLifecycle: { sectionInstanceId: 'instance-query_1', targetGeneration: 7 },
 	claimedExecutions: [] as Array<Record<string, unknown>>,
 	getSchemaLifecycleIdentity: vi.fn(() => ({ sectionInstanceId: 'instance-query_1', targetGeneration: 7 })),
+	setSchemaLifecycleTarget: vi.fn(),
 	beginQueryExecution: vi.fn(),
 	synchronizeKustoSectionTarget: vi.fn(() => true),
 	getQuerySectionElement: vi.fn(),
@@ -224,7 +225,12 @@ describe('executeRunFunction', () => {
 		for (const key of Object.keys(lastRunCacheEnabledByBoxId)) delete lastRunCacheEnabledByBoxId[key];
 		testState.claimedExecutions.length = 0;
 		testState.postMessageToHost.mockClear();
+		testState.sectionLifecycle.sectionInstanceId = 'instance-query_1';
+		testState.sectionLifecycle.targetGeneration = 7;
 		testState.getSchemaLifecycleIdentity.mockClear();
+		testState.getSchemaLifecycleIdentity.mockImplementation(() => ({ ...testState.sectionLifecycle }));
+		testState.setSchemaLifecycleTarget.mockReset();
+		testState.setSchemaLifecycleTarget.mockImplementation(() => ({ ...testState.sectionLifecycle }));
 		testState.beginQueryExecution.mockReset();
 		testState.beginQueryExecution.mockImplementation((executionId: string, producer = 'manual') => {
 			testState.claimedExecutions.push({
@@ -242,6 +248,7 @@ describe('executeRunFunction', () => {
 		testState.getQuerySectionElement.mockReset();
 		testState.getQuerySectionElement.mockImplementation((boxId: string) => String(boxId) === 'query_1' ? {
 			getSchemaLifecycleIdentity: testState.getSchemaLifecycleIdentity,
+			setSchemaLifecycleTarget: testState.setSchemaLifecycleTarget,
 			beginQueryExecution: testState.beginQueryExecution,
 		} : null);
 		testState.getConnectionId.mockReturnValue('conn-1');
@@ -433,6 +440,55 @@ describe('executeRunFunction', () => {
 		expect(executionId).toBeUndefined();
 		expect(testState.beginQueryExecution).toHaveBeenCalledOnce();
 		expect(getExecuteMessages()).toHaveLength(0);
+	});
+
+	it('synchronizes a restored visible target before the first query execution', () => {
+		const refreshedLifecycle = {
+			sectionInstanceId: 'instance-query_1',
+			targetGeneration: 8,
+		};
+		testState.setSchemaLifecycleTarget.mockImplementation(() => {
+			Object.assign(testState.sectionLifecycle, refreshedLifecycle);
+			return { ...testState.sectionLifecycle };
+		});
+		testState.queryEditors.query_1 = makeEditor('print x=1');
+		appendExecutionControls('query_1');
+
+		const executionId = executeQuery('query_1', 'plain');
+
+		expect(executionId).toMatch(/^kusto-run-/);
+		expect(testState.setSchemaLifecycleTarget).toHaveBeenCalledWith('conn-1', 'Samples');
+		expect(getExecuteMessages()).toEqual([expect.objectContaining({
+			connectionId: 'conn-1',
+			database: 'Samples',
+			sectionInstanceId: refreshedLifecycle.sectionInstanceId,
+			targetGeneration: refreshedLifecycle.targetGeneration,
+		})]);
+		expect(testState.claimedExecutions).toEqual([expect.objectContaining({
+			sectionInstanceId: refreshedLifecycle.sectionInstanceId,
+			targetGeneration: refreshedLifecycle.targetGeneration,
+		})]);
+		expect(testState.setSchemaLifecycleTarget.mock.invocationCallOrder[0])
+			.toBeLessThan(testState.beginQueryExecution.mock.invocationCallOrder[0]);
+	});
+
+	it('synchronizes a restored visible target before Run Function execution', async () => {
+		testState.setSchemaLifecycleTarget.mockImplementation(() => {
+			testState.sectionLifecycle.targetGeneration = 8;
+			return { ...testState.sectionLifecycle };
+		});
+		testState.queryEditors.query_1 = makeEditor('.create function RestoredFunction() { print x=1 }');
+
+		await executeRunFunction('query_1');
+
+		expect(testState.setSchemaLifecycleTarget).toHaveBeenCalledWith('conn-1', 'Samples');
+		expect(getExecuteMessages()).toEqual([expect.objectContaining({
+			query: 'let RestoredFunction = () { print x=1 };\nRestoredFunction()',
+			targetGeneration: 8,
+		})]);
+		expect(testState.claimedExecutions).toEqual([expect.objectContaining({
+			targetGeneration: 8,
+		})]);
 	});
 
 	it('stamps a manual comparison source run with its generated execution identity', () => {

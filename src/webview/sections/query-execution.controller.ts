@@ -1221,6 +1221,12 @@ function createKustoExecutionId(): string {
 	return `kusto-run-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
 }
 
+function reconcileKustoExecutionTarget(section: any, connectionId: string, database: string) {
+	return typeof section?.setSchemaLifecycleTarget === 'function'
+		? section.setSchemaLifecycleTarget(connectionId, database)
+		: section?.getSchemaLifecycleIdentity?.();
+}
+
 const ADMITTED_KUSTO_TERMINAL_EVENT = 'kusto-workbench-query-terminal';
 const kustoToolExecutionFenceByBoxId = new Map<string, string>();
 
@@ -1466,7 +1472,7 @@ export function executeQuery(
 		};
 	}
 	const section = __kustoGetQuerySectionElement(String(boxId || ''));
-	const lifecycle = section?.getSchemaLifecycleIdentity?.();
+	const lifecycle = reconcileKustoExecutionTarget(section, connectionId, database);
 	const comparisonConsumerId = comparisonRun && String(boxId) === comparisonRun.comparisonBoxId
 		? comparisonSourceArtifactConsumerId(comparisonRun.comparisonBoxId)
 		: '';
@@ -1516,13 +1522,13 @@ export function executeQueryDirect(boxId: string, query: string): string | undef
 	const database = __kustoGetDatabase(id);
 	if (!connectionId) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); } return undefined; }
 	if (!database) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); } return undefined; }
+	const section = __kustoGetQuerySectionElement(id);
+	const lifecycle = reconcileKustoExecutionTarget(section, connectionId, database);
+	if (!lifecycle) return undefined;
 	__kustoLog(id, 'run.start', 'Executing inline function query', { connectionId, database, queryMode: 'plain' });
 	try { delete pState.queryResultJsonByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
 	try { delete pState.resultArtifactByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
 	const executionId = createKustoExecutionId();
-	const section = __kustoGetQuerySectionElement(id);
-	const lifecycle = section?.getSchemaLifecycleIdentity?.();
-	if (!lifecycle) return undefined;
 	if (typeof section?.beginQueryExecution !== 'function'
 		|| section.beginQueryExecution(executionId) !== true) return undefined;
 	closeRunMenu(id);

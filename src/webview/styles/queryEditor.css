@@ -29,10 +29,16 @@
 		   precedence and re-enable native rendering (including arrows).    */
 		::-webkit-scrollbar { width: 14px; height: 14px; }
 		::-webkit-scrollbar-track { background: transparent; }
-		::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); }
-		::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
-		::-webkit-scrollbar-thumb:active { background: var(--vscode-scrollbarSlider-activeBackground); }
+		::-webkit-scrollbar-thumb {
+			background-color: var(--vscode-scrollbarSlider-background);
+			background-clip: content-box;
+			border: 3px solid transparent;
+			border-radius: calc(var(--vscode-cornerRadius-small, 4px) + 3px);
+		}
+		::-webkit-scrollbar-thumb:hover { background-color: var(--vscode-scrollbarSlider-hoverBackground); }
+		::-webkit-scrollbar-thumb:active { background-color: var(--vscode-scrollbarSlider-activeBackground); }
 		::-webkit-scrollbar-corner { background: transparent; }
+		.monaco-scrollable-element > .scrollbar > .slider { border-radius: var(--vscode-cornerRadius-small, 4px); }
 		
 		body {
 			font-family: var(--vscode-font-family);
@@ -238,10 +244,10 @@
 		body[data-kusto-document-kind="md"] .kw-md-scrollbar-thumb {
 			position: absolute;
 			top: 0;
-			right: 0;
-			width: 10px;
+			right: 1px;
+			width: 8px;
 			min-height: 33px;
-			border-radius: 0;
+			border-radius: var(--vscode-cornerRadius-small, 4px);
 			background: var(--vscode-scrollbarSlider-background);
 		}
 		body[data-kusto-document-kind="md"] .kw-md-scrollbar:hover .kw-md-scrollbar-thumb {

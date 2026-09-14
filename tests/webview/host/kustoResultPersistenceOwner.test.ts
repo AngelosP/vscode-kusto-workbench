@@ -644,6 +644,71 @@ describe('KustoResultPersistenceOwner', () => {
 		}).sections?.[0]).toMatchObject({ selectedResultIndex: 1, resultJson: expect.any(String) });
 	});
 
+	it('preserves a restored attachment while its matching database target completes', () => {
+		const first = createOwner();
+		first.session.beginExecution(terminal());
+		first.session.stagePublication('publication-1', terminal());
+		first.session.commitPublication('publication-1');
+		const persisted = first.owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		});
+
+		const owner = new KustoResultPersistenceOwner('file:///reopened-pending-database.kqlx');
+		owner.admitCanonicalSource('reopened-source', persisted);
+		const session = owner.openPanel('reopened-panel');
+		session.openSection('query_1', 'reopened-instance');
+
+		expect(session.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'reopened-instance', targetGeneration: 1,
+			connectionId: 'connection-1', connectionRevision: 4,
+			connectionIdentityKey: 'https://cluster|',
+		})).toBe(true);
+		expect(owner.getCommittedSummary('query_1')).toBeTruthy();
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		}, session.panelId).sections?.[0]).not.toHaveProperty('resultJson');
+
+		expect(session.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'reopened-instance', targetGeneration: 2,
+			connectionId: 'connection-1', database: 'Db', connectionRevision: 4,
+			connectionIdentityKey: 'https://cluster|',
+		})).toBe(true);
+		expect(owner.getCommittedSummary('query_1')).toBeTruthy();
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		}, session.panelId).sections?.[0]).toHaveProperty('resultJson');
+	});
+
+	it('revokes a restored attachment when pending database resolution selects another database', () => {
+		const first = createOwner();
+		first.session.beginExecution(terminal());
+		first.session.stagePublication('publication-1', terminal());
+		first.session.commitPublication('publication-1');
+		const persisted = first.owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		});
+
+		const owner = new KustoResultPersistenceOwner('file:///reopened-other-database.kqlx');
+		owner.admitCanonicalSource('reopened-source', persisted);
+		const session = owner.openPanel('reopened-panel');
+		session.openSection('query_1', 'reopened-instance');
+		session.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'reopened-instance', targetGeneration: 1,
+			connectionId: 'connection-1', connectionRevision: 4,
+			connectionIdentityKey: 'https://cluster|',
+		});
+
+		expect(session.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'reopened-instance', targetGeneration: 2,
+			connectionId: 'connection-1', database: 'OtherDb', connectionRevision: 4,
+			connectionIdentityKey: 'https://cluster|',
+		})).toBe(true);
+		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		}, session.panelId).sections?.[0]).not.toHaveProperty('resultJson');
+	});
+
 	it('does not let a stale panel retarget or execution clear the owner panel attachment', () => {
 		const { owner, session: ownerPanel } = createOwner();
 		ownerPanel.beginExecution(terminal());

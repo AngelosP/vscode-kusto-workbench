@@ -2,7 +2,7 @@
  * DOM-based overlay scrollbars for the main webview.
  *
  * Replaces the native browser scrollbar on the page-level scroll container
- * with a lightweight overlay that matches VS Code's look: thin rectangular
+ * with a lightweight overlay that matches VS Code's look: thin rounded
  * thumb, no arrow buttons, transparent track, theme-aware colors.
  *
  * Uses the OverlayScrollbars library which preserves native scroll feel
@@ -150,7 +150,7 @@ function init() {
 			visibility: 'auto',
 			autoHide: 'move',
 			autoHideDelay: 800,
-			autoHideSuspend: true,
+			autoHideSuspend: false,
 		},
 		overflow: {
 			x: 'hidden',

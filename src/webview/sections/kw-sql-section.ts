@@ -1160,7 +1160,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 				padding: { top: 6, bottom: 6 },
 				suggestOnTriggerCharacters: false,
 				wordBasedSuggestions: 'off',
-				scrollbar: { alwaysConsumeMouseWheel: false, horizontal: 'hidden', verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
+				scrollbar: { alwaysConsumeMouseWheel: false, horizontal: 'hidden', verticalScrollbarSize: 10, verticalSliderSize: 8, horizontalScrollbarSize: 10, horizontalSliderSize: 8 },
 				// Enable inline suggestions (ghost text completions from Copilot)
 				inlineSuggest: { enabled: true },
 			});

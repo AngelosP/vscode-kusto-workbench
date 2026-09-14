@@ -1,7 +1,7 @@
 /**
  * Shared scrollbar stylesheet for both light-DOM and shadow-DOM components.
  *
- * Produces VS Code-style scrollbars: thin rectangular thumbs, no arrow
+ * Produces VS Code-style scrollbars: thin rounded thumbs, no arrow
  * buttons, transparent tracks, and theme-aware colors via the standard
  * `--vscode-scrollbarSlider-*` CSS custom properties.
  *
@@ -22,10 +22,18 @@ const css = /* css */ `
    re-enable native rendering (including arrows on Windows). */
 ::-webkit-scrollbar { width: 14px; height: 14px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); }
-::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
-::-webkit-scrollbar-thumb:active { background: var(--vscode-scrollbarSlider-activeBackground); }
+::-webkit-scrollbar-thumb {
+   background-color: var(--vscode-scrollbarSlider-background);
+   background-clip: content-box;
+   border: 3px solid transparent;
+   border-radius: calc(var(--vscode-cornerRadius-small, 4px) + 3px);
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--vscode-scrollbarSlider-hoverBackground); }
+::-webkit-scrollbar-thumb:active { background-color: var(--vscode-scrollbarSlider-activeBackground); }
 ::-webkit-scrollbar-corner { background: transparent; }
+
+/* Monaco 0.52 predates VS Code's modern rounded slider rule. */
+.monaco-scrollable-element > .scrollbar > .slider { border-radius: var(--vscode-cornerRadius-small, 4px); }
 `;
 
 const sheet = new CSSStyleSheet();

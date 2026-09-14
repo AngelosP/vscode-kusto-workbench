@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const overlayMocks = vi.hoisted(() => {
@@ -87,6 +89,48 @@ afterEach(() => {
 });
 
 describe('page OverlayScrollbars bootstrap', () => {
+	it('uses the current VS Code rounded thumb treatment across scrollbar implementations', async () => {
+		const radius = 'border-radius: var(--vscode-cornerRadius-small, 4px)';
+		const insetRadius = 'border-radius: calc(var(--vscode-cornerRadius-small, 4px) + 3px)';
+		const overlayCss = readFileSync(resolve('src/webview/shared/os-theme-styles.ts'), 'utf8');
+		const sharedCss = readFileSync(resolve('src/webview/shared/scrollbar-styles.ts'), 'utf8');
+		const pageCss = readFileSync(resolve('src/webview/styles/queryEditor.css'), 'utf8');
+
+		expect(overlayCss).toContain('--os-padding-perpendicular: 3px');
+		expect(overlayCss).toContain(radius);
+		expect(sharedCss).toContain('border: 3px solid transparent');
+		expect(sharedCss).toContain('background-clip: content-box');
+		expect(sharedCss).toContain('::-webkit-scrollbar-thumb:hover { background-color:');
+		expect(sharedCss).toContain(insetRadius);
+		expect(sharedCss).toContain('.monaco-scrollable-element > .scrollbar > .slider');
+		expect(pageCss).toContain('border: 3px solid transparent');
+		expect(pageCss).toContain('background-clip: content-box');
+		expect(pageCss).toContain('::-webkit-scrollbar-thumb:hover { background-color:');
+		expect(pageCss).toContain(insetRadius);
+		expect(pageCss).toContain(`.monaco-scrollable-element > .scrollbar > .slider { ${radius}; }`);
+		const markdownThumbStart = pageCss.indexOf('body[data-kusto-document-kind="md"] .kw-md-scrollbar-thumb {');
+		const markdownThumbEnd = pageCss.indexOf('}', markdownThumbStart);
+		expect(markdownThumbStart).toBeGreaterThanOrEqual(0);
+		const markdownThumbCss = pageCss.slice(markdownThumbStart, markdownThumbEnd);
+		expect(markdownThumbCss).toContain('right: 1px');
+		expect(markdownThumbCss).toContain('width: 8px');
+		expect(markdownThumbCss).toContain(radius);
+
+		for (const sourcePath of [
+			'src/webview/monaco/monaco.ts',
+			'src/webview/core/section-factory.ts',
+			'src/webview/sections/kw-python-section.ts',
+			'src/webview/sections/kw-html-section.ts',
+			'src/webview/sections/kw-sql-section.ts',
+		]) {
+			const source = readFileSync(resolve(sourcePath), 'utf8');
+			expect(source, sourcePath).toContain('verticalScrollbarSize: 10');
+			expect(source, sourcePath).toContain('verticalSliderSize: 8');
+			expect(source, sourcePath).toContain('horizontalScrollbarSize: 10');
+			expect(source, sourcePath).toContain('horizontalSliderSize: 8');
+		}
+	});
+
 	it('adopts structural CSS and initializes for standalone viewer opt-in', async () => {
 		const { osLibrarySheet } = await import('../../src/webview/shared/os-library-styles.js');
 		const { osThemeSheet } = await import('../../src/webview/shared/os-theme-styles.js');
@@ -108,6 +152,12 @@ describe('page OverlayScrollbars bootstrap', () => {
 		const options = overlayMocks.OverlayScrollbars.mock.calls[0][1] as any;
 		expect(typeof options.update?.ignoreMutation).toBe('function');
 		expect(options.update?.attributes).toEqual(['hidden']);
+		expect(options.scrollbars).toEqual({
+			visibility: 'auto',
+			autoHide: 'move',
+			autoHideDelay: 800,
+			autoHideSuspend: false,
+		});
 		expect(resizeObserveMock).toHaveBeenCalledWith(viewer);
 		expect(mutationObserveMock).toHaveBeenCalledWith(viewer, { childList: true });
 	});

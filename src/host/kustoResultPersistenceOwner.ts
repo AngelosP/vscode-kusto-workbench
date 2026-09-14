@@ -307,6 +307,18 @@ function attachmentMatchesTarget(
 	return !connectionIdentityKey || connectionIdentityKey === attachment.connectionIdentityKey;
 }
 
+function attachmentMatchesPendingDatabaseTarget(
+	attachment: ResultAttachment,
+	target: KustoSectionLifecycleOwner,
+): boolean {
+	if (!normalize(target.connectionId) || normalize(target.database)
+		|| normalize(target.connectionId) !== attachment.connectionId) return false;
+	if (Number.isSafeInteger(target.connectionRevision)
+		&& target.connectionRevision !== attachment.connectionRevision) return false;
+	const connectionIdentityKey = normalize(target.connectionIdentityKey);
+	return !connectionIdentityKey || connectionIdentityKey === attachment.connectionIdentityKey;
+}
+
 function descriptorlessRecordMatchesTarget(
 	record: JsonRecord,
 	target: KustoSectionLifecycleOwner,
@@ -1318,6 +1330,14 @@ export class KustoResultPersistenceOwner {
 			&& descriptorlessRecordMatchesTarget(canonical.target, target);
 	}
 
+	matchesCanonicalPendingDatabaseTarget(
+		boxIdInput: unknown,
+		target: KustoSectionLifecycleOwner,
+	): boolean {
+		const attachment = this.committedByBoxId.get(normalize(boxIdInput));
+		return !!attachment && attachmentMatchesPendingDatabaseTarget(attachment, target);
+	}
+
 	canPanelRevokeAttachment(panelId: string, boxId: string): boolean {
 		const ownerPanelId = this.attachmentOwnerPanelByBoxId.get(boxId);
 		if (ownerPanelId) return ownerPanelId === panelId;
@@ -1380,6 +1400,18 @@ export class KustoResultPanelSession {
 			const initialAdoption = current.targetGeneration === 0
 				&& !normalize(current.connectionId)
 				&& !normalize(current.database);
+			const pendingDatabaseResolution = this.owner.matchesCanonicalPendingDatabaseTarget(
+				target.boxId, target,
+			);
+			const databaseCompletion = target.targetGeneration === current.targetGeneration + 1
+				&& normalize(target.connectionId) === normalize(current.connectionId)
+				&& !normalize(current.database)
+				&& !!normalize(target.database)
+				&& (current.connectionRevision === undefined
+					|| current.connectionRevision === target.connectionRevision)
+				&& (!normalize(current.connectionIdentityKey)
+					|| normalize(current.connectionIdentityKey) === normalize(target.connectionIdentityKey))
+				&& this.owner.matchesCanonicalTarget(target.boxId, target);
 			const physicalEnrichment = target.targetGeneration === current.targetGeneration + 1
 				&& normalize(target.connectionId) === normalize(current.connectionId)
 				&& normalize(target.database).toLowerCase() === normalize(current.database).toLowerCase()
@@ -1393,8 +1425,9 @@ export class KustoResultPanelSession {
 			const freshInitialAdoption = initialAdoption && !this.owner.hasCanonicalResultState();
 			if (!this.owner.hasMarkerlessInertState(target.boxId)
 				&& this.owner.canPanelRevokeAttachment(this.panelId, target.boxId)
-				&& ((!freshInitialAdoption && !this.owner.matchesCanonicalTarget(target.boxId, target))
-				|| (!initialAdoption && !physicalEnrichment))) {
+				&& ((!freshInitialAdoption && !pendingDatabaseResolution
+					&& !this.owner.matchesCanonicalTarget(target.boxId, target))
+				|| (!initialAdoption && !physicalEnrichment && !databaseCompletion))) {
 				this.owner.revokeBox(target.boxId);
 			}
 			this.activeByBoxId.delete(target.boxId);

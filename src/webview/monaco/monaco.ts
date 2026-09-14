@@ -5846,7 +5846,7 @@ function initQueryEditor(boxId: any) {
 			readOnly,
 			domReadOnly: readOnly,
 			automaticLayout: true,
-			scrollbar: { alwaysConsumeMouseWheel: false, verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
+			scrollbar: { alwaysConsumeMouseWheel: false, verticalScrollbarSize: 10, verticalSliderSize: 8, horizontalScrollbarSize: 10, horizontalSliderSize: 8 },
 			// Reduce the blank gap between the line numbers and the code.
 			// We rely on the line-decorations lane for the active-statement indicator, so keep it
 			// non-zero but tight.
