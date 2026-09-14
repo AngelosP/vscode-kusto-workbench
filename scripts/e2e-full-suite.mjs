@@ -296,6 +296,16 @@ function readTestSettings(testDir) {
 	}
 
 	const config = readJson(configPath, {});
+	if (!config || typeof config !== 'object' || Array.isArray(config)) {
+		throw new Error(`${relativePath(configPath)} must be an object.`);
+	}
+	const supportedKeys = ['workspaceSettings', 'managedWorkspacePath', 'managedWorkspaceOwner', 'env', 'timeout', 'optIn'];
+	for (const key of Object.keys(config)) {
+		if (!supportedKeys.includes(key)) {
+			throw new Error(`${relativePath(configPath)} unsupported property ${key}. Supported properties: ${supportedKeys.join(', ')}.`);
+		}
+	}
+
 	let workspaceSettings = null;
 	if (config.workspaceSettings !== undefined) {
 		if (!config.workspaceSettings || typeof config.workspaceSettings !== 'object' || Array.isArray(config.workspaceSettings)) {

@@ -5,13 +5,15 @@ Feature: Kusto semantic autocomplete with deterministic schemas
     And I capture the output channel "Kusto Workbench"
     When I move the Dev Host to 0, 0
     When I resize the Dev Host to 1280x1000
+    When I execute command "workbench.action.closeSidebar"
     When I execute command "workbench.action.closeAuxiliaryBar"
+    When I execute command "workbench.action.closePanel"
     And I wait 2 seconds
 
   Scenario: Fully qualified function body suggests remote Span columns at all expression positions
     When I execute command "kusto.openQueryEditor"
     When I execute command "kustoWorkbench.test.setIsolatedKustoConnections"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx"
 
     When I evaluate "window.__e2e.workbench.enableIsolatedKustoConnections()" in the webview
     When I evaluate "window.__e2e.workbench.assertIsolatedKustoConnections()" in the webview
@@ -51,7 +53,7 @@ Feature: Kusto semantic autocomplete with deterministic schemas
   Scenario: Current-cluster synthetic function where dropdown renders TIMESTAMP column
     When I execute command "kusto.openQueryEditor"
     When I execute command "kustoWorkbench.test.setIsolatedKustoConnections"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx"
 
     When I evaluate "window.__e2e.workbench.enableIsolatedKustoConnections()" in the webview
     When I evaluate "window.__e2e.workbench.assertIsolatedKustoConnections()" in the webview

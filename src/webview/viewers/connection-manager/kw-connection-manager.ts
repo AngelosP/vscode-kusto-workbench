@@ -4,9 +4,8 @@ import { scrollbarSheet } from '../../shared/scrollbar-styles.js';
 import { osStyles } from '../../shared/os-styles.js';
 import { OverlayScrollbarsController } from '../../components/overlay-scrollbars.controller.js';
 import { customElement, state } from 'lit/decorators.js';
+import { repeat } from 'lit/directives/repeat.js';
 import { ICONS, iconRegistryStyles } from '../../shared/icon-registry.js';
-import { registerPageScrollDismissable } from '../../core/page-scroll-dismiss.js';
-import { pushDismissable, removeDismissable } from '../../components/dismiss-stack.js';
 import type { KustoConnectionFormSubmitDetail } from '../../components/kw-kusto-connection-form.js';
 import type { SqlConnectionFormSubmitDetail } from '../../components/kw-sql-connection-form.js';
 import '../../components/kw-kusto-connection-form.js';
@@ -18,6 +17,7 @@ import {
 	type SearchResult,
 	type SearchControllerHost,
 } from './connection-manager-search.controller.js';
+import { normalizeConnectionSearchTargets, type ConnectionSearchTarget } from '../../../shared/connectionSearch.js';
 import { kustoClusterKey } from '../../shared/clusterUtils.js';
 import {
 	admitKustoPublicationHostMessage,
@@ -145,6 +145,17 @@ interface ExplorerPath {
 	section?: 'tables' | 'functions' | 'table-columns' | 'views';
 	folderPath?: string[];
 	tableName?: string;
+	columnName?: string;
+}
+
+interface SearchTargetConnection {
+	id: string;
+	label: string;
+	address: string;
+	isProtected: boolean;
+	databases: readonly string[] | undefined;
+	loading: boolean;
+	error: boolean;
 }
 
 interface VsCodeApi {
@@ -245,9 +256,12 @@ export class KwConnectionManager extends LitElement {
 	private _schemaRefreshRequestIds = new Map<string, KustoRequestOwner>();
 	private _previewRequestIds = new Map<string, KustoRequestOwner>();
 	@state() private _activeFilter: ActiveFilter = 'all';
-	@state() private _refreshMenuOpen = false;
-	private _refreshMenuDismissRegistered = false;
-	private _dismissRefreshMenu = (): void => this._closeRefreshMenu();
+	@state() private _searchTargetPickerOpen = false;
+	@state() private _searchTargetDraft: ConnectionSearchTarget[] = [];
+	@state() private _searchTargetFilter = '';
+	@state() private _searchTargetExpanded = new Set<string>();
+	private _searchTargetKind: ConnectionKind = 'kusto';
+	private _searchTargetReturnFocus: HTMLElement | null = null;
 
 	// Modal state
 	@state() private _modalVisible = false;
@@ -294,11 +308,12 @@ export class KwConnectionManager extends LitElement {
 	// ── Search controller ─────────────────────────────────────────────────────
 
 	private _search = new ConnectionManagerSearchController(this as unknown as SearchControllerHost);
-	private _removeRefreshMenuScrollDismiss: (() => void) | null = null;
 	private _scrollResetGeneration = 0;
 	private _scrollClampRetryScheduled = false;
 	private _scrollClampRetryCount = 0;
 	private _scrollbarUpdateGeneration = 0;
+	private _revealedColumnElement: HTMLElement | null = null;
+	private _columnSelectionRange: Range | null = null;
 
 	/** Bridge for the search controller to send messages to the host. */
 	postMessage(msg: unknown): void {
@@ -312,20 +327,36 @@ export class KwConnectionManager extends LitElement {
 		this._vscode = acquireVsCodeApi();
 		window.addEventListener('message', this._onMessage);
 		this._vscode.postMessage({ type: 'requestSnapshot' });
-		this.addEventListener('click', this._dismissToolsMenu);
 	}
 
 	disconnectedCallback(): void {
+		this._clearSearchColumnSelection();
 		super.disconnectedCallback();
 		window.removeEventListener('message', this._onMessage);
-		this.removeEventListener('click', this._dismissToolsMenu);
-		this._cleanupRefreshMenuScrollDismiss();
+		this._closeSearchTargetPicker();
+		this._searchTargetReturnFocus = null;
 	}
 
 	protected override updated(changedProps: PropertyValues): void {
 		super.updated(changedProps);
 		this._syncScrollOwnerTestState();
 		this._clampExplorerScroll();
+		this._revealSearchColumn();
+		if (this._searchTargetPickerOpen && (this._searchTargetKind !== this._activeKind || this._activeFilter !== 'search' || this._search.scope !== 'selected')) {
+			this._closeSearchTargetPicker();
+		}
+		if (changedProps.has('_searchTargetPickerOpen')) {
+			if (this._searchTargetPickerOpen) {
+				const dialog = this.shadowRoot?.querySelector<HTMLDialogElement>('[data-testid="cm-search-target-dialog"]');
+				if (dialog && !dialog.open) dialog.showModal();
+				const filter = this.shadowRoot?.querySelector<HTMLInputElement>('[data-testid="cm-search-target-filter"]');
+				filter?.focus();
+				requestAnimationFrame(() => dialog?.open && filter?.isConnected && filter.focus());
+			} else {
+				if (this._searchTargetReturnFocus?.isConnected) this._searchTargetReturnFocus.focus();
+				this._searchTargetReturnFocus = null;
+			}
+		}
 		if (changedProps.has('_modalVisible') || (this._modalVisible && changedProps.has('_activeKind'))) {
 			if (this._modalVisible) {
 				const dialog = this.shadowRoot?.querySelector<HTMLDialogElement>('dialog[data-testid="cm-modal-overlay"]');
@@ -428,24 +459,30 @@ export class KwConnectionManager extends LitElement {
 			&& (left.database ?? '') === (right.database ?? '')
 			&& (left.section ?? '') === (right.section ?? '')
 			&& (left.tableName ?? '') === (right.tableName ?? '')
+			&& (left.columnName ?? '') === (right.columnName ?? '')
 			&& leftFolders.length === rightFolders.length
 			&& leftFolders.every((folder, index) => folder === rightFolders[index]);
 	}
 
-	private _setKustoExplorerPath(path: ExplorerPath | null): void {
+	private _setKustoExplorerPath(path: ExplorerPath | null, preserveColumn = false): void {
+		if (path?.columnName && !preserveColumn) path = { ...path, tableName: undefined, columnName: undefined };
 		if (this._isSameExplorerPath(this._explorerPath, path)) return;
+		this._clearSearchColumnSelection();
 		this._explorerPath = path;
 		this._scheduleExplorerScrollReset();
 	}
 
-	private _setSqlExplorerPath(path: ExplorerPath | null): void {
+	private _setSqlExplorerPath(path: ExplorerPath | null, preserveColumn = false): void {
+		if (path?.columnName && !preserveColumn) path = { ...path, tableName: undefined, columnName: undefined };
 		if (this._isSameExplorerPath(this._sqlExplorerPath, path)) return;
+		this._clearSearchColumnSelection();
 		this._sqlExplorerPath = path;
 		this._scheduleExplorerScrollReset();
 	}
 
 	private _setKustoFilter(filter: ActiveFilter): void {
 		if (filter === this._activeFilter) return;
+		this._clearSearchColumnSelection();
 		this._activeFilter = filter;
 		if (filter === 'search' && this._search.kind !== 'kusto') this._search.setKind('kusto');
 		this._validateBreadcrumb();
@@ -454,6 +491,7 @@ export class KwConnectionManager extends LitElement {
 
 	private _setSqlFilter(filter: ActiveFilter): void {
 		if (filter === this._activeFilter) return;
+		this._clearSearchColumnSelection();
 		this._activeFilter = filter;
 		if (filter === 'search' && this._search.kind !== 'sql') this._search.setKind('sql');
 		this._validateSqlBreadcrumb();
@@ -469,49 +507,6 @@ export class KwConnectionManager extends LitElement {
 		const nestedList = content.querySelector<HTMLElement>('.explorer-list');
 		const nestedOverflowY = nestedList ? String(getComputedStyle(nestedList).overflowY || '') : '';
 		this.dataset.testScrollOwner = nestedOverflowY === 'auto' || nestedOverflowY === 'scroll' ? 'nested' : 'single';
-	}
-
-	private _dismissToolsMenu = (e: Event) => {
-		const path = e.composedPath();
-		if (this._refreshMenuOpen) {
-			const split = this.shadowRoot?.querySelector('.search-refresh-split');
-			if (split && !path.includes(split)) {
-				this._closeRefreshMenu();
-			}
-		}
-	};
-
-	private _toggleRefreshMenu(): void {
-		const nextOpen = !this._refreshMenuOpen;
-		this._refreshMenuOpen = nextOpen;
-		this._cleanupRefreshMenuScrollDismiss();
-		if (nextOpen) {
-			pushDismissable(this._dismissRefreshMenu);
-			this._refreshMenuDismissRegistered = true;
-			this._removeRefreshMenuScrollDismiss = registerPageScrollDismissable(() => this._closeRefreshMenu(), {
-				dismissOnWheel: true,
-				shouldDismiss: ({ event, kind }) => {
-					if (kind !== 'wheel') return true;
-					const split = this.shadowRoot?.querySelector('.search-refresh-split');
-					return !(split && event.composedPath().includes(split));
-				},
-			});
-		}
-	}
-
-	private _closeRefreshMenu(): void {
-		this._cleanupRefreshMenuScrollDismiss();
-		this._refreshMenuOpen = false;
-	}
-
-	private _cleanupRefreshMenuScrollDismiss(): void {
-		if (this._refreshMenuDismissRegistered) {
-			removeDismissable(this._dismissRefreshMenu);
-			this._refreshMenuDismissRegistered = false;
-		}
-		if (!this._removeRefreshMenuScrollDismiss) return;
-		this._removeRefreshMenuScrollDismiss();
-		this._removeRefreshMenuScrollDismiss = null;
 	}
 
 	private _evictChangedKustoIdentityState(previous: Snapshot | null, next: Snapshot): boolean {
@@ -580,7 +575,10 @@ export class KwConnectionManager extends LitElement {
 		for (const key of [...this._sqlSchemaRequestIds.keys()]) if (isProtectedKey(key)) this._sqlSchemaRequestIds.delete(key);
 		for (const key of [...this._sqlPreviewRequestIds.keys()]) if (isProtectedKey(key)) this._sqlPreviewRequestIds.delete(key);
 		if (this._sqlExplorerPath && protectedIds.has(this._sqlExplorerPath.connectionId)) this._setSqlExplorerPath(null);
-		this._search.invalidateSqlResults();
+		if ([...protectedIds].some(id => !this._snapshot?.sqlLeaveNoTrace?.includes(id))
+			|| this._search.results.some(result => result.kind === 'sql' && protectedIds.has(result.connectionId))) {
+			this._search.invalidateSqlResults();
+		}
 	}
 
 	private _evictProtectedKustoState(next: Snapshot): void {
@@ -604,7 +602,11 @@ export class KwConnectionManager extends LitElement {
 		this._expandedFunctions = new Set([...this._expandedFunctions].filter(key => !isProtectedKey(key)));
 		this._expandedFolders = new Set([...this._expandedFolders].filter(key => !isProtectedKey(key)));
 		if (this._explorerPath && protectedIds.has(this._explorerPath.connectionId)) this._setKustoExplorerPath(null);
-		this._search.invalidateKustoResults();
+		const previousProtected = new Set((this._snapshot?.leaveNoTraceClusters ?? []).map(cluster => kustoClusterKey(cluster)));
+		if ([...protectedClusters].some(cluster => !previousProtected.has(cluster))
+			|| this._search.results.some(result => result.kind === 'kusto' && protectedIds.has(result.connectionId))) {
+			this._search.invalidateKustoResults();
+		}
 	}
 
 	// ── Message handling ──────────────────────────────────────────────────────
@@ -700,9 +702,11 @@ export class KwConnectionManager extends LitElement {
 					const hasKusto = (this._snapshot.connections?.length ?? 0) > 0;
 					const hasSql = (this._snapshot.sqlConnections?.length ?? 0) > 0;
 					const persisted = this._snapshot.activeKind;
-					if (persisted === 'sql' && hasSql) {
+					if (this._snapshot.sqlAvailable === false) {
+						this._activeKind = 'kusto';
+					} else if (persisted === 'sql') {
 						this._activeKind = 'sql';
-					} else if (persisted === 'kusto' && hasKusto) {
+					} else if (persisted === 'kusto') {
 						this._activeKind = 'kusto';
 					} else if (hasSql && !hasKusto) {
 						this._activeKind = 'sql';
@@ -722,16 +726,15 @@ export class KwConnectionManager extends LitElement {
 						? {
 							...(this._snapshot.searchState as any),
 							lastResults: Array.isArray((this._snapshot.searchState as any).lastResults)
-								? (this._snapshot.searchState as any).lastResults.filter((result: any) => !protectedConnectionIds.has(String(result?.connectionId || '')))
+								? (this._snapshot.searchState as any).lastResults.filter((result: any) => !protectedConnectionIds.has(String(result?.connectionId || ''))
+									&& (this._snapshot?.sqlAvailable !== false || result?.kind !== 'sql'))
 								: [],
 						}
 						: this._snapshot.searchState;
-					const searchState = this._snapshot.sqlAvailable === false
-						? { query: '', scope: 'cached', categories: {}, contentToggles: {}, lastResults: [], lastSearchTimestamp: 0 }
-						: kustoIdentityChanged && this._activeKind === 'kusto'
+					const searchState = kustoIdentityChanged && this._activeKind === 'kusto'
 						? { ...(filteredSearchState as any), lastResults: [] }
 						: filteredSearchState;
-					this._search.restoreState(searchState as any, this._activeKind);
+					this._search.restoreState(searchState as any, this._activeKind, true);
 				}
 				if (!this._selectedConnectionId && this._snapshot?.connections?.length) {
 					const sortedConnections = sortKustoConnections(this._snapshot.connections);
@@ -1069,12 +1072,13 @@ export class KwConnectionManager extends LitElement {
 				</div>
 			</div>
 
-			<div class="explorer-panel" data-testid="cm-explorer-panel" data-test-kind=${kind} data-test-connections=${connections.length} data-test-sql-connections=${sqlConnections.length}>
+			<div class="explorer-panel ${this._activeFilter === 'search' ? 'search-active' : ''}" data-testid="cm-explorer-panel" data-test-kind=${kind} data-test-connections=${connections.length} data-test-sql-connections=${sqlConnections.length}>
 				${kind === 'kusto' ? this._renderKustoContent() : this._renderSqlContent()}
 			</div>
 			</div>
 
 			${this._modalVisible ? this._renderModal() : nothing}
+			${this._searchTargetPickerOpen ? this._renderSearchTargetDialog() : nothing}
 		`;
 	}
 
@@ -1416,7 +1420,7 @@ export class KwConnectionManager extends LitElement {
 									<div class="explorer-detail-section">
 										<div class="explorer-detail-label">Schema (${colNames.length} columns)</div>
 										<div class="explorer-detail-schema">
-											${colNames.map(col => this._renderKustoSchemaColumnRow(schema, table, col, cols[col]))}
+											${colNames.map(col => this._renderKustoSchemaColumnRow(schema, table, col, cols[col], ep))}
 										</div>
 									</div>
 								` : nothing}
@@ -1524,10 +1528,13 @@ export class KwConnectionManager extends LitElement {
 		return matchedKey ? docs[matchedKey] : '';
 	}
 
-	private _renderKustoSchemaColumnRow(schema: DatabaseSchema, table: string, column: string, columnType: string): TemplateResult {
+	private _renderKustoSchemaColumnRow(schema: DatabaseSchema, table: string, column: string, columnType: string, path?: ExplorerPath): TemplateResult {
 		const docString = this._getKustoColumnDocString(schema, table, column);
+		const selected = path?.tableName === table && path.columnName === column;
 		return html`
-			<div class="explorer-schema-row ${docString ? 'has-doc' : ''}">
+			<div class="explorer-schema-row ${docString ? 'has-doc' : ''} ${selected ? 'selected' : ''}"
+				data-testid="cm-schema-column" data-table=${table} data-column=${column} data-selected=${String(selected)}
+				aria-current=${selected ? 'true' : nothing} tabindex="-1">
 				<span class="explorer-schema-col-main">
 					<span class="explorer-schema-col-header">
 						<span class="explorer-schema-col-name">${column}</span>
@@ -1884,7 +1891,7 @@ export class KwConnectionManager extends LitElement {
 									<div class="explorer-detail-section">
 										<div class="explorer-detail-label">Schema (${colNames.length} columns)</div>
 										<div class="explorer-detail-schema">
-											${colNames.map(col => this._renderKustoSchemaColumnRow(schema, table, col, cols[col]))}
+											${colNames.map(col => this._renderKustoSchemaColumnRow(schema, table, col, cols[col], ep))}
 										</div>
 									</div>
 								` : nothing}
@@ -1928,12 +1935,7 @@ export class KwConnectionManager extends LitElement {
 									<div class="explorer-detail-section">
 										<div class="explorer-detail-label">Schema (${colNames.length} columns)</div>
 										<div class="explorer-detail-schema">
-											${colNames.map(col => html`
-												<div class="explorer-schema-row">
-													<span class="explorer-schema-col-name">${col}</span>
-													<span class="explorer-schema-col-type">${cols[col]}</span>
-												</div>
-											`)}
+											${colNames.map(col => this._renderKustoSchemaColumnRow(schema, view, col, cols[col], ep))}
 										</div>
 									</div>
 								` : nothing}
@@ -2372,28 +2374,312 @@ export class KwConnectionManager extends LitElement {
 
 	// ── Search UI ─────────────────────────────────────────────────────────────
 
+	private _getSearchTargetConnections(): SearchTargetConnection[] {
+		if (this._activeKind === 'sql') {
+			return sortSqlConnections(this._snapshot?.sqlConnections).map(connection => {
+				const isProtected = this._snapshot?.sqlLeaveNoTrace?.includes(connection.id) ?? false;
+				const loading = this._sqlLoadingDatabases.has(connection.id);
+				const error = this._sqlDatabaseLoadErrors[connection.id];
+				return {
+					id: connection.id,
+					label: getSqlConnectionLabel(connection),
+					address: connection.serverUrl,
+					isProtected,
+					databases: isProtected ? undefined : this._snapshot?.sqlCachedDatabases?.[connection.id] ?? (!loading && error === '' ? [] : undefined),
+					loading,
+					error: !!error,
+				};
+			});
+		}
+		return sortKustoConnections(this._snapshot?.connections).map(connection => {
+			const isProtected = this._isLeaveNoTrace(connection.clusterUrl);
+			const loading = this._loadingDatabases.has(connection.id);
+			const error = this._databaseLoadErrors[connection.id];
+			return {
+				id: connection.id,
+				label: getKustoConnectionLabel(connection),
+				address: connection.clusterUrl,
+				isProtected,
+				databases: isProtected ? undefined : this._snapshot?.cachedDatabases?.[connection.id] ?? (!loading && error === '' ? [] : undefined),
+				loading,
+				error: !!error,
+			};
+		});
+	}
+
+	private _getSearchTargetLabel(target: ConnectionSearchTarget): string {
+		const connection = this._getSearchTargetConnections().find(candidate => candidate.id === target.connectionId);
+		const label = connection?.label ?? target.connectionId;
+		if (connection?.isProtected) return `${label} (Leave No Trace)`;
+		return target.database === undefined ? `${label} (all databases)` : `${label} / ${target.database}`;
+	}
+
+	private _removeSearchTarget(target: ConnectionSearchTarget): void {
+		if (this._search.scope !== 'selected' || this._searchTargetPickerOpen) return;
+		const index = this._search.targets.findIndex(candidate => candidate.connectionId === target.connectionId && candidate.database === target.database);
+		if (index < 0) return;
+		const kind = this._activeKind;
+		this._search.setTargets(this._search.targets.filter(candidate => candidate.connectionId !== target.connectionId || candidate.database !== target.database));
+		void this.updateComplete.then(() => {
+			if (!this.isConnected || this._activeKind !== kind || this._searchTargetPickerOpen) return;
+			const removes = this.shadowRoot?.querySelectorAll<HTMLButtonElement>('[data-testid="cm-search-target-remove"]');
+			const next = removes?.[index] ?? this.shadowRoot?.querySelector<HTMLButtonElement>('[data-testid="cm-search-target-picker"]');
+			next?.focus();
+		});
+	}
+
+	private _getSearchTargetDatabases(connection: SearchTargetConnection): string[] {
+		if (connection.isProtected) return [];
+		return sortStringsAlphabetically([...new Set([
+			...(connection.databases ?? []),
+			...this._searchTargetDraft.filter(target => target.connectionId === connection.id && target.database !== undefined)
+				.map(target => target.database!),
+		])]);
+	}
+
+	private _openSearchTargetPicker(): void {
+		if (this._searchTargetPickerOpen || this._search.scope !== 'selected') return;
+		const allowedIds = new Set(this._getSearchTargetConnections().filter(connection => !connection.isProtected).map(connection => connection.id));
+		this._searchTargetDraft = normalizeConnectionSearchTargets(this._search.targets.filter(target => allowedIds.has(target.connectionId)));
+		this._searchTargetFilter = '';
+		this._searchTargetExpanded = new Set(this._searchTargetDraft.filter(target => target.database !== undefined).map(target => target.connectionId));
+		this._searchTargetKind = this._activeKind;
+		this._searchTargetReturnFocus = this.shadowRoot?.querySelector<HTMLElement>('[data-testid="cm-search-target-picker"]') ?? null;
+		this._searchTargetPickerOpen = true;
+	}
+
+	private _closeSearchTargetPicker(apply = false): void {
+		if (!this._searchTargetPickerOpen) return;
+		if (apply && this._searchTargetKind === this._activeKind) {
+			const allowedIds = new Set(this._getSearchTargetConnections().filter(connection => !connection.isProtected).map(connection => connection.id));
+			this._search.setTargets(normalizeConnectionSearchTargets(this._searchTargetDraft.filter(target => allowedIds.has(target.connectionId))));
+		}
+		this._searchTargetPickerOpen = false;
+		this._searchTargetDraft = [];
+		const dialog = this.shadowRoot?.querySelector<HTMLDialogElement>('[data-testid="cm-search-target-dialog"]');
+		if (dialog?.open) dialog.close();
+	}
+
+	private _filterSearchTargets(value: string): void {
+		this._searchTargetFilter = value;
+		const filter = value.trim().toLowerCase();
+		if (!filter) return;
+		this._searchTargetExpanded = new Set([
+			...this._searchTargetExpanded,
+			...this._getSearchTargetConnections()
+				.filter(connection => this._getSearchTargetDatabases(connection).some(database => database.toLowerCase().includes(filter)))
+				.map(connection => connection.id),
+		]);
+	}
+
+	private _requestSearchTargetDatabases(connectionId: string, refresh = false): void {
+		const connection = this._getSearchTargetConnections().find(candidate => candidate.id === connectionId);
+		if (!this._searchTargetPickerOpen || this._searchTargetKind !== this._activeKind || !connection || connection.isProtected || connection.loading) return;
+		if (!refresh && (connection.databases !== undefined || connection.error)) return;
+		const type = this._activeKind === 'sql'
+			? (refresh ? 'sql.cluster.refreshDatabases' : 'sql.cluster.expand')
+			: (refresh ? 'cluster.refreshDatabases' : 'cluster.expand');
+		this._vscode.postMessage({ type, connectionId });
+	}
+
+	private _toggleSearchTargetExpansion(connectionId: string): void {
+		const connection = this._getSearchTargetConnections().find(candidate => candidate.id === connectionId);
+		if (!connection || connection.isProtected) return;
+		const expanded = new Set(this._searchTargetExpanded);
+		if (expanded.has(connectionId)) expanded.delete(connectionId);
+		else expanded.add(connectionId);
+		this._searchTargetExpanded = expanded;
+		if (expanded.has(connectionId)) this._requestSearchTargetDatabases(connectionId);
+	}
+
+	private _setSearchTarget(connectionId: string, database: string | undefined, checked: boolean): void {
+		const connection = this._getSearchTargetConnections().find(candidate => candidate.id === connectionId);
+		if (!this._searchTargetPickerOpen || this._searchTargetKind !== this._activeKind || !connection || connection.isProtected) return;
+		const otherConnections = this._searchTargetDraft.filter(target => target.connectionId !== connectionId);
+		if (database === undefined) {
+			this._searchTargetDraft = checked ? [...otherConnections, { connectionId }] : otherConnections;
+			return;
+		}
+		const targets = this._searchTargetDraft.some(target => target.connectionId === connectionId && target.database === undefined)
+			? [...otherConnections, ...this._getSearchTargetDatabases(connection).map(databaseName => ({ connectionId, database: databaseName }))]
+			: this._searchTargetDraft;
+		this._searchTargetDraft = normalizeConnectionSearchTargets([
+			...targets.filter(target => target.connectionId !== connectionId || target.database !== database),
+			...(checked ? [{ connectionId, database }] : []),
+		]);
+	}
+
+	private _renderSearchTargetDialog(): TemplateResult {
+		const kindLabel = this._activeKind === 'sql' ? 'servers' : 'clusters';
+		const filter = this._searchTargetFilter.trim().toLowerCase();
+		const connections = this._getSearchTargetConnections().filter(connection =>
+			`${connection.label} ${connection.address}`.toLowerCase().includes(filter)
+			|| this._getSearchTargetDatabases(connection).some(database => database.toLowerCase().includes(filter)));
+		return html`
+			<dialog id="cm-search-target-dialog" class="modal-overlay search-target-dialog" data-testid="cm-search-target-dialog"
+				aria-labelledby="cm-search-target-title"
+				@cancel=${(event: Event) => { event.preventDefault(); this._closeSearchTargetPicker(); }}
+				@keydown=${(event: KeyboardEvent) => {
+					if (event.key === 'Escape') {
+						event.preventDefault();
+						event.stopPropagation();
+						this._closeSearchTargetPicker();
+					}
+				}}>
+				<div class="modal-content">
+					<div class="modal-header">
+						<h2 id="cm-search-target-title">Select ${kindLabel} and databases</h2>
+						<button class="btn-icon" type="button" title="Cancel selection" aria-label="Cancel selection"
+							@click=${() => this._closeSearchTargetPicker()}>${ICONS.close}</button>
+					</div>
+					<div class="modal-body search-target-body">
+						<label for="cm-search-target-filter">Filter ${kindLabel} and databases</label>
+						<input id="cm-search-target-filter" class="search-input" data-testid="cm-search-target-filter" type="search" autofocus
+							placeholder="Name or address" .value=${this._searchTargetFilter}
+							@input=${(event: Event) => this._filterSearchTargets((event.target as HTMLInputElement).value)} />
+						<div class="search-target-list" data-overlay-scroll="x:hidden">
+							<ul class="search-target-tree" aria-label=${kindLabel}>
+								${repeat(connections, connection => connection.id, connection => this._renderSearchTargetConnection(connection, filter))}
+							</ul>
+							${connections.length === 0 ? html`
+								<div class="search-target-status" role="status">
+									${!this._snapshot ? 'Loading connections...' : filter ? `No matching ${kindLabel} or databases.` : `No ${kindLabel} available.`}
+								</div>
+							` : nothing}
+						</div>
+					</div>
+					<div class="modal-footer">
+						<button class="btn" type="button" data-testid="cm-search-target-cancel" @click=${() => this._closeSearchTargetPicker()}>Cancel</button>
+						<button class="btn primary" type="button" data-testid="cm-search-target-apply" @click=${() => this._closeSearchTargetPicker(true)}>Apply</button>
+					</div>
+				</div>
+			</dialog>
+		`;
+	}
+
+	private _renderSearchTargetConnection(connection: SearchTargetConnection, filter: string): TemplateResult {
+		const whole = !connection.isProtected && this._searchTargetDraft.some(target => target.connectionId === connection.id && target.database === undefined);
+		const partial = !connection.isProtected && !whole && this._searchTargetDraft.some(target => target.connectionId === connection.id);
+		const expanded = !connection.isProtected && this._searchTargetExpanded.has(connection.id);
+		const connectionMatches = `${connection.label} ${connection.address}`.toLowerCase().includes(filter);
+		const databases = this._getSearchTargetDatabases(connection).filter(database => connectionMatches || database.toLowerCase().includes(filter));
+		const groupId = `cm-search-target-databases-${encodeURIComponent(connection.id)}`;
+		return html`
+			<li>
+				<div class="search-target-row ${connection.isProtected ? 'is-protected' : ''}">
+					<button class="btn-icon search-target-expand" type="button" data-testid="cm-search-target-expand" data-connection-id=${connection.id}
+						aria-expanded=${String(expanded)} aria-controls=${groupId} ?disabled=${connection.isProtected}
+						title=${`${expanded ? 'Collapse' : 'Expand'} ${connection.label}`} aria-label=${`${expanded ? 'Collapse' : 'Expand'} ${connection.label}`}
+						@click=${() => this._toggleSearchTargetExpansion(connection.id)}>${ICONS.chevron}</button>
+					<label class="search-target-choice" title=${`${connection.label} (all databases)\n${connection.address}`}>
+						<input type="checkbox" data-testid="cm-search-target-cluster" data-connection-id=${connection.id}
+							aria-label=${`${connection.label} (all databases)`} aria-checked=${partial ? 'mixed' : String(whole)}
+							.checked=${whole} .indeterminate=${partial} ?disabled=${connection.isProtected}
+							@change=${(event: Event) => this._setSearchTarget(connection.id, undefined, (event.target as HTMLInputElement).checked)} />
+						<span class="search-target-icon">${connection.isProtected ? ICONS.shield : this._activeKind === 'sql' ? ICONS.sqlServer : ICONS.kustoCluster}</span>
+						<span class="search-target-name">
+							<span>${connection.label}</span>
+							<span class="search-target-address">${connection.isProtected ? 'Leave No Trace' : connection.address}</span>
+						</span>
+					</label>
+				</div>
+				<div id=${groupId} ?hidden=${!expanded}>
+					${expanded ? html`
+						${this._renderSearchTargetDatabaseStatus(connection)}
+						<ul class="search-target-databases" aria-label=${`${connection.label} databases`}>
+							${repeat(databases, database => database, database => html`
+								<li>
+									<label class="search-target-choice" title=${`${connection.label} / ${database}`}>
+										<input type="checkbox" data-testid="cm-search-target-database" data-connection-id=${connection.id} data-database=${database}
+											aria-label=${`${connection.label} / ${database}`}
+											.checked=${whole || this._searchTargetDraft.some(target => target.connectionId === connection.id && target.database === database)}
+											@change=${(event: Event) => this._setSearchTarget(connection.id, database, (event.target as HTMLInputElement).checked)} />
+										<span class="search-target-icon">${ICONS.database}</span>
+										<span class="search-target-name">${database}</span>
+									</label>
+								</li>
+							`)}
+						</ul>
+					` : nothing}
+				</div>
+			</li>
+		`;
+	}
+
+	private _renderSearchTargetDatabaseStatus(connection: SearchTargetConnection): TemplateResult | typeof nothing {
+		if (connection.loading) return html`
+			<div class="search-target-status" data-testid="cm-search-target-loading" data-connection-id=${connection.id} role="status">${ICONS.spinner} Loading databases...</div>
+		`;
+		if (!connection.error && connection.databases?.length) return nothing;
+		const status = connection.error ? 'error' : connection.databases === undefined ? 'unloaded' : 'empty';
+		const message = connection.error ? 'Could not load databases.' : connection.databases === undefined ? 'Databases not loaded.' : 'No databases found.';
+		const action = connection.error ? 'Retry' : connection.databases === undefined ? 'Load databases' : 'Refresh';
+		return html`
+			<div class="search-target-status" data-testid=${`cm-search-target-${status}`} data-connection-id=${connection.id} role=${connection.error ? 'alert' : 'status'}>
+				<span>${message}</span>
+				<button class="btn" type="button" data-testid=${connection.error ? 'cm-search-target-retry' : connection.databases === undefined ? 'cm-search-target-load' : 'cm-search-target-refresh'}
+					data-connection-id=${connection.id} aria-label=${`${action} for ${connection.label}`}
+					@click=${() => this._requestSearchTargetDatabases(connection.id, true)}>${ICONS.refresh} ${action}</button>
+			</div>
+		`;
+	}
+
 	private _renderSearchContent(): TemplateResult {
 		const s = this._search;
-		const categories = s.kind === 'sql' ? SQL_CATEGORIES : KUSTO_CATEGORIES;
-		const cats = s.categories;
+		const categories = (s.kind === 'sql' ? SQL_CATEGORIES : KUSTO_CATEGORIES)
+			.filter(category => s.canSearchConnections || (category.id !== 'clusters' && category.id !== 'servers'));
+		const cats = s.effectiveCategories;
 		const RESULT_CAT_MAP: Record<string, string> = { cluster: 'clusters', database: 'databases', table: 'tables', column: 'tables', function: 'functions', server: 'servers', view: 'views', 'stored-procedure': 'storedProcedures' };
-		const visibleResults = s.results.filter(r => cats[RESULT_CAT_MAP[r.category] ?? r.category] !== false);
+		const visibleResults = s.results.filter(result => {
+			if (result.category === 'column') return !!s.contentToggles.tables || (s.kind === 'sql' && !!s.contentToggles.views);
+			if (result.category === 'function') return !!cats.functions || !!s.contentToggles.functions;
+			return cats[RESULT_CAT_MAP[result.category] ?? result.category] !== false;
+		});
 		const resultCount = visibleResults.length;
 
-		const cachedCount = this._activeKind === 'kusto'
-			? Object.keys(this._snapshot?.cachedDatabases ?? {}).length
-			: Object.keys(this._snapshot?.sqlCachedDatabases ?? {}).length;
-		const totalCount = this._activeKind === 'kusto'
-			? (this._snapshot?.connections?.length ?? 0)
-			: (this._snapshot?.sqlConnections?.length ?? 0);
+		const addTargetLabel = this._activeKind === 'sql' ? 'Add servers or databases' : 'Add clusters or databases';
 
 		return html`
 			<div class="search-container" data-testid="cm-search-container">
-				<!-- Search input -->
-				<div class="search-section-label">What to search for</div>
+				<label class="search-section-label" for="cm-search-scope">Where to search</label>
+				<div class="search-scope-row">
+					<select id="cm-search-scope" class="search-scope" data-testid="cm-search-scope"
+						.value=${s.scope}
+						@change=${(event: Event) => {
+							const scope = (event.target as HTMLSelectElement).value;
+							if (scope === 'selected' || scope === 'cached' || scope === 'everything') s.setScope(scope);
+						}}>
+						<option value="selected">Specific cluster(s) or database(s)</option>
+						<option value="cached">All cached connections (fast)</option>
+						<option value="everything">All connections (slow)</option>
+					</select>
+					${s.scope === 'selected' ? html`
+						<div class="search-targets" data-testid="cm-search-targets">
+							${repeat(s.targets, target => JSON.stringify([target.connectionId, target.database ?? '']), target => {
+								const label = this._getSearchTargetLabel(target);
+								return html`
+									<span class="search-target-tag" data-testid="cm-search-target-tag" title=${label}
+										data-connection-id=${target.connectionId} data-database=${target.database ?? ''}>
+										<span class="search-target-label" data-testid="cm-search-target-label" title=${label}>${label}</span>
+										<button class="btn-icon search-target-remove" type="button" data-testid="cm-search-target-remove"
+											data-connection-id=${target.connectionId} data-database=${target.database ?? ''}
+											title=${`Remove ${label}`} aria-label=${`Remove ${label}`}
+											@click=${(event: Event) => { event.stopPropagation(); this._removeSearchTarget(target); }}>${ICONS.close}</button>
+									</span>
+								`;
+							})}
+							<button class="btn-icon search-target-picker" type="button" data-testid="cm-search-target-picker"
+								title=${addTargetLabel} aria-label=${addTargetLabel}
+								aria-haspopup="dialog" aria-controls="cm-search-target-dialog" aria-expanded=${String(this._searchTargetPickerOpen)}
+								@click=${() => this._openSearchTargetPicker()}>${ICONS.add}</button>
+						</div>
+					` : nothing}
+				</div>
+				${s.canSearch ? html`
+				<label class="search-section-label" for="cm-search-input">What to search for</label>
 				<div class="search-input-row">
 					<div class="search-input-wrapper">
-						<input class="search-input" data-testid="cm-search-input" type="text" placeholder="Search connections, databases, tables…"
+						<input id="cm-search-input" class="search-input" data-testid="cm-search-input" type="text" placeholder="Search connections, databases, tables…"
 							.value=${s.query}
 							@input=${(e: Event) => s.setQuery((e.target as HTMLInputElement).value)}
 						/>
@@ -2411,18 +2697,18 @@ export class KwConnectionManager extends LitElement {
 					</div>
 				` : nothing}
 
-				<!-- Category chips + Refresh split-button -->
 				<div class="search-categories-row">
 					<div class="search-categories" data-testid="cm-search-categories">
 						${categories.map(cat => {
-							const isOn = s.categories[cat.id];
+							const isOn = cat.contentKey ? s.contentToggles[cat.contentKey] : cats[cat.id];
 							const contentOn = isOn && cat.hasContent && s.contentToggles[cat.id];
-							const icon = { clusters: ICONS.kustoCluster, databases: ICONS.database, tables: ICONS.table, functions: ICONS.function, servers: ICONS.sqlServer, views: ICONS.table, storedProcedures: ICONS.function }[cat.id] ?? ICONS.kustoCluster;
+							const icon = { clusters: ICONS.kustoCluster, databases: ICONS.database, tables: ICONS.table, tableColumns: ICONS.toolbarQualifyTables, functions: ICONS.function, functionBody: ICONS.code, servers: ICONS.sqlServer, views: ICONS.table, storedProcedures: ICONS.function }[cat.id] ?? ICONS.kustoCluster;
 							const tooltip = isOn && cat.splitLabel ? (contentOn ? `${cat.splitLabel[0]} ${cat.splitLabel[1]}` : cat.splitLabel[0]) : cat.label;
 							return html`
 							<button class="search-category-chip ${isOn ? 'active' : ''} ${cat.hasContent ? 'has-content' : ''} ${contentOn ? 'content-on' : ''}"
-								title=${tooltip}
-								@click=${() => s.cycleCategory(cat.id, cat.hasContent)}>
+								data-testid="cm-search-category" data-category=${cat.id} aria-pressed=${String(!!isOn)}
+								title=${tooltip} aria-label=${tooltip}
+								@click=${() => cat.contentKey ? s.toggleContent(cat.contentKey) : cat.hasContent ? s.cycleCategory(cat.id, true) : s.toggleCategory(cat.id)}>
 								<span class="search-chip-icon">${icon}</span>
 								${isOn && cat.splitLabel ? html`
 									<span class="search-chip-label search-chip-text">${cat.splitLabel[0]} <span class="search-chip-secondary ${contentOn ? '' : 'dimmed'}">${cat.splitLabel[1]}</span></span>
@@ -2431,26 +2717,6 @@ export class KwConnectionManager extends LitElement {
 								`}
 							</button>
 						`;})}
-					</div>
-					<div class="search-refresh-split">
-						<button class="search-refresh-main" @click=${() => s.refreshCachedAndSearch()}>
-							<span class="search-refresh-label-always">Refresh</span> <span class="search-refresh-label-extra">schemas</span> <span class="search-refresh-count">(${cachedCount})</span>
-						</button>
-						<button class="search-refresh-drop ${this._refreshMenuOpen ? 'active' : ''}" @click=${() => this._toggleRefreshMenu()}>
-							${ICONS.chevron}
-						</button>
-						${this._refreshMenuOpen ? html`
-							<div class="search-refresh-menu">
-								<button class="search-tools-item" @click=${() => { this._closeRefreshMenu(); s.refreshCachedAndSearch(); }}>
-									<div class="search-tools-item-title">Refresh connections with cached schemas <span class="search-tools-count">(${cachedCount})</span></div>
-									<div class="search-tools-item-desc">These are connections you typically use. Use this to pick up very recent schema changes in them (new tables, etc.) before you use search.</div>
-								</button>
-								<button class="search-tools-item" @click=${() => { this._closeRefreshMenu(); s.refreshAllAndSearch(); }}>
-									<div class="search-tools-item-title">Refresh all connections <span class="search-tools-count">(${totalCount})</span></div>
-									<div class="search-tools-item-desc">These are all the connections you have, even ones you have not actually used before. Use this to make sure you have the schema of 100% of your connections before you search.</div>
-								</button>
-							</div>
-						` : nothing}
 					</div>
 				</div>
 
@@ -2480,14 +2746,18 @@ export class KwConnectionManager extends LitElement {
 					` : nothing}
 					${visibleResults.map(r => {
 						const expandable = r.category === 'table' || r.category === 'view' || r.category === 'function' || r.category === 'stored-procedure';
+						const columnType = r.category === 'column' ? r.columnType : undefined;
 						const itemKey = this._searchResultKey(r);
 						const isExpanded = expandable && (r.category === 'function' || r.category === 'stored-procedure' ? this._expandedFunctions.has(itemKey) : this._expandedTables.has(itemKey));
 						return html`
 						<div class="explorer-list-item-wrapper ${isExpanded ? 'expanded' : ''}">
-							<div class="explorer-list-item search-result-item" @click=${() => expandable ? this._toggleSearchResult(r) : this._navigateToSearchResult(r)}>
+							<div class="explorer-list-item search-result-item" data-testid="cm-search-result" data-category=${r.category}
+								data-connection-id=${r.connectionId} data-database=${r.database ?? ''} data-parent=${r.parentName ?? ''} data-name=${r.name}
+								@click=${() => expandable ? this._toggleSearchResult(r) : this._navigateToSearchResult(r)}>
 								${expandable ? html`<span class="explorer-list-item-chevron ${isExpanded ? 'expanded' : ''}">${ICONS.chevron}</span>` : nothing}
 								<span class="explorer-list-item-icon ${r.category}">${this._getSearchResultIcon(r.category)}</span>
 								<span class="explorer-list-item-name">${r.name}</span>
+								${columnType ? html`<span class="search-result-column-type" data-testid="cm-search-column-type">(${columnType})</span>` : nothing}
 								<span class="search-result-context">
 									${r.parentName ? html`<span class="search-result-parent">${r.parentName} ›</span>` : nothing}
 									${r.database ? html`<span class="search-result-db">${r.connectionName} › ${r.database}</span>` : html`<span class="search-result-db">${r.connectionName}</span>`}
@@ -2498,6 +2768,7 @@ export class KwConnectionManager extends LitElement {
 						</div>
 					`;})}
 				</div>
+				` : nothing}
 			</div>
 		`;
 	}
@@ -2596,6 +2867,7 @@ export class KwConnectionManager extends LitElement {
 	}
 
 	private _navigateToSearchResult(r: SearchResult): void {
+		if (r.category === 'column' && (!r.database || !r.parentName || r.kind !== this._activeKind)) return;
 		const filterChanged = this._activeFilter !== 'all';
 		if (filterChanged) {
 			this._activeFilter = 'all';
@@ -2611,7 +2883,10 @@ export class KwConnectionManager extends LitElement {
 					}
 				}
 			} else if (r.category === 'table' || r.category === 'column') {
-				this._setKustoExplorerPath({ connectionId: r.connectionId, database: r.database, section: 'tables', folderPath: [] });
+				if (r.category === 'column') this._expandedTables = new Set([...this._expandedTables, `${r.connectionId}|${r.database}|table|${r.parentName}`]);
+				this._setKustoExplorerPath({ connectionId: r.connectionId, database: r.database, section: 'tables', folderPath: [],
+					...(r.category === 'column' ? { tableName: r.parentName, columnName: r.name } : {}),
+				}, r.category === 'column');
 				this._vscode.postMessage({ type: 'cluster.expand', connectionId: r.connectionId });
 				if (r.database) {
 					const dbKey = r.connectionId + '|' + r.database;
@@ -2640,7 +2915,10 @@ export class KwConnectionManager extends LitElement {
 					}
 				}
 			} else if (r.category === 'table' || r.category === 'column') {
-				this._setSqlExplorerPath({ connectionId: r.connectionId, database: r.database, section: 'tables' });
+				if (r.category === 'column') this._expandedTables = new Set([...this._expandedTables, `${r.connectionId}|${r.database}|table|${r.parentName}`]);
+				this._setSqlExplorerPath({ connectionId: r.connectionId, database: r.database, section: r.parentKind === 'view' ? 'views' : 'tables',
+					...(r.category === 'column' ? { tableName: r.parentName, columnName: r.name } : {}),
+				}, r.category === 'column');
 				this._vscode.postMessage({ type: 'sql.cluster.expand', connectionId: r.connectionId });
 				if (r.database) {
 					const dbKey = r.connectionId + '|' + r.database;
@@ -2671,6 +2949,61 @@ export class KwConnectionManager extends LitElement {
 		if (filterChanged) {
 			this._scheduleExplorerScrollReset();
 		}
+	}
+
+	private _clearSearchColumnSelection(): void {
+		const ownedRange = this._columnSelectionRange;
+		this._columnSelectionRange = null;
+		this._revealedColumnElement = null;
+		const selection = window.getSelection();
+		if (!ownedRange || selection?.rangeCount !== 1) return;
+		const currentRange = selection.getRangeAt(0);
+		if (currentRange.startContainer === ownedRange.startContainer && currentRange.startOffset === ownedRange.startOffset
+			&& currentRange.endContainer === ownedRange.endContainer && currentRange.endOffset === ownedRange.endOffset) {
+			selection.removeAllRanges();
+		}
+	}
+
+	private _revealSearchColumn(): void {
+		const path = this._activeKind === 'kusto' ? this._explorerPath : this._sqlExplorerPath;
+		if (this._activeFilter !== 'all' || !path?.database || !path.tableName || !path.columnName) {
+			this._clearSearchColumnSelection();
+			return;
+		}
+		const dbKey = `${path.connectionId}|${path.database}`;
+		if (this._activeKind === 'kusto') {
+			const schema = this._databaseSchemas[dbKey];
+			if (!schema) return;
+			const folderPath = (schema.tableFolders?.[path.tableName] ?? '').split('/').filter(Boolean);
+			if (JSON.stringify(path.folderPath ?? []) !== JSON.stringify(folderPath)) {
+				this._setKustoExplorerPath({ ...path, folderPath }, true);
+				return;
+			}
+		} else {
+			const schema = this._sqlDatabaseSchemas[dbKey];
+			if (!schema) return;
+			const section = schema.views?.includes(path.tableName) ? 'views' : 'tables';
+			if (path.section !== section) {
+				this._setSqlExplorerPath({ ...path, section }, true);
+				return;
+			}
+		}
+		const row = this.shadowRoot?.querySelector<HTMLElement>('[data-testid="cm-schema-column"][data-selected="true"]');
+		const name = row?.querySelector<HTMLElement>('.explorer-schema-col-name');
+		if (!row || !name || this._revealedColumnElement === name) return;
+		this._revealedColumnElement = name;
+		void this.updateComplete.then(() => requestAnimationFrame(() => {
+			const current = this._activeKind === 'kusto' ? this._explorerPath : this._sqlExplorerPath;
+			if (!this.isConnected || !row.isConnected || this._activeFilter !== 'all' || current !== path) return;
+			row.focus({ preventScroll: true });
+			row.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+			const selection = window.getSelection();
+			const range = document.createRange();
+			range.selectNodeContents(name);
+			selection?.removeAllRanges();
+			selection?.addRange(range);
+			this._columnSelectionRange = range.cloneRange();
+		}));
 	}
 
 	// ── Folder tree helpers ───────────────────────────────────────────────────

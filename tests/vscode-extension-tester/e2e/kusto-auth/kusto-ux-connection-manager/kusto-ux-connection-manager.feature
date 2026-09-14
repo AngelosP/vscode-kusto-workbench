@@ -44,12 +44,22 @@ Feature: Kusto Connection Manager surrounding UX
     Then I take a screenshot "04-manager-edit-cancelled"
 
     When I click "[data-testid='cm-filter-search']" in the webview "Connection Manager"
-    When I wait for "[data-testid='cm-search-input']" in the webview "Connection Manager" for 10 seconds
-    When I click ".search-refresh-drop" in the webview "Connection Manager"
-    When I evaluate "(() => { const manager = document.querySelector('kw-connection-manager'); const root = manager?.shadowRoot; const menu = root?.querySelector('.search-refresh-menu'); if (!menu || menu.getBoundingClientRect().width <= 0 || !menu.textContent.includes('Refresh all connections')) throw new Error('Search refresh menu did not open visibly'); if (root?.querySelector('.modal-overlay, .modal-content, kw-kusto-connection-form')) throw new Error('Dismissed modal subtree returned before Search capture'); return 'refresh menu open without modal'; })()" in the webview "Connection Manager"
-    Then I take a screenshot "05-manager-refresh-menu"
+    When I wait for "[data-testid='cm-search-scope']" in the webview "Connection Manager" for 10 seconds
+    When I evaluate "(() => { const root = document.querySelector('kw-connection-manager')?.shadowRoot; const scope = root?.querySelector('[data-testid=cm-search-scope]'); if (JSON.stringify(Array.from(scope?.options || [], option => option.value)) !== JSON.stringify(['selected', 'cached', 'everything'])) throw new Error('Unexpected Search scopes'); const input = root?.querySelector('[data-testid=cm-search-input]'); (input || scope).focus(); return 'native input target focused'; })()" in the webview "Connection Manager"
+    When I press "Ctrl+A"
+    When I press "Backspace"
+    When I focus "[data-testid='cm-search-scope']" in the webview "Connection Manager"
+    When I press "Home"
+    When I press "Tab"
+    When I wait for "[data-testid='cm-search-target-picker']" in the webview "Connection Manager" for 10 seconds
+    When I evaluate "(() => { const manager = document.querySelector('kw-connection-manager'); window.__cmUxSearchBefore = JSON.stringify({ scope: manager._search.scope, targets: manager._search.targets, query: manager._search.query, categories: manager._search.categories, contentToggles: manager._search.contentToggles }); return 'committed search selection observed'; })()" in the webview "Connection Manager"
+    When I resize the Dev Host to 1000 by 700
+    When I click "[data-testid='cm-search-target-picker']" in the webview "Connection Manager"
+    When I wait for "[data-testid='cm-search-target-dialog'][open]" in the webview "Connection Manager" for 10 seconds
+    When I evaluate "(() => { const root = document.querySelector('kw-connection-manager')?.shadowRoot; const dialog = root?.querySelector('[data-testid=cm-search-target-dialog]'); const footer = dialog?.querySelector('.modal-footer'); const bounds = dialog?.getBoundingClientRect(); const footerBounds = footer?.getBoundingClientRect(); if (!dialog?.matches(':modal') || !bounds || bounds.width <= 0 || bounds.left < 0 || bounds.top < 0 || bounds.right > innerWidth + 1 || bounds.bottom > innerHeight + 1 || !footerBounds || footerBounds.bottom > bounds.bottom || footerBounds.top < bounds.top) throw new Error('Search target dialog or footer is clipped'); if (root.querySelector('[data-testid=cm-modal-overlay], kw-kusto-connection-form, .search-refresh-menu')) throw new Error('Obsolete modal or refresh subtree returned'); return 'search target dialog is in the top layer with a visible footer'; })()" in the webview "Connection Manager"
+    Then I take a screenshot "05-manager-search-target-dialog"
     When I press "Escape"
-    When I evaluate "(() => { const manager = document.querySelector('kw-connection-manager'); if (manager?.shadowRoot?.querySelector('.search-refresh-menu')) throw new Error('Search refresh menu did not close on Escape'); return 'refresh menu dismissed'; })()" in the webview "Connection Manager"
+    When I evaluate "(() => { const manager = document.querySelector('kw-connection-manager'); const root = manager?.shadowRoot; const state = JSON.stringify({ scope: manager._search.scope, targets: manager._search.targets, query: manager._search.query, categories: manager._search.categories, contentToggles: manager._search.contentToggles }); if (root?.querySelector('[data-testid=cm-search-target-dialog]') || root?.activeElement !== root?.querySelector('[data-testid=cm-search-target-picker]') || state !== window.__cmUxSearchBefore) throw new Error('Escape changed the search selection or lost picker focus'); return 'search target draft dismissed without mutation'; })()" in the webview "Connection Manager"
 
     When I resize the Dev Host to 1100 by 420
     When I click "[data-testid='cm-add-connection']" in the webview "Connection Manager"

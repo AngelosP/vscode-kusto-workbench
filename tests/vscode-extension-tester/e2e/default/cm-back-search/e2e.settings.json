@@ -1,0 +1,6 @@
+{
+  "timeout": 60000,
+  "workspaceSettings": {
+    "kustoWorkbench.didYouKnow.enabled": false
+  }
+}

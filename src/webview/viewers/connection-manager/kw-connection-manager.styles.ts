@@ -62,6 +62,7 @@ export const styles = css`
 
 		/* Main layout — single panel */
 		.explorer-panel { flex: 1 1 auto; min-height: 190px; display: flex; flex-direction: column; border: 1px solid var(--vscode-editorWidget-border); border-radius: 4px; background: var(--vscode-editorWidget-background); overflow: hidden; }
+		.explorer-panel.search-active { flex: 0 1 auto; min-height: 0; overflow: visible; }
 
 		/* Filter tabs */
 		.filter-bar { display: flex; gap: 0; border-bottom: 1px solid var(--vscode-editorWidget-border); flex-shrink: 0; container-type: inline-size; background: var(--vscode-sideBarSectionHeader-background, rgba(128,128,128,.08)); }
@@ -165,6 +166,8 @@ export const styles = css`
 		.explorer-schema-row { display: flex; align-items: center; gap: 8px; padding: 3px 8px; font-size: 11px; background: rgba(0, 0, 0, 0.08); border-radius: 3px; }
 		.explorer-schema-row.has-doc { align-items: flex-start; padding-top: 5px; padding-bottom: 5px; }
 		.explorer-schema-row:hover { background: rgba(0, 0, 0, 0.15); }
+		.explorer-schema-row.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+		.explorer-schema-row.selected :is(.explorer-schema-col-name, .explorer-schema-col-type) { color: inherit; }
 		.explorer-schema-col-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
 		.explorer-schema-col-header { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
 		.explorer-schema-col-name { font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-symbolIcon-propertyForeground, #9cdcfe); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -222,57 +225,69 @@ export const styles = css`
 
 		/* Search */
 		.search-tab svg { fill: var(--vscode-foreground); }
-		.search-container { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; overflow: hidden; container-type: inline-size; }
-		.search-section-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--vscode-descriptionForeground); padding: 14px 12px 2px; }
-		.search-input-row { display: flex; align-items: center; gap: 2px; padding: 4px 12px 2px; }
-		.search-input-wrapper { flex: 1; position: relative; display: flex; align-items: center; }
+		.search-container { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; overflow: visible; container-type: inline-size; }
+		.search-section-label { flex-shrink: 0; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0; color: var(--vscode-descriptionForeground); padding: 14px 12px 2px; }
+		.search-scope-row { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: flex-start; gap: 8px; min-width: 0; padding: 4px 12px 12px; }
+		.search-scope { flex: 0 1 240px; min-width: 0; max-width: 100%; min-height: 30px; padding: 4px 6px; font: inherit; font-size: 12px; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border, var(--vscode-editorWidget-border)); border-radius: 3px; }
+		.search-targets { display: flex; flex: 1 1 220px; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+		.search-target-tag { display: inline-flex; flex: 0 1 auto; align-items: center; gap: 4px; min-width: 0; max-width: 100%; height: 28px; padding: 2px 2px 2px 8px; border: 1px solid var(--vscode-editorWidget-border); border-radius: 3px; font-size: 12px; color: var(--vscode-foreground); background: var(--vscode-toolbar-activeBackground, transparent); }
+		.search-target-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+		.search-target-picker { flex: 0 0 28px; width: 28px; height: 28px; }
+		.search-target-remove { flex: 0 0 22px; width: 22px; height: 22px; }
+		.search-target-picker svg, .search-target-picker .codicon, .search-target-remove svg, .search-target-remove .codicon { flex-shrink: 0; width: 14px; height: 14px; font-size: 14px; }
+		.search-scope:focus-visible, .search-target-picker:focus-visible, .search-target-remove:focus-visible, .search-target-dialog :is(button, input):focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+		.search-target-dialog { width: 520px; font: inherit; }
+		.search-target-dialog .modal-content { max-height: min(600px, calc(100vh - 32px)); }
+		.search-target-dialog .modal-header { gap: 8px; padding: 12px 16px; }
+		.search-target-dialog h2 { min-width: 0; overflow-wrap: anywhere; }
+		.search-target-dialog .btn-icon { flex-shrink: 0; }
+		.search-target-body { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 8px; padding: 12px 16px; overflow: hidden; }
+		.search-target-body > label { font-size: 12px; }
+		.search-target-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+		.search-target-tree, .search-target-databases { list-style: none; padding: 0; margin: 0; }
+		.search-target-row { display: flex; align-items: center; gap: 4px; min-height: 40px; }
+		.search-target-row:hover, .search-target-databases .search-target-choice:hover { background: var(--vscode-list-hoverBackground); }
+		.search-target-row.is-protected { color: var(--vscode-disabledForeground); }
+		.search-target-expand { width: 24px; height: 28px; }
+		.search-target-expand[aria-expanded="true"] svg, .search-target-expand[aria-expanded="true"] .codicon { transform: rotate(90deg); }
+		.search-target-expand:disabled { cursor: default; background: transparent; color: var(--vscode-disabledForeground); }
+		.search-target-choice { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; padding: 6px 4px; cursor: pointer; }
+		.is-protected .search-target-choice { cursor: default; }
+		.search-target-choice input { flex: 0 0 16px; width: 16px; height: 16px; margin: 0; accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-button-background)); }
+		.search-target-icon, .search-target-status > svg { display: inline-flex; flex: 0 0 16px; width: 16px; height: 16px; }
+		.search-target-icon svg, .search-target-icon .codicon { width: 16px; height: 16px; font-size: 16px; }
+		.search-target-name { display: flex; flex: 1; flex-direction: column; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+		.search-target-address { font-size: 11px; color: var(--vscode-descriptionForeground); }
+		.search-target-databases { padding-left: 28px; }
+		.search-target-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 4px 8px 32px; font-size: 12px; color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; }
+		.search-target-status .btn { padding: 4px 8px; max-width: 100%; text-align: left; }
+		.search-target-dialog .modal-footer { padding: 10px 16px; flex-wrap: wrap; }
+		.search-input-row { display: flex; flex-shrink: 0; align-items: center; gap: 2px; padding: 4px 12px 2px; }
+		.search-input-wrapper { flex: 1; min-width: 0; position: relative; display: flex; align-items: center; }
 		.search-input { flex: 1; padding: 6px 10px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 3px; font-family: inherit; font-size: 13px; outline: none; width: 100%; }
 		.search-input:focus { border-color: var(--vscode-focusBorder); }
 		.search-input::placeholder { color: var(--vscode-input-placeholderForeground); }
 		.search-input-spinner { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; pointer-events: none; }
 		.search-input-spinner svg { width: 14px; height: 14px; color: var(--vscode-descriptionForeground); }
 
-		/* Tools dropdown menu (reused by refresh split-button) */
-		.search-tools-item { display: flex; flex-direction: column; gap: 3px; padding: 10px 14px; width: 100%; text-align: left; border: none; border-bottom: 1px solid var(--vscode-menu-separatorBackground, var(--vscode-editorWidget-border)); background: transparent; color: var(--vscode-menu-foreground, var(--vscode-foreground)); cursor: pointer; font-family: inherit; transition: background 0.1s; }
-		.search-tools-item:last-child { border-bottom: none; }
-		.search-tools-item:hover { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-foreground)); }
-		.search-tools-item-title { font-size: 12px; font-weight: 500; }
-		.search-tools-count { font-weight: 400; opacity: 0.7; }
-		.search-tools-item-desc { font-size: 11px; color: var(--vscode-descriptionForeground); line-height: 1.4; }
-		.search-tools-item:hover .search-tools-item-desc { color: inherit; opacity: 0.85; }
-
-		/* Category segments — connected control, muted palette */
-		.search-categories-row { display: flex; align-items: stretch; gap: 10px; padding: 5px 12px 14px; flex-wrap: wrap; }
-		.search-categories { display: inline-flex; gap: 0; align-items: flex-start; flex-wrap: wrap; }
-		.search-category-chip { display: inline-flex; align-items: center; padding: 4px 10px; font-size: 11px; line-height: 16px; border: 1px solid var(--vscode-editorWidget-border); border-right-width: 0; background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; font-family: inherit; transition: all 0.15s; white-space: nowrap; box-sizing: border-box; }
-		.search-category-chip:first-child { border-radius: 3px 0 0 3px; }
-		.search-category-chip:last-child { border-radius: 0 3px 3px 0; border-right-width: 1px; }
+		/* Search category controls */
+		.search-categories-row { display: flex; flex-shrink: 0; align-items: stretch; gap: 10px; padding: 5px 12px 14px; flex-wrap: wrap; }
+		.search-categories { display: inline-flex; gap: 4px; align-items: flex-start; flex-wrap: wrap; }
+		.search-category-chip { display: inline-flex; align-items: center; padding: 4px 10px; font-size: 11px; line-height: 16px; border: 1px solid var(--vscode-editorWidget-border); border-radius: 3px; background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; font-family: inherit; transition: all 0.15s; white-space: nowrap; box-sizing: border-box; }
 		.search-category-chip:hover { background: var(--vscode-list-hoverBackground); }
 		.search-category-chip.active { background: var(--vscode-toolbar-activeBackground, rgba(128,128,128,.2)); color: var(--vscode-foreground); border-color: var(--vscode-focusBorder); }
-		.search-category-chip.active + .search-category-chip { border-left-color: var(--vscode-focusBorder); }
 		.search-category-chip.has-content.active:not(.content-on) { background: var(--vscode-toolbar-activeBackground, rgba(128,128,128,.2)); color: var(--vscode-foreground); }
 		.search-category-chip.content-on { background: var(--vscode-toolbar-activeBackground, rgba(128,128,128,.2)); color: var(--vscode-foreground); border-color: var(--vscode-focusBorder); }
 		.search-chip-label { flex-shrink: 0; }
 		.search-chip-icon { display: none; align-items: center; }
-		.search-chip-icon svg { width: 14px; height: 14px; max-width: 14px; max-height: 14px; min-width: 14px; min-height: 14px; }
+		.search-chip-icon svg, .search-chip-icon .codicon { width: 14px; height: 14px; max-width: 14px; max-height: 14px; min-width: 14px; min-height: 14px; font-size: 14px; }
 		.search-chip-secondary { transition: opacity 0.15s; }
 		.search-chip-secondary.dimmed { opacity: 0.4; }
-		/* Narrow: switch to icon-only chips */
-		/* Narrow: switch to icon-only chips first, then condense refresh label */
-		@container (max-width: 600px) { .search-chip-text { display: none; } .search-chip-icon { display: inline-flex; } .search-category-chip { padding: 4px 8px; height: 24px; } }
-		@container (max-width: 340px) { .search-refresh-label-extra { display: none; } }
-		@container (max-width: 240px) { .search-refresh-split { display: none; } }
-
-		/* Refresh split-button — sits next to category segments */
-		.search-refresh-split { display: inline-flex; align-items: stretch; position: relative; }
-		.search-refresh-main { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; font-size: 11px; line-height: 16px; border: 1px solid var(--vscode-editorWidget-border); border-right: none; border-radius: 3px 0 0 3px; background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; font-family: inherit; white-space: nowrap; transition: all 0.15s; box-sizing: border-box; }
-		.search-refresh-main:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
-		.search-refresh-main svg { width: 12px; height: 12px; flex-shrink: 0; }
-		.search-refresh-count { opacity: 0.7; }
-		.search-refresh-drop { display: inline-flex; align-items: center; justify-content: center; width: 20px; padding: 0; border: 1px solid var(--vscode-editorWidget-border); border-radius: 0 3px 3px 0; background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; transition: all 0.15s; }
-		.search-refresh-drop:hover, .search-refresh-drop.active { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
-		.search-refresh-drop svg { width: 10px; height: 10px; transform: rotate(90deg); }
-		.search-refresh-menu { position: absolute; top: 100%; right: 0; z-index: 100; width: 380px; max-width: calc(100vw - 40px); margin-top: 4px; background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.25); overflow: hidden; }
+		@container (max-width: 600px) {
+			.search-chip-text { display: none; }
+			.search-chip-icon { display: inline-flex; }
+			.search-category-chip { flex: 0 0 32px; width: 32px; height: 24px; justify-content: center; padding: 4px 8px; }
+		}
 
 		/* Progress strip — sits below the search input row */
 		.search-progress-strip { display: flex; align-items: center; gap: 6px; padding: 5px 12px; margin: 0 12px 4px; font-size: 11px; color: var(--vscode-descriptionForeground); background: var(--vscode-sideBarSectionHeader-background, rgba(128,128,128,.08)); border-radius: 4px; flex-shrink: 0; }
@@ -281,11 +296,13 @@ export const styles = css`
 		.search-progress-count { opacity: 0.7; flex-shrink: 0; }
 		.search-progress-dismiss { width: 20px; height: 20px; flex-shrink: 0; margin-left: auto; }
 		.search-results { flex: 0 1 auto; overflow-y: auto; min-height: 0; background: var(--vscode-sideBar-background, var(--vscode-editor-background)); }
-		.search-result-count { padding: 10px 18px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--vscode-descriptionForeground); border-bottom: 1px solid var(--vscode-editorWidget-border); display: flex; align-items: center; gap: 6px; }
+		.search-result-count { flex-shrink: 0; padding: 10px 18px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0; color: var(--vscode-descriptionForeground); border-bottom: 1px solid var(--vscode-editorWidget-border); display: flex; align-items: center; gap: 6px; }
 		.search-result-rerun { width: 16px; height: 16px; opacity: 0.6; }
 		.search-result-rerun:hover { opacity: 1; }
 		.search-result-rerun svg { width: 10px !important; height: 10px !important; }
 		.search-result-item { min-height: 44px; }
+		.search-result-item > .explorer-list-item-name, .search-result-item:hover > .explorer-list-item-name { flex: 0 1 auto; min-width: 0; }
+		.search-result-column-type { flex-shrink: 0; font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; }
 		.search-result-context { font-size: 11px; color: var(--vscode-descriptionForeground); opacity: 0.7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; min-width: 0; }
 		.search-result-parent { margin-right: 2px; }
 		.search-result-db { font-family: var(--vscode-editor-font-family, monospace); }

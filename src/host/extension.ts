@@ -1133,6 +1133,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				await cleanupSupplementalSchemaDiagnosticsState(false);
 			}),
 			vscode.commands.registerCommand('kustoWorkbench.test.seedKustoTextDiagnosticsState', async () => {
+				await supplementalStartupCleanup;
 				for (const connection of connectionManager.getConnections()) {
 					if (String(connection.name || '') === textDiagnosticsTestName || kustoClusterKey(connection.clusterUrl) === kustoClusterKey(textDiagnosticsTestCluster)) {
 						await connectionManager.removeConnection(connection.id);
@@ -2513,7 +2514,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			const sessionUri = vscode.Uri.joinPath(context.globalStorageUri, 'session.kqlx');
 			await withKqlxDocumentWriteLock(sessionUri, async () => {
 				if (testIsolateKustoConnections) {
-					await vscode.workspace.fs.writeFile(sessionUri, new TextEncoder().encode(''));
+					const content = stringifyKqlxFile(createKqlxOrMdxFileWithDefaultSection('kqlx'));
+					await vscode.workspace.fs.writeFile(sessionUri, new TextEncoder().encode(content));
 					return;
 				}
 				try {

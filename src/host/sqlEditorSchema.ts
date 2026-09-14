@@ -363,9 +363,19 @@ export type SqlSchemaSearchMatch = {
 	kind: string;
 	name: string;
 	table?: string;
+	parentKind?: 'table' | 'view';
 	type?: string;
 	parametersText?: string;
 };
+
+export interface SqlSchemaSearchOptions {
+	tableNames?: boolean;
+	tableColumns?: boolean;
+	viewNames?: boolean;
+	viewColumns?: boolean;
+	storedProcedureNames?: boolean;
+	storedProcedureBody?: boolean;
+}
 
 /**
  * Enumerates all cached SQL schemas from disk.
@@ -413,6 +423,7 @@ export async function searchCachedSqlSchemas(
 	pattern: string,
 	maxResults: number = 500,
 	allowedOwners?: ReadonlyMap<string, SqlSchemaCacheOwner>,
+	options: SqlSchemaSearchOptions = {},
 ): Promise<SqlSchemaSearchMatch[]> {
 	let re: RegExp;
 	try { re = new RegExp(pattern, 'i'); } catch { return []; }
@@ -426,7 +437,7 @@ export async function searchCachedSqlSchemas(
 		const matchedTables = new Set<string>();
 
 		// Tables
-		for (const table of schema.tables ?? []) {
+		for (const table of options.tableNames === false ? [] : schema.tables ?? []) {
 			if (matches.length >= maxResults) break;
 			if (re.test(table)) {
 				matchedTables.add(table);
@@ -435,7 +446,7 @@ export async function searchCachedSqlSchemas(
 		}
 
 		// Views
-		for (const view of schema.views ?? []) {
+		for (const view of options.viewNames === false ? [] : schema.views ?? []) {
 			if (matches.length >= maxResults) break;
 			if (re.test(view)) {
 				matches.push({ ...base, kind: 'view', name: view });
@@ -445,10 +456,12 @@ export async function searchCachedSqlSchemas(
 		// Columns
 		for (const [table, cols] of Object.entries(schema.columnsByTable ?? {})) {
 			if (matches.length >= maxResults) break;
+			const parentKind = (schema.views ?? []).includes(table) ? 'view' : 'table';
+			if (parentKind === 'view' ? options.viewColumns === false : options.tableColumns === false) continue;
 			for (const [col, colType] of Object.entries(cols)) {
 				if (matches.length >= maxResults) break;
 				if (re.test(col) || re.test(colType)) {
-					matches.push({ ...base, kind: 'column', name: col, table, type: colType });
+					matches.push({ ...base, kind: 'column', name: col, table, parentKind, type: colType });
 				}
 			}
 		}
@@ -457,11 +470,11 @@ export async function searchCachedSqlSchemas(
 		for (const sp of schema.storedProcedures ?? []) {
 			if (matches.length >= maxResults) break;
 			let matchKind: string | undefined;
-			if (re.test(sp.name)) {
+			if (options.storedProcedureNames !== false && re.test(sp.name)) {
 				matchKind = 'storedProcedure';
-			} else if (sp.parametersText && re.test(sp.parametersText)) {
+			} else if (options.storedProcedureBody !== false && sp.parametersText && re.test(sp.parametersText)) {
 				matchKind = 'spParameter';
-			} else if (sp.body && re.test(sp.body)) {
+			} else if (options.storedProcedureBody !== false && sp.body && re.test(sp.body)) {
 				matchKind = 'spBody';
 			}
 			if (matchKind) {

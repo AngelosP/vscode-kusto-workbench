@@ -7,11 +7,13 @@ import {
 	getSqlSchemaCacheDirUri,
 	getSqlSchemaCacheFileUri,
 	readCachedSqlSchemaFromDisk,
+	searchCachedSqlSchemas,
 	SqlSchemaService,
 	sqlSchemaCacheKey,
 	sqlSchemaPrincipalFingerprint,
 	sqlSchemaTargetSignature,
 	SQL_SCHEMA_CACHE_VERSION,
+	type SqlSchemaSearchOptions,
 } from '../../../src/host/sqlEditorSchema';
 import { captureSqlSchemaCacheGeneration, clearSqlSchemaCacheFiles } from '../../../src/host/sqlSchemaCacheGeneration';
 
@@ -20,6 +22,85 @@ function deferred<T>() {
 	const promise = new Promise<T>(res => { resolve = res; });
 	return { promise, resolve };
 }
+
+describe('SQL cached schema search filters', () => {
+	const base = { connectionId: 'sql-search', serverUrl: 'server.example', database: 'Db' };
+	const schema = {
+		tables: ['HitTable1', 'HitTable2'], views: ['HitView'],
+		columnsByTable: {
+			HitTable1: { HitColumn: 'int' }, HitTable2: { OtherColumn: 'HitType' },
+			HitView: { HitViewColumn: 'nvarchar' },
+		},
+		storedProcedures: [
+			{ name: 'HitProcedure', body: 'SELECT Hit = 1', parametersText: '@value int' },
+			{ name: 'ParameterOnly', parametersText: '@Hit int' },
+			{ name: 'BodyOnly', body: 'SELECT Hit = 2' },
+		],
+	};
+	async function searchCache(options?: SqlSchemaSearchOptions, maxResults = 500) {
+		const storageUri = {
+			fsPath: '', path: '/sql-search-filters', toString: () => 'file:///sql-search-filters',
+		} as vscode.Uri;
+		const owner = { principalFingerprint: 'principal-a', targetSignature: 'target-a' };
+		const entry = {
+			...base, ...owner, schema, version: SQL_SCHEMA_CACHE_VERSION, timestamp: Date.now(),
+			cacheGeneration: await captureSqlSchemaCacheGeneration(storageUri),
+		};
+		const originalReadDirectory = vscode.workspace.fs.readDirectory;
+		vscode.workspace.fs.readDirectory = vi.fn().mockResolvedValue([['entry.json', 1]]);
+		const readFile = vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(Buffer.from(JSON.stringify(entry)));
+		try {
+			const allowedOwners = new Map([[base.connectionId, owner]]);
+			return options === undefined
+				? await searchCachedSqlSchemas(storageUri, 'Hit', maxResults, allowedOwners)
+				: await searchCachedSqlSchemas(storageUri, 'Hit', maxResults, allowedOwners, options);
+		} finally {
+			if (originalReadDirectory === undefined) Reflect.deleteProperty(vscode.workspace.fs, 'readDirectory');
+			else vscode.workspace.fs.readDirectory = originalReadDirectory;
+			readFile.mockRestore();
+		}
+	}
+
+	it('does not let disabled table names fill the limit before enabled column matches', async () => {
+		await expect(searchCache({
+			tableNames: false, tableColumns: true, viewNames: false, viewColumns: false,
+			storedProcedureNames: false, storedProcedureBody: false,
+		}, 2)).resolves.toEqual([
+			{ ...base, kind: 'column', name: 'HitColumn', table: 'HitTable1', parentKind: 'table', type: 'int' },
+			{ ...base, kind: 'column', name: 'OtherColumn', table: 'HitTable2', parentKind: 'table', type: 'HitType' },
+		]);
+	});
+
+	it('keeps all SQL match types enabled for the four-argument scanner call', async () => {
+		await expect(searchCache()).resolves.toEqual([
+			{ ...base, kind: 'table', name: 'HitTable1' },
+			{ ...base, kind: 'table', name: 'HitTable2' },
+			{ ...base, kind: 'view', name: 'HitView' },
+			{ ...base, kind: 'column', name: 'HitColumn', table: 'HitTable1', parentKind: 'table', type: 'int' },
+			{ ...base, kind: 'column', name: 'OtherColumn', table: 'HitTable2', parentKind: 'table', type: 'HitType' },
+			{ ...base, kind: 'column', name: 'HitViewColumn', table: 'HitView', parentKind: 'view', type: 'nvarchar' },
+			{ ...base, kind: 'storedProcedure', name: 'HitProcedure', parametersText: '@value int' },
+			{ ...base, kind: 'spParameter', name: 'ParameterOnly', parametersText: '@Hit int' },
+			{ ...base, kind: 'spBody', name: 'BodyOnly' },
+		]);
+	});
+
+	it.each([
+		{ names: false, body: true, kind: 'spBody' },
+		{ names: true, body: false, kind: 'storedProcedure' },
+	])('classifies a same-name-and-body SQL match with names=$names and body=$body', async ({ names, body, kind }) => {
+		await expect(searchCache({
+			tableNames: false, tableColumns: false, viewNames: false, viewColumns: false,
+			storedProcedureNames: names, storedProcedureBody: body,
+		})).resolves.toEqual([
+			{ ...base, kind, name: 'HitProcedure', parametersText: '@value int' },
+			...(body ? [
+				{ ...base, kind: 'spParameter', name: 'ParameterOnly', parametersText: '@Hit int' },
+				{ ...base, kind: 'spBody', name: 'BodyOnly' },
+			] : []),
+		]);
+	});
+});
 
 describe('SqlSchemaService Leave No Trace policy', () => {
 	it('distinguishes SQL Login principals whose usernames differ only by case', () => {

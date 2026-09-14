@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import * as ts from 'typescript';
 
 const { postMessageToHost } = vi.hoisted(() => ({ postMessageToHost: vi.fn() }));
 
 vi.mock('../../src/webview/shared/webview-messages.js', () => ({ postMessageToHost }));
 
+import { parseDocumentViewHostMessage } from '../../src/shared/documentViewProtocol.js';
 import { pState } from '../../src/webview/shared/persistence-state.js';
 import {
 	acknowledgeHostOwnedDocumentOrder,
@@ -19,6 +23,7 @@ import {
 	requestHostOwnedHtmlPatch,
 	requestHostOwnedHtmlPublishInfoPatch,
 	requestHostOwnedHtmlRemove,
+	requestHostOwnedMarkdownAdd,
 	requestHostOwnedMarkdownPatch,
 	requestHostOwnedMarkdownRemove,
 	requestHostOwnedPythonPatch,
@@ -34,6 +39,81 @@ import {
 async function waitForPostedMessage(count: number): Promise<any> {
 	for (let attempt = 0; attempt < 20 && postMessageToHost.mock.calls.length < count; attempt++) await Promise.resolve();
 	return postMessageToHost.mock.calls[count - 1]?.[0];
+}
+
+const helperPath = resolve(process.cwd(), 'src/webview/core/test-helpers.ts');
+const helperSource = ts.createSourceFile(helperPath, readFileSync(helperPath, 'utf8'), ts.ScriptTarget.Latest, true);
+const helperNames = [
+	'TEST_SECTION_SELECTOR', 'clickTestSectionClose', 'e2eDelay', 'e2eClearSectionsStable',
+	'e2eDocumentCommandAcceptance',
+	'e2eDocumentCommandCapture', 'e2eBeginDocumentCommandCapture', 'e2eWaitForDocumentCommands',
+	'__testRemoveAllSections', 'E2E_LAYOUT_RESULT_SECTION_ID', 'E2E_LAYOUT_SPECS', 'e2eLayoutSpec',
+	'e2eLayoutDelay', 'e2eLayoutWaitFor', 'e2eLayoutGeneratedLines', 'e2eLayoutAddSection',
+	'e2eLayoutCreateStressNotebook',
+];
+const helperCode = ts.transpileModule(helperNames.map(name => {
+	const statement = helperSource.statements.find(candidate =>
+		(ts.isFunctionDeclaration(candidate) && candidate.name?.text === name)
+		|| (ts.isVariableStatement(candidate) && candidate.declarationList.declarations.some(declaration =>
+			ts.isIdentifier(declaration.name) && declaration.name.text === name))
+		|| (ts.isExpressionStatement(candidate) && ts.isBinaryExpression(candidate.expression)
+			&& ts.isPropertyAccessExpression(candidate.expression.left)
+			&& candidate.expression.left.expression.getText(helperSource) === '_win'
+			&& candidate.expression.left.name.text === name));
+	if (!statement) throw new Error(`E2E helper declaration not found: ${name}`);
+	return statement.getText(helperSource);
+}).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText;
+
+function loadDocumentHelpers() {
+	const originalProperties = new Map([
+		'__e2eCaptureHostMessage', '__testRemoveAllSections', 'addQueryBox', 'addSqlBox', 'addChartBox',
+	].map(name => [name, Object.getOwnPropertyDescriptor(window, name)]));
+	let suppressed = false;
+	const suppressPersistence = vi.fn((value: boolean) => { suppressed = value; });
+	const adoptClean = vi.fn();
+	const helpers = new Function(
+		'pState', '_win', 'isPersistenceSuppressedForTest', 'suppressPersistenceForTest',
+		'adoptCurrentStateAsCleanForTest', 'waitForHostOwnedMarkdownCommands',
+		`${helperCode}\nreturn {
+			clearSections: e2eClearSectionsStable,
+			beginCapture: e2eBeginDocumentCommandCapture,
+			waitForCommands: e2eWaitForDocumentCommands,
+			createStressNotebook: e2eLayoutCreateStressNotebook,
+			capture: () => e2eDocumentCommandCapture,
+		};`,
+	)(pState, window, () => suppressed, suppressPersistence, adoptClean, waitForHostOwnedMarkdownCommands) as {
+		clearSections(timeoutMs?: number, quietMs?: number): Promise<string>;
+		beginCapture(): string;
+		waitForCommands(minimumCount?: number, timeoutMs?: number): Promise<unknown>;
+		createStressNotebook(requireChartReady?: boolean): Promise<string>;
+		capture(): { onMessage: (event: MessageEvent) => void; results: unknown[] } | undefined;
+	};
+	return {
+		...helpers, suppressPersistence, adoptClean,
+		dispose: () => {
+			const capture = helpers.capture();
+			if (capture) window.removeEventListener('message', capture.onMessage);
+			for (const [name, descriptor] of originalProperties) {
+				if (descriptor) Object.defineProperty(window, name, descriptor);
+				else Reflect.deleteProperty(window, name);
+			}
+		},
+	};
+}
+
+function observeHelper<Result>(promise: Promise<Result>) {
+	const settled = vi.fn();
+	const result = promise.then(value => ({ value }), error => ({ error })).then(outcome => {
+		settled(outcome);
+		return outcome;
+	});
+	return { result, settled };
+}
+
+function deliverDocumentResult(message: unknown) {
+	const admission = handleHostOwnedMarkdownCommandResult(message);
+	window.dispatchEvent(new MessageEvent('message', { data: message }));
+	return admission;
 }
 
 describe('host-owned Markdown command client', () => {
@@ -56,6 +136,479 @@ describe('host-owned Markdown command client', () => {
 	});
 
 	afterEach(() => resetHostOwnedMarkdownDocument());
+
+	it('keeps actual E2E cleanup pending beyond DOM removal before recreating the same section ID', async () => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
+		const applyCount = pState.documentDataApplyCount;
+		pState.documentDataApplyCount = 1;
+		const runtimeWindow = window as unknown as { __e2eCaptureHostMessage?: (message: unknown) => unknown };
+		const previousCapture = runtimeWindow.__e2eCaptureHostMessage;
+		postMessageToHost.mockImplementation(message => runtimeWindow.__e2eCaptureHostMessage?.(message));
+		const helpers = loadDocumentHelpers();
+		const section = document.createElement('kw-markdown-section');
+		section.id = 'markdown_1';
+		const shell = document.createElement('kw-section-shell');
+		section.attachShadow({ mode: 'open' }).append(shell);
+		const close = document.createElement('button');
+		close.className = 'close-btn';
+		shell.attachShadow({ mode: 'open' }).append(close);
+		close.addEventListener('click', () => {
+			requestHostOwnedMarkdownRemove(section.id);
+			section.remove();
+		});
+		document.body.append(section);
+		let settled = false;
+		const cleanup = helpers.clearSections(2_000).then(
+			value => { settled = true; return { value }; },
+			error => { settled = true; return { error }; },
+		);
+		const recreated = document.createElement('kw-markdown-section');
+		try {
+			const remove = await waitForPostedMessage(1);
+			expect(remove).toMatchObject({ command: { type: 'remove', sectionId: 'markdown_1' } });
+			expect(section.isConnected).toBe(false);
+			let barrierSettled = false;
+			const barrier = waitForHostOwnedMarkdownCommands().then(accepted => {
+				barrierSettled = true;
+				return accepted;
+			});
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(getHostOwnedDocumentSectionStatus('markdown_1')).toBe('present');
+			expect(barrierSettled).toBe(false);
+			expect(settled, 'DOM emptiness must not complete cleanup before the host remove is admitted').toBe(false);
+			expect(helpers.adoptClean).not.toHaveBeenCalled();
+
+			const result = {
+				type: 'markdownDocumentCommandResult', commandId: remove.commandId, ok: true, sourceGeneration: 7,
+				projection: {
+					documentRevision: 1, sectionRevisions: {}, markdownSectionRevisions: {},
+					markdownSections: [], urlSections: [], orderedSectionIds: [],
+				},
+			};
+			expect(handleHostOwnedMarkdownCommandResult(result)).toMatchObject({ handled: true, accepted: true });
+			window.dispatchEvent(new MessageEvent('message', { data: result }));
+			await vi.advanceTimersByTimeAsync(900);
+			await expect(barrier).resolves.toBe(true);
+			expect(await cleanup).toEqual({ value: expect.stringContaining('removed 1 sections') });
+			expect(getHostOwnedDocumentSectionStatus('markdown_1')).toBe('absent');
+			expect(helpers.adoptClean).toHaveBeenCalledOnce();
+			expect(helpers.suppressPersistence.mock.calls).toEqual([[true], [false]]);
+
+			const replacement = { id: 'markdown_1', type: 'markdown' as const, text: 'recreated' };
+			expect(requestHostOwnedMarkdownAdd(replacement)).toBe(true);
+			recreated.id = replacement.id;
+			recreated.textContent = replacement.text;
+			document.body.append(recreated);
+			const add = await waitForPostedMessage(2);
+			expect(add).toMatchObject({ expectedDocumentRevision: 1, command: { type: 'add', section: replacement } });
+			expect(handleHostOwnedMarkdownCommandResult({
+				type: 'markdownDocumentCommandResult', commandId: add.commandId, ok: true, sourceGeneration: 7,
+				projection: {
+					documentRevision: 2, sectionRevisions: { markdown_1: 1 }, markdownSectionRevisions: { markdown_1: 1 },
+					markdownSections: [replacement], urlSections: [], orderedSectionIds: ['markdown_1'],
+				},
+			})).toMatchObject({ handled: true, accepted: true });
+			await expect(waitForHostOwnedMarkdownCommands()).resolves.toBe(true);
+			expect(getHostOwnedDocumentSectionStatus('markdown_1')).toBe('present');
+			expect(pState.hostOwnedMarkdownSections.markdown_1.text).toBe('recreated');
+			expect(document.getElementById('markdown_1')).toBe(recreated);
+		} finally {
+			resetHostOwnedMarkdownDocument();
+			await vi.advanceTimersByTimeAsync(2_100);
+			await cleanup;
+			section.remove();
+			recreated.remove();
+			pState.documentDataApplyCount = applyCount;
+			if (previousCapture) runtimeWindow.__e2eCaptureHostMessage = previousCapture;
+			else delete runtimeWindow.__e2eCaptureHostMessage;
+			helpers.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	describe('actual E2E document helpers', () => {
+		let helpers: ReturnType<typeof loadDocumentHelpers>;
+		let container: HTMLElement;
+		let applyCount: number;
+		const emptyProjection = {
+			documentRevision: 1, sectionRevisions: {}, markdownSectionRevisions: {},
+			markdownSections: [], urlSections: [], orderedSectionIds: [],
+		};
+
+		beforeEach(() => {
+			vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
+			applyCount = pState.documentDataApplyCount;
+			pState.documentDataApplyCount = 1;
+			helpers = loadDocumentHelpers();
+			postMessageToHost.mockImplementation(message => {
+				const capture = Reflect.get(window, '__e2eCaptureHostMessage');
+				return typeof capture === 'function' ? capture(message) : undefined;
+			});
+			container = document.createElement('div');
+			document.body.append(container);
+		});
+
+		afterEach(async () => {
+			resetHostOwnedMarkdownDocument();
+			await vi.advanceTimersByTimeAsync(11_000);
+			helpers.dispose();
+			container.remove();
+			pState.documentDataApplyCount = applyCount;
+			vi.useRealTimers();
+		});
+
+		function seedSection(id = 'markdown_1') {
+			const state = { id, type: 'markdown' as const, text: 'before', expanded: true, mode: 'wysiwyg' as const };
+			expect(adoptHostOwnedMarkdownDocument({
+				documentRevision: 0, sourceGeneration: 7,
+				sectionRevisions: { [id]: 0 }, markdownSectionRevisions: { [id]: 0 },
+			}, { sections: [state] })).toBe(true);
+			const section = document.createElement('kw-markdown-section');
+			section.id = id;
+			const shell = document.createElement('kw-section-shell');
+			section.attachShadow({ mode: 'open' }).append(shell);
+			const close = document.createElement('button');
+			close.className = 'close-btn';
+			shell.attachShadow({ mode: 'open' }).append(close);
+			close.addEventListener('click', () => {
+				requestHostOwnedMarkdownRemove(id);
+				section.remove();
+			});
+			container.append(section);
+			return {
+				documentRevision: 0, sectionRevisions: { [id]: 0 }, markdownSectionRevisions: { [id]: 0 },
+				markdownSections: [state], urlSections: [], orderedSectionIds: [id],
+			};
+		}
+
+		it('rejects cleanup after a rejected removal even when the client reconciles an unblocked projection', async () => {
+			const projection = seedSection();
+			const recreate = vi.fn();
+			const cleanup = observeHelper(helpers.clearSections(2_000).then(recreate));
+			const remove = await waitForPostedMessage(1);
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(recreate).not.toHaveBeenCalled();
+			expect(deliverDocumentResult({
+				type: 'markdownDocumentCommandResult', commandId: remove.commandId,
+				ok: false, sourceGeneration: 7, projection,
+			})).toMatchObject({ handled: true, accepted: false });
+			await vi.advanceTimersByTimeAsync(0);
+			await expect(cleanup.result).resolves.toMatchObject({ error: { message: expect.stringMatching(/rejected/i) } });
+			expect(recreate).not.toHaveBeenCalled();
+			expect(getHostOwnedDocumentSectionStatus('markdown_1')).toBe('present');
+			expect(helpers.adoptClean).not.toHaveBeenCalled();
+			expect(helpers.suppressPersistence.mock.calls).toEqual([[true], [false]]);
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		it.each([false, true])('completes cleanup only for accepted hidden-note commands between quiet polls (accepted=%s)', async accepted => {
+			seedSection();
+			const cleanup = observeHelper(helpers.clearSections(2_000));
+			const remove = await waitForPostedMessage(1);
+			expect(deliverDocumentResult({
+				type: 'markdownDocumentCommandResult', commandId: remove.commandId,
+				ok: true, sourceGeneration: 7, projection: emptyProjection,
+			})).toMatchObject({ handled: true, accepted: true });
+			await vi.advanceTimersByTimeAsync(150);
+			expect(cleanup.settled).not.toHaveBeenCalled();
+			expect(container.children).toHaveLength(0);
+			const noteSection = { id: 'devnotes_between_polls', type: 'devnotes' as const, entries: [] };
+			const noteSettlement = requestHostOwnedDevelopmentNoteAdd(noteSection);
+			const note = await waitForPostedMessage(2);
+			expect(note).toMatchObject({ expectedDocumentRevision: 1, command: { type: 'add' } });
+			expect(deliverDocumentResult({
+				type: 'markdownDocumentCommandResult', commandId: note.commandId,
+				ok: accepted, sourceGeneration: 7, documentRevision: accepted ? 2 : 1,
+				...(!accepted ? { error: { code: 'stale-document-revision', message: 'rejected between cleanup polls' } } : {}),
+				projection: accepted ? {
+					...emptyProjection, documentRevision: 2, sectionRevisions: { [noteSection.id]: 1 },
+					developmentNoteSections: [noteSection], orderedSectionIds: [noteSection.id],
+				} : emptyProjection,
+			})).toMatchObject({ handled: true, accepted });
+			await expect(noteSettlement).resolves.toBe(accepted);
+			await expect(waitForHostOwnedMarkdownCommands()).resolves.toBe(true);
+			await vi.advanceTimersByTimeAsync(800);
+			if (accepted) {
+				await expect(cleanup.result).resolves.toEqual({ value: expect.stringContaining('removed 1 sections') });
+				expect(helpers.adoptClean).toHaveBeenCalledOnce();
+			} else {
+				await expect(cleanup.result).resolves.toMatchObject({ error: { message: expect.stringMatching(/rejected/i) } });
+				expect(helpers.adoptClean).not.toHaveBeenCalled();
+			}
+			expect(helpers.suppressPersistence.mock.calls).toEqual([[true], [false]]);
+			expect(postMessageToHost).toHaveBeenCalledTimes(2);
+			expect(getHostOwnedDevelopmentNoteSections()).toEqual(accepted ? [noteSection] : []);
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		it('waits for actual client work even when transport does not reach the capture hook', async () => {
+			seedSection();
+			postMessageToHost.mockImplementationOnce(() => undefined);
+			const cleanup = observeHelper(helpers.clearSections(2_000));
+			const remove = await waitForPostedMessage(1);
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(cleanup.settled).not.toHaveBeenCalled();
+			expect(helpers.adoptClean).not.toHaveBeenCalled();
+			expect(getHostOwnedDocumentSectionStatus('markdown_1')).toBe('present');
+			expect(deliverDocumentResult({
+				type: 'markdownDocumentCommandResult', commandId: remove.commandId,
+				ok: true, sourceGeneration: 7, projection: emptyProjection,
+			})).toMatchObject({ handled: true, accepted: true });
+			await vi.advanceTimersByTimeAsync(900);
+			await expect(cleanup.result).resolves.toEqual({ value: expect.stringContaining('removed 1 sections') });
+			expect(helpers.adoptClean).toHaveBeenCalledOnce();
+			expect(helpers.suppressPersistence.mock.calls).toEqual([[true], [false]]);
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		it.each([false, true])('bounds cleanup at its deadline and preserves prior suppression=%s', async alreadySuppressed => {
+			seedSection();
+			if (alreadySuppressed) helpers.suppressPersistence(true);
+			helpers.suppressPersistence.mockClear();
+			const cleanup = observeHelper(helpers.clearSections(1_200, 100));
+			const remove = await waitForPostedMessage(1);
+			await vi.advanceTimersByTimeAsync(1_199);
+			expect(cleanup.settled).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(cleanup.result).resolves.toMatchObject({ error: { message: expect.stringMatching(/timed out/i) } });
+			expect(helpers.suppressPersistence.mock.calls).toEqual(alreadySuppressed ? [] : [[true], [false]]);
+			expect(helpers.adoptClean).not.toHaveBeenCalled();
+			expect(vi.getTimerCount()).toBe(1);
+			expect(deliverDocumentResult({
+				type: 'markdownDocumentCommandResult', commandId: remove.commandId,
+				ok: true, sourceGeneration: 7, projection: emptyProjection,
+			})).toMatchObject({ handled: true, accepted: true });
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(cleanup.settled).toHaveBeenCalledOnce();
+			expect(helpers.adoptClean).not.toHaveBeenCalled();
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		it('rejects captured raw success when the actual client rejects its projection', async () => {
+			const projection = seedSection();
+			helpers.beginCapture();
+			requestHostOwnedMarkdownRemove('markdown_1');
+			const remove = await waitForPostedMessage(1);
+			const waiting = observeHelper(helpers.waitForCommands(1, 800));
+			expect(deliverDocumentResult({
+				type: 'markdownDocumentCommandResult', commandId: remove.commandId,
+				ok: true, sourceGeneration: 7, projection,
+			})).toEqual({ handled: true, accepted: false });
+			await vi.advanceTimersByTimeAsync(400);
+			await expect(waiting.result).resolves.toMatchObject({ error: { message: expect.stringMatching(/rejected/i) } });
+			expect(postMessageToHost).toHaveBeenCalledWith({ type: 'requestDocument' });
+			expect(helpers.capture()).toBeUndefined();
+			expect(Reflect.get(window, '__e2eCaptureHostMessage')).toBeUndefined();
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		it('rejects capture retired before waiting despite a canonical late success from its old source', async () => {
+			const previousSessionId = pState.documentViewSessionId;
+			const envelope = { protocolVersion: 1, channel: 'document-view', viewSessionId: 'capture-view' };
+			pState.documentViewSessionId = envelope.viewSessionId;
+			postMessageToHost.mockImplementation(message => {
+				const capture = Reflect.get(window, '__e2eCaptureHostMessage');
+				return typeof capture === 'function' ? capture({ ...message, ...envelope }) : undefined;
+			});
+			try {
+				helpers.beginCapture();
+				expect(requestHostOwnedMarkdownRemove('markdown_1')).toBe(true);
+				const remove = await waitForPostedMessage(1);
+				expect(remove).toMatchObject({ sourceGeneration: 7, expectedDocumentRevision: 0 });
+				expect(adoptHostOwnedMarkdownDocument({
+					documentRevision: 0, sourceGeneration: 8,
+					sectionRevisions: { markdown_1: 0 }, markdownSectionRevisions: { markdown_1: 0 },
+				}, { sections: [{ id: 'markdown_1', type: 'markdown', text: 'replacement source' }] })).toBe(true);
+				const waiting = observeHelper(helpers.waitForCommands(1, 1_000));
+				const lateSuccess = {
+					...envelope, type: 'markdownDocumentCommandResult', commandId: remove.commandId,
+					ok: true, sourceGeneration: 7, documentRevision: 1, projection: emptyProjection,
+				};
+				expect(parseDocumentViewHostMessage(lateSuccess).ok).toBe(true);
+				expect(deliverDocumentResult(lateSuccess)).toEqual({ handled: false, accepted: false });
+				await vi.advanceTimersByTimeAsync(300);
+				await expect(waiting.result).resolves.toMatchObject({ error: { message: expect.stringMatching(/rejected|retired/i) } });
+				expect(pState.markdownSourceGeneration).toBe(8);
+				expect(pState.markdownDocumentRevision).toBe(0);
+				expect(pState.hostOwnedMarkdownSections.markdown_1.text).toBe('replacement source');
+				expect(helpers.capture()).toBeUndefined();
+				expect(Reflect.get(window, '__e2eCaptureHostMessage')).toBeUndefined();
+				expect(vi.getTimerCount()).toBe(0);
+			} finally {
+				pState.documentViewSessionId = previousSessionId;
+			}
+		});
+
+		it.each([false, true])('keeps a completed capture fenced to its starting view session (retired=%s)', async retired => {
+			const previousSessionId = pState.documentViewSessionId;
+			const envelope = { protocolVersion: 1, channel: 'document-view', viewSessionId: 'completed-view' };
+			pState.documentViewSessionId = envelope.viewSessionId;
+			postMessageToHost.mockImplementation(message => {
+				const capture = Reflect.get(window, '__e2eCaptureHostMessage');
+				return typeof capture === 'function' ? capture({ ...message, ...envelope }) : undefined;
+			});
+			try {
+				helpers.beginCapture();
+				expect(requestHostOwnedMarkdownRemove('markdown_1')).toBe(true);
+				const remove = await waitForPostedMessage(1);
+				const result = {
+					...envelope, type: 'markdownDocumentCommandResult', commandId: remove.commandId,
+					ok: true, sourceGeneration: 7, documentRevision: 1, projection: emptyProjection,
+				};
+				expect(parseDocumentViewHostMessage(result).ok).toBe(true);
+				expect(deliverDocumentResult(result)).toMatchObject({ handled: true, accepted: true });
+				if (retired) pState.documentViewSessionId = 'replacement-view';
+				const waiting = observeHelper(helpers.waitForCommands(1, 1_000));
+				await vi.advanceTimersByTimeAsync(300);
+				if (retired) {
+					await expect(waiting.result).resolves.toMatchObject({ error: { message: expect.stringMatching(/rejected|retired/i) } });
+				} else {
+					await expect(waiting.result).resolves.toMatchObject({ value: {
+						commandIds: [remove.commandId], results: [{ commandId: remove.commandId, ok: true }],
+					} });
+				}
+				expect(pState.markdownSourceGeneration).toBe(7);
+				expect(pState.markdownDocumentRevision).toBe(1);
+				expect(helpers.capture()).toBeUndefined();
+				expect(Reflect.get(window, '__e2eCaptureHostMessage')).toBeUndefined();
+				expect(vi.getTimerCount()).toBe(0);
+			} finally {
+				pState.documentViewSessionId = previousSessionId;
+			}
+		});
+
+		it('requires client admission and reports only exact captured commands despite stale and duplicate replies', async () => {
+			const previousCapture = vi.fn();
+			const envelope = { protocolVersion: 1, channel: 'document-view', viewSessionId: 'current-view' };
+			Reflect.set(window, '__e2eCaptureHostMessage', previousCapture);
+			postMessageToHost.mockImplementation(message => {
+				const capture = Reflect.get(window, '__e2eCaptureHostMessage');
+				return typeof capture === 'function' ? capture({ ...message, ...envelope }) : undefined;
+			});
+			helpers.beginCapture();
+			requestHostOwnedMarkdownRemove('markdown_1');
+			const remove = await waitForPostedMessage(1);
+			const waiting = observeHelper(helpers.waitForCommands(1, 1_000));
+			const result = {
+				...envelope,
+				type: 'markdownDocumentCommandResult', commandId: remove.commandId,
+				ok: true, sourceGeneration: 7, projection: emptyProjection,
+			};
+			expect(deliverDocumentResult({ ...result, commandId: 'stale-rejection', ok: false }).handled).toBe(false);
+			expect(deliverDocumentResult({ ...result, commandId: 'unrelated-success' }).handled).toBe(false);
+			for (const staleIdentity of [
+				{ viewSessionId: 'retired-view' }, { channel: 'unrelated' }, { protocolVersion: 0 }, { sourceGeneration: 6 },
+			]) {
+				window.dispatchEvent(new MessageEvent('message', { data: { ...result, ...staleIdentity, ok: false } }));
+			}
+			window.dispatchEvent(new MessageEvent('message', { data: result }));
+			await vi.advanceTimersByTimeAsync(400);
+			expect(waiting.settled, 'a raw reply cannot substitute for client admission').not.toHaveBeenCalled();
+			expect(getHostOwnedDocumentSectionStatus('markdown_1')).toBe('present');
+			expect(deliverDocumentResult(result)).toMatchObject({ handled: true, accepted: true });
+			expect(deliverDocumentResult(result).handled).toBe(false);
+			await vi.advanceTimersByTimeAsync(300);
+			await expect(waiting.result).resolves.toEqual({ value: {
+				commandIds: [remove.commandId],
+				commands: [{ commandId: remove.commandId, type: 'remove', sectionId: 'markdown_1', sectionType: '' }],
+				results: [{ commandId: remove.commandId, ok: true, orderedSectionIds: [], markdownSectionIds: [], htmlSectionIds: [] }],
+			} });
+			expect(helpers.capture()).toBeUndefined();
+			expect(Reflect.get(window, '__e2eCaptureHostMessage')).toBe(previousCapture);
+			expect(previousCapture).toHaveBeenCalledWith({ ...remove, ...envelope });
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		it.each([false, true])('enforces a cleanup deadline between polling ticks with restoreInProgress=%s', async restoring => {
+			pState.restoreInProgress = restoring;
+			const cleanup = observeHelper(helpers.clearSections(125));
+			try {
+				await vi.advanceTimersByTimeAsync(124);
+				expect(cleanup.settled).not.toHaveBeenCalled();
+				await vi.advanceTimersByTimeAsync(1);
+				expect(cleanup.settled).toHaveBeenCalledOnce();
+				await expect(cleanup.result).resolves.toMatchObject({ error: { message: expect.stringMatching(/timed out/i) } });
+				expect(helpers.adoptClean).not.toHaveBeenCalled();
+				expect(helpers.suppressPersistence.mock.calls).toEqual([[true], [false]]);
+				expect(vi.getTimerCount()).toBe(0);
+			} finally {
+				pState.restoreInProgress = false;
+			}
+		});
+
+		it('times out a pending client barrier and detaches capture before a late valid result', async () => {
+			helpers.beginCapture();
+			requestHostOwnedMarkdownRemove('markdown_1');
+			const remove = await waitForPostedMessage(1);
+			const capture = helpers.capture()!;
+			const waiting = observeHelper(helpers.waitForCommands(1, 400));
+			await vi.advanceTimersByTimeAsync(399);
+			expect(waiting.settled).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(waiting.result).resolves.toMatchObject({ error: { message: expect.stringMatching(/timed out/i) } });
+			expect(helpers.capture()).toBeUndefined();
+			expect(Reflect.get(window, '__e2eCaptureHostMessage')).toBeUndefined();
+			expect(vi.getTimerCount()).toBe(1);
+			expect(deliverDocumentResult({
+				type: 'markdownDocumentCommandResult', commandId: remove.commandId,
+				ok: true, sourceGeneration: 7, projection: emptyProjection,
+			})).toMatchObject({ handled: true, accepted: true });
+			await vi.advanceTimersByTimeAsync(300);
+			expect(capture.results).toEqual([]);
+			expect(waiting.settled).toHaveBeenCalledOnce();
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		it.each([true, false])('gates the actual layout factory on cleanup admission=%s', async accepted => {
+			const projection = seedSection('e2e_layout_markdown');
+			const factoryStop = new Error('layout factory boundary reached');
+			const addQuery = vi.fn(() => { throw factoryStop; });
+			Reflect.set(window, 'addQueryBox', addQuery);
+			const layout = observeHelper(helpers.createStressNotebook(false));
+			const remove = await waitForPostedMessage(1);
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(addQuery, 'layout recreation must not start while the old owner remains').not.toHaveBeenCalled();
+			expect(getHostOwnedDocumentSectionStatus('e2e_layout_markdown')).toBe('present');
+			expect(deliverDocumentResult({
+				type: 'markdownDocumentCommandResult', commandId: remove.commandId,
+				ok: accepted, sourceGeneration: 7, projection: accepted ? emptyProjection : projection,
+			})).toMatchObject({ handled: true, accepted });
+			await vi.advanceTimersByTimeAsync(900);
+			if (accepted) {
+				await expect(layout.result).resolves.toEqual({ error: factoryStop });
+				expect(addQuery).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'e2e_layout_query' }));
+				expect(getHostOwnedDocumentSectionStatus('e2e_layout_markdown')).toBe('absent');
+			} else {
+				await expect(layout.result).resolves.toMatchObject({ error: { message: expect.stringMatching(/rejected/i) } });
+				expect(addQuery).not.toHaveBeenCalled();
+			}
+			expect(helpers.capture()).toBeUndefined();
+		});
+
+		it('cleans layout-owned capture when a section factory throws before the command wait', async () => {
+			adoptHostOwnedMarkdownDocument({
+				documentRevision: 0, sourceGeneration: 7, sectionRevisions: {}, markdownSectionRevisions: {},
+			}, { sections: [] });
+			const previousCapture = vi.fn();
+			Reflect.set(window, '__e2eCaptureHostMessage', previousCapture);
+			for (const [name, tag] of [['addQueryBox', 'kw-query-section'], ['addSqlBox', 'kw-sql-section']]) {
+				Reflect.set(window, name, (options: { id: string }) => {
+					const section = document.createElement(tag);
+					section.id = options.id;
+					container.append(section);
+					return section.id;
+				});
+			}
+			const factoryFailure = new Error('chart factory failed');
+			Reflect.set(window, 'addChartBox', () => { throw factoryFailure; });
+			const layout = observeHelper(helpers.createStressNotebook(false));
+			await vi.advanceTimersByTimeAsync(900);
+			await expect(layout.result).resolves.toEqual({ error: factoryFailure });
+			expect(helpers.capture(), 'layout must release capture even before waitForCommands is reached').toBeUndefined();
+			expect(Reflect.get(window, '__e2eCaptureHostMessage')).toBe(previousCapture);
+			expect(vi.getTimerCount()).toBe(0);
+		});
+	});
 
 	it('reports section presence from the authoritative projection', () => {
 		expect(getHostOwnedDocumentSectionStatus('markdown_1')).toBe('present');

@@ -9,6 +9,7 @@ import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
 import { schemaRequestTokenByBoxId } from './kusto-schema-request-state.js';
 import { getSqlSectionSession } from './sql-section-message-router.js';
 import { pState } from '../shared/persistence-state.js';
+import { waitForHostOwnedMarkdownCommands } from './markdown-document-client.js';
 import { DOCUMENT_VIEW_CHANNEL, DOCUMENT_VIEW_PROTOCOL_VERSION } from '../../shared/documentViewProtocol.js';
 import { parseKustoDatabaseDiscoveryHostMessage } from '../../shared/kustoDatabaseDiscoveryProtocol.js';
 import { admitKustoPublicationHostMessage } from '../../shared/kustoPublicationProtocol.js';
@@ -430,19 +431,74 @@ _win.__testRemoveAllSections = (): string => {
 	throw new Error(`Timed out removing sections; remaining=${remaining.join(', ')}`);
 };
 
+function e2eDocumentCommandAcceptance() {
+	const markdownSourceGeneration = pState.markdownSourceGeneration;
+	const documentViewSessionId = pState.documentViewSessionId;
+	const isCurrent = () => pState.markdownSourceGeneration === markdownSourceGeneration
+		&& pState.documentViewSessionId === documentViewSessionId;
+	let acceptance = waitForHostOwnedMarkdownCommands();
+	return {
+		observe() {
+			const current = isCurrent() ? waitForHostOwnedMarkdownCommands() : Promise.resolve(false);
+			acceptance = Promise.all([acceptance, current]).then(([previous, accepted]) => previous && accepted);
+		},
+		async wait(): Promise<boolean> {
+			if (!isCurrent()) return false;
+			this.observe();
+			let checkpoint: Promise<boolean>;
+			do {
+				if (!isCurrent()) return false;
+				checkpoint = acceptance;
+				if (!await checkpoint) return false;
+			} while (checkpoint !== acceptance);
+			return isCurrent();
+		},
+	};
+}
+
 async function e2eClearSectionsStable(timeoutMs = 10_000, quietMs = 750): Promise<string> {
 	const started = performance.now();
+	const deadline = started + timeoutMs;
+	let commandTimeout: ReturnType<typeof setTimeout> | undefined;
 	let quietSince = 0;
 	let removed = 0;
 	const wasSuppressed = isPersistenceSuppressedForTest();
-	if (!wasSuppressed) suppressPersistenceForTest(true);
+	const previousCapture = _win.__e2eCaptureHostMessage;
+	const initialGeneration = pState.markdownSourceGeneration;
+	const initialSession = pState.documentViewSessionId;
+	const commands = new Map<string, { type: string; sectionId: string; sourceGeneration: number }>();
+	const results: unknown[] = [];
+	const onResult = (event: MessageEvent) => {
+		const result = event.data;
+		if (result?.type !== 'markdownDocumentCommandResult' || !commands.has(result.commandId)) return;
+		if (results.length < 16) results.push({
+			commandId: result.commandId, command: commands.get(result.commandId), ok: result.ok,
+			sourceGeneration: result.sourceGeneration, documentRevision: result.projection?.documentRevision,
+			error: result.error,
+		});
+	};
+	window.addEventListener('message', onResult);
+	let acceptance = pState.hostOwnedMarkdownActive ? e2eDocumentCommandAcceptance() : undefined;
+	_win.__e2eCaptureHostMessage = (message: any) => {
+		if (message?.type === 'markdownDocumentCommand') {
+			commands.set(message.commandId, {
+				type: message.command?.type, sectionId: message.command?.sectionId || message.command?.section?.id,
+				sourceGeneration: message.sourceGeneration,
+			});
+			acceptance ??= e2eDocumentCommandAcceptance();
+			acceptance.observe();
+		}
+		return typeof previousCapture === 'function' ? previousCapture(message) !== false : true;
+	};
 	try {
-		while (performance.now() - started <= timeoutMs) {
+		if (!wasSuppressed) suppressPersistenceForTest(true);
+		while (performance.now() < deadline) {
 			if (pState.documentDataApplyCount < 1 || pState.restoreInProgress) {
 				quietSince = 0;
-				await e2eDelay(100);
+				await e2eDelay(Math.min(100, Math.max(0, deadline - performance.now())));
 				continue;
 			}
+			acceptance ??= e2eDocumentCommandAcceptance();
 			const sections = Array.from(document.querySelectorAll(TEST_SECTION_SELECTOR)) as HTMLElement[];
 			if (sections.length > 0) {
 				quietSince = 0;
@@ -451,18 +507,40 @@ async function e2eClearSectionsStable(timeoutMs = 10_000, quietMs = 750): Promis
 					clickTestSectionClose(section);
 					removed++;
 				}
-			} else {
+			}
+			const accepted = await Promise.race([
+				acceptance.wait(),
+				new Promise<false>(resolve => {
+					commandTimeout = setTimeout(() => resolve(false), Math.max(0, deadline - performance.now()));
+				}),
+			]);
+			clearTimeout(commandTimeout);
+			commandTimeout = undefined;
+			if (performance.now() >= deadline) break;
+			if (!accepted) throw new Error(`Document command was rejected while clearing sections: ${JSON.stringify({
+				initialGeneration, currentGeneration: pState.markdownSourceGeneration,
+				initialSession, currentSession: pState.documentViewSessionId,
+				documentRevision: pState.markdownDocumentRevision,
+				commands: [...commands.values()], results,
+			})}`);
+			if (pState.restoreInProgress || document.querySelectorAll(TEST_SECTION_SELECTOR).length > 0) {
+				quietSince = 0;
+			} else if (sections.length === 0) {
 				if (!quietSince) quietSince = performance.now();
 				if (performance.now() - quietSince >= quietMs) {
 					adoptCurrentStateAsCleanForTest();
 					return `removed ${removed} sections; stable empty for ${Math.round(performance.now() - quietSince)}ms`;
 				}
 			}
-			await e2eDelay(100);
+			await e2eDelay(Math.min(100, Math.max(0, deadline - performance.now())));
 		}
 		const remaining = Array.from(document.querySelectorAll(TEST_SECTION_SELECTOR)).map(element => element.tagName.toLowerCase());
 		throw new Error(`Timed out stabilizing empty workbench; removed=${removed}; remaining=${remaining.join(', ')}`);
 	} finally {
+		clearTimeout(commandTimeout);
+		window.removeEventListener('message', onResult);
+		if (typeof previousCapture === 'function') _win.__e2eCaptureHostMessage = previousCapture;
+		else delete _win.__e2eCaptureHostMessage;
 		if (!wasSuppressed) suppressPersistenceForTest(false);
 	}
 }
@@ -7116,9 +7194,8 @@ async function e2eLayoutSetMonacoValue(sectionId: string, value: string): Promis
 }
 
 async function e2eLayoutCreateStressNotebook(requireChartReady: boolean = true): Promise<string> {
+	await e2eClearSectionsStable();
 	const chartRuntimeReady = requireChartReady ? ensureEchartsLoaded() : Promise.resolve();
-	_win.__testRemoveAllSections();
-	await e2eLayoutWaitFor(() => document.querySelectorAll(TEST_SECTION_SELECTOR).length === 0, 'all sections to be removed');
 
 	const queryText = `datatable(Category:string, Score:long, Events:long)\n[\n${Array.from({ length: 24 }, (_value, index) => `  "${['Alpha', 'Beta', 'Gamma', 'Delta'][index % 4]}", ${index * 3 + 1}, ${index + 10}`).join(',\n')}\n]`;
 	const sqlText = `SELECT * FROM (VALUES\n${Array.from({ length: 24 }, (_value, index) => `  ('${['Alpha', 'Beta', 'Gamma', 'Delta'][index % 4]}', ${index * 3 + 1}, ${index + 10})`).join(',\n')}\n) AS layout_fixture(Category, Score, Events);`;
@@ -7143,50 +7220,60 @@ async function e2eLayoutCreateStressNotebook(requireChartReady: boolean = true):
 	await chartRuntimeReady;
 
 	e2eBeginDocumentCommandCapture();
-	e2eLayoutAddSection('addChartBox', {
-		id: e2eLayoutSpec('chart').id,
-		name: 'Layout Chart',
-		mode: 'preview',
-		dataSourceId: queryId,
-		chartType: 'bar',
-		xColumn: 'Category',
-		yColumn: 'Score',
-		yColumns: ['Score'],
-		editorHeightPx: 240,
-	});
-	e2eLayoutAddSection('addMarkdownBox', {
-		id: e2eLayoutSpec('markdown').id,
-		title: 'Layout Markdown',
-		text: markdownText,
-		mode: 'preview',
-		editorHeightPx: 220,
-	});
-	e2eLayoutAddSection('addTransformationBox', {
-		id: e2eLayoutSpec('transformation').id,
-		name: 'Layout Transformation',
-		mode: 'preview',
-		dataSourceId: queryId,
-		transformationType: 'derive',
-		deriveColumns: [{ name: 'ScoreCopy', expression: 'Score' }],
-		editorHeightPx: 240,
-	});
-	e2eLayoutAddSection('addUrlBox', {
-		id: e2eLayoutSpec('url').id,
-		name: 'Layout URL',
-		url: 'https://example.invalid/e2e-layout.txt',
-		outputHeightPx: 180,
-		expanded: true,
-	});
-	e2eLayoutAddSection('addHtmlBox', {
-		id: e2eLayoutSpec('html').id,
-		name: 'Layout HTML',
-		code: e2eLayoutHtmlPreviewCode(),
-		mode: 'preview',
-		expanded: true,
-	});
-	e2eLayoutAddSection('addPythonBox', { id: e2eLayoutSpec('python').id });
+	const capture = e2eDocumentCommandCapture;
+	try {
+		e2eLayoutAddSection('addChartBox', {
+			id: e2eLayoutSpec('chart').id,
+			name: 'Layout Chart',
+			mode: 'preview',
+			dataSourceId: queryId,
+			chartType: 'bar',
+			xColumn: 'Category',
+			yColumn: 'Score',
+			yColumns: ['Score'],
+			editorHeightPx: 240,
+		});
+		e2eLayoutAddSection('addMarkdownBox', {
+			id: e2eLayoutSpec('markdown').id,
+			title: 'Layout Markdown',
+			text: markdownText,
+			mode: 'preview',
+			editorHeightPx: 220,
+		});
+		e2eLayoutAddSection('addTransformationBox', {
+			id: e2eLayoutSpec('transformation').id,
+			name: 'Layout Transformation',
+			mode: 'preview',
+			dataSourceId: queryId,
+			transformationType: 'derive',
+			deriveColumns: [{ name: 'ScoreCopy', expression: 'Score' }],
+			editorHeightPx: 240,
+		});
+		e2eLayoutAddSection('addUrlBox', {
+			id: e2eLayoutSpec('url').id,
+			name: 'Layout URL',
+			url: 'https://example.invalid/e2e-layout.txt',
+			outputHeightPx: 180,
+			expanded: true,
+		});
+		e2eLayoutAddSection('addHtmlBox', {
+			id: e2eLayoutSpec('html').id,
+			name: 'Layout HTML',
+			code: e2eLayoutHtmlPreviewCode(),
+			mode: 'preview',
+			expanded: true,
+		});
+		e2eLayoutAddSection('addPythonBox', { id: e2eLayoutSpec('python').id });
 
-	await e2eWaitForDocumentCommands(6, 20000);
+		await e2eWaitForDocumentCommands(6, 20000);
+	} finally {
+		if (capture && e2eDocumentCommandCapture === capture) {
+			window.removeEventListener('message', capture.onMessage);
+			if (typeof capture.previousCapture === 'function') _win.__e2eCaptureHostMessage = capture.previousCapture;
+			else delete _win.__e2eCaptureHostMessage;
+			e2eDocumentCommandCapture = undefined;
+		}
+	}
 	await e2eLayoutWaitFor(() => E2E_LAYOUT_SPECS.every(spec => !!document.getElementById(spec.id)), 'all layout sections');
 	await e2eSeedQueryResult(queryId, e2eLayoutSampleResult());
 	await e2eSeedQueryResult(sqlId, e2eLayoutSampleResult());
@@ -7868,6 +7955,7 @@ function e2eBridgeCurrentResultIntoQueryTerminals(expectedCount = 1): string {
 
 let e2eDocumentCommandCapture: {
 	previousCapture?: (message: unknown) => unknown;
+	acceptance: ReturnType<typeof e2eDocumentCommandAcceptance>;
 	commands: any[];
 	results: any[];
 	onMessage: (event: MessageEvent) => void;
@@ -7876,6 +7964,7 @@ let e2eDocumentCommandCapture: {
 function e2eBeginDocumentCommandCapture(): string {
 	if (e2eDocumentCommandCapture) throw new Error('Document command capture is already active');
 	const previousCapture = _win.__e2eCaptureHostMessage;
+	const acceptance = e2eDocumentCommandAcceptance();
 	const commands: any[] = [];
 	const results: any[] = [];
 	const onMessage = (event: MessageEvent) => {
@@ -7883,9 +7972,10 @@ function e2eBeginDocumentCommandCapture(): string {
 			results.push(JSON.parse(JSON.stringify(event.data)));
 		}
 	};
-	e2eDocumentCommandCapture = { previousCapture, commands, results, onMessage };
+	e2eDocumentCommandCapture = { previousCapture, acceptance, commands, results, onMessage };
 	_win.__e2eCaptureHostMessage = (message: any) => {
 		if (message?.type === 'markdownDocumentCommand') {
+			acceptance.observe();
 			commands.push(JSON.parse(JSON.stringify(message)));
 		}
 		return typeof previousCapture === 'function' ? previousCapture(message) !== false : true;
@@ -7898,15 +7988,33 @@ async function e2eWaitForDocumentCommands(minimumCount = 1, timeoutMs = 10000): 
 	const capture = e2eDocumentCommandCapture;
 	if (!capture) throw new Error('Document command capture is not active');
 	const deadline = performance.now() + timeoutMs;
+	let commandTimeout: ReturnType<typeof setTimeout> | undefined;
 	let stableCount = -1;
 	let stableSince = 0;
 	try {
 		while (performance.now() < deadline) {
-			const commandIds = [...new Set(capture.commands.map(command => String(command.commandId || '')).filter(Boolean))];
-			const failed = capture.results.find(result => commandIds.includes(String(result.commandId || '')) && result.ok !== true);
+			const accepted = await Promise.race([
+				capture.acceptance.wait(),
+				new Promise<false>(resolve => {
+					commandTimeout = setTimeout(() => resolve(false), Math.max(0, deadline - performance.now()));
+				}),
+			]);
+			clearTimeout(commandTimeout);
+			commandTimeout = undefined;
+			if (performance.now() >= deadline) break;
+			if (!accepted) throw new Error('Document command was rejected by the command client');
+			const commands = [...new Map(capture.commands
+				.filter(command => typeof command.commandId === 'string' && command.commandId.length > 0)
+				.map(command => [command.commandId as string, command] as const)).values()];
+			const commandIds = commands.map(command => command.commandId as string);
+			const results = commands.map(command => capture.results.find(result =>
+				result.commandId === command.commandId && result.sourceGeneration === command.sourceGeneration
+				&& result.viewSessionId === command.viewSessionId && result.channel === command.channel
+				&& result.protocolVersion === command.protocolVersion));
+			const failed = results.find(result => result && result.ok !== true);
 			if (failed) throw new Error(`Document command was rejected: ${JSON.stringify(failed)}`);
-			const allSettled = commandIds.length >= minimumCount && commandIds.every(commandId =>
-				capture.results.some(result => result.commandId === commandId && result.ok === true));
+			const allSettled = commandIds.length >= minimumCount && results.every((result, index) =>
+				result?.ok === true && result.projection?.documentRevision === commands[index].expectedDocumentRevision + 1);
 			if (allSettled) {
 				if (stableCount !== commandIds.length) {
 					stableCount = commandIds.length;
@@ -7914,13 +8022,13 @@ async function e2eWaitForDocumentCommands(minimumCount = 1, timeoutMs = 10000): 
 				} else if (performance.now() - stableSince >= 250) {
 					return {
 						commandIds,
-						commands: capture.commands.map(command => ({
+						commands: commands.map(command => ({
 							commandId: String(command.commandId || ''),
 							type: String(command.command?.type || ''),
 							sectionId: String(command.command?.section?.id || command.command?.sectionId || ''),
 							sectionType: String(command.command?.section?.type || ''),
 						})),
-						results: capture.results.map(result => ({
+						results: results.map(result => ({
 							commandId: String(result.commandId || ''),
 							ok: result.ok === true,
 							orderedSectionIds: Array.isArray(result.projection?.orderedSectionIds)
@@ -7936,12 +8044,13 @@ async function e2eWaitForDocumentCommands(minimumCount = 1, timeoutMs = 10000): 
 				stableCount = -1;
 				stableSince = 0;
 			}
-			await e2eDelay(50);
+			await e2eDelay(Math.min(50, Math.max(0, deadline - performance.now())));
 		}
 		throw new Error(`Timed out waiting for document commands: ${JSON.stringify({
 			minimumCount, commands: capture.commands, results: capture.results,
 		})}`);
 	} finally {
+		clearTimeout(commandTimeout);
 		window.removeEventListener('message', capture.onMessage);
 		if (typeof capture.previousCapture === 'function') _win.__e2eCaptureHostMessage = capture.previousCapture;
 		else delete _win.__e2eCaptureHostMessage;
@@ -9018,4 +9127,5 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		},
 	},
 	};
+	document.body.dataset.kustoE2eReady = 'true';
 }

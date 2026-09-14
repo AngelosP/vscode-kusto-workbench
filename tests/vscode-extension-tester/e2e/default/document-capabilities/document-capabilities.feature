@@ -13,10 +13,11 @@ Feature: Document-kind section capabilities
       """
 
     When I open file "tests/vscode-extension-tester/runs/default/document-capabilities/incompatible.mdx" in the editor
-    Then the webview should contain "Invalid Kusto Workbench file"
-    Then the webview should contain "Invalid .mdx"
-    Then the webview should contain "query_invalid_mdx"
-    Then the webview should contain "incompatible known type"
+    When I wait for "h2" in the webview "incompatible.mdx"
+    Then the webview "incompatible.mdx" should contain "Invalid Kusto Workbench file"
+    Then the webview "incompatible.mdx" should contain "Invalid .mdx"
+    Then the webview "incompatible.mdx" should contain "query_invalid_mdx"
+    Then the webview "incompatible.mdx" should contain "incompatible known type"
     When I execute command "notifications.clearAll"
     Then I take a screenshot "01-incompatible-mdx-read-only"
     Then I collect JSON artifact "incompatible-mdx-file" from extension host expression "(async () => { const suffix = '/tests/vscode-extension-tester/runs/default/document-capabilities/incompatible.mdx'; const document = vscode.workspace.textDocuments.find(candidate => candidate.uri.path.replace(/\\/g, '/').endsWith(suffix)); if (!document) throw new Error('Open incompatible MDX fixture not found'); if (document.isDirty) throw new Error('Invalid MDX unexpectedly became dirty'); const bytes = await vscode.workspace.fs.readFile(document.uri); const file = JSON.parse(new TextDecoder().decode(bytes)); const ids = file.state.sections.map(section => section.id); if (ids.join('|') !== 'query_invalid_mdx|future_invalid_mdx') throw new Error('Invalid MDX content changed: ' + ids.join(',')); return { kind: file.kind, ids, queryType: file.state.sections[0].type, futurePayload: file.state.sections[1].payload, dirty: document.isDirty }; })()"

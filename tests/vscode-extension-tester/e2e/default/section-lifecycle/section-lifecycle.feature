@@ -3,16 +3,19 @@ Feature: Section lifecycle — add, rename, collapse, expand, remove all section
   Background:
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
-    And I wait 2 seconds
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 1000 by 700
+    And I execute command "workbench.action.closeSidebar"
+    And I execute command "workbench.action.closeAuxiliaryBar"
+    And I execute command "workbench.action.closePanel"
 
   Scenario: Add, interact with, and remove each section type
     # ── Setup ─────────────────────────────────────────────────────────────
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx"
 
     # Clear all existing sections
-    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
-    And I wait 2 seconds
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview "session.kqlx"
 
     # ── TEST 1: Add KQL section ───────────────────────────────────────────
     When I wait for "button[data-add-kind='query']" in the webview for 20 seconds

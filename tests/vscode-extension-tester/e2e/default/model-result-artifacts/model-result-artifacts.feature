@@ -3,11 +3,14 @@ Feature: Exact model result artifacts
   Background:
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
+    When I execute command "workbench.action.closeSidebar"
+    When I execute command "workbench.action.closeAuxiliaryBar"
+    When I execute command "workbench.action.closePanel"
     And I wait 2 seconds
 
   Scenario: Delegated model response stays bound to execution A and enforces model permission
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx"
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
     When I evaluate "window.__e2e.workbench.bridgeCurrentResultIntoQueryTerminals(2)" in the webview

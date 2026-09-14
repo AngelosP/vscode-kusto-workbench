@@ -1,6 +1,11 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { describe, expect, it } from 'vitest';
+import { runInNewContext } from 'vm';
+import * as ts from 'typescript';
+import { describe, expect, it, vi } from 'vitest';
+import {
+	createKqlxOrMdxFileWithDefaultSection, parseKqlxText, stringifyKqlxFile,
+} from '../../../src/host/kqlxFormat';
 
 const root = process.cwd();
 const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
@@ -105,6 +110,289 @@ describe('first-launch integration inventory', () => {
 		expect(testHelpersSource).toContain("message.type !== 'kustoPublicationCommit'");
 		expect(testHelpersSource).toContain("const shortConnection = { ...regional, clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey }");
 		expect(testHelpersSource).toContain('shortSectionClusterUrl: shortConfigured.clusterUrl');
+	});
+
+	it('keeps the text-diagnostics seed selected after deferred supplemental startup cleanup', async () => {
+		const deferred = () => {
+			let resolve!: () => void;
+			const promise = new Promise<void>(resolvePromise => { resolve = resolvePromise; });
+			return { promise, resolve };
+		};
+		const cleanupWriteStarted = deferred();
+		const releaseCleanup = deferred();
+		const startupAwaited = deferred();
+		const storageKeys = {
+			lastConnectionId: 'kusto.lastConnectionId',
+			lastDatabase: 'kusto.lastDatabase',
+			cachedDatabases: 'kusto.cachedDatabases',
+		};
+		const previousSelectionKey = 'kusto.test.supplementalPreviousSelection';
+		const state = new Map<string, unknown>([
+			[storageKeys.lastConnectionId, 'user-connection'],
+			[storageKeys.lastDatabase, 'UserDb'],
+			[storageKeys.cachedDatabases, {}],
+			['kusto.fileConnectionCache', {}],
+		]);
+		type FixtureConnection = { id: string; name: string; clusterUrl: string; database: string; authorityId: string };
+		type SeedResult = { connectionId: string; clusterUrl: string; database: string };
+		type SeedSchema = {
+			connectionId: string;
+			database: string;
+			accountPartition: string;
+			schema: { tables: string[]; columnTypesByTable: Record<string, Record<string, string>> };
+		};
+		const userConnection: FixtureConnection = {
+			id: 'user-connection', name: 'User Connection', clusterUrl: 'https://user.kusto.windows.net',
+			database: 'UserDb', authorityId: 'organizations',
+		};
+		const connections = new Map<string, FixtureConnection>([
+			[userConnection.id, userConnection],
+			['supplemental-connection', {
+				id: 'supplemental-connection', name: 'E2E Supplemental Schema Interrupted',
+				clusterUrl: 'https://supplemental-remote.westus.kusto.windows.net',
+				database: 'TelemetryDb', authorityId: 'organizations',
+			}],
+		]);
+		const preferences = new Map<string, { id: string; label: string }>();
+		const databases = new Map<string, { accountPartition: string; databases: string[] }>();
+		const schemas = new Map<string, SeedSchema>();
+		const commands = new Map<string, () => Promise<SeedResult>>();
+		const getConnections = vi.fn(() => [...connections.values()]);
+		const warn = vi.fn();
+		const schemaCacheKey = (clusterUrl: string, database: string, connectionId: string, accountPartition: string) =>
+			JSON.stringify([clusterUrl, database, connectionId, accountPartition]);
+		const seedCommandId = 'kustoWorkbench.test.seedKustoTextDiagnosticsState';
+		const declarationNames = [
+			'textDiagnosticsTestName', 'textDiagnosticsTestCluster', 'textDiagnosticsTestDatabase',
+			'supplementalTestPrefix', 'supplementalCurrentCluster', 'supplementalRemoteCluster',
+			'supplementalDatabase', 'supplementalPreviousSelectionKey', 'supplementalClusterKeys', 'testAuthAccount',
+			'isSupplementalConnection', 'cleanupSupplementalSchemaDiagnosticsState',
+			'hasSupplementalStartupResidue', 'supplementalStartupCleanup',
+		];
+		const declarations = new Map<string, string>();
+		let seedRegistration: string | undefined;
+		const sourceFile = ts.createSourceFile('extension.ts', extensionSource, ts.ScriptTarget.Latest, true);
+		const visit = (node: ts.Node): void => {
+			if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && declarationNames.includes(node.name.text)) {
+				declarations.set(node.name.text, `const ${node.getText(sourceFile)};`);
+			}
+			if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+				&& node.expression.name.text === 'registerCommand'
+				&& node.arguments[0] && ts.isStringLiteral(node.arguments[0])
+				&& node.arguments[0].text === seedCommandId) {
+				seedRegistration = node.getText(sourceFile);
+			}
+			ts.forEachChild(node, visit);
+		};
+		visit(sourceFile);
+		for (const name of declarationNames) expect(declarations.has(name), name).toBe(true);
+		expect(seedRegistration).toBeDefined();
+		const fixtureSource = ts.transpileModule(`
+			${declarationNames.map(name => declarations.get(name)).join('\n')}
+			((supplementalStartupCleanup) => {
+				${seedRegistration};
+			})(observeStartupCleanup(supplementalStartupCleanup));
+			supplementalStartupCleanup;
+		`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText;
+		const startupCleanup = runInNewContext(fixtureSource, {
+			STORAGE_KEYS: storageKeys,
+			SCHEMA_CACHE_VERSION: 1,
+			context: {
+				globalStorageUri: 'fixture-storage',
+				globalState: {
+					keys: () => [...state.keys()],
+					get: (key: string) => state.get(key),
+					update: async (key: string, value: unknown) => {
+						if (value === undefined) state.delete(key);
+						else state.set(key, value);
+						if (key === previousSelectionKey && value !== undefined) {
+							cleanupWriteStarted.resolve();
+							await releaseCleanup.promise;
+						}
+					},
+				},
+			},
+			connectionManager: {
+				getConnections,
+				removeConnection: async (connectionId: string) => { connections.delete(connectionId); },
+				addConnection: async (configuration: Omit<FixtureConnection, 'id' | 'authorityId'>) => {
+					const connection = { ...configuration, id: 'seed-connection', authorityId: 'organizations' };
+					connections.set(connection.id, connection);
+					return connection;
+				},
+			},
+			testAuthPreferences: {
+				removeConnection: async (connectionId: string) => { preferences.delete(connectionId); },
+				setExplicitAccount: async (connectionId: string, account: { id: string; label: string }) => {
+					preferences.set(connectionId, account);
+				},
+				getAccountPartition: (authorityId: string, accountId: string) => `${authorityId}/${accountId}`,
+			},
+			testConnectionCache: {
+				clearConnection: async (connectionId: string) => { databases.delete(connectionId); },
+				setDatabases: async (connectionId: string, accountPartition: string, values: string[]) => {
+					databases.set(connectionId, { accountPartition, databases: values });
+				},
+			},
+			kustoClusterKey: (clusterUrl: string) => new URL(clusterUrl).hostname,
+			schemaCacheKey,
+			getSchemaCacheFileUri: (_storage: string, cacheKey: string) => cacheKey,
+			writeCachedSchemaToDisk: async (_storage: string, cacheKey: string, schema: SeedSchema) => {
+				schemas.set(cacheKey, schema);
+				return true;
+			},
+			vscode: {
+				commands: {
+					registerCommand: (command: string, handler: () => Promise<SeedResult>) => { commands.set(command, handler); },
+				},
+				workspace: { fs: { delete: async (cacheKey: string) => { schemas.delete(cacheKey); } } },
+			},
+			getWorkbenchLogger: () => ({ warn }),
+			observeStartupCleanup: (pending: Promise<unknown>): PromiseLike<unknown> => ({
+				then(onfulfilled, onrejected) {
+					startupAwaited.resolve();
+					return pending.then(onfulfilled, onrejected);
+				},
+			}),
+		}) as Promise<unknown>;
+		await cleanupWriteStarted.promise;
+		expect(state.get(previousSelectionKey)).toMatchObject({
+			lastConnectionId: 'user-connection', lastConnectionIdPresent: true,
+			lastDatabase: 'UserDb', lastDatabasePresent: true,
+		});
+		const readsBeforeSeed = getConnections.mock.calls.length;
+		const seedPromise = commands.get(seedCommandId)!();
+		let readsWhileCleanupHeld = 0;
+		try {
+			await Promise.race([seedPromise, startupAwaited.promise]);
+			readsWhileCleanupHeld = getConnections.mock.calls.length - readsBeforeSeed;
+		} finally {
+			releaseCleanup.resolve();
+			await Promise.all([startupCleanup, seedPromise]);
+		}
+		expect(warn).not.toHaveBeenCalled();
+		expect(await startupCleanup).toEqual({ verified: true, restoredFilePinCount: 0, restoredCachedDatabaseCount: 0 });
+		const seeded = await seedPromise;
+		expect(seeded).toEqual({
+			connectionId: 'seed-connection', clusterUrl: 'https://kw-diagnostics-seed.kusto.windows.net', database: 'SeedDb',
+		});
+		const accountPartition = 'organizations/kusto-workbench-test-account';
+		const seedCacheKey = schemaCacheKey(seeded.clusterUrl, seeded.database, seeded.connectionId, accountPartition);
+		const cachedDatabases = databases.get(seeded.connectionId);
+		expect({
+			lastConnectionId: state.get(storageKeys.lastConnectionId),
+			lastDatabase: state.get(storageKeys.lastDatabase),
+			authPartition: preferences.get(seeded.connectionId)?.id === 'kusto-workbench-test-account'
+				&& cachedDatabases?.accountPartition === accountPartition,
+			databases: cachedDatabases?.databases,
+			schemaExists: schemas.has(seedCacheKey),
+		}).toEqual({
+			lastConnectionId: 'seed-connection', lastDatabase: 'SeedDb',
+			authPartition: true, databases: ['SeedDb'], schemaExists: true,
+		});
+		expect(readsWhileCleanupHeld).toBe(0);
+		expect(schemas.get(seedCacheKey)).toMatchObject({
+			connectionId: seeded.connectionId, database: 'SeedDb', accountPartition,
+			schema: { tables: ['KnownOnly'], columnTypesByTable: { KnownOnly: { Timestamp: 'datetime', Value: 'long' } } },
+		});
+		expect(connections.get(userConnection.id)).toEqual(userConnection);
+		expect(connections.has('supplemental-connection')).toBe(false);
+		expect(state.has(previousSelectionKey)).toBe(false);
+	});
+
+	it.each([
+		['isolated reset', true, 'populated'],
+		['isolated fresh session', true, 'missing'],
+		['ordinary existing empty session', false, 'empty'],
+		['ordinary missing session', false, 'missing'],
+	] as const)('opens %s with canonical creation and locked writes before reveal', async (_scenario, isolated, initial) => {
+		const sourceFile = ts.createSourceFile('extension.ts', extensionSource, ts.ScriptTarget.Latest, true);
+		let callbackSource: string | undefined;
+		const visit = (node: ts.Node): void => {
+			if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+				&& node.expression.name.text === 'registerCommand'
+				&& node.arguments[0] && ts.isStringLiteral(node.arguments[0])
+				&& node.arguments[0].text === 'kusto.openQueryEditor') {
+				callbackSource = node.arguments[1]?.getText(sourceFile);
+			}
+			ts.forEachChild(node, visit);
+		};
+		visit(sourceFile);
+		expect(callbackSource).toBeDefined();
+		const savedSession = stringifyKqlxFile({
+			kind: 'kqlx', version: 1, state: { sections: [{
+				type: 'query', query: 'print Old=1', clusterUrl: 'https://old.kusto.windows.net',
+				database: 'OldDb', resultJson: '{"rows":[[1]]}',
+			}] },
+		});
+		let bytes = initial === 'missing' ? undefined : new TextEncoder().encode(initial === 'empty' ? '' : savedSession);
+		const originalBytes = bytes?.slice();
+		const sessionUri = join('fixture-storage', 'session.kqlx');
+		const shouldWrite = isolated || initial === 'missing';
+		let releaseWrite!: () => void;
+		let markWriteStarted!: () => void;
+		const writeHeld = new Promise<void>(resolve => { releaseWrite = resolve; });
+		const writeStarted = new Promise<void>(resolve => { markWriteStarted = resolve; });
+		const events: string[] = [];
+		let locked = false;
+		const createFresh = vi.fn(createKqlxOrMdxFileWithDefaultSection);
+		const writeFile = vi.fn(async (uri: string, content: Uint8Array) => {
+			expect(uri).toBe(sessionUri);
+			expect(locked).toBe(true);
+			markWriteStarted();
+			await writeHeld;
+			bytes = content.slice();
+			events.push('write');
+		});
+		const reveal = vi.fn(async (uri: string) => {
+			expect(uri).toBe(sessionUri);
+			expect(locked).toBe(false);
+			events.push('reveal');
+		});
+		const open = runInNewContext(ts.transpileModule(`(${callbackSource});`, {
+			compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+		}).outputText, {
+			TextEncoder, stringifyKqlxFile, testIsolateKustoConnections: isolated,
+			createKqlxOrMdxFileWithDefaultSection: createFresh,
+			afterFirstLaunch: (handler: () => Promise<void>) => handler,
+			context: { globalStorageUri: 'fixture-storage' },
+			vscode: { Uri: { joinPath: join }, workspace: { fs: {
+				createDirectory: vi.fn().mockResolvedValue(undefined), writeFile,
+				stat: async (uri: string) => {
+					expect(uri).toBe(sessionUri);
+					expect(locked).toBe(true);
+					if (bytes === undefined) throw Object.assign(new Error('missing'), { code: 'FileNotFound' });
+					return { size: bytes.length };
+				},
+			} } },
+			withKqlxDocumentWriteLock: async (uri: string, writer: () => Promise<void>) => {
+				expect(uri).toBe(sessionUri);
+				locked = true;
+				events.push('lock');
+				try { await writer(); } finally { locked = false; events.push('unlock'); }
+			},
+			revealOrOpenQueryEditorSession: reveal,
+		}) as () => Promise<void>;
+		const opening = open();
+		try {
+			await Promise.race([writeStarted, opening]);
+			expect(bytes).toEqual(originalBytes);
+			expect(writeFile).toHaveBeenCalledTimes(shouldWrite ? 1 : 0);
+			expect(reveal).toHaveBeenCalledTimes(shouldWrite ? 0 : 1);
+		} finally {
+			releaseWrite();
+			await opening;
+		}
+		expect(createFresh.mock.calls).toEqual(shouldWrite ? [['kqlx']] : []);
+		expect(events).toEqual(shouldWrite ? ['lock', 'write', 'unlock', 'reveal'] : ['lock', 'unlock', 'reveal']);
+		if (shouldWrite) {
+			expect(bytes).toEqual(new TextEncoder().encode(stringifyKqlxFile(createKqlxOrMdxFileWithDefaultSection('kqlx'))));
+			expect(parseKqlxText(new TextDecoder().decode(bytes))).toEqual({
+				ok: true, file: { kind: 'kqlx', version: 1, state: { sections: [{ type: 'query', expanded: true, query: '' }] } },
+			});
+		} else {
+			expect(bytes).toEqual(originalBytes);
+		}
 	});
 
 	it('declares file-opening choices as profile-only application settings', () => {

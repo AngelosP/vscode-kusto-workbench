@@ -4,12 +4,14 @@ Feature: Kusto worker schema replacement
     Given the extension is in a clean state
     When I move the Dev Host to 0, 0
     When I resize the Dev Host to 1280x1000
+    When I execute command "workbench.action.closeSidebar"
     When I execute command "workbench.action.closeAuxiliaryBar"
+    When I execute command "workbench.action.closePanel"
 
   Scenario: Changed compact schema replaces the worker catalog
     When I execute command "kustoWorkbench.test.setIsolatedKustoConnections"
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx"
     When I evaluate "window.__e2e.workbench.enableIsolatedKustoConnections()" in the webview
     When I evaluate "window.__e2e.workbench.assertIsolatedKustoConnections()" in the webview
     When I wait for "kw-query-section" in the webview for 20 seconds
@@ -33,9 +35,9 @@ Feature: Kusto worker schema replacement
     When I evaluate "window.__e2e.suggest.kusto.trigger()" in the webview
     When I evaluate "window.__e2e.suggest.kusto.waitExistingAllColumnsVisible('worker schema B acceptance', 'VersionOnlyNew', 5000)" in the webview for 10 seconds
     When I evaluate "window.__e2e.kusto.acceptSuggestion('project-columns')" in the webview
-  	When I evaluate "window.__e2e.kusto.assertQuery('Events\n| project VersionOnlyNew')" in the webview
+    When I evaluate "window.__e2e.kusto.assertQuery('Events\n| project VersionOnlyNew')" in the webview
     And I wait 1 second
-  	When I evaluate "window.__e2e.kusto.assertQuery('Events\n| project VersionOnlyNew')" in the webview
+    When I evaluate "window.__e2e.kusto.assertQuery('Events\n| project VersionOnlyNew')" in the webview
     When I evaluate "(() => { const section = document.querySelector('kw-query-section'); section.clearResults(); section.setSchemaInfo({ status: 'loaded', statusText: 'E2E replacement schema B loaded' }); return 'replacement state restored'; })()" in the webview
     And I wait 1 second
     When I evaluate "window.__e2e.kusto.assertQuery('Events\n| project VersionOnlyNew')" in the webview

@@ -12,6 +12,7 @@ Feature: Tutorial viewer
 
   Scenario: Open Did you know manually
     When I execute command "kusto.openTutorials"
-    When I wait for "kw-tutorial-viewer" in the webview for 25 seconds
-    And I evaluate "(() => { const viewer = document.querySelector('kw-tutorial-viewer'); const root = viewer.shadowRoot; const waitFor = async () => { for (let attempt = 0; attempt < 120; attempt++) { await viewer.updateComplete; const text = root.textContent || ''; if (text.includes('Did you know?') && (root.querySelector('[data-testid=tutorial-viewer-mode-standard]') || root.querySelector('[data-testid=tutorial-viewer-mode-unavailable]'))) return text; await new Promise(resolve => setTimeout(resolve, 100)); } throw new Error('Did you know viewer did not render'); }; return waitFor(); })()" in the webview
+    When I wait for "kw-tutorial-viewer" in the webview "Did you know?" for 25 seconds
+    And I wait for "[data-testid='tutorial-viewer-mode-standard'], [data-testid='tutorial-viewer-mode-unavailable']" in the webview "Did you know?" for 25 seconds
+    And I evaluate "(() => { const viewer = document.querySelector('kw-tutorial-viewer'); const root = viewer.shadowRoot; const waitFor = async () => { for (let attempt = 0; attempt < 120; attempt++) { await viewer.updateComplete; const text = root.textContent || ''; if (text.includes('Did you know?') && (root.querySelector('[data-testid=tutorial-viewer-mode-standard]') || root.querySelector('[data-testid=tutorial-viewer-mode-unavailable]'))) return text; await new Promise(resolve => setTimeout(resolve, 100)); } throw new Error('Did you know viewer did not render'); }; return waitFor(); })()" in the webview "Did you know?"
     Then I take a screenshot "01-did-you-know-open"

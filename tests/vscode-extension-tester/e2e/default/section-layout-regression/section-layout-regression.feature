@@ -5,30 +5,37 @@ Feature: Section layout regression across all section types
     When I move the Dev Host to 0, 0
     And I resize the Dev Host to 1300 by 950
     And I capture the output channel "Kusto Workbench"
-    And I wait 2 seconds
+    And I execute command "workbench.action.closeSidebar"
+    And I execute command "workbench.action.closeAuxiliaryBar"
+    And I execute command "workbench.action.closePanel"
+    And I execute command "kustoWorkbench.test.closeQueryEditorSession"
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
-    And I wait for "#queries-container" in the webview for 20 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
     And I evaluate "window.__e2e.workbench.clearSections()" in the webview
-    And I wait 1 second
 
   Scenario: Page scrolling remains stable with every section type
     When I evaluate "window.__e2e.layout.createStressNotebook()" in the webview for 40 seconds
     And I wait 1 second
     When I evaluate "window.__e2e.layout.assertScrollStability()" in the webview for 20 seconds
     Then I take a screenshot "01-section-layout-scroll-stability"
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
+    And I execute command "kustoWorkbench.test.closeQueryEditorSession"
 
   Scenario: Collapse and expand keeps section bodies hidden and visible
     When I evaluate "window.__e2e.layout.createStressNotebook()" in the webview for 40 seconds
     And I wait 1 second
     When I evaluate "window.__e2e.layout.exerciseCollapseExpand()" in the webview
     Then I take a screenshot "02-section-layout-collapse-expand"
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
+    And I execute command "kustoWorkbench.test.closeQueryEditorSession"
 
   Scenario: Auto-fit and manual resize stay bounded for every section type
     When I evaluate "window.__e2e.layout.createStressNotebook()" in the webview for 40 seconds
     And I wait 1 second
     When I evaluate "window.__e2e.layout.exerciseAutoFitAndResize()" in the webview
     Then I take a screenshot "03-section-layout-fit-resize"
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
+    And I execute command "kustoWorkbench.test.closeQueryEditorSession"
 
   Scenario: Real section controls auto-fit and collapse without shifting ownership
     When I evaluate "window.__e2e.layout.createStressNotebook()" in the webview for 40 seconds
@@ -45,3 +52,5 @@ Feature: Section layout regression across all section types
     And I wait 1 second
     When I evaluate "(() => { const section = document.getElementById('e2e_layout_query'); const wrapper = section?.querySelector('.query-editor-wrapper'); const identity = section?.getSchemaLifecycleIdentity?.(); if (section !== window.__nativeLayoutSectionBefore || identity?.sectionInstanceId !== window.__nativeLayoutIdentityBefore?.sectionInstanceId || section.classList.contains('is-collapsed') || !wrapper || wrapper.getBoundingClientRect().height < 80 || wrapper.getBoundingClientRect().height > 750) throw new Error('Real expand control changed ownership or restored an invalid body'); return { height: wrapper.getBoundingClientRect().height, identity }; })()" in the webview
     Then I take a screenshot "04-native-section-controls"
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
+    And I execute command "kustoWorkbench.test.closeQueryEditorSession"

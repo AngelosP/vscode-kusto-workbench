@@ -4,16 +4,16 @@ Feature: Kusto auto-trigger autocomplete without authentication
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
     When I move the Dev Host to 0, 0
-    When I resize the Dev Host to 1280x1000
+    When I resize the Dev Host to 1000 by 700
+    When I execute command "workbench.action.closeSidebar"
     When I execute command "workbench.action.closeAuxiliaryBar"
-    And I wait 2 seconds
+    When I execute command "workbench.action.closePanel"
 
   Scenario: Kusto auto-trigger toggle and suppression respect offline context without schema
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx"
 
-    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
-    And I wait 2 seconds
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview "session.kqlx"
 
     When I wait for "button[data-add-kind='query']" in the webview for 20 seconds
     When I click "button[data-add-kind='query']" in the webview

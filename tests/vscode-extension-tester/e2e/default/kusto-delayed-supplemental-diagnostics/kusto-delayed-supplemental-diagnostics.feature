@@ -5,7 +5,9 @@ Feature: Delayed supplemental schemas do not expose transient diagnostics
     And I capture the output channel "Kusto Workbench"
     When I move the Dev Host to 0, 0
     When I resize the Dev Host to 1280x1000
+    When I execute command "workbench.action.closeSidebar"
     When I execute command "workbench.action.closeAuxiliaryBar"
+    When I execute command "workbench.action.closePanel"
     When I execute command "kusto.openQueryEditor"
     When I execute command "workbench.action.closeAllEditors"
     When I execute command "kustoWorkbench.test.cleanupSupplementalSchemaDiagnosticsState"
@@ -14,7 +16,7 @@ Feature: Delayed supplemental schemas do not expose transient diagnostics
   Scenario: KS207 and KS208 stay hidden through delayed acquisition of reference seventeen
     When I execute command "kustoWorkbench.test.setIsolatedKustoConnections"
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx"
     When I evaluate "window.__e2e.workbench.enableIsolatedKustoConnections()" in the webview
     When I evaluate "window.__e2e.workbench.assertIsolatedKustoConnections()" in the webview
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview

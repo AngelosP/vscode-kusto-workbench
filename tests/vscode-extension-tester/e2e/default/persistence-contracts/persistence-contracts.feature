@@ -11,10 +11,13 @@ Feature: Persistence contracts for unresolved selections and legacy file shapes
     And I wait 2 seconds
 
   Scenario: Save and reopen unresolved Kusto and SQL selections without dropping metadata
-    Given a file "tests/vscode-extension-tester/runs/default/persistence-contracts/unresolved-selection.kqlx" exists
+    Given a file "tests/vscode-extension-tester/runs/default/persistence-contracts/unresolved-selection.kqlx" exists with content:
+      """
+      {"kind":"kqlx","version":1,"state":{"sections":[{"id":"query_fixture_start","type":"query","query":"","expanded":true}]}}
+      """
 
     When I open file "tests/vscode-extension-tester/runs/default/persistence-contracts/unresolved-selection.kqlx" in the editor
-    And I wait 8 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "unresolved-selection.kqlx" for 20 seconds
     When I wait for "#queries-container" in the webview "unresolved-selection.kqlx" for 20 seconds
     And I wait for "kw-query-section" in the webview "unresolved-selection.kqlx" for 20 seconds
 

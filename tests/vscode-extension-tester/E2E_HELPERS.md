@@ -2,6 +2,20 @@
 
 Feature files should prefer the semantic `window.__e2e` API over long inline JavaScript or direct private fields. The older `window.__test*` helpers remain available as low-level building blocks, but new behavioral tests should read like product intent.
 
+## Readiness And Targeting
+
+Wait for `body[data-kusto-e2e-ready='true']` in the exact notebook tab before using `window.__e2e`. This development-only marker is installed after the helper API; it does not replace section, Monaco, schema, or execution readiness assertions. Close unrelated sidebar/panel webviews during setup. Use title targeting at open/reopen boundaries, but leave keyboard/focus-sensitive operations unqualified once the intended editor is active: CLI 0.1.23 reactivates a named tab before each operation, which can dismiss suggestions or blur chat inputs.
+
+```gherkin
+When I execute command "kusto.openQueryEditor"
+And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx"
+And I evaluate "window.__e2e.workbench.clearSections()" in the webview
+```
+
+`clearSections()` returns a promise. Return or await it in composed expressions. Cleanup waits for canonical host-command settlement as well as an empty DOM; rejection, source/session retirement, or timeout must fail setup before section IDs can be reused. `waitForDocumentCommands()` similarly requires client acceptance, not merely a captured `ok: true` wire message.
+
+Title-targeted steps may activate their tab. When focus retention is the behavior under test, assert the active tab's exact URI from the extension host before any title-targeted inspection. Standalone tutorial and first-launch webviews have different bundles: wait for their own rendered controls rather than the notebook helper marker.
+
 ## Preferred Patterns
 
 - `window.__e2e.workbench.clearSections()`

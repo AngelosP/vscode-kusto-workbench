@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import {
+	copyFileSync,
+	cpSync,
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
@@ -37,6 +40,189 @@ const exportSkillFeaturePath = path.join(
 	'export-skill-sidecar',
 	'export-skill-sidecar.feature',
 );
+
+function withSuiteSettingsFixture(run) {
+	const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), 'kusto-e2e-settings-'));
+	try {
+		const scriptsDir = path.join(fixtureRoot, 'scripts');
+		mkdirSync(scriptsDir);
+		for (const name of ['e2e-full-suite.mjs', 'e2e-full-suite-support.mjs']) {
+			copyFileSync(path.join(repoRoot, 'scripts', name), path.join(scriptsDir, name));
+		}
+		const relativeTestDir = path.join('tests', 'vscode-extension-tester', 'e2e', 'default', 'first-launch-setup');
+		const testDir = path.join(fixtureRoot, relativeTestDir);
+		cpSync(path.join(repoRoot, relativeTestDir), testDir, { recursive: true });
+		const runSuite = (args = [], { captureCommand = false } = {}) => {
+			const outputDir = mkdtempSync(path.join(fixtureRoot, 'output-'));
+			const preload = captureCommand ? ['--import', `data:text/javascript,${encodeURIComponent(`
+				import childProcess from 'node:child_process';
+				import { writeFileSync } from 'node:fs';
+				import { syncBuiltinESMExports } from 'node:module';
+				childProcess.spawnSync = (command, args) => {
+					writeFileSync(${JSON.stringify(path.join(outputDir, 'invocation.json'))}, JSON.stringify({ command, args }));
+					process.exit(0);
+				};
+				syncBuiltinESMExports();
+			`)}`] : [];
+			const result = spawnSync(process.execPath, [
+				...preload,
+				path.join(scriptsDir, 'e2e-full-suite.mjs'),
+				captureCommand ? '--no-build' : '--dry-run',
+				'--profiles', 'default', '--test-id', 'first-launch-setup',
+				'--vscode-version', 'insiders', '--output-dir', outputDir,
+				...args,
+			], { cwd: fixtureRoot, encoding: 'utf8' });
+			const artifacts = readdirSync(outputDir, { recursive: true })
+				.filter(name => name.endsWith('.json'))
+				.map(name => JSON.parse(readFileSync(path.join(outputDir, name), 'utf8')));
+			return {
+				...result,
+				summary: artifacts.find(value => Array.isArray(value.runs)),
+				invocation: artifacts.find(value => typeof value.command === 'string'),
+			};
+		};
+		return run({ testDir, runSuite });
+	} finally {
+		rmSync(fixtureRoot, { recursive: true, force: true });
+	}
+}
+
+test('E2E settings discovery honors the first-launch 45000ms timeout', () => {
+	withSuiteSettingsFixture(({ runSuite }) => {
+		const result = runSuite();
+		assert.equal(result.status, 0, result.stderr || result.stdout);
+		assert.equal(result.summary?.dryRun, true);
+		assert.equal(result.summary.vscodeVersion, 'insiders');
+		assert.equal(result.summary.executed, 0);
+		assert.equal(result.summary.runs.length, 1);
+		assert.equal(result.summary.runs[0].profile, 'default');
+		assert.equal(result.summary.runs[0].testId, 'first-launch-setup');
+		assert.equal(result.summary.runs[0].timeout, '45000');
+	});
+});
+
+test('E2E settings preserve default and explicit timeout transitions', () => {
+	withSuiteSettingsFixture(({ testDir, runSuite }) => {
+		const settingsPath = path.join(testDir, 'e2e.settings.json');
+		for (const [config, expected] of [
+			[undefined, ''],
+			[{}, ''],
+			[{ timeout: 1 }, '1'],
+			[{ timeout: 45000 }, '45000'],
+			[{ timeout: ' 60000 ' }, '60000'],
+			[{}, ''],
+		]) {
+			if (config === undefined) rmSync(settingsPath);
+			else writeFileSync(settingsPath, JSON.stringify(config));
+			const result = runSuite();
+			assert.equal(result.status, 0, result.stderr || result.stdout);
+			assert.equal(result.summary.runs[0].timeout, expected);
+		}
+	});
+});
+
+test('E2E settings preserve CLI timeout precedence and nightly version forwarding', () => {
+	withSuiteSettingsFixture(({ testDir, runSuite }) => {
+		for (const [args, expected] of [
+			[[], ['--timeout', '45000']],
+			[['--timeout', '60000'], ['--timeout', '60000']],
+			[['--timeout', 'none'], ['--timeout', 'none']],
+		]) {
+			const result = runSuite(args, { captureCommand: true });
+			assert.equal(result.status, 0, result.stderr || result.stdout);
+			assert.deepEqual(result.invocation, {
+				command: 'vscode-ext-test',
+				args: [
+					'run', '--no-build', '--test-id', 'first-launch-setup', '--vscode-version', 'insiders',
+					...expected,
+					'--env', 'KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH=0',
+				],
+			});
+		}
+		writeFileSync(path.join(testDir, 'e2e.settings.json'), '{}');
+		const result = runSuite([], { captureCommand: true });
+		assert.equal(result.status, 0, result.stderr || result.stdout);
+		assert.equal(result.invocation.args.includes('--timeout'), false);
+	});
+});
+
+test('E2E settings discovery preserves supported fields and nested settings keys', () => {
+	withSuiteSettingsFixture(({ testDir, runSuite }) => {
+		const settingsPath = path.join(testDir, 'e2e.settings.json');
+		for (const workspace of [
+			{ workspaceSettings: { 'files.autoSave': 'off', stepTimeoutMs: 45000 } },
+			{
+				managedWorkspacePath: path.join(testDir, 'managed-workspace'),
+				managedWorkspaceOwner: { markerName: '.owner', content: 'owned\n' },
+			},
+		]) {
+			const config = { ...workspace, env: { stepTimeoutMs: '45000' }, optIn: true, timeout: ' 45000 ' };
+			writeFileSync(settingsPath, JSON.stringify(config));
+			const excluded = runSuite();
+			assert.equal(excluded.status, 0, excluded.stderr || excluded.stdout);
+			assert.equal(excluded.summary.excludedOptInTests, 1);
+			assert.deepEqual(excluded.summary.runs, []);
+			const included = runSuite(['--include-opt-in-tests']);
+			assert.equal(included.status, 0, included.stderr || included.stdout);
+			assert.equal(included.summary.runs.length, 1);
+			const settings = included.summary.runs[0];
+			assert.equal(settings.timeout, '45000');
+			assert.equal(settings.optIn, true);
+			assert.deepEqual(settings.env, config.env);
+			assert.deepEqual(settings.workspaceSettings, workspace.workspaceSettings ?? null);
+			assert.equal(settings.managedWorkspacePath, workspace.managedWorkspacePath ?? null);
+			assert.deepEqual(settings.managedWorkspaceOwner, workspace.managedWorkspaceOwner ?? null);
+		}
+	});
+});
+
+test('E2E settings discovery rejects unsupported keys before falling back or overriding', () => {
+	withSuiteSettingsFixture(({ testDir, runSuite }) => {
+		for (const [config, key] of [
+			[{ stepTimeoutMs: 45000 }, 'stepTimeoutMs'],
+			[{ timeuot: 45000 }, 'timeuot'],
+			[{ timeout: 45000, stepTimeoutMs: 45000 }, 'stepTimeoutMs'],
+		]) {
+			writeFileSync(path.join(testDir, 'e2e.settings.json'), JSON.stringify(config));
+			for (const args of [[], ['--timeout', '60000']]) {
+				const result = runSuite(args);
+				assert.equal(result.status, 1, `${JSON.stringify(config)} must fail discovery`);
+				assert.match(result.stderr, /first-launch-setup\/e2e\.settings\.json/);
+				assert.ok(result.stderr.includes(`unsupported property ${key}`), result.stderr);
+				assert.equal(result.summary, undefined);
+			}
+		}
+	});
+});
+
+test('E2E settings discovery rejects non-object configurations', () => {
+	withSuiteSettingsFixture(({ testDir, runSuite }) => {
+		for (const config of [null, [], '45000', 45000, false]) {
+			writeFileSync(path.join(testDir, 'e2e.settings.json'), JSON.stringify(config));
+			const result = runSuite();
+			assert.equal(result.status, 1, `${JSON.stringify(config)} must fail discovery`);
+			assert.match(result.stderr, /first-launch-setup\/e2e\.settings\.json must be an object/);
+			assert.equal(result.summary, undefined);
+		}
+	});
+});
+
+test('E2E settings discovery rejects invalid timeouts and accepts a later correction', () => {
+	withSuiteSettingsFixture(({ testDir, runSuite }) => {
+		const settingsPath = path.join(testDir, 'e2e.settings.json');
+		for (const timeout of [0, -1, 1.5, '', 'none', '45s', null, false]) {
+			writeFileSync(settingsPath, JSON.stringify({ timeout }));
+			const result = runSuite(['--timeout', '60000']);
+			assert.equal(result.status, 1, `${JSON.stringify(timeout)} must fail discovery`);
+			assert.match(result.stderr, /e2e\.settings\.json property timeout must be a positive millisecond value/);
+			assert.equal(result.summary, undefined);
+		}
+		writeFileSync(settingsPath, JSON.stringify({ timeout: 45000 }));
+		const corrected = runSuite();
+		assert.equal(corrected.status, 0, corrected.stderr || corrected.stdout);
+		assert.equal(corrected.summary.runs[0].timeout, '45000');
+	});
+});
 
 test('rejects unresolved environment placeholders at the repository root', () => {
 	const placeholderEntries = readdirSync(repoRoot, { withFileTypes: true })

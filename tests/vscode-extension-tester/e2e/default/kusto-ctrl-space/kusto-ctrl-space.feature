@@ -5,7 +5,9 @@ Feature: Kusto Ctrl+Space autocomplete shortcut
     And I capture the output channel "Kusto Workbench"
     When I move the Dev Host to 0, 0
     When I resize the Dev Host to 1280x1000
+    When I execute command "workbench.action.closeSidebar"
     When I execute command "workbench.action.closeAuxiliaryBar"
+    When I execute command "workbench.action.closePanel"
     When I execute command "kusto.openQueryEditor"
     When I execute command "workbench.action.closeAllEditors"
     When I execute command "kustoWorkbench.test.cleanupSupplementalSchemaDiagnosticsState"
@@ -14,7 +16,7 @@ Feature: Kusto Ctrl+Space autocomplete shortcut
   Scenario: Ctrl+Space opens Kusto suggestions in the real webview editor
     When I execute command "kustoWorkbench.test.setIsolatedKustoConnections"
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx"
     When I evaluate "window.__e2e.workbench.enableIsolatedKustoConnections()" in the webview
     When I evaluate "window.__e2e.workbench.assertIsolatedKustoConnections()" in the webview
 
@@ -46,7 +48,7 @@ Feature: Kusto Ctrl+Space autocomplete shortcut
   Scenario: Ctrl+Space opens suggestions inside a function over a fully qualified remote table
     When I execute command "kustoWorkbench.test.setIsolatedKustoConnections"
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx"
     When I evaluate "window.__e2e.workbench.enableIsolatedKustoConnections()" in the webview
     When I evaluate "window.__e2e.workbench.assertIsolatedKustoConnections()" in the webview
 
@@ -81,7 +83,7 @@ Feature: Kusto Ctrl+Space autocomplete shortcut
   Scenario: Ctrl+Space loads a fully qualified remote schema without a primary selection
     When I execute command "kustoWorkbench.test.seedSupplementalSchemaDiagnosticsState"
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx"
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     When I click "button[data-add-kind='query']" in the webview
     When I wait for "kw-query-section" in the webview for 15 seconds
@@ -97,7 +99,7 @@ Feature: Kusto Ctrl+Space autocomplete shortcut
   Scenario: A cold no-context schema automatically retries the original caret
     When I execute command "kustoWorkbench.test.setIsolatedKustoConnections"
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx"
     When I evaluate "window.__e2e.workbench.enableIsolatedKustoConnections()" in the webview
     When I evaluate "window.__e2e.workbench.assertIsolatedKustoConnections()" in the webview
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
@@ -121,7 +123,7 @@ Feature: Kusto Ctrl+Space autocomplete shortcut
   Scenario: Dismissing a cold fallback cancels its semantic retry
     When I execute command "kustoWorkbench.test.setIsolatedKustoConnections"
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx"
     When I evaluate "window.__e2e.workbench.enableIsolatedKustoConnections()" in the webview
     When I evaluate "window.__e2e.workbench.assertIsolatedKustoConnections()" in the webview
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
@@ -143,7 +145,7 @@ Feature: Kusto Ctrl+Space autocomplete shortcut
   Scenario: Ctrl+Space falls back after a missing remote schema timeout
     When I execute command "kustoWorkbench.test.setIsolatedKustoConnections"
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx"
     When I evaluate "window.__e2e.workbench.enableIsolatedKustoConnections()" in the webview
     When I evaluate "window.__e2e.workbench.assertIsolatedKustoConnections()" in the webview
 

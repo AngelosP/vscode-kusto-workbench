@@ -103,6 +103,8 @@ Tests can include an `e2e.settings.json` file next to their `.feature` file with
 
 The same file may include an `env` object whose values are non-secret strings passed only to that test's launched VS Code process. Do not put credentials, tokens, or other secrets in tracked E2E settings.
 
+Use `"timeout": 45000` for a per-step timeout in milliseconds; `stepTimeoutMs` is not supported. An explicit runner `--timeout` takes precedence. The outer timeout must exceed a step's explicit wait/evaluation budget. Unknown top-level settings and non-object configurations fail discovery instead of silently using defaults.
+
 Tests that add their own external workspace can declare `managedWorkspacePath`. The path must resolve to an absolute path after `${ENVIRONMENT_VARIABLE}` expansion. This field does not launch or create the workspace; it lets the suite move that exact workspace's reusable-profile storage into the run artifacts after the test, including when the output directory is on another volume. Unreadable metadata is left for the normal residue report rather than aborting summary generation. The feature must validate the canonical external path, reject links in every path it will mutate, create or add the directory itself, and verify it is the intended first workspace before any file-writing product action. A `managedWorkspaceOwner` with exact `markerName` and `content` authorizes the runner to remove that workspace after the VS Code child exits.
 
 `workspaceSettings` and `managedWorkspacePath` are mutually exclusive. The runner handles both direct folder metadata and VS Code's generated untitled-workspace metadata, but moves an untitled entry only when its canonical folder set contains exactly the declared managed workspace.
@@ -157,6 +159,35 @@ The orchestrator checks each reusable profile's `user-data/User/workspaceStorage
 Use `--repair-profile-residue` to move residue into the current history artifact folder without deleting auth state. Do not delete `globalStorage`, `Local Storage`, or SecretStorage when cleaning profiles.
 
 The orchestrator also seeds named profiles with quiet host settings such as `extensions.ignoreRecommendations=true`. This keeps screenshots and failure artifacts focused on Kusto Workbench rather than machine-specific VS Code recommendations.
+
+## Stabilization Coverage Ledger
+
+Contract: the current default behavioral suite must exercise real editor workflows on the newest stable VS Code without setup races, hidden failures, or substituted success. The scheduled `latest` gate, existing behavioral assertions, and fail-on-assertion policy remain required. A local pass is not a hosted-Windows pass.
+
+| Path / transition | Owner and exact oracle | Coverage / decision |
+| --- | --- | --- |
+| Fresh editor -> helper setup -> user controls | Development helper registration; exact initial tab plus `data-kusto-e2e-ready`; existing section, worker, and result assertions still run | Include: affected default feature scenarios; do not reactivate the tab during focus-sensitive observations; standalone viewers use their own rendered controls |
+| Invalid MDX open -> error page -> unchanged durable bytes | Native custom editor; expected heading/reason plus exact section IDs and `dirty: false` | Existing `document-capabilities`: wait for the error page in `incompatible.mdx` before text assertions |
+| Remove -> delayed acknowledgement -> same-ID recreation | Real Markdown document client; cleanup stays pending beyond DOM removal, then only accepted removal permits recreation | Include `markdown-document-client.test.ts`: delayed/rejected replies, malformed success, stale/duplicate/session-mismatched results, timeout/late response, quiet-window hidden commands, suppression restoration |
+| Capture -> source/session retirement -> delayed old success | Client acceptance and capture lifetime; old traffic cannot complete the current capture | Include same client suite: retirement before waiting, uncaptured pending work, rearming, and failure cleanup |
+| Layout scenario -> accepted teardown -> exact session close -> next scenario | Layout helper plus provider close drain; eight created sections are removed before resetting the test-owned session | Include `section-layout-regression`: explicit setup/teardown for all four scenarios; three iterations assert 96 created and accepted removals without changing geometry checks |
+| First-launch Save -> resumed session -> Add SQL | Canonical starter factory; one KQL starter plus real SQL Add and synchronized toolbar preferences | Existing `first-launch-setup` E2E plus `firstLaunchIntegration.test.ts`: isolated/fresh/missing session and unchanged ordinary existing empty file |
+| Deferred supplemental cleanup -> new text-diagnostics fixture | Startup cleanup owner; no seed reads before settlement and final exact seeded connection/database while auth/schema survive | Include `firstLaunchIntegration.test.ts` deferred behavioral regression |
+| Settings discovery -> CLI forwarding | Suite parser; exact 45000 ms, explicit override precedence, invalid/unknown rejection, correction, and supported workspace/opt-in paths | Include `e2e-full-suite-support.test.mjs`; direct CLI invocation must supply its timeout separately |
+| Auth/cache setup -> result display -> Save/reopen | Existing prepared-owner/result contracts; exact cache/partition, rows, lineage, and durable bytes | Existing `share-result-artifacts`, `persisted-results-restore`, `legacy-result-migration`, and `kusto-fq-open-diagnostics`; no speculative auth invalidation changes |
+| Charts weekly/channel -> Agent edits -> Charts unchanged | Tutorial host mutations and delivered snapshot; Charts remains weekly while Agent changes | Existing composed `did-you-know-regressions`; isolated probes alone do not replace this E2E |
+| Save Kusto/SQL search -> reload -> switch kind -> restore before requesting another snapshot -> edit both kinds | Host publishes after the active-kind write; exact stored per-kind query, scope, targets, and categories reach the current controller | Include `connectionManagerViewerSearch.test.ts` and `cm-back-search`; retain write failure propagation, result sanitization, and independent B1-to-B2 post-reload edits |
+| Explicit empty engine -> Add form -> snapshot -> draft retained | Webview snapshot honors explicit selection independently of inventory; SQL unavailable still forces Kusto | Include `kw-connection-manager.test.ts` and `connection-manager`; host unset/invalid preference auto-selects SQL only for SQL-only inventory, without writing a default preference |
+| Full cold default suite -> all test IDs terminal -> artifacts | Suite runner; no failed, skipped, or allowed-failure entries; inspect reports, JSON, screenshots, and profile residue | Required final qualification on latest VS Code; preserve prior failures and classify interrupted runs separately |
+| Authenticated profiles and browser viewer | Different environment/host owners from the requested default CI workflow | Exclude from this stabilization gate; no changed authenticated execution or browser contracts |
+
+Review limits: Cached Values' existing label assertion does not prove refresh completion while it displays `Loading...`. The clarification View oracle proves card presence, expansion, and input focus, but not that the card is inside the captured chat viewport. The prior-session lifecycle scenario can omit a stale-barrier injection when no barrier was captured. These pre-existing coverage gaps are not evidence for those stronger claims; this stabilization does not replace their assertions with weaker ones or count them as new coverage.
+
+### Verified Local Run
+
+`full-suite-20260914T101117Z` completed on September 14, 2026: 77/77 test IDs and 160/160 scenarios passed on Windows with VS Code 1.137.0 (resolved from latest stable), vscode-ext-test 0.1.23, and Node v22.16.0. Each test ran once, with zero bootstrap retries, skipped cases, allowed failures, quarantines, or profile residue. All 207 screenshots and the structured reports were reviewed. The final focused headless ring passed 371 Vitest tests and 26 Node runner tests; type checking, lint, and bundling passed in the suite build.
+
+This is local working-tree evidence, not a GitHub-hosted run or a guarantee against all intermittent failures. The earlier full runs and their failures remain in local history; successful follow-ups do not replace them. The layout fix separately passed three composed iterations, including accepted teardown and exact close before each reopening. Screenshot review also retained unrelated visual findings: SQL stale-result dimming is not established by its class-only assertion, and the narrow comparison toolbar can clip the cache-plan checkbox. These are not claimed as repaired by this suite-stabilization work. Scheduled latest-VS-Code selection and its failure policy are unchanged.
 
 ## Scheduling
 

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
+import { connectionSearchIncludes, normalizeConnectionSearchTargets, type ConnectionSearchTarget } from '../shared/connectionSearch';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { HostKustoFavoritesApplicationHandler } from './kustoFavoritesApplicationHandler';
 import { KustoQueryClient, DatabaseSchemaIndex } from './kustoClient';
@@ -87,6 +88,7 @@ const STORAGE_KEYS = {
 	sqlFavorites: 'sql.favorites',
 	sqlLeaveNoTrace: 'sql.leaveNoTraceConnections',
 	searchState: 'connectionManager.searchState',
+	sqlSearchState: 'connectionManager.sqlSearchState',
 } as const;
 
 export type ConnectionKind = 'kusto' | 'sql';
@@ -162,7 +164,7 @@ type IncomingMessage =
 	| { type: 'sql.leaveNoTrace.add'; connectionId: string }
 	| { type: 'sql.leaveNoTrace.remove'; connectionId: string }
 	// Search
-	| { type: 'search'; requestId: string; query: string; scope: string; kind: ConnectionKind; categories: Record<string, boolean>; contentToggles: Record<string, boolean> }
+	| { type: 'search'; requestId: string; query: string; scope: string; kind: ConnectionKind; categories: Record<string, boolean>; contentToggles: Record<string, boolean>; targets?: ConnectionSearchTarget[] }
 	| { type: 'search.cancel'; requestId: string }
 	| { type: 'search.saveState'; kind: ConnectionKind; state: unknown };
 
@@ -633,7 +635,9 @@ export class ConnectionManagerViewerV2 {
 
 	private getActiveKind(): ConnectionKind {
 		const raw = this.context.globalState.get<string>(STORAGE_KEYS.activeKind);
-		return raw === 'sql' ? 'sql' : 'kusto';
+		if (raw === 'sql' || raw === 'kusto') return raw;
+		return this.connectionManager.getConnections().length === 0
+			&& (this.sqlDeps?.getSqlConnectionManager().getConnections().length ?? 0) > 0 ? 'sql' : 'kusto';
 	}
 
 	private async setActiveKind(kind: ConnectionKind): Promise<void> {
@@ -786,9 +790,12 @@ export class ConnectionManagerViewerV2 {
 	}
 
 	private getSearchState(): unknown {
-		const raw = this.context.globalState.get<unknown>(STORAGE_KEYS.searchState) ?? null;
+		const kind = this.getActiveKind();
+		const raw = this.context.globalState.get<unknown>(kind === 'sql' ? STORAGE_KEYS.sqlSearchState : STORAGE_KEYS.searchState)
+			?? (kind === 'sql' ? this.context.globalState.get<unknown>(STORAGE_KEYS.searchState) : null);
 		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
 		const state = raw as Record<string, unknown>;
+		if (state.kind && state.kind !== kind) return null;
 		const results = Array.isArray(state.lastResults) ? state.lastResults : [];
 		const withoutSqlResults = results.filter(result => String((result as any)?.kind || '') !== 'sql');
 		const removedSqlResults = withoutSqlResults.length !== results.length;
@@ -805,12 +812,14 @@ export class ConnectionManagerViewerV2 {
 	}
 
 	private async setSearchState(state: unknown, sourceKind: ConnectionKind = this.getActiveKind()): Promise<void> {
+		const storageKey = sourceKind === 'sql' ? STORAGE_KEYS.sqlSearchState : STORAGE_KEYS.searchState;
 		if (state && typeof state === 'object' && !Array.isArray(state)) {
 			const record = state as Record<string, unknown>;
 			const results = Array.isArray(record.lastResults) ? record.lastResults : [];
 			if (sourceKind === 'sql') {
-				await this.context.globalState.update(STORAGE_KEYS.searchState, {
+				await this.context.globalState.update(storageKey, {
 					...record,
+					kind: sourceKind,
 					lastResults: [],
 					lastSearchTimestamp: 0,
 				});
@@ -837,8 +846,9 @@ export class ConnectionManagerViewerV2 {
 					const { kustoSearchOwnerToken: _ownerToken, ...persistedResult } = candidate;
 					return [persistedResult];
 				});
-				await this.context.globalState.update(STORAGE_KEYS.searchState, {
+				await this.context.globalState.update(storageKey, {
 					...record,
+					kind: sourceKind,
 					lastResults: admitted,
 					kustoSearchOwnerToken: undefined,
 					kustoPrincipalFingerprint: currentFingerprint,
@@ -847,7 +857,7 @@ export class ConnectionManagerViewerV2 {
 			});
 			return;
 		}
-		await this.context.globalState.update(STORAGE_KEYS.searchState, state);
+		await this.context.globalState.update(storageKey, state);
 	}
 
 	private getSqlSearchOwner(connection: SqlConnection): {
@@ -911,9 +921,7 @@ export class ConnectionManagerViewerV2 {
 		const protectedKustoConnectionIds = new Set(connections
 			.filter(connection => kustoPolicy?.globallyBlocked || protectedKustoClusters.has(kustoClusterKey(connection.clusterUrl)))
 			.map(connection => connection.id));
-		const rawSearchState = sqlAvailable ? this.getSearchState() : {
-			query: '', scope: 'cached', categories: {}, contentToggles: {}, lastResults: [], lastSearchTimestamp: 0,
-		};
+		const rawSearchState = this.getSearchState();
 		const kustoSearchPolicyCurrent = !kustoPolicy || Number((rawSearchState as any)?.kustoPolicyVersion) === kustoPolicy.version;
 		const searchState = rawSearchState && typeof rawSearchState === 'object'
 			? {
@@ -934,7 +942,7 @@ export class ConnectionManagerViewerV2 {
 			&& Array.isArray((rawSearchState as any).lastResults)
 			&& Array.isArray((searchState as any)?.lastResults)
 			&& (searchState as any).lastResults.length !== (rawSearchState as any).lastResults.length) {
-			await this.context.globalState.update(STORAGE_KEYS.searchState, searchState);
+			await this.context.globalState.update(this.getActiveKind() === 'sql' ? STORAGE_KEYS.sqlSearchState : STORAGE_KEYS.searchState, searchState);
 		}
 		return {
 			revision,
@@ -1750,6 +1758,7 @@ export class ConnectionManagerViewerV2 {
 			case 'setActiveKind': {
 				const kind = msg.kind === 'sql' ? 'sql' : 'kusto' as ConnectionKind;
 				await this.setActiveKind(kind);
+				await this.sendSnapshotToWebview();
 				return;
 			}
 			case 'sql.connection.add': {
@@ -2207,7 +2216,7 @@ export class ConnectionManagerViewerV2 {
 				const signal = abortController.signal;
 
 				// Run search in the background (don't block message loop)
-				void this._executeSearch(requestId, query, msg.scope as string, msg.kind as ConnectionKind, msg.categories, msg.contentToggles, signal);
+				void this._executeSearch(requestId, query, msg.scope as string, msg.kind as ConnectionKind, msg.categories, msg.contentToggles, signal, msg.targets);
 				return;
 			}
 			case 'search.cancel': {
@@ -2238,6 +2247,7 @@ export class ConnectionManagerViewerV2 {
 		categories: Record<string, boolean>,
 		contentToggles: Record<string, boolean>,
 		signal: AbortSignal,
+		rawTargets?: readonly ConnectionSearchTarget[],
 	): Promise<void> {
 		type SearchResult = {
 			category: string;
@@ -2247,15 +2257,20 @@ export class ConnectionManagerViewerV2 {
 			database?: string;
 			name: string;
 			parentName?: string;
+			parentKind?: 'table' | 'view';
+			columnType?: string;
 			matchContext?: string;
 			_sqlOwner?: { targetSignature: string; principalFingerprint: string; revocationGeneration: number };
 		};
-		const kustoOwners = kind === 'kusto' ? await this.captureKustoSearchOwners() : new Map<string, KustoSearchOwner>();
+		const targets = scope === 'selected' ? normalizeConnectionSearchTargets(rawTargets) : undefined;
+		const kustoOwners = kind === 'kusto' ? new Map([...(await this.captureKustoSearchOwners())]
+			.filter(([connectionId]) => !targets || targets.some(target => target.connectionId === connectionId))) : new Map<string, KustoSearchOwner>();
 		this.activeKustoSearchOwners = kustoOwners;
 		const kustoSearchOwnerToken = kind === 'kusto' ? this.rememberKustoSearchOwners(kustoOwners) : undefined;
 
 		const sendResults = async (results: SearchResult[], completed: boolean) => {
 			if (signal.aborted) return;
+			if (targets) results = results.filter(result => connectionSearchIncludes(targets, result.connectionId, result.database));
 			if (kind === 'sql') {
 				try {
 					await this.dispatchSqlOwnerSnapshot((canonical: any) => {
@@ -2312,10 +2327,11 @@ export class ConnectionManagerViewerV2 {
 				const connections = [...kustoOwners.values()].map(owner => owner.connection);
 				const cachedDbs = this.getCachedDatabases();
 				for (const conn of connections) {
-					if (categories['clusters'] && (re.test(conn.name) || re.test(conn.clusterUrl))) {
+					if (scope === 'cached' && !(conn.id in cachedDbs)) continue;
+					if (categories['clusters'] && (!targets || connectionSearchIncludes(targets, conn.id)) && (re.test(conn.name) || re.test(conn.clusterUrl))) {
 						nameResults.push({ category: 'cluster', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, name: conn.name || conn.clusterUrl });
 					}
-					if (categories['databases']) {
+					if (categories['databases'] && scope !== 'everything' && scope !== 'selected') {
 						const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
 						for (const db of cachedDbs[conn.id] ?? []) {
 							if (re.test(db)) {
@@ -2338,12 +2354,14 @@ export class ConnectionManagerViewerV2 {
 					Object.entries(await this.getSqlCachedDatabases()).filter(([connectionId]) => !protectedIds.has(connectionId)),
 				);
 				for (const conn of sqlConns) {
+					if (targets && !targets.some(target => target.connectionId === conn.id)) continue;
+					if (scope === 'cached' && !(conn.id in sqlCachedDbs)) continue;
 					const sqlOwner = ownerByConnectionId.get(conn.id);
 					if (!sqlOwner) continue;
-					if (categories['servers'] && (re.test(conn.name) || re.test(conn.serverUrl))) {
+					if (categories['servers'] && (!targets || connectionSearchIncludes(targets, conn.id)) && (re.test(conn.name) || re.test(conn.serverUrl))) {
 						nameResults.push({ category: 'server', kind: 'sql', connectionId: conn.id, connectionName: conn.name, name: conn.name || conn.serverUrl, _sqlOwner: sqlOwner });
 					}
-					if (categories['databases']) {
+					if (categories['databases'] && scope !== 'everything' && scope !== 'selected') {
 						for (const db of sqlCachedDbs[conn.id] ?? []) {
 							if (re.test(db)) {
 								nameResults.push({ category: 'database', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database: db, name: db, _sqlOwner: sqlOwner });
@@ -2358,8 +2376,8 @@ export class ConnectionManagerViewerV2 {
 
 			// ── Phase 2: Schema search (scope-dependent) ──
 
-			if (scope === 'refresh-cached' || scope === 'everything') {
-				await this._refreshSchemasForSearch(kind, scope, query, categories, contentToggles, requestId, signal, sendResults, sendProgress, kustoOwners);
+			if (scope === 'refresh-cached' || scope === 'everything' || scope === 'selected') {
+				await this._refreshSchemasForSearch(kind, scope, query, categories, contentToggles, requestId, signal, sendResults, sendProgress, kustoOwners, targets);
 			} else {
 				// Tier 1: search disk-cached schemas
 				await this._searchCachedSchemasForSearch(kind, query, categories, contentToggles, requestId, signal, sendResults, kustoOwners);
@@ -2392,8 +2410,8 @@ export class ConnectionManagerViewerV2 {
 		kustoOwners: ReadonlyMap<string, KustoSearchOwner> = new Map(),
 	): Promise<void> {
 		const wantsSchemaSearch = kind === 'kusto'
-			? (categories['tables'] || categories['functions'])
-			: (categories['tables'] || categories['views'] || categories['storedProcedures']);
+			? (categories['tables'] || contentToggles['tables'] || categories['functions'] || contentToggles['functions'])
+			: (categories['tables'] || contentToggles['tables'] || categories['views'] || categories['storedProcedures']);
 		if (!wantsSchemaSearch) return;
 
 		if (kind === 'kusto') {
@@ -2401,7 +2419,10 @@ export class ConnectionManagerViewerV2 {
 				const identity = schemaPrincipalIdentity(owner.connection.id, owner.accountPartition);
 				return identity ? [identity] : [];
 			}));
-			const matches = await searchCachedSchemas(this.context.globalStorageUri, query, 500, allowedIdentities);
+			const matches = await searchCachedSchemas(this.context.globalStorageUri, query, 500, allowedIdentities, {
+				tableNames: !!categories['tables'], tableColumns: !!contentToggles['tables'],
+				functionNames: !!categories['functions'], functionBody: !!contentToggles['functions'],
+			});
 			if (signal.aborted) return;
 			const results = this._mapKustoSchemaMatches(matches, categories, contentToggles)
 				.filter(result => kustoOwners.has(String(result.connectionId || '')));
@@ -2425,7 +2446,11 @@ export class ConnectionManagerViewerV2 {
 				});
 				allowedOwners.set(connection.id, { principalFingerprint, targetSignature: sqlSchemaTargetSignature(connection) });
 			}
-			const matches = await searchCachedSqlSchemas(this.context.globalStorageUri, query, 500, allowedOwners);
+			const matches = await searchCachedSqlSchemas(this.context.globalStorageUri, query, 500, allowedOwners, {
+				tableNames: !!categories['tables'], tableColumns: !!contentToggles['tables'],
+				viewNames: !!categories['views'], viewColumns: !!categories['views'] && !!contentToggles['views'],
+				storedProcedureNames: !!categories['storedProcedures'], storedProcedureBody: !!categories['storedProcedures'] && !!contentToggles['storedProcedures'],
+			});
 			if (signal.aborted || this._activeSearchRequestId !== requestId) return;
 			for (const connectionId of new Set(matches.map(match => match.connectionId))) {
 				const owner = ownerContext.get(connectionId);
@@ -2473,14 +2498,16 @@ export class ConnectionManagerViewerV2 {
 		sendResults: (results: any[], completed: boolean) => Promise<void>,
 		sendProgress: (message: string, current?: number, total?: number) => void,
 		kustoOwners: ReadonlyMap<string, KustoSearchOwner> = new Map(),
+		targets?: readonly ConnectionSearchTarget[],
 	): Promise<void> {
 		let re: RegExp;
 		try { re = new RegExp(query, 'i'); } catch { return; }
 
 		if (kind === 'kusto') {
-			const connections = [...kustoOwners.values()].map(owner => owner.connection);
+			const connections = [...kustoOwners.values()].map(owner => owner.connection)
+				.filter(connection => scope !== 'selected' || targets?.some(target => target.connectionId === connection.id));
 
-			if (scope === 'everything') {
+			if (scope === 'everything' || scope === 'selected') {
 				const searchTraceId = createDatabaseListTraceId();
 				const requestRef = databaseListTraceRef(requestId);
 				this.traceDatabaseList(searchTraceId, 'search-everything.start', {
@@ -2496,6 +2523,12 @@ export class ConnectionManagerViewerV2 {
 					if (signal.aborted) {
 						this.traceDatabaseList(searchTraceId, 'search-everything.cancelled', { requestId, completedConnections: step });
 						return;
+					}
+					if (targets && !connectionSearchIncludes(targets, conn.id)) {
+						for (const target of targets) {
+							if (target.connectionId === conn.id && target.database !== undefined) dbPairs.push({ conn, db: target.database });
+						}
+						continue;
 					}
 					step++;
 					sendProgress(`Connecting to ${conn.name || conn.clusterUrl}…`, step, totalConns);
@@ -2538,6 +2571,13 @@ export class ConnectionManagerViewerV2 {
 					connectionCount: totalConns,
 					databaseCount: dbPairs.length,
 				});
+
+				if (categories['databases']) {
+					await sendResults(dbPairs.filter(({ db }) => re.test(db)).map(({ conn, db }) => ({
+						category: 'database', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, database: db, name: db,
+					})), false);
+				}
+				if (!categories['tables'] && !contentToggles['tables'] && !categories['functions'] && !contentToggles['functions']) return;
 
 				// Now refresh all schemas
 				const totalSchemas = dbPairs.length;
@@ -2613,9 +2653,10 @@ export class ConnectionManagerViewerV2 {
 			const protectedIds = new Set(this.sqlDeps.getSqlLeaveNoTraceConnectionIds?.() ?? []);
 			const mgr = this.sqlDeps.getSqlConnectionManager();
 			const client = this.sqlDeps.getSqlClient();
-			const sqlConns = mgr.getConnections().filter(connection => !protectedIds.has(connection.id));
+			const sqlConns = mgr.getConnections().filter(connection => !protectedIds.has(connection.id)
+				&& (scope !== 'selected' || targets?.some(target => target.connectionId === connection.id)));
 
-			if (scope === 'everything') {
+			if (scope === 'everything' || scope === 'selected') {
 				let step = 0;
 				const totalConns = sqlConns.length;
 				const dbPairs: Array<{
@@ -2626,6 +2667,15 @@ export class ConnectionManagerViewerV2 {
 
 				for (const conn of sqlConns) {
 					if (signal.aborted) return;
+					if (targets && !connectionSearchIncludes(targets, conn.id)) {
+						const owner = this.getSqlSearchOwner(conn);
+						if (!owner) continue;
+						await this.assertCurrentSqlSearchOwner(requestId, conn, owner.principalFingerprint, signal);
+						for (const target of targets) {
+							if (target.connectionId === conn.id && target.database !== undefined) dbPairs.push({ conn, db: target.database, owner });
+						}
+						continue;
+					}
 					step++;
 					sendProgress(`Connecting to ${conn.name || conn.serverUrl}…`, step, totalConns);
 					try {
@@ -2646,6 +2696,13 @@ export class ConnectionManagerViewerV2 {
 						for (const db of dbs) dbPairs.push({ conn, db, owner });
 					} catch { /* skip */ }
 				}
+
+				if (categories['databases']) {
+					await sendResults(dbPairs.filter(({ db }) => re.test(db)).map(({ conn, db, owner }) => ({
+						category: 'database', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database: db, name: db, _sqlOwner: owner,
+					})), false);
+				}
+				if (!categories['tables'] && !contentToggles['tables'] && !categories['views'] && !categories['storedProcedures']) return;
 
 				const totalSchemas = dbPairs.length;
 				for (let i = 0; i < dbPairs.length; i++) {
@@ -2705,33 +2762,30 @@ export class ConnectionManagerViewerV2 {
 		contentToggles: Record<string, boolean>,
 	): any[] {
 		const results: any[] = [];
-		const columnMatchContext = (name: string, type?: string, docString?: string): string => {
-			const typeText = type ? `${name}: ${type}` : '';
-			return docString ? (typeText ? `${typeText} - ${docString}` : docString) : typeText;
-		};
 		if (categories['tables']) {
 			for (const table of schema.tables ?? []) {
 				if (re.test(table)) results.push({ category: 'table', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, database, name: table });
 			}
-			if (contentToggles['tables']) {
-				for (const [table, cols] of Object.entries(schema.columnTypesByTable ?? {})) {
-					for (const [col, colType] of Object.entries(cols)) {
-						const docString = schema.columnDocStrings?.[`${table}.${col}`];
-						if (re.test(col) || re.test(colType) || (!!docString && re.test(docString))) {
-							results.push({ category: 'column', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, database, name: col, parentName: table, matchContext: columnMatchContext(col, colType, docString) });
-						}
+		}
+		if (contentToggles['tables']) {
+			for (const [table, cols] of Object.entries(schema.columnTypesByTable ?? {})) {
+				for (const [col, colType] of Object.entries(cols)) {
+					const docString = schema.columnDocStrings?.[`${table}.${col}`];
+					if (re.test(col) || re.test(colType) || (!!docString && re.test(docString))) {
+						results.push({ category: 'column', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, database, name: col, parentName: table, parentKind: 'table', columnType: colType || undefined, matchContext: docString });
 					}
 				}
 			}
 		}
-		if (categories['functions']) {
-			for (const fn of (schema.functions ?? []) as Array<{ name?: string; body?: string; parametersText?: string; docString?: string }>) {
+		if (categories['functions'] || contentToggles['functions']) {
+			for (const fn of (schema.functions ?? []) as Array<{ name?: string; body?: string; parametersText?: string; docString?: string; parameters?: Array<{ name?: string; type?: string }> }>) {
 				const fnName = typeof fn === 'string' ? fn : fn?.name;
 				if (!fnName) continue;
-				if (re.test(fnName)) {
+				if (categories['functions'] && re.test(fnName)) {
 					results.push({ category: 'function', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, database, name: fnName });
 				} else if (contentToggles['functions'] && typeof fn === 'object') {
-					if ((fn.body && re.test(fn.body)) || (fn.parametersText && re.test(fn.parametersText)) || (fn.docString && re.test(fn.docString))) {
+					if ((fn.body && re.test(fn.body)) || (fn.parametersText && re.test(fn.parametersText)) || (fn.docString && re.test(fn.docString))
+						|| fn.parameters?.some(parameter => (parameter.name && re.test(parameter.name)) || (parameter.type && re.test(parameter.type)))) {
 						results.push({ category: 'function', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, database, name: fnName, matchContext: fn.docString || fn.parametersText || '(body match)' });
 					}
 				}
@@ -2755,14 +2809,14 @@ export class ConnectionManagerViewerV2 {
 			for (const table of schema.tables ?? []) {
 				if (re.test(table)) results.push({ category: 'table', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database, name: table });
 			}
-			if (contentToggles['tables']) {
-				const viewSet = new Set(schema.views ?? []);
-				for (const [table, cols] of Object.entries(schema.columnsByTable ?? {})) {
-					if (viewSet.has(table)) continue;
-					for (const [col, colType] of Object.entries(cols)) {
-						if (re.test(col) || re.test(colType)) {
-							results.push({ category: 'column', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database, name: col, parentName: table, matchContext: `${col}: ${colType}` });
-						}
+		}
+		if (contentToggles['tables']) {
+			const viewSet = new Set(schema.views ?? []);
+			for (const [table, cols] of Object.entries(schema.columnsByTable ?? {})) {
+				if (viewSet.has(table)) continue;
+				for (const [col, colType] of Object.entries(cols)) {
+					if (re.test(col) || re.test(colType)) {
+						results.push({ category: 'column', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database, name: col, parentName: table, parentKind: 'table', columnType: colType || undefined });
 					}
 				}
 			}
@@ -2776,7 +2830,7 @@ export class ConnectionManagerViewerV2 {
 					if (!(schema.views ?? []).includes(view)) continue;
 					for (const [col, colType] of Object.entries(cols)) {
 						if (re.test(col) || re.test(colType)) {
-							results.push({ category: 'column', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database, name: col, parentName: view, matchContext: `${col}: ${colType}` });
+							results.push({ category: 'column', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database, name: col, parentName: view, parentKind: 'view', columnType: colType || undefined });
 						}
 					}
 				}
@@ -2809,13 +2863,11 @@ export class ConnectionManagerViewerV2 {
 				if (!categories['tables']) continue;
 				results.push({ category: 'table', kind: 'kusto', connectionId: connId, connectionName: connName, database: m.database, name: m.name, matchContext: m.docString });
 			} else if (m.kind === 'column' || m.kind === 'columnType' || m.kind === 'columnDocString') {
-				if (!categories['tables'] || !contentToggles['tables']) continue;
-				const typeText = m.type ? `${m.name}: ${m.type}` : '';
-				const matchContext = m.docString ? (typeText ? `${typeText} - ${m.docString}` : m.docString) : typeText;
-				results.push({ category: 'column', kind: 'kusto', connectionId: connId, connectionName: connName, database: m.database, name: m.name, parentName: m.table, matchContext });
+				if (!contentToggles['tables']) continue;
+				results.push({ category: 'column', kind: 'kusto', connectionId: connId, connectionName: connName, database: m.database, name: m.name, parentName: m.table, parentKind: 'table', columnType: m.type || undefined, matchContext: m.docString });
 			} else if (m.kind === 'function' || m.kind === 'functionDocString' || m.kind === 'functionFolder' || m.kind === 'functionParameter' || m.kind === 'functionBody') {
-				if (!categories['functions']) continue;
-				if ((m.kind === 'functionBody' || m.kind === 'functionParameter' || m.kind === 'functionDocString') && !contentToggles['functions']) continue;
+				const isContent = m.kind === 'functionBody' || m.kind === 'functionParameter' || m.kind === 'functionDocString';
+				if (isContent ? !contentToggles['functions'] : !categories['functions']) continue;
 				results.push({ category: 'function', kind: 'kusto', connectionId: connId, connectionName: connName, database: m.database, name: m.name, matchContext: m.docString || m.parametersText });
 			}
 		}
@@ -2838,10 +2890,10 @@ export class ConnectionManagerViewerV2 {
 				if (!categories['views']) continue;
 				results.push({ category: 'view', kind: 'sql', connectionId: connId, connectionName: connName, database: m.database, name: m.name });
 			} else if (m.kind === 'column') {
-				const isTableContent = categories['tables'] && contentToggles['tables'];
-				const isViewContent = categories['views'] && contentToggles['views'];
+				const isTableContent = m.parentKind !== 'view' && contentToggles['tables'];
+				const isViewContent = m.parentKind !== 'table' && categories['views'] && contentToggles['views'];
 				if (!isTableContent && !isViewContent) continue;
-				results.push({ category: 'column', kind: 'sql', connectionId: connId, connectionName: connName, database: m.database, name: m.name, parentName: m.table, matchContext: m.type ? `${m.name}: ${m.type}` : undefined });
+				results.push({ category: 'column', kind: 'sql', connectionId: connId, connectionName: connName, database: m.database, name: m.name, parentName: m.table, parentKind: m.parentKind, columnType: m.type || undefined });
 			} else if (m.kind === 'storedProcedure' || m.kind === 'spBody' || m.kind === 'spParameter') {
 				if (!categories['storedProcedures']) continue;
 				if ((m.kind === 'spBody' || m.kind === 'spParameter') && !contentToggles['storedProcedures']) continue;

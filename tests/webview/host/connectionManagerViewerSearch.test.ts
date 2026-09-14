@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { ConnectionManagerViewerV2 } from '../../../src/host/connectionManagerViewer';
-import { sqlSchemaPrincipalFingerprint, sqlSchemaTargetSignature, SQL_SCHEMA_CACHE_VERSION } from '../../../src/host/sqlEditorSchema';
+import { getSqlSchemaCacheDirUri, searchCachedSqlSchemas, sqlSchemaPrincipalFingerprint, sqlSchemaTargetSignature, SQL_SCHEMA_CACHE_VERSION } from '../../../src/host/sqlEditorSchema';
 import { captureSqlSchemaCacheGeneration } from '../../../src/host/sqlSchemaCacheGeneration';
+import * as schemaCache from '../../../src/host/schemaCache';
 
 function createViewerHarness(): ConnectionManagerViewerV2 & Record<string, any> {
 	const viewer = Object.create(ConnectionManagerViewerV2.prototype) as ConnectionManagerViewerV2 & Record<string, any>;
@@ -124,6 +125,49 @@ function createSqlConnectionTestHarness(options: { accountId?: string; authType?
 	};
 }
 
+function createKustoSearchTestHarness() {
+	const viewer = createViewerHarness();
+	const connections = ['a', 'b', 'c'].map(suffix => ({
+		id: `cluster-${suffix}`, name: `Cluster ${suffix.toUpperCase()}`,
+		clusterUrl: `https://cluster-${suffix}.kusto.windows.net`,
+	}));
+	const databases: Record<string, string[]> = {
+		'cluster-a': ['A1', 'A2'], 'cluster-b': ['B1', 'B2'], 'cluster-c': ['C1'],
+	};
+	const cachedDatabases: Record<string, string[]> = { 'cluster-a': ['A1'], 'cluster-b': ['B2'] };
+	const getDatabases = vi.fn(async (connection: { id: string }) => databases[connection.id]);
+	const getDatabaseSchema = vi.fn(async (connection: { id: string }, database: string) => ({
+		schema: { tables: [`${database}Events`, 'UnrelatedTable'] },
+		accountPartition: `partition-${connection.id}`,
+	}));
+	const postMessage = vi.fn(async (_message: any) => true);
+	viewer.panel = { webview: { postMessage } };
+	viewer.context = {
+		globalStorageUri: vscode.Uri.file('/selected-kusto-search'),
+		globalState: { get: vi.fn(), update: vi.fn(async () => undefined) },
+	};
+	viewer.connectionManager = {
+		getConnections: vi.fn(() => connections),
+		getConnectionIncarnation: vi.fn(() => 1),
+		runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => await run({
+			clusterKeys: [], globallyBlocked: false, version: 1,
+			revocationGenerations: { 'cluster-a': 0, 'cluster-b': 0, 'cluster-c': 0 },
+		})),
+	};
+	viewer.connectionCache = { captureGeneration: vi.fn(() => ({ global: 0, connection: 0, partition: 0 })) };
+	viewer.authPreferences = {
+		getConnectionSessionGeneration: vi.fn(() => 0),
+		waitForProviderAccountRefresh: vi.fn(async () => undefined),
+	};
+	viewer.kustoClient = {
+		getAccountPartition: vi.fn((connection: { id: string }) => `partition-${connection.id}`),
+		getConnectionSessionGeneration: vi.fn(() => 0),
+		getDatabases, getDatabaseSchema, isAuthenticationError: vi.fn(() => false),
+	};
+	viewer.getCachedDatabases = vi.fn(() => cachedDatabases);
+	return { viewer, connections, databases, cachedDatabases, getDatabases, getDatabaseSchema, postMessage };
+}
+
 function sqlTestMessage(connection: any, password?: string) {
 	return {
 		type: 'sql.connection.test' as const,
@@ -146,6 +190,796 @@ async function flushAsyncDispatch(): Promise<void> {
 }
 
 describe('ConnectionManagerViewerV2 schema search mapping', () => {
+	it.each([
+		{ source: 'cached Kusto', kind: 'kusto', cached: true },
+		{ source: 'fresh Kusto', kind: 'kusto', cached: false },
+		{ source: 'cached SQL', kind: 'sql', cached: true },
+		{ source: 'fresh SQL', kind: 'sql', cached: false },
+	] as const)('preserves exact column metadata and navigation identity from $source', ({ kind, cached }) => {
+		const viewer = createViewerHarness();
+		const connection = {
+			id: 'column-source', name: 'Column Source', clusterUrl: 'https://source.kusto.windows.net',
+			serverUrl: 'source.example', dialect: 'mssql', authType: 'sql-login', username: 'user',
+		};
+		viewer.connectionManager = { getConnections: () => [connection] };
+		viewer.sqlDeps = { getSqlConnectionManager: () => ({ getConnections: () => [connection] }) };
+		const owner = { targetSignature: 'exact-target', principalFingerprint: 'exact-principal', revocationGeneration: 4 };
+		const columns = [
+			{ name: 'HitColumn', type: 'long', docString: 'Raw count', matchKind: 'column' },
+			{ name: 'TypedColumn', type: 'System.Int64', docString: 'Wire type kept verbatim', matchKind: 'columnType' },
+			{ name: 'DocumentedColumn', type: 'nvarchar(128)', docString: 'Hit column documentation', matchKind: 'columnDocString' },
+			{ name: 'MissingTypeHit', type: undefined, docString: 'MissingTypeHit: long - legacy-looking documentation', matchKind: 'columnDocString' },
+			{ name: 'BareHit', type: undefined, docString: undefined, matchKind: 'column' },
+			{ name: 'EmptyTypeHit', type: '', docString: undefined, matchKind: 'column' },
+		] as const;
+		const parents = kind === 'kusto'
+			? [{ name: 'Events', kind: 'table' } as const]
+			: [{ name: 'dbo.Events', kind: 'table' }, { name: 'report.Events', kind: 'view' }] as const;
+		const columnTypes = Object.fromEntries(columns.map(column => [column.name, column.type]));
+		const categories = { tables: true, views: true };
+		const contentToggles = { tables: true, views: true };
+		const database = 'Exact Database';
+		const results = kind === 'kusto'
+			? cached
+				? viewer._mapKustoSchemaMatches(columns.map(column => ({
+					connectionId: connection.id, clusterUrl: connection.clusterUrl, database,
+					kind: column.matchKind, name: column.name, table: 'Events', type: column.type, docString: column.docString,
+				})), categories, contentToggles)
+				: viewer._searchSingleKustoSchema({
+					tables: ['Events'], columnTypesByTable: { Events: columnTypes },
+					columnDocStrings: Object.fromEntries(columns.map(column => [`Events.${column.name}`, column.docString])),
+				}, connection.clusterUrl, database, connection, /Hit|System\.Int64/i, categories, contentToggles)
+			: cached
+				? viewer._mapSqlSchemaMatches(parents.flatMap(parent => columns.map(column => ({
+					connectionId: connection.id, serverUrl: connection.serverUrl, database,
+					kind: 'column', name: column.name, table: parent.name, parentKind: parent.kind, type: column.type,
+				}))), categories, contentToggles)
+				: viewer._searchSingleSqlSchema({
+					tables: ['dbo.Events'], views: ['report.Events'],
+					columnsByTable: Object.fromEntries(parents.map(parent => [parent.name, columnTypes])),
+				}, connection, database, owner, /Hit|System\.Int64|nvarchar/i, categories, contentToggles);
+
+		expect(results).toEqual(parents.flatMap(parent => columns.map(column => ({
+			category: 'column', kind, connectionId: connection.id, connectionName: connection.name, database,
+			name: column.name, parentName: parent.name, parentKind: parent.kind,
+			columnType: column.type || undefined,
+			matchContext: kind === 'kusto' ? column.docString : undefined,
+			...(kind === 'sql' && !cached ? { _sqlOwner: owner } : {}),
+		}))));
+		if (kind === 'sql' && !cached) {
+			for (const result of results) expect(result._sqlOwner).toBe(owner);
+		}
+	});
+
+	it.each([
+		{ names: false, content: false },
+		{ names: true, content: false },
+		{ names: false, content: true },
+		{ names: true, content: true },
+	])('searches Kusto names=$names and content=$content independently in cached and fresh schemas', ({ names, content }) => {
+		const viewer = createViewerHarness();
+		const connection = { id: 'independent', name: 'Cluster', clusterUrl: 'https://independent.kusto.windows.net' };
+		viewer.connectionManager = { getConnections: () => [connection] };
+		const categories = { tables: names, functions: names };
+		const contentToggles = { tables: content, functions: content };
+		const schema = {
+			tables: ['HitTable'],
+			columnTypesByTable: { HitTable: { HitColumn: 'string' } },
+			functions: [{ name: 'HitFunction', body: 'print other=1' }, { name: 'BodyOnly', body: 'print Hit=1' }],
+		};
+		const matches = [
+			{ kind: 'table', name: 'HitTable' },
+			{ kind: 'column', name: 'HitColumn', table: 'HitTable', type: 'string' },
+			{ kind: 'function', name: 'HitFunction' },
+			{ kind: 'functionBody', name: 'BodyOnly' },
+		].map(match => ({ ...match, connectionId: connection.id, clusterUrl: connection.clusterUrl, database: 'db' }));
+		const expected = [
+			...(names ? [['table', 'HitTable'], ['function', 'HitFunction']] : []),
+			...(content ? [['column', 'HitColumn'], ['function', 'BodyOnly']] : []),
+		].sort();
+		const fresh = viewer._searchSingleKustoSchema(schema, connection.clusterUrl, 'db', connection, /Hit/i, categories, contentToggles);
+		const cached = viewer._mapKustoSchemaMatches(matches, categories, contentToggles);
+		for (const results of [fresh, cached]) {
+			expect(results.map((result: { category: string; name: string }) => [result.category, result.name]).sort()).toEqual(expected);
+		}
+	});
+
+	it.each([
+		{ pattern: 'Hit', matchKind: 'functionBody', names: ['HitFunction', 'BodyOnly'] },
+		{ pattern: '^dynamic$', matchKind: 'functionParameter', names: ['WithParameter'] },
+		{ pattern: '^payload$', matchKind: 'functionParameter', names: ['WithParameter'] },
+	])('finds body-only cached matches for $pattern without name precedence or limit starvation', async ({ pattern, matchKind, names }) => {
+		const entry = {
+			version: schemaCache.SCHEMA_CACHE_VERSION, timestamp: Date.now(), connectionId: 'independent',
+			accountPartition: 'partition-a', clusterUrl: 'https://independent.kusto.windows.net', database: 'db',
+			schema: {
+				tables: ['HitTable1', 'HitTable2'],
+				functions: [
+					{ name: 'HitFunction', body: 'print Hit=1' }, { name: 'BodyOnly', body: 'print Hit=2' },
+					{ name: 'WithParameter', body: 'print result=1', parametersText: '(payload: dynamic)', parameters: [{ name: 'payload', type: 'dynamic' }] },
+				],
+			},
+		};
+		const originalReadDirectory = vscode.workspace.fs.readDirectory;
+		vscode.workspace.fs.readDirectory = vi.fn().mockResolvedValue([['entry.json', 1]]);
+		const readFile = vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(Buffer.from(JSON.stringify(entry)));
+		try {
+			const matches = await schemaCache.searchCachedSchemas(vscode.Uri.file('/independent-cache-search'), pattern, 2,
+				new Set([schemaCache.schemaPrincipalIdentity('independent', 'partition-a')!]),
+				{ tableNames: false, tableColumns: false, functionNames: false, functionBody: true });
+			expect(matches.map(match => [match.kind, match.name])).toEqual(names.map(name => [matchKind, name]));
+			const viewer = createViewerHarness();
+			const connection = { id: entry.connectionId, name: 'Cluster', clusterUrl: entry.clusterUrl };
+			const fresh = viewer._searchSingleKustoSchema(entry.schema, entry.clusterUrl, entry.database, connection,
+				new RegExp(pattern, 'i'), { tables: false, functions: false }, { tables: false, functions: true });
+			expect(fresh.map((result: { name: string }) => result.name)).toEqual(names);
+		} finally {
+			if (originalReadDirectory) vscode.workspace.fs.readDirectory = originalReadDirectory;
+			else Reflect.deleteProperty(vscode.workspace.fs, 'readDirectory');
+			readFile.mockRestore();
+		}
+	});
+
+	it.each([
+		{ names: false, columns: false, views: false },
+		{ names: true, columns: false, views: false },
+		{ names: false, columns: true, views: false },
+		{ names: true, columns: true, views: false },
+		{ names: false, columns: false, views: true },
+	])('keeps SQL names=$names, columns=$columns, combined views=$views exact in cached and fresh searches', async ({ names, columns, views }) => {
+		const harness = createSqlConnectionTestHarness({ authType: 'sql-login' });
+		let persistedState: unknown;
+		harness.viewer.getActiveKind = vi.fn(() => 'sql');
+		harness.globalState.get.mockImplementation((key: string) => key === 'connectionManager.sqlSearchState' ? persistedState : undefined);
+		harness.globalState.update.mockImplementation(async (_key: string, value: unknown) => {
+			persistedState = JSON.parse(JSON.stringify(value));
+		});
+		const storageUri = {
+			fsPath: '', path: '/sql-independent-search', toString: () => 'file:///sql-independent-search',
+		} as vscode.Uri;
+		harness.viewer.context.globalStorageUri = storageUri;
+		harness.viewer.getSqlCachedDatabases = vi.fn(async () => ({ 'sql-1': ['DbA'] }));
+		const connection = harness.getConnection();
+		const owner = {
+			principalFingerprint: sqlSchemaPrincipalFingerprint(harness.viewer.context, connection)!,
+			targetSignature: sqlSchemaTargetSignature(connection),
+		};
+		const schema = {
+			tables: ['HitTable'], views: ['Reports'],
+			columnsByTable: { HitTable: { HitColumn: 'int', OtherColumn: 'HitType' }, Reports: { HitViewColumn: 'nvarchar' } },
+			storedProcedures: [{ name: 'HitProcedure', parametersText: '@Hit int', body: 'SELECT Hit = 1' }],
+		};
+		harness.getDatabaseSchema.mockResolvedValue(schema);
+		const entry = {
+			version: SQL_SCHEMA_CACHE_VERSION, timestamp: Date.now(), schema, ...owner,
+			connectionId: connection.id, serverUrl: connection.serverUrl, database: 'DbA',
+			cacheGeneration: await captureSqlSchemaCacheGeneration(storageUri),
+		};
+		const cacheDirectory = getSqlSchemaCacheDirUri(storageUri);
+		const originalReadDirectory = vscode.workspace.fs.readDirectory;
+		vscode.workspace.fs.readDirectory = vi.fn().mockResolvedValue([['entry.json', 1]]);
+		const readFile = vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(Buffer.from(JSON.stringify(entry)));
+		const categories = { tables: names, views, storedProcedures: false };
+		const contentToggles = { tables: columns, views: true, storedProcedures: true };
+		const base = { kind: 'sql', connectionId: connection.id, connectionName: connection.name, database: 'DbA' };
+		const expected = [
+			...(names ? [{ ...base, category: 'table', name: 'HitTable' }] : []),
+			...(columns ? [
+				{ ...base, category: 'column', name: 'HitColumn', parentName: 'HitTable', parentKind: 'table', columnType: 'int' },
+				{ ...base, category: 'column', name: 'OtherColumn', parentName: 'HitTable', parentKind: 'table', columnType: 'HitType' },
+			] : []),
+			...(views ? [{ ...base, category: 'column', name: 'HitViewColumn', parentName: 'Reports', parentKind: 'view', columnType: 'nvarchar' }] : []),
+		];
+		const signal = new AbortController().signal;
+
+		try {
+			for (const scope of ['cached', 'selected']) {
+				const requestId = `sql-independent-${scope}`;
+				harness.viewer._activeSearchRequestId = requestId;
+				await harness.viewer._executeSearch(
+					requestId, 'Hit', scope, 'sql', categories, contentToggles, signal,
+					scope === 'selected' ? [{ connectionId: connection.id, database: 'DbA' }] : undefined,
+				);
+				const publications = harness.postMessage.mock.calls.map(([message]) => message)
+					.filter(message => message.type === 'searchResults' && message.requestId === requestId);
+				expect(publications.flatMap(message => message.results)).toEqual(expected);
+				expect(publications.at(-1)).toEqual({ type: 'searchResults', requestId, results: [], completed: true });
+				expect(harness.viewer._activeSearchRequestId).toBeNull();
+				const state = {
+					query: 'Hit', scope, categories, contentToggles, lastSearchTimestamp: 123,
+					lastResults: publications.flatMap(message => message.results),
+					futureSearchOptions: { label: '  exact raw option  ', enabled: false, count: 0 },
+				};
+				await harness.viewer.onMessage({ type: 'search.saveState', kind: 'sql', state });
+				const expectedState = { ...state, kind: 'sql', lastResults: [], lastSearchTimestamp: 0 };
+				expect(harness.globalState.update).toHaveBeenLastCalledWith('connectionManager.sqlSearchState', expectedState);
+				expect(persistedState).toStrictEqual(expectedState);
+				expect(harness.viewer.getSearchState()).toStrictEqual(expectedState);
+			}
+			expect(harness.getDatabaseSchema.mock.calls).toEqual(names || columns || views ? [[connection, 'DbA', { signal }]] : []);
+			expect(harness.getDatabases).not.toHaveBeenCalled();
+			const allMatches = await searchCachedSqlSchemas(storageUri, 'Hit', 500, new Map([[connection.id, owner]]));
+			expect(allMatches.filter(match => match.kind === 'column').map(match => [match.parentKind, match.name])).toEqual([
+				['table', 'HitColumn'], ['table', 'OtherColumn'], ['view', 'HitViewColumn'],
+			]);
+			expect(harness.viewer._mapSqlSchemaMatches(allMatches, categories, contentToggles)).toEqual(expected);
+			expect(readFile.mock.calls).toEqual(Array.from({ length: names || columns || views ? 2 : 1 }, () => [
+				vscode.Uri.joinPath(cacheDirectory, 'entry.json'),
+			]));
+		} finally {
+			if (originalReadDirectory === undefined) Reflect.deleteProperty(vscode.workspace.fs, 'readDirectory');
+			else vscode.workspace.fs.readDirectory = originalReadDirectory;
+			readFile.mockRestore();
+		}
+	});
+
+	it('keeps every Kusto match type enabled for the four-argument scanner call', async () => {
+		const base = { connectionId: 'kusto-defaults', clusterUrl: 'https://defaults.kusto.windows.net', database: 'Db' };
+		const entry = {
+			...base, version: schemaCache.SCHEMA_CACHE_VERSION, timestamp: Date.now(), accountPartition: 'partition-a',
+			schema: {
+				tables: ['HitTable', 'DocumentedTable', 'FolderTable'],
+				tableDocStrings: { DocumentedTable: 'Hit table documentation' }, tableFolders: { FolderTable: 'Hit/Folder' },
+				columnTypesByTable: { HitTable: { HitColumn: 'string', TypedColumn: 'HitType', DocumentedColumn: 'string' } },
+				columnDocStrings: { 'HitTable.DocumentedColumn': 'Hit column documentation' },
+				functions: [
+					{ name: 'HitFunction', body: 'print Hit = 1' },
+					{ name: 'DocumentedFunction', docString: 'Hit function documentation' },
+					{ name: 'FolderFunction', folder: 'Hit/Functions' },
+					{ name: 'ParameterFunction', parametersText: 'HitParameter:string' },
+					{ name: 'BodyFunction', body: 'print Hit = 2' },
+				],
+			},
+		};
+		const originalReadDirectory = vscode.workspace.fs.readDirectory;
+		vscode.workspace.fs.readDirectory = vi.fn().mockResolvedValue([['entry.json', 1]]);
+		const readFile = vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(Buffer.from(JSON.stringify(entry)));
+		try {
+			await expect(schemaCache.searchCachedSchemas(vscode.Uri.file('/kusto-search-defaults'), 'Hit', 50,
+				new Set([schemaCache.schemaPrincipalIdentity(base.connectionId, entry.accountPartition)]))).resolves.toEqual([
+				{ ...base, kind: 'table', name: 'HitTable' },
+				{ ...base, kind: 'tableDocString', name: 'DocumentedTable', docString: 'Hit table documentation' },
+				{ ...base, kind: 'tableFolder', name: 'FolderTable' },
+				{ ...base, kind: 'column', name: 'HitColumn', table: 'HitTable', type: 'string' },
+				{ ...base, kind: 'columnType', name: 'TypedColumn', table: 'HitTable', type: 'HitType' },
+				{ ...base, kind: 'columnDocString', name: 'DocumentedColumn', table: 'HitTable', type: 'string', docString: 'Hit column documentation' },
+				{ ...base, kind: 'function', name: 'HitFunction' },
+				{ ...base, kind: 'functionDocString', name: 'DocumentedFunction', docString: 'Hit function documentation' },
+				{ ...base, kind: 'functionFolder', name: 'FolderFunction' },
+				{ ...base, kind: 'functionParameter', name: 'ParameterFunction', parametersText: 'HitParameter:string' },
+				{ ...base, kind: 'functionBody', name: 'BodyFunction' },
+			]);
+		} finally {
+			if (originalReadDirectory === undefined) Reflect.deleteProperty(vscode.workspace.fs, 'readDirectory');
+			else vscode.workspace.fs.readDirectory = originalReadDirectory;
+			readFile.mockRestore();
+		}
+	});
+
+	it.each([
+		{ scope: 'cached', columns: true, body: true },
+		{ scope: 'selected', columns: true, body: false },
+		{ scope: 'everything', columns: false, body: true },
+	])('executes content-only Kusto $scope search with columns=$columns and body=$body for the current owner', async ({ scope, columns, body }) => {
+		const harness = createKustoSearchTestHarness();
+		const storedStateBytes = new Map<string, string>();
+		harness.viewer.context.globalState.get.mockImplementation((key: string) => {
+			const bytes = storedStateBytes.get(key);
+			return bytes === undefined ? undefined : JSON.parse(bytes);
+		});
+		harness.viewer.context.globalState.update.mockImplementation(async (key: string, value: unknown) => {
+			storedStateBytes.set(key, JSON.stringify(value));
+		});
+		const connection = harness.connections[1];
+		const database = 'B1';
+		const accountPartition = `partition-${connection.id}`;
+		const storageUri = vscode.Uri.file(`/kusto-content-only-${scope}`);
+		harness.viewer.context.globalStorageUri = storageUri;
+		harness.viewer.authPreferences.getConnectionSessionGeneration.mockReturnValue(7);
+		harness.viewer.kustoClient.getConnectionSessionGeneration.mockReturnValue(7);
+		harness.viewer.connectionManager.getConnectionIncarnation.mockReturnValue(2);
+		if (scope === 'everything') {
+			harness.viewer.connectionManager.getConnections.mockReturnValue([connection]);
+			harness.getDatabases.mockResolvedValue([database]);
+		}
+		harness.cachedDatabases[connection.id] = [database];
+		const schema = {
+			tables: ['HitTable'], columnTypesByTable: { HitTable: { HitColumn: 'System.Int64', OtherColumn: 'int' } },
+			columnDocStrings: { 'HitTable.HitColumn': 'Exact Hit column documentation' },
+			functions: [
+				{ name: 'HitFunction', body: 'print Hit = 1', parametersText: 'value:string' },
+				{ name: 'BodyOnly', body: 'print Hit = 2', parametersText: 'value:long' },
+				{ name: 'HitNameOnly', body: 'print Other = 1' },
+			],
+		};
+		harness.getDatabaseSchema.mockResolvedValue({ schema, accountPartition });
+		const entry = {
+			version: schemaCache.SCHEMA_CACHE_VERSION, timestamp: Date.now(), schema,
+			connectionId: connection.id, clusterUrl: connection.clusterUrl, database, accountPartition,
+		};
+		const entries = [entry, { ...entry, accountPartition: 'old-account' }, { ...entry, connectionId: 'removed' }];
+		const cacheDirectory = schemaCache.getSchemaCacheDirUri(storageUri);
+		const cacheUris = entries.map((_entry, index) => vscode.Uri.joinPath(cacheDirectory, `entry-${index}.json`));
+		const files = new Map(cacheUris.map((uri, index) => [uri.toString(), Buffer.from(JSON.stringify(entries[index]))]));
+		const originalReadDirectory = vscode.workspace.fs.readDirectory;
+		const readDirectory = vi.fn().mockResolvedValue(entries.map((_entry, index) => [`entry-${index}.json`, 1]));
+		vscode.workspace.fs.readDirectory = readDirectory;
+		const readFile = vi.spyOn(vscode.workspace.fs, 'readFile').mockImplementation(async uri => {
+			const bytes = files.get(uri.toString());
+			if (!bytes) throw new Error(`Unexpected schema cache read: ${uri.toString()}`);
+			return bytes;
+		});
+		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile').mockImplementation(async (uri, bytes) => {
+			files.set(uri.toString(), Buffer.from(bytes));
+		});
+		const createDirectory = vi.spyOn(vscode.workspace.fs, 'createDirectory').mockResolvedValue(undefined);
+		const requestId = `kusto-content-only-${scope}`;
+		harness.viewer._activeSearchRequestId = requestId;
+
+		try {
+			await harness.viewer._executeSearch(
+				requestId, 'Hit', scope, 'kusto', { clusters: false, databases: false, tables: false, functions: false },
+				{ tables: columns, functions: body }, new AbortController().signal,
+				scope === 'selected' ? [{ connectionId: connection.id, database }] : undefined,
+			);
+			const base = { kind: 'kusto', connectionId: connection.id, connectionName: connection.name, database };
+			const publications = harness.postMessage.mock.calls.map(([message]) => message)
+				.filter(message => message.type === 'searchResults');
+			const rows = publications.flatMap(message => message.results);
+			expect(rows.map(({ kustoSearchOwner: _owner, ...row }) => row)).toEqual([
+				...(columns ? [{
+					...base, category: 'column', name: 'HitColumn', parentName: 'HitTable', parentKind: 'table',
+					columnType: 'System.Int64', matchContext: 'Exact Hit column documentation',
+				}] : []),
+				...(body ? [
+					{ ...base, category: 'function', name: 'HitFunction', matchContext: 'value:string' },
+					{ ...base, category: 'function', name: 'BodyOnly', matchContext: 'value:long' },
+				] : []),
+			]);
+			for (const row of rows) {
+				expect(row.kustoSearchOwner).toEqual(expect.objectContaining({
+					accountPartition, connectionIncarnation: 2, authSessionGeneration: 7, leaveNoTraceRevision: 0,
+					databaseCacheGeneration: { global: 0, connection: 0, partition: 0 },
+					schemaCacheGeneration: { global: 0, connection: 0, partition: 0 },
+				}));
+			}
+			expect(publications.at(-1)).toEqual({
+				type: 'searchResults', requestId, results: [], completed: true, kustoSearchOwnerToken: expect.any(String),
+			});
+			const ownerToken = publications.at(-1)!.kustoSearchOwnerToken;
+			const persistedRows = rows.map(row => ({
+				...row, futureMetadata: { label: '  exact raw metadata  ', values: [0, false, null] },
+			}));
+			const state = {
+				query: 'Hit', scope, lastSearchTimestamp: 123,
+				lastResults: persistedRows.map(row => ({ ...row, kustoSearchOwnerToken: ownerToken })),
+				futureSearchOptions: { label: '  exact raw option  ', enabled: false, count: 0 },
+			};
+			await harness.viewer.onMessage({ type: 'search.saveState', kind: 'kusto', state });
+			const expectedState = {
+				...state, kind: 'kusto', lastResults: persistedRows, kustoSearchOwnerToken: undefined,
+				kustoPrincipalFingerprint: harness.viewer.getKustoSearchPrincipalFingerprint(), kustoPolicyVersion: 1,
+			};
+			expect(harness.viewer.context.globalState.update).toHaveBeenLastCalledWith('connectionManager.searchState', expectedState);
+			const restoredState = JSON.parse(storedStateBytes.get('connectionManager.searchState')!);
+			expect(restoredState).toStrictEqual(JSON.parse(JSON.stringify(expectedState)));
+			const reopened = createViewerHarness();
+			Object.assign(reopened, {
+				context: harness.viewer.context, connectionManager: harness.viewer.connectionManager,
+				connectionCache: harness.viewer.connectionCache, authPreferences: harness.viewer.authPreferences,
+				kustoClient: harness.viewer.kustoClient,
+			});
+			expect(reopened.kustoSearchOwnersByToken.size).toBe(0);
+			expect(reopened.getSearchState()).toStrictEqual(restoredState);
+			await reopened.onMessage({ type: 'search.saveState', kind: 'kusto', state: reopened.getSearchState() });
+			expect(JSON.parse(storedStateBytes.get('connectionManager.searchState')!)).toStrictEqual(restoredState);
+			expect(harness.getDatabases.mock.calls).toEqual(scope === 'everything' ? [[
+				connection, true, { traceId: expect.any(String), source: 'connection-manager-search-everything', persistCache: false },
+			]] : []);
+			expect(harness.getDatabaseSchema.mock.calls).toEqual(scope === 'cached' ? [] : [[
+				connection, database, true, { persistCache: false, source: 'connection-manager-search-everything' },
+			]]);
+			expect(readDirectory.mock.calls).toEqual(scope === 'cached' ? [[cacheDirectory]] : []);
+			expect(readFile.mock.calls).toEqual(scope === 'cached' ? cacheUris.map(uri => [uri]) : []);
+			expect(createDirectory.mock.calls).toEqual(scope === 'cached' ? [] : [[cacheDirectory]]);
+			const cacheKey = schemaCache.schemaCacheKey(connection.clusterUrl, database, connection.id, accountPartition);
+			expect(writeFile.mock.calls.map(([uri, bytes]) => [uri, JSON.parse(Buffer.from(bytes).toString('utf8'))])).toEqual(
+				scope === 'cached' ? [] : [[schemaCache.getSchemaCacheFileUri(storageUri, cacheKey), { ...entry, timestamp: expect.any(Number) }]],
+			);
+			if (scope !== 'cached') {
+				await expect(schemaCache.readCachedSchemaFromDisk(storageUri, cacheKey)).resolves.toEqual({ ...entry, timestamp: expect.any(Number) });
+			}
+			expect(harness.viewer.authPreferences.waitForProviderAccountRefresh).toHaveBeenCalled();
+			expect(harness.viewer._activeSearchRequestId).toBeNull();
+		} finally {
+			if (originalReadDirectory === undefined) Reflect.deleteProperty(vscode.workspace.fs, 'readDirectory');
+			else vscode.workspace.fs.readDirectory = originalReadDirectory;
+			readFile.mockRestore();
+			writeFile.mockRestore();
+			createDirectory.mockRestore();
+		}
+	});
+
+	it('searches only explicitly selected SQL databases without server discovery', async () => {
+		const harness = createSqlConnectionTestHarness({ accountId: 'account-a' });
+		harness.viewer.context.globalStorageUri = vscode.Uri.file('/selected-sql-search');
+		harness.getDatabases.mockResolvedValue(['DbA', 'DbB']);
+		harness.getDatabaseSchema.mockResolvedValue({ tables: ['Orders'], columnsByTable: {} });
+		harness.viewer.getSqlCachedDatabases = vi.fn(async () => ({ 'sql-1': ['DbA', 'DbB'] }));
+
+		await harness.viewer.onMessage({
+			type: 'search', requestId: 'selected-database', query: 'Orders|SQL|Db', scope: 'selected', kind: 'sql',
+			targets: [{ connectionId: 'sql-1', database: 'DbA' }, { connectionId: 'removed', database: 'DbB' }],
+			categories: { servers: true, databases: true, tables: true }, contentToggles: {},
+		});
+		await vi.waitFor(() => expect(harness.viewer._activeSearchRequestId).toBeNull());
+
+		expect(harness.getDatabases).not.toHaveBeenCalled();
+		expect(harness.getDatabaseSchema).toHaveBeenCalledExactlyOnceWith(harness.getConnection(), 'DbA', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+		const results = harness.postMessage.mock.calls.map(([message]) => message)
+			.filter(message => message.type === 'searchResults').flatMap(message => message.results);
+		expect(results.map(result => [result.category, result.connectionId, result.database, result.name])).toEqual([
+			['database', 'sql-1', 'DbA', 'DbA'], ['table', 'sql-1', 'DbA', 'Orders'],
+		]);
+	});
+
+	it.each([
+		{
+			selection: 'a whole server', targets: [{ connectionId: 'sql-1' }],
+			pairs: [['sql-1', 'A1'], ['sql-1', 'A2']],
+		},
+		{
+			selection: 'server A plus database B1, excluding B2 and C',
+			targets: [{ connectionId: 'sql-1' }, { connectionId: 'sql-2', database: 'B1' }],
+			pairs: [['sql-1', 'A1'], ['sql-1', 'A2'], ['sql-2', 'B1']],
+		},
+	])('searches selected SQL $selection with exact discovery and schema targets', async ({ targets, pairs }) => {
+		const harness = createSqlConnectionTestHarness({ authType: 'sql-login' });
+		const connections = ['A', 'B', 'C'].map((suffix, index) => ({
+			...harness.getConnection(), id: `sql-${index + 1}`, name: `SQL ${suffix}`, serverUrl: `${suffix.toLowerCase()}.example`,
+		}));
+		const databases: Record<string, string[]> = { 'sql-1': ['A1', 'A2'], 'sql-2': ['B1', 'B2'], 'sql-3': ['C1'] };
+		const manager = {
+			...harness.manager,
+			getConnection: vi.fn((connectionId: string) => connections.find(connection => connection.id === connectionId)),
+			getConnections: vi.fn(() => connections),
+		};
+		harness.viewer.context.globalStorageUri = {
+			fsPath: '', path: '/selected-sql-servers', toString: () => 'file:///selected-sql-servers',
+		} as vscode.Uri;
+		harness.viewer.sqlDeps.getSqlConnectionManager = () => manager;
+		harness.viewer.sqlDeps.dispatchSqlOwnerSnapshot = async (dispatch: (snapshot: any) => unknown) => await dispatch({
+			policy: { connectionIds: [], version: 1, globallyBlocked: false, revocationGenerations: { 'sql-1': 0, 'sql-2': 0, 'sql-3': 0 } },
+			connections, connectionVersion: 1, accountsByServer: {}, principalVersion: 1,
+		});
+		harness.viewer.getSqlCachedDatabases = vi.fn(async () => ({ 'sql-1': ['A1'], 'sql-2': ['B2'] }));
+		harness.getDatabases.mockImplementation(async connection => databases[connection.id]);
+		harness.getDatabaseSchema.mockImplementation(async (_connection, database) => ({
+			tables: [`${database}Events`, 'UnrelatedTable'], columnsByTable: {},
+		}));
+		const requestId = 'selected-sql-servers';
+		const signal = new AbortController().signal;
+		harness.viewer._activeSearchRequestId = requestId;
+
+		await harness.viewer._executeSearch(
+			requestId, '^SQL [ABC]$|^[ABC][12](Events)?$', 'selected', 'sql',
+			{ servers: true, databases: true, tables: true }, {}, signal, targets,
+		);
+
+		expect(harness.getDatabases.mock.calls).toEqual([[connections[0], { signal }]]);
+		expect(harness.getDatabaseSchema.mock.calls).toEqual(pairs.map(([connectionId, database]) => [
+			connections.find(connection => connection.id === connectionId), database, { signal },
+		]));
+		const publications = harness.postMessage.mock.calls.map(([message]) => message)
+			.filter(message => message.type === 'searchResults');
+		expect(publications.flatMap(message => message.results)).toEqual([
+			{ category: 'server', kind: 'sql', connectionId: 'sql-1', connectionName: 'SQL A', name: 'SQL A' },
+			...pairs.map(([connectionId, database]) => ({
+				category: 'database', kind: 'sql', connectionId,
+				connectionName: connections.find(connection => connection.id === connectionId)!.name, database, name: database,
+			})),
+			...pairs.map(([connectionId, database]) => ({
+				category: 'table', kind: 'sql', connectionId,
+				connectionName: connections.find(connection => connection.id === connectionId)!.name, database, name: `${database}Events`,
+			})),
+		]);
+		expect(publications.at(-1)).toEqual({ type: 'searchResults', requestId, results: [], completed: true });
+		expect(harness.viewer._activeSearchRequestId).toBeNull();
+	});
+
+	it.each([
+		{
+			selection: 'database-only targets',
+			targets: [{ connectionId: 'cluster-a', database: 'A2' }, { connectionId: 'cluster-b', database: 'B1' }],
+			discoveredConnections: [], clusters: [],
+			pairs: [['cluster-a', 'A2'], ['cluster-b', 'B1']],
+		},
+		{
+			selection: 'a whole cluster', targets: [{ connectionId: 'cluster-a' }],
+			discoveredConnections: ['cluster-a'], clusters: ['cluster-a'],
+			pairs: [['cluster-a', 'A1'], ['cluster-a', 'A2']],
+		},
+		{
+			selection: 'cluster A plus database B1, excluding B2 and C',
+			targets: [{ connectionId: 'cluster-a' }, { connectionId: 'cluster-b', database: 'B1' }],
+			discoveredConnections: ['cluster-a'], clusters: ['cluster-a'],
+			pairs: [['cluster-a', 'A1'], ['cluster-a', 'A2'], ['cluster-b', 'B1']],
+		},
+	])('searches selected Kusto $selection with exact discovery and schema targets', async ({ targets, discoveredConnections, clusters, pairs }) => {
+		const harness = createKustoSearchTestHarness();
+		const writeSchema = vi.spyOn(schemaCache, 'writeCachedSchemaToDisk').mockResolvedValue(true);
+		const requestId = 'selected-kusto';
+		harness.viewer._activeSearchRequestId = requestId;
+		const connectionFor = (connectionId: string) => harness.connections.find(connection => connection.id === connectionId)!;
+
+		try {
+			await harness.viewer._executeSearch(
+				requestId, '^Cluster [ABC]$|^[ABC][12](Events)?$', 'selected', 'kusto',
+				{ clusters: true, databases: true, tables: true }, {}, new AbortController().signal, targets,
+			);
+
+			expect(harness.getDatabases.mock.calls).toEqual(discoveredConnections.map(connectionId => [
+				connectionFor(connectionId), true,
+				{ traceId: expect.any(String), source: 'connection-manager-search-everything', persistCache: false },
+			]));
+			expect(harness.getDatabaseSchema.mock.calls).toEqual(pairs.map(([connectionId, database]) => [
+				connectionFor(connectionId), database, true,
+				{ persistCache: false, source: 'connection-manager-search-everything' },
+			]));
+			expect(writeSchema.mock.calls).toEqual(pairs.map(([connectionId, database]) => [
+				harness.viewer.context.globalStorageUri,
+				schemaCache.schemaCacheKey(connectionFor(connectionId).clusterUrl, database, connectionId, `partition-${connectionId}`),
+				{
+					schema: { tables: [`${database}Events`, 'UnrelatedTable'] }, timestamp: expect.any(Number),
+					version: schemaCache.SCHEMA_CACHE_VERSION, clusterUrl: connectionFor(connectionId).clusterUrl,
+					database, connectionId, accountPartition: `partition-${connectionId}`,
+				},
+				{ global: 0, connection: 0, partition: 0 },
+			]));
+			const publications = harness.postMessage.mock.calls.map(([message]) => message)
+				.filter(message => message.type === 'searchResults');
+			const rows = publications.flatMap(message => message.results);
+			expect(rows.map(({ kustoSearchOwner: _owner, ...row }) => row)).toEqual([
+				...clusters.map(connectionId => ({
+					category: 'cluster', kind: 'kusto', connectionId,
+					connectionName: connectionFor(connectionId).name, name: connectionFor(connectionId).name,
+				})),
+				...pairs.map(([connectionId, database]) => ({
+					category: 'database', kind: 'kusto', connectionId,
+					connectionName: connectionFor(connectionId).name, database, name: database,
+				})),
+				...pairs.map(([connectionId, database]) => ({
+					category: 'table', kind: 'kusto', connectionId,
+					connectionName: connectionFor(connectionId).name, database, name: `${database}Events`,
+				})),
+			]);
+			for (const row of rows) {
+				expect(row.kustoSearchOwner).toEqual(expect.objectContaining({
+					accountPartition: `partition-${row.connectionId}`, connectionIncarnation: 1,
+					authSessionGeneration: 0, leaveNoTraceRevision: 0,
+				}));
+			}
+			expect(publications.at(-1)).toEqual({
+				type: 'searchResults', requestId, results: [], completed: true, kustoSearchOwnerToken: expect.any(String),
+			});
+			expect(harness.viewer.authPreferences.waitForProviderAccountRefresh).toHaveBeenCalled();
+			expect(harness.viewer._activeSearchRequestId).toBeNull();
+		} finally {
+			writeSchema.mockRestore();
+		}
+	});
+
+	it.each(['cached', 'refresh-cached', 'everything'] as const)(
+		'keeps Kusto name, schema, and network results exact for %s scope', async scope => {
+			const harness = createKustoSearchTestHarness();
+			const query = '^Cluster [ABC]$|^[ABC][12](Events)?$';
+			const requestId = `kusto-${scope}`;
+			harness.viewer._activeSearchRequestId = requestId;
+			const cachedPairs = [['cluster-a', 'A1'], ['cluster-b', 'B2']];
+			const allPairs = [['cluster-a', 'A1'], ['cluster-a', 'A2'], ['cluster-b', 'B1'], ['cluster-b', 'B2'], ['cluster-c', 'C1']];
+			const connectionFor = (connectionId: string) => harness.connections.find(connection => connection.id === connectionId)!;
+			const entries = cachedPairs.map(([connectionId, database]) => ({
+				version: schemaCache.SCHEMA_CACHE_VERSION, timestamp: Date.now(),
+				connectionId, database, clusterUrl: connectionFor(connectionId).clusterUrl,
+				accountPartition: `partition-${connectionId}`, schema: { tables: [`${database}Events`, 'UnrelatedTable'] },
+			}));
+			entries.push(
+				{ ...entries[0], accountPartition: 'old-account', database: 'A2', schema: { tables: ['A2Events'] } },
+				{ ...entries[0], connectionId: 'removed', accountPartition: 'partition-removed', database: 'C1', schema: { tables: ['C1Events'] } },
+			);
+			const cacheDirectory = schemaCache.getSchemaCacheDirUri(harness.viewer.context.globalStorageUri);
+			const cacheFiles = entries.map((entry, index) => ({
+				name: `entry-${index}.json`, uri: vscode.Uri.joinPath(cacheDirectory, `entry-${index}.json`),
+				bytes: Buffer.from(JSON.stringify(entry), 'utf8'),
+			}));
+			const fsApi = vscode.workspace.fs as any;
+			const originalReadDirectory = fsApi.readDirectory;
+			const readDirectory = vi.fn(async () => cacheFiles.map(file => [file.name, 1]));
+			fsApi.readDirectory = readDirectory;
+			const readFile = vi.spyOn(vscode.workspace.fs, 'readFile').mockImplementation(async uri => {
+				const file = cacheFiles.find(candidate => candidate.uri.toString() === uri.toString());
+				if (!file) throw new Error(`Unexpected schema cache read: ${uri.toString()}`);
+				return file.bytes;
+			});
+			const searchCached = vi.spyOn(schemaCache, 'searchCachedSchemas');
+			const readCached = vi.spyOn(schemaCache, 'readAllCachedSchemasFromDisk');
+			const writeSchema = vi.spyOn(schemaCache, 'writeCachedSchemaToDisk').mockResolvedValue(true);
+
+			try {
+				await harness.viewer._executeSearch(
+					requestId, query, scope, 'kusto', { clusters: true, databases: true, tables: true }, {},
+					new AbortController().signal,
+				);
+
+				const allowedIdentities = new Set(harness.connections.map(connection =>
+					schemaCache.schemaPrincipalIdentity(connection.id, `partition-${connection.id}`)));
+				expect(searchCached.mock.calls).toEqual(scope === 'cached'
+					? [[harness.viewer.context.globalStorageUri, query, 500, allowedIdentities,
+						{ tableNames: true, tableColumns: false, functionNames: false, functionBody: false }]] : []);
+				expect(readCached.mock.calls).toEqual(scope === 'refresh-cached'
+					? [[harness.viewer.context.globalStorageUri, undefined, undefined, allowedIdentities]] : []);
+				expect(readDirectory.mock.calls).toEqual(scope === 'everything' ? [] : [[cacheDirectory]]);
+				expect(readFile.mock.calls).toEqual(scope === 'everything' ? [] : cacheFiles.map(file => [file.uri]));
+				expect(harness.getDatabases.mock.calls).toEqual(scope === 'everything' ? harness.connections.map(connection => [
+					connection, true, { traceId: expect.any(String), source: 'connection-manager-search-everything', persistCache: false },
+				]) : []);
+				const searchedPairs = scope === 'everything' ? allPairs : cachedPairs;
+				const fetchedPairs = scope === 'cached' ? [] : searchedPairs;
+				expect(harness.getDatabaseSchema.mock.calls).toEqual(fetchedPairs.map(([connectionId, database]) => [
+					connectionFor(connectionId), database, true,
+					{ persistCache: false, source: scope === 'everything' ? 'connection-manager-search-everything' : 'connection-manager-search-refresh' },
+				]));
+				expect(writeSchema.mock.calls.map(([, , entry]) => [entry.connectionId, entry.database])).toEqual(fetchedPairs);
+				const namedConnections = scope === 'cached' ? harness.connections.slice(0, 2) : harness.connections;
+				const expectedNames = scope === 'everything'
+					? [
+						...namedConnections.map(connection => ['cluster', connection.id, undefined, connection.name]),
+						...allPairs.map(([connectionId, database]) => ['database', connectionId, database, database]),
+					]
+					: namedConnections.flatMap(connection => [
+						['cluster', connection.id, undefined, connection.name],
+						...(harness.cachedDatabases[connection.id] ?? []).map(database => ['database', connection.id, database, database]),
+					]);
+				const publications = harness.postMessage.mock.calls.map(([message]) => message)
+					.filter(message => message.type === 'searchResults');
+				expect(publications.flatMap(message => message.results)
+					.map(result => [result.category, result.connectionId, result.database, result.name])).toEqual([
+					...expectedNames,
+					...searchedPairs.map(([connectionId, database]) => ['table', connectionId, database, `${database}Events`]),
+				]);
+				expect(publications.at(-1)).toEqual({
+					type: 'searchResults', requestId, completed: true, results: [], kustoSearchOwnerToken: expect.any(String),
+				});
+				expect(harness.viewer._activeSearchRequestId).toBeNull();
+			} finally {
+				if (originalReadDirectory === undefined) delete fsApi.readDirectory;
+				else fsApi.readDirectory = originalReadDirectory;
+				readFile.mockRestore();
+				searchCached.mockRestore();
+				readCached.mockRestore();
+				writeSchema.mockRestore();
+			}
+		},
+	);
+
+	it.each([
+		{ selection: 'missing', targets: undefined },
+		{ selection: 'empty', targets: [] },
+		{ selection: 'a malformed container', targets: { connectionId: 'cluster-a' } },
+		{
+			selection: 'malformed entries',
+			targets: [null, 'cluster-a', {}, { connectionId: '' }, { connectionId: 42 },
+				{ connectionId: 'cluster-a', database: '' }, { connectionId: 'cluster-b', database: 42 },
+				{ connectionId: 'cluster-c', database: ' ' }],
+		},
+		{ selection: 'stale connections', targets: [{ connectionId: 'removed' }, { connectionId: 'removed', database: 'A1' }] },
+	])('does no Kusto network work or row publication for $selection selected targets', async ({ targets }) => {
+		const harness = createKustoSearchTestHarness();
+		const writeSchema = vi.spyOn(schemaCache, 'writeCachedSchemaToDisk').mockResolvedValue(true);
+		const requestId = 'invalid-selected-kusto';
+		harness.viewer._activeSearchRequestId = requestId;
+
+		try {
+			expect((await harness.viewer.captureKustoSearchOwners()).size).toBe(3);
+			await harness.viewer._executeSearch(
+				requestId, 'Cluster|Events', 'selected', 'kusto', { clusters: true, tables: true }, {},
+				new AbortController().signal, targets,
+			);
+
+			expect(harness.getDatabases).not.toHaveBeenCalled();
+			expect(harness.getDatabaseSchema).not.toHaveBeenCalled();
+			expect(writeSchema).not.toHaveBeenCalled();
+			expect(harness.postMessage.mock.calls).toEqual([[{
+				type: 'searchResults', requestId, results: [], completed: true, kustoSearchOwnerToken: expect.any(String),
+			}]]);
+			expect(harness.viewer._activeSearchRequestId).toBeNull();
+		} finally {
+			writeSchema.mockRestore();
+		}
+	});
+
+	it.each([
+		{ phase: 'discovery', retirement: 'cancelled' },
+		{ phase: 'schema', retirement: 'cancelled' },
+		{ phase: 'discovery', retirement: 'superseded' },
+		{ phase: 'schema', retirement: 'superseded' },
+	])('discards a late Kusto $phase result after the selected search is $retirement', async ({ phase, retirement }) => {
+		const harness = createKustoSearchTestHarness();
+		const writeSchema = vi.spyOn(schemaCache, 'writeCachedSchemaToDisk').mockResolvedValue(true);
+		const pendingDiscovery = deferred<string[]>();
+		const pendingSchema = deferred<Awaited<ReturnType<typeof harness.getDatabaseSchema>>>();
+		const currentSchema = deferred<Awaited<ReturnType<typeof harness.getDatabaseSchema>>>();
+		const oldResult = { schema: { tables: ['A1Events'] }, accountPartition: 'partition-cluster-a' };
+		const currentResult = { schema: { tables: ['B1Events'] }, accountPartition: 'partition-cluster-b' };
+		if (phase === 'discovery') harness.getDatabases.mockReturnValueOnce(pendingDiscovery.promise);
+		harness.getDatabaseSchema.mockImplementation((_connection, database) =>
+			database === 'B1' ? currentSchema.promise : pendingSchema.promise);
+		const oldController = new AbortController();
+		harness.viewer._activeSearchRequestId = 'old-search';
+		harness.viewer._searchAbortController = oldController;
+		const oldSearch = harness.viewer._executeSearch(
+			'old-search', '^A[12]Events$', 'selected', 'kusto', { tables: true }, {}, oldController.signal,
+			[{ connectionId: 'cluster-a' }],
+		);
+
+		try {
+			await vi.waitFor(() => expect(phase === 'discovery' ? harness.getDatabases : harness.getDatabaseSchema).toHaveBeenCalledOnce());
+			if (retirement === 'cancelled') {
+				await harness.viewer.onMessage({ type: 'search.cancel', requestId: 'old-search' });
+				expect(harness.viewer._activeSearchRequestId).toBeNull();
+			}
+			await harness.viewer.onMessage({
+				type: 'search', requestId: 'current-search', query: '^B1Events$', scope: 'selected', kind: 'kusto',
+				categories: { tables: true }, contentToggles: {}, targets: [{ connectionId: 'cluster-b', database: 'B1' }],
+			});
+			await vi.waitFor(() => expect(harness.getDatabaseSchema).toHaveBeenCalledTimes(phase === 'schema' ? 2 : 1));
+			const currentController = harness.viewer._searchAbortController;
+			expect(oldController.signal.aborted).toBe(true);
+			expect(currentController.signal.aborted).toBe(false);
+
+			pendingDiscovery.resolve(['A1', 'A2']);
+			pendingSchema.resolve(oldResult);
+			await oldSearch;
+
+			expect(harness.viewer._activeSearchRequestId).toBe('current-search');
+			expect(harness.viewer._searchAbortController).toBe(currentController);
+			expect(harness.viewer.activeKustoSearchOwners.has('cluster-b')).toBe(true);
+			expect(harness.viewer.postKustoPublication).not.toHaveBeenCalled();
+			expect(writeSchema).not.toHaveBeenCalled();
+			expect(harness.getDatabases.mock.calls).toEqual([[
+				harness.connections[0], true,
+				{ traceId: expect.any(String), source: 'connection-manager-search-everything', persistCache: false },
+			]]);
+			expect(harness.getDatabaseSchema.mock.calls).toEqual([
+				...(phase === 'schema' ? [[harness.connections[0], 'A1', true, { persistCache: false, source: 'connection-manager-search-everything' }]] : []),
+				[harness.connections[1], 'B1', true, { persistCache: false, source: 'connection-manager-search-everything' }],
+			]);
+
+			currentSchema.resolve(currentResult);
+			await vi.waitFor(() => expect(harness.viewer._activeSearchRequestId).toBeNull());
+			const publications = harness.postMessage.mock.calls.map(([message]) => message)
+				.filter(message => message.type === 'searchResults');
+			expect(publications.map(message => [message.requestId, message.completed, message.results.map(result => [
+				result.category, result.connectionId, result.database, result.name,
+			])])).toEqual([
+				['current-search', false, [['table', 'cluster-b', 'B1', 'B1Events']]],
+				['current-search', true, []],
+			]);
+			expect(writeSchema.mock.calls.map(([, , entry]) => [entry.connectionId, entry.database, entry.schema])).toEqual([
+				['cluster-b', 'B1', currentResult.schema],
+			]);
+		} finally {
+			oldController.abort();
+			harness.viewer._searchAbortController?.abort();
+			pendingDiscovery.resolve(['A1', 'A2']);
+			pendingSchema.resolve(oldResult);
+			currentSchema.resolve(currentResult);
+			await oldSearch;
+			await vi.waitFor(() => expect(harness.viewer._activeSearchRequestId).toBeNull());
+			writeSchema.mockRestore();
+		}
+	});
+
 	it('fails a Connection Manager Kusto publication closed when applied and revoke acknowledgements are lost', async () => {
 		vi.useFakeTimers();
 		try {
@@ -287,7 +1121,9 @@ describe('ConnectionManagerViewerV2 schema search mapping', () => {
 				category: 'column',
 				name: 'alphaCol',
 				parentName: 'AlphaRoot',
-				matchContext: 'alphaCol: long - Primary event count for the current window',
+				parentKind: 'table',
+				columnType: 'long',
+				matchContext: 'Primary event count for the current window',
 			}),
 		]);
 	});
@@ -313,7 +1149,9 @@ describe('ConnectionManagerViewerV2 schema search mapping', () => {
 				category: 'column',
 				name: 'alphaCol',
 				parentName: 'AlphaRoot',
-				matchContext: 'alphaCol: long - Primary event count for the current window',
+				parentKind: 'table',
+				columnType: 'long',
+				matchContext: 'Primary event count for the current window',
 			}),
 		]);
 	});
@@ -1339,6 +2177,129 @@ describe('ConnectionManagerViewerV2 persisted search ownership', () => {
 
 		expect(persisted.lastResults).toEqual([]);
 		expect(JSON.stringify(persisted.lastResults)).not.toContain('SecretDb');
+	});
+
+	it.each([
+		[undefined, 0, 1, 'sql'],
+		[undefined, 1, 0, 'kusto'],
+		[undefined, 1, 1, 'kusto'],
+		[undefined, 0, 0, 'kusto'],
+		['invalid', 0, 1, 'sql'],
+		['invalid', 1, 0, 'kusto'],
+		['invalid', 1, 1, 'kusto'],
+		['invalid', 0, 0, 'kusto'],
+		['kusto', 0, 1, 'kusto'],
+		['kusto', 1, 0, 'kusto'],
+		['kusto', 1, 1, 'kusto'],
+		['kusto', 0, 0, 'kusto'],
+		['sql', 0, 1, 'sql'],
+		['sql', 1, 0, 'sql'],
+		['sql', 1, 1, 'sql'],
+		['sql', 0, 0, 'sql'],
+	] as const)('resolves raw active kind %s with %i Kusto and %i SQL connections to %s', (raw, kustoCount, sqlCount, expectedKind) => {
+		const viewer = createViewerHarness();
+		const sqlState = {
+			kind: 'sql', query: 'cm-sql-default', scope: 'cached',
+			categories: { servers: false, databases: true, tables: false },
+			lastResults: [{ kind: 'sql', connectionId: 'sql-1', name: 'SecretProcedure', matchContext: 'secret body' }],
+			lastSearchTimestamp: 123,
+		};
+		const stored = new Map<string, unknown>([
+			['connectionManager.activeKind', raw],
+			['connectionManager.searchState', { kind: 'kusto', query: 'cm-kusto-default' }],
+			['connectionManager.sqlSearchState', sqlState],
+		]);
+		const globalState = { get: vi.fn((key: string) => stored.get(key)), update: vi.fn() };
+		viewer.context = { globalState };
+		viewer.connectionManager = { getConnections: vi.fn(() => kustoCount ? [{}] : []) };
+		const sqlManager = { getConnections: vi.fn(() => sqlCount ? [{}] : []) };
+		viewer.sqlDeps = { getSqlConnectionManager: () => sqlManager };
+
+		expect(viewer.getActiveKind()).toBe(expectedKind);
+		if (expectedKind === 'sql') {
+			expect(viewer.getSearchState()).toEqual({ ...sqlState, lastResults: [], lastSearchTimestamp: 0 });
+		}
+		expect(globalState.update).not.toHaveBeenCalled();
+	});
+
+	it('publishes restored per-kind search state after the active-kind write and preserves Kusto configuration', async () => {
+		const harness = createSqlConnectionTestHarness({ authType: 'sql-login' });
+		const { viewer, globalState, postMessage } = harness;
+		const kustoState = {
+			kind: 'kusto', query: 'cm-kusto-persist-b2', scope: 'selected',
+			categories: { clusters: true, databases: false, tables: true },
+			lastResults: [], lastSearchTimestamp: 0, kustoPrincipalFingerprint: '',
+		};
+		const sqlState = {
+			kind: 'sql', query: 'cm-sql-persist', scope: 'cached',
+			categories: { servers: false, databases: true, tables: false },
+			lastResults: [{ kind: 'sql', connectionId: 'sql-1', name: 'SecretProcedure', matchContext: 'secret body' }],
+			lastSearchTimestamp: 123,
+		};
+		const stored = new Map<string, unknown>([
+			['connectionManager.activeKind', 'kusto'],
+			['connectionManager.searchState', structuredClone(kustoState)],
+			['connectionManager.sqlSearchState', structuredClone(sqlState)],
+		]);
+		const kindWrite = deferred<void>();
+		globalState.get.mockImplementation((key: string) => stored.get(key));
+		globalState.update.mockImplementation(async (key: string, value: unknown) => {
+			await kindWrite.promise;
+			stored.set(key, value);
+		});
+		viewer.snapshotRevision = 0;
+		viewer.authPreferences = { getAccounts: vi.fn(async () => []) };
+		viewer.connectionManager = {
+			getConnections: vi.fn(() => []),
+			getLeaveNoTraceClusters: vi.fn(() => []),
+			runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => await run({
+				clusterKeys: [], globallyBlocked: false, version: 1, revocationGenerations: {},
+			})),
+		};
+		viewer.getFavorites = vi.fn(() => []);
+		viewer.getCachedDatabases = vi.fn(() => ({}));
+		viewer.getExpandedClusters = vi.fn(() => []);
+		const publishSnapshot = vi.spyOn(viewer, 'sendSnapshotToWebview');
+
+		const switchToSql = viewer.onMessage({ type: 'setActiveKind', kind: 'sql' });
+		await flushAsyncDispatch();
+		expect(globalState.update).toHaveBeenCalledExactlyOnceWith('connectionManager.activeKind', 'sql');
+		expect(stored.get('connectionManager.activeKind')).toBe('kusto');
+		expect(publishSnapshot).not.toHaveBeenCalled();
+		expect(postMessage).not.toHaveBeenCalled();
+
+		kindWrite.resolve();
+		await switchToSql;
+
+		expect(publishSnapshot).toHaveBeenCalledTimes(1);
+		expect(postMessage).toHaveBeenCalledExactlyOnceWith({
+			type: 'snapshot', snapshot: expect.objectContaining({
+				activeKind: 'sql',
+				searchState: { ...sqlState, lastResults: [], lastSearchTimestamp: 0, kustoPolicyVersion: 1 },
+			}),
+		});
+
+		await viewer.onMessage({ type: 'setActiveKind', kind: 'kusto' });
+
+		expect(publishSnapshot).toHaveBeenCalledTimes(2);
+		expect(postMessage).toHaveBeenCalledTimes(2);
+		expect(postMessage).toHaveBeenLastCalledWith({
+			type: 'snapshot', snapshot: expect.objectContaining({
+				activeKind: 'kusto', searchState: { ...kustoState, kustoPolicyVersion: 1 },
+			}),
+		});
+		expect(stored.get('connectionManager.searchState')).toEqual(kustoState);
+		expect(stored.get('connectionManager.sqlSearchState')).toEqual(sqlState);
+		expect(globalState.update.mock.calls).toEqual([
+			['connectionManager.activeKind', 'sql'], ['connectionManager.activeKind', 'kusto'],
+		]);
+
+		const writeFailure = new Error('Active kind write failed');
+		globalState.update.mockRejectedValueOnce(writeFailure);
+		await expect(viewer.onMessage({ type: 'setActiveKind', kind: 'sql' })).rejects.toBe(writeFailure);
+		expect(stored.get('connectionManager.activeKind')).toBe('kusto');
+		expect(publishSnapshot).toHaveBeenCalledTimes(2);
+		expect(postMessage).toHaveBeenCalledTimes(2);
 	});
 
 	it('never persists or restores SQL search result rows', async () => {

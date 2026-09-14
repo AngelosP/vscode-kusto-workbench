@@ -70,6 +70,12 @@ only proves the backing handler.
 
 <!-- Flaky areas, timing-sensitive steps, framework workarounds -->
 
+- Keep the scheduled latest-VS-Code gate: version drift is intentional compatibility coverage. Do not replace it with a pinned pass or hide assertion failures through retries.
+- The suite runner reads `timeout`, not `stepTimeoutMs`; unknown top-level E2E settings now fail discovery. A step's explicit wait must fit within the outer CLI timeout.
+- Notebook helper readiness is `body[data-kusto-e2e-ready='true']` in the exact file tab. It proves helper registration, not schema/worker readiness. Standalone tutorial/first-launch bundles do not have this marker. Title targeting can activate a tab, so focus-retention tests must first assert the exact active URI through the extension host.
+- CLI 0.1.23 reactivates named tabs before every operation. Keep title targeting at initial open/reopen readiness, then use the active webview for keyboard, suggestion, or chat-focus assertions with unrelated panels closed. Do not remove the required `in the webview` words from ordinary evaluate/wait/click steps when removing a title; JSON artifact steps have a different optional suffix. Gherkin parsing alone does not validate registered step syntax.
+- Return/await `clearSections()`: an empty DOM does not mean the host accepted removals. Cleanup/capture must retain canonical acceptance and failure checkpoints across quiet periods and source/session retirement before IDs can be reused.
+- Isolated fresh scratch sessions use the canonical starter factory like normal first use; existing empty documents must still reopen empty. The text-diagnostics seed must await supplemental startup cleanup before capturing or changing selection.
 - For persistence E2E tests, assert both visible section IDs (`document.querySelectorAll(...)`) and direct `#queries-container.children` order, because persistence serializes direct DOM child order.
 - Add explicit screenshots after scrolling to HTML/SQL sections; a top-of-document screenshot can pass assertions while hiding lower restored sections.
 - This installed `vscode-ext-test` CLI does not currently provide the documented `I set setting ...` / `setting ... should be ...` Gherkin steps. Use per-test `e2e.settings.json` `workspaceSettings` for deterministic settings, or assert settings indirectly through the extension UI/state.

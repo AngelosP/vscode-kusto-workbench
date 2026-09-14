@@ -24,7 +24,7 @@ Feature: Fully qualified Kusto references prepare without an editor click
     When I evaluate "window.__e2e.kusto.assertColumnCompletionForSection(0, 'RemoteOnlyColumn', 5000)" in the webview for 10 seconds
     When I evaluate "window.__e2e.kusto.assertNoSupplementalWarnings(0)" in the webview
     When I execute command "workbench.action.focusActiveEditorGroup"
-    When I click at 950, 15
+    When I move the mouse to 30, 400
     Then I take a screenshot "01-kql-remote-completion-ready"
     When I execute command "workbench.action.files.revert"
     When I execute command "workbench.action.closeAllEditors"
@@ -61,7 +61,7 @@ Feature: Fully qualified Kusto references prepare without an editor click
     When I evaluate "window.__e2e.kusto.assertColumnCompletionForSection(0, 'RemoteOnlyColumn', 5000)" in the webview for 10 seconds
     When I evaluate "window.__e2e.kusto.assertNoSupplementalWarnings(0)" in the webview
     When I execute command "workbench.action.focusActiveEditorGroup"
-    When I click at 950, 15
+    When I move the mouse to 30, 400
     Then I take a screenshot "02-kqlx-model-roundtrip-ready"
     When I execute command "workbench.action.files.revert"
     When I execute command "workbench.action.closeAllEditors"

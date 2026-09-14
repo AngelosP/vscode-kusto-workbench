@@ -335,6 +335,13 @@ export type SchemaSearchMatch = {
 	parametersText?: string;
 };
 
+export interface SchemaSearchOptions {
+	tableNames?: boolean;
+	tableColumns?: boolean;
+	functionNames?: boolean;
+	functionBody?: boolean;
+}
+
 /**
  * Searches all cached schemas for tables, columns, functions, docstrings,
  * folder paths, column types, function bodies, parameters, and any other
@@ -346,6 +353,7 @@ export const searchCachedSchemas = async (
 	pattern: string,
 	maxResults: number = 200,
 	allowedPrincipalIdentities?: ReadonlySet<string>,
+	options: SchemaSearchOptions = {},
 ): Promise<SchemaSearchMatch[]> => {
 	let re: RegExp;
 	try {
@@ -385,7 +393,7 @@ export const searchCachedSchemas = async (
 				const matchedFunctions = new Set<string>();
 
 				// Search tables (name match)
-				for (const table of schema.tables || []) {
+				for (const table of options.tableNames === false ? [] : schema.tables || []) {
 					if (matches.length >= maxResults) break;
 					if (re.test(table)) {
 						matchedTables.add(table);
@@ -395,7 +403,7 @@ export const searchCachedSchemas = async (
 				}
 
 				// Search table docstrings (when the table name itself didn't match)
-				if (schema.tableDocStrings) {
+				if (options.tableNames !== false && schema.tableDocStrings) {
 					for (const [table, doc] of Object.entries(schema.tableDocStrings)) {
 						if (matches.length >= maxResults) break;
 						if (matchedTables.has(table)) continue;
@@ -407,7 +415,7 @@ export const searchCachedSchemas = async (
 				}
 
 				// Search table folders (when the table didn't already match)
-				if (schema.tableFolders) {
+				if (options.tableNames !== false && schema.tableFolders) {
 					for (const [table, folder] of Object.entries(schema.tableFolders)) {
 						if (matches.length >= maxResults) break;
 						if (matchedTables.has(table)) continue;
@@ -420,7 +428,7 @@ export const searchCachedSchemas = async (
 				}
 
 				// Search columns (name match)
-				for (const [table, cols] of Object.entries(schema.columnTypesByTable || {})) {
+				for (const [table, cols] of Object.entries(options.tableColumns === false ? {} : schema.columnTypesByTable || {})) {
 					if (matches.length >= maxResults) break;
 					for (const [col, colType] of Object.entries(cols)) {
 						if (matches.length >= maxResults) break;
@@ -433,7 +441,7 @@ export const searchCachedSchemas = async (
 				}
 
 				// Search column types (when the column name itself didn't match)
-				for (const [table, cols] of Object.entries(schema.columnTypesByTable || {})) {
+				for (const [table, cols] of Object.entries(options.tableColumns === false ? {} : schema.columnTypesByTable || {})) {
 					if (matches.length >= maxResults) break;
 					for (const [col, colType] of Object.entries(cols)) {
 						if (matches.length >= maxResults) break;
@@ -448,7 +456,7 @@ export const searchCachedSchemas = async (
 				}
 
 				// Search column docstrings (when the column name/type didn't match)
-				if (schema.columnDocStrings) {
+				if (options.tableColumns !== false && schema.columnDocStrings) {
 					for (const [key, doc] of Object.entries(schema.columnDocStrings)) {
 						if (matches.length >= maxResults) break;
 						if (matchedColumns.has(key)) continue;
@@ -473,17 +481,17 @@ export const searchCachedSchemas = async (
 
 					// Check all searchable fields of the function
 					let matchKind: string | undefined;
-					if (re.test(fnName)) {
+					if (options.functionNames !== false && re.test(fnName)) {
 						matchKind = 'function';
-					} else if (fnObj?.docString && re.test(fnObj.docString)) {
+					} else if (options.functionBody !== false && fnObj?.docString && re.test(fnObj.docString)) {
 						matchKind = 'functionDocString';
-					} else if (fnObj?.folder && re.test(fnObj.folder)) {
+					} else if (options.functionNames !== false && fnObj?.folder && re.test(fnObj.folder)) {
 						matchKind = 'functionFolder';
-					} else if (fnObj?.parametersText && re.test(fnObj.parametersText)) {
+					} else if (options.functionBody !== false && fnObj?.parametersText && re.test(fnObj.parametersText)) {
 						matchKind = 'functionParameter';
-					} else if (fnObj?.body && re.test(fnObj.body)) {
+					} else if (options.functionBody !== false && fnObj?.body && re.test(fnObj.body)) {
 						matchKind = 'functionBody';
-					} else if (fnObj?.parameters) {
+					} else if (options.functionBody !== false && fnObj?.parameters) {
 						for (const param of fnObj.parameters) {
 							if (param.name && re.test(param.name)) {
 								matchKind = 'functionParameter';
