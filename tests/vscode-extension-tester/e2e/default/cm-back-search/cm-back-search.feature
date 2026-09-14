@@ -1099,3 +1099,146 @@ Feature: Connection Manager progressive Search and Back navigation
         return { activeKind: snapshot.activeKind, fixtureObserversRemoved: true, fixtureMetadataRemoved: true, originalPreferencesRestored: true, originalQuery: original.host.query, hostSearchState: JSON.parse(JSON.stringify(snapshot.searchState)) };
       })()
       """
+
+  Scenario: SQL routine presentation formats the same unchanged implementation through Search and normal browsing
+    Then I collect JSON artifact "cm-sql-routine-fixture" from webview expression:
+      """
+      (async () => {
+        const manager = document.querySelector('kw-connection-manager');
+        const root = manager.shadowRoot;
+        const clone = value => structuredClone(value);
+        const equal = (actual, expected, label) => { if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(label + ': ' + JSON.stringify({ actual, expected })); };
+        const waitFor = async (predicate, label) => {
+          const deadline = Date.now() + 15000;
+          while (Date.now() < deadline) {
+            await manager.updateComplete;
+            if (predicate()) return;
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+          throw new Error('Timed out: ' + label);
+        };
+        await waitFor(() => manager._snapshot && !manager._search.loading && !manager._search._saveDebounceTimer && !manager._search._searchDebounceTimer, 'settled initial metadata');
+        const initialIds = [...manager._snapshot.connections, ...(manager._snapshot.sqlConnections ?? [])].map(connection => connection.id);
+        const inheritedIds = ['cm-e2e-kusto-a', 'cm-e2e-kusto-b', 'cm-e2e-sql-a', 'cm-e2e-sql-b'];
+        if (initialIds.length && (!window.__cmReloadProof?.beforeMetadata || initialIds.some(id => !inheritedIds.includes(id)))) throw new Error('Requires an isolated empty host, optionally decorated by scenario one');
+        const original = clone({ snapshot: manager._snapshot, schemas: manager._sqlDatabaseSchemas, expanded: manager._expandedFunctions, kind: manager._activeKind, filter: manager._activeFilter, path: manager._sqlExplorerPath, search: Object.fromEntries(Object.entries(manager._search).filter(([key]) => key !== 'host')) });
+        const native = manager._vscode;
+        const connectionId = 'cm-routine-format-sql';
+        const database = 'master';
+        const dbKey = connectionId + '|' + database;
+        const body = "create   procedure dbo.ReadItems @name sysname, @result sysname OUTPUT as BEGIN DECLARE @sql nvarchar(1000); IF @name IS NULL BEGIN RAISERROR(N'Missing name', 16, 1); RETURN; END; SET @sql = N'SELECT Name FROM dbo.Items WHERE Name = @name'; EXEC (@sql); SELECT @result = @name; END;";
+        const procedure = { name: 'dbo.ReadItems', parametersText: '@name sysname, @result sysname OUTPUT', body };
+        const signature = procedure.name + '(' + procedure.parametersText + ')';
+        const schema = { tables: [], views: [], columnsByTable: {}, storedProcedures: [procedure] };
+        const results = [{ kind: 'sql', category: 'stored-procedure', connectionId, connectionName: 'Routine presentation fixture', database, name: procedure.name }];
+        const state = { kind: 'sql', scope: 'selected', targets: [{ connectionId, database }], query: 'name', categories: { servers: false, databases: false, tables: false, views: false, storedProcedures: true }, contentToggles: { tables: false, views: false, storedProcedures: true }, lastResults: results };
+        const evidence = { outgoing: [], clicks: [], formatted: null };
+        const onClick = event => {
+          const row = event.composedPath().find(node => node instanceof HTMLElement && node.classList.contains('explorer-list-item'));
+          if (row) evidence.clicks.push({ name: row.querySelector('.explorer-list-item-name')?.textContent ?? null, search: row.classList.contains('search-result-item') });
+        };
+        manager._vscode = { postMessage: message => { evidence.outgoing.push(clone(message)); return native.postMessage(message); } };
+        root.addEventListener('click', onClick, true);
+        manager._snapshot = { ...clone(original.snapshot), activeKind: 'sql', connections: [], cachedDatabases: {}, sqlConnections: [{ id: connectionId, name: 'Routine presentation fixture', serverUrl: 'cm-routine-format-sql.invalid', dialect: 'mssql', authType: 'aad' }], sqlCachedDatabases: { [connectionId]: [database] } };
+        manager._activeKind = 'sql';
+        manager._activeFilter = 'all';
+        manager._sqlDatabaseSchemas = { ...clone(original.schemas), [dbKey]: clone(schema) };
+        manager._search.restoreState(clone(state), 'sql');
+        manager.requestUpdate();
+        evidence.inspect = async (label, context, expanded) => {
+          await manager.updateComplete;
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          equal(manager._sqlDatabaseSchemas[dbKey], schema, label + ' raw schema is byte-identical');
+          equal(manager._sqlDatabaseSchemas[dbKey].storedProcedures[0].body, body, label + ' raw body');
+          equal(evidence.outgoing.filter(message => message.type !== 'sql.cluster.expand'), [], label + ' no search, schema acquisition, preview, or execution messages');
+          equal(evidence.outgoing.map(message => message.connectionId), evidence.outgoing.map(() => connectionId), label + ' ownerless navigation only');
+          const search = context === 'search';
+          equal(!!root.querySelector('[data-testid=cm-search-container]'), search, label + ' actual presentation context');
+          if (search) {
+            equal([root.querySelector('[data-testid=cm-search-input]')?.value, root.querySelector('[data-testid=cm-search-scope]')?.value, manager._search.targets, manager._search.results], ['name', 'selected', state.targets, results], label + ' settled presentation fixture, not executed search');
+          } else {
+            equal(manager._sqlExplorerPath, { connectionId, database, section: 'functions' }, label + ' normal browser path');
+            equal(Array.from(root.querySelectorAll('.breadcrumb-item'), crumb => crumb.textContent.trim()), ['All', 'Routine presentation fixture', database, 'Stored Procedures'], label + ' real tree controls');
+          }
+          const row = search ? root.querySelector('.search-result-item[data-category="stored-procedure"][data-name="dbo.ReadItems"]') : root.querySelector('.explorer-list-item[title="' + signature + '"]');
+          if (!row) throw new Error(label + ': missing exact routine row');
+          equal(row.querySelector('.explorer-list-item-name')?.textContent, procedure.name, label + ' unchanged routine name');
+          equal(row.getAttribute('title'), search ? null : signature, label + ' unchanged title');
+          const wrapper = row.closest('.explorer-list-item-wrapper');
+          const pre = wrapper.querySelector('pre.explorer-detail-body');
+          equal([wrapper.classList.contains('expanded'), !!pre], [expanded, expanded], label + ' real expand/collapse');
+          const implementationText = pre?.textContent ?? null;
+          const lines = implementationText?.split('\n') ?? [];
+          let geometry = null;
+          if (pre) {
+            equal(wrapper.querySelector('.explorer-detail-code')?.textContent, signature, label + ' unchanged signature');
+            if (implementationText === body || lines.length < 10 || !/^CREATE PROCEDURE dbo\.ReadItems\b/.test(implementationText) || !/\bSELECT\s*\n +@result\s*=\s*@name/.test(implementationText) || !lines.some(line => /^ {4}\S/.test(line)) || lines.some(line => /\t/.test(line) || (line.match(/^ */)[0].length % 4 !== 0))) throw new Error(label + ': expected multiline uppercase SQL with four-space indentation: ' + JSON.stringify(lines));
+            for (const literal of ["N'Missing name'", "N'SELECT Name FROM dbo.Items WHERE Name = @name'"]) equal(implementationText.split(literal).length, 2, label + ' exact string literal ' + literal);
+            if (evidence.formatted === null) evidence.formatted = implementationText;
+            equal(implementationText, evidence.formatted, label + ' identical Search and browser formatting');
+            const bounds = pre.getBoundingClientRect();
+            const style = getComputedStyle(pre);
+            if (bounds.width <= 0 || bounds.height <= 0 || bounds.left < 0 || bounds.right > innerWidth + 1 || bounds.top >= innerHeight || bounds.bottom <= 0 || pre.scrollWidth > pre.clientWidth + 1 || !['pre-wrap', 'break-spaces'].includes(style.whiteSpace)) throw new Error(label + ': implementation is hidden or horizontally clipped');
+            geometry = { bounds: bounds.toJSON(), clientWidth: pre.clientWidth, scrollWidth: pre.scrollWidth, clientHeight: pre.clientHeight, scrollHeight: pre.scrollHeight, whiteSpace: style.whiteSpace, fontSize: style.fontSize, lineHeight: style.lineHeight };
+          }
+          return { label, context, expanded, name: procedure.name, title: row.getAttribute('title'), signature: wrapper.querySelector('.explorer-detail-code')?.textContent ?? null, implementationText, lines, lineCount: lines.length, start: lines[0] ?? null, viewport: { width: innerWidth, height: innerHeight }, componentWidth: manager.getBoundingClientRect().width, pre: geometry, sourceUnchanged: true, rawBody: body, rawBodyBytes: new TextEncoder().encode(body).length, hostExecutionMessages: [], outgoing: clone(evidence.outgoing), clicks: clone(evidence.clicks), queryExecutionUnderTest: false };
+        };
+        evidence.cleanup = async () => {
+          const sourceUnchanged = JSON.stringify(manager._sqlDatabaseSchemas[dbKey]) === JSON.stringify(schema);
+          const outgoing = clone(evidence.outgoing);
+          root.removeEventListener('click', onClick, true);
+          manager._vscode = native;
+          if (outgoing.some(message => message.type === 'sql.cluster.expand') && !original.snapshot.sqlExpandedConnections?.includes(connectionId)) native.postMessage({ type: 'sql.cluster.collapse', connectionId });
+          manager._snapshot = clone(original.snapshot);
+          manager._sqlDatabaseSchemas = clone(original.schemas);
+          manager._expandedFunctions = clone(original.expanded);
+          manager._activeKind = original.kind;
+          manager._activeFilter = original.filter;
+          manager._sqlExplorerPath = clone(original.path);
+          Object.assign(manager._search, clone(original.search));
+          manager.requestUpdate();
+          const revision = manager._snapshot.revision;
+          native.postMessage({ type: 'requestSnapshot' });
+          await waitFor(() => manager._snapshot.revision > revision, 'host expansion preference restored');
+          equal(manager._snapshot.sqlExpandedConnections ?? [], original.snapshot.sqlExpandedConnections ?? [], 'original host expansion preference');
+          equal(manager._snapshot.searchState, original.snapshot.searchState, 'original host search preference');
+          equal(manager._snapshot.activeKind, original.snapshot.activeKind, 'original host kind');
+          manager._snapshot = clone(original.snapshot);
+          Object.assign(manager._search, clone(original.search));
+          manager.requestUpdate();
+          await manager.updateComplete;
+          equal(manager._sqlDatabaseSchemas, original.schemas, 'original SQL schema metadata');
+          equal([...manager._expandedFunctions], [...original.expanded], 'original expanded routines');
+          if (!sourceUnchanged) throw new Error('Routine display mutated the raw schema');
+          equal(outgoing, [{ type: 'sql.cluster.expand', connectionId }], 'only one ownerless browse request, zero host execution');
+          equal(evidence.clicks.map(click => click.name), [procedure.name, procedure.name, 'Routine presentation fixture', database, 'Stored Procedures', procedure.name, procedure.name], 'complete real Search and browser controls');
+          delete window.__cmSqlRoutine;
+          return { sourceUnchanged, originalMetadataRestored: true, originalPreferencesRestored: true, nativeTransportRestored: manager._vscode === native, fixtureObserversRemoved: true, outgoing, clicks: evidence.clicks };
+        };
+        window.__cmSqlRoutine = evidence;
+        await manager.updateComplete;
+        return { scope: 'read-only routine presentation fixture; no search matching or SQL execution', metadataConnectionId: connectionId, database, schema, initialSearchState: state, sourceUnchanged: true, originalHostSearchState: original.snapshot.searchState ?? null };
+      })()
+      """
+    When I click "[data-testid='cm-sql-filter-search']" in the webview
+    Then I collect JSON artifact "cm-sql-routine-search-before" from webview expression "window.__cmSqlRoutine.inspect('search-before', 'search', false)"
+    When I click ".search-result-item[data-category='stored-procedure'][data-connection-id='cm-routine-format-sql'][data-database='master'][data-name='dbo.ReadItems']" in the webview
+    Then I collect JSON artifact "cm-sql-routine-search-expanded" from webview expression "window.__cmSqlRoutine.inspect('search-expanded-1000x700', 'search', true)"
+    When I move the mouse to 20, 20
+    Then I take a screenshot "09-sql-routine-search-formatted"
+    When I click ".search-result-item[data-category='stored-procedure'][data-connection-id='cm-routine-format-sql'][data-database='master'][data-name='dbo.ReadItems']" in the webview
+    Then I collect JSON artifact "cm-sql-routine-search-collapsed" from webview expression "window.__cmSqlRoutine.inspect('search-collapsed', 'search', false)"
+    When I click "[data-testid='cm-sql-filter-all']" in the webview
+    When I click ".root-connection-row:has(> .explorer-list-item-icon.server)" in the webview
+    When I click ".explorer-list-item:has(> .explorer-list-item-icon.database)" in the webview
+    When I click ".explorer-list-item:has(> .explorer-list-item-icon.function)" in the webview
+    Then I collect JSON artifact "cm-sql-routine-browse-before" from webview expression "window.__cmSqlRoutine.inspect('browse-before', 'browse', false)"
+    When I click ".explorer-list-item[title='dbo.ReadItems(@name sysname, @result sysname OUTPUT)']" in the webview
+    Then I collect JSON artifact "cm-sql-routine-browse-expanded" from webview expression "window.__cmSqlRoutine.inspect('browse-expanded-1000x700', 'browse', true)"
+    When I resize the Dev Host to 700 by 650
+    Then I collect JSON artifact "cm-sql-routine-browse-narrow" from webview expression "window.__cmSqlRoutine.inspect('browse-expanded-700x650', 'browse', true)"
+    When I move the mouse to 20, 20
+    Then I take a screenshot "10-sql-routine-browse-formatted-narrow"
+    When I click ".explorer-list-item[title='dbo.ReadItems(@name sysname, @result sysname OUTPUT)']" in the webview
+    Then I collect JSON artifact "cm-sql-routine-browse-collapsed" from webview expression "window.__cmSqlRoutine.inspect('browse-collapsed', 'browse', false)"
+    Then I collect JSON artifact "cm-sql-routine-cleanup" from webview expression "window.__cmSqlRoutine.cleanup()"

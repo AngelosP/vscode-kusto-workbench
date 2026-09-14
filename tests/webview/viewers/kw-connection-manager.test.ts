@@ -7,6 +7,7 @@ import type { KwConnectionManager } from '../../../src/webview/viewers/connectio
 import type { ConnectionKind, ConnectionSearchTarget, SearchResult, SearchState } from '../../../src/webview/viewers/connection-manager/connection-manager-search.controller.js';
 import { ConnectionManagerSearchController } from '../../../src/webview/viewers/connection-manager/connection-manager-search.controller.js';
 import { styles as connectionManagerStyles } from '../../../src/webview/viewers/connection-manager/kw-connection-manager.styles.js';
+import { prettifySql } from '../../../src/webview/monaco/sql-prettify.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -1153,6 +1154,34 @@ describe('kw-connection-manager', () => {
 	// ── Search state ───────────────────────────────────────────────────────────
 
 	describe('search state', () => {
+		it.each(['search', 'explorer'] as const)('formats SQL routine implementations in the %s without changing the source', async surface => {
+			const body = 'CREATE PROCEDURE dbo.ReadItems @id int AS BEGIN SELECT Name, Id FROM dbo.Items WHERE Id = @id; END;';
+			const procedure = { name: 'dbo.ReadItems', parametersText: '@id int', body };
+			const el = await openSearch('sql', { searchState: {
+				kind: 'sql', scope: 'cached', query: 'ReadItems',
+				lastResults: [searchResult({ kind: 'sql', connectionId: 'sql1', database: 'sqldb1', category: 'stored-procedure', name: procedure.name })],
+			} });
+			sendSqlSchemaLoaded(el, 'sql1', 'sqldb1', { tables: [], views: [], storedProcedures: [procedure] });
+			await el.updateComplete;
+			if (surface === 'explorer') {
+				clickButtonByTestId(el, 'cm-sql-filter-all');
+				await el.updateComplete;
+				clickListItemByName(el, 'MySqlServer');
+				await el.updateComplete;
+				clickListItemByName(el, 'sqldb1');
+				await el.updateComplete;
+				clickListItemByName(el, 'Stored Procedures');
+				await el.updateComplete;
+			}
+			clickListItemByName(el, procedure.name);
+			await el.updateComplete;
+			const implementation = el.shadowRoot!.querySelector('pre.explorer-detail-body');
+			expect(implementation?.textContent).toBe(prettifySql(body));
+			expect(implementation?.textContent).toMatch(/SELECT\s*\n\s+Name,\s*\n\s+Id/);
+			expect(procedure.body).toBe(body);
+			expect(el.shadowRoot!.querySelector('.explorer-detail-code')?.textContent).toBe('dbo.ReadItems(@id int)');
+		});
+
 		it.each(searchKinds)('$kind: shows a column type inline and reveals the expanded source table with the column selected', async ({ kind, connectionId, database }) => {
 			const result = { ...searchResult({ kind, connectionId, database, category: 'column', parentName: 'Orders', name: 'DurationMs' }), columnType: 'long' };
 			const el = await openSearch(kind, { searchState: {

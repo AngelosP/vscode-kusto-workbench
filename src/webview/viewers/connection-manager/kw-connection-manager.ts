@@ -6,6 +6,7 @@ import { OverlayScrollbarsController } from '../../components/overlay-scrollbars
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { ICONS, iconRegistryStyles } from '../../shared/icon-registry.js';
+import { prettifySql } from '../../monaco/sql-prettify.js';
 import type { KustoConnectionFormSubmitDetail } from '../../components/kw-kusto-connection-form.js';
 import type { SqlConnectionFormSubmitDetail } from '../../components/kw-sql-connection-form.js';
 import '../../components/kw-kusto-connection-form.js';
@@ -1973,7 +1974,7 @@ export class KwConnectionManager extends LitElement {
 						${isExpanded ? html`
 							<div class="explorer-item-details">
 								<div class="explorer-detail-section"><div class="explorer-detail-label">Signature</div><div class="explorer-detail-code">${sp.name}(${sp.parametersText || ''})</div></div>
-								${sp.body ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Implementation</div><pre class="explorer-detail-body">${sp.body}</pre></div>` : nothing}
+								${sp.body ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Implementation</div><pre class="explorer-detail-body">${prettifySql(sp.body)}</pre></div>` : nothing}
 							</div>
 						` : nothing}
 					</div>`;
@@ -2859,7 +2860,7 @@ export class KwConnectionManager extends LitElement {
 				if (!sp) return html`<div class="explorer-item-details"><div class="explorer-detail-section"><span class="explorer-detail-label">Stored procedure not found in schema</span></div></div>`;
 				return html`<div class="explorer-item-details">
 					<div class="explorer-detail-section"><div class="explorer-detail-label">Signature</div><div class="explorer-detail-code">${sp.name}(${sp.parametersText || ''})</div></div>
-					${sp.body ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Implementation</div><pre class="explorer-detail-body">${sp.body}</pre></div>` : nothing}
+					${sp.body ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Implementation</div><pre class="explorer-detail-body">${prettifySql(sp.body)}</pre></div>` : nothing}
 				</div>`;
 			}
 		}
