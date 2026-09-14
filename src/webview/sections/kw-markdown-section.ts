@@ -52,6 +52,24 @@ interface ToastViewerApi {
 	dispose(): void;
 }
 
+interface ToastMarkdownRenderResult {
+	delim?: string | string[];
+	rawHTML?: string | string[] | null;
+	text?: string;
+	attrs?: unknown;
+}
+
+interface ToastMarkdownRenderContext {
+	origin?: () => ToastMarkdownRenderResult;
+}
+
+const PORTABLE_MARKDOWN_RENDERER = {
+	bulletList: (_nodeInfo: unknown, context: ToastMarkdownRenderContext): ToastMarkdownRenderResult => ({
+		...(context.origin?.() ?? {}),
+		delim: '-',
+	}),
+};
+
 interface WysiwygScrollbarOverlay {
 	host: HTMLElement;
 	prose: HTMLElement;
@@ -554,6 +572,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 				frontMatter: true,
 				initialValue,
 				toolbarItems: toolbarItemsConfig,
+				customMarkdownRenderer: PORTABLE_MARKDOWN_RENDERER,
 				plugins: KwMarkdownSection._getToastUiPlugins(ToastEditor),
 				events: {
 					change: () => {

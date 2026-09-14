@@ -54,12 +54,12 @@ Just let the custom VS Code agent 'Kusto Workbench' do all your work. It's crazy
 
 The agent can:
 
-* Create and configure query, markdown, chart, transformation, and Python sections
-* Execute queries and inspect results
-* Search across all your cached schemas to find tables and columns
-* Fetch schemas live from clusters it hasn't seen before
-* Orchestrate multi-section reports end to end
-* Use a dedicated sub-agent for deep Kusto data searches
+- Create and configure query, markdown, chart, transformation, and Python sections
+- Execute queries and inspect results
+- Search across all your cached schemas to find tables and columns
+- Fetch schemas live from clusters it hasn't seen before
+- Orchestrate multi-section reports end to end
+- Use a dedicated sub-agent for deep Kusto data searches
 
 ![VS Code custom agent that actually works called Kusto Workbench](media/marketplace/vscode-custom-agent.png)
 

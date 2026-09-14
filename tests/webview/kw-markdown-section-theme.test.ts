@@ -372,3 +372,54 @@ describe('KwMarkdownSection.applyThemeAll — theme switching', () => {
 		expect(defaultUI.classList.contains('toastui-editor-dark')).toBe(true);
 	});
 });
+
+describe('KwMarkdownSection Markdown portability', () => {
+	it('configures WYSIWYG bullet lists to serialize with dash markers', () => {
+		let capturedOptions: any;
+		class FakeToastEditor {
+			constructor(options: any) {
+				capturedOptions = options;
+				const defaultUi = document.createElement('div');
+				defaultUi.className = 'toastui-editor-defaultUI';
+				options.el.appendChild(defaultUi);
+			}
+
+			getMarkdown(): string {
+				const rendered = capturedOptions.customMarkdownRenderer.bulletList({}, { origin: () => ({ delim: '*' }) });
+				return `${rendered.delim} portable item`;
+			}
+			setMarkdown(): void {}
+			setHeight(): void {}
+			changeMode(): void {}
+			destroy(): void {}
+			getCurrentModeEditor(): object { return { commands: {} }; }
+		}
+
+		(window as any).toastui = { Editor: FakeToastEditor };
+		const section = document.createElement('kw-markdown-section') as KwMarkdownSection;
+		section.boxId = 'portable-list';
+
+		const editorHost = document.createElement('div');
+		editorHost.className = 'kusto-markdown-editor';
+		section.appendChild(editorHost);
+		const viewerHost = document.createElement('div');
+		viewerHost.className = 'markdown-viewer';
+		section.appendChild(viewerHost);
+
+		try {
+			(section as any)._initEditor();
+			const renderBulletList = capturedOptions.customMarkdownRenderer?.bulletList;
+			expect(renderBulletList).toBeTypeOf('function');
+			expect(section.serialize().text).toBe('- portable item');
+
+			const original = { delim: '*', rawHTML: ['<ul>', '</ul>'] };
+			expect(renderBulletList({}, { inTable: true, origin: () => original })).toEqual({
+				delim: '-',
+				rawHTML: ['<ul>', '</ul>'],
+			});
+		} finally {
+			(section as any)._editorApi?.dispose();
+			delete (window as any).toastui;
+		}
+	});
+});

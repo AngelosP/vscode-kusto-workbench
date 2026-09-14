@@ -3,6 +3,12 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [5.2.0] - Unreleased
+
+* Better search experience for Kusto and SQL schemas.
+* Bugs
+    * Search results for columns deep link to the table correctly now.
+
 ## [5.1.1] - 2026.09.13
 
 * Scrollbar styling matches new VS Code scrollbar styling.
