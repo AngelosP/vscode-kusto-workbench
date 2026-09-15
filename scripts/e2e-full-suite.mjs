@@ -1048,7 +1048,7 @@ function main() {
 		}
 		args.push(
 			'--env',
-			`KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH=${testCase.testId === 'first-launch-setup' ? '0' : '1'}`,
+			`KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH=${['first-launch-setup', 'vscode-scrollbars'].includes(testCase.testId) ? '0' : '1'}`,
 		);
 
 		const preparedWorkspace = prepareTestWorkspace(testCase, suiteOutputDir);

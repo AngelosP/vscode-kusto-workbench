@@ -152,7 +152,7 @@ Triage rules:
 
 Named profiles keep authentication state under `tests/vscode-extension-tester/profiles/`, which is gitignored. They must not keep restored editor/workspace state between tests.
 
-The reusable `default` profile follows the same workspace-residue rule when it exists locally. Ordinary suite cases also set `KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH=1`, which settles stale development-only onboarding state before commands run. The `first-launch-setup` test is explicitly excluded so it continues to exercise the real onboarding flow.
+The reusable `default` profile follows the same workspace-residue rule when it exists locally. Ordinary suite cases also set `KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH=1`, which settles stale development-only onboarding state before commands run. The `first-launch-setup` and `vscode-scrollbars` tests are explicitly excluded because they exercise the real onboarding flow. Both declare a 45-second step budget so their existing 35-second waits can complete without the runner's default 30-second timeout intervening.
 
 The orchestrator checks each reusable profile's `user-data/User/workspaceStorage` and allows only the controller workspace `ext-dev`. When a test uses a generated per-test workspace, its matching workspaceStorage entry is moved into that run's managed artifact backup before the generic residue check. Any other entry is profile residue because it can make `Given the extension is in a clean state` hang on `workbench.action.closeAllEditors`.
 
@@ -194,6 +194,25 @@ Review limits: Cached Values' existing label assertion does not prove refresh co
 `full-suite-20260914T101117Z` completed on September 14, 2026: 77/77 test IDs and 160/160 scenarios passed on Windows with VS Code 1.137.0 (resolved from latest stable), vscode-ext-test 0.1.23, and Node v22.16.0. Each test ran once, with zero bootstrap retries, skipped cases, allowed failures, quarantines, or profile residue. All 207 screenshots and the structured reports were reviewed. The final focused headless ring passed 371 Vitest tests and 26 Node runner tests; type checking, lint, and bundling passed in the suite build.
 
 This is local working-tree evidence, not a GitHub-hosted run or a guarantee against all intermittent failures. The earlier full runs and their failures remain in local history; successful follow-ups do not replace them. The layout fix separately passed three composed iterations, including accepted teardown and exact close before each reopening. Screenshot review also retained unrelated visual findings: SQL stale-result dimming is not established by its class-only assertion, and the narrow comparison toolbar can clip the cache-plan checkbox. These are not claimed as repaired by this suite-stabilization work. Scheduled latest-VS-Code selection and its failure policy are unchanged.
+
+### Native Storage Reproduction
+
+Run #162 preserved a preference trace with all five explicit fixture preferences assigned at 957 ms, then an empty preference map observed at 1003 ms without an intervening traced preference write. This is distinct from #160's database-cache invalidation race, fixed in `756764e`.
+
+The manual [native Memento diagnostic](../../scripts/repro-vscode-memento.mjs) extracts the installed VS Code `ExtHostMemento` and `ExtHostStorage` classes into an isolated VM. It controls the scheduler and FIFO main-thread echo transport without modifying the installation, using real class implementations and synthetic data:
+
+```powershell
+node scripts/repro-vscode-memento.mjs --vscode-root "<VS Code installation or resources/app directory>"
+```
+
+On VS Code 1.137.0 (`645f29cc3176500b4b5762ba887cf2a7f0ffdf2c`), the diagnostic reproduced this interleaving:
+
+1. An unrelated update sends the prior whole-Memento snapshot.
+2. A preference update assigns five entries locally, awaiting its scheduled send.
+3. The first update's FIFO storage echo replaces the whole local snapshot, dropping the pending preferences.
+4. The preference update sends the now-empty map; both update promises fulfill, but the five entries are absent from the live and captured transport state.
+
+Serialized, coalesced, and preference-send-before-echo controls retain all five entries. Exit 1 means the race reproduced with controls preserved; exit 0 means every contract held; exit 2 indicates unsupported source layout or a diagnostic/control failure. This is a native-class scheduling reproduction, not an end-to-end recording of the CI storage transport, so it does not establish that every historical fixture failure had this cause. Keep the diagnostic opt-in, the strict fixture assertions, and the rolling latest-VS-Code gate. Do not mask the issue with preference rewrites, assertion retries, or a version pin. An upstream fix must preserve pending Memento mutations across incoming whole-state echoes.
 
 ## Scheduling
 

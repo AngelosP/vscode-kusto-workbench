@@ -43,7 +43,7 @@ const exportSkillFeaturePath = path.join(
 	'export-skill-sidecar.feature',
 );
 
-function withSuiteSettingsFixture(run) {
+function withSuiteSettingsFixture(run, testId = 'first-launch-setup') {
 	const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), 'kusto-e2e-settings-'));
 	try {
 		const scriptsDir = path.join(fixtureRoot, 'scripts');
@@ -51,7 +51,7 @@ function withSuiteSettingsFixture(run) {
 		for (const name of ['e2e-full-suite.mjs', 'e2e-full-suite-support.mjs']) {
 			copyFileSync(path.join(repoRoot, 'scripts', name), path.join(scriptsDir, name));
 		}
-		const relativeTestDir = path.join('tests', 'vscode-extension-tester', 'e2e', 'default', 'first-launch-setup');
+		const relativeTestDir = path.join('tests', 'vscode-extension-tester', 'e2e', 'default', testId);
 		const testDir = path.join(fixtureRoot, relativeTestDir);
 		cpSync(path.join(repoRoot, relativeTestDir), testDir, { recursive: true });
 		const runSuite = (args = [], { captureCommand = false } = {}) => {
@@ -70,7 +70,7 @@ function withSuiteSettingsFixture(run) {
 				...preload,
 				path.join(scriptsDir, 'e2e-full-suite.mjs'),
 				captureCommand ? '--no-build' : '--dry-run',
-				'--profiles', 'default', '--test-id', 'first-launch-setup',
+				'--profiles', 'default', '--test-id', testId,
 				'--vscode-version', 'insiders', '--output-dir', outputDir,
 				...args,
 			], { cwd: fixtureRoot, encoding: 'utf8' });
@@ -101,6 +101,17 @@ test('E2E settings discovery honors the first-launch 45000ms timeout', () => {
 		assert.equal(result.summary.runs[0].testId, 'first-launch-setup');
 		assert.equal(result.summary.runs[0].timeout, '45000');
 	});
+});
+
+test('scrollbar first-launch scenarios keep their full wait budget and do not bypass setup', () => {
+	withSuiteSettingsFixture(({ runSuite }) => {
+		const result = runSuite([], { captureCommand: true });
+		assert.equal(result.status, 0, result.stderr || result.stdout);
+		assert.deepEqual(result.invocation.args, [
+			'run', '--no-build', '--test-id', 'vscode-scrollbars', '--vscode-version', 'insiders',
+			'--timeout', '45000', '--env', 'KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH=0',
+		]);
+	}, 'vscode-scrollbars');
 });
 
 test('E2E settings preserve default and explicit timeout transitions', () => {
