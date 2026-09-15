@@ -127,8 +127,21 @@ Feature: Exported skill includes dashboard rules sidecar
   Scenario: Export Agent Skill writes SKILL.md and html-dashboard-rules.md
     When I start command "kusto.exportSkill"
     Then I wait for QuickInput title "Where"
-    When I press "Enter"
-    And I wait 1 second
+    When I select QuickInput item "$(globe) .github/skills/kusto-workbench"
+    Then I collect JSON artifact "export-skill-completion" from extension host expression:
+      """
+      (async () => {
+        const fs = process.getBuiltinModule('fs');
+        const path = process.getBuiltinModule('path');
+        const target = path.join(process.env.TEMP, 'vscode-kusto-workbench-export-skill-sidecar', '.github', 'skills', 'kusto-workbench');
+        const deadline = Date.now() + 10000;
+        while (Date.now() < deadline) {
+          if (['SKILL.md', 'html-dashboard-rules.md'].every(name => fs.existsSync(path.join(target, name)))) return { target, filesCreated: true };
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        throw new Error('Export did not create both skill files in the selected workspace');
+      })()
+      """
 
     Then the file "${TEMP}/vscode-kusto-workbench-export-skill-sidecar/.github/skills/kusto-workbench/SKILL.md" should exist
     And the file "${TEMP}/vscode-kusto-workbench-export-skill-sidecar/.github/skills/kusto-workbench/html-dashboard-rules.md" should exist
@@ -165,7 +178,7 @@ Feature: Exported skill includes dashboard rules sidecar
 
     When I start command "kusto.exportSkill"
     Then I wait for QuickInput title "Where"
-    When I press "Enter"
+    When I select QuickInput item "$(globe) .github/skills/kusto-workbench"
     And I wait 1 second
     Then I take a screenshot "skill-overwrite-confirmation"
     When I press "Escape"
