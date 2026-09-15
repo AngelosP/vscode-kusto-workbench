@@ -3810,6 +3810,7 @@ function ensureMonaco() {
 				// (blob URL workaround for VS Code webview cross-origin restrictions).
 
 				try {
+					(_win.MonacoEnvironment ??= {}).globalAPI = true;
 					(req as any).config({ paths: { vs: _win.__kustoQueryEditorConfig!.monacoVsUri } });
 					traceFileOpen('monaco.require.configured');
 				} catch (e) {

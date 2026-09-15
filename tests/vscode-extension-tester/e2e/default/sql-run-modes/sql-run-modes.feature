@@ -3,11 +3,14 @@ Feature: SQL run modes - split button, plain vs TOP 100
   Background:
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
+    And I execute command "workbench.action.closeSidebar"
+    And I execute command "workbench.action.closeAuxiliaryBar"
+    And I execute command "workbench.action.closePanel"
     And I wait 2 seconds
 
   Scenario: Run mode defaults to TOP 100, can switch modes, label updates without a SQL connection
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
 
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds

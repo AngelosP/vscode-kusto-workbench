@@ -3,12 +3,16 @@ Feature: Kusto section features — toolbar, run modes, persistence without conn
   Background:
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
-    And I wait 2 seconds
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 1000 by 700
+    And I execute command "workbench.action.closeSidebar"
+    And I execute command "workbench.action.closeAuxiliaryBar"
+    And I execute command "workbench.action.closePanel"
 
   Scenario: Toolbar actions, run modes, and section serialization
     # ── Setup ─────────────────────────────────────────────────────────────
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx"
 
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds

@@ -8,7 +8,7 @@ Feature: Kusto query action hover animation
     And I execute command "workbench.action.closeAuxiliaryBar"
     And I execute command "workbench.action.closePanel"
     And I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     When I wait for "button[data-add-kind='query']" in the webview for 20 seconds
     When I click "button[data-add-kind='query']" in the webview

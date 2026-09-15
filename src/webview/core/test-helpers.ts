@@ -7221,8 +7221,23 @@ async function e2eLayoutCreateStressNotebook(requireChartReady: boolean = true):
 
 	e2eBeginDocumentCommandCapture();
 	const capture = e2eDocumentCommandCapture;
+	const deadline = performance.now() + 20000;
+	let commandTimeout: ReturnType<typeof setTimeout> | undefined;
 	try {
-		e2eLayoutAddSection('addChartBox', {
+		const addHostSection = async (addFunctionName: string, options: Record<string, unknown>) => {
+			e2eLayoutAddSection(addFunctionName, options);
+			const accepted = await Promise.race([
+				capture?.acceptance.wait(),
+				new Promise<false>(resolve => {
+					commandTimeout = setTimeout(() => resolve(false), Math.max(0, deadline - performance.now()));
+				}),
+			]);
+			clearTimeout(commandTimeout);
+			commandTimeout = undefined;
+			if (performance.now() >= deadline) throw new Error(`Timed out creating layout section ${options.id}`);
+			if (accepted !== true) throw new Error(`Document command client did not accept layout section ${options.id}`);
+		};
+		await addHostSection('addChartBox', {
 			id: e2eLayoutSpec('chart').id,
 			name: 'Layout Chart',
 			mode: 'preview',
@@ -7233,14 +7248,14 @@ async function e2eLayoutCreateStressNotebook(requireChartReady: boolean = true):
 			yColumns: ['Score'],
 			editorHeightPx: 240,
 		});
-		e2eLayoutAddSection('addMarkdownBox', {
+		await addHostSection('addMarkdownBox', {
 			id: e2eLayoutSpec('markdown').id,
 			title: 'Layout Markdown',
 			text: markdownText,
 			mode: 'preview',
 			editorHeightPx: 220,
 		});
-		e2eLayoutAddSection('addTransformationBox', {
+		await addHostSection('addTransformationBox', {
 			id: e2eLayoutSpec('transformation').id,
 			name: 'Layout Transformation',
 			mode: 'preview',
@@ -7249,24 +7264,25 @@ async function e2eLayoutCreateStressNotebook(requireChartReady: boolean = true):
 			deriveColumns: [{ name: 'ScoreCopy', expression: 'Score' }],
 			editorHeightPx: 240,
 		});
-		e2eLayoutAddSection('addUrlBox', {
+		await addHostSection('addUrlBox', {
 			id: e2eLayoutSpec('url').id,
 			name: 'Layout URL',
 			url: 'https://example.invalid/e2e-layout.txt',
 			outputHeightPx: 180,
 			expanded: true,
 		});
-		e2eLayoutAddSection('addHtmlBox', {
+		await addHostSection('addHtmlBox', {
 			id: e2eLayoutSpec('html').id,
 			name: 'Layout HTML',
 			code: e2eLayoutHtmlPreviewCode(),
 			mode: 'preview',
 			expanded: true,
 		});
-		e2eLayoutAddSection('addPythonBox', { id: e2eLayoutSpec('python').id });
+		await addHostSection('addPythonBox', { id: e2eLayoutSpec('python').id });
 
-		await e2eWaitForDocumentCommands(6, 20000);
+		await e2eWaitForDocumentCommands(6, Math.max(0, deadline - performance.now()));
 	} finally {
+		clearTimeout(commandTimeout);
 		if (capture && e2eDocumentCommandCapture === capture) {
 			window.removeEventListener('message', capture.onMessage);
 			if (typeof capture.previousCapture === 'function') _win.__e2eCaptureHostMessage = capture.previousCapture;

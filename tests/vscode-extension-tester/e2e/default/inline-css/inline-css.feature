@@ -2,6 +2,9 @@ Feature: Inline CSS — webview is styled at first paint with no external CSS de
 
   Background:
     Given the extension is in a clean state
+    And I execute command "workbench.action.closeSidebar"
+    And I execute command "workbench.action.closeAuxiliaryBar"
+    And I execute command "workbench.action.closePanel"
     And I wait 2 seconds
 
   Scenario: Query editor webview has inline CSS, not an external link
@@ -41,7 +44,7 @@ Feature: Inline CSS — webview is styled at first paint with no external CSS de
 
   Scenario: Add-controls footer is functional after inline CSS
     When I execute command "kusto.openQueryEditor"
-    And I wait 5 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
 
     # Clear all sections first
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview

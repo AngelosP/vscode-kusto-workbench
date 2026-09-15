@@ -1,5 +1,5 @@
 import { readFileSync } from 'fs';
-import { join } from 'path';
+import { dirname, isAbsolute, join } from 'path';
 import { runInNewContext } from 'vm';
 import * as ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
@@ -50,20 +50,267 @@ function deferred() {
 
 function extensionCommandCallback(commandId: string): string {
 	const sourceFile = ts.createSourceFile('extension.ts', extensionSource, ts.ScriptTarget.Latest, true);
-	let callbackSource: string | undefined;
+	const initializers = new Map<string, ts.Expression>();
+	let callback: ts.Expression | undefined;
 	const visit = (node: ts.Node): void => {
+		if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+			initializers.set(node.name.text, node.initializer);
+		}
 		if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
 			&& node.expression.name.text === 'registerCommand'
 			&& node.arguments[0] && ts.isStringLiteral(node.arguments[0])
 			&& node.arguments[0].text === commandId) {
-			callbackSource = node.arguments[1]?.getText(sourceFile);
+			callback = node.arguments[1];
 		}
 		ts.forEachChild(node, visit);
 	};
 	visit(sourceFile);
+	const callbackSource = (callback && ts.isIdentifier(callback) ? initializers.get(callback.text) : callback)?.getText(sourceFile);
 	expect(callbackSource, commandId).toBeDefined();
 	return callbackSource!;
 }
+
+describe('persisted-result offline fixture', () => {
+	function fixture(holdAssertion = false) {
+		const account = { id: 'kusto-workbench-persisted-result-test-account', label: 'Kusto Workbench persisted-result test account' };
+		const clusterUrl = 'https://persisted-results-e2e.kusto.windows.net';
+		const database = 'PersistedDb';
+		type Connection = { id: string; name: string; clusterUrl: string; database: string; authorityId: string };
+		const connection: Connection = {
+			id: 'fixture-connection', name: 'E2E Persisted Result Fixture Kusto', clusterUrl, database, authorityId: 'organizations',
+		};
+		const accountPartition = `${connection.authorityId}/${account.id}`;
+		const connections = new Map<string, Connection>();
+		const preferences = new Map<string, string>();
+		const databases = new Map<string, string[]>();
+		const schemas = new Map<string, CachedSchemaEntry>();
+		const files = new Map<string, string>();
+		const initialCachesReady = deferred();
+		const assertionHeld = deferred();
+		if (!holdAssertion) assertionHeld.resolve();
+		let authTail = Promise.resolve();
+		let lifecycleTail = Promise.resolve();
+		const clearCaches = vi.fn(() => { databases.clear(); schemas.clear(); });
+		const auth = {
+			waitForProviderAccountRefresh: vi.fn().mockResolvedValue(undefined),
+			getPreferredAccountId: vi.fn((connectionId: string) => preferences.get(connectionId)),
+			getAccountPartition: (authorityId: string, accountId: string) => `${authorityId}/${accountId}`,
+			setExplicitAccount: vi.fn(async (connectionId: string, selected: typeof account) => { preferences.set(connectionId, selected.id); }),
+			setTokenOverride: vi.fn(async () => {
+				authTail = authTail.then(() => { lifecycleTail = lifecycleTail.then(() => { clearCaches(); }); });
+			}),
+			waitForWriteSettlement: vi.fn(async () => { await authTail; }),
+		};
+		const snapshot = { globallyBlocked: false, clusterKeys: [] as string[], revocationGenerations: {} as Record<string, number> };
+		const connectionManager = {
+			getConnections: () => [...connections.values()],
+			addConnection: vi.fn(async () => { connections.set(connection.id, connection); return connection; }),
+			getConnectionIncarnation: vi.fn(() => 1),
+			getLeaveNoTraceRevision: () => 0,
+			waitForSettlement: vi.fn(async () => {
+				await lifecycleTail;
+				if (schemas.size) { initialCachesReady.resolve(); await assertionHeld.promise; }
+			}),
+			runWithLeaveNoTraceSnapshotLock: async (action: (current: typeof snapshot) => Promise<void>) => action(snapshot),
+		};
+		const cacheKey = (connectionId: string, partition: string) => JSON.stringify([connectionId, partition]);
+		const cache = {
+			getDatabases: vi.fn((connectionId: string, partition: string) => databases.get(cacheKey(connectionId, partition)) ?? []),
+			setDatabases: vi.fn(async (connectionId: string, partition: string, values: string[]) => {
+				databases.set(cacheKey(connectionId, partition), values);
+				return true;
+			}),
+		};
+		const writeSchema = vi.fn(async (_storage: unknown, key: string, entry: CachedSchemaEntry) => {
+			schemas.set(key, entry);
+			return true;
+		});
+		const readSchema = vi.fn(async (_storage: unknown, cluster: string, target: string, connectionId: string, partition: string) =>
+			schemas.get(schemaCacheKey(cluster, target, connectionId, partition)));
+		const template = { version: 1, state: { sections: [{
+			id: 'query_fixture', type: 'query', query: 'PersistedFixture', connectionIdHint: 'old-connection',
+			kustoAccountPartition: 'old-partition', kustoLeaveNoTraceRevision: 9,
+			resultJson: JSON.stringify({ columns: ['RowId'], rows: [[7]], metadata: { preserved: true } }),
+		}] } };
+		type Uri = { fsPath: string };
+		const writeFile = vi.fn(async (uri: Uri, bytes: Uint8Array) => { files.set(uri.fsPath, Buffer.from(bytes).toString('utf8')); });
+		const context = { extensionPath: root, globalStorageUri: { fsPath: join(root, 'fixture-storage') } };
+		const prepare = runInNewContext(ts.transpileModule(`(${extensionCommandCallback('kustoWorkbench.test.preparePersistedResultFixture')});`, {
+			compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+		}).outputText, {
+			Buffer, path: { dirname, isAbsolute, join }, context,
+			vscode: {
+				Uri: { file: (fsPath: string) => ({ fsPath }), joinPath: (uri: Uri, name: string) => ({ fsPath: join(uri.fsPath, name) }) },
+				workspace: { fs: {
+					readFile: vi.fn(async () => Buffer.from(JSON.stringify(template))),
+					createDirectory: vi.fn().mockResolvedValue(undefined), writeFile,
+					delete: vi.fn(async (uri: Uri) => { files.delete(uri.fsPath); }),
+				} },
+			},
+			persistedResultFixtureStartupCleanup: Promise.resolve(), cleanupPersistedResultFixtureState: vi.fn().mockResolvedValue(undefined),
+			persistedResultFixturePrefix: 'E2E Persisted Result Fixture', persistedResultKustoCluster: clusterUrl,
+			persistedResultKustoDatabase: database, persistedResultAuthAccount: account,
+			testAuthPreferences: auth, testConnectionCache: cache, connectionManager,
+			SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk: writeSchema, readCachedSchemaFromDiskByCluster: readSchema,
+			getKustoConnectionIdentityKey: (cluster: string, authority: string) => JSON.stringify([cluster, authority]),
+			kustoClusterKey: (cluster: string) => cluster,
+		}) as (request: { engine: string; templatePath: string; outputPath: string; legacyKusto?: boolean }) => Promise<{ outputPath: string; connectionId: string }>;
+		const request = { engine: 'kusto', templatePath: 'template.kqlx', outputPath: 'output.kqlx', legacyKusto: true };
+		return {
+			prepare, request, connection, account, accountPartition, connections, preferences, databases, schemas, files,
+			auth, cache, writeSchema, readSchema, writeFile, clearCaches, connectionManager, snapshot, initialCachesReady, assertionHeld,
+		};
+	}
+
+	function expectPublishedFixture(setup: ReturnType<typeof fixture>, legacyKusto: boolean) {
+		expect(setup.cache.getDatabases(setup.connection.id, setup.accountPartition)).toEqual(['PersistedDb']);
+		expect([...setup.schemas.values()]).toEqual([expect.objectContaining({
+			connectionId: setup.connection.id, accountPartition: setup.accountPartition,
+			database: 'PersistedDb', clusterUrl: setup.connection.clusterUrl, version: SCHEMA_CACHE_VERSION,
+			schema: { tables: ['PersistedFixture'], columnTypesByTable: { PersistedFixture: { RowId: 'long' } } },
+		})]);
+		expect(setup.files.size).toBe(1);
+		expect(setup.writeFile).toHaveBeenCalledTimes(1);
+		expect(setup.files.get(join(root, 'output.kqlx'))).toBe(`${JSON.stringify({ version: 1, state: { sections: [{
+			id: 'query_fixture', type: 'query', query: 'PersistedFixture',
+			...(legacyKusto ? {} : { kustoAccountPartition: setup.accountPartition, kustoLeaveNoTraceRevision: 0 }),
+			resultJson: JSON.stringify({ columns: ['RowId'], rows: [[7]], metadata: {
+				preserved: true, cluster: setup.connection.clusterUrl, database: 'PersistedDb',
+			} }),
+			clusterUrl: setup.connection.clusterUrl, authorityId: 'organizations', database: 'PersistedDb',
+		}] } }, null, 2)}\n`);
+	}
+
+	it.each([true, false])('preserves exact output without synthetic artifact privileges (legacyKusto=%s)', async legacyKusto => {
+		const setup = fixture();
+		await expect(setup.prepare({ ...setup.request, legacyKusto })).resolves.toEqual({
+			outputPath: join(root, 'output.kqlx'), connectionId: setup.connection.id,
+		});
+		expect(setup.auth.setTokenOverride).toHaveBeenCalledTimes(1);
+		expect(setup.cache.setDatabases).toHaveBeenCalledTimes(1);
+		expect(setup.writeSchema).toHaveBeenCalledTimes(1);
+		expectPublishedFixture(setup, legacyKusto);
+	});
+
+	it.each([undefined, 'previous-account'])('recovers both caches after preference loss (%s) before publication', async previousAccount => {
+		const setup = fixture(true);
+		const authStarted = deferred();
+		const authHeld = deferred();
+		const lifecycleStarted = deferred();
+		const lifecycleHeld = deferred();
+		const preparing = setup.prepare(setup.request);
+		try {
+			await Promise.race([preparing, setup.initialCachesReady.promise]);
+			expect(setup.databases.size).toBe(1);
+			expect(setup.schemas.size).toBe(1);
+			expect(setup.writeFile).not.toHaveBeenCalled();
+			if (previousAccount) setup.preferences.set(setup.connection.id, previousAccount);
+			else setup.preferences.delete(setup.connection.id);
+			const settleAuth = setup.auth.waitForWriteSettlement.getMockImplementation()!;
+			const settleLifecycle = setup.connectionManager.waitForSettlement.getMockImplementation()!;
+			setup.auth.waitForWriteSettlement.mockImplementationOnce(async () => {
+				authStarted.resolve(); await authHeld.promise; await settleAuth();
+			});
+			setup.connectionManager.waitForSettlement.mockImplementationOnce(async () => {
+				lifecycleStarted.resolve(); await lifecycleHeld.promise; await settleLifecycle();
+			});
+			setup.assertionHeld.resolve();
+			await Promise.race([preparing, authStarted.promise]);
+			expect(setup.cache.setDatabases).toHaveBeenCalledTimes(1);
+			expect(setup.writeSchema).toHaveBeenCalledTimes(1);
+			expect(setup.writeFile).not.toHaveBeenCalled();
+			authHeld.resolve();
+			await Promise.race([preparing, lifecycleStarted.promise]);
+			expect(setup.cache.setDatabases).toHaveBeenCalledTimes(1);
+			expect(setup.writeSchema).toHaveBeenCalledTimes(1);
+			expect(setup.writeFile).not.toHaveBeenCalled();
+		} finally {
+			setup.assertionHeld.resolve(); authHeld.resolve(); lifecycleHeld.resolve();
+		}
+		await expect(preparing).resolves.toEqual({ outputPath: join(root, 'output.kqlx'), connectionId: setup.connection.id });
+		expect(setup.auth.setTokenOverride).toHaveBeenCalledTimes(2);
+		expect(setup.clearCaches).toHaveBeenCalledTimes(2);
+		expect(setup.cache.setDatabases).toHaveBeenCalledTimes(2);
+		expect(setup.writeSchema).toHaveBeenCalledTimes(2);
+		expect(setup.preferences.get(setup.connection.id)).toBe(setup.account.id);
+		expectPublishedFixture(setup, true);
+	});
+
+	it.each([
+		['database', '"cachedDatabases":[]'],
+		['schema', '"hasCachedSchema":false'],
+		['duplicate owner', '"matchingOwnerIds":["fixture-connection","duplicate"]'],
+		['incarnation', '"connectionIncarnationMatches":false'],
+		['policy revision', '"leaveNoTraceRevision":1'],
+		['protected cluster', '"protectedResult":true'],
+		['late preference loss', '"partitionMatches":false'],
+	])('rejects %s drift without read-miss repairs or publication', async (drift, detail) => {
+		const setup = fixture(true);
+		const preparing = setup.prepare(setup.request);
+		try {
+			await Promise.race([preparing, setup.initialCachesReady.promise]);
+			switch (drift) {
+				case 'database': setup.databases.clear(); break;
+				case 'schema': setup.schemas.clear(); break;
+				case 'duplicate owner': setup.connections.set('duplicate', { ...setup.connection, id: 'duplicate' }); break;
+				case 'incarnation': setup.connectionManager.getConnectionIncarnation.mockReturnValue(2); break;
+				case 'policy revision': setup.snapshot.revocationGenerations[setup.connection.clusterUrl] = 1; break;
+				case 'protected cluster': setup.snapshot.clusterKeys.push(setup.connection.clusterUrl); break;
+				case 'late preference loss': {
+					const readSchema = setup.readSchema.getMockImplementation()!;
+					setup.readSchema.mockImplementationOnce(async (...args) => {
+						setup.preferences.delete(setup.connection.id);
+						await setup.auth.setTokenOverride();
+						await setup.auth.waitForWriteSettlement();
+						await setup.connectionManager.waitForSettlement();
+						return readSchema(...args);
+					});
+					break;
+				}
+			}
+		} finally {
+			setup.assertionHeld.resolve();
+		}
+		await expect(preparing).rejects.toMatchObject({ message: expect.stringContaining(detail) });
+		expect(setup.auth.setTokenOverride).toHaveBeenCalledTimes(drift === 'late preference loss' ? 2 : 1);
+		expect(setup.cache.setDatabases).toHaveBeenCalledTimes(1);
+		expect(setup.writeSchema).toHaveBeenCalledTimes(1);
+		expect(setup.writeFile).not.toHaveBeenCalled();
+		expect(setup.files.size).toBe(0);
+	});
+
+	it.each([
+		['initial', 'database', false], ['initial', 'schema', false],
+		['recovery', 'database', false], ['recovery', 'schema', false],
+		['recovery', 'database', true], ['recovery', 'schema', true],
+	] as const)('rejects a %s %s cache write (throws=%s) without publishing', async (phase, failedWrite, throws) => {
+		const setup = fixture(phase === 'recovery');
+		const failure = new Error(`${failedWrite} storage failure`);
+		const writer = failedWrite === 'database' ? setup.cache.setDatabases : setup.writeSchema;
+		const rejectWrite = () => throws ? writer.mockRejectedValueOnce(failure) : writer.mockResolvedValueOnce(false);
+		if (phase === 'initial') rejectWrite();
+		const preparing = setup.prepare(setup.request);
+		if (phase === 'recovery') {
+			try {
+				await Promise.race([preparing, setup.initialCachesReady.promise]);
+				setup.preferences.delete(setup.connection.id);
+				rejectWrite();
+			} finally {
+				setup.assertionHeld.resolve();
+			}
+		}
+		if (throws) {
+			await expect(preparing).rejects.toBe(failure);
+		} else {
+			await expect(preparing).rejects.toMatchObject({
+				message: `Persisted-result Kusto fixture ${failedWrite} cache write was superseded.`,
+			});
+		}
+		if (failedWrite === 'database') expect(setup.writeSchema).toHaveBeenCalledTimes(phase === 'initial' ? 0 : 1);
+		expect(setup.writeFile).not.toHaveBeenCalled();
+		expect(setup.files.size).toBe(0);
+	});
+});
 
 describe('Copilot clarification offline fixture', () => {
 	function fixture(holdSideEffects = false, failedWrite?: 'database' | 'schema') {

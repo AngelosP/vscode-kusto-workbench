@@ -12,7 +12,7 @@ Feature: SQL toolbar actions - prettify, comment toggle, undo, redo, search
 
   Scenario: Prettify, toggle comment, undo, redo, and search without a SQL connection
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
 
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
@@ -91,7 +91,7 @@ Feature: SQL toolbar actions - prettify, comment toggle, undo, redo, search
     When I move the Dev Host to 0, 0
     And I resize the Dev Host to 700 by 900
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
     When I evaluate "window.__e2e.layout.createStressNotebook(false)" in the webview for 20 seconds
     And I evaluate "(async () => { const section = document.getElementById('e2e_layout_query'); if (!section) throw new Error('Layout Kusto section is missing'); section.setCopilotChatVisible(true); section.setCopilotChatWidthPx(1000); const toolbar = section.querySelector('kw-query-toolbar'); const surface = toolbar?.querySelector('.query-editor-toolbar'); const split = document.getElementById('e2e_layout_query_copilot_split'); if (!toolbar || !surface || !split || split.classList.contains('kusto-copilot-chat-hidden')) throw new Error('Real Kusto Copilot split did not open'); section.scrollIntoView({ block: 'start' }); window.__e2e.kusto.setQuery(`datatable(id:long, name:string) [1, 'test']`); toolbar.setOverflowStartIndex(3); await toolbar.updateComplete; return { toolbarWidth: toolbar.getBoundingClientRect().width, surfaceWidth: surface.getBoundingClientRect().width, splitWidth: split.getBoundingClientRect().width, overflowStartIndex: toolbar.getOverflowStartIndex() }; })()" in the webview
     And I wait 2 seconds

@@ -2,8 +2,11 @@ Feature: All section types remain functional
 
   Background:
     Given the extension is in a clean state
+    And I execute command "workbench.action.closeSidebar"
+    And I execute command "workbench.action.closeAuxiliaryBar"
+    And I execute command "workbench.action.closePanel"
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
     When I wait for "#queries-container" in the webview for 20 seconds
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
 

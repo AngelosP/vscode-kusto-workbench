@@ -12,7 +12,7 @@ Feature: Exact clipboard share result artifacts
 
   Scenario: Share pins A, reopens on B, and denies or revokes unavailable rows
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
 
@@ -26,7 +26,7 @@ Feature: Exact clipboard share result artifacts
   Scenario: Copy a Kusto ADX link through the real host clipboard adapter
     When I execute command "kustoWorkbench.test.cleanupKustoIdentityChecklist"
     When I execute command "kusto.openQueryEditor"
-    And I wait 2 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     When I execute command "kustoWorkbench.test.seedKustoIdentityChecklist"
     When I execute command "workbench.action.focusActiveEditorGroup"

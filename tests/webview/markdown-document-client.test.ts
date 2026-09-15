@@ -16,20 +16,25 @@ import {
 	getOptimisticHostOwnedDevelopmentNoteSections,
 	getHostOwnedDocumentSectionStatus,
 	handleHostOwnedMarkdownCommandResult,
+	requestHostOwnedChartAdd,
 	requestHostOwnedChartPatch,
 	requestHostOwnedChartRemove,
 	requestHostOwnedDevelopmentNoteAdd,
 	requestHostOwnedDevelopmentNotePatch,
+	requestHostOwnedHtmlAdd,
 	requestHostOwnedHtmlPatch,
 	requestHostOwnedHtmlPublishInfoPatch,
 	requestHostOwnedHtmlRemove,
 	requestHostOwnedMarkdownAdd,
 	requestHostOwnedMarkdownPatch,
 	requestHostOwnedMarkdownRemove,
+	requestHostOwnedPythonAdd,
 	requestHostOwnedPythonPatch,
 	requestHostOwnedPythonRemove,
+	requestHostOwnedTransformationAdd,
 	requestHostOwnedTransformationPatch,
 	requestHostOwnedTransformationRemove,
+	requestHostOwnedUrlAdd,
 	requestHostOwnedUrlPatch,
 	requestHostOwnedUrlRemove,
 	resetHostOwnedMarkdownDocument,
@@ -49,7 +54,7 @@ const helperNames = [
 	'e2eDocumentCommandCapture', 'e2eBeginDocumentCommandCapture', 'e2eWaitForDocumentCommands',
 	'__testRemoveAllSections', 'E2E_LAYOUT_RESULT_SECTION_ID', 'E2E_LAYOUT_SPECS', 'e2eLayoutSpec',
 	'e2eLayoutDelay', 'e2eLayoutWaitFor', 'e2eLayoutGeneratedLines', 'e2eLayoutAddSection',
-	'e2eLayoutCreateStressNotebook',
+	'e2eLayoutHtmlPreviewCode', 'e2eLayoutSampleResult', 'e2eLayoutCreateStressNotebook',
 ];
 const helperCode = ts.transpileModule(helperNames.map(name => {
 	const statement = helperSource.statements.find(candidate =>
@@ -66,14 +71,16 @@ const helperCode = ts.transpileModule(helperNames.map(name => {
 
 function loadDocumentHelpers() {
 	const originalProperties = new Map([
-		'__e2eCaptureHostMessage', '__testRemoveAllSections', 'addQueryBox', 'addSqlBox', 'addChartBox',
+		'__e2eCaptureHostMessage', '__testRemoveAllSections', 'addQueryBox', 'addSqlBox', 'addChartBox', 'addMarkdownBox',
+		'addTransformationBox', 'addUrlBox', 'addHtmlBox', 'addPythonBox',
 	].map(name => [name, Object.getOwnPropertyDescriptor(window, name)]));
 	let suppressed = false;
 	const suppressPersistence = vi.fn((value: boolean) => { suppressed = value; });
 	const adoptClean = vi.fn();
+	const seedResult = vi.fn();
 	const helpers = new Function(
 		'pState', '_win', 'isPersistenceSuppressedForTest', 'suppressPersistenceForTest',
-		'adoptCurrentStateAsCleanForTest', 'waitForHostOwnedMarkdownCommands',
+		'adoptCurrentStateAsCleanForTest', 'waitForHostOwnedMarkdownCommands', 'e2eSeedQueryResult',
 		`${helperCode}\nreturn {
 			clearSections: e2eClearSectionsStable,
 			beginCapture: e2eBeginDocumentCommandCapture,
@@ -81,15 +88,15 @@ function loadDocumentHelpers() {
 			createStressNotebook: e2eLayoutCreateStressNotebook,
 			capture: () => e2eDocumentCommandCapture,
 		};`,
-	)(pState, window, () => suppressed, suppressPersistence, adoptClean, waitForHostOwnedMarkdownCommands) as {
+	)(pState, window, () => suppressed, suppressPersistence, adoptClean, waitForHostOwnedMarkdownCommands, seedResult) as {
 		clearSections(timeoutMs?: number, quietMs?: number): Promise<string>;
 		beginCapture(): string;
 		waitForCommands(minimumCount?: number, timeoutMs?: number): Promise<unknown>;
 		createStressNotebook(requireChartReady?: boolean): Promise<string>;
-		capture(): { onMessage: (event: MessageEvent) => void; results: unknown[] } | undefined;
+		capture(): { onMessage: (event: MessageEvent) => void; commands: unknown[]; results: unknown[] } | undefined;
 	};
 	return {
-		...helpers, suppressPersistence, adoptClean,
+		...helpers, suppressPersistence, adoptClean, seedResult,
 		dispose: () => {
 			const capture = helpers.capture();
 			if (capture) window.removeEventListener('message', capture.onMessage);
@@ -278,6 +285,70 @@ describe('host-owned Markdown command client', () => {
 			return {
 				documentRevision: 0, sectionRevisions: { [id]: 0 }, markdownSectionRevisions: { [id]: 0 },
 				markdownSections: [state], urlSections: [], orderedSectionIds: [id],
+			};
+		}
+
+		function prepareLayoutFactories() {
+			expect(adoptHostOwnedMarkdownDocument({
+				documentRevision: 0, sourceGeneration: 7, sectionRevisions: {}, markdownSectionRevisions: {},
+			}, { sections: [] })).toBe(true);
+			const previousCapture = vi.fn();
+			Reflect.set(window, '__e2eCaptureHostMessage', previousCapture);
+			for (const [name, tag] of [['addQueryBox', 'kw-query-section'], ['addSqlBox', 'kw-sql-section']]) {
+				Reflect.set(window, name, (options: { id: string }) => {
+					const section = document.createElement(tag);
+					section.id = options.id;
+					container.append(section);
+					expect(acknowledgeHostOwnedDocumentOrder(Array.from(container.children, child => child.id))).toBe(true);
+					return section.id;
+				});
+			}
+			const factoryCalls = vi.fn();
+			const factories: [string, string, (options: { id: string }) => boolean][] = [
+				['addChartBox', 'chart', options => requestHostOwnedChartAdd({ ...options, type: 'chart' })],
+				['addMarkdownBox', 'markdown', options => requestHostOwnedMarkdownAdd({ ...options, type: 'markdown' })],
+				['addTransformationBox', 'transformation', options => requestHostOwnedTransformationAdd({ ...options, type: 'transformation' })],
+				['addUrlBox', 'url', options => requestHostOwnedUrlAdd({ ...options, type: 'url' })],
+				['addHtmlBox', 'html', options => requestHostOwnedHtmlAdd({ ...options, type: 'html' })],
+				['addPythonBox', 'python', options => requestHostOwnedPythonAdd({ ...options, type: 'python' })],
+			];
+			for (const [name, kind, request] of factories) {
+				Reflect.set(window, name, (options: { id: string }) => {
+					factoryCalls(kind, options);
+					const section = document.createElement(`kw-${kind}-section`);
+					section.id = options.id;
+					container.append(section);
+					expect(request(options)).toBe(true);
+					return section.id;
+				});
+			}
+			return { previousCapture, factoryCalls };
+		}
+
+		function layoutCommands() {
+			return postMessageToHost.mock.calls.map(([message]) => message)
+				.filter(message => message.type === 'markdownDocumentCommand');
+		}
+
+		function layoutAddResult(commandIndex: number, ok = true, projectedCount = commandIndex + 1) {
+			const commands = layoutCommands();
+			const sections = commands.slice(0, projectedCount).map(command => command.command.section);
+			const markdownSections = sections.filter(section => section.type === 'markdown');
+			return {
+				type: 'markdownDocumentCommandResult', commandId: commands[commandIndex].commandId,
+				ok, sourceGeneration: 7,
+				projection: {
+					documentRevision: projectedCount,
+					sectionRevisions: Object.fromEntries(sections.map(section => [section.id, 1])),
+					markdownSectionRevisions: Object.fromEntries(markdownSections.map(section => [section.id, 1])),
+					markdownSections,
+					chartSections: sections.filter(section => section.type === 'chart'),
+					transformationSections: sections.filter(section => section.type === 'transformation'),
+					urlSections: sections.filter(section => section.type === 'url'),
+					htmlSections: sections.filter(section => section.type === 'html'),
+					pythonSections: sections.filter(section => section.type === 'python'),
+					orderedSectionIds: ['e2e_layout_query', 'e2e_layout_sql', ...sections.map(section => section.id)],
+				},
 			};
 		}
 
@@ -583,6 +654,167 @@ describe('host-owned Markdown command client', () => {
 				expect(addQuery).not.toHaveBeenCalled();
 			}
 			expect(helpers.capture()).toBeUndefined();
+		});
+
+		it('waits for the first host Add acceptance before calling the second layout factory', async () => {
+			adoptHostOwnedMarkdownDocument({
+				documentRevision: 0, sourceGeneration: 7, sectionRevisions: {}, markdownSectionRevisions: {},
+			}, { sections: [] });
+			const previousCapture = vi.fn();
+			Reflect.set(window, '__e2eCaptureHostMessage', previousCapture);
+			for (const [name, tag] of [['addQueryBox', 'kw-query-section'], ['addSqlBox', 'kw-sql-section']]) {
+				Reflect.set(window, name, (options: { id: string }) => {
+					const section = document.createElement(tag);
+					section.id = options.id;
+					container.append(section);
+					return section.id;
+				});
+			}
+			Reflect.set(window, 'addChartBox', (options: { id: string }) => {
+				expect(requestHostOwnedChartAdd({ ...options, type: 'chart' })).toBe(true);
+				return options.id;
+			});
+			const factoryStop = new Error('second layout factory reached');
+			const addMarkdown = vi.fn(() => { throw factoryStop; });
+			Reflect.set(window, 'addMarkdownBox', addMarkdown);
+			const layout = observeHelper(helpers.createStressNotebook(false));
+			await vi.advanceTimersByTimeAsync(900);
+			const add = await waitForPostedMessage(1);
+			expect(add).toMatchObject({ command: { type: 'add', section: { id: 'e2e_layout_chart', type: 'chart' } } });
+			await vi.advanceTimersByTimeAsync(999);
+			expect(addMarkdown, 'the second factory must not run before response 1 is accepted').not.toHaveBeenCalled();
+			expect(layout.settled).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(1);
+			expect(deliverDocumentResult({
+				type: 'markdownDocumentCommandResult', commandId: add.commandId, ok: true, sourceGeneration: 7,
+				projection: {
+					...emptyProjection, chartSections: [add.command.section],
+					sectionRevisions: { e2e_layout_chart: 1 }, orderedSectionIds: ['e2e_layout_chart'],
+				},
+			})).toMatchObject({ handled: true, accepted: true });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(addMarkdown).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'e2e_layout_markdown' }));
+			await expect(layout.result).resolves.toEqual({ error: factoryStop });
+			expect(helpers.capture()).toBeUndefined();
+			expect(Reflect.get(window, '__e2eCaptureHostMessage')).toBe(previousCapture);
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		it('retains all six accepted layout Adds across a serial one-second host queue', async () => {
+			const { previousCapture, factoryCalls } = prepareLayoutFactories();
+			const transport = postMessageToHost.getMockImplementation()!;
+			const admissions: ReturnType<typeof deliverDocumentResult>[] = [];
+			let hostAvailableAt = performance.now();
+			postMessageToHost.mockImplementation(message => {
+				const captured = transport(message);
+				if (message.type === 'markdownDocumentCommand') {
+					const commandIndex = layoutCommands().length - 1;
+					hostAvailableAt = Math.max(hostAvailableAt, performance.now()) + 1_000;
+					setTimeout(() => admissions.push(deliverDocumentResult(layoutAddResult(commandIndex))), hostAvailableAt - performance.now());
+				}
+				return captured;
+			});
+			const resultBoundary = new Error('layout result seeding boundary reached');
+			helpers.seedResult.mockRejectedValue(resultBoundary);
+			const layout = observeHelper(helpers.createStressNotebook(false));
+			await vi.advanceTimersByTimeAsync(900);
+			const capture = helpers.capture()!;
+			for (let commandIndex = 0; commandIndex < 6; commandIndex++) {
+				expect(factoryCalls).toHaveBeenCalledTimes(commandIndex + 1);
+				await vi.advanceTimersByTimeAsync(1_000);
+				expect(admissions).toHaveLength(commandIndex + 1);
+				expect(admissions[commandIndex]).toMatchObject({ handled: true, accepted: true });
+			}
+			await vi.advanceTimersByTimeAsync(249);
+			expect(helpers.seedResult).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(layout.result).resolves.toEqual({ error: resultBoundary });
+			const commands = layoutCommands();
+			expect(commands).toHaveLength(6);
+			expect(commands.map(command => command.expectedDocumentRevision)).toEqual([0, 1, 2, 3, 4, 5]);
+			expect(factoryCalls.mock.calls.map(([kind]) => kind)).toEqual(['chart', 'markdown', 'transformation', 'url', 'html', 'python']);
+			expect(capture.commands).toEqual(JSON.parse(JSON.stringify(commands)));
+			expect(capture.results).toEqual(JSON.parse(JSON.stringify(commands.map((_command, index) => layoutAddResult(index)))));
+			expect(Array.from(container.children, section => section.id)).toEqual([
+				'e2e_layout_query', 'e2e_layout_sql', 'e2e_layout_chart', 'e2e_layout_markdown',
+				'e2e_layout_transformation', 'e2e_layout_url', 'e2e_layout_html', 'e2e_layout_python',
+			]);
+			expect(helpers.seedResult).toHaveBeenCalledOnce();
+			await expect(waitForHostOwnedMarkdownCommands()).resolves.toBe(true);
+			expect(helpers.capture()).toBeUndefined();
+			expect(Reflect.get(window, '__e2eCaptureHostMessage')).toBe(previousCapture);
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		it.each([false, true])('stops layout factories when the second Add is not accepted despite raw ok=%s', async ok => {
+			const { previousCapture, factoryCalls } = prepareLayoutFactories();
+			const layout = observeHelper(helpers.createStressNotebook(false));
+			await vi.advanceTimersByTimeAsync(900);
+			expect(deliverDocumentResult(layoutAddResult(0))).toMatchObject({ handled: true, accepted: true });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(factoryCalls).toHaveBeenCalledTimes(2);
+			expect(deliverDocumentResult(layoutAddResult(1, ok, 1))).toMatchObject({ handled: true, accepted: false });
+			await vi.advanceTimersByTimeAsync(0);
+			await expect(layout.result).resolves.toMatchObject({ error: { message: expect.stringMatching(/did not accept.*e2e_layout_markdown/) } });
+			await expect(waitForHostOwnedMarkdownCommands()).resolves.toBe(!ok);
+			expect(factoryCalls).toHaveBeenCalledTimes(2);
+			expect(helpers.seedResult).not.toHaveBeenCalled();
+			expect(helpers.capture()).toBeUndefined();
+			expect(Reflect.get(window, '__e2eCaptureHostMessage')).toBe(previousCapture);
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		it('keeps the layout Add client timeout fatal at exactly five seconds', async () => {
+			const { previousCapture, factoryCalls } = prepareLayoutFactories();
+			const layout = observeHelper(helpers.createStressNotebook(false));
+			await vi.advanceTimersByTimeAsync(900);
+			const capture = helpers.capture()!;
+			await vi.advanceTimersByTimeAsync(4_999);
+			expect(layout.settled).not.toHaveBeenCalled();
+			expect(factoryCalls).toHaveBeenCalledTimes(1);
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(layout.result).resolves.toMatchObject({ error: { message: expect.stringMatching(/did not accept.*e2e_layout_chart/) } });
+			expect(deliverDocumentResult(layoutAddResult(0))).toEqual({ handled: false, accepted: false });
+			expect(capture.results).toEqual([]);
+			expect(factoryCalls).toHaveBeenCalledTimes(1);
+			expect(helpers.seedResult).not.toHaveBeenCalled();
+			expect(layout.settled).toHaveBeenCalledOnce();
+			expect(helpers.capture()).toBeUndefined();
+			expect(Reflect.get(window, '__e2eCaptureHostMessage')).toBe(previousCapture);
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		it.each([
+			{ phase: 'pending Add', delay: 4_500, acceptedCount: 4, factoryCount: 5 },
+			{ phase: 'final verification', delay: 3_300, acceptedCount: 6, factoryCount: 6 },
+		])('shares the twenty-second layout deadline through $phase', async ({ delay, acceptedCount, factoryCount }) => {
+			const { previousCapture, factoryCalls } = prepareLayoutFactories();
+			const layout = observeHelper(helpers.createStressNotebook(false));
+			await vi.advanceTimersByTimeAsync(900);
+			const deadline = performance.now() + 20_000;
+			const capture = helpers.capture()!;
+			for (let commandIndex = 0; commandIndex < acceptedCount; commandIndex++) {
+				await vi.advanceTimersByTimeAsync(delay);
+				expect(deliverDocumentResult(layoutAddResult(commandIndex))).toMatchObject({ handled: true, accepted: true });
+				await vi.advanceTimersByTimeAsync(0);
+			}
+			await vi.advanceTimersByTimeAsync(deadline - performance.now() - 1);
+			expect(layout.settled).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(layout.result).resolves.toMatchObject({ error: { message: expect.stringMatching(/timed out/i) } });
+			expect(factoryCalls).toHaveBeenCalledTimes(factoryCount);
+			expect(helpers.capture()).toBeUndefined();
+			expect(Reflect.get(window, '__e2eCaptureHostMessage')).toBe(previousCapture);
+			expect(vi.getTimerCount()).toBe(factoryCount - acceptedCount);
+			if (factoryCount > acceptedCount) {
+				expect(deliverDocumentResult(layoutAddResult(acceptedCount))).toMatchObject({ handled: true, accepted: true });
+			}
+			await vi.advanceTimersByTimeAsync(300);
+			expect(capture.results).toHaveLength(acceptedCount);
+			expect(factoryCalls).toHaveBeenCalledTimes(factoryCount);
+			expect(helpers.seedResult).not.toHaveBeenCalled();
+			expect(layout.settled).toHaveBeenCalledOnce();
+			expect(vi.getTimerCount()).toBe(0);
 		});
 
 		it('cleans layout-owned capture when a section factory throws before the command wait', async () => {

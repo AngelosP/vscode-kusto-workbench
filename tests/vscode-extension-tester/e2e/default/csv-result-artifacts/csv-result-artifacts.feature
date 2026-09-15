@@ -14,7 +14,7 @@ Feature: Exact CSV result artifacts
   When I execute command "kustoWorkbench.test.setNextCsvSaveTarget" with args '["kusto-workbench-exact-results.csv"]'
   	When I execute command "kustoWorkbench.test.setIsolatedKustoConnections"
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
   And I wait for "#queries-container" in the webview for 20 seconds
   And I evaluate "(async () => { const deadline = performance.now() + 15000; while (performance.now() < deadline) { const container = document.getElementById('queries-container'); if (document.body.dataset.kustoDocumentLoading !== 'true' && container?.getAttribute('aria-busy') !== 'true') return 'notebook ready'; await new Promise(resolve => setTimeout(resolve, 100)); } throw new Error('Notebook document loading did not settle'); })()" in the webview for 20 seconds
   	When I evaluate "window.__e2e.workbench.enableIsolatedKustoConnections()" in the webview

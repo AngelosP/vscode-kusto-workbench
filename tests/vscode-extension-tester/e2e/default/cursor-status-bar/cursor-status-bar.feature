@@ -5,11 +5,14 @@ Feature: Webview editor cursor status bar
     When I move the Dev Host to 0, 0
     And I resize the Dev Host to 1200 by 900
     And I capture the output channel "Kusto Workbench"
+    And I execute command "workbench.action.closeSidebar"
+    And I execute command "workbench.action.closeAuxiliaryBar"
+    And I execute command "workbench.action.closePanel"
     And I wait 2 seconds
 
   Scenario: Editable Kusto Workbench sections publish line and column cursor status
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
     And I wait for "#queries-container" in the webview for 20 seconds
     And I evaluate "window.__e2e.cursorStatus.createNotebook()" in the webview for 20 seconds
     And I evaluate "window.__e2e.cursorStatus.beginCapture()" in the webview
@@ -38,7 +41,7 @@ Feature: Webview editor cursor status bar
 
   Scenario: Preview modes clear cursor status for non-editable surfaces
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
     And I wait for "#queries-container" in the webview for 20 seconds
     And I evaluate "window.__e2e.cursorStatus.createNotebook()" in the webview for 20 seconds
     And I evaluate "window.__e2e.cursorStatus.beginCapture()" in the webview

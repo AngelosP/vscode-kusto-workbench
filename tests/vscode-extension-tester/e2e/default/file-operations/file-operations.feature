@@ -3,12 +3,15 @@ Feature: File operations — serialization roundtrip and section content
   Background:
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
+    And I execute command "workbench.action.closeSidebar"
+    And I execute command "workbench.action.closeAuxiliaryBar"
+    And I execute command "workbench.action.closePanel"
     And I wait 2 seconds
 
   Scenario: Create session with sections, verify serialization preserves content
     # ── Setup: create a session with multiple sections ────────────────────
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
 
     # Clear existing sections
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview

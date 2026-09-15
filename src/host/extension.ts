@@ -484,31 +484,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 							await testAuthPreferences.waitForWriteSettlement();
 							await connectionManager.waitForSettlement();
 							if (testAuthPreferences.getPreferredAccountId(connection.id)
-								=== persistedResultAuthAccount.id) return;
+								=== persistedResultAuthAccount.id) {
+								accountPartition = testAuthPreferences.getAccountPartition(connection.authorityId, persistedResultAuthAccount.id);
+								if (!await testConnectionCache.setDatabases(connection.id, accountPartition, [targetDatabase])) {
+									throw new Error('Persisted-result Kusto fixture database cache write was superseded.');
+								}
+								const schema = {
+									tables: ['PersistedFixture'],
+									columnTypesByTable: { PersistedFixture: { RowId: 'long' } },
+								};
+								const schemaWritten = await writeCachedSchemaToDisk(
+									context.globalStorageUri,
+									schemaCacheKey(connection.clusterUrl, targetDatabase, connection.id, accountPartition),
+									{
+										schema, timestamp: Date.now(), version: SCHEMA_CACHE_VERSION,
+										clusterUrl: connection.clusterUrl, database: targetDatabase,
+										connectionId: connection.id, accountPartition,
+									},
+								);
+								if (!schemaWritten) {
+									throw new Error('Persisted-result Kusto fixture schema cache write was superseded.');
+								}
+								return;
+							}
 						}
 						throw new Error('Persisted-result Kusto fixture owner did not become resolvable.');
 					};
 					await ensureSyntheticKustoOwner();
-					accountPartition = testAuthPreferences.getAccountPartition(connection.authorityId, persistedResultAuthAccount.id);
-					if (!await testConnectionCache.setDatabases(connection.id, accountPartition, [targetDatabase])) {
-						throw new Error('Persisted-result Kusto fixture database cache write was superseded.');
-					}
-					const schema = {
-						tables: ['PersistedFixture'],
-						columnTypesByTable: { PersistedFixture: { RowId: 'long' } },
-					};
-					const schemaWritten = await writeCachedSchemaToDisk(
-						context.globalStorageUri,
-						schemaCacheKey(connection.clusterUrl, targetDatabase, connection.id, accountPartition),
-						{
-							schema, timestamp: Date.now(), version: SCHEMA_CACHE_VERSION,
-							clusterUrl: connection.clusterUrl, database: targetDatabase,
-							connectionId: connection.id, accountPartition,
-						},
-					);
-					if (!schemaWritten) {
-						throw new Error('Persisted-result Kusto fixture schema cache write was superseded.');
-					}
 				}
 				const expectedConnectionIncarnation = connectionManager.getConnectionIncarnation(connection.id);
 				const requireCachedSchema = !existingConnection;
@@ -516,13 +518,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					if (ensureSyntheticKustoOwner
 						&& testAuthPreferences.getPreferredAccountId(connection.id) !== persistedResultAuthAccount.id) {
 						await ensureSyntheticKustoOwner();
-					}
-					if (!existingConnection
-						&& !testConnectionCache.getDatabases(connection.id, accountPartition, false)
-							.some(database => database.toLowerCase() === targetDatabase.toLowerCase())) {
-						if (!await testConnectionCache.setDatabases(connection.id, accountPartition, [targetDatabase])) {
-							throw new Error('Persisted-result Kusto fixture database cache repair was superseded.');
-						}
 					}
 					return connectionManager.runWithLeaveNoTraceSnapshotLock(async snapshot => {
 					const cachedSchema = await readCachedSchemaFromDiskByCluster(
