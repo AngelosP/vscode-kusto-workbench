@@ -877,6 +877,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 	private static readonly openPanelsByUri = new Map<string, Set<vscode.WebviewPanel>>();
 	private static readonly closingEditorsByUri = new Map<string, Set<object>>();
 	private static readonly panelChangeListenersByUri = new Map<string, Set<() => void>>();
+	private static readonly initializedPanels = new WeakSet<vscode.WebviewPanel>();
 
 	/** In-memory store for section diff virtual documents (saved and current snapshots). */
 	public static readonly sectionDiffContents = new Map<string, string>();
@@ -895,18 +896,28 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		for (const listener of KqlxEditorProvider.panelChangeListenersByUri.get(key) ?? []) listener();
 	}
 
+	private static markOpenEditorInitialized(uri: vscode.Uri, panel: vscode.WebviewPanel): void {
+		const key = KqlxEditorProvider.panelKey(uri);
+		if (!KqlxEditorProvider.openPanelsByUri.get(key)?.has(panel)
+			|| KqlxEditorProvider.initializedPanels.has(panel)) return;
+		KqlxEditorProvider.initializedPanels.add(panel);
+		KqlxEditorProvider.notifyPanelChange(key);
+	}
+
 	public static trackOpenEditor(uri: vscode.Uri, panel: vscode.WebviewPanel): vscode.Disposable & {
 		beginClosing(): void;
 		finishClosing(): void;
 	} {
 		const key = KqlxEditorProvider.panelKey(uri);
 		const panels = KqlxEditorProvider.openPanelsByUri.get(key) ?? new Set<vscode.WebviewPanel>();
+		KqlxEditorProvider.initializedPanels.delete(panel);
 		panels.add(panel);
 		KqlxEditorProvider.openPanelsByUri.set(key, panels);
 		KqlxEditorProvider.notifyPanelChange(key);
 		const closingToken = {};
 		let state: 'open' | 'closing' | 'finished' = 'open';
 		const removeOpenPanel = () => {
+			KqlxEditorProvider.initializedPanels.delete(panel);
 			const current = KqlxEditorProvider.openPanelsByUri.get(key);
 			current?.delete(panel);
 			if (current?.size === 0) KqlxEditorProvider.openPanelsByUri.delete(key);
@@ -943,6 +954,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				panel.reveal(viewColumn, false);
 				return true;
 			} catch {
+				KqlxEditorProvider.initializedPanels.delete(panel);
 				panels.delete(panel);
 			}
 		}
@@ -976,6 +988,33 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			};
 			const onChange = () => {
 				if (KqlxEditorProvider.revealOpenEditor(uri, viewColumn)) finish(true);
+			};
+			listeners.add(onChange);
+			KqlxEditorProvider.panelChangeListenersByUri.set(key, listeners);
+			const timer = setTimeout(() => finish(false), timeoutMs);
+			onChange();
+		});
+	}
+
+	public static async waitForOpenEditorInitialized(uri: vscode.Uri, timeoutMs = 30_000): Promise<boolean> {
+		const key = KqlxEditorProvider.panelKey(uri);
+		const hasInitializedEditor = () => [...(KqlxEditorProvider.openPanelsByUri.get(key) ?? [])]
+			.some(panel => KqlxEditorProvider.initializedPanels.has(panel));
+		if (hasInitializedEditor()) return true;
+		if (timeoutMs <= 0) return false;
+		return new Promise<boolean>(resolve => {
+			let settled = false;
+			const listeners = KqlxEditorProvider.panelChangeListenersByUri.get(key) ?? new Set<() => void>();
+			const finish = (initialized: boolean) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				listeners.delete(onChange);
+				if (listeners.size === 0) KqlxEditorProvider.panelChangeListenersByUri.delete(key);
+				resolve(initialized);
+			};
+			const onChange = () => {
+				if (hasInitializedEditor()) finish(true);
 			};
 			listeners.add(onChange);
 			KqlxEditorProvider.panelChangeListenersByUri.set(key, listeners);
@@ -2621,6 +2660,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			else if (this.markdownDocuments.get(markdownDocumentKey) === previousPanelOwner) {
 				this.markdownDocuments.delete(markdownDocumentKey);
 			}
+			KqlxEditorProvider.markOpenEditorInitialized(document.uri, webviewPanel);
 		};
 		const overlayOwnedMarkdownState = (
 			baseState: KqlxStateV1,

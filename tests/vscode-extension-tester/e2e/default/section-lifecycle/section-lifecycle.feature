@@ -44,6 +44,7 @@ Feature: Section lifecycle — add, rename, collapse, expand, remove all section
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (el.classList.contains('is-collapsed')) throw new Error('Should be expanded'); return 'expanded ✓'; })()" in the webview
 
     # ── TEST 4: Add Chart section ─────────────────────────────────────────
+    When I evaluate "window.__e2e.workbench.beginDocumentCommandCapture()" in the webview
     When I click "button[data-add-kind='chart']" in the webview
     And I wait 2 seconds
 
@@ -93,6 +94,7 @@ Feature: Section lifecycle — add, rename, collapse, expand, remove all section
     Then I take a screenshot "09-all-types-verified"
 
     # ── TEST 12: Remove all sections one by one ───────────────────────────
+    When I evaluate "window.__e2e.workbench.waitForDocumentCommands(6)" in the webview
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
 

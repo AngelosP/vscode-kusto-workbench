@@ -2555,6 +2555,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			// Open the persistent session file (survives restarts/crashes).
 			await vscode.workspace.fs.createDirectory(context.globalStorageUri);
 			const sessionUri = vscode.Uri.joinPath(context.globalStorageUri, 'session.kqlx');
+			if (testIsolateKustoConnections) await closeQueryEditorSessionTabs(sessionUri);
 			await withKqlxDocumentWriteLock(sessionUri, async () => {
 				if (testIsolateKustoConnections) {
 					const content = stringifyKqlxFile(createKqlxOrMdxFileWithDefaultSection('kqlx'));
@@ -2572,6 +2573,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			});
 
 			await revealOrOpenQueryEditorSession(sessionUri);
+			if (testIsolateKustoConnections
+				&& !await KqlxEditorProvider.waitForOpenEditorInitialized(sessionUri, 30_000)) {
+				throw new Error('The isolated Kusto Workbench session did not finish initializing.');
+			}
 		}))
 	);
 

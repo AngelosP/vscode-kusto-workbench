@@ -768,9 +768,21 @@ describe('first-launch integration inventory', () => {
 		let markWriteStarted!: () => void;
 		const writeHeld = new Promise<void>(resolve => { releaseWrite = resolve; });
 		const writeStarted = new Promise<void>(resolve => { markWriteStarted = resolve; });
+		const closeHeld = deferred();
+		const closeStarted = deferred();
+		const initializationHeld = deferred();
+		const initializationStarted = deferred();
 		const events: string[] = [];
 		let locked = false;
 		const createFresh = vi.fn(createKqlxOrMdxFileWithDefaultSection);
+		const close = vi.fn(async (uri: string) => {
+			expect(uri).toBe(sessionUri);
+			expect(locked).toBe(false);
+			events.push('close');
+			closeStarted.resolve();
+			await closeHeld.promise;
+			events.push('closed');
+		});
 		const writeFile = vi.fn(async (uri: string, content: Uint8Array) => {
 			expect(uri).toBe(sessionUri);
 			expect(locked).toBe(true);
@@ -783,6 +795,16 @@ describe('first-launch integration inventory', () => {
 			expect(uri).toBe(sessionUri);
 			expect(locked).toBe(false);
 			events.push('reveal');
+		});
+		const waitForInitialization = vi.fn(async (uri: string, timeoutMs: number) => {
+			expect(uri).toBe(sessionUri);
+			expect(timeoutMs).toBe(30_000);
+			expect(locked).toBe(false);
+			events.push('wait');
+			initializationStarted.resolve();
+			await initializationHeld.promise;
+			events.push('ready');
+			return true;
 		});
 		const open = runInNewContext(ts.transpileModule(`(${callbackSource});`, {
 			compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
@@ -807,19 +829,40 @@ describe('first-launch integration inventory', () => {
 				try { await writer(); } finally { locked = false; events.push('unlock'); }
 			},
 			revealOrOpenQueryEditorSession: reveal,
+			closeQueryEditorSessionTabs: close,
+			KqlxEditorProvider: { waitForOpenEditorInitialized: waitForInitialization },
 		}) as () => Promise<void>;
-		const opening = open();
+		const settled = vi.fn();
+		const opening = open().then(settled);
 		try {
+			if (isolated) {
+				await Promise.race([closeStarted.promise, opening]);
+				expect(events).toEqual(['close']);
+				expect(writeFile).not.toHaveBeenCalled();
+				expect(reveal).not.toHaveBeenCalled();
+				expect(settled).not.toHaveBeenCalled();
+				closeHeld.resolve();
+			}
 			await Promise.race([writeStarted, opening]);
 			expect(bytes).toEqual(originalBytes);
 			expect(writeFile).toHaveBeenCalledTimes(shouldWrite ? 1 : 0);
 			expect(reveal).toHaveBeenCalledTimes(shouldWrite ? 0 : 1);
-		} finally {
 			releaseWrite();
+			await Promise.race([initializationStarted.promise, opening]);
+			expect(waitForInitialization).toHaveBeenCalledTimes(isolated ? 1 : 0);
+			if (isolated) expect(settled).not.toHaveBeenCalled();
+		} finally {
+			closeHeld.resolve();
+			releaseWrite();
+			initializationHeld.resolve();
 			await opening;
 		}
+		expect(close).toHaveBeenCalledTimes(isolated ? 1 : 0);
 		expect(createFresh.mock.calls).toEqual(shouldWrite ? [['kqlx']] : []);
-		expect(events).toEqual(shouldWrite ? ['lock', 'write', 'unlock', 'reveal'] : ['lock', 'unlock', 'reveal']);
+		expect(events).toEqual([
+			...(isolated ? ['close', 'closed'] : []),
+			'lock', ...(shouldWrite ? ['write'] : []), 'unlock', 'reveal', ...(isolated ? ['wait', 'ready'] : []),
+		]);
 		if (shouldWrite) {
 			expect(bytes).toEqual(new TextEncoder().encode(stringifyKqlxFile(createKqlxOrMdxFileWithDefaultSection('kqlx'))));
 			expect(parseKqlxText(new TextDecoder().decode(bytes))).toEqual({

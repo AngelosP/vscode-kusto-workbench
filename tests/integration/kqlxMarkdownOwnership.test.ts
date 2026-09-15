@@ -866,71 +866,143 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
-	test('initial projection recovery shares one bounded retry budget', async () => {
-		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
-		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-initial-projection-budget-'));
-		const filePath = path.join(tmpDir, 'bounded.kqlx');
-		const currentText = JSON.stringify({
-			kind: 'kqlx', version: 1, state: { sections: [
-				{ id: 'query_1', type: 'query', query: 'print Value=1' },
-			] },
-		});
-		let receiveHandler: ((message: any) => unknown) | undefined;
-		let latestProjection: any;
-		let projectionCount = 0;
-		const disposeHandlers: Array<() => void> = [];
+	for (const outcome of ['accepted', 'host retry', 'webview rejection', 'host rejection', 'disposed'] as const) {
+		test(`initial projection initialization waiter handles ${outcome}`, async () => {
+			const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+			const originalCommit = QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh;
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-initial-projection-budget-'));
+			const filePath = path.join(tmpDir, 'bounded.kqlx');
+			const uri = vscode.Uri.file(filePath);
+			const otherUri = vscode.Uri.file(path.join(tmpDir, 'other.kqlx'));
+			const currentText = JSON.stringify({
+				kind: 'kqlx', version: 1, state: { sections: [
+					{ id: 'query_1', type: 'query', query: 'print Value=1' },
+				] },
+			});
+			let receiveHandler: ((message: any) => unknown) | undefined;
+			let latestProjection: any;
+			let projectionCount = 0;
+			let admissionAttempts = 0;
+			let revealCount = 0;
+			let queryEditor: QueryEditorProvider | undefined;
+			let initialized: boolean | undefined;
+			let initializing: Promise<boolean> | undefined;
+			const disposeHandlers: Array<() => void> = [];
+			const listeners = (KqlxEditorProvider as unknown as {
+				panelChangeListenersByUri: Map<string, Set<() => void>>;
+			}).panelChangeListenersByUri;
+			const key = normalizeWorkbenchUriKey(uri);
+			const accepted = outcome === 'accepted' || outcome === 'host retry';
+			const expectedAttempts = outcome === 'host retry' ? 2
+				: outcome === 'webview rejection' || outcome === 'host rejection' ? 3 : 1;
 
-		try {
-			fs.writeFileSync(filePath, currentText, 'utf8');
-			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
-			const provider = new (KqlxEditorProvider as any)(
-				{
-					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
-					globalState: { get: () => undefined, update: async () => undefined },
-					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
-				} as any,
-				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
-			) as KqlxEditorProvider;
-			const document = {
-				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
-				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
-			} as any;
-			const panel = {
-				webview: {
-					options: {}, postMessage: async (message: any) => {
-						if (message?.type === 'documentData') {
-							projectionCount++;
-							latestProjection = message;
+			try {
+				fs.writeFileSync(filePath, currentText, 'utf8');
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async function (this: QueryEditorProvider) {
+					queryEditor = this;
+				};
+				QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh = async function (fingerprint, commit) {
+					if (this === queryEditor) {
+						admissionAttempts++;
+						if (outcome === 'host rejection' || (outcome === 'host retry' && admissionAttempts === 1)) {
+							return false;
 						}
-						if (message?.reloadRequestId) {
-							await Promise.resolve(receiveHandler?.({
-								type: 'documentReloadResult', requestId: message.reloadRequestId,
-								applied: false, editRevision: 0,
-							}));
-						}
-						return true;
+					}
+					return originalCommit.call(this, fingerprint, commit);
+				};
+				const provider = new (KqlxEditorProvider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				) as KqlxEditorProvider;
+				const document = {
+					uri, getText: () => currentText, eol: vscode.EndOfLine.LF,
+					positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+				} as any;
+				const panel = {
+					reveal: () => { revealCount++; },
+					webview: {
+						options: {}, postMessage: async (message: any) => {
+							if (message?.type === 'documentData') {
+								projectionCount++;
+								latestProjection = message;
+							}
+							return true;
+						},
+						onDidReceiveMessage: (handler: any) => {
+							receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
+							return { dispose() {} };
+						},
 					},
-					onDidReceiveMessage: (handler: any) => {
-						receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
+					onDidDispose: (handler: () => void) => {
+						disposeHandlers.push(handler);
 						return { dispose() {} };
 					},
-				},
-				onDidDispose: (handler: () => void) => {
-					disposeHandlers.push(handler);
-					return { dispose() {} };
-				},
-			} as any;
+				} as any;
 
-			await provider.resolveCustomTextEditor(document, panel, {} as any);
-			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
-			assert.strictEqual(projectionCount, 3, 'one initial request must share a three-attempt total budget');
-			for (const dispose of disposeHandlers) dispose();
-			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 2_000), true);
-		} finally {
-			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
-			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
-		}
-	});
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0), false);
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, -1), false);
+				initializing = KqlxEditorProvider.waitForOpenEditorInitialized(uri, 2_000).then(value => {
+					initialized = value;
+					return value;
+				});
+				assert.strictEqual(listeners.get(key)?.size, 1);
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 1), false);
+				assert.strictEqual(listeners.get(key)?.size, 1, 'an expired waiter must not remove another waiter');
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				assert.strictEqual(initialized, undefined, 'panel registration must not initialize the editor');
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0), false);
+				const request = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				for (let attempt = 1; attempt <= expectedAttempts; attempt++) {
+					await waitForCondition(() => projectionCount === attempt, `projection ${attempt} must be posted`, 1_000);
+					assert.strictEqual(latestProjection.sourceGeneration, attempt);
+					assert.strictEqual(initialized, undefined, 'sent projections and rejected admissions must remain uninitialized');
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0), false);
+					if (outcome === 'disposed') {
+						for (const dispose of disposeHandlers) dispose();
+					}
+					await Promise.resolve(receiveHandler!({
+						type: 'documentReloadResult', requestId: latestProjection.reloadRequestId,
+						applied: outcome !== 'webview rejection', editRevision: 0,
+					}));
+				}
+				await request;
+				assert.strictEqual(await initializing, accepted);
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0), accepted);
+				assert.strictEqual(projectionCount, expectedAttempts, 'initial recovery must retain the three-attempt total budget');
+				assert.strictEqual(admissionAttempts, outcome === 'webview rejection' || outcome === 'disposed' ? 0 : expectedAttempts);
+				assert.strictEqual(listeners.has(key), false, 'settled waiters must release their listeners');
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(otherUri, 1), false);
+				assert.strictEqual(listeners.has(normalizeWorkbenchUriKey(otherUri)), false);
+				for (const dispose of disposeHandlers) dispose();
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0), false);
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000), true);
+				const replacement = KqlxEditorProvider.trackOpenEditor(uri, {} as vscode.WebviewPanel);
+				try {
+					await Promise.resolve(receiveHandler!({
+						type: 'documentReloadResult', requestId: latestProjection.reloadRequestId,
+						applied: true, editRevision: 0,
+					}));
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0), false);
+					replacement.beginClosing();
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0), false);
+				} finally {
+					replacement.dispose();
+				}
+				assert.strictEqual(revealCount, 0, 'initialization waiting must not reveal or focus the panel');
+			} finally {
+				for (const dispose of disposeHandlers) dispose();
+				await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+				await initializing;
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+				QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh = originalCommit;
+				try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+			}
+		});
+	}
 
 	test('retired view session cannot acknowledge, command, or release successor Save work', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
