@@ -255,7 +255,20 @@ export function cleanupOwnedManagedWorkspace({
 	if (operations.readFileSync(markerPath, 'utf8') !== owner.content) {
 		throw new Error(`Managed E2E workspace ownership marker has unexpected content: ${markerPath}`);
 	}
-	operations.rmSync(workspaceDir, { recursive: true, force: false });
+	const maxRetries = 5;
+	const retryDelay = 200;
+	for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		try {
+			operations.rmSync(workspaceDir, { recursive: true, force: false });
+			break;
+		} catch (error) {
+			if (process.platform !== 'win32' || attempt === maxRetries || !error || typeof error !== 'object'
+				|| (error.code !== 'EBUSY' && error.code !== 'EPERM')) {
+				throw error;
+			}
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, retryDelay * (attempt + 1));
+		}
+	}
 	if (operations.lstatSync(workspaceDir, { throwIfNoEntry: false })) {
 		throw new Error(`Managed E2E workspace remained after cleanup: ${workspaceDir}`);
 	}

@@ -4725,9 +4725,32 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						`The Markdown command belonged to a retired document owner (generation=${commandGeneration}/${activeProjectionGeneration}, active=${activeMarkdownOwnerEntry === entry}, mapped=${this.markdownDocuments.get(markdownDocumentKey) === entry}).`,
 					);
 					const deliverCommandResult = async () => {
-						if (commandResult && !outerDisposed) {
-							await deliverWebviewMessage({ ...commandResult, type: 'markdownDocumentCommandResult' });
-						}
+						if (!commandResult || outerDisposed || !documentViewSessionActive) return;
+						const admitted = stampDocumentViewHostMessage(viewSessionId, commandResult);
+						if (!admitted.ok) throw new Error(`Invalid command result (${commandId}).`);
+						const terminal = Object.freeze(admitted.value);
+						const generation = activeProjectionGeneration;
+						const authority = markdownDocumentQueue.latestAuthority;
+						const isDeliveryCurrent = () => !outerDisposed && documentViewSessionActive
+							&& generation === activeProjectionGeneration && authority === markdownDocumentQueue.latestAuthority;
+						let expired = false;
+						let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+						let expireDelivery!: () => void;
+						const deadline = new Promise<false>(resolve => { expireDelivery = () => { expired = true; resolve(false); }; });
+						try {
+							for (let attempt = 0; attempt < 3; attempt++) {
+								if (!isDeliveryCurrent()) return;
+								if (expired) break;
+								if (await Promise.race([
+									deliverWebviewMessage(terminal).catch(() => false), deadline, outerDisposalSignal,
+								]) || !isDeliveryCurrent()) return;
+								if (!deadlineTimer) deadlineTimer = setTimeout(expireDelivery, 500);
+								if (attempt < 2 && !expired) { await Promise.race([
+									new Promise<void>(resolve => setTimeout(resolve, 50)), deadline, outerDisposalSignal,
+								]); }
+							}
+							throw new Error(`Command result delivery failed (${commandId}).`);
+						} finally { clearTimeout(deadlineTimer); }
 					};
 					const isCommandCurrent = () => !!entry
 						&& Number.isSafeInteger(commandGeneration)

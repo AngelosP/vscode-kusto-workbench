@@ -101,7 +101,7 @@ Feature: Workbench tool session survives broad notebook activation
     When I execute command "workbench.action.closeAllEditors"
     Then I wait 1 second
     Then I collect JSON artifact "reopen-canary" from extension host expression "(async () => { const uri = vscode.Uri.joinPath(vscode.Uri.joinPath(vscode.Uri.file(process.env.TEMP || process.cwd()), 'kusto-workbench-tool-session-activation-sweep'), 'activation-sweep-00.kqlx'); await vscode.commands.executeCommand('vscode.openWith', uri, 'kusto.kqlxEditor', { preview: false }); return { opened: true }; })()"
-    When I wait for "#sweep_canary_query" in the webview for 30 seconds
+    When I wait for "body[data-kusto-e2e-ready='true'] #sweep_canary_query" in the webview "activation-sweep-00.kqlx" for 30 seconds
     Then I collect JSON artifact "reopened-canary" from webview expression "(() => { const query = window.queryEditors?.sweep_canary_query?.getValue?.() || ''; if (query !== 'print SweepRecovered=76') throw new Error('Reopened canary query was not durable: ' + query); return { query }; })()"
     Then I collect JSON artifact "reopened-inventory" from extension host expression:
       """

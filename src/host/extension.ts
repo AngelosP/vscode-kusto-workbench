@@ -268,7 +268,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				await copilotClarificationAuth.waitForProviderAccountRefresh();
 				for (const connection of connectionManager.getConnections()) {
 					if (connection.name === copilotClarificationConnectionName) {
+						await copilotClarificationAuth.clearTokenOverride(
+							connection.authorityId,
+							copilotClarificationAccount.id,
+							[connection.id],
+						);
 						await connectionManager.removeConnection(connection.id);
+						await copilotClarificationAuth.removeConnection(connection.id);
+						await testConnectionCache.clearConnection(connection.id);
+						await deleteCachedSchemasForConnections(context.globalStorageUri, new Set([connection.id]));
+						await copilotClarificationAuth.waitForWriteSettlement();
+						await connectionManager.waitForSettlement();
 					}
 				}
 				const connection = await connectionManager.addConnection({
@@ -283,6 +293,42 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					'kusto-copilot-clarification-e2e-token',
 					[connection.id],
 				);
+				await copilotClarificationAuth.waitForWriteSettlement();
+				await connectionManager.waitForSettlement();
+				const accountPartition = copilotClarificationAuth.getAccountPartition(connection.authorityId, copilotClarificationAccount.id);
+				if (!await testConnectionCache.setDatabases(connection.id, accountPartition, ['ChecklistDb'])) {
+					throw new Error('Copilot clarification fixture database cache write was superseded.');
+				}
+				const schemaWritten = await writeCachedSchemaToDisk(
+					context.globalStorageUri,
+					schemaCacheKey(connection.clusterUrl, 'ChecklistDb', connection.id, accountPartition),
+					{
+						schema: {
+							tables: ['events'],
+							columnTypesByTable: { events: { Timestamp: 'datetime' } },
+							rawSchemaJson: {
+								Databases: {
+									ChecklistDb: {
+										Name: 'ChecklistDb',
+										Tables: {
+											events: {
+												Name: 'events',
+												OrderedColumns: [{ Name: 'Timestamp', Type: 'System.DateTime', CslType: 'datetime' }],
+											},
+										},
+										Functions: {},
+									},
+								},
+							},
+						},
+						timestamp: Date.now(), version: SCHEMA_CACHE_VERSION,
+						clusterUrl: connection.clusterUrl, database: 'ChecklistDb',
+						connectionId: connection.id, accountPartition,
+					},
+				);
+				if (!schemaWritten) {
+					throw new Error('Copilot clarification fixture schema cache write was superseded.');
+				}
 				await toolOrchestrator?.postToAllWebviews({
 					type: 'e2eCopilotClarificationConnection',
 					connection,
@@ -299,11 +345,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 						copilotClarificationAccount.id,
 						[connection.id],
 					);
+					await connectionManager.removeConnection(connection.id);
 					await copilotClarificationAuth.removeConnection(connection.id);
-					if (connection.name === copilotClarificationConnectionName) {
-						await connectionManager.removeConnection(connection.id);
-					}
+					await testConnectionCache.clearConnection(connection.id);
+					await deleteCachedSchemasForConnections(context.globalStorageUri, new Set([connection.id]));
 				}
+				await copilotClarificationAuth.waitForWriteSettlement();
+				await connectionManager.waitForSettlement();
 			}),
 		);
 		const testPrefix = 'E2E Identity Checklist';

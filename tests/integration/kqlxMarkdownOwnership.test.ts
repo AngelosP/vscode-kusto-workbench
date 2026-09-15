@@ -7,8 +7,11 @@ import * as vscode from 'vscode';
 import { CompatSidecarSession } from '../../src/host/compatSidecarSession';
 import { KqlxEditorProvider, withKqlxDocumentWriteLock } from '../../src/host/kqlxEditorProvider';
 import { KustoResultPersistenceRegistry } from '../../src/host/kustoResultPersistenceOwner';
+import { MainWebviewStartupGateway } from '../../src/host/mainWebviewStartupGateway';
 import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
 import { normalizeWorkbenchUriKey } from '../../src/host/workbenchFileTypes';
+import * as workbenchLogger from '../../src/host/workbenchLogger';
+import { MarkdownDocumentAggregate } from '../../src/shared/markdownDocumentAggregate';
 import { adaptMainWebviewStartupTestPanel } from './mainWebviewStartupTestAdapter';
 
 type DisposableLike = { dispose(): void };
@@ -117,6 +120,227 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 	suiteTeardown(() => {
 		(KqlxEditorProvider as any).prototype.resolveCustomTextEditor = originalResolveCustomTextEditor;
 	});
+
+	for (const { accepted, transport, expectedAttempts } of [
+		{ accepted: true, transport: 'false then true', expectedAttempts: 2 },
+		{ accepted: false, transport: 'false then true', expectedAttempts: 2 },
+		{ accepted: true, transport: 'throw then true', expectedAttempts: 2 },
+		{ accepted: false, transport: 'throw then true', expectedAttempts: 2 },
+		{ accepted: true, transport: 'success', expectedAttempts: 1 },
+		{ accepted: true, transport: 'late initial success', expectedAttempts: 1 },
+		{ accepted: true, transport: 'false twice then true', expectedAttempts: 3 },
+		{ accepted: true, transport: 'permanent false', expectedAttempts: 3 },
+		{ accepted: true, transport: 'permanent throw', expectedAttempts: 3 },
+		{ accepted: true, transport: 'dispose after false', expectedAttempts: 1 },
+		{ accepted: true, transport: 'source retirement after false', expectedAttempts: 1 },
+		{ accepted: true, transport: 'deadline', expectedAttempts: 2 },
+	] as const) {
+		test(`command result transport ${transport} preserves the ${accepted ? 'accepted' : 'rejected'} terminal without another mutation`, async () => {
+			const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+			const originalOpen = fs.promises.open;
+			const originalPostMessage = MainWebviewStartupGateway.prototype.postMessage;
+			const originalTransition = MarkdownDocumentAggregate.prototype.transition;
+			const originalGetLogger = workbenchLogger.getWorkbenchLogger;
+			const originalSetTimeout = global.setTimeout;
+			const originalClearTimeout = global.clearTimeout;
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-command-result-transport-'));
+			const filePath = path.join(tmpDir, 'session.kqlx');
+			const uri = vscode.Uri.file(filePath);
+			const initialText = JSON.stringify({
+				kind: 'kqlx', version: 1, state: { sections: [
+					{ id: 'markdown_transport', type: 'markdown', text: 'Retained section' },
+				] },
+			}, null, 2) + '\n';
+			let receiveHandler: ((message: any) => unknown) | undefined;
+			let projection: any;
+			let durableWrites = 0;
+			let transitions = 0;
+			let captureDeliveryTimers = false;
+			let deadlineHandle: ReturnType<typeof setTimeout> | undefined;
+			let deadlineCleared = false;
+			let expireDelivery: (() => void) | undefined;
+			let settleTransport: ((delivered: boolean) => void) | undefined;
+			const terminals: any[] = [];
+			const gatewayTerminals: unknown[] = [];
+			const terminalSnapshots: string[] = [];
+			const transportWarnings: unknown[][] = [];
+			const deliveryDelays: number[] = [];
+			const disposeHandlers: Array<() => void> = [];
+			try {
+				fs.writeFileSync(filePath, initialText, 'utf8');
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+				MainWebviewStartupGateway.prototype.postMessage = function (message: unknown) {
+					if ((message as any)?.type === 'markdownDocumentCommandResult') gatewayTerminals.push(message);
+					return originalPostMessage.call(this, message);
+				};
+				MarkdownDocumentAggregate.prototype.transition = function (...args: Parameters<typeof originalTransition>) {
+					transitions++;
+					return originalTransition.apply(this, args);
+				};
+				(workbenchLogger as any).getWorkbenchLogger = () => {
+					const logger = originalGetLogger();
+					return {
+						...logger,
+						warn: (message: string, ...args: unknown[]) => {
+							if (message === '[kusto] webview message failed:') transportWarnings.push([message, ...args]);
+							else logger.warn(message, ...args);
+						},
+					};
+				};
+				global.setTimeout = ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+					const handle = originalSetTimeout(callback, delay, ...args);
+					if (captureDeliveryTimers && (delay === 50 || delay === 500)) {
+						deliveryDelays.push(delay);
+						if (delay === 500 && !expireDelivery) {
+							deadlineHandle = handle;
+							expireDelivery = () => callback(...args);
+						}
+					}
+					return handle;
+				}) as typeof setTimeout;
+				global.clearTimeout = timeout => {
+					if (timeout === deadlineHandle) deadlineCleared = true;
+					originalClearTimeout(timeout);
+				};
+				fs.promises.open = async (...args: Parameters<typeof fs.promises.open>) => {
+					const handle = await originalOpen(...args);
+					if (String(args[0]) === uri.fsPath && args[1] === 'r+') {
+						const originalSync = handle.sync.bind(handle);
+						handle.sync = async () => {
+							await originalSync();
+							durableWrites++;
+						};
+					}
+					return handle;
+				};
+				const provider = new (KqlxEditorProvider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(tmpDir), extensionMode: vscode.ExtensionMode.Test,
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				) as KqlxEditorProvider;
+				const document = {
+					uri, getText: () => initialText, eol: vscode.EndOfLine.LF,
+					positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: false, version: 1,
+				} as any;
+				const panel = {
+					webview: {
+						options: {},
+						postMessage: async (message: any) => {
+							if (message?.type === 'documentData') projection = message;
+							if (message?.reloadRequestId) {
+								await Promise.resolve(receiveHandler?.({
+									type: 'documentReloadResult', requestId: message.reloadRequestId,
+									applied: true, editRevision: Number(message.editRevision || 0),
+									markdownCommandBarrierSupported: true,
+								}));
+							}
+							if (message?.type === 'markdownDocumentCommandResult') {
+								terminals.push(message);
+								terminalSnapshots.push(JSON.stringify(message));
+								if (transport === 'dispose after false') {
+									captureDeliveryTimers = false;
+									for (const dispose of disposeHandlers) dispose();
+									captureDeliveryTimers = true;
+									return false;
+								}
+								if (transport === 'source retirement after false') {
+									captureDeliveryTimers = false;
+									await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+									captureDeliveryTimers = true;
+									return false;
+								}
+								if (transport === 'deadline' || transport === 'late initial success') {
+									if (transport === 'deadline' && terminals.length === 1) return false;
+									queueMicrotask(() => {
+										expireDelivery?.();
+										if (transport === 'late initial success') settleTransport?.(true);
+									});
+									return new Promise<boolean>(resolve => { settleTransport = resolve; });
+								}
+								if (transport === 'permanent throw' || (transport === 'throw then true' && terminals.length === 1)) {
+									throw new Error('Transport detail must not appear in the permanent-failure warning.');
+								}
+								return transport !== 'permanent false'
+									&& (transport === 'success' || terminals.length >= expectedAttempts);
+							}
+							return true;
+						},
+						onDidReceiveMessage: (handler: (message: any) => unknown) => {
+							receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
+							return { dispose() {} };
+						},
+					},
+					onDidDispose: (handler: () => void) => {
+						disposeHandlers.push(handler);
+						return { dispose() {} };
+					},
+				} as any;
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const initialRevision = projection.documentRevision;
+				const initialGeneration = projection.sourceGeneration;
+				durableWrites = 0;
+				transitions = 0;
+				captureDeliveryTimers = true;
+				await Promise.resolve(receiveHandler!({
+					type: 'markdownDocumentCommand', commandId: 'python-add-6',
+					sourceGeneration: initialGeneration,
+					expectedDocumentRevision: initialRevision + (accepted ? 0 : 1),
+					command: { type: 'add', section: { id: 'python_transport', type: 'python', code: 'print(6)' } },
+				}));
+				captureDeliveryTimers = false;
+				settleTransport?.(true);
+				await new Promise<void>(resolve => setImmediate(resolve));
+				assert.strictEqual(terminals.length, expectedAttempts, 'only known non-delivery may retry while the owner remains live');
+				assert.strictEqual(gatewayTerminals.length, expectedAttempts);
+				for (const terminal of gatewayTerminals) {
+					assert.strictEqual(terminal, gatewayTerminals[0], 'gateway retries must reuse one result object');
+					assert.strictEqual(Object.isFrozen(terminal), true, 'the admitted result must be immutable');
+				}
+				assert.deepStrictEqual(terminalSnapshots, Array(expectedAttempts).fill(terminalSnapshots[0]));
+				assert.strictEqual(transitions, 1, 'transport retries must never reenter the command transition');
+				assert.strictEqual(terminals[0].commandId, 'python-add-6');
+				assert.strictEqual(terminals[0].ok, accepted);
+				assert.strictEqual(terminals[0].sourceGeneration, initialGeneration);
+				assert.strictEqual(terminals[0].documentRevision, initialRevision + (accepted ? 1 : 0));
+				assert.strictEqual(durableWrites, accepted ? 1 : 0, 'transport retry must not repeat the durable write');
+				const retryUnnecessary = transport === 'success' || transport === 'late initial success'
+					|| transport === 'dispose after false' || transport === 'source retirement after false';
+				if (retryUnnecessary) assert.deepStrictEqual(deliveryDelays, [], 'successful delivery or retirement must not start a retry budget');
+				else assert.strictEqual(deliveryDelays[0], 500, 'the retry deadline must stay below the existing five-second client deadline');
+				assert.ok(deliveryDelays.filter(delay => delay === 50).length <= 2, 'retry delays must total at most 100 ms');
+				if (deadlineHandle) assert.strictEqual(deadlineCleared, true, 'every terminal path must clear its deadline');
+				const permanentFailure = transport === 'permanent false' || transport === 'permanent throw' || transport === 'deadline';
+				assert.strictEqual(transportWarnings.length, permanentFailure ? 1 : 0);
+				if (permanentFailure) {
+					assert.strictEqual(transportWarnings[0].length, 2);
+					assert.ok(transportWarnings[0][1] instanceof Error);
+					assert.strictEqual((transportWarnings[0][1] as Error).message, 'Command result delivery failed (python-add-6).');
+				}
+				if (transport === 'source retirement after false') assert.ok(projection.sourceGeneration > initialGeneration);
+				assert.deepStrictEqual(
+					JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections.map((section: any) => section.id),
+					accepted ? ['markdown_transport', 'python_transport'] : ['markdown_transport'],
+				);
+			} finally {
+				captureDeliveryTimers = false;
+				settleTransport?.(false);
+				for (const dispose of disposeHandlers) dispose();
+				await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+				fs.promises.open = originalOpen;
+				MainWebviewStartupGateway.prototype.postMessage = originalPostMessage;
+				MarkdownDocumentAggregate.prototype.transition = originalTransition;
+				(workbenchLogger as any).getWorkbenchLogger = originalGetLogger;
+				global.setTimeout = originalSetTimeout;
+				global.clearTimeout = originalClearTimeout;
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+	}
 
 	test('Power BI compensation cannot mutate a same-ID HTML replacement and cleanup follows host projection', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;

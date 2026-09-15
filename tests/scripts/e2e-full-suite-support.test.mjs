@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import {
 	copyFileSync,
 	cpSync,
@@ -8,6 +9,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	readdirSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from 'node:fs';
@@ -533,6 +535,262 @@ test('runs cleanup after artifact processing fails and preserves both errors', (
 		rmSync(fixtureRoot, { recursive: true, force: true });
 	}
 });
+
+test('retries transient Windows managed workspace locks with bounded removal', {
+	skip: process.platform !== 'win32',
+}, testContext => {
+	const retryWait = testContext.mock.method(Atomics, 'wait', () => 'timed-out');
+	for (const code of ['EBUSY', 'EPERM']) {
+		retryWait.mock.resetCalls();
+		const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), 'kusto-e2e-cleanup-retry-'));
+		const workspaceDir = path.join(fixtureRoot, 'workspace');
+		const owner = { markerName: '.owner', content: 'owned\n' };
+		const markerPath = path.join(workspaceDir, owner.markerName);
+		const removalCalls = [];
+		try {
+			mkdirSync(workspaceDir);
+			writeFileSync(markerPath, owner.content);
+			writeFileSync(path.join(workspaceDir, 'generated.txt'), 'generated');
+			const result = cleanupOwnedManagedWorkspace({
+				workspaceDir,
+				owner,
+				protectedRoot: repoRoot,
+				operations: {
+					lstatSync,
+					readFileSync,
+					realpathSync,
+					rmSync: (target, options) => {
+						removalCalls.push([target, options]);
+						if (removalCalls.length === 1) {
+							rmSync(markerPath);
+							throw Object.assign(new Error(`${code}: resource busy or locked`), { code });
+						}
+						rmSync(target, options);
+					},
+				},
+			});
+
+			assert.deepEqual(removalCalls, [
+				[workspaceDir, { recursive: true, force: false }],
+				[workspaceDir, { recursive: true, force: false }],
+			]);
+			assert.deepEqual(retryWait.mock.calls.map(call => call.arguments[3]), [200]);
+			assert.deepEqual(result, { removed: true, path: workspaceDir, markerPath });
+			assert.equal(lstatSync(workspaceDir, { throwIfNoEntry: false }), undefined);
+		} finally {
+			rmSync(fixtureRoot, { recursive: true, force: true });
+		}
+	}
+});
+
+test('keeps managed workspace removal failures fatal and limits retries to Windows lock errors', testContext => {
+	const retryWait = testContext.mock.method(Atomics, 'wait', () => 'timed-out');
+	const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+	const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), 'kusto-e2e-cleanup-failure-'));
+	const workspaceDir = path.join(fixtureRoot, 'workspace');
+	const owner = { markerName: '.owner', content: 'owned\n' };
+	try {
+		mkdirSync(workspaceDir);
+		writeFileSync(path.join(workspaceDir, owner.markerName), owner.content);
+		for (const platform of ['win32', 'linux']) {
+			Object.defineProperty(process, 'platform', { value: platform });
+			for (const code of ['EBUSY', 'EPERM', 'EACCES', 'EIO', 'ENOENT', 'ENOTEMPTY', 'EMFILE', 'ENFILE']) {
+				retryWait.mock.resetCalls();
+				const operationError = new Error('E2E assertion failed');
+				const cleanupError = Object.assign(new Error(`${code}: removal failed`), { code });
+				const removalCalls = [];
+				let operationCalls = 0;
+				const outcome = runWithGuaranteedCleanup(
+					() => { operationCalls++; throw operationError; },
+					() => cleanupOwnedManagedWorkspace({
+						workspaceDir,
+						owner,
+						protectedRoot: repoRoot,
+						operations: {
+							lstatSync,
+							readFileSync,
+							realpathSync,
+							rmSync: (target, options) => {
+								removalCalls.push([target, options]);
+								throw cleanupError;
+							},
+						},
+					}),
+				);
+
+				const shouldRetry = platform === 'win32' && (code === 'EBUSY' || code === 'EPERM');
+				assert.deepEqual(removalCalls, Array.from(
+					{ length: shouldRetry ? 6 : 1 },
+					() => [workspaceDir, { recursive: true, force: false }],
+				), `${platform}: ${code}`);
+				assert.deepEqual(retryWait.mock.calls.map(call => call.arguments[3]), shouldRetry ? [200, 400, 600, 800, 1000] : []);
+				assert.equal(operationCalls, 1);
+				assert.equal(outcome.operationError, operationError);
+				assert.equal(outcome.cleanupError, cleanupError);
+				assert.equal(outcome.cleanupValue, undefined);
+				assert.ok(lstatSync(workspaceDir).isDirectory());
+				assert.equal(readFileSync(path.join(workspaceDir, owner.markerName), 'utf8'), owner.content);
+			}
+		}
+	} finally {
+		Object.defineProperty(process, 'platform', platformDescriptor);
+		rmSync(fixtureRoot, { recursive: true, force: true });
+	}
+});
+
+test('rejects managed workspace cleanup when native removal leaves the root behind', testContext => {
+	testContext.mock.method(Atomics, 'wait', () => 'timed-out');
+	const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), 'kusto-e2e-cleanup-postcondition-'));
+	const workspaceDir = path.join(fixtureRoot, 'workspace');
+	const owner = { markerName: '.owner', content: 'owned\n' };
+	try {
+		mkdirSync(workspaceDir);
+		writeFileSync(path.join(workspaceDir, owner.markerName), owner.content);
+		for (const failFirst of process.platform === 'win32' ? [false, true] : [false]) {
+			let removalCalls = 0;
+			assert.throws(() => cleanupOwnedManagedWorkspace({
+				workspaceDir,
+				owner,
+				protectedRoot: repoRoot,
+				operations: {
+					lstatSync,
+					readFileSync,
+					realpathSync,
+					rmSync: () => {
+						removalCalls++;
+						if (failFirst && removalCalls === 1) {
+							throw Object.assign(new Error('workspace busy'), { code: 'EBUSY' });
+						}
+					},
+				},
+			}), /remained after cleanup/);
+			assert.equal(removalCalls, failFirst ? 2 : 1);
+			assert.ok(lstatSync(workspaceDir).isDirectory());
+		}
+	} finally {
+		rmSync(fixtureRoot, { recursive: true, force: true });
+	}
+});
+
+test('rejects unsafe managed workspace ownership before any removal or retry', () => {
+	const workspaceDir = path.join(os.tmpdir(), 'kusto-e2e-cleanup-guard-workspace');
+	const owner = { markerName: '.owner', content: 'owned\n' };
+	const markerPath = path.join(workspaceDir, owner.markerName);
+	const rootStat = { isSymbolicLink: () => false, isDirectory: () => true };
+	const markerStat = { isSymbolicLink: () => false, isFile: () => true, nlink: 1 };
+	const markerReadError = Object.assign(new Error('EBUSY reading ownership marker'), { code: 'EBUSY' });
+	const cases = [
+		[/root is a link or has the wrong type/, { lstatSync: () => ({ ...rootStat, isSymbolicLink: () => true }) }],
+		[/root is a link or has the wrong type/, { lstatSync: () => ({ ...rootStat, isDirectory: () => false }) }],
+		[/ownership marker is invalid/, { lstatSync: target => target === workspaceDir ? rootStat : undefined }],
+		...[
+			{ ...markerStat, isSymbolicLink: () => true },
+			{ ...markerStat, isFile: () => false },
+			{ ...markerStat, nlink: 2 },
+		].map(invalidMarker => [
+			/ownership marker is invalid/,
+			{ lstatSync: target => target === workspaceDir ? rootStat : invalidMarker },
+		]),
+		[/ownership marker escaped its root/, { realpathSync: target => target === markerPath ? path.join(repoRoot, '.owner') : target }],
+		[/ownership marker has unexpected content/, { readFileSync: () => 'unowned\n' }],
+		[markerReadError, { readFileSync: () => { throw markerReadError; } }],
+		...[repoRoot, path.join(repoRoot, 'workspace'), path.dirname(repoRoot)].map(canonicalWorkspace => [
+			/overlaps the protected root/,
+			{ realpathSync: target => target === workspaceDir ? canonicalWorkspace : target },
+		]),
+	];
+	for (const [expectedError, overrides] of cases) {
+		let removalCalls = 0;
+		assert.throws(() => cleanupOwnedManagedWorkspace({
+			workspaceDir,
+			owner,
+			protectedRoot: repoRoot,
+			operations: {
+				lstatSync: target => target === workspaceDir ? rootStat : markerStat,
+				readFileSync: () => owner.content,
+				realpathSync: target => target,
+				rmSync: () => { removalCalls++; },
+				...overrides,
+			},
+		}), expectedError);
+		assert.equal(removalCalls, 0);
+	}
+});
+
+for (const releaseLock of [true, false]) {
+	test(`managed workspace cleanup ${releaseLock ? 'removes a released' : 'fails on a persistent'} Windows child cwd lock`, {
+		skip: process.platform !== 'win32',
+		timeout: 20000,
+	}, async () => {
+		const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), 'kusto-e2e-cleanup-child-'));
+		const workspaceDir = path.join(fixtureRoot, 'workspace');
+		const owner = { markerName: '.owner', content: 'owned\n' };
+		let child;
+		let childClosed;
+		try {
+			mkdirSync(workspaceDir);
+			writeFileSync(path.join(workspaceDir, owner.markerName), owner.content);
+			child = spawn(process.execPath, ['-e', `
+				setTimeout(() => process.exit(2), 15000);
+				process.stdin.once('data', () => {
+					setTimeout(() => {
+						process.chdir(process.argv[1]);
+						process.exit(0);
+					}, 300);
+				});
+				process.stdout.write('locked');
+			`, fixtureRoot], { cwd: workspaceDir, stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true });
+			childClosed = once(child, 'close');
+			const [ready] = await Promise.race([
+				once(child.stdout, 'data'),
+				childClosed.then(([code]) => { throw new Error(`Lock holder exited before readiness: ${code}`); }),
+			]);
+			assert.equal(ready.toString(), 'locked');
+			const lockErrors = [];
+			const cleanup = () => cleanupOwnedManagedWorkspace({
+				workspaceDir,
+				owner,
+				protectedRoot: repoRoot,
+				operations: {
+					lstatSync,
+					readFileSync,
+					realpathSync,
+					rmSync: (target, options) => {
+						try {
+							rmSync(target, options);
+						} catch (error) {
+							lockErrors.push(error);
+							if (releaseLock && lockErrors.length === 1) child.stdin.end('release');
+							throw error;
+						}
+					},
+				},
+			});
+
+			if (releaseLock) {
+				assert.deepEqual(cleanup(), {
+					removed: true,
+					path: workspaceDir,
+					markerPath: path.join(workspaceDir, owner.markerName),
+				});
+				assert.ok(lockErrors.length >= 1 && lockErrors.length <= 5);
+				assert.equal(lstatSync(workspaceDir, { throwIfNoEntry: false }), undefined);
+				assert.deepEqual(await childClosed, [0, null]);
+			} else {
+				assert.throws(cleanup, error => error === lockErrors[5]);
+				assert.equal(lockErrors.length, 6);
+				assert.ok(lstatSync(workspaceDir).isDirectory());
+			}
+			assert.ok(lockErrors.every(error => error.code === 'EBUSY' || error.code === 'EPERM'));
+		} finally {
+			if (childClosed) {
+				if (child.exitCode === null) child.kill();
+				await childClosed.catch(() => undefined);
+			}
+			rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+		}
+	});
+}
 
 test('rejects deleting a managed workspace that contains the protected root', () => {
 	const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), 'kusto-e2e-ancestor-workspace-'));

@@ -6,6 +6,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
 	createKqlxOrMdxFileWithDefaultSection, parseKqlxText, stringifyKqlxFile,
 } from '../../../src/host/kqlxFormat';
+import { extractSchemaFromJson } from '../../../src/host/kustoClientUtils';
+import { SCHEMA_CACHE_VERSION, schemaCacheKey, type CachedSchemaEntry } from '../../../src/host/schemaCache';
 
 const root = process.cwd();
 const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
@@ -39,6 +41,209 @@ const extensionGatedCommands = [
 	'kusto.openCustomAgent',
 	'kusto.exportSkill',
 ];
+
+function deferred() {
+	let resolve!: () => void;
+	const promise = new Promise<void>(resolvePromise => { resolve = resolvePromise; });
+	return { promise, resolve };
+}
+
+function extensionCommandCallback(commandId: string): string {
+	const sourceFile = ts.createSourceFile('extension.ts', extensionSource, ts.ScriptTarget.Latest, true);
+	let callbackSource: string | undefined;
+	const visit = (node: ts.Node): void => {
+		if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+			&& node.expression.name.text === 'registerCommand'
+			&& node.arguments[0] && ts.isStringLiteral(node.arguments[0])
+			&& node.arguments[0].text === commandId) {
+			callbackSource = node.arguments[1]?.getText(sourceFile);
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(sourceFile);
+	expect(callbackSource, commandId).toBeDefined();
+	return callbackSource!;
+}
+
+describe('Copilot clarification offline fixture', () => {
+	function fixture(holdSideEffects = false, failedWrite?: 'database' | 'schema') {
+		const account = { id: 'kusto-copilot-clarification-e2e-account', label: 'Kusto Copilot clarification E2E account' };
+		const clusterUrl = 'https://copilot-clarification-e2e.invalid';
+		type Connection = { id: string; name: string; clusterUrl: string; database: string; authorityId: string };
+		const userConnection: Connection = {
+			id: 'user-connection', name: 'User Connection', clusterUrl, database: 'UserDb', authorityId: 'organizations',
+		};
+		const connections = new Map<string, Connection>([[userConnection.id, userConnection]]);
+		const preferences = new Map([[userConnection.id, 'user-account']]);
+		const tokens = new Map([['organizations/user-account', 'user-token']]);
+		const databases = new Map([[userConnection.id, { accountPartition: 'organizations/user-account', databases: ['UserDb'] }]]);
+		const schemas = new Map<string, CachedSchemaEntry>([['user-schema', {
+			connectionId: userConnection.id, accountPartition: 'organizations/user-account',
+			schema: { tables: ['UserTable'], columnTypesByTable: {} }, version: SCHEMA_CACHE_VERSION, timestamp: 1,
+		}]]);
+		const originalUserSchema = schemas.get('user-schema');
+		const authHeld = deferred();
+		const lifecycleHeld = deferred();
+		const authStarted = deferred();
+		const lifecycleStarted = deferred();
+		if (!holdSideEffects) { authHeld.resolve(); lifecycleHeld.resolve(); }
+		let authTail = Promise.resolve();
+		let lifecycleTail = Promise.resolve();
+		const clearCaches = (connectionId: string) => {
+			databases.delete(connectionId);
+			for (const [cacheKey, entry] of schemas) if (entry.connectionId === connectionId) schemas.delete(cacheKey);
+		};
+		const queueAuthChange = (connectionId: string) => {
+			authTail = authTail.then(async () => {
+				await authHeld.promise;
+				lifecycleTail = lifecycleTail.then(async () => { await lifecycleHeld.promise; clearCaches(connectionId); });
+			});
+		};
+		const auth = {
+			waitForProviderAccountRefresh: vi.fn().mockResolvedValue(undefined),
+			waitForWriteSettlement: vi.fn(async () => { authStarted.resolve(); await authTail; }),
+			getAccountPartition: (authorityId: string, accountId: string) => `${authorityId}/${accountId}`,
+			setExplicitAccount: async (connectionId: string, selected: typeof account) => {
+				preferences.set(connectionId, selected.id); queueAuthChange(connectionId);
+			},
+			setTokenOverride: async (authorityId: string, accountId: string, token: string, connectionIds: string[]) => {
+				tokens.set(`${authorityId}/${accountId}`, token);
+				for (const connectionId of connectionIds) queueAuthChange(connectionId);
+			},
+			clearTokenOverride: vi.fn(async (authorityId: string, accountId: string, connectionIds: string[]) => {
+				tokens.delete(`${authorityId}/${accountId}`);
+				for (const connectionId of connectionIds) queueAuthChange(connectionId);
+			}),
+			removeConnection: async (connectionId: string) => { preferences.delete(connectionId); queueAuthChange(connectionId); },
+		};
+		let nextConnectionId = 0;
+		const connectionManager = {
+			getConnections: () => [...connections.values()],
+			addConnection: async (configuration: Omit<Connection, 'id' | 'authorityId'>) => {
+				const connection = { ...configuration, id: `fixture-${++nextConnectionId}`, authorityId: 'organizations' };
+				connections.set(connection.id, connection);
+				return connection;
+			},
+			removeConnection: async (connectionId: string) => { connections.delete(connectionId); },
+			waitForSettlement: vi.fn(async () => { lifecycleStarted.resolve(); await lifecycleTail; }),
+		};
+		const cache = {
+			setDatabases: vi.fn(async (connectionId: string, accountPartition: string, values: string[]) => {
+				if (failedWrite === 'database') return false;
+				databases.set(connectionId, { accountPartition, databases: values });
+				return true;
+			}),
+			clearConnection: vi.fn(async (connectionId: string) => { databases.delete(connectionId); }),
+		};
+		const writeSchema = vi.fn(async (_storage: string, cacheKey: string, entry: CachedSchemaEntry) => {
+			if (failedWrite === 'schema') return false;
+			schemas.set(cacheKey, entry);
+			return true;
+		});
+		const deleteSchemas = vi.fn(async (_storage: string, connectionIds: ReadonlySet<string>) => {
+			for (const [cacheKey, entry] of schemas) if (connectionIds.has(entry.connectionId!)) schemas.delete(cacheKey);
+		});
+		const post = vi.fn(async (message: { type: string; connection: Connection; database: string }) => {
+			const partition = auth.getAccountPartition(message.connection.authorityId, account.id);
+			return {
+				database: databases.get(message.connection.id),
+				schema: schemas.get(schemaCacheKey(clusterUrl, message.database, message.connection.id, partition)),
+			};
+		});
+		const callbacks = ['seedCopilotClarificationConnection', 'removeCopilotClarificationConnection']
+			.map(command => extensionCommandCallback(`kustoWorkbench.test.${command}`));
+		const [seed, remove] = runInNewContext(ts.transpileModule(`[${callbacks.join(',')}];`, {
+			compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+		}).outputText, {
+			copilotClarificationConnectionName: 'Kusto Copilot Clarification E2E',
+			copilotClarificationCluster: clusterUrl, copilotClarificationAccount: account, copilotClarificationAuth: auth,
+			connectionManager, testConnectionCache: cache, context: { globalStorageUri: 'fixture-storage' },
+			SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk: writeSchema,
+			deleteCachedSchemasForConnections: deleteSchemas, toolOrchestrator: { postToAllWebviews: post },
+		}) as [() => Promise<Connection>, () => Promise<void>];
+		const assertUserUntouched = () => {
+			expect(connections.get(userConnection.id)).toEqual(userConnection);
+			expect(preferences.get(userConnection.id)).toBe('user-account');
+			expect(tokens.get('organizations/user-account')).toBe('user-token');
+			expect(databases.get(userConnection.id)?.databases).toEqual(['UserDb']);
+			expect(schemas.get('user-schema')).toBe(originalUserSchema);
+		};
+		return {
+			seed, remove, post, auth, cache, writeSchema, deleteSchemas, connectionManager,
+			connections, preferences, tokens, databases, schemas, assertUserUntouched,
+			authHeld, lifecycleHeld, authStarted, lifecycleStarted,
+		};
+	}
+
+	it('publishes only after delayed auth clears settle and both offline caches exist', async () => {
+		const setup = fixture(true);
+		const seeding = setup.seed();
+		try {
+			await Promise.race([seeding, setup.authStarted.promise]);
+			expect(setup.post).not.toHaveBeenCalled();
+			expect(setup.cache.setDatabases).not.toHaveBeenCalled();
+			setup.authHeld.resolve();
+			await Promise.race([seeding, setup.lifecycleStarted.promise]);
+			expect(setup.post).not.toHaveBeenCalled();
+			expect(setup.writeSchema).not.toHaveBeenCalled();
+		} finally {
+			setup.authHeld.resolve(); setup.lifecycleHeld.resolve();
+			await seeding;
+		}
+		const connection = await seeding;
+		expect(setup.post).toHaveBeenCalledExactlyOnceWith({ type: 'e2eCopilotClarificationConnection', connection, database: 'ChecklistDb' });
+		const published = await setup.post.mock.results[0].value;
+		expect(published.database).toEqual({ accountPartition: 'organizations/kusto-copilot-clarification-e2e-account', databases: ['ChecklistDb'] });
+		expect(published.schema).toMatchObject({
+			connectionId: connection.id, database: 'ChecklistDb', clusterUrl: connection.clusterUrl,
+			accountPartition: published.database!.accountPartition, version: SCHEMA_CACHE_VERSION,
+			schema: { tables: ['events'], columnTypesByTable: { events: { Timestamp: 'datetime' } } },
+		});
+		const raw = published.schema!.schema.rawSchemaJson as { Databases: { ChecklistDb: { Tables: { events: { OrderedColumns: unknown } } } } };
+		expect(Array.isArray(raw.Databases.ChecklistDb.Tables.events.OrderedColumns)).toBe(true);
+		const parsedColumns: Record<string, Record<string, string>> = {};
+		extractSchemaFromJson(raw, parsedColumns);
+		expect(parsedColumns).toEqual({ events: { Timestamp: 'System.DateTime' } });
+		setup.assertUserUntouched();
+	});
+
+	it.each(['database', 'schema'] as const)('rejects a superseded %s write without publishing', async failedWrite => {
+		const setup = fixture(false, failedWrite);
+		await expect(setup.seed()).rejects.toThrow(new RegExp(`${failedWrite} cache write`, 'i'));
+		expect(setup.post).not.toHaveBeenCalled();
+		if (failedWrite === 'database') expect(setup.writeSchema).not.toHaveBeenCalled();
+		await setup.remove();
+		expect([...setup.connections.keys()]).toEqual(['user-connection']);
+		expect([...setup.databases.keys()]).toEqual(['user-connection']);
+		expect([...setup.schemas.keys()]).toEqual(['user-schema']);
+		setup.assertUserUntouched();
+	});
+
+	it('reseeds and removes only fixture state with awaited cleanup', async () => {
+		const setup = fixture();
+		const first = await setup.seed();
+		const second = await setup.seed();
+		expect(second.id).not.toBe(first.id);
+		expect(setup.preferences.has(first.id)).toBe(false);
+		expect(setup.databases.has(first.id)).toBe(false);
+		expect([...setup.schemas.values()].some(entry => entry.connectionId === first.id)).toBe(false);
+		setup.auth.waitForWriteSettlement.mockClear();
+		setup.connectionManager.waitForSettlement.mockClear();
+		await setup.remove();
+		expect(setup.auth.waitForWriteSettlement).toHaveBeenCalled();
+		expect(setup.connectionManager.waitForSettlement).toHaveBeenCalled();
+		expect(setup.cache.clearConnection).toHaveBeenCalledWith(second.id);
+		expect(setup.deleteSchemas.mock.calls.at(-1)?.[0]).toBe('fixture-storage');
+		expect([...setup.deleteSchemas.mock.calls.at(-1)![1]]).toEqual([second.id]);
+		expect([...setup.connections.keys()]).toEqual(['user-connection']);
+		expect([...setup.preferences.keys()]).toEqual(['user-connection']);
+		expect([...setup.tokens.keys()]).toEqual(['organizations/user-account']);
+		expect([...setup.databases.keys()]).toEqual(['user-connection']);
+		expect([...setup.schemas.keys()]).toEqual(['user-schema']);
+		await setup.remove();
+		setup.assertUserUntouched();
+	});
+});
 
 describe('first-launch integration inventory', () => {
 	it('activates for every supported cold-open language and extension URI', () => {
@@ -113,11 +318,6 @@ describe('first-launch integration inventory', () => {
 	});
 
 	it('keeps the text-diagnostics seed selected after deferred supplemental startup cleanup', async () => {
-		const deferred = () => {
-			let resolve!: () => void;
-			const promise = new Promise<void>(resolvePromise => { resolve = resolvePromise; });
-			return { promise, resolve };
-		};
 		const cleanupWriteStarted = deferred();
 		const releaseCleanup = deferred();
 		const startupAwaited = deferred();
@@ -306,19 +506,7 @@ describe('first-launch integration inventory', () => {
 		['ordinary existing empty session', false, 'empty'],
 		['ordinary missing session', false, 'missing'],
 	] as const)('opens %s with canonical creation and locked writes before reveal', async (_scenario, isolated, initial) => {
-		const sourceFile = ts.createSourceFile('extension.ts', extensionSource, ts.ScriptTarget.Latest, true);
-		let callbackSource: string | undefined;
-		const visit = (node: ts.Node): void => {
-			if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
-				&& node.expression.name.text === 'registerCommand'
-				&& node.arguments[0] && ts.isStringLiteral(node.arguments[0])
-				&& node.arguments[0].text === 'kusto.openQueryEditor') {
-				callbackSource = node.arguments[1]?.getText(sourceFile);
-			}
-			ts.forEachChild(node, visit);
-		};
-		visit(sourceFile);
-		expect(callbackSource).toBeDefined();
+		const callbackSource = extensionCommandCallback('kusto.openQueryEditor');
 		const savedSession = stringifyKqlxFile({
 			kind: 'kqlx', version: 1, state: { sections: [{
 				type: 'query', query: 'print Old=1', clusterUrl: 'https://old.kusto.windows.net',
