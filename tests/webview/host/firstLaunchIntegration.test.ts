@@ -1,13 +1,20 @@
-import { readFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import { dirname, isAbsolute, join } from 'path';
 import { runInNewContext } from 'vm';
 import * as ts from 'typescript';
+import * as vscode from 'vscode';
 import { describe, expect, it, vi } from 'vitest';
+import { ConnectionManager, type KustoConnection } from '../../../src/host/connectionManager';
+import { KustoAuthPreferenceService } from '../../../src/host/kustoAuthPreferenceService';
+import { KustoQueryClient } from '../../../src/host/kustoClient';
 import {
 	createKqlxOrMdxFileWithDefaultSection, parseKqlxText, stringifyKqlxFile,
 } from '../../../src/host/kqlxFormat';
 import { extractSchemaFromJson } from '../../../src/host/kustoClientUtils';
+import { STORAGE_KEYS } from '../../../src/host/queryEditorTypes';
 import { SCHEMA_CACHE_VERSION, schemaCacheKey, type CachedSchemaEntry } from '../../../src/host/schemaCache';
+import { kustoClusterKey } from '../../../src/shared/kustoClusterUrls';
 
 const root = process.cwd();
 const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
@@ -489,6 +496,146 @@ describe('Copilot clarification offline fixture', () => {
 		expect([...setup.schemas.keys()]).toEqual(['user-schema']);
 		await setup.remove();
 		setup.assertUserUntouched();
+	});
+});
+
+describe('identity checklist real-service regression probe', () => {
+	it.each(['none', 'local-update', 'external-replacement'] as const)(
+		'checks repeated fixture cleanup with delayed Memento writes and reports preference loss (%s)', async lossKind => {
+		const storagePath = mkdtempSync(join(tmpdir(), 'kusto-identity-preference-probe-'));
+		const preferenceKey = 'kusto.auth.connectionPreferences.v1';
+		const state: Record<string, unknown> = {};
+		let persisted: Record<string, unknown> = {};
+		let injectPreferenceLoss = false;
+		const preferenceWrites: string[][] = [];
+		const secrets = new Map<string, string>();
+		const context = {
+			extensionMode: 2,
+			subscriptions: [] as vscode.Disposable[],
+			globalStorageUri: vscode.Uri.file(storagePath),
+			globalState: {
+				get: (key: string, fallback?: unknown) => state[key] ?? fallback,
+				keys: () => Object.keys(state),
+				update: async (key: string, value: unknown) => {
+					if (value === undefined) delete state[key];
+					else state[key] = JSON.parse(JSON.stringify(value));
+					if (key === preferenceKey) preferenceWrites.push(Object.keys((state[key] ?? {}) as object));
+					if (injectPreferenceLoss && key === STORAGE_KEYS.favorites && Array.isArray(value) && value.length > 0) {
+						injectPreferenceLoss = false;
+						if (lossKind === 'local-update') await context.globalState.update(preferenceKey, {});
+						else delete state[preferenceKey];
+					}
+					await new Promise(resolve => setTimeout(resolve, 1));
+					persisted = JSON.parse(JSON.stringify(state));
+				},
+			},
+			secrets: {
+				get: async (key: string) => secrets.get(key),
+				keys: async () => [...secrets.keys()],
+				store: async (key: string, value: string) => { secrets.set(key, value); },
+				delete: async (key: string) => { secrets.delete(key); },
+			},
+		} as unknown as vscode.ExtensionContext;
+		const auth = KustoAuthPreferenceService.getInstance(context);
+		const getAuth = vi.spyOn(KustoAuthPreferenceService, 'getInstance');
+		const manager = new ConnectionManager(context);
+		const clients = [new KustoQueryClient(context, undefined, manager), new KustoQueryClient(context, undefined, manager)];
+		try {
+			expect(getAuth.mock.calls).toEqual([[context], [context]]);
+			expect(getAuth.mock.results.map(result => result.value)).toEqual([auth, auth]);
+			const names = new Set([
+				'testAuthAccount', 'testPrefix', 'testClusters', 'identityClipboardSentinel', 'testClusterKeys', 'isTestCluster',
+				'identityChecklistPreviousSelection', 'captureIdentitySelection', 'restoreIdentitySelection',
+				'withIdentityPreferenceTrace', 'assertIdentityChecklistReady', 'cleanupIdentityChecklistState',
+			]);
+			const declarations = new Map<string, string>();
+			const sourceFile = ts.createSourceFile('extension.ts', extensionSource, ts.ScriptTarget.Latest, true);
+			const visit = (node: ts.Node): void => {
+				if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && names.has(node.name.text)) {
+					declarations.set(node.name.text, `let ${node.name.text} = ${node.initializer?.getText(sourceFile) ?? 'undefined'};`);
+				}
+				ts.forEachChild(node, visit);
+			};
+			visit(sourceFile);
+			expect([...declarations.keys()].sort()).toEqual([...names].sort());
+			const databases = new Map<string, string[]>();
+			const source = `(() => {
+				${[...declarations.values()].join('\n')}
+				return { seed: ${extensionCommandCallback('kustoWorkbench.test.seedKustoIdentityChecklist')}, testAuthAccount };
+			})();`;
+			const fixture = runInNewContext(ts.transpileModule(source, {
+				compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+			}).outputText, {
+				context, connectionManager: manager, testAuthPreferences: auth, kustoClusterKey, STORAGE_KEYS,
+				SCHEMA_CACHE_VERSION, schemaCacheKey,
+				vscode: { env: { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } } },
+				ConnectionService: { waitForLastSelectionSettlement: vi.fn().mockResolvedValue(undefined) },
+				deleteCachedSchemasForConnections: vi.fn().mockResolvedValue(undefined),
+				writeCachedSchemaToDisk: vi.fn().mockResolvedValue(true),
+				testConnectionCache: {
+					clearConnection: async (connectionId: string) => { databases.delete(connectionId); },
+					setDatabases: async (connectionId: string, _partition: string, values: string[]) => { databases.set(connectionId, values); return true; },
+					getDatabases: (connectionId: string) => databases.get(connectionId) ?? [],
+				},
+			}) as {
+				seed: () => Promise<{ added: KustoConnection[]; readiness: unknown[] }>;
+				testAuthAccount: { id: string; label: string };
+			};
+			const allIds = new Set<string>();
+			for (let iteration = 0; iteration < 2; iteration++) {
+				const originalGet = context.globalState.get;
+				const originalUpdate = context.globalState.update;
+				if (iteration === 1 && lossKind !== 'none') {
+					injectPreferenceLoss = true;
+					const message = await fixture.seed().then(() => '', (error: Error) => error.message);
+					expect(message).toContain('at fixture-complete:');
+					expect(message).not.toContain('kusto-workbench-identity-e2e-token');
+					const trace = JSON.parse(message.split(' preferenceTrace=')[1]) as Array<{
+						event: string; storageKey?: string; snapshot: { present: boolean; keys: string[]; explicitTestKeys: string[] }; stack?: string;
+					}>;
+					const assignedAt = trace.findLastIndex(event => event.event === 'write-request' && event.snapshot.explicitTestKeys.length === 5);
+					expect(assignedAt).toBeGreaterThanOrEqual(0);
+					const afterAssignment = trace.slice(assignedAt + 1);
+					expect(afterAssignment.some(event => event.event === 'write-request' && event.snapshot.keys.length === 0)).toBe(lossKind === 'local-update');
+					expect(afterAssignment).toContainEqual(expect.objectContaining({
+						snapshot: { present: lossKind === 'local-update', keys: [], explicitTestKeys: [] },
+					}));
+					if (lossKind === 'local-update') {
+						expect(afterAssignment).toContainEqual(expect.objectContaining({
+							event: 'write-request', storageKey: preferenceKey, stack: expect.stringContaining('update'),
+						}));
+					}
+					expect(manager.getConnections()).toHaveLength(5);
+					for (const connection of manager.getConnections()) expect(auth.getPreference(connection.id)).toEqual({ mode: 'automatic' });
+					expect(context.globalState.get).toBe(originalGet);
+					expect(context.globalState.update).toBe(originalUpdate);
+					break;
+				}
+				const result = await fixture.seed();
+				await auth.waitForWriteSettlement();
+				await manager.waitForSettlement();
+				expect(result.added).toHaveLength(5);
+				expect(result.readiness).toHaveLength(5);
+				const expected = Object.fromEntries(result.added.map(connection => {
+					expect(allIds.has(connection.id)).toBe(false);
+					allIds.add(connection.id);
+					expect(auth.getPreference(connection.id)).toEqual({ mode: 'explicit', accountId: fixture.testAuthAccount.id });
+					return [connection.id, { mode: 'explicit', accountId: fixture.testAuthAccount.id }];
+				}));
+				expect(state[preferenceKey], JSON.stringify(preferenceWrites)).toEqual(expected);
+				expect(persisted[preferenceKey]).toEqual(expected);
+				expect(manager.getConnections().map(connection => connection.id).sort()).toEqual(Object.keys(expected).sort());
+				expect(context.globalState.get).toBe(originalGet);
+				expect(context.globalState.update).toBe(originalUpdate);
+			}
+			expect(allIds.size).toBe(lossKind === 'none' ? 10 : 5);
+		} finally {
+			getAuth.mockRestore();
+			for (const client of clients) client.dispose();
+			auth.dispose();
+			await manager.dispose();
+			rmSync(storagePath, { recursive: true, force: true });
+		}
 	});
 });
 

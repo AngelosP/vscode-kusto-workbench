@@ -973,6 +973,66 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				selection.lastDatabasePresent ? selection.lastDatabase : undefined,
 			);
 		};
+		const withIdentityPreferenceTrace = <TResult>(action: () => Promise<TResult>) => async (): Promise<TResult> => {
+			const preferenceKey = 'kusto.auth.connectionPreferences.v1';
+			const globalState = context.globalState;
+			const originalGet = globalState.get;
+			const originalUpdate = globalState.update;
+			const startedAt = Date.now();
+			const summarize = (value: unknown) => {
+				const preferences = value && typeof value === 'object' && !Array.isArray(value)
+					? value as Record<string, { mode?: unknown; accountId?: unknown } | undefined> : {};
+				const keys = Object.keys(preferences).sort();
+				return {
+					present: value !== undefined,
+					keys,
+					explicitTestKeys: keys.filter(key => preferences[key]?.mode === 'explicit' && preferences[key]?.accountId === testAuthAccount.id),
+				};
+			};
+			const trace: Array<{
+				event: string; elapsedMs: number; storageKey?: string; snapshot: ReturnType<typeof summarize>; stack?: string;
+			}> = [];
+			let active = true;
+			let lastSnapshot = '';
+			const record = (event: string, snapshot: ReturnType<typeof summarize>, storageKey?: string, stack?: string) => {
+				trace.push({ event, elapsedMs: Date.now() - startedAt, storageKey, snapshot, stack });
+				if (trace.length > 80) trace.shift();
+			};
+			const observe = (event: string, storageKey?: string) => {
+				if (!active) return;
+				const snapshot = summarize(originalGet.call(globalState, preferenceKey, undefined));
+				const serialized = JSON.stringify(snapshot);
+				if (serialized === lastSnapshot) return;
+				lastSnapshot = serialized;
+				record(event, snapshot, storageKey);
+			};
+			const tracedGet: typeof originalGet = function <T>(this: vscode.Memento, key: string, fallback?: T): T {
+				const value = originalGet.call(this, key, fallback) as T;
+				if (key === preferenceKey) observe('read', key);
+				return value;
+			};
+			const tracedUpdate: typeof originalUpdate = function (this: vscode.Memento, key: string, value: unknown) {
+				observe('before-update', key);
+				if (key === preferenceKey) record('write-request', summarize(value), key, new Error().stack?.split('\n').slice(1, 7).join('\n'));
+				const completion = originalUpdate.call(this, key, value);
+				observe('update-returned', key);
+				void completion.then(() => observe('write-settled', key), () => observe('write-rejected', key));
+				return completion;
+			};
+			observe('begin');
+			globalState.get = tracedGet;
+			globalState.update = tracedUpdate;
+			try {
+				return await action();
+			} catch (error) {
+				observe('failure');
+				throw new Error(`${error instanceof Error ? error.message : String(error)} preferenceTrace=${JSON.stringify(trace)}`);
+			} finally {
+				active = false;
+				if (globalState.get === tracedGet) globalState.get = originalGet;
+				if (globalState.update === tracedUpdate) globalState.update = originalUpdate;
+			}
+		};
 		const assertIdentityChecklistReady = async () => {
 			await testAuthPreferences.waitForProviderAccountRefresh();
 			const connections = connectionManager.getConnections().filter(connection =>
@@ -1294,7 +1354,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					database: supplementalDatabase,
 				};
 			}),
-			vscode.commands.registerCommand('kustoWorkbench.test.seedKustoIdentityChecklist', async () => {
+			vscode.commands.registerCommand('kustoWorkbench.test.seedKustoIdentityChecklist', withIdentityPreferenceTrace(async () => {
 				await testAuthPreferences.waitForProviderAccountRefresh();
 				await cleanupIdentityChecklistState();
 				await testAuthPreferences.waitForWriteSettlement(250);
@@ -1400,7 +1460,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				assertExplicitAccounts(added, 'fixture-complete');
 				const readiness = await assertIdentityChecklistReady();
 				return { added, cachedKey: kustoClusterKey('identityadx.westus'), readiness };
-			}),
+			})),
 			vscode.commands.registerCommand('kustoWorkbench.test.assertClipboardContains', async (expected: string) => {
 				const needle = String(expected || '');
 				if (!needle) throw new Error('Clipboard assertion requires non-empty text.');
