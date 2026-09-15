@@ -1704,8 +1704,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (changed) linkedContentRevision++;
 		};
 		// Track the last text we wrote directly to disk for session files.
-		// Pending identities suppress each matching document event even when writes are observed out of order.
 		const ownedSessionWrites = new OwnedSessionWriteTracker(isSessionFile ? lastSavedText : '');
+		let ownedSessionWriteAuthorityToken: number | undefined;
+		let sessionChangeTail = Promise.resolve();
+		let lastAcceptedSessionExternalChange: {
+			snapshot: Awaited<ReturnType<typeof readKqlxDocumentSnapshotLocked>>;
+			generation: number;
+			authorityToken: number;
+		} | undefined;
 
 		const sectionIdentityAt = (sections: readonly KqlxSectionV1[], targetIndex: number): LinkedQuerySectionIdentity | undefined => {
 			const target = sections[targetIndex] as any;
@@ -2839,6 +2845,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				throw new Error('The Kusto Workbench session editor was disposed before persistence completed.');
 			}
 			const expectedIdentity = lastSavedIdentity;
+			const authorityToken = markdownDocumentQueue.latestAuthority?.token;
 			await withKqlxDocumentWriteLock(document.uri, async () => {
 				if (document.uri.scheme === 'file' && (!expectedIdentity
 					|| !localFileIdentityEquals(expectedIdentity, await getLocalFileIdentity(document.uri)))) {
@@ -2873,6 +2880,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					if (publishedText !== nextText) throw new Error('The Kusto Workbench session changed during publication.');
 					lastSavedText = nextText;
 					lastSavedIdentity = publishedIdentity;
+					ownedSessionWriteAuthorityToken = authorityToken;
 				} catch (error) {
 					ownedSessionWrites.rollback(writeToken);
 					throw error;
@@ -4384,15 +4392,41 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		// Listen for external file changes (e.g., from Copilot, git, or other processes).
 		// When the document changes externally, refresh the webview to show the new content.
 		subscriptions.push(
-			vscode.workspace.onDidChangeTextDocument((e) => {
+			vscode.workspace.onDidChangeTextDocument(async (e) => {
+				let releaseSessionChange: (() => void) | undefined;
 				try {
 					if (outerDisposed) return;
 					if (e.document.uri.toString() !== document.uri.toString()) {
 						return;
 					}
-					const currentText = e.document.getText();
-					const matchesSharedOwnedMutation = observeSharedOwnedMutation(currentText);
-					const matchesLocalOwnedMutation = ownedDocumentEdits.observe(currentText);
+					let currentText = e.document.getText();
+					let matchesCurrentSource = true;
+					let sessionSnapshot: Awaited<ReturnType<typeof readKqlxDocumentSnapshotLocked>> | undefined;
+					if (isSessionFile) {
+						const previousChange = sessionChangeTail;
+						sessionChangeTail = new Promise<void>(resolve => { releaseSessionChange = resolve; });
+						await previousChange;
+						if (outerDisposed) return;
+						sessionSnapshot = await readKqlxDocumentSnapshotLocked(document.uri);
+						if (outerDisposed) return;
+						currentText = sessionSnapshot.text;
+						const acceptedChange = lastAcceptedSessionExternalChange;
+						if (acceptedChange
+							&& acceptedChange.generation === postDocumentGeneration
+							&& acceptedChange.generation === activeProjectionGeneration
+							&& acceptedChange.authorityToken === activeProjectionAuthorityToken
+							&& acceptedChange.authorityToken === markdownDocumentQueue.latestAuthority?.token
+							&& acceptedChange.snapshot.text === currentText
+							&& activeProjectionSourceText === currentText
+							&& markdownDocumentQueue.latestAuthority.sourceText === currentText
+							&& (document.uri.scheme !== 'file'
+								|| localFileIdentityEquals(sessionSnapshot.identity, acceptedChange.snapshot.identity))) return;
+						matchesCurrentSource = ownedSessionWriteAuthorityToken === markdownDocumentQueue.latestAuthority?.token
+							&& (document.uri.scheme !== 'file' || localFileIdentityEquals(sessionSnapshot.identity, lastSavedIdentity));
+						if (matchesCurrentSource) ownedSessionWrites.observe(currentText);
+					}
+					const matchesSharedOwnedMutation = matchesCurrentSource && observeSharedOwnedMutation(currentText);
+					const matchesLocalOwnedMutation = matchesCurrentSource && ownedDocumentEdits.observe(currentText);
 					const matchesOwnedDocumentEdit = matchesSharedOwnedMutation || matchesLocalOwnedMutation;
 					if (!webviewInitialized && e.contentChanges.length > 0) {
 						if (initialProjectionRecovery) {
@@ -4403,7 +4437,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					}
 					if (!shouldReloadKqlxAfterDocumentChange({
 						isSessionFile,
-						matchesOwnedSessionWrite: isSessionFile && ownedSessionWrites.observe(currentText),
+						matchesOwnedSessionWrite: isSessionFile && matchesCurrentSource
+							&& currentText === ownedSessionWrites.latest,
 						matchesOwnedDocumentEdit,
 						webviewInitialized,
 						contentChangeCount: e.contentChanges.length,
@@ -4411,9 +4446,22 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					fencePersistenceForProjection(postDocumentGeneration + 1, currentText);
 					// Notify the webview that the document changed externally.
 					// Use forceReload to ensure the webview updates even if already initialized.
-					void postDocument({ forceReload: true });
+					const accepted = await postDocument({ forceReload: true });
+					if (accepted && sessionSnapshot && !outerDisposed
+						&& activeProjectionGeneration === postDocumentGeneration
+						&& activeProjectionSourceText === sessionSnapshot.text
+						&& markdownDocumentQueue.latestAuthority?.token === activeProjectionAuthorityToken
+						&& markdownDocumentQueue.latestAuthority.sourceText === sessionSnapshot.text) {
+						lastAcceptedSessionExternalChange = {
+							snapshot: sessionSnapshot,
+							generation: activeProjectionGeneration,
+							authorityToken: activeProjectionAuthorityToken,
+						};
+					}
 				} catch {
 					// ignore
+				} finally {
+					releaseSessionChange?.();
 				}
 			})
 		);

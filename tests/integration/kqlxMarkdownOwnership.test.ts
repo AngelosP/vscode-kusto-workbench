@@ -4828,6 +4828,264 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
+	async function verifySessionStableWriteObservation(mode: 'external' | 'replacement' | 'text-document'): Promise<void> {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalOnDidChange = vscode.workspace.onDidChangeTextDocument;
+		const originalOpen = fs.promises.open;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-session-stable-write-'));
+		const filePath = path.join(tmpDir, 'session.kqlx');
+		const uri = vscode.Uri.file(filePath);
+		const initialState = {
+			futureState: { keep: 'owned native write' },
+			sections: [
+				{ id: 'query_1', type: 'query', query: 'print Value=1' },
+				{ id: 'sql_1', type: 'sql', query: 'select 1 as Value' },
+				{ id: 'markdown_1', type: 'markdown', text: 'before' },
+				{ id: 'url_1', type: 'url', url: 'https://example.com/data.csv' },
+				{ id: 'python_1', type: 'python', code: 'print(1)' },
+				{ id: 'chart_1', type: 'chart', dataSourceId: 'query_1', chartType: 'bar' },
+				{ id: 'transformation_1', type: 'transformation', dataSourceId: 'sql_1' },
+				{ id: 'html_1', type: 'html', code: '<main>retained</main>' },
+			],
+		};
+		const initialText = JSON.stringify({ kind: 'kqlx', version: 1, state: initialState }, null, 2) + '\n';
+		const expectedText = initialText.replace('"text": "before"', '"text": "after"');
+		let currentText = initialText;
+		const document = {
+			uri, getText: () => currentText, eol: vscode.EndOfLine.LF,
+			positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: false, version: 1,
+		} as any;
+		const changeHandlers = new Set<(event: vscode.TextDocumentChangeEvent) => unknown>();
+		const pendingChanges: Promise<unknown>[] = [];
+		const notifyChange = (text: string) => {
+			const previousLength = currentText.length;
+			currentText = text;
+			for (const handler of changeHandlers) {
+				pendingChanges.push(Promise.resolve(handler({
+					document, reason: undefined, contentChanges: [{
+						text, range: new vscode.Range(document.positionAt(0), document.positionAt(previousLength)),
+						rangeOffset: 0, rangeLength: previousLength,
+					}],
+				})));
+			}
+		};
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let latestProjection: any;
+		const posted: any[] = [];
+		const disposeHandlers: Array<() => void> = [];
+		let holdWrite = false;
+		let truncated = false;
+		let completedWriteText: string | undefined;
+		let completedWriteIdentity: fs.BigIntStats | undefined;
+		let releaseWrite!: () => void;
+		const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+		let command: Promise<unknown> | undefined;
+
+		try {
+			fs.writeFileSync(filePath, initialText, 'utf8');
+			const initialIdentity = fs.statSync(filePath, { bigint: true });
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(vscode.workspace as any).onDidChangeTextDocument = (handler: (event: vscode.TextDocumentChangeEvent) => unknown) => {
+				changeHandlers.add(handler);
+				return { dispose: () => { changeHandlers.delete(handler); } };
+			};
+			fs.promises.open = async (...args: Parameters<typeof fs.promises.open>) => {
+				const handle = await originalOpen(...args);
+				if (String(args[0]) !== uri.fsPath || args[1] !== 'r+') return handle;
+				const originalTruncate = handle.truncate;
+				const originalSync = handle.sync;
+				let heldHandle = false;
+				handle.truncate = async (length?: number) => {
+					await originalTruncate.call(handle, length);
+					if (holdWrite && length === 0) {
+						holdWrite = false;
+						heldHandle = true;
+						truncated = true;
+						notifyChange(fs.readFileSync(filePath, 'utf8'));
+						await writeGate;
+					}
+				};
+				handle.sync = async () => {
+					await originalSync.call(handle);
+					if (heldHandle && completedWriteText === undefined) {
+						completedWriteText = fs.readFileSync(filePath, 'utf8');
+						completedWriteIdentity = fs.statSync(filePath, { bigint: true });
+					}
+				};
+				return handle;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(mode === 'text-document' ? path.join(tmpDir, 'global-storage') : tmpDir),
+					extensionMode: vscode.ExtensionMode.Test,
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') latestProjection = message;
+						if (message?.reloadRequestId) {
+							await Promise.resolve(receiveHandler?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const sourceGeneration = latestProjection.sourceGeneration;
+			const projectionCount = posted.filter(message => message?.type === 'documentData').length;
+			const queue = [...(provider as any).markdownDocumentQueues.values()][0] as any;
+			const authorityToken = queue.latestAuthority.token;
+			if (mode === 'text-document') {
+				notifyChange('');
+				assert.notStrictEqual(queue.latestAuthority.token, authorityToken,
+					'normal TextDocument changes must fence synchronously before their callback returns');
+				assert.strictEqual(queue.latestAuthority.sourceText, '');
+				await Promise.all(pendingChanges.splice(0));
+				assert.notStrictEqual(latestProjection.sourceGeneration, sourceGeneration);
+				assert.deepStrictEqual(latestProjection.state.sections, []);
+				assert.strictEqual(fs.readFileSync(filePath, 'utf8'), initialText);
+				return;
+			}
+			holdWrite = true;
+			command = Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommand', commandId: 'session-stable-write-command',
+				sourceGeneration, expectedDocumentRevision: latestProjection.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'markdown_1',
+					expectedSectionRevision: latestProjection.markdownSectionRevisions.markdown_1,
+					patch: { text: 'after' },
+				},
+			}));
+			await waitForCondition(() => truncated, 'owned command must reach native truncate(0)', 1_000);
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), '');
+			releaseWrite();
+			await command;
+			await Promise.all(pendingChanges.splice(0));
+			assert.strictEqual(completedWriteText, expectedText, 'the original native handle must finish writing all sections');
+			assert.strictEqual(completedWriteIdentity?.dev, initialIdentity.dev);
+			assert.strictEqual(completedWriteIdentity?.ino, initialIdentity.ino);
+			const result = posted.find(message => message?.type === 'markdownDocumentCommandResult'
+				&& message.commandId === 'session-stable-write-command');
+			assert.strictEqual(result?.ok, true,
+				`intermediate empty session notification must not fence the owned command: ${JSON.stringify(result)}`);
+			await Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommand', commandId: 'session-stable-write-next-command',
+				sourceGeneration, expectedDocumentRevision: result.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'html_1',
+					expectedSectionRevision: result.projection.sectionRevisions.html_1,
+					patch: { code: '<main>after</main>' },
+				},
+			}));
+			const nextResult = posted.find(message => message?.type === 'markdownDocumentCommandResult'
+				&& message.commandId === 'session-stable-write-next-command');
+			assert.strictEqual(nextResult?.ok, true, JSON.stringify(nextResult));
+			assert.strictEqual(nextResult.documentRevision, result.documentRevision + 1);
+			const nextText = expectedText.replace('<main>retained</main>', '<main>after</main>');
+			notifyChange(nextText);
+			notifyChange(nextText);
+			notifyChange(expectedText);
+			notifyChange('');
+			await Promise.all(pendingChanges.splice(0));
+			await withKqlxDocumentWriteLock(uri, async () => undefined);
+			assert.strictEqual(latestProjection.sourceGeneration, sourceGeneration);
+			assert.strictEqual(posted.filter(message => message?.type === 'documentData').length, projectionCount);
+			assert.strictEqual(queue.latestAuthority.token, authorityToken);
+			assert.strictEqual(queue.latestAuthority.sourceText, nextText);
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), nextText);
+			assert.deepStrictEqual(nextResult.projection.orderedSectionIds,
+				['query_1', 'sql_1', 'markdown_1', 'url_1', 'python_1', 'chart_1', 'transformation_1', 'html_1']);
+			if (mode === 'replacement') {
+				fs.renameSync(filePath, path.join(tmpDir, 'replaced-session.kqlx'));
+				fs.writeFileSync(filePath, nextText, 'utf8');
+				assert.notStrictEqual(fs.statSync(filePath, { bigint: true }).ino, initialIdentity.ino);
+				notifyChange(nextText);
+				await Promise.all(pendingChanges.splice(0));
+				assert.notStrictEqual(latestProjection.sourceGeneration, sourceGeneration,
+					'identical bytes in a replacement file must not match the owned write identity');
+				assert.deepStrictEqual(latestProjection.state, JSON.parse(nextText).state);
+				assert.strictEqual(fs.readFileSync(filePath, 'utf8'), nextText);
+				return;
+			}
+			fs.writeFileSync(filePath, expectedText, 'utf8');
+			notifyChange(nextText);
+			await Promise.all(pendingChanges.splice(0));
+			assert.notStrictEqual(latestProjection.sourceGeneration, sourceGeneration,
+				'stable external bytes must override an older unobserved owned write even when the event text is stale');
+			assert.strictEqual(latestProjection.state.sections.find((section: any) => section.id === 'html_1').code,
+				'<main>retained</main>');
+			const externalGeneration = latestProjection.sourceGeneration;
+			const externalAuthorityToken = queue.latestAuthority.token;
+			const externalProjectionCount = posted.filter(message => message?.type === 'documentData').length;
+			notifyChange(expectedText);
+			await Promise.all(pendingChanges.splice(0));
+			assert.strictEqual(latestProjection.sourceGeneration, externalGeneration,
+				'a duplicate accepted external snapshot must not publish another generation');
+			assert.strictEqual(queue.latestAuthority.token, externalAuthorityToken);
+			assert.strictEqual(posted.filter(message => message?.type === 'documentData').length, externalProjectionCount);
+			fs.writeFileSync(filePath, nextText, 'utf8');
+			notifyChange(nextText);
+			await Promise.all(pendingChanges.splice(0));
+			assert.notStrictEqual(latestProjection.sourceGeneration, externalGeneration,
+				'latest owned bytes from a retired source authority must reload as an external change');
+			assert.strictEqual(latestProjection.state.sections.find((section: any) => section.id === 'html_1').code,
+				'<main>after</main>');
+			const restoredGeneration = latestProjection.sourceGeneration;
+			fs.writeFileSync(filePath, '', 'utf8');
+			notifyChange('');
+			await Promise.all(pendingChanges.splice(0));
+			await waitForCondition(() => latestProjection.sourceGeneration !== restoredGeneration
+				&& latestProjection.state.sections.length === 0, 'real external empty bytes must reload the session');
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), '');
+			const authorityBeforeDispose = queue.latestAuthority;
+			const projectionsBeforeDispose = posted.filter(message => message?.type === 'documentData').length;
+			fs.writeFileSync(filePath, expectedText, 'utf8');
+			notifyChange(expectedText);
+			for (const dispose of disposeHandlers.splice(0)) dispose();
+			await Promise.all(pendingChanges.splice(0));
+			assert.strictEqual(queue.latestAuthority, authorityBeforeDispose,
+				'a session observation that resumes after disposal must not fence source authority');
+			assert.strictEqual(posted.filter(message => message?.type === 'documentData').length, projectionsBeforeDispose);
+		} finally {
+			releaseWrite();
+			await command?.catch(() => undefined);
+			await Promise.allSettled(pendingChanges);
+			for (const dispose of disposeHandlers) dispose();
+			await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+			fs.promises.open = originalOpen;
+			(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChange;
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	}
+
+	test('session stable-write observation preserves owned commands and reloads external empty bytes', async () => {
+		await verifySessionStableWriteObservation('external');
+	});
+
+	test('session stable-write observation reloads identical bytes from a replacement physical file', async () => {
+		await verifySessionStableWriteObservation('replacement');
+	});
+
+	test('session stable-write observation leaves normal TextDocument fencing synchronous', async () => {
+		await verifySessionStableWriteObservation('text-document');
+	});
+
 	test('session publication yields to a newer acknowledged projection after writing', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
