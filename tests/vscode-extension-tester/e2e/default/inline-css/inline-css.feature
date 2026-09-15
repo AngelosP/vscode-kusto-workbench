@@ -10,7 +10,7 @@ Feature: Inline CSS — webview is styled at first paint with no external CSS de
   Scenario: Query editor webview has inline CSS, not an external link
     # Open a standalone query editor
     When I execute command "kusto.openQueryEditor"
-    And I wait 5 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
 
     # ── TEST 1: The <head> contains a <style> tag with substantial CSS (the inlined bundle) ──
     When I evaluate "(() => { const styles = document.querySelectorAll('head style'); if (styles.length === 0) throw new Error('No <style> tags in <head>'); const totalCss = Array.from(styles).reduce((sum, s) => sum + s.textContent.length, 0); if (totalCss < 5000) throw new Error('Inline CSS too small (' + totalCss + ' chars) — bundle likely not inlined'); return 'inline CSS present: ' + totalCss + ' chars across ' + styles.length + ' <style> tag(s) ✓'; })()" in the webview
@@ -32,7 +32,7 @@ Feature: Inline CSS — webview is styled at first paint with no external CSS de
   Scenario: KQLX file webview has inline CSS
     # Open a .kqlx file via the extension's own command (avoids native file dialog)
     When I execute command "kusto.openQueryEditor"
-    And I wait 5 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
 
     # ── TEST 6: Webview has inline CSS (same as standalone, but verifies the shared code path) ──
     When I evaluate "(() => { const styles = document.querySelectorAll('head style'); const totalCss = Array.from(styles).reduce((sum, s) => sum + s.textContent.length, 0); if (totalCss < 5000) throw new Error('Inline CSS too small (' + totalCss + ' chars)'); const cssBundleLink = Array.from(document.querySelectorAll('head link[rel=stylesheet]')).find(l => l.href && l.href.includes('queryEditor.bundle.css')); if (cssBundleLink) throw new Error('External CSS bundle link found'); return 'inline CSS verified: ' + totalCss + ' chars ✓'; })()" in the webview
@@ -67,7 +67,7 @@ Feature: Inline CSS — webview is styled at first paint with no external CSS de
 
   Scenario: Share modal opens and closes correctly with inline CSS
     When I execute command "kusto.openQueryEditor"
-    And I wait 5 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
 
     # ── TEST 9: Share modal starts hidden ────────────────────────────────
     When I evaluate "(() => { const modal = document.getElementById('shareModal'); if (!modal) throw new Error('Share modal element not found'); const display = getComputedStyle(modal).display; if (display !== 'none') throw new Error('Share modal should start hidden, got display=' + display); return 'share modal hidden ✓'; })()" in the webview
@@ -79,7 +79,7 @@ Feature: Inline CSS — webview is styled at first paint with no external CSS de
 
   Scenario: Alternating row CSS custom property is injected
     When I execute command "kusto.openQueryEditor"
-    And I wait 3 seconds
+    And I wait for "body[data-kusto-e2e-ready='true']" in the webview "session.kqlx" for 20 seconds
 
     # ── TEST 11: The alternating row CSS custom property is set ───────────
     When I evaluate "(() => { const root = document.documentElement; const altBg = getComputedStyle(root).getPropertyValue('--kw-alt-row-bg'); if (!altBg || altBg.trim() === '') throw new Error('--kw-alt-row-bg CSS custom property not set'); return 'alternating row CSS property set: ' + altBg.trim() + ' ✓'; })()" in the webview
