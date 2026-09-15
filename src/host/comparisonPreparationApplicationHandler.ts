@@ -13,6 +13,22 @@ import {
 	type PreparedComparisonSection,
 } from '../shared/kustoExecution';
 
+type SqlComparisonTargetIdentityForTest = {
+	sectionInstanceId: string | null;
+	targetGeneration: number;
+	connectionId: string | null;
+	database: string | null;
+};
+
+export type SqlComparisonTargetRejectionForTest = {
+	requestId: string;
+	sourceBoxId: string;
+	comparisonBoxId: string;
+	expectedSource: SqlComparisonTargetIdentityForTest;
+	reportedComparison: SqlComparisonTargetIdentityForTest;
+	actualComparison: SqlComparisonTargetIdentityForTest;
+};
+
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
 	reject: (error: Error) => void;
@@ -24,6 +40,7 @@ type PendingComparisonEnsure = {
 	sqlSourceDatabase?: string;
 	copilotSequence?: number;
 	kustoRequest?: KustoCopilotRequestIdentity;
+	captureTargetRejectionForTest?: (diagnostic: SqlComparisonTargetRejectionForTest) => void;
 	comparisonBoxId?: string;
 	cancellationDisposable?: vscode.Disposable;
 	previousSqlComparisonOwnerCaptured?: boolean;
@@ -54,6 +71,7 @@ export interface ComparisonPreparationApplicationHandler {
 		token: vscode.CancellationToken,
 		copilotSequence?: number,
 		kustoRequest?: KustoCopilotRequestIdentity,
+		captureTargetRejectionForTest?: (diagnostic: SqlComparisonTargetRejectionForTest) => void,
 	): Promise<PreparedComparisonSection>;
 	rejectPendingComparisonEnsures(sourceBoxId: string): void;
 	dispose(): void;
@@ -112,6 +130,7 @@ export class HostComparisonPreparationApplicationHandler
 		token: vscode.CancellationToken,
 		copilotSequence?: number,
 		kustoRequest?: KustoCopilotRequestIdentity,
+		captureTargetRejectionForTest?: (diagnostic: SqlComparisonTargetRejectionForTest) => void,
 	): Promise<PreparedComparisonSection> {
 		if (this.disposed) throw new Error('Canceled');
 		if (!this.options.hasWebview()) throw new Error('Webview panel is not available');
@@ -160,6 +179,7 @@ export class HostComparisonPreparationApplicationHandler
 				...(sqlSourceDatabase ? { sqlSourceDatabase } : {}),
 				...(copilotSequence !== undefined ? { copilotSequence } : {}),
 				...(kustoRequest ? { kustoRequest } : {}),
+				...(captureTargetRejectionForTest ? { captureTargetRejectionForTest } : {}),
 			};
 			this.pendingComparisonEnsureByRequestId.set(requestId, pending);
 
@@ -286,6 +306,33 @@ export class HostComparisonPreparationApplicationHandler
 					|| comparisonTarget?.connectionId !== pending.sqlConnectionId
 					|| String(comparisonTarget?.database || '').toLowerCase()
 						!== String(pending.sqlSourceDatabase || '').toLowerCase()) {
+					if (pending.captureTargetRejectionForTest) {
+						try {
+							pending.captureTargetRejectionForTest({
+								requestId, sourceBoxId: pending.sourceBoxId, comparisonBoxId,
+								expectedSource: {
+									sectionInstanceId: pending.sqlSourceSectionInstanceId ?? null,
+									targetGeneration: pending.sqlSourceTargetGeneration ?? 0,
+									connectionId: pending.sqlConnectionId,
+									database: pending.sqlSourceDatabase ?? null,
+								},
+								reportedComparison: {
+									sectionInstanceId: comparisonSectionInstanceId,
+									targetGeneration: comparisonTargetGeneration,
+									connectionId: comparisonConnectionId,
+									database: comparisonDatabase,
+								},
+								actualComparison: {
+									sectionInstanceId: this.options.sqlLifecycle.getSectionInstanceId(comparisonBoxId) ?? null,
+									targetGeneration: this.options.sqlLifecycle.getGeneration(comparisonBoxId),
+									connectionId: comparisonTarget?.connectionId ?? null,
+									database: comparisonTarget?.database ?? null,
+								},
+							});
+						} catch {
+							pending.captureTargetRejectionForTest = undefined;
+						}
+					}
 					this.settlePendingComparisonEnsure(requestId, pending, {
 						error: new Error('SQL comparison target was missing, stale, self-referential, or mismatched.'),
 					});

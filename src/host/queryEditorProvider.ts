@@ -212,6 +212,7 @@ import {
 import {
 	HostComparisonPreparationApplicationHandler,
 	type ComparisonPreparationApplicationHandler,
+	type SqlComparisonTargetRejectionForTest,
 } from './comparisonPreparationApplicationHandler';
 import {
 	HostSqlSectionExecutionApplicationHandler,
@@ -268,8 +269,17 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	static async prepareSqlComparisonForTest(sourceBoxId: string, query: string): Promise<PreparedComparisonSection> {
 		const provider = QueryEditorProvider.activeProviderForTest();
 		const cancellation = new vscode.CancellationTokenSource();
+		let targetRejection: SqlComparisonTargetRejectionForTest | undefined;
 		try {
-			return await provider.ensureComparisonBoxInWebview(sourceBoxId, query, cancellation.token);
+			return await provider.comparisonPreparationApplication.ensureComparisonBoxInWebview(
+				sourceBoxId, query, cancellation.token, undefined, undefined,
+				diagnostic => { targetRejection = diagnostic; },
+			);
+		} catch (error) {
+			if (error instanceof Error && targetRejection) {
+				error.message += ` SQL comparison target diagnostic: ${JSON.stringify(targetRejection)}`;
+			}
+			throw error;
 		} finally {
 			cancellation.dispose();
 		}

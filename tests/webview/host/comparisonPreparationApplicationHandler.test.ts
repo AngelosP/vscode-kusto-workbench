@@ -218,6 +218,58 @@ describe('HostComparisonPreparationApplicationHandler', () => {
 		expect(harness.postMessage).not.toHaveBeenCalled();
 	});
 
+	it.each([false, true])('captures a rejected SQL target before rollback (target admitted: %s)', async (targetAdmitted) => {
+		const harness = createHarness();
+		const captureTargetRejection = vi.fn();
+		if (targetAdmitted) {
+			harness.lifecycle.openSection('comparison', 'actual-instance');
+			harness.lifecycle.setTarget('comparison', 'sql-connection', '', 6);
+			Object.assign(harness.lifecycle.getTarget('comparison')!, {
+				accessToken: 'must-not-be-captured', principalKey: 'must-not-be-captured',
+			});
+		}
+		harness.postMessage.mockImplementation(async (message: unknown) => {
+			const candidate = message as Record<string, unknown>;
+			if (candidate.type === 'sqlComparisonAdmissionRollback') {
+				harness.lifecycle.openSection('comparison', 'later-instance');
+				harness.lifecycle.setTarget('comparison', 'later-connection', 'LaterDatabase', 8);
+				queueMicrotask(() => {
+					void harness.handler.handleMessage(sqlAck(String(candidate.requestId), 'rolledBack'));
+				});
+			}
+			return true;
+		});
+		const preparation = harness.handler.ensureComparisonBoxInWebview(
+			'source', 'SELECT 3', createCancellation().token, undefined, undefined, captureTargetRejection,
+		).catch(error => error);
+		await flushPromises();
+		await harness.handler.handleMessage(sqlComparisonEnsured('request-1'));
+		const failure = await preparation;
+
+		expect(failure).toBeInstanceOf(Error);
+		expect(failure.message).toBe('SQL comparison target was missing, stale, self-referential, or mismatched.');
+		expect(captureTargetRejection).toHaveBeenCalledExactlyOnceWith({
+			requestId: 'request-1', sourceBoxId: 'source', comparisonBoxId: 'comparison',
+			expectedSource: {
+				sectionInstanceId: 'source-instance', targetGeneration: 3,
+				connectionId: 'sql-connection', database: 'Database',
+			},
+			reportedComparison: {
+				sectionInstanceId: 'comparison-instance', targetGeneration: 7,
+				connectionId: 'sql-connection', database: 'Database',
+			},
+			actualComparison: {
+				sectionInstanceId: targetAdmitted ? 'actual-instance' : null,
+				targetGeneration: targetAdmitted ? 6 : 0,
+				connectionId: targetAdmitted ? 'sql-connection' : null,
+				database: targetAdmitted ? '' : null,
+			},
+		});
+		expect(harness.lifecycle.getComparisonOwner('comparison')).toBeUndefined();
+		expect(harness.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'sqlComparisonAdmission' }));
+		harness.handler.dispose();
+	});
+
 	it('prepares and removes an exact Kusto comparison owner', async () => {
 		const harness = createHarness(false);
 		const cancellation = createCancellation();

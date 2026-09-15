@@ -1,12 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '../../src/webview/sections/kw-sql-section.js';
+import type { KwSqlSection } from '../../src/webview/sections/kw-sql-section.js';
 import {
 	__kustoWithPinnedSectionRemovalBypass,
 	addSqlBox,
 	removeSqlBox,
 	sqlBoxes,
 } from '../../src/webview/core/section-factory.js';
-import { optimizationMetadataByBoxId } from '../../src/webview/core/state.js';
+import {
+	optimizationMetadataByBoxId,
+	setSqlConnections,
+	sqlCachedDatabases,
+	sqlConnections,
+} from '../../src/webview/core/state.js';
 import { pState } from '../../src/webview/shared/persistence-state.js';
 import {
 	bindResultArtifactConsumer,
@@ -53,6 +59,75 @@ describe('SQL comparison lifecycle', () => {
 		expect(comparison.serialize()).toMatchObject({
 			id: comparisonId, type: 'sql', comparisonSourceBoxId: 'sql_source',
 		});
+	});
+
+	it('publishes the recreated comparison target before acknowledging its preparation', async () => {
+		const { drainBufferedHostMessages } = await import('../../src/webview/core/message-handler.js');
+		const messages: Record<string, unknown>[] = [];
+		const previousVsCode = window.vscode;
+		const previousConnections = [...sqlConnections];
+		const previousCachedDatabases = { ...sqlCachedDatabases };
+		const previousDocumentKind = pState.documentKind;
+		const previousAllowedSectionKinds = pState.allowedSectionKinds;
+		const previousDocumentRuntimeActive = pState.documentRuntimeActive;
+		const previousDocumentMutationAllowed = pState.documentMutationAllowed;
+		window.vscode = { postMessage: (message: Record<string, unknown>) => messages.push(message) } as any;
+		try {
+			pState.documentKind = 'sqlx';
+			pState.allowedSectionKinds = ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+			pState.documentRuntimeActive = true;
+			pState.documentMutationAllowed = true;
+			setSqlConnections([{
+				id: 'sql-a', name: 'SQL A', dialect: 'mssql', serverUrl: 'sql-a.example', authType: 'aad',
+			}]);
+			sqlCachedDatabases['sql-a'] = ['Db'];
+			const sourceId = addSqlBox({
+				id: 'sql_source', query: 'SELECT 1', serverUrl: 'sql-a.example',
+				connectionIdHint: 'sql-a', database: 'Db',
+			});
+			const source = document.getElementById(sourceId) as KwSqlSection;
+			await source.updateComplete;
+			expect(source.getConnectionId()).toBe('sql-a');
+			expect(source.getDatabase()).toBe('Db');
+
+			for (const [requestId, query] of [['initial', 'SELECT 2'], ['recreated', 'SELECT 3']]) {
+				messages.length = 0;
+				window.__kustoBufferedHostMessages = [{
+					type: 'ensureComparisonBox', engine: 'sql', requestId, boxId: sourceId, query,
+					sourceSectionInstanceId: source.sqlSession.instanceId,
+					sourceTargetGeneration: source.sqlSession.targetGeneration,
+				}];
+				await drainBufferedHostMessages();
+				const acknowledgementIndex = messages.findIndex(message => message.type === 'comparisonBoxEnsured');
+				expect(acknowledgementIndex).toBeGreaterThanOrEqual(0);
+				const acknowledgement = messages[acknowledgementIndex];
+				expect(acknowledgement).toMatchObject({
+					requestId, comparisonBoxId: `sql_cmp_${requestId}`,
+					comparisonConnectionId: 'sql-a', comparisonDatabase: 'Db',
+				});
+				const targetMessages = messages.slice(0, acknowledgementIndex).filter(message =>
+					message.boxId === acknowledgement.comparisonBoxId
+					&& ['getSqlDatabases', 'prefetchSqlSchema', 'stsConnect'].includes(String(message.type)));
+				expect(targetMessages).toContainEqual(expect.objectContaining({
+					sectionInstanceId: acknowledgement.comparisonSectionInstanceId,
+					targetGeneration: acknowledgement.comparisonTargetGeneration,
+					sqlConnectionId: acknowledgement.comparisonConnectionId,
+					database: acknowledgement.comparisonDatabase,
+				}));
+				removeSqlBox(String(acknowledgement.comparisonBoxId));
+				expect(optimizationMetadataByBoxId[sourceId]).toBeUndefined();
+			}
+		} finally {
+			for (const boxId of [...sqlBoxes]) removeSqlBox(boxId);
+			window.vscode = previousVsCode;
+			setSqlConnections(previousConnections);
+			for (const connectionId of Object.keys(sqlCachedDatabases)) delete sqlCachedDatabases[connectionId];
+			Object.assign(sqlCachedDatabases, previousCachedDatabases);
+			pState.documentKind = previousDocumentKind;
+			pState.allowedSectionKinds = previousAllowedSectionKinds;
+			pState.documentRuntimeActive = previousDocumentRuntimeActive;
+			pState.documentMutationAllowed = previousDocumentMutationAllowed;
+		}
 	});
 
 	it('preserves lineage during real initial target adoption and detaches on later retarget', async () => {
