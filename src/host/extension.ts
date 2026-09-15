@@ -1413,12 +1413,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					'kusto-workbench-identity-e2e-token',
 					added.map(connection => connection.id),
 				);
+				await testAuthPreferences.waitForWriteSettlement();
+				await connectionManager.waitForSettlement();
 				for (const connection of added) {
 					const accountPartition = testAuthPreferences.getAccountPartition(connection.authorityId, testAuthAccount.id);
 					const databases = kustoClusterKey(connection.clusterUrl) === kustoClusterKey('identityadx.westus')
 						? ['ChecklistDb', 'CachedOnlyDb']
 						: ['ChecklistDb'];
-					await testConnectionCache.setDatabases(connection.id, accountPartition, databases);
+					const databasesWritten = await testConnectionCache.setDatabases(connection.id, accountPartition, databases);
+					if (!databasesWritten) {
+						throw new Error(`Identity checklist database cache write was superseded for ${connection.name}.`);
+					}
 					const schemaWritten = await writeCachedSchemaToDisk(
 						context.globalStorageUri,
 						schemaCacheKey(connection.clusterUrl, 'ChecklistDb', connection.id, accountPartition),
@@ -2633,9 +2638,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			});
 
 			await revealOrOpenQueryEditorSession(sessionUri);
-			if (testIsolateKustoConnections
+			const isE2eSessionOpen = testIsolateKustoConnections
+				|| (context.extensionMode !== vscode.ExtensionMode.Production
+					&& process.env.KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH === '1');
+			if (isE2eSessionOpen
 				&& !await KqlxEditorProvider.waitForOpenEditorInitialized(sessionUri, 30_000)) {
-				throw new Error('The isolated Kusto Workbench session did not finish initializing.');
+				throw new Error('The E2E Kusto Workbench session did not finish initializing.');
 			}
 		}))
 	);

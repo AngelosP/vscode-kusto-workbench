@@ -500,9 +500,25 @@ describe('Copilot clarification offline fixture', () => {
 });
 
 describe('identity checklist real-service regression probe', () => {
-	it.each(['none', 'local-update', 'external-replacement'] as const)(
-		'checks repeated fixture cleanup with delayed Memento writes and reports preference loss (%s)', async lossKind => {
+	it.each([
+		'none', 'local-update', 'external-replacement', 'delayed-cache-invalidation',
+		'database-write-superseded', 'database-write-rejected', 'schema-write-superseded', 'schema-write-rejected',
+	] as const)(
+		'settles identity caches and reports exact fixture failures (%s)', async lossKind => {
+		const { KustoConnectionCache } = await import('../../../src/host/kustoConnectionCache');
+		const schemaCache = await import('../../../src/host/schemaCache');
+		const fileSystem = await import('node:fs/promises');
 		const storagePath = mkdtempSync(join(tmpdir(), 'kusto-identity-preference-probe-'));
+		const originalFileSystem = Object.getOwnPropertyDescriptor(vscode.workspace, 'fs')!;
+		Object.defineProperty(vscode.workspace, 'fs', { value: {
+			...vscode.workspace.fs,
+			createDirectory: async (uri: vscode.Uri) => { await fileSystem.mkdir(uri.fsPath, { recursive: true }); },
+			readFile: (uri: vscode.Uri) => fileSystem.readFile(uri.fsPath),
+			writeFile: (uri: vscode.Uri, bytes: Uint8Array) => fileSystem.writeFile(uri.fsPath, bytes),
+			readDirectory: async (uri: vscode.Uri) => (await fileSystem.readdir(uri.fsPath, { withFileTypes: true }))
+				.map(entry => [entry.name, entry.isDirectory() ? 2 : 1]),
+			delete: (uri: vscode.Uri, options?: { recursive?: boolean }) => fileSystem.rm(uri.fsPath, { recursive: !!options?.recursive, force: true }),
+		} });
 		const preferenceKey = 'kusto.auth.connectionPreferences.v1';
 		const state: Record<string, unknown> = {};
 		let persisted: Record<string, unknown> = {};
@@ -540,6 +556,64 @@ describe('identity checklist real-service regression probe', () => {
 		const getAuth = vi.spyOn(KustoAuthPreferenceService, 'getInstance');
 		const manager = new ConnectionManager(context);
 		const clients = [new KustoQueryClient(context, undefined, manager), new KustoQueryClient(context, undefined, manager)];
+		const databaseCache = new KustoConnectionCache(context);
+		let invalidationAdmitted = deferred();
+		let releaseInvalidation = deferred();
+		let cachePublication = deferred();
+		let lifecycleAwaited = deferred();
+		let holdInvalidation = false;
+		let injectCacheFailure = false;
+		let pendingInvalidations = 0;
+		let pendingSchemaInvalidations = 0;
+		const clearAccountPartition = KustoConnectionCache.prototype.clearAccountPartition;
+		const clearPartition = vi.spyOn(KustoConnectionCache.prototype, 'clearAccountPartition').mockImplementation(function (partition) {
+			if (!holdInvalidation) return clearAccountPartition.call(this, partition);
+			pendingInvalidations++;
+			invalidationAdmitted.resolve();
+			return releaseInvalidation.promise.then(async () => {
+				await clearAccountPartition.call(this, partition);
+				pendingInvalidations--;
+			});
+		});
+		const clearSchemaAccountPartitions = schemaCache.deleteCachedSchemasForAccountPartitions;
+		const clearSchemaPartitions = vi.spyOn(schemaCache, 'deleteCachedSchemasForAccountPartitions').mockImplementation((...args) => {
+			if (!holdInvalidation) return clearSchemaAccountPartitions(...args);
+			pendingSchemaInvalidations++;
+			return releaseInvalidation.promise.then(async () => {
+				const deleted = await clearSchemaAccountPartitions(...args);
+				pendingSchemaInvalidations--;
+				return deleted;
+			});
+		});
+		const setTokenOverride = auth.setTokenOverride.bind(auth);
+		const override = vi.spyOn(auth, 'setTokenOverride').mockImplementation(async (...args) => {
+			holdInvalidation = lossKind === 'delayed-cache-invalidation';
+			try { await setTokenOverride(...args); }
+			finally { holdInvalidation = false; }
+		});
+		const waitForSettlement = manager.waitForSettlement.bind(manager);
+		const settlement = vi.spyOn(manager, 'waitForSettlement').mockImplementation(async () => {
+			if (pendingInvalidations) lifecycleAwaited.resolve();
+			await waitForSettlement();
+		});
+		const setDatabases = databaseCache.setDatabases.bind(databaseCache);
+		const databaseWrites = vi.spyOn(databaseCache, 'setDatabases').mockImplementation(async (...args) => {
+			if (injectCacheFailure && lossKind.startsWith('database-')
+				&& manager.getConnections().find(connection => connection.id === args[0])?.name === 'E2E Identity Checklist Foobar') {
+				if (lossKind === 'database-write-rejected') throw new Error('database storage unavailable');
+				return false;
+			}
+			return setDatabases(...args);
+		});
+		const writeSchema = vi.fn(async (...args: Parameters<typeof schemaCache.writeCachedSchemaToDisk>) => {
+			cachePublication.resolve();
+			if (injectCacheFailure && lossKind.startsWith('schema-')
+				&& manager.getConnections().find(connection => connection.id === args[2].connectionId)?.name === 'E2E Identity Checklist Foobar') {
+				if (lossKind === 'schema-write-rejected') throw new Error('schema storage unavailable');
+				return false;
+			}
+			return schemaCache.writeCachedSchemaToDisk(...args);
+		});
 		try {
 			expect(getAuth.mock.calls).toEqual([[context], [context]]);
 			expect(getAuth.mock.results.map(result => result.value)).toEqual([auth, auth]);
@@ -558,34 +632,72 @@ describe('identity checklist real-service regression probe', () => {
 			};
 			visit(sourceFile);
 			expect([...declarations.keys()].sort()).toEqual([...names].sort());
-			const databases = new Map<string, string[]>();
 			const source = `(() => {
 				${[...declarations.values()].join('\n')}
-				return { seed: ${extensionCommandCallback('kustoWorkbench.test.seedKustoIdentityChecklist')}, testAuthAccount };
+				return { seed: ${extensionCommandCallback('kustoWorkbench.test.seedKustoIdentityChecklist')}, cleanup: cleanupIdentityChecklistState, testAuthAccount, identityClipboardSentinel };
 			})();`;
+			const clipboardWrite = vi.fn().mockResolvedValue(undefined);
 			const fixture = runInNewContext(ts.transpileModule(source, {
 				compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 			}).outputText, {
 				context, connectionManager: manager, testAuthPreferences: auth, kustoClusterKey, STORAGE_KEYS,
 				SCHEMA_CACHE_VERSION, schemaCacheKey,
-				vscode: { env: { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } } },
+				vscode: { env: { clipboard: { writeText: clipboardWrite } } },
 				ConnectionService: { waitForLastSelectionSettlement: vi.fn().mockResolvedValue(undefined) },
-				deleteCachedSchemasForConnections: vi.fn().mockResolvedValue(undefined),
-				writeCachedSchemaToDisk: vi.fn().mockResolvedValue(true),
-				testConnectionCache: {
-					clearConnection: async (connectionId: string) => { databases.delete(connectionId); },
-					setDatabases: async (connectionId: string, _partition: string, values: string[]) => { databases.set(connectionId, values); return true; },
-					getDatabases: (connectionId: string) => databases.get(connectionId) ?? [],
-				},
+				deleteCachedSchemasForConnections: schemaCache.deleteCachedSchemasForConnections,
+				writeCachedSchemaToDisk: writeSchema,
+				testConnectionCache: databaseCache,
 			}) as {
 				seed: () => Promise<{ added: KustoConnection[]; readiness: unknown[] }>;
+				cleanup: () => Promise<void>;
 				testAuthAccount: { id: string; label: string };
+				identityClipboardSentinel: string;
+			};
+			const userAccount = { id: 'user-account', label: 'User account' };
+			const userPartition = auth.getAccountPartition(undefined, userAccount.id);
+			const userPrivateCluster = 'https://user-private.kusto.windows.net';
+			const userConnection = lossKind === 'local-update' || lossKind === 'external-replacement' ? undefined
+				: await manager.addConnection({ name: 'User connection', clusterUrl: 'https://user-identity.kusto.windows.net', database: 'UserDb' });
+			let userSchemaBytes = '';
+			if (userConnection) {
+				await auth.setExplicitAccount(userConnection.id, userAccount);
+				await manager.addLeaveNoTrace(userPrivateCluster);
+				await auth.waitForWriteSettlement();
+				await manager.waitForSettlement();
+				expect(await databaseCache.setDatabases(userConnection.id, userPartition, ['UserDb'])).toBe(true);
+				const userSchemaKey = schemaCacheKey(userConnection.clusterUrl, 'UserDb', userConnection.id, userPartition);
+				expect(await schemaCache.writeCachedSchemaToDisk(context.globalStorageUri, userSchemaKey, {
+					schema: { tables: ['UserTable'], columnTypesByTable: { UserTable: { UserValue: 'string' } } },
+					timestamp: Date.now(), version: SCHEMA_CACHE_VERSION, clusterUrl: userConnection.clusterUrl,
+					database: 'UserDb', connectionId: userConnection.id, accountPartition: userPartition,
+				})).toBe(true);
+				userSchemaBytes = readFileSync(schemaCache.getSchemaCacheFileUri(context.globalStorageUri, userSchemaKey).fsPath, 'utf8');
+				await context.globalState.update(STORAGE_KEYS.lastConnectionId, userConnection.id);
+				await context.globalState.update(STORAGE_KEYS.lastDatabase, 'UserDb');
+			}
+			const assertUserUntouched = async () => {
+				if (!userConnection) return;
+				expect(manager.getConnections().find(connection => connection.id === userConnection.id)).toEqual(userConnection);
+				expect(auth.getPreference(userConnection.id)).toEqual({ mode: 'explicit', accountId: userAccount.id });
+				expect(databaseCache.getDatabases(userConnection.id, userPartition, false)).toEqual(['UserDb']);
+				const userSchemaKey = schemaCacheKey(userConnection.clusterUrl, 'UserDb', userConnection.id, userPartition);
+				expect(readFileSync(schemaCache.getSchemaCacheFileUri(context.globalStorageUri, userSchemaKey).fsPath, 'utf8')).toBe(userSchemaBytes);
+				expect(context.globalState.get(STORAGE_KEYS.lastConnectionId)).toBe(userConnection.id);
+				expect(context.globalState.get(STORAGE_KEYS.lastDatabase)).toBe('UserDb');
+				expect(await manager.runWithLeaveNoTraceSnapshotLock(async snapshot => snapshot.clusterKeys))
+					.toContain(kustoClusterKey(userPrivateCluster));
 			};
 			const allIds = new Set<string>();
 			for (let iteration = 0; iteration < 2; iteration++) {
+				invalidationAdmitted = deferred();
+				releaseInvalidation = deferred();
+				cachePublication = deferred();
+				lifecycleAwaited = deferred();
+				databaseWrites.mockClear();
+				writeSchema.mockClear();
 				const originalGet = context.globalState.get;
 				const originalUpdate = context.globalState.update;
-				if (iteration === 1 && lossKind !== 'none') {
+				if (iteration === 1 && (lossKind === 'local-update' || lossKind === 'external-replacement')) {
 					injectPreferenceLoss = true;
 					const message = await fixture.seed().then(() => '', (error: Error) => error.message);
 					expect(message).toContain('at fixture-complete:');
@@ -611,29 +723,88 @@ describe('identity checklist real-service regression probe', () => {
 					expect(context.globalState.update).toBe(originalUpdate);
 					break;
 				}
-				const result = await fixture.seed();
+				if (iteration === 1 && (lossKind.startsWith('database-') || lossKind.startsWith('schema-'))) {
+					injectCacheFailure = true;
+					const failedCache = lossKind.startsWith('database-') ? 'database' : 'schema';
+					const message = await fixture.seed().then(() => '', (error: Error) => error.message);
+					expect(message).toContain(lossKind.endsWith('rejected') ? `${failedCache} storage unavailable`
+						: `Identity checklist ${failedCache} cache write was superseded for E2E Identity Checklist Foobar.`);
+					expect(databaseWrites).toHaveBeenCalledTimes(4);
+					expect(writeSchema).toHaveBeenCalledTimes(failedCache === 'database' ? 3 : 4);
+					for (const connection of manager.getConnections().filter(connection => connection.id !== userConnection?.id)) {
+						expect(auth.getPreference(connection.id)).toEqual({ mode: 'explicit', accountId: fixture.testAuthAccount.id });
+					}
+					expect(context.globalState.get).toBe(originalGet);
+					expect(context.globalState.update).toBe(originalUpdate);
+					await assertUserUntouched();
+					break;
+				}
+				const seeding = fixture.seed();
+				let writesBeforeInvalidationSettled = 0;
+				if (lossKind === 'delayed-cache-invalidation') {
+					await invalidationAdmitted.promise;
+					await Promise.race([cachePublication.promise, lifecycleAwaited.promise]);
+					writesBeforeInvalidationSettled = databaseWrites.mock.calls.length + writeSchema.mock.calls.length;
+					expect(pendingInvalidations).toBe(2);
+					expect(pendingSchemaInvalidations).toBe(2);
+					releaseInvalidation.resolve();
+				}
+				const result = await seeding;
 				await auth.waitForWriteSettlement();
 				await manager.waitForSettlement();
+				expect(writesBeforeInvalidationSettled).toBe(0);
+				expect(pendingInvalidations + pendingSchemaInvalidations).toBe(0);
+				expect(clipboardWrite).toHaveBeenLastCalledWith(fixture.identityClipboardSentinel);
 				expect(result.added).toHaveLength(5);
 				expect(result.readiness).toHaveLength(5);
-				const expected = Object.fromEntries(result.added.map(connection => {
+				const expected: Record<string, unknown> = userConnection
+					? { [userConnection.id]: { mode: 'explicit', accountId: userAccount.id } } : {};
+				for (const connection of result.added) {
 					expect(allIds.has(connection.id)).toBe(false);
 					allIds.add(connection.id);
 					expect(auth.getPreference(connection.id)).toEqual({ mode: 'explicit', accountId: fixture.testAuthAccount.id });
-					return [connection.id, { mode: 'explicit', accountId: fixture.testAuthAccount.id }];
-				}));
+					const accountPartition = auth.getAccountPartition(connection.authorityId, fixture.testAuthAccount.id);
+					expect(databaseCache.getDatabases(connection.id, accountPartition, false)).toEqual(
+						kustoClusterKey(connection.clusterUrl) === kustoClusterKey('identityadx.westus') ? ['ChecklistDb', 'CachedOnlyDb'] : ['ChecklistDb'],
+					);
+					expect(await schemaCache.readCachedSchemaFromDiskByCluster(
+						context.globalStorageUri, connection.clusterUrl, 'ChecklistDb', connection.id, accountPartition,
+					)).toMatchObject({
+						connectionId: connection.id, accountPartition, database: 'ChecklistDb', version: SCHEMA_CACHE_VERSION,
+						schema: { tables: ['NeedleTable'], columnTypesByTable: { NeedleTable: { Timestamp: 'datetime', Value: 'long' } } },
+					});
+					expected[connection.id] = { mode: 'explicit', accountId: fixture.testAuthAccount.id };
+				}
 				expect(state[preferenceKey], JSON.stringify(preferenceWrites)).toEqual(expected);
 				expect(persisted[preferenceKey]).toEqual(expected);
 				expect(manager.getConnections().map(connection => connection.id).sort()).toEqual(Object.keys(expected).sort());
 				expect(context.globalState.get).toBe(originalGet);
 				expect(context.globalState.update).toBe(originalUpdate);
+				await assertUserUntouched();
 			}
-			expect(allIds.size).toBe(lossKind === 'none' ? 10 : 5);
+			expect(allIds.size).toBe(lossKind === 'none' || lossKind === 'delayed-cache-invalidation' ? 10 : 5);
+			await fixture.cleanup();
+			await auth.waitForWriteSettlement();
+			await manager.waitForSettlement();
+			await assertUserUntouched();
+			expect(manager.getConnections()).toEqual(userConnection ? [userConnection] : []);
+			expect(databaseCache.getEntries().map(entry => entry.connectionId)).toEqual(userConnection ? [userConnection.id] : []);
+			expect((await fileSystem.readdir(schemaCache.getSchemaCacheDirUri(context.globalStorageUri).fsPath))).toHaveLength(userConnection ? 1 : 0);
 		} finally {
+			releaseInvalidation.resolve();
+			await auth.waitForWriteSettlement();
+			await waitForSettlement();
+			databaseWrites.mockRestore();
+			settlement.mockRestore();
+			override.mockRestore();
+			clearPartition.mockRestore();
+			clearSchemaPartitions.mockRestore();
 			getAuth.mockRestore();
 			for (const client of clients) client.dispose();
 			auth.dispose();
-			await manager.dispose();
+			manager.dispose();
+			await waitForSettlement();
+			Object.defineProperty(vscode.workspace, 'fs', originalFileSystem);
 			rmSync(storagePath, { recursive: true, force: true });
 		}
 	});
@@ -895,11 +1066,15 @@ describe('first-launch integration inventory', () => {
 	});
 
 	it.each([
-		['isolated reset', true, 'populated'],
-		['isolated fresh session', true, 'missing'],
-		['ordinary existing empty session', false, 'empty'],
-		['ordinary missing session', false, 'missing'],
-	] as const)('opens %s with canonical creation and locked writes before reveal', async (_scenario, isolated, initial) => {
+		['isolated reset', true, 'populated', false, vscode.ExtensionMode.Development],
+		['isolated fresh session', true, 'missing', false, vscode.ExtensionMode.Development],
+		['ordinary existing empty session', false, 'empty', false, vscode.ExtensionMode.Development],
+		['ordinary missing session', false, 'missing', false, vscode.ExtensionMode.Development],
+		['E2E existing empty session', false, 'empty', true, vscode.ExtensionMode.Development],
+		['E2E missing session', false, 'missing', true, vscode.ExtensionMode.Development],
+		['E2E populated session', false, 'populated', true, vscode.ExtensionMode.Development],
+		['production session with E2E environment', false, 'populated', true, vscode.ExtensionMode.Production],
+	] as const)('opens %s with canonical creation and locked writes before reveal', async (_scenario, isolated, initial, bypass, extensionMode) => {
 		const callbackSource = extensionCommandCallback('kusto.openQueryEditor');
 		const savedSession = stringifyKqlxFile({
 			kind: 'kqlx', version: 1, state: { sections: [{
@@ -911,6 +1086,7 @@ describe('first-launch integration inventory', () => {
 		const originalBytes = bytes?.slice();
 		const sessionUri = join('fixture-storage', 'session.kqlx');
 		const shouldWrite = isolated || initial === 'missing';
+		const shouldWait = isolated || (bypass && extensionMode !== vscode.ExtensionMode.Production);
 		let releaseWrite!: () => void;
 		let markWriteStarted!: () => void;
 		const writeHeld = new Promise<void>(resolve => { releaseWrite = resolve; });
@@ -957,10 +1133,11 @@ describe('first-launch integration inventory', () => {
 			compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 		}).outputText, {
 			TextEncoder, stringifyKqlxFile, testIsolateKustoConnections: isolated,
+			process: { env: { KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH: bypass ? '1' : undefined } },
 			createKqlxOrMdxFileWithDefaultSection: createFresh,
 			afterFirstLaunch: (handler: () => Promise<void>) => handler,
-			context: { globalStorageUri: 'fixture-storage' },
-			vscode: { Uri: { joinPath: join }, workspace: { fs: {
+			context: { globalStorageUri: 'fixture-storage', extensionMode },
+			vscode: { ExtensionMode: vscode.ExtensionMode, Uri: { joinPath: join }, workspace: { fs: {
 				createDirectory: vi.fn().mockResolvedValue(undefined), writeFile,
 				stat: async (uri: string) => {
 					expect(uri).toBe(sessionUri);
@@ -990,14 +1167,14 @@ describe('first-launch integration inventory', () => {
 				expect(settled).not.toHaveBeenCalled();
 				closeHeld.resolve();
 			}
-			await Promise.race([writeStarted, opening]);
+			await Promise.race([writeStarted, initializationStarted.promise, opening]);
 			expect(bytes).toEqual(originalBytes);
 			expect(writeFile).toHaveBeenCalledTimes(shouldWrite ? 1 : 0);
 			expect(reveal).toHaveBeenCalledTimes(shouldWrite ? 0 : 1);
 			releaseWrite();
 			await Promise.race([initializationStarted.promise, opening]);
-			expect(waitForInitialization).toHaveBeenCalledTimes(isolated ? 1 : 0);
-			if (isolated) expect(settled).not.toHaveBeenCalled();
+			expect(waitForInitialization).toHaveBeenCalledTimes(shouldWait ? 1 : 0);
+			if (shouldWait) expect(settled).not.toHaveBeenCalled();
 		} finally {
 			closeHeld.resolve();
 			releaseWrite();
@@ -1008,7 +1185,7 @@ describe('first-launch integration inventory', () => {
 		expect(createFresh.mock.calls).toEqual(shouldWrite ? [['kqlx']] : []);
 		expect(events).toEqual([
 			...(isolated ? ['close', 'closed'] : []),
-			'lock', ...(shouldWrite ? ['write'] : []), 'unlock', 'reveal', ...(isolated ? ['wait', 'ready'] : []),
+			'lock', ...(shouldWrite ? ['write'] : []), 'unlock', 'reveal', ...(shouldWait ? ['wait', 'ready'] : []),
 		]);
 		if (shouldWrite) {
 			expect(bytes).toEqual(new TextEncoder().encode(stringifyKqlxFile(createKqlxOrMdxFileWithDefaultSection('kqlx'))));
