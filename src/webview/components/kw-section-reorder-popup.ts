@@ -440,7 +440,7 @@ export class KwSectionReorderPopup extends LitElement {
 
 	override render(): TemplateResult {
 		return html`
-			<div class="backdrop" @click=${this._onBackdropClick}></div>
+			<div class="backdrop" @mousedown=${this._onBackdropClick}></div>
 			<div class="panel" tabindex="-1" @keydown=${this._onKeydown}>
 				<div class="panel-header">
 					<span class="panel-title">

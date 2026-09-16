@@ -423,3 +423,23 @@ describe('KwMarkdownSection Markdown portability', () => {
 		}
 	});
 });
+
+describe('KwMarkdownSection mode popup dismissal', () => {
+	it('stays open when a press starts inside and releases outside', async () => {
+		const section = document.createElement('kw-markdown-section') as KwMarkdownSection;
+		(section as any)._dropdownOpen = true;
+		container.appendChild(section);
+		await section.updateComplete;
+
+		const menu = section.shadowRoot!.querySelector('.md-mode-dropdown-menu') as HTMLElement;
+		menu.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+		document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
+		document.body.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+		await section.updateComplete;
+		expect((section as any)._dropdownOpen).toBe(true);
+
+		document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+		await section.updateComplete;
+		expect((section as any)._dropdownOpen).toBe(false);
+	});
+});

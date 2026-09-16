@@ -413,6 +413,110 @@ const setOwn = (target: Record<string, unknown>, key: string, value: unknown): v
 	Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
 };
 
+const RESULT_ATTACHMENT_FIELDS = [
+	'resultJson', 'result', 'resultArtifact', 'selectedResultIndex',
+	'kustoAccountPartition', 'kustoLeaveNoTraceRevision',
+	'principalFingerprint', 'revocationGeneration',
+] as const;
+
+function resultSectionIdentity(section: KqlxSectionV1): string | undefined {
+	const kind = canonicalKnownSectionKind(section.type);
+	return (kind === 'query' || kind === 'sql') && typeof section.id === 'string' && section.id.trim()
+		? `${kind}\u0000${section.id}`
+		: undefined;
+}
+
+function hasResultAttachment(section: KqlxSectionV1): boolean {
+	const record = section as Record<string, unknown>;
+	return (hasOwn(record, 'resultJson') && record.resultJson !== undefined)
+		|| (hasOwn(record, 'result') && record.result !== undefined);
+}
+
+export function stripKqlxResultAttachments(state: KqlxStateV1): KqlxStateV1 {
+	return { ...state, sections: state.sections.map(section => {
+		const kind = canonicalKnownSectionKind(section.type);
+		if (kind !== 'query' && kind !== 'sql') return section;
+		const stripped = { ...section } as Record<string, unknown>;
+		for (const field of RESULT_ATTACHMENT_FIELDS) delete stripped[field];
+		return stripped as KqlxSectionV1;
+	}) };
+}
+
+function uniqueResultSections(state: KqlxStateV1): Map<string, KqlxSectionV1 | undefined> {
+	const sections = new Map<string, KqlxSectionV1 | undefined>();
+	for (const section of state.sections) {
+		const identity = resultSectionIdentity(section);
+		if (identity) sections.set(identity, sections.has(identity) ? undefined : section);
+	}
+	return sections;
+}
+
+function resultAttachmentEquals(left: KqlxSectionV1, right: KqlxSectionV1): boolean {
+	const leftRecord = left as Record<string, unknown>;
+	const rightRecord = right as Record<string, unknown>;
+	return RESULT_ATTACHMENT_FIELDS.every(field => hasOwn(leftRecord, field) === hasOwn(rightRecord, field)
+		&& exactJsonEqual(leftRecord[field], rightRecord[field]));
+}
+
+function resultAttachmentWasReplaced(saved: KqlxSectionV1, submitted: KqlxSectionV1): boolean {
+	const savedRecord = saved as Record<string, unknown>;
+	const submittedRecord = submitted as Record<string, unknown>;
+	if (['resultJson', 'result'].some(field => hasOwn(submittedRecord, field)
+		&& submittedRecord[field] !== undefined
+		&& !exactJsonEqual(savedRecord[field], submittedRecord[field]))) return true;
+	const savedArtifact = isObject(savedRecord.resultArtifact) ? savedRecord.resultArtifact : undefined;
+	const submittedArtifact = isObject(submittedRecord.resultArtifact) ? submittedRecord.resultArtifact : undefined;
+	return !!submittedArtifact && ['artifactId', 'revision'].some(field => hasOwn(submittedArtifact, field)
+		&& submittedArtifact[field] !== undefined
+		&& !exactJsonEqual(savedArtifact?.[field], submittedArtifact[field]));
+}
+
+export function preserveKqlxResultAttachments(
+	durableBaseline: KqlxStateV1 | undefined,
+	candidate: KqlxStateV1,
+	submittedCandidate?: KqlxStateV1,
+): KqlxStateV1 {
+	if (!durableBaseline && !submittedCandidate) return candidate;
+	const savedSections = durableBaseline ? uniqueResultSections(durableBaseline) : undefined;
+	const candidateSections = uniqueResultSections(candidate);
+	const submittedSections = submittedCandidate ? uniqueResultSections(submittedCandidate) : candidateSections;
+	let changed = false;
+	const sections = candidate.sections.map(section => {
+		const identity = resultSectionIdentity(section);
+		if (!identity || candidateSections.get(identity) !== section) return section;
+		const submitted = submittedSections.get(identity);
+		if (!submitted) return section;
+		const saved = savedSections?.get(identity);
+		let attachment = saved && hasResultAttachment(saved) ? saved : undefined;
+		if (attachment) {
+			const replaced = resultAttachmentWasReplaced(attachment, submitted);
+			if (hasResultAttachment(section) && replaced) return section;
+			const selectedResultIndex = hasOwn(submitted, 'selectedResultIndex')
+				? (submitted as Record<string, unknown>).selectedResultIndex : undefined;
+			if (!replaced && hasResultAttachment(submitted)
+				&& (selectedResultIndex === undefined || (typeof selectedResultIndex === 'number'
+					&& Number.isSafeInteger(selectedResultIndex) && selectedResultIndex >= 0))) {
+				const selectedAttachment = { ...attachment } as Record<string, unknown>;
+				delete selectedAttachment.selectedResultIndex;
+				if (selectedResultIndex !== undefined) selectedAttachment.selectedResultIndex = selectedResultIndex;
+				attachment = selectedAttachment as KqlxSectionV1;
+			}
+			if (resultAttachmentEquals(attachment, section)) return section;
+		} else if (hasResultAttachment(section) || !hasResultAttachment(submitted)
+			|| !RESULT_ATTACHMENT_FIELDS.some(field => hasOwn(section, field))) return section;
+		const restored = { ...section } as Record<string, unknown>;
+		for (const field of RESULT_ATTACHMENT_FIELDS) {
+			delete restored[field];
+			if (attachment && hasOwn(attachment, field)) {
+				setOwn(restored, field, cloneJsonValue((attachment as Record<string, unknown>)[field]));
+			}
+		}
+		changed = true;
+		return restored as KqlxSectionV1;
+	});
+	return changed ? { ...candidate, sections } : candidate;
+}
+
 function invalidKnownShape(
 	value: Record<string, unknown>,
 	schema: Readonly<Record<string, JsonFieldSchema>>,
@@ -753,14 +857,35 @@ function overlayObject(
 function overlayKnownSection(base: KqlxSectionV1, edited: KqlxSectionV1): KqlxSectionV1 {
 	const type = sectionType(edited);
 	if (!isKnownSectionType(type)) return cloneJsonValue(edited);
-	return overlayObject(
-		base as Record<string, unknown>,
-		edited as Record<string, unknown>,
+	let baseRecord = base as Record<string, unknown>;
+	const editedRecord = edited as Record<string, unknown>;
+	const kind = canonicalKnownSectionKind(type);
+	const resultSection = kind === 'query' || kind === 'sql';
+	const baseArtifact = isObject(baseRecord.resultArtifact) ? baseRecord.resultArtifact : undefined;
+	const editedArtifact = isObject(editedRecord.resultArtifact) ? editedRecord.resultArtifact : undefined;
+	if (resultSection && hasResultAttachment(edited) && (
+		!exactJsonEqual(baseRecord.resultJson, editedRecord.resultJson)
+		|| !exactJsonEqual(baseRecord.result, editedRecord.result)
+		|| baseArtifact?.artifactId !== editedArtifact?.artifactId
+		|| baseArtifact?.revision !== editedArtifact?.revision
+	)) {
+		baseRecord = { ...baseRecord };
+		for (const field of RESULT_ATTACHMENT_FIELDS) delete baseRecord[field];
+	}
+	const overlaid = overlayObject(
+		baseRecord,
+		editedRecord,
 		{
 			kind: 'object', fields: KNOWN_SECTION_SCHEMAS[type], preserveExtensionsWhenOmitted: true,
 			identityKeys: [], requiredKeys: [],
 		},
-	) as KqlxSectionV1;
+	);
+	if (resultSection) {
+		for (const field of RESULT_ATTACHMENT_FIELDS) {
+			if (!hasOwn(editedRecord, field)) delete overlaid[field];
+		}
+	}
+	return overlaid as KqlxSectionV1;
 }
 
 function enqueueIndex(queues: Map<string, number[]>, key: string, index: number): void {

@@ -1028,6 +1028,26 @@ describe('kw-connection-manager', () => {
 			expect(getComputedStyle(body).overflowY).toBe('auto');
 		});
 
+		it('dismisses the connection modal only when the mouse press starts on its backdrop', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot());
+			await el.updateComplete;
+			clickButtonByTestId(el, 'cm-add-connection');
+			await el.updateComplete;
+
+			const dialog = el.shadowRoot!.querySelector<HTMLDialogElement>('dialog[data-testid="cm-modal-overlay"]')!;
+			const content = dialog.querySelector<HTMLElement>('.modal-content')!;
+			content.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+			dialog.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
+			dialog.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+			await el.updateComplete;
+			expect(el.shadowRoot!.querySelector('[data-testid="cm-modal-overlay"]')).not.toBeNull();
+
+			dialog.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+			await el.updateComplete;
+			expect(el.shadowRoot!.querySelector('[data-testid="cm-modal-overlay"]')).toBeNull();
+		});
+
 		it('focuses the Kusto cluster field and restores the Add button on Escape', async () => {
 			const el = createElement();
 			sendSnapshot(el, snapshot({ connections: [], cachedDatabases: {}, sqlConnections: [], sqlCachedDatabases: {} }));

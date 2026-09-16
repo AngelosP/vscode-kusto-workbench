@@ -167,14 +167,14 @@ function __kustoUpdateAddSectionDropdownVisibility() {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-// Close dropdown when clicking outside.
-document.addEventListener('click', (event: any) => {
+// Close dropdown when a press starts outside.
+document.addEventListener('mousedown', (event: MouseEvent) => {
 	try {
 		const menu = document.getElementById('addSectionDropdownMenu') as any;
 		const btn = document.getElementById('addSectionDropdownBtn') as any;
 		if (!menu || menu.style.display !== 'block') return;
 
-		const target = event.target;
+		const target = event.target as Element | null;
 		if (target && typeof target.closest === 'function') {
 			if (target.closest('.add-controls-dropdown')) {
 				return; // Click inside dropdown, don't close.
@@ -232,13 +232,13 @@ try {
 try {
 	const shareModal = document.getElementById('shareModal');
 	if (shareModal) {
-		// Backdrop click closes the modal.
-		shareModal.addEventListener('click', (event: any) => {
+		// A press that starts on the backdrop closes the modal.
+		shareModal.addEventListener('mousedown', (event: any) => {
 			try { __kustoCloseShareModal(event); } catch (e) { console.error('[kusto]', e); }
 		});
 		// Stop propagation on content area.
 		const content = document.getElementById('shareModalContent');
-		if (content) content.addEventListener('click', (event: any) => event.stopPropagation());
+		if (content) content.addEventListener('mousedown', (event: any) => event.stopPropagation());
 		// Close button.
 		const closeBtn = document.getElementById('shareModalCloseBtn');
 		if (closeBtn) closeBtn.addEventListener('click', () => { try { __kustoCloseShareModal(); } catch (e) { console.error('[kusto]', e); } });

@@ -218,8 +218,8 @@ export class KwObjectViewer extends LitElement {
 		const hasMoreEntries = allEntries.length > this._entriesLimit;
 
 		return html`
-			<div class="modal-backdrop" @click=${this.hide}>
-				<div class="modal-content" @click=${(e: Event) => e.stopPropagation()}>
+			<div class="modal-backdrop" @mousedown=${this.hide}>
+				<div class="modal-content" @mousedown=${(e: Event) => e.stopPropagation()}>
 					<div class="modal-header">
 						<h3>${this.title}</h3>
 						<div class="search-area">

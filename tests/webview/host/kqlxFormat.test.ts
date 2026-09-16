@@ -7,8 +7,10 @@ import {
 	parseKqlxText,
 	stringifyKqlxFile,
 	type KqlxFileKind,
-	type KqlxFileV1
+	type KqlxFileV1,
+	type KqlxStateV1,
 } from '../../../src/host/kqlxFormat';
+import { preserveKqlxResultAttachments, stripKqlxResultAttachments } from '../../../src/host/kqlxOverlay';
 
 const knownSectionKinds = [
 	'query', 'copilotQuery', 'sql', 'chart', 'transformation',
@@ -20,6 +22,109 @@ const expectedSectionKindsByDocument = {
 	sqlx: ['sql', 'chart', 'transformation', 'markdown', 'python', 'url', 'html', 'devnotes'],
 	mdx: ['markdown', 'url', 'transformation', 'devnotes'],
 } as const satisfies Readonly<Record<KqlxFileKind, readonly (typeof knownSectionKinds)[number][]>>;
+
+describe('saved result attachment preservation', () => {
+	const resultJson = JSON.stringify({
+		columns: [{ name: 'Category', type: 'string' }, { name: 'Value', type: 'long' }],
+		rows: [['alpha', 10, 'legacy-extra-a'], ['beta', 20, 'legacy-extra-b'], ['gamma', 30, 'legacy-extra-c']],
+		metadata: { executionTime: '00:00:00.042', cluster: 'https://unresolved-legacy-e2e.kusto.windows.net', database: 'PersistedDb' },
+	});
+	const resultArtifact = {
+		version: 1, artifactId: 'artifact-a', sourceBoxId: 'section_1', revision: 3, createdAt: 1,
+		producer: { boxId: 'section_1', connectionId: 'connection-x', database: 'PersistedDb', futureProducer: 'saved A' },
+		policy: { exposeToActiveContent: false, futurePolicy: 'saved A' },
+		futureArtifact: { retained: 'saved A' },
+	};
+	const attachment = {
+		resultJson, result: { legacy: ['saved A'] }, resultArtifact, selectedResultIndex: 0,
+		kustoAccountPartition: 'account-x', kustoLeaveNoTraceRevision: 4,
+		principalFingerprint: 'principal-x', revocationGeneration: 5,
+	};
+
+	it.each(['query', 'copilotQuery', 'sql'] as const)(
+		'preserves an omitted legacy %s descriptor through chart edit, serialize, reparse, and another edit', type => {
+			const savedSection = { id: 'section_1', type, query: 'original', resultJson, resultArtifact };
+			let durable: KqlxFileV1 = {
+				kind: 'kqlx', version: 1, state: { sections: [
+					savedSection,
+					{ id: 'chart_1', type: 'chart', chartTitle: 'Original', dataSourceId: 'section_1' },
+				] },
+			};
+			for (const chartTitle of ['Unresolved legacy saved', 'Unresolved legacy reopened']) {
+				const submitted: KqlxStateV1 = { sections: [
+					{ id: 'section_1', type, query: 'original', resultJson },
+					{ id: 'chart_1', type: 'chart', chartTitle, dataSourceId: 'section_1' },
+				] };
+				const candidate = overlayKqlxFileState(durable, submitted);
+				const state = preserveKqlxResultAttachments(durable.state, candidate.state, submitted);
+				const reopened = parseKqlxText(stringifyKqlxFile({ ...candidate, state }));
+				if (!reopened.ok) throw new Error(reopened.error);
+
+				expect(reopened.file.state.sections).toEqual([savedSection, submitted.sections[1]]);
+				expect(reopened.file.state.sections[0]).not.toHaveProperty('kustoAccountPartition');
+				expect(reopened.file.state.sections[0]).not.toHaveProperty('kustoLeaveNoTraceRevision');
+				durable = reopened.file;
+			}
+		},
+	);
+
+	it('keeps authored SQL target Y with historical attachment A from target X through row-free Save and reparse', () => {
+		const saved: KqlxStateV1 = { sections: [{
+			id: 'section_1', type: 'sql', connectionIdHint: 'connection-x', targetSignature: 'target-x',
+			query: 'SELECT 1', database: 'PersistedDb', ...attachment,
+		}] };
+		const candidate: KqlxStateV1 = { sections: [{
+			id: 'section_1', type: 'sql', connectionIdHint: 'connection-y', targetSignature: 'target-y',
+			query: 'SELECT 2', database: 'CurrentDb', principalFingerprint: 'principal-y', revocationGeneration: 9,
+		}] };
+		const before = JSON.stringify({ saved, candidate });
+		const state = preserveKqlxResultAttachments(saved, candidate);
+		const reopened = parseKqlxText(stringifyKqlxFile({ kind: 'sqlx', version: 1, state }), { allowedKinds: ['sqlx'] });
+		if (!reopened.ok) throw new Error(reopened.error);
+
+		expect(reopened.file.state.sections).toEqual([{ ...candidate.sections[0], ...attachment }]);
+		expect(JSON.stringify({ saved, candidate })).toBe(before);
+		expect(state.sections[0].resultArtifact).not.toBe(saved.sections[0].resultArtifact);
+		expect(stripKqlxResultAttachments(state).sections).toEqual([{
+			id: 'section_1', type: 'sql', connectionIdHint: 'connection-y', targetSignature: 'target-y',
+			query: 'SELECT 2', database: 'CurrentDb',
+		}]);
+	});
+
+	it.each(['query', 'sql'] as const)('retains saved %s metadata for identical payloads without a new execution identity', type => {
+		const saved: KqlxStateV1 = { sections: [{ id: 'section_1', type, ...attachment }] };
+		const candidate: KqlxStateV1 = { sections: [{
+			id: 'section_1', type, query: 'edited', connectionIdHint: 'connection-y', targetSignature: 'target-y',
+			...attachment,
+			resultArtifact: {
+				...resultArtifact,
+				producer: { boxId: 'section_1', connectionId: 'connection-y' },
+				policy: { exposeToActiveContent: true },
+				futureArtifact: { replaced: 'not a new execution' },
+			},
+			kustoAccountPartition: 'account-y', kustoLeaveNoTraceRevision: 8,
+			principalFingerprint: 'principal-y', revocationGeneration: 9,
+		}] };
+
+		expect(preserveKqlxResultAttachments(saved, candidate).sections)
+			.toEqual([{ ...candidate.sections[0], ...attachment }]);
+	});
+
+	it.each([
+		['artifact ID', { ...resultArtifact, artifactId: 'artifact-b' }],
+		['revision', { ...resultArtifact, revision: 4 }],
+	] as const)('does not restore old metadata onto identical rows from a new %s', (_label, nextArtifact) => {
+		const saved: KqlxStateV1 = { sections: [{ id: 'section_1', type: 'query', ...attachment }] };
+		const submitted: KqlxStateV1 = { sections: [{
+			id: 'section_1', type: 'query', resultJson, resultArtifact: nextArtifact,
+			kustoAccountPartition: 'account-y', kustoLeaveNoTraceRevision: 8,
+		}] };
+		const filtered: KqlxStateV1 = { sections: [{ id: 'section_1', type: 'query', resultJson }] };
+
+		expect(preserveKqlxResultAttachments(saved, submitted)).toBe(submitted);
+		expect(preserveKqlxResultAttachments(saved, filtered, submitted)).toBe(filtered);
+	});
+});
 
 describe('createEmptyKqlxFile', () => {
 	it('returns kqlx file with kind, version 1, empty sections', () => {
@@ -922,6 +1027,30 @@ describe('parseKqlxText edge cases', () => {
 
 		expect(replacement.id).toBe('note_b');
 		expect(replacement.futureEntrySetting).toBeUndefined();
+	});
+
+	it.each(['query', 'sql'])('keeps a %s result replacement independent from the saved attachment', type => {
+		const savedArtifact = {
+			version: 1, artifactId: 'artifact-a', sourceBoxId: 'section_1', revision: 3, createdAt: 1,
+			futureArtifact: { belongsTo: 'A' },
+		};
+		const parsed = parseKqlxText(JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [{
+			id: 'section_1', type, resultJson: '{"rows":[["A"]]}', result: { legacy: 'A' },
+			resultArtifact: savedArtifact, selectedResultIndex: 2,
+			kustoAccountPartition: 'account-a', kustoLeaveNoTraceRevision: 4,
+			principalFingerprint: 'principal-a', revocationGeneration: 5,
+			futureSection: 'kept',
+		}] } }));
+		if (!parsed.ok) throw new Error(parsed.error);
+		const replacement = { id: 'section_1', type, resultJson: '{"rows":[["B"]]}' };
+		expect(overlayKqlxFileState(parsed.file, { sections: [replacement] }).state.sections)
+			.toEqual([{ ...replacement, futureSection: 'kept' }]);
+		expect(overlayKqlxFileState(parsed.file, { sections: [{ id: 'section_1', type }] }).state.sections)
+			.toEqual([{ id: 'section_1', type, futureSection: 'kept' }]);
+		const nextArtifact = { version: 1, artifactId: 'artifact-a', sourceBoxId: 'section_1', revision: 4, createdAt: 2 };
+		const nextRevision = { ...replacement, resultArtifact: nextArtifact };
+		expect(overlayKqlxFileState(parsed.file, { sections: [nextRevision] }).state.sections)
+			.toEqual([{ ...nextRevision, futureSection: 'kept' }]);
 	});
 
 	it('does not transfer future metadata across replaced result artifact IDs', () => {

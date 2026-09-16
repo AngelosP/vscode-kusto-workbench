@@ -111,8 +111,8 @@ export class KwCellViewer extends LitElement {
 		this._matchCount = matchCount;
 
 		return html`
-			<div class="modal-backdrop" @click=${this.hide}>
-				<div class="modal-content" @click=${(e: Event) => e.stopPropagation()}>
+			<div class="modal-backdrop" @mousedown=${this.hide}>
+				<div class="modal-content" @mousedown=${(e: Event) => e.stopPropagation()}>
 					<div class="modal-header">
 						<h3>Cell viewer for <strong>${this._title}</strong></h3>
 						<div class="search-area">

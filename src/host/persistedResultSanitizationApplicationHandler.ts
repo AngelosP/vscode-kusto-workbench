@@ -2,19 +2,22 @@ import * as vscode from 'vscode';
 
 import type { ConnectionManager } from './connectionManager';
 import type { KustoQueryClient } from './kustoClient';
-import { sqlSchemaPrincipalFingerprintForPrincipal } from './sqlEditorSchema';
 import type { SqlConnectionManager } from './sqlConnectionManager';
 import type { SqlEditorLifecycleCoordinator } from './sql/sqlEditorLifecycleCoordinator';
-import { normalizeSqlServerUrl } from './sql/sqlAuthState';
 import type { SqlOwnerSnapshot, SqlWorkbenchService } from './sql/sqlWorkbenchService';
 import { canonicalSectionKind } from '../shared/documentSectionCapabilities';
-import { resolveKustoConnection } from '../shared/kustoAuth';
-import { kustoClusterKey, kustoDatabaseKey } from '../shared/kustoClusterUrls';
+import { kustoClusterKey } from '../shared/kustoClusterUrls';
+import type { KustoDispatchIdentity } from '../shared/kustoExecution';
+import { getKustoResultSets, parseKustoResultBatch } from '../shared/kustoResultBatch';
 import {
-	legacyKustoResultTargetMatches,
-	resolveLegacyKustoEffectiveTarget,
-} from '../shared/legacyKustoResult';
-import { resolveSqlConnectionTarget } from '../shared/sqlConnectionIdentity';
+	publicationFromPersistedResultArtifact,
+	type PersistedResultArtifactV1,
+	type ResultArtifactPublication,
+} from '../shared/resultArtifact';
+import {
+	sqlConnectionServerSignature,
+	sqlConnectionTargetSignatureMatches,
+} from '../shared/sqlConnectionIdentity';
 import {
 	kustoLeaveNoTracePolicyFingerprint,
 	type KustoLeaveNoTracePolicySnapshot,
@@ -46,13 +49,35 @@ export function hasPersistedResultJson(state: PersistedResultState): boolean {
 		&& hasOwn(section as Record<string, unknown>, 'resultJson'));
 }
 
-function isParseablePersistedResultJson(resultJson: unknown): boolean {
-	if (typeof resultJson !== 'string' || !resultJson.trim()) return false;
+function isResultSection(section: unknown): section is Record<string, unknown> {
+	if (!section || typeof section !== 'object' || Array.isArray(section)) return false;
+	const kind = canonicalSectionKind((section as Record<string, unknown>).type);
+	return kind === 'query' || kind === 'sql';
+}
+
+function resultPublication(section: Record<string, unknown>): ResultArtifactPublication | undefined {
+	const value = section.resultArtifact;
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+	const artifact = value as Record<string, unknown>;
+	return publicationFromPersistedResultArtifact({
+		version: artifact.version, artifactId: artifact.artifactId, sourceBoxId: artifact.sourceBoxId,
+		revision: artifact.revision, createdAt: artifact.createdAt, producer: artifact.producer,
+	}, String(section.id || '').trim());
+}
+
+function resultPayloadTargets(section: Record<string, unknown>): readonly Readonly<{ cluster: string; database?: string }>[] {
 	try {
-		const parsed = JSON.parse(resultJson);
-		return !!parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+		const parsed = parseKustoResultBatch(typeof section.resultJson === 'string'
+			? JSON.parse(section.resultJson) : section.result);
+		if (!parsed.ok) return [];
+		return getKustoResultSets(parsed.value).flatMap(result => {
+			const { cluster, database } = result.metadata;
+			return typeof cluster === 'string' && cluster.trim()
+				? [{ cluster: cluster.trim(), ...(typeof database === 'string' ? { database: database.trim() } : {}) }]
+				: [];
+		});
 	} catch {
-		return false;
+		return [];
 	}
 }
 
@@ -126,145 +151,37 @@ export class HostPersistedResultSanitizationApplicationHandler
 	constructor(private readonly options: PersistedResultSanitizationApplicationHandlerOptions) {}
 
 	sanitizeSqlLeaveNoTraceState<T extends PersistedResultState>(state: T): T {
-		state = this.stripLegacyResultPayloads(state);
-		const sections = Array.isArray(state?.sections) ? state.sections : [];
-		this.options.sqlLifecycle.reconcileComparisonOwners(sections);
-		const sectionsById = new Map(
-			sections
-				.filter((section): section is Record<string, unknown> => !!section && typeof section === 'object')
-				.map(section => [String(section.id || '').trim(), section] as const)
-				.filter(([id]) => !!id),
-		);
-		let changed = false;
-		const sanitized = sections.map(section => {
-			if (!section || typeof section !== 'object') return section;
-			const record = section as Record<string, unknown>;
-			const boxId = String(record.id || '').trim();
-			const sectionType = String(record.type || '');
-			const persistedSourceBoxId = String(record.comparisonSourceBoxId || '').trim();
-			const persistedSource = persistedSourceBoxId ? sectionsById.get(persistedSourceBoxId) : undefined;
-			const unresolvedLegacyKustoCandidate = canonicalSectionKind(record.type) === 'query'
-				&& !hasOwn(record, 'kustoAccountPartition')
-				&& !hasOwn(record, 'kustoLeaveNoTraceRevision');
-			if (persistedSourceBoxId && !persistedSource && 'resultJson' in record
-				&& !unresolvedLegacyKustoCandidate) {
-				changed = true;
-				const clone = { ...record };
-				delete clone.resultJson;
-				delete clone.resultArtifact;
-				delete clone.selectedResultIndex;
-				return clone;
-			}
-			const derivedOwner = boxId ? this.options.sqlLifecycle.getComparisonOwner(boxId) : undefined;
-			const persistedSqlSource = String(persistedSource?.type || '') === 'sql' ? persistedSource : undefined;
-			if (sectionType !== 'sql' && !derivedOwner && !persistedSqlSource) return section;
-			const connectionId = derivedOwner?.connectionId
-				?? (boxId ? this.options.sqlLifecycle.getConnectionId(boxId) : undefined);
-			const sourceConnectionId = persistedSourceBoxId
-				? this.options.sqlLifecycle.getConnectionId(persistedSourceBoxId)
-				: undefined;
-			const persistedConnectionId = String(
-				persistedSqlSource?.connectionIdHint || record.connectionIdHint || '',
-			).trim();
-			const persistedTargetSignature = String(
-				persistedSqlSource?.targetSignature || record.targetSignature || '',
-			);
-			const restoredResolution = persistedConnectionId && persistedTargetSignature
-				? resolveSqlConnectionTarget(
-					this.options.sqlConnectionManager.getConnections(),
-					persistedConnectionId,
-					persistedTargetSignature,
-				)
-				: undefined;
-			const restoredConnectionId = restoredResolution?.kind === 'matched'
-				? restoredResolution.connection.id
-				: undefined;
-			const hasPersistedOwner = !!persistedConnectionId || !!persistedTargetSignature;
-			const requiresPersistedOwner = sectionType === 'sql' || !!persistedSqlSource;
-			const effectiveConnectionId = requiresPersistedOwner || hasPersistedOwner
-				? restoredConnectionId
-				: connectionId ?? sourceConnectionId;
-			const serverUrl = String(persistedSqlSource?.serverUrl || record.serverUrl || '').trim().toLowerCase();
-			const protectedByRuntimeOwner = !!effectiveConnectionId
-				&& this.options.sqlWorkbench.isLeaveNoTraceConnection(effectiveConnectionId);
-			const protectedByRestoredServer = !effectiveConnectionId && !!serverUrl
-				&& this.options.sqlConnectionManager.getConnections().some(connection =>
-					this.options.sqlWorkbench.isLeaveNoTraceConnection(connection.id)
-						&& String(connection.serverUrl || '').trim().toLowerCase() === serverUrl
-				);
-			const sqlOwnedSection = sectionType === 'sql' || !!derivedOwner || !!persistedSqlSource;
-			const unresolvedPersistedOwner = sqlOwnedSection && !effectiveConnectionId;
-			if ((!protectedByRuntimeOwner && !protectedByRestoredServer && !unresolvedPersistedOwner)
-				|| !('resultJson' in record)) return section;
-			changed = true;
-			const clone = { ...record };
-			delete clone.resultJson;
-			delete clone.resultArtifact;
-			delete clone.selectedResultIndex;
-			return clone;
-		});
-		return this.stripOrphanedSqlPrincipalFingerprints(changed ? { ...state, sections: sanitized } : state);
+		try {
+			this.options.sqlLifecycle.reconcileComparisonOwners(Array.isArray(state?.sections) ? state.sections : []);
+		} catch {
+			return state;
+		}
+		return state;
 	}
 
 	async sanitizeSqlLeaveNoTraceStateFresh<T extends PersistedResultState>(
 		state: T,
 		onKustoSanitized?: KustoSanitizationObserver,
 	): Promise<T> {
-		state = this.stripLegacyResultPayloads(state);
-		if (!onKustoSanitized && !hasPersistedResultJson(state)) {
-			return this.sanitizeSqlLeaveNoTraceState(state);
-		}
-		const notifyKustoSanitized = (
-			before: PersistedResultState,
-			after: PersistedResultState,
-			context: KustoSanitizationContext,
-		) => {
-			try {
-				onKustoSanitized?.(before, after, context);
-			} catch (error) {
-				throw new KustoSanitizationObserverError(error);
-			}
-		};
+		this.sanitizeSqlLeaveNoTraceState(state);
+		if (!onKustoSanitized) return state;
 		try {
-			return await this.options.sqlWorkbench.retrySqlOwnerSnapshotAcquisition(async () => {
-				return this.options.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoSnapshot => {
-					const kustoSanitized = this.sanitizeKustoLeaveNoTraceStateFromSnapshot(state, kustoSnapshot);
-					notifyKustoSanitized(state, kustoSanitized, { snapshot: kustoSnapshot });
-					const locallySanitized = this.sanitizeSqlLeaveNoTraceState(kustoSanitized);
-					if (!this.hasSqlOwnedState(locallySanitized)) {
-						return { acquired: true as const, value: locallySanitized };
-					}
-					return this.options.sqlWorkbench.tryDispatchSqlOwnerSnapshot(snapshot =>
-						this.sanitizeSqlPrincipalOwnedResultsFromSnapshot(locallySanitized, snapshot));
-				});
+			return await this.options.connectionManager.runWithLeaveNoTraceSnapshotLock(async snapshot => {
+				try {
+					onKustoSanitized(state, state, { snapshot });
+				} catch (error) {
+					throw new KustoSanitizationObserverError(error);
+				}
+				return state;
 			});
 		} catch (error) {
 			if (error instanceof KustoSanitizationObserverError) throw error.cause;
-			try {
-				return await this.options.connectionManager.runWithLeaveNoTraceSnapshotLock(async () => {
-					const sanitized = this.stripAllSqlOwnedResults(
-						this.stripAllKustoOwnedResults(this.sanitizeSqlLeaveNoTraceState(state)),
-					);
-					notifyKustoSanitized(state, sanitized, {
-						snapshot: {
-							clusterKeys: [], globallyBlocked: true, version: 0, revocationGenerations: {},
-						},
-					});
-					return sanitized;
-				});
-			} catch (fallbackError) {
-				if (fallbackError instanceof KustoSanitizationObserverError) throw fallbackError.cause;
-				throw error;
-			}
+			return state;
 		}
 	}
 
 	sanitizeSqlLeaveNoTraceStateFailClosed<T extends PersistedResultState>(state: T): T {
-		state = this.stripLegacyResultPayloads(state);
-		const locallySanitized = this.stripAllKustoOwnedResults(this.sanitizeSqlLeaveNoTraceState(state));
-		return this.hasSqlOwnedState(locallySanitized)
-			? this.stripAllSqlOwnedResults(locallySanitized)
-			: locallySanitized;
+		return this.sanitizeSqlLeaveNoTraceState(state);
 	}
 
 	commitKustoSourceAdmissionFresh(
@@ -283,19 +200,51 @@ export class HostPersistedResultSanitizationApplicationHandler
 		publish: (sanitizedState: T) => Promise<R>,
 		onKustoSanitized?: KustoSanitizationObserver,
 	): Promise<R> {
-		state = this.stripLegacyResultPayloads(state);
-		return this.options.sqlWorkbench.retrySqlOwnerSnapshotAcquisition(async () => {
-			return this.options.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoSnapshot => {
-				const kustoSanitized = this.sanitizeKustoLeaveNoTraceStateFromSnapshot(state, kustoSnapshot);
-				onKustoSanitized?.(state, kustoSanitized, { snapshot: kustoSnapshot });
-				const locallySanitized = this.sanitizeSqlLeaveNoTraceState(kustoSanitized);
-				if (!this.hasSqlOwnedState(locallySanitized)) {
-					return { acquired: true as const, value: await publish(locallySanitized) };
-				}
-				return this.options.sqlWorkbench.tryRunWithSqlOwnerSnapshotLock(async sqlSnapshot =>
-					publish(this.sanitizeSqlPrincipalOwnedResultsFromSnapshot(locallySanitized, sqlSnapshot)));
+		this.sanitizeSqlLeaveNoTraceState(state);
+		const withKustoSnapshot = <Value>(dispatch: (candidate: T) => Promise<Value>): Promise<Value> =>
+			this.options.connectionManager.runWithLeaveNoTraceSnapshotLock(async snapshot => {
+				const protectedClusters = new Set(snapshot.clusterKeys);
+				const candidate = this.filterNewResultCandidates(state, (source, allowSectionTarget) => {
+					const producer = resultPublication(source)?.producer;
+					if (producer?.engine === 'sql') return false;
+					if (producer?.engine !== 'kusto' && canonicalSectionKind(source.type) !== 'query') {
+						return allowSectionTarget ? false : undefined;
+					}
+					if (snapshot.globallyBlocked) return true;
+					if (protectedClusters.size === 0) return false;
+					const dispatch = producer?.dispatch as Partial<KustoDispatchIdentity> | undefined;
+					const identityCluster = typeof dispatch?.connectionIdentityKey === 'string'
+						? kustoClusterKey(dispatch.connectionIdentityKey.split('|', 1)[0])
+						: '';
+					const capturedCluster = identityCluster
+						|| (typeof dispatch?.clusterEndpoint === 'string' ? kustoClusterKey(dispatch.clusterEndpoint) : '');
+					if (capturedCluster) return protectedClusters.has(capturedCluster);
+					const payloadTargets = resultPayloadTargets(source);
+					if (payloadTargets.length) return payloadTargets.some(target => protectedClusters.has(kustoClusterKey(target.cluster)));
+					const producingConnectionId = typeof producer?.connectionId === 'string' ? producer.connectionId.trim() : '';
+					if (producingConnectionId) {
+						return this.options.connectionManager.getConnections().some(connection =>
+							connection.id === producingConnectionId && protectedClusters.has(kustoClusterKey(connection.clusterUrl)));
+					}
+					if (!allowSectionTarget) return undefined;
+					const clusterKey = kustoClusterKey(source.clusterUrl);
+					if (clusterKey) return protectedClusters.has(clusterKey);
+					const connectionId = String(source.connectionIdHint || '').trim();
+					return !!connectionId && this.options.connectionManager.getConnections().some(connection =>
+						connection.id === connectionId && protectedClusters.has(kustoClusterKey(connection.clusterUrl)));
+				});
+				onKustoSanitized?.(state, candidate, { snapshot });
+				return dispatch(candidate);
 			});
-		});
+		const sections = Array.isArray(state?.sections) ? state.sections : [];
+		if (!sections.some(section => isResultSection(section)
+			&& (canonicalSectionKind(section.type) === 'sql' || resultPublication(section)?.producer?.engine === 'sql'))) {
+			return withKustoSnapshot(publish);
+		}
+		return this.options.sqlWorkbench.retrySqlOwnerSnapshotAcquisition(() =>
+			withKustoSnapshot(candidate => this.options.sqlWorkbench.tryRunWithSqlOwnerSnapshotLock(async snapshot =>
+				publish(this.filterNewResultCandidates(candidate,
+					(source, allowSectionTarget) => this.isSqlTargetProtected(source, snapshot, allowSectionTarget), state)))));
 	}
 
 	invalidateSqlPersistence(): void {
@@ -313,314 +262,142 @@ export class HostPersistedResultSanitizationApplicationHandler
 		this.kustoPersistenceInvalidationEmitter.dispose();
 	}
 
-	private stripLegacyResultPayloads<T extends PersistedResultState>(state: T): T {
-		const sections = Array.isArray(state?.sections) ? state.sections : [];
-		let changed = false;
-		const sanitized = sections.map(section => {
-			if (!section || typeof section !== 'object') return section;
-			const record = section as Record<string, unknown>;
-			const canonicalType = canonicalSectionKind(record.type);
-			if ((canonicalType !== 'query' && canonicalType !== 'sql')
-				|| !Object.prototype.hasOwnProperty.call(record, 'result')) return section;
-			changed = true;
-			const clone = { ...record };
-			delete clone.result;
-			return clone;
-		});
-		return changed ? { ...state, sections: sanitized } : state;
-	}
-
-	private sanitizeKustoLeaveNoTraceStateFromSnapshot<T extends PersistedResultState>(
+	private filterNewResultCandidates<T extends PersistedResultState>(
 		state: T,
-		snapshot: KustoLeaveNoTracePolicySnapshot,
+		isProtected: (source: Record<string, unknown>, allowSectionTarget: boolean) => boolean | undefined,
+		sourceState: PersistedResultState = state,
 	): T {
-		type KustoResultDecision =
-			| Readonly<{ kind: 'untouched' | 'preserve' | 'strip' | 'unavailable'; restorable: false }>
-			| Readonly<{ kind: 'keep'; restorable: boolean }>
-			| Readonly<{ kind: 'adopt'; restorable: true; accountPartition: string; leaveNoTraceRevision: number }>;
 		const sections = Array.isArray(state?.sections) ? state.sections : [];
-		const sectionsById = new Map(sections
-			.filter((section): section is Record<string, unknown> => !!section && typeof section === 'object')
-			.map(section => [String(section.id || '').trim(), section] as const));
-		const protectedClusters = new Set(snapshot.clusterKeys);
-		const connections = this.options.connectionManager.getConnections();
-		const decisions = new Map<Record<string, unknown>, KustoResultDecision>();
-		const evaluate = (
-			record: Record<string, unknown>,
-			visiting = new Set<Record<string, unknown>>(),
-		): KustoResultDecision => {
-			const cached = decisions.get(record);
-			if (cached) {
-				return cached;
+		const sourceSections = Array.isArray(sourceState?.sections) ? sourceState.sections : [];
+		const sectionsById = new Map<string, Record<string, unknown> | undefined>();
+		const sectionsByArtifactId = new Map<string, Record<string, unknown> | undefined>();
+		const publications = new Map<Record<string, unknown>, ResultArtifactPublication>();
+		const comparisonSources = new Map<Record<string, unknown>, readonly string[]>();
+		for (const section of sourceSections.filter(isResultSection)) {
+			const id = String(section.id || '').trim();
+			if (id) sectionsById.set(id, sectionsById.has(id) ? undefined : section);
+			const publication = resultPublication(section);
+			if (!publication?.persistedIdentity) continue;
+			publications.set(section, publication);
+			const artifactId = publication.persistedIdentity.artifactId;
+			sectionsByArtifactId.set(artifactId, sectionsByArtifactId.has(artifactId) ? undefined : section);
+			const lineage = (section.resultArtifact as PersistedResultArtifactV1).lineage;
+			if (!Array.isArray(lineage)) continue;
+			const sources = lineage.filter(source => source && typeof source === 'object'
+				&& !Array.isArray(source) && source.role === 'comparison-source');
+			if (sources.length) {
+				comparisonSources.set(section, sources.flatMap(source =>
+					typeof source.sourceArtifactId === 'string' && source.sourceArtifactId.trim() ? [source.sourceArtifactId.trim()] : []));
 			}
-			const hasPersistedAccountPartition = hasOwn(record, 'kustoAccountPartition');
-			const hasPersistedLeaveNoTraceRevision = hasOwn(record, 'kustoLeaveNoTraceRevision');
-			const legacy = !hasPersistedAccountPartition && !hasPersistedLeaveNoTraceRevision;
-			if (!hasOwn(record, 'resultJson')) {
-				return { kind: 'unavailable', restorable: false };
+		}
+		const effectiveKind = (source: Record<string, unknown>, visited = new Set<Record<string, unknown>>()): 'query' | 'sql' => {
+			const engine = publications.get(source)?.producer?.engine;
+			if (engine === 'kusto') return 'query';
+			if (engine === 'sql') return 'sql';
+			if (!visited.has(source)) {
+				visited.add(source);
+				const sourceArtifacts = comparisonSources.get(source);
+				const parent = sourceArtifacts
+					? sourceArtifacts.length === 1 ? sectionsByArtifactId.get(sourceArtifacts[0]) : undefined
+					: sectionsById.get(String(source.comparisonSourceBoxId || '').trim());
+				if (parent) return effectiveKind(parent, visited);
 			}
-			if (canonicalSectionKind(record.type) !== 'query') {
-				return { kind: 'untouched', restorable: false };
-			}
-			if (visiting.has(record)) {
-				return legacy
-					? { kind: 'preserve', restorable: false }
-					: { kind: 'strip', restorable: false };
-			}
-			visiting.add(record);
-			try {
-				const sourceBoxId = String(record.comparisonSourceBoxId || '').trim();
-				const source = sourceBoxId ? sectionsById.get(sourceBoxId) : undefined;
-				const sourceKind = canonicalSectionKind(source?.type);
-				if (sourceBoxId && sourceKind === 'sql') {
-					const decision = { kind: 'untouched', restorable: false } as const;
-					decisions.set(record, decision);
-					return decision;
-				}
-				if (sourceBoxId && sourceKind !== 'query') {
-					const decision = legacy
-						? { kind: 'preserve', restorable: false } as const
-						: { kind: 'strip', restorable: false } as const;
-					decisions.set(record, decision);
-					return decision;
-				}
-				const kustoSource = sourceKind === 'query' ? source : undefined;
-				if (legacy && kustoSource) {
-					const sourceDecision = evaluate(kustoSource, visiting);
-					if ((sourceDecision.kind !== 'keep' && sourceDecision.kind !== 'adopt')
-						|| !sourceDecision.restorable) {
-						const decision = { kind: 'preserve', restorable: false } as const;
-						decisions.set(record, decision);
-						return decision;
-					}
-				}
-				const effectiveTargetResolution = resolveLegacyKustoEffectiveTarget(record, sectionsById);
-				if (!effectiveTargetResolution || effectiveTargetResolution.kind !== 'kusto') {
-					const decision = legacy
-						? { kind: 'preserve', restorable: false } as const
-						: { kind: 'strip', restorable: false } as const;
-					decisions.set(record, decision);
-					return decision;
-				}
-				const { clusterUrl, database, authorityId, connectionIdHint } = effectiveTargetResolution.target;
-				let ownerMatches = false;
-				let currentAccountPartition = '';
-				let currentLeaveNoTraceRevision = -1;
-				try {
-					const resolution = resolveKustoConnection(connections, {
-						clusterUrl,
-						authorityId,
-						connectionIdHint,
-					});
-					ownerMatches = !!database
-						&& resolution.kind === 'matched'
-						&& (!String(connectionIdHint || '').trim()
-							|| resolution.connection.id === String(connectionIdHint || '').trim());
-					if (resolution.kind === 'matched') {
-						currentAccountPartition = String(
-							this.options.kustoClient.getAccountPartition(resolution.connection) || '',
-						).trim();
-						currentLeaveNoTraceRevision = snapshot.revocationGenerations?.[kustoClusterKey(clusterUrl)] ?? 0;
-					}
-				} catch {
-					ownerMatches = false;
-				}
-				const protectedResult = snapshot.globallyBlocked || protectedClusters.has(kustoClusterKey(clusterUrl));
-				let decision: KustoResultDecision;
-				if (legacy) {
-					const canAdoptLegacyResult = ownerMatches
-						&& !!currentAccountPartition
-						&& currentLeaveNoTraceRevision === 0
-						&& !protectedResult
-						&& legacyKustoResultTargetMatches(record.resultJson, clusterUrl, database);
-					decision = canAdoptLegacyResult
-						? {
-							kind: 'adopt', restorable: true,
-							accountPartition: currentAccountPartition,
-							leaveNoTraceRevision: currentLeaveNoTraceRevision,
-						}
-						: { kind: 'preserve', restorable: false };
-				} else {
-					const persistedAccountPartition = String(record.kustoAccountPartition || '').trim();
-					const persistedLeaveNoTraceRevision = Number(record.kustoLeaveNoTraceRevision);
-					const resultOwnerMatches = !!persistedAccountPartition
-						&& persistedAccountPartition === currentAccountPartition
-						&& Number.isSafeInteger(persistedLeaveNoTraceRevision)
-						&& persistedLeaveNoTraceRevision >= 0
-						&& persistedLeaveNoTraceRevision === currentLeaveNoTraceRevision;
-					decision = ownerMatches && resultOwnerMatches && !protectedResult
-						? { kind: 'keep', restorable: isParseablePersistedResultJson(record.resultJson) }
-						: { kind: 'strip', restorable: false };
-				}
-				decisions.set(record, decision);
-				return decision;
-			} finally {
-				visiting.delete(record);
-			}
+			return canonicalSectionKind(source.type) === 'sql' ? 'sql' : 'query';
 		};
+		const evaluate = (source: Record<string, unknown>, allowSectionTarget: boolean): boolean | undefined => {
+			const type = effectiveKind(source);
+			return isProtected(canonicalSectionKind(source.type) === type ? source : { ...source, type }, allowSectionTarget);
+		};
+		const fromAttachment = (source: Record<string, unknown>, visited = new Set<Record<string, unknown>>()): boolean | undefined => {
+			if (visited.has(source)) return undefined;
+			visited.add(source);
+			const protectedResult = evaluate(source, false);
+			if (protectedResult !== undefined) return protectedResult;
+			const sources = comparisonSources.get(source);
+			if (!sources?.length) return undefined;
+			const decisions = sources.map(artifactId => {
+				const parent = sectionsByArtifactId.get(artifactId);
+				return parent ? fromAttachment(parent, new Set(visited)) : undefined;
+			});
+			return decisions.some(decision => decision === true) ? true
+				: decisions.every(decision => decision === false) ? false : undefined;
+		};
+		const resultFields = [
+			'result', 'resultJson', 'resultArtifact', 'selectedResultIndex',
+			'kustoAccountPartition', 'kustoLeaveNoTraceRevision', 'principalFingerprint', 'revocationGeneration',
+		];
 		let changed = false;
-		const sanitized = sections.map(section => {
-			if (!section || typeof section !== 'object' || Array.isArray(section)) return section;
-			const record = section as Record<string, unknown>;
-			const decision = evaluate(record);
-			if (decision.kind === 'adopt') {
-				changed = true;
-				const adopted: Record<string, unknown> = {
-					...record,
-					kustoAccountPartition: decision.accountPartition,
-					kustoLeaveNoTraceRevision: decision.leaveNoTraceRevision,
-				};
-				delete adopted.resultArtifact;
-				return adopted;
+		const candidates = sections.map((section, index) => {
+			if (!isResultSection(section)) return section;
+			let source = isResultSection(sourceSections[index]) ? sourceSections[index] : section;
+			let protectedResult = fromAttachment(source);
+			const visited = new Set<Record<string, unknown>>();
+			while (protectedResult === undefined && !comparisonSources.has(source) && !visited.has(source)) {
+				visited.add(source);
+				const parent = sectionsById.get(String(source.comparisonSourceBoxId || '').trim());
+				if (!parent) break;
+				source = parent;
+				protectedResult = fromAttachment(source);
 			}
-			if (decision.kind === 'preserve' && hasOwn(record, 'resultArtifact')) {
-				changed = true;
-				const preserved = { ...record };
-				delete preserved.resultArtifact;
-				return preserved;
+			if (protectedResult === undefined && !comparisonSources.has(source)) {
+				const parentId = String(source.comparisonSourceBoxId || '').trim();
+				const parent = sectionsById.get(parentId);
+				const fallbackSources = parent && visited.has(parent) ? [...visited] : parentId ? [] : [source];
+				protectedResult = fallbackSources.some(fallback => evaluate(fallback, true) === true);
 			}
-			if (decision.kind !== 'strip') return section;
+			const fields = protectedResult ? resultFields : ['result'];
+			if (!fields.some(field => hasOwn(section, field))) return section;
 			changed = true;
-			const clone = { ...record };
-			delete clone.resultJson;
-			delete clone.resultArtifact;
-			delete clone.kustoAccountPartition;
-			delete clone.kustoLeaveNoTraceRevision;
-			delete clone.selectedResultIndex;
-			return clone;
+			const candidate = { ...section };
+			for (const field of fields) delete candidate[field];
+			return candidate;
 		});
-		return changed ? { ...state, sections: sanitized } : state;
+		return changed ? { ...state, sections: candidates } : state;
 	}
 
-	private stripAllKustoOwnedResults<T extends PersistedResultState>(state: T): T {
-		return this.sanitizeKustoLeaveNoTraceStateFromSnapshot(state, {
-			clusterKeys: [],
-			globallyBlocked: true,
-			version: 0,
-			revocationGenerations: {},
+	private isSqlTargetProtected(
+		source: Record<string, unknown>,
+		snapshot: Pick<SqlOwnerSnapshot, 'policy' | 'connections'>,
+		allowSectionTarget: boolean,
+	): boolean | undefined {
+		const producer = resultPublication(source)?.producer;
+		if (producer?.engine === 'kusto') return false;
+		if (producer?.engine !== 'sql' && canonicalSectionKind(source.type) !== 'sql') return allowSectionTarget ? false : undefined;
+		if (snapshot.policy.globallyBlocked) return true;
+		const protectedIds = new Set(snapshot.policy.connectionIds);
+		if (protectedIds.size === 0) return false;
+		const producingConnectionId = typeof producer?.connectionId === 'string' ? producer.connectionId.trim() : '';
+		const producingDatabase = typeof producer?.database === 'string' ? producer.database.trim() : '';
+		const payloadTargets = resultPayloadTargets(source).map(target => ({
+			server: sqlConnectionServerSignature({ dialect: String(source.dialect || 'mssql'), serverUrl: target.cluster }),
+			database: producingDatabase || target.database,
+		}));
+		const producingConnection = snapshot.connections.find(connection => connection.id === producingConnectionId);
+		if (producingConnectionId && (!producingConnection || !payloadTargets.length
+			|| payloadTargets.every(target => target.server === sqlConnectionServerSignature(producingConnection)))) {
+			if (protectedIds.has(producingConnectionId)) return true;
+			if (producingConnection) return false;
+		}
+		if (payloadTargets.length) {
+			return payloadTargets.some(target => snapshot.connections.some(connection => protectedIds.has(connection.id)
+				&& sqlConnectionServerSignature(connection) === target.server
+				&& (!connection.database || !target.database
+					|| connection.database.trim().toLowerCase() === target.database.toLowerCase())));
+		}
+		if (producingConnectionId) return false;
+		if (!allowSectionTarget) return undefined;
+		if (protectedIds.has(String(source.connectionIdHint || '').trim())) return true;
+		const signature = String(source.targetSignature || '');
+		if (signature) {
+			return snapshot.connections.some(connection => protectedIds.has(connection.id)
+				&& sqlConnectionTargetSignatureMatches(connection, signature));
+		}
+		const server = sqlConnectionServerSignature({
+			dialect: String(source.dialect || 'mssql'),
+			serverUrl: String(source.serverUrl || ''),
+			port: typeof source.port === 'number' ? source.port : undefined,
 		});
-	}
-
-	private stripOrphanedSqlPrincipalFingerprints<T extends PersistedResultState>(state: T): T {
-		const sections = Array.isArray(state?.sections) ? state.sections : [];
-		let changed = false;
-		const sanitized = sections.map(section => {
-			if (!section || typeof section !== 'object') return section;
-			const record = section as Record<string, unknown>;
-			const orphanedArtifact = 'resultArtifact' in record && !String(record.resultJson || '');
-			const orphanedSelection = 'selectedResultIndex' in record && !String(record.resultJson || '');
-			const orphanedSqlPrincipal = String(record.type || '') === 'sql'
-				&& ('principalFingerprint' in record || 'revocationGeneration' in record)
-				&& !String(record.resultJson || '');
-			if (!orphanedArtifact && !orphanedSelection && !orphanedSqlPrincipal) return section;
-			changed = true;
-			const clone = { ...record };
-			if (orphanedArtifact) delete clone.resultArtifact;
-			if (orphanedSelection) delete clone.selectedResultIndex;
-			if (orphanedSqlPrincipal) {
-				delete clone.principalFingerprint;
-				delete clone.revocationGeneration;
-			}
-			return clone;
-		});
-		return changed ? { ...state, sections: sanitized } : state;
-	}
-
-	private stripAllSqlOwnedResults<T extends PersistedResultState>(state: T): T {
-		const sections = Array.isArray(state?.sections) ? state.sections : [];
-		const sectionTypesById = new Map(sections
-			.filter((section): section is Record<string, unknown> => !!section && typeof section === 'object')
-			.map(section => [String(section.id || '').trim(), String(section.type || '')]));
-		let changed = false;
-		const sanitized = sections.map(section => {
-			if (!section || typeof section !== 'object' || !('resultJson' in section)) return section;
-			const record = section as Record<string, unknown>;
-			const sourceBoxId = String(record.comparisonSourceBoxId || '').trim();
-			const unresolvedMarkerlessKusto = canonicalSectionKind(record.type) === 'query'
-				&& !!sourceBoxId
-				&& !sectionTypesById.has(sourceBoxId)
-				&& !hasOwn(record, 'kustoAccountPartition')
-				&& !hasOwn(record, 'kustoLeaveNoTraceRevision');
-			if (unresolvedMarkerlessKusto) return section;
-			const sqlOwned = String(record.type || '') === 'sql'
-				|| (!!sourceBoxId && (sectionTypesById.get(sourceBoxId) === 'sql'
-					|| !sectionTypesById.has(sourceBoxId)));
-			if (!sqlOwned) return section;
-			changed = true;
-			const clone = { ...record };
-			delete clone.resultJson;
-			delete clone.resultArtifact;
-			delete clone.selectedResultIndex;
-			return clone;
-		});
-		return this.stripOrphanedSqlPrincipalFingerprints(changed ? { ...state, sections: sanitized } : state);
-	}
-
-	private sanitizeSqlPrincipalOwnedResultsFromSnapshot<T extends PersistedResultState>(
-		state: T,
-		snapshot: SqlOwnerSnapshot,
-	): T {
-		const sections = Array.isArray(state?.sections) ? state.sections : [];
-		const sectionsById = new Map(sections
-			.filter((section): section is Record<string, unknown> => !!section && typeof section === 'object')
-			.map(section => [String(section.id || '').trim(), section] as const));
-		const protectedIds = snapshot.policy.globallyBlocked
-			? new Set(snapshot.connections.map(connection => connection.id))
-			: new Set(snapshot.policy.connectionIds);
-		let changed = false;
-		const sanitized = sections.map(section => {
-			if (!section || typeof section !== 'object' || !('resultJson' in section)) return section;
-			const record = section as Record<string, unknown>;
-			const sourceBoxId = String(record.comparisonSourceBoxId || '').trim();
-			const source = sourceBoxId ? sectionsById.get(sourceBoxId) : undefined;
-			const owner = String(source?.type || '') === 'sql' ? source! : record;
-			if (String(owner.type || '') !== 'sql') return section;
-			const connectionId = String(owner.connectionIdHint || '').trim();
-			const targetSignature = String(owner.targetSignature || '');
-			const persistedPrincipalFingerprint = String(owner.principalFingerprint || '').trim();
-			const persistedRevocationGeneration = Number(owner.revocationGeneration ?? 0);
-			const resolution = resolveSqlConnectionTarget(snapshot.connections, connectionId, targetSignature);
-			const connection = resolution.kind === 'matched' ? resolution.connection : undefined;
-			const resolvedConnectionId = String(connection?.id || '');
-			let ownerMatches = !!connection
-				&& !protectedIds.has(resolvedConnectionId)
-				&& !!targetSignature
-				&& Number.isSafeInteger(persistedRevocationGeneration)
-				&& persistedRevocationGeneration === (snapshot.policy.revocationGenerations[resolvedConnectionId] ?? 0);
-			if (ownerMatches && connection) {
-				const authType = String(connection.authType || '').trim().toLowerCase();
-				const principal = authType === 'aad'
-					? snapshot.accountsByServer[normalizeSqlServerUrl(connection.serverUrl)]
-					: String(connection.username || '').trim();
-				const currentPrincipalFingerprint = sqlSchemaPrincipalFingerprintForPrincipal(connection, principal);
-				ownerMatches = authType === 'aad'
-					? !!persistedPrincipalFingerprint
-						&& persistedPrincipalFingerprint === currentPrincipalFingerprint
-					: !persistedPrincipalFingerprint
-						|| persistedPrincipalFingerprint === currentPrincipalFingerprint;
-			}
-			if (ownerMatches) return section;
-			changed = true;
-			const clone = { ...record };
-			delete clone.resultJson;
-			delete clone.resultArtifact;
-			delete clone.selectedResultIndex;
-			return clone;
-		});
-		return this.stripOrphanedSqlPrincipalFingerprints(changed ? { ...state, sections: sanitized } : state);
-	}
-
-	private hasSqlOwnedState(state: PersistedResultState): boolean {
-		const sections = Array.isArray(state?.sections) ? state.sections : [];
-		const sectionTypesById = new Map(sections
-			.filter((section): section is Record<string, unknown> => !!section && typeof section === 'object')
-			.map(section => [String(section.id || '').trim(), String(section.type || '')]));
-		return sections.some(section => {
-			if (!section || typeof section !== 'object') return false;
-			const record = section as Record<string, unknown>;
-			if (String(record.type || '') === 'sql') return true;
-			const sourceBoxId = String(record.comparisonSourceBoxId || '').trim();
-			return !!sourceBoxId && sectionTypesById.get(sourceBoxId) === 'sql';
-		});
+		return !!server && snapshot.connections.some(connection => protectedIds.has(connection.id)
+			&& sqlConnectionServerSignature(connection) === server);
 	}
 }

@@ -8,6 +8,7 @@ import { isDeepStrictEqual } from 'util';
 
 import type { KqlxFileV1, KqlxStateV1 } from './kqlxFormat';
 import { hasAmbiguousCompatIdlessSections } from './compatSidecarFormat';
+import { preserveKqlxResultAttachments } from './kqlxOverlay';
 import { publishOwnedFileText } from './ownedFilePublication';
 
 export type CompatSidecarRepair = Readonly<{
@@ -284,8 +285,14 @@ export class CompatSidecarStore {
 
 	constructor(private readonly options: CompatSidecarStoreOptions) {}
 
-	async buildFresh(state: KqlxStateV1, baseFile?: KqlxFileV1): Promise<KqlxFileV1> {
+	async buildFresh(
+		state: KqlxStateV1,
+		durableBaseline?: KqlxFileV1,
+		baseFile: KqlxFileV1 | undefined = durableBaseline,
+	): Promise<KqlxFileV1> {
+		const baseline = durableBaseline && this.options.buildFile(durableBaseline.state, durableBaseline);
 		const file = this.options.buildFile(await this.options.sanitizeFresh(state), baseFile);
+		file.state = preserveKqlxResultAttachments(baseline?.state, file.state, state);
 		return baseFile && isDeepStrictEqual(file, baseFile) ? baseFile : file;
 	}
 
@@ -306,12 +313,13 @@ export class CompatSidecarStore {
 			const parsedBaseline = this.options.parse(baselineText);
 			if (!parsedBaseline) throw new Error('The companion sidecar is malformed or incompatible with this document type.');
 			if (!this.options.isLinked(uri, parsedBaseline)) throw this.changedError();
-			const baselineFile = parsedBaseline;
+			const baselineFile = this.options.buildFile(parsedBaseline.state, parsedBaseline);
 			const candidate = this.options.buildFile(state, baselineFile);
 			return this.options.publishFresh(candidate.state, sanitized => withCompatSidecarLock(uri, baseline.identity, async () => {
 				const locked = await readCompatSidecarSnapshot(uri);
 				if (!compatSidecarFileIdentityEquals(baseline.identity, locked.identity) || locked.text !== baselineText) throw this.changedError();
 				const file = this.options.buildFile(sanitized, candidate);
+				file.state = preserveKqlxResultAttachments(baselineFile.state, file.state, candidate.state);
 				const text = this.options.stringify(file);
 				const beforeWrite = await readCompatSidecarSnapshot(uri);
 				if (!compatSidecarFileIdentityEquals(baseline.identity, beforeWrite.identity) || beforeWrite.text !== baselineText) throw this.changedError();
@@ -332,24 +340,16 @@ export class CompatSidecarStore {
 				const currentText = baseline.text;
 				const parsed = this.options.parse(currentText);
 				if (!parsed || !this.options.isLinked(uri, parsed)) return undefined;
-				const candidate = this.options.buildFile(parsed.state, parsed);
 				let publication: { raced: true } | { raced: false; value: CompatSidecarRepair };
 				try {
-					publication = await this.options.publishFresh(candidate.state, sanitized => withCompatSidecarLock(uri, baseline.identity, async () => {
+					publication = await withCompatSidecarLock(uri, baseline.identity, async () => {
 					const locked = await readCompatSidecarSnapshot(uri);
 					if (!compatSidecarFileIdentityEquals(baseline.identity, locked.identity) || locked.text !== currentText) return { raced: true as const };
-					if (isDeepStrictEqual(sanitized, candidate.state)
-						&& this.options.preserveUnchangedRepairText?.(sanitized)) {
-						return {
-							raced: false as const,
-							value: { file: parsed, inputText: currentText, text: currentText, identity: baseline.identity },
-						};
-					}
-					const file = this.options.buildFile(sanitized, candidate);
-					const text = this.options.stringify(file);
-					if (text !== currentText) await writeCompatSidecarTextOwned(uri, text, baseline.identity, currentText);
-					return { raced: false as const, value: { file, inputText: currentText, text, identity: baseline.identity } };
-					}));
+					return {
+						raced: false as const,
+						value: { file: parsed, inputText: currentText, text: currentText, identity: baseline.identity },
+					};
+					});
 				} catch (error) {
 					if (isCompatSidecarCasError(error)) continue;
 					throw error;
@@ -373,7 +373,9 @@ export class CompatSidecarStore {
 					baselineText = baseline.text;
 					baselineIdentity = baseline.identity;
 					const parsed = this.options.parse(baselineText);
-					if (parsed && this.options.isLinked(uri, parsed) && !hasAmbiguousCompatIdlessSections(parsed)) baselineFile = parsed;
+					if (parsed && this.options.isLinked(uri, parsed) && !hasAmbiguousCompatIdlessSections(parsed)) {
+						baselineFile = this.options.buildFile(parsed.state, parsed);
+					}
 				} catch { /* no baseline */ }
 				const candidate = this.options.buildFile(state, baselineFile);
 				let publication: { raced: true } | { raced: false; value: vscode.Uri };
@@ -388,6 +390,7 @@ export class CompatSidecarStore {
 					} catch { /* absent */ }
 					if (!compatSidecarFileIdentityEquals(baselineIdentity, lockedIdentity) || lockedText !== baselineText) return { raced: true as const };
 					const file = this.options.buildFile(sanitized, candidate);
+					file.state = preserveKqlxResultAttachments(baselineFile?.state, file.state, candidate.state);
 					await writeCompatSidecarTextOwned(recoveryUri, this.options.stringify(file));
 					return { raced: false as const, value: recoveryUri };
 					}));

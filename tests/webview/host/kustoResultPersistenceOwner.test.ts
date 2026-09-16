@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { KustoResultPersistenceOwner } from '../../../src/host/kustoResultPersistenceOwner.js';
-import { createKustoResultBatch } from '../../../src/shared/kustoResultBatch.js';
+import { createKustoResultBatch, serializeKustoResultBatchForPersistence } from '../../../src/shared/kustoResultBatch.js';
 import { getKustoConnectionIdentityKey } from '../../../src/shared/kustoAuth.js';
 import { UNVERIFIED_LEGACY_RESULT_PRODUCER } from '../../../src/shared/resultArtifact.js';
 
@@ -55,6 +55,225 @@ function createOwner() {
 }
 
 describe('KustoResultPersistenceOwner', () => {
+	it('retains committed results while a replacement begins, stages, and aborts', () => {
+		const { owner, session } = createOwner();
+		const state = { sections: [{ id: 'query_1', type: 'query', query: 'print Authored=3' }] };
+		expect(session.beginExecution(terminal())).toBe(true);
+		expect(session.stagePublication('publication-1', terminal())).toBeDefined();
+		expect(session.commitPublication('publication-1')).toBe(true);
+		const saved = owner.overlaySnapshot(state);
+		const replacement = { ...terminal('execution-2'), reservationSequence: 2 };
+
+		expect(session.beginExecution(replacement)).toBe(true);
+		expect(owner.overlaySnapshot(state)).toEqual(saved);
+		expect(session.stagePublication('publication-2', replacement)).toBeDefined();
+		expect(owner.overlaySnapshot(state)).toEqual(saved);
+		session.abortPublication('publication-2');
+		expect(session.commitPublication('publication-2')).toBe(false);
+		expect(owner.overlaySnapshot(state)).toEqual(saved);
+
+		const later = { ...terminal('execution-3'), reservationSequence: 3 };
+		expect(session.beginExecution(later)).toBe(true);
+		expect(session.stagePublication('publication-3', later)).toBeDefined();
+		expect(session.commitPublication('publication-3')).toBe(true);
+		expect(owner.getCommittedSummary('query_1')?.executionId).toBe('execution-3');
+		expect(owner.overlaySnapshot(state).sections?.[0]).toMatchObject({
+			query: 'print Authored=3',
+			resultArtifact: { producer: { executionId: 'execution-3' } },
+		});
+	});
+
+	it.each(['auth', 'target', 'LNT', 'global LNT', 'policy generation', 'lifecycle close'] as const)(
+		'preserves saved A through staged B invalidation by %s and admits a later valid replacement',
+		(invalidation) => {
+			const { owner, session } = createOwner();
+			const authored = { sections: [{
+				id: 'query_1', type: 'query', query: 'print Authored=9',
+				clusterUrl: 'https://authored-cluster', authorityId: 'authored-tenant',
+				connectionIdHint: 'authored-connection', database: 'AuthoredDb',
+			}] };
+			expect(session.beginExecution(terminal('saved-a'))).toBe(true);
+			const savedTerminal = session.stagePublication('saved-a', terminal('saved-a'))!;
+			expect(session.commitPublication('saved-a')).toBe(true);
+			expect(session.selectResult({
+				requestId: 'select-a', boxId: 'query_1', sectionInstanceId: 'section-instance-1',
+				targetGeneration: 1, primaryArtifactId: savedTerminal.resultArtifactAssignment.artifactId,
+				resultIndex: 1,
+			})).toEqual({ accepted: true, resultIndex: 1 });
+			const saved = owner.overlaySnapshot(authored, session.panelId);
+			const pending = { ...terminal('staged-b'), reservationSequence: 2 };
+			expect(session.beginExecution(pending)).toBe(true);
+			expect(owner.overlaySnapshot(authored, session.panelId)).toEqual(saved);
+			expect(session.stagePublication('staged-b', pending)).toBeDefined();
+			const restored = new KustoResultPersistenceOwner('file:///historical-roundtrip.kqlx');
+			restored.admitCanonicalSource('saved-a', JSON.parse(JSON.stringify(saved)));
+			expect(restored.overlaySnapshot(authored)).toEqual(saved);
+
+			let replacement = { ...terminal('valid-c'), reservationSequence: 3 };
+			if (invalidation === 'auth') {
+				owner.revokeConnections(new Set(['connection-1']));
+				replacement = { ...replacement, dispatch: {
+					...replacement.dispatch, accountPartition: 'partition-b', authSessionGeneration: 4,
+				} };
+			} else if (invalidation === 'target') {
+				replacement = {
+					...replacement, targetGeneration: 2, connectionId: 'connection-2', database: 'OtherDb',
+					dispatch: {
+						...replacement.dispatch, clusterEndpoint: 'https://other-cluster',
+						connectionIdentityKey: 'https://other-cluster|',
+					},
+				};
+				expect(session.adoptTarget(replacement)).toBe(true);
+			} else if (invalidation === 'lifecycle close') {
+				expect(session.closeSection('query_1', 'section-instance-1')).toBe(true);
+				expect(session.openSection('query_1', 'section-instance-2')).toBe(true);
+				replacement = { ...replacement, sectionInstanceId: 'section-instance-2' };
+				expect(session.adoptTarget(replacement)).toBe(true);
+			} else {
+				owner.revokePolicyIncompatibleAttachments({
+					clusterKeys: invalidation === 'LNT' ? ['https://cluster'] : [],
+					globallyBlocked: invalidation === 'global LNT',
+					revocationGenerations: { cluster: invalidation === 'policy generation' ? 3 : 2 },
+				});
+			}
+
+			expect(owner.overlaySnapshot(authored, session.panelId)).toEqual(saved);
+			expect(owner.getCommittedSummary('query_1')?.executionId).toBe('saved-a');
+			expect(session.commitPublication('staged-b')).toBe(false);
+			expect(session.stagePublication('late-b', pending)).toBeUndefined();
+			owner.revokePolicyIncompatibleAttachments({
+				clusterKeys: [], globallyBlocked: false,
+				revocationGenerations: { cluster: 4, 'other-cluster': 4 },
+			});
+			replacement = { ...replacement, dispatch: { ...replacement.dispatch, leaveNoTraceRevision: 4 } };
+			expect(session.commitPublication('staged-b')).toBe(false);
+			expect(session.beginExecution(replacement)).toBe(true);
+			expect(session.stagePublication('valid-c', replacement)?.selectedResultIndex).toBe(1);
+			expect(owner.overlaySnapshot(authored, session.panelId)).toEqual(saved);
+			expect(session.commitPublication('valid-c')).toBe(true);
+			expect(owner.getCommittedSummary('query_1')).toMatchObject({
+				executionId: 'valid-c', selectedResultIndex: 1,
+			});
+			const updated = owner.overlaySnapshot(authored, session.panelId);
+			expect(updated.sections?.[0]).toMatchObject({
+				...authored.sections[0], selectedResultIndex: 1,
+				resultArtifact: { producer: { executionId: 'valid-c', connectionId: replacement.connectionId } },
+			});
+			restored.admitCanonicalSource('valid-c', JSON.parse(JSON.stringify(updated)));
+			expect(restored.overlaySnapshot(authored)).toEqual(updated);
+		},
+	);
+
+	it('retains A but rejects staged B after canonical ownership moves to another panel', () => {
+		const { owner, session } = createOwner();
+		const state = { sections: [{ id: 'query_1', type: 'query', query: 'print Authored=3' }] };
+		expect(session.beginExecution(terminal('saved-a'))).toBe(true);
+		expect(session.stagePublication('saved-a', terminal('saved-a'))).toBeDefined();
+		expect(session.commitPublication('saved-a')).toBe(true);
+		const saved = owner.overlaySnapshot(state);
+		const pending = { ...terminal('pending-b'), reservationSequence: 2 };
+		expect(session.beginExecution(pending)).toBe(true);
+		expect(session.stagePublication('pending-b', pending)).toBeDefined();
+		const successor = owner.openPanel('successor-panel');
+		expect(successor.openSection('query_1', 'successor-instance')).toBe(true);
+		const replacement = { ...terminal('valid-c'), sectionInstanceId: 'successor-instance', reservationSequence: 3 };
+		expect(successor.adoptTarget(replacement)).toBe(true);
+		owner.admitCanonicalSource('owner-handoff', saved, 'owner-handoff', successor.panelId);
+
+		expect(owner.overlaySnapshot(state, successor.panelId)).toEqual(saved);
+		expect(session.commitPublication('pending-b')).toBe(false);
+		expect(session.stagePublication('late-b', pending)).toBeUndefined();
+		expect(owner.overlaySnapshot(state, successor.panelId)).toEqual(saved);
+		expect(successor.beginExecution(replacement)).toBe(true);
+		expect(successor.stagePublication('valid-c', replacement)).toBeDefined();
+		expect(successor.commitPublication('valid-c')).toBe(true);
+		expect(owner.getCommittedSummary('query_1')?.executionId).toBe('valid-c');
+	});
+
+	it.each(['LNT', 'oversized'] as const)('retains A when %s completion cannot persist B, then replaces A with C', (reason) => {
+		const { owner, session } = createOwner();
+		const state = { sections: [{ id: 'query_1', type: 'query', query: 'print Authored=3' }] };
+		expect(session.beginExecution(terminal('saved-a'))).toBe(true);
+		expect(session.stagePublication('saved-a', terminal('saved-a'))).toBeDefined();
+		expect(session.commitPublication('saved-a')).toBe(true);
+		const saved = owner.overlaySnapshot(state);
+		const pending = { ...terminal('nonpersistable-b'), reservationSequence: 2 };
+		if (reason === 'LNT') {
+			owner.revokePolicyIncompatibleAttachments({
+				clusterKeys: ['https://cluster'], globallyBlocked: false, revocationGenerations: { cluster: 2 },
+			});
+		} else {
+			const oversized = createKustoResultBatch([{
+				columns: ['Value'], rows: [[3]], metadata: { payload: 'x'.repeat(5 * 1024 * 1024) },
+			}]);
+			if (!oversized.ok) throw new Error(oversized.error);
+			pending.result = oversized.value;
+			expect(serializeKustoResultBatchForPersistence(pending.result).json).toBeNull();
+		}
+		expect(session.beginExecution(pending)).toBe(true);
+		expect(session.stagePublication('nonpersistable-b', pending)).toBeDefined();
+		expect(session.commitPublication('nonpersistable-b')).toBe(true);
+		expect(owner.overlaySnapshot(state)).toEqual(saved);
+		expect(owner.getCommittedSummary('query_1')?.executionId).toBe('saved-a');
+
+		owner.revokePolicyIncompatibleAttachments({
+			clusterKeys: [], globallyBlocked: false, revocationGenerations: { cluster: 3 },
+		});
+		const replacement = { ...terminal('valid-c'), reservationSequence: 3,
+			dispatch: { ...terminal().dispatch, leaveNoTraceRevision: 3 } };
+		expect(session.beginExecution(replacement)).toBe(true);
+		expect(session.stagePublication('valid-c', replacement)).toBeDefined();
+		expect(session.commitPublication('valid-c')).toBe(true);
+		expect(owner.getCommittedSummary('query_1')?.executionId).toBe('valid-c');
+	});
+
+	it.each(['markerless', 'descriptorless'] as const)('retains %s history until a valid persistable replacement', (kind) => {
+		const { owner, session } = createOwner();
+		const state = { sections: [{ id: 'query_1', type: 'query', query: 'print Authored=3' }] };
+		const saved = { sections: [{
+			...state.sections[0], resultJson: JSON.stringify({ columns: ['Original'], rows: [[7]], metadata: {} }),
+			...(kind === 'descriptorless' ? { kustoAccountPartition: 'old-partition', kustoLeaveNoTraceRevision: 0 } : {}),
+		}] };
+		owner.admitCanonicalSource('historical-a', saved);
+		const pending = { ...terminal('pending-b'), reservationSequence: 2 };
+		expect(session.beginExecution(pending)).toBe(true);
+		expect(session.stagePublication('pending-b', pending)).toBeDefined();
+		owner.revokeConnections(new Set(['connection-1']));
+		owner.revokePolicyIncompatibleAttachments({
+			clusterKeys: ['https://cluster'], globallyBlocked: true, revocationGenerations: { cluster: 3 },
+		});
+		expect(owner.overlaySnapshot(state)).toEqual(saved);
+		expect(session.commitPublication('pending-b')).toBe(false);
+		expect(session.stagePublication('late-b', pending)).toBeUndefined();
+		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
+		owner.revokePolicyIncompatibleAttachments({
+			clusterKeys: [], globallyBlocked: false, revocationGenerations: { cluster: 4 },
+		});
+		const replacement = { ...terminal('valid-c'), reservationSequence: 3,
+			dispatch: { ...terminal().dispatch, leaveNoTraceRevision: 4 } };
+		expect(session.beginExecution(replacement)).toBe(true);
+		expect(session.stagePublication('valid-c', replacement)).toBeDefined();
+		expect(owner.overlaySnapshot(state)).toEqual(saved);
+		expect(session.commitPublication('valid-c')).toBe(true);
+		expect(owner.getCommittedSummary('query_1')?.executionId).toBe('valid-c');
+	});
+
+	it.each(['section removal', 'result clear'] as const)('retires saved and staged results only for explicit %s', (deletion) => {
+		const { owner, session } = createOwner();
+		const state = { sections: [{ id: 'query_1', type: 'query', query: 'print Authored=3' }] };
+		expect(session.beginExecution(terminal('saved-a'))).toBe(true);
+		expect(session.stagePublication('saved-a', terminal('saved-a'))).toBeDefined();
+		expect(session.commitPublication('saved-a')).toBe(true);
+		const pending = { ...terminal('pending-b'), reservationSequence: 2 };
+		expect(session.beginExecution(pending)).toBe(true);
+		expect(session.stagePublication('pending-b', pending)).toBeDefined();
+		owner.admitCanonicalSource('explicit-deletion', deletion === 'result clear' ? state : { sections: [] });
+		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
+		expect(owner.overlaySnapshot(state).sections?.[0]).not.toHaveProperty('resultJson');
+		expect(session.commitPublication('pending-b')).toBe(false);
+		expect(session.stagePublication('late-b', pending)).toBeUndefined();
+	});
+
 	it('leaves persisted fields untouched before any canonical source is admitted', () => {
 		const owner = new KustoResultPersistenceOwner('file:///opening.kqlx');
 		const state = {
@@ -134,7 +353,7 @@ describe('KustoResultPersistenceOwner', () => {
 		})).toBe(true);
 		expect(admission?.commit()).toBe(false);
 		const retry = owner.prepareCanonicalSource('opening-source', persisted, '1');
-		expect(retry?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(retry?.projectedState.sections?.[0]).toHaveProperty('resultJson');
 		expect(retry?.commit()).toBe(true);
 	});
 
@@ -449,12 +668,12 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(admission?.projectedState.sections?.[0]).toHaveProperty('resultJson');
 		expect(admission?.commit()).toBe(false);
 		const retry = owner.prepareCanonicalSource('result-candidate', persisted, '2');
-		expect(retry?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(retry?.projectedState.sections?.[0]).toHaveProperty('resultJson');
 		expect(retry?.commit()).toBe(true);
-		expect(owner.overlaySnapshot(persisted).sections?.[0]).not.toHaveProperty('resultJson');
+		expect(owner.overlaySnapshot(persisted)).toEqual(persisted);
 	});
 
-	it('rejects a cold result-bearing admission after the Kusto policy snapshot changes', () => {
+	it('admits a historical cold source after the Kusto policy snapshot changes', () => {
 		const source = createOwner();
 		source.session.beginExecution(terminal());
 		source.session.stagePublication('publication-1', terminal());
@@ -474,12 +693,12 @@ describe('KustoResultPersistenceOwner', () => {
 			revocationGenerations: { cluster: 3 },
 		});
 
-		expect(admission.commit()).toBe(false);
-		admission.abandonRetry();
-		expect(owner.hasCommittedAttachments()).toBe(false);
+		expect(admission.commit()).toBe(true);
+		expect(owner.hasCommittedAttachments()).toBe(true);
+		expect(owner.overlaySnapshot(persisted)).toEqual(persisted);
 	});
 
-	it('rejects a cold admission after authoritative sanitation removes its result', () => {
+	it('admits a historical cold source despite a sanitation removal request', () => {
 		const source = createOwner();
 		source.session.beginExecution(terminal());
 		source.session.stagePublication('publication-1', terminal());
@@ -495,12 +714,12 @@ describe('KustoResultPersistenceOwner', () => {
 
 		owner.revokeSanitizedAttachments(persisted, rowFree);
 
-		expect(admission.commit()).toBe(false);
-		admission.abandonRetry();
-		expect(owner.hasCommittedAttachments()).toBe(false);
+		expect(admission.commit()).toBe(true);
+		expect(owner.hasCommittedAttachments()).toBe(true);
+		expect(owner.overlaySnapshot(rowFree)).toEqual(persisted);
 	});
 
-	it('rejects a cold admission after connection revocation with no committed attachment', () => {
+	it('admits a historical cold source after connection revocation', () => {
 		const source = createOwner();
 		source.session.beginExecution(terminal());
 		source.session.stagePublication('publication-1', terminal());
@@ -513,9 +732,9 @@ describe('KustoResultPersistenceOwner', () => {
 
 		owner.revokeConnections(new Set(['connection-1']));
 
-		expect(admission.commit()).toBe(false);
-		admission.abandonRetry();
-		expect(owner.hasCommittedAttachments()).toBe(false);
+		expect(admission.commit()).toBe(true);
+		expect(owner.hasCommittedAttachments()).toBe(true);
+		expect(owner.overlaySnapshot(persisted)).toEqual(persisted);
 	});
 
 	it('commits the detached candidate even if caller-owned preview values mutate', () => {
@@ -581,7 +800,7 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(section.selectedResultIndex).toBeUndefined();
 	});
 
-	it('persists the trusted execution target for a runtime-only favorite selection', () => {
+	it('keeps a runtime-only execution target in provenance without rewriting authored selection', () => {
 		const { owner, session } = createOwner();
 		session.beginExecution(terminal());
 		session.stagePublication('publication-1', terminal());
@@ -595,14 +814,18 @@ describe('KustoResultPersistenceOwner', () => {
 		}).sections?.[0] as Record<string, unknown>;
 
 		expect(section).toMatchObject({
-			clusterUrl: 'https://cluster',
-			connectionIdHint: 'connection-1',
-			database: 'Db',
+			authorityId: 'stale-authority',
 			favoritesMode: true,
 			runMode: 'runAll',
 			resultJson: expect.any(String),
+			resultArtifact: { producer: {
+				connectionId: 'connection-1', database: 'Db',
+				dispatch: { clusterEndpoint: 'https://cluster' },
+			} },
 		});
-		expect(section).not.toHaveProperty('authorityId');
+		expect(section).not.toHaveProperty('clusterUrl');
+		expect(section).not.toHaveProperty('connectionIdHint');
+		expect(section).not.toHaveProperty('database');
 	});
 
 	it('preserves a restored attachment when the first adopted target matches exactly', () => {
@@ -666,7 +889,7 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(owner.getCommittedSummary('query_1')).toBeTruthy();
 		expect(owner.overlaySnapshot({
 			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
-		}, session.panelId).sections?.[0]).not.toHaveProperty('resultJson');
+		}, session.panelId).sections?.[0]).toHaveProperty('resultJson');
 
 		expect(session.adoptTarget({
 			boxId: 'query_1', sectionInstanceId: 'reopened-instance', targetGeneration: 2,
@@ -679,7 +902,7 @@ describe('KustoResultPersistenceOwner', () => {
 		}, session.panelId).sections?.[0]).toHaveProperty('resultJson');
 	});
 
-	it('revokes a restored attachment when pending database resolution selects another database', () => {
+	it('preserves a restored attachment when pending database resolution selects another database', () => {
 		const first = createOwner();
 		first.session.beginExecution(terminal());
 		first.session.stagePublication('publication-1', terminal());
@@ -703,10 +926,10 @@ describe('KustoResultPersistenceOwner', () => {
 			connectionId: 'connection-1', database: 'OtherDb', connectionRevision: 4,
 			connectionIdentityKey: 'https://cluster|',
 		})).toBe(true);
-		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
+		expect(owner.getCommittedSummary('query_1')?.executionId).toBe('execution-1');
 		expect(owner.overlaySnapshot({
 			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
-		}, session.panelId).sections?.[0]).not.toHaveProperty('resultJson');
+		}, session.panelId).sections?.[0]).toHaveProperty('resultJson');
 	});
 
 	it('does not let a stale panel retarget or execution clear the owner panel attachment', () => {
@@ -730,7 +953,7 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(owner.getCommittedSummary('query_1')?.executionId).toBe('execution-1');
 	});
 
-	it('keeps committed rows scoped to each panel target after retarget', () => {
+	it('projects historical rows without rewriting either panel target after retarget', () => {
 		const { owner, session: firstPanel } = createOwner();
 		expect(firstPanel.beginExecution(terminal())).toBe(true);
 		expect(firstPanel.stagePublication('publication-1', terminal())).toBeTruthy();
@@ -749,7 +972,10 @@ describe('KustoResultPersistenceOwner', () => {
 
 		const secondOverlay = owner.overlaySnapshot(targetBState, 'panel-2').sections?.[0] as Record<string, unknown>;
 
-		expect(secondOverlay).not.toHaveProperty('resultJson');
+		expect(secondOverlay).toMatchObject({
+			resultJson: expect.any(String),
+			resultArtifact: { producer: { connectionId: 'connection-1', database: 'Db' } },
+		});
 		expect(secondOverlay.clusterUrl).toBe('https://other-cluster');
 		expect(secondOverlay.connectionIdHint).toBe('connection-2');
 		expect(secondOverlay.database).toBe('OtherDb');
@@ -759,7 +985,7 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(owner.getCommittedSummary('query_1')).toBeTruthy();
 	});
 
-	it('revokes a restored attachment when physical target enrichment mismatches', () => {
+	it('preserves a restored attachment when physical target enrichment mismatches', () => {
 		const first = createOwner();
 		first.session.beginExecution(terminal());
 		first.session.stagePublication('publication-1', terminal());
@@ -788,7 +1014,7 @@ describe('KustoResultPersistenceOwner', () => {
 
 		expect(owner.overlaySnapshot({
 			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
-		}).sections?.[0]).not.toHaveProperty('resultJson');
+		}).sections?.[0]).toHaveProperty('resultJson');
 	});
 
 	it.each([
@@ -816,10 +1042,13 @@ describe('KustoResultPersistenceOwner', () => {
 		}).sections?.[0] as Record<string, unknown>;
 
 		expect(overlaid.database).toBe('OtherDb');
-		expect(overlaid).not.toHaveProperty('resultJson');
+		expect(overlaid).toMatchObject({
+			resultJson: section.resultJson,
+			resultArtifact: { producer: { database: 'Db', executionId: 'execution-1' } },
+		});
 	});
 
-	it('rejects an incoherent initial modern attachment without overwriting its authored target', () => {
+	it('admits historical modern provenance independently of the current authored target', () => {
 		const source = createOwner();
 		source.session.beginExecution(terminal());
 		source.session.stagePublication('publication-1', terminal());
@@ -838,8 +1067,8 @@ describe('KustoResultPersistenceOwner', () => {
 		}).sections?.[0] as Record<string, unknown>;
 
 		expect(overlaid.database).toBe('OtherDb');
-		expect(overlaid).not.toHaveProperty('resultJson');
-		expect(overlaid).not.toHaveProperty('resultArtifact');
+		expect(overlaid.resultJson).toBe(section.resultJson);
+		expect(overlaid.resultArtifact).toEqual(section.resultArtifact);
 	});
 
 	it('rejects a modern attachment forged with the runtime-only legacy producer', () => {
@@ -919,7 +1148,7 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(owner.overlaySnapshot(rowFreeState).sections?.[0]).toHaveProperty('resultJson');
 	});
 
-	it('does not restore an exact attachment removed by fresh sanitation from the same source', () => {
+	it('retains an exact attachment despite fresh sanitation of the same source', () => {
 		const { owner, session } = createOwner();
 		const rowFreeState = {
 			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
@@ -935,9 +1164,9 @@ describe('KustoResultPersistenceOwner', () => {
 			'same-source-bytes', rowFreeState, 'source-authority-1',
 		);
 
-		expect(admission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(admission?.projectedState).toEqual(beforeSanitation);
 		expect(admission?.commit()).toBe(true);
-		expect(owner.overlaySnapshot(rowFreeState).sections?.[0]).not.toHaveProperty('resultJson');
+		expect(owner.overlaySnapshot(rowFreeState)).toEqual(beforeSanitation);
 	});
 
 	it('does not let an older sanitation callback revoke a newer attachment', () => {
@@ -961,7 +1190,7 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(owner.overlaySnapshot(rowFreeState).sections?.[0]).toHaveProperty('resultJson');
 	});
 
-	it('revokes a row-free runtime attachment from an incompatible policy snapshot', () => {
+	it('retains a committed attachment when a row-free snapshot meets an incompatible policy', () => {
 		const { owner, session } = createOwner();
 		const rowFreeState = {
 			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
@@ -976,7 +1205,8 @@ describe('KustoResultPersistenceOwner', () => {
 			revocationGenerations: { cluster: 3 },
 		});
 
-		expect(owner.overlaySnapshot(rowFreeState).sections?.[0]).not.toHaveProperty('resultJson');
+		expect(owner.overlaySnapshot(rowFreeState).sections?.[0]).toHaveProperty('resultJson');
+		expect(owner.getCommittedSummary('query_1')?.executionId).toBe('execution-1');
 	});
 
 	it('aborts a staged publication when the policy snapshot blocks its cluster', () => {
@@ -992,7 +1222,7 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(session.commitPublication('publication-1')).toBe(false);
 	});
 
-	it('revokes an exact inert restored attachment removed by sanitation', () => {
+	it('retains an exact inert restored attachment despite sanitation', () => {
 		const owner = new KustoResultPersistenceOwner('file:///legacy.kqlx');
 		const persisted = {
 			sections: [{
@@ -1007,7 +1237,7 @@ describe('KustoResultPersistenceOwner', () => {
 
 		owner.revokeSanitizedAttachments(owner.overlaySnapshot(rowFreeState), rowFreeState);
 
-		expect(owner.overlaySnapshot(rowFreeState).sections?.[0]).not.toHaveProperty('resultJson');
+		expect(owner.overlaySnapshot(rowFreeState)).toEqual(persisted);
 	});
 
 	it('admits different compatibility bytes that collide on a panel-local source revision', () => {
@@ -1046,7 +1276,7 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(session.commitPublication('publication-1')).toBe(false);
 	});
 
-	it('clears the durable attachment at the accepted rerun boundary', () => {
+	it('retains the durable attachment at the accepted rerun boundary', () => {
 		const { owner, session } = createOwner();
 		session.beginExecution(terminal('execution-1'));
 		session.stagePublication('publication-1', terminal('execution-1'));
@@ -1055,7 +1285,8 @@ describe('KustoResultPersistenceOwner', () => {
 		session.beginExecution({ ...terminal('execution-2'), reservationSequence: 2 });
 
 		expect(owner.overlaySnapshot({ sections: [{ id: 'query_1', type: 'query' }] }).sections?.[0])
-			.not.toHaveProperty('resultJson');
+			.toHaveProperty('resultJson');
+		expect(owner.getCommittedSummary('query_1')?.executionId).toBe('execution-1');
 	});
 
 	it('does not let a stale canonical attachment overwrite a newer host commit', () => {
@@ -1186,7 +1417,7 @@ describe('KustoResultPersistenceOwner', () => {
 		session.beginExecution(terminal());
 		session.stagePublication('publication-1', terminal());
 		session.commitPublication('publication-1');
-		expect(session.closeSection('query_1', 'section-instance-1')).toBe(true);
+		expect(session.closeSection('query_1', 'section-instance-1', false)).toBe(true);
 
 		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
 	});
@@ -1548,7 +1779,7 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(secondPanel.beginExecution(terminal('execution-2'))).toBe(true);
 	});
 
-	it('does not restore an exact-pair attachment rejected by the admitting panel target', () => {
+	it('preserves an exact-pair historical attachment across an incompatible admitting panel target', () => {
 		const { owner, session: firstPanel } = createOwner();
 		const rowFreeState = {
 			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
@@ -1568,20 +1799,20 @@ describe('KustoResultPersistenceOwner', () => {
 			'same-source-fingerprint', rowFreeState, 'same-source-revision', 'panel-2',
 		);
 
-		expect(admission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(admission?.projectedState.sections?.[0]).toHaveProperty('resultJson');
 		expect(admission?.commit()).toBe(true);
-		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
+		expect(owner.getCommittedSummary('query_1')?.executionId).toBe('execution-1');
 		const overlaid = owner.overlaySnapshot({
 			sections: [{
 				id: 'query_1', type: 'query', connectionIdHint: 'connection-2', database: 'OtherDb',
 			}],
 		}, 'panel-2').sections?.[0] as Record<string, unknown>;
-		expect(overlaid).not.toHaveProperty('resultJson');
+		expect(overlaid).toHaveProperty('resultJson');
 		expect(overlaid.connectionIdHint).toBe('connection-2');
 		expect(overlaid.database).toBe('OtherDb');
 	});
 
-	it('does not restore an owned attachment rejected by the admitting panel target', () => {
+	it('preserves an owned historical attachment across an incompatible admitting panel target', () => {
 		const { owner, session: firstPanel } = createOwner();
 		const rowFreeState = {
 			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
@@ -1602,15 +1833,15 @@ describe('KustoResultPersistenceOwner', () => {
 			'owned-mismatched-fingerprint', rowFreeState, 'owned-mismatched-source', 'panel-2',
 		);
 
-		expect(admission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(admission?.projectedState.sections?.[0]).toHaveProperty('resultJson');
 		expect(admission?.commit()).toBe(true);
-		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
+		expect(owner.getCommittedSummary('query_1')?.executionId).toBe('execution-1');
 		const overlaid = owner.overlaySnapshot({
 			sections: [{
 				id: 'query_1', type: 'query', connectionIdHint: 'connection-2', database: 'OtherDb',
 			}],
 		}, 'panel-2').sections?.[0] as Record<string, unknown>;
-		expect(overlaid).not.toHaveProperty('resultJson');
+		expect(overlaid).toHaveProperty('resultJson');
 		expect(overlaid.connectionIdHint).toBe('connection-2');
 		expect(overlaid.database).toBe('OtherDb');
 	});
@@ -1633,7 +1864,7 @@ describe('KustoResultPersistenceOwner', () => {
 		const firstAdmission = owner.prepareCanonicalSource(
 			'same-source-fingerprint', rowFreeState, 'same-source-revision', 'panel-2',
 		);
-		expect(firstAdmission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(firstAdmission?.projectedState.sections?.[0]).toHaveProperty('resultJson');
 		expect(secondPanel.adoptTarget({
 			boxId: 'query_1', sectionInstanceId: 'section-instance-2', targetGeneration: 2,
 			connectionId: 'connection-1', database: 'Db',
@@ -1668,7 +1899,7 @@ describe('KustoResultPersistenceOwner', () => {
 			'owned-target-reversal-fingerprint', rowFreeState,
 			'owned-target-reversal-source', 'panel-2',
 		);
-		expect(firstAdmission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(firstAdmission?.projectedState.sections?.[0]).toHaveProperty('resultJson');
 		expect(secondPanel.adoptTarget({
 			boxId: 'query_1', sectionInstanceId: 'section-instance-2', targetGeneration: 2,
 			connectionId: 'connection-1', database: 'Db',
@@ -1711,14 +1942,14 @@ describe('KustoResultPersistenceOwner', () => {
 		const retry = owner.prepareCanonicalSource(
 			'descriptorless-source', source, 'descriptorless-revision', 'panel-descriptorless',
 		);
-		expect(retry?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(retry?.projectedState.sections?.[0]).toHaveProperty('resultJson', resultJson);
 		expect(retry?.commit()).toBe(true);
 		expect(owner.overlaySnapshot({
 			sections: [{
 				id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-b.kusto.windows.net',
 				authorityId: 'tenant-b.example.com', connectionIdHint: 'connection-b', database: 'DbB',
 			}],
-		}, 'panel-descriptorless').sections?.[0]).not.toHaveProperty('resultJson');
+		}, 'panel-descriptorless').sections?.[0]).toHaveProperty('resultJson', resultJson);
 	});
 
 	it.each([
@@ -1734,7 +1965,7 @@ describe('KustoResultPersistenceOwner', () => {
 				'https://cluster-a.kusto.windows.net', 'tenant-b.example.com',
 			),
 		}],
-	] as const)('rejects a descriptorless migrated result with a mismatched %s', (_label, mismatch) => {
+	] as const)('preserves a descriptorless migrated result with a mismatched %s', (_label, mismatch) => {
 		const owner = new KustoResultPersistenceOwner(`file:///descriptorless-${_label}.kqlx`);
 		const panel = owner.openPanel('panel-descriptorless');
 		expect(panel.openSection('query_legacy', 'section-descriptorless')).toBe(true);
@@ -1753,7 +1984,7 @@ describe('KustoResultPersistenceOwner', () => {
 			'descriptorless-source', source, 'descriptorless-revision', 'panel-descriptorless',
 		);
 
-		expect(admission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(admission?.projectedState.sections?.[0]).toHaveProperty('resultJson', resultJson);
 		expect(admission?.commit()).toBe(true);
 	});
 
@@ -1788,7 +2019,7 @@ describe('KustoResultPersistenceOwner', () => {
 		const firstAdmission = owner.prepareCanonicalSource(
 			'descriptorless-source', source, 'descriptorless-revision', 'panel-b',
 		);
-		expect(firstAdmission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(firstAdmission?.projectedState.sections?.[0]).toHaveProperty('resultJson', resultJson);
 		expect(secondPanel.adoptTarget({
 			boxId: 'query_legacy', sectionInstanceId: 'section-b', targetGeneration: 2,
 			connectionId: 'connection-a', database: 'DbA',
@@ -1849,11 +2080,11 @@ describe('KustoResultPersistenceOwner', () => {
 		const retry = owner.prepareCanonicalSource(
 			'descriptorless-source', source, 'descriptorless-revision', 'panel-b',
 		);
-		expect(retry?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(retry?.projectedState.sections?.[0]).toHaveProperty('resultJson', resultJson);
 		expect(retry?.commit()).toBe(true);
 	});
 
-	it('keeps descriptorless migrated rows scoped to each panel target after commit', () => {
+	it('projects descriptorless historical rows independently of each panel target', () => {
 		const owner = new KustoResultPersistenceOwner('file:///descriptorless-multi-panel.kqlx');
 		const firstPanel = owner.openPanel('panel-a');
 		const secondPanel = owner.openPanel('panel-b');
@@ -1900,7 +2131,7 @@ describe('KustoResultPersistenceOwner', () => {
 		}] };
 
 		const secondOverlay = owner.overlaySnapshot(rowFreeTargetB, 'panel-b').sections?.[0] as Record<string, unknown>;
-		expect(secondOverlay).not.toHaveProperty('resultJson');
+		expect(secondOverlay).toHaveProperty('resultJson', resultJson);
 		expect(secondOverlay.clusterUrl).toBe('https://cluster-b.kusto.windows.net');
 		expect(secondOverlay.connectionIdHint).toBe('connection-b');
 		expect(secondOverlay.database).toBe('DbB');
@@ -1908,7 +2139,7 @@ describe('KustoResultPersistenceOwner', () => {
 			.toHaveProperty('resultJson', resultJson);
 	});
 
-	it('keeps an owned row-free candidate hidden from a mismatched panel target', () => {
+	it('retains owned descriptorless history for a row-free candidate with a mismatched panel target', () => {
 		const owner = new KustoResultPersistenceOwner('file:///descriptorless-owned-row-free.kqlx');
 		const firstPanel = owner.openPanel('panel-a');
 		const secondPanel = owner.openPanel('panel-b');
@@ -1944,10 +2175,10 @@ describe('KustoResultPersistenceOwner', () => {
 			'owned-row-free-fingerprint', rowFreeTargetA, 'owned-row-free-source', 'panel-b',
 		);
 
-		expect(admission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(admission?.projectedState.sections?.[0]).toHaveProperty('resultJson', resultJson);
 		expect(admission?.commit()).toBe(true);
 		expect(owner.overlaySnapshot(rowFreeTargetA, 'panel-b').sections?.[0])
-			.not.toHaveProperty('resultJson');
+			.toHaveProperty('resultJson', resultJson);
 		expect(owner.overlaySnapshot(rowFreeTargetA, 'panel-a').sections?.[0])
 			.toHaveProperty('resultJson', resultJson);
 	});
@@ -1960,7 +2191,7 @@ describe('KustoResultPersistenceOwner', () => {
 		['connection invalidation', (owner: KustoResultPersistenceOwner) => owner.revokeConnections(
 			new Set(['connection-a']),
 		)],
-	] as const)('revokes target-bound descriptorless rows after a row-free panel save on %s', (_label, revoke) => {
+	] as const)('retains descriptorless rows after a row-free panel save on %s', (_label, revoke) => {
 		const owner = new KustoResultPersistenceOwner(`file:///descriptorless-${_label}.kqlx`);
 		const firstPanel = owner.openPanel('panel-a');
 		const secondPanel = owner.openPanel('panel-b');
@@ -2005,7 +2236,7 @@ describe('KustoResultPersistenceOwner', () => {
 		const admission = owner.prepareCanonicalSource(
 			'owned-row-free-fingerprint', rowFreeState, 'owned-row-free-source', 'panel-b',
 		);
-		expect(admission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(admission?.projectedState.sections?.[0]).toHaveProperty('resultJson', descriptorlessResultJson);
 		expect(admission?.commit()).toBe(true);
 		expect(owner.overlaySnapshot(rowFreeState, 'panel-a').sections?.[0])
 			.toHaveProperty('resultJson', descriptorlessResultJson);
@@ -2013,7 +2244,7 @@ describe('KustoResultPersistenceOwner', () => {
 		revoke(owner);
 
 		const afterRevocation = owner.overlaySnapshot(rowFreeState, 'panel-a');
-		expect(afterRevocation.sections?.[0]).not.toHaveProperty('resultJson');
+		expect(afterRevocation.sections?.[0]).toHaveProperty('resultJson', descriptorlessResultJson);
 		expect(afterRevocation.sections?.[1]).toHaveProperty('resultJson', markerlessResultJson);
 	});
 
@@ -2044,7 +2275,7 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(owner.overlaySnapshot(rowFree).sections?.[1]).toHaveProperty('resultJson', resultJson);
 	});
 
-	it('revokes a hintless descriptorless result through its unique runtime connection', () => {
+	it('retains a hintless descriptorless result after its unique runtime connection is revoked', () => {
 		const owner = new KustoResultPersistenceOwner('file:///descriptorless-hintless.kqlx');
 		const panel = owner.openPanel('panel-hintless');
 		expect(panel.openSection('query_legacy', 'section-hintless')).toBe(true);
@@ -2070,7 +2301,7 @@ describe('KustoResultPersistenceOwner', () => {
 		owner.revokeConnections(new Set(['connection-a']));
 
 		expect(owner.overlaySnapshot(rowFree, 'panel-hintless').sections?.[0])
-			.not.toHaveProperty('resultJson');
+			.toHaveProperty('resultJson', resultJson);
 	});
 
 	it('preserves an authority-less descriptorless result through unique tenant enrichment', () => {
@@ -2099,7 +2330,7 @@ describe('KustoResultPersistenceOwner', () => {
 			.toHaveProperty('resultJson', resultJson);
 	});
 
-	it('keeps an authority-less descriptorless result hidden across ambiguous tenant aliases', () => {
+	it('retains authority-less descriptorless history across ambiguous tenant aliases', () => {
 		const owner = new KustoResultPersistenceOwner('file:///descriptorless-tenant-ambiguous.kqlx');
 		const first = owner.openPanel('panel-tenant-a');
 		const second = owner.openPanel('panel-tenant-b');
@@ -2127,12 +2358,12 @@ describe('KustoResultPersistenceOwner', () => {
 		}] }, 'descriptorless-tenant-ambiguous-revision');
 
 		expect(owner.overlaySnapshot(rowFree, 'panel-tenant-a').sections?.[0])
-			.not.toHaveProperty('resultJson');
+			.toHaveProperty('resultJson', resultJson);
 		expect(owner.overlaySnapshot(rowFree, 'panel-tenant-b').sections?.[0])
-			.not.toHaveProperty('resultJson');
+			.toHaveProperty('resultJson', resultJson);
 	});
 
-	it('revokes inert descriptorless state before closing its sole section target', () => {
+	it('retains inert descriptorless state across lifecycle close and reopen', () => {
 		const owner = new KustoResultPersistenceOwner('file:///descriptorless-close-reopen.kqlx');
 		const panel = owner.openPanel('panel-close-reopen');
 		expect(panel.openSection('query_legacy', 'section-first')).toBe(true);
@@ -2164,10 +2395,10 @@ describe('KustoResultPersistenceOwner', () => {
 		})).toBe(true);
 
 		expect(owner.overlaySnapshot(rowFree, 'panel-close-reopen').sections?.[0])
-			.not.toHaveProperty('resultJson');
+			.toHaveProperty('resultJson', resultJson);
 	});
 
-	it('revokes previously enriched hintless state when a second alias arrives later', () => {
+	it('retains previously enriched hintless history when a second alias arrives later', () => {
 		const owner = new KustoResultPersistenceOwner('file:///descriptorless-late-alias.kqlx');
 		const first = owner.openPanel('panel-late-alias-a');
 		expect(first.openSection('query_legacy', 'section-late-alias-a')).toBe(true);
@@ -2200,12 +2431,12 @@ describe('KustoResultPersistenceOwner', () => {
 		})).toBe(true);
 
 		expect(owner.overlaySnapshot(rowFree, 'panel-late-alias-a').sections?.[0])
-			.not.toHaveProperty('resultJson');
+			.toHaveProperty('resultJson', resultJson);
 		expect(owner.overlaySnapshot(rowFree, 'panel-late-alias-b').sections?.[0])
-			.not.toHaveProperty('resultJson');
+			.toHaveProperty('resultJson', resultJson);
 	});
 
-	it('preserves matching descriptorless state while reconciling a rejected committed attachment', () => {
+	it('preserves modern and descriptorless history while reconciling mismatched targets', () => {
 		const { owner, session: firstPanel } = createOwner();
 		expect(firstPanel.openSection('query_legacy', 'section-legacy-a')).toBe(true);
 		expect(firstPanel.adoptTarget({
@@ -2265,12 +2496,12 @@ describe('KustoResultPersistenceOwner', () => {
 			'mixed-owned-row-free', rowFreeState, 'mixed-owned-revision', 'panel-b',
 		);
 
-		expect(admission?.projectedState.sections?.[0]).not.toHaveProperty('resultJson');
-		expect(admission?.projectedState.sections?.[1]).not.toHaveProperty('resultJson');
+		expect(admission?.projectedState.sections?.[0]).toHaveProperty('resultJson');
+		expect(admission?.projectedState.sections?.[1]).toHaveProperty('resultJson', descriptorlessResultJson);
 		expect(admission?.commit()).toBe(true);
-		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
+		expect(owner.getCommittedSummary('query_1')?.executionId).toBe('execution-1');
 		expect(owner.overlaySnapshot(rowFreeState, 'panel-b').sections?.[1])
-			.not.toHaveProperty('resultJson');
+			.toHaveProperty('resultJson', descriptorlessResultJson);
 		expect(owner.overlaySnapshot(rowFreeState, 'panel-1').sections?.[1])
 			.toHaveProperty('resultJson', descriptorlessResultJson);
 	});
@@ -2331,7 +2562,7 @@ describe('KustoResultPersistenceOwner', () => {
 		}] }, 'panel-descriptorless').sections?.[0]).toHaveProperty('resultJson', resultJson);
 	});
 
-	it('revokes descriptorless migrated rows on mismatching physical enrichment', () => {
+	it('retains descriptorless migrated rows on mismatching physical enrichment', () => {
 		const owner = new KustoResultPersistenceOwner('file:///descriptorless-mismatched-enrichment.kqlx');
 		const panel = owner.openPanel('panel-descriptorless');
 		expect(panel.openSection('query_legacy', 'section-descriptorless')).toBe(true);
@@ -2358,7 +2589,7 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(owner.overlaySnapshot({ sections: [{
 			id: 'query_legacy', type: 'query', clusterUrl: 'https://cluster-b.kusto.windows.net',
 			authorityId: 'tenant-b.example.com', connectionIdHint: 'connection-a', database: 'DbA',
-		}] }, 'panel-descriptorless').sections?.[0]).not.toHaveProperty('resultJson');
+		}] }, 'panel-descriptorless').sections?.[0]).toHaveProperty('resultJson', resultJson);
 	});
 
 	it('retains markerless inert payloads across initial and changed section targets', () => {
@@ -2436,7 +2667,7 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(section.resultArtifact).toBeUndefined();
 	});
 
-	it('rejects marker-bearing descriptorless rows without an effective target', () => {
+	it('retains marker-bearing descriptorless rows as historical data without an effective target', () => {
 		const owner = new KustoResultPersistenceOwner('file:///targetless-adopted-legacy.kqlx');
 		owner.admitCanonicalSource('targetless-adopted-source', { sections: [{
 			id: 'query_legacy', type: 'query',
@@ -2446,7 +2677,11 @@ describe('KustoResultPersistenceOwner', () => {
 
 		expect(owner.overlaySnapshot({
 			sections: [{ id: 'query_legacy', type: 'query' }],
-		}).sections?.[0]).not.toHaveProperty('resultJson');
+		}).sections?.[0]).toMatchObject({
+			resultJson: JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} }),
+			kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
+		});
+		expect(owner.getCommittedSummary('query_legacy')).toBeUndefined();
 	});
 
 	it('does not retire an attachment for a host-owned row-free source observation', () => {
@@ -2488,7 +2723,7 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(overlaid.sections?.[1]).toEqual(state.sections[1]);
 	});
 
-	it('revokes committed and staged attachments for connection invalidation', () => {
+	it('revokes staged publication but retains committed history for connection invalidation', () => {
 		const { owner, session } = createOwner();
 		session.beginExecution(terminal('execution-1'));
 		session.stagePublication('publication-1', terminal('execution-1'));
@@ -2500,6 +2735,7 @@ describe('KustoResultPersistenceOwner', () => {
 
 		expect(session.commitPublication('publication-2')).toBe(false);
 		expect(owner.overlaySnapshot({ sections: [{ id: 'query_1', type: 'query' }] }).sections?.[0])
-			.not.toHaveProperty('resultJson');
+			.toHaveProperty('resultJson');
+		expect(owner.getCommittedSummary('query_1')?.executionId).toBe('execution-1');
 	});
 });

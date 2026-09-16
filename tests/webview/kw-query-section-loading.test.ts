@@ -44,10 +44,12 @@ import { applyKustoLeaveNoTracePolicy, markKustoLeaveNoTracePolicyPending } from
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
 import { pState } from '../../src/webview/shared/persistence-state.js';
 import {
+	bindResultArtifactConsumer,
 	clearResultsState,
 	displayResultBatchForBox,
 	displayResultForBox,
 	getCurrentResultArtifact,
+	getBoundResultArtifact,
 	getResultsState,
 	getSelectedResultIndex,
 	setResultsState,
@@ -56,7 +58,7 @@ import { postMessageToHost } from '../../src/webview/shared/webview-messages.js'
 import { APPLIED_KUSTO_COPILOT_DONE_EVENT } from '../../src/webview/core/kusto-copilot-output-runtime.js';
 import { getKustoSchemaIdentityKey } from '../../src/shared/kustoAuth.js';
 import { createKustoResultBatch } from '../../src/shared/kustoResultBatch.js';
-import { createUnverifiedLegacyResultArtifactPublication } from '../../src/shared/resultArtifact.js';
+import { comparisonSourceArtifactConsumerId, createUnverifiedLegacyResultArtifactPublication } from '../../src/shared/resultArtifact.js';
 
 vi.mock('../../src/webview/shared/webview-messages.js', () => ({
 	postMessageToHost: vi.fn(),
@@ -1464,7 +1466,7 @@ describe('kw-query-section loading states', () => {
 		}));
 	});
 
-	it('clears a stamped restored artifact when initial physical enrichment resolves to another owner', () => {
+	it('preserves a stamped restored artifact when initial physical enrichment resolves to another owner', () => {
 		const el = createSection();
 		el.id = el.boxId;
 		el.setConnections([{
@@ -1488,14 +1490,19 @@ describe('kw-query-section loading states', () => {
 			connectionRevision: 5, connectionIdentityKey: 'cluster|tenant-b',
 		}]);
 
-		expect(getResultsState('test1')).toBeNull();
-		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
+		expect(getResultsState('test1')?.rows).toEqual([['RESTORED']]);
+		expect(pState.queryResultJsonByBoxId.test1).toContain('RESTORED');
 	});
 
-	it('clears rows, persisted output, comparison summary, and Copilot state when its target retires', () => {
+	it('preserves committed output and artifact bindings while retiring target execution and Copilot state', () => {
 		const el = createSection();
 		el.displayResult({ columns: ['value'], rows: [['old-target']], metadata: {} });
 		setResultsState('test1', { boxId: 'test1', columns: ['value'], rows: [['old-target']] });
+		const resultTable = el.querySelector('kw-data-table');
+		const savedResult = getResultsState('test1');
+		const savedArtifact = getCurrentResultArtifact('test1')!;
+		const consumerId = comparisonSourceArtifactConsumerId('test1');
+		bindResultArtifactConsumer(consumerId, 'test1', savedArtifact.artifactId);
 		pState.queryResultJsonByBoxId.test1 = JSON.stringify({ columns: ['value'], rows: [['old-target']] });
 		pState.resultArtifactByBoxId.test1 = {
 			version: 1, artifactId: 'result:test1:1', sourceBoxId: 'test1', revision: 1, createdAt: 1,
@@ -1515,10 +1522,13 @@ describe('kw-query-section loading states', () => {
 		try { el.clearTargetBoundState(); }
 		finally { window.removeEventListener(APPLIED_KUSTO_COPILOT_DONE_EVENT, onRetired); }
 
-		expect(getResultsState('test1')).toBeNull();
-		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
-		expect(pState.resultArtifactByBoxId.test1).toBeUndefined();
-		expect(el.querySelector('.comparison-summary-banner')).toBeNull();
+		expect(getResultsState('test1')).toBe(savedResult);
+		expect(getCurrentResultArtifact('test1')).toBe(savedArtifact);
+		expect(getBoundResultArtifact(consumerId, 'test1')).toBe(savedArtifact);
+		expect(pState.queryResultJsonByBoxId.test1).toContain('old-target');
+		expect(pState.resultArtifactByBoxId.test1?.artifactId).toBe('result:test1:1');
+		expect(el.querySelector('kw-data-table')).toBe(resultTable);
+		expect(el.querySelector('.comparison-summary-banner')).toBe(banner);
 		expect(postMessageToHost).not.toHaveBeenCalledWith(
 			expect.objectContaining({ type: 'clearComparisonSummary' }),
 		);
@@ -1529,7 +1539,7 @@ describe('kw-query-section loading states', () => {
 		});
 	});
 
-	it('clears ordinary target-bound state before advancing to another database', () => {
+	it('preserves ordinary results while retiring execution before advancing to another database', () => {
 		const el = createSection();
 		el.setConnectionId('connection-1');
 		el.setDatabase('DbA');
@@ -1544,8 +1554,9 @@ describe('kw-query-section loading states', () => {
 
 		expect(next?.targetGeneration).toBeGreaterThan(oldExecution.targetGeneration);
 		expect(el.getActiveExecution()).toBeUndefined();
-		expect(getResultsState('test1')).toBeNull();
-		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
+		expect(el.acceptsQueryTerminal(oldExecution.executionId)).toBe(false);
+		expect(getResultsState('test1')?.rows).toEqual([['DB_A']]);
+		expect(pState.queryResultJsonByBoxId.test1).toContain('DB_A');
 		expect(postMessageToHost).toHaveBeenCalledWith({
 			type: 'cancelQuery', boxId: 'test1', executionId: oldExecution.executionId,
 			sectionInstanceId: oldExecution.sectionInstanceId,
@@ -1581,7 +1592,7 @@ describe('kw-query-section loading states', () => {
 		expect(el.querySelector('kw-data-table')).not.toBeNull();
 	});
 
-	it('clears restored rows when a pending target completes with another database', () => {
+	it('preserves restored rows when a pending target completes with another database', () => {
 		const el = createSection();
 		el.id = el.boxId;
 		el.setConnections([{
@@ -1603,11 +1614,11 @@ describe('kw-query-section loading states', () => {
 
 		el.setSchemaLifecycleTarget('connection-1', 'OtherDb');
 
-		expect(getResultsState('test1')).toBeNull();
-		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
+		expect(getResultsState('test1')?.rows).toEqual([['RESTORED']]);
+		expect(pState.queryResultJsonByBoxId.test1).toContain('RESTORED');
 	});
 
-	it('clears restored rows when pending database completion uses another physical owner', () => {
+	it('preserves restored rows when pending database completion uses another physical owner', () => {
 		const el = createSection();
 		el.id = el.boxId;
 		el.setConnections([{
@@ -1631,11 +1642,11 @@ describe('kw-query-section loading states', () => {
 			connectionRevision: 5, connectionIdentityKey: 'cluster|tenant-b',
 		}]);
 
-		expect(getResultsState('test1')).toBeNull();
-		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
+		expect(getResultsState('test1')?.rows).toEqual([['RESTORED']]);
+		expect(pState.queryResultJsonByBoxId.test1).toContain('RESTORED');
 	});
 
-	it('clears restored rows immediately when a complete target changes physical owner', () => {
+	it('preserves restored rows when a complete target changes physical owner', () => {
 		const el = createSection();
 		el.id = el.boxId;
 		el.setConnections([{
@@ -1660,8 +1671,8 @@ describe('kw-query-section loading states', () => {
 			connectionRevision: 5, connectionIdentityKey: 'cluster|tenant-b',
 		}]);
 
-		expect(getResultsState('test1')).toBeNull();
-		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
+		expect(getResultsState('test1')?.rows).toEqual([['RESTORED']]);
+		expect(pState.queryResultJsonByBoxId.test1).toContain('RESTORED');
 	});
 
 	it('keeps a canceled Copilot owner admissible until its exact done terminal', () => {

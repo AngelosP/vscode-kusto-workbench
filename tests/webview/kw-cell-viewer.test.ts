@@ -96,24 +96,24 @@ describe('kw-cell-viewer', () => {
 		expect(el.open).toBe(false);
 	});
 
-	it('clicking backdrop hides the modal', async () => {
+	it('pressing the backdrop hides the modal', async () => {
 		const el = getViewer();
 		el.show('Col', 'value');
 		await el.updateComplete;
 
-		getBackdrop(el)?.click();
+		getBackdrop(el)?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
 		await el.updateComplete;
 
 		expect(el.open).toBe(false);
 	});
 
-	it('clicking modal content does not close', async () => {
+	it('pressing modal content does not close', async () => {
 		const el = getViewer();
 		el.show('Col', 'value');
 		await el.updateComplete;
 
 		const content = el.shadowRoot!.querySelector('.modal-content') as HTMLElement;
-		content.click();
+		content.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
 		await el.updateComplete;
 
 		expect(el.open).toBe(true);

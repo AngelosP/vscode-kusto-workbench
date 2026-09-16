@@ -34,7 +34,7 @@ describe('comparison summary host bridge retirement', () => {
 		expect(executionController).toContain('getResultArtifact(comparisonSourceArtifactId)');
 		expect(executionController).toContain("banner.className = 'comparison-summary-banner';");
 		expect(executionController).not.toContain("type: 'comparisonSummary'");
-		expect(querySection).toContain("this.querySelector('.comparison-summary-banner')?.remove();");
+		expect(querySection).not.toContain("this.querySelector('.comparison-summary-banner')?.remove();");
 		expect(querySection).not.toContain("type: 'clearComparisonSummary'");
 	});
 });

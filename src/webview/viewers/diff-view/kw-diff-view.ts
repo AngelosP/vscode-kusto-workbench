@@ -401,8 +401,8 @@ export class KwDiffView extends LitElement {
 
 	override render() {
 		return html`
-		<div class="backdrop ${this._visible ? 'visible' : ''}" @click=${this._onBackdropClick}>
-			<div class="content" @click=${(e: Event) => e.stopPropagation()}>
+		<div class="backdrop ${this._visible ? 'visible' : ''}" @mousedown=${this._onBackdropClick}>
+			<div class="content" @mousedown=${(e: Event) => e.stopPropagation()}>
 				<div class="header">
 					<h3>${this._title}</h3>
 					<button class="close-btn" type="button" title="Close" aria-label="Close" @click=${this.close}>

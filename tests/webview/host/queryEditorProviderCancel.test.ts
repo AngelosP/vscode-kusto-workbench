@@ -1824,47 +1824,53 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryError' }));
 	});
 
-	it('strips persisted SQL results for a protected runtime connection', () => {
+	it('preserves saved SQL rows and principal for a protected runtime connection', () => {
 		const provider = createSqlProviderHarness();
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => true);
 		const state = {
 			sections: [
 				{ id: 'sql_1', type: 'sql', query: 'SELECT 1', principalFingerprint: 'principal-a', resultJson: '{"secret":true}' },
 				{ id: 'chart_1', type: 'chart', dataSourceId: 'sql_1' },
 			],
 		};
+		const originalState = structuredClone(state);
 
 		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
-		expect(sanitized).not.toBe(state);
-		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
-		expect(sanitized.sections[0]).not.toHaveProperty('principalFingerprint');
-		expect(sanitized.sections[1]).toEqual(state.sections[1]);
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 	});
 
-	it('removes an orphaned SQL principal fingerprint even when no result remains', () => {
+	it('preserves a saved SQL principal fingerprint even when no result remains', () => {
 		const provider = createSqlProviderHarness();
 		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => false);
 		const state = { sections: [{
 			id: 'sql_1', type: 'sql', query: 'SELECT 1', principalFingerprint: 'principal-a',
 		}] };
+		const originalState = structuredClone(state);
 
 		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
 
-		expect(sanitized.sections[0]).not.toHaveProperty('principalFingerprint');
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 	});
 
-	it('strips restored SQL results by protected server before box ownership is known', () => {
+	it('preserves restored SQL rows on a protected server before box ownership is known', () => {
 		const provider = createSqlProviderHarness();
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => true);
 		provider.sqlLifecycle.removeTarget('sql_1');
 		const state = {
 			sections: [{ id: 'sql_restored', type: 'sql', serverUrl: 'server.example', resultJson: '{"secret":true}' }],
 		};
+		const originalState = structuredClone(state);
 
 		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
-		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 	});
 
-	it('strips restored SQL results by protected connection hint after target-signature drift', () => {
+	it('preserves restored SQL rows with a protected connection hint after target-signature drift', () => {
 		const provider = createSqlProviderHarness();
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => true);
 		provider.sqlLifecycle.removeTarget('sql_1');
 		const state = {
 			sections: [{
@@ -1872,12 +1878,14 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 				serverUrl: 'old.example', targetSignature: 'old-target', resultJson: '{"secret":true}',
 			}],
 		};
+		const originalState = structuredClone(state);
 
 		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
-		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 	});
 
-	it('resolves a stale SQL hint through one exact target signature and strips protected rows', () => {
+	it('preserves restored SQL rows with a stale hint and an exact protected target signature', () => {
 		const provider = createSqlProviderHarness();
 		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => true);
 		const recreated = provider.sqlWorkbench.connectionManager.getConnection('sql-1');
@@ -1886,12 +1894,14 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			id: 'sql_restored', type: 'sql', connectionIdHint: 'sql_deleted', targetSignature,
 			serverUrl: recreated.serverUrl, resultJson: '{"secret":true}',
 		}] };
+		const originalState = structuredClone(state);
 
 		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
-		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 	});
 
-	it('fails closed when restored SQL result ownership is ambiguous', () => {
+	it('preserves restored SQL rows and descriptor when ownership is ambiguous', () => {
 		const provider = createSqlProviderHarness();
 		const connection = provider.sqlWorkbench.connectionManager.getConnection('sql-1');
 		provider.sqlWorkbench.connectionManager.getConnections = vi.fn(() => [connection, { ...connection, id: 'sql-2' }]);
@@ -1901,14 +1911,16 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			id: 'sql_restored', type: 'sql', connectionIdHint: 'sql_deleted', targetSignature,
 			resultJson: '{"secret":true}', resultArtifact: { version: 1, artifactId: 'sql-secret' },
 		}] };
+		const originalState = structuredClone(state);
 
 		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
-		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
-		expect(sanitized.sections[0]).not.toHaveProperty('resultArtifact');
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 	});
 
-	it('strips persisted comparison results by durable SQL source lineage', () => {
+	it('preserves saved comparison rows with protected durable SQL source lineage', () => {
 		const provider = createSqlProviderHarness();
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => true);
 		provider.sqlLifecycle.removeTarget('sql_1');
 		const state = {
 			sections: [
@@ -1916,13 +1928,14 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 				{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'sql_source', query: 'SELECT 2', resultJson: '{"secret":true}' },
 			],
 		};
+		const originalState = structuredClone(state);
 
 		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
-		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
-		expect(sanitized.sections[1]).toMatchObject({ comparisonSourceBoxId: 'sql_source', query: 'SELECT 2' });
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 	});
 
-	it('strips SQL comparison rows when the persisted source owner cannot be resolved', () => {
+	it('preserves saved SQL comparison rows when the source owner cannot be resolved', () => {
 		const provider = createSqlProviderHarness();
 		provider.sqlLifecycle.removeTarget('sql_1');
 		const state = {
@@ -1931,12 +1944,14 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 				{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'sql_source', query: 'SELECT 2', resultJson: '{"secret":true}' },
 			],
 		};
+		const originalState = structuredClone(state);
 
 		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
-		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 	});
 
-	it('uses persisted SQL owner B instead of a stale same-box live owner A during reload', () => {
+	it('preserves saved SQL owner B rows despite a stale same-box live owner A during reload', () => {
 		const provider = createSqlProviderHarness();
 		const ownerA = { id: 'sql-a', name: 'A', dialect: 'mssql', serverUrl: 'shared.example', authType: 'sql-login', username: 'UserA' };
 		const ownerB = { id: 'sql-b', name: 'B', dialect: 'mssql', serverUrl: 'shared.example', authType: 'sql-login', username: 'UserB' };
@@ -1952,10 +1967,11 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			},
 			{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'sql_source', query: 'SELECT 2', resultJson: '{"owner":"B-comparison"}' },
 		] };
+		const originalState = structuredClone(state);
 
 		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
-		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
-		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 	});
 
 	it('preserves persisted Kusto comparison results during SQL privacy sanitization', () => {
@@ -1972,7 +1988,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.sqlLifecycle.getComparisonOwner('query_cmp')).toBeUndefined();
 	});
 
-	it('strips persisted Kusto comparison rows when the comparison target differs from its source', async () => {
+	it('preserves saved Kusto comparison rows and descriptor when its target differs from its source', async () => {
 		const provider = createSqlProviderHarness();
 		provider.connectionManager.getConnections = vi.fn(() => [
 			{ id: 'source', name: 'Source', clusterUrl: 'https://source.kusto.windows.net' },
@@ -1982,28 +1998,26 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			{ id: 'query_source', type: 'query', clusterUrl: 'https://source.kusto.windows.net', connectionIdHint: 'source', database: 'Db', query: 'T' },
 			{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'query_source', clusterUrl: 'https://other.kusto.windows.net', connectionIdHint: 'other', database: 'OtherDb', query: 'T | count', resultJson: '{"secret":true}', resultArtifact: { version: 1, artifactId: 'kusto-secret' }, kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0 },
 		] };
+		const originalState = structuredClone(state);
 
 		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
-		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
-		expect(sanitized.sections[1]).not.toHaveProperty('resultArtifact');
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 	});
 
-	it('always strips legacy row-bearing result payloads without dropping future fields', async () => {
+	it('preserves exact saved legacy row-bearing result payloads and future fields', async () => {
 		const provider = createSqlProviderHarness();
 		const state = { futureState: { keep: true }, sections: [
 			{ id: 'query_1', type: 'query', query: 'T', result: { rows: [['kusto-secret']] }, futureQuerySetting: 1 },
 			{ id: 'sql_1', type: 'sql', query: 'select 1', result: { rows: [['sql-secret']] }, futureSqlSetting: 2 },
 			{ id: 'future_1', type: 'future-section', result: { opaque: true } },
 		] };
+		const originalState = structuredClone(state);
 
 		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
 
-		expect((sanitized as any).futureState).toEqual({ keep: true });
-		expect(sanitized.sections[0]).not.toHaveProperty('result');
-		expect(sanitized.sections[0]).toHaveProperty('futureQuerySetting', 1);
-		expect(sanitized.sections[1]).not.toHaveProperty('result');
-		expect(sanitized.sections[1]).toHaveProperty('futureSqlSetting', 2);
-		expect(sanitized.sections[2]).toHaveProperty('result', { opaque: true });
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 	});
 
 	it('does not read SQL policy storage for pure Kusto, Markdown, and Chart state', async () => {
@@ -2170,7 +2184,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		}
 	});
 
-	it('fails closed for ownerless and ambiguous Kusto rows while preserving a unique public owner', async () => {
+	it('preserves exact saved ownerless, ambiguous, and uniquely owned Kusto rows', async () => {
 		const provider = createSqlProviderHarness();
 		provider.connectionManager.getConnections = vi.fn(() => [
 			TEST_CONNECTION,
@@ -2182,15 +2196,15 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			{ id: 'query_ownerless', type: 'query', query: 'print 1', resultJson: '{"ownerless":true}', kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0 },
 			{ id: 'query_ambiguous', type: 'query', clusterUrl: 'https://shared.kusto.windows.net', database: 'Db', resultJson: '{"ambiguous":true}', kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0 },
 		] };
+		const originalState = structuredClone(state);
 
 		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
 
-		expect(sanitized.sections[0]).toHaveProperty('resultJson', '{"public":true}');
-		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
-		expect(sanitized.sections[2]).not.toHaveProperty('resultJson');
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 	});
 
-	it('treats sql_-prefixed Kusto connection and section IDs as Kusto ownership', async () => {
+	it('preserves saved protected Kusto rows with sql_-prefixed connection and section IDs', async () => {
 		const provider = createSqlProviderHarness();
 		const connection = { id: 'sql_kusto_connection', name: 'Kusto', clusterUrl: 'https://opaque-id.kusto.windows.net' };
 		provider.connectionManager.getConnections = vi.fn(() => [connection]);
@@ -2201,14 +2215,15 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			{ id: 'sql_kusto_source', type: 'query', clusterUrl: connection.clusterUrl, connectionIdHint: connection.id, database: 'Db', resultJson: '{"source":true}', kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0 },
 			{ id: 'sql_kusto_comparison', type: 'query', comparisonSourceBoxId: 'sql_kusto_source', clusterUrl: connection.clusterUrl, connectionIdHint: connection.id, database: 'Db', resultJson: '{"comparison":true}', kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0 },
 		] };
+		const originalState = structuredClone(state);
 
 		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
-		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
-		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 		expect(provider.sqlWorkbench.dispatchSqlOwnerSnapshot).not.toHaveBeenCalled();
 	});
 
-	it('strips orphaned comparison rows before SQL policy I/O during fresh save', async () => {
+	it('preserves saved orphaned comparison rows without SQL policy I/O during a fresh read', async () => {
 		const provider = createSqlProviderHarness();
 		provider.sqlWorkbench.refreshLeaveNoTracePolicy = vi.fn(async () => { throw new Error('SQL policy unavailable'); });
 		const state = { sections: [{
@@ -2216,9 +2231,11 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			query: 'SELECT 2', resultJson: '{"secret":true}',
 			kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0,
 		}] };
+		const originalState = structuredClone(state);
 
 		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
-		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 		expect(provider.sqlWorkbench.refreshLeaveNoTracePolicy).not.toHaveBeenCalled();
 	});
 
@@ -2236,7 +2253,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.sqlWorkbench.dispatchSqlOwnerSnapshot).not.toHaveBeenCalled();
 	});
 
-	it('strips persisted AAD source and comparison rows after the canonical principal rotates', async () => {
+	it('preserves saved AAD source rows, principal, and comparison rows after the canonical principal rotates', async () => {
 		const provider = createSqlProviderHarness();
 		const connection = provider.sqlWorkbench.connectionManager.getConnection('sql-1');
 		const principalA = sqlSchemaPrincipalFingerprintForPrincipal(connection, 'account-a')!;
@@ -2260,15 +2277,15 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 				},
 			],
 		};
+		const originalState = structuredClone(state);
 
 		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
 
-		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
-		expect(sanitized.sections[0]).not.toHaveProperty('principalFingerprint');
-		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 	});
 
-	it('strips persisted SQL rows when the canonical connection target changed before the watcher refresh', async () => {
+	it('preserves saved SQL rows and principal when the canonical connection target changed before watcher refresh', async () => {
 		const provider = createSqlProviderHarness();
 		const connection = provider.sqlWorkbench.connectionManager.getConnection('sql-1');
 		const principal = sqlSchemaPrincipalFingerprintForPrincipal(connection, 'account-a')!;
@@ -2284,11 +2301,12 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			targetSignature: sqlConnectionTargetSignature(connection), principalFingerprint: principal,
 			resultJson: '{"rows":[["old-target"]]}',
 		}] };
+		const originalState = structuredClone(state);
 
 		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
 
-		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
-		expect(sanitized.sections[0]).not.toHaveProperty('principalFingerprint');
+		expect(sanitized).toBe(state);
+		expect(sanitized).toStrictEqual(originalState);
 	});
 
 	it('does not infer SQL ownership from opaque query connection IDs', () => {

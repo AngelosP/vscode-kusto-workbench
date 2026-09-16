@@ -3,7 +3,7 @@
 export {};
 
 import { normalizeClusterUrl, isLeaveNoTraceCluster, normalizePersistedResultJson, trySerializeQueryResult } from '../shared/persistence-utils';
-import { kustoClusterKey, kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
+import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
 import { resolveKustoConnection } from '../../shared/kustoAuth.js';
 import { postMessageToHost } from '../shared/webview-messages';
 import {
@@ -18,7 +18,6 @@ import {
 	displayResultBatchForBox,
 	displayResultForBox,
 	getCurrentResultArtifact,
-	getResultsState,
 	getResultsStateRevision,
 	restoreResultsRuntime,
 	type ResultsRuntimeSnapshot,
@@ -27,7 +26,6 @@ import {
 	createDerivedResultArtifactPublication,
 	createRestoredKustoResultArtifactPublication,
 	createUnverifiedLegacyResultArtifactPublication,
-	isUnverifiedLegacyResultArtifact,
 	projectRowsToDeclaredColumns,
 	publicationFromPersistedResultArtifact,
 	RESULT_ARTIFACT_CSV_RESET_EVENT,
@@ -38,7 +36,6 @@ import {
 } from '../../shared/resultArtifact.js';
 import { getKustoResultSets, parseKustoResultBatch } from '../../shared/kustoResultBatch.js';
 import {
-	legacyKustoResultTargetMatches,
 	resolveLegacyKustoEffectiveTarget,
 } from '../../shared/legacyKustoResult.js';
 import { admitKqlFullQueryText } from '../../host/kqlLanguageService/sourceAnalysis.js';
@@ -555,18 +552,6 @@ function __kustoResolveSqlOwnerRestore(element: any, persistedSection: any): Sql
 	return { state: 'valid', connectionId: currentConnectionId };
 }
 
-function __kustoQueuePendingSqlOwnedRestore(job: Omit<PendingSqlOwnedRestore, 'generation' | 'documentUri' | 'initialResultsRevision'>): void {
-	const connectionIdHint = String(job.persistedOwner?.connectionIdHint || '').trim();
-	const targetSignature = String(job.persistedOwner?.targetSignature || '');
-	if (!job.boxId || !job.resultJson || !connectionIdHint || !targetSignature) return;
-	__kustoPendingSqlOwnedRestores.push({
-		...job,
-		generation: __kustoRestoreResultGeneration,
-		documentUri: String(pState.documentUri || ''),
-		initialResultsRevision: getResultsStateRevision(job.boxId),
-	});
-}
-
 export function resolvePendingSqlResultRestores(): void {
 	const pending = __kustoPendingSqlOwnedRestores;
 	__kustoPendingSqlOwnedRestores = [];
@@ -607,32 +592,22 @@ export function resolvePendingSqlResultRestores(): void {
 	__kustoScheduleDeferredRestoredResults();
 }
 
-export function discardPendingSqlResultRestores(protectedConnectionIds: readonly string[]): void {
-	const protectedIds = new Set(protectedConnectionIds.map(id => String(id || '').trim()).filter(Boolean));
-	__kustoPendingSqlOwnedRestores = __kustoPendingSqlOwnedRestores.filter(job => {
-		const connectionId = String(job.persistedOwner.connectionIdHint || '').trim();
-		return !!connectionId && !protectedIds.has(connectionId);
-	});
-	__kustoDeferredRestoredResultJobs = __kustoDeferredRestoredResultJobs.filter(job => {
-		if (!job.sqlOwnerConnectionId) return job.kind === 'query';
-		return !protectedIds.has(job.sqlOwnerConnectionId);
-	});
-}
-
 function __kustoIsKustoOwnedRestore(job: DeferredRestoredResultJob): boolean {
-	return job.kind === 'query' && !job.sqlOwnerConnectionId;
+	return job.kind === 'query' && !job.sqlOwnerSourceBoxId;
 }
 
 function __kustoHasDeferredResultDependencyCycle(job: DeferredRestoredResultJob): boolean {
 	const jobsByBoxId = new Map(__kustoDeferredRestoredResultJobs
 		.filter(candidate => __kustoIsDeferredResultJobDocumentCurrent(candidate))
 		.map(candidate => [candidate.boxId, candidate]));
+	jobsByBoxId.set(job.boxId, job);
 	const visited = new Set<string>();
-	let current: DeferredRestoredResultJob | undefined = job;
-	while (current?.derivedSourceBoxId) {
-		if (visited.has(current.boxId)) return true;
-		visited.add(current.boxId);
-		current = jobsByBoxId.get(current.derivedSourceBoxId);
+	let currentBoxId = job.boxId;
+	while (currentBoxId) {
+		if (visited.has(currentBoxId)) return true;
+		visited.add(currentBoxId);
+		currentBoxId = jobsByBoxId.get(currentBoxId)?.derivedSourceBoxId
+			|| String(__kustoAcknowledgedRuntimeSourceSections[currentBoxId]?.comparisonSourceBoxId || '').trim();
 	}
 	return false;
 }
@@ -743,94 +718,17 @@ export function beginKustoLeaveNoTracePolicyApplication(): KustoLeaveNoTracePoli
 
 type KustoLeaveNoTracePolicyEffectsPlan = Readonly<{
 	retainedDeferredJobs: DeferredRestoredResultJob[];
-	storedResultBoxIdsToDelete: readonly string[];
-	revokedUnverifiedLegacyBoxIds: readonly string[];
-	protectedBoxIds: readonly string[];
-	changed: boolean;
 }>;
 
 function __kustoPrepareKustoLeaveNoTracePolicyEffects(): KustoLeaveNoTracePolicyEffectsPlan {
-	let changed = false;
-	const retainedDeferredJobs: DeferredRestoredResultJob[] = [];
-	const storedResultBoxIdsToDelete: string[] = [];
-	for (const job of __kustoDeferredRestoredResultJobs) {
-		if (!__kustoIsKustoOwnedRestore(job)) {
-			retainedDeferredJobs.push(job);
-			continue;
-		}
-		if (!__kustoIsDeferredResultJobDocumentCurrent(job)) continue;
-		if (__kustoIsProtectedKustoResult(job.boxId, job.kustoClusterUrl, job.kustoConnectionIdHint)) {
-			if (job.legacyUnverified) {
-				retainedDeferredJobs.push(job);
-				continue;
-			}
-			if (pState.queryResultJsonByBoxId?.[job.boxId] === job.resultJson) {
-				storedResultBoxIdsToDelete.push(job.boxId);
-			}
-			changed = true;
-			continue;
-		}
-		const ownerState = __kustoGetDeferredResultJobOwnerState(job);
-		if (ownerState === 'invalid') {
-			changed = true;
-			continue;
-		}
-		retainedDeferredJobs.push(job);
-	}
-
-	const protectedBoxIds: string[] = [];
-	const hiddenLegacyBoxIds = new Set(retainedDeferredJobs
-		.filter(job => job.legacyUnverified
-			&& __kustoIsProtectedKustoResult(job.boxId, job.kustoClusterUrl, job.kustoConnectionIdHint))
-		.map(job => job.boxId));
-	const revokedUnverifiedLegacyBoxIds: string[] = [];
-	for (const rawBoxId of queryBoxes || []) {
-		const boxId = String(rawBoxId || '').trim();
-		if (!boxId || __kustoIsSqlOwnedQueryBox(boxId)) continue;
-		const currentArtifact = getCurrentResultArtifact(boxId);
-		const clusterKey = kustoClusterKey(__kustoResolveKustoResultCluster(boxId));
-		if (isUnverifiedLegacyResultArtifact(currentArtifact)
-			&& (__kustoKustoPolicyRevocationGenerations[clusterKey] ?? 0) !== 0) {
-			revokedUnverifiedLegacyBoxIds.push(boxId);
-			changed = true;
-			continue;
-		}
-		if (!__kustoIsProtectedKustoResult(boxId)) continue;
-		if (hiddenLegacyBoxIds.has(boxId)
-			&& !pState.queryResultJsonByBoxId?.[boxId]
-			&& !getResultsState(boxId)) continue;
-		protectedBoxIds.push(boxId);
-		changed = changed || !!pState.queryResultJsonByBoxId?.[boxId] || !!getResultsState(boxId);
-	}
 	return {
-		retainedDeferredJobs,
-		storedResultBoxIdsToDelete,
-		revokedUnverifiedLegacyBoxIds,
-		protectedBoxIds,
-		changed,
+		retainedDeferredJobs: __kustoDeferredRestoredResultJobs.filter(__kustoIsDeferredResultJobDocumentCurrent),
 	};
 }
 
 function __kustoCommitKustoLeaveNoTracePolicyEffects(plan: KustoLeaveNoTracePolicyEffectsPlan): void {
 	__kustoDeferredRestoredResultJobs = plan.retainedDeferredJobs;
-	for (const boxId of plan.storedResultBoxIdsToDelete) __kustoDeleteStoredQueryResultJson(boxId);
-	for (const boxId of plan.revokedUnverifiedLegacyBoxIds) {
-		try { clearResultsState(boxId); } catch (e) { console.error('[kusto]', e); }
-		try { (document.getElementById(boxId) as any)?.clearResults?.(); } catch (e) { console.error('[kusto]', e); }
-		if (pState.lastExecutedBox === boxId) pState.lastExecutedBox = '';
-	}
-	for (const boxId of plan.protectedBoxIds) {
-		__kustoDeleteStoredQueryResultJson(boxId);
-		try { clearResultsState(boxId); } catch (e) { console.error('[kusto]', e); }
-		try { (document.getElementById(boxId) as any)?.clearResults?.(); } catch (e) { console.error('[kusto]', e); }
-		if (pState.lastExecutedBox === boxId) pState.lastExecutedBox = '';
-	}
-	if (plan.changed) __kustoPendingProtectedResultPurge = true;
 	__kustoScheduleDeferredRestoredResults();
-	if (__kustoPendingProtectedResultPurge
-		&& !__kustoDeferredRestoredResultJobs.some(__kustoIsKustoOwnedRestore)) {
-		try { __kustoRequestProtectedResultPurge(); } catch (e) { console.error('[kusto]', e); }
-	}
 }
 
 export function applyKustoLeaveNoTracePolicy(
@@ -862,29 +760,6 @@ function __kustoQueueRestoredResult(job: Omit<DeferredRestoredResultJob, 'genera
 		const boxId = String(job.boxId || '');
 		const resultJson = String(job.resultJson || '');
 		if (!boxId || !resultJson) return;
-		if (job.kind === 'sql') {
-			const section = __kustoGetSqlSectionElement(boxId);
-			if (typeof section?.canPersistResults === 'function' && !section.canPersistResults()) return;
-		}
-		if (job.kind === 'query' && !job.sqlOwnerConnectionId && __kustoKustoPolicyReady) {
-			if (__kustoIsProtectedKustoResult(boxId, job.kustoClusterUrl, job.kustoConnectionIdHint)) {
-				if (job.legacyUnverified) {
-					__kustoDeferredRestoredResultJobs.push({
-						...job,
-						boxId,
-						resultJson,
-						generation: __kustoRestoreResultGeneration,
-						documentUri: String(pState.documentUri || ''),
-						initialResultsRevision: getResultsStateRevision(boxId),
-						persistenceEpoch: __kustoPersistenceEpoch,
-					});
-					return;
-				}
-				__kustoDeleteStoredQueryResultJson(boxId);
-				__kustoRequestProtectedResultPurge();
-				return;
-			}
-		}
 		__kustoDeferredRestoredResultJobs.push({
 			...job,
 			boxId,
@@ -921,13 +796,13 @@ function __kustoLiveSqlRestoredResultProducer(job: DeferredRestoredResultJob): R
 	connectionId: string;
 	database: string;
 }> | undefined {
-	if (!job.sqlOwnerConnectionId) return undefined;
+	if (__kustoIsKustoOwnedRestore(job)) return undefined;
 	const ownerBoxId = String(job.sqlOwnerSourceBoxId || job.boxId).trim();
 	const ownerSection = __kustoGetSqlSectionElement(ownerBoxId);
-	if (!ownerSection) return undefined;
 	const query = __kustoCurrentRestoredQueryText(job);
-	const connectionId = String(ownerSection.getConnectionId?.() || ownerSection.getSqlConnectionId?.() || '').trim();
-	const database = String(ownerSection.getDatabase?.() || job.expectedResultDatabase || '').trim();
+	const connectionId = String(ownerSection?.getConnectionId?.() || ownerSection?.getSqlConnectionId?.()
+		|| job.persistedSqlOwnerConnectionId || job.sqlOwnerConnectionId || '').trim();
+	const database = String(job.expectedResultDatabase || ownerSection?.getDatabase?.() || '').trim();
 	return query.trim() && connectionId && database ? { engine: 'sql', query, connectionId, database } : undefined;
 }
 
@@ -945,85 +820,18 @@ function __kustoGetDeferredResultJobOwnerState(job: DeferredRestoredResultJob): 
 		if (job.derivedSourceBoxId) {
 			if (job.derivedSourceBoxId === job.boxId) return 'invalid';
 			if (__kustoHasDeferredResultDependencyCycle(job)) return 'invalid';
+			if (!document.getElementById(job.derivedSourceBoxId)) return 'invalid';
 			if (!getCurrentResultArtifact(job.derivedSourceBoxId)) {
-				return __kustoDeferredRestoredResultJobs.some(candidate => (
+				if (__kustoDeferredRestoredResultJobs.some(candidate => (
 					candidate !== job && candidate.boxId === job.derivedSourceBoxId
-				)) ? 'pending' : 'invalid';
+				))) return 'pending';
 			}
 		}
-		if (job.legacyUnverified) {
-			if (job.kind !== 'query' || job.sqlOwnerConnectionId) return 'invalid';
-			if (job.expectedQueryText !== undefined
-				&& __kustoCurrentRestoredQueryText(job) !== job.expectedQueryText) return 'invalid';
-			const ownerSection = job.derivedSourceBoxId
-				? document.getElementById(job.derivedSourceBoxId) as any
-				: sectionEl as any;
-			const currentTarget = kustoDatabaseKey(
-				ownerSection?.getClusterUrl?.(), ownerSection?.getDatabase?.(),
-			);
-			const expectedTarget = kustoDatabaseKey(job.kustoClusterUrl, job.kustoDatabase);
-			if (!currentTarget) return 'pending';
-			if (!expectedTarget || currentTarget !== expectedTarget) return 'invalid';
-			if (queryExecutionTimers?.[job.boxId]) return 'invalid';
-			return tag === 'kw-query-section' ? 'ready' : 'invalid';
-		}
-		if (__kustoIsReadOnlyBrowserViewer()) {
-			const expectedTag = job.kind === 'sql' ? 'kw-sql-section' : 'kw-query-section';
-			if (tag !== expectedTag) return 'invalid';
-			if (job.expectedQueryText !== undefined
-				&& __kustoCurrentRestoredQueryText(job) !== job.expectedQueryText) return 'invalid';
-			if (queryExecutionTimers?.[job.boxId]) return 'invalid';
-			return 'ready';
-		}
-		if (job.sqlOwnerConnectionId) {
-			const liveProducer = __kustoLiveSqlRestoredResultProducer(job);
-			if (!liveProducer) return 'pending';
-			if (liveProducer.query !== String(job.expectedQueryText || '')
-				|| liveProducer.connectionId !== String(job.sqlOwnerConnectionId || '').trim()
-				|| liveProducer.database.toLowerCase() !== String(job.expectedResultDatabase || '').trim().toLowerCase()) {
-				return 'invalid';
-			}
-		}
-		if (job.kind === 'query') {
-			if (!job.sqlOwnerConnectionId && job.expectedQueryText !== undefined) {
-				const editorQuery = queryEditors?.[job.boxId]?.getValue?.();
-				const pendingQuery = pState.pendingQueryTextByBoxId?.[job.boxId];
-				const currentQuery = String(editorQuery !== undefined && (editorQuery !== '' || pendingQuery === undefined)
-					? editorQuery
-					: pendingQuery || '');
-				if (currentQuery !== job.expectedQueryText) return 'invalid';
-				const expectedClusterUrl = String(job.kustoClusterUrl || '').trim();
-				const expectedDatabase = String(job.kustoDatabase || '').trim();
-				if (!expectedClusterUrl || !expectedDatabase) return 'invalid';
-				const resolution = resolveKustoConnection(connections || [], {
-					clusterUrl: expectedClusterUrl,
-					authorityId: job.kustoAuthorityId,
-					connectionIdHint: job.kustoConnectionIdHint,
-				});
-				if (resolution.kind === 'missing') return 'pending';
-				if (resolution.kind !== 'matched') return 'invalid';
-				const ownerSection = job.derivedSourceBoxId
-					? document.getElementById(job.derivedSourceBoxId) as any
-					: sectionEl as any;
-				const currentConnectionId = String(ownerSection?.getConnectionId?.() || '').trim();
-				const currentDatabase = String(ownerSection?.getDatabase?.() || '').trim();
-				if (!currentConnectionId || !currentDatabase) return 'pending';
-				if (currentConnectionId !== String(resolution.connection.id || '').trim()) return 'invalid';
-				if (currentDatabase !== expectedDatabase) return 'invalid';
-				const expectedAccountPartition = String(job.kustoAccountPartition || '').trim();
-				const currentAccountPartition = String((resolution.connection as any).accountPartition || '').trim();
-				const expectedRevision = Number(job.kustoLeaveNoTraceRevision);
-				const currentRevision = __kustoKustoPolicyRevocationGenerations[kustoClusterKey(expectedClusterUrl)] ?? 0;
-				if (!expectedAccountPartition || currentAccountPartition !== expectedAccountPartition
-					|| !Number.isSafeInteger(expectedRevision) || expectedRevision < 0
-					|| currentRevision !== expectedRevision) return 'invalid';
-			}
-			if (queryExecutionTimers?.[job.boxId]) return 'invalid';
-			return tag === 'kw-query-section' ? 'ready' : 'invalid';
-		}
-		if (typeof (sectionEl as any).canPersistResults === 'function' && !(sectionEl as any).canPersistResults()) return 'invalid';
+		if (job.expectedQueryText !== undefined
+			&& __kustoCurrentRestoredQueryText(job) !== job.expectedQueryText) return 'invalid';
+		if (queryExecutionTimers?.[job.boxId]) return 'invalid';
 		if ((sectionEl as any)._executing === true || (sectionEl as HTMLElement).dataset?.testExecuting === 'true') return 'invalid';
-		return tag === 'kw-sql-section' ? 'ready' : 'invalid';
+		return tag === (job.kind === 'sql' ? 'kw-sql-section' : 'kw-query-section') ? 'ready' : 'invalid';
 	} catch {
 		return 'invalid';
 	}
@@ -1036,18 +844,6 @@ function __kustoGetDeferredResultJobState(job: DeferredRestoredResultJob): Defer
 		const stored = String(pState.queryResultJsonByBoxId?.[job.boxId] || '');
 		return job.kind === 'query' ? (!stored || stored === job.resultJson ? 'ready' : 'invalid')
 			: (stored === job.resultJson ? 'ready' : 'invalid');
-	}
-	if (__kustoIsKustoOwnedRestore(job)) {
-		if (!__kustoKustoPolicyReady) return 'pending';
-		if (job.legacyUnverified) {
-			const clusterKey = kustoClusterKey(__kustoResolveKustoResultCluster(
-				job.boxId, job.kustoClusterUrl, job.kustoConnectionIdHint,
-			));
-			if ((__kustoKustoPolicyRevocationGenerations[clusterKey] ?? 0) !== 0) return 'pending';
-		}
-		if (__kustoIsProtectedKustoResult(job.boxId, job.kustoClusterUrl, job.kustoConnectionIdHint)) {
-			return job.legacyUnverified ? 'pending' : 'invalid';
-		}
 	}
 	const stored = String(pState.queryResultJsonByBoxId?.[job.boxId] || '');
 	return (__kustoIsKustoOwnedRestore(job) ? !stored || stored === job.resultJson : stored === job.resultJson)
@@ -1122,15 +918,26 @@ function __kustoTrustedRestoredResultProducer(job: DeferredRestoredResultJob): R
 	connectionId: string;
 	database: string;
 }> | undefined {
-	const liveSqlProducer = __kustoLiveSqlRestoredResultProducer(job);
-	if (job.sqlOwnerConnectionId) return liveSqlProducer;
-	const section = document.getElementById(job.derivedSourceBoxId || job.boxId) as any;
-	const engine = 'kusto';
-	const currentQuery = __kustoCurrentRestoredQueryText(job);
+	const engine = __kustoIsKustoOwnedRestore(job) ? 'kusto' : 'sql';
 	const persistedProducer = job.resultArtifact && typeof job.resultArtifact === 'object'
 		&& !Array.isArray(job.resultArtifact)
 		? (job.resultArtifact as { producer?: unknown }).producer
 		: undefined;
+	if (persistedProducer && typeof persistedProducer === 'object' && !Array.isArray(persistedProducer)) {
+		const producer = persistedProducer as Record<string, unknown>;
+		if (engine === 'sql' && producer.connectionId !== undefined
+			&& (typeof producer.connectionId !== 'string' || !producer.connectionId
+				|| producer.connectionId !== producer.connectionId.trim())) return undefined;
+		if (producer.engine === engine && producer.boxId === job.boxId
+			&& typeof producer.query === 'string' && producer.query.trim()
+			&& typeof producer.connectionId === 'string' && producer.connectionId.trim()
+			&& typeof producer.database === 'string' && producer.database.trim()) {
+			return { engine, query: producer.query, connectionId: producer.connectionId, database: producer.database };
+		}
+	}
+	if (engine === 'sql') return __kustoLiveSqlRestoredResultProducer(job);
+	const section = document.getElementById(job.derivedSourceBoxId || job.boxId) as any;
+	const currentQuery = __kustoCurrentRestoredQueryText(job);
 	const persistedQuery = persistedProducer && typeof persistedProducer === 'object'
 		&& !Array.isArray(persistedProducer)
 		? String((persistedProducer as Record<string, unknown>).query ?? '')
@@ -1139,7 +946,7 @@ function __kustoTrustedRestoredResultProducer(job: DeferredRestoredResultJob): R
 	const query = fullQueryAdmission.ok && persistedQuery === fullQueryAdmission.executionText
 		? fullQueryAdmission.executionText
 		: currentQuery;
-	const connectionId = String(section?.getConnectionId?.() || '').trim();
+	const connectionId = String(section?.getConnectionId?.() || job.kustoConnectionIdHint || '').trim();
 	const database = String(job.expectedResultDatabase || job.kustoDatabase || section?.getDatabase?.() || '').trim();
 	return query.trim() && connectionId && database ? { engine, query, connectionId, database } : undefined;
 }
@@ -1158,35 +965,6 @@ function __kustoExpectedPersistedProducer(
 		if ((producer as Record<string, unknown>)[key] !== undefined) expected[key] = trustedProducer[key];
 	}
 	return Object.keys(expected).length ? expected : undefined;
-}
-
-function __kustoRebindPersistedSqlArtifactOwner(
-	job: DeferredRestoredResultJob,
-	trustedProducer: Readonly<{ engine: 'kusto' | 'sql'; query: string; connectionId: string; database: string }> | undefined,
-): unknown {
-	const persistedConnectionId = String(job.persistedSqlOwnerConnectionId || '').trim();
-	const resolvedConnectionId = String(job.sqlOwnerConnectionId || '').trim();
-	if (!trustedProducer || trustedProducer.engine !== 'sql' || !persistedConnectionId || !resolvedConnectionId
-		|| !job.resultArtifact || typeof job.resultArtifact !== 'object' || Array.isArray(job.resultArtifact)) {
-		return job.resultArtifact;
-	}
-	const artifact = job.resultArtifact as Record<string, unknown>;
-	const producer = artifact.producer;
-	const producerConnectionId = producer && typeof producer === 'object' && !Array.isArray(producer)
-		? (producer as Record<string, unknown>).connectionId
-		: undefined;
-	if (producerConnectionId !== undefined
-		&& (typeof producerConnectionId !== 'string' || producerConnectionId !== persistedConnectionId)) {
-		return undefined;
-	}
-	if (persistedConnectionId === resolvedConnectionId
-		|| !producer || typeof producer !== 'object' || Array.isArray(producer)) {
-		return job.resultArtifact;
-	}
-	return {
-		...artifact,
-		producer: { ...(producer as Record<string, unknown>), connectionId: resolvedConnectionId },
-	};
 }
 
 function __kustoNormalizeRestoredResultSet(value: unknown): Record<string, unknown> {
@@ -1236,7 +1014,7 @@ function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): vo
 		}
 		if (!parsed || typeof parsed !== 'object') return;
 		if (!__kustoIsDeferredResultJobCurrent(job)) return;
-		const isKustoBatchRestore = job.kind === 'query' && !job.sqlOwnerConnectionId;
+		const isKustoBatchRestore = __kustoIsKustoOwnedRestore(job);
 		let selectedResultIndex = 0;
 		if (isKustoBatchRestore) {
 			const batch = parseKustoResultBatch(__kustoNormalizeRestoredKustoBatch(parsed));
@@ -1290,7 +1068,7 @@ function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): vo
 		}
 		pState.lastExecutedBox = job.boxId;
 		const trustedProducer = __kustoTrustedRestoredResultProducer(job);
-		const persistedResultArtifact = __kustoRebindPersistedSqlArtifactOwner(job, trustedProducer);
+		const persistedResultArtifact = job.resultArtifact;
 		const derivedSourceArtifact = job.derivedSourceBoxId
 			? getCurrentResultArtifact(job.derivedSourceBoxId)
 			: null;
@@ -1365,7 +1143,7 @@ function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): vo
 					: undefined)
 				: undefined));
 		const artifactPublication: ResultArtifactPublication | undefined = persistedPublication
-			&& trustedProducer && !browserReadOnly && !job.legacyUnverified
+			&& !persistedPublication.persistedIdentity && trustedProducer && !browserReadOnly && !job.legacyUnverified
 			? {
 				...persistedPublication,
 				producer: {
@@ -1376,10 +1154,6 @@ function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): vo
 				},
 			}
 			: persistedPublication;
-		if (job.derivedSourceBoxId && !artifactPublication) {
-			__kustoDeleteStoredQueryResultJson(job.boxId);
-			return;
-		}
 		const displayOptions = {
 			label: 'Results',
 			showExecutionTime: true,
@@ -1449,8 +1223,6 @@ function __kustoDeferredRestoreOnlyChangedOwnedOutput(job: DeferredRestoredResul
 function __kustoScheduleDeferredRestoredResults(): void {
 	try {
 		if (__kustoDeferredRestoredResultScheduled || __kustoDeferredRestoredResultJobs.length === 0) return;
-		if (!__kustoIsReadOnlyBrowserViewer()
-			&& !__kustoKustoPolicyReady && __kustoDeferredRestoredResultJobs.every(__kustoIsKustoOwnedRestore)) return;
 		__kustoDeferredRestoredResultScheduled = true;
 		const scheduleToken = {};
 		__kustoDeferredRestoredResultScheduleToken = scheduleToken;
@@ -1465,9 +1237,6 @@ function __kustoScheduleDeferredRestoredResults(): void {
 				__kustoRecordDeferredRestoredResultSettlementForTest(job, state);
 				if (state === 'ready') {
 					__kustoRenderDeferredRestoredResult(job);
-				} else {
-					__kustoDeleteStoredQueryResultJson(job.boxId);
-					if (__kustoIsKustoOwnedRestore(job)) __kustoPendingProtectedResultPurge = true;
 				}
 			}
 			if (__kustoDeferredRestoredResultJobs.some(candidate => __kustoGetDeferredResultJobState(candidate) !== 'pending')) {
@@ -1488,9 +1257,6 @@ export function resolvePendingKustoResultRestores(): void {
 		__kustoRecordDeferredRestoredResultSettlementForTest(job, state);
 		if (state === 'ready') {
 			__kustoRenderDeferredRestoredResult(job);
-		} else {
-			__kustoDeleteStoredQueryResultJson(job.boxId);
-			if (__kustoIsKustoOwnedRestore(job)) __kustoPendingProtectedResultPurge = true;
 		}
 	}
 	if (__kustoPendingProtectedResultPurge
@@ -2008,8 +1774,7 @@ function __kustoReconcilePendingRestoredResultsForPersist(): void {
 function __kustoAdvancePersistenceEpoch(): void {
 	const retainedPendingKustoJobs = __kustoDeferredRestoredResultJobs.filter(job =>
 		__kustoIsDeferredResultJobDocumentCurrent(job)
-		&& __kustoIsKustoOwnedRestore(job)
-		&& __kustoGetDeferredResultJobState(job) === 'pending');
+		&& __kustoGetDeferredResultJobState(job) !== 'invalid');
 	__kustoPersistenceEpoch++;
 	for (const job of retainedPendingKustoJobs) job.persistenceEpoch = __kustoPersistenceEpoch;
 }
@@ -3676,15 +3441,11 @@ function applyKqlxState(
 					delete optimizationMetadataByBoxId[String(section.id || '')];
 					continue;
 				}
-				const comparisonSourceKind = canonicalSectionKind(String(comparisonSource?.type || ''));
 				const effectiveTargetResolution = resolveLegacyKustoEffectiveTarget(section, sectionsById);
 				const kustoComparisonTarget = comparisonSourceBoxId
 					&& effectiveTargetResolution?.kind === 'kusto'
 					? effectiveTargetResolution.target
 					: undefined;
-				const comparisonOwnerMatchesSource = !comparisonSourceBoxId
-					|| comparisonSourceKind === 'sql'
-					|| !!kustoComparisonTarget;
 				const runtimeTarget = kustoComparisonTarget || section;
 				const boxId = addQueryBox({
 					id: (section.id ? String(section.id) : undefined),
@@ -3783,56 +3544,20 @@ function applyKqlxState(
 				// Restore last result (if present + parseable).
 				try {
 					const sqlComparisonSource = String(comparisonSource?.type || '') === 'sql';
-					const sourceSqlElement = sqlComparisonSource ? __kustoGetSqlSectionElement(comparisonSourceBoxId) : null;
-					const sourceOwnerResolution = sqlComparisonSource && !__kustoIsReadOnlyBrowserViewer()
-						? __kustoResolveSqlOwnerRestore(sourceSqlElement, comparisonSource)
-						: undefined;
-					const sourceOwnerResolved = !sqlComparisonSource
-						|| (__kustoIsReadOnlyBrowserViewer()
-							? comparisonSourceExists
-							: sourceOwnerResolution?.state === 'valid');
 					const hasRestorableKustoOwner = sqlComparisonSource
 						|| __kustoHasCompletePersistedKustoResultOwner(section);
-					const legacyTarget = kustoComparisonTarget || section;
-					const markerlessLegacy = !Object.prototype.hasOwnProperty.call(section, 'kustoAccountPartition')
-						&& !Object.prototype.hasOwnProperty.call(section, 'kustoLeaveNoTraceRevision');
 					const matchingUnverifiedLegacy = !sqlComparisonSource
-						&& markerlessLegacy
-						&& !hasRestorableKustoOwner
-						&& legacyKustoResultTargetMatches(
-							section.resultJson,
-							legacyTarget.clusterUrl,
-							legacyTarget.database,
-						);
-					const rj = (!hasRestorableKustoOwner && !matchingUnverifiedLegacy)
-						|| (comparisonSourceBoxId && (!comparisonSourceExists || !sourceOwnerResolved || !comparisonOwnerMatchesSource))
+						&& !hasRestorableKustoOwner;
+					const rj = comparisonSourceBoxId && !comparisonSourceExists
 						? ''
 						: (section.resultJson ? String(section.resultJson) : '');
-					if (sqlComparisonSource && !sourceOwnerResolved && section.resultJson) {
-						__kustoQueuePendingSqlOwnedRestore({
-							kind: 'query', boxId, resultJson: String(section.resultJson), resultsHeightPx: section.resultsHeightPx,
-							resultArtifact: section.resultArtifact,
-							expectedQueryText: String(section.query || ''),
-							expectedResultDatabase: String(comparisonSource?.database || ''),
-							sqlOwnerSourceBoxId: comparisonSourceBoxId,
-							derivedSourceBoxId: comparisonSourceBoxId,
-							persistedOwner: {
-								connectionIdHint: comparisonSource?.connectionIdHint,
-								targetSignature: comparisonSource?.targetSignature,
-								principalFingerprint: comparisonSource?.principalFingerprint,
-								revocationGeneration: comparisonSource?.revocationGeneration,
-								sourceBoxId: comparisonSourceBoxId,
-							},
-						});
-					}
 					if (rj) {
 						if (sqlComparisonSource) __kustoSetStoredQueryResultJson(boxId, rj);
 						__kustoQueueRestoredResult({
 							kind: 'query', boxId, resultJson: rj, resultsHeightPx: section.resultsHeightPx,
 							resultArtifact: matchingUnverifiedLegacy ? undefined : section.resultArtifact,
 							...(sqlComparisonSource ? {
-								sqlOwnerConnectionId: sourceOwnerResolution?.connectionId
-									|| String(comparisonSource?.connectionIdHint || '').trim(),
+								sqlOwnerConnectionId: String(comparisonSource?.connectionIdHint || '').trim(),
 								persistedSqlOwnerConnectionId: String(comparisonSource?.connectionIdHint || '').trim(),
 							} : {}),
 							...(comparisonSourceBoxId ? { derivedSourceBoxId: comparisonSourceBoxId } : {}),
@@ -4191,6 +3916,7 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					copilotChatWidthPx: section.copilotChatWidthPx,
 				});
 				const restoredSqlEl = __kustoGetSqlSectionElement(pendingId);
+				restoredSqlEl?.setResultPersistenceProvenance?.(section);
 				if (typeof restoredSqlEl?.setLeaveNoTraceConnectionIds === 'function') {
 					restoredSqlEl.setLeaveNoTraceConnectionIds(sqlLeaveNoTraceConnectionIds);
 				}
@@ -4213,10 +3939,7 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 				// Restore persisted query results.
 				try {
 					const rj = section.resultJson ? String(section.resultJson) : '';
-					const ownerResolution = rj && !__kustoIsReadOnlyBrowserViewer()
-						? __kustoResolveSqlOwnerRestore(restoredSqlEl, section)
-						: undefined;
-					if (rj && __kustoIsReadOnlyBrowserViewer()) {
+					if (rj) {
 						__kustoSetStoredQueryResultJson(pendingId, rj);
 						__kustoQueueRestoredResult({
 							kind: 'sql', boxId: pendingId, resultJson: rj,
@@ -4225,40 +3948,9 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 							expectedQueryText: String(section.query || ''),
 							expectedResultDatabase: String(section.database || ''),
 							sqlOwnerSourceBoxId: comparisonSourceBoxId || pendingId,
-							...(comparisonSourceBoxId ? { derivedSourceBoxId: comparisonSourceBoxId } : {}),
-						});
-					} else if (rj
-						&& ownerResolution?.state === 'valid'
-						&& ownerResolution.connectionId
-						&& (typeof restoredSqlEl?.canPersistResults !== 'function' || restoredSqlEl.canPersistResults())) {
-						__kustoSetStoredQueryResultJson(pendingId, rj);
-						__kustoQueueRestoredResult({
-							kind: 'sql',
-							boxId: pendingId,
-							resultJson: rj,
-							resultArtifact: section.resultArtifact,
-							resultsHeightPx: section.resultsHeightPx,
-							expectedQueryText: String(section.query || ''),
-							expectedResultDatabase: String(section.database || ''),
-							sqlOwnerSourceBoxId: comparisonSourceBoxId || pendingId,
-							sqlOwnerConnectionId: ownerResolution.connectionId,
+							sqlOwnerConnectionId: String(section.connectionIdHint || '').trim(),
 							persistedSqlOwnerConnectionId: String(section.connectionIdHint || '').trim(),
 							...(comparisonSourceBoxId ? { derivedSourceBoxId: comparisonSourceBoxId } : {}),
-						});
-					} else if (rj) {
-						__kustoQueuePendingSqlOwnedRestore({
-							kind: 'sql', boxId: pendingId, resultJson: rj, resultsHeightPx: section.resultsHeightPx,
-							resultArtifact: section.resultArtifact,
-							expectedQueryText: String(section.query || ''),
-							expectedResultDatabase: String(section.database || ''),
-							sqlOwnerSourceBoxId: comparisonSourceBoxId || pendingId,
-							...(comparisonSourceBoxId ? { derivedSourceBoxId: comparisonSourceBoxId } : {}),
-							persistedOwner: {
-								connectionIdHint: section.connectionIdHint,
-								targetSignature: section.targetSignature,
-								principalFingerprint: section.principalFingerprint,
-								revocationGeneration: section.revocationGeneration,
-							},
 						});
 					}
 				} catch (e) { console.error('[kusto]', e); }
@@ -4407,6 +4099,7 @@ function __kustoSetMalformedDocumentLock(
 	error?: unknown,
 	options: Readonly<{ preserveResultAttachments?: boolean }> = {},
 ): void {
+	const preserveResultAttachments = options.preserveResultAttachments !== false;
 	__kustoPersistenceEnabled = false;
 	pState.documentMutationAllowed = false;
 	pState.documentRuntimeActive = false;
@@ -4414,8 +4107,10 @@ function __kustoSetMalformedDocumentLock(
 	__kustoPendingAddOwnerApplyCount = -1;
 	__kustoPendingAddOwnerDocumentKey = '';
 	__kustoCancelPendingAddRetry();
-	__kustoLastAppliedProjectionState = undefined;
-	__kustoAcknowledgedRuntimeSourceSections = {};
+	if (!preserveResultAttachments) {
+		__kustoLastAppliedProjectionState = undefined;
+		__kustoAcknowledgedRuntimeSourceSections = {};
+	}
 	resetHostOwnedMarkdownDocument();
 	window.dispatchEvent(new Event(DOCUMENT_RUNTIME_INVALIDATED_EVENT));
 	__kustoStartRestoreResultBatch();
@@ -4428,7 +4123,7 @@ function __kustoSetMalformedDocumentLock(
 				postMessageToHost({
 					type: 'kustoSectionClose', boxId,
 					sectionInstanceId: lifecycle.sectionInstanceId,
-					...(options.preserveResultAttachments === true
+					...(preserveResultAttachments
 						? { preserveResultAttachment: true }
 						: {}),
 				});
@@ -4436,25 +4131,44 @@ function __kustoSetMalformedDocumentLock(
 		}
 		try {
 			section?.disposeSchemaLifecycle?.({
-				preserveResultAttachment: options.preserveResultAttachments === true,
+				preserveResultAttachment: preserveResultAttachments,
 			});
 		} catch (e) { console.error('[kusto]', e); }
 	}
 	for (const boxId of [...sqlBoxes]) {
-		try { __kustoGetSqlSectionElement(boxId)?.retireForDocumentInvalidation?.(); } catch (e) { console.error('[kusto]', e); }
+		try {
+			const section = __kustoGetSqlSectionElement(boxId);
+			if (preserveResultAttachments) {
+				section?.setComparisonAdmissionPending?.(true);
+				section?.cancelToolRun?.();
+				section?.copilotWriteQueryCancel?.();
+				section?.setStsReady?.(false);
+			} else {
+				section?.retireForDocumentInvalidation?.();
+			}
+		} catch (e) { console.error('[kusto]', e); }
 	}
 	const container = document.getElementById('queries-container');
 	for (const element of Array.from(container?.children || [])) {
 		const boxId = String((element as HTMLElement).id || '').trim();
 		if (!boxId) continue;
-		try { clearResultsState(boxId); } catch (e) { console.error('[kusto]', e); }
-		try { (element as any).clearResults?.(); } catch (e) { console.error('[kusto]', e); }
-		delete pState.queryResultJsonByBoxId[boxId];
-		delete pState.resultArtifactByBoxId[boxId];
-		delete pState.kustoResultOwnerByBoxId[boxId];
+		if (!preserveResultAttachments) {
+			try { clearResultsState(boxId); } catch (e) { console.error('[kusto]', e); }
+			try { (element as any).clearResults?.(); } catch (e) { console.error('[kusto]', e); }
+			delete pState.queryResultJsonByBoxId[boxId];
+			delete pState.resultArtifactByBoxId[boxId];
+			delete pState.kustoResultOwnerByBoxId[boxId];
+		}
 		delete queryExecutionTimers[boxId];
 	}
-	pState.lastExecutedBox = null;
+	if (!preserveResultAttachments) {
+		__kustoClearAllSections();
+		pState.queryResultJsonByBoxId = {};
+		pState.resultArtifactByBoxId = {};
+		pState.kustoResultOwnerByBoxId = {};
+		__kustoResetStoredResultSignatures();
+		pState.lastExecutedBox = null;
+	}
 	if (__kustoPersistTimer) {
 		clearTimeout(__kustoPersistTimer);
 		__kustoPersistTimer = null;
@@ -4501,6 +4215,7 @@ export function handleDocumentDataMessage(message: any): boolean {
 	});
 
 	const incomingDocumentUri = (message && typeof message.documentUri === 'string') ? String(message.documentUri) : '';
+	const isDifferentDocument = !!incomingDocumentUri && !!__kustoLastAppliedDocumentUri && incomingDocumentUri !== __kustoLastAppliedDocumentUri;
 	const preserveHostOwnedViews = __kustoHasAppliedDocument
 		&& pState.hostOwnedMarkdownActive
 		&& !!incomingDocumentUri
@@ -4512,7 +4227,6 @@ export function handleDocumentDataMessage(message: any): boolean {
 	// - forceReload is requested, or
 	// - the payload is for a different documentUri (preview tab reuse scenario).
 	try {
-		const isDifferentDocument = !!incomingDocumentUri && !!__kustoLastAppliedDocumentUri && incomingDocumentUri !== __kustoLastAppliedDocumentUri;
 		if (__kustoHasAppliedDocument && !(message && message.forceReload) && !isDifferentDocument) {
 			traceFileOpen('persistence.documentData.skippedAlreadyApplied', { incomingDocumentUri, lastAppliedDocumentUri: __kustoLastAppliedDocumentUri });
 			const incomingGeneration = Number(message?.sourceGeneration);
@@ -4528,11 +4242,11 @@ export function handleDocumentDataMessage(message: any): boolean {
 	try { window.closeDiffView?.(); } catch (e) { console.error('[kusto]', e); }
 	const ok = !!(message && message.ok);
 	if (!ok) {
-		resetHostOwnedMarkdownDocument();
-		__kustoLastAppliedProjectionState = undefined;
-		__kustoAcknowledgedRuntimeSourceSections = {};
 		__kustoCancelHtmlPowerBiCompatibilityCheck();
-		__kustoSetMalformedDocumentLock(message?.error);
+		if (isDifferentDocument) pState.documentUri = incomingDocumentUri;
+		__kustoSetMalformedDocumentLock(message?.error, {
+			preserveResultAttachments: __kustoHasAppliedDocument && !isDifferentDocument,
+		});
 		__kustoHasAppliedDocument = true;
 		if (typeof message?.documentUri === 'string') __kustoLastAppliedDocumentUri = String(message.documentUri);
 		pState.documentDataApplyCount = __kustoDocumentDataApplyCount;
@@ -4659,9 +4373,7 @@ export function handleDocumentDataMessage(message: any): boolean {
 	} catch (error) {
 		console.error('[kusto]', error);
 		__kustoSetMalformedDocumentLock(error, {
-			preserveResultAttachments: __kustoHasAppliedDocument
-				&& !!incomingDocumentUri
-				&& incomingDocumentUri === __kustoLastAppliedDocumentUri,
+			preserveResultAttachments: __kustoHasAppliedDocument && !isDifferentDocument,
 		});
 		return false;
 	} finally {

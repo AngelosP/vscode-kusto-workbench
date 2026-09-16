@@ -317,7 +317,7 @@ describe('HostKustoSectionExecutionApplicationHandler', () => {
 		expect(harness.executeQueryCancelable).not.toHaveBeenCalled();
 	});
 
-	it('clears the committed attachment only after a host-originated start is accepted', async () => {
+	it('preserves the historical attachment while advancing execution identity after an accepted host-originated start', async () => {
 		const harness = createHarness();
 		await harness.openAndTarget();
 		const previous = {
@@ -330,6 +330,12 @@ describe('HostKustoSectionExecutionApplicationHandler', () => {
 		expect(harness.resultSession.beginExecution(previous)).toBe(true);
 		expect(harness.resultSession.stagePublication('previous-publication', previous)).toBeTruthy();
 		expect(harness.resultSession.commitPublication('previous-publication')).toBe(true);
+		const previousAttachment = structuredClone(harness.resultOwner.overlaySnapshot({
+			sections: [{ id: 'query-1', type: 'query' }],
+		}).sections?.[0]);
+		expect(previousAttachment).toHaveProperty('resultJson');
+		expect(previousAttachment).toHaveProperty('resultArtifact');
+		const previousExecution = harness.resultSession.getActiveExecution('query-1');
 		const execution = deferred<QueryResult>();
 		harness.executeQueryCancelable.mockImplementationOnce(dispatchingExecution(execution.promise));
 
@@ -339,6 +345,10 @@ describe('HostKustoSectionExecutionApplicationHandler', () => {
 		});
 		await vi.waitFor(() => expect(harness.transport).toHaveBeenCalledOnce());
 		const started = harness.transport.mock.calls[0][0] as any;
+		expect(harness.resultSession.getActiveExecution('query-1')).toBe(previousExecution);
+		expect(harness.resultOwner.overlaySnapshot({
+			sections: [{ id: 'query-1', type: 'query' }],
+		}).sections?.[0]).toStrictEqual(previousAttachment);
 		await harness.handler.handleMessage({
 			type: 'kustoExecutionStartedAck', boxId: started.boxId,
 			executionId: started.executionId, sectionInstanceId: started.sectionInstanceId,
@@ -348,7 +358,11 @@ describe('HostKustoSectionExecutionApplicationHandler', () => {
 
 		expect(harness.resultOwner.overlaySnapshot({
 			sections: [{ id: 'query-1', type: 'query' }],
-		}).sections?.[0]).not.toHaveProperty('resultJson');
+		}).sections?.[0]).toStrictEqual(previousAttachment);
+		expect(harness.resultSession.getActiveExecution('query-1')).toMatchObject({
+			boxId: started.boxId, executionId: started.executionId,
+			sectionInstanceId: started.sectionInstanceId, targetGeneration: started.targetGeneration,
+		});
 		execution.resolve(queryResult('next'));
 		await expect(running).resolves.toMatchObject({ status: 'success' });
 	});

@@ -38,6 +38,7 @@ beforeEach(() => {
 afterEach(() => {
 	clearSqlSectionSessionsForTest();
 	delete pState.queryResultJsonByBoxId.sql_test1;
+	delete pState.resultArtifactByBoxId.sql_test1;
 	setSqlConnections([]);
 	setConnections([]);
 	render(nothing, container);
@@ -684,19 +685,43 @@ describe('kw-sql-section loading states', () => {
 
 	it('serializes the opaque principal fingerprint only with persisted SQL results', () => {
 		const el = createSection();
+		clearResultsState(el.boxId);
 		const connection = {
 			id: 'sql-a', name: 'SQL', serverUrl: 'sql.example', dialect: 'mssql', authType: 'aad',
 			principalFingerprint: 'principal-a',
 		};
-		el.setConnections([connection], { lastConnectionId: connection.id });
+		const historicalConnection = { ...connection, id: 'sql-historical', serverUrl: 'old-sql.example' };
+		el.setDesiredConnectionOwner(connection.id, sqlConnectionTargetSignature(connection));
+		el.setConnections([historicalConnection, connection], { lastConnectionId: historicalConnection.id });
 		expect(el.serialize()).not.toHaveProperty('principalFingerprint');
 
 		pState.queryResultJsonByBoxId.sql_test1 = '{"rows":[[1]]}';
+		expect(el.serialize()).not.toHaveProperty('principalFingerprint');
+		expect(el.serialize()).not.toHaveProperty('revocationGeneration');
+		const savedProvenance = { principalFingerprint: 'principal-saved', revocationGeneration: 3 };
+		el.setResultPersistenceProvenance(savedProvenance);
+		savedProvenance.principalFingerprint = 'principal-mutated';
+		savedProvenance.revocationGeneration = 4;
+		expect(el.displayResult({ columns: [{ name: 'Value' }], rows: [[1]], metadata: {} })).toBe(true);
 
 		expect(el.serialize()).toMatchObject({
 			resultJson: '{"rows":[[1]]}',
-			principalFingerprint: 'principal-a',
+			principalFingerprint: 'principal-saved',
+			revocationGeneration: 3,
+			connectionIdHint: connection.id,
+			targetSignature: sqlConnectionTargetSignature(connection),
 		});
+		const savedSnapshot = el.serialize();
+		const resultsBody = document.getElementById(el.boxId + '_sql_results_body')!;
+		resultsBody.id = el.boxId + '_unavailable_results_body';
+		try {
+			expect(el.displayResult({ columns: [{ name: 'Value' }], rows: [[2]], metadata: {} }, {
+				executionId: 'rejected-result',
+			})).toBe(false);
+			expect(el.serialize()).toEqual(savedSnapshot);
+		} finally {
+			resultsBody.id = el.boxId + '_sql_results_body';
+		}
 	});
 
 	it('applies the canonical cached databases for the resolved connection', () => {
@@ -819,7 +844,7 @@ describe('kw-sql-section loading states', () => {
 		expect(el.getSqlConnectionId()).toBe('');
 	});
 
-	it('clears live and persisted results when the selected connection becomes Leave No Trace', async () => {
+	it('preserves prior SQL results on Leave No Trace and keeps newly executed results runtime-only', async () => {
 		const el = createSection();
 		el.setConnections([
 			{ id: 'sensitive', name: 'Sensitive', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad' },
@@ -827,20 +852,23 @@ describe('kw-sql-section loading states', () => {
 		el.setDatabase('Db');
 		pState.queryResultJsonByBoxId.sql_test1 = '{"rows":[["secret"]]}';
 		setResultsState('sql_test1', { boxId: 'sql_test1', columns: ['Value'], rows: [['secret']], metadata: {} });
+		const savedResult = getResultsState('sql_test1');
+		const savedArtifact = getCurrentResultArtifact('sql_test1');
 
 		expect(el.serialize().resultJson).toContain('secret');
 		expect(getResultsState('sql_test1')).not.toBeNull();
 
 		el.setLeaveNoTraceConnectionIds(['sensitive']);
 
-		expect(pState.queryResultJsonByBoxId.sql_test1).toBeUndefined();
-		expect(getResultsState('sql_test1')).toBeNull();
+		expect(pState.queryResultJsonByBoxId.sql_test1).toBe('{"rows":[["secret"]]}');
+		expect(getResultsState('sql_test1')).toBe(savedResult);
+		expect(getCurrentResultArtifact('sql_test1')).toBe(savedArtifact);
 		expect(el.serialize()).not.toHaveProperty('resultJson');
 		expect(el.getConnectionId()).toBe('sensitive');
 		expect(el.getDatabase()).toBe('Db');
 		expect(el.serialize()).toMatchObject({ connectionIdHint: 'sensitive', database: 'Db' });
 
-		__kustoOnQueryResult('sql_test1', { columns: ['Value'], rows: [['late-secret']], metadata: {} });
+		__kustoOnQueryResult('sql_test1', { columns: ['Value'], rows: [['runtime-secret']], metadata: {} });
 		expect(pState.queryResultJsonByBoxId.sql_test1).toBeUndefined();
 		el.setExecutionOwner('protected-owner');
 		expect((document.getElementById('sql_test1_sql_run_btn') as HTMLButtonElement).disabled).toBe(false);
@@ -851,6 +879,7 @@ describe('kw-sql-section loading states', () => {
 
 		el.setLeaveNoTraceConnectionIds([]);
 		expect(el.dataset.testHasError).toBe('false');
+		expect(el.serialize()).not.toHaveProperty('resultJson');
 	});
 
 	it('clears shared and persisted rows when an accepted SQL run fails', () => {
@@ -934,33 +963,122 @@ describe('kw-sql-section loading states', () => {
 		}
 	});
 
-	it.each(['principal', 'revocation'] as const)('clears retained rows before adopting a new %s owner snapshot', change => {
+	it.each(['principal', 'revocation'] as const)('preserves retained rows while adopting a new %s owner snapshot', change => {
 		const el = createSection();
+		el.id = el.boxId;
 		const original = {
 			id: 'sql-a', name: 'SQL', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad',
 			principalFingerprint: 'principal-a', revocationGeneration: 0,
 		};
 		el.setConnections([original], { lastConnectionId: original.id });
+		el.setDatabase('DbA');
 		pState.queryResultJsonByBoxId.sql_test1 = '{"rows":[["owner-a"]]}';
+		setResultsState(el.boxId, { columns: ['Value'], rows: [['owner-a']], metadata: {} }, {
+			producer: {
+				engine: 'sql', boxId: el.boxId, executionId: 'execution-a', connectionId: original.id, database: 'DbA',
+				dispatch: {
+					targetSignature: sqlConnectionTargetSignature(original),
+					principalFingerprint: original.principalFingerprint,
+					revocationGeneration: original.revocationGeneration,
+				},
+			},
+		});
+		const originalArtifact = getCurrentResultArtifact(el.boxId);
 		const ownerChanges: CustomEvent[] = [];
 		el.addEventListener('sql-target-owner-changed', event => ownerChanges.push(event as CustomEvent));
 		const connectionChanges: CustomEvent[] = [];
 		el.addEventListener('sql-connection-changed', event => connectionChanges.push(event as CustomEvent));
 		el.invalidateOwner();
 
-		el.setConnections([{
+		const current = {
 			...original,
 			...(change === 'principal' ? { principalFingerprint: 'principal-b' } : { revocationGeneration: 1 }),
-		}]);
+		};
+		el.setConnections([current]);
+		el.setDatabases(['DbA']);
 
-		expect(pState.queryResultJsonByBoxId.sql_test1).toBeUndefined();
-		expect(el.serialize()).not.toHaveProperty('resultJson');
-		expect(el.serialize()).not.toHaveProperty('principalFingerprint');
+		expect(pState.queryResultJsonByBoxId.sql_test1).toBe('{"rows":[["owner-a"]]}');
+		expect(getCurrentResultArtifact(el.boxId)).toBe(originalArtifact);
+		expect(el.serialize()).toMatchObject({
+			resultJson: '{"rows":[["owner-a"]]}',
+			principalFingerprint: original.principalFingerprint,
+			revocationGeneration: original.revocationGeneration,
+			connectionIdHint: current.id,
+			serverUrl: current.serverUrl,
+			targetSignature: sqlConnectionTargetSignature(current),
+			database: 'DbA',
+		});
+		expect(el.getConnectionId()).toBe(original.id);
 		expect(ownerChanges.length).toBeGreaterThanOrEqual(1);
 		expect(connectionChanges.at(-1)?.detail).toMatchObject({ preserveTargetGeneration: true });
+
+		const retargeted = { ...current, id: 'sql-b', name: 'SQL B', serverUrl: 'other-sql.example.test' };
+		el.setConnections([current, retargeted]);
+		el.setSqlConnectionId(retargeted.id);
+		el.setDatabase('DbB');
+		const retainedSnapshot = el.serialize();
+		expect(retainedSnapshot).toMatchObject({
+			resultJson: '{"rows":[["owner-a"]]}',
+			principalFingerprint: original.principalFingerprint,
+			revocationGeneration: original.revocationGeneration,
+			connectionIdHint: retargeted.id,
+			serverUrl: retargeted.serverUrl,
+			targetSignature: sqlConnectionTargetSignature(retargeted),
+			database: 'DbB',
+			resultArtifact: {
+				artifactId: originalArtifact!.artifactId,
+				producer: { connectionId: original.id, database: 'DbA' },
+			},
+		});
+		el.setLeaveNoTraceConnectionIds([retargeted.id]);
+		expect(pState.queryResultJsonByBoxId[el.boxId]).toBe(retainedSnapshot.resultJson);
+		expect(getCurrentResultArtifact(el.boxId)).toBe(originalArtifact);
+		const protectedSnapshot = el.serialize();
+		for (const key of ['resultJson', 'resultArtifact', 'principalFingerprint', 'revocationGeneration']) {
+			expect(protectedSnapshot).not.toHaveProperty(key);
+		}
+		expect(protectedSnapshot).toMatchObject({
+			connectionIdHint: retargeted.id, targetSignature: sqlConnectionTargetSignature(retargeted), database: 'DbB',
+		});
+		el.setLeaveNoTraceConnectionIds([]);
+		expect(el.serialize()).toEqual(retainedSnapshot);
+		clearResultsState(el.boxId);
+		pState.resultArtifactByBoxId[el.boxId] = retainedSnapshot.resultArtifact!;
+		expect(el.serialize()).toEqual(retainedSnapshot);
+
+		el.setQuery('SELECT 2 AS Value');
+		el.setStsReady(true, 'owner-b');
+		expect((el as any)._runQuery()).toBe(true);
+		const executionId = el.getActiveQueryExecutionId();
+		expect(el.acceptsQueryTerminal('execution-a')).toBe(false);
+		expect(el.acceptsQueryTerminal(executionId)).toBe(true);
+		const newResult = { columns: ['Value'], rows: [['owner-b']], metadata: {} };
+		expect(displayResultForBox(newResult, el.boxId, {
+			executionId,
+			artifactPublication: {
+				producer: { engine: 'sql', boxId: el.boxId, executionId, connectionId: retargeted.id, database: 'DbB' },
+			},
+		})).toBe(true);
+		__kustoOnQueryResult(el.boxId, newResult);
+		const acceptedSnapshot = el.serialize();
+		expect(JSON.parse(acceptedSnapshot.resultJson!)).toMatchObject(newResult);
+		expect(acceptedSnapshot).toMatchObject({
+			principalFingerprint: current.principalFingerprint,
+			revocationGeneration: current.revocationGeneration,
+			connectionIdHint: retargeted.id,
+			serverUrl: retargeted.serverUrl,
+			targetSignature: sqlConnectionTargetSignature(retargeted),
+			database: 'DbB',
+		});
+		expect(acceptedSnapshot.resultArtifact?.artifactId).not.toBe(originalArtifact!.artifactId);
+
+		el.invalidateOwner();
+		el.setConnections([{ ...retargeted, principalFingerprint: 'principal-c', revocationGeneration: 2 }]);
+		el.setDatabases(['DbB']);
+		expect(el.serialize()).toEqual(acceptedSnapshot);
 	});
 
-	it('clears results and Copilot context when the database target changes', async () => {
+	it('preserves results while retiring execution and Copilot context when the database target changes', async () => {
 		const el = createSection();
 		el.setConnections([
 			{ id: 'sql-a', name: 'SQL', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad' },
@@ -968,6 +1086,7 @@ describe('kw-sql-section loading states', () => {
 		el.setDatabase('DbA');
 		pState.queryResultJsonByBoxId.sql_test1 = '{"rows":[["secret-a"]]}';
 		setResultsState('sql_test1', { boxId: 'sql_test1', columns: ['Value'], rows: [['secret-a']], metadata: {} });
+		const savedResult = getResultsState('sql_test1');
 		const cancel = vi.spyOn(el, 'copilotWriteQueryCancel');
 		const clearConversation = vi.spyOn(el, 'copilotClearConversation');
 		const ownerChanges: CustomEvent[] = [];
@@ -977,11 +1096,13 @@ describe('kw-sql-section loading states', () => {
 		const previousVsCode = window.vscode;
 		window.vscode = { postMessage } as any;
 		(el as any)._executing = true;
+		(el as any)._activeQueryExecutionId = 'retired-sql-run';
 		el.setDatabase('DbB');
 
-		expect(pState.queryResultJsonByBoxId.sql_test1).toBeUndefined();
-		expect(getResultsState('sql_test1')).toBeNull();
-		expect(el.serialize()).not.toHaveProperty('resultJson');
+		expect(pState.queryResultJsonByBoxId.sql_test1).toBe('{"rows":[["secret-a"]]}');
+		expect(getResultsState('sql_test1')).toBe(savedResult);
+		expect(el.serialize().resultJson).toBe('{"rows":[["secret-a"]]}');
+		expect(el.acceptsQueryTerminal('retired-sql-run')).toBe(false);
 		expect(cancel).toHaveBeenCalled();
 		expect(clearConversation).toHaveBeenCalled();
 		expect(ownerChanges).toHaveLength(1);

@@ -62,8 +62,8 @@
 	</div>
 
 	<!-- Object Viewer Modal -->
-	<div id="objectViewer" class="object-viewer-modal" onclick="closeObjectViewer(event)">
-		<div class="object-viewer-content" onclick="event.stopPropagation()">
+	<div id="objectViewer" class="object-viewer-modal" onmousedown="closeObjectViewer(event)">
+		<div class="object-viewer-content" onmousedown="event.stopPropagation()">
 			<div class="object-viewer-header">
 				<h3 id="objectViewerTitle"></h3>
 				<div class="object-viewer-search">
@@ -101,8 +101,8 @@
 	</div>
 
 	<!-- Cell Viewer Modal -->
-	<div id="cellViewer" class="cell-viewer-modal" onclick="closeCellViewer(event)">
-		<div class="cell-viewer-content" onclick="event.stopPropagation()">
+	<div id="cellViewer" class="cell-viewer-modal" onmousedown="closeCellViewer(event)">
+		<div class="cell-viewer-content" onmousedown="event.stopPropagation()">
 			<div class="cell-viewer-header">
 				<h3 id="cellViewerTitle"></h3>
 				<div class="cell-viewer-search">

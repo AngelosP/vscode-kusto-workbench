@@ -1468,11 +1468,16 @@ function toggleCachePopup( boxId: any) {
 	popup.classList.add('open');
 
 	let removeScrollListener: (() => void) | null = null;
+	let listenerTimer: ReturnType<typeof setTimeout> | null = null;
 
 	const closePopup = () => {
+		if (listenerTimer) {
+			clearTimeout(listenerTimer);
+			listenerTimer = null;
+		}
 		popup.classList.remove('open');
 		delete popup._kustoCacheClose;
-		document.removeEventListener('click', clickHandler);
+		document.removeEventListener('mousedown', mouseDownHandler);
 		if (removeScrollListener) {
 			removeScrollListener();
 			removeScrollListener = null;
@@ -1481,16 +1486,22 @@ function toggleCachePopup( boxId: any) {
 
 	popup._kustoCacheClose = closePopup;
 
-	const clickHandler = (e: any) => {
+	const mouseDownHandler = (e: MouseEvent) => {
 		try {
-			if (!popup.contains(e.target) && !(e.target.closest && e.target.closest('#' + boxId + '_cache_label'))) {
+			const path = e.composedPath();
+			const label = document.getElementById(boxId + '_cache_label');
+			if (!path.includes(popup) && !(label && path.includes(label))) {
 				closePopup();
 			}
 		} catch { closePopup(); }
 	};
 
-	// Delay click listener to avoid closing from the opening click
-	setTimeout(() => { document.addEventListener('click', clickHandler); }, 0);
+	// Install after the opening click so its preceding press cannot dismiss the popup.
+	listenerTimer = setTimeout(() => {
+		listenerTimer = null;
+		if (!popup.classList.contains('open') || popup._kustoCacheClose !== closePopup) return;
+		document.addEventListener('mousedown', mouseDownHandler);
+	}, 0);
 	removeScrollListener = registerPageScrollDismissable(closePopup, {
 		dismissOnWheel: true,
 		shouldDismiss: ({ event, kind }) => kind !== 'wheel' || !popup.contains(event.target as Node),
@@ -2253,13 +2264,12 @@ export function __kustoCleanupSectionModeResizeObserver( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-// Close all section-mode dropdowns when clicking outside
+// Close all section-mode dropdowns when a press starts outside.
 try {
-	document.addEventListener('click', (ev: any) => {
+	document.addEventListener('mousedown', (ev: MouseEvent) => {
 		try {
-			const target = ev.target;
-			if (!target) return;
-			const inDropdown = target.closest && target.closest('.section-mode-dropdown');
+			const inDropdown = ev.composedPath().some(target =>
+				(target as Element).classList?.contains('section-mode-dropdown'));
 			if (!inDropdown) {
 				cleanupSectionModeDropdownScrollDismiss();
 				const menus = document.querySelectorAll('.section-mode-dropdown-menu');
@@ -3111,8 +3121,10 @@ export function addSqlBox(options?: any) {
 
 	litEl.addEventListener('sql-target-owner-changed', (e: any) => {
 		const sourceBoxId = String(e.detail?.boxId || id);
+		if (e.detail?.hadCompleteTarget !== true) return;
 		if (optimizationMetadataByBoxId[sourceBoxId]?.isComparison) {
-			if (e.detail?.hadCompleteTarget === true) detachSqlComparisonOwnership(sourceBoxId);
+			const comparisonSourceId = retireSqlComparisonExecution(sourceBoxId);
+			if (comparisonSourceId) registerSqlDerivedComparisonSession(sourceBoxId, comparisonSourceId);
 			return;
 		}
 		const comparisonIds = new Set<string>();
@@ -3124,9 +3136,19 @@ export function addSqlBox(options?: any) {
 			}
 		}
 		for (const comparisonId of comparisonIds) {
-			try { removeComparisonSection(comparisonId); } catch (error) { console.error('[kusto]', error); }
+			try {
+				const comparison = document.getElementById(comparisonId) as any;
+				if (typeof comparison?.invalidateOwner === 'function'
+					&& comparison.getConnectionId?.() && comparison.getDatabase?.()) {
+					comparison.invalidateOwner();
+				} else {
+					const comparisonSourceId = retireSqlComparisonExecution(comparisonId);
+					if (comparisonSourceId) registerSqlDerivedComparisonSession(comparisonId, comparisonSourceId);
+					comparison?.clearTargetBoundState?.();
+					comparison?.setStsReady?.(false);
+				}
+			} catch (error) { console.error('[kusto]', error); }
 		}
-		delete optimizationMetadataByBoxId[sourceBoxId];
 	});
 
 	litEl.addEventListener('sql-refresh-databases', (e: any) => {
@@ -3266,17 +3288,23 @@ export function addSqlBox(options?: any) {
 	return id;
 }
 
-function detachSqlComparisonOwnership(id: string, notifyHost = true): string {
+function retireSqlComparisonExecution(id: string, notifyHost = true): string {
 	const ownMetadata = optimizationMetadataByBoxId[id];
 	const sourceBoxId = ownMetadata?.isComparison ? String(ownMetadata.sourceBoxId || '').trim() : '';
 	if (!sourceBoxId) return '';
 	try { retireSqlComparisonAdmission(id, sourceBoxId); } catch (e) { console.error('[kusto]', e); }
 	try { document.getElementById(id)?.removeAttribute('data-sql-comparison-admission-request-id'); } catch (e) { console.error('[kusto]', e); }
 	unregisterSqlDerivedComparisonSession(id);
-	try { unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId(id)); } catch (e) { console.error('[kusto]', e); }
 	if (notifyHost) {
 		try { postMessageToHost({ type: 'sqlComparisonRemoved', boxId: id, sourceBoxId }); } catch (e) { console.error('[kusto]', e); }
 	}
+	return sourceBoxId;
+}
+
+function detachSqlComparisonOwnership(id: string, notifyHost = true): string {
+	const sourceBoxId = retireSqlComparisonExecution(id, notifyHost);
+	if (!sourceBoxId) return '';
+	try { unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId(id)); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoSetLinkedOptimizationMode(sourceBoxId, id, false); } catch (e) { console.error('[kusto]', e); }
 	const sourceMetadata = optimizationMetadataByBoxId[sourceBoxId];
 	if (String(sourceMetadata?.comparisonBoxId || '') === id) {

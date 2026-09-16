@@ -64,6 +64,26 @@ describe('Diff immutable artifact bindings', () => {
 		expect(getBoundResultArtifact(diffArtifactConsumerId('b'))).toBeNull();
 	});
 
+	it('dismisses only when the mouse press starts on the backdrop', async () => {
+		const artifactA = publish('query_diff_a', 'a-1', 'a-1')!;
+		const artifactB = publish('query_diff_b', 'b-1', 'b-1')!;
+		view.open({
+			aBoxId: 'query_diff_a', bBoxId: 'query_diff_b',
+			aArtifactId: artifactA.artifactId, bArtifactId: artifactB.artifactId,
+		});
+		await view.updateComplete;
+
+		const content = view.shadowRoot!.querySelector('.content') as HTMLElement;
+		const backdrop = view.shadowRoot!.querySelector('.backdrop') as HTMLElement;
+		content.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+		backdrop.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
+		backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+		expect(view.isVisible).toBe(true);
+
+		backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+		expect(view.isVisible).toBe(false);
+	});
+
 	it('closes synchronously when either bound source is revoked', () => {
 		const artifactA = publish('query_diff_a', 'a-1', 'a-1')!;
 		const artifactB = publish('query_diff_b', 'b-1', 'b-1')!;

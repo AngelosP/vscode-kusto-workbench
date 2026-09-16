@@ -2,12 +2,16 @@ import { describe, it, expect, vi } from 'vitest';
 import { KwHtmlSection } from '../../src/webview/sections/kw-html-section';
 import {
 	clearResultsState,
+	displayResultForBox,
 	getBoundResultArtifact,
 	getCurrentResultArtifact,
+	getResultsState,
 	setResultsBatchState,
 	setResultsState,
 } from '../../src/webview/core/results-state';
-import { htmlDashboardFactArtifactConsumerId } from '../../src/shared/resultArtifact';
+import { createPrimaryResultArtifactIdentity, htmlDashboardFactArtifactConsumerId, toPersistedResultArtifact } from '../../src/shared/resultArtifact';
+import { admitKustoPublicationHostMessage } from '../../src/shared/kustoPublicationProtocol';
+import type { KwPublishPbiDialog } from '../../src/webview/components/kw-publish-pbi-dialog';
 import { pState } from '../../src/webview/shared/persistence-state';
 
 type BridgeSection = KwHtmlSection & { _buildDataBridgeScript(): string; refreshDataBridge(): void };
@@ -367,6 +371,166 @@ describe('HTML dashboard artifact bridge ownership', () => {
 		})).toBe(false);
 		section.remove();
 		await Promise.resolve();
+	});
+
+	it('preserves saved query rows, HTML binding and the pre-submit Publish dialog across auth retirement', async () => {
+		const { KwQuerySection } = await import('../../src/webview/sections/kw-query-section');
+		const { startMainWebviewMessageDispatcher } = await import('../../src/webview/core/message-handler');
+		const sourceId = 'query_html_publish_auth';
+		const connectionId = 'connection_html_publish_auth';
+		const query = 'FactEvents | project Value';
+		const savedResult = { columns: [{ name: 'Value', type: 'long' }], rows: [[7], [11]], metadata: {} };
+		const savedJson = JSON.stringify(savedResult);
+		const querySection = new KwQuerySection();
+		querySection.id = sourceId;
+		querySection.boxId = sourceId;
+		const section = new KwHtmlSection();
+		section.id = 'html_publish_auth';
+		section.boxId = section.id;
+		const runtimeWindow = window as Window & typeof globalThis & {
+			__e2eCaptureHostMessage?: (message: unknown) => unknown;
+		};
+		const previousCapture = runtimeWindow.__e2eCaptureHostMessage;
+		const previousRuntimeActive = pState.documentRuntimeActive;
+		const messages: Array<Record<string, unknown>> = [];
+		const dispatch = (data: Record<string, unknown>) => window.dispatchEvent(new MessageEvent('message', { data }));
+		runtimeWindow.__e2eCaptureHostMessage = message => {
+			const outbound = message as Record<string, unknown>;
+			messages.push(outbound);
+			if (outbound.type === 'getPbiWorkspaces') queueMicrotask(() => dispatch({
+				type: 'pbiWorkspacesResult', requestId: outbound.requestId, boxId: section.boxId,
+				ok: true, workspaces: [{ id: 'workspace-local', name: 'Local workspace' }],
+			}));
+			return false;
+		};
+		const measure = vi.spyOn(section as unknown as HeightSection, '_measureCurrentHtmlHeight').mockResolvedValue(720);
+		const terminalAdmission = vi.spyOn(querySection, 'admitQueryTerminal');
+		try {
+			pState.documentRuntimeActive = true;
+			await startMainWebviewMessageDispatcher();
+			document.body.append(querySection, section);
+			querySection.setConnections([{ id: connectionId, clusterUrl: 'https://cluster.kusto.windows.net' }]);
+			querySection.setConnectionId(connectionId);
+			querySection.setDatabases(['Samples'], 'Samples');
+			querySection.setSchemaLifecycleTarget(connectionId, 'Samples');
+			await querySection.updateComplete;
+			displayResultForBox(savedResult, sourceId, {
+				artifactPublication: {
+					producer: { engine: 'kusto', boxId: sourceId, executionId: 'saved-execution', connectionId, database: 'Samples', query },
+					policy: { exposeToActiveContent: true },
+				},
+			});
+			pState.queryResultJsonByBoxId[sourceId] = savedJson;
+			const savedState = getResultsState(sourceId);
+			const savedArtifact = getCurrentResultArtifact(sourceId)!;
+			const savedArtifactMetadata = toPersistedResultArtifact(savedArtifact)!;
+			pState.resultArtifactByBoxId[sourceId] = savedArtifactMetadata;
+			const table = querySection.querySelector('kw-data-table');
+			expect(table).not.toBeNull();
+			expect(savedState?.rows).toEqual([[7], [11]]);
+			section.setCode(`<script type="application/kw-provenance">${JSON.stringify({
+				version: 1,
+				model: { fact: { sectionId: sourceId, sectionName: 'Fact Events' } },
+				bindings: { total: { display: { type: 'scalar', agg: 'SUM', column: 'Value' } } },
+			})}</script><main><span data-kw-bind="total"></span></main>`);
+			section.setMode('preview');
+			await section.updateComplete;
+			const iframe = section.shadowRoot!.querySelector<HTMLIFrameElement>('#preview-iframe')!;
+			await vi.waitFor(() => expect(iframe.srcdoc).toContain('"rows":[[7],[11]]'));
+			const srcdoc = iframe.srcdoc;
+			expect(querySection.beginQueryExecution('pending-before-auth')).toBe(true);
+			const execution = querySection.getActiveExecution()!;
+			expect(querySection.acceptsQueryTerminal(execution.executionId)).toBe(true);
+
+			section.shadowRoot!.querySelector<HTMLButtonElement>('[aria-label="Publish to Power BI service"]')!.click();
+			const dialog = section.shadowRoot!.querySelector<KwPublishPbiDialog>('kw-publish-pbi-dialog')!;
+			await vi.waitFor(() => expect(dialog.shadowRoot?.querySelector('.sd-f .sd-btn-primary')?.textContent).toContain('Publish'));
+			const panel = dialog.shadowRoot!.querySelector('.sd')!;
+			expect(messages.filter(message => message.type === 'getPbiWorkspaces')).toHaveLength(1);
+			expect(messages.some(message => message.type === 'publishToPowerBI')).toBe(false);
+			const assertSavedDashboard = () => {
+				expect(getResultsState(sourceId)).toBe(savedState);
+				expect(getResultsState(sourceId)?.rows).toEqual([[7], [11]]);
+				expect(getCurrentResultArtifact(sourceId)).toBe(savedArtifact);
+				expect(getBoundResultArtifact(htmlDashboardFactArtifactConsumerId(section.boxId), sourceId)).toBe(savedArtifact);
+				expect(pState.queryResultJsonByBoxId[sourceId]).toBe(savedJson);
+				expect(pState.resultArtifactByBoxId[sourceId]).toBe(savedArtifactMetadata);
+				expect(querySection.querySelector('kw-data-table')).toBe(table);
+				expect(section.shadowRoot!.querySelector('#preview-iframe')).toBe(iframe);
+				expect(iframe.srcdoc).toBe(srcdoc);
+				expect(dialog.shadowRoot!.querySelector('.sd')).toBe(panel);
+				expect(messages.some(message => message.type === 'publishToPowerBI')).toBe(false);
+			};
+			assertSavedDashboard();
+
+			dispatch({ type: 'kustoAuthIdentityChanged', connectionIds: [connectionId], reason: 'sessions-changed' });
+			await querySection.updateComplete;
+			await section.updateComplete;
+			await dialog.updateComplete;
+			expect(querySection.getSchemaLifecycleIdentity()!.targetGeneration).toBeGreaterThan(execution.targetGeneration);
+			expect(querySection.getActiveExecution()).toBeUndefined();
+			expect(querySection.acceptsQueryTerminal(execution.executionId)).toBe(false);
+			expect(messages).toContainEqual({
+				type: 'cancelQuery', boxId: sourceId, executionId: execution.executionId,
+				sectionInstanceId: execution.sectionInstanceId, targetGeneration: execution.targetGeneration,
+			});
+			assertSavedDashboard();
+
+			const dispatchIdentity = {
+				dispatchAttempt: 1, connectionRevision: 0, leaveNoTraceRevision: 0,
+				connectionIdentityKey: 'cluster|authority', clusterEndpoint: 'https://cluster.kusto.windows.net',
+				accountPartition: 'partition-before-auth', authSessionGeneration: 0, clientActivityId: 'late-query',
+			};
+			const producer = {
+				engine: 'kusto' as const, ...execution, producer: 'manual' as const, reservationSequence: 2,
+				connectionId, database: 'Samples', query, dispatch: dispatchIdentity,
+			};
+			const stage = {
+				type: 'kustoPublicationStage', publicationId: 'html-auth-stale-result',
+				publicationDeadline: Date.now() + 5_000,
+				payload: {
+					type: 'queryResult', ...producer,
+					result: { ...savedResult, rows: [[70], [110]] },
+					resultArtifactAssignment: {
+						version: 1,
+						...createPrimaryResultArtifactIdentity(sourceId, savedArtifact.revision + 1, savedArtifact.createdAt + 1),
+						producer,
+						policy: {
+							accountPartition: dispatchIdentity.accountPartition, authSessionGeneration: 0,
+							leaveNoTraceRevision: 0, connectionRevision: 0, connectionIdentityKey: dispatchIdentity.connectionIdentityKey,
+							exposeToActiveContent: true, sendToModel: true, shareToClipboard: true, exportToCsv: true,
+						},
+					},
+				},
+			};
+			expect(admitKustoPublicationHostMessage(stage)).toMatchObject({ recognized: true, parsed: { ok: true } });
+			dispatch(stage);
+			expect(messages).toContainEqual({
+				type: 'kustoPublicationAck', publicationId: stage.publicationId, phase: 'staged', accepted: true,
+			});
+			dispatch({ type: 'kustoPublicationCommit', publicationId: stage.publicationId });
+			await vi.waitFor(() => expect(messages).toContainEqual({
+				type: 'kustoPublicationAck', publicationId: stage.publicationId, phase: 'applied', accepted: false,
+			}));
+			expect(terminalAdmission).toHaveReturnedWith('retired');
+			await section.updateComplete;
+			await dialog.updateComplete;
+			assertSavedDashboard();
+		} finally {
+			measure.mockRestore();
+			terminalAdmission.mockRestore();
+			section.remove();
+			querySection.remove();
+			await Promise.resolve();
+			clearResultsState(sourceId);
+			delete pState.queryResultJsonByBoxId[sourceId];
+			delete pState.resultArtifactByBoxId[sourceId];
+			delete pState.resultsVisibleByBoxId[sourceId];
+			delete pState.pendingHtmlCodeByBoxId[section.boxId];
+			pState.documentRuntimeActive = previousRuntimeActive;
+			if (previousCapture) runtimeWindow.__e2eCaptureHostMessage = previousCapture;
+			else delete runtimeWindow.__e2eCaptureHostMessage;
+		}
 	});
 
 	it('does not let a removed instance repopulate a cleared pending-code slot before replacement', async () => {

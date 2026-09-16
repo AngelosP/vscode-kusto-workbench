@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { html, nothing, render } from 'lit';
+import { OverlayScrollbars } from 'overlayscrollbars';
 
 const testState = vi.hoisted(() => ({
 	postMessageToHost: vi.fn(),
@@ -136,6 +137,46 @@ afterEach(() => {
 });
 
 describe('kw-publish-pbi-dialog', () => {
+	it('keeps the whole dialog in one overlay viewport through success, close, and reopen', async () => {
+		const dialog = createDialog();
+		await showDialog(dialog, { ...storedPublishInfo, dataMode: 'import' });
+		await sendWorkspaces(dialog);
+		await sendExists(dialog, true);
+		const panel = dialog.shadowRoot!.querySelector<HTMLElement>('.sd[data-overlay-scroll]');
+		expect(panel).not.toBeNull();
+		const scrollbars = OverlayScrollbars(panel!);
+		expect(OverlayScrollbars.valid(scrollbars)).toBe(true);
+		expect(scrollbars!.elements().viewport).toBe(panel);
+		expect(panel!.tabIndex).toBe(0);
+		expect(panel!.style.scrollbarWidth).toBe('none');
+		expect(dialog.shadowRoot!.querySelectorAll('[data-overlay-scroll]')).toHaveLength(1);
+
+		primaryButton(dialog).click();
+		await sendPublishSuccess(dialog);
+
+		expect(OverlayScrollbars(panel!)).toBe(scrollbars);
+		for (const selector of ['.sd-h', '.sd-b', '.ppd-status-success', '.sd-f']) {
+			expect(panel!.querySelector(selector)?.parentElement).toBe(panel);
+		}
+		expect(panel!.querySelectorAll('.os-scrollbar-vertical')).toHaveLength(1);
+		dialog.shadowRoot!.querySelector<HTMLButtonElement>('.sd-f .sd-btn:not(.sd-btn-primary)')!.click();
+		await waitForUpdate(dialog);
+		expect(OverlayScrollbars.valid(scrollbars)).toBe(false);
+		expect(dialog.shadowRoot!.querySelector('.sd')).toBeNull();
+		expect(dialog.shadowRoot!.querySelector('.os-scrollbar')).toBeNull();
+
+		await showDialog(dialog, storedPublishInfo);
+		const reopenedPanel = dialog.shadowRoot!.querySelector<HTMLElement>('.sd[data-overlay-scroll]')!;
+		const reopenedScrollbars = OverlayScrollbars(reopenedPanel);
+		expect(reopenedPanel).not.toBe(panel);
+		expect(OverlayScrollbars.valid(reopenedScrollbars)).toBe(true);
+		expect(reopenedScrollbars).not.toBe(scrollbars);
+		expect(reopenedPanel.querySelectorAll('.os-scrollbar-vertical')).toHaveLength(1);
+
+		render(nothing, container);
+		expect(OverlayScrollbars.valid(reopenedScrollbars)).toBe(false);
+	});
+
 	it('cancels every active dashboard request when hidden', async () => {
 		const dialog = createDialog();
 		await showDialog(dialog, storedPublishInfo);

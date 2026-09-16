@@ -18,6 +18,7 @@ const testState = vi.hoisted(() => {
 	const sqlElements: Record<string, HTMLElement & {
 		setFavoritesMode: ReturnType<typeof vi.fn>;
 		setLeaveNoTraceConnectionIds: ReturnType<typeof vi.fn>;
+		setResultPersistenceProvenance: ReturnType<typeof vi.fn>;
 		canPersistResults: () => boolean;
 		getConnectionId: () => string;
 		getSqlConnectionId: () => string;
@@ -114,6 +115,7 @@ const testState = vi.hoisted(() => {
 			serialize: () => unknown;
 			setFavoritesMode: ReturnType<typeof vi.fn>;
 			setLeaveNoTraceConnectionIds: ReturnType<typeof vi.fn>;
+			setResultPersistenceProvenance: ReturnType<typeof vi.fn>;
 			canPersistResults: () => boolean;
 			getConnectionId: () => string;
 			getSqlConnectionId: () => string;
@@ -123,6 +125,7 @@ const testState = vi.hoisted(() => {
 		el.id = id;
 		el.setFavoritesMode = vi.fn();
 		el.setLeaveNoTraceConnectionIds = vi.fn((ids: string[]) => { protectedConnectionIds = new Set(ids); });
+		el.setResultPersistenceProvenance = vi.fn();
 		el.getConnectionId = () => selectedConnectionId;
 		el.getSqlConnectionId = () => selectedConnectionId;
 		el.getDatabase = () => String(options.database || '');
@@ -415,8 +418,11 @@ import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-r
 import { __kustoCloseShareModal, setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
 import { addChartBox } from '../../src/webview/sections/kw-chart-section.js';
 import { addTransformationBox } from '../../src/webview/sections/kw-transformation-section.js';
-import { acknowledgeDocumentReconciliation, acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyBrowserViewerDocumentProjection, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, beginKustoLeaveNoTracePolicyApplication, captureKustoLeaveNoTracePolicyRuntime, createSectionWithCapabilities, discardPendingSqlResultRestores, finalizeDocumentDefaultsAfterAcknowledgement, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, installRuntimeAddSectionBridges, lockDocumentAfterPersistenceFailure, markKustoLeaveNoTracePolicyPending, persistDocumentAndWaitForAck, reconcileDocumentWithHost, resetDocumentPersistenceForTest, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, restoreKustoLeaveNoTracePolicyRuntime, schedulePersist, suppressPersistenceForTest, waitForPersistDocumentAck, __kustoApplyDocumentCapabilities, __kustoClearStoredQueryResult, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
-import { createDerivedResultArtifactPublication, createUnverifiedLegacyResultArtifactPublication, isUnverifiedLegacyResultArtifact, publicationFromPersistedResultArtifact, RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, RESULT_ARTIFACT_CSV_RESET_EVENT, ResultArtifactStore } from '../../src/shared/resultArtifact.js';
+import { acknowledgeDocumentReconciliation, acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyBrowserViewerDocumentProjection, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, beginKustoLeaveNoTracePolicyApplication, captureKustoLeaveNoTracePolicyRuntime, createSectionWithCapabilities, finalizeDocumentDefaultsAfterAcknowledgement, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, installRuntimeAddSectionBridges, lockDocumentAfterPersistenceFailure, markKustoLeaveNoTracePolicyPending, persistDocumentAndWaitForAck, reconcileDocumentWithHost, resetDocumentPersistenceForTest, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, restoreKustoLeaveNoTracePolicyRuntime, schedulePersist, suppressPersistenceForTest, waitForPersistDocumentAck, __kustoApplyDocumentCapabilities, __kustoClearStoredQueryResult, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
+import { createDerivedResultArtifactPublication, createUnverifiedLegacyResultArtifactPublication, isUnverifiedLegacyResultArtifact, publicationFromPersistedResultArtifact, RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, RESULT_ARTIFACT_CSV_RESET_EVENT, ResultArtifactStore, toPersistedResultArtifact } from '../../src/shared/resultArtifact.js';
+import { getKustoResultSets, parseKustoResultBatch } from '../../src/shared/kustoResultBatch.js';
+import { createKustoResultSelectionRequest } from '../../src/shared/kustoResultAttachmentProtocol.js';
+import { KustoResultPersistenceOwner } from '../../src/host/kustoResultPersistenceOwner.js';
 import { sqlConnectionTargetSignature } from '../../src/shared/sqlConnectionIdentity.js';
 
 describe('persistence round-trip', () => {
@@ -724,7 +730,7 @@ describe('persistence round-trip', () => {
 		['blank partition', { kustoAccountPartition: '', kustoLeaveNoTraceRevision: 0 }],
 		['negative revision', { kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: -1 }],
 		['non-integer revision', { kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0.5 }],
-	])('keeps a Kusto cache with %s inert in the read-only browser viewer', (_label, provenance) => {
+	])('displays a Kusto cache with %s without granting artifact capabilities in the read-only viewer', (_label, provenance) => {
 		vi.useFakeTimers();
 		(window as any).__kustoReadOnlyMode = true;
 		const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['invalid-browser-owner']], metadata: {} });
@@ -739,9 +745,11 @@ describe('persistence round-trip', () => {
 			});
 			flushDeferredRestoreTimers();
 
-			expect(displayResultForBox).not.toHaveBeenCalledWith(
+			expect(displayResultForBox).toHaveBeenCalledWith(
 				expect.objectContaining({ rows: [['invalid-browser-owner']] }),
-				'query_browser_invalid_owner', expect.anything(),
+				'query_browser_invalid_owner', expect.objectContaining({
+					artifactPublication: expect.objectContaining({ policy: {} }),
+				}),
 			);
 		} finally {
 			delete (window as any).__kustoReadOnlyMode;
@@ -752,7 +760,7 @@ describe('persistence round-trip', () => {
 	it.each([
 		['partition only', { kustoAccountPartition: 'partition-a' }],
 		['revision only', { kustoLeaveNoTraceRevision: 0 }],
-	] as const)('keeps a matching legacy Kusto cache with %s inert', (_label, partialOwner) => {
+	] as const)('displays a saved legacy Kusto cache with %s as unverified data', (_label, partialOwner) => {
 		vi.useFakeTimers();
 		try {
 			const resultJson = JSON.stringify({
@@ -772,8 +780,10 @@ describe('persistence round-trip', () => {
 			vi.runOnlyPendingTimers();
 
 			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
-			expect(displayResultForBox).not.toHaveBeenCalledWith(
-				expect.anything(), 'partial_owner_result', expect.anything(),
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [[1]] }), 'partial_owner_result', expect.objectContaining({
+					artifactPublication: expect.objectContaining({ policy: {} }),
+				}),
 			);
 		} finally {
 			vi.useRealTimers();
@@ -1266,6 +1276,7 @@ describe('persistence round-trip', () => {
 		pState.queryResultJsonByBoxId.query_good = '{"rows":[[1]]}';
 		pState.resultArtifactByBoxId.query_good = { artifactId: 'result:query_good:1' } as any;
 		pState.kustoResultOwnerByBoxId.query_good = { accountPartition: 'partition-a', leaveNoTraceRevision: 0 };
+		vi.mocked(clearResultsState).mockClear();
 		vi.mocked(postMessageToHost).mockClear();
 		vi.mocked(__kustoCloseShareModal).mockClear();
 		resetCsv.mockClear();
@@ -1309,16 +1320,17 @@ describe('persistence round-trip', () => {
 		expect(diffTable.canCopyRows()).toBe(false);
 		expect(pState.documentRuntimeActive).toBe(false);
 		expect(clearTargetBoundState).toHaveBeenCalledOnce();
-		expect(disposeSchemaLifecycle).toHaveBeenCalledOnce();
-		expect(clearResults).toHaveBeenCalled();
-		expect(clearResultsState).toHaveBeenCalledWith('query_good');
+		expect(disposeSchemaLifecycle).toHaveBeenCalledWith({ preserveResultAttachment: true });
+		expect(clearResults).not.toHaveBeenCalled();
+		expect(clearResultsState).not.toHaveBeenCalled();
 		expect(postMessageToHost).toHaveBeenCalledWith({
 			type: 'kustoSectionClose', boxId: 'query_good', sectionInstanceId: 'query-good-instance',
+			preserveResultAttachment: true,
 		});
 		expect(testState.queryExecutionTimers.query_good).toBeUndefined();
-		expect(pState.queryResultJsonByBoxId.query_good).toBeUndefined();
-		expect(pState.resultArtifactByBoxId.query_good).toBeUndefined();
-		expect(pState.kustoResultOwnerByBoxId.query_good).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.query_good).toBe('{"rows":[[1]]}');
+		expect(pState.resultArtifactByBoxId.query_good).toEqual({ artifactId: 'result:query_good:1' });
+		expect(pState.kustoResultOwnerByBoxId.query_good).toEqual({ accountPartition: 'partition-a', leaveNoTraceRevision: 0 });
 
 		expect(document.getElementById('query_good')).toBe(query);
 		expect((container as HTMLElement & { inert?: boolean }).inert).toBe(true);
@@ -1598,7 +1610,7 @@ describe('persistence round-trip', () => {
 		}
 	});
 
-	it('renders SQL rows but rejects forged clipboard producer provenance on restore', () => {
+	it('renders SQL rows but rejects another section clipboard producer provenance on restore', () => {
 		vi.useFakeTimers();
 		try {
 			const sqlConnection = {
@@ -1610,7 +1622,7 @@ describe('persistence round-trip', () => {
 			const resultArtifact = {
 				version: 1, artifactId: 'result:sql_forged:2', sourceBoxId: 'sql_forged', revision: 2, createdAt: 123,
 				producer: {
-					engine: 'sql', boxId: 'sql_forged', executionId: 'sql-execution',
+					engine: 'sql', boxId: 'sql_unrelated', executionId: 'sql-execution',
 					query: 'SELECT forged=1', connectionId: 'sql-forged', database: 'Db',
 				},
 				policy: { exposeToActiveContent: true, shareToClipboard: true, exportToCsv: true },
@@ -1640,7 +1652,7 @@ describe('persistence round-trip', () => {
 	it.each([
 		['query edit', (id: string) => { pState.pendingSqlQueryByBoxId[id] = 'SELECT changed=1'; }],
 		['database change', (id: string) => { testState.sqlElements[id].getDatabase = () => 'OtherDb'; }],
-	] as const)('discards SQL restore after a live %s before idle admission', (_label, mutate) => {
+	] as const)('preserves saved SQL bytes while respecting a live %s before idle admission', (_label, mutate) => {
 		vi.useFakeTimers();
 		try {
 			const sqlConnection = {
@@ -1668,11 +1680,16 @@ describe('persistence round-trip', () => {
 			mutate('sql_race');
 			flushDeferredRestoreTimers();
 
-			expect(displayResultForBox).not.toHaveBeenCalledWith(
-				expect.objectContaining({ rows: [['old']] }), 'sql_race', expect.anything(),
-			);
-			expect(pState.queryResultJsonByBoxId.sql_race).toBeUndefined();
-			expect(pState.resultArtifactByBoxId.sql_race).toBeUndefined();
+			if (_label === 'query edit') {
+				expect(displayResultForBox).not.toHaveBeenCalledWith(
+					expect.objectContaining({ rows: [['old']] }), 'sql_race', expect.anything(),
+				);
+			} else {
+				expect(displayResultForBox).toHaveBeenCalledWith(
+					expect.objectContaining({ rows: [['old']] }), 'sql_race', expect.anything(),
+				);
+			}
+			expect(pState.queryResultJsonByBoxId.sql_race).toBe(resultJson);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1681,7 +1698,7 @@ describe('persistence round-trip', () => {
 	it.each([
 		{ connectionIdHint: 'sql-a' },
 		{ targetSignature: 'target-a' },
-	])('does not restore SQL rows with partial owner metadata: %j', partialOwner => {
+	])('restores saved SQL rows with partial owner metadata: %j', partialOwner => {
 		const resultJson = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['partial-owner']] });
 		testState.sqlConnections.push({ id: 'sql-a', serverUrl: 'shared.example' });
 
@@ -1693,10 +1710,10 @@ describe('persistence round-trip', () => {
 			}] },
 		});
 
-		expect(pState.queryResultJsonByBoxId.sql_partial).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.sql_partial).toBe(resultJson);
 	});
 
-	it('defers a complete-owner SQL result until the cold connection snapshot validates it', () => {
+	it('loads a saved SQL result before the cold connection snapshot arrives', () => {
 		const connection = {
 			id: 'sql-cold', name: 'Cold', dialect: 'mssql', serverUrl: 'cold.example',
 			database: 'Db', authType: 'sql-login', username: 'ColdUser',
@@ -1711,7 +1728,7 @@ describe('persistence round-trip', () => {
 				connectionIdHint: 'sql-cold', targetSignature, query: 'SELECT 1', resultJson,
 			}] },
 		});
-		expect(pState.queryResultJsonByBoxId.sql_cold).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.sql_cold).toBe(resultJson);
 
 		testState.sqlConnections.push(connection);
 		testState.sqlElements.sql_cold.getConnectionId = () => 'sql-cold';
@@ -1720,7 +1737,7 @@ describe('persistence round-trip', () => {
 		expect(pState.queryResultJsonByBoxId.sql_cold).toBe(resultJson);
 	});
 
-	it('preserves cold-owner SQL result bytes across an unrelated save without rendering them', () => {
+	it('preserves and displays cold-owner SQL result bytes across an unrelated save', () => {
 		document.body.innerHTML = '<div id="queries-container"></div>';
 		const connection = {
 			id: 'sql-cold-save', name: 'Cold save', dialect: 'mssql', serverUrl: 'cold-save.example',
@@ -1752,6 +1769,10 @@ describe('persistence round-trip', () => {
 		section.serialize = () => ({
 			type: 'sql', id: 'sql_cold_save', name: 'After', serverUrl: connection.serverUrl,
 			database: 'Db', connectionIdHint: connection.id, targetSignature, query: 'SELECT 1', expanded: true,
+			resultJson: pState.queryResultJsonByBoxId.sql_cold_save,
+			resultArtifact: pState.resultArtifactByBoxId.sql_cold_save,
+			principalFingerprint: connection.principalFingerprint,
+			revocationGeneration: connection.revocationGeneration,
 		});
 		vi.mocked(postMessageToHost).mockClear();
 
@@ -1765,8 +1786,79 @@ describe('persistence round-trip', () => {
 			principalFingerprint: connection.principalFingerprint,
 			revocationGeneration: connection.revocationGeneration,
 		}));
-		expect(pState.queryResultJsonByBoxId.sql_cold_save).toBeUndefined();
-		expect(displayResultForBox).not.toHaveBeenCalled();
+		expect(pState.queryResultJsonByBoxId.sql_cold_save).toBe(resultJson);
+		expect(displayResultForBox).toHaveBeenCalledWith(
+			expect.objectContaining({ rows: [['preserved']] }), 'sql_cold_save', expect.anything(),
+		);
+	});
+
+	it.each([
+		['saved principal and revocation', { principalFingerprint: 'principal-saved', revocationGeneration: 3 }],
+		['markerless provenance', {}],
+	] as const)('restores SQL %s before display and serialization without changing the selected target', (_label, savedProvenance) => {
+		vi.useFakeTimers();
+		try {
+			document.body.innerHTML = '<div id="queries-container"></div>';
+			const currentConnection = {
+				id: 'sql-current', serverUrl: 'current.example', database: 'CurrentDb', dialect: 'mssql',
+				authType: 'aad', principalFingerprint: 'principal-current', revocationGeneration: 7,
+			};
+			testState.sqlConnections.push(currentConnection);
+			const resultJson = JSON.stringify({ columns: ['Value'], rows: [['saved-result']] });
+			const savedSection = {
+				id: 'sql_provenance_restore', type: 'sql', name: 'Before', query: 'SELECT 2',
+				serverUrl: currentConnection.serverUrl, database: currentConnection.database,
+				connectionIdHint: currentConnection.id, targetSignature: sqlConnectionTargetSignature(currentConnection),
+				...savedProvenance, resultJson,
+			};
+			let name = savedSection.name;
+			let provenance: { principalFingerprint?: string; revocationGeneration?: number } = {
+				principalFingerprint: currentConnection.principalFingerprint,
+				revocationGeneration: currentConnection.revocationGeneration,
+			};
+			const serialize = vi.fn(() => ({ ...savedSection, ...provenance, name }));
+			const createSqlBox = testState.addSqlBox.getMockImplementation()!;
+			testState.addSqlBox.mockImplementationOnce(options => {
+				const boxId = createSqlBox(options);
+				const element = testState.sqlElements[boxId];
+				element.setResultPersistenceProvenance.mockImplementation((section: typeof provenance) => {
+					provenance = {
+						...(typeof section.principalFingerprint === 'string' ? { principalFingerprint: section.principalFingerprint } : {}),
+						...(typeof section.revocationGeneration === 'number' ? { revocationGeneration: section.revocationGeneration } : {}),
+					};
+				});
+				element.serialize = serialize;
+				return boxId;
+			});
+
+			expect(handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentUri: 'file:///tmp/sql-provenance.sqlx', documentKind: 'sqlx',
+				state: { sections: [savedSection] },
+			})).toBe(true);
+			flushDeferredRestoreTimers();
+
+			const element = testState.sqlElements[savedSection.id];
+			expect(element.setResultPersistenceProvenance).toHaveBeenCalledExactlyOnceWith(savedSection);
+			const provenanceOrder = element.setResultPersistenceProvenance.mock.invocationCallOrder[0];
+			expect(provenanceOrder).toBeLessThan(serialize.mock.invocationCallOrder[0]);
+			expect(provenanceOrder).toBeLessThan(vi.mocked(displayResultForBox).mock.invocationCallOrder[0]);
+			expect(element.getConnectionId()).toBe(currentConnection.id);
+			expect(element.getDatabase()).toBe(currentConnection.database);
+			expect(provenance).toEqual(savedProvenance);
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['saved-result']] }), savedSection.id, expect.anything(),
+			);
+			name = 'After';
+			vi.mocked(postMessageToHost).mockClear();
+			schedulePersist('section-name', true);
+			const persisted = vi.mocked(postMessageToHost).mock.calls
+				.map(([message]) => message as any)
+				.find(message => message.type === 'persistDocument');
+			expect(persisted?.state.sections).toEqual([{ ...savedSection, name: 'After' }]);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('does not poll persistence while unchanged SQL result ownership is unresolved', () => {
@@ -1861,7 +1953,7 @@ describe('persistence round-trip', () => {
 	it.each([
 		['query', (id: string) => { pState.pendingSqlQueryByBoxId[id] = 'SELECT changed=1'; }],
 		['database', (id: string) => { testState.sqlElements[id].getDatabase = () => 'OtherDb'; }],
-	] as const)('drops pending SQL rows when the %s changes before owner resolution', (_label, mutate) => {
+	] as const)('retains saved SQL rows when the %s changes before owner resolution', (_label, mutate) => {
 		const connection = {
 			id: 'sql-late-config', name: 'Late config', dialect: 'mssql', serverUrl: 'late-config.example',
 			database: 'Db', authType: 'sql-login', username: 'User',
@@ -1882,10 +1974,10 @@ describe('persistence round-trip', () => {
 
 		resolvePendingSqlResultRestores();
 
-		expect(pState.queryResultJsonByBoxId.sql_late_config).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.sql_late_config).toBe(resultJson);
 	});
 
-	it('retires a pending SQL comparison when a newer source result wins before owner resolution', () => {
+	it('preserves a saved SQL comparison without overwriting a newer source result', () => {
 		const connection = {
 			id: 'sql-late-lineage', name: 'Late lineage', dialect: 'mssql', serverUrl: 'late-lineage.example',
 			database: 'Db', authType: 'sql-login', username: 'User',
@@ -1916,7 +2008,10 @@ describe('persistence round-trip', () => {
 		resolvePendingSqlResultRestores();
 
 		expect(pState.queryResultJsonByBoxId.sql_late_lineage).toBe(newSourceResult);
-		expect(pState.queryResultJsonByBoxId.query_late_lineage).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.query_late_lineage).toBe(comparisonResult);
+		expect(displayResultForBox).not.toHaveBeenCalledWith(
+			expect.objectContaining({ rows: [['old-source']] }), 'sql_late_lineage', expect.anything(),
+		);
 	});
 
 	it('renders warm SQL results through a uniquely recreated connection with the same target identity', () => {
@@ -1958,7 +2053,7 @@ describe('persistence round-trip', () => {
 				'sql_warm_recreated',
 				expect.objectContaining({
 					artifactPublication: expect.objectContaining({
-						producer: expect.objectContaining({ connectionId: recreatedConnection.id }),
+						producer: expect.objectContaining({ connectionId: originalConnection.id }),
 						policy: expect.objectContaining({
 							exposeToActiveContent: true, sendToModel: true,
 							shareToClipboard: true, exportToCsv: true,
@@ -1967,9 +2062,68 @@ describe('persistence round-trip', () => {
 				}),
 			);
 			expect(pState.resultArtifactByBoxId.sql_warm_recreated).toMatchObject({
-				producer: { connectionId: recreatedConnection.id },
+				producer: { connectionId: originalConnection.id },
 				policy: { exposeToActiveContent: true, sendToModel: true, shareToClipboard: true, exportToCsv: true },
 			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('preserves historical SQL artifact identity while saving the current target signature', () => {
+		vi.useFakeTimers();
+		try {
+			document.body.innerHTML = '<div id="queries-container"></div>';
+			const currentConnection = {
+				id: 'sql-current-y', serverUrl: 'sql-current-y.example', database: 'CurrentDb', dialect: 'mssql',
+				authType: 'aad', principalFingerprint: 'principal-current', revocationGeneration: 7,
+			};
+			testState.sqlConnections.push(currentConnection);
+			const boxId = 'sql_historical_producer';
+			const resultJson = JSON.stringify({ columns: ['Value'], rows: [['historical-sql']] });
+			const resultArtifact = {
+				version: 1 as const, artifactId: `result:${boxId}:3`, sourceBoxId: boxId, revision: 3, createdAt: 1234,
+				producer: {
+					engine: 'sql', boxId, executionId: 'sql-execution-x', query: 'SELECT 1',
+					connectionId: 'sql-producer-x', database: 'ProducerDb',
+				},
+				policy: { exposeToActiveContent: true, sendToModel: true, shareToClipboard: true, exportToCsv: true },
+			};
+			const savedSection = {
+				type: 'sql', id: boxId, query: 'SELECT 2', serverUrl: currentConnection.serverUrl,
+				connectionIdHint: currentConnection.id, database: currentConnection.database,
+				targetSignature: sqlConnectionTargetSignature(currentConnection),
+				principalFingerprint: 'principal-saved', revocationGeneration: 3, resultJson, resultArtifact,
+			};
+			const artifacts = new ResultArtifactStore();
+			testState.getCurrentResultArtifact.mockImplementation((sourceBoxId: unknown) => artifacts.getCurrent(String(sourceBoxId)) || null);
+			vi.mocked(displayResultForBox).mockImplementation((result, sourceBoxId, options) => (
+				!!artifacts.publish(String(sourceBoxId), result, options?.artifactPublication)
+			));
+
+			expect(handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, documentKind: 'sqlx',
+				documentUri: 'file:///tmp/historical-sql.sqlx', state: { sections: [savedSection] },
+			})).toBe(true);
+			flushDeferredRestoreTimers();
+
+			expect(toPersistedResultArtifact(artifacts.getCurrent(boxId))).toEqual(resultArtifact);
+			expect(pState.resultArtifactByBoxId[boxId]).toEqual(resultArtifact);
+			const section = testState.sqlElements[boxId];
+			expect(section.setResultPersistenceProvenance).toHaveBeenCalledExactlyOnceWith(savedSection);
+			expect(section.getConnectionId()).toBe(currentConnection.id);
+			expect(section.getDatabase()).toBe(currentConnection.database);
+			expect(section.getQuery()).toBe(savedSection.query);
+			section.serialize = () => ({
+				...savedSection, name: 'After', connectionIdHint: section.getConnectionId(), database: section.getDatabase(),
+				resultJson: pState.queryResultJsonByBoxId[boxId], resultArtifact: pState.resultArtifactByBoxId[boxId],
+			});
+			vi.mocked(postMessageToHost).mockClear();
+			schedulePersist('section-name', true);
+			const persisted = vi.mocked(postMessageToHost).mock.calls
+				.map(([message]) => message as any)
+				.find(message => message.type === 'persistDocument');
+			expect(persisted?.state.sections).toEqual([{ ...savedSection, name: 'After' }]);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -2044,10 +2198,10 @@ describe('persistence round-trip', () => {
 					query: 'SELECT 1', resultJson,
 				}] },
 			});
-			expect(pState.queryResultJsonByBoxId.sql_late_owner).toBeUndefined();
+			expect(pState.queryResultJsonByBoxId.sql_late_owner).toBe(resultJson);
 
 			resolvePendingSqlResultRestores();
-			expect(pState.queryResultJsonByBoxId.sql_late_owner).toBeUndefined();
+			expect(pState.queryResultJsonByBoxId.sql_late_owner).toBe(resultJson);
 
 			testState.sqlConnections.push(connection);
 			testState.sqlElements.sql_late_owner.getConnectionId = () => connection.id;
@@ -2066,7 +2220,7 @@ describe('persistence round-trip', () => {
 		}
 	});
 
-	it('preserves safe pending SQL results when another connection is Leave No Trace', () => {
+	it('preserves all saved SQL results when a connection becomes Leave No Trace', () => {
 		const safe = {
 			id: 'sql-safe', name: 'Safe', dialect: 'mssql', serverUrl: 'safe.example',
 			database: 'Db', authType: 'sql-login', username: 'SafeUser',
@@ -2092,20 +2246,20 @@ describe('persistence round-trip', () => {
 			] },
 		});
 
-		discardPendingSqlResultRestores([protectedConnection.id]);
+		testState.sqlElements.sql_protected.setLeaveNoTraceConnectionIds([protectedConnection.id]);
 		testState.sqlConnections.push(safe, protectedConnection);
 		testState.sqlElements.sql_safe.getConnectionId = () => safe.id;
 		testState.sqlElements.sql_protected.getConnectionId = () => protectedConnection.id;
 		resolvePendingSqlResultRestores();
 
 		expect(pState.queryResultJsonByBoxId.sql_safe).toBe(safeResult);
-		expect(pState.queryResultJsonByBoxId.sql_protected).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.sql_protected).toBe(protectedResult);
 	});
 
 	it.each([
 		{ label: 'rotated', persistedPrincipal: 'principal-a', currentPrincipal: 'principal-b' },
 		{ label: 'legacy-missing', persistedPrincipal: undefined, currentPrincipal: 'principal-b' },
-	])('does not restore $label AAD rows or SQL comparison rows under another principal', ({ persistedPrincipal, currentPrincipal }) => {
+	])('restores saved $label AAD and SQL comparison rows despite another current principal', ({ persistedPrincipal, currentPrincipal }) => {
 		const connection = {
 			id: 'sql-aad', name: 'AAD', dialect: 'mssql', serverUrl: 'aad.example',
 			database: 'Db', authType: 'aad',
@@ -2129,8 +2283,8 @@ describe('persistence round-trip', () => {
 		testState.sqlElements.sql_aad.getConnectionId = () => connection.id;
 		resolvePendingSqlResultRestores();
 
-		expect(pState.queryResultJsonByBoxId.sql_aad).toBeUndefined();
-		expect(pState.queryResultJsonByBoxId.query_cmp_aad).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.sql_aad).toBe(sourceResult);
+		expect(pState.queryResultJsonByBoxId.query_cmp_aad).toBe(comparisonResult);
 	});
 
 	it('restores AAD source and comparison rows only for the exact persisted principal', () => {
@@ -2160,7 +2314,7 @@ describe('persistence round-trip', () => {
 		expect(pState.queryResultJsonByBoxId.query_cmp_aad_match).toBe(comparisonResult);
 	});
 
-	it('does not restore SQL rows after a later LNT revocation generation', () => {
+	it('restores saved SQL rows after a later LNT revocation generation', () => {
 		const connection = {
 			id: 'sql-revoked', name: 'Revoked', dialect: 'mssql', serverUrl: 'revoked.example',
 			database: 'Db', authType: 'sql-login', username: 'user', revocationGeneration: 1,
@@ -2179,10 +2333,10 @@ describe('persistence round-trip', () => {
 		testState.sqlElements.sql_revoked.getConnectionId = () => connection.id;
 		resolvePendingSqlResultRestores();
 
-		expect(pState.queryResultJsonByBoxId.sql_revoked).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.sql_revoked).toBe(resultJson);
 	});
 
-	it('does not admit a cold SQL comparison after Leave No Trace is applied', () => {
+	it('preserves a cold saved SQL comparison after Leave No Trace is applied', () => {
 		const connection = {
 			id: 'sql-sensitive', name: 'Sensitive', dialect: 'mssql', serverUrl: 'sensitive.example',
 			database: 'Db', authType: 'sql-login', username: 'SensitiveUser',
@@ -2208,8 +2362,8 @@ describe('persistence round-trip', () => {
 
 		resolvePendingSqlResultRestores();
 
-		expect(pState.queryResultJsonByBoxId.sql_sensitive).toBeUndefined();
-		expect(pState.queryResultJsonByBoxId.query_cmp).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.sql_sensitive).toBe(sourceResult);
+		expect(pState.queryResultJsonByBoxId.query_cmp).toBe(comparisonResult);
 	});
 
 	it('skips an orphaned SQL comparison before creating or restoring its data', () => {
@@ -2263,7 +2417,7 @@ describe('persistence round-trip', () => {
 		expect(testState.addMarkdownBox).not.toHaveBeenCalled();
 	});
 
-	it('does not restore SQL comparison rows while the existing source owner is unresolved', () => {
+	it('retains saved SQL comparison rows while the existing source owner is unresolved', () => {
 		const resultJson = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['unresolved-row']] });
 		handleDocumentDataMessage({
 			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/unresolved.sqlx',
@@ -2276,10 +2430,15 @@ describe('persistence round-trip', () => {
 		});
 
 		expect(testState.queryBoxes).toContain('query_cmp');
-		expect(pState.queryResultJsonByBoxId.query_cmp).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.query_cmp).toBe(resultJson);
+		resolvePendingKustoResultRestores();
+		expect(displayResultForBox).toHaveBeenCalledWith(
+			expect.objectContaining({ rows: [['unresolved-row']] }), 'query_cmp',
+			{ label: 'Results', showExecutionTime: true },
+		);
 	});
 
-	it('does not restore SQL source or comparison rows through a stale same-box owner', () => {
+	it('retains saved SQL source and comparison rows across a same-box owner change', () => {
 		const sourceResult = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['owner-b']] });
 		const comparisonResult = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['owner-b-comparison']] });
 		testState.sqlConnections.push({ id: 'sql-a', serverUrl: 'shared.example' });
@@ -2294,8 +2453,8 @@ describe('persistence round-trip', () => {
 			] },
 		});
 
-		expect(pState.queryResultJsonByBoxId.sql_source).toBeUndefined();
-		expect(pState.queryResultJsonByBoxId.query_cmp).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.sql_source).toBe(sourceResult);
+		expect(pState.queryResultJsonByBoxId.query_cmp).toBe(comparisonResult);
 	});
 
 	it.each([
@@ -2355,7 +2514,6 @@ describe('persistence round-trip', () => {
 			let comparisonRendered = false;
 			const comparisonArtifact = {
 				...comparisonDescriptor,
-				producer: { ...comparisonDescriptor.producer, connectionId: connection.id },
 				restored: true, columns: ['Value'], rows: [[2]], metadata: {},
 			};
 			vi.mocked(displayResultForBox).mockImplementation((_result, boxId) => {
@@ -2395,16 +2553,13 @@ describe('persistence round-trip', () => {
 				expect.objectContaining({ rows: [[2]] }), 'query_warm_cmp',
 				expect.objectContaining({
 					artifactPublication: expect.objectContaining({
-						producer: expect.objectContaining({ connectionId: connection.id }),
+						producer: expect.objectContaining({ connectionId: persistedConnection.id }),
 						lineage: comparisonDescriptor.lineage,
 						policy: expect.objectContaining({ shareToClipboard: true, exportToCsv: true }),
 					}),
 				}),
 			);
-			expect(pState.resultArtifactByBoxId.query_warm_cmp).toMatchObject({
-				...comparisonDescriptor,
-				producer: { ...comparisonDescriptor.producer, connectionId: connection.id },
-			});
+			expect(pState.resultArtifactByBoxId.query_warm_cmp).toMatchObject(comparisonDescriptor);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -2557,7 +2712,7 @@ describe('persistence round-trip', () => {
 		}
 	});
 
-	it('does not trust a forged exposure-only restored query as producer provenance', () => {
+	it('does not trust an exposure-only restored producer from another engine', () => {
 		vi.useFakeTimers();
 		try {
 			testState.kustoConnections.push(ownedKustoConnection({
@@ -2568,7 +2723,7 @@ describe('persistence round-trip', () => {
 				version: 1, artifactId: 'result:query_forged_exposure:2', sourceBoxId: 'query_forged_exposure',
 				revision: 2, createdAt: 123,
 				producer: {
-					engine: 'kusto', boxId: 'query_forged_exposure', query: 'HiddenTable | take 100',
+					engine: 'sql', boxId: 'query_forged_exposure', query: 'HiddenTable | take 100',
 					connectionId: 'public-default', database: 'Db',
 				},
 				policy: {
@@ -2906,15 +3061,17 @@ describe('persistence round-trip', () => {
 				true,
 				{ authorityId: 'tenant-b.example.com' },
 			);
-			expect(displayResultForBox).not.toHaveBeenCalledWith(
-				expect.anything(), 'query_partial_comparison', expect.anything(),
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [[2]] }), 'query_partial_comparison', expect.objectContaining({
+					artifactPublication: expect.objectContaining({ policy: {} }),
+				}),
 			);
 		} finally {
 			vi.useRealTimers();
 		}
 	});
 
-	it('rejects a persisted Kusto comparison result owned by a different target than its source', () => {
+	it('displays saved Kusto comparison rows from a different target without lineage capabilities', () => {
 		vi.useFakeTimers();
 		try {
 			testState.kustoConnections.push(
@@ -2932,8 +3089,12 @@ describe('persistence round-trip', () => {
 			applyKustoLeaveNoTracePolicy([], false);
 			flushDeferredRestoreTimers();
 
-			expect(pState.queryResultJsonByBoxId.query_cmp).toBeUndefined();
-			expect(displayResultForBox).not.toHaveBeenCalledWith(expect.anything(), 'query_cmp', expect.anything());
+			expect(pState.queryResultJsonByBoxId.query_cmp).toBe(resultJson);
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['WRONG_TARGET']] }), 'query_cmp', expect.objectContaining({
+					artifactPublication: expect.objectContaining({ policy: {} }),
+				}),
+			);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -3071,7 +3232,7 @@ describe('persistence round-trip', () => {
 		['KQL sidecar mismatched', 'kql', JSON.stringify({ columns: [{ name: 'Value' }], rows: [[1]], metadata: { cluster: 'other', database: 'Db' } })],
 		['KQLX malformed', 'kqlx', '{"rows":'],
 		['KQL sidecar malformed', 'kql', '{"rows":'],
-	] as const)('keeps an invalid unverified legacy Kusto cache inert for %s', (_label, documentKind, resultJson) => {
+	] as const)('restores parseable legacy Kusto data without current-target admission for %s', (_label, documentKind, resultJson) => {
 		vi.useFakeTimers();
 		try {
 			testState.kustoConnections.push(ownedKustoConnection({
@@ -3087,18 +3248,24 @@ describe('persistence round-trip', () => {
 				}] },
 			});
 
-			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
-			expect(pState.queryResultJsonByBoxId.legacy_result).toBeUndefined();
-			expect(displayResultForBox).not.toHaveBeenCalledWith(
-				expect.anything(), 'legacy_result', expect.anything(),
-			);
 			vi.mocked(postMessageToHost).mockClear();
 			applyKustoLeaveNoTracePolicy([], false);
 			vi.runOnlyPendingTimers();
 
-			expect(displayResultForBox).not.toHaveBeenCalledWith(
-				expect.anything(), 'legacy_result', expect.anything(),
-			);
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+			if (_label.includes('malformed')) {
+				expect(pState.queryResultJsonByBoxId.legacy_result).toBeUndefined();
+				expect(displayResultForBox).not.toHaveBeenCalledWith(
+					expect.anything(), 'legacy_result', expect.anything(),
+				);
+			} else {
+				expect(pState.queryResultJsonByBoxId.legacy_result).toBe(resultJson);
+				expect(displayResultForBox).toHaveBeenCalledWith(
+					expect.objectContaining({ rows: [[1]] }), 'legacy_result', expect.objectContaining({
+						artifactPublication: expect.objectContaining({ policy: {} }),
+					}),
+				);
+			}
 			expect(postMessageToHost).not.toHaveBeenCalledWith(
 				expect.objectContaining({ type: 'persistDocument' }),
 			);
@@ -3173,7 +3340,7 @@ describe('persistence round-trip', () => {
 		}
 	});
 
-	it('does not restore protected SQL resultJson into storage or shared results', () => {
+	it('restores saved SQL resultJson into storage and display under Leave No Trace', () => {
 		vi.useFakeTimers();
 		const resultJson = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['protected-row']], metadata: {} });
 		testState.sqlLeaveNoTraceConnectionIds.push('sql-sensitive');
@@ -3185,9 +3352,11 @@ describe('persistence round-trip', () => {
 			});
 			const sqlEl = testState.sqlElements.sql_protected;
 			expect(sqlEl.setLeaveNoTraceConnectionIds).toHaveBeenCalledWith(['sql-sensitive']);
-			expect(pState.queryResultJsonByBoxId.sql_protected).toBeUndefined();
+			expect(pState.queryResultJsonByBoxId.sql_protected).toBe(resultJson);
 			vi.advanceTimersByTime(25);
-			expect(displayResultForBox).not.toHaveBeenCalled();
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['protected-row']] }), 'sql_protected', expect.anything(),
+			);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -3321,6 +3490,9 @@ describe('persistence round-trip', () => {
 			pending.serialize = () => ({
 				id: 'query_pending_restart', type: 'query', query: 'print Value=42',
 				clusterUrl, connectionIdHint: 'restart-owner', database: 'Db',
+				...(pState.queryResultJsonByBoxId.query_pending_restart ? {
+					resultJson: pState.queryResultJsonByBoxId.query_pending_restart, ...kustoResultOwner,
+				} : {}),
 			});
 			const neighbor = document.getElementById('query_startup_neighbor') as any;
 			neighbor.serialize = () => ({
@@ -3334,7 +3506,7 @@ describe('persistence round-trip', () => {
 				.find(message => message.type === 'persistDocument');
 			expect(persist?.state.sections.find((section: any) => section.id === 'query_pending_restart'))
 				.toMatchObject({ resultJson, ...kustoResultOwner });
-			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
 
 			testState.kustoConnections.push(ownedKustoConnection({ id: 'restart-owner', clusterUrl }));
 			applyKustoLeaveNoTracePolicy([], false);
@@ -3728,16 +3900,112 @@ describe('persistence round-trip', () => {
 		await expect(reconciled).resolves.toBe(true);
 	});
 
-	it('locks editing and persistence after an indeterminate host persistence failure', () => {
-		createRevisionedQueryHarness('file:///tmp/indeterminate.kqlx', 'print value=1', 'kqlx');
+	it.each([
+		['indeterminate persistence', false, 'persistence'],
+		['malformed current document', false, 'malformed'],
+		['rejected current projection', false, 'projection'],
+		['malformed document switch', true, 'malformed'],
+		['rejected document switch', true, 'projection'],
+	] as const)('failure lock preserves only current-document data after %s', (_label, switchesDocument, failure) => {
+		const documentUri = 'file:///tmp/indeterminate.kqlx';
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[42]] });
+		expect(handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri, documentKind: 'kqlx',
+			state: { sections: [
+				{ id: 'query_failure_lock', type: 'query', query: 'print Value=42', resultJson },
+				{ id: 'sql_failure_lock', type: 'sql', query: 'SELECT 42', resultJson },
+			] },
+		})).toBe(true);
+		const query = document.getElementById('query_failure_lock') as any;
+		const sql = testState.sqlElements.sql_failure_lock;
+		const sqlClearResults = vi.fn();
+		const retireSql = vi.fn(() => {
+			sqlClearResults();
+			delete pState.queryResultJsonByBoxId.sql_failure_lock;
+		});
+		const cancelSql = vi.fn();
+		const cancelSqlCopilot = vi.fn();
+		const blockSqlAdmission = vi.fn();
+		const setStsReady = vi.fn();
+		Object.assign(sql, {
+			clearResults: sqlClearResults,
+			retireForDocumentInvalidation: retireSql,
+			cancelToolRun: cancelSql,
+			copilotWriteQueryCancel: cancelSqlCopilot,
+			setComparisonAdmissionPending: blockSqlAdmission,
+			setStsReady,
+		});
+		const artifacts = Object.fromEntries([query.id, sql.id].map(boxId => [
+			boxId, { artifactId: `result:${boxId}:3` },
+		]));
+		for (const boxId of [query.id, sql.id]) {
+			pState.queryResultJsonByBoxId[boxId] = resultJson;
+			pState.resultArtifactByBoxId[boxId] = artifacts[boxId] as any;
+			testState.queryExecutionTimers[boxId] = { active: true };
+		}
+		pState.kustoResultOwnerByBoxId[query.id] = { accountPartition: 'partition-a', leaveNoTraceRevision: 3 };
+		pState.lastExecutedBox = query.id;
+		pState.queryEditorPendingAdds.chart = 1;
+		vi.mocked(clearResultsState).mockClear();
+		vi.mocked(postMessageToHost).mockClear();
 
-		lockDocumentAfterPersistenceFailure();
+		if (failure === 'persistence') {
+			lockDocumentAfterPersistenceFailure();
+		} else {
+			expect(handleDocumentDataMessage({
+				type: 'documentData', ok: failure !== 'malformed', forceReload: true, documentKind: 'kqlx',
+				documentUri: switchesDocument ? 'file:///tmp/different.kqlx' : documentUri,
+				error: 'Invalid JSON',
+				state: { sections: [{ id: 'sql_rejected', type: 'sql', comparisonSourceBoxId: 'missing' }] },
+			})).toBe(failure === 'malformed');
+		}
 
 		expect(pState.documentMutationAllowed).toBe(false);
 		expect(pState.documentRuntimeActive).toBe(false);
+		expect(pState.queryEditorPendingAdds).toEqual(createEmptyQueryEditorPendingAdds());
+		expect(testState.queryExecutionTimers).toEqual({});
 		expect(schedulePersist('blocked-after-failure', true)).toBeUndefined();
-		expect(document.getElementById('kusto-malformed-document-banner')?.textContent)
-			.toContain('Editing and saving are disabled to prevent data loss');
+		expect(container.getAttribute('aria-disabled')).toBe('true');
+		expect(document.getElementById('kusto-malformed-document-banner')).not.toBeNull();
+		expect(query.clearTargetBoundState).toHaveBeenCalledOnce();
+		expect(query.disposeSchemaLifecycle).toHaveBeenCalledWith({ preserveResultAttachment: !switchesDocument });
+		expect(postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoSectionClose', boxId: query.id, sectionInstanceId: `instance-${query.id}`,
+			...(!switchesDocument ? { preserveResultAttachment: true } : {}),
+		});
+		expect(postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'persistDocument' }));
+		if (switchesDocument) {
+			expect(retireSql).toHaveBeenCalledOnce();
+			expect(query.clearResults).toHaveBeenCalledOnce();
+			for (const boxId of [query.id, sql.id]) {
+				expect(document.getElementById(boxId)).toBeNull();
+				expect(clearResultsState).toHaveBeenCalledWith(boxId);
+				expect(pState.queryResultJsonByBoxId[boxId]).toBeUndefined();
+				expect(pState.resultArtifactByBoxId[boxId]).toBeUndefined();
+			}
+			expect(pState.kustoResultOwnerByBoxId[query.id]).toBeUndefined();
+			expect(pState.lastExecutedBox).toBeNull();
+		} else {
+			expect(retireSql).not.toHaveBeenCalled();
+			expect(cancelSql).toHaveBeenCalledOnce();
+			expect(cancelSqlCopilot).toHaveBeenCalledOnce();
+			expect(blockSqlAdmission).toHaveBeenCalledWith(true);
+			expect(setStsReady).toHaveBeenCalledWith(false);
+			expect(query.clearResults).not.toHaveBeenCalled();
+			expect(sqlClearResults).not.toHaveBeenCalled();
+			expect(clearResultsState).not.toHaveBeenCalled();
+			expect(document.getElementById(query.id)).toBe(query);
+			expect(document.getElementById(sql.id)).toBe(sql);
+			for (const boxId of [query.id, sql.id]) {
+				expect(pState.queryResultJsonByBoxId[boxId]).toBe(resultJson);
+				expect(pState.resultArtifactByBoxId[boxId]).toBe(artifacts[boxId]);
+			}
+			expect(pState.kustoResultOwnerByBoxId[query.id]).toEqual({ accountPartition: 'partition-a', leaveNoTraceRevision: 3 });
+			expect(pState.lastExecutedBox).toBe(query.id);
+		}
 	});
 
 	it('rejects an older waiter when a newer different revision supersedes it', async () => {
@@ -4421,7 +4689,7 @@ describe('persistence round-trip', () => {
 		}
 	});
 
-	it('rejects SQL-kind comparison rows without an exact derived lineage descriptor', () => {
+	it('displays saved SQL comparison rows without admitting missing lineage capabilities', () => {
 		vi.useFakeTimers();
 		try {
 			const connection = {
@@ -4448,10 +4716,10 @@ describe('persistence round-trip', () => {
 			});
 			flushDeferredRestoreTimers();
 
-			expect(displayResultForBox).not.toHaveBeenCalledWith(
-				expect.anything(), 'sql_comparison', expect.anything(),
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [[2]] }), 'sql_comparison', { label: 'Results', showExecutionTime: true },
 			);
-			expect(pState.queryResultJsonByBoxId.sql_comparison).toBeUndefined();
+			expect(pState.queryResultJsonByBoxId.sql_comparison).toBeTruthy();
 		} finally {
 			vi.useRealTimers();
 		}
@@ -4565,7 +4833,7 @@ describe('persistence round-trip', () => {
 	it.each([
 		['KQLX', 'kqlx', 'file:///tmp/missing-owner-edit.kqlx'],
 		['KQL sidecar', 'kql', 'file:///tmp/missing-owner-edit.kql'],
-	] as const)('persists an authored edit while preserving a host-admitted owner pending projection in %s', (_label, documentKind, documentUri) => {
+	] as const)('persists an authored edit while preserving historical results without a live owner in %s', (_label, documentKind, documentUri) => {
 		vi.useFakeTimers();
 		try {
 			const resultJson = JSON.stringify({ columns: ['Value'], rows: [['private']], metadata: {} });
@@ -4584,7 +4852,7 @@ describe('persistence round-trip', () => {
 			});
 			applyKustoLeaveNoTracePolicy([], false);
 			flushDeferredRestoreTimers();
-			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
 			const container = document.createElement('div');
 			container.id = 'queries-container';
 			const pendingOwner = document.getElementById('query_missing_owner_edit') as any;
@@ -4592,6 +4860,7 @@ describe('persistence round-trip', () => {
 				id: 'query_missing_owner_edit', type: 'query', query: 'print Value=1',
 				clusterUrl: 'https://missing-owner.kusto.windows.net', database: 'Db',
 				connectionIdHint: 'missing-owner',
+				resultJson: pState.queryResultJsonByBoxId.query_missing_owner_edit, ...kustoResultOwner,
 			});
 			container.appendChild(pendingOwner);
 			container.appendChild(document.getElementById('query_authored_peer')!);
@@ -4613,7 +4882,7 @@ describe('persistence round-trip', () => {
 				.toMatchObject({ query: 'print After=2' });
 			expect(persisted?.state.sections.find((section: any) => section.id === 'query_missing_owner_edit'))
 				.toMatchObject({ resultJson, ...kustoResultOwner });
-			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
 
 			testState.kustoConnections.push(ownedKustoConnection({
 				id: 'missing-owner', clusterUrl: 'https://missing-owner.kusto.windows.net',
@@ -4687,7 +4956,7 @@ describe('persistence round-trip', () => {
 			expect(legacy).not.toHaveProperty('resultArtifact');
 			expect(legacy).not.toHaveProperty('kustoAccountPartition');
 			expect(legacy).not.toHaveProperty('kustoLeaveNoTraceRevision');
-			expect(displayResultForBox).not.toHaveBeenCalledWith(
+			expect(displayResultForBox).toHaveBeenCalledWith(
 				expect.objectContaining({ rows: [[42]] }),
 				'query_deferred_legacy',
 				expect.anything(),
@@ -4951,7 +5220,10 @@ describe('persistence round-trip', () => {
 			applyKustoLeaveNoTracePolicyRaw(['https://stale.kusto.windows.net'], true, firstPolicyRequestId);
 			applyKustoLeaveNoTracePolicyRaw(['https://uncorrelated.kusto.windows.net'], true);
 			flushDeferredRestoreTimers();
-			expect(displayResultForBox).not.toHaveBeenCalled();
+			expect(displayResultForBox).toHaveBeenCalledOnce();
+			expect(displayResultForBox).not.toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['old']] }), 'query_reload', expect.anything(),
+			);
 
 			applyKustoLeaveNoTracePolicyRaw([], false, secondPolicyRequestId);
 
@@ -4973,7 +5245,7 @@ describe('persistence round-trip', () => {
 		}
 	});
 
-	it('waits for Kusto policy readiness and discards a protected restored result', () => {
+	it('restores saved Kusto results before policy readiness and preserves them under Leave No Trace', () => {
 		vi.useFakeTimers();
 		try {
 			markKustoLeaveNoTracePolicyPending();
@@ -4987,21 +5259,21 @@ describe('persistence round-trip', () => {
 			});
 
 			flushDeferredRestoreTimers();
-			expect(displayResultForBox).not.toHaveBeenCalled();
-			expect(pState.queryResultJsonByBoxId.query_protected_restore).toBeUndefined();
-			expect((getKqlxState() as any).sections.find((section: any) => section.id === 'query_protected_restore')?.resultJson)
-				.toBeUndefined();
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['RESTORED_SECRET']] }), 'query_protected_restore', expect.anything(),
+			);
+			expect(pState.queryResultJsonByBoxId.query_protected_restore).toBe(resultJson);
 
 			applyKustoLeaveNoTracePolicy(['https://secret.kusto.windows.net'], false);
 			flushDeferredRestoreTimers();
-			expect(displayResultForBox).not.toHaveBeenCalled();
-			expect(pState.queryResultJsonByBoxId.query_protected_restore).toBeUndefined();
+			expect(displayResultForBox).toHaveBeenCalledOnce();
+			expect(pState.queryResultJsonByBoxId.query_protected_restore).toBe(resultJson);
 		} finally {
 			vi.useRealTimers();
 		}
 	});
 
-	it('keeps a protected matching legacy cache hidden until policy becomes unprotected', () => {
+	it('keeps a saved legacy cache visible across protected and unprotected policies', () => {
 		vi.useFakeTimers();
 		try {
 			let resultsRevision = 0;
@@ -5023,9 +5295,9 @@ describe('persistence round-trip', () => {
 
 			applyKustoLeaveNoTracePolicy(['https://secret.kusto.windows.net'], false);
 			flushDeferredRestoreTimers();
-			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
-			expect(displayResultForBox).not.toHaveBeenCalled();
-			expect(pState.queryResultJsonByBoxId.query_protected_legacy).toBeUndefined();
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+			expect(displayResultForBox).toHaveBeenCalledOnce();
+			expect(pState.queryResultJsonByBoxId.query_protected_legacy).toBe(resultJson);
 			expect(resultsRevision).toBe(0);
 
 			applyKustoLeaveNoTracePolicy([], false);
@@ -5043,7 +5315,7 @@ describe('persistence round-trip', () => {
 		}
 	});
 
-	it('rejects a matching legacy cache when its authored target changes before policy readiness', () => {
+	it('restores saved legacy rows when the target changes before policy readiness', () => {
 		vi.useFakeTimers();
 		try {
 			markKustoLeaveNoTracePolicyPending();
@@ -5066,15 +5338,15 @@ describe('persistence round-trip', () => {
 			flushDeferredRestoreTimers();
 
 			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
-			expect(displayResultForBox).not.toHaveBeenCalledWith(
-				expect.anything(), 'query_retargeted_legacy', expect.anything(),
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['OLD_TARGET']] }), 'query_retargeted_legacy', expect.anything(),
 			);
 		} finally {
 			vi.useRealTimers();
 		}
 	});
 
-	it('keeps a matching legacy cache hidden after a prior policy revocation', () => {
+	it('restores saved legacy rows after a prior policy revocation', () => {
 		vi.useFakeTimers();
 		try {
 			markKustoLeaveNoTracePolicyPending();
@@ -5096,15 +5368,17 @@ describe('persistence round-trip', () => {
 			});
 			flushDeferredRestoreTimers();
 
-			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
-			expect(displayResultForBox).not.toHaveBeenCalled();
-			expect(pState.queryResultJsonByBoxId.query_revoked_legacy).toBeUndefined();
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['REVOKED_LEGACY_SECRET']] }), 'query_revoked_legacy', expect.anything(),
+			);
+			expect(pState.queryResultJsonByBoxId.query_revoked_legacy).toBe(resultJson);
 		} finally {
 			vi.useRealTimers();
 		}
 	});
 
-	it('clears a rendered unverified legacy cache after a later policy revocation generation', () => {
+	it('preserves a rendered unverified legacy cache after a later policy revocation generation', () => {
 		vi.useFakeTimers();
 		try {
 			markKustoLeaveNoTracePolicyPending();
@@ -5153,9 +5427,9 @@ describe('persistence round-trip', () => {
 				'https://revoked-live.kusto.windows.net': 1,
 			});
 
-			expect(clearResultsState).toHaveBeenCalledWith('query_revoked_rendered_legacy');
-			expect(section.clearResults).toHaveBeenCalledOnce();
-			expect(pState.lastExecutedBox).toBe('');
+			expect(clearResultsState).not.toHaveBeenCalled();
+			expect(section.clearResults).not.toHaveBeenCalled();
+			expect(pState.lastExecutedBox).toBe('query_revoked_rendered_legacy');
 			expect(pState.queryResultJsonByBoxId.query_revoked_rendered_legacy).toBe(resultJson);
 			expect((getKqlxState() as any).sections.find(
 				(candidate: any) => candidate.id === 'query_revoked_rendered_legacy',
@@ -5165,7 +5439,7 @@ describe('persistence round-trip', () => {
 		}
 	});
 
-	it('publishes a result-free document when the matching fresh policy is protected', () => {
+	it('does not purge saved results when the matching fresh policy is protected', () => {
 		applyKustoLeaveNoTracePolicy(['https://secret.kusto.windows.net'], false);
 		vi.mocked(postMessageToHost).mockClear();
 		const resultJson = JSON.stringify({ columns: ['Secret'], rows: [['POLICY_FIRST_SECRET']], metadata: {} });
@@ -5178,13 +5452,13 @@ describe('persistence round-trip', () => {
 			}] },
 		});
 		applyKustoLeaveNoTracePolicy(['https://secret.kusto.windows.net'], false);
+		resolvePendingKustoResultRestores();
 
 		const purge = vi.mocked(postMessageToHost).mock.calls
 			.map(([message]) => message as any)
 			.find(message => message.type === 'persistDocument' && message.reason === 'kusto-leave-no-trace-policy');
-		expect(purge).toBeTruthy();
-		expect(purge.state.sections.find((section: any) => section.id === 'query_policy_first')?.resultJson).toBeUndefined();
-		expect(pState.queryResultJsonByBoxId.query_policy_first).toBeUndefined();
+		expect(purge).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.query_policy_first).toBe(resultJson);
 	});
 
 	it('does not persist a protected-result purge before commit or after rollback', () => {
@@ -5225,7 +5499,7 @@ describe('persistence round-trip', () => {
 		)).toBe(false);
 	});
 
-	it('emits protected-result revocation and persistence only at commit', () => {
+	it('preserves committed results and consumer bindings when an LNT policy change commits', () => {
 		const resultJson = JSON.stringify({ columns: ['Secret'], rows: [['COMMITTED_SECRET']], metadata: {} });
 		handleDocumentDataMessage({
 			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/committed-policy.kqlx',
@@ -5256,13 +5530,13 @@ describe('persistence round-trip', () => {
 
 			application.commit();
 
-			expect(clearResultsState).toHaveBeenCalledWith('query_committed_policy');
-			expect(revoked).toHaveBeenCalledOnce();
-			expect(pState.queryResultJsonByBoxId.query_committed_policy).toBeUndefined();
-			expect(pState.kustoResultOwnerByBoxId.query_committed_policy).toBeUndefined();
-			expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
-				type: 'persistDocument', reason: 'kusto-leave-no-trace-policy',
-			}));
+			expect(clearResultsState).not.toHaveBeenCalled();
+			expect(revoked).not.toHaveBeenCalled();
+			expect(pState.queryResultJsonByBoxId.query_committed_policy).toBe(resultJson);
+			expect(pState.kustoResultOwnerByBoxId.query_committed_policy).toEqual({
+				accountPartition: 'partition-a', leaveNoTraceRevision: 0,
+			});
+			expect(postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'persistDocument' }));
 		} finally {
 			window.removeEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, revoked);
 		}
@@ -5299,7 +5573,7 @@ describe('persistence round-trip', () => {
 		expect(postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'persistDocument' }));
 	});
 
-	it('still purges a protected restore after a benign no-op persist schedule', () => {
+	it('does not purge a saved protected restore after a benign no-op persist schedule', () => {
 		markKustoLeaveNoTracePolicyPending();
 		const resultJson = JSON.stringify({ columns: ['Secret'], rows: [['NOOP_SECRET']], metadata: {} });
 		handleDocumentDataMessage({
@@ -5323,11 +5597,12 @@ describe('persistence round-trip', () => {
 		const purge = vi.mocked(postMessageToHost).mock.calls
 			.map(([message]) => message as any)
 			.find(message => message.type === 'persistDocument' && message.reason === 'kusto-leave-no-trace-policy');
-		expect(purge).toBeTruthy();
-		expect(purge.state.sections.find((section: any) => section.id === 'query_noop_before_policy')?.resultJson).toBeUndefined();
+		expect(purge).toBeUndefined();
+		resolvePendingKustoResultRestores();
+		expect(pState.queryResultJsonByBoxId.query_noop_before_policy).toBe(resultJson);
 	});
 
-	it('preserves admitted public rows while durably purging protected rows', () => {
+	it('preserves saved public and protected rows without a policy-triggered write', () => {
 		vi.useFakeTimers();
 		try {
 			testState.kustoConnections.push(
@@ -5353,14 +5628,14 @@ describe('persistence round-trip', () => {
 
 			applyKustoLeaveNoTracePolicy(['https://secret.kusto.windows.net'], false);
 			flushDeferredRestoreTimers();
+			flushDeferredRestoreTimers();
 			expect(pState.queryResultJsonByBoxId.query_public_mixed).toBe(publicResult);
+			expect(pState.queryResultJsonByBoxId.query_protected_mixed).toBe(protectedResult);
 
 			const purge = vi.mocked(postMessageToHost).mock.calls
 				.map(([message]) => message as any)
 				.find(message => message.type === 'persistDocument' && message.reason === 'kusto-leave-no-trace-policy');
-			expect(purge).toBeTruthy();
-			expect(purge.state.sections.find((section: any) => section.id === 'query_protected_mixed')?.resultJson).toBeUndefined();
-			expect(purge.state.sections.find((section: any) => section.id === 'query_public_mixed')?.resultJson).toBe(publicResult);
+			expect(purge).toBeUndefined();
 		} finally {
 			vi.useRealTimers();
 		}
@@ -5486,7 +5761,7 @@ describe('persistence round-trip', () => {
 		}
 	});
 
-	it('releases an unprotected restored result only after Kusto policy readiness', () => {
+	it('restores saved results and artifact identity before Kusto policy readiness', () => {
 		vi.useFakeTimers();
 		try {
 			testState.kustoConnections.push(ownedKustoConnection({ id: 'public-default', clusterUrl: 'https://public.kusto.windows.net' }));
@@ -5513,8 +5788,8 @@ describe('persistence round-trip', () => {
 			});
 
 			flushDeferredRestoreTimers();
-			expect(displayResultForBox).not.toHaveBeenCalled();
-			expect(pState.queryResultJsonByBoxId.query_public_restore).toBeUndefined();
+			expect(displayResultForBox).toHaveBeenCalledOnce();
+			expect(pState.queryResultJsonByBoxId.query_public_restore).toBe(resultJson);
 			applyKustoLeaveNoTracePolicy([], false);
 			flushDeferredRestoreTimers();
 			expect(pState.queryResultJsonByBoxId.query_public_restore).toBe(resultJson);
@@ -5576,7 +5851,7 @@ describe('persistence round-trip', () => {
 				}] },
 			});
 			flushDeferredRestoreTimers();
-			expect(displayResultBatchForBox).not.toHaveBeenCalled();
+			expect(displayResultBatchForBox).toHaveBeenCalledOnce();
 			applyKustoLeaveNoTracePolicy([], false);
 			flushDeferredRestoreTimers();
 
@@ -5597,7 +5872,153 @@ describe('persistence round-trip', () => {
 		}
 	});
 
-	it('rejects restored Kusto comparison rows with forged artifact ancestry', () => {
+	it('restores revision-3 historical producer identity and selects Result 2 while the current target remains different', () => {
+		vi.useFakeTimers();
+		try {
+			document.body.innerHTML = '<div id="queries-container"></div>';
+			const boxId = 'query_historical_producer';
+			const documentUri = 'file:///tmp/historical-producer.kqlx';
+			const currentConnection = {
+				id: 'connection-y', clusterUrl: 'https://target-y.kusto.windows.net', accountPartition: 'partition-current',
+			};
+			testState.kustoConnections.push(currentConnection);
+			const resultJson = JSON.stringify({
+				columns: ['Value'], rows: [['first-from-x']], metadata: { resultName: 'First' },
+				additionalResults: { version: 1, sets: [
+					{ resultIndex: 1, columns: ['Value'], rows: [['second-from-x']], metadata: { resultName: 'Second' } },
+				] },
+			});
+			const resultArtifact = {
+				version: 1 as const, artifactId: `result:${boxId}:3`, sourceBoxId: boxId, revision: 3, createdAt: 1234,
+				producer: {
+					engine: 'kusto', boxId, executionId: 'execution-x', sectionInstanceId: 'producer-instance-x',
+					targetGeneration: 3, producer: 'manual', connectionId: 'connection-x', database: 'ProducerDb',
+					query: 'print Value="first-from-x"; print Value="second-from-x"',
+					dispatch: {
+						clusterEndpoint: 'https://producer-x.kusto.windows.net', authorityId: 'tenant-x',
+						connectionIdentityKey: 'producer-x|tenant-x', connectionRevision: 2,
+						accountPartition: 'partition-a', leaveNoTraceRevision: 3,
+					},
+				},
+				policy: {
+					accountPartition: 'partition-a', leaveNoTraceRevision: 3,
+					connectionIdentityKey: 'producer-x|tenant-x', connectionRevision: 2,
+					exposeToActiveContent: true, sendToModel: true, shareToClipboard: true, exportToCsv: true,
+				},
+			};
+			const savedSection = {
+				type: 'query', id: boxId, query: 'print CurrentTarget="y"',
+				clusterUrl: currentConnection.clusterUrl, connectionIdHint: currentConnection.id, database: 'CurrentDb',
+				resultJson, resultArtifact, kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 3,
+			};
+			const lifecycle = { boxId, sectionInstanceId: `instance-${boxId}`, targetGeneration: 1 };
+			const owner = new KustoResultPersistenceOwner(documentUri);
+			const panel = owner.openPanel('historical-producer-panel');
+			expect(panel.openSection(boxId, lifecycle.sectionInstanceId)).toBe(true);
+			expect(panel.adoptTarget({ ...lifecycle, connectionId: currentConnection.id, database: 'CurrentDb' })).toBe(true);
+			owner.admitCanonicalSource('source-revision-3', { sections: [savedSection] }, '3', panel.panelId);
+			expect(owner.getCommittedSummary(boxId)).toMatchObject({
+				primaryArtifactId: resultArtifact.artifactId, resultSetCount: 2, selectedResultIndex: 0,
+			});
+			const artifacts = new ResultArtifactStore();
+			testState.getCurrentResultArtifact.mockImplementation((sourceBoxId: unknown, resultIndex = 0) => (
+				artifacts.getCurrent(String(sourceBoxId), resultIndex) || null
+			));
+			vi.mocked(displayResultBatchForBox).mockImplementation((result, sourceBoxId, options) => {
+				const batch = parseKustoResultBatch(result);
+				return batch.ok && !!artifacts.publishBatch(
+					String(sourceBoxId), getKustoResultSets(batch.value), options?.artifactPublication,
+				);
+			});
+
+			expect(handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, documentUri, documentKind: 'kqlx',
+				sourceGeneration: 3, editRevision: 3, state: { sections: [savedSection] },
+			})).toBe(true);
+			flushDeferredRestoreTimers();
+
+			const primary = artifacts.getCurrent(boxId)!;
+			expect(primary.artifactId).toBe(resultArtifact.artifactId);
+			expect(primary.producer).toEqual(resultArtifact.producer);
+			expect(toPersistedResultArtifact(primary)).toEqual(resultArtifact);
+			expect(pState.resultArtifactByBoxId[boxId]).toEqual(resultArtifact);
+			expect(artifacts.getCurrent(boxId, 1)).toMatchObject({
+				artifactId: `${resultArtifact.artifactId}:set:1`, revision: 3, rows: [['second-from-x']],
+			});
+			const section = document.getElementById(boxId) as any;
+			expect(section.getConnectionId()).toBe(currentConnection.id);
+			expect(section.getDatabase()).toBe('CurrentDb');
+			expect(pState.pendingQueryTextByBoxId[boxId]).toBe(savedSection.query);
+			const request = createKustoResultSelectionRequest({
+				...lifecycle, requestId: 'select-historical-result-2', primaryArtifactId: primary.artifactId, resultIndex: 1,
+			});
+			expect(request.ok).toBe(true);
+			if (!request.ok) throw new Error(request.error);
+			expect(request.value).toMatchObject({ primaryArtifactId: resultArtifact.artifactId, resultIndex: 1 });
+			const selection = panel.selectResult(request.value);
+			expect(selection).toEqual({ accepted: true, resultIndex: 1 });
+			expect(owner.getCommittedSummary(boxId)?.selectedResultIndex).toBe(1);
+			expect(artifacts.getCurrent(boxId, selection.resultIndex)?.rows).toEqual([['second-from-x']]);
+			section.serialize = () => ({
+				...savedSection, selectedResultIndex: selection.resultIndex,
+				query: pState.pendingQueryTextByBoxId[boxId], connectionIdHint: section.getConnectionId(),
+				database: section.getDatabase(), resultJson: pState.queryResultJsonByBoxId[boxId],
+				resultArtifact: pState.resultArtifactByBoxId[boxId],
+			});
+			vi.mocked(postMessageToHost).mockClear();
+			schedulePersist('kusto-result-selection', true);
+			const persisted = vi.mocked(postMessageToHost).mock.calls
+				.map(([message]) => message as any)
+				.find(message => message.type === 'persistDocument');
+			expect(persisted?.state.sections).toEqual([{ ...savedSection, selectedResultIndex: 1 }]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
+		'wrong source box', 'non-primary result index', 'unsupported version',
+		'unsafe revision', 'non-boolean capability', 'mismatched account', 'unadmitted lineage',
+	])('displays historical rows without admitting a descriptor with %s', invalidField => {
+		vi.useFakeTimers();
+		try {
+			const boxId = 'query_invalid_history';
+			const resultJson = JSON.stringify({ columns: ['Value'], rows: [['historical']] });
+			const policy = { accountPartition: 'partition-a', leaveNoTraceRevision: 0, exposeToActiveContent: true, sendToModel: true };
+			const resultArtifact: Record<string, unknown> = {
+				version: 1, artifactId: `result:${boxId}:3`, sourceBoxId: boxId, revision: 3, createdAt: 1234,
+				producer: { engine: 'kusto', boxId, query: 'HistoricalTable', connectionId: 'producer-x', database: 'ProducerDb' },
+				policy,
+			};
+			switch (invalidField) {
+				case 'wrong source box': resultArtifact.sourceBoxId = 'query_unrelated'; break;
+				case 'non-primary result index': resultArtifact.artifactId = `result:${boxId}:3:set:1`; break;
+				case 'unsupported version': resultArtifact.version = 2; break;
+				case 'unsafe revision': resultArtifact.revision = Number.MAX_SAFE_INTEGER; break;
+				case 'non-boolean capability': resultArtifact.policy = { ...policy, sendToModel: 'true' }; break;
+				case 'mismatched account': resultArtifact.policy = { ...policy, accountPartition: 'unrelated-account' }; break;
+				case 'unadmitted lineage': resultArtifact.lineage = [{ sourceArtifactId: 'result:unrelated:1', role: 'comparison-source' }]; break;
+			}
+			expect(handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, documentKind: 'kqlx',
+				documentUri: 'file:///tmp/invalid-history.kqlx', state: { sections: [{
+					type: 'query', id: boxId, query: 'CurrentTable', clusterUrl: 'https://current-y.kusto.windows.net',
+					connectionIdHint: 'current-y', database: 'CurrentDb', resultJson, resultArtifact, ...kustoResultOwner,
+				}] },
+			})).toBe(true);
+			flushDeferredRestoreTimers();
+
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['historical']] }), boxId, { label: 'Results', showExecutionTime: true },
+			);
+			expect(pState.queryResultJsonByBoxId[boxId]).toBe(resultJson);
+			expect(pState.resultArtifactByBoxId[boxId]).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('displays saved Kusto comparison rows without granting forged artifact ancestry', () => {
 		vi.useFakeTimers();
 		try {
 			testState.kustoConnections.push(ownedKustoConnection({
@@ -5620,7 +6041,10 @@ describe('persistence round-trip', () => {
 			const resultArtifact = {
 				version: 1, artifactId: 'result:query_comparison:9', sourceBoxId: 'query_comparison',
 				revision: 9, createdAt: 1234,
-				producer: { engine: 'kusto', boxId: 'query_comparison', executionId: 'comparison-execution' },
+				producer: {
+					engine: 'kusto', boxId: 'query_comparison', executionId: 'comparison-execution',
+					query: 'print comparison=1', connectionId: 'public-default', database: 'Db',
+				},
 				policy: {
 					accountPartition: 'partition-a', leaveNoTraceRevision: 0,
 					exposeToActiveContent: true, sendToModel: true, shareToClipboard: true,
@@ -5650,19 +6074,19 @@ describe('persistence round-trip', () => {
 			applyKustoLeaveNoTracePolicy([], false);
 			flushDeferredRestoreTimers();
 
-			expect(displayResultForBox).not.toHaveBeenCalledWith(
+			expect(displayResultForBox).toHaveBeenCalledWith(
 				expect.objectContaining({ rows: [['forged']] }),
 				'query_comparison',
-				expect.anything(),
+				{ label: 'Results', showExecutionTime: true },
 			);
-			expect(pState.queryResultJsonByBoxId.query_comparison).toBeUndefined();
+			expect(pState.queryResultJsonByBoxId.query_comparison).toBeTruthy();
 			expect(pState.resultArtifactByBoxId.query_comparison).toBeUndefined();
 		} finally {
 			vi.useRealTimers();
 		}
 	});
 
-	it('does not restore account A Kusto rows after the same connection moves to account B', () => {
+	it('restores saved account A Kusto rows after the connection moves to account B', () => {
 		vi.useFakeTimers();
 		try {
 			testState.kustoConnections.push({
@@ -5680,8 +6104,9 @@ describe('persistence round-trip', () => {
 			applyKustoLeaveNoTracePolicy([], false);
 			flushDeferredRestoreTimers();
 
-			expect(pState.queryResultJsonByBoxId.query_account_swap).toBeUndefined();
-			expect(displayResultForBox).not.toHaveBeenCalledWith(
+			expect(pState.queryResultJsonByBoxId.query_account_swap).toBe(resultJson);
+			expect(pState.kustoResultOwnerByBoxId.query_account_swap?.accountPartition).toBe('partition-a');
+			expect(displayResultForBox).toHaveBeenCalledWith(
 				expect.objectContaining({ rows: [['ACCOUNT_A_ROW']] }), 'query_account_swap', expect.anything(),
 			);
 		} finally {
@@ -5689,7 +6114,7 @@ describe('persistence round-trip', () => {
 		}
 	});
 
-	it('does not restore Kusto rows produced before a closed-notebook policy interval', () => {
+	it('restores saved Kusto rows produced before a closed-notebook policy interval', () => {
 		vi.useFakeTimers();
 		try {
 			testState.kustoConnections.push(ownedKustoConnection({
@@ -5707,8 +6132,8 @@ describe('persistence round-trip', () => {
 			applyKustoLeaveNoTracePolicy([], false, { interval: 2 });
 			flushDeferredRestoreTimers();
 
-			expect(pState.queryResultJsonByBoxId.query_policy_interval).toBeUndefined();
-			expect(displayResultForBox).not.toHaveBeenCalledWith(
+			expect(pState.queryResultJsonByBoxId.query_policy_interval).toBe(resultJson);
+			expect(displayResultForBox).toHaveBeenCalledWith(
 				expect.objectContaining({ rows: [['PRE_INTERVAL_ROW']] }), 'query_policy_interval', expect.anything(),
 			);
 		} finally {
@@ -5716,7 +6141,7 @@ describe('persistence round-trip', () => {
 		}
 	});
 
-	it('keeps restored Kusto rows private until their exact connection arrives', () => {
+	it('restores saved Kusto rows before their connection arrives without republishing them', () => {
 		vi.useFakeTimers();
 		try {
 			const resultJson = JSON.stringify({ columns: ['Value'], rows: [['late-owner']], metadata: {} });
@@ -5729,7 +6154,7 @@ describe('persistence round-trip', () => {
 			});
 			applyKustoLeaveNoTracePolicy([], false);
 			flushDeferredRestoreTimers();
-			expect(displayResultForBox).not.toHaveBeenCalled();
+			expect(displayResultForBox).toHaveBeenCalledOnce();
 
 			testState.kustoConnections.push(ownedKustoConnection({ id: 'late-connection', clusterUrl: 'https://late.kusto.windows.net' }));
 			const section = document.getElementById('query_late_owner') as any;
@@ -5738,6 +6163,7 @@ describe('persistence round-trip', () => {
 			flushDeferredRestoreTimers();
 
 			expect(pState.queryResultJsonByBoxId.query_late_owner).toBe(resultJson);
+			expect(displayResultForBox).toHaveBeenCalledOnce();
 			expect(displayResultForBox).toHaveBeenCalledWith(
 				{ ...JSON.parse(resultJson), metadata: { executionTime: '' } },
 				'query_late_owner',
@@ -5759,7 +6185,7 @@ describe('persistence round-trip', () => {
 			{ id: 'authority-a', clusterUrl: 'https://shared.kusto.windows.net', authorityId: 'common' },
 			{ id: 'authority-b', clusterUrl: 'https://shared.kusto.windows.net', authorityId: 'organizations' },
 		], { clusterUrl: 'https://shared.kusto.windows.net', database: 'Db' }],
-	] as const)('never renders %s restored Kusto rows', (_case, ownerConnections, target) => {
+	] as const)('renders saved %s Kusto rows without granting owner capabilities', (_case, ownerConnections, target) => {
 		vi.useFakeTimers();
 		try {
 			testState.kustoConnections.push(...ownerConnections);
@@ -5771,14 +6197,18 @@ describe('persistence round-trip', () => {
 			applyKustoLeaveNoTracePolicy([], false);
 			flushDeferredRestoreTimers();
 
-			expect(displayResultForBox).not.toHaveBeenCalled();
-			expect(pState.queryResultJsonByBoxId[`query_${_case}`]).toBeUndefined();
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['UNOWNED']] }), `query_${_case}`, expect.objectContaining({
+					artifactPublication: expect.objectContaining({ policy: {} }),
+				}),
+			);
+			expect(pState.queryResultJsonByBoxId[`query_${_case}`]).toBe(resultJson);
 		} finally {
 			vi.useRealTimers();
 		}
 	});
 
-	it('clears stored and rendered Kusto results when global recovery blocks policy', () => {
+	it('preserves saved Kusto results when global recovery blocks policy', () => {
 		const resultJson = JSON.stringify({ columns: ['Secret'], rows: [['LIVE_SECRET']], metadata: {} });
 		handleDocumentDataMessage({
 			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/global-recovery.kqlx',
@@ -5790,12 +6220,13 @@ describe('persistence round-trip', () => {
 		vi.mocked(displayResultForBox).mockClear();
 
 		applyKustoLeaveNoTracePolicy([], true);
+		resolvePendingKustoResultRestores();
 
-		expect(pState.queryResultJsonByBoxId.query_global_recovery).toBeUndefined();
-		expect((document.getElementById('query_global_recovery') as any).clearResults).toHaveBeenCalled();
+		expect(pState.queryResultJsonByBoxId.query_global_recovery).toBe(resultJson);
+		expect((document.getElementById('query_global_recovery') as any).clearResults).not.toHaveBeenCalled();
 	});
 
-	it('purges a Kusto source and comparison whose opaque IDs begin with sql_', () => {
+	it('preserves a Kusto source and comparison whose opaque IDs begin with sql_', () => {
 		const clusterUrl = 'https://opaque-id.kusto.windows.net';
 		testState.kustoConnections.push({ id: 'sql_kusto_connection', clusterUrl });
 		const sourceResult = JSON.stringify({ columns: ['Secret'], rows: [['SOURCE']] });
@@ -5807,12 +6238,14 @@ describe('persistence round-trip', () => {
 				{ type: 'query', id: 'sql_kusto_comparison', comparisonSourceBoxId: 'sql_kusto_source', clusterUrl, connectionIdHint: 'sql_kusto_connection', database: 'Db', query: 'T | count', resultJson: comparisonResult },
 			] },
 		});
+		pState.queryResultJsonByBoxId.sql_kusto_source = sourceResult;
+		pState.queryResultJsonByBoxId.sql_kusto_comparison = comparisonResult;
 		applyKustoLeaveNoTracePolicy([clusterUrl], false);
 
-		expect(pState.queryResultJsonByBoxId.sql_kusto_source).toBeUndefined();
-		expect(pState.queryResultJsonByBoxId.sql_kusto_comparison).toBeUndefined();
-		expect((document.getElementById('sql_kusto_source') as any).clearResults).toHaveBeenCalled();
-		expect((document.getElementById('sql_kusto_comparison') as any).clearResults).toHaveBeenCalled();
+		expect(pState.queryResultJsonByBoxId.sql_kusto_source).toBe(sourceResult);
+		expect(pState.queryResultJsonByBoxId.sql_kusto_comparison).toBe(comparisonResult);
+		expect((document.getElementById('sql_kusto_source') as any).clearResults).not.toHaveBeenCalled();
+		expect((document.getElementById('sql_kusto_comparison') as any).clearResults).not.toHaveBeenCalled();
 	});
 
 	it('does not render deferred restored results over a running query', () => {

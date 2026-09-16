@@ -226,6 +226,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	@state() private _desiredServerUrl = '';
 	private _desiredConnectionIdHint = '';
 	private _desiredTargetSignature = '';
+	private _resultPersistenceProvenance?: Readonly<Pick<SqlSectionData, 'principalFingerprint' | 'revocationGeneration'>>;
 	private _csvResultArtifactId = '';
 	private _csvResultTableToken = '';
 	private _csvExportAllowed = false;
@@ -892,10 +893,10 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	private _renderAddSqlConnectionModal(): TemplateResult {
 		return html`
-			<div class="add-connection-overlay" @click=${() => this._onAddSqlConnectionCancel()} @keydown=${(e: KeyboardEvent) => {
+			<div class="add-connection-overlay" @mousedown=${() => this._onAddSqlConnectionCancel()} @keydown=${(e: KeyboardEvent) => {
 				if (e.key === 'Escape') { this._onAddSqlConnectionCancel(); e.preventDefault(); }
 			}}>
-				<div class="add-connection-dialog" @click=${(e: Event) => e.stopPropagation()}>
+				<div class="add-connection-dialog" @mousedown=${(e: Event) => e.stopPropagation()}>
 					<div class="add-connection-header">
 						<span class="add-connection-title">Add SQL Connection</span>
 						<button class="add-connection-close" @click=${() => this._onAddSqlConnectionCancel()}>
@@ -1522,8 +1523,13 @@ export class KwSqlSection extends LitElement implements SectionElement {
 				const resultArtifact = toPersistedResultArtifact(getCurrentResultArtifact(this.boxId))
 					|| pState.resultArtifactByBoxId?.[this.boxId];
 				if (resultArtifact) data.resultArtifact = resultArtifact;
-				if (connection?.principalFingerprint) data.principalFingerprint = connection.principalFingerprint;
-				data.revocationGeneration = connection?.revocationGeneration ?? 0;
+				const resultOwner = { ...this._resultPersistenceProvenance, ...resultArtifact?.producer?.dispatch };
+				if (typeof resultOwner?.principalFingerprint === 'string') {
+					data.principalFingerprint = resultOwner.principalFingerprint;
+				}
+				if (typeof resultOwner?.revocationGeneration === 'number') {
+					data.revocationGeneration = resultOwner.revocationGeneration;
+				}
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -1659,6 +1665,13 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		this._desiredTargetSignature = normalizeSqlConnectionTargetSignature(String(targetSignature || ''));
 		this._pendingPersistedTargetAdoption = !!this._desiredConnectionIdHint && !!this._desiredTargetSignature;
 		if (this._desiredConnectionIdHint || this._desiredTargetSignature) this._desiredServerUrlPendingMatch = true;
+	}
+
+	public setResultPersistenceProvenance(provenance: Pick<SqlSectionData, 'principalFingerprint' | 'revocationGeneration'>): void {
+		this._resultPersistenceProvenance = Object.freeze({
+			...(typeof provenance.principalFingerprint === 'string' ? { principalFingerprint: provenance.principalFingerprint } : {}),
+			...(typeof provenance.revocationGeneration === 'number' ? { revocationGeneration: provenance.revocationGeneration } : {}),
+		});
 	}
 
 	/** Set the desired database (used during restoration). */
@@ -1808,7 +1821,6 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		this._executing = false;
 		this._activeQueryExecutionId = '';
 		this._stopElapsedTimer();
-		this._clearResultData();
 		this._lastError = '';
 		if (!this._protectedExecutionOwner) this.setStsReady(false);
 		try { schedulePersist('sql-leave-no-trace', true); } catch (e) { console.error('[kusto]', e); }
@@ -1824,7 +1836,6 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		this._executing = false;
 		this._activeQueryExecutionId = '';
 		this._stopElapsedTimer();
-		this._clearResultData();
 		this._protectedExecutionOwner = false;
 		this.setStsReady(false);
 		this.sqlSession.rejectPendingToolRun(new Error('SQL target changed during tool execution.'));
@@ -2309,6 +2320,13 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		const resultsWrapper = document.getElementById(this.boxId + '_sql_results_wrapper');
 		const resultsResizer = document.getElementById(this.boxId + '_sql_results_resizer');
 		if (!resultsBody) return false;
+		if (options?.executionId) {
+			const connection = this._connections.find(candidate => candidate.id === this._connectionId);
+			this.setResultPersistenceProvenance({
+				principalFingerprint: connection?.principalFingerprint,
+				revocationGeneration: connection?.revocationGeneration ?? 0,
+			});
+		}
 		this._releaseCsvResultArtifact();
 
 		resultsBody.innerHTML = '';

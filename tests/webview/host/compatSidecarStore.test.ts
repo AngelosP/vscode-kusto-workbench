@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { buildCompatSidecarFile, type CompatSidecarFormat } from '../../../src/host/compatSidecarFormat';
+import { buildCompatSidecarFile, isLinkedCompatSidecar, type CompatSidecarFormat } from '../../../src/host/compatSidecarFormat';
 import {
 	CompatSidecarStore,
 	hasDirtyCompatSidecarPhysicalAlias,
@@ -13,11 +13,106 @@ import {
 	withCompatSidecarLock,
 	writeCompatSidecarTextOwned,
 } from '../../../src/host/compatSidecarStore';
-import { parseKqlxText, stringifyKqlxFile } from '../../../src/host/kqlxFormat';
+import { parseKqlxText, stringifyKqlxFile, type KqlxStateV1 } from '../../../src/host/kqlxFormat';
+import { stripKqlxResultAttachments } from '../../../src/host/kqlxOverlay';
 
 afterEach(() => vi.restoreAllMocks());
 
 describe('CompatSidecarStore lossless baseline', () => {
+	it.each(['query', 'sql'] as const)('preserves disk A through %s publication, recovery and repair, excludes no-data B, then admits new allowed C', async primaryKind => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-saved-results-'));
+		const extension = primaryKind === 'query' ? 'kql' : 'sql';
+		const compatUri = vscode.Uri.file(path.join(tmpDir, `sample.${extension}`).replace(/\\/g, '/'));
+		const sidecarUri = vscode.Uri.file(`${compatUri.fsPath}.json`);
+		const format: CompatSidecarFormat = { primaryKind, sidecarKind: primaryKind === 'query' ? 'kqlx' : 'sqlx' };
+		const savedTarget = primaryKind === 'query' ? { clusterUrl: 'https://a.kusto.windows.net' } : { targetSignature: 'target-a' };
+		const editedTarget = primaryKind === 'query' ? { clusterUrl: 'https://b.kusto.windows.net' } : { targetSignature: 'target-b' };
+		const attachment = {
+			resultJson: '{"rows":[["saved A"]]}', result: { rows: [['legacy A']] },
+			resultArtifact: {
+				version: 1, artifactId: 'artifact-a', sourceBoxId: 'primary', revision: 3, createdAt: 1,
+				futureMetadata: { retained: 'A' },
+			},
+			selectedResultIndex: 2, kustoAccountPartition: 'account-a', kustoLeaveNoTraceRevision: 4,
+			principalFingerprint: 'principal-a', revocationGeneration: 5,
+		};
+		let blocked = true;
+		let policyHeld = false;
+		const publishFresh = vi.fn(async <T>(state: KqlxStateV1, publish: (state: KqlxStateV1) => Promise<T>): Promise<T> => {
+			policyHeld = true;
+			try { return await publish(blocked ? stripKqlxResultAttachments(state) : state); }
+			finally { policyHeld = false; }
+		});
+		const store = new CompatSidecarStore({
+			compatUri,
+			parse: text => {
+				const parsed = parseKqlxText(text, { allowedKinds: [format.sidecarKind], defaultKind: format.sidecarKind });
+				return parsed.ok ? parsed.file : undefined;
+			},
+			isLinked: (uri, file) => isLinkedCompatSidecar(uri, file, compatUri, primaryKind),
+			sanitizeFresh: async state => blocked ? stripKqlxResultAttachments(state) : state,
+			publishFresh,
+			buildFile: (state, base) => buildCompatSidecarFile(compatUri, state, format, base),
+			stringify: stringifyKqlxFile,
+		});
+		try {
+			const original = buildCompatSidecarFile(compatUri, { futureState: 'kept', sections: [
+				{ id: 'primary', type: primaryKind, futureSection: 'kept', ...savedTarget, ...attachment },
+				{ id: 'removed', type: primaryKind, ...savedTarget, ...attachment },
+			] }, format);
+			const originalText = JSON.stringify({ ...original, futureRoot: 'kept' }) + '\r\n';
+			fs.writeFileSync(sidecarUri.fsPath, originalText, 'utf8');
+			const initial = await readCompatSidecarSnapshot(sidecarUri);
+			const omitted: KqlxStateV1 = { sections: [{ id: 'primary', type: primaryKind, query: 'edited', ...editedTarget }] };
+			const expectedSaved = { id: 'primary', type: primaryKind, linkedQueryPath: `sample.${extension}`, futureSection: 'kept', ...editedTarget, ...attachment };
+			expect((await store.buildFresh(omitted, original)).state.sections).toEqual([expectedSaved]);
+			expect((await store.repair(sidecarUri, initial.identity))?.text).toBe(originalText);
+			expect(publishFresh).not.toHaveBeenCalled();
+			expect(fs.readFileSync(sidecarUri.fsPath, 'utf8')).toBe(originalText);
+
+			const candidate: KqlxStateV1 = { sections: [{ ...omitted.sections[0], resultJson: '{"rows":[["new B"]]}' }] };
+			expect((await store.buildFresh(candidate, original)).state.sections).toEqual([expectedSaved]);
+			const dirtyCandidate = buildCompatSidecarFile(compatUri, candidate, format, original);
+			expect((await store.buildFresh(omitted, original, dirtyCandidate)).state.sections).toEqual([expectedSaved]);
+			expect((await store.buildFresh(omitted, undefined, dirtyCandidate)).state.sections).toEqual([{
+				id: 'primary', type: primaryKind, linkedQueryPath: `sample.${extension}`, futureSection: 'kept', ...editedTarget,
+			}]);
+			const written = await store.writeFresh(sidecarUri, candidate, initial.text, initial.identity, async () => {
+				expect(policyHeld).toBe(true);
+				expect(fs.readFileSync(sidecarUri.fsPath, 'utf8')).toBe(originalText);
+			});
+			expect(JSON.parse(fs.readFileSync(sidecarUri.fsPath, 'utf8')).state.sections).toEqual([expectedSaved]);
+			expect(written.file.futureRoot).toBe('kept');
+			expect(written.file.state.futureState).toBe('kept');
+			const recovery = await store.writeRecovery(sidecarUri, candidate);
+			expect(JSON.parse(fs.readFileSync(recovery.fsPath, 'utf8')).state.sections).toEqual([expectedSaved]);
+			expect(fs.readFileSync(sidecarUri.fsPath, 'utf8')).toBe(written.text);
+
+			blocked = false;
+			const afterPolicyChange = await store.writeFresh(sidecarUri, omitted, written.text, written.identity);
+			expect(JSON.parse(fs.readFileSync(sidecarUri.fsPath, 'utf8')).state.sections).toEqual([expectedSaved]);
+			const allowedCandidate: KqlxStateV1 = { sections: [{ ...omitted.sections[0], resultJson: '{"rows":[["new C"]]}' }] };
+			const replacement = await store.writeFresh(sidecarUri, allowedCandidate, afterPolicyChange.text, afterPolicyChange.identity);
+			const expectedReplacement = {
+				id: 'primary', type: primaryKind, linkedQueryPath: `sample.${extension}`, futureSection: 'kept', ...editedTarget,
+				resultJson: '{"rows":[["new C"]]}',
+			};
+			expect(replacement.file.state.sections).toEqual([expectedReplacement]);
+			expect(JSON.parse(fs.readFileSync(sidecarUri.fsPath, 'utf8')).state.sections).toEqual([expectedReplacement]);
+			blocked = true;
+			const afterOmission = await store.writeFresh(sidecarUri, omitted, replacement.text, replacement.identity);
+			expect(JSON.parse(fs.readFileSync(sidecarUri.fsPath, 'utf8')).state.sections).toEqual([expectedReplacement]);
+			expect(afterOmission.file.state.sections).toHaveLength(1);
+			expect((await store.repair(sidecarUri, afterOmission.identity))?.text).toBe(afterOmission.text);
+			const newRecovery = await store.writeRecovery(vscode.Uri.file(path.join(tmpDir, 'absent.json')), candidate);
+			expect(JSON.parse(fs.readFileSync(newRecovery.fsPath, 'utf8')).state.sections)
+				.toEqual([{ id: 'primary', type: primaryKind, linkedQueryPath: `sample.${extension}`, ...editedTarget }]);
+			expect(policyHeld).toBe(false);
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
 	it('captures local file device and inode identities without number precision loss', async () => {
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-exact-identity-'));
 		const sidecarPath = path.join(tmpDir, 'sample.kql.json');
@@ -625,7 +720,7 @@ describe('CompatSidecarStore lossless baseline', () => {
 		}
 	});
 
-	it('repairs an exact ambiguous id-less baseline without dropping root extensions', async () => {
+	it('reads an exact ambiguous id-less baseline without repair writes and materializes IDs only when building', async () => {
 		const compatUri = vscode.Uri.parse('untitled:/work/sample.kql');
 		const sidecarUri = vscode.Uri.parse('untitled:/work/sample.kql.json');
 		let text = stringifyKqlxFile({
@@ -658,7 +753,14 @@ describe('CompatSidecarStore lossless baseline', () => {
 
 		expect(repaired?.file.futureRoot).toEqual({ keep: true });
 		expect(repaired?.file.state.sections.map(section => (section as any).futureMarker)).toEqual(['first', 'second']);
-		expect(repaired?.file.state.sections.every(section => !!String((section as any).id || ''))).toBe(true);
+		expect(repaired?.file.state.sections.every(section => !String((section as any).id || ''))).toBe(true);
+		expect(repaired?.text).toBe(text);
+		expect(vscode.workspace.fs.writeFile).not.toHaveBeenCalled();
+		if (!repaired) throw new Error('Expected the unchanged companion snapshot.');
+		const materialized = await store.buildFresh(repaired.file.state, repaired.file);
+		expect(materialized.state.sections.every(section => !!String((section as Record<string, unknown>).id || ''))).toBe(true);
+		expect(materialized.state.sections.map(section => (section as Record<string, unknown>).futureMarker)).toEqual(['first', 'second']);
+		expect(vscode.workspace.fs.writeFile).not.toHaveBeenCalled();
 	});
 
 	it.each([

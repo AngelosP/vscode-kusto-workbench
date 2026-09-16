@@ -2387,7 +2387,7 @@ describe('message-handler dispatch', () => {
 		expect(mocks.onDatabasesError).toHaveBeenCalledWith('query_1', 'Database refresh cancelled.', 'c1', 'database-refresh-current');
 	});
 
-	it('clears rendered and persisted results immediately when Kusto identity is invalidated', async () => {
+	it('preserves committed results while invalidating the Kusto execution and schema target', async () => {
 		const state = await import('../../src/webview/core/state.js');
 		handlerState.queryEditors.query_1 = {};
 		mocks.getConnectionId.mockReturnValue('c1');
@@ -2395,17 +2395,20 @@ describe('message-handler dispatch', () => {
 		const invalidateSchemaLifecycleTarget = vi.fn();
 		mocks.getQuerySectionElement.mockReturnValue({ clearResults, invalidateSchemaLifecycleTarget });
 		handlerState.pState.queryResultJsonByBoxId = { query_1: '{"rows":[["secret-a"]]}' };
+		const savedArtifact = { artifactId: 'saved-artifact' };
+		handlerState.pState.resultArtifactByBoxId = { query_1: savedArtifact };
 
 		dispatchHostMessage({ type: 'kustoAuthIdentityChanged', connectionIds: ['c1'], reason: 'selection' });
 
-		expect(mocks.clearResultsState).toHaveBeenCalledWith('query_1');
-		expect((handlerState.pState.queryResultJsonByBoxId as Record<string, string>).query_1).toBeUndefined();
-		expect(clearResults).toHaveBeenCalledOnce();
+		expect(mocks.clearResultsState).not.toHaveBeenCalled();
+		expect((handlerState.pState.queryResultJsonByBoxId as Record<string, string>).query_1).toBe('{"rows":[["secret-a"]]}');
+		expect((handlerState.pState.resultArtifactByBoxId as Record<string, unknown>).query_1).toBe(savedArtifact);
+		expect(clearResults).not.toHaveBeenCalled();
 		expect(invalidateSchemaLifecycleTarget).toHaveBeenCalledOnce();
 		expect(state.isSchemaWorkerApplyRequired('query_1')).toBe(true);
 	});
 
-	it('clears SQL Copilot chat and result snapshots when LNT policy changes', () => {
+	it('retires SQL Copilot chat but preserves result snapshots when LNT policy changes', () => {
 		const copilotWriteQueryCancel = vi.fn();
 		const copilotClearConversation = vi.fn();
 		const clearResults = vi.fn();
@@ -2416,24 +2419,29 @@ describe('message-handler dispatch', () => {
 
 		expect(copilotWriteQueryCancel).toHaveBeenCalledOnce();
 		expect(copilotClearConversation).toHaveBeenCalledOnce();
-		expect(mocks.clearResultsState).toHaveBeenCalledWith('sql_1');
-		expect((handlerState.pState.queryResultJsonByBoxId as Record<string, string>).sql_1).toBeUndefined();
-		expect(clearResults).toHaveBeenCalledOnce();
+		expect(mocks.clearResultsState).not.toHaveBeenCalled();
+		expect((handlerState.pState.queryResultJsonByBoxId as Record<string, string>).sql_1).toBe('{"rows":[["secret"]]}');
+		expect(clearResults).not.toHaveBeenCalled();
 	});
 
-	it('clears a SQL-derived comparison and rejects its late result', () => {
-		const comparison = document.createElement('div') as HTMLElement & { clearResults: ReturnType<typeof vi.fn> };
+	it('preserves a SQL-derived comparison and rejects its late result', () => {
+		const comparison = document.createElement('div') as HTMLElement & {
+			clearResults: ReturnType<typeof vi.fn>;
+			clearTargetBoundState: ReturnType<typeof vi.fn>;
+		};
 		comparison.id = 'query_cmp_1';
 		comparison.clearResults = vi.fn();
+		comparison.clearTargetBoundState = vi.fn();
 		document.body.appendChild(comparison);
 		mocks.getQuerySectionElement.mockImplementation((boxId: string) => boxId === 'query_cmp_1' ? comparison : null);
 		handlerState.pState.queryResultJsonByBoxId = { query_cmp_1: '{"rows":[["secret"]]}' };
 
 		dispatchHostMessage({ type: 'sqlCopilotPolicyChanged', boxIds: ['sql_1', 'query_cmp_1'] });
 
-		expect(mocks.clearResultsState).toHaveBeenCalledWith('query_cmp_1');
-		expect((handlerState.pState.queryResultJsonByBoxId as Record<string, string>).query_cmp_1).toBeUndefined();
-		expect(comparison.clearResults).toHaveBeenCalledOnce();
+		expect(mocks.clearResultsState).not.toHaveBeenCalled();
+		expect((handlerState.pState.queryResultJsonByBoxId as Record<string, string>).query_cmp_1).toBe('{"rows":[["secret"]]}');
+		expect(comparison.clearResults).not.toHaveBeenCalled();
+		expect(comparison.clearTargetBoundState).toHaveBeenCalledOnce();
 
 		const resultsState = vi.mocked(getResultsStateMock);
 		dispatchHostMessage({
@@ -2443,8 +2451,8 @@ describe('message-handler dispatch', () => {
 		});
 
 		expect(resultsState).not.toHaveBeenCalled();
-		expect(mocks.clearResultsState).toHaveBeenCalledWith('query_cmp_1');
-		expect((handlerState.pState.queryResultJsonByBoxId as Record<string, string>).query_cmp_1).toBeUndefined();
+		expect(mocks.clearResultsState).not.toHaveBeenCalled();
+		expect((handlerState.pState.queryResultJsonByBoxId as Record<string, string>).query_cmp_1).toBe('{"rows":[["secret"]]}');
 	});
 
 	it('allows a Kusto result when its ID reuses a removed SQL comparison tombstone', async () => {

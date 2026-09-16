@@ -307,13 +307,13 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 
 	override connectedCallback(): void {
 		super.connectedCallback();
-		document.addEventListener('click', this._onDocumentClick);
+		document.addEventListener('mousedown', this._onDocumentMouseDown);
 		KwMarkdownSection._startThemeObserver();
 	}
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
-		document.removeEventListener('click', this._onDocumentClick);
+		document.removeEventListener('mousedown', this._onDocumentMouseDown);
 		document.body.classList.remove('kw-md-wysiwyg-mode');
 		this._cleanupDropdownScrollDismiss();
 		this._cleanupResizeObserver();
@@ -1588,7 +1588,9 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 		}
 	}
 
-	private _onDocumentClick = (): void => {
+	private _onDocumentMouseDown = (event: MouseEvent): void => {
+		if (event.composedPath().some(target =>
+			(target as Element).classList?.contains('md-mode-dropdown'))) return;
 		this._closeDropdown();
 	};
 

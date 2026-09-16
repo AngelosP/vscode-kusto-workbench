@@ -9,9 +9,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Better default settings for the chart axis (less overlapping text by default, etc.).
 * Added an opt-in Copilot CLI bridge that drives the same live Kusto Workbench tools and agent workflow as VS Code Copilot Chat.
 * Copilot Chat now shows cumulative tool calls while generating and no longer stops after 100 model requests.
+* Saved query data and legacy metadata are preserved across authentication/account changes, missing connections or targets, policy changes, Save, and reopen. Leave No Trace prevents saving NEW result data; it does not retroactively remove existing bytes. Supported explicit result/section clear remains user intent.
 * Bugs
     * Search results for columns deep link to the table correctly now.
     * Exported Power BI Import models now disable Kusto result truncation, preventing refresh failures when datasets exceed the default 64 MB or 500,000-row limits.
+    * A malformed same-document reload keeps the last good view while locking editing and saving.
+    * Popups now dismiss only when a mouse press starts outside them, so dragging from inside and releasing outside no longer closes them unexpectedly.
 
 ## [5.1.1] - 2026.09.13
 
@@ -36,8 +39,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * [Added more Kusto sign-in options, including clusters that require a specific tenant or authority.](https://github.com/AngelosP/vscode-kusto-workbench/issues/25) This helps when your Entra ID account is a guest in the tenant that owns the Kusto cluster.
 * Kusto sections now show a thin readiness indicator so it is easier to tell when schema loading, preparation, or background work is still in progress.
 * SQL sections are more dependable in installed builds. Query execution, database browsing, schema loading, IntelliSense, and cancellation now use Microsoft's SQL Tools Service, which Kusto Workbench downloads and verifies automatically on first use.
-* Leave No Trace protections are stronger for SQL connections and saved results. Protected connections now block work that could retain data locally, cancel in-progress work when the policy changes, and avoid restoring protected cached results.
-* Existing `.kqlx` files and companion `.kql.json` result caches open more safely. Verified legacy cached results are restored automatically; unverified caches are kept intact but hidden instead of being erased.
+* Leave No Trace protections were strengthened for SQL connections, including cancellation of in-progress work when policy changes and restrictions on new local data retention. Earlier restoration restrictions are superseded by the saved-data preservation contract in Unreleased; Leave No Trace is not a retroactive purge.
+* Existing `.kqlx` files and companion `.kql.json` result caches gained legacy restoration support. The earlier hide-on-unverified behavior is superseded by the Unreleased contract: saved payloads and legacy metadata are preserved without automatic removal.
 * Copilot conversations are easier to follow. When the Kusto Workbench agent asks a clarifying question, your reply now returns to the agent flow that asked it.
 * Kusto diagnostics and autocomplete are more accurate for existing `.kql` and `.csl` files, including fewer stale errors from old schema information and better handling of function result schemas.
 * Dashboard and Power BI export/publish flows are more resilient, with stronger validation before publishing and more reliable handling of generated report artifacts.
@@ -436,7 +439,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [0.8.0] - 2026-01-29
 
 * After user feedback (thank you Kristen), added an extension icon to the VS Code **Activity Bar** as they call it. It does the same thing as executing the command `Open Query Editor` from the command pallete does. If the extra icon is annoying to you because you prefer a more minimal look, you can turn the extension icon off in the extension's settings.
-* After user feedback again (thank you Chris), Implemented the concept of 'Leave no trace' Kusto clusters. These are clusters that the user can mark to never leave any trace of data behind. It will never persist any data to disk, only queries and section configurations will be saved, but never actual tabular data or chart data.
+* After user feedback again (thank you Chris), introduced 'Leave no trace' Kusto clusters to prevent saving new tabular and derived query data while retaining queries and section configuration. This setting is not a retroactive purge of already saved data; see the current contract in Unreleased.
 * Added new UX for managing connections called **Connection Manager**. It can be launched either from the command bar, or from the Activity Bar.
 * Bugs
     * Randomly started seeing 2 sections at the bottom of .md files. The joys of vibe coding :)

@@ -813,23 +813,32 @@ export function getRunModeForPersistence(boxId: any): string {
 
 const __kustoEventIsInsideDropdownUi = (ev: any): boolean => {
 	try {
-		const t = ev && ev.target ? ev.target : null;
-		if (!t || !t.closest) return false;
-		return !!(
-			t.closest('.kusto-dropdown-menu') ||
-			t.closest('.kusto-favorites-menu') ||
-			t.closest('.kusto-dropdown-btn') ||
-			t.closest('.kusto-favorites-btn') ||
-			t.closest('.kusto-dropdown-wrapper') ||
-			t.closest('.qe-toolbar-dropdown-menu') ||
-			t.closest('.qe-toolbar-overflow-menu')
-		);
+		const selector = [
+			'.kusto-dropdown-menu',
+			'.kusto-favorites-menu',
+			'.kusto-dropdown-btn',
+			'.kusto-favorites-btn',
+			'.kusto-dropdown-wrapper',
+			'.qe-toolbar-dropdown-menu',
+			'.qe-toolbar-dropdown-btn',
+			'.qe-toolbar-overflow-menu',
+			'.qe-toolbar-overflow-btn',
+			'.md-mode-dropdown',
+			'.section-mode-dropdown',
+			'.add-controls-dropdown',
+			'.unified-btn-split-menu',
+			'.unified-btn-split-toggle',
+		].join(',');
+		const path = typeof ev?.composedPath === 'function' ? ev.composedPath() : [ev?.target];
+		return path.some((target: EventTarget | undefined) =>
+			typeof (target as Element | undefined)?.matches === 'function'
+			&& (target as Element).matches(selector));
 	} catch {
 		return false;
 	}
 };
 
-document.addEventListener('click', (ev: any) => {
+document.addEventListener('mousedown', (ev: MouseEvent) => {
 	if (__kustoEventIsInsideDropdownUi(ev)) return;
 	closeAllRunMenus();
 	try { closeAllFavoritesDropdowns(); } catch (e) { console.error('[kusto]', e); }

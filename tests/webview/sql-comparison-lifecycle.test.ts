@@ -130,7 +130,7 @@ describe('SQL comparison lifecycle', () => {
 		}
 	});
 
-	it('preserves lineage during real initial target adoption and detaches on later retarget', async () => {
+	it('preserves comparison lineage while retiring execution on later retarget', async () => {
 		const postMessage = vi.fn();
 		const previousVsCode = window.vscode;
 		window.vscode = { postMessage } as any;
@@ -153,9 +153,9 @@ describe('SQL comparison lifecycle', () => {
 
 			comparison.setDatabase('OtherDb');
 
-			expect(optimizationMetadataByBoxId.sql_source).toBeUndefined();
-			expect(optimizationMetadataByBoxId[comparisonId]).toBeUndefined();
-			expect(comparison.serialize()).not.toHaveProperty('comparisonSourceBoxId');
+			expect(optimizationMetadataByBoxId.sql_source).toEqual({ comparisonBoxId: comparisonId });
+			expect(optimizationMetadataByBoxId[comparisonId]).toEqual({ sourceBoxId: 'sql_source', isComparison: true });
+			expect(comparison.serialize()).toMatchObject({ comparisonSourceBoxId: 'sql_source' });
 			expect(postMessage).toHaveBeenCalledWith({
 				type: 'sqlComparisonRemoved', boxId: comparisonId, sourceBoxId: 'sql_source',
 			});
@@ -164,7 +164,7 @@ describe('SQL comparison lifecycle', () => {
 		}
 	});
 
-	it('preserves lineage through initial dropdown completion and detaches on later dropdown retarget', async () => {
+	it('preserves lineage through dropdown completion and later dropdown retarget', async () => {
 		const postMessage = vi.fn();
 		const previousVsCode = window.vscode;
 		window.vscode = { postMessage } as any;
@@ -199,7 +199,7 @@ describe('SQL comparison lifecycle', () => {
 			}));
 
 			expect(comparison.getDatabase()).toBe('OtherDb');
-			expect(comparison.serialize()).not.toHaveProperty('comparisonSourceBoxId');
+			expect(comparison.serialize()).toMatchObject({ comparisonSourceBoxId: 'sql_source' });
 			expect(postMessage).toHaveBeenCalledWith({
 				type: 'sqlComparisonRemoved', boxId: comparisonId, sourceBoxId: 'sql_source',
 			});
@@ -208,7 +208,7 @@ describe('SQL comparison lifecycle', () => {
 		}
 	});
 
-	it('detaches comparison ownership when an established comparison target changes', async () => {
+	it('retires comparison execution admission without detaching saved lineage on target change', async () => {
 		const postMessage = vi.fn();
 		const retireAdmission = vi.fn(() => false);
 		const retirementRegistration = registerSqlComparisonAdmissionRetirementHandler(retireAdmission);
@@ -228,10 +228,10 @@ describe('SQL comparison lifecycle', () => {
 			}));
 
 			expect(document.getElementById(comparisonId)).toBe(comparison);
-			expect(optimizationMetadataByBoxId.sql_source).toBeUndefined();
-			expect(optimizationMetadataByBoxId[comparisonId]).toBeUndefined();
+			expect(optimizationMetadataByBoxId.sql_source).toEqual({ comparisonBoxId: comparisonId });
+			expect(optimizationMetadataByBoxId[comparisonId]).toEqual({ sourceBoxId: 'sql_source', isComparison: true });
 			expect(comparison.hasAttribute('data-sql-comparison-admission-request-id')).toBe(false);
-			expect(comparison.serialize()).not.toHaveProperty('comparisonSourceBoxId');
+			expect(comparison.serialize()).toMatchObject({ comparisonSourceBoxId: 'sql_source' });
 			expect(retireAdmission).toHaveBeenCalledWith(comparisonId, 'sql_source');
 			expect(postMessage).toHaveBeenCalledWith({
 				type: 'sqlComparisonRemoved', boxId: comparisonId, sourceBoxId: 'sql_source',
@@ -240,6 +240,47 @@ describe('SQL comparison lifecycle', () => {
 			retirementRegistration.dispose();
 			window.vscode = previousVsCode;
 		}
+	});
+
+	it('preserves a source comparison and its artifact binding through owner invalidation until explicit removal', async () => {
+		const sourceId = addSqlBox({ id: 'sql_source', query: 'SELECT 1' });
+		const comparisonId = addSqlBox({ id: 'sql_comparison', comparisonSourceBoxId: sourceId, query: 'SELECT 2' });
+		const source = document.getElementById(sourceId) as KwSqlSection;
+		const comparison = document.getElementById(comparisonId) as KwSqlSection;
+		const connection = { id: 'sql-a', name: 'SQL A', dialect: 'mssql', serverUrl: 'sql-a.example', authType: 'aad' };
+		for (const section of [source, comparison]) {
+			section.setConnections([connection], { lastConnectionId: connection.id });
+			section.setDatabases(['Db']);
+			section.setDatabase('Db');
+		}
+		await Promise.all([source.updateComplete, comparison.updateComplete]);
+		const sourceArtifact = setResultsState(sourceId, {
+			boxId: sourceId, columns: ['Value'], rows: [[1]], metadata: {},
+		}, { producer: { engine: 'sql', boxId: sourceId }, policy: { exposeToActiveContent: true } })!;
+		const bindingId = comparisonSourceArtifactConsumerId(comparisonId);
+		bindResultArtifactConsumer(bindingId, sourceId, sourceArtifact.artifactId);
+		const comparisonResult = '{"columns":["Value"],"rows":[[2]],"metadata":{}}';
+		pState.queryResultJsonByBoxId[comparisonId] = comparisonResult;
+		comparison.displayResult({ columns: [{ name: 'Value' }], rows: [[2]] });
+		const resultTable = comparison.querySelector('kw-data-table');
+		comparison.setStsReady(true, 'comparison-owner');
+
+		source.invalidateOwner();
+		await Promise.all([source.updateComplete, comparison.updateComplete]);
+
+		expect(document.getElementById(comparisonId)).toBe(comparison);
+		expect(comparison.querySelector('kw-data-table')).toBe(resultTable);
+		expect(pState.queryResultJsonByBoxId[comparisonId]).toBe(comparisonResult);
+		expect(comparison.serialize()).toMatchObject({ comparisonSourceBoxId: sourceId, resultJson: comparisonResult });
+		expect(getBoundResultArtifact(bindingId, sourceId)).toBe(sourceArtifact);
+		expect(comparison.getCopilotOwnerToken()).toBe('');
+
+		removeSqlBox(comparisonId);
+
+		expect(document.getElementById(comparisonId)).toBeNull();
+		expect(pState.queryResultJsonByBoxId[comparisonId]).toBeUndefined();
+		expect(getBoundResultArtifact(bindingId, sourceId)).toBeNull();
+		clearResultsState(sourceId);
 	});
 
 	it('does not remove the pinned first SQL section through the UI cleanup path', () => {

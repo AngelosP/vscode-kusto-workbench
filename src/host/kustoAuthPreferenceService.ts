@@ -92,13 +92,11 @@ export class KustoAuthPreferenceService implements vscode.Disposable {
 		this.providerAccountRefresh = this.refreshProviderAccounts(false);
 		this.authSubscription = vscode.authentication.onDidChangeSessions?.(event => {
 			if (event.provider.id === KUSTO_AUTH_PROVIDER_ID) {
-				const overlappedInitialBaseline = !this.providerAccountsInitialized;
-				const mappedAccountIdsAtEvent = this.mappedAccountIds();
+				const mappedAccountIdsAtEvent = this.providerAccountsInitialized ? new Set<string>() : this.mappedAccountIds();
 				const observedSessionsAtEvent = new Map(this.observedProviderSessions);
 				const sessionGenerationsAtEvent = new Map(this.providerSessionGenerations);
 				const refresh = () => this.refreshProviderAccounts(
-					true, event as unknown as ProviderSessionChange,
-					overlappedInitialBaseline, mappedAccountIdsAtEvent,
+					true, event as unknown as ProviderSessionChange, mappedAccountIdsAtEvent,
 					observedSessionsAtEvent, sessionGenerationsAtEvent,
 				);
 				this.providerAccountRefresh = this.providerAccountRefresh.then(refresh, refresh);
@@ -112,7 +110,6 @@ export class KustoAuthPreferenceService implements vscode.Disposable {
 	private async refreshProviderAccounts(
 		emitRemoval: boolean,
 		event?: ProviderSessionChange,
-		overlappedInitialBaseline = false,
 		mappedAccountIdsAtEvent: ReadonlySet<string> = new Set(),
 		observedSessionsAtEvent: ReadonlyMap<string, ObservedProviderSession> = new Map(),
 		sessionGenerationsAtEvent: ReadonlyMap<string, number> = new Map(),
@@ -126,9 +123,7 @@ export class KustoAuthPreferenceService implements vscode.Disposable {
 			return;
 		}
 		const current = new Set(accounts.map(account => String(account?.id || '').trim()).filter(Boolean));
-		const hadBaseline = this.providerAccountsInitialized;
-		const removed = new Set([...this.providerAccountIds].filter(accountId => !current.has(accountId)));
-		const added = new Set([...current].filter(accountId => !this.providerAccountIds.has(accountId)));
+		const removed = new Set([...this.providerAccountIds, ...mappedAccountIdsAtEvent].filter(accountId => !current.has(accountId)));
 		const observedSessionChanges = emitRemoval
 			? await this.refreshObservedProviderSessions(current, observedSessionsAtEvent)
 			: new Set<string>();
@@ -138,32 +133,11 @@ export class KustoAuthPreferenceService implements vscode.Disposable {
 		const explicitlyRemoved = new Set((event?.removed || [])
 			.map(session => String(session?.account?.id || '').trim())
 			.filter(Boolean));
-		const hasExplicitSessionDetails = (event?.added?.length || 0) > 0
-			|| (event?.removed?.length || 0) > 0
-			|| (event?.changed?.length || 0) > 0;
 		const changed = !emitRemoval
 			? new Set<string>()
-			: new Set([
-				...observedSessionChanges,
-				...explicitlyChanged,
-				...(!hasExplicitSessionDetails && observedSessionChanges.size === 0 && removed.size === 0 && added.size === 0
-					? [...mappedAccountIdsAtEvent].filter(accountId => current.has(accountId)
-						&& ![...observedSessionsAtEvent.values()].some(observed => observed.account.id === accountId))
-					: []),
-			]);
+			: new Set([...observedSessionChanges, ...explicitlyChanged]);
 		this.providerAccountIds = current;
 		this.providerAccountsInitialized = true;
-		const hasExplicitRemovalOrChange = (event?.removed?.length || 0) > 0 || (event?.changed?.length || 0) > 0;
-		if (emitRemoval && overlappedInitialBaseline && !hasExplicitRemovalOrChange
-			&& removed.size === 0 && added.size === 0) {
-			const connectionIds = this.connectionIdsForAccounts(mappedAccountIdsAtEvent);
-			if (connectionIds.length > 0) this.changeEmitter.fire({ connectionIds, reason: 'sessions-changed' });
-			return;
-		}
-		if (emitRemoval && !hadBaseline) {
-			this.invalidateUncertainProviderChange(event);
-			return;
-		}
 		if (!emitRemoval || (removed.size === 0 && explicitlyRemoved.size === 0 && changed.size === 0)) return;
 		const invalidatedAccountIds = new Set([...removed, ...explicitlyRemoved, ...changed].filter(accountId => {
 			const generationAtEvent = sessionGenerationsAtEvent.get(accountId) ?? 0;
@@ -188,6 +162,7 @@ export class KustoAuthPreferenceService implements vscode.Disposable {
 					[...observed.scopes],
 					{ silent: true, account: observed.account },
 				);
+				if (this.observedProviderSessions.get(observationKey) !== observed) continue;
 				const sessionFingerprint = session
 					? hashIdentity(`${session.id}\u0000${String(session.accessToken || '')}`)
 					: '';
@@ -203,7 +178,7 @@ export class KustoAuthPreferenceService implements vscode.Disposable {
 					}
 				}
 			} catch {
-				changed.add(accountId);
+				if (this.observedProviderSessions.get(observationKey) === observed) changed.add(accountId);
 			}
 		}
 		return changed;
@@ -228,6 +203,7 @@ export class KustoAuthPreferenceService implements vscode.Disposable {
 		const observationKey = this.providerSessionObservationKey(accountId, scopes);
 		const previous = this.observedProviderSessions.get(observationKey);
 		const sessionFingerprint = hashIdentity(`${sessionId}\u0000${String(session.accessToken || '')}`);
+		if (previous?.sessionFingerprint === sessionFingerprint) return;
 		this.observedProviderSessions.set(observationKey, Object.freeze({
 			sessionId,
 			sessionFingerprint,
@@ -238,7 +214,6 @@ export class KustoAuthPreferenceService implements vscode.Disposable {
 			this.providerSessionGenerations.set(accountId, this.providerSessionGenerations.get(accountId) ?? 0);
 			return;
 		}
-		if (previous.sessionFingerprint === sessionFingerprint) return;
 		this.advanceProviderSessionGeneration(accountId);
 		const connectionIds = this.connectionIdsForAccounts(new Set([accountId]));
 		if (connectionIds.length > 0) this.changeEmitter.fire({ connectionIds, reason: 'sessions-changed' });

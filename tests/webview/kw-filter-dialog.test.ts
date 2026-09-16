@@ -676,13 +676,13 @@ describe('kw-filter-dialog — Lit component', () => {
 		expect(footerBtns[1].textContent).toBe('Apply');
 	});
 
-	it('dispatches filter-close when backdrop is clicked', async () => {
+	it('dispatches filter-close when backdrop is pressed', async () => {
 		const el = createFilterDialog();
 		await el.updateComplete;
 		let closed = false;
 		el.addEventListener('filter-close', () => { closed = true; });
 		const bg = getShadow(el, '.sd-bg')!;
-		bg.click();
+		bg.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
 		expect(closed).toBe(true);
 	});
 
@@ -737,13 +737,13 @@ describe('kw-filter-dialog — Lit component', () => {
 		expect(detail.filterSpec.allowedValues).toEqual(['A']);
 	});
 
-	it('does not close dialog when clicking inside the dialog', async () => {
+	it('does not close dialog when pressing inside the dialog', async () => {
 		const el = createFilterDialog();
 		await el.updateComplete;
 		let closed = false;
 		el.addEventListener('filter-close', () => { closed = true; });
 		const dialog = getShadow(el, '.sd.fd')!;
-		dialog.click();
+		dialog.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
 		expect(closed).toBe(false);
 	});
 

@@ -65,4 +65,25 @@ describe('batch URL visibility', () => {
 		expect(section.commitDocumentState).toHaveBeenCalledOnce();
 		expect(mocks.schedulePersist).toHaveBeenCalledOnce();
 	});
+
+	it('keeps the Add Section popup open when a press starts inside and releases outside', () => {
+		const dropdown = document.createElement('div');
+		dropdown.className = 'add-controls-dropdown';
+		const button = document.createElement('button');
+		button.id = 'addSectionDropdownBtn';
+		const menu = document.createElement('div');
+		menu.id = 'addSectionDropdownMenu';
+		menu.className = 'add-controls-dropdown-menu';
+		menu.style.display = 'block';
+		dropdown.append(button, menu);
+		document.body.appendChild(dropdown);
+
+		menu.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+		document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
+		document.body.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+		expect(menu.style.display).toBe('block');
+
+		document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+		expect(menu.style.display).toBe('none');
+	});
 });

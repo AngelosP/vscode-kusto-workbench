@@ -102,7 +102,7 @@ describe('kw-sort-dialog — rendering', () => {
 
 describe('kw-sort-dialog — events', () => {
 
-	it('dispatches sort-close on backdrop click', async () => {
+	it('dispatches sort-close on backdrop press', async () => {
 		const el = createSortDialog();
 		await el.updateComplete;
 
@@ -110,7 +110,7 @@ describe('kw-sort-dialog — events', () => {
 		el.addEventListener('sort-close', () => { closed = true; });
 
 		const backdrop = el.shadowRoot!.querySelector('.sd-bg') as HTMLElement;
-		backdrop.click();
+		backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
 		expect(closed).toBe(true);
 	});
 

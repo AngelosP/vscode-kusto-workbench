@@ -939,10 +939,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 	private _renderAddConnectionModal(): TemplateResult {
 		return html`
-			<div class="add-connection-overlay" role="dialog" aria-modal="true" aria-labelledby="${this.boxId}_add_connection_title" @click=${() => this._onAddConnectionCancel()} @keydown=${(e: KeyboardEvent) => {
+			<div class="add-connection-overlay" role="dialog" aria-modal="true" aria-labelledby="${this.boxId}_add_connection_title" @mousedown=${() => this._onAddConnectionCancel()} @keydown=${(e: KeyboardEvent) => {
 				if (e.key === 'Escape') { this._onAddConnectionCancel(); e.preventDefault(); }
 			}}>
-				<div class="add-connection-dialog" @click=${(e: Event) => e.stopPropagation()}>
+				<div class="add-connection-dialog" @mousedown=${(e: Event) => e.stopPropagation()}>
 					<div class="add-connection-header">
 						<span class="add-connection-title" id="${this.boxId}_add_connection_title">Add Connection</span>
 						<button class="add-connection-close" data-testid="kusto-add-connection-close" title="Close" aria-label="Close" @click=${() => this._onAddConnectionCancel()}>
@@ -2014,7 +2014,6 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	}
 
 	public clearTargetBoundState(): void {
-		unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId(this.boxId));
 		const retiredExecution = this.executionCtrl.retireActiveQueryExecution();
 		if (retiredExecution) {
 			try {
@@ -2025,11 +2024,6 @@ export class KwQuerySection extends LitElement implements SectionElement {
 				});
 			} catch (e) { console.error('[kusto]', e); }
 		}
-		clearResultsState(this.boxId);
-		delete pState.queryResultJsonByBoxId[this.boxId];
-		delete pState.resultArtifactByBoxId[this.boxId];
-		this.clearResults();
-		this.querySelector('.comparison-summary-banner')?.remove();
 		this.copilotChatCtrl.retireKustoCopilotTarget();
 		try { window.schedulePersist?.('kusto-target-retired'); } catch (e) { console.error('[kusto]', e); }
 	}

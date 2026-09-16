@@ -2031,8 +2031,8 @@ export class KwConnectionManager extends LitElement {
 
 	private _renderKustoModal(): TemplateResult {
 		return html`
-			<dialog class="modal-overlay" data-testid="cm-modal-overlay" @click=${() => this._closeModal()} @keydown=${this._onModalKeydown} @cancel=${this._onModalCancel}>
-				<div class="modal-content" data-testid="cm-modal-content" role="dialog" aria-modal="true" aria-labelledby="cm-kusto-modal-title" @click=${(e: Event) => e.stopPropagation()}>
+			<dialog class="modal-overlay" data-testid="cm-modal-overlay" @mousedown=${() => this._closeModal()} @keydown=${this._onModalKeydown} @cancel=${this._onModalCancel}>
+				<div class="modal-content" data-testid="cm-modal-content" role="dialog" aria-modal="true" aria-labelledby="cm-kusto-modal-title" @mousedown=${(e: Event) => e.stopPropagation()}>
 					<div class="modal-header">
 						<h2 id="cm-kusto-modal-title">${this._modalMode === 'edit' ? 'Edit Connection' : 'Add Connection'}</h2>
 						<button class="btn-icon" data-testid="cm-modal-close" title="Close" aria-label="Close" @click=${() => this._closeModal()}>${ICONS.close}</button>
@@ -2067,8 +2067,8 @@ export class KwConnectionManager extends LitElement {
 		const isEditing = !!this._editingConnectionId;
 
 		return html`
-			<dialog class="modal-overlay" data-testid="cm-modal-overlay" @click=${() => this._closeModal()} @keydown=${this._onModalKeydown} @cancel=${this._onModalCancel}>
-				<div class="modal-content" data-testid="cm-modal-content" @click=${(e: Event) => e.stopPropagation()}>
+			<dialog class="modal-overlay" data-testid="cm-modal-overlay" @mousedown=${() => this._closeModal()} @keydown=${this._onModalKeydown} @cancel=${this._onModalCancel}>
+				<div class="modal-content" data-testid="cm-modal-content" @mousedown=${(e: Event) => e.stopPropagation()}>
 					<div class="modal-header">
 						<h2>${isEditing ? 'Edit SQL Connection' : 'Add SQL Connection'}</h2>
 						<button class="btn-icon" @click=${() => this._closeModal()}>${ICONS.close}</button>

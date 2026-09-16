@@ -205,8 +205,8 @@ export class KwUniqueValuesDialog extends LitElement {
 		const panelH = OVERHEAD + maxVisible * ROW_H;
 
 		return html`
-		<div class="modal-backdrop" @click=${this.hide}>
-			<div class="modal-content" @click=${(e: Event) => e.stopPropagation()}>
+		<div class="modal-backdrop" @mousedown=${this.hide}>
+			<div class="modal-content" @mousedown=${(e: Event) => e.stopPropagation()}>
 				<div class="modal-header">
 					<h3>${title}</h3>
 					<button class="close-btn" title="Close" @click=${this.hide}>✕</button>

@@ -67,7 +67,7 @@ export class KwFunctionParamsDialog extends LitElement {
 
 	protected override render(): TemplateResult | typeof import('lit').nothing {
 		if (!this._visible) return html``;
-		return html`<div class="sd-bg" @click=${this._cancel}><div class="sd" @click=${(e: Event) => e.stopPropagation()}>
+		return html`<div class="sd-bg" @mousedown=${this._cancel}><div class="sd" @mousedown=${(e: Event) => e.stopPropagation()}>
 			<div class="sd-h">
 				<strong>${this._functionName}(…)</strong>
 				<button class="nb sd-x" title="Close" @click=${this._cancel}>${ICON_CLOSE}</button>

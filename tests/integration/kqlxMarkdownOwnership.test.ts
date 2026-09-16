@@ -3984,6 +3984,159 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
+	for (const editCount of [1, 9]) {
+		test(`native Save preserves id-less SQL results after ${editCount} unsaved Markdown edits`, async () => {
+			const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+			const originalApplyEdit = vscode.workspace.applyEdit;
+			const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
+			const originalOnDidSave = vscode.workspace.onDidSaveTextDocument;
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-idless-sql-save-'));
+			const filePath = path.join(tmpDir, 'saved-results.sqlx');
+			const uri = vscode.Uri.file(filePath);
+			const resultJson = JSON.stringify({ columns: [{ name: 'Value', type: 'int' }], rows: [[7]] });
+			const initialText = JSON.stringify({
+				kind: 'sqlx', version: 1, state: { sections: [
+					{ type: 'sql', query: 'SELECT 7 AS Value', resultJson },
+					{ id: 'markdown_1', type: 'markdown', text: 'before' },
+				] },
+			}, null, 2) + '\n';
+			let currentText = initialText;
+			let receiveHandler: ((message: any) => unknown) | undefined;
+			let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+			let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
+			let projection: any;
+			let commandResult: any;
+			const disposeHandlers: Array<() => void> = [];
+			const unsavedTexts = new Set<string>();
+			const document = {
+				uri, getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: false, version: 1,
+			} as any;
+			try {
+				fs.writeFileSync(filePath, initialText, 'utf8');
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+				(vscode.workspace as any).onWillSaveTextDocument = (handler: typeof willSaveHandler) => {
+					willSaveHandler = handler;
+					return { dispose() {} };
+				};
+				(vscode.workspace as any).onDidSaveTextDocument = (handler: typeof didSaveHandler) => {
+					didSaveHandler = handler;
+					return { dispose() {} };
+				};
+				(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+					const entries = edit.entries();
+					assert.strictEqual(entries[0]?.[0].toString(), uri.toString());
+					const replacement = entries[0]?.[1]?.[0]?.newText;
+					if (typeof replacement !== 'string') return false;
+					currentText = replacement;
+					document.isDirty = true;
+					document.version++;
+					unsavedTexts.add(currentText);
+					return true;
+				};
+				const provider = new (KqlxEditorProvider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+						extensionMode: vscode.ExtensionMode.Test,
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				) as KqlxEditorProvider;
+				const panel = {
+					webview: {
+						options: {},
+						postMessage: async (message: any) => {
+							if (message?.type === 'documentData') projection = message;
+							if (message?.reloadRequestId) {
+								await Promise.resolve(receiveHandler?.({
+									type: 'documentReloadResult', requestId: message.reloadRequestId,
+									applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+								}));
+							}
+							if (message?.type === 'markdownDocumentCommandResult') commandResult = message;
+							if (message?.type === 'requestMarkdownCommandBarrier') {
+								await Promise.resolve(receiveHandler?.({
+									type: 'markdownDocumentCommandBarrierResult', requestId: message.requestId,
+									sourceGeneration: message.sourceGeneration,
+									documentRevision: commandResult?.documentRevision ?? projection.documentRevision,
+									accepted: true,
+								}));
+							}
+							if (message?.type === 'requestFinalPersist') {
+								await Promise.resolve(receiveHandler?.({
+									type: 'persistDocument', flushRequestId: message.requestId,
+									sourceGeneration: projection.sourceGeneration, state: JSON.parse(currentText).state,
+								}));
+							}
+							return true;
+						},
+						onDidReceiveMessage: (handler: (message: any) => unknown) => {
+							receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
+							return { dispose() {} };
+						},
+					},
+					onDidDispose: (handler: () => void) => {
+						disposeHandlers.push(handler);
+						return { dispose() {} };
+					},
+				} as any;
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const generatedSqlId = projection.state.sections[0].id;
+				assert.ok(generatedSqlId);
+				assert.strictEqual(projection.state.sections[0].resultJson, resultJson);
+				for (let revision = 1; revision <= editCount; revision++) {
+					await Promise.resolve(receiveHandler!({
+						type: 'markdownDocumentCommand', commandId: `unsaved-markdown-${revision}`,
+						sourceGeneration: projection.sourceGeneration,
+						expectedDocumentRevision: commandResult?.documentRevision ?? projection.documentRevision,
+						command: {
+							type: 'patch', sectionId: 'markdown_1',
+							expectedSectionRevision: (commandResult?.projection ?? projection).markdownSectionRevisions.markdown_1,
+							patch: { text: `unsaved edit ${revision}` },
+						},
+					}));
+					assert.strictEqual(commandResult?.ok, true);
+					assert.strictEqual(JSON.parse(currentText).state.sections[0].id, generatedSqlId);
+					assert.strictEqual(JSON.parse(currentText).state.sections[0].resultJson, resultJson);
+				}
+				assert.strictEqual(unsavedTexts.size, editCount);
+				assert.strictEqual(fs.readFileSync(filePath, 'utf8'), initialText);
+				let savePreparation: Promise<vscode.TextEdit[]> | undefined;
+				assert.ok(willSaveHandler);
+				willSaveHandler!({
+					document,
+					waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { savePreparation = Promise.resolve(thenable); },
+				} as any);
+				assert.ok(savePreparation);
+				const edits = await savePreparation!;
+				const savedText = edits[0]?.newText ?? currentText;
+				assert.strictEqual(JSON.parse(savedText).state.sections[0].resultJson, resultJson,
+					'native Save must preserve the id-less disk attachment after unsaved source-cache churn');
+				currentText = savedText;
+				document.isDirty = false;
+				document.version++;
+				fs.writeFileSync(filePath, savedText, 'utf8');
+				assert.ok(didSaveHandler);
+				await Promise.resolve(didSaveHandler!(document));
+				await (provider as any).markdownDocumentQueues.get(normalizeWorkbenchUriKey(uri)).tail;
+				assert.strictEqual(JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections[0].resultJson, resultJson);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				assert.strictEqual(projection.state.sections[0].id, generatedSqlId);
+				assert.strictEqual(projection.state.sections[0].resultJson, resultJson);
+				assert.strictEqual(projection.state.sections[1].text, `unsaved edit ${editCount}`);
+			} finally {
+				for (const dispose of disposeHandlers) dispose();
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+				(vscode.workspace as any).applyEdit = originalApplyEdit;
+				(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
+				(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSave;
+				try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+			}
+		});
+	}
+
 	test('native Save fences a Markdown command still in transport', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalApplyEdit = vscode.workspace.applyEdit;

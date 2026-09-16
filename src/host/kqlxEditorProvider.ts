@@ -15,7 +15,7 @@ import {
 import type { SqlWorkbenchService } from './sql/sqlWorkbenchService';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { overlayKqlxFileState, parseKqlxText, stringifyKqlxFile, type KqlxFileKind, type KqlxFileV1, type KqlxSectionV1, type KqlxStateV1 } from './kqlxFormat';
-import { getKqlxPreservedEnvelope, KqlxOverlayConflictError } from './kqlxOverlay';
+import { getKqlxPreservedEnvelope, KqlxOverlayConflictError, preserveKqlxResultAttachments, stripKqlxResultAttachments } from './kqlxOverlay';
 import { renderDiffInWebview, DIFF_NOISE_KEYS, COMPARISON_NOISE_KEYS } from './diffViewerUtils';
 import type { SectionChangeInfo } from './queryEditorTypes';
 import { perfBegin, perfMark } from './perfTrace';
@@ -794,9 +794,6 @@ type MarkdownDocumentOwnerQueue = {
 	sourceObservationSequence: number;
 	authoritySequence: number;
 	latestAuthority?: MarkdownSourceAuthority;
-	privacyRepairNeeded: boolean;
-	privacyDurableText?: string;
-	pendingPrivacySave?: Promise<void>;
 	pendingOwnedMutation?: {
 		token: number;
 		text: string;
@@ -842,6 +839,7 @@ export async function publishKqlxTextFresh<R>(
 	eol: vscode.EndOfLine,
 	publishStateFresh: PublishSqlStateFresh,
 	publishText: (sanitizedText: string) => Promise<R>,
+	durableBaseline?: KqlxStateV1,
 ): Promise<R> {
 	const parsed = parseKqlxText(text, {
 		allowedKinds: [kind],
@@ -856,12 +854,12 @@ export async function publishKqlxTextFresh<R>(
 	}
 	return publishStateFresh(parsed.file.state, async sanitizedState => {
 		assertDocumentSectionKindsAllowed(kind, sanitizedState.sections);
-		if (sanitizedState === parsed.file.state) return publishText(text);
-		const file = overlayKqlxFileState(
-			parsed.file,
-			sanitizedState,
-			kind,
-		);
+		let file = sanitizedState === parsed.file.state
+			? parsed.file
+			: overlayKqlxFileState(parsed.file, sanitizedState, kind);
+		const preservedState = preserveKqlxResultAttachments(durableBaseline, file.state, parsed.file.state);
+		if (preservedState !== file.state) file = { ...file, state: preservedState };
+		if (file === parsed.file) return publishText(text);
 		const unsupportedSanitizedLink = getUnsupportedNativeDocumentReason(file.state);
 		if (unsupportedSanitizedLink) {
 			throw new Error(`Cannot publish an unsupported linked section. ${unsupportedSanitizedLink}`);
@@ -870,6 +868,20 @@ export async function publishKqlxTextFresh<R>(
 		const lf = serialized.replace(/\r\n/g, '\n');
 		return publishText(eol === vscode.EndOfLine.CRLF ? lf.replace(/\n/g, '\r\n') : lf);
 	});
+}
+
+export function prepareKqlxSaveText(
+	text: string,
+	kind: KqlxFileKind,
+	eol: vscode.EndOfLine,
+	durableBaseline: KqlxStateV1 | undefined,
+): Promise<string> {
+	return publishKqlxTextFresh(
+		text, kind, eol,
+		async (state, publish) => publish(stripKqlxResultAttachments(state)),
+		async preparedText => preparedText,
+		durableBaseline,
+	);
 }
 
 export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
@@ -2414,7 +2426,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				});
 				projectedSectionIdsBySourceText.set(sourceText, projectedSectionIds);
 				while (projectedSectionIdsBySourceText.size > 8) {
-					projectedSectionIdsBySourceText.delete(projectedSectionIdsBySourceText.keys().next().value!);
+					for (const cachedSourceText of projectedSectionIdsBySourceText.keys()) {
+						if (cachedSourceText === lastSavedText) continue;
+						projectedSectionIdsBySourceText.delete(cachedSourceText);
+						break;
+					}
 				}
 			}
 			let changed = false;
@@ -2469,7 +2485,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				activePersistenceLeases: new Set(),
 				sourceObservationSequence: 0,
 				authoritySequence: 0,
-				privacyRepairNeeded: false,
 			};
 			this.markdownDocumentQueues.set(markdownDocumentKey, created);
 			return created;
@@ -2580,7 +2595,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			entry.queue.activePersistenceLeases.add(lease);
 			entry.queue.tail = previousMarkdownWork.catch(() => undefined).then(() => persistenceLease);
 			await previousMarkdownWork.catch(() => undefined);
-			await entry.queue.pendingPrivacySave;
 			return lease;
 		};
 		let invalidateMarkdownBarriersForGeneration: (generation: number) => void = () => undefined;
@@ -2687,6 +2701,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			return true;
 		};
 
+		const readDurableResultBaseline = async (): Promise<KqlxStateV1 | undefined> => {
+			if (document.uri.scheme === 'untitled') return undefined;
+			const snapshot = await readKqlxDocumentSnapshotLocked(document.uri);
+			const parsed = parseKqlxText(snapshot.text, { allowedKinds: [documentKind], defaultKind: documentKind });
+			if (!parsed.ok) throw new Error(`Cannot preserve saved result attachments: ${parsed.error}`);
+			return ensureProjectedSectionIds(parsed.file.state, snapshot.text);
+		};
 		const sanitizeSerializedNotebookTextFresh = async (text: string): Promise<string> => {
 			return publishKqlxTextFresh(
 				text,
@@ -2698,18 +2719,15 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					)
 					: publish(queryEditor.sanitizeSqlLeaveNoTraceState(state)),
 				async sanitizedText => sanitizedText,
+				await readDurableResultBaseline(),
 			);
 		};
 		const sanitizeSerializedNotebookTextFailClosed = async (text: string): Promise<string> => {
-			return publishKqlxTextFresh(
-				text,
-				documentKind,
-				document.eol,
-				async (state, publish) => publish(queryEditor.sanitizeSqlLeaveNoTraceStateFailClosed(state)),
-				async sanitizedText => sanitizedText,
+			return prepareKqlxSaveText(
+				text, documentKind, document.eol, await readDurableResultBaseline(),
 			);
 		};
-		const publishSerializedNotebookTextFresh = <R>(
+		const publishSerializedNotebookTextFresh = async <R>(
 			text: string,
 			publishText: (sanitizedText: string) => Promise<R>,
 		): Promise<R> => publishKqlxTextFresh(
@@ -2720,20 +2738,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				state, publish, revokeSanitizedKustoAttachments,
 			),
 			publishText,
-		);
-		const publishSerializedNotebookTextWithKustoResultsFresh = <R>(
-			text: string,
-			publishText: (sanitizedText: string) => Promise<R>,
-		): Promise<R> => publishKqlxTextFresh(
-			text,
-			documentKind,
-			document.eol,
-			(state, publish) => queryEditor.publishSqlLeaveNoTraceStateFresh(
-				kustoResultOwner.overlaySnapshot(state, kustoResultPanelSession.panelId),
-				publish,
-				revokeSanitizedKustoAttachments,
-			),
-			publishText,
+			await readDurableResultBaseline(),
 		);
 		const normalizeTextToEol = (text: string, eol: vscode.EndOfLine): string => {
 			const lf = String(text ?? '').replace(/\r\n/g, '\n');
@@ -2966,7 +2971,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			const queueLease = new Promise<void>(resolve => { release = resolve; });
 			markdownDocumentQueue.tail = previousWork.catch(() => undefined).then(() => queueLease);
 			await previousWork.catch(() => undefined);
-			await markdownDocumentQueue.pendingPrivacySave;
 			try {
 				return await work();
 			} finally {
@@ -3003,377 +3007,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				return cleanup();
 			});
 		});
-
-		let privacyRepairRetryScheduled = false;
-		const schedulePrivacyRepairRetry = (allowDisposed = false): void => {
-			if (privacyRepairRetryScheduled || closeFinalizationAbandoned || (outerDisposed && !allowDisposed)) return;
-			privacyRepairRetryScheduled = true;
-			const latestAuthority = markdownDocumentQueue.latestAuthority;
-			if (latestAuthority
-				&& activeProjectionAuthorityToken === latestAuthority.token
-				&& activeProjectionSourceText === latestAuthority.sourceText
-				&& document.getText() === latestAuthority.sourceText) {
-				queueMicrotask(() => {
-					privacyRepairRetryScheduled = false;
-					if (markdownDocumentQueue.privacyRepairNeeded) {
-						void repairPersistedSqlState(allowDisposed).catch(() => undefined);
-					}
-				});
-				return;
-			}
-			void postDocument({ forceReload: true }).then(() => {
-				privacyRepairRetryScheduled = false;
-				if (markdownDocumentQueue.privacyRepairNeeded) {
-					void repairPersistedSqlState(allowDisposed).catch(() => undefined);
-				}
-			}, () => { privacyRepairRetryScheduled = false; });
-		};
-		const sourceMayNeedPrivacyRepair = (): boolean => {
-			if (kustoResultOwner.hasCommittedAttachments()) return true;
-			if (markdownDocumentQueue.privacyRepairNeeded || markdownDocumentQueue.privacyDurableText) return true;
-			const parsed = parseKqlxText(document.getText(), {
-				allowedKinds: [documentKind], defaultKind: documentKind,
-			});
-			return parsed.ok && parsed.file.state.sections.some(section => {
-				const record = section as Record<string, unknown>;
-				return Object.prototype.hasOwnProperty.call(record, 'resultJson')
-					|| Object.prototype.hasOwnProperty.call(record, 'resultArtifact');
-			});
-		};
-
-		const repairPersistedSqlState = (allowDisposed = false): Promise<void> => {
-			if (!sourceMayNeedPrivacyRepair()) return Promise.resolve();
-			markdownDocumentQueue.privacyRepairNeeded = true;
-			return runInMarkdownDocumentQueue(() => serializeSqlSaveRepair(async (): Promise<{
-				autoSaveText?: string;
-				authorityToken?: number;
-				completeAutoSave?: () => void;
-			}> => {
-			let retryRequested = false;
-			const requestRetry = (): void => {
-				retryRequested = true;
-				schedulePrivacyRepairRetry(allowDisposed);
-			};
-			if (closeFinalizationAbandoned || (outerDisposed && !allowDisposed)) return {};
-			const repairAuthority = markdownDocumentQueue.latestAuthority;
-			const repairProjectionGeneration = activeProjectionGeneration;
-			const repairOwner = activeMarkdownOwnerEntry;
-			if (!repairAuthority || activeProjectionAuthorityToken !== repairAuthority.token) return {};
-			const isRepairCurrent = (expectedText?: string): boolean => (
-				!closeFinalizationAbandoned
-				&& (allowDisposed || !outerDisposed)
-				&& activeProjectionGeneration === repairProjectionGeneration
-				&& activeProjectionAuthorityToken === repairAuthority.token
-				&& markdownDocumentQueue.latestAuthority?.token === repairAuthority.token
-				&& activeMarkdownOwnerEntry === repairOwner
-				&& (expectedText === undefined || document.getText() === expectedText)
-			);
-			const startingText = document.getText();
-			if (!isRepairCurrent(startingText)) return {};
-			const startedDirty = document.isDirty;
-			let startedFromDurableText = false;
-			if (!startedDirty && !isSessionFile) {
-				try {
-					startedFromDurableText = new TextDecoder().decode(
-						await vscode.workspace.fs.readFile(document.uri),
-					) === startingText;
-				} catch {
-					startedFromDurableText = false;
-				}
-			}
-			if (isSessionFile) {
-				let diskText: string;
-				try {
-					diskText = (await readKqlxDocumentSnapshotLocked(document.uri)).text;
-				} catch {
-					return {};
-				}
-				if (!isRepairCurrent(startingText) || diskText !== lastSavedText) {
-					requestRetry();
-					return {};
-				}
-				const repairedText = await publishSerializedNotebookTextWithKustoResultsFresh(diskText, async sanitizedText => {
-					if (!isRepairCurrent(startingText)) return sanitizedText;
-					if (sanitizedText !== diskText) await writeOwnedSessionText(sanitizedText, allowDisposed);
-					return sanitizedText;
-				});
-				if (!isRepairCurrent(startingText)) {
-					requestRetry();
-					return {};
-				}
-				let publishedText: string;
-				try {
-					publishedText = (await readKqlxDocumentSnapshotLocked(document.uri)).text;
-				} catch {
-					return {};
-				}
-				if (publishedText !== repairedText
-					|| !commitCurrentAdapterText(repairAuthority.token, repairOwner, repairedText)) return {};
-				lastSavedText = repairedText;
-				markdownDocumentQueue.privacyRepairNeeded = false;
-				return {};
-			}
-			const currentFile = parseKqlxText(startingText, {
-				allowedKinds: [documentKind],
-				defaultKind: documentKind,
-			});
-			if (!currentFile.ok) return {};
-			const isSemanticNoop = (candidateText: string, sanitizedText: string): boolean => {
-				const candidate = parseKqlxText(candidateText, {
-					allowedKinds: [documentKind], defaultKind: documentKind,
-				});
-				const sanitized = parseKqlxText(sanitizedText, {
-					allowedKinds: [documentKind], defaultKind: documentKind,
-				});
-				return candidate.ok && sanitized.ok && deepEqual(
-					normalizeKqlxFileForPersistenceComparison(candidate.file),
-					normalizeKqlxFileForPersistenceComparison(sanitized.file),
-				);
-			};
-			const reconcileKustoResultState = kustoResultOwner.hasCanonicalResultState();
-			const sanitizeDurableNotebook = async (): Promise<boolean> => {
-				let durableText: string;
-				try {
-					durableText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
-				} catch {
-					return false;
-				}
-				const sanitizedDurable = await sanitizeSerializedNotebookTextFresh(durableText);
-				if (sanitizedDurable === durableText) return true;
-				const identity = lastSavedIdentity ?? await getLocalFileIdentity(document.uri);
-				if (!identity || !await writeOwnedLocalFileText(
-					document.uri, identity, durableText, sanitizedDurable,
-				)) return false;
-				lastSavedText = sanitizedDurable;
-				return true;
-			};
-			const repairedText = reconcileKustoResultState
-				? await publishSerializedNotebookTextWithKustoResultsFresh(
-					startingText,
-					async sanitizedText => sanitizedText,
-				)
-				: await sanitizeSerializedNotebookTextFresh(startingText);
-			if (closeFinalizationAbandoned) return {};
-			if (!isRepairCurrent(startingText)) {
-				requestRetry();
-				return {};
-			}
-			if (repairedText === startingText
-				|| (!reconcileKustoResultState && isSemanticNoop(startingText, repairedText))) {
-				if (!await sanitizeDurableNotebook()) {
-					requestRetry();
-					return {};
-				}
-				markdownDocumentQueue.privacyDurableText = undefined;
-				markdownDocumentQueue.privacyRepairNeeded = false;
-				return {};
-			}
-			let repairedBufferText = '';
-			await (_persistChain = _persistChain.catch(() => undefined).then(async () => {
-				for (let attempt = 0; attempt < 3; attempt++) {
-					if (closeFinalizationAbandoned) return;
-					const latestText = document.getText();
-					if (!isRepairCurrent(latestText)) {
-						requestRetry();
-						return;
-					}
-					const latestRepair = reconcileKustoResultState
-						? await publishSerializedNotebookTextWithKustoResultsFresh(
-							latestText,
-							async sanitizedText => sanitizedText,
-						)
-						: await sanitizeSerializedNotebookTextFresh(latestText);
-					if (!isRepairCurrent(latestText)) {
-						requestRetry();
-						return;
-					}
-					if (latestRepair === latestText
-						|| (!reconcileKustoResultState && isSemanticNoop(latestText, latestRepair))) {
-						markdownDocumentQueue.privacyRepairNeeded = false;
-						return;
-					}
-					const edit = new vscode.WorkspaceEdit();
-					edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(latestText.length)), latestRepair);
-					lastWebviewPersistAt = Date.now();
-					if (!await applyOwnedSourceEdit(edit, latestRepair)) {
-						throw new Error('VS Code rejected the SQL privacy repair edit.');
-					}
-					if (!isRepairCurrent(latestRepair)) {
-						const authority = markdownDocumentQueue.latestAuthority;
-						if (authority && authority.token > repairAuthority.token && document.getText() === latestRepair) {
-							sourceRollbackFailed = true;
-							sourceRollbackFailedCandidate = latestRepair;
-							for (let rollbackAttempt = 0; rollbackAttempt < 3; rollbackAttempt++) {
-								const latestAuthority = markdownDocumentQueue.latestAuthority;
-								if (!latestAuthority || latestAuthority.token < authority.token
-									|| document.getText() !== latestRepair) break;
-								const rollbackBase = document.getText();
-								const rollback = new vscode.WorkspaceEdit();
-								rollback.replace(
-									document.uri,
-									new vscode.Range(document.positionAt(0), document.positionAt(rollbackBase.length)),
-									latestAuthority.sourceText,
-								);
-								lastWebviewPersistAt = Date.now();
-								await applyOwnedSourceEdit(rollback, latestAuthority.sourceText);
-								if (markdownDocumentQueue.latestAuthority?.token === latestAuthority.token
-									&& document.getText() === latestAuthority.sourceText) break;
-								if (document.getText() !== latestAuthority.sourceText) break;
-							}
-							if (document.getText() !== latestRepair) {
-								sourceRollbackFailed = false;
-								sourceRollbackFailedCandidate = undefined;
-							}
-						}
-						requestRetry();
-						return;
-					}
-					if (!commitCurrentAuthorityText(repairAuthority.token, latestRepair)) {
-						requestRetry();
-						return;
-					}
-					if (repairOwner) {
-						const repairedFile = parseKqlxText(latestRepair, {
-							allowedKinds: [documentKind], defaultKind: documentKind,
-						});
-						if (repairedFile.ok) {
-							repairOwner.document = repairOwner.document.withAdapterState(
-								ensureProjectedSectionIds(repairedFile.file.state, latestRepair),
-							);
-							repairOwner.sourceText = latestRepair;
-						}
-					}
-					repairedBufferText = latestRepair;
-					markdownDocumentQueue.privacyDurableText = latestRepair;
-					markdownDocumentQueue.privacyRepairNeeded = false;
-					return;
-				}
-			}));
-			if (retryRequested) return {};
-			if (repairedBufferText && !await sanitizeDurableNotebook()) {
-				markdownDocumentQueue.privacyRepairNeeded = true;
-				requestRetry();
-				return {};
-			}
-			if (startedFromDurableText && repairedBufferText
-				&& markdownDocumentQueue.latestAuthority?.token === repairAuthority.token
-				&& markdownDocumentQueue.latestAuthority.sourceText === repairedBufferText
-				&& document.isDirty && document.getText() === repairedBufferText) {
-				let completeAutoSave!: () => void;
-				const pendingPrivacySave = new Promise<void>(resolve => { completeAutoSave = resolve; });
-				markdownDocumentQueue.pendingPrivacySave = pendingPrivacySave;
-				return {
-					autoSaveText: repairedBufferText,
-					authorityToken: repairAuthority.token,
-					completeAutoSave: () => {
-						if (markdownDocumentQueue.pendingPrivacySave === pendingPrivacySave) {
-							markdownDocumentQueue.pendingPrivacySave = undefined;
-						}
-						completeAutoSave();
-					},
-				};
-			}
-			if (!repairedBufferText) markdownDocumentQueue.privacyRepairNeeded = false;
-			return {};
-			})).then(async deferred => {
-				if (!deferred.autoSaveText || deferred.authorityToken === undefined) return;
-				const persistPrivacyRepair = async (): Promise<void> => {
-						let targetText = deferred.autoSaveText!;
-						let targetAuthorityToken = deferred.authorityToken!;
-						markdownDocumentQueue.canonicalSaveText = targetText;
-						try {
-							for (let attempt = 0; attempt < 2; attempt++) {
-								const latestAuthority = markdownDocumentQueue.latestAuthority;
-								if (!latestAuthority
-									|| latestAuthority.token !== targetAuthorityToken
-									|| latestAuthority.sourceText !== targetText
-									|| document.getText() !== targetText) {
-									const replacementAuthority = markdownDocumentQueue.latestAuthority;
-									const replacementText = document.getText();
-									if (!replacementAuthority || replacementAuthority.sourceText !== replacementText) {
-										markdownDocumentQueue.privacyRepairNeeded = true;
-										schedulePrivacyRepairRetry(allowDisposed);
-										return;
-									}
-									const sanitizedReplacement = await sanitizeSerializedNotebookTextFresh(replacementText);
-									if (markdownDocumentQueue.latestAuthority?.token !== replacementAuthority.token
-										|| document.getText() !== replacementText) {
-										markdownDocumentQueue.privacyRepairNeeded = true;
-										schedulePrivacyRepairRetry(allowDisposed);
-										return;
-									}
-									if (sanitizedReplacement !== replacementText) {
-										const edit = new vscode.WorkspaceEdit();
-										edit.replace(
-											document.uri,
-											new vscode.Range(document.positionAt(0), document.positionAt(replacementText.length)),
-											sanitizedReplacement,
-										);
-										lastWebviewPersistAt = Date.now();
-										if (!await applyOwnedSourceEdit(edit, sanitizedReplacement)) return;
-										if (markdownDocumentQueue.latestAuthority?.token !== replacementAuthority.token
-											|| document.getText() !== sanitizedReplacement
-											|| !commitCurrentAdapterText(
-												replacementAuthority.token,
-												this.markdownDocuments.get(markdownDocumentKey),
-												sanitizedReplacement,
-											)) return;
-									}
-									let durableText: string | undefined;
-									try {
-										durableText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
-									} catch {
-										durableText = undefined;
-									}
-									if (durableText === undefined) return;
-									const sanitizedDurable = await sanitizeSerializedNotebookTextFresh(durableText);
-									if (sanitizedDurable !== durableText) {
-										const identity = lastSavedIdentity ?? await getLocalFileIdentity(document.uri);
-										if (!identity || !await writeOwnedLocalFileText(
-											document.uri, identity, durableText, sanitizedDurable,
-										)) {
-											markdownDocumentQueue.privacyRepairNeeded = true;
-											schedulePrivacyRepairRetry(allowDisposed);
-											return;
-										}
-										lastSavedText = sanitizedDurable;
-									}
-									markdownDocumentQueue.privacyDurableText = undefined;
-									markdownDocumentQueue.privacyRepairNeeded = false;
-									return;
-								}
-								let saved = false;
-								try { saved = await document.save(); } catch { saved = false; }
-								let durableText: string | undefined;
-								try {
-									durableText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
-								} catch {
-									durableText = undefined;
-								}
-								if (saved && durableText === targetText) {
-									if (markdownDocumentQueue.privacyDurableText === targetText) {
-										markdownDocumentQueue.privacyDurableText = undefined;
-									}
-									markdownDocumentQueue.privacyRepairNeeded = false;
-									return;
-								}
-								markdownDocumentQueue.privacyRepairNeeded = true;
-							}
-							schedulePrivacyRepairRetry(allowDisposed);
-						} finally {
-							if (markdownDocumentQueue.canonicalSaveText === targetText) {
-								markdownDocumentQueue.canonicalSaveText = undefined;
-							}
-							deferred.completeAutoSave?.();
-						}
-				};
-				if (allowDisposed) {
-					await persistPrivacyRepair();
-					return;
-				}
-				queueMicrotask(() => { void persistPrivacyRepair(); });
-			});
-		};
 
 		const scheduleSave = () => {
 			// Only auto-save the persistent session file.
@@ -4019,12 +3652,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				}
 			}
 		};
-		subscriptions.push(queryEditor.onDidInvalidateSqlPersistence(() => {
-			void repairPersistedSqlState().catch(() => undefined);
-		}));
-		subscriptions.push(queryEditor.onDidInvalidateKustoPersistence(() => {
-			void repairPersistedSqlState().catch(() => undefined);
-		}));
 		if (!isSessionFile) {
 			subscriptions.push(vscode.workspace.onWillSaveTextDocument(event => {
 				if (event.document.uri.toString() !== document.uri.toString()) return;
@@ -4308,8 +3935,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								() => restoreCanonicalNativeResults(pending, canonicalRestoreLease),
 								() => restoreCanonicalNativeResults(pending, canonicalRestoreLease),
 							);
-					} else {
-						void repairPersistedSqlState().catch(() => undefined);
 					}
 					notifyNativeSaveStateChanged();
 				} catch {
@@ -4516,8 +4141,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							}
 						}
 						if (closeFinalizationAbandoned) return;
-						await repairPersistedSqlState(true);
-						if (closeFinalizationAbandoned) return;
 						await _persistChain;
 						await sqlSaveRepairTail;
 						await _persistChain;
@@ -4649,9 +4272,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							}
 							if (accepted) {
 								webviewInitialized = true;
-								if (markdownDocumentQueue.privacyRepairNeeded) {
-									void repairPersistedSqlState().catch(() => undefined);
-								}
 							} else if (retryEligible) {
 								if (ownerCommitConflict && activation.kustoSourceAdmission
 									&& retrySourceCurrent && activation.retryBudget.remainingAttempts > 0) {
@@ -4725,7 +4345,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					if (outerDisposed) return;
 					webviewInitialized = delivered
 						|| activeProjectionGeneration >= requestGenerationFloor;
-					void repairPersistedSqlState().catch(() => undefined);
 					perfMark('host.kqlx.requestDocument.completed');
 					fileOpenTrace.mark('requestDocument.completed');
 
@@ -4859,7 +4478,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					let publishApplicationAdmitted = false;
 					entry.queue.pendingCommands++;
 					const operation = previousCommandTail.catch(() => undefined).then(async () => {
-						await entry.queue.pendingPrivacySave;
 						const currentText = await readProjectionSourceText();
 						const currentFile = parseKqlxText(currentText, {
 							allowedKinds: [documentKind], defaultKind: documentKind,

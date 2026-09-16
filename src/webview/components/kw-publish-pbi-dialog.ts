@@ -1,6 +1,8 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { styles } from './kw-publish-pbi-dialog.styles.js';
 import { scrollbarSheet } from '../shared/scrollbar-styles.js';
+import { osStyles } from '../shared/os-styles.js';
+import { OverlayScrollbarsController } from './overlay-scrollbars.controller.js';
 import { customElement, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from './dismiss-stack.js';
 import { postMessageToHost } from '../shared/webview-messages.js';
@@ -23,6 +25,8 @@ const STORAGE_KEY_WORKSPACE_NAME = 'kw.publishPbi.lastWorkspaceName';
 
 @customElement('kw-publish-pbi-dialog')
 export class KwPublishPbiDialog extends LitElement {
+	private _osCtrl = new OverlayScrollbarsController(this);
+
 	@state() private _state: DialogState = 'idle';
 	@state() private _workspaces: PbiWorkspace[] = [];
 	@state() private _selectedWorkspaceId = '';
@@ -526,11 +530,12 @@ export class KwPublishPbiDialog extends LitElement {
 		const dismissLabel = isSuccess ? 'Close' : 'Cancel';
 		const controlsDisabled = isPublishing || this._checkingExistence;
 
-		return html`<div class="sd-bg" @mousedown=${this._cancel}><div class="sd" @mousedown=${(e: Event) => e.stopPropagation()}>
+		return html`<div class="sd-bg" @mousedown=${this._cancel}><div class="sd" data-overlay-scroll="x:hidden y:scroll autoHide:move"
+			role="dialog" aria-modal="true" aria-labelledby="publish-pbi-dialog-title" tabindex="0" @mousedown=${(e: Event) => e.stopPropagation()}>
 			<div class="sd-h">
 				<div class="sd-h-title">
 					<svg class="sd-h-icon" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="10" width="3" height="4"/><rect x="6" y="6" width="3" height="8"/><rect x="10" y="3" width="3" height="11"/></svg>
-					<strong>${isUpdate ? 'Re-publish to Power BI' : 'Publish to Power BI'}</strong>
+					<strong id="publish-pbi-dialog-title">${isUpdate ? 'Re-publish to Power BI' : 'Publish to Power BI'}</strong>
 				</div>
 				<button class="nb sd-x" title="Close" @click=${this._cancel}>${ICONS.close}</button>
 			</div>
@@ -602,7 +607,7 @@ export class KwPublishPbiDialog extends LitElement {
 		</div></div>`;
 	}
 
-	static override styles = [scrollbarSheet, iconRegistryStyles, styles];
+	static override styles = [...osStyles, scrollbarSheet, iconRegistryStyles, styles];
 }
 
 declare global {

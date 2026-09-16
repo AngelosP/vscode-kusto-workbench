@@ -132,6 +132,36 @@ describe('KustoAuthPreferenceService', () => {
 		expect(test.service.getPreference('conn-1')).toEqual({ mode: 'automatic' });
 	});
 
+	it.each([false, true])('uses confirmed account absence after a failed baseline (removed: %s)', async removed => {
+		let listener!: (event: vscode.AuthenticationSessionsChangeEvent) => void;
+		const accounts = [
+			{ id: 'account-a', label: 'a@example.com' },
+			{ id: 'account-b', label: 'b@example.com' },
+		];
+		vi.mocked(vscode.authentication.getAccounts)
+			.mockRejectedValueOnce(new Error('provider unavailable'))
+			.mockResolvedValue(removed ? accounts.slice(1) : accounts);
+		const test = harness({
+			'kusto.auth.connectionPreferences.v1': {
+				'conn-a': { mode: 'automatic', lastSuccessfulAccountId: 'account-a' },
+				'conn-b': { mode: 'explicit', accountId: 'account-b' },
+			},
+		}, candidate => { listener = candidate; });
+		const changes = vi.fn();
+		test.service.onDidChange(changes);
+		await test.service.waitForProviderAccountRefresh();
+
+		listener({ provider: { id: 'microsoft', label: 'Microsoft' } });
+		await test.service.waitForProviderAccountRefresh();
+
+		expect(changes.mock.calls).toEqual(removed ? [[{ connectionIds: ['conn-a'], reason: 'sessions-changed' }]] : []);
+		expect(test.service.getProviderSessionGeneration('account-a')).toBe(removed ? 1 : 0);
+		expect(test.service.getProviderSessionGeneration('account-b')).toBe(0);
+		expect(test.service.getPreferredAccountId('conn-a')).toBe('account-a');
+		expect(test.service.getPreferredAccountId('conn-b')).toBe('account-b');
+		test.service.dispose();
+	});
+
 	it('invalidates a mapped connection when removal follows a failed initial account baseline', async () => {
 		let listener!: (event: any) => void;
 		vi.mocked(vscode.authentication.getAccounts)
@@ -178,9 +208,12 @@ describe('KustoAuthPreferenceService', () => {
 		await vi.waitFor(() => expect(changes).toEqual([{ connectionIds: ['conn-a'], reason: 'sessions-changed' }]));
 	});
 
-	it('targets mapped connections when a Microsoft session changes under the same account ID', async () => {
+	it('does not invalidate mapped connections for a generic same-account event without an observed Kusto session', async () => {
 		let listener!: (event: any) => void;
-		const accounts = [{ id: 'account-a', label: 'a@example.com' }];
+		const accounts = [
+			{ id: 'account-a', label: 'a@example.com' },
+			{ id: 'account-b', label: 'b@example.com' },
+		];
 		vi.mocked(vscode.authentication.getAccounts).mockImplementation(async () => [...accounts]);
 		const test = harness({
 			'kusto.auth.connectionPreferences.v1': {
@@ -193,8 +226,63 @@ describe('KustoAuthPreferenceService', () => {
 		await vi.waitFor(() => expect(vscode.authentication.getAccounts).toHaveBeenCalledOnce());
 
 		listener({ provider: { id: 'microsoft' } });
+		await test.service.waitForProviderAccountRefresh();
 
-		await vi.waitFor(() => expect(changes).toEqual([{ connectionIds: ['conn-a'], reason: 'sessions-changed' }]));
+		expect(changes).toEqual([]);
+		expect(test.service.getConnectionSessionGeneration('conn-a')).toBe(0);
+		expect(test.service.getConnectionSessionGeneration('conn-b')).toBe(0);
+	});
+
+	it.each([
+		{ action: 'opening Publish before the first query', scope: 'https://api.fabric.microsoft.com/.default', observed: false, pendingBaseline: false },
+		{ action: 'opening Publish after a Kusto query', scope: 'https://api.fabric.microsoft.com/.default', observed: true, pendingBaseline: false },
+		{ action: 'running the first query after restore', scope: 'https://help.kusto.windows.net/.default', observed: false, pendingBaseline: false },
+		{ action: 'opening Publish during initial account refresh', scope: 'https://api.fabric.microsoft.com/.default', observed: false, pendingBaseline: true },
+		{ action: 'running the first query during initial account refresh', scope: 'https://help.kusto.windows.net/.default', observed: false, pendingBaseline: true },
+	])('preserves the restored Kusto owner when $action acquires a session for the same account', async ({ scope, observed, pendingBaseline }) => {
+		let listener!: (event: vscode.AuthenticationSessionsChangeEvent) => void;
+		const account = { id: 'account-a', label: 'a@example.com' };
+		const initialAccounts = deferred<readonly vscode.AuthenticationSessionAccountInformation[]>();
+		const kustoScope = 'https://help.kusto.windows.net/.default';
+		const kustoSession: vscode.AuthenticationSession = {
+			id: 'kusto-session', account, accessToken: 'synthetic-kusto-token', scopes: [kustoScope],
+		};
+		vi.mocked(vscode.authentication.getAccounts).mockResolvedValue([account]);
+		if (pendingBaseline) vi.mocked(vscode.authentication.getAccounts).mockReturnValueOnce(initialAccounts.promise);
+		const test = harness({
+			'kusto.auth.connectionPreferences.v1': {
+				'conn-a': { mode: 'automatic', lastSuccessfulAccountId: account.id },
+			},
+		}, candidate => { listener = candidate; });
+		if (!pendingBaseline) await test.service.waitForProviderAccountRefresh();
+		if (observed) test.service.observeProviderSession(kustoSession, [kustoScope]);
+		const changes = vi.fn();
+		const subscription = test.service.onDidChange(changes);
+		vi.spyOn(vscode.authentication, 'getSession').mockImplementation(async (_provider, requestedScopes, options) => {
+			if (options?.silent) return kustoSession;
+			listener({ provider: { id: 'microsoft', label: 'Microsoft' } });
+			return requestedScopes.includes(kustoScope)
+				? kustoSession
+				: { id: 'fabric-session', account, accessToken: 'synthetic-fabric-token', scopes: [...requestedScopes] };
+		});
+
+		try {
+			const session = await vscode.authentication.getSession('microsoft', [scope], { createIfNone: true });
+			if (scope === kustoScope) test.service.observeProviderSession(session, [kustoScope]);
+			initialAccounts.resolve([account]);
+			await test.service.waitForProviderAccountRefresh();
+
+			expect(session.account).toEqual(account);
+			expect(test.service.getPreference('conn-a')).toEqual({
+				mode: 'automatic', lastSuccessfulAccountId: account.id,
+			});
+			expect(changes, 'same-account authentication must not cancel the first execution').not.toHaveBeenCalled();
+			expect(test.service.getConnectionSessionGeneration('conn-a')).toBe(0);
+			expect(vscode.authentication.getSession).toHaveBeenCalledTimes(observed ? 2 : 1);
+		} finally {
+			subscription.dispose();
+			test.service.dispose();
+		}
 	});
 
 	it('scopes a detailed same-set session change to the named Microsoft account', async () => {
@@ -341,18 +429,26 @@ describe('KustoAuthPreferenceService', () => {
 		expect(test.service.getProviderSessionGeneration('account-b')).toBe(0);
 	});
 
-	it('does not broaden invalidation when A replacement is observed before provider refresh', async () => {
+	it.each([
+		{ pendingBaseline: false, observedAtEvent: true },
+		{ pendingBaseline: false, observedAtEvent: false },
+		{ pendingBaseline: true, observedAtEvent: true },
+		{ pendingBaseline: true, observedAtEvent: false },
+	])('deduplicates observed A rotation across provider refresh (pending baseline: $pendingBaseline, observed at event: $observedAtEvent)', async ({ pendingBaseline, observedAtEvent }) => {
 		let listener!: (event: any) => void;
 		const accounts = [
 			{ id: 'account-a', label: 'a@example.com' },
 			{ id: 'account-b', label: 'b@example.com' },
 		];
+		const initialAccounts = deferred<readonly vscode.AuthenticationSessionAccountInformation[]>();
 		const sessionA1 = { id: 'session-a-1', account: accounts[0], accessToken: 'token-a-1', scopes: [] };
 		const sessionA2 = { id: 'session-a-2', account: accounts[0], accessToken: 'token-a-2', scopes: [] };
 		const sessionB = { id: 'session-b-1', account: accounts[1], accessToken: 'token-b', scopes: [] };
+		let currentSessionA = sessionA2;
 		vi.mocked(vscode.authentication.getAccounts).mockImplementation(async () => [...accounts]);
+		if (pendingBaseline) vi.mocked(vscode.authentication.getAccounts).mockReturnValueOnce(initialAccounts.promise);
 		vi.spyOn(vscode.authentication, 'getSession').mockImplementation(async (_provider, _scopes, options: any) =>
-			String(options?.account?.id) === 'account-a' ? sessionA2 as any : sessionB as any);
+			String(options?.account?.id) === 'account-a' ? currentSessionA : sessionB);
 		const test = harness({
 			'kusto.auth.connectionPreferences.v1': {
 				'conn-a': { mode: 'explicit', accountId: 'account-a' },
@@ -361,17 +457,77 @@ describe('KustoAuthPreferenceService', () => {
 		}, candidate => { listener = candidate; });
 		const changes: unknown[] = [];
 		test.service.onDidChange(change => changes.push(change));
-		await vi.waitFor(() => expect(vscode.authentication.getAccounts).toHaveBeenCalledOnce());
-		test.service.observeProviderSession(sessionA1 as any, ['scope']);
-		test.service.observeProviderSession(sessionB as any, ['scope']);
+		if (!pendingBaseline) await test.service.waitForProviderAccountRefresh();
+		if (observedAtEvent) test.service.observeProviderSession(sessionA1, ['scope']);
+		test.service.observeProviderSession(sessionB, ['scope']);
 
 		listener({ provider: { id: 'microsoft' } });
-		test.service.observeProviderSession(sessionA2 as any, ['scope']);
+		if (!observedAtEvent) test.service.observeProviderSession(sessionA1, ['scope']);
+		test.service.observeProviderSession(sessionA2, ['scope']);
+		initialAccounts.resolve(accounts);
 		await test.service.waitForProviderAccountRefresh();
 
 		expect(changes).toEqual([{ connectionIds: ['conn-a'], reason: 'sessions-changed' }]);
 		expect(test.service.getProviderSessionGeneration('account-a')).toBe(1);
 		expect(test.service.getProviderSessionGeneration('account-b')).toBe(0);
+		expect(vscode.authentication.getSession).toHaveBeenCalledTimes(observedAtEvent ? 2 : 1);
+
+		listener({ provider: { id: 'microsoft' } });
+		await test.service.waitForProviderAccountRefresh();
+		expect(changes).toHaveLength(1);
+		expect(test.service.getProviderSessionGeneration('account-a')).toBe(1);
+
+		currentSessionA = { ...sessionA2, accessToken: 'token-a-3' };
+		listener({ provider: { id: 'microsoft' } });
+		await test.service.waitForProviderAccountRefresh();
+		expect(changes).toEqual([
+			{ connectionIds: ['conn-a'], reason: 'sessions-changed' },
+			{ connectionIds: ['conn-a'], reason: 'sessions-changed' },
+		]);
+		expect(test.service.getProviderSessionGeneration('account-a')).toBe(2);
+		expect(test.service.getProviderSessionGeneration('account-b')).toBe(0);
+		test.service.dispose();
+	});
+
+	it.each([false, true])('reconciles a delayed provider probe with a concurrent observation (newer: %s)', async newer => {
+		let listener!: (event: vscode.AuthenticationSessionsChangeEvent) => void;
+		const account = { id: 'account-a', label: 'a@example.com' };
+		const firstSession = { id: 'session-1', account, accessToken: 'token-1', scopes: ['scope'] };
+		const probedSession = { ...firstSession, id: 'session-2', accessToken: 'token-2' };
+		const newestSession = { ...firstSession, id: 'session-3', accessToken: 'token-3' };
+		const probeStarted = deferred<void>();
+		const probe = deferred<vscode.AuthenticationSession>();
+		vi.mocked(vscode.authentication.getAccounts).mockResolvedValue([account]);
+		vi.spyOn(vscode.authentication, 'getSession')
+			.mockImplementationOnce(async () => {
+				probeStarted.resolve(undefined);
+				return probe.promise;
+			})
+			.mockResolvedValue(newer ? newestSession : probedSession);
+		const test = harness({
+			'kusto.auth.connectionPreferences.v1': {
+				'conn-a': { mode: 'automatic', lastSuccessfulAccountId: account.id },
+			},
+		}, candidate => { listener = candidate; });
+		await test.service.waitForProviderAccountRefresh();
+		test.service.observeProviderSession(firstSession, firstSession.scopes);
+		const changes = vi.fn();
+		test.service.onDidChange(changes);
+
+		listener({ provider: { id: 'microsoft', label: 'Microsoft' } });
+		await probeStarted.promise;
+		test.service.observeProviderSession(newer ? newestSession : firstSession, firstSession.scopes);
+		expect(test.service.getProviderSessionGeneration(account.id)).toBe(newer ? 1 : 0);
+		probe.resolve(probedSession);
+		await test.service.waitForProviderAccountRefresh();
+		expect(changes.mock.calls).toEqual([[{ connectionIds: ['conn-a'], reason: 'sessions-changed' }]]);
+		expect(test.service.getProviderSessionGeneration(account.id)).toBe(1);
+
+		listener({ provider: { id: 'microsoft', label: 'Microsoft' } });
+		await test.service.waitForProviderAccountRefresh();
+		expect(changes).toHaveBeenCalledOnce();
+		expect(test.service.getProviderSessionGeneration(account.id)).toBe(1);
+		test.service.dispose();
 	});
 
 	it('does not treat first use of a second Kusto authority as account recreation', async () => {

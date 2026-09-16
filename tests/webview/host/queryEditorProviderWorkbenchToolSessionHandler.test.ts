@@ -412,7 +412,9 @@ describe('QueryEditorProvider Workbench tool session application', () => {
 		expect(providerSource).toContain('this.workbenchToolSessionApplication.activate();');
 		expect(providerSource).toContain('this.workbenchToolSessionApplication.dispose();');
 		expect(providerSource).not.toContain('this.sqlLifecycle.reconcileComparisonOwners(sections);');
-		expect(sanitationSource).toContain('this.options.sqlLifecycle.reconcileComparisonOwners(sections);');
+		expect(sanitationSource).toContain(
+			'this.options.sqlLifecycle.reconcileComparisonOwners(Array.isArray(state?.sections) ? state.sections : []);',
+		);
 
 		expect(handlerSource).toContain('private connectionToken: number | undefined;');
 		expect(handlerSource).toContain('private readonly stateResponseResolvers');

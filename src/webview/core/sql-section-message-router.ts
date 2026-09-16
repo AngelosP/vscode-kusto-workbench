@@ -293,8 +293,6 @@ export function routeSqlSectionMessage(
 			effects.handleStsDiagnostics(boxId, []);
 			if (typeof section?.invalidateOwner === 'function') section.invalidateOwner(message.retired === true);
 			else section?.setSqlConnectionId?.('');
-			section?.clearResults?.();
-			effects.clearPolicyBox(boxId);
 			return 'handled';
 		}
 		case 'sqlDatabasesLoading': {

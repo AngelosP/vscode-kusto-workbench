@@ -101,7 +101,6 @@ import { safeRun } from '../shared/safe-run';
 import {
 	bindIndexedResultArtifactConsumer,
 	bindResultArtifactConsumer,
-	clearResultsState,
 	getBoundResultArtifact,
 	getCurrentResultArtifact,
 	getResultArtifact,
@@ -170,7 +169,6 @@ import {
 	__kustoClearStoredQueryResult,
 	resolvePendingSqlResultRestores,
 	resolvePendingKustoResultRestores,
-	discardPendingSqlResultRestores,
 	applyKustoLeaveNoTracePolicy,
 	lockDocumentAfterPersistenceFailure,
 	beginKustoLeaveNoTracePolicyApplication,
@@ -484,21 +482,17 @@ const sqlPolicyBlockedBoxIds = new Set<string>();
 let latestSqlConnectionsRevision = 0;
 const sqlCopilotToolCancellationByRequestId = new Map<string, () => void>();
 
-function clearSqlPolicyBox(boxId: string): void {
+function retireSqlPolicyBox(boxId: string): void {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	clearResultsState(id);
-	delete pState.queryResultJsonByBoxId[id];
-	delete pState.resultArtifactByBoxId[id];
-	const section = __kustoGetSqlSectionElement(id) || __kustoGetQuerySectionElement(id);
-	if (typeof section?.clearResults === 'function') section.clearResults();
+	const section = __kustoGetQuerySectionElement(id);
+	section?.clearTargetBoundState?.();
 }
 
 function applySqlLeaveNoTraceConnectionIds(value: unknown): void {
 	const ids = Array.isArray(value) ? value.map(id => String(id || '').trim()).filter(Boolean) : [];
 	const protectedIds = new Set(ids);
 	setSqlLeaveNoTraceConnectionIds(ids);
-	if (ids.length > 0) discardPendingSqlResultRestores(ids);
 	for (const boxId of Array.isArray(sqlBoxes) ? sqlBoxes : []) {
 		const section = __kustoGetSqlSectionElement(String(boxId || ''));
 		if (typeof section?.setLeaveNoTraceConnectionIds === 'function') section.setLeaveNoTraceConnectionIds(ids);
@@ -516,11 +510,6 @@ function applySqlLeaveNoTraceConnectionIds(value: unknown): void {
 		const kustoSourceSection = sourceBoxId ? __kustoGetQuerySectionElement(sourceBoxId) : null;
 		if (!sourceSection && kustoSourceSection) continue;
 		if (!comparisonSection) {
-			clearSqlPolicyBox(boxId);
-			delete optimizationMetadataByBoxId[boxId];
-			if (sourceBoxId && optimizationMetadataByBoxId[sourceBoxId]?.comparisonBoxId === boxId) {
-				delete optimizationMetadataByBoxId[sourceBoxId];
-			}
 			sqlPolicyBlockedBoxIds.delete(boxId);
 			continue;
 		}
@@ -529,7 +518,7 @@ function applySqlLeaveNoTraceConnectionIds(value: unknown): void {
 			: '';
 		if (protectedIds.has(sourceConnectionId)) {
 			sqlPolicyBlockedBoxIds.add(boxId);
-			clearSqlPolicyBox(boxId);
+			retireSqlPolicyBox(boxId);
 		} else {
 			sqlPolicyBlockedBoxIds.delete(boxId);
 		}
@@ -2468,7 +2457,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		reportDatabasesError: onSqlDatabasesError,
 		handleStsResponse,
 		handleStsDiagnostics,
-		clearPolicyBox: clearSqlPolicyBox,
+		clearPolicyBox: retireSqlPolicyBox,
 	}) : 'not-sql';
 	if (sqlRoute !== 'not-sql') {
 		if (sqlCopilotExecutionIdentity && message.executing === true) {
@@ -3022,12 +3011,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					schemaFetchInFlightByBoxId[boxId] = false;
 					lastSchemaRequestAtByBoxId[boxId] = 0;
 					requireSchemaWorkerApply(boxId);
-					clearResultsState(boxId);
-					delete pState.queryResultJsonByBoxId[boxId];
-					delete pState.resultArtifactByBoxId[boxId];
 					if (typeof section?.setDatabasesLoading === 'function') section.setDatabasesLoading(false);
 					if (typeof section?.setRefreshLoading === 'function') section.setRefreshLoading(false);
-					if (typeof section?.clearResults === 'function') section.clearResults();
 					const chat = typeof section?.getCopilotChatEl === 'function' ? section.getCopilotChatEl() : null;
 					if (typeof chat?.clearConversation === 'function') chat.clearConversation();
 				}
@@ -3559,7 +3544,6 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					sqlPolicyBlockedBoxIds.delete(blockedId);
 				} else {
 					try { setQueryExecuting(message.boxId, false); } catch (e) { console.error('[kusto]', e); }
-					try { clearSqlPolicyBox(blockedId); } catch (e) { console.error('[kusto]', e); }
 					completeKustoTerminal(message);
 					acknowledgeKustoPublication(message, false);
 					break;
@@ -4297,7 +4281,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					else sqlPolicyBlockedBoxIds.add(id);
 					if (typeof sqlEl?.copilotWriteQueryCancel === 'function') sqlEl.copilotWriteQueryCancel();
 					if (typeof sqlEl?.copilotClearConversation === 'function') sqlEl.copilotClearConversation();
-					clearSqlPolicyBox(id);
+					retireSqlPolicyBox(id);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;

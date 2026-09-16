@@ -81,6 +81,33 @@ function createEffects(target: SqlSectionSessionTarget) {
 describe('routeSqlSectionMessage', () => {
 	beforeEach(() => clearSqlSectionSessionsForTest());
 
+	it('retires an SQL owner without clearing its committed result snapshot', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		const { effects, section } = createEffects(target);
+		target.setStsReady(true, 'owner-old', 0);
+		section.invalidateOwner.mockImplementation(() => target.setStsReady(false));
+
+		expect(routeSqlSectionMessage({
+			type: 'sqlConnectionOwnerChanged', boxId: target.boxId,
+			sectionInstanceId: target.instanceId, targetGeneration: 1, retired: true,
+		}, effects)).toBe('handled');
+
+		expect(section.invalidateOwner).toHaveBeenCalledWith(true);
+		expect(section.clearResults).not.toHaveBeenCalled();
+		expect(effects.clearPolicyBox).not.toHaveBeenCalled();
+		expect(effects.clearSchema).toHaveBeenCalledWith(target.boxId);
+		expect(effects.handleStsDiagnostics).toHaveBeenCalledWith(target.boxId, []);
+		expect(routeSqlSectionMessage({
+			type: 'queryResult', boxId: target.boxId, ownerToken: 'owner-old', executionId: 'late-run',
+		}, effects)).toBe('rejected');
+		expect(routeSqlSectionMessage({
+			type: 'sqlConnectionOwnerChanged', boxId: target.boxId,
+			sectionInstanceId: target.instanceId, targetGeneration: 0,
+		}, effects)).toBe('rejected');
+		expect(section.invalidateOwner).toHaveBeenCalledOnce();
+	});
+
 	it('rejects stale database responses and handles the exact request', () => {
 		const target = createTarget();
 		registerSqlSectionSession(target);

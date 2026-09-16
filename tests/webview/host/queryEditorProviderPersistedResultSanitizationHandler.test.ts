@@ -340,7 +340,7 @@ describe('QueryEditorProvider persisted result sanitization application', () => 
 		expect(handler.invalidateKustoPersistence).toHaveBeenCalledOnce();
 	});
 
-	it('keeps persisted-result sanitation authority out of the provider', () => {
+	it('keeps saved-state reads non-destructive and NEW-result filtering owned by the handler', () => {
 		const workspaceRoot = path.resolve(__dirname, '../../..');
 		const providerSource = fs.readFileSync(
 			path.join(workspaceRoot, 'src/host/queryEditorProvider.ts'),
@@ -350,6 +350,17 @@ describe('QueryEditorProvider persisted result sanitization application', () => 
 			path.join(workspaceRoot, 'src/host/persistedResultSanitizationApplicationHandler.ts'),
 			'utf8',
 		);
+		const handlerImplementation = handlerSource.slice(
+			handlerSource.indexOf('export class HostPersistedResultSanitizationApplicationHandler'),
+		);
+		const savedReadSource = handlerImplementation.slice(
+			handlerImplementation.indexOf('\tsanitizeSqlLeaveNoTraceState<'),
+			handlerImplementation.indexOf('\tcommitKustoSourceAdmissionFresh('),
+		);
+		const newPublicationSource = handlerImplementation.slice(
+			handlerImplementation.indexOf('\tpublishSqlLeaveNoTraceStateFresh<'),
+			handlerImplementation.indexOf('\tinvalidateSqlPersistence():'),
+		);
 
 		expect(providerSource).not.toContain('stripLegacyResultPayloads');
 		expect(providerSource).not.toContain('sanitizeKustoLeaveNoTraceStateFromSnapshot');
@@ -358,15 +369,25 @@ describe('QueryEditorProvider persisted result sanitization application', () => 
 		expect(providerSource).not.toContain('stripAllSqlOwnedResults');
 		expect(providerSource).not.toContain('sanitizeSqlPrincipalOwnedResultsFromSnapshot');
 		expect(providerSource).not.toContain('hasSqlOwnedState');
+		expect(providerSource).not.toContain('filterNewResultCandidates');
+		expect(providerSource).not.toContain('isSqlTargetProtected');
 		expect(providerSource).not.toContain('sqlPersistenceInvalidationEmitter');
 		expect(providerSource).not.toContain('kustoPersistenceInvalidationEmitter');
 		expect(providerSource).not.toContain('runWithLeaveNoTraceSnapshotLock');
 		expect(providerSource).not.toContain('tryRunWithSqlOwnerSnapshotLock');
 		expect(providerSource).toContain('this.persistedResultSanitizationApplication.dispose();');
-		expect(handlerSource).toContain('private stripLegacyResultPayloads');
-		expect(handlerSource).toContain('private sanitizeKustoLeaveNoTraceStateFromSnapshot');
-		expect(handlerSource).toContain('this.options.connectionManager.runWithLeaveNoTraceSnapshotLock');
-		expect(handlerSource).toContain('this.options.sqlWorkbench.tryRunWithSqlOwnerSnapshotLock');
+		expect(savedReadSource).toMatch(/catch \{\s+return state;\s+\}\s+return state;/);
+		expect(savedReadSource).toContain('if (!onKustoSanitized) return state;');
+		expect(savedReadSource).toContain('onKustoSanitized(state, state, { snapshot });');
+		expect(savedReadSource).toContain('return this.sanitizeSqlLeaveNoTraceState(state);');
+		expect(savedReadSource).not.toContain('filterNewResultCandidates');
+		expect(savedReadSource).not.toContain('tryRunWithSqlOwnerSnapshotLock');
+		expect(newPublicationSource).toContain('this.filterNewResultCandidates(');
+		expect(newPublicationSource).toContain('this.isSqlTargetProtected(source, snapshot, allowSectionTarget)');
+		expect(newPublicationSource).toContain('this.options.connectionManager.runWithLeaveNoTraceSnapshotLock');
+		expect(newPublicationSource).toContain('this.options.sqlWorkbench.tryRunWithSqlOwnerSnapshotLock');
+		expect(handlerSource).toContain('private filterNewResultCandidates<');
+		expect(handlerSource).toContain('private isSqlTargetProtected(');
 		expect(handlerSource).toContain('private readonly sqlPersistenceInvalidationEmitter');
 		expect(handlerSource).toContain('private readonly kustoPersistenceInvalidationEmitter');
 	});

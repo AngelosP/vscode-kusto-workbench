@@ -81,7 +81,7 @@ export class KwSortDialog extends LitElement {
 		const unusedCols = this.columns.map((c, i) => ({ name: c.name, idx: i }))
 			.filter(c => !this._draft.some(s => s.id === String(c.idx)));
 
-		return html`<div class="sd-bg" @click=${this._close}><div class="sd" role="dialog" aria-modal="true" aria-labelledby="sort-dialog-title" @click=${(e: Event) => e.stopPropagation()}>
+		return html`<div class="sd-bg" @mousedown=${this._close}><div class="sd" role="dialog" aria-modal="true" aria-labelledby="sort-dialog-title" @mousedown=${(e: Event) => e.stopPropagation()}>
 			<div class="sd-h">
 				<strong id="sort-dialog-title">Sort</strong>
 				<button class="nb sd-x" title="Close" @click=${this._close}>${ICON_CLOSE}</button>

@@ -5,13 +5,13 @@ export const styles = css`
 	:host{display:contents}
 
 	.sd-bg{position:fixed;top:var(--kw-modal-top, 0);left:0;right:0;height:var(--kw-modal-height, 100vh);background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center}
-	.sd{background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border);border-radius:6px;width:480px;max-width:calc(100% - 24px);max-height:80%;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.4);overflow:hidden}
+	.sd{background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border);border-radius:6px;width:480px;max-width:calc(100% - 24px);max-height:80%;box-shadow:0 8px 32px rgba(0,0,0,.4);overflow:auto;overscroll-behavior:contain}
 	.sd-h{display:flex;flex-shrink:0;align-items:center;justify-content:space-between;padding:14px 16px;background:linear-gradient(135deg, rgba(246,190,0,.08) 0%, rgba(246,190,0,.02) 100%);border-bottom:1px solid var(--vscode-panel-border)}
 	.sd-h-title{display:flex;align-items:center;gap:8px;overflow:hidden}
 	.sd-h-title strong{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 	.sd-h-icon{width:20px;height:20px;flex-shrink:0;color:#f2c811}
 	.sd-x{flex-shrink:0;width:28px;height:28px}
-	.sd-b{flex:1 1 auto;min-height:0;padding:16px;overflow:auto}
+	.sd-b{padding:16px}
 	.sd-f{display:flex;flex-shrink:0;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--vscode-panel-border);background:var(--vscode-sideBar-background, var(--vscode-editor-background))}
 	.sd-btn{padding:6px 16px;font-size:12px;font-family:inherit;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-button-border,transparent);background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);transition:background .15s}.sd-btn:hover:not(:disabled){background:var(--vscode-button-secondaryHoverBackground)}
 	.sd-btn-primary{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}.sd-btn-primary:hover:not(:disabled){background:var(--vscode-button-hoverBackground)}

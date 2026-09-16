@@ -16,11 +16,105 @@ import {
 	consumeKqlxProjectionAttempt,
 	createKqlxProjectionAttemptBudget,
 	publishKqlxTextFresh,
+	prepareKqlxSaveText,
 	resolveLinkedQueryUri,
 	shouldReloadKqlxAfterDocumentChange,
 } from '../../../src/host/kqlxEditorProvider';
+import { preserveKqlxResultAttachments, stripKqlxResultAttachments } from '../../../src/host/kqlxOverlay';
+import type { KqlxStateV1 } from '../../../src/host/kqlxFormat';
+import { createKustoResultBatch } from '../../../src/shared/kustoResultBatch';
 import { assertDocumentSectionKindsAllowed } from '../../../src/shared/documentSectionCapabilities';
 import * as vscode from 'vscode';
+
+describe('preserveKqlxResultAttachments', () => {
+	const attachment = {
+		resultJson: '{"rows":[["saved A"]]}',
+		result: { legacy: ['saved A'] },
+		resultArtifact: {
+			version: 1, artifactId: 'artifact-a', sourceBoxId: 'query_1', revision: 3, createdAt: 1,
+			producer: { engine: 'kusto', futureProducer: 'saved' },
+			futureArtifact: { retained: true },
+		},
+		selectedResultIndex: 2,
+		kustoAccountPartition: 'account-a',
+		kustoLeaveNoTraceRevision: 4,
+		principalFingerprint: 'principal-a',
+		revocationGeneration: 5,
+	};
+	const baseline = (type = 'query', id = 'query_1'): KqlxStateV1 => ({
+		sections: [{ type, id, query: 'original', ...attachment }],
+	});
+
+	it.each(['query', 'sql', 'copilotQuery'])('restores the exact saved %s attachment without mutating either input', type => {
+		const saved = baseline(type);
+		const candidate: KqlxStateV1 = { sections: [{
+			type, id: 'query_1', query: 'edited', futureSection: 'candidate',
+			resultArtifact: { artifactId: 'blocked-b' }, selectedResultIndex: 0,
+			principalFingerprint: 'blocked-b',
+		}] };
+		const before = JSON.stringify({ saved, candidate });
+
+		const restored = preserveKqlxResultAttachments(saved, candidate);
+
+		expect(restored.sections).toEqual([{ type, id: 'query_1', query: 'edited', futureSection: 'candidate', ...attachment }]);
+		expect(JSON.stringify({ saved, candidate })).toBe(before);
+		expect(restored.sections[0].resultArtifact).not.toBe(saved.sections[0].resultArtifact);
+	});
+
+	it('keeps an allowed replacement and its own metadata only', () => {
+		const candidate: KqlxStateV1 = { sections: [{
+			type: 'query', id: 'query_1', query: 'edited', resultJson: '{"rows":[["allowed B"]]}',
+		}] };
+		expect(preserveKqlxResultAttachments(baseline(), candidate)).toBe(candidate);
+		expect(candidate.sections[0]).not.toHaveProperty('resultArtifact');
+		expect(candidate.sections[0]).not.toHaveProperty('selectedResultIndex');
+	});
+
+	it('does not leave a blocked new attachment behind when no saved attachment exists', () => {
+		const submitted: KqlxStateV1 = { sections: [{ id: 'sql_1', type: 'sql', ...attachment }] };
+		const filtered: KqlxStateV1 = { sections: [{
+			id: 'sql_1', type: 'sql', query: 'edited', targetSignature: 'blocked-target',
+			principalFingerprint: 'blocked-principal', selectedResultIndex: 2,
+		}] };
+		for (const saved of [undefined, { sections: [{ id: 'sql_1', type: 'sql' }] }] satisfies Array<KqlxStateV1 | undefined>) {
+			expect(preserveKqlxResultAttachments(saved, filtered, submitted).sections)
+				.toEqual([{ id: 'sql_1', type: 'sql', query: 'edited', targetSignature: 'blocked-target' }]);
+		}
+	});
+
+	it('does not restore saved results after an ambiguous submitted identity is reduced to one section', () => {
+		const submitted: KqlxStateV1 = { sections: [
+			{ id: 'query_1', type: 'query', resultJson: 'B' },
+			{ id: 'query_1', type: 'copilotQuery', resultJson: 'C' },
+		] };
+		const filtered: KqlxStateV1 = { sections: [{ id: 'query_1', type: 'query' }] };
+		expect(preserveKqlxResultAttachments(baseline(), filtered, submitted)).toBe(filtered);
+	});
+
+	it('preserves canonical aliases and legacy result-only attachments', () => {
+		const saved: KqlxStateV1 = { sections: [{ type: 'copilotQuery', id: 'query_1', result: attachment.result }] };
+		expect(preserveKqlxResultAttachments(saved, { sections: [{ type: 'query', id: 'query_1' }] }).sections)
+			.toEqual([{ type: 'query', id: 'query_1', result: attachment.result }]);
+	});
+
+	it('does not restore removed, unrelated, idless, or ambiguously matched sections', () => {
+		const candidates: KqlxStateV1[] = [
+			{ sections: [] },
+			{ sections: [{ type: 'sql', id: 'query_1' }] },
+			{ sections: [{ type: 'query', id: 'query_2' }] },
+			{ sections: [{ type: 'query', id: ' query_1 ' }] },
+			{ sections: [{ type: 'query' }] },
+			{ sections: [{ type: 'query', id: 'query_1' }, { type: 'copilotQuery', id: 'query_1' }] },
+		];
+		for (const candidate of candidates) expect(preserveKqlxResultAttachments(baseline(), candidate)).toBe(candidate);
+		const candidate: KqlxStateV1 = { sections: [{ type: 'query', id: 'query_1' }] };
+		expect(preserveKqlxResultAttachments({ sections: [...baseline().sections, ...baseline('copilotQuery').sections] }, candidate))
+			.toBe(candidate);
+		expect(preserveKqlxResultAttachments(baseline('query', ''), candidate)).toBe(candidate);
+		expect(preserveKqlxResultAttachments(undefined, candidate)).toBe(candidate);
+		expect(preserveKqlxResultAttachments({ sections: [] }, candidate)).toBe(candidate);
+	});
+});
 
 describe('parseNativePersistDocumentState', () => {
 	it('rejects malformed and accessor-backed state before accepting a canonical follow-up', () => {
@@ -70,6 +164,131 @@ describe('resolveLinkedQueryUri', () => {
 });
 
 describe('publishKqlxTextFresh', () => {
+	it.each(['query', 'sql'])('keeps deliberate %s result selection changes while preserving the same saved payload', async type => {
+		const batch = createKustoResultBatch([
+			{ columns: ['Value'], rows: [['first']], metadata: {} },
+			{ columns: ['Value'], rows: [['second']], metadata: {} },
+			{ columns: ['Value'], rows: [['third']], metadata: {} },
+		]);
+		if (!batch.ok) throw new Error('Invalid multi-result fixture');
+		const resultJson = JSON.stringify(batch.value);
+		const resultArtifact = {
+			version: 1, artifactId: 'selection-artifact', sourceBoxId: 'selection-query', revision: 4, createdAt: 1,
+			futureMetadata: { retained: true },
+		};
+		let durable: KqlxStateV1 = { sections: [{
+			id: 'selection-query', type, resultJson, resultArtifact, selectedResultIndex: 2,
+		}] };
+		for (const filtered of [false, true]) {
+			for (const selectedResultIndex of [1, 0, 2, undefined]) {
+				const submitted: KqlxStateV1 = { sections: [{
+					id: 'selection-query', type, resultJson, resultArtifact,
+					...(selectedResultIndex === undefined ? {} : { selectedResultIndex }),
+				}] };
+				const text = JSON.stringify({ kind: 'kqlx', version: 1, state: submitted });
+				const intermediate = await prepareKqlxSaveText(text, 'kqlx', vscode.EndOfLine.LF, durable);
+				expect(JSON.parse(intermediate).state.sections[0].resultJson).toBe(resultJson);
+				const savedText = await publishKqlxTextFresh(text, 'kqlx', vscode.EndOfLine.LF,
+					async (state, publish) => publish(filtered ? stripKqlxResultAttachments(state) : state),
+					async output => output, durable);
+				durable = JSON.parse(savedText).state;
+				expect(durable.sections).toEqual(submitted.sections);
+			}
+		}
+	});
+
+	it('does not rewrite an unchanged saved attachment when sanitation omits its legacy result field', async () => {
+		const state: KqlxStateV1 = { sections: [{
+			id: 'query_1', type: 'query', query: 'edited',
+			resultJson: '{"rows":[["saved A"]]}', result: { legacy: 'saved A' },
+			resultArtifact: { version: 1, artifactId: 'artifact-a', sourceBoxId: 'query_1', revision: 2, createdAt: 1 },
+			selectedResultIndex: 1, kustoAccountPartition: 'account-a', kustoLeaveNoTraceRevision: 2,
+		}] };
+		const input = JSON.stringify({ kind: 'kqlx', version: 1, state });
+		const output = await publishKqlxTextFresh(input, 'kqlx', vscode.EndOfLine.LF, async (candidate, publish) => {
+			return publish({ ...candidate, sections: candidate.sections.map(section => {
+				const filtered = { ...section } as Record<string, unknown>;
+				delete filtered.result;
+				return filtered as KqlxStateV1['sections'][number];
+			}) });
+		}, async text => text, state);
+		expect(JSON.parse(output).state).toEqual(state);
+	});
+
+	it.each(['query', 'sql'])('keeps saved A in the %s save intermediate even if new-result restoration fails', async type => {
+		const savedAttachment = {
+			resultJson: '{"rows":[["saved A"]]}', result: { rows: [['legacy A']] },
+			resultArtifact: {
+				version: 1, artifactId: 'artifact-a', sourceBoxId: 'section_1', revision: 3, createdAt: 1,
+				futureMetadata: { retained: 'A' },
+			},
+			selectedResultIndex: 2, kustoAccountPartition: 'account-a', kustoLeaveNoTraceRevision: 4,
+			principalFingerprint: 'principal-a', revocationGeneration: 5,
+		};
+		const baseline: KqlxStateV1 = { sections: [{ id: 'section_1', type, query: 'original', ...savedAttachment }] };
+		const candidate = JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [{
+			id: 'section_1', type, query: 'edited', resultJson: '{"rows":[["new B"]]}',
+			resultArtifact: { version: 1, artifactId: 'artifact-b', sourceBoxId: 'section_1', revision: 4, createdAt: 2 },
+		}] } });
+		const intermediate = await prepareKqlxSaveText(candidate, 'kqlx', vscode.EndOfLine.LF, baseline);
+		expect(JSON.parse(intermediate).state.sections).toEqual([{ id: 'section_1', type, query: 'edited', ...savedAttachment }]);
+		const publish = vi.fn();
+		await expect(publishKqlxTextFresh(candidate, 'kqlx', vscode.EndOfLine.LF, async () => {
+			throw new Error('restoration failed');
+		}, publish, JSON.parse(intermediate).state)).rejects.toThrow('restoration failed');
+		expect(publish).not.toHaveBeenCalled();
+		expect(JSON.parse(intermediate).state.sections[0].resultJson).toBe(savedAttachment.resultJson);
+		const fresh = await prepareKqlxSaveText(candidate, 'kqlx', vscode.EndOfLine.LF, undefined);
+		expect(JSON.parse(fresh).state.sections).toEqual([{ id: 'section_1', type, query: 'edited' }]);
+	});
+
+	it.each(['query', 'sql'])('keeps disk A through blocked and omitted %s candidates, then replaces it with allowed B', async type => {
+		const savedAttachment = {
+			resultJson: '{"rows":[["saved A"]]}', result: { rows: [['legacy A']] },
+			resultArtifact: {
+				version: 1, artifactId: 'artifact-a', sourceBoxId: 'section_1', revision: 3, createdAt: 1,
+				futureMetadata: { retained: 'A' },
+			},
+			selectedResultIndex: 2, kustoAccountPartition: 'account-a', kustoLeaveNoTraceRevision: 4,
+			principalFingerprint: 'principal-a', revocationGeneration: 5,
+		};
+		let durable: KqlxStateV1 = { sections: [{ id: 'section_1', type, query: 'original', ...savedAttachment }] };
+		let policyHeld = false;
+		let blocked = true;
+		const publishStateFresh = async <R>(state: KqlxStateV1, publish: (state: KqlxStateV1) => Promise<R>): Promise<R> => {
+			policyHeld = true;
+			try {
+				return await publish(blocked ? {
+					...state,
+					sections: state.sections.map(section => ({ id: section.id, type: section.type, query: section.query })),
+				} : state);
+			} finally {
+				policyHeld = false;
+			}
+		};
+		const publish = async (sections: KqlxStateV1['sections']): Promise<KqlxStateV1> => {
+			const text = JSON.stringify({ kind: 'kqlx', version: 1, futureRoot: 'kept', state: { sections } });
+			return publishKqlxTextFresh(text, 'kqlx', vscode.EndOfLine.CRLF, publishStateFresh, async output => {
+				expect(policyHeld).toBe(true);
+				const parsed = JSON.parse(output);
+				expect(parsed.futureRoot).toBe('kept');
+				durable = parsed.state;
+				return durable;
+			}, durable);
+		};
+		const omitted = [{ id: 'section_1', type, query: 'edited' }];
+		expect((await publish(omitted)).sections).toEqual([{ ...omitted[0], ...savedAttachment }]);
+		const replacement = [{ ...omitted[0], resultJson: '{"rows":[["new B"]]}' }];
+		expect((await publish(replacement)).sections).toEqual([{ ...omitted[0], ...savedAttachment }]);
+		blocked = false;
+		expect((await publish(replacement)).sections).toEqual(replacement);
+		blocked = true;
+		expect((await publish(omitted)).sections).toEqual(replacement);
+		expect((await publish([])).sections).toEqual([]);
+		expect((await publish(replacement)).sections).toEqual(omitted);
+		expect(policyHeld).toBe(false);
+	});
+
 	it('blocks malformed text before invoking either publication callback', async () => {
 		const publishStateFresh = vi.fn();
 		const publishText = vi.fn();

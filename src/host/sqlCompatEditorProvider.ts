@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { preserveKqlxResultAttachments } from './kqlxOverlay';
 
 import { randomUUID } from 'crypto';
 import * as path from 'path';
@@ -332,7 +333,12 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			buildFile: (state, baseFile) => SqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, state, baseFile),
 			stringify: stringifyKqlxFile,
 		});
-		const freshSidecarFile = (state: KqlxStateV1) => sidecarStore.buildFresh(state, sidecarFile);
+		const freshSidecarFile = (state: KqlxStateV1) => {
+			const baseline = lastWrittenSidecarText === undefined
+				? undefined : parseCompatSidecarText(lastWrittenSidecarText, SQL_COMPAT_SIDECAR_FORMAT);
+			if (baseline && !baseline.ok) throw new Error(baseline.error);
+			return sidecarStore.buildFresh(state, baseline?.file, sidecarFile);
+		};
 		const writeFreshSidecar = (
 			uri: vscode.Uri,
 			state: KqlxStateV1,
@@ -578,44 +584,6 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				}
 			}));
 		}
-		const repairInvalidatedPersistence = () => {
-			if (sidecarSession.isClosing || !sidecarUri || !lastKnownSidecarState) return;
-			const repairUri = sidecarUri;
-			const draftState = lastKnownSidecarState;
-			const draftGeneration = sidecarSession.generation;
-			const repairEditRevision = sidecarSession.currentEditRevision;
-			void sidecarSession.enqueueAfterPersists(async () => {
-				const [sanitizedDraft, repaired] = await Promise.all([
-					queryEditor.sanitizeSqlLeaveNoTraceStateFresh(draftState),
-					repairPersistedSidecar(repairUri),
-				]);
-				const draftUnchanged = sidecarSession.generation === draftGeneration && lastKnownSidecarState === draftState;
-				if (draftUnchanged) {
-					lastKnownSidecarState = sanitizedDraft;
-				}
-				if (!repaired) return;
-				sidecarSession.rebaseDraftBase(repaired.inputText, repaired.text);
-				sidecarFile = repaired.file;
-				lastWrittenSidecarText = repaired.text;
-				lastWrittenSidecarIdentity = repaired.identity;
-				if (!sidecarSession.isDirty && draftUnchanged
-					&& sidecarSession.currentStateEditRevision === repairEditRevision
-					&& sidecarSession.currentEditRevision === repairEditRevision) {
-					const applied = await postDocument({
-						forceReload: true,
-						expectedEditRevision: repairEditRevision,
-						sidecarFileOverride: repaired.file,
-					});
-					if (!applied
-						|| sidecarSession.generation !== draftGeneration
-						|| sidecarSession.currentEditRevision !== repairEditRevision) return;
-					lastKnownSidecarState = repaired.file.state;
-					sidecarSession.markClean(repairEditRevision);
-				}
-			}).catch(() => undefined);
-		};
-		subscriptions.push(queryEditor.onDidInvalidateSqlPersistence(repairInvalidatedPersistence));
-		subscriptions.push(queryEditor.onDidInvalidateKustoPersistence(repairInvalidatedPersistence));
 		const ownedDocumentEdits = new OwnedDocumentEditTracker(text => text.replace(/\r\n?/g, '\n'));
 		let activeSourceMutations = 0;
 		const applyOwnedSourceEdit = async (edit: vscode.WorkspaceEdit, expectedText: string): Promise<boolean> => {
@@ -1132,6 +1100,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						if (!compatSidecarFileIdentityEquals(baseline.identity, locked.identity)
 							|| locked.text !== currentText) return { raced: true as const };
 						const file = SqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, state, baselineFile);
+						file.state = preserveKqlxResultAttachments(baselineFile.state, file.state, baselineFile.state);
 						const text = stringifyKqlxFile(file);
 						const identity = text !== currentText
 							? await writeCompatSidecarTextOwned(targetSidecarUri, text, baseline.identity, currentText)

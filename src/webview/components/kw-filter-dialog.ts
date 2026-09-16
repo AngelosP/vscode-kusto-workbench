@@ -458,7 +458,7 @@ export class KwFilterDialog extends LitElement {
 		]);
 		const activeRules = this._draftRules.filter(r => String(r.op || '').trim()).length;
 
-		return html`<div class="sd-bg" @click=${this._close}><div class="sd fd" role="dialog" aria-modal="true" aria-labelledby="filter-dialog-title" @click=${(e: Event) => e.stopPropagation()}>
+		return html`<div class="sd-bg" @mousedown=${this._close}><div class="sd fd" role="dialog" aria-modal="true" aria-labelledby="filter-dialog-title" @mousedown=${(e: Event) => e.stopPropagation()}>
 			<div class="sd-h">
 				<strong id="filter-dialog-title">Filter applied to the column '${colName}'</strong>
 				<button type="button" class="nb sd-x" title="Close" aria-label="Close" @click=${this._close}>${ICON_CLOSE}</button>

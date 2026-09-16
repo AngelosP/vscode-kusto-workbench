@@ -1,14 +1,87 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { Uri } from 'vscode';
+import * as vscode from 'vscode';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import {
+	KqlCompatEditorProvider,
 	getSidecarKqlxUriForCompat,
 	resolveLinkedQueryUri,
 	isLinkedSidecarForCompatFile,
 	pendingAddKindKeyForUri,
 } from '../../../src/host/kqlCompatEditorProvider';
-import type { KqlxFileV1 } from '../../../src/host/kqlxFormat';
+import type { KqlxFileV1, KqlxStateV1 } from '../../../src/host/kqlxFormat';
+import { SqlCompatEditorProvider } from '../../../src/host/sqlCompatEditorProvider';
+import { stripKqlxResultAttachments } from '../../../src/host/kqlxOverlay';
+
+afterEach(() => vi.restoreAllMocks());
+
+describe.each(['query', 'sql'] as const)('%s companion baseline adoption', primaryKind => {
+	it.each(['existing', 'absent', 'unrelated'] as const)('uses only the %s durable attachment baseline', async mode => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-companion-adoption-'));
+		const extension = primaryKind === 'query' ? 'kql' : 'sql';
+		const uri = Uri.file(path.join(tmpDir, `sample.${extension}`).replace(/\\/g, '/'));
+		const sidecarPath = `${uri.fsPath}.json`;
+		const attachment = {
+			resultJson: '{"rows":[["saved A"]]}', result: { legacy: 'A' },
+			resultArtifact: {
+				version: 1, artifactId: 'artifact-a', sourceBoxId: 'primary', revision: 2, createdAt: 1,
+				futureMetadata: { kept: 'A' },
+			},
+			selectedResultIndex: 1, kustoAccountPartition: 'account-a', kustoLeaveNoTraceRevision: 2,
+			targetSignature: 'target-a', principalFingerprint: 'principal-a', revocationGeneration: 3,
+		};
+		const savedSection = { id: 'primary', type: primaryKind, linkedQueryPath: `sample.${extension}`, ...attachment };
+		const candidate: KqlxStateV1 = { sections: [{ id: 'primary', type: primaryKind, resultJson: '{"rows":[["blocked B"]]}' }] };
+		type Publication = <T>(state: KqlxStateV1, publish: (state: KqlxStateV1) => Promise<T>) => Promise<T>;
+		type Enabled = { uri: vscode.Uri; file: KqlxFileV1; text: string } | undefined;
+		const publishFresh: Publication = async (state, publish) => publish(stripKqlxResultAttachments(state));
+		vi.spyOn(vscode.window, 'showInformationMessage').mockResolvedValue('Create companion file' as never);
+		vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue('Overwrite sidecar' as never);
+		vi.spyOn(vscode.workspace.fs, 'readFile').mockImplementation(async target => {
+			try { return await fs.promises.readFile(target.fsPath); }
+			catch (error) {
+				if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+					throw Object.assign(new Error('File not found'), { code: 'FileNotFound' });
+				}
+				throw error;
+			}
+		});
+		try {
+			fs.writeFileSync(uri.fsPath, 'unchanged source', 'utf8');
+			if (mode !== 'absent') {
+				fs.writeFileSync(sidecarPath, JSON.stringify({
+					kind: primaryKind === 'query' ? 'kqlx' : 'sqlx', version: 1, futureRoot: 'kept',
+					state: { sections: [{ ...savedSection, linkedQueryPath: mode === 'existing' ? `sample.${extension}` : `other.${extension}` }] },
+				}), 'utf8');
+			}
+			const document = { uri } as vscode.TextDocument;
+			let enabled: Enabled;
+			if (primaryKind === 'query') {
+				const provider = Object.create(KqlCompatEditorProvider.prototype) as {
+					enableSidecarKqlxForCompat(document: vscode.TextDocument, inferred: undefined, state: KqlxStateV1, publish: Publication): Promise<Enabled>;
+				};
+				enabled = await provider.enableSidecarKqlxForCompat(document, undefined, candidate, publishFresh);
+			} else {
+				const provider = Object.create(SqlCompatEditorProvider.prototype) as {
+					enableSidecarForSqlCompat(document: vscode.TextDocument, state: KqlxStateV1, publish: Publication): Promise<Enabled>;
+				};
+				enabled = await provider.enableSidecarForSqlCompat(document, candidate, publishFresh);
+			}
+			expect(enabled).toBeDefined();
+			const saved = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+			expect(saved.state.sections).toEqual(mode === 'existing'
+				? [savedSection]
+				: [{ id: 'primary', type: primaryKind, linkedQueryPath: `sample.${extension}` }]);
+			if (mode === 'existing') expect(saved.futureRoot).toBe('kept');
+			expect(enabled?.file).toEqual(saved);
+			expect(fs.readFileSync(uri.fsPath, 'utf8')).toBe('unchanged source');
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+});
 
 // ── getSidecarKqlxUriForCompat ───────────────────────────────────────────────
 
