@@ -44,6 +44,8 @@ export const ICONS = {
 	delete: codicon('trash'),
 	copy: codicon('copy'),
 	refresh: codicon('refresh'),
+	check: codicon('check'),
+	warning: codicon('warning'),
 	info: codicon('info'),
 	mailRead: svg(html`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M2.5 6.2l5.5 4.1 5.5-4.1"/><path d="M3.5 4.5h9a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11V6a1.5 1.5 0 0 1 1.5-1.5z"/></svg>`),
 	mailUnread: svg(html`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M2.5 6.2l5.5 4.1 5.5-4.1"/><path d="M3.5 4.5h9a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11V6a1.5 1.5 0 0 1 1.5-1.5z"/><circle cx="12.25" cy="3.75" r="2.15" fill="currentColor" stroke="var(--vscode-sideBar-background, var(--vscode-editor-background))" stroke-width="1"/></svg>`),

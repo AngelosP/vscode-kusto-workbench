@@ -417,22 +417,30 @@ describe('kw-publish-pbi-dialog', () => {
 		expect(buttonText(primaryButton(dialog))).toBe('Re-publish');
 	});
 
-	it('renders success information with refresh schedule, initial refresh, and links', async () => {
+	it.each([
+		{ scheduleConfigured: true, initialRefreshTriggered: true },
+		{ scheduleConfigured: true, initialRefreshTriggered: false },
+		{ scheduleConfigured: false, initialRefreshTriggered: true },
+		{ scheduleConfigured: false, initialRefreshTriggered: false },
+	])('renders clear Import status and links for schedule=$scheduleConfigured, refresh=$initialRefreshTriggered', async ({ scheduleConfigured, initialRefreshTriggered }) => {
 		localStorage.setItem('kw.publishPbi.lastWorkspaceId', 'workspace-1');
 		localStorage.setItem('kw.publishPbi.lastWorkspaceName', 'Analytics');
 		const dialog = createDialog();
 		await showDialog(dialog);
 		await sendWorkspaces(dialog);
 		primaryButton(dialog).click();
-		await sendPublishSuccess(dialog);
+		await sendPublishSuccess(dialog, { scheduleConfigured, initialRefreshTriggered });
 
 		const rows = dialog.shadowRoot?.querySelectorAll('.ppd-status-success > .ppd-success-row') || [];
 		expect(rows).toHaveLength(4);
 		expect(rows[0].textContent).toContain('Published Successfully');
-		expect(rows[1].textContent).toContain('Refresh schedule');
-		expect(rows[1].textContent).toContain('Daily at 1:00 AM UTC');
-		expect(rows[2].textContent).toContain('Initial refresh');
-		expect(rows[2].textContent).toContain('Started');
+		expect(rows[1].textContent).toContain(scheduleConfigured ? 'Daily refresh scheduled for 1:00 AM UTC' : 'Refresh schedule not configured');
+		expect(rows[2].textContent).toContain(initialRefreshTriggered ? 'Initial refresh requested' : 'Initial refresh not started');
+		expect(rows[1].querySelector('.codicon-check') !== null).toBe(scheduleConfigured);
+		expect(rows[2].querySelector('.codicon-check') !== null).toBe(initialRefreshTriggered);
+		expect(rows[1].querySelector('.codicon-warning') !== null).toBe(!scheduleConfigured);
+		expect(rows[2].querySelector('.codicon-warning') !== null).toBe(!initialRefreshTriggered);
+		expect(dialog.shadowRoot?.querySelector('.ppd-success-schedule')).toBeNull();
 
 		const links = Array.from(dialog.shadowRoot?.querySelectorAll('.ppd-success-link') || []) as HTMLAnchorElement[];
 		expect(links.map(link => link.textContent)).toEqual(['View report', 'Semantic model settings']);
@@ -440,5 +448,27 @@ describe('kw-publish-pbi-dialog', () => {
 		expect(links[1].getAttribute('href')).toBe('https://app.powerbi.com/groups/workspace-1/settings/datasets/model-new');
 		expect(links.every(link => link.getAttribute('target') === '_blank')).toBe(true);
 		expect(links.every(link => link.getAttribute('rel') === 'noopener noreferrer')).toBe(true);
+	});
+
+	it('keeps DirectQuery success independent from Import refresh setup', async () => {
+		const dialog = createDialog();
+		await showDialog(dialog, storedPublishInfo);
+		await sendWorkspaces(dialog);
+		await sendExists(dialog, true);
+		primaryButton(dialog).click();
+		await sendPublishSuccess(dialog, {
+			dataMode: 'directQuery', scheduleConfigured: false, initialRefreshTriggered: undefined,
+			semanticModelId: storedPublishInfo.semanticModelId, reportId: storedPublishInfo.reportId,
+			reportUrl: storedPublishInfo.reportUrl,
+		});
+
+		const status = dialog.shadowRoot?.querySelector('.ppd-status-success');
+		expect(status?.textContent).toContain('Updated Successfully');
+		expect(status?.textContent).toContain('Direct Query uses live data; no scheduled refresh needed');
+		expect(status?.textContent).not.toContain('not configured');
+		expect(status?.textContent).not.toContain('Initial refresh');
+		expect(status?.querySelectorAll('.ppd-success-link')).toHaveLength(2);
+		expect(status?.querySelector<HTMLAnchorElement>('.ppd-success-link:last-child')?.href)
+			.toBe('https://app.powerbi.com/groups/workspace-1/settings/datasets/model-1');
 	});
 });

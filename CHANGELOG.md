@@ -11,6 +11,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Copilot Chat now shows cumulative tool calls while generating and no longer stops after 100 model requests.
 * Bugs
     * Search results for columns deep link to the table correctly now.
+    * Exported Power BI Import models now disable Kusto result truncation, preventing refresh failures when datasets exceed the default 64 MB or 500,000-row limits.
 
 ## [5.1.1] - 2026.09.13
 

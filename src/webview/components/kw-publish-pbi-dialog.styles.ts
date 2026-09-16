@@ -6,13 +6,13 @@ export const styles = css`
 
 	.sd-bg{position:fixed;top:var(--kw-modal-top, 0);left:0;right:0;height:var(--kw-modal-height, 100vh);background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center}
 	.sd{background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border);border-radius:6px;width:480px;max-width:calc(100% - 24px);max-height:80%;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.4);overflow:hidden}
-	.sd-h{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:linear-gradient(135deg, rgba(246,190,0,.08) 0%, rgba(246,190,0,.02) 100%);border-bottom:1px solid var(--vscode-panel-border)}
+	.sd-h{display:flex;flex-shrink:0;align-items:center;justify-content:space-between;padding:14px 16px;background:linear-gradient(135deg, rgba(246,190,0,.08) 0%, rgba(246,190,0,.02) 100%);border-bottom:1px solid var(--vscode-panel-border)}
 	.sd-h-title{display:flex;align-items:center;gap:8px;overflow:hidden}
 	.sd-h-title strong{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 	.sd-h-icon{width:20px;height:20px;flex-shrink:0;color:#f2c811}
 	.sd-x{flex-shrink:0;width:28px;height:28px}
-	.sd-b{padding:16px;overflow:auto}
-	.sd-f{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--vscode-panel-border);background:var(--vscode-sideBar-background, var(--vscode-editor-background))}
+	.sd-b{flex:1 1 auto;min-height:0;padding:16px;overflow:auto}
+	.sd-f{display:flex;flex-shrink:0;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--vscode-panel-border);background:var(--vscode-sideBar-background, var(--vscode-editor-background))}
 	.sd-btn{padding:6px 16px;font-size:12px;font-family:inherit;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-button-border,transparent);background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);transition:background .15s}.sd-btn:hover:not(:disabled){background:var(--vscode-button-secondaryHoverBackground)}
 	.sd-btn-primary{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}.sd-btn-primary:hover:not(:disabled){background:var(--vscode-button-hoverBackground)}
 	.sd-btn:disabled{opacity:.5;cursor:default}
@@ -39,22 +39,22 @@ export const styles = css`
 	/* ── Status ── */
 	.ppd-status{display:flex;align-items:center;gap:8px;padding:12px 16px;font-size:12px;border-top:1px solid var(--vscode-panel-border)}
 	.ppd-status-error{color:var(--vscode-errorForeground)}
-	.ppd-status-success{position:relative;display:flex;flex-direction:column;gap:8px;padding:12px 14px 12px 16px;margin:0 16px 12px;border-radius:6px;overflow:hidden;background:linear-gradient(135deg, rgba(115,201,145,.14), rgba(115,201,145,.055) 58%, rgba(64,160,255,.055));border:1px solid rgba(115,201,145,.34);box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 8px 20px rgba(0,0,0,.16)}
-	.ppd-status-success::before{content:'';position:absolute;inset:0 auto 0 0;width:3px;background:var(--vscode-testing-iconPassed, #73c991)}
-	.ppd-success-row{position:relative;display:flex;align-items:center;gap:10px;min-width:0;z-index:1}
+	.ppd-status-success{display:flex;flex-shrink:0;flex-direction:column;gap:6px;padding:12px 16px;background:color-mix(in srgb,var(--vscode-testing-iconPassed, #73c991) 10%,var(--vscode-editor-background));border-top:1px solid var(--vscode-panel-border)}
+	.ppd-success-row{display:flex;align-items:center;gap:8px;min-width:0}
 	.ppd-success-summary{color:var(--vscode-testing-iconPassed, #73c991)}
-	.ppd-success-check{width:20px;height:20px;flex-shrink:0;filter:drop-shadow(0 1px 4px rgba(115,201,145,.35))}
-	.ppd-success-text{font-size:13px;font-weight:700;white-space:nowrap;color:var(--vscode-foreground)}
-	.ppd-success-schedule-row{padding-left:30px;gap:7px;color:var(--vscode-descriptionForeground);flex-wrap:wrap}
-	.ppd-success-schedule-row .codicon{font-size:13px;width:13px;height:13px;color:var(--vscode-testing-iconPassed, #73c991)}
-	.ppd-success-schedule-label{font-size:11px;font-weight:700;color:var(--vscode-foreground)}
-	.ppd-success-actions{gap:8px;flex-wrap:wrap;padding-left:30px}
-	.ppd-success-link{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:27px;padding:5px 10px;font-size:12px;border-radius:5px;background:rgba(255,255,255,.035);color:var(--vscode-textLink-foreground);text-decoration:none;border:1px solid rgba(128,128,128,.26);cursor:pointer;transition:background .15s,border-color .15s,transform .15s,box-shadow .15s;line-height:1.35;box-shadow:inset 0 1px 0 rgba(255,255,255,.035)}
-	.ppd-success-link:hover{background:var(--vscode-button-secondaryHoverBackground);border-color:rgba(115,201,145,.42);text-decoration:none;transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.18)}
+	.ppd-success-check{display:flex;align-items:center;justify-content:center;width:18px;height:18px;flex-shrink:0;border-radius:50%;background:var(--vscode-testing-iconPassed, #73c991);color:var(--vscode-editor-background)}
+	.ppd-success-check .codicon{font-size:14px}
+	.ppd-success-text{font-size:13px;font-weight:600;overflow-wrap:anywhere;color:var(--vscode-foreground)}
+	.ppd-success-detail-row{padding-left:26px;align-items:flex-start;font-size:12px;line-height:1.5;color:var(--vscode-foreground)}
+	.ppd-success-detail-row .codicon{flex:0 0 14px;width:14px;height:14px;margin-top:2px;font-size:14px;color:var(--vscode-descriptionForeground)}
+	.ppd-success-detail-row .codicon-check{color:var(--vscode-testing-iconPassed, #73c991)}
+	.ppd-success-detail-row .codicon-warning{color:var(--vscode-editorWarning-foreground)}
+	.ppd-success-actions{gap:6px 18px;flex-wrap:wrap;padding-left:26px;margin-top:2px}
+	.ppd-success-link{display:inline-flex;align-items:center;gap:6px;min-width:0;min-height:24px;font-size:12px;line-height:1.5;color:var(--vscode-textLink-foreground);text-decoration:none;cursor:pointer}
+	.ppd-success-link:hover{color:var(--vscode-textLink-activeForeground);text-decoration:underline}
 	.ppd-success-link:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:2px}
-	.ppd-success-link .codicon{font-size:13px;width:13px;height:13px;color:var(--vscode-testing-iconPassed, #73c991)}
-	.ppd-success-link a{color:inherit;text-decoration:none}
-	.ppd-success-schedule{display:inline-flex;align-items:center;min-height:20px;padding:2px 8px;border-radius:999px;background:rgba(255,255,255,.035);border:1px solid rgba(128,128,128,.18);font-size:11px;color:var(--vscode-descriptionForeground);min-width:0}
+	.ppd-success-link .codicon{font-size:13px;width:13px;height:13px;flex-shrink:0}
+	.ppd-success-link span:last-child{overflow-wrap:anywhere}
 	.ppd-spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--vscode-foreground);border-top-color:transparent;border-radius:50%;animation:ppd-spin .8s linear infinite;flex-shrink:0;vertical-align:middle}
 	@keyframes ppd-spin{to{transform:rotate(360deg)}}
 

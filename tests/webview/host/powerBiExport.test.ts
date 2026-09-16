@@ -1637,6 +1637,7 @@ describe('generateTableTmdl', () => {
 
 		expect(tmdl).toContain('mode: import');
 		expect(tmdl).not.toContain('mode: directQuery');
+		expect(tmdl).toContain(', [NoTruncate=true])');
 	});
 
 	it('uses DirectQuery mode when requested', () => {
@@ -1644,6 +1645,7 @@ describe('generateTableTmdl', () => {
 
 		expect(tmdl).toContain('mode: directQuery');
 		expect(tmdl).not.toContain('mode: import');
+		expect(tmdl).not.toContain('NoTruncate');
 	});
 
 	it('preserves the AzureDataExplorer.Contents expression in both modes', () => {
@@ -1749,6 +1751,14 @@ describe('generateTableTmdl', () => {
 });
 
 describe('generateDimTableTmdl', () => {
+	it('disables result truncation for Import partitions only', () => {
+		const imported = generateDimTableTmdl('Dim Skill', 'SkillName', 'string', 'https://cluster.kusto.windows.net', 'db', factDataSource.query);
+		const directQuery = generateDimTableTmdl('Dim Skill', 'SkillName', 'string', 'https://cluster.kusto.windows.net', 'db', factDataSource.query, 'directQuery');
+
+		expect(imported).toContain(', [NoTruncate=true])');
+		expect(directQuery).not.toContain('NoTruncate');
+	});
+
 	it('canonicalizes truncated ADX cluster URLs for Power BI', () => {
 		const tmdl = generateDimTableTmdl('Dim Skill', 'SkillName', 'string', 'https://ddtelinsights', 'db', factDataSource.query);
 
@@ -3973,11 +3983,14 @@ describe('Power BI project artifact manifest', () => {
 
 	it('feeds local export and Fabric preparation from one byte-identical sorted manifest', async () => {
 		const { manifest } = representativeManifest();
+		const factTableArtifact = manifest.artifacts.find(artifact =>
+			artifact.path === 'ArtifactParity.SemanticModel/definition/tables/Fact_Events.tmdl');
 
 		expect(manifest.artifacts.map(artifact => artifact.path)).toEqual(
 			[...manifest.artifacts.map(artifact => artifact.path)].sort(),
 		);
 		expect(new Set(manifest.artifacts.map(artifact => artifact.path)).size).toBe(manifest.artifacts.length);
+		expect(Buffer.from(factTableArtifact!.bytes).toString('utf8')).toContain(', [NoTruncate=true])');
 
 		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile').mockResolvedValue(undefined);
 		const createDirectory = vi.spyOn(vscode.workspace.fs, 'createDirectory').mockResolvedValue(undefined);
@@ -4082,7 +4095,7 @@ describe('Power BI project artifact manifest', () => {
 			{ path: 'ArtifactParity.SemanticModel/definition/cultures/en-US.tmdl', sha256: 'a995d477a1d573696686ae8d71e4e145e6f59a77effcace88992a3491440c77a' },
 			{ path: 'ArtifactParity.SemanticModel/definition/database.tmdl', sha256: '71bbba8bc0dd61900dc629a69a3d8c62918e3a2f94878e08867319d6e8c356c1' },
 			{ path: 'ArtifactParity.SemanticModel/definition/model.tmdl', sha256: '4196e14640049c96ff846e25867af225d25f5fc7c20611eed4284da4d7775fb7' },
-			{ path: 'ArtifactParity.SemanticModel/definition/tables/Fact_Events.tmdl', sha256: 'f520656d6cf36b6e8a5ddf0f4108c0bd675e3bd3298c4cb6933b141551c6e449' },
+			{ path: 'ArtifactParity.SemanticModel/definition/tables/Fact_Events.tmdl', sha256: '2fd37ab83e18cf4ada5bbb78419e683f09e9a7045d78673802a649ae68921360' },
 			{ path: 'ArtifactParity.SemanticModel/definition/tables/_KW_HtmlMeasures.tmdl', sha256: '6e19edcabc20eb36f323188ff6cbe28bb04936f80be90334b37d5248e65c3b27' },
 			{ path: 'ArtifactParity.pbip', sha256: 'add5698e04ea38dcc8d36609402757c6e2c6fdefaebff5bea49eef0f192e2b81' },
 		]);

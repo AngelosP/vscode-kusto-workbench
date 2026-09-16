@@ -490,19 +490,22 @@ export class KwPublishPbiDialog extends LitElement {
 		const settingsUrl = this._getSemanticModelSettingsUrl();
 		return html`<div class="ppd-status-success" role="status">
 			<div class="ppd-success-row ppd-success-summary">
-				<svg class="ppd-success-check" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" focusable="false"><path d="M8 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1zm3.354 4.646a.5.5 0 0 0-.708 0L7 9.293 5.354 7.646a.5.5 0 1 0-.708.708l2 2a.5.5 0 0 0 .708 0l4-4a.5.5 0 0 0 0-.708z"/></svg>
+				<span class="ppd-success-check">${ICONS.check}</span>
 				<span class="ppd-success-text">${this._lastPublishWasUpdate ? 'Updated Successfully' : 'Published Successfully'}</span>
 			</div>
-			<div class="ppd-success-row ppd-success-schedule-row">
-				${ICONS.refresh}
-				<span class="ppd-success-schedule-label">Refresh schedule</span>
-				<span class="ppd-success-schedule">${this._scheduleConfigured ? 'Daily at 1:00 AM UTC' : 'Not configured'}</span>
-			</div>
-			${this._publishedDataMode === 'import' ? html`<div class="ppd-success-row ppd-success-schedule-row">
-				${ICONS.refresh}
-				<span class="ppd-success-schedule-label">Initial refresh</span>
-				<span class="ppd-success-schedule">${this._initialRefreshTriggered ? 'Started' : 'Not started'}</span>
-			</div>` : nothing}
+			${this._publishedDataMode === 'import' ? html`
+				<div class="ppd-success-row ppd-success-detail-row">
+					${this._scheduleConfigured ? ICONS.check : ICONS.warning}
+					<span>${this._scheduleConfigured ? 'Daily refresh scheduled for 1:00 AM UTC' : 'Refresh schedule not configured'}</span>
+				</div>
+				<div class="ppd-success-row ppd-success-detail-row">
+					${this._initialRefreshTriggered ? ICONS.check : ICONS.warning}
+					<span>${this._initialRefreshTriggered ? 'Initial refresh requested' : 'Initial refresh not started'}</span>
+				</div>
+			` : html`<div class="ppd-success-row ppd-success-detail-row">
+				${ICONS.info}
+				<span>Direct Query uses live data; no scheduled refresh needed</span>
+			</div>`}
 			<div class="ppd-success-row ppd-success-actions">
 				<a class="ppd-success-link" href=${this._reportUrl} target="_blank" rel="noopener noreferrer">${ICONS.linkExternal}<span>View report</span></a>
 				${settingsUrl ? html`<a class="ppd-success-link" href=${settingsUrl} target="_blank" rel="noopener noreferrer">${ICONS.settingsGear}<span>Semantic model settings</span></a>` : nothing}

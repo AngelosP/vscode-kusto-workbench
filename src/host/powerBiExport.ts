@@ -2141,6 +2141,8 @@ export function generateDimTableTmdl(
 ): string {
 	const tmdlType = kustoTypeToTmdl(columnType);
 	const escapeTmdlName = (s: string) => s.replace(/'/g, "''");
+	const normalizedDataMode = normalizePowerBiDataMode(dataMode, 'import');
+	const connectorOptions = normalizedDataMode === 'import' ? ', [NoTruncate=true]' : '';
 	const normalizedQuery = normalizeKqlForPowerBiQuery(sourceQuery);
 	const dimQuery = `${normalizedQuery} | distinct ${columnName}`;
 	const escapedQuery = escapePowerQueryMString(dimQuery);
@@ -2159,10 +2161,10 @@ export function generateDimTableTmdl(
 		`\t\tsourceColumn: ${escapeTmdlName(columnName)}`,
 		'',
 		`\tpartition '${escapeTmdlName(dimTableName)}' = m`,
-		`\t\tmode: ${normalizePowerBiDataMode(dataMode, 'import')}`,
+		`\t\tmode: ${normalizedDataMode}`,
 		'\t\tsource =',
 		'\t\t\tlet',
-		`\t\t\t\tSource = AzureDataExplorer.Contents("${escapedCluster}", "${escapedDb}", "${escapedQuery}")`,
+		`\t\t\t\tSource = AzureDataExplorer.Contents("${escapedCluster}", "${escapedDb}", "${escapedQuery}"${connectorOptions})`,
 		'\t\t\tin',
 		'\t\t\t\tSource',
 	];
@@ -2176,6 +2178,8 @@ export function generateTableTmdl(
 	idSource: PowerBiArtifactIdSource = defaultPowerBiArtifactIdSource,
 ): string {
 	const tableName = sanitizeName(ds.name);
+	const normalizedDataMode = normalizePowerBiDataMode(dataMode, 'import');
+	const connectorOptions = normalizedDataMode === 'import' ? ', [NoTruncate=true]' : '';
 	const normalizedQuery = normalizeKqlForPowerBiQuery(ds.query);
 	const escapedQuery = escapePowerQueryMString(normalizedQuery);
 	const escapeTmdlName = (s: string) => s.replace(/'/g, "''");
@@ -2198,10 +2202,10 @@ export function generateTableTmdl(
 	const escapedCluster = escapePowerQueryMString(canonicalizePowerBiKustoClusterUrl(ds.clusterUrl));
 	const escapedDb = escapePowerQueryMString(ds.database);
 	lines.push(`\tpartition '${escapeTmdlName(tableName)}' = m`);
-	lines.push(`\t\tmode: ${normalizePowerBiDataMode(dataMode, 'import')}`);
+	lines.push(`\t\tmode: ${normalizedDataMode}`);
 	lines.push(`\t\tsource =`);
 	lines.push(`\t\t\tlet`);
-	lines.push(`\t\t\t\tSource = AzureDataExplorer.Contents("${escapedCluster}", "${escapedDb}", "${escapedQuery}")`);
+	lines.push(`\t\t\t\tSource = AzureDataExplorer.Contents("${escapedCluster}", "${escapedDb}", "${escapedQuery}"${connectorOptions})`);
 	lines.push(`\t\t\tin`);
 	lines.push(`\t\t\t\tSource`);
 
