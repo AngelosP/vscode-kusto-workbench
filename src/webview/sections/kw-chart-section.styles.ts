@@ -455,17 +455,24 @@ export const styles = css`
 			text-decoration: underline;
 			color: var(--vscode-textLink-foreground, var(--vscode-foreground));
 		}
-		.axis-label-clickable.has-settings::after {
-			content: '';
+		.axis-label-clickable > .axis-settings-indicator {
 			display: inline-block;
 			width: 5px;
 			height: 5px;
-			background: var(--vscode-focusBorder, #007fd4);
+			background: var(--vscode-descriptionForeground, var(--vscode-foreground));
 			border-radius: 50%;
+			opacity: 0.65;
 			margin-left: 4px;
 			vertical-align: middle;
 			position: relative;
 			top: -1px;
+		}
+		.axis-label-clickable:hover > .axis-settings-indicator {
+			opacity: 1;
+		}
+		.axis-label-clickable.has-settings > .axis-settings-indicator {
+			background: var(--vscode-focusBorder, #007fd4);
+			opacity: 1;
 		}
 
 		/* ── Axis settings popup content (form controls — slotted inside kw-popover) ── */

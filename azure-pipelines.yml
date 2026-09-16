@@ -19,14 +19,12 @@ trigger:
       - v*
   paths:
     exclude:
-      - '**/*.md'
       - '**/*.gitignore'
       - '**/*.gitattributes'
       - '.github/**'
       - 'resources/**'
       - 'docs/**'
       - 'sample/**'
-      - 'scripts/**'
       - 'browser-ext/**'
       - 'web/**'
 
@@ -162,6 +160,9 @@ extends:
 
               - bash: npm run package
                 displayName: Build package
+
+              - bash: npx vitest run tests/webview/host/copilotCliSessionManager.test.ts tests/webview/host/workbenchMcpBridge.test.ts tests/webview/host/copilotCliIntegration.test.ts tests/webview/host/firstLaunchIntegration.test.ts tests/webview/host/schemaIndexUtils.test.ts --maxWorkers=1 --no-file-parallelism
+                displayName: Run Copilot CLI bridge tests
 
               - bash: |
                   set -euo pipefail

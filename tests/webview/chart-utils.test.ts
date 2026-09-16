@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
 	formatNumber,
+	formatAxisTickLabel,
+	estimateValueAxisMaxLabelChars,
 	computeAxisFontSize,
 	normalizeLegendPosition,
 	normalizeStackMode,
@@ -20,7 +22,13 @@ import {
 	shouldShowTimeForUtcAxis,
 	computeTimeAxisLabelRotation,
 	computeCategoryLabelRotation,
+	estimateAxisLabelDepth,
+	computeAxisOutsideMargin,
+	computeAdaptiveXAxisTitleGap,
+	computeAdaptiveYAxisTitleGap,
 	measureLabelChars,
+	MAX_AXIS_TICK_LABEL_CHARS,
+	MAX_AUTOMATIC_AXIS_TITLE_GAP_PX,
 	DEFAULT_SERIES_COLORS,
 	LEGEND_POSITION_CYCLE,
 	normalizeLegendSortMode,
@@ -54,6 +62,29 @@ describe('formatNumber', () => {
 	});
 	it('coerces string to number', () => {
 		expect(formatNumber('123')).toBe('123');
+	});
+});
+
+describe('estimateValueAxisMaxLabelChars', () => {
+	it('includes a wider positive nice endpoint', () => {
+		expect(estimateValueAxisMaxLabelChars([999_998, 999_999])).toBe('1,000,000'.length);
+	});
+
+	it('includes a wider negative nice endpoint', () => {
+		expect(estimateValueAxisMaxLabelChars([-999_999])).toBe('-1,000,000'.length);
+	});
+
+	it('preserves wider formatted fractional values', () => {
+		expect(estimateValueAxisMaxLabelChars([0.123456])).toBe('0.123456'.length);
+	});
+});
+
+describe('formatAxisTickLabel', () => {
+	it('preserves short labels and bounds long rendered labels', () => {
+		expect(formatAxisTickLabel('short')).toBe('short');
+		const formatted = formatAxisTickLabel('x'.repeat(500));
+		expect(formatted).toHaveLength(MAX_AXIS_TICK_LABEL_CHARS);
+		expect(formatted.endsWith('...')).toBe(true);
 	});
 });
 
@@ -268,6 +299,45 @@ describe('hasCustomYAxisSettings', () => {
 	});
 	it('detects custom series colors', () => {
 		expect(hasCustomYAxisSettings({ ...getDefaultYAxisSettings(), seriesColors: { 'Revenue': '#ff0000' } })).toBe(true);
+	});
+});
+
+describe('adaptive axis title gaps', () => {
+	it('keeps the standard defaults for short labels', () => {
+		expect(computeAdaptiveXAxisTitleGap(3, 0, 12, 30)).toBe(30);
+		expect(computeAdaptiveYAxisTitleGap(3, 11, 45)).toBe(45);
+	});
+
+	it('clears rotated X labels and wide Y values', () => {
+		expect(computeAdaptiveXAxisTitleGap(11, 60, 9, 30)).toBeGreaterThanOrEqual(73);
+		expect(computeAdaptiveYAxisTitleGap(9, 11, 45)).toBeGreaterThanOrEqual(77);
+	});
+
+	it('preserves explicit user adjustments', () => {
+		expect(computeAdaptiveXAxisTitleGap(30, 75, 12, 64)).toBe(64);
+		expect(computeAdaptiveYAxisTitleGap(30, 11, 82)).toBe(82);
+	});
+
+	it('contains title and tick bounds without adding both reserves', () => {
+		const labelDepth = estimateAxisLabelDepth(11, 60, 9);
+		const titleGap = computeAdaptiveXAxisTitleGap(11, 60, 9, 30);
+		const margin = computeAxisOutsideMargin(labelDepth, titleGap, true);
+
+		expect(margin).toBe(titleGap + 16);
+		expect(margin).toBeLessThan(titleGap + labelDepth);
+	});
+
+	it('reclaims title-only space when the title is hidden', () => {
+		const labelDepth = estimateAxisLabelDepth(11, 60, 9);
+		const titleGap = computeAdaptiveXAxisTitleGap(11, 60, 9, 30);
+
+		expect(computeAxisOutsideMargin(labelDepth, titleGap, false))
+			.toBeLessThan(computeAxisOutsideMargin(labelDepth, titleGap, true));
+	});
+
+	it('bounds automatic gaps for adversarial labels', () => {
+		expect(computeAdaptiveXAxisTitleGap(500, 75, 12, 30)).toBe(MAX_AUTOMATIC_AXIS_TITLE_GAP_PX);
+		expect(computeAdaptiveYAxisTitleGap(500, 11, 45)).toBe(MAX_AUTOMATIC_AXIS_TITLE_GAP_PX);
 	});
 });
 

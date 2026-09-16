@@ -87,6 +87,84 @@ function normalizeAskKustoCopilotMaxResultRows(value: unknown): number {
 	);
 }
 
+type SchemaSummaryItem = Readonly<{
+	clusterUrl: string;
+	database: string;
+	tables: string[];
+	functions: string[];
+}>;
+
+type SchemaCollectionKey = 'databases' | 'schemas';
+
+export async function formatSchemaCollectionJsonWithTokenBudget(
+	result: Readonly<{ error?: string }> & Partial<Record<SchemaCollectionKey, SchemaSummaryItem[]>>,
+	collectionKey: SchemaCollectionKey,
+	tokenizationOptions: vscode.LanguageModelToolTokenizationOptions | undefined,
+	token: vscode.CancellationToken,
+): Promise<string> {
+	const fullText = JSON.stringify(result, null, 2);
+	if (!tokenizationOptions || tokenizationOptions.tokenBudget <= 0) return fullText;
+	const countTokens = async (text: string) => {
+		try {
+			return await tokenizationOptions.countTokens(text, token);
+		} catch {
+			return Math.max(1, Math.ceil(text.length / 4));
+		}
+	};
+	if (await countTokens(fullText) <= tokenizationOptions.tokenBudget) return fullText;
+
+	const source = result[collectionKey] ?? [];
+	const error = result.error?.slice(0, 500);
+	const candidate = (count: number, nameLimit: number, includeError: boolean) => {
+		const entries = source.slice(0, count).map(entry => ({
+			clusterUrl: entry.clusterUrl,
+			database: entry.database,
+			tables: entry.tables.slice(0, nameLimit),
+			functions: entry.functions.slice(0, nameLimit),
+			...(entry.tables.length > nameLimit ? { tableCount: entry.tables.length } : {}),
+			...(entry.functions.length > nameLimit ? { functionCount: entry.functions.length } : {}),
+		}));
+		return JSON.stringify({
+			[collectionKey]: entries,
+			...(includeError && error ? { error } : {}),
+			truncated: true,
+			totalDatabaseCount: source.length,
+			returnedDatabaseCount: entries.length,
+		}, null, 2);
+	};
+
+	let bestText: string | undefined;
+	let bestCount = -1;
+	let bestNameLimit = -1;
+	for (const nameLimit of [100, 25, 5, 0]) {
+		let low = 0;
+		let high = source.length;
+		let fittingCount = -1;
+		let fittingText: string | undefined;
+		while (low <= high) {
+			const middle = Math.floor((low + high) / 2);
+			const text = candidate(middle, nameLimit, true);
+			if (await countTokens(text) <= tokenizationOptions.tokenBudget) {
+				fittingCount = middle;
+				fittingText = text;
+				low = middle + 1;
+			} else {
+				high = middle - 1;
+			}
+		}
+		if (fittingText && (fittingCount > bestCount || (fittingCount === bestCount && nameLimit > bestNameLimit))) {
+			bestText = fittingText;
+			bestCount = fittingCount;
+			bestNameLimit = nameLimit;
+		}
+	}
+	if (bestText) return bestText;
+
+	const withoutError = candidate(0, 0, false);
+	if (await countTokens(withoutError) <= tokenizationOptions.tokenBudget) return withoutError;
+	return '{}';
+}
+
 type ToolResponseAdmission<T> =
 	| Readonly<{ ok: true; value: T }>
 	| Readonly<{ ok: false }>;
@@ -2747,7 +2825,7 @@ export class KustoWorkbenchToolOrchestrator {
 		const result = await this.sendToWebview<DelegateToKustoWorkbenchCopilotResult>(
 			'toolDelegateToKustoWorkbenchCopilot',
 			{ input: normalizedInput },
-			180000,
+			null,
 			target,
 			(connection, requestId) => connection.poster({ type: 'toolCancelKustoCopilot', requestId }),
 			capturedConnection,
@@ -3234,12 +3312,17 @@ export class RefreshKustoSchemaTool implements vscode.LanguageModelTool<RefreshK
 
 	async invoke(
 		options: vscode.LanguageModelToolInvocationOptions<RefreshKustoSchemaInput>,
-		_token: vscode.CancellationToken
+		token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
 			const result = await this.orchestrator.refreshSchema(getToolInput(options));
 			return new vscode.LanguageModelToolResult([
-				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
+				new vscode.LanguageModelTextPart(await formatSchemaCollectionJsonWithTokenBudget(
+					result,
+					'schemas',
+					options.tokenizationOptions,
+					token,
+				))
 			]);
 		} catch (err) {
 			return new vscode.LanguageModelToolResult([
@@ -3301,8 +3384,18 @@ export class GetSchemaTool implements vscode.LanguageModelTool<GetSchemaInput> {
 		try {
 			const result = await this.orchestrator.getSchema(getToolInput(options));
 
-			// If the result is an error or a multi-database summary, return as JSON
-			if (result.error || result.databases) {
+			// Multi-database summaries retain valid JSON while respecting the caller's token budget.
+			if (result.databases) {
+				return new vscode.LanguageModelToolResult([
+					new vscode.LanguageModelTextPart(await formatSchemaCollectionJsonWithTokenBudget(
+						result,
+						'databases',
+						options.tokenizationOptions,
+						token,
+					))
+				]);
+			}
+			if (result.error) {
 				return new vscode.LanguageModelToolResult([
 					new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 				]);

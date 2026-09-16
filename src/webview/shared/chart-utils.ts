@@ -9,6 +9,7 @@ export interface XAxisSettings {
 	labelDensity: number;
 	showAxisLabel: boolean;
 	customLabel: string;
+	/** The legacy default value 30 selects automatic clearance; other values are exact pixels. */
 	titleGap: number;
 }
 
@@ -18,6 +19,7 @@ export interface YAxisSettings {
 	min: string;
 	max: string;
 	seriesColors: Record<string, string>;
+	/** The legacy default value 45 selects automatic clearance; other values are exact pixels. */
 	titleGap: number;
 	sortDirection: '' | 'asc' | 'desc';
 }
@@ -63,6 +65,9 @@ export const DEFAULT_SERIES_COLORS = [
 	'#3ba272', '#fc8452', '#9a60b4', '#ea7ccc', '#48b8d0',
 ];
 
+export const MAX_AXIS_TICK_LABEL_CHARS = 28;
+export const MAX_AUTOMATIC_AXIS_TITLE_GAP_PX = 240;
+
 // ── Functions ─────────────────────────────────────────────────────────────────
 
 export function formatNumber(value: unknown): string {
@@ -70,6 +75,33 @@ export function formatNumber(value: unknown): string {
 	const n = typeof value === 'number' ? value : Number(value);
 	if (!Number.isFinite(n)) return String(value);
 	return n.toLocaleString('en-US', { maximumFractionDigits: 6 });
+}
+
+export function formatAxisTickLabel(value: unknown): string {
+	const label = String(value ?? '');
+	if (label.length <= MAX_AXIS_TICK_LABEL_CHARS) return label;
+	return `${label.slice(0, MAX_AXIS_TICK_LABEL_CHARS - 3)}...`;
+}
+
+export function estimateValueAxisMaxLabelChars(values: readonly unknown[]): number {
+	let maxChars = 1;
+	let maxPositive = 0;
+	let maxNegativeMagnitude = 0;
+	for (const value of values) {
+		const numeric = typeof value === 'number' ? value : Number(value);
+		if (!Number.isFinite(numeric)) continue;
+		maxChars = Math.max(maxChars, formatAxisTickLabel(formatNumber(numeric)).length);
+		if (numeric >= 0) maxPositive = Math.max(maxPositive, numeric);
+		else maxNegativeMagnitude = Math.max(maxNegativeMagnitude, Math.abs(numeric));
+	}
+	const includeNiceBoundary = (magnitude: number, sign: 1 | -1): void => {
+		if (!(magnitude > 0)) return;
+		const boundary = 10 ** Math.ceil(Math.log10(magnitude));
+		if (Number.isFinite(boundary)) maxChars = Math.max(maxChars, formatAxisTickLabel(formatNumber(sign * boundary)).length);
+	};
+	includeNiceBoundary(maxPositive, 1);
+	includeNiceBoundary(maxNegativeMagnitude, -1);
+	return maxChars;
 }
 
 export function computeAxisFontSize(labelCount: number, axisPixelWidth: number, isYAxis: boolean): number {
@@ -493,6 +525,46 @@ export function computeCategoryLabelRotation(axisPixelWidth: number, labelCount:
 	if (n > maxNoRotate * 1.3) return 45;
 	if (n > maxNoRotate) return 30;
 	return 0;
+}
+
+const MONOSPACE_CHAR_WIDTH_EM = 0.62;
+const AXIS_TITLE_CLEARANCE_PX = 15;
+
+export function estimateAxisLabelDepth(maxLabelChars: number, rotationDegrees: number, fontSize: number): number {
+	const chars = Number.isFinite(maxLabelChars) ? Math.max(0, maxLabelChars) : 0;
+	const size = Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 12;
+	const rotation = Number.isFinite(rotationDegrees) ? rotationDegrees * Math.PI / 180 : 0;
+	const labelWidth = chars * size * MONOSPACE_CHAR_WIDTH_EM;
+	return Math.abs(Math.sin(rotation)) * labelWidth + Math.abs(Math.cos(rotation)) * size;
+}
+
+export function computeAxisOutsideMargin(labelDepth: number, titleGap: number, titleVisible: boolean, titleFontSize = 12): number {
+	const depth = Number.isFinite(labelDepth) ? Math.max(0, labelDepth) : 0;
+	const gap = Number.isFinite(titleGap) ? Math.max(0, titleGap) : 0;
+	const fontSize = Number.isFinite(titleFontSize) && titleFontSize > 0 ? titleFontSize : 12;
+	const tickMargin = Math.ceil(depth + 10);
+	const titleMargin = titleVisible ? Math.ceil(gap + fontSize / 2 + 10) : 0;
+	return Math.max(20, tickMargin, titleMargin);
+}
+
+export function computeAdaptiveXAxisTitleGap(maxLabelChars: number, rotationDegrees: number, fontSize: number, configuredGap: number): number {
+	if (Number.isFinite(configuredGap) && configuredGap !== getDefaultXAxisSettings().titleGap) return configuredGap;
+	const labelDepth = estimateAxisLabelDepth(maxLabelChars, rotationDegrees, fontSize);
+	return Math.min(
+		MAX_AUTOMATIC_AXIS_TITLE_GAP_PX,
+		Math.max(getDefaultXAxisSettings().titleGap, Math.ceil(labelDepth + AXIS_TITLE_CLEARANCE_PX)),
+	);
+}
+
+export function computeAdaptiveYAxisTitleGap(maxLabelChars: number, fontSize: number, configuredGap: number): number {
+	if (Number.isFinite(configuredGap) && configuredGap !== getDefaultYAxisSettings().titleGap) return configuredGap;
+	const chars = Number.isFinite(maxLabelChars) ? Math.max(0, maxLabelChars) : 0;
+	const size = Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 11;
+	const labelWidth = chars * size * MONOSPACE_CHAR_WIDTH_EM;
+	return Math.min(
+		MAX_AUTOMATIC_AXIS_TITLE_GAP_PX,
+		Math.max(getDefaultYAxisSettings().titleGap, Math.ceil(labelWidth + AXIS_TITLE_CLEARANCE_PX)),
+	);
 }
 
 export function measureLabelChars(labels: string[]): { avgLabelChars: number; maxLabelChars: number } {

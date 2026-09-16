@@ -886,9 +886,10 @@ export const formatSchemaWithTokenBudget = async (
 
 	for (const { phase, options } of phases) {
 		const text = formatSchemaWithOptions(database, schema, meta, options);
-		const tokens = await countTokens(text);
+		const finalText = addPruneNotice(text, phase);
+		const tokens = await countTokens(finalText);
 		if (tokens <= tokenBudget) {
-			return { text: addPruneNotice(text, phase), phase, tokenCount: tokens, tokenBudget };
+			return { text: finalText, phase, tokenCount: tokens, tokenBudget };
 		}
 	}
 
@@ -922,35 +923,26 @@ async function truncateToTokenBudget(
 	countTokens: (text: string) => PromiseLike<number>
 ): Promise<string> {
 	const CUTOFF_NOTICE = '\n\n... schema cut off due to context window limits. Ask the user for specific table or column names.';
-	// Reserve tokens for the notice itself
-	const noticeTokens = await countTokens(CUTOFF_NOTICE);
-	const availableBudget = Math.max(1, tokenBudget - noticeTokens);
+	const noticeOnly = CUTOFF_NOTICE.trimStart();
+	if (await countTokens(noticeOnly) > tokenBudget) {
+		return truncatePrefixToTokenBudget(noticeOnly, tokenBudget, countTokens);
+	}
+	const withNotice = (prefix: string) => prefix ? prefix + CUTOFF_NOTICE : noticeOnly;
 
-	// Binary search on character length (token count is roughly proportional)
+	if (await countTokens(withNotice(text)) <= tokenBudget) return withNotice(text);
+
+	// Binary search the actual combined return value, including the notice.
 	let lo = 0;
 	let hi = text.length;
 	let bestLen = 0;
-
-	// First check if the whole text fits with the notice
-	const fullTokens = await countTokens(text);
-	if (fullTokens <= availableBudget) {
-		return text + CUTOFF_NOTICE;
-	}
-
-	// Rough initial estimate: scale down proportionally
-	const initialGuess = Math.floor((availableBudget / fullTokens) * text.length);
-	hi = Math.min(hi, initialGuess + Math.floor(initialGuess * 0.2)); // slight overshoot for search space
-
-	for (let i = 0; i < 10; i++) { // max 10 iterations should converge
+	while (lo <= hi) {
 		const mid = Math.floor((lo + hi) / 2);
-		if (mid <= lo) break;
-		const candidate = text.slice(0, mid);
-		const tokens = await countTokens(candidate);
-		if (tokens <= availableBudget) {
+		const tokens = await countTokens(withNotice(text.slice(0, mid)));
+		if (tokens <= tokenBudget) {
 			bestLen = mid;
-			lo = mid;
+			lo = mid + 1;
 		} else {
-			hi = mid;
+			hi = mid - 1;
 		}
 	}
 
@@ -958,6 +950,29 @@ async function truncateToTokenBudget(
 	const tentative = text.slice(0, bestLen);
 	const lastNewline = tentative.lastIndexOf('\n');
 	const cleanText = lastNewline > 0 ? tentative.slice(0, lastNewline) : tentative;
+	const cleanCandidate = withNotice(cleanText);
+	if (await countTokens(cleanCandidate) <= tokenBudget) return cleanCandidate;
+	const exactCandidate = withNotice(tentative);
+	return await countTokens(exactCandidate) <= tokenBudget ? exactCandidate : noticeOnly;
+}
 
-	return cleanText + CUTOFF_NOTICE;
+async function truncatePrefixToTokenBudget(
+	text: string,
+	tokenBudget: number,
+	countTokens: (text: string) => PromiseLike<number>,
+): Promise<string> {
+	let low = 0;
+	let high = text.length;
+	let best = '';
+	while (low <= high) {
+		const middle = Math.floor((low + high) / 2);
+		const candidate = text.slice(0, middle);
+		if (await countTokens(candidate) <= tokenBudget) {
+			best = candidate;
+			low = middle + 1;
+		} else {
+			high = middle - 1;
+		}
+	}
+	return best;
 }

@@ -18,6 +18,8 @@ const DIST = join(__dirname, '..', 'dist');
 // ── Baselines (KB) — synchronized with the integrated production gate ──
 const BASELINES = {
 	'extension.js':                                        2374,
+	'copilot-cli-integration.js':                            12,
+	'workbench-mcp-bridge.js':                              431,
 	'webview/webview.bundle.js':                           3283,
 	'webview/md-editor.bundle.js':                          296,
 	'webview/tutorial-viewer.bundle.js':                    154,

@@ -843,8 +843,9 @@ export class KwChartSection extends LitElement implements SectionElement {
 					<!-- X column -->
 					<span class="chart-field-group">
 						<label class="axis-label-clickable ${this._hasCustomXSettings() ? 'has-settings' : ''}" data-axis="x"
+							data-testid="chart-x-axis-settings"
 							@click=${(e: Event) => this._toggleAxisPopup('x', e)}
-							title="Click to configure X-axis settings">X</label>
+							title="Click to configure X-axis settings">X<span class="axis-settings-indicator" aria-hidden="true"></span></label>
 						<select class="chart-select" @change=${this._onXColumnChanged}>
 							${xOptions.map(c => html`
 								<option value=${c} ?selected=${this._xColumn === c}>${c || '(none)'}</option>
@@ -856,7 +857,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 					<span class="chart-field-group">
 						<label class="axis-label-clickable ${this._hasCustomYSettings() ? 'has-settings' : ''}" data-axis="y"
 							@click=${(e: Event) => this._toggleAxisPopup('y', e)}
-							title="Click to configure Y-axis settings">Y</label>
+							title="Click to configure Y-axis settings">Y<span class="axis-settings-indicator" aria-hidden="true"></span></label>
 						${this._renderCheckboxDropdown('y', colNames.filter(c => c !== this._xColumn), this._yColumns, 'Select...')}
 					</span>
 
@@ -865,7 +866,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 						<span class="chart-field-group">
 							<label class="axis-label-clickable ${this._hasCustomLegendSettings() ? 'has-settings' : ''}"
 								@click=${(e: Event) => this._toggleAxisPopup('legend', e)}
-								title="Click to configure legend settings">Legend</label>
+								title="Click to configure legend settings">Legend<span class="axis-settings-indicator" aria-hidden="true"></span></label>
 							<div class="chart-legend-inline">
 								<select class="chart-select" @change=${this._onLegendColumnChanged}
 									?disabled=${multiYSelected}>
@@ -967,7 +968,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 					<span class="chart-field-group">
 						<label class="axis-label-clickable ${this._hasCustomLabelSettings() ? 'has-settings' : ''}"
 							@click=${(e: Event) => this._toggleAxisPopup('labels', e)}
-							title="Click to configure label settings">Labels</label>
+							title="Click to configure label settings">Labels<span class="axis-settings-indicator" aria-hidden="true"></span></label>
 						${this._renderSlider({
 							min: 0, max: this._effectiveMax('labels:labelDensity', 100), value: this._labelDensity,
 							label: this._labelDensity >= 100 ? 'All' : this._labelDensity > 0 ? `${this._labelDensity}%` : 'Off',
@@ -1024,7 +1025,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 					<span class="chart-field-group">
 						<label class="axis-label-clickable ${this._sankeyLeftMargin !== 100 ? 'has-settings' : ''}"
 							@click=${(e: Event) => this._toggleAxisPopup('sankey-orient', e)}
-							title="Click to configure layout settings">Orient</label>
+							title="Click to configure layout settings">Orient<span class="axis-settings-indicator" aria-hidden="true"></span></label>
 						<select class="chart-select" @change=${this._onOrientChanged}>
 							<option value="LR" ?selected=${this._orient === 'LR'}>Left → Right</option>
 							<option value="RL" ?selected=${this._orient === 'RL'}>Right → Left</option>
@@ -1051,7 +1052,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 					<span class="chart-field-group">
 						<label class="axis-label-clickable ${this._hasCustomXSettings() ? 'has-settings' : ''}" data-axis="x"
 							@click=${(e: Event) => this._toggleAxisPopup('x', e)}
-							title="Click to configure X-axis settings">X</label>
+							title="Click to configure X-axis settings">X<span class="axis-settings-indicator" aria-hidden="true"></span></label>
 						<select class="chart-select" @change=${this._onXColumnChanged}>
 							<option value="" ?selected=${!this._xColumn}>(select)</option>
 							${colNames.map(c => html`
@@ -1064,7 +1065,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 					<span class="chart-field-group">
 						<label class="axis-label-clickable ${this._hasCustomYSettings() ? 'has-settings' : ''}" data-axis="y"
 							@click=${(e: Event) => this._toggleAxisPopup('y', e)}
-							title="Click to configure Y-axis settings">Y</label>
+							title="Click to configure Y-axis settings">Y<span class="axis-settings-indicator" aria-hidden="true"></span></label>
 						<select class="chart-select" @change=${this._onHeatmapYColumnChanged}>
 							<option value="" ?selected=${!heatmapY}>(select)</option>
 							${colNames.map(c => html`
@@ -1094,7 +1095,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 					<span class="chart-field-group">
 						<label class="axis-label-clickable ${this._hasCustomHeatmapSlicerSettings() ? 'has-settings' : ''}"
 							@click=${(e: Event) => this._toggleAxisPopup('heatmap-slicer', e)}
-							title="Click to configure slicer position and spacing">Slicer</label>
+							title="Click to configure slicer position and spacing">Slicer<span class="axis-settings-indicator" aria-hidden="true"></span></label>
 						<select class="chart-select" @change=${(e: Event) => this._onHeatmapSetting('visualMapPosition', (e.target as HTMLSelectElement).value as 'right' | 'left' | 'bottom' | 'top')}>
 							${(['right', 'left', 'bottom', 'top'] as const).map(p => html`
 								<option value=${p} ?selected=${hs.visualMapPosition === p}>
@@ -1108,7 +1109,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 					<span class="chart-field-group">
 						<label class="axis-label-clickable ${this._hasCustomHeatmapLabelSettings() ? 'has-settings' : ''}"
 							@click=${(e: Event) => this._toggleAxisPopup('heatmap-labels', e)}
-							title="Click to configure cell label settings">Labels</label>
+							title="Click to configure cell label settings">Labels<span class="axis-settings-indicator" aria-hidden="true"></span></label>
 						<label class="toggle-switch" title="Show values inside each cell">
 							<input type="checkbox" .checked=${!!hs.showCellLabels}
 								@change=${(e: Event) => this._onHeatmapSetting('showCellLabels', (e.target as HTMLInputElement).checked)}>
@@ -1193,8 +1194,22 @@ export class KwChartSection extends LitElement implements SectionElement {
 		document.addEventListener('mouseup', onUp);
 	}
 
+	private _getAxisTitleGapControl(axis: 'x' | 'y'): { value: number; label: string } {
+		const settings = axis === 'x' ? this._xAxisSettings : this._yAxisSettings;
+		const defaultGap = axis === 'x' ? defaultXAxisSettings().titleGap : defaultYAxisSettings().titleGap;
+		const runtime = getChartState(this.boxId) as Record<string, unknown>;
+		const effectiveKey = axis === 'x' ? '__effectiveXAxisTitleGap' : '__effectiveYAxisTitleGap';
+		const effectiveGap = runtime[effectiveKey];
+		const isAutomatic = settings.titleGap === defaultGap;
+		const value = isAutomatic && typeof effectiveGap === 'number' && Number.isFinite(effectiveGap)
+			? effectiveGap
+			: settings.titleGap;
+		return { value, label: isAutomatic ? `Auto (${value}px)` : `${value}px` };
+	}
+
 	private _renderXAxisPopup(): TemplateResult {
 		const s = this._xAxisSettings;
+		const titleGap = this._getAxisTitleGapControl('x');
 		const gapMax = 1000;
 		const densMax = this._effectiveMax('x:labelDensity', 100);
 		const isHeatmap = this._chartType === 'heatmap';
@@ -1210,10 +1225,11 @@ export class KwChartSection extends LitElement implements SectionElement {
 					<input type="text" class="axis-text-input" .value=${s.customLabel || ''} placeholder=${this._xColumn || 'Axis title'}
 						title="Custom title text for the X axis (leave empty to use column name, enter a space to hide)"
 						@input=${(e: Event) => this._onAxisSetting('x', 'customLabel', (e.target as HTMLInputElement).value)}>
-					<div class="axis-title-gap-slider" title="Title gap — space in pixels between the axis title and the tick labels">
+					<div class="axis-title-gap-slider" data-testid="chart-x-axis-title-gap"
+						title="Automatic spacing clears tick labels; drag to set an exact title gap">
 						${this._renderSlider({
-							min: 10, max: gapMax, value: s.titleGap,
-							label: `${s.titleGap}px`,
+							min: 10, max: Math.max(gapMax, titleGap.value), value: titleGap.value,
+							label: titleGap.label,
 							onInput: (e: Event) => this._onSliderInput('x', 'titleGap', e),
 						})}
 					</div>
@@ -1265,6 +1281,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 
 	private _renderYAxisPopup(): TemplateResult {
 		const s = this._yAxisSettings;
+		const titleGap = this._getAxisTitleGapControl('y');
 		const defColors = ['#5470c6','#91cc75','#fac858','#ee6666','#73c0de','#3ba272','#fc8452','#9a60b4','#ea7ccc','#48b8d0'];
 		const gapMax = 1000;
 		const isHeatmap = this._chartType === 'heatmap';
@@ -1280,10 +1297,11 @@ export class KwChartSection extends LitElement implements SectionElement {
 					<input type="text" class="axis-text-input" .value=${s.customLabel || ''} placeholder=${this._yColumns.join(', ') || 'Axis title'}
 						title="Custom title text for the Y axis (leave empty to use column name, enter a space to hide)"
 						@input=${(e: Event) => this._onAxisSetting('y', 'customLabel', (e.target as HTMLInputElement).value)}>
-					<div class="axis-title-gap-slider" title="Title gap — space in pixels between the axis title and the tick labels">
+					<div class="axis-title-gap-slider" data-testid="chart-y-axis-title-gap"
+						title="Automatic spacing clears tick labels; drag to set an exact title gap">
 						${this._renderSlider({
-							min: 10, max: gapMax, value: s.titleGap,
-							label: `${s.titleGap}px`,
+							min: 10, max: Math.max(gapMax, titleGap.value), value: titleGap.value,
+							label: titleGap.label,
 							onInput: (e: Event) => this._onSliderInput('y', 'titleGap', e),
 						})}
 					</div>
@@ -1864,7 +1882,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 			this._openAxisPopup = '';
 			return;
 		}
-		this._setAxisPopupAnchorFromElement(e.target as HTMLElement);
+		this._setAxisPopupAnchorFromElement(e.currentTarget as HTMLElement);
 		this._openAxisPopup = axis;
 	}
 

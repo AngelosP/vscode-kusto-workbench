@@ -29,6 +29,16 @@ For architecture details, file inventories, and design rationale, see [ARCHITECT
 | `npm run test:webview:watch` | Vitest in watch mode for rapid iteration |
 | `npm run test:coverage-gate` | Runs Vitest coverage and fails if statement coverage drops below the recorded baseline |
 
+Copilot CLI bridge changes should first run:
+
+```powershell
+npx vitest run tests/webview/host/copilotCliSessionManager.test.ts tests/webview/host/workbenchMcpBridge.test.ts tests/webview/host/copilotCliIntegration.test.ts tests/webview/host/firstLaunchIntegration.test.ts tests/webview/host/schemaIndexUtils.test.ts --maxWorkers=1 --no-file-parallelism
+npm run compile-tests
+npx vscode-test --config .vscode-test.mjs --timeout 10000 --fail-zero --grep "Copilot CLI bridge"
+```
+
+Keep `workbench-mcp-bridge.js` and `copilot-cli-integration.js` as separate lazy artifacts. The default-off integration must not pull the MCP SDK or generated CLI instructions into `extension.js`.
+
 ## Testing Guidelines
 
 - When given an example of a KQL query where the extension behaves incorrectly, **first create a regression test** that catches the problem, then fix the code, then verify the test passes, then verify all tests pass.

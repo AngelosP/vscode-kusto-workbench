@@ -953,14 +953,22 @@ describe('Kusto Copilot function execution', () => {
 		} as any, undefined);
 
 		expect(model.sendRequest).toHaveBeenCalledTimes(2);
+		const progress = hostMessagesOfType(host, 'copilotWriteQueryStatus')
+			.filter(message => message.role === 'progress')
+			.map(message => message.status);
+		expect(progress).toContain('Generating response\u2026');
+		expect(progress).toContain('Generating response (0 tool calls)\u2026');
 		expect(hostMessagesOfType(host, 'copilotWriteQueryStatus')).toContainEqual(expect.objectContaining({
 			role: 'assistant', status: 'ANSWER_AFTER_EMPTY_SQL_RESPONSE',
 		}));
 	});
 
-	it('reports advancing model rounds across an optional SQL tool turn', async () => {
+	it('reports cumulative SQL tool calls across a multi-tool model response', async () => {
 		const model = createModel([
-			[new vscode.LanguageModelToolCallPart('schema-call', 'get_sql_schema', {})],
+			[
+				new vscode.LanguageModelToolCallPart('schema-call', 'get_sql_schema', {}),
+				new vscode.LanguageModelToolCallPart('rules-call', 'get_query_optimization_best_practices', {}),
+			],
 			[new vscode.LanguageModelTextPart('ANSWER_AFTER_SQL_SCHEMA')],
 		]);
 		vscodeMocks.selectChatModels.mockResolvedValue([model]);
@@ -970,7 +978,7 @@ describe('Kusto Copilot function execution', () => {
 
 		await service.startSqlCopilotWriteQuery({
 			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db', request: 'Inspect the schema.',
-			enabledTools: ['get_sql_schema'],
+			enabledTools: ['get_sql_schema', 'get_query_optimization_best_practices'],
 		}, { getConnection: vi.fn(() => sqlConnection) } as any, {
 			getSchema: vi.fn(async () => ({ schema: { tables: ['T'], columnsByTable: { T: { Id: 'int' } } } })),
 		} as any, undefined);
@@ -978,8 +986,9 @@ describe('Kusto Copilot function execution', () => {
 		const progress = hostMessagesOfType(host, 'copilotWriteQueryStatus')
 			.filter(message => message.role === 'progress')
 			.map(message => message.status);
-		expect(progress).toContain('Generating response (round 1)\u2026');
-		expect(progress).toContain('Generating response (round 2)\u2026');
+		expect(progress).toContain('Generating response\u2026');
+		expect(progress).toContain('Generating response (2 tool calls)\u2026');
+		expect(progress.some(status => status.includes('round'))).toBe(false);
 	});
 
 	it('offers no SQL tools when the user explicitly disables every tool', async () => {
@@ -1040,10 +1049,12 @@ describe('Kusto Copilot function execution', () => {
 		}));
 	});
 
-	it('terminates an optional SQL tool loop at exactly 100 model rounds', async () => {
-		const model = createModel([[
-			new vscode.LanguageModelToolCallPart('schema-call', 'get_sql_schema', {}),
-		]]);
+	it('continues an optional SQL tool loop beyond 100 tool calls', async () => {
+		const responses = Array.from({ length: 101 }, (_, index) => [
+			new vscode.LanguageModelToolCallPart(`schema-call-${index}`, 'get_sql_schema', {}),
+		]);
+		responses.push([new vscode.LanguageModelTextPart('ANSWER_AFTER_101_SQL_TOOL_CALLS')]);
+		const model = createModel(responses);
 		vscodeMocks.selectChatModels.mockResolvedValue([model]);
 		const host = createHost([]);
 		const service = new CopilotService(host);
@@ -1056,10 +1067,12 @@ describe('Kusto Copilot function execution', () => {
 			getSchema: vi.fn(async () => ({ schema: { tables: ['T'], columnsByTable: {} } })),
 		} as any, undefined);
 
-		expect(model.sendRequest).toHaveBeenCalledTimes(100);
+		expect(model.sendRequest).toHaveBeenCalledTimes(102);
 		expect(hostMessagesOfType(host, 'copilotWriteQueryDone')).toContainEqual(expect.objectContaining({
-			boxId: 'sql-source', ok: false,
-			message: 'Copilot used too many model rounds without a final response.',
+			boxId: 'sql-source', ok: true,
+		}));
+		expect(hostMessagesOfType(host, 'copilotWriteQueryStatus')).toContainEqual(expect.objectContaining({
+			role: 'progress', status: 'Generating response (101 tool calls)\u2026',
 		}));
 	});
 
@@ -1088,6 +1101,9 @@ describe('Kusto Copilot function execution', () => {
 		expect(model.sendRequest).toHaveBeenCalledTimes(2);
 		expect(hostMessagesOfType(host, 'copilotWriteQueryStatus')).toContainEqual(expect.objectContaining({
 			status: 'Copilot called a tool that is not enabled. Retrying\u2026', role: 'progress',
+		}));
+		expect(hostMessagesOfType(host, 'copilotWriteQueryStatus')).toContainEqual(expect.objectContaining({
+			status: 'Generating response (0 tool calls)\u2026', role: 'progress',
 		}));
 	});
 
@@ -2412,6 +2428,35 @@ describe('Kusto Copilot function execution', () => {
 		expect(noteMessages.at(-1)?.result).toContain(expectedResult);
 	});
 
+	it('continues optional Kusto development-note calls beyond the error retry budget', async () => {
+		const responses = Array.from({ length: 7 }, (_, index) => [
+			new vscode.LanguageModelToolCallPart(`note-call-${index}`, 'update_development_note', {
+				content: `Remember constraint ${index}.`, category: 'usage-note',
+			}),
+		]);
+		responses.push([
+			new vscode.LanguageModelToolCallPart('final-call', 'respond_to_all_other_queries', { query: 'print done=1' }),
+		]);
+		const model = createModel(responses);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const service = new CopilotService(host);
+
+		await service.startCopilotWriteQuery({
+			...startMessage(),
+			enabledTools: ['update_development_note', 'respond_to_all_other_queries'],
+		});
+
+		expect(model.sendRequest).toHaveBeenCalledTimes(8);
+		expect(host.updateDevelopmentNotes).toHaveBeenCalledTimes(7);
+		expect(hostMessagesOfType(host, 'copilotWriteQueryDone')).toContainEqual(expect.objectContaining({
+			boxId: 'query_1', ok: true,
+		}));
+		expect(hostMessagesOfType(host, 'copilotWriteQueryStatus')).toContainEqual(expect.objectContaining({
+			role: 'progress', status: 'Generating response (7 tool calls)\u2026',
+		}));
+	});
+
 	it.each([
 		['line comment before .create function', '// generated helper\n.create function FilterRows(threshold:long) { range x from 1 to 10 step 1 | where x > threshold }\nFilterRows(5)'],
 		['block comment before .create-or-alter function', '/* generated helper */\n.create-or-alter function FilterRows(threshold:long) { range x from 1 to 10 step 1 | where x > threshold }\nFilterRows(5)'],
@@ -2662,7 +2707,7 @@ describe('Kusto Copilot function execution', () => {
 		expectInlineFilterRowsQuery(capturedQueries[capturedQueries.length - 1]);
 	});
 
-	it('advances the visible model round for a nested Kusto optimization repair request', async () => {
+	it('reports the existing tool-call count for a nested Kusto optimization repair request', async () => {
 		const model = createModel([
 			[new vscode.LanguageModelToolCallPart(
 				'opt-call', 'respond_to_query_performance_optimization_request', { query: 'print bad=1' },
@@ -2691,17 +2736,22 @@ describe('Kusto Copilot function execution', () => {
 		const progress = hostMessagesOfType(host, 'copilotWriteQueryStatus')
 			.filter(message => message.role === 'progress')
 			.map(message => message.status);
-		expect(progress).toContain('Generating response (round 1)\u2026');
-		expect(progress).toContain('Generating response (round 2)\u2026');
+		expect(progress).toContain('Generating response\u2026');
+		expect(progress).toContain('Generating response (1 tool call)\u2026');
 	});
 
-	it('does not start a nested Kusto repair after the 100th model call', async () => {
+	it('starts a nested Kusto repair after 100 tool calls', async () => {
 		const responses = Array.from({ length: 99 }, (_, index) => [
 			new vscode.LanguageModelToolCallPart(`rules-${index}`, 'get_query_optimization_best_practices', {}),
 		]);
 		responses.push([
 			new vscode.LanguageModelToolCallPart(
 				'opt-call', 'respond_to_query_performance_optimization_request', { query: 'print bad=1' },
+			),
+		]);
+		responses.push([
+			new vscode.LanguageModelToolCallPart(
+				'fix-call', 'respond_to_query_performance_optimization_request', { query: 'print fixed=1' },
 			),
 		]);
 		const model = createModel(responses);
@@ -2721,11 +2771,42 @@ describe('Kusto Copilot function execution', () => {
 			],
 		});
 
-		expect(model.sendRequest).toHaveBeenCalledTimes(100);
+		expect(model.sendRequest).toHaveBeenCalledTimes(101);
 		expect(hostMessagesOfType(host, 'copilotWriteQueryDone')).toContainEqual(expect.objectContaining({
-			boxId: 'query_1', ok: false,
-			message: 'Copilot used too many model rounds without a final response.',
+			boxId: 'query_1', ok: true,
 		}));
+		expect(hostMessagesOfType(host, 'copilotWriteQueryStatus')).toContainEqual(expect.objectContaining({
+			role: 'progress', status: 'Generating response (100 tool calls)\u2026',
+		}));
+	});
+
+	it('does not count or execute an unoffered nested Kusto repair tool call', async () => {
+		const model = createModel([
+			[new vscode.LanguageModelToolCallPart(
+				'opt-call', 'respond_to_query_performance_optimization_request', { query: 'print bad=1' },
+			)],
+			[new vscode.LanguageModelToolCallPart(
+				'unoffered-fix', 'respond_to_all_other_queries', { query: 'print unoffered=1' },
+			)],
+		]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const executionQueries: string[] = [];
+		(host.executeKustoSectionQuery as any).mockImplementation(async ({ query, executionId }: any) => {
+			executionQueries.push(query);
+			return { status: 'failed', executionId, error: 'synthetic repair request' };
+		});
+		const service = new CopilotService(host);
+
+		await service.startCopilotWriteQuery({
+			...startMessage(), currentQuery: 'print source=1', request: 'Optimize this query.',
+		});
+
+		expect(executionQueries).not.toContain('print unoffered=1');
+		expect(hostMessagesOfType(host, 'copilotWriteQueryStatus')
+			.filter(message => message.role === 'progress')
+			.map(message => message.status))
+			.not.toContain('Generating response (2 tool calls)\u2026');
 	});
 
 	it('does not execute a Copilot comparison against a different source data target', async () => {

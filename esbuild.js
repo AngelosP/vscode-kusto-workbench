@@ -399,6 +399,44 @@ async function main() {
 		console.warn('[watch] failed to bundle first-launch setup:', e && e.message ? e.message : e);
 	}
 
+	const workbenchMcpBridgeCtx = await esbuild.context({
+		entryPoints: ['src/host/workbenchMcpBridge.ts'],
+		bundle: true,
+		format: 'cjs',
+		minify: production,
+		sourcemap: !production,
+		sourcesContent: false,
+		platform: 'node',
+		outfile: 'dist/workbench-mcp-bridge.js',
+		logLevel: 'silent',
+		plugins: [esbuildProblemMatcherPlugin],
+	});
+	if (watch) {
+		await workbenchMcpBridgeCtx.watch();
+	} else {
+		await workbenchMcpBridgeCtx.rebuild();
+		await workbenchMcpBridgeCtx.dispose();
+	}
+	const copilotCliIntegrationCtx = await esbuild.context({
+		entryPoints: ['src/host/copilotCliIntegration.ts'],
+		bundle: true,
+		format: 'cjs',
+		minify: production,
+		sourcemap: !production,
+		sourcesContent: false,
+		platform: 'node',
+		outfile: 'dist/copilot-cli-integration.js',
+		external: ['vscode'],
+		logLevel: 'silent',
+		plugins: [esbuildProblemMatcherPlugin],
+	});
+	if (watch) {
+		await copilotCliIntegrationCtx.watch();
+	} else {
+		await copilotCliIntegrationCtx.rebuild();
+		await copilotCliIntegrationCtx.dispose();
+	}
+
 	const ctx = await esbuild.context({
 		entryPoints: [
 			'src/host/extension.ts'
@@ -476,6 +514,8 @@ async function main() {
 		}
 		const BASELINES = {
 			'extension.js':                                        2374,
+			'copilot-cli-integration.js':                            12,
+			'workbench-mcp-bridge.js':                              431,
 			'webview/webview.bundle.js':                           3283,
 			'webview/md-editor.bundle.js':                          296,
 			'webview/tutorial-viewer.bundle.js':                    154,

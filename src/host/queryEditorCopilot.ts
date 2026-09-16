@@ -2038,25 +2038,20 @@ Completion:`;
 			}
 
 			const maxAttempts = 6;
-			const maxModelRounds = 100;
-			let modelRound = 0;
-			const beginModelRound = (): boolean => {
-				if (modelRound >= maxModelRounds) {
-					postRequestMessage({
-						type: 'copilotWriteQueryDone', boxId, ok: false,
-						message: 'Copilot used too many model rounds without a final response.',
-					});
-					return false;
-				}
-				modelRound++;
-				postStatus(`Generating response (round ${modelRound})…`);
-				return true;
+			let toolCallCount = 0;
+			let modelRequestCount = 0;
+			const postGeneratingResponseStatus = (): void => {
+				const toolCallStatus = modelRequestCount === 0
+					? ''
+					: ` (${toolCallCount} tool call${toolCallCount === 1 ? '' : 's'})`;
+				postStatus(`Generating response${toolCallStatus}…`);
+				modelRequestCount++;
 			};
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 				if (!isActive() || cts.token.isCancellationRequested) {
 					throw new Error('Copilot write-query canceled');
 				}
-				if (!beginModelRound()) return;
+				postGeneratingResponseStatus();
 
 				const messages = this.buildMessagesFromHistory({
 					boxId,
@@ -2130,6 +2125,7 @@ Completion:`;
 					postStatus('Copilot returned malformed tool calls. Retrying…');
 					continue;
 				}
+				toolCallCount += historyToolCalls.length;
 
 				// Has tool calls — post any accompanying narrative text.
 				if (responseText.trim()) {
@@ -2652,24 +2648,30 @@ Completion:`;
 										)
 									];
 
-									if (!beginModelRound()) return;
+									postGeneratingResponseStatus();
 									const fixResponse = await model.sendRequest(
 										fixMessages,
 										{ tools: [fixTool], toolMode: vscode.LanguageModelChatToolMode.Required },
 										cts.token
 									);
-									let fixedQuery = '';
+									const nativeFixToolCalls: vscode.LanguageModelToolCallPart[] = [];
 									for await (const fixPart of fixResponse.stream) {
 										if (!isActive() || cts.token.isCancellationRequested) {
 											throw new Error('Copilot write-query canceled');
 										}
 										if (fixPart instanceof vscode.LanguageModelToolCallPart) {
-											const rawQ = this.extractQueryArgument(fixPart.input);
-											fixedQuery = this.extractKustoCodeBlock(rawQ).trim();
+											nativeFixToolCalls.push(fixPart);
 										}
 									}
-									if (fixedQuery) {
-										candidate = this.getRunnableKustoQuery(fixedQuery);
+									const fixToolCalls = this.toHistoryToolCalls(nativeFixToolCalls, [fixTool]);
+									if (!this.hasUnofferedToolCall(nativeFixToolCalls, [fixTool])
+										&& fixToolCalls.length === nativeFixToolCalls.length) {
+										toolCallCount += fixToolCalls.length;
+										for (const fixToolCall of fixToolCalls) {
+											const rawQ = this.extractQueryArgument(fixToolCall.input);
+											const fixedQuery = this.extractKustoCodeBlock(rawQ).trim();
+											if (fixedQuery) candidate = this.getRunnableKustoQuery(fixedQuery);
+										}
 									}
 								}
 							}
@@ -2853,6 +2855,7 @@ Completion:`;
 								result: toolResult
 							});
 						} catch { /* ignore */ }
+						hasOptionalToolCalls = true;
 						continue;
 					}
 
@@ -3431,28 +3434,21 @@ Completion:`;
 			const serverUrl = connection?.serverUrl || '(unknown)';
 
 			const maxAttempts = 6;
-			const maxModelRounds = 100;
-			let modelRound = 0;
-			const beginModelRound = async (): Promise<boolean> => {
-				if (modelRound >= maxModelRounds) {
-					await commitRequestHistory(() => {
-						postSqlMessage({
-							type: 'copilotWriteQueryDone', boxId, ok: false,
-							message: 'Copilot used too many model rounds without a final response.',
-						});
-					});
-					return false;
-				}
-				modelRound++;
-				postStatus(`Generating response (round ${modelRound})…`);
-				return true;
+			let toolCallCount = 0;
+			let modelRequestCount = 0;
+			const postGeneratingResponseStatus = (): void => {
+				const toolCallStatus = modelRequestCount === 0
+					? ''
+					: ` (${toolCallCount} tool call${toolCallCount === 1 ? '' : 's'})`;
+				postStatus(`Generating response${toolCallStatus}…`);
+				modelRequestCount++;
 			};
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 				await assertActiveOwner();
 				if (!isActive() || cts.token.isCancellationRequested) {
 					throw new Error('SQL Copilot write-query canceled');
 				}
-				if (!await beginModelRound()) return;
+				postGeneratingResponseStatus();
 
 				const messages = this.buildSqlMessagesFromHistory({
 					boxId, serverUrl, database, schemaText, priorAttempts
@@ -3518,6 +3514,7 @@ Completion:`;
 					postStatus('Copilot returned malformed tool calls. Retrying…');
 					continue;
 				}
+				toolCallCount += historyToolCalls.length;
 
 				// Record assistant message with tool calls
 				const assistantEntryId = this.nextHistoryEntryId(boxId);

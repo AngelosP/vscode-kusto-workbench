@@ -2311,6 +2311,56 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		await expect(capturePostedInput('250')).resolves.toMatchObject({ maxResultRows: 100 });
 	});
 
+	it('does not install a fixed deadline for delegated Kusto Copilot requests', async () => {
+		vi.useFakeTimers();
+		const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+		try {
+			const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+				fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+			);
+			const poster = vi.fn(() => true);
+			orchestrator.connect(poster, vi.fn(async () => []), vi.fn());
+			let outcome = 'pending';
+			const pending = orchestrator.delegateToKustoWorkbenchCopilot({ question: 'Help' });
+			void pending.then(
+				() => { outcome = 'resolved'; },
+				() => { outcome = 'rejected'; },
+			);
+			const request = poster.mock.calls[0][0] as any;
+			expect(setTimeoutSpy).not.toHaveBeenCalledWith(expect.any(Function), 180_000);
+
+			await vi.advanceTimersByTimeAsync(180_001);
+
+			expect(outcome).toBe('pending');
+			expect(poster).not.toHaveBeenCalledWith(expect.objectContaining({
+				type: 'toolCancelKustoCopilot', requestId: request.requestId,
+			}));
+			orchestrator.handleWebviewResponse(request.requestId, { success: true, sectionId: 'query_1' });
+			await expect(pending).resolves.toEqual({ success: true, sectionId: 'query_1' });
+		} finally {
+			setTimeoutSpy.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
+	it('cancels an unbounded delegated Kusto Copilot request explicitly', async () => {
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const poster = vi.fn(() => true);
+		orchestrator.connect(poster, vi.fn(async () => []), vi.fn());
+		const cancellation = cancellationToken();
+		const pending = orchestrator.delegateToKustoWorkbenchCopilot({ question: 'Help' }, cancellation.token);
+		const request = poster.mock.calls[0][0] as any;
+
+		cancellation.cancel();
+
+		await expect(pending).rejects.toMatchObject({ name: 'Canceled' });
+		expect(poster).toHaveBeenCalledWith({
+			type: 'toolCancelKustoCopilot', requestId: request.requestId,
+		});
+	});
+
 	it('keeps the Kusto Copilot waiter live after a malformed matching clarification result', async () => {
 		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
 			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,

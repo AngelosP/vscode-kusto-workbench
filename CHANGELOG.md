@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [5.2.0] - Unreleased
 
 * Better search experience for Kusto and SQL schemas.
+* Better default settings for the chart axis (less overlapping text by default, etc.).
+* Added an opt-in Copilot CLI bridge that drives the same live Kusto Workbench tools and agent workflow as VS Code Copilot Chat.
+* Copilot Chat now shows cumulative tool calls while generating and no longer stops after 100 model requests.
 * Bugs
     * Search results for columns deep link to the table correctly now.
 

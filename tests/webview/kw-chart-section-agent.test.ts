@@ -43,6 +43,7 @@ vi.mock('../../src/webview/core/persistence.js', () => ({
 import '../../src/webview/sections/kw-chart-section.js';
 import { KwChartSection } from '../../src/webview/sections/kw-chart-section.js';
 import { ICONS } from '../../src/webview/shared/icon-registry.js';
+import { styles as chartSectionStyles } from '../../src/webview/sections/kw-chart-section.styles.js';
 
 beforeEach(() => {
 	// Stub globals that kw-chart-section reads
@@ -473,6 +474,73 @@ describe('kw-chart-section agent configuration', () => {
 		expect(globalState.valueColumn).toBe('Count');
 	});
 
+	it('shows a settings affordance on every configurable chart label', async () => {
+		const el = createChartSection('chart_settings_affordances');
+		await el.updateComplete;
+
+		for (const { chartType, labels } of [
+			{ chartType: 'area', labels: ['X', 'Y', 'Legend'] },
+			{ chartType: 'pie', labels: ['Labels'] },
+			{ chartType: 'sankey', labels: ['Orient'] },
+			{ chartType: 'heatmap', labels: ['X', 'Y', 'Slicer', 'Labels'] },
+		] as const) {
+			expect(el.configure({ chartType, dataSourceId: 'q1' })).toBe(true);
+			await el.updateComplete;
+
+			const configurableLabels = Array.from(el.shadowRoot!.querySelectorAll('.axis-label-clickable'));
+			expect(configurableLabels.map(label => label.textContent?.trim())).toEqual(labels);
+			for (const label of configurableLabels) {
+				expect(label.querySelectorAll('.axis-settings-indicator')).toHaveLength(1);
+			}
+		}
+	});
+
+	it('keeps the tiny dot footprint while custom settings change its color', async () => {
+		const el = createChartSection('chart_settings_indicator_state');
+		await el.updateComplete;
+		await configureAreaChart(el);
+
+		const defaultLabel = el.shadowRoot!.querySelector('[data-axis="x"]') as HTMLElement;
+		const defaultIndicator = defaultLabel.querySelector('.axis-settings-indicator') as HTMLElement;
+		expect(defaultIndicator).not.toBeNull();
+		expect(defaultLabel.classList.contains('has-settings')).toBe(false);
+		const styleSheet = new CSSStyleSheet();
+		styleSheet.replaceSync(chartSectionStyles.cssText);
+		const indicatorRule = Array.from(styleSheet.cssRules).find(rule =>
+			(rule as CSSStyleRule).selectorText === '.axis-label-clickable > .axis-settings-indicator',
+		) as CSSStyleRule | undefined;
+		expect(indicatorRule?.style.width).toBe('5px');
+		expect(indicatorRule?.style.height).toBe('5px');
+		expect(indicatorRule?.style.borderRadius).toBe('50%');
+		expect(chartSectionStyles.cssText).toMatch(/\.axis-label-clickable\s*>\s*\.axis-settings-indicator\s*\{[^}]*background:\s*var\(--vscode-descriptionForeground/s);
+		expect(chartSectionStyles.cssText).toMatch(/\.axis-label-clickable\.has-settings\s*>\s*\.axis-settings-indicator\s*\{[^}]*background:\s*var\(--vscode-focusBorder/s);
+
+		vi.spyOn(defaultLabel, 'getBoundingClientRect').mockReturnValue({
+			top: 20,
+			left: 30,
+			bottom: 40,
+			width: 50,
+		} as DOMRect);
+		vi.spyOn(defaultIndicator, 'getBoundingClientRect').mockReturnValue({
+			top: 100,
+			left: 110,
+			bottom: 105,
+			width: 5,
+		} as DOMRect);
+
+		defaultIndicator.click();
+		expect((el as any)._openAxisPopup).toBe('x');
+		expect((el as any)._popoverAnchorRect).toMatchObject({ top: 20, left: 30, bottom: 40, width: 50 });
+
+		el.setXAxisSettings({ customLabel: 'When' });
+		await el.updateComplete;
+
+		const customLabel = el.shadowRoot!.querySelector('[data-axis="x"]') as HTMLElement;
+		const customIndicator = customLabel.querySelector('.axis-settings-indicator');
+		expect(customLabel.classList.contains('has-settings')).toBe(true);
+		expect(customIndicator).toBe(defaultIndicator);
+	});
+
 	it('opens X/Y axis popup from chart axis-title click event', async () => {
 		const el = createChartSection();
 		await el.updateComplete;
@@ -488,5 +556,43 @@ describe('kw-chart-section agent configuration', () => {
 		}));
 		await el.updateComplete;
 		expect((el as any)._openAxisPopup).toBe('y');
+	});
+
+	it('hands automatic axis title gaps to the sliders without a position jump', async () => {
+		const el = createChartSection('chart_auto_axis_gap');
+		await el.updateComplete;
+		const runtimeState = (window as any).chartStateByBoxId[el.boxId];
+		Object.defineProperties(runtimeState, {
+			__effectiveXAxisTitleGap: { value: 73, writable: true, configurable: true },
+			__effectiveYAxisTitleGap: { value: 84, writable: true, configurable: true },
+			__effectiveCanvasMinHeight: { value: 220, writable: true, configurable: true },
+		});
+
+		el.dispatchEvent(new CustomEvent('kusto-axis-title-click', {
+			detail: { axis: 'x', clientX: 120, clientY: 240 },
+		}));
+		await el.updateComplete;
+
+		const sliders = Array.from(el.shadowRoot!.querySelectorAll('.axis-title-gap-slider input')) as HTMLInputElement[];
+		const labels = Array.from(el.shadowRoot!.querySelectorAll('.axis-title-gap-slider .slider-ghost-text'));
+		expect(sliders.map(slider => slider.value)).toEqual(['73', '84']);
+		expect(labels.map(label => label.textContent?.trim())).toEqual(['Auto (73px)', 'Auto (84px)']);
+
+		sliders[0].value = '74';
+		sliders[0].dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+		await el.updateComplete;
+
+		const updatedSlider = el.shadowRoot!.querySelector('.axis-title-gap-slider input') as HTMLInputElement;
+		const updatedLabel = el.shadowRoot!.querySelector('.axis-title-gap-slider .slider-ghost-text');
+		expect(updatedSlider.value).toBe('74');
+		expect(updatedLabel?.textContent?.trim()).toBe('74px');
+		const serialized = el.serialize() as any;
+		expect(serialized.xAxisSettings.titleGap).toBe(74);
+		expect(serialized).not.toHaveProperty('__effectiveXAxisTitleGap');
+		expect(serialized).not.toHaveProperty('__effectiveYAxisTitleGap');
+		expect(serialized).not.toHaveProperty('__effectiveCanvasMinHeight');
+		expect(Object.keys(runtimeState)).not.toEqual(expect.arrayContaining([
+			'__effectiveXAxisTitleGap', '__effectiveYAxisTitleGap', '__effectiveCanvasMinHeight',
+		]));
 	});
 });

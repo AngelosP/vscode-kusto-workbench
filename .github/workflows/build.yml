@@ -16,14 +16,12 @@ on:
     tags:
       - v*
     paths-ignore:
-      - '**/*.md'
       - '**/*.gitignore'
       - '**/*.gitattributes'
       - '.github/**'
       - 'resources/**'
       - 'docs/**'
       - 'sample/**'
-      - 'scripts/**'
       - 'browser-ext/**'
       - 'web/**'
   workflow_dispatch:
@@ -91,6 +89,9 @@ jobs:
 
       - name: Build (package)
         run: npm run package
+
+      - name: Run Copilot CLI bridge tests
+        run: npx vitest run tests/webview/host/copilotCliSessionManager.test.ts tests/webview/host/workbenchMcpBridge.test.ts tests/webview/host/copilotCliIntegration.test.ts tests/webview/host/firstLaunchIntegration.test.ts tests/webview/host/schemaIndexUtils.test.ts --maxWorkers=1 --no-file-parallelism
 
       - name: Install Xvfb (for VS Code tests)
         run: |

@@ -97,6 +97,9 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `diffViewerUtils.ts` | Utilities for rendering diff views |
 | `cachedValuesViewer.ts` | Cached values viewer panel, including generation-leased and application-acknowledged SQL schema/cache publication |
 | `kustoWorkbenchTools.ts` | VS Code agent tool registrations |
+| `copilotCliIntegration.ts` | Lazy Copilot CLI discovery, manifest/agent projection, private launch assets, terminal lifecycle, and registered-tool invocation adapter |
+| `copilotCliSessionManager.ts` | Transport-neutral explicit-connect session, lease, startup-fencing, and bridge shutdown owner |
+| `workbenchMcpBridge.ts` | Authenticated loopback MCP transport over injected registered-tool calls, including per-lease cancellation and shutdown |
 | `copilotConversationUtils.ts` | Copilot conversation message building utilities |
 | `copilotPromptUtils.ts` | Pure prompt template builders for Copilot optimization and tool definitions |
 | `kustoClientUtils.ts` | Pure schema parsing (`extractSchemaFromJson`, `finalizeSchema`), cell formatting, error classification |
@@ -1112,6 +1115,20 @@ HTML dashboard-relevant tools include:
 
 Schema-specific tools still include `kusto-workbench_refresh-schema` and `kusto-workbench_search-cached-schemas`, but they are no longer the full agent tool surface.
 
+### Copilot CLI Bridge
+
+Copilot CLI integration is an opt-in transport adapter over the same registered VS Code tools. `kustoWorkbench.copilotCli.enabled` defaults to `false`; enabling it alone performs no network or terminal work. `Kusto Workbench: Connect Copilot CLI` explicitly creates the connection for that VS Code window.
+
+`copilotCliIntegration.ts` owns CLI discovery, per-terminal launch assets, generated CLI agent frontmatter, terminal lifecycle, and lazy loading. `workbenchMcpBridge.ts` owns the authenticated loopback MCP transport and per-lease request cancellation. `copilotCliSessionManager.ts` owns bridge/session sequencing and ensures Stop or setting disable wins over asynchronous startup.
+
+The adapter derives its public names, descriptions, and JSON schemas from `contributes.languageModelTools`, verifies that every tool is live in `vscode.lm.tools`, and invokes the registered implementation through `vscode.lm.invokeTool()`. It does not call `KustoWorkbenchToolOrchestrator` directly. Tool text parts are returned unchanged, so VS Code Chat and CLI share the same implementation, target selection, execution, persistence, validation, and error semantics.
+
+The MCP SDK and HTTP server are bundled separately in `dist/workbench-mcp-bridge.js`; CLI launch and instruction rendering are in `dist/copilot-cli-integration.js`. The normal `dist/extension.js` contains only the inert lazy lifecycle helper and dynamically loads neither opt-in bundle until an enabled user invokes Connect. Each launched terminal receives a distinct bearer lease. Its temporary MCP configuration lives in per-user extension global storage outside the agent's granted root, is exclusively created with owner-only mode where supported, and is deleted after the first authenticated request. This limits exposure but is not a security boundary against another process already running as the same OS user. Closing the terminal revokes that lease; Disconnect or disabling the setting revokes all leases, requests cancellation of active calls, and stops the listener. An underlying registered tool that does not support cancellation may finish an already accepted mutation. No automatic reconnect, mutation replay, remote forwarding, or browser-host bridge exists.
+
+`getKustoSchema` receives a tokenization budget from the same Copilot model family named by the generated main agent when available. A bounded estimator is used when VS Code exposes no matching model, so a CLI call cannot accidentally return an unbounded full schema solely because MCP lacks VS Code Chat's caller tokenization metadata.
+
+The initial workflow launches a fresh attached CLI terminal from the selected VS Code window. It does not inject credentials or MCP configuration into a Copilot CLI process that was already running before Connect.
+
 ## Dependencies
 
 * `@kusto/monaco-kusto` — Monaco Editor KQL language support
@@ -1120,6 +1137,7 @@ Schema-specific tools still include `kusto-workbench_refresh-schema` and `kusto-
 * `@toast-ui/editor` — WYSIWYG markdown editor
 * `echarts` — Charting library
 * `vscode-jsonrpc` — JSON-RPC protocol for STS communication
+* `@modelcontextprotocol/server` and `@modelcontextprotocol/node` — lazily loaded Copilot CLI MCP transport
 * Microsoft SQL Tools Service — downloaded and integrity-checked on first SQL use; provides IntelliSense and query execution
 
 ## Test Coverage

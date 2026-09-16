@@ -69,6 +69,10 @@ import {
 	refreshEditingPreferences,
 } from './editingPreferences';
 import { parseEditingPreferencesHostMessage } from '../shared/editingPreferences';
+import {
+	CopilotCliConnectionCancelledError,
+	LazyCopilotCliIntegration,
+} from './copilotCliSessionManager';
 
 type TestOpenFileSummary = NonNullable<Awaited<ReturnType<KustoWorkbenchToolOrchestrator['listSections']>>['openFiles']>[number];
 type TestKustoCopilotDelegationInput = Parameters<KustoWorkbenchToolOrchestrator['delegateToKustoWorkbenchCopilot']>[0];
@@ -87,6 +91,25 @@ export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
 let sqlWorkbenchService: SqlWorkbenchService | undefined;
 let kustoConnectionManager: ConnectionManager | undefined;
 let kustoAuthPreferenceService: KustoAuthPreferenceService | undefined;
+const COPILOT_CLI_ENABLED_SETTING = 'copilotCli.enabled';
+type CopilotCliIntegration = {
+	connect(): Promise<void>;
+	stop(): Promise<void>;
+	dispose(): Promise<void>;
+};
+let copilotCliIntegration: LazyCopilotCliIntegration<CopilotCliIntegration> | undefined;
+
+function getOrCreateCopilotCliIntegration(context: vscode.ExtensionContext): LazyCopilotCliIntegration<CopilotCliIntegration> {
+	if (copilotCliIntegration) return copilotCliIntegration;
+	copilotCliIntegration = new LazyCopilotCliIntegration(async () => {
+		const moduleUri = vscode.Uri.joinPath(context.extensionUri, 'dist', 'copilot-cli-integration.js');
+		const module = await import(moduleUri.toString());
+		const integration = module.createCopilotCliIntegration?.(context, getWorkbenchLogger()) as CopilotCliIntegration | undefined;
+		if (!integration) throw new Error('The packaged Copilot CLI integration is unavailable.');
+		return integration;
+	});
+	return copilotCliIntegration;
+}
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
@@ -195,6 +218,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				}).catch(error => {
 					getWorkbenchLogger().error('[Kusto Workbench] Failed to refresh editing preferences:', error instanceof Error ? error : String(error));
 				});
+			}
+			if (e.affectsConfiguration(`kustoWorkbench.${COPILOT_CLI_ENABLED_SETTING}`)) {
+				if (!vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>(COPILOT_CLI_ENABLED_SETTING, false)) {
+					void copilotCliIntegration?.stop().catch(error => {
+					getWorkbenchLogger().error('[Copilot CLI] Failed to apply the integration setting:', error instanceof Error ? error : String(error));
+					});
+				}
 			}
 		})
 	);
@@ -2835,6 +2865,49 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	);
 
 	context.subscriptions.push(
+		vscode.commands.registerCommand('kusto.connectCopilotCli', () => {
+			if (!vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>(COPILOT_CLI_ENABLED_SETTING, false)) {
+				void vscode.window.showInformationMessage(
+					'Copilot CLI integration is disabled. Enable kustoWorkbench.copilotCli.enabled before connecting.',
+					'Open Settings',
+				).then(selected => selected === 'Open Settings'
+					? vscode.commands.executeCommand('workbench.action.openSettings', `kustoWorkbench.${COPILOT_CLI_ENABLED_SETTING}`)
+					: undefined);
+				return Promise.resolve({ success: false, disabled: true });
+			}
+			const integration = getOrCreateCopilotCliIntegration(context);
+			const expectedGeneration = integration.captureGeneration();
+			return afterFirstLaunch(async () => {
+				try {
+					if (!vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>(COPILOT_CLI_ENABLED_SETTING, false)) return;
+					await integration.connect(expectedGeneration);
+					return { success: true };
+				} catch (error) {
+					if (error instanceof vscode.CancellationError || error instanceof CopilotCliConnectionCancelledError) {
+						return { success: false, cancelled: true };
+					}
+					const message = error instanceof Error ? error.message : String(error);
+					getWorkbenchLogger().error(`[Copilot CLI] Connect failed: ${message}`);
+					void vscode.window.showErrorMessage(`Could not connect Copilot CLI: ${message}`);
+					return { success: false, error: message };
+				}
+			})();
+		}),
+		vscode.commands.registerCommand('kusto.disconnectCopilotCli', async () => {
+			try {
+				await copilotCliIntegration?.stop();
+				void vscode.window.showInformationMessage('Disconnected Copilot CLI from this Kusto Workbench window.');
+				return { success: true };
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				getWorkbenchLogger().error(`[Copilot CLI] Disconnect failed: ${message}`);
+				void vscode.window.showErrorMessage(`Could not disconnect Copilot CLI: ${message}`);
+				return { success: false, error: message };
+			}
+		}),
+	);
+
+	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.configureFirstLaunchSetup', () => firstLaunchCoordinator.openConfiguration())
 	);
 
@@ -2918,17 +2991,45 @@ export async function closeQueryEditorSessionTabs(sessionUri: vscode.Uri): Promi
 
 // This method is called when your extension is deactivated
 export async function deactivate() {
-	await ConnectionService.waitForLastSelectionSettlement();
 	const service = sqlWorkbenchService;
 	const connectionManager = kustoConnectionManager;
 	const authPreferences = kustoAuthPreferenceService;
+	const cliIntegration = copilotCliIntegration;
 	sqlWorkbenchService = undefined;
 	kustoConnectionManager = undefined;
 	kustoAuthPreferenceService = undefined;
-	connectionManager?.dispose();
-	await Promise.all([
-		service?.dispose(),
-		connectionManager?.waitForSettlement(),
-		authPreferences?.waitForWriteSettlement(),
-	]);
+	copilotCliIntegration = undefined;
+	let cliDisposal: Promise<void>;
+	try {
+		cliDisposal = Promise.resolve(cliIntegration?.dispose());
+	} catch (error) {
+		cliDisposal = Promise.reject(error);
+	}
+	const hostDisposal = (async () => {
+		const failures: unknown[] = [];
+		try {
+			await ConnectionService.waitForLastSelectionSettlement();
+		} catch (error) {
+			failures.push(error);
+		}
+		try {
+			connectionManager?.dispose();
+		} catch (error) {
+			failures.push(error);
+		}
+		const results = await Promise.allSettled([
+			Promise.resolve().then(() => service?.dispose()),
+			Promise.resolve().then(() => connectionManager?.waitForSettlement()),
+			Promise.resolve().then(() => authPreferences?.waitForWriteSettlement()),
+		]);
+		failures.push(...results
+			.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+			.map(result => result.reason));
+		if (failures.length > 0) throw new AggregateError(failures, 'Kusto Workbench host teardown failed.');
+	})();
+	const results = await Promise.allSettled([cliDisposal, hostDisposal]);
+	const failures = results
+		.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+		.map(result => result.reason);
+	if (failures.length > 0) throw new AggregateError(failures, 'Kusto Workbench deactivation failed.');
 }

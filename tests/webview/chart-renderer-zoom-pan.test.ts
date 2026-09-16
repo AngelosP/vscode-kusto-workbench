@@ -129,20 +129,20 @@ describe('chart-renderer zoom/pan controls', () => {
 		expect(persistenceMocks.schedulePersist).not.toHaveBeenCalled();
 	});
 
-	function createCanvas(canvasId: string): HTMLDivElement {
+	function createCanvas(canvasId: string, width = 640, height = 360): HTMLDivElement {
 		const canvas = document.createElement('div');
 		canvas.id = canvasId;
-		Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: 640 });
-		Object.defineProperty(canvas, 'clientHeight', { configurable: true, value: 360 });
+		Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: width });
+		Object.defineProperty(canvas, 'clientHeight', { configurable: true, value: height });
 		canvas.getBoundingClientRect = () => ({
 			x: 0,
 			y: 0,
 			left: 0,
 			top: 0,
-			right: 640,
-			bottom: 360,
-			width: 640,
-			height: 360,
+			right: width,
+			bottom: height,
+			width,
+			height,
 			toJSON: () => ({}),
 		} as DOMRect);
 		return canvas;
@@ -181,6 +181,8 @@ describe('chart-renderer zoom/pan controls', () => {
 		stateOverrides: Record<string, unknown> = {},
 		resultsOverrides: { columns?: unknown[]; rows?: unknown[][] } = {},
 		idOverride?: string,
+		canvasSize: { width: number; height: number } = { width: 640, height: 360 },
+		expectRendered = true,
 	): { id: string; option: any; state: any } {
 		const id = idOverride || `chart_${chartType}_${Math.random().toString(36).slice(2)}`;
 		const host = document.createElement('div');
@@ -191,13 +193,13 @@ describe('chart-renderer zoom/pan controls', () => {
 		wrapper.id = `${id}_chart_wrapper`;
 		const editContainer = document.createElement('div');
 		editContainer.id = `${id}_chart_edit`;
-		editContainer.appendChild(createCanvas(`${id}_chart_canvas_edit`));
+		editContainer.appendChild(createCanvas(`${id}_chart_canvas_edit`, canvasSize.width, canvasSize.height));
 		addZoomControls(id, editContainer);
 		wrapper.appendChild(editContainer);
 
 		const previewContainer = document.createElement('div');
 		previewContainer.id = `${id}_chart_preview`;
-		previewContainer.appendChild(createCanvas(`${id}_chart_canvas_preview`));
+		previewContainer.appendChild(createCanvas(`${id}_chart_canvas_preview`, canvasSize.width, canvasSize.height));
 		wrapper.appendChild(previewContainer);
 		document.body.appendChild(wrapper);
 
@@ -239,12 +241,21 @@ describe('chart-renderer zoom/pan controls', () => {
 
 		renderChart(id);
 		const fullOptionCall = setOption.mock.calls.find((call) => call[1]?.notMerge === true);
-		expect(fullOptionCall).toBeTruthy();
-		return { id, option: fullOptionCall![0], state };
+		if (expectRendered) expect(fullOptionCall).toBeTruthy();
+		return { id, option: fullOptionCall?.[0], state };
 	}
 
 	function valuesFor(series: any): any[] {
 		return (series.data || []).map((point: any) => point && typeof point === 'object' ? point.value : point);
+	}
+
+	function minimumXAxisTitleGap(labels: string[], fontSize: number, rotationDegrees: number): number {
+		const rotationRadians = rotationDegrees * Math.PI / 180;
+		const maxLabelChars = Math.max(...labels.map(label => label.length));
+		const estimatedLabelWidth = maxLabelChars * fontSize * 0.62;
+		const estimatedLabelDepth = Math.abs(Math.sin(rotationRadians)) * estimatedLabelWidth
+			+ Math.abs(Math.cos(rotationRadians)) * fontSize;
+		return Math.ceil(estimatedLabelDepth + 15);
 	}
 
 	it.each(['line', 'bar', 'area'])('keeps category X-axis sort paired with %s values and tooltips', (chartType) => {
@@ -483,6 +494,368 @@ describe('chart-renderer zoom/pan controls', () => {
 			'01-Jan-2024',
 		]);
 		expect(valuesFor(scenario.option.series[0])).toEqual([30, 20, 10]);
+	});
+
+	it.each(['line', 'scatter'])('keeps default %s axis titles outside dense tick-label bands', (chartType) => {
+		const rows = Array.from({ length: 24 }, (_, index) => [
+			new Date(Date.UTC(2024, 0, index + 1)).toISOString(),
+			1_234_567 + index,
+		]);
+		const scenario = renderScenario(chartType, {
+			xColumn: 'Timestamp',
+			yColumn: 'Value',
+			yColumns: ['Value'],
+		}, {
+			columns: ['Timestamp', 'Value'],
+			rows,
+		});
+
+		const xLabels = Array.isArray(scenario.option.xAxis.data)
+			? scenario.option.xAxis.data.map(String)
+			: rows.map(row => scenario.option.xAxis.axisLabel.formatter(Date.parse(String(row[0]))));
+		const xFontSize = scenario.option.xAxis.axisLabel.fontSize;
+		const minimumXTitleGap = minimumXAxisTitleGap(
+			xLabels,
+			xFontSize,
+			scenario.option.xAxis.axisLabel.rotate,
+		);
+
+		const yLabels = rows.map(row => Number(row[1]).toLocaleString('en-US'));
+		const maxYLabelChars = Math.max(...yLabels.map(label => label.length));
+		const minimumYTitleGap = Math.ceil(maxYLabelChars * 11 * 0.62 + 15);
+
+		expect(scenario.option.xAxis.axisLabel.rotate).toBe(60);
+		expect(scenario.option.xAxis.nameGap).toBeGreaterThanOrEqual(minimumXTitleGap);
+		expect(scenario.option.yAxis.nameGap).toBeGreaterThanOrEqual(minimumYTitleGap);
+		expect(scenario.option.grid.bottom).toBeGreaterThan(scenario.option.xAxis.nameGap);
+		expect(scenario.option.grid.left).toBeGreaterThan(scenario.option.yAxis.nameGap);
+	});
+
+	it('keeps the default heatmap X-axis title outside dense category labels', () => {
+		const rows = Array.from({ length: 24 }, (_, index) => [
+			`Daily category ${String(index + 1).padStart(2, '0')}`,
+			'Primary lane',
+			index + 1,
+		]);
+		const scenario = renderScenario('heatmap', {
+			xColumn: 'Category',
+			yColumn: 'Lane',
+			valueColumn: 'Value',
+		}, {
+			columns: ['Category', 'Lane', 'Value'],
+			rows,
+		});
+		const xLabels = scenario.option.xAxis.data.map(String);
+		const minimumGap = minimumXAxisTitleGap(
+			xLabels,
+			scenario.option.xAxis.axisLabel.fontSize,
+			scenario.option.xAxis.axisLabel.rotate,
+		);
+
+		expect(scenario.option.xAxis.axisLabel.rotate).toBeGreaterThan(30);
+		expect(scenario.option.xAxis.nameGap).toBeGreaterThanOrEqual(minimumGap);
+		expect(scenario.option.grid.bottom).toBeGreaterThan(scenario.option.xAxis.nameGap);
+	});
+
+	it('keeps explicit axis title gaps authoritative', () => {
+		const rows = Array.from({ length: 24 }, (_, index) => [
+			new Date(Date.UTC(2024, 0, index + 1)).toISOString(),
+			1_234_567 + index,
+		]);
+		const scenario = renderScenario('line', {
+			xColumn: 'Timestamp',
+			yColumn: 'Value',
+			yColumns: ['Value'],
+			xAxisSettings: { titleGap: 64 },
+			yAxisSettings: { titleGap: 82 },
+		}, {
+			columns: ['Timestamp', 'Value'],
+			rows,
+		});
+
+		expect(scenario.option.xAxis.axisLabel.rotate).toBe(60);
+		expect(scenario.option.xAxis.nameGap).toBe(64);
+		expect(scenario.option.yAxis.nameGap).toBe(82);
+	});
+
+	it('keeps an explicit heatmap Y-axis title gap exact after automatic layout', () => {
+		const rows = [
+			['A', 'A very long primary lane label', 1],
+			['B', 'A very long secondary lane label', 2],
+		];
+		const automatic = renderScenario('heatmap', {
+			xColumn: 'Category',
+			yColumn: 'Lane',
+			valueColumn: 'Value',
+		}, {
+			columns: ['Category', 'Lane', 'Value'],
+			rows,
+		});
+		const automaticGap = automatic.option.yAxis.nameGap;
+		setOption.mockClear();
+
+		const manual = renderScenario('heatmap', {
+			xColumn: 'Category',
+			yColumn: 'Lane',
+			valueColumn: 'Value',
+			yAxisSettings: { titleGap: automaticGap + 1 },
+		}, {
+			columns: ['Category', 'Lane', 'Value'],
+			rows,
+		});
+
+		expect(automaticGap).toBeGreaterThan(45);
+		expect(manual.option.yAxis.nameGap).toBe(automaticGap + 1);
+	});
+
+	it('recomputes the complete adaptive axis layout when the chart narrows', async () => {
+		let resizeCallback: ResizeObserverCallback | undefined;
+		const originalResizeObserver = globalThis.ResizeObserver;
+		class TestResizeObserver {
+			constructor(callback: ResizeObserverCallback) { resizeCallback = callback; }
+			observe(): void { /* noop */ }
+			unobserve(): void { /* noop */ }
+			disconnect(): void { /* noop */ }
+		}
+		Object.defineProperty(globalThis, 'ResizeObserver', {
+			configurable: true,
+			value: TestResizeObserver,
+		});
+		try {
+			const rows = Array.from({ length: 8 }, (_, index) => [
+				new Date(Date.UTC(2024, 0, index + 1)).toISOString(),
+				999_999 + index,
+			]);
+			const scenario = renderScenario('line', {
+				xColumn: 'Timestamp',
+				yColumn: 'Value',
+				yColumns: ['Value'],
+			}, {
+				columns: ['Timestamp', 'Value'],
+				rows,
+			});
+			expect(scenario.option.xAxis.axisLabel.rotate).toBe(0);
+			expect(scenario.option.xAxis.nameGap).toBe(30);
+			expect(resizeCallback).toBeTypeOf('function');
+
+			const canvas = document.getElementById(`${scenario.id}_chart_canvas_edit`) as HTMLDivElement;
+			Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: 300 });
+			canvas.getBoundingClientRect = () => ({
+				x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 360,
+				width: 300, height: 360, toJSON: () => ({}),
+			} as DOMRect);
+			setOption.mockClear();
+			resizeCallback!([{
+				contentRect: { width: 300 } as DOMRectReadOnly,
+			} as ResizeObserverEntry], {} as ResizeObserver);
+			await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+
+			const fullOptionCall = setOption.mock.calls.find(call => call[1]?.notMerge === true);
+			expect(fullOptionCall).toBeTruthy();
+			const resizedOption = fullOptionCall![0];
+			expect(resizedOption.xAxis.axisLabel.rotate).toBe(60);
+			expect(resizedOption.xAxis.nameGap).toBeGreaterThan(scenario.option.xAxis.nameGap);
+			expect(resizedOption.grid.bottom).toBeGreaterThan(resizedOption.xAxis.nameGap);
+			expect(scenario.state.__effectiveXAxisTitleGap).toBe(resizedOption.xAxis.nameGap);
+		} finally {
+			Object.defineProperty(globalThis, 'ResizeObserver', {
+				configurable: true,
+				value: originalResizeObserver,
+			});
+		}
+	});
+
+	it('preserves a useful plot height for dense adaptive labels', () => {
+		const rows = Array.from({ length: 24 }, (_, index) => [
+			new Date(Date.UTC(2024, 0, index + 1)).toISOString(),
+			999_999 + index,
+		]);
+		const scenario = renderScenario('line', {
+			xColumn: 'Timestamp',
+			yColumn: 'Value',
+			yColumns: ['Value'],
+		}, {
+			columns: ['Timestamp', 'Value'],
+			rows,
+		});
+		const canvas = document.getElementById(`${scenario.id}_chart_canvas_edit`) as HTMLElement;
+		const wrapper = document.getElementById(`${scenario.id}_chart_wrapper`) as HTMLElement;
+		const minimumCanvasHeight = parseInt(canvas.style.minHeight, 10);
+
+		expect(minimumCanvasHeight).toBeGreaterThanOrEqual(
+			Math.ceil(scenario.option.grid.top + scenario.option.grid.bottom + 80),
+		);
+		expect(scenario.option.grid.bottom).toBeLessThan(scenario.option.xAxis.nameGap + 25);
+		expect(wrapper.style.minHeight).toBe(canvas.style.minHeight);
+	});
+
+	it('reclaims title-only grid space when axis titles are hidden', () => {
+		const rows = Array.from({ length: 24 }, (_, index) => [
+			new Date(Date.UTC(2024, 0, index + 1)).toISOString(),
+			1_234_567 + index,
+		]);
+		const visible = renderScenario('line', {
+			xColumn: 'Timestamp', yColumn: 'Value', yColumns: ['Value'],
+		}, { columns: ['Timestamp', 'Value'], rows });
+		setOption.mockClear();
+		const hidden = renderScenario('line', {
+			xColumn: 'Timestamp', yColumn: 'Value', yColumns: ['Value'],
+			xAxisSettings: { showAxisLabel: false },
+			yAxisSettings: { showAxisLabel: false },
+		}, { columns: ['Timestamp', 'Value'], rows });
+
+		expect(hidden.option.grid.bottom).toBeLessThan(visible.option.grid.bottom);
+		expect(hidden.option.grid.left).toBeLessThan(visible.option.grid.left);
+	});
+
+	it('retires queued resize work before disposing the chart instance', async () => {
+		let resizeCallback: ResizeObserverCallback | undefined;
+		const originalResizeObserver = globalThis.ResizeObserver;
+		class TestResizeObserver {
+			constructor(callback: ResizeObserverCallback) { resizeCallback = callback; }
+			observe(): void { /* noop */ }
+			unobserve(): void { /* noop */ }
+			disconnect(): void { /* noop */ }
+		}
+		Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: TestResizeObserver });
+		try {
+			const scenario = renderScenario('line');
+			expect(resizeCallback).toBeTypeOf('function');
+			resizeCallback!([{ contentRect: { width: 300 } as DOMRectReadOnly } as ResizeObserverEntry], {} as ResizeObserver);
+			disposeChartEcharts(scenario.id);
+			instance.resize.mockClear();
+			await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+
+			expect(instance.resize).not.toHaveBeenCalled();
+			expect(setOption.mock.calls.filter(call => call[1]?.notMerge === true)).toHaveLength(1);
+		} finally {
+			Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: originalResizeObserver });
+		}
+	});
+
+	it('does not revive a removed zero-size chart', async () => {
+		let resizeCallback: ResizeObserverCallback | undefined;
+		const disconnect = vi.fn();
+		const originalResizeObserver = globalThis.ResizeObserver;
+		class TestResizeObserver {
+			constructor(callback: ResizeObserverCallback) { resizeCallback = callback; }
+			observe(): void { /* noop */ }
+			unobserve(): void { /* noop */ }
+			disconnect(): void { disconnect(); }
+		}
+		Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: TestResizeObserver });
+		try {
+			const scenario = renderScenario('line', {}, {}, 'chart_zero_size', { width: 0, height: 0 }, false);
+			const canvas = document.getElementById(`${scenario.id}_chart_canvas_edit`) as HTMLDivElement;
+			expect(resizeCallback).toBeTypeOf('function');
+			expect(setOption.mock.calls.find(call => call[1]?.notMerge === true)).toBeUndefined();
+
+			disposeChartEcharts(scenario.id);
+			document.getElementById(scenario.id)?.remove();
+			delete (window as any).chartStateByBoxId[scenario.id];
+			Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: 640 });
+			Object.defineProperty(canvas, 'clientHeight', { configurable: true, value: 360 });
+			resizeCallback!([{ contentRect: { width: 640, height: 360 } as DOMRectReadOnly } as ResizeObserverEntry], {} as ResizeObserver);
+			await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+
+			expect(disconnect).toHaveBeenCalled();
+			expect((window as any).chartStateByBoxId[scenario.id]).toBeUndefined();
+			expect(setOption.mock.calls.find(call => call[1]?.notMerge === true)).toBeUndefined();
+		} finally {
+			Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: originalResizeObserver });
+		}
+	});
+
+	it('resets runtime minimum heights on disposal', () => {
+		const scenario = renderScenario('line');
+		const wrapper = document.getElementById(`${scenario.id}_chart_wrapper`) as HTMLElement;
+		const canvas = document.getElementById(`${scenario.id}_chart_canvas_edit`) as HTMLElement;
+		expect(parseInt(wrapper.style.minHeight, 10)).toBeGreaterThanOrEqual(140);
+
+		disposeChartEcharts(scenario.id);
+
+		expect(wrapper.style.minHeight).toBe('0');
+		expect(canvas.style.minHeight).toBe('140px');
+	});
+
+	it.each(['left', 'right', 'top', 'bottom'] as const)('keeps a zero-gap heatmap visual map outside the %s plot edge', (position) => {
+		const scenario = renderScenario('heatmap', {
+			xColumn: 'Category',
+			yColumn: 'Target',
+			valueColumn: 'Value',
+			heatmapSettings: { visualMapPosition: position, visualMapGap: 0 },
+		}, {
+			columns: ['Category', 'Target', 'Value'],
+			rows: [['A', 'B', -1_000_000], ['B', 'C', 999_999]],
+		});
+
+		if (position === 'left') expect(scenario.option.grid.left).toBeGreaterThan(100);
+		if (position === 'right') expect(scenario.option.grid.right).toBeGreaterThan(100);
+		if (position === 'top') expect(scenario.option.grid.top).toBeGreaterThan(50);
+		if (position === 'bottom') expect(scenario.option.grid.bottom).toBeGreaterThan(70);
+	});
+
+	it('bounds automatic layout for very long category labels', () => {
+		const longLabel = 'category-' + 'x'.repeat(500);
+		const scenario = renderScenario('heatmap', {
+			xColumn: 'Category', yColumn: 'Target', valueColumn: 'Value',
+		}, {
+			columns: ['Category', 'Target', 'Value'],
+			rows: [[longLabel, longLabel, 1], ['short', 'short', 2]],
+		});
+
+		expect(scenario.option.xAxis.nameGap).toBeLessThanOrEqual(240);
+		expect(scenario.option.yAxis.nameGap).toBeLessThanOrEqual(240);
+		expect(scenario.option.xAxis.axisLabel.formatter(longLabel).length).toBeLessThanOrEqual(28);
+		expect(scenario.option.yAxis.axisLabel.formatter(longLabel).length).toBeLessThanOrEqual(28);
+		expect(scenario.state.__effectiveCanvasMinHeight).toBeLessThan(500);
+		expect(scenario.option.tooltip.formatter({ value: [0, 0, 1], data: {} })).toContain(longLabel);
+	});
+
+	it.each(['scatter', 'heatmap'])('honors hidden axis titles for %s charts', (chartType) => {
+		const isHeatmap = chartType === 'heatmap';
+		const scenario = renderScenario(chartType, {
+			xColumn: isHeatmap ? 'Category' : 'Timestamp',
+			yColumn: isHeatmap ? 'Target' : 'Value',
+			yColumns: ['Value'],
+			valueColumn: 'Value',
+			xAxisSettings: { showAxisLabel: false },
+			yAxisSettings: { showAxisLabel: false },
+		});
+
+		expect(scenario.option.xAxis.name ?? '').toBe('');
+		expect(scenario.option.yAxis.name ?? '').toBe('');
+	});
+
+	it('reserves Y-axis title clearance for a wider nice tick endpoint', () => {
+		const scenario = renderScenario('line', {
+			xColumn: 'Category',
+			yColumn: 'Value',
+			yColumns: ['Value'],
+		}, {
+			columns: ['Category', 'Value'],
+			rows: [['A', 999_998], ['B', 999_999]],
+		});
+		const minimumGapForOneMillion = Math.ceil('1,000,000'.length * 11 * 0.62 + 15);
+
+		expect(scenario.option.yAxis.nameGap).toBeGreaterThanOrEqual(minimumGapForOneMillion);
+	});
+
+	it('reserves Y-axis title clearance for stacked totals', () => {
+		const yColumns = Array.from({ length: 10 }, (_, index) => `Value${index + 1}`);
+		const scenario = renderScenario('bar', {
+			xColumn: 'Category',
+			yColumn: yColumns[0],
+			yColumns,
+			stackMode: 'stacked',
+			yAxisSettings: { customLabel: 'Total' },
+		}, {
+			columns: ['Category', ...yColumns],
+			rows: [['A', ...yColumns.map(() => 999)]],
+		});
+		const minimumGapForTenThousand = Math.ceil('10,000'.length * 11 * 0.62 + 15);
+
+		expect(scenario.option.yAxis.nameGap).toBeGreaterThanOrEqual(minimumGapForTenThousand);
 	});
 
 	function getControls(id: string): { controls: HTMLElement; zoom: HTMLButtonElement; undo: HTMLButtonElement } {
@@ -810,6 +1183,8 @@ describe('chart-renderer zoom/pan controls', () => {
 	it('captures zoom state before direct disposal', () => {
 		const scenario = renderScenario('line', { legendColumn: 'Category' });
 		instance.getOption.mockReturnValue({ dataZoom: [{ start: 30, end: 70 }] });
+		expect(scenario.state.__effectiveXAxisTitleGap).toBeTypeOf('number');
+		expect(scenario.state.__effectiveYAxisTitleGap).toBeTypeOf('number');
 
 		disposeChartEcharts(scenario.id);
 
@@ -818,6 +1193,19 @@ describe('chart-renderer zoom/pan controls', () => {
 			expect.objectContaining({ dataZoomIndex: 0, start: 30, end: 70 }),
 		]);
 		expect(scenario.state.__zoomPanViewportSignature).toBeTypeOf('string');
+		expect(scenario.state.__effectiveXAxisTitleGap).toBeUndefined();
+		expect(scenario.state.__effectiveYAxisTitleGap).toBeUndefined();
+	});
+
+	it('publishes effective gaps only after ECharts accepts the option', () => {
+		const scenario = renderScenario('line');
+		const acceptedGap = scenario.state.__effectiveXAxisTitleGap;
+		scenario.state.xAxisSettings = { titleGap: 64 };
+		setOption.mockImplementationOnce(() => { throw new Error('setOption failed'); });
+
+		renderChart(scenario.id);
+
+		expect(scenario.state.__effectiveXAxisTitleGap).toBe(acceptedGap);
 	});
 
 	it('purges sentinel-bearing zoom state without preserving viewport data', () => {

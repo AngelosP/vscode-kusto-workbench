@@ -1,0 +1,8 @@
+{
+  "optIn": true,
+  "managedWorkspacePath": "${TEMP}/vscode-kusto-workbench-copilot-cli-bridge",
+  "managedWorkspaceOwner": {
+    "markerName": ".kusto-workbench-e2e-owner",
+    "content": "copilot-cli-bridge-v1\n"
+  }
+}

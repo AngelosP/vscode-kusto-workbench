@@ -6161,6 +6161,73 @@ function e2eChartRenderedOption(chartId: string): any {
 	return option;
 }
 
+interface E2eChartTextRect {
+	text: string;
+	left: number;
+	top: number;
+	right: number;
+	bottom: number;
+}
+
+function e2eChartRenderedTextRects(chartId: string): E2eChartTextRect[] {
+	const state = _win.chartStateByBoxId?.[chartId];
+	const displayList = state?.__echarts?.instance?.getZr?.()?.storage?.getDisplayList?.(true);
+	if (!Array.isArray(displayList)) throw new Error(`ZRender display list unavailable for ${chartId}`);
+	const result: E2eChartTextRect[] = [];
+	for (const displayable of displayList) {
+		const text = typeof displayable?.style?.text === 'string' ? displayable.style.text : '';
+		if (!text || displayable.ignore || displayable.invisible || typeof displayable.getBoundingRect !== 'function') continue;
+		const rect = displayable.getBoundingRect();
+		if (!rect || ![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite)) continue;
+		const transform = typeof displayable.getComputedTransform === 'function'
+			? displayable.getComputedTransform()
+			: displayable.transform;
+		const corners = [
+			[rect.x, rect.y],
+			[rect.x + rect.width, rect.y],
+			[rect.x, rect.y + rect.height],
+			[rect.x + rect.width, rect.y + rect.height],
+		].map(([x, y]) => Array.isArray(transform) && transform.length >= 6
+			? [transform[0] * x + transform[2] * y + transform[4], transform[1] * x + transform[3] * y + transform[5]]
+			: [x, y]);
+		const xs = corners.map(point => point[0]);
+		const ys = corners.map(point => point[1]);
+		result.push({
+			text,
+			left: Math.min(...xs),
+			top: Math.min(...ys),
+			right: Math.max(...xs),
+			bottom: Math.max(...ys),
+		});
+	}
+	return result;
+}
+
+function e2eChartAssertAxisTextClearance(chartId: string): {
+	xTitle: E2eChartTextRect;
+	yTitle: E2eChartTextRect;
+	xTickBandBottom: number;
+	yTickBandLeft: number;
+} {
+	const rects = e2eChartRenderedTextRects(chartId);
+	const xTitle = rects.filter(rect => rect.text === 'Date').sort((left, right) => right.top - left.top)[0];
+	const yTitle = rects.filter(rect => rect.text === 'Daily usage').sort((left, right) => left.left - right.left)[0];
+	const xTicks = rects.filter(rect => /^\d{2}-Jan-2024$/.test(rect.text));
+	const yTicks = rects.filter(rect => /^-?[\d,]+(?:\.\d+)?$/.test(rect.text));
+	if (!xTitle || !yTitle || xTicks.length < 2 || yTicks.length < 2) {
+		throw new Error(`Axis display text is incomplete: ${JSON.stringify(rects.map(rect => rect.text))}`);
+	}
+	const xTickBandBottom = Math.max(...xTicks.map(rect => rect.bottom));
+	const yTickBandLeft = Math.min(...yTicks.map(rect => rect.left));
+	if (xTitle.top < xTickBandBottom + 2) {
+		throw new Error(`X-axis title overlaps rendered ticks: ${JSON.stringify({ xTitle, xTickBandBottom, xTicks })}`);
+	}
+	if (yTitle.right > yTickBandLeft - 2) {
+		throw new Error(`Y-axis title overlaps rendered ticks: ${JSON.stringify({ yTitle, yTickBandLeft, yTicks })}`);
+	}
+	return { xTitle, yTitle, xTickBandBottom, yTickBandLeft };
+}
+
 function e2eChartAssertRegressionState(chartId: string): string {
 	const chartSection = document.getElementById(chartId) as any;
 	if (!chartSection || typeof chartSection.serialize !== 'function') {
@@ -6282,6 +6349,115 @@ async function e2eChartAssertTitleSyncAndHeatmapNumericCategories(): Promise<str
 	setPageScrollTop(Math.max(0, chartSection.offsetTop - 24));
 	await e2eLayoutDelay(100);
 	return summary;
+}
+
+async function e2eChartPrepareAdaptiveAxisTitleGap(): Promise<string> {
+	const sourceId = e2eLayoutAddSection('addUrlBox', {
+		id: 'url_e2e_axis_title_gap_source',
+		name: 'Dense axis data',
+		url: 'https://example.invalid/axis-title-gap.csv',
+		expanded: false,
+	});
+	await e2eLayoutWaitFor(() => !!document.getElementById(sourceId), 'axis title gap data section');
+	const rows: unknown[][] = [];
+	const seriesNames = ['Foundry', 'Canvas', 'Plugins'];
+	for (let day = 0; day < 24; day++) {
+		for (let seriesIndex = 0; seriesIndex < seriesNames.length; seriesIndex++) {
+			rows.push([
+				new Date(Date.UTC(2024, 0, day + 1)).toISOString(),
+				1_234_567 + day * 12_345 + seriesIndex * 80_000,
+				seriesNames[seriesIndex],
+			]);
+		}
+	}
+	const source = {
+		columns: [
+			{ name: 'Date', type: 'datetime' },
+			{ name: 'Daily usage', type: 'long' },
+			{ name: 'Surface', type: 'string' },
+		],
+		rows,
+		metadata: { executionTimeMs: 1 },
+	};
+	displayResultForBox(source, sourceId, { label: 'Results' });
+	await e2eLayoutWaitFor(() => (getResultsState(sourceId)?.columns || []).length === 3, 'axis title gap source data');
+
+	const chartId = e2eLayoutAddSection('addChartBox', {
+		id: 'chart_e2e_axis_title_gap',
+		name: 'Adaptive Axis Titles',
+		mode: 'edit',
+		expanded: true,
+		dataSourceId: sourceId,
+		chartType: 'line',
+		xColumn: 'Date',
+		yColumns: ['Daily usage'],
+		legendColumn: 'Surface',
+		showDataLabels: false,
+		chartTitle: 'Daily Foundry adoption and usage',
+		chartSubtitle: 'Automatic title clearance with dense date labels',
+		editorHeightPx: 420,
+	});
+	await e2eLayoutWaitFor(() => !!document.getElementById(chartId), 'adaptive axis title chart');
+	const chartSection = document.getElementById(chartId) as any;
+	await e2eLayoutWaitFor(() => !!chartSection.shadowRoot, 'adaptive axis title chart shadow root', 10000);
+	for (let attempt = 0; attempt < 5; attempt++) {
+		displayResultForBox(source, sourceId, { label: 'Results' });
+		chartSection.refresh?.();
+		await e2eLayoutWaitForUpdate(chartSection as HTMLElement);
+		await e2eLayoutDelay(200);
+		if (!String(chartSection.shadowRoot?.textContent || '').includes('No data available yet.')) break;
+	}
+	if (String(chartSection.shadowRoot?.textContent || '').includes('No data available yet.')) {
+		throw new Error('Adaptive axis title chart returned to its empty state');
+	}
+	const chartWrapper = document.getElementById(chartId + '_chart_wrapper') as HTMLElement | null;
+	if (chartWrapper) {
+		chartWrapper.style.display = '';
+		chartWrapper.style.height = '420px';
+		chartWrapper.dataset.kustoUserResized = 'true';
+	}
+	chartSection.refresh?.();
+	await e2eLayoutWaitFor(() => {
+		const state = _win.chartStateByBoxId?.[chartId];
+		const canvas = document.getElementById(chartId + '_chart_canvas_edit') as HTMLElement | null;
+		return !!state?.__echarts?.instance && !!canvas && canvas.getBoundingClientRect().height > 200
+			&& !canvas.querySelector('.error-message');
+	}, 'adaptive axis title chart rendering', 10000);
+
+	const state = _win.chartStateByBoxId?.[chartId];
+	const option = e2eChartRenderedOption(chartId);
+	const xAxis = Array.isArray(option.xAxis) ? option.xAxis[0] : option.xAxis;
+	const yAxis = Array.isArray(option.yAxis) ? option.yAxis[0] : option.yAxis;
+	const grid = Array.isArray(option.grid) ? option.grid[0] : option.grid;
+	const xLabels = Array.isArray(xAxis?.data) ? xAxis.data.map((label: unknown) => String(label ?? '')) : [];
+	const rotation = Number(xAxis?.axisLabel?.rotate || 0);
+	const fontSize = Number(xAxis?.axisLabel?.fontSize || 12);
+	const maxLabelChars = xLabels.reduce((max: number, label: string) => Math.max(max, label.length), 0);
+	const radians = rotation * Math.PI / 180;
+	const minimumXGap = Math.ceil(
+		Math.abs(Math.sin(radians)) * maxLabelChars * fontSize * 0.62
+		+ Math.abs(Math.cos(radians)) * fontSize
+		+ 15,
+	);
+	const xGap = Number(xAxis?.nameGap);
+	const yGap = Number(yAxis?.nameGap);
+	if (state?.xAxisSettings?.titleGap !== 30 || state?.yAxisSettings?.titleGap !== 45) {
+		throw new Error(`Automatic axis layout persisted a derived gap: ${JSON.stringify(state)}`);
+	}
+	if (rotation <= 30 || !Number.isFinite(xGap) || xGap < minimumXGap || !Number.isFinite(yGap) || yGap <= 45) {
+		throw new Error(`Axis titles did not clear labels: ${JSON.stringify({ rotation, xGap, minimumXGap, yGap })}`);
+	}
+	if (Number(grid?.bottom) <= xGap || Number(grid?.left) <= yGap) {
+		throw new Error(`Grid does not contain axis titles: ${JSON.stringify({ grid, xGap, yGap })}`);
+	}
+	if (state.__effectiveXAxisTitleGap !== xGap || state.__effectiveYAxisTitleGap !== yGap) {
+		throw new Error(`Effective gaps do not match ECharts: ${JSON.stringify({ state, xGap, yGap })}`);
+	}
+	e2eChartAssertAxisTextClearance(chartId);
+	chartSection.dataset.e2eAutomaticXAxisTitleGap = String(xGap);
+	setPageScrollTop(Math.max(0, chartSection.offsetTop - 24));
+	await e2eLayoutDelay(100);
+	return 'adaptive axis title chart prepared';
 }
 
 async function e2eChartAssertArtifactPinAndDependentRebind(): Promise<string> {
@@ -8598,6 +8774,8 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 	},
 	chart: {
 		assertTitleSyncAndHeatmapNumericCategories: e2eChartAssertTitleSyncAndHeatmapNumericCategories,
+		prepareAdaptiveAxisTitleGap: e2eChartPrepareAdaptiveAxisTitleGap,
+		axisTextLayout: e2eChartAssertAxisTextClearance,
 		assertArtifactPinAndDependentRebind: e2eChartAssertArtifactPinAndDependentRebind,
 	},
 	transformation: {

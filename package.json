@@ -111,6 +111,13 @@
           "default": true,
           "description": "Show cursor-based Smart documentation in Kusto query sections."
         },
+        "kustoWorkbench.copilotCli.enabled": {
+          "order": 23,
+          "type": "boolean",
+          "scope": "application",
+          "default": false,
+          "description": "Allow an explicitly started GitHub Copilot CLI session to call this VS Code window's Kusto Workbench tools. No listener or CLI process starts until you run Connect Copilot CLI."
+        },
         "kustoWorkbench.alternatingRowColor": {
           "order": 6,
           "type": "string",
@@ -340,6 +347,18 @@
         "title": "Export Agent Skill...",
         "category": "Kusto Workbench",
         "icon": "$(export)"
+      },
+      {
+        "command": "kusto.connectCopilotCli",
+        "title": "Connect Copilot CLI",
+        "category": "Kusto Workbench",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "kusto.disconnectCopilotCli",
+        "title": "Disconnect Copilot CLI",
+        "category": "Kusto Workbench",
+        "icon": "$(debug-disconnect)"
       }
     ],
     "menus": {
@@ -358,6 +377,11 @@
           "command": "kusto.exportSkill",
           "group": "navigation",
           "when": "view == kustoWorkbench.quickAccess"
+        },
+        {
+          "command": "kusto.connectCopilotCli",
+          "group": "navigation",
+          "when": "view == kustoWorkbench.quickAccess && config.kustoWorkbench.copilotCli.enabled"
         }
       ]
     },
@@ -749,9 +773,9 @@
               "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
-		  "required": [
-			"sectionId"
-		  ]
+          "required": [
+            "sectionId"
+          ]
         }
       },
       {
@@ -1152,7 +1176,7 @@
                 },
                 "titleGap": {
                   "type": "number",
-                  "description": "Gap in pixels between axis title and axis line"
+                  "description": "Exact gap in pixels between axis title and axis line; omit or use 30 for automatic clearance"
                 }
               },
               "additionalProperties": false
@@ -1186,7 +1210,7 @@
                 },
                 "titleGap": {
                   "type": "number",
-                  "description": "Gap in pixels between axis title and axis line"
+                  "description": "Exact gap in pixels between axis title and axis line; omit or use 45 for automatic clearance"
                 },
                 "sortDirection": {
                   "type": "string",
@@ -1923,7 +1947,7 @@
               "type": "string",
               "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
-		  }
+          }
         }
       },
       {
@@ -2008,6 +2032,7 @@
     "bundle-size:gate": "node scripts/bundle-size-gate.mjs"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
     "@types/chai": "^4.3.20",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
@@ -2028,6 +2053,8 @@
   "dependencies": {
     "@azure/identity": "^4.13.0",
     "@kusto/monaco-kusto": "^14.1.0",
+    "@modelcontextprotocol/node": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
     "@tanstack/table-core": "^8.21.3",
     "@tanstack/virtual-core": "^3.13.21",
     "@toast-ui/editor": "^3.2.2",

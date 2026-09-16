@@ -229,10 +229,10 @@ describe('CopilotChatManagerController document capabilities', () => {
 		chat.setRunning(true);
 		const initialMessages = chat.getMessages().length;
 
-		controller.copilotWriteQueryStatus('Generating response (round 1)\u2026', '', 'progress');
+		controller.copilotWriteQueryStatus('Generating response (1 tool call)\u2026', '', 'progress');
 		await chat.updateComplete;
 		expect(chat.shadowRoot?.querySelector('[data-testid="copilot-chat-progress"]')?.textContent)
-			.toBe('Generating response (round 1)\u2026');
+			.toBe('Generating response (1 tool call)\u2026');
 		expect(chat.getMessages()).toHaveLength(initialMessages);
 
 		controller.copilotWriteQueryStatus('Final SQL prose', '', 'assistant');

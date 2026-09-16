@@ -27,6 +27,8 @@ import {
 import { tryParseFiniteNumber, tryParseDate } from './transform-expr.js';
 import {
 	formatNumber,
+	formatAxisTickLabel,
+	estimateValueAxisMaxLabelChars,
 	computeAxisFontSize,
 	normalizeLegendPosition,
 	normalizeStackMode,
@@ -40,6 +42,10 @@ import {
 	shouldShowTimeForUtcAxis,
 	computeTimeAxisLabelRotation,
 	computeCategoryLabelRotation,
+	estimateAxisLabelDepth,
+	computeAxisOutsideMargin,
+	computeAdaptiveXAxisTitleGap,
+	computeAdaptiveYAxisTitleGap,
 	measureLabelChars,
 	breakSankeyCycles,
 	getOwnSeriesColor,
@@ -106,6 +112,145 @@ export function getChartState(boxId: any) {
 	}
 }
 
+function updateEffectiveAxisTitleGaps(boxId: string, state: any, option: unknown): void {
+	const optionWithAxes = option as {
+		xAxis?: { nameGap?: unknown } | Array<{ nameGap?: unknown }>;
+		yAxis?: { nameGap?: unknown } | Array<{ nameGap?: unknown }>;
+	} | null;
+	const xAxis = Array.isArray(optionWithAxes?.xAxis) ? optionWithAxes.xAxis[0] : optionWithAxes?.xAxis;
+	const yAxis = Array.isArray(optionWithAxes?.yAxis) ? optionWithAxes.yAxis[0] : optionWithAxes?.yAxis;
+	const nextX = typeof xAxis?.nameGap === 'number' && Number.isFinite(xAxis.nameGap) ? xAxis.nameGap : undefined;
+	const nextY = typeof yAxis?.nameGap === 'number' && Number.isFinite(yAxis.nameGap) ? yAxis.nameGap : undefined;
+	const changed = state.__effectiveXAxisTitleGap !== nextX || state.__effectiveYAxisTitleGap !== nextY;
+	setChartRuntimeValue(state, '__effectiveXAxisTitleGap', nextX);
+	setChartRuntimeValue(state, '__effectiveYAxisTitleGap', nextY);
+	if (!changed) return;
+	try {
+		const element = document.getElementById(boxId) as { requestUpdate?: () => void } | null;
+		element?.requestUpdate?.();
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function setChartRuntimeValue(state: any, key: string, value: unknown): void {
+	if (value === undefined) {
+		delete state[key];
+		return;
+	}
+	Object.defineProperty(state, key, {
+		value,
+		enumerable: false,
+		configurable: true,
+		writable: true,
+	});
+}
+
+function disposeChartResizeObserver(state: any): void {
+	try {
+		if (state.__resizeObserverRaf) cancelAnimationFrame(state.__resizeObserverRaf);
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		if (state.__resizeObserver && typeof state.__resizeObserver.disconnect === 'function') {
+			state.__resizeObserver.disconnect();
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try { delete state.__resizeObserverRaf; } catch (e) { console.error('[kusto]', e); }
+	try { delete state.__resizeObserver; } catch (e) { console.error('[kusto]', e); }
+}
+
+const CHART_FRAME_KEYS = [
+	'__zeroSizeRetryRaf',
+	'__initialLayoutRaf',
+	'__postLayoutRaf',
+	'__resizeObserverRaf',
+	'__maximizeRaf',
+] as const;
+
+function cancelChartFrame(state: any, key: typeof CHART_FRAME_KEYS[number]): void {
+	try {
+		if (state[key]) cancelAnimationFrame(state[key]);
+	} catch (e) { console.error('[kusto]', e); }
+	try { delete state[key]; } catch (e) { console.error('[kusto]', e); }
+}
+
+function scheduleOwnedChartFrame(
+	boxId: string,
+	state: any,
+	canvas: HTMLElement,
+	key: typeof CHART_FRAME_KEYS[number],
+	instance: any | null,
+	callback: () => void,
+): void {
+	cancelChartFrame(state, key);
+	state[key] = requestAnimationFrame(() => {
+		delete state[key];
+		if (window.chartStateByBoxId?.[boxId] !== state || document.getElementById(boxId) === null
+			|| document.getElementById(canvas.id) !== canvas) return;
+		if (instance && state.__echarts?.instance !== instance) return;
+		callback();
+	});
+}
+
+function disposeZeroSizeObserver(state: any): void {
+	cancelChartFrame(state, '__zeroSizeRetryRaf');
+	try { state.__zeroSizeObserver?.disconnect?.(); } catch (e) { console.error('[kusto]', e); }
+	try { delete state.__zeroSizeObserver; } catch (e) { console.error('[kusto]', e); }
+	try { delete state.__zeroSizeCanvas; } catch (e) { console.error('[kusto]', e); }
+}
+
+function disposeChartLayoutScheduling(state: any): void {
+	disposeChartResizeObserver(state);
+	disposeZeroSizeObserver(state);
+	for (const key of CHART_FRAME_KEYS) cancelChartFrame(state, key);
+}
+
+function deferChartUntilSized(boxId: string, state: any, canvas: HTMLElement): void {
+	if (state.__zeroSizeCanvas !== canvas) {
+		disposeZeroSizeObserver(state);
+		state.__zeroSizeCanvas = canvas;
+		if (typeof ResizeObserver !== 'undefined') {
+			const observer = new ResizeObserver(() => {
+				if (state.__zeroSizeObserver !== observer || window.chartStateByBoxId?.[boxId] !== state
+					|| document.getElementById(canvas.id) !== canvas || !canvas.clientWidth || !canvas.clientHeight) return;
+				disposeZeroSizeObserver(state);
+				renderChart(boxId);
+			});
+			state.__zeroSizeObserver = observer;
+			observer.observe(canvas);
+		}
+	}
+	scheduleOwnedChartFrame(boxId, state, canvas, '__zeroSizeRetryRaf', null, () => {
+		if (!canvas.clientWidth || !canvas.clientHeight) return;
+		disposeZeroSizeObserver(state);
+		renderChart(boxId);
+	});
+}
+
+function resetChartRuntimeMinimumHeight(boxId: string, state: any, canvasMinHeight = '140px'): void {
+	try { delete state.__effectiveCanvasMinHeight; } catch (e) { console.error('[kusto]', e); }
+	try {
+		const wrapper = document.getElementById(`${boxId}_chart_wrapper`);
+		if (wrapper) wrapper.style.minHeight = '0';
+	} catch (e) { console.error('[kusto]', e); }
+	for (const suffix of ['_chart_canvas_edit', '_chart_canvas_preview']) {
+		try {
+			const canvas = document.getElementById(boxId + suffix);
+			if (canvas) canvas.style.minHeight = canvasMinHeight;
+		} catch (e) { console.error('[kusto]', e); }
+	}
+}
+
+function updateChartCanvasMinimumHeight(boxId: string, state: any, canvas: HTMLElement, option: unknown): void {
+	const optionWithGrid = option as { grid?: { top?: unknown; bottom?: unknown } | Array<{ top?: unknown; bottom?: unknown }> } | null;
+	const grid = Array.isArray(optionWithGrid?.grid) ? optionWithGrid.grid[0] : optionWithGrid?.grid;
+	const top = typeof grid?.top === 'number' && Number.isFinite(grid.top) ? Math.max(0, grid.top) : 0;
+	const bottom = typeof grid?.bottom === 'number' && Number.isFinite(grid.bottom) ? Math.max(0, grid.bottom) : 0;
+	const minHeight = Math.max(140, Math.ceil(top + bottom + 80));
+	setChartRuntimeValue(state, '__effectiveCanvasMinHeight', minHeight);
+	canvas.style.minHeight = `${minHeight}px`;
+	const wrapper = document.getElementById(`${boxId}_chart_wrapper`);
+	if (wrapper) wrapper.style.minHeight = `${minHeight}px`;
+}
+
 // ── Data cell helpers ─────────────────────────────────────────────────────────
 // These reproduce the extraBoxes.ts wrappers, using the same underlying parsers.
 
@@ -130,6 +275,14 @@ function cellToTimeMs(cell: any): number | null {
 	} catch {
 		return null;
 	}
+}
+
+function resolveAxisTitle(settings: { showAxisLabel?: unknown; customLabel?: unknown }, fallback: string): string {
+	if (settings.showAxisLabel === false) return '';
+	if (typeof settings.customLabel === 'string' && settings.customLabel.length > 0) {
+		return settings.customLabel.trim() === '' ? '' : settings.customLabel;
+	}
+	return fallback;
 }
 
 // ── Utility helpers ───────────────────────────────────────────────────────────
@@ -970,7 +1123,10 @@ export function getChartMinResizeHeight(boxId: any) {
 		const st = getChartState(id);
 		const isEditMode = st.mode === 'edit';
 		const isChartRendering = st.__wasRendering || false;
-		const canvasMinH = isChartRendering ? CHART_CANVAS_RENDERING_MIN_HEIGHT : CHART_CANVAS_PLACEHOLDER_MIN_HEIGHT;
+		const adaptiveCanvasMinHeight = typeof st.__effectiveCanvasMinHeight === 'number' && Number.isFinite(st.__effectiveCanvasMinHeight)
+			? Math.max(CHART_CANVAS_RENDERING_MIN_HEIGHT, st.__effectiveCanvasMinHeight)
+			: CHART_CANVAS_RENDERING_MIN_HEIGHT;
+		const canvasMinH = isChartRendering ? adaptiveCanvasMinHeight : CHART_CANVAS_PLACEHOLDER_MIN_HEIGHT;
 		if (!isEditMode) {
 			return canvasMinH;
 		}
@@ -1045,14 +1201,13 @@ export function disposeChartEcharts(boxId: any) {
 		}
 		if (st) {
 			try { uninstallZoomPanPointerCaptureBridge(st); } catch (e) { console.error('[kusto]', e); }
-			try {
-				if (st.__resizeObserver && typeof st.__resizeObserver.disconnect === 'function') {
-					st.__resizeObserver.disconnect();
-				}
-			} catch (e) { console.error('[kusto]', e); }
+			try { disposeChartLayoutScheduling(st); } catch (e) { console.error('[kusto]', e); }
 			try { delete st.__lastTimeAxis; } catch (e) { console.error('[kusto]', e); }
+			try { delete st.__lastCategoryAxis; } catch (e) { console.error('[kusto]', e); }
+			try { delete st.__effectiveXAxisTitleGap; } catch (e) { console.error('[kusto]', e); }
+			try { delete st.__effectiveYAxisTitleGap; } catch (e) { console.error('[kusto]', e); }
+			try { resetChartRuntimeMinimumHeight(String(boxId), st); } catch (e) { console.error('[kusto]', e); }
 			try { delete st.__echarts; } catch (e) { console.error('[kusto]', e); }
-			try { delete st.__resizeObserver; } catch (e) { console.error('[kusto]', e); }
 			try { delete st.__axisTitleClickHandler; } catch (e) { console.error('[kusto]', e); }
 			try { delete st.__hoverTooltipGlobalout; } catch (e) { console.error('[kusto]', e); }
 		}
@@ -1071,9 +1226,8 @@ export function purgeChartEcharts(boxId: any) {
 			try { uninstallZoomPanPointerCaptureBridge(st); } catch (e) { console.error('[kusto]', e); }
 			try { uninstallZoomPanDragOverlay(st); } catch (e) { console.error('[kusto]', e); }
 			try { clearZoomPanViewport(st); } catch (e) { console.error('[kusto]', e); }
-			try {
-				if (st.__resizeObserver && typeof st.__resizeObserver.disconnect === 'function') st.__resizeObserver.disconnect();
-			} catch (e) { console.error('[kusto]', e); }
+			try { disposeChartLayoutScheduling(st); } catch (e) { console.error('[kusto]', e); }
+			try { resetChartRuntimeMinimumHeight(id, st); } catch (e) { console.error('[kusto]', e); }
 			for (const key of Object.keys(st)) {
 				if (key.startsWith('__')) delete st[key];
 			}
@@ -1312,14 +1466,16 @@ export function renderChart(boxId: any) {
 		try { syncZoomPanControls(id, st, chartType, null, ''); } catch (e) { console.error('[kusto]', e); }
 		try {
 			if (st.__echarts && st.__echarts.instance) {
+				disposeChartLayoutScheduling(st);
 				st.__echarts.instance.dispose();
 				delete st.__echarts;
 			}
 		} catch (e) { console.error('[kusto]', e); }
+		try { updateEffectiveAxisTitleGaps(id, st, null); } catch (e) { console.error('[kusto]', e); }
 		try {
 			canvas.innerHTML = '<div class="error-message" style="white-space:pre-wrap">' + escapeHtml(String(msg || '')) + '</div>';
 		} catch (e) { console.error('[kusto]', e); }
-		try { canvas.style.minHeight = '0'; } catch (e) { console.error('[kusto]', e); }
+		try { resetChartRuntimeMinimumHeight(id, st, '0'); } catch (e) { console.error('[kusto]', e); }
 		try { canvas.style.height = 'auto'; canvas.style.flex = '0 0 auto'; } catch (e) { console.error('[kusto]', e); }
 		// Collapse the wrapper too — it may retain a persisted pixel height
 		// from firstUpdated or a previous maximizeChartBox call.
@@ -1353,14 +1509,16 @@ export function renderChart(boxId: any) {
 	// to avoid the ECharts "Can't get DOM width or height" warning.
 	try { canvas.style.minHeight = '140px'; canvas.style.height = '100%'; canvas.style.flex = '1 1 auto'; } catch (e) { console.error('[kusto]', e); }
 	if (!canvas.clientWidth || !canvas.clientHeight) {
-		requestAnimationFrame(() => { try { renderChart(id); } catch (e) { console.error('[kusto]', e); } });
+		deferChartUntilSized(id, st, canvas);
 		return;
 	}
+	disposeZeroSizeObserver(st);
 	try {
 		const isDark = getIsDarkThemeForEcharts();
 		const themeName = isDark ? 'dark' : undefined;
 		const prev = st.__echarts && st.__echarts.instance ? st.__echarts : null;
 		if (!prev || prev.canvasId !== canvasId || prev.isDark !== isDark) {
+			disposeChartLayoutScheduling(st);
 			try {
 				if (prev && prev.instance) {
 					const prevChartType = typeof prev.chartType === 'string' ? prev.chartType : chartType;
@@ -1370,12 +1528,6 @@ export function renderChart(boxId: any) {
 			} catch (e) { console.error('[kusto]', e); }
 			try { if (prev && prev.instance) prev.instance.dispose(); } catch (e) { console.error('[kusto]', e); }
 			st.__echarts = { instance: window.echarts.init(canvas, themeName), canvasId, isDark, chartType, zoomPanSignature };
-			try {
-				if (st.__resizeObserver && typeof st.__resizeObserver.disconnect === 'function') {
-					st.__resizeObserver.disconnect();
-				}
-			} catch (e) { console.error('[kusto]', e); }
-			try { delete st.__resizeObserver; } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
@@ -2083,14 +2235,13 @@ export function renderChart(boxId: any) {
 			const showLabels = !!st.showDataLabels;
 			const dataLabelDensityScatter = typeof st.labelDensity === 'number' ? st.labelDensity : 50;
 
-			const xAxisTitleGap = typeof xAxisSettings.titleGap === 'number' ? xAxisSettings.titleGap : 30;
+			const xAxisName = resolveAxisTitle(xAxisSettings, xColName);
+			const xAxisTitleGapSetting = typeof xAxisSettings.titleGap === 'number' ? xAxisSettings.titleGap : 30;
 
-			const yAxisShowLabel = yAxisSettings.showAxisLabel !== false;
-			const yAxisCustomLabel = yAxisSettings.customLabel || '';
-			const yAxisName = yAxisShowLabel ? (yAxisCustomLabel || yColName) : '';
+			const yAxisName = resolveAxisTitle(yAxisSettings, yColName);
 			const yAxisMin = yAxisSettings.min;
 			const yAxisMax = yAxisSettings.max;
-			const yAxisTitleGap = typeof yAxisSettings.titleGap === 'number' ? yAxisSettings.titleGap : 45;
+			const yAxisTitleGapSetting = typeof yAxisSettings.titleGap === 'number' ? yAxisSettings.titleGap : 45;
 			const yAxisMinValue = (yAxisMin !== '' && yAxisMin !== undefined) ? parseFloat(yAxisMin) : undefined;
 			const yAxisMaxValue = (yAxisMax !== '' && yAxisMax !== undefined) ? parseFloat(yAxisMax) : undefined;
 
@@ -2130,8 +2281,24 @@ export function renderChart(boxId: any) {
 				})) : false;
 				const rotate = useTime ? computeTimeAxisLabelRotation(canvasWidthPx, points.length, showTime) : 0;
 				const axisFontSize = computeAxisFontSize(points.length, canvasWidthPx, false);
-				const bottomMargin = (rotate > 30 ? 45 : 25) + xAxisTitleGap;
-				const leftMargin = 15 + yAxisTitleGap;
+				let xAxisMaxLabelChars = 0;
+				const yAxisValues: number[] = [];
+				for (const point of points) {
+					const xValue = point.value[0];
+					const yValue = point.value[1];
+					const xLabel = formatAxisTickLabel(useTime ? formatUtcDateTime(xValue, showTime) : formatNumber(xValue));
+					xAxisMaxLabelChars = Math.max(xAxisMaxLabelChars, xLabel.length);
+					yAxisValues.push(yValue);
+				}
+				if (typeof yAxisMinValue === 'number' && Number.isFinite(yAxisMinValue)) yAxisValues.push(yAxisMinValue);
+				if (typeof yAxisMaxValue === 'number' && Number.isFinite(yAxisMaxValue)) yAxisValues.push(yAxisMaxValue);
+				const yAxisMaxLabelChars = estimateValueAxisMaxLabelChars(yAxisValues);
+				const xAxisTitleGap = computeAdaptiveXAxisTitleGap(xAxisMaxLabelChars, rotate, axisFontSize, xAxisTitleGapSetting);
+				const yAxisTitleGap = computeAdaptiveYAxisTitleGap(yAxisMaxLabelChars, 11, yAxisTitleGapSetting);
+				const xLabelDepth = estimateAxisLabelDepth(xAxisMaxLabelChars, rotate, axisFontSize);
+				const yLabelDepth = yAxisMaxLabelChars * 11 * 0.62;
+				const bottomMargin = computeAxisOutsideMargin(xLabelDepth, xAxisTitleGap, !!xAxisName);
+				const leftMargin = computeAxisOutsideMargin(yLabelDepth, yAxisTitleGap, !!yAxisName);
 				option = {
 					...(buildChartTitleOption() ? { title: buildChartTitleOption() } : {}),
 					backgroundColor: 'transparent',
@@ -2167,7 +2334,7 @@ export function renderChart(boxId: any) {
 					},
 					xAxis: useTime ? {
 						type: 'time',
-						name: xColName,
+						name: xAxisName,
 						nameLocation: 'middle',
 						triggerEvent: true,
 						nameGap: xAxisTitleGap,
@@ -2175,19 +2342,19 @@ export function renderChart(boxId: any) {
 							rotate,
 							fontSize: axisFontSize,
 							fontFamily: 'monospace',
-							formatter: (value: any) => formatUtcDateTime(value, showTime)
+							formatter: (value: any) => formatAxisTickLabel(formatUtcDateTime(value, showTime))
 						},
 						axisPointer: { label: { formatter: (p: any) => formatUtcDateTime(p && p.value, showTime) } }
 					} : {
 						type: 'value',
-						name: xColName,
+						name: xAxisName,
 						nameLocation: 'middle',
 						triggerEvent: true,
 						nameGap: xAxisTitleGap,
 						axisLabel: {
 							fontSize: axisFontSize,
 							fontFamily: 'monospace',
-							formatter: (value: any) => formatNumber(value)
+							formatter: (value: any) => formatAxisTickLabel(formatNumber(value))
 						}
 					},
 					yAxis: {
@@ -2201,7 +2368,7 @@ export function renderChart(boxId: any) {
 						axisLabel: {
 							fontSize: 11,
 							fontFamily: 'monospace',
-							formatter: (value: any) => formatNumber(value)
+							formatter: (value: any) => formatAxisTickLabel(formatNumber(value))
 						}
 					},
 					...buildZoomPanOptions(chartType),
@@ -2355,8 +2522,8 @@ export function renderChart(boxId: any) {
 					? xCategories.map(k => formatUtcDateTime(Number(k), showTime))
 					: xCategories;
 
-				const labelStats = measureLabelChars(useTime ? xDisplayLabels : xCategories);
-				const yLabelStats = measureLabelChars(yCategories);
+				const labelStats = measureLabelChars((useTime ? xDisplayLabels : xCategories).map(formatAxisTickLabel));
+				const yLabelStats = measureLabelChars(yCategories.map(formatAxisTickLabel));
 
 				const rotate = useTime
 					? computeTimeAxisLabelRotation(canvasWidthPx, xCategories.length, showTime)
@@ -2368,41 +2535,35 @@ export function renderChart(boxId: any) {
 				const vmGap = typeof heatmapSettings.visualMapGap === 'number' ? heatmapSettings.visualMapGap : 60;
 				const isVmHorizontal = vmPos === 'top' || vmPos === 'bottom';
 
-				const xTitleGap = typeof xAxisSettings.titleGap === 'number' ? xAxisSettings.titleGap : 30;
-				// Y-axis nameGap must cover the label width so the title sits just outside the labels.
-				// Compute a dynamic default based on the longest label, then let the user's titleGap
-				// setting offset from that baseline.
-				const yLabelPixelWidth = yLabelStats.maxLabelChars * 7 + 10;
-				const yTitleGapDefault = yLabelPixelWidth;
+				const xTitleGapSetting = typeof xAxisSettings.titleGap === 'number' ? xAxisSettings.titleGap : 30;
 				const yTitleGapSetting = typeof yAxisSettings.titleGap === 'number' ? yAxisSettings.titleGap : 45;
-				const yTitleGap = yTitleGapDefault + (yTitleGapSetting - 45);
 
 				// ── X-axis name (title) ──────────────────────────
 				// Empty customLabel → use column name; space-only customLabel → hide title
-				const xCustom = xAxisSettings.customLabel;
-				const xAxisName = (typeof xCustom === 'string' && xCustom.length > 0)
-					? (xCustom.trim() === '' ? '' : xCustom)
-					: (xColName || '');
-				const yCustom = yAxisSettings.customLabel;
-				const yAxisName = (typeof yCustom === 'string' && yCustom.length > 0)
-					? (yCustom.trim() === '' ? '' : yCustom)
-					: (yColName || '');
+				const xAxisName = resolveAxisTitle(xAxisSettings, xColName || '');
+				const yAxisName = resolveAxisTitle(yAxisSettings, yColName || '');
+				const xTitleGap = xAxisName
+					? computeAdaptiveXAxisTitleGap(labelStats.maxLabelChars, rotate, axisFontSize, xTitleGapSetting)
+					: xTitleGapSetting;
+				const yTitleGap = yAxisName
+					? computeAdaptiveYAxisTitleGap(yLabelStats.maxLabelChars, 11, yTitleGapSetting)
+					: yTitleGapSetting;
 
 				// Compute grid margins based on visual map position and axis titles
-				const baseBottom = (rotate > 30 ? 60 : 40);
-				const baseLeft = Math.min(120, Math.max(50, yLabelStats.maxLabelChars * 7 + 15));
-				const xTitleExtra = xAxisName ? (xTitleGap > 30 ? xTitleGap - 30 + 15 : 15) : 0;
-				// When a Y-axis title is shown, the left margin must be wide enough to fit the
-				// rotated title text (placed at nameGap from the axis line) plus padding.
-				const yTitleExtra = yAxisName ? Math.max(20, yTitleGap - baseLeft + 25) : 0;
-				const bottomMargin = baseBottom + xTitleExtra + (vmPos === 'bottom' ? vmGap : 0);
-				const leftMargin = baseLeft + yTitleExtra + (vmPos === 'left' ? vmGap : 0);
-				// Estimate label width for the formatted max value to give the slicer enough room
-				const vmMaxLabel = formatNumber(maxVal);
-				const vmLabelWidth = Math.max(40, vmMaxLabel.length * 8 + 16);
+				const xLabelDepth = estimateAxisLabelDepth(labelStats.maxLabelChars, rotate, axisFontSize);
+				const yLabelDepth = yLabelStats.maxLabelChars * 11 * 0.62;
+				// Estimate the complete visual-map footprint so every placement remains outside the plot.
+				const vmMinLabel = formatAxisTickLabel(formatNumber(minVal));
+				const vmMaxLabel = formatAxisTickLabel(formatNumber(maxVal));
+				const vmLabelWidth = Math.max(40, Math.max(vmMinLabel.length, vmMaxLabel.length) * 8 + 16);
 				const vmSlicerWidth = 30 + vmLabelWidth; // slicer bar + label text
+				const vmSlicerHeight = 50;
+				const bottomMargin = computeAxisOutsideMargin(xLabelDepth, xTitleGap, !!xAxisName)
+					+ (vmPos === 'bottom' ? vmGap + vmSlicerHeight : 0);
+				const leftMargin = computeAxisOutsideMargin(yLabelDepth, yTitleGap, !!yAxisName)
+					+ (vmPos === 'left' ? vmGap + vmSlicerWidth : 0);
 				const rightMargin = vmPos === 'right' ? vmGap + vmSlicerWidth : 20;
-				const topMargin = 20 + _chartTitleSpace + (vmPos === 'top' ? vmGap : 0);
+				const topMargin = 20 + _chartTitleSpace + (vmPos === 'top' ? vmGap + vmSlicerHeight : 0);
 
 				// ── Visual map options ───────────────────────────
 				const visualMapOption: Record<string, any> = {
@@ -2410,7 +2571,7 @@ export function renderChart(boxId: any) {
 					max: maxVal,
 					calculable: true,
 					orient: isVmHorizontal ? 'horizontal' : 'vertical',
-					formatter: (value: number) => formatNumber(value),
+					formatter: (value: number) => formatAxisTickLabel(formatNumber(value)),
 					inRange: {
 						color: ['#313695', '#4575b4', '#74add1', '#abd9e9', '#e0f3f8', '#ffffbf', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026']
 					},
@@ -2441,6 +2602,7 @@ export function renderChart(boxId: any) {
 							rotate,
 							fontSize: axisFontSize,
 							fontFamily: 'monospace',
+							formatter: (value: any) => formatAxisTickLabel(value),
 						},
 					},
 					yAxis: {
@@ -2452,6 +2614,7 @@ export function renderChart(boxId: any) {
 						axisLabel: {
 							fontSize: 11,
 							fontFamily: 'monospace',
+							formatter: (value: any) => formatAxisTickLabel(value),
 						},
 					},
 					visualMap: visualMapOption,
@@ -2590,16 +2753,13 @@ export function renderChart(boxId: any) {
 				const xAxisSortDirection = xAxisSettings.sortDirection || '';
 				const xAxisScaleType = xAxisSettings.scaleType || '';
 				const xAxisLabelDensity = xAxisSettings.labelDensity || '';
-				const xAxisShowLabel = xAxisSettings.showAxisLabel !== false;
-				const xAxisCustomLabel = xAxisSettings.customLabel || '';
-				const xAxisName = xAxisShowLabel ? (xAxisCustomLabel || xColName) : '';
-				const xAxisTitleGap = typeof xAxisSettings.titleGap === 'number' ? xAxisSettings.titleGap : 30;
+				const xAxisName = resolveAxisTitle(xAxisSettings, xColName);
+				const xAxisTitleGapSetting = typeof xAxisSettings.titleGap === 'number' ? xAxisSettings.titleGap : 30;
 
-				const yAxisShowLabel = yAxisSettings.showAxisLabel !== false;
-				const yAxisCustomLabel = yAxisSettings.customLabel || '';
+				const yAxisName = resolveAxisTitle(yAxisSettings, yCols.length === 1 ? yCols[0] : '');
 				const yAxisMin = yAxisSettings.min;
 				const yAxisMax = yAxisSettings.max;
-				const yAxisTitleGap = typeof yAxisSettings.titleGap === 'number' ? yAxisSettings.titleGap : 45;
+				const yAxisTitleGapSetting = typeof yAxisSettings.titleGap === 'number' ? yAxisSettings.titleGap : 45;
 				const yAxisMinValue = (yAxisMin !== '' && yAxisMin !== undefined) ? parseFloat(yAxisMin) : undefined;
 				const yAxisMaxValue = (yAxisMax !== '' && yAxisMax !== undefined) ? parseFloat(yAxisMax) : undefined;
 				const seriesColors = (yAxisSettings.seriesColors && typeof yAxisSettings.seriesColors === 'object') ? yAxisSettings.seriesColors : {};
@@ -2681,6 +2841,7 @@ export function renderChart(boxId: any) {
 
 				// Compute Y range across all data for value-based label density
 				let yRangeForLabels = 0;
+				const yAxisValues: number[] = [];
 				try {
 					let yMin = Infinity, yMax = -Infinity;
 					for (const r of (rows || [])) {
@@ -2691,6 +2852,7 @@ export function renderChart(boxId: any) {
 							if (typeof v === 'number' && Number.isFinite(v)) {
 								if (v < yMin) yMin = v;
 								if (v > yMax) yMax = v;
+								yAxisValues.push(v);
 							}
 						}
 					}
@@ -2949,6 +3111,8 @@ export function renderChart(boxId: any) {
 						}
 					}
 				}
+				if (typeof yAxisMinValue === 'number' && Number.isFinite(yAxisMinValue)) yAxisValues.push(yAxisMinValue);
+				if (typeof yAxisMaxValue === 'number' && Number.isFinite(yAxisMaxValue)) yAxisValues.push(yAxisMaxValue);
 
 
 				let xLabels = treatAsTime ? timeLabels : (categoryXLabels.length ? categoryXLabels : sortCategoryLabels(Array.from(xLabelsSet)));
@@ -3020,21 +3184,48 @@ export function renderChart(boxId: any) {
 						}
 					}
 				}
+				if (stackMode === 'stacked') {
+					const dataLength = Math.max(0, ...seriesData.map((series: any) => Array.isArray(series.data) ? series.data.length : 0));
+					for (let dataIndex = 0; dataIndex < dataLength; dataIndex++) {
+						let positiveTotal = 0;
+						let negativeTotal = 0;
+						for (const series of seriesData) {
+							const point = series.data?.[dataIndex];
+							const value = point && typeof point === 'object' ? point.value : point;
+							if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+							if (value >= 0) positiveTotal += value;
+							else negativeTotal += value;
+						}
+						if (positiveTotal !== 0) yAxisValues.push(positiveTotal);
+						if (negativeTotal !== 0) yAxisValues.push(negativeTotal);
+					}
+				}
 
 				let rotate;
 				let categoryLabelStats = null;
 				if (treatAsTime) {
 					if (useContinuousLabels) {
-						categoryLabelStats = measureLabelChars(xLabels);
+						categoryLabelStats = measureLabelChars(xLabels.map((label: any) => formatAxisTickLabel(label)));
 						rotate = computeCategoryLabelRotation(canvasWidthPx, xLabels.length, categoryLabelStats.avgLabelChars, categoryLabelStats.maxLabelChars);
 					} else {
 						rotate = computeTimeAxisLabelRotation(canvasWidthPx, xLabels.length, showTime);
 					}
 				} else {
-					categoryLabelStats = measureLabelChars(xLabels);
+					categoryLabelStats = measureLabelChars(xLabels.map((label: any) => formatAxisTickLabel(label)));
 					rotate = computeCategoryLabelRotation(canvasWidthPx, xLabels.length, categoryLabelStats.avgLabelChars, categoryLabelStats.maxLabelChars);
 				}
 				const axisFontSize = computeAxisFontSize(xLabels.length, canvasWidthPx, false);
+				const xAxisTitleGap = computeAdaptiveXAxisTitleGap(
+					measureLabelChars(xLabels.map((label: any) => formatAxisTickLabel(label))).maxLabelChars,
+					rotate,
+					axisFontSize,
+					xAxisTitleGapSetting,
+				);
+				const yAxisTitleGap = computeAdaptiveYAxisTitleGap(
+					stackMode === 'stacked100' ? 4 : estimateValueAxisMaxLabelChars(yAxisValues),
+					11,
+					yAxisTitleGapSetting,
+				);
 
 				let axisLabelInterval: any = 0;
 				const densityValue = typeof xAxisLabelDensity === 'number' ? Math.max(1, xAxisLabelDensity) : 100;
@@ -3049,7 +3240,13 @@ export function renderChart(boxId: any) {
 					};
 				}
 
-				const bottomMargin = (rotate > 30 ? 45 : 15) + xAxisTitleGap;
+				const xLabelDepth = estimateAxisLabelDepth(
+					measureLabelChars(xLabels.map((label: any) => formatAxisTickLabel(label))).maxLabelChars,
+					rotate,
+					axisFontSize,
+				);
+				const yLabelDepth = (stackMode === 'stacked100' ? 4 : estimateValueAxisMaxLabelChars(yAxisValues)) * 11 * 0.62;
+				const bottomMargin = computeAxisOutsideMargin(xLabelDepth, xAxisTitleGap, !!xAxisName);
 
 				const legendEnabled = seriesData.length > 1;
 				// End labels only make sense for line/area charts where each series
@@ -3079,7 +3276,10 @@ export function renderChart(boxId: any) {
 				}
 
 				const endLabelRightMargin = useEndLabels ? 100 : 0;
-				const gridLeft = (legendEnabled && !useEndLabels && legendPosition === 'left') ? (SIDE_LEGEND_TOTAL + SIDE_LEGEND_GAP + legendGap + yAxisTitleGap) : (15 + yAxisTitleGap);
+				const yAxisOutsideMargin = computeAxisOutsideMargin(yLabelDepth, yAxisTitleGap, !!yAxisName);
+				const gridLeft = (legendEnabled && !useEndLabels && legendPosition === 'left')
+					? (SIDE_LEGEND_TOTAL + SIDE_LEGEND_GAP + legendGap + yAxisOutsideMargin)
+					: yAxisOutsideMargin;
 				const gridRight = useEndLabels ? (20 + endLabelRightMargin)
 					: ((legendEnabled && legendPosition === 'right') ? (SIDE_LEGEND_TOTAL + SIDE_LEGEND_GAP + legendGap) : 20);
 				const gridTop = _chartTitleSpace + ((legendEnabled && !useEndLabels && legendPosition === 'top') ? (50 + legendGap) : 20);
@@ -3183,7 +3383,7 @@ export function renderChart(boxId: any) {
 							type: 'category',
 							name: xAxisName,
 							nameLocation: 'middle',
-							nameGap: rotate > 30 ? xAxisTitleGap + 25 : xAxisTitleGap,
+							nameGap: xAxisTitleGap,
 							data: xLabels,
 							boundaryGap: (chartType === 'bar'),
 							triggerEvent: true,
@@ -3192,12 +3392,13 @@ export function renderChart(boxId: any) {
 								fontSize: axisFontSize,
 								fontFamily: 'monospace',
 								interval: axisLabelInterval,
-								rotate
+								rotate,
+								formatter: (value: any) => formatAxisTickLabel(value),
 							}
 						},
 					yAxis: {
 						type: 'value',
-						name: yAxisShowLabel ? (yAxisCustomLabel || (yCols.length === 1 ? yCols[0] : '')) : '',
+						name: yAxisName,
 						nameLocation: 'middle',
 						triggerEvent: true,
 						nameGap: yAxisTitleGap,
@@ -3208,7 +3409,7 @@ export function renderChart(boxId: any) {
 							fontFamily: 'monospace',
 							formatter: stackMode === 'stacked100'
 								? (value: any) => (typeof value === 'number' ? value.toFixed(0) + '%' : '')
-								: (value: any) => formatNumber(value)
+								: (value: any) => formatAxisTickLabel(formatNumber(value))
 						}
 					},
 					...buildZoomPanOptions(chartType),
@@ -3250,6 +3451,8 @@ export function renderChart(boxId: any) {
 		try { inst.dispatchAction({ type: 'hideTip' }); } catch (e) { console.error('[kusto]', e); }
 		try { dismissHoverTooltip(id); } catch (e) { console.error('[kusto]', e); }
 		inst.setOption(option || {}, { notMerge: true, lazyUpdate: true, silent: true });
+		try { updateEffectiveAxisTitleGaps(id, st, option); } catch (e) { console.error('[kusto]', e); }
+		try { updateChartCanvasMinimumHeight(id, st, canvas, option); } catch (e) { console.error('[kusto]', e); }
 		try {
 			if (st.__echarts) {
 				st.__echarts.chartType = chartType;
@@ -3274,7 +3477,7 @@ export function renderChart(boxId: any) {
 						sectionBox.style.display = '';
 					}
 
-					requestAnimationFrame(() => {
+					scheduleOwnedChartFrame(id, st, canvas, '__initialLayoutRaf', inst, () => {
 						try {
 							if (canvas.clientWidth > 0 && canvas.clientHeight > 0) {
 								inst.resize();
@@ -3290,7 +3493,7 @@ export function renderChart(boxId: any) {
 	// zero-dimension canvases (e.g. hidden containers) to avoid the ECharts
 	// "Can't get DOM width or height" warning.
 	try {
-		requestAnimationFrame(() => {
+		scheduleOwnedChartFrame(id, st, canvas, '__postLayoutRaf', inst, () => {
 			try {
 				if (canvas.clientWidth > 0 && canvas.clientHeight > 0) {
 					inst.resize();
@@ -3312,8 +3515,8 @@ export function renderChart(boxId: any) {
 		if (!st.__resizeObserver && typeof ResizeObserver !== 'undefined') {
 			let lastObservedWidth = 0;
 			let pendingWidth = 0;
-			let resizeRaf = 0;
-			st.__resizeObserver = new ResizeObserver((entries) => {
+			const resizeObserver = new ResizeObserver((entries) => {
+				if (st.__resizeObserver !== resizeObserver || st.__echarts?.instance !== inst) return;
 				let newWidth = 0;
 				try {
 					for (const entry of entries) {
@@ -3323,40 +3526,24 @@ export function renderChart(boxId: any) {
 				} catch (e) { console.error('[kusto]', e); }
 				if (!newWidth) return;
 				pendingWidth = newWidth;
-				if (resizeRaf) return;
-				resizeRaf = requestAnimationFrame(() => {
-					resizeRaf = 0;
+				if (st.__resizeObserverRaf) return;
+				scheduleOwnedChartFrame(id, st, canvas, '__resizeObserverRaf', inst, () => {
 					const width = pendingWidth;
 					// Ignore tiny jitter (1px oscillation) to avoid resize feedback loops.
 					if (!width || (lastObservedWidth && Math.abs(width - lastObservedWidth) < 2)) return;
 					lastObservedWidth = width;
+					if (st.__resizeObserver !== resizeObserver) return;
 					try {
 						if (canvas.clientWidth > 0 && canvas.clientHeight > 0) {
 							inst.resize();
 						}
 					} catch (e) { console.error('[kusto]', e); }
 					try {
-						if (st.__lastTimeAxis) {
-							const rotate = computeTimeAxisLabelRotation(width, st.__lastTimeAxis.labelCount, st.__lastTimeAxis.showTime);
-							if (rotate !== st.__lastTimeAxis.rotate) {
-								st.__lastTimeAxis.rotate = rotate;
-								try {
-									inst.setOption({ xAxis: { axisLabel: { rotate } } }, { lazyUpdate: true, silent: true });
-								} catch (e) { console.error('[kusto]', e); }
-							}
-						} else if (st.__lastCategoryAxis) {
-							const ca = st.__lastCategoryAxis;
-							const rotate = computeCategoryLabelRotation(width, ca.labelCount, ca.avgLabelChars, ca.maxLabelChars);
-							if (rotate !== ca.rotate) {
-								ca.rotate = rotate;
-								try {
-									inst.setOption({ xAxis: { axisLabel: { rotate } } }, { lazyUpdate: true, silent: true });
-								} catch (e) { console.error('[kusto]', e); }
-							}
-						}
+						renderChart(id);
 					} catch (e) { console.error('[kusto]', e); }
 				});
 			});
+			st.__resizeObserver = resizeObserver;
 			try {
 				const wrapper = document.getElementById(id + '_chart_wrapper') as any;
 				if (wrapper) st.__resizeObserver.observe(wrapper);
@@ -3376,7 +3563,7 @@ export function maximizeChartBox(boxId: any) {
 
 		const isChartRendered = st && st.__echarts && st.__echarts.instance && st.__wasRendering;
 		const targetHeight = isChartRendered
-			? 360
+			? Math.max(360, getChartMinResizeHeight(boxId))
 			: (typeof getChartMinResizeHeight === 'function' ? getChartMinResizeHeight(boxId) : 80);
 
 		wrapper.style.height = Math.ceil(targetHeight) + 'px';
@@ -3386,8 +3573,11 @@ export function maximizeChartBox(boxId: any) {
 		// because renderChart calls maximizeChartBox on state transitions.
 		try {
 			if (st && st.__echarts && st.__echarts.instance) {
-				requestAnimationFrame(() => {
-					try { st.__echarts.instance.resize(); } catch (e) { console.error('[kusto]', e); }
+				const instance = st.__echarts.instance;
+				const canvasId = getChartActiveCanvasElementId(boxId);
+				const canvas = document.getElementById(canvasId) as HTMLElement | null;
+				if (canvas) scheduleOwnedChartFrame(String(boxId), st, canvas, '__maximizeRaf', instance, () => {
+					try { instance.resize(); } catch (e) { console.error('[kusto]', e); }
 				});
 			}
 		} catch (e) { console.error('[kusto]', e); }

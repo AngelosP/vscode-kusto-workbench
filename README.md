@@ -63,6 +63,21 @@ The agent can:
 
 ![VS Code custom agent that actually works called Kusto Workbench](media/marketplace/vscode-custom-agent.png)
 
+### Drive the live Workbench from Copilot CLI
+
+Copilot CLI can use the same Kusto Workbench tools against the notebooks open in a specific VS Code window. VS Code remains the owner of connections, authentication, execution, document state, charts, and dashboard previews; the CLI is another agent surface over those existing tools.
+
+This integration is off by default and never starts a listener or CLI process during normal extension activation.
+
+1. Enable `kustoWorkbench.copilotCli.enabled` in VS Code settings.
+2. In the VS Code window you want to control, run `Kusto Workbench: Connect Copilot CLI`.
+3. Use the new terminal session. It is bound to that VS Code window and loads the same Kusto Workbench agent instructions.
+4. Run `Kusto Workbench: Disconnect Copilot CLI` to revoke every CLI session attached through that window.
+
+Each connection uses an authenticated loopback endpoint and a short-lived configuration file in VS Code's per-user extension storage, outside the directory granted to the CLI agent. The file is created with owner-only mode where the operating system supports it and deleted after the CLI authenticates. A process already running as the same OS user could still access it during that short interval. Closing its terminal revokes that session. Repeating the Connect command creates another independently revocable CLI session. VS Code must remain running, and this initial integration supports fresh same-machine desktop sessions with GitHub Copilot CLI 1.0.81 or newer. Attaching an already-running CLI process is not part of this initial scope.
+
+Disconnecting or disabling the setting blocks new calls and requests cancellation of active calls. It does not roll back an operation that the underlying Workbench tool already accepted; short non-cancellable mutations may finish through the same semantics they have in VS Code Copilot Chat.
+
 ### Let your own agent control Kusto Workbench
 
 Export a skill that teaches your own agent how to control Kusto Workbench and its advanced features
@@ -254,11 +269,14 @@ You can open `.kqlx` and `.sqlx` files directly from GitHub or SharePoint using 
 | `Kusto Workbench: Open Tutorials...` | Open the searchable tutorial viewer with category subscriptions |
 | `Kusto Workbench: Open Kusto Workbench Custom Agent` | Open the Copilot Chat panel with the Kusto Workbench agent |
 | `Kusto Workbench: Export Agent Skill...` | Export a SKILL.md file so other Copilot agents can use Kusto Workbench as a tool |
+| `Kusto Workbench: Connect Copilot CLI` | Start an explicitly attached Copilot CLI session for this VS Code window |
+| `Kusto Workbench: Disconnect Copilot CLI` | Revoke and close Copilot CLI sessions attached through this VS Code window |
 | `Kusto Workbench: Show Development Notes` | View AI development notes stored in the current file |
 
 ## Requirements
 
 * VS Code 1.107.0 or higher
+* For Copilot CLI integration: GitHub Copilot CLI 1.0.81 or higher on the same machine
 * For Python sections: a local Python install available as `python`, `python3`, or `py` on your PATH
 
 ## Data & privacy (how it actually works)
@@ -308,6 +326,8 @@ When you use **Optimize** or the **integrated Copilot Chat**:
 * Any result comparison happens by running queries against your Kusto cluster (not by executing anything inside Copilot).
 
 The Optimize message appears in the embedded chat like a message you sent yourself. Anything you submit in that conversation is part of what gets sent to Copilot.
+
+When you explicitly connect Copilot CLI, Workbench tool inputs and results are also returned to that CLI session. Leave No Trace continues to govern what Workbench persists, but it cannot erase content already retained by Copilot CLI in its own conversation history, logs, exports, or temporary output files. Use the CLI's retention and telemetry settings according to your data-handling requirements.
 
 ### Python sections
 

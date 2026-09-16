@@ -5,6 +5,8 @@ const DIST = join(import.meta.dirname, '..', 'dist');
 
 const FILES = [
   'extension.js',
+  'copilot-cli-integration.js',
+  'workbench-mcp-bridge.js',
   'webview/webview.bundle.js',
   'webview/md-editor.bundle.js',
   'webview/tutorial-viewer.bundle.js',

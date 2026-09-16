@@ -301,6 +301,7 @@ const kustoToolExecutionSettlementByRequestId = new Map<string, () => void>();
 const cancelledKustoToolRequestIds = new Set<string>();
 const retiredSqlCopilotStarts = new Map<string, ReturnType<typeof setTimeout>>();
 const kustoCopilotToolOwnerByRequestId = new Map<string, KustoCopilotRequestIdentity>();
+const kustoCopilotToolCancellationByRequestId = new Map<string, () => void>();
 const kustoToolConfigureTailBySectionId = new Map<string, Promise<void>>();
 const sqlToolConfigureTailBySectionId = new Map<string, Promise<void>>();
 let kustoToolConfigureRuntimeEpoch = 0;
@@ -5451,6 +5452,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 
 		case 'toolCancelKustoCopilot': {
 			const requestId = String(message.requestId || '');
+			const cancellation = kustoCopilotToolCancellationByRequestId.get(requestId);
+			if (cancellation) {
+				cancellation();
+				break;
+			}
 			const owner = kustoCopilotToolOwnerByRequestId.get(requestId);
 			if (!owner) {
 				if (requestId) cancelledKustoToolRequestIds.add(requestId);
@@ -6168,8 +6174,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				let pendingClarification: KustoCopilotClarifyingQuestionMessage | undefined;
 				let pendingQueryTerminal: any = null;
 				let boundModelArtifacts: readonly ResultArtifact[] = [];
-				let timeoutId: ReturnType<typeof setTimeout> | undefined;
 				let failedDoneTimer: ReturnType<typeof setTimeout> | undefined;
+				let cancelDelegation: (() => void) | undefined;
 				const modelConsumerIds = new Set<string>([indexedModelConsumerId(requestId, 0)]);
 				const cleanup = () => {
 					try { window.removeEventListener(ADMITTED_KUSTO_COPILOT_EVENT, resultHandler as EventListener); } catch { /* best effort */ }
@@ -6177,11 +6183,22 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					try { window.removeEventListener(APPLIED_KUSTO_COPILOT_DONE_EVENT, doneHandler as EventListener); } catch { /* best effort */ }
 					try { window.removeEventListener(ADMITTED_KUSTO_EXECUTION_STARTED_EVENT, startedHandler as EventListener); } catch { /* best effort */ }
 					try { window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener); } catch { /* best effort */ }
-					try { if (timeoutId !== undefined) clearTimeout(timeoutId); } catch { /* best effort */ }
 					try { if (failedDoneTimer !== undefined) clearTimeout(failedDoneTimer); } catch { /* best effort */ }
 					try { kustoCopilotToolOwnerByRequestId.delete(requestId); } catch { /* best effort */ }
+					try {
+						if (kustoCopilotToolCancellationByRequestId.get(requestId) === cancelDelegation) {
+							kustoCopilotToolCancellationByRequestId.delete(requestId);
+						}
+					} catch { /* best effort */ }
 					try { cancelledKustoToolRequestIds.delete(requestId); } catch { /* best effort */ }
 					releaseModelResultConsumers(modelConsumerIds);
+				};
+				cancelDelegation = () => {
+					if (responded) return;
+					responded = true;
+					const owner = expectedCopilotRequest;
+					cleanup();
+					if (owner) querySection?.cancelKustoCopilotRequest?.(owner);
 				};
 				cleanupDelegation = cleanup;
 
@@ -6428,34 +6445,6 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				window.addEventListener(ADMITTED_KUSTO_EXECUTION_STARTED_EVENT, startedHandler as EventListener);
 				window.addEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener);
 				
-				// Timeout after 3 minutes
-				timeoutId = setTimeout(() => {
-					if (!responded) {
-						responded = true;
-						cleanup();
-						
-						// Clear the Copilot chat "thinking..." state on timeout
-						// (unlike cancel/error, no regular handler will clear this)
-						try {
-							const kwEl = __kustoGetQuerySectionElement(sectionId);
-							if (kwEl && typeof kwEl.copilotWriteQueryDone === 'function') {
-								kwEl.copilotWriteQueryDone(false, 'Request timed out');
-							}
-						} catch (e) { console.error('[kusto]', e); }
-						
-						postMessageToHost({ 
-							type: 'toolResponse', 
-							requestId, 
-							result: { 
-								success: false,
-								timedOut: true,
-								...getRequestScopedQueryField(),
-								error: 'Request timed out after 3 minutes'
-							}
-						});
-					}
-				}, 180000);
-				
 				const submittedOwner = querySection.submitCopilotChatRequest(question, true);
 				if (!hasKustoCopilotRequestIdentity(submittedOwner)) {
 					cleanup();
@@ -6466,8 +6455,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				} else {
 					expectedCopilotRequest = submittedOwner;
 					kustoCopilotToolOwnerByRequestId.set(requestId, submittedOwner);
+					kustoCopilotToolCancellationByRequestId.set(requestId, cancelDelegation);
 					if (cancelledKustoToolRequestIds.delete(requestId)) {
-						querySection.cancelKustoCopilotRequest?.(submittedOwner);
+						cancelDelegation();
 					}
 				}
 				

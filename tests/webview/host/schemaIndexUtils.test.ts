@@ -464,16 +464,30 @@ describe('formatSchemaWithTokenBudget', () => {
 		expect(result.phase).toBeGreaterThanOrEqual(1);
 	});
 
-	it('very small budget → phase 5 hard truncation with cut-off notice', async () => {
+	it('very small budget → phase 5 hard truncation stays within budget', async () => {
 		const result = await formatSchemaWithTokenBudget('TestDb', schema, undefined, 5, charCountTokenizer);
 		expect(result.phase).toBe(5);
-		expect(result.text).toContain('schema cut off due to context window limits');
+		expect(result.text.length).toBeGreaterThan(0);
+		expect(await charCountTokenizer(result.text)).toBeLessThanOrEqual(result.tokenBudget);
 	});
 
 	it('phase 5 with budget smaller than notice itself still returns notice', async () => {
 		const result = await formatSchemaWithTokenBudget('TestDb', schema, undefined, 1, charCountTokenizer);
 		expect(result.phase).toBe(5);
 		expect(result.text.length).toBeGreaterThan(0);
+		expect(await charCountTokenizer(result.text)).toBeLessThanOrEqual(result.tokenBudget);
+	});
+
+	it('phase 5 measures the combined prefix and notice with a context-sensitive tokenizer', async () => {
+		const contextSensitiveTokenizer = async (text: string) => {
+			const combinationPenalty = text.includes('schema cut off') && !text.startsWith('...') ? 50 : 0;
+			return text.length + combinationPenalty;
+		};
+		const result = await formatSchemaWithTokenBudget('TestDb', schema, undefined, 120, contextSensitiveTokenizer);
+
+		expect(result.phase).toBe(5);
+		expect(result.tokenCount).toBe(await contextSensitiveTokenizer(result.text));
+		expect(result.tokenCount).toBeLessThanOrEqual(result.tokenBudget);
 	});
 
 	it('prune notice is appended for phases 1-4', async () => {

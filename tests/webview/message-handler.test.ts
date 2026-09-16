@@ -9920,6 +9920,106 @@ describe('changedSections agent provenance', () => {
 		expect(mocks.getQuerySectionElement).not.toHaveBeenCalled();
 	});
 
+	it('cleans up delegated Kusto Copilot work immediately on explicit cancellation', async () => {
+		const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: '' });
+		const owner = {
+			boxId: 'query_1', copilotRequestId: 'delegated-explicit-cancel',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		};
+		let activeOwner: typeof owner | undefined;
+		const cancel = vi.fn(() => true);
+		Object.assign(section, {
+			isCopilotChatRunning: vi.fn(() => false),
+			getActiveKustoCopilotRequest: vi.fn(() => activeOwner),
+			submitCopilotChatRequest: vi.fn(() => {
+				activeOwner = owner;
+				return owner;
+			}),
+			cancelKustoCopilotRequest: cancel,
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.getConnectionId.mockReturnValue('conn-1');
+		mocks.getDatabase.mockReturnValue('db-1');
+
+		dispatchHostMessage({
+			type: 'toolDelegateToKustoWorkbenchCopilot', requestId: 'r-kusto-explicit-cancel',
+			input: { sectionId: 'query_1', question: 'Start request' },
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+		mocks.postMessageToHost.mockClear();
+		mocks.unbindResultArtifactConsumer.mockClear();
+
+		dispatchHostMessage({ type: 'toolCancelKustoCopilot', requestId: 'r-kusto-explicit-cancel' });
+
+		expect(cancel).toHaveBeenCalledWith(owner);
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('model:r-kusto-explicit-cancel:result');
+		window.dispatchEvent(new CustomEvent('kusto-workbench-copilot-done-applied', {
+			detail: { type: 'copilotWriteQueryDone', ...owner, ok: false, message: 'Canceled.' },
+		}));
+		await Promise.resolve();
+		expect(mocks.postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'r-kusto-explicit-cancel',
+		}));
+	});
+
+	it('does not install a fixed deadline for delegated Kusto Copilot work', async () => {
+		vi.useFakeTimers();
+		const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+		try {
+			const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: '' });
+			const owner = {
+				boxId: 'query_1', copilotRequestId: 'delegated-long-running',
+				sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+			};
+			let activeOwner: typeof owner | undefined;
+			const writeQueryDone = vi.fn();
+			Object.assign(section, {
+				isCopilotChatRunning: vi.fn(() => false),
+				getActiveKustoCopilotRequest: vi.fn(() => activeOwner),
+				submitCopilotChatRequest: vi.fn(() => {
+					activeOwner = owner;
+					return owner;
+				}),
+				copilotWriteQueryDone: writeQueryDone,
+			});
+			mocks.getQuerySectionElement.mockReturnValue(section);
+			mocks.getConnectionId.mockReturnValue('conn-1');
+			mocks.getDatabase.mockReturnValue('db-1');
+
+			dispatchHostMessage({
+				type: 'toolDelegateToKustoWorkbenchCopilot', requestId: 'r-kusto-long-running',
+				input: { sectionId: 'query_1', question: 'Keep working' },
+			});
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(setTimeoutSpy).not.toHaveBeenCalledWith(expect.any(Function), 180_000);
+
+			await vi.advanceTimersByTimeAsync(180_001);
+
+			expect(writeQueryDone).not.toHaveBeenCalled();
+			expect(mocks.postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({
+				type: 'toolResponse', requestId: 'r-kusto-long-running',
+			}));
+
+			window.dispatchEvent(new CustomEvent('kusto-workbench-copilot-done-applied', {
+				detail: {
+					type: 'copilotWriteQueryDone', ...owner, ok: false,
+					message: 'Completed after the former deadline.',
+				},
+			}));
+			await Promise.resolve();
+
+			expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+				type: 'toolResponse', requestId: 'r-kusto-long-running',
+				result: { success: false, error: 'Completed after the former deadline.' },
+			});
+		} finally {
+			setTimeoutSpy.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
 	it('rejects a busy delegated Kusto request before run-mode or submission effects', async () => {
 		const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'print 1' });
 		const owner = {

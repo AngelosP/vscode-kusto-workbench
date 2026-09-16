@@ -279,12 +279,12 @@ describe('kw-copilot-chat — running state', () => {
 		await waitUpdate(el);
 		const initialMessages = getMessages(el).length;
 		el.setRunning(true);
-		el.setProgress('Generating response (round 1)\u2026');
-		el.setProgress('Generating response (round 2)\u2026');
+		el.setProgress('Generating response\u2026');
+		el.setProgress('Generating response (2 tool calls)\u2026');
 		await waitUpdate(el);
 
 		const progress = getShadowEl(el, '[data-testid="copilot-chat-progress"]');
-		expect(progress?.textContent).toBe('Generating response (round 2)\u2026');
+		expect(progress?.textContent).toBe('Generating response (2 tool calls)\u2026');
 		expect(getMessages(el)).toHaveLength(initialMessages);
 
 		el.setRunning(false);
