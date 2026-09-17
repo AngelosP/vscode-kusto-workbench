@@ -116,7 +116,7 @@
           "type": "boolean",
           "scope": "application",
           "default": false,
-          "description": "Allow an explicitly started GitHub Copilot CLI session to call this VS Code window's Kusto Workbench tools. No listener or CLI process starts until you run Connect Copilot CLI."
+          "description": "Allow an explicitly started GitHub Copilot CLI session to call this VS Code window's Kusto Workbench tools. No listener or CLI process starts until you run Copilot CLI - Open new instance (integrated) or Copilot CLI - Open new instance (external)."
         },
         "kustoWorkbench.alternatingRowColor": {
           "order": 6,
@@ -350,13 +350,19 @@
       },
       {
         "command": "kusto.connectCopilotCli",
-        "title": "Connect Copilot CLI",
+        "title": "Copilot CLI - Open new instance (integrated)",
         "category": "Kusto Workbench",
         "icon": "$(terminal)"
       },
+    {
+    "command": "kusto.createExternalCopilotCliConnection",
+        "title": "Copilot CLI - Open new instance (external)",
+    "category": "Kusto Workbench",
+    "icon": "$(terminal-new)"
+    },
       {
         "command": "kusto.disconnectCopilotCli",
-        "title": "Disconnect Copilot CLI",
+        "title": "Copilot CLI - Disconnect all instances",
         "category": "Kusto Workbench",
         "icon": "$(debug-disconnect)"
       }
@@ -380,6 +386,11 @@
         },
         {
           "command": "kusto.connectCopilotCli",
+          "group": "navigation",
+          "when": "view == kustoWorkbench.quickAccess && config.kustoWorkbench.copilotCli.enabled"
+        },
+        {
+          "command": "kusto.createExternalCopilotCliConnection",
           "group": "navigation",
           "when": "view == kustoWorkbench.quickAccess && config.kustoWorkbench.copilotCli.enabled"
         }

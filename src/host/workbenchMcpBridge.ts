@@ -303,14 +303,22 @@ export async function startWorkbenchMcpBridge(
 			for (const request of requests) request.abort('Kusto Workbench MCP bridge closed.');
 		}
 		activeRequests.clear();
-		closePromise = (async () => {
+		const operation = (async () => {
 			const serverClosed = new Promise<void>((resolve, reject) => {
-				server.close(error => error ? reject(error) : resolve());
+				server.close(error => {
+					if (!error || (error as NodeJS.ErrnoException).code === 'ERR_SERVER_NOT_RUNNING') resolve();
+					else reject(error);
+				});
 				server.closeAllConnections();
 			});
 			await handler.close();
 			await serverClosed;
 		})();
+		const retryableClose = operation.catch(error => {
+			if (closePromise === retryableClose) closePromise = undefined;
+			throw error;
+		});
+		closePromise = retryableClose;
 		return closePromise;
 	};
 

@@ -3,6 +3,7 @@ import {
 	normalizeValue,
 	normalizeSection,
 	normalizeStateForComparison,
+	normalizeKqlxFileForCompatibilityComparison,
 	normalizeKqlxFileForComparison,
 	normalizeKqlxFileForPersistenceComparison,
 	normalizeHeight,
@@ -686,6 +687,67 @@ describe('normalizeStateForComparison', () => {
 		const before = normalizeKqlxFileForComparison({ kind: 'kqlx', version: 1, futureRoot: 1, state } as any);
 		const after = normalizeKqlxFileForComparison({ kind: 'kqlx', version: 1, futureRoot: 2, state } as any);
 		expect(deepEqual(before, after)).toBe(false);
+	});
+
+	it('treats explicit webview defaults as equal to an omitted companion baseline', () => {
+		const before = {
+			kind: 'sqlx', version: 1, state: { sections: [{
+				id: 'compat_primary_sql', type: 'sql', linkedQueryPath: 'empty.sql',
+			}] },
+		} as any;
+		const after = {
+			kind: 'sqlx', version: 1, state: { sections: [{
+				id: 'compat_primary_sql', type: 'sql', linkedQueryPath: 'empty.sql',
+				name: '', expanded: true,
+			}] },
+		} as any;
+		expect(deepEqual(
+			normalizeKqlxFileForCompatibilityComparison(before),
+			normalizeKqlxFileForCompatibilityComparison(after),
+		)).toBe(true);
+	});
+
+	it.each([
+		['favorites mode', { favoritesMode: true }],
+		['Copilot chat visibility', { copilotChatVisible: true }],
+		['result rows', { resultJson: '{"rows":[[2]]}' }],
+		['result artifact', { resultArtifact: { version: 1, artifactId: 'artifact-b' } }],
+	] as const)('retains persisted %s in compatibility comparison', (_label, changedField) => {
+		const before = {
+			kind: 'kqlx', version: 1, state: { sections: [{
+				id: 'compat_primary_query', type: 'query', linkedQueryPath: 'empty.kql',
+			}] },
+		} as any;
+		const after = {
+			...before,
+			state: { sections: [{ ...before.state.sections[0], ...changedField }] },
+		} as any;
+		expect(deepEqual(
+			normalizeKqlxFileForCompatibilityComparison(before),
+			normalizeKqlxFileForCompatibilityComparison(after),
+		)).toBe(false);
+	});
+
+	it('retains explicit defaults on authored secondary sections', () => {
+		const before = {
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'compat_primary_query', type: 'query', linkedQueryPath: 'empty.kql' },
+				{ id: 'markdown_1', type: 'markdown', text: 'content' },
+			] },
+		} as any;
+		const after = {
+			...before,
+			state: { sections: [before.state.sections[0], { ...before.state.sections[1], expanded: true }] },
+		} as any;
+		expect(deepEqual(
+			normalizeKqlxFileForCompatibilityComparison(before),
+			normalizeKqlxFileForCompatibilityComparison(after),
+		)).toBe(false);
+	});
+
+	it('preserves an authored empty native snapshot at the persistence boundary', () => {
+		expect(parseNativePersistDocumentState({ sections: [] }, 'kqlx')).toEqual({ sections: [] });
+		expect(parseNativePersistDocumentState({ sections: [] }, 'sqlx')).toEqual({ sections: [] });
 	});
 
 	it.each(['favoritesMode', 'copilotChatVisible'])('treats omitted persisted %s as a durable change', field => {

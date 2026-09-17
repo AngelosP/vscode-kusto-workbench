@@ -75,6 +75,7 @@ export function parseNativePersistDocumentState(
 		}), {
 			allowedKinds: [documentKind],
 			defaultKind: documentKind,
+			preserveEmptySections: true,
 		});
 		return parsed.ok ? parsed.file.state : undefined;
 	} catch {
@@ -580,6 +581,30 @@ const clonePersistenceComparable = (
 const normalizeStateForPersistenceComparison = (state: KqlxStateV1): Record<string, unknown> =>
 	clonePersistenceComparable(state) as Record<string, unknown>;
 
+const COMPATIBILITY_IMPLICIT_EMPTY_STRING_KEYS = new Set([
+	'name', 'title', 'clusterUrl', 'database', 'serverUrl', 'authorityId', 'connectionIdHint', 'targetSignature',
+]);
+
+const normalizeStateForCompatibilityComparison = (state: KqlxStateV1): Record<string, unknown> => {
+	const normalized = normalizeStateForPersistenceComparison(state);
+	if (!Array.isArray(normalized.sections)) return normalized;
+	normalized.sections = normalized.sections.map((section, index) => {
+		if (!section || typeof section !== 'object' || Array.isArray(section)) return section;
+		const record = section as Record<string, unknown>;
+		const kind = canonicalSectionKind(String(record.type ?? ''));
+		if (index !== 0 || (kind !== 'query' && kind !== 'sql')) return record;
+		const comparable = { ...record };
+		for (const key of COMPATIBILITY_IMPLICIT_EMPTY_STRING_KEYS) {
+			if (comparable[key] === '') delete comparable[key];
+		}
+		for (const [key, value] of Object.entries(comparable)) {
+			if (__kustoIsImplicitSectionDefault(key, value)) delete comparable[key];
+		}
+		return comparable;
+	});
+	return normalized;
+};
+
 export const normalizeKqlxFileForComparison = (
 	file: KqlxFileV1,
 	state: KqlxStateV1 = file.state,
@@ -599,6 +624,16 @@ export const normalizeKqlxFileForPersistenceComparison = (
 	kind: file.kind,
 	version: file.version,
 	knownState: normalizeStateForPersistenceComparison(state),
+	preserved: getKqlxPreservedEnvelope(file, state),
+});
+
+export const normalizeKqlxFileForCompatibilityComparison = (
+	file: KqlxFileV1,
+	state: KqlxStateV1 = file.state,
+): Record<string, unknown> => ({
+	kind: file.kind,
+	version: file.version,
+	knownState: normalizeStateForCompatibilityComparison(state),
 	preserved: getKqlxPreservedEnvelope(file, state),
 });
 
@@ -844,6 +879,7 @@ export async function publishKqlxTextFresh<R>(
 	const parsed = parseKqlxText(text, {
 		allowedKinds: [kind],
 		defaultKind: kind,
+		preserveEmptySections: true,
 	});
 	if (!parsed.ok) {
 		throw new Error(`Cannot publish a malformed Kusto Workbench document because its SQL privacy state cannot be verified. ${parsed.error}`);

@@ -9081,6 +9081,107 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('exact empty companions publish no section changes for their unchanged projected primary', async () => {
+		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const originalShowWarningMessage = vscode.window.showWarningMessage;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-empty-companion-section-status-'));
+		const variants = [
+			{
+				extension: '.kql', Provider: KqlCompatEditorProvider, storedKind: 'mdx',
+				primaryType: 'query', primaryId: 'compat_primary_query',
+				webviewDefaults: {
+					name: '', clusterUrl: '', database: '', expanded: true, resultsVisible: true,
+					runMode: 'take100', cacheEnabled: true, cacheValue: 1, cacheUnit: 'days',
+				},
+			},
+			{
+				extension: '.sql', Provider: SqlCompatEditorProvider, storedKind: 'kqlx',
+				primaryType: 'sql', primaryId: 'compat_primary_sql',
+				webviewDefaults: { name: '', expanded: true },
+			},
+		] as const;
+
+		try {
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => state;
+			let savePromptCount = 0;
+			(vscode.window as any).showWarningMessage = async () => {
+				savePromptCount++;
+				return 'Discard';
+			};
+			for (const [index, variant] of variants.entries()) {
+				savePromptCount = 0;
+				const sourcePath = path.join(tmpDir, `empty-${index}${variant.extension}`);
+				const sidecarPath = `${sourcePath}.json`;
+				const sidecarText = JSON.stringify({
+					kind: variant.storedKind, version: 1, futureRoot: { keep: variant.extension },
+					state: { futureState: ['keep'], sections: [] },
+				});
+				fs.writeFileSync(sourcePath, '', 'utf8');
+				fs.writeFileSync(sidecarPath, sidecarText, 'utf8');
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				const disposeHandlers: Array<() => void> = [];
+				const posted: any[] = [];
+				const provider = new (variant.Provider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-${index}`)),
+						extensionMode: vscode.ExtensionMode.Test,
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(sourcePath), getText: () => '', lineCount: 1,
+					lineAt: () => ({ text: '' }), eol: vscode.EndOfLine.LF, isDirty: false, save: async () => true,
+				} as any;
+				const panel = {
+					visible: false, active: false,
+					webview: {
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+						onDidReceiveMessage: (handler: (message: any) => unknown) => {
+							receiveHandler = handler;
+							return { dispose() {} };
+						},
+					},
+					onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+					onDidChangeViewState: () => ({ dispose() {} }),
+				} as any;
+
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const projection = posted.filter(message => message?.type === 'documentData' && message.ok === true).at(-1);
+				assert.strictEqual(projection?.state?.sections?.length, 1);
+				assert.strictEqual(projection.state.sections[0].id, variant.primaryId);
+				const forgedSnapshotId = `forged-empty-primary-${index}`;
+				await Promise.resolve(receiveHandler!({
+					type: 'persistDocument', snapshotId: forgedSnapshotId,
+					sourceGeneration: projection.sourceGeneration, editRevision: 1,
+					state: { sections: [{ id: 'forged_primary', type: variant.primaryType, query: '' }] },
+				}));
+				assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+					&& message.snapshotId === forgedSnapshotId), `${variant.extension} forged primary must not be acknowledged`);
+				assert.strictEqual(fs.readFileSync(sidecarPath, 'utf8'), sidecarText);
+				assert.strictEqual(document.getText(), '');
+				await Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
+					type: 'persistDocument', editRevision: 2,
+					state: { sections: [{ type: variant.primaryType, query: '', ...variant.webviewDefaults }] },
+				})));
+
+				const changedSections = posted.filter(message => message?.type === 'changedSections').at(-1);
+				assert.deepStrictEqual(changedSections?.changes, [], `${variant.extension} projected primary must remain clean`);
+				assert.strictEqual(fs.readFileSync(sidecarPath, 'utf8'), sidecarText);
+				for (const dispose of disposeHandlers) dispose();
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 1_000), true);
+				assert.strictEqual(savePromptCount, 0,
+					`${variant.extension} default-rich primary must not prompt on close; changes=${JSON.stringify(changedSections)}`);
+			}
+		} finally {
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			(vscode.window as any).showWarningMessage = originalShowWarningMessage;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('compatibility close promotes pre-disposal beforeunload while ordinary startup work is blocked', async () => {
 		const originalHandle = (QueryEditorProvider as any).prototype.handleWebviewMessage;
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
@@ -10374,9 +10475,12 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const projectionCountBeforeConflict = posted.filter(message => message?.type === 'documentData').length;
 			holdReload = true;
-			const conflictedRequest = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const conflictedRequest = Promise.resolve(receiveHandler!({
+				type: 'requestDocument', requestId: 'compat-owner-conflict-reload', expectedEditRevision: 4,
+			}));
 			await waitForCondition(() => !!heldReloadRequestId, 'compatibility conflict candidate should be posted');
 			const conflictedProjection = posted.filter(message => message?.type === 'documentData').at(-1);
+			assert.strictEqual(conflictedProjection.expectedEditRevision, 4);
 			const second = terminal('compat-owner-result-2', 2, 2);
 			assert.strictEqual(session.beginExecution(second), true);
 			assert.ok(session.stagePublication('compat-owner-publication-2', second));
@@ -10399,6 +10503,8 @@ suite('Sidecar .kql.json strategy', () => {
 			assert.strictEqual(settledProjections.length, projectionCountBeforeConflict + 2);
 			const retryProjection = settledProjections.at(-1);
 			assert.ok(retryProjection.sourceGeneration > conflictedProjection.sourceGeneration);
+			assert.strictEqual(retryProjection.expectedEditRevision, 4,
+				'canonical-source conflict retry must retain the originating edit-revision fence');
 			const editedState = {
 				...retryProjection.state,
 				sections: retryProjection.state.sections.map((section: any) => section.id === 'markdown_1'

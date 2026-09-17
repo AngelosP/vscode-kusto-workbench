@@ -88,6 +88,9 @@ function fileFor(state: KqlxStateV1): KqlxFileV1 {
 function createHarness(options: Partial<HarnessBehavior & {
 	sourceText: string;
 	languageLabel: 'KQL' | 'SQL';
+	lastWrittenMaterializedText: string;
+	materializedComparisonText: string;
+	materializedDirty: boolean;
 }> = {}) {
 	const calls: string[] = [];
 	const acknowledgements: Array<Readonly<{ snapshotId: string; editRevision: number }>> = [];
@@ -200,7 +203,11 @@ function createHarness(options: Partial<HarnessBehavior & {
 				return behavior.materializedAvailable ? fileFor(state) : undefined;
 			},
 			serializeMaterialized: file => JSON.stringify(file),
-			getLastWrittenMaterializedText: () => 'BASELINE',
+			getLastWrittenMaterializedText: () => options.lastWrittenMaterializedText ?? 'BASELINE',
+			getMaterializedComparisonText: () => options.materializedComparisonText,
+			...(options.materializedDirty === undefined ? {} : {
+				isMaterializedDirty: () => options.materializedDirty as boolean,
+			}),
 			getPrimaryText: state => String((state.sections[0] as { query?: unknown } | undefined)?.query ?? ''),
 			readSourceText: () => {
 				sourceReadCalls++;
@@ -285,6 +292,37 @@ describe('CompatSidecarPersistCoordinator authority capture ordering', () => {
 });
 
 describe('CompatSidecarPersistCoordinator', () => {
+	it('keeps a canonical-equivalent empty companion clean while retaining raw CAS bytes', async () => {
+		const state = persistenceState('NEXT');
+		const canonicalText = JSON.stringify(fileFor(state));
+		const harness = createHarness({
+			lastWrittenMaterializedText: '{"kind":"kqlx","version":1,"state":{"sections":[]}}',
+			materializedComparisonText: canonicalText,
+		});
+
+		await expect(harness.coordinator.persist(snapshot())).resolves.toMatchObject({ terminal: 'applied' });
+
+		expect(harness.session.isDirty).toBe(false);
+		expect(harness.session.baseText).toBeUndefined();
+		expect(harness.calls).toContain(
+			'materialized-dirty:false:{"kind":"kqlx","version":1,"state":{"sections":[]}}',
+		);
+	});
+
+	it('honors adapter semantic equality over byte mismatch while retaining raw CAS bytes', async () => {
+		const rawText = '{"kind":"kqlx","version":1,"state":{"sections":[]}}';
+		const harness = createHarness({
+			lastWrittenMaterializedText: rawText,
+			materializedComparisonText: 'different canonical bytes',
+			materializedDirty: false,
+		});
+
+		await expect(harness.coordinator.persist(snapshot())).resolves.toMatchObject({ terminal: 'applied' });
+
+		expect(harness.session.isDirty).toBe(false);
+		expect(harness.calls).toContain(`materialized-dirty:false:${rawText}`);
+	});
+
 	it('requires an available final snapshot for tool-driven compatibility lifecycle work', () => {
 		expect(() => requireAvailableCompatSidecarFinalPersist({ available: true }, 'KQL')).not.toThrow();
 		expect(() => requireAvailableCompatSidecarFinalPersist({

@@ -10,7 +10,7 @@ import type { SqlWorkbenchService } from './sql/sqlWorkbenchService';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { stringifyKqlxFile, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 import { renderDiffInWebview } from './diffViewerUtils';
-import { normalizeSection, computeChangedSections, formatSectionDiffContent, KqlxEditorProvider, OwnedDocumentEditTracker } from './kqlxEditorProvider';
+import { normalizeSection, computeChangedSections, deepEqual, formatSectionDiffContent, normalizeKqlxFileForCompatibilityComparison, KqlxEditorProvider, OwnedDocumentEditTracker } from './kqlxEditorProvider';
 import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTypes';
 import { getWorkbenchLogger } from './workbenchLogger';
 import { createFileOpenTrace } from './fileOpenTrace';
@@ -32,6 +32,7 @@ import {
 import {
 	assertCompatPrimaryIdentity,
 	buildCompatSidecarFile,
+	getCanonicalEmptyCompatSidecarText,
 	getCompatSidecarUri,
 	hydrateCompatSidecarState,
 	isLinkedCompatSidecar,
@@ -297,6 +298,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		let sidecarFile: KqlxFileV1 | undefined;
 		let sidecarLoadError: string | undefined;
 		let lastWrittenSidecarText: string | undefined;
+		let materializedComparisonBaselineText: string | undefined;
 		let lastWrittenSidecarIdentity: CompatSidecarFileIdentity | undefined;
 		try {
 			sidecarUri = getSidecarJsonUriForSqlCompat(document.uri);
@@ -310,6 +312,9 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					} else if (isLinkedSidecarForSqlFile(sidecarUri, parsed.file, document.uri)) {
 						sidecarFile = parsed.file;
 						lastWrittenSidecarText = text;
+						materializedComparisonBaselineText = getCanonicalEmptyCompatSidecarText(
+							document.uri, parsed.file, SQL_COMPAT_SIDECAR_FORMAT,
+						);
 						lastWrittenSidecarIdentity = snapshot.identity;
 					}
 				} catch {
@@ -347,12 +352,26 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		) => sidecarStore.writeFresh(uri, state, expectedCurrentText, lastWrittenSidecarIdentity, beforePublish);
 		const repairPersistedSidecar = (uri: vscode.Uri) => sidecarStore.repair(uri, lastWrittenSidecarIdentity);
 		const writeDraftRecoveryFile = (uri: vscode.Uri, state: KqlxStateV1) => sidecarStore.writeRecovery(uri, state);
+		const isMaterializedSidecarDirty = (candidate: KqlxFileV1): boolean => {
+			const comparisonText = materializedComparisonBaselineText ?? lastWrittenSidecarText;
+			if (comparisonText === undefined) return true;
+			const comparison = parseCompatSidecarText(comparisonText, SQL_COMPAT_SIDECAR_FORMAT);
+			return comparison.ok
+				? !deepEqual(
+					normalizeKqlxFileForCompatibilityComparison(candidate),
+					normalizeKqlxFileForCompatibilityComparison(comparison.file),
+				)
+				: stringifyKqlxFile(candidate) !== comparisonText;
+		};
 		if (sidecarUri && sidecarFile && lastWrittenSidecarText !== undefined) {
 			const repaired = await repairPersistedSidecar(sidecarUri);
 			if (repaired) {
 				sidecarFile = repaired.file;
 				lastKnownSidecarState = repaired.file.state;
 				lastWrittenSidecarText = repaired.text;
+				materializedComparisonBaselineText = getCanonicalEmptyCompatSidecarText(
+					document.uri, repaired.file, SQL_COMPAT_SIDECAR_FORMAT,
+				);
 				lastWrittenSidecarIdentity = repaired.identity;
 			}
 		}
@@ -407,7 +426,10 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			savedSqlText = document.getText();
 			savedSidecarSectionCache = new Map<string, Record<string, unknown>>();
 			if (sidecarFile) {
-				const sections = Array.isArray(sidecarFile.state.sections) ? sidecarFile.state.sections : [];
+				const rawSections = Array.isArray(sidecarFile.state.sections) ? sidecarFile.state.sections : [];
+				const sections = rawSections.length > 0
+					? rawSections
+					: hydrateCompatSidecarState(sidecarFile, savedSqlText, SQL_COMPAT_SIDECAR_FORMAT).sections;
 				let isFirst = true;
 				for (const section of sections) {
 					const s = section as Record<string, unknown>;
@@ -636,6 +658,8 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				},
 				serializeMaterialized: stringifyKqlxFile,
 				getLastWrittenMaterializedText: () => lastWrittenSidecarText,
+				getMaterializedComparisonText: () => materializedComparisonBaselineText,
+				isMaterializedDirty: isMaterializedSidecarDirty,
 				getPrimaryText: state => {
 					const primary = state.sections[0] as Record<string, unknown> | undefined;
 					return typeof primary?.query === 'string' ? primary.query : '';
@@ -743,6 +767,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				);
 				sidecarFile = persisted;
 				lastWrittenSidecarText = text;
+				materializedComparisonBaselineText = undefined;
 				lastWrittenSidecarIdentity = identity;
 				sidecarSession.markClean();
 				rebuildSavedCache();
@@ -829,6 +854,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				);
 				sidecarFile = persisted;
 				lastWrittenSidecarText = text;
+				materializedComparisonBaselineText = undefined;
 				lastWrittenSidecarIdentity = identity;
 				sidecarSession.markClean();
 			},
@@ -845,6 +871,9 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				if (!repaired) return;
 				sidecarFile = repaired.file;
 				lastWrittenSidecarText = repaired.text;
+				materializedComparisonBaselineText = getCanonicalEmptyCompatSidecarText(
+					document.uri, repaired.file, SQL_COMPAT_SIDECAR_FORMAT,
+				);
 				lastWrittenSidecarIdentity = repaired.identity;
 			},
 			drainStore: () => sidecarStore.drain(),
@@ -915,6 +944,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					sidecarUri = enabled.uri;
 					sidecarFile = enabled.file;
 					lastWrittenSidecarText = enabled.text;
+					materializedComparisonBaselineText = undefined;
 					lastWrittenSidecarIdentity = enabled.identity;
 					lastKnownSidecarState = enabled.file.state;
 					sidecarSession.markClean(upgradeRevision);

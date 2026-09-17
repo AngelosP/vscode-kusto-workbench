@@ -70,11 +70,13 @@ Copilot CLI can use the same Kusto Workbench tools against the notebooks open in
 This integration is off by default and never starts a listener or CLI process during normal extension activation.
 
 1. Enable `kustoWorkbench.copilotCli.enabled` in VS Code settings.
-2. In the VS Code window you want to control, run `Kusto Workbench: Connect Copilot CLI`.
-3. Use the new terminal session. It is bound to that VS Code window and loads the same Kusto Workbench agent instructions.
-4. Run `Kusto Workbench: Disconnect Copilot CLI` to revoke every CLI session attached through that window.
+2. In the VS Code window you want to control, choose a launch mode:
+	- Run `Kusto Workbench: Copilot CLI - Open new instance (integrated)` for a terminal inside VS Code.
+	- On Windows, run `Kusto Workbench: Copilot CLI - Open new instance (external)` for a separate PowerShell console outside VS Code.
+3. Use the new CLI session. It is bound to that VS Code window and loads the same Kusto Workbench agent instructions.
+4. Run `Kusto Workbench: Copilot CLI - Disconnect all instances` to revoke and close every CLI session attached through that window.
 
-Each connection uses an authenticated loopback endpoint and a short-lived configuration file in VS Code's per-user extension storage, outside the directory granted to the CLI agent. The file is created with owner-only mode where the operating system supports it and deleted after the CLI authenticates. A process already running as the same OS user could still access it during that short interval. Closing its terminal revokes that session. Repeating the Connect command creates another independently revocable CLI session. VS Code must remain running, and this initial integration supports fresh same-machine desktop sessions with GitHub Copilot CLI 1.0.81 or newer. Attaching an already-running CLI process is not part of this initial scope.
+Each connection uses an authenticated loopback endpoint and a short-lived configuration file in VS Code's per-user extension storage, outside the directory granted to the CLI agent. The file is created with owner-only mode where the operating system supports it and deleted after the CLI authenticates. A process already running as the same OS user could still access it during that short interval. Closing either terminal type revokes only that session. Repeating either connection command creates another independently revocable CLI session. VS Code must remain running, and both modes require a fresh same-machine desktop session with GitHub Copilot CLI 1.0.81 or newer. The external-console mode currently requires Windows. Attaching an already-running CLI process is not supported.
 
 Disconnecting or disabling the setting blocks new calls and requests cancellation of active calls. It does not roll back an operation that the underlying Workbench tool already accepted; short non-cancellable mutations may finish through the same semantics they have in VS Code Copilot Chat.
 
@@ -269,8 +271,9 @@ You can open `.kqlx` and `.sqlx` files directly from GitHub or SharePoint using 
 | `Kusto Workbench: Open Tutorials...` | Open the searchable tutorial viewer with category subscriptions |
 | `Kusto Workbench: Open Kusto Workbench Custom Agent` | Open the Copilot Chat panel with the Kusto Workbench agent |
 | `Kusto Workbench: Export Agent Skill...` | Export a SKILL.md file so other Copilot agents can use Kusto Workbench as a tool |
-| `Kusto Workbench: Connect Copilot CLI` | Start an explicitly attached Copilot CLI session for this VS Code window |
-| `Kusto Workbench: Disconnect Copilot CLI` | Revoke and close Copilot CLI sessions attached through this VS Code window |
+| `Kusto Workbench: Copilot CLI - Open new instance (integrated)` | Start an explicitly attached Copilot CLI session in a VS Code terminal for this window |
+| `Kusto Workbench: Copilot CLI - Open new instance (external)` | Start an attached Copilot CLI session in a separate Windows console |
+| `Kusto Workbench: Copilot CLI - Disconnect all instances` | Revoke and close every Copilot CLI session attached through this VS Code window |
 | `Kusto Workbench: Show Development Notes` | View AI development notes stored in the current file |
 
 ## Requirements

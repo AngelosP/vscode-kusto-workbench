@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-21T00:00:00.000Z",
+  "generatedAt": "2026-09-17T00:00:00.000Z",
   "categories": [
     {
       "id": "agent",
@@ -185,6 +185,13 @@
       "contentUrl": "content/copilot-agent-vs-chat.md",
       "minExtensionVersion": "0.0.0",
       "updateToken": "copilot-agent-vs-chat-2026-05-04"
+    },
+    {
+      "id": "copilot-cli-live-workbench",
+      "categoryId": "copilot",
+      "contentUrl": "content/copilot-cli-live-workbench.md",
+      "minExtensionVersion": "5.2.0",
+      "updateToken": "copilot-cli-live-workbench-2026-09-17"
     },
     {
       "id": "powerbi-build-publish-report",

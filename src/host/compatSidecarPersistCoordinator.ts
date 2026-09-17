@@ -60,6 +60,8 @@ export interface CompatSidecarPersistPhysicalAdapter {
 	materializeState(state: KqlxStateV1): Promise<KqlxFileV1 | undefined>;
 	serializeMaterialized(file: KqlxFileV1): string;
 	getLastWrittenMaterializedText(): string | undefined;
+	getMaterializedComparisonText?(): string | undefined;
+	isMaterializedDirty?(file: KqlxFileV1): boolean;
 	getPrimaryText(state: KqlxStateV1): string;
 	readSourceText(): string;
 	applySourceText(text: string): Promise<boolean>;
@@ -220,8 +222,12 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 					adapter.setKnownState(state);
 					session.setStateRevision(incomingEditRevision);
 					const lastWrittenText = adapter.getLastWrittenMaterializedText();
+					const comparisonText = adapter.getMaterializedComparisonText?.() ?? lastWrittenText;
 					const draftText = adapter.serializeMaterialized(validatedDraft);
-					session.setMaterializedDirty(draftText !== lastWrittenText, lastWrittenText);
+					session.setMaterializedDirty(
+						adapter.isMaterializedDirty?.(validatedDraft) ?? draftText !== comparisonText,
+						lastWrittenText,
+					);
 					adapter.publishChanges(state);
 				}
 				adapter.notifyPreparationFailure(error);
@@ -271,9 +277,13 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 			session.setStateRevision(incomingEditRevision);
 			if (materializedSidecar) {
 				const lastWrittenText = adapter.getLastWrittenMaterializedText();
+				const comparisonText = adapter.getMaterializedComparisonText?.() ?? lastWrittenText;
 				const materializedText = adapter.serializeMaterialized(materializedSidecar);
 				adapter.setMaterializedSidecar(materializedSidecar);
-				session.setMaterializedDirty(materializedText !== lastWrittenText, lastWrittenText);
+				session.setMaterializedDirty(
+					adapter.isMaterializedDirty?.(materializedSidecar) ?? materializedText !== comparisonText,
+					lastWrittenText,
+				);
 			}
 			adapter.publishChanges(state);
 			return { terminal: 'applied', ok: true } as const;

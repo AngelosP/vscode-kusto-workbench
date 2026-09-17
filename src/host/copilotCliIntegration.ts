@@ -1,16 +1,24 @@
 import * as vscode from 'vscode';
 import { execFile } from 'node:child_process';
-import { writeFile as writeLocalFile } from 'node:fs/promises';
+import { access, writeFile as writeLocalFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import {
 	CopilotCliConnectionCancelledError,
 	CopilotCliSessionManager,
 	type CopilotCliBridge,
+	type CopilotCliConnectionTarget,
 	type CopilotCliLease,
 	type CopilotCliPreparedLaunch,
 	type CopilotCliTerminal,
 } from './copilotCliSessionManager';
+import {
+	EXTERNAL_CLI_BROKER_SCRIPT,
+	EXTERNAL_CLI_RUNNER_SCRIPT,
+	createExternalCliLaunchDescriptor,
+	launchExternalCopilotCliTerminal,
+} from './copilotCliExternalTerminal';
 import type {
 	RunningWorkbenchMcpBridge,
 	StartWorkbenchMcpBridgeOptions,
@@ -52,6 +60,16 @@ interface PreparedCopilotCliLaunch extends CopilotCliPreparedLaunch {
 	readonly executable: string;
 	readonly args: readonly string[];
 	readonly cwd: vscode.Uri;
+	readonly external?: Readonly<{
+		powerShellExecutable: string;
+		taskkillExecutable: string;
+		brokerScriptPath: string;
+		descriptorPath: string;
+		startPath: string;
+		stopPath: string;
+		exitedPath: string;
+		visiblePidPath: string;
+	}>;
 }
 
 interface WorkbenchMcpBridgeModule {
@@ -59,7 +77,7 @@ interface WorkbenchMcpBridgeModule {
 }
 
 export interface CopilotCliIntegration extends vscode.Disposable {
-	connect(): Promise<void>;
+	connect(target?: CopilotCliConnectionTarget): Promise<void>;
 	stop(): Promise<void>;
 }
 
@@ -322,6 +340,17 @@ async function readText(uri: vscode.Uri): Promise<string> {
 	return Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
 }
 
+export function getWindowsExternalCliExecutables(systemRoot: string | undefined): {
+	powerShellExecutable: string;
+	taskkillExecutable: string;
+} {
+	if (!systemRoot) throw new Error('The Windows system directory is unavailable.');
+	return {
+		powerShellExecutable: join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+		taskkillExecutable: join(systemRoot, 'System32', 'taskkill.exe'),
+	};
+}
+
 export async function chooseWorkingDirectory(signal: AbortSignal): Promise<vscode.Uri> {
 	const folders = vscode.workspace.workspaceFolders || [];
 	if (folders.length === 0) {
@@ -366,6 +395,7 @@ class DefaultCopilotCliIntegration implements CopilotCliIntegration {
 	private terminalCloseSubscription: vscode.Disposable | undefined;
 	private pendingExecutable: string | undefined;
 	private pendingWorkingDirectory: vscode.Uri | undefined;
+	private pendingExternalExecutables: ReturnType<typeof getWindowsExternalCliExecutables> | undefined;
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -374,7 +404,7 @@ class DefaultCopilotCliIntegration implements CopilotCliIntegration {
 		this.manager = new CopilotCliSessionManager({
 			isEnabled: () => vscode.workspace.getConfiguration('kustoWorkbench')
 				.get<boolean>(COPILOT_CLI_ENABLED_SETTING, false),
-			prepareConnection: async signal => {
+			prepareConnection: async (signal, target) => {
 				try {
 					this.pendingWorkingDirectory = await chooseWorkingDirectory(signal);
 					if (this.pendingWorkingDirectory.scheme !== 'file'
@@ -383,26 +413,46 @@ class DefaultCopilotCliIntegration implements CopilotCliIntegration {
 						throw new Error('Copilot CLI integration currently supports local desktop VS Code windows with a local file working directory only.');
 					}
 					this.pendingExecutable = await resolveCopilotCliExecutable(signal);
+					if (target === 'external') {
+						if (process.platform !== 'win32') {
+							throw new Error('External Copilot CLI consoles are currently supported on Windows only.');
+						}
+						this.pendingExternalExecutables = getWindowsExternalCliExecutables(process.env.SystemRoot);
+						await Promise.all([
+							access(this.pendingExternalExecutables.powerShellExecutable),
+							access(this.pendingExternalExecutables.taskkillExecutable),
+						]);
+					}
 				} catch (error) {
 					this.pendingWorkingDirectory = undefined;
 					this.pendingExecutable = undefined;
+					this.pendingExternalExecutables = undefined;
 					if (signal.aborted) throw new CopilotCliConnectionCancelledError();
 					throw error;
 				}
 			},
 			createBridge: () => this.createBridge(),
-			prepareLaunch: ({ bridge, lease }) => this.prepareLaunch(bridge, lease),
-			launchTerminal: launch => this.launchTerminal(launch as PreparedCopilotCliLaunch),
+			prepareLaunch: ({ bridge, lease, target, retainLaunch }) => this.prepareLaunch(
+				bridge,
+				lease,
+				target,
+				retainLaunch,
+			),
+			launchTerminal: (launch, target, signal) => this.launchTerminal(
+				launch as PreparedCopilotCliLaunch,
+				target,
+				signal,
+			),
 			showDisabledMessage: () => this.showDisabledMessage(),
 		});
 	}
 
-	async connect(): Promise<void> {
+	async connect(target: CopilotCliConnectionTarget = 'integrated'): Promise<void> {
 		if (vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>(COPILOT_CLI_ENABLED_SETTING, false)) {
-			this.ensureTerminalCloseListener();
+			if (target === 'integrated') this.ensureTerminalCloseListener();
 		}
 		try {
-			await this.manager.connect();
+			await this.manager.connect(target);
 		} catch (error) {
 			if (error instanceof CopilotCliConnectionCancelledError) throw new vscode.CancellationError();
 			throw error;
@@ -469,17 +519,46 @@ class DefaultCopilotCliIntegration implements CopilotCliIntegration {
 		});
 	}
 
-	private async prepareLaunch(bridge: CopilotCliBridge, lease: CopilotCliLease): Promise<PreparedCopilotCliLaunch> {
+	private async prepareLaunch(
+		bridge: CopilotCliBridge,
+		lease: CopilotCliLease,
+		target: CopilotCliConnectionTarget,
+		retainLaunch: (launch: CopilotCliPreparedLaunch) => void,
+	): Promise<PreparedCopilotCliLaunch> {
 		const executable = this.pendingExecutable;
 		const cwd = this.pendingWorkingDirectory;
+		const externalExecutables = this.pendingExternalExecutables;
 		this.pendingExecutable = undefined;
 		this.pendingWorkingDirectory = undefined;
+		this.pendingExternalExecutables = undefined;
 		if (!executable || !cwd) throw new Error('Copilot CLI connection preflight did not complete.');
+		if (target === 'external' && !externalExecutables) {
+			throw new Error('External Copilot CLI connection preflight did not complete.');
+		}
 
 		const sessionRoot = vscode.Uri.joinPath(this.context.globalStorageUri, 'copilot-cli', lease.id);
 		const agentRoot = vscode.Uri.joinPath(sessionRoot, 'agent');
 		const agentsDir = vscode.Uri.joinPath(agentRoot, '.github', 'agents');
 		const configUri = vscode.Uri.joinPath(sessionRoot, 'mcp.json');
+		const brokerScriptUri = vscode.Uri.joinPath(sessionRoot, 'external-broker.ps1');
+		const runnerScriptUri = vscode.Uri.joinPath(sessionRoot, 'external-runner.ps1');
+		const descriptorUri = vscode.Uri.joinPath(sessionRoot, 'external-launch.json');
+		const startUri = vscode.Uri.joinPath(sessionRoot, 'external-start');
+		const stopUri = vscode.Uri.joinPath(sessionRoot, 'external-stop');
+		const exitedUri = vscode.Uri.joinPath(sessionRoot, 'external-exited');
+		const visiblePidUri = vscode.Uri.joinPath(sessionRoot, 'external-visible-pid');
+		let cleanupPromise: Promise<void> | undefined;
+		const disposeSessionRoot = () => {
+			if (!cleanupPromise) {
+				const operation = this.removeSessionRoot(sessionRoot);
+				cleanupPromise = operation;
+				void operation.catch(() => {
+					if (cleanupPromise === operation) cleanupPromise = undefined;
+				});
+			}
+			return cleanupPromise;
+		};
+		retainLaunch({ dispose: disposeSessionRoot });
 		try {
 			await vscode.workspace.fs.createDirectory(agentsDir);
 			const mainSource = await readText(vscode.Uri.joinPath(this.context.extensionUri, 'copilot-instructions', 'custom-agent.md'));
@@ -488,6 +567,12 @@ class DefaultCopilotCliIntegration implements CopilotCliIntegration {
 			const toolNames = contributions.map(tool => tool.toolReferenceName);
 			const serverName = `kusto-workbench-${lease.id.replaceAll('-', '').slice(0, 12)}`;
 			const agents = renderCopilotCliAgents({ mainSource, searchSource, serverName, allToolNames: toolNames });
+			const args = [
+				`--additional-mcp-config=@${configUri.fsPath}`,
+				`--add-dir=${agentRoot.fsPath}`,
+				`--agent=${MAIN_AGENT_ID}`,
+				'--no-remote-export',
+			];
 			const configBytes = Buffer.from(`${JSON.stringify(createCopilotCliMcpConfig({
 				serverName,
 				endpoint: bridge.endpoint,
@@ -496,51 +581,93 @@ class DefaultCopilotCliIntegration implements CopilotCliIntegration {
 			}), null, 2)}\n`, 'utf8');
 			await publishCopilotCliLaunchAssets({
 				writeAgents: async () => {
-					await vscode.workspace.fs.writeFile(
-						vscode.Uri.joinPath(agentsDir, `${MAIN_AGENT_ID}.agent.md`),
-						Buffer.from(agents.main, 'utf8'),
-					);
-					await vscode.workspace.fs.writeFile(
-						vscode.Uri.joinPath(agentsDir, `${SEARCH_AGENT_ID}.agent.md`),
-						Buffer.from(agents.search, 'utf8'),
-					);
+					const writes = [
+						vscode.workspace.fs.writeFile(
+							vscode.Uri.joinPath(agentsDir, `${MAIN_AGENT_ID}.agent.md`),
+							Buffer.from(agents.main, 'utf8'),
+						),
+						vscode.workspace.fs.writeFile(
+							vscode.Uri.joinPath(agentsDir, `${SEARCH_AGENT_ID}.agent.md`),
+							Buffer.from(agents.search, 'utf8'),
+						),
+					];
+					if (target === 'external') {
+						writes.push(
+							vscode.workspace.fs.writeFile(brokerScriptUri, Buffer.from(EXTERNAL_CLI_BROKER_SCRIPT, 'utf8')),
+							vscode.workspace.fs.writeFile(runnerScriptUri, Buffer.from(EXTERNAL_CLI_RUNNER_SCRIPT, 'utf8')),
+							vscode.workspace.fs.writeFile(descriptorUri, Buffer.from(createExternalCliLaunchDescriptor({
+								cliExecutable: executable,
+								arguments: args,
+								workingDirectory: cwd.fsPath,
+								powerShellExecutable: externalExecutables!.powerShellExecutable,
+								taskkillExecutable: externalExecutables!.taskkillExecutable,
+								runnerScriptPath: runnerScriptUri.fsPath,
+								descriptorPath: descriptorUri.fsPath,
+								startPath: startUri.fsPath,
+								stopPath: stopUri.fsPath,
+								exitedPath: exitedUri.fsPath,
+								visiblePidPath: visiblePidUri.fsPath,
+							}), 'utf8')),
+						);
+					}
+					await Promise.all(writes);
 				},
 				writeCredential: () => writeLocalFile(configUri.fsPath, configBytes, { flag: 'wx', mode: 0o600 }).then(() => undefined),
-				cleanup: () => Promise.resolve(vscode.workspace.fs.delete(sessionRoot, { recursive: true, useTrash: false })),
+				cleanup: disposeSessionRoot,
 			});
-			void this.deleteConfigAfterAuthentication(configUri, lease.authenticated);
-			let disposed = false;
+			void this.deleteConfigAfterAuthentication(configUri, lease);
 			return {
 				executable,
 				cwd,
-				args: [
-					`--additional-mcp-config=@${configUri.fsPath}`,
-					`--add-dir=${agentRoot.fsPath}`,
-					`--agent=${MAIN_AGENT_ID}`,
-					'--no-remote-export',
-				],
-				dispose: async () => {
-					if (disposed) return;
-					disposed = true;
-					await this.removeSessionRoot(sessionRoot);
-				},
+				args,
+				...(target === 'external' ? {
+					external: {
+						powerShellExecutable: externalExecutables!.powerShellExecutable,
+						taskkillExecutable: externalExecutables!.taskkillExecutable,
+						brokerScriptPath: brokerScriptUri.fsPath,
+						descriptorPath: descriptorUri.fsPath,
+						startPath: startUri.fsPath,
+						stopPath: stopUri.fsPath,
+						exitedPath: exitedUri.fsPath,
+						visiblePidPath: visiblePidUri.fsPath,
+					},
+				} : {}),
+				dispose: disposeSessionRoot,
 			};
 		} catch (error) {
-			await this.removeSessionRoot(sessionRoot);
+			try {
+				await disposeSessionRoot();
+			} catch (cleanupError) {
+				throw new AggregateError([error, cleanupError], 'Copilot CLI launch preparation and cleanup both failed.');
+			}
 			throw error;
 		}
 	}
 
 	private async removeSessionRoot(sessionRoot: vscode.Uri): Promise<void> {
 		try {
-			await vscode.workspace.fs.delete(sessionRoot, { recursive: true, useTrash: false });
+			await this.deleteWithRetry(sessionRoot, { recursive: true, useTrash: false });
 		} catch (error) {
-			if (error instanceof vscode.FileSystemError && error.code === 'FileNotFound') return;
 			this.logger.warn(`[Copilot CLI] Failed to remove session files: ${error instanceof Error ? error.message : String(error)}`);
+			throw error;
 		}
 	}
 
-	private async launchTerminal(launch: PreparedCopilotCliLaunch): Promise<CopilotCliTerminal> {
+	private async launchTerminal(
+		launch: PreparedCopilotCliLaunch,
+		target: CopilotCliConnectionTarget,
+		signal: AbortSignal,
+	): Promise<CopilotCliTerminal> {
+		if (target === 'external') {
+			if (!launch.external) throw new Error('External Copilot CLI launch assets are unavailable.');
+			return launchExternalCopilotCliTerminal({
+				...launch.external,
+				workingDirectory: launch.cwd.fsPath,
+				signal,
+				onClosed: terminalId => this.manager.handleTerminalClosed(terminalId),
+				onError: message => this.logger.error(`[Copilot CLI] ${message}`),
+			});
+		}
 		const terminal = vscode.window.createTerminal({
 			name: 'Kusto Workbench Copilot CLI',
 			shellPath: launch.executable,
@@ -559,14 +686,32 @@ class DefaultCopilotCliIntegration implements CopilotCliIntegration {
 		};
 	}
 
-	private async deleteConfigAfterAuthentication(configUri: vscode.Uri, authenticated: Promise<boolean>): Promise<void> {
-		if (!await authenticated) return;
+	private async deleteConfigAfterAuthentication(configUri: vscode.Uri, lease: CopilotCliLease): Promise<void> {
+		if (!await lease.authenticated) return;
 		try {
-			await vscode.workspace.fs.delete(configUri, { useTrash: false });
+			await this.deleteWithRetry(configUri, { useTrash: false });
 		} catch (error) {
-			if (error instanceof vscode.FileSystemError && error.code === 'FileNotFound') return;
-			this.logger.warn(`[Copilot CLI] Failed to remove authenticated session configuration: ${error instanceof Error ? error.message : String(error)}`);
+			lease.revoke();
+			this.logger.error(`[Copilot CLI] Revoked a session whose authenticated configuration could not be removed: ${error instanceof Error ? error.message : String(error)}`);
 		}
+	}
+
+	private async deleteWithRetry(
+		uri: vscode.Uri,
+		options: { recursive?: boolean; useTrash?: boolean },
+	): Promise<void> {
+		let lastError: unknown;
+		for (let attempt = 0; attempt < 3; attempt++) {
+			try {
+				await vscode.workspace.fs.delete(uri, options);
+				return;
+			} catch (error) {
+				if (error instanceof vscode.FileSystemError && error.code === 'FileNotFound') return;
+				lastError = error;
+				if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)));
+			}
+		}
+		throw lastError;
 	}
 
 	private ensureTerminalCloseListener(): void {

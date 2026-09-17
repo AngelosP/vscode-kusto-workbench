@@ -34,6 +34,34 @@ function createTerminal(id: string): CopilotCliTerminal {
 }
 
 describe('CopilotCliSessionManager', () => {
+	it('threads an external target through the existing connection pipeline', async () => {
+		const { bridge } = createBridge();
+		const prepareConnection = vi.fn(async () => {});
+		const prepareLaunch = vi.fn(async () => ({ name: 'external-launch' }));
+		const launchTerminal = vi.fn(async () => createTerminal('external-terminal'));
+		const manager = new CopilotCliSessionManager({
+			isEnabled: () => true,
+			prepareConnection,
+			createBridge: async () => bridge,
+			prepareLaunch,
+			launchTerminal,
+			showDisabledMessage: vi.fn(async () => {}),
+		});
+
+		await manager.connect('external');
+
+		expect(prepareConnection).toHaveBeenCalledWith(expect.any(AbortSignal), 'external');
+		expect(prepareLaunch).toHaveBeenCalledWith(expect.objectContaining({
+			bridge,
+			target: 'external',
+		}));
+		expect(launchTerminal).toHaveBeenCalledWith(
+			{ name: 'external-launch' },
+			'external',
+			expect.any(AbortSignal),
+		);
+	});
+
 	it('does no bridge, launch, or file work while the opt-in setting is disabled', async () => {
 		const createBridge = vi.fn();
 		const prepareConnection = vi.fn();
@@ -112,6 +140,76 @@ describe('CopilotCliSessionManager', () => {
 		expect(close).toHaveBeenCalledOnce();
 	});
 
+	it('retains a bridge whose close fails and retries it on Stop', async () => {
+		const { bridge } = createBridge();
+		const close = vi.fn()
+			.mockRejectedValueOnce(new Error('bridge close failed'))
+			.mockResolvedValue(undefined);
+		bridge.close = close;
+		const manager = new CopilotCliSessionManager({
+			isEnabled: () => true,
+			createBridge: async () => bridge,
+			prepareLaunch: async () => ({ dispose: vi.fn() }),
+			launchTerminal: async () => { throw new Error('launch failed'); },
+			showDisabledMessage: vi.fn(async () => {}),
+		});
+
+		await expect(manager.connect()).rejects.toThrow('connection cleanup failed');
+		expect(close).toHaveBeenCalledOnce();
+
+		await manager.stop();
+		expect(close).toHaveBeenCalledTimes(2);
+	});
+
+	it('retries retained bridge closure across repeated disposal failures', async () => {
+		const { bridge } = createBridge();
+		const close = vi.fn()
+			.mockRejectedValueOnce(new Error('bridge close failed once'))
+			.mockRejectedValueOnce(new Error('bridge close failed twice'))
+			.mockResolvedValue(undefined);
+		bridge.close = close;
+		const manager = new CopilotCliSessionManager({
+			isEnabled: () => true,
+			createBridge: async () => bridge,
+			prepareLaunch: async () => ({ dispose: vi.fn() }),
+			launchTerminal: async () => createTerminal('terminal-1'),
+			showDisabledMessage: vi.fn(async () => {}),
+		});
+		await manager.connect();
+
+		await expect(manager.dispose()).rejects.toThrow('shutdown failed');
+		await expect(manager.dispose()).rejects.toThrow('shutdown failed');
+		await manager.dispose();
+
+		expect(close).toHaveBeenCalledTimes(3);
+	});
+
+	it('retains preparation-time root cleanup when publication and deletion both fail', async () => {
+		const { bridge, revoke, close } = createBridge();
+		const rootCleanup = vi.fn()
+			.mockRejectedValueOnce(new Error('root locked'))
+			.mockResolvedValue(undefined);
+		const manager = new CopilotCliSessionManager({
+			isEnabled: () => true,
+			createBridge: async () => bridge,
+			prepareLaunch: async ({ retainLaunch }) => {
+				retainLaunch({ dispose: rootCleanup });
+				throw new Error('publication failed');
+			},
+			launchTerminal: vi.fn(),
+			showDisabledMessage: vi.fn(async () => {}),
+		});
+
+		await expect(manager.connect('external')).rejects.toThrow('provisional session cleanup failed');
+		expect(rootCleanup).toHaveBeenCalledOnce();
+		expect(close).toHaveBeenCalledOnce();
+
+		await manager.stop();
+
+		expect(rootCleanup).toHaveBeenCalledTimes(2);
+		expect(revoke).toHaveBeenCalledTimes(3);
+	});
+
 	it('does not launch a terminal when stop wins during bridge startup', async () => {
 		const { bridge, close } = createBridge();
 		let finishBridge: ((value: CopilotCliBridge) => void) | undefined;
@@ -168,6 +266,35 @@ describe('CopilotCliSessionManager', () => {
 		expect(createBridge).not.toHaveBeenCalled();
 	});
 
+	it('aborts an external process launch that is pending session admission', async () => {
+		const { bridge, revoke, close } = createBridge();
+		const launchCleanup = vi.fn();
+		let launchSignal: AbortSignal | undefined;
+		const manager = new CopilotCliSessionManager({
+			isEnabled: () => true,
+			createBridge: async () => bridge,
+			prepareLaunch: async () => ({ dispose: launchCleanup }),
+			launchTerminal: async (_launch, target, signal) => {
+				expect(target).toBe('external');
+				launchSignal = signal;
+				return new Promise<CopilotCliTerminal>((_resolve, reject) => {
+					signal.addEventListener('abort', () => reject(new CopilotCliConnectionCancelledError()), { once: true });
+				});
+			},
+			showDisabledMessage: vi.fn(async () => {}),
+		});
+		const connect = manager.connect('external').catch(error => error);
+		await vi.waitFor(() => expect(launchSignal).toBeDefined());
+
+		await manager.stop();
+
+		expect(launchSignal?.aborted).toBe(true);
+		expect(await connect).toBeInstanceOf(CopilotCliConnectionCancelledError);
+		expect(revoke).toHaveBeenCalledOnce();
+		expect(launchCleanup).toHaveBeenCalledOnce();
+		expect(close).toHaveBeenCalledOnce();
+	});
+
 	it('removes an inserted session when terminal presentation throws', async () => {
 		const { bridge, revoke, close } = createBridge();
 		const terminal = createTerminal('terminal-show-failure');
@@ -184,6 +311,35 @@ describe('CopilotCliSessionManager', () => {
 		expect(terminal.dispose).toHaveBeenCalledOnce();
 		expect(revoke).toHaveBeenCalledOnce();
 		expect(close).toHaveBeenCalledOnce();
+	});
+
+	it('retains failed pre-admission cleanup for a later Stop retry', async () => {
+		const { bridge, revoke, close } = createBridge();
+		const terminal = createTerminal('external-provisional');
+		terminal.show = vi.fn(async () => { throw new Error('startup receipt failed'); });
+		terminal.dispose = vi.fn()
+			.mockRejectedValueOnce(new Error('process cleanup failed'))
+			.mockResolvedValue(undefined);
+		const launchCleanup = vi.fn(async () => {});
+		const manager = new CopilotCliSessionManager({
+			isEnabled: () => true,
+			createBridge: async () => bridge,
+			prepareLaunch: async () => ({ dispose: launchCleanup }),
+			launchTerminal: async () => terminal,
+			showDisabledMessage: vi.fn(async () => {}),
+		});
+
+		await expect(manager.connect('external')).rejects.toThrow('provisional session cleanup failed');
+
+		expect(terminal.dispose).toHaveBeenCalledOnce();
+		expect(launchCleanup).not.toHaveBeenCalled();
+		expect(close).toHaveBeenCalledOnce();
+
+		await manager.stop();
+
+		expect(revoke).toHaveBeenCalledTimes(3);
+		expect(terminal.dispose).toHaveBeenCalledTimes(2);
+		expect(launchCleanup).toHaveBeenCalledOnce();
 	});
 
 	it('retires a terminal that closed before session admission', async () => {
@@ -254,6 +410,60 @@ describe('CopilotCliSessionManager', () => {
 		await stop;
 	});
 
+	it('revokes every lease before awaiting external process termination and session cleanup', async () => {
+		const actions: string[] = [];
+		let leaseSequence = 0;
+		const bridge: CopilotCliBridge = {
+			endpoint: 'http://127.0.0.1:43210/mcp',
+			createLease: () => {
+				const id = `lease-${++leaseSequence}`;
+				return {
+					id,
+					token: `token-${leaseSequence}`,
+					authenticated: Promise.resolve(true),
+					revoke: () => { actions.push(`revoke-${id}`); },
+				};
+			},
+			close: async () => { actions.push('bridge-close'); },
+		};
+		const releaseTermination: Array<() => void> = [];
+		const terminals = ['external-1', 'external-2'].map(id => ({
+			id,
+			show: vi.fn(),
+			dispose: () => new Promise<void>(resolve => {
+				actions.push(`terminate-${id}`);
+				releaseTermination.push(resolve);
+			}),
+		}));
+		const manager = new CopilotCliSessionManager({
+			isEnabled: () => true,
+			createBridge: async () => bridge,
+			prepareLaunch: async ({ lease }) => ({
+				dispose: () => { actions.push(`cleanup-${lease.id}`); },
+			}),
+			launchTerminal: async () => terminals.shift()!,
+			showDisabledMessage: vi.fn(async () => {}),
+		});
+		await manager.connect('external');
+		await manager.connect('external');
+
+		let settled = false;
+		const stop = manager.stop().then(() => { settled = true; });
+		await vi.waitFor(() => expect(releaseTermination).toHaveLength(2));
+
+		expect(actions).toEqual([
+			'revoke-lease-1',
+			'revoke-lease-2',
+			'bridge-close',
+			'terminate-external-1',
+			'terminate-external-2',
+		]);
+		expect(settled).toBe(false);
+		releaseTermination.forEach(resolve => resolve());
+		await stop;
+		expect(actions.slice(-2)).toEqual(['cleanup-lease-1', 'cleanup-lease-2']);
+	});
+
 	it('keeps the shared bridge alive when an existing terminal closes during another Connect', async () => {
 		const { bridge, close } = createBridge();
 		const terminals = [createTerminal('terminal-1'), createTerminal('terminal-2')];
@@ -284,12 +494,15 @@ describe('CopilotCliSessionManager', () => {
 		expect(close).toHaveBeenCalledOnce();
 	});
 
-	it('closes the bridge even when natural-close file cleanup rejects', async () => {
+	it('retains a naturally closed session until file cleanup succeeds on retry', async () => {
 		const { bridge, revoke, close } = createBridge();
+		const cleanup = vi.fn()
+			.mockRejectedValueOnce(new Error('cleanup failed'))
+			.mockResolvedValue(undefined);
 		const manager = new CopilotCliSessionManager({
 			isEnabled: () => true,
 			createBridge: async () => bridge,
-			prepareLaunch: async () => ({ dispose: async () => { throw new Error('cleanup failed'); } }),
+			prepareLaunch: async () => ({ dispose: cleanup }),
 			launchTerminal: async () => createTerminal('terminal-1'),
 			showDisabledMessage: vi.fn(async () => {}),
 		});
@@ -297,19 +510,27 @@ describe('CopilotCliSessionManager', () => {
 
 		await expect(manager.handleTerminalClosed('terminal-1')).rejects.toThrow('terminal cleanup failed');
 		expect(revoke).toHaveBeenCalledOnce();
+		expect(close).not.toHaveBeenCalled();
+
+		await manager.stop();
+
+		expect(cleanup).toHaveBeenCalledTimes(2);
 		expect(close).toHaveBeenCalledOnce();
 	});
 
 	it('runs launch and bridge cleanup when natural-close lease revocation throws', async () => {
 		const cleanup = vi.fn();
 		const close = vi.fn(async () => {});
+		const revoke = vi.fn()
+			.mockImplementationOnce(() => { throw new Error('revoke failed'); })
+			.mockImplementation(() => undefined);
 		const bridge: CopilotCliBridge = {
 			endpoint: 'http://127.0.0.1:43210/mcp',
 			createLease: () => ({
 				id: 'lease-1',
 				token: 'token-1',
 				authenticated: Promise.resolve(true),
-				revoke: () => { throw new Error('revoke failed'); },
+				revoke,
 			}),
 			close,
 		};
@@ -325,6 +546,12 @@ describe('CopilotCliSessionManager', () => {
 		await expect(manager.handleTerminalClosed('terminal-1')).rejects.toThrow('terminal cleanup failed');
 
 		expect(cleanup).toHaveBeenCalledOnce();
+		expect(close).not.toHaveBeenCalled();
+
+		await manager.stop();
+
+		expect(revoke).toHaveBeenCalledTimes(2);
+		expect(cleanup).toHaveBeenCalledTimes(2);
 		expect(close).toHaveBeenCalledOnce();
 	});
 
@@ -354,6 +581,7 @@ describe('CopilotCliSessionManager', () => {
 	it('continues revoking and disposing later sessions after synchronous teardown errors', async () => {
 		const actions: string[] = [];
 		let leaseSequence = 0;
+		let firstRevokeAttempts = 0;
 		const bridge: CopilotCliBridge = {
 			endpoint: 'http://127.0.0.1:43210/mcp',
 			createLease: () => {
@@ -364,16 +592,17 @@ describe('CopilotCliSessionManager', () => {
 					authenticated: Promise.resolve(true),
 					revoke: () => {
 						actions.push(`revoke-${sequence}`);
-						if (sequence === 1) throw new Error('revoke failed');
+						if (sequence === 1 && ++firstRevokeAttempts === 1) throw new Error('revoke failed');
 					},
 				};
 			},
 			close: async () => { actions.push('bridge-close'); },
 		};
 		const firstTerminal = createTerminal('terminal-1');
+		let firstDisposeAttempts = 0;
 		firstTerminal.dispose = () => {
 			actions.push('dispose-1');
-			throw new Error('dispose failed');
+			if (++firstDisposeAttempts === 1) throw new Error('dispose failed');
 		};
 		const secondTerminal = createTerminal('terminal-2');
 		secondTerminal.dispose = () => { actions.push('dispose-2'); };
@@ -391,14 +620,19 @@ describe('CopilotCliSessionManager', () => {
 		await expect(manager.stop()).rejects.toThrow('shutdown failed');
 
 		expect(actions).toEqual([
-			'revoke-1', 'dispose-1', 'revoke-2', 'dispose-2',
-			'bridge-close', 'cleanup-lease-1', 'cleanup-lease-2',
+			'revoke-1', 'revoke-2', 'bridge-close',
+			'dispose-1', 'dispose-2', 'cleanup-lease-2',
 		]);
+
+		await manager.stop();
+
+		expect(actions.slice(-3)).toEqual(['revoke-1', 'dispose-1', 'cleanup-lease-1']);
 	});
 
 	it('runs every provisional cleanup action when another session keeps the bridge alive', async () => {
 		const actions: string[] = [];
 		let leaseSequence = 0;
+		let provisionalRevokeAttempts = 0;
 		const bridge: CopilotCliBridge = {
 			endpoint: 'http://127.0.0.1:43210/mcp',
 			createLease: () => {
@@ -409,7 +643,7 @@ describe('CopilotCliSessionManager', () => {
 					authenticated: Promise.resolve(true),
 					revoke: () => {
 						actions.push(`revoke-${sequence}`);
-						if (sequence === 2) throw new Error('provisional revoke failed');
+						if (sequence === 2 && ++provisionalRevokeAttempts === 1) throw new Error('provisional revoke failed');
 					},
 				};
 			},
@@ -417,9 +651,10 @@ describe('CopilotCliSessionManager', () => {
 		};
 		const firstTerminal = createTerminal('terminal-1');
 		const provisionalTerminal = createTerminal('terminal-2');
+		let provisionalDisposeAttempts = 0;
 		provisionalTerminal.dispose = () => {
 			actions.push('dispose-provisional');
-			throw new Error('provisional dispose failed');
+			if (++provisionalDisposeAttempts === 1) throw new Error('provisional dispose failed');
 		};
 		let launchSequence = 0;
 		const manager = new CopilotCliSessionManager({
@@ -428,7 +663,6 @@ describe('CopilotCliSessionManager', () => {
 			prepareLaunch: async ({ lease }) => ({
 				dispose: () => {
 					actions.push(`cleanup-${lease.id}`);
-					if (lease.id === 'lease-2') throw new Error('provisional cleanup failed');
 				},
 			}),
 			launchTerminal: async () => {
@@ -443,13 +677,15 @@ describe('CopilotCliSessionManager', () => {
 		await expect(manager.connect()).rejects.toThrow('provisional session cleanup failed');
 
 		expect(actions).toEqual([
-			'dispose-provisional',
 			'revoke-2',
-			'cleanup-lease-2',
+			'dispose-provisional',
 		]);
 		await manager.stop();
 		expect(actions).toContain('revoke-1');
 		expect(actions).toContain('bridge-close');
+		expect(actions.filter(action => action === 'dispose-provisional')).toHaveLength(2);
+		expect(actions).toContain('cleanup-lease-2');
+		expect(actions.indexOf('cleanup-lease-2')).toBeGreaterThan(actions.lastIndexOf('dispose-provisional'));
 	});
 });
 
@@ -473,6 +709,21 @@ describe('LazyCopilotCliIntegration', () => {
 		await integration.stop();
 
 		expect(load).not.toHaveBeenCalled();
+	});
+
+	it('retains a service after failed disposal and retries until cleanup succeeds', async () => {
+		const service = createService();
+		service.stop.mockRejectedValueOnce(new Error('stop failed'));
+		service.dispose.mockRejectedValueOnce(new Error('dispose failed'));
+		const integration = new LazyCopilotCliIntegration(async () => service);
+		await integration.connect();
+
+		await expect(integration.dispose()).rejects.toThrow('disposal failed');
+		await integration.dispose();
+		await integration.dispose();
+
+		expect(service.stop).toHaveBeenCalledTimes(2);
+		expect(service.dispose).toHaveBeenCalledTimes(2);
 	});
 
 	it('makes stop a barrier against a cold import that finishes late', async () => {

@@ -93,7 +93,7 @@ let kustoConnectionManager: ConnectionManager | undefined;
 let kustoAuthPreferenceService: KustoAuthPreferenceService | undefined;
 const COPILOT_CLI_ENABLED_SETTING = 'copilotCli.enabled';
 type CopilotCliIntegration = {
-	connect(): Promise<void>;
+	connect(target?: 'integrated' | 'external'): Promise<void>;
 	stop(): Promise<void>;
 	dispose(): Promise<void>;
 };
@@ -2893,6 +2893,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				}
 			})();
 		}),
+		vscode.commands.registerCommand('kusto.createExternalCopilotCliConnection', () => {
+			if (!vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>(COPILOT_CLI_ENABLED_SETTING, false)) {
+				void vscode.window.showInformationMessage(
+					'Copilot CLI integration is disabled. Enable kustoWorkbench.copilotCli.enabled before connecting.',
+					'Open Settings',
+				).then(selected => selected === 'Open Settings'
+					? vscode.commands.executeCommand('workbench.action.openSettings', `kustoWorkbench.${COPILOT_CLI_ENABLED_SETTING}`)
+					: undefined);
+				return Promise.resolve({ success: false, disabled: true });
+			}
+			const integration = getOrCreateCopilotCliIntegration(context);
+			const expectedGeneration = integration.captureGeneration();
+			return afterFirstLaunch(async () => {
+				try {
+					if (!vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>(COPILOT_CLI_ENABLED_SETTING, false)) return;
+					await integration.connect(expectedGeneration, 'external');
+					return { success: true };
+				} catch (error) {
+					if (error instanceof vscode.CancellationError || error instanceof CopilotCliConnectionCancelledError) {
+						return { success: false, cancelled: true };
+					}
+					const message = error instanceof Error ? error.message : String(error);
+					getWorkbenchLogger().error(`[Copilot CLI] External connection failed: ${message}`);
+					void vscode.window.showErrorMessage(`Could not create external Copilot CLI connection: ${message}`);
+					return { success: false, error: message };
+				}
+			})();
+		}),
 		vscode.commands.registerCommand('kusto.disconnectCopilotCli', async () => {
 			try {
 				await copilotCliIntegration?.stop();
@@ -2998,10 +3026,11 @@ export async function deactivate() {
 	sqlWorkbenchService = undefined;
 	kustoConnectionManager = undefined;
 	kustoAuthPreferenceService = undefined;
-	copilotCliIntegration = undefined;
 	let cliDisposal: Promise<void>;
 	try {
-		cliDisposal = Promise.resolve(cliIntegration?.dispose());
+		cliDisposal = Promise.resolve(cliIntegration?.dispose()).then(() => {
+			if (copilotCliIntegration === cliIntegration) copilotCliIntegration = undefined;
+		});
 	} catch (error) {
 		cliDisposal = Promise.reject(error);
 	}

@@ -5110,7 +5110,9 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				assert.strictEqual(queue.latestAuthority.sourceText, '');
 				await Promise.all(pendingChanges.splice(0));
 				assert.notStrictEqual(latestProjection.sourceGeneration, sourceGeneration);
-				assert.deepStrictEqual(latestProjection.state.sections, []);
+				assert.strictEqual(latestProjection.state.sections.length, 1);
+				assert.strictEqual(latestProjection.state.sections[0].type, 'query');
+				assert.strictEqual(latestProjection.state.sections[0].query, '');
 				assert.strictEqual(fs.readFileSync(filePath, 'utf8'), initialText);
 				return;
 			}
@@ -5203,7 +5205,10 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			notifyChange('');
 			await Promise.all(pendingChanges.splice(0));
 			await waitForCondition(() => latestProjection.sourceGeneration !== restoredGeneration
-				&& latestProjection.state.sections.length === 0, 'real external empty bytes must reload the session');
+				&& latestProjection.state.sections.length === 1
+				&& latestProjection.state.sections[0].type === 'query'
+				&& latestProjection.state.sections[0].query === '',
+			'real external empty bytes must reload the session with one Kusto starter');
 			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), '');
 			const authorityBeforeDispose = queue.latestAuthority;
 			const projectionsBeforeDispose = posted.filter(message => message?.type === 'documentData').length;

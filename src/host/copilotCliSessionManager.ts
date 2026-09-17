@@ -5,6 +5,8 @@ export interface CopilotCliLease {
 	revoke(): void;
 }
 
+export type CopilotCliConnectionTarget = 'integrated' | 'external';
+
 export interface CopilotCliBridge {
 	readonly endpoint: string;
 	createLease(): CopilotCliLease;
@@ -14,8 +16,8 @@ export interface CopilotCliBridge {
 export interface CopilotCliTerminal {
 	readonly id: string;
 	isClosed?(): boolean;
-	show(): void;
-	dispose(): void;
+	show(): void | Promise<void>;
+	dispose(): void | Promise<void>;
 }
 
 export interface CopilotCliPreparedLaunch {
@@ -26,14 +28,21 @@ export interface CopilotCliPreparedLaunch {
 export interface CopilotCliLaunchContext {
 	readonly bridge: CopilotCliBridge;
 	readonly lease: CopilotCliLease;
+	readonly target: CopilotCliConnectionTarget;
+	readonly signal: AbortSignal;
+	retainLaunch(launch: CopilotCliPreparedLaunch): void;
 }
 
 export interface CopilotCliSessionManagerDependencies {
 	isEnabled(): boolean;
-	prepareConnection?(signal: AbortSignal): Promise<void>;
+	prepareConnection?(signal: AbortSignal, target: CopilotCliConnectionTarget): Promise<void>;
 	createBridge(): Promise<CopilotCliBridge>;
 	prepareLaunch(context: CopilotCliLaunchContext): Promise<CopilotCliPreparedLaunch>;
-	launchTerminal(launch: CopilotCliPreparedLaunch): Promise<CopilotCliTerminal>;
+	launchTerminal(
+		launch: CopilotCliPreparedLaunch,
+		target: CopilotCliConnectionTarget,
+		signal: AbortSignal,
+	): Promise<CopilotCliTerminal>;
 	showDisabledMessage(): Promise<void>;
 }
 
@@ -45,6 +54,12 @@ type ActiveSession = Readonly<{
 	lease: CopilotCliLease;
 	launch: CopilotCliPreparedLaunch;
 	terminal: CopilotCliTerminal;
+}>;
+
+type ProvisionalSession = Readonly<{
+	lease: CopilotCliLease;
+	launch?: CopilotCliPreparedLaunch;
+	terminal?: CopilotCliTerminal;
 }>;
 
 function invokeSettlement(callback: () => void | Promise<void>): Promise<void> {
@@ -59,7 +74,7 @@ export class CopilotCliConnectionCancelledError extends Error {
 }
 
 export interface CopilotCliIntegrationService {
-	connect(): Promise<void>;
+	connect(target?: CopilotCliConnectionTarget): Promise<void>;
 	stop(): Promise<void>;
 	dispose(): Promise<void>;
 }
@@ -78,7 +93,10 @@ export class LazyCopilotCliIntegration<T extends CopilotCliIntegrationService> {
 		return this.generation;
 	}
 
-	async connect(expectedGeneration: number = this.generation): Promise<void> {
+	async connect(
+		expectedGeneration: number = this.generation,
+		target: CopilotCliConnectionTarget = 'integrated',
+	): Promise<void> {
 		if (this.disposed) throw new Error('The Copilot CLI integration has been disposed.');
 		const precedingStop = this.stopPromise;
 		const run = async () => {
@@ -86,7 +104,7 @@ export class LazyCopilotCliIntegration<T extends CopilotCliIntegrationService> {
 			this.assertCurrent(expectedGeneration);
 			const service = await this.getOrLoad();
 			this.assertCurrent(expectedGeneration);
-			await service.connect();
+			await service.connect(target);
 			if (expectedGeneration !== this.generation || this.disposed) {
 				await service.stop();
 				throw new CopilotCliConnectionCancelledError();
@@ -119,22 +137,31 @@ export class LazyCopilotCliIntegration<T extends CopilotCliIntegrationService> {
 	}
 
 	async dispose(): Promise<void> {
-		if (this.disposed) return;
+		if (this.disposed && !this.service && !this.servicePromise) return;
 		this.disposed = true;
-		const failures: unknown[] = [];
+		let stopFailure: unknown;
 		try {
 			await this.stop();
 		} catch (error) {
-			failures.push(error);
+			stopFailure = error;
+		}
+		const service = this.service ?? (this.servicePromise ? await this.servicePromise.catch(() => undefined) : undefined);
+		if (!service) {
+			this.servicePromise = undefined;
+			if (stopFailure !== undefined) throw new AggregateError([stopFailure], 'Copilot CLI disposal failed.');
+			return;
 		}
 		try {
-			await this.service?.dispose();
+			await service.dispose();
 		} catch (error) {
-			failures.push(error);
+			throw new AggregateError(
+				stopFailure === undefined ? [error] : [stopFailure, error],
+				'Copilot CLI disposal failed.',
+			);
 		}
 		this.service = undefined;
 		this.servicePromise = undefined;
-		if (failures.length > 0) throw new AggregateError(failures, 'Copilot CLI disposal failed.');
+		if (stopFailure !== undefined) throw new AggregateError([stopFailure], 'Copilot CLI disposal failed.');
 	}
 
 	private async getOrLoad(): Promise<T> {
@@ -162,15 +189,17 @@ export class CopilotCliSessionManager {
 	private bridge: CopilotCliBridge | undefined;
 	private bridgePromise: Promise<CopilotCliBridge> | undefined;
 	private readonly sessions = new Map<string, ActiveSession>();
+	private readonly provisionalSessions = new Map<string, ProvisionalSession>();
 	private disposed = false;
 	private generation = 0;
 	private pendingConnections = 0;
 	private readonly pendingPreflights = new Set<AbortController>();
 	private readonly terminalCleanups = new Set<Promise<void>>();
+	private readonly stoppingSessionIds = new Set<string>();
 
 	constructor(private readonly dependencies: CopilotCliSessionManagerDependencies) {}
 
-	async connect(): Promise<CopilotCliConnectResult> {
+	async connect(target: CopilotCliConnectionTarget = 'integrated'): Promise<CopilotCliConnectResult> {
 		if (this.disposed) throw new Error('The Copilot CLI integration has been disposed.');
 		if (!this.dependencies.isEnabled()) {
 			await this.dependencies.showDisabledMessage();
@@ -184,7 +213,7 @@ export class CopilotCliSessionManager {
 		let outcome: CopilotCliConnectResult | undefined;
 		let failure: unknown;
 		try {
-			await this.dependencies.prepareConnection?.(preflight.signal);
+			await this.dependencies.prepareConnection?.(preflight.signal, target);
 			this.assertCurrent(generation);
 			const bridge = await this.getOrCreateBridge();
 			this.assertCurrent(generation);
@@ -192,9 +221,21 @@ export class CopilotCliSessionManager {
 			let launch: CopilotCliPreparedLaunch | undefined;
 			let terminal: CopilotCliTerminal | undefined;
 			try {
-				launch = await this.dependencies.prepareLaunch({ bridge, lease });
+				const preparedLaunch = await this.dependencies.prepareLaunch({
+					bridge,
+					lease,
+					target,
+					signal: preflight.signal,
+					retainLaunch: retained => {
+						if (launch && launch !== retained) {
+							throw new Error('Copilot CLI launch cleanup ownership was registered more than once.');
+						}
+						launch = retained;
+					},
+				});
+				launch = preparedLaunch;
 				this.assertCurrent(generation);
-				terminal = await this.dependencies.launchTerminal(launch);
+				terminal = await this.dependencies.launchTerminal(launch, target, preflight.signal);
 				this.assertCurrent(generation);
 				if (terminal.isClosed?.()) throw new CopilotCliConnectionCancelledError();
 				if (this.sessions.has(terminal.id)) {
@@ -202,32 +243,23 @@ export class CopilotCliSessionManager {
 				}
 				this.sessions.set(terminal.id, { lease, launch, terminal });
 				try {
-					terminal.show();
+					await terminal.show();
+					this.assertCurrent(generation);
+					if (terminal.isClosed?.()) throw new CopilotCliConnectionCancelledError();
 				} catch (error) {
 					this.sessions.delete(terminal.id);
 					throw error;
 				}
 				outcome = { started: true, leaseId: lease.id, terminalId: terminal.id };
 			} catch (error) {
-				const failures: unknown[] = [error];
+				const provisional = { lease, launch, terminal };
+				this.provisionalSessions.set(lease.id, provisional);
 				try {
-					terminal?.dispose();
+					await this.cleanupProvisionalSession(lease.id, provisional);
 				} catch (cleanupError) {
-					failures.push(cleanupError);
+					failure = new AggregateError([error, cleanupError], 'Copilot CLI provisional session cleanup failed.');
 				}
-				try {
-					lease.revoke();
-				} catch (cleanupError) {
-					failures.push(cleanupError);
-				}
-				try {
-					await launch?.dispose?.();
-				} catch (cleanupError) {
-					failures.push(cleanupError);
-				}
-				failure = failures.length === 1
-					? error
-					: new AggregateError(failures, 'Copilot CLI provisional session cleanup failed.');
+				if (failure === undefined) failure = error;
 			}
 		} catch (error) {
 			failure = error;
@@ -246,20 +278,50 @@ export class CopilotCliSessionManager {
 		return outcome!;
 	}
 
+	private async cleanupProvisionalSession(
+		leaseId: string,
+		session: ProvisionalSession,
+	): Promise<void> {
+		const failures: unknown[] = [];
+		try {
+			session.lease.revoke();
+		} catch (error) {
+			failures.push(error);
+		}
+		let terminalStopped = true;
+		try {
+			await session.terminal?.dispose();
+		} catch (error) {
+			terminalStopped = false;
+			failures.push(error);
+		}
+		if (terminalStopped) {
+			try {
+				await session.launch?.dispose?.();
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		if (failures.length > 0) {
+			throw new AggregateError(failures, 'Copilot CLI provisional cleanup failed.');
+		}
+		if (this.provisionalSessions.get(leaseId) === session) this.provisionalSessions.delete(leaseId);
+	}
+
 	handleTerminalClosed(terminalId: string): Promise<void> {
 		const session = this.sessions.get(terminalId);
-		if (!session) return Promise.resolve();
-		this.sessions.delete(terminalId);
+		if (!session || this.stoppingSessionIds.has(terminalId)) return Promise.resolve();
 		const operation = (async () => {
 			const results = await Promise.allSettled([
 				invokeSettlement(() => session.lease.revoke()),
 				invokeSettlement(() => session.launch.dispose?.()),
-				invokeSettlement(() => this.closeBridgeIfIdle()),
 			]);
 			const failures = results
 				.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
 				.map(result => result.reason);
 			if (failures.length > 0) throw new AggregateError(failures, 'Copilot CLI terminal cleanup failed.');
+			if (this.sessions.get(terminalId) === session) this.sessions.delete(terminalId);
+			await this.closeBridgeIfIdle();
 		})();
 		this.terminalCleanups.add(operation);
 		void operation.finally(() => this.terminalCleanups.delete(operation)).catch(() => undefined);
@@ -269,35 +331,52 @@ export class CopilotCliSessionManager {
 	async stop(): Promise<void> {
 		this.generation++;
 		for (const preflight of this.pendingPreflights) preflight.abort('Copilot CLI integration stopped.');
-		const sessions = [...this.sessions.values()];
-		this.sessions.clear();
+		const sessions = [...this.sessions.entries()];
+		const provisionalSessions = [...this.provisionalSessions.entries()];
+		for (const [terminalId] of sessions) this.stoppingSessionIds.add(terminalId);
 		const failures: unknown[] = [];
-		for (const session of sessions) {
+		for (const [, session] of sessions) {
 			try {
 				session.lease.revoke();
 			} catch (error) {
 				failures.push(error);
 			}
+		}
+		for (const [, session] of provisionalSessions) {
 			try {
-				session.terminal.dispose();
-			} catch (error) {
-				failures.push(error);
+				session.lease.revoke();
+			} catch {
+				// cleanupProvisionalSession retries after bridge admission is closed.
 			}
 		}
-		const settlements = [
-			invokeSettlement(() => this.closeBridge()),
-			...sessions.map(session => invokeSettlement(() => session.launch.dispose?.())),
-			...this.terminalCleanups,
-		];
-		const results = await Promise.allSettled(settlements);
-		failures.push(...results
+		try {
+			await this.closeBridge();
+		} catch (error) {
+			failures.push(error);
+		}
+		const sessionResults = await Promise.allSettled(sessions.map(async ([terminalId, session]) => {
+			await session.terminal.dispose();
+			await session.launch.dispose?.();
+			if (this.sessions.get(terminalId) === session) this.sessions.delete(terminalId);
+		}));
+		for (const [terminalId] of sessions) this.stoppingSessionIds.delete(terminalId);
+		failures.push(...sessionResults
+			.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+			.map(result => result.reason));
+		const provisionalResults = await Promise.allSettled(
+			provisionalSessions.map(([leaseId, session]) => this.cleanupProvisionalSession(leaseId, session)),
+		);
+		failures.push(...provisionalResults
+			.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+			.map(result => result.reason));
+		const cleanupResults = await Promise.allSettled(this.terminalCleanups);
+		failures.push(...cleanupResults
 			.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
 			.map(result => result.reason));
 		if (failures.length > 0) throw new AggregateError(failures, 'Copilot CLI shutdown failed.');
 	}
 
 	async dispose(): Promise<void> {
-		if (this.disposed) return;
 		this.disposed = true;
 		await this.stop();
 	}
@@ -330,8 +409,8 @@ export class CopilotCliSessionManager {
 	private async closeBridge(): Promise<void> {
 		const bridgePromise = this.bridgePromise;
 		const bridge = this.bridge ?? (bridgePromise ? await bridgePromise : undefined);
+		await bridge?.close();
 		if (this.bridge === bridge) this.bridge = undefined;
 		if (this.bridgePromise === bridgePromise) this.bridgePromise = undefined;
-		await bridge?.close();
 	}
 }

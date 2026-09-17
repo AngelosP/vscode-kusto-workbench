@@ -4378,7 +4378,7 @@ describe('persistence round-trip', () => {
 		}
 	});
 
-	it('does not insert a blank query section into an explicitly empty persisted KQLX', () => {
+	it('does not duplicate native default normalization inside the webview finalizer', () => {
 		const state = { sections: [] };
 		expect(handleDocumentDataMessage({
 			type: 'documentData', ok: true, forceReload: true,

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { parseKqlxText, type KqlxSectionV1, type DevNoteEntry } from './kqlxFormat';
+import { parseKqlxText, type KqlxFileKind, type KqlxSectionV1, type DevNoteEntry } from './kqlxFormat';
 import { canonicalSectionKind } from '../shared/documentSectionCapabilities';
 
 // ── Noise fields ─────────────────────────────────────────────────────────────
@@ -43,8 +43,8 @@ export const DIFF_NOISE_KEYS = new Set([
  *
  * Pure function — deterministic, no side effects.
  */
-export function formatKqlxForDiff(raw: string): string {
-	const parsed = parseKqlxText(raw, { allowedKinds: ['kqlx', 'mdx', 'sqlx'] });
+export function formatKqlxForDiff(raw: string, defaultKind: KqlxFileKind = 'kqlx'): string {
+	const parsed = parseKqlxText(raw, { allowedKinds: ['kqlx', 'mdx', 'sqlx'], defaultKind });
 	if (!parsed.ok) return raw;
 
 	const { file } = parsed;
@@ -343,8 +343,13 @@ export async function renderDiffInWebview(
 
 	// For .kqlx files, build a human-readable smart view alongside the raw JSON.
 	const isKqlx = /\.(kqlx|mdx|sqlx)$/i.test(originalUri.path);
-	const originalSmart = isKqlx ? formatKqlxForDiff(originalContent) : undefined;
-	const modifiedSmart = isKqlx ? formatKqlxForDiff(modifiedContent) : undefined;
+	const defaultKind: KqlxFileKind = /\.sqlx$/i.test(originalUri.path)
+		? 'sqlx'
+		: /\.mdx$/i.test(originalUri.path)
+			? 'mdx'
+			: 'kqlx';
+	const originalSmart = isKqlx ? formatKqlxForDiff(originalContent, defaultKind) : undefined;
+	const modifiedSmart = isKqlx ? formatKqlxForDiff(modifiedContent, defaultKind) : undefined;
 
 	webviewPanel.webview.options = {
 		enableScripts: true,

@@ -41,6 +41,84 @@ describe('compatSidecarFormat', () => {
 		}
 	});
 
+	it.each([
+		['SQL legacy KQLX root', 'kqlx', 'sql', 'sqlx', ['sqlx', 'kqlx']],
+		['KQL legacy MDX root', 'mdx', 'query', 'kqlx', ['kqlx', 'mdx']],
+	] as const)('hydrates an empty %s with its pinned primary kind', (
+		_label, legacyKind, primaryKind, sidecarKind, acceptedFileKinds,
+	) => {
+		const format = { primaryKind, sidecarKind, acceptedFileKinds } as const;
+		const parsed = parseCompatSidecarText(JSON.stringify({
+			kind: legacyKind, version: 1, state: { sections: [] },
+		}), format);
+
+		expect(parsed.ok).toBe(true);
+		if (parsed.ok) {
+			expect(parsed.file.kind).toBe(legacyKind);
+			expect(parsed.file.state.sections).toEqual([]);
+			expect(hydrateCompatSidecarState(parsed.file, '', format).sections).toEqual([
+				{ id: `compat_primary_${primaryKind}`, type: primaryKind, query: '' },
+			]);
+		}
+	});
+
+	it.each([
+		['query', 'kqlx', 'sample.kql'],
+		['sql', 'sqlx', 'sample.sql'],
+	] as const)('adopts only the exact empty %s sibling and materializes it losslessly', (
+		primaryKind, sidecarKind, primaryName,
+	) => {
+		const compatUri = Uri.file(`/work/${primaryName}`);
+		const sidecarUri = Uri.file(`/work/${primaryName}.json`);
+		const unrelatedUri = Uri.file(`/work/unrelated-${primaryName}.json`);
+		const baseline = {
+			kind: sidecarKind === 'sqlx' ? 'kqlx' : 'mdx',
+			version: 1,
+			futureRoot: { keep: true },
+			state: { futureState: ['keep'], sections: [] },
+		} as any;
+
+		expect(isLinkedCompatSidecar(sidecarUri, baseline, compatUri, primaryKind)).toBe(true);
+		expect(isLinkedCompatSidecar(unrelatedUri, baseline, compatUri, primaryKind)).toBe(false);
+
+		const hydrated = hydrateCompatSidecarState(baseline, '', { primaryKind, sidecarKind });
+		const materialized = buildCompatSidecarFile(
+			compatUri,
+			hydrated,
+			{ primaryKind, sidecarKind },
+			baseline,
+		);
+		expect(materialized).toMatchObject({
+			kind: sidecarKind,
+			futureRoot: { keep: true },
+			state: { futureState: ['keep'] },
+		});
+		expect(materialized.state.sections).toEqual([{
+			id: `compat_primary_${primaryKind}`,
+			type: primaryKind,
+			linkedQueryPath: primaryName,
+		}]);
+	});
+
+	it.each([
+		['query', 'kqlx', 'sample.kql'],
+		['sql', 'sqlx', 'sample.sql'],
+	] as const)('rejects a forged %s primary ID against an exact empty companion', (
+		primaryKind, sidecarKind, primaryName,
+	) => {
+		const compatUri = Uri.file(`/work/${primaryName}`);
+		const baseline = {
+			kind: sidecarKind, version: 1, state: { sections: [] },
+		} as any;
+
+		expect(() => buildCompatSidecarFile(
+			compatUri,
+			{ sections: [{ id: 'forged_primary', type: primaryKind, query: '' } as any] },
+			{ primaryKind, sidecarKind },
+			baseline,
+		)).toThrow('pinned and cannot be removed or replaced');
+	});
+
 	it('refuses to build an SQLX companion containing a Kusto query', () => {
 		expect(() => buildCompatSidecarFile(
 			Uri.file('/work/sample.sql'),
@@ -109,6 +187,25 @@ describe('compatSidecarFormat', () => {
 		expect(hydrated.sections[0]).toMatchObject({ type: primaryKind, query: 'SELECTED TEXT', name: 'Primary' });
 		expect(hydrated.sections[0]).not.toHaveProperty('linkedQueryPath');
 		expect(hydrated.sections[1]).toMatchObject({ type: 'markdown', text: 'Notes' });
+	});
+
+	it.each([
+		['KQL', 'query', 'kqlx'],
+		['SQL', 'sql', 'sqlx'],
+	] as const)('hydrates blank %s compatibility state with one pinned %s section', (
+		_label, primaryKind, sidecarKind,
+	) => {
+		const hydrated = hydrateCompatSidecarState({
+			kind: sidecarKind,
+			version: 1,
+			state: { sections: [] },
+		} as any, '', { primaryKind, sidecarKind });
+
+		expect(hydrated.sections).toEqual([{
+			id: `compat_primary_${primaryKind}`,
+			type: primaryKind,
+			query: '',
+		}]);
 	});
 
 	it('accepts only configured primary kinds when validating linkage', () => {

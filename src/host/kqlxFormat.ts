@@ -182,9 +182,15 @@ export type ParseKqlxTextOptions = {
 	allowedKinds?: readonly KqlxFileKind[];
 	/**
 	 * When the document is empty, which kind should be assumed.
-	 * If omitted, defaults to 'kqlx'.
+	 * If omitted, defaults to 'kqlx'. Blank KQLX and SQLX documents receive
+	 * their document-kind default section; blank MDX documents remain empty.
 	 */
 	defaultKind?: KqlxFileKind;
+	/**
+	 * Compatibility sidecars defer zero-section normalization until their
+	 * destination-aware pinned-primary hydrator runs.
+	 */
+	preserveEmptySections?: boolean;
 };
 
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -224,7 +230,13 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 	const raw = String(text ?? '').trim();
 	if (!raw) {
 		const defaultKind: KqlxFileKind = options?.defaultKind ?? 'kqlx';
-		return { ok: true, file: createEmptyKqlxOrMdxFile(defaultKind) };
+		return {
+			ok: true,
+			file: options?.preserveEmptySections !== true
+				&& (defaultKind === 'kqlx' || defaultKind === 'sqlx')
+				? createKqlxOrMdxFileWithDefaultSection(defaultKind)
+				: createEmptyKqlxOrMdxFile(defaultKind),
+		};
 	}
 
 	let parsed: unknown;
@@ -268,7 +280,11 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 			return { ok: false, error: `Invalid .kqlx: "state.${preference}" must be a boolean.` };
 		}
 	}
-	const sections = sectionsRaw as KqlxSectionV1[];
+	const sections = sectionsRaw.length === 0
+		&& options?.preserveEmptySections !== true
+		&& (kind === 'kqlx' || kind === 'sqlx')
+		? createKqlxOrMdxFileWithDefaultSection(kind).state.sections
+		: sectionsRaw as KqlxSectionV1[];
 	const incompatibleSection = findIncompatibleKnownSection(kind as KqlxFileKind, sections);
 	if (incompatibleSection) {
 		return { ok: false, error: formatIncompatibleKnownSection(incompatibleSection) };

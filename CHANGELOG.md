@@ -8,6 +8,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Better search experience for Kusto and SQL schemas.
 * Better default settings for the chart axis (less overlapping text by default, etc.).
 * Added an opt-in Copilot CLI bridge that drives the same live Kusto Workbench tools and agent workflow as VS Code Copilot Chat.
+* Copilot CLI connections can now launch in either an integrated VS Code terminal or a separate Windows console.
 * Copilot Chat now shows cumulative tool calls while generating and no longer stops after 100 model requests.
 * Saved query data and legacy metadata are preserved across authentication/account changes, missing connections or targets, policy changes, Save, and reopen. Leave No Trace prevents saving NEW result data; it does not retroactively remove existing bytes. Supported explicit result/section clear remains user intent.
 * Bugs

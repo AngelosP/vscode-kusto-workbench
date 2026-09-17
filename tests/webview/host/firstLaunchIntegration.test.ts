@@ -1211,7 +1211,14 @@ describe('first-launch integration inventory', () => {
 
 	it('gates every contributed production command except the configure command', () => {
 		const contributed = packageJson.contributes.commands.map(command => command.command);
-		const expected = [...extensionGatedCommands, 'kusto.openRemoteFile', 'kusto.configureFirstLaunchSetup', 'kusto.connectCopilotCli', 'kusto.disconnectCopilotCli'].sort();
+		const expected = [
+			...extensionGatedCommands,
+			'kusto.openRemoteFile',
+			'kusto.configureFirstLaunchSetup',
+			'kusto.connectCopilotCli',
+			'kusto.createExternalCopilotCliConnection',
+			'kusto.disconnectCopilotCli',
+		].sort();
 		expect(contributed.sort()).toEqual(expected);
 		for (const command of extensionGatedCommands) {
 			const registration = extensionSource.slice(extensionSource.indexOf(`registerCommand('${command}'`));
@@ -1228,7 +1235,15 @@ describe('first-launch integration inventory', () => {
 			default?: boolean;
 		};
 		expect(setting).toMatchObject({ type: 'boolean', scope: 'application', default: false });
+		expect(Object.fromEntries(packageJson.contributes.commands
+			.filter(command => command.command.includes('CopilotCli'))
+			.map(command => [command.command, command.title]))).toEqual({
+			'kusto.connectCopilotCli': 'Copilot CLI - Open new instance (integrated)',
+			'kusto.createExternalCopilotCliConnection': 'Copilot CLI - Open new instance (external)',
+			'kusto.disconnectCopilotCli': 'Copilot CLI - Disconnect all instances',
+		});
 		expect(extensionSource).toContain("registerCommand('kusto.connectCopilotCli'");
+		expect(extensionSource).toContain("registerCommand('kusto.createExternalCopilotCliConnection'");
 		expect(extensionSource).toContain("registerCommand('kusto.disconnectCopilotCli'");
 		expect(extensionSource).toContain("'dist', 'copilot-cli-integration.js'");
 		expect(extensionSource).not.toContain("from './copilotCliIntegration'");
@@ -1243,6 +1258,10 @@ describe('first-launch integration inventory', () => {
 		const connectRegistration = extensionSource.slice(extensionSource.indexOf("registerCommand('kusto.connectCopilotCli'"));
 		expect(connectRegistration.indexOf('captureGeneration()')).toBeGreaterThanOrEqual(0);
 		expect(connectRegistration.indexOf('return afterFirstLaunch(')).toBeGreaterThan(connectRegistration.indexOf('captureGeneration()'));
+		const externalRegistration = extensionSource.slice(extensionSource.indexOf("registerCommand('kusto.createExternalCopilotCliConnection'"));
+		expect(externalRegistration.indexOf('captureGeneration()')).toBeGreaterThanOrEqual(0);
+		expect(externalRegistration.indexOf('return afterFirstLaunch(')).toBeGreaterThan(externalRegistration.indexOf('captureGeneration()'));
+		expect(externalRegistration).toContain("integration.connect(expectedGeneration, 'external')");
 	});
 
 	it('validates remote URI input before consuming first use', () => {
@@ -1280,6 +1299,8 @@ describe('first-launch integration inventory', () => {
 			.toBeLessThan(deactivation.indexOf('ConnectionService.waitForLastSelectionSettlement()'));
 		expect(deactivation).toContain('Promise.allSettled([cliDisposal, hostDisposal])');
 		expect(deactivation).toContain('connectionManager?.waitForSettlement()');
+		expect(deactivation.indexOf('copilotCliIntegration = undefined'))
+			.toBeGreaterThan(deactivation.indexOf('cliIntegration?.dispose()'));
 	});
 
 	it('registers the setup artifact in initial copy, watch copy, bundle, and both size tools', () => {

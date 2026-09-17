@@ -47,6 +47,7 @@ export function parseCompatSidecarText(text: string, format: CompatSidecarFormat
 	const parsed = parseKqlxText(text, {
 		allowedKinds: format.acceptedFileKinds?.length ? format.acceptedFileKinds : [format.sidecarKind],
 		defaultKind: format.sidecarKind,
+		preserveEmptySections: true,
 	});
 	if (!parsed.ok) return parsed;
 	try {
@@ -126,6 +127,10 @@ export function isLinkedCompatSidecar(
 ): boolean {
 	try {
 		const sections = Array.isArray(sidecarFile?.state?.sections) ? sidecarFile.state.sections : [];
+		if (sections.length === 0) {
+			const expectedSidecarUri = compatDocumentUri.with({ path: `${compatDocumentUri.path}.json` });
+			return normalizeWorkbenchUriKey(sidecarUri) === normalizeWorkbenchUriKey(expectedSidecarUri);
+		}
 		const first = sections[0] as Record<string, unknown> | undefined;
 		if (canonicalCompatSectionType(first) !== primaryKind) return false;
 		const linkedPath = typeof first?.linkedQueryPath === 'string' ? first.linkedQueryPath.trim() : '';
@@ -160,7 +165,7 @@ export function hydrateCompatSidecarState(
 	const rawSections = Array.isArray(file.state.sections) ? file.state.sections : [];
 	const sections = rawSections.map(section => ({ ...(section as Record<string, unknown>) }));
 	if (sections.length === 0 || canonicalCompatSectionType(sections[0]) !== format.primaryKind) {
-		sections.unshift({ type: format.primaryKind });
+		sections.unshift({ id: `compat_primary_${format.primaryKind}`, type: format.primaryKind });
 	}
 	sections[0] = { ...sections[0], type: format.primaryKind, query: primaryText };
 	delete sections[0].linkedQueryPath;
@@ -168,6 +173,16 @@ export function hydrateCompatSidecarState(
 		...file.state,
 		sections: sections as KqlxStateV1['sections'],
 	};
+}
+
+export function getCanonicalEmptyCompatSidecarText(
+	compatUri: vscode.Uri,
+	file: KqlxFileV1,
+	format: CompatSidecarFormat,
+): string | undefined {
+	if (file.state.sections.length !== 0) return undefined;
+	const hydrated = hydrateCompatSidecarState(file, '', format);
+	return stringifyKqlxFile(buildCompatSidecarFile(compatUri, hydrated, format, file));
 }
 
 export function buildCompatSidecarFile(
@@ -181,7 +196,7 @@ export function buildCompatSidecarFile(
 	const materializedBase = baseFile ? ensureCompatSectionIds(baseFile) : undefined;
 	const sections = (Array.isArray(state.sections) ? state.sections : [])
 		.map(section => ({ ...(section as Record<string, unknown>) }));
-	if (materializedBase) {
+	if (materializedBase?.state.sections.length) {
 		const expectedPrimary = materializedBase.state.sections[0] as Record<string, unknown> | undefined;
 		const incomingPrimary = sections[0];
 		const expectedPrimaryId = String(expectedPrimary?.id || '').trim();
@@ -191,8 +206,17 @@ export function buildCompatSidecarFile(
 			|| (!projectsExactBaseline && incomingPrimaryId !== expectedPrimaryId)) {
 			throw new Error('The established companion primary section is pinned and cannot be removed or replaced.');
 		}
-	} else if (sections.length === 0 || canonicalCompatSectionType(sections[0]) !== format.primaryKind) {
-		sections.unshift({ type: format.primaryKind });
+	} else if (materializedBase) {
+		const incomingPrimary = sections[0];
+		const expectedPrimaryId = `compat_primary_${format.primaryKind}`;
+		if ((!projectsExactBaseline && !incomingPrimary)
+			|| (incomingPrimary && (canonicalCompatSectionType(incomingPrimary) !== format.primaryKind
+				|| String(incomingPrimary.id || '').trim() !== expectedPrimaryId))) {
+			throw new Error('The established companion primary section is pinned and cannot be removed or replaced.');
+		}
+	}
+	if (sections.length === 0 || canonicalCompatSectionType(sections[0]) !== format.primaryKind) {
+		sections.unshift({ id: `compat_primary_${format.primaryKind}`, type: format.primaryKind });
 	}
 	sections[0] = {
 		...sections[0],

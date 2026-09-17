@@ -91,7 +91,7 @@ describe('tutorial catalog validation', () => {
 		expect(isExtensionVersionCompatible('0.0.0-placeholder', '99.0.0')).toBe(true);
 	});
 
-	it('gates current result-table tutorial updates to extension 5.1.0', () => {
+	it('gates current release-specific tutorial updates', () => {
 		const actual = JSON.parse(readFileSync(resolve('media/tutorials/catalog.v1.json'), 'utf8')) as TutorialCatalog;
 		const byId = new Map(actual.content.map(item => [item.id, item]));
 		expect(byId.get('results-search-json')?.minExtensionVersion).toBe('5.1.0');
@@ -104,7 +104,13 @@ describe('tutorial catalog validation', () => {
 		expect(byId.get('results-column-tools')?.updateToken).toBe('results-column-tools-2026-08-21');
 		expect(byId.get('results-multiple-result-sets')?.updateToken).toBe('results-multiple-result-sets-2026-08-21');
 		expect(byId.get('results-column-datatypes')?.updateToken).toBe('results-column-datatypes-2026-08-21');
-		expect(actual.generatedAt).toBe('2026-08-21T00:00:00.000Z');
+		expect(byId.get('copilot-cli-live-workbench')).toMatchObject({
+			categoryId: 'copilot',
+			contentUrl: 'content/copilot-cli-live-workbench.md',
+			minExtensionVersion: '5.2.0',
+			updateToken: 'copilot-cli-live-workbench-2026-09-17',
+		});
+		expect(actual.generatedAt).toBe('2026-09-17T00:00:00.000Z');
 	});
 });
 

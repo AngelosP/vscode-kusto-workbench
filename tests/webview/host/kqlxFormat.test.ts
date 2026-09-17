@@ -173,32 +173,42 @@ describe('createKqlxOrMdxFileWithDefaultSection', () => {
 		});
 	});
 
-	it('creates a blank starter without changing empty-file parsing semantics', () => {
+	it('creates a blank starter for explicit fresh-file producers', () => {
 		expect(createKqlxOrMdxFileWithDefaultSection('kqlx').state.sections).toEqual([
 			{ type: 'query', expanded: true, query: '' },
 		]);
-		expect(parseKqlxText('').ok && parseKqlxText('').file.state.sections).toEqual([]);
 	});
 });
 
 describe('parseKqlxText', () => {
-	it('valid minimal JSON → ok: true', () => {
-		const text = '{"kind":"kqlx","version":1,"state":{"sections":[]}}';
-		const result = parseKqlxText(text);
+	it.each([
+		['kqlx', 'query'],
+		['sqlx', 'sql'],
+	] as const)('blank %s text → one default %s section', (kind, sectionKind) => {
+		const result = parseKqlxText(' \r\n ', { allowedKinds: [kind], defaultKind: kind });
 		expect(result.ok).toBe(true);
 		if (result.ok) {
-			expect(result.file.kind).toBe('kqlx');
-			expect(result.file.version).toBe(1);
-			expect(result.file.state.sections).toEqual([]);
+			expect(result.file).toEqual({
+				kind,
+				version: 1,
+				state: { sections: [{ type: sectionKind, expanded: true, query: '' }] },
+			});
 		}
 	});
 
-	it('empty string → ok: true with default empty kqlx file', () => {
-		const result = parseKqlxText('');
+	it.each([
+		['kqlx', 'query'],
+		['sqlx', 'sql'],
+	] as const)('valid zero-section %s JSON → one default %s section', (kind, sectionKind) => {
+		const result = parseKqlxText(JSON.stringify({ kind, version: 1, state: { sections: [] } }), {
+			allowedKinds: [kind],
+			defaultKind: kind,
+		});
 		expect(result.ok).toBe(true);
 		if (result.ok) {
-			expect(result.file.kind).toBe('kqlx');
-			expect(result.file.state.sections).toEqual([]);
+			expect(result.file.state.sections).toEqual([
+				{ type: sectionKind, expanded: true, query: '' },
+			]);
 		}
 	});
 
@@ -490,13 +500,13 @@ describe('stringifyKqlxFile', () => {
 		expect(text.endsWith('\n')).toBe(true);
 	});
 
-	it('round-trip: parse(stringify(createEmpty())) equals createEmpty()', () => {
+	it('round-trip: parse(stringify(createEmpty())) adds the default query section', () => {
 		const original = createEmptyKqlxFile();
 		const text = stringifyKqlxFile(original);
 		const parsed = parseKqlxText(text);
 		expect(parsed.ok).toBe(true);
 		if (parsed.ok) {
-			expect(parsed.file).toEqual(original);
+			expect(parsed.file).toEqual(createKqlxOrMdxFileWithDefaultSection('kqlx'));
 		}
 	});
 
@@ -521,12 +531,14 @@ describe('stringifyKqlxFile', () => {
 });
 
 describe('parseKqlxText edge cases', () => {
-	it('whitespace-only text (spaces, tabs, newlines) → empty file with defaults', () => {
+	it('whitespace-only text (spaces, tabs, newlines) → default Kusto section', () => {
 		const result = parseKqlxText('   \t\n  ');
 		expect(result.ok).toBe(true);
 		if (result.ok) {
 			expect(result.file.kind).toBe('kqlx');
-			expect(result.file.state.sections).toEqual([]);
+			expect(result.file.state.sections).toEqual([
+				{ type: 'query', expanded: true, query: '' },
+			]);
 		}
 	});
 

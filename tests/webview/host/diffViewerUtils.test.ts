@@ -25,15 +25,21 @@ describe('formatKqlxForDiff', () => {
 		const raw = JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [] } }, null, 2);
 		const result = formatKqlxForDiff(raw);
 		expect(result).toContain('kqlx v1');
-		expect(result).toContain('0 sections');
+		expect(result).toContain('1 section');
+		expect(result).toContain('══ [Kusto] ══');
 		expect(result).toContain('────');
 	});
 
-	it('produces a header for an empty string input', () => {
-		// parseKqlxText('') returns an empty kqlx file.
-		const result = formatKqlxForDiff('');
-		expect(result).toContain('kqlx v1');
-		expect(result).toContain('0 sections');
+	it.each([
+		['kqlx', '1 section', '══ [Kusto] ══'],
+		['sqlx', '1 section', '══ [SQL] ══'],
+		['mdx', '0 sections', undefined],
+	] as const)('formats blank %s input with its document-kind default', (kind, count, sectionHeader) => {
+		const result = formatKqlxForDiff('', kind);
+		expect(result).toContain(`${kind} v1`);
+		expect(result).toContain(count);
+		if (sectionHeader) expect(result).toContain(sectionHeader);
+		else expect(result).not.toContain('══ [');
 	});
 
 	// ── Query section ─────────────────────────────────────────────────────

@@ -185,4 +185,115 @@ Feature: Opt-in Copilot CLI bridge lifecycle
         }
       })()
       """
+    Then I collect JSON artifact "copilot-cli-external-lifecycle" from extension host expression:
+      """
+      (async () => {
+        const fs = process.getBuiltinModule('fs');
+        const path = process.getBuiltinModule('path');
+        const childProcess = process.getBuiltinModule('child_process');
+        const configuration = vscode.workspace.getConfiguration('kustoWorkbench');
+        const previous = configuration.inspect('copilotCli.enabled')?.globalValue;
+        const cliTerminals = () => vscode.window.terminals.filter(terminal => terminal.creationOptions?.name === 'Kusto Workbench Copilot CLI');
+        const waitFor = async (condition, label, timeout = 20000) => {
+          const deadline = Date.now() + timeout;
+          while (Date.now() < deadline) {
+            const value = condition();
+            if (value) return value;
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+          throw new Error('Timed out waiting for ' + label);
+        };
+        const processExists = processId => {
+          try {
+            process.kill(processId, 0);
+            return true;
+          } catch {
+            return false;
+          }
+        };
+        const inspectIntegrated = terminal => {
+          const args = Array.isArray(terminal.creationOptions?.shellArgs) ? terminal.creationOptions.shellArgs.map(String) : [];
+          const configArg = args.find(value => value.startsWith('--additional-mcp-config=@'));
+          if (!configArg) throw new Error('Integrated CLI config argument is missing.');
+          const configPath = configArg.slice('--additional-mcp-config=@'.length);
+          return { terminal, sessionRoot: path.dirname(configPath) };
+        };
+
+        let integrated;
+        let externalRoot;
+        try {
+          await vscode.commands.executeCommand('kusto.disconnectCopilotCli');
+          await configuration.update('copilotCli.enabled', true, vscode.ConfigurationTarget.Global);
+          const integratedResult = await vscode.commands.executeCommand('kusto.connectCopilotCli');
+          if (!integratedResult?.success) throw new Error('Integrated Connect failed: ' + JSON.stringify(integratedResult));
+          integrated = inspectIntegrated(await waitFor(() => cliTerminals()[0], 'mixed integrated CLI session'));
+          const sessionsRoot = path.dirname(integrated.sessionRoot);
+
+          const externalResult = await vscode.commands.executeCommand('kusto.createExternalCopilotCliConnection');
+          if (!externalResult?.success) throw new Error('External Connect failed: ' + JSON.stringify(externalResult));
+          if (cliTerminals().length !== 1) throw new Error('External Connect unexpectedly created a VS Code terminal.');
+          externalRoot = await waitFor(() => {
+            const roots = fs.readdirSync(sessionsRoot, { withFileTypes: true })
+              .filter(entry => entry.isDirectory())
+              .map(entry => path.join(sessionsRoot, entry.name));
+            return roots.find(root => root !== integrated.sessionRoot && fs.existsSync(path.join(root, 'external-launch.json')));
+          }, 'external CLI session root');
+
+          const externalAssets = [
+            path.join(externalRoot, 'external-broker.ps1'),
+            path.join(externalRoot, 'external-runner.ps1'),
+            path.join(externalRoot, 'external-launch.json')
+          ];
+          if (externalAssets.some(file => fs.readFileSync(file, 'utf8').includes('Bearer '))) {
+            throw new Error('External launch assets exposed the bearer token.');
+          }
+          await waitFor(() => !fs.existsSync(path.join(externalRoot, 'mcp.json')), 'external MCP authentication', 20000);
+
+          const firstDescriptor = JSON.parse(fs.readFileSync(path.join(externalRoot, 'external-launch.json'), 'utf8'));
+          const firstVisiblePid = Number(fs.readFileSync(path.join(externalRoot, 'external-visible-pid'), 'utf8').trim());
+          if (!Number.isSafeInteger(firstVisiblePid) || firstVisiblePid <= 0) throw new Error('External visible process ID is invalid.');
+          childProcess.execFileSync(firstDescriptor.taskkillExecutable, ['/PID', String(firstVisiblePid), '/T', '/F'], { windowsHide: true });
+          await waitFor(() => !fs.existsSync(externalRoot), 'external natural-close cleanup');
+          if (cliTerminals().length !== 1 || !fs.existsSync(integrated.sessionRoot)) {
+            throw new Error('Closing the external console removed the integrated CLI session.');
+          }
+
+          const secondExternalResult = await vscode.commands.executeCommand('kusto.createExternalCopilotCliConnection');
+          if (!secondExternalResult?.success) throw new Error('Second External Connect failed: ' + JSON.stringify(secondExternalResult));
+          externalRoot = await waitFor(() => {
+            const roots = fs.readdirSync(sessionsRoot, { withFileTypes: true })
+              .filter(entry => entry.isDirectory())
+              .map(entry => path.join(sessionsRoot, entry.name));
+            return roots.find(root => root !== integrated.sessionRoot && fs.existsSync(path.join(root, 'external-launch.json')));
+          }, 'second external CLI session root');
+          await waitFor(() => !fs.existsSync(path.join(externalRoot, 'mcp.json')), 'second external MCP authentication', 20000);
+          const secondVisiblePid = Number(fs.readFileSync(path.join(externalRoot, 'external-visible-pid'), 'utf8').trim());
+          if (!Number.isSafeInteger(secondVisiblePid) || secondVisiblePid <= 0 || !processExists(secondVisiblePid)) {
+            throw new Error('Second external Copilot CLI process is not alive after authentication.');
+          }
+
+          integrated.terminal.dispose();
+          await waitFor(() => cliTerminals().length === 0 && !fs.existsSync(integrated.sessionRoot), 'integrated natural close');
+          if (!fs.existsSync(externalRoot)) throw new Error('Closing the integrated terminal removed the external CLI session.');
+          if (!processExists(secondVisiblePid)) throw new Error('Closing the integrated terminal stopped the external CLI process.');
+
+          await vscode.commands.executeCommand('kusto.disconnectCopilotCli');
+          await waitFor(() => !fs.existsSync(externalRoot), 'external disconnect cleanup');
+          await waitFor(() => !processExists(secondVisiblePid), 'external process termination');
+          return {
+            authenticated: true,
+            createdVsCodeTerminal: false,
+            launchAssetsExcludeBearer: true,
+            externalNaturalClosePreservedIntegrated: true,
+            survivedIntegratedClose: true,
+            processSurvivedIntegratedClose: true,
+            processStoppedOnDisconnect: true,
+            rootRemovedOnDisconnect: true
+          };
+        } finally {
+          await vscode.commands.executeCommand('kusto.disconnectCopilotCli');
+          await configuration.update('copilotCli.enabled', previous, vscode.ConfigurationTarget.Global);
+        }
+      })()
+      """
     Then I take a screenshot "copilot-cli-lifecycle-clean"
