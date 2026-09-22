@@ -1,8 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import * as vscode from 'vscode';
-import { classifyWorkbenchUri, getWorkbenchTabInputUris, normalizeWorkbenchUriKey } from '../../../src/host/workbenchFileTypes';
+import { classifyWorkbenchUri, getWorkbenchTabInputUris, normalizeWorkbenchUriKey, sameNonzeroPhysicalFileIdentity } from '../../../src/host/workbenchFileTypes';
 
 describe('workbenchFileTypes', () => {
+	it('compares full-width nonzero physical identities exactly', () => {
+		expect(sameNonzeroPhysicalFileIdentity(
+			{ dev: 9007199254740992n, ino: 9007199254740994n },
+			{ dev: 9007199254740993n, ino: 9007199254740994n },
+		)).toBe(false);
+		expect(sameNonzeroPhysicalFileIdentity(
+			{ dev: 7n, ino: 9007199254740992n },
+			{ dev: 7n, ino: 9007199254740993n },
+		)).toBe(false);
+		expect(sameNonzeroPhysicalFileIdentity(
+			{ dev: 7n, ino: 0n },
+			{ dev: 7n, ino: 0n },
+		)).toBe(false);
+	});
+
 	it('classifies core notebook and query file types', () => {
 		expect(classifyWorkbenchUri(vscode.Uri.file('/work/a.kqlx'))?.fileKind).toBe('kqlx');
 		expect(classifyWorkbenchUri(vscode.Uri.file('/work/a.mdx'))?.fileKind).toBe('mdx');

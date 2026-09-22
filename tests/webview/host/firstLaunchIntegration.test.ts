@@ -22,10 +22,18 @@ const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 	scripts: { package: string };
 	dependencies: Record<string, string>;
 	contributes: {
-		commands: Array<{ command: string }>;
+		commands: Array<{ command: string; title: string }>;
+		menus: {
+			commandPalette: Array<{ command: string; when?: string }>;
+			'view/title': Array<{ command: string; group?: string; when?: string }>;
+		};
 		configuration: { properties: Record<string, { scope?: string }> };
 	};
 };
+const externalMcpBootstrapPackageJson = JSON.parse(
+	readFileSync(join(root, 'external-mcp-bootstrap', 'package.json'), 'utf8'),
+) as { activationEvents: string[]; extensionKind: string[] };
+const externalMcpBootstrapSource = readFileSync(join(root, 'external-mcp-bootstrap', 'extension.js'), 'utf8');
 const extensionSource = readFileSync(join(root, 'src', 'host', 'extension.ts'), 'utf8');
 const remoteSource = readFileSync(join(root, 'src', 'host', 'remoteFileOpener.ts'), 'utf8');
 const queryToolbarSource = readFileSync(join(root, 'src', 'webview', 'sections', 'kw-query-toolbar.ts'), 'utf8');
@@ -811,6 +819,17 @@ describe('identity checklist real-service regression probe', () => {
 });
 
 describe('first-launch integration inventory', () => {
+	it('stages external MCP setup assets for compile and development watch', () => {
+		expect(packageJson.scripts['prepare:external-mcp']).toContain('stage-mcp-connector-runtime.mjs');
+		expect(packageJson.scripts['prepare:external-mcp']).toContain('package-external-mcp-bootstrap.mjs');
+		expect(packageJson.scripts.compile).toContain('npm run prepare:external-mcp');
+		expect(packageJson.scripts.prewatch).toBe('npm run prepare:external-mcp');
+		const tasks = JSON.parse(readFileSync(join(root, '.vscode', 'tasks.json'), 'utf8')
+			.replace(/^\s*\/\/.*$/gm, '')) as { tasks: Array<{ label?: string; dependsOn?: string[] }> };
+		const watch = tasks.tasks.find(task => task.label === 'watch');
+		expect(watch?.dependsOn).toContain('npm: prepare:external-mcp');
+	});
+
 	it('activates for every supported cold-open language and extension URI', () => {
 		for (const event of ['onLanguage:kql', 'onLanguage:kqlx', 'onLanguage:sqlx', 'onLanguage:sql', 'onLanguage:markdown', 'onUri']) {
 			expect(packageJson.activationEvents).toContain(event);
@@ -824,6 +843,16 @@ describe('first-launch integration inventory', () => {
 			'seedKustoIdentityChecklist',
 		]) {
 			expect(packageJson.activationEvents).toContain(`onCommand:kustoWorkbench.test.${command}`);
+		}
+	});
+
+	it('cold-activates legacy external integration command aliases', () => {
+		for (const command of [
+			'kusto.connectCopilotCli',
+			'kusto.createExternalCopilotCliConnection',
+			'kusto.disconnectCopilotCli',
+		]) {
+			expect(packageJson.activationEvents).toContain(`onCommand:${command}`);
 		}
 	});
 
@@ -1215,9 +1244,11 @@ describe('first-launch integration inventory', () => {
 			...extensionGatedCommands,
 			'kusto.openRemoteFile',
 			'kusto.configureFirstLaunchSetup',
-			'kusto.connectCopilotCli',
-			'kusto.createExternalCopilotCliConnection',
-			'kusto.disconnectCopilotCli',
+			'kusto.enableExternalTools',
+			'kusto.showExternalToolsStatus',
+			'kusto.disableExternalTools',
+			'kusto.startExternalMcpProvider',
+			'kusto.stopExternalMcpProvider',
 		].sort();
 		expect(contributed.sort()).toEqual(expected);
 		for (const command of extensionGatedCommands) {
@@ -1228,40 +1259,42 @@ describe('first-launch integration inventory', () => {
 		expect(extensionSource).toContain("registerCommand('kusto.configureFirstLaunchSetup', () => firstLaunchCoordinator.openConfiguration())");
 	});
 
-	it('keeps Copilot CLI integration default-off and explicit-connect only', () => {
-		const setting = packageJson.contributes.configuration.properties['kustoWorkbench.copilotCli.enabled'] as {
+	it('keeps external MCP integration default-off, automatic, and client-independent', () => {
+		const setting = packageJson.contributes.configuration.properties['kustoWorkbench.externalTools.enabled'] as {
 			type?: string;
 			scope?: string;
 			default?: boolean;
 		};
 		expect(setting).toMatchObject({ type: 'boolean', scope: 'application', default: false });
+		expect(packageJson.activationEvents).not.toContain('onStartupFinished');
+		expect(externalMcpBootstrapPackageJson.activationEvents).toEqual(['onStartupFinished']);
+		expect(externalMcpBootstrapPackageJson.extensionKind).toEqual(['ui']);
+		expect(externalMcpBootstrapSource).toContain("get('externalTools.enabled', false)");
+		expect(externalMcpBootstrapSource).toContain("executeCommand('kusto.startExternalMcpProvider')");
 		expect(Object.fromEntries(packageJson.contributes.commands
-			.filter(command => command.command.includes('CopilotCli'))
+			.filter(command => command.command.includes('ExternalTools'))
 			.map(command => [command.command, command.title]))).toEqual({
-			'kusto.connectCopilotCli': 'Copilot CLI - Open new instance (integrated)',
-			'kusto.createExternalCopilotCliConnection': 'Copilot CLI - Open new instance (external)',
-			'kusto.disconnectCopilotCli': 'Copilot CLI - Disconnect all instances',
+			'kusto.enableExternalTools': 'Configure integration with external tools...',
+			'kusto.showExternalToolsStatus': 'External tools - Show integration status',
+			'kusto.disableExternalTools': 'External tools - Disable or remove integration...',
 		});
+		const configureMenu = packageJson.contributes.menus.commandPalette
+			.find((entry: { command: string; when?: string }) => entry.command === 'kusto.enableExternalTools');
+		expect(configureMenu).toEqual({ command: 'kusto.enableExternalTools' });
+		expect(extensionSource).toContain("registerCommand('kusto.enableExternalTools'");
+		expect(extensionSource).toContain("registerCommand('kusto.showExternalToolsStatus'");
+		expect(extensionSource).toContain("registerCommand('kusto.disableExternalTools'");
 		expect(extensionSource).toContain("registerCommand('kusto.connectCopilotCli'");
 		expect(extensionSource).toContain("registerCommand('kusto.createExternalCopilotCliConnection'");
 		expect(extensionSource).toContain("registerCommand('kusto.disconnectCopilotCli'");
-		expect(extensionSource).toContain("'dist', 'copilot-cli-integration.js'");
-		expect(extensionSource).not.toContain("from './copilotCliIntegration'");
+		expect(extensionSource).toContain("'dist', 'external-mcp-provider.js'");
+		expect(extensionSource).toContain("'dist', 'external-mcp-setup.js'");
+		expect(extensionSource).not.toContain('copilot-cli-integration.js');
 		expect(extensionSource).not.toContain('startWorkbenchMcpBridge(');
-		const activationBody = extensionSource.slice(
-			extensionSource.indexOf('export async function activate'),
-			extensionSource.indexOf('function tabInputUri'),
-		);
-		expect(activationBody).not.toContain('new LazyCopilotCliIntegration');
-		expect(extensionSource.slice(0, extensionSource.indexOf('export async function activate')))
-			.toContain('new LazyCopilotCliIntegration');
-		const connectRegistration = extensionSource.slice(extensionSource.indexOf("registerCommand('kusto.connectCopilotCli'"));
-		expect(connectRegistration.indexOf('captureGeneration()')).toBeGreaterThanOrEqual(0);
-		expect(connectRegistration.indexOf('return afterFirstLaunch(')).toBeGreaterThan(connectRegistration.indexOf('captureGeneration()'));
-		const externalRegistration = extensionSource.slice(extensionSource.indexOf("registerCommand('kusto.createExternalCopilotCliConnection'"));
-		expect(externalRegistration.indexOf('captureGeneration()')).toBeGreaterThanOrEqual(0);
-		expect(externalRegistration.indexOf('return afterFirstLaunch(')).toBeGreaterThan(externalRegistration.indexOf('captureGeneration()'));
-		expect(externalRegistration).toContain("integration.connect(expectedGeneration, 'external')");
+		const setupRegistration = extensionSource.slice(extensionSource.indexOf("registerCommand('kusto.enableExternalTools'"));
+		expect(setupRegistration).toContain('afterFirstLaunch(');
+		expect(setupRegistration).toContain('runExternalMcpSetup');
+		expect(extensionSource).toContain('applyExternalMcpProviderSetting(context)');
 	});
 
 	it('validates remote URI input before consuming first use', () => {
@@ -1269,6 +1302,26 @@ describe('first-launch integration inventory', () => {
 		expect(uriHandler.indexOf('const validationError = validateRemoteUrl(fileUrl);')).toBeGreaterThan(-1);
 		expect(uriHandler.indexOf('const validationError = validateRemoteUrl(fileUrl);'))
 			.toBeLessThan(uriHandler.indexOf('await beforeOpen();'));
+	});
+
+	it('places external-tools configuration below skill export and removes only the status toolbar shortcut', () => {
+		const templateStart = extensionSource.indexOf('webviewView.webview.html = `');
+		expect(templateStart).toBeGreaterThan(-1);
+		const template = extensionSource.slice(templateStart, extensionSource.indexOf('</html>`;', templateStart));
+		const container = document.createElement('div');
+		container.innerHTML = template.slice(template.indexOf('<body>'), template.indexOf('</body>'));
+		const exportCard = container.querySelector("button[onclick=\"sendCommand('exportSkill')\"]")?.closest('.card');
+		const externalTools = container.querySelector('[data-testid="quick-access-external-tools"]');
+		expect(externalTools).not.toBeNull();
+		expect(exportCard?.nextElementSibling).toBe(externalTools);
+		const configureButton = externalTools?.querySelector('[data-testid="configure-external-tools"]');
+		expect(configureButton?.textContent?.trim()).toBe('Configure...');
+		expect(configureButton?.getAttribute('onclick')).toBe("sendCommand('configureExternalTools')");
+		expect(extensionSource).toMatch(/case 'configureExternalTools':\s+await vscode\.commands\.executeCommand\('kusto\.enableExternalTools'\);/);
+		const toolbarCommands = packageJson.contributes.menus['view/title'].map(entry => entry.command);
+		expect(toolbarCommands).toContain('kusto.enableExternalTools');
+		expect(toolbarCommands).not.toContain('kusto.showExternalToolsStatus');
+		expect(packageJson.contributes.commands.some(command => command.command === 'kusto.showExternalToolsStatus')).toBe(true);
 	});
 
 	it('does not persist application editing toggles into notebook documents', () => {
@@ -1292,15 +1345,29 @@ describe('first-launch integration inventory', () => {
 			.toBeGreaterThan(bootstrap.indexOf('throw error;'));
 	});
 
-	it('revokes Copilot CLI before draining unrelated extension owners during deactivation', () => {
+	it('stops the external provider before draining unrelated extension owners during deactivation', () => {
 		const deactivation = extensionSource.slice(extensionSource.indexOf('export async function deactivate()'));
-		expect(deactivation.indexOf('cliIntegration?.dispose()')).toBeGreaterThanOrEqual(0);
-		expect(deactivation.indexOf('cliIntegration?.dispose()'))
+		expect(deactivation.indexOf('externalProviderCoordinator?.dispose()')).toBeGreaterThanOrEqual(0);
+		expect(deactivation.indexOf('externalProviderCoordinator?.dispose()'))
 			.toBeLessThan(deactivation.indexOf('ConnectionService.waitForLastSelectionSettlement()'));
-		expect(deactivation).toContain('Promise.allSettled([cliDisposal, hostDisposal])');
+		expect(deactivation).toContain('externalProviderDisposal');
 		expect(deactivation).toContain('connectionManager?.waitForSettlement()');
-		expect(deactivation.indexOf('copilotCliIntegration = undefined'))
-			.toBeGreaterThan(deactivation.indexOf('cliIntegration?.dispose()'));
+	});
+
+	it('isolates optional external provider startup failures from Workbench activation', () => {
+		const startup = extensionSource.slice(
+			extensionSource.indexOf("get<boolean>(EXTERNAL_TOOLS_ENABLED_SETTING, false)"),
+			extensionSource.indexOf('context.subscriptions.push(\n\t\tvscode.workspace.onWillRenameFiles'),
+		);
+		expect(startup).toContain('await applyExternalMcpProviderSetting(context);');
+		expect(startup).toContain('Optional provider startup failed; Kusto Workbench activation will continue');
+		expect(startup).toContain('catch (error)');
+	});
+
+	it('tracks both tab selection and editor-group activation for background ownership handoff', () => {
+		expect(extensionSource).toContain('tabGroups.onDidChangeTabs');
+		expect(extensionSource).toContain('tabGroups.onDidChangeTabGroups');
+		expect(extensionSource).toContain('handleTabsActivated(activeTab ? [activeTab] : [])');
 	});
 
 	it('registers the setup artifact in initial copy, watch copy, bundle, and both size tools', () => {

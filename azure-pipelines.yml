@@ -47,11 +47,11 @@ parameters:
     type: string
     default: 1es-pt-ubuntu22
   - name: windowsPoolName
-    displayName: Windows 1ES hosted pool for source analysis
+    displayName: Windows 1ES hosted pool
     type: string
     default: 1es-evals-pool
   - name: windowsPoolImage
-    displayName: Windows source-analysis image
+    displayName: Windows pool image
     type: string
     default: 1ES-pt-win-2022
 
@@ -103,9 +103,9 @@ extends:
                 fetchTags: true
 
               - task: UseNode@1
-                displayName: Use Node.js 20
+                displayName: Use Node.js 24
                 inputs:
-                  version: 20.x
+                  version: 24.x
 
               - task: UseDotNet@2
                 displayName: Use .NET SDK 8
@@ -161,8 +161,11 @@ extends:
               - bash: npm run package
                 displayName: Build package
 
-              - bash: npx vitest run tests/webview/host/copilotCliSessionManager.test.ts tests/webview/host/workbenchMcpBridge.test.ts tests/webview/host/copilotCliIntegration.test.ts tests/webview/host/firstLaunchIntegration.test.ts tests/webview/host/schemaIndexUtils.test.ts --maxWorkers=1 --no-file-parallelism
-                displayName: Run Copilot CLI bridge tests
+              - bash: npx vitest run tests/webview/host/externalMcpCatalog.test.ts tests/webview/host/externalMcpHostEligibility.test.ts tests/webview/host/externalMcpProviderStartup.test.ts tests/webview/host/externalMcpProviderStateCoordinator.test.ts tests/webview/host/externalMcpProviderLifecycle.test.ts tests/webview/host/externalMcpConnectorCore.test.ts tests/webview/host/externalMcpConnectorStdio.test.ts tests/webview/host/externalMcpRuntime.test.ts tests/webview/host/externalMcpConnectorInstaller.test.ts tests/webview/host/externalMcpDiscovery.test.ts tests/webview/host/externalMcpClientProvisioning.test.ts tests/webview/host/externalMcpSetup.test.ts tests/webview/host/workbenchMcpBridge.test.ts tests/webview/host/workbenchMcpToolAdapter.test.ts tests/webview/host/toolOrchestratorConnect.test.ts tests/webview/host/firstLaunchIntegration.test.ts tests/webview/host/skill-template.test.ts tests/webview/host/tutorialCatalog.test.ts --maxWorkers=1 --no-file-parallelism
+                displayName: Run external MCP tests
+
+              - bash: npm run validate:tutorials
+                displayName: Validate tutorial catalog
 
               - bash: |
                   set -euo pipefail
@@ -177,17 +180,70 @@ extends:
 
               - bash: |
                   set -euo pipefail
-                  npm install --global @vscode/vsce
 
                   artifact_dir="$(Build.ArtifactStagingDirectory)/vsix"
                   package_name="$(node -p "require('./package.json').name")"
                   vsix_name="$package_name-$(ExtensionVersion).vsix"
                   mkdir -p "$artifact_dir"
 
-                  vsce package -o "$artifact_dir/$vsix_name"
+                  node scripts/package-vsix.mjs
+                  cp "out/releases/$vsix_name" "$artifact_dir/$vsix_name"
                   printf '%s\n' "$(ExtensionVersion)" > "$artifact_dir/version.txt"
-                  echo "Created $vsix_name"
+                  echo "Copied verified $vsix_name"
                 displayName: Package VSIX
+
+          - job: ConnectorRuntimeWindows
+            displayName: Verify packaged Windows connector runtime
+            timeoutInMinutes: 30
+            pool:
+              name: ${{ parameters.windowsPoolName }}
+              image: ${{ parameters.windowsPoolImage }}
+              os: windows
+            steps:
+              - checkout: self
+                displayName: Checkout
+                clean: true
+
+              - task: UseNode@1
+                displayName: Use Node.js 24
+                inputs:
+                  version: 24.x
+
+              - task: Cache@2
+                displayName: Cache npm downloads
+                inputs:
+                  key: 'npm | "$(Agent.OS)" | package-lock.json'
+                  restoreKeys: |
+                    npm | "$(Agent.OS)"
+                  path: $(npm_config_cache)
+
+              - pwsh: npm ci
+                displayName: Install dependencies
+
+              - pwsh: |
+                  $ErrorActionPreference = 'Stop'
+                  node esbuild.js
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                  node scripts/stage-mcp-connector-runtime.mjs
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                  node scripts/package-external-mcp-bootstrap.mjs
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                displayName: Build connector artifacts
+
+              - pwsh: npx.cmd vitest run tests/webview/host/externalMcpRuntime.test.ts tests/webview/host/externalMcpConnectorInstaller.test.ts tests/webview/host/externalMcpDiscovery.test.ts tests/webview/host/externalMcpSetup.test.ts --maxWorkers=1 --no-file-parallelism
+                displayName: Verify packaged connector
+
+              - pwsh: npm run compile-tests
+                displayName: Compile extension-host tests
+
+              - pwsh: npx.cmd vscode-test --config .vscode-test.mjs --timeout 60000 --fail-zero --grep "External MCP provider"
+                displayName: Verify external MCP provider in VS Code
+
+              - pwsh: npx.cmd vitest run tests/webview/host/externalMcpColdLaunch.e2e.test.ts --maxWorkers=1 --no-file-parallelism
+                displayName: Verify packaged cold launch and report lifecycle
+                timeoutInMinutes: 10
+                env:
+                  KUSTO_WORKBENCH_RUN_COLD_MCP_E2E: '1'
 
       - stage: Publish
         displayName: Publish release
@@ -206,9 +262,9 @@ extends:
               - checkout: none
 
               - task: UseNode@1
-                displayName: Use Node.js 20
+                displayName: Use Node.js 24
                 inputs:
-                  version: 20.x
+                  version: 24.x
 
               - bash: |
                   set -euo pipefail
@@ -223,7 +279,7 @@ extends:
                     exit 1
                   fi
 
-                  npm install --global @vscode/vsce
+                  npm install --global @vscode/vsce@4.0.0
                   vsce publish --packagePath "$vsix_path" --pat "$VSCE_PAT"
                 displayName: Publish to VS Code Marketplace
                 env:

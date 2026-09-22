@@ -74,6 +74,37 @@
     "notes": "Uses default profile. Opens the Kusto Workbench activity bar view. Feature file: features/export-skill.feature"
   },
   {
+    "filename": "external-tools-quick-access.png",
+    "profile": "default",
+    "tier": "easy",
+    "description": "Quick Access shows External Tools directly below Export Agent Skill, with the real Configure button",
+    "readmeLine": 72,
+    "altText": "External Tools below Export Agent Skill in Kusto Workbench Quick Access",
+    "commands": ["workbench.view.extension.kustoWorkbench"],
+    "windowSize": { "width": 1100, "height": 1000 },
+    "feature": "tutorial-external-mcp-commands",
+    "testId": "tutorial-external-mcp-commands",
+    "screenshotLabel": "01-external-tools-quick-access",
+    "crop": { "x": 60, "y": 267, "width": 278, "height": 316 },
+    "additionalOutputs": ["media/tutorials/content/images/tip-copilot-external-mcp-clients.png"],
+    "notes": "Uses an isolated default profile at 100% DPI. Scroll the External Tools card to center, then use the native click at 20,500 to keep the Dev Host in foreground before capture. The same scenario clicks Configure, verifies all three client choices, cancels/reopens, and verifies status remains in the Command Palette. No consent or client registration is performed. Generate this capture first; use -CropOnly for external-tools-clients to reuse the same verified run. Canonical feature: features/tutorial-external-mcp-commands.feature."
+  },
+  {
+    "filename": "external-tools-clients.png",
+    "profile": "default",
+    "tier": "easy",
+    "description": "The real external-tools client picker offers Copilot CLI, automatic Microsoft Scout MCP and skill configuration, and Other MCP client",
+    "readmeLine": 78,
+    "altText": "Configure integration picker with Copilot CLI, Microsoft Scout, and Other MCP client",
+    "commands": ["workbench.view.extension.kustoWorkbench"],
+    "windowSize": { "width": 1100, "height": 1000 },
+    "feature": "tutorial-external-mcp-commands",
+    "testId": "tutorial-external-mcp-commands",
+    "screenshotLabel": "02-external-tools-clients",
+    "crop": { "x": 251, "y": 6, "width": 600, "height": 136 },
+    "notes": "Shares the Quick Access capture scenario. Opens the picker by clicking the actual Configure button, checks the title and all three choices, captures before selecting a client, then cancels. No external client or user state is modified. Automatic Scout description refreshed and both screenshots reviewed in run 20260922-060121. Canonical feature: features/tutorial-external-mcp-commands.feature."
+  },
+  {
     "filename": "kusto-query-editor.png",
     "profile": "kusto-auth",
     "tier": "medium",

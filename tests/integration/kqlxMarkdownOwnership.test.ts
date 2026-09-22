@@ -4626,7 +4626,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
-	test('fresh native sanitation revokes a same-source Kusto attachment before projection and persistence', async function () {
+	test('fresh native sanitation preserves a saved same-source Kusto attachment across policy changes', async function () {
 		this.timeout(20_000);
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
@@ -4777,14 +4777,11 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 			assert.ok(acknowledgedSourceGeneration > initialSourceGeneration);
 			assert.strictEqual(acknowledgedSourceGeneration, latestProjection.sourceGeneration);
-			assert.ok(!latestProjection.state.sections[0].resultJson);
-			assert.strictEqual(owner.hasCommittedAttachments(), false);
-			assert.ok(!(owner.overlaySnapshot(rowFreeState).sections?.[0] as any).resultJson);
-			await waitForCondition(
-				() => !currentText.includes('resultJson')
-					&& !fs.readFileSync(filePath, 'utf8').includes('resultJson'),
-				'fresh sanitation should repair the buffer and durable source',
-			);
+			assert.ok(latestProjection.state.sections[0].resultJson);
+			assert.strictEqual(owner.hasCommittedAttachments(), true);
+			assert.ok((owner.overlaySnapshot(rowFreeState).sections?.[0] as any).resultJson);
+			assert.ok(currentText.includes('resultJson'));
+			assert.ok(fs.readFileSync(filePath, 'utf8').includes('resultJson'));
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 
 			const revokedAttachmentPersist = {
@@ -4798,8 +4795,8 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 					&& message.snapshotId === 'revoked-attachment'),
 				'revoked attachment persistence should acknowledge',
 			);
-			assert.ok(!currentText.includes('resultJson'));
-			assert.ok(!fs.readFileSync(filePath, 'utf8').includes('resultJson'));
+			assert.ok(currentText.includes('resultJson'));
+			assert.ok(fs.readFileSync(filePath, 'utf8').includes('resultJson'));
 			disposePanel();
 			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 2_000), true);
 		} finally {

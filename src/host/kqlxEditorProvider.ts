@@ -30,9 +30,10 @@ import {
 	MainWebviewStartupGateway,
 	waitForRetainedStartupInitialization,
 } from './mainWebviewStartupGateway';
-import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
+import { normalizeWorkbenchUriKey, sameNonzeroPhysicalFileIdentity } from './workbenchFileTypes';
 import { CompatSidecarSession } from './compatSidecarSession';
 import { publishOwnedFileText } from './ownedFilePublication';
+import { releaseLockPreservingError } from './lockRelease';
 import {
 	addableSectionKindsForDocument,
 	assertDocumentSectionKindsAllowed,
@@ -146,38 +147,51 @@ async function samePhysicalLocalFile(left: vscode.Uri, right: vscode.Uri): Promi
 		if (normalizeWorkbenchUriKey(vscode.Uri.file(leftRealPath))
 			=== normalizeWorkbenchUriKey(vscode.Uri.file(rightRealPath))) return true;
 		const [leftStat, rightStat] = await Promise.all([
-			fs.promises.stat(leftRealPath),
-			fs.promises.stat(rightRealPath),
+			fs.promises.stat(leftRealPath, { bigint: true }),
+			fs.promises.stat(rightRealPath, { bigint: true }),
 		]);
-		return leftStat.dev === rightStat.dev && leftStat.ino !== 0 && leftStat.ino === rightStat.ino;
+		return sameNonzeroPhysicalFileIdentity(leftStat, rightStat);
 	} catch {
 		return false;
 	}
 }
 
-export type LocalFileIdentity = Readonly<{ realPathKey: string; device: number; inode: number }>;
+export type LocalFileIdentity = Readonly<{ realPathKey: string; device: string; inode: string }>;
 
 async function getLocalFileIdentity(uri: vscode.Uri): Promise<LocalFileIdentity | undefined> {
 	if (uri.scheme !== 'file') return undefined;
 	try {
 		const realPath = await fs.promises.realpath(uri.fsPath);
-		const stat = await fs.promises.stat(realPath);
+		const stat = await fs.promises.stat(realPath, { bigint: true });
 		return {
 			realPathKey: normalizeWorkbenchUriKey(vscode.Uri.file(realPath)),
-			device: stat.dev,
-			inode: stat.ino,
+			device: stat.dev.toString(),
+			inode: stat.ino.toString(),
 		};
 	} catch {
 		return undefined;
 	}
 }
 
-function localFileIdentityEquals(left: LocalFileIdentity | undefined, right: LocalFileIdentity | undefined): boolean {
+export function localFileIdentityEquals(left: LocalFileIdentity | undefined, right: LocalFileIdentity | undefined): boolean {
 	if (!left || !right) return false;
-	if (left.inode !== 0 && right.inode !== 0) {
+	if ((left.inode === '0') !== (right.inode === '0')) return false;
+	if (left.inode !== '0' && right.inode !== '0') {
 		return left.device === right.device && left.inode === right.inode;
 	}
-	return left.realPathKey === right.realPathKey;
+	return left.device === right.device && left.realPathKey === right.realPathKey;
+}
+
+export async function hasDirtyOpenLocalFileAlias(
+	identity: LocalFileIdentity,
+	owner: Pick<vscode.TextDocument, 'uri'>,
+	candidates: readonly Pick<vscode.TextDocument, 'uri' | 'isDirty'>[] = vscode.workspace.textDocuments,
+): Promise<boolean> {
+	for (const candidate of candidates) {
+		if (candidate === owner || !candidate.isDirty || candidate.uri.scheme !== 'file') continue;
+		if (localFileIdentityEquals(identity, await getLocalFileIdentity(candidate.uri))) return true;
+	}
+	return false;
 }
 
 export async function withKqlxDocumentWriteLock<T>(
@@ -191,7 +205,7 @@ export async function withKqlxDocumentWriteLock<T>(
 		: undefined;
 	const identityKey = uri.scheme === 'vscode-userdata'
 		? `uri:${normalizeWorkbenchUriKey(uri)}`
-		: identity && identity.inode !== 0
+		: identity && identity.inode !== '0'
 			? `inode:${identity.device}:${identity.inode}`
 			: `path:${identity?.realPathKey ?? normalizeWorkbenchUriKey(uri)}`;
 	const digest = createHash('sha256').update(identityKey).digest('hex');
@@ -208,10 +222,18 @@ export async function withKqlxDocumentWriteLock<T>(
 			maxTimeout: 25,
 		},
 	});
+	let operationError: unknown;
 	try {
 		return await work();
+	} catch (error) {
+		operationError = error;
+		throw error;
 	} finally {
-		await release();
+		await releaseLockPreservingError(
+			release,
+			operationError,
+			'The Kusto Workbench document operation failed while releasing its write lock.',
+		);
 	}
 }
 
@@ -875,6 +897,7 @@ export async function publishKqlxTextFresh<R>(
 	publishStateFresh: PublishSqlStateFresh,
 	publishText: (sanitizedText: string) => Promise<R>,
 	durableBaseline?: KqlxStateV1,
+	suppressedAttachmentSectionIds: ReadonlySet<string> = new Set(),
 ): Promise<R> {
 	const parsed = parseKqlxText(text, {
 		allowedKinds: [kind],
@@ -893,9 +916,11 @@ export async function publishKqlxTextFresh<R>(
 		let file = sanitizedState === parsed.file.state
 			? parsed.file
 			: overlayKqlxFileState(parsed.file, sanitizedState, kind);
-		const preservedState = preserveKqlxResultAttachments(durableBaseline, file.state, parsed.file.state);
+		const preservedState = preserveKqlxResultAttachments(
+			durableBaseline, file.state, parsed.file.state, suppressedAttachmentSectionIds,
+		);
 		if (preservedState !== file.state) file = { ...file, state: preservedState };
-		if (file === parsed.file) return publishText(text);
+		if (file === parsed.file || deepEqual(file, parsed.file)) return publishText(text);
 		const unsupportedSanitizedLink = getUnsupportedNativeDocumentReason(file.state);
 		if (unsupportedSanitizedLink) {
 			throw new Error(`Cannot publish an unsupported linked section. ${unsupportedSanitizedLink}`);
@@ -911,12 +936,14 @@ export function prepareKqlxSaveText(
 	kind: KqlxFileKind,
 	eol: vscode.EndOfLine,
 	durableBaseline: KqlxStateV1 | undefined,
+	suppressedAttachmentSectionIds: ReadonlySet<string> = new Set(),
 ): Promise<string> {
 	return publishKqlxTextFresh(
 		text, kind, eol,
 		async (state, publish) => publish(stripKqlxResultAttachments(state)),
 		async preparedText => preparedText,
 		durableBaseline,
+		suppressedAttachmentSectionIds,
 	);
 }
 
@@ -1651,6 +1678,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		let lastSavedText = initialSourceSnapshot.text;
 		let lastSavedIdentity = initialSourceSnapshot.identity;
 		let lastSavedEol = document.eol;
+		let acceptedSaveSnapshotSequence = 0;
 
 		// ── Section-level unsaved-changes tracking ──────────────────────────
 		// A cache of normalized sections from the last-saved text, keyed by section id.
@@ -1842,16 +1870,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			return undefined;
 		};
-		const hasDirtyOpenPhysicalAlias = async (
-			identity: LocalFileIdentity,
-			owner: vscode.TextDocument,
-		): Promise<boolean> => {
-			for (const candidate of vscode.workspace.textDocuments) {
-				if (candidate === owner || !candidate.isDirty || candidate.uri.scheme !== 'file') continue;
-				if (localFileIdentityEquals(identity, await getLocalFileIdentity(candidate.uri))) return true;
-			}
-			return false;
-		};
 		const writeOwnedLocalFileText = async (
 			uri: vscode.Uri,
 			identity: LocalFileIdentity,
@@ -1861,8 +1879,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (!localFileIdentityEquals(identity, await getLocalFileIdentity(uri))) return false;
 			const handle = await fs.promises.open(uri.fsPath, 'r+');
 			try {
-				const stat = await handle.stat();
-				if (stat.dev !== identity.device || (identity.inode !== 0 && stat.ino !== identity.inode)) return false;
+				const stat = await handle.stat({ bigint: true });
+				if (stat.dev.toString() !== identity.device
+					|| (identity.inode !== '0' && stat.ino.toString() !== identity.inode)) return false;
 				await publishOwnedFileText(handle, identity, expectedText, nextText);
 			} finally {
 				await handle.close();
@@ -2025,7 +2044,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				|| !localFileIdentityEquals(linkedQueryPhysicalIdentity, targetIdentity)
 				|| await samePhysicalLocalFile(document.uri, targetUri)
 				|| !localFileIdentityEquals(targetIdentity, await getLocalFileIdentity(targetUri))) return false;
-			if (await hasDirtyOpenPhysicalAlias(targetIdentity, targetDocument)) return false;
+			if (await hasDirtyOpenLocalFileAlias(targetIdentity, targetDocument)) return false;
 			const expectedText = targetDocument.getText();
 			const durableBeforeSave = await tryReadTextFile(targetUri);
 			if (durableBeforeSave === undefined || durableBeforeSave !== lastSavedLinkedQueryText) return false;
@@ -2180,7 +2199,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						|| !localFileIdentityEquals(owner.identity, await getLocalFileIdentity(owner.uri))) {
 						return { ok: false, reason: 'save-failed' };
 					}
-					if (await hasDirtyOpenPhysicalAlias(owner.identity, owner.document)) {
+					if (await hasDirtyOpenLocalFileAlias(owner.identity, owner.document)) {
 						return { ok: false, reason: 'dirty-alias' };
 					}
 					priorDurableText = await tryReadTextFile(owner.uri);
@@ -2209,7 +2228,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						return { ok: false, reason: 'owner-changed' };
 					}
 					if (priorDurableText !== candidateText) {
-						if (await hasDirtyOpenPhysicalAlias(owner.identity, owner.document)) {
+						if (await hasDirtyOpenLocalFileAlias(owner.identity, owner.document)) {
 							await rollback();
 							return { ok: false, reason: 'dirty-alias' };
 						}
@@ -2745,6 +2764,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			return ensureProjectedSectionIds(parsed.file.state, snapshot.text);
 		};
 		const sanitizeSerializedNotebookTextFresh = async (text: string): Promise<string> => {
+			const durableBaseline = await readDurableResultBaseline();
+			const suppressedAttachmentSectionIds = new Set(
+				kustoResultOwner.getExplicitlyClearedAttachmentSectionIds(durableBaseline ?? { sections: [] }),
+			);
 			return publishKqlxTextFresh(
 				text,
 				documentKind,
@@ -2755,27 +2778,39 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					)
 					: publish(queryEditor.sanitizeSqlLeaveNoTraceState(state)),
 				async sanitizedText => sanitizedText,
-				await readDurableResultBaseline(),
+				durableBaseline,
+				suppressedAttachmentSectionIds,
 			);
 		};
 		const sanitizeSerializedNotebookTextFailClosed = async (text: string): Promise<string> => {
+			const durableBaseline = await readDurableResultBaseline();
+			const suppressedAttachmentSectionIds = new Set(
+				kustoResultOwner.getExplicitlyClearedAttachmentSectionIds(durableBaseline ?? { sections: [] }),
+			);
 			return prepareKqlxSaveText(
-				text, documentKind, document.eol, await readDurableResultBaseline(),
+				text, documentKind, document.eol, durableBaseline, suppressedAttachmentSectionIds,
 			);
 		};
 		const publishSerializedNotebookTextFresh = async <R>(
 			text: string,
 			publishText: (sanitizedText: string) => Promise<R>,
-		): Promise<R> => publishKqlxTextFresh(
-			text,
-			documentKind,
-			document.eol,
-			(state, publish) => queryEditor.publishSqlLeaveNoTraceStateFresh(
-				state, publish, revokeSanitizedKustoAttachments,
-			),
-			publishText,
-			await readDurableResultBaseline(),
-		);
+		): Promise<R> => {
+			const durableBaseline = await readDurableResultBaseline();
+			const suppressedAttachmentSectionIds = new Set(
+				kustoResultOwner.getExplicitlyClearedAttachmentSectionIds(durableBaseline ?? { sections: [] }),
+			);
+			return publishKqlxTextFresh(
+				text,
+				documentKind,
+				document.eol,
+				(state, publish) => queryEditor.publishSqlLeaveNoTraceStateFresh(
+					state, publish, revokeSanitizedKustoAttachments,
+				),
+				publishText,
+				durableBaseline,
+				suppressedAttachmentSectionIds,
+			);
+		};
 		const normalizeTextToEol = (text: string, eol: vscode.EndOfLine): string => {
 			const lf = String(text ?? '').replace(/\r\n/g, '\n');
 			return eol === vscode.EndOfLine.CRLF ? lf.replace(/\n/g, '\r\n') : lf;
@@ -2888,11 +2923,17 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			const expectedIdentity = lastSavedIdentity;
 			const authorityToken = markdownDocumentQueue.latestAuthority?.token;
 			await withKqlxDocumentWriteLock(document.uri, async () => {
+				if (closeFinalizationAbandoned) {
+					throw new Error('The Kusto Workbench session close was abandoned before persistence completed.');
+				}
 				if (document.uri.scheme === 'file' && (!expectedIdentity
 					|| !localFileIdentityEquals(expectedIdentity, await getLocalFileIdentity(document.uri)))) {
 					throw new Error('The Kusto Workbench session changed physical identity before publication.');
 				}
 				const currentDiskText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
+				if (closeFinalizationAbandoned) {
+					throw new Error('The Kusto Workbench session close was abandoned before persistence completed.');
+				}
 				if (currentDiskText !== lastSavedText) {
 					throw new Error('The Kusto Workbench session changed in another window. Reload it before saving.');
 				}
@@ -2901,8 +2942,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					if (document.uri.scheme === 'file' && expectedIdentity) {
 						const handle = await fs.promises.open(document.uri.fsPath, 'r+');
 						try {
-							const stat = await handle.stat();
-							if (stat.dev !== expectedIdentity.device || (expectedIdentity.inode !== 0 && stat.ino !== expectedIdentity.inode)) {
+							const stat = await handle.stat({ bigint: true });
+							if (stat.dev.toString() !== expectedIdentity.device
+								|| (expectedIdentity.inode !== '0' && stat.ino.toString() !== expectedIdentity.inode)) {
 								throw new Error('The Kusto Workbench session changed physical identity before publication.');
 							}
 							await publishOwnedFileText(handle, expectedIdentity, currentDiskText, nextText);
@@ -3012,6 +3054,29 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			} finally {
 				release();
 			}
+		};
+		const reprojectInvalidatedPersistence = () => {
+			if (outerDisposed) return;
+			const expectedEditRevision = projectionSession.currentEditRevision;
+			void runInMarkdownDocumentQueue(async () => {
+				const sourceText = await readProjectionSourceText();
+				const parsed = parseKqlxText(sourceText, {
+					allowedKinds: [documentKind], defaultKind: documentKind,
+				});
+				if (!parsed.ok || outerDisposed) return;
+				const observedState = kustoResultOwner.overlaySnapshot(
+					parsed.file.state, kustoResultPanelSession.panelId,
+				);
+				await queryEditor.publishSqlLeaveNoTraceStateFresh(
+					observedState,
+					async () => undefined,
+					revokeSanitizedKustoAttachments,
+				);
+				if (!outerDisposed && pendingProjectionActivations.size === 0
+					&& await isProjectionSourceCurrent(sourceText)) {
+					await postDocument({ forceReload: true, expectedEditRevision });
+				}
+			}).catch(() => undefined);
 		};
 		queryEditor.dashboardApplication.setPowerBiPublishCleanupAdmission(async (
 			publishInfo, cleanup, waitForPendingDocumentApplications,
@@ -3446,6 +3511,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			outerDisposalSubscription,
 			{ dispose: () => kustoResultLease.release() },
 		];
+		subscriptions.push(queryEditor.onDidInvalidateSqlPersistence(reprojectInvalidatedPersistence));
+		subscriptions.push(queryEditor.onDidInvalidateKustoPersistence(reprojectInvalidatedPersistence));
 		const markdownBarrierRequests = new Map<string, {
 			sourceGeneration: number;
 			resolve: (lease: MarkdownSaveLease | undefined) => void;
@@ -3851,7 +3918,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						sanitizedText = await sanitizeSerializedNotebookTextFailClosed(document.getText());
 					}
 					const freshText = document.getText();
-					const edits = sanitizedText === freshText
+					const edits = sanitizedText === freshText && freshText === currentText
 						? []
 						: [vscode.TextEdit.replace(
 							new vscode.Range(document.positionAt(0), document.positionAt(freshText.length)),
@@ -3948,8 +4015,28 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							void reapplyTask.finally(() => linkedSaveTasks.delete(reapplyTask));
 						} else rolledBackLinkedNativeSave = undefined;
 					}
-					lastSavedText = saved.getText();
+					const savedText = saved.getText();
+					lastSavedText = savedText;
 					lastSavedEol = saved.eol;
+					const saveSnapshotSequence = ++acceptedSaveSnapshotSequence;
+					const saveSnapshotRefresh = (async () => {
+						try {
+							const snapshot = await readKqlxDocumentSnapshotLocked(saved.uri);
+							if (saveSnapshotSequence !== acceptedSaveSnapshotSequence
+								|| snapshot.text !== savedText) return;
+							lastSavedText = snapshot.text;
+							lastSavedIdentity = snapshot.identity;
+							lastSavedEol = saved.eol;
+						} catch {
+							// A later file change must remain authoritative.
+						}
+					})();
+					const trackedSaveSnapshot = saveSnapshotRefresh.then(() => undefined, () => undefined);
+					nativeSavePreparations.add(trackedSaveSnapshot);
+					void trackedSaveSnapshot.then(() => {
+						nativeSavePreparations.delete(trackedSaveSnapshot);
+						notifyNativeSaveStateChanged();
+					});
 					// Rebuild section change cache and notify webview that everything is clean.
 					rebuildSavedSectionCache(lastSavedText);
 					postChangedSectionsClear();
@@ -4127,6 +4214,110 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			})
 		);
 
+		let closeMaterializationWriteInProgress = false;
+		const materializeCanonicalKustoResults = async (): Promise<void> => {
+			if (!kustoResultOwner.hasCanonicalResultState() || closeFinalizationAbandoned) return;
+			await runInMarkdownDocumentQueue(() => serializeSqlSaveRepair(async () => {
+				if (closeFinalizationAbandoned) return;
+				const sourceText = await readProjectionSourceText();
+				if (closeFinalizationAbandoned) return;
+				const parsed = parseKqlxText(sourceText, {
+					allowedKinds: [documentKind], defaultKind: documentKind,
+				});
+				if (!parsed.ok) return;
+				const authoritativeState = kustoResultOwner.overlaySnapshot(
+					parsed.file.state, kustoResultPanelSession.panelId,
+				);
+				if (deepEqual(authoritativeState, parsed.file.state)) return;
+				const durableSnapshot = document.uri.scheme === 'untitled'
+					? undefined
+					: await readKqlxDocumentSnapshotLocked(document.uri);
+				if (closeFinalizationAbandoned) return;
+				if (!isSessionFile && (!durableSnapshot?.identity || !lastSavedIdentity
+					|| !localFileIdentityEquals(durableSnapshot.identity, lastSavedIdentity)
+					|| durableSnapshot.text !== lastSavedText)) return;
+				const durableParse = durableSnapshot && parseKqlxText(durableSnapshot.text, {
+					allowedKinds: [documentKind], defaultKind: documentKind,
+				});
+				const durableBaseline = durableSnapshot && durableParse?.ok
+					? ensureProjectedSectionIds(durableParse.file.state, durableSnapshot.text)
+					: undefined;
+				const attachmentBaseline = durableBaseline
+					?? ensureProjectedSectionIds(parsed.file.state, sourceText);
+				const explicitlyClearedAttachmentIds = new Set(
+					kustoResultOwner.getExplicitlyClearedAttachmentSectionIds(attachmentBaseline),
+				);
+				const materializedText = await publishKqlxTextFresh(
+					sourceText,
+					documentKind,
+					document.eol,
+					(_state, publish) => queryEditor.publishSqlLeaveNoTraceStateFresh(
+						authoritativeState, publish, revokeSanitizedKustoAttachments,
+					),
+					async text => text,
+					attachmentBaseline,
+					explicitlyClearedAttachmentIds,
+				);
+				if (closeFinalizationAbandoned || materializedText === sourceText) return;
+				if (isSessionFile) {
+					await writeOwnedSessionText(materializedText, true);
+					if (closeFinalizationAbandoned) return;
+					lastSavedText = materializedText;
+					lastSavedEol = document.eol;
+					return;
+				}
+				if (!durableSnapshot?.identity || document.getText() !== sourceText) return;
+				const rollbackBuffer = async (): Promise<void> => {
+					if (document.getText() !== materializedText) return;
+					const rollback = new vscode.WorkspaceEdit();
+					rollback.replace(
+						document.uri,
+						new vscode.Range(document.positionAt(0), document.positionAt(materializedText.length)),
+						sourceText,
+					);
+					await applyOwnedSourceEdit(rollback, sourceText);
+				};
+				if (closeFinalizationAbandoned
+					|| !localFileIdentityEquals(durableSnapshot.identity, await getLocalFileIdentity(document.uri))
+					|| await tryReadTextFile(document.uri) !== durableSnapshot.text
+					|| await hasDirtyOpenLocalFileAlias(durableSnapshot.identity, document)
+					|| document.getText() !== sourceText) return;
+				const edit = new vscode.WorkspaceEdit();
+				edit.replace(
+					document.uri,
+					new vscode.Range(document.positionAt(0), document.positionAt(sourceText.length)),
+					materializedText,
+				);
+				if (!await applyOwnedSourceEdit(edit, materializedText)) return;
+				if (closeFinalizationAbandoned) {
+					await rollbackBuffer();
+					return;
+				}
+				let published = false;
+				closeMaterializationWriteInProgress = true;
+				try {
+					if (!await hasDirtyOpenLocalFileAlias(durableSnapshot.identity, document)) {
+						published = await writeOwnedLocalFileText(
+							document.uri, durableSnapshot.identity, durableSnapshot.text, materializedText,
+						);
+					}
+				} catch {
+					published = false;
+				} finally {
+					closeMaterializationWriteInProgress = false;
+				}
+				if (!published) {
+					await rollbackBuffer();
+					return;
+				}
+				const authority = markdownDocumentQueue.latestAuthority;
+				if (authority) commitCurrentAdapterText(authority.token, activeMarkdownOwnerEntry, materializedText);
+				lastSavedText = materializedText;
+				lastSavedIdentity = await getLocalFileIdentity(document.uri);
+				lastSavedEol = document.eol;
+			}));
+		};
+
 		closeFinalization = () => {
 			void (async () => {
 				try {
@@ -4177,6 +4368,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							}
 						}
 						if (closeFinalizationAbandoned) return;
+						await materializeCanonicalKustoResults();
+						if (closeFinalizationAbandoned) return;
 						await _persistChain;
 						await sqlSaveRepairTail;
 						await _persistChain;
@@ -4185,6 +4378,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						closeFinalizationAbandoned = true;
 						notifyNativeSaveStateChanged();
 						getWorkbenchLogger().warn('[kusto] Timed out draining Kusto Workbench persistence during close.');
+						if (closeMaterializationWriteInProgress) await persistenceDrain.catch(() => undefined);
 					}
 					if (!await settlesWithin(Promise.allSettled([...admittedWebviewHandlers]), NON_PERSISTENCE_CLOSE_WAIT_MS)) {
 						getWorkbenchLogger().warn('[kusto] Timed out draining non-persistence webview work during close.');
@@ -5248,6 +5442,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								void postDocument({ forceReload: true });
 							}
 							if (persistAccepted && snapshotId && Number.isSafeInteger(incomingEditRevision) && !outerDisposed) {
+								projectionSession.adoptRevision(Number(incomingEditRevision));
 								try {
 									await startupGateway.postMessage({
 										type: 'persistDocumentAck', snapshotId, editRevision: incomingEditRevision,

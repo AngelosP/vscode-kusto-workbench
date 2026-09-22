@@ -10,6 +10,7 @@ import {
 	hasDirtyCompatSidecarPhysicalAlias,
 	hasOpenCompatSidecarPhysicalAlias,
 	readCompatSidecarSnapshot,
+	releaseCompatSidecarLocks,
 	withCompatSidecarLock,
 	writeCompatSidecarTextOwned,
 } from '../../../src/host/compatSidecarStore';
@@ -19,6 +20,22 @@ import { stripKqlxResultAttachments } from '../../../src/host/kqlxOverlay';
 afterEach(() => vi.restoreAllMocks());
 
 describe('CompatSidecarStore lossless baseline', () => {
+	it('attempts every lock release and reports all cleanup failures', async () => {
+		const calls: number[] = [];
+		const primaryError = new Error('operation failed');
+		const firstReleaseError = new Error('first release failed');
+		const thirdReleaseError = new Error('third release failed');
+
+		await expect(releaseCompatSidecarLocks([
+			async () => { calls.push(1); throw firstReleaseError; },
+			async () => { calls.push(2); },
+			async () => { calls.push(3); throw thirdReleaseError; },
+		], primaryError)).rejects.toMatchObject({
+			errors: [primaryError, thirdReleaseError, firstReleaseError],
+		});
+		expect(calls).toEqual([3, 2, 1]);
+	});
+
 	it.each(['query', 'sql'] as const)('preserves disk A through %s publication, recovery and repair, excludes no-data B, then admits new allowed C', async primaryKind => {
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-saved-results-'));
 		const extension = primaryKind === 'query' ? 'kql' : 'sql';
@@ -108,6 +125,50 @@ describe('CompatSidecarStore lossless baseline', () => {
 			expect(JSON.parse(fs.readFileSync(newRecovery.fsPath, 'utf8')).state.sections)
 				.toEqual([{ id: 'primary', type: primaryKind, linkedQueryPath: `sample.${extension}`, ...editedTarget }]);
 			expect(policyHeld).toBe(false);
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it('suppresses only an explicitly removed result while preserving a blocked saved sibling', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-selective-clear-'));
+		const compatUri = vscode.Uri.file(path.join(tmpDir, 'sample.kql').replace(/\\/g, '/'));
+		const sidecarUri = vscode.Uri.file(`${compatUri.fsPath}.json`);
+		const format: CompatSidecarFormat = { primaryKind: 'query', sidecarKind: 'kqlx' };
+		const saved = buildCompatSidecarFile(compatUri, { sections: [
+			{ id: 'result-a', type: 'query', query: 'print A=1', resultJson: 'saved-a' },
+			{ id: 'result-b', type: 'query', query: 'print B=2', resultJson: 'saved-b' },
+		] }, format);
+		const store = new CompatSidecarStore({
+			compatUri,
+			parse: text => {
+				const parsed = parseKqlxText(text, { allowedKinds: ['kqlx'], defaultKind: 'kqlx' });
+				return parsed.ok ? parsed.file : undefined;
+			},
+			isLinked: (uri, file) => isLinkedCompatSidecar(uri, file, compatUri, 'query'),
+			sanitizeFresh: async state => stripKqlxResultAttachments(state),
+			publishFresh: async (state, publish) => publish(stripKqlxResultAttachments(state)),
+			buildFile: (state, base) => buildCompatSidecarFile(compatUri, state, format, base),
+			stringify: stringifyKqlxFile,
+		});
+		try {
+			const savedText = stringifyKqlxFile(saved);
+			fs.writeFileSync(sidecarUri.fsPath, savedText, 'utf8');
+			const snapshot = await readCompatSidecarSnapshot(sidecarUri);
+			const submitted: KqlxStateV1 = { sections: [
+				{ id: 'result-a', type: 'query', query: 'print A=1' },
+				{ id: 'result-b', type: 'query', query: 'print B=2' },
+			] };
+
+			const written = await store.writeFresh(
+				sidecarUri, submitted, snapshot.text, snapshot.identity, undefined, new Set(['result-a']),
+			);
+
+			expect(written.file.state.sections[0]).not.toHaveProperty('resultJson');
+			expect(written.file.state.sections[1]).toHaveProperty('resultJson', 'saved-b');
+			const persisted = JSON.parse(fs.readFileSync(sidecarUri.fsPath, 'utf8'));
+			expect(persisted.state.sections[0]).not.toHaveProperty('resultJson');
+			expect(persisted.state.sections[1].resultJson).toBe('saved-b');
 		} finally {
 			fs.rmSync(tmpDir, { recursive: true, force: true });
 		}
@@ -287,7 +348,7 @@ describe('CompatSidecarStore lossless baseline', () => {
 		try {
 			vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
 				const handle = await originalOpen(...args as [any, any]);
-				if (String(args[0]) === sidecarPath && args[1] === 'wx') {
+				if (String(args[0]).startsWith(`${sidecarPath}.`) && String(args[0]).endsWith('.tmp') && args[1] === 'wx') {
 					(handle as any).writeFile = async () => {
 						await handle.write(Buffer.from('PARTIAL', 'utf8'), 0, 7, 0);
 						throw new Error('injected creation failure');
@@ -309,24 +370,50 @@ describe('CompatSidecarStore lossless baseline', () => {
 		const sidecarPath = path.join(tmpDir, 'sample.kql.json');
 		const displacedPath = path.join(tmpDir, 'partial.kql.json');
 		const originalOpen = fs.promises.open.bind(fs.promises);
+		let replaced = false;
 		try {
 			vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
-				const handle = await originalOpen(...args as [any, any]);
-				if (String(args[0]) === sidecarPath && args[1] === 'wx') {
-					(handle as any).writeFile = async () => {
-						await handle.write(Buffer.from('PARTIAL', 'utf8'), 0, 7, 0);
-						fs.renameSync(sidecarPath, displacedPath);
-						fs.writeFileSync(sidecarPath, 'EXTERNAL_REPLACEMENT', 'utf8');
-						throw new Error('injected creation retarget');
-					};
+				if (!replaced && String(args[0]) === sidecarPath && args[1] === 'r') {
+					replaced = true;
+					fs.renameSync(sidecarPath, displacedPath);
+					fs.writeFileSync(sidecarPath, 'EXTERNAL_REPLACEMENT', 'utf8');
 				}
-				return handle;
+				return originalOpen(...args as [any, any]);
 			});
 
 			await expect(writeCompatSidecarTextOwned(vscode.Uri.file(sidecarPath), 'LOCAL'))
-				.rejects.toThrow('injected creation retarget');
+				.rejects.toThrow('changed while it was being created');
 			expect(fs.readFileSync(sidecarPath, 'utf8')).toBe('EXTERNAL_REPLACEMENT');
-			expect(fs.readFileSync(displacedPath, 'utf8')).toBe('PARTIAL');
+			expect(fs.readFileSync(displacedPath, 'utf8')).toBe('LOCAL');
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it('preserves an in-place external overwrite when failed creation cleanup retains the inode', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-create-in-place-'));
+		const sidecarPath = path.join(tmpDir, 'sample.kql.json');
+		const originalOpen = fs.promises.open.bind(fs.promises);
+		let overwritten = false;
+		try {
+			vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+				if (!overwritten && String(args[0]) === sidecarPath && args[1] === 'r') {
+					overwritten = true;
+					const external = await originalOpen(sidecarPath, 'r+');
+					try {
+						await external.truncate(0);
+						await external.writeFile('EXTERNAL_IN_PLACE', 'utf8');
+						await external.sync();
+					} finally {
+						await external.close();
+					}
+				}
+				return originalOpen(...args as [any, any]);
+			});
+
+			await expect(writeCompatSidecarTextOwned(vscode.Uri.file(sidecarPath), 'LOCAL'))
+				.rejects.toThrow('changed while it was being created');
+			expect(fs.readFileSync(sidecarPath, 'utf8')).toBe('EXTERNAL_IN_PLACE');
 		} finally {
 			fs.rmSync(tmpDir, { recursive: true, force: true });
 		}
@@ -344,13 +431,12 @@ describe('CompatSidecarStore lossless baseline', () => {
 		try {
 			let paused = false;
 			vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
-				const handle = await originalOpen(...args as [any, any]);
-				if (!paused && String(args[0]) === sidecarPath && args[1] === 'wx') {
+				if (!paused && String(args[0]) === sidecarPath && args[1] === 'r') {
 					paused = true;
 					markCreated();
 					await creatorGate;
 				}
-				return handle;
+				return originalOpen(...args as [any, any]);
 			});
 
 			const creator = withCompatSidecarLock(sidecarUri, undefined, () =>
@@ -364,8 +450,8 @@ describe('CompatSidecarStore lossless baseline', () => {
 			releaseCreator();
 
 			const outcomes = await Promise.allSettled([creator, competitor]);
-			expect(outcomes.filter(outcome => outcome.status === 'fulfilled')).toHaveLength(1);
-			expect(fs.readFileSync(sidecarPath, 'utf8')).toBe('CREATOR');
+			expect(outcomes.filter(outcome => outcome.status === 'fulfilled')).toHaveLength(2);
+			expect(fs.readFileSync(sidecarPath, 'utf8')).toBe('COMPETITOR');
 		} finally {
 			releaseCreator();
 			fs.rmSync(tmpDir, { recursive: true, force: true });

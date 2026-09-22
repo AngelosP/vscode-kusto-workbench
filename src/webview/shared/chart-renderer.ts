@@ -3576,9 +3576,11 @@ export function maximizeChartBox(boxId: any) {
 				const instance = st.__echarts.instance;
 				const canvasId = getChartActiveCanvasElementId(boxId);
 				const canvas = document.getElementById(canvasId) as HTMLElement | null;
-				if (canvas) scheduleOwnedChartFrame(String(boxId), st, canvas, '__maximizeRaf', instance, () => {
-					try { instance.resize(); } catch (e) { console.error('[kusto]', e); }
-				});
+				if (canvas) {
+					scheduleOwnedChartFrame(String(boxId), st, canvas, '__maximizeRaf', instance, () => {
+						try { instance.resize(); } catch (e) { console.error('[kusto]', e); }
+					});
+				}
 			}
 		} catch (e) { console.error('[kusto]', e); }
 		try { persistChartConfiguration(boxId); } catch (e) { console.error('[kusto]', e); }

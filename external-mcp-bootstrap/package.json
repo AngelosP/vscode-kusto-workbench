@@ -1,0 +1,31 @@
+{
+  "name": "kusto-workbench-mcp-bootstrap",
+  "displayName": "Kusto Workbench External Tools Bootstrap",
+  "description": "Starts the Kusto Workbench external MCP provider only when the user-enabled integration is on.",
+  "publisher": "angelos-petropoulos",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AngelosP/vscode-kusto-workbench.git"
+  },
+  "engines": {
+    "vscode": "^1.107.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "files": [
+    "extension.js",
+    "README.md",
+    "LICENSE"
+  ]
+}

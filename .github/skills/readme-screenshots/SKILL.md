@@ -265,6 +265,10 @@ The `screenshots.json` file in this folder defines every screenshot. Fields:
 | `cropHints` | string | Description of what region to crop (exact pixels determined at runtime) |
 | `notes` | string | Gotchas, timing requirements, special setup |
 | `todo` | boolean | If `true`, the screenshot is planned but not yet rendered in README |
+| `feature` | string | Optional shared canonical feature basename; defaults to the screenshot name |
+| `testId` | string | Optional existing E2E test ID for a shared capture; defaults to `readme-ss-<name>` |
+| `screenshotLabel` | string | Exact capture label when a scenario produces multiple images |
+| `additionalOutputs` | string[] | Repository-relative destinations for the same crop, such as a tutorial image |
 
 Use `altText` (not `readmeLine`) as the stable identifier when matching
 screenshots to README references.
@@ -393,6 +397,7 @@ screenshots to README references.
 
 ## Tips
 
+- The external-tools images share `features/tutorial-external-mcp-commands.feature`. Capture with `take-screenshot.ps1 external-tools-quick-access`, then use `take-screenshot.ps1 external-tools-clients -CropOnly` to crop the picker from the same run. The first crop also publishes the Did You Know image. The scenario cancels before setup consent and does not change client registrations.
 - Run one screenshot at a time to iterate quickly on the feature file
   and crop region. Batch mode is for the final pass.
 - Group "easy" tier screenshots first to build momentum and validate

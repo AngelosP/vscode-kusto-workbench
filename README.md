@@ -63,22 +63,43 @@ The agent can:
 
 ![VS Code custom agent that actually works called Kusto Workbench](media/marketplace/vscode-custom-agent.png)
 
-### Drive the live Workbench from Copilot CLI
+### Copilot CLI, Scout, and external tools
 
-Copilot CLI can use the same Kusto Workbench tools against the notebooks open in a specific VS Code window. VS Code remains the owner of connections, authentication, execution, document state, charts, and dashboard previews; the CLI is another agent surface over those existing tools.
+Ask **Copilot CLI** or **Microsoft Scout** to build reports in Kusto Workbench from a natural-language request. The external client plans the work and uses the same Workbench tools as the VS Code agent: discover connections, query Kusto or SQL, add charts and transformations, write Markdown or HTML, validate, and save. VS Code keeps ownership of authentication and the report.
 
-This integration is off by default and never starts a listener or CLI process during normal extension activation.
+**Connect your client**
 
-1. Enable `kustoWorkbench.copilotCli.enabled` in VS Code settings.
-2. In the VS Code window you want to control, choose a launch mode:
-	- Run `Kusto Workbench: Copilot CLI - Open new instance (integrated)` for a terminal inside VS Code.
-	- On Windows, run `Kusto Workbench: Copilot CLI - Open new instance (external)` for a separate PowerShell console outside VS Code.
-3. Use the new CLI session. It is bound to that VS Code window and loads the same Kusto Workbench agent instructions.
-4. Run `Kusto Workbench: Copilot CLI - Disconnect all instances` to revoke and close every CLI session attached through that window.
+1. Open Kusto Workbench's **Quick Access** view and select **Configure...** under **External Tools**, directly below **Export Agent Skill**. You can also run `Kusto Workbench: Configure integration with external tools...` from the Command Palette.
+2. Choose your client, review the setup consent, and select **Default Profile** or an exact named VS Code profile. The target profile must already contain the same Workbench version.
+3. Complete the client-specific step below and start a fresh client session.
 
-Each connection uses an authenticated loopback endpoint and a short-lived configuration file in VS Code's per-user extension storage, outside the directory granted to the CLI agent. The file is created with owner-only mode where the operating system supports it and deleted after the CLI authenticates. A process already running as the same OS user could still access it during that short interval. Closing either terminal type revokes only that session. Repeating either connection command creates another independently revocable CLI session. VS Code must remain running, and both modes require a fresh same-machine desktop session with GitHub Copilot CLI 1.0.81 or newer. The external-console mode currently requires Windows. Attaching an already-running CLI process is not supported.
+![External Tools below Export Agent Skill in Kusto Workbench Quick Access](media/marketplace/external-tools-quick-access.png)
 
-Disconnecting or disabling the setting blocks new calls and requests cancellation of active calls. It does not roll back an operation that the underlying Workbench tool already accepted; short non-cancellable mutations may finish through the same semantics they have in VS Code Copilot Chat.
+![Configure integration picker with Copilot CLI, Microsoft Scout, and Other MCP client](media/marketplace/external-tools-clients.png)
+
+**Copilot CLI**
+
+Setup registers the MCP server automatically and installs the user-level **Kusto Workbench** custom agent. Launch normally with `copilot`, then enter `/agent` and select **Kusto Workbench**. No special launch arguments are required. Tool approvals remain under Copilot CLI's control.
+
+**Microsoft Scout**
+
+Setup automatically registers the Kusto Workbench MCP server and installs its skill. No **Add Server** form is needed. Fully quit Scout, including its system-tray process, before first-time registration: Scout reads its local MCP configuration at startup and can overwrite external changes while running. After setup, open Scout and start a new conversation.
+
+An existing matching server is reused without rewriting it or taking ownership. Other servers, discovered tools, credentials, and approval settings are preserved. Automatic registration uses the local configuration format verified with Scout `0.23.779.0`; an unknown or conflicting format is rejected rather than overwritten.
+
+**Other MCP clients** receive portable local STDIO configuration. Use the client's supported server-management flow to install it.
+
+For example, ask your connected client:
+
+> In my analysis workspace, create a report of daily query failures for the last seven days. Add a bar chart and a Markdown summary, then save it without bringing VS Code to the foreground.
+
+The client discovers or launches a Workbench window and uses its exact `instanceId`, plus the report's exact file and section IDs. Background report creation uses `reveal: false` and never overwrites an existing file. If a mutation loses its response, the client must inspect the target before retrying.
+
+**Reconfigure or remove**
+
+Return to **External Tools > Configure...** anytime to repair setup or change the profile used for new Workbench windows. Start a fresh client session after changing the launch profile. **External tools - Show integration status** remains in the Command Palette; **External tools - Disable or remove integration...** lets you select the components to remove. Scout cleanup removes only an unchanged registration created by Workbench and requires Scout to be closed. Pre-existing manual registrations, user-edited agents, and user-edited skills are preserved.
+
+**Requirements and safety:** Local Windows x64 desktop VS Code and an MCP client that supports local command/STDIO servers. Integration is off by default. First setup downloads the pinned official Node.js runtime from `nodejs.org`, verifies its SHA-256 digest, and caches it for repair; the VSIX does not embed Node.js. Removing the local connector also removes its runtime cache. WSL, SSH, containers, web extension hosts, ARM64, Linux, macOS, and remote MCP forwarding are not currently supported. Client approval and data-retention policies still apply.
 
 ### Let your own agent control Kusto Workbench
 
@@ -271,15 +292,15 @@ You can open `.kqlx` and `.sqlx` files directly from GitHub or SharePoint using 
 | `Kusto Workbench: Open Tutorials...` | Open the searchable tutorial viewer with category subscriptions |
 | `Kusto Workbench: Open Kusto Workbench Custom Agent` | Open the Copilot Chat panel with the Kusto Workbench agent |
 | `Kusto Workbench: Export Agent Skill...` | Export a SKILL.md file so other Copilot agents can use Kusto Workbench as a tool |
-| `Kusto Workbench: Copilot CLI - Open new instance (integrated)` | Start an explicitly attached Copilot CLI session in a VS Code terminal for this window |
-| `Kusto Workbench: Copilot CLI - Open new instance (external)` | Start an attached Copilot CLI session in a separate Windows console |
-| `Kusto Workbench: Copilot CLI - Disconnect all instances` | Revoke and close every Copilot CLI session attached through this VS Code window |
+| `Kusto Workbench: Configure integration with external tools...` | Install, repair, or retarget the local connector and configure a Copilot CLI agent, Scout skill, or another MCP client |
+| `Kusto Workbench: External tools - Show integration status` | Show provider, connector, and supported client registration status |
+| `Kusto Workbench: External tools - Disable or remove integration...` | Disable the provider or remove selected client/bootstrap integration parts |
 | `Kusto Workbench: Show Development Notes` | View AI development notes stored in the current file |
 
 ## Requirements
 
 * VS Code 1.107.0 or higher
-* For Copilot CLI integration: GitHub Copilot CLI 1.0.81 or higher on the same machine
+* For external MCP integration: local Windows x64 desktop VS Code; the selected MCP client must support local command/STDIO servers; first setup needs HTTPS access to `nodejs.org`
 * For Python sections: a local Python install available as `python`, `python3`, or `py` on your PATH
 
 ## Data & privacy (how it actually works)
@@ -330,7 +351,7 @@ When you use **Optimize** or the **integrated Copilot Chat**:
 
 The Optimize message appears in the embedded chat like a message you sent yourself. Anything you submit in that conversation is part of what gets sent to Copilot.
 
-When you explicitly connect Copilot CLI, Workbench tool inputs and results are also returned to that CLI session. Leave No Trace continues to govern what Workbench persists, but it cannot erase content already retained by Copilot CLI in its own conversation history, logs, exports, or temporary output files. Use the CLI's retention and telemetry settings according to your data-handling requirements.
+When you configure an external MCP client, Workbench tool inputs and results are returned to that client. Leave No Trace continues to govern what Workbench persists, but it cannot erase content already retained by the client in conversation history, logs, exports, or temporary output files. Use the client's approval, retention, and telemetry settings according to your data-handling requirements.
 
 ### Python sections
 

@@ -36,6 +36,7 @@ permissions:
 
 jobs:
   build:
+    needs: connector-runtime-windows
     runs-on: ubuntu-latest
 
     steps:
@@ -47,7 +48,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20.x
+          node-version: 24.x
           cache: npm
 
       - name: Setup .NET (for NBgv tool)
@@ -90,8 +91,11 @@ jobs:
       - name: Build (package)
         run: npm run package
 
-      - name: Run Copilot CLI bridge tests
-        run: npx vitest run tests/webview/host/copilotCliSessionManager.test.ts tests/webview/host/workbenchMcpBridge.test.ts tests/webview/host/copilotCliIntegration.test.ts tests/webview/host/firstLaunchIntegration.test.ts tests/webview/host/schemaIndexUtils.test.ts --maxWorkers=1 --no-file-parallelism
+      - name: Run external MCP tests
+        run: npx vitest run tests/webview/host/externalMcpCatalog.test.ts tests/webview/host/externalMcpHostEligibility.test.ts tests/webview/host/externalMcpProviderStartup.test.ts tests/webview/host/externalMcpProviderStateCoordinator.test.ts tests/webview/host/externalMcpProviderLifecycle.test.ts tests/webview/host/externalMcpConnectorCore.test.ts tests/webview/host/externalMcpConnectorStdio.test.ts tests/webview/host/externalMcpRuntime.test.ts tests/webview/host/externalMcpConnectorInstaller.test.ts tests/webview/host/externalMcpDiscovery.test.ts tests/webview/host/externalMcpClientProvisioning.test.ts tests/webview/host/externalMcpSetup.test.ts tests/webview/host/workbenchMcpBridge.test.ts tests/webview/host/workbenchMcpToolAdapter.test.ts tests/webview/host/toolOrchestratorConnect.test.ts tests/webview/host/firstLaunchIntegration.test.ts tests/webview/host/skill-template.test.ts tests/webview/host/tutorialCatalog.test.ts --maxWorkers=1 --no-file-parallelism
+
+      - name: Validate tutorial catalog
+        run: npm run validate:tutorials
 
       - name: Install Xvfb (for VS Code tests)
         run: |
@@ -103,19 +107,20 @@ jobs:
         run: xvfb-run -a npm test -- --bail
 
       - name: Package VSIX (vsce)
+        id: package-vsix
         shell: bash
         run: |
           set -euo pipefail
-          npm install -g @vscode/vsce
-          VSIX_NAME="${{ github.event.repository.name }}-${{ steps.nbgv.outputs.version }}.vsix"
-          echo "VSIX_NAME=$VSIX_NAME" >> $GITHUB_ENV
-          vsce package -o "$VSIX_NAME"
+          VSIX_PATH="out/releases/vscode-kusto-workbench-${{ steps.nbgv.outputs.version }}.vsix"
+          node scripts/package-vsix.mjs
+          test -f "$VSIX_PATH"
+          echo "path=$VSIX_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
         with:
           name: vsix-${{ steps.nbgv.outputs.version }}
-          path: ${{ env.VSIX_NAME }}
+          path: ${{ steps.package-vsix.outputs.path }}
 
       - name: Publish to VS Code Marketplace
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
@@ -128,8 +133,7 @@ jobs:
             echo "VSCE_PAT is not set. Add it as a repository secret to publish."
             exit 1
           fi
-          npm install -g @vscode/vsce
-          vsce publish --pat "$VSCE_PAT"
+          node node_modules/@vscode/vsce/vsce publish --packagePath "${{ steps.package-vsix.outputs.path }}" --pat "$VSCE_PAT"
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
@@ -138,4 +142,41 @@ jobs:
           tag_name: v${{ steps.nbgv.outputs.version }}
           name: v${{ steps.nbgv.outputs.version }}
           generate_release_notes: true
-          files: ${{ env.VSIX_NAME }}
+          files: ${{ steps.package-vsix.outputs.path }}
+
+  connector-runtime-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build connector artifacts
+        run: |
+          node esbuild.js
+          node scripts/stage-mcp-connector-runtime.mjs
+          node scripts/package-external-mcp-bootstrap.mjs
+
+      - name: Verify packaged Windows connector
+        run: |
+          npx vitest run tests/webview/host/externalMcpRuntime.test.ts tests/webview/host/externalMcpConnectorInstaller.test.ts tests/webview/host/externalMcpDiscovery.test.ts tests/webview/host/externalMcpSetup.test.ts --maxWorkers=1 --no-file-parallelism
+
+      - name: Compile extension-host tests
+        run: npm run compile-tests
+
+      - name: Verify external MCP provider in VS Code
+        run: npx vscode-test --config .vscode-test.mjs --timeout 60000 --fail-zero --grep "External MCP provider"
+
+      - name: Verify packaged cold launch and report lifecycle
+        timeout-minutes: 10
+        env:
+          KUSTO_WORKBENCH_RUN_COLD_MCP_E2E: '1'
+        run: npx vitest run tests/webview/host/externalMcpColdLaunch.e2e.test.ts --maxWorkers=1 --no-file-parallelism

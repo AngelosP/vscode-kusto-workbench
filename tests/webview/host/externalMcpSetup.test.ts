@@ -1,0 +1,440 @@
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import * as vscode from 'vscode';
+import { describe, expect, it, vi } from 'vitest';
+import {
+	acquireExternalMcpConnectorLock,
+	type InstalledExternalMcpConnector,
+} from '../../../src/host/externalMcpConnectorInstaller';
+import {
+	assertExternalToolsConfigurationRegistered,
+	createGenericMcpConfiguration,
+	disableExternalMcpIntegration,
+	executeVsCodeCli,
+	installProviderBootstrap,
+	removeInstalledExternalMcpConnector,
+	runExternalMcpSetup,
+	showExternalMcpStatus,
+	uninstallProviderBootstrap,
+	updateExternalToolsEnabledWithRollback,
+} from '../../../src/host/externalMcpSetup';
+import { reconcileCopilotCliAgent } from '../../../src/host/externalCopilotAgent';
+import * as connectorInstaller from '../../../src/host/externalMcpConnectorInstaller';
+import * as scoutProvisioning from '../../../src/host/externalScoutMcpProvisioning';
+import * as scoutSkill from '../../../src/host/externalScoutSkill';
+import * as clientProvisioning from '../../../src/host/externalMcpClientProvisioning';
+
+vi.mock('vscode', async importOriginal => {
+	const original = await importOriginal<typeof import('vscode')>();
+	return {
+		...original,
+		UIKind: { Desktop: 1, Web: 2 },
+		ProgressLocation: { Notification: 15 },
+		env: { ...original.env, uiKind: 1 },
+	};
+});
+
+const connector: InstalledExternalMcpConnector = {
+	root: 'C:\\Users\\me\\AppData\\Local\\KustoWorkbench\\McpConnector',
+	versionDirectory: 'C:\\connector\\versions\\5.2.0',
+	bootstrapPath: 'C:\\connector\\bootstrap.cjs',
+	command: 'C:\\connector\\node.exe',
+	args: ['C:\\connector\\bootstrap.cjs'],
+	connectorVersion: '5.2.0',
+	schemaHash: 'a'.repeat(64),
+};
+
+function findVsCodeCli(): string | undefined {
+	if (process.platform !== 'win32' || !process.env.SystemRoot) return undefined;
+	try {
+		return execFileSync(join(process.env.SystemRoot, 'System32', 'where.exe'), ['code.cmd'], { encoding: 'utf8' })
+			.split(/\r?\n/).map(line => line.trim()).find(line => line.toLowerCase().endsWith('code.cmd'));
+	} catch {
+		return undefined;
+	}
+}
+
+const vsCodeCli = findVsCodeCli();
+
+describe('external MCP setup', () => {
+	it('requires the current configuration registry before setup mutates integration state', () => {
+		expect(() => assertExternalToolsConfigurationRegistered(undefined))
+			.toThrow('Developer: Reload Window');
+		expect(() => assertExternalToolsConfigurationRegistered({ defaultValue: false }))
+			.not.toThrow();
+	});
+
+	it('provides portable stdio fields without pretending every client shares one file format', () => {
+		expect(createGenericMcpConfiguration(connector)).toEqual({
+			mcpServers: {
+				'kusto-workbench': {
+					type: 'stdio',
+					command: connector.command,
+					args: connector.args,
+					tools: ['*'],
+				},
+			},
+		});
+	});
+
+	it('preflights automatic Scout registration before installing shared connector state', () => {
+		const source = readFileSync(resolve('src/host/externalMcpSetup.ts'), 'utf8');
+		const setup = source.slice(source.indexOf('export async function runExternalMcpSetup'));
+		expect(setup.indexOf('await preflightScoutMcpRegistration')).toBeLessThan(setup.indexOf('await acquireExternalMcpConnectorLock'));
+		expect(source).toMatch(/configureScoutIntegration\(\{\s+connector,/);
+		expect(source).toContain('close Scout before first-time registration');
+		expect(source).toContain('Tool approvals remain controlled by Scout.');
+		expect(source).not.toContain('createScoutSetupInstructions');
+	});
+
+	it.runIf(process.platform === 'win32').each([true, false])('configures the selected Scout client, checks status, and removes only owned artifacts (new registration: %s)', async registrationChanged => {
+		const cliRoot = mkdtempSync(join(tmpdir(), 'kw-scout-setup-cli-'));
+		mkdirSync(join(cliRoot, 'bin'));
+		writeFileSync(join(cliRoot, 'bin', 'code.cmd'), '@echo off\r\necho angelos-petropoulos.vscode-kusto-workbench@5.2.0\r\necho angelos-petropoulos.kusto-workbench-mcp-bootstrap@0.0.0\r\n');
+		const originalWindow = Object.getOwnPropertyDescriptors(vscode.window);
+		const originalExecPath = process.execPath;
+		const events: string[] = [];
+		const getConfiguration = vi.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({
+			inspect: () => ({ defaultValue: false }),
+			get: () => true,
+			update: vi.fn(async () => { events.push('provider'); }),
+		} as never);
+		const register = vi.spyOn(scoutProvisioning, 'reconcileScoutMcpRegistration').mockImplementation(async () => {
+			events.push('registration');
+			return { changed: registrationChanged, managed: registrationChanged, serverKey: 'kusto_workbench' };
+		});
+		const preflight = vi.spyOn(scoutProvisioning, 'preflightScoutMcpRegistration').mockResolvedValue(undefined);
+		const inspect = vi.spyOn(scoutProvisioning, 'inspectScoutMcpRegistration').mockResolvedValue({ configured: true, managed: registrationChanged });
+		const remove = vi.spyOn(scoutProvisioning, 'removeScoutMcpRegistration').mockResolvedValue({ removed: registrationChanged });
+		const installSkill = vi.spyOn(scoutSkill, 'reconcileScoutSkill').mockImplementation(async () => {
+			events.push('skill');
+			return { changed: registrationChanged, status: registrationChanged ? 'installed' : 'current', skillPath: 'isolated/SKILL.md' };
+		});
+		const removeSkill = vi.spyOn(scoutSkill, 'removeScoutSkill').mockResolvedValue({ removed: true, skillPath: 'isolated/SKILL.md' });
+		const lock = vi.spyOn(connectorInstaller, 'acquireExternalMcpConnectorLock').mockResolvedValue(async () => undefined);
+		const install = vi.spyOn(connectorInstaller, 'installExternalMcpConnector').mockResolvedValue(connector);
+		const list = vi.spyOn(clientProvisioning, 'executeClientCommand').mockResolvedValue({ exitCode: 0, stdout: '{"mcpServers":{}}', stderr: '' });
+		const pick = vi.fn().mockResolvedValueOnce({ clientKind: 'scout' }).mockResolvedValueOnce({ value: 'default' });
+		const info = vi.fn();
+		const warning = vi.fn().mockResolvedValue('Continue');
+		Object.assign(vscode.window, {
+			showQuickPick: pick, showInformationMessage: info, showWarningMessage: warning,
+			withProgress: async (_options: unknown, action: () => Promise<unknown>) => action(),
+		});
+		process.execPath = join(cliRoot, 'Code.exe');
+		try {
+			const context = { extensionUri: vscode.Uri.file(resolve('.')), extension: { packageJSON: { version: '5.2.0' } } } as unknown as vscode.ExtensionContext;
+			const result = await runExternalMcpSetup(context, { info: vi.fn(), warn: vi.fn(), error: vi.fn() });
+			expect(result).toEqual({ client: 'scout', integrationEnabled: true, fullyConfigured: true, requiresClientReload: registrationChanged });
+			expect(events).toEqual(['registration', 'skill', 'provider']);
+			expect(preflight).toHaveBeenCalledOnce();
+			expect(register).toHaveBeenCalledWith({ connector });
+			expect(installSkill.mock.calls[0][0].sourceContent).toContain('# Kusto Workbench Skill');
+			expect(info.mock.calls[0][0]).toContain(registrationChanged ? 'Open or restart Scout' : 'Start a new conversation');
+			await showExternalMcpStatus();
+			expect(info.mock.calls[1][0]).toContain(registrationChanged ? 'Scout: configured, managed' : 'Scout: configured, existing registration');
+			pick.mockResolvedValueOnce([{ id: 'scout' }]);
+			inspect.mockResolvedValue({ configured: !registrationChanged, managed: false });
+			await disableExternalMcpIntegration();
+			expect(remove).toHaveBeenCalledOnce();
+			expect(removeSkill).toHaveBeenCalledOnce();
+			if (!registrationChanged) expect(warning.mock.calls.at(-1)?.[0]).toContain('preserved because Workbench did not create it');
+		} finally {
+			process.execPath = originalExecPath;
+			for (const key of ['showQuickPick', 'showInformationMessage', 'showWarningMessage', 'withProgress']) {
+				const descriptor = originalWindow[key];
+				if (descriptor) Object.defineProperty(vscode.window, key, descriptor);
+				else Reflect.deleteProperty(vscode.window, key);
+			}
+			for (const mock of [getConfiguration, register, preflight, inspect, remove, installSkill, removeSkill, lock, install, list]) mock.mockRestore();
+			rmSync(cliRoot, { recursive: true, force: true });
+		}
+	});
+
+	it('restores a changed client registration when provider enablement fails', async () => {
+		const settingError = new Error('setting write failed');
+		const rollback = vi.fn(async () => undefined);
+
+		await expect(updateExternalToolsEnabledWithRollback(
+			async () => { throw settingError; },
+			rollback,
+		)).rejects.toBe(settingError);
+		expect(rollback).toHaveBeenCalledOnce();
+	});
+
+	it('keeps heavy Workbench startup off and assigns startup activation only to the tiny bootstrap', () => {
+		const main = JSON.parse(readFileSync(resolve('package.json'), 'utf8'));
+		const bootstrap = JSON.parse(readFileSync(resolve('external-mcp-bootstrap/package.json'), 'utf8'));
+
+		expect(main.activationEvents).not.toContain('onStartupFinished');
+		expect(bootstrap.activationEvents).toEqual(['onStartupFinished']);
+		expect(bootstrap.extensionKind).toEqual(['ui']);
+		expect(readFileSync(resolve('external-mcp-bootstrap/extension.js'), 'utf8'))
+			.toContain("get('externalTools.enabled', false)");
+	});
+
+	it.runIf(process.platform === 'win32')('uses the supported profile-aware code.cmd install and uninstall lifecycle', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'kw-code-cli-'));
+		const cliDirectory = join(root, 'CLI with spaces');
+		mkdirSync(cliDirectory);
+		const commandFile = join(cliDirectory, 'code.cmd');
+		const driverPath = join(cliDirectory, 'driver.cjs');
+		writeFileSync(commandFile, `@echo off\r\n"${process.execPath}" "%~dp0driver.cjs" %*\r\n`);
+		writeFileSync(driverPath, String.raw`
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+const marker = path.join(__dirname, 'installed');
+fs.appendFileSync(path.join(__dirname, 'calls.jsonl'), JSON.stringify(args) + '\n');
+if (args.includes('--install-extension')) fs.writeFileSync(marker, 'yes');
+if (args.includes('--uninstall-extension')) fs.rmSync(marker, { force: true });
+if (args.includes('--list-extensions')) {
+  const version = args.includes('--show-versions') ? '@5.2.0' : '';
+  const profileIndex = args.indexOf('--profile');
+  const profileName = profileIndex >= 0 ? args[profileIndex + 1] : '';
+  console.log('angelos-petropoulos.vscode-kusto-workbench' + (profileName === 'Old profile' ? '@5.1.1' : version));
+  if (fs.existsSync(marker)) console.log('angelos-petropoulos.kusto-workbench-mcp-bootstrap' + version);
+}
+`);
+		const cli = { commandFile, profileArgs: ['--profile', 'Data profile'] };
+		const context = {
+			extensionUri: vscode.Uri.file(root),
+			extension: { packageJSON: { version: '5.2.0' } },
+		} as unknown as vscode.ExtensionContext;
+		try {
+			await installProviderBootstrap({ context, cli });
+			await uninstallProviderBootstrap(cli);
+			let calls = readFileSync(join(cliDirectory, 'calls.jsonl'), 'utf8')
+				.trim().split(/\r?\n/).map(line => JSON.parse(line) as string[]);
+			expect(calls).toHaveLength(6);
+			expect(calls.every(call => call[0] === '--profile' && call[1] === 'Data profile')).toBe(true);
+			expect(calls[0].slice(2)).toEqual(['--list-extensions', '--show-versions']);
+			expect(calls[1].slice(2)).toEqual([
+				'--install-extension',
+				vscode.Uri.joinPath(context.extensionUri, 'dist', 'mcp-connector', 'kusto-workbench-mcp-bootstrap.vsix').fsPath,
+				'--force',
+			]);
+			expect(calls[2].slice(2)).toEqual(['--list-extensions', '--show-versions']);
+			expect(calls[3].slice(2)).toEqual(['--list-extensions']);
+			expect(calls[4].slice(2)).toEqual(['--uninstall-extension', 'angelos-petropoulos.kusto-workbench-mcp-bootstrap']);
+			expect(calls[5].slice(2)).toEqual(['--list-extensions']);
+
+			await expect(installProviderBootstrap({
+				context,
+				cli: { commandFile, profileArgs: ['--profile', 'Old profile'] },
+			})).rejects.toThrow('has Kusto Workbench 5.1.1 installed, but this setup requires 5.2.0');
+			expect(existsSync(join(cliDirectory, 'installed'))).toBe(false);
+
+			await expect(installProviderBootstrap({
+				context,
+				cli: { commandFile, profileArgs: ['--profile', 'Data & AI'] },
+			})).rejects.toThrow('characters unsupported by the command-line installer');
+			calls = readFileSync(join(cliDirectory, 'calls.jsonl'), 'utf8')
+				.trim().split(/\r?\n/).map(line => JSON.parse(line) as string[]);
+			expect(calls).toHaveLength(7);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it.runIf(vsCodeCli !== undefined)('installs and removes the companion through a real isolated VS Code CLI', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'kw-real-code-cli-'));
+		const userDataDirectory = join(root, 'user data');
+		const extensionsDirectory = join(root, 'extensions');
+		const vsixPath = join(root, 'bootstrap.vsix');
+		try {
+			execFileSync(process.execPath, [
+				resolve('node_modules', '@vscode', 'vsce', 'vsce'),
+				'package',
+				'--no-dependencies',
+				'-o',
+				vsixPath,
+			], { cwd: resolve('external-mcp-bootstrap'), stdio: 'pipe' });
+			const cli = {
+				commandFile: vsCodeCli!,
+				profileArgs: ['--user-data-dir', userDataDirectory, '--extensions-dir', extensionsDirectory],
+			};
+			await executeVsCodeCli(cli, ['--install-extension', vsixPath, '--force']);
+			let installed = await executeVsCodeCli(cli, ['--list-extensions', '--show-versions']);
+			expect(installed.toLowerCase()).toContain('angelos-petropoulos.kusto-workbench-mcp-bootstrap@');
+
+			await executeVsCodeCli(cli, ['--uninstall-extension', 'angelos-petropoulos.kusto-workbench-mcp-bootstrap']);
+			installed = await executeVsCodeCli(cli, ['--list-extensions']);
+			expect(installed.toLowerCase()).not.toContain('angelos-petropoulos.kusto-workbench-mcp-bootstrap');
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	it('does not preselect optional client cleanup when disabling the provider', async () => {
+		const showQuickPick = vi.fn().mockResolvedValue([{ id: 'provider' }]);
+		Object.assign(vscode.window, { showQuickPick });
+		const update = vi.fn().mockResolvedValue(undefined);
+		const getConfiguration = vi.spyOn(vscode.workspace, 'getConfiguration')
+			.mockReturnValue({ inspect: () => ({ defaultValue: false }), update } as never);
+		try {
+			await disableExternalMcpIntegration();
+			const choices = showQuickPick.mock.calls[0][0] as Array<{ id: string; picked: boolean }>;
+			expect(choices.find(choice => choice.id === 'provider')?.picked).toBe(true);
+			expect(choices.find(choice => choice.id === 'copilot')?.picked).toBe(false);
+			expect(choices.find(choice => choice.id === 'connector')?.picked).toBe(false);
+			expect(update).toHaveBeenCalledWith('externalTools.enabled', false, vscode.ConfigurationTarget.Global);
+		} finally {
+			delete (vscode.window as Partial<typeof vscode.window> & { showQuickPick?: unknown }).showQuickPick;
+			getConfiguration.mockRestore();
+		}
+	});
+
+	it('removes only the installed local connector directory', async () => {
+		const localAppData = mkdtempSync(join(tmpdir(), 'kw-remove-connector-'));
+		const connectorRoot = join(localAppData, 'KustoWorkbench', 'McpConnector');
+		const staleQuarantine = join(localAppData, 'KustoWorkbench', '.mcp-connector-remove-stale');
+		mkdirSync(connectorRoot, { recursive: true });
+		mkdirSync(staleQuarantine, { recursive: true });
+		writeFileSync(join(connectorRoot, 'current.json'), '{}');
+		writeFileSync(join(staleQuarantine, 'node.exe'), 'stale');
+		try {
+			await removeInstalledExternalMcpConnector(localAppData);
+			expect(existsSync(connectorRoot)).toBe(false);
+			expect(existsSync(staleQuarantine)).toBe(false);
+			expect(existsSync(localAppData)).toBe(true);
+		} finally {
+			rmSync(localAppData, { recursive: true, force: true });
+		}
+	});
+
+	it('serializes connector removal with installation', async () => {
+		const localAppData = mkdtempSync(join(tmpdir(), 'kw-remove-connector-lock-'));
+		const connectorRoot = join(localAppData, 'KustoWorkbench', 'McpConnector');
+		mkdirSync(connectorRoot, { recursive: true });
+		writeFileSync(join(connectorRoot, 'current.json'), '{}');
+		const release = await acquireExternalMcpConnectorLock(localAppData);
+		let completed = false;
+		const removal = removeInstalledExternalMcpConnector(localAppData).then(() => { completed = true; });
+		try {
+			await new Promise(resolvePromise => setTimeout(resolvePromise, 150));
+			expect(completed).toBe(false);
+			expect(existsSync(connectorRoot)).toBe(true);
+		} finally {
+			await release();
+		}
+		try {
+			await removal;
+			expect(existsSync(connectorRoot)).toBe(false);
+		} finally {
+			rmSync(localAppData, { recursive: true, force: true });
+		}
+	});
+
+	it('serializes provider disable with connector setup', async () => {
+		const localAppData = mkdtempSync(join(tmpdir(), 'kw-disable-provider-lock-'));
+		const priorLocalAppData = process.env.LOCALAPPDATA;
+		process.env.LOCALAPPDATA = localAppData;
+		const showQuickPick = vi.fn().mockResolvedValue([{ id: 'provider' }]);
+		Object.assign(vscode.window, { showQuickPick });
+		const update = vi.fn().mockResolvedValue(undefined);
+		const getConfiguration = vi.spyOn(vscode.workspace, 'getConfiguration')
+			.mockReturnValue({ inspect: () => ({ defaultValue: false }), update } as never);
+		const release = await acquireExternalMcpConnectorLock(localAppData);
+		const disabling = disableExternalMcpIntegration();
+		try {
+			await new Promise(resolvePromise => setTimeout(resolvePromise, 150));
+			expect(update).not.toHaveBeenCalled();
+		} finally {
+			await release();
+		}
+		try {
+			await disabling;
+			expect(update).toHaveBeenCalledWith('externalTools.enabled', false, vscode.ConfigurationTarget.Global);
+		} finally {
+			if (priorLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+			else process.env.LOCALAPPDATA = priorLocalAppData;
+			delete (vscode.window as Partial<typeof vscode.window> & { showQuickPick?: unknown }).showQuickPick;
+			getConfiguration.mockRestore();
+			rmSync(localAppData, { recursive: true, force: true });
+		}
+	});
+
+	it('does not partially disable integration when the shared security lock is unavailable', async () => {
+		const showQuickPick = vi.fn().mockResolvedValue([{ id: 'provider' }, { id: 'copilot' }]);
+		Object.assign(vscode.window, { showQuickPick });
+		const update = vi.fn().mockResolvedValue(undefined);
+		const getConfiguration = vi.spyOn(vscode.workspace, 'getConfiguration')
+			.mockReturnValue({ inspect: () => ({ defaultValue: false }), update } as never);
+		const systemRoot = process.env.SystemRoot;
+		delete process.env.SystemRoot;
+		try {
+			await expect(disableExternalMcpIntegration()).rejects.toThrow('Windows system directory is unavailable');
+			expect(update).not.toHaveBeenCalled();
+		} finally {
+			if (systemRoot === undefined) delete process.env.SystemRoot;
+			else process.env.SystemRoot = systemRoot;
+			delete (vscode.window as Partial<typeof vscode.window> & { showQuickPick?: unknown }).showQuickPick;
+			getConfiguration.mockRestore();
+		}
+	});
+
+	it('continues selected cleanup after an independent step fails', async () => {
+		const localAppData = mkdtempSync(join(tmpdir(), 'kw-best-effort-cleanup-'));
+		const connectorRoot = join(localAppData, 'KustoWorkbench', 'McpConnector');
+		mkdirSync(connectorRoot, { recursive: true });
+		writeFileSync(join(connectorRoot, 'current.json'), '{}');
+		const showQuickPick = vi.fn().mockResolvedValue([{ id: 'other' }, { id: 'connector' }]);
+		Object.assign(vscode.window, { showQuickPick });
+		const clipboard = { writeText: vi.fn().mockRejectedValue(new Error('clipboard unavailable')) };
+		Object.assign(vscode.env, { clipboard });
+		const update = vi.fn().mockResolvedValue(undefined);
+		const getConfiguration = vi.spyOn(vscode.workspace, 'getConfiguration')
+			.mockReturnValue({ inspect: () => ({ defaultValue: false }), update } as never);
+		const previousLocalAppData = process.env.LOCALAPPDATA;
+		process.env.LOCALAPPDATA = localAppData;
+		try {
+			await expect(disableExternalMcpIntegration()).rejects.toThrow('clipboard unavailable');
+			expect(existsSync(connectorRoot)).toBe(false);
+			expect(update).toHaveBeenCalledWith('externalTools.enabled', false, vscode.ConfigurationTarget.Global);
+		} finally {
+			if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+			else process.env.LOCALAPPDATA = previousLocalAppData;
+			delete (vscode.env as Partial<typeof vscode.env> & { clipboard?: unknown }).clipboard;
+			delete (vscode.window as Partial<typeof vscode.window> & { showQuickPick?: unknown }).showQuickPick;
+			getConfiguration.mockRestore();
+			rmSync(localAppData, { recursive: true, force: true });
+		}
+	});
+
+	it('continues provider and managed-agent cleanup when Copilot CLI is unavailable', async () => {
+		const localAppData = mkdtempSync(join(tmpdir(), 'kw-cleanup-no-copilot-'));
+		const copilotHomeDirectory = join(localAppData, 'copilot-home');
+		const agentPath = join(copilotHomeDirectory, 'agents', 'kusto-workbench.agent.md');
+		const previousLocalAppData = process.env.LOCALAPPDATA;
+		const previousPath = process.env.PATH;
+		const previousCopilotHome = process.env.COPILOT_HOME;
+		process.env.LOCALAPPDATA = localAppData;
+		process.env.COPILOT_HOME = copilotHomeDirectory;
+		process.env.PATH = '';
+		const showQuickPick = vi.fn().mockResolvedValue([{ id: 'provider' }, { id: 'copilot' }]);
+		Object.assign(vscode.window, { showQuickPick });
+		const update = vi.fn().mockResolvedValue(undefined);
+		const getConfiguration = vi.spyOn(vscode.workspace, 'getConfiguration')
+			.mockReturnValue({ inspect: () => ({ defaultValue: false }), update } as never);
+		try {
+			await reconcileCopilotCliAgent({ sourceContent: '---\nname: Kusto Workbench\n---\nManaged test agent.\n' });
+			expect(existsSync(agentPath)).toBe(true);
+			await expect(disableExternalMcpIntegration()).rejects.toThrow('GitHub Copilot CLI');
+			expect(update).toHaveBeenCalledWith('externalTools.enabled', false, vscode.ConfigurationTarget.Global);
+			expect(existsSync(agentPath)).toBe(false);
+		} finally {
+			if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+			else process.env.LOCALAPPDATA = previousLocalAppData;
+			if (previousPath === undefined) delete process.env.PATH;
+			else process.env.PATH = previousPath;
+			if (previousCopilotHome === undefined) delete process.env.COPILOT_HOME;
+			else process.env.COPILOT_HOME = previousCopilotHome;
+			delete (vscode.window as Partial<typeof vscode.window> & { showQuickPick?: unknown }).showQuickPick;
+			getConfiguration.mockRestore();
+			rmSync(localAppData, { recursive: true, force: true });
+		}
+	});
+});

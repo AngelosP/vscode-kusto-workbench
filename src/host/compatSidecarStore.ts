@@ -160,6 +160,24 @@ const sidecarLockKeys = (uri: vscode.Uri, identity?: CompatSidecarFileIdentity):
 	return [...new Set(keys)].sort();
 };
 
+export async function releaseCompatSidecarLocks(
+	releases: readonly (() => Promise<void>)[],
+	operationError?: unknown,
+): Promise<void> {
+	const releaseErrors: unknown[] = [];
+	for (const release of [...releases].reverse()) {
+		try {
+			await release();
+		} catch (error) {
+			releaseErrors.push(error);
+		}
+	}
+	if (releaseErrors.length === 0) return;
+	const errors = operationError === undefined ? releaseErrors : [operationError, ...releaseErrors];
+	if (errors.length === 1) throw errors[0];
+	throw new AggregateError(errors, 'The companion sidecar operation failed while releasing its locks.');
+}
+
 export async function withCompatSidecarLock<T>(
 	uri: vscode.Uri,
 	expectedIdentity: CompatSidecarFileIdentity | undefined,
@@ -169,6 +187,7 @@ export async function withCompatSidecarLock<T>(
 	const lockRoot = path.join(os.tmpdir(), 'vscode-kusto-workbench-sidecar-locks');
 	await fs.promises.mkdir(lockRoot, { recursive: true });
 	const releases: Array<() => Promise<void>> = [];
+	let operationError: unknown;
 	try {
 		for (const key of sidecarLockKeys(uri, expectedIdentity)) {
 			const digest = crypto.createHash('sha256').update(key).digest('hex');
@@ -187,8 +206,11 @@ export async function withCompatSidecarLock<T>(
 			}
 		}
 		return await work();
+	} catch (error) {
+		operationError = error;
+		throw error;
 	} finally {
-		for (const release of releases.reverse()) await release();
+		await releaseCompatSidecarLocks(releases, operationError);
 	}
 }
 
@@ -203,47 +225,88 @@ export async function writeCompatSidecarTextOwned(
 			await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(text));
 			return undefined;
 		}
+		const temporaryPath = `${uri.fsPath}.${crypto.randomUUID()}.tmp`;
 		let handle: fs.promises.FileHandle | undefined;
-		let created = false;
 		let createdIdentity: CompatSidecarFileIdentity | undefined;
 		let verifiedIdentity: CompatSidecarFileIdentity | undefined;
+		let published = false;
 		try {
-			handle = await fs.promises.open(uri.fsPath, 'wx');
-			created = true;
+			handle = await fs.promises.open(temporaryPath, 'wx');
 			const createdStat = await handle.stat({ bigint: true });
-			const createdRealPath = await resolveCompatSidecarRealPath(uri.fsPath);
+			const createdRealPath = await resolveCompatSidecarRealPath(temporaryPath);
 			if (!createdRealPath && createdStat.ino === 0n) {
 				throw new CompatSidecarCasError('The companion sidecar canonical physical path is unavailable.');
 			}
-			createdIdentity = compatSidecarIdentityFromStat(createdStat, createdRealPath ?? uri.fsPath);
+			createdIdentity = compatSidecarIdentityFromStat(createdStat, createdRealPath ?? temporaryPath);
 			await handle.writeFile(text, { encoding: 'utf8' });
 			await handle.sync();
 			await handle.close();
 			handle = undefined;
-			const published = await readCompatSidecarSnapshot(uri);
-			if (!compatSidecarFileIdentityEquals(createdIdentity, published.identity) || published.text !== text) {
+			const staged = await readCompatSidecarSnapshot(vscode.Uri.file(temporaryPath));
+			if (!compatSidecarFileIdentityEquals(createdIdentity, staged.identity) || staged.text !== text) {
+				throw new CompatSidecarCasError('The companion sidecar changed while it was being staged.');
+			}
+			await fs.promises.link(temporaryPath, uri.fsPath);
+			published = true;
+			const publishedSnapshot = await readCompatSidecarSnapshot(uri);
+			if (!compatSidecarFileIdentityEquals(createdIdentity, publishedSnapshot.identity) || publishedSnapshot.text !== text) {
 				throw new CompatSidecarCasError('The companion sidecar changed while it was being created.');
 			}
-			verifiedIdentity = published.identity;
+			verifiedIdentity = publishedSnapshot.identity;
 		} catch (error) {
-			if (created && createdIdentity) {
-				await handle?.close().catch(() => undefined);
-				handle = undefined;
+			await handle?.close().catch(() => undefined);
+			handle = undefined;
+			let cleanupError: unknown;
+			if (published && createdIdentity) {
+				const quarantinePath = `${uri.fsPath}.${crypto.randomUUID()}.rollback`;
+				let quarantined = false;
 				try {
-					const current = await readCompatSidecarSnapshot(uri);
-					if (compatSidecarFileIdentityEquals(createdIdentity, current.identity)) {
-						await fs.promises.unlink(uri.fsPath);
+					await fs.promises.rename(uri.fsPath, quarantinePath);
+					quarantined = true;
+					const current = await readCompatSidecarSnapshot(vscode.Uri.file(quarantinePath));
+					if (compatSidecarFileIdentityEquals(createdIdentity, current.identity) && current.text === text) {
+						await fs.promises.unlink(quarantinePath);
+						quarantined = false;
+					} else {
+						await fs.promises.rename(quarantinePath, uri.fsPath);
+						quarantined = false;
 					}
-				} catch {
-					// The pathname no longer names the file created by this operation.
+				} catch (candidateCleanupError) {
+					cleanupError = candidateCleanupError;
+					if (quarantined) {
+						try {
+							await fs.promises.rename(quarantinePath, uri.fsPath);
+							quarantined = false;
+						} catch (restoreError) {
+							cleanupError = new AggregateError(
+								[candidateCleanupError, restoreError],
+								`The companion sidecar was preserved at ${quarantinePath} because its original path could not be restored.`,
+							);
+						}
+					}
 				}
 			}
-			if ((error as NodeJS.ErrnoException)?.code === 'EEXIST') {
-				throw new CompatSidecarCasError('The companion sidecar appeared while it was being created.');
+			const publicationError = (error as NodeJS.ErrnoException)?.code === 'EEXIST'
+				? new CompatSidecarCasError('The companion sidecar appeared while it was being created.')
+				: error;
+			if (cleanupError !== undefined) {
+				throw new AggregateError(
+					[publicationError, cleanupError],
+					'The companion sidecar creation failed and cleanup could not be completed safely.',
+				);
 			}
-			throw error;
+			throw publicationError;
 		} finally {
 			await handle?.close().catch(() => undefined);
+			try {
+				const staged = await readCompatSidecarSnapshot(vscode.Uri.file(temporaryPath));
+				if (createdIdentity && compatSidecarFileIdentityEquals(createdIdentity, staged.identity)
+					&& (published || staged.text === text)) {
+					await fs.promises.unlink(temporaryPath);
+				}
+			} catch {
+				// The private staging path is absent or no longer owned by this operation.
+			}
 		}
 		return verifiedIdentity;
 	}
@@ -302,6 +365,7 @@ export class CompatSidecarStore {
 		expectedCurrentText?: string,
 		expectedIdentity?: CompatSidecarFileIdentity,
 		beforePublish?: () => Promise<void>,
+		suppressedAttachmentSectionIds: ReadonlySet<string> = new Set(),
 	): Promise<{ file: KqlxFileV1; text: string; identity?: CompatSidecarFileIdentity }> {
 		return this.serialize(async () => {
 			const baseline = await readCompatSidecarSnapshot(uri);
@@ -319,7 +383,12 @@ export class CompatSidecarStore {
 				const locked = await readCompatSidecarSnapshot(uri);
 				if (!compatSidecarFileIdentityEquals(baseline.identity, locked.identity) || locked.text !== baselineText) throw this.changedError();
 				const file = this.options.buildFile(sanitized, candidate);
-				file.state = preserveKqlxResultAttachments(baselineFile.state, file.state, candidate.state);
+				file.state = preserveKqlxResultAttachments(
+					baselineFile.state, file.state, candidate.state, suppressedAttachmentSectionIds,
+				);
+				if (isDeepStrictEqual(file, baselineFile)) {
+					return { file: baselineFile, text: baselineText, identity: baseline.identity };
+				}
 				const text = this.options.stringify(file);
 				const beforeWrite = await readCompatSidecarSnapshot(uri);
 				if (!compatSidecarFileIdentityEquals(baseline.identity, beforeWrite.identity) || beforeWrite.text !== baselineText) throw this.changedError();

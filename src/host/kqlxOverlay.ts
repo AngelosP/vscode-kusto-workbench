@@ -475,6 +475,7 @@ export function preserveKqlxResultAttachments(
 	durableBaseline: KqlxStateV1 | undefined,
 	candidate: KqlxStateV1,
 	submittedCandidate?: KqlxStateV1,
+	suppressedSectionIds: ReadonlySet<string> = new Set(),
 ): KqlxStateV1 {
 	if (!durableBaseline && !submittedCandidate) return candidate;
 	const savedSections = durableBaseline ? uniqueResultSections(durableBaseline) : undefined;
@@ -484,6 +485,14 @@ export function preserveKqlxResultAttachments(
 	const sections = candidate.sections.map(section => {
 		const identity = resultSectionIdentity(section);
 		if (!identity || candidateSections.get(identity) !== section) return section;
+		const sectionId = typeof section.id === 'string' ? section.id.trim() : '';
+		if (sectionId && suppressedSectionIds.has(sectionId)) {
+			const stripped = { ...section } as Record<string, unknown>;
+			for (const field of RESULT_ATTACHMENT_FIELDS) delete stripped[field];
+			const next = stripped as KqlxSectionV1;
+			if (!resultAttachmentEquals(next, section)) changed = true;
+			return next;
+		}
 		const submitted = submittedSections.get(identity);
 		if (!submitted) return section;
 		const saved = savedSections?.get(identity);

@@ -33,6 +33,14 @@ export interface ClassifyWorkbenchUriOptions {
 	includeOptionalPlainText?: boolean;
 }
 
+export function sameNonzeroPhysicalFileIdentity(
+	left: Readonly<{ dev: bigint; ino: bigint }>,
+	right: Readonly<{ dev: bigint; ino: bigint }>,
+): boolean {
+	return left.ino !== 0n && right.ino !== 0n
+		&& left.dev === right.dev && left.ino === right.ino;
+}
+
 export function getWorkbenchTabInputUris(input: unknown): vscode.Uri[] {
 	const uris: vscode.Uri[] = [];
 	const add = (candidate: unknown) => {

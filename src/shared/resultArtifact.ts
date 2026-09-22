@@ -90,6 +90,7 @@ export const UNVERIFIED_LEGACY_RESULT_PRODUCER = 'legacy-unverified';
 
 const unverifiedLegacyResultPublications = new WeakSet<object>();
 const unverifiedLegacyResultArtifacts = new WeakSet<object>();
+const MAX_PERSISTED_ARTIFACT_ID_LENGTH = 32 * 1024;
 
 function isUnverifiedLegacyResultPublication(value: unknown): boolean {
 	return !!value && typeof value === 'object' && unverifiedLegacyResultPublications.has(value);
@@ -402,7 +403,7 @@ function parsePersistedPolicy(value: Record<string, unknown>): ResultArtifactPol
 		if (!isRecord(item)) return null;
 		const sourceArtifactId = String(item.sourceArtifactId || '').trim();
 		const sourceStamp = parsePersistedPolicyStamp(item);
-		if (!sourceArtifactId || sourceArtifactId.length > 512 || !sourceStamp
+		if (!sourceArtifactId || sourceArtifactId.length > MAX_PERSISTED_ARTIFACT_ID_LENGTH || !sourceStamp
 			|| sourceArtifactIds.has(sourceArtifactId)) return null;
 		sourceArtifactIds.add(sourceArtifactId);
 		sourcePolicies.push({ sourceArtifactId, ...sourceStamp });
@@ -426,6 +427,26 @@ export function toPersistedResultArtifact(artifact: ResultArtifact | null | unde
 	});
 }
 
+export function hasCanonicalPersistedResultArtifactIdentity(
+	value: unknown,
+	expectedSourceBoxId: string,
+): value is PersistedResultArtifactV1 {
+	if (!isRecord(value) || value.version !== 1) return false;
+	const artifactId = String(value.artifactId || '').trim();
+	const sourceBoxId = String(value.sourceBoxId || '').trim();
+	const expectedSource = String(expectedSourceBoxId || '').trim();
+	const revision = Number(value.revision);
+	const createdAt = Number(value.createdAt);
+	if (!artifactId || artifactId.length > MAX_PERSISTED_ARTIFACT_ID_LENGTH
+		|| !sourceBoxId || sourceBoxId !== expectedSource
+		|| !Number.isSafeInteger(revision) || revision <= 0 || revision >= Number.MAX_SAFE_INTEGER
+		|| artifactId !== canonicalResultArtifactId(sourceBoxId, revision)
+		|| !Number.isFinite(createdAt) || createdAt < 0) return false;
+	const producer = isRecord(value.producer) ? value.producer as ResultArtifactProducer : undefined;
+	return (!producer || String(producer.boxId || '').trim() === expectedSource)
+		&& producer?.producer !== UNVERIFIED_LEGACY_RESULT_PRODUCER;
+}
+
 export function publicationFromPersistedResultArtifact(
 	value: unknown,
 	expectedSourceBoxId: string,
@@ -446,19 +467,14 @@ export function publicationFromPersistedResultArtifact(
 		derivedSourcePolicies?: readonly ResultArtifactSourcePolicy[];
 	}>,
 ): ResultArtifactPublication | undefined {
-	if (!isRecord(value) || value.version !== 1) return undefined;
+	if (!hasCanonicalPersistedResultArtifactIdentity(value, expectedSourceBoxId)) return undefined;
 	const artifactId = String(value.artifactId || '').trim();
 	const sourceBoxId = String(value.sourceBoxId || '').trim();
 	const expectedSource = String(expectedSourceBoxId || '').trim();
 	const revision = Number(value.revision);
 	const createdAt = Number(value.createdAt);
-	if (!artifactId || artifactId.length > 512 || !sourceBoxId || sourceBoxId !== expectedSource
-		|| !Number.isSafeInteger(revision) || revision <= 0 || revision >= Number.MAX_SAFE_INTEGER
-		|| artifactId !== canonicalResultArtifactId(sourceBoxId, revision)
-		|| !Number.isFinite(createdAt) || createdAt < 0) return undefined;
+	if (!sourceBoxId || sourceBoxId !== expectedSource) return undefined;
 	const producer = isRecord(value.producer) ? value.producer as ResultArtifactProducer : undefined;
-	if (producer && String(producer.boxId || '').trim() !== expectedSource) return undefined;
-	if (producer?.producer === UNVERIFIED_LEGACY_RESULT_PRODUCER) return undefined;
 	if (expectedPolicy?.expectedProducer) {
 		if (!producer) return undefined;
 		const expectedProducer = expectedPolicy.expectedProducer;
@@ -480,7 +496,7 @@ export function publicationFromPersistedResultArtifact(
 			if (!isRecord(item)) return undefined;
 			const sourceArtifactId = String(item.sourceArtifactId || '').trim();
 			const role = String(item.role || '').trim();
-			if (!sourceArtifactId || sourceArtifactId.length > 512 || role.length > 512) return undefined;
+			if (!sourceArtifactId || sourceArtifactId.length > MAX_PERSISTED_ARTIFACT_ID_LENGTH || role.length > 512) return undefined;
 			lineage.push({ sourceArtifactId, ...(role ? { role } : {}) });
 		}
 		if (lineage.length === 0) lineage = undefined;

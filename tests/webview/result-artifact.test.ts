@@ -250,6 +250,18 @@ describe('ResultArtifactStore', () => {
 		expect(rerun.artifactId).not.toBe(restored.artifactId);
 	});
 
+	it('round-trips canonical artifact identities for maximum-length section IDs', () => {
+		const sourceBoxId = `q${'é'.repeat(4095)}`;
+		const store = new ResultArtifactStore();
+		const original = store.publish(sourceBoxId, {
+			columns: ['Value'], rows: [[1]], metadata: {},
+		})!;
+		const descriptor = toPersistedResultArtifact(original)!;
+
+		expect(descriptor.artifactId.length).toBeGreaterThan(512);
+		expect(publicationFromPersistedResultArtifact(descriptor, sourceBoxId)).toBeDefined();
+	});
+
 	it('rejects a persisted descriptor for another source section', () => {
 		const descriptor = {
 			version: 1, artifactId: 'result:query_1:7', sourceBoxId: 'query_1',

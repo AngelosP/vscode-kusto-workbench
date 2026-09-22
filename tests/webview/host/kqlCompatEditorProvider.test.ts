@@ -199,11 +199,11 @@ describe('isLinkedSidecarForCompatFile', () => {
 		expect(isLinkedSidecarForCompatFile(sidecarUri, sidecar, compatUri)).toBe(false);
 	});
 
-	it('returns false when sections array is empty', () => {
+	it('recognizes an empty canonical sidecar by its filename', () => {
 		const sidecarUri = Uri.file('/folder/query.kql.json');
 		const compatUri = Uri.file('/folder/query.kql');
 		const sidecar: KqlxFileV1 = { version: 1, state: { sections: [] } as any };
-		expect(isLinkedSidecarForCompatFile(sidecarUri, sidecar, compatUri)).toBe(false);
+		expect(isLinkedSidecarForCompatFile(sidecarUri, sidecar, compatUri)).toBe(true);
 	});
 
 	it('returns false when sidecar file has no state', () => {
@@ -273,9 +273,14 @@ describe('compatibility coordinator ownership', () => {
 			expect(source).not.toContain('projectionCoordinator.rollbackSupersededSourceEdit');
 			expect(source).toContain('hydrateCompatSidecarState');
 			expect(source).toContain('applyOwnedSourceEdit');
-			expect(source).toContain(".then(() => toolCloseSidecarGuard?.())");
-			expect(source.indexOf(".then(() => toolCloseSidecarGuard?.())"))
+			expect(source).toContain(".then(() => assertNoDirtyOpenSidecarAlias())");
+			expect(source.indexOf(".then(() => assertNoDirtyOpenSidecarAlias())"))
 				.toBeLessThan(source.indexOf("() => [] as vscode.TextEdit[]"));
+			const saveDraft = source.indexOf('saveDraft: async draft =>');
+			const closeGuard = source.indexOf('assertNoDirtyOpenSidecarAlias,', saveDraft);
+			expect(saveDraft).toBeGreaterThanOrEqual(0);
+			expect(closeGuard).toBeGreaterThan(saveDraft);
+			expect(closeGuard).toBeLessThan(source.indexOf('sidecarSession.markClean()', saveDraft));
 		}
 
 		const persistCoordinator = fs.readFileSync(path.join(

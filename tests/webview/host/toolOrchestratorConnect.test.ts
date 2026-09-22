@@ -1,5 +1,9 @@
 import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
 import * as vscode from 'vscode';
+import * as fs from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { KustoWorkbenchToolOrchestrator } from '../../../src/host/kustoWorkbenchTools';
 import { HostWorkbenchToolSessionApplicationHandler } from '../../../src/host/workbenchToolSessionApplicationHandler';
 import { classifyWorkbenchUri } from '../../../src/host/workbenchFileTypes';
@@ -39,6 +43,10 @@ function deferred<T>() {
 	return { promise, resolve };
 }
 
+function createMessagePoster(result = true) {
+	return vi.fn<(message: unknown) => boolean>(() => result);
+}
+
 function cancellationToken() {
 	let cancelled = false;
 	const listeners = new Set<() => void>();
@@ -63,6 +71,8 @@ function resetOpenEditorState(): void {
 	(vscode.window.tabGroups as any).activeTabGroup = { activeTab: undefined, tabs: [], isActive: true };
 	(vscode.window.tabGroups as any).all = [];
 	(vscode.workspace as any).textDocuments = [];
+	delete (vscode.workspace as any).applyEdit;
+	delete (vscode as any).WorkspaceEdit;
 	((vscode as any).__mockCommandCalls ?? []).length = 0;
 }
 
@@ -124,7 +134,11 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 
 		const result = await orchestrator.createFile({ fileType, filePath: requestedPath });
 
-		expect(result).toEqual({ success: true, filePath: expect.stringContaining(`fresh-${fileType}.${fileType}`) });
+		expect(result).toMatchObject({
+			success: true,
+			filePath: expect.stringContaining(`fresh-${fileType}.${fileType}`),
+			openRequested: true,
+		});
 		const uri = vscode.Uri.file(`${requestedPath}.${fileType}`);
 		const text = (vscode as any).__mockFileSystem.readText(uri);
 		const file = JSON.parse(text);
@@ -135,8 +149,897 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		});
 		expect(file.state.sections).toHaveLength(1);
 		expect((vscode as any).__mockCommandCalls).toContainEqual({
-			command: 'vscode.openWith', args: [uri, 'kusto.kqlxEditor'],
+			command: 'vscode.openWith', args: [uri, 'kusto.kqlxEditor', { preview: false, preserveFocus: false }],
 		});
+	});
+
+	it('refuses to overwrite an existing main file byte-exact', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/existing-report.kqlx');
+		const original = '{"owner":"user","content":"keep exactly"}';
+		await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(original));
+
+		const result = await orchestrator.createFile({
+			fileType: 'kqlx',
+			filePath: '/work/existing-report',
+			initialContent: 'print ShouldNotWrite = 1',
+		});
+
+		expect(result).toMatchObject({ success: false, error: expect.stringContaining('never overwritten') });
+		expect((vscode as any).__mockFileSystem.readText(uri)).toBe(original);
+		expect((vscode as any).__mockCommandCalls).not.toContainEqual(expect.objectContaining({ command: 'vscode.openWith' }));
+	});
+
+	it('refuses a sidecar collision before creating the main file', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const mainUri = vscode.Uri.file('/work/existing-sidecar.kql');
+		const sidecarUri = vscode.Uri.file('/work/existing-sidecar.kql.json');
+		const originalSidecar = '{"owner":"user","sidecar":"keep exactly"}';
+		await vscode.workspace.fs.writeFile(sidecarUri, new TextEncoder().encode(originalSidecar));
+
+		const result = await orchestrator.createFile({
+			fileType: 'kql-sidecar',
+			filePath: '/work/existing-sidecar',
+			initialContent: 'print ShouldNotWrite = 1',
+		});
+
+		expect(result).toMatchObject({ success: false, error: expect.stringContaining('never overwritten') });
+		expect((vscode as any).__mockFileSystem.readText(mainUri)).toBeUndefined();
+		expect((vscode as any).__mockFileSystem.readText(sidecarUri)).toBe(originalSidecar);
+	});
+
+	it('rolls back a newly published main file when sidecar publication fails', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const mainUri = vscode.Uri.file('/work/sidecar-publish-failure.kql');
+		const sidecarUri = vscode.Uri.file('/work/sidecar-publish-failure.kql.json');
+		const rename = vscode.workspace.fs.rename.bind(vscode.workspace.fs);
+		let renameCount = 0;
+		vi.spyOn(fs.promises, 'stat').mockResolvedValue({ dev: 1n, ino: 1n } as any);
+		vi.spyOn(vscode.workspace.fs, 'rename').mockImplementation(async (...args) => {
+			renameCount++;
+			if (renameCount === 2) throw new Error('synthetic sidecar publish failure');
+			return rename(...args);
+		});
+
+		const result = await orchestrator.createFile({
+			fileType: 'kql-sidecar',
+			filePath: '/work/sidecar-publish-failure',
+			initialContent: 'print Value = 1',
+		});
+
+		expect(result).toMatchObject({ success: false, error: expect.stringContaining('synthetic sidecar publish failure') });
+		expect((vscode as any).__mockFileSystem.readText(mainUri)).toBeUndefined();
+		expect((vscode as any).__mockFileSystem.readText(sidecarUri)).toBeUndefined();
+	});
+
+	it('preserves an external replacement when sidecar publication fails after publishing the main file', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const mainUri = vscode.Uri.file('/work/sidecar-external-replacement.kql');
+		const sidecarUri = vscode.Uri.file('/work/sidecar-external-replacement.kql.json');
+		const externalText = 'print External = 2';
+		const rename = vscode.workspace.fs.rename.bind(vscode.workspace.fs);
+		let renameCount = 0;
+		let externalReplacementPublished = false;
+		vi.spyOn(fs.promises, 'stat').mockImplementation(async path => {
+			const value = String(path);
+			const mainFileQuarantine = value.includes('.rollback') && !value.includes('.kql.json.');
+			const inode = mainFileQuarantine && externalReplacementPublished ? 3n : 1n;
+			return { dev: 1n, ino: inode } as any;
+		});
+		vi.spyOn(vscode.workspace.fs, 'rename').mockImplementation(async (...args) => {
+			renameCount++;
+			if (renameCount === 2) {
+				await vscode.workspace.fs.writeFile(mainUri, new TextEncoder().encode(externalText));
+				externalReplacementPublished = true;
+				throw new Error('synthetic sidecar publish failure');
+			}
+			return rename(...args);
+		});
+
+		const result = await orchestrator.createFile({
+			fileType: 'kql-sidecar',
+			filePath: '/work/sidecar-external-replacement',
+			initialContent: 'print Value = 1',
+		});
+
+		expect(result).toMatchObject({ success: false, error: expect.stringContaining('synthetic sidecar publish failure') });
+		expect((vscode as any).__mockFileSystem.readText(mainUri)).toBe(externalText);
+		expect((vscode as any).__mockFileSystem.readText(sidecarUri)).toBeUndefined();
+	});
+
+	it('preserves an in-place external edit when sidecar publication fails after publishing the main file', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const mainUri = vscode.Uri.file('/work/sidecar-in-place-edit.kql');
+		const externalText = 'print ExternalInPlace = 3';
+		const rename = vscode.workspace.fs.rename.bind(vscode.workspace.fs);
+		let renameCount = 0;
+		vi.spyOn(fs.promises, 'stat').mockResolvedValue({ dev: 1n, ino: 1n } as any);
+		vi.spyOn(vscode.workspace.fs, 'rename').mockImplementation(async (...args) => {
+			renameCount++;
+			if (renameCount === 2) {
+				await vscode.workspace.fs.writeFile(mainUri, new TextEncoder().encode(externalText));
+				throw new Error('synthetic sidecar publish failure');
+			}
+			return rename(...args);
+		});
+
+		const result = await orchestrator.createFile({
+			fileType: 'kql-sidecar', filePath: '/work/sidecar-in-place-edit', initialContent: 'print Value = 1',
+		});
+
+		expect(result).toMatchObject({ success: false, error: expect.stringContaining('synthetic sidecar publish failure') });
+		expect((vscode as any).__mockFileSystem.readText(mainUri)).toBe(externalText);
+	});
+
+	it('reports durable creation when opening the new file fails', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/created-not-opened.kqlx');
+		vi.spyOn(vscode.commands, 'executeCommand').mockRejectedValueOnce(new Error('synthetic open failure'));
+
+		const result = await orchestrator.createFile({
+			fileType: 'kqlx', filePath: '/work/created-not-opened', reveal: false,
+		});
+
+		expect(result).toMatchObject({
+			success: true,
+			filePath: uri.fsPath,
+			openRequested: true,
+			opened: false,
+			warning: expect.stringContaining('synthetic open failure'),
+		});
+		expect((vscode as any).__mockFileSystem.readText(uri)).toBeDefined();
+	});
+
+	it('createFile preserves focus for a background external workflow', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/background-report.kqlx');
+
+		await orchestrator.createFile({ fileType: 'kqlx', filePath: '/work/background-report', reveal: false });
+
+		expect((vscode as any).__mockCommandCalls).toContainEqual({
+			command: 'vscode.openWith',
+			args: [uri, 'kusto.kqlxEditor', { preview: false, preserveFocus: true }],
+		});
+	});
+
+	it('lists backing-document sections while a live rich editor snapshot is not ready', async () => {
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/opening-background.kqlx');
+		const tab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor') };
+		setTabGroups({ activeTab: tab, tabs: [tab], isActive: true });
+		const text = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [{ id: 'query_backing', type: 'query', query: 'print Value = 1' }] },
+		});
+		(vscode.workspace as any).textDocuments = [{
+			uri,
+			getText: () => text,
+			positionAt: (offset: number) => new vscode.Position(0, offset),
+			isDirty: false,
+		}];
+		const stateGetter = vi.fn(async () => undefined as any);
+		orchestrator.connect(vi.fn(() => true), stateGetter, vi.fn(), uri.toString());
+
+		const result = await orchestrator.listSections();
+		const file = result.openFiles?.find(candidate => candidate.openFileId === classifyWorkbenchUri(uri)!.openFileId);
+
+		expect(stateGetter).toHaveBeenCalled();
+		expect(result.sections).toEqual([expect.objectContaining({ id: 'query_backing', type: 'query' })]);
+		expect(file?.sections).toEqual([expect.objectContaining({ id: 'query_backing', type: 'query' })]);
+		expect(file?.sectionsUnavailable).not.toBe(true);
+	});
+
+	it('omits a protected SQL section from backing-document fallback', async () => {
+		const refreshPolicy = vi.fn(async () => ['sql-sensitive']);
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+			refreshPolicy,
+		);
+		const uri = vscode.Uri.file('/work/opening-sensitive.sqlx');
+		const tab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor') };
+		setTabGroups({ activeTab: tab, tabs: [tab], isActive: true });
+		const text = JSON.stringify({
+			kind: 'sqlx', version: 1, state: { sections: [{
+				id: 'sql_sensitive', type: 'sql', serverUrl: 'private.example', database: 'Sensitive',
+				connectionIdHint: 'sql-sensitive', query: 'SELECT 1',
+			}] },
+		});
+		(vscode.workspace as any).textDocuments = [{
+			uri,
+			getText: () => text,
+			positionAt: (offset: number) => new vscode.Position(0, offset),
+			isDirty: false,
+		}];
+		orchestrator.connect(vi.fn(() => true), vi.fn(async () => undefined as any), vi.fn(), uri.toString());
+
+		const result = await orchestrator.listSections();
+		const file = result.openFiles?.find(candidate => candidate.openFileId === classifyWorkbenchUri(uri)!.openFileId);
+
+		expect(refreshPolicy).toHaveBeenCalled();
+		expect(result.sections).toEqual([]);
+		expect(file?.sections).toEqual([]);
+		expect(JSON.stringify(file)).not.toContain('private.example');
+		expect(JSON.stringify(file)).not.toContain('Sensitive');
+	});
+
+	it('does not expose backing SQL sections when privacy policy resolution fails', async () => {
+		const refreshPolicy = vi.fn(async () => { throw new Error('privacy policy unavailable'); });
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+			refreshPolicy,
+		);
+		const uri = vscode.Uri.file('/work/opening-policy-failure.sqlx');
+		const tab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor') };
+		setTabGroups({ activeTab: tab, tabs: [tab], isActive: true });
+		const text = JSON.stringify({
+			kind: 'sqlx', version: 1, state: { sections: [{
+				id: 'sql_sensitive', type: 'sql', serverUrl: 'private.example', database: 'Sensitive',
+				connectionIdHint: 'sql-sensitive', query: 'SELECT 1',
+			}] },
+		});
+		(vscode.workspace as any).textDocuments = [{
+			uri,
+			getText: () => text,
+			positionAt: (offset: number) => new vscode.Position(0, offset),
+			isDirty: false,
+		}];
+		orchestrator.connect(vi.fn(() => true), vi.fn(async () => undefined as any), vi.fn(), uri.toString());
+
+		const result = await orchestrator.listSections();
+		const file = result.openFiles?.find(candidate => candidate.openFileId === classifyWorkbenchUri(uri)!.openFileId);
+
+		expect(file?.sections).toBeUndefined();
+		expect(file?.sectionsUnavailable).toBe(true);
+		expect(file?.error).toContain('privacy policy unavailable');
+		expect(JSON.stringify(file)).not.toContain('private.example');
+		expect(JSON.stringify(file)).not.toContain('Sensitive');
+	});
+
+	it('keeps reveal-false rich files host-owned until explicit activation', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/owned-background.kqlx');
+		expect(await orchestrator.createFile({
+			fileType: 'kqlx',
+			filePath: '/work/owned-background',
+			initialContent: 'print Value = 1',
+			reveal: false,
+		})).toMatchObject({ success: true, filePath: uri.fsPath });
+		let text = (vscode as any).__mockFileSystem.readText(uri);
+		const tab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor') };
+		setTabGroups({ activeTab: undefined, tabs: [], isActive: true }, { activeTab: tab, tabs: [tab], isActive: false });
+		const document = {
+			uri,
+			getText: () => text,
+			positionAt: (offset: number) => new vscode.Position(0, offset),
+			isDirty: false,
+		};
+		(vscode.workspace as any).textDocuments = [document];
+		class TestWorkspaceEdit {
+			replacement = '';
+			replace(_uri: vscode.Uri, _range: vscode.Range, value: string) { this.replacement = value; }
+		}
+		(vscode as any).WorkspaceEdit = TestWorkspaceEdit;
+		const applyEdit = vi.fn(async (edit: TestWorkspaceEdit) => {
+			text = edit.replacement;
+			return true;
+		});
+		(vscode.workspace as any).applyEdit = applyEdit;
+		const poster = createMessagePoster();
+		orchestrator.connect(poster, vi.fn(async () => undefined as any), vi.fn(), uri.toString());
+
+		const listed = await orchestrator.listSections();
+		const file = listed.openFiles?.find(candidate => candidate.openFileId === classifyWorkbenchUri(uri)!.openFileId);
+		const sectionId = file?.sections?.[0]?.id;
+		expect(sectionId).toBe('section_0');
+		expect(await orchestrator.configureQuerySection({
+			openFileId: file!.openFileId,
+			sectionId: sectionId!,
+			query: 'print Value = 2',
+		})).toEqual({ success: true });
+		expect(poster).not.toHaveBeenCalled();
+		expect(applyEdit).toHaveBeenCalledOnce();
+		expect(text).toContain('print Value = 2');
+
+		expect(await orchestrator.activateWorkbenchFile({ openFileId: file!.openFileId }))
+			.toMatchObject({ success: true });
+		const liveMutation = orchestrator.configureQuerySection({
+			openFileId: file!.openFileId,
+			sectionId: sectionId!,
+			query: 'print Value = 3',
+		});
+		expect(poster).toHaveBeenCalledOnce();
+		const request = poster.mock.calls[0][0] as any;
+		orchestrator.handleWebviewResponse(request.requestId, { success: true });
+		await expect(liveMutation).resolves.toEqual({ success: true });
+	});
+
+	it('configures SQL, Transformation, and HTML sections in a reveal-false report without a live editor', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/background-complete-report.kqlx');
+		await orchestrator.createFile({
+			fileType: 'kqlx', filePath: '/work/background-complete-report', reveal: false,
+		});
+		let text = (vscode as any).__mockFileSystem.readText(uri);
+		const tab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor') };
+		setTabGroups({ activeTab: undefined, tabs: [], isActive: true }, { activeTab: tab, tabs: [tab], isActive: false });
+		(vscode.workspace as any).textDocuments = [{
+			uri,
+			getText: () => text,
+			positionAt: (offset: number) => new vscode.Position(0, offset),
+			isDirty: false,
+		}];
+		class TestWorkspaceEdit {
+			replacement = '';
+			replace(_uri: vscode.Uri, _range: vscode.Range, value: string) { this.replacement = value; }
+		}
+		(vscode as any).WorkspaceEdit = TestWorkspaceEdit;
+		(vscode.workspace as any).applyEdit = vi.fn(async (edit: TestWorkspaceEdit) => {
+			text = edit.replacement;
+			return true;
+		});
+		const openFileId = classifyWorkbenchUri(uri)!.openFileId;
+
+		const sql = await orchestrator.addSection({ openFileId, type: 'sql', name: 'Warehouse' });
+		expect(await orchestrator.configureSqlSection({
+			openFileId, sectionId: sql.sectionId, name: 'Warehouse', query: 'SELECT 42\\nGO', database: 'Analytics',
+		})).toEqual({ success: true });
+		const transformation = await orchestrator.addSection({
+			openFileId, type: 'transformation', name: 'Summary', dataSourceId: 'old_source', dataSourceResultIndex: 2,
+		});
+		expect(await orchestrator.configureTransformation({
+			openFileId, sectionId: transformation.sectionId, name: 'Summary', dataSourceId: 'section_0',
+			transformationType: 'summarize', groupByColumns: ['Category'],
+			aggregations: [{ name: 'Total', column: 'Value', function: 'sum' }],
+		})).toEqual({ success: true });
+		const html = await orchestrator.addSection({ openFileId, type: 'html', name: 'Dashboard' });
+		const htmlCode = `<script type="application/kw-provenance">${JSON.stringify({
+			version: 1, model: { fact: { sectionId: 'section_0' } }, bindings: {},
+		})}</script><h1>Ready</h1>`;
+		expect(await orchestrator.configureHtmlSection({
+			openFileId, sectionId: html.sectionId, name: 'Dashboard', code: htmlCode, mode: 'preview',
+		})).toEqual({ success: true });
+
+		const file = JSON.parse(text);
+		expect(file.state.sections).toEqual(expect.arrayContaining([
+			expect.objectContaining({ id: sql.sectionId, type: 'sql', name: 'Warehouse', query: 'SELECT 42\nGO', database: 'Analytics' }),
+			expect.objectContaining({
+				id: transformation.sectionId, type: 'transformation', transformationType: 'summarize',
+				dataSourceId: 'section_0', dataSourceResultIndex: 0,
+				groupByColumns: ['Category'], aggregations: [{ name: 'Total', column: 'Value', function: 'sum' }],
+			}),
+			expect.objectContaining({
+				id: html.sectionId, type: 'html', name: 'Dashboard', code: htmlCode,
+				mode: 'preview', dataSourceIds: ['section_0'],
+			}),
+		]));
+	});
+
+	it('migrates reveal-false ownership across rename before mutating the new file', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const oldUri = vscode.Uri.file('/work/background-before.kqlx');
+		const newUri = vscode.Uri.file('/work/background-after.kqlx');
+		await orchestrator.createFile({ fileType: 'kqlx', filePath: '/work/background-before', reveal: false });
+		let text = (vscode as any).__mockFileSystem.readText(oldUri);
+		const oldTab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(oldUri, 'kusto.kqlxEditor') };
+		const newTab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(newUri, 'kusto.kqlxEditor') };
+		setTabGroups({ activeTab: undefined, tabs: [oldTab], isActive: true });
+		(vscode.workspace as any).textDocuments = [{
+			uri: newUri,
+			getText: () => text,
+			positionAt: (offset: number) => new vscode.Position(0, offset),
+			isDirty: false,
+		}];
+		class TestWorkspaceEdit {
+			replacement = '';
+			replace(_uri: vscode.Uri, _range: vscode.Range, value: string) { this.replacement = value; }
+		}
+		(vscode as any).WorkspaceEdit = TestWorkspaceEdit;
+		const applyEdit = vi.fn(async (edit: TestWorkspaceEdit) => {
+			text = edit.replacement;
+			return true;
+		});
+		(vscode.workspace as any).applyEdit = applyEdit;
+		const poster = vi.fn(() => true);
+		orchestrator.connect(poster, vi.fn(async () => undefined as any), vi.fn(), oldUri.toString());
+
+		await orchestrator.prepareFilesRename([{ oldUri, newUri }]);
+		setTabGroups({ activeTab: undefined, tabs: [newTab], isActive: true });
+		await orchestrator.handleFilesRenamed([{ oldUri, newUri }]);
+		const listed = await orchestrator.listSections();
+		const file = listed.openFiles?.find(candidate => candidate.openFileId === classifyWorkbenchUri(newUri)!.openFileId);
+		expect(file?.sections?.[0]?.id).toBe('section_0');
+		expect(await orchestrator.configureQuerySection({
+			openFileId: file!.openFileId,
+			sectionId: 'section_0',
+			query: 'print Renamed = true',
+		})).toEqual({ success: true });
+		expect(poster).not.toHaveBeenCalled();
+		expect(applyEdit).toHaveBeenCalledOnce();
+		expect(text).toContain('print Renamed = true');
+	});
+
+	it('expands a parent-folder rename to its host-owned Workbench descendant', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const oldFolder = vscode.Uri.file('/work/background-folder-old');
+		const newFolder = vscode.Uri.file('/work/background-folder-new');
+		const oldUri = vscode.Uri.file('/work/background-folder-old/report.kqlx');
+		const newUri = vscode.Uri.file('/work/background-folder-new/report.kqlx');
+		await orchestrator.createFile({
+			fileType: 'kqlx',
+			filePath: '/work/background-folder-old/report',
+			reveal: false,
+		});
+		let text = (vscode as any).__mockFileSystem.readText(oldUri);
+		const oldTab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(oldUri, 'kusto.kqlxEditor') };
+		const newTab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(newUri, 'kusto.kqlxEditor') };
+		setTabGroups({ activeTab: undefined, tabs: [oldTab], isActive: true });
+		(vscode.workspace as any).textDocuments = [{
+			uri: newUri,
+			getText: () => text,
+			positionAt: (offset: number) => new vscode.Position(0, offset),
+			isDirty: false,
+		}];
+		class TestWorkspaceEdit {
+			replacement = '';
+			replace(_uri: vscode.Uri, _range: vscode.Range, value: string) { this.replacement = value; }
+		}
+		(vscode as any).WorkspaceEdit = TestWorkspaceEdit;
+		const applyEdit = vi.fn(async (edit: TestWorkspaceEdit) => {
+			text = edit.replacement;
+			return true;
+		});
+		(vscode.workspace as any).applyEdit = applyEdit;
+		orchestrator.connect(vi.fn(() => true), vi.fn(async () => undefined as any), vi.fn(), oldUri.toString());
+
+		await orchestrator.prepareFilesRename([{ oldUri: oldFolder, newUri: newFolder }]);
+		setTabGroups({ activeTab: undefined, tabs: [newTab], isActive: true });
+		await orchestrator.handleFilesRenamed([{ oldUri: oldFolder, newUri: newFolder }]);
+		const listed = await orchestrator.listSections();
+		const newFile = listed.openFiles?.find(candidate => candidate.openFileId === classifyWorkbenchUri(newUri)!.openFileId);
+		expect(newFile?.sections?.[0]?.id).toBe('section_0');
+		expect(listed.openFiles?.some(candidate => candidate.openFileId === classifyWorkbenchUri(oldUri)!.openFileId)).toBe(false);
+		expect(await orchestrator.configureQuerySection({
+			openFileId: newFile!.openFileId,
+			sectionId: 'section_0',
+			query: 'print FolderRenamed = true',
+		})).toEqual({ success: true });
+		expect(applyEdit).toHaveBeenCalledOnce();
+		expect(text).toContain('print FolderRenamed = true');
+	});
+
+	it('retires reveal-false ownership after manual tab close so reopen uses the live editor', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/background-reopened.kqlx');
+		await orchestrator.createFile({ fileType: 'kqlx', filePath: '/work/background-reopened', reveal: false });
+		const closedTab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor') };
+		setTabGroups({ activeTab: undefined, tabs: [], isActive: true });
+		await orchestrator.handleTabsClosed([closedTab as any]);
+		const reopenedTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor') };
+		setTabGroups({ activeTab: reopenedTab, tabs: [reopenedTab], isActive: true });
+		const poster = createMessagePoster();
+		orchestrator.connect(poster, vi.fn(async () => [{ id: 'query_live', type: 'query' }]), vi.fn(), uri.toString());
+
+		const mutation = orchestrator.configureQuerySection({
+			openFileId: classifyWorkbenchUri(uri)!.openFileId,
+			sectionId: 'query_live',
+			query: 'print Live = true',
+		});
+		expect(poster).toHaveBeenCalledOnce();
+		const request = poster.mock.calls[0][0] as any;
+		orchestrator.handleWebviewResponse(request.requestId, { success: true });
+		await expect(mutation).resolves.toEqual({ success: true });
+	});
+
+	it('transfers reveal-false ownership when the user activates the tab', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/background-user-activated.kqlx');
+		await orchestrator.createFile({ fileType: 'kqlx', filePath: '/work/background-user-activated', reveal: false });
+		await new Promise(resolve => setTimeout(resolve, 300));
+		const activeTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor') };
+		setTabGroups({ activeTab, tabs: [activeTab], isActive: true });
+		const poster = createMessagePoster();
+		orchestrator.connect(poster, vi.fn(async () => [{ id: 'query_live', type: 'query' }]), vi.fn(), uri.toString());
+		await orchestrator.handleTabsActivated([activeTab as any]);
+
+		const mutation = orchestrator.configureQuerySection({
+			openFileId: classifyWorkbenchUri(uri)!.openFileId,
+			sectionId: 'query_live',
+			query: 'print Visible = true',
+		});
+		expect(poster).toHaveBeenCalledOnce();
+		const request = poster.mock.calls[0][0] as any;
+		orchestrator.handleWebviewResponse(request.requestId, { success: true });
+		await expect(mutation).resolves.toEqual({ success: true });
+	});
+
+	it('does not transfer reveal-false ownership for an active tab in an inactive group', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/background-inactive-group.kqlx');
+		await orchestrator.createFile({ fileType: 'kqlx', filePath: '/work/background-inactive-group', reveal: false });
+		const visibleUri = vscode.Uri.file('/work/visible.kqlx');
+		const visibleTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(visibleUri, 'kusto.kqlxEditor') };
+		const hiddenTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor') };
+		setTabGroups(
+			{ activeTab: visibleTab, tabs: [visibleTab], isActive: true },
+			{ activeTab: hiddenTab, tabs: [hiddenTab], isActive: false },
+		);
+		await orchestrator.handleTabsActivated([hiddenTab as any]);
+
+		expect((orchestrator as any).hostOwnedBackgroundFiles.has(classifyWorkbenchUri(uri)!.logicalUriKey)).toBe(true);
+	});
+
+	it('transfers reveal-false ownership when its already-selected editor group becomes active', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/background-group-activated.kqlx');
+		await orchestrator.createFile({ fileType: 'kqlx', filePath: '/work/background-group-activated', reveal: false });
+		await new Promise(resolve => setTimeout(resolve, 300));
+		const tab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor') };
+		const group = { activeTab: tab, tabs: [tab], isActive: true };
+		setTabGroups(group);
+		const poster = createMessagePoster();
+		orchestrator.connect(poster, vi.fn(async () => [{ id: 'query_live', type: 'query' }]), vi.fn(), uri.toString());
+
+		await orchestrator.handleTabsActivated([tab as any]);
+		const mutation = orchestrator.configureQuerySection({
+			openFileId: classifyWorkbenchUri(uri)!.openFileId,
+			sectionId: 'query_live',
+			query: 'print GroupActive = true',
+		});
+		expect(poster).toHaveBeenCalledOnce();
+		const request = poster.mock.calls[0][0] as any;
+		orchestrator.handleWebviewResponse(request.requestId, { success: true });
+		await expect(mutation).resolves.toEqual({ success: true });
+	});
+
+	it('ignores activation events while a reveal-false file is still opening', async () => {
+		vi.useFakeTimers();
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/background-opening-lease.kqlx');
+		await orchestrator.createFile({ fileType: 'kqlx', filePath: '/work/background-opening-lease', reveal: false });
+		const tab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor') };
+		setTabGroups({ activeTab: tab, tabs: [tab], isActive: true });
+
+		await orchestrator.handleTabsActivated([tab as any]);
+		expect((orchestrator as any).hostOwnedBackgroundFiles.has(classifyWorkbenchUri(uri)!.logicalUriKey)).toBe(true);
+		await vi.advanceTimersByTimeAsync(250);
+		await orchestrator.handleTabsActivated([tab as any]);
+		expect((orchestrator as any).hostOwnedBackgroundFiles.has(classifyWorkbenchUri(uri)!.logicalUriKey)).toBe(false);
+	});
+
+	it('serializes host-owned mutation, save, and close without losing admitted bytes', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/background-serialized.kqlx');
+		await orchestrator.createFile({ fileType: 'kqlx', filePath: '/work/background-serialized', reveal: false });
+		let text = (vscode as any).__mockFileSystem.readText(uri);
+		let dirty = false;
+		const tab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor') };
+		setTabGroups({ activeTab: undefined, tabs: [], isActive: true }, { activeTab: tab, tabs: [tab], isActive: false });
+		const save = vi.fn(async () => { dirty = false; return true; });
+		const document = {
+			uri,
+			getText: () => text,
+			positionAt: (offset: number) => new vscode.Position(0, offset),
+			get isDirty() { return dirty; },
+			save,
+		};
+		(vscode.workspace as any).textDocuments = [document];
+		class TestWorkspaceEdit {
+			replacement = '';
+			replace(_uri: vscode.Uri, _range: vscode.Range, value: string) { this.replacement = value; }
+		}
+		(vscode as any).WorkspaceEdit = TestWorkspaceEdit;
+		const firstApply = deferred<void>();
+		const secondApply = deferred<void>();
+		let applyCount = 0;
+		const applyEdit = vi.fn(async (edit: TestWorkspaceEdit) => {
+			applyCount++;
+			await (applyCount === 1 ? firstApply.promise : secondApply.promise);
+			text = edit.replacement;
+			dirty = true;
+			return true;
+		});
+		(vscode.workspace as any).applyEdit = applyEdit;
+		const openFileId = classifyWorkbenchUri(uri)!.openFileId;
+
+		const firstMutation = orchestrator.configureQuerySection({
+			openFileId,
+			sectionId: 'section_0',
+			query: 'print Value = 2',
+		});
+		await vi.waitFor(() => expect(applyEdit).toHaveBeenCalledTimes(1));
+		const saving = orchestrator.saveWorkbenchFile({ openFileId });
+		await Promise.resolve();
+		expect(save).not.toHaveBeenCalled();
+		firstApply.resolve();
+		await expect(firstMutation).resolves.toEqual({ success: true });
+		await expect(saving).resolves.toMatchObject({ success: true, saved: true, wasDirty: true });
+		expect(text).toContain('print Value = 2');
+
+		const secondMutation = orchestrator.configureQuerySection({
+			openFileId,
+			sectionId: 'section_0',
+			query: 'print Value = 3',
+		});
+		await vi.waitFor(() => expect(applyEdit).toHaveBeenCalledTimes(2));
+		const closing = orchestrator.closeWorkbenchFile({ openFileId, saveChanges: true });
+		await expect(orchestrator.configureQuerySection({
+			openFileId,
+			sectionId: 'section_0',
+			query: 'print Value = 4',
+		})).rejects.toThrow('changing lifecycle state');
+		secondApply.resolve();
+		await expect(secondMutation).resolves.toEqual({ success: true });
+		await expect(closing).resolves.toMatchObject({ success: true, closed: true, saved: true, wasDirty: true });
+		expect(text).toContain('print Value = 3');
+		expect(text).not.toContain('print Value = 4');
+		expect(save).toHaveBeenCalledTimes(2);
+	});
+
+	it('recovers after a failed background mutation and saves the next admitted edit', async () => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/background-recovery.kqlx');
+		await orchestrator.createFile({ fileType: 'kqlx', filePath: '/work/background-recovery', reveal: false });
+		let text = '{ invalid json';
+		let dirty = false;
+		const tab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor') };
+		setTabGroups({ activeTab: undefined, tabs: [], isActive: true }, { activeTab: tab, tabs: [tab], isActive: false });
+		const save = vi.fn(async () => { dirty = false; return true; });
+		const document = {
+			uri,
+			getText: () => text,
+			positionAt: (offset: number) => new vscode.Position(0, offset),
+			get isDirty() { return dirty; },
+			save,
+		};
+		(vscode.workspace as any).textDocuments = [document];
+		class TestWorkspaceEdit {
+			replacement = '';
+			replace(_uri: vscode.Uri, _range: vscode.Range, value: string) { this.replacement = value; }
+		}
+		(vscode as any).WorkspaceEdit = TestWorkspaceEdit;
+		const applyEdit = vi.fn(async (edit: TestWorkspaceEdit) => {
+			text = edit.replacement;
+			dirty = true;
+			return true;
+		});
+		(vscode.workspace as any).applyEdit = applyEdit;
+		const openFileId = classifyWorkbenchUri(uri)!.openFileId;
+
+		await expect(orchestrator.configureQuerySection({
+			openFileId,
+			sectionId: 'section_0',
+			query: 'print Failed = true',
+		})).rejects.toThrow('Invalid JSON');
+		text = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [{ type: 'query', query: 'print Value = 1' }] },
+		});
+		expect(await orchestrator.configureQuerySection({
+			openFileId,
+			sectionId: 'section_0',
+			query: 'print Recovered = true',
+		})).toEqual({ success: true });
+		expect(await orchestrator.saveWorkbenchFile({ openFileId }))
+			.toMatchObject({ success: true, saved: true, wasDirty: true });
+		expect(text).toContain('print Recovered = true');
+		expect(text).not.toContain('print Failed = true');
+		expect(applyEdit).toHaveBeenCalledOnce();
+		expect(save).toHaveBeenCalledOnce();
+	});
+
+	it('mutates and saves an exact inactive KQLX file without changing the active tab', async () => {
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const activeUri = vscode.Uri.file('/work/active.kqlx');
+		const targetUri = vscode.Uri.file('/work/background.kqlx');
+		const activeTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(activeUri, 'kusto.kqlxEditor') };
+		const targetTab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlxEditor') };
+		setTabGroups(
+			{ activeTab, tabs: [activeTab], isActive: true },
+			{ activeTab: targetTab, tabs: [targetTab], isActive: false },
+		);
+		let text = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [{ type: 'query', expanded: true, query: '' }] },
+		}, null, 2);
+		let dirty = false;
+		const document = {
+			uri: targetUri,
+			getText: () => text,
+			positionAt: (offset: number) => new vscode.Position(0, offset),
+			get isDirty() { return dirty; },
+			save: vi.fn(async () => { dirty = false; return true; }),
+		};
+		(vscode.workspace as any).textDocuments = [document];
+		class TestWorkspaceEdit {
+			replacement = '';
+			replace(_uri: vscode.Uri, _range: vscode.Range, value: string) { this.replacement = value; }
+		}
+		(vscode as any).WorkspaceEdit = TestWorkspaceEdit;
+		const applyEdit = vi.fn(async (edit: TestWorkspaceEdit) => {
+			text = edit.replacement;
+			dirty = true;
+			return true;
+		});
+		(vscode.workspace as any).applyEdit = applyEdit;
+
+		const listed = await orchestrator.listSections();
+		const target = listed.openFiles?.find(file => file.openFileId === classifyWorkbenchUri(targetUri)!.openFileId);
+		expect(target?.sections).toEqual([expect.objectContaining({ id: 'section_0', type: 'query' })]);
+		expect(await orchestrator.configureQuerySection({
+			openFileId: target!.openFileId,
+			sectionId: 'section_0',
+			name: 'Background query',
+			query: 'print Value = 1',
+			execute: false,
+		})).toEqual({ success: true });
+		const configuredQueryText = text;
+		expect(await orchestrator.configureQuerySection({
+			openFileId: target!.openFileId,
+			sectionId: 'section_0',
+			name: 'Background query',
+			query: 'print Value = 1',
+			execute: false,
+		})).toEqual({ success: true });
+		expect(text).toBe(configuredQueryText);
+		expect(applyEdit).toHaveBeenCalledOnce();
+		const markdown = await orchestrator.addSection({
+			openFileId: target!.openFileId,
+			type: 'markdown',
+			name: 'Summary',
+			text: '# Background report',
+		});
+		const chart = await orchestrator.addSection({
+			openFileId: target!.openFileId,
+			type: 'chart',
+			name: 'Values',
+			dataSourceId: 'section_0',
+			chartType: 'bar',
+		});
+		expect(await orchestrator.updateMarkdownSection({
+			openFileId: target!.openFileId,
+			sectionId: markdown.sectionId,
+			text: '# Saved background report',
+			mode: 'preview',
+		})).toEqual({ success: true });
+		const updatedMarkdownText = text;
+		expect(await orchestrator.updateMarkdownSection({
+			openFileId: target!.openFileId,
+			sectionId: markdown.sectionId,
+			text: '# Saved background report',
+			mode: 'preview',
+		})).toEqual({ success: true });
+		expect(text).toBe(updatedMarkdownText);
+		expect(await orchestrator.configureChart({
+			openFileId: target!.openFileId,
+			sectionId: chart.sectionId,
+			dataSourceId: 'section_0',
+			chartType: 'bar',
+			xColumn: 'Category',
+			yColumns: ['Value'],
+		})).toEqual({ success: true });
+		const configuredChartText = text;
+		expect(await orchestrator.configureChart({
+			openFileId: target!.openFileId,
+			sectionId: chart.sectionId,
+			dataSourceId: 'section_0',
+			chartType: 'bar',
+			xColumn: 'Category',
+			yColumns: ['Value'],
+		})).toEqual({ success: true });
+		expect(text).toBe(configuredChartText);
+		expect(await orchestrator.saveWorkbenchFile({ openFileId: target!.openFileId }))
+			.toMatchObject({ success: true, saved: true, wasDirty: true });
+
+		const persisted = JSON.parse(text);
+		expect(persisted.state.sections).toEqual(expect.arrayContaining([
+			expect.objectContaining({ id: 'section_0', type: 'query', name: 'Background query', query: 'print Value = 1' }),
+			expect.objectContaining({ id: markdown.sectionId, type: 'markdown', text: '# Saved background report' }),
+			expect.objectContaining({ id: chart.sectionId, type: 'chart', xColumn: 'Category', yColumns: ['Value'] }),
+		]));
+		expect(document.save).toHaveBeenCalledOnce();
+		expect(applyEdit).toHaveBeenCalledTimes(5);
+		expect((vscode.window.tabGroups.all[0] as any).activeTab).toBe(activeTab);
+	});
+
+	it('rejects an incompatible inactive-file section without changing SQLX bytes', async () => {
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const activeUri = vscode.Uri.file('/work/active.kqlx');
+		const targetUri = vscode.Uri.file('/work/background.sqlx');
+		const activeTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(activeUri, 'kusto.kqlxEditor') };
+		const targetTab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlxEditor') };
+		setTabGroups(
+			{ activeTab, tabs: [activeTab], isActive: true },
+			{ activeTab: targetTab, tabs: [targetTab], isActive: false },
+		);
+		const originalText = JSON.stringify({
+			kind: 'sqlx', version: 1, state: { sections: [{ id: 'sql_1', type: 'sql', expanded: true, query: 'select 1' }] },
+		}, null, 2);
+		const document = {
+			uri: targetUri,
+			getText: () => originalText,
+			positionAt: (offset: number) => new vscode.Position(0, offset),
+			isDirty: false,
+		};
+		(vscode.workspace as any).textDocuments = [document];
+		class TestWorkspaceEdit {
+			replace() { throw new Error('Rejected background mutation must not create an edit.'); }
+		}
+		(vscode as any).WorkspaceEdit = TestWorkspaceEdit;
+		const applyEdit = vi.fn();
+		(vscode.workspace as any).applyEdit = applyEdit;
+
+		const listed = await orchestrator.listSections();
+		const target = listed.openFiles?.find(file => file.openFileId === classifyWorkbenchUri(targetUri)!.openFileId);
+		const result = await orchestrator.addSection({
+			openFileId: target!.openFileId,
+			type: 'query',
+			query: 'print Value = 1',
+		});
+
+		expect(result).toEqual({
+			sectionId: '',
+			success: false,
+			error: 'Section type "query" is not supported in .sqlx files.',
+		});
+		expect(document.getText()).toBe(originalText);
+		expect(applyEdit).not.toHaveBeenCalled();
 	});
 
 	it('reconnects an evicted live bridge and returns a 3-row by 4-column askKustoCopilot result', async () => {
@@ -145,7 +1048,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		);
 		const uri = vscode.Uri.file('/work/reactivated-result.kqlx');
 		setActiveCustomTab(uri, 'kusto.kqlxEditor');
-		const postMessage = vi.fn(() => true);
+		const postMessage = createMessagePoster();
 		const handler = new HostWorkbenchToolSessionApplicationHandler({
 			getOrchestrator: () => orch,
 			postMessage,
@@ -205,7 +1108,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
 		);
 		const uri = vscode.Uri.file('/work/development-notes.kqlx');
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orch.connect(poster, vi.fn(async () => []), vi.fn(), uri.toString());
 		setActiveCustomTab(uri, 'kusto.kqlxEditor');
 		let settled = false;
@@ -366,7 +1269,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 
 	it('preserves a host-retained section ID in a structured add result', async () => {
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orch.connect(poster, vi.fn(async () => []), vi.fn());
 
 		const request = orch.addSection({ type: 'markdown', text: 'retained' });
@@ -422,7 +1325,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 			id: 'sql_1', type: 'sql', connectionId: 'sql-test', database: 'Db',
 			ownerToken: liveOwner?.ownerToken || '',
 		}]);
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orch.connect(poster, stateGetter, vi.fn(), undefined, () => 'sql-test', () => liveOwner);
 
 		const request = orch.getSqlSchema({ sectionId: 'sql_1' });
@@ -553,7 +1456,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 			refreshPolicy,
 			assertAllowed,
 		);
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orch.connect(
 			poster,
 			vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]),
@@ -584,7 +1487,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 			fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient,
 			vi.fn(async () => []), vi.fn(async () => undefined), () => 0, dispatchOwner,
 		);
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
 
 		const request = orch.getSqlSchema({ sectionId: 'sql_1' });
@@ -607,7 +1510,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 			fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient,
 			vi.fn(async () => []), vi.fn(async () => undefined), () => 0, dispatchOwner,
 		);
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
 
 		const request = orch.delegateToSqlCopilot({ sectionId: 'sql_1', question: 'Write a query' });
@@ -626,15 +1529,21 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
 		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
 		let liveOwner = { connectionId: 'sql-test', database: 'DbA', ownerToken: 'owner-a', generation: 1 };
-		const dispatchOwner = vi.fn(async (_connection: unknown, _principal: string, _revocation: number, dispatch: () => unknown) => {
+		const dispatchOwnerImplementation = async <T>(
+			_connection: unknown,
+			_principal: string,
+			_revocation: number,
+			dispatch: () => T | PromiseLike<T>,
+		): Promise<T> => {
 			liveOwner = { ...liveOwner, database: 'DbB', generation: 2 };
 			return await dispatch();
-		});
+		};
+		const dispatchOwner = vi.fn(dispatchOwnerImplementation) as typeof dispatchOwnerImplementation;
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(
 			fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient,
 			vi.fn(async () => []), vi.fn(async () => undefined), () => 0, dispatchOwner,
 		);
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orch.connect(
 			poster,
 			vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'DbA', ownerToken: 'owner-a' }]),
@@ -659,15 +1568,21 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		let liveOwner: { connectionId: string; database: string; ownerToken: string; generation: number } | undefined = {
 			connectionId: 'sql-test', database: 'Db', ownerToken: 'owner-a', generation: 1,
 		};
-		const dispatchOwner = vi.fn(async (_connection: unknown, _principal: string, _revocation: number, dispatch: () => unknown) => {
+		const dispatchOwnerImplementation = async <T>(
+			_connection: unknown,
+			_principal: string,
+			_revocation: number,
+			dispatch: () => T | PromiseLike<T>,
+		): Promise<T> => {
 			liveOwner = undefined;
 			return await dispatch();
-		});
+		};
+		const dispatchOwner = vi.fn(dispatchOwnerImplementation) as typeof dispatchOwnerImplementation;
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(
 			fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient,
 			vi.fn(async () => []), vi.fn(async () => undefined), () => 0, dispatchOwner,
 		);
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orch.connect(
 			poster,
 			vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]),
@@ -695,7 +1610,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 			assertConnectionCurrent: vi.fn(async () => { if (++assertions === 1) await preflight.promise; }),
 		} as any;
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, vi.fn(async () => []), vi.fn(async () => undefined));
-		const firstPoster = vi.fn(() => true);
+		const firstPoster = createMessagePoster();
 		const secondPoster = vi.fn(() => true);
 		orch.connect(firstPoster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
 
@@ -724,7 +1639,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 			assertConnectionCurrent: vi.fn(async () => { if (++assertions === 1) await preflight.promise; }),
 		} as any;
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, vi.fn(async () => []), vi.fn(async () => undefined));
-		const firstPoster = vi.fn(() => true);
+		const firstPoster = createMessagePoster();
 		const secondPoster = vi.fn(() => true);
 		orch.connect(firstPoster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
 
@@ -747,7 +1662,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
 		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, vi.fn(async () => []), vi.fn(async () => undefined));
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
 		const cancellation = cancellationToken();
 
@@ -767,7 +1682,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
 		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, vi.fn(async () => []), vi.fn(async () => undefined));
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
 
 		const request = orch.getSqlSchema({ sectionId: 'sql_1' });
@@ -782,7 +1697,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
 		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, vi.fn(async () => []), vi.fn(async () => undefined));
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
 
 		const request = orch.delegateToSqlCopilot({ sectionId: 'sql_1', question: 'Write a query' });
@@ -797,7 +1712,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
 		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, vi.fn(async () => []), vi.fn(async () => undefined));
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'DbA', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
 
 		const request = orch.getSqlSchema({ sectionId: 'sql_1' });
@@ -812,7 +1727,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
 		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, vi.fn(async () => []), vi.fn(async () => undefined));
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
 
 		const request = orch.delegateToSqlCopilot({ sectionId: 'sql_1', question: 'Write a query' });
@@ -1201,7 +2116,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 	it('cancels the exact acknowledged Kusto execution on the captured editor', async () => {
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 		const uri = vscode.Uri.file('/work/active-query.kqlx');
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orch.connect(poster, vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), uri.toString());
 		setActiveCustomTab(uri, 'kusto.kqlxEditor');
 		const cancellation = cancellationToken();
@@ -1335,7 +2250,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 		const sqlUri = vscode.Uri.file('/work/query.sql');
 		const notebookUri = vscode.Uri.file('/work/later-notebook.kqlx');
-		const sqlPoster = vi.fn(() => true);
+		const sqlPoster = createMessagePoster();
 		const notebookPoster = vi.fn();
 		const sqlStateGetter = vi.fn(async () => [{ id: 'sql_1', type: 'sql', name: 'SQL', serverUrl: 'server.example', database: 'db' }]);
 		const notebookStateGetter = vi.fn(async () => [{ id: 'notebook_query', type: 'query' }]);
@@ -1369,7 +2284,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 			assertConnectionCurrent: vi.fn(async () => undefined),
 		} as any;
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient);
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql' }]), vi.fn(), undefined, () => 'sql-test');
 
 		const request = orch.configureSqlSection({ sectionId: 'sql_1', connectionId: 'sql-test', query: 'SELECT 1' });
@@ -1394,7 +2309,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 			assertConnectionCurrent: vi.fn(async () => undefined),
 		} as any;
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient);
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		let liveOwner = { connectionId: 'sql-a', database: 'DbA', ownerToken: 'owner-a', generation: 1 };
 		orch.connect(
 			poster,
@@ -1425,7 +2340,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const assertAllowed = vi.fn(async () => preflight.promise);
 		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, undefined, assertAllowed);
-		const firstPoster = vi.fn(() => true);
+		const firstPoster = createMessagePoster();
 		const secondPoster = vi.fn();
 		orch.connect(firstPoster, vi.fn(async () => [{ id: 'sql_1', type: 'sql' }]), vi.fn(), undefined, () => 'sql-test');
 
@@ -1510,7 +2425,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		};
 		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient);
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		const owner = { connectionId: 'sql-test', database: 'Db', ownerToken: 'owner-token', generation: 1 };
 		const token = orch.connect(
 			poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db' }]), vi.fn(), undefined,
@@ -1529,7 +2444,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
 		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient);
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		const owner = { connectionId: 'sql-test', database: 'Db', ownerToken: 'owner-token', generation: 1 };
 		const token = orch.connect(
 			poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db' }]), vi.fn(), undefined,
@@ -1550,7 +2465,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
 		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient);
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		const owner = { connectionId: 'sql-test', database: 'Db', ownerToken: 'owner-token', generation: 1 };
 		orch.connect(
 			poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db' }]), vi.fn(), undefined,
@@ -1909,6 +2824,50 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect((vscode.window.tabGroups.all[0] as any).tabs).toEqual([activeTab]);
 	});
 
+	it('saveWorkbenchFile saves the exact dirty document without closing or focusing its tab', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const activeUri = vscode.Uri.file('/work/active.kqlx');
+		const targetUri = vscode.Uri.file('/work/background-report.kqlx');
+		const activeTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(activeUri, 'kusto.kqlxEditor'), label: 'active.kqlx' };
+		const targetTab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlxEditor'), label: 'background-report.kqlx' };
+		setTabGroups(
+			{ activeTab, tabs: [activeTab], isActive: true },
+			{ activeTab: targetTab, tabs: [targetTab], isActive: false },
+		);
+		let dirty = true;
+		const save = vi.fn(async () => { dirty = false; return true; });
+		(vscode.workspace as any).textDocuments = [{ uri: targetUri, get isDirty() { return dirty; }, save }];
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+
+		const result = await orch.saveWorkbenchFile({
+			openFileId: classifyWorkbenchUri(targetUri)!.openFileId,
+		});
+
+		expect(result).toMatchObject({ success: true, saved: true, wasDirty: true });
+		expect(save).toHaveBeenCalledOnce();
+		expect(close).not.toHaveBeenCalled();
+		expect((vscode.window.tabGroups.all[0] as any).activeTab).toBe(activeTab);
+	});
+
+	it('saveWorkbenchFile rejects an explicit URI that is not open instead of falling back to the active file', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const activeUri = vscode.Uri.file('/work/active.kqlx');
+		const foreignUri = vscode.Uri.file('/work/foreign-window.kqlx');
+		const activeTab = { isActive: true, isDirty: true, input: new vscode.TabInputCustom(activeUri, 'kusto.kqlxEditor'), label: 'active.kqlx' };
+		setTabGroups({ activeTab, tabs: [activeTab], isActive: true });
+		const save = vi.fn(async () => true);
+		(vscode.workspace as any).textDocuments = [{ uri: activeUri, isDirty: true, save }];
+
+		const result = await orch.saveWorkbenchFile({ targetFileUri: foreignUri.toString() });
+
+		expect(result).toEqual({
+			success: false,
+			saved: false,
+			error: 'No matching open Kusto Workbench file was found.',
+		});
+		expect(save).not.toHaveBeenCalled();
+	});
+
 	it.each([
 		{},
 		{ openFileId: '   ' },
@@ -2070,7 +3029,8 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const sidecarUri = vscode.Uri.file('/work/late-clean.kql.json');
 		const targetTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlCompatEditor'), label: 'late-clean.kql' };
 		const sidecarTab = { isActive: false, isDirty: false, input: new vscode.TabInputText(sidecarUri), label: 'late-clean.kql.json' };
-		const activeGroup = { activeTab: targetTab, tabs: [targetTab], isActive: true };
+		const tabs: Array<typeof targetTab | typeof sidecarTab> = [targetTab];
+		const activeGroup = { activeTab: targetTab, tabs, isActive: true };
 		setTabGroups(activeGroup);
 		let inspectionCount = 0;
 		const closeLifecycle = {
@@ -2318,7 +3278,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 			const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
 				fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
 			);
-			const poster = vi.fn(() => true);
+			const poster = createMessagePoster();
 			orchestrator.connect(poster, vi.fn(async () => []), vi.fn());
 			let outcome = 'pending';
 			const pending = orchestrator.delegateToKustoWorkbenchCopilot({ question: 'Help' });
@@ -2347,7 +3307,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
 			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
 		);
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orchestrator.connect(poster, vi.fn(async () => []), vi.fn());
 		const cancellation = cancellationToken();
 		const pending = orchestrator.delegateToKustoWorkbenchCopilot({ question: 'Help' }, cancellation.token);
@@ -2365,7 +3325,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
 			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
 		);
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orchestrator.connect(poster, vi.fn(async () => []), vi.fn());
 		let settled = false;
 		const pending = orchestrator.delegateToKustoWorkbenchCopilot({ question: 'Help' });
@@ -2405,7 +3365,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const fileA = vscode.Uri.file('/work/clarification-a.kqlx');
 		const fileB = vscode.Uri.file('/work/clarification-b.kqlx');
 		const infoA = classifyWorkbenchUri(fileA)!;
-		const posterA = vi.fn(() => true);
+		const posterA = createMessagePoster();
 		orchestrator.connect(posterA, vi.fn(async () => []), vi.fn(), fileA.toString());
 		orchestrator.connect(vi.fn(() => true), vi.fn(async () => []), vi.fn(), fileB.toString());
 		setActiveCustomTab(fileA, 'kusto.kqlxEditor');
@@ -2434,7 +3394,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const newUri = vscode.Uri.file('/work/clarification-new.kqlx');
 		const oldInfo = classifyWorkbenchUri(oldUri)!;
 		const newInfo = classifyWorkbenchUri(newUri)!;
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orchestrator.connect(poster, vi.fn(async () => []), vi.fn(), oldUri.toString());
 
 		const pending = orchestrator.delegateToKustoWorkbenchCopilot({
@@ -2464,7 +3424,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 			label: 'clarification-pending-old.kqlx',
 		};
 		const group = { activeTab: oldTab, tabs: [oldTab], isActive: true };
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orchestrator.connect(poster, vi.fn(async () => []), vi.fn(), oldUri.toString());
 		setTabGroups(group);
 
@@ -2484,15 +3444,14 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		await vi.waitFor(() => expect(group.tabs).not.toContain(oldTab));
 	});
 
-	it('fences native rename until the remapped clarification response settles', async () => {
+	it('fences native rename until the current-identity clarification response settles', async () => {
 		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
 			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
 		);
 		const oldUri = vscode.Uri.file('/work/clarification-will-old.kqlx');
 		const newUri = vscode.Uri.file('/work/clarification-will-new.kqlx');
 		const oldInfo = classifyWorkbenchUri(oldUri)!;
-		const newInfo = classifyWorkbenchUri(newUri)!;
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orchestrator.connect(poster, vi.fn(async () => []), vi.fn(), oldUri.toString());
 
 		const pending = orchestrator.delegateToKustoWorkbenchCopilot({
@@ -2510,9 +3469,158 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 			question: 'Which range?', sectionId: 'query_1',
 		});
 
-		await expect(pending).resolves.toEqual(expect.objectContaining({ openFileId: newInfo.openFileId }));
+		await expect(pending).resolves.toEqual(expect.objectContaining({ openFileId: oldInfo.openFileId }));
 		await renameFence;
 		expect(renameFenceSettled).toBe(true);
+	});
+
+	it('keeps old identity and releases ownership block when a prepared rename never completes', async () => {
+		vi.useFakeTimers();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const oldUri = vscode.Uri.file('/work/cancelled-rename-old.kqlx');
+		const newUri = vscode.Uri.file('/work/cancelled-rename-new.kqlx');
+		const oldInfo = classifyWorkbenchUri(oldUri)!;
+		await vscode.workspace.fs.writeFile(oldUri, new TextEncoder().encode('{}'));
+		(orchestrator as any).hostOwnedBackgroundFiles.add(oldInfo.logicalUriKey);
+
+		await orchestrator.prepareFilesRename([{ oldUri, newUri }]);
+
+		expect((orchestrator as any).resolveRenamedWorkbenchFileInfo(oldInfo).openFileId).toBe(oldInfo.openFileId);
+		expect((orchestrator as any).backgroundMutationBlocks.get(oldInfo.logicalUriKey)).toBe(1);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect((orchestrator as any).backgroundMutationBlocks.has(oldInfo.logicalUriKey)).toBe(false);
+		expect((orchestrator as any).hostOwnedBackgroundFiles.has(oldInfo.logicalUriKey)).toBe(true);
+		expect((orchestrator as any).renamedWorkbenchFiles.has(oldInfo.logicalUriKey)).toBe(false);
+	});
+
+	it('keeps a rename fenced while an admitted background operation exceeds the cancellation timeout', async () => {
+		vi.useFakeTimers();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const oldUri = vscode.Uri.file('/work/slow-rename-old.kqlx');
+		const newUri = vscode.Uri.file('/work/slow-rename-new.kqlx');
+		const oldInfo = classifyWorkbenchUri(oldUri)!;
+		await vscode.workspace.fs.writeFile(oldUri, new TextEncoder().encode('{}'));
+		(orchestrator as any).hostOwnedBackgroundFiles.add(oldInfo.logicalUriKey);
+		const operationGate = deferred<void>();
+		const operation = (orchestrator as any).runBackgroundFileOperation(
+			oldInfo.logicalUriKey,
+			() => operationGate.promise,
+		);
+		let prepareSettled = false;
+		const preparing = orchestrator.prepareFilesRename([{ oldUri, newUri }])
+			.then(() => { prepareSettled = true; });
+		await Promise.resolve();
+
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(prepareSettled).toBe(false);
+		expect((orchestrator as any).backgroundMutationBlocks.get(oldInfo.logicalUriKey)).toBe(1);
+		operationGate.resolve();
+		await operation;
+		await preparing;
+		expect((orchestrator as any).backgroundMutationBlocks.get(oldInfo.logicalUriKey)).toBe(1);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect((orchestrator as any).backgroundMutationBlocks.has(oldInfo.logicalUriKey)).toBe(false);
+	});
+
+	it('retires a rename alias when the old source path is recreated as a distinct file', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'kw-rename-recreate-'));
+		try {
+			const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+				fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+			);
+			const oldUri = vscode.Uri.file(join(root, 'source.kqlx'));
+			const newUri = vscode.Uri.file(join(root, 'renamed.kqlx'));
+			writeFileSync(newUri.fsPath, '{}');
+			await orchestrator.handleFilesRenamed([{ oldUri, newUri }]);
+			writeFileSync(oldUri.fsPath, '{}');
+			const oldPoster = createMessagePoster();
+			const newPoster = createMessagePoster();
+			orchestrator.connect(oldPoster, vi.fn(async () => [{ id: 'query_old', type: 'query' }]), vi.fn(), oldUri.toString());
+			orchestrator.connect(newPoster, vi.fn(async () => [{ id: 'query_new', type: 'query' }]), vi.fn(), newUri.toString());
+			const oldTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(oldUri, 'kusto.kqlxEditor') };
+			const newTab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(newUri, 'kusto.kqlxEditor') };
+			setTabGroups(
+				{ activeTab: oldTab, tabs: [oldTab], isActive: true },
+				{ activeTab: newTab, tabs: [newTab], isActive: false },
+			);
+
+			const oldMutation = orchestrator.configureQuerySection({
+				openFileId: classifyWorkbenchUri(oldUri)!.openFileId,
+				sectionId: 'query_old',
+				query: 'print Source = true',
+			});
+			expect(oldPoster).toHaveBeenCalledOnce();
+			const oldRequest = oldPoster.mock.calls[0][0] as any;
+			orchestrator.handleWebviewResponse(oldRequest.requestId, { success: true });
+			await expect(oldMutation).resolves.toEqual({ success: true });
+
+			const newMutation = orchestrator.configureQuerySection({
+				openFileId: classifyWorkbenchUri(newUri)!.openFileId,
+				sectionId: 'query_new',
+				query: 'print Renamed = true',
+			});
+			expect(newPoster).toHaveBeenCalledOnce();
+			const newRequest = newPoster.mock.calls[0][0] as any;
+			orchestrator.handleWebviewResponse(newRequest.requestId, { success: true });
+			await expect(newMutation).resolves.toEqual({ success: true });
+			expect((orchestrator as any).renamedWorkbenchFiles.has(classifyWorkbenchUri(oldUri)!.logicalUriKey)).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it('flattens chained rename aliases before an intermediate path is recreated', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'kw-rename-chain-'));
+		try {
+			const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+				fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+			);
+			const uriA = vscode.Uri.file(join(root, 'a.kqlx'));
+			const uriB = vscode.Uri.file(join(root, 'b.kqlx'));
+			const uriC = vscode.Uri.file(join(root, 'c.kqlx'));
+			writeFileSync(uriC.fsPath, '{}');
+			await orchestrator.handleFilesRenamed([{ oldUri: uriA, newUri: uriB }]);
+			await orchestrator.handleFilesRenamed([{ oldUri: uriB, newUri: uriC }]);
+			writeFileSync(uriB.fsPath, '{}');
+			const posterB = createMessagePoster();
+			const posterC = createMessagePoster();
+			orchestrator.connect(posterB, vi.fn(async () => [{ id: 'query_b', type: 'query' }]), vi.fn(), uriB.toString());
+			orchestrator.connect(posterC, vi.fn(async () => [{ id: 'query_c', type: 'query' }]), vi.fn(), uriC.toString());
+			const tabB = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(uriB, 'kusto.kqlxEditor') };
+			const tabC = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(uriC, 'kusto.kqlxEditor') };
+			setTabGroups(
+				{ activeTab: tabB, tabs: [tabB], isActive: true },
+				{ activeTab: tabC, tabs: [tabC], isActive: false },
+			);
+
+			const mutationB = orchestrator.configureQuerySection({
+				openFileId: classifyWorkbenchUri(uriB)!.openFileId,
+				sectionId: 'query_b',
+				query: 'print B = true',
+			});
+			expect(posterB).toHaveBeenCalledOnce();
+			const requestB = posterB.mock.calls[0][0] as any;
+			orchestrator.handleWebviewResponse(requestB.requestId, { success: true });
+			await expect(mutationB).resolves.toEqual({ success: true });
+
+			const mutationC = orchestrator.configureQuerySection({
+				openFileId: classifyWorkbenchUri(uriC)!.openFileId,
+				sectionId: 'query_c',
+				query: 'print C = true',
+			});
+			expect(posterC).toHaveBeenCalledOnce();
+			const requestC = posterC.mock.calls[0][0] as any;
+			orchestrator.handleWebviewResponse(requestC.requestId, { success: true });
+			await expect(mutationC).resolves.toEqual({ success: true });
+			const aliasA = (orchestrator as any).renamedWorkbenchFiles.get(classifyWorkbenchUri(uriA)!.logicalUriKey);
+			expect(aliasA?.logicalUriKey).toBe(classifyWorkbenchUri(uriC)!.logicalUriKey);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it('does not fence rename on unrelated pending tools', async () => {
@@ -2522,7 +3630,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const oldUri = vscode.Uri.file('/work/configure-will-old.kqlx');
 		const newUri = vscode.Uri.file('/work/configure-will-new.kqlx');
 		const oldInfo = classifyWorkbenchUri(oldUri)!;
-		const poster = vi.fn(() => true);
+		const poster = createMessagePoster();
 		orchestrator.connect(poster, vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), oldUri.toString());
 
 		const pending = orchestrator.configureQuerySection({

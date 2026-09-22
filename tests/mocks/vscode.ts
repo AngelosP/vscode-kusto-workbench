@@ -238,6 +238,15 @@ export const workspace = {
 	}),
 	fs: {
 		createDirectory: () => Promise.resolve(),
+		stat: async (uri: Uri) => {
+			const bytes = fileSystemStore.get(uri.toString()) ?? fileSystemStore.get(uri.fsPath);
+			if (!bytes) {
+				const error = new Error(`ENOENT: ${uri.toString()}`) as Error & { code: string };
+				error.code = 'FileNotFound';
+				throw error;
+			}
+			return { type: 1, ctime: 0, mtime: 0, size: bytes.byteLength };
+		},
 		readFile: async (uri: Uri) => {
 			const bytes = fileSystemStore.get(uri.toString()) ?? fileSystemStore.get(uri.fsPath);
 			if (!bytes) {
@@ -249,6 +258,24 @@ export const workspace = {
 			fileSystemStore.set(uri.toString(), bytes);
 			fileSystemStore.set(uri.fsPath, bytes);
 		},
+		rename: async (source: Uri, target: Uri, options?: { overwrite?: boolean }) => {
+			const bytes = fileSystemStore.get(source.toString()) ?? fileSystemStore.get(source.fsPath);
+			if (!bytes) {
+				const error = new Error(`ENOENT: ${source.toString()}`) as Error & { code: string };
+				error.code = 'FileNotFound';
+				throw error;
+			}
+			const targetExists = fileSystemStore.has(target.toString()) || fileSystemStore.has(target.fsPath);
+			if (targetExists && options?.overwrite !== true) {
+				const error = new Error(`EEXIST: ${target.toString()}`) as Error & { code: string };
+				error.code = 'FileExists';
+				throw error;
+			}
+			fileSystemStore.set(target.toString(), bytes);
+			fileSystemStore.set(target.fsPath, bytes);
+			fileSystemStore.delete(source.toString());
+			fileSystemStore.delete(source.fsPath);
+		},
 		delete: async (uri: Uri, _options?: { recursive?: boolean }) => {
 			fileSystemStore.delete(uri.toString());
 			fileSystemStore.delete(uri.fsPath);
@@ -256,6 +283,7 @@ export const workspace = {
 	},
 	openTextDocument: async (uri: Uri) => ({ uri }),
 	onDidOpenTextDocument: () => ({ dispose: () => {} }),
+	onDidChangeWorkspaceFolders: () => ({ dispose: () => {} }),
 	onDidChangeConfiguration: () => ({ dispose: () => {} }),
 };
 

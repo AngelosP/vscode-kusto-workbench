@@ -47,6 +47,7 @@ only proves the backing handler.
 
 <!-- CSS selectors, data-testid values, and webview titles that work for this extension -->
 
+- Quick Access External Tools: open `workbench.view.extension.kustoWorkbench`, wait for `[data-testid='configure-external-tools']`, and scroll `[data-testid='quick-access-external-tools']` into view. The real button opens `Configure integration with external tools`; cancel before client selection to avoid setup effects. At 1100x1000, a native click at `20,500` before screenshots keeps the isolated window in foreground. After `workbench.action.showCommands`, wait for QuickInput title `Type the name of a command to run.` before typing; immediate input was lost in run `20260922-044204`, and the readiness-gated rerun `20260922-044325` passed with both screenshots reviewed.
 - Main notebook container: `#queries-container`.
 - Section tags are stable and usable through webview CSS/evaluate steps: `kw-query-section`, `kw-markdown-section`, `kw-html-section`, `kw-python-section`, `kw-sql-section`.
 - Add buttons use `button[data-add-kind='<kind>']`, with kinds including `query`, `sql`, `html`, and `markdown`.
@@ -58,6 +59,8 @@ only proves the backing handler.
 - XY-chart X-axis settings are reliably clickable through `[data-testid='chart-x-axis-settings']`. The `chart-regressions` automatic-axis-gap scenario provides visual state evidence for the constant 5x5 affordance: its first screenshot shows neutral default dots for X/Y/Legend, and its post-slider screenshot shows only X changing to blue.
 
 ## Activation & Setup Quirks
+
+- `external-scout-setup` exercises the real Configure client/profile pickers, native Continue consent, reconfiguration, and managed removal using a separately loaded setup bundle with only connector-install/process checks prepared and Scout paths redirected to a unique temp home. Its JSON oracles verify registration plus skill, byte-identical rerun, unrelated-state preservation, and exact fixture cleanup. The evaluator has no global `require`: use `process.getBuiltinModule('node:module').createRequire(...)`. Do not spread the whole `vscode` API; that evaluates proposed getters. Target consent with `I click "Continue" on the "Visual Studio Code" dialog`, not the controller's generic dialog registry. Run 20260922-055306 passed all 28 steps; screenshot and four JSON artifacts reviewed. This does not prove a newly created registration is loaded by the Scout application itself.
 
 <!-- E.g. "needs a .kql file open before commands are available" -->
 

@@ -69,10 +69,8 @@ import {
 	refreshEditingPreferences,
 } from './editingPreferences';
 import { parseEditingPreferencesHostMessage } from '../shared/editingPreferences';
-import {
-	CopilotCliConnectionCancelledError,
-	LazyCopilotCliIntegration,
-} from './copilotCliSessionManager';
+import { isExternalMcpHostEligible } from '../shared/externalMcpHostEligibility';
+import { ExternalMcpProviderStateCoordinator } from './externalMcpProviderStateCoordinator';
 
 type TestOpenFileSummary = NonNullable<Awaited<ReturnType<KustoWorkbenchToolOrchestrator['listSections']>>['openFiles']>[number];
 type TestKustoCopilotDelegationInput = Parameters<KustoWorkbenchToolOrchestrator['delegateToKustoWorkbenchCopilot']>[0];
@@ -91,24 +89,71 @@ export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
 let sqlWorkbenchService: SqlWorkbenchService | undefined;
 let kustoConnectionManager: ConnectionManager | undefined;
 let kustoAuthPreferenceService: KustoAuthPreferenceService | undefined;
-const COPILOT_CLI_ENABLED_SETTING = 'copilotCli.enabled';
-type CopilotCliIntegration = {
-	connect(target?: 'integrated' | 'external'): Promise<void>;
+const EXTERNAL_TOOLS_ENABLED_SETTING = 'externalTools.enabled';
+type ExternalMcpProviderIntegration = {
+	start(): Promise<void>;
 	stop(): Promise<void>;
 	dispose(): Promise<void>;
 };
-let copilotCliIntegration: LazyCopilotCliIntegration<CopilotCliIntegration> | undefined;
+let externalMcpProviderStateCoordinator: ExternalMcpProviderStateCoordinator<ExternalMcpProviderIntegration> | undefined;
+type ExternalMcpClientKind = 'copilot-cli' | 'scout' | 'other';
+type ExternalMcpSetupModule = {
+	runExternalMcpSetup(
+		context: vscode.ExtensionContext,
+		logger: ReturnType<typeof getWorkbenchLogger>,
+		preselected?: ExternalMcpClientKind,
+	): Promise<{ integrationEnabled: boolean } | undefined>;
+	showExternalMcpStatus(): Promise<void>;
+	disableExternalMcpIntegration(): Promise<void>;
+};
+let externalMcpSetupModulePromise: Promise<ExternalMcpSetupModule> | undefined;
 
-function getOrCreateCopilotCliIntegration(context: vscode.ExtensionContext): LazyCopilotCliIntegration<CopilotCliIntegration> {
-	if (copilotCliIntegration) return copilotCliIntegration;
-	copilotCliIntegration = new LazyCopilotCliIntegration(async () => {
-		const moduleUri = vscode.Uri.joinPath(context.extensionUri, 'dist', 'copilot-cli-integration.js');
-		const module = await import(moduleUri.toString());
-		const integration = module.createCopilotCliIntegration?.(context, getWorkbenchLogger()) as CopilotCliIntegration | undefined;
-		if (!integration) throw new Error('The packaged Copilot CLI integration is unavailable.');
-		return integration;
-	});
-	return copilotCliIntegration;
+function loadExternalMcpSetupModule(context: vscode.ExtensionContext): Promise<ExternalMcpSetupModule> {
+	if (!externalMcpSetupModulePromise) {
+		const moduleUri = vscode.Uri.joinPath(context.extensionUri, 'dist', 'external-mcp-setup.js');
+		externalMcpSetupModulePromise = import(moduleUri.toString()) as Promise<ExternalMcpSetupModule>;
+	}
+	return externalMcpSetupModulePromise;
+}
+
+function getOrCreateExternalMcpProviderStateCoordinator(
+	context: vscode.ExtensionContext,
+): ExternalMcpProviderStateCoordinator<ExternalMcpProviderIntegration> {
+	if (!externalMcpProviderStateCoordinator) {
+		externalMcpProviderStateCoordinator = new ExternalMcpProviderStateCoordinator(async () => {
+			const moduleUri = vscode.Uri.joinPath(context.extensionUri, 'dist', 'external-mcp-provider.js');
+			const module = await import(moduleUri.toString());
+			const integration = module.createExternalMcpProviderIntegration?.(
+				context,
+				getWorkbenchLogger(),
+			) as ExternalMcpProviderIntegration | undefined;
+			if (!integration) throw new Error('The packaged external MCP provider is unavailable.');
+			return integration;
+		});
+	}
+	return externalMcpProviderStateCoordinator;
+}
+
+async function applyExternalMcpProviderSetting(context: vscode.ExtensionContext): Promise<void> {
+	const enabled = vscode.workspace.getConfiguration('kustoWorkbench')
+		.get<boolean>(EXTERNAL_TOOLS_ENABLED_SETTING, false);
+	getWorkbenchLogger().info(`[External MCP] Applying provider setting: ${enabled ? 'enabled' : 'disabled'}.`);
+	if (!enabled) {
+		await externalMcpProviderStateCoordinator?.setEnabled(false);
+		return;
+	}
+	if (!isExternalMcpHostEligible({
+		platform: process.platform,
+		architecture: process.arch,
+		remoteName: vscode.env.remoteName,
+		desktop: vscode.env.uiKind === vscode.UIKind.Desktop,
+	})) {
+		await externalMcpProviderStateCoordinator?.setEnabled(false);
+		getWorkbenchLogger().info('[External MCP] Provider skipped on an unsupported host.');
+		return;
+	}
+	getWorkbenchLogger().info('[External MCP] Starting provider integration.');
+	await getOrCreateExternalMcpProviderStateCoordinator(context).setEnabled(true);
 }
 
 // This method is called when your extension is activated
@@ -219,12 +264,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					getWorkbenchLogger().error('[Kusto Workbench] Failed to refresh editing preferences:', error instanceof Error ? error : String(error));
 				});
 			}
-			if (e.affectsConfiguration(`kustoWorkbench.${COPILOT_CLI_ENABLED_SETTING}`)) {
-				if (!vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>(COPILOT_CLI_ENABLED_SETTING, false)) {
-					void copilotCliIntegration?.stop().catch(error => {
-					getWorkbenchLogger().error('[Copilot CLI] Failed to apply the integration setting:', error instanceof Error ? error : String(error));
-					});
-				}
+			if (e.affectsConfiguration(`kustoWorkbench.${EXTERNAL_TOOLS_ENABLED_SETTING}`)) {
+				void applyExternalMcpProviderSetting(context).catch(error => {
+					getWorkbenchLogger().error('[External MCP] Failed to apply the integration setting:', error instanceof Error ? error : String(error));
+				});
 			}
 		})
 	);
@@ -1650,6 +1693,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		connectionId => sqlWorkbenchService!.leaveNoTracePolicy.getRevocationGeneration(connectionId),
 		(connection, principal, revocation, dispatch) => sqlWorkbenchService!.dispatchSqlOwnerAllowed(connection, principal, revocation, dispatch),
 	);
+	if (vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>(EXTERNAL_TOOLS_ENABLED_SETTING, false)) {
+		try {
+			await applyExternalMcpProviderSetting(context);
+		} catch (error) {
+			getWorkbenchLogger().error(
+				'[External MCP] Optional provider startup failed; Kusto Workbench activation will continue:',
+				error instanceof Error ? error : String(error),
+			);
+		}
+	}
 	context.subscriptions.push(
 		vscode.workspace.onWillRenameFiles((event) => {
 			event.waitUntil(toolOrchestrator?.prepareFilesRename(event.files) ?? Promise.resolve());
@@ -1658,7 +1711,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			void toolOrchestrator?.handleFilesRenamed(event.files).catch(() => {
 				// Ignore rename bookkeeping failures; VS Code remains the source of truth.
 			});
-		})
+		}),
+		vscode.window.tabGroups.onDidChangeTabs((event) => {
+			void Promise.all([
+				toolOrchestrator?.handleTabsClosed(event.closed),
+				toolOrchestrator?.handleTabsActivated(event.changed),
+			]).catch(() => {
+				// Ignore close bookkeeping failures; VS Code remains the source of truth.
+			});
+		}),
+		vscode.window.tabGroups.onDidChangeTabGroups(() => {
+			const activeTab = vscode.window.tabGroups.activeTabGroup?.activeTab;
+			void toolOrchestrator?.handleTabsActivated(activeTab ? [activeTab] : []).catch(() => {
+				// Ignore ownership bookkeeping failures; VS Code remains the source of truth.
+			});
+		}),
 	);
 	if (context.extensionMode !== vscode.ExtensionMode.Production) {
 		type DelegationRecord = {
@@ -2525,6 +2592,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			<div class="card-desc">Export a SKILL.md file that teaches any Copilot agent how to operate Kusto Workbench. Share with your team or keep it local.</div>
 			<button class="button" onclick="sendCommand('exportSkill')">Export Skill...</button>
 		</div>
+		<div class="card" data-testid="quick-access-external-tools">
+			<div class="card-title">
+				<i class="codicon codicon-plug" aria-hidden="true"></i> External Tools
+			</div>
+			<div class="card-desc">Copilot CLI, Microsoft Scout, and other MCP clients.</div>
+			<button class="button" data-testid="configure-external-tools" title="Configure integration with external tools" onclick="sendCommand('configureExternalTools')">
+				<i class="codicon codicon-settings-gear" aria-hidden="true"></i> Configure...
+			</button>
+		</div>
 	</div>
 
 	<div class="section">
@@ -2631,9 +2707,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 							break;
 						case 'openWalkthroughEditor':
 							await vscode.commands.executeCommand('kusto.openTutorials', 'editor');
-							break;					case 'exportSkill':
-						await vscode.commands.executeCommand('kusto.exportSkill');
-						break;					}
+							break;
+						case 'exportSkill':
+							await vscode.commands.executeCommand('kusto.exportSkill');
+							break;
+						case 'configureExternalTools':
+							await vscode.commands.executeCommand('kusto.enableExternalTools');
+							break;
+					}
 				});
 			}
 		})
@@ -2865,73 +2946,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('kusto.connectCopilotCli', () => {
-			if (!vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>(COPILOT_CLI_ENABLED_SETTING, false)) {
-				void vscode.window.showInformationMessage(
-					'Copilot CLI integration is disabled. Enable kustoWorkbench.copilotCli.enabled before connecting.',
-					'Open Settings',
-				).then(selected => selected === 'Open Settings'
-					? vscode.commands.executeCommand('workbench.action.openSettings', `kustoWorkbench.${COPILOT_CLI_ENABLED_SETTING}`)
-					: undefined);
-				return Promise.resolve({ success: false, disabled: true });
-			}
-			const integration = getOrCreateCopilotCliIntegration(context);
-			const expectedGeneration = integration.captureGeneration();
-			return afterFirstLaunch(async () => {
-				try {
-					if (!vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>(COPILOT_CLI_ENABLED_SETTING, false)) return;
-					await integration.connect(expectedGeneration);
-					return { success: true };
-				} catch (error) {
-					if (error instanceof vscode.CancellationError || error instanceof CopilotCliConnectionCancelledError) {
-						return { success: false, cancelled: true };
-					}
-					const message = error instanceof Error ? error.message : String(error);
-					getWorkbenchLogger().error(`[Copilot CLI] Connect failed: ${message}`);
-					void vscode.window.showErrorMessage(`Could not connect Copilot CLI: ${message}`);
-					return { success: false, error: message };
-				}
-			})();
+		vscode.commands.registerCommand('kusto.startExternalMcpProvider', async () => {
+			await applyExternalMcpProviderSetting(context);
 		}),
-		vscode.commands.registerCommand('kusto.createExternalCopilotCliConnection', () => {
-			if (!vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>(COPILOT_CLI_ENABLED_SETTING, false)) {
-				void vscode.window.showInformationMessage(
-					'Copilot CLI integration is disabled. Enable kustoWorkbench.copilotCli.enabled before connecting.',
-					'Open Settings',
-				).then(selected => selected === 'Open Settings'
-					? vscode.commands.executeCommand('workbench.action.openSettings', `kustoWorkbench.${COPILOT_CLI_ENABLED_SETTING}`)
-					: undefined);
-				return Promise.resolve({ success: false, disabled: true });
+		vscode.commands.registerCommand('kusto.stopExternalMcpProvider', async () => {
+			await externalMcpProviderStateCoordinator?.setEnabled(false);
+		}),
+		vscode.commands.registerCommand('kusto.enableExternalTools', (preselected?: ExternalMcpClientKind) => afterFirstLaunch(async () => {
+			try {
+				const setup = await loadExternalMcpSetupModule(context);
+				const result = await setup.runExternalMcpSetup(context, getWorkbenchLogger(), preselected);
+				if (result?.integrationEnabled) await applyExternalMcpProviderSetting(context);
+				return result;
+			} catch (error) {
+				if (error instanceof vscode.CancellationError) return undefined;
+				const message = error instanceof Error ? error.message : String(error);
+				getWorkbenchLogger().error(`[External MCP] Setup failed: ${message}`);
+				void vscode.window.showErrorMessage(`Could not configure external tools integration: ${message}`);
+				throw error;
 			}
-			const integration = getOrCreateCopilotCliIntegration(context);
-			const expectedGeneration = integration.captureGeneration();
-			return afterFirstLaunch(async () => {
-				try {
-					if (!vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>(COPILOT_CLI_ENABLED_SETTING, false)) return;
-					await integration.connect(expectedGeneration, 'external');
-					return { success: true };
-				} catch (error) {
-					if (error instanceof vscode.CancellationError || error instanceof CopilotCliConnectionCancelledError) {
-						return { success: false, cancelled: true };
-					}
-					const message = error instanceof Error ? error.message : String(error);
-					getWorkbenchLogger().error(`[Copilot CLI] External connection failed: ${message}`);
-					void vscode.window.showErrorMessage(`Could not create external Copilot CLI connection: ${message}`);
-					return { success: false, error: message };
-				}
-			})();
+		})()),
+		vscode.commands.registerCommand('kusto.showExternalToolsStatus', async () => {
+			await (await loadExternalMcpSetupModule(context)).showExternalMcpStatus();
+		}),
+		vscode.commands.registerCommand('kusto.disableExternalTools', async () => {
+			await (await loadExternalMcpSetupModule(context)).disableExternalMcpIntegration();
+			await applyExternalMcpProviderSetting(context);
+		}),
+		vscode.commands.registerCommand('kusto.connectCopilotCli', async () => {
+			void vscode.window.showWarningMessage('This command was replaced by Kusto Workbench: Configure integration with external tools...');
+			return vscode.commands.executeCommand('kusto.enableExternalTools', 'copilot-cli');
+		}),
+		vscode.commands.registerCommand('kusto.createExternalCopilotCliConnection', async () => {
+			void vscode.window.showWarningMessage('VS Code no longer launches external agents. Configure your MCP client through Kusto Workbench: Configure integration with external tools...');
+			return vscode.commands.executeCommand('kusto.enableExternalTools', 'copilot-cli');
 		}),
 		vscode.commands.registerCommand('kusto.disconnectCopilotCli', async () => {
-			try {
-				await copilotCliIntegration?.stop();
-				void vscode.window.showInformationMessage('Disconnected Copilot CLI from this Kusto Workbench window.');
-				return { success: true };
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				getWorkbenchLogger().error(`[Copilot CLI] Disconnect failed: ${message}`);
-				void vscode.window.showErrorMessage(`Could not disconnect Copilot CLI: ${message}`);
-				return { success: false, error: message };
-			}
+			void vscode.window.showWarningMessage('This command was replaced by Kusto Workbench: External tools - Disable or remove integration...');
+			return vscode.commands.executeCommand('kusto.disableExternalTools');
 		}),
 	);
 
@@ -3022,17 +3074,16 @@ export async function deactivate() {
 	const service = sqlWorkbenchService;
 	const connectionManager = kustoConnectionManager;
 	const authPreferences = kustoAuthPreferenceService;
-	const cliIntegration = copilotCliIntegration;
+	const externalProviderCoordinator = externalMcpProviderStateCoordinator;
 	sqlWorkbenchService = undefined;
 	kustoConnectionManager = undefined;
 	kustoAuthPreferenceService = undefined;
-	let cliDisposal: Promise<void>;
+	externalMcpProviderStateCoordinator = undefined;
+	let externalProviderDisposal: Promise<void>;
 	try {
-		cliDisposal = Promise.resolve(cliIntegration?.dispose()).then(() => {
-			if (copilotCliIntegration === cliIntegration) copilotCliIntegration = undefined;
-		});
+		externalProviderDisposal = Promise.resolve(externalProviderCoordinator?.dispose());
 	} catch (error) {
-		cliDisposal = Promise.reject(error);
+		externalProviderDisposal = Promise.reject(error);
 	}
 	const hostDisposal = (async () => {
 		const failures: unknown[] = [];
@@ -3056,7 +3107,10 @@ export async function deactivate() {
 			.map(result => result.reason));
 		if (failures.length > 0) throw new AggregateError(failures, 'Kusto Workbench host teardown failed.');
 	})();
-	const results = await Promise.allSettled([cliDisposal, hostDisposal]);
+	const results = await Promise.allSettled([
+		externalProviderDisposal,
+		hostDisposal,
+	]);
 	const failures = results
 		.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
 		.map(result => result.reason);

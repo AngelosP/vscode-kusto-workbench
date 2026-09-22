@@ -37,6 +37,23 @@ const esbuildProblemMatcherPlugin = {
 };
 
 async function main() {
+	const connectorLicenseDir = path.join(__dirname, 'dist', 'mcp-connector', 'licenses');
+	await fs.promises.mkdir(connectorLicenseDir, { recursive: true });
+	await Promise.all([
+		fs.promises.copyFile(
+			path.join(__dirname, 'node_modules', '@modelcontextprotocol', 'server', 'LICENSE'),
+			path.join(connectorLicenseDir, 'MODEL_CONTEXT_PROTOCOL_LICENSE.txt'),
+		),
+		fs.promises.copyFile(
+			path.join(__dirname, 'node_modules', 'extract-zip', 'LICENSE'),
+			path.join(connectorLicenseDir, 'EXTRACT_ZIP_LICENSE.txt'),
+		),
+		fs.promises.copyFile(
+			path.join(__dirname, 'node_modules', 'jsonc-parser', 'LICENSE.md'),
+			path.join(connectorLicenseDir, 'JSONC_PARSER_LICENSE.txt'),
+		),
+	]);
+
 	// ── Generate OverlayScrollbars library CSS as a TypeScript CSSStyleSheet ──
 	// Must run before the webview bundle so the import resolves.
 	try {
@@ -407,6 +424,7 @@ async function main() {
 		sourcemap: !production,
 		sourcesContent: false,
 		platform: 'node',
+		define: { navigator: 'undefined' },
 		outfile: 'dist/workbench-mcp-bridge.js',
 		logLevel: 'silent',
 		plugins: [esbuildProblemMatcherPlugin],
@@ -417,24 +435,62 @@ async function main() {
 		await workbenchMcpBridgeCtx.rebuild();
 		await workbenchMcpBridgeCtx.dispose();
 	}
-	const copilotCliIntegrationCtx = await esbuild.context({
-		entryPoints: ['src/host/copilotCliIntegration.ts'],
+	const externalMcpConnectorCtx = await esbuild.context({
+		entryPoints: ['src/connector/index.ts'],
 		bundle: true,
 		format: 'cjs',
 		minify: production,
 		sourcemap: !production,
 		sourcesContent: false,
 		platform: 'node',
-		outfile: 'dist/copilot-cli-integration.js',
+		target: 'node20',
+		outfile: 'dist/mcp-connector/connector.cjs',
+		logLevel: 'silent',
+		plugins: [esbuildProblemMatcherPlugin],
+	});
+	if (watch) {
+		await externalMcpConnectorCtx.watch();
+	} else {
+		await externalMcpConnectorCtx.rebuild();
+		await externalMcpConnectorCtx.dispose();
+	}
+	const externalMcpProviderCtx = await esbuild.context({
+		entryPoints: ['src/host/externalMcpProviderIntegration.ts'],
+		bundle: true,
+		format: 'cjs',
+		minify: production,
+		sourcemap: !production,
+		sourcesContent: false,
+		platform: 'node',
+		outfile: 'dist/external-mcp-provider.js',
 		external: ['vscode'],
 		logLevel: 'silent',
 		plugins: [esbuildProblemMatcherPlugin],
 	});
 	if (watch) {
-		await copilotCliIntegrationCtx.watch();
+		await externalMcpProviderCtx.watch();
 	} else {
-		await copilotCliIntegrationCtx.rebuild();
-		await copilotCliIntegrationCtx.dispose();
+		await externalMcpProviderCtx.rebuild();
+		await externalMcpProviderCtx.dispose();
+	}
+	const externalMcpSetupCtx = await esbuild.context({
+		entryPoints: ['src/host/externalMcpSetup.ts'],
+		bundle: true,
+		format: 'cjs',
+		minify: production,
+		sourcemap: !production,
+		sourcesContent: false,
+		platform: 'node',
+		outfile: 'dist/external-mcp-setup.js',
+		external: ['vscode'],
+		logLevel: 'silent',
+		plugins: [esbuildProblemMatcherPlugin],
+	});
+	if (watch) {
+		await externalMcpSetupCtx.watch();
+	} else {
+		await externalMcpSetupCtx.rebuild();
+		await externalMcpSetupCtx.dispose();
 	}
 
 	const ctx = await esbuild.context({
@@ -507,15 +563,20 @@ async function main() {
 		for (const requiredArtifact of [
 			'webview/first-launch-setup.html',
 			'webview/first-launch-setup.bundle.js',
+			'mcp-connector/licenses/MODEL_CONTEXT_PROTOCOL_LICENSE.txt',
+			'mcp-connector/licenses/EXTRACT_ZIP_LICENSE.txt',
+			'mcp-connector/licenses/JSONC_PARSER_LICENSE.txt',
 		]) {
 			if (!fs.existsSync(path.join(__dirname, 'dist', requiredArtifact))) {
 				throw new Error(`Missing required production artifact: ${requiredArtifact}`);
 			}
 		}
 		const BASELINES = {
-			'extension.js':                                        2374,
-			'copilot-cli-integration.js':                            12,
+			'extension.js':                                        2464,
 			'workbench-mcp-bridge.js':                              431,
+			'mcp-connector/connector.cjs':                           700,
+			'external-mcp-provider.js':                               80,
+			'external-mcp-setup.js':                                  150,
 			'webview/webview.bundle.js':                           3283,
 			'webview/md-editor.bundle.js':                          296,
 			'webview/tutorial-viewer.bundle.js':                    154,

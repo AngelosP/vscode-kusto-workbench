@@ -165,6 +165,35 @@ describe('resolveLinkedQueryUri', () => {
 });
 
 describe('publishKqlxTextFresh', () => {
+	it('keeps an explicitly cleared result absent while preserving an unsuppressed sibling', async () => {
+		const durable: KqlxStateV1 = { sections: [
+			{ id: 'query_clear', type: 'query', query: 'print Clear=1', resultJson: 'CLEAR_ME' },
+			{ id: 'query_keep', type: 'query', query: 'print Keep=1', resultJson: 'KEEP_ME' },
+		] };
+		const candidate: KqlxStateV1 = { sections: [
+			{ id: 'query_clear', type: 'query', query: 'print Clear=2' },
+			{ id: 'query_keep', type: 'query', query: 'print Keep=2' },
+		] };
+		const text = JSON.stringify({ kind: 'kqlx', version: 1, state: candidate });
+		const suppressed = new Set(['query_clear']);
+
+		const intermediate = await prepareKqlxSaveText(
+			text, 'kqlx', vscode.EndOfLine.LF, durable, suppressed,
+		);
+		expect(JSON.parse(intermediate).state.sections).toEqual([
+			{ id: 'query_clear', type: 'query', query: 'print Clear=2' },
+			{ id: 'query_keep', type: 'query', query: 'print Keep=2', resultJson: 'KEEP_ME' },
+		]);
+		const published = await publishKqlxTextFresh(
+			text, 'kqlx', vscode.EndOfLine.LF,
+			async (state, publish) => publish(state),
+			async output => output,
+			durable,
+			suppressed,
+		);
+		expect(JSON.parse(published).state.sections).toEqual(JSON.parse(intermediate).state.sections);
+	});
+
 	it.each(['query', 'sql'])('keeps deliberate %s result selection changes while preserving the same saved payload', async type => {
 		const batch = createKustoResultBatch([
 			{ columns: ['Value'], rows: [['first']], metadata: {} },

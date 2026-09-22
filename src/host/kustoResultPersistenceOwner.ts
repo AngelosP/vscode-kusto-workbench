@@ -1,6 +1,7 @@
 import {
 	createDerivedResultArtifactPublication,
 	createPrimaryResultArtifactIdentity,
+	hasCanonicalPersistedResultArtifactIdentity,
 	UNVERIFIED_LEGACY_RESULT_PRODUCER,
 	type PersistedResultArtifactV1,
 	type ResultArtifact,
@@ -99,6 +100,7 @@ export type KustoCommittedResultSummary = Readonly<{
 
 type CanonicalSectionState =
 	| Readonly<{ kind: 'managed'; attachment?: ResultAttachment }>
+	| Readonly<{ kind: 'opaque'; sourceFingerprint: string; sourceRevision: string }>
 	| Readonly<{
 		kind: 'inert';
 		fields: Readonly<JsonRecord>;
@@ -403,6 +405,7 @@ export function getRemovedKustoResultSectionIds(before: ResultState, after: Resu
 export class KustoResultPersistenceOwner {
 	private readonly panels = new Map<string, KustoResultPanelSession>();
 	private readonly canonicalSections = new Map<string, CanonicalSectionState>();
+	private readonly explicitlyRemovedBoxIds = new Map<string, boolean>();
 	private readonly committedByBoxId = new Map<string, ResultAttachment>();
 	private readonly attachmentOwnerPanelByBoxId = new Map<string, string>();
 	private readonly stagedByPublicationId = new Map<string, StagedPublication>();
@@ -511,6 +514,18 @@ export class KustoResultPersistenceOwner {
 			if (!boxId || !this.canonicalSections.has(boxId)) canonicalCoverageComplete = false;
 			if (boxId) incomingKustoIds.add(boxId);
 		}
+		let tombstonesChanged = false;
+		for (const [boxId, absenceConfirmed] of [...this.explicitlyRemovedBoxIds]) {
+			if (incomingKustoIds.has(boxId)) {
+				if (absenceConfirmed) {
+					this.explicitlyRemovedBoxIds.delete(boxId);
+					tombstonesChanged = true;
+				}
+			} else if (!absenceConfirmed) {
+				this.explicitlyRemovedBoxIds.set(boxId, true);
+				tombstonesChanged = true;
+			}
+		}
 		canonicalCoverageComplete = canonicalCoverageComplete
 			&& incomingKustoIds.size === this.canonicalSections.size;
 		const claimCommittedAttachmentsForPanel = () => {
@@ -523,7 +538,7 @@ export class KustoResultPersistenceOwner {
 		const exactSourcePair = sourceRevision === this.lastCanonicalSourceRevision
 			&& fingerprint === this.lastCanonicalSourceFingerprint;
 		let admittedState = state;
-		if (exactSourcePair && hadCanonicalAuthority && canonicalCoverageComplete) {
+		if (exactSourcePair && hadCanonicalAuthority && canonicalCoverageComplete && !tombstonesChanged) {
 			claimCommittedAttachmentsForPanel();
 			return;
 		}
@@ -570,12 +585,12 @@ export class KustoResultPersistenceOwner {
 				: undefined;
 			const incomingRevision = Number(incomingArtifact?.revision);
 			const parsedIncomingResult = hasResult ? parseResultJson(String(value.resultJson)) : undefined;
-			const validIncomingArtifact = !!incomingArtifact
+			const canonicalIncomingArtifact = incomingArtifact
+				? hasCanonicalPersistedResultArtifactIdentity(incomingArtifact, boxId)
+				: undefined;
+			const validIncomingArtifact = !!canonicalIncomingArtifact
 				&& parsedIncomingResult?.ok === true
 				&& hasAccount && hasRevision
-				&& incomingArtifact.version === 1
-				&& incomingArtifact.sourceBoxId === boxId
-				&& typeof incomingArtifact.artifactId === 'string'
 				&& Number.isSafeInteger(incomingRevision);
 			const coherentIncomingArtifact = validIncomingArtifact
 				&& persistedArtifactHasCoherentProvenance(value, incomingArtifact!);
@@ -586,6 +601,10 @@ export class KustoResultPersistenceOwner {
 				continue;
 			}
 			if (!hasResult) {
+				const canonical = this.canonicalSections.get(boxId);
+				if (canonical?.kind === 'opaque'
+					&& canonical.sourceFingerprint === fingerprint
+					&& canonical.sourceRevision === sourceRevision) continue;
 				this.revokeBox(boxId);
 				continue;
 			}
@@ -674,7 +693,9 @@ export class KustoResultPersistenceOwner {
 				continue;
 			}
 			this.committedByBoxId.delete(boxId);
-			this.canonicalSections.set(boxId, Object.freeze({ kind: 'managed' }));
+			this.canonicalSections.set(boxId, Object.freeze({
+				kind: 'opaque', sourceFingerprint: fingerprint, sourceRevision,
+			}));
 		}
 		for (const boxId of [...this.canonicalSections.keys()]) {
 			if (nextIds.has(boxId)) continue;
@@ -738,6 +759,9 @@ export class KustoResultPersistenceOwner {
 			=== expectedOwnerMutationRevision;
 		const preview = this.cloneForCanonicalPreview();
 		preview.admitCanonicalSource(fingerprint, previewState, sourceRevision);
+		const preparedOpaqueBoxIds = new Set([...preview.canonicalSections]
+			.filter(([, canonical]) => canonical.kind === 'opaque')
+			.map(([boxId]) => boxId));
 		const preparedTargetAdmissions = new Map<string, PreparedTargetAdmission>();
 		for (const [boxId, attachment] of preview.committedByBoxId) {
 			const allowed = this.currentTargetsAllowAttachment(panelId, boxId, attachment);
@@ -806,6 +830,14 @@ export class KustoResultPersistenceOwner {
 					setBounded(this.ownedSourceFingerprints, fingerprint, this.ownerMutationRevision);
 				}
 				this.admitCanonicalSource(fingerprint, candidateState, sourceRevision, panelId);
+				for (const boxId of preparedOpaqueBoxIds) {
+					if (this.canonicalSections.get(boxId)?.kind === 'managed'
+						&& !this.committedByBoxId.has(boxId)) {
+						this.canonicalSections.set(boxId, Object.freeze({
+							kind: 'opaque', sourceFingerprint: fingerprint, sourceRevision,
+						}));
+					}
+				}
 				for (const [ownedFingerprint, ownerRevision] of this.ownedSourceFingerprints) {
 					if (ownerRevision === expectedOwnerMutationRevision) {
 						this.ownedSourceFingerprints.set(ownedFingerprint, this.ownerMutationRevision);
@@ -920,6 +952,9 @@ export class KustoResultPersistenceOwner {
 		preview.lastCanonicalSourceFingerprint = this.lastCanonicalSourceFingerprint;
 		preview.policySnapshot = this.policySnapshot;
 		for (const [key, value] of this.canonicalSections) preview.canonicalSections.set(key, value);
+		for (const [boxId, absenceConfirmed] of this.explicitlyRemovedBoxIds) {
+			preview.explicitlyRemovedBoxIds.set(boxId, absenceConfirmed);
+		}
 		for (const [key, value] of this.committedByBoxId) preview.committedByBoxId.set(key, value);
 		for (const [key, value] of this.attachmentOwnerPanelByBoxId) {
 			preview.attachmentOwnerPanelByBoxId.set(key, value);
@@ -934,28 +969,30 @@ export class KustoResultPersistenceOwner {
 	private rebaseCandidateOnCurrentOwner<T extends ResultState>(state: T): T {
 		if (!Array.isArray(state.sections) || !this.canonicalAuthorityEstablished) return state;
 		const types = sectionTypes(state);
-		const sections = state.sections.map(value => {
+		const sections = state.sections.flatMap(value => {
 			if (!isRecord(value) || canonicalSectionKind(value.type) !== 'query'
-				|| isSqlDerivedQuery(value, types)) return value;
+				|| isSqlDerivedQuery(value, types)) return [value];
 			const boxId = normalize(value.id);
-			if (!boxId) return value;
+			if (!boxId) return [value];
+			if (this.explicitlyRemovedBoxIds.has(boxId)) return [];
 			const committed = this.committedByBoxId.get(boxId);
 			if (committed) {
-				return withCommittedAttachment(value, committed);
+				return [withCommittedAttachment(value, committed)];
 			}
 			const canonical = this.canonicalSections.get(boxId);
 			if (canonical?.kind === 'managed' && !canonical.attachment) {
 				const markerless = typeof value.resultJson === 'string' && !!value.resultJson
 					&& !Object.prototype.hasOwnProperty.call(value, 'kustoAccountPartition')
 					&& !Object.prototype.hasOwnProperty.call(value, 'kustoLeaveNoTraceRevision');
-				return markerless
+				return [markerless
 					? { ...removeAttachmentFields(value), ...attachmentFields(value) }
-					: removeAttachmentFields(value);
+					: removeAttachmentFields(value)];
 			}
 			if (canonical?.kind === 'inert') {
-				return { ...removeAttachmentFields(value), ...canonical.fields };
+				return [{ ...removeAttachmentFields(value), ...canonical.fields }];
 			}
-			return value;
+			if (canonical?.kind === 'opaque') return [removeAttachmentFields(value)];
+			return [value];
 		});
 		return { ...state, sections };
 	}
@@ -979,11 +1016,15 @@ export class KustoResultPersistenceOwner {
 		if (!this.canonicalAuthorityEstablished && !observation) return state;
 		const types = sectionTypes(state);
 		let changed = false;
-		const sections = state.sections.map(value => {
+		const sections = state.sections.flatMap(value => {
 			if (!isRecord(value) || canonicalSectionKind(value.type) !== 'query'
-				|| isSqlDerivedQuery(value, types)) return value;
+				|| isSqlDerivedQuery(value, types)) return [value];
 			const boxId = normalize(value.id);
-			if (!boxId) return value;
+			if (!boxId) return [value];
+			if (this.explicitlyRemovedBoxIds.has(boxId)) {
+				changed = true;
+				return [];
+			}
 			const base = removeAttachmentFields(value);
 			const canonical = this.canonicalSections.get(boxId);
 			const committed = this.committedByBoxId.get(boxId);
@@ -1003,7 +1044,7 @@ export class KustoResultPersistenceOwner {
 				next = { ...base, ...attachmentFields(value) };
 			}
 			changed = changed || JSON.stringify(next) !== JSON.stringify(value);
-			return next;
+			return [next];
 		});
 		return changed ? { ...state, sections } : state;
 	}
@@ -1185,6 +1226,15 @@ export class KustoResultPersistenceOwner {
 		this.selectedPreferenceByBoxId.delete(boxId);
 	}
 
+	revokeSection(boxId: string): void {
+		this.explicitlyRemovedBoxIds.set(boxId, false);
+		this.revokeBox(boxId);
+	}
+
+	reopenSection(boxId: string): void {
+		if (this.explicitlyRemovedBoxIds.delete(boxId)) this.ownerMutationRevision++;
+	}
+
 	revokeConnections(connectionIds: ReadonlySet<string>): void {
 		if (connectionIds.size === 0) return;
 		for (const session of this.panels.values()) {
@@ -1271,6 +1321,19 @@ export class KustoResultPersistenceOwner {
 		return this.committedByBoxId.size > 0;
 	}
 
+	getExplicitlyClearedAttachmentSectionIds(state: ResultState): string[] {
+		if (!Array.isArray(state.sections)) return [];
+		const types = sectionTypes(state);
+		return state.sections.flatMap(value => {
+			if (!isRecord(value) || canonicalSectionKind(value.type) !== 'query'
+				|| isSqlDerivedQuery(value, types)
+				|| typeof value.resultJson !== 'string' || !value.resultJson) return [];
+			const boxId = normalize(value.id);
+			const canonical = this.canonicalSections.get(boxId);
+			return boxId && canonical?.kind === 'managed' && !canonical.attachment ? [boxId] : [];
+		});
+	}
+
 	hasCanonicalResultState(): boolean {
 		return this.canonicalAuthorityEstablished;
 	}
@@ -1295,6 +1358,7 @@ export class KustoResultPanelSession {
 		const boxId = normalize(boxIdInput);
 		const sectionInstanceId = normalize(sectionInstanceIdInput);
 		if (!boxId || !sectionInstanceId) return false;
+		this.owner.reopenSection(boxId);
 		if (this.targets.has(boxId)) this.owner.clearForExecution(boxId, this.panelId);
 		this.targets.set(boxId, Object.freeze({ boxId, sectionInstanceId, targetGeneration: 0 }));
 		return true;
@@ -1330,7 +1394,7 @@ export class KustoResultPanelSession {
 			&& this.owner.canPanelRevokeAttachment(this.panelId, boxId);
 		this.owner.clearForExecution(boxId, this.panelId);
 		this.targets.delete(boxId);
-		if (canRevoke) this.owner.revokeBox(boxId);
+		if (canRevoke) this.owner.revokeSection(boxId);
 		return true;
 	}
 

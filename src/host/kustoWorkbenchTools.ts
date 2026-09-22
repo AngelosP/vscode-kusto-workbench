@@ -1,12 +1,17 @@
 import * as vscode from 'vscode';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { isDeepStrictEqual } from 'node:util';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import {
 	createKqlxOrMdxFileWithDefaultSection,
+	parseKqlxText,
+	stringifyKqlxFile,
 	type DevNoteEntry,
+	type KqlxFileV1,
 	type KqlxFileKind,
+	type KqlxSectionV1,
 } from './kqlxFormat';
 import { captureSchemaCacheGeneration, readAllCachedSchemasFromDisk, readCachedSchemaFromDiskByCluster, searchCachedSchemas, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey, schemaPrincipalIdentity, type SchemaCacheGeneration } from './schemaCache';
 import { KustoConnectionCache, type KustoConnectionCacheGeneration } from './kustoConnectionCache';
@@ -19,7 +24,7 @@ import {
 } from './powerBiExport';
 import { getLegacyDashboardWarnings, parseKwProvenance } from '../shared/htmlDashboardUpgrade';
 import type { PortableDashboardDiagnostic } from '../shared/portableDashboardCompiler';
-import { classifyWorkbenchUri, classifyWorkbenchUriString, type WorkbenchFileInfo, type WorkbenchFileKind } from './workbenchFileTypes';
+import { classifyWorkbenchUri, classifyWorkbenchUriString, sameNonzeroPhysicalFileIdentity, type WorkbenchFileInfo, type WorkbenchFileKind } from './workbenchFileTypes';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { getKustoConnectionIdentityKey, resolveStrictKustoConnection } from '../shared/kustoAuth';
 import {
@@ -40,6 +45,8 @@ import {
 import type { ToolStateSection } from '../shared/toolStateSnapshotProtocol.js';
 import { isRuntimeProxy } from '../shared/runtimeMessageEnvelope.js';
 import type { WorkbenchFileCloseLifecycle } from './workbenchToolSessionApplicationHandler.js';
+import { withKqlxDocumentWriteLock } from './kqlxEditorProvider.js';
+import { canonicalAddableSectionKind } from '../shared/documentSectionCapabilities.js';
 
 export type TargetFields = {
 	openFileId?: string;
@@ -270,6 +277,8 @@ export interface CloseWorkbenchFileInput extends TargetFields {
 	/** Save the exact dirty backing document before closing. Dirty files are refused by default. */
 	saveChanges?: boolean;
 }
+
+export interface SaveWorkbenchFileInput extends TargetFields {}
 
 export interface AddSectionInput extends TargetFields {
 	type: 'query' | 'markdown' | 'chart' | 'transformation' | 'url' | 'python' | 'html' | 'sql';
@@ -557,6 +566,8 @@ export interface CreateFileInput {
 	 * - For md: The initial markdown content
 	 */
 	initialContent?: string;
+	/** When false, open the Workbench editor without taking focus from the user's current application/editor. */
+	reveal?: boolean;
 }
 
 export interface ManageDevelopmentNotesInput {
@@ -779,6 +790,17 @@ export class KustoWorkbenchToolOrchestrator {
 		logicalUriKeys: ReadonlySet<string>;
 		resolve: () => void;
 	}>();
+	private readonly backgroundFileOperations = new Map<string, Promise<void>>();
+	private readonly backgroundMutationBlocks = new Map<string, number>();
+	private readonly hostOwnedBackgroundFiles = new Set<string>();
+	private readonly backgroundOpeningFiles = new Set<string>();
+	private readonly backgroundOpeningTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	private readonly preparedBackgroundRenames = new Map<string, {
+		logicalUriKeys: readonly string[];
+		files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[];
+		blockMoves: readonly { oldLogicalUriKey: string; newLogicalUriKey: string }[];
+		cleanupTimer?: ReturnType<typeof setTimeout>;
+	}>();
 	// Pending responses from webview
 	private pendingResponses = new Map<string, {
 		resolve: (value: unknown) => void;
@@ -944,6 +966,12 @@ export class KustoWorkbenchToolOrchestrator {
 		return latest;
 	}
 
+	private getToolConnectionForFile(file: InternalOpenWorkbenchFileSummary): LiveWorkbenchConnection | undefined {
+		return this.hostOwnedBackgroundFiles.has(file.logicalUriKey)
+			? undefined
+			: this.getLatestLiveConnectionForKey(file.logicalUriKey);
+	}
+
 	private resolveRenamedWorkbenchFileInfo(info: WorkbenchFileInfo): WorkbenchFileInfo {
 		let current = info;
 		const seen = new Set<string>();
@@ -958,12 +986,130 @@ export class KustoWorkbenchToolOrchestrator {
 			if (!renamed) {
 				return current;
 			}
+			if (this.wasRenamedSourceRecreated(current, renamed)) {
+				this.renamedWorkbenchFiles.delete(key);
+				return current;
+			}
 			current = renamed;
 			if (renamed.logicalUriKey === key) {
 				return renamed;
 			}
 		}
 		return current;
+	}
+
+	private wasRenamedSourceRecreated(source: WorkbenchFileInfo, target: WorkbenchFileInfo): boolean {
+		if (source.logicalUriKey === target.logicalUriKey
+			|| source.logicalUri.scheme !== 'file'
+			|| target.logicalUri.scheme !== 'file'
+			|| !fs.existsSync(source.logicalUri.fsPath)) return false;
+		if (!fs.existsSync(target.logicalUri.fsPath)) return true;
+		try {
+			const sourceStat = fs.statSync(source.logicalUri.fsPath, { bigint: true });
+			const targetStat = fs.statSync(target.logicalUri.fsPath, { bigint: true });
+			return !sameNonzeroPhysicalFileIdentity(sourceStat, targetStat);
+		} catch {
+			return true;
+		}
+	}
+
+	private backgroundRenameKey(oldUri: vscode.Uri, newUri: vscode.Uri): string {
+		return `${oldUri.toString()}\n${newUri.toString()}`;
+	}
+
+	private trackedWorkbenchFileInfos(): WorkbenchFileInfo[] {
+		const byKey = new Map<string, WorkbenchFileInfo>();
+		for (const connection of this.liveConnections.values()) {
+			if (connection.documentInfo) byKey.set(connection.documentInfo.logicalUriKey, connection.documentInfo);
+		}
+		for (const file of this.collectOpenWorkbenchFiles().openFiles) {
+			const info = classifyWorkbenchUriString(file.logicalUri, { includeOptionalPlainText: true });
+			if (info) byKey.set(info.logicalUriKey, info);
+		}
+		for (const info of this.renamedWorkbenchFiles.values()) byKey.set(info.logicalUriKey, info);
+		return [...byKey.values()];
+	}
+
+	private descendantRenameUri(candidate: vscode.Uri, oldRoot: vscode.Uri, newRoot: vscode.Uri): vscode.Uri | undefined {
+		if (candidate.scheme !== oldRoot.scheme || candidate.authority !== oldRoot.authority) return undefined;
+		const normalize = (value: string) => {
+			const pathValue = value.replace(/\\/g, '/').replace(/\/+$/, '');
+			return process.platform === 'win32' && candidate.scheme === 'file' ? pathValue.toLowerCase() : pathValue;
+		};
+		const candidatePath = normalize(candidate.path);
+		const oldPath = normalize(oldRoot.path);
+		if (!oldPath || !candidatePath.startsWith(`${oldPath}/`)) return undefined;
+		const suffix = candidate.path.replace(/\\/g, '/').slice(oldRoot.path.replace(/\\/g, '/').replace(/\/+$/, '').length);
+		const newPath = `${newRoot.path.replace(/\\/g, '/').replace(/\/+$/, '')}${suffix}`;
+		return newRoot.with({ path: newPath });
+	}
+
+	private expandWorkbenchRenameFiles(
+		files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[],
+	): Array<{ rootKey: string; oldUri: vscode.Uri; newUri: vscode.Uri }> {
+		const expanded = new Map<string, { rootKey: string; oldUri: vscode.Uri; newUri: vscode.Uri }>();
+		const tracked = this.trackedWorkbenchFileInfos();
+		for (const file of files) {
+			const rootKey = this.backgroundRenameKey(file.oldUri, file.newUri);
+			const oldInfo = classifyWorkbenchUri(file.oldUri, { includeOptionalPlainText: true });
+			const newInfo = classifyWorkbenchUri(file.newUri, { includeOptionalPlainText: true });
+			if (oldInfo && newInfo) {
+				expanded.set(rootKey, { rootKey, oldUri: file.oldUri, newUri: file.newUri });
+				continue;
+			}
+			for (const info of tracked) {
+				const newUri = this.descendantRenameUri(info.logicalUri, file.oldUri, file.newUri);
+				if (!newUri || !classifyWorkbenchUri(newUri, { includeOptionalPlainText: true })) continue;
+				const pairKey = `${rootKey}\n${info.logicalUri.toString()}\n${newUri.toString()}`;
+				expanded.set(pairKey, { rootKey, oldUri: info.logicalUri, newUri });
+			}
+		}
+		return [...expanded.values()];
+	}
+
+	private async workspaceUriExists(uri: vscode.Uri): Promise<boolean> {
+		try {
+			await vscode.workspace.fs.stat(uri);
+			return true;
+		} catch (error) {
+			if (this.isWorkspaceFileNotFound(error)) return false;
+			throw error;
+		}
+	}
+
+	private schedulePreparedRenameCancellationProbe(key: string, oldUri: vscode.Uri, newUri: vscode.Uri): void {
+		const prepared = this.preparedBackgroundRenames.get(key);
+		if (!prepared || prepared.cleanupTimer) return;
+		prepared.cleanupTimer = setTimeout(() => {
+			void (async () => {
+				const current = this.preparedBackgroundRenames.get(key);
+				if (!current) return;
+				try {
+					const [oldExists, newExists] = await Promise.all([
+						this.workspaceUriExists(oldUri),
+						this.workspaceUriExists(newUri),
+					]);
+					if (oldExists && !newExists) {
+						this.clearPreparedBackgroundRename(key);
+						return;
+					}
+				} catch {
+					// Keep the fence when cancellation cannot be proven.
+				}
+				current.cleanupTimer = undefined;
+				this.schedulePreparedRenameCancellationProbe(key, oldUri, newUri);
+			})().catch(() => undefined);
+		}, 30_000);
+	}
+
+	private clearPreparedBackgroundRename(key: string): void {
+		const prepared = this.preparedBackgroundRenames.get(key);
+		if (!prepared) return;
+		this.preparedBackgroundRenames.delete(key);
+		if (prepared.cleanupTimer) clearTimeout(prepared.cleanupTimer);
+		for (const logicalUriKey of prepared.logicalUriKeys) {
+			this.removeBackgroundMutationBlock(logicalUriKey);
+		}
 	}
 
 	private remapRenamedWorkbenchFiles(
@@ -982,9 +1128,41 @@ export class KustoWorkbenchToolOrchestrator {
 				continue;
 			}
 			const previousInfo = this.resolveRenamedWorkbenchFileInfo(oldInfo);
+			const previousKeys = new Set([oldInfo.logicalUriKey, previousInfo.logicalUriKey]);
+			let wasHostOwned = false;
+			let wasOpening = false;
+			let mutationBlockCount = 0;
+			for (const key of previousKeys) {
+				wasHostOwned = this.hostOwnedBackgroundFiles.delete(key) || wasHostOwned;
+				wasOpening = this.backgroundOpeningFiles.has(key) || wasOpening;
+				this.clearBackgroundOpeningLease(key);
+				mutationBlockCount += this.backgroundMutationBlocks.get(key) ?? 0;
+				this.backgroundMutationBlocks.delete(key);
+			}
+			if (wasHostOwned) this.hostOwnedBackgroundFiles.add(newInfo.logicalUriKey);
+			if (wasOpening) {
+				this.backgroundOpeningFiles.add(newInfo.logicalUriKey);
+				this.scheduleBackgroundOpeningLeaseRelease(newInfo.logicalUriKey);
+			}
+			if (mutationBlockCount > 0) {
+				this.backgroundMutationBlocks.set(
+					newInfo.logicalUriKey,
+					(this.backgroundMutationBlocks.get(newInfo.logicalUriKey) ?? 0) + mutationBlockCount,
+				);
+			}
 			this.renamedWorkbenchFiles.set(oldInfo.logicalUriKey, newInfo);
 			if (previousInfo.logicalUriKey !== oldInfo.logicalUriKey) {
 				this.renamedWorkbenchFiles.set(previousInfo.logicalUriKey, newInfo);
+			}
+			for (const [aliasKey, aliasTarget] of [...this.renamedWorkbenchFiles]) {
+				if (aliasKey === newInfo.logicalUriKey) continue;
+				const resolvedTarget = this.resolveRenamedWorkbenchFileInfo(aliasTarget);
+				if (aliasTarget.logicalUriKey === previousInfo.logicalUriKey
+					|| aliasTarget.logicalUriKey === oldInfo.logicalUriKey
+					|| resolvedTarget.logicalUriKey === previousInfo.logicalUriKey
+					|| resolvedTarget.logicalUriKey === oldInfo.logicalUriKey) {
+					this.renamedWorkbenchFiles.set(aliasKey, newInfo);
+				}
 			}
 
 			for (const entry of this.liveConnections.values()) {
@@ -1009,24 +1187,138 @@ export class KustoWorkbenchToolOrchestrator {
 	}
 
 	async prepareFilesRename(files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[]): Promise<void> {
-		const remapped = this.remapRenamedWorkbenchFiles(files);
-		await this.waitForPendingResponses(new Set(remapped.map(file => file.newLogicalUriKey)));
+		const backgroundKeys = new Set<string>();
+		const pendingResponseKeys = new Set<string>();
+		const expanded = this.expandWorkbenchRenameFiles(files);
+		for (const file of files) {
+			this.clearPreparedBackgroundRename(this.backgroundRenameKey(file.oldUri, file.newUri));
+		}
+		for (const file of expanded) {
+			const oldInfo = classifyWorkbenchUri(file.oldUri, { includeOptionalPlainText: true });
+			const newInfo = classifyWorkbenchUri(file.newUri, { includeOptionalPlainText: true });
+			if (!oldInfo || !newInfo) continue;
+			const currentInfo = this.resolveRenamedWorkbenchFileInfo(oldInfo);
+			pendingResponseKeys.add(oldInfo.logicalUriKey);
+			pendingResponseKeys.add(currentInfo.logicalUriKey);
+			const ownedKeys = [oldInfo.logicalUriKey, currentInfo.logicalUriKey]
+				.filter((key, index, keys) => keys.indexOf(key) === index && this.hostOwnedBackgroundFiles.has(key));
+			if (ownedKeys.length > 0) {
+				const renameKey = file.rootKey;
+				for (const key of ownedKeys) {
+					if (!backgroundKeys.has(key)) {
+						backgroundKeys.add(key);
+						this.addBackgroundMutationBlock(key);
+					}
+				}
+				const rootFiles = expanded
+					.filter(candidate => candidate.rootKey === renameKey)
+					.map(candidate => ({ oldUri: candidate.oldUri, newUri: candidate.newUri }));
+				const existing = this.preparedBackgroundRenames.get(renameKey);
+				this.preparedBackgroundRenames.set(renameKey, {
+					logicalUriKeys: [...new Set([...(existing?.logicalUriKeys ?? []), ...ownedKeys])],
+					files: rootFiles,
+					blockMoves: [
+						...(existing?.blockMoves ?? []),
+						...ownedKeys.map(oldLogicalUriKey => ({ oldLogicalUriKey, newLogicalUriKey: newInfo.logicalUriKey })),
+					],
+				});
+			}
+		}
+		await Promise.all([...backgroundKeys].map(key => this.waitForBackgroundFileOperation(key)));
+		await this.waitForPendingResponses(pendingResponseKeys);
+		for (const file of files) {
+			const renameKey = this.backgroundRenameKey(file.oldUri, file.newUri);
+			const prepared = this.preparedBackgroundRenames.get(renameKey);
+			if (!prepared) continue;
+			this.schedulePreparedRenameCancellationProbe(renameKey, file.oldUri, file.newUri);
+		}
 	}
 
 	async handleFilesRenamed(files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[]): Promise<void> {
 		const immediateTabClosures: Array<{ oldUri: vscode.Uri; newUri: vscode.Uri }> = [];
-		for (const file of this.remapRenamedWorkbenchFiles(files)) {
-			if (this.hasPendingResponseForLogicalUriKey(file.newLogicalUriKey)) {
-				this.deferredRenamedTabClosures.set(file.oldLogicalUriKey, {
-					oldUri: file.oldUri,
-					newUri: file.newUri,
-					newLogicalUriKey: file.newLogicalUriKey,
-				});
-			} else {
-				immediateTabClosures.push({ oldUri: file.oldUri, newUri: file.newUri });
+		const preparedRenames = files.map(file => {
+			const key = this.backgroundRenameKey(file.oldUri, file.newUri);
+			return { key, prepared: this.preparedBackgroundRenames.get(key) };
+		});
+		for (const { prepared } of preparedRenames) {
+			if (prepared?.cleanupTimer) clearTimeout(prepared.cleanupTimer);
+		}
+		const effectiveFiles = preparedRenames.flatMap(({ prepared }, index) =>
+			prepared?.files ?? this.expandWorkbenchRenameFiles([files[index]]).map(file => ({ oldUri: file.oldUri, newUri: file.newUri }))
+		);
+		const remapped = this.remapRenamedWorkbenchFiles(effectiveFiles);
+		try {
+			for (const file of remapped) {
+				if (this.hasPendingResponseForLogicalUriKey(file.newLogicalUriKey)) {
+					this.deferredRenamedTabClosures.set(file.oldLogicalUriKey, {
+						oldUri: file.oldUri,
+						newUri: file.newUri,
+						newLogicalUriKey: file.newLogicalUriKey,
+					});
+				} else {
+					immediateTabClosures.push({ oldUri: file.oldUri, newUri: file.newUri });
+				}
+			}
+			await this.closeRenamedWorkbenchTabs(immediateTabClosures);
+		} finally {
+			for (let index = 0; index < preparedRenames.length; index++) {
+				const { key, prepared } = preparedRenames[index];
+				this.preparedBackgroundRenames.delete(key);
+				if (!prepared) continue;
+				for (const move of prepared.blockMoves) {
+					this.removeBackgroundMutationBlock(move.newLogicalUriKey);
+				}
 			}
 		}
-		await this.closeRenamedWorkbenchTabs(immediateTabClosures);
+	}
+
+	async handleTabsClosed(tabs: readonly vscode.Tab[]): Promise<void> {
+		const keys = new Set<string>();
+		for (const tab of tabs) {
+			const tabInput = this.getTabInputUri(tab.input);
+			const info = tabInput ? classifyWorkbenchUri(tabInput.uri, {
+				viewType: tabInput.viewType,
+				includeOptionalPlainText: true,
+			}) : undefined;
+			if (info && this.hostOwnedBackgroundFiles.has(info.logicalUriKey)) keys.add(info.logicalUriKey);
+		}
+		for (const key of keys) this.addBackgroundMutationBlock(key);
+		try {
+			await Promise.all([...keys].map(key => this.waitForBackgroundFileOperation(key)));
+			for (const key of keys) {
+				this.hostOwnedBackgroundFiles.delete(key);
+				this.clearBackgroundOpeningLease(key);
+			}
+		} finally {
+			for (const key of keys) this.removeBackgroundMutationBlock(key);
+		}
+	}
+
+	async handleTabsActivated(tabs: readonly vscode.Tab[]): Promise<void> {
+		const keys = new Set<string>();
+		const activeGroup = vscode.window.tabGroups.activeTabGroup;
+		if (!activeGroup?.isActive || !activeGroup.activeTab) return;
+		for (const tab of tabs) {
+			if (!tab.isActive || tab !== activeGroup.activeTab) continue;
+			const tabInput = this.getTabInputUri(tab.input);
+			const info = tabInput ? classifyWorkbenchUri(tabInput.uri, {
+				viewType: tabInput.viewType,
+				includeOptionalPlainText: true,
+			}) : undefined;
+			if (info
+				&& this.hostOwnedBackgroundFiles.has(info.logicalUriKey)
+				&& !this.backgroundOpeningFiles.has(info.logicalUriKey)) keys.add(info.logicalUriKey);
+		}
+		for (const key of keys) this.addBackgroundMutationBlock(key);
+		try {
+			await Promise.all([...keys].map(key => this.waitForBackgroundFileOperation(key)));
+			for (const key of keys) {
+				this.hostOwnedBackgroundFiles.delete(key);
+				this.clearBackgroundOpeningLease(key);
+			}
+		} finally {
+			for (const key of keys) this.removeBackgroundMutationBlock(key);
+		}
 	}
 
 	private hasPendingResponseForLogicalUriKey(logicalUriKey: string): boolean {
@@ -1350,7 +1642,7 @@ export class KustoWorkbenchToolOrchestrator {
 				hasActiveUnsupportedFile,
 				explicitTarget,
 				explicitTargetRequested,
-				connection: this.getLatestLiveConnectionForKey(explicitTarget.logicalUriKey),
+				connection: this.getToolConnectionForFile(explicitTarget),
 			};
 		}
 
@@ -1360,10 +1652,256 @@ export class KustoWorkbenchToolOrchestrator {
 				activeFile,
 				hasActiveUnsupportedFile,
 				explicitTargetRequested,
-				connection: this.getLatestLiveConnectionForKey(activeFile.logicalUriKey),
+				connection: this.getToolConnectionForFile(activeFile),
 			};
 		}
 		return { openFiles, hasActiveUnsupportedFile, explicitTargetRequested, connection: hasActiveUnsupportedFile ? undefined : this.getLatestLiveConnection() };
+	}
+
+	private isRichWorkbenchFile(file: InternalOpenWorkbenchFileSummary): file is InternalOpenWorkbenchFileSummary & { fileKind: KqlxFileKind } {
+		return file.fileKind === 'kqlx' || file.fileKind === 'mdx' || file.fileKind === 'sqlx';
+	}
+
+	private async getBackgroundDocument(file: InternalOpenWorkbenchFileSummary): Promise<vscode.TextDocument> {
+		const existing = vscode.workspace.textDocuments.find(document =>
+			classifyWorkbenchUri(document.uri, { includeOptionalPlainText: true })?.openFileId === file.openFileId
+		);
+		return existing ?? vscode.workspace.openTextDocument(vscode.Uri.parse(file.logicalUri));
+	}
+
+	private parseBackgroundFile(file: InternalOpenWorkbenchFileSummary, document: vscode.TextDocument): KqlxFileV1 {
+		if (!this.isRichWorkbenchFile(file)) {
+			throw new Error(`Background section changes are not supported for ${file.fileKind} files.`);
+		}
+		const parsed = parseKqlxText(document.getText(), {
+			allowedKinds: [file.fileKind],
+			defaultKind: file.fileKind,
+		});
+		if (!parsed.ok) throw new Error(parsed.error);
+		return parsed.file;
+	}
+
+	private sectionId(section: KqlxSectionV1, index: number): string {
+		return typeof section.id === 'string' && section.id.trim() ? section.id.trim() : `section_${index}`;
+	}
+
+	private findBackgroundSection(file: KqlxFileV1, sectionId: string): KqlxSectionV1 | undefined {
+		const index = file.state.sections.findIndex((section, sectionIndex) =>
+			this.sectionId(section, sectionIndex) === sectionId
+		);
+		return index < 0 ? undefined : file.state.sections[index];
+	}
+
+	private setBackgroundSectionField(section: KqlxSectionV1, key: string, value: unknown): boolean {
+		if (value === undefined) return false;
+		const record = section as Record<string, unknown>;
+		if (isDeepStrictEqual(record[key], value)) return false;
+		record[key] = value;
+		return true;
+	}
+
+	private stabilizeBackgroundSectionId(section: KqlxSectionV1, sectionId: string, changed: boolean): void {
+		if (changed && !section.id) section.id = sectionId;
+	}
+
+	private async runBackgroundFileOperation<T>(logicalUriKey: string, operation: () => Promise<T>): Promise<T> {
+		const previous = this.backgroundFileOperations.get(logicalUriKey) ?? Promise.resolve();
+		const result = previous.catch(() => undefined).then(operation);
+		const completion = result.then(() => undefined, () => undefined);
+		this.backgroundFileOperations.set(logicalUriKey, completion);
+		try {
+			return await result;
+		} finally {
+			if (this.backgroundFileOperations.get(logicalUriKey) === completion) {
+				this.backgroundFileOperations.delete(logicalUriKey);
+			}
+		}
+	}
+
+	private async waitForBackgroundFileOperation(logicalUriKey: string): Promise<void> {
+		await this.backgroundFileOperations.get(logicalUriKey)?.catch(() => undefined);
+	}
+
+	private addBackgroundMutationBlock(logicalUriKey: string): void {
+		this.backgroundMutationBlocks.set(
+			logicalUriKey,
+			(this.backgroundMutationBlocks.get(logicalUriKey) ?? 0) + 1,
+		);
+	}
+
+	private removeBackgroundMutationBlock(logicalUriKey: string): void {
+		const next = (this.backgroundMutationBlocks.get(logicalUriKey) ?? 0) - 1;
+		if (next > 0) this.backgroundMutationBlocks.set(logicalUriKey, next);
+		else this.backgroundMutationBlocks.delete(logicalUriKey);
+	}
+
+	private clearBackgroundOpeningLease(logicalUriKey: string): void {
+		this.backgroundOpeningFiles.delete(logicalUriKey);
+		const timer = this.backgroundOpeningTimers.get(logicalUriKey);
+		if (timer) clearTimeout(timer);
+		this.backgroundOpeningTimers.delete(logicalUriKey);
+	}
+
+	private scheduleBackgroundOpeningLeaseRelease(logicalUriKey: string): void {
+		const existing = this.backgroundOpeningTimers.get(logicalUriKey);
+		if (existing) clearTimeout(existing);
+		const timer = setTimeout(() => {
+			this.backgroundOpeningFiles.delete(logicalUriKey);
+			this.backgroundOpeningTimers.delete(logicalUriKey);
+		}, 250);
+		this.backgroundOpeningTimers.set(logicalUriKey, timer);
+	}
+
+	private async acquireHostOwnedBackgroundLifecycle(logicalUriKey: string): Promise<(() => void) | undefined> {
+		if (!this.hostOwnedBackgroundFiles.has(logicalUriKey)) return undefined;
+		if ((this.backgroundMutationBlocks.get(logicalUriKey) ?? 0) > 0) {
+			throw new Error('The targeted background Workbench file is already changing lifecycle state.');
+		}
+		this.addBackgroundMutationBlock(logicalUriKey);
+		const previous = this.backgroundFileOperations.get(logicalUriKey) ?? Promise.resolve();
+		let releaseGate!: () => void;
+		const gate = new Promise<void>(resolve => { releaseGate = resolve; });
+		const tail = previous.catch(() => undefined).then(() => gate);
+		this.backgroundFileOperations.set(logicalUriKey, tail);
+		await previous.catch(() => undefined);
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			this.removeBackgroundMutationBlock(logicalUriKey);
+			releaseGate();
+			void tail.finally(() => {
+				if (this.backgroundFileOperations.get(logicalUriKey) === tail) {
+					this.backgroundFileOperations.delete(logicalUriKey);
+				}
+			}).catch(() => undefined);
+		};
+	}
+
+	private async mutateBackgroundFile<T>(
+		target: ReturnType<KustoWorkbenchToolOrchestrator['resolveToolTarget']>,
+		mutation: (file: KqlxFileV1) => { result: T; changed: boolean },
+	): Promise<T | undefined> {
+		const file = target.explicitTarget;
+		if (target.connection || !file || !this.isRichWorkbenchFile(file)
+			|| !target.openFiles.some(openFile => openFile.openFileId === file.openFileId)) {
+			return undefined;
+		}
+		const key = file.logicalUriKey;
+		if ((this.backgroundMutationBlocks.get(key) ?? 0) > 0) {
+			throw new Error('The targeted background Workbench file is changing lifecycle state. Retry after the current activation, rename, or close completes.');
+		}
+		return this.runBackgroundFileOperation<T | undefined>(key, async () => {
+			if (this.getLatestLiveConnectionForKey(file.logicalUriKey)
+				&& !this.hostOwnedBackgroundFiles.has(file.logicalUriKey)) return undefined;
+			const document = await this.getBackgroundDocument(file);
+			let result: T | undefined;
+			await withKqlxDocumentWriteLock(document.uri, async () => {
+				if (this.getLatestLiveConnectionForKey(file.logicalUriKey)
+					&& !this.hostOwnedBackgroundFiles.has(file.logicalUriKey)) return;
+				const parsed = this.parseBackgroundFile(file, document);
+				const mutationResult = mutation(parsed);
+				result = mutationResult.result;
+				if (!mutationResult.changed) return;
+				const serialized = stringifyKqlxFile(parsed);
+				const validation = parseKqlxText(serialized, {
+					allowedKinds: [file.fileKind],
+					defaultKind: file.fileKind,
+				});
+				if (!validation.ok) throw new Error(validation.error);
+				const edit = new vscode.WorkspaceEdit();
+				edit.replace(
+					document.uri,
+					new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
+					serialized,
+				);
+				if (!await vscode.workspace.applyEdit(edit)) {
+					throw new Error('VS Code declined the background Workbench document edit.');
+				}
+			});
+			return result;
+		});
+	}
+
+	private createBackgroundSection(file: KqlxFileV1, input: AddSectionInput, sectionId: string): KqlxSectionV1 | undefined {
+		const sectionType = canonicalAddableSectionKind(file.kind, input.type);
+		if (!sectionType) return undefined;
+		const base = { id: sectionId, type: sectionType, expanded: true };
+		switch (sectionType) {
+			case 'query':
+				return {
+					...base,
+					...(input.name ? { name: input.name } : {}),
+					...(input.query !== undefined ? { query: input.query } : {}),
+					...(input.clusterUrl !== undefined ? { clusterUrl: input.clusterUrl } : {}),
+					...(input.connectionId !== undefined ? { connectionIdHint: input.connectionId } : {}),
+					...(input.database !== undefined ? { database: input.database } : {}),
+				};
+			case 'sql':
+				return {
+					...base,
+					...(input.name ? { name: input.name } : {}),
+					...(input.query !== undefined ? { query: input.query } : {}),
+				};
+			case 'markdown':
+				return {
+					...base,
+					...(input.name ? { title: input.name } : {}),
+					...(input.text !== undefined ? { text: input.text } : {}),
+				};
+			case 'chart':
+				return {
+					...base,
+					...(input.name ? { name: input.name } : {}),
+					...(input.dataSourceId !== undefined ? { dataSourceId: input.dataSourceId } : {}),
+					...(input.dataSourceResultIndex !== undefined ? { dataSourceResultIndex: input.dataSourceResultIndex } : {}),
+					...(input.chartType !== undefined ? { chartType: input.chartType } : {}),
+				};
+			case 'transformation':
+				return {
+					...base,
+					...(input.name ? { name: input.name } : {}),
+					...(input.dataSourceId !== undefined ? { dataSourceId: input.dataSourceId } : {}),
+					...(input.dataSourceResultIndex !== undefined ? { dataSourceResultIndex: input.dataSourceResultIndex } : {}),
+				};
+			case 'python':
+				return { ...base, ...(input.name ? { name: input.name } : {}), ...(input.code !== undefined ? { code: input.code } : {}) };
+			case 'url':
+				return { ...base, ...(input.name ? { name: input.name } : {}), ...(input.url !== undefined ? { url: input.url } : {}) };
+			case 'html':
+				return { ...base, ...(input.name ? { name: input.name } : {}), ...(input.code !== undefined ? { code: input.code } : {}) };
+		}
+	}
+
+	private async getBackgroundSections(file: InternalOpenWorkbenchFileSummary): Promise<ToolSectionSummary[] | undefined> {
+		if (!this.isRichWorkbenchFile(file)) return undefined;
+		await this.waitForBackgroundFileOperation(file.logicalUriKey);
+		const document = await this.getBackgroundDocument(file);
+		const parsed = this.parseBackgroundFile(file, document);
+		const rawSections = parsed.state.sections.map((section, index) => ({
+			...section,
+			id: this.sectionId(section, index),
+		})) as ToolSection[];
+		const sectionTypeById = new Map(rawSections.map(section => [
+			String(section.id || '').trim(),
+			String(section.type || ''),
+		]));
+		const hasSqlOwner = rawSections.some(section => {
+			if (String(section.type || '') === 'sql') return true;
+			const sourceBoxId = String((section as Record<string, unknown>).comparisonSourceBoxId || '').trim();
+			return !!sourceBoxId && sectionTypeById.get(sourceBoxId) === 'sql';
+		});
+		const protectedIds = hasSqlOwner ? await this.getProtectedSqlConnectionIds() : new Set<string>();
+		return rawSections
+			.filter(section => {
+				const record = section as Record<string, unknown>;
+				const comparisonSourceBoxId = String(record.comparisonSourceBoxId || '').trim();
+				if (String(section.type || '') !== 'sql'
+					&& (!comparisonSourceBoxId || sectionTypeById.get(comparisonSourceBoxId) !== 'sql')) return true;
+				const connectionId = String(record.connectionIdHint || '').trim();
+				return !!connectionId && !protectedIds.has(connectionId);
+			})
+			.map((section, index) => this.summarizeToolSection(section, index));
 	}
 
 	/**
@@ -2083,12 +2621,25 @@ export class KustoWorkbenchToolOrchestrator {
 		const sectionsByOpenFileId = new Map<string, ToolSectionSummary[]>();
 		await Promise.all(openFiles.map(async (file) => {
 			const internal = target.openFiles.find(openFile => openFile.openFileId === file.openFileId);
-			const connection = internal ? this.getLatestLiveConnectionForKey(internal.logicalUriKey) : undefined;
+			const connection = internal ? this.getToolConnectionForFile(internal) : undefined;
 			if (!connection) {
+				if (internal) {
+					try {
+						const sections = await this.getBackgroundSections(internal);
+						if (sections) {
+							file.sections = sections;
+							sectionsByOpenFileId.set(file.openFileId, sections);
+						}
+					} catch (error) {
+						file.sectionsUnavailable = true;
+						file.error = error instanceof Error ? error.message : String(error);
+					}
+				}
 				return;
 			}
 			try {
-				const sections = await this.getSectionsForConnection(connection);
+				const sections = await this.getSectionsForConnection(connection)
+					?? (internal ? await this.getBackgroundSections(internal) : undefined);
 				if (sections) {
 					file.sections = sections;
 					sectionsByOpenFileId.set(file.openFileId, sections);
@@ -2096,9 +2647,9 @@ export class KustoWorkbenchToolOrchestrator {
 					file.sectionsUnavailable = true;
 					file.error = 'Sections are unavailable for this open file.';
 				}
-			} catch (err) {
+			} catch (error) {
 				file.sectionsUnavailable = true;
-				file.error = err instanceof Error ? err.message : String(err);
+				file.error = error instanceof Error ? error.message : String(error);
 			}
 		}));
 		if (!target.connection) {
@@ -2317,9 +2868,55 @@ export class KustoWorkbenchToolOrchestrator {
 	async configureSqlSection(input: ConfigureSqlSectionInput, cancellationToken?: vscode.CancellationToken): Promise<{ success: boolean; resultPreview?: string }> {
 		const { target, rest } = this.splitTargetFields(input);
 		input = rest as ConfigureSqlSectionInput;
+		if (input.query !== undefined) input = { ...input, query: unescapeLLMText(input.query) };
 		const resolvedTarget = this.resolveToolTarget(target);
 		const capturedConnection = resolvedTarget.connection;
 		if (!capturedConnection || !this.liveConnections.has(capturedConnection.token)) {
+			if (input.execute) {
+				throw new Error('Background SQL execution requires a live Workbench editor.');
+			}
+			const backgroundTarget = resolvedTarget.explicitTarget;
+			if (!backgroundTarget || !this.hostOwnedBackgroundFiles.has(backgroundTarget.logicalUriKey)) {
+				throw new Error('Kusto Workbench is not currently open with a live editor for SQL configuration.');
+			}
+			let requestedConnection: ReturnType<SqlConnectionManager['getConnection']>;
+			if (input.connectionId) {
+				requestedConnection = this.getSqlConnectionManager().getConnection(String(input.connectionId));
+				if (!requestedConnection) {
+					throw new Error(`SQL connection "${input.connectionId}" was not found. Use list-sql-connections first.`);
+				}
+			} else if (input.serverUrl) {
+				const matching = this.getSqlConnectionManager().getConnections().filter(connection =>
+					String(connection.serverUrl || '').trim().toLowerCase().includes(String(input.serverUrl || '').trim().toLowerCase()),
+				);
+				if (matching.length !== 1) {
+					throw new Error('SQL server target is missing or ambiguous. Pass connectionId from list-sql-connections.');
+				}
+				requestedConnection = matching[0];
+			}
+			if (requestedConnection) {
+				await this.refreshSqlLeaveNoTracePolicy?.();
+				await this.assertSqlConnectionAllowed?.(requestedConnection.id);
+				await this.getSqlConnectionManager().assertConnectionCurrent(requestedConnection);
+			}
+			const background = await this.mutateBackgroundFile<{ success: boolean }>(resolvedTarget, file => {
+				const section = this.findBackgroundSection(file, input.sectionId);
+				if (!section || section.type !== 'sql') return { result: { success: false }, changed: false };
+				let changed = false;
+				changed = this.setBackgroundSectionField(section, 'name', input.name) || changed;
+				changed = this.setBackgroundSectionField(section, 'query', input.query) || changed;
+				changed = this.setBackgroundSectionField(section, 'database', input.database) || changed;
+				if (requestedConnection) {
+					changed = this.setBackgroundSectionField(section, 'serverUrl', requestedConnection.serverUrl) || changed;
+					changed = this.setBackgroundSectionField(section, 'connectionIdHint', requestedConnection.id) || changed;
+					changed = this.setBackgroundSectionField(
+						section, 'targetSignature', sqlConnectionTargetSignature(requestedConnection),
+					) || changed;
+				}
+				this.stabilizeBackgroundSectionId(section, input.sectionId, changed);
+				return { result: { success: true }, changed };
+			});
+			if (background) return background;
 			throw new Error('Kusto Workbench is not currently open with a live editor for SQL configuration.');
 		}
 		const existingConnectionId = capturedConnection?.sqlConnectionResolver?.(input.sectionId);
@@ -2629,6 +3226,20 @@ export class KustoWorkbenchToolOrchestrator {
 			if (!preflight.input) return { sectionId: '', success: false, error: preflight.error };
 			input = preflight.input;
 		}
+		const resolvedTarget = this.resolveToolTarget(target);
+		const background = resolvedTarget.connection ? undefined : await this.mutateBackgroundFile<AddSectionResult>(resolvedTarget, file => {
+			const sectionId = `${input.type}_${randomUUID()}`;
+			const section = this.createBackgroundSection(file, input, sectionId);
+			if (!section) {
+				return {
+					result: { sectionId: '', success: false, error: `Section type "${input.type}" is not supported in .${file.kind} files.` },
+					changed: false,
+				};
+			}
+			file.state.sections.push(section);
+			return { result: { sectionId, success: true }, changed: true };
+		});
+		if (background) return background;
 		return this.sendToWebview('toolAddSection', { input }, 30000, target);
 	}
 
@@ -2657,6 +3268,25 @@ export class KustoWorkbenchToolOrchestrator {
 		const preflight = this.preflightKustoToolTarget(input);
 		if (!preflight.input) return { success: false, resultPreview: '', error: preflight.error };
 		input = preflight.input;
+		const resolvedTarget = this.resolveToolTarget(target);
+		if (!resolvedTarget.connection && input.execute) {
+			return { success: false, error: 'Background query execution requires a live Workbench editor.' };
+		}
+		const background = resolvedTarget.connection ? undefined : await this.mutateBackgroundFile<ConfigureQuerySectionResult>(resolvedTarget, file => {
+			const section = this.findBackgroundSection(file, input.sectionId);
+			if (!section || (section.type !== 'query' && section.type !== 'copilotQuery')) {
+				return { result: { success: false, error: `Query section not found: ${input.sectionId}` }, changed: false };
+			}
+			let changed = false;
+			changed = this.setBackgroundSectionField(section, 'name', input.name) || changed;
+			changed = this.setBackgroundSectionField(section, 'query', input.query) || changed;
+			changed = this.setBackgroundSectionField(section, 'clusterUrl', input.clusterUrl) || changed;
+			changed = this.setBackgroundSectionField(section, 'connectionIdHint', input.connectionId) || changed;
+			changed = this.setBackgroundSectionField(section, 'database', input.database) || changed;
+			this.stabilizeBackgroundSectionId(section, input.sectionId, changed);
+			return { result: { success: true }, changed };
+		});
+		if (background) return background;
 		const queryTimeoutMinutes = vscode.workspace.getConfiguration('kustoWorkbench').get<number>('queryTimeout', 20);
 		const timeoutMs = input.execute
 			? (queryTimeoutMinutes > 0 ? queryTimeoutMinutes * 60_000 + 30_000 : null)
@@ -2672,16 +3302,60 @@ export class KustoWorkbenchToolOrchestrator {
 		if (textValue !== undefined) {
 			input = { ...input, text: unescapeLLMText(textValue) };
 		}
+		const resolvedTarget = this.resolveToolTarget(target);
+		const background = resolvedTarget.connection ? undefined : await this.mutateBackgroundFile<{ success: boolean }>(resolvedTarget, file => {
+			const section = this.findBackgroundSection(file, input.sectionId);
+			if (!section || section.type !== 'markdown') return { result: { success: false }, changed: false };
+			let changed = false;
+			changed = this.setBackgroundSectionField(section, 'title', input.name) || changed;
+			changed = this.setBackgroundSectionField(section, 'text', input.text) || changed;
+			changed = this.setBackgroundSectionField(section, 'mode', input.mode) || changed;
+			this.stabilizeBackgroundSectionId(section, input.sectionId, changed);
+			return { result: { success: true }, changed };
+		});
+		if (background) return background;
 		return this.sendToWebview('toolUpdateMarkdownSection', { input }, 30000, target);
 	}
 
 	async configureChart(input: ConfigureChartInput): Promise<{ success: boolean }> {
 		const { target, rest } = this.splitTargetFields(input);
+		const resolvedTarget = this.resolveToolTarget(target);
+		const background = resolvedTarget.connection ? undefined : await this.mutateBackgroundFile<{ success: boolean }>(resolvedTarget, file => {
+			const section = this.findBackgroundSection(file, rest.sectionId);
+			if (!section || section.type !== 'chart') return { result: { success: false }, changed: false };
+			const { sectionId: _sectionId, ...patch } = rest;
+			let changed = false;
+			for (const [key, value] of Object.entries(patch)) {
+				changed = this.setBackgroundSectionField(section, key, value) || changed;
+			}
+			this.stabilizeBackgroundSectionId(section, rest.sectionId, changed);
+			return { result: { success: true }, changed };
+		});
+		if (background) return background;
 		return this.sendToWebview('toolConfigureChart', { input: rest }, 30000, target);
 	}
 
 	async configureTransformation(input: ConfigureTransformationInput): Promise<{ success: boolean }> {
 		const { target, rest } = this.splitTargetFields(input);
+		const resolvedTarget = this.resolveToolTarget(target);
+		const background = resolvedTarget.connection ? undefined : await this.mutateBackgroundFile<{ success: boolean }>(resolvedTarget, file => {
+			const section = this.findBackgroundSection(file, rest.sectionId);
+			if (!section || section.type !== 'transformation') return { result: { success: false }, changed: false };
+			const { sectionId: _sectionId, ...patch } = rest;
+			let changed = false;
+			if (patch.dataSourceId !== undefined && patch.dataSourceResultIndex === undefined) {
+				changed = this.setBackgroundSectionField(section, 'dataSourceResultIndex', 0) || changed;
+			}
+			if (patch.joinRightDataSourceId !== undefined && patch.joinRightDataSourceResultIndex === undefined) {
+				changed = this.setBackgroundSectionField(section, 'joinRightDataSourceResultIndex', 0) || changed;
+			}
+			for (const [key, value] of Object.entries(patch)) {
+				changed = this.setBackgroundSectionField(section, key, value) || changed;
+			}
+			this.stabilizeBackgroundSectionId(section, rest.sectionId, changed);
+			return { result: { success: true }, changed };
+		});
+		if (background) return background;
 		return this.sendToWebview('toolConfigureTransformation', { input: rest }, 30000, target);
 	}
 
@@ -2691,6 +3365,24 @@ export class KustoWorkbenchToolOrchestrator {
 		if (input.code !== undefined) {
 			input = { ...input, code: unescapeLLMText(input.code) };
 		}
+		const resolvedTarget = this.resolveToolTarget(target);
+		const background = resolvedTarget.connection ? undefined : await this.mutateBackgroundFile<{ success: boolean; sectionId?: string }>(resolvedTarget, file => {
+			const section = this.findBackgroundSection(file, input.sectionId);
+			if (!section || section.type !== 'html') return { result: { success: false }, changed: false };
+			let changed = false;
+			changed = this.setBackgroundSectionField(section, 'name', input.name) || changed;
+			changed = this.setBackgroundSectionField(section, 'code', input.code) || changed;
+			changed = this.setBackgroundSectionField(section, 'mode', input.mode) || changed;
+			if (input.code !== undefined) {
+				const factSectionId = String(parseKwProvenance(input.code)?.model?.fact?.sectionId || '').trim();
+				changed = this.setBackgroundSectionField(
+					section, 'dataSourceIds', factSectionId ? [factSectionId] : [],
+				) || changed;
+			}
+			this.stabilizeBackgroundSectionId(section, input.sectionId, changed);
+			return { result: { success: true }, changed };
+		});
+		if (background) return background;
 		return this.sendToWebview('toolConfigureHtmlSection', {
 			sectionId: input.sectionId,
 			name: input.name,
@@ -2865,6 +3557,127 @@ export class KustoWorkbenchToolOrchestrator {
 		}
 	}
 
+	private isWorkspaceFileNotFound(error: unknown): boolean {
+		const code = error && typeof error === 'object' && 'code' in error
+			? String((error as { code?: unknown }).code || '')
+			: '';
+		const message = error instanceof Error ? error.message : String(error);
+		return code === 'FileNotFound' || code === 'ENOENT' || /\bENOENT\b/.test(message);
+	}
+
+	private async assertWorkspaceFileAbsent(uri: vscode.Uri): Promise<void> {
+		try {
+			await vscode.workspace.fs.stat(uri);
+		} catch (error) {
+			if (this.isWorkspaceFileNotFound(error)) return;
+			throw error;
+		}
+		throw new Error(`A file already exists at ${uri.fsPath || uri.toString()}. Choose a new path; existing files are never overwritten.`);
+	}
+
+	private async getCreatedFileIdentity(uri: vscode.Uri): Promise<Readonly<{ dev: bigint; ino: bigint }> | undefined> {
+		if (uri.scheme !== 'file') return undefined;
+		try {
+			const stat = await fs.promises.stat(uri.fsPath, { bigint: true });
+			return Object.freeze({ dev: stat.dev, ino: stat.ino });
+		} catch {
+			return undefined;
+		}
+	}
+
+	private async rollbackCreatedFile(
+		uri: vscode.Uri,
+		expectedIdentity: Readonly<{ dev: bigint; ino: bigint }> | undefined,
+		expectedHash: string,
+	): Promise<void> {
+		if (!expectedIdentity) {
+			try {
+				await vscode.workspace.fs.stat(uri);
+			} catch (error) {
+				if (this.isWorkspaceFileNotFound(error)) return;
+				throw error;
+			}
+			throw new Error(`Could not verify ownership of the partially created file ${uri.fsPath || uri.toString()}; it was left untouched.`);
+		}
+		const quarantineUri = uri.with({ path: `${uri.path}.${randomUUID()}.rollback` });
+		try {
+			await vscode.workspace.fs.rename(uri, quarantineUri, { overwrite: false });
+		} catch (error) {
+			if (this.isWorkspaceFileNotFound(error)) return;
+			throw error;
+		}
+		const movedIdentity = await this.getCreatedFileIdentity(quarantineUri);
+		let movedHash = '';
+		try {
+			movedHash = createHash('sha256').update(await vscode.workspace.fs.readFile(quarantineUri)).digest('hex');
+		} catch {
+			// Preserve an unreadable candidate rather than deleting bytes we cannot verify.
+		}
+		if (movedIdentity && sameNonzeroPhysicalFileIdentity(expectedIdentity, movedIdentity)
+			&& movedHash === expectedHash) {
+			await vscode.workspace.fs.delete(quarantineUri);
+			return;
+		}
+		try {
+			await vscode.workspace.fs.rename(quarantineUri, uri, { overwrite: false });
+		} catch (restoreError) {
+			throw new AggregateError(
+				[restoreError],
+				`A replacement file was preserved at ${quarantineUri.fsPath || quarantineUri.toString()} because its original path could not be restored.`,
+			);
+		}
+	}
+
+	private async createWorkspaceFilesExclusive(
+		files: readonly { uri: vscode.Uri; content: string }[],
+	): Promise<void> {
+		await Promise.all(files.map(file => this.assertWorkspaceFileAbsent(file.uri)));
+		const staged: Array<{
+			temporaryUri: vscode.Uri;
+			targetUri: vscode.Uri;
+			identity?: Readonly<{ dev: bigint; ino: bigint }>;
+			expectedHash: string;
+			published: boolean;
+		}> = [];
+		try {
+			for (const file of files) {
+				const temporaryUri = file.uri.with({ path: `${file.uri.path}.${randomUUID()}.tmp` });
+				const stagedFile = {
+					temporaryUri,
+					targetUri: file.uri,
+					identity: undefined as Readonly<{ dev: bigint; ino: bigint }> | undefined,
+					expectedHash: createHash('sha256').update(file.content, 'utf8').digest('hex'),
+					published: false,
+				};
+				staged.push(stagedFile);
+				await vscode.workspace.fs.writeFile(temporaryUri, new TextEncoder().encode(file.content));
+				stagedFile.identity = await this.getCreatedFileIdentity(temporaryUri);
+			}
+			for (const file of staged) {
+				await vscode.workspace.fs.rename(file.temporaryUri, file.targetUri, { overwrite: false });
+				file.published = true;
+			}
+		} catch (error) {
+			const cleanupErrors: unknown[] = [];
+			for (const file of [...staged].reverse()) {
+				try {
+					await this.rollbackCreatedFile(
+						file.published ? file.targetUri : file.temporaryUri,
+						file.identity,
+						file.expectedHash,
+					);
+				} catch (cleanupError) {
+					cleanupErrors.push(cleanupError);
+				}
+			}
+			if (cleanupErrors.length > 0) {
+				const message = error instanceof Error ? error.message : String(error);
+				throw new AggregateError([error, ...cleanupErrors], `${message} Cleanup of partially created files was incomplete.`);
+			}
+			throw error;
+		}
+	}
+
 	async activateWorkbenchFile(input: TargetFields): Promise<ActivationResult> {
 		const targetFileInfo = input.targetFileUri ? this.normalizeTargetFileUri(input.targetFileUri) : undefined;
 		const target = this.resolveToolTarget(input);
@@ -2883,12 +3696,11 @@ export class KustoWorkbenchToolOrchestrator {
 		if (!editorId) {
 			return { success: false, error: 'No Workbench editor is available for the target file.' };
 		}
+		let releaseBackgroundLifecycle: (() => void) | undefined;
 		try {
-			await vscode.commands.executeCommand('vscode.openWith', effectiveInfo.logicalUri, editorId, {
-				viewColumn: vscode.ViewColumn.Active,
-				preserveFocus: false,
-			});
-		} catch (err) {
+			this.clearBackgroundOpeningLease(effectiveInfo.logicalUriKey);
+			releaseBackgroundLifecycle = await this.acquireHostOwnedBackgroundLifecycle(effectiveInfo.logicalUriKey);
+		} catch (error) {
 			return {
 				success: false,
 				openFileId: effectiveInfo.openFileId,
@@ -2897,21 +3709,43 @@ export class KustoWorkbenchToolOrchestrator {
 				fileKind: effectiveInfo.fileKind,
 				...(effectiveInfo.filePath ? { filePath: effectiveInfo.filePath } : {}),
 				...(effectiveInfo.fileName ? { fileName: effectiveInfo.fileName } : {}),
-				error: err instanceof Error ? err.message : String(err),
+				error: error instanceof Error ? error.message : String(error),
 			};
 		}
-		const liveConnection = this.getLatestLiveConnectionForKey(effectiveInfo.logicalUriKey);
-		return {
-			success: true,
-			openFileId: effectiveInfo.openFileId,
-			uri: effectiveInfo.uriString,
-			logicalUri: effectiveInfo.logicalUriString,
-			fileKind: effectiveInfo.fileKind,
-			...(effectiveInfo.filePath ? { filePath: effectiveInfo.filePath } : {}),
-			...(effectiveInfo.fileName ? { fileName: effectiveInfo.fileName } : {}),
-			isLiveWorkbench: !!liveConnection,
-			isReadOnlyFallback: !liveConnection,
-		};
+		try {
+			try {
+				await vscode.commands.executeCommand('vscode.openWith', effectiveInfo.logicalUri, editorId, {
+					viewColumn: vscode.ViewColumn.Active,
+					preserveFocus: false,
+				});
+			} catch (error) {
+				return {
+					success: false,
+					openFileId: effectiveInfo.openFileId,
+					uri: effectiveInfo.uriString,
+					logicalUri: effectiveInfo.logicalUriString,
+					fileKind: effectiveInfo.fileKind,
+					...(effectiveInfo.filePath ? { filePath: effectiveInfo.filePath } : {}),
+					...(effectiveInfo.fileName ? { fileName: effectiveInfo.fileName } : {}),
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+			this.hostOwnedBackgroundFiles.delete(effectiveInfo.logicalUriKey);
+			const liveConnection = this.getLatestLiveConnectionForKey(effectiveInfo.logicalUriKey);
+			return {
+				success: true,
+				openFileId: effectiveInfo.openFileId,
+				uri: effectiveInfo.uriString,
+				logicalUri: effectiveInfo.logicalUriString,
+				fileKind: effectiveInfo.fileKind,
+				...(effectiveInfo.filePath ? { filePath: effectiveInfo.filePath } : {}),
+				...(effectiveInfo.fileName ? { fileName: effectiveInfo.fileName } : {}),
+				isLiveWorkbench: !!liveConnection,
+				isReadOnlyFallback: !liveConnection,
+			};
+		} finally {
+			releaseBackgroundLifecycle?.();
+		}
 	}
 
 	async closeWorkbenchFile(input: CloseWorkbenchFileInput): Promise<CloseWorkbenchFileResult> {
@@ -2961,8 +3795,6 @@ export class KustoWorkbenchToolOrchestrator {
 					tabUris.some(uri => this.isSameUriExact(document.uri, uri))),
 			};
 		};
-		const initialEditors = collectMatchingEditors();
-		const { tabs, documents } = initialEditors;
 		const metadata = {
 			openFileId: file.openFileId,
 			uri: file.uri,
@@ -2971,6 +3803,15 @@ export class KustoWorkbenchToolOrchestrator {
 			...(file.filePath ? { filePath: file.filePath } : {}),
 			...(file.fileName ? { fileName: file.fileName } : {}),
 		};
+		let releaseBackgroundLifecycle: (() => void) | undefined;
+		try {
+			releaseBackgroundLifecycle = await this.acquireHostOwnedBackgroundLifecycle(file.logicalUriKey);
+		} catch (error) {
+			return { success: false, closed: false, ...metadata, error: error instanceof Error ? error.message : String(error) };
+		}
+		try {
+		const initialEditors = collectMatchingEditors();
+		const { tabs, documents } = initialEditors;
 		if (tabs.length === 0) {
 			return { success: false, closed: false, ...metadata, error: 'The targeted Kusto Workbench file is not open as an editor tab.' };
 		}
@@ -3108,6 +3949,10 @@ export class KustoWorkbenchToolOrchestrator {
 			}
 			const uniqueTabs = [...new Set(closingEditors.tabs)];
 			const closed = await vscode.window.tabGroups.close(uniqueTabs, true);
+			if (closed) {
+				this.hostOwnedBackgroundFiles.delete(file.logicalUriKey);
+				this.clearBackgroundOpeningLease(file.logicalUriKey);
+			}
 			return closed
 				? { success: true, closed: true, closedTabCount: uniqueTabs.length, saved, wasDirty, ...metadata }
 				: { success: false, closed: false, saved, wasDirty, ...metadata, error: 'VS Code did not close the targeted Workbench file.' };
@@ -3117,11 +3962,94 @@ export class KustoWorkbenchToolOrchestrator {
 				error: `VS Code could not close the targeted Workbench file: ${error instanceof Error ? error.message : String(error)}`,
 			};
 		}
+		} finally {
+			releaseBackgroundLifecycle?.();
+		}
+	}
+
+	async saveWorkbenchFile(input: SaveWorkbenchFileInput): Promise<{
+		success: boolean;
+		saved: boolean;
+		wasDirty?: boolean;
+		openFileId?: string;
+		filePath?: string;
+		error?: string;
+	}> {
+		const openFileId = typeof input.openFileId === 'string' ? input.openFileId.trim() : '';
+		const targetFileUri = typeof input.targetFileUri === 'string' ? input.targetFileUri.trim() : '';
+		if (!openFileId && !targetFileUri) {
+			return { success: false, saved: false, error: 'Saving a Workbench file requires an explicit openFileId or targetFileUri from #listSections.' };
+		}
+		let target: ReturnType<KustoWorkbenchToolOrchestrator['resolveToolTarget']>;
+		try {
+			target = this.resolveToolTarget(input);
+		} catch (error) {
+			return { success: false, saved: false, error: error instanceof Error ? error.message : String(error) };
+		}
+		const file = target.explicitTarget ?? target.activeFile;
+		if (!file) return { success: false, saved: false, error: 'No matching open Kusto Workbench file was found.' };
+		if (target.explicitTargetRequested
+			&& !target.openFiles.some(openFile => openFile.openFileId === file.openFileId)) {
+			return { success: false, saved: false, error: 'No matching open Kusto Workbench file was found.' };
+		}
+		const metadata = {
+			openFileId: file.openFileId,
+			...(file.filePath ? { filePath: file.filePath } : {}),
+		};
+		let releaseBackgroundLifecycle: (() => void) | undefined;
+		try {
+			releaseBackgroundLifecycle = await this.acquireHostOwnedBackgroundLifecycle(file.logicalUriKey);
+		} catch (error) {
+			return { success: false, saved: false, ...metadata, error: error instanceof Error ? error.message : String(error) };
+		}
+		try {
+			const matchingDocuments = () => vscode.workspace.textDocuments.filter(document => {
+				const info = classifyWorkbenchUri(document.uri, { includeOptionalPlainText: true });
+				return info?.logicalUriKey === file.logicalUriKey;
+			});
+			const matchingTabs = () => (vscode.window.tabGroups.all || []).flatMap(group => group.tabs || []).filter(tab => {
+				const tabInput = this.getTabInputUri(tab.input);
+				const info = tabInput ? classifyWorkbenchUri(tabInput.uri, {
+					viewType: tabInput.viewType,
+					includeOptionalPlainText: true,
+				}) : undefined;
+				return info?.logicalUriKey === file.logicalUriKey;
+			});
+			let lifecycleDirty = false;
+			try {
+				lifecycleDirty = await target.connection?.closeLifecycle?.inspectDirty() ?? false;
+			} catch (error) {
+				return { success: false, saved: false, ...metadata, error: `The targeted Workbench file's save state could not be inspected: ${error instanceof Error ? error.message : String(error)}` };
+			}
+			const documents = matchingDocuments();
+			const wasDirty = lifecycleDirty || documents.some(document => document.isDirty) || matchingTabs().some(tab => tab.isDirty);
+			if (!wasDirty) return { success: true, saved: false, wasDirty: false, ...metadata };
+			try {
+				await target.connection?.closeLifecycle?.save();
+				for (const document of matchingDocuments().filter(document => document.isDirty)) {
+					if (!await document.save()) throw new Error('The backing document declined the save request.');
+				}
+				const remainsLifecycleDirty = await target.connection?.closeLifecycle?.inspectDirty() ?? false;
+				if (remainsLifecycleDirty
+					|| matchingDocuments().some(document => document.isDirty)
+					|| matchingTabs().some(tab => tab.isDirty)) {
+					return { success: false, saved: false, wasDirty: true, ...metadata, error: 'The targeted Workbench file remained dirty after saving.' };
+				}
+				return { success: true, saved: true, wasDirty: true, ...metadata };
+			} catch (error) {
+				return { success: false, saved: false, wasDirty: true, ...metadata, error: `The targeted Workbench file could not be saved: ${error instanceof Error ? error.message : String(error)}` };
+			}
+		} finally {
+			releaseBackgroundLifecycle?.();
+		}
 	}
 
 	async createFile(input: CreateFileInput): Promise<{
 		success: boolean;
 		filePath?: string;
+		openRequested?: boolean;
+		opened?: boolean;
+		warning?: string;
 		error?: string;
 	}> {
 		// Unescape literal \n sequences that LLMs frequently produce in text content
@@ -3215,6 +4143,7 @@ export class KustoWorkbenchToolOrchestrator {
 		try {
 			// Create the file content based on file type
 			let content: string;
+			const filesToCreate: Array<{ uri: vscode.Uri; content: string }> = [];
 			
 			if (kqlxKind) {
 				const file = createKqlxOrMdxFileWithDefaultSection(kqlxKind, initialContent || '');
@@ -3227,13 +4156,13 @@ export class KustoWorkbenchToolOrchestrator {
 				content = initialContent || '';
 			}
 
-			// Write the main file
-			await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(content));
+			filesToCreate.push({ uri: fileUri, content });
 
 			// Create sidecar file if needed
 			if (isSidecar && sidecarExtension) {
-				const sidecarPath = fileUri.fsPath.replace(extension, sidecarExtension);
-				const sidecarUri = vscode.Uri.file(sidecarPath);
+				const sidecarUri = fileUri.with({
+					path: `${fileUri.path.slice(0, -extension.length)}${sidecarExtension}`,
+				});
 				
 				// Create sidecar with linked query section pointing to the main file.
 				// linkedQueryPath must be on the first section (not on state) for
@@ -3247,14 +4176,46 @@ export class KustoWorkbenchToolOrchestrator {
 					}
 				}, null, 2);
 				
-				await vscode.workspace.fs.writeFile(sidecarUri, new TextEncoder().encode(sidecarContent));
+				filesToCreate.push({ uri: sidecarUri, content: sidecarContent });
+			}
+			await this.createWorkspaceFilesExclusive(filesToCreate);
+
+			const backgroundInfo = input.reveal === false && kqlxKind
+				? classifyWorkbenchUri(fileUri, { includeOptionalPlainText: true })
+				: undefined;
+			if (backgroundInfo) {
+				this.hostOwnedBackgroundFiles.add(backgroundInfo.logicalUriKey);
+				this.backgroundOpeningFiles.add(backgroundInfo.logicalUriKey);
 			}
 
 			// Open the file with the appropriate editor
-			await vscode.commands.executeCommand('vscode.openWith', fileUri, editorId);
+			try {
+				await vscode.commands.executeCommand('vscode.openWith', fileUri, editorId, {
+					preview: false,
+					preserveFocus: input.reveal === false,
+				});
+			} catch (error) {
+				if (backgroundInfo) {
+					this.hostOwnedBackgroundFiles.delete(backgroundInfo.logicalUriKey);
+					this.clearBackgroundOpeningLease(backgroundInfo.logicalUriKey);
+				}
+				return {
+					success: true,
+					filePath: fileUri.fsPath,
+					openRequested: true,
+					opened: false,
+					warning: `The file was created but could not be opened in Kusto Workbench: ${error instanceof Error ? error.message : String(error)}`,
+				};
+			}
+			if (backgroundInfo) this.scheduleBackgroundOpeningLeaseRelease(backgroundInfo.logicalUriKey);
 
-			return { success: true, filePath: fileUri.fsPath };
+			return { success: true, filePath: fileUri.fsPath, openRequested: true };
 		} catch (err) {
+			const failedInfo = fileUri ? classifyWorkbenchUri(fileUri, { includeOptionalPlainText: true }) : undefined;
+			if (failedInfo) {
+				this.hostOwnedBackgroundFiles.delete(failedInfo.logicalUriKey);
+				this.clearBackgroundOpeningLease(failedInfo.logicalUriKey);
+			}
 			return {
 				success: false,
 				error: `Failed to create file: ${err instanceof Error ? err.message : String(err)}`
@@ -3751,6 +4712,18 @@ export class CreateFileTool implements vscode.LanguageModelTool<CreateFileInput>
 	}
 }
 
+export class SaveWorkbenchFileTool implements vscode.LanguageModelTool<SaveWorkbenchFileInput> {
+	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
+
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<SaveWorkbenchFileInput>,
+		_token: vscode.CancellationToken,
+	): Promise<vscode.LanguageModelToolResult> {
+		const result = await this.orchestrator.saveWorkbenchFile(getToolInput(options));
+		return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))]);
+	}
+}
+
 export class ManageDevelopmentNotesTool implements vscode.LanguageModelTool<ManageDevelopmentNotesInput> {
 	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
 
@@ -4017,6 +4990,7 @@ export function registerKustoWorkbenchTools(
 		vscode.lm.registerTool('kusto-workbench_validate-html-dashboard', new ValidateHtmlDashboardTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_ask-kusto-copilot', new DelegateToKustoWorkbenchCopilotTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_create-file', new CreateFileTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_save-workbench-file', new SaveWorkbenchFileTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_manage-development-notes', new ManageDevelopmentNotesTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_list-sql-connections', new ListSqlConnectionsTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_configure-sql-section', new ConfigureSqlSectionTool(orchestrator)),

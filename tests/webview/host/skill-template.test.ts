@@ -26,10 +26,10 @@ describe('exported Kusto Workbench skill template', () => {
 	const exportedDashboardRules = exportedFiles.find(file => file.fileName === HTML_DASHBOARD_RULES_FILENAME)?.content ?? '';
 
 	it('is bumped to the current template version', () => {
-		expect(TEMPLATE_VERSION).toBe(19);
-		expect(template).toContain('# version: 19 - Auto-updated by Kusto Workbench. Do not remove this line.');
-		expect(isSkillTemplateCurrent(18)).toBe(false);
-		expect(isSkillTemplateCurrent(19)).toBe(true);
+		expect(TEMPLATE_VERSION).toBe(21);
+		expect(template).toContain('# version: 21 - Auto-updated by Kusto Workbench. Do not remove this line.');
+		expect(isSkillTemplateCurrent(20)).toBe(false);
+		expect(isSkillTemplateCurrent(21)).toBe(true);
 	});
 
 	it('exports the compact skill and dashboard rules sidecar separately', () => {

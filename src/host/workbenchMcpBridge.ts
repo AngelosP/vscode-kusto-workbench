@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import {
 	createMcpHandler,
@@ -10,7 +10,6 @@ import {
 	localhostOriginValidation,
 	toWebRequest,
 } from '@modelcontextprotocol/node';
-import type { CopilotCliBridge, CopilotCliLease } from './copilotCliSessionManager';
 
 export interface WorkbenchMcpToolDefinition {
 	readonly name: string;
@@ -26,6 +25,7 @@ export interface WorkbenchMcpInvocationResult {
 
 export interface StartWorkbenchMcpBridgeOptions {
 	readonly tools: readonly WorkbenchMcpToolDefinition[];
+	readonly sharedAuthorizationToken: string;
 	readonly invokeTool: (
 		registeredName: string,
 		input: unknown,
@@ -35,8 +35,11 @@ export interface StartWorkbenchMcpBridgeOptions {
 	readonly onError?: (error: Error) => void;
 }
 
-export interface RunningWorkbenchMcpBridge extends CopilotCliBridge {
+
+export interface RunningWorkbenchMcpBridge {
+	readonly endpoint: string;
 	readonly toolCount: number;
+	close(): Promise<void>;
 }
 
 function bearerToken(request: IncomingMessage): string | undefined {
@@ -183,8 +186,10 @@ export async function startWorkbenchMcpBridge(
 	options: StartWorkbenchMcpBridgeOptions,
 ): Promise<RunningWorkbenchMcpBridge> {
 	validateTools(options.tools);
-	const leases = new Map<string, { id: string; markAuthenticated(): void; revokeBeforeAuthentication(): void }>();
-	const activeRequests = new Map<string, Set<AbortController>>();
+	if (options.sharedAuthorizationToken.length < 32) {
+		throw new Error('The Workbench MCP provider authorization token is too short.');
+	}
+	const activeRequests = new Set<AbortController>();
 	let closed = false;
 	let closePromise: Promise<void> | undefined;
 
@@ -240,19 +245,15 @@ export async function startWorkbenchMcpBridge(
 		const suppliedToken = bearerToken(request);
 		const authorizedToken = suppliedToken === undefined
 			? undefined
-			: [...leases.keys()].find(candidate => tokensEqual(candidate, suppliedToken));
+			: tokensEqual(options.sharedAuthorizationToken, suppliedToken)
+				? options.sharedAuthorizationToken
+				: undefined;
 		if (!authorizedToken) {
 			writeJsonError(response, 401, 'A current Kusto Workbench CLI lease is required.');
 			return;
 		}
-		leases.get(authorizedToken)?.markAuthenticated();
 		const abortController = new AbortController();
-		let leaseRequests = activeRequests.get(authorizedToken);
-		if (!leaseRequests) {
-			leaseRequests = new Set<AbortController>();
-			activeRequests.set(authorizedToken, leaseRequests);
-		}
-		leaseRequests.add(abortController);
+		activeRequests.add(abortController);
 		const abortRequest = () => {
 			if (!response.writableEnded) abortController.abort('MCP client disconnected.');
 		};
@@ -269,8 +270,7 @@ export async function startWorkbenchMcpBridge(
 		}).finally(() => {
 			request.off('aborted', abortRequest);
 			response.off('close', abortRequest);
-			leaseRequests?.delete(abortController);
-			if (leaseRequests?.size === 0) activeRequests.delete(authorizedToken);
+			activeRequests.delete(abortController);
 		});
 	});
 
@@ -297,11 +297,7 @@ export async function startWorkbenchMcpBridge(
 	const close = (): Promise<void> => {
 		if (closePromise) return closePromise;
 		closed = true;
-		for (const lease of leases.values()) lease.revokeBeforeAuthentication();
-		leases.clear();
-		for (const requests of activeRequests.values()) {
-			for (const request of requests) request.abort('Kusto Workbench MCP bridge closed.');
-		}
+		for (const request of activeRequests) request.abort('Kusto Workbench MCP bridge closed.');
 		activeRequests.clear();
 		const operation = (async () => {
 			const serverClosed = new Promise<void>((resolve, reject) => {
@@ -325,37 +321,6 @@ export async function startWorkbenchMcpBridge(
 	return {
 		endpoint: `http://127.0.0.1:${address.port}/mcp`,
 		toolCount: options.tools.length,
-		createLease(): CopilotCliLease {
-			if (closed) throw new Error('Kusto Workbench MCP bridge is closed.');
-			const id = randomUUID();
-			const token = randomBytes(32).toString('base64url');
-			let settleAuthentication: ((authenticated: boolean) => void) | undefined;
-			const authenticated = new Promise<boolean>(resolve => { settleAuthentication = resolve; });
-			let authenticationSettled = false;
-			const settle = (value: boolean) => {
-				if (authenticationSettled) return;
-				authenticationSettled = true;
-				settleAuthentication?.(value);
-			};
-			leases.set(token, { id, markAuthenticated: () => settle(true), revokeBeforeAuthentication: () => settle(false) });
-			let revoked = false;
-			return {
-				id,
-				token,
-				authenticated,
-				revoke() {
-					if (revoked) return;
-					revoked = true;
-					leases.get(token)?.revokeBeforeAuthentication();
-					leases.delete(token);
-					const requests = activeRequests.get(token);
-					if (requests) {
-						for (const request of requests) request.abort('Copilot CLI lease revoked.');
-						activeRequests.delete(token);
-					}
-				},
-			};
-		},
 		close,
 	};
 }

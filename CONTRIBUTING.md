@@ -6,7 +6,7 @@ For architecture details, file inventories, and design rationale, see [ARCHITECT
 
 ## Prerequisites
 
-- **Node.js** LTS (20+). The project types target Node 22.x (`@types/node: "22.x"`).
+- **Node.js** 24.x. The project types target Node 22.x (`@types/node: "22.x"), while packaging emits metadata for the pinned Node 24 win-x64 connector runtime. Opt-in external-tools setup downloads and verifies that runtime on first use.
 - **VS Code** 1.107 or later (`engines.vscode: "^1.107.0"`).
 - Run `npm install` at the repo root to install all dependencies.
 
@@ -29,16 +29,17 @@ For architecture details, file inventories, and design rationale, see [ARCHITECT
 | `npm run test:webview:watch` | Vitest in watch mode for rapid iteration |
 | `npm run test:coverage-gate` | Runs Vitest coverage and fails if statement coverage drops below the recorded baseline |
 
-Copilot CLI bridge changes should first run:
+External MCP changes should first run:
 
 ```powershell
-npx vitest run tests/webview/host/copilotCliSessionManager.test.ts tests/webview/host/copilotCliExternalTerminal.test.ts tests/webview/host/workbenchMcpBridge.test.ts tests/webview/host/copilotCliIntegration.test.ts tests/webview/host/firstLaunchIntegration.test.ts tests/webview/host/schemaIndexUtils.test.ts --maxWorkers=1 --no-file-parallelism
+npx vitest run tests/webview/host/externalMcpCatalog.test.ts tests/webview/host/externalMcpHostEligibility.test.ts tests/webview/host/externalMcpProviderStartup.test.ts tests/webview/host/externalMcpProviderStateCoordinator.test.ts tests/webview/host/externalMcpProviderLifecycle.test.ts tests/webview/host/externalMcpConnectorCore.test.ts tests/webview/host/externalMcpConnectorStdio.test.ts tests/webview/host/externalMcpRuntime.test.ts tests/webview/host/externalMcpConnectorInstaller.test.ts tests/webview/host/externalMcpDiscovery.test.ts tests/webview/host/externalMcpClientProvisioning.test.ts tests/webview/host/externalCopilotAgent.test.ts tests/webview/host/externalCopilotIntegration.test.ts tests/webview/host/externalScoutSkill.test.ts tests/webview/host/externalScoutIntegration.test.ts tests/webview/host/externalMcpSetup.test.ts tests/webview/host/workbenchMcpBridge.test.ts tests/webview/host/workbenchMcpToolAdapter.test.ts tests/webview/host/toolOrchestratorConnect.test.ts tests/webview/host/firstLaunchIntegration.test.ts tests/webview/host/skill-template.test.ts tests/webview/host/tutorialCatalog.test.ts --maxWorkers=1 --no-file-parallelism
+npm run validate:tutorials
 npm run compile-tests
-npx vscode-test --config .vscode-test.mjs --timeout 10000 --fail-zero --grep "Copilot CLI bridge"
-vscode-ext-test run --test-id copilot-cli-bridge
+npx vscode-test --config .vscode-test.mjs --timeout 60000 --fail-zero --grep "External MCP provider"
+$env:KUSTO_WORKBENCH_RUN_COLD_MCP_E2E='1'; npx vitest run tests/webview/host/externalMcpColdLaunch.e2e.test.ts
 ```
 
-Keep `workbench-mcp-bridge.js` and `copilot-cli-integration.js` as separate lazy artifacts. The default-off integration must not pull the MCP SDK or generated CLI instructions into `extension.js`.
+Keep `workbench-mcp-bridge.js`, `external-mcp-provider.js`, `external-mcp-setup.js`, and `mcp-connector/connector.cjs` as separate artifacts. The default-off integration must not add `onStartupFinished` to the main extension. Only the tiny packaged bootstrap companion owns startup activation.
 
 ## Testing Guidelines
 

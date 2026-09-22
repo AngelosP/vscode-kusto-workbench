@@ -29,6 +29,9 @@
     "workspaceContains:**/*.kqlx",
     "workspaceContains:**/*.mdx",
     "workspaceContains:**/*.sqlx",
+    "onCommand:kusto.connectCopilotCli",
+    "onCommand:kusto.createExternalCopilotCliConnection",
+    "onCommand:kusto.disconnectCopilotCli",
     "onCommand:kustoWorkbench.test.resetDidYouKnowState",
     "onCommand:kustoWorkbench.test.openEmbeddedDidYouKnow",
     "onCommand:kustoWorkbench.test.openMdCompatFile",
@@ -116,7 +119,22 @@
           "type": "boolean",
           "scope": "application",
           "default": false,
-          "description": "Allow an explicitly started GitHub Copilot CLI session to call this VS Code window's Kusto Workbench tools. No listener or CLI process starts until you run Copilot CLI - Open new instance (integrated) or Copilot CLI - Open new instance (external)."
+          "description": "Deprecated legacy setting for VS Code-owned Copilot CLI sessions.",
+          "deprecationMessage": "Use kustoWorkbench.externalTools.enabled and Kusto Workbench: Configure integration with external tools... instead."
+        },
+        "kustoWorkbench.externalTools.enabled": {
+          "order": 24,
+          "type": "boolean",
+          "scope": "application",
+          "default": false,
+          "description": "Allow configured local MCP clients to discover and use eligible Kusto Workbench windows. The provider starts automatically in local Windows desktop windows when enabled."
+        },
+        "kustoWorkbench.externalTools.launchRequestId": {
+          "order": 25,
+          "type": "string",
+          "scope": "window",
+          "default": "",
+          "description": "Internal correlation value used when an external MCP connector launches a new Kusto Workbench window."
         },
         "kustoWorkbench.alternatingRowColor": {
           "order": 6,
@@ -349,28 +367,49 @@
         "icon": "$(export)"
       },
       {
-        "command": "kusto.connectCopilotCli",
-        "title": "Copilot CLI - Open new instance (integrated)",
+        "command": "kusto.enableExternalTools",
+        "title": "Configure integration with external tools...",
         "category": "Kusto Workbench",
-        "icon": "$(terminal)"
+        "icon": "$(plug)"
       },
-    {
-    "command": "kusto.createExternalCopilotCliConnection",
-        "title": "Copilot CLI - Open new instance (external)",
-    "category": "Kusto Workbench",
-    "icon": "$(terminal-new)"
-    },
       {
-        "command": "kusto.disconnectCopilotCli",
-        "title": "Copilot CLI - Disconnect all instances",
+        "command": "kusto.showExternalToolsStatus",
+        "title": "External tools - Show integration status",
+        "category": "Kusto Workbench",
+        "icon": "$(info)"
+      },
+      {
+        "command": "kusto.disableExternalTools",
+        "title": "External tools - Disable or remove integration...",
         "category": "Kusto Workbench",
         "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "kusto.startExternalMcpProvider",
+        "title": "Start External MCP Provider",
+        "category": "Kusto Workbench"
+      },
+      {
+        "command": "kusto.stopExternalMcpProvider",
+        "title": "Stop External MCP Provider",
+        "category": "Kusto Workbench"
       }
     ],
     "menus": {
       "commandPalette": [
         {
+          "command": "kusto.enableExternalTools"
+        },
+        {
           "command": "kusto.showDevelopmentNotes"
+        },
+        {
+          "command": "kusto.startExternalMcpProvider",
+          "when": "false"
+        },
+        {
+          "command": "kusto.stopExternalMcpProvider",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -385,14 +424,9 @@
           "when": "view == kustoWorkbench.quickAccess"
         },
         {
-          "command": "kusto.connectCopilotCli",
+          "command": "kusto.enableExternalTools",
           "group": "navigation",
-          "when": "view == kustoWorkbench.quickAccess && config.kustoWorkbench.copilotCli.enabled"
-        },
-        {
-          "command": "kusto.createExternalCopilotCliConnection",
-          "group": "navigation",
-          "when": "view == kustoWorkbench.quickAccess && config.kustoWorkbench.copilotCli.enabled"
+          "when": "view == kustoWorkbench.quickAccess"
         }
       ]
     },
@@ -1773,12 +1807,60 @@
             "initialContent": {
               "type": "string",
               "description": "Optional: Initial content for the file (Kusto query for kqlx/kql/csl, SQL query for sqlx, markdown for md/mdx)"
+            },
+            "reveal": {
+              "type": "boolean",
+              "default": true,
+              "description": "When false, open the Workbench editor without taking focus. Use false for background external-agent workflows."
             }
           },
           "required": [
             "fileType",
             "filePath"
           ]
+        }
+      },
+      {
+        "name": "kusto-workbench_save-workbench-file",
+        "tags": [
+          "kusto",
+          "workbench",
+          "file",
+          "save"
+        ],
+        "toolReferenceName": "saveWorkbenchFile",
+        "displayName": "Save Workbench File",
+        "modelDescription": "Saves one exact open Kusto Workbench file without closing or focusing it. Always pass openFileId from #listSections or targetFileUri. Use this after background report mutations to confirm the completed document is persisted.",
+        "userDescription": "Save an exact open Workbench file without closing it.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(save)",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "anyOf": [
+            {
+              "required": [
+                "openFileId"
+              ]
+            },
+            {
+              "required": [
+                "targetFileUri"
+              ]
+            }
+          ],
+          "properties": {
+            "openFileId": {
+              "type": "string",
+              "pattern": ".*\\S.*",
+              "description": "Exact open Workbench file ID returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "pattern": ".*\\S.*",
+              "description": "Exact URI or path of an open Workbench file."
+            }
+          }
         }
       },
       {
@@ -2013,21 +2095,23 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
-    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "compile": "npm run check-types && npm run lint && node esbuild.js && npm run prepare:external-mcp",
+    "prepare:external-mcp": "node scripts/stage-mcp-connector-runtime.mjs && node scripts/package-external-mcp-bootstrap.mjs",
+    "prewatch": "npm run prepare:external-mcp",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && npm run check-types && npm run lint && node esbuild.js --production",
+    "package": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && npm run check-types && npm run lint && node esbuild.js --production && node scripts/stage-mcp-connector-runtime.mjs && node scripts/package-external-mcp-bootstrap.mjs",
     "vsix": "npm run package && node scripts/package-vsix.mjs",
     "compile-tests": "node -e \"require('fs').rmSync('out/tests',{recursive:true,force:true})\" && tsc -p tests/integration/tsconfig.json",
     "watch-tests": "tsc -p tests/integration/tsconfig.json -w",
     "generate:kusto-functions": "node scripts/generate-kusto-functions.mjs",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
-    "check-types": "tsc --noEmit && tsc --noEmit -p tsconfig.webview.json",
-    "lint": "eslint src/host src/webview src/shared",
+    "check-types": "tsc --noEmit && tsc --noEmit -p tsconfig.webview.json && tsc --noEmit -p tsconfig.connector.json",
+    "lint": "eslint src/host src/webview src/shared src/connector",
     "test": "vscode-test --config .vscode-test.mjs --timeout 5000 --fail-zero",
-    "test:webview": "vitest run",
-    "test:webview:coverage": "vitest run --coverage",
+    "test:webview": "vitest run --maxWorkers=1 --no-file-parallelism --testTimeout=15000",
+    "test:webview:coverage": "vitest run --coverage --maxWorkers=1 --testTimeout=15000",
     "test:webview:watch": "vitest",
     "test:e2e:full": "node scripts/e2e-full-suite.mjs",
     "test:e2e:ci": "node scripts/e2e-full-suite.mjs --profiles default",
@@ -2052,6 +2136,7 @@
     "@vitest/coverage-v8": "^4.1.0",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "4.0.0",
     "chai": "^4.5.0",
     "esbuild": "^0.27.1",
     "eslint": "^9.39.1",
@@ -2072,6 +2157,8 @@
     "@toast-ui/editor-plugin-color-syntax": "^3.1.0",
     "azure-kusto-data": "^7.0.3",
     "echarts": "^5.5.1",
+    "extract-zip": "2.0.1",
+    "jsonc-parser": "^3.3.1",
     "lit": "^3.3.2",
     "monaco-editor": "^0.52.0",
     "overlayscrollbars": "^2.15.1",

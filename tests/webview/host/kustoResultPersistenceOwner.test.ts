@@ -1104,6 +1104,55 @@ describe('KustoResultPersistenceOwner', () => {
 		expect(overlaid).not.toHaveProperty('resultArtifact');
 	});
 
+	it.each([
+		['noncanonical artifact ID', { artifactId: 'forged' }],
+		['revision zero', { revision: 0, artifactId: 'result:query_1:0' }],
+	] as const)('keeps a modern attachment with %s opaque', (_label, replacement) => {
+		const source = createOwner();
+		source.session.beginExecution(terminal());
+		source.session.stagePublication('publication-1', terminal());
+		source.session.commitPublication('publication-1');
+		const persisted = source.owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		});
+		const section = persisted.sections?.[0] as Record<string, unknown>;
+		const owner = new KustoResultPersistenceOwner(`file:///noncanonical-${_label}.kqlx`);
+
+		owner.admitCanonicalSource('noncanonical-source', {
+			sections: [{
+				...section,
+				resultArtifact: { ...(section.resultArtifact as Record<string, unknown>), ...replacement },
+			}],
+		});
+
+		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
+		const overlaid = owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		}).sections?.[0] as Record<string, unknown>;
+		expect(overlaid).not.toHaveProperty('resultJson');
+		expect(overlaid).not.toHaveProperty('resultArtifact');
+	});
+
+	it('turns a changed source omission into an explicit clear for an opaque modern attachment', () => {
+		const owner = new KustoResultPersistenceOwner('file:///opaque-clear.kqlx');
+		const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		const persisted = { sections: [{
+			id: 'query_1', type: 'query', query: 'print Value=1', resultJson,
+			resultArtifact: {
+				version: 1, artifactId: 'result:query_1:1', sourceBoxId: 'query_1', revision: 1, createdAt: 1,
+			},
+			kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0,
+		}] };
+		const cleared = { sections: [{ id: 'query_1', type: 'query', query: 'print Value=2' }] };
+
+		owner.admitCanonicalSource('opaque-a', persisted, 'source-1');
+		expect(owner.overlaySnapshot(cleared)).toEqual(cleared);
+		const admission = owner.prepareCanonicalSource('opaque-b', cleared, 'source-2');
+		expect(admission?.projectedState).toEqual(cleared);
+		expect(admission?.commit()).toBe(true);
+		expect(owner.getExplicitlyClearedAttachmentSectionIds(persisted)).toEqual(['query_1']);
+	});
+
 	it('does not deduplicate an exact-byte external revert after a host commit', () => {
 		const owner = new KustoResultPersistenceOwner('file:///exact-revert.kqlx');
 		const rowFreeState = {
@@ -1419,6 +1468,33 @@ describe('KustoResultPersistenceOwner', () => {
 		session.commitPublication('publication-1');
 		expect(session.closeSection('query_1', 'section-instance-1', false)).toBe(true);
 
+		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
+		expect(owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		}).sections).toEqual([]);
+	});
+
+	it('admits a same-ID section after an authoritative removal source without restoring old rows', () => {
+		const { owner, session } = createOwner();
+		session.beginExecution(terminal());
+		session.stagePublication('publication-1', terminal());
+		session.commitPublication('publication-1');
+		const saved = owner.overlaySnapshot({
+			sections: [{ id: 'query_1', type: 'query', query: 'print First=1' }],
+		});
+		owner.admitCanonicalSource('saved-source', saved, 'source-1');
+		expect(session.closeSection('query_1', 'section-instance-1', false)).toBe(true);
+		expect(owner.overlaySnapshot(saved).sections).toEqual([]);
+
+		owner.admitCanonicalSource('removed-source', { sections: [] }, 'source-2');
+		const restored = {
+			sections: [{ id: 'query_1', type: 'query', query: 'print Restored=1' }],
+		};
+		const admission = owner.prepareCanonicalSource('restored-source', restored, 'source-3');
+
+		expect(admission?.projectedState).toEqual(restored);
+		expect(admission?.commit()).toBe(true);
+		expect(owner.overlaySnapshot(restored)).toEqual(restored);
 		expect(owner.getCommittedSummary('query_1')).toBeUndefined();
 	});
 

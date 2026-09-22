@@ -2608,10 +2608,14 @@ export class KwConnectionManager extends LitElement {
 	}
 
 	private _renderSearchTargetDatabaseStatus(connection: SearchTargetConnection): TemplateResult | typeof nothing {
-		if (connection.loading) return html`
-			<div class="search-target-status" data-testid="cm-search-target-loading" data-connection-id=${connection.id} role="status">${ICONS.spinner} Loading databases...</div>
-		`;
-		if (!connection.error && connection.databases?.length) return nothing;
+		if (connection.loading) {
+			return html`
+				<div class="search-target-status" data-testid="cm-search-target-loading" data-connection-id=${connection.id} role="status">${ICONS.spinner} Loading databases...</div>
+			`;
+		}
+		if (!connection.error && connection.databases?.length) {
+			return nothing;
+		}
 		const status = connection.error ? 'error' : connection.databases === undefined ? 'unloaded' : 'empty';
 		const message = connection.error ? 'Could not load databases.' : connection.databases === undefined ? 'Databases not loaded.' : 'No databases found.';
 		const action = connection.error ? 'Retry' : connection.databases === undefined ? 'Load databases' : 'Refresh';

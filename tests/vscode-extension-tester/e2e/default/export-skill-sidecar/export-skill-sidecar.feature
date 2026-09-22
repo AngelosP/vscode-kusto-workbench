@@ -145,7 +145,7 @@ Feature: Exported skill includes dashboard rules sidecar
 
     Then the file "${TEMP}/vscode-kusto-workbench-export-skill-sidecar/.github/skills/kusto-workbench/SKILL.md" should exist
     And the file "${TEMP}/vscode-kusto-workbench-export-skill-sidecar/.github/skills/kusto-workbench/html-dashboard-rules.md" should exist
-    And the file "${TEMP}/vscode-kusto-workbench-export-skill-sidecar/.github/skills/kusto-workbench/SKILL.md" should contain "# version: 19"
+    And the file "${TEMP}/vscode-kusto-workbench-export-skill-sidecar/.github/skills/kusto-workbench/SKILL.md" should contain "# version: 21"
     And the file "${TEMP}/vscode-kusto-workbench-export-skill-sidecar/.github/skills/kusto-workbench/SKILL.md" should contain "./html-dashboard-rules.md"
     And the file "${TEMP}/vscode-kusto-workbench-export-skill-sidecar/.github/skills/kusto-workbench/SKILL.md" should contain "# Kusto Workbench Skill"
     And the file "${TEMP}/vscode-kusto-workbench-export-skill-sidecar/.github/skills/kusto-workbench/html-dashboard-rules.md" should contain "# Kusto Workbench HTML Dashboard Rules"

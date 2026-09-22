@@ -38,7 +38,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20.x
+          node-version: 24.x
           cache: npm
 
       # ── Extract version from tag ──────────────────────────────────
@@ -91,11 +91,12 @@ jobs:
 
       # ── Package as ZIP ────────────────────────────────────────────
       - name: Package extension as ZIP
+        id: package-zip
         shell: bash
         run: |
           set -euo pipefail
           ZIP_NAME="kusto-workbench-viewer-${{ steps.version.outputs.manifest_version }}.zip"
-          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+          echo "path=$ZIP_NAME" >> "$GITHUB_OUTPUT"
           cd browser-ext/dist
           zip -r "../../$ZIP_NAME" .
           cd ../..
@@ -105,7 +106,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: edge-extension-${{ steps.version.outputs.manifest_version }}
-          path: ${{ env.ZIP_NAME }}
+          path: ${{ steps.package-zip.outputs.path }}
 
       # ── Publish to Edge Add-ons marketplace ───────────────────────
       - name: Publish to Edge Add-ons marketplace
@@ -129,14 +130,14 @@ jobs:
           API_BASE="https://api.addons.microsoftedge.microsoft.com/v1/products/$EDGE_PRODUCT_ID"
 
           # ── 1. Upload package (single request — capture headers + status) ──
-          echo "Uploading ${{ env.ZIP_NAME }}..."
+          echo "Uploading ${{ steps.package-zip.outputs.path }}..."
           HEADER_FILE=$(mktemp)
           UPLOAD_BODY=$(curl -s -D "$HEADER_FILE" -w "\n%{http_code}" -X POST \
             "$API_BASE/submissions/draft/package" \
             -H "Authorization: ApiKey $EDGE_API_KEY" \
             -H "X-ClientID: $EDGE_CLIENT_ID" \
             -H "Content-Type: application/zip" \
-            -T "${{ env.ZIP_NAME }}")
+            -T "${{ steps.package-zip.outputs.path }}")
 
           HTTP_CODE=$(echo "$UPLOAD_BODY" | tail -n1)
           UPLOAD_BODY=$(echo "$UPLOAD_BODY" | sed '$d')

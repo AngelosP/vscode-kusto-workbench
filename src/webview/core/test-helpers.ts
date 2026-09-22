@@ -471,11 +471,13 @@ async function e2eClearSectionsStable(timeoutMs = 10_000, quietMs = 750): Promis
 	const onResult = (event: MessageEvent) => {
 		const result = event.data;
 		if (result?.type !== 'markdownDocumentCommandResult' || !commands.has(result.commandId)) return;
-		if (results.length < 16) results.push({
-			commandId: result.commandId, command: commands.get(result.commandId), ok: result.ok,
-			sourceGeneration: result.sourceGeneration, documentRevision: result.projection?.documentRevision,
-			error: result.error,
-		});
+		if (results.length < 16) {
+			results.push({
+				commandId: result.commandId, command: commands.get(result.commandId), ok: result.ok,
+				sourceGeneration: result.sourceGeneration, documentRevision: result.projection?.documentRevision,
+				error: result.error,
+			});
+		}
 	};
 	window.addEventListener('message', onResult);
 	let acceptance = pState.hostOwnedMarkdownActive ? e2eDocumentCommandAcceptance() : undefined;
@@ -516,17 +518,23 @@ async function e2eClearSectionsStable(timeoutMs = 10_000, quietMs = 750): Promis
 			]);
 			clearTimeout(commandTimeout);
 			commandTimeout = undefined;
-			if (performance.now() >= deadline) break;
-			if (!accepted) throw new Error(`Document command was rejected while clearing sections: ${JSON.stringify({
-				initialGeneration, currentGeneration: pState.markdownSourceGeneration,
-				initialSession, currentSession: pState.documentViewSessionId,
-				documentRevision: pState.markdownDocumentRevision,
-				commands: [...commands.values()], results,
-			})}`);
+			if (performance.now() >= deadline) {
+				break;
+			}
+			if (!accepted) {
+				throw new Error(`Document command was rejected while clearing sections: ${JSON.stringify({
+					initialGeneration, currentGeneration: pState.markdownSourceGeneration,
+					initialSession, currentSession: pState.documentViewSessionId,
+					documentRevision: pState.markdownDocumentRevision,
+					commands: [...commands.values()], results,
+				})}`);
+			}
 			if (pState.restoreInProgress || document.querySelectorAll(TEST_SECTION_SELECTOR).length > 0) {
 				quietSince = 0;
 			} else if (sections.length === 0) {
-				if (!quietSince) quietSince = performance.now();
+				if (!quietSince) {
+					quietSince = performance.now();
+				}
 				if (performance.now() - quietSince >= quietMs) {
 					adoptCurrentStateAsCleanForTest();
 					return `removed ${removed} sections; stable empty for ${Math.round(performance.now() - quietSince)}ms`;

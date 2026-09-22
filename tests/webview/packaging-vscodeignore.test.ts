@@ -15,5 +15,6 @@ describe('VSIX packaging ignore rules', () => {
 		expect(ignoredEntries).not.toContain('README.md');
 		expect(ignoredEntries).not.toContain('CHANGELOG.md');
 		expect(ignoredEntries).not.toContain('LICENSE');
+		expect(ignoredEntries).toContain('dist/mcp-connector/runtime/*.zip');
 	});
 });

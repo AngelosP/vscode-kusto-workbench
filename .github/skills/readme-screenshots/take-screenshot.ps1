@@ -40,29 +40,38 @@ if (-not $entry) {
     exit 1
 }
 
-$featureFile = Join-Path $featuresDir "$Name.feature"
+$featureName = if ($entry.feature) { $entry.feature } else { $Name }
+$featureFile = Join-Path $featuresDir "$featureName.feature"
 if (-not (Test-Path $featureFile)) {
     Write-Error "Feature file not found: $featureFile"
     exit 1
 }
 
-$profile = $entry.profile
-$testId  = "readme-ss-$Name"
+$captureProfile = $entry.profile
+$testId  = if ($entry.testId) { $entry.testId } else { "readme-ss-$Name" }
+
+function Copy-AdditionalOutputs([string]$Source) {
+    foreach ($relativePath in $entry.additionalOutputs) {
+        $destination = Join-Path $repoRoot $relativePath
+        Copy-Item -LiteralPath $Source -Destination $destination -Force
+        Write-Host "Also published: $destination" -ForegroundColor Green
+    }
+}
 
 # -- Phase 1: Capture (unless -CropOnly) --------------------------------------
 
 if (-not $CropOnly) {
     # Copy feature file into the e2e directory for the right profile
-    $targetDir = Join-Path $e2eBase $profile $testId
+    $targetDir = Join-Path $e2eBase $captureProfile $testId
     if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }
-    Copy-Item $featureFile -Destination (Join-Path $targetDir "$Name.feature") -Force
+    Copy-Item $featureFile -Destination (Join-Path $targetDir "$featureName.feature") -Force
 
     # Build the run command
     $cmd = "vscode-ext-test run --test-id $testId"
-    if ($profile -ne 'default') { $cmd += " --reuse-named-profile $profile" }
+    if ($captureProfile -ne 'default') { $cmd += " --reuse-named-profile $captureProfile" }
     if ($NoBuild)               { $cmd += " --no-build" }
 
-    Write-Host "`n=== Capturing: $Name (profile=$profile) ===" -ForegroundColor Cyan
+    Write-Host "`n=== Capturing: $Name (profile=$captureProfile) ===" -ForegroundColor Cyan
     Invoke-Expression "$cmd 2>&1" | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Capture failed for $Name (exit code $LASTEXITCODE)"
@@ -72,7 +81,7 @@ if (-not $CropOnly) {
 
 # -- Find the latest run directory ---------------------------------------------
 
-$runProfileDir = Join-Path $runsBase $(if ($profile -eq 'default') { 'default' } else { $profile })
+$runProfileDir = Join-Path $runsBase $(if ($captureProfile -eq 'default') { 'default' } else { $captureProfile })
 $runDirs = Get-ChildItem (Join-Path $runProfileDir $testId) -Directory | Sort-Object Name -Descending
 if ($runDirs.Count -eq 0) {
     Write-Error "No run directory found for $testId"
@@ -80,8 +89,8 @@ if ($runDirs.Count -eq 0) {
 }
 $latestRun = $runDirs[0].FullName
 
-# Find the screenshot PNG (last .png in the run -- the final screenshot)
-$rawPng = Get-ChildItem $latestRun -Filter '*.png' | Select-Object -Last 1
+$screenshotFilter = if ($entry.screenshotLabel) { "*-$($entry.screenshotLabel).png" } else { '*.png' }
+$rawPng = Get-ChildItem $latestRun -Filter $screenshotFilter | Sort-Object Name | Select-Object -Last 1
 if (-not $rawPng) {
     Write-Error "No screenshot PNG found in $latestRun"
     exit 1
@@ -97,6 +106,7 @@ if (-not $crop) {
     $oldPng = Join-Path $mediaDir ($entry.filename -replace '\.png$', '.old.png')
     if (-not (Test-Path $oldPng) -and (Test-Path $targetPng)) { Rename-Item $targetPng $oldPng -Force }
     Copy-Item $rawPng.FullName $targetPng -Force
+    Copy-AdditionalOutputs $targetPng
     Write-Host "Copied (no crop): $targetPng" -ForegroundColor Green
     exit 0
 }
@@ -116,6 +126,7 @@ $cropped = $src.Clone($rect, $src.PixelFormat)
 $cropped.Save($targetPng)
 $src.Dispose()
 $cropped.Dispose()
+Copy-AdditionalOutputs $targetPng
 
 Write-Host "`n=== Done: $Name ===" -ForegroundColor Green
 Write-Host "  New:  $targetPng"

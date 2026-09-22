@@ -11,7 +11,7 @@ import {
 	type KqlxParseResult,
 	type KqlxStateV1,
 } from './kqlxFormat';
-import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
+import { normalizeWorkbenchUriKey, sameNonzeroPhysicalFileIdentity } from './workbenchFileTypes';
 import {
 	assertDocumentSectionKindsAllowed,
 	canonicalSectionKind,
@@ -126,7 +126,8 @@ export function isLinkedCompatSidecar(
 	primaryKind: CompatPrimarySectionKind,
 ): boolean {
 	try {
-		const sections = Array.isArray(sidecarFile?.state?.sections) ? sidecarFile.state.sections : [];
+		if (!sidecarFile || !sidecarFile.state || !Array.isArray(sidecarFile.state.sections)) return false;
+		const sections = sidecarFile.state.sections;
 		if (sections.length === 0) {
 			const expectedSidecarUri = compatDocumentUri.with({ path: `${compatDocumentUri.path}.json` });
 			return normalizeWorkbenchUriKey(sidecarUri) === normalizeWorkbenchUriKey(expectedSidecarUri);
@@ -142,9 +143,9 @@ export function isLinkedCompatSidecar(
 				const compatRealPath = fs.realpathSync.native(compatDocumentUri.fsPath);
 				if (normalizeWorkbenchUriKey(vscode.Uri.file(resolvedRealPath))
 					=== normalizeWorkbenchUriKey(vscode.Uri.file(compatRealPath))) return true;
-				const resolvedStat = fs.statSync(resolvedRealPath);
-				const compatStat = fs.statSync(compatRealPath);
-				return resolvedStat.dev === compatStat.dev && resolvedStat.ino !== 0 && resolvedStat.ino === compatStat.ino;
+				const resolvedStat = fs.statSync(resolvedRealPath, { bigint: true });
+				const compatStat = fs.statSync(compatRealPath, { bigint: true });
+				return sameNonzeroPhysicalFileIdentity(resolvedStat, compatStat);
 			} catch {
 				// Fall back to URI identity when either path does not yet exist.
 			}

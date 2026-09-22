@@ -6,9 +6,11 @@
 		{
             "label": "watch",
             "dependsOn": [
+                "npm: prepare:external-mcp",
                 "npm: watch:tsc",
                 "npm: watch:esbuild"
             ],
+            "dependsOrder": "sequence",
             "presentation": {
                 "reveal": "never"
             },
@@ -17,6 +19,16 @@
                 "isDefault": true
             }
         },
+    {
+      "type": "npm",
+      "script": "prepare:external-mcp",
+      "problemMatcher": [],
+      "label": "npm: prepare:external-mcp",
+      "presentation": {
+        "group": "watch",
+        "reveal": "never"
+      }
+    },
         {
             "type": "npm",
             "script": "watch:esbuild",

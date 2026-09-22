@@ -7,8 +7,16 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 * Better search experience for Kusto and SQL schemas.
 * Better default settings for the chart axis (less overlapping text by default, etc.).
-* Added an opt-in Copilot CLI bridge that drives the same live Kusto Workbench tools and agent workflow as VS Code Copilot Chat.
-* Copilot CLI connections can now launch in either an integrated VS Code terminal or a separate Windows console.
+* Added opt-in external MCP integration for local Windows x64 clients. A stable STDIO connector discovers and explicitly routes to Kusto Workbench VS Code windows over secured named pipes and loopback Streamable HTTP MCP.
+* Added supported automatic Copilot CLI registration plus a managed user-level Kusto Workbench agent, so Copilot CLI can orchestrate complete report workflows from natural-language requests instead of requiring users to name individual MCP tools.
+* Microsoft Scout setup automatically registers the MCP server alongside its managed Kusto Workbench skill using Scout's verified local configuration format. Existing manual registrations and unrelated settings are preserved; new registration and managed removal require Scout to be closed.
+* External-tools configuration remains available after setup as a rerunnable Configure command, including retargeting connector cold launches between an installed named VS Code profile and the default profile.
+* External agents can launch a new Workbench window, create and edit reports without taking focus, save exact files, and route concurrent work across multiple windows.
+* External discovery is restricted to current-user local Workbench pipes and IPv4 loopback MCP endpoints, stale announcements are removed after host exit, and setup repairs corrupt installed connector runtimes from a verified local archive cache.
+* The external MCP connector's pinned Node.js runtime is now downloaded from `nodejs.org` and SHA-256 verified during first setup instead of being embedded in the VSIX, substantially reducing the extension package size.
+* External-client guidance now documents explicit instance routing and ambiguous-mutation handling; setup preserves conflicting registrations and user-edited agent/skill files, while selective removal deletes only unchanged Kusto Workbench-managed customizations.
+* Provider enable, disable, restart, and deactivation are latest-wins and race-safe. Files created with `reveal: false` remain explicitly host-owned through background edits and save, even while a hidden editor is still starting.
+* Background creation never overwrites existing main or sidecar files, and mutation, Save, Close, activation, direct rename, and containing-folder rename now share one lossless per-file lifecycle.
 * Copilot Chat now shows cumulative tool calls while generating and no longer stops after 100 model requests.
 * Saved query data and legacy metadata are preserved across authentication/account changes, missing connections or targets, policy changes, Save, and reopen. Leave No Trace prevents saving NEW result data; it does not retroactively remove existing bytes. Supported explicit result/section clear remains user intent.
 * Bugs

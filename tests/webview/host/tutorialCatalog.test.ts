@@ -104,13 +104,13 @@ describe('tutorial catalog validation', () => {
 		expect(byId.get('results-column-tools')?.updateToken).toBe('results-column-tools-2026-08-21');
 		expect(byId.get('results-multiple-result-sets')?.updateToken).toBe('results-multiple-result-sets-2026-08-21');
 		expect(byId.get('results-column-datatypes')?.updateToken).toBe('results-column-datatypes-2026-08-21');
-		expect(byId.get('copilot-cli-live-workbench')).toMatchObject({
+		expect(byId.get('copilot-external-mcp-clients')).toMatchObject({
 			categoryId: 'copilot',
-			contentUrl: 'content/copilot-cli-live-workbench.md',
+			contentUrl: 'content/copilot-external-mcp-clients.md',
 			minExtensionVersion: '5.2.0',
-			updateToken: 'copilot-cli-live-workbench-2026-09-17',
+			updateToken: 'copilot-external-mcp-clients-2026-09-22',
 		});
-		expect(actual.generatedAt).toBe('2026-09-17T00:00:00.000Z');
+		expect(actual.generatedAt).toBe('2026-09-22T00:00:00.000Z');
 	});
 });
 
