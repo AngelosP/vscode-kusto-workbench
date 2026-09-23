@@ -2,6 +2,8 @@
 
 Use Kusto Workbench tools to operate local Workbench files through an explicitly selected VS Code window.
 
+Microsoft Copilot desktop uses these tools through its **Local Code sessions**, not Chat, Cowork, or cloud Code sessions. Its local Workbench plugin and skill may be available in a session without appearing in Code's Customize catalog. Its Code account integration is separate from terminal Copilot CLI and Microsoft Scout; do not assume configuring one client configures another. Keep Code's normal MCP approval prompts under user control.
+
 ## Routing contract
 
 1. Call `listWorkbenchInstances` before any Workbench operation.

@@ -25,6 +25,7 @@ import * as connectorInstaller from '../../../src/host/externalMcpConnectorInsta
 import * as scoutProvisioning from '../../../src/host/externalScoutMcpProvisioning';
 import * as scoutSkill from '../../../src/host/externalScoutSkill';
 import * as clientProvisioning from '../../../src/host/externalMcpClientProvisioning';
+import * as copilotCode from '../../../src/host/externalCopilotCodeIntegration';
 
 vi.mock('vscode', async importOriginal => {
 	const original = await importOriginal<typeof import('vscode')>();
@@ -32,6 +33,7 @@ vi.mock('vscode', async importOriginal => {
 		...original,
 		UIKind: { Desktop: 1, Web: 2 },
 		ProgressLocation: { Notification: 15 },
+		CancellationError: class extends Error {},
 		env: { ...original.env, uiKind: 1 },
 	};
 });
@@ -162,6 +164,74 @@ describe('external MCP setup', () => {
 			rollback,
 		)).rejects.toBe(settingError);
 		expect(rollback).toHaveBeenCalledOnce();
+	});
+
+	it.runIf(process.platform === 'win32').each([true, false])('offers Microsoft Copilot Code separately and configures only its selected account (reload: %s)', async requiresClientReload => {
+		const root = mkdtempSync(join(tmpdir(), 'kw-code-setup-cli-'));
+		mkdirSync(join(root, 'bin'));
+		writeFileSync(join(root, 'bin', 'code.cmd'), '@echo off\r\necho angelos-petropoulos.vscode-kusto-workbench@5.2.0\r\necho angelos-petropoulos.kusto-workbench-mcp-bootstrap@0.0.0\r\n');
+		const target = { accountId: 'a'.repeat(32), executable: join(root, 'copilot.exe'), copilotHomeDirectory: join(root, 'code-account') };
+		const originalWindow = Object.getOwnPropertyDescriptors(vscode.window);
+		const originalExecPath = process.execPath;
+		const pick = vi.fn().mockResolvedValueOnce({ clientKind: 'copilot-code' }).mockResolvedValueOnce({ value: 'default' });
+		const info = vi.fn();
+		Object.assign(vscode.window, { showQuickPick: pick, showWarningMessage: vi.fn().mockResolvedValue('Continue'), showInformationMessage: info,
+			withProgress: async (_options: unknown, action: () => Promise<unknown>) => action() });
+		const configuration = vi.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({ inspect: () => ({ defaultValue: false }), get: () => true, update: vi.fn().mockResolvedValue(undefined) } as never);
+		const discover = vi.spyOn(copilotCode, 'discoverCopilotCodeTargets').mockResolvedValue([target]);
+		const preflight = vi.spyOn(copilotCode, 'preflightCopilotCodeIntegration').mockResolvedValue(undefined);
+		const configure = vi.spyOn(copilotCode, 'configureCopilotCodeIntegration').mockResolvedValue({ changed: requiresClientReload, managed: true, requiresClientReload });
+		const inspect = vi.spyOn(copilotCode, 'inspectCopilotCodeIntegration').mockResolvedValue(true);
+		const remove = vi.spyOn(copilotCode, 'removeCopilotCodeIntegration').mockResolvedValue({ removed: true, existingPreserved: false });
+		const lock = vi.spyOn(connectorInstaller, 'acquireExternalMcpConnectorLock').mockResolvedValue(async () => undefined);
+		const install = vi.spyOn(connectorInstaller, 'installExternalMcpConnector').mockResolvedValue(connector);
+		const cli = vi.spyOn(clientProvisioning, 'executeClientCommand').mockResolvedValue({ exitCode: 0, stdout: '{"mcpServers":{}}', stderr: '' });
+		const scout = vi.spyOn(scoutProvisioning, 'inspectScoutMcpRegistration').mockResolvedValue({ configured: false, managed: false });
+		process.execPath = join(root, 'Code.exe');
+		try {
+			const context = { extensionUri: vscode.Uri.file(resolve('.')), extension: { packageJSON: { version: '5.2.0' } } } as unknown as vscode.ExtensionContext;
+			expect(await runExternalMcpSetup(context, { info: vi.fn(), warn: vi.fn(), error: vi.fn() })).toEqual({ client: 'copilot-code', integrationEnabled: true, fullyConfigured: true, requiresClientReload });
+			expect((pick.mock.calls[0][0] as { label: string }[]).map(item => item.label)).toEqual(['Copilot CLI', 'Microsoft Scout', 'Microsoft Copilot (Code)', 'Other MCP client...']);
+			expect(configure.mock.calls[0][0]).toMatchObject({ target, connector });
+			expect(configure.mock.calls[0][0].skillSourceContent).toContain('# Kusto Workbench Skill');
+			expect(preflight).toHaveBeenCalledBefore(install);
+			expect(info.mock.calls[0][0]).toContain('Local Code session');
+			expect(info.mock.calls[0][0]).toContain('may not appear in Customize');
+			expect(info.mock.calls[0][0]).toContain('MCP tool approval prompts');
+			expect(info.mock.calls[0][0]).not.toContain('Code > Customize');
+			expect(info.mock.calls[0][0].includes('Quit and reopen Copilot')).toBe(requiresClientReload);
+			await showExternalMcpStatus();
+			expect(info.mock.calls[1][0]).toContain('1 of 1 Code accounts');
+			pick.mockResolvedValueOnce([{ id: 'copilot-code' }]);
+			await disableExternalMcpIntegration();
+			expect(remove).toHaveBeenCalledWith({ target, localAppData: process.env.LOCALAPPDATA });
+		} finally {
+			process.execPath = originalExecPath;
+			for (const key of ['showQuickPick', 'showWarningMessage', 'showInformationMessage', 'withProgress']) {
+				const descriptor = originalWindow[key];
+				if (descriptor) Object.defineProperty(vscode.window, key, descriptor); else Reflect.deleteProperty(vscode.window, key);
+			}
+			for (const mock of [configuration, discover, preflight, configure, inspect, remove, lock, install, cli, scout]) mock.mockRestore();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it('cancels Code account selection before any selected cleanup changes state', async () => {
+		const originalPick = Object.getOwnPropertyDescriptor(vscode.window, 'showQuickPick');
+		const pick = vi.fn().mockResolvedValueOnce([{ id: 'provider' }, { id: 'copilot-code' }]).mockResolvedValueOnce(undefined);
+		Object.assign(vscode.window, { showQuickPick: pick });
+		const update = vi.fn();
+		const configuration = vi.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({ inspect: () => ({ defaultValue: false }), update } as never);
+		const discover = vi.spyOn(copilotCode, 'discoverCopilotCodeTargets').mockResolvedValue(['a', 'b'].map(letter => ({ accountId: letter.repeat(32), executable: 'copilot.exe', copilotHomeDirectory: letter })));
+		const lock = vi.spyOn(connectorInstaller, 'acquireExternalMcpConnectorLock');
+		try {
+			await disableExternalMcpIntegration();
+			expect(update).not.toHaveBeenCalled();
+			expect(lock).not.toHaveBeenCalled();
+		} finally {
+			configuration.mockRestore(); discover.mockRestore(); lock.mockRestore();
+			if (originalPick) Object.defineProperty(vscode.window, 'showQuickPick', originalPick); else Reflect.deleteProperty(vscode.window, 'showQuickPick');
+		}
 	});
 
 	it('keeps heavy Workbench startup off and assigns startup activation only to the tiny bootstrap', () => {

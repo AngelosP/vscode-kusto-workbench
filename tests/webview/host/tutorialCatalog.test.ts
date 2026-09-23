@@ -110,7 +110,7 @@ describe('tutorial catalog validation', () => {
 			minExtensionVersion: '5.2.0',
 			updateToken: 'copilot-external-mcp-clients-2026-09-22',
 		});
-		expect(actual.generatedAt).toBe('2026-09-22T00:00:00.000Z');
+		expect(actual.generatedAt).toBe('2026-09-22T23:51:46.000Z');
 	});
 });
 

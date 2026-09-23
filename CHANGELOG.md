@@ -10,6 +10,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Added opt-in external MCP integration for local Windows x64 clients. A stable STDIO connector discovers and explicitly routes to Kusto Workbench VS Code windows over secured named pipes and loopback Streamable HTTP MCP.
 * Added supported automatic Copilot CLI registration plus a managed user-level Kusto Workbench agent, so Copilot CLI can orchestrate complete report workflows from natural-language requests instead of requiring users to name individual MCP tools.
 * Microsoft Scout setup automatically registers the MCP server alongside its managed Kusto Workbench skill using Scout's verified local configuration format. Existing manual registrations and unrelated settings are preserved; new registration and managed removal require Scout to be closed.
+* Added Microsoft Copilot (Code) as a third named external client. Setup installs an account-scoped plugin with the MCP server and Workbench skill through Code's bundled plugin installer, independently of terminal Copilot CLI and Scout. Managed updates support rollback; cleanup preserves unowned or edited plugins. Chat and Cowork are not configured.
 * External-tools configuration remains available after setup as a rerunnable Configure command, including retargeting connector cold launches between an installed named VS Code profile and the default profile.
 * External agents can launch a new Workbench window, create and edit reports without taking focus, save exact files, and route concurrent work across multiple windows.
 * External discovery is restricted to current-user local Workbench pipes and IPv4 loopback MCP endpoints, stale announcements are removed after host exit, and setup repairs corrupt installed connector runtimes from a verified local archive cache.
@@ -20,6 +21,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Copilot Chat now shows cumulative tool calls while generating and no longer stops after 100 model requests.
 * Saved query data and legacy metadata are preserved across authentication/account changes, missing connections or targets, policy changes, Save, and reopen. Leave No Trace prevents saving NEW result data; it does not retroactively remove existing bytes. Supported explicit result/section clear remains user intent.
 * Bugs
+    * Microsoft Copilot setup now directs users to Local Code sessions and normal MCP approvals instead of promising that local plugins appear in Customize.
+    * Microsoft Copilot (Code) setup now accepts a UTF-8 byte-order mark in its runtime manifest instead of incorrectly reporting that the manifest is invalid.
     * Search results for columns deep link to the table correctly now.
     * Exported Power BI Import models now disable Kusto result truncation, preventing refresh failures when datasets exceed the default 64 MB or 500,000-row limits.
     * A malformed same-document reload keeps the last good view while locking editing and saving.

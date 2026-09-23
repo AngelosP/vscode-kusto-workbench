@@ -161,7 +161,7 @@ extends:
               - bash: npm run package
                 displayName: Build package
 
-              - bash: npx vitest run tests/webview/host/externalMcpCatalog.test.ts tests/webview/host/externalMcpHostEligibility.test.ts tests/webview/host/externalMcpProviderStartup.test.ts tests/webview/host/externalMcpProviderStateCoordinator.test.ts tests/webview/host/externalMcpProviderLifecycle.test.ts tests/webview/host/externalMcpConnectorCore.test.ts tests/webview/host/externalMcpConnectorStdio.test.ts tests/webview/host/externalMcpRuntime.test.ts tests/webview/host/externalMcpConnectorInstaller.test.ts tests/webview/host/externalMcpDiscovery.test.ts tests/webview/host/externalMcpClientProvisioning.test.ts tests/webview/host/externalMcpSetup.test.ts tests/webview/host/workbenchMcpBridge.test.ts tests/webview/host/workbenchMcpToolAdapter.test.ts tests/webview/host/toolOrchestratorConnect.test.ts tests/webview/host/firstLaunchIntegration.test.ts tests/webview/host/skill-template.test.ts tests/webview/host/tutorialCatalog.test.ts --maxWorkers=1 --no-file-parallelism
+              - bash: npx vitest run tests/webview/host/externalMcpCatalog.test.ts tests/webview/host/externalMcpHostEligibility.test.ts tests/webview/host/externalMcpProviderStartup.test.ts tests/webview/host/externalMcpProviderStateCoordinator.test.ts tests/webview/host/externalMcpProviderLifecycle.test.ts tests/webview/host/externalMcpConnectorCore.test.ts tests/webview/host/externalMcpConnectorStdio.test.ts tests/webview/host/externalMcpRuntime.test.ts tests/webview/host/externalMcpConnectorInstaller.test.ts tests/webview/host/externalMcpDiscovery.test.ts tests/webview/host/externalMcpClientProvisioning.test.ts tests/webview/host/externalCopilotCodeIntegration.test.ts tests/webview/host/externalMcpSetup.test.ts tests/webview/host/workbenchMcpBridge.test.ts tests/webview/host/workbenchMcpToolAdapter.test.ts tests/webview/host/toolOrchestratorConnect.test.ts tests/webview/host/firstLaunchIntegration.test.ts tests/webview/host/skill-template.test.ts tests/webview/host/tutorialCatalog.test.ts --maxWorkers=1 --no-file-parallelism
                 displayName: Run external MCP tests
 
               - bash: npm run validate:tutorials
@@ -230,7 +230,7 @@ extends:
                   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
                 displayName: Build connector artifacts
 
-              - pwsh: npx.cmd vitest run tests/webview/host/externalMcpRuntime.test.ts tests/webview/host/externalMcpConnectorInstaller.test.ts tests/webview/host/externalMcpDiscovery.test.ts tests/webview/host/externalMcpSetup.test.ts --maxWorkers=1 --no-file-parallelism
+              - pwsh: npx.cmd vitest run tests/webview/host/externalMcpRuntime.test.ts tests/webview/host/externalMcpConnectorInstaller.test.ts tests/webview/host/externalMcpDiscovery.test.ts tests/webview/host/externalCopilotCodeIntegration.test.ts tests/webview/host/externalMcpSetup.test.ts --maxWorkers=1 --no-file-parallelism
                 displayName: Verify packaged connector
 
               - pwsh: npm run compile-tests

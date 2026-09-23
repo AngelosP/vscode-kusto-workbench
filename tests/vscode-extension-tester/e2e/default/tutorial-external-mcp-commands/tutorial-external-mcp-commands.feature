@@ -1,5 +1,5 @@
 @screenshot-generator
-Feature: External tools from Quick Access
+Feature: External tools and Local Code from Quick Access
 
   Scenario: Configure from the card, cancel, and reopen without changing integration
     Given the extension is in a clean state
@@ -19,6 +19,7 @@ Feature: External tools from Quick Access
         const bounds = card.getBoundingClientRect();
         if (!previous.textContent.includes('Export Agent Skill')) throw new Error('External Tools is not directly below Export Agent Skill');
         if (button.textContent.trim() !== 'Configure...') throw new Error('Configure label mismatch');
+        if (!card.textContent.includes('Microsoft Copilot (Code)')) throw new Error('Code client missing from External Tools');
         if (bounds.top < 0 || bounds.bottom > innerHeight) throw new Error('External Tools is clipped');
         if (document.documentElement.scrollWidth > innerWidth) throw new Error('Quick Access overflows horizontally');
         return {
@@ -49,6 +50,7 @@ Feature: External tools from Quick Access
     Then I wait for QuickInput title "Configure integration with external tools"
     And the QuickInput should contain item "Copilot CLI"
     And the QuickInput should contain item "Microsoft Scout"
+    And the QuickInput should contain item "Microsoft Copilot (Code)"
     And the QuickInput should contain item "Other MCP client..."
     Then I take a screenshot "02-external-tools-clients"
     When I press "Escape"
@@ -56,6 +58,7 @@ Feature: External tools from Quick Access
     Then I wait for QuickInput title "Configure integration with external tools"
     And the QuickInput should contain item "Copilot CLI"
     And the QuickInput should contain item "Microsoft Scout"
+    And the QuickInput should contain item "Microsoft Copilot (Code)"
     And the QuickInput should contain item "Other MCP client..."
     When I press "Escape"
     And I start command "workbench.action.showCommands"

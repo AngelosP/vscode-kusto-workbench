@@ -19,8 +19,16 @@ import { reconcileCopilotCliIntegration } from './externalCopilotIntegration';
 import { configureScoutIntegration } from './externalScoutIntegration';
 import { removeScoutSkill } from './externalScoutSkill';
 import { inspectScoutMcpRegistration, preflightScoutMcpRegistration, removeScoutMcpRegistration } from './externalScoutMcpProvisioning';
+import {
+	configureCopilotCodeIntegration,
+	discoverCopilotCodeTargets,
+	inspectCopilotCodeIntegration,
+	preflightCopilotCodeIntegration,
+	removeCopilotCodeIntegration,
+	type CopilotCodeTarget,
+} from './externalCopilotCodeIntegration';
 
-export type ExternalMcpClientKind = 'copilot-cli' | 'scout' | 'other';
+export type ExternalMcpClientKind = 'copilot-cli' | 'scout' | 'copilot-code' | 'other';
 const MAIN_EXTENSION_ID = 'angelos-petropoulos.vscode-kusto-workbench';
 const BOOTSTRAP_EXTENSION_ID = 'angelos-petropoulos.kusto-workbench-mcp-bootstrap';
 
@@ -139,9 +147,22 @@ async function chooseClient(preselected?: ExternalMcpClientKind): Promise<Extern
 	const picked = await vscode.window.showQuickPick([
 		{ label: 'Copilot CLI', clientKind: 'copilot-cli' as const, description: 'Configure automatically through copilot mcp' },
 		{ label: 'Microsoft Scout', clientKind: 'scout' as const, description: 'Configure the MCP server and Kusto Workbench skill automatically' },
+		{ label: 'Microsoft Copilot (Code)', clientKind: 'copilot-code' as const, description: 'Configure local Code sessions with MCP tools and a Workbench skill' },
 		{ label: 'Other MCP client...', clientKind: 'other' as const, description: 'Copy portable STDIO configuration guidance' },
 	], { title: 'Configure integration with external tools', placeHolder: 'Choose an MCP client to configure or reconfigure' });
 	return picked?.clientKind;
+}
+
+async function chooseCopilotCodeTarget(localAppData: string): Promise<CopilotCodeTarget> {
+	const targets = await discoverCopilotCodeTargets(localAppData);
+	if (targets.length === 1) return targets[0];
+	const picked = await vscode.window.showQuickPick(targets.map(target => ({
+		label: `Code account ${target.accountId}`,
+		detail: target.copilotHomeDirectory,
+		target,
+	})), { title: 'Microsoft Copilot Code account', placeHolder: 'Choose the Code account to configure; other accounts are left unchanged', ignoreFocusOut: true });
+	if (!picked) throw new vscode.CancellationError();
+	return picked.target;
 }
 
 async function installForCurrentWindow(
@@ -204,7 +225,7 @@ export async function runExternalMcpSetup(
 	const client = await chooseClient(preselected);
 	if (!client) return undefined;
 	const consent = await vscode.window.showWarningMessage(
-		'Kusto Workbench will download an official Node runtime from nodejs.org, verify its SHA-256 digest, and install it with a local STDIO MCP connector under your user profile. The verified archive is cached for repair. A small companion extension will be installed in the selected VS Code profile, and the provider will be enabled application-wide so external clients can launch or operate Workbench windows. Copilot CLI setup also installs a managed user-level agent. Scout setup adds the MCP server to its local configuration and installs a managed user-level skill; close Scout before first-time registration. Existing servers and approval settings are preserved. Client and enterprise approval policies still apply.',
+		'Kusto Workbench will download an official Node runtime from nodejs.org, verify its SHA-256 digest, and install it with a local STDIO MCP connector under your user profile. The verified archive is cached for repair. A small companion extension will be installed in the selected VS Code profile, and the provider will be enabled application-wide so external clients can launch or operate Workbench windows. Copilot CLI setup also installs a managed user-level agent. Scout setup adds the MCP server and a skill; close Scout before first-time registration. Microsoft Copilot (Code) setup installs an MCP-and-skill plugin in its separate Code account, not Chat or Cowork. Existing integrations and approval settings are preserved. Client and enterprise approval policies still apply.',
 		{ modal: true },
 		'Continue',
 	);
@@ -220,9 +241,11 @@ export async function runExternalMcpSetup(
 	const copilotAgentSource = client === 'copilot-cli'
 		? await readFile(join(context.extensionUri.fsPath, 'copilot-instructions', 'external-copilot-agent.md'), 'utf8')
 		: undefined;
-	const scoutSkillSource = client === 'scout'
+	const scoutSkillSource = client === 'scout' || client === 'copilot-code'
 		? await readFile(join(context.extensionUri.fsPath, 'copilot-instructions', 'external-scout-skill.md'), 'utf8')
 		: undefined;
+	const codeTarget = client === 'copilot-code' ? await chooseCopilotCodeTarget(localAppData) : undefined;
+	if (codeTarget) await preflightCopilotCodeIntegration({ target: codeTarget, localAppData });
 	if (client === 'scout') {
 		const connectorRoot = join(localAppData, 'KustoWorkbench', 'McpConnector');
 		await preflightScoutMcpRegistration({ connector: {
@@ -283,6 +306,23 @@ export async function runExternalMcpSetup(
 					? 'Kusto Workbench is configured for Microsoft Scout, including its MCP server and skill. Open or restart Scout, then start a new conversation. Tool approvals remain controlled by Scout.'
 					: 'Kusto Workbench MCP registration and skill are configured for Microsoft Scout. Start a new conversation to use the skill.');
 				logger.info(`[External MCP] Scout registration verified (${integration.registration.changed ? 'installed' : 'existing'}); skill verified (${integration.skill.status}).`);
+			};
+		} else if (client === 'copilot-code') {
+			const integration = await vscode.window.withProgress({
+				location: vscode.ProgressLocation.Notification,
+				title: 'Configuring Kusto Workbench plugin for Microsoft Copilot Code...',
+				cancellable: false,
+			}, () => configureCopilotCodeIntegration({
+				target: codeTarget!, localAppData, connector, skillSourceContent: scoutSkillSource!,
+				enableProvider: () => vscode.workspace.getConfiguration('kustoWorkbench')
+					.update('externalTools.enabled', true, vscode.ConfigurationTarget.Global),
+			}));
+			result = { client, integrationEnabled: true, fullyConfigured: true, requiresClientReload: integration.requiresClientReload };
+			notice = () => {
+				void vscode.window.showInformationMessage(integration.requiresClientReload
+					? 'Kusto Workbench is registered for Microsoft Copilot Code. Quit and reopen Copilot, then start a new Local Code session and ask to use Kusto Workbench. Local plugins may not appear in Customize. Review Code\'s MCP tool approval prompts.'
+					: 'Kusto Workbench is already registered for Microsoft Copilot Code. Start a new Local Code session and ask to use Kusto Workbench. Local plugins may not appear in Customize. Review Code\'s MCP tool approval prompts.');
+				logger.info(`[External MCP] Microsoft Copilot Code plugin verified (${integration.managed ? 'managed' : 'existing'}).`);
 			};
 		} else {
 			await vscode.env.clipboard.writeText(JSON.stringify(createGenericMcpConfiguration(connector), null, 2));
@@ -349,8 +389,16 @@ export async function showExternalMcpStatus(): Promise<void> {
 			scout = 'configuration unavailable or conflicting; inspect Scout Extensions > MCP Servers';
 		}
 	}
+	let copilotCode = 'not initialized';
+	try {
+		const targets = await discoverCopilotCodeTargets();
+		const installed = await Promise.all(targets.map(target => inspectCopilotCodeIntegration(target)));
+		copilotCode = `${installed.filter(Boolean).length} of ${targets.length} Code accounts have the Workbench plugin`;
+	} catch {
+		copilotCode = 'unavailable or not initialized; open Copilot > Code';
+	}
 	void vscode.window.showInformationMessage(
-		`External tools provider: ${enabled ? 'enabled' : 'disabled'}; connector: ${installed ? connectorVersion : 'not installed'}; Copilot CLI: ${copilot}; Scout: ${scout}.`,
+		`External tools provider: ${enabled ? 'enabled' : 'disabled'}; connector: ${installed ? connectorVersion : 'not installed'}; Copilot CLI: ${copilot}; Scout: ${scout}; Microsoft Copilot: ${copilotCode}.`,
 		{ modal: true },
 	);
 }
@@ -363,6 +411,7 @@ export async function disableExternalMcpIntegration(): Promise<void> {
 		{ label: 'Disable Kusto Workbench provider', id: 'provider', picked: true },
 		{ label: 'Remove Copilot CLI registration and managed agent', id: 'copilot', picked: false },
 		{ label: 'Remove managed Scout MCP registration and skill', id: 'scout', picked: false },
+		{ label: 'Remove Microsoft Copilot (Code) managed plugin', id: 'copilot-code', picked: false },
 		{ label: 'Show other MCP client removal instructions', id: 'other', picked: false },
 		{ label: 'Uninstall startup bootstrap from a VS Code profile...', id: 'bootstrap', picked: false },
 		{ label: 'Remove the installed local connector', id: 'connector', picked: false },
@@ -383,7 +432,18 @@ export async function disableExternalMcpIntegration(): Promise<void> {
 			profileArgs: profile.profileName ? ['--profile', profile.profileName] : [],
 		};
 	}
-	const requiresLock = ['provider', 'copilot', 'scout', 'bootstrap', 'connector'].some(id => selected.has(id));
+	let codeTarget: CopilotCodeTarget | undefined;
+	let codeTargetError: unknown;
+	if (selected.has('copilot-code')) {
+		try {
+			if (!process.env.LOCALAPPDATA) throw new Error('The local application data directory is unavailable.');
+			codeTarget = await chooseCopilotCodeTarget(process.env.LOCALAPPDATA);
+		} catch (error) {
+			if (error instanceof vscode.CancellationError) return;
+			codeTargetError = error;
+		}
+	}
+	const requiresLock = ['provider', 'copilot', 'scout', 'copilot-code', 'bootstrap', 'connector'].some(id => selected.has(id));
 	const localAppData = process.env.LOCALAPPDATA;
 	if (requiresLock && !localAppData) throw new Error('The local application data directory is unavailable.');
 	const release = requiresLock ? await acquireExternalMcpConnectorLock(localAppData!) : undefined;
@@ -435,6 +495,15 @@ export async function disableExternalMcpIntegration(): Promise<void> {
 		if (selected.has('other')) {
 			await runCleanup('Copy MCP client removal instructions', async () => {
 				await vscode.env.clipboard.writeText('Use your MCP client’s documented server-management flow to remove the server named "kusto-workbench". Kusto Workbench does not edit client configuration files directly.');
+			});
+		}
+		if (selected.has('copilot-code')) {
+			await runCleanup('Remove Microsoft Copilot Code plugin', async () => {
+				if (!codeTarget) throw codeTargetError;
+				const removal = await removeCopilotCodeIntegration({ target: codeTarget, localAppData });
+				if (removal.existingPreserved) {
+					void vscode.window.showWarningMessage('The existing Copilot Code Workbench plugin was preserved because this setup did not install it. Manage it through Code > Customize.');
+				}
 			});
 		}
 		if (bootstrapCli) {

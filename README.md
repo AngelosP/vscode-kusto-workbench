@@ -63,9 +63,9 @@ The agent can:
 
 ![VS Code custom agent that actually works called Kusto Workbench](media/marketplace/vscode-custom-agent.png)
 
-### Copilot CLI, Scout, and external tools
+### Copilot CLI, Scout, and Microsoft Copilot (Code)
 
-Ask **Copilot CLI** or **Microsoft Scout** to build reports in Kusto Workbench from a natural-language request. The external client plans the work and uses the same Workbench tools as the VS Code agent: discover connections, query Kusto or SQL, add charts and transformations, write Markdown or HTML, validate, and save. VS Code keeps ownership of authentication and the report.
+Ask **Copilot CLI**, **Microsoft Scout**, or **Microsoft Copilot (Code)** to build reports in Kusto Workbench from a natural-language request. The external client plans the work and uses the same Workbench tools as the VS Code agent: discover connections, query Kusto or SQL, add charts and transformations, write Markdown or HTML, validate, and save. VS Code keeps ownership of authentication and the report.
 
 **Connect your client**
 
@@ -75,7 +75,7 @@ Ask **Copilot CLI** or **Microsoft Scout** to build reports in Kusto Workbench f
 
 ![External Tools below Export Agent Skill in Kusto Workbench Quick Access](media/marketplace/external-tools-quick-access.png)
 
-![Configure integration picker with Copilot CLI, Microsoft Scout, and Other MCP client](media/marketplace/external-tools-clients.png)
+![Configure integration picker with Copilot CLI, Microsoft Scout, Microsoft Copilot (Code), and Other MCP client](media/marketplace/external-tools-clients.png)
 
 **Copilot CLI**
 
@@ -87,6 +87,16 @@ Setup automatically registers the Kusto Workbench MCP server and installs its sk
 
 An existing matching server is reused without rewriting it or taking ownership. Other servers, discovered tools, credentials, and approval settings are preserved. Automatic registration uses the local configuration format verified with Scout `0.23.779.0`; an unknown or conflicting format is rejected rather than overwritten.
 
+**Microsoft Copilot (Code)**
+
+Open the Microsoft Copilot desktop app, sign in, and open **Code** once before setup. Choose **Microsoft Copilot (Code)** in Workbench's client picker. If several initialized Code accounts are found, select the exact account directory shown; Workbench does not guess the active account.
+
+Setup uses Code's bundled plugin installer to add a **kusto-workbench** plugin containing the MCP server and Workbench skill. Quit and reopen Copilot after installation or an update, then select **Code > New session** and set **Where to run this session** to **Local**. Ask to use Kusto Workbench, for example: "Use Kusto Workbench to list the available Workbench windows." Review each **Invoke MCP tool** request and choose **Allow once** when its target matches your request. Session-wide or permanent approval is not required.
+
+**Local plugins may not appear in Code > Customize > Plugins / Skills.** Their absence there does not mean they are unavailable to a Local Code session. In the verified desktop build, the session loads the **kusto-workbench** skill and invokes its MCP tools even though Customize omits both. This does not configure **Chat**, **Cowork**, or cloud Code sessions, change approval settings, or modify terminal Copilot CLI or Scout registrations.
+
+This compatibility adapter is verified with Copilot desktop `155.0.4283.3` and Code runtime `0.1.229.0` (API 4). It uses supported plugin commands, but the desktop runtime/account layout is an observed integration boundary, not a public desktop registration API. The bundled runtime currently accepts local plugin packages and warns that future versions will require marketplace-based installation.
+
 **Other MCP clients** receive portable local STDIO configuration. Use the client's supported server-management flow to install it.
 
 For example, ask your connected client:
@@ -97,7 +107,7 @@ The client discovers or launches a Workbench window and uses its exact `instance
 
 **Reconfigure or remove**
 
-Return to **External Tools > Configure...** anytime to repair setup or change the profile used for new Workbench windows. Start a fresh client session after changing the launch profile. **External tools - Show integration status** remains in the Command Palette; **External tools - Disable or remove integration...** lets you select the components to remove. Scout cleanup removes only an unchanged registration created by Workbench and requires Scout to be closed. Pre-existing manual registrations, user-edited agents, and user-edited skills are preserved.
+Return to **External Tools > Configure...** anytime to repair setup or change the profile used for new Workbench windows. Start a fresh client session after changing the launch profile. **External tools - Show integration status** remains in the Command Palette; **External tools - Disable or remove integration...** lets you select the components to remove. Scout cleanup removes only an unchanged registration created by Workbench and requires Scout to be closed. Code cleanup removes only the unchanged managed plugin from the selected Code account. Pre-existing manual registrations and user-edited agents, skills, and plugins are preserved.
 
 **Requirements and safety:** Local Windows x64 desktop VS Code and an MCP client that supports local command/STDIO servers. Integration is off by default. First setup downloads the pinned official Node.js runtime from `nodejs.org`, verifies its SHA-256 digest, and caches it for repair; the VSIX does not embed Node.js. Removing the local connector also removes its runtime cache. WSL, SSH, containers, web extension hosts, ARM64, Linux, macOS, and remote MCP forwarding are not currently supported. Client approval and data-retention policies still apply.
 
@@ -292,7 +302,7 @@ You can open `.kqlx` and `.sqlx` files directly from GitHub or SharePoint using 
 | `Kusto Workbench: Open Tutorials...` | Open the searchable tutorial viewer with category subscriptions |
 | `Kusto Workbench: Open Kusto Workbench Custom Agent` | Open the Copilot Chat panel with the Kusto Workbench agent |
 | `Kusto Workbench: Export Agent Skill...` | Export a SKILL.md file so other Copilot agents can use Kusto Workbench as a tool |
-| `Kusto Workbench: Configure integration with external tools...` | Install, repair, or retarget the local connector and configure a Copilot CLI agent, Scout skill, or another MCP client |
+| `Kusto Workbench: Configure integration with external tools...` | Install, repair, or retarget the local connector and configure a Copilot CLI agent, Scout skill, Microsoft Copilot Code plugin, or another MCP client |
 | `Kusto Workbench: External tools - Show integration status` | Show provider, connector, and supported client registration status |
 | `Kusto Workbench: External tools - Disable or remove integration...` | Disable the provider or remove selected client/bootstrap integration parts |
 | `Kusto Workbench: Show Development Notes` | View AI development notes stored in the current file |

@@ -2596,7 +2596,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			<div class="card-title">
 				<i class="codicon codicon-plug" aria-hidden="true"></i> External Tools
 			</div>
-			<div class="card-desc">Copilot CLI, Microsoft Scout, and other MCP clients.</div>
+			<div class="card-desc">Copilot CLI, Microsoft Scout, Microsoft Copilot (Code), and other MCP clients.</div>
 			<button class="button" data-testid="configure-external-tools" title="Configure integration with external tools" onclick="sendCommand('configureExternalTools')">
 				<i class="codicon codicon-settings-gear" aria-hidden="true"></i> Configure...
 			</button>
