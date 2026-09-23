@@ -14,8 +14,8 @@ It has advanced markdown capabilities (thanks to the amazing folks at [TOAST UI]
 
 New to the extension? Two built-in walkthroughs will get you going fast:
 
-* **Agent-First Workflow** – Let the VS Code Copilot agent build queries, charts, and full reports for you.
-* **Editor-First Workflow** – Write KQL yourself, explore results, then add charts and markdown around them.
+- **Agent-First Workflow** – Let the VS Code Copilot agent build queries, charts, and full reports for you.
+- **Editor-First Workflow** – Write KQL yourself, explore results, then add charts and markdown around them.
 
 Open them from the command palette (`Kusto Workbench: Open Walkthroughs...`) or from the Activity Bar.
 
@@ -67,49 +67,7 @@ The agent can:
 
 Ask **Copilot CLI**, **Microsoft Scout**, or **Microsoft Copilot (Code)** to build reports in Kusto Workbench from a natural-language request. The external client plans the work and uses the same Workbench tools as the VS Code agent: discover connections, query Kusto or SQL, add charts and transformations, write Markdown or HTML, validate, and save. VS Code keeps ownership of authentication and the report.
 
-**Connect your client**
-
-1. Open Kusto Workbench's **Quick Access** view and select **Configure...** under **External Tools**, directly below **Export Agent Skill**. You can also run `Kusto Workbench: Configure integration with external tools...` from the Command Palette.
-2. Choose your client, review the setup consent, and select **Default Profile** or an exact named VS Code profile. The target profile must already contain the same Workbench version.
-3. Complete the client-specific step below and start a fresh client session.
-
-![External Tools below Export Agent Skill in Kusto Workbench Quick Access](media/marketplace/external-tools-quick-access.png)
-
 ![Configure integration picker with Copilot CLI, Microsoft Scout, Microsoft Copilot (Code), and Other MCP client](media/marketplace/external-tools-clients.png)
-
-**Copilot CLI**
-
-Setup registers the MCP server automatically and installs the user-level **Kusto Workbench** custom agent. Launch normally with `copilot`, then enter `/agent` and select **Kusto Workbench**. No special launch arguments are required. Tool approvals remain under Copilot CLI's control.
-
-**Microsoft Scout**
-
-Setup automatically registers the Kusto Workbench MCP server and installs its skill. No **Add Server** form is needed. Fully quit Scout, including its system-tray process, before first-time registration: Scout reads its local MCP configuration at startup and can overwrite external changes while running. After setup, open Scout and start a new conversation.
-
-An existing matching server is reused without rewriting it or taking ownership. Other servers, discovered tools, credentials, and approval settings are preserved. Automatic registration uses the local configuration format verified with Scout `0.23.779.0`; an unknown or conflicting format is rejected rather than overwritten.
-
-**Microsoft Copilot (Code)**
-
-Open the Microsoft Copilot desktop app, sign in, and open **Code** once before setup. Choose **Microsoft Copilot (Code)** in Workbench's client picker. If several initialized Code accounts are found, select the exact account directory shown; Workbench does not guess the active account.
-
-Setup uses Code's bundled plugin installer to add a **kusto-workbench** plugin containing the MCP server and Workbench skill. Quit and reopen Copilot after installation or an update, then select **Code > New session** and set **Where to run this session** to **Local**. Ask to use Kusto Workbench, for example: "Use Kusto Workbench to list the available Workbench windows." Review each **Invoke MCP tool** request and choose **Allow once** when its target matches your request. Session-wide or permanent approval is not required.
-
-**Local plugins may not appear in Code > Customize > Plugins / Skills.** Their absence there does not mean they are unavailable to a Local Code session. In the verified desktop build, the session loads the **kusto-workbench** skill and invokes its MCP tools even though Customize omits both. This does not configure **Chat**, **Cowork**, or cloud Code sessions, change approval settings, or modify terminal Copilot CLI or Scout registrations.
-
-This compatibility adapter is verified with Copilot desktop `155.0.4283.3` and Code runtime `0.1.229.0` (API 4). It uses supported plugin commands, but the desktop runtime/account layout is an observed integration boundary, not a public desktop registration API. The bundled runtime currently accepts local plugin packages and warns that future versions will require marketplace-based installation.
-
-**Other MCP clients** receive portable local STDIO configuration. Use the client's supported server-management flow to install it.
-
-For example, ask your connected client:
-
-> In my analysis workspace, create a report of daily query failures for the last seven days. Add a bar chart and a Markdown summary, then save it without bringing VS Code to the foreground.
-
-The client discovers or launches a Workbench window and uses its exact `instanceId`, plus the report's exact file and section IDs. Background report creation uses `reveal: false` and never overwrites an existing file. If a mutation loses its response, the client must inspect the target before retrying.
-
-**Reconfigure or remove**
-
-Return to **External Tools > Configure...** anytime to repair setup or change the profile used for new Workbench windows. Start a fresh client session after changing the launch profile. **External tools - Show integration status** remains in the Command Palette; **External tools - Disable or remove integration...** lets you select the components to remove. Scout cleanup removes only an unchanged registration created by Workbench and requires Scout to be closed. Code cleanup removes only the unchanged managed plugin from the selected Code account. Pre-existing manual registrations and user-edited agents, skills, and plugins are preserved.
-
-**Requirements and safety:** Local Windows x64 desktop VS Code and an MCP client that supports local command/STDIO servers. Integration is off by default. First setup downloads the pinned official Node.js runtime from `nodejs.org`, verifies its SHA-256 digest, and caches it for repair; the VSIX does not embed Node.js. Removing the local connector also removes its runtime cache. WSL, SSH, containers, web extension hosts, ARM64, Linux, macOS, and remote MCP forwarding are not currently supported. Client approval and data-retention policies still apply.
 
 ### Let your own agent control Kusto Workbench
 
@@ -135,11 +93,11 @@ Write and run T-SQL queries right alongside your KQL. Open existing `.sql` files
 
 ## HTML for dashboards and export to Power BI
 
-* Author rich HTML dashboards directly in the workbook, with JavaScript available for preview interactions.
-* Add a `kw-provenance` block and `data-kw-bind` targets to make dashboard values exportable to Power BI.
-* Exportable scalar, table, repeated table, pivot, bar, pie, and line bindings are generated from the same fact query that powers the preview.
-* Use `KustoWorkbench.renderChart(bindingId)` for exportable preview charts, `KustoWorkbench.renderTable(bindingId)` for exportable tables, and `KustoWorkbench.renderRepeatedTable(bindingId)` for grouped/repeated table sections, including stacked status bars inside table cells.
-* Export dashboards as Power BI projects or reports that use Import mode by default, with DirectQuery available when the report should query Kusto at view time.
+- Author rich HTML dashboards directly in the workbook, with JavaScript available for preview interactions.
+- Add a `kw-provenance` block and `data-kw-bind` targets to make dashboard values exportable to Power BI.
+- Exportable scalar, table, repeated table, pivot, bar, pie, and line bindings are generated from the same fact query that powers the preview.
+- Use `KustoWorkbench.renderChart(bindingId)` for exportable preview charts, `KustoWorkbench.renderTable(bindingId)` for exportable tables, and `KustoWorkbench.renderRepeatedTable(bindingId)` for grouped/repeated table sections, including stacked status bars inside table cells.
+- Export dashboards as Power BI projects or reports that use Import mode by default, with DirectQuery available when the report should query Kusto at view time.
 
 ![HTML based dashboard](media/marketplace/html-dashboard.png)
 
@@ -147,28 +105,28 @@ Write and run T-SQL queries right alongside your KQL. Open existing `.sql` files
 
 ### Load .csv data directly from the internet
 
-* If you have a URL, then you can load it.
-* Supports image files like .png and .jpg and all sorts of orientations and sizing options.
-* Supports .csv files with access to all the tabular controls and tools like search, scroll to column, etc.
-* You can transform .csv files just like you can transform Kusto query results, and you can join them all too!
+- If you have a URL, then you can load it.
+- Supports image files like .png and .jpg and all sorts of orientations and sizing options.
+- Supports .csv files with access to all the tabular controls and tools like search, scroll to column, etc.
+- You can transform .csv files just like you can transform Kusto query results, and you can join them all too!
 
 ![Load .csv data directly from the internet](./media/marketplace/csv.png)
 
 ### Transform data
 
-* You can transform Kusto query results without changing the query itself.
-* Derive new columns, summarize and aggregate, get distinct values, or pivot your data and all without writing another line of KQL.
-* Transformations also work on .csv files loaded via a URL section.
+- You can transform Kusto query results without changing the query itself.
+- Derive new columns, summarize and aggregate, get distinct values, or pivot your data and all without writing another line of KQL.
+- Transformations also work on .csv files loaded via a URL section.
 
 ![Using data transformation to add a calculated column](media/marketplace/transformation.png)
 
 ### Chart data
 
-* Create charts from Kusto query results or .csv data.
-* Supports line, area, bar, scatter, pie, sankey, and funnel chart types (more to come).
-* Configure axes, legends, data labels, and more.
-* Click on the X, Y, Legend labels to configure additional settings.
-* Charts update live when you re-run your query.
+- Create charts from Kusto query results or .csv data.
+- Supports line, area, bar, scatter, pie, sankey, and funnel chart types (more to come).
+- Configure axes, legends, data labels, and more.
+- Click on the X, Y, Legend labels to configure additional settings.
+- Charts update live when you re-run your query.
 
 ![Creating a bar chart from a Kusto query](media/marketplace/chart.png)
 
@@ -182,9 +140,9 @@ Use the query toolbar "Prettify" action to apply Kusto-aware formatting rules (f
 
 When a query fails, Kusto Workbench surfaces helpful, human-friendly diagnostics:
 
-* Go-to-line behavior to take you straight to the relevant part of the query
-* Highlighting of important terms to focus your attention with red squiggles
-* Hints in the scrollbar
+- Go-to-line behavior to take you straight to the relevant part of the query
+- Highlighting of important terms to focus your attention with red squiggles
+- Hints in the scrollbar
 
 ![Debugging a Kusto query with syntax errors](media/marketplace/diagnostics.png)
 
@@ -232,10 +190,10 @@ Full WYSIWYG and raw markdown editing powered by TOAST UI Editor. Add narrative 
 
 ### Python sections
 
-* Embed Python code cells alongside your KQL.
-* Python runs locally on your machine, and output is captured inline.
-* Great for post-processing query results or running custom analysis.
-* P.S. Very soon it will be possible to connect the Python sections to all the other sections automagically, stay tuned :)
+- Embed Python code cells alongside your KQL.
+- Python runs locally on your machine, and output is captured inline.
+- Great for post-processing query results or running custom analysis.
+- P.S. Very soon it will be possible to connect the Python sections to all the other sections automagically, stay tuned :)
 
 ![Python sections with pandras and np](media/marketplace/python-sections.png)
 
@@ -261,11 +219,11 @@ The Copilot agent can store development notes per file (corrections, schema hint
 
 To open a file:
 
-* `.kql` / `.csl`: open it normally (opens in compatibility mode)
-* `.kqlx`: create an empty file and open it normally, or run `Kusto Workbench: Open .kqlx File`
-* `.sql`: open it normally (opens in compatibility mode)
-* `.sqlx`: create an empty file and open it normally, or run `Kusto Workbench: Open .sqlx File`
-* `.mdx`: create an empty file and open it normally
+- `.kql` / `.csl`: open it normally (opens in compatibility mode)
+- `.kqlx`: create an empty file and open it normally, or run `Kusto Workbench: Open .kqlx File`
+- `.sql`: open it normally (opens in compatibility mode)
+- `.sqlx`: create an empty file and open it normally, or run `Kusto Workbench: Open .sqlx File`
+- `.mdx`: create an empty file and open it normally
 
 ## File formats (and "no file" mode)
 
@@ -309,9 +267,9 @@ You can open `.kqlx` and `.sqlx` files directly from GitHub or SharePoint using 
 
 ## Requirements
 
-* VS Code 1.107.0 or higher
-* For external MCP integration: local Windows x64 desktop VS Code; the selected MCP client must support local command/STDIO servers; first setup needs HTTPS access to `nodejs.org`
-* For Python sections: a local Python install available as `python`, `python3`, or `py` on your PATH
+- VS Code 1.107.0 or higher
+- For external MCP integration: local Windows x64 desktop VS Code; the selected MCP client must support local command/STDIO servers; first setup needs HTTPS access to `nodejs.org`
+- For Python sections: a local Python install available as `python`, `python3`, or `py` on your PATH
 
 ## Data & privacy (how it actually works)
 
@@ -319,23 +277,23 @@ This extension is designed to keep your work local by default, and only sends da
 
 ### What gets stored locally
 
-* **Connections**: Saved in VS Code extension global state on your machine (name + cluster URL + optional default database). This is not synced by the extension itself, but your VS Code settings/profile sync behavior may vary.
-* **Authentication account preferences (per cluster)**: The extension remembers which Microsoft work account was last used successfully per Kusto cluster (account id/label only). This helps avoid repeated sign-in prompts when you use multiple clusters that require different accounts.
-* **`.kqlx` / `.sqlx` notebooks**: Stored wherever you save them (workspace file), and contain your section content (queries, markdown text, python code/output, URL section settings, etc.). `.sqlx` files work the same way as `.kqlx` but for T-SQL sections.
-* **Persistent "no file" session**: If you use `Kusto Workbench: Open Query Editor`, the session auto-saves to a `.kqlx` file in VS Code's *global storage* for this extension so it can survive restarts.
-* **Optional persisted query results**: When enabled/available, the extension may embed recent query results into the `.kqlx` / `.sqlx` state as JSON (capped at \~200KB per section). If you save a `.kqlx` or `.sqlx`, those embedded results become part of the file.
-* **Schema cache**: Database schemas are cached on disk (in the extension's global storage) to speed up iteration. The cache is versioned and automatically invalidated when the format changes.
-* **Development notes**: AI-generated development notes are stored within the `.kqlx` / `.sqlx` file alongside your sections.
-* **SQL Server connections**: Saved in VS Code extension global state on your machine (server hostname, port, database, and authentication mode). SQL Login passwords are stored through VS Code `SecretStorage`, separate from the connection record. Microsoft Entra authentication uses an access token obtained through VS Code authentication.
-* **SQL Tools Service runtime**: Downloaded on first SQL use, verified against the pinned release digest, and cached in the extension's global storage.
+- **Connections**: Saved in VS Code extension global state on your machine (name + cluster URL + optional default database). This is not synced by the extension itself, but your VS Code settings/profile sync behavior may vary.
+- **Authentication account preferences (per cluster)**: The extension remembers which Microsoft work account was last used successfully per Kusto cluster (account id/label only). This helps avoid repeated sign-in prompts when you use multiple clusters that require different accounts.
+- **`.kqlx` / `.sqlx` notebooks**: Stored wherever you save them (workspace file), and contain your section content (queries, markdown text, python code/output, URL section settings, etc.). `.sqlx` files work the same way as `.kqlx` but for T-SQL sections.
+- **Persistent "no file" session**: If you use `Kusto Workbench: Open Query Editor`, the session auto-saves to a `.kqlx` file in VS Code's *global storage* for this extension so it can survive restarts.
+- **Optional persisted query results**: When enabled/available, the extension may embed recent query results into the `.kqlx` / `.sqlx` state as JSON (capped at \~200KB per section). If you save a `.kqlx` or `.sqlx`, those embedded results become part of the file.
+- **Schema cache**: Database schemas are cached on disk (in the extension's global storage) to speed up iteration. The cache is versioned and automatically invalidated when the format changes.
+- **Development notes**: AI-generated development notes are stored within the `.kqlx` / `.sqlx` file alongside your sections.
+- **SQL Server connections**: Saved in VS Code extension global state on your machine (server hostname, port, database, and authentication mode). SQL Login passwords are stored through VS Code `SecretStorage`, separate from the connection record. Microsoft Entra authentication uses an access token obtained through VS Code authentication.
+- **SQL Tools Service runtime**: Downloaded on first SQL use, verified against the pinned release digest, and cached in the extension's global storage.
 
 ### What gets sent to your Kusto cluster
 
 When you click **Run** (or any action that executes KQL), the extension sends:
 
-* Your **query text**
-* The target **cluster** and **database**
-* Your **Microsoft access token** (obtained via VS Code's built-in Microsoft authentication)
+- Your **query text**
+- The target **cluster** and **database**
+- Your **Microsoft access token** (obtained via VS Code's built-in Microsoft authentication)
 
 The extension uses `vscode.authentication.getSession('microsoft', ['https://kusto.kusto.windows.net/.default'], …)` to acquire a token. Token lifecycle and secure storage are handled by VS Code; the extension uses the token in memory to authenticate requests.
 
@@ -345,9 +303,9 @@ If you work with multiple clusters that require different accounts, the extensio
 
 When you click **Run** in a SQL section, the extension sends:
 
-* Your **T-SQL query text**
-* The target **server** and **database**
-* Your **Microsoft Entra access token** or **SQL Login username/password**, depending on the authentication mode you selected
+- Your **T-SQL query text**
+- The target **server** and **database**
+- Your **Microsoft Entra access token** or **SQL Login username/password**, depending on the authentication mode you selected
 
 The connection and query are handled by Microsoft's SQL Tools Service. SQL Login passwords are retrieved from VS Code `SecretStorage` when needed and are not written into notebook files, connection records, or logs.
 
@@ -355,9 +313,9 @@ The connection and query are handled by Microsoft's SQL Tools Service. SQL Login
 
 When you use **Optimize** or the **integrated Copilot Chat**:
 
-* The extension sends the prompt (which includes your **query text** and **database schema**) to GitHub Copilot via VS Code's Language Model API (`vscode.lm`).
-* The extension does **not** send your Kusto credentials to Copilot.
-* Any result comparison happens by running queries against your Kusto cluster (not by executing anything inside Copilot).
+- The extension sends the prompt (which includes your **query text** and **database schema**) to GitHub Copilot via VS Code's Language Model API (`vscode.lm`).
+- The extension does **not** send your Kusto credentials to Copilot.
+- Any result comparison happens by running queries against your Kusto cluster (not by executing anything inside Copilot).
 
 The Optimize message appears in the embedded chat like a message you sent yourself. Anything you submit in that conversation is part of what gets sent to Copilot.
 
@@ -367,19 +325,19 @@ When you configure an external MCP client, Workbench tool inputs and results are
 
 Python sections run **locally** on your machine by spawning a local Python interpreter (`python`, `python3`, or `py`).
 
-* Your code is executed locally.
-* Output is captured (with size limits) and may be stored in the `.kqlx` file if you save.
+- Your code is executed locally.
+- Output is captured (with size limits) and may be stored in the `.kqlx` file if you save.
 
 ### Diagnostics and logs
 
-* Query errors returned by the Kusto SDK/cluster may be surfaced in the UI (and may include fragments of your query or server-provided diagnostics).
-* The extension may write diagnostic information to the VS Code Developer Tools console during development/troubleshooting.
+- Query errors returned by the Kusto SDK/cluster may be surfaced in the UI (and may include fragments of your query or server-provided diagnostics).
+- The extension may write diagnostic information to the VS Code Developer Tools console during development/troubleshooting.
 
 ### How to remove stored data
 
-* Remove saved connections: use `Kusto Workbench: Manage Connections`.
-* Remove `.kqlx` / `.sqlx` content (including embedded results): delete or edit the file.
-* Clear the persistent session: delete the extension's global storage for Kusto Workbench (this removes the auto-saved session file).
+- Remove saved connections: use `Kusto Workbench: Manage Connections`.
+- Remove `.kqlx` / `.sqlx` content (including embedded results): delete or edit the file.
+- Clear the persistent session: delete the extension's global storage for Kusto Workbench (this removes the auto-saved session file).
 
 ## Third-party credits
 
