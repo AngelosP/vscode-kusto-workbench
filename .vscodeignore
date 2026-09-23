@@ -4,6 +4,7 @@
 .vscode-e2e/**
 .env
 out/**
+reports/**
 node_modules/**
 src/**
 dist/webview-tsc-out/**
@@ -21,6 +22,7 @@ version.json
 scripts/**
 media/tutorials/**
 media/walkthroughs/**
+!media/walkthroughs/external-*.md
 browser-ext/**
 external-mcp-bootstrap/**
 **/*.vsix

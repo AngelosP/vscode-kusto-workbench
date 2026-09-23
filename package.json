@@ -289,6 +289,59 @@
         "priority": "option"
       }
     ],
+    "walkthroughs": [
+      {
+        "id": "kustoWorkbench.externalTools",
+        "title": "Kusto Workbench: External Tools Integration",
+        "description": "Connect Copilot CLI, Vera, Scout, Microsoft Copilot Local Code, or another MCP client. Choose your client, verify the connection, and keep control of permissions and cleanup.",
+        "icon": "media/images/kusto-workbench-logo.png",
+        "steps": [
+          {
+            "id": "externalTools.setup",
+            "title": "Prepare VS Code and configure the connector",
+            "description": "Review the requirements and setup consent, then choose your client and VS Code profile. After setup, read the step for your client; you do not need to configure them all.\n[Configure external tools](command:kusto.enableExternalTools)",
+            "completionEvents": ["onContext:config.kustoWorkbench.externalTools.enabled"],
+            "media": { "markdown": "media/walkthroughs/external-01-setup.md" }
+          },
+          {
+            "id": "externalTools.copilotCli",
+            "title": "Copilot CLI: use the Workbench agent",
+            "description": "Let the dedicated Workbench agent orchestrate reports from a terminal. If you want to keep Vera or another agent's identity, use the next step instead.",
+            "media": { "markdown": "media/walkthroughs/external-02-copilot-cli.md" }
+          },
+          {
+            "id": "externalTools.vera",
+            "title": "Vera: add Workbench without switching agents",
+            "description": "Keep Vera's analytics knowledge and identity while using Workbench as an additional tool. Do not switch with /agent kusto-workbench.",
+            "media": { "markdown": "media/walkthroughs/external-03-vera.md" }
+          },
+          {
+            "id": "externalTools.scout",
+            "title": "Microsoft Scout: register MCP and a skill",
+            "description": "Close Scout before first-time registration, configure it in Workbench, then reopen Scout and start a fresh conversation.",
+            "media": { "markdown": "media/walkthroughs/external-04-scout.md" }
+          },
+          {
+            "id": "externalTools.copilotCode",
+            "title": "Microsoft Copilot: start a Local Code session",
+            "description": "Use Code with Local execution and review its MCP approvals. Local plugins can work even when Customize does not list them.",
+            "media": { "markdown": "media/walkthroughs/external-05-copilot-code.md" }
+          },
+          {
+            "id": "externalTools.other",
+            "title": "Other clients: use local STDIO configuration",
+            "description": "Use your client's supported MCP configuration flow and load Workbench's live guidance. Cloud-only clients need a different integration.",
+            "media": { "markdown": "media/walkthroughs/external-06-other-clients.md" }
+          },
+          {
+            "id": "externalTools.verify",
+            "title": "Verify, troubleshoot, and remove integration",
+            "description": "Check connectivity before requesting a report. Learn about exact window routing, client approvals, repair, and selective cleanup.\n[Show integration status](command:kusto.showExternalToolsStatus)",
+            "media": { "markdown": "media/walkthroughs/external-07-verify.md" }
+          }
+        ]
+      }
+    ],
     "commands": [
       {
         "command": "kusto.openQueryEditor",
@@ -373,6 +426,11 @@
         "icon": "$(plug)"
       },
       {
+        "command": "kusto.openExternalToolsWalkthrough",
+        "title": "External tools - Open walkthrough",
+        "category": "Kusto Workbench"
+      },
+      {
         "command": "kusto.showExternalToolsStatus",
         "title": "External tools - Show integration status",
         "category": "Kusto Workbench",
@@ -399,6 +457,9 @@
       "commandPalette": [
         {
           "command": "kusto.enableExternalTools"
+        },
+        {
+          "command": "kusto.openExternalToolsWalkthrough"
         },
         {
           "command": "kusto.showDevelopmentNotes"

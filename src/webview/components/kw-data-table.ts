@@ -689,7 +689,7 @@ export class KwDataTable extends LitElement {
 		}
 		this._destroyOverlayScrollbars();
 		this._osInstance = OverlayScrollbars(vscroll, {
-			scrollbars: { visibility: 'auto', autoHide: 'move', autoHideDelay: 800, autoHideSuspend: true },
+			scrollbars: { visibility: 'auto', autoHide: 'move', autoHideDelay: 800, autoHideSuspend: false },
 			overflow: { x: 'scroll', y: 'scroll' },
 		});
 		this._osHostElement = vscroll;

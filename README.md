@@ -12,12 +12,13 @@ It has advanced markdown capabilities (thanks to the amazing folks at [TOAST UI]
 
 ### Walkthroughs
 
-New to the extension? Two built-in walkthroughs will get you going fast:
+New to the extension? Start with an in-editor guide:
 
 - **Agent-First Workflow** – Let the VS Code Copilot agent build queries, charts, and full reports for you.
 - **Editor-First Workflow** – Write KQL yourself, explore results, then add charts and markdown around them.
+- **External Tools Integration** - Connect Copilot CLI, Vera, Scout, Microsoft Copilot Local Code, or another MCP client.
 
-Open them from the command palette (`Kusto Workbench: Open Walkthroughs...`) or from the Activity Bar.
+Open the tutorials from the Activity Bar or `Kusto Workbench: Open Did You Know...`. For external tools, run `Kusto Workbench: External tools - Open walkthrough`.
 
 ## Key Features
 
@@ -66,6 +67,8 @@ The agent can:
 ### Copilot CLI, Scout, and Microsoft Copilot (Code)
 
 Ask **Copilot CLI**, **Microsoft Scout**, or **Microsoft Copilot (Code)** to build reports in Kusto Workbench from a natural-language request. The external client plans the work and uses the same Workbench tools as the VS Code agent: discover connections, query Kusto or SQL, add charts and transformations, write Markdown or HTML, validate, and save. VS Code keeps ownership of authentication and the report.
+
+For detailed setup, client-specific steps (including keeping Vera), and troubleshooting, run **Kusto Workbench: External tools - Open walkthrough** from the Command Palette, or [read the setup guide](media/walkthroughs/external-01-setup.md).
 
 ![Configure integration picker with Copilot CLI, Microsoft Scout, Microsoft Copilot (Code), and Other MCP client](media/marketplace/external-tools-clients.png)
 

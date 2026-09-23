@@ -5,6 +5,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [5.2.0] - Unreleased
 
+* Added a native External Tools Integration walkthrough covering setup, Copilot CLI, Vera, Scout, Microsoft Copilot Local Code, other MCP clients, verification, and cleanup.
 * Better search experience for Kusto and SQL schemas.
 * Better default settings for the chart axis (less overlapping text by default, etc.).
 * Added opt-in external MCP integration for local Windows x64 clients. A stable STDIO connector discovers and explicitly routes to Kusto Workbench VS Code windows over secured named pipes and loopback Streamable HTTP MCP.

@@ -1,0 +1,6 @@
+{
+  "env": {
+    "KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH": "1"
+  },
+  "timeout": 45000
+}

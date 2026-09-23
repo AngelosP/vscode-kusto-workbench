@@ -11,12 +11,13 @@ const overlayMocks = vi.hoisted(() => {
 		Object.defineProperty(el, 'clientHeight', { configurable: true, value: height });
 	}
 
-	const OverlayScrollbars = vi.fn((host: HTMLElement) => {
+	const OverlayScrollbars = vi.fn((host: HTMLElement, options: unknown) => {
 		const viewport = document.createElement('div');
 		viewport.className = 'os-viewport';
 		setClientSize(viewport, 320, 180);
 		const instance: any = {
 			host,
+			options,
 			viewport,
 			destroyed: false,
 			destroy: vi.fn(() => { instance.destroyed = true; }),
@@ -1173,6 +1174,9 @@ describe('kw-data-table visibility lifecycle', () => {
 		expect(firstVscroll).toBeTruthy();
 		expect(overlayMocks.instances).toHaveLength(1);
 		expect(overlayMocks.instances[0].host).toBe(firstVscroll);
+		expect(overlayMocks.instances[0].options.scrollbars).toMatchObject({
+			autoHide: 'move', autoHideDelay: 800, autoHideSuspend: false,
+		});
 		expect(renderedCellText(table)).toEqual(['alpha', 'bravo', 'charlie']);
 
 		table.setBodyVisible(false);
@@ -1189,6 +1193,9 @@ describe('kw-data-table visibility lifecycle', () => {
 		expect(secondVscroll).not.toBe(firstVscroll);
 		expect(overlayMocks.instances).toHaveLength(2);
 		expect(overlayMocks.instances[1].host).toBe(secondVscroll);
+		expect(overlayMocks.instances[1].options.scrollbars).toMatchObject({
+			autoHide: 'move', autoHideDelay: 800, autoHideSuspend: false,
+		});
 		expect(virtualMocks.instances.at(-1)?.options.getScrollElement()).toBe(overlayMocks.instances[1].viewport);
 		expect(renderedCellText(table)).toEqual(['alpha', 'bravo', 'charlie']);
 	});

@@ -2766,6 +2766,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	);
 
 	context.subscriptions.push(
+		vscode.commands.registerCommand('kusto.openExternalToolsWalkthrough', () =>
+			vscode.commands.executeCommand('workbench.action.openWalkthrough', `${context.extension.id}#kustoWorkbench.externalTools`, false))
+	);
+
+	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.manageConnections', afterFirstLaunch(() => {
 			ConnectionManagerViewerV2.open(context, context.extensionUri, connectionManager, {
 				getSqlConnectionManager,

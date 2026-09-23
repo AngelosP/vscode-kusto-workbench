@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, isAbsolute, join } from 'path';
 import { runInNewContext } from 'vm';
@@ -23,6 +23,11 @@ const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 	dependencies: Record<string, string>;
 	contributes: {
 		commands: Array<{ command: string; title: string }>;
+		walkthroughs: Array<{
+			id: string;
+			title: string;
+			steps: Array<{ id: string; title: string; description: string; completionEvents?: string[]; media: { markdown: string } }>;
+		}>;
 		menus: {
 			commandPalette: Array<{ command: string; when?: string }>;
 			'view/title': Array<{ command: string; group?: string; when?: string }>;
@@ -1249,6 +1254,7 @@ describe('first-launch integration inventory', () => {
 			'kusto.disableExternalTools',
 			'kusto.startExternalMcpProvider',
 			'kusto.stopExternalMcpProvider',
+			'kusto.openExternalToolsWalkthrough',
 		].sort();
 		expect(contributed.sort()).toEqual(expected);
 		for (const command of extensionGatedCommands) {
@@ -1275,6 +1281,7 @@ describe('first-launch integration inventory', () => {
 			.filter(command => command.command.includes('ExternalTools'))
 			.map(command => [command.command, command.title]))).toEqual({
 			'kusto.enableExternalTools': 'Configure integration with external tools...',
+			'kusto.openExternalToolsWalkthrough': 'External tools - Open walkthrough',
 			'kusto.showExternalToolsStatus': 'External tools - Show integration status',
 			'kusto.disableExternalTools': 'External tools - Disable or remove integration...',
 		});
@@ -1295,6 +1302,50 @@ describe('first-launch integration inventory', () => {
 		expect(setupRegistration).toContain('afterFirstLaunch(');
 		expect(setupRegistration).toContain('runExternalMcpSetup');
 		expect(extensionSource).toContain('applyExternalMcpProviderSetting(context)');
+	});
+
+	it('opens the native external-tools walkthrough without running setup or consuming first use', async () => {
+		const commandId = 'kusto.openExternalToolsWalkthrough';
+		expect(packageJson.contributes.menus.commandPalette.find(entry => entry.command === commandId)).toEqual({ command: commandId });
+		const executeCommand = vi.fn().mockResolvedValue(undefined);
+		const callback = runInNewContext(`(${extensionCommandCallback(commandId)})`, {
+			vscode: { commands: { executeCommand } },
+			context: { extension: { id: 'angelos-petropoulos.vscode-kusto-workbench' } },
+		}) as () => Promise<void>;
+		await callback();
+		expect(executeCommand).toHaveBeenCalledExactlyOnceWith(
+			'workbench.action.openWalkthrough', 'angelos-petropoulos.vscode-kusto-workbench#kustoWorkbench.externalTools', false,
+		);
+	});
+
+	it('ships all external-tools walkthrough pages and links the compact README to the native guide', () => {
+		const walkthrough = packageJson.contributes.walkthroughs.find(item => item.id === 'kustoWorkbench.externalTools')!;
+		expect(walkthrough.title).toBe('Kusto Workbench: External Tools Integration');
+		expect(walkthrough.steps.map(step => step.id)).toEqual([
+			'externalTools.setup', 'externalTools.copilotCli', 'externalTools.vera', 'externalTools.scout',
+			'externalTools.copilotCode', 'externalTools.other', 'externalTools.verify',
+		]);
+		expect(walkthrough.steps[0].completionEvents).toEqual(['onContext:config.kustoWorkbench.externalTools.enabled']);
+		const commands = new Set(packageJson.contributes.commands.map(command => command.command));
+		for (const step of walkthrough.steps) {
+			expect(step.media.markdown).toMatch(/^media\/walkthroughs\/external-[\w-]+\.md$/);
+			const text = readFileSync(join(root, step.media.markdown), 'utf8');
+			expect(text.startsWith('# '), step.id).toBe(true);
+			for (const match of step.description.matchAll(/command:([\w.]+)/g)) {
+				expect(commands.has(match[1]), match[1]).toBe(true);
+			}
+			for (const match of text.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
+				expect(existsSync(join(root, dirname(step.media.markdown), match[1])), match[1]).toBe(true);
+			}
+		}
+		const ignore = readFileSync(join(root, '.vscodeignore'), 'utf8');
+		expect(ignore.indexOf('!media/walkthroughs/external-*.md')).toBeGreaterThan(ignore.indexOf('media/walkthroughs/**'));
+		expect(ignore.split(/\r?\n/)).toContain('reports/**');
+		const readme = readFileSync(join(root, 'README.md'), 'utf8');
+		expect(readme).toContain('[read the setup guide](media/walkthroughs/external-01-setup.md)');
+		expect(readme).not.toContain('](command:');
+		expect(readme).toContain('media/marketplace/external-tools-clients.png');
+		expect(readme).toContain('Kusto Workbench: External tools - Open walkthrough');
 	});
 
 	it('validates remote URI input before consuming first use', () => {
