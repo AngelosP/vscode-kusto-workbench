@@ -51,6 +51,20 @@ Feature: Recover a KQLX notebook with repeated trailing content
     When I execute command "workbench.action.focusActiveEditorGroup"
     And I click at 30, 700
     Then I take a screenshot "repair-option-in-read-only-file"
+    Then I collect JSON artifact "recovery-button-styled" from webview expression:
+      """
+      (() => {
+        const action = document.querySelector('a.recovery-button[href^="command:kustoWorkbench.recoverKqlx."]');
+        if (!action) throw new Error('Recover a Copy action is missing');
+        const style = getComputedStyle(action);
+        if (action.parentElement?.tagName !== 'P' || action.parentElement.textContent.trim() !== 'Recover a Copy'
+          || style.display !== 'inline-flex' || style.cursor !== 'pointer' || style.textDecorationLine !== 'none'
+          || style.backgroundColor === 'rgba(0, 0, 0, 0)' || style.backgroundColor === 'transparent') {
+          throw new Error('Recovery action must be a separate, theme-colored button');
+        }
+        return { buttonStyled: true, separateRow: true };
+      })()
+      """
     When I click the element "Recover a Copy"
     And I click "Recover a Copy" on the "Visual Studio Code" dialog
     And I save the file as "${TEMP}\kw-repeated-suffix-recovery-e2e\recovered.kqlx"

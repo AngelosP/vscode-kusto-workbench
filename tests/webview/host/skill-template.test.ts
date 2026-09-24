@@ -75,6 +75,25 @@ describe('exported Kusto Workbench skill template', () => {
 		}
 	});
 
+	it('keeps generic tools available without using them to write Workbench files', () => {
+		for (const filePath of [
+			'copilot-instructions/custom-agent.md',
+			'copilot-instructions/custom-subagent-search.md',
+		]) {
+			const content = readWorkspaceFile(filePath);
+			const toolsLine = content.split('\n').find(line => line.startsWith('tools:')) ?? '';
+			for (const tool of ['edit', 'execute', 'agent', 'runSubagent']) {
+				expect(toolsLine).toContain(`'${tool}'`);
+			}
+			expect(content).toContain('## Workbench File Safety');
+			expect(content).toContain('Never use generic `edit` or `execute` to modify a Workbench-owned file');
+			expect(content).toContain('If a required Workbench tool is unavailable, disabled, or fails, stop');
+			expect(content).toContain('Generic `edit` and `execute` remain available for files that are not Workbench-owned.');
+			expect(content).toContain('Do not delegate Workbench file writes to an agent that uses generic file tools.');
+			expect(content).not.toContain('unless absolutely necessary');
+		}
+	});
+
 	it('keeps exact Workbench closing available without exposing focus-based close commands', () => {
 		const mainAgent = readWorkspaceFile('copilot-instructions/custom-agent.md');
 		const searchAgent = readWorkspaceFile('copilot-instructions/custom-subagent-search.md');

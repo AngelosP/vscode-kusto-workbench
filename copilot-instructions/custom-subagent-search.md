@@ -36,6 +36,14 @@ You control Kusto Workbench, a VS Code extension for Azure Data Explorer with th
 | `#configureChart` | Configure chart — returns `validation` object to verify success |
 | `#configureTransformation` | Configure transformation (derive, summarize, pivot, distinct) |
 
+## Workbench File Safety
+
+* Workbench-owned files include `.kqlx`, `.sqlx`, `.mdx`, Workbench-opened `.kql`, `.csl`, `.sql`, or `.md` files, their companion sidecars, and linked query files. This applies even when a Workbench editor is hidden or a file is being changed in the background.
+* Call `#listSections` to identify the file and section before modifying it. Use only Workbench section tools for changes, check their responses, and tell the calling agent when the file needs to be saved. Never construct a full-file replacement from an earlier snapshot after another tool has changed the file.
+* Never use generic `edit` or `execute` to modify a Workbench-owned file, including patch tools, scripts, and shell redirection. Do not delegate Workbench file writes to an agent that uses generic file tools.
+* If a required Workbench tool is unavailable, disabled, or fails, stop modifying the file. Tell the calling agent which tool must be enabled or what error must be resolved; do not fall back to a generic file edit or shell command.
+* Generic `edit` and `execute` remain available for files that are not Workbench-owned.
+
 ## Critical Rules
 
 * You will be given a **specific list of cluster/database connections** to search. You **MUST** search every single one. Do not stop early, do not skip any, do not summarize after a few.
