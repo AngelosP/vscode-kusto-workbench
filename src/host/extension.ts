@@ -2766,11 +2766,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('kusto.openExternalToolsWalkthrough', () =>
-			vscode.commands.executeCommand('workbench.action.openWalkthrough', `${context.extension.id}#kustoWorkbench.externalTools`, false))
-	);
-
-	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.manageConnections', afterFirstLaunch(() => {
 			ConnectionManagerViewerV2.open(context, context.extensionUri, connectionManager, {
 				getSqlConnectionManager,
@@ -2979,11 +2974,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			await applyExternalMcpProviderSetting(context);
 		}),
 		vscode.commands.registerCommand('kusto.connectCopilotCli', async () => {
-			void vscode.window.showWarningMessage('This command was replaced by Kusto Workbench: Configure integration with external tools...');
+			void vscode.window.showWarningMessage('This command was replaced by Kusto Workbench: External Tools - Configure integration...');
 			return vscode.commands.executeCommand('kusto.enableExternalTools', 'copilot-cli');
 		}),
 		vscode.commands.registerCommand('kusto.createExternalCopilotCliConnection', async () => {
-			void vscode.window.showWarningMessage('VS Code no longer launches external agents. Configure your MCP client through Kusto Workbench: Configure integration with external tools...');
+			void vscode.window.showWarningMessage('VS Code no longer launches external agents. Configure your MCP client through Kusto Workbench: External Tools - Configure integration...');
 			return vscode.commands.executeCommand('kusto.enableExternalTools', 'copilot-cli');
 		}),
 		vscode.commands.registerCommand('kusto.disconnectCopilotCli', async () => {

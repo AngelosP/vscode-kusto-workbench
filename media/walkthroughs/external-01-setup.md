@@ -11,7 +11,7 @@ The external client plans your work. Kusto Workbench in VS Code supplies the too
 
 ## Run setup
 
-1. Select **Configure external tools** in this walkthrough, or **External Tools > Configure...** in Quick Access. The Command Palette entry is **Kusto Workbench: Configure integration with external tools...**.
+1. Select **Configure external tools** in this walkthrough, or **External Tools > Configure...** in Quick Access. The Command Palette entry is **Kusto Workbench: External Tools - Configure integration...**.
 2. Choose **Copilot CLI**, **Microsoft Scout**, **Microsoft Copilot (Code)**, or **Other MCP client...**. For **Vera**, choose **Copilot CLI**, then follow the Vera step without switching agents.
 3. Review the consent. Setup installs a per-user local connector, installs a small startup companion in the selected VS Code profile, and enables Workbench's provider application-wide for eligible local windows.
 4. Choose **Default Profile** or **Named profile...**. For a named profile, enter its exact name. This selection also controls which profile is used when a client launches a new Workbench window.

@@ -3,6 +3,7 @@ import {
 	createEmptyKqlxFile,
 	createEmptyKqlxOrMdxFile,
 	createKqlxOrMdxFileWithDefaultSection,
+	detectRecoverableRepeatedKqlxSuffix,
 	overlayKqlxFileState,
 	parseKqlxText,
 	stringifyKqlxFile,
@@ -22,6 +23,38 @@ const expectedSectionKindsByDocument = {
 	sqlx: ['sql', 'chart', 'transformation', 'markdown', 'python', 'url', 'html', 'devnotes'],
 	mdx: ['markdown', 'url', 'transformation', 'devnotes'],
 } as const satisfies Readonly<Record<KqlxFileKind, readonly (typeof knownSectionKinds)[number][]>>;
+
+describe('repeated KQLX suffix recovery', () => {
+	const valid = JSON.stringify({
+		kind: 'kqlx', version: 1, state: { sections: [
+			{ id: 'query_1', type: 'query', query: 'print message="quoted } \\" text"',
+				resultJson: JSON.stringify({ columns: [{ name: 'Value', type: 'string' }], rows: [['X'.repeat(3000)]] }),
+				futureField: { preserved: true } },
+			{ id: 'query_2', type: 'query', query: 'print Other=1' },
+		] },
+	}, null, 2).replace(/\n/g, '\r\n');
+	const block = valid.slice(-1400);
+
+	it('recognizes exact repeated endings after a complete document without changing its bytes', () => {
+		const malformed = valid + block.repeat(3) + '\r\n';
+		expect(parseKqlxText(malformed).ok).toBe(false);
+		expect(detectRecoverableRepeatedKqlxSuffix(malformed)).toEqual({
+			repairedText: valid,
+			removedBytes: Buffer.byteLength(block.repeat(3) + '\r\n'),
+			sectionCount: 2,
+			repetitions: 3,
+		});
+		expect(JSON.parse(valid).state.sections[0].futureField.preserved).toBe(true);
+	});
+
+	it('does not offer recovery for ordinary JSON, truncated data, a single copy, or a changed repeat', () => {
+		expect(detectRecoverableRepeatedKqlxSuffix(valid + '\r\n')).toBeUndefined();
+		expect(detectRecoverableRepeatedKqlxSuffix(valid.slice(0, -1))).toBeUndefined();
+		expect(detectRecoverableRepeatedKqlxSuffix(valid + block)).toBeUndefined();
+		expect(detectRecoverableRepeatedKqlxSuffix(valid + block + block.slice(0, -1) + 'x')).toBeUndefined();
+		expect(detectRecoverableRepeatedKqlxSuffix(valid.replace('"kqlx"', '"sqlx"') + block.repeat(3))).toBeUndefined();
+	});
+});
 
 describe('saved result attachment preservation', () => {
 	const resultJson = JSON.stringify({

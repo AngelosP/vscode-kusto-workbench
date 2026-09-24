@@ -108,9 +108,9 @@ describe('tutorial catalog validation', () => {
 			categoryId: 'copilot',
 			contentUrl: 'content/copilot-external-mcp-clients.md',
 			minExtensionVersion: '5.2.0',
-			updateToken: 'copilot-external-mcp-clients-2026-09-22',
+			updateToken: 'copilot-external-mcp-clients-2026-09-23',
 		});
-		expect(actual.generatedAt).toBe('2026-09-22T23:51:46.000Z');
+		expect(actual.generatedAt).toBe('2026-09-23T06:09:16.651Z');
 	});
 });
 

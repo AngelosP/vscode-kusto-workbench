@@ -60,7 +60,6 @@ try {
 		join(connectorDirectory, 'connector.cjs'),
 		join(connectorDirectory, 'kusto-workbench-mcp-bootstrap.vsix'),
 		join(extensionDirectory, 'copilot-instructions', 'external-mcp-client.md'),
-		join(extensionDirectory, 'copilot-instructions', 'external-copilot-agent.md'),
 		join(extensionDirectory, 'copilot-instructions', 'external-scout-skill.md'),
 		runtimeMetadataPath,
 	];

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import * as vscode from 'vscode';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -20,7 +20,7 @@ import {
 	uninstallProviderBootstrap,
 	updateExternalToolsEnabledWithRollback,
 } from '../../../src/host/externalMcpSetup';
-import { reconcileCopilotCliAgent } from '../../../src/host/externalCopilotAgent';
+import { createManagedCopilotCliAgentContent } from '../../../src/host/externalCopilotAgent';
 import * as connectorInstaller from '../../../src/host/externalMcpConnectorInstaller';
 import * as scoutProvisioning from '../../../src/host/externalScoutMcpProvisioning';
 import * as scoutSkill from '../../../src/host/externalScoutSkill';
@@ -165,6 +165,80 @@ describe('external MCP setup', () => {
 		)).rejects.toBe(settingError);
 		expect(rollback).toHaveBeenCalledOnce();
 	});
+
+	it.runIf(process.platform === 'win32').each(['fresh', 'managed', 'edited', 'unowned', 'enable-failed'] as const)(
+		'configures Copilot CLI without a second agent and retires only owned legacy content (%s)', async legacy => {
+			const root = mkdtempSync(join(tmpdir(), 'kw-cli-setup-'));
+			const bin = join(root, 'bin');
+			const copilotHomeDirectory = join(root, 'copilot-home');
+			const agentPath = join(copilotHomeDirectory, 'agents', 'kusto-workbench.agent.md');
+			mkdirSync(bin);
+			mkdirSync(join(copilotHomeDirectory, 'agents'), { recursive: true });
+			copyFileSync(join(process.env.SystemRoot!, 'System32', 'where.exe'), join(bin, 'copilot.exe'));
+			writeFileSync(join(bin, 'code.cmd'), '@echo off\r\necho angelos-petropoulos.vscode-kusto-workbench@5.2.0\r\necho angelos-petropoulos.kusto-workbench-mcp-bootstrap@0.0.0\r\n');
+			const legacyContent = createManagedCopilotCliAgentContent('---\nname: Kusto Workbench\n---\nLegacy agent.\n');
+			if (legacy !== 'fresh') writeFileSync(agentPath, legacy === 'unowned' ? 'user-owned agent\n' : legacy === 'edited' ? `${legacyContent}User edit.\n` : legacyContent);
+			const previousEnvironment = { LOCALAPPDATA: process.env.LOCALAPPDATA, COPILOT_HOME: process.env.COPILOT_HOME, PATH: process.env.PATH };
+			const previousExecPath = process.execPath;
+			const originalWindow = Object.getOwnPropertyDescriptors(vscode.window);
+			process.env.LOCALAPPDATA = root;
+			process.env.COPILOT_HOME = copilotHomeDirectory;
+			process.env.PATH = `${bin}${delimiter}${previousEnvironment.PATH || ''}`;
+			process.execPath = join(root, 'Code.exe');
+			const pick = vi.fn().mockResolvedValueOnce({ clientKind: 'copilot-cli' }).mockResolvedValueOnce({ value: 'default' });
+			const info = vi.fn();
+			const warning = vi.fn().mockResolvedValue('Continue');
+			Object.assign(vscode.window, { showQuickPick: pick, showWarningMessage: warning, showInformationMessage: info,
+				withProgress: async (_options: unknown, action: () => Promise<unknown>) => action() });
+			const rollback = vi.fn(async () => undefined);
+			const registration = vi.spyOn(clientProvisioning, 'reconcileCopilotCliRegistration').mockResolvedValue({
+				changed: false, reloadRequired: false, executable: join(bin, 'copilot.exe'), rollback,
+			});
+			const configuration = vi.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({
+				inspect: () => ({ defaultValue: false }),
+				update: vi.fn(async () => {
+					expect(existsSync(agentPath)).toBe(legacy !== 'fresh');
+					if (legacy === 'enable-failed') throw new Error('provider write failed');
+				}),
+			} as never);
+			const lock = vi.spyOn(connectorInstaller, 'acquireExternalMcpConnectorLock').mockResolvedValue(async () => undefined);
+			const install = vi.spyOn(connectorInstaller, 'installExternalMcpConnector').mockResolvedValue(connector);
+			const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+			try {
+				const context = { extensionUri: vscode.Uri.file(resolve('.')), extension: { packageJSON: { version: '5.2.0' } } } as unknown as vscode.ExtensionContext;
+				if (legacy === 'enable-failed') {
+					await expect(runExternalMcpSetup(context, logger)).rejects.toThrow('provider write failed');
+					expect(rollback).toHaveBeenCalledOnce();
+					expect(readFileSync(agentPath, 'utf8')).toBe(legacyContent);
+					return;
+				}
+				const result = await runExternalMcpSetup(context, logger);
+				expect(registration).toHaveBeenCalledWith({ executable: join(bin, 'copilot.exe'), connector });
+				expect(result).toEqual({ client: 'copilot-cli', integrationEnabled: true, fullyConfigured: true, requiresClientReload: legacy === 'managed' });
+				expect(existsSync(agentPath)).toBe(legacy === 'edited' || legacy === 'unowned');
+				if (legacy === 'edited' || legacy === 'unowned') {
+					expect(readFileSync(agentPath, 'utf8')).toBe(legacy === 'edited' ? `${legacyContent}User edit.\n` : 'user-owned agent\n');
+					expect(warning).toHaveBeenCalledTimes(2);
+				} else {
+					expect(warning).toHaveBeenCalledOnce();
+				}
+				expect(info).toHaveBeenCalledWith(expect.stringContaining('no agent switch is needed.'));
+			} finally {
+				process.execPath = previousExecPath;
+				for (const [key, value] of Object.entries(previousEnvironment)) {
+					if (value === undefined) delete process.env[key];
+					else process.env[key] = value;
+				}
+				for (const key of ['showQuickPick', 'showWarningMessage', 'showInformationMessage', 'withProgress']) {
+					const descriptor = originalWindow[key];
+					if (descriptor) Object.defineProperty(vscode.window, key, descriptor);
+					else Reflect.deleteProperty(vscode.window, key);
+				}
+				for (const mock of [configuration, registration, lock, install]) mock.mockRestore();
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
 
 	it.runIf(process.platform === 'win32').each([true, false])('offers Microsoft Copilot Code separately and configures only its selected account (reload: %s)', async requiresClientReload => {
 		const root = mkdtempSync(join(tmpdir(), 'kw-code-setup-cli-'));
@@ -490,7 +564,8 @@ if (args.includes('--list-extensions')) {
 		const getConfiguration = vi.spyOn(vscode.workspace, 'getConfiguration')
 			.mockReturnValue({ inspect: () => ({ defaultValue: false }), update } as never);
 		try {
-			await reconcileCopilotCliAgent({ sourceContent: '---\nname: Kusto Workbench\n---\nManaged test agent.\n' });
+			mkdirSync(join(copilotHomeDirectory, 'agents'), { recursive: true });
+			writeFileSync(agentPath, createManagedCopilotCliAgentContent('---\nname: Kusto Workbench\n---\nManaged test agent.\n'));
 			expect(existsSync(agentPath)).toBe(true);
 			await expect(disableExternalMcpIntegration()).rejects.toThrow('GitHub Copilot CLI');
 			expect(update).toHaveBeenCalledWith('externalTools.enabled', false, vscode.ConfigurationTarget.Global);

@@ -5,7 +5,7 @@ Workbench configures Scout's MCP registration and installs a Workbench skill so 
 ## Configure safely
 
 1. **Fully quit Scout**, including its system-tray process, before first-time registration. Scout reads its MCP configuration at startup and can overwrite external changes while it is running.
-2. Run **Configure integration with external tools...** in VS Code and choose **Microsoft Scout**.
+2. Run **External Tools - Configure integration...** in VS Code and choose **Microsoft Scout**.
 3. Review the consent and choose your VS Code profile. You do not need to fill out Scout's **Add Server** form.
 4. Reopen Scout and start a **new conversation**.
 5. Ask:

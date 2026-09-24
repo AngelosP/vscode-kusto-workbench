@@ -1,3 +1,6 @@
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { reconcileCopilotCliIntegration } from '../../../src/host/externalCopilotIntegration';
 import type { InstalledExternalMcpConnector } from '../../../src/host/externalMcpConnectorInstaller';
@@ -13,12 +16,35 @@ const connector: InstalledExternalMcpConnector = {
 };
 
 describe('Copilot CLI external integration provisioning', () => {
-	it('converges the MCP registration before the user-level agent', async () => {
-		const calls: string[] = [];
-		const registrationRollback = vi.fn(async () => { calls.push('registration rollback'); });
-		const agentRollback = vi.fn(async () => { calls.push('agent rollback'); });
+	it('registers the MCP connector without installing a second agent', async () => {
+		const copilotHomeDirectory = mkdtempSync(join(tmpdir(), 'kw-cli-no-agent-'));
+		const agentPath = join(copilotHomeDirectory, 'agents', 'kusto-workbench.agent.md');
+		const previousCopilotHome = process.env.COPILOT_HOME;
+		const reconcileRegistration = vi.fn(async () => ({
+			changed: true,
+			reloadRequired: true,
+			executable: 'copilot.exe',
+		}));
+		try {
+			process.env.COPILOT_HOME = copilotHomeDirectory;
+			const result = await reconcileCopilotCliIntegration({
+				executable: 'copilot.exe',
+				connector,
+				reconcileRegistration,
+			});
+			expect(reconcileRegistration).toHaveBeenCalledWith({ executable: 'copilot.exe', connector });
+			expect(result).toMatchObject({ changed: true, reloadRequired: true });
+			expect(existsSync(agentPath)).toBe(false);
+		} finally {
+			if (previousCopilotHome === undefined) delete process.env.COPILOT_HOME;
+			else process.env.COPILOT_HOME = previousCopilotHome;
+			rmSync(copilotHomeDirectory, { recursive: true, force: true });
+		}
+	});
+
+	it('returns the registration rollback when provider enablement fails', async () => {
+		const registrationRollback = vi.fn(async () => undefined);
 		const reconcileRegistration = vi.fn(async () => {
-			calls.push('registration');
 			return {
 				changed: true,
 				reloadRequired: true,
@@ -26,96 +52,33 @@ describe('Copilot CLI external integration provisioning', () => {
 				rollback: registrationRollback,
 			};
 		});
-		const reconcileAgent = vi.fn(async () => {
-			calls.push('agent');
-			return {
-				changed: true,
-				status: 'installed' as const,
-				agentPath: 'C:\\Users\\me\\.copilot\\agents\\kusto-workbench.agent.md',
-				rollback: agentRollback,
-			};
-		});
 
 		const result = await reconcileCopilotCliIntegration({
 			executable: 'copilot.exe',
 			connector,
-			agentSourceContent: 'agent',
 			reconcileRegistration,
-			reconcileAgent,
 		});
 
-		expect(calls).toEqual(['registration', 'agent']);
+		expect(reconcileRegistration).toHaveBeenCalledOnce();
 		expect(result).toMatchObject({ changed: true, reloadRequired: true });
 		await result.rollback?.();
-		expect(calls).toEqual(['registration', 'agent', 'agent rollback', 'registration rollback']);
-	});
-
-	it('rolls back a changed registration when agent provisioning fails', async () => {
-		const registrationRollback = vi.fn(async () => undefined);
-		const failure = new Error('agent conflict');
-		const reconcileRegistration = vi.fn(async () => ({
-			changed: true,
-			reloadRequired: true,
-			executable: 'copilot.exe',
-			rollback: registrationRollback,
-		}));
-		const reconcileAgent = vi.fn(async () => { throw failure; });
-
-		await expect(reconcileCopilotCliIntegration({
-			executable: 'copilot.exe',
-			connector,
-			agentSourceContent: 'agent',
-			reconcileRegistration,
-			reconcileAgent,
-		})).rejects.toBe(failure);
 		expect(registrationRollback).toHaveBeenCalledOnce();
 	});
 
-	it('reports both the provisioning and compensation failures', async () => {
-		const failure = new Error('agent conflict');
-		const rollbackFailure = new Error('registration rollback failed');
-		const reconcileRegistration = vi.fn(async () => ({
-			changed: true,
-			reloadRequired: true,
-			executable: 'copilot.exe',
-			rollback: async () => { throw rollbackFailure; },
-		}));
-		const reconcileAgent = vi.fn(async () => { throw failure; });
-
-		const rejected = await reconcileCopilotCliIntegration({
-			executable: 'copilot.exe',
-			connector,
-			agentSourceContent: 'agent',
-			reconcileRegistration,
-			reconcileAgent,
-		}).catch(error => error);
-
-		expect(rejected).toBeInstanceOf(AggregateError);
-		expect((rejected as AggregateError).errors).toEqual([failure, rollbackFailure]);
-	});
-
-	it('marks an agent-only change as requiring a new CLI session', async () => {
+	it('does not require a new session when registration and launch target are unchanged', async () => {
 		const reconcileRegistration = vi.fn(async () => ({
 			changed: false,
 			reloadRequired: false,
 			executable: 'copilot.exe',
 		}));
-		const reconcileAgent = vi.fn(async () => ({
-			changed: true,
-			status: 'updated' as const,
-			agentPath: 'agent.md',
-			rollback: async () => undefined,
-		}));
 
 		const result = await reconcileCopilotCliIntegration({
 			executable: 'copilot.exe',
 			connector,
-			agentSourceContent: 'agent',
 			reconcileRegistration,
-			reconcileAgent,
 		});
 
-		expect(result).toMatchObject({ changed: true, reloadRequired: true });
+		expect(result).toMatchObject({ changed: false, reloadRequired: false });
 	});
 
 	it('requires a new CLI session when setup retargets the VS Code launch profile', async () => {
@@ -124,18 +87,11 @@ describe('Copilot CLI external integration provisioning', () => {
 			reloadRequired: false,
 			executable: 'copilot.exe',
 		}));
-		const reconcileAgent = vi.fn(async () => ({
-			changed: false,
-			status: 'current' as const,
-			agentPath: 'agent.md',
-		}));
 
 		const result = await reconcileCopilotCliIntegration({
 			executable: 'copilot.exe',
 			connector: { ...connector, launchTargetChanged: true },
-			agentSourceContent: 'agent',
 			reconcileRegistration,
-			reconcileAgent,
 		});
 
 		expect(result).toMatchObject({ changed: true, reloadRequired: true });

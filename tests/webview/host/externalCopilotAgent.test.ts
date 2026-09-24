@@ -5,9 +5,9 @@ import { describe, expect, it } from 'vitest';
 import {
 	createManagedCopilotCliAgentContent,
 	reconcileManagedExternalCustomization,
-	reconcileCopilotCliAgent,
 	removeManagedExternalCustomization,
 	removeCopilotCliAgent,
+	retireManagedCopilotCliAgent,
 	resolveCopilotHomeDirectory,
 } from '../../../src/host/externalCopilotAgent';
 
@@ -24,19 +24,19 @@ First version.
 
 const secondAgent = firstAgent.replace('First version.', 'Second version.');
 
-describe('Copilot CLI user-level agent', () => {
-	it('packages a GitHub Copilot agent that orchestrates the routed MCP tool set', () => {
-		const source = readFileSync(resolve('copilot-instructions', 'external-copilot-agent.md'), 'utf8');
+async function installLegacyAgent(options: { copilotHomeDirectory?: string; sourceContent: string }) {
+	const copilotHomeDirectory = options.copilotHomeDirectory ?? resolveCopilotHomeDirectory();
+	const managed = await reconcileManagedExternalCustomization({
+		path: join(copilotHomeDirectory, 'agents', 'kusto-workbench.agent.md'),
+		sourceContent: options.sourceContent,
+		artifactName: 'Copilot CLI agent',
+	});
+	return { changed: managed.changed, status: managed.status, agentPath: managed.path, rollback: managed.rollback };
+}
 
-		expect(source).toContain('name: Kusto Workbench');
-		expect(source).toContain('target: github-copilot');
-		expect(source).toContain('kusto-workbench/*');
-		expect(source).toContain('Do not make the user translate their request into individual tool calls.');
-		expect(source).toContain('call `getWorkbenchGuidance`');
-		expect(source).toContain('pass its exact `instanceId` to every Workbench tool call');
-		expect(source).toContain('do not replay it');
-		expect(source).toContain('`reveal: false`');
-		expect(source).toContain('`saveWorkbenchFile`');
+describe('managed customizations and legacy Copilot CLI agent removal', () => {
+	it('does not retain the retired Copilot CLI agent source', () => {
+		expect(existsSync(resolve('copilot-instructions', 'external-copilot-agent.md'))).toBe(false);
 	});
 
 	it('uses COPILOT_HOME when present and otherwise the documented user directory', () => {
@@ -50,9 +50,9 @@ describe('Copilot CLI user-level agent', () => {
 		const copilotHomeDirectory = mkdtempSync(join(tmpdir(), 'kw-copilot-agent-'));
 		const agentPath = join(copilotHomeDirectory, 'agents', 'kusto-workbench.agent.md');
 		try {
-			const installed = await reconcileCopilotCliAgent({ copilotHomeDirectory, sourceContent: firstAgent });
+			const installed = await installLegacyAgent({ copilotHomeDirectory, sourceContent: firstAgent });
 			const initialBytes = readFileSync(agentPath, 'utf8');
-			const current = await reconcileCopilotCliAgent({ copilotHomeDirectory, sourceContent: firstAgent });
+			const current = await installLegacyAgent({ copilotHomeDirectory, sourceContent: firstAgent });
 
 			expect(installed).toMatchObject({ changed: true, status: 'installed', agentPath });
 			expect(initialBytes).toBe(createManagedCopilotCliAgentContent(firstAgent));
@@ -67,9 +67,9 @@ describe('Copilot CLI user-level agent', () => {
 		const copilotHomeDirectory = mkdtempSync(join(tmpdir(), 'kw-copilot-agent-update-'));
 		const agentPath = join(copilotHomeDirectory, 'agents', 'kusto-workbench.agent.md');
 		try {
-			await reconcileCopilotCliAgent({ copilotHomeDirectory, sourceContent: firstAgent });
+			await installLegacyAgent({ copilotHomeDirectory, sourceContent: firstAgent });
 			const previousBytes = readFileSync(agentPath, 'utf8');
-			const updated = await reconcileCopilotCliAgent({ copilotHomeDirectory, sourceContent: secondAgent });
+			const updated = await installLegacyAgent({ copilotHomeDirectory, sourceContent: secondAgent });
 
 			expect(updated).toMatchObject({ changed: true, status: 'updated', agentPath });
 			expect(readFileSync(agentPath, 'utf8')).toBe(createManagedCopilotCliAgentContent(secondAgent));
@@ -85,14 +85,14 @@ describe('Copilot CLI user-level agent', () => {
 		const agentsDirectory = join(copilotHomeDirectory, 'agents');
 		const agentPath = join(agentsDirectory, 'kusto-workbench.agent.md');
 		try {
-			await reconcileCopilotCliAgent({ copilotHomeDirectory, sourceContent: firstAgent });
+			await installLegacyAgent({ copilotHomeDirectory, sourceContent: firstAgent });
 			writeFileSync(agentPath, `${readFileSync(agentPath, 'utf8')}User edit.\n`);
-			await expect(reconcileCopilotCliAgent({ copilotHomeDirectory, sourceContent: secondAgent }))
+			await expect(installLegacyAgent({ copilotHomeDirectory, sourceContent: secondAgent }))
 				.rejects.toThrow('user-edited');
 			expect(readFileSync(agentPath, 'utf8')).toContain('User edit.');
 
 			writeFileSync(agentPath, 'user-owned agent\n');
-			await expect(reconcileCopilotCliAgent({ copilotHomeDirectory, sourceContent: firstAgent }))
+			await expect(installLegacyAgent({ copilotHomeDirectory, sourceContent: firstAgent }))
 				.rejects.toThrow('not managed by Kusto Workbench');
 			expect(readFileSync(agentPath, 'utf8')).toBe('user-owned agent\n');
 		} finally {
@@ -104,11 +104,11 @@ describe('Copilot CLI user-level agent', () => {
 		const copilotHomeDirectory = mkdtempSync(join(tmpdir(), 'kw-copilot-agent-rollback-'));
 		const agentPath = join(copilotHomeDirectory, 'agents', 'kusto-workbench.agent.md');
 		try {
-			const installed = await reconcileCopilotCliAgent({ copilotHomeDirectory, sourceContent: firstAgent });
+			const installed = await installLegacyAgent({ copilotHomeDirectory, sourceContent: firstAgent });
 			await installed.rollback?.();
 			expect(existsSync(agentPath)).toBe(false);
 
-			const changed = await reconcileCopilotCliAgent({ copilotHomeDirectory, sourceContent: firstAgent });
+			const changed = await installLegacyAgent({ copilotHomeDirectory, sourceContent: firstAgent });
 			writeFileSync(agentPath, `${readFileSync(agentPath, 'utf8')}User edit.\n`);
 			await expect(changed.rollback?.()).rejects.toThrow('user-edited');
 			expect(existsSync(agentPath)).toBe(true);
@@ -121,7 +121,7 @@ describe('Copilot CLI user-level agent', () => {
 		const copilotHomeDirectory = mkdtempSync(join(tmpdir(), 'kw-copilot-agent-remove-'));
 		const agentPath = join(copilotHomeDirectory, 'agents', 'kusto-workbench.agent.md');
 		try {
-			await reconcileCopilotCliAgent({ copilotHomeDirectory, sourceContent: firstAgent });
+			await installLegacyAgent({ copilotHomeDirectory, sourceContent: firstAgent });
 			expect(await removeCopilotCliAgent({ copilotHomeDirectory })).toEqual({ removed: true, agentPath });
 			expect(existsSync(agentPath)).toBe(false);
 			expect(await removeCopilotCliAgent({ copilotHomeDirectory })).toEqual({ removed: false, agentPath });
@@ -135,11 +135,38 @@ describe('Copilot CLI user-level agent', () => {
 		}
 	});
 
+	it('retires an unchanged legacy agent without touching edited or user-owned files', async () => {
+		const copilotHomeDirectory = mkdtempSync(join(tmpdir(), 'kw-copilot-agent-retire-'));
+		const agentPath = join(copilotHomeDirectory, 'agents', 'kusto-workbench.agent.md');
+		try {
+			await installLegacyAgent({ copilotHomeDirectory, sourceContent: firstAgent });
+			expect(await retireManagedCopilotCliAgent({ copilotHomeDirectory }))
+				.toEqual({ status: 'removed', agentPath });
+			expect(existsSync(agentPath)).toBe(false);
+			expect(await retireManagedCopilotCliAgent({ copilotHomeDirectory }))
+				.toEqual({ status: 'absent', agentPath });
+
+			await installLegacyAgent({ copilotHomeDirectory, sourceContent: firstAgent });
+			const edited = `${readFileSync(agentPath, 'utf8')}User edit.\n`;
+			writeFileSync(agentPath, edited);
+			expect(await retireManagedCopilotCliAgent({ copilotHomeDirectory }))
+				.toEqual({ status: 'preserved', agentPath });
+			expect(readFileSync(agentPath, 'utf8')).toBe(edited);
+
+			writeFileSync(agentPath, 'user-owned agent\n');
+			expect(await retireManagedCopilotCliAgent({ copilotHomeDirectory }))
+				.toEqual({ status: 'preserved', agentPath });
+			expect(readFileSync(agentPath, 'utf8')).toBe('user-owned agent\n');
+		} finally {
+			rmSync(copilotHomeDirectory, { recursive: true, force: true });
+		}
+	});
+
 	it('preserves a concurrent user replacement during managed update and removal', async () => {
 		const copilotHomeDirectory = mkdtempSync(join(tmpdir(), 'kw-copilot-agent-race-'));
 		const agentPath = join(copilotHomeDirectory, 'agents', 'kusto-workbench.agent.md');
 		try {
-			await reconcileCopilotCliAgent({ copilotHomeDirectory, sourceContent: firstAgent });
+			await installLegacyAgent({ copilotHomeDirectory, sourceContent: firstAgent });
 			await expect(reconcileManagedExternalCustomization({
 				path: agentPath,
 				sourceContent: secondAgent,
@@ -149,7 +176,7 @@ describe('Copilot CLI user-level agent', () => {
 			expect(readFileSync(agentPath, 'utf8')).toBe('concurrent user replacement\n');
 
 			rmSync(agentPath, { force: true });
-			await reconcileCopilotCliAgent({ copilotHomeDirectory, sourceContent: firstAgent });
+			await installLegacyAgent({ copilotHomeDirectory, sourceContent: firstAgent });
 			await expect(removeManagedExternalCustomization({
 				path: agentPath,
 				artifactName: 'Copilot CLI agent',

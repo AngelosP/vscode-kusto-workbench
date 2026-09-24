@@ -22,7 +22,7 @@ Supply your real connection, database, and output folder. Ask the client to conf
 | Target profile has the wrong extension version | Install the same Workbench build into that profile, reload its window, and rerun Configure. |
 | Setting is not registered after a VSIX update | Run **Developer: Reload Window**, then retry setup. |
 | Copilot Code plugin is missing from Customize | Start a new **Local** Code session and test its actual MCP calls. The catalog can omit working local plugins. |
-| Vera loses its identity | Start through `vera` and use Workbench as a tool or skill. Do not select `/agent kusto-workbench`. |
+| Vera loses its identity | Start through `vera` and use Workbench as a tool or skill without switching agents. |
 | Scout setup asks you to close the app | Quit its tray process too, then retry. Do not edit the registry while Scout is running. |
 | Client requests permission | Inspect the exact tool and target. Approve once if appropriate; do not bypass your organization's policy. |
 | Setup reports a conflicting or edited registration | Inspect the named client entry. Workbench preserves it; do not delete unrelated settings or credentials to retry. |
@@ -32,7 +32,7 @@ Supply your real connection, database, and output folder. Ask the client to conf
 
 ## Reconfigure or clean up
 
-Rerun **Configure integration with external tools...** to repair setup or change the profile used for future cold launches. A launch-profile change requires a fresh client session.
+Rerun **External Tools - Configure integration...** to repair setup or change the profile used for future cold launches. A launch-profile change requires a fresh client session.
 
 Run **Kusto Workbench: External tools - Disable or remove integration...** to select exactly what to remove: provider enablement, a managed client integration, the startup companion, or the local connector and its runtime cache. Disabling the provider affects all external clients. Removing only one client does not require removing the shared connector.
 

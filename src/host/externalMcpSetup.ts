@@ -14,7 +14,7 @@ import {
 	KUSTO_WORKBENCH_MCP_SERVER_NAME,
 	removeCopilotCliRegistration,
 } from './externalMcpClientProvisioning';
-import { removeCopilotCliAgent } from './externalCopilotAgent';
+import { removeCopilotCliAgent, retireManagedCopilotCliAgent } from './externalCopilotAgent';
 import { reconcileCopilotCliIntegration } from './externalCopilotIntegration';
 import { configureScoutIntegration } from './externalScoutIntegration';
 import { removeScoutSkill } from './externalScoutSkill';
@@ -225,7 +225,7 @@ export async function runExternalMcpSetup(
 	const client = await chooseClient(preselected);
 	if (!client) return undefined;
 	const consent = await vscode.window.showWarningMessage(
-		'Kusto Workbench will download an official Node runtime from nodejs.org, verify its SHA-256 digest, and install it with a local STDIO MCP connector under your user profile. The verified archive is cached for repair. A small companion extension will be installed in the selected VS Code profile, and the provider will be enabled application-wide so external clients can launch or operate Workbench windows. Copilot CLI setup also installs a managed user-level agent. Scout setup adds the MCP server and a skill; close Scout before first-time registration. Microsoft Copilot (Code) setup installs an MCP-and-skill plugin in its separate Code account, not Chat or Cowork. Existing integrations and approval settings are preserved. Client and enterprise approval policies still apply.',
+		'Kusto Workbench will download an official Node runtime from nodejs.org, verify its SHA-256 digest, and install it with a local STDIO MCP connector under your user profile. The verified archive is cached for repair. A small companion extension will be installed in the selected VS Code profile, and the provider will be enabled application-wide so external clients can launch or operate Workbench windows. Copilot CLI setup registers the MCP server and removes an unchanged Workbench-managed legacy CLI agent, if present; user-edited agents are preserved. Scout setup adds the MCP server and a skill; close Scout before first-time registration. Microsoft Copilot (Code) setup installs an MCP-and-skill plugin in its separate Code account, not Chat or Cowork. Existing integrations and approval settings are preserved. Client and enterprise approval policies still apply.',
 		{ modal: true },
 		'Continue',
 	);
@@ -238,9 +238,6 @@ export async function runExternalMcpSetup(
 		throw new Error('External tools integration currently supports local Windows x64 desktop installations only.');
 	}
 	const copilotExecutable = client === 'copilot-cli' ? await resolveCopilotCliExecutable() : undefined;
-	const copilotAgentSource = client === 'copilot-cli'
-		? await readFile(join(context.extensionUri.fsPath, 'copilot-instructions', 'external-copilot-agent.md'), 'utf8')
-		: undefined;
 	const scoutSkillSource = client === 'scout' || client === 'copilot-code'
 		? await readFile(join(context.extensionUri.fsPath, 'copilot-instructions', 'external-scout-skill.md'), 'utf8')
 		: undefined;
@@ -265,24 +262,32 @@ export async function runExternalMcpSetup(
 		if (client === 'copilot-cli') {
 			const integration = await vscode.window.withProgress({
 				location: vscode.ProgressLocation.Notification,
-				title: 'Configuring GitHub Copilot CLI and Kusto Workbench agent...',
+				title: 'Configuring Kusto Workbench MCP tools for GitHub Copilot CLI...',
 				cancellable: false,
 			}, () => reconcileCopilotCliIntegration({
 				executable: copilotExecutable!,
 				connector,
-				agentSourceContent: copilotAgentSource!,
 			}));
 			await updateExternalToolsEnabledWithRollback(
 				() => vscode.workspace.getConfiguration('kustoWorkbench')
 					.update('externalTools.enabled', true, vscode.ConfigurationTarget.Global),
 				integration.rollback,
 			);
-			result = { client, integrationEnabled: true, fullyConfigured: true, requiresClientReload: integration.reloadRequired };
+			let legacyAgentStatus: 'removed' | 'absent' | 'preserved' | 'error' = 'error';
+			try {
+				legacyAgentStatus = (await retireManagedCopilotCliAgent()).status;
+			} catch (error) {
+				logger.warn(`[External MCP] Could not retire the legacy Copilot CLI agent: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			result = { client, integrationEnabled: true, fullyConfigured: true, requiresClientReload: integration.reloadRequired || legacyAgentStatus === 'removed' };
 			notice = () => {
-				void vscode.window.showInformationMessage(integration.reloadRequired
-					? 'Kusto Workbench is configured for Copilot CLI, including its user-level agent. Start a new CLI session. Tool approvals remain controlled by Copilot CLI.'
-					: 'Kusto Workbench and its user-level agent are already configured for Copilot CLI.');
-				logger.info(`[External MCP] Copilot CLI registration and user-level agent verified (${integration.agent.status}).`);
+				void vscode.window.showInformationMessage(result.requiresClientReload
+					? 'Kusto Workbench MCP tools are configured for Copilot CLI. Start a new CLI session and ask to use Workbench; no agent switch is needed. Tool approvals remain controlled by Copilot CLI.'
+					: 'Kusto Workbench MCP tools are already configured for Copilot CLI. Ask to use Workbench; no agent switch is needed.');
+				if (legacyAgentStatus === 'preserved' || legacyAgentStatus === 'error') {
+					void vscode.window.showWarningMessage('The existing Copilot CLI Workbench agent was preserved because it is edited, not Workbench-managed, or could not be safely removed. Remove it manually if you no longer need it.');
+				}
+				logger.info(`[External MCP] Copilot CLI registration verified; legacy agent ${legacyAgentStatus}.`);
 			};
 		} else if (client === 'scout') {
 			const integration = await vscode.window.withProgress({

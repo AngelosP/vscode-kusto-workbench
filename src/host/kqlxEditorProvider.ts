@@ -14,7 +14,7 @@ import {
 } from './kustoResultPersistenceOwner';
 import type { SqlWorkbenchService } from './sql/sqlWorkbenchService';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
-import { overlayKqlxFileState, parseKqlxText, stringifyKqlxFile, type KqlxFileKind, type KqlxFileV1, type KqlxSectionV1, type KqlxStateV1 } from './kqlxFormat';
+import { detectRecoverableRepeatedKqlxSuffix, overlayKqlxFileState, parseKqlxText, stringifyKqlxFile, type KqlxFileKind, type KqlxFileV1, type KqlxSectionV1, type KqlxStateV1 } from './kqlxFormat';
 import { getKqlxPreservedEnvelope, KqlxOverlayConflictError, preserveKqlxResultAttachments, stripKqlxResultAttachments } from './kqlxOverlay';
 import { renderDiffInWebview, DIFF_NOISE_KEYS, COMPARISON_NOISE_KEYS } from './diffViewerUtils';
 import type { SectionChangeInfo } from './queryEditorTypes';
@@ -1505,10 +1505,86 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		if (!initialParse.ok || unsafeLinkedQueryReason) {
 			documentViewSessionActive = false;
 			startupGateway.dispose();
-			webviewPanel.webview.options = { enableScripts: false };
+			const detected = !initialParse.ok && initialParse.error.startsWith('Invalid JSON:')
+				&& documentKindForPerf === 'kqlx' && document.uri.scheme === 'file'
+				? detectRecoverableRepeatedKqlxSuffix(initialSourceSnapshot.text)
+				: undefined;
+			const candidate = detected && parseKqlxText(detected.repairedText);
+			const recovery = detected && candidate?.ok && !candidate.file.state.sections.some(section =>
+				'linkedQueryPath' in section && typeof section.linkedQueryPath === 'string' && !!section.linkedQueryPath.trim(),
+			) ? detected : undefined;
+			const recoveryCommand = recovery ? `kustoWorkbench.recoverKqlx.${viewSessionId}` : undefined;
+			let commandRegistration: vscode.Disposable | undefined;
+			if (recovery && recoveryCommand) {
+				commandRegistration = vscode.commands.registerCommand(recoveryCommand, async () => {
+					if (outerDisposed) return;
+					const action = await vscode.window.showWarningMessage(
+						`A valid ${recovery.sectionCount}-section notebook was found before ${recovery.removedBytes.toLocaleString()} extra bytes. Create a recovered copy? The original will not change.`,
+						{ modal: true }, 'Recover a Copy',
+					);
+					if (action !== 'Recover a Copy' || outerDisposed) return;
+					const originalPath = document.uri.fsPath;
+					const destination = await vscode.window.showSaveDialog({
+						title: 'Recover Kusto Workbench file', saveLabel: 'Recover a Copy',
+						filters: { 'Kusto Workbench': ['kqlx'] },
+						defaultUri: vscode.Uri.file(path.join(
+							path.dirname(originalPath), `${path.parse(originalPath).name}.recovered.kqlx`,
+						)),
+					});
+					if (!destination || outerDisposed) return;
+					if (destination.scheme !== 'file' || path.extname(destination.fsPath).toLowerCase() !== '.kqlx') {
+						void vscode.window.showWarningMessage('Choose a local .kqlx path for the recovered copy.');
+						return;
+					}
+					if (normalizeWorkbenchUriKey(destination) === normalizeWorkbenchUriKey(document.uri)) {
+						void vscode.window.showWarningMessage('Choose a different file name. The original file cannot be used as the recovered copy.');
+						return;
+					}
+					try {
+						await withKqlxDocumentWriteLock(document.uri, async () => {
+							if (outerDisposed || document.isDirty || document.getText() !== initialSourceSnapshot.text
+								|| !localFileIdentityEquals(initialSourceSnapshot.identity, await getLocalFileIdentity(document.uri))) {
+								throw new Error('source-changed');
+							}
+							const sourceBytes = await vscode.workspace.fs.readFile(document.uri);
+							if (!Buffer.from(sourceBytes).equals(Buffer.from(initialSourceSnapshot.text, 'utf8'))
+								|| !localFileIdentityEquals(initialSourceSnapshot.identity, await getLocalFileIdentity(document.uri))) {
+								throw new Error('source-changed');
+							}
+							await fs.promises.writeFile(destination.fsPath, Buffer.from(recovery.repairedText, 'utf8'), { flag: 'wx' });
+						}, initialSourceSnapshot.identity);
+					} catch (error) {
+						const message = error instanceof Error && error.message === 'source-changed'
+							? 'The original file changed after it was opened. Reopen it before recovering a copy.'
+							: (error as NodeJS.ErrnoException).code === 'EEXIST'
+								? 'The recovery destination already exists. Choose a different file name.'
+								: 'Could not create the recovered copy. The original file was not changed.';
+						void vscode.window.showErrorMessage(message);
+						return;
+					}
+					try {
+						await vscode.commands.executeCommand('vscode.openWith', destination, 'kusto.kqlxEditor', { preview: false });
+					} catch {
+						void vscode.window.showErrorMessage('The recovered copy was created but could not be opened. Open it from the file explorer.');
+					}
+				});
+			}
+			webviewPanel.webview.options = recoveryCommand
+				? { enableScripts: false, enableCommandUris: [recoveryCommand], localResourceRoots: [] }
+				: { enableScripts: false };
 			const reason = initialParse.ok ? unsafeLinkedQueryReason : initialParse.error;
-			webviewPanel.webview.html = `<h2>Invalid Kusto Workbench file</h2><p>${escapeHtmlText(reason)}</p><p>Read-only to prevent data loss. Open with the Text Editor to repair.</p>`;
+			const recoveryStyles = recoveryCommand ? `<style>
+				.recovery-button { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-height: 28px; padding: 4px 14px; border-radius: 2px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); font: inherit; text-decoration: none; cursor: pointer; }
+				.recovery-button:visited { color: var(--vscode-button-foreground); }
+				.recovery-button:hover { background: var(--vscode-button-hoverBackground); text-decoration: none; }
+				.recovery-button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+			</style>` : '';
+			const recoveryLink = recoveryCommand
+				? `<p>A valid ${recovery!.sectionCount}-section document has ${recovery!.removedBytes.toLocaleString()} extra trailing bytes.</p><p><a class="recovery-button" href="command:${recoveryCommand}">Recover a Copy</a></p>`
+				: '';
+			webviewPanel.webview.html = `<!DOCTYPE html><html lang="en"><head><meta http-equiv="Content-Security-Policy" content="default-src 'none';${recoveryCommand ? " style-src 'unsafe-inline';" : ''}">${recoveryStyles}</head><body><h2>Invalid Kusto Workbench file</h2><p>${escapeHtmlText(reason)}</p><p>Read-only to prevent data loss. Open with the Text Editor to repair.</p>${recoveryLink}</body></html>`;
 			handleOuterDisposal = () => {
+				commandRegistration?.dispose();
 				outerDisposalSubscription.dispose();
 				openEditorRegistration.finishClosing();
 			};

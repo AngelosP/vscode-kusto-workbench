@@ -4,7 +4,7 @@ Use this path for a client that supports a **local command / STDIO MCP server** 
 
 ## Add the connector
 
-1. Run **Configure integration with external tools...** and choose **Other MCP client...**.
+1. Run **External Tools - Configure integration...** and choose **Other MCP client...**.
 2. Review the consent and select your VS Code profile. Workbench installs the local connector, enables the provider, and copies portable MCP configuration to the clipboard.
 3. Use your client's documented server-management flow to apply that configuration. The clipboard output is guidance; Workbench has not registered it in the other client for you.
 4. Keep the executable in **command** and the bootstrap path in the **args array**, as copied. Do not combine them into a single quoted executable path. Spaces in paths are normal.

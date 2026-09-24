@@ -8253,6 +8253,96 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('repeated KQLX suffix recovery refuses cancel, source changes, and existing destinations', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kqlx-recovery-'));
+		const filePath = path.join(tmpDir, 'damaged.kqlx');
+		const copyPath = path.join(tmpDir, 'recovered.kqlx');
+		const valid = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', query: 'print Value=1',
+					resultJson: JSON.stringify({ columns: [{ name: 'Value', type: 'string' }], rows: [['R'.repeat(1800)]] }) },
+			] },
+		}, null, 2);
+		const damaged = valid + valid.slice(-1200).repeat(3) + '\r\n';
+		const originalWarning = vscode.window.showWarningMessage;
+		const originalError = vscode.window.showErrorMessage;
+		const originalPicker = vscode.window.showSaveDialog;
+		let disposePanel: (() => void) | undefined;
+		const warnings: string[] = [];
+		const errors: string[] = [];
+		let confirmation: string | undefined;
+		let destination = vscode.Uri.file(copyPath);
+		let pickerCalls = 0;
+		try {
+			fs.writeFileSync(filePath, damaged, 'utf8');
+			const provider = new (KqlxEditorProvider as any)(
+				{ subscriptions: [] } as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const webview = {
+				options: {}, html: '', postMessage: async () => true,
+				onDidReceiveMessage: () => ({ dispose() {} }),
+			} as any;
+			const uri = vscode.Uri.file(filePath);
+			await provider.resolveCustomTextEditor({ uri, getText: () => damaged, isDirty: false } as any, {
+				webview,
+				onDidDispose: (handler: () => void) => { disposePanel = handler; return { dispose() {} }; },
+			} as any, {} as any);
+			assert.strictEqual(webview.options.enableScripts, false);
+			assert.strictEqual(webview.options.localResourceRoots.length, 0);
+			assert.strictEqual(webview.options.enableCommandUris.length, 1);
+			assert.ok(webview.html.includes('Recover a Copy'));
+			const command = webview.options.enableCommandUris[0] as string;
+			(vscode.window as any).showWarningMessage = async (message: unknown) => {
+				warnings.push(String(message));
+				return confirmation;
+			};
+			(vscode.window as any).showErrorMessage = async (message: unknown) => {
+				errors.push(String(message));
+				return undefined;
+			};
+			(vscode.window as any).showSaveDialog = async () => { pickerCalls++; return destination; };
+
+			await vscode.commands.executeCommand(command);
+			assert.strictEqual(pickerCalls, 0, 'cancelling confirmation must not open Save As');
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), damaged);
+			assert.strictEqual(fs.existsSync(copyPath), false);
+
+			confirmation = 'Recover a Copy';
+			destination = uri;
+			await vscode.commands.executeCommand(command);
+			assert.ok(warnings.some(message => message.includes('original file cannot be used')));
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), damaged);
+			assert.strictEqual(fs.existsSync(copyPath), false);
+
+			destination = vscode.Uri.file(copyPath);
+			const externallyChanged = damaged + 'external change';
+			(vscode.window as any).showSaveDialog = async () => {
+				pickerCalls++;
+				fs.writeFileSync(filePath, externallyChanged, 'utf8');
+				return destination;
+			};
+			await vscode.commands.executeCommand(command);
+			assert.ok(errors.some(message => message.includes('changed after it was opened')));
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), externallyChanged);
+			assert.strictEqual(fs.existsSync(copyPath), false);
+
+			fs.writeFileSync(filePath, damaged, 'utf8');
+			fs.writeFileSync(copyPath, 'EXISTING COPY', 'utf8');
+			(vscode.window as any).showSaveDialog = async () => { pickerCalls++; return destination; };
+			await vscode.commands.executeCommand(command);
+			assert.ok(errors.some(message => message.includes('already exists')));
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), damaged);
+			assert.strictEqual(fs.readFileSync(copyPath, 'utf8'), 'EXISTING COPY');
+		} finally {
+			disposePanel?.();
+			(vscode.window as any).showWarningMessage = originalWarning;
+			(vscode.window as any).showErrorMessage = originalError;
+			(vscode.window as any).showSaveDialog = originalPicker;
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
 	test('known-incompatible MDX opens read-only with an actionable error', async () => {
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-mdx-incompatible-'));
 		const filePath = path.join(tmpDir, 'incompatible.mdx');

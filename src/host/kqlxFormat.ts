@@ -387,3 +387,61 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 export function stringifyKqlxFile(file: KqlxFileV1): string {
 	return JSON.stringify(file, null, 2) + '\n';
 }
+
+export function detectRecoverableRepeatedKqlxSuffix(
+	text: string,
+	options?: ParseKqlxTextOptions,
+): { repairedText: string; removedBytes: number; sectionCount: number; repetitions: number } | undefined {
+	let start = 0;
+	while (start < text.length && /\s/.test(text[start])) start++;
+	if (text[start] !== '{') return undefined;
+
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	let rootEnd = -1;
+	for (let index = start; index < text.length; index++) {
+		const character = text[index];
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (character === '\\') escaped = true;
+			else if (character === '"') inString = false;
+		} else if (character === '"') {
+			inString = true;
+		} else if (character === '{') {
+			depth++;
+		} else if (character === '}' && --depth === 0) {
+			rootEnd = index + 1;
+			break;
+		}
+	}
+	if (rootEnd < 0) return undefined;
+
+	const trailer = text.slice(rootEnd);
+	const repeatedText = trailer.endsWith('\r\n') ? trailer.slice(0, -2)
+		: trailer.endsWith('\n') ? trailer.slice(0, -1) : trailer;
+	for (let repetitions = 2; repetitions <= 16; repetitions++) {
+		if (repeatedText.length % repetitions !== 0) continue;
+		const blockLength = repeatedText.length / repetitions;
+		if (blockLength < 1024 || blockLength > rootEnd) continue;
+		const block = text.slice(rootEnd - blockLength, rootEnd);
+		let matches = true;
+		for (let offset = 0; offset < repeatedText.length; offset += blockLength) {
+			if (repeatedText.slice(offset, offset + blockLength) !== block) {
+				matches = false;
+				break;
+			}
+		}
+		if (!matches) continue;
+		const repairedText = text.slice(0, rootEnd);
+		const parsed = parseKqlxText(repairedText, { ...options, preserveEmptySections: true });
+		if (!parsed.ok) return undefined;
+		return {
+			repairedText,
+			removedBytes: Buffer.byteLength(trailer, 'utf8'),
+			sectionCount: parsed.file.state.sections.length,
+			repetitions,
+		};
+	}
+	return undefined;
+}

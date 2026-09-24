@@ -5,7 +5,7 @@ This is the **Microsoft Copilot desktop app's Code mode**, not terminal Copilot 
 ## Configure your Code account
 
 1. Open Microsoft Copilot, sign in, and open **Code** once to initialize its runtime and account directory.
-2. In VS Code, run **Configure integration with external tools...** and choose **Microsoft Copilot (Code)**.
+2. In VS Code, run **External Tools - Configure integration...** and choose **Microsoft Copilot (Code)**.
 3. Select the VS Code profile. If several Code accounts are initialized, select the exact account directory shown; setup does not guess which one you intend.
 4. After installation or an update, quit and reopen Copilot.
 5. Select **Code > New session** and set **Where to run this session** to **Local**.

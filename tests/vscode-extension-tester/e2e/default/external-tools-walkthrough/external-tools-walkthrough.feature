@@ -1,6 +1,6 @@
 Feature: Native external-tools integration walkthrough
 
-  Scenario: Follow the README entry command, read client steps, cancel setup, and reopen
+  Scenario: Follow the README Welcome path, read client steps, cancel setup, and reopen
     Given the extension is in a clean state
     When I move the Dev Host to 0, 0
     And I resize the Dev Host to 1000 by 700
@@ -29,12 +29,10 @@ Feature: Native external-tools integration walkthrough
       """
     When I execute command "extension.open" with args '["angelos-petropoulos.vscode-kusto-workbench"]'
     Then I wait for "h1" in the webview
-    And the webview should contain "Kusto Workbench: External tools - Open walkthrough"
-    When I start command "workbench.action.showCommands"
-    Then I wait for QuickInput title "Type the name of a command to run."
-    When I type "Kusto Workbench: External tools - Open walkthrough"
-    Then I wait for QuickInput item "Kusto Workbench: External tools - Open walkthrough"
-    When I press "Enter"
+    And the webview should contain "Welcome > Walkthroughs > Kusto Workbench: External Tools Integration"
+    When I execute command "welcome.showAllWalkthroughs"
+    And I click the element "Kusto Workbench: External Tools Integration"
+    Then I wait for "h1" in the webview for 15 seconds
     Then the webview should contain "Connect an external agent to Workbench"
     And the webview should contain "Leave No Trace"
     Then I collect JSON artifact "setup-image-loaded" from webview expression:
@@ -49,12 +47,12 @@ Feature: Native external-tools integration walkthrough
       """
     When I click at 20, 500
     Then I take a screenshot "01-native-walkthrough-setup"
-    When I click the element "Copilot CLI: use the Workbench agent"
+    When I click the element "Copilot CLI: use Workbench directly"
     Then the webview should contain "Copilot CLI"
-    And the webview should contain "/agent"
+    And the webview should contain "No /agent switch"
     When I click the element "Vera: add Workbench without switching agents"
     Then the webview should contain "Keep Vera and add Workbench tools"
-    And the webview should contain "Do not run /agent kusto-workbench"
+    And the webview should contain "Stay with Vera"
     When I click the element "Microsoft Scout: register MCP and a skill"
     Then the webview should contain "Microsoft Scout"
     And the webview should contain "Fully quit Scout"
@@ -78,12 +76,17 @@ Feature: Native external-tools integration walkthrough
     And the QuickInput should contain item "Microsoft Copilot (Code)"
     And the QuickInput should contain item "Other MCP client..."
     When I press "Escape"
-    And I start command "workbench.action.showCommands"
-    Then I wait for QuickInput title "Type the name of a command to run."
-    When I type "Kusto Workbench: External tools - Open walkthrough"
-    Then I wait for QuickInput item "Kusto Workbench: External tools - Open walkthrough"
-    When I press "Enter"
+    And I execute command "welcome.showAllWalkthroughs"
+    And I click the element "Kusto Workbench: External Tools Integration"
+    Then I wait for "h1" in the webview for 15 seconds
     Then the webview should contain "Connect an external agent to Workbench"
+    When I start command "workbench.action.showCommands"
+    Then I wait for QuickInput title "Type the name of a command to run."
+    When I type "Kusto Workbench: External Tools - Configure integration..."
+    Then I wait for QuickInput item "Kusto Workbench: External Tools - Configure integration..."
+    When I press "Enter"
+    Then I wait for QuickInput title "Configure integration with external tools"
+    When I press "Escape"
     Then I collect JSON artifact "reading-and-cancellation-are-read-only" from extension host expression:
       """
       (() => {

@@ -1254,7 +1254,6 @@ describe('first-launch integration inventory', () => {
 			'kusto.disableExternalTools',
 			'kusto.startExternalMcpProvider',
 			'kusto.stopExternalMcpProvider',
-			'kusto.openExternalToolsWalkthrough',
 		].sort();
 		expect(contributed.sort()).toEqual(expected);
 		for (const command of extensionGatedCommands) {
@@ -1280,8 +1279,7 @@ describe('first-launch integration inventory', () => {
 		expect(Object.fromEntries(packageJson.contributes.commands
 			.filter(command => command.command.includes('ExternalTools'))
 			.map(command => [command.command, command.title]))).toEqual({
-			'kusto.enableExternalTools': 'Configure integration with external tools...',
-			'kusto.openExternalToolsWalkthrough': 'External tools - Open walkthrough',
+			'kusto.enableExternalTools': 'External Tools - Configure integration...',
 			'kusto.showExternalToolsStatus': 'External tools - Show integration status',
 			'kusto.disableExternalTools': 'External tools - Disable or remove integration...',
 		});
@@ -1304,18 +1302,12 @@ describe('first-launch integration inventory', () => {
 		expect(extensionSource).toContain('applyExternalMcpProviderSetting(context)');
 	});
 
-	it('opens the native external-tools walkthrough without running setup or consuming first use', async () => {
+	it('keeps the external-tools walkthrough in Welcome without a palette command', () => {
 		const commandId = 'kusto.openExternalToolsWalkthrough';
-		expect(packageJson.contributes.menus.commandPalette.find(entry => entry.command === commandId)).toEqual({ command: commandId });
-		const executeCommand = vi.fn().mockResolvedValue(undefined);
-		const callback = runInNewContext(`(${extensionCommandCallback(commandId)})`, {
-			vscode: { commands: { executeCommand } },
-			context: { extension: { id: 'angelos-petropoulos.vscode-kusto-workbench' } },
-		}) as () => Promise<void>;
-		await callback();
-		expect(executeCommand).toHaveBeenCalledExactlyOnceWith(
-			'workbench.action.openWalkthrough', 'angelos-petropoulos.vscode-kusto-workbench#kustoWorkbench.externalTools', false,
-		);
+		expect(packageJson.contributes.walkthroughs.some(item => item.id === 'kustoWorkbench.externalTools')).toBe(true);
+		expect(packageJson.contributes.commands.some(command => command.command === commandId)).toBe(false);
+		expect(packageJson.contributes.menus.commandPalette.some(entry => entry.command === commandId)).toBe(false);
+		expect(extensionSource).not.toContain(`registerCommand('${commandId}'`);
 	});
 
 	it('ships all external-tools walkthrough pages and links the compact README to the native guide', () => {
@@ -1345,7 +1337,8 @@ describe('first-launch integration inventory', () => {
 		expect(readme).toContain('[read the setup guide](media/walkthroughs/external-01-setup.md)');
 		expect(readme).not.toContain('](command:');
 		expect(readme).toContain('media/marketplace/external-tools-clients.png');
-		expect(readme).toContain('Kusto Workbench: External tools - Open walkthrough');
+		expect(readme).toContain('Welcome > Walkthroughs > Kusto Workbench: External Tools Integration');
+		expect(readme).not.toContain('External tools - Open walkthrough');
 	});
 
 	it('validates remote URI input before consuming first use', () => {

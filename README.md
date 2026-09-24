@@ -16,9 +16,9 @@ New to the extension? Start with an in-editor guide:
 
 - **Agent-First Workflow** – Let the VS Code Copilot agent build queries, charts, and full reports for you.
 - **Editor-First Workflow** – Write KQL yourself, explore results, then add charts and markdown around them.
-- **External Tools Integration** - Connect Copilot CLI, Vera, Scout, Microsoft Copilot Local Code, or another MCP client.
+- **External Tools Integration** \- Connect Copilot CLI\, Microsoft Scout\, Microsoft Copilot \(Code mode\)\, or another MCP client\.
 
-Open the tutorials from the Activity Bar or `Kusto Workbench: Open Did You Know...`. For external tools, run `Kusto Workbench: External tools - Open walkthrough`.
+Open the tutorials from the Activity Bar.
 
 ## Key Features
 
@@ -68,7 +68,7 @@ The agent can:
 
 Ask **Copilot CLI**, **Microsoft Scout**, or **Microsoft Copilot (Code)** to build reports in Kusto Workbench from a natural-language request. The external client plans the work and uses the same Workbench tools as the VS Code agent: discover connections, query Kusto or SQL, add charts and transformations, write Markdown or HTML, validate, and save. VS Code keeps ownership of authentication and the report.
 
-For detailed setup, client-specific steps (including keeping Vera), and troubleshooting, run **Kusto Workbench: External tools - Open walkthrough** from the Command Palette, or [read the setup guide](media/walkthroughs/external-01-setup.md).
+For detailed setup, client-specific steps (including keeping Vera), and troubleshooting, open **Welcome > Walkthroughs > Kusto Workbench: External Tools Integration** in VS Code, or [read the setup guide](media/walkthroughs/external-01-setup.md).
 
 ![Configure integration picker with Copilot CLI, Microsoft Scout, Microsoft Copilot (Code), and Other MCP client](media/marketplace/external-tools-clients.png)
 
@@ -263,7 +263,7 @@ You can open `.kqlx` and `.sqlx` files directly from GitHub or SharePoint using 
 | `Kusto Workbench: Open Tutorials...` | Open the searchable tutorial viewer with category subscriptions |
 | `Kusto Workbench: Open Kusto Workbench Custom Agent` | Open the Copilot Chat panel with the Kusto Workbench agent |
 | `Kusto Workbench: Export Agent Skill...` | Export a SKILL.md file so other Copilot agents can use Kusto Workbench as a tool |
-| `Kusto Workbench: Configure integration with external tools...` | Install, repair, or retarget the local connector and configure a Copilot CLI agent, Scout skill, Microsoft Copilot Code plugin, or another MCP client |
+| `Kusto Workbench: Configure integration with external tools...` | Install, repair, or retarget the local connector and configure Copilot CLI MCP tools, a Scout skill, a Microsoft Copilot Code plugin, or another MCP client |
 | `Kusto Workbench: External tools - Show integration status` | Show provider, connector, and supported client registration status |
 | `Kusto Workbench: External tools - Disable or remove integration...` | Disable the provider or remove selected client/bootstrap integration parts |
 | `Kusto Workbench: Show Development Notes` | View AI development notes stored in the current file |

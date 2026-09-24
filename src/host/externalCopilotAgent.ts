@@ -10,13 +10,6 @@ const ANY_MANAGED_MARKER_PATTERN = /<!-- Managed by Kusto Workbench\. Source SHA
 
 export type CopilotCliAgentStatus = 'installed' | 'current' | 'updated';
 
-export interface CopilotCliAgentResult {
-	readonly changed: boolean;
-	readonly status: CopilotCliAgentStatus;
-	readonly agentPath: string;
-	readonly rollback?: () => Promise<void>;
-}
-
 export interface ManagedExternalCustomizationResult {
 	readonly changed: boolean;
 	readonly status: CopilotCliAgentStatus;
@@ -267,24 +260,6 @@ export async function removeManagedExternalCustomization(options: {
 	return { removed: true, path: artifactPath };
 }
 
-export async function reconcileCopilotCliAgent(options: {
-	readonly sourceContent: string;
-	readonly copilotHomeDirectory?: string;
-}): Promise<CopilotCliAgentResult> {
-	const copilotHomeDirectory = options.copilotHomeDirectory ?? resolveCopilotHomeDirectory();
-	const managed = await reconcileManagedExternalCustomization({
-		path: join(copilotHomeDirectory, 'agents', AGENT_FILE_NAME),
-		sourceContent: options.sourceContent,
-		artifactName: 'Copilot CLI agent',
-	});
-	return {
-		changed: managed.changed,
-		status: managed.status,
-		agentPath: managed.path,
-		...(managed.rollback ? { rollback: managed.rollback } : {}),
-	};
-}
-
 export async function removeCopilotCliAgent(options: {
 	readonly copilotHomeDirectory?: string;
 } = {}): Promise<{ removed: boolean; agentPath: string }> {
@@ -294,4 +269,17 @@ export async function removeCopilotCliAgent(options: {
 		artifactName: 'Copilot CLI agent',
 	});
 	return { removed: removed.removed, agentPath: removed.path };
+}
+
+export async function retireManagedCopilotCliAgent(options: {
+	readonly copilotHomeDirectory?: string;
+} = {}): Promise<{ status: 'removed' | 'absent' | 'preserved'; agentPath: string }> {
+	const copilotHomeDirectory = options.copilotHomeDirectory ?? resolveCopilotHomeDirectory();
+	const agentPath = join(copilotHomeDirectory, 'agents', AGENT_FILE_NAME);
+	const content = await readOptional(agentPath);
+	if (content === undefined) return { status: 'absent', agentPath };
+	const inspected = inspectManagedAgent(content);
+	if (!inspected.managed || !inspected.unchanged) return { status: 'preserved', agentPath };
+	const removed = await removeCopilotCliAgent({ copilotHomeDirectory });
+	return { status: removed.removed ? 'removed' : 'absent', agentPath };
 }

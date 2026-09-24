@@ -120,7 +120,7 @@
           "scope": "application",
           "default": false,
           "description": "Deprecated legacy setting for VS Code-owned Copilot CLI sessions.",
-          "deprecationMessage": "Use kustoWorkbench.externalTools.enabled and Kusto Workbench: Configure integration with external tools... instead."
+          "deprecationMessage": "Use kustoWorkbench.externalTools.enabled and Kusto Workbench: External Tools - Configure integration... instead."
         },
         "kustoWorkbench.externalTools.enabled": {
           "order": 24,
@@ -305,14 +305,14 @@
           },
           {
             "id": "externalTools.copilotCli",
-            "title": "Copilot CLI: use the Workbench agent",
-            "description": "Let the dedicated Workbench agent orchestrate reports from a terminal. If you want to keep Vera or another agent's identity, use the next step instead.",
+            "title": "Copilot CLI: use Workbench directly",
+            "description": "Start Copilot CLI normally and ask it to use Workbench. No separate agent or agent switch is required.",
             "media": { "markdown": "media/walkthroughs/external-02-copilot-cli.md" }
           },
           {
             "id": "externalTools.vera",
             "title": "Vera: add Workbench without switching agents",
-            "description": "Keep Vera's analytics knowledge and identity while using Workbench as an additional tool. Do not switch with /agent kusto-workbench.",
+            "description": "Keep Vera's analytics knowledge and identity while using Workbench as an additional tool. No agent switch is required.",
             "media": { "markdown": "media/walkthroughs/external-03-vera.md" }
           },
           {
@@ -421,14 +421,9 @@
       },
       {
         "command": "kusto.enableExternalTools",
-        "title": "Configure integration with external tools...",
+        "title": "External Tools - Configure integration...",
         "category": "Kusto Workbench",
         "icon": "$(plug)"
-      },
-      {
-        "command": "kusto.openExternalToolsWalkthrough",
-        "title": "External tools - Open walkthrough",
-        "category": "Kusto Workbench"
       },
       {
         "command": "kusto.showExternalToolsStatus",
@@ -457,9 +452,6 @@
       "commandPalette": [
         {
           "command": "kusto.enableExternalTools"
-        },
-        {
-          "command": "kusto.openExternalToolsWalkthrough"
         },
         {
           "command": "kusto.showDevelopmentNotes"
