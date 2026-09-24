@@ -207,7 +207,23 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 				{ versionNegotiation: { mode: 'auto' } },
 			);
 			await client.connect(transport);
-			const cold = jsonResult<{ instances: unknown[] }>(await client.callTool({
+			const exposedTools = await client.listTools();
+			expect(exposedTools.tools.map(tool => tool.name).sort()).toEqual(['execute-tool', 'list-tools']);
+			const discovered = jsonResult<{ operations: Array<{ name: string; summary: string }> }>(await client.callTool({
+				name: 'list-tools', arguments: {},
+			}));
+			expect(discovered.operations).toHaveLength(packageJSON.contributes.languageModelTools.length + 4);
+			expect(discovered.operations.find(operation => operation.name === 'createKustoFile')?.summary).toBeTruthy();
+			expect(discovered.operations[0]).not.toHaveProperty('inputSchema');
+			const createSchema = jsonResult<{ inputSchema: { required: string[] } }>(await client.callTool({
+				name: 'list-tools', arguments: { name: 'createKustoFile' },
+			}));
+			expect(createSchema.inputSchema.required).toEqual(expect.arrayContaining(['instanceId', 'filePath', 'fileType']));
+			const executeOperation = (
+				request: { name: string; arguments: Record<string, unknown> },
+				options?: Parameters<Client['callTool']>[1],
+			) => client!.callTool({ name: 'execute-tool', arguments: request }, options);
+			const cold = jsonResult<{ instances: unknown[] }>(await executeOperation({
 				name: 'listWorkbenchInstances',
 				arguments: {},
 			}));
@@ -217,7 +233,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 				instanceId: string;
 				workspaceFolders: string[];
 				compatible: boolean;
-			}>(await client!.callTool({
+			}>(await executeOperation({
 				name: 'launchWorkbenchInstance',
 				arguments: {
 					workspaceFolder,
@@ -238,7 +254,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 			const firstBase = join(firstWorkspace, 'instance-a-report');
 			const secondBase = join(secondWorkspace, 'instance-b-report');
 			const [firstCreated, secondCreated] = await Promise.all([
-				client.callTool({
+				executeOperation({
 					name: 'createKustoFile',
 					arguments: {
 						instanceId: first.instanceId,
@@ -248,7 +264,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 						reveal: false,
 					},
 				}, { timeout: 60_000 }),
-				client.callTool({
+				executeOperation({
 					name: 'createKustoFile',
 					arguments: {
 						instanceId: second.instanceId,
@@ -277,7 +293,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 				const listedBefore = jsonResult<{
 					sections: Array<{ id: string; type: string }>;
 					openFiles: ListedOpenFile[];
-				}>(await client.callTool({
+				}>(await executeOperation({
 					name: 'listSections',
 					arguments: { instanceId: first.instanceId },
 				}, { timeout: 60_000 }));
@@ -289,7 +305,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 			expect(firstOpenFile).toBeDefined();
 			expect(querySection).toBeDefined();
 
-			const configuredQuery = jsonResult<{ success: boolean }>(await client.callTool({
+			const configuredQuery = jsonResult<{ success: boolean }>(await executeOperation({
 				name: 'configureKustoQuerySection',
 				arguments: {
 					instanceId: first.instanceId,
@@ -302,7 +318,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 			}, { timeout: 60_000 }));
 			expect(configuredQuery.success).toBe(true);
 
-			const markdown = jsonResult<{ success: boolean; sectionId: string }>(await client.callTool({
+			const markdown = jsonResult<{ success: boolean; sectionId: string }>(await executeOperation({
 				name: 'addSection',
 				arguments: {
 					instanceId: first.instanceId,
@@ -313,7 +329,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 				},
 			}, { timeout: 60_000 }));
 			expect(markdown.success).toBe(true);
-			const updatedMarkdown = jsonResult<{ success: boolean }>(await client.callTool({
+			const updatedMarkdown = jsonResult<{ success: boolean }>(await executeOperation({
 				name: 'updateMarkdownSection',
 				arguments: {
 					instanceId: first.instanceId,
@@ -326,7 +342,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 			}, { timeout: 60_000 }));
 			expect(updatedMarkdown.success).toBe(true);
 
-			const chart = jsonResult<{ success: boolean; sectionId: string }>(await client.callTool({
+			const chart = jsonResult<{ success: boolean; sectionId: string }>(await executeOperation({
 				name: 'addSection',
 				arguments: {
 					instanceId: first.instanceId,
@@ -338,7 +354,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 				},
 			}, { timeout: 60_000 }));
 			expect(chart.success).toBe(true);
-			const configuredChart = jsonResult<{ success: boolean }>(await client.callTool({
+			const configuredChart = jsonResult<{ success: boolean }>(await executeOperation({
 				name: 'configureChart',
 				arguments: {
 					instanceId: first.instanceId,
@@ -354,7 +370,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 			}, { timeout: 60_000 }));
 			expect(configuredChart.success).toBe(true);
 
-			const saved = jsonResult<{ success: boolean; saved: boolean }>(await client.callTool({
+			const saved = jsonResult<{ success: boolean; saved: boolean }>(await executeOperation({
 				name: 'saveWorkbenchFile',
 				arguments: { instanceId: first.instanceId, openFileId: firstOpenFile!.openFileId },
 			}, { timeout: 60_000 }));
@@ -387,7 +403,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 				}),
 			]));
 
-			const closed = jsonResult<{ success: boolean; closed: boolean }>(await client.callTool({
+			const closed = jsonResult<{ success: boolean; closed: boolean }>(await executeOperation({
 				name: 'closeWorkbenchFile',
 				arguments: {
 					instanceId: first.instanceId,
@@ -395,7 +411,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 				},
 			}, { timeout: 60_000 }));
 			expect(closed).toMatchObject({ success: true, closed: true });
-			const reopened = jsonResult<{ success: boolean }>(await client.callTool({
+			const reopened = jsonResult<{ success: boolean }>(await executeOperation({
 				name: 'activateWorkbenchFile',
 				arguments: { instanceId: first.instanceId, targetFileUri: firstPath.filePath },
 			}, { timeout: 60_000 }));
@@ -405,7 +421,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 			while (Date.now() < reopenDeadline && !restored?.sections) {
 				const listedAfter = jsonResult<{
 					openFiles: Array<{ filePath?: string; sections?: Array<{ id: string; type: string }> }>;
-				}>(await client.callTool({
+				}>(await executeOperation({
 					name: 'listSections',
 					arguments: { instanceId: first.instanceId },
 				}, { timeout: 60_000 }));
@@ -415,14 +431,14 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 			}
 			expect(restored?.sections?.map(section => section.type)).toEqual(['query', 'markdown', 'chart']);
 
-			const crossSave = jsonResult<{ success: boolean; error?: string }>(await client.callTool({
+			const crossSave = jsonResult<{ success: boolean; error?: string }>(await executeOperation({
 				name: 'saveWorkbenchFile',
 				arguments: { instanceId: second.instanceId, targetFileUri: firstPath.filePath },
 			}, { timeout: 60_000 }));
 			expect(crossSave.success).toBe(false);
 			expect(crossSave.error).toContain('No matching open Kusto Workbench file');
 
-			const listed = jsonResult<{ instances: Array<{ instanceId: string }> }>(await client.callTool({
+			const listed = jsonResult<{ instances: Array<{ instanceId: string }> }>(await executeOperation({
 				name: 'listWorkbenchInstances',
 				arguments: {},
 			}));

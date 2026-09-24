@@ -234,7 +234,7 @@ $texts = @($controls | Where-Object { -not $_.Current.IsOffscreen -and $_.Curren
     probeSession = ($names -contains 'New session: Workbench Connectivity Probe')
     localSession = ($names -contains 'Local sessions')
     workbenchSkill = ($texts -contains 'kusto-workbench')
-    toolCallsCompleted = (@($names | Where-Object { $_ -match '^Completed Kusto workbench get Workbench Guidance and [1-9][0-9]* other tool call' }).Count -gt 0)
+	toolCallsCompleted = (@($names | Where-Object { $_ -match '(?i)^Completed Kusto workbench execute tool and [1-9][0-9]* other tool call' }).Count -gt 0)
     discoverySucceeded = ($texts -contains 'Success.' -and $texts -contains 'Instances:')
     stillGenerating = ($names -contains 'Stop generating response')
     instanceIds = @($texts | Where-Object { $_ -match '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$' })
@@ -250,7 +250,7 @@ $texts = @($controls | Where-Object { -not $_.Current.IsOffscreen -and $_.Curren
 			stillGenerating: boolean;
 			instanceIds: string[];
 		};
-		expect(state, 'Open the completed Workbench Connectivity Probe in Local Code, with its skill and discovery result visible').toMatchObject({
+		expect(state, 'Open a new Workbench Connectivity Probe in Local Code using execute-tool for guidance and instance listing').toMatchObject({
 			probeSession: true, localSession: true, workbenchSkill: true, toolCallsCompleted: true, discoverySucceeded: true, stillGenerating: false,
 		});
 		expect(state.instanceIds.length).toBeGreaterThan(0);
@@ -264,7 +264,9 @@ $texts = @($controls | Where-Object { -not $_.Current.IsOffscreen -and $_.Curren
 		});
 		try {
 			await client.connect(transport);
-			const result = await client.callTool({ name: 'listWorkbenchInstances', arguments: {} });
+			const result = await client.callTool({
+				name: 'execute-tool', arguments: { name: 'listWorkbenchInstances', arguments: {} },
+			});
 			expect(result.isError).not.toBe(true);
 			const text = result.content.find(part => part.type === 'text');
 			if (!text || text.type !== 'text') throw new Error('Workbench discovery did not return text.');

@@ -8,9 +8,9 @@ Use this path for a client that supports a **local command / STDIO MCP server** 
 2. Review the consent and select your VS Code profile. Workbench installs the local connector, enables the provider, and copies portable MCP configuration to the clipboard.
 3. Use your client's documented server-management flow to apply that configuration. The clipboard output is guidance; Workbench has not registered it in the other client for you.
 4. Keep the executable in **command** and the bootstrap path in the **args array**, as copied. Do not combine them into a single quoted executable path. Spaces in paths are normal.
-5. Start or reconnect the client's MCP session and ask it to load `getWorkbenchGuidance`, then call `listWorkbenchInstances`.
+5. Start or reconnect the client's MCP session. Ask it to use `execute-tool` with `{ "name": "getWorkbenchGuidance", "arguments": {} }`, then `{ "name": "listWorkbenchInstances", "arguments": {} }`. Use `list-tools` to search operations or request an exact schema by name.
 
-The guide teaches the client how to choose a Workbench window, create and edit sections, validate charts or HTML, save reports, and recover safely from uncertain results. A client that only knows the tool names may still need this guidance before it can orchestrate a report.
+The guide teaches the client how to choose a Workbench window, create and edit sections, validate charts or HTML, save reports, and recover safely from uncertain results. Only the two gateway tools appear in the client's MCP catalog; Workbench operations are discoverable by name and run through `execute-tool`.
 
 ## Keep the local boundary
 

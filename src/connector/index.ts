@@ -5,6 +5,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { createExternalMcpCatalog } from '../shared/externalMcpCatalog';
 import { ExternalMcpConnectorCore, type ConnectorToolResult } from './externalMcpConnectorCore';
 import { createNodeConnectorDependencies, loadConnectorConfig } from './externalMcpConnectorNode';
+import { createExternalMcpOperations } from './externalMcpOperations';
 
 function configArgument(argv: readonly string[]): string {
 	const index = argv.indexOf('--config');
@@ -29,60 +30,45 @@ async function main(): Promise<void> {
 	const catalog = createExternalMcpCatalog(manifest.contributes.languageModelTools);
 	const guidance = await readFile(config.guidancePath, 'utf8');
 	const core = new ExternalMcpConnectorCore(catalog, createNodeConnectorDependencies(config));
+	const operations = createExternalMcpOperations(catalog, core, guidance);
 	const server = new McpServer({
 		name: 'kusto-workbench',
 		version: config.connectorVersion,
 	}, {
-		instructions: 'Use listWorkbenchInstances or launchWorkbenchInstance first. Every Workbench operation requires the exact instanceId. Use getWorkbenchGuidance for the complete workflow.',
+		instructions: 'Call list-tools to discover operations or fetch one schema. Call execute-tool with an operation name and arguments. Start with getWorkbenchGuidance and listWorkbenchInstances; pass the exact instanceId for Workbench operations.',
 	});
 
-	server.registerTool('listWorkbenchInstances', {
-		title: 'List Kusto Workbench Instances',
-		description: 'Lists eligible running Kusto Workbench VS Code instances. Results never include discovery endpoints or credentials.',
-		inputSchema: fromJsonSchema({ type: 'object', properties: {}, additionalProperties: false }),
-	}, async (_input, context) => asMcpResult(await core.listInstances(context.mcpReq.signal)));
-	server.registerTool('checkWorkbenchInstance', {
-		title: 'Check Kusto Workbench Instance',
-		description: 'Checks that one exact Kusto Workbench instance is still running and compatible.',
-		inputSchema: fromJsonSchema({
-			type: 'object',
-			properties: { instanceId: { type: 'string', pattern: '.*\\S.*' } },
-			required: ['instanceId'],
-			additionalProperties: false,
-		}),
-	}, async input => asMcpResult(await core.checkInstance(String(asInput(input).instanceId))));
-	server.registerTool('launchWorkbenchInstance', {
-		title: 'Launch Kusto Workbench Instance',
-		description: 'Launches a new VS Code window for an existing local workspace folder and waits for its Kusto Workbench provider to become ready.',
+	server.registerTool('list-tools', {
+		title: 'List Kusto Workbench Operations',
+		description: 'Discover Kusto Workbench operation names and short summaries. Optionally search with query or request the exact input schema for one name. Use execute-tool to run an operation.',
 		inputSchema: fromJsonSchema({
 			type: 'object',
 			properties: {
-				workspaceFolder: { type: 'string', pattern: '.*\\S.*' },
-				timeoutMs: { type: 'integer', minimum: 1000, maximum: 180000 },
+				name: { type: 'string', description: 'Exact operation name to get its full input schema.' },
+				query: { type: 'string', description: 'Optional case-insensitive search across operation names and summaries.' },
 			},
-			required: ['workspaceFolder'],
+			additionalProperties: false,
+		}),
+	}, async input => {
+		const values = asInput(input);
+		return asMcpResult(operations.list(values.name as string | undefined, values.query as string | undefined));
+	});
+	server.registerTool('execute-tool', {
+		title: 'Execute Kusto Workbench Operation',
+		description: 'Execute a named Workbench operation with arguments matching its schema from list-tools. To begin, execute getWorkbenchGuidance and listWorkbenchInstances with empty arguments; route Workbench operations using the returned exact instanceId inside arguments. Do not replay a mutation whose response was lost.',
+		inputSchema: fromJsonSchema({
+			type: 'object',
+			properties: {
+				name: { type: 'string', pattern: '.*\\S.*', description: 'Exact operation name from list-tools.' },
+				arguments: { type: 'object', description: 'Operation arguments; include instanceId for Workbench operations.' },
+			},
+			required: ['name', 'arguments'],
 			additionalProperties: false,
 		}),
 	}, async (input, context) => {
 		const values = asInput(input);
-		return asMcpResult(await core.launchInstance({
-			workspaceFolder: String(values.workspaceFolder),
-			...(typeof values.timeoutMs === 'number' ? { timeoutMs: values.timeoutMs } : {}),
-		}, context.mcpReq.signal));
+		return asMcpResult(await operations.execute(values.name as string, values.arguments, context.mcpReq.signal));
 	});
-	server.registerTool('getWorkbenchGuidance', {
-		title: 'Get Kusto Workbench Guidance',
-		description: 'Returns the portable Kusto Workbench tool workflow and safety guidance.',
-		inputSchema: fromJsonSchema({ type: 'object', properties: {}, additionalProperties: false }),
-	}, async () => ({ content: [{ type: 'text' as const, text: guidance }] }));
-
-	for (const tool of catalog.tools) {
-		server.registerTool(tool.name, {
-			...(tool.title ? { title: tool.title } : {}),
-			description: tool.description,
-			inputSchema: fromJsonSchema(tool.inputSchema),
-		}, async (input, context) => asMcpResult(await core.invokeWorkbenchTool(tool.name, input, context.mcpReq.signal)));
-	}
 
 	const transport = new StdioServerTransport();
 	let shuttingDown = false;

@@ -6,7 +6,7 @@ Open the intended Workbench workspace in VS Code, then ask your connected client
 
 > Use Kusto Workbench to list the available Workbench windows. Do not query data, launch windows, or change files.
 
-Look for a completed `listWorkbenchInstances` call and a live result. If several windows are returned, identify the intended workspace explicitly. The client must use its exact `instanceId`, not whichever window is foreground or first in a list.
+Look for a completed `execute-tool` call with `name: "listWorkbenchInstances"` and a live result. If several windows are returned, identify the intended workspace explicitly. The client must pass its exact `instanceId` inside the operation arguments, not use whichever window is foreground or first in a list.
 
 Then try a report request with a clear target:
 

@@ -16,7 +16,7 @@ Ask:
 
 > Use Kusto Workbench to list the available Workbench windows. Do not query data or change any files.
 
-The session can load the **kusto-workbench** skill and call its MCP tools. Review each **Invoke MCP tool** request. For the initial connectivity check, expect read-only calls such as `getWorkbenchGuidance` and `listWorkbenchInstances`; choose **Allow once** when the request matches your intent. Session-wide or permanent approval is not required.
+The session can load the **kusto-workbench** skill and use the two MCP tools, `list-tools` and `execute-tool`. Review each **Invoke MCP tool** request. For the initial connectivity check, expect `execute-tool` calls for the read-only operations `getWorkbenchGuidance` and `listWorkbenchInstances`; choose **Allow once** when the request matches your intent. Session-wide or permanent approval is not required.
 
 **Local plugins and skills may not appear in Code > Customize.** In the verified build, both are absent from that catalog but work in a Local Code session. Check actual skill loading and completed MCP calls, not catalog visibility alone.
 

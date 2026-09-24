@@ -25,11 +25,24 @@ describe('Scout-compatible Kusto Workbench skill', () => {
 		expect(source).toContain('name: kusto-workbench');
 		expect(source).toContain('description:');
 		expect(source).toContain('Do not make the user translate their request into individual tool calls.');
-		expect(source).toContain('call `getWorkbenchGuidance`');
-		expect(source).toContain('pass its exact `instanceId` to every Workbench tool call');
+		expect(source).toContain('use `execute-tool` for `getWorkbenchGuidance`');
+		expect(source).toContain('`list-tools`');
+		expect(source).toContain('pass its exact `instanceId` inside `arguments`');
 		expect(source).toContain('do not replay it');
 		expect(source).toContain('`reveal: false`');
 		expect(source).toContain('`saveWorkbenchFile`');
+	});
+
+	it('keeps the compact skill catalog aligned with every canonical operation', () => {
+		const source = readFileSync(resolve('copilot-instructions', 'external-scout-skill.md'), 'utf8');
+		const manifest = JSON.parse(readFileSync(resolve('package.json'), 'utf8'));
+		const operations = [...source.matchAll(/^\| `([A-Za-z][A-Za-z0-9]+)` \| (.+) \|$/gm)];
+		const expected = [
+			'getWorkbenchGuidance', 'listWorkbenchInstances', 'checkWorkbenchInstance', 'launchWorkbenchInstance',
+			...manifest.contributes.languageModelTools.map((tool: { toolReferenceName: string }) => tool.toolReferenceName),
+		];
+		expect(operations.map((match: RegExpMatchArray) => match[1]).sort()).toEqual(expected.sort());
+		expect(operations.every((match: RegExpMatchArray) => match[2].trim().length > 8)).toBe(true);
 	});
 
 	it('uses the documented user skill directory under Copilot home', () => {

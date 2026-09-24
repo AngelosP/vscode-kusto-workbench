@@ -5,6 +5,7 @@ export interface CanonicalWorkbenchToolContribution {
 	readonly toolReferenceName: string;
 	readonly displayName?: string;
 	readonly modelDescription: string;
+	readonly userDescription?: string;
 	readonly inputSchema: Readonly<Record<string, unknown>>;
 }
 
@@ -13,6 +14,7 @@ export interface ExternalMcpToolDefinition {
 	readonly registeredName: string;
 	readonly title?: string;
 	readonly description: string;
+	readonly summary: string;
 	readonly inputSchema: Readonly<Record<string, unknown>>;
 }
 
@@ -74,10 +76,11 @@ export function createExternalMcpCatalog(
 			registeredName: contribution.name,
 			...(contribution.displayName ? { title: contribution.displayName } : {}),
 			description: contribution.modelDescription,
+			summary: contribution.userDescription || contribution.modelDescription,
 			inputSchema: routedSchema(contribution.inputSchema),
 		};
 	});
-	const hashSource = stableJson(tools);
+	const hashSource = stableJson(tools.map(({ summary: _summary, ...tool }) => tool));
 	return {
 		protocolVersion: 1,
 		schemaHash: createHash('sha256').update(hashSource).digest('hex'),

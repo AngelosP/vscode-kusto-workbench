@@ -66,7 +66,7 @@ The agent can:
 
 ### Copilot CLI, Scout, and Microsoft Copilot (Code)
 
-Ask **Copilot CLI**, **Microsoft Scout**, or **Microsoft Copilot (Code)** to build reports in Kusto Workbench from a natural-language request. The external client plans the work and uses the same Workbench tools as the VS Code agent: discover connections, query Kusto or SQL, add charts and transformations, write Markdown or HTML, validate, and save. VS Code keeps ownership of authentication and the report.
+Ask **Copilot CLI**, **Microsoft Scout**, or **Microsoft Copilot (Code)** to build reports in Kusto Workbench from a natural-language request. External clients see two MCP tools: `list-tools` discovers Workbench operations and their schemas, and `execute-tool` runs a named operation. They can discover connections, query Kusto or SQL, add charts and transformations, write Markdown or HTML, validate, and save through the same underlying Workbench capabilities as the VS Code agent. VS Code keeps ownership of authentication and the report.
 
 For detailed setup, client-specific steps (including keeping Vera), and troubleshooting, open **Welcome > Walkthroughs > Kusto Workbench: External Tools Integration** in VS Code, or [read the setup guide](media/walkthroughs/external-01-setup.md).
 

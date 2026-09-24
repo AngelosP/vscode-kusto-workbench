@@ -15,13 +15,15 @@ copilot
 
 5. Ask Copilot CLI to use Kusto Workbench. No `/agent` switch or special launch flags are required.
 
+Workbench exposes two MCP tools: `list-tools` searches operation summaries or returns one operation's input schema, and `execute-tool` runs `{ "name": "operationName", "arguments": { ... } }`. The normal CLI agent can call `execute-tool` for `getWorkbenchGuidance` and `listWorkbenchInstances` without a separate skill. All other Workbench operations are available by name through the same gateway, not as additional MCP tools.
+
 ## Check the connection
 
 Ask:
 
 > Use Kusto Workbench to list the available Workbench windows. Do not query data or change any files.
 
-Review the tool approval prompts. A successful call should return live Workbench instances, or an explicit empty list when no eligible window is running. A registration listed in `/mcp` is not by itself proof that a Workbench window is reachable.
+Review the tool approval prompts. A successful `execute-tool` call for `listWorkbenchInstances` should return live Workbench instances, or an explicit empty list when no eligible window is running. A registration listed in `/mcp` is not by itself proof that a Workbench window is reachable.
 
 Then describe a report in natural language, identifying the workspace, connection, database, and output file. Copilot CLI can create queries, charts, transformations, Markdown, and HTML, then save the exact report.
 

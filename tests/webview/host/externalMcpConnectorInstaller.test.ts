@@ -91,7 +91,8 @@ describe.runIf(process.platform === 'win32' && process.arch === 'x64')('external
 		expect(second.command).toBe(join(second.root, 'node.exe'));
 		expect(second.args).toEqual([second.bootstrapPath]);
 		const guidance = readFileSync(join(second.versionDirectory, 'guidance.md'), 'utf8');
-		expect(guidance).toContain('pass its exact `instanceId` to every Workbench tool call');
+		expect(guidance).toContain('pass its exact `instanceId` inside `arguments`');
+		expect(guidance).toContain('`execute-tool`');
 		expect(guidance).toContain('do not replay it automatically');
 		expect(guidance).not.toContain('#runSubagent');
 		expect(installedRuntime).toMatchObject({ version: '24.21.0', target: 'win-x64', nodeSha256: installedNodeHash });
@@ -114,9 +115,13 @@ describe.runIf(process.platform === 'win32' && process.arch === 'x64')('external
 		try {
 			await client.connect(transport);
 			const tools = await client.listTools();
-			expect(tools.tools).toHaveLength(packageJSON.contributes.languageModelTools.length + 4);
-			expect(tools.tools.map(tool => tool.name)).toContain('launchWorkbenchInstance');
-			const instances = await client.callTool({ name: 'listWorkbenchInstances', arguments: {} });
+			expect(tools.tools.map(tool => tool.name).sort()).toEqual(['execute-tool', 'list-tools']);
+			const catalog = await client.callTool({ name: 'list-tools', arguments: {} });
+			expect(JSON.parse((catalog.content[0] as { text: string }).text).operations)
+				.toHaveLength(packageJSON.contributes.languageModelTools.length + 4);
+			const instances = await client.callTool({
+				name: 'execute-tool', arguments: { name: 'listWorkbenchInstances', arguments: {} },
+			});
 			expect(JSON.parse((instances.content[0] as { text: string }).text)).toEqual({ instances: [] });
 		} finally {
 			await client.close();

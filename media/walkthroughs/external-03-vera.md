@@ -14,7 +14,7 @@ vera
 3. Stay with Vera. No agent switch is required.
 4. Ask Vera to use Workbench as an additional capability:
 
-> Stay as Vera and keep your analytics knowledge and response rules. Use the Kusto Workbench MCP tools to list the available Workbench windows. Read getWorkbenchGuidance first. Do not query data or change files yet.
+> Stay as Vera and keep your analytics knowledge and response rules. Use Kusto Workbench's execute-tool for getWorkbenchGuidance and listWorkbenchInstances with empty arguments. Do not query data or change files yet.
 
 The verified Vera launcher runs `agency copilot` and reads the normal user MCP configuration. A custom launcher or an isolated Agency profile can load different sources; inspect its configured servers if Workbench is missing.
 
@@ -22,7 +22,7 @@ The verified Vera launcher runs `agency copilot` and reads the normal user MCP c
 
 If the **kusto-workbench** skill is available, Vera can load it without switching its identity. In current Copilot CLI versions, `/skills list` shows discovered skills. A skill adds task instructions to the conversation; `/agent` changes the active agent.
 
-The standalone Copilot CLI setup installs neither a separate agent nor a personal skill. A personal Workbench skill may already be present from Scout setup or an explicit skill installation. If it is not present, ask Vera to load `getWorkbenchGuidance` from the MCP server; that supplies the live workflow.
+The standalone Copilot CLI setup installs neither a separate agent nor a personal skill. A personal Workbench skill may already be present from Scout setup or an explicit skill installation. If it is not present, ask Vera to use `execute-tool` for `getWorkbenchGuidance` and `list-tools` for unfamiliar operations; those supply the live workflow and input schemas.
 
 ## Combine the workflows
 

@@ -34,6 +34,20 @@ describe('external MCP catalog', () => {
 			.toEqual({ sectionId: 'query_1', execute: true });
 	});
 
+	it('keeps advisory summaries out of the connector/provider compatibility hash', () => {
+		const contribution = {
+			name: 'kusto-workbench_list-sections',
+			toolReferenceName: 'listSections',
+			modelDescription: 'Lists open sections.',
+			inputSchema: { type: 'object', properties: {} },
+		};
+		const original = createExternalMcpCatalog([contribution]);
+		const revised = createExternalMcpCatalog([{ ...contribution, userDescription: 'Find sections in an open report.' }]);
+
+		expect(revised.tools[0].summary).toBe('Find sections in an open report.');
+		expect(revised.schemaHash).toBe(original.schemaHash);
+	});
+
 	it('rejects duplicated public names', () => {
 		const contribution = {
 			name: 'registered',
