@@ -2696,6 +2696,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 		const tracksRichEditRevision = pState.documentKind === 'kqlx'
 			|| pState.documentKind === 'sqlx'
 			|| pState.documentKind === 'mdx';
+		const nativeUserSave = r === 'user-save' && tracksRichEditRevision && !pState.compatibilityMode;
 		if (tracksRichEditRevision) {
 			try {
 				const mutationSignature = __kustoGetPersistSignature(__kustoGetPersistenceSnapshotState());
@@ -2772,7 +2773,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 					__kustoLastSentPersistRevision = pState.documentEditRevision;
 					return;
 				}
-				if (!hostResultStatePending && sig && sig === __kustoLastPersistSignature
+				if (!nativeUserSave && !hostResultStatePending && sig && sig === __kustoLastPersistSignature
 					&& !hasConflictingPendingPersistSnapshot(sig)) {
 					return;
 				}
@@ -2817,7 +2818,8 @@ export function schedulePersist(reason?: any, immediate?: any) {
 					const editRevision = preparePersistRevision(sig);
 					const snapshotId = `document-snapshot-${Date.now()}-${++__kustoPersistSnapshotSequence}`;
 					trackPendingPersistSnapshot(snapshotId, sig, editRevision, state);
-					postMessageToHost({ type: 'persistDocument', state, reason: r, sourceGeneration: pState.sourceGeneration, editRevision, snapshotId });
+					postMessageToHost({ type: 'persistDocument', state, reason: r, sourceGeneration: pState.sourceGeneration, editRevision, snapshotId,
+						...(nativeUserSave ? { flush: true } : {}) });
 					return snapshotId;
 				} else {
 					if (sig) __kustoLastPersistSignature = sig;

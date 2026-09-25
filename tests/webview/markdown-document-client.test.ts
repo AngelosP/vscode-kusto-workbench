@@ -15,6 +15,7 @@ import {
 	getHostOwnedDevelopmentNoteSections,
 	getOptimisticHostOwnedDevelopmentNoteSections,
 	getHostOwnedDocumentSectionStatus,
+	getHostOwnedDocumentSectionOrder,
 	handleHostOwnedMarkdownCommandResult,
 	requestHostOwnedChartAdd,
 	requestHostOwnedChartPatch,
@@ -1076,6 +1077,109 @@ describe('host-owned Markdown command client', () => {
 			},
 		});
 		await expect(barrier).resolves.toBe(true);
+	});
+
+	it('retains the newest Markdown projection when accepted command results arrive out of order', async () => {
+		requestHostOwnedMarkdownPatch({ id: 'markdown_1', type: 'markdown', text: 'one', expanded: true, mode: 'wysiwyg' });
+		requestHostOwnedMarkdownPatch({ id: 'markdown_1', type: 'markdown', text: 'two', expanded: true, mode: 'wysiwyg' });
+		const first = await waitForPostedMessage(1);
+		const second = await waitForPostedMessage(2);
+		const projection = (text: string, revision: number) => ({
+			documentRevision: revision, sectionRevisions: { markdown_1: revision },
+			markdownSectionRevisions: { markdown_1: revision },
+			markdownSections: [{
+				id: 'markdown_1', type: 'markdown', title: '', text, tab: 'edit', expanded: true, mode: 'wysiwyg',
+			}],
+			urlSections: [],
+			orderedSectionIds: ['markdown_1'],
+		});
+		expect(handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: second.commandId, ok: true,
+			sourceGeneration: 7, projection: projection('two', 2),
+		})).toMatchObject({ accepted: true });
+		expect(handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: first.commandId, ok: true,
+			sourceGeneration: 7, projection: projection('one', 1),
+		})).toMatchObject({ accepted: true });
+		expect(pState.markdownDocumentRevision).toBe(2);
+		expect(pState.hostOwnedMarkdownSections.markdown_1.text).toBe('two');
+		await expect(waitForHostOwnedMarkdownCommands()).resolves.toBe(true);
+		requestHostOwnedMarkdownPatch({ id: 'markdown_1', type: 'markdown', text: 'three', expanded: true, mode: 'wysiwyg' });
+		expect(await waitForPostedMessage(3)).toMatchObject({
+			expectedDocumentRevision: 2, command: { expectedSectionRevision: 2 },
+		});
+	});
+
+	it('keeps the queue open when a saved section order arrives before an older command result', async () => {
+		requestHostOwnedMarkdownPatch({ id: 'markdown_1', type: 'markdown', text: 'one', expanded: true, mode: 'wysiwyg' });
+		requestHostOwnedMarkdownPatch({ id: 'markdown_1', type: 'markdown', text: 'two', expanded: true, mode: 'wysiwyg' });
+		const first = await waitForPostedMessage(1);
+		const second = await waitForPostedMessage(2);
+		expect(handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: second.commandId, ok: true,
+			sourceGeneration: 7,
+			projection: {
+				documentRevision: 2, sectionRevisions: { markdown_1: 2 },
+				markdownSectionRevisions: { markdown_1: 2 },
+				markdownSections: [{
+					id: 'markdown_1', type: 'markdown', title: '', text: 'two', tab: 'edit', expanded: true,
+					mode: 'wysiwyg',
+				}], urlSections: [], orderedSectionIds: ['markdown_1'],
+			},
+		})).toMatchObject({ accepted: true });
+		expect(acknowledgeHostOwnedDocumentOrder(['markdown_1'])).toBe(true);
+		expect(getHostOwnedDocumentSectionStatus('markdown_1')).toBe('present');
+		expect(handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: first.commandId, ok: true,
+			sourceGeneration: 7,
+			projection: {
+				documentRevision: 1, sectionRevisions: { markdown_1: 1 },
+				markdownSectionRevisions: { markdown_1: 1 },
+				markdownSections: [{
+					id: 'markdown_1', type: 'markdown', title: '', text: 'one', tab: 'edit', expanded: true,
+					mode: 'wysiwyg',
+				}], urlSections: [], orderedSectionIds: ['markdown_1'],
+			},
+		})).toMatchObject({ accepted: true });
+		await expect(waitForHostOwnedMarkdownCommands()).resolves.toBe(true);
+		expect(pState.hostOwnedMarkdownSections.markdown_1.text).toBe('two');
+	});
+
+	it('applies a saved order for an Add already covered by a newer accepted result', async () => {
+		const added = { id: 'markdown_2', type: 'markdown' as const, text: 'new', expanded: true, mode: 'wysiwyg' as const };
+		requestHostOwnedMarkdownAdd(added);
+		requestHostOwnedMarkdownPatch({ id: 'markdown_1', type: 'markdown', text: 'updated', expanded: true, mode: 'wysiwyg' });
+		const first = await waitForPostedMessage(1);
+		const second = await waitForPostedMessage(2);
+		expect(handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: second.commandId, ok: true,
+			sourceGeneration: 7,
+			projection: {
+				documentRevision: 2, sectionRevisions: { markdown_1: 1, markdown_2: 1 },
+				markdownSectionRevisions: { markdown_1: 1, markdown_2: 1 },
+				markdownSections: [
+					{ id: 'markdown_1', type: 'markdown', title: '', text: 'updated', tab: 'edit', expanded: true, mode: 'wysiwyg' },
+					added,
+				], urlSections: [], orderedSectionIds: ['markdown_1', 'markdown_2'],
+			},
+		})).toMatchObject({ accepted: true });
+		expect(acknowledgeHostOwnedDocumentOrder(['markdown_2', 'markdown_1'])).toBe(true);
+		expect(getHostOwnedDocumentSectionStatus('markdown_2')).toBe('present');
+		expect(handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: first.commandId, ok: true,
+			sourceGeneration: 7,
+			projection: {
+				documentRevision: 1, sectionRevisions: { markdown_1: 0, markdown_2: 1 },
+				markdownSectionRevisions: { markdown_1: 0, markdown_2: 1 },
+				markdownSections: [
+					{ id: 'markdown_1', type: 'markdown', text: 'before', expanded: true, mode: 'wysiwyg' },
+					added,
+				], urlSections: [], orderedSectionIds: ['markdown_1', 'markdown_2'],
+			},
+		})).toMatchObject({ accepted: true });
+		await expect(waitForHostOwnedMarkdownCommands()).resolves.toBe(true);
+		expect(pState.markdownDocumentRevision).toBe(2);
+		expect(getHostOwnedDocumentSectionOrder()).toEqual(['markdown_2', 'markdown_1']);
 	});
 
 	it('cancels queued snapshots on reload and ignores their late results', async () => {

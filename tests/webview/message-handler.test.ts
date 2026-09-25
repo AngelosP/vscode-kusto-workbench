@@ -1020,6 +1020,48 @@ describe('message-handler dispatch', () => {
 		)).toHaveLength(0);
 	});
 
+	it('relinquishes background ownership once per native session only for trusted user input', () => {
+		handlerState.pState.documentViewSessionId = 'native-session-1';
+		mocks.postMessageToHost.mockClear();
+		const notify = (messageHandlerModule as any).notifyBackgroundWorkbenchUserInteraction;
+		document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+		notify({ isTrusted: false });
+		expect(mocks.postMessageToHost).not.toHaveBeenCalled();
+		handlerState.pState.compatibilityMode = true;
+		notify({ isTrusted: true });
+		expect(mocks.postMessageToHost).not.toHaveBeenCalled();
+		handlerState.pState.compatibilityMode = false;
+		const trustedKey = new KeyboardEvent('keydown', { key: 'a', bubbles: true });
+		Object.defineProperty(trustedKey, 'isTrusted', { value: true });
+		document.body.dispatchEvent(trustedKey);
+		notify({ isTrusted: true });
+		expect(mocks.postMessageToHost).toHaveBeenCalledExactlyOnceWith({
+			type: 'backgroundWorkbenchUserInteraction', viewSessionId: 'native-session-1',
+		});
+		handlerState.pState.documentViewSessionId = 'native-session-2';
+		notify({ isTrusted: true });
+		expect(mocks.postMessageToHost).toHaveBeenCalledTimes(2);
+		expect(mocks.postMessageToHost).toHaveBeenLastCalledWith({
+			type: 'backgroundWorkbenchUserInteraction', viewSessionId: 'native-session-2',
+		});
+	});
+
+	it('intercepts trusted Ctrl+S in native rich editors and requests immediate persistence', async () => {
+		handlerState.pState.documentViewSessionId = 'native-user-save-session';
+		const persistence = await import('../../src/webview/core/persistence.js');
+		const schedulePersist = vi.mocked(persistence.schedulePersist);
+		schedulePersist.mockReturnValueOnce('document-snapshot-user-save');
+		const save = new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true });
+		Object.defineProperty(save, 'isTrusted', { value: true });
+		document.body.dispatchEvent(save);
+		expect(save.defaultPrevented).toBe(true);
+		expect(schedulePersist).toHaveBeenCalledExactlyOnceWith('user-save', true);
+		const synthetic = new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true });
+		document.body.dispatchEvent(synthetic);
+		expect(synthetic.defaultPrevented).toBe(false);
+		expect(schedulePersist).toHaveBeenCalledTimes(1);
+	});
+
 	it('answers a dispatcher probe with its challenge and runtime identity while inactive', () => {
 		handlerState.pState.documentRuntimeActive = false;
 
@@ -7784,6 +7826,25 @@ describe('changedSections agent provenance', () => {
 			mocks.isHostOwnedMarkdownDocument.mockReturnValue(false);
 			mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(true);
 			container.remove();
+		}
+	});
+
+	it('includes a named Markdown tool section in its initial Add instead of a later patch', async () => {
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		const setSectionName = vi.mocked(sectionFactory.__kustoSetSectionName);
+		setSectionName.mockClear();
+		mocks.isHostOwnedMarkdownDocument.mockReturnValue(true);
+		try {
+			dispatchHostMessage({
+				type: 'toolAddSection', requestId: 'named-markdown-add',
+				input: { type: 'markdown', name: 'Summary', text: '# Result' },
+			});
+			expect(mocks.createSectionWithCapabilities).toHaveBeenCalledWith('markdown', {
+				title: 'Summary', text: '# Result',
+			});
+			expect(setSectionName).not.toHaveBeenCalled();
+		} finally {
+			mocks.isHostOwnedMarkdownDocument.mockReturnValue(false);
 		}
 	});
 

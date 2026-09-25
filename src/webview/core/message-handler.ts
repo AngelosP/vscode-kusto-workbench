@@ -4945,7 +4945,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 								...(input.dataSourceResultIndex !== undefined ? { dataSourceResultIndex: input.dataSourceResultIndex } : {}),
 							}
 						: sectionType === 'markdown'
-							? { ...(textValue !== undefined ? { text: String(textValue) } : {}) }
+							? {
+								...(textValue !== undefined ? { text: String(textValue) } : {}),
+								...(input.name ? { title: String(input.name) } : {}),
+							}
 							: sectionType === 'python'
 								? { ...(input.code !== undefined ? { code: String(input.code) } : {}) }
 							: sectionType === 'html'
@@ -4961,7 +4964,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				let success = creation.ok;
 				let creationError = creation.ok ? undefined : creation.error;
 				let hostSectionStatus: 'present' | 'absent' | 'unknown' = 'absent';
-				if (sectionId && input.name && sectionType !== 'url') __kustoSetSectionName(sectionId, input.name);
+				if (sectionId && input.name && sectionType !== 'url' && sectionType !== 'markdown') {
+					__kustoSetSectionName(sectionId, input.name);
+				}
 				if (success && sectionType === 'query' && (input.clusterUrl || input.connectionId || input.database)) {
 					const applied = applyToolKustoTarget(sectionId, input);
 					if (!applied.success) {
@@ -5524,7 +5529,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				if (success && isHostOwnedMarkdownDocument()) {
 					success = await waitForHostOwnedMarkdownCommands();
 				}
-				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to update markdown section' });
+				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined
+					: 'Failed to update markdown section' });
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -6731,6 +6737,27 @@ export async function drainBufferedHostMessages(): Promise<void> {
 let mainWebviewMessageDispatcherStarted = false;
 const mainWebviewRuntimeId = globalThis.crypto?.randomUUID?.()
 	?? `main_webview_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+let lastBackgroundInteractionSessionId = '';
+
+export function notifyBackgroundWorkbenchUserInteraction(event: Pick<Event, 'isTrusted'>): void {
+	const viewSessionId = pState.documentViewSessionId;
+	if (!event.isTrusted || !pState.documentRuntimeActive || pState.compatibilityMode
+		|| (pState.documentKind !== 'kqlx' && pState.documentKind !== 'sqlx' && pState.documentKind !== 'mdx')
+		|| !viewSessionId || lastBackgroundInteractionSessionId === viewSessionId) return;
+	lastBackgroundInteractionSessionId = viewSessionId;
+	postMessageToHost({ type: 'backgroundWorkbenchUserInteraction', viewSessionId });
+}
+
+export function handleNativeWorkbenchSaveShortcut(event: KeyboardEvent): void {
+	if (!event.isTrusted || event.repeat || event.shiftKey || event.altKey
+		|| !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's'
+		|| !pState.documentRuntimeActive || pState.compatibilityMode || !pState.documentViewSessionId
+		|| (pState.documentKind !== 'kqlx' && pState.documentKind !== 'sqlx' && pState.documentKind !== 'mdx')) return;
+	const snapshotId = schedulePersist('user-save', true);
+	if (typeof snapshotId !== 'string' || !snapshotId) return;
+	event.preventDefault();
+	event.stopImmediatePropagation();
+}
 
 function publishMainWebviewDispatcherReady(probeId?: string): void {
 	postMessageToHost({
@@ -6743,6 +6770,10 @@ function publishMainWebviewDispatcherReady(probeId?: string): void {
 export async function startMainWebviewMessageDispatcher(): Promise<void> {
 	if (mainWebviewMessageDispatcherStarted) return;
 	mainWebviewMessageDispatcherStarted = true;
+	for (const type of ['pointerdown', 'keydown', 'beforeinput', 'paste', 'cut', 'drop']) {
+		document.addEventListener(type, notifyBackgroundWorkbenchUserInteraction, true);
+	}
+	document.addEventListener('keydown', handleNativeWorkbenchSaveShortcut, true);
 	window.addEventListener('message', async (event: any) => {
 		const message = (event && event.data && typeof event.data === 'object') ? event.data : {};
 		await __kustoDispatchHostMessage(message);

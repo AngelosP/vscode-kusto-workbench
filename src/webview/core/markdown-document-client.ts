@@ -572,7 +572,9 @@ export function acknowledgeHostOwnedDocumentOrder(orderedSectionIds: readonly st
 	for (const pending of pendingCommands.values()) {
 		if (pending.command.type !== 'add') continue;
 		const section = commandSection(pending.command.section);
-		if (section) pendingAddedSectionIds.add(section.id);
+		if (section && !authoritativeProjection.orderedSectionIds.includes(section.id)) {
+			pendingAddedSectionIds.add(section.id);
+		}
 	}
 	let rebased = projectionWithAcknowledgedOrder(
 		authoritativeProjection,
@@ -580,6 +582,7 @@ export function acknowledgeHostOwnedDocumentOrder(orderedSectionIds: readonly st
 	);
 	authoritativeProjection = cloneProjection(rebased);
 	for (const pending of pendingCommands.values()) {
+		if (pending.expectedDocumentRevision < rebased.documentRevision) continue;
 		if (pending.epoch !== projectionEpoch
 			|| pending.sourceGeneration !== pState.markdownSourceGeneration
 			|| pending.expectedDocumentRevision !== rebased.documentRevision) {
@@ -904,7 +907,11 @@ export function handleHostOwnedMarkdownCommandResult(message: unknown): {
 		&& !!projection
 		&& projectionsEqual(projection, pending.expectedProjection);
 	if (accepted && projection) {
-		adoptProjection(projection, pendingCommands.size === 0);
+		if (projection.documentRevision > authoritativeProjection.documentRevision) {
+			adoptProjection(projection, pendingCommands.size === 0);
+		} else if (pendingCommands.size === 0) {
+			synchronizeOptimisticProjection(authoritativeProjection);
+		}
 		pending.settle?.(true);
 		notifyQueueWaiters();
 		return { handled: true, accepted: true, projection };

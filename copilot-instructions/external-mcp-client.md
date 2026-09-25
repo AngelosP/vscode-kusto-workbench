@@ -12,6 +12,7 @@ Microsoft Copilot desktop uses these tools through its **Local Code sessions**, 
 4. Never infer an instance from foreground, recency, list order, workspace name, or process ID.
 5. Execute `checkWorkbenchInstance` when a long workflow resumes or instance availability is uncertain.
 6. If an `execute-tool` mutation loses its response, do not replay it automatically. Inspect the same instance and target file first because the mutation may already have completed.
+7. If the exact response says `This document is still loading and cannot accept mutations yet.`, that mutation was rejected before application. Wait briefly and retry only that explicitly rejected operation on the same instance and file. A `listSections` result can show sections before the editor accepts mutations; do not treat its presence alone as readiness.
 
 ## File workflow
 

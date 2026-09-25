@@ -2403,6 +2403,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	context.subscriptions.push(KqlxEditorProvider.register(
 		context, context.extensionUri, connectionManager, sqlWorkbenchService,
 		editorCursorStatusBar, kustoResultPersistenceRegistry,
+		uri => toolOrchestrator?.isHostOwnedBackgroundFile(uri) ?? false,
+		uri => toolOrchestrator?.transferBackgroundOwnershipOnUserInteraction(uri) ?? Promise.resolve(),
 	));
 	// Register .kql/.csl compatibility custom editor
 	context.subscriptions.push(KqlCompatEditorProvider.register(

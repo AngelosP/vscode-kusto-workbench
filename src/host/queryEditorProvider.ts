@@ -366,6 +366,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly copilotChatFirstTimeApplication: CopilotChatFirstTimeApplicationHandler;
 	readonly workbenchToolSessionApplication: WorkbenchToolSessionApplicationHandler;
 	private workbenchFileCloseLifecycle?: WorkbenchFileCloseLifecycle;
+	private workbenchToolMutationReadiness?: () => Promise<boolean>;
 	readonly kustoConnectionBrowsingApplication: KustoConnectionBrowsingApplicationHandler;
 	readonly copilotQueryWorkflowApplication: CopilotQueryWorkflowApplicationHandler;
 	readonly kustoSectionExecutionApplication: KustoSectionExecutionApplicationHandler;
@@ -833,6 +834,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				isAvailable: () => !!this.panel,
 				getDocumentUri: () => this.documentUri,
 				getCloseLifecycle: () => this.workbenchFileCloseLifecycle,
+				getMutationReadiness: () => this.workbenchToolMutationReadiness,
 				connectionManager: this.connectionManager,
 				schema: this.schema,
 				sqlLifecycle: this.sqlLifecycle,
@@ -1033,6 +1035,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	documentUri?: string;
 	setWorkbenchFileCloseLifecycle(lifecycle: WorkbenchFileCloseLifecycle): void {
 		this.workbenchFileCloseLifecycle = lifecycle;
+	}
+
+	setWorkbenchToolMutationReadiness(waitForReady: () => Promise<boolean>): void {
+		this.workbenchToolMutationReadiness = waitForReady;
 	}
 
 	async requestSectionsFromWebview(purpose?: 'schema-refresh', targetConnectionId?: string): Promise<unknown[] | undefined> {

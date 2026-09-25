@@ -46,6 +46,7 @@ export interface WorkbenchToolSessionOrchestrator {
 		sqlConnectionResolver?: (sectionId?: string) => string | undefined,
 		sqlOwnerResolver?: (sectionId: string) => SqlReadyToolOwner | undefined,
 		closeLifecycle?: WorkbenchFileCloseLifecycle,
+		waitForMutationReady?: () => Promise<boolean>,
 	): number;
 	activateConnection(token: number): boolean;
 	disconnectIfOwner(token: number): void;
@@ -79,6 +80,7 @@ export type WorkbenchToolSessionApplicationHandlerOptions = {
 	isAvailable(): boolean;
 	getDocumentUri(): string | undefined;
 	getCloseLifecycle?(): WorkbenchFileCloseLifecycle | undefined;
+	getMutationReadiness?(): (() => Promise<boolean>) | undefined;
 	connectionManager: Pick<ConnectionManager, 'getConnections'>;
 	schema: Pick<SchemaService, 'refreshSchemaForTools'>;
 	sqlLifecycle: Pick<SqlEditorLifecycleCoordinator,
@@ -122,6 +124,7 @@ implements WorkbenchToolSessionApplicationHandler {
 				return id ? this.options.sqlLifecycle.getReadyToolOwner(id) : undefined;
 			},
 			this.options.getCloseLifecycle?.(),
+			this.options.getMutationReadiness?.(),
 		);
 		this.connectedOrchestrator = orchestrator;
 		this.connectionToken = token;

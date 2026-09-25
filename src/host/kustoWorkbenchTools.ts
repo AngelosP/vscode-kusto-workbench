@@ -714,6 +714,7 @@ interface LiveWorkbenchConnection {
 	token: number;
 	poster: (message: unknown) => unknown;
 	stateGetter: () => Promise<ToolSection[] | undefined>;
+	waitForMutationReady?: () => Promise<boolean>;
 	schemaRefresher: (clusterUrl: string, connectionId: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>;
 	sqlConnectionResolver?: (sectionId?: string) => string | undefined;
 	sqlOwnerResolver?: (sectionId: string) => {
@@ -793,7 +794,9 @@ export class KustoWorkbenchToolOrchestrator {
 	private readonly backgroundFileOperations = new Map<string, Promise<void>>();
 	private readonly backgroundMutationBlocks = new Map<string, number>();
 	private readonly hostOwnedBackgroundFiles = new Set<string>();
+	private readonly backgroundUserInteractionTransfers = new Map<string, Promise<void>>();
 	private readonly backgroundOpeningFiles = new Set<string>();
+	private readonly backgroundProgrammaticSelections = new Set<string>();
 	private readonly backgroundOpeningTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private readonly preparedBackgroundRenames = new Map<string, {
 		logicalUriKeys: readonly string[];
@@ -876,6 +879,7 @@ export class KustoWorkbenchToolOrchestrator {
 		sqlConnectionResolver?: (sectionId?: string) => string | undefined,
 		sqlOwnerResolver?: LiveWorkbenchConnection['sqlOwnerResolver'],
 		closeLifecycle?: WorkbenchFileCloseLifecycle,
+		waitForMutationReady?: () => Promise<boolean>,
 	): number {
 		this.connectionToken++;
 		const classifiedDocumentInfo = documentUri
@@ -892,6 +896,7 @@ export class KustoWorkbenchToolOrchestrator {
 			...(sqlConnectionResolver ? { sqlConnectionResolver } : {}),
 			...(sqlOwnerResolver ? { sqlOwnerResolver } : {}),
 			...(closeLifecycle ? { closeLifecycle } : {}),
+			...(waitForMutationReady ? { waitForMutationReady } : {}),
 			...(documentUri ? { documentUri } : {}),
 			...(documentInfo ? { documentInfo, logicalUriKey: documentInfo.logicalUriKey } : {}),
 			sequence: this.connectionToken,
@@ -970,6 +975,32 @@ export class KustoWorkbenchToolOrchestrator {
 		return this.hostOwnedBackgroundFiles.has(file.logicalUriKey)
 			? undefined
 			: this.getLatestLiveConnectionForKey(file.logicalUriKey);
+	}
+
+	isHostOwnedBackgroundFile(uri: vscode.Uri): boolean {
+		const file = classifyWorkbenchUri(uri, { includeOptionalPlainText: true });
+		return !!file && this.hostOwnedBackgroundFiles.has(file.logicalUriKey)
+			&& !this.backgroundUserInteractionTransfers.has(file.logicalUriKey);
+	}
+
+	transferBackgroundOwnershipOnUserInteraction(uri: vscode.Uri): Promise<void> {
+		const file = classifyWorkbenchUri(uri, { includeOptionalPlainText: true });
+		if (!file || !this.hostOwnedBackgroundFiles.has(file.logicalUriKey)) return Promise.resolve();
+		const key = file.logicalUriKey;
+		const pending = this.backgroundUserInteractionTransfers.get(key);
+		if (pending) return pending;
+		this.addBackgroundMutationBlock(key);
+		const transfer = (async () => {
+			await this.waitForBackgroundFileOperation(key);
+			this.hostOwnedBackgroundFiles.delete(key);
+			this.backgroundProgrammaticSelections.delete(key);
+			this.clearBackgroundOpeningLease(key);
+		})().finally(() => {
+			this.backgroundUserInteractionTransfers.delete(key);
+			this.removeBackgroundMutationBlock(key);
+		});
+		this.backgroundUserInteractionTransfers.set(key, transfer);
+		return transfer;
 	}
 
 	private resolveRenamedWorkbenchFileInfo(info: WorkbenchFileInfo): WorkbenchFileInfo {
@@ -1131,15 +1162,20 @@ export class KustoWorkbenchToolOrchestrator {
 			const previousKeys = new Set([oldInfo.logicalUriKey, previousInfo.logicalUriKey]);
 			let wasHostOwned = false;
 			let wasOpening = false;
+			let wasProgrammaticallySelected = false;
 			let mutationBlockCount = 0;
 			for (const key of previousKeys) {
 				wasHostOwned = this.hostOwnedBackgroundFiles.delete(key) || wasHostOwned;
 				wasOpening = this.backgroundOpeningFiles.has(key) || wasOpening;
+				wasProgrammaticallySelected = this.backgroundProgrammaticSelections.delete(key) || wasProgrammaticallySelected;
 				this.clearBackgroundOpeningLease(key);
 				mutationBlockCount += this.backgroundMutationBlocks.get(key) ?? 0;
 				this.backgroundMutationBlocks.delete(key);
 			}
 			if (wasHostOwned) this.hostOwnedBackgroundFiles.add(newInfo.logicalUriKey);
+			if (wasHostOwned && wasProgrammaticallySelected) {
+				this.backgroundProgrammaticSelections.add(newInfo.logicalUriKey);
+			}
 			if (wasOpening) {
 				this.backgroundOpeningFiles.add(newInfo.logicalUriKey);
 				this.scheduleBackgroundOpeningLeaseRelease(newInfo.logicalUriKey);
@@ -1287,6 +1323,7 @@ export class KustoWorkbenchToolOrchestrator {
 			await Promise.all([...keys].map(key => this.waitForBackgroundFileOperation(key)));
 			for (const key of keys) {
 				this.hostOwnedBackgroundFiles.delete(key);
+				this.backgroundProgrammaticSelections.delete(key);
 				this.clearBackgroundOpeningLease(key);
 			}
 		} finally {
@@ -1298,6 +1335,13 @@ export class KustoWorkbenchToolOrchestrator {
 		const keys = new Set<string>();
 		const activeGroup = vscode.window.tabGroups.activeTabGroup;
 		if (!activeGroup?.isActive || !activeGroup.activeTab) return;
+		const activeInput = this.getTabInputUri(activeGroup.activeTab.input);
+		const activeFile = activeInput ? classifyWorkbenchUri(activeInput.uri, {
+			viewType: activeInput.viewType, includeOptionalPlainText: true,
+		}) : undefined;
+		for (const key of this.backgroundProgrammaticSelections) {
+			if (key !== activeFile?.logicalUriKey) this.backgroundProgrammaticSelections.delete(key);
+		}
 		for (const tab of tabs) {
 			if (!tab.isActive || tab !== activeGroup.activeTab) continue;
 			const tabInput = this.getTabInputUri(tab.input);
@@ -1307,12 +1351,20 @@ export class KustoWorkbenchToolOrchestrator {
 			}) : undefined;
 			if (info
 				&& this.hostOwnedBackgroundFiles.has(info.logicalUriKey)
-				&& !this.backgroundOpeningFiles.has(info.logicalUriKey)) keys.add(info.logicalUriKey);
+				&& !this.backgroundOpeningFiles.has(info.logicalUriKey)
+				&& !this.backgroundProgrammaticSelections.has(info.logicalUriKey)) keys.add(info.logicalUriKey);
 		}
 		for (const key of keys) this.addBackgroundMutationBlock(key);
 		try {
 			await Promise.all([...keys].map(key => this.waitForBackgroundFileOperation(key)));
+			const currentGroup = vscode.window.tabGroups.activeTabGroup;
+			const currentTab = currentGroup?.isActive ? currentGroup.activeTab : undefined;
+			const currentInput = currentTab?.isActive ? this.getTabInputUri(currentTab.input) : undefined;
+			const currentFile = currentInput ? classifyWorkbenchUri(currentInput.uri, {
+				viewType: currentInput.viewType, includeOptionalPlainText: true,
+			}) : undefined;
 			for (const key of keys) {
+				if (currentFile?.logicalUriKey !== key || this.backgroundProgrammaticSelections.has(key)) continue;
 				this.hostOwnedBackgroundFiles.delete(key);
 				this.clearBackgroundOpeningLease(key);
 			}
@@ -2009,6 +2061,14 @@ export class KustoWorkbenchToolOrchestrator {
 				throw new Error('The active Kusto Workbench file is open without a live Workbench editor. Reopen it with Kusto Workbench before editing or executing sections.');
 			}
 			throw new Error('Kusto Workbench is not currently open. Please open a supported Kusto Workbench file or use the Query Editor first.');
+		}
+		if (!this.liveConnections.has(target.connection.token)) {
+			throw new Error('The targeted Kusto Workbench editor closed before the request was dispatched.');
+		}
+		if (cancellationToken?.isCancellationRequested) throw new vscode.CancellationError();
+		const readiness = target.connection.waitForMutationReady?.();
+		if (readiness && !await (cancellationToken ? raceCancellation(readiness, cancellationToken) : readiness)) {
+			throw new Error('This document is still loading and cannot accept mutations yet.');
 		}
 		if (!this.liveConnections.has(target.connection.token)) {
 			throw new Error('The targeted Kusto Workbench editor closed before the request was dispatched.');
@@ -3731,6 +3791,7 @@ export class KustoWorkbenchToolOrchestrator {
 				};
 			}
 			this.hostOwnedBackgroundFiles.delete(effectiveInfo.logicalUriKey);
+			this.backgroundProgrammaticSelections.delete(effectiveInfo.logicalUriKey);
 			const liveConnection = this.getLatestLiveConnectionForKey(effectiveInfo.logicalUriKey);
 			return {
 				success: true,
@@ -3951,6 +4012,7 @@ export class KustoWorkbenchToolOrchestrator {
 			const closed = await vscode.window.tabGroups.close(uniqueTabs, true);
 			if (closed) {
 				this.hostOwnedBackgroundFiles.delete(file.logicalUriKey);
+				this.backgroundProgrammaticSelections.delete(file.logicalUriKey);
 				this.clearBackgroundOpeningLease(file.logicalUriKey);
 			}
 			return closed
@@ -4186,6 +4248,7 @@ export class KustoWorkbenchToolOrchestrator {
 			if (backgroundInfo) {
 				this.hostOwnedBackgroundFiles.add(backgroundInfo.logicalUriKey);
 				this.backgroundOpeningFiles.add(backgroundInfo.logicalUriKey);
+				this.backgroundProgrammaticSelections.add(backgroundInfo.logicalUriKey);
 			}
 
 			// Open the file with the appropriate editor
@@ -4197,6 +4260,7 @@ export class KustoWorkbenchToolOrchestrator {
 			} catch (error) {
 				if (backgroundInfo) {
 					this.hostOwnedBackgroundFiles.delete(backgroundInfo.logicalUriKey);
+					this.backgroundProgrammaticSelections.delete(backgroundInfo.logicalUriKey);
 					this.clearBackgroundOpeningLease(backgroundInfo.logicalUriKey);
 				}
 				return {
@@ -4214,6 +4278,7 @@ export class KustoWorkbenchToolOrchestrator {
 			const failedInfo = fileUri ? classifyWorkbenchUri(fileUri, { includeOptionalPlainText: true }) : undefined;
 			if (failedInfo) {
 				this.hostOwnedBackgroundFiles.delete(failedInfo.logicalUriKey);
+				this.backgroundProgrammaticSelections.delete(failedInfo.logicalUriKey);
 				this.clearBackgroundOpeningLease(failedInfo.logicalUriKey);
 			}
 			return {

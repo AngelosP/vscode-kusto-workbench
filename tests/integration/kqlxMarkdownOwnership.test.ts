@@ -748,15 +748,9 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { savePreparation = Promise.resolve(thenable); },
 			} as any);
 			assert.ok(savePreparation);
-			let preparedText = currentText;
-			try {
-				const edits = await savePreparation!;
-				if (edits.length > 0) preparedText = edits.at(-1)!.newText;
-			} catch (error) {
-				assert.match(error instanceof Error ? error.message : String(error), /projection was acknowledged/);
-			}
-			const prepared = JSON.parse(preparedText);
-			assert.deepStrictEqual(prepared.state.sections, JSON.parse(currentText).state.sections);
+			await assert.rejects(savePreparation!, /has not accepted its initial notebook projection/);
+			assert.deepStrictEqual(JSON.parse(currentText).state.sections,
+				JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections);
 
 			await Promise.resolve(receiveHandler!({
 				type: 'documentReloadResult', requestId: reloadRequestId,
@@ -846,11 +840,8 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { savePreparation = Promise.resolve(thenable); },
 			} as any);
 			assert.ok(savePreparation);
-			let preparedText = currentText;
-			const edits = await savePreparation!;
-			if (edits.length > 0) preparedText = edits.at(-1)!.newText;
+			await assert.rejects(savePreparation!, /has not accepted its initial notebook projection/);
 			assert.strictEqual(finalSnapshotRequests, 0);
-			assert.deepStrictEqual(JSON.parse(preparedText).state.sections, JSON.parse(currentText).state.sections);
 			assert.deepStrictEqual(JSON.parse(currentText).state.sections, JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections);
 
 			await Promise.resolve(receiveHandler!({
@@ -863,6 +854,25 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
 			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('initial projection readiness is scoped to the requested editor panel', async () => {
+		const uri = vscode.Uri.file(path.join(os.tmpdir(), 'kw-panel-projection-readiness.kqlx'));
+		const firstPanel = {} as vscode.WebviewPanel;
+		const secondPanel = {} as vscode.WebviewPanel;
+		const first = KqlxEditorProvider.trackOpenEditor(uri, firstPanel);
+		const second = KqlxEditorProvider.trackOpenEditor(uri, secondPanel);
+		try {
+			const secondReadiness = KqlxEditorProvider.waitForOpenEditorInitialized(uri, 2_000, secondPanel);
+			(KqlxEditorProvider as any).markOpenEditorInitialized(uri, firstPanel);
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0), true);
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, secondPanel), false);
+			second.beginClosing();
+			assert.strictEqual(await secondReadiness, false);
+		} finally {
+			second.finishClosing();
+			first.finishClosing();
 		}
 	});
 
@@ -4137,6 +4147,694 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		});
 	}
 
+	test('native Save waits for initial Markdown projection before preparing a dirty notebook', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-markdown-initial-save-'));
+		const filePath = path.join(tmpDir, 'initial.kqlx');
+		const currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', query: 'print 1' },
+				{ id: 'markdown_1', type: 'markdown', title: 'Summary', text: '# Original' },
+			] },
+		});
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+		let projection: any;
+		let barrierRequests = 0;
+		let preparation: Promise<vscode.TextEdit[]> | undefined;
+		let settled = false;
+		let preparationError: unknown;
+		const disposeHandlers: Array<() => void> = [];
+		const document = {
+			uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+			positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: true,
+		} as any;
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(vscode.workspace as any).onWillSaveTextDocument = (handler: typeof willSaveHandler) => {
+				willSaveHandler = handler;
+				return { dispose() {} };
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						if (message?.type === 'documentData') projection = message;
+						if (message?.type === 'requestMarkdownCommandBarrier') {
+							barrierRequests++;
+							await Promise.resolve(receiveHandler?.({
+								type: 'markdownDocumentCommandBarrierResult', requestId: message.requestId,
+								sourceGeneration: message.sourceGeneration,
+								documentRevision: projection.documentRevision, accepted: true,
+							}));
+						}
+						if (message?.type === 'requestFinalPersist') {
+							await Promise.resolve(receiveHandler?.({
+								type: 'persistDocument', flushRequestId: message.requestId,
+								sourceGeneration: projection.sourceGeneration,
+								state: JSON.parse(currentText).state,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+					receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
+					return { dispose() {} };
+				},
+				},
+			onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			assert.ok(willSaveHandler);
+			willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => {
+					preparation = Promise.resolve(thenable);
+					void preparation.then(() => { settled = true; }, error => { settled = true; preparationError = error; });
+				},
+			} as any);
+			await waitForCondition(() => !!projection || settled,
+				'Initial Save neither requested a Markdown projection nor settled', 1_000);
+			assert.ok(projection, `Save must request the initial host Markdown projection before preparing edits: ${String(preparationError)}`);
+			assert.strictEqual(settled, false, 'Save must wait for projection acknowledgement');
+			assert.strictEqual(barrierRequests, 0);
+			await Promise.resolve(receiveHandler!({
+				type: 'documentReloadResult', requestId: projection.reloadRequestId,
+				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+			}));
+			const edits = await preparation!;
+			assert.strictEqual(barrierRequests, 1);
+			const state = JSON.parse(edits[0]?.newText ?? currentText).state;
+			assert.deepStrictEqual(state.sections.map((section: any) => section.id), ['query_1', 'markdown_1']);
+			assert.strictEqual(state.sections[1].title, 'Summary');
+			assert.strictEqual(state.sections[1].text, '# Original');
+		} finally {
+			for (const dispose of disposeHandlers) dispose();
+			await preparation?.catch(() => undefined);
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	test('background native Save preserves tool-owned Markdown before foreground projection', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
+		const originalOnDidSave = vscode.workspace.onDidSaveTextDocument;
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-background-markdown-save-'));
+		const filePath = path.join(tmpDir, 'report.kqlx');
+		const initialText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [{ id: 'query_1', type: 'query', query: 'print 1' }] },
+		});
+		let currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', query: 'print 1' },
+				{ id: 'markdown_1', type: 'markdown', title: 'Summary', text: '# Tool report' },
+			] },
+		});
+		let adapterQuery = 'print 1';
+		let backgroundOwned = true;
+		let userInteractionTransfers = 0;
+		let projection: any;
+		let barrierRequests = 0;
+		let finalPersistRequests = 0;
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+		let didSaveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
+		const disposeHandlers: Array<() => void> = [];
+		const document = {
+			uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+			positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: true, version: 1,
+		} as any;
+		try {
+			fs.writeFileSync(filePath, initialText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(vscode.workspace as any).onWillSaveTextDocument = (handler: typeof willSaveHandler) => {
+				willSaveHandler = handler;
+				return { dispose() {} };
+			};
+			(vscode.workspace as any).onDidSaveTextDocument = (handler: typeof didSaveHandler) => {
+				didSaveHandler = handler;
+				return { dispose() {} };
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				undefined, undefined, () => backgroundOwned, () => {
+					userInteractionTransfers++;
+					backgroundOwned = false;
+					return Promise.resolve();
+				},
+			) as KqlxEditorProvider;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						if (message?.type === 'documentData') projection = message;
+						if (message?.type === 'requestMarkdownCommandBarrier') {
+							barrierRequests++;
+							await Promise.resolve(receiveHandler?.({
+								type: 'markdownDocumentCommandBarrierResult', requestId: message.requestId,
+								sourceGeneration: message.sourceGeneration,
+								documentRevision: projection.documentRevision, accepted: true,
+							}));
+						}
+						if (message?.type === 'requestFinalPersist') {
+							finalPersistRequests++;
+							const state = JSON.parse(currentText).state;
+							state.sections[0].query = adapterQuery;
+							await Promise.resolve(receiveHandler?.({
+								type: 'persistDocument', flushRequestId: message.requestId,
+								sourceGeneration: projection.sourceGeneration, state,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+					receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
+					return { dispose() {} };
+				},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			assert.ok(willSaveHandler);
+			const prepareSave = () => {
+				let preparation: Promise<vscode.TextEdit[]> | undefined;
+				willSaveHandler!({
+					document,
+					waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { preparation = Promise.resolve(thenable); },
+				} as any);
+				assert.ok(preparation);
+				return preparation!;
+			};
+			const backgroundEdits = await Promise.race([
+				prepareSave(),
+				new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Background Save waited for a webview')), 1_000)),
+			]);
+			assert.deepStrictEqual(backgroundEdits, []);
+			assert.strictEqual(projection, undefined);
+			assert.strictEqual(barrierRequests, 0);
+			assert.strictEqual(finalPersistRequests, 0);
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			assert.deepStrictEqual(JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections[1],
+				{ id: 'markdown_1', type: 'markdown', title: 'Summary', text: '# Tool report' });
+
+			const initialProjection = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await waitForCondition(() => !!projection, 'Background panel did not request its projection', 1_000);
+			const backgroundProjection = projection as { reloadRequestId: string; viewSessionId: string } | undefined;
+			assert.ok(backgroundProjection);
+			await Promise.resolve(receiveHandler!({
+				type: 'documentReloadResult', requestId: backgroundProjection.reloadRequestId,
+				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+			}));
+			await initialProjection;
+			const acknowledgedBackgroundSave = prepareSave();
+			document.version++;
+			const acceptedEdits = await Promise.race([
+				acknowledgedBackgroundSave,
+				new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Background Save waited for its active webview')), 1_000)),
+			]);
+			assert.deepStrictEqual(acceptedEdits, [], 'the background source must not return version-sensitive Save edits');
+			assert.strictEqual(barrierRequests, 0);
+			assert.strictEqual(finalPersistRequests, 0);
+
+			await Promise.resolve(receiveHandler!({
+				type: 'backgroundWorkbenchUserInteraction', viewSessionId: 'retired-session',
+			}));
+			assert.strictEqual(userInteractionTransfers, 0);
+			assert.strictEqual(backgroundOwned, true);
+			await Promise.resolve(receiveHandler!({
+				type: 'backgroundWorkbenchUserInteraction', viewSessionId: backgroundProjection.viewSessionId,
+			}));
+			assert.strictEqual(userInteractionTransfers, 1);
+			assert.strictEqual(backgroundOwned, false);
+			adapterQuery = 'print EditedBeforeDebounce = 2';
+			const foregroundSave = prepareSave();
+			const foregroundEdits = await foregroundSave;
+			assert.strictEqual(barrierRequests, 1);
+			assert.strictEqual(finalPersistRequests, 1);
+			assert.strictEqual(foregroundEdits.length, 1);
+			fs.writeFileSync(filePath, foregroundEdits[0].newText, 'utf8');
+			const restoredSections = JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections;
+			assert.strictEqual(restoredSections[0].query, adapterQuery);
+			assert.strictEqual(restoredSections[1].text, '# Tool report');
+
+			currentText = foregroundEdits[0].newText;
+			document.isDirty = false;
+			document.version++;
+			assert.ok(didSaveHandler);
+			await Promise.resolve(didSaveHandler!(document));
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				const [uri, replacements] = edit.entries()[0] ?? [];
+				const replacement = replacements?.[0]?.newText;
+				assert.strictEqual(uri?.toString(), document.uri.toString());
+				if (typeof replacement !== 'string') return false;
+				currentText = replacement;
+				document.isDirty = true;
+				document.version++;
+				return true;
+			};
+			let userSaves = 0;
+			document.save = async () => {
+				userSaves++;
+				const edits = await prepareSave();
+				if (edits.length > 0) currentText = edits.at(-1)!.newText;
+				fs.writeFileSync(filePath, currentText, 'utf8');
+				document.isDirty = false;
+				await Promise.resolve(didSaveHandler!(document));
+				return true;
+			};
+			adapterQuery = 'print SavedWithoutDebounce = 3';
+			const userState = JSON.parse(currentText).state;
+			userState.sections[0].query = adapterQuery;
+			const userProjection = projection as { sourceGeneration: number } | undefined;
+			assert.ok(userProjection);
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', state: userState,
+				sourceGeneration: userProjection.sourceGeneration, editRevision: 1,
+				snapshotId: 'trusted-user-save-1', flush: true, reason: 'user-save',
+			}));
+			assert.strictEqual(userSaves, 1, 'an explicit webview Save must commit the accepted snapshot');
+			const userSavedSections = JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections;
+			assert.strictEqual(userSavedSections[0].query, adapterQuery);
+			assert.strictEqual(userSavedSections[1].text, '# Tool report');
+			assert.strictEqual(document.isDirty, false);
+		} finally {
+			for (const dispose of disposeHandlers) dispose();
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
+			(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSave;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	test('first user Save waits for a background edit and rejects its stale snapshot', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalShowErrorMessage = vscode.window.showErrorMessage;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-background-handoff-save-'));
+		const filePath = path.join(tmpDir, 'handoff.kqlx');
+		let currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', query: 'print Initial = 1' },
+				{ id: 'markdown_1', type: 'markdown', text: '# Notes' },
+			] },
+		});
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let projection: any;
+		let releaseBackgroundEdit!: () => void;
+		const backgroundEdit = new Promise<void>(resolve => { releaseBackgroundEdit = resolve; });
+		let backgroundOwned = true;
+		let saveCalls = 0;
+		let editCalls = 0;
+		const saveErrors: string[] = [];
+		const disposeHandlers: Array<() => void> = [];
+		const document = {
+			uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+			positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: true, version: 1,
+			save: async () => { saveCalls++; return true; },
+		} as any;
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(vscode.workspace as any).applyEdit = async () => { editCalls++; return true; };
+			(vscode.window as any).showErrorMessage = async (message: string) => { saveErrors.push(message); return undefined; };
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				undefined, undefined, () => backgroundOwned, () => {
+					backgroundOwned = false;
+					return backgroundEdit;
+				},
+		) as KqlxEditorProvider;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						if (message?.type === 'documentData') {
+							projection = message;
+							await Promise.resolve(receiveHandler?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			assert.ok(projection);
+			await Promise.resolve(receiveHandler!({
+				type: 'backgroundWorkbenchUserInteraction', viewSessionId: projection.viewSessionId,
+			}));
+			assert.strictEqual(backgroundOwned, false);
+			const staleState = JSON.parse(currentText).state;
+			staleState.sections[0].query = 'print StaleView = 2';
+			const racedSave = Promise.resolve(receiveHandler!({
+				type: 'persistDocument', state: staleState,
+				sourceGeneration: projection.sourceGeneration, editRevision: 1,
+				snapshotId: 'user-save-before-background-edit', flush: true, reason: 'user-save',
+			}));
+			let settled = false;
+			void racedSave.then(() => { settled = true; }, () => { settled = true; });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(settled, false, 'Save must await the in-flight background edit');
+			assert.strictEqual(saveCalls, 0);
+			assert.strictEqual(editCalls, 0);
+			const newerFile = JSON.parse(currentText);
+			newerFile.state.sections[0].query = 'print BackgroundTool = 3';
+			currentText = JSON.stringify(newerFile);
+			document.version++;
+			releaseBackgroundEdit();
+			await racedSave;
+			assert.strictEqual(saveCalls, 0, 'stale user Save must not follow the background write');
+			assert.strictEqual(editCalls, 0, 'stale user snapshot must not edit the newer document');
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].query, 'print BackgroundTool = 3');
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', state: staleState,
+				sourceGeneration: projection.sourceGeneration, editRevision: 2,
+				snapshotId: 'user-save-after-background-edit', flush: true, reason: 'user-save',
+			}));
+			assert.strictEqual(saveCalls, 0, 'a later stale Save must wait for the new source projection');
+			assert.strictEqual(editCalls, 0, 'the later stale snapshot must not replace the completed tool edit');
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].query, 'print BackgroundTool = 3');
+			assert.strictEqual(saveErrors.length, 2, 'both declined Save requests must be visible to the user');
+			assert.ok(saveErrors.every(error => error.includes('notebook changed during a background edit')));
+		} finally {
+			releaseBackgroundEdit();
+			for (const dispose of disposeHandlers) dispose();
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(vscode.window as any).showErrorMessage = originalShowErrorMessage;
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	test('failed background handoff notifies on Save and permits a new explicit Save', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalShowErrorMessage = vscode.window.showErrorMessage;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-background-handoff-retry-'));
+		const filePath = path.join(tmpDir, 'retry.kqlx');
+		const currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', query: 'print 1' },
+				{ id: 'markdown_1', type: 'markdown', text: '# Notes' },
+			] },
+		});
+		let backgroundOwned = true;
+		let transferAttempts = 0;
+		let saveCalls = 0;
+		let persistAcks = 0;
+		const saveErrors: string[] = [];
+		let projection: any;
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const disposeHandlers: Array<() => void> = [];
+		const document = {
+			uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+			positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: true, version: 1,
+			save: async () => { saveCalls++; return true; },
+		} as any;
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(vscode.window as any).showErrorMessage = async (message: string) => { saveErrors.push(message); return undefined; };
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				undefined, undefined, () => backgroundOwned, () => {
+					transferAttempts++;
+					if (transferAttempts === 1) return Promise.reject(new Error('The background editor is still settling.'));
+					backgroundOwned = false;
+					return Promise.resolve();
+				},
+			) as KqlxEditorProvider;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						if (message?.type === 'persistDocumentAck') persistAcks++;
+						if (message?.type === 'documentData') {
+							projection = message;
+							await Promise.resolve(receiveHandler?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+							}));
+						}
+						if (message?.type === 'requestMarkdownCommandBarrier') {
+							await Promise.resolve(receiveHandler?.({
+								type: 'markdownDocumentCommandBarrierResult', requestId: message.requestId,
+								sourceGeneration: message.sourceGeneration,
+								documentRevision: projection.documentRevision, accepted: true,
+							}));
+						}
+						if (message?.type === 'requestFinalPersist') {
+							await Promise.resolve(receiveHandler?.({
+								type: 'persistDocument', flushRequestId: message.requestId,
+								sourceGeneration: projection.sourceGeneration, state: JSON.parse(currentText).state,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			assert.ok(projection);
+			await Promise.resolve(receiveHandler!({
+				type: 'backgroundWorkbenchUserInteraction', viewSessionId: projection.viewSessionId,
+			}));
+			const submitSave = (snapshotId: string, editRevision: number) => Promise.resolve(receiveHandler!({
+				type: 'persistDocument', state: JSON.parse(currentText).state,
+				sourceGeneration: projection.sourceGeneration, snapshotId, editRevision,
+				flush: true, reason: 'user-save',
+			}));
+			await submitSave('failed-handoff-save', 1);
+			assert.strictEqual(transferAttempts, 1);
+			assert.strictEqual(saveCalls, 0);
+			assert.strictEqual(backgroundOwned, true);
+			assert.strictEqual(saveErrors.length, 1, 'a failed intercepted Save must show an error');
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', state: JSON.parse(currentText).state,
+				sourceGeneration: projection.sourceGeneration, snapshotId: 'auto-after-failed-handoff',
+				editRevision: 1, reason: 'query-edit',
+			}));
+			assert.strictEqual(persistAcks, 0, 'an automatic webview snapshot must not claim a background-owned document');
+			await submitSave('new-explicit-save', 2);
+			assert.strictEqual(transferAttempts, 2, 'the new user Save should retry ownership transfer once');
+			assert.strictEqual(saveCalls, 1);
+			assert.strictEqual(backgroundOwned, false);
+			assert.strictEqual(saveErrors.length, 1);
+		} finally {
+			for (const dispose of disposeHandlers) dispose();
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(vscode.window as any).showErrorMessage = originalShowErrorMessage;
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	test('native Save waits for a background source edit to reach the active Markdown projection', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-background-save-projection-'));
+		const filePath = path.join(tmpDir, 'background.kqlx');
+		const initialText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [{ id: 'query_1', type: 'query', query: 'print 1' }] },
+		});
+		let currentText = initialText;
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+		let latestProjection: any;
+		let deferredProjection: any;
+		let barrierRequest: any;
+		let barrierCount = 0;
+		let advanceSourceOnBarrier = false;
+		let holdProjection = false;
+		let postedProjectionCount = 0;
+		let savePreparation: Promise<vscode.TextEdit[]> | undefined;
+		let blockedSave: Promise<vscode.TextEdit[]> | undefined;
+		let markdownQueue: { pendingCommands: number } | undefined;
+		const disposeHandlers: Array<() => void> = [];
+		const document = {
+			uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+			positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: true,
+		} as any;
+		try {
+			fs.writeFileSync(filePath, initialText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(vscode.workspace as any).onWillSaveTextDocument = (handler: typeof willSaveHandler) => {
+				willSaveHandler = handler;
+				return { dispose() {} };
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						if (message?.type === 'documentData') {
+							postedProjectionCount++;
+							latestProjection = message;
+							if (holdProjection) deferredProjection = message;
+							else await Promise.resolve(receiveHandler?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+							}));
+						}
+						if (message?.type === 'requestMarkdownCommandBarrier') {
+							barrierRequest = message;
+							barrierCount++;
+							if (advanceSourceOnBarrier) {
+								advanceSourceOnBarrier = false;
+								currentText = JSON.stringify({
+									kind: 'kqlx', version: 1,
+									state: { sections: [
+										{ id: 'query_1', type: 'query', query: 'print 3' },
+										{ id: 'markdown_1', type: 'markdown', title: 'Summary', text: '# Most recent' },
+									] },
+								});
+								await Promise.resolve(receiveHandler?.({ type: 'requestDocument' }));
+							}
+							await Promise.resolve(receiveHandler?.({
+								type: 'markdownDocumentCommandBarrierResult', requestId: message.requestId,
+								sourceGeneration: message.sourceGeneration,
+								documentRevision: latestProjection.documentRevision, accepted: true,
+							}));
+						}
+						if (message?.type === 'requestFinalPersist') {
+							await Promise.resolve(receiveHandler?.({
+								type: 'persistDocument', flushRequestId: message.requestId,
+								sourceGeneration: latestProjection.sourceGeneration,
+								state: JSON.parse(currentText).state,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+					receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
+					return { dispose() {} };
+				},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			assert.ok(willSaveHandler);
+			assert.strictEqual(barrierRequest, undefined, 'the baseline projection must not have a pending Save barrier');
+			const firstGeneration = latestProjection.sourceGeneration;
+			holdProjection = true;
+			currentText = JSON.stringify({
+				kind: 'kqlx', version: 1,
+				state: { sections: [
+					{ id: 'query_1', type: 'query', query: 'print 2' },
+					{ id: 'markdown_1', type: 'markdown', title: 'Summary', text: '# Updated' },
+				] },
+			});
+			markdownQueue = (provider as any).markdownDocumentQueues.get(normalizeWorkbenchUriKey(document.uri));
+			assert.ok(markdownQueue);
+			markdownQueue.pendingCommands = 1;
+			let blockedSaveSettled = false;
+			willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => {
+					blockedSave = Promise.resolve(thenable);
+					void blockedSave.then(() => { blockedSaveSettled = true; }, () => { blockedSaveSettled = true; });
+				},
+			} as any);
+			await waitForCondition(() => blockedSaveSettled || !!deferredProjection || !!barrierRequest,
+				'Pending-command Save did not settle or try to replace the projection', 1_000);
+			assert.deepStrictEqual(deferredProjection, undefined,
+				'Save must not discard an in-flight Markdown command by replacing its projection');
+			assert.strictEqual(barrierRequest, undefined);
+			await assert.rejects(blockedSave!, /pending Markdown commands/);
+			markdownQueue.pendingCommands = 0;
+			const pendingRefresh = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await waitForCondition(() => !!deferredProjection, 'Background source projection was not posted', 1_000);
+			const pendingProjectionCount = postedProjectionCount;
+			await new Promise<void>(resolve => setTimeout(resolve, 50));
+			assert.strictEqual(postedProjectionCount, pendingProjectionCount,
+				'The held source projection must stay stable before Save begins');
+			willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { savePreparation = Promise.resolve(thenable); },
+			} as any);
+			assert.ok(deferredProjection, 'Save must project the latest background bytes before reserving a Markdown barrier');
+			assert.strictEqual(barrierRequest, undefined, 'Save must not use the stale Markdown projection');
+			const saveProjection = deferredProjection as unknown as { sourceGeneration: number; reloadRequestId: string };
+			assert.notStrictEqual(saveProjection.sourceGeneration, firstGeneration);
+			await new Promise<void>(resolve => setTimeout(resolve, 50));
+			assert.strictEqual(postedProjectionCount, pendingProjectionCount,
+				'Save must join the pending source projection instead of publishing another one');
+			holdProjection = false;
+			advanceSourceOnBarrier = true;
+			await Promise.resolve(receiveHandler!({
+				type: 'documentReloadResult', requestId: saveProjection.reloadRequestId,
+				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+			}));
+			await pendingRefresh;
+			assert.ok(savePreparation);
+			const edits = await savePreparation!;
+			assert.strictEqual(postedProjectionCount, pendingProjectionCount + 1);
+			assert.strictEqual(barrierCount, 2, 'Save must reacquire a read-only barrier for the newer source');
+			assert.ok(barrierRequest);
+			const savedText = edits[0]?.newText ?? currentText;
+			const sections = JSON.parse(savedText).state.sections;
+			assert.deepStrictEqual(sections.map((section: any) => section.id), ['query_1', 'markdown_1']);
+			assert.strictEqual(sections[0].query, 'print 3');
+			assert.strictEqual(sections[1].title, 'Summary');
+			assert.strictEqual(sections[1].text, '# Most recent');
+		} finally {
+			for (const dispose of disposeHandlers) dispose();
+			if (markdownQueue) markdownQueue.pendingCommands = 0;
+			await blockedSave?.catch(() => undefined);
+			await savePreparation?.catch(() => undefined);
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
 	test('native Save fences a Markdown command still in transport', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalApplyEdit = vscode.workspace.applyEdit;
@@ -4413,19 +5111,25 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			const pendingReload = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 			await pendingProjectionPosted;
 			let pendingSourceSave: Promise<vscode.TextEdit[]> | undefined;
+			let pendingSourceSaveSettled = false;
 			willSaveHandler!({
 				document,
-				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { pendingSourceSave = Promise.resolve(thenable); },
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => {
+					pendingSourceSave = Promise.resolve(thenable);
+					void pendingSourceSave.then(() => { pendingSourceSaveSettled = true; }, () => { pendingSourceSaveSettled = true; });
+				},
 			} as any);
-			await pendingSourceSave;
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(pendingSourceSaveSettled, false, 'Save must wait for the newer Markdown projection');
 			assert.strictEqual([...((provider as any).markdownDocuments.values())][0], activeOwner);
-			await Promise.resolve(didSaveHandler!(document));
 			holdReloadAcknowledgement = false;
 			await Promise.resolve(receiveHandler!({
 				type: 'documentReloadResult', requestId: pendingReloadRequestId,
 				applied: false, editRevision: 0, markdownCommandBarrierSupported: true,
 			}));
+			await assert.rejects(pendingSourceSave!, /latest notebook text was not accepted/);
 			await pendingReload;
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].text, 'unacknowledged source');
 
 			currentText = activeOwner.sourceText;
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));

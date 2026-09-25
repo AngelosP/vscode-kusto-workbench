@@ -1,0 +1,6 @@
+{
+  "timeout": 90000,
+  "workspaceSettings": {
+    "files.autoSave": "off"
+  }
+}

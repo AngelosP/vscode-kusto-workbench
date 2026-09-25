@@ -3715,6 +3715,46 @@ describe('persistence round-trip', () => {
 	});
 
 	it.each([
+		['kqlx', 'query', 'query', 'print Before=1', 'print UserTyped=77'],
+		['sqlx', 'sql', 'query', 'select Before=1', 'select UserTyped=77'],
+		['mdx', 'markdown', 'text', '# Before', '# UserTyped'],
+	] as const)('publishes a %s user-save snapshot immediately even if the last state was acknowledged',
+		(documentKind, sectionKind, contentField, originalText, editedText) => {
+		vi.useFakeTimers();
+		try {
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind, documentUri: `file:///tmp/user-save.${documentKind}`,
+				state: { sections: [{ type: sectionKind, id: 'section_user_save', [contentField]: originalText }] },
+			});
+			document.body.innerHTML = '<div id="queries-container"></div>';
+			const section = document.createElement('div') as HTMLElement & { serialize: () => unknown };
+			section.id = 'section_user_save';
+			section.serialize = () => ({ id: section.id, type: sectionKind, [contentField]: editedText });
+			document.getElementById('queries-container')!.appendChild(section);
+			pState.documentKind = documentKind;
+			pState.compatibilityMode = false;
+			vi.mocked(postMessageToHost).mockClear();
+			const first = schedulePersist('prior-edit', true);
+			const prior = vi.mocked(postMessageToHost).mock.calls[0][0] as any;
+			expect(first).toBe(prior.snapshotId);
+			acknowledgePersistDocument(prior.snapshotId, prior.editRevision);
+			vi.mocked(postMessageToHost).mockClear();
+			schedulePersist('typing', false);
+			const saveId = schedulePersist('user-save', true);
+			expect(saveId).toMatch(/^document-snapshot-/);
+			expect(postMessageToHost).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+				type: 'persistDocument', reason: 'user-save', snapshotId: saveId,
+				state: expect.objectContaining({ sections: [expect.objectContaining({ [contentField]: editedText })] }),
+			}));
+			vi.advanceTimersByTime(400);
+			expect(postMessageToHost).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
 		['kqlx', 'file:///tmp/run-all-result.kqlx', 'kusto-result-attachment-committed'],
 		['kqlx', 'file:///tmp/run-all-started.kqlx', 'kusto-execution-started'],
 		['kqlx', 'file:///tmp/run-all-selection.kqlx', 'kusto-result-selection'],

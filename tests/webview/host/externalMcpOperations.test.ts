@@ -116,4 +116,48 @@ describe('external MCP progressive operations', () => {
 		expect(result.content[0].text).toContain('may already have completed');
 		expect(dependencies.invokeProvider).toHaveBeenCalledOnce();
 	});
+
+	it('isolates 64 overlapping calls through lost responses, invalid arguments, and a stale provider', async () => {
+		const { provider, dependencies, operations } = fixture();
+		const otherProvider = { ...provider, instanceId: 'instance-b', endpoint: 'http://127.0.0.1:43211/mcp' };
+		dependencies.discoverProviders.mockResolvedValue([provider, otherProvider]);
+		dependencies.invokeProvider.mockImplementation(async (target, _name, input) => {
+			if (target.instanceId === provider.instanceId) throw new Error('injected lost response');
+			return { content: [{ type: 'text' as const, text: `ok:${input.filePath}` }] };
+		});
+		const requests = Array.from({ length: 64 }, (_, index) => ({
+			instanceId: index % 2 === 0 ? provider.instanceId : otherProvider.instanceId,
+			filePath: `C:/reports/stress-${index}`, fileType: 'kqlx', openFileId: `file-${index}`,
+		}));
+		const results = await Promise.all(requests.map(args => operations.execute('createKustoFile', args)));
+		for (const [index, result] of results.entries()) {
+			if (index % 2 === 0) {
+				expect(result.isError).toBe(true);
+				expect(result.content[0].text).toContain('may already have completed');
+			} else {
+				expect(result.isError).not.toBe(true);
+				expect(result.content[0].text).toBe(`ok:${requests[index].filePath}`);
+			}
+		}
+		expect(dependencies.invokeProvider).toHaveBeenCalledTimes(64);
+		for (const request of requests) {
+			const calls = dependencies.invokeProvider.mock.calls.filter(([, , input]) => input.filePath === request.filePath);
+			expect(calls).toHaveLength(1);
+			expect(calls[0][0].instanceId).toBe(request.instanceId);
+		}
+
+		const invalid = await Promise.all(requests.map(args =>
+			operations.execute('createKustoFile', { ...args, fileType: 'unsupported' })));
+		expect(invalid.every(result => result.isError && result.content[0].text.includes('Input schema:'))).toBe(true);
+		expect(dependencies.discoverProviders).toHaveBeenCalledTimes(64);
+		expect(dependencies.invokeProvider).toHaveBeenCalledTimes(64);
+
+		dependencies.discoverProviders.mockResolvedValue([otherProvider]);
+		await expect(operations.execute('createKustoFile', requests[0])).rejects.toThrow('Unknown or stale');
+		expect((await operations.execute('createKustoFile', requests[1])).content[0].text)
+			.toBe(`ok:${requests[1].filePath}`);
+		dependencies.discoverProviders.mockResolvedValue([{ ...provider, schemaHash: '0'.repeat(64) }, otherProvider]);
+		await expect(operations.execute('createKustoFile', requests[0])).rejects.toThrow('incompatible tool catalog');
+		expect(dependencies.invokeProvider).toHaveBeenCalledTimes(65);
+	});
 });

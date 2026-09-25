@@ -1071,11 +1071,12 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		});
 	}
 
-	public static async waitForOpenEditorInitialized(uri: vscode.Uri, timeoutMs = 30_000): Promise<boolean> {
+	public static async waitForOpenEditorInitialized(uri: vscode.Uri, timeoutMs = 30_000, panel?: vscode.WebviewPanel): Promise<boolean> {
 		const key = KqlxEditorProvider.panelKey(uri);
 		const hasInitializedEditor = () => [...(KqlxEditorProvider.openPanelsByUri.get(key) ?? [])]
-			.some(panel => KqlxEditorProvider.initializedPanels.has(panel));
+			.some(candidate => (!panel || candidate === panel) && KqlxEditorProvider.initializedPanels.has(candidate));
 		if (hasInitializedEditor()) return true;
+		if (panel && !KqlxEditorProvider.openPanelsByUri.get(key)?.has(panel)) return false;
 		if (timeoutMs <= 0) return false;
 		return new Promise<boolean>(resolve => {
 			let settled = false;
@@ -1090,6 +1091,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			};
 			const onChange = () => {
 				if (hasInitializedEditor()) finish(true);
+				else if (panel && !KqlxEditorProvider.openPanelsByUri.get(key)?.has(panel)) finish(false);
 			};
 			listeners.add(onChange);
 			KqlxEditorProvider.panelChangeListenersByUri.set(key, listeners);
@@ -1155,6 +1157,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		sqlWorkbench: SqlWorkbenchService,
 		editorCursorStatusBar?: EditorCursorStatusBar,
 		kustoResultPersistenceRegistry = new KustoResultPersistenceRegistry(),
+		isHostOwnedBackgroundFile?: (uri: vscode.Uri) => boolean,
+		transferBackgroundOwnershipOnUserInteraction?: (uri: vscode.Uri) => Promise<void>,
 	): vscode.Disposable {
 		// Register the virtual document provider for section diffs (once).
 		if (!KqlxEditorProvider.sectionDiffProviderRegistered) {
@@ -1170,7 +1174,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 		const provider = new KqlxEditorProvider(
 			context, extensionUri, connectionManager, sqlWorkbench,
-			editorCursorStatusBar, kustoResultPersistenceRegistry,
+			editorCursorStatusBar, kustoResultPersistenceRegistry, isHostOwnedBackgroundFile,
+			transferBackgroundOwnershipOnUserInteraction,
 		);
 		return vscode.window.registerCustomEditorProvider(KqlxEditorProvider.viewType, provider, {
 			supportsMultipleEditorsPerDocument: false,
@@ -1187,6 +1192,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		private readonly sqlWorkbench: SqlWorkbenchService,
 		private readonly editorCursorStatusBar?: EditorCursorStatusBar,
 		private readonly kustoResultPersistenceRegistry = new KustoResultPersistenceRegistry(),
+		private readonly isHostOwnedBackgroundFile?: (uri: vscode.Uri) => boolean,
+		private readonly transferBackgroundOwnershipOnUserInteraction?: (uri: vscode.Uri) => Promise<void>,
 	) {
 		this.context.subscriptions.push(vscode.workspace.onDidCloseTextDocument(document => {
 			const key = normalizeWorkbenchUriKey(document.uri);
@@ -1326,6 +1333,26 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				=== normalizeWorkbenchUriKey(vscode.Uri.joinPath(globalStorageUri, 'session.kqlx'));
 		const viewSessionId = randomUUID();
 		let documentViewSessionActive = true;
+		let userInteractionHandoff: { sourceText: string; promise: Promise<void>; pending: boolean } | undefined;
+		const startUserInteractionHandoff = (): void => {
+			if (outerDisposed || !documentViewSessionActive || userInteractionHandoff
+				|| !this.isHostOwnedBackgroundFile?.(document.uri)) return;
+			const sourceText = document.getText();
+			let promise: Promise<void>;
+			try {
+				promise = this.transferBackgroundOwnershipOnUserInteraction?.(document.uri) ?? Promise.resolve();
+			} catch (error) {
+				promise = Promise.reject(error);
+			}
+			const handoff = { sourceText, promise, pending: true };
+			userInteractionHandoff = handoff;
+			void promise.then(
+				() => { handoff.pending = false; },
+				error => getWorkbenchLogger().warn(
+					'[kusto] Background editor handoff failed:', error instanceof Error ? error : String(error),
+				),
+			);
+		};
 		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
 		const admittedWebviewHandlers = new Set<Promise<void>>();
 		const admittedPersistenceHandlers = new Set<Promise<void>>();
@@ -1394,6 +1421,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 		const admitIncomingWebviewMessage = (input: unknown): IncomingWebviewMessage | undefined => {
 			if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+			if ((input as Record<string, unknown>).type === 'backgroundWorkbenchUserInteraction') {
+				if (!outerDisposed && documentViewSessionActive
+					&& (input as Record<string, unknown>).viewSessionId === viewSessionId) {
+					startUserInteractionHandoff();
+				}
+				return undefined;
+			}
 			if (isDocumentViewWebviewMessageType(input)) {
 				const parsed = parseDocumentViewWebviewMessage(input);
 				if (!parsed.ok
@@ -1648,6 +1682,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 		queryEditor.fileOpenTrace = fileOpenTrace;
 		queryEditor.documentUri = document.uri.toString();
+		queryEditor.setWorkbenchToolMutationReadiness(() =>
+			KqlxEditorProvider.waitForOpenEditorInitialized(document.uri, 30_000, webviewPanel));
 		queryEditor.setMessageTransport(
 			message => startupGateway.postMessage(message),
 			() => startupGateway.beginDispatcherRevalidation(),
@@ -3273,6 +3309,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const pendingProjectionActivations = new Map<string, {
 			generation: number;
 			sourceText: string;
+			result: Promise<boolean>;
 			owner?: MarkdownDocumentOwnerEntry;
 			authorityToken: number;
 			authorityEpoch: number;
@@ -3302,7 +3339,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		) => {
 			const reload = projectionSession.createReloadRequest();
 			const activation = {
-				generation, sourceText, owner, authorityToken, authorityEpoch,
+				generation, sourceText, result: reload.result, owner, authorityToken, authorityEpoch,
 				retryBudget, requestId, policyFingerprint, sourceChangeFollowUpAvailable,
 				kustoSourceAdmission,
 			};
@@ -3852,19 +3889,91 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					if (pendingLinkedNativeSave && !await rollbackPendingLinkedNativeSave()) {
 						throw new Error('Cannot save because a previous linked-query Save could not be rolled back.');
 					}
+					const backgroundOwned = this.isHostOwnedBackgroundFile?.(document.uri) ?? false;
+					const initialSource = !webviewInitialized || backgroundOwned
+						? parseKqlxText(document.getText(), { allowedKinds: [documentKind], defaultKind: documentKind })
+						: undefined;
+					const sourceHasOwnedSectionsAtSave = initialSource?.ok && initialSource.file.state.sections.some(section =>
+						isMarkdownDocumentOwnedSectionKind(canonicalSectionKind(String((section as any)?.type || ''))),
+						);
+					if (sourceHasOwnedSectionsAtSave && initialSource?.ok
+						&& backgroundOwned
+						&& markdownDocumentQueue.pendingCommands === 0 && activeSourceMutations === 0
+						&& markdownDocumentQueue.activePersistenceLeases.size === 0
+						&& activeNativeMarkdownSaveLeases.size === 0 && !pendingNativeResultRestore
+						&& !linkedQueryUri && initialSource.file.state.sections.every(section => {
+							const record = section as Record<string, unknown>;
+							return !('resultJson' in record) && !('resultArtifact' in record)
+								&& !String(record.linkedQueryPath || '').trim();
+						})) return [];
+					if (!webviewInitialized && sourceHasOwnedSectionsAtSave && !await ensureInitialDocument()) {
+						throw Object.assign(
+							new Error('Cannot save because the Workbench editor has not accepted its initial notebook projection.'),
+							{ markdownBarrierFailed: true },
+						);
+					}
 					if (markdownCommandBarrierSupported) {
-						markdownSaveLease = await requestMarkdownCommandBarrier();
-						if (!markdownSaveLease) {
-							throw Object.assign(
-								new Error('Cannot save because pending Markdown commands did not settle. Reload the file and try again.'),
-								{ markdownBarrierFailed: true },
-							);
-						}
-						activeNativeMarkdownSaveLeases.add(markdownSaveLease);
-						if (outerDisposed) {
-							throw Object.assign(new Error('Cannot save because the editor closed while reserving Markdown state.'), {
-								markdownBarrierFailed: true,
-							});
+						for (let attempt = 0; attempt < 3; attempt++) {
+							const sourceBeforeBarrier = document.getText();
+							if (activeProjectionSourceText !== sourceBeforeBarrier
+								&& markdownDocumentQueue.pendingCommands > 0) {
+								throw Object.assign(
+									new Error('Cannot save while pending Markdown commands belong to an older notebook projection.'),
+									{ markdownBarrierFailed: true },
+								);
+							}
+							if (activeProjectionSourceText !== sourceBeforeBarrier
+								|| markdownDocumentQueue.latestAuthority?.sourceText !== sourceBeforeBarrier) {
+								const pendingProjection = [...pendingProjectionActivations.values()]
+									.filter(candidate => candidate.sourceText === sourceBeforeBarrier)
+									.sort((left, right) => right.generation - left.generation)[0];
+								const accepted = pendingProjection
+									? await pendingProjection.result
+									: await postDocument({ forceReload: true });
+								await projectionActivationTail;
+								if (!accepted || activeProjectionSourceText !== document.getText()
+									|| markdownDocumentQueue.latestAuthority?.sourceText !== document.getText()) {
+									if (attempt < 2 && sourceBeforeBarrier !== document.getText()) continue;
+									throw Object.assign(
+										new Error('Cannot save because the latest notebook text was not accepted by the Workbench editor.'),
+										{ markdownBarrierFailed: true },
+									);
+								}
+							}
+							markdownSaveLease = await requestMarkdownCommandBarrier();
+							if (!markdownSaveLease) {
+								if (attempt < 2 && sourceBeforeBarrier !== document.getText()) continue;
+								throw Object.assign(
+									new Error('Cannot save because pending Markdown commands did not settle. Reload the file and try again.'),
+									{ markdownBarrierFailed: true },
+								);
+							}
+							activeNativeMarkdownSaveLeases.add(markdownSaveLease);
+							if (outerDisposed) {
+								throw Object.assign(new Error('Cannot save because the editor closed while reserving Markdown state.'), {
+									markdownBarrierFailed: true,
+								});
+							}
+							const currentSource = document.getText();
+							if (activeProjectionSourceText === currentSource
+								&& markdownDocumentQueue.latestAuthority?.sourceText === currentSource
+								&& markdownSaveLease.sourceGeneration === activeProjectionGeneration
+								&& markdownSaveLease.sourceAuthorityToken === activeProjectionAuthorityToken
+								&& markdownSaveLease.sourceAuthorityToken === markdownDocumentQueue.latestAuthority?.token
+								&& (markdownSaveLease.owner
+									? activeMarkdownOwnerEntry === markdownSaveLease.owner
+										&& this.markdownDocuments.get(markdownDocumentKey) === markdownSaveLease.owner
+									: activeMarkdownOwnerEntry === undefined
+										&& this.markdownDocuments.get(markdownDocumentKey) === undefined)) break;
+							settleActiveNativeMarkdownSaveLease(markdownSaveLease);
+							markdownSaveLease = undefined;
+							if (attempt === 2 || sourceBeforeBarrier === currentSource
+								|| markdownDocumentQueue.pendingCommands > 0) {
+								throw Object.assign(
+									new Error('Cannot save because the notebook source or Markdown owner changed while reserving state.'),
+									{ markdownBarrierFailed: true },
+								);
+							}
 						}
 					}
 					if (activeSourceMutations > 0) {
@@ -4935,6 +5044,34 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					message = persistMessage.value as IncomingWebviewMessage;
 					const flushRequestId = persistMessage.value.flushRequestId;
 					if (flushRequestId && !finalPersistSession.hasPendingFinalPersistRequest(String(flushRequestId))) return;
+					const isUserSaveSnapshot = persistMessage.value.reason === 'user-save'
+						&& persistMessage.value.flush === true && !!persistMessage.value.snapshotId;
+					if (!userInteractionHandoff && this.isHostOwnedBackgroundFile?.(document.uri)
+						&& !isUserSaveSnapshot) return;
+					if (isUserSaveSnapshot) startUserInteractionHandoff();
+					if (userInteractionHandoff) {
+						const handoff = userInteractionHandoff;
+						const handoffWasPending = handoff.pending;
+						try {
+							await handoff.promise;
+						} catch (error) {
+							if (isUserSaveSnapshot && !outerDisposed) {
+								if (userInteractionHandoff === handoff) userInteractionHandoff = undefined;
+								void vscode.window.showErrorMessage(
+									'Kusto Workbench could not save because background editor ownership did not transfer. Review it and save again.',
+								);
+							}
+							return;
+						}
+						if (outerDisposed) return;
+						if (isUserSaveSnapshot && document.getText() !== handoff.sourceText
+							&& (handoffWasPending || activeProjectionSourceText !== document.getText())) {
+							void vscode.window.showErrorMessage(
+								'Kusto Workbench could not save because the notebook changed during a background edit. Review it and save again.',
+							);
+							return;
+						}
+					}
 					await projectionActivationTail;
 					const flushUnavailableReason = persistMessage.value.flushUnavailableReason;
 					const snapshotId = persistMessage.value.snapshotId || '';
@@ -5037,6 +5174,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const persistProjectionGeneration = activeProjectionGeneration;
 					const reloadEpochAtAdmission = sourceReloadEpoch;
 					const persistReason = String((message as any).reason || '');
+					const userSaveRequested = !isSessionFile && persistReason === 'user-save'
+						&& persistMessage.value.flush === true && !!snapshotId && !flushRequestId;
 					const materializeKustoResultAttachment = persistReason === 'kusto-result-attachment-committed';
 					const allowDisposedPersist = isSessionFile && persistReason === 'beforeunload';
 					const isPersistCurrent = () => (allowDisposedPersist || !outerDisposed)
@@ -5531,6 +5670,17 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						} finally {
 							releasePersistDecision();
 							markdownPersistenceLease?.settle();
+							if (userSaveRequested && !outerDisposed) {
+								try {
+									if (!persistAccepted || acceptedSourceText !== document.getText()
+										|| !await document.save()) {
+										throw new Error('The current editor snapshot was not saved.');
+										}
+								} catch (error) {
+									getWorkbenchLogger().warn('[kusto] Explicit document Save failed:', error instanceof Error ? error : String(error));
+									void vscode.window.showErrorMessage('Kusto Workbench could not save the current document. Check its state and try again.');
+								}
+							}
 						}
 						if (saveDocumentAfterDecision && !outerDisposed) {
 							try { await document.save(); } catch { /* ignore */ }

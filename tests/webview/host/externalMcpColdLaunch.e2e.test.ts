@@ -11,6 +11,7 @@ import {
 	writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { copyFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { Client } from '@modelcontextprotocol/client';
@@ -19,6 +20,7 @@ import extractZip from 'extract-zip';
 import * as vscode from 'vscode';
 import { describe, expect, it } from 'vitest';
 import { installExternalMcpConnector } from '../../../src/host/externalMcpConnectorInstaller';
+import { acquireExternalMcpRuntimeArchive } from '../../../src/host/externalMcpRuntime';
 import { executeVsCodeCli } from '../../../src/host/externalMcpSetup';
 
 const enabled = process.platform === 'win32'
@@ -80,6 +82,26 @@ function collectVsCodeDiagnostics(userDataDirectory: string): string {
 		.flatMap(path => readFileSync(path, 'utf8').split(/\r?\n/)
 			.map(line => `${path.slice(logsDirectory.length + 1)}: ${line}`));
 	return lines.slice(-200).join('\n') || `No relevant lines found in ${paths.length} VS Code log files.`;
+}
+
+function collectSaveFailures(userDataDirectory: string): string[] {
+	const logsDirectory = join(userDataDirectory, 'logs');
+	if (!existsSync(logsDirectory)) return [];
+	const failures: string[] = [];
+	const visit = (directory: string): void => {
+		for (const entry of readdirSync(directory, { withFileTypes: true })) {
+			const filePath = join(directory, entry.name);
+			if (entry.isDirectory()) visit(filePath);
+			else if (/^(?:exthost|Kusto Workbench)\.log$/i.test(entry.name)) {
+				failures.push(...readFileSync(filePath, 'utf8').split(/\r?\n/)
+					.filter(line => line.includes('onWillSaveTextDocument-listener') && line.includes('threw ERROR')
+						|| line.includes('[sql-persistence] Final snapshot unavailable; saving fail-closed state:'))
+					.map(line => `${filePath.slice(logsDirectory.length + 1)}: ${line}`));
+			}
+		}
+	};
+	visit(logsDirectory);
+	return failures;
 }
 
 function findVsCode(): { commandFile: string; executable: string } {
@@ -154,6 +176,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 			profileArgs: ['--user-data-dir', userDataDirectory, '--extensions-dir', extensionsDirectory],
 		};
 		let client: Client | undefined;
+		let failure: Error | undefined;
 		try {
 			await packVsix({
 				cwd: extensionRoot,
@@ -182,6 +205,12 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 				localAppData,
 				systemRoot: process.env.SystemRoot!,
 				codeExecutable: vsCode.executable,
+				...(process.env.KUSTO_WORKBENCH_MCP_STRESS_RUNTIME_ARCHIVE ? {
+					acquireRuntimeArchive: (metadata, cacheDirectory) => acquireExternalMcpRuntimeArchive(
+						metadata, cacheDirectory,
+						async (_url, destination) => copyFile(process.env.KUSTO_WORKBENCH_MCP_STRESS_RUNTIME_ARCHIVE!, destination),
+					),
+				} : {}),
 				codeArguments: [
 					'--user-data-dir', userDataDirectory,
 					'--extensions-dir', extensionsDirectory,
@@ -304,6 +333,47 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 			}
 			expect(firstOpenFile).toBeDefined();
 			expect(querySection).toBeDefined();
+			if (process.env.KUSTO_WORKBENCH_RUN_MCP_STRESS === '1') {
+				let secondReady = false;
+				const secondReadyDeadline = Date.now() + 30_000;
+				while (!secondReady && Date.now() < secondReadyDeadline) {
+					const listedSecond = jsonResult<{ openFiles: ListedOpenFile[] }>(await executeOperation({
+						name: 'listSections', arguments: { instanceId: second.instanceId },
+					}, { timeout: 60_000 }));
+					secondReady = listedSecond.openFiles.some(file =>
+						file.filePath && pathKey(file.filePath) === pathKey(secondPath.filePath) && !!file.sections);
+					if (!secondReady) await new Promise(resolvePromise => setTimeout(resolvePromise, 250));
+				}
+				expect(secondReady).toBe(true);
+				for (const concurrency of [1, 4, 8, 16]) {
+					const durations: number[] = [];
+					for (let startIndex = 0; startIndex < 32; startIndex += concurrency) {
+						await Promise.all(Array.from({ length: Math.min(concurrency, 32 - startIndex) }, async (_, offset) => {
+							const requestIndex = startIndex + offset;
+							const target = requestIndex % 2 === 0 ? first : second;
+							const ownPath = requestIndex % 2 === 0 ? firstPath.filePath : secondPath.filePath;
+							const otherPath = requestIndex % 2 === 0 ? secondPath.filePath : firstPath.filePath;
+							const started = performance.now();
+							if (requestIndex % 4 < 2) {
+								const checked = jsonResult<{ instanceId: string; compatible: boolean }>(await executeOperation({
+									name: 'checkWorkbenchInstance', arguments: { instanceId: target.instanceId },
+								}, { timeout: 60_000 }));
+								expect(checked).toMatchObject({ instanceId: target.instanceId, compatible: true });
+							} else {
+								const listed = jsonResult<{ openFiles: ListedOpenFile[] }>(await executeOperation({
+									name: 'listSections', arguments: { instanceId: target.instanceId },
+								}, { timeout: 60_000 }));
+								const paths = listed.openFiles.flatMap(file => file.filePath ? [pathKey(file.filePath)] : []);
+								expect(paths).toContain(pathKey(ownPath));
+								expect(paths).not.toContain(pathKey(otherPath));
+							}
+							durations.push(performance.now() - started);
+						}));
+					}
+					durations.sort((left, right) => left - right);
+					console.info(`MCP provider concurrency ${concurrency}: 32 calls, p95 ${durations[30].toFixed(1)} ms, max ${durations[31].toFixed(1)} ms`);
+				}
+			}
 
 			const configuredQuery = jsonResult<{ success: boolean }>(await executeOperation({
 				name: 'configureKustoQuerySection',
@@ -437,6 +507,117 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 			}, { timeout: 60_000 }));
 			expect(crossSave.success).toBe(false);
 			expect(crossSave.error).toContain('No matching open Kusto Workbench file');
+			if (process.env.KUSTO_WORKBENCH_RUN_MCP_STRESS === '1') {
+				const findOpenFile = async (instanceId: string, filePath: string): Promise<ListedOpenFile> => {
+					const deadline = Date.now() + 30_000;
+					while (Date.now() < deadline) {
+						const listedFiles = jsonResult<{ openFiles: ListedOpenFile[] }>(await executeOperation({
+							name: 'listSections', arguments: { instanceId },
+						}, { timeout: 60_000 }));
+						const found = listedFiles.openFiles.find(file =>
+							file.filePath && pathKey(file.filePath) === pathKey(filePath) && file.sections);
+						if (found) return found;
+						await new Promise(resolvePromise => setTimeout(resolvePromise, 250));
+					}
+					throw new Error(`Workbench did not expose the isolated report ${filePath}.`);
+				};
+				const executeAfterExplicitLoading = async <T>(
+					request: { name: string; arguments: Record<string, unknown> }, marker: string,
+				): Promise<T> => {
+					const deadline = Date.now() + 30_000;
+					while (true) {
+						const response = await executeOperation(request, { timeout: 60_000 });
+						if (textResult(response) !== 'Error: This document is still loading and cannot accept mutations yet.') {
+							return jsonResult<T>(response);
+						}
+						if (Date.now() >= deadline) throw new Error(`${marker}: ${request.name} never became ready.`);
+						await new Promise(resolvePromise => setTimeout(resolvePromise, 250));
+					}
+				};
+				const stressCycles = Number(process.env.KUSTO_WORKBENCH_MCP_STRESS_CYCLES ?? 10);
+				expect(Number.isSafeInteger(stressCycles) && stressCycles >= 1 && stressCycles <= 10).toBe(true);
+				const started = performance.now();
+				await Promise.all([first, second].map(async (instance, instanceIndex) => {
+					const workspaceFolder = instanceIndex === 0 ? firstWorkspace : secondWorkspace;
+					const otherWorkspace = instanceIndex === 0 ? secondWorkspace : firstWorkspace;
+					for (let iteration = 0; iteration < stressCycles; iteration++) {
+						const marker = `Window${instanceIndex}-Revision${iteration}`;
+						const query = `print Marker = "${marker}"`;
+						const markdownText = `# ${marker}`;
+						const created = jsonResult<{ success: boolean; filePath: string }>(await executeOperation({
+							name: 'createKustoFile', arguments: {
+								instanceId: instance.instanceId, fileType: 'kqlx',
+								filePath: join(workspaceFolder, `stress-${instanceIndex}-${iteration}`),
+								initialContent: query, reveal: false,
+							},
+						}, { timeout: 60_000 }));
+						expect(created.success).toBe(true);
+						expect(pathKey(created.filePath)).toBe(pathKey(join(workspaceFolder, `stress-${instanceIndex}-${iteration}.kqlx`)));
+						expect(existsSync(join(otherWorkspace, `stress-${instanceIndex}-${iteration}.kqlx`))).toBe(false);
+						const openFile = await findOpenFile(instance.instanceId, created.filePath);
+						const source = openFile.sections!.find(section => section.type === 'query');
+						expect(source).toBeDefined();
+						const configured = await executeAfterExplicitLoading<{ success: boolean }>({
+							name: 'configureKustoQuerySection', arguments: {
+								instanceId: instance.instanceId, openFileId: openFile.openFileId,
+								sectionId: source!.id, name: marker, query, execute: false,
+							},
+						}, marker);
+						expect(configured.success).toBe(true);
+						const added = await executeAfterExplicitLoading<{ success: boolean; sectionId: string }>({
+							name: 'addSection', arguments: {
+								instanceId: instance.instanceId, openFileId: openFile.openFileId,
+								type: 'markdown', name: marker, text: markdownText,
+							},
+						}, marker);
+						expect(added, `${marker}: ${JSON.stringify(added)}`).toMatchObject({ success: true });
+						const saved = await executeAfterExplicitLoading<{ success: boolean; saved: boolean }>({
+							name: 'saveWorkbenchFile', arguments: { instanceId: instance.instanceId, openFileId: openFile.openFileId },
+						}, marker);
+						expect(saved).toMatchObject({ success: true, saved: true });
+						const savedText = readFileSync(created.filePath, 'utf8');
+						const sections = (JSON.parse(savedText) as { state: { sections: Array<Record<string, unknown>> } }).state.sections;
+						expect(sections).toEqual(expect.arrayContaining([
+							expect.objectContaining({ id: source!.id, type: 'query', name: marker, query }),
+							expect.objectContaining({ id: added.sectionId, type: 'markdown', title: marker, text: markdownText }),
+						]));
+						const closed = await executeAfterExplicitLoading<{ success: boolean; closed: boolean }>({
+							name: 'closeWorkbenchFile', arguments: { instanceId: instance.instanceId, openFileId: openFile.openFileId },
+						}, marker);
+						expect(closed).toMatchObject({ success: true, closed: true });
+						const activated = jsonResult<{ success: boolean }>(await executeOperation({
+							name: 'activateWorkbenchFile', arguments: { instanceId: instance.instanceId, targetFileUri: created.filePath },
+						}, { timeout: 60_000 }));
+						expect(activated.success).toBe(true);
+						const reopened = await findOpenFile(instance.instanceId, created.filePath);
+						expect(reopened.sections?.map(section => section.id)).toEqual([source!.id, added.sectionId]);
+						expect(readFileSync(created.filePath, 'utf8')).toBe(savedText);
+						const edited = await executeAfterExplicitLoading<{ success: boolean }>({
+							name: 'updateMarkdownSection', arguments: {
+								instanceId: instance.instanceId, openFileId: reopened.openFileId,
+								sectionId: added.sectionId, text: `${markdownText}\n\nEdited after reopen.`,
+							},
+						}, marker);
+						expect(edited.success).toBe(true);
+						const resaved = await executeAfterExplicitLoading<{ success: boolean; saved: boolean }>({
+							name: 'saveWorkbenchFile', arguments: { instanceId: instance.instanceId, openFileId: reopened.openFileId },
+						}, marker);
+						expect(resaved).toMatchObject({ success: true, saved: true });
+						const revised = (JSON.parse(readFileSync(created.filePath, 'utf8')) as {
+							state: { sections: Array<Record<string, unknown>> };
+						}).state.sections;
+						expect(revised).toEqual(expect.arrayContaining([
+							expect.objectContaining({ id: added.sectionId, title: marker, text: `${markdownText}\n\nEdited after reopen.` }),
+						]));
+						const finished = await executeAfterExplicitLoading<{ success: boolean; closed: boolean }>({
+							name: 'closeWorkbenchFile', arguments: { instanceId: instance.instanceId, openFileId: reopened.openFileId },
+						}, marker);
+						expect(finished).toMatchObject({ success: true, closed: true });
+					}
+					console.info(`MCP window ${instanceIndex}: ${stressCycles} saved/reopened report cycles passed`);
+				}));
+				console.info(`MCP report cycles: ${stressCycles * 2} total in ${((performance.now() - started) / 1000).toFixed(1)} s`);
+			}
 
 			const listed = jsonResult<{ instances: Array<{ instanceId: string }> }>(await executeOperation({
 				name: 'listWorkbenchInstances',
@@ -446,16 +627,28 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 				.toEqual([first.instanceId, second.instanceId].sort());
 			expect(readdirSync(join(localAppData, 'KustoWorkbench', 'McpConnector', 'launches'))).toHaveLength(2);
 			expect(stderr).toBe('');
+			if (process.env.KUSTO_WORKBENCH_RUN_MCP_STRESS === '1') {
+				expect(existsSync(join(userDataDirectory, 'logs'))).toBe(true);
+				expect(collectSaveFailures(userDataDirectory)).toEqual([]);
+			}
 		} catch (error) {
-			await stopIsolatedVsCode(userDataDirectory).catch(() => undefined);
-			throw new Error(
+			failure = new Error(
 				`${error instanceof Error ? error.message : String(error)}\n\n${collectVsCodeDiagnostics(userDataDirectory)}`,
 				{ cause: error },
 			);
+			throw failure;
 		} finally {
 			await client?.close().catch(() => undefined);
-			await stopIsolatedVsCode(userDataDirectory).catch(() => undefined);
-			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+			try {
+				await stopIsolatedVsCode(userDataDirectory);
+			} catch (cleanupError) {
+				throw new AggregateError(
+					[...(failure ? [failure] : []), cleanupError],
+					`Isolated VS Code cleanup failed; retained ${root} for inspection.`,
+				);
+			}
+			if (failure) console.error(`Retained isolated MCP test artifacts at ${root}`);
+			else rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 		}
-	}, 540_000);
+	}, process.env.KUSTO_WORKBENCH_RUN_MCP_STRESS === '1' ? 1_200_000 : 540_000);
 });

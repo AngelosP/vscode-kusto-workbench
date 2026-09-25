@@ -29,6 +29,7 @@ describe('Scout-compatible Kusto Workbench skill', () => {
 		expect(source).toContain('`list-tools`');
 		expect(source).toContain('pass its exact `instanceId` inside `arguments`');
 		expect(source).toContain('do not replay it');
+		expect(source).toContain('This document is still loading and cannot accept mutations yet.');
 		expect(source).toContain('`reveal: false`');
 		expect(source).toContain('`saveWorkbenchFile`');
 	});
