@@ -982,6 +982,26 @@ describe('persistence round-trip', () => {
 		}
 	});
 
+	it('restores saved Kusto Copilot chat visibility and width without focusing it', () => {
+		const section = {
+			setCopilotChatVisible: vi.fn(),
+			setCopilotChatWidthPx: vi.fn(),
+		};
+		vi.mocked(__kustoGetQuerySectionElement).mockReturnValue(section as any);
+
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentUri: 'file:///tmp/kusto-chat.kqlx',
+			state: { sections: [{
+				id: 'query_chat_saved', type: 'query', query: 'print Saved=1',
+				copilotChatVisible: true, copilotChatWidthPx: 360,
+			}] },
+		});
+
+		expect(section.setCopilotChatVisible).toHaveBeenCalledWith(true, false);
+		expect(section.setCopilotChatWidthPx).toHaveBeenCalledWith(360);
+	});
+
 	it('publishes a local schema prewarm token only after claiming stamped lifecycle ownership', () => {
 		vi.useFakeTimers();
 		const boxId = 'query_prewarm_claim';
@@ -4809,6 +4829,58 @@ describe('persistence round-trip', () => {
 		}
 	});
 
+	it('does not persist an unchanged saved result that becomes available after restoration', () => {
+		vi.useFakeTimers();
+		const clusterUrl = 'https://layout-restored.kusto.windows.net';
+		testState.kustoConnections.push(ownedKustoConnection({ id: 'layout-restored', clusterUrl }));
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		try {
+		const resultJson = JSON.stringify({
+			columns: [{ name: 'Value', type: 'int' }], rows: [[1]], metadata: {},
+		});
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentUri: 'file:///tmp/query-layout-restored.kqlx',
+			state: { sections: [{
+				id: 'query_layout_restored', type: 'query', name: 'Saved result',
+				clusterUrl, database: 'Db', query: 'print Value=1', resultsHeightPx: 182, resultJson,
+				...kustoResultOwner,
+			}] },
+		});
+		const queryEl = document.getElementById('query_layout_restored') as HTMLElement & { serialize: () => unknown };
+		let admitted = false;
+		let query = 'print Value=1';
+		queryEl.serialize = () => ({
+			id: 'query_layout_restored', type: 'query', name: 'Saved result',
+			query, resultsHeightPx: 182, clusterUrl, database: 'Db',
+			...(admitted ? {
+				resultJson, resultArtifact: {
+					version: 1, artifactId: 'result:query_layout_restored:1',
+					sourceBoxId: 'query_layout_restored', revision: 1, createdAt: 1,
+				}, ...kustoResultOwner,
+			} : {}),
+		});
+		adoptCurrentStateAsCleanForTest();
+		flushDeferredRestoreTimers();
+		admitted = true;
+
+		vi.mocked(postMessageToHost).mockClear();
+		schedulePersist(undefined, true);
+		expect(postMessageToHost).not.toHaveBeenCalled();
+		query = 'print Value=2';
+		schedulePersist(undefined, true);
+		expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'persistDocument', state: expect.objectContaining({
+				sections: [expect.objectContaining({ query: 'print Value=2' })],
+			}),
+		}));
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('adopts automatic owner proof enrichment without hiding authored target changes', () => {
 		vi.useFakeTimers();
 		try {
@@ -7102,6 +7174,11 @@ describe('persistence round-trip', () => {
 	});
 
 	it('restores compatibility query connection data before connection selectors refresh', () => {
+		const section = {
+			setCopilotChatVisible: vi.fn(),
+			setCopilotChatWidthPx: vi.fn(),
+		};
+		vi.mocked(__kustoGetQuerySectionElement).mockReturnValue(section as any);
 		handleDocumentDataMessage({
 			type: 'documentData',
 			ok: true,
@@ -7117,6 +7194,8 @@ describe('persistence round-trip', () => {
 						query: 'StormEvents | take 5',
 						clusterUrl: 'https://help.kusto.windows.net',
 						database: 'Samples',
+						copilotChatVisible: true,
+						copilotChatWidthPx: 360,
 					},
 				],
 			},
@@ -7135,6 +7214,8 @@ describe('persistence round-trip', () => {
 
 		const restoredQueryId = String(testState.addQueryBox.mock.results[0]?.value || '');
 		expect(pState.pendingQueryTextByBoxId[restoredQueryId]).toBe('StormEvents | take 5');
+		expect(section.setCopilotChatVisible).toHaveBeenCalledWith(true, false);
+		expect(section.setCopilotChatWidthPx).toHaveBeenCalledWith(360);
 	});
 
 	it('ignores duplicate documentData for same document unless forced', () => {

@@ -1866,6 +1866,66 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('unchanged projected native sections never materialize on a persist echo', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-native-projected-noop-'));
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		try {
+			for (const [index, sections] of [
+				[],
+				[{ type: 'query', query: 'print Historical=1' }],
+			].entries()) {
+				const notebookPath = path.join(tmpDir, `historical-${index}.kqlx`);
+				const originalText = JSON.stringify({ kind: 'kqlx', version: 1, state: { sections } });
+				fs.writeFileSync(notebookPath, originalText, 'utf8');
+				const document = await vscode.workspace.openTextDocument(vscode.Uri.file(notebookPath));
+				let applyEditCalls = 0;
+				(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+					if (edit.entries().some(([uri]) => uri.toString() === document.uri.toString())) applyEditCalls++;
+					return originalApplyEdit(edit);
+				};
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				const posted: any[] = [];
+				const provider = new (KqlxEditorProvider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-${index}`)),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				) as KqlxEditorProvider;
+				const panel = {
+					webview: {
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+						onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					},
+					onDidDispose: () => ({ dispose() {} }),
+				} as any;
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const projection = [...posted].reverse().find(message => message?.type === 'documentData' && message.ok === true);
+				assert.ok(projection);
+				assert.strictEqual(projection.state.sections.length, 1);
+				assert.ok(String(projection.state.sections[0].id || '').startsWith('section_'));
+				const snapshotId = `native-projected-noop-${index}`;
+				await Promise.resolve(receiveHandler!({
+					type: 'persistDocument', snapshotId, editRevision: 1,
+					sourceGeneration: projection.sourceGeneration, state: projection.state,
+				}));
+				await waitForCondition(
+					() => posted.some(message => message?.type === 'persistDocumentAck' && message.snapshotId === snapshotId),
+					'unmodified projected native state should acknowledge without an edit',
+				);
+				assert.strictEqual(applyEditCalls, 0, 'opening an ID-less notebook must not apply an edit');
+				assert.strictEqual(document.isDirty, false);
+				assert.strictEqual(document.getText(), originalText);
+				assert.strictEqual(fs.readFileSync(notebookPath, 'utf8'), originalText);
+			}
+		} finally {
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('linked CRLF query stays clean for EOL-only persistence and accepts subsequent edits', async () => {
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-linked-crlf-'));
 		const linkedPath = path.join(tmpDir, 'linked.kql');

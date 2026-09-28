@@ -5,7 +5,7 @@ import '../../src/webview/sections/kw-query-section.js';
 import type { KwQuerySection } from '../../src/webview/sections/kw-query-section.js';
 import type { KwDropdown } from '../../src/webview/components/kw-dropdown.js';
 import { setKustoFavorites, setQueryBoxes } from '../../src/webview/core/state.js';
-import { __kustoUpdateFavoritesUiForAllBoxes } from '../../src/webview/sections/query-connection.controller.js';
+import { __kustoMaybeDefaultFirstBoxToFavoritesMode, __kustoSetFavoritesModeForBox, __kustoUpdateFavoritesUiForAllBoxes } from '../../src/webview/sections/query-connection.controller.js';
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -41,6 +41,31 @@ function getDropdownButtonText(dropdown: KwDropdown): string {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('kw-query-section favorites dropdown', () => {
+
+	it('keeps automatic Favorites mode display-only until the user selects a mode', async () => {
+		const section = createSection('query_auto_favorites');
+		section.id = 'query_auto_favorites';
+		await section.updateComplete;
+		setQueryBoxes(['query_auto_favorites']);
+		setKustoFavorites([{ connectionId: 'conn1', clusterUrl: 'https://example.kusto.windows.net', database: 'Samples', name: 'Saved Favorite' }]);
+		section.setFavorites([{ connectionId: 'conn1', clusterUrl: 'https://example.kusto.windows.net', database: 'Samples', name: 'Saved Favorite' }]);
+		section.addEventListener('favorites-mode-changed', event => {
+			const detail = (event as CustomEvent<{ boxId: string; favoritesMode: boolean }>).detail;
+			__kustoSetFavoritesModeForBox(detail.boxId, detail.favoritesMode);
+		});
+
+		__kustoMaybeDefaultFirstBoxToFavoritesMode();
+		expect(section.isFavoritesMode()).toBe(true);
+		expect(section.serialize()).not.toHaveProperty('favoritesMode');
+
+		await section.updateComplete;
+		section.shadowRoot!.querySelector<HTMLButtonElement>('button[aria-label="Show cluster and database picker"]')!.click();
+		expect(section.serialize()).toHaveProperty('favoritesMode', false);
+
+		await section.updateComplete;
+		section.shadowRoot!.querySelector<HTMLButtonElement>('button[aria-label="Show favorites"]')!.click();
+		expect(section.serialize()).toHaveProperty('favoritesMode', true);
+	});
 
 	it('updates favorites dropdowns for every Kusto section in the current webview', async () => {
 		render(html`

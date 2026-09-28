@@ -554,6 +554,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 								'kusto-workbench-offline-e2e-token',
 								[connection.id],
 							);
+							await testAuthPreferences.waitForProviderAccountRefresh();
 							await testAuthPreferences.waitForWriteSettlement();
 							await connectionManager.waitForSettlement();
 							if (testAuthPreferences.getPreferredAccountId(connection.id)

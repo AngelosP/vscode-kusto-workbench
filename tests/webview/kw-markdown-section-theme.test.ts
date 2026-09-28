@@ -417,6 +417,26 @@ describe('KwMarkdownSection Markdown portability', () => {
 				delim: '-',
 				rawHTML: ['<ul>', '</ul>'],
 			});
+			for (const marker of ['*', '+', '-']) {
+				const listNode: any = { type: { name: 'bulletList' }, attrs: { htmlAttrs: null } };
+				const transaction = {
+					setNodeMarkup: (_pos: number, _type: unknown, attrs: unknown) => { listNode.attrs = attrs; return transaction; },
+				};
+				const view = {
+					state: { doc: { descendants: (visit: (node: unknown, pos: number) => void) => visit(listNode, 0) }, tr: transaction },
+					dispatch: vi.fn(),
+				};
+				const sourceList = { type: 'list', listData: { type: 'bullet', bulletChar: marker } };
+				(KwMarkdownSection as any)._restoreBulletMarkers({
+					toastMark: { getRootNode: () => ({ type: 'document', firstChild: sourceList }) },
+					wwEditor: { view },
+				});
+				expect(listNode.attrs.htmlAttrs).toEqual({});
+				expect(renderBulletList({ node: listNode }, { origin: () => original })).toEqual({
+					delim: marker,
+					rawHTML: ['<ul>', '</ul>'],
+				});
+			}
 		} finally {
 			(section as any)._editorApi?.dispose();
 			delete (window as any).toastui;

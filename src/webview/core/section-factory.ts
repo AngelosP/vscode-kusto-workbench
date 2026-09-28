@@ -819,6 +819,7 @@ export function __kustoAutoSizeResults(boxId: any, options?: { markUserResized?:
 	const resultsEl = document.getElementById(id + '_results') as any;
 	if (!w || !resultsEl) return;
 	try { if (getComputedStyle(w).display === 'none') return; } catch (e) { console.error('[kusto]', e); }
+	if (options?.markUserResized === false && w.dataset?.kustoUserResized === 'true') return;
 
 	const dataTableEl = resultsEl.querySelector ? resultsEl.querySelector('kw-data-table') : null;
 	if (dataTableEl && typeof dataTableEl.getContentHeight === 'function') {

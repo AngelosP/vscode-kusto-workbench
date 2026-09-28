@@ -77,6 +77,7 @@ afterEach(() => {
 	vi.useRealTimers();
 	render(nothing, container);
 	container.remove();
+	delete pState.manualQueryEditorHeightPxByBoxId.test1;
 	disposeKustoPreparation('test1');
 	delete databaseRequestTokenByBoxId.test1;
 	delete optimizationMetadataByBoxId.test1;
@@ -543,6 +544,57 @@ describe('kw-query-section loading states', () => {
 		expect(wrapper.style.height).toBe('48px');
 		vi.advanceTimersByTime(200);
 		expect(wrapper.style.height).toBe('48px');
+	});
+
+	it('does not save an automatic editor height without a resize marker', async () => {
+		const el = createSection();
+		await el.updateComplete;
+		const wrapper = el.querySelector('.query-editor-wrapper') as HTMLElement;
+		wrapper.style.height = '180px';
+		expect(el.serialize()).not.toHaveProperty('editorHeightPx');
+		pState.manualQueryEditorHeightPxByBoxId[el.boxId] = 180;
+		expect(el.serialize()).not.toHaveProperty('editorHeightPx');
+
+		wrapper.dataset.kustoUserResized = 'true';
+		expect(el.serialize().editorHeightPx).toBe(180);
+	});
+
+	it('auto-fits loaded query results without saving an unauthored height', async () => {
+		vi.useFakeTimers();
+		const el = createSection();
+		el.id = el.boxId;
+		expect(el.displayResult({
+			columns: [{ name: 'Value', type: 'int' }], rows: [[1]], metadata: {},
+		})).toBe(true);
+		const table = el.querySelector('kw-data-table') as any;
+		await table.updateComplete;
+		table.getContentHeight = vi.fn(() => 193);
+		vi.advanceTimersByTime(200);
+		const wrapper = document.getElementById(el.boxId + '_results_wrapper')!;
+		expect(wrapper.style.height).toBe('213px');
+		expect(el.serialize()).not.toHaveProperty('resultsHeightPx');
+	});
+
+	it('keeps a restored results height through delayed fit and initial table chrome', async () => {
+		vi.useFakeTimers();
+		const el = createSection();
+		el.id = el.boxId;
+		expect(el.displayResult({
+			columns: [{ name: 'Value', type: 'int' }], rows: [[1]], metadata: {},
+		})).toBe(true);
+		const table = el.querySelector('kw-data-table') as any;
+		await table.updateComplete;
+		const wrapper = document.getElementById(el.boxId + '_results_wrapper')!;
+		wrapper.style.height = '182px';
+		wrapper.dataset.kustoUserResized = 'true';
+		wrapper.dataset.kustoRestoredHeight = 'true';
+		wrapper.dataset.kustoRestoredHeightPx = '182';
+		table.getContentHeight = vi.fn(() => 193);
+		vi.advanceTimersByTime(200);
+		expect(wrapper.style.height).toBe('182px');
+		table.dispatchEvent(new CustomEvent('chrome-height-change', { detail: { delta: 31 } }));
+		expect(wrapper.style.height).toBe('182px');
+		expect(el.serialize().resultsHeightPx).toBe(182);
 	});
 
 	it('does not let a detached reveal timer resize a same-ID replacement', async () => {

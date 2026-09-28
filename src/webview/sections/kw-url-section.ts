@@ -164,6 +164,9 @@ export class KwUrlSection extends LitElement implements SectionElement {
 		super.updated(changed);
 		if (changed.has('_fetchState')) {
 			this._renderUrlContent();
+			if (!this._userResized && this.outputHeightPx !== undefined) {
+				this.setOutputHeightPx(this.outputHeightPx);
+			}
 			// Auto-fit after content finishes loading (non-image types).
 			// Images already handle auto-size via __autoSizeImagePending in _renderImage.
 			if (this._autoFitPending) {
@@ -195,7 +198,7 @@ export class KwUrlSection extends LitElement implements SectionElement {
 					name-placeholder="URL name (optional)"
 					@name-change=${this._onShellNameChange}
 					@toggle-visibility=${this._toggleVisibility}
-					@fit-to-contents=${this._fitToContents}>
+					@fit-to-contents=${() => this._fitToContents(true)}>
 					${this._fetchState.expanded && this._isImageContent() ? html`
 					<div slot="header-buttons" class="img-menu-anchor">
 						<button class="unified-btn-secondary md-tab"
@@ -243,7 +246,7 @@ export class KwUrlSection extends LitElement implements SectionElement {
 					<div class="resizer"
 						title="Drag to resize"
 						@mousedown=${this._onResizerMouseDown}
-						@dblclick=${this._fitToContents}></div>
+						@dblclick=${() => this._fitToContents(true)}></div>
 					</div>
 					` : nothing}
 				</kw-section-shell>
@@ -338,6 +341,11 @@ export class KwUrlSection extends LitElement implements SectionElement {
 			img.addEventListener('load', () => {
 				const wrapper = this.shadowRoot?.getElementById('output-wrapper');
 				if (!wrapper) return;
+				if (this._userResized) {
+					st.__autoSizeImagePending = false;
+					st.__autoSizedImageOnce = true;
+					return;
+				}
 
 				let currentH = 0;
 				try { currentH = wrapper.getBoundingClientRect().height; } catch (e) { console.error('[kusto]', e); }
@@ -349,6 +357,11 @@ export class KwUrlSection extends LitElement implements SectionElement {
 				}
 
 				setTimeout(() => {
+					if (this._userResized) {
+						st.__autoSizeImagePending = false;
+						st.__autoSizedImageOnce = true;
+						return;
+					}
 					const resizer = this.shadowRoot?.querySelector('.resizer');
 					const resizerH = resizer ? resizer.getBoundingClientRect().height : 1;
 					const imgH = img.getBoundingClientRect().height;
@@ -356,10 +369,8 @@ export class KwUrlSection extends LitElement implements SectionElement {
 					const maxH = 3000;
 					const nextH = Math.max(minH, Math.min(maxH, Math.ceil(imgH + resizerH)));
 					wrapper.style.height = nextH + 'px';
-					this._userResized = true;
 					st.__autoSizeImagePending = false;
 					st.__autoSizedImageOnce = true;
-					this._schedulePersist();
 				}, 0);
 			}, { once: true });
 		}
@@ -947,9 +958,9 @@ export class KwUrlSection extends LitElement implements SectionElement {
 		return Math.max(120, Math.min(3000, Math.ceil(contentH + RESIZER_HEIGHT)));
 	}
 
-	private _fitToContents(): void {
+	private _fitToContents(persist = false): void {
 		const wrapper = this.shadowRoot?.getElementById('output-wrapper');
-		if (!wrapper) return;
+		if (!wrapper || (!persist && this._userResized)) return;
 
 		// In Mode B (Fill section), cap to image natural height so there's no blank space.
 		if (this._imageSizeMode === 'natural' && this._isImageContent()) {
@@ -958,8 +969,10 @@ export class KwUrlSection extends LitElement implements SectionElement {
 				const resizerH = this.shadowRoot?.querySelector('.resizer')?.getBoundingClientRect().height ?? 1;
 				const maxH = Math.ceil(imgEl.naturalHeight + resizerH);
 				wrapper.style.height = Math.max(120, maxH) + 'px';
-				this._userResized = true;
-				this._schedulePersist();
+				if (persist) {
+					this._userResized = true;
+					this._schedulePersist();
+				}
 				return;
 			}
 		}
@@ -967,8 +980,10 @@ export class KwUrlSection extends LitElement implements SectionElement {
 		const desiredPx = this._computeFitToContentsHeight();
 		wrapper.style.height = desiredPx + 'px';
 		wrapper.style.minHeight = '0';
-		this._userResized = true;
-		this._schedulePersist();
+		if (persist) {
+			this._userResized = true;
+			this._schedulePersist();
+		}
 	}
 
 	// ── Resize handle ─────────────────────────────────────────────────────────

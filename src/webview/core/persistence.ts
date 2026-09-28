@@ -1733,6 +1733,48 @@ function __kustoIsAutomaticOwnerEnrichmentOnly(cleanSignature: string, currentSt
 	}
 }
 
+function __kustoIsAutomaticRestoredResultAdmissionOnly(cleanSignature: string, currentState: unknown): boolean {
+	try {
+		if (!cleanSignature) return false;
+		const clean = JSON.parse(cleanSignature) as { sections?: Array<Record<string, unknown>> };
+		const current = JSON.parse(JSON.stringify(currentState)) as { sections?: Array<Record<string, unknown>> };
+		const cleanById = new Map((Array.isArray(clean.sections) ? clean.sections : [])
+			.map(section => [String(section?.id || '').trim(), section] as const)
+			.filter(([id]) => !!id));
+		let admitted = false;
+		for (const section of Array.isArray(current.sections) ? current.sections : []) {
+			const id = String(section?.id || '').trim();
+			const source = __kustoAcknowledgedRuntimeSourceSections[id] as Record<string, unknown> | undefined;
+			const original = cleanById.get(id);
+			if (!original || !source || String(source.type) !== 'query'
+				|| typeof source.resultJson !== 'string' || !source.resultJson
+				|| typeof source.kustoAccountPartition !== 'string'
+				|| !Number.isSafeInteger(source.kustoLeaveNoTraceRevision)
+				|| Object.prototype.hasOwnProperty.call(original, 'resultJson')
+				|| !Object.prototype.hasOwnProperty.call(section, 'resultJson')) continue;
+			if (section.resultJson !== __kustoGetStoredQueryResultToken(id, source.resultJson)) return false;
+			for (const key of ['kustoAccountPartition', 'kustoLeaveNoTraceRevision']) {
+				if (Object.prototype.hasOwnProperty.call(original, key)) continue;
+				if (section[key] !== source[key]) return false;
+				delete section[key];
+			}
+			if (!Object.prototype.hasOwnProperty.call(original, 'resultArtifact')
+				&& Object.prototype.hasOwnProperty.call(section, 'resultArtifact')) {
+				const artifact = section.resultArtifact as Record<string, unknown> | undefined;
+				if (!artifact || (source.resultArtifact !== undefined
+					? JSON.stringify(artifact) !== JSON.stringify(source.resultArtifact)
+					: artifact.sourceBoxId !== id)) return false;
+				delete section.resultArtifact;
+			}
+			delete section.resultJson;
+			admitted = true;
+		}
+		return admitted && JSON.stringify(clean) === JSON.stringify(current);
+	} catch {
+		return false;
+	}
+}
+
 function __kustoHasPendingRestoredResultsForCurrentDocument(): boolean {
 	const documentUri = String(pState.documentUri || '');
 	return __kustoDeferredRestoredResultJobs.some(__kustoIsDeferredResultJobDocumentCurrent)
@@ -2726,7 +2768,10 @@ export function schedulePersist(reason?: any, immediate?: any) {
 				if (signature === __kustoLastPersistSignature) {
 					return undefined;
 				}
-				if (!r && __kustoIsAutomaticOwnerEnrichmentOnly(__kustoLastPersistSignature, signatureState)) {
+				if (!r && !hostResultStatePending && (
+					__kustoIsAutomaticOwnerEnrichmentOnly(__kustoLastPersistSignature, signatureState)
+					|| __kustoIsAutomaticRestoredResultAdmissionOnly(__kustoLastPersistSignature, signatureState)
+				)) {
 					__kustoLastPersistSignature = signature;
 					__kustoLastPersistRevision = pState.documentEditRevision;
 					__kustoLastSentPersistSignature = signature;
@@ -2765,8 +2810,9 @@ export function schedulePersist(reason?: any, immediate?: any) {
 				const prepared = prepareStateForPersist();
 				if (!prepared) return;
 				const { state, signatureState, signature: sig } = prepared;
-				if (!r && sig !== __kustoLastPersistSignature
-					&& __kustoIsAutomaticOwnerEnrichmentOnly(__kustoLastPersistSignature, signatureState)) {
+				if (!r && !hostResultStatePending && sig !== __kustoLastPersistSignature
+					&& (__kustoIsAutomaticOwnerEnrichmentOnly(__kustoLastPersistSignature, signatureState)
+						|| __kustoIsAutomaticRestoredResultAdmissionOnly(__kustoLastPersistSignature, signatureState))) {
 					__kustoLastPersistSignature = sig;
 					__kustoLastPersistRevision = pState.documentEditRevision;
 					__kustoLastSentPersistSignature = sig;
@@ -3310,6 +3356,8 @@ function applyKqlxState(
 			let suggestedAuthorityId = '';
 			let suggestedConnectionIdHint = '';
 			let suggestedDatabase = '';
+			let savedChatVisible: boolean | undefined;
+			let savedChatWidthPx: number | undefined;
 			let projectedPrimaryId = '';
 			try {
 				const sections = Array.isArray(s.sections) ? s.sections : [];
@@ -3325,6 +3373,11 @@ function applyKqlxState(
 						suggestedAuthorityId = first ? String(first.authorityId || '') : '';
 						suggestedConnectionIdHint = first ? String(first.connectionIdHint || '') : '';
 						suggestedDatabase = first ? String(first.database || '') : '';
+						if (singleKind === 'query') {
+							savedChatVisible = typeof first?.copilotChatVisible === 'boolean' ? first.copilotChatVisible : undefined;
+							savedChatWidthPx = typeof first?.copilotChatWidthPx === 'number' && Number.isFinite(first.copilotChatWidthPx)
+								? first.copilotChatWidthPx : undefined;
+						}
 					} catch (e) { console.error('[kusto]', e); }
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -3381,6 +3434,8 @@ function applyKqlxState(
 					if (db && typeof kwEl.setDesiredDatabase === 'function') {
 						kwEl.setDesiredDatabase(db);
 					}
+					if (savedChatWidthPx !== undefined) kwEl.setCopilotChatWidthPx?.(savedChatWidthPx);
+					if (savedChatVisible !== undefined) kwEl.setCopilotChatVisible?.(savedChatVisible, false);
 				}
 				// If this suggested selection exists in favorites, switch to Favorites mode by default.
 				try {
@@ -3516,6 +3571,12 @@ function applyKqlxState(
 								persistAuthoredConnectionSelection,
 								authoredConnectionSelection,
 							);
+						}
+						if (typeof section.copilotChatWidthPx === 'number' && Number.isFinite(section.copilotChatWidthPx)) {
+							kwEl.setCopilotChatWidthPx?.(section.copilotChatWidthPx);
+						}
+						if (typeof section.copilotChatVisible === 'boolean') {
+							kwEl.setCopilotChatVisible?.(section.copilotChatVisible, false);
 						}
 					}
 					try {

@@ -286,7 +286,7 @@ export class QueryConnectionController implements ReactiveController {
 		const fav = __kustoFindFavorite(connectionId, db);
 		try {
 			if (fav) {
-				this.applyFavoritesMode(true);
+				this.applyFavoritesMode(true, false);
 				this.updateFavoritesUi();
 			}
 		} catch (e) { console.error('[kusto]', e); }
@@ -314,18 +314,22 @@ export class QueryConnectionController implements ReactiveController {
 				: null;
 		} catch { desired = null; }
 		if (!desired) return;
+		if (Object.prototype.hasOwnProperty.call(favoritesModeByBoxId, id)) {
+			delete __kustoAutoEnterFavoritesByBoxId[id];
+			return;
+		}
 		const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
 		if (!hasAny) return;
 		const fav = __kustoFindFavorite(this.host.getConnectionId(), desired.database);
 		if (!fav) {
 			try {
 				const isInFavMode = !!(favoritesModeByBoxId && favoritesModeByBoxId[id]);
-				if (isInFavMode) this.applyFavoritesMode(false);
+				if (isInFavMode) this.applyFavoritesMode(false, false);
 			} catch (e) { console.error('[kusto]', e); }
 			try { delete __kustoAutoEnterFavoritesByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
-		try { this.applyFavoritesMode(true); } catch (e) { console.error('[kusto]', e); }
+		try { this.applyFavoritesMode(true, false); } catch (e) { console.error('[kusto]', e); }
 		try { delete __kustoAutoEnterFavoritesByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -385,12 +389,18 @@ export class QueryConnectionController implements ReactiveController {
 		}
 	}
 
-	applyFavoritesMode(enabled: boolean): void {
+	applyFavoritesMode(enabled: boolean, persist = true): void {
 		const id = this.host.boxId;
-		favoritesModeByBoxId[id] = !!enabled;
+		if (persist) favoritesModeByBoxId[id] = !!enabled;
 		if (typeof this.host.setFavoritesMode === 'function') {
 			this.host.setFavoritesMode(!!enabled);
 		}
+	}
+
+	getPersistedFavoritesMode(): boolean | undefined {
+		const id = this.host.boxId;
+		return Object.prototype.hasOwnProperty.call(favoritesModeByBoxId, id)
+			? !!favoritesModeByBoxId[id] : undefined;
 	}
 
 	toggleFavorite(): void {
@@ -1099,7 +1109,7 @@ export function __kustoMaybeDefaultFirstBoxToFavoritesMode() {
 		} catch (e) { console.error('[kusto]', e); }
 		const el = __kustoGetQuerySectionElement(id);
 		if (el?.connectionCtrl) {
-			el.connectionCtrl.applyFavoritesMode(true);
+			el.connectionCtrl.applyFavoritesMode(true, false);
 			el.connectionCtrl.updateFavoritesUi();
 		}
 		__kustoDidDefaultFirstBoxToFavorites = true;

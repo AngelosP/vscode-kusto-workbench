@@ -212,6 +212,21 @@ describe('persisted-result offline fixture', () => {
 		expectPublishedFixture(setup, legacyKusto);
 	});
 
+	it('rebuilds synthetic caches after provider refresh drops the account during setup', async () => {
+		const setup = fixture();
+		let refreshCount = 0;
+		setup.auth.waitForProviderAccountRefresh.mockImplementation(async () => {
+			if (++refreshCount === 2) setup.preferences.delete(setup.connection.id);
+		});
+
+		await expect(setup.prepare(setup.request)).resolves.toEqual({
+			outputPath: join(root, 'output.kqlx'), connectionId: setup.connection.id,
+		});
+		expect(refreshCount).toBeGreaterThanOrEqual(3);
+		expect(setup.auth.setTokenOverride).toHaveBeenCalledTimes(2);
+		expectPublishedFixture(setup, true);
+	});
+
 	it.each([undefined, 'previous-account'])('recovers both caches after preference loss (%s) before publication', async previousAccount => {
 		const setup = fixture(true);
 		const authStarted = deferred();

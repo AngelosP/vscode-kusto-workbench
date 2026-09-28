@@ -5272,7 +5272,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					};
 
 					const currentText = isSessionFile ? persistenceBaseText : document.getText();
-					const incomingComparable = normalizeKqlxFileForPersistenceComparison(overlayComparisonFile(currentText, state));
+					const incomingComparable = normalizeKqlxFileForPersistenceComparison(overlayDocumentFile(currentText, state));
 
 					let incomingMatchesDisk = false;
 					let diskTextForMatch = '';
@@ -5290,9 +5290,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							if (parsedSaved.ok) {
 								const savedState = (() => {
 									try {
-										if (!linkedQueryUri) return parsedSaved.file.state;
+										const projectedState = ensureProjectedSectionIds(parsedSaved.file.state, lastSavedText);
+										if (!linkedQueryUri) return projectedState;
 										return withLinkedQueryText(
-											ensureProjectedSectionIds(parsedSaved.file.state, lastSavedText),
+											projectedState,
 											lastSavedLinkedQueryText,
 										);
 									} catch {
@@ -5325,7 +5326,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							if (parsedDisk.ok) {
 								const diskState = (() => {
 									try {
-										if (!linkedQueryUri) return parsedDisk.file.state;
+										const projectedState = ensureProjectedSectionIds(parsedDisk.file.state, diskText);
+										if (!linkedQueryUri) return projectedState;
 										let linkedText = '';
 										try {
 											linkedText = linkedQueryDocument ? linkedQueryDocument.getText() : lastSavedLinkedQueryText;
@@ -5333,7 +5335,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 											linkedText = lastSavedLinkedQueryText;
 										}
 										return withLinkedQueryText(
-											ensureProjectedSectionIds(parsedDisk.file.state, diskText),
+											projectedState,
 											linkedText,
 										);
 									} catch {
@@ -5391,7 +5393,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							if (parsedCurrent.ok) {
 								const currentState = (() => {
 									try {
-										if (!linkedQueryUri) return parsedCurrent.file.state;
+										const projectedState = ensureProjectedSectionIds(parsedCurrent.file.state, currentText);
+										if (!linkedQueryUri) return projectedState;
 										let linkedText = '';
 										try {
 											linkedText = linkedQueryDocument ? linkedQueryDocument.getText() : lastSavedLinkedQueryText;
@@ -5399,7 +5402,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 											linkedText = lastSavedLinkedQueryText;
 										}
 										return withLinkedQueryText(
-											ensureProjectedSectionIds(parsedCurrent.file.state, currentText),
+											projectedState,
 											linkedText,
 										);
 									} catch {

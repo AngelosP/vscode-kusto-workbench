@@ -63,11 +63,15 @@ interface ToastMarkdownRenderContext {
 	origin?: () => ToastMarkdownRenderResult;
 }
 
+const savedBulletMarkers = new WeakMap<object, '*' | '-' | '+'>();
+const isBulletMarker = (value: unknown): value is '*' | '-' | '+' => value === '*' || value === '-' || value === '+';
+
 const PORTABLE_MARKDOWN_RENDERER = {
-	bulletList: (_nodeInfo: unknown, context: ToastMarkdownRenderContext): ToastMarkdownRenderResult => ({
-		...(context.origin?.() ?? {}),
-		delim: '-',
-	}),
+	bulletList: (nodeInfo: { node?: { attrs?: object } }, context: ToastMarkdownRenderContext): ToastMarkdownRenderResult => {
+		const attrs = nodeInfo?.node?.attrs;
+		const savedMarker = attrs ? savedBulletMarkers.get(attrs) : undefined;
+		return { ...(context.origin?.() ?? {}), delim: isBulletMarker(savedMarker) ? savedMarker : '-' };
+	},
 };
 
 interface WysiwygScrollbarOverlay {
@@ -273,6 +277,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 	// ── Internal state ────────────────────────────────────────────────────────
 
 	@state() private _mode: MarkdownMode = 'wysiwyg';
+	private _switchingEditorMode = false;
 	@state() private _expanded = true;
 	@state() private _title = '';
 	@state() private _dropdownOpen = false;
@@ -561,6 +566,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 		);
 
 		let toastEditor: any = null;
+		let initializingEditor = true;
 		try {
 			const editorOptions: any = {
 				el: editorContainer,
@@ -576,6 +582,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 				plugins: KwMarkdownSection._getToastUiPlugins(ToastEditor),
 				events: {
 					change: () => {
+						if (initializingEditor || this._switchingEditorMode) return;
 						this._schedulePersist();
 						this._scheduleMdAutoExpand();
 					},
@@ -606,7 +613,13 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 				try { return toastEditor?.getMarkdown?.() ?? ''; } catch { return ''; }
 			},
 			setValue: (value: string) => {
-				try { toastEditor?.setMarkdown?.(String(value || '')); } catch (e) { console.error('[kusto]', e); }
+				const wasInitializing = initializingEditor;
+				initializingEditor = true;
+				try {
+					toastEditor?.setMarkdown?.(String(value || ''));
+					KwMarkdownSection._restoreBulletMarkers(toastEditor);
+				} catch (e) { console.error('[kusto]', e); }
+				finally { initializingEditor = wasInitializing; }
 			},
 			layout: () => {
 				try {
@@ -635,6 +648,8 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 			win.__kustoMarkdownEditors[this.boxId] = api;
 		} catch (e) { console.error('[kusto]', e); }
 
+		KwMarkdownSection._restoreBulletMarkers(toastEditor);
+
 		// Check for late-arriving pending text.
 		try {
 			const latePending = pState.pendingMarkdownTextByBoxId?.[this.boxId];
@@ -646,6 +661,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 
 		// Apply mode.
 		this._applyEditorMode();
+		initializingEditor = false;
 
 		// Apply pending reveal.
 		try { this._tryApplyPendingReveal(); } catch (e) { console.error('[kusto]', e); }
@@ -998,7 +1014,13 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 		// Editor modes (WYSIWYG / Markdown).
 		const toastEditor = this._editorApi?._toastui;
 		if (toastEditor && typeof toastEditor.changeMode === 'function') {
-			try { toastEditor.changeMode(this._mode, true); } catch (e) { console.error('[kusto]', e); }
+			const wasSwitchingEditorMode = this._switchingEditorMode;
+			this._switchingEditorMode = true;
+			try {
+				toastEditor.changeMode(this._mode, true);
+				if (this._mode === 'wysiwyg') KwMarkdownSection._restoreBulletMarkers(toastEditor);
+			} catch (e) { console.error('[kusto]', e); }
+			finally { this._switchingEditorMode = wasSwitchingEditorMode; }
 		}
 		try { this._editorApi?.layout(); } catch (e) { console.error('[kusto]', e); }
 		this._publishMarkdownCursorStatus('markdown-edit-mode');
@@ -2086,6 +2108,40 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 			return { r: parseInt(hex.slice(0, 2), 16), g: parseInt(hex.slice(2, 4), 16), b: parseInt(hex.slice(4, 6), 16) };
 		}
 		return null;
+	}
+
+	private static _restoreBulletMarkers(editor: any): void {
+		try {
+			const root = editor?.toastMark?.getRootNode?.();
+			const view = editor?.wwEditor?.view;
+			if (!root || !view?.state?.doc?.descendants) return;
+			const markers: Array<'*' | '-' | '+'> = [];
+			const visit = (node: any): void => {
+				if (node.type === 'list' && node.listData?.type === 'bullet' && isBulletMarker(node.listData.bulletChar)) {
+					markers.push(node.listData.bulletChar);
+				}
+				for (let child = node.firstChild; child; child = child.next) visit(child);
+			};
+			visit(root);
+			if (!markers.length) return;
+			const lists: Array<{ node: any; pos: number }> = [];
+			view.state.doc.descendants((node: any, pos: number) => {
+				if (node.type.name === 'bulletList') lists.push({ node, pos });
+			});
+			if (lists.length !== markers.length) return;
+			const transaction = view.state.tr;
+			for (const { node, pos } of lists) {
+				transaction.setNodeMarkup(pos, undefined, {
+					...node.attrs,
+					htmlAttrs: { ...node.attrs.htmlAttrs },
+				});
+			}
+			view.dispatch(transaction);
+			let markerIndex = 0;
+			view.state.doc.descendants((node: any) => {
+				if (node.type.name === 'bulletList') savedBulletMarkers.set(node.attrs, markers[markerIndex++]);
+			});
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	/** Get Toast UI plugins for the editor. */

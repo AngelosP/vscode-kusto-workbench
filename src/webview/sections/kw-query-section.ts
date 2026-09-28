@@ -1625,7 +1625,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		// Adjust wrapper height when data-table chrome (search bar, row-jump, etc.) toggles.
 		// Apply the delta so the visible data area stays the same size.
 		dt.addEventListener('chrome-height-change', (e: Event) => {
-			if (!resultsWrapper) return;
+			if (!resultsWrapper || resultsWrapper.dataset.kustoRestoredHeight === 'true') return;
 			const curH = parseInt(resultsWrapper.style.height, 10);
 			// Skip if collapsed or hidden.
 			if (!curH || curH <= 48) return;
@@ -1678,9 +1678,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		// section-max-height / FIT_CAP_PX logic documented in ARCHITECTURE.md.
 		// Retry at 50ms and 150ms to account for data-table rendering latency.
 		if (initialBodyVisible) {
-			__kustoAutoSizeResults(this.boxId);
-			setTimeout(() => __kustoAutoSizeResults(this.boxId), 50);
-			setTimeout(() => __kustoAutoSizeResults(this.boxId), 150);
+			__kustoAutoSizeResults(this.boxId, { markUserResized: false });
+			setTimeout(() => __kustoAutoSizeResults(this.boxId, { markUserResized: false }), 50);
+			setTimeout(() => __kustoAutoSizeResults(this.boxId, { markUserResized: false }), 150);
 		}
 		return true;
 	}
@@ -2044,8 +2044,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		const connectionId = this._connectionId;
 		const database = this._database || this._desiredDatabase;
 
-		let favoritesMode: boolean | undefined;
-		if (this._favoritesMode) favoritesMode = true;
+		const favoritesMode = this.connectionCtrl.getPersistedFavoritesMode();
 
 		const expanded = this._expanded;
 		let resultsVisible = true;
@@ -2157,21 +2156,14 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 	private _getEditorHeightPx(): number | undefined {
 		try {
-			// Check manual height map first (set by drag resize).
-			const m = pState.manualQueryEditorHeightPxByBoxId;
-			const v = m?.[this.boxId];
-			if (typeof v === 'number' && Number.isFinite(v) && v > 0) return Math.round(v);
-			// Measure from the DOM directly — find the editor wrapper and read its inline height.
 			const editorEl = document.getElementById(this.boxId + '_query_editor');
 			const wrapper = editorEl?.closest('.query-editor-wrapper') as HTMLElement | null;
-			if (!wrapper) return undefined;
-			// Only persist heights from explicit user resize, not auto-resize.
-			if (wrapper.dataset?.kustoAutoResized === 'true') return undefined;
+			if (!wrapper || wrapper.dataset?.kustoUserResized !== 'true') return undefined;
 			const inlineH = wrapper.style.height?.trim();
-			if (!inlineH || inlineH === 'auto') return undefined;
-			const match = inlineH.match(/^(\d+)px$/i);
-			if (!match) return undefined;
-			return Math.max(0, parseInt(match[1], 10));
+			const match = inlineH?.match(/^(\d+)px$/i);
+			if (match) return Math.max(0, parseInt(match[1], 10));
+			const height = pState.manualQueryEditorHeightPxByBoxId?.[this.boxId];
+			if (typeof height === 'number' && Number.isFinite(height) && height > 0) return Math.round(height);
 		} catch (e) { console.error('[kusto]', e); }
 		return undefined;
 	}

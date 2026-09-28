@@ -209,6 +209,90 @@ describe('kw-url-section — rendering', () => {
 		expect(el.shadowRoot).toBeTruthy();
 	});
 
+	it('auto-fits URL output without persisting a height until Fit is requested', async () => {
+		const el = createUrlSection('url_auto_fit');
+		el.setUrl('https://example.invalid/document.txt');
+		(el as any)._fetchState = { ...(el as any)._fetchState, loaded: true, kind: 'text' };
+		await el.updateComplete;
+		vi.spyOn(el as any, '_computeFitToContentsHeight').mockReturnValue(151);
+		(el as any)._fitToContents();
+		expect(el.shadowRoot?.getElementById('output-wrapper')?.style.height).toBe('151px');
+		expect(el.createDocumentState()).not.toHaveProperty('outputHeightPx');
+
+		(el as any)._fitToContents(true);
+		expect(el.createDocumentState().outputHeightPx).toBe(151);
+	});
+
+	it('does not auto-fit over an authored URL output height', async () => {
+		const el = createUrlSection('url_restored_fit');
+		el.setUrl('https://example.invalid/document.txt');
+		(el as any)._fetchState = { ...(el as any)._fetchState, loaded: true, kind: 'text' };
+		await el.updateComplete;
+		vi.spyOn(el as any, '_computeFitToContentsHeight').mockReturnValue(151);
+		el.setOutputHeightPx(320);
+
+		(el as any)._fitToContents();
+		expect(el.shadowRoot?.getElementById('output-wrapper')?.style.height).toBe('320px');
+		expect(el.createDocumentState().outputHeightPx).toBe(320);
+	});
+
+	it('applies an authored URL height when output loads after the document', async () => {
+		const el = createUrlSection('url_restored_late_output');
+		await el.updateComplete;
+		el.applyHostDocumentState({
+			id: el.boxId, type: 'url', name: 'Restored',
+			url: 'https://example.invalid/document.txt', expanded: true, outputHeightPx: 320,
+		});
+		await el.updateComplete;
+		expect(el.shadowRoot?.getElementById('output-wrapper')).toBeNull();
+
+		(el as any)._fetchState = { ...(el as any)._fetchState, loaded: true, kind: 'text' };
+		await el.updateComplete;
+		vi.spyOn(el as any, '_computeFitToContentsHeight').mockReturnValue(151);
+		(el as any)._fitToContents();
+		expect(el.shadowRoot?.getElementById('output-wrapper')?.style.height).toBe('320px');
+		expect(el.createDocumentState().outputHeightPx).toBe(320);
+	});
+
+	it('sizes a newly loaded image without authoring its output height', async () => {
+		vi.useFakeTimers();
+		const el = createUrlSection('url_new_image');
+		el.setUrl('https://example.invalid/picture.png');
+		(el as any)._fetchState = {
+			...(el as any)._fetchState, loaded: true, kind: 'image',
+			dataUri: 'data:image/png;base64,AA==', __autoSizeImagePending: true,
+		};
+		await el.updateComplete;
+		const wrapper = el.shadowRoot!.getElementById('output-wrapper')!;
+		const image = el.shadowRoot!.querySelector('#url-content img')!;
+		vi.spyOn(image, 'getBoundingClientRect').mockReturnValue({ height: 150 } as DOMRect);
+		image.dispatchEvent(new Event('load'));
+		vi.advanceTimersByTime(1);
+
+		expect(wrapper.style.height).toBe('150px');
+		expect(el.createDocumentState()).not.toHaveProperty('outputHeightPx');
+	});
+
+	it('does not replace a restored output height on first image load', async () => {
+		vi.useFakeTimers();
+		const el = createUrlSection('url_restored_image');
+		el.setUrl('https://example.invalid/picture.png');
+		(el as any)._fetchState = {
+			...(el as any)._fetchState, loaded: true, kind: 'image',
+			dataUri: 'data:image/png;base64,AA==', __autoSizeImagePending: true,
+		};
+		await el.updateComplete;
+		const wrapper = el.shadowRoot!.getElementById('output-wrapper')!;
+		const image = el.shadowRoot!.querySelector('#url-content img')!;
+		vi.spyOn(image, 'getBoundingClientRect').mockReturnValue({ height: 150 } as DOMRect);
+		el.setOutputHeightPx(320);
+		image.dispatchEvent(new Event('load'));
+		vi.advanceTimersByTime(1);
+
+		expect(wrapper.style.height).toBe('320px');
+		expect(el.createDocumentState().outputHeightPx).toBe(320);
+	});
+
 	it('shows a URL input field', async () => {
 		const el = createUrlSection();
 		await el.updateComplete;
