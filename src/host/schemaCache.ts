@@ -16,8 +16,12 @@ type SchemaCacheMutationState = {
 	connectionGenerations: Map<string, number>;
 	partitionGenerations: Map<string, number>;
 	tail: Promise<unknown>;
+	decodedReadEpoch: number;
+	decodedSchemas: Map<string, { entry: CachedSchemaEntry; stat: vscode.FileStat }>;
 };
 const schemaCacheMutations = new Map<string, SchemaCacheMutationState>();
+const DECODED_SCHEMA_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+const DECODED_SCHEMA_CACHE_MAX_ENTRIES = 4;
 
 function schemaCacheOwnerKey(globalStorageUri: vscode.Uri): string {
 	return globalStorageUri.toString();
@@ -27,7 +31,8 @@ function getSchemaCacheMutationState(globalStorageUri: vscode.Uri): SchemaCacheM
 	const key = schemaCacheOwnerKey(globalStorageUri);
 	let state = schemaCacheMutations.get(key);
 	if (!state) {
-		state = { globalGeneration: 0, connectionGenerations: new Map(), partitionGenerations: new Map(), tail: Promise.resolve() };
+		state = { globalGeneration: 0, connectionGenerations: new Map(), partitionGenerations: new Map(), tail: Promise.resolve(),
+			decodedReadEpoch: 0, decodedSchemas: new Map() };
 		schemaCacheMutations.set(key, state);
 	}
 	return state;
@@ -35,9 +40,29 @@ function getSchemaCacheMutationState(globalStorageUri: vscode.Uri): SchemaCacheM
 
 function enqueueSchemaCacheMutation<T>(globalStorageUri: vscode.Uri, operation: () => Promise<T>): Promise<T> {
 	const state = getSchemaCacheMutationState(globalStorageUri);
-	const next = state.tail.then(operation, operation);
+	const invalidateDecodedReads = () => { state.decodedReadEpoch++; state.decodedSchemas.clear(); };
+	invalidateDecodedReads();
+	const mutate = async () => {
+		invalidateDecodedReads();
+		try { return await operation(); }
+		finally { invalidateDecodedReads(); }
+	};
+	const next = state.tail.then(mutate, mutate);
 	state.tail = next.catch(() => undefined);
 	return next;
+}
+
+function sameSchemaCacheFile(left: vscode.FileStat, right: vscode.FileStat): boolean {
+	return [left.ctime, left.mtime, left.size, left.type, right.ctime, right.mtime, right.size, right.type].every(Number.isFinite)
+		&& Number.isSafeInteger(left.size) && left.size >= 0
+		&& !!(left.type & vscode.FileType.File) && left.type === right.type
+		&& left.ctime === right.ctime && left.mtime === right.mtime && left.size === right.size;
+}
+
+function freezeDecodedSchema(value: unknown): void {
+	if (!value || typeof value !== 'object' || Object.isFrozen(value)) return;
+	for (const child of Object.values(value)) freezeDecodedSchema(child);
+	Object.freeze(value);
 }
 
 export function captureSchemaCacheGeneration(globalStorageUri: vscode.Uri, connectionId: string = '', accountPartition: string = ''): SchemaCacheGeneration {
@@ -135,15 +160,30 @@ export const readCachedSchemaFromDisk = async (
 	globalStorageUri: vscode.Uri,
 	cacheKey: string
 ): Promise<CachedSchemaEntry | undefined> => {
+	const state = getSchemaCacheMutationState(globalStorageUri);
+	const epoch = state.decodedReadEpoch;
 	try {
 		const fileUri = getSchemaCacheFileUri(globalStorageUri, cacheKey);
+		const before = await vscode.workspace.fs.stat(fileUri);
+		if (epoch !== state.decodedReadEpoch || !sameSchemaCacheFile(before, before)) return undefined;
+		const cached = state.decodedSchemas.get(cacheKey);
+		if (cached && sameSchemaCacheFile(cached.stat, before)) {
+			state.decodedSchemas.delete(cacheKey);
+			state.decodedSchemas.set(cacheKey, cached);
+			return cached.entry;
+		}
+		state.decodedSchemas.delete(cacheKey);
 		const buf = await vscode.workspace.fs.readFile(fileUri);
+		const after = await vscode.workspace.fs.stat(fileUri);
+		if (epoch !== state.decodedReadEpoch || !sameSchemaCacheFile(before, after)) return undefined;
+		const concurrent = state.decodedSchemas.get(cacheKey);
+		if (concurrent && sameSchemaCacheFile(concurrent.stat, after)) return concurrent.entry;
 		const parsed = JSON.parse(Buffer.from(buf).toString('utf8')) as Partial<CachedSchemaEntry>;
 		if (!parsed || !parsed.schema || typeof parsed.timestamp !== 'number') {
 			return undefined;
 		}
 		const version = typeof parsed.version === 'number' && isFinite(parsed.version) ? parsed.version : 0;
-		return {
+		const entry: CachedSchemaEntry = {
 			schema: parsed.schema,
 			timestamp: parsed.timestamp,
 			version,
@@ -152,7 +192,17 @@ export const readCachedSchemaFromDisk = async (
 			connectionId: typeof parsed.connectionId === 'string' ? parsed.connectionId : undefined,
 			accountPartition: typeof parsed.accountPartition === 'string' ? parsed.accountPartition : undefined,
 		};
+		freezeDecodedSchema(entry);
+		if (after.size <= DECODED_SCHEMA_CACHE_MAX_BYTES) {
+			while (state.decodedSchemas.size >= DECODED_SCHEMA_CACHE_MAX_ENTRIES
+				|| [...state.decodedSchemas.values()].reduce((bytes, item) => bytes + item.stat.size, after.size) > DECODED_SCHEMA_CACHE_MAX_BYTES) {
+				state.decodedSchemas.delete(state.decodedSchemas.keys().next().value!);
+			}
+			state.decodedSchemas.set(cacheKey, { entry, stat: { ...after } });
+		}
+		return entry;
 	} catch {
+		state.decodedSchemas.delete(cacheKey);
 		return undefined;
 	}
 };

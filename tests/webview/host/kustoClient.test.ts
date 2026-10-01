@@ -77,6 +77,46 @@ function createCancelableClientHarness() {
 
 // ── parseKustoTimespan ────────────────────────────────────────────────────────
 
+describe('Kusto schema diagnostic previews', () => {
+	it('preserves exact small-row JSON previews', () => {
+		const client = new KustoQueryClient();
+		const row = { Schema: '{"Databases":{}}', Count: 1 };
+		const debug = (client as any).buildSchemaDebug({
+			primaryResults: [{ columns: [{ name: 'Schema' }], rows: () => [row] }],
+		}, '.show database schema as json');
+		expect(debug.sampleRowPreview).toBe(JSON.stringify(row));
+		expect(debug.primaryColumns).toEqual(['Schema']);
+		expect(debug.sampleRowKeys).toEqual(['Schema', 'Count']);
+	});
+
+	it('bounds raw schema strings before JSON preview serialization', () => {
+		const client = new KustoQueryClient();
+		const rawSchema = 'X'.repeat(1_000_000);
+		let reads = 0;
+		const row = { get Schema() { reads++; return rawSchema; }, toJSON: vi.fn(function () { return this; }) };
+		const originalStringify = JSON.stringify;
+		let serializedLength = 0;
+		const stringify = vi.spyOn(JSON, 'stringify').mockImplementation((value, replacer, space) => {
+			const serialized = originalStringify(value, replacer as any, space);
+			serializedLength = serialized?.length ?? 0;
+			return serialized;
+		});
+		let debug: any;
+		try {
+			debug = (client as any).buildSchemaDebug({
+				primaryResults: [{ columns: [{ name: 'Schema' }], rows: () => [row] }],
+			}, '.show database schema as json');
+		} finally {
+			stringify.mockRestore();
+		}
+		expect(serializedLength).toBeLessThan(1024);
+		expect(debug.sampleRowPreview).toHaveLength(500);
+		expect(reads).toBe(1);
+		expect(row.toJSON).toHaveBeenCalledTimes(1);
+		expect(rawSchema).toHaveLength(1_000_000);
+	});
+});
+
 describe('parseKustoTimespan', () => {
 	it('parses standard hh:mm:ss format', () => {
 		expect(parseKustoTimespan('00:00:01')).toBe(1000);

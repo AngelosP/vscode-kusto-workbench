@@ -148,6 +148,13 @@ export enum EndOfLine {
 	CRLF = 2,
 }
 
+export enum FileType {
+	Unknown = 0,
+	File = 1,
+	Directory = 2,
+	SymbolicLink = 64,
+}
+
 export const window = {
 	activeTextEditor: undefined as any,
 	visibleTextEditors: [] as any[],

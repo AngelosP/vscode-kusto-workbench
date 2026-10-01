@@ -974,7 +974,8 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 			return;
 		}
 		traceFileOpen('monaco.schema.enhance.start', { schemaKey: args.schemaKey, modelKey: args.modelKey });
-		const result = await enhanceKustoFunctionBodiesForSchemaChunked(args.schemaObj, {
+		const schemaForEnhancement = prepareKustoSchemaForWorkerFast(args.schemaObj);
+		const result = await enhanceKustoFunctionBodiesForSchemaChunked(schemaForEnhancement, {
 			shouldContinue: isCurrent,
 			maxBatchSize: 25,
 			maxSliceMs: 6,
@@ -1009,7 +1010,7 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 			}
 			try {
 				traceFileOpen('monaco.schema.enhance.normalize.start', { schemaKey: args.schemaKey, modelKey: args.modelKey });
-				const schemaForWorker = stampKustoSchemaMajorVersion(prepareKustoSchemaForWorkerFast(args.schemaObj), transaction.id);
+				const schemaForWorker = stampKustoSchemaMajorVersion(prepareKustoSchemaForWorkerFast(schemaForEnhancement), transaction.id);
 				const engineSchema = await args.worker.normalizeSchema(schemaForWorker, args.clusterUrl, args.databaseInContext);
 				if (!canMutate()) {
 					cancelOwned();
@@ -1039,14 +1040,14 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 					return false;
 				}
 				__kustoSchemaTracker.schemaCache[args.schemaKey] = {
-					rawSchemaJson: args.schemaObj,
+					rawSchemaJson: schemaForEnhancement,
 					clusterUrl: args.clusterUrl,
 					database: args.databaseInContext,
 					connectionId: args.connectionId,
 					accountPartition: args.accountPartition,
 				};
 				try {
-					await __kustoAddDatabaseAliasesToWorker(args.worker, args.modelKey, args.schemaObj, args.clusterName || args.clusterUrl, args.clusterUrl, args.databaseInContext, transaction, canMutate);
+					await __kustoAddDatabaseAliasesToWorker(args.worker, args.modelKey, schemaForEnhancement, args.clusterName || args.clusterUrl, args.clusterUrl, args.databaseInContext, transaction, canMutate);
 					if (!canMutate()) {
 						cancelOwned();
 						return false;

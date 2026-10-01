@@ -2444,11 +2444,41 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				|| !replayOwner
 				|| !sameLinkedUri(linkedQueryUri, rolledBack.uri)
 				|| linkedQueryDocument !== rolledBack.document
-				|| !localFileIdentityEquals(linkedQueryPhysicalIdentity, rolledBack.identity)
-				|| replayOwner.contentRevision !== rollbackRevision
+				|| !localFileIdentityEquals(linkedQueryPhysicalIdentity, rolledBack.identity)) {
+				if (rolledBackLinkedNativeSave === rolledBack) rolledBackLinkedNativeSave = undefined;
+				return false;
+			}
+			if (replayOwner.contentRevision !== rollbackRevision
 				|| !sameLinkedText(replayOwner.bufferText, rolledBack.priorBufferText)
-				|| !sameLinkedText(replayOwner.hydratedText, rolledBack.priorBufferText)
-				|| await tryReadTextFile(rolledBack.uri) !== rolledBack.priorDurableText) {
+				|| !sameLinkedText(replayOwner.hydratedText, rolledBack.priorBufferText)) {
+				try {
+					return await runWithLinkedWriteLease(async () => {
+						const isCurrent = () => rolledBackLinkedNativeSave === rolledBack
+							&& !pendingLinkedNativeSave && !linkedRollbackFailed && !closeFinalizationAbandoned
+							&& !linkedQueryHydrationFailed && linkedContentTargetIsCurrent(replayOwner);
+						if (!isCurrent() || rolledBack.rollbackContentRevision === undefined
+							|| await samePhysicalLocalFile(document.uri, rolledBack.uri)
+							|| !localFileIdentityEquals(rolledBack.identity, await getLocalFileIdentity(rolledBack.uri))
+							|| await hasDirtyOpenLocalFileAlias(rolledBack.identity, rolledBack.document)
+							|| lastSavedLinkedQueryText !== rolledBack.priorDurableText
+							|| await tryReadTextFile(rolledBack.uri) !== rolledBack.priorDurableText
+							|| !isCurrent()) return false;
+						if (!await writeOwnedLocalFileText(rolledBack.uri, rolledBack.identity, rolledBack.priorDurableText, rolledBack.candidateText)) return false;
+						if (!isCurrent()) {
+							const restored = await writeOwnedLocalFileText(rolledBack.uri, rolledBack.identity, rolledBack.candidateText, rolledBack.priorDurableText);
+							if (!restored) linkedRollbackFailed = true;
+							return false;
+						}
+						if (await tryReadTextFile(rolledBack.uri) !== rolledBack.candidateText
+							|| !localFileIdentityEquals(rolledBack.identity, await getLocalFileIdentity(rolledBack.uri))) return false;
+						setLastSavedLinkedQueryText(rolledBack.candidateText);
+						return true;
+					});
+				} finally {
+					if (rolledBackLinkedNativeSave === rolledBack) rolledBackLinkedNativeSave = undefined;
+				}
+			}
+			if (await tryReadTextFile(rolledBack.uri) !== rolledBack.priorDurableText) {
 				if (rolledBackLinkedNativeSave === rolledBack) rolledBackLinkedNativeSave = undefined;
 				return false;
 			}
@@ -2463,6 +2493,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				return false;
 			}
 			if (rolledBackLinkedNativeSave === rolledBack) rolledBackLinkedNativeSave = undefined;
+			await finalizeCommittedLinkedBuffer(rolledBack, true);
 			return true;
 		};
 		const waitForPendingLinkedNativeSaveCommit = async (timeoutMs = 500): Promise<boolean> => {
@@ -2472,6 +2503,55 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				await new Promise<void>(resolve => setTimeout(resolve, 20));
 			}
 			return !pendingLinkedNativeSave || await confirmPendingLinkedNativeSaveFromDisk();
+		};
+		const saveLinkedBufferForOwner = (
+			owner: LinkedContentOwner,
+			isRequestCurrent: () => boolean,
+			allowClosing = false,
+		): Promise<boolean> => runWithLinkedWriteLease(async () => {
+			const isCurrent = () => isRequestCurrent()
+				&& (!outerDisposed || allowClosing) && !closeFinalizationAbandoned
+				&& !linkedRollbackFailed && !linkedQueryHydrationFailed
+				&& linkedContentBaselineIsCurrent(owner);
+			if (!isCurrent() || owner.uri.scheme !== 'file'
+				|| pendingLinkedNativeSave || pendingLinkedRollback || rolledBackLinkedNativeSave
+				|| await samePhysicalLocalFile(document.uri, owner.uri)
+				|| !localFileIdentityEquals(owner.identity, await getLocalFileIdentity(owner.uri))
+				|| await hasDirtyOpenLocalFileAlias(owner.identity, owner.document)) return false;
+			const durableText = await tryReadTextFile(owner.uri);
+			if (!isCurrent() || durableText !== owner.lastSavedText
+				|| lastSavedLinkedQueryText !== owner.lastSavedText) return false;
+			if (owner.document.isDirty && !await owner.document.save()) return false;
+			if (!linkedContentTargetIsCurrent(owner)
+				|| !localFileIdentityEquals(owner.identity, await getLocalFileIdentity(owner.uri))) return false;
+			const savedText = await tryReadTextFile(owner.uri);
+			if (savedText === undefined || savedText !== owner.document.getText() || owner.document.isDirty) return false;
+			setLastSavedLinkedQueryText(savedText);
+			setHydratedLinkedQueryText(savedText);
+			if (!sameLinkedText(savedText, owner.bufferText) && !outerDisposed) {
+				void postDocument({ forceReload: true });
+			}
+			return true;
+		});
+		const finalizeCommittedLinkedBuffer = (transaction: LinkedSaveTransaction, allowClosing = false): Promise<void> => {
+			const owner = captureLinkedContentOwner();
+			if (!owner || owner.document !== transaction.document
+				|| !sameLinkedUri(owner.uri, transaction.uri)
+				|| !localFileIdentityEquals(owner.identity, transaction.identity)
+				|| owner.lastSavedText !== transaction.candidateText
+				|| !sameLinkedText(owner.bufferText, transaction.candidateText)
+				|| !sameLinkedText(owner.hydratedText, transaction.candidateText)) return Promise.resolve();
+			const task = saveLinkedBufferForOwner(owner, () => !outerDisposed || allowClosing, allowClosing)
+				.catch(() => false)
+				.then(saved => {
+					if (!saved && !outerDisposed && linkedContentBaselineIsCurrent(owner)) {
+						getWorkbenchLogger().warn('[kusto] The committed linked query editor could not finish saving.');
+						void vscode.window.showErrorMessage('Kusto Workbench could not finish saving the linked query editor. Its unsaved changes have been kept.');
+					}
+				});
+			linkedSaveTasks.add(task);
+			void task.finally(() => linkedSaveTasks.delete(task));
+			return task;
 		};
 		const saveSessionSnapshot = async (
 			notebookText: string,
@@ -3671,17 +3751,27 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				if (pending.sourceGeneration !== generation) settleMarkdownBarrier(requestId, pending);
 			}
 		};
-		const requestMarkdownCommandBarrier = (): Promise<MarkdownSaveLease | undefined> => {
+		const requestMarkdownCommandBarrier = (retirement: AbortSignal): Promise<MarkdownSaveLease | undefined> => {
 			const requestId = `markdown-save-barrier-${randomUUID()}`;
 			const sourceGeneration = activeProjectionGeneration;
 			return new Promise(resolve => {
+				const onRetired = () => {
+					const pending = markdownBarrierRequests.get(requestId);
+					if (pending) settleMarkdownBarrier(requestId, pending);
+				};
+				const finish = (lease: MarkdownSaveLease | undefined) => {
+					retirement.removeEventListener('abort', onRetired);
+					resolve(lease);
+				};
 				let expire!: () => void;
 				const expired = new Promise<void>(expiredResolve => { expire = expiredResolve; });
 				const timer = setTimeout(() => {
 					const pending = markdownBarrierRequests.get(requestId);
 					if (pending) settleMarkdownBarrier(requestId, pending);
 				}, 5_000);
-				markdownBarrierRequests.set(requestId, { sourceGeneration, resolve, timer, expired, expire });
+				markdownBarrierRequests.set(requestId, { sourceGeneration, resolve: finish, timer, expired, expire });
+				retirement.addEventListener('abort', onRetired, { once: true });
+				if (retirement.aborted) { onRetired(); return; }
 				void deliverWebviewMessage({
 					type: 'requestMarkdownCommandBarrier', requestId, sourceGeneration,
 				}).then(delivered => {
@@ -3710,6 +3800,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 		const activeNativeMarkdownSaveLeases = new Set<MarkdownSaveLease>();
 		const transferredNativeMarkdownSaveLeases = new Set<MarkdownSaveLease>();
+		const unleasedNativeSavePreparations = new Set<AbortController>();
 		const nativeMarkdownSaveLeases: NativeMarkdownSaveLeaseRecord[] = [];
 		const settleActiveNativeMarkdownSaveLease = (lease: MarkdownSaveLease) => {
 			activeNativeMarkdownSaveLeases.delete(lease);
@@ -3723,7 +3814,23 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 		const settleNativeMarkdownSaveLease = (savedText: string) => {
 			const index = nativeMarkdownSaveLeases.findIndex(record => record.expectedText === savedText);
-			settleNativeMarkdownSaveLeaseRecord(index);
+			if (index >= 0) {
+				settleNativeMarkdownSaveLeaseRecord(index);
+				return;
+			}
+			const candidates = [...activeNativeMarkdownSaveLeases]
+				.filter(lease => !transferredNativeMarkdownSaveLeases.has(lease));
+			if (candidates.length === 0 && unleasedNativeSavePreparations.size === 1) {
+				const preparation = unleasedNativeSavePreparations.values().next().value!;
+				unleasedNativeSavePreparations.delete(preparation);
+				preparation.abort();
+				return;
+			}
+			if (candidates.length !== 1) return;
+			const lease = candidates[0];
+			const retainedIndex = nativeMarkdownSaveLeases.findIndex(record => record.lease === lease);
+			if (retainedIndex >= 0) settleNativeMarkdownSaveLeaseRecord(retainedIndex);
+			else settleActiveNativeMarkdownSaveLease(lease);
 		};
 		const takeNativeMarkdownSaveLease = (savedText: string): MarkdownSaveLease | undefined => {
 			const index = nativeMarkdownSaveLeases.findIndex(record => record.expectedText === savedText);
@@ -3859,6 +3966,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				}
 			};
 			try {
+				if (pending.candidateText === pending.rowFreeText) return;
 				if (markdownSaveLease) await restore();
 				else await runInMarkdownDocumentQueue(restore);
 			} finally {
@@ -3881,14 +3989,19 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					event.waitUntil(Promise.resolve([]));
 					return;
 				}
+				const preparationRetirement = new AbortController();
+				unleasedNativeSavePreparations.add(preparationRetirement);
 				const preparation = (async () => {
 					let markdownSaveLease: MarkdownSaveLease | undefined;
 					let retainedMarkdownSaveLease = false;
 					try {
+					rolledBackLinkedNativeSave = undefined;
 					if (sourceRollbackFailed) throw new Error('Cannot save because an external reload could not be restored. Reload the file and try again.');
 					if (pendingLinkedNativeSave && !await rollbackPendingLinkedNativeSave()) {
 						throw new Error('Cannot save because a previous linked-query Save could not be rolled back.');
 					}
+					if (preparationRetirement.signal.aborted) return [];
+					rolledBackLinkedNativeSave = undefined;
 					const backgroundOwned = this.isHostOwnedBackgroundFile?.(document.uri) ?? false;
 					const initialSource = !webviewInitialized || backgroundOwned
 						? parseKqlxText(document.getText(), { allowedKinds: [documentKind], defaultKind: documentKind })
@@ -3906,7 +4019,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							return !('resultJson' in record) && !('resultArtifact' in record)
 								&& !String(record.linkedQueryPath || '').trim();
 						})) return [];
-					if (!webviewInitialized && sourceHasOwnedSectionsAtSave && !await ensureInitialDocument()) {
+					const initialProjectionAccepted = !webviewInitialized && sourceHasOwnedSectionsAtSave
+						? await ensureInitialDocument() : true;
+					if (preparationRetirement.signal.aborted) return [];
+					if (!initialProjectionAccepted) {
 						throw Object.assign(
 							new Error('Cannot save because the Workbench editor has not accepted its initial notebook projection.'),
 							{ markdownBarrierFailed: true },
@@ -3931,6 +4047,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 									? await pendingProjection.result
 									: await postDocument({ forceReload: true });
 								await projectionActivationTail;
+								if (preparationRetirement.signal.aborted) return [];
 								if (!accepted || activeProjectionSourceText !== document.getText()
 									|| markdownDocumentQueue.latestAuthority?.sourceText !== document.getText()) {
 									if (attempt < 2 && sourceBeforeBarrier !== document.getText()) continue;
@@ -3940,7 +4057,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 									);
 								}
 							}
-							markdownSaveLease = await requestMarkdownCommandBarrier();
+							markdownSaveLease = await requestMarkdownCommandBarrier(preparationRetirement.signal);
+							if (preparationRetirement.signal.aborted) return [];
 							if (!markdownSaveLease) {
 								if (attempt < 2 && sourceBeforeBarrier !== document.getText()) continue;
 								throw Object.assign(
@@ -3949,6 +4067,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								);
 							}
 							activeNativeMarkdownSaveLeases.add(markdownSaveLease);
+							unleasedNativeSavePreparations.delete(preparationRetirement);
 							if (outerDisposed) {
 								throw Object.assign(new Error('Cannot save because the editor closed while reserving Markdown state.'), {
 									markdownBarrierFailed: true,
@@ -3967,6 +4086,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 										&& this.markdownDocuments.get(markdownDocumentKey) === undefined)) break;
 							settleActiveNativeMarkdownSaveLease(markdownSaveLease);
 							markdownSaveLease = undefined;
+							unleasedNativeSavePreparations.add(preparationRetirement);
 							if (attempt === 2 || sourceBeforeBarrier === currentSource
 								|| markdownDocumentQueue.pendingCommands > 0) {
 								throw Object.assign(
@@ -3988,7 +4108,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const saveLinkedUri = linkedQueryUri;
 					const saveLinkedGeneration = linkedQueryLoadGeneration;
 					const saveLinkedIdentity = linkedQueryPhysicalIdentity;
-					const saveOwnerIsCurrent = () => activeProjectionGeneration === saveProjectionGeneration
+					const saveOwnerIsCurrent = () => !preparationRetirement.signal.aborted
+						&& activeProjectionGeneration === saveProjectionGeneration
+						&& (!markdownSaveLease || activeNativeMarkdownSaveLeases.has(markdownSaveLease))
 						&& activeProjectionAuthorityToken === saveAuthorityToken
 						&& markdownDocumentQueue.latestAuthority?.token === saveAuthorityToken
 						&& (saveMarkdownOwner
@@ -4089,6 +4211,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						};
 						notifyNativeSaveStateChanged();
 					} catch (error) {
+						if (preparationRetirement.signal.aborted) throw error;
+						if (markdownSaveLease && !activeNativeMarkdownSaveLeases.has(markdownSaveLease)) throw error;
 						if (error instanceof KqlxOverlayConflictError
 							|| (error instanceof Error && error.name === 'KqlxOverlayConflictError')) throw error;
 						if ((error as any)?.markdownBarrierFailed === true) throw error;
@@ -4101,6 +4225,15 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						notifyNativeSaveStateChanged();
 						getWorkbenchLogger().warn(`[sql-persistence] Final snapshot unavailable; saving fail-closed state: ${error instanceof Error ? error.message : String(error)}`);
 						sanitizedText = await sanitizeSerializedNotebookTextFailClosed(document.getText());
+					}
+					if (preparationRetirement.signal.aborted) return [];
+					if (markdownSaveLease) {
+						retainedMarkdownSaveLease = retainNativeMarkdownSaveLease(markdownSaveLease, sanitizedText);
+						if (!retainedMarkdownSaveLease) {
+							throw Object.assign(new Error('Cannot save because the editor closed before Markdown state could commit.'), {
+								markdownBarrierFailed: true,
+							});
+						}
 					}
 					const freshText = document.getText();
 					const edits = sanitizedText === freshText && freshText === currentText
@@ -4116,16 +4249,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						ownedDocumentEdits.begin(sanitizedText);
 						claimSharedOwnedMutation(sanitizedText);
 					}
-					if (markdownSaveLease) {
-						retainedMarkdownSaveLease = retainNativeMarkdownSaveLease(markdownSaveLease, sanitizedText);
-						if (!retainedMarkdownSaveLease) {
-							throw Object.assign(new Error('Cannot save because the editor closed before Markdown state could commit.'), {
-								markdownBarrierFailed: true,
-							});
-						}
-					}
 					return edits;
 					} finally {
+						unleasedNativeSavePreparations.delete(preparationRetirement);
+						preparationRetirement.abort();
 						if (!retainedMarkdownSaveLease && markdownSaveLease) {
 							settleActiveNativeMarkdownSaveLease(markdownSaveLease);
 						}
@@ -4184,7 +4311,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								}).then(() => undefined, () => undefined);
 								linkedSaveTasks.add(reapplyTask);
 								void reapplyTask.finally(() => linkedSaveTasks.delete(reapplyTask));
-							} else clearPendingLinkedNativeSave();
+							} else {
+								clearPendingLinkedNativeSave();
+								finalizeCommittedLinkedBuffer(pendingLinkedSave);
+							}
 						}
 						else {
 							const rollbackTask = rollbackPendingLinkedNativeSave().then(() => undefined, () => undefined);
@@ -4225,9 +4355,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					// Rebuild section change cache and notify webview that everything is clean.
 					rebuildSavedSectionCache(lastSavedText);
 					postChangedSectionsClear();
-					// Best-effort: when the notebook metadata file is saved, also save the linked query file.
 					try {
-						if (!linkedNativeSaveHandled && linkedQueryDocument && linkedQueryDocument.isDirty) {
+						if (isSessionFile && !linkedNativeSaveHandled && linkedQueryDocument && linkedQueryDocument.isDirty) {
 							const saveTask = saveCurrentLinkedQueryDocument().then(() => undefined, () => undefined);
 							linkedSaveTasks.add(saveTask);
 							void saveTask.finally(() => linkedSaveTasks.delete(saveTask));
@@ -5198,6 +5327,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					let persistAccepted = false;
 					let acceptedSourceText: string | undefined;
 					let acceptedOrderedSectionIds: string[] | undefined;
+					let acceptedLinkedOwner: LinkedContentOwner | undefined;
 					let linkedSessionRollback: {
 						uri: vscode.Uri;
 						identity: LocalFileIdentity;
@@ -5660,6 +5790,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								void postDocument({ forceReload: true });
 							}
 							if (persistAccepted && snapshotId && Number.isSafeInteger(incomingEditRevision) && !outerDisposed) {
+								if (userSaveRequested && linkedQueryUri && !document.isDirty) {
+									acceptedLinkedOwner = captureLinkedContentOwner();
+								}
 								projectionSession.adoptRevision(Number(incomingEditRevision));
 								try {
 									await startupGateway.postMessage({
@@ -5671,11 +5804,21 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								}
 							}
 						} finally {
+							const linkedSave = userSaveRequested && persistAccepted && acceptedLinkedOwner
+								&& acceptedSourceText === document.getText() && !document.isDirty
+								? saveLinkedBufferForOwner(acceptedLinkedOwner, () =>
+									acceptedSourceText === document.getText()
+									&& activeProjectionGeneration === persistProjectionGeneration
+									&& activeProjectionAuthorityToken === persistAuthorityToken
+									&& markdownDocumentQueue.latestAuthority?.token === persistAuthorityToken)
+								: undefined;
+							const linkedSaveOutcome = linkedSave?.catch(() => false);
 							releasePersistDecision();
 							markdownPersistenceLease?.settle();
 							if (userSaveRequested && !outerDisposed) {
 								try {
 									if (!persistAccepted || acceptedSourceText !== document.getText()
+										|| (linkedSaveOutcome && !await linkedSaveOutcome)
 										|| !await document.save()) {
 										throw new Error('The current editor snapshot was not saved.');
 										}

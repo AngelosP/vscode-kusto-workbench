@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
+import { scheduler } from 'node:timers/promises';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { DatabaseSchemaIndex, KustoQueryClient, normalizeClusterEndpoint } from './kustoClient';
@@ -12,7 +13,7 @@ import {
 	type SchemaCacheGeneration,
 	writeCachedSchemaToDisk,
 } from './schemaCache';
-import { ensureRawSchemaJson, getAutocompleteSchemaSignature, getSchemaSummary } from './schemaIndexUtils';
+import { ensureRawSchemaJson, getAutocompleteSchemaSignature, getAutocompleteSchemaSignatureAsync, getSchemaSummary } from './schemaIndexUtils';
 import {
 	STORAGE_KEYS,
 	CachedSchemaEntry
@@ -45,6 +46,13 @@ type SchemaPrefetchOptions = {
 	cacheOnly?: boolean;
 	silent?: boolean;
 	reason?: string;
+};
+
+type PreparedPrimarySchema = {
+	result: Awaited<ReturnType<KustoQueryClient['getDatabaseSchema']>>;
+	schema: DatabaseSchemaIndex;
+	signature: string;
+	accountPartition: string;
 };
 
 type BackgroundSchemaRefreshListener = {
@@ -85,6 +93,7 @@ function requireWorkerReadySchema(schema: DatabaseSchemaIndex, database: string)
 export class SchemaService {
 	private readonly backgroundSchemaRefreshes = new Map<string, { listeners: BackgroundSchemaRefreshListener[]; promise: Promise<void> }>();
 	private readonly cachedSchemaReads = new Map<string, Promise<CachedSchemaEntry | undefined>>();
+	private readonly primarySchemaLoads = new Map<string, Promise<PreparedPrimarySchema>>();
 
 	constructor(private readonly host: SchemaServiceHost) {
 		void this.migrateCachedSchemasToDiskOnce();
@@ -97,6 +106,48 @@ export class SchemaService {
 			return getKustoConnectionIdentityKey(current.clusterUrl, current.authorityId) === capturedIdentity;
 		} catch {
 			return false;
+		}
+	}
+
+	private async preparePrimarySchema(
+		connection: KustoConnection,
+		database: string,
+		forceRefresh: boolean,
+		connectionIdentity: string,
+		cacheKey: string,
+	): Promise<PreparedPrimarySchema> {
+		const key = `${forceRefresh ? 'force' : 'normal'}|${connectionIdentity}|${cacheKey || `unresolved|${encodeURIComponent(connection.id)}|${kustoDatabaseKey(connection.clusterUrl, database)}`}`;
+		const existing = this.primarySchemaLoads.get(key);
+		if (existing) return existing;
+		const load = (async (): Promise<PreparedPrimarySchema> => {
+			const result = await this.host.kustoClient.getDatabaseSchema(connection, database, forceRefresh);
+			if (!this.isConnectionIdentityCurrent(connection.id, connectionIdentity)) throw new Error('The schema connection changed during preparation.');
+			await scheduler.yield();
+			if (!this.isConnectionIdentityCurrent(connection.id, connectionIdentity)) throw new Error('The schema connection changed during preparation.');
+			const schema = requireWorkerReadySchema(result.schema, database);
+			const accountPartition = result.accountPartition;
+			if (!accountPartition) throw new Error('The schema response did not include a resolved Microsoft account identity.');
+			const resolvedCacheKey = schemaCacheKey(connection.clusterUrl, database, connection.id, accountPartition);
+			const signature = await getAutocompleteSchemaSignatureAsync(schema);
+			await scheduler.yield();
+			if (!this.isConnectionIdentityCurrent(connection.id, connectionIdentity)) throw new Error('The schema connection changed during preparation.');
+			try {
+				await this.saveCachedSchemaToDisk(resolvedCacheKey, {
+					schema,
+					timestamp: result.fromCache ? Date.now() - (result.cacheAgeMs ?? 0) : Date.now(),
+					version: SCHEMA_CACHE_VERSION, clusterUrl: connection.clusterUrl, database,
+					connectionId: connection.id, accountPartition,
+				}, result.cacheGeneration);
+			} catch (cacheError) {
+				this.host.output.warn(`[schema] failed to persist schema db=${database}: ${cacheError instanceof Error ? cacheError.message : String(cacheError)}`);
+			}
+			return { result, schema, signature, accountPartition };
+		})();
+		this.primarySchemaLoads.set(key, load);
+		try {
+			return await load;
+		} finally {
+			if (this.primarySchemaLoads.get(key) === load) this.primarySchemaLoads.delete(key);
 		}
 	}
 
@@ -125,7 +176,7 @@ export class SchemaService {
 			schema,
 			schemaMeta: {
 				...summary,
-				schemaSignature: getAutocompleteSchemaSignature(schema),
+				schemaSignature: args.meta?.schemaSignature ?? getAutocompleteSchemaSignature(schema),
 				...args.meta,
 			}
 		});
@@ -165,6 +216,8 @@ export class SchemaService {
 					throw new Error('Background schema refresh returned a different account identity.');
 				}
 				const schema = requireWorkerReadySchema(result.schema, listener.database);
+				const freshSignature = await getAutocompleteSchemaSignatureAsync(schema);
+				if (!this.isConnectionIdentityCurrent(listener.connectionId, listener.connectionIdentity)) return;
 				const timestamp = result.fromCache
 					? Date.now() - (result.cacheAgeMs ?? 0)
 					: Date.now();
@@ -182,7 +235,6 @@ export class SchemaService {
 					this.host.output.warn(`[schema] failed to persist background schema db=${listener.database}: ${cacheError instanceof Error ? cacheError.message : String(cacheError)}`);
 				}
 
-				const freshSignature = getAutocompleteSchemaSignature(schema);
 				const freshHasRawSchemaJson = !!schema.rawSchemaJson;
 				const snapshot = listeners.slice();
 				for (const item of snapshot) {
@@ -203,6 +255,7 @@ export class SchemaService {
 						lifecycle: item.lifecycle,
 						schema,
 						meta: {
+							schemaSignature: freshSignature,
 							fromCache: result.fromCache,
 							cacheAgeMs: result.cacheAgeMs,
 							debug: result.debug,
@@ -369,10 +422,18 @@ export class SchemaService {
 			// Read persisted cache once so we can (a) use it when fresh, and (b) fall back to it on errors.
 			const cached = await this.getCachedSchemaFromDiskByCluster(connection, database, initialAccountPartition);
 			if (!isConnectionCurrent()) return;
+			if (cached?.schema) {
+				await scheduler.yield();
+				if (!isConnectionCurrent()) return;
+			}
 			const cachedState = classifyCachedSchema(cached);
 			const cachedAgeMs = cachedState.cacheAgeMs;
-			const cachedSignature = cached?.schema ? getAutocompleteSchemaSignature(cached.schema) : undefined;
+			const cachedSignature = cached?.schema ? await getAutocompleteSchemaSignatureAsync(cached.schema) : undefined;
 			const cachedHasRawSchemaJson = !!cached?.schema?.rawSchemaJson;
+			if (cached?.schema) {
+				await scheduler.yield();
+				if (!isConnectionCurrent()) return;
+			}
 
 			if (options.cacheOnly) {
 				if (!isConnectionCurrent()) return;
@@ -388,6 +449,7 @@ export class SchemaService {
 						lifecycle,
 						schema: cached.schema,
 						meta: {
+							schemaSignature: cachedSignature,
 							fromCache: true,
 							cacheAgeMs: cachedAgeMs,
 							deliveryKind: 'cache-only',
@@ -425,6 +487,7 @@ export class SchemaService {
 					lifecycle,
 					schema,
 					meta: {
+						schemaSignature: cachedSignature,
 						fromCache: true,
 						cacheAgeMs: cachedAgeMs,
 						deliveryKind: 'cache',
@@ -457,6 +520,7 @@ export class SchemaService {
 					lifecycle,
 					schema,
 					meta: {
+						schemaSignature: cachedSignature,
 						fromCache: true,
 						cacheAgeMs: cachedAgeMs,
 						deliveryKind: 'cache',
@@ -485,14 +549,10 @@ export class SchemaService {
 				return;
 			}
 
-			const result = await this.host.kustoClient.getDatabaseSchema(connection, database, forceRefresh);
+			const { result, schema, signature, accountPartition: resolvedAccountPartition } = await this.preparePrimarySchema(
+				connection, database, forceRefresh, connectionIdentity, cacheKey,
+			);
 			if (!isConnectionCurrent()) return;
-			const schema = requireWorkerReadySchema(result.schema, database);
-			const resolvedAccountPartition = result.accountPartition;
-			if (!resolvedAccountPartition) {
-				throw new Error('The schema response did not include a resolved Microsoft account identity.');
-			}
-			const resolvedCacheKey = schemaCacheKey(connection.clusterUrl, database, connection.id, resolvedAccountPartition);
 
 			const summary = getSchemaSummary(schema);
 
@@ -500,23 +560,6 @@ export class SchemaService {
 				`[schema] loaded db=${database} tables=${summary.tablesCount} columns=${summary.columnsCount} fromCache=${result.fromCache}`
 			);
 
-			// Persist schema across VS Code sessions.
-			const timestamp = result.fromCache
-				? Date.now() - (result.cacheAgeMs ?? 0)
-				: Date.now();
-			try {
-				await this.saveCachedSchemaToDisk(resolvedCacheKey, {
-					schema,
-					timestamp,
-					version: SCHEMA_CACHE_VERSION,
-					clusterUrl: connection.clusterUrl,
-					database,
-					connectionId,
-					accountPartition: resolvedAccountPartition,
-				}, result.cacheGeneration);
-			} catch (cacheError) {
-				this.host.output.warn(`[schema] failed to persist schema db=${database}: ${cacheError instanceof Error ? cacheError.message : String(cacheError)}`);
-			}
 			if (!isConnectionCurrent()) return;
 			if (summary.tablesCount === 0 || summary.columnsCount === 0) {
 				const d = result.debug;
@@ -540,6 +583,7 @@ export class SchemaService {
 				lifecycle,
 				schema,
 				meta: {
+					schemaSignature: signature,
 					fromCache: result.fromCache,
 					cacheAgeMs: result.cacheAgeMs,
 					debug: result.debug,
@@ -563,6 +607,8 @@ export class SchemaService {
 				if (!isConnectionCurrent()) return;
 				if (cached && cached.schema) {
 					const schema = cached.schema;
+					const signature = await getAutocompleteSchemaSignatureAsync(schema);
+					if (!isConnectionCurrent()) return;
 					const summary = getSchemaSummary(schema);
 					const hasRawSchemaJson = !!schema.rawSchemaJson;
 
@@ -579,6 +625,7 @@ export class SchemaService {
 						lifecycle,
 						schema,
 						meta: {
+							schemaSignature: signature,
 							fromCache: true,
 							cacheAgeMs: Date.now() - cached.timestamp,
 							isFailoverToCache: true,
@@ -918,6 +965,8 @@ export class SchemaService {
 					const schema = requireWorkerReadySchema(result.schema, db);
 					const accountPartition = result.accountPartition;
 					if (!accountPartition) throw new Error('Schema authentication identity could not be resolved.');
+					const signature = await getAutocompleteSchemaSignatureAsync(schema);
+					if (!isConnectionCurrent()) return { schemas: [], error: 'The connection changed while schema refresh was running.' };
 
 					const cacheKey = schemaCacheKey(connection.clusterUrl, db, connection.id, accountPartition);
 					const timestamp = result.fromCache ? Date.now() - (result.cacheAgeMs ?? 0) : Date.now();
@@ -946,6 +995,7 @@ export class SchemaService {
 								: undefined,
 							schema,
 							meta: {
+								schemaSignature: signature,
 								fromCache: result.fromCache,
 								cacheAgeMs: result.cacheAgeMs,
 								forceRefresh: true,

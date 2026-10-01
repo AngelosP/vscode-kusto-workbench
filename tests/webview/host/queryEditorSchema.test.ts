@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import * as os from 'os';
 import * as path from 'path';
+import { scheduler } from 'node:timers/promises';
 import { SchemaService } from '../../../src/host/queryEditorSchema';
+import * as schemaIndexUtils from '../../../src/host/schemaIndexUtils';
 import type { KustoConnection } from '../../../src/host/connectionManager';
 import { isAuthError } from '../../../src/host/kustoClientUtils';
 import { SCHEMA_CACHE_TTL_MS, SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk } from '../../../src/host/schemaCache';
@@ -82,6 +84,206 @@ function createService(connection: KustoConnection) {
 }
 
 describe('SchemaService cross-cluster schema requests', () => {
+	it.each(['primary', 'cached', 'background', 'failover', 'tools'] as const)('retires %s schema signing before any stale cache write or delivery', async route => {
+		const connection: KustoConnection = { id: 'signing', name: 'Signing', clusterUrl: 'https://signing.kusto.windows.net' };
+		const { service, messages, getDatabaseSchema, setConnection } = createService(connection);
+		const cached = {
+			schema: { tables: ['Events'], columnTypesByTable: { Events: { TIMESTAMP: 'datetime' } }, rawSchemaJson: makeRawSchema('TelemetryDb') },
+			timestamp: route === 'background' ? 1 : Date.now(), version: SCHEMA_CACHE_VERSION,
+			connectionId: connection.id, accountPartition: 'test-partition',
+		};
+		const read = vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue(
+			route === 'cached' || route === 'background' ? cached : undefined,
+		);
+		if (route === 'failover') {
+			read.mockResolvedValueOnce(undefined).mockResolvedValue(cached);
+			getDatabaseSchema.mockRejectedValue(new Error('offline'));
+		}
+		const write = vi.spyOn(service, 'saveCachedSchemaToDisk').mockResolvedValue(undefined);
+		const started = Promise.withResolvers<void>();
+		const held = Promise.withResolvers<string>();
+		let signatures = 0;
+		const signature = vi.spyOn(schemaIndexUtils, 'getAutocompleteSchemaSignatureAsync').mockImplementation(() => {
+			if (route === 'background' && ++signatures === 1) return Promise.resolve('cached-signature');
+			started.resolve();
+			return held.promise;
+		});
+		try {
+			const request = route === 'tools'
+				? service.refreshSchemaForTools(connection.clusterUrl, connection.id, [{ boxId: 'query_1', database: 'TelemetryDb', requestToken: 'old' }])
+				: service.prefetchSchema(connection.id, 'TelemetryDb', 'query_1', false, 'old');
+			await started.promise;
+			const background = [...(service as any).backgroundSchemaRefreshes.values()].map((entry: any) => entry.promise);
+			expect(write).not.toHaveBeenCalled();
+			const priorMessages = messages.slice();
+			setConnection({ ...connection, clusterUrl: 'https://replacement.kusto.windows.net' });
+			held.resolve('fresh-signature');
+			await request;
+			await Promise.all(background);
+			expect(write).not.toHaveBeenCalled();
+			expect(messages).toEqual(priorMessages);
+			expect(messages).toHaveLength(route === 'background' ? 1 : 0);
+		} finally {
+			held.resolve('cleanup');
+			signature.mockRestore();
+		}
+	});
+
+	it.each([
+		{ phase: 'before schema preparation', heldYield: 1, cached: false },
+		{ phase: 'before cache serialization', heldYield: 2, cached: false },
+		{ phase: 'before cached signature', heldYield: 1, cached: true },
+		{ phase: 'before cached delivery', heldYield: 2, cached: true },
+	])('yields $phase and retires a changed connection before effects', async ({ heldYield, cached }) => {
+		const connection: KustoConnection = { id: 'yielding', name: 'Yielding', clusterUrl: 'https://yielding.kusto.windows.net' };
+		const { service, messages, getDatabaseSchema, setConnection } = createService(connection);
+		const read = vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue(cached ? {
+			schema: { tables: ['Events'], columnTypesByTable: { Events: { TIMESTAMP: 'datetime' } }, rawSchemaJson: makeRawSchema('TelemetryDb') },
+			timestamp: Date.now(), version: SCHEMA_CACHE_VERSION,
+			connectionId: connection.id, accountPartition: 'test-partition',
+		} : undefined);
+		const write = vi.spyOn(service, 'saveCachedSchemaToDisk').mockResolvedValue(undefined);
+		const signature = vi.spyOn(schemaIndexUtils, 'getAutocompleteSchemaSignatureAsync');
+		const started = Promise.withResolvers<void>();
+		const held = Promise.withResolvers<void>();
+		let yields = 0;
+		const yielding = vi.spyOn(scheduler, 'yield').mockImplementation(() => {
+			if (++yields === heldYield) { started.resolve(); return held.promise; }
+			return Promise.resolve();
+		});
+		try {
+			const request = service.prefetchSchema(connection.id, 'TelemetryDb', 'old_target', false, 'old_token');
+			await started.promise;
+			if (heldYield === 1) expect(signature).not.toHaveBeenCalled();
+			else expect(signature).toHaveBeenCalledTimes(1);
+			expect(messages).toEqual([]);
+			expect(write).not.toHaveBeenCalled();
+			setConnection({ ...connection, clusterUrl: 'https://replacement.kusto.windows.net' });
+			held.resolve();
+			await request;
+			expect(write).not.toHaveBeenCalled();
+			expect(messages).toEqual([]);
+			read.mockResolvedValue(undefined);
+			await service.prefetchSchema(connection.id, 'TelemetryDb', 'new_target', false, 'new_token');
+			expect(getDatabaseSchema).toHaveBeenCalledTimes(cached ? 1 : 2);
+			expect(write).toHaveBeenCalledTimes(1);
+			expect(messages).toHaveLength(1);
+			expect(messages[0]).toMatchObject({ type: 'schemaData', boxId: 'new_target', requestToken: 'new_token', clusterUrl: 'https://replacement.kusto.windows.net' });
+		} finally {
+			held.resolve();
+			yielding.mockRestore();
+			signature.mockRestore();
+		}
+	});
+
+	it('shares primary schema preparation and cache publication across concurrent sections', async () => {
+		const connection: KustoConnection = { id: 'shared', name: 'Shared', clusterUrl: 'https://shared.kusto.windows.net' };
+		const { service, messages, getDatabaseSchema } = createService(connection);
+		const read = vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue(undefined);
+		const write = vi.spyOn(service, 'saveCachedSchemaToDisk');
+		const fetched = Promise.withResolvers<Awaited<ReturnType<typeof getDatabaseSchema>>>();
+		getDatabaseSchema.mockReturnValue(fetched.promise);
+		const requests = Array.from({ length: 4 }, (_, index) => service.prefetchSchema(
+			connection.id, 'TelemetryDb', `query_${index}`, false, `token_${index}`, {},
+			{ sectionInstanceId: `instance_${index}`, targetGeneration: index + 1 },
+		));
+		await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(4));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		fetched.resolve({ schema: { tables: ['Events'], columnTypesByTable: { Events: { TIMESTAMP: 'datetime', EventName: 'string' } }, rawSchemaJson: makeRawSchema('TelemetryDb') }, fromCache: false, accountPartition: 'test-partition' });
+		await Promise.all(requests);
+		expect(getDatabaseSchema).toHaveBeenCalledTimes(1);
+		expect(write).toHaveBeenCalledTimes(1);
+		expect(write.mock.calls[0][0]).toBe(schemaCacheKey(connection.clusterUrl, 'TelemetryDb', connection.id, 'test-partition'));
+		const deliveries = messages.filter(message => message.type === 'schemaData');
+		expect(deliveries).toHaveLength(4);
+		for (let index = 0; index < 4; index++) expect(deliveries).toContainEqual(expect.objectContaining({
+			boxId: `query_${index}`, requestToken: `token_${index}`, sectionInstanceId: `instance_${index}`,
+			targetGeneration: index + 1, accountPartition: 'test-partition',
+			schemaMeta: expect.objectContaining({ deliveryKind: 'fresh', workerUpdateNeeded: true, forceRefresh: false }),
+		}));
+		expect(new Set(deliveries.map(message => message.schemaMeta.schemaSignature)).size).toBe(1);
+		read.mockRestore();
+		await service.prefetchSchema(connection.id, 'TelemetryDb', 'query_5', false, 'token_5');
+		expect(getDatabaseSchema).toHaveBeenCalledTimes(1);
+		expect(messages.at(-1)).toMatchObject({ type: 'schemaData', boxId: 'query_5', schemaMeta: { deliveryKind: 'cache' } });
+	});
+
+	it('retires failed shared primary preparation and keeps cache-write failure best effort', async () => {
+		const connection: KustoConnection = { id: 'retry', name: 'Retry', clusterUrl: 'https://retry.kusto.windows.net' };
+		const { service, messages, getDatabaseSchema } = createService(connection);
+		vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue(undefined);
+		const fetched = Promise.withResolvers<Awaited<ReturnType<typeof getDatabaseSchema>>>();
+		getDatabaseSchema.mockReturnValueOnce(fetched.promise);
+		const first = service.prefetchSchema(connection.id, 'TelemetryDb', 'query_1', false, 'token_1');
+		const second = service.prefetchSchema(connection.id, 'TelemetryDb', 'query_2', false, 'token_2');
+		await new Promise(resolve => setTimeout(resolve, 0));
+		fetched.reject(new Error('offline'));
+		await Promise.all([first, second]);
+		expect(getDatabaseSchema).toHaveBeenCalledTimes(1);
+		expect(messages.filter(message => message.type === 'schemaError').map(message => message.requestToken)).toEqual(['token_1', 'token_2']);
+		vi.spyOn(service, 'saveCachedSchemaToDisk').mockRejectedValue(new Error('disk full'));
+		await Promise.all([
+			service.prefetchSchema(connection.id, 'TelemetryDb', 'query_3', false, 'token_3'),
+			service.prefetchSchema(connection.id, 'TelemetryDb', 'query_4', false, 'token_4'),
+		]);
+		expect(getDatabaseSchema).toHaveBeenCalledTimes(2);
+		expect(messages.filter(message => message.type === 'schemaData').map(message => message.requestToken)).toEqual(['token_3', 'token_4']);
+		expect((service as any).host.output.warn.mock.calls.filter((call: unknown[]) => String(call[0]).includes('failed to persist schema'))).toHaveLength(1);
+	});
+
+	it('keeps refresh and account identities separate while resolving an unknown account once', async () => {
+		const connection: KustoConnection = { id: 'identity', name: 'Identity', clusterUrl: 'https://identity.kusto.windows.net' };
+		const { service, messages, getDatabaseSchema } = createService(connection);
+		vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue(undefined);
+		const write = vi.spyOn(service, 'saveCachedSchemaToDisk').mockResolvedValue(undefined);
+		await Promise.all([
+			service.prefetchSchema(connection.id, 'TelemetryDb', 'ordinary', false, 'ordinary'),
+			service.prefetchSchema(connection.id, 'TelemetryDb', 'forced', true, 'forced'),
+		]);
+		expect(getDatabaseSchema).toHaveBeenCalledTimes(2);
+		expect(messages.find(message => message.boxId === 'ordinary')?.schemaMeta.forceRefresh).toBe(false);
+		expect(messages.find(message => message.boxId === 'forced')?.schemaMeta.forceRefresh).toBe(true);
+		const accounts = (service as any).host.kustoClient.getAccountPartition;
+		accounts.mockReturnValueOnce('partition-a').mockReturnValueOnce('partition-b');
+		const result = { schema: { tables: ['Events'], columnTypesByTable: { Events: { TIMESTAMP: 'datetime', EventName: 'string' } }, rawSchemaJson: makeRawSchema('TelemetryDb') }, fromCache: false, accountPartition: 'partition-a' };
+		getDatabaseSchema.mockResolvedValueOnce(result).mockResolvedValueOnce({ ...result, accountPartition: 'partition-b' });
+		await Promise.all([
+			service.prefetchSchema(connection.id, 'TelemetryDb', 'account_a', false, 'account_a'),
+			service.prefetchSchema(connection.id, 'TelemetryDb', 'account_b', false, 'account_b'),
+		]);
+		expect(getDatabaseSchema).toHaveBeenCalledTimes(4);
+		expect(write.mock.calls.slice(-2).map(call => call[0])).toEqual([
+			schemaCacheKey(connection.clusterUrl, 'TelemetryDb', connection.id, 'partition-a'),
+			schemaCacheKey(connection.clusterUrl, 'TelemetryDb', connection.id, 'partition-b'),
+		]);
+		accounts.mockReturnValue(undefined);
+		await Promise.all([
+			service.prefetchSchema(connection.id, 'TelemetryDb', 'unresolved_a', false, 'unresolved_a'),
+			service.prefetchSchema(connection.id, 'TelemetryDb', 'unresolved_b', false, 'unresolved_b'),
+		]);
+		expect(getDatabaseSchema).toHaveBeenCalledTimes(5);
+		expect(write.mock.calls.at(-1)?.[0]).toBe(schemaCacheKey(connection.clusterUrl, 'TelemetryDb', connection.id, 'test-partition'));
+	});
+
+	it('does not publish or persist a shared preparation after its connection identity changes', async () => {
+		const connection: KustoConnection = { id: 'changed', name: 'Changed', clusterUrl: 'https://changed.kusto.windows.net' };
+		const { service, messages, getDatabaseSchema, setConnection } = createService(connection);
+		vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue(undefined);
+		const write = vi.spyOn(service, 'saveCachedSchemaToDisk').mockResolvedValue(undefined);
+		const fetched = Promise.withResolvers<Awaited<ReturnType<typeof getDatabaseSchema>>>();
+		getDatabaseSchema.mockReturnValueOnce(fetched.promise);
+		const request = service.prefetchSchema(connection.id, 'TelemetryDb', 'old_target', false, 'old_target');
+		await new Promise(resolve => setTimeout(resolve, 0));
+		setConnection({ ...connection, clusterUrl: 'https://replacement.kusto.windows.net' });
+		fetched.resolve({ schema: { tables: ['Events'], columnTypesByTable: { Events: { TIMESTAMP: 'datetime', EventName: 'string' } }, rawSchemaJson: makeRawSchema('TelemetryDb') }, fromCache: false, accountPartition: 'test-partition' });
+		await request;
+		expect(write).not.toHaveBeenCalled();
+		expect(messages).toEqual([]);
+		await service.prefetchSchema(connection.id, 'TelemetryDb', 'new_target', false, 'new_target');
+		expect(getDatabaseSchema).toHaveBeenCalledTimes(2);
+		expect(messages.at(-1)).toMatchObject({ type: 'schemaData', boxId: 'new_target', clusterUrl: 'https://replacement.kusto.windows.net' });
+	});
+
 	it('matches a full ADX host request to a regional short-form configured connection', async () => {
 		const connection: KustoConnection = {
 			id: 'semantic-westus',

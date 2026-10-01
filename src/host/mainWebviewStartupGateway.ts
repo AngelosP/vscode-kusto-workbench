@@ -25,9 +25,10 @@ import {
 	admitPowerBiPublishWebviewMessageFromEnvelope,
 } from '../shared/powerBiPublishProtocol';
 import { parseKustoResultAttachmentWebviewMessageFromEnvelope } from '../shared/kustoResultAttachmentProtocol';
-import { captureRuntimeMessageEnvelope } from '../shared/runtimeMessageEnvelope';
+import { captureRuntimeMessageEnvelope, isRuntimeProxy } from '../shared/runtimeMessageEnvelope';
 import { parsePersistDocumentMessage } from '../shared/persistDocumentState';
 import { parseSqlCopilotExecutionStartAck } from '../shared/copilotExecutionStart';
+import { encodeMainWebviewHostMessage, SCHEMA_DATA_BYTES_CODEC } from '../shared/mainWebviewMessageTransport';
 
 export const MAIN_WEBVIEW_DISPATCHER_READY_TYPE = 'mainWebviewDispatcherReady' as const;
 export const MAIN_WEBVIEW_DISPATCHER_PROBE_TYPE = 'mainWebviewDispatcherProbe' as const;
@@ -180,7 +181,7 @@ export function isMainWebviewCorrelatedReply(input: unknown): boolean {
 	}
 }
 
-type DispatcherReadySignal = Readonly<{ runtimeId?: string; probeId?: string }>;
+type DispatcherReadySignal = Readonly<{ runtimeId?: string; probeId?: string; schemaDataBytes: boolean }>;
 function parseDispatcherReadyMessage(input: unknown): DispatcherReadySignal | undefined {
 	const type = safelyInspectProperty(input, 'type');
 	if (type?.kind !== 'data' || type.value !== MAIN_WEBVIEW_DISPATCHER_READY_TYPE) return undefined;
@@ -188,7 +189,18 @@ function parseDispatcherReadyMessage(input: unknown): DispatcherReadySignal | un
 	const probeId = safelyInspectProperty(input, 'probeId');
 	if (runtimeId && (runtimeId.kind !== 'data' || typeof runtimeId.value !== 'string' || !runtimeId.value.trim())) return undefined;
 	if (probeId && (probeId.kind !== 'data' || typeof probeId.value !== 'string' || !probeId.value.trim())) return undefined;
+	const codecs = safelyInspectProperty(input, 'transportCodecs');
+	let schemaDataBytes = false;
+	if (codecs) {
+		if (codecs.kind !== 'data' || isRuntimeProxy(codecs.value) || !Array.isArray(codecs.value) || codecs.value.length > 16) return undefined;
+		for (let index = 0; index < codecs.value.length; index++) {
+			const item = Object.getOwnPropertyDescriptor(codecs.value, index);
+			if (!item || !Object.prototype.hasOwnProperty.call(item, 'value') || typeof item.value !== 'string') return undefined;
+			if (item.value === SCHEMA_DATA_BYTES_CODEC) schemaDataBytes = true;
+		}
+	}
 	return {
+		schemaDataBytes,
 		...(runtimeId?.kind === 'data' ? { runtimeId: String(runtimeId.value).trim() } : {}),
 		...(probeId?.kind === 'data' ? { probeId: String(probeId.value).trim() } : {}),
 	};
@@ -204,6 +216,7 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 	private retiredInboundDrain: Promise<void> = Promise.resolve();
 	private outboundDrain?: Promise<void>;
 	private dispatcherReady = false;
+	private schemaDataBytes = false;
 	private dispatcherRuntimeId = '';
 	private dispatcherRevalidationProbeId = '';
 	private dispatcherRevalidationFailed = false;
@@ -420,12 +433,14 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 			if (signal.probeId !== this.dispatcherRevalidationProbeId) return;
 		} else if (this.dispatcherReady) {
 			if (signal.runtimeId) this.dispatcherRuntimeId = signal.runtimeId;
+			this.schemaDataBytes = signal.schemaDataBytes;
 			return;
 		}
 		this.clearDispatcherRevalidationTimer();
 		this.dispatcherRevalidationProbeId = '';
 		this.dispatcherRevalidationFailed = false;
 		if (signal.runtimeId) this.dispatcherRuntimeId = signal.runtimeId;
+		this.schemaDataBytes = signal.schemaDataBytes;
 		this.dispatcherReady = true;
 		await this.drainOutbound();
 	}
@@ -541,7 +556,9 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 	private async deliver(message: unknown): Promise<boolean> {
 		if (this.retired) return false;
 		try {
-			return await Promise.resolve(this.options.panel.webview.postMessage(message)) !== false;
+			const encoded = encodeMainWebviewHostMessage(message, this.schemaDataBytes);
+			if (encoded === undefined) return false;
+			return await Promise.resolve(this.options.panel.webview.postMessage(encoded)) !== false;
 		} catch {
 			return false;
 		}

@@ -501,6 +501,11 @@ describe('ConnectionManagerViewerV2 schema search mapping', () => {
 		const cacheDirectory = schemaCache.getSchemaCacheDirUri(storageUri);
 		const cacheUris = entries.map((_entry, index) => vscode.Uri.joinPath(cacheDirectory, `entry-${index}.json`));
 		const files = new Map(cacheUris.map((uri, index) => [uri.toString(), Buffer.from(JSON.stringify(entries[index]))]));
+		const stat = vi.spyOn(vscode.workspace.fs, 'stat').mockImplementation(async uri => {
+			const bytes = files.get(uri.toString());
+			if (!bytes) throw new Error(`Missing schema cache stat: ${uri.toString()}`);
+			return { type: vscode.FileType.File, ctime: 1, mtime: 1, size: bytes.byteLength };
+		});
 		const originalReadDirectory = vscode.workspace.fs.readDirectory;
 		const readDirectory = vi.fn().mockResolvedValue(entries.map((_entry, index) => [`entry-${index}.json`, 1]));
 		vscode.workspace.fs.readDirectory = readDirectory;
@@ -594,6 +599,7 @@ describe('ConnectionManagerViewerV2 schema search mapping', () => {
 		} finally {
 			if (originalReadDirectory === undefined) Reflect.deleteProperty(vscode.workspace.fs, 'readDirectory');
 			else vscode.workspace.fs.readDirectory = originalReadDirectory;
+			stat.mockRestore();
 			readFile.mockRestore();
 			writeFile.mockRestore();
 			createDirectory.mockRestore();

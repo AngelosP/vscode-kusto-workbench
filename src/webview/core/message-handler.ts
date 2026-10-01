@@ -5,6 +5,7 @@ let applyingConnectionsData = false;
 // Dispatches incoming postMessage from the extension host to the right module.
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
+import { decodeMainWebviewHostMessage, SCHEMA_DATA_BYTES_CODEC } from '../../shared/mainWebviewMessageTransport.js';
 import {
 	hasDocumentViewEnvelopeFields,
 	isDocumentViewHostMessageType,
@@ -2058,6 +2059,7 @@ window.addEventListener(DOCUMENT_RUNTIME_INVALIDATED_EVENT, () => {
 });
 
 const __kustoDispatchHostMessage = async (message: any) => {
+	message = decodeMainWebviewHostMessage(message);
 	const envelope = captureRuntimeMessageEnvelope(message);
 	if (!envelope.ok) return;
 	message = envelope.value;
@@ -6763,6 +6765,7 @@ function publishMainWebviewDispatcherReady(probeId?: string): void {
 	postMessageToHost({
 		type: 'mainWebviewDispatcherReady',
 		runtimeId: mainWebviewRuntimeId,
+		transportCodecs: [SCHEMA_DATA_BYTES_CODEC],
 		...(probeId ? { probeId } : {}),
 	});
 }

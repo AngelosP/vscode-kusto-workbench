@@ -297,7 +297,18 @@ export function ensureInferredKustoFunctionBodiesForSchema(schemaObj: any): any 
 }
 
 export function prepareKustoSchemaForWorkerFast(schemaObj: any): any {
-	return ensureKustoFunctionBodiesForSchema(schemaObj);
+	if (!schemaObj || typeof schemaObj !== 'object' || !schemaObj.Databases || typeof schemaObj.Databases !== 'object') return schemaObj;
+	const databases = Object.fromEntries(Object.entries(schemaObj.Databases).map(([name, database]: [string, any]) => {
+		const functions = database?.Functions;
+		if (!functions || typeof functions !== 'object') return [name, database];
+		const copyFunction = (record: any) => record && typeof record === 'object'
+			? (Array.isArray(record) ? [...record] : { ...record }) : record;
+		const ownedFunctions = Array.isArray(functions)
+			? functions.map(copyFunction)
+			: Object.fromEntries(Object.entries(functions).map(([key, record]) => [key, copyFunction(record)]));
+		return [name, { ...database, Functions: ownedFunctions }];
+	}));
+	return ensureKustoFunctionBodiesForSchema({ ...schemaObj, Databases: databases });
 }
 
 export function prepareKustoSchemaForWorkerFull(schemaObj: any): any {

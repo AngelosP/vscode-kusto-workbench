@@ -2293,7 +2293,9 @@ export class KustoQueryClient {
 			const sampleRowKeys = sampleRow && typeof sampleRow === 'object' ? Object.keys(sampleRow).slice(0, 20) : [];
 			let sampleRowPreview = '';
 			try {
-				sampleRowPreview = JSON.stringify(sampleRow)?.slice(0, 500) ?? '';
+				sampleRowPreview = JSON.stringify(sampleRow, (_key, value) =>
+					typeof value === 'string' && value.length > 500 ? value.slice(0, 500) : value,
+				)?.slice(0, 500) ?? '';
 			} catch {
 				sampleRowPreview = String(sampleRow)?.slice(0, 500) ?? '';
 			}

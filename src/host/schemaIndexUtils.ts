@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import { scheduler } from 'node:timers/promises';
 
 import type { DatabaseSchemaIndex } from './kustoClient';
 
@@ -38,6 +39,7 @@ export const PRUNE_PHASE_DESCRIPTIONS: Record<SchemaPrunePhase, string> = {
 const _derivedColumnsCache = new WeakMap<object, Record<string, string[]>>();
 const _validatedRawSchemaDatabases = new WeakMap<object, Set<string>>();
 const _autocompleteSignatureCache = new WeakMap<object, string>();
+const _autocompleteSignatureLoads = new WeakMap<object, Promise<string>>();
 
 const sortStrings = (values: string[]): string[] => values.sort((a, b) => a.localeCompare(b));
 
@@ -359,7 +361,11 @@ export const getSchemaSummary = (schema: DatabaseSchemaIndex | undefined | null)
 	hasRawSchemaJson: !!schema?.rawSchemaJson,
 });
 
-function stableForSignature(value: unknown, ancestors: WeakSet<object> = new WeakSet()): unknown {
+function* stableForSignature(value: unknown, ancestors: WeakSet<object> = new WeakSet(), budget = { remaining: 1024 }): Generator<void, unknown> {
+	if (--budget.remaining === 0) {
+		budget.remaining = 1024;
+		yield;
+	}
 	if (typeof value === 'bigint' || typeof value === 'symbol' || typeof value === 'function') {
 		return String(value);
 	}
@@ -371,11 +377,15 @@ function stableForSignature(value: unknown, ancestors: WeakSet<object> = new Wea
 	ancestors.add(value);
 	try {
 		if (Array.isArray(value)) {
-			return value.map(item => stableForSignature(item, ancestors));
+			const items = new Array(value.length);
+			for (let index = 0; index < value.length; index++) {
+				if (index in value) items[index] = yield* stableForSignature(value[index], ancestors, budget);
+			}
+			return items;
 		}
 		const out: Record<string, unknown> = {};
 		for (const key of Object.keys(value as Record<string, unknown>).sort((a, b) => a.localeCompare(b))) {
-			out[key] = stableForSignature((value as Record<string, unknown>)[key], ancestors);
+			out[key] = yield* stableForSignature((value as Record<string, unknown>)[key], ancestors, budget);
 		}
 		return out;
 	} finally {
@@ -383,12 +393,7 @@ function stableForSignature(value: unknown, ancestors: WeakSet<object> = new Wea
 	}
 }
 
-export const getAutocompleteSchemaSignature = (schema: DatabaseSchemaIndex | undefined | null): string => {
-	if (!schema) {
-		return 'sha256:empty';
-	}
-	const cached = _autocompleteSignatureCache.get(schema);
-	if (cached) return cached;
+function autocompleteSignatureInput(schema: DatabaseSchemaIndex): unknown {
 	const tableNames = Array.isArray(schema.tables)
 		? schema.tables.map(table => String(table || '')).filter(Boolean).sort((a, b) => a.localeCompare(b))
 		: [];
@@ -416,19 +421,55 @@ export const getAutocompleteSchemaSignature = (schema: DatabaseSchemaIndex | und
 		}))
 		.filter(fn => fn.name)
 		.sort((a, b) => a.name.localeCompare(b.name));
-	const canonical = stableForSignature({
+	return {
 		tables: tableNames,
 		columnTypesByTable,
-		tableDocStrings: stableForSignature(schema.tableDocStrings || {}),
-		tableFolders: stableForSignature(schema.tableFolders || {}),
-		columnDocStrings: stableForSignature(schema.columnDocStrings || {}),
+		tableDocStrings: schema.tableDocStrings || {},
+		tableFolders: schema.tableFolders || {},
+		columnDocStrings: schema.columnDocStrings || {},
 		functions,
-		rawSchemaJson: schema.rawSchemaJson ? stableForSignature(schema.rawSchemaJson) : null,
-	});
-	const json = JSON.stringify(canonical);
+		rawSchemaJson: schema.rawSchemaJson || null,
+	};
+}
+
+export const getAutocompleteSchemaSignature = (schema: DatabaseSchemaIndex | undefined | null): string => {
+	if (!schema) return 'sha256:empty';
+	const cached = _autocompleteSignatureCache.get(schema);
+	if (cached) return cached;
+	const traversal = stableForSignature(autocompleteSignatureInput(schema));
+	let step = traversal.next();
+	while (!step.done) step = traversal.next();
+	const json = JSON.stringify(step.value);
 	const signature = 'sha256:' + crypto.createHash('sha256').update(json, 'utf8').digest('hex');
 	_autocompleteSignatureCache.set(schema, signature);
 	return signature;
+};
+
+export const getAutocompleteSchemaSignatureAsync = (schema: DatabaseSchemaIndex | undefined | null): Promise<string> => {
+	if (!schema) return Promise.resolve('sha256:empty');
+	const cached = _autocompleteSignatureCache.get(schema);
+	if (cached) return Promise.resolve(cached);
+	const pending = _autocompleteSignatureLoads.get(schema);
+	if (pending) return pending;
+	const load = Promise.resolve().then(async () => {
+		const completed = _autocompleteSignatureCache.get(schema);
+		if (completed) return completed;
+		const traversal = stableForSignature(autocompleteSignatureInput(schema));
+		let step = traversal.next();
+		while (!step.done) {
+			await scheduler.yield();
+			step = traversal.next();
+		}
+		const json = JSON.stringify(step.value);
+		if (json.length > 1024 * 1024) await scheduler.yield();
+		const signature = 'sha256:' + crypto.createHash('sha256').update(json, 'utf8').digest('hex');
+		_autocompleteSignatureCache.set(schema, signature);
+		return signature;
+	});
+	_autocompleteSignatureLoads.set(schema, load);
+	const retire = () => { if (_autocompleteSignatureLoads.get(schema) === load) _autocompleteSignatureLoads.delete(schema); };
+	void load.then(retire, retire);
+	return load;
 };
 
 /**

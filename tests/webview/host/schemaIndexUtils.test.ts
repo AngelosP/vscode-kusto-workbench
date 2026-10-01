@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { scheduler } from 'node:timers/promises';
 import type { DatabaseSchemaIndex } from '../../../src/host/kustoClient';
 import {
 	getColumnsByTable,
@@ -10,6 +11,7 @@ import {
 	formatSchemaAsCompactText,
 	ensureRawSchemaJson,
 	getAutocompleteSchemaSignature,
+	getAutocompleteSchemaSignatureAsync,
 	getSchemaSummary,
 	TYPE_ABBREVIATIONS,
 } from '../../../src/host/schemaIndexUtils';
@@ -257,6 +259,101 @@ describe('countColumns', () => {
 });
 
 describe('schema summary and autocomplete signature', () => {
+	it.each(['wide-object', 'primitive-array', 'nested-objects'] as const)('yields during a large %s signature and preserves the synchronous digest', async shape => {
+		const values = Array.from({ length: 5000 }, (_, index) => `value_${index}`);
+		const rawSchemaJson = shape === 'wide-object' ? Object.fromEntries(values.map(value => [value, value]))
+			: shape === 'primitive-array' ? { values }
+				: { values: values.map(value => ({ nested: { value } })) };
+		const expected = getAutocompleteSchemaSignature(makeSchema({ rawSchemaJson: structuredClone(rawSchemaJson) }));
+		const schema = makeSchema({ rawSchemaJson });
+		const yielding = vi.spyOn(scheduler, 'yield');
+		try {
+			const first = getAutocompleteSchemaSignatureAsync(schema);
+			const second = getAutocompleteSchemaSignatureAsync(schema);
+			expect(second).toBe(first);
+			let completed = false;
+			void first.then(() => { completed = true; });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			expect(completed).toBe(false, 'queued native work must get a turn before a large signature finishes');
+			expect(await first).toBe(expected);
+			expect(await second).toBe(expected);
+			expect(yielding.mock.calls.length).toBeGreaterThan(0);
+			const yieldCount = yielding.mock.calls.length;
+			expect(await getAutocompleteSchemaSignatureAsync(schema)).toBe(expected);
+			expect(getAutocompleteSchemaSignature(schema)).toBe(expected);
+			expect(yielding.mock.calls.length).toBe(yieldCount);
+		} finally {
+			yielding.mockRestore();
+		}
+	});
+
+	it('canonicalizes each raw schema subtree only once', () => {
+		const originalKeys = Object.keys;
+		let rawVisits = 0;
+		const keys = vi.spyOn(Object, 'keys').mockImplementation(value => {
+			if (Object.prototype.hasOwnProperty.call(value, 'traversalProbe')) rawVisits++;
+			return originalKeys(value);
+		});
+		try {
+			getAutocompleteSchemaSignature(makeSchema({
+				rawSchemaJson: { Databases: { Db: { traversalProbe: true, Tables: {} } } },
+			}));
+		} finally {
+			keys.mockRestore();
+		}
+		expect(rawVisits).toBe(1);
+	});
+
+	it('preserves the previous digest for nested autocomplete metadata', async () => {
+		const schema = makeSchema({
+			tables: ['Events'],
+			columnTypesByTable: { Events: { Value: 'long' } },
+			tableDocStrings: { Events: 'Example' },
+			tableFolders: { Events: 'Folder' },
+			columnDocStrings: { 'Events.Value': 'Count' },
+			functions: [{ name: 'Recent', body: 'Events', parameters: [{ name: 'window', type: 'timespan', defaultValue: '1h' }] }],
+			rawSchemaJson: {
+				Plugins: [], Databases: { Db: {
+					Tables: { Events: { Name: 'Events', OrderedColumns: [{ Name: 'Value', Type: 'System.Int64', CslType: 'long' }] } },
+					MajorVersion: 1, MinorVersion: 0,
+				} },
+			},
+		});
+		expect(getAutocompleteSchemaSignature(schema)).toBe('sha256:99f61dd373a94f531472c4672dc6a683b14a888627d3d0ee66f83d83c5faec4b');
+		expect(await getAutocompleteSchemaSignatureAsync(structuredClone(schema))).toBe('sha256:99f61dd373a94f531472c4672dc6a683b14a888627d3d0ee66f83d83c5faec4b');
+	});
+
+	it('preserves the previous digest for cyclic, special-value, and hostile-key metadata', async () => {
+		const raw: Record<string, unknown> = Object.defineProperty({ constructor: { name: 'data' } }, '__proto__', {
+			value: { tag: 'data' }, enumerable: true,
+		});
+		raw.missing = undefined;
+		raw.integer = 1n;
+		raw.symbol = Symbol('value');
+		raw.fn = Math.max;
+		raw.self = raw;
+		expect(getAutocompleteSchemaSignature(makeSchema({ rawSchemaJson: raw })))
+			.toBe('sha256:5b7febf98a93a711a8abae815f8f530f6378cf2a7d7f4873f81a39a6a546be08');
+		expect(await getAutocompleteSchemaSignatureAsync(makeSchema({ rawSchemaJson: raw })))
+			.toBe('sha256:5b7febf98a93a711a8abae815f8f530f6378cf2a7d7f4873f81a39a6a546be08');
+	});
+
+	it('retires a rejected shared signature so the same snapshot can be retried', async () => {
+		let rejectRead = true;
+		const schema = makeSchema();
+		Object.defineProperty(schema, 'rawSchemaJson', { get: () => {
+			if (rejectRead) throw new Error('schema read failed');
+			return { Databases: {} };
+		} });
+		const first = getAutocompleteSchemaSignatureAsync(schema);
+		expect(getAutocompleteSchemaSignatureAsync(schema)).toBe(first);
+		await expect(first).rejects.toThrow('schema read failed');
+		rejectRead = false;
+		const retry = getAutocompleteSchemaSignatureAsync(schema);
+		expect(retry).not.toBe(first);
+		expect(await retry).toBe(getAutocompleteSchemaSignature(makeSchema({ rawSchemaJson: { Databases: {} } })));
+	});
+
 	it('summarizes tables, columns, functions, and raw schema capability', () => {
 		const schema = makeSchema({
 			tables: ['Events'],

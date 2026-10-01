@@ -541,6 +541,11 @@ describe('identity checklist real-service regression probe', () => {
 		Object.defineProperty(vscode.workspace, 'fs', { value: {
 			...vscode.workspace.fs,
 			createDirectory: async (uri: vscode.Uri) => { await fileSystem.mkdir(uri.fsPath, { recursive: true }); },
+			stat: async (uri: vscode.Uri) => {
+				const stat = await fileSystem.stat(uri.fsPath);
+				return { type: stat.isDirectory() ? vscode.FileType.Directory : vscode.FileType.File,
+					ctime: stat.birthtimeMs, mtime: stat.mtimeMs, size: stat.size };
+			},
 			readFile: (uri: vscode.Uri) => fileSystem.readFile(uri.fsPath),
 			writeFile: (uri: vscode.Uri, bytes: Uint8Array) => fileSystem.writeFile(uri.fsPath, bytes),
 			readDirectory: async (uri: vscode.Uri) => (await fileSystem.readdir(uri.fsPath, { withFileTypes: true }))

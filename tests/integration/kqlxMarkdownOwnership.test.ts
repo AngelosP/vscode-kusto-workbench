@@ -676,7 +676,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
-	test('Python-only Save before projection acknowledgement fails closed', async () => {
+	test('Python-only Save waits for projection acknowledgement and preserves owned state', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-python-pre-ack-save-'));
@@ -693,6 +693,12 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		let reloadRequestId = '';
 		let projection: any;
 		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+		let request: Promise<unknown> | undefined;
+		let savePreparation: Promise<vscode.TextEdit[]> | undefined;
+		let settled = false;
+		let barrierRequests = 0;
+		let finalSnapshotRequests = 0;
+		const disposers: Array<() => void> = [];
 
 		try {
 			fs.writeFileSync(filePath, currentText, 'utf8');
@@ -721,7 +727,15 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 							projection = message;
 							reloadRequestId = String(message.reloadRequestId || '');
 						}
+						if (message?.type === 'requestMarkdownCommandBarrier') {
+							barrierRequests++;
+							await Promise.resolve(receiveHandler?.({
+								type: 'markdownDocumentCommandBarrierResult', requestId: message.requestId,
+								sourceGeneration: message.sourceGeneration, documentRevision: projection.documentRevision, accepted: true,
+							}));
+						}
 						if (message?.type === 'requestFinalPersist') {
+							finalSnapshotRequests++;
 							await Promise.resolve(receiveHandler?.({
 								type: 'persistDocument', flushRequestId: message.requestId,
 								sourceGeneration: projection.sourceGeneration,
@@ -735,20 +749,23 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						return { dispose() {} };
 					},
 				},
-				onDidDispose: () => ({ dispose() {} }),
+				onDidDispose: (handler: () => void) => { disposers.push(handler); return { dispose() {} }; },
 			} as any;
 
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
-			const request = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			request = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 			await waitForCondition(() => !!reloadRequestId, 'Python projection candidate should be posted', 1_000);
 			assert.ok(willSaveHandler);
-			let savePreparation: Promise<vscode.TextEdit[]> | undefined;
 			willSaveHandler!({
 				document,
-				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { savePreparation = Promise.resolve(thenable); },
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { savePreparation = Promise.resolve(thenable); void savePreparation.then(() => { settled = true; }, () => { settled = true; }); },
 			} as any);
 			assert.ok(savePreparation);
-			await assert.rejects(savePreparation!, /has not accepted its initial notebook projection/);
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(settled, false);
+			assert.strictEqual(barrierRequests, 0);
+			assert.strictEqual(finalSnapshotRequests, 0);
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), currentText);
 			assert.deepStrictEqual(JSON.parse(currentText).state.sections,
 				JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections);
 
@@ -757,15 +774,26 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
 			}));
 			await request;
-			assert.strictEqual(JSON.parse(currentText).state.sections[0].code, 'print(1)');
+			const edits = await savePreparation;
+			assert.ok(edits.length <= 1);
+			const saved = JSON.parse(edits.at(-1)?.newText ?? currentText);
+			assert.strictEqual(saved.state.sections[0].code, 'print(1)');
+			assert.strictEqual(saved.state.sections[0].output, 'one');
+			assert.strictEqual(saved.state.sections[0].editorHeightPx, 180);
+			assert.strictEqual(saved.futureRoot.keep, true);
+			assert.strictEqual(barrierRequests, 1);
+			assert.strictEqual(finalSnapshotRequests, 1);
 		} finally {
+			for (const dispose of disposers) dispose();
+			await savePreparation?.catch(() => undefined);
+			await request?.catch(() => undefined);
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
 			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});
 
-	test('Chart-only Save before projection acknowledgement fails closed', async () => {
+	test('Chart-only Save waits for projection acknowledgement and preserves owned state', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-chart-pre-ack-save-'));
@@ -784,6 +812,11 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		let projection: any;
 		let finalSnapshotRequests = 0;
 		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+		let request: Promise<unknown> | undefined;
+		let savePreparation: Promise<vscode.TextEdit[]> | undefined;
+		let settled = false;
+		let barrierRequests = 0;
+		const disposers: Array<() => void> = [];
 
 		try {
 			fs.writeFileSync(filePath, currentText, 'utf8');
@@ -812,6 +845,13 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 							projection = message;
 							reloadRequestId = String(message.reloadRequestId || '');
 						}
+						if (message?.type === 'requestMarkdownCommandBarrier') {
+							barrierRequests++;
+							await Promise.resolve(receiveHandler?.({
+								type: 'markdownDocumentCommandBarrierResult', requestId: message.requestId,
+								sourceGeneration: message.sourceGeneration, documentRevision: projection.documentRevision, accepted: true,
+							}));
+						}
 						if (message?.type === 'requestFinalPersist') {
 							finalSnapshotRequests++;
 							await Promise.resolve(receiveHandler?.({
@@ -827,21 +867,23 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						return { dispose() {} };
 					},
 				},
-				onDidDispose: () => ({ dispose() {} }),
+				onDidDispose: (handler: () => void) => { disposers.push(handler); return { dispose() {} }; },
 			} as any;
 
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
-			const request = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			request = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 			await waitForCondition(() => !!reloadRequestId, 'Chart projection candidate should be posted', 1_000);
 			assert.ok(willSaveHandler);
-			let savePreparation: Promise<vscode.TextEdit[]> | undefined;
 			willSaveHandler!({
 				document,
-				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { savePreparation = Promise.resolve(thenable); },
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { savePreparation = Promise.resolve(thenable); void savePreparation.then(() => { settled = true; }, () => { settled = true; }); },
 			} as any);
 			assert.ok(savePreparation);
-			await assert.rejects(savePreparation!, /has not accepted its initial notebook projection/);
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(settled, false);
+			assert.strictEqual(barrierRequests, 0);
 			assert.strictEqual(finalSnapshotRequests, 0);
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), currentText);
 			assert.deepStrictEqual(JSON.parse(currentText).state.sections, JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections);
 
 			await Promise.resolve(receiveHandler!({
@@ -849,8 +891,18 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
 			}));
 			await request;
-			assert.strictEqual(JSON.parse(currentText).state.sections[0].chartTitle, 'Owned chart');
+			const edits = await savePreparation;
+			assert.ok(edits.length <= 1);
+			const saved = JSON.parse(edits.at(-1)?.newText ?? currentText);
+			assert.strictEqual(saved.state.sections[0].chartTitle, 'Owned chart');
+			assert.strictEqual(saved.state.sections[0].dataSourceId, 'query_source');
+			assert.strictEqual(saved.futureRoot.keep, true);
+			assert.strictEqual(barrierRequests, 1);
+			assert.strictEqual(finalSnapshotRequests, 1);
 		} finally {
+			for (const dispose of disposers) dispose();
+			await savePreparation?.catch(() => undefined);
+			await request?.catch(() => undefined);
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
 			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -4840,6 +4892,11 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		const originalApplyEdit = vscode.workspace.applyEdit;
 		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
 		const originalOnDidSave = vscode.workspace.onDidSaveTextDocument;
+		const originalFreshPublication = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+		let holdFreshPublication = false;
+		let blockedFreshPublications = 0;
+		let releaseFreshPublication!: () => void;
+		const freshPublicationGate = new Promise<void>(resolve => { releaseFreshPublication = resolve; });
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-markdown-in-transit-save-'));
 		const filePath = path.join(tmpDir, 'in-transit.kqlx');
 		let currentText = JSON.stringify({
@@ -4853,20 +4910,33 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		const disposeHandlers: Array<() => void> = [];
 		let projection: any;
 		let pendingBarrier: any;
+		const capturedBarriers: any[] = [];
 		let commandResult: any;
 		let holdReloadAcknowledgement = false;
 		let pendingReloadRequestId = '';
 		let markPendingProjectionPosted!: () => void;
 		const pendingProjectionPosted = new Promise<void>(resolve => { markPendingProjectionPosted = resolve; });
 		let holdFinalPersist = false;
+		let holdBarrierReply = false;
 		let rejectNextBarrier = false;
 		let raceCommandAfterBarrierResponse = false;
 		let heldFinalPersistRequestId = '';
 		let finalPersistRequestCount = 0;
+		const sourceReplacements: string[] = [];
+		let earlyCommitSave: Promise<vscode.TextEdit[]> | undefined;
+		let earlyCommitCommand: Promise<void> | undefined;
+		const additionalSavePreparations: Promise<vscode.TextEdit[]>[] = [];
 
 		try {
 			fs.writeFileSync(filePath, currentText, 'utf8');
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async function (...args: unknown[]) {
+				if (holdFreshPublication) {
+					blockedFreshPublications++;
+					await freshPublicationGate;
+				}
+				return originalFreshPublication.apply(this, args);
+			};
 			(vscode.workspace as any).onWillSaveTextDocument = (handler: any) => {
 				willSaveHandler = handler;
 				return { dispose() {} };
@@ -4878,6 +4948,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
 				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
 				if (typeof replacement !== 'string') return false;
+				sourceReplacements.push(replacement);
 				currentText = replacement;
 				return true;
 			};
@@ -4911,7 +4982,8 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						}
 						if (message?.type === 'requestMarkdownCommandBarrier') {
 							pendingBarrier = message;
-							if (commandResult) {
+							capturedBarriers.push(message);
+							if (commandResult && !holdBarrierReply) {
 								const accepted = !rejectNextBarrier;
 								rejectNextBarrier = false;
 								const priorResult = commandResult;
@@ -4940,7 +5012,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						}
 						if (message?.type === 'markdownDocumentCommandResult') {
 							commandResult = message;
-							if (pendingBarrier) {
+							if (pendingBarrier && !holdBarrierReply) {
 								await Promise.resolve(receiveHandler?.({
 									type: 'markdownDocumentCommandBarrierResult', requestId: pendingBarrier.requestId,
 									sourceGeneration: pendingBarrier.sourceGeneration,
@@ -4974,6 +5046,92 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			} as any;
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			holdBarrierReply = true;
+			let committedBeforeBarrier!: Promise<vscode.TextEdit[]>;
+			willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => {
+					committedBeforeBarrier = Promise.resolve(thenable);
+					additionalSavePreparations.push(committedBeforeBarrier);
+					void committedBeforeBarrier.catch(() => undefined);
+				},
+			} as any);
+			await waitForCondition(() => !!pendingBarrier, 'native Save should request its barrier before a late reply');
+			const lateBarrier = pendingBarrier;
+			const queueBeforeBarrier = [...((provider as any).markdownDocumentQueues.values())][0];
+			let preBarrierSettled = false;
+			void committedBeforeBarrier.then(() => { preBarrierSettled = true; }, () => { preBarrierSettled = true; });
+			queueBeforeBarrier.canonicalSaveText = currentText;
+			await Promise.resolve(didSaveHandler!(document));
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(preBarrierSettled, false, 'canonical Save must not retire an unleased user preparation');
+			queueBeforeBarrier.canonicalSaveText = undefined;
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			await Promise.resolve(didSaveHandler!(document));
+			assert.deepStrictEqual(await Promise.race([
+				committedBeforeBarrier,
+				new Promise<never>((_, reject) => setTimeout(() => reject(new Error('already committed Save still waits for an unacquired barrier')), 500)),
+			]), []);
+			await Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommandBarrierResult', requestId: lateBarrier.requestId,
+				sourceGeneration: lateBarrier.sourceGeneration, documentRevision: projection.documentRevision, accepted: true,
+			}));
+			const beforeOverlappingBarriers = capturedBarriers.length;
+			const overlappingPreparations: Promise<vscode.TextEdit[]>[] = [];
+			let unleasedSettlements = 0;
+			for (let index = 0; index < 2; index++) willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => {
+					const pending = Promise.resolve(thenable);
+					overlappingPreparations.push(pending);
+					additionalSavePreparations.push(pending);
+					void pending.then(() => { unleasedSettlements++; }, () => { unleasedSettlements++; });
+				},
+			} as any);
+			await waitForCondition(() => capturedBarriers.length === beforeOverlappingBarriers + 2, 'two unleased Saves must have distinct barriers');
+			await Promise.resolve(didSaveHandler!(document));
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(unleasedSettlements, 0, 'an ambiguous commit must not guess among unleased Saves');
+			const firstUnleased = capturedBarriers[beforeOverlappingBarriers];
+			await Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommandBarrierResult', requestId: firstUnleased.requestId,
+				sourceGeneration: firstUnleased.sourceGeneration, documentRevision: projection.documentRevision, accepted: false,
+			}));
+			await assert.rejects(overlappingPreparations[0], /pending Markdown commands did not settle/);
+			await Promise.resolve(didSaveHandler!(document));
+			assert.deepStrictEqual(await overlappingPreparations[1], []);
+			const secondUnleased = capturedBarriers[beforeOverlappingBarriers + 1];
+			await Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommandBarrierResult', requestId: secondUnleased.requestId,
+				sourceGeneration: secondUnleased.sourceGeneration, documentRevision: projection.documentRevision, accepted: true,
+			}));
+			holdBarrierReply = false;
+			pendingBarrier = undefined;
+			holdReloadAcknowledgement = true;
+			currentText = currentText.replace('"before"', '"committed before projection"');
+			const committedProjection = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await pendingProjectionPosted;
+			const barriersBeforeProjectionCommit = capturedBarriers.length;
+			let committedBeforeProjection!: Promise<vscode.TextEdit[]>;
+			willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => {
+					committedBeforeProjection = Promise.resolve(thenable);
+					additionalSavePreparations.push(committedBeforeProjection);
+					void committedBeforeProjection.catch(() => undefined);
+				},
+			} as any);
+			await new Promise<void>(resolve => setImmediate(resolve));
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			await Promise.resolve(didSaveHandler!(document));
+			holdReloadAcknowledgement = false;
+			await Promise.resolve(receiveHandler!({
+				type: 'documentReloadResult', requestId: pendingReloadRequestId,
+				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+			}));
+			await committedProjection;
+			assert.deepStrictEqual(await committedBeforeProjection, []);
+			assert.strictEqual(capturedBarriers.length, barriersBeforeProjectionCommit, 'a committed projection waiter must not later reserve a Save lease');
 			const command = Promise.resolve(receiveHandler!({
 				type: 'markdownDocumentCommand', commandId: 'in-transit-command',
 				sourceGeneration: projection.sourceGeneration,
@@ -4994,7 +5152,17 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.strictEqual(commandResult?.ok, true);
 			assert.strictEqual(JSON.parse(currentText).state.sections[0].text, 'after');
 			assert.ok(didSaveHandler);
+			document.isDirty = false;
+			holdFreshPublication = true;
 			await Promise.resolve(didSaveHandler!(document));
+			const queueAfterNoOpSave = [...((provider as any).markdownDocumentQueues.values())][0];
+			await Promise.race([
+				queueAfterNoOpSave.tail,
+				new Promise<never>((_, reject) => setTimeout(() => reject(new Error('identical committed results still hold the Save lease behind fresh publication')), 500)),
+			]);
+			assert.strictEqual(blockedFreshPublications, 0, 'identical committed bytes must not enter fresh result publication');
+			holdFreshPublication = false;
+			document.isDirty = true;
 
 			rejectNextBarrier = true;
 			let rejectedSave: Promise<vscode.TextEdit[]> | undefined;
@@ -5099,6 +5267,115 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			await postBarrierCommand;
 			assert.strictEqual(postBarrierCommandSettled, true);
 			assert.strictEqual(JSON.parse(currentText).state.sections[0].text, 'after committed save');
+			willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => {
+					earlyCommitSave = Promise.resolve(thenable);
+					void earlyCommitSave.catch(() => undefined);
+				},
+			} as any);
+			await waitForCondition(() => finalPersistRequestCount === 4, 'early-commit Save should request its final snapshot');
+			const earlyCommitRequestId = heldFinalPersistRequestId;
+			let earlyCommitCommandSettled = false;
+			earlyCommitCommand = Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommand', commandId: 'post-early-commit-command',
+				sourceGeneration: commandResult.sourceGeneration,
+				expectedDocumentRevision: commandResult.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'markdown_1',
+					expectedSectionRevision: commandResult.projection.markdownSectionRevisions.markdown_1,
+					patch: { text: 'after early commit' },
+				},
+			})).then(() => { earlyCommitCommandSettled = true; });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(earlyCommitCommandSettled, false, 'early-commit Save must fence commands before commit');
+			const replacementsBeforeEarlyCommit = sourceReplacements.length;
+			await Promise.resolve(didSaveHandler!(document));
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', flushRequestId: earlyCommitRequestId,
+				sourceGeneration: commandResult.sourceGeneration,
+				state: { sections: [{ id: 'markdown_1', type: 'markdown', text: 'stale adapter' }] },
+			}));
+			await waitForCondition(() => earlyCommitCommandSettled, 'command must settle after early native commit, not after lease timeout', 500);
+			await assert.rejects(earlyCommitSave!, /changed while Save was waiting for the final snapshot/);
+			assert.strictEqual(commandResult?.commandId, 'post-early-commit-command');
+			assert.strictEqual(commandResult?.ok, true);
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].text, 'after early commit');
+			assert.ok(sourceReplacements.slice(replacementsBeforeEarlyCommit).every(text =>
+				JSON.parse(text).state.sections[0].text === 'after early commit'));
+			let noCommandSave!: Promise<vscode.TextEdit[]>;
+			willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => {
+					noCommandSave = Promise.resolve(thenable);
+					additionalSavePreparations.push(noCommandSave);
+					void noCommandSave.catch(() => undefined);
+				},
+			} as any);
+			await waitForCondition(() => finalPersistRequestCount === 5, 'unmodified early-commit Save should request its final snapshot');
+			await Promise.resolve(didSaveHandler!(document));
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', flushRequestId: heldFinalPersistRequestId,
+				sourceGeneration: commandResult.sourceGeneration,
+				state: { sections: [{ id: 'markdown_1', type: 'markdown', text: 'stale adapter' }] },
+			}));
+			await assert.rejects(noCommandSave, /changed while Save was waiting for the final snapshot/);
+			const queueAfterEarlyCommit = [...((provider as any).markdownDocumentQueues.values())][0];
+			assert.strictEqual(queueAfterEarlyCommit.pendingOwnedMutation, undefined);
+			const replacementsBeforeLateFailure = sourceReplacements.length;
+			let lateFailedSave!: Promise<vscode.TextEdit[]>;
+			willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => {
+					lateFailedSave = Promise.resolve(thenable);
+					additionalSavePreparations.push(lateFailedSave);
+					void lateFailedSave.catch(() => undefined);
+				},
+			} as any);
+			await waitForCondition(() => finalPersistRequestCount === 6, 'late-failure Save should request its final snapshot');
+			await Promise.resolve(didSaveHandler!(document));
+			await assert.rejects(lateFailedSave, /timed out|timeout/i);
+			assert.strictEqual(sourceReplacements.length, replacementsBeforeLateFailure);
+			assert.strictEqual(queueAfterEarlyCommit.pendingOwnedMutation, undefined, 'late snapshot failure must not claim unapplied bytes');
+
+			let mismatchedCommitSave!: Promise<vscode.TextEdit[]>;
+			willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => {
+					mismatchedCommitSave = Promise.resolve(thenable);
+					additionalSavePreparations.push(mismatchedCommitSave);
+				},
+			} as any);
+			await waitForCondition(() => finalPersistRequestCount === 7, 'different-byte Save should request its final snapshot');
+			await Promise.resolve(receiveHandler!({
+				type: 'persistDocument', flushRequestId: heldFinalPersistRequestId,
+				sourceGeneration: commandResult.sourceGeneration,
+				state: { sections: [{ id: 'markdown_1', type: 'markdown', text: 'stale adapter' }] },
+			}));
+			await mismatchedCommitSave;
+			let mismatchedCommitCommandSettled = false;
+			const mismatchedCommitCommand = Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommand', commandId: 'post-mismatched-commit-command',
+				sourceGeneration: commandResult.sourceGeneration,
+				expectedDocumentRevision: commandResult.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'markdown_1',
+					expectedSectionRevision: commandResult.projection.markdownSectionRevisions.markdown_1,
+					patch: { text: 'after mismatched commit' },
+				},
+			})).then(() => { mismatchedCommitCommandSettled = true; });
+			const committedText = JSON.stringify(JSON.parse(currentText));
+			assert.notStrictEqual(committedText, currentText);
+			queueAfterEarlyCommit.canonicalSaveText = committedText;
+			await Promise.resolve(didSaveHandler!({ ...document, getText: () => committedText }));
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(mismatchedCommitCommandSettled, false, 'internal canonical Save must not release the user Save lease');
+			queueAfterEarlyCommit.canonicalSaveText = undefined;
+			await Promise.resolve(didSaveHandler!({ ...document, getText: () => committedText }));
+			await waitForCondition(() => mismatchedCommitCommandSettled, 'actual native commit must release its lease even when its bytes differ', 500);
+			await mismatchedCommitCommand;
+			assert.strictEqual(commandResult?.ok, true);
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].text, 'after mismatched commit');
 			holdFinalPersist = false;
 
 			const activeOwner = [...((provider as any).markdownDocuments.values())][0];
@@ -5108,8 +5385,9 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				] },
 			}, null, 2) + '\n';
 			holdReloadAcknowledgement = true;
+			const previousReloadRequestId = pendingReloadRequestId;
 			const pendingReload = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
-			await pendingProjectionPosted;
+			await waitForCondition(() => pendingReloadRequestId !== previousReloadRequestId, 'newer source must post its own unacknowledged projection');
 			let pendingSourceSave: Promise<vscode.TextEdit[]> | undefined;
 			let pendingSourceSaveSettled = false;
 			willSaveHandler!({
@@ -5139,7 +5417,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				document,
 				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { disposedSave = Promise.resolve(thenable); },
 			} as any);
-			await waitForCondition(() => finalPersistRequestCount === 4, 'disposal Save should reserve the queue');
+			await waitForCondition(() => finalPersistRequestCount === 8, 'disposal Save should reserve the queue');
 			for (const dispose of disposeHandlers) dispose();
 			await assert.rejects(disposedSave!);
 			const queue = [...((provider as any).markdownDocumentQueues.values())][0] as { tail: Promise<void> };
@@ -5148,7 +5426,12 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				new Promise<never>((_, reject) => setTimeout(() => reject(new Error('disposed Save lease did not settle')), 1_000)),
 			]);
 		} finally {
+			releaseFreshPublication();
+			holdFreshPublication = false;
+			for (const dispose of disposeHandlers) dispose();
+			await Promise.allSettled([earlyCommitSave, earlyCommitCommand, ...additionalSavePreparations]);
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalFreshPublication;
 			(vscode.workspace as any).applyEdit = originalApplyEdit;
 			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
 			(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSave;

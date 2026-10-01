@@ -334,7 +334,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'showSectionDiff'; sectionId: string }
 
 	// Provider messages (kqlx, kqlCompat, mdCompat editors)
-	| { type: 'mainWebviewDispatcherReady'; runtimeId: string; probeId?: string }
+	| { type: 'mainWebviewDispatcherReady'; runtimeId: string; probeId?: string; transportCodecs?: readonly string[] }
 	| { type: 'backgroundWorkbenchUserInteraction'; viewSessionId: string }
 	| { type: 'requestDocument'; requestId?: string; expectedEditRevision?: number }
 	| { type: 'persistDocument'; state: unknown; sourceGeneration?: number; flush?: boolean; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; flushUnavailableReason?: string; testOnlyNoop?: boolean }

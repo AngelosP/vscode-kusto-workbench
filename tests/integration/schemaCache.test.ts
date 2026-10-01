@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { readAllCachedSchemasFromDisk, readCachedSchemaFromDiskByCluster, searchCachedSchemas, writeCachedSchemaToDisk, CachedSchemaEntry, SCHEMA_CACHE_VERSION, schemaCacheKey } from '../../src/host/schemaCache';
+import { readAllCachedSchemasFromDisk, readCachedSchemaFromDisk, readCachedSchemaFromDiskByCluster, searchCachedSchemas, writeCachedSchemaToDisk, CachedSchemaEntry, SCHEMA_CACHE_VERSION, schemaCacheKey, getSchemaCacheFileUri, classifyCachedSchema, SCHEMA_CACHE_TTL_MS, clearCachedSchemas, deleteCachedSchemasForConnections, deleteCachedSchemasForAccountPartitions } from '../../src/host/schemaCache';
 
 suite('readAllCachedSchemasFromDisk', () => {
 	let tmpDir: string;
@@ -658,6 +658,154 @@ suite('writeCachedSchemaToDisk', () => {
 
 	teardown(() => {
 		fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	function identityEntry(database = 'Samples'): CachedSchemaEntry {
+		return { schema: { tables: ['Events'], columnTypesByTable: { Events: { Value: 'long' } } },
+			timestamp: Date.now(), version: SCHEMA_CACHE_VERSION, clusterUrl: 'https://cache.kusto.windows.net',
+			database, connectionId: 'cache-connection', accountPartition: 'cache-account' };
+	}
+
+	test('reuses immutable decoded schema snapshots and observes external edits and TTL changes', async () => {
+		const entry = identityEntry();
+		const key = schemaCacheKey(entry.clusterUrl, entry.database, entry.connectionId, entry.accountPartition);
+		await writeCachedSchemaToDisk(globalStorageUri, key, entry);
+		const first = await readCachedSchemaFromDisk(globalStorageUri, key);
+		const repeated = await readCachedSchemaFromDisk(globalStorageUri, key);
+		assert.ok(first);
+		assert.strictEqual(repeated, first, 'an unchanged file should not be parsed into another 41 MB schema graph');
+		assert.ok(Object.isFrozen(first.schema.columnTypesByTable.Events));
+		assert.throws(() => first.schema.tables.push('Mutated'));
+		assert.strictEqual(classifyCachedSchema(repeated, entry.timestamp + SCHEMA_CACHE_TTL_MS).isFresh, false);
+		const file = getSchemaCacheFileUri(globalStorageUri, key).fsPath;
+		fs.writeFileSync(file, JSON.stringify({ ...entry, schema: { ...entry.schema, tables: ['Changed'] } }), 'utf8');
+		fs.utimesSync(file, new Date(), new Date(Date.now() + 2000));
+		const changed = await readCachedSchemaFromDisk(globalStorageUri, key);
+		assert.notStrictEqual(changed, first);
+		assert.deepStrictEqual(changed?.schema.tables, ['Changed']);
+		fs.writeFileSync(file, '{malformed', 'utf8');
+		assert.strictEqual(await readCachedSchemaFromDisk(globalStorageUri, key), undefined);
+		await writeCachedSchemaToDisk(globalStorageUri, key, entry);
+		assert.deepStrictEqual((await readCachedSchemaFromDisk(globalStorageUri, key))?.schema.tables, ['Events']);
+		fs.unlinkSync(file);
+		assert.strictEqual(await readCachedSchemaFromDisk(globalStorageUri, key), undefined);
+	});
+
+	for (const mutation of ['write', 'clear', 'connection', 'account'] as const) {
+		for (const phase of ['read', 'cached-stat'] as const) {
+			test(`decoded schema ${phase} cannot outlive ${mutation} invalidation`, async () => {
+				const entry = identityEntry();
+				const key = schemaCacheKey(entry.clusterUrl, entry.database, entry.connectionId, entry.accountPartition);
+				await writeCachedSchemaToDisk(globalStorageUri, key, entry);
+				if (phase === 'cached-stat') assert.ok(await readCachedSchemaFromDisk(globalStorageUri, key));
+				const target = getSchemaCacheFileUri(globalStorageUri, key);
+				const originalFileSystem = vscode.workspace.fs;
+				const originalFileSystemDescriptor = Object.getOwnPropertyDescriptor(vscode.workspace, 'fs')!;
+				const originalStat = vscode.workspace.fs.stat;
+				const originalRead = vscode.workspace.fs.readFile;
+				const stableStat = await originalStat(target);
+				let markPaused!: () => void;
+				let release!: () => void;
+				const paused = new Promise<void>(resolve => { markPaused = resolve; });
+				const held = new Promise<void>(resolve => { release = resolve; });
+				let captured = false;
+				let pending: Promise<CachedSchemaEntry | undefined> | undefined;
+				try {
+					const fileSystem = { ...originalFileSystem };
+					Object.defineProperty(vscode.workspace, 'fs', { ...originalFileSystemDescriptor, get: () => fileSystem });
+					(vscode.workspace.fs as any).stat = async (uri: vscode.Uri) => {
+						const stat = await originalStat(uri);
+						if (uri.toString() !== target.toString()) return stat;
+						if (phase === 'cached-stat' && !captured) { captured = true; markPaused(); await held; }
+						return mutation === 'write' ? stableStat : stat;
+					};
+					(vscode.workspace.fs as any).readFile = async (uri: vscode.Uri) => {
+						const bytes = await originalRead(uri);
+						if (uri.toString() === target.toString() && phase === 'read' && !captured) {
+							captured = true; markPaused(); await held;
+						}
+						return bytes;
+					};
+					pending = readCachedSchemaFromDisk(globalStorageUri, key);
+					await paused;
+					if (mutation === 'write') await writeCachedSchemaToDisk(globalStorageUri, key, {
+						...entry, schema: { ...entry.schema, tables: ['Newest'] },
+					});
+					else if (mutation === 'clear') await clearCachedSchemas(globalStorageUri);
+					else if (mutation === 'connection') await deleteCachedSchemasForConnections(globalStorageUri, new Set([entry.connectionId!]));
+					else await deleteCachedSchemasForAccountPartitions(globalStorageUri, new Set([entry.accountPartition!]));
+					release();
+					assert.strictEqual(await pending, undefined, 'a read that crossed cache invalidation must not return or retain stale data');
+					const current = await readCachedSchemaFromDisk(globalStorageUri, key);
+					if (mutation === 'write') assert.deepStrictEqual(current?.schema.tables, ['Newest']);
+					else assert.strictEqual(current, undefined);
+				} finally {
+					release();
+					await pending;
+					Object.defineProperty(vscode.workspace, 'fs', originalFileSystemDescriptor);
+				}
+			});
+		}
+	}
+
+	test('bounds decoded schema entries with least-recently-used eviction', async () => {
+		const keys: string[] = [];
+		for (let index = 0; index < 5; index++) {
+			const entry = identityEntry(`Database${index}`);
+			const key = schemaCacheKey(entry.clusterUrl, entry.database, entry.connectionId, entry.accountPartition);
+			await writeCachedSchemaToDisk(globalStorageUri, key, entry);
+			keys.push(key);
+		}
+		const first = await readCachedSchemaFromDisk(globalStorageUri, keys[0]);
+		const second = await readCachedSchemaFromDisk(globalStorageUri, keys[1]);
+		await readCachedSchemaFromDisk(globalStorageUri, keys[2]);
+		await readCachedSchemaFromDisk(globalStorageUri, keys[3]);
+		assert.strictEqual(await readCachedSchemaFromDisk(globalStorageUri, keys[0]), first);
+		await readCachedSchemaFromDisk(globalStorageUri, keys[4]);
+		assert.strictEqual(await readCachedSchemaFromDisk(globalStorageUri, keys[0]), first);
+		assert.notStrictEqual(await readCachedSchemaFromDisk(globalStorageUri, keys[1]), second);
+	});
+
+	test('bounds decoded raw bytes and refuses incomplete stat identity', async () => {
+		const keys: string[] = [];
+		for (const database of ['First', 'Second', 'Oversized']) {
+			const entry = identityEntry(database);
+			const key = schemaCacheKey(entry.clusterUrl, entry.database, entry.connectionId, entry.accountPartition);
+			await writeCachedSchemaToDisk(globalStorageUri, key, entry);
+			keys.push(key);
+		}
+		const originalFileSystem = vscode.workspace.fs;
+		const originalFileSystemDescriptor = Object.getOwnPropertyDescriptor(vscode.workspace, 'fs')!;
+		const originalStat = vscode.workspace.fs.stat;
+		let incomplete = false;
+		let negativeSize = false;
+		try {
+			const fileSystem = { ...originalFileSystem };
+			Object.defineProperty(vscode.workspace, 'fs', { ...originalFileSystemDescriptor, get: () => fileSystem });
+			(vscode.workspace.fs as any).stat = async (uri: vscode.Uri) => {
+				const stat = await originalStat(uri);
+				if (!uri.fsPath.toLowerCase().startsWith(cacheDir.toLowerCase())) return stat;
+				return { ...stat, mtime: incomplete ? undefined : stat.mtime,
+					size: negativeSize ? -1 : uri.toString() === getSchemaCacheFileUri(globalStorageUri, keys[2]).toString() ? 65 * 1024 * 1024 : 40 * 1024 * 1024 };
+			};
+			const first = await readCachedSchemaFromDisk(globalStorageUri, keys[0]);
+			assert.ok(first);
+			await readCachedSchemaFromDisk(globalStorageUri, keys[1]);
+			assert.notStrictEqual(await readCachedSchemaFromDisk(globalStorageUri, keys[0]), first, 'two 40 MiB snapshots cannot both occupy the 64 MiB cache');
+			const oversized = await readCachedSchemaFromDisk(globalStorageUri, keys[2]);
+			assert.ok(oversized && Object.isFrozen(oversized.schema));
+			assert.notStrictEqual(await readCachedSchemaFromDisk(globalStorageUri, keys[2]), oversized, 'oversized snapshots are not retained');
+			incomplete = true;
+			assert.strictEqual(await readCachedSchemaFromDisk(globalStorageUri, keys[0]), undefined);
+			incomplete = false;
+			assert.ok(await readCachedSchemaFromDisk(globalStorageUri, keys[0]));
+			negativeSize = true;
+			assert.strictEqual(await readCachedSchemaFromDisk(globalStorageUri, keys[0]), undefined);
+			negativeSize = false;
+			assert.ok(await readCachedSchemaFromDisk(globalStorageUri, keys[0]));
+		} finally {
+			Object.defineProperty(vscode.workspace, 'fs', originalFileSystemDescriptor);
+		}
 	});
 
 	test('rejects writes without explicit principal and origin metadata', async () => {

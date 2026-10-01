@@ -15,6 +15,7 @@ import {
 	type DevelopmentNoteMutationHostMessage,
 } from '../../../src/shared/developmentNoteMutationProtocol';
 import { admitArtifactCsvSaveWebviewMessage } from '../../../src/shared/artifactCsvSaveProtocol';
+import { decodeMainWebviewHostMessage, encodeMainWebviewHostMessage, SCHEMA_DATA_BYTES_CODEC } from '../../../src/shared/mainWebviewMessageTransport';
 
 type TestMessage = { type: string; sequence?: number; [key: string]: unknown };
 
@@ -63,6 +64,184 @@ function admitTestMessage(input: unknown): TestMessage | undefined {
 }
 
 describe('MainWebviewStartupGateway', () => {
+	it('decodes schema bytes without bypassing the canonical message boundary', () => {
+		const schema = { type: 'schemaData', requestToken: 'request_1', schema: { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: { Databases: {} } } };
+		expect(decodeMainWebviewHostMessage(encodeMainWebviewHostMessage(schema, true))).toEqual(schema);
+		expect(decodeMainWebviewHostMessage(schema)).toBe(schema);
+		for (const payload of ['not bytes', new Uint8Array([255]), new TextEncoder().encode('broken'), new TextEncoder().encode('[]'), new TextEncoder().encode('{"type":"documentData"}'), new TextEncoder().encode('{"type":"serializedSchemaData"}')]) {
+			expect(decodeMainWebviewHostMessage({ type: 'serializedSchemaData', payload })).toBeUndefined();
+		}
+		let accessorReads = 0;
+		const accessor = Object.defineProperty({ type: 'serializedSchemaData' }, 'payload', {
+			enumerable: true, get: () => { accessorReads++; return new Uint8Array(); },
+		});
+		expect(decodeMainWebviewHostMessage(accessor)).toBeUndefined();
+		expect(accessorReads).toBe(0);
+	});
+
+	it('shares immutable schema bytes without sharing per-request metadata', () => {
+		const schema = { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: { Databases: {} } };
+		const first = { type: 'schemaData', schema, requestToken: 'request_a', accountPartition: 'account_a', targetGeneration: 1, schemaMeta: { schemaSignature: 'signature_1' } };
+		const second = { ...first, requestToken: 'request_b', accountPartition: 'account_b', targetGeneration: 2 };
+		const firstEncoded = encodeMainWebviewHostMessage(first, true) as { payload: Uint8Array };
+		const secondEncoded = encodeMainWebviewHostMessage(second, true) as { payload: Uint8Array };
+		expect(secondEncoded.payload).toBe(firstEncoded.payload);
+		expect(decodeMainWebviewHostMessage(firstEncoded)).toEqual(first);
+		expect(decodeMainWebviewHostMessage(secondEncoded)).toEqual(second);
+		const revised = encodeMainWebviewHostMessage({ ...first, schemaMeta: { schemaSignature: 'signature_2' } }, true) as { payload: Uint8Array };
+		expect(revised.payload).not.toBe(firstEncoded.payload);
+		const recreated = encodeMainWebviewHostMessage({ ...first, schema: { ...schema } }, true) as { payload: Uint8Array };
+		expect(recreated.payload).not.toBe(firstEncoded.payload);
+		const unsigned = { type: 'schemaData', schema };
+		expect((encodeMainWebviewHostMessage(unsigned, true) as { payload: Uint8Array }).payload)
+			.not.toBe((encodeMainWebviewHostMessage(unsigned, true) as { payload: Uint8Array }).payload);
+	});
+
+	it('reuses an immutable decoded schema only for exact bytes and keeps each request header', () => {
+		const schema = { tables: ['SharedDecodeEvents'], columnTypesByTable: { SharedDecodeEvents: { Value: 'long' } }, rawSchemaJson: { Databases: {} } };
+		const payload = new TextEncoder().encode(JSON.stringify(schema));
+		const retainedBytes = payload.slice();
+		const message = (bytes: Uint8Array, requestToken: string) => ({
+			type: 'serializedSchemaData', payload: bytes,
+			metadata: { type: 'schemaData', requestToken, accountPartition: requestToken, schemaMeta: { schemaSignature: 'same-signature' } },
+		});
+		const parse = vi.spyOn(JSON, 'parse');
+		try {
+			const first = decodeMainWebviewHostMessage(message(payload, 'first')) as any;
+			payload.fill(0);
+			const second = decodeMainWebviewHostMessage(message(retainedBytes.slice(), 'second')) as any;
+			expect(parse).toHaveBeenCalledTimes(1);
+			expect(second).not.toBe(first);
+			expect(second.schema).toBe(first.schema);
+			expect(second.requestToken).toBe('second');
+			expect(second.accountPartition).toBe('second');
+			expect(Object.hasOwn(second, 'schema')).toBe(true);
+			expect(Object.isFrozen(second.schema.rawSchemaJson.Databases)).toBe(true);
+			expect(() => second.schema.tables.push('Mutation')).toThrow();
+			const revisedBytes = new TextEncoder().encode(JSON.stringify({ ...schema, tables: ['ChangedDecodeEvents'] }));
+			const revised = decodeMainWebviewHostMessage(message(revisedBytes, 'third')) as any;
+			expect(parse).toHaveBeenCalledTimes(2);
+			expect(revised.schema.tables).toEqual(['ChangedDecodeEvents']);
+			expect(first.schema).toEqual(schema);
+		} finally {
+			parse.mockRestore();
+		}
+	});
+
+	it('revalidates headers on decoded cache hits and compares only the active byte view', () => {
+		const payload = new TextEncoder().encode('{"tables":["OffsetDecodeEvents"]}');
+		const padded = new Uint8Array(payload.length + 4);
+		padded.set(payload, 2);
+		const metadata = { type: 'schemaData', requestToken: 'offset' };
+		const first = decodeMainWebviewHostMessage({ type: 'serializedSchemaData', metadata, payload }) as any;
+		const second = decodeMainWebviewHostMessage({ type: 'serializedSchemaData', metadata, payload: new DataView(padded.buffer, 2, payload.length) }) as any;
+		expect(second.schema).toBe(first.schema);
+		for (const malformed of [{ type: 'documentData' }, { type: 'schemaData', schema: {} }, Object.create(metadata), [], null]) {
+			expect(decodeMainWebviewHostMessage({ type: 'serializedSchemaData', metadata: malformed, payload })).toBeUndefined();
+		}
+		expect(decodeMainWebviewHostMessage({ type: 'serializedSchemaData', metadata, payload: padded })).toBeUndefined();
+	});
+
+	it('does not retain shared-backed or oversized decoded payloads', () => {
+		const payload = new TextEncoder().encode('{"tables":["SharedBufferDecodeEvents"]}');
+		const shared = new Uint8Array(new SharedArrayBuffer(payload.length));
+		shared.set(payload);
+		const metadata = { type: 'schemaData', requestToken: 'uncached' };
+		const message = { type: 'serializedSchemaData', metadata, payload: shared };
+		const first = decodeMainWebviewHostMessage(message) as any;
+		const second = decodeMainWebviewHostMessage(message) as any;
+		expect(second.schema).toEqual(first.schema);
+		expect(second.schema).not.toBe(first.schema);
+		const oversized = new TextEncoder().encode('{"padding":"' + 'x'.repeat(64 * 1024 * 1024) + '"}');
+		const largeMessage = { type: 'serializedSchemaData', metadata, payload: oversized };
+		const largeFirst = decodeMainWebviewHostMessage(largeMessage) as any;
+		const largeSecond = decodeMainWebviewHostMessage(largeMessage) as any;
+		expect(largeFirst.schema.padding.length).toBe(64 * 1024 * 1024);
+		expect(largeSecond.schema).not.toBe(largeFirst.schema);
+	});
+
+	it('rejects malformed split schema envelopes before reconstruction', () => {
+		const payload = new TextEncoder().encode('{"tables":[]}');
+		for (const metadata of [{ type: 'documentData' }, { type: 'schemaData', schema: {} }, [], null, new (class { type = 'schemaData'; })()]) {
+			expect(decodeMainWebviewHostMessage({ type: 'serializedSchemaData', metadata, payload })).toBeUndefined();
+		}
+		for (const text of ['[]', 'null', 'false', '1', '"schema"']) {
+			expect(decodeMainWebviewHostMessage({ type: 'serializedSchemaData', metadata: { type: 'schemaData' }, payload: new TextEncoder().encode(text) })).toBeUndefined();
+		}
+		let reads = 0;
+		const accessor = Object.defineProperty({ type: 'serializedSchemaData', payload }, 'metadata', { enumerable: true, get: () => { reads++; return { type: 'schemaData' }; } });
+		expect(decodeMainWebviewHostMessage(accessor)).toBeUndefined();
+		expect(reads).toBe(0);
+	});
+
+	it('encodes prepared schemas on the exact negotiated runtime and rejects serialization failures', async () => {
+		const harness = createPanelHarness();
+		const schema = { type: 'schemaData', schema: { tables: ['Events'] } };
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel, admitInbound: admitTestMessage,
+			prepareOutbound: message => (message as TestMessage).type === 'schemaData' ? { ...(message as TestMessage), requestToken: 'prepared' } : message,
+		});
+		await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'legacy' });
+		await gateway.postMessage(schema);
+		expect(harness.posted[0]).toEqual({ ...schema, requestToken: 'prepared' });
+		gateway.beginDispatcherRevalidation();
+		const probe = harness.posted.at(-1) as { type: string; probeId: string };
+		expect(probe.type).toBe('mainWebviewDispatcherProbe');
+		const pending = gateway.postMessage(schema);
+		await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'modern', probeId: probe.probeId, transportCodecs: [SCHEMA_DATA_BYTES_CODEC] });
+		await expect(pending).resolves.toBe(true);
+		expect(decodeMainWebviewHostMessage(harness.posted.at(-1))).toEqual({ ...schema, requestToken: 'prepared' });
+		const count = harness.posted.length;
+		const circular: Record<string, unknown> = {};
+		circular.self = circular;
+		await expect(gateway.postMessage({ type: 'schemaData', schema: circular })).resolves.toBe(false);
+		await expect(gateway.postMessage({ type: 'schemaData', schema: { value: BigInt(1) } })).resolves.toBe(false);
+		expect(harness.posted).toHaveLength(count);
+		gateway.dispose();
+	});
+
+	it('does not inspect accessor-valued schema fields or capability-array proxies', async () => {
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		let reads = 0;
+		const proxy = new Proxy([SCHEMA_DATA_BYTES_CODEC], { get: () => { reads++; throw new Error('trap'); } });
+		await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'invalid', transportCodecs: proxy });
+		expect(reads).toBe(0);
+		await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'modern', transportCodecs: [SCHEMA_DATA_BYTES_CODEC] });
+		const accessor = Object.defineProperty({ type: 'schemaData' }, 'schema', { enumerable: true, get: () => { reads++; return {}; } });
+		await expect(gateway.postMessage(accessor)).resolves.toBe(false);
+		expect(reads).toBe(0);
+		expect(harness.posted).toEqual([]);
+		gateway.dispose();
+	});
+
+	it('uses a negotiated binary schema payload without changing its data or other messages', async () => {
+		const harness = createPanelHarness();
+		const schema = {
+			type: 'schemaData', boxId: 'query_1', connectionId: 'connection_1', database: 'Samples',
+			clusterUrl: 'https://cluster.kusto.windows.net', accountPartition: 'account_1',
+			requestToken: 'request_1', sectionInstanceId: 'instance_1', targetGeneration: 2,
+			schema: { tables: ['Events'], columnTypesByTable: { Events: { Value: 'long' } }, rawSchemaJson: { Databases: { Samples: { Tables: { Events: { OrderedColumns: [{ Name: 'Value', CslType: 'long' }] } } } } } },
+			schemaMeta: { schemaSignature: 'schema_1' },
+		};
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		const delivery = gateway.postMessage(schema);
+		await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime_1', transportCodecs: [SCHEMA_DATA_BYTES_CODEC] });
+		await expect(delivery).resolves.toBe(true);
+		const encoded = harness.posted[0] as { type: string; payload: Uint8Array };
+		expect(encoded.type).toBe('serializedSchemaData');
+		expect(encoded.payload).toBeInstanceOf(Uint8Array);
+		expect(JSON.parse(new TextDecoder().decode(encoded.payload))).toEqual(schema.schema);
+		expect(decodeMainWebviewHostMessage(encoded)).toEqual(schema);
+		const other = { type: 'requestMarkdownCommandBarrier', requestId: 'save_1', sourceGeneration: 2 };
+		await gateway.postMessage(other);
+		expect(harness.posted[1]).toBe(other);
+		await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'legacy_runtime', transportCodecs: ['schemaDataBytes/1'] });
+		await gateway.postMessage(schema);
+		expect(harness.posted[2]).toBe(schema);
+		gateway.dispose();
+	});
+
 	it('settles retained startup on completion or a bounded timeout', async () => {
 		vi.useFakeTimers();
 		try {

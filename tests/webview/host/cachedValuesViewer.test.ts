@@ -583,6 +583,7 @@ describe('CachedValuesViewerV2 Kusto mutation completion', () => {
 		const connection = { id: 'c1', name: 'Cluster', clusterUrl: 'https://cluster.kusto.windows.net' };
 		const storageUri = vscode.Uri.file('/cached-values-read-clear-race');
 		const pendingRead = deferred<Uint8Array>();
+		vi.spyOn(vscode.workspace.fs, 'stat').mockResolvedValue({ type: vscode.FileType.File, ctime: 1, mtime: 1, size: 100 });
 		vi.spyOn(vscode.workspace.fs, 'readFile').mockReturnValue(pendingRead.promise);
 		viewer.context = { globalStorageUri: storageUri, globalState: { get: vi.fn(), update: vi.fn(async () => undefined) } };
 		viewer.panel = { webview: { postMessage: vi.fn(async () => true) } };

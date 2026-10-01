@@ -14,6 +14,7 @@ import {
 	ResultArtifactStore,
 } from '../../src/shared/resultArtifact.js';
 import { __kustoPrettifyKustoTextWithSemicolonStatements } from '../../src/webview/monaco/prettify.js';
+import { encodeMainWebviewHostMessage } from '../../src/shared/mainWebviewMessageTransport.js';
 
 const handlerState = vi.hoisted(() => ({
 	activeQueryEditorBoxId: '',
@@ -6314,22 +6315,35 @@ describe('message-handler dispatch', () => {
 		expect(mocks.clearResultsState).not.toHaveBeenCalledWith('query_cmp');
 	});
 
-	it('drops tokened Kusto schema responses when the box token no longer matches', async () => {
+	it.each([false, true])('drops stale tokened Kusto schema responses with binary transport %s', async binary => {
 		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_new';
+		handlerState.connections.push({ id: 'c1', clusterUrl: 'https://cluster.kusto.windows.net', accountPartition: 'partition-1' });
 
-		dispatchHostMessage({
+		dispatchHostMessage(encodeMainWebviewHostMessage({
 			type: 'schemaData',
 			boxId: 'query_1',
 			connectionId: 'c1',
 			database: 'Samples',
 			clusterUrl: 'https://cluster.kusto.windows.net',
+			accountPartition: 'partition-1',
 			requestToken: 'schema_old',
 			schema: { tables: ['OldTable'], columnTypesByTable: {}, rawSchemaJson: { Databases: {} } },
 			schemaMeta: { schemaSignature: 'old', workerUpdateNeeded: true },
-		});
+		}, binary) as Record<string, unknown>);
 
 		expect(handlerState.schemaByBoxId.query_1).toBeUndefined();
 		expect(handlerState.schemaByConnDb['c1|Samples']).toBeUndefined();
+	});
+
+	it.each([
+		{ type: 'serializedSchemaData', payload: 'not bytes' },
+		{ type: 'serializedSchemaData', payload: new Uint8Array([255]) },
+		{ type: 'serializedSchemaData', payload: new TextEncoder().encode('{"type":"schemaData","boxId":"query_1","schema":false}') },
+		{ type: 'serializedSchemaData', payload: new TextEncoder().encode('{"type":"documentData","state":{"sections":[]}}') },
+	])('rejects malformed encoded schema delivery without state effects %#', message => {
+		dispatchHostMessage(message);
+		expect(handlerState.schemaByBoxId).toEqual({});
+		expect(mocks.handleDocumentDataMessage).not.toHaveBeenCalled();
 	});
 
 	it('drops a late tool schema refresh after the box target token changes', async () => {
@@ -7385,12 +7399,13 @@ describe('message-handler dispatch', () => {
 		state.disposeKustoPreparation('query_1');
 	});
 
-	it('applies open-time schema data for the sole query editor before focus settles', async () => {
+	it.each([false, true])('applies open-time schema data before focus settles with binary transport %s', async binary => {
 		const state = await import('../../src/webview/core/state.js');
 		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
 		const clusterUrl = 'https://cluster.kusto.windows.net';
 		const database = 'Samples';
 		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
+		handlerState.connections.push({ id: 'c1', clusterUrl, accountPartition: 'partition-1' });
 		handlerState.activeQueryEditorBoxId = '';
 		handlerState.queryBoxes.push('query_1');
 		mocks.getConnectionId.mockReturnValue('c1');
@@ -7400,15 +7415,16 @@ describe('message-handler dispatch', () => {
 		(window as any).__kustoSetMonacoKustoSchema = vi.fn(async () => true);
 		(window as any).__kustoTriggerRevalidation = vi.fn();
 
-		dispatchHostMessage({
+		dispatchHostMessage(encodeMainWebviewHostMessage({
 			type: 'schemaData',
 			boxId: 'query_1',
 			connectionId: 'c1',
 			database,
 			clusterUrl,
+			accountPartition: 'partition-1',
 			schema: { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: { Databases: { Samples: {} } } },
 			schemaMeta: { schemaSignature: 'sig-1', workerUpdateNeeded: true },
-		});
+		}, binary) as Record<string, unknown>);
 		await vi.waitFor(() => expect((window as any).__kustoTriggerRevalidation).toHaveBeenCalledWith('query_1'));
 		expect(state.markSchemaWorkerReady.mock.invocationCallOrder[0])
 			.toBeLessThan((window as any).__kustoTriggerRevalidation.mock.invocationCallOrder[0]);

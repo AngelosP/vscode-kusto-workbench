@@ -2199,6 +2199,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const connection = { id: 'race', name: 'Race', clusterUrl: 'https://race.kusto.windows.net' };
 		const accountPartition = 'tenant|account';
 		const pendingRead = deferred<Uint8Array>();
+		vi.spyOn(vscode.workspace.fs, 'stat').mockResolvedValue({ type: vscode.FileType.File, ctime: 1, mtime: 1, size: 100 });
 		vi.spyOn(vscode.workspace.fs, 'readFile').mockReturnValue(pendingRead.promise);
 		let protectedNow = false;
 		const connectionManager = {
