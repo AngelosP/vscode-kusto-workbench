@@ -6,7 +6,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { KqlCompatEditorProvider } from '../../src/host/kqlCompatEditorProvider';
-import { KqlxEditorProvider } from '../../src/host/kqlxEditorProvider';
+import { KqlxEditorProvider, OwnedDocumentEditTracker } from '../../src/host/kqlxEditorProvider';
 import { MdCompatEditorProvider } from '../../src/host/mdCompatEditorProvider';
 import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
 import { KustoResultPersistenceRegistry } from '../../src/host/kustoResultPersistenceOwner';
@@ -27,6 +27,7 @@ import {
 	getCompatibilityPersistenceTestBootstrap,
 	registerCompatibilityPersistenceTestBootstrap,
 } from './mainWebviewStartupTestAdapter';
+import { createLiveTextDocumentTestFacade } from './liveTextDocumentTestFacade';
 
 type DisposableLike = { dispose(): void };
 function connectionManagerStub(overrides: Record<string, unknown> = {}) {
@@ -224,6 +225,7 @@ suite('Sidecar .kql.json strategy', () => {
 	const originalOnWillSaveTextDocument = vscode.workspace.onWillSaveTextDocument;
 	const originalOnDidSaveTextDocument = vscode.workspace.onDidSaveTextDocument;
 	const workspaceSubscriptions: vscode.Disposable[] = [];
+	const liveDocuments = createLiveTextDocumentTestFacade();
 	const trackWorkspaceEvent = (register: (...args: any[]) => vscode.Disposable) => (...args: any[]) => {
 		const subscription = register.apply(vscode.workspace, args);
 		workspaceSubscriptions.push(subscription);
@@ -231,6 +233,7 @@ suite('Sidecar .kql.json strategy', () => {
 	};
 
 	suiteSetup(() => {
+		liveDocuments.install();
 		(KqlxEditorProvider as any).prototype.resolveCustomTextEditor = function (
 			this: KqlxEditorProvider,
 			document: vscode.TextDocument,
@@ -239,6 +242,7 @@ suite('Sidecar .kql.json strategy', () => {
 		) {
 			adaptMainWebviewStartupTestPanel(panel);
 			adaptKqlxDocumentViewTestPanel(panel);
+			liveDocuments.register(document);
 			return originalResolveKqlxEditor.call(this, document, panel, token);
 		};
 		(KqlCompatEditorProvider as any).prototype.resolveCustomTextEditor = function (
@@ -249,6 +253,7 @@ suite('Sidecar .kql.json strategy', () => {
 		) {
 			adaptMainWebviewStartupTestPanel(panel);
 			adaptCompatibilityPersistenceTestPanel(panel);
+			liveDocuments.register(document);
 			return originalResolveKqlCompatEditor.call(this, document, panel, token);
 		};
 		(SqlCompatEditorProvider as any).prototype.resolveCustomTextEditor = function (
@@ -259,6 +264,7 @@ suite('Sidecar .kql.json strategy', () => {
 		) {
 			adaptMainWebviewStartupTestPanel(panel);
 			adaptCompatibilityPersistenceTestPanel(panel);
+			liveDocuments.register(document);
 			return originalResolveSqlCompatEditor.call(this, document, panel, token);
 		};
 		(QueryEditorProvider as any).prototype.initializeWebviewPanel = async (
@@ -281,9 +287,11 @@ suite('Sidecar .kql.json strategy', () => {
 		for (const subscription of workspaceSubscriptions.splice(0)) {
 			try { subscription.dispose(); } catch { /* ignore */ }
 		}
+		liveDocuments.clear();
 	});
 
 	suiteTeardown(() => {
+		liveDocuments.dispose();
 		(KqlxEditorProvider as any).prototype.resolveCustomTextEditor = originalResolveKqlxEditor;
 		(KqlCompatEditorProvider as any).prototype.resolveCustomTextEditor = originalResolveKqlCompatEditor;
 		(SqlCompatEditorProvider as any).prototype.resolveCustomTextEditor = originalResolveSqlCompatEditor;
@@ -293,6 +301,22 @@ suite('Sidecar .kql.json strategy', () => {
 		(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChangeTextDocument;
 		(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSaveTextDocument;
 		(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSaveTextDocument;
+	});
+
+	test('retired owned edit cancellation preserves a later identical edit registration', () => {
+		const tracker = new OwnedDocumentEditTracker();
+		const cancelFirst = tracker.begin('same source');
+		assert.strictEqual(tracker.observe('same source'), true);
+		const cancelSecond = tracker.begin('same source');
+		cancelFirst();
+		assert.strictEqual(tracker.observe('same source'), true);
+		cancelSecond();
+		assert.strictEqual(tracker.observe('same source'), false);
+		const cancelThird = tracker.begin('same source');
+		tracker.begin('same source');
+		cancelThird();
+		assert.strictEqual(tracker.observe('same source'), true);
+		assert.strictEqual(tracker.observe('same source'), false);
 	});
 
 	test('opening .kql uses linked sibling .kql.json sidecar when present', async () => {
@@ -7631,26 +7655,51 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
-	test('ordinary rich close materializes a committed Run All result when confirmation persistence is lost', async () => {
+	for (const closeNativeDocument of [false, true]) test(
+		closeNativeDocument
+			? 'ordinary rich close materializes a committed Run All result without editing after its native tab closes'
+			: 'ordinary rich close materializes a committed Run All result when confirmation persistence is lost',
+		async function () {
+		this.timeout(20_000);
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalFileOpen = fs.promises.open;
 		const originalSanitizeSync = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceState;
 		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
 		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-file-run-all-result-'));
 		const filePath = path.join(tmpDir, 'workbook.kqlx');
+		const uri = vscode.Uri.file(filePath);
 		const querySection = {
 			id: 'query_run_all', type: 'query', query: 'print First=1; print Second=2', runMode: 'runAll',
+			name: 'Initial query',
 		};
 		fs.writeFileSync(filePath, JSON.stringify({
 			kind: 'kqlx', version: 1, state: { sections: [querySection] },
 		}), 'utf8');
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		const disposeHandlers: Array<() => void> = [];
+		const posted: any[] = [];
+		const sourceEdits: Array<{ closed: boolean; afterNativeTabClose: boolean; replacementLength: number }> = [];
+		let nativeTabClosed = false;
+		let privacyPublicationDepth = 0;
+		const durablePublicationLocks: boolean[] = [];
+		let completed = false;
 		try {
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceState = (state: any) => state;
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => state;
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
 				state: any, publish: (value: any) => Promise<unknown>,
-			) => publish(state);
+			) => {
+				privacyPublicationDepth++;
+				try { return await publish(state); }
+				finally { privacyPublicationDepth--; }
+			};
+			(fs.promises as any).open = async (...args: any[]) => {
+				if (String(args[0]).toLowerCase() === filePath.toLowerCase() && args[1] === 'r+') {
+					durablePublicationLocks.push(privacyPublicationDepth > 0);
+				}
+				return (originalFileOpen as any)(...args);
+			};
 			const resultRegistry = new KustoResultPersistenceRegistry();
 			const provider = new (KqlxEditorProvider as any)(
 				{
@@ -7661,14 +7710,36 @@ suite('Sidecar .kql.json strategy', () => {
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
 				undefined, resultRegistry,
 			) as KqlxEditorProvider;
-			const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+			if (closeNativeDocument) {
+				await vscode.commands.executeCommand('vscode.openWith', uri, 'default', { preview: false });
+			}
+			const document = closeNativeDocument
+				? vscode.workspace.textDocuments.find(candidate => candidate.uri.toString() === uri.toString())!
+				: await vscode.workspace.openTextDocument(uri);
+			assert.ok(document, 'PRECONDITION: the native text tab must expose its document');
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				const replacements = edit.entries().find(([target]) => target.toString() === uri.toString())?.[1];
+				if (replacements?.length) sourceEdits.push({
+					closed: document.isClosed, afterNativeTabClose: nativeTabClosed, replacementLength: replacements[0].newText.length,
+				});
+				return originalApplyEdit.call(vscode.workspace, edit);
+			};
 			const panel = {
 				webview: {
 					options: {}, postMessage: async (message: any) => {
+						posted.push(message);
 						if (message?.reloadRequestId) {
 							await Promise.resolve(receiveHandler?.({
 								type: 'documentReloadResult', requestId: message.reloadRequestId,
 								applied: true, editRevision: Number(message.editRevision || 0),
+							}));
+						}
+						if (message?.type === 'requestFinalPersist') {
+							const projection = [...posted].reverse().find(candidate => candidate?.type === 'documentData' && candidate.ok);
+							void Promise.resolve().then(() => receiveHandler!({
+								type: 'persistDocument', state: { sections: [querySection] }, flush: true, reason: 'save',
+								editRevision: 1, snapshotId: 'run-all-close-save', flushRequestId: message.requestId,
+								sourceGeneration: projection?.sourceGeneration,
 							}));
 						}
 						return true;
@@ -7679,6 +7750,17 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any;
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			if (!closeNativeDocument) {
+				const projection = [...posted].reverse().find(message => message?.type === 'documentData' && message.ok);
+				querySection.name = 'Accepted query';
+				await Promise.resolve(receiveHandler!({
+					type: 'persistDocument', state: { sections: [querySection] }, editRevision: 1,
+					snapshotId: 'run-all-close-control', sourceGeneration: projection?.sourceGeneration,
+				}));
+				assert.ok(sourceEdits.length > 0, 'PRECONDITION: observe a real provider edit before checking retired writes');
+				assert.strictEqual(await document.save(), true);
+				await waitForCondition(() => !document.isDirty, 'PRECONDITION: initial query edit must be saved');
+			}
 			const resultOwner = resultRegistry.get(normalizeWorkbenchUriKey(document.uri));
 			if (!resultOwner) throw new Error('Ordinary KQLX result owner was not created.');
 			const resultSession = resultOwner.openPanel('ordinary-run-all-result-test');
@@ -7710,21 +7792,58 @@ suite('Sidecar .kql.json strategy', () => {
 			assert.ok(resultSession.stagePublication('ordinary-run-all-publication', terminal));
 			assert.strictEqual(resultSession.commitPublication('ordinary-run-all-publication'), true);
 
+			if (closeNativeDocument) {
+				const tabs = vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab =>
+					tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === uri.toString());
+				assert.strictEqual(tabs.length, 1, 'PRECONDITION: exactly one task-owned native text tab');
+				assert.strictEqual(document.isDirty, false);
+				assert.strictEqual(await vscode.window.tabGroups.close(tabs), true);
+				nativeTabClosed = true;
+			}
 			for (const dispose of disposeHandlers) dispose();
-			await waitForCondition(() => {
-				const file = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-				return !!file.state.sections[0]?.resultJson;
-			}, 'Ordinary KQLX Run All result should reach durable file bytes');
 			assert.strictEqual(
 				await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 1_000),
 				true,
 				'Ordinary KQLX result close should fully release the editor',
 			);
+			assert.deepStrictEqual(sourceEdits.filter(edit => edit.closed), [],
+				'Close materialization must not issue a WorkspaceEdit against its retired native document');
+			assert.deepStrictEqual(sourceEdits.filter(edit => edit.afterNativeTabClose), [],
+				'Close materialization must not issue a WorkspaceEdit after its last native tab closes');
+			assert.deepStrictEqual(durablePublicationLocks, [true],
+				'New close results must be written while fresh privacy publication remains locked');
+			const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections[0];
+			const result = JSON.parse(persisted.resultJson);
+			assert.strictEqual(persisted.query, querySection.query);
+			assert.strictEqual(persisted.name, querySection.name);
+			assert.strictEqual(result.columns[0].name ?? result.columns[0], 'First');
+			assert.strictEqual(String(result.rows[0][0].full ?? result.rows[0][0]), '1');
+			assert.strictEqual(result.additionalResults.sets[0].columns[0].name ?? result.additionalResults.sets[0].columns[0], 'Second');
+			assert.strictEqual(String(result.additionalResults.sets[0].rows[0][0].full ?? result.additionalResults.sets[0].rows[0][0]), '2');
+			assert.strictEqual(persisted.resultArtifact.artifactId, 'result:query_run_all:1');
+			if (closeNativeDocument) {
+				if (document.isClosed) assert.ok(!vscode.workspace.textDocuments.some(candidate => candidate.uri.toString() === uri.toString()),
+					'Close materialization must not recreate a retired native document');
+				assert.ok(!vscode.window.tabGroups.all.flatMap(group => group.tabs).some(tab =>
+					'uri' in (tab.input as object) && (tab.input as vscode.TabInputText).uri.toString() === uri.toString()),
+					'Close materialization must not reopen the notebook');
+			}
+			completed = true;
 		} finally {
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(fs.promises as any).open = originalFileOpen;
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceState = originalSanitizeSync;
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
-			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+			for (const dispose of disposeHandlers) dispose();
+			for (const candidate of vscode.workspace.textDocuments.filter(candidate => candidate.uri.toString() === uri.toString())) {
+				if (candidate.isDirty) await candidate.save();
+			}
+			const tabs = vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab =>
+				!tab.isDirty && 'uri' in (tab.input as object) && (tab.input as vscode.TabInputText).uri.toString() === uri.toString());
+			if (tabs.length) await vscode.window.tabGroups.close(tabs);
+			if (completed) fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3 });
+			else console.error(`Preserved failed native-close fixture: ${tmpDir}`);
 		}
 	});
 
@@ -7826,15 +7945,17 @@ suite('Sidecar .kql.json strategy', () => {
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => state;
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
 				state: any, publish: (value: any) => Promise<unknown>,
-			) => publish(state);
-			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
-				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
-				if (typeof replacement !== 'string') return false;
-				if (!replaced) {
+			) => {
+				if (!replaced && state.sections.some((section: any) => section.resultJson)) {
 					replaced = true;
 					fs.renameSync(filePath, displacedPath);
 					fs.writeFileSync(filePath, externalText, 'utf8');
 				}
+				return publish(state);
+			};
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+				if (typeof replacement !== 'string') return false;
 				currentText = replacement;
 				return true;
 			};
@@ -7893,6 +8014,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			for (const dispose of disposeHandlers) dispose();
 			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 2_000), true);
+			assert.strictEqual(replaced, true, 'External replacement must occur at the actual result publication boundary');
 			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), externalText);
 			assert.strictEqual(saveCalls, 0);
 		} finally {

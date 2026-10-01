@@ -13,6 +13,7 @@ import { normalizeWorkbenchUriKey } from '../../src/host/workbenchFileTypes';
 import * as workbenchLogger from '../../src/host/workbenchLogger';
 import { MarkdownDocumentAggregate } from '../../src/shared/markdownDocumentAggregate';
 import { adaptMainWebviewStartupTestPanel } from './mainWebviewStartupTestAdapter';
+import { createLiveTextDocumentTestFacade } from './liveTextDocumentTestFacade';
 
 type DisposableLike = { dispose(): void };
 
@@ -104,8 +105,10 @@ function sqlWorkbenchStub(): any {
 
 suite('KQLX host-owned Markdown lifecycle', () => {
 	const originalResolveCustomTextEditor = (KqlxEditorProvider as any).prototype.resolveCustomTextEditor;
+	const liveDocuments = createLiveTextDocumentTestFacade();
 
 	suiteSetup(() => {
+		liveDocuments.install();
 		(KqlxEditorProvider as any).prototype.resolveCustomTextEditor = function (
 			this: KqlxEditorProvider,
 			document: vscode.TextDocument,
@@ -113,11 +116,17 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			token: vscode.CancellationToken,
 		) {
 			adaptMainWebviewStartupTestPanel(panel);
+			liveDocuments.register(document);
 			return originalResolveCustomTextEditor.call(this, document, panel, token);
 		};
 	});
 
+	teardown(() => {
+		liveDocuments.clear();
+	});
+
 	suiteTeardown(() => {
+		liveDocuments.dispose();
 		(KqlxEditorProvider as any).prototype.resolveCustomTextEditor = originalResolveCustomTextEditor;
 	});
 
@@ -6334,9 +6343,14 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
-	test('panel disposal rolls back only the in-flight file command', async () => {
+	for (const hasSurvivingTextEditor of [true, false]) test(
+		hasSurvivingTextEditor
+			? 'panel disposal rolls back only the in-flight file command with a surviving text editor'
+			: 'panel disposal never rolls back a landed edit after the last view retires',
+		async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalVisibleEditors = Object.getOwnPropertyDescriptor(vscode.window, 'visibleTextEditors')!;
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-markdown-disposal-rollback-'));
 		const filePath = path.join(tmpDir, 'dispose.kqlx');
 		let currentText = JSON.stringify({
@@ -6347,6 +6361,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		let projection: any;
 		const disposeHandlers: Array<() => void> = [];
+		const replacements: string[] = [];
 		let gateSecond = false;
 		let markSecondApplied!: () => void;
 		let releaseSecond!: () => void;
@@ -6359,6 +6374,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
 				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
 				if (typeof replacement !== 'string') return false;
+				replacements.push(replacement);
 				currentText = replacement;
 				if (gateSecond && replacement.includes('second command')) {
 					gateSecond = false;
@@ -6379,6 +6395,10 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
 				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
 			} as any;
+			Object.defineProperty(vscode.window, 'visibleTextEditors', {
+				...originalVisibleEditors,
+				get: () => hasSurvivingTextEditor ? [{ document }] : [],
+			});
 			const panel = {
 				webview: {
 					options: {},
@@ -6427,12 +6447,19 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			for (const dispose of disposeHandlers) dispose();
 			releaseSecond();
 			await second;
-			assert.strictEqual(currentText, firstText);
-			assert.strictEqual(JSON.parse(currentText).state.sections[0].text, 'first command');
+			if (hasSurvivingTextEditor) {
+				assert.strictEqual(currentText, firstText);
+				assert.strictEqual(JSON.parse(currentText).state.sections[0].text, 'first command');
+				assert.strictEqual(replacements.length, 3);
+			} else {
+				assert.strictEqual(replacements.length, 2, 'A retired owner cannot repair an already-landed edit');
+				assert.strictEqual(JSON.parse(currentText).state.sections[0].text, 'second command');
+			}
 		} finally {
 			releaseSecond?.();
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
 			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			Object.defineProperty(vscode.window, 'visibleTextEditors', originalVisibleEditors);
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});
