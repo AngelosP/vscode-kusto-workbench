@@ -5070,11 +5070,8 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			const queueBeforeBarrier = [...((provider as any).markdownDocumentQueues.values())][0];
 			let preBarrierSettled = false;
 			void committedBeforeBarrier.then(() => { preBarrierSettled = true; }, () => { preBarrierSettled = true; });
-			queueBeforeBarrier.canonicalSaveText = currentText;
-			await Promise.resolve(didSaveHandler!(document));
 			await new Promise<void>(resolve => setImmediate(resolve));
-			assert.strictEqual(preBarrierSettled, false, 'canonical Save must not retire an unleased user preparation');
-			queueBeforeBarrier.canonicalSaveText = undefined;
+			assert.strictEqual(preBarrierSettled, false, 'an uncommitted user preparation must remain pending');
 			fs.writeFileSync(filePath, currentText, 'utf8');
 			await Promise.resolve(didSaveHandler!(document));
 			assert.deepStrictEqual(await Promise.race([
@@ -5375,11 +5372,8 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			})).then(() => { mismatchedCommitCommandSettled = true; });
 			const committedText = JSON.stringify(JSON.parse(currentText));
 			assert.notStrictEqual(committedText, currentText);
-			queueAfterEarlyCommit.canonicalSaveText = committedText;
-			await Promise.resolve(didSaveHandler!({ ...document, getText: () => committedText }));
 			await new Promise<void>(resolve => setImmediate(resolve));
-			assert.strictEqual(mismatchedCommitCommandSettled, false, 'internal canonical Save must not release the user Save lease');
-			queueAfterEarlyCommit.canonicalSaveText = undefined;
+			assert.strictEqual(mismatchedCommitCommandSettled, false, 'the user Save lease remains held until its native commit');
 			await Promise.resolve(didSaveHandler!({ ...document, getText: () => committedText }));
 			await waitForCondition(() => mismatchedCommitCommandSettled, 'actual native commit must release its lease even when its bytes differ', 500);
 			await mismatchedCommitCommand;
@@ -6043,11 +6037,11 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				let heldHandle = false;
 				handle.truncate = async (length?: number) => {
 					await originalTruncate.call(handle, length);
-					if (holdWrite && length === 0) {
+					if (holdWrite) {
 						holdWrite = false;
 						heldHandle = true;
 						truncated = true;
-						notifyChange(fs.readFileSync(filePath, 'utf8'));
+						notifyChange('');
 						await writeGate;
 					}
 				};
@@ -6119,8 +6113,8 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 					patch: { text: 'after' },
 				},
 			}));
-			await waitForCondition(() => truncated, 'owned command must reach native truncate(0)', 1_000);
-			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), '');
+			await waitForCondition(() => truncated, 'owned command must reach its final native truncate before sync', 1_000);
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), expectedText, 'the writer must not expose an empty file during publication');
 			releaseWrite();
 			await command;
 			await Promise.all(pendingChanges.splice(0));
@@ -6130,7 +6124,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			const result = posted.find(message => message?.type === 'markdownDocumentCommandResult'
 				&& message.commandId === 'session-stable-write-command');
 			assert.strictEqual(result?.ok, true,
-				`intermediate empty session notification must not fence the owned command: ${JSON.stringify(result)}`);
+				`a stale empty session notification during publication must not fence the owned command: ${JSON.stringify(result)}`);
 			await Promise.resolve(receiveHandler!({
 				type: 'markdownDocumentCommand', commandId: 'session-stable-write-next-command',
 				sourceGeneration, expectedDocumentRevision: result.documentRevision,

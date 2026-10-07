@@ -3368,6 +3368,111 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect(close).not.toHaveBeenCalled();
 	});
 
+	const connectCleanRichKqlx = (name: string, closeLifecycle: { inspectDirty: () => Promise<boolean>; save: () => Promise<void> }) => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const targetUri = vscode.Uri.file(`/work/${name}.kqlx`);
+		const targetTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(targetUri, 'kusto.kqlxEditor'), label: `${name}.kqlx` };
+		setTabGroups({ activeTab: targetTab, tabs: [targetTab], isActive: true });
+		const document = { uri: targetUri, isDirty: false, save: vi.fn(async () => true) };
+		(vscode.workspace as any).textDocuments = [document];
+		orch.connect(vi.fn(), vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), targetUri.toString(), undefined, undefined, closeLifecycle);
+		const close = vi.spyOn(vscode.window.tabGroups, 'close');
+		const executeCommand = vi.spyOn(vscode.commands, 'executeCommand');
+		return { orch, targetUri, targetTab, document, close, executeCommand };
+	};
+
+	it('closeWorkbenchFile refuses rich kqlx lifecycle dirtiness without saveChanges even when tab and document are clean', async () => {
+		const closeLifecycle = {
+			inspectDirty: vi.fn(async () => true),
+			save: vi.fn(async () => undefined),
+		};
+		const { orch, targetUri, document, close } = connectCleanRichKqlx('rich-lifecycle-dirty', closeLifecycle);
+
+		const result = await (orch as any).closeWorkbenchFile({
+			openFileId: classifyWorkbenchUri(targetUri)!.openFileId,
+		});
+
+		expect(closeLifecycle.inspectDirty).toHaveBeenCalledOnce();
+		expect(closeLifecycle.save).not.toHaveBeenCalled();
+		expect(document.save).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ success: false, closed: false, wasDirty: true });
+		expect(close).not.toHaveBeenCalled();
+	});
+
+	it('closeWorkbenchFile awaits rich kqlx lifecycle save and clean revalidation before closing the exact tab', async () => {
+		let saveSettled = false;
+		const closeLifecycle = {
+			inspectDirty: vi.fn(async () => !saveSettled),
+			save: vi.fn(async () => {
+				await Promise.resolve();
+				saveSettled = true;
+			}),
+		};
+		const { orch, targetUri, targetTab, document, close, executeCommand } = connectCleanRichKqlx('rich-lifecycle-save', closeLifecycle);
+
+		const result = await (orch as any).closeWorkbenchFile({
+			targetFileUri: targetUri.toString(),
+			saveChanges: true,
+		});
+
+		expect(closeLifecycle.save).toHaveBeenCalledOnce();
+		expect(closeLifecycle.inspectDirty).toHaveBeenCalledTimes(2);
+		expect(document.save).not.toHaveBeenCalled();
+		expect(executeCommand).not.toHaveBeenCalled();
+		expect(close).toHaveBeenCalledOnce();
+		expect(close).toHaveBeenCalledWith([targetTab], true);
+		expect(result).toMatchObject({ success: true, closed: true, saved: true, wasDirty: true });
+	});
+
+	it('closeWorkbenchFile leaves the rich kqlx tab open when lifecycle save resolves but publication remains dirty', async () => {
+		const closeLifecycle = {
+			inspectDirty: vi.fn(async () => true),
+			save: vi.fn(async () => undefined),
+		};
+		const { orch, targetUri, document, close } = connectCleanRichKqlx('rich-publication-failed', closeLifecycle);
+
+		const result = await (orch as any).closeWorkbenchFile({
+			targetFileUri: targetUri.toString(),
+			saveChanges: true,
+		});
+
+		expect(closeLifecycle.save).toHaveBeenCalledOnce();
+		expect(closeLifecycle.inspectDirty).toHaveBeenCalledTimes(2);
+		expect(document.save).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ success: false, closed: false, wasDirty: true });
+		expect(result.error).toContain('remained dirty');
+		expect(close).not.toHaveBeenCalled();
+	});
+
+	it('closeWorkbenchFile does not close a rich kqlx tab until pending publication inspection settles', async () => {
+		let resolveFinalInspection!: (dirty: boolean) => void;
+		const finalInspection = new Promise<boolean>(resolve => { resolveFinalInspection = resolve; });
+		const closeLifecycle = {
+			inspectDirty: vi.fn()
+				.mockResolvedValueOnce(true)
+				.mockImplementationOnce(() => finalInspection),
+			save: vi.fn(async () => undefined),
+		};
+		const { orch, targetUri, targetTab, close } = connectCleanRichKqlx('rich-pending-publication', closeLifecycle);
+		expect(targetTab.isDirty).toBe(false);
+
+		const pending = (orch as any).closeWorkbenchFile({
+			targetFileUri: targetUri.toString(),
+			saveChanges: true,
+		});
+		await vi.waitFor(() => expect(closeLifecycle.inspectDirty).toHaveBeenCalledTimes(2));
+		for (let i = 0; i < 10; i++) await Promise.resolve();
+
+		expect(closeLifecycle.save).toHaveBeenCalledOnce();
+		expect(close).not.toHaveBeenCalled();
+
+		resolveFinalInspection(false);
+		const result = await pending;
+
+		expect(close).toHaveBeenCalledWith([targetTab], true);
+		expect(result).toMatchObject({ success: true, closed: true, saved: true, wasDirty: true });
+	});
+
 	it('closeWorkbenchFile refuses a dirty target unless saveChanges is explicit', async () => {
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 		const targetUri = vscode.Uri.file('/work/dirty.kqlx');

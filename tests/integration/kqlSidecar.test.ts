@@ -3690,8 +3690,10 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any;
 			await provider.resolveCustomTextEditor(document, panel, {} as any);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			const notebookWillSave = willSaveHandler!;
+			const notebookDidSave = didSaveHandler!;
 			let waited: Promise<unknown> | undefined;
-			willSaveHandler!({ document, waitUntil: (value: Promise<unknown>) => { waited = value; } });
+			notebookWillSave({ document, waitUntil: (value: Promise<unknown>) => { waited = value; } });
 			const notebookEdits = await waited as vscode.TextEdit[];
 			assert.strictEqual(notebookEdits.length, 0);
 			assert.strictEqual(fs.readFileSync(linkedPath, 'utf8'), 'CANDIDATE');
@@ -3717,10 +3719,10 @@ suite('Sidecar .kql.json strategy', () => {
 			assert.strictEqual(fs.readFileSync(linkedPath, 'utf8'), 'BASELINE');
 			failFinalSnapshot = true;
 			let newerSave: Promise<unknown> | undefined;
-			willSaveHandler!({ document, waitUntil: (value: Promise<unknown>) => { newerSave = value; } });
+			notebookWillSave({ document, waitUntil: (value: Promise<unknown>) => { newerSave = value; } });
 			await assert.rejects(newerSave!, /final editor snapshot/);
 			fs.writeFileSync(notebookPath, notebookText, 'utf8');
-			await Promise.resolve(didSaveHandler!(document));
+			await Promise.resolve(notebookDidSave(document));
 			for (const dispose of disposeHandlers) dispose();
 			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 2_000), true);
 			assert.strictEqual(linkedText, 'NEWER');
@@ -6595,6 +6597,450 @@ suite('Sidecar .kql.json strategy', () => {
 			if (historicalPrototype && historicalMethods) Object.assign(historicalPrototype, historicalMethods);
 			if (completed) fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3 });
 			else console.error(`Preserved failed real-range fixture: ${tmpDir}`);
+		}
+	});
+
+	const nativeSingleSaveTitle = 'native Save publishes new results without a post-commit buffer edit or second Save';
+	const nativeSingleSaveRows = (label: string) => Array.from({ length: 17_000 }, (_, index) =>
+		[index, `${label}-row-${index}-${'x'.repeat(80)}`]);
+	for (const scenario of [
+		{ title: nativeSingleSaveTitle, encoding: 'utf8', crlf: false, bom: false, large: false, rawDraft: false, toolSave: false, retryPublication: false },
+		{ title: `${nativeSingleSaveTitle} for a large CRLF notebook`, encoding: 'utf8', crlf: true, bom: false, large: true, rawDraft: false, toolSave: false, retryPublication: false },
+		{ title: `${nativeSingleSaveTitle} for a UTF-8 BOM notebook`, encoding: 'utf8bom', crlf: false, bom: true, large: false, rawDraft: false, toolSave: false, retryPublication: false },
+		{ title: `${nativeSingleSaveTitle} while retaining a raw dirty draft`, encoding: 'utf8', crlf: false, bom: false, large: false, rawDraft: true, toolSave: false, retryPublication: false },
+		{ title: `${nativeSingleSaveTitle} through the tool Save lifecycle`, encoding: 'utf8', crlf: false, bom: false, large: false, rawDraft: false, toolSave: true, retryPublication: false },
+		{ title: `${nativeSingleSaveTitle} after retrying a failed publication`, encoding: 'utf8', crlf: false, bom: false, large: false, rawDraft: false, toolSave: false, retryPublication: true },
+		{ title: `${nativeSingleSaveTitle} for a UTF-16 LE BOM notebook`, encoding: 'utf16le', crlf: false, bom: false, large: false, rawDraft: false, toolSave: false, retryPublication: false },
+		{ title: `${nativeSingleSaveTitle} for a Windows-1252 non-ASCII notebook`, encoding: 'windows1252', crlf: false, bom: false, large: false, rawDraft: false, toolSave: false, retryPublication: false },
+	] as const) test(scenario.title, async function () {
+		this.timeout(scenario.large ? 30_000 : 20_000);
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+		const originalSetLifecycle = (QueryEditorProvider as any).prototype.setWorkbenchFileCloseLifecycle;
+		const originalOpen = fs.promises.open;
+		const originalShowWarning = vscode.window.showWarningMessage;
+		let lifecycle: { inspectDirty(): Promise<boolean>; save(): Promise<void> } | undefined;
+		const warnings: string[] = [];
+		let faultArmed = false;
+		let failedOpens = 0;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-native-single-save-'));
+		const uri = vscode.Uri.file(path.join(tmpDir, 'single-save.kqlx'));
+		const utf8Bom = Buffer.from([0xef, 0xbb, 0xbf]);
+		const utf16LeBom = Buffer.from([0xff, 0xfe]);
+		const nativeEncoding = scenario.encoding === 'utf16le' || scenario.encoding === 'windows1252';
+		const savedTextDecoder = scenario.encoding === 'utf16le' ? new TextDecoder('utf-16le')
+			: scenario.encoding === 'windows1252' ? new TextDecoder('windows-1252') : new TextDecoder();
+		const readSavedText = () => savedTextDecoder.decode(fs.readFileSync(uri.fsPath));
+		const waitMs = scenario.large ? 20_000 : 10_000;
+		const nonAscii = 'caf\u00e9 \u20ac';
+		const oldResult = JSON.stringify(scenario.large
+			? { columns: ['Id', 'Old'], rows: nativeSingleSaveRows('old'), metadata: {} }
+			: nativeEncoding ? { columns: ['Old', 'Label'], rows: [[7, `old ${nonAscii}`]], metadata: {} }
+				: { columns: ['Old'], rows: [[7]], metadata: {} });
+		const newResult = JSON.stringify(scenario.large
+			? { columns: ['Id', 'New'], rows: nativeSingleSaveRows('new'), metadata: {} }
+			: nativeEncoding ? { columns: ['New', 'Label'], rows: [[11, `new ${nonAscii}`]], metadata: {} }
+				: { columns: ['New'], rows: [[11]], metadata: {} });
+		const baseline = { sections: [
+			{ id: 'query_old', type: 'query', query: 'print Old=7', resultJson: oldResult },
+			{ id: 'query_new', type: 'query', query: 'print New=11' },
+		] };
+		const state = { sections: baseline.sections.map(section => section.id === 'query_new'
+			? { ...section, name: 'Accepted result', resultJson: newResult } : section) };
+		const posted: any[] = [];
+		const disposals: Array<() => void> = [];
+		const observers: vscode.Disposable[] = [];
+		let receive: ((message: any) => unknown) | undefined;
+		let nativeSaves = 0;
+		let postCommitEdits = 0;
+		const invalidVersions: number[] = [];
+		let completed = false;
+		let releasePublication!: () => void;
+		const publicationGate = new Promise<void>(resolve => { releasePublication = resolve; });
+		let publicationHeld = false;
+		let publicationSettled = false;
+		try {
+			const fixtureText = JSON.stringify({ kind: 'kqlx', version: 1, state: baseline }, null, 2);
+			let document: vscode.TextDocument;
+			if (nativeEncoding) {
+				let encoded = Buffer.from(await vscode.workspace.encode(fixtureText, { encoding: scenario.encoding }));
+				if (scenario.encoding === 'utf16le' && !encoded.subarray(0, 2).equals(utf16LeBom)) {
+					encoded = Buffer.concat([utf16LeBom, encoded]);
+				}
+				assert.strictEqual(await vscode.workspace.decode(encoded, { encoding: scenario.encoding }), fixtureText);
+				fs.writeFileSync(uri.fsPath, encoded);
+				document = await vscode.workspace.openTextDocument(uri, { encoding: scenario.encoding });
+				await vscode.window.showTextDocument(document, { preview: false });
+				assert.strictEqual(document.getText(), fixtureText);
+			} else {
+				const fixtureBytes = Buffer.from(scenario.crlf ? fixtureText.replace(/\n/g, '\r\n') : fixtureText, 'utf8');
+				fs.writeFileSync(uri.fsPath, scenario.bom ? Buffer.concat([utf8Bom, fixtureBytes]) : fixtureBytes);
+				await vscode.commands.executeCommand('vscode.openWith', uri, 'default', { preview: false });
+				document = vscode.workspace.textDocuments.find(candidate => candidate.uri.toString() === uri.toString())!;
+			}
+			assert.ok(document);
+			assert.strictEqual(document.encoding, scenario.encoding);
+			assert.ok(vscode.window.tabGroups.all.flatMap(group => group.tabs).some(tab =>
+				tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === uri.toString()),
+			'The fixture must be shown in a text tab for its exact URI');
+			if (scenario.crlf) assert.strictEqual(document.eol, vscode.EndOfLine.CRLF);
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
+				value: any, publish: (value: unknown) => Promise<unknown>,
+			) => {
+				if (!scenario.rawDraft || publicationHeld || nativeSaves === 0
+					|| !value?.sections?.some((section: any) => section?.resultJson === newResult)) return publish(value);
+				publicationHeld = true;
+				await publicationGate;
+				try { return await publish(value); } finally { publicationSettled = true; }
+			};
+			(QueryEditorProvider as any).prototype.setWorkbenchFileCloseLifecycle = function (this: unknown, value: any) {
+				lifecycle = value;
+				return originalSetLifecycle.call(this, value);
+			};
+			if (scenario.retryPublication) {
+				faultArmed = true;
+				(fs.promises as any).open = async (target: fs.PathLike, flags?: any, ...rest: any[]) => {
+					if (faultArmed && nativeSaves > 0 && flags === 'r+' && String(target) === uri.fsPath) {
+						faultArmed = false;
+						failedOpens++;
+						throw Object.assign(new Error(`EACCES: permission denied, open '${uri.fsPath}'`), { code: 'EACCES' });
+					}
+					return (originalOpen as any).call(fs.promises, target, flags, ...rest);
+				};
+				(vscode.window as any).showWarningMessage = (message: string) => {
+					warnings.push(String(message));
+					return Promise.resolve(undefined);
+				};
+			}
+			const registry = new KustoResultPersistenceRegistry();
+			const provider = new (KqlxEditorProvider as any)({
+				subscriptions: observers,
+				workspaceState: { get: () => undefined, update: async () => undefined },
+				globalState: { get: () => undefined, update: async () => undefined },
+				globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global')),
+			}, vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			undefined, registry) as KqlxEditorProvider;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						await reloadAwarePostMessage(() => receive, posted)(message);
+						if (message?.type === 'requestFinalPersist') {
+							const projection = [...posted].reverse().find(candidate => candidate?.type === 'documentData' && candidate.ok);
+							void Promise.resolve().then(() => receive!({
+								type: 'persistDocument', state, flush: true, reason: 'save', editRevision: 1,
+								snapshotId: 'single-save-final', sourceGeneration: projection?.sourceGeneration,
+								flushRequestId: message.requestId,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => { receive = handler; return { dispose() {} }; },
+				},
+				onDidDispose: (handler: () => void) => { disposals.push(handler); return { dispose() {} }; },
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receive!({ type: 'requestDocument' }));
+			registry.get(normalizeWorkbenchUriKey(uri))!.admitCanonicalSource('single-save-new-result', state);
+			const projection = [...posted].reverse().find(message => message?.type === 'documentData' && message.ok);
+			await Promise.resolve(receive!({
+				type: 'persistDocument', state, editRevision: 1, snapshotId: 'single-save-edited',
+				sourceGeneration: projection.sourceGeneration,
+			}));
+			assert.strictEqual(document.isDirty, true);
+			assert.strictEqual(JSON.parse(document.getText()).state.sections[1].resultJson, newResult);
+			assert.strictEqual(JSON.parse(readSavedText()).state.sections[1].resultJson, undefined);
+			observers.push(vscode.workspace.onDidSaveTextDocument(saved => {
+				if (saved.uri.toString() === uri.toString()) nativeSaves++;
+			}));
+			observers.push(vscode.workspace.onDidChangeTextDocument(event => {
+				if (event.document.uri.toString() !== uri.toString()) return;
+				try { JSON.parse(event.document.getText()); } catch (error) {
+					invalidVersions.push(event.document.version);
+					fs.writeFileSync(path.join(tmpDir, `invalid-buffer-${event.document.version}.txt`), event.document.getText(), 'utf8');
+					console.error(JSON.stringify({ version: event.document.version, length: event.document.getText().length, encoding: event.document.encoding, error: String(error) }));
+				}
+			}));
+			(vscode.workspace as any).applyEdit = (edit: vscode.WorkspaceEdit) => {
+				if (nativeSaves > 0 && edit.has(uri)) postCommitEdits++;
+				return originalApplyEdit.call(vscode.workspace, edit);
+			};
+			if (scenario.rawDraft) {
+				const saveResult = await Promise.race([
+					Promise.resolve(document.save()),
+					new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), waitMs)),
+				]);
+				assert.strictEqual(saveResult, true, 'The first native Save must commit while canonical publication is held');
+				await waitForCondition(() => publicationHeld, 'Canonical publication must start after the first native Save', waitMs);
+				const rowFreeText = readSavedText();
+				const rowFree = JSON.parse(rowFreeText).state.sections;
+				assert.strictEqual(rowFree[0].resultJson, oldResult);
+				assert.strictEqual(rowFree[1].resultJson, undefined);
+				const sourceText = document.getText();
+				assert.ok(sourceText.startsWith('{'));
+				const insertion = `${document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n'}  "kwOpaqueDraft": "raw-draft-${path.basename(tmpDir)}",`;
+				const draftText = sourceText.slice(0, 1) + insertion + sourceText.slice(1);
+				const draftEdit = new vscode.WorkspaceEdit();
+				draftEdit.insert(uri, document.positionAt(1), insertion);
+				assert.strictEqual(await originalApplyEdit.call(vscode.workspace, draftEdit), true);
+				assert.strictEqual(document.getText(), draftText);
+				assert.strictEqual(publicationSettled, false);
+				releasePublication();
+				await waitForCondition(() => publicationSettled, 'Held canonical publication must settle after release', waitMs);
+				await (provider as any).markdownDocumentQueues.get(normalizeWorkbenchUriKey(uri))?.tail;
+				assert.strictEqual(document.isDirty, true, 'The raw draft must remain dirty');
+				assert.strictEqual(document.getText(), draftText, 'The raw draft must be retained exactly');
+				assert.strictEqual(readSavedText(), rowFreeText, 'Held publication must not overwrite the row-free saved file');
+				assert.strictEqual(JSON.parse(readSavedText()).state.sections[0].resultJson, oldResult);
+				assert.strictEqual(postCommitEdits, 0, 'Saving results must never submit a post-commit WorkspaceEdit');
+				assert.strictEqual(nativeSaves, 1, 'Saving results must not call native Save a second time');
+				assert.deepStrictEqual(invalidVersions, []);
+			} else {
+				const assertDurableAtReturn = (label: string) => {
+					assert.strictEqual(document.isDirty, false, `${label}: the notebook must be clean when Save returns`);
+					const diskText = readSavedText();
+					assert.strictEqual(document.getText(), diskText, `${label}: the buffer must match the published file`);
+					const sections = JSON.parse(diskText).state.sections;
+					assert.strictEqual(sections[0].resultJson, oldResult);
+					assert.strictEqual(sections[1].resultJson, newResult);
+				};
+				if (scenario.toolSave) {
+					assert.ok(lifecycle, 'The provider must register a Save lifecycle');
+					await lifecycle!.save();
+					assertDurableAtReturn('Tool Save');
+				} else if (scenario.retryPublication) {
+					assert.ok(lifecycle, 'The provider must register a Save lifecycle');
+					await assert.rejects(() => lifecycle!.save(), /could not confirm/);
+					assert.strictEqual(failedOpens, 1, 'The first publication must reach the injected open failure');
+					const rowFreeText = readSavedText();
+					const rowFree = JSON.parse(rowFreeText).state.sections;
+					assert.strictEqual(rowFree[0].resultJson, oldResult);
+					assert.strictEqual(rowFree[1].resultJson, undefined);
+					assert.strictEqual(document.isDirty, false);
+					assert.strictEqual(JSON.parse(document.getText()).state.sections[1].resultJson, undefined);
+					assert.ok(warnings.some(message => /could not confirm the final saved query results/.test(message)),
+						'The failed publication must warn the user');
+					assert.strictEqual(nativeSaves, 1);
+					faultArmed = false;
+					(fs.promises as any).open = originalOpen;
+					await lifecycle!.save();
+					assertDurableAtReturn('Retried Save');
+					assert.strictEqual(failedOpens, 1);
+				} else {
+					assert.strictEqual(await document.save(), true);
+					await waitForCondition(() => {
+						try {
+							const diskText = readSavedText();
+							return !document.isDirty && diskText === document.getText()
+								&& JSON.parse(diskText).state.sections[1].resultJson === newResult;
+						} catch { return false; }
+					}, 'Native Save must publish permitted rows and reconcile its clean source without another edit', waitMs);
+				}
+				assert.strictEqual(postCommitEdits, 0, 'Saving results must never submit a post-commit WorkspaceEdit');
+				assert.strictEqual(nativeSaves, 1, 'Saving results must not call native Save a second time');
+				assert.deepStrictEqual(invalidVersions, []);
+				const savedBytes = fs.readFileSync(uri.fsPath);
+				assert.strictEqual(savedBytes.subarray(0, 3).equals(utf8Bom), scenario.bom, 'Publication must preserve the raw BOM prefix');
+				assert.strictEqual(savedBytes.subarray(0, 2).equals(utf16LeBom), scenario.encoding === 'utf16le',
+					'Publication must preserve the UTF-16 LE BOM prefix');
+				if (scenario.encoding === 'utf16le') {
+					assert.ok(!savedBytes.subarray(2, 4).equals(utf16LeBom), 'Publication must not duplicate the UTF-16 LE BOM');
+				}
+				if (scenario.encoding === 'windows1252') {
+					assert.ok(savedBytes.includes(0xe9), 'Windows-1252 publication must write e-acute as raw byte 0xE9');
+					assert.ok(savedBytes.includes(0x80), 'Windows-1252 publication must write the euro sign as raw byte 0x80');
+					assert.ok(!savedBytes.includes(Buffer.from([0xc3, 0xa9])), 'Windows-1252 publication must not write UTF-8 e-acute');
+					assert.ok(!savedBytes.includes(Buffer.from([0xe2, 0x82, 0xac])), 'Windows-1252 publication must not write a UTF-8 euro sign');
+				}
+				if (nativeEncoding) {
+					assert.strictEqual(await vscode.workspace.decode(savedBytes, { encoding: scenario.encoding }), document.getText(),
+						'The native buffer must match the published bytes decoded with its encoding');
+				}
+				assert.strictEqual(document.encoding, scenario.encoding, 'Publication must preserve the native document encoding');
+				const savedText = savedTextDecoder.decode(savedBytes);
+				if (scenario.crlf) assert.ok(!/(?<!\r)\n/.test(savedText), 'Publication must preserve CRLF line endings');
+				const saved = JSON.parse(savedText).state.sections;
+				assert.strictEqual(saved[0].resultJson, oldResult);
+				assert.strictEqual(saved[1].resultJson, newResult);
+				assert.strictEqual(saved[1].name, 'Accepted result');
+			}
+			completed = true;
+		} finally {
+			releasePublication();
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			for (const dispose of disposals) dispose();
+			await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+			for (const observer of observers) observer.dispose();
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+			(QueryEditorProvider as any).prototype.setWorkbenchFileCloseLifecycle = originalSetLifecycle;
+			faultArmed = false;
+			(fs.promises as any).open = originalOpen;
+			(vscode.window as any).showWarningMessage = originalShowWarning;
+			for (const document of vscode.workspace.textDocuments.filter(candidate => candidate.uri.toString() === uri.toString())) {
+				if (document.isDirty) await document.save();
+			}
+			const tabs = vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab =>
+				!tab.isDirty && tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === uri.toString());
+			if (tabs.length) await vscode.window.tabGroups.close(tabs);
+			if (completed) fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3 });
+			else console.error(`Preserved failed single-save fixture: ${tmpDir}`);
+		}
+	});
+
+	let virtualSaveProbeCounter = 0;
+	test('native Save publishes results through a writable virtual filesystem', async function () {
+		this.timeout(20_000);
+		const scheme = `save-probe-${Date.now().toString(36)}${++virtualSaveProbeCounter}`;
+		const uri = vscode.Uri.from({ scheme, path: '/single-save.kqlx' });
+		const rootUri = vscode.Uri.from({ scheme, path: '/' });
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+		const oldResult = JSON.stringify({ columns: ['Old'], rows: [[7]], metadata: {} });
+		const newResult = JSON.stringify({ columns: ['New'], rows: [[11]], metadata: {} });
+		const baseline = { sections: [
+			{ id: 'query_old', type: 'query', query: 'print Old=7', resultJson: oldResult },
+			{ id: 'query_new', type: 'query', query: 'print New=11' },
+		] };
+		const state = { sections: baseline.sections.map(section => section.id === 'query_new'
+			? { ...section, name: 'Accepted result', resultJson: newResult } : section) };
+		const changeEmitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
+		const rootTime = Date.now();
+		let fileEntry = { data: new Uint8Array(), ctime: rootTime, mtime: rootTime };
+		let providerWrites = 0;
+		const notFound = (target: vscode.Uri) => vscode.FileSystemError.FileNotFound(target);
+		const fileSystem: vscode.FileSystemProvider = {
+			onDidChangeFile: changeEmitter.event,
+			watch: () => new vscode.Disposable(() => undefined),
+			stat: target => {
+				if (target.path === '/') return { type: vscode.FileType.Directory, ctime: rootTime, mtime: rootTime, size: 0 };
+				if (target.path === uri.path) {
+					return { type: vscode.FileType.File, ctime: fileEntry.ctime, mtime: fileEntry.mtime, size: fileEntry.data.byteLength };
+				}
+				throw notFound(target);
+			},
+			readDirectory: target => {
+				if (target.path !== '/') throw notFound(target);
+				return [['single-save.kqlx', vscode.FileType.File]];
+			},
+			createDirectory: target => { throw vscode.FileSystemError.NoPermissions(target); },
+			readFile: target => {
+				if (target.path !== uri.path) throw notFound(target);
+				return fileEntry.data.slice();
+			},
+			writeFile: (target, content) => {
+				if (target.path !== uri.path) throw vscode.FileSystemError.NoPermissions(target);
+				fileEntry = { data: content.slice(), ctime: fileEntry.ctime, mtime: Math.max(Date.now(), fileEntry.mtime + 1) };
+				providerWrites++;
+				queueMicrotask(() => changeEmitter.fire([{ type: vscode.FileChangeType.Changed, uri: target }]));
+			},
+			delete: target => { throw vscode.FileSystemError.NoPermissions(target); },
+			rename: target => { throw vscode.FileSystemError.NoPermissions(target); },
+		};
+		const decoder = new TextDecoder();
+		const providerText = () => decoder.decode(fileEntry.data);
+		const posted: any[] = [];
+		const disposals: Array<() => void> = [];
+		const observers: vscode.Disposable[] = [];
+		let receive: ((message: any) => unknown) | undefined;
+		let nativeSaves = 0;
+		let postCommitEdits = 0;
+		const invalidVersions: number[] = [];
+		const globalStorage = path.join(os.tmpdir(), `kw-${scheme}-global`);
+		let registration: vscode.Disposable | undefined;
+		try {
+			registration = vscode.workspace.registerFileSystemProvider(scheme, fileSystem, { isCaseSensitive: true });
+			fileEntry = { ...fileEntry, data: new TextEncoder().encode(JSON.stringify({ kind: 'kqlx', version: 1, state: baseline }, null, 2)) };
+			assert.strictEqual((await vscode.workspace.fs.stat(rootUri)).type, vscode.FileType.Directory);
+			const document = await vscode.workspace.openTextDocument(uri);
+			await vscode.window.showTextDocument(document, { preview: false });
+			assert.strictEqual(document.getText(), providerText());
+			assert.ok(vscode.window.tabGroups.all.flatMap(group => group.tabs).some(tab =>
+				tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === uri.toString()),
+			'The virtual fixture must be shown in a text tab for its exact URI');
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
+				value: any, publish: (value: unknown) => Promise<unknown>,
+			) => publish(value);
+			const registry = new KustoResultPersistenceRegistry();
+			const provider = new (KqlxEditorProvider as any)({
+				subscriptions: observers,
+				workspaceState: { get: () => undefined, update: async () => undefined },
+				globalState: { get: () => undefined, update: async () => undefined },
+				globalStorageUri: vscode.Uri.file(globalStorage),
+			}, vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			undefined, registry) as KqlxEditorProvider;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						await reloadAwarePostMessage(() => receive, posted)(message);
+						if (message?.type === 'requestFinalPersist') {
+							const projection = [...posted].reverse().find(candidate => candidate?.type === 'documentData' && candidate.ok);
+							void Promise.resolve().then(() => receive!({
+								type: 'persistDocument', state, flush: true, reason: 'save', editRevision: 1,
+								snapshotId: 'virtual-save-final', sourceGeneration: projection?.sourceGeneration,
+								flushRequestId: message.requestId,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => { receive = handler; return { dispose() {} }; },
+				},
+				onDidDispose: (handler: () => void) => { disposals.push(handler); return { dispose() {} }; },
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receive!({ type: 'requestDocument' }));
+			registry.get(normalizeWorkbenchUriKey(uri))!.admitCanonicalSource('virtual-save-new-result', state);
+			const projection = [...posted].reverse().find(message => message?.type === 'documentData' && message.ok);
+			await Promise.resolve(receive!({
+				type: 'persistDocument', state, editRevision: 1, snapshotId: 'virtual-save-edited',
+				sourceGeneration: projection.sourceGeneration,
+			}));
+			assert.strictEqual(document.isDirty, true);
+			assert.strictEqual(JSON.parse(document.getText()).state.sections[1].resultJson, newResult);
+			assert.strictEqual(JSON.parse(providerText()).state.sections[1].resultJson, undefined);
+			observers.push(vscode.workspace.onDidSaveTextDocument(saved => {
+				if (saved.uri.toString() === uri.toString()) nativeSaves++;
+			}));
+			observers.push(vscode.workspace.onDidChangeTextDocument(event => {
+				if (event.document.uri.toString() !== uri.toString()) return;
+				try { JSON.parse(event.document.getText()); } catch { invalidVersions.push(event.document.version); }
+			}));
+			(vscode.workspace as any).applyEdit = (edit: vscode.WorkspaceEdit) => {
+				if (nativeSaves > 0 && edit.has(uri)) postCommitEdits++;
+				return originalApplyEdit.call(vscode.workspace, edit);
+			};
+			assert.strictEqual(await document.save(), true);
+			await waitForCondition(() => {
+				try {
+					const text = providerText();
+					return !document.isDirty && text === document.getText()
+						&& JSON.parse(text).state.sections[1].resultJson === newResult;
+				} catch { return false; }
+			}, 'Native Save must publish results to the virtual provider and reload its clean source', 10_000);
+			assert.strictEqual(postCommitEdits, 0, 'Saving results must never submit a post-commit WorkspaceEdit');
+			assert.strictEqual(nativeSaves, 1, 'Saving results must not call native Save a second time');
+			assert.deepStrictEqual(invalidVersions, []);
+			assert.ok(providerWrites >= 1);
+			const saved = JSON.parse(providerText()).state.sections;
+			assert.strictEqual(saved[0].resultJson, oldResult);
+			assert.strictEqual(saved[1].resultJson, newResult);
+			assert.strictEqual(saved[1].name, 'Accepted result');
+			assert.strictEqual(document.getText(), providerText());
+		} finally {
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			for (const dispose of disposals) dispose();
+			await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+			for (const observer of observers) observer.dispose();
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+			for (const document of vscode.workspace.textDocuments.filter(candidate => candidate.uri.toString() === uri.toString())) {
+				if (document.isDirty) await document.save();
+			}
+			const tabs = vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab =>
+				!tab.isDirty && tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === uri.toString());
+			if (tabs.length) await vscode.window.tabGroups.close(tabs);
+			fs.rmSync(globalStorage, { recursive: true, force: true, maxRetries: 3 });
+			registration?.dispose();
+			changeEmitter.dispose();
 		}
 	});
 
@@ -9598,7 +10044,14 @@ suite('Sidecar .kql.json strategy', () => {
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (value: unknown, publish: (state: unknown) => Promise<unknown>) => {
 				publishCalls++;
 				if (gateFirstRestore && ++restorePublishCalls === 1) await firstGate;
-				return publish(value);
+				const result = await publish(value);
+				const saved = fs.readFileSync(filePath, 'utf8');
+				if (!dirty && saved !== currentText) {
+					diskText = saved;
+					currentText = saved;
+					version++;
+				}
+				return result;
 			};
 			const resultRegistry = new KustoResultPersistenceRegistry();
 			const provider = new (KqlxEditorProvider as any)(
@@ -9612,7 +10065,7 @@ suite('Sidecar .kql.json strategy', () => {
 				save: async () => {
 					let nested: Promise<vscode.TextEdit[]> | undefined;
 					willSaveHandler!({ document, waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { nested = Promise.resolve(thenable); } } as any);
-					await nested; diskText = currentText; dirty = false; await Promise.resolve(didSaveHandler!(document)); return true;
+					await nested; diskText = currentText; fs.writeFileSync(filePath, diskText, 'utf8'); dirty = false; await Promise.resolve(didSaveHandler!(document)); return true;
 				},
 			} as any;
 			const panel = {
@@ -9641,7 +10094,7 @@ suite('Sidecar .kql.json strategy', () => {
 				willSaveHandler!({ document, waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { barrier = Promise.resolve(thenable); } } as any);
 				const edits = await barrier!;
 				if (edits[0]) { currentText = edits[0].newText; version++; }
-				diskText = currentText; dirty = false; await Promise.resolve(didSaveHandler!(document));
+				diskText = currentText; fs.writeFileSync(filePath, diskText, 'utf8'); dirty = false; await Promise.resolve(didSaveHandler!(document));
 			};
 			await runNativeSave();
 			requestedState = makeState('RESULT_TWO');
@@ -9750,7 +10203,17 @@ suite('Sidecar .kql.json strategy', () => {
 					markCanonicalRestoreStarted();
 					await canonicalRestoreGate;
 				}
-				return publish(value);
+				const result = await publish(value);
+				const savedText = fs.readFileSync(filePath, 'utf8');
+				if (!dirty && savedText !== currentText) {
+					diskText = savedText;
+					currentText = savedText;
+					version++;
+					for (const changeHandler of canonicalChangeHandlers) {
+						await Promise.resolve(changeHandler({ document, contentChanges: [{}] } as any));
+					}
+				}
+				return result;
 			};
 			const provider = new (KqlxEditorProvider as any)(
 				{
@@ -9779,6 +10242,7 @@ suite('Sidecar .kql.json strategy', () => {
 					}
 					await Promise.all(nestedBarriers);
 					diskText = currentText;
+					fs.writeFileSync(filePath, diskText, 'utf8');
 					dirty = false;
 					for (const handler of canonicalDidSaveHandlers) await Promise.resolve(handler(document));
 					return true;
@@ -9855,6 +10319,7 @@ suite('Sidecar .kql.json strategy', () => {
 				await Promise.resolve(changeHandler({ document, contentChanges: [{}] } as any));
 			}
 			diskText = currentText;
+			fs.writeFileSync(filePath, diskText, 'utf8');
 			dirty = false;
 			gateCanonicalRestore = true;
 			await Promise.resolve(savingDidSaveHandler(document));

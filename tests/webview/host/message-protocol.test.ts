@@ -373,7 +373,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postToAllWebviews::73:10',
 	'src/host/editorCursorStatusApplicationHandler.ts::postMessage::postMessage::83:10',
 	'src/host/kqlLanguageRequestApplicationHandler.ts::postMessage::postMessage::48:3',
-	'src/host/kqlxEditorProvider.ts::deliverCommandResult::deliverWebviewMessage::4996:10',
+	'src/host/kqlxEditorProvider.ts::deliverCommandResult::deliverWebviewMessage::5161:10',
 	'src/host/kustoConnectionOnboardingApplicationHandler.ts::testConnectionFromWebview::postMessage::192:4',
 	'src/host/kustoConnectionsProjectionApplicationHandler.ts::publishSnapshot::postMessage::122:4',
 	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::500:33',
@@ -2259,7 +2259,7 @@ describe('Message Protocol Contract', () => {
 			const extraction = extractPostMessageTypes(relativePath);
 			expect(extraction.types).toContain('requestMarkdownCommandBarrier');
 			expect(extraction.dynamicSites).toEqual([
-				'src/host/kqlxEditorProvider.ts::deliverCommandResult::deliverWebviewMessage::4996:10',
+				'src/host/kqlxEditorProvider.ts::deliverCommandResult::deliverWebviewMessage::5161:10',
 			]);
 			const sourceFile = ts.createSourceFile(relativePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 			const commandResultTypes = new Set<string | undefined>();
