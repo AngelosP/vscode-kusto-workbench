@@ -188,6 +188,14 @@ export class SqlWorkbenchService {
 		return this.readyPromise;
 	}
 
+	async prepareToolExecution(): Promise<void> {
+		return this.runLifecycleOperation(async () => {
+			await this.awaitReadyActive();
+			await this.runtime.prepareInstallation();
+			this.assertActive();
+		});
+	}
+
 	getLeaveNoTraceConnectionIds(): string[] {
 		return this.leaveNoTracePolicy.isGloballyBlocked()
 			? this.connectionManager.getConnections().map(connection => connection.id)

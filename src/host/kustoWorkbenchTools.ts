@@ -20,10 +20,9 @@ import type { KustoQueryClient } from './kustoClient';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget } from './schemaIndexUtils';
 import {
 	getPowerBiHtmlValidationDiagnostics,
-	type PowerBiDataSource,
 } from './powerBiExport';
 import { getLegacyDashboardWarnings, parseKwProvenance } from '../shared/htmlDashboardUpgrade';
-import type { PortableDashboardDiagnostic } from '../shared/portableDashboardCompiler';
+import type { PortableDashboardDataSource, PortableDashboardDiagnostic } from '../shared/portableDashboardCompiler';
 import { classifyWorkbenchUri, classifyWorkbenchUriString, sameNonzeroPhysicalFileIdentity, type WorkbenchFileInfo, type WorkbenchFileKind } from './workbenchFileTypes';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { getKustoConnectionIdentityKey, resolveStrictKustoConnection } from '../shared/kustoAuth';
@@ -33,7 +32,7 @@ import {
 } from '../shared/kustoCopilotClarificationProtocol.js';
 import { filterKustoFavoritesForActivePrincipals, migrateKustoFavorites } from './connectionManagerFavorites';
 import { sqlConnectionTargetSignature } from '../shared/sqlConnectionIdentity';
-import { readCurrentSqlSchemaPrincipalFingerprint } from './sqlEditorSchema';
+import { readCurrentSqlSchemaPrincipalFingerprint, sqlSchemaPrincipalFingerprint } from './sqlEditorSchema';
 import type { KustoExecutionRequestIdentity } from '../shared/kustoExecution.js';
 import type { KustoLeaveNoTracePolicySnapshot } from './kustoLeaveNoTracePolicyStore';
 import {
@@ -42,11 +41,12 @@ import {
 	type DevelopmentNoteMutationPayload,
 	type DevelopmentNoteMutationWebviewAdmission,
 } from '../shared/developmentNoteMutationProtocol.js';
-import type { ToolStateSection } from '../shared/toolStateSnapshotProtocol.js';
+import { captureExpectedKustoTarget, type ExpectedKustoTarget, type ToolStateSection } from '../shared/toolStateSnapshotProtocol.js';
 import { isRuntimeProxy } from '../shared/runtimeMessageEnvelope.js';
-import type { WorkbenchFileCloseLifecycle } from './workbenchToolSessionApplicationHandler.js';
+import type { KustoExecutionPreparation, WorkbenchFileCloseLifecycle } from './workbenchToolSessionApplicationHandler.js';
 import { withKqlxDocumentWriteLock } from './kqlxEditorProvider.js';
 import { canonicalAddableSectionKind } from '../shared/documentSectionCapabilities.js';
+import { createFileOpenTrace } from './fileOpenTrace';
 
 export type TargetFields = {
 	openFileId?: string;
@@ -519,7 +519,7 @@ interface HtmlDashboardContextResult {
 	previewHeight?: number;
 	hasProvenance?: boolean;
 	bindingCount?: number;
-	dataSources?: PowerBiDataSource[];
+	dataSources?: PortableDashboardDataSource[];
 	factColumns?: Array<{ name: string; type: string }>;
 	error?: string;
 }
@@ -712,9 +712,15 @@ type CloseWorkbenchFileResult = {
 
 interface LiveWorkbenchConnection {
 	token: number;
-	poster: (message: unknown) => unknown;
+	poster: (message: unknown, signal?: AbortSignal, isCurrent?: () => boolean) => unknown;
 	stateGetter: () => Promise<ToolSection[] | undefined>;
+	captureStateAdmission?: () => (() => boolean);
+	prepareKustoExecution?: KustoExecutionPreparation;
+	prepareSqlExecution?: () => Promise<void>;
+	captureSqlSectionAdmission?: (sectionId: string) => (() => boolean);
 	waitForMutationReady?: () => Promise<boolean>;
+	reactivate?: () => Promise<boolean>;
+	waitForReadReady?: () => Promise<boolean>;
 	schemaRefresher: (clusterUrl: string, connectionId: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>;
 	sqlConnectionResolver?: (sectionId?: string) => string | undefined;
 	sqlOwnerResolver?: (sectionId: string) => {
@@ -771,6 +777,7 @@ function cacheGenerationMatches(
 
 export class KustoWorkbenchToolOrchestrator {
 	private static instance: KustoWorkbenchToolOrchestrator | undefined;
+	private static readonly SQL_TOOL_INSTALLATION_TIMEOUT_MS = 6 * 60_000;
 	private static readonly SQL_TOOL_OWNER_READY_TIMEOUT_MS = 10_000;
 	private static readonly SQL_TOOL_OWNER_READY_POLL_MS = 50;
 	
@@ -793,7 +800,7 @@ export class KustoWorkbenchToolOrchestrator {
 	}>();
 	private readonly backgroundFileOperations = new Map<string, Promise<void>>();
 	private readonly backgroundMutationBlocks = new Map<string, number>();
-	private readonly hostOwnedBackgroundFiles = new Set<string>();
+	private readonly hostOwnedBackgroundFiles = new Map<string, string | undefined>();
 	private readonly backgroundUserInteractionTransfers = new Map<string, Promise<void>>();
 	private readonly backgroundOpeningFiles = new Set<string>();
 	private readonly backgroundProgrammaticSelections = new Set<string>();
@@ -810,6 +817,7 @@ export class KustoWorkbenchToolOrchestrator {
 		reject: (err: Error) => void;
 		timer?: ReturnType<typeof setTimeout>;
 		cancellationSubscription?: vscode.Disposable;
+		controller: AbortController;
 		connectionToken: number;
 		kustoExecution?: KustoExecutionRequestIdentity;
 		waitForRename?: boolean;
@@ -872,7 +880,7 @@ export class KustoWorkbenchToolOrchestrator {
 	 * instance can clear the callbacks.
 	 */
 	connect(
-		poster: (message: unknown) => unknown,
+		poster: (message: unknown, signal?: AbortSignal, isCurrent?: () => boolean) => unknown,
 		stateGetter: () => Promise<ToolSection[] | undefined>,
 		schemaRefresher: (clusterUrl: string, connectionId: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>,
 		documentUri?: string,
@@ -880,6 +888,12 @@ export class KustoWorkbenchToolOrchestrator {
 		sqlOwnerResolver?: LiveWorkbenchConnection['sqlOwnerResolver'],
 		closeLifecycle?: WorkbenchFileCloseLifecycle,
 		waitForMutationReady?: () => Promise<boolean>,
+		reactivate?: () => Promise<boolean>,
+		waitForReadReady?: () => Promise<boolean>,
+		captureStateAdmission?: () => (() => boolean),
+		prepareKustoExecution?: KustoExecutionPreparation,
+		prepareSqlExecution?: () => Promise<void>,
+		captureSqlSectionAdmission?: (sectionId: string) => (() => boolean),
 	): number {
 		this.connectionToken++;
 		const classifiedDocumentInfo = documentUri
@@ -897,6 +911,12 @@ export class KustoWorkbenchToolOrchestrator {
 			...(sqlOwnerResolver ? { sqlOwnerResolver } : {}),
 			...(closeLifecycle ? { closeLifecycle } : {}),
 			...(waitForMutationReady ? { waitForMutationReady } : {}),
+			...(reactivate ? { reactivate } : {}),
+			...(waitForReadReady ? { waitForReadReady } : {}),
+			...(captureStateAdmission ? { captureStateAdmission } : {}),
+			...(prepareKustoExecution ? { prepareKustoExecution } : {}),
+			...(prepareSqlExecution ? { prepareSqlExecution } : {}),
+			...(captureSqlSectionAdmission ? { captureSqlSectionAdmission } : {}),
 			...(documentUri ? { documentUri } : {}),
 			...(documentInfo ? { documentInfo, logicalUriKey: documentInfo.logicalUriKey } : {}),
 			sequence: this.connectionToken,
@@ -911,6 +931,10 @@ export class KustoWorkbenchToolOrchestrator {
 		if (!connection) return false;
 		this.applyLatestConnection(connection);
 		return true;
+	}
+
+	isConnectionCurrent(token: number): boolean {
+		return this.liveConnections.has(token);
 	}
 
 	evictActiveConnectionForTest(): boolean {
@@ -929,6 +953,7 @@ export class KustoWorkbenchToolOrchestrator {
 			if (pending.connectionToken !== token) continue;
 			this.pendingResponses.delete(requestId);
 			this.developmentNoteMutationRequestIds.delete(requestId);
+			pending.controller.abort();
 			if (pending.timer) clearTimeout(pending.timer);
 			pending.cancellationSubscription?.dispose();
 			pending.reject(new Error('The owning Kusto Workbench editor closed before the request completed.'));
@@ -1172,7 +1197,7 @@ export class KustoWorkbenchToolOrchestrator {
 				mutationBlockCount += this.backgroundMutationBlocks.get(key) ?? 0;
 				this.backgroundMutationBlocks.delete(key);
 			}
-			if (wasHostOwned) this.hostOwnedBackgroundFiles.add(newInfo.logicalUriKey);
+			if (wasHostOwned) this.hostOwnedBackgroundFiles.set(newInfo.logicalUriKey, undefined);
 			if (wasHostOwned && wasProgrammaticallySelected) {
 				this.backgroundProgrammaticSelections.add(newInfo.logicalUriKey);
 			}
@@ -1714,6 +1739,49 @@ export class KustoWorkbenchToolOrchestrator {
 		return file.fileKind === 'kqlx' || file.fileKind === 'mdx' || file.fileKind === 'sqlx';
 	}
 
+	private async prepareBackgroundLiveOperation(
+		targetFields: TargetFields,
+		cancellationToken?: vscode.CancellationToken,
+	): Promise<{ connection?: LiveWorkbenchConnection; isCurrent?: () => boolean }> {
+		const target = this.resolveToolTarget(targetFields);
+		const file = target.explicitTarget;
+		if (target.connection || !file || !this.hostOwnedBackgroundFiles.has(file.logicalUriKey)) return { connection: target.connection };
+		const connection = this.getLatestLiveConnectionForKey(file.logicalUriKey);
+		if (!connection) return {};
+		if (cancellationToken?.isCancellationRequested) throw new vscode.CancellationError();
+		const acquisition = this.acquireHostOwnedBackgroundLifecycle(file.logicalUriKey);
+		let release: (() => void) | undefined;
+		try {
+			release = cancellationToken ? await raceCancellation(acquisition, cancellationToken) : await acquisition;
+			const document = await this.getBackgroundDocument(file);
+			const version = document.version;
+			const source = document.getText();
+			const waitForReady = connection.waitForReadReady ?? connection.waitForMutationReady;
+			const readiness = waitForReady?.() ?? Promise.resolve(false);
+			if (!await (cancellationToken ? raceCancellation(readiness, cancellationToken) : readiness)) {
+				throw new Error('This document is still loading and cannot accept mutations yet.');
+			}
+			if (cancellationToken?.isCancellationRequested) throw new vscode.CancellationError();
+			const admission = connection.captureStateAdmission?.();
+			const isCurrent = () => this.liveConnections.get(connection.token) === connection
+				&& connection.logicalUriKey === file.logicalUriKey
+				&& document.version === version && document.getText() === source
+				&& admission?.() !== false;
+			if (!isCurrent()) {
+				throw new Error('The targeted Workbench editor changed before background ownership could transfer.');
+			}
+			this.hostOwnedBackgroundFiles.delete(file.logicalUriKey);
+			this.backgroundProgrammaticSelections.delete(file.logicalUriKey);
+			this.clearBackgroundOpeningLease(file.logicalUriKey);
+			return { connection, isCurrent };
+		} catch (error) {
+			if (!release) void acquisition.then(complete => complete?.(), () => undefined);
+			throw error;
+		} finally {
+			release?.();
+		}
+	}
+
 	private async getBackgroundDocument(file: InternalOpenWorkbenchFileSummary): Promise<vscode.TextDocument> {
 		const existing = vscode.workspace.textDocuments.find(document =>
 			classifyWorkbenchUri(document.uri, { includeOptionalPlainText: true })?.openFileId === file.openFileId
@@ -2024,6 +2092,7 @@ export class KustoWorkbenchToolOrchestrator {
 		}
 		this.pendingResponses.delete(requestId);
 		this.developmentNoteMutationRequestIds.delete(requestId);
+		pending.controller.abort();
 		this.flushDeferredRenamedTabClosures();
 		if (pending.timer) clearTimeout(pending.timer);
 		pending.cancellationSubscription?.dispose();
@@ -2049,6 +2118,7 @@ export class KustoWorkbenchToolOrchestrator {
 		capturedConnection?: LiveWorkbenchConnection,
 		cancellationToken?: vscode.CancellationToken,
 		admitResult?: (result: unknown) => ToolResponseAdmission<T>,
+		isCurrent?: () => boolean,
 	): Promise<T> {
 		const target = capturedConnection
 			? { connection: capturedConnection, openFiles: [], hasActiveUnsupportedFile: false, explicitTargetRequested: false }
@@ -2066,7 +2136,8 @@ export class KustoWorkbenchToolOrchestrator {
 			throw new Error('The targeted Kusto Workbench editor closed before the request was dispatched.');
 		}
 		if (cancellationToken?.isCancellationRequested) throw new vscode.CancellationError();
-		const readiness = target.connection.waitForMutationReady?.();
+		const readiness = type === 'toolGetHtmlDashboardContext' && target.connection.waitForReadReady
+			? target.connection.waitForReadReady() : target.connection.waitForMutationReady?.();
 		if (readiness && !await (cancellationToken ? raceCancellation(readiness, cancellationToken) : readiness)) {
 			throw new Error('This document is still loading and cannot accept mutations yet.');
 		}
@@ -2074,6 +2145,7 @@ export class KustoWorkbenchToolOrchestrator {
 			throw new Error('The targeted Kusto Workbench editor closed before the request was dispatched.');
 		}
 		if (cancellationToken?.isCancellationRequested) throw new vscode.CancellationError();
+		if (isCurrent?.() === false) throw new Error('The targeted Workbench editor changed before the request was dispatched.');
 		
 		const requestId = `tool_${++this.responseSeq}_${Date.now()}`;
 		const developmentNoteRequest = type === 'updateDevNotes'
@@ -2087,9 +2159,11 @@ export class KustoWorkbenchToolOrchestrator {
 			: { type, requestId, ...payload };
 		
 		return new Promise<T>((resolve, reject) => {
+			const controller = new AbortController();
 			let pending!: {
 				resolve: (value: unknown) => void; reject: (err: Error) => void;
 				timer?: ReturnType<typeof setTimeout>; cancellationSubscription?: vscode.Disposable;
+				controller: AbortController;
 				connectionToken: number; kustoExecution?: KustoExecutionRequestIdentity;
 				waitForRename?: boolean;
 				admitResult?: (result: unknown) => ToolResponseAdmission<unknown>;
@@ -2106,6 +2180,7 @@ export class KustoWorkbenchToolOrchestrator {
 					if (!pending) return;
 					this.pendingResponses.delete(requestId);
 					this.developmentNoteMutationRequestIds.delete(requestId);
+					pending.controller.abort();
 					this.flushDeferredRenamedTabClosures();
 					pending.cancellationSubscription?.dispose();
 					try { cancelKustoExecution(); } catch { /* preserve timeout */ }
@@ -2116,6 +2191,7 @@ export class KustoWorkbenchToolOrchestrator {
 				resolve: resolve as (value: unknown) => void, 
 				reject, 
 				timer,
+				controller,
 				connectionToken: target.connection!.token,
 				...(type === 'toolDelegateToKustoWorkbenchCopilot' ? { waitForRename: true } : {}),
 				...(admitResult ? { admitResult: admitResult as (result: unknown) => ToolResponseAdmission<unknown> } : {}),
@@ -2126,6 +2202,7 @@ export class KustoWorkbenchToolOrchestrator {
 				if (this.pendingResponses.get(requestId) !== pending) return;
 				this.pendingResponses.delete(requestId);
 				this.developmentNoteMutationRequestIds.delete(requestId);
+				pending.controller.abort();
 				this.flushDeferredRenamedTabClosures();
 				if (timer) clearTimeout(timer);
 				pending.cancellationSubscription?.dispose();
@@ -2141,10 +2218,13 @@ export class KustoWorkbenchToolOrchestrator {
 			}
 			let posted: unknown;
 			try {
-				posted = target.connection!.poster(outboundMessage);
+				posted = isCurrent
+					? target.connection!.poster(outboundMessage, controller.signal, isCurrent)
+					: target.connection!.poster(outboundMessage, controller.signal);
 			} catch (error) {
 				this.pendingResponses.delete(requestId);
 				this.developmentNoteMutationRequestIds.delete(requestId);
+				pending.controller.abort();
 				this.flushDeferredRenamedTabClosures();
 				if (timer) clearTimeout(timer);
 				pending.cancellationSubscription?.dispose();
@@ -2155,6 +2235,7 @@ export class KustoWorkbenchToolOrchestrator {
 				if (delivered === true || this.pendingResponses.get(requestId) !== pending) return;
 				this.pendingResponses.delete(requestId);
 				this.developmentNoteMutationRequestIds.delete(requestId);
+				pending.controller.abort();
 				this.flushDeferredRenamedTabClosures();
 				if (timer) clearTimeout(timer);
 				pending.cancellationSubscription?.dispose();
@@ -2163,6 +2244,7 @@ export class KustoWorkbenchToolOrchestrator {
 				if (this.pendingResponses.get(requestId) !== pending) return;
 				this.pendingResponses.delete(requestId);
 				this.developmentNoteMutationRequestIds.delete(requestId);
+				pending.controller.abort();
 				this.flushDeferredRenamedTabClosures();
 				if (timer) clearTimeout(timer);
 				pending.cancellationSubscription?.dispose();
@@ -2648,8 +2730,15 @@ export class KustoWorkbenchToolOrchestrator {
 		return { id, type, name, expanded, clusterUrl, database };
 	}
 
-	private async getSectionsForConnection(connection: LiveWorkbenchConnection): Promise<ToolSectionSummary[] | undefined> {
+	private async getSectionsForConnection(
+		connection: LiveWorkbenchConnection,
+		file?: InternalOpenWorkbenchFileSummary,
+		registerAdmission?: (admission: () => boolean) => void,
+	): Promise<ToolSectionSummary[] | undefined> {
+		if (this.liveConnections.get(connection.token) !== connection) return undefined;
 		const rawSections = await connection.stateGetter();
+		if (!Array.isArray(rawSections) || this.liveConnections.get(connection.token) !== connection) return undefined;
+		const snapshotAdmission = connection.captureStateAdmission?.() ?? (() => true);
 		const sectionTypeById = new Map((rawSections ?? []).map(section => [String(section?.id || '').trim(), String(section?.type || '')]));
 		const hasSqlOwner = (rawSections ?? []).some(section => {
 			if (String(section?.type || '') === 'sql') return true;
@@ -2657,13 +2746,41 @@ export class KustoWorkbenchToolOrchestrator {
 			return !!sourceBoxId && sectionTypeById.get(sourceBoxId) === 'sql';
 		});
 		const protectedIds = hasSqlOwner ? await this.getProtectedSqlConnectionIds() : new Set<string>();
+		if (this.liveConnections.get(connection.token) !== connection) return undefined;
+		const seedHash = file?.fileKind === 'sqlx' ? this.hostOwnedBackgroundFiles.get(file.logicalUriKey) : undefined;
+		const onlySection = rawSections.length === 1 ? rawSections[0] : undefined;
+		if (file && seedHash && onlySection?.type === 'sql' && typeof onlySection.id === 'string' && onlySection.id.trim()
+			&& !(onlySection as Record<string, unknown>).comparisonSourceBoxId && !connection.sqlConnectionResolver?.(onlySection.id)
+			&& this.isHostOwnedBackgroundFile(vscode.Uri.parse(file.logicalUri))) {
+			try {
+				const id = onlySection.id;
+				const ownerIsCurrent = () => this.liveConnections.get(connection.token) === connection
+					&& this.isHostOwnedBackgroundFile(vscode.Uri.parse(file.logicalUri)) && this.hostOwnedBackgroundFiles.get(file.logicalUriKey) === seedHash
+					&& !connection.sqlConnectionResolver?.(id) && snapshotAdmission();
+				await this.waitForBackgroundFileOperation(file.logicalUriKey);
+				if (!ownerIsCurrent()) return undefined;
+				const document = await this.getBackgroundDocument(file);
+				if (!ownerIsCurrent()) return undefined;
+				const text = document.getText();
+				const version = document.version;
+				const isCurrent = () => ownerIsCurrent()
+					&& vscode.workspace.textDocuments.includes(document) && document.version === version && document.getText() === text;
+				if (!isCurrent()) return undefined;
+				if (createHash('sha256').update(text, 'utf8').digest('hex') !== seedHash) return [];
+				const originalSection = this.parseBackgroundFile(file, document).state.sections[0];
+				if (originalSection?.type !== 'sql' || originalSection.query !== onlySection.query) return [];
+				registerAdmission?.(isCurrent);
+				return [{ id, type: 'sql' }];
+			} catch { return undefined; }
+		}
+		if (this.liveConnections.get(connection.token) !== connection) return undefined;
 		return rawSections
 			?.filter(section => {
 				const sectionId = String(section?.id || '').trim();
 				const connectionId = connection.sqlConnectionResolver?.(sectionId);
 				const comparisonSourceBoxId = String((section as any)?.comparisonSourceBoxId || '').trim();
 				if (String(section?.type || '') === 'sql' || (comparisonSourceBoxId && sectionTypeById.get(comparisonSourceBoxId) === 'sql')) {
-					return !!connectionId && !protectedIds.has(connectionId);
+					return connectionId ? !protectedIds.has(connectionId) : false;
 				}
 				return true;
 			})
@@ -2679,10 +2796,14 @@ export class KustoWorkbenchToolOrchestrator {
 		const target = this.resolveToolTarget();
 		const openFiles = this.toPublicOpenFiles(target.openFiles);
 		const sectionsByOpenFileId = new Map<string, ToolSectionSummary[]>();
+		const connectionsByOpenFileId = new Map<string, LiveWorkbenchConnection>();
+		const structuralAdmissions = new Map<string, () => boolean>();
 		await Promise.all(openFiles.map(async (file) => {
 			const internal = target.openFiles.find(openFile => openFile.openFileId === file.openFileId);
-			const connection = internal ? this.getToolConnectionForFile(internal) : undefined;
+			const connection = internal ? this.getLatestLiveConnectionForKey(internal.logicalUriKey) : undefined;
 			if (!connection) {
+				file.isLiveWorkbench = false;
+				file.isReadOnlyFallback = true;
 				if (internal) {
 					try {
 						const sections = await this.getBackgroundSections(internal);
@@ -2697,9 +2818,16 @@ export class KustoWorkbenchToolOrchestrator {
 				}
 				return;
 			}
+			connectionsByOpenFileId.set(file.openFileId, connection);
 			try {
-				const sections = await this.getSectionsForConnection(connection)
-					?? (internal ? await this.getBackgroundSections(internal) : undefined);
+				const liveSections = await this.getSectionsForConnection(connection, internal, admission => structuralAdmissions.set(file.openFileId, admission));
+				file.isLiveWorkbench = liveSections !== undefined;
+				file.isReadOnlyFallback = false;
+				if (liveSections === undefined) {
+					file.sectionsUnavailable = true;
+					file.error = 'The targeted Kusto Workbench editor could not provide a current live section snapshot.';
+				}
+				const sections = liveSections ?? (internal ? await this.getBackgroundSections(internal) : undefined);
 				if (sections) {
 					file.sections = sections;
 					sectionsByOpenFileId.set(file.openFileId, sections);
@@ -2708,11 +2836,38 @@ export class KustoWorkbenchToolOrchestrator {
 					file.error = 'Sections are unavailable for this open file.';
 				}
 			} catch (error) {
+				file.isLiveWorkbench = false;
+				file.isReadOnlyFallback = false;
 				file.sectionsUnavailable = true;
-				file.error = error instanceof Error ? error.message : String(error);
+				const message = error instanceof Error ? error.message : String(error);
+				file.error = message.trim() ? message : 'The targeted Kusto Workbench editor could not provide a current live section snapshot.';
 			}
 		}));
-		if (!target.connection) {
+		const targetOpenFileId = target.explicitTarget?.openFileId ?? target.activeFile?.openFileId ?? target.connection?.documentInfo?.openFileId;
+		const targetSections = target.connection && !targetOpenFileId ? await this.getSectionsForConnection(target.connection) : undefined;
+		for (const file of openFiles) {
+			const connection = connectionsByOpenFileId.get(file.openFileId);
+			const structuralAdmission = structuralAdmissions.get(file.openFileId);
+			if (structuralAdmission) {
+				let current = false;
+				try { current = structuralAdmission(); } catch {}
+				if (!current) {
+					file.isLiveWorkbench = false;
+					file.sectionsUnavailable = true;
+					file.error = 'The targeted Kusto Workbench editor changed while collecting its live section snapshot.';
+					delete file.sections;
+					sectionsByOpenFileId.delete(file.openFileId);
+				}
+			}
+			if (!connection || this.liveConnections.get(connection.token) === connection) continue;
+			file.isLiveWorkbench = false;
+			file.isReadOnlyFallback = false;
+			file.sectionsUnavailable = true;
+			file.error = 'The targeted Kusto Workbench editor closed while collecting its live section snapshot.';
+			delete file.sections;
+			sectionsByOpenFileId.delete(file.openFileId);
+		}
+		if (!target.connection || this.liveConnections.get(target.connection.token) !== target.connection) {
 			const file = target.activeFile ?? (target.hasActiveUnsupportedFile ? undefined : target.openFiles[0]);
 			if (file) {
 				return {
@@ -2727,8 +2882,7 @@ export class KustoWorkbenchToolOrchestrator {
 			}
 			throw new Error('Kusto Workbench is not currently open.');
 		}
-		const targetOpenFileId = target.explicitTarget?.openFileId ?? target.activeFile?.openFileId ?? target.connection.documentInfo?.openFileId;
-		const sections = targetOpenFileId ? sectionsByOpenFileId.get(targetOpenFileId) : await this.getSectionsForConnection(target.connection);
+		const sections = targetOpenFileId ? sectionsByOpenFileId.get(targetOpenFileId) : targetSections;
 		if (!sections) {
 			return { sections: [], ...(openFiles.length ? { openFiles } : {}) };
 		}
@@ -2751,12 +2905,16 @@ export class KustoWorkbenchToolOrchestrator {
 	 */
 	async getDevNotes(targetFields: TargetFields = {}): Promise<DevNoteEntry[]> {
 		const target = this.resolveToolTarget(targetFields);
-		if (!target.connection) {
-			return [];
+		const connection = target.connection;
+		if (!connection || this.liveConnections.get(connection.token) !== connection) {
+			throw new Error('The targeted Kusto Workbench editor is not available for reading development notes.');
 		}
-		const rawSections = await target.connection.stateGetter();
-		if (!rawSections) {
-			return [];
+		const rawSections = await connection.stateGetter();
+		if (this.liveConnections.get(connection.token) !== connection) {
+			throw new Error('The targeted Kusto Workbench editor closed while reading development notes.');
+		}
+		if (!Array.isArray(rawSections)) {
+			throw new Error('The targeted Kusto Workbench editor could not provide its development-note snapshot.');
 		}
 		for (const s of rawSections) {
 			if (typeof s.type === 'string' && s.type === 'devnotes' && Array.isArray(s.entries)) {
@@ -2770,8 +2928,16 @@ export class KustoWorkbenchToolOrchestrator {
 		const { target, rest } = this.splitTargetFields(input);
 		input = rest as ManageDevelopmentNotesInput;
 		if (input.action === 'view') {
-			const notes = await this.getDevNotes(target);
-			return { success: true, notes };
+			try {
+				const notes = await this.getDevNotes(target);
+				return { success: true, notes };
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return {
+					success: false,
+					error: message.trim() ? message : 'The targeted Kusto Workbench editor could not provide its development-note snapshot.',
+				};
+			}
 		}
 		if (input.action === 'add') {
 			if (!input.content || !input.category) {
@@ -2930,6 +3096,12 @@ export class KustoWorkbenchToolOrchestrator {
 		input = rest as ConfigureSqlSectionInput;
 		if (input.query !== undefined) input = { ...input, query: unescapeLLMText(input.query) };
 		const resolvedTarget = this.resolveToolTarget(target);
+		let operationCurrent: (() => boolean) | undefined;
+		if (!resolvedTarget.connection && input.execute) {
+			const operation = await this.prepareBackgroundLiveOperation(target, cancellationToken);
+			resolvedTarget.connection = operation.connection;
+			operationCurrent = operation.isCurrent;
+		}
 		const capturedConnection = resolvedTarget.connection;
 		if (!capturedConnection || !this.liveConnections.has(capturedConnection.token)) {
 			if (input.execute) {
@@ -2938,6 +3110,30 @@ export class KustoWorkbenchToolOrchestrator {
 			const backgroundTarget = resolvedTarget.explicitTarget;
 			if (!backgroundTarget || !this.hostOwnedBackgroundFiles.has(backgroundTarget.logicalUriKey)) {
 				throw new Error('Kusto Workbench is not currently open with a live editor for SQL configuration.');
+			}
+			if (cancellationToken?.isCancellationRequested) throw new vscode.CancellationError();
+			let aliasRequired = false;
+			let structuralAdmission: (() => boolean) | undefined;
+			const document = vscode.workspace.textDocuments.find(candidate =>
+				classifyWorkbenchUri(candidate.uri, { includeOptionalPlainText: true })?.openFileId === backgroundTarget.openFileId);
+			if (document && backgroundTarget.fileKind === 'sqlx'
+				&& !this.findBackgroundSection(this.parseBackgroundFile(backgroundTarget, document), input.sectionId)) {
+				aliasRequired = true;
+				const source = document.getText();
+				const version = document.version;
+				const seedHash = this.hostOwnedBackgroundFiles.get(backgroundTarget.logicalUriKey);
+				const connection = this.getLatestLiveConnectionForKey(backgroundTarget.logicalUriKey);
+				const runtimeAdmission = connection?.captureStateAdmission?.();
+				if (!seedHash || !connection || !runtimeAdmission || !this.isHostOwnedBackgroundFile(document.uri)
+					|| createHash('sha256').update(source, 'utf8').digest('hex') !== seedHash) return { success: false };
+				const sections = await this.getSectionsForConnection(connection, backgroundTarget, admission => { structuralAdmission = admission; });
+				if (cancellationToken?.isCancellationRequested) throw new vscode.CancellationError();
+				const proof = structuralAdmission;
+				if (!proof || !isDeepStrictEqual(sections, [{ id: input.sectionId, type: 'sql' }])) return { success: false };
+				structuralAdmission = () => !document.isClosed && vscode.workspace.textDocuments.includes(document)
+					&& document.version === version && document.getText() === source
+					&& connection.logicalUriKey === backgroundTarget.logicalUriKey && runtimeAdmission() && proof();
+				if (!structuralAdmission()) return { success: false };
 			}
 			let requestedConnection: ReturnType<SqlConnectionManager['getConnection']>;
 			if (input.connectionId) {
@@ -2954,13 +3150,29 @@ export class KustoWorkbenchToolOrchestrator {
 				}
 				requestedConnection = matching[0];
 			}
+			let assertRequestedConnectionCurrent: (() => void) | undefined;
 			if (requestedConnection) {
+				const connectionId = requestedConnection.id;
+				const revocationGeneration = this.getSqlRevocationGeneration?.(connectionId) ?? 0;
+				const targetSignature = sqlConnectionTargetSignature(requestedConnection);
+				assertRequestedConnectionCurrent = () => {
+					if (cancellationToken?.isCancellationRequested) throw new vscode.CancellationError();
+					const current = this.getSqlConnectionManager().getConnection(connectionId);
+					if (!current || sqlConnectionTargetSignature(current) !== targetSignature
+						|| (this.getSqlRevocationGeneration?.(connectionId) ?? 0) !== revocationGeneration) {
+						throw new Error('SQL connection changed or was revoked before background configuration.');
+					}
+				};
 				await this.refreshSqlLeaveNoTracePolicy?.();
 				await this.assertSqlConnectionAllowed?.(requestedConnection.id);
 				await this.getSqlConnectionManager().assertConnectionCurrent(requestedConnection);
+				assertRequestedConnectionCurrent();
 			}
 			const background = await this.mutateBackgroundFile<{ success: boolean }>(resolvedTarget, file => {
-				const section = this.findBackgroundSection(file, input.sectionId);
+				if (cancellationToken?.isCancellationRequested) throw new vscode.CancellationError();
+				assertRequestedConnectionCurrent?.();
+				if (aliasRequired && structuralAdmission?.() !== true) return { result: { success: false }, changed: false };
+				const section = this.findBackgroundSection(file, input.sectionId) ?? (aliasRequired ? file.state.sections[0] : undefined);
 				if (!section || section.type !== 'sql') return { result: { success: false }, changed: false };
 				let changed = false;
 				changed = this.setBackgroundSectionField(section, 'name', input.name) || changed;
@@ -2978,6 +3190,23 @@ export class KustoWorkbenchToolOrchestrator {
 			});
 			if (background) return background;
 			throw new Error('Kusto Workbench is not currently open with a live editor for SQL configuration.');
+		}
+		if (input.execute) {
+			const sectionAdmission = !input.connectionId && !input.serverUrl && input.database === undefined
+				? capturedConnection.captureSqlSectionAdmission?.(input.sectionId) : undefined;
+			const inheritedCurrent = operationCurrent;
+			const admission = capturedConnection.captureStateAdmission?.();
+			const documentUri = capturedConnection.documentUri;
+			const logicalUriKey = capturedConnection.logicalUriKey;
+			const document = vscode.workspace.textDocuments.find(candidate => candidate.uri.toString() === documentUri);
+			const version = document?.version;
+			const source = document?.getText();
+			operationCurrent = () => !cancellationToken?.isCancellationRequested
+				&& this.liveConnections.get(capturedConnection.token) === capturedConnection
+				&& capturedConnection.documentUri === documentUri && capturedConnection.logicalUriKey === logicalUriKey
+				&& (!document || (!document.isClosed && vscode.workspace.textDocuments.includes(document)
+					&& document.version === version && document.getText() === source))
+				&& inheritedCurrent?.() !== false && admission?.() !== false && sectionAdmission?.() !== false;
 		}
 		const existingConnectionId = capturedConnection?.sqlConnectionResolver?.(input.sectionId);
 		let requestedConnectionId: string | undefined;
@@ -3023,21 +3252,71 @@ export class KustoWorkbenchToolOrchestrator {
 		const operationRevocationGeneration = this.getSqlRevocationGeneration?.(operationConnectionId) ?? 0;
 		if (input.execute && !operationPrincipalFingerprint) throw new Error('SQL section principal is unavailable before execution.');
 		let operationDatabase = String(input.database || '').trim();
+		let operationOwnerToken = '';
 		if (input.execute && !operationDatabase) {
 			const sections = await capturedConnection.stateGetter();
-			const section = sections?.find(candidate => String(candidate?.id || '') === String(input.sectionId || ''));
+			const section = sections?.find(candidate => candidate?.type === 'sql'
+				&& String(candidate.id || '') === String(input.sectionId || ''));
 			operationDatabase = String(section?.database || '').trim();
+			operationOwnerToken = String(section?.ownerToken || '').trim();
 		}
 		if (input.execute && !operationDatabase) throw new Error('SQL section database is unavailable before execution.');
 		const requestsTargetConfiguration = !!requestedConnection || input.database !== undefined;
 		if (input.execute && !capturedConnection.sqlOwnerResolver) {
 			throw new Error('SQL section owner resolver is unavailable before execution.');
 		}
+		let expectedReadyOwner: ReturnType<NonNullable<LiveWorkbenchConnection['sqlOwnerResolver']>>;
 		if (input.execute && !requestsTargetConfiguration) {
 			const liveOwner = capturedConnection.sqlOwnerResolver?.(String(input.sectionId || ''));
-			if (!liveOwner || liveOwner.connectionId !== operationConnectionId || liveOwner.database !== operationDatabase) {
+			if ((!liveOwner && operationOwnerToken)
+				|| (liveOwner && (liveOwner.connectionId !== operationConnectionId || liveOwner.database !== operationDatabase
+					|| (operationOwnerToken && liveOwner.ownerToken !== operationOwnerToken)))) {
 				throw new Error('SQL section owner changed before execution.');
 			}
+			if (liveOwner) expectedReadyOwner = { ...liveOwner };
+		}
+		if (input.execute) {
+			const sourceCurrent = operationCurrent;
+			const savedConnection = { ...operationConnection };
+			operationCurrent = () => sourceCurrent?.() !== false
+				&& isDeepStrictEqual(savedConnection, this.getSqlConnectionManager().getConnection(operationConnectionId))
+				&& sqlSchemaPrincipalFingerprint(this.context, savedConnection) === operationPrincipalFingerprint
+				&& (this.getSqlRevocationGeneration?.(operationConnectionId) ?? 0) === operationRevocationGeneration
+				&& (!expectedReadyOwner || isDeepStrictEqual(expectedReadyOwner, capturedConnection.sqlOwnerResolver?.(input.sectionId)));
+			if (cancellationToken?.isCancellationRequested) throw new vscode.CancellationError();
+			if (!operationCurrent()) throw new Error('The targeted Workbench editor changed before SQL installation preparation.');
+			if (capturedConnection.prepareSqlExecution) {
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				try {
+					const deadline = new Promise<never>((_resolve, reject) => {
+						timer = setTimeout(() => reject(new Error('SQL Tools Service installation preparation timed out.')),
+							KustoWorkbenchToolOrchestrator.SQL_TOOL_INSTALLATION_TIMEOUT_MS);
+					});
+					const preparation = Promise.race([capturedConnection.prepareSqlExecution(), deadline]);
+					await (cancellationToken ? raceCancellation(preparation, cancellationToken) : preparation);
+				} finally {
+					if (timer) clearTimeout(timer);
+				}
+			}
+			if (!requestsTargetConfiguration && !expectedReadyOwner) {
+				const readyOwner = await this.resolveSqlToolSection(capturedConnection, input.sectionId, cancellationToken);
+				if (readyOwner.connectionId !== operationConnectionId || readyOwner.database !== operationDatabase
+					|| readyOwner.generation === undefined) {
+					throw new Error('SQL section owner changed during tool preflight.');
+				}
+				expectedReadyOwner = {
+					connectionId: readyOwner.connectionId, database: readyOwner.database,
+					ownerToken: readyOwner.ownerToken, generation: readyOwner.generation,
+				};
+			}
+			await this.refreshSqlLeaveNoTracePolicy?.();
+			await this.assertSqlConnectionAllowed?.(operationConnectionId);
+			await this.getSqlConnectionManager().assertConnectionCurrent(operationConnection);
+			if (await readCurrentSqlSchemaPrincipalFingerprint(this.context, operationConnection) !== operationPrincipalFingerprint) {
+				throw new Error('SQL connection principal changed during installation preparation.');
+			}
+			if (cancellationToken?.isCancellationRequested) throw new vscode.CancellationError();
+			if (!operationCurrent()) throw new Error('The targeted Workbench editor changed during SQL installation preparation.');
 		}
 		if (input.query !== undefined) {
 			input = { ...input, query: unescapeLLMText(input.query) };
@@ -3081,6 +3360,8 @@ export class KustoWorkbenchToolOrchestrator {
 				: undefined,
 			capturedConnection,
 			cancellationToken,
+			undefined,
+			operationCurrent,
 		);
 		if (!this.liveConnections.has(capturedConnection.token)) {
 			throw new Error('The targeted Kusto Workbench editor closed during SQL configuration.');
@@ -3303,9 +3584,11 @@ export class KustoWorkbenchToolOrchestrator {
 		return this.sendToWebview('toolAddSection', { input }, 30000, target);
 	}
 
-	async removeSection(input: RemoveSectionInput): Promise<{ success: boolean }> {
+	async removeSection(input: RemoveSectionInput, cancellationToken?: vscode.CancellationToken): Promise<{ success: boolean }> {
 		const { target, rest } = this.splitTargetFields(input);
-		return this.sendToWebview('toolRemoveSection', { sectionId: rest.sectionId }, 30000, target);
+		const operation = await this.prepareBackgroundLiveOperation(target, cancellationToken);
+		return this.sendToWebview('toolRemoveSection', { sectionId: rest.sectionId }, 30000, target,
+			undefined, operation.connection, cancellationToken, undefined, operation.isCurrent);
 	}
 
 	async collapseSection(input: CollapseSectionInput): Promise<{ success: boolean }> {
@@ -3321,6 +3604,8 @@ export class KustoWorkbenchToolOrchestrator {
 	async configureQuerySection(input: ConfigureQuerySectionInput, cancellationToken?: vscode.CancellationToken): Promise<ConfigureQuerySectionResult> {
 		const { target, rest } = this.splitTargetFields(input);
 		input = rest as ConfigureQuerySectionInput;
+		const requiresExpectedTarget = input.execute === true && !(input.connectionId || input.clusterUrl || input.database);
+		let expectedKustoTarget: ExpectedKustoTarget | undefined;
 		// Unescape literal \n sequences that LLMs frequently produce in query text
 		if (input.query !== undefined) {
 			input = { ...input, query: unescapeLLMText(input.query) };
@@ -3329,8 +3614,92 @@ export class KustoWorkbenchToolOrchestrator {
 		if (!preflight.input) return { success: false, resultPreview: '', error: preflight.error };
 		input = preflight.input;
 		const resolvedTarget = this.resolveToolTarget(target);
+		let operationCurrent: (() => boolean) | undefined;
+		if (!resolvedTarget.connection && input.execute) {
+			const operation = await this.prepareBackgroundLiveOperation(target, cancellationToken);
+			resolvedTarget.connection = operation.connection;
+			operationCurrent = operation.isCurrent;
+		}
 		if (!resolvedTarget.connection && input.execute) {
 			return { success: false, error: 'Background query execution requires a live Workbench editor.' };
+		}
+		if (input.execute && resolvedTarget.connection?.prepareKustoExecution) {
+			const connection = resolvedTarget.connection;
+			const inheritedCurrent = operationCurrent;
+			let admission: (() => boolean) | undefined;
+			let runtimeAdmission: (() => boolean) | undefined;
+			let retired = false;
+			const documentUri = connection.documentUri;
+			const logicalUriKey = connection.logicalUriKey;
+			const document = vscode.workspace.textDocuments.find(candidate => candidate.uri.toString() === documentUri);
+			const version = document?.version;
+			const savedTarget = this.connectionManager.getConnections().find(candidate => candidate.id === input.connectionId);
+			let savedConnection = savedTarget ? Object.freeze({ ...savedTarget }) : undefined;
+			let incarnation = savedConnection ? this.connectionManager.getConnectionIncarnation?.(savedConnection.id) : undefined;
+			operationCurrent = () => !retired && !cancellationToken?.isCancellationRequested
+				&& this.liveConnections.get(connection.token) === connection
+				&& connection.documentUri === documentUri && connection.logicalUriKey === logicalUriKey
+				&& (!document || (!document.isClosed && vscode.workspace.textDocuments.includes(document) && document.version === version))
+				&& inheritedCurrent?.() !== false && runtimeAdmission?.() !== false && admission?.() !== false
+				&& (!savedConnection || (isDeepStrictEqual(savedConnection,
+					this.connectionManager.getConnections().find(candidate => candidate.id === savedConnection!.id))
+					&& this.connectionManager.getConnectionIncarnation?.(savedConnection.id) === incarnation));
+			if (cancellationToken?.isCancellationRequested) throw new vscode.CancellationError();
+			if (!operationCurrent()) throw new Error('The targeted Workbench editor changed before Kusto execution preparation.');
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			let prepared = false;
+			try {
+				const deadline = new Promise<boolean>((_resolve, reject) => {
+					timer = setTimeout(() => reject(new Error('Kusto execution preparation timed out.')), 30_000);
+				});
+				const preparation = Promise.race([
+					connection.prepareKustoExecution!(async isCurrent => {
+						runtimeAdmission = isCurrent;
+						admission = connection.captureStateAdmission?.();
+						if (!operationCurrent!()) return false;
+						if (!savedConnection) {
+							const sections = await connection.stateGetter();
+							if (!operationCurrent!()) return false;
+							const section = sections?.find(candidate => candidate.id === input.sectionId);
+							if (!section || (section.type !== 'query' && section.type !== 'copilotQuery')
+								|| typeof section.connectionId !== 'string' || !section.connectionId.trim()
+								|| typeof section.clusterUrl !== 'string' || !section.clusterUrl.trim()) {
+								throw new Error('The targeted query section has no saved Kusto connection.');
+							}
+							if (requiresExpectedTarget) {
+								const captured = captureExpectedKustoTarget({
+									sectionId: section.id, sectionInstanceId: section.sectionInstanceId,
+									targetGeneration: section.targetGeneration, connectionId: section.connectionId,
+									clusterUrl: section.clusterUrl, database: section.database,
+								});
+								if (!captured.ok) throw new Error(`The targeted query section has no complete Kusto execution target: ${captured.error}`);
+								expectedKustoTarget = captured.value;
+							}
+							const effectiveTarget = this.preflightKustoToolTarget({ connectionId: section.connectionId, clusterUrl: section.clusterUrl });
+							if (!effectiveTarget.input) throw new Error(effectiveTarget.error);
+							const current = this.connectionManager.getConnections().find(candidate => candidate.id === effectiveTarget.input!.connectionId);
+							if (!current) return false;
+							savedConnection = Object.freeze({ ...current });
+							incarnation = this.connectionManager.getConnectionIncarnation?.(current.id);
+						}
+						return operationCurrent!();
+					}),
+					deadline,
+				]);
+				prepared = await (cancellationToken ? raceCancellation(preparation, cancellationToken) : preparation);
+				if (!prepared) {
+					throw new Error('Kusto connections could not be prepared for execution.');
+				}
+			} finally {
+				retired = !prepared;
+				if (timer) clearTimeout(timer);
+			}
+			const revalidated = this.preflightKustoToolTarget(input);
+			if (!revalidated.input) return { success: false, resultPreview: '', error: revalidated.error };
+			if (!operationCurrent()) throw new Error('The targeted Workbench editor changed during Kusto execution preparation.');
+		}
+		if (requiresExpectedTarget && !expectedKustoTarget) {
+			return { success: false, error: 'The targeted query section has no complete Kusto execution target.' };
 		}
 		const background = resolvedTarget.connection ? undefined : await this.mutateBackgroundFile<ConfigureQuerySectionResult>(resolvedTarget, file => {
 			const section = this.findBackgroundSection(file, input.sectionId);
@@ -3351,7 +3720,8 @@ export class KustoWorkbenchToolOrchestrator {
 		const timeoutMs = input.execute
 			? (queryTimeoutMinutes > 0 ? queryTimeoutMinutes * 60_000 + 30_000 : null)
 			: 30000;
-		return this.sendToWebview('toolConfigureQuerySection', { input }, timeoutMs, target, undefined, undefined, cancellationToken);
+		return this.sendToWebview('toolConfigureQuerySection', { input, ...(expectedKustoTarget ? { expectedKustoTarget } : {}) }, timeoutMs, target,
+			undefined, resolvedTarget.connection, cancellationToken, undefined, operationCurrent);
 	}
 
 	async updateMarkdownSection(input: UpdateMarkdownSectionInput): Promise<{ success: boolean }> {
@@ -3511,7 +3881,7 @@ export class KustoWorkbenchToolOrchestrator {
 		if (!context.success) issues.push(context.error || 'Unable to read HTML dashboard context.');
 		if (!code.trim()) issues.push('HTML section has no dashboard code.');
 		if (!context.hasProvenance) issues.push('Missing application/kw-provenance block. Upgrade this dashboard to the latest provenance contract before finalizing.');
-		if (dataSources.length === 0) issues.push('No runnable fact data source found. Run the fact query and ensure provenance model.fact.sectionId points at that query section.');
+		if (dataSources.length === 0) issues.push('No usable saved fact data source found. Check the referenced query section, result index and dashboard data permission.');
 		const diagnostics = getPowerBiHtmlValidationDiagnostics(code, dataSources);
 		issues.push(...diagnostics
 			.filter(diagnostic => diagnostic.code !== 'missing-provenance')
@@ -3756,11 +4126,17 @@ export class KustoWorkbenchToolOrchestrator {
 		if (!editorId) {
 			return { success: false, error: 'No Workbench editor is available for the target file.' };
 		}
+		let uriHash: string | undefined;
+		try { uriHash = createHash('sha256').update(effectiveInfo.logicalUriKey).digest('hex'); } catch {}
+		const trace = createFileOpenTrace('activate', { uriHash });
 		let releaseBackgroundLifecycle: (() => void) | undefined;
 		try {
 			this.clearBackgroundOpeningLease(effectiveInfo.logicalUriKey);
+			trace.mark('lifecycle.start');
 			releaseBackgroundLifecycle = await this.acquireHostOwnedBackgroundLifecycle(effectiveInfo.logicalUriKey);
+			trace.mark('lifecycle.done');
 		} catch (error) {
+			trace.mark('lifecycle.failed');
 			return {
 				success: false,
 				openFileId: effectiveInfo.openFileId,
@@ -3774,11 +4150,14 @@ export class KustoWorkbenchToolOrchestrator {
 		}
 		try {
 			try {
+				trace.mark('openWith.start');
 				await vscode.commands.executeCommand('vscode.openWith', effectiveInfo.logicalUri, editorId, {
 					viewColumn: vscode.ViewColumn.Active,
 					preserveFocus: false,
 				});
+				trace.mark('openWith.done');
 			} catch (error) {
+				trace.mark('openWith.failed');
 				return {
 					success: false,
 					openFileId: effectiveInfo.openFileId,
@@ -3793,16 +4172,40 @@ export class KustoWorkbenchToolOrchestrator {
 			this.hostOwnedBackgroundFiles.delete(effectiveInfo.logicalUriKey);
 			this.backgroundProgrammaticSelections.delete(effectiveInfo.logicalUriKey);
 			const liveConnection = this.getLatestLiveConnectionForKey(effectiveInfo.logicalUriKey);
+			let activationFailed = false;
+			let activationError: string | undefined;
+			if (liveConnection) {
+				this.activateConnection(liveConnection.token);
+				try {
+					trace.mark('recovery.start', { callback: !!liveConnection.reactivate });
+					const ready = liveConnection.reactivate
+						? await liveConnection.reactivate()
+						: await this.getSectionsForConnection(liveConnection) !== undefined;
+					const current = this.liveConnections.get(liveConnection.token) === liveConnection;
+					trace.mark('recovery.done', { ready, current });
+					if (!ready || !current) {
+						activationFailed = true;
+						activationError = 'The targeted Kusto Workbench editor could not restore its live section bridge.';
+					}
+				} catch (error) {
+					trace.mark('recovery.failed');
+					activationFailed = true;
+					const message = error instanceof Error ? error.message : String(error);
+					activationError = message.trim() ? message : 'The targeted Kusto Workbench editor could not restore its live section bridge.';
+				}
+			}
+			trace.mark('result', { success: !activationFailed, live: !!liveConnection && !activationFailed });
 			return {
-				success: true,
+				success: !activationFailed,
 				openFileId: effectiveInfo.openFileId,
 				uri: effectiveInfo.uriString,
 				logicalUri: effectiveInfo.logicalUriString,
 				fileKind: effectiveInfo.fileKind,
 				...(effectiveInfo.filePath ? { filePath: effectiveInfo.filePath } : {}),
 				...(effectiveInfo.fileName ? { fileName: effectiveInfo.fileName } : {}),
-				isLiveWorkbench: !!liveConnection,
+				isLiveWorkbench: !!liveConnection && !activationFailed,
 				isReadOnlyFallback: !liveConnection,
+				...(activationError ? { error: activationError } : {}),
 			};
 		} finally {
 			releaseBackgroundLifecycle?.();
@@ -4246,7 +4649,7 @@ export class KustoWorkbenchToolOrchestrator {
 				? classifyWorkbenchUri(fileUri, { includeOptionalPlainText: true })
 				: undefined;
 			if (backgroundInfo) {
-				this.hostOwnedBackgroundFiles.add(backgroundInfo.logicalUriKey);
+				this.hostOwnedBackgroundFiles.set(backgroundInfo.logicalUriKey, fileType === 'sqlx' ? createHash('sha256').update(content, 'utf8').digest('hex') : undefined);
 				this.backgroundOpeningFiles.add(backgroundInfo.logicalUriKey);
 				this.backgroundProgrammaticSelections.add(backgroundInfo.logicalUriKey);
 			}
@@ -4576,10 +4979,10 @@ export class RemoveSectionTool implements vscode.LanguageModelTool<RemoveSection
 
 	async invoke(
 		options: vscode.LanguageModelToolInvocationOptions<RemoveSectionInput>,
-		_token: vscode.CancellationToken
+		token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.removeSection(getToolInput(options));
+			const result = await this.orchestrator.removeSection(getToolInput(options), token);
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);

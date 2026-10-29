@@ -15,6 +15,7 @@ import { extractSchemaFromJson } from '../../../src/host/kustoClientUtils';
 import { STORAGE_KEYS } from '../../../src/host/queryEditorTypes';
 import { SCHEMA_CACHE_VERSION, schemaCacheKey, type CachedSchemaEntry } from '../../../src/host/schemaCache';
 import { kustoClusterKey } from '../../../src/shared/kustoClusterUrls';
+import { createPrimaryResultArtifactIdentity, type PersistedResultArtifactV1 } from '../../../src/shared/resultArtifact';
 
 const root = process.cwd();
 const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
@@ -114,6 +115,7 @@ describe('persisted-result offline fixture', () => {
 		const auth = {
 			waitForProviderAccountRefresh: vi.fn().mockResolvedValue(undefined),
 			getPreferredAccountId: vi.fn((connectionId: string) => preferences.get(connectionId)),
+			getConnectionSessionGeneration: vi.fn(() => 4),
 			getAccountPartition: (authorityId: string, accountId: string) => `${authorityId}/${accountId}`,
 			setExplicitAccount: vi.fn(async (connectionId: string, selected: typeof account) => { preferences.set(connectionId, selected.id); }),
 			setTokenOverride: vi.fn(async () => {
@@ -153,32 +155,61 @@ describe('persisted-result offline fixture', () => {
 			resultJson: JSON.stringify({ columns: ['RowId'], rows: [[7]], metadata: { preserved: true } }),
 		}] } };
 		type Uri = { fsPath: string };
-		const writeFile = vi.fn(async (uri: Uri, bytes: Uint8Array) => { files.set(uri.fsPath, Buffer.from(bytes).toString('utf8')); });
+		const afterWrite = vi.fn<(fsPath: string, bytes: Uint8Array) => void>();
+		const writeFile = vi.fn(async (uri: Uri, bytes: Uint8Array) => {
+			files.set(uri.fsPath, Buffer.from(bytes).toString('utf8'));
+			afterWrite(uri.fsPath, bytes);
+		});
+		const nodeWriteFile = vi.fn(async (fsPath: string, bytes: Uint8Array) => {
+			files.set(fsPath, Buffer.from(bytes).toString('utf8'));
+			afterWrite(fsPath, bytes);
+		});
+		const closeFile = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+		const openLocalFile = vi.fn(async (fsPath: string, _flags: string) => {
+			if (files.has(fsPath)) throw Object.assign(new Error('Fixture output already exists.'), { code: 'EEXIST' });
+			files.set(fsPath, '');
+			return { writeFile: (bytes: Uint8Array) => nodeWriteFile(fsPath, bytes), close: closeFile };
+		});
+		const deleteFile = vi.fn(async (uri: Uri) => { files.delete(uri.fsPath); });
+		const readFile = vi.fn(async () => Buffer.from(JSON.stringify(template)));
+		const stat = vi.fn(async (uri: Uri) => {
+			const bytes = files.get(uri.fsPath);
+			if (bytes === undefined) throw Object.assign(new Error('Missing fixture output.'), { code: 'FileNotFound' });
+			return { type: 1, ctime: 0, mtime: 0, size: Buffer.byteLength(bytes) };
+		});
+		const cleanupPersistedResultFixtureState = vi.fn().mockResolvedValue(undefined);
+		const createdAt = 1_728_000_000_123;
 		const context = { extensionPath: root, globalStorageUri: { fsPath: join(root, 'fixture-storage') } };
 		const prepare = runInNewContext(ts.transpileModule(`(${extensionCommandCallback('kustoWorkbench.test.preparePersistedResultFixture')});`, {
 			compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 		}).outputText, {
-			Buffer, path: { dirname, isAbsolute, join }, context,
+			Buffer, openLocalFile, path: { dirname, isAbsolute, join }, context, Date: { now: () => createdAt },
 			vscode: {
 				Uri: { file: (fsPath: string) => ({ fsPath }), joinPath: (uri: Uri, name: string) => ({ fsPath: join(uri.fsPath, name) }) },
 				workspace: { fs: {
-					readFile: vi.fn(async () => Buffer.from(JSON.stringify(template))),
+					readFile, stat,
 					createDirectory: vi.fn().mockResolvedValue(undefined), writeFile,
-					delete: vi.fn(async (uri: Uri) => { files.delete(uri.fsPath); }),
+					delete: deleteFile,
 				} },
 			},
-			persistedResultFixtureStartupCleanup: Promise.resolve(), cleanupPersistedResultFixtureState: vi.fn().mockResolvedValue(undefined),
+			persistedResultFixtureStartupCleanup: Promise.resolve(), cleanupPersistedResultFixtureState,
 			persistedResultFixturePrefix: 'E2E Persisted Result Fixture', persistedResultKustoCluster: clusterUrl,
 			persistedResultKustoDatabase: database, persistedResultAuthAccount: account,
 			testAuthPreferences: auth, testConnectionCache: cache, connectionManager,
-			SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk: writeSchema, readCachedSchemaFromDiskByCluster: readSchema,
+			SCHEMA_CACHE_VERSION, schemaCacheKey, createPrimaryResultArtifactIdentity,
+			writeCachedSchemaToDisk: writeSchema, readCachedSchemaFromDiskByCluster: readSchema,
 			getKustoConnectionIdentityKey: (cluster: string, authority: string) => JSON.stringify([cluster, authority]),
 			kustoClusterKey: (cluster: string) => cluster,
-		}) as (request: { engine: string; templatePath: string; outputPath: string; legacyKusto?: boolean }) => Promise<{ outputPath: string; connectionId: string }>;
+		}) as (request: {
+			engine: string; templatePath: string; outputPath: string; legacyKusto?: boolean;
+			exposeToActiveContent?: unknown; existingConnectionId?: string; database?: string;
+		}) => Promise<{ outputPath: string; connectionId: string }>;
 		const request = { engine: 'kusto', templatePath: 'template.kqlx', outputPath: 'output.kqlx', legacyKusto: true };
 		return {
 			prepare, request, connection, account, accountPartition, connections, preferences, databases, schemas, files,
 			auth, cache, writeSchema, readSchema, writeFile, clearCaches, connectionManager, snapshot, initialCachesReady, assertionHeld,
+			template, readFile, stat, cleanupPersistedResultFixtureState, createdAt,
+			afterWrite, nodeWriteFile, openLocalFile, closeFile, deleteFile,
 		};
 	}
 
@@ -191,6 +222,10 @@ describe('persisted-result offline fixture', () => {
 		})]);
 		expect(setup.files.size).toBe(1);
 		expect(setup.writeFile).toHaveBeenCalledTimes(1);
+		expect(setup.openLocalFile).not.toHaveBeenCalled();
+		expect(setup.nodeWriteFile).not.toHaveBeenCalled();
+		expect(setup.closeFile).not.toHaveBeenCalled();
+		expect(setup.deleteFile).not.toHaveBeenCalled();
 		expect(setup.files.get(join(root, 'output.kqlx'))).toBe(`${JSON.stringify({ version: 1, state: { sections: [{
 			id: 'query_fixture', type: 'query', query: 'PersistedFixture',
 			...(legacyKusto ? {} : { kustoAccountPartition: setup.accountPartition, kustoLeaveNoTraceRevision: 0 }),
@@ -201,15 +236,325 @@ describe('persisted-result offline fixture', () => {
 		}] } }, null, 2)}\n`);
 	}
 
-	it.each([true, false])('preserves exact output without synthetic artifact privileges (legacyKusto=%s)', async legacyKusto => {
+	it.each([true, false].flatMap(legacyKusto =>
+		[undefined, false, 'true', 1].map(exposeToActiveContent => ({ legacyKusto, exposeToActiveContent })),
+	))('preserves exact output without synthetic artifact privileges (legacyKusto=$legacyKusto, exposeToActiveContent=$exposeToActiveContent)', async ({ legacyKusto, exposeToActiveContent }) => {
 		const setup = fixture();
-		await expect(setup.prepare({ ...setup.request, legacyKusto })).resolves.toEqual({
+		await expect(setup.prepare({
+			...setup.request, legacyKusto,
+			...(exposeToActiveContent === undefined ? {} : { exposeToActiveContent }),
+		})).resolves.toEqual({
 			outputPath: join(root, 'output.kqlx'), connectionId: setup.connection.id,
 		});
 		expect(setup.auth.setTokenOverride).toHaveBeenCalledTimes(1);
 		expect(setup.cache.setDatabases).toHaveBeenCalledTimes(1);
 		expect(setup.writeSchema).toHaveBeenCalledTimes(1);
+		expect(setup.stat).not.toHaveBeenCalled();
 		expectPublishedFixture(setup, legacyKusto);
+	});
+
+	it.each([[1, 4, 'PersistedDb'], [3, 9, 'FixtureDb']] as const)(
+		'authors canonical active-only bytes for the settled owner (revision=%s, session=%s, database=%s)',
+		async (connectionRevision, authSessionGeneration, database) => {
+			const setup = fixture(true);
+			setup.connectionManager.getConnectionIncarnation.mockReturnValue(connectionRevision);
+			setup.template.state.sections[0].query = 'PersistedFixture | take 1';
+			const preparing = setup.prepare({ ...setup.request, legacyKusto: false, exposeToActiveContent: true, database });
+			try {
+				await Promise.race([preparing, setup.initialCachesReady.promise]);
+				expect(setup.writeFile).not.toHaveBeenCalled();
+				expect(setup.nodeWriteFile).not.toHaveBeenCalled();
+				setup.auth.getConnectionSessionGeneration.mockReturnValue(authSessionGeneration);
+			} finally {
+				setup.assertionHeld.resolve();
+			}
+			await expect(preparing).resolves.toEqual({ outputPath: join(root, 'output.kqlx'), connectionId: setup.connection.id });
+			const connectionIdentityKey = JSON.stringify([setup.connection.clusterUrl, setup.connection.authorityId]);
+			const artifact: PersistedResultArtifactV1 = {
+				version: 1, artifactId: 'result:query_fixture:1', sourceBoxId: 'query_fixture', revision: 1, createdAt: setup.createdAt,
+				producer: {
+					engine: 'kusto', boxId: 'query_fixture', executionId: 'persisted-result-fixture-execution',
+					sectionInstanceId: 'persisted-result-fixture-section', targetGeneration: 1, reservationSequence: 1,
+					query: setup.template.state.sections[0].query, producer: 'manual', connectionId: setup.connection.id, database,
+					dispatch: {
+						clusterEndpoint: setup.connection.clusterUrl, authorityId: setup.connection.authorityId,
+						accountPartition: setup.accountPartition, authSessionGeneration, leaveNoTraceRevision: 0,
+						connectionRevision, connectionIdentityKey,
+					},
+				},
+				policy: {
+					accountPartition: setup.accountPartition, authSessionGeneration, leaveNoTraceRevision: 0,
+					connectionRevision, connectionIdentityKey, exposeToActiveContent: true,
+				},
+			};
+			const expected = { version: 1, state: { sections: [{
+				...setup.template.state.sections[0], connectionIdHint: setup.connection.id,
+				kustoAccountPartition: setup.accountPartition, kustoLeaveNoTraceRevision: 0,
+				resultJson: JSON.stringify({ columns: ['RowId'], rows: [[7]], metadata: {
+					preserved: true, cluster: setup.connection.clusterUrl, database,
+				} }),
+				clusterUrl: setup.connection.clusterUrl, authorityId: setup.connection.authorityId, database, resultArtifact: artifact,
+			}] } };
+			expect(setup.files.get(join(root, 'output.kqlx'))).toBe(`${JSON.stringify(expected, null, 2)}\n`);
+			expect(setup.cache.getDatabases(setup.connection.id, setup.accountPartition)).toEqual([database]);
+			expect(setup.stat).toHaveBeenCalledExactlyOnceWith({ fsPath: join(root, 'output.kqlx') });
+			expect(setup.openLocalFile).toHaveBeenCalledExactlyOnceWith(join(root, 'output.kqlx'), 'wx');
+			expect(setup.nodeWriteFile).toHaveBeenCalledExactlyOnceWith(
+				join(root, 'output.kqlx'), Buffer.from(`${JSON.stringify(expected, null, 2)}\n`, 'utf8'),
+			);
+			expect(setup.closeFile).toHaveBeenCalledTimes(1);
+			expect(setup.writeFile).not.toHaveBeenCalled();
+			expect(setup.deleteFile).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([
+		['legacy Kusto', { legacyKusto: true }], ['SQL', { engine: 'sql', legacyKusto: false }],
+	] as const)('rejects explicit active-content authoring for %s before effects', async (_engine, request) => {
+		const setup = fixture();
+		await expect(setup.prepare({ ...setup.request, ...request, exposeToActiveContent: true }))
+			.rejects.toMatchObject({ message: 'Active-content fixture authoring requires non-legacy Kusto.' });
+		expect(setup.cleanupPersistedResultFixtureState).not.toHaveBeenCalled();
+		expect(setup.auth.waitForProviderAccountRefresh).not.toHaveBeenCalled();
+		expect(setup.connectionManager.addConnection).not.toHaveBeenCalled();
+		expect(setup.readFile).not.toHaveBeenCalled();
+		expect(setup.writeFile).not.toHaveBeenCalled();
+		expect(setup.stat).not.toHaveBeenCalled();
+		expect(setup.files.size).toBe(0);
+	});
+
+	it.each([null, {}, { version: 1, ...createPrimaryResultArtifactIdentity('query_fixture', 1, 1) }])(
+		'refuses an own artifact field in a new active-content template (%j)', async resultArtifact => {
+			const setup = fixture();
+			Object.assign(setup.template.state.sections[0], { resultArtifact });
+			await expect(setup.prepare({ ...setup.request, legacyKusto: false, exposeToActiveContent: true }))
+				.rejects.toMatchObject({ message: 'Active-content fixture authoring requires a descriptor-free template.' });
+			expect(setup.connectionManager.addConnection).not.toHaveBeenCalled();
+			expect(setup.auth.setTokenOverride).not.toHaveBeenCalled();
+			expect(setup.writeFile).not.toHaveBeenCalled();
+			expect(setup.files.size).toBe(0);
+		},
+	);
+
+	it('refuses the same template and output for new active-content authoring', async () => {
+		const setup = fixture();
+		const original = JSON.stringify(setup.template);
+		setup.files.set(join(root, 'template.kqlx'), original);
+		await expect(setup.prepare({ ...setup.request, legacyKusto: false, exposeToActiveContent: true, outputPath: setup.request.templatePath }))
+			.rejects.toMatchObject({ message: 'Active-content fixture authoring requires different template and output paths.' });
+		expect(setup.connectionManager.addConnection).not.toHaveBeenCalled();
+		expect(setup.writeFile).not.toHaveBeenCalled();
+		expect([...setup.files]).toEqual([[join(root, 'template.kqlx'), original]]);
+	});
+
+	it.each([false, true])('refuses an existing active-content output at publication (late=%s)', async late => {
+		const setup = fixture(late);
+		const outputPath = join(root, 'output.kqlx');
+		if (!late) setup.files.set(outputPath, 'unchanged baseline bytes');
+		const preparing = setup.prepare({ ...setup.request, legacyKusto: false, exposeToActiveContent: true });
+		if (late) {
+			try {
+				await Promise.race([preparing, setup.initialCachesReady.promise]);
+				setup.files.set(outputPath, 'unchanged baseline bytes');
+			} finally {
+				setup.assertionHeld.resolve();
+			}
+		}
+		await expect(preparing).rejects.toMatchObject({ message: 'Active-content fixture authoring requires a new output file.' });
+		expect(setup.stat).toHaveBeenCalledExactlyOnceWith({ fsPath: outputPath });
+		expect(setup.writeFile).not.toHaveBeenCalled();
+		expect(setup.openLocalFile).not.toHaveBeenCalled();
+		expect(setup.nodeWriteFile).not.toHaveBeenCalled();
+		expect(setup.deleteFile).not.toHaveBeenCalled();
+		expect([...setup.files]).toEqual([[outputPath, 'unchanged baseline bytes']]);
+	});
+
+	it('refuses reuse of a successfully authored active-content output', async () => {
+		const setup = fixture();
+		const request = { ...setup.request, legacyKusto: false, exposeToActiveContent: true };
+		await setup.prepare(request);
+		const original = setup.files.get(join(root, 'output.kqlx'));
+		await expect(setup.prepare(request)).rejects.toMatchObject({ message: 'Active-content fixture authoring requires a new output file.' });
+		expect(setup.openLocalFile).toHaveBeenCalledExactlyOnceWith(join(root, 'output.kqlx'), 'wx');
+		expect(setup.nodeWriteFile).toHaveBeenCalledTimes(1);
+		expect(setup.closeFile).toHaveBeenCalledTimes(1);
+		expect(setup.writeFile).not.toHaveBeenCalled();
+		expect(setup.deleteFile).not.toHaveBeenCalled();
+		expect(setup.files.get(join(root, 'output.kqlx'))).toBe(original);
+	});
+
+	it('retains an output created between stat and exclusive open without overwriting or deleting it', async () => {
+		const setup = fixture();
+		const outputPath = join(root, 'output.kqlx');
+		const original = 'concurrent original bytes';
+		const stat = setup.stat.getMockImplementation()!;
+		setup.stat.mockImplementationOnce(async uri => {
+			try { return await stat(uri); }
+			finally { setup.files.set(uri.fsPath, original); }
+		});
+		const failure = await setup.prepare({ ...setup.request, legacyKusto: false, exposeToActiveContent: true })
+			.then(() => undefined, (error: unknown) => error);
+		expect([...setup.files]).toEqual([[outputPath, original]]);
+		expect(failure).toMatchObject({ message: 'Active-content fixture authoring requires a new output file.' });
+		expect(setup.stat).toHaveBeenCalledExactlyOnceWith({ fsPath: outputPath });
+		expect(setup.openLocalFile).toHaveBeenCalledExactlyOnceWith(outputPath, 'wx');
+		expect(setup.nodeWriteFile).not.toHaveBeenCalled();
+		expect(setup.closeFile).not.toHaveBeenCalled();
+		expect(setup.writeFile).not.toHaveBeenCalled();
+		expect(setup.deleteFile).not.toHaveBeenCalled();
+	});
+
+	it.each([undefined, 'EACCES'])('propagates exclusive-open errors other than EEXIST (%s)', async code => {
+		const setup = fixture();
+		const failure = Object.assign(new Error('Exclusive output open failed.'), code === undefined ? {} : { code });
+		setup.openLocalFile.mockRejectedValueOnce(failure);
+		await expect(setup.prepare({ ...setup.request, legacyKusto: false, exposeToActiveContent: true })).rejects.toBe(failure);
+		expect(setup.openLocalFile).toHaveBeenCalledExactlyOnceWith(join(root, 'output.kqlx'), 'wx');
+		expect(setup.nodeWriteFile).not.toHaveBeenCalled();
+		expect(setup.closeFile).not.toHaveBeenCalled();
+		expect(setup.writeFile).not.toHaveBeenCalled();
+		expect(setup.deleteFile).not.toHaveBeenCalled();
+		expect(setup.files.size).toBe(0);
+	});
+
+	it.each([undefined, 'NoPermissions', 'Unavailable'])('propagates output stat errors other than FileNotFound (%s)', async code => {
+		const setup = fixture();
+		const failure = Object.assign(new Error('Output stat failed.'), code === undefined ? {} : { code });
+		setup.stat.mockRejectedValueOnce(failure);
+		await expect(setup.prepare({ ...setup.request, legacyKusto: false, exposeToActiveContent: true })).rejects.toBe(failure);
+		expect(setup.writeFile).not.toHaveBeenCalled();
+		expect(setup.files.size).toBe(0);
+	});
+
+	it.each([true, false])('preserves default in-place fixture reuse (legacyKusto=%s)', async legacyKusto => {
+		const setup = fixture();
+		setup.request.templatePath = setup.request.outputPath;
+		setup.files.set(join(root, 'output.kqlx'), JSON.stringify(setup.template));
+		await setup.prepare({ ...setup.request, legacyKusto });
+		expect(setup.stat).not.toHaveBeenCalled();
+		expectPublishedFixture(setup, legacyKusto);
+	});
+
+	it.each([true, false])('preserves exact existing-connection bytes and all capabilities (legacyKusto=%s)', async legacyKusto => {
+		const setup = fixture();
+		setup.connection.name = 'Existing Unit Owner';
+		setup.connection.clusterUrl = 'https://existing-unit-owner.invalid';
+		setup.connections.set(setup.connection.id, setup.connection);
+		setup.preferences.set(setup.connection.id, setup.account.id);
+		await setup.cache.setDatabases(setup.connection.id, setup.accountPartition, ['PersistedDb']);
+		setup.request.templatePath = setup.request.outputPath;
+		Object.assign(setup.template.state.sections[0], { resultArtifact: { version: 1 } });
+		setup.files.set(join(root, 'output.kqlx'), JSON.stringify(setup.template));
+		const request = { ...setup.request, legacyKusto, existingConnectionId: setup.connection.id };
+		await setup.prepare(request);
+		const original = setup.files.get(join(root, 'output.kqlx'))!;
+		const published = JSON.parse(original) as { state: { sections: Array<{ resultArtifact: PersistedResultArtifactV1 }> } };
+		expect(published.state.sections[0].resultArtifact.policy).toEqual({
+			accountPartition: setup.accountPartition, authSessionGeneration: 4, leaveNoTraceRevision: 0,
+			connectionRevision: 1, connectionIdentityKey: JSON.stringify([setup.connection.clusterUrl, setup.connection.authorityId]),
+			exposeToActiveContent: true, sendToModel: true, shareToClipboard: true, exportToCsv: true,
+		});
+		for (const exposeToActiveContent of legacyKusto ? [false, 'true', 1] : [false, 'true', 1, true]) {
+			await setup.prepare({ ...request, exposeToActiveContent });
+			expect(setup.files.get(join(root, 'output.kqlx'))).toBe(original);
+		}
+		expect(published.state.sections[0].resultArtifact.lineage).toEqual([]);
+		expect(setup.openLocalFile).not.toHaveBeenCalled();
+		expect(setup.nodeWriteFile).not.toHaveBeenCalled();
+		expect(setup.closeFile).not.toHaveBeenCalled();
+		expect(setup.deleteFile).not.toHaveBeenCalled();
+		expect(setup.stat).not.toHaveBeenCalled();
+		expect(setup.connectionManager.addConnection).not.toHaveBeenCalled();
+		expect(setup.auth.setTokenOverride).not.toHaveBeenCalled();
+	});
+
+	it.each(['database', 'schema', 'incarnation', 'policy revision', 'protected cluster'] as const)(
+		'revalidates %s after active-content publication without overwriting or deleting the output', async drift => {
+			const setup = fixture();
+			setup.afterWrite.mockImplementationOnce(() => {
+				switch (drift) {
+					case 'database': setup.databases.clear(); break;
+					case 'schema': setup.schemas.clear(); break;
+					case 'incarnation': setup.connectionManager.getConnectionIncarnation.mockReturnValue(2); break;
+					case 'policy revision': setup.snapshot.revocationGenerations[setup.connection.clusterUrl] = 1; break;
+					case 'protected cluster': setup.snapshot.clusterKeys.push(setup.connection.clusterUrl); break;
+				}
+			});
+			await expect(setup.prepare({ ...setup.request, legacyKusto: false, exposeToActiveContent: true }))
+				.rejects.toMatchObject({ message: expect.stringContaining('Persisted-result Kusto fixture owner did not settle:') });
+			expect([...setup.files]).toEqual([[
+				join(root, 'output.kqlx'), Buffer.from(setup.afterWrite.mock.calls[0][1]).toString('utf8'),
+			]]);
+			expect(setup.openLocalFile).toHaveBeenCalledExactlyOnceWith(join(root, 'output.kqlx'), 'wx');
+			expect(setup.nodeWriteFile).toHaveBeenCalledTimes(1);
+			expect(setup.closeFile).toHaveBeenCalledTimes(1);
+			expect(setup.writeFile).not.toHaveBeenCalled();
+			expect(setup.deleteFile).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(['identical', 'changed'] as const)('retains a concurrent %s replacement after late owner failure', async replacement => {
+		const setup = fixture();
+		const outputPath = join(root, 'output.kqlx');
+		let replacementBytes = '';
+		setup.afterWrite.mockImplementationOnce((fsPath, bytes) => {
+			replacementBytes = replacement === 'identical' ? Buffer.from(bytes).toString('utf8') : 'concurrent replacement bytes';
+			setup.files.set(fsPath, replacementBytes);
+			setup.databases.clear();
+		});
+		await expect(setup.prepare({ ...setup.request, legacyKusto: false, exposeToActiveContent: true }))
+			.rejects.toMatchObject({ message: expect.stringContaining('Persisted-result Kusto fixture owner did not settle:') });
+		expect([...setup.files]).toEqual([[outputPath, replacementBytes]]);
+		expect(setup.openLocalFile).toHaveBeenCalledExactlyOnceWith(outputPath, 'wx');
+		expect(setup.nodeWriteFile).toHaveBeenCalledTimes(1);
+		expect(setup.closeFile).toHaveBeenCalledTimes(1);
+		expect(setup.writeFile).not.toHaveBeenCalled();
+		expect(setup.deleteFile).not.toHaveBeenCalled();
+	});
+
+	it.each(['write', 'close', 'write and close'] as const)('rejects %s failure, closes the handle, and retains fixture evidence', async failureKind => {
+		const setup = fixture();
+		const outputPath = join(root, 'output.kqlx');
+		const writeFailure = new Error('Partial fixture write failed.');
+		const closeFailure = new Error('Fixture handle close failed.');
+		if (failureKind !== 'close') {
+			setup.nodeWriteFile.mockImplementationOnce(async (fsPath, bytes) => {
+				setup.files.set(fsPath, Buffer.from(bytes).subarray(0, 12).toString('utf8'));
+				throw writeFailure;
+			});
+		}
+		if (failureKind !== 'write') setup.closeFile.mockRejectedValueOnce(closeFailure);
+		const failure = await setup.prepare({ ...setup.request, legacyKusto: false, exposeToActiveContent: true })
+			.then(() => undefined, (error: unknown) => error);
+		expect(setup.openLocalFile).toHaveBeenCalledExactlyOnceWith(outputPath, 'wx');
+		expect(setup.nodeWriteFile).toHaveBeenCalledTimes(1);
+		expect(setup.closeFile).toHaveBeenCalledTimes(1);
+		const expectedBytes = Buffer.from(setup.nodeWriteFile.mock.calls[0][1]);
+		expect([...setup.files]).toEqual([[
+			outputPath, (failureKind === 'close' ? expectedBytes : expectedBytes.subarray(0, 12)).toString('utf8'),
+		]]);
+		if (failureKind === 'write and close') {
+			expect(failure).toMatchObject({ name: 'AggregateError', errors: [writeFailure, closeFailure] });
+		} else {
+			expect(failure).toBe(failureKind === 'write' ? writeFailure : closeFailure);
+		}
+		expect(setup.writeFile).not.toHaveBeenCalled();
+		expect(setup.deleteFile).not.toHaveBeenCalled();
+	});
+
+	it.each([true, false])('preserves default workspace-writer cleanup after late owner failure (legacyKusto=%s)', async legacyKusto => {
+		const setup = fixture();
+		setup.afterWrite.mockImplementationOnce(() => { setup.databases.clear(); });
+		await expect(setup.prepare({ ...setup.request, legacyKusto }))
+			.rejects.toMatchObject({ message: expect.stringContaining('Persisted-result Kusto fixture owner did not settle:') });
+		expect(setup.writeFile).toHaveBeenCalledTimes(1);
+		expect(setup.deleteFile).toHaveBeenCalledExactlyOnceWith(
+			{ fsPath: join(root, 'output.kqlx') }, { recursive: false, useTrash: false },
+		);
+		expect(setup.openLocalFile).not.toHaveBeenCalled();
+		expect(setup.nodeWriteFile).not.toHaveBeenCalled();
+		expect(setup.closeFile).not.toHaveBeenCalled();
+		expect(setup.files.size).toBe(0);
 	});
 
 	it('rebuilds synthetic caches after provider refresh drops the account during setup', async () => {

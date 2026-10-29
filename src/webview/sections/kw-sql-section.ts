@@ -1827,7 +1827,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		return true;
 	}
 
-	private _clearTargetData(hadCompleteTarget = !!this._sqlConnectionId && !!this._database): void {
+	private _clearTargetData(hadCompleteTarget = !!this._sqlConnectionId && !!this._database, persist = true): void {
 		if (this._executing) {
 			try {
 				postMessageToHost({ type: 'cancelSqlQuery', boxId: this.boxId, sectionInstanceId: this.sqlSession.instanceId });
@@ -1846,7 +1846,9 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			bubbles: true,
 			composed: true,
 		}));
-		try { schedulePersist('sql-target-changed', true); } catch (e) { console.error('[kusto]', e); }
+		if (persist) {
+			try { schedulePersist('sql-target-changed', true); } catch (e) { console.error('[kusto]', e); }
+		}
 	}
 
 	// ── Favorites public API ──────────────────────────────────────────────────
@@ -1961,7 +1963,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (connectionTargetChanged) {
 			if (!adoptingPersistedConnection && !reAdoptingHostInvalidatedOwner) {
 				this._pendingPersistedTargetAdoption = false;
-				this._clearTargetData();
+				this._clearTargetData(undefined, false);
 			}
 			if (prev === resolvedId) {
 				this._database = '';
@@ -2067,7 +2069,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			this._desiredDatabase = '';
 			this._hostOwnerReadoptionDatabase = '';
 			if (hadExplicitDatabaseTarget) {
-				this._clearTargetData(hadCompleteTargetBeforeUpdate);
+				this._clearTargetData(hadCompleteTargetBeforeUpdate, false);
 				this._resetSchemaReadiness('not-loaded');
 				this.dispatchEvent(new CustomEvent('sql-database-changed', {
 					detail: { boxId: this.boxId, database: '' },
@@ -2100,7 +2102,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		}
 		if (this._database && this._database !== previousDatabase) {
 			if (!adoptingPersistedDatabase && !hostReadoptionDatabase) {
-				this._clearTargetData(hadCompleteTargetBeforeUpdate);
+				this._clearTargetData(hadCompleteTargetBeforeUpdate, false);
 			}
 			this._pendingPersistedTargetAdoption = false;
 			this._pendingHostOwnerReadoption = false;
@@ -3055,17 +3057,19 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		document.addEventListener('mouseup', onMouseUp);
 	}
 
-	private _fitResultsToContents(force?: boolean): void {
+	private _fitResultsToContents(force = false): void {
 		const wrapper = document.getElementById(this.boxId + '_sql_results_wrapper');
 		const dt = wrapper?.querySelector('kw-data-table') as any;
 		if (!wrapper || !dt || typeof dt.getContentHeight !== 'function') return;
+		if (!force && wrapper.dataset.kustoUserResized === 'true') return;
 		const contentH = dt.getContentHeight();
-		if (contentH > 0) {
-			const sectionMaxH = contentH + 20;
-			wrapper.style.height = Math.max(120, Math.min(KwSqlSection._FIT_CAP_PX, sectionMaxH)) + 'px';
+		if (!(contentH > 0)) return;
+		const sectionMaxH = contentH + 20;
+		wrapper.style.height = Math.max(120, Math.min(KwSqlSection._FIT_CAP_PX, sectionMaxH)) + 'px';
+		if (force) {
 			wrapper.dataset.kustoUserResized = 'true';
+			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		}
-		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	/** After section reorder (disconnect/reconnect), refresh kw-data-table layout. */

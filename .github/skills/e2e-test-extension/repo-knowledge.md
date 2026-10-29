@@ -10,6 +10,487 @@ on every `vscode-ext-test init` to stay current with framework updates),
 Read this file before every test session. Update it after every session with
 anything new you learned. Structure it however makes sense for this repo.
 
+## Current Verification Checkpoint: October 29
+
+Status: INCOMPLETE. The deferred native invalidation mechanism has a controlled
+red/green regression, but the original three workflows are not all verified.
+No tests were run for this documentation update.
+
+| Scope | Latest evidence / limit |
+| --- | --- |
+| Controlled readiness race | A real native document, two overlapping requests and two accepted generations remain unready when persistence invalidation is dropped while the second ACK is pending. The baseline passed and the race failed before the fix. The unchanged race now passes through the same first readiness promise, preserving two projections, two admissions, clean version 1 and exact authored bytes |
+| Focused native controls | 37 passed in 4 seconds, including independent policy, physical settlement, source/version ABA, owner/runtime retirement, disposal and third-invalidation controls. A separate consumed-follow-up red produced seven projections; the unchanged green produces four with no renewed allowance despite remaining attempts and time |
+| Full native regression | `npm test`: 440 passed in 3 minutes on VS Code 1.144.0, exit 0. Existing local-history ENOENT and fixture EPERM warnings remain visible. Raw receipt: `%APPDATA%/Code/copilot-terminal-output/copilot-terminal-output-c0df4379-0082-4ded-ab4b-b669ba520e46.txt` |
+| Protocol inventory | 80 passed after reviewing the unchanged validated command-result sender and updating only two source coordinates, `5565:10` to `5636:10`. The preceding 78-pass / 2-coordinate-failure result remains retained |
+| Production package | All three typechecks, lint, all 12 bundle caps and bootstrap packaging passed. The user explicitly approved only the host cap increase to 2543 KiB: baseline 2493 plus unchanged 50 KiB buffer, 2604032 bytes. Other limits, including webview 3349 KiB, are unchanged |
+| Full coverage | 9312 passed, 4 existing skips; 372 passing files and 1 skipped file; 974.32 seconds; statement coverage 53.58% (34812/64971), official gate passed. No product changes followed this gate |
+| Full scripts | 539 total: 538 passed, no failures or cancellations, 1 existing skip; 303233.9292 ms. Raw receipt: `%APPDATA%/Code/copilot-terminal-output/copilot-terminal-output-123d38e7-38b0-43fd-89ef-7fe5639e2504.txt` |
+| Real workflow evidence | Original r16 first activation failed after 30292 ms before observed webview ingress. Diagnostic KDC20 instead captured successful bootstrap, resources, both ACKs and drained counters, followed by a failed first activation after 31124 ms. Required-generation state was not captured, so attribution to the controlled mechanism remains conditional until a fresh real-workflow green |
+| Current frozen product | Host 2603047 bytes, SHA-256 `4fc449aa5e29c909c61145bc318b83775011a1bd7490d6b2ad9ad3496f105692`; webview 3425860 bytes, SHA-256 `ac2e294fcddfd3c729c13d1a5ab922bed367c8126c4246611a96ea1b8632b04a`. New ka21 manifest `ddd0f937fda810a440e46d05c7396ceadb02e7ae339f265d6e9f6034b8343629` pins the unchanged normal feature, helper and authentic Code 1.143.0. Native regression Code 1.144.0 is a separate build |
+| Current normal first-call failure | Fresh r22 returned first-104 failure after 30309 ms: zero webview ingress and 116 native posts pending until disposal. No document request or projection started, so the deferred-invalidation fix was not traversed. Source, versions, dirty state and SDK capture were preserved; this startup failure remains unresolved |
+| Current normal functional pass | The unchanged four-step CLI scenario passed in fresh tss-r23; first URI-only 104 succeeded in 1855.3879 ms, all 13 checks were true, complete SDK capture had zero quality counters, and bytes/version/clean state were preserved. The separate observer triggered after the call and never connected or evaluated. Its diagnostic qualification and first shutdown checkpoint remain failed; later cleanup reached zero. This functional pass does not create strict ka21 readiness or erase r22 |
+| Composed diagnostic prefix | One authorized standard-CLI diagnostic used that exact normal PASS receipt in fresh tsp-r21. Call 100 passed in 4794.097 ms; call 101 remained pending for 178111.202 ms until framework cancellation. Calls 102-104 were never made. Native opening began but no matching provider entry, open completion or recovery appeared. The 180000-ms step timeout and missing final normal artifact remain failures; private diagnostics do not replace acceptance |
+| Preservation and cleanup | Prefix24 preserved all 185 original completed-standalone/profile/evidence file facts and inventories, all 178 runtime files and the manifest. No retries, Save, query execution or dirty discard were used. Its private cleanup/observation gaps remain recorded; the later exact owned-process/listener checkpoint was zero. Automatic captures were retained without image viewing |
+
+Deferred invalidations wait outside the URI queue for their exact projection's
+physical settlement, then require fresh canonical proof under that queue. They
+do not bypass readiness, extend deadlines, renew retry budgets, remove saved
+attachments, or make SQL/linked/session states eligible for native retention.
+The full acceptance path remains a fresh normal standalone activation followed
+only on success by a separately isolated prefix 100-103 and first activation
+104. Earlier setup, shutdown, capture, shared-store and activation failures stay
+failed and retained; diagnostic passes cannot replace normal acceptance.
+
+### Framework Fix Request: Correlate Pending Native Open Progress
+
+**What I was trying to do:** Complete the single first-call prefix 100-103,
+then first activation 104, using disposable archived copies on the current
+verified product. Prefix24 is retained under the normal run
+`%TEMP%/kr21-8b9e/tests/vscode-extension-tester/runs/20261029-175320` and the
+attributed private evidence root `%TEMP%/kw-acceptance-Hjxk4u/evidence`.
+
+**What step/capability is missing or broken:** Request-correlated native
+progress from command receipt through text-model resolution to custom-editor
+provider dispatch/return, including the pending await and cancellation reason.
+The current passive logs and CDP connection attempts cannot distinguish these
+stages. This is an observability blocker, not proof of a VS Code defect.
+
+**What I observed:** Call 100 returned genuine live success. Call 101 URI hash
+`4c684f844d56cd8597ec23400fed153bdd61649de6712985c7b26f06bd5fe3bd`
+completed lifecycle acquisition at 17:53:41.776 UTC and entered native
+`openWith`, with no matching provider entry or open completion before
+`Canceled` at 17:56:39.878 UTC. A pending observation at 17:53:46.772 UTC found
+the exact tab active but no native document; CDP timed out during connection,
+before evaluation. URI-less native `openTextDocument` log entries are only
+temporally correlated. Calls 102-104 were not made.
+
+**What I already tried:** Ordinary product activation/provider logs, normal
+Workbench and Controller output capture, retained renderer/main/extension-host
+logs, the actual SDK observer before activation, bounded pending and
+post-failure observations, and a one-shot native-ready performance observer.
+The normal standalone functional pass and the distinct controlled readiness
+fix do not identify the native-open stall. Prefix24's SDK recorder observed
+only call 100's panel, so loss counters of zero do not establish call-101
+coverage. Private cleanup and the initial shutdown gap remain failed even
+though later process/listener checks were zero.
+
+**What the framework needs to support:** Add a supported, bounded passive
+observer or native trace collector for the actual owned window's command/model
+bridge. Bind one request token and URI hash to command admission, model
+resolution entry/exit, provider dispatch/return, pending stage and terminal
+cancellation. Record observation gaps and loss explicitly; preserve the first
+public result and physically pending work through normal shutdown. Preserve
+receivers, arguments, promise identity and errors. Do not retry, reveal, reload,
+Save, query, inspect credentials, or capture document/console payloads. Validate
+exact process/profile ownership and use only requesting-user diagnostics. Test
+transparency, bounded capture, cancellation and ownership in the framework;
+do not weaken this extension's acceptance oracle or increase its deadlines.
+
+**Suggested Gherkin step syntax (if applicable):**
+
+```gherkin
+Given native open progress is observed for the exact task-owned URI
+Then I collect the first native open outcome without retrying it
+```
+
+**Priority:** blocking for attribution of the pending native-open failure,
+not evidence that the earlier product fixes or all original workflows are
+complete. No authorization to edit the separate framework repository is
+assumed. The earlier withdrawn request below remains historical; this request
+records the current bounded prefix24 evidence and its specific missing stage.
+
+## Historical Verification Checkpoint: October 28
+
+Status: INCOMPLETE. The original three bugs are not all fixed. This short ledger
+records the parent's latest receipts; older records below remain intact and do
+not qualify the new fix. No tests were run for this documentation update.
+
+| Scope | Latest evidence / limit |
+| --- | --- |
+| Native conditional readiness | Genuine native red in 2 seconds: an actual same-authority automatic conditional negative ACK left readiness false despite clean real-document source. The unchanged reproduction passed after the fix in 716 ms. The issued/required/accepted generation contract and strict retention fences are documented beside native projection readiness in `ARCHITECTURE.md` |
+| Focused native controls | 15 passed in 3 seconds: five prior ordinary controls plus ten automatic cases, including separate policy-before and policy-after cases, preparation failure, runtime replacement, explicit rejection first, superseded fresh proof itself returning false, disposal, real source/version ABA, and later local persistence of query 2 through the actual readiness callback |
+| Ordinary logging / focused regressions | Tool activation and provider-entry phase logs use hashed URIs; legacy raw paths remain, so this is not whole-log sanitization. TypeSpec harness checks: 90 passed; logging host ring: 327 passed. One line added to the existing message-handler native-session probe passed. Two protocol failures were only reviewed source coordinates (`5506:10` -> `5565:10`), with the same validation/delivery sender verified; the corrected three-file ring passed 407 tests |
+| Full native regression | `npm test`: 427 passed in 3 minutes on VS Code 1.143.1. Cleanup logs include `EPERM` after fixture deletion; these were not test failures, and this is not a zero-warning claim |
+| Latest product E2E failure | `r13` failed at prefix 100 after 31474 ms: generation 1 accepted, then `forceReload` generation 3 negatively acknowledged before persistence, leaving active 1/latest 3 at a dead end. A pending metadata observation completed and captured a clean native model at version 1; this is not continuous responsiveness or message-listener proof. Raw expected/actual revisions were not captured; attribution remains conditional, not proof of every prior root cause |
+| Full coverage gate | 9312 passed / 4 existing skips, 372 passing files / 1 skipped, 980.65 seconds. Statements 53.58% (34812/64971), branches 49.67%, functions 56.02%, lines 56.34%; gate passed |
+| Full script regression | 539 total: 538 passed, no failures or cancellations, one existing skip, 356175.8032 ms. Raw receipt: `%APPDATA%/Code/copilot-terminal-output/copilot-terminal-output-3b60eb84-2359-4986-a970-7180a37d8992.txt` |
+
+Full native log:
+`%APPDATA%/Code/copilot-terminal-output/copilot-terminal-output-aa82f984-b5e7-4aca-b071-baf59ee25577.txt`.
+All three typechecks, lint, and package now pass after the user-approved host-only
+2 KiB increase: baseline 2491 + unchanged 50 = 2541 KiB (2601984 bytes).
+Measured host: 2601171 bytes, previously 1235 bytes above the 2539 KiB cap.
+Only host baselines in `esbuild.js` and `scripts/bundle-size-gate.mjs` changed;
+other limits, including webview 3349 KiB, are unchanged. A fresh
+`npm run package` passed after both full suites; its raw log is
+`%TEMP%/kw-readiness-package-8b9e28.log`. Measured host SHA-256:
+`b5445c1e8154facab2bda727c3aed88ea3c797dd645e7df3fb5a6b4790eb0414`.
+Webview remains `ac2e294fcddfd3c729c13d1a5ab922bed367c8126c4246611a96ea1b8632b04a`.
+
+Current-build E2E remains PENDING. Historical pre-logging evidence only:
+9299 passed / 4 skipped, 53.58% (34812/64971), native 417 passed, and Node 504
+passed / 1 skipped. None qualifies the new fix.
+
+The original hidden checkpoints remain unreached, the TypeSpec prefix is not
+qualified, and current-product E2E is required. Earlier Kusto I1 reopen and the
+old SQL profile's dirty-restore finding remain open; the earlier live SQL
+functional pass retains its preceding-build, account-consent, and recorder
+caveats below. This native fix does not explain all `r10` native-open hangs or
+the `r11` setup timeout. CDP `defaultTarget` chooses the first inspectable page;
+an attachment timeout does not prove a frozen main workbench. The framework
+request below is withdrawn in favor of ordinary logs and existing CLI capture.
+
+## Historical Verification Checkpoint: October 26-27
+
+Status: INCOMPLETE. This checkpoint supersedes the older totals and "final"
+wording below; earlier failures and receipts remain historical evidence.
+First-operation ownership, SQL structural identity/configure-only admission,
+Save completion, and automatic primary-schema authentication defects have
+focused red/green coverage. The original hidden and prefixed TypeSpec acceptance
+paths are not closed.
+
+| Contract | Exact path and oracle | Current evidence / decision |
+| --- | --- | --- |
+| Fresh SQL identity | CREATE SQLX with `reveal:false`, Save, LIST; per-file inventory exposes only the actual `{id,type}`, without source changes or ownership transfer | Existing: `lists the real unconfigured SQL section after background CREATE and SAVE without handing off ownership` plus privacy, source/version, runtime, mapping, cancellation, and peer-delay assertions in `toolOrchestratorConnect.test.ts`; focused file 313 passed |
+| Configure-only and removal | Advertised ID -> source configuration -> Save -> actual close notification retires ownership -> reopen -> live configuration -> Save; retain both separate first-removal flows | Existing: three native `background-created` scenarios in `kqlxMarkdownOwnership.test.ts`; adapted frontend and offline SQL adapters, not authenticated query proof |
+| Authenticated SQL I1 | Stored `SELECT 1 AS Probe` -> CREATE without reveal -> Save/LIST -> first configure/execute without query replacement -> rendered/durable result -> close/reopen -> execute-only -> fresh producer -> clean Save | Functional pass on preceding `85fcc734...` build, after the user allowed Microsoft-account access. First execution 16860 ms, reopen 732 ms, execute-only 6378 ms. CLI 0; strict recorder 1 because connection-store inode/timestamps changed despite identical bytes/hash. Keep that failure; writer unobserved. See `%TEMP%/i1r-8b9e26/report.md` |
+| Automatic primary schema | Native restore before connections exist -> later automatic reconciliation -> one noninteractive cache-miss fetch -> delivered/applied schema; explicit controls retain their own permission | Existing: genuine composed red, then 154 tests across `kw-query-section-loading.test.ts` and `queryEditorSchema.test.ts`; pending-database ABA, account/protection changes, and both auth-mode coalescing orders covered |
+| Native schema controls | Rendered Refresh Schema plus actual FlaUI Ctrl+Space in the exact Monaco editor | Partial: real refresh changed the prepared catalog; native keypress produced visible suggestions and ready worker. Fresh silent authentication returned no usable session without an interactive attempt. Successful automatic network acquisition remains unverified. See `%TEMP%/kw-native-schema-20261026-8b9e9b92/report.md` |
+| Hidden canary | Exact note then valid six-binding/one-source dashboard baseline -> continuously hidden prefix -> notes then dashboard at 19/32, before inventory | Defer: current baseline passed (6491/176/76 ms); prefix 1-5 passed, 6 remained pending until the 240-second framework deadline. Both hidden checkpoints unreached. No long-duration root reproduction or recovery claim |
+| TypeSpec first activation | Fresh standalone -> separately qualified fresh prefix 100-103 -> first activation of exact archived 104, without warming/retry | Standalone qualified at 2398 ms. Prefix 100-103 passed; 104 remained pending until framework cancellation at 166215 ms. No returned product response; capture overflow 344 and incomplete cleanup. See `%TEMP%/ka7-8b9e/final-verified.json` |
+| Earlier Kusto I1 and SQL restore | Kusto first execution/Save -> reopen -> fresh execution; separately observe dirty custom-tab versus clean native model during profile restoration | Defer: earlier Kusto reopen lost its bridge. The old SQL profile's mismatch preceded model resolution, with no later correlated snapshot. Fresh profiles do not close either finding |
+
+Current production identifiers:
+
+```text
+Host: cdcc2310f7f860dbd3c4f22c7f1f5eebd3e22018952b2607b7254f7b8dd2a5d9
+Webview: ac2e294fcddfd3c729c13d1a5ab922bed367c8126c4246611a96ea1b8632b04a
+Host bytes/cap: 2599385 / 2599936 (2539 KiB)
+Webview bytes/cap: 3425860 / 3429376 (3349 KiB)
+```
+
+Package: all three typechecks, lint, and 12 bundle gates passed. The host cap
+increase was explicitly approved; all other limits and the 50 KiB buffer remain
+unchanged. Current Node suite: 505 total, 504 passed, one existing prerequisite
+skip. Current default native suite: 417 passed, exit 0. Final post-auth-fix
+coverage is PENDING; the earlier 9253/4 at 53.06% is a pre-fix receipt, not a
+current qualification.
+
+Retain the native regression chronology: 377/40 exposed a test budget shorter
+than its intentional lease/snapshot waits; its local budget was corrected.
+The next 398/19 run included a real lease expiry before a 6755 ms native commit.
+An opt-in diagnostic 417-pass run did not establish the cause. Normal fixture
+diagnostic I/O was subsequently deferred, with all return-time snapshots and
+assertions retained; default 417-pass runs then completed. Do not infer the old
+delay's cause solely from those passes. Windows journal rename failures were
+reproduced and fixed with bounded metadata-only retries, without replaying tools.
+
+The user permits new testing profiles when they unblock capability without
+destabilizing existing work, never to avoid fixing a broken path. Named I1
+profiles require exact root/user-data/native-argv and approved-target checks.
+Never copy auth stores manually, discard failed dirty fixtures, or revert the
+user's later profile edits. Normal account-consent UI may require the user:
+the SQL session completed only after "Allow access to my Microsoft account".
+The unchanged connection form was canceled, not saved or tested again.
+
+The original runtime was VS Code 1.143.0/087f..., current E2E uses authentic
+1.143.0/2d0b..., and native integration uses 1.143.1. These are not identical
+builds. E2E uses production-built assets in Development hosts. The user-provided
+connection-success screenshot supports that UI state only; no automated visual
+or installed-Production qualification is claimed.
+
+### Withdrawn Framework Request: Correlate Pending Native Opens
+
+**Status: WITHDRAWN as premature.** The user preferred ordinary product logs.
+Existing CLI post-failure capture already works through its CDP fallback
+(`r9Workbench`: 158947 bytes; `r12`: 205359 bytes), without framework changes.
+The request, priority, and observations below are retained as historical
+evidence, not an active framework prerequisite or proof of a main-process freeze.
+
+**What I was trying to do:** Complete the unchanged hidden-canary and archived
+TypeSpec first-activation sequences, preserving every first response and file.
+
+**What step/capability is missing or broken:** A supported URI-correlated native
+IPC progress audit before `openTextDocument` returns, through model resolution,
+provider entry/return, HTML/control delivery, and final settlement. Implementing
+this in the framework repository requires separate authorization.
+
+**What I observed:** The current TypeSpec 104 call started at
+2026-10-27T06:24:57.947Z. Native logs contain `vscode.openWith`, `_workbench.openWith`,
+and two URI-less `openTextDocument` invocations, followed by no attributable
+model/provider progress before framework cancellation. These entries are
+time-correlated, not an exact target identity join. The bounded SDK recorder
+overflowed; no captured 104 panel does not prove that no panel existed. Four
+clean tabs remained at the last cleanup observation; normal host shutdown later
+reached zero processes. Artifacts: `%TEMP%/ka7-8b9e/final-evidence.json` and
+`%TEMP%/kw-acceptance-yXXBLO/evidence/call-104-response.json`.
+
+**What I already tried:** Exact immutable originals, first-call preservation,
+independent standalone and prefix hosts, native text/custom-editor controls,
+SDK before-ingress recording, raw renderer capture with Document rebinding,
+post-verdict realm inspection, bounded native-window metadata, and current-build
+automatic-auth suppression. Earlier 30-second projection-ACK failures and this
+unresolved native-open wait are distinct observations. Neither synthetic ACK
+loss nor a larger product deadline is a root-cause test.
+
+**What the framework needs to support:** Record scalar request/URI hashes,
+native stage identity, entry/exit/deadline/cancellation and pending-dialog
+metadata independently of the stalled log stream. Reserve bounded capacity for
+the exact target and expose loss counters. Never capture document bodies,
+authentication arguments, sessions, tokens, or secrets. Preserve receivers,
+arguments, return/throw identity and the original first-call result; observations
+must not retry, reveal, save, or close the target. Provide transparency tests and
+one isolated replay retaining pending operations through normal host shutdown.
+
+**Suggested Gherkin step syntax (if applicable):**
+
+```gherkin
+Given native open progress is observed for the exact task-owned URI
+Then I collect the first native open outcome without retrying it
+```
+
+**Priority:** blocking for attribution of the pending native-open failure,
+not evidence that the earlier product fixes or all original workflows are done.
+
+## Historical First Operations and Archived Activation: October 20-22
+
+Status: concrete first-operation ownership, queued-delivery, removal-persistence,
+and Kusto connection-publication defects have focused red/green tests. The full
+reported workflow is not closed: live Kusto still encountered a four-second
+readiness rejection, SQL encountered Tools Service readiness failure, and the
+original prolonged-hidden and load-dependent TypeSpec failures are unresolved.
+Do not replace these outcomes with passing unit tests or matching error strings.
+
+| Contract | Setup, action, and oracle | Evidence / remaining gap |
+| --- | --- | --- |
+| First background operation | Real orchestrator CREATE with `reveal:false` -> exact Save -> live LIST -> first removal or Kusto/SQL execution without query replacement; ID/URI and active/hidden cases | Twelve genuine missing-live reds, then green in `toolOrchestratorConnect.test.ts`; physical webview/execution replies are simulated |
+| Ownership and dispatch fences | Actual admitted background edit held during public removal cancellation; later Save retains the edit; source/version/connection/runtime changes cannot deliver a queued mutation | Focused orchestrator, provider/session, and gateway tests; stale physical-delivery cases were red before the guard |
+| Removal durability | Actual query/SQL webview handler removes the element but withholds success until persistence confirmation; rejected or retired runtime cannot succeed | Six genuine early-response reds, then green in `message-handler.test.ts` |
+| Native removal lifecycle | Real native document/provider, background creation, live projection, response at matching native persistence ACK -> immediate public Save -> disk zero sections -> reopen -> implicit starter -> second removal/Save | Two passing `kqlxMarkdownOwnership.test.ts` cases; adapted frontend, not real DOM or query execution |
+| Kusto publication readiness | Valid host target, ready dispatcher/native projection, deferred account enumeration and real staged/applied publication before one execution | Premature-post red then green; 28 added preparation, cancellation, identity, and provider tests; does not prove the later live readiness failure fixed |
+| Live execution lifecycle | First configure/execute without `query` -> real Probe result -> Save/reopen -> fresh second producer and Save | Opt-in `background-first-execution`; earlier first Kusto execution and disk result succeeded, but full lifecycle remains unqualified. Latest current-build first request failed at the four-second gate; SQL failed STS readiness |
+| TypeSpec first activation | Unchanged 54,487-byte archived copy -> exactly one public URI activation -> live/non-fallback response -> unchanged clean source and exact close | Standalone passed in 1.289 s; fresh prefix trial failed at index 100 after 30.507 s, before TypeSpec. No load-dependent TypeSpec qualification |
+| Hidden canary | Exact saved note and valid six-binding/one-source dashboard baseline -> no inventory during mixed workload -> sequential notes/dashboard while hidden -> one ordinary activation only after failure | Baseline passed; prefix 2 failed activation after 30.851 s before hidden checkpoints. Later controller launch failed before product calls. No hidden-outage red/green |
+| Bounded diagnostics | Native reload acknowledgment/admission metadata uses the existing 128-record cap and two reserved terminal records; throwing sinks cannot affect readiness | Five native diagnostic scenarios pass; new fields are numeric/boolean only. Existing timeouts and startup decisions remain unchanged |
+
+The user explicitly approved an initial host limit of 2528 KiB and then a final
+2532 KiB limit after the additional target/runtime guards (baseline 2482 plus the
+unchanged 50 KiB buffer), leaving every other limit unchanged. The final measured
+host is approximately 2531 KiB. Earlier 2528 KiB builds predate those guards;
+the final production package passes all three typechecks, lint, and all 12 size
+gates at 2531/2532 KiB for the host and 3344/3349 KiB for the main webview.
+
+Final repository regressions: coverage gate passes with 372 passing files and
+one existing skipped file, 9,121 passing tests and four existing skipped tests,
+and 53.06% statement coverage. All 395 native integration tests pass. The complete
+Node script suite has 351 passes, zero failures, and one existing recorded-build
+prerequisite skip. Full logs are `%TEMP%/kw-final-coverage-verified-oct22.log`,
+`%TEMP%/kw-final-native-oct21.log`, and `%TEMP%/kw-final-script-regressions-oct22.log`.
+These gates do not qualify the remaining live E2E paths; their last failed
+attempts predate the final target/runtime guards and require a fresh runtime run.
+
+Final review additions have their own red/green cases: registered-but-loading
+readiness before publication, immutable execute-only section/target expectations
+without retargeting, both real compatibility providers forwarding queued guards,
+and early dirty/tabless-document refusal in the opt-in harnesses. All starting
+documents are preserved, not only those associated with visible tabs. The first
+full coverage attempt was interrupted after exposing a stale six-trigger source
+assertion; a second interrupted attempt exposed missing lifecycle fields in the
+provider fixture. Both are failed/incomplete evidence, not passing gates. Their
+focused corrections passed before the final complete coverage run. The final
+post-edit review found no remaining Critical or Warning findings in its scope.
+
+Use sequential terminal execution, including across agents: the terminal/CWD is
+shared. Parallel terminal work mixed output and ran one `npx` invocation in a
+frozen extension directory; its unwanted installation prompt was cancelled.
+Do not credit commands without an actual completion receipt. Watchers can also
+replace parent `dist` output without changing source: build an immutable private
+source snapshot and verify runtime hashes before and after real E2E trials.
+
+VS Code 1.143.0 may be absent from the download catalog. The official test-electron
+cache accepts a verified copy of the authentic signed runtime under
+`.vscode-test/vscode-win32-x64-archive-1.143.0`, with its normal completion metadata.
+Do not patch the downloader, relabel another version, copy user authentication,
+or touch the normal installation. Retain earlier setup failures. The standard
+named-profile launcher refreshes managed auth metadata and window-restore state;
+the user explicitly approved those effects for inactive `kusto-auth` and
+`sql-auth` profiles only. Preserve starting clean tabs instead of assuming an
+empty window, and never discard a dirty failed fixture.
+
+Private evidence is retained under `%TEMP%`: `kw-acceptance-9r66XT` (TypeSpec
+standalone/prefix audit), `kw-acceptance-Hw6OP9` (valid canary then prefix failure),
+and `kw-i1-private-source-20261021-8b9e9b92` (live execution trials and immutable
+builds). None of these claims visual qualification or proof of all SDK probe/ACK
+phases. Existing saved results and all archived originals remain unchanged.
+
+## Compact Tutorial Footer: October 20
+
+The `520px` media query must not force `.compact-utility-strip` into a column or
+make its actions full-width. Let the footer and action strip wrap naturally.
+The compact Mute menu anchors to the action strip, not the narrower Mute button;
+otherwise the narrow-screen menu rule squeezes labels into approximately 61px.
+
+Coverage ledger for the shared `kw-tutorial-viewer` CSS:
+
+| Path | Evidence / decision |
+| --- | --- |
+| Embedded file open -> loaded media -> resize -> footer geometry -> real Mute toggle -> open-menu bounds -> real Got it -> overlay gone | `did-you-know-embedded-popup` outline, actual webview widths 486/346/926px; include the reported breakpoint, separate navigation wrapping, and wide control |
+| Original stacking | Run `20261020-171418`: genuine red at 486px, footer 120px; all actions share X but have different Y values |
+| Menu counterexample after initial footer repair | Run `20261020-173013`: genuine narrow-menu red, width 60.7px/client 59px/scroll 100px; wide menu assertion passed before an unrelated capture failure |
+| Final footer and menu | Run `20261020-173205`: 3/3 passed on VS Code 1.142.0; 346px menu width 280px, fully inside viewport, no horizontal overflow; exact-window capture metadata valid |
+| Standard and empty compact controls | Existing `did-you-know-compact-actions` run `20261020-172517`: 3/3 passed; empty Got it alignment, wide close placement, adaptive controls/scrollbar and real dismissal; predates only the compact menu anchoring follow-up |
+| Persistence, auth, revisions, document formats | Exclude additional lifecycle matrix: only shared presentation CSS changed, with no message, state, or persistence changes |
+| Widths below the measured 346px | Deferred: the outline asserts fitting actions share a row; it does not claim coverage of the action strip's own wrapping at smaller widths |
+
+Run `20261020-172040` failed only during screenshot foreground capture after all
+three geometry and Mute-toggle checks passed. Keep it distinct from the later
+passing runs. Screenshots were captured and metadata reviewed, not visually
+inspected because image-resource retrieval has disrupted this user's chat.
+
+Final regression gates after the menu follow-up: `npm run test:webview` passed
+9,028 tests across 372 files, with four existing skipped tests in one file;
+`npm test` passed all 391 extension-host tests on VS Code 1.142.0. The normal
+compile, all three TypeScript checks, and lint also passed.
+
+## Prolonged Hidden Access: October 15 Evidence, October 16 Blocker
+
+Status: the reported continuously hidden four-second access outage remains
+unreproduced in an independently observed runtime and is not fixed by this
+investigation. The earlier native final-sanitation overlap fix and its five
+fast integration cases remain intact; their final error strings do not qualify
+this different failure phase. Do not add a 24/25-minute regression or treat that
+elapsed time as an established threshold.
+
+The user supplied the report at
+`C:/Users/angelpe/source/dogfooding/vscode-kusto-workbench-dogfood/extension-prolonged-access-retest-2026-10-15.mdx`
+and the immutable archive at
+`C:/Users/angelpe/AppData/Local/Temp/kw-prolonged-access-before-2026-10-15-a2ba55ee9a1b42e495d52479c8604b8e.zip`.
+Read-only ZIP inspection verified 856,415 bytes and SHA-256
+`d8471f77cac73d133f935b83d24630cece4e5168ee80f9f74c59ee6a78432cf2`.
+The current report matched its archived copy. Nothing was extracted over or
+written to the original files.
+
+The exact URI/path join covers all 109 successful historical activations.
+`evidence/hidden-full-load-inventory.json` contains 110 task-owned files plus one
+pre-existing fallback: 80 task-owned unavailable snapshots include the canary,
+leaving 79 historical failures. Unavailable counts are 68 KQLX, nine MDX, and
+three SQLX. Nineteen plain KQL/CSL/SQL files retain live metadata; eight Markdown
+files are expected fallbacks. These flags do not independently prove API access.
+The three healthy rich files are indices 106-108, but 17 healthy plain files were
+opened before the newest failed rich file at index 104. Neither a type-only nor
+a recency-only causal conclusion is established.
+
+`evidence/observed-canary-calls-and-responses.json` records sequential notes then
+dashboard calls. Baseline durations were 31/88 ms at 19:31:33 UTC; after 19 files,
+38/101 ms at 19:36:46; after 109 files, 4,092/4,125 ms starting 19:57:33.102 and
+19:57:37.197. Inventory followed qualification. Responses are semantic
+transcriptions, not raw captures; loaded build/window, SDK send/ACK receipts,
+per-file last visibility, and the first failing transition were not recorded.
+
+### Short Investigation Attempts
+
+All attempts used the existing framework, retained first failures, and requested
+no data queries. No original notebook or normal F5 window was used. The user
+explicitly approved use of the inactive isolated `kusto-auth` profile and later
+approved the standard launcher's reset of that profile's stored window/workspace
+restore metadata. This does not authorize resets of normal profiles.
+
+| Run | Actual boundary reached | Classification |
+| --- | --- | --- |
+| `runs/20261015-214420` | New synthetic canary activation succeeded; actual gateway probe/ACK traces were captured; setup then treated `panelFor()` metadata as the SDK panel instead of using `.panel` | Harness setup failure, corrected before later attempts |
+| `runs/20261015-215156` | Existing fresh-profile persisted-result helper failed with `partitionMatches:false` and `cachedDatabases:[]` before notebook calls | Fixture setup failure, not outage reproduction |
+| `runs/20261015-215313` | One unchanged fresh-host retry produced the same pre-baseline owner/cache failure | Fixture setup blocker; do not loop or relax admission |
+| `runs/20261016-023604` | Approved prepared-profile launch found Workbench already active before the test script could install its observer; no notebook calls followed | Pre-activation observation blocker |
+
+Experimental opt-in gateway traces passed 98 calibration tests, but these tests
+did not reproduce the outage. The experimental host bundle exceeded the unchanged
+2524 KiB limit at approximately 2527 KiB. Review also found async-sink rejection,
+cleanup, settings-restoration, and incomplete phase/runtime-proof risks in that
+unqualified experiment. Only this investigation's diagnostic/probe additions and
+their new tests were removed with context-checked inverse patches. The earlier
+fixes, unrelated dirty work, all four run artifacts, and private evidence remain.
+The restored gateway/provider/protocol ring passes 194 tests; production
+typechecks, lint, packaging, and all 12 unchanged bundle gates pass. These are
+restoration checks, not a new full-suite or outage-fix claim.
+
+### Coverage Ledger
+
+| Contract | Evidence / decision | Remaining gap |
+| --- | --- | --- |
+| Four-second dispatcher expiry versus five-second state reply and 30-second projection/context waits | Existing gateway/session deadline tests retained | Incident's exact failing phase still needs runtime receipts |
+| Native sanitation overlapping resume | Existing five native integration cases retained | Adapted frontend, deliberate resume, and invalid dashboard baseline are not continuously hidden outage evidence |
+| Continuously hidden real canary, first notes then dashboard before inventory | Include a short independently observed case after framework support | No completed healthy-baseline-to-hidden-failure experiment here |
+| Probe send, renderer receipt, ACK emission/admission, and SDK settlement | Include correlated passive evidence | SDK `true` is not renderer receipt; closure posters do not expose actual panels |
+| Tracing and cleanup cannot manufacture a pass | Include rejecting async sinks, saturation, target mismatch, opening/close-time damage, and unconditional restoration | Experimental calibration alone did not establish all these guarantees |
+
+### Framework Fix Request: Observe Actual Product SDK Before Activation
+
+**What I was trying to do:**
+Run a short real hidden-webview probe using an unchanged private archived canary
+in the approved isolated `kusto-auth` profile. Establish exact original notes,
+valid dashboard bindings and saved-result data, hide the canary, then call notes
+once followed by dashboard validation once before a complete inventory.
+
+**What step/capability is missing or broken:**
+The framework needs a supported pre-activation observer of the actual
+product-specific VS Code API, or equivalent controller-owned passive panel and
+transport observation installed before product startup. An observer installed
+after activation cannot recover provider registrations or the panels enclosed
+by opaque `liveConnections.poster` callbacks.
+
+**What I observed:**
+The prepared run `20261016-023604` failed at
+`Given I collect JSON artifact "hidden-probe-setup" from extension host expression:`
+with `SETUP_BLOCKED: requires an inactive observed host; never attach or close starting tabs`.
+Workbench was already active. No hidden-canary calls or recovery actions ran.
+
+**What I already tried:**
+The three fresh-host attempts and the prepared-profile attempt are listed above.
+The first captured real gateway traffic but failed local panel access; that
+mistake was corrected. Two later fresh hosts failed the unchanged fixture-owner
+admission before opening any notebook. Prepared mode therefore removed fixture
+seeding and setup Save, using an immutable archived copy instead. The approved
+standard profile restore reset still did not provide pre-activation observation.
+No fabricated ACK, substituted state getter, relaxed validity check, query,
+manual authentication-store copying, alternate launcher, or normal-profile
+workaround was used. The standard framework still performs its normal managed
+shared-authentication and Local State synchronization for named profiles.
+
+**What the framework needs to support:**
+Implement the capability in the existing `vscode-extension-tester` framework,
+not a second profile launcher. Install an explicitly requested test observer
+before Workbench activates and assert it sees the actual product API/provider.
+Forward receiver, arguments, return values, and physical SDK settlement unchanged.
+Capture exact process/build, URI, panel incarnation, renderer runtime, owner-specific
+generation, read operation, wait/probe/request, ACK admission, and SDK settlement
+identities. Record healthy identity before hiding; later renderer disappearance
+is failure evidence, not a new setup failure. Disk hashes or orchestrator-method
+presence alone must not certify the executing gateway and renderer.
+
+Use bounded scalar recording with consistent correlation encoding; capture
+monotonic timestamps at observation and flush outside measured operations.
+Contain synchronous and asynchronous observer failures without awaiting them;
+exclude trace messages from sender tracing to prevent recursion. Preserve the
+first failure, even when the next original-order read succeeds. Require exact
+canary request/reply and returned file/section identities, complete later
+per-file inventory results, continuous hidden state, and no dropped evidence.
+Register idempotent cleanup before hooks, execute it on setup/step/cancellation
+failures, attempt all restorations, compare complete descriptors, and recheck
+bytes, dirty/version state, settings, tabs, and execution after closing. Never
+discard dirty files, rebaseline after admission, or require a successful renderer
+response to retain evidence of renderer loss.
+
+**Suggested Gherkin step syntax (if applicable):**
+```gherkin
+Given I observe actual product SDK traffic before extension activation
+```
+
+**Priority:** Blocking for the required independent prepared-profile observation.
+After support lands, keep the experiment short and opt-in. Once a real failing
+transition is captured, reduce that transition to a deterministic seconds-long
+regression. Do not manufacture a root-cause reproduction by dropping ACKs, forcing
+timeouts, or introducing a 25-minute suite test.
+
 ## Coverage Planning Gate
 
 Before adding, changing, or claiming completeness for E2E coverage, read and
@@ -35,6 +516,694 @@ Do not infer the session contract from a single-window fixture alone. Keep the
 cross-window write-lock test, and drive the reopened multi-result picker with
 native click/keyboard input; assigning `picker.value` and dispatching `change`
 only proves the backing handler.
+
+## Activation Recovery Ledger (2026-10-07)
+
+Contract: unavailable live state must not be reported as successful empty notes.
+Exact activation must recover the targeted dispatcher and await its current
+accepted document projection without replaying rejected requests or changing
+authored bytes. Gray legacy rendering remains separately attributed until a
+rendered-control and runtime-error probe supplies evidence.
+
+Owners: `MainWebviewStartupGateway`, `QueryEditorProvider`,
+`HostWorkbenchToolSessionApplicationHandler`, `KustoWorkbenchToolOrchestrator`,
+native projection readiness, compatibility projection recovery, and the webview
+dispatcher's canonical state snapshot and correlated document request sender.
+
+Acceptance: ten-section canary with one exact note, Kusto 3x4, SQL 3x6, and six
+bindings -> 109 historical primary activations plus ten companions -> exact
+URI/ID and repeated same-visible activation -> notes/dashboard and unchanged
+120-source byte checks -> clean canary close/reopen with all 109 histories still
+open -> restored APIs/results -> authored edit/Save -> second reopen/interaction.
+Fixtures are disposable equivalents, not proof of the report's unidentified
+installed binary. Its original 119 historical files are not activated or changed.
+
+| ID | Setup, Action, And Oracle | Layer / Decision | Result |
+| --- | --- | --- | --- |
+| A1 | `toolOrchestratorConnect`: undefined note getter for active/URI/ID, rejected getter, retired deferred connection, unavailable -> authoritative empty -> exact ten-section note snapshot; failure has no fabricated notes | Unit / Include | Red-first, green |
+| A2 | Same suite: deferred exact activation callback true/false and retirement while awaiting it; no premature live success or target substitution | Unit / Include | Red-first, green |
+| A3 | `mainWebviewStartupGateway`: expired probe -> new runtime -> distinct challenge -> old ACK ignored -> exact ACK delivers new state request; expired mutation never replays; duplicate startup cannot renew deadline | Unit / Include | Red-first, green |
+| A4 | Same suite: cold activation and concurrent callers share bounded challenge results; matching ACK true, expiry false; existing queue/retirement tests retained | Unit / Include | Red-first, green |
+| A5 | `queryEditorProviderWorkbenchToolSessionHandler`: transport-first ordering, projection checks, failed transport/snapshot, replacement and retirement before/after reads | Unit / Include | Green; initial disposed-harness setup failure corrected |
+| A6 | `message-handler`: inactive native/KQL/SQL probe requests one correlated document per challenge; active retained runtime does not reload; throwing serializer emits nonblank canonical error | Webview / Include | Red-first, green |
+| A7 | `compatSidecarProjectionCoordinator`: exhausted initial request -> fresh correlation -> accepted current ACK; repeated correlation and automatic retry cannot renew budget; monotonic generation | Unit / Include | Red-first, green |
+| A8 | `kqlxMarkdownOwnership`: historical native readiness -> pending fresh projection -> accepted/rejected/host-rejected/disposed result; old ACK rejected and document bytes/version unchanged | Native integration / Include | Four red-first cases green; 62 ownership tests pass on VS Code 1.141.0 |
+| A9 | `workbench-tool-session-activation-sweep`: full acceptance above, 110 primaries/120 sources, exact ten section IDs/note metadata, six bindings, 3x4/3x6 tables, repeated activation, siblings retained through clean reopen, actual blank Query Run-options menu | Native E2E / Include | `20261008-011615`: all steps pass in 231969 ms on VS Code 1.141.0; JSON/logs reviewed, visual inspection unavailable |
+| A10 | Actual four-second dispatcher expiry, stale matching ACK replay, same-visible fresh-challenge recovery, exact notes/dashboard/rows and byte preservation | Native E2E / Include | `dispatcher-expiry-outbound-20261008`: one fault attempt, 4012 ms, 16 withheld ACKs; expired replay inert; 19 ms fresh recovery and 12 ms repeat; same panel/runtime, clean bytes, exact cleanup |
+| A11 | Authenticated Kusto/SQL reruns and unrelated chart/transform/export/privacy Cartesian products | Defer | This slice changes startup/readiness, not execution/publication owners; saved result restoration and existing native ownership gates are not a live rerun claim |
+| A12 | Screenshot appearance / exact original gray incident attribution | Defer | Image inspection is prohibited in this conversation; DOM geometry, native menu interaction, logs and byte checks cannot certify screenshot appearance or the unidentified installed build |
+
+Final affected unit gate: 788 tests in nine files. Full native integration:
+324/324 on VS Code 1.141.0. The first full integration run passed 323/324 and
+exposed an ordinary compatibility request renewing exhausted startup; recovery
+was narrowed to fresh `dispatcher-document-` correlations, with non-evicting
+64-request bounds. Its existing failing native test and the full suite then pass.
+Host/webview/connector types, zero-warning lint, normal production package,
+12 unchanged bundle limits, diagnostics, and whitespace checks pass. No commits,
+version changes, original-notebook activations, or normal-profile changes.
+Final read-only comparison of `baseline.json` from the October 7 audit archive
+against its exact dogfood workspace matches all 119 original SHA-256 values,
+including ten archived companions; zero files are changed or missing. This is a
+byte check only and does not infer current editor dirty state in another window.
+
+The sweep exposed passive SQL connection/database adoption persisting untouched
+SQLX, including blank documents. Controller persistence now requires user/tool
+intent; passive target clearing retains runtime effects without scheduling a
+document write. Automatic result fitting no longer authors height or persists;
+saved heights remain exact and explicit Fit still authors the measurement.
+New red-first tests cover both paths; the complete SQL component/controller ring
+passes 87 tests. These fixes preserve the existing native Save/publication owner.
+
+Earlier runs remain failures, not passes: unresolved synthetic fixture owners,
+missing pre-activation SQL helper, unconfigured SQL inventory, wrong table-column
+accessor, section-top rather than table scrolling, an unqualified retained-frame
+wait, overbroad blank-Run and JSON-key-order assertions, and observing a native
+Save before its final clean publication. The final fixture saves only its newly
+created canary before establishing the baseline. At most one extra setup Save
+admits only an identity-only SQL descriptor transition, with exact authored
+content checks; no rebaseline occurs after historical activation. Later native
+Save is invoked once and its clean buffer/disk convergence is observed within
+ten seconds, requiring a 500 ms stable checkpoint. Data/schema/byte assertions
+were not removed.
+
+For retained-frame result waits, always target the exact canary title. With 110
+webviews an unqualified asynchronous helper can wait on a frozen unrelated frame
+while the actual canary's tables are present. Scroll the `kw-data-table`, not a
+tall query section, before requiring its three rows to intersect the viewport.
+Kusto main Run readiness is target-based, not based on nonempty query text;
+assert it against the public selection-readiness predicate and never execute the
+blank control probe. Use the exact CSS toggle in its exact webview.
+
+The first controlled-expiry attempt was harness-blocked: a late capture listener
+did not precede the installed dispatcher. The passing test uses the existing
+dynamic `__e2eCaptureHostMessage` hook to return false only for canonical probe
+ACKs. It does not replace the SDK or alter host readiness; prior hooks are
+restored and the expired real ACK is replayed before fresh recovery. Both runs
+are retained, and all task-owned hosts/CLI processes are closed.
+
+Exact archived-file and authentic installed-VSIX repetition, authenticated query
+reruns, and visual appearance remain separate deferred qualifications. The SQL
+table in the sweep is explicitly a saved legacy display fixture, not evidence of
+an authenticated live SQL execution or ownership-publication transition.
+
+## No-Op And Cold-Readiness Follow-Up (2026-10-09)
+
+Contract: opening, hiding, revealing, and closing an untouched document must
+preserve its exact bytes and clean state with Auto Save enabled. Genuine authoring
+and native Save must still work. The original109 acceptance also requires actual
+Query controls, exact notes and six dashboard bindings, loaded Production build
+identity, native pixels, retained historical tabs, and a second post-reopen edit.
+The earlier synthetic sweep is not a substitute for that composed lifecycle.
+
+Owners: webview signature/restoration comparison, gateway dispatcher and outbound
+queue, native projection/URI/Save ownership, exact tool connection and inventory,
+and the isolated archive/capture/classification harness.
+
+| ID | Setup, Action, And Oracle | Layer / Decision | Result |
+| --- | --- | --- | --- |
+| N1 | `noncanonical fourteen-section hydration preserves native bytes without an ordering-only edit`: five Markdown, five Query, four Chart sections and opaque fields -> accepted projection -> key-order-only snapshot -> unchanged native version, clean state and exact bytes -> real query change and Save | Native integration / Include | Passed before changing native equality; native `deepEqual` was already key-order-insensitive. Not proof of the incident writer |
+| N2 | `does not persist or advance revision when fourteen hydrated sections only reorder object keys`: retain acknowledged baseline without reprojection/reseeding -> reorder serializer keys -> zero persistence and revision changes -> genuine query edit persists | Webview / Include | Red: one `persistDocument`, revision 1. Green after sorting comparison-copy object keys; wire text, values, arrays and result strings are not normalized |
+| N3 | `does not persist reordered saved descriptors during deferred result settlement`: saved nested descriptor -> acknowledged clean baseline -> deferred peer settles -> no automatic persistence -> genuine query edit preserves both saved result strings and descriptor | Webview / Include | Red: one automatic persistence. Green after normalizing both comparison operands; the fixture records the real queued-to-settled transition |
+| N4 | Cold dispatcher delay and coalesced deadline; held earlier physical send beyond 5.2 seconds -> no premature reload lease -> current dispatch/ACK; source/version/ABA, readiness expiry, disposal, invalid/unsafe projections, preparation rejection and transport rejection | Gateway and native / Include | 78 gateway tests and full 341 native tests pass. Two full native runs exposed lost transport retries, then factory replay; original retry-count and one-shot assertions were retained and both defects repaired |
+| N5 | Unavailable and authoritative-empty snapshots; retirement during snapshot, SQL privacy admission and after A settles while B is pending; reveal-false file bridge inspection -> background edit -> explicit activation -> live edit | Host / Include | Red-first unavailable/retired flags, callback-free activation and final fanout races are green. Mutation ownership is unchanged; no healthy-neighbor substitution |
+| N6 | Immutable private archives -> fresh marked TEMP root, link confinement and exact 131 before-images -> first clean legacy tab -> one exact-ID activation -> DOM Query controls and actual execution observer | Installed Production / Include | Two earlier runs reached one successful activation, clean 498-byte archival source and zero execution ingress/start. They predate the separate cold-copy fix and do not qualify that lifecycle. Exact executing module/context/tree hashes match the candidate; native control pixels remain unqualified |
+| N7 | Pre-staged separate byte-identical cold copy -> exact recorded109 order including archival original target20 and growth target83/checkpoint88 -> close/reopen only the cold copy while all109 histories remain -> real native menu/Escape, separate authoring/Save/reopen/second edit, exact note and six bindings | Composed E2E / Defer | BLOCKED: native pixels/SDK geometry, actual URI/panel/frame mapping, and lawful Production offline result ownership. No fresh host was authorized for the cold-copy follow-up; no installed full109 pass, notes/dashboard completion or image review is claimed |
+| N8 | Partial88, missing lifecycle, wrong executing hashes, overwritten host evidence, dirty-then-revert, unsafe links/aliases/cleanup, wrong/blank/fallback pixels and unobserved execution | Harness / Include | Final Node harness/support run passes; negative cases cannot certify partial or metadata-only evidence. Unit capture adapters do not replace native captures |
+| N9 | Existing Node test `acceptance cold canary close retains exact109 including archival original target20; closing target20 fails108/109`: stage exact498 bytes before opening, keep original20 plus distinct cold tab, close cold after109, then deliberately close original20 | Node, real private filesystem and SDK-shaped tabs / Include | Red before fix: actual `108/109` after cold close. Green: exact109 retained; the original20 negative still throws `108/109`. No ordinal exclusion, reordering, rebaseline, normalization or file removal |
+| N10 | Existing Node test `acceptance session composes first exact-ID cold copy, original109 including target20, clean close/reopen and independent131+1 observers`: metadata lookup once -> exact URI tool -> all109 -> cold close/reopen -> separate authoring copy | Node session with SDK-shaped metadata/tool/tab facades / Include | Exact original order and source hashes retained; archive baseline/source/checked counts131, separate cold count/checked count1. Copy keeps source basename and section ID; clean model generations and close/reopen observed. Not native E2E or Production fact qualification |
+| N11 | Six mutations (buffer, disk, dirty document, dirty tab, clean version advance, changed/reverted buffer) at before-activation, before-close and after-reopen; parent collector independently rehashes the cold copy/source and verifies the root marker | Node session and existing parent-identity tests / Include | All18 mutation cases reject before further intent, without changing archival131 state. Existing parent hash assertions remain intact; cold inspection is separate, never blended into primary counts |
+| N12 | Exact cold/historical/authoring control paths and source linkage; actual absent panel handle plus wildcard CSP with otherwise matching URI and geometry | Classifier and unchanged control matcher / Include | Separate-copy and archival-frame substitutions reject. `handle:null` plus wildcard CSP remains explicit BLOCKED; no handle is fabricated and no matcher is removed |
+
+Final official coverage: 8,713 tests pass in 372 files, with four pre-existing
+skipped tests in one file; statement coverage 52.32%, unchanged threshold. Full
+native integration passes 341/341 on VS Code 1.141.0. Host/webview/connector types,
+lint, production packaging and all 12 unchanged bundle gates pass. Earlier red
+attempts and all failed installed campaigns are retained.
+
+Candidate: `out/releases/vscode-kusto-workbench-0.0.0-placeholder.vsix`, SHA-256
+`6b14f0549768a35b85104b175251c133ef487629b79ca2c502b49f0a0e4293bc`.
+Executing main SHA-256 is
+`2993f705ca59acf27b4114555f809ec26dd052404aee82e15ef507eeeb0428bf`; the 52-file
+dist tree matches the VSIX. Actual loaded module and `ExtensionMode.Production`
+are recorded, rather than inferred from the manifest version. No release,
+original incident-binary attribution, human visual review, or completed109
+qualification is implied by these code gates.
+
+Installed attempts: `%TEMP%/kw-acceptance-d54mpo/a1` stopped before its activation
+tool call because first-launch Welcome was foregrounded; the harness now admits
+one clean exact inactive tab but still requires exact post-tool focus.
+`%TEMP%/kw-acceptance-HI7qTh/a1` exposed the SDK treating an undefined frame result
+as success; the exact-token guard now rejects that frame. Final
+`%TEMP%/kw-acceptance-mSpHlp/a1` reaches the exact inner frame and controls but
+refuses native input because native Document geometry is missing or ambiguous.
+No screenshots are viewed. All three are failures or blockers, never passes.
+
+Framework blocker: `NativeUIClient.getElementTree(windowId)` has no supported
+depth/node/deadline options, while available bridge source limits depth to five
+and does not report truncation. The available live CLI also lacks an enforceable
+`realNativeOnly` policy. A bounded, PID/HWND-scoped native Document inventory with
+explicit truncation and native-only/no-auth isolation is required before the
+pixel gate can qualify; do not map a gray region or another document by guesswork.
+The default synthetic feature remains unchanged by the opt-in comment-extracted
+original109 fragment. Historical archived queries are never executed, original
+dogfood files are never activated/restored, and no Auto Save or equality gate is
+disabled. Authenticated synthetic ADX execution is a separate lawful owner path,
+not an offline fixture or an authorization to use Development seeds.
+
+### Critical Cold-Copy Harness Follow-Up
+
+Only the existing replay harness, existing Node tests and this ledger changed.
+The opt-in feature keeps the original basename/section-ID expectations; the
+default feature and production code are untouched. Stage the exclusive copy
+under `<fresh marked TEMP root>/cold-canary/<original basename>` before any
+Workbench opening, outside `history` but inside the SDK's exact owned-root
+boundary. Preserve all131 archive bytes/hashes and the 498-byte original20.
+Authoring uses its third, distinct copy. Never reuse an old campaign root.
+
+`acceptanceControlPath` is root-relative: cold/menu/Escape/reopened controls use
+`cold-canary/<original basename>`, historical83/88/109 use their original
+`history/<recorded path>`, and second interaction uses
+`history/original109-authoring.kqlx`. Runtime `controlTarget`, parent collection
+and classification must agree on those exact URIs, not only a title or section
+ID shared by both copies. Cold model text, dirty transitions and same-model
+versions are observed independently through close/reopen; mutations before
+native intent must reject, including dirty/changed-then-reverted revisions.
+
+Scoped validation: `node --test tests/scripts/published-notebook-journal.test.mjs
+tests/scripts/e2e-full-suite-support.test.mjs` passes214/214, zero skips; 43 new
+cases, with all previous tests/assertions retained. The first red used the same
+retention command as the first harness patch's green validation. The three old
+failure campaigns remain immutable:393/393 archived sources and15/15 private
+archive/harness/helper/VSIX artifacts rehashed unchanged, no new cold root in
+those campaigns. No host launch, network, capture/view, normal profile/auth,
+original-file write, production edit, commit, version or gate change occurred.
+
+Parent manual checklist item9: close/reopen the **separate cold copy** while
+exactly109 archival tabs, including the original target20, stay retained and
+all131 archival hashes remain unchanged. Never reduce that retention oracle.
+
+Pipeline status remains **UNQUALIFIED**. The pre-review was already completed;
+the requested new post-WARNING-1 pass is read-only and scoped to this follow-up.
+Node facades do not qualify the native pixels, actual panel mapping or lawful
+Production offline fact owner.
+
+Final preservation check: 130 of 131 originals match their expected current
+baseline, including the growth notebook's existing 15,947-byte after-image
+`AA25DDE07FFF18562AF78A6CC5278B1462072F4B9BA65C3CEC24F9AE54A35CC9`.
+`markdown/mdx-test.mdx` differs: expected
+`f029166cfdc12508ed17f0bb8c24649c52a4007b17c6fa6c5ef82f7a5fd8e7e1`, current
+`8b7c4a819ae63c4538c7d996015ad295729f134402e9718c90cb19d295ea5ffd`.
+Both are 583-byte UTF-8 JSON with 28 CRLFs; parsed values and array order are
+identical, with object-key order differences at `$.state` and its two sections.
+Current mtime is `2026-10-09T01:02:54.678Z`. The writer is not attributed; do not
+restore the file or claim all131 original byte hashes stayed unchanged. All
+393 archived copies across the three failed campaigns match their before-images;
+both protected archives, the candidate, and all three installed mains match their
+recorded hashes. No task-owned host survives; the eight pre-existing watcher
+processes remain. User editor buffers/active-editor dirty state were not observed.
+Final Node harness/support validation passes 214 tests without skipped cases;
+that lower-layer result does not qualify the blocked installed lifecycle.
+
+### Framework Fix Request: Exact Owned-Panel Capture (BLOCKED)
+
+**What I was trying to do:** Prove native Query controls/menu/Escape and
+close/reopen for a private cold copy while its same-basename archival original20
+and the other108 historical tabs remain open, with no executions or auth.
+
+**What step/capability is missing or broken:** Supported exact URI/current-panel
+to CDP frame identity, bounded native Document geometry, and enforceable
+`realNativeOnly` capture/no-auth isolation in the installed framework.
+
+**What I observed:** The actual public panel facade has `handle:null` and
+wildcard CSP; neither supplies a unique frame identity. The unchanged matcher
+returns `BLOCKED: exact URI-to-native-panel-to-CDP-frame identity unavailable`.
+`getElementTree(windowId)` exposes no supported depth/node/deadline controls;
+available bridge source fixes depth at five without a truncation report. The
+installed CLI does not expose the required native-only policy.
+
+**What I already tried:** The three retained campaigns and bounded SDK/CDP/tree
+investigation are preserved. Node regressions prove that matching URI, basename,
+section ID or geometry cannot replace the missing actual panel/frame identity.
+No fresh hosts, images, guessed handles/depth options or weaker matchers are
+authorized for this fix request.
+
+**What the framework needs to support:** A supported, independently verifiable
+mapping of the exact owned URI and current panel incarnation to its actual CDP
+target/context/frame owner, without private-field assumptions, title-only
+selection or wildcard matching; PID/HWND-scoped bounded native Document
+inventory with explicit truncation; and native-only/no-auth capture policy that
+fails closed. Preserve tokens, frame-owner/geometry and no-fallback checks.
+
+**Suggested Gherkin step syntax (if applicable):** A native capture step keyed
+by exact owned URI plus current panel incarnation, asserting the actual frame
+identity and native-only/no-fallback policy. This is a capability request, not
+an available step or workaround.
+
+**Priority:** blocking. Pixel/SDK geometry and exact panel mapping remain
+BLOCKED; lawful Production offline result ownership is an independent hard
+gate. Do not substitute remote customer queries, auth seeds, forged facts or
+Development fixture commands.
+
+## Wave 3 Coverage Ledger (2026-10-09)
+
+Status: installed pipeline **UNQUALIFIED**. Code gates pass, but the actual
+`current133-api` attempt stops at initial `StageSetupBlockingOwner`; neither the
+composed Production acceptance nor its executing panel-runtime proof is complete.
+This is a documentation-only checkpoint using supplied gate receipts, not a new
+test run. The October 7/8 history and the earlier 8,713-test/341-native checkpoint
+above remain historical evidence, not the Wave 3 final gate.
+
+Scope: the frozen 447-source snapshot at
+`698891c66d37f4aa28cae40c4469b806c0e4bf31`. The same canonical URI queue,
+`MainWebviewStartupGateway`, source-generation authority and native Save owners
+remain in place; no new state map, file or transaction framework is implied.
+Implementation and regression tests reuse existing files. This ledger records
+their scope and receipts; no dependency, metadata, version, threshold, normal
+profile/auth store or protected original was changed.
+
+Isolation: use immutable archived before-images, never live originals, auth
+seeds, historical query execution or Development fake result owners. Auto Save
+stays enabled; exact assertions and byte baselines are not weakened or reset.
+
+### Contract And Composed Acceptance
+
+Ordinary targeted reads must establish fresh dispatcher/projection readiness and
+return a complete captured snapshot or a canonical failure, never fabricated
+empty notes or a successful partial document. Expiry withdraws the exact unsent
+request without canceling a submitted SDK promise. Untouched bytes, model
+versions, clean state, saved results and attachments stay independent of reads;
+prior comparison-copy signatures and passive SQL behavior do not authorize
+normalization, rebaselining or changing Auto Save. Genuine authoring/native Save
+retain their existing owners.
+
+**C1, mandatory read-only API composition:** immutable 133 before-images,
+101 structured sources and the original October 7 order109 -> one clean unique
+SDK custom-editor canary and one metadata-only exact-ID initial activation ->
+initial full oracles -> all109 historical activations in the recorded order ->
+hidden full oracles without auto-reveal -> exactly one ordinary exact-ID
+post-stress activation -> full oracles before any close -> read-only close and
+independent parent/runtime collection. Every oracle requires the original
+regression canary's ten exact sections, full note and metadata/related IDs, six
+bindings, typed raw results and attachment graph, the two Query sections and
+the saved SQL display. The second Query's primary and additional tables must
+both survive. It is not an authenticated SQL rerun. All133 source
+bytes remain exact; the separate cold copy has its own count1/linkage ledger.
+Before/after executing provider, gateway and webview identities are mandatory.
+`current133-api` never replaces or renumbers the original131/original109 contract.
+
+**C2, distinct native-control composition:** the original131 archive contract,
+separate cold copy and all109 retained historical tabs including original20 ->
+real Query controls at83/88/109 and native Run-options/Escape -> clean cold-copy
+close/reopen while all109 remain -> separate authoring copy, real keyboard edit
+and native Save -> reopen and second edit/Save/interaction, with live UI, durable
+bytes and restored notes/bindings/results checked throughout. C1 API calls and
+the older Development sweep cannot replace these controls or this lifecycle.
+Exact panel/frame/native geometry and lawful Production result ownership remain
+independent blockers; no image inspection or native-control pass is claimed.
+
+Owners: the gateway owns panel transport, issued recovery and readiness episodes;
+`QueryEditorProvider` owns captured-panel read preflight;
+`HostWorkbenchToolSessionApplicationHandler` owns connection token, waiter and
+reply settlement; the orchestrator owns targeted read/inventory dispatch.
+Strict `getKqlxState(true)` and the shared snapshot protocol own capture/admission;
+`KustoEditorSchemaCoordinator.beginSchemaRequests()` owns schema batch staging,
+commit and guarded notification. `SqlEditorLifecycleCoordinator` retains SQL
+comparison reconciliation after exact snapshot admission. Existing projection,
+URI/source-generation and Save/publication owners retain durable authority.
+The archive observer, SDK tab observer, cleanup set and parent collector are
+evidence owners, not replacement product state authorities.
+
+| Raw Dimension | Required Values / Transitions |
+| --- | --- |
+| Readiness | Cold shared30s; READY same-runtime fresh read; established4s/250ms probes; runtime replacement; unavailable/disposed; coalesced and staggered callers |
+| Delivery | Queued unsent -> expiry/abort; preparation abort; physically submitted held SDK promise -> release; stale ACK/retry must not replay rejected work |
+| Identity | Same/different connection registry token, panel, runtime and accepted projection; retirement before SQL effects and after the final inventory fanout await |
+| Snapshot | Complete, partial, missing known serializer/primary/owned record, throwing callback, malformed/proxy and over-cap; authoritative empty/blank; same versus unrelated schema-refresh target |
+| Schema Batch | Fresh/changed/equivalent targets; precommit refusal, late capture and stale model/token; postcommit waiter/readiness/lifecycle supersession, including later same-owner listeners |
+| Host / Persistence | Native KQLX, KQL/CSL compatibility and SQL compatibility have distinct host paths; no-op comparison versus genuine authored Save; wire/raw results and array order remain exact |
+| Lifecycle / Proof | C1 initial -> full109 hidden -> sole ordinary activation -> before-close; C2 cold close/reopen and second authoring revision; sealed candidate versus initial-only methods/disk hashes and missing later runtime proof |
+| Preservation | Clean bytes/dirty flags/model versions; changed-then-reverted damage; independent cold count1/checkpoints; no setup Save or byte rebaseline after admission |
+
+### Selected Evidence And Gaps
+
+Each row names a distinct boundary, not a proposed new test. Existing evidence
+is credited only for the listed setup, action and oracle; lower-layer passes do
+not qualify C1/C2 or disprove installed Production `RuntimePressureWave3`.
+
+| ID | Lifecycle / Owner | Exact Evidence, Setup, Action And Oracle | Decision / Layer | Result / Limitation |
+| --- | --- | --- | --- | --- |
+| C1 | Full API109/133 and executing candidate owners | [Unchanged archived canary survives original109 with exact hidden and ordinary activation oracles](../../../tests/vscode-extension-tester/e2e/default/workbench-tool-session-activation-sweep/workbench-tool-session-activation-sweep.feature#L110): initial exact-ID admission -> all109 -> hidden reads -> sole ordinary activation -> exact ten-section/note/six-binding/result graph before close | Include / Installed Production APIs | Actual initial dashboard is invalid; history0, post-stress activation0. No completed109 or qualified runtime proof |
+| C2 | Native controls, Save, cold and authoring lifecycles | [Cold controls and exact archive order precede separate native authoring](../../../tests/vscode-extension-tester/e2e/default/workbench-tool-session-activation-sweep/workbench-tool-session-activation-sweep.feature#L4): real controls83/88/109, retain original20/all109 during cold reopen, keyboard Save/reopen/second edit with exact durable and UI oracles | Defer / Native E2E | Framework panel/frame/geometry and lawful result-owner blockers; APIs/source fixtures do not exercise native input |
+| C3 | Exact unsent withdrawal versus physical SDK submission | [withdraws only the canceled queued message and cleans its abort listener](../../../tests/webview/host/mainWebviewStartupGateway.test.ts#L849): two queued sends -> cancel one -> only the other delivers. [does not release the physical drain when a submitted message is aborted](../../../tests/webview/host/mainWebviewStartupGateway.test.ts#L886): hold submitted head -> abort -> following waits for actual release. [withdraws a timed-out dashboard request behind a physically held outbound head](../../../tests/webview/host/toolOrchestratorConnect.test.ts#L212): timeout -> release -> no expired context request | Existing / Host unit | Focused gate passes; optional standard host-only AbortSignal is not a wire field or SDK cancellation |
+| C4 | Stable read episode versus runtime replacement | [shares the original read deadline without retiring a ready same-runtime epoch (acknowledged=%s)](../../../tests/webview/host/mainWebviewStartupGateway.test.ts#L1215): 250ms retry and second caller at3999ms share one result/deadline; exact ACK preserves epoch, expiry retires it. [fences an older snapshot only when a staggered read observes runtime replacement (%s)](../../../tests/webview/host/queryEditorProviderWorkbenchToolSessionHandler.test.ts#L433): same-runtime older reply accepted; replacement rejects it before SQL | Existing / Host unit | Both branches pass; no recursive snapshot or fresh budget per caller |
+| C5 | Issued dispatcher-document recovery during blocked inbound work | [admits its issued recovery after READY without unblocking unrelated inbound work](../../../tests/webview/host/mainWebviewStartupGateway.test.ts#L790): held handler -> exact issued challenge ACK -> duplicate recovery -> one requestDocument, ordinary work still held. [never routes unissued or expired dispatcher recovery into the document provider](../../../tests/webview/host/mainWebviewStartupGateway.test.ts#L826): unissued/expired correlation -> zero provider calls | Existing / Gateway unit | Bounded issued record survives READY; unissued, replayed and stale requests do not become document admission |
+| C6 | Reply timer, registry/runtime/projection admission before SQL | [waits for read readiness before starting the unchanged snapshot deadline](../../../tests/webview/host/workbenchToolSessionApplicationHandler.test.ts#L449): hold readiness5200ms -> no request -> release -> exact empty response at4999ms is valid. [checks captured runtime and projection admission before SQL effects](../../../tests/webview/host/workbenchToolSessionApplicationHandler.test.ts#L475) and [rejects a registry-retired snapshot without requiring handler reactivation](../../../tests/webview/host/workbenchToolSessionApplicationHandler.test.ts#L492): retire captured authority -> undefined, no SQL reconciliation, exact signal retired | Existing / Session-owner unit | Five-second reply budget starts after read readiness; legitimate empty state remains distinct from unavailable |
+| C7 | Actual READY read preflight and independent inventory fanout | [recovers a cached READY projection through an actual read probe before requesting its snapshot](../../../tests/webview/host/queryEditorProviderWorkbenchToolSessionHandler.test.ts#L394): stale probe inert -> exact ACK -> one snapshot/SQL reconciliation, no reveal. [does not publish live inventory retired after its snapshot while another file is pending](../../../tests/webview/host/toolOrchestratorConnect.test.ts#L554): A read settles, B held, A retires -> no stale live A after final await | Existing / Provider/orchestrator unit | Same/different captured owners remain independent; backing inspection or a healthy neighbor cannot establish live readiness |
+| C8 | Strict base versus tolerant ordinary persistence | [keeps default persistence tolerant while strict tool capture rejects a later serializer failure](../../../tests/webview/persistence-roundtrip.test.ts#L1180), [rejects a missing known %s serializer only during strict tool capture](../../../tests/webview/persistence-roundtrip.test.ts#L1203) and [accepts an authoritative empty native strict tool capture without stale passthrough notes](../../../tests/webview/persistence-roundtrip.test.ts#L1285): later failure/missing known kinds reject complete tool capture; ordinary persistence stays tolerant; true empty captures frozen [] | Existing / Webview unit | No successful partial snapshot, fabricated blank primary or stale notes; legitimate pending/reader blank values remain valid |
+| C9 | Real producer base/enrichment before schema effects | [rejects a real producer with later %s before schema-refresh effects](../../../tests/webview/message-handler.test.ts#L1819): real strict serializer, accessors, base/enrichment cap and SQL callback failures -> one canonical nonblank error with sections[], original schema identity/token/preparation unchanged, getters untouched | Existing / Webview producer unit | Shared caps apply before and after enrichment; canonical error is not authoritative successful empty state |
+| C10 | Schema batch refusal, commit and independent publication | [rejects a batch with %s before target, token, waiter, or listener effects](../../../tests/webview/kusto-editor-schema-coordinator.test.ts#L111): three owners, invalid/stale/refused/late-capture plan -> no batch effects. [admits normalized frozen identities for mixed targets before committing or notifying](../../../tests/webview/kusto-editor-schema-coordinator.test.ts#L171): fresh/changed/equivalent owners -> every notification sees the whole committed batch. [suppresses stale post-commit notifications after a %s supersedes an owner](../../../tests/webview/kusto-editor-schema-coordinator.test.ts#L228): waiter/readiness/lifecycle callback publishes independent middle owner -> preserve it, suppress stale notifications | Existing / Coordinator unit | Precommit refusal has no effects; postcommit guards do not roll back an independently published owner |
+| C11 | Shared bounds and top-level proxy ingress | [keeps the exact 16 Mi-character snapshot limit including object keys](../../../tests/webview/tool-state-snapshot-protocol.test.ts#L78), [keeps the exact 250,000-value snapshot limit](../../../tests/webview/tool-state-snapshot-protocol.test.ts#L89) and [rejects a top-level proxy through $direction $path admission before nested reflection](../../../tests/webview/tool-state-snapshot-protocol.test.ts#L241): exact boundary/overflow and host/webview direct/captured proxy paths -> inert invalid admission before nested reflection/waiter effects | Existing / Shared protocol unit | Existing depth64/container10,000 limits and frozen exact values retained; no separate strict/enriched budget |
+| C12 | Three native host paths and physical reload lease | [${variant.name} startup buffers both directions until explicit dispatcher readiness](../../../tests/integration/kqlSidecar.test.ts#L10467): native KQLX/KQL compatibility/SQL compatibility -> queued startup, one document delivery, retirement rejects later traffic. [cold readiness starts the native reload lease only after a 5200 ms dispatcher ACK](../../../tests/integration/kqlxMarkdownOwnership.test.ts#L7111): no early lease -> exact ACK -> one five-second lease, unchanged bytes/version/clean state -> authored change/native Save | Existing / VS Code source integration | Final343/343 on1.141.0; SDK adapters echo actual issued probes and retain3/6/64 counts. Not installed-release E2E |
+| C13 | Historical no-op comparison and native Save owner | [noncanonical fourteen-section hydration preserves native bytes without an ordering-only edit](../../../tests/integration/kqlxMarkdownOwnership.test.ts#L134): hydration -> ordering-only state -> exact clean bytes/version -> genuine edit/Save. [does not persist or advance revision when fourteen hydrated sections only reorder object keys](../../../tests/webview/persistence-roundtrip.test.ts#L3888) and [does not persist reordered saved descriptors during deferred result settlement](../../../tests/webview/persistence-roundtrip.test.ts#L5120): retain acknowledged operands -> reorder/settle -> no automatic persist -> real edit retains saved descriptors | Existing / Historical native/webview evidence | Native equality already passed before the prior comparison-copy fix; no new normalization, Auto Save change or incident-writer attribution |
+| C14 | Exact initial SDK focus, composed mock lifecycle and actual cleanup | [current133 initial exact-ID activation admits the clean inactive canary behind Welcome and waits for SDK focus](../../../tests/scripts/published-notebook-journal.test.mjs#L1968): one metadata ID/initial call, clean unique SDK tab before/after. [current133 Node mocked lifecycle composes all109, exact hidden oracles, one activation and readonly close](../../../tests/scripts/published-notebook-journal.test.mjs#L2046): immutable archives -> all109 -> hidden/activation/close, retain public failures and assert actual SDK tab array empty | Existing / Private filesystem and SDK-shaped Node | Distinct133/109 and independent cold count1 preserved; no product fixture owner or real native controls proved |
+| C15 | Fail-closed runtime classifier and independent parent collection | [current133 API classifier preserves negative evidence for matching orchestrator without executing panel-owner proof](../../../tests/scripts/published-notebook-journal.test.mjs#L485) and the same parameterized test for `executing panel-owner proof missing`: false/missing panel proof -> HARNESS_BLOCKED, no API qualification. [current133 independent collection keeps API pixels unattempted and cannot heal stale loaded METHOD observations](../../../tests/scripts/published-notebook-journal.test.mjs#L2010): even seeded retained true flags -> independently false panel-owner proof, exact limitation retained | Existing / Pure classifier and parent-collector Node | Two final focused identity guards and one collector case pass; theoretical classifier panelOwners:true is not actual fixture-owner evidence |
+| C16 | Duplicate scalar/Cartesian expansion | C3-C11 already exercise shared capture/cap/admission owners and their refusal/success transitions; retain the coupled C1/C2 paths and distinct host/token/schema owners | Exclude / Duplicate only | No extra tests for equivalent scalar products. This does not exclude distinct mutation owners, host paths or dependent lifecycle risks |
+| C17 | Idle READY with an already-held outbound head | C3/C4 cover shared readiness and retained submitted/unsent paths, not the full idle-READY held-head admission-order permutation | Defer / Concrete ordering gap | A fresh ordinary send could take another branch; the retained physical/unsent red and its green checks do not prove global send ordering |
+| C18 | Development-note mutation queued expiry | HostDevelopmentNoteMutationApplicationHandler has its own mutation waiter/transport owner, outside the ordinary state/dashboard read fence | Defer / Explicitly out of scope | Its queued expiry remains unqualified; no claim that all mutations are fenced |
+
+### Recorded Gates And Sealed Candidate
+
+Corrected official FULL coverage: **8,843 pass**, four existing skips,
+372 passing files plus one skipped file (373 total), **52.40%** statements,
+1,132.67s; unchanged coverage threshold. The initial FULL result remains
+8,841 pass/two failures. Both sender coordinates and the source guard were
+corrected before the official pass: the AST permits read-only
+`activeSourceGeneration` access through the existing coordinator, not a declared
+or assigned duplicate source authority. Affected gate: 1,124 tests in 10 files,
+no skips. Final native source integration: 343/343 on VS Code 1.141.0 with
+actual-probe SDK adapters and unchanged 3/6/64 assertions. Normal
+host/webview/connector types, lint, production package and all 12 unchanged
+bundle gates pass.
+
+The candidate passed those code/package gates with the exact 447-source snapshot
+unchanged; only harness/docs followed packaging. Sealed candidate:
+`out/releases/vscode-kusto-workbench-0.0.0-placeholder.vsix`, 5,623,580 bytes,
+SHA-256 `2ddefbf4aa1788b7f9eee2db112d8e0c99944e4faa5b2a45708ce94ca4a0dea6`.
+Main SHA-256:
+`505e463234728a90e2df9c53c5b7a5864858eb0c0d1283c773a481767b9f0c24`.
+52-resource tree SHA-256:
+`b76e15b8ad302a2ef68ab81f60ea4dcad63ad720ee5729cc1ef61d648724ee8a`.
+Host: 2,572,381/2,574,336 bytes; webview: 3,418,013/3,418,112 bytes, 99-byte headroom.
+Local watcher-generated dist drift (three bundles/three maps) is not this sealed
+candidate; no repack followed. Packaged Node 24 runtime and Node 22.16 terminal
+execution are distinct contexts, not a reason to change metadata or thresholds.
+
+Final full Node journal/support receipt: **297 pass**, zero failures, skips or
+cancellations, 285.14s. This includes the two final identity guards and the
+independent collector refusal; their focused checks also pass. The saved receipt
+does not expose an exit-code field. No installed qualification is inferred from
+these Node facade tests.
+
+### Actual Installed Evidence And Counterexamples
+
+Frozen ActualAPI attempt `c261009144905dd3d`,
+`%TEMP%/kw-acceptance-xCzswC/a1`: one initial exact-ID activation succeeded,
+notes were exact and full section count was10. Dashboard wrapper success=true
+but valid=false, provenance=true, six bindings and zero data sources with
+missing-data-source issues. This is a genuine initial StageSetupBlockingOwner
+stop, not an auth-causal conclusion: history0/post-stress activation0, no
+completed109. All133 bytes were clean at the observed prepared/initial and
+post-host parent checkpoints; these partial checks are not the composed gate.
+
+The earlier current133 attempt under `%TEMP%/kw-acceptance-xBZDtZ/a1` stopped on
+the clean INACTIVE canary behind Welcome. Its correction admits that exact
+unique clean tab, observes bounded90s SDK tab events, performs one metadata-only
+ID lookup and one initial exact-ID activation, and requires exact SDK focus
+afterward. No healthy-neighbor substitution or replay is allowed; both failed
+attempts remain preserved.
+
+Actual initial build evidence records ExtensionMode.Production context1,
+require-cache executing orchestrator method slices with six matches
+(`VERIFIED_INITIAL`) and the52 on-disk resource hashes. After identity is null
+(`Runtime MISSING`). Executing provider/gateway/webview owners are not proved;
+manifest5.2.0 alone is insufficient. The collector records
+`collection.runtimeVerified.panelOwners=false` and the verbatim
+`collection.runtimeLimitation`:
+`Executing provider, gateway and webview identities are not observed by orchestrator method fingerprints`.
+Matching parent disk hashes, tracked source or harness counts cannot repair that
+missing observation. A pure classifier fixture with panelOwners:true is only
+theoretical unit data; no production global or owner hook was added. Installed
+API preservation remains unqualified, with no release or incident-causal claim
+and no attribution of an older Wave 3 executing implementation.
+
+Post-review cleanup red: the API canary lies outside order109, so the old owned
+URI set reported zero survivors while leaving its actual SDK tab open. The
+actual-tab-absence assertion failed; an API-only URI union now feeds the same
+owned set to observer and cleanup, leaving original131 intact. The composed
+mock lifecycle asserts that actual task-owned tabs are empty after cleanup,
+not merely that a filtered survivor count is zero.
+
+Seventeen preservation counterexamples initially received false API credit.
+Qualification now requires initialActivationCalls1 and its exact record,
+clean unique canonical SDK custom-editor observations before (Welcome focus
+allowed) and after (exact active focus), plus independent cold count1/source
+linkage/checkpoints/dirty-byte-version and no-rebaseline guards. Preservation
+damage has priority even if subsequently reverted; a legitimate unopened cold
+copy may have empty revision observations. Two later runtime-identity reds
+exposed matching unchanged orchestrator methods being credited without executing
+panel owners; final classification fails closed until proper runtime
+instrumentation exists. Such instrumentation is future work, not implemented
+or replaced by method/disk hashes. Lower-layer green results do not refute the
+blocked installed Production RuntimePressureWave3 path.
+
+## Independent Public-Activation Red (2026-10-09)
+
+Scope: tests only, no product fix or rollback. The user rejected using their F5
+window. The new opt-in `archive-public-activation-repro` runs in a fresh ephemeral
+Development host against the actual extension and public LM tools. It copies the
+immutable Wave3 historical corpus before opening, never opens protected originals,
+and uses a separately labelled synthetic canary with one explicit authoring Save
+before its baseline. This is not the original canary's result graph or Production
+qualification. Existing user tabs, profiles, auth stores and watchers stay intact.
+
+| Contract | Setup, Action, Oracle | Result / Fidelity |
+| --- | --- | --- |
+| Harness command-path sensitivity | `current133 historical first opens use exactly one public activation call without direct-open warming`: one historical range -> require one public tool call | Red: actual0 versus expected1. Harness gap, not a product reproduction |
+| First public activation | Real archived copies -> one public URI activation per recorded target, all109 -> preserve first response and independent later inventory | Natural product red in run `20261009-191256`: targets21/92/105 return false with live-bridge recovery error; all three are live later without another activation. Target88 returns true but its SDK readiness check fails, separately recorded |
+| Hidden and ordinary recovery | Healthy synthetic note/six-binding/one-source baseline -> hidden19 -> full109 hidden -> one exact-ID activation -> once-only note/dashboard checks | Passed for this synthetic canary. Original-canary full-load unavailability and failed recovery remain unreproduced, not cleared |
+| Transient preservation | Observe all archived models/dirty transitions from first open; compare immutable bytes before and after exact cleanup | Red: eight historical paths changed or became dirty then reverted; final disk hashes all match. Final byte equality does not erase137 retained damage events |
+| Setup and execution controls | Actual Development context/module, facade ingress/start observer, exact root/clean-tab cleanup, source/resource hashes | Initial controls passed; zero query ingress/start, unchanged identity, all109 retained and110 clean exact tabs closed. Panel runtime/native pixels/Production remain unqualified |
+
+Earlier setup failures remain retained: `20261009-190208` stopped on synthetic
+authoring defaults/dirty state; `20261009-190936` stopped on a diagnostic snapshot
+comparison despite matching public notes and valid dashboard. These are not product
+availability reproductions. The corrected snapshot assertion compares JSON transport
+values, not prototype identity; it does not normalize a file or heal API failures.
+
+Command: `vscode-ext-test run --extension-path . --features
+tests/vscode-extension-tester/e2e/opt-in/archive-public-activation-repro
+--vscode-version stable --timeout 180000 --no-build`. The initial attempt performed
+the normal source compile/types/lint; subsequent attempts used that unchanged build.
+The final scenario exits1 on its aggregate contract assertion. The feature syntax
+and exact109/nonpolling route guard passes; the previous harness-fidelity check
+remains intentionally red. Do not describe the complete suite as green.
+
+The three private roots `kw-acceptance-kxLIe4`, `kw-acceptance-mxYOO4`, and
+`kw-acceptance-1G8lh0` and their failed evidence are preserved. Read-only audit:
+447/447 production files unchanged;134/134 Wave4 originals,399/399 staged histories,
+three cold copies and sealed VSIX unchanged; zero scoped runner/Code survivors;
+all seven prior watcher lifetimes/parents retained. No images were viewed. No new
+product-causal attribution: independent note/no-op fixes have evidence, while shared
+readiness/schema changes still need causal controls before keeping or reverting them
+as an incident remedy. Never roll back the user's mixed worktree wholesale.
+
+### Wave4 Evidence Handoff And Timing Replay
+
+The failed-run handoff records a16m28.880s sweep:180.080s inside activation calls
+and808.800s between calls. The canary was hidden for about17 minutes. Notes and
+dashboard passed after19 targets, then failed after109; the failed reads and one
+failed recovery took roughly4 seconds each. Our earlier independent run took
+about3 minutes. This timing difference is a test condition, not a proven cause.
+
+`KW_ARCHIVE_REPRO_TIMING=wave4` optionally replays the immutable Wave4 archive's
+109 request timestamps and the handoff's hidden/recovery check times in our own
+ephemeral host. One fixed clock preserves the pauses and records late starts;
+no caller deadlines increase and no failed activation is replayed. Timed reads
+use the recorded open-file-ID-only arguments. Three focused syntax, timing and
+loaded-method checks pass.
+
+Timed source run `20261009-224408`, private root `kw-acceptance-CnovpM`, reached
+all109 calls on the recorded clock. Initial, hidden19, hidden109 and ordinary
+recovery passed for the synthetic canary. First activations35/83/105 failed and
+later became live without activation retry; transient preservation failed while
+final hashes matched. Most starts were0-15ms late; a slow call caused22.690s
+lateness at93, recorded without resetting the clock. Timing alone has not
+reproduced the original hidden/read/recovery failures. The earlier timed run
+`20261009-224113` stopped on its first synthetic activation and is retained.
+
+The separate `archive-original-canary-baseline` case opens an unchanged private
+copy of the real canary, with no seeds, warming, query or Save. Source run
+`20261009-232546`, root `kw-acceptance-DgooTw`: activation succeeded, the note read
+failed, and dashboard validation returned six bindings/zero sources with
+`missing-data-source`. All staged bytes/versions stayed clean; zero execution,
+exact cleanup and unchanged source identity were recorded. This is not the
+reported working-baseline-then-full-load failure. A prepared independent test
+profile and actual failed-run window/build information are needed; authentication
+as the cause is not established. Do not alter the notebook to force admission.
+
+The handoff does not identify which window or Workbench build handled Wave4,
+the actual account state, or a related exception trace. Installed5.2.0 metadata
+does not fill those gaps. Renderer tool-set JSON and Copilot schema warnings are
+not tied to these failures. Remaining differences include our synthetic canary,
+blank SQL, fresh starting state and extra diagnostic reads; timing alone cannot
+make this a complete reproduction of the original notebook.
+
+### Original Connection-ID Profile Setup Blocker
+
+The updated handoff supplies non-secret connection ID, endpoint and database,
+but no verified working profile. `ConnectionManager` loads saved connection IDs
+unchanged; Add Connection and XML import generate new IDs. The focused saved-record
+test passes, including persistence/reload through the existing loader. This is
+lower-layer setup evidence, not a reproduction of the reported notebook failure.
+
+The test-only `archive-original-canary-baseline/profile-runner.cjs` validates fresh
+private user-data/extensions/shared-data directories, compiled-source hashes,
+Windows quoting, config/receipt ownership and bounded phases. Prepare uses actual
+VS Code Memento to write only the non-secret connection record. No account, token,
+partition, artifact or privacy settings are supplied; no notebook opens in Prepare.
+Check is a new host which must restore the exact record before any notebook call.
+The initial path-case and `vscode-userdata` URI setup failures remain preserved;
+six focused runner/baseline safety checks pass after test-only corrections.
+
+Private root `kw-acceptance-cm2dGc`: native Prepare readback succeeded and exited;
+fresh Check did not restore the record. The actual tested VS Code1.141.0
+`mainImpl.js` storage rule is
+`getStorageOptions(){return{useInMemoryStorage:!!this.environmentService.extensionTestsLocationURI}}`.
+Both hosts used the same private storage path, but native extension-test mode uses
+in-memory storage. A successful write/readback therefore cannot prepare the next
+host. The unchanged original was not opened in this Check; zero notebook calls
+means this remains a setup blocker, not the full-load reproduction.
+
+Earlier proposed framework improvement, not established as necessary: support a fresh persistent Development host with
+explicit private user-data/extensions/shared-data and artifact directories, no
+`--extensionTestsPath`, no inherited/reusable profile, no normal Local State/auth
+copy, no Settings Sync, and source build/window evidence. It must provide the
+extension-host controller so the non-secret Memento preparation can complete,
+close that owned host, then reopen the same private profile and verify original
+ID/incarnation before the unchanged notebook baseline. Do not fix this by editing
+VS Code's database, changing the notebook ID, injecting a matching account/policy,
+or running its query. Native `profile-runner.cjs` is retained diagnostic evidence;
+it is not a working persistent-profile recipe.
+
+### Existing Kusto Profile Attempt (2026-10-12)
+
+The standard E2E harness already launches the prepared `kusto-auth` profile.
+The native in-memory-storage limitation above came from the alternative launcher
+we chose, not evidence that named-profile launch support must be redesigned.
+`--clone-named-profile` is declared but unimplemented in CLI0.1.23; this attempt
+used its supported serial `--reuse-named-profile kusto-auth` route.
+
+Run `20261012-174407` stopped before notebook calls because our test incorrectly
+required a zero-tab/inactive starting state. The Kusto profile had opened its clean
+scratch `session.kqlx`. Explicit `KW_ARCHIVE_BASELINE_PROFILE=kusto-auth` test mode
+now validates actual profile storage, preserves every starting tab, and checks
+only the owned temporary copy. If the extension was already active, earlier
+registration/execution events are not claimed to be observed; read-only tool calls
+and this observation limitation are reported separately.
+
+Run `20261012-174923`: unchanged original-canary copy opened successfully; its
+exact saved note was returned. Dashboard wrapper success was true but validity
+false, six bindings/zero data sources with `missing-data-source`. The profile had
+31 configured connections; its matching cluster record was
+`conn_1779868561094_1s3rb3htt`, database `NetDefaultDB`, while the saved fact hint
+was `conn_1765825441854_gi5ey0lar`. This is a confirmed setup difference, not proof
+of an authentication cause or the later historical outage. No sign-in error was
+returned by these calls. No query, Save, seed or connection change was requested.
+The temporary copy and all staged bytes stayed unchanged; its one clean tab
+closed, the starting scratch tab remained, and the harness test host stopped.
+Do not run109 as evidence of working-then-failing dashboard recovery until the
+original dashboard baseline passes in the prepared profile.
+
+Final safety check and repeat run `20261012-175842`, private root `kw-acceptance-pJTWaI`,
+confirmed the same baseline result. Prepared mode now reads settings as prerequisites
+instead of changing global Auto Save or preview settings, and preserves starting-tab
+multiplicity, editor type and dirty state. Three focused safety/syntax checks pass;
+the live dashboard assertion remains red. Temporary copy: zero damage, exact bytes,
+one clean owned tab closed, original Scratch retained. No query, Save, sign-in,
+seed, connection change or product edit was requested. This demonstrates that the
+existing harness/profile can run the scenario; it does not establish the later
+full-load outage or identify its cause.
+
+## First-Activation Verification And Native Input Blocker (2026-10-14)
+
+The reported first-activation problem now has a passing real archived-file run:
+`runs/20261014-223229`, VS Code 1.141.2, source Development host, one public
+activation for each of the exact 109 historical targets. All 109 first results
+passed. The canary's hidden checks at 19/109, one ordinary recovery, unchanged
+bytes/model/dirty state, observed zero query ingress/starts, and exact cleanup
+of 110 owned tabs passed. Retained evidence root: `kw-acceptance-WxOj8f`.
+The recorded Wave4 timing replay also passed in `runs/20261014-234803`, retained
+root `kw-acceptance-4gCPBp`: the same 109 first calls had zero failures, with
+hidden19/109, recovery, preservation, unchanged source/build, zero observed
+execution, and exact cleanup passing on the fixed recorded clock. The overall
+run took 1154886 ms and retained lateness observations without resetting time.
+This is source-only partial runtime evidence, not installed Production, visual,
+or original-canary full-result-graph qualification. Older failed runs remain
+failed and retained; later inventory never replaces a first activation result.
+
+Two protocol inventory failures in the full unit run were stale source
+coordinates for the unchanged validated command-result sender. Its reviewed
+location moved from `5251:10` to `5436:10`; both exact expectations were updated
+without changing the scanner, allowlist membership, or message validation.
+The complete 80-test protocol file then passed. The fresh full coverage gate
+passed with 9028 tests, four existing skips, and 53.03% statement coverage.
+The complete extension-host suite passed 386 tests on the currently resolved
+VS Code 1.142.0; the last subscription-wrapper cleanup also passed its focused
+tests. Full Node harness regressions passed 342 tests with one explicit
+recorded-build prerequisite skip. These do not replace the still-blocked
+physical Bold/composed native Save-reopen workflow. The preceding failed
+coverage run and its two stale-coordinate failures remain retained.
+
+| Coverage | Exact setup/action/oracle | Evidence and remaining limit |
+| --- | --- | --- |
+| First activation and passive preservation | Immutable private archived copies, exact109 order, one public URI call each, hidden19/109 reads, one recovery, byte/model/dirty observations, exact-owned cleanup | Fast run 223229 and recorded-timing run 234803 passed; no Production/visual claim |
+| Markdown preservation and current API ownership | Exact source, current editor registration, persistence roundtrip | 322 focused Markdown/ownership/persistence tests passed |
+| Genuine paragraph authoring | Fresh private native fixture, raw before-image, trusted input, exact current section/editor text and whole host model | Native runs 193448/194211/195628/200415 passed through typing; older stale staged copies are not current-feature evidence |
+| Physical Bold and composed Save/reopen | Exact owned window/frame, one physical click, trusted toolbar event, DOM strong, exact Markdown, Undo/Redo, two observed manual Saves and public reopen | Blocked: no trusted Bold event observed; later steps were not executed and are not qualified by unit passes |
+
+### Framework Fix Request: Verifiable Owned Native Click Delivery
+
+**What I was trying to do:**
+Complete `native-markdown-authoring.feature` through a real Bold toolbar click,
+Undo/Redo, manual Save, exact clean close/public reopen, and a second edit/Save.
+Only fresh isolated hosts and disposable private copies may be used.
+
+**What step/capability is missing or broken:**
+`NativeUIClient.clickMouse` returns without a verifiable foreground or delivery
+receipt. The native tree supplies no Document anchor for correlating the actual
+CDP guest/frame-owner geometry with screen coordinates. Delivery is unproven;
+this is not evidence that the product's Bold behavior is defective.
+
+**What I observed:**
+Run `runs/20261014-200415`, retained root `kw-acceptance-8ZGPl4`, passed first
+activation, exact passive source, current API identity, trusted paragraph input,
+and exact authored host model. The owned native window was PID 100184,
+HWND `0x12A0E96`, bounds `(672,320,1216,808)`. Native Bold bounds were
+`(930,482,24,24)`; the sole submitted screen point was `(942,494)`.
+The exact guest viewport was `846x676`, DPR 1, Bold rect `(197,71,24,24)`.
+The frame-owner quad was `[53,91,899,91,899,767,53,767]`, with a `1200x800`
+shell viewport. The native tree contained 11 observed nodes and zero Document
+candidates. After 1514.8 ms of exact-frame observation, the toolbar event delta
+was empty, the selected word remained plain, and both current source APIs agreed.
+Receipts `bold-control-state.json` and `bold-control-geometry.json` are retained.
+
+**What I already tried:**
+Fresh byte-identical feature stages; current PID/HWND/title targeting rather than
+reminted enumeration IDs; actual enabled visible UIA button bounds; the same
+single click followed by bounded observation; exact URI/token/root/observer
+fences; and read-only DOM/frame-owner/native-tree geometry. No synthetic click,
+keyboard Bold shortcut, guessed-coordinate correction, or action retry was used.
+The diagnostic now rejects pre-click activity and bounds drift and retains
+best-effort non-overwriting evidence on observation failure.
+
+**What the framework needs to support:**
+An owned-window native click with foreground PID/HWND verification and a useful
+input-submission/delivery receipt. Provide bounded, complete native Document
+geometry or another verified guest-to-screen mapping, explicit tree truncation,
+and the actual bridge identity. Keep physical input and all event/DOM/source
+oracles intact; do not return success solely because the bridge call completed.
+Installed CLI 0.1.23 native/CDP clients and the bridge's mouse/window/tree
+operations are the implementation surfaces. Public CDP selector clicking is
+synthetic-first and must not replace this trusted-control requirement.
+
+**Suggested Gherkin step syntax:**
+```gherkin
+When I click the native control "Bold" in the exact owned window with delivery evidence
+```
+
+**Priority:** Blocking for the composed native authoring lifecycle; independent
+first-activation verification has passed. Never use the normal/F5 window, alter
+protected originals, discard dirty tabs, inspect images, or erase failed evidence.
 
 ## Extension Commands
 

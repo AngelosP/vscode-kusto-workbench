@@ -6,6 +6,27 @@ beforeEach(() => {
 });
 
 describe('workbenchLogger', () => {
+	it.each(['channel', 'sink', 'detail', 'clock'])('keeps file-opening trace failures observational (%s)', async fault => {
+		const vscode = await import('vscode');
+		const trace = vi.fn(() => { if (fault === 'sink') throw new Error('Trace sink failed'); });
+		const createOutputChannel = vi.spyOn(vscode.window, 'createOutputChannel').mockImplementation((() => {
+			if (fault === 'channel') throw new Error('Trace channel unavailable');
+			return { trace };
+		}) as any);
+		const { createFileOpenTrace } = await import('../../../src/host/fileOpenTrace');
+		const detail = fault === 'detail' ? {
+			toJSON() { throw new Error('Cannot encode detail'); },
+			[Symbol.toPrimitive]() { throw new Error('Cannot coerce detail'); },
+		} : { uriHash: 'a'.repeat(64) };
+		if (fault === 'clock') vi.spyOn(Date, 'now').mockImplementationOnce(() => { throw new Error('Trace clock unavailable'); });
+		let opening: ReturnType<typeof createFileOpenTrace> | undefined;
+		expect(() => { opening = createFileOpenTrace('activate', detail); }).not.toThrow();
+		expect(opening).toMatchObject({ id: expect.any(Number), label: 'activate' });
+		expect(() => opening!.mark('openWith.start', detail)).not.toThrow();
+		createOutputChannel.mockReturnValue({ trace: vi.fn() } as any);
+		expect(() => opening!.mark('openWith.done', { success: true })).not.toThrow();
+	});
+
 	it('creates one lazy LogOutputChannel and recreates it after disposal', async () => {
 		const vscode = await import('vscode');
 		const createdChannels: any[] = [];

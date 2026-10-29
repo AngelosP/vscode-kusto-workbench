@@ -62,6 +62,7 @@ import {
 import {
 	compilePortableDashboard,
 	portableDashboardIrToProvenance,
+	type PortableDashboardDataSource,
 } from '../../shared/portableDashboardCompiler.js';
 import { createMonacoCursorStatusPublisher, type EditorCursorStatusPublisher } from '../shared/editor-cursor-status.js';
 import type { HtmlSectionState, PbiPublishInfo } from '../../shared/htmlSectionDefinition.js';
@@ -171,6 +172,17 @@ export interface HtmlDashboardExportContext {
 	bindingCount: number;
 	dataSources: PowerBiPublishDataSource[];
 	factColumns: Array<{ name: string; type: string }>;
+}
+
+export type HtmlDashboardValidationContext = Omit<HtmlDashboardExportContext, 'dataSources'> & {
+	dataSources: PortableDashboardDataSource[];
+};
+
+function factDataSourceColumns(columns: readonly unknown[], useDisplayName = false): Array<{ name: string; type: string }> {
+	return columns.map((column: any) => ({
+		name: typeof column === 'string' ? column : (column?.name || (useDisplayName && column?.displayName) || 'column'),
+		type: typeof column === 'object' ? (column?.type || 'string') : 'string',
+	}));
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -644,17 +656,27 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	/** Best-effort collection of the fact data source for PBI export. Returns empty array on failure. */
 	private _collectDataSourcesForPBI(): PowerBiPublishDataSource[] {
+		return this._collectFactDataSources(true);
+	}
+
+	private _collectFactDataSources(forPowerBi: true): PowerBiPublishDataSource[];
+	private _collectFactDataSources(forPowerBi: false): PortableDashboardDataSource[];
+	private _collectFactDataSources(forPowerBi: boolean): PowerBiPublishDataSource[] | PortableDashboardDataSource[] {
 		const provenance = parseKwProvenance(this._getCodeText());
 		if (!provenance?.model?.fact?.sectionId) return [];
 
 		const dsId = provenance.model.fact.sectionId;
 		const resultIndex = provenance.model.fact.resultIndex ?? 0;
 		const el = document.getElementById(dsId) as any;
-		if (!el || String(el.tagName || '').toLowerCase() !== 'kw-query-section') return [];
+		if (el?.tagName !== 'KW-QUERY-SECTION') return [];
 		const artifact = getBoundResultArtifact(htmlDashboardFactArtifactConsumerId(this.boxId), dsId);
 		if (!artifact || artifact.resultIndex !== resultIndex
 			|| !artifact.columns.length || artifact.producer?.engine !== 'kusto'
 			|| artifact.producer.boxId !== dsId) return [];
+		const source = { sectionId: dsId, ...(resultIndex > 0 ? { resultIndex } : {}), columns: factDataSourceColumns(artifact.columns, true) };
+		if (!forPowerBi) {
+			return artifact.policy?.exposeToActiveContent === true ? [source] : [];
+		}
 
 		let resolvedCluster = '';
 		let resolvedDb = '';
@@ -676,15 +698,10 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		const sectionName = provenance.model.fact.sectionName
 			|| (typeof el.getName === 'function' ? el.getName() : '')
 			|| dsId.replace('query_', 'Query_');
-		const columns = artifact.columns.map((c: any) => ({
-			name: typeof c === 'string' ? c : (c?.name || c?.displayName || 'column'),
-			type: typeof c === 'object' ? (c?.type || 'string') : 'string',
-		}));
 
 		return [{
-			name: sectionName, sectionId: dsId,
-			...(resultIndex > 0 ? { resultIndex } : {}),
-			clusterUrl: resolvedCluster, database: artifactDatabase, query: artifactQuery, columns,
+			...source, name: sectionName,
+			clusterUrl: resolvedCluster, database: artifactDatabase, query: artifactQuery,
 		}];
 	}
 
@@ -1325,10 +1342,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			|| artifact.policy?.exposeToActiveContent !== true || !artifact.columns) return '';
 
 		const MAX_ROWS = 10_000;
-		const columns = (artifact.columns || []).map((c: any) => ({
-			name: typeof c === 'string' ? c : (c?.name || 'column'),
-			type: typeof c === 'object' ? (c?.type || 'string') : 'string',
-		}));
+		const columns = factDataSourceColumns(artifact.columns);
 		const portableDashboard = compilePortableDashboard({
 			htmlCode: this._getCodeText(),
 			dataSources: [{ sectionId: factSectionId, resultIndex: factResultIndex, columns }],
@@ -2753,9 +2767,16 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	}
 
 	public getDashboardExportContext(): HtmlDashboardExportContext {
+		return this._getDashboardContext(this._collectDataSourcesForPBI());
+	}
+
+	public getDashboardValidationContext(): HtmlDashboardValidationContext {
+		return this._getDashboardContext(this._collectFactDataSources(false));
+	}
+
+	private _getDashboardContext<DataSource extends PortableDashboardDataSource>(dataSources: DataSource[]): Omit<HtmlDashboardExportContext, 'dataSources'> & { dataSources: DataSource[] } {
 		const code = this._getCodeText();
 		const provenance = parseKwProvenance(code);
-		const dataSources = this._collectDataSourcesForPBI();
 		return {
 			sectionId: this.boxId,
 			name: this._name,
@@ -2764,7 +2785,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			hasProvenance: !!provenance,
 			bindingCount: provenance ? Object.keys(provenance.bindings || {}).length : 0,
 			dataSources,
-			factColumns: dataSources[0]?.columns ?? [],
+			factColumns: dataSources[0] ? [...dataSources[0].columns] : [],
 		};
 	}
 

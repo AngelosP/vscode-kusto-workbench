@@ -14,6 +14,16 @@ export type KustoEditorModelLease = KustoEditorSectionLease & Readonly<{
 	modelGeneration: number;
 }>;
 
+export type KustoEditorSchemaRequestPlan = Readonly<{
+	lease: KustoEditorSectionLease;
+	modelLease?: KustoEditorModelLease;
+	identity: KustoEditorLifecycleIdentity;
+	targetBefore: KustoEditorSchemaTarget | undefined;
+	target: KustoEditorSchemaTarget;
+	requestToken: string;
+	previousRequestToken: string | undefined;
+}>;
+
 export type KustoEditorOwnedStateSlot =
 	| 'schema'
 	| 'schemaMeta'
@@ -81,6 +91,23 @@ type ActiveKustoEditorRecord = KustoEditorRecord & { sectionInstanceId: string }
 
 function normalizeId(value: unknown): string {
 	return String(value || '').trim();
+}
+
+function normalizeTarget(
+	connectionId: string,
+	database?: string,
+	physicalOwner?: { connectionRevision?: number; connectionIdentityKey?: string },
+): KustoEditorSchemaTarget | undefined {
+	const id = normalizeId(connectionId);
+	const normalizedDatabase = normalizeId(database);
+	return id ? Object.freeze({
+		connectionId: id,
+		...(normalizedDatabase ? { database: normalizedDatabase } : {}),
+		...(Number.isSafeInteger(physicalOwner?.connectionRevision) && Number(physicalOwner?.connectionRevision) >= 0
+			? { connectionRevision: Number(physicalOwner?.connectionRevision) } : {}),
+		...(normalizeId(physicalOwner?.connectionIdentityKey)
+			? { connectionIdentityKey: normalizeId(physicalOwner?.connectionIdentityKey) } : {}),
+	}) : undefined;
 }
 
 function targetsEqual(
@@ -158,36 +185,12 @@ export class KustoEditorSchemaCoordinator {
 	): KustoEditorLifecycleIdentity | undefined {
 		const current = this.getRecord(lease);
 		if (!current) return undefined;
-		const normalizedConnectionId = normalizeId(connectionId);
-		const normalizedDatabase = normalizeId(database);
-		const target = normalizedConnectionId
-			? Object.freeze({
-				connectionId: normalizedConnectionId,
-				...(normalizedDatabase ? { database: normalizedDatabase } : {}),
-				...(Number.isSafeInteger(physicalOwner?.connectionRevision) && Number(physicalOwner?.connectionRevision) >= 0
-					? { connectionRevision: Number(physicalOwner?.connectionRevision) }
-					: {}),
-				...(normalizeId(physicalOwner?.connectionIdentityKey)
-					? { connectionIdentityKey: normalizeId(physicalOwner?.connectionIdentityKey) }
-					: {}),
-			})
-			: undefined;
+		const target = normalizeTarget(connectionId, database, physicalOwner);
 		if (!targetsEqual(current.target, target)) {
 			this.retireTargetState(current);
-			current.targetGeneration += 1;
 			current.target = target;
-			current.databaseRequestToken = undefined;
-			current.schemaRequestToken = undefined;
 		}
-		const identity = this.getIdentity(current.boxId);
-		if (identity) {
-			this.publishLifecycle({
-				type: 'target',
-				owner: Object.freeze({ boxId: current.boxId, ...identity }),
-				...(current.target ? { target: Object.freeze({ ...current.target }) } : {}),
-			});
-		}
-		return identity;
+		return this.publishTarget(current);
 	}
 
 	invalidateTarget(lease: KustoEditorSectionLease): KustoEditorLifecycleIdentity | undefined {
@@ -204,22 +207,27 @@ export class KustoEditorSchemaCoordinator {
 
 	private invalidateRecordTarget(current: KustoEditorRecord): KustoEditorLifecycleIdentity | undefined {
 		this.retireTargetState(current);
-		current.targetGeneration += 1;
-		current.databaseRequestToken = undefined;
-		current.schemaRequestToken = undefined;
-		const identity = this.getIdentity(current.boxId);
+		return this.publishTarget(current);
+	}
+
+	private publishTarget(
+		current: KustoEditorRecord,
+		identity = this.getIdentity(current.boxId),
+		isCurrent?: () => boolean,
+	): KustoEditorLifecycleIdentity | undefined {
 		if (identity && current.sectionInstanceId) {
 			this.publishLifecycle({
 				type: 'target',
-				owner: Object.freeze({ boxId: current.boxId, ...identity }),
+				owner: Object.freeze({ boxId: current.boxId, sectionInstanceId: identity.sectionInstanceId, targetGeneration: identity.targetGeneration }),
 				...(current.target ? { target: Object.freeze({ ...current.target }) } : {}),
-			});
+			}, isCurrent);
 		}
 		return identity;
 	}
 
-	private publishLifecycle(event: KustoEditorLifecycleEvent): void {
+	private publishLifecycle(event: KustoEditorLifecycleEvent, isCurrent?: () => boolean): void {
 		for (const listener of [...this.lifecycleListeners]) {
+			if (isCurrent && !isCurrent()) break;
 			try { listener(event); } catch { /* lifecycle observers cannot break ownership */ }
 		}
 	}
@@ -229,15 +237,59 @@ export class KustoEditorSchemaCoordinator {
 		requestToken: string,
 	): KustoEditorSchemaRequestIdentity | undefined {
 		const current = this.getRecord(lease);
-		const token = normalizeId(requestToken);
-		if (!current?.target?.connectionId || !current.target.database || !token) return undefined;
-		current.schemaRequestToken = token;
-		return Object.freeze({
-			boxId: current.boxId,
-			sectionInstanceId: current.sectionInstanceId,
-			targetGeneration: current.targetGeneration,
-			requestToken: token,
+		if (!current?.target?.connectionId || !current.target.database) return undefined;
+		const request = this.createRequestIdentity(current, requestToken);
+		if (request) current.schemaRequestToken = request.requestToken;
+		return request;
+	}
+
+	beginSchemaRequests(
+		plans: readonly KustoEditorSchemaRequestPlan[],
+		admit: (requests: readonly KustoEditorSchemaRequestIdentity[]) => boolean,
+	): readonly KustoEditorSchemaRequestIdentity[] | undefined {
+		const staged = plans.map(({ lease, modelLease, identity, targetBefore, target: desired, requestToken, previousRequestToken }) => {
+			const target = normalizeTarget(desired.connectionId, desired.database, desired);
+			const current = this.getRecord(lease);
+			const token = this.getSchemaRequestToken(lease.boxId);
+			if (!current || !target?.database || token !== previousRequestToken
+				|| (modelLease && (normalizeId(modelLease.boxId) !== current.boxId || !this.isModelLeaseCurrent(modelLease)))) return undefined;
+			const instanceId = normalizeId(identity.sectionInstanceId);
+			const generation = identity.targetGeneration;
+			const { modelUri, modelGeneration } = current;
+			const changed = !targetsEqual(current.target, target);
+			const request = this.createRequestIdentity(current, requestToken, current.targetGeneration + (changed ? 1 : 0));
+			return request ? {
+				current, target: changed ? target : targetBefore!, request, changed,
+				isCurrent: (expectedGeneration = generation, expectedTarget = targetBefore, expectedToken = token) =>
+					this.editors.get(current.boxId) === current && current.sectionInstanceId === instanceId
+					&& current.targetGeneration === expectedGeneration && current.target === expectedTarget
+					&& current.schemaRequestToken === expectedToken && current.modelUri === modelUri
+					&& current.modelGeneration === modelGeneration,
+				waiters: changed ? current.ownedState.workerReadyWaiters : undefined,
+				ready: changed && 'workerReady' in current.ownedState,
+			} : undefined;
 		});
+		const entries = staged as NonNullable<(typeof staged)[number]>[];
+		if (entries.some((entry, index) => !entry || !entry.isCurrent()
+			|| entries.findIndex(other => other?.current === entry.current) !== index)) return undefined;
+		const requests = Object.freeze(entries.map(entry => entry.request));
+		if (!admit(requests) || !entries.every(entry => entry.isCurrent())) return undefined;
+		for (const entry of entries) {
+			if (entry.changed) {
+				this.retireTargetState(entry.current, false);
+				entry.current.target = entry.target;
+			}
+			entry.current.schemaRequestToken = entry.request.requestToken;
+		}
+		for (const entry of entries) {
+			if (entry.changed) this.settleWorkerWaiters(entry.waiters);
+			const isCurrent = () => entry.isCurrent(entry.request.targetGeneration, entry.target, entry.request.requestToken);
+			try {
+				if (entry.ready && isCurrent()) this.publishOwnedStateListeners(entry.current, 'workerReady', undefined, isCurrent);
+			} catch (error) { console.error('[kusto]', error); }
+			this.publishTarget(entry.current, entry.request, isCurrent);
+		}
+		return requests;
 	}
 
 	beginDatabaseRequest(
@@ -245,15 +297,19 @@ export class KustoEditorSchemaCoordinator {
 		requestToken: string,
 	): KustoEditorSchemaRequestIdentity | undefined {
 		const current = this.getRecord(lease);
+		if (!current?.target?.connectionId) return undefined;
+		const request = this.createRequestIdentity(current, requestToken);
+		if (request) current.databaseRequestToken = request.requestToken;
+		return request;
+	}
+
+	private createRequestIdentity(
+		current: ActiveKustoEditorRecord,
+		requestToken: string,
+		targetGeneration = current.targetGeneration,
+	): KustoEditorSchemaRequestIdentity | undefined {
 		const token = normalizeId(requestToken);
-		if (!current?.target?.connectionId || !token) return undefined;
-		current.databaseRequestToken = token;
-		return Object.freeze({
-			boxId: current.boxId,
-			sectionInstanceId: current.sectionInstanceId,
-			targetGeneration: current.targetGeneration,
-			requestToken: token,
-		});
+		return token ? Object.freeze({ boxId: current.boxId, sectionInstanceId: current.sectionInstanceId, targetGeneration, requestToken: token }) : undefined;
 	}
 
 	getIdentity(boxId: string): KustoEditorLifecycleIdentity | undefined {
@@ -331,7 +387,7 @@ export class KustoEditorSchemaCoordinator {
 
 	clearOwnedStateSlot(slot: KustoEditorOwnedStateSlot): void {
 		for (const record of this.editors.values()) {
-			if (slot === 'workerReadyWaiters') this.settleWorkerWaiters(record);
+			if (slot === 'workerReadyWaiters') this.settleWorkerWaiters(record.ownedState.workerReadyWaiters);
 			delete record.ownedState[slot];
 		}
 	}
@@ -434,7 +490,12 @@ export class KustoEditorSchemaCoordinator {
 		if (!record) return;
 		if (value === undefined) delete record.ownedState[slot];
 		else record.ownedState[slot] = value;
+		this.publishOwnedStateListeners(record, slot, value);
+	}
+
+	private publishOwnedStateListeners(record: KustoEditorRecord, slot: KustoEditorOwnedStateSlot, value: unknown, isCurrent?: () => boolean): void {
 		for (const listener of Array.from(record.listeners.get(slot) || [])) {
+			if (isCurrent && !isCurrent()) break;
 			listener(value);
 		}
 	}
@@ -456,9 +517,8 @@ export class KustoEditorSchemaCoordinator {
 	}
 
 	detachModel(lease: KustoEditorModelLease): boolean {
-		const current = this.editors.get(normalizeId(lease.boxId));
+		const current = this.getRecord(lease);
 		if (!current
-			|| current.sectionInstanceId !== normalizeId(lease.sectionInstanceId)
 			|| current.modelUri !== normalizeId(lease.modelUri)
 			|| current.modelGeneration !== lease.modelGeneration) return false;
 		current.modelUri = undefined;
@@ -471,9 +531,8 @@ export class KustoEditorSchemaCoordinator {
 	}
 
 	isModelLeaseCurrent(lease: KustoEditorModelLease): boolean {
-		const current = this.editors.get(normalizeId(lease.boxId));
+		const current = this.getRecord(lease);
 		return !!current
-			&& current.sectionInstanceId === normalizeId(lease.sectionInstanceId)
 			&& current.modelUri === normalizeId(lease.modelUri)
 			&& current.modelGeneration === lease.modelGeneration;
 	}
@@ -484,20 +543,9 @@ export class KustoEditorSchemaCoordinator {
 		target?: KustoEditorSchemaTarget,
 		requestToken?: string,
 	): boolean {
-		const current = this.editors.get(normalizeId(boxId));
-		if (!current
-			|| current.sectionInstanceId !== normalizeId(identity.sectionInstanceId)
-			|| current.targetGeneration !== identity.targetGeneration) return false;
-		if (target && !targetsEqual(current.target, {
-			connectionId: normalizeId(target.connectionId),
-			...(normalizeId(target.database) ? { database: normalizeId(target.database) } : {}),
-			...(Number.isSafeInteger(target.connectionRevision) && Number(target.connectionRevision) >= 0
-				? { connectionRevision: Number(target.connectionRevision) }
-				: {}),
-			...(normalizeId(target.connectionIdentityKey)
-				? { connectionIdentityKey: normalizeId(target.connectionIdentityKey) }
-				: {}),
-		})) return false;
+		const current = this.getCurrentRecord(boxId, identity);
+		if (!current) return false;
+		if (target && (!current.target || !targetsEqual(current.target, normalizeTarget(target.connectionId, target.database, target)))) return false;
 		const token = normalizeId(requestToken);
 		return !token || current.schemaRequestToken === token;
 	}
@@ -508,10 +556,8 @@ export class KustoEditorSchemaCoordinator {
 		connectionId: string,
 		requestToken: string,
 	): boolean {
-		const current = this.editors.get(normalizeId(boxId));
+		const current = this.getCurrentRecord(boxId, identity);
 		return !!current
-			&& current.sectionInstanceId === normalizeId(identity.sectionInstanceId)
-			&& current.targetGeneration === identity.targetGeneration
 			&& current.target?.connectionId === normalizeId(connectionId)
 			&& current.databaseRequestToken === normalizeId(requestToken);
 	}
@@ -522,14 +568,9 @@ export class KustoEditorSchemaCoordinator {
 		target: KustoEditorSchemaTarget,
 		requestToken: string,
 	): boolean {
-		const current = this.editors.get(normalizeId(boxId));
+		const current = this.getCurrentRecord(boxId, identity);
 		return !!current
-			&& current.sectionInstanceId === normalizeId(identity.sectionInstanceId)
-			&& current.targetGeneration === identity.targetGeneration
-			&& logicalTargetsEqual(current.target, {
-				connectionId: normalizeId(target.connectionId),
-				...(normalizeId(target.database) ? { database: normalizeId(target.database) } : {}),
-			})
+			&& !!current.target && logicalTargetsEqual(current.target, normalizeTarget(target.connectionId, target.database))
 			&& current.schemaRequestToken === normalizeId(requestToken);
 	}
 
@@ -537,6 +578,14 @@ export class KustoEditorSchemaCoordinator {
 		for (const record of this.editors.values()) this.retireRecord(record);
 		this.editors.clear();
 		this.tombstonedBoxIds.clear();
+	}
+
+	private getCurrentRecord(boxId: string, identity: KustoEditorLifecycleIdentity): KustoEditorRecord | undefined {
+		const current = this.editors.get(normalizeId(boxId));
+		return current
+			&& current.sectionInstanceId === normalizeId(identity.sectionInstanceId)
+			&& current.targetGeneration === identity.targetGeneration
+			? current : undefined;
 	}
 
 	private getRecord(lease: KustoEditorSectionLease): ActiveKustoEditorRecord | undefined {
@@ -567,7 +616,7 @@ export class KustoEditorSchemaCoordinator {
 	}
 
 	private retireRecord(record: KustoEditorRecord): void {
-		this.settleWorkerWaiters(record);
+		this.settleWorkerWaiters(record.ownedState.workerReadyWaiters);
 		this.revokeWorkerReady(record);
 		for (const key of Object.keys(record.ownedState) as KustoEditorOwnedStateSlot[]) {
 			delete record.ownedState[key];
@@ -575,8 +624,8 @@ export class KustoEditorSchemaCoordinator {
 		record.listeners.clear();
 	}
 
-	private retireTargetState(record: KustoEditorRecord): void {
-		this.settleWorkerWaiters(record);
+	private retireTargetState(record: KustoEditorRecord, notify = true): void {
+		if (notify) this.settleWorkerWaiters(record.ownedState.workerReadyWaiters);
 		for (const slot of [
 			'schema',
 			'schemaMeta',
@@ -586,24 +635,24 @@ export class KustoEditorSchemaCoordinator {
 			'workerApplyRequired',
 			'workerReadyWaiters',
 		] satisfies KustoEditorOwnedStateSlot[]) {
-			if (slot === 'workerReady') {
+			if (slot === 'workerReady' && notify) {
 				this.revokeWorkerReady(record);
 				continue;
 			}
 			delete record.ownedState[slot];
 		}
+		record.targetGeneration += 1;
+		record.databaseRequestToken = undefined;
+		record.schemaRequestToken = undefined;
 	}
 
 	private revokeWorkerReady(record: KustoEditorRecord): void {
 		if (!('workerReady' in record.ownedState)) return;
 		delete record.ownedState.workerReady;
-		for (const listener of Array.from(record.listeners.get('workerReady') || [])) {
-			listener(undefined);
-		}
+		this.publishOwnedStateListeners(record, 'workerReady', undefined);
 	}
 
-	private settleWorkerWaiters(record: KustoEditorRecord): void {
-		const waiters = record.ownedState.workerReadyWaiters;
+	private settleWorkerWaiters(waiters: unknown): void {
 		if (Array.isArray(waiters)) {
 			for (const waiter of waiters) {
 				try {

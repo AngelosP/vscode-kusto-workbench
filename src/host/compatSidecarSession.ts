@@ -20,7 +20,12 @@ type PendingFinalPersist = {
 type PendingReload = {
 	resolve: (applied: boolean) => void;
 	timer: ReturnType<typeof setTimeout>;
+	arrivalDeadline?: number;
+	absoluteCommitDeadline?: number;
+	claimed?: boolean;
 };
+
+export type CompatReloadReservationOptions = Readonly<{ absoluteCommitDeadline: number }>;
 
 export class CompatSidecarSession {
 	private dirty = false;
@@ -65,7 +70,29 @@ export class CompatSidecarSession {
 		return !!requestId && this.pendingFinalPersists.has(requestId);
 	}
 	hasPendingReloadRequest(requestId: string): boolean {
-		return !!requestId && this.pendingReloads.has(requestId);
+		const pending = requestId ? this.pendingReloads.get(requestId) : undefined;
+		if (!pending) return false;
+		if (pending.absoluteCommitDeadline !== undefined) {
+			const deadline = pending.claimed ? pending.absoluteCommitDeadline
+				: Math.min(pending.arrivalDeadline!, pending.absoluteCommitDeadline);
+			if (!Number.isFinite(deadline) || performance.now() >= deadline) {
+				this.failReload(requestId);
+				return false;
+			}
+		}
+		return true;
+	}
+
+	claimReloadRequest(requestId: string): boolean {
+		const pending = this.pendingReloads.get(requestId);
+		if (!pending || pending.claimed || pending.absoluteCommitDeadline === undefined
+			|| !this.hasPendingReloadRequest(requestId)) return false;
+		clearTimeout(pending.timer);
+		pending.claimed = true;
+		pending.timer = setTimeout(() => {
+			if (this.pendingReloads.get(requestId) === pending) this.failReload(requestId);
+		}, Math.max(0, pending.absoluteCommitDeadline - performance.now()));
+		return true;
 	}
 
 	isStaleRevision(revision: number): boolean {
@@ -330,21 +357,28 @@ export class CompatSidecarSession {
 		await this.finalPersistTail;
 	}
 
-	createReloadRequest(timeoutMs = 5_000): { requestId: string; result: Promise<boolean> } {
+	createReloadRequest(
+		timeoutMs = 5_000,
+		options?: CompatReloadReservationOptions,
+	): { requestId: string; result: Promise<boolean> } {
 		const requestId = `document-reload-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+		const arrivalDeadline = options ? performance.now() + timeoutMs : undefined;
 		const result = new Promise<boolean>(resolve => {
-			const timer = setTimeout(() => {
-				this.pendingReloads.delete(requestId);
-				resolve(false);
-			}, timeoutMs);
-			this.pendingReloads.set(requestId, { resolve, timer });
+			const timer = setTimeout(() => this.failReload(requestId), options
+				? Math.max(0, Math.min(arrivalDeadline!, options.absoluteCommitDeadline) - performance.now())
+				: timeoutMs);
+			this.pendingReloads.set(requestId, {
+				resolve, timer,
+				...(options ? { arrivalDeadline, absoluteCommitDeadline: options.absoluteCommitDeadline, claimed: false } : {}),
+			});
 		});
 		return { requestId, result };
 	}
 
 	completeReload(requestId: string, applied: boolean, revision: number): boolean {
 		const pending = this.pendingReloads.get(requestId);
-		if (!pending) return false;
+		if (!pending || !this.hasPendingReloadRequest(requestId)) return false;
+		if (pending.absoluteCommitDeadline !== undefined && pending.claimed !== applied) return false;
 		clearTimeout(pending.timer);
 		this.pendingReloads.delete(requestId);
 		this.adoptRevision(revision);

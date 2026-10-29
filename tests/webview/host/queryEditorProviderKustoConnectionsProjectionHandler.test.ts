@@ -252,7 +252,7 @@ describe('QueryEditorProvider Kusto connections projection application', () => {
 		expect(providerSource).not.toContain('private async sendConnectionsData');
 		expect(providerSource).not.toContain("type: 'connectionsData'");
 		expect(providerSource).not.toContain('getEditingPreferencesData');
-		expect(providerSource.match(/kustoConnectionsProjectionApplication\.refresh\(/g)).toHaveLength(6);
+		expect(providerSource.match(/kustoConnectionsProjectionApplication\.refresh\(/g)).toHaveLength(7);
 		expect(providerSource).toMatch(
 			/persistedResultSanitizationApplication\?: PersistedResultSanitizationApplicationHandler,\s+kustoConnectionsProjectionApplication\?: KustoConnectionsProjectionApplicationHandler,/,
 		);

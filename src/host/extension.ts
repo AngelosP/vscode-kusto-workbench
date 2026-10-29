@@ -2,6 +2,7 @@
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { open as openLocalFile } from 'node:fs/promises';
 import { ConnectionManager, normalizeFilePath, type FileConnectionCacheEntry } from './connectionManager';
 import {
 	setTestIsolateKustoConnections,
@@ -491,17 +492,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			const candidate = request as {
 				engine?: unknown; templatePath?: unknown; outputPath?: unknown; legacyKusto?: unknown;
 				sessionFile?: unknown; existingConnectionId?: unknown; existingClusterIncludes?: unknown;
-				database?: unknown; includeChart?: unknown; recreateSqlOwner?: unknown;
+				database?: unknown; includeChart?: unknown; recreateSqlOwner?: unknown; exposeToActiveContent?: unknown;
 			};
 			const engine = String(candidate.engine || '').trim();
 			const templatePath = String(candidate.templatePath || '').trim();
 			const outputPath = String(candidate.outputPath || '').trim();
 			const legacyKusto = candidate.legacyKusto === true;
+			const exposeToActiveContent = candidate.exposeToActiveContent === true;
 			const sessionFile = candidate.sessionFile === true;
 			const existingConnectionId = String(candidate.existingConnectionId || '').trim();
 			const existingClusterIncludes = String(candidate.existingClusterIncludes || '').trim().toLowerCase();
 			if ((engine !== 'kusto' && engine !== 'sql') || !templatePath || (!sessionFile && !outputPath)) {
 				throw new Error('Persisted-result fixture requires engine and templatePath, plus outputPath unless sessionFile is true.');
+			}
+			if (exposeToActiveContent && (engine !== 'kusto' || legacyKusto)) {
+				throw new Error('Active-content fixture authoring requires non-legacy Kusto.');
 			}
 			await persistedResultFixtureStartupCleanup;
 			await testAuthPreferences.waitForProviderAccountRefresh();
@@ -519,6 +524,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			let connectionId = '';
 			let assertKustoFixtureReady: (() => Promise<void>) | undefined;
 			let ensureSyntheticKustoOwner: (() => Promise<void>) | undefined;
+			let requireFreshOutput = false;
 			if (engine === 'kusto') {
 				const existingConnections = connectionManager.getConnections().filter(connection =>
 					existingConnectionId
@@ -529,6 +535,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					throw new Error('Persisted-result fixture connection selection is ambiguous.');
 				}
 				const existingConnection = existingConnections[0];
+				if (!existingConnection && exposeToActiveContent) {
+					if (Object.prototype.hasOwnProperty.call(section, 'resultArtifact')) {
+						throw new Error('Active-content fixture authoring requires a descriptor-free template.');
+					}
+					if (absoluteOutputPath === absoluteTemplatePath) {
+						throw new Error('Active-content fixture authoring requires different template and output paths.');
+					}
+					requireFreshOutput = true;
+				}
 				const connection = existingConnection ?? await connectionManager.addConnection({
 					name: `${persistedResultFixturePrefix} Kusto`,
 					clusterUrl: persistedResultKustoCluster,
@@ -663,7 +678,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 						kustoLeaveNoTraceRevision: leaveNoTraceRevision,
 					});
 				}
-				if (existingConnection) {
+				if (existingConnection || exposeToActiveContent) {
 					section.connectionIdHint = connection.id;
 					const connectionRevision = connectionManager.getConnectionIncarnation(connection.id);
 					const connectionIdentityKey = getKustoConnectionIdentityKey(
@@ -694,10 +709,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 						policy: {
 							accountPartition, authSessionGeneration, leaveNoTraceRevision,
 							connectionRevision, connectionIdentityKey,
-							exposeToActiveContent: true, sendToModel: true,
-							shareToClipboard: true, exportToCsv: true,
+							...(existingConnection ? {
+								exposeToActiveContent: true, sendToModel: true,
+								shareToClipboard: true, exportToCsv: true,
+							} : { exposeToActiveContent: true }),
 						},
-						lineage: [],
+						...(existingConnection ? { lineage: [] } : {}),
 					};
 				} else {
 					delete section.connectionIdHint;
@@ -762,11 +779,46 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			const outputUri = vscode.Uri.file(absoluteOutputPath);
 			await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(absoluteOutputPath)));
 			await assertKustoFixtureReady?.();
-			await vscode.workspace.fs.writeFile(outputUri, Buffer.from(`${JSON.stringify(fixture, null, 2)}\n`, 'utf8'));
+			const outputBytes = Buffer.from(`${JSON.stringify(fixture, null, 2)}\n`, 'utf8');
+			if (requireFreshOutput) {
+				let outputMissing = false;
+				try {
+					await vscode.workspace.fs.stat(outputUri);
+				} catch (error) {
+					if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'FileNotFound') throw error;
+					outputMissing = true;
+				}
+				if (!outputMissing) throw new Error('Active-content fixture authoring requires a new output file.');
+				const outputFile = await openLocalFile(absoluteOutputPath, 'wx').catch((error: unknown) => {
+					if ((error as NodeJS.ErrnoException | null | undefined)?.code === 'EEXIST') {
+						throw new Error('Active-content fixture authoring requires a new output file.');
+					}
+					throw error;
+				});
+				let writeFailed = false;
+				let writeError: unknown;
+				try {
+					await outputFile.writeFile(outputBytes);
+				} catch (error) {
+					writeFailed = true;
+					writeError = error;
+				}
+				try {
+					await outputFile.close();
+				} catch (error) {
+					if (writeFailed) throw new AggregateError([writeError, error], 'Active-content fixture output write and close failed.');
+					throw error;
+				}
+				if (writeFailed) throw writeError;
+			} else {
+				await vscode.workspace.fs.writeFile(outputUri, outputBytes);
+			}
 			try {
 				await assertKustoFixtureReady?.();
 			} catch (error) {
-				try { await vscode.workspace.fs.delete(outputUri, { recursive: false, useTrash: false }); } catch { /* ignore */ }
+				if (!requireFreshOutput) {
+					try { await vscode.workspace.fs.delete(outputUri, { recursive: false, useTrash: false }); } catch { /* ignore */ }
+				}
 				throw error;
 			}
 			return { outputPath: absoluteOutputPath, connectionId };
@@ -2019,7 +2071,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 								cleanupOpenFiles = Array.isArray(cleanupListed.openFiles) ? cleanupListed.openFiles : [];
 								const tempFiles = cleanupOpenFiles.filter(file => file.logicalUri === activeLogicalUri || file.logicalUri === targetLogicalUri);
 								cleanupClosedEditors = tabsForUris([activeUri, targetUri]).length === 0;
-								cleanupNoLiveEditors = tempFiles.length === 0 || tempFiles.every(file => file.isLiveWorkbench === false);
+								cleanupNoLiveEditors = cleanupClosedEditors
+									&& (tempFiles.length === 0 || tempFiles.every(file => file.isLiveWorkbench === false));
 								if (cleanupNoLiveEditors) {
 									break;
 								}

@@ -68,6 +68,7 @@ When you need to find a table, column, function, docstring, or data and you do n
 * Use `#activateWorkbenchFile` only when the user wants a file focused/visible; explicit `openFileId` targeting can edit a live non-active file without changing focus.
 * After background mutations, call `#saveWorkbenchFile` with the exact `openFileId` or `targetFileUri`, then verify `success` before reporting completion.
 * If a file is marked `isReadOnlyFallback`, reopen it with Kusto Workbench or activate it before editing.
+* For the exact target in `openFiles`, `sectionsUnavailable: true` or both `isLiveWorkbench: false` and `isReadOnlyFallback: false` means its live bridge is unavailable. Backing sections are inspection-only, not proof of usable live state. Activate that exact file once only when visibility is requested, and require `success: true` and `isLiveWorkbench: true` before reporting recovery. Otherwise report the unavailable bridge without mutation, neighbor substitution, or replay of an uncertain operation.
 
 ### 2\. Kusto Data Questions
 

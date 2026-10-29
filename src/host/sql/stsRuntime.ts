@@ -181,6 +181,8 @@ export async function createProtectedStsRuntime(
 
 export class StsRuntime implements StsRuntimeLike {
 	private processManager: StsProcessManager | undefined;
+	private installationPromise: Promise<string | null> | undefined;
+	private installationPrepared = false;
 	private startPromise: Promise<StsProcessManager> | undefined;
 	private restartPromise: Promise<void> | undefined;
 	private managerFailureSubscription: vscode.Disposable | undefined;
@@ -193,6 +195,35 @@ export class StsRuntime implements StsRuntimeLike {
 		private readonly output: WorkbenchLogger,
 		private readonly dependencies: StsRuntimeDependencies = defaultDependencies,
 	) {}
+
+	async prepareInstallation(): Promise<void> {
+		if (this.disposed) throw new Error('SQL Tools Service runtime is disposed.');
+		if (!this.restartPromise && this.processManager?.isRunning && !this.processManager.isFailed) return;
+		if (this.installationPrepared && !this.startPromise) this.installationPromise = undefined;
+		const binaryPath = await this.ensureInstallation();
+		if (!binaryPath) throw new Error('SQL Tools Service is unavailable. Retry when the runtime can be downloaded.');
+		if (this.disposed) throw new Error('SQL Tools Service runtime is disposed.');
+	}
+
+	private ensureInstallation(reinstall = false): Promise<string | null> {
+		if (reinstall) this.installationPromise = undefined;
+		if (!this.installationPromise) {
+			this.installationPrepared = false;
+			const install = () => this.dependencies.ensureSts(this.context.globalStorageUri.fsPath, this.output);
+			const installation = reinstall
+				? this.dependencies.invalidateStsCache(this.context.globalStorageUri.fsPath, this.output).then(install)
+				: install();
+			this.installationPromise = installation;
+			void installation.then(binaryPath => {
+				if (this.installationPromise !== installation) return;
+				this.installationPrepared = !!binaryPath;
+				if (!binaryPath) this.installationPromise = undefined;
+			}, () => {
+				if (this.installationPromise === installation) this.installationPromise = undefined;
+			});
+		}
+		return this.installationPromise;
+	}
 
 	getProcessManager(): Promise<StsProcessManager> {
 		if (this.disposed) return Promise.reject(new Error('SQL Tools Service runtime is disposed.'));
@@ -217,6 +248,7 @@ export class StsRuntime implements StsRuntimeLike {
 	async dispose(): Promise<void> {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.installationPromise = undefined;
 		let manager = this.processManager;
 		if (!manager && this.startPromise) {
 			try { manager = await this.startPromise; } catch { /* startup already failed */ }
@@ -260,7 +292,7 @@ export class StsRuntime implements StsRuntimeLike {
 	private async startCore(): Promise<StsProcessManager> {
 		let firstError: unknown;
 		for (let attempt = 0; attempt < 2; attempt++) {
-			const binaryPath = await this.dependencies.ensureSts(this.context.globalStorageUri.fsPath, this.output);
+			const binaryPath = await this.ensureInstallation();
 			if (!binaryPath) throw new Error('SQL Tools Service is unavailable. Retry when the runtime can be downloaded.');
 			if (this.disposed) throw new Error('SQL Tools Service runtime is disposed.');
 
@@ -272,6 +304,7 @@ export class StsRuntime implements StsRuntimeLike {
 				if (this.disposed) throw new Error('SQL Tools Service runtime is disposed.');
 				const previous = this.processManager;
 				this.processManager = manager;
+				this.installationPromise = undefined;
 				this.managerFailureSubscription?.dispose();
 				this.managerFailureSubscription = manager.onDidFail(() => {
 					if (this.processManager !== manager || this.disposed) return;
@@ -291,9 +324,10 @@ export class StsRuntime implements StsRuntimeLike {
 				if (attempt === 0 && manager.epoch === 0 && !this.disposed) {
 					firstError = error;
 					this.output.warn('[sts] Initial runtime launch failed; reinstalling the verified cache once.');
-					await this.dependencies.invalidateStsCache(this.context.globalStorageUri.fsPath, this.output);
+					void this.ensureInstallation(true);
 					continue;
 				}
+				this.installationPromise = undefined;
 				throw firstError ?? error;
 			}
 		}

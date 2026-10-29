@@ -594,6 +594,383 @@ describe('MainWebviewStartupGateway', () => {
 		]);
 	});
 
+	it('prepares an idle ready document projection synchronously and allows a transport-reentrant reply', async () => {
+		const harness = createPanelHarness();
+		const events: string[] = [];
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel, admitInbound: admitTestMessage,
+			prepareOutbound: message => { events.push(`prepare:${(message as TestMessage).type}`); return message; },
+		});
+		await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE });
+		vi.mocked(harness.panel.webview.postMessage).mockImplementation(async (message: TestMessage) => {
+			events.push(`send:${message.type}`);
+			harness.posted.push(message);
+			if (message.type === 'documentData') await gateway.postMessage({ type: 'commandResult' });
+			return true;
+		});
+		const delivery = gateway.postDocumentProjection({
+			preflight: () => { events.push('preflight'); return true; },
+			prepare: () => { events.push('factory'); return { message: { type: 'documentData' } }; },
+		});
+		expect(events).toEqual([
+			'preflight', 'factory', 'prepare:documentData', 'send:documentData',
+			'prepare:commandResult', 'send:commandResult',
+		]);
+		await expect(delivery).resolves.toBe(true);
+		gateway.dispose();
+	});
+
+	it.each(['retirement', 'disposal', 'readiness ABA', 'runtime replacement', 'revalidation expiry'] as const)(
+		'cancels a document projection during async preflight on %s without reviving its factory', async transition => {
+			vi.useFakeTimers();
+			try {
+				const harness = createPanelHarness();
+				const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+				await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1' });
+				const preflight = Promise.withResolvers<boolean>();
+				const prepare = vi.fn(() => ({ message: { type: 'documentData' } }));
+				const delivery = gateway.postDocumentProjection({ preflight: () => preflight.promise, prepare });
+				const following = gateway.postMessage({ type: 'following' });
+				let revalidation: Promise<boolean> | undefined;
+				if (transition === 'retirement') harness.disposePanel();
+				else if (transition === 'disposal') gateway.dispose();
+				else if (transition === 'runtime replacement') {
+					void harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-2' });
+				}
+				else {
+					revalidation = gateway.beginDispatcherRevalidation();
+					const probe = harness.posted.at(-1) as TestMessage;
+					if (transition === 'readiness ABA') {
+						void harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1', probeId: probe.probeId });
+					} else {
+						await vi.advanceTimersByTimeAsync(4_000);
+						await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1', probeId: probe.probeId });
+					}
+				}
+				await expect(delivery).resolves.toBe(false);
+				await expect(following).resolves.toBe(transition === 'readiness ABA' || transition === 'runtime replacement');
+				if (revalidation) await expect(revalidation).resolves.toBe(transition === 'readiness ABA');
+				preflight.resolve(true);
+				await vi.advanceTimersByTimeAsync(0);
+				expect(prepare).not.toHaveBeenCalled();
+				expect(harness.posted).not.toContainEqual({ type: 'documentData' });
+				gateway.dispose();
+				expect(vi.getTimerCount()).toBe(0);
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
+
+	it('reserves an async preflight head before reentrant ordinary admission and preserves its snapshot', async () => {
+		const harness = createPanelHarness();
+		const preflight = Promise.withResolvers<boolean>();
+		const ordinary = { type: 'following', sequence: 1 };
+		let following: Promise<boolean> | undefined;
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel, admitInbound: admitTestMessage,
+			prepareOutbound: message => ({ ...(message as TestMessage) }),
+		});
+		await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE });
+		const prepare = vi.fn(() => ({ message: { type: 'documentData' } }));
+		const check = vi.fn(() => {
+			following = gateway.postMessage(ordinary);
+			return preflight.promise;
+		});
+		const delivery = gateway.postDocumentProjection({ preflight: check, prepare });
+		ordinary.sequence = 2;
+		expect(gateway.postMessageFireAndForget({ type: 'fireAndForget' })).toBe(true);
+		expect(harness.posted).toEqual([]);
+		expect(prepare).not.toHaveBeenCalled();
+		preflight.resolve(true);
+		await expect(delivery).resolves.toBe(true);
+		await expect(following).resolves.toBe(true);
+		await vi.waitFor(() => expect(harness.posted).toEqual([
+			{ type: 'documentData' }, { type: 'following', sequence: 1 }, { type: 'fireAndForget' },
+		]));
+		expect(check).toHaveBeenCalledTimes(1);
+		expect(prepare).toHaveBeenCalledTimes(1);
+		gateway.dispose();
+	});
+
+	it('observes a rejected async preflight even when it disposes the gateway during invocation', async () => {
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE });
+		const preflight = Promise.withResolvers<boolean>();
+		const prepare = vi.fn(() => ({ message: { type: 'documentData' } }));
+		const delivery = gateway.postDocumentProjection({
+			preflight: () => { gateway.dispose(); return preflight.promise; }, prepare,
+		});
+		await expect(delivery).resolves.toBe(false);
+		preflight.reject(new Error('Retired source preflight failed.'));
+		await new Promise<void>(resolve => setTimeout(resolve, 0));
+		expect(prepare).not.toHaveBeenCalled();
+		expect(harness.posted).toEqual([]);
+	});
+
+	it.each(['cold', 'established'] as const)('never invokes a queued document factory after %s readiness expires', async startup => {
+		vi.useFakeTimers();
+		try {
+			const harness = createPanelHarness();
+			const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+			if (startup === 'established') await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1' });
+			const readiness = gateway.beginDispatcherRevalidation();
+			const probe = harness.posted.at(-1) as TestMessage;
+			const preflight = vi.fn(() => true);
+			const prepare = vi.fn(() => ({ message: { type: 'documentData' } }));
+			const delivery = gateway.postDocumentProjection({ preflight, prepare });
+			await vi.advanceTimersByTimeAsync(startup === 'cold' ? 30_000 : 4_000);
+			await expect(readiness).resolves.toBe(false);
+			await expect(delivery).resolves.toBe(false);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1', probeId: probe.probeId });
+			await expect(gateway.waitForDispatcherReady()).resolves.toBe(false);
+			expect(preflight).not.toHaveBeenCalled();
+			expect(prepare).not.toHaveBeenCalled();
+			expect(harness.posted).not.toContainEqual({ type: 'documentData' });
+			gateway.dispose();
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
+		'preflight false', 'preflight throw', 'preflight reject', 'factory undefined', 'factory throw',
+		'invalid execution', 'invalid tool snapshot', 'invalid publication', 'invalid Power BI',
+		'outbound undefined', 'outbound throw', 'transport false', 'transport throw',
+	] as const)('rejects %s once and continues the existing outbound drain', async failure => {
+		const harness = createPanelHarness();
+		const preparedTypes: string[] = [];
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel, admitInbound: admitTestMessage,
+			prepareOutbound: message => {
+				const type = (message as TestMessage).type;
+				preparedTypes.push(type);
+				if (type === 'documentData' && failure === 'outbound undefined') return undefined;
+				if (type === 'documentData' && failure === 'outbound throw') throw new Error('Invalid outbound preparation.');
+				return message;
+			},
+		});
+		vi.mocked(harness.panel.webview.postMessage).mockImplementation(async (message: TestMessage) => {
+			if (message.type === 'documentData' && failure === 'transport throw') throw new Error('Transport failed.');
+			harness.posted.push(message);
+			return message.type !== 'documentData' || failure !== 'transport false';
+		});
+		const preflight = vi.fn(() => {
+			if (failure === 'preflight throw') throw new Error('Source preflight failed.');
+			if (failure === 'preflight reject') return Promise.reject(new Error('Source preflight rejected.'));
+			return failure !== 'preflight false';
+		});
+		const prepare = vi.fn(() => {
+			if (failure === 'factory undefined') return undefined;
+			if (failure === 'factory throw') throw new Error('Projection preparation failed.');
+			const type = failure === 'invalid execution' ? 'kustoExecutionStarted'
+				: failure === 'invalid tool snapshot' ? 'requestToolState'
+					: failure === 'invalid publication' ? 'kustoPublicationStage'
+						: failure === 'invalid Power BI' ? 'publishToPowerBIResult' : 'documentData';
+			return { message: { type } };
+		});
+		const onPreparationRejected = vi.fn();
+		const projection = { preflight, prepare, onPreparationRejected };
+		const delivery = gateway.postDocumentProjection(projection);
+		const following = gateway.postMessage({ type: 'following' });
+		await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE });
+		await expect(delivery).resolves.toBe(false);
+		await expect(following).resolves.toBe(true);
+		expect(preflight).toHaveBeenCalledTimes(1);
+		expect(prepare).toHaveBeenCalledTimes(failure.startsWith('preflight') ? 0 : 1);
+		expect(onPreparationRejected).toHaveBeenCalledTimes(failure.startsWith('preflight') || failure.startsWith('transport') ? 0 : 1);
+		expect(preparedTypes).toEqual(failure.startsWith('outbound') || failure.startsWith('transport')
+			? ['following', 'documentData'] : ['following']);
+		expect(harness.posted.at(-1)).toEqual({ type: 'following' });
+		gateway.dispose();
+	});
+
+	it('admits its issued recovery after READY without unblocking unrelated inbound work', async () => {
+		const harness = createPanelHarness();
+		let release!: () => void;
+		const held = new Promise<void>(resolve => { release = resolve; });
+		const handled: string[] = [];
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel, admitInbound: admitTestMessage,
+			allowReentrantInbound: isMainWebviewCorrelatedReply,
+		});
+		harness.receive({ type: 'heldInbound' });
+		const drain = gateway.setInboundHandler(async message => {
+			handled.push(message.type);
+			if (message.type === 'heldInbound') await held;
+		});
+		try {
+			await Promise.resolve();
+			const readiness = gateway.beginDispatcherRevalidation();
+			const probe = harness.posted.at(-1) as { probeId: string };
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'recovered-runtime', probeId: probe.probeId });
+			await expect(readiness).resolves.toBe(true);
+			const recovery = { type: 'requestDocument', requestId: `dispatcher-document-${probe.probeId}` };
+			await harness.receive(recovery);
+			await harness.receive(recovery);
+			harness.receive({ type: 'ordinaryFollowing' });
+
+			expect(handled).toEqual(['heldInbound', 'requestDocument']);
+			release();
+			await drain;
+			expect(handled).toEqual(['heldInbound', 'requestDocument', 'ordinaryFollowing']);
+		} finally {
+			release();
+			await drain;
+			gateway.dispose();
+		}
+	});
+
+	it('never routes unissued or expired dispatcher recovery into the document provider', async () => {
+		vi.useFakeTimers();
+		const harness = createPanelHarness();
+		const handled = vi.fn();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		try {
+			await gateway.setInboundHandler(handled);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'original-runtime' });
+			await harness.receive({ type: 'requestDocument', requestId: 'dispatcher-document-unissued' });
+			expect(handled).not.toHaveBeenCalled();
+
+			const readiness = gateway.beginDispatcherRevalidation();
+			const probe = harness.posted.at(-1) as { probeId: string };
+			await vi.advanceTimersByTimeAsync(4_000);
+			await expect(readiness).resolves.toBe(false);
+			await harness.receive({ type: 'requestDocument', requestId: `dispatcher-document-${probe.probeId}` });
+			expect(handled).not.toHaveBeenCalled();
+		} finally {
+			gateway.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it('withdraws only the canceled queued message and cleans its abort listener', async () => {
+		const harness = createPanelHarness();
+		const prepared = vi.fn(message => message);
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel, admitInbound: admitTestMessage, prepareOutbound: prepared,
+		});
+		const canceled = new AbortController();
+		const retained = new AbortController();
+		const remove = vi.spyOn(canceled.signal, 'removeEventListener');
+		const first = gateway.postMessage({ type: 'canceled-queued' }, canceled.signal);
+		const second = gateway.postMessage({ type: 'retained-queued' }, retained.signal);
+		canceled.abort();
+		await expect(first).resolves.toBe(false);
+		expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
+		await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE });
+		await expect(second).resolves.toBe(true);
+		expect(harness.posted).toEqual([{ type: 'retained-queued' }]);
+		retained.abort();
+		gateway.dispose();
+	});
+
+	it.each(['invalidated', 'current', 'throwing'] as const)(
+		'outbound currentness checks a %s capture at physical queue delivery', async state => {
+			const harness = createPanelHarness();
+			const held = Promise.withResolvers<boolean>();
+			const headMessage = { type: 'physical-head' };
+			const protectedMessage = { type: 'requestToolState', requestId: 'protected-tool' };
+			const followingMessage = { type: 'following-control' };
+			vi.mocked(harness.panel.webview.postMessage).mockImplementation((message: TestMessage) => {
+				harness.posted.push(message);
+				return message === headMessage ? held.promise : Promise.resolve(true);
+			});
+			const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+			const first = gateway.postMessage(headMessage);
+			const ready = Promise.resolve(harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE }));
+			try {
+				expect(harness.posted).toEqual([headMessage]);
+				let currentGeneration = 1;
+				const capturedGeneration = currentGeneration;
+				let throwOnCheck = false;
+				const isCurrent = () => {
+					if (throwOnCheck) throw new Error('Currentness unavailable');
+					return currentGeneration === capturedGeneration;
+				};
+				const protectedDelivery = Reflect.apply(gateway.postMessage, gateway, [
+					protectedMessage, undefined, isCurrent,
+				]) as Promise<boolean>;
+				if (state === 'invalidated') currentGeneration++;
+				if (state === 'throwing') throwOnCheck = true;
+				const following = gateway.postMessage(followingMessage);
+				expect(harness.posted).toEqual([headMessage]);
+
+				held.resolve(true);
+				await ready;
+				await expect(first).resolves.toBe(true);
+				await expect(following).resolves.toBe(true);
+				expect(harness.posted.filter(message => message === followingMessage)).toEqual([followingMessage]);
+				await expect.soft(protectedDelivery).resolves.toBe(state === 'current');
+				expect(harness.posted).toEqual(state === 'current'
+					? [headMessage, protectedMessage, followingMessage]
+					: [headMessage, followingMessage]);
+			} finally {
+				held.resolve(true);
+				gateway.dispose();
+			}
+		},
+	);
+
+	it('outbound currentness rejects an immediately stale capture before physical delivery', async () => {
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		try {
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE });
+			const delivery = Reflect.apply(gateway.postMessage, gateway, [
+				{ type: 'requestToolState', requestId: 'immediately-stale-tool' }, undefined, () => false,
+			]) as Promise<boolean>;
+			await expect.soft(delivery).resolves.toBe(false);
+			expect(harness.posted).toEqual([]);
+		} finally {
+			gateway.dispose();
+		}
+	});
+
+	it('rejects pre-aborted and preparation-aborted sends before physical submission', async () => {
+		const harness = createPanelHarness();
+		const controller = new AbortController();
+		const prepared = vi.fn(message => { controller.abort(); return message; });
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel, admitInbound: admitTestMessage, prepareOutbound: prepared,
+		});
+		await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE });
+		await expect(gateway.postMessage({ type: 'preparing' }, controller.signal)).resolves.toBe(false);
+		expect(prepared).toHaveBeenCalledOnce();
+		await expect(gateway.postMessage({ type: 'already-aborted' }, controller.signal)).resolves.toBe(false);
+		expect(prepared).toHaveBeenCalledOnce();
+		expect(harness.posted).toEqual([]);
+		gateway.dispose();
+	});
+
+	it('does not release the physical drain when a submitted message is aborted', async () => {
+		const harness = createPanelHarness();
+		let release!: (value: boolean) => void;
+		const held = new Promise<boolean>(resolve => { release = resolve; });
+		vi.mocked(harness.panel.webview.postMessage).mockImplementation((message: TestMessage) => {
+			harness.posted.push(message);
+			return message.type === 'physical-head' ? held : Promise.resolve(true);
+		});
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		const controller = new AbortController();
+		const first = gateway.postMessage({ type: 'physical-head' }, controller.signal);
+		const ready = Promise.resolve(harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE }));
+		const following = gateway.postMessage({ type: 'following-head' });
+		let settled = false;
+		void first.then(() => { settled = true; });
+		controller.abort();
+		await Promise.resolve();
+		expect(settled).toBe(false);
+		expect(harness.posted).toEqual([{ type: 'physical-head' }]);
+		release(true);
+		await expect(first).resolves.toBe(true);
+		await expect(following).resolves.toBe(true);
+		await ready;
+		gateway.dispose();
+	});
+
 	it('holds reactivation traffic until the current dispatcher answers a direct probe', async () => {
 		const harness = createPanelHarness();
 		const gateway = new MainWebviewStartupGateway<TestMessage>({
@@ -800,6 +1177,335 @@ describe('MainWebviewStartupGateway', () => {
 			}));
 			await expect(gateway.postMessage({ type: 'mutation', sequence: 3 })).resolves.toBe(true);
 			expect(harness.posted).toContainEqual({ type: 'mutation', sequence: 3 });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('keeps an expired matching acknowledgement from reopening request admission', async () => {
+		vi.useFakeTimers();
+		try {
+			const harness = createPanelHarness();
+			const gateway = new MainWebviewStartupGateway<TestMessage>({
+				panel: harness.panel, admitInbound: admitTestMessage,
+				dispatcherRevalidationTimeoutMs: 100, dispatcherRevalidationRetryMs: 20,
+			});
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1' });
+			const expired = gateway.beginDispatcherRevalidation();
+			const probe = harness.posted.at(-1) as TestMessage;
+			const mutation = gateway.postMessage({ type: 'mutation', sequence: 1 });
+			await vi.advanceTimersByTimeAsync(100);
+			await expect(expired).resolves.toBe(false);
+			await expect(mutation).resolves.toBe(false);
+			await harness.receive({
+				type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1', probeId: probe.probeId,
+			});
+			await expect(gateway.postMessage({ type: 'requestToolState', requestId: 'after-expired-ack' })).resolves.toBe(false);
+			expect(harness.posted).not.toContainEqual({ type: 'mutation', sequence: 1 });
+			expect(harness.posted).not.toContainEqual({ type: 'requestToolState', requestId: 'after-expired-ack' });
+			gateway.dispose();
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([true, false])('bounds exact activation while its initial dispatcher is still starting (acknowledged=%s)', async acknowledged => {
+		vi.useFakeTimers();
+		try {
+			const harness = createPanelHarness();
+			const gateway = new MainWebviewStartupGateway<TestMessage>({
+				panel: harness.panel, admitInbound: admitTestMessage,
+				dispatcherColdStartTimeoutMs: 100,
+				dispatcherRevalidationTimeoutMs: 100, dispatcherRevalidationRetryMs: 20,
+			});
+			const ready = gateway.beginDispatcherRevalidation();
+			const probe = harness.posted.at(-1) as TestMessage;
+			expect(probe).toMatchObject({ type: 'mainWebviewDispatcherProbe', probeId: expect.any(String) });
+			const snapshot = gateway.postMessage({ type: 'requestToolState', requestId: 'initial-activation' });
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'initial-runtime' });
+			expect(harness.posted).not.toContainEqual({ type: 'requestToolState', requestId: 'initial-activation' });
+			if (acknowledged) {
+				await harness.receive({
+					type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'initial-runtime', probeId: probe.probeId,
+				});
+			} else {
+				await vi.advanceTimersByTimeAsync(100);
+			}
+			await expect(ready).resolves.toBe(acknowledged);
+			await expect(snapshot).resolves.toBe(acknowledged);
+			gateway.dispose();
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([true, false])('shares the current bounded revalidation result across activation callers (acknowledged=%s)', async acknowledged => {
+		vi.useFakeTimers();
+		try {
+			const harness = createPanelHarness();
+			const gateway = new MainWebviewStartupGateway<TestMessage>({
+				panel: harness.panel,
+				admitInbound: admitTestMessage,
+				dispatcherRevalidationTimeoutMs: 100,
+				dispatcherRevalidationRetryMs: 20,
+			});
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1' });
+			const first = gateway.beginDispatcherRevalidation();
+			expect(first).toBeInstanceOf(Promise);
+			const probe = harness.posted.at(-1) as TestMessage;
+			await vi.advanceTimersByTimeAsync(95);
+			const second = gateway.beginDispatcherRevalidation();
+			expect(second).toBe(first);
+			if (acknowledged) {
+				await harness.receive({
+					type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1', probeId: probe.probeId,
+				});
+			} else {
+				await vi.advanceTimersByTimeAsync(5);
+			}
+			await expect(first).resolves.toBe(acknowledged);
+			await expect(second).resolves.toBe(acknowledged);
+			expect(vi.getTimerCount()).toBe(0);
+			gateway.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([true, false])('shares the original read deadline without retiring a ready same-runtime epoch (acknowledged=%s)', async acknowledged => {
+		vi.useFakeTimers();
+		const harness = createPanelHarness();
+		const handled = vi.fn();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		try {
+			await gateway.setInboundHandler(handled);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1' });
+			const epoch = gateway.readinessIdentity;
+			const first = gateway.waitForReadDispatcherReady();
+			const probe = harness.posted.at(-1) as TestMessage;
+			let settled = false;
+			void first.then(() => { settled = true; });
+			expect(gateway.isDispatcherReady).toBe(true);
+			expect(gateway.readinessIdentity).toBe(epoch);
+			await vi.advanceTimersByTimeAsync(249);
+			expect(harness.posted).toEqual([probe]);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(harness.posted).toEqual([probe, probe]);
+			await vi.advanceTimersByTimeAsync(3_749);
+			const second = gateway.waitForReadDispatcherReady();
+			expect(second).toBe(first);
+			expect(settled).toBe(false);
+			if (acknowledged) {
+				await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1', probeId: probe.probeId });
+			} else await vi.advanceTimersByTimeAsync(1);
+			await expect(first).resolves.toBe(acknowledged);
+			await expect(second).resolves.toBe(acknowledged);
+			expect(gateway.isDispatcherReady).toBe(acknowledged);
+			expect(gateway.readinessIdentity).toBe(epoch + (acknowledged ? 0 : 1));
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1', probeId: probe.probeId });
+			const recovery = { type: 'requestDocument', requestId: `dispatcher-document-${probe.probeId}` };
+			await harness.receive(recovery);
+			await harness.receive(recovery);
+			expect(handled).toHaveBeenCalledTimes(acknowledged ? 1 : 0);
+			if (!acknowledged) await expect(gateway.postMessage({ type: 'mutation' })).resolves.toBe(false);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			gateway.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it.each(['read then force', 'force then read'] as const)('keeps forced readiness revocation and the original shared deadline for %s', async order => {
+		vi.useFakeTimers();
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		try {
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1' });
+			const epoch = gateway.readinessIdentity;
+			const first = order === 'read then force' ? gateway.waitForReadDispatcherReady() : gateway.beginDispatcherRevalidation();
+			await vi.advanceTimersByTimeAsync(3_999);
+			const second = order === 'read then force' ? gateway.beginDispatcherRevalidation() : gateway.waitForReadDispatcherReady();
+			expect(second).toBe(first);
+			expect(gateway.isDispatcherReady).toBe(false);
+			expect(gateway.readinessIdentity).toBe(epoch + 1);
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(first).resolves.toBe(false);
+			await expect(second).resolves.toBe(false);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			gateway.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it('ignores stale scoped runtime acknowledgements during ready read validation', async () => {
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		try {
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1' });
+			const prior = gateway.beginDispatcherRevalidation();
+			const priorProbe = harness.posted.at(-1) as TestMessage;
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1', probeId: priorProbe.probeId });
+			await expect(prior).resolves.toBe(true);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-2' });
+			const epoch = gateway.readinessIdentity;
+			const current = gateway.waitForReadDispatcherReady();
+			const currentProbe = harness.posted.at(-1) as TestMessage;
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1', probeId: priorProbe.probeId });
+			expect(gateway.readinessIdentity).toBe(epoch);
+			expect(gateway.isDispatcherReady).toBe(true);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-2', probeId: currentProbe.probeId });
+			await expect(current).resolves.toBe(true);
+			expect(gateway.readinessIdentity).toBe(epoch);
+		} finally {
+			gateway.dispose();
+		}
+	});
+
+	it('fences prepared projections on an unscoped runtime replacement before a read challenge is answered', async () => {
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		let release!: (fresh: boolean) => void;
+		const preflight = new Promise<boolean>(resolve => { release = resolve; });
+		const prepare = vi.fn(() => ({ message: { type: 'documentData' } }));
+		try {
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1' });
+			const epoch = gateway.readinessIdentity;
+			const projection = gateway.postDocumentProjection({ preflight: () => preflight, prepare });
+			const readiness = gateway.waitForReadDispatcherReady();
+			const probe = harness.posted.at(-1) as TestMessage;
+			const following = gateway.postMessage({ type: 'following' });
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-2' });
+			expect(gateway.readinessIdentity).toBe(epoch + 1);
+			expect(gateway.isDispatcherReady).toBe(false);
+			await expect(projection).resolves.toBe(false);
+			release(true);
+			expect(prepare).not.toHaveBeenCalled();
+			expect(harness.posted).not.toContainEqual({ type: 'following' });
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-2', probeId: probe.probeId });
+			await expect(readiness).resolves.toBe(true);
+			await expect(following).resolves.toBe(true);
+			expect(prepare).not.toHaveBeenCalled();
+		} finally {
+			release(false);
+			gateway.dispose();
+		}
+	});
+
+	it('expires a read challenge without releasing a submitted physical head or replaying an unsent mutation', async () => {
+		vi.useFakeTimers();
+		const harness = createPanelHarness();
+		let release!: (delivered: boolean) => void;
+		const held = new Promise<boolean>(resolve => { release = resolve; });
+		vi.mocked(harness.panel.webview.postMessage).mockImplementation((message: TestMessage) => {
+			harness.posted.push(message);
+			return message.type === 'physical-head' ? held : Promise.resolve(true);
+		});
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		try {
+			const controller = new AbortController();
+			const physical = gateway.postMessage({ type: 'physical-head' }, controller.signal);
+			const initialReady = Promise.resolve(harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1' }));
+			let physicalSettled = false;
+			void physical.then(() => { physicalSettled = true; });
+			const readReady = gateway.waitForReadDispatcherReady();
+			const probe = harness.posted.at(-1) as TestMessage;
+			const mutation = gateway.postMessage({ type: 'mutation', sequence: 1 });
+			controller.abort();
+			await vi.advanceTimersByTimeAsync(4_000);
+			await expect(readReady).resolves.toBe(false);
+			await expect(mutation).resolves.toBe(false);
+			expect(physicalSettled).toBe(false);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1', probeId: probe.probeId });
+			await expect(gateway.postMessage({ type: 'requestToolState', requestId: 'expired-read' })).resolves.toBe(false);
+			const recovery = gateway.waitForReadDispatcherReady();
+			const recoveryProbe = harness.posted.at(-1) as TestMessage;
+			expect(recoveryProbe.probeId).not.toBe(probe.probeId);
+			void harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-1', probeId: recoveryProbe.probeId });
+			await expect(recovery).resolves.toBe(true);
+			const current = gateway.postMessage({ type: 'requestToolState', requestId: 'current-read' });
+			expect(physicalSettled).toBe(false);
+			expect(harness.posted).not.toContainEqual({ type: 'requestToolState', requestId: 'current-read' });
+			release(true);
+			await expect(physical).resolves.toBe(true);
+			await initialReady;
+			await expect(current).resolves.toBe(true);
+			expect(harness.posted).not.toContainEqual({ type: 'mutation', sequence: 1 });
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			release(false);
+			gateway.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it('starts a fresh bounded challenge when a new runtime appears after expired revalidation', async () => {
+		vi.useFakeTimers();
+		try {
+			const harness = createPanelHarness();
+			const gateway = new MainWebviewStartupGateway<TestMessage>({
+				panel: harness.panel,
+				admitInbound: admitTestMessage,
+				dispatcherRevalidationTimeoutMs: 100,
+				dispatcherRevalidationRetryMs: 20,
+			});
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-old' });
+			gateway.beginDispatcherRevalidation();
+			const expiredProbe = harness.posted.at(-1) as TestMessage;
+			const expiredMutation = gateway.postMessage({ type: 'mutation', sequence: 1 });
+			await vi.advanceTimersByTimeAsync(100);
+			await expect(expiredMutation).resolves.toBe(false);
+
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-new' });
+			const recoveryProbe = harness.posted.at(-1) as TestMessage;
+			expect(recoveryProbe.type).toBe('mainWebviewDispatcherProbe');
+			expect(recoveryProbe.probeId).not.toBe(expiredProbe.probeId);
+			const snapshot = gateway.postMessage({ type: 'requestToolState', requestId: 'recovered-state' });
+			let settled = false;
+			void snapshot.then(() => { settled = true; });
+			await harness.receive({
+				type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-old', probeId: expiredProbe.probeId,
+			});
+			await Promise.resolve();
+			expect(settled).toBe(false);
+			await harness.receive({
+				type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-new', probeId: recoveryProbe.probeId,
+			});
+			await expect(snapshot).resolves.toBe(true);
+			expect(harness.posted).toContainEqual({ type: 'requestToolState', requestId: 'recovered-state' });
+			expect(harness.posted).not.toContainEqual({ type: 'mutation', sequence: 1 });
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('does not renew failed recovery from duplicate startup announcements', async () => {
+		vi.useFakeTimers();
+		try {
+			const harness = createPanelHarness();
+			const gateway = new MainWebviewStartupGateway<TestMessage>({
+				panel: harness.panel,
+				admitInbound: admitTestMessage,
+				dispatcherRevalidationTimeoutMs: 100,
+				dispatcherRevalidationRetryMs: 20,
+			});
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-old' });
+			gateway.beginDispatcherRevalidation();
+			await vi.advanceTimersByTimeAsync(100);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-new' });
+			const pending = gateway.postMessage({ type: 'mutation', sequence: 2 });
+			await vi.advanceTimersByTimeAsync(90);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-new' });
+			await vi.advanceTimersByTimeAsync(10);
+			await expect(pending).resolves.toBe(false);
+			const probeCount = harness.posted.length;
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-new' });
+			expect(harness.posted).toHaveLength(probeCount);
+			expect(vi.getTimerCount()).toBe(0);
+			gateway.dispose();
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1469,5 +2175,244 @@ describe('MainWebviewStartupGateway', () => {
 		expect(successorInbound).toHaveBeenCalledWith({ type: 'request', sequence: 2 });
 		expect(predecessor.posted).toEqual([]);
 		expect(successor.posted).toEqual([{ type: 'projection', sequence: 2 }]);
+	});
+
+	it('keeps first cold activation pending until an exact 5200 ms dispatcher acknowledgement', async () => {
+		vi.useFakeTimers();
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({
+			panel: harness.panel,
+			admitInbound: admitTestMessage,
+		});
+		try {
+			const readiness = gateway.beginDispatcherRevalidation();
+			const probe = harness.posted.at(-1) as TestMessage;
+			expect(probe).toMatchObject({ type: 'mainWebviewDispatcherProbe', probeId: expect.any(String) });
+			const projection = { type: 'projection', sequence: 1 };
+			const delivery = gateway.postMessage(projection);
+			const settlements: boolean[] = [];
+			void readiness.then(ready => { settlements.push(ready); });
+
+			await vi.advanceTimersByTimeAsync(5_200);
+			expect(settlements).toEqual([]);
+			expect(harness.posted).not.toContainEqual(projection);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'cold-runtime' });
+			expect(settlements).toEqual([]);
+			await harness.receive({
+				type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE,
+				runtimeId: 'cold-runtime', probeId: probe.probeId,
+			});
+
+			await expect(readiness).resolves.toBe(true);
+			await expect(delivery).resolves.toBe(true);
+			expect(harness.posted.filter(message => (message as TestMessage).type === 'projection')).toEqual([projection]);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			gateway.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it('coalesces cold activation at 29999 ms and rejects expired queued work at 30000 ms', async () => {
+		vi.useFakeTimers();
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		try {
+			const first = gateway.beginDispatcherRevalidation();
+			const probe = harness.posted.at(-1) as TestMessage;
+			const mutation = { type: 'mutation', sequence: 1 };
+			const delivery = gateway.postMessage(mutation);
+			const settlements: boolean[] = [];
+			void first.then(ready => { settlements.push(ready); });
+			await vi.advanceTimersByTimeAsync(29_999);
+			expect(settlements).toEqual([]);
+			expect(gateway.beginDispatcherRevalidation()).toBe(first);
+			expect(gateway.waitForDispatcherReady()).toBe(first);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'cold-replacement' });
+			await vi.advanceTimersByTimeAsync(1);
+
+			await expect(first).resolves.toBe(false);
+			await expect(delivery).resolves.toBe(false);
+			await harness.receive({
+				type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE,
+				runtimeId: 'cold-replacement', probeId: probe.probeId,
+			});
+			await expect(gateway.waitForDispatcherReady()).resolves.toBe(false);
+			await expect(gateway.postMessage({ type: 'mutation', sequence: 2 })).resolves.toBe(false);
+			expect(harness.posted).not.toContainEqual(mutation);
+			expect(harness.posted.every(message => (message as TestMessage).probeId === probe.probeId)).toBe(true);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			gateway.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it('keeps an unchallenged cold wait on its original deadline when activation joins', async () => {
+		vi.useFakeTimers();
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		try {
+			const first = gateway.waitForDispatcherReady();
+			expect(gateway.waitForDispatcherReady()).toBe(first);
+			expect(harness.posted).toEqual([]);
+			const settlements: boolean[] = [];
+			void first.then(ready => { settlements.push(ready); });
+			await vi.advanceTimersByTimeAsync(29_999);
+			expect(settlements).toEqual([]);
+			expect(gateway.beginDispatcherRevalidation()).toBe(first);
+			const probe = harness.posted.at(-1) as TestMessage;
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'first-runtime' });
+			expect(settlements).toEqual([]);
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(first).resolves.toBe(false);
+			await harness.receive({
+				type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE,
+				runtimeId: 'first-runtime', probeId: probe.probeId,
+			});
+			await expect(gateway.waitForDispatcherReady()).resolves.toBe(false);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			gateway.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it('admits only an initial unprobed READY during an unchallenged cold wait', async () => {
+		vi.useFakeTimers();
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		try {
+			const readiness = gateway.waitForDispatcherReady();
+			const projection = { type: 'projection', sequence: 1 };
+			const delivery = gateway.postMessage(projection);
+			const settlements: boolean[] = [];
+			void readiness.then(ready => { settlements.push(ready); });
+			await vi.advanceTimersByTimeAsync(5_200);
+			await harness.receive({
+				type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'first-runtime', probeId: 'unsolicited-probe',
+			});
+			expect(settlements).toEqual([]);
+			expect(harness.posted).toEqual([]);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'first-runtime' });
+			await expect(readiness).resolves.toBe(true);
+			await expect(delivery).resolves.toBe(true);
+			await expect(gateway.waitForDispatcherReady()).resolves.toBe(true);
+			expect(harness.posted).toEqual([projection]);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			gateway.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it.each(['same-runtime', 'replacement-runtime'])('keeps established %s revalidation bounded at 3999 and 4000 ms', async runtimeId => {
+		vi.useFakeTimers();
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		try {
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'same-runtime' });
+			const readiness = gateway.beginDispatcherRevalidation();
+			const probe = harness.posted.at(-1) as TestMessage;
+			const mutation = { type: 'mutation', sequence: 1 };
+			const delivery = gateway.postMessage(mutation);
+			const settlements: boolean[] = [];
+			void readiness.then(ready => { settlements.push(ready); });
+			await vi.advanceTimersByTimeAsync(3_999);
+			expect(settlements).toEqual([]);
+			expect(gateway.beginDispatcherRevalidation()).toBe(readiness);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId });
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(readiness).resolves.toBe(false);
+			await expect(delivery).resolves.toBe(false);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId, probeId: probe.probeId });
+			await expect(gateway.waitForDispatcherReady()).resolves.toBe(false);
+			expect(harness.posted).not.toContainEqual(mutation);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			gateway.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it.each(['caller', 'replacement runtime'])('does not renew the consumed cold allowance for a later %s', async recovery => {
+		vi.useFakeTimers();
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		try {
+			const cold = gateway.beginDispatcherRevalidation();
+			const expiredProbe = harness.posted.at(-1) as TestMessage;
+			const rejectedMutation = { type: 'mutation', sequence: 1 };
+			const rejectedDelivery = gateway.postMessage(rejectedMutation);
+			await vi.advanceTimersByTimeAsync(30_000);
+			await expect(cold).resolves.toBe(false);
+			await expect(rejectedDelivery).resolves.toBe(false);
+			if (recovery === 'replacement runtime') {
+				await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'replacement-runtime' });
+			} else {
+				gateway.beginDispatcherRevalidation();
+			}
+			const readiness = gateway.waitForDispatcherReady();
+			const probe = harness.posted.at(-1) as TestMessage;
+			expect(probe.probeId).not.toBe(expiredProbe.probeId);
+			const settlements: boolean[] = [];
+			void readiness.then(ready => { settlements.push(ready); });
+			await vi.advanceTimersByTimeAsync(3_999);
+			expect(settlements).toEqual([]);
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(readiness).resolves.toBe(false);
+			await harness.receive({
+				type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE,
+				runtimeId: 'replacement-runtime', probeId: probe.probeId,
+			});
+			await expect(gateway.postMessage({ type: 'mutation', sequence: 2 })).resolves.toBe(false);
+			expect(harness.posted).not.toContainEqual(rejectedMutation);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			gateway.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it('settles cold readiness and queued work on disposal without late replay', async () => {
+		vi.useFakeTimers();
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		try {
+			const readiness = gateway.waitForDispatcherReady();
+			const mutation = gateway.postMessage({ type: 'mutation', sequence: 1 });
+			harness.disposePanel();
+			await expect(readiness).resolves.toBe(false);
+			await expect(mutation).resolves.toBe(false);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'late-runtime' });
+			await expect(gateway.waitForDispatcherReady()).resolves.toBe(false);
+			await expect(gateway.beginDispatcherRevalidation()).resolves.toBe(false);
+			expect(harness.posted).toEqual([]);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			gateway.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it('handles READY control before an ordinary startup drain waiting for cold readiness', async () => {
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		const events: number[] = [];
+		try {
+			void harness.receive({ type: 'request', sequence: 1 });
+			void harness.receive({ type: 'request', sequence: 2 });
+			const drain = gateway.setInboundHandler(async message => {
+				if (message.sequence === 1) expect(await gateway.waitForDispatcherReady()).toBe(true);
+				events.push(message.sequence ?? -1);
+			});
+			await Promise.resolve();
+			expect(events).toEqual([]);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'first-runtime' });
+			await drain;
+			expect(events).toEqual([1, 2]);
+		} finally {
+			gateway.dispose();
+		}
 	});
 });

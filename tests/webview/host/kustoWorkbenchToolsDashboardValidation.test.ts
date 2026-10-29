@@ -30,11 +30,7 @@ describe('Kusto Workbench HTML dashboard agent validation', () => {
 			hasProvenance: true,
 			bindingCount: 1,
 			dataSources: [{
-				name: 'Fact Events',
 				sectionId: 'query_fact',
-				clusterUrl: 'https://cluster.kusto.windows.net',
-				database: 'db',
-				query: 'FactEvents',
 				columns: [{ name: 'ExistingMetric', type: 'long' }],
 			}],
 			factColumns: [{ name: 'ExistingMetric', type: 'long' }],
@@ -78,8 +74,7 @@ describe('Kusto Workbench HTML dashboard agent validation', () => {
 			success: true, sectionId: 'html_dashboard', name: 'Dashboard', code: htmlCode,
 			hasProvenance: true, bindingCount: 0,
 			dataSources: [{
-				name: 'Fact Events', sectionId: 'query_fact',
-				clusterUrl: 'https://cluster.kusto.windows.net', database: 'db', query: 'FactEvents',
+				sectionId: 'query_fact',
 				columns: [{ name: 'ExistingMetric', type: 'long' }],
 			}],
 			factColumns: [{ name: 'ExistingMetric', type: 'long' }],
@@ -108,8 +103,7 @@ describe('Kusto Workbench HTML dashboard agent validation', () => {
 			success: true, sectionId: 'html_dashboard', name: 'Dashboard', code: htmlCode,
 			hasProvenance: true, bindingCount: 0,
 			dataSources: [{
-				name: 'Fact Events', sectionId: 'query_fact', resultIndex: 2,
-				clusterUrl: 'https://cluster.kusto.windows.net', database: 'db', query: 'FactEvents',
+				sectionId: 'query_fact', resultIndex: 2,
 				columns: [{ name: 'Value', type: 'long' }],
 			}],
 			factColumns: [{ name: 'Value', type: 'long' }],

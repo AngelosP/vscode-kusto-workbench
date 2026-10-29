@@ -10,7 +10,147 @@ function deferred<T>() {
 	return { promise, resolve };
 }
 
+function createInstallationRuntime() {
+	const manager = {
+		epoch: 0, isRunning: false, isFailed: false, ready: Promise.resolve(),
+		start: vi.fn(async () => { manager.epoch = 1; manager.isRunning = true; }),
+		stop: vi.fn(async () => { manager.isRunning = false; }),
+		onDidFail: vi.fn(() => ({ dispose: vi.fn() })),
+	};
+	const dependencies = {
+		ensureSts: vi.fn<() => Promise<string | null>>(async () => 'verified-binary'),
+		invalidateStsCache: vi.fn(async () => undefined),
+		createProcessManager: vi.fn((_binary: string, _logs: string, _output: unknown) => manager as never),
+	};
+	const runtime = new StsRuntime({
+		globalStorageUri: { fsPath: 'storage' }, logUri: { fsPath: 'logs' },
+	} as never, { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never, dependencies);
+	return { runtime, dependencies, manager };
+}
+
 describe('StsRuntime', () => {
+	it('shares installation-only preparation with ordinary startup and skips verification for its healthy manager', async () => {
+		const { runtime, dependencies, manager } = createInstallationRuntime();
+		const installation = deferred<string | null>();
+		dependencies.ensureSts.mockReturnValue(installation.promise);
+		const preparation = runtime.prepareInstallation();
+		const startup = runtime.getProcessManager();
+		const second = runtime.prepareInstallation();
+		try {
+			expect(dependencies.ensureSts).toHaveBeenCalledOnce();
+			expect(dependencies.ensureSts).toHaveBeenCalledWith('storage', expect.anything());
+			expect(dependencies.createProcessManager).not.toHaveBeenCalled();
+			installation.resolve('verified-shared-binary');
+			await Promise.all([preparation, second]);
+			await expect(startup).resolves.toBe(manager);
+			expect(manager.start).toHaveBeenCalledOnce();
+			expect(manager.isRunning).toBe(true);
+			await runtime.prepareInstallation();
+			expect(await runtime.getProcessManager()).toBe(manager);
+			expect(dependencies.ensureSts).toHaveBeenCalledOnce();
+			expect(dependencies.createProcessManager).toHaveBeenCalledExactlyOnceWith('verified-shared-binary', 'logs', expect.anything());
+		} finally {
+			installation.resolve('verified-shared-binary');
+			await runtime.dispose();
+		}
+	});
+
+	it('reverifies an unused prepared binary on the next preparation instead of caching its path forever', async () => {
+		const { runtime, dependencies } = createInstallationRuntime();
+		dependencies.ensureSts.mockResolvedValueOnce('first-verified-binary').mockResolvedValueOnce('next-verified-binary');
+		try {
+			await runtime.prepareInstallation();
+			expect(dependencies.createProcessManager).not.toHaveBeenCalled();
+			await runtime.prepareInstallation();
+			expect(dependencies.ensureSts).toHaveBeenCalledTimes(2);
+			expect(dependencies.createProcessManager).not.toHaveBeenCalled();
+			await runtime.getProcessManager();
+			expect(dependencies.createProcessManager).toHaveBeenCalledExactlyOnceWith('next-verified-binary', 'logs', expect.anything());
+			expect(dependencies.ensureSts).toHaveBeenCalledTimes(2);
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it.each(['rejected', 'unavailable'])('clears %s preparation without starting a process or retrying until the next caller', async failure => {
+		const { runtime, dependencies } = createInstallationRuntime();
+		if (failure === 'rejected') dependencies.ensureSts.mockRejectedValueOnce(new Error('installer failed'));
+		else dependencies.ensureSts.mockResolvedValueOnce(null);
+		try {
+			await expect(runtime.prepareInstallation()).rejects.toThrow(failure === 'rejected' ? 'installer failed' : 'unavailable');
+			expect(dependencies.ensureSts).toHaveBeenCalledOnce();
+			expect(dependencies.createProcessManager).not.toHaveBeenCalled();
+			await runtime.prepareInstallation();
+			await runtime.getProcessManager();
+			expect(dependencies.ensureSts).toHaveBeenCalledTimes(2);
+			expect(dependencies.createProcessManager).toHaveBeenCalledOnce();
+			expect(dependencies.invalidateStsCache).not.toHaveBeenCalled();
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it('shares first-launch reinstall with preparation and never reuses the quarantined binary', async () => {
+		const { runtime, dependencies, manager } = createInstallationRuntime();
+		const invalidation = deferred<void>();
+		dependencies.invalidateStsCache.mockReturnValue(invalidation.promise);
+		dependencies.ensureSts.mockResolvedValueOnce('old-verified-binary').mockResolvedValueOnce('fresh-verified-binary');
+		const broken = { ...manager, epoch: 0, isRunning: false, isFailed: true,
+			start: vi.fn(async () => { throw new Error('support file missing'); }), stop: vi.fn(async () => undefined) };
+		dependencies.createProcessManager.mockReturnValueOnce(broken as never);
+		await runtime.prepareInstallation();
+		const startup = runtime.getProcessManager();
+		try {
+			await vi.waitFor(() => expect(dependencies.invalidateStsCache).toHaveBeenCalledOnce());
+			const preparation = runtime.prepareInstallation();
+			expect(dependencies.ensureSts).toHaveBeenCalledOnce();
+			expect(dependencies.createProcessManager).toHaveBeenCalledOnce();
+			invalidation.resolve(undefined);
+			await preparation;
+			await expect(startup).resolves.toBe(manager);
+			expect(dependencies.ensureSts).toHaveBeenCalledTimes(2);
+			expect(dependencies.createProcessManager.mock.calls.map(([binary]) => binary))
+				.toEqual(['old-verified-binary', 'fresh-verified-binary']);
+			expect(broken.stop).toHaveBeenCalledOnce();
+		} finally {
+			invalidation.resolve(undefined);
+			await startup.catch(() => undefined);
+			await runtime.dispose();
+		}
+	});
+
+	it('does not add an implicit third installation when first-launch reinstall is unavailable', async () => {
+		const { runtime, dependencies, manager } = createInstallationRuntime();
+		dependencies.ensureSts.mockResolvedValueOnce('old-verified-binary').mockResolvedValueOnce(null);
+		const broken = { ...manager, epoch: 0, isRunning: false, isFailed: true,
+			start: vi.fn(async () => { throw new Error('support file missing'); }), stop: vi.fn(async () => undefined) };
+		dependencies.createProcessManager.mockReturnValueOnce(broken as never);
+		try {
+			await runtime.prepareInstallation();
+			await expect(runtime.getProcessManager()).rejects.toThrow('unavailable');
+			expect(dependencies.ensureSts).toHaveBeenCalledTimes(2);
+			expect(dependencies.invalidateStsCache).toHaveBeenCalledOnce();
+			expect(dependencies.createProcessManager).toHaveBeenCalledOnce();
+			await runtime.prepareInstallation();
+			expect(dependencies.ensureSts).toHaveBeenCalledTimes(3);
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it('rejects installation preparation across disposal without creating a process', async () => {
+		const { runtime, dependencies } = createInstallationRuntime();
+		const installation = deferred<string | null>();
+		dependencies.ensureSts.mockReturnValue(installation.promise);
+		const preparation = runtime.prepareInstallation().catch(error => error);
+		await runtime.dispose();
+		installation.resolve('verified-binary');
+		await expect(preparation).resolves.toMatchObject({ message: 'SQL Tools Service runtime is disposed.' });
+		await expect(runtime.prepareInstallation()).rejects.toThrow('disposed');
+		expect(dependencies.ensureSts).toHaveBeenCalledOnce();
+		expect(dependencies.createProcessManager).not.toHaveBeenCalled();
+	});
+
 	it('removes an abandoned protected sandbox after a prior crash', async () => {
 		const sandbox = path.join(os.tmpdir(), `kusto-workbench-sts-lnt-${process.pid}-abandoned-test`);
 		fs.mkdirSync(sandbox, { recursive: true });

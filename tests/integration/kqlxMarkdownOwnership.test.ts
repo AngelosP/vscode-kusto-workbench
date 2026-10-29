@@ -7,12 +7,16 @@ import * as vscode from 'vscode';
 import { CompatSidecarSession } from '../../src/host/compatSidecarSession';
 import { KqlxEditorProvider, withKqlxDocumentWriteLock } from '../../src/host/kqlxEditorProvider';
 import { KustoResultPersistenceRegistry } from '../../src/host/kustoResultPersistenceOwner';
+import { KustoWorkbenchToolOrchestrator } from '../../src/host/kustoWorkbenchTools';
 import { MainWebviewStartupGateway } from '../../src/host/mainWebviewStartupGateway';
 import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
+import type { SqlEditorLanguageService, SqlEditorLifecycleCoordinatorOptions } from '../../src/host/sql/sqlEditorLifecycleCoordinator';
 import { normalizeWorkbenchUriKey } from '../../src/host/workbenchFileTypes';
 import * as workbenchLogger from '../../src/host/workbenchLogger';
 import { MarkdownDocumentAggregate } from '../../src/shared/markdownDocumentAggregate';
-import { adaptMainWebviewStartupTestPanel } from './mainWebviewStartupTestAdapter';
+import { createPrimaryResultArtifactIdentity, publicationFromPersistedResultArtifact } from '../../src/shared/resultArtifact';
+import { createToolStateResponseMessage } from '../../src/shared/toolStateSnapshotProtocol';
+import { adaptMainWebviewStartupTestPanel, deferMainWebviewReadyForTest } from './mainWebviewStartupTestAdapter';
 import { createLiveTextDocumentTestFacade } from './liveTextDocumentTestFacade';
 
 type DisposableLike = { dispose(): void };
@@ -129,6 +133,900 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		liveDocuments.dispose();
 		(KqlxEditorProvider as any).prototype.resolveCustomTextEditor = originalResolveCustomTextEditor;
 	});
+
+	test('noncanonical fourteen-section hydration preserves native bytes without an ordering-only edit', async function () {
+		this.timeout(15_000);
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-order-only-hydration-'));
+		const filePath = path.join(tmpDir, 'noncanonical.kqlx');
+		const uri = vscode.Uri.file(filePath);
+		const sections: Array<Record<string, unknown>> = [
+			...Array.from({ length: 5 }, (_, index) => ({
+				id: `markdown_order_${index}`, type: 'markdown', title: `Notes ${index}`,
+				text: `Synthetic notes ${index}`, tab: 'preview', mode: 'preview', expanded: false,
+				futureSection: { second: 2, first: 1 },
+			})),
+			...Array.from({ length: 5 }, (_, index) => ({
+				id: `query_order_${index}`, type: 'query', name: `Query ${index}`,
+				clusterUrl: '', database: '', query: `print Synthetic=${index}`,
+				expanded: true, resultsVisible: false, runMode: 'take100',
+				cacheEnabled: true, cacheValue: 1, cacheUnit: 'days',
+			})),
+			...Array.from({ length: 4 }, (_, index) => ({
+				id: `chart_order_${index}`, type: 'chart', name: `Chart ${index}`,
+				dataSourceId: 'query_order_0', chartType: 'bar', xColumn: 'Category',
+				yColumn: 'Value', yColumns: ['Value', 'Count'], editorHeightPx: 182, expanded: false,
+			})),
+		];
+		const authoredBytes = Buffer.from(JSON.stringify({
+			kind: 'kqlx', version: 1, futureRoot: { second: 2, first: 1 }, state: { sections },
+		}, null, 2) + '\n', 'utf8');
+		const posted: any[] = [];
+		const disposeHandlers: Array<() => void> = [];
+		const subscriptions: vscode.Disposable[] = [];
+		let receive: ((message: any) => unknown) | undefined;
+		let projection: any;
+		let ownedEdits = 0;
+		let sourceChanges = 0;
+		let dirtyObserved = false;
+		let document: vscode.TextDocument | undefined;
+		try {
+			fs.writeFileSync(filePath, authoredBytes);
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit, ...args: unknown[]) => {
+				if (edit.entries().some(([target]) => target.toString() === uri.toString())) ownedEdits++;
+				return originalApplyEdit.call(vscode.workspace, edit, ...args as []);
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			document = await vscode.workspace.openTextDocument(uri);
+			assert.strictEqual(liveDocuments.register(document), false);
+			const initialVersion = document.version;
+			subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
+				if (event.document !== document) return;
+				sourceChanges++;
+				if (event.document.isDirty) dirtyObserved = true;
+			}));
+			const panel = {
+				webview: {
+					options: {}, postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') projection = message;
+						if (message?.reloadRequestId) await Promise.resolve(receive?.({
+							type: 'documentReloadResult', requestId: message.reloadRequestId,
+							applied: true, editRevision: 0,
+						}));
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receive = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receive!({ type: 'requestDocument' }));
+			assert.strictEqual(projection.state.sections.length, 14);
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), true);
+			const state = JSON.parse(authoredBytes.toString('utf8')).state;
+			state.sections = state.sections.map((section: Record<string, unknown>) =>
+				Object.fromEntries(Object.keys(section).reverse().map(key => [key, section[key]])));
+			assert.deepStrictEqual(state.sections, sections);
+			await Promise.resolve(receive!({
+				type: 'persistDocument', snapshotId: 'ordering-only-hydration', editRevision: 0,
+				sourceGeneration: projection.sourceGeneration, state,
+			}));
+			assert.ok(posted.some(message => message.type === 'persistDocumentAck'
+				&& message.snapshotId === 'ordering-only-hydration'));
+			assert.strictEqual(ownedEdits, 0);
+			assert.strictEqual(sourceChanges, 0);
+			assert.strictEqual(dirtyObserved, false);
+			assert.strictEqual(document.version, initialVersion);
+			assert.strictEqual(document.isDirty, false);
+			assert.strictEqual(document.getText(), authoredBytes.toString('utf8'));
+			assert.deepStrictEqual(fs.readFileSync(filePath), authoredBytes);
+
+			state.sections[5].query = 'print Synthetic=99';
+			await Promise.resolve(receive!({
+				type: 'persistDocument', snapshotId: 'genuine-query-change', editRevision: 1,
+				sourceGeneration: projection.sourceGeneration, state,
+			}));
+			assert.ok(posted.some(message => message.type === 'persistDocumentAck'
+				&& message.snapshotId === 'genuine-query-change'));
+			assert.ok(ownedEdits > 0, 'the real native edit interception must observe genuine authoring');
+			assert.strictEqual(JSON.parse(document.getText()).state.sections[5].query, 'print Synthetic=99');
+			assert.strictEqual(document.isDirty, true);
+			await document.save();
+			assert.strictEqual(document.isDirty, false);
+			assert.strictEqual(JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections[5].query, 'print Synthetic=99');
+		} finally {
+			for (const dispose of disposeHandlers) dispose();
+			await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+			for (const subscription of subscriptions) subscription.dispose();
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			if (document?.isDirty) await document.save();
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	for (const { acknowledgeFirst, retirement } of [
+		{ acknowledgeFirst: true, retirement: 'none' },
+		{ acknowledgeFirst: false, retirement: 'none' },
+		{ acknowledgeFirst: false, retirement: 'source change' },
+		{ acknowledgeFirst: false, retirement: 'same-byte version' },
+		{ acknowledgeFirst: false, retirement: 'disposal' },
+	] as const) {
+		test(`retained native reload survives dispatcher overlap (acknowledge first=${acknowledgeFirst})${retirement === 'none' ? '' : ` with ${retirement}`}`, async function () {
+			this.timeout(10_000);
+			const originalInitialize = QueryEditorProvider.prototype.initializeWebviewPanel;
+			const originalWait = KqlxEditorProvider.waitForOpenEditorInitialized;
+			const originalSetTimeout = globalThis.setTimeout;
+			const extensionModule = require('../../src/host/extension') as { toolOrchestrator?: KustoWorkbenchToolOrchestrator };
+			const originalOrchestrator = Object.getOwnPropertyDescriptor(extensionModule, 'toolOrchestrator')!;
+			const originalSingleton = Object.getOwnPropertyDescriptor(KustoWorkbenchToolOrchestrator, 'instance')!;
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-retained-read-overlap-'));
+			const uri = vscode.Uri.file(path.join(tmpDir, 'retained.kqlx'));
+			const extensionUri = vscode.Uri.file(path.resolve(__dirname, '../../..'));
+			const subscriptions: vscode.Disposable[] = [];
+			const secretChanges = new vscode.EventEmitter<vscode.SecretStorageChangeEvent>();
+			const cancellation = new vscode.CancellationTokenSource();
+			const memento = () => {
+				const values = new Map<string, unknown>();
+				return {
+					get: (key: string, fallback?: unknown) => values.has(key) ? values.get(key) : fallback,
+					update: async (key: string, value: unknown) => { values.set(key, value); },
+					keys: () => [...values.keys()], setKeysForSync: () => undefined,
+				};
+			};
+			const context = {
+				subscriptions, extensionUri, extensionPath: extensionUri.fsPath, extensionMode: vscode.ExtensionMode.Test,
+				extension: { packageJSON: JSON.parse(fs.readFileSync(path.join(extensionUri.fsPath, 'package.json'), 'utf8')) },
+				globalState: memento(), workspaceState: memento(),
+				globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global')),
+				storageUri: vscode.Uri.file(path.join(tmpDir, 'storage')),
+				logUri: vscode.Uri.file(path.join(tmpDir, 'logs')),
+				asAbsolutePath: (relative: string) => path.join(extensionUri.fsPath, relative),
+				secrets: { get: async () => undefined, store: async () => undefined,
+					delete: async () => undefined, onDidChange: secretChanges.event },
+			} as unknown as vscode.ExtensionContext;
+			const note = { id: 'retained_note', created: '2026-10-07T00:00:00.000Z', updated: '2026-10-07T00:00:00.000Z',
+				category: 'usage-note', content: 'Keep the original note readable.', source: 'agent' };
+			const authoredBytes = Buffer.from(JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'retained_query', type: 'query', query: 'print Amount=10.5', expanded: false,
+					resultJson: JSON.stringify({ columns: [{ name: 'Amount', type: 'real' }], rows: [[10.5]] }) },
+				{ id: 'retained_notes', type: 'devnotes', entries: [note] },
+				{ id: 'retained_html', type: 'html', code: '<p>Retained dashboard</p>', mode: 'preview', expanded: false },
+			] } }, null, 2) + '\n');
+			const disposalHandlers = new Set<() => unknown>();
+			const viewHandlers = new Set<() => unknown>();
+			const incoming = new Set<Promise<unknown>>();
+			const transportErrors: unknown[] = [];
+			const projections: Array<{ reloadRequestId: string; sourceGeneration: number; state: { sections: unknown[] } }> = [];
+			const probes: string[] = [];
+			let receive: ((message: unknown) => unknown) | undefined;
+			let queryEditor: QueryEditorProvider | undefined;
+			let runtimeProjection: typeof projections[number] | undefined;
+			let armed = false;
+			let sanitationCalls = 0;
+			let sanitationHeld = false;
+			let holdProbe = false;
+			let revealCount = 0;
+			let disposed = false;
+			let sourceChanges = 0;
+			let document: vscode.TextDocument | undefined;
+			let failed = false;
+			let captureReadTimer = false;
+			const nativeReadTimers: Array<{ handle: ReturnType<typeof setTimeout>; expire(): void }> = [];
+			let releaseSanitation!: () => void;
+			const sanitation = new Promise<void>(resolve => { releaseSanitation = resolve; });
+			const send = (message: unknown): Promise<unknown> => {
+				assert.ok(receive, 'the actual gateway must install its listener');
+				const work = Promise.resolve(receive(message));
+				incoming.add(work);
+				void work.then(() => incoming.delete(work), error => { transportErrors.push(error); incoming.delete(work); });
+				return work;
+			};
+			const panelState = { visible: true, active: true };
+			const panel = {
+				viewType: KqlxEditorProvider.viewType,
+				get visible() { return panelState.visible; }, get active() { return panelState.active; },
+				reveal: () => { revealCount++; },
+				webview: {
+					options: {}, html: '', cspSource: 'vscode-webview://retained-read-overlap', asWebviewUri: (value: vscode.Uri) => value,
+					postMessage: async (message: Record<string, unknown>) => {
+						if (message.type === 'documentData') {
+							assert.strictEqual(message.ok, true, 'the unchanged fixture must have a valid projection');
+							runtimeProjection = message as unknown as typeof projections[number];
+							projections.push(runtimeProjection);
+							await send({ type: 'documentReloadResult', requestId: message.reloadRequestId, applied: true, editRevision: 0 });
+						} else if (message.type === 'mainWebviewDispatcherProbe') {
+							assert.strictEqual(typeof message.probeId, 'string');
+							probes.push(message.probeId as string);
+							if (!holdProbe) await send({ type: 'mainWebviewDispatcherReady', runtimeId: 'retained-runtime', probeId: message.probeId });
+						} else if (message.type === 'requestToolState') {
+							assert.ok(runtimeProjection, 'state replies must derive from the actually delivered projection');
+							assert.ok(typeof message.requestId === 'string');
+							const response = createToolStateResponseMessage(message.requestId, runtimeProjection.state.sections);
+							assert.ok(response.ok);
+							await send(response.value);
+						} else if (message.type === 'toolGetHtmlDashboardContext') {
+							assert.ok(runtimeProjection);
+							const html = runtimeProjection.state.sections.find(section =>
+								(section as { id?: string }).id === message.sectionId) as { id: string; code: string };
+							assert.ok(html);
+							await send({ type: 'toolResponse', requestId: message.requestId, result: {
+								success: true, sectionId: html.id, code: html.code, hasProvenance: false,
+								bindingCount: 0, dataSources: [], factColumns: [],
+							} });
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: (message: unknown) => unknown) => {
+						receive = wrapDocumentViewTestReceiver(handler, () => runtimeProjection);
+						return new vscode.Disposable(() => { receive = undefined; });
+					},
+				},
+				onDidDispose: (handler: () => unknown) => {
+					disposalHandlers.add(handler);
+					return new vscode.Disposable(() => { disposalHandlers.delete(handler); });
+				},
+				onDidChangeViewState: (handler: () => unknown) => {
+					viewHandlers.add(handler);
+					return new vscode.Disposable(() => { viewHandlers.delete(handler); });
+				},
+				dispose: () => {
+					if (disposed) return;
+					disposed = true;
+					for (const handler of [...disposalHandlers]) handler();
+				},
+			} as unknown as vscode.WebviewPanel;
+			const setVisible = (visible: boolean) => {
+				panelState.visible = visible;
+				panelState.active = visible;
+				for (const handler of viewHandlers) handler();
+			};
+			try {
+				fs.writeFileSync(uri.fsPath, authoredBytes);
+				document = await vscode.workspace.openTextDocument(uri);
+				assert.strictEqual(liveDocuments.register(document), false);
+				const version = document.version;
+				subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
+					if (event.document === document && event.contentChanges.length > 0) sourceChanges++;
+				}));
+				QueryEditorProvider.prototype.initializeWebviewPanel = async function (targetPanel, options) {
+					assert.strictEqual(targetPanel, panel);
+					queryEditor = this;
+					const originalSanitize = this.sanitizeSqlLeaveNoTraceStateFresh.bind(this);
+					this.sanitizeSqlLeaveNoTraceStateFresh = async (state, onKustoSanitized) => {
+						const result = await originalSanitize(state, onKustoSanitized);
+						if (armed && ++sanitationCalls === 2) {
+							sanitationHeld = true;
+							await sanitation;
+						}
+						return result;
+					};
+					await originalInitialize.call(this, targetPanel, options);
+				};
+				const connections = connectionManagerStub();
+				const sqlWorkbench = sqlWorkbenchStub();
+				Object.defineProperty(KustoWorkbenchToolOrchestrator, 'instance', { ...originalSingleton, value: undefined });
+				const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(context, connections,
+					() => sqlWorkbench.connectionManager, {} as never);
+				extensionModule.toolOrchestrator = orchestrator;
+				const readAccess = () => Promise.all([
+					orchestrator.manageDevelopmentNotes({ action: 'view', targetFileUri: uri.toString() }),
+					orchestrator.validateHtmlDashboard({ sectionId: 'retained_html', targetFileUri: uri.toString() }),
+				]);
+				deferMainWebviewReadyForTest(panel);
+				const provider = new (KqlxEditorProvider as any)(context, extensionUri, connections, sqlWorkbench) as KqlxEditorProvider;
+				await provider.resolveCustomTextEditor(document, panel, cancellation.token);
+				await send({ type: 'mainWebviewDispatcherReady', runtimeId: 'retained-runtime' });
+				await send({ type: 'requestDocument' });
+				assert.ok(queryEditor);
+				assert.strictEqual(projections.length, 1);
+				const expectedState = createToolStateResponseMessage('expected-retained-state', runtimeProjection!.state.sections);
+				assert.ok(expectedState.ok);
+				assert.deepStrictEqual(await queryEditor.requestSectionsFromWebview(), expectedState.value.sections);
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), true);
+				const baseline = await readAccess();
+				assert.strictEqual(baseline[0].success, true);
+				assert.deepStrictEqual(JSON.parse(JSON.stringify(baseline[0].notes)), [note]);
+				assert.strictEqual(baseline[1].success, true);
+				assert.strictEqual(baseline[1].valid, false, 'the fixture has no provenance or active-content permission');
+				assert.ok(baseline[1].issues.length > 0);
+				setVisible(false);
+				armed = true;
+				const reload = send({ type: 'requestDocument', requestId: 'retained-source-reconciliation' });
+				await waitForCondition(() => sanitationHeld, 'the established reload must reach final sanitation', 1_000);
+				holdProbe = true;
+				setVisible(true);
+				const probeId = probes.at(-1)!;
+				setVisible(false);
+				if (!acknowledgeFirst) {
+					releaseSanitation();
+					for (let turn = 0; turn < 8; turn++) await new Promise<void>(resolve => setImmediate(resolve));
+				}
+				const expectedQuery = retirement === 'source change' ? 'print Amount=20.5' : 'print Amount=10.5';
+				if (retirement === 'source change' || retirement === 'same-byte version') {
+					const replaceQuery = async (query: string) => {
+						assert.ok(document);
+						const text = document.getText();
+						const current = JSON.parse(text).state.sections[0].query as string;
+						const offset = text.indexOf(current);
+						assert.ok(offset >= 0);
+						const edit = new vscode.WorkspaceEdit();
+						edit.replace(uri, new vscode.Range(document.positionAt(offset), document.positionAt(offset + current.length)), query);
+						assert.strictEqual(await vscode.workspace.applyEdit(edit), true);
+					};
+					await replaceQuery('print Amount=20.5');
+					if (retirement === 'same-byte version') await replaceQuery('print Amount=10.5');
+					assert.ok(document.version > version);
+				}
+				const expectedVersion = document.version;
+				const expectedDirty = document.isDirty;
+				const expectedText = document.getText();
+				const acknowledge = receive!;
+				if (retirement === 'disposal') panel.dispose();
+				await acknowledge({ type: 'mainWebviewDispatcherReady', runtimeId: 'retained-runtime', probeId });
+				holdProbe = false;
+				releaseSanitation();
+				await reload;
+				if (retirement === 'disposal') {
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+					assert.strictEqual(projections.length, 1, 'late readiness cannot deliver a retired projection');
+					assert.deepStrictEqual(fs.readFileSync(uri.fsPath), authoredBytes);
+					assert.strictEqual(document.getText(), authoredBytes.toString('utf8'));
+					assert.strictEqual(document.version, version);
+					assert.strictEqual(document.isDirty, false);
+					assert.strictEqual(sourceChanges, 0);
+					assert.strictEqual(revealCount, 0);
+					assert.deepStrictEqual(transportErrors, []);
+					return;
+				}
+				if (retirement !== 'none') {
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 2_000, panel), true);
+					assert.ok(runtimeProjection!.sourceGeneration > 2, 'the old queued generation must not be revived');
+					assert.strictEqual((runtimeProjection!.state.sections[0] as { query: string }).query, expectedQuery);
+				}
+				const ready = await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel);
+				globalThis.setTimeout = ((callback: (...parameters: unknown[]) => void, delay?: number, ...parameters: unknown[]) => {
+					const handle = originalSetTimeout(callback, delay, ...parameters);
+					if (captureReadTimer) {
+						assert.ok(typeof delay === 'number' && delay > 0 && delay <= 30_000);
+						nativeReadTimers.push({ handle, expire: () => callback(...parameters) });
+					}
+					return handle;
+				}) as typeof setTimeout;
+				KqlxEditorProvider.waitForOpenEditorInitialized = (...args) => {
+					const previous = captureReadTimer;
+					captureReadTimer = args[0].toString() === uri.toString() && (args[1] ?? 30_000) > 0;
+					try { return originalWait(...args); }
+					finally { captureReadTimer = previous; }
+				};
+				let readsSettled = false;
+				const after = readAccess().then(result => { readsSettled = true; return result; });
+				await waitForCondition(() => readsSettled || nativeReadTimers.length > 0,
+					'the exact public reads must settle or reach the native readiness deadline', 1_000);
+				for (const timer of nativeReadTimers) timer.expire();
+				const observed = await after;
+				console.log('[retained-native-read-overlap]', JSON.stringify({ acknowledgeFirst, retirement, ready,
+					projections: projections.length, nativeReadDeadlines: nativeReadTimers.length,
+					notes: { success: observed[0].success, error: observed[0].error },
+					dashboard: { success: observed[1].success, valid: observed[1].valid, error: observed[1].error } }));
+				assert.deepStrictEqual(fs.readFileSync(uri.fsPath), authoredBytes);
+				assert.strictEqual(document.getText(), expectedText);
+				assert.strictEqual(document.version, expectedVersion);
+				assert.strictEqual(document.isDirty, expectedDirty);
+				assert.strictEqual(sourceChanges, retirement === 'source change' ? 1 : retirement === 'same-byte version' ? 2 : 0);
+				assert.strictEqual(panel.visible, false);
+				assert.strictEqual(revealCount, 0);
+				assert.deepStrictEqual(transportErrors, []);
+				assert.deepStrictEqual(observed, baseline, 'the first public note and dashboard reads must remain available');
+				assert.strictEqual(ready, true, 'the acknowledged dispatcher must not strand the unchanged native document generation');
+				const expectedSections = expectedState.value.sections.map(section => section.id === 'retained_query'
+					? { ...section, query: expectedQuery } : section);
+				const currentExpected = createToolStateResponseMessage('expected-current-retained-state', expectedSections);
+				assert.ok(currentExpected.ok);
+				assert.deepStrictEqual(await queryEditor.requestSectionsFromWebview(), currentExpected.value.sections);
+				assert.strictEqual(projections.length, 2, 'the same reload must finish without a replacement request or retry');
+			} catch (error) {
+				failed = true;
+				throw error;
+			} finally {
+				try {
+					releaseSanitation();
+					panel.dispose();
+					await Promise.allSettled([...incoming]);
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000), true,
+						`native close must finish before fixture deletion; retained at ${tmpDir}`);
+				} finally {
+					QueryEditorProvider.prototype.initializeWebviewPanel = originalInitialize;
+					KqlxEditorProvider.waitForOpenEditorInitialized = originalWait;
+					globalThis.setTimeout = originalSetTimeout;
+					for (const timer of nativeReadTimers) clearTimeout(timer.handle);
+					Object.defineProperty(extensionModule, 'toolOrchestrator', originalOrchestrator);
+					Object.defineProperty(KustoWorkbenchToolOrchestrator, 'instance', originalSingleton);
+					for (const subscription of subscriptions) subscription.dispose();
+					secretChanges.dispose();
+					cancellation.dispose();
+				}
+				if (document?.isDirty) assert.strictEqual(await document.save(), true);
+				const ownedTabs = vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab =>
+					(tab.input as { uri?: vscode.Uri }).uri?.toString() === uri.toString());
+				assert.ok(ownedTabs.every(tab => !tab.isDirty), 'cleanup cannot discard an authored private fixture');
+				if (ownedTabs.length) assert.strictEqual(await vscode.window.tabGroups.close(ownedTabs), true);
+				if (failed) console.log('[retained-native-read-overlap] retained failed fixture:', tmpDir);
+				else if (retirement === 'source change' || retirement === 'same-byte version') {
+					console.log('[retained-native-read-overlap] retained authored fixture for native history:', tmpDir);
+				}
+				else fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+			}
+		});
+	}
+
+	for (const { fileType, configureOnly } of [
+		{ fileType: 'kqlx', configureOnly: false },
+		{ fileType: 'sqlx', configureOnly: false },
+		{ fileType: 'sqlx', configureOnly: true },
+	] as const) {
+		test(`background-created ${fileType} ${configureOnly ? 'configuration-only' : 'first removal'} survives native Save and reopen`, async function () {
+			this.timeout(15_000);
+			const originalExecuteCommand = Object.getOwnPropertyDescriptor(vscode.commands, 'executeCommand')!;
+			const originalInitialize = Object.getOwnPropertyDescriptor(QueryEditorProvider.prototype, 'initializeWebviewPanel')!;
+			const extensionModule = require('../../src/host/extension') as { toolOrchestrator?: KustoWorkbenchToolOrchestrator };
+			const originalOrchestrator = Object.getOwnPropertyDescriptor(extensionModule, 'toolOrchestrator')!;
+			const originalSingleton = Object.getOwnPropertyDescriptor(KustoWorkbenchToolOrchestrator, 'instance')!;
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-background-first-removal-'));
+			const uri = vscode.Uri.file(path.join(tmpDir, `report.${fileType}`));
+			const extensionUri = vscode.Uri.file(path.resolve(__dirname, '../../..'));
+			const subscriptions: vscode.Disposable[] = [];
+			const secretChanges = new vscode.EventEmitter<vscode.SecretStorageChangeEvent>();
+			const cancellation = new vscode.CancellationTokenSource();
+			const initialTabs = new Set(vscode.window.tabGroups.all.flatMap(group => group.tabs));
+			const documents = new Set<vscode.TextDocument>();
+			const panels: vscode.WebviewPanel[] = [];
+			const incoming = new Set<Promise<unknown>>();
+			const transportErrors: unknown[] = [];
+			const memento = () => {
+				const values = new Map<string, unknown>();
+				return {
+					get: (key: string, fallback?: unknown) => values.has(key) ? values.get(key) : fallback,
+					update: async (key: string, value: unknown) => { values.set(key, value); },
+					keys: () => [...values.keys()], setKeysForSync: () => undefined,
+				};
+			};
+			const context = {
+				subscriptions, extensionUri, extensionPath: extensionUri.fsPath, extensionMode: vscode.ExtensionMode.Test,
+				extension: { packageJSON: JSON.parse(fs.readFileSync(path.join(extensionUri.fsPath, 'package.json'), 'utf8')) },
+				globalState: memento(), workspaceState: memento(),
+				globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global')),
+				storageUri: vscode.Uri.file(path.join(tmpDir, 'storage')),
+				logUri: vscode.Uri.file(path.join(tmpDir, 'logs')),
+				asAbsolutePath: (relative: string) => path.join(extensionUri.fsPath, relative),
+				secrets: { get: async () => undefined, store: async () => undefined,
+					delete: async () => undefined, onDidChange: secretChanges.event },
+			} as unknown as vscode.ExtensionContext;
+			type FixtureState = { sections: Array<{ id?: string; type: string; query?: string; [key: string]: unknown }> };
+			type FixtureProjection = {
+				state: FixtureState; reloadRequestId: string; sourceGeneration: number;
+				documentRevision: number; viewSessionId: string;
+			};
+			let revealCount = 0;
+			let openCount = 0;
+			let failed = false;
+			const languageOpens: Array<{ boxId: string; text: string }> = [];
+			const languageConnections: Array<{ boxId: string; database: string }> = [];
+			try {
+				assert.strictEqual(fs.existsSync(uri.fsPath), false, 'the fixture must never overwrite an existing file');
+				const connections = connectionManagerStub();
+				const sqlWorkbench = sqlWorkbenchStub();
+				const sqlConnection = { id: 'sql-native-configure', name: 'Native SQL', serverUrl: 'native-sql.example',
+					dialect: 'mssql', authType: 'sql-login', username: 'fixture' };
+				if (configureOnly) {
+					sqlWorkbench.connectionManager.getConnections = () => [{ ...sqlConnection }];
+					sqlWorkbench.connectionManager.getConnection = (id: string) => id === sqlConnection.id ? { ...sqlConnection } : undefined;
+					sqlWorkbench.connectionManager.assertConnectionCurrent = async () => undefined;
+					sqlWorkbench.serverAccountMap = { refresh: async () => undefined, getAccountsByServer: () => ({}) };
+					sqlWorkbench.leaveNoTracePolicy = { getRevocationGeneration: () => 0 };
+					sqlWorkbench.dispatchSqlOwnerAllowed = async (_connection: unknown, _principal: string, _revocation: number, dispatch: () => unknown) => dispatch();
+					sqlWorkbench.runtime.getProcessManager = async () => ({ offline: true });
+					const createLanguageService = (): SqlEditorLanguageService => ({
+						onDiagnostics: () => undefined,
+						getCompletions: async () => { throw new Error('Unexpected completion request'); },
+						getHover: async () => { throw new Error('Unexpected hover request'); },
+						getSignatureHelp: async () => { throw new Error('Unexpected signature request'); },
+						openDocument: async (boxId, text, connection, owner) => {
+							assert.deepStrictEqual(connection, sqlConnection);
+							assert.ok(owner?.sectionInstanceId);
+							languageOpens.push({ boxId, text });
+							return vscode.Uri.file(path.join(tmpDir, `${boxId}.sql`)).toString();
+						},
+						connectDocument: async (boxId, connection, database, owner) => {
+							assert.deepStrictEqual(connection, sqlConnection);
+							assert.ok(owner?.sectionInstanceId);
+							languageConnections.push({ boxId, database });
+						},
+						changeDocument: async () => undefined,
+						closeDocumentForOwner: () => true, closeDocumentUriForOwner: () => true,
+						dispose: () => undefined,
+					});
+					Object.defineProperty(QueryEditorProvider.prototype, 'initializeWebviewPanel', {
+						...originalInitialize,
+						value: function (this: QueryEditorProvider, ...args: unknown[]) {
+							const options = Reflect.get(Reflect.get(this, 'sqlLifecycle'), 'options') as SqlEditorLifecycleCoordinatorOptions;
+							if (options.context === context) options.createLanguageService = createLanguageService;
+							return originalInitialize.value.apply(this, args);
+						},
+					});
+				}
+				Object.defineProperty(KustoWorkbenchToolOrchestrator, 'instance', { ...originalSingleton, value: undefined });
+				const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(context, connections,
+					() => sqlWorkbench.connectionManager, {} as never);
+				extensionModule.toolOrchestrator = orchestrator;
+				const provider = new (KqlxEditorProvider as unknown as new (...args: unknown[]) => KqlxEditorProvider)(
+					context, extensionUri, connections, sqlWorkbench, undefined, undefined,
+					(target: vscode.Uri) => orchestrator.isHostOwnedBackgroundFile(target),
+					(target: vscode.Uri) => orchestrator.transferBackgroundOwnershipOnUserInteraction(target),
+				);
+				const openFixture = async () => {
+					const document = await vscode.workspace.openTextDocument(uri);
+					documents.add(document);
+					assert.strictEqual(liveDocuments.register(document), false, 'the backing document must be native');
+					const posted: Array<Record<string, unknown>> = [];
+					const disposalHandlers = new Set<() => unknown>();
+					let receive: ((message: unknown) => unknown) | undefined;
+					let projection: FixtureProjection | undefined;
+					let state: FixtureState | undefined;
+					let editRevision = 0;
+					let snapshotSequence = 0;
+					const removalResponses = new Map<string, string>();
+					let disposed = false;
+					const runtimeId = `background-removal-${fileType}-${panels.length}`;
+					const send = (message: unknown): Promise<unknown> => {
+						assert.ok(receive, 'the actual startup gateway must install its listener');
+						const work = Promise.resolve(receive(message));
+						incoming.add(work);
+						void work.then(() => incoming.delete(work), error => { transportErrors.push(error); incoming.delete(work); });
+						return work;
+					};
+					const persist = async (flushRequestId?: unknown, toolRequestId?: string) => {
+						assert.ok(projection);
+						assert.ok(state);
+						const snapshotId = `${runtimeId}-${++snapshotSequence}`;
+						if (toolRequestId) removalResponses.set(snapshotId, toolRequestId);
+						await send({
+							type: 'persistDocument', state: structuredClone(state),
+							sourceGeneration: projection.sourceGeneration, editRevision, snapshotId,
+							...(typeof flushRequestId === 'string' ? { flushRequestId } : {}),
+						});
+						const acknowledgement = posted.find(message => message.type === 'persistDocumentAck'
+							&& message.snapshotId === snapshotId);
+						assert.ok(acknowledgement, 'the native owner must admit the exact simulated webview snapshot');
+						return acknowledgement;
+					};
+					const panel = {
+						viewType: KqlxEditorProvider.viewType, visible: false, active: false,
+						reveal: () => { revealCount++; },
+						webview: {
+							options: {}, html: '', cspSource: 'vscode-webview://background-first-removal',
+							asWebviewUri: (value: vscode.Uri) => value,
+							postMessage: async (message: Record<string, unknown>) => {
+								posted.push(message);
+								if (message.type === 'documentData') {
+									assert.strictEqual(message.ok, true);
+									projection = message as unknown as FixtureProjection;
+									state = structuredClone(projection.state);
+									await send({ type: 'documentReloadResult', requestId: projection.reloadRequestId,
+										applied: true, editRevision, markdownCommandBarrierSupported: true });
+								} else if (message.type === 'mainWebviewDispatcherProbe') {
+									await send({ type: 'mainWebviewDispatcherReady', runtimeId, probeId: message.probeId });
+								} else if (message.type === 'requestToolState') {
+									assert.ok(state);
+									assert.strictEqual(typeof message.requestId, 'string');
+									const response = createToolStateResponseMessage(message.requestId as string, state.sections);
+									assert.ok(response.ok);
+									await send(response.value);
+								} else if (message.type === 'toolRemoveSection') {
+									assert.strictEqual(orchestrator.isHostOwnedBackgroundFile(uri), false,
+										'the real orchestrator must transfer ownership before its first live removal');
+									assert.ok(state);
+									const index = state.sections.findIndex(section => section.id === message.sectionId);
+									assert.ok(index >= 0, 'removal must target an actually delivered native section ID');
+									state.sections.splice(index, 1);
+									editRevision++;
+									void persist(undefined, String(message.requestId)).catch(error => { transportErrors.push(error); });
+								} else if (configureOnly && message.type === 'toolConfigureSqlSection') {
+									assert.strictEqual(orchestrator.isHostOwnedBackgroundFile(uri), false);
+									assert.ok(state);
+									const input = message.input as { sectionId: string; name: string; execute: boolean };
+									assert.strictEqual(input.execute, false);
+									assert.strictEqual(typeof input.name, 'string');
+									const section = state.sections.find(candidate => candidate.id === input.sectionId && candidate.type === 'sql');
+									assert.ok(section, 'live configuration must target the exact restored SQL section');
+									section.name = input.name;
+									editRevision++;
+									void persist(undefined, String(message.requestId)).catch(error => { transportErrors.push(error); });
+								} else if (message.type === 'persistDocumentAck') {
+									const requestId = removalResponses.get(String(message.snapshotId));
+									if (requestId) {
+										removalResponses.delete(String(message.snapshotId));
+										await send({ type: 'toolResponse', requestId, result: { success: true } });
+									}
+								} else if (message.type === 'requestMarkdownCommandBarrier') {
+									assert.ok(projection);
+									await send({ type: 'markdownDocumentCommandBarrierResult', requestId: message.requestId,
+										sourceGeneration: projection.sourceGeneration,
+										documentRevision: projection.documentRevision, accepted: true });
+								} else if (message.type === 'requestFinalPersist') {
+									await persist(message.requestId);
+								}
+								return true;
+							},
+							onDidReceiveMessage: (handler: (message: unknown) => unknown) => {
+								receive = wrapDocumentViewTestReceiver(handler, () => projection);
+								return new vscode.Disposable(() => { receive = undefined; });
+							},
+						},
+						onDidDispose: (handler: () => unknown) => {
+							disposalHandlers.add(handler);
+							return new vscode.Disposable(() => { disposalHandlers.delete(handler); });
+						},
+						onDidChangeViewState: () => new vscode.Disposable(() => undefined),
+						dispose: () => {
+							if (disposed) return;
+							disposed = true;
+							for (const handler of [...disposalHandlers]) handler();
+						},
+					} as unknown as vscode.WebviewPanel;
+					panels.push(panel);
+					deferMainWebviewReadyForTest(panel);
+					await provider.resolveCustomTextEditor(document, panel, cancellation.token);
+					await send({ type: 'mainWebviewDispatcherReady', runtimeId });
+					await send({ type: 'requestDocument' });
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), true);
+					if (configureOnly) {
+						assert.ok(state);
+						for (const section of state.sections) {
+							if (section.type !== 'sql') continue;
+							assert.ok(section.id);
+							const sectionInstanceId = `${runtimeId}-${section.id}`;
+							await send({ type: 'sqlSectionOpen', boxId: section.id, sectionInstanceId });
+							await send({ type: 'stsDidOpen', boxId: section.id, sectionInstanceId, text: section.query ?? '' });
+							if (!section.connectionIdHint || !section.database) continue;
+							await send({ type: 'stsConnect', boxId: section.id, sectionInstanceId,
+								sqlConnectionId: section.connectionIdHint, database: section.database, targetGeneration: 1 });
+							assert.ok(posted.some(message => message.type === 'stsConnectionState' && message.boxId === section.id
+								&& message.sectionInstanceId === sectionInstanceId && message.state === 'ready'
+								&& typeof message.ownerToken === 'string' && message.ownerToken.length > 0),
+								'the real restored SQL lifecycle must publish a ready owner');
+						}
+					}
+					return {
+						document, panel, posted, send,
+						get state() { assert.ok(state); return state; },
+						get projection() { assert.ok(projection); return projection; },
+					};
+				};
+				let current: Awaited<ReturnType<typeof openFixture>> | undefined;
+				Object.defineProperty(vscode.commands, 'executeCommand', {
+					...originalExecuteCommand,
+					value: async (command: string, ...args: unknown[]) => {
+						if (command !== 'vscode.openWith') return originalExecuteCommand.value.call(vscode.commands, command, ...args);
+						assert.strictEqual((args[0] as vscode.Uri).toString(), uri.toString());
+						assert.strictEqual(args[1], KqlxEditorProvider.viewType);
+						assert.deepStrictEqual(args[2], { preview: false, preserveFocus: true });
+						openCount++;
+						current = await openFixture();
+						return undefined;
+					},
+				});
+				const seedQuery = fileType === 'sqlx' ? 'SELECT 7 AS Value' : 'print Value=7';
+				const created = await orchestrator.createFile({ fileType, filePath: uri.fsPath, initialContent: seedQuery, reveal: false });
+				assert.strictEqual(created.success, true, JSON.stringify(created));
+				assert.strictEqual(created.openRequested, true);
+				assert.strictEqual(created.warning, undefined, JSON.stringify(created));
+				assert.ok(current);
+				const first = current;
+				assert.strictEqual(first.state.sections.length, 1);
+				assert.strictEqual(first.state.sections[0].query, seedQuery);
+				const createdBytes = fs.readFileSync(uri.fsPath);
+				const createdVersion = first.document.version;
+				const saved = await orchestrator.saveWorkbenchFile({ targetFileUri: uri.toString() });
+				assert.strictEqual(saved.success, true, JSON.stringify(saved));
+				assert.ok(saved.openFileId);
+				const listed = await orchestrator.listSections();
+				const liveFile = listed.openFiles?.find(file => file.openFileId === saved.openFileId);
+				assert.ok(liveFile);
+				assert.strictEqual(liveFile.isLiveWorkbench, true);
+				assert.strictEqual(liveFile.isReadOnlyFallback, false);
+				const sectionId = liveFile.sections?.[0]?.id;
+				assert.ok(sectionId);
+				assert.strictEqual(sectionId, first.state.sections[0].id, 'LIST must expose the exact delivered native section ID');
+				assert.deepStrictEqual(liveFile.sections?.map(section => section.id), [sectionId]);
+				if (fileType === 'sqlx') assert.deepStrictEqual(liveFile.sections, [{ id: sectionId, type: 'sql' }]);
+				assert.ok(first.posted.some(message => message.type === 'requestToolState'));
+				assert.strictEqual(orchestrator.isHostOwnedBackgroundFile(uri), true, 'Save and live listing must not transfer ownership');
+				assert.strictEqual(first.document.version, createdVersion);
+				assert.strictEqual(first.document.isDirty, false);
+				assert.deepStrictEqual(fs.readFileSync(uri.fsPath), createdBytes);
+				const unownedSnapshotId = `unowned-${fileType}-automatic-snapshot`;
+				await first.send({
+					type: 'persistDocument', state: { ...structuredClone(first.state), sections: [] },
+					sourceGeneration: first.projection.sourceGeneration, editRevision: 1,
+					snapshotId: unownedSnapshotId, reason: 'section-remove',
+				});
+				assert.strictEqual(first.posted.some(message => message.type === 'persistDocumentAck'
+					&& message.snapshotId === unownedSnapshotId), false, 'an automatic snapshot cannot claim background ownership');
+				assert.strictEqual(orchestrator.isHostOwnedBackgroundFile(uri), true);
+				assert.strictEqual(first.document.version, createdVersion);
+				assert.strictEqual(first.document.isDirty, false);
+				assert.strictEqual(first.document.getText(), createdBytes.toString('utf8'));
+				assert.deepStrictEqual(fs.readFileSync(uri.fsPath), createdBytes);
+				assert.strictEqual(first.posted.some(message => message.type === 'requestFinalPersist'
+					|| message.type === 'requestMarkdownCommandBarrier'), false, 'background Save must remain source-only');
+				if (configureOnly) {
+					assert.strictEqual(JSON.parse(first.document.getText()).state.sections[0].id, undefined);
+					assert.deepStrictEqual(await orchestrator.configureSqlSection({ openFileId: saved.openFileId, sectionId,
+						query: seedQuery, execute: false }), { success: true });
+					assert.strictEqual(first.document.version, createdVersion, 'a no-op cannot materialize the native ID');
+					assert.strictEqual(first.document.isDirty, false);
+					assert.strictEqual(first.document.getText(), createdBytes.toString('utf8'));
+					assert.deepStrictEqual(await orchestrator.configureSqlSection({ openFileId: saved.openFileId, sectionId,
+						name: 'Configured probe', connectionId: sqlConnection.id, database: 'ProbeDb', execute: false }), { success: true });
+					const configured = JSON.parse(first.document.getText()).state.sections[0];
+					assert.strictEqual(configured.id, sectionId, 'a source mutation must persist the exact public native ID');
+					assert.strictEqual(configured.query, seedQuery);
+					assert.strictEqual(configured.name, 'Configured probe');
+					assert.strictEqual(configured.connectionIdHint, sqlConnection.id);
+					assert.strictEqual(configured.serverUrl, sqlConnection.serverUrl);
+					assert.strictEqual(configured.database, 'ProbeDb');
+					const other = await orchestrator.addSection({ openFileId: saved.openFileId, type: 'sql', name: 'Untouched peer' });
+					assert.ok(other.sectionId);
+					assert.deepStrictEqual(await orchestrator.configureSqlSection({ openFileId: saved.openFileId,
+						sectionId: other.sectionId, query: 'SELECT 2 AS Other', execute: false }), { success: true });
+					const savedConfiguration = await orchestrator.saveWorkbenchFile({ openFileId: saved.openFileId });
+					assert.strictEqual(savedConfiguration.success, true, JSON.stringify(savedConfiguration));
+					assert.strictEqual(savedConfiguration.saved, true);
+					assert.strictEqual(orchestrator.isHostOwnedBackgroundFile(uri), true, 'configure-only and Save cannot transfer ownership');
+					assert.strictEqual(first.document.isDirty, false);
+					const configuredBytes = fs.readFileSync(uri.fsPath);
+					assert.strictEqual(first.document.getText(), configuredBytes.toString('utf8'));
+					const savedSections = JSON.parse(configuredBytes.toString('utf8')).state.sections;
+					assert.deepStrictEqual(savedSections.map((section: { id: string }) => section.id), [sectionId, other.sectionId]);
+					assert.deepStrictEqual(savedSections[0], configured);
+					assert.strictEqual(savedSections[1].query, 'SELECT 2 AS Other');
+					assert.deepStrictEqual(languageOpens, []);
+					assert.deepStrictEqual(languageConnections, []);
+					assert.strictEqual(first.posted.some(message => message.type === 'toolConfigureSqlSection'
+						|| message.type === 'toolRemoveSection'), false);
+					const firstViewSession = first.projection.viewSessionId;
+					first.panel.dispose();
+					await orchestrator.handleTabsClosed([{
+						input: new vscode.TabInputCustom(uri, KqlxEditorProvider.viewType),
+					} as vscode.Tab]);
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000), true);
+					assert.strictEqual(orchestrator.isHostOwnedBackgroundFile(uri), false,
+						'closing the exact SQL tab must retire background ownership before reopen');
+					assert.deepStrictEqual(fs.readFileSync(uri.fsPath), configuredBytes);
+					await vscode.commands.executeCommand('vscode.openWith', uri, KqlxEditorProvider.viewType,
+						{ preview: false, preserveFocus: true });
+					assert.ok(current);
+					const reopened = current;
+					assert.notStrictEqual(reopened.projection.viewSessionId, firstViewSession);
+					assert.deepStrictEqual(reopened.state.sections.map(section => section.id), [sectionId, other.sectionId]);
+					assert.strictEqual(reopened.state.sections[0].id, sectionId, 'reopen must preserve the ID originally advertised by LIST');
+					assert.strictEqual(reopened.state.sections[0].query, seedQuery);
+					assert.strictEqual(reopened.state.sections[0].name, 'Configured probe');
+					assert.strictEqual(reopened.document.getText(), configuredBytes.toString('utf8'));
+					assert.strictEqual(reopened.document.isDirty, false);
+					assert.strictEqual(orchestrator.isHostOwnedBackgroundFile(uri), false);
+					assert.deepStrictEqual(languageOpens, [{ boxId: sectionId, text: seedQuery }]);
+					assert.deepStrictEqual(languageConnections, [{ boxId: sectionId, database: 'ProbeDb' }]);
+					const stateRequests = reopened.posted.filter(message => message.type === 'requestToolState').length;
+					assert.deepStrictEqual(await orchestrator.configureSqlSection({ openFileId: saved.openFileId, sectionId,
+						name: 'Configured after reopen', execute: false }), { success: true });
+					assert.deepStrictEqual(reopened.state.sections[0], { ...configured, name: 'Configured after reopen' });
+					assert.deepStrictEqual(reopened.state.sections[1], savedSections[1]);
+					assert.strictEqual(reopened.posted.filter(message => message.type === 'requestToolState').length, stateRequests,
+						'an ordinary persisted ID must not need another structural proof');
+					const savedAgain = await orchestrator.saveWorkbenchFile({ openFileId: saved.openFileId });
+					assert.strictEqual(savedAgain.success, true, JSON.stringify(savedAgain));
+					assert.strictEqual(savedAgain.saved, true);
+					const finalBytes = fs.readFileSync(uri.fsPath, 'utf8');
+					assert.strictEqual(reopened.document.getText(), finalBytes);
+					assert.strictEqual(reopened.document.isDirty, false);
+					const finalSections = JSON.parse(finalBytes).state.sections;
+					assert.strictEqual(finalSections.length, 2);
+					assert.deepStrictEqual(finalSections[0], { ...configured, name: 'Configured after reopen' });
+					assert.deepStrictEqual(finalSections[1], savedSections[1], 'later configuration cannot change another section');
+					assert.strictEqual(orchestrator.isHostOwnedBackgroundFile(uri), false);
+					const liveConfigurations = reopened.posted.filter(message => message.type === 'toolConfigureSqlSection');
+					assert.strictEqual(liveConfigurations.length, 1);
+					assert.strictEqual((liveConfigurations[0].input as { sectionId: string }).sectionId, sectionId);
+					assert.strictEqual(reopened.posted.some(message => message.type === 'toolRemoveSection'), false);
+					assert.ok(first.posted.some(message => message.type === 'requestFinalPersist'), 'SQL-only native Save retains its adapter snapshot');
+					assert.ok(reopened.posted.some(message => message.type === 'requestFinalPersist'), 'post-reopen Save retains its adapter snapshot');
+					assert.strictEqual(openCount, 2);
+					assert.strictEqual(revealCount, 0);
+					assert.deepStrictEqual(transportErrors, []);
+					return;
+				}
+				const removed = await orchestrator.removeSection({ openFileId: saved.openFileId, sectionId });
+				assert.strictEqual(removed.success, true);
+				const savedRemoval = await orchestrator.saveWorkbenchFile({ openFileId: saved.openFileId });
+				assert.strictEqual(savedRemoval.success, true, JSON.stringify(savedRemoval));
+				assert.strictEqual(savedRemoval.saved, true, 'public Save must commit the acknowledged removal');
+				assert.strictEqual(first.document.isDirty, false);
+				assert.deepStrictEqual(JSON.parse(first.document.getText()).state.sections, []);
+				assert.deepStrictEqual(JSON.parse(fs.readFileSync(uri.fsPath, 'utf8')).state.sections, []);
+				assert.deepStrictEqual(first.state.sections, []);
+				assert.strictEqual(first.posted.filter(message => message.type === 'toolRemoveSection').length, 1);
+				assert.ok(first.posted.some(message => message.type === 'requestMarkdownCommandBarrier'));
+				assert.ok(first.posted.some(message => message.type === 'requestFinalPersist'));
+				const emptyBytes = fs.readFileSync(uri.fsPath);
+				const firstViewSession = first.projection.viewSessionId;
+				first.panel.dispose();
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000), true);
+				assert.deepStrictEqual(fs.readFileSync(uri.fsPath), emptyBytes);
+				await vscode.commands.executeCommand('vscode.openWith', uri, KqlxEditorProvider.viewType,
+					{ preview: false, preserveFocus: true });
+				assert.ok(current);
+				const reopened = current;
+				assert.notStrictEqual(reopened.projection.viewSessionId, firstViewSession);
+				assert.strictEqual(reopened.state.sections.length, 1, 'an authored empty notebook projects its implicit starter');
+				const starter = reopened.state.sections[0];
+				assert.strictEqual(starter.type, fileType === 'sqlx' ? 'sql' : 'query');
+				assert.strictEqual(starter.query ?? '', '', 'the removed seed must not return on reopen');
+				assert.strictEqual(reopened.document.isDirty, false);
+				assert.deepStrictEqual(fs.readFileSync(uri.fsPath), emptyBytes, 'starter hydration must not rewrite authored empty bytes');
+				assert.ok(starter.id);
+				assert.strictEqual((await orchestrator.removeSection({ openFileId: saved.openFileId, sectionId: starter.id })).success, true);
+				const savedAgain = await orchestrator.saveWorkbenchFile({ openFileId: saved.openFileId });
+				assert.strictEqual(savedAgain.success, true, JSON.stringify(savedAgain));
+				assert.deepStrictEqual(JSON.parse(fs.readFileSync(uri.fsPath, 'utf8')).state.sections, []);
+				assert.strictEqual(reopened.document.isDirty, false);
+				assert.strictEqual(openCount, 2);
+				assert.strictEqual(revealCount, 0, 'no operation may activate or reveal either mock panel');
+				assert.deepStrictEqual(transportErrors, []);
+			} catch (error) {
+				failed = true;
+				throw error;
+			} finally {
+				try {
+					for (const panel of panels) panel.dispose();
+					await Promise.allSettled([...incoming]);
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000), true,
+						`native close must finish before fixture deletion; retained at ${tmpDir}`);
+				} finally {
+					Object.defineProperty(vscode.commands, 'executeCommand', originalExecuteCommand);
+					Object.defineProperty(extensionModule, 'toolOrchestrator', originalOrchestrator);
+					Object.defineProperty(KustoWorkbenchToolOrchestrator, 'instance', originalSingleton);
+					if (configureOnly) Object.defineProperty(QueryEditorProvider.prototype, 'initializeWebviewPanel', originalInitialize);
+					for (const subscription of subscriptions) subscription.dispose();
+					secretChanges.dispose();
+					cancellation.dispose();
+				}
+				for (const document of documents) {
+					if (!document.isClosed && document.isDirty) assert.strictEqual(await document.save(), true);
+				}
+				const ownedTabs = vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab =>
+					!initialTabs.has(tab) && (tab.input as { uri?: vscode.Uri }).uri?.toString() === uri.toString());
+				assert.ok(ownedTabs.every(tab => !tab.isDirty), 'cleanup must not discard fixture edits');
+				if (ownedTabs.length) assert.strictEqual(await vscode.window.tabGroups.close(ownedTabs), true);
+				if (failed) console.log('[background-native-first-removal] retained failed fixture:', tmpDir);
+				else fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+			}
+		});
+	}
 
 	for (const { accepted, transport, expectedAttempts } of [
 		{ accepted: true, transport: 'false then true', expectedAttempts: 2 },
@@ -937,6 +1835,996 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
+	for (const outcome of ['accepted', 'webview rejection', 'host rejection', 'disposed', 'ordinary owner projection'] as const) {
+		test(`current native projection readiness requires its exact accepted acknowledgement (${outcome})`, async function () {
+			this.timeout(10_000);
+			const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+			const originalCommit = QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh;
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-current-projection-readiness-'));
+			const filePath = path.join(tmpDir, 'current.kqlx');
+			const uri = vscode.Uri.file(filePath);
+			const authoredFile = {
+				kind: 'kqlx', version: 1, futureRoot: { keep: true }, state: { sections: [
+					{ id: 'query_1', type: 'query', query: 'print Value=1', expanded: false },
+					{ id: 'markdown_1', type: 'markdown', text: '# Authored state', mode: 'preview' },
+				] },
+			};
+			const authoredBytes = Buffer.from(JSON.stringify(authoredFile, null, 2) + '\n', 'utf8');
+			let receiveHandler: ((message: any) => unknown) | undefined;
+			let queryEditor: QueryEditorProvider | undefined;
+			let rejectHostAdmission = false;
+			let capabilityReadiness: Promise<boolean> | undefined;
+			let sampleCapabilityReadiness = false;
+			const projections: any[] = [];
+			const requests: Promise<unknown>[] = [];
+			const disposeHandlers: Array<() => void> = [];
+			const subscriptions: vscode.Disposable[] = [];
+			let releaseOrdinaryProjection!: () => void;
+			const ordinaryProjectionDelivery = new Promise<void>(resolve => { releaseOrdinaryProjection = resolve; });
+			const acknowledge = (projection: any, applied: boolean) => Promise.resolve(receiveHandler!({
+				protocolVersion: projection.protocolVersion,
+				channel: projection.channel,
+				viewSessionId: projection.viewSessionId,
+				type: 'documentReloadResult', requestId: projection.reloadRequestId,
+				applied, editRevision: 0,
+			}));
+
+			try {
+				fs.writeFileSync(filePath, authoredBytes);
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async function (this: QueryEditorProvider) {
+					queryEditor = this;
+				};
+				QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh = async function (fingerprint, commit) {
+					if (this === queryEditor && rejectHostAdmission) return false;
+					return originalCommit.call(this, fingerprint, commit);
+				};
+				const provider = new (KqlxEditorProvider as any)(
+					{
+						subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				) as KqlxEditorProvider;
+				const document = await vscode.workspace.openTextDocument(uri);
+				const originalVersion = document.version;
+				assert.strictEqual(liveDocuments.register(document), false, 'the fixture must be a real native TextDocument');
+				const panel = {
+					webview: {
+						options: {}, postMessage: async (message: any) => {
+							if (sampleCapabilityReadiness && message?.type === 'persistenceMode') {
+								capabilityReadiness = KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel);
+							}
+							if (message?.type === 'documentData') {
+								projections.push(message);
+								if (outcome === 'ordinary owner projection' && projections.length === 2) await ordinaryProjectionDelivery;
+							}
+							return true;
+						},
+						onDidReceiveMessage: (handler: any) => {
+							receiveHandler = wrapDocumentViewTestReceiver(handler, () => projections.at(-1));
+							return { dispose() {} };
+						},
+					},
+					onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+				} as any;
+				const assertAuthoredStateUnchanged = () => {
+					assert.deepStrictEqual(fs.readFileSync(filePath), authoredBytes);
+					assert.strictEqual(document.getText(), authoredBytes.toString('utf8'));
+					assert.deepStrictEqual(JSON.parse(document.getText()), authoredFile);
+					assert.strictEqual(document.version, originalVersion);
+					assert.strictEqual(document.isDirty, false);
+				};
+
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				const initialRequest = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				requests.push(initialRequest);
+				await waitForCondition(() => projections.length === 1, 'initial native projection must be posted', 1_000);
+				const initialProjection = projections[0];
+				await acknowledge(initialProjection, true);
+				await initialRequest;
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), true);
+				assertAuthoredStateUnchanged();
+
+				sampleCapabilityReadiness = true;
+				rejectHostAdmission = outcome === 'host rejection';
+				const requestId = 'native-current-projection';
+				let currentRequest: Promise<unknown>;
+				if (outcome === 'ordinary owner projection') {
+					const registration = (provider as any).markdownPanelOwners.get(normalizeWorkbenchUriKey(uri))?.get(panel);
+					assert.strictEqual(typeof registration?.requestProjection, 'function', 'the canonical URI owner must provide its actual projection callback');
+					registration.requestProjection();
+					capabilityReadiness = KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel);
+					currentRequest = KqlxEditorProvider.waitForOpenEditorInitialized(uri, 2_000, panel);
+				} else {
+					currentRequest = Promise.resolve(receiveHandler!({ type: 'requestDocument', requestId }));
+				}
+				requests.push(currentRequest);
+				await waitForCondition(() => projections.length === 2 && capabilityReadiness !== undefined,
+					'the correlated native projection must be posted without its acknowledgement', 1_000);
+				sampleCapabilityReadiness = false;
+				assert.strictEqual(await capabilityReadiness, false,
+					'a fresh request must revoke historical readiness before capabilities are sent');
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+				const currentProjection = projections[1];
+				assert.strictEqual(currentProjection.requestId, outcome === 'ordinary owner projection' ? undefined : requestId);
+				assert.strictEqual(currentProjection.forceReload, true);
+				assert.ok(currentProjection.sourceGeneration > initialProjection.sourceGeneration);
+				assert.strictEqual(currentProjection.viewSessionId, initialProjection.viewSessionId);
+				assert.strictEqual(currentProjection.documentRevision, initialProjection.documentRevision);
+				assertAuthoredStateUnchanged();
+
+				await acknowledge(initialProjection, true);
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false,
+					'an old acknowledgement must not make the current projection ready');
+				await acknowledge({ ...currentProjection, reloadRequestId: `${currentProjection.reloadRequestId}-stale` }, true);
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false,
+					'a mismatched acknowledgement must not consume current projection readiness');
+				const initialized = KqlxEditorProvider.waitForOpenEditorInitialized(uri, 2_000, panel);
+				if (outcome === 'disposed') {
+					for (const dispose of disposeHandlers) dispose();
+					await acknowledge(currentProjection, true);
+				} else {
+					const attempts = outcome === 'host rejection' ? 3 : 1;
+					for (let attempt = 1; attempt <= attempts; attempt++) {
+						await waitForCondition(() => projections.length === attempt + 1,
+							`current native projection attempt ${attempt} must be posted`, 1_000);
+						assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+						await acknowledge(projections[attempt], outcome !== 'webview rejection');
+					}
+				}
+				if (outcome === 'ordinary owner projection') {
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false,
+						'the ordinary canonical projection must fully settle after ACK before advertising readiness');
+					assert.strictEqual((queryEditor as any).workbenchToolSnapshotIdentity(), `${currentProjection.sourceGeneration}:2`,
+						'the canonical ACK must re-enter and commit while its physical SDK delivery remains held');
+					releaseOrdinaryProjection();
+				}
+				await currentRequest;
+				const accepted = outcome === 'accepted' || outcome === 'ordinary owner projection';
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), accepted,
+					'only the exact host-accepted current projection can restore readiness');
+				assertAuthoredStateUnchanged();
+				if (accepted) assert.strictEqual(await initialized, true);
+				for (const dispose of disposeHandlers) dispose();
+				if (!accepted) assert.strictEqual(await initialized, false);
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000), true);
+				await acknowledge(initialProjection, true);
+				await acknowledge(projections.at(-1), true);
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+				assertAuthoredStateUnchanged();
+			} finally {
+				releaseOrdinaryProjection();
+				for (const dispose of disposeHandlers) dispose();
+				await Promise.allSettled(requests);
+				await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+				for (const subscription of subscriptions) subscription.dispose();
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+				QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh = originalCommit;
+				try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+			}
+		});
+	}
+
+	for (const scenario of ['BASELINE', 'RACE'] as const) test(`initial native mutation readiness survives queued projection acknowledgement (${scenario})`, async function () {
+		const originalInitialize = QueryEditorProvider.prototype.initializeWebviewPanel;
+		const originalPublish = QueryEditorProvider.prototype.publishSqlLeaveNoTraceStateFresh;
+		const originalCommit = QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-pending-activation-invalidation-'));
+		const filePath = path.join(tmpDir, 'pending.kqlx');
+		const uri = vscode.Uri.file(filePath);
+		const authoredBytes = Buffer.from(JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [
+			{ id: 'query_1', type: 'query', query: 'print Value=1', expanded: false },
+			{ id: 'markdown_1', type: 'markdown', text: '# Authored state', mode: 'preview' },
+		] } }, null, 2) + '\n', 'utf8');
+		const subscriptions: vscode.Disposable[] = [];
+		const disposers: Array<() => void> = [];
+		const requests: Promise<unknown>[] = [];
+		const projections: any[] = [];
+		const admissions: boolean[] = [];
+		const readinessStates: Readonly<Record<string, unknown>>[] = [];
+		let queryEditor: QueryEditorProvider | undefined;
+		let receive: ((message: any) => unknown) | undefined;
+		let invalidatePersistence: (() => void) | undefined;
+		let originalInvalidationEvent: vscode.Event<void> | undefined;
+		let trace: { mark(event: string, detail?: Readonly<Record<string, unknown>>): void } | undefined;
+		let originalTraceMark: NonNullable<typeof trace>['mark'] | undefined;
+		let firstReadiness: Promise<boolean> | undefined;
+		let firstReadinessResult: boolean | undefined;
+		let revealCount = 0;
+		let holdRefresh = false;
+		let refreshPrepared = false;
+		let preparationCount = 0;
+		let initialPosted!: () => void;
+		let secondPosted!: () => void;
+		const initialProjectionPosted = new Promise<void>(resolve => { initialPosted = resolve; });
+		const secondProjectionPosted = new Promise<void>(resolve => { secondPosted = resolve; });
+		let beginPreparation!: () => void;
+		let releasePreparation!: () => void;
+		let finishRefresh!: () => void;
+		const preparationStarted = new Promise<void>(resolve => { beginPreparation = resolve; });
+		const preparationGate = new Promise<void>(resolve => { releasePreparation = resolve; });
+		const refreshDrained = new Promise<void>(resolve => { finishRefresh = resolve; });
+		try {
+			fs.writeFileSync(filePath, authoredBytes);
+			QueryEditorProvider.prototype.initializeWebviewPanel = async function () {
+				queryEditor = this;
+				const subscribe = this.onDidInvalidateKustoPersistence;
+				originalInvalidationEvent = subscribe;
+				const captureInvalidation: vscode.Event<void> = (listener, thisArgs, disposables) => {
+					invalidatePersistence = listener;
+					return subscribe(listener, thisArgs, disposables);
+				};
+				(this as any).onDidInvalidateKustoPersistence = captureInvalidation;
+				trace = this.fileOpenTrace;
+				assert.ok(trace);
+				originalTraceMark = trace.mark;
+				trace.mark = function (event, detail) {
+					originalTraceMark!.call(this, event, detail);
+					if (event === 'notify.transitions' && detail) {
+						readinessStates.push(detail);
+						if (refreshPrepared) finishRefresh();
+					}
+				};
+			};
+			QueryEditorProvider.prototype.publishSqlLeaveNoTraceStateFresh = async function (state, publish, observer) {
+				if (this !== queryEditor || !holdRefresh) return originalPublish.bind(this)(state, publish, observer);
+				holdRefresh = false;
+				preparationCount++;
+				beginPreparation();
+				await preparationGate;
+				const result = await originalPublish.bind(this)(state, publish, observer);
+				refreshPrepared = true;
+				return result;
+			};
+			QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh = async function (fingerprint, commit) {
+				const result = await originalCommit.call(this, fingerprint, commit);
+				if (this === queryEditor) admissions.push(result);
+				return result;
+			};
+			const provider = new (KqlxEditorProvider as any)({
+				subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+				globalState: { get: () => undefined, update: async () => undefined },
+				globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+			}, vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub()) as KqlxEditorProvider;
+			const document = await vscode.workspace.openTextDocument(uri);
+			assert.strictEqual(liveDocuments.register(document), false, 'the fixture must use a real native TextDocument');
+			const originalVersion = document.version;
+			assert.strictEqual(originalVersion, 1);
+			const activeTextEditor = vscode.window.activeTextEditor;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						if (message?.type === 'documentData') {
+							projections.push(message);
+							if (projections.length === 1) initialPosted();
+							if (projections.length === 2) secondPosted();
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receive = wrapDocumentViewTestReceiver(handler, () => projections.at(-1));
+						return { dispose() {} };
+					},
+				},
+				reveal: () => { revealCount++; },
+				onDidDispose: (handler: () => void) => { disposers.push(handler); return { dispose() {} }; },
+			} as any;
+			const acknowledge = (projection: any) => Promise.resolve(receive!({
+				type: 'documentReloadResult', requestId: projection.reloadRequestId, applied: true, editRevision: 0,
+				protocolVersion: projection.protocolVersion, channel: projection.channel, viewSessionId: projection.viewSessionId,
+			}));
+			const assertAuthoredStateUnchanged = () => {
+				assert.deepStrictEqual(fs.readFileSync(filePath), authoredBytes);
+				assert.strictEqual(document.getText(), authoredBytes.toString('utf8'));
+				assert.strictEqual(document.version, originalVersion);
+				assert.strictEqual(document.isDirty, false);
+				assert.strictEqual(vscode.window.activeTextEditor, activeTextEditor);
+				assert.strictEqual(revealCount, 0);
+			};
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			assert.ok(queryEditor);
+			assert.strictEqual(typeof invalidatePersistence, 'function', 'capture the provider callback registered with the real invalidation event');
+			const readinessCallback = (queryEditor as any).workbenchToolMutationReadiness as (() => Promise<boolean>);
+			assert.strictEqual(typeof readinessCallback, 'function');
+			firstReadiness = readinessCallback();
+			void firstReadiness.then(result => { firstReadinessResult = result; });
+			const initialRequest = Promise.resolve(receive!({ type: 'requestDocument' }));
+			requests.push(initialRequest);
+			await initialProjectionPosted;
+			assert.strictEqual(projections[0].requestId, undefined);
+			assert.strictEqual(projections[0].sourceGeneration, 1);
+			const requestId = 'queued-native-readiness';
+			requests.push(Promise.resolve(receive!({ type: 'requestDocument', requestId })));
+			assert.strictEqual(firstReadinessResult, undefined);
+			await acknowledge(projections[0]);
+			await initialRequest;
+			await secondProjectionPosted;
+			const secondProjection = projections[1];
+			assert.strictEqual(secondProjection.requestId, requestId, 'the second request must not coalesce with the anonymous request');
+			assert.strictEqual(secondProjection.sourceGeneration, 2);
+			assert.strictEqual(secondProjection.viewSessionId, projections[0].viewSessionId);
+			assert.deepStrictEqual(admissions, [true], 'ACK1 must complete canonical host admission before the race');
+			assert.strictEqual(firstReadinessResult, undefined, 'the first readiness call must still be waiting for ACK2');
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+			assertAuthoredStateUnchanged();
+			const queue = (provider as any).markdownDocumentQueues.get(normalizeWorkbenchUriKey(uri)) as { tail: Promise<void> };
+			assert.ok(queue);
+			if (scenario === 'RACE') {
+				const previousTail = queue.tail;
+				holdRefresh = true;
+				invalidatePersistence!();
+				const refreshTail = queue.tail;
+				assert.notStrictEqual(refreshTail, previousTail, 'the real invalidation callback must reserve the document queue');
+				await preparationStarted;
+				assert.strictEqual(projections.length, 2);
+				assert.deepStrictEqual(admissions, [true], 'ACK2 remains withheld during invalidation preparation');
+				releasePreparation();
+				await refreshDrained;
+				await refreshTail;
+				assert.strictEqual(preparationCount, 1);
+				assert.strictEqual(queue.tail, refreshTail);
+				assert.strictEqual(projections.length, 2, 'queued invalidation must skip a new projection while generation 2 awaits activation');
+				assert.strictEqual(readinessStates.at(-1)?.pendingDocumentProjections, 1);
+				assert.strictEqual(readinessStates.at(-1)?.pendingProjectionActivationSize, 1);
+				assert.strictEqual(firstReadinessResult, undefined);
+			}
+			await acknowledge(secondProjection);
+			await Promise.all(requests);
+			await queue.tail;
+			assert.deepStrictEqual(admissions, [true, true], 'both exact positive ACKs must complete real canonical host admission');
+			assert.strictEqual(projections.length, 2);
+			const drained = readinessStates.at(-1);
+			assert.ok(drained, 'read the actual provider counters emitted by its readiness notifier');
+			assert.deepStrictEqual({
+				active: drained.activeProjectionGeneration, posted: drained.postDocumentGeneration,
+				requests: drained.admittedDocumentRequests, projections: drained.pendingDocumentProjections,
+				activations: drained.pendingProjectionActivationSize,
+				initialRecovery: drained.initialRecovery, pendingRecovery: drained.pendingRecovery,
+			}, { active: 2, posted: 2, requests: 0, projections: 0, activations: 0, initialRecovery: false, pendingRecovery: false });
+			assert.strictEqual((queryEditor as any).workbenchToolSnapshotIdentity().split(':')[0], '2');
+			assertAuthoredStateUnchanged();
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), true,
+				'the exact panel must initialize after both accepted ACKs and all queued work drain');
+			assert.strictEqual(await firstReadiness, true, 'the same first mutation-readiness promise must resolve true');
+		} finally {
+			releasePreparation();
+			try {
+				for (const dispose of disposers.splice(0)) dispose();
+				await Promise.allSettled(requests);
+				await firstReadiness;
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000), true);
+			} finally {
+				try {
+					for (const subscription of subscriptions) subscription.dispose();
+				} finally {
+					if (queryEditor && originalInvalidationEvent) (queryEditor as any).onDidInvalidateKustoPersistence = originalInvalidationEvent;
+					if (trace && originalTraceMark) trace.mark = originalTraceMark;
+					QueryEditorProvider.prototype.initializeWebviewPanel = originalInitialize;
+					QueryEditorProvider.prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+					QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh = originalCommit;
+				}
+			}
+		}
+	});
+
+	for (const scenario of ['physical settlement', 'Kusto policy changed', 'SQL policy changed', 'SQL-produced comparison',
+		'projected state changed', 'runtime replaced', 'owner replaced', 'disposed', 'source version ABA', 'third invalidation',
+		'consumed source-change follow-up'] as const) test(`deferred native invalidation proves its exact current projection (${scenario})`, async function () {
+		const originalInitialize = QueryEditorProvider.prototype.initializeWebviewPanel;
+		const originalPublish = QueryEditorProvider.prototype.publishSqlLeaveNoTraceStateFresh;
+		const originalCommit = QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh;
+		const originalCreateReload = CompatSidecarSession.prototype.createReloadRequest;
+		const originalOnDidChange = vscode.workspace.onDidChangeTextDocument;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-deferred-invalidation-'));
+		const uri = vscode.Uri.file(path.join(tmpDir, 'deferred.kqlx'));
+		const sqlArtifact = {
+			version: 1 as const, ...createPrimaryResultArtifactIdentity('query_comparison', 1, 1)!,
+			producer: { engine: 'sql', boxId: 'query_comparison', connectionId: 'sql_deferred', query: 'SELECT 1 AS Value' },
+		};
+		const authoredBytes = Buffer.from(JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [
+			{ id: 'query_1', type: 'query', query: 'print Value=1', expanded: false },
+			{ id: 'markdown_1', type: 'markdown', text: '# Retained state', mode: 'preview' },
+			...(scenario === 'SQL policy changed' || scenario === 'SQL-produced comparison'
+				? [{ id: scenario === 'SQL-produced comparison' ? 'sql_original' : 'sql_1', type: 'sql', query: 'SELECT 1 AS Value' }] : []),
+			...(scenario === 'SQL-produced comparison' ? [{ id: 'query_comparison', type: 'query', query: 'print Value=1',
+				comparisonSourceBoxId: 'sql_original', resultArtifact: sqlArtifact,
+				resultJson: JSON.stringify({ columns: [{ name: 'Value', dataType: 'int' }], rows: [[1]] }),
+			}] : []),
+		] } }, null, 2) + '\n');
+		const subscriptions: vscode.Disposable[] = [];
+		const disposers: Array<() => void> = [];
+		const requests: Promise<unknown>[] = [];
+		const posted: any[] = [];
+		const projections: any[] = [];
+		const admissions: boolean[] = [];
+		const proofResults: unknown[] = [];
+		const reloads: Array<{ requestId: string; deadline: number | undefined }> = [];
+		const readinessStates: Readonly<Record<string, unknown>>[] = [];
+		const settlements: Readonly<Record<string, unknown>>[] = [];
+		const sourceChanges: vscode.TextDocumentChangeEvent[] = [];
+		const policy = { clusterKeys: [], version: 0, globallyBlocked: false, revocationGenerations: {} };
+		const connections = connectionManagerStub();
+		connections.runWithLeaveNoTraceSnapshotLock = async (work: (snapshot: typeof policy) => unknown) => work(policy);
+		const sqlPolicy = { connectionIds: [], version: 0, globallyBlocked: false, revocationGenerations: {} };
+		const sqlSnapshot = { policy: sqlPolicy, connections: [], connectionVersion: 0, accountsByServer: {}, principalVersion: 0 };
+		const sqlPolicyAdmissions: number[] = [];
+		const sqlWorkbench = sqlWorkbenchStub();
+		sqlWorkbench.tryRunWithSqlOwnerSnapshotLock = async (work: (snapshot: typeof sqlSnapshot) => unknown) => {
+			sqlPolicyAdmissions.push(sqlPolicy.version);
+			return { acquired: true, value: await work(sqlSnapshot) };
+		};
+		let queryEditor: QueryEditorProvider | undefined;
+		let nativeDocument: vscode.TextDocument | undefined;
+		let receive: ((message: any) => unknown) | undefined;
+		let trace: { mark(event: string, detail?: Readonly<Record<string, unknown>>): void } | undefined;
+		let originalTraceMark: NonNullable<typeof trace>['mark'] | undefined;
+		let firstReadiness: Promise<boolean> | undefined;
+		let firstReadinessResult: boolean | undefined;
+		let holdRefresh = false;
+		let holdProof = false;
+		let holdNextPreparation = false;
+		let proofEntered = false;
+		let physicalSettled = false;
+		let revealCount = 0;
+		let rejectRenewedDelivery = false;
+		let beginPreparation!: () => void;
+		let releasePreparation!: () => void;
+		let beginProof!: () => void;
+		let releaseProof!: () => void;
+		let beginNextPreparation!: () => void;
+		let releaseNextPreparation!: () => void;
+		let releasePhysical!: () => void;
+		const preparationStarted = new Promise<void>(resolve => { beginPreparation = resolve; });
+		const preparationGate = new Promise<void>(resolve => { releasePreparation = resolve; });
+		const proofStarted = new Promise<void>(resolve => { beginProof = resolve; });
+		const proofGate = new Promise<void>(resolve => { releaseProof = resolve; });
+		const nextPreparationStarted = new Promise<void>(resolve => { beginNextPreparation = resolve; });
+		const nextPreparationGate = new Promise<void>(resolve => { releaseNextPreparation = resolve; });
+		const physicalGate = new Promise<void>(resolve => { releasePhysical = resolve; });
+		try {
+			fs.writeFileSync(uri.fsPath, authoredBytes);
+			if (scenario === 'consumed source-change follow-up') {
+				(vscode.workspace as any).onDidChangeTextDocument = (
+					listener: (event: vscode.TextDocumentChangeEvent) => unknown,
+					thisArgs?: unknown,
+					eventDisposables?: vscode.Disposable[],
+				) => originalOnDidChange(event => {
+					if (event.document === nativeDocument && event.contentChanges.length > 0) sourceChanges.push(event);
+					else listener.call(thisArgs, event);
+				}, undefined, eventDisposables);
+			}
+			if (scenario === 'SQL-produced comparison') {
+				assert.strictEqual(publicationFromPersistedResultArtifact(sqlArtifact, 'query_comparison')?.producer?.engine, 'sql');
+			}
+			QueryEditorProvider.prototype.initializeWebviewPanel = async function () {
+				if (queryEditor) return;
+				queryEditor = this;
+				trace = this.fileOpenTrace;
+				assert.ok(trace);
+				originalTraceMark = trace.mark;
+				trace.mark = function (event, detail) {
+					originalTraceMark!.call(this, event, detail);
+					if (event === 'notify.transitions' && detail) readinessStates.push(detail);
+					if (event === 'reload.settled' && detail) settlements.push(detail);
+				};
+			};
+			QueryEditorProvider.prototype.publishSqlLeaveNoTraceStateFresh = async function (state, publish, observer) {
+				if (this !== queryEditor) return originalPublish.bind(this)(state, publish, observer);
+				if (holdRefresh) {
+					holdRefresh = false;
+					beginPreparation();
+					await preparationGate;
+				} else if (holdProof) {
+					holdProof = false;
+					const waitForProof = async () => {
+						proofEntered = true;
+						beginProof();
+						await proofGate;
+					};
+					const finishProof = async (sanitized: typeof state) => {
+						const candidate = scenario === 'projected state changed' ? { ...sanitized,
+							sections: sanitized.sections?.map(section => {
+								const record = section as Record<string, unknown>;
+								return record.id === 'query_1' ? { ...record, expanded: true } : section;
+							}),
+						} as typeof sanitized : sanitized;
+						const result = await publish(candidate);
+						proofResults.push(result);
+						return result;
+					};
+					if (scenario === 'Kusto policy changed' || scenario === 'SQL policy changed'
+						|| scenario === 'SQL-produced comparison' || scenario === 'owner replaced' || scenario === 'third invalidation'
+						|| scenario === 'consumed source-change follow-up') {
+						await waitForProof();
+						return originalPublish.bind(this)(state, finishProof, observer);
+					}
+					return originalPublish.bind(this)(state, async sanitized => {
+						await waitForProof();
+						return finishProof(sanitized);
+					}, observer);
+				} else if (holdNextPreparation) {
+					holdNextPreparation = false;
+					beginNextPreparation();
+					await nextPreparationGate;
+				}
+				return originalPublish.bind(this)(state, publish, observer);
+			};
+			QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh = async function (fingerprint, commit) {
+				const result = await originalCommit.call(this, fingerprint, commit);
+				if (this === queryEditor) admissions.push(result);
+				return result;
+			};
+			CompatSidecarSession.prototype.createReloadRequest = function (timeoutMs, options) {
+				const reload = originalCreateReload.call(this, timeoutMs, options);
+				reloads.push({ requestId: reload.requestId, deadline: options?.absoluteCommitDeadline });
+				return reload;
+			};
+			const provider = new (KqlxEditorProvider as any)({
+				subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+				globalState: { get: () => undefined, update: async () => undefined },
+				globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+			}, vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connections, sqlWorkbench) as KqlxEditorProvider;
+			const document = await vscode.workspace.openTextDocument(uri);
+			nativeDocument = document;
+			assert.strictEqual(liveDocuments.register(document), false);
+			const version = document.version;
+			const activeTextEditor = vscode.window.activeTextEditor;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') {
+							projections.push(message);
+							if (projections.length === 2 && scenario === 'physical settlement') {
+								await physicalGate;
+								physicalSettled = true;
+							}
+							if (rejectRenewedDelivery) return false;
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receive = wrapDocumentViewTestReceiver(handler, () => projections.at(-1));
+						return { dispose() {} };
+					},
+				},
+				reveal: () => { revealCount++; },
+				onDidDispose: (handler: () => void) => { disposers.push(handler); return { dispose() {} }; },
+			} as any;
+			const acknowledge = (projection: any) => Promise.resolve(receive!({
+				type: 'documentReloadResult', requestId: projection.reloadRequestId, applied: true, editRevision: 0,
+				protocolVersion: projection.protocolVersion, channel: projection.channel, viewSessionId: projection.viewSessionId,
+			}));
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			assert.ok(queryEditor);
+			firstReadiness = (queryEditor as any).workbenchToolMutationReadiness();
+			void firstReadiness!.then(result => { firstReadinessResult = result; });
+			requests.push(Promise.resolve(receive!({ type: 'requestDocument' })));
+			await waitForCondition(() => projections.length === 1, 'initial deferred-control projection must be posted', 1_000);
+			requests.push(Promise.resolve(receive!({ type: 'requestDocument', requestId: 'deferred-control' })));
+			await acknowledge(projections[0]);
+			await waitForCondition(() => projections.length === 2, 'queued deferred-control projection must be posted', 1_000);
+			const secondProjection = projections[1];
+			if (scenario === 'SQL-produced comparison') {
+				const comparison = secondProjection.state.sections.find((section: any) => section.id === 'query_comparison');
+				assert.strictEqual(comparison?.resultArtifact?.producer?.engine, 'sql');
+				assert.strictEqual(comparison.resultJson, JSON.stringify({ columns: [{ name: 'Value', dataType: 'int' }], rows: [[1]] }));
+			}
+			const originalDeadline = reloads.find(reload => reload.requestId === secondProjection.reloadRequestId)?.deadline;
+			assert.strictEqual(typeof originalDeadline, 'number');
+			const queue = (provider as any).markdownDocumentQueues.get(normalizeWorkbenchUriKey(uri)) as { tail: Promise<void> };
+			if (scenario === 'consumed source-change follow-up') {
+				const changeSource = async (value: number) => {
+					const text = authoredBytes.toString('utf8').replace('print Value=1', `print Value=${value}`);
+					const edit = new vscode.WorkspaceEdit();
+					edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), text);
+					assert.strictEqual(await vscode.workspace.applyEdit(edit), true);
+					assert.strictEqual(document.getText(), text);
+					assert.strictEqual(document.version, version + value - 1);
+					assert.strictEqual(document.isDirty, true);
+				};
+				await changeSource(2);
+				await acknowledge(secondProjection);
+				await waitForCondition(() => projections.length === 3, 'the first source change must consume its one follow-up', 1_000);
+				const followUp = projections[2];
+				assert.strictEqual(followUp.state.sections[0].query, 'print Value=2');
+				assert.strictEqual(reloads[2].deadline, originalDeadline);
+				holdRefresh = true;
+				(queryEditor as any).persistedResultSanitizationApplication.invalidateKustoPersistence();
+				await preparationStarted;
+				const preparationTail = queue.tail;
+				releasePreparation();
+				await preparationTail;
+				assert.strictEqual(projections.length, 3);
+				holdProof = true;
+				await acknowledge(followUp);
+				await proofStarted;
+				assert.deepStrictEqual(admissions, [true, true]);
+				assert.strictEqual(firstReadinessResult, undefined);
+				policy.version++;
+				releaseProof();
+				await waitForCondition(() => proofResults.length === 1, 'the changed policy must fail the deferred fresh proof', 1_000);
+				assert.deepStrictEqual(proofResults, [false]);
+				await waitForCondition(() => projections.length === 4, 'the failed proof must use its existing attempt budget', 1_000);
+				const fallback = projections[3];
+				assert.strictEqual(fallback.state.sections[0].query, 'print Value=2');
+				assert.strictEqual(reloads[3].deadline, originalDeadline);
+				await changeSource(3);
+				rejectRenewedDelivery = true;
+				await acknowledge(fallback);
+				await Promise.all(requests);
+				await queue.tail;
+				await waitForCondition(() => readinessStates.at(-1)?.pendingDocumentProjections === 0
+					&& readinessStates.at(-1)?.pendingProjectionActivationSize === 0,
+					'the second source change must settle without another pending delivery', 1_000);
+				const settlement = settlements.find(detail => detail.generation === fallback.sourceGeneration);
+				assert.ok(settlement);
+				assert.deepStrictEqual({ eligible: settlement.retryEligible, sourceCurrent: settlement.retrySourceCurrent,
+					remainingAttempts: settlement.remainingAttempts }, { eligible: true, sourceCurrent: false, remainingAttempts: 1 });
+				assert.ok(performance.now() < originalDeadline!, 'the exhausted follow-up must be tested before its original deadline');
+				assert.ok(reloads.slice(1).every(reload => reload.deadline === originalDeadline));
+				console.log('[native deferred consumed follow-up]', JSON.stringify({ projections: projections.length,
+					renewedProjections: projections.length - 4, reloads: reloads.length,
+					remainingAttempts: settlement.remainingAttempts, deadlineRetained: true }));
+				assert.strictEqual(projections.length, 4, 'a deferred fallback must not renew a consumed source-change follow-up or its three-attempt budget');
+				assert.strictEqual(reloads.length, 4);
+				assert.strictEqual(sourceChanges.length, 2);
+				assert.deepStrictEqual(admissions, [true, true]);
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+				assert.strictEqual(firstReadinessResult, undefined);
+				assert.deepStrictEqual(fs.readFileSync(uri.fsPath), authoredBytes);
+				assert.strictEqual(vscode.window.activeTextEditor, activeTextEditor);
+				assert.strictEqual(revealCount, 0);
+				return;
+			}
+			holdRefresh = true;
+			(queryEditor as any).persistedResultSanitizationApplication.invalidateKustoPersistence();
+			await preparationStarted;
+			const preparationTail = queue.tail;
+			releasePreparation();
+			await preparationTail;
+			assert.strictEqual(projections.length, 2);
+			holdProof = true;
+			await acknowledge(secondProjection);
+			assert.deepStrictEqual(admissions, [true, true]);
+			if (scenario === 'physical settlement') {
+				assert.strictEqual(physicalSettled, false);
+				assert.strictEqual(proofEntered, false, 'logical ACK completion must not start a proof before SDK settlement');
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+				releasePhysical();
+			}
+			await proofStarted;
+			await Promise.all(requests);
+			assert.strictEqual(firstReadinessResult, undefined, 'the first waiter must remain pending while fresh proof is held');
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+			if (scenario === 'Kusto policy changed') policy.version++;
+			if (scenario === 'SQL policy changed' || scenario === 'SQL-produced comparison') sqlPolicy.version++;
+			if (scenario === 'runtime replaced') {
+				await Promise.resolve(receive!({ type: 'mainWebviewDispatcherReady', runtimeId: 'deferred-replacement-runtime' }));
+				const probe = posted.filter(message => message.type === 'mainWebviewDispatcherProbe').at(-1);
+				if (probe) await Promise.resolve(receive!({ type: 'mainWebviewDispatcherReady', runtimeId: 'deferred-replacement-runtime', probeId: probe.probeId }));
+			}
+			if (scenario === 'owner replaced') {
+				let replacementReceive: ((message: any) => unknown) | undefined;
+				let replacementProjection: any;
+				const replacementPanel = {
+					webview: {
+						options: {},
+						postMessage: async (message: any) => { if (message?.type === 'documentData') replacementProjection = message; return true; },
+						onDidReceiveMessage: (handler: any) => {
+							replacementReceive = wrapDocumentViewTestReceiver(handler, () => replacementProjection);
+							return { dispose() {} };
+						},
+					},
+					onDidDispose: (handler: () => void) => { disposers.push(handler); return { dispose() {} }; },
+				} as any;
+				await provider.resolveCustomTextEditor(document, replacementPanel, {} as any);
+				const replacementRequest = Promise.resolve(replacementReceive!({ type: 'requestDocument' }));
+				requests.push(replacementRequest);
+				await waitForCondition(() => !!replacementProjection, 'the replacement owner must project through its own panel', 1_000);
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, replacementPanel), false);
+				await Promise.resolve(replacementReceive!({ type: 'documentReloadResult', requestId: replacementProjection.reloadRequestId,
+					applied: true, editRevision: 0, protocolVersion: replacementProjection.protocolVersion,
+					channel: replacementProjection.channel, viewSessionId: replacementProjection.viewSessionId }));
+				await replacementRequest;
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, replacementPanel), true,
+					'only the replacement panel\'s own accepted projection may initialize it');
+			}
+			if (scenario === 'disposed') for (const dispose of disposers.splice(0)) dispose();
+			if (scenario === 'source version ABA') {
+				for (const text of [authoredBytes.toString('utf8') + ' ', authoredBytes.toString('utf8')]) {
+					const edit = new vscode.WorkspaceEdit();
+					edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), text);
+					assert.strictEqual(await vscode.workspace.applyEdit(edit), true);
+				}
+				assert.ok(document.version > version);
+			}
+			if (scenario === 'third invalidation') {
+				policy.version++;
+				holdNextPreparation = true;
+				(queryEditor as any).persistedResultSanitizationApplication.invalidateKustoPersistence();
+				releaseProof();
+				await nextPreparationStarted;
+				assert.deepStrictEqual(proofResults, [false], 'the superseded proof must reject its own stale sequence');
+				assert.strictEqual(firstReadinessResult, undefined);
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false,
+					'the old finally must not clear the newest pending requirement');
+				releaseNextPreparation();
+				await waitForCondition(() => projections.length === 3, 'changed policy requires a new actual projection', 1_000);
+				assert.strictEqual(reloads.find(reload => reload.requestId === projections[2].reloadRequestId)?.deadline, originalDeadline,
+					'a third invalidation must not restart the original attempt deadline');
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+				await acknowledge(projections[2]);
+			} else {
+				releaseProof();
+				await waitForCondition(() => proofResults.length === 1, 'the exact fresh proof must settle', 1_000);
+				assert.deepStrictEqual(proofResults, [scenario === 'physical settlement']);
+				if (scenario === 'disposed') {
+					assert.strictEqual(await firstReadiness, false);
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+					assert.strictEqual(projections.length, 2);
+					return;
+				}
+				if (scenario !== 'physical settlement') {
+					await waitForCondition(() => projections.length > 2
+						&& (scenario !== 'source version ABA' || projections.at(-1).sourceGeneration === readinessStates.at(-1)?.postDocumentGeneration),
+						'the stale proof requires an actual current projection', 1_000);
+					assert.ok(projections.at(-1).sourceGeneration > secondProjection.sourceGeneration);
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+					assert.strictEqual(firstReadinessResult, undefined);
+					if (scenario !== 'source version ABA') {
+						assert.strictEqual(reloads.find(reload => reload.requestId === projections.at(-1).reloadRequestId)?.deadline, originalDeadline);
+					}
+					await acknowledge(projections.at(-1));
+				}
+			}
+			await queue.tail;
+			await waitForCondition(() => readinessStates.at(-1)?.pendingDocumentProjections === 0,
+				'all exact deferred-control work must physically drain', 1_000);
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), true);
+			assert.strictEqual(await firstReadiness, true);
+			assert.deepStrictEqual(admissions, scenario === 'physical settlement' ? [true, true] : [true, true, true]);
+			if (scenario !== 'source version ABA') assert.strictEqual(projections.length, scenario === 'physical settlement' ? 2 : 3);
+			if (scenario === 'SQL policy changed' || scenario === 'SQL-produced comparison') {
+				assert.strictEqual(policy.version, 0, 'SQL policy changes must be independent of the Kusto fingerprint');
+				assert.ok(sqlPolicyAdmissions.includes(1), 'the fresh publisher must acquire the changed canonical SQL policy');
+			}
+			assert.deepStrictEqual(fs.readFileSync(uri.fsPath), authoredBytes);
+			assert.strictEqual(document.getText(), authoredBytes.toString('utf8'));
+			if (scenario !== 'source version ABA') {
+				assert.strictEqual(document.version, version);
+				assert.strictEqual(document.isDirty, false);
+			}
+			assert.strictEqual(vscode.window.activeTextEditor, activeTextEditor);
+			assert.strictEqual(revealCount, 0);
+		} finally {
+			releasePreparation();
+			releaseProof();
+			releaseNextPreparation();
+			releasePhysical();
+			try {
+				for (const dispose of disposers.splice(0)) dispose();
+				await Promise.allSettled(requests);
+				await firstReadiness;
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000), true);
+			} finally {
+				for (const subscription of subscriptions) subscription.dispose();
+				if (trace && originalTraceMark) trace.mark = originalTraceMark;
+				QueryEditorProvider.prototype.initializeWebviewPanel = originalInitialize;
+				QueryEditorProvider.prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+				QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh = originalCommit;
+				CompatSidecarSession.prototype.createReloadRequest = originalCreateReload;
+				(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChange;
+			}
+			if (nativeDocument?.isDirty) assert.strictEqual(await nativeDocument.save(), true);
+		}
+	});
+
+	for (const scenario of ['retained', 'policy changed', 'policy changed before preparation', 'preparation failed', 'runtime replaced', 'explicit rejection first', 'superseded', 'disposed', 'source version ABA', 'local persist'] as const) test(`automatic revision-rejected refresh retains an unchanged accepted native view (${scenario})`, async function () {
+		this.timeout(10_000);
+		const originalInitialize = QueryEditorProvider.prototype.initializeWebviewPanel;
+		const originalPublish = QueryEditorProvider.prototype.publishSqlLeaveNoTraceStateFresh;
+		const originalCommit = QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-conditional-refresh-readiness-'));
+		const filePath = path.join(tmpDir, 'conditional.kqlx');
+		const uri = vscode.Uri.file(filePath);
+		const authoredBytes = Buffer.from(JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [
+			{ id: 'query_1', type: 'query', query: 'print Value=1', expanded: false },
+			{ id: 'markdown_1', type: 'markdown', text: '# Authored state', mode: 'preview' },
+		] } }, null, 2) + '\n');
+		const subscriptions: vscode.Disposable[] = [];
+		const disposers: Array<() => void> = [];
+		const projections: any[] = [];
+		const posted: any[] = [];
+		const policy = { clusterKeys: [], version: 0, globallyBlocked: false, revocationGenerations: {} };
+		const connections = connectionManagerStub();
+		connections.runWithLeaveNoTraceSnapshotLock = async (work: (snapshot: typeof policy) => unknown) => work(policy);
+		let queryEditor: QueryEditorProvider | undefined;
+		let receive: ((message: any) => unknown) | undefined;
+		let holdRefresh = false;
+		let beginPreparation!: () => void;
+		let releasePreparation!: () => void;
+		const preparationStarted = new Promise<void>(resolve => { beginPreparation = resolve; });
+		const preparationGate = new Promise<void>(resolve => { releasePreparation = resolve; });
+		let holdRecovery = false;
+		let captureRecovery = false;
+		const recoveryResults: boolean[] = [];
+		let beginRecovery!: () => void;
+		let releaseRecovery!: () => void;
+		const recoveryStarted = new Promise<void>(resolve => { beginRecovery = resolve; });
+		const recoveryGate = new Promise<void>(resolve => { releaseRecovery = resolve; });
+		let holdNextPreparation = false;
+		let beginNextPreparation!: () => void;
+		let releaseNextPreparation!: () => void;
+		const nextPreparationStarted = new Promise<void>(resolve => { beginNextPreparation = resolve; });
+		const nextPreparationGate = new Promise<void>(resolve => { releaseNextPreparation = resolve; });
+		let recoveryAcknowledgement: Promise<unknown> | undefined;
+		let initialRequest: Promise<unknown> | undefined;
+		try {
+			fs.writeFileSync(filePath, authoredBytes);
+			QueryEditorProvider.prototype.initializeWebviewPanel = async function () { queryEditor = this; };
+			QueryEditorProvider.prototype.publishSqlLeaveNoTraceStateFresh = async function (state, publish, observer) {
+				if (this === queryEditor && holdNextPreparation) {
+					holdNextPreparation = false;
+					beginNextPreparation();
+					await nextPreparationGate;
+				}
+				if (this === queryEditor && holdRefresh) {
+					holdRefresh = false;
+					beginPreparation();
+					await preparationGate;
+					if (scenario === 'preparation failed') throw new Error('Policy preparation unavailable');
+				}
+				return originalPublish.bind(this)(state, publish, observer);
+			};
+			QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh = async function (fingerprint, commit) {
+				if (this === queryEditor && holdRecovery) {
+					holdRecovery = false;
+					beginRecovery();
+					await recoveryGate;
+				}
+				const result = await originalCommit.call(this, fingerprint, commit);
+				if (captureRecovery) recoveryResults.push(result);
+				return result;
+			};
+			const provider = new (KqlxEditorProvider as any)({
+				subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+				globalState: { get: () => undefined, update: async () => undefined },
+				globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+			}, vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connections, sqlWorkbenchStub()) as KqlxEditorProvider;
+			const document = await vscode.workspace.openTextDocument(uri);
+			const version = document.version;
+			assert.strictEqual(liveDocuments.register(document), false);
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => { posted.push(message); if (message?.type === 'documentData') projections.push(message); return true; },
+					onDidReceiveMessage: (handler: any) => {
+						receive = wrapDocumentViewTestReceiver(handler, () => projections.at(-1));
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposers.push(handler); return { dispose() {} }; },
+			} as any;
+			const acknowledge = (projection: any, applied: boolean, editRevision: number) => Promise.resolve(receive!({
+				type: 'documentReloadResult', requestId: projection.reloadRequestId, applied, editRevision,
+				protocolVersion: projection.protocolVersion, channel: projection.channel, viewSessionId: projection.viewSessionId,
+			}));
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			initialRequest = Promise.resolve(receive!({ type: 'requestDocument' }));
+			await waitForCondition(() => projections.length === 1, 'initial projection must be posted', 1_000);
+			const accepted = projections[0];
+			await acknowledge(accepted, true, 0);
+			await initialRequest;
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), true);
+			const acceptedSnapshotIdentity = (queryEditor as any).workbenchToolSnapshotIdentity();
+			if (scenario === 'runtime replaced') {
+				await Promise.resolve(receive!({ type: 'mainWebviewDispatcherReady', runtimeId: 'replacement-runtime' }));
+				const probe = posted.filter(message => message.type === 'mainWebviewDispatcherProbe').at(-1);
+				if (probe) await Promise.resolve(receive!({ type: 'mainWebviewDispatcherReady', runtimeId: 'replacement-runtime', probeId: probe.probeId }));
+			}
+			if (scenario === 'explicit rejection first') {
+				const explicit = Promise.resolve(receive!({ type: 'requestDocument', requestId: 'explicit-rejected-refresh', expectedEditRevision: 0 }));
+				await waitForCondition(() => projections.length === 2, 'explicit conditional request must be posted', 1_000);
+				await acknowledge(projections[1], false, 0);
+				await explicit;
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+			}
+			const priorProjectionCount = projections.length;
+			holdRefresh = true;
+			(queryEditor as any).persistedResultSanitizationApplication.invalidateKustoPersistence();
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false,
+				'automatic invalidation must revoke cached readiness before its queued work starts');
+			await preparationStarted;
+			const localEditRevision = 1;
+			if (scenario === 'policy changed before preparation') policy.version++;
+			releasePreparation();
+			if (scenario === 'preparation failed') {
+				await new Promise<void>(resolve => setImmediate(resolve));
+				assert.strictEqual(projections.length, priorProjectionCount, 'failed preparation must not post a projection');
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false,
+					'failed automatic preparation must not advertise historical readiness');
+				assert.deepStrictEqual(fs.readFileSync(filePath), authoredBytes);
+				assert.strictEqual(document.version, version);
+				assert.strictEqual(document.isDirty, false);
+				return;
+			}
+			await waitForCondition(() => projections.length === priorProjectionCount + 1, 'automatic conditional refresh must be posted', 1_000);
+			const rejected = projections.at(-1);
+			assert.strictEqual(rejected.forceReload, true);
+			assert.strictEqual(rejected.expectedEditRevision, 0);
+			assert.ok(rejected.sourceGeneration > accepted.sourceGeneration);
+			assert.strictEqual(rejected.viewSessionId, accepted.viewSessionId);
+			assert.notStrictEqual(rejected.expectedEditRevision, localEditRevision);
+			if (scenario === 'policy changed') policy.version++;
+			if (scenario === 'disposed') for (const dispose of disposers) dispose();
+			if (scenario === 'source version ABA') {
+				for (const text of [authoredBytes.toString('utf8') + ' ', authoredBytes.toString('utf8')]) {
+					const edit = new vscode.WorkspaceEdit();
+					edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), text);
+					assert.strictEqual(await vscode.workspace.applyEdit(edit), true);
+				}
+				assert.ok(document.version > version);
+			}
+			holdRecovery = scenario === 'superseded';
+			captureRecovery = true;
+			recoveryAcknowledgement = acknowledge(rejected, false, localEditRevision);
+			if (scenario === 'superseded') {
+				await recoveryStarted;
+				holdNextPreparation = true;
+				(queryEditor as any).persistedResultSanitizationApplication.invalidateKustoPersistence();
+				await nextPreparationStarted;
+				assert.strictEqual(projections.length, priorProjectionCount + 1, 'new invalidation has not issued another generation yet');
+				releaseRecovery();
+			}
+			await recoveryAcknowledgement;
+			if (scenario === 'superseded' || scenario === 'policy changed before preparation') {
+				assert.deepStrictEqual(recoveryResults, [false], 'the old proof itself must fail independently of pending counters');
+			}
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.deepStrictEqual(fs.readFileSync(filePath), authoredBytes);
+			assert.strictEqual(document.getText(), authoredBytes.toString('utf8'));
+			if (scenario !== 'source version ABA') {
+				assert.strictEqual(document.version, version);
+				assert.strictEqual(document.isDirty, false);
+			}
+			const retained = scenario === 'retained' || scenario === 'local persist';
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), retained,
+				'only a rejected automatic refresh with an unchanged accepted owner may retain readiness');
+			const retainedSnapshotIdentity = (queryEditor as any).workbenchToolSnapshotIdentity();
+			assert.strictEqual(retainedSnapshotIdentity.split(':')[0], acceptedSnapshotIdentity.split(':')[0],
+				'the rejected generation must not replace the accepted runtime');
+			assert.notStrictEqual(retainedSnapshotIdentity, acceptedSnapshotIdentity,
+				'the attempted refresh must still invalidate older snapshot observations');
+			if (retained) assert.strictEqual(await (queryEditor as any).workbenchToolMutationReadiness(), true);
+			if (scenario === 'local persist') {
+				const state = JSON.parse(JSON.stringify(accepted.state));
+				state.sections.find((section: any) => section.id === 'query_1').query = 'print Value=2';
+				await Promise.resolve(receive!({ type: 'persistDocument', snapshotId: 'retained-local-persist', editRevision: 1,
+					sourceGeneration: accepted.sourceGeneration, state }));
+				assert.ok(posted.some(message => message.type === 'persistDocumentAck' && message.snapshotId === 'retained-local-persist'));
+				assert.strictEqual(JSON.parse(document.getText()).state.sections[0].query, 'print Value=2');
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), true);
+				assert.strictEqual(await (queryEditor as any).workbenchToolMutationReadiness(), true);
+			}
+		} finally {
+			releasePreparation();
+			releaseRecovery();
+			releaseNextPreparation();
+			for (const dispose of disposers) dispose();
+			await recoveryAcknowledgement?.catch(() => undefined);
+			await initialRequest?.catch(() => undefined);
+			await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+			for (const subscription of subscriptions) subscription.dispose();
+			QueryEditorProvider.prototype.initializeWebviewPanel = originalInitialize;
+			QueryEditorProvider.prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+			QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh = originalCommit;
+		}
+	});
+
 	for (const outcome of ['accepted', 'host retry', 'webview rejection', 'host rejection', 'disposed'] as const) {
 		test(`initial projection initialization waiter handles ${outcome}`, async () => {
 			const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
@@ -1070,6 +2958,271 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				await initializing;
 				(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
 				QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh = originalCommit;
+				try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+			}
+		});
+	}
+
+	for (const outcome of ['fresh recovery', 'failed request deduplication', 'pending settlement', 'bounded correlations', 'issued challenge', 'regular read'] as const) {
+		test(`native initial recovery handles ${outcome} without changing its source`, async function () {
+			this.timeout(20_000);
+			const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+			const originalRead = (KqlxEditorProvider as any).prototype.readProjectionSourceTextForDocument;
+			const originalSetInbound = MainWebviewStartupGateway.prototype.setInboundHandler;
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-native-initial-recovery-'));
+			const filePath = path.join(tmpDir, 'recovery.kqlx');
+			const uri = vscode.Uri.file(filePath);
+			const authoredFile = {
+				kind: 'kqlx', version: 1, futureRoot: { keep: true }, state: { sections: [
+					{ id: 'query_canary', type: 'query', query: 'print Canary=10', expanded: false },
+					{ id: 'markdown_authored', type: 'markdown', text: '# Authored note\n+ Keep this marker\n', mode: 'preview' },
+				] },
+			};
+			const authoredBytes = Buffer.from(JSON.stringify(authoredFile, null, 2) + '\n', 'utf8');
+			let document: vscode.TextDocument | undefined;
+			let queryEditor: QueryEditorProvider | undefined;
+			let receiveHandler: ((message: any) => unknown) | undefined;
+			let nativeMessageHandler: ((message: any) => void | PromiseLike<void>) | undefined;
+			let gateway: MainWebviewStartupGateway<unknown> | undefined;
+			const runtimeId = `native-recovery-runtime-${outcome}`;
+			const dispatcherProbes: string[] = [];
+			const admittedRequestIds: Array<string | undefined> = [];
+			let documentRecoveryProbeId: string | undefined;
+			let runtimeProjection: any;
+			let snapshotProjection: any;
+			let documentDeliveryAvailable = false;
+			let holdSettlement = false;
+			let settlementHeld = false;
+			let releaseSettlement!: () => void;
+			const settlementGate = new Promise<void>(resolve => { releaseSettlement = resolve; });
+			const projections: any[] = [];
+			const requests: Promise<unknown>[] = [];
+			const disposeHandlers: Array<() => void> = [];
+			const subscriptions: vscode.Disposable[] = [];
+			let snapshotRequests = 0;
+			let revealCount = 0;
+			const readRecovery = outcome === 'issued challenge' || outcome === 'regular read';
+			const requestDocument = (requestId?: string) => {
+				const handler = outcome === 'pending settlement' && requestId !== undefined
+					? nativeMessageHandler! : receiveHandler!;
+				const request = Promise.resolve(handler({ type: 'requestDocument', requestId }));
+				requests.push(request);
+				return request;
+			};
+			const acknowledge = (projection: any, applied = true) => {
+				if (applied && documentDeliveryAvailable && projection === projections.at(-1)) runtimeProjection = projection;
+				return Promise.resolve(receiveHandler!({
+					protocolVersion: projection.protocolVersion, channel: projection.channel,
+					viewSessionId: projection.viewSessionId, type: 'documentReloadResult',
+					requestId: projection.reloadRequestId, applied, editRevision: 0,
+				}));
+			};
+
+			try {
+				fs.writeFileSync(filePath, authoredBytes);
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async function (
+					this: QueryEditorProvider, panel: vscode.WebviewPanel,
+				) {
+					queryEditor = this;
+					(this as any).panel = panel;
+					(this as any)._panelDisposed = false;
+				};
+				MainWebviewStartupGateway.prototype.setInboundHandler = function (handler) {
+					gateway = this;
+					nativeMessageHandler = message => {
+						if (message?.type === 'requestDocument') admittedRequestIds.push(message.requestId);
+						return handler(message);
+					};
+					return originalSetInbound.call(this, nativeMessageHandler);
+				};
+				(KqlxEditorProvider as any).prototype.readProjectionSourceTextForDocument = async function (
+					this: KqlxEditorProvider, sourceDocument: vscode.TextDocument, isSessionFile: boolean,
+				) {
+					const text = await originalRead.call(this, sourceDocument, isSessionFile);
+					if (sourceDocument === document && holdSettlement) {
+						holdSettlement = false;
+						settlementHeld = true;
+						await settlementGate;
+					}
+					return text;
+				};
+				const provider = new (KqlxEditorProvider as any)(
+					{
+						subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				) as KqlxEditorProvider;
+				document = await vscode.workspace.openTextDocument(uri);
+				const originalVersion = document.version;
+				assert.strictEqual(liveDocuments.register(document), false, 'recovery must use a real native TextDocument');
+				const panel = {
+					visible: false, active: false,
+					reveal: () => { revealCount++; },
+					webview: {
+						options: {}, postMessage: async (message: any) => {
+							if (message?.type === 'mainWebviewDispatcherProbe') {
+								dispatcherProbes.push(message.probeId);
+								if (!runtimeProjection && documentRecoveryProbeId !== message.probeId) {
+									documentRecoveryProbeId = message.probeId;
+									void requestDocument(`dispatcher-document-${message.probeId}`);
+								}
+								await Promise.resolve(receiveHandler!({ type: 'mainWebviewDispatcherReady', runtimeId, probeId: message.probeId }));
+							}
+							if (message?.type === 'documentData') {
+								projections.push(message);
+								if (outcome === 'pending settlement' && projections.length === 3) holdSettlement = true;
+								return documentDeliveryAvailable;
+							}
+							if (message?.type === 'requestToolState') {
+								snapshotRequests++;
+								snapshotProjection = runtimeProjection;
+								assert.ok(snapshotProjection, 'a snapshot must come from an applied runtime projection');
+								const response = createToolStateResponseMessage(message.requestId, snapshotProjection.state.sections);
+								assert.ok(response.ok, 'the runtime must emit a canonical typed tool-state response');
+								await Promise.resolve(receiveHandler!(response.value));
+							}
+							return true;
+						},
+						onDidReceiveMessage: (handler: any) => {
+							receiveHandler = wrapDocumentViewTestReceiver(handler, () => projections.at(-1));
+							return { dispose() {} };
+						},
+					},
+					onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+				} as any;
+				const assertSourceUnchanged = () => {
+					assert.deepStrictEqual(fs.readFileSync(filePath), authoredBytes);
+					assert.strictEqual(document!.getText(), authoredBytes.toString('utf8'));
+					assert.deepStrictEqual(JSON.parse(document!.getText()), authoredFile);
+					assert.strictEqual(document!.version, originalVersion);
+					assert.strictEqual(document!.isDirty, false);
+					for (const projection of projections) {
+						assert.strictEqual(projection.state.sections[0].query, 'print Canary=10');
+						assert.strictEqual(projection.state.sections[1].text, authoredFile.state.sections[1].text);
+					}
+				};
+
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				await Promise.resolve(receiveHandler!({ type: 'mainWebviewDispatcherReady', runtimeId }));
+				const initialRequest = requestDocument();
+				if (outcome === 'pending settlement') {
+					await waitForCondition(() => settlementHeld, 'the old failed run must be held at its settlement read', 1_000);
+				} else await initialRequest;
+				assert.strictEqual(projections.length, 3, 'initial delivery failure must exhaust exactly three attempts');
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+				assertSourceUnchanged();
+
+				const beforeUnissuedRequests = admittedRequestIds.length;
+				for (let repeat = 0; repeat < 2; repeat++) {
+					await Promise.resolve(receiveHandler!({ type: 'requestDocument', requestId: 'dispatcher-document-unissued-recovery' }));
+				}
+				assert.strictEqual(admittedRequestIds.length, beforeUnissuedRequests, 'unissued prefix-only requests must be dropped before provider effects');
+				assert.strictEqual(projections.length, 3, 'unissued requests must not rearm native recovery');
+				assertSourceUnchanged();
+
+				if (outcome === 'bounded correlations') {
+					for (let requestIndex = 0; requestIndex < 64; requestIndex++) {
+						await requestDocument(`native-bounded-${requestIndex}`);
+						assert.strictEqual(projections.length, 3 + (requestIndex + 1) * 3,
+							'each admitted fresh correlation must have only its own three-attempt budget');
+					}
+					documentDeliveryAvailable = true;
+					await requestDocument('native-bounded-overflow');
+					await requestDocument('native-bounded-0');
+					await requestDocument();
+					assert.strictEqual(projections.length, 195, 'the bounded ledger must neither evict tombstones nor admit overflow');
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+					assertSourceUnchanged();
+					return;
+				}
+
+				if (outcome === 'failed request deduplication') {
+					const failedRequestId = 'native-failed-recovery';
+					await requestDocument(failedRequestId);
+					assert.strictEqual(projections.length, 6, 'a fresh failed request must get exactly three deliveries');
+					assert.ok(projections.slice(3).every(projection => projection.requestId === failedRequestId));
+					await requestDocument(failedRequestId);
+					await requestDocument();
+					assert.strictEqual(projections.length, 6, 'a duplicate or automatic request must never rearm exhausted recovery');
+					await acknowledge(projections.at(-1));
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+					assertSourceUnchanged();
+				}
+
+				documentDeliveryAvailable = true;
+				let requestId = `native-recovery-${outcome}`;
+				const beforeRecovery = projections.length;
+				if (outcome === 'regular read') {
+					assert.strictEqual(gateway!.isDispatcherReady, true,
+						'ordinary recovery must start with cached READY after failed projection hydration');
+					assert.strictEqual(panel.active, false);
+					assert.strictEqual(panel.visible, false);
+				}
+				const recovery = readRecovery
+					? queryEditor!.requestSectionsFromWebview() : requestDocument(requestId);
+				if (readRecovery) requests.push(recovery);
+				let recoverySettled = false;
+				void recovery.then(() => { recoverySettled = true; });
+				if (outcome === 'pending settlement') {
+					await new Promise<void>(resolve => setImmediate(resolve));
+					assert.strictEqual(projections.length, beforeRecovery, 'fresh recovery must coalesce until the old run settles');
+					assert.strictEqual(recoverySettled, false, 'fresh recovery must not settle with the old failed run');
+					releaseSettlement();
+				}
+				await waitForCondition(() => projections.length === beforeRecovery + 1,
+					'a fresh explicit request must recover the unchanged source after initial exhaustion', 1_000);
+				const recoveredProjection = projections.at(-1);
+				if (readRecovery) {
+					assert.strictEqual(dispatcherProbes.length, 1, 'read preflight must issue one actual dispatcher challenge');
+					requestId = `dispatcher-document-${dispatcherProbes[0]}`;
+					const beforeReplay = admittedRequestIds.length;
+					await Promise.resolve(receiveHandler!({ type: 'requestDocument', requestId: `${requestId}-stale` }));
+					await Promise.resolve(receiveHandler!({ type: 'requestDocument', requestId }));
+					assert.strictEqual(admittedRequestIds.length, beforeReplay, 'mismatched and repeated issued challenges must not reach the provider');
+					assert.strictEqual(admittedRequestIds.filter(id => id === requestId).length, 1);
+				}
+				assert.strictEqual(recoveredProjection.requestId, requestId, 'recovery must carry the fresh runtime correlation');
+				assert.strictEqual(recoveredProjection.viewSessionId, projections[0].viewSessionId);
+				assert.ok(recoveredProjection.sourceGeneration > projections[0].sourceGeneration);
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false,
+					'delivery without the new acknowledgement must not restore readiness');
+				await acknowledge(projections[0]);
+				await acknowledge({ ...recoveredProjection, reloadRequestId: `${recoveredProjection.reloadRequestId}-stale` });
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false,
+					'an old or mismatched acknowledgement must not accept the fresh projection');
+				assertSourceUnchanged();
+				assert.strictEqual(snapshotRequests, 0, 'read preflight must not post a snapshot before the current projection acknowledgement');
+				await acknowledge(recoveredProjection);
+				await recovery;
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), true,
+					'only the exact accepted fresh projection must restore readiness');
+				const sections = readRecovery ? await recovery : await queryEditor!.requestSectionsFromWebview();
+				assert.strictEqual(snapshotRequests, 1, 'the real snapshot API must reach the recovered runtime');
+				assert.strictEqual(JSON.stringify(sections), JSON.stringify(recoveredProjection.state.sections));
+				assert.strictEqual(snapshotProjection, recoveredProjection, 'the snapshot must capture the exact current applied projection');
+				if (readRecovery) {
+					const beforeRetiredReplay = admittedRequestIds.length;
+					assert.ok(gateway);
+					assert.strictEqual(await gateway.beginDispatcherRevalidation(), true);
+					assert.strictEqual(dispatcherProbes.length, 2);
+					await Promise.resolve(receiveHandler!({ type: 'requestDocument', requestId }));
+					assert.strictEqual(admittedRequestIds.length, beforeRetiredReplay, 'an old episode challenge must be dropped before provider effects');
+					assert.strictEqual(projections.length, beforeRecovery + 1);
+					assert.strictEqual(snapshotRequests, 1);
+				}
+				assertSourceUnchanged();
+				assert.strictEqual(revealCount, 0, 'ordinary read recovery must not reveal or activate the hidden panel');
+			} finally {
+				releaseSettlement();
+				for (const dispose of disposeHandlers) dispose();
+				await Promise.allSettled(requests);
+				await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+				for (const subscription of subscriptions) subscription.dispose();
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+				(KqlxEditorProvider as any).prototype.readProjectionSourceTextForDocument = originalRead;
+				MainWebviewStartupGateway.prototype.setInboundHandler = originalSetInbound;
 				try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 			}
 		});
@@ -3812,8 +5965,8 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			const postDriftResult = posted.find(message => message?.type === 'markdownDocumentCommandResult'
 				&& message.commandId === 'post-drift-command');
 			const ownerBeforeExpiredAck = [...((provider as any).markdownDocuments.values())][0];
-			CompatSidecarSession.prototype.createReloadRequest = function () {
-				return originalCreateReloadRequest.call(this, 20);
+			CompatSidecarSession.prototype.createReloadRequest = function (_timeoutMs, options) {
+				return originalCreateReloadRequest.call(this, 20, options);
 			};
 			const driftRequestId = pendingReloadRequestId;
 			currentText = notebook('print expired candidate = 5', 'after source drift');
@@ -4895,6 +7048,213 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			fs.rmSync(tmpDir, { recursive: true, force: true });
 		}
 	});
+
+	for (const scenario of ['lease expiry', 'unleased expiry', 'unleased final snapshot failure', 'different committed bytes', 'source changed', 'disposal', 'lease expiry recovery (controlled callbacks)'] as const) {
+	test(`native commit join fails closed (${scenario})`, async function () {
+		this.timeout(15_000);
+		const recoveryCase = scenario === 'lease expiry recovery (controlled callbacks)';
+		const prototype = (QueryEditorProvider as any).prototype;
+		const originalInitialize = prototype.initializeWebviewPanel;
+		const originalSetLifecycle = prototype.setWorkbenchFileCloseLifecycle;
+		const originalWillSave = vscode.workspace.onWillSaveTextDocument;
+		const originalDidSave = vscode.workspace.onDidSaveTextDocument;
+		const originalSetTimeout = globalThis.setTimeout;
+		const originalClearTimeout = globalThis.clearTimeout;
+		const originalSingleton = Object.getOwnPropertyDescriptor(KustoWorkbenchToolOrchestrator, 'instance')!;
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-native-commit-bound-'));
+		const uri = vscode.Uri.file(path.join(root, 'probe.kqlx'));
+		const baseline = JSON.stringify({ kind: 'kqlx', version: 1, futureRoot: { keep: true }, state: { sections: [{
+			id: 'query_1', type: 'query', query: 'print Probe1=1', futureSection: 42,
+			resultJson: JSON.stringify({ columns: ['Probe1'], rows: [[1]] }),
+		}] } }, null, 2);
+		let currentText = baseline.replace('"futureSection": 42', '"futureSection": 43');
+		const document = {
+			uri, getText: () => currentText, eol: vscode.EndOfLine.LF,
+			positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: true,
+		} as any;
+		let receive: ((message: any) => unknown) | undefined;
+		let willSave: ((event: any) => void) | undefined;
+		let didSave: ((saved: vscode.TextDocument) => unknown) | undefined;
+		let lifecycle: { inspectDirty(): Promise<boolean>; save(): Promise<void> } | undefined;
+		let projection: any;
+		let captureTimers = false;
+		const timers: Array<{ handle: ReturnType<typeof setTimeout>; expire(): void; cleared: boolean }> = [];
+		const disposals: Array<() => void> = [];
+		let preparation: Promise<vscode.TextEdit[]> | undefined;
+		let inspection: Promise<{ value?: boolean; error?: unknown }> | undefined;
+		let siblingInspection: typeof inspection;
+		let recovery: ReturnType<KustoWorkbenchToolOrchestrator['saveWorkbenchFile']> | undefined;
+		let orchestrator: KustoWorkbenchToolOrchestrator | undefined;
+		let connectionToken: number | undefined;
+		let recoveryCommits = 0;
+		let completed = false;
+		try {
+			fs.writeFileSync(uri.fsPath, baseline);
+			prototype.initializeWebviewPanel = async () => undefined;
+			prototype.setWorkbenchFileCloseLifecycle = function (this: QueryEditorProvider, value: typeof lifecycle) {
+				lifecycle = value;
+				return originalSetLifecycle.call(this, value);
+			};
+			(vscode.workspace as any).onWillSaveTextDocument = (handler: typeof willSave) => { willSave = handler; return { dispose() {} }; };
+			(vscode.workspace as any).onDidSaveTextDocument = (handler: typeof didSave) => { didSave = handler; return { dispose() {} }; };
+			(globalThis as any).setTimeout = (callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+				const handle = originalSetTimeout(callback, delay, ...args);
+				if (captureTimers && delay === 5_000) timers.push({ handle, expire: () => callback(...args), cleared: false });
+				return handle;
+			};
+			(globalThis as any).clearTimeout = (handle: ReturnType<typeof setTimeout>) => {
+				const timer = timers.find(candidate => candidate.handle === handle);
+				if (timer) timer.cleared = true;
+				return originalClearTimeout(handle);
+			};
+			const context = {
+				subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+				globalState: { get: () => undefined, update: async () => undefined },
+				globalStorageUri: vscode.Uri.file(path.join(root, 'global')),
+			} as any;
+			const connections = connectionManagerStub();
+			const sqlWorkbench = sqlWorkbenchStub();
+			const provider = new (KqlxEditorProvider as any)(context,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connections, sqlWorkbench) as KqlxEditorProvider;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						if (message.type === 'documentData' && message.ok) projection = message;
+						if (message.reloadRequestId) {
+							await Promise.resolve(receive!({
+								type: 'documentReloadResult', requestId: message.reloadRequestId, applied: true, editRevision: 0,
+								markdownCommandBarrierSupported: !scenario.startsWith('unleased'),
+							}));
+						}
+						if (message.type === 'requestMarkdownCommandBarrier') {
+							await Promise.resolve(receive!({
+								type: 'markdownDocumentCommandBarrierResult', requestId: message.requestId,
+								sourceGeneration: message.sourceGeneration, documentRevision: 0, accepted: true,
+							}));
+						}
+						if (message.type === 'requestFinalPersist' && scenario !== 'unleased final snapshot failure') {
+							await Promise.resolve(receive!({ type: 'persistDocument', flushRequestId: message.requestId,
+								sourceGeneration: projection.sourceGeneration, state: JSON.parse(currentText).state }));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receive = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposals.push(handler); return { dispose() {} }; },
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receive!({ type: 'requestDocument' }));
+			if (recoveryCase) {
+				(KustoWorkbenchToolOrchestrator as any).instance = undefined;
+				orchestrator = KustoWorkbenchToolOrchestrator.getInstance(context, connections, () => sqlWorkbench.connectionManager, {} as any);
+				connectionToken = orchestrator.connect(() => true, async () => JSON.parse(currentText).state.sections,
+					async () => ({ schemas: [] }), uri.toString(), undefined, undefined, lifecycle);
+				document.save = async () => {
+					let retryPreparation: Promise<vscode.TextEdit[]> | undefined;
+					willSave!({ document, waitUntil: (work: Thenable<vscode.TextEdit[]>) => { retryPreparation = Promise.resolve(work); } });
+					const retryEdits = await retryPreparation!;
+					if (retryEdits.length) currentText = retryEdits[0].newText;
+					fs.writeFileSync(uri.fsPath, currentText);
+					document.isDirty = false;
+					recoveryCommits++;
+					await Promise.resolve(didSave!(document));
+					return true;
+				};
+			}
+			captureTimers = true;
+			willSave!({ document, waitUntil: (work: Thenable<vscode.TextEdit[]>) => { preparation = Promise.resolve(work); } });
+			const edits = await preparation!;
+			captureTimers = false;
+			if (edits.length) currentText = edits[0].newText;
+			const preparedText = currentText;
+			const activeTimers = timers.filter(timer => !timer.cleared);
+			assert.strictEqual(activeTimers.length, 1, 'Every prepared native Save must retain the existing five-second commit lease');
+			let settled = false;
+			inspection = lifecycle!.inspectDirty().then(value => { settled = true; return { value }; }, error => {
+				settled = true;
+				return { error };
+			});
+			if (recoveryCase) siblingInspection = lifecycle!.inspectDirty().then(value => ({ value }), error => ({ error }));
+			await new Promise<void>(resolve => setImmediate(resolve));
+			if (scenario !== 'unleased final snapshot failure') {
+				assert.strictEqual(settled, false, 'Preparation alone must not complete inspection without onDidSave');
+			}
+			let expectedDisk = baseline;
+			if (scenario === 'different committed bytes') {
+				currentText = JSON.stringify(JSON.parse(preparedText));
+				expectedDisk = currentText;
+				fs.writeFileSync(uri.fsPath, currentText);
+				document.isDirty = false;
+				await Promise.resolve(didSave!(document));
+			} else if (scenario === 'source changed') {
+				currentText = preparedText.replace('print Probe1=1', 'print UserDraft=2');
+				await Promise.resolve(receive!({ type: 'requestDocument' }));
+				await Promise.resolve(didSave!({ ...document, getText: () => preparedText }));
+			} else if (scenario === 'disposal') {
+				for (const dispose of disposals.splice(0)) dispose();
+			} else if (scenario.endsWith('expiry') || recoveryCase) {
+				activeTimers[0].expire();
+			}
+			if (recoveryCase) {
+				assert.strictEqual(fs.readFileSync(uri.fsPath, 'utf8'), baseline);
+				assert.strictEqual(document.isDirty, true);
+				recovery = orchestrator!.saveWorkbenchFile({ targetFileUri: uri.toString() });
+			}
+			const outcome = await inspection;
+			assert.ok(outcome.error instanceof Error, `${scenario}: inspection must reject, not silently retry native Save`);
+			assert.match(outcome.error.message, /native notebook Save|Save lifecycle/);
+			if (recoveryCase) {
+				const siblingOutcome = await siblingInspection!;
+				assert.ok(siblingOutcome.error instanceof Error, 'Every caller already joining the expired attempt must reject');
+				const result = await recovery!;
+				fs.writeFileSync(path.join(root, 'recovery.json'), JSON.stringify({ scenario, timing: 'controlled callbacks',
+					originalError: outcome.error.message, siblingError: siblingOutcome.error.message, result,
+					recoveryCommits, buffer: currentText, disk: fs.readFileSync(uri.fsPath, 'utf8'), dirty: document.isDirty }, null, 2));
+				console.log(JSON.stringify({ scenario, result, recoveryCommits }));
+				assert.strictEqual(result.success, true, 'A fresh public Save must not inherit an expired attempt failure');
+				assert.strictEqual(result.saved, true);
+				assert.strictEqual(recoveryCommits, 1);
+				assert.strictEqual(document.isDirty, false);
+				assert.strictEqual(currentText, preparedText);
+				assert.strictEqual(fs.readFileSync(uri.fsPath, 'utf8'), preparedText);
+				completed = true;
+				return;
+			}
+			assert.strictEqual(fs.readFileSync(uri.fsPath, 'utf8'), expectedDisk, 'Failed joining must not replace durable bytes');
+			assert.strictEqual(document.isDirty, scenario !== 'different committed bytes');
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].futureSection, 43);
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].resultJson, JSON.parse(baseline).state.sections[0].resultJson);
+			assert.deepStrictEqual(JSON.parse(currentText).futureRoot, { keep: true });
+			if (scenario === 'source changed') assert.strictEqual(JSON.parse(currentText).state.sections[0].query, 'print UserDraft=2');
+			fs.writeFileSync(path.join(root, 'outcome.json'), JSON.stringify({ scenario, error: outcome.error.message,
+				buffer: currentText, disk: expectedDisk, dirty: document.isDirty, leaseTimeoutMs: 5_000 }, null, 2));
+			completed = true;
+		} finally {
+			captureTimers = false;
+			for (const timer of timers.filter(candidate => !candidate.cleared)) timer.expire();
+			await preparation?.catch(() => undefined);
+			await Promise.resolve(didSave?.(document));
+			await inspection?.catch(() => undefined);
+			await siblingInspection?.catch(() => undefined);
+			await recovery?.catch(() => undefined);
+			if (connectionToken !== undefined) orchestrator?.disconnectIfOwner(connectionToken);
+			for (const dispose of disposals.splice(0)) dispose();
+			await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+			prototype.initializeWebviewPanel = originalInitialize;
+			prototype.setWorkbenchFileCloseLifecycle = originalSetLifecycle;
+			(vscode.workspace as any).onWillSaveTextDocument = originalWillSave;
+			(vscode.workspace as any).onDidSaveTextDocument = originalDidSave;
+			(globalThis as any).setTimeout = originalSetTimeout;
+			(globalThis as any).clearTimeout = originalClearTimeout;
+			if (recoveryCase) Object.defineProperty(KustoWorkbenchToolOrchestrator, 'instance', originalSingleton);
+			console.log(`Retained ${completed ? 'passed' : 'failed'} native commit bound fixture: ${root}`);
+		}
+	});
+	}
 
 	test('native Save fences a Markdown command still in transport', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
@@ -6565,6 +8925,1249 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			releaseCommand?.();
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
 			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	for (const boundary of ['positive claim controls', 'owner expiry', 'disposal', 'mutable source drift',
+		'source read throw', 'commit throw', 'arrival retry deadline'] as const) {
+		test(`native ACK reservation background owner handles ${boundary}`, async function () {
+			this.timeout(30_000);
+			const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+			const originalCommit = QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh;
+			const originalCreateReload = CompatSidecarSession.prototype.createReloadRequest;
+			const originalClaim = CompatSidecarSession.prototype.claimReloadRequest;
+			const originalClock = Object.getOwnPropertyDescriptor(performance, 'now');
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-native-ack-owner-'));
+			const filePath = path.join(tmpDir, 'owner.kqlx');
+			const uri = vscode.Uri.file(filePath);
+			const savedResult = JSON.stringify({ columns: ['Value'], rows: [[41]], rowCount: 1 });
+			const initialText = JSON.stringify({ kind: 'kqlx', version: 1, futureRoot: { retained: true }, state: { sections: [
+				{ id: 'query_ack_owner', type: 'query', query: 'print Synthetic=0', resultJson: savedResult },
+				{ id: 'markdown_ack_owner', type: 'markdown', text: 'Retained owner notes.' },
+			] } }, null, 2) + '\n';
+			let currentText = initialText;
+			let sourceVersion = 1;
+			let ownerClock = 1_000;
+			let sourceReadThrows = 0;
+			let sourceReadFaults = 0;
+			const document = {
+				uri,
+				getText: () => {
+					if (sourceReadThrows > 0) {
+						sourceReadThrows--;
+						sourceReadFaults++;
+						throw new Error('Controlled native source read failure.');
+					}
+					return currentText;
+				},
+				get version() { return sourceVersion; },
+				get isDirty() { return currentText !== initialText; },
+				isClosed: false, eol: vscode.EndOfLine.LF,
+				get lineCount() { return currentText.split('\n').length; },
+				lineAt: (line: number) => ({ text: currentText.split('\n')[line] ?? '' }),
+				positionAt: (offset: number) => {
+					const lines = currentText.slice(0, offset).split('\n');
+					return new vscode.Position(lines.length - 1, lines.at(-1)!.length);
+				},
+			} as vscode.TextDocument;
+			const posted: any[] = [];
+			const projections: any[] = [];
+			const claims: Array<{ requestId: string; accepted: boolean; claimedAt: number }> = [];
+			const reloads: Array<{ session: CompatSidecarSession; requestId: string; deadline: number; settled?: boolean }> = [];
+			const commitResults: boolean[] = [];
+			const commitFailures: unknown[] = [];
+			const disposeHandlers = new Set<() => void>();
+			const subscriptions: vscode.Disposable[] = [];
+			let receive: ((message: any) => unknown) | undefined;
+			let queryEditor: QueryEditorProvider | undefined;
+			let request: Promise<unknown> | undefined;
+			let ack: Promise<unknown> | undefined;
+			let requestSettled = false;
+			let ackSettled = false;
+			let admissionCalls = 0;
+			let commitFaults = 0;
+			let releaseAdmission!: () => void;
+			const admissionGate = new Promise<void>(resolve => { releaseAdmission = resolve; });
+			let panelDisposed = false;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						posted.push(message);
+						if (message.type === 'documentData') projections.push(message);
+						return true;
+					},
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+						receive = wrapDocumentViewTestReceiver(handler, () => projections.at(-1));
+						return new vscode.Disposable(() => undefined);
+					},
+				},
+				onDidDispose: (handler: () => void) => {
+					disposeHandlers.add(handler);
+					return new vscode.Disposable(() => { disposeHandlers.delete(handler); });
+				},
+				dispose: () => {
+					if (panelDisposed) return;
+					panelDisposed = true;
+					for (const handler of [...disposeHandlers]) handler();
+				},
+			} as unknown as vscode.WebviewPanel;
+			try {
+				fs.writeFileSync(filePath, initialText, 'utf8');
+				Object.defineProperty(performance, 'now', { configurable: true, value: () => ownerClock });
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async function (this: QueryEditorProvider) {
+					queryEditor = this;
+				};
+				CompatSidecarSession.prototype.createReloadRequest = function (timeoutMs, options) {
+					const reload = originalCreateReload.call(this, timeoutMs, options);
+					if (options) {
+						const observation = { session: this, requestId: reload.requestId, deadline: options.absoluteCommitDeadline,
+							settled: undefined as boolean | undefined };
+						reloads.push(observation);
+						void reload.result.then(value => { observation.settled = value; });
+					}
+					return reload;
+				};
+				CompatSidecarSession.prototype.claimReloadRequest = function (requestId) {
+					const accepted = originalClaim.call(this, requestId);
+					claims.push({ requestId, accepted, claimedAt: performance.now() });
+					return accepted;
+				};
+				QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh = async function (this: QueryEditorProvider,
+					...args: Parameters<QueryEditorProvider['commitKustoSourceAdmissionFresh']>) {
+					if (this !== queryEditor) return originalCommit.apply(this, args);
+					admissionCalls++;
+					await admissionGate;
+					try {
+					if (boundary === 'commit throw' && commitFaults === 0) {
+						commitFaults++;
+						throw new Error('Controlled native canonical commit failure.');
+					}
+					const accepted = await originalCommit.apply(this, args);
+					commitResults.push(accepted);
+					return accepted;
+					} catch (error) {
+						commitFailures.push(error);
+						throw error;
+					}
+				};
+				const provider = new (KqlxEditorProvider as any)(
+					{
+						subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+						extensionMode: vscode.ExtensionMode.Test,
+					} as any,
+					vscode.Uri.file(path.resolve(__dirname, '../../..')), connectionManagerStub(), sqlWorkbenchStub(),
+				) as KqlxEditorProvider;
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				assert.ok(receive);
+				request = Promise.resolve(receive({ type: 'requestDocument', requestId: 'native-background-owner' }))
+					.finally(() => { requestSettled = true; });
+				await waitForCondition(() => projections.length === 1, 'the actual background provider must deliver initial A', 750);
+				assert.strictEqual(reloads[0].deadline, 31_000);
+				let projection = projections[0];
+				if (boundary === 'arrival retry deadline') {
+					ownerClock = 20_000;
+					assert.strictEqual(reloads[0].session.hasPendingReloadRequest(reloads[0].requestId), false);
+					await waitForCondition(() => projections.length === 2, 'an expired arrival must spend one existing retry', 750);
+					assert.strictEqual(reloads[0].settled, false);
+					assert.strictEqual(reloads[1].deadline, 31_000, 'a retry must retain the original background operation deadline');
+					projection = projections[1];
+				}
+				const acknowledgement = {
+					protocolVersion: projection.protocolVersion, channel: projection.channel, viewSessionId: projection.viewSessionId,
+					type: 'documentReloadResult', requestId: projection.reloadRequestId, applied: true, editRevision: 0,
+				};
+				const currentReload = reloads.at(-1)!;
+				let getterCalls = 0;
+				if (boundary === 'positive claim controls') {
+					await Promise.resolve(receive({ ...acknowledgement, viewSessionId: 'wrong-native-session' }));
+					await Promise.resolve(receive({ ...acknowledgement, applied: 'true' }));
+					await Promise.resolve(receive({ ...acknowledgement, requestId: 'unknown-native-request' }));
+					const accessor = { ...acknowledgement };
+					Object.defineProperty(accessor, 'applied', { enumerable: true, get: () => { getterCalls++; return true; } });
+					await Promise.resolve(receive(accessor));
+					assert.strictEqual(getterCalls, 0);
+					assert.strictEqual(claims.length, 0, 'malformed, wrong-session, and unknown ACKs must not reach reservation');
+					assert.strictEqual(currentReload.settled, undefined);
+					assert.strictEqual(admissionCalls, 0);
+				}
+				ownerClock += 97;
+				ack = Promise.resolve(receive(acknowledgement)).finally(() => { ackSettled = true; });
+				await waitForCondition(() => admissionCalls === 1, 'the canonical ACK must enter the actual held commit', 750);
+				assert.strictEqual(claims.filter(claim => claim.accepted).length, 1);
+				assert.strictEqual(currentReload.settled, undefined);
+				if (boundary === 'positive claim controls') {
+					await Promise.resolve(receive(acknowledgement));
+					await Promise.resolve(receive({ ...acknowledgement, applied: false, editRevision: 99 }));
+					assert.strictEqual(claims.filter(claim => claim.accepted).length, 1);
+					assert.strictEqual(admissionCalls, 1);
+					assert.strictEqual(currentReload.settled, undefined, 'duplicate positive and later false ACKs cannot consume a claimed positive');
+					assert.strictEqual(currentReload.session.currentEditRevision, 0);
+				}
+				if (boundary === 'owner expiry') {
+					ownerClock = 31_000;
+					assert.strictEqual(currentReload.session.hasPendingReloadRequest(currentReload.requestId), false,
+						'the owner operation must expire without a public readiness caller or timer flush');
+					await request;
+					assert.strictEqual(ackSettled, false, 'logical expiry must not finish the held physical commit');
+					assert.strictEqual(requestSettled, true);
+					assert.strictEqual(currentReload.settled, false);
+					assert.deepStrictEqual(commitResults, []);
+				} else if (boundary === 'disposal') {
+					panel.dispose();
+					await request;
+					assert.strictEqual(currentReload.settled, false);
+					assert.strictEqual(ackSettled, false);
+				} else if (boundary === 'mutable source drift') {
+					currentText = initialText.replace('print Synthetic=0', 'print Synthetic=1');
+					sourceVersion++;
+					ownerClock = 20_000;
+					assert.notStrictEqual(document.getText(), initialText);
+					assert.strictEqual(document.version, 2);
+					assert.strictEqual(document.isDirty, true);
+				} else if (boundary === 'source read throw') sourceReadThrows = 1;
+				releaseAdmission();
+				await ack;
+				if (boundary === 'mutable source drift') {
+					await waitForCondition(() => projections.length === 2, 'a genuine buffer drift may use one current-source follow-up', 750);
+					assert.strictEqual(reloads[1].deadline, 31_000, 'source follow-up must not reset the native owner deadline');
+					assert.strictEqual(projections[1].state.sections[0].query, 'print Synthetic=1');
+					assert.strictEqual(projections[1].state.sections[0].resultJson, savedResult);
+					ownerClock = 31_000;
+					assert.strictEqual(reloads[1].session.hasPendingReloadRequest(reloads[1].requestId), false);
+				}
+				await request;
+				assert.strictEqual(requestSettled, true);
+				assert.strictEqual(currentReload.session.hasPendingReloadRequest(currentReload.requestId), false);
+				const accepted = boundary === 'positive claim controls' || boundary === 'arrival retry deadline';
+				assert.strictEqual(currentReload.settled, accepted);
+				const exception = boundary === 'source read throw' || boundary === 'commit throw';
+				assert.deepStrictEqual(commitResults, exception ? [] : [accepted]);
+				assert.deepStrictEqual(commitFailures.map(error => (error as Error).message), exception
+					? [boundary === 'source read throw' ? 'Controlled native source read failure.' : 'Controlled native canonical commit failure.']
+					: []);
+				assert.strictEqual(sourceReadFaults, boundary === 'source read throw' ? 1 : 0);
+				assert.strictEqual(commitFaults, boundary === 'commit throw' ? 1 : 0);
+				assert.strictEqual(projections.length, boundary === 'mutable source drift' || boundary === 'arrival retry deadline' ? 2 : 1,
+					'only a valid current-source transition or arrival retry may start another native projection');
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), accepted);
+				const acceptedClaims = claims.filter(claim => claim.accepted).length;
+				await Promise.resolve(receive(acknowledgement));
+				assert.strictEqual(claims.filter(claim => claim.accepted).length, acceptedClaims, 'late ACK must be inert after exact waiter retirement');
+				assert.strictEqual(admissionCalls, 1);
+				assert.strictEqual(posted.filter(message => message.type === 'requestToolState').length, 0,
+					'background owner validation must have no public snapshot observer');
+				assert.strictEqual(document.getText(), currentText);
+				assert.strictEqual(document.version, boundary === 'mutable source drift' ? 2 : 1);
+				assert.strictEqual(document.isDirty, boundary === 'mutable source drift');
+				assert.strictEqual(JSON.parse(document.getText()).state.sections[0].resultJson, savedResult);
+				assert.strictEqual(fs.readFileSync(filePath, 'utf8'), initialText);
+				console.log('[tests/integration/kqlxMarkdownOwnership.test.ts:native ACK owner]', JSON.stringify({
+					boundary, deadline: reloads[0].deadline, claims, admissionCalls, commitResults,
+					reloads: reloads.map(reload => ({ requestId: reload.requestId, deadline: reload.deadline, settled: reload.settled })),
+					projections: projections.length, documentVersion: document.version, dirty: document.isDirty,
+				}));
+			} finally {
+				sourceReadThrows = 0;
+				ownerClock = Math.max(ownerClock, ...reloads.map(reload => reload.deadline));
+				for (const reload of reloads) reload.session.hasPendingReloadRequest(reload.requestId);
+				releaseAdmission();
+				panel.dispose();
+				await ack;
+				await request;
+				await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+				for (const subscription of subscriptions) subscription.dispose();
+				CompatSidecarSession.prototype.createReloadRequest = originalCreateReload;
+				CompatSidecarSession.prototype.claimReloadRequest = originalClaim;
+				QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh = originalCommit;
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+				if (originalClock) Object.defineProperty(performance, 'now', originalClock);
+				else delete (performance as unknown as { now?: () => number }).now;
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+	}
+
+	test('cold readiness starts the native reload lease only after a 5200 ms dispatcher ACK', async function () {
+		this.timeout(15_000);
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalSetInbound = MainWebviewStartupGateway.prototype.setInboundHandler;
+		const originalCreateReload = CompatSidecarSession.prototype.createReloadRequest;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-cold-start-native-'));
+		const filePath = path.join(tmpDir, 'cold.kqlx');
+		const uri = vscode.Uri.file(filePath);
+		const initialText = JSON.stringify({
+			kind: 'kqlx', version: 1, futureRoot: { retained: true }, state: { sections: [
+				{ id: 'query_cold', type: 'query', query: 'print Synthetic=0' },
+			] },
+		}, null, 2) + '\n';
+		const posted: any[] = [];
+		const reloadLeases: Array<{ requestId: string; startedAt: number; timeoutMs: number }> = [];
+		const disposeHandlers: Array<() => void> = [];
+		const subscriptions: vscode.Disposable[] = [];
+		let gateway: MainWebviewStartupGateway<unknown> | undefined;
+		let receive: ((message: any) => unknown) | undefined;
+		let projection: any;
+		let document: vscode.TextDocument | undefined;
+		let request: Promise<unknown> | undefined;
+		let adapterState = JSON.parse(initialText).state;
+		try {
+			fs.writeFileSync(filePath, initialText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			MainWebviewStartupGateway.prototype.setInboundHandler = function (handler) {
+				gateway = this;
+				return originalSetInbound.call(this, handler);
+			};
+			CompatSidecarSession.prototype.createReloadRequest = function (timeoutMs, options) {
+				const reload = originalCreateReload.call(this, timeoutMs, options);
+				reloadLeases.push({ requestId: reload.requestId, startedAt: Date.now(), timeoutMs: timeoutMs ?? 5_000 });
+				return reload;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+					extensionMode: vscode.ExtensionMode.Test,
+				} as any,
+				vscode.Uri.file(path.resolve(__dirname, '../../..')), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			document = await vscode.workspace.openTextDocument(uri);
+			assert.strictEqual(liveDocuments.register(document), false);
+			const initialVersion = document.version;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') projection = message;
+						if (message?.reloadRequestId) {
+							await Promise.resolve(receive?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: 0,
+							}));
+						}
+						if (message?.type === 'requestFinalPersist') {
+							await Promise.resolve(receive?.({
+								type: 'persistDocument', flushRequestId: message.requestId,
+								sourceGeneration: projection.sourceGeneration, editRevision: 1,
+								state: adapterState,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receive = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+			deferMainWebviewReadyForTest(panel);
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			assert.ok(gateway);
+			assert.ok(receive);
+			const readiness = gateway.beginDispatcherRevalidation();
+			const probe = posted.at(-1);
+			assert.strictEqual(probe?.type, 'mainWebviewDispatcherProbe');
+			request = Promise.resolve(receive({ type: 'requestDocument' }));
+			await new Promise<void>(resolve => setTimeout(resolve, 5_200));
+			assert.strictEqual(reloadLeases.length, 0,
+				'the native five-second reload lease must not run while cold delivery is unavailable');
+			assert.strictEqual(projection, undefined);
+			const readyAt = Date.now();
+			await Promise.resolve(receive({
+				type: 'mainWebviewDispatcherReady', runtimeId: 'native-cold-runtime', probeId: probe.probeId,
+			}));
+			assert.strictEqual(await readiness, true);
+			await request;
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), true);
+			const acceptedProjection = projection as {
+				reloadRequestId: string; sourceGeneration: number; state: { sections: Array<{ query: string }> };
+			} | undefined;
+			assert.ok(acceptedProjection);
+			assert.strictEqual(reloadLeases.length, 1, 'one cold projection must not become a replayed reload');
+			assert.ok(reloadLeases[0].startedAt >= readyAt);
+			assert.strictEqual(reloadLeases[0].timeoutMs, 5_000);
+			assert.strictEqual(acceptedProjection.reloadRequestId, reloadLeases[0].requestId);
+			assert.strictEqual(posted.filter(message => message?.type === 'documentData').length, 1);
+			assert.strictEqual(acceptedProjection.state.sections[0].query, 'print Synthetic=0');
+			assert.strictEqual(document.version, initialVersion);
+			assert.strictEqual(document.isDirty, false);
+			assert.strictEqual(document.getText(), initialText);
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), initialText);
+
+			adapterState = JSON.parse(initialText).state;
+			adapterState.sections[0].query = 'print Synthetic=1';
+			await Promise.resolve(receive({
+				type: 'persistDocument', snapshotId: 'kw-cold-start-authored', editRevision: 1,
+				sourceGeneration: acceptedProjection.sourceGeneration, state: adapterState,
+			}));
+			assert.ok(posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'kw-cold-start-authored'));
+			assert.strictEqual(JSON.parse(document.getText()).state.sections[0].query, 'print Synthetic=1');
+			assert.strictEqual(document.isDirty, true);
+			await document.save();
+			assert.strictEqual(document.isDirty, false);
+			const saved = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+			assert.strictEqual(saved.state.sections[0].query, 'print Synthetic=1');
+			assert.deepStrictEqual(saved.futureRoot, { retained: true });
+		} finally {
+			for (const dispose of disposeHandlers.splice(0)) dispose();
+			await request?.catch(() => undefined);
+			await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+			for (const subscription of subscriptions) subscription.dispose();
+			MainWebviewStartupGateway.prototype.setInboundHandler = originalSetInbound;
+			CompatSidecarSession.prototype.createReloadRequest = originalCreateReload;
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			if (document?.isDirty) await document.save();
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('queued native projection starts the reload lease only at physical delivery', async function () {
+		this.timeout(15_000);
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalSetInbound = MainWebviewStartupGateway.prototype.setInboundHandler;
+		const originalCreateReload = CompatSidecarSession.prototype.createReloadRequest;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-queued-native-projection-'));
+		const filePath = path.join(tmpDir, 'queued.kqlx');
+		const uri = vscode.Uri.file(filePath);
+		const initialText = JSON.stringify({
+			futureRoot: { retained: true }, kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_queued', type: 'query', query: 'print Synthetic=0' },
+			] },
+		}, null, 2) + '\n';
+		const authoredText = initialText.replace('print Synthetic=0', 'print Synthetic=1');
+		const posted: any[] = [];
+		const reloadLeases: Array<{ requestId: string; startedAt: number; timeoutMs: number }> = [];
+		const disposeHandlers: Array<() => void> = [];
+		const subscriptions: vscode.Disposable[] = [];
+		let markTransportStarted!: () => void;
+		let releaseTransport!: () => void;
+		const transportStarted = new Promise<void>(resolve => { markTransportStarted = resolve; });
+		const transportGate = new Promise<void>(resolve => { releaseTransport = resolve; });
+		let gateway: MainWebviewStartupGateway<unknown> | undefined;
+		let receive: ((message: any) => unknown) | undefined;
+		let projection: any;
+		let document: vscode.TextDocument | undefined;
+		let readiness: Promise<unknown> | undefined;
+		let request: Promise<unknown> | undefined;
+		let adapterState = JSON.parse(initialText).state;
+		try {
+			fs.writeFileSync(filePath, initialText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			MainWebviewStartupGateway.prototype.setInboundHandler = function (handler) {
+				gateway = this;
+				return originalSetInbound.call(this, handler);
+			};
+			CompatSidecarSession.prototype.createReloadRequest = function (timeoutMs, options) {
+				const reload = originalCreateReload.call(this, timeoutMs, options);
+				reloadLeases.push({ requestId: reload.requestId, startedAt: Date.now(), timeoutMs: timeoutMs ?? 5_000 });
+				return reload;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+					extensionMode: vscode.ExtensionMode.Test,
+				} as any,
+				vscode.Uri.file(path.resolve(__dirname, '../../..')), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			document = await vscode.workspace.openTextDocument(uri);
+			assert.strictEqual(liveDocuments.register(document), false);
+			const initialVersion = document.version;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'persistenceMode') {
+							markTransportStarted();
+							await transportGate;
+						}
+						if (message?.type === 'documentData') projection = message;
+						if (message?.reloadRequestId) {
+							await Promise.resolve(receive?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: 0,
+							}));
+						}
+						if (message?.type === 'requestFinalPersist') {
+							await Promise.resolve(receive?.({
+								type: 'persistDocument', flushRequestId: message.requestId,
+								sourceGeneration: projection.sourceGeneration, editRevision: 1, state: adapterState,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receive = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+			deferMainWebviewReadyForTest(panel);
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			assert.ok(gateway);
+			assert.ok(receive);
+			assert.strictEqual(gateway.isDispatcherReady, false);
+			readiness = Promise.resolve(receive({
+				type: 'mainWebviewDispatcherReady', runtimeId: 'native-queued-runtime',
+			}));
+			await transportStarted;
+			request = Promise.resolve(receive({ type: 'requestDocument' }));
+			await new Promise<void>(resolve => setTimeout(resolve, 5_200));
+			assert.strictEqual(posted.filter(message => message?.type === 'documentData').length, 0);
+			assert.strictEqual(reloadLeases.length, 0,
+				'the native reload lease must not run behind a blocked physical transport head');
+			const releasedAt = Date.now();
+			releaseTransport();
+			await readiness;
+			await request;
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), true);
+			assert.strictEqual(reloadLeases.length, 1);
+			assert.ok(reloadLeases[0].startedAt >= releasedAt);
+			assert.strictEqual(reloadLeases[0].timeoutMs, 5_000);
+			assert.strictEqual(projection.reloadRequestId, reloadLeases[0].requestId);
+			assert.strictEqual(posted.filter(message => message?.type === 'documentData').length, 1);
+			assert.strictEqual(document.version, initialVersion);
+			assert.strictEqual(document.isDirty, false);
+			assert.strictEqual(document.getText(), initialText);
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), initialText);
+
+			adapterState = JSON.parse(initialText).state;
+			adapterState.sections[0].query = 'print Synthetic=1';
+			await Promise.resolve(receive({
+				type: 'persistDocument', snapshotId: 'queued-native-authored', editRevision: 1,
+				sourceGeneration: projection.sourceGeneration, state: adapterState,
+			}));
+			assert.ok(posted.some(message => message?.type === 'persistDocumentAck'
+				&& message.snapshotId === 'queued-native-authored'));
+			assert.strictEqual(document.getText(), authoredText);
+			assert.strictEqual(document.isDirty, true);
+			await document.save();
+			assert.strictEqual(document.isDirty, false);
+			assert.strictEqual(document.getText(), authoredText);
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), authoredText);
+		} finally {
+			releaseTransport();
+			for (const dispose of disposeHandlers.splice(0)) dispose();
+			await readiness?.catch(() => undefined);
+			await request?.catch(() => undefined);
+			await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+			for (const subscription of subscriptions) subscription.dispose();
+			MainWebviewStartupGateway.prototype.setInboundHandler = originalSetInbound;
+			CompatSidecarSession.prototype.createReloadRequest = originalCreateReload;
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			if (document?.isDirty) await document.save();
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	for (const transition of ['source bytes', 'source version ABA', 'malformed source', 'unsafe linked query'] as const) {
+		test(`queued native projection fences ${transition} at physical delivery`, async function () {
+			this.timeout(10_000);
+			const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+			const originalPostProjection = MainWebviewStartupGateway.prototype.postDocumentProjection;
+			const originalCreateReload = CompatSidecarSession.prototype.createReloadRequest;
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-queued-native-fence-'));
+			const filePath = path.join(tmpDir, 'queued.kqlx');
+			const uri = vscode.Uri.file(filePath);
+			const initialText = JSON.stringify({
+				kind: 'kqlx', version: 1, state: { sections: [
+					{ id: 'query_queued', type: 'query', query: 'print Synthetic=0' },
+				] },
+			}, null, 2) + '\n';
+			const newerText = initialText.replace('print Synthetic=0', 'print Synthetic=1');
+			const unsafeText = JSON.stringify({
+				kind: 'kqlx', version: 1, state: { sections: [
+					{ id: 'query_queued', type: 'query', query: '', linkedQueryPath: 'queued.kqlx' },
+				] },
+			}, null, 2) + '\n';
+			const posted: any[] = [];
+			const preparations: number[] = [];
+			const reloadLeases: Array<{ requestId: string; startedAt: number; timeoutMs: number }> = [];
+			const disposeHandlers: Array<() => void> = [];
+			const subscriptions: vscode.Disposable[] = [];
+			let markTransportStarted!: () => void;
+			let releaseTransport!: () => void;
+			let markProjectionQueued!: () => void;
+			const transportStarted = new Promise<void>(resolve => { markTransportStarted = resolve; });
+			const transportGate = new Promise<void>(resolve => { releaseTransport = resolve; });
+			const projectionQueued = new Promise<void>(resolve => { markProjectionQueued = resolve; });
+			let receive: ((message: any) => unknown) | undefined;
+			let projection: any;
+			let document: vscode.TextDocument | undefined;
+			let readiness: Promise<unknown> | undefined;
+			let request: Promise<unknown> | undefined;
+			try {
+				fs.writeFileSync(filePath, initialText, 'utf8');
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+				MainWebviewStartupGateway.prototype.postDocumentProjection = function (options) {
+					const index = preparations.push(0) - 1;
+					markProjectionQueued();
+					return originalPostProjection.call(this, {
+						preflight: options.preflight,
+						prepare: () => { preparations[index]++; return options.prepare(); },
+					});
+				};
+				CompatSidecarSession.prototype.createReloadRequest = function (timeoutMs, options) {
+					const reload = originalCreateReload.call(this, timeoutMs, options);
+					reloadLeases.push({ requestId: reload.requestId, startedAt: Date.now(), timeoutMs: timeoutMs ?? 5_000 });
+					return reload;
+				};
+				const provider = new (KqlxEditorProvider as any)(
+					{
+						subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+						extensionMode: vscode.ExtensionMode.Test,
+					} as any,
+					vscode.Uri.file(path.resolve(__dirname, '../../..')), connectionManagerStub(), sqlWorkbenchStub(),
+				) as KqlxEditorProvider;
+				document = await vscode.workspace.openTextDocument(uri);
+				assert.strictEqual(liveDocuments.register(document), false);
+				const initialVersion = document.version;
+				const panel = {
+					webview: {
+						options: {},
+						postMessage: async (message: any) => {
+							posted.push(message);
+							if (message?.type === 'persistenceMode') {
+								markTransportStarted();
+								await transportGate;
+							}
+							if (message?.type === 'documentData') projection = message;
+							if (message?.reloadRequestId) await Promise.resolve(receive?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: 0,
+							}));
+							return true;
+						},
+						onDidReceiveMessage: (handler: any) => {
+							receive = wrapDocumentViewTestReceiver(handler, () => projection);
+							return { dispose() {} };
+						},
+					},
+					onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+				} as any;
+				deferMainWebviewReadyForTest(panel);
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				assert.ok(receive);
+				readiness = Promise.resolve(receive({ type: 'mainWebviewDispatcherReady', runtimeId: 'native-queued-fence-runtime' }));
+				await transportStarted;
+				const replaceSource = async (text: string) => {
+					const edit = new vscode.WorkspaceEdit();
+					edit.replace(uri, new vscode.Range(document!.positionAt(0), document!.positionAt(document!.getText().length)), text);
+					assert.strictEqual(await vscode.workspace.applyEdit(edit), true);
+				};
+				const errorBranch = transition === 'malformed source' || transition === 'unsafe linked query';
+				if (errorBranch) await replaceSource(transition === 'malformed source' ? '{ malformed' : unsafeText);
+				request = Promise.resolve(receive({ type: 'requestDocument' }));
+				await projectionQueued;
+				if (!errorBranch) {
+					await replaceSource(newerText);
+					if (transition === 'source version ABA') await replaceSource(initialText);
+				}
+				const sourceText = document.getText();
+				const sourceVersion = document.version;
+				assert.ok(sourceVersion > initialVersion);
+				assert.strictEqual(preparations[0], 0);
+				assert.strictEqual(reloadLeases.length, 0);
+				assert.strictEqual(posted.some(message => message?.type === 'documentData'), false);
+				const releasedAt = Date.now();
+				releaseTransport();
+				await readiness;
+				await request;
+				assert.strictEqual(preparations[0], errorBranch ? 1 : 0,
+					'a stale queued native candidate must never invoke its projection factory, including same-byte ABA');
+				if (!projection) await Promise.resolve(receive({ type: 'requestDocument' }));
+				assert.strictEqual(posted.filter(message => message?.type === 'documentData').length, 1);
+				assert.strictEqual(reloadLeases.length, 1);
+				assert.strictEqual(reloadLeases[0].timeoutMs, 5_000);
+				assert.ok(reloadLeases[0].startedAt >= releasedAt);
+				assert.strictEqual(projection.reloadRequestId, reloadLeases[0].requestId);
+				assert.strictEqual(projection.ok, !errorBranch);
+				if (errorBranch) {
+					assert.match(projection.error, transition === 'unsafe linked query' ? /linked query/i : /JSON|Unexpected|property|valid/i);
+				} else {
+					assert.ok(projection.sourceGeneration > 1);
+					assert.strictEqual(projection.state.sections[0].query,
+						transition === 'source version ABA' ? 'print Synthetic=0' : 'print Synthetic=1');
+				}
+				assert.strictEqual(document.version, sourceVersion);
+				assert.strictEqual(document.getText(), sourceText);
+				assert.strictEqual(document.isDirty, true);
+				assert.strictEqual(fs.readFileSync(filePath, 'utf8'), initialText);
+			} finally {
+				releaseTransport();
+				for (const dispose of disposeHandlers.splice(0)) dispose();
+				await readiness?.catch(() => undefined);
+				await request?.catch(() => undefined);
+				await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+				for (const subscription of subscriptions) subscription.dispose();
+				MainWebviewStartupGateway.prototype.postDocumentProjection = originalPostProjection;
+				CompatSidecarSession.prototype.createReloadRequest = originalCreateReload;
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+				if (document?.isDirty) await document.save();
+				try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+			}
+		});
+	}
+
+	for (const failure of ['undefined factory', 'throwing factory', 'failed canonical admission'] as const) {
+		test(`queued native projection rejects ${failure} without leaking reload or Kusto source admission`, async () => {
+			const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+			const originalPostProjection = MainWebviewStartupGateway.prototype.postDocumentProjection;
+			const originalCreateReload = CompatSidecarSession.prototype.createReloadRequest;
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-native-projection-failure-'));
+			const filePath = path.join(tmpDir, 'failure.kqlx');
+			const uri = vscode.Uri.file(filePath);
+			const initialText = JSON.stringify({
+				kind: 'kqlx', version: 1, state: { sections: [
+					{ id: 'query_failed', type: 'query', query: 'print Synthetic=0' },
+				] },
+			}, null, 2) + '\n';
+			const registry = new KustoResultPersistenceRegistry();
+			const admissions: Array<{ discarded: boolean; commit(): unknown }> = [];
+			const reloads: Array<{ session: CompatSidecarSession; requestId: string }> = [];
+			const posted: any[] = [];
+			const disposeHandlers: Array<() => void> = [];
+			const subscriptions: vscode.Disposable[] = [];
+			let gateway: MainWebviewStartupGateway<unknown> | undefined;
+			let receive: ((message: any) => unknown) | undefined;
+			let restoreSourcePreparation: (() => void) | undefined;
+			let factoryCalls = 0;
+			try {
+				fs.writeFileSync(filePath, initialText, 'utf8');
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+				MainWebviewStartupGateway.prototype.postDocumentProjection = function (options) {
+					gateway = this;
+					return originalPostProjection.call(this, {
+						...options,
+						preflight: options.preflight,
+						prepare: () => {
+							factoryCalls++;
+							if (failure === 'undefined factory') return undefined;
+							const prepared = options.prepare();
+							assert.ok(prepared);
+							if (failure === 'throwing factory') throw new Error('Native projection factory failed.');
+							return { message: { ...(prepared.message as Record<string, unknown>), sourceGeneration: -1 } };
+						},
+					});
+				};
+				CompatSidecarSession.prototype.createReloadRequest = function (timeoutMs, options) {
+					const reload = originalCreateReload.call(this, timeoutMs, options);
+					reloads.push({ session: this, requestId: reload.requestId });
+					return reload;
+				};
+				const provider = new (KqlxEditorProvider as any)(
+					{
+						subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+						extensionMode: vscode.ExtensionMode.Test,
+					} as any,
+					vscode.Uri.file(path.resolve(__dirname, '../../..')), connectionManagerStub(), sqlWorkbenchStub(), undefined, registry,
+				) as KqlxEditorProvider;
+				const document = await vscode.workspace.openTextDocument(uri);
+				assert.strictEqual(liveDocuments.register(document), false);
+				const initialVersion = document.version;
+				const panel = {
+					webview: {
+						options: {},
+						postMessage: async (message: any) => { posted.push(message); return true; },
+						onDidReceiveMessage: (handler: any) => { receive = handler; return { dispose() {} }; },
+					},
+					onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+				} as any;
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				const owner = registry.get(normalizeWorkbenchUriKey(uri));
+				assert.ok(owner);
+				const originalPrepare = owner.prepareCanonicalSource;
+				owner.prepareCanonicalSource = (...args) => {
+					const admission = originalPrepare.bind(owner)(...args);
+					if (!admission) return admission;
+					const receipt = { discarded: false, commit: () => admission.commit() };
+					admissions.push(receipt);
+					return { ...admission, discard: () => { receipt.discarded = true; admission.discard(); } };
+				};
+				restoreSourcePreparation = () => { owner.prepareCanonicalSource = originalPrepare; };
+				assert.ok(receive);
+				const requestedAt = Date.now();
+				await Promise.resolve(receive({ type: 'requestDocument' }));
+				assert.ok(Date.now() - requestedAt < 1_000, 'rejected preparation must not await an uncreated or five-second reload');
+				assert.strictEqual(factoryCalls, 1, 'a failed factory or outbound admission must not replay');
+				assert.strictEqual(admissions.length, failure === 'undefined factory' ? 0 : 1);
+				assert.strictEqual(reloads.length, failure === 'undefined factory' ? 0 : 1);
+				for (const admission of admissions) {
+					assert.strictEqual(admission.discarded, true);
+					assert.strictEqual(admission.commit(), false, 'a discarded canonical source must not activate later');
+				}
+				for (const reload of reloads) assert.strictEqual(reload.session.hasPendingReloadRequest(reload.requestId), false);
+				assert.strictEqual(posted.some(message => message?.type === 'documentData'), false);
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+				assert.ok(gateway);
+				assert.strictEqual(await gateway.postMessage({ type: 'afterRejectedProjection' }), true);
+				assert.strictEqual(posted.at(-1)?.type, 'afterRejectedProjection');
+				assert.strictEqual(document.version, initialVersion);
+				assert.strictEqual(document.isDirty, false);
+				assert.strictEqual(document.getText(), initialText);
+				assert.strictEqual(fs.readFileSync(filePath, 'utf8'), initialText);
+			} finally {
+				for (const dispose of disposeHandlers.splice(0)) dispose();
+				await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+				for (const subscription of subscriptions) subscription.dispose();
+				restoreSourcePreparation?.();
+				MainWebviewStartupGateway.prototype.postDocumentProjection = originalPostProjection;
+				CompatSidecarSession.prototype.createReloadRequest = originalCreateReload;
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+				try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+			}
+		});
+	}
+
+	test('queued session projection rechecks locked disk authority before creating its reload', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalPostProjection = MainWebviewStartupGateway.prototype.postDocumentProjection;
+		const originalCreateReload = CompatSidecarSession.prototype.createReloadRequest;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-queued-session-projection-'));
+		const filePath = path.join(tmpDir, 'session.kqlx');
+		const uri = vscode.Uri.file(filePath);
+		const initialText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_session', type: 'query', query: 'print Synthetic=0' },
+			] },
+		}, null, 2) + '\n';
+		const newerText = initialText.replace('print Synthetic=0', 'print Synthetic=1');
+		const posted: any[] = [];
+		const preparations: number[] = [];
+		const disposeHandlers: Array<() => void> = [];
+		const subscriptions: vscode.Disposable[] = [];
+		let markTransportStarted!: () => void;
+		let releaseTransport!: () => void;
+		let markProjectionQueued!: () => void;
+		let markPreflightStarted!: () => void;
+		let markWriteLockHeld!: () => void;
+		let releaseWriteLock!: () => void;
+		const transportStarted = new Promise<void>(resolve => { markTransportStarted = resolve; });
+		const transportGate = new Promise<void>(resolve => { releaseTransport = resolve; });
+		const projectionQueued = new Promise<void>(resolve => { markProjectionQueued = resolve; });
+		const preflightStarted = new Promise<void>(resolve => { markPreflightStarted = resolve; });
+		const writeLockHeld = new Promise<void>(resolve => { markWriteLockHeld = resolve; });
+		const writeGate = new Promise<void>(resolve => { releaseWriteLock = resolve; });
+		let receive: ((message: any) => unknown) | undefined;
+		let projection: any;
+		let readiness: Promise<unknown> | undefined;
+		let request: Promise<unknown> | undefined;
+		let writer: Promise<void> | undefined;
+		let firstPreflight: Promise<boolean> | undefined;
+		let reloadLeases = 0;
+		try {
+			fs.writeFileSync(filePath, initialText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			MainWebviewStartupGateway.prototype.postDocumentProjection = function (options) {
+				const index = preparations.push(0) - 1;
+				markProjectionQueued();
+				return originalPostProjection.call(this, {
+					preflight: () => {
+						const result = options.preflight();
+						if (index === 0) {
+							assert.ok(result instanceof Promise, 'the session send must perform an asynchronous locked fresh read');
+							firstPreflight = Promise.resolve(result);
+							markPreflightStarted();
+						}
+						return result;
+					},
+					prepare: () => { preparations[index]++; return options.prepare(); },
+				});
+			};
+			CompatSidecarSession.prototype.createReloadRequest = function (timeoutMs, options) {
+				reloadLeases++;
+				return originalCreateReload.call(this, timeoutMs, options);
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(tmpDir), extensionMode: vscode.ExtensionMode.Test,
+				} as any,
+				vscode.Uri.file(path.resolve(__dirname, '../../..')), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = await vscode.workspace.openTextDocument(uri);
+			assert.strictEqual(liveDocuments.register(document), false);
+			const initialVersion = document.version;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'persistenceMode') { markTransportStarted(); await transportGate; }
+						if (message?.type === 'documentData') projection = message;
+						if (message?.reloadRequestId) await Promise.resolve(receive?.({
+							type: 'documentReloadResult', requestId: message.reloadRequestId, applied: true, editRevision: 0,
+						}));
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receive = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+			deferMainWebviewReadyForTest(panel);
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			assert.ok(receive);
+			readiness = Promise.resolve(receive({ type: 'mainWebviewDispatcherReady', runtimeId: 'native-queued-session-runtime' }));
+			await transportStarted;
+			request = Promise.resolve(receive({ type: 'requestDocument' }));
+			await projectionQueued;
+			writer = withKqlxDocumentWriteLock(uri, async () => {
+				markWriteLockHeld();
+				await writeGate;
+				fs.writeFileSync(filePath, newerText, 'utf8');
+			});
+			await writeLockHeld;
+			releaseTransport();
+			await preflightStarted;
+			assert.strictEqual(document.version, initialVersion);
+			assert.strictEqual(document.getText(), initialText);
+			assert.strictEqual(reloadLeases, 0);
+			assert.strictEqual(preparations[0], 0);
+			assert.strictEqual(posted.some(message => message?.type === 'documentData'), false);
+			releaseWriteLock();
+			await writer;
+			assert.strictEqual(await firstPreflight, false, 'the queued session candidate must see the newer locked disk bytes');
+			await readiness;
+			await request;
+			assert.strictEqual(preparations[0], 0, 'a stale session source cannot materialize or start a reload');
+			if (!projection) await Promise.resolve(receive({ type: 'requestDocument' }));
+			assert.strictEqual(projection?.ok, true);
+			assert.ok(projection.sourceGeneration > 1);
+			assert.strictEqual(projection.state.sections[0].query, 'print Synthetic=1');
+			assert.ok(preparations.every(count => count <= 1), 'one queued candidate must not replay its factory');
+			assert.strictEqual(document.isDirty, false);
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), newerText);
+		} finally {
+			releaseTransport();
+			releaseWriteLock();
+			await writer?.catch(() => undefined);
+			for (const dispose of disposeHandlers.splice(0)) dispose();
+			await readiness?.catch(() => undefined);
+			await request?.catch(() => undefined);
+			await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+			for (const subscription of subscriptions) subscription.dispose();
+			MainWebviewStartupGateway.prototype.postDocumentProjection = originalPostProjection;
+			CompatSidecarSession.prototype.createReloadRequest = originalCreateReload;
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	for (const transition of ['source bytes', 'source version', 'disposal', 'cold expiry', 'native Save'] as const) {
+		test(`cold readiness fences native ${transition}`, async function () {
+			this.timeout(10_000);
+			const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+			const originalWait = MainWebviewStartupGateway.prototype.waitForDispatcherReady;
+			const originalCreateReload = CompatSidecarSession.prototype.createReloadRequest;
+			const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
+			const originalSetTimeout = global.setTimeout;
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-cold-start-fence-'));
+			const filePath = path.join(tmpDir, 'fenced.kqlx');
+			const uri = vscode.Uri.file(filePath);
+			const initialText = JSON.stringify({
+				kind: 'kqlx', version: 1, state: { sections: [
+					{ id: 'query_cold', type: 'query', query: 'print Synthetic=0' },
+					{ id: 'markdown_cold', type: 'markdown', text: 'Retained cold notes' },
+				] },
+			}, null, 2) + '\n';
+			const newerText = initialText.replace('print Synthetic=0', 'print Synthetic=1');
+			const posted: any[] = [];
+			const disposeHandlers: Array<() => void> = [];
+			const subscriptions: vscode.Disposable[] = [];
+			let markWaiting!: () => void;
+			const waiting = new Promise<void>(resolve => { markWaiting = resolve; });
+			let gateway: MainWebviewStartupGateway<unknown> | undefined;
+			let receive: ((message: any) => unknown) | undefined;
+			let willSave: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+			let projection: any;
+			let document: vscode.TextDocument | undefined;
+			let request: Promise<unknown> | undefined;
+			let expireColdWait: (() => void) | undefined;
+			let coldTimers = 0;
+			let reloadLeases = 0;
+			let saveDeadline: ReturnType<typeof setTimeout> | undefined;
+			try {
+				fs.writeFileSync(filePath, initialText, 'utf8');
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+				MainWebviewStartupGateway.prototype.waitForDispatcherReady = function () {
+					gateway = this;
+					const readiness = originalWait.call(this);
+					markWaiting();
+					return readiness;
+				};
+				CompatSidecarSession.prototype.createReloadRequest = function (timeoutMs, options) {
+					reloadLeases++;
+					return originalCreateReload.call(this, timeoutMs, options);
+				};
+				if (transition === 'cold expiry') {
+					global.setTimeout = ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+						const handle = originalSetTimeout(callback, delay, ...args);
+						if (delay === 30_000) {
+							coldTimers++;
+							expireColdWait = () => callback(...args);
+						}
+						return handle;
+					}) as typeof setTimeout;
+				}
+				if (transition === 'native Save') {
+					(vscode.workspace as any).onWillSaveTextDocument = (handler: typeof willSave) => {
+						willSave = handler;
+						return { dispose() {} };
+					};
+				}
+				const provider = new (KqlxEditorProvider as any)(
+					{
+						subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+						extensionMode: vscode.ExtensionMode.Test,
+					} as any,
+					vscode.Uri.file(path.resolve(__dirname, '../../..')), connectionManagerStub(), sqlWorkbenchStub(),
+				) as KqlxEditorProvider;
+				document = await vscode.workspace.openTextDocument(uri);
+				assert.strictEqual(liveDocuments.register(document), false);
+				const initialVersion = document.version;
+				const panel = {
+					webview: {
+						options: {},
+						postMessage: async (message: any) => {
+							posted.push(message);
+							if (message?.type === 'documentData') projection = message;
+							if (message?.reloadRequestId) {
+								await Promise.resolve(receive?.({
+									type: 'documentReloadResult', requestId: message.reloadRequestId,
+									applied: true, editRevision: 0,
+								}));
+							}
+							return true;
+						},
+						onDidReceiveMessage: (handler: any) => {
+							receive = wrapDocumentViewTestReceiver(handler, () => projection);
+							return { dispose() {} };
+						},
+					},
+					onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+				} as any;
+				deferMainWebviewReadyForTest(panel);
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				assert.ok(receive);
+				request = Promise.resolve(receive({ type: 'requestDocument' }));
+				await waiting;
+				assert.ok(gateway);
+				assert.strictEqual(gateway.isDispatcherReady, false);
+				assert.strictEqual(reloadLeases, 0);
+				assert.strictEqual(posted.some(message => message?.type === 'documentData'), false);
+
+				if (transition === 'disposal' || transition === 'cold expiry') {
+					let lateReady: Record<string, unknown> = { type: 'mainWebviewDispatcherReady', runtimeId: 'late-runtime' };
+					if (transition === 'disposal') {
+						for (const dispose of disposeHandlers.splice(0)) dispose();
+					} else {
+						const readiness = gateway.beginDispatcherRevalidation();
+						const probe = posted.at(-1);
+						assert.strictEqual(probe?.type, 'mainWebviewDispatcherProbe');
+						lateReady = { ...lateReady, probeId: probe.probeId };
+						assert.ok(expireColdWait);
+						expireColdWait();
+						assert.strictEqual(await readiness, false);
+						assert.strictEqual(coldTimers, 1, 'native recovery must not renew the cold allowance');
+					}
+					await request;
+					await Promise.resolve(receive(lateReady));
+					assert.strictEqual(await gateway.waitForDispatcherReady(), false);
+					assert.strictEqual(reloadLeases, 0);
+					assert.strictEqual(posted.some(message => message?.type === 'documentData'), false);
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+					assert.strictEqual(document.version, initialVersion);
+					assert.strictEqual(document.isDirty, false);
+					assert.strictEqual(document.getText(), initialText);
+					assert.strictEqual(fs.readFileSync(filePath, 'utf8'), initialText);
+					return;
+				}
+
+				const replaceSource = async (text: string) => {
+					const edit = new vscode.WorkspaceEdit();
+					const currentText = document!.getText();
+					edit.replace(uri, new vscode.Range(document!.positionAt(0), document!.positionAt(currentText.length)), text);
+					assert.strictEqual(await vscode.workspace.applyEdit(edit), true);
+				};
+				await replaceSource(newerText);
+				if (transition === 'source version') await replaceSource(initialText);
+				const currentText = document.getText();
+				const currentVersion = document.version;
+				assert.ok(currentVersion > initialVersion);
+				assert.strictEqual(document.isDirty, true);
+				if (transition === 'native Save') {
+					assert.ok(willSave);
+					let preparation: Promise<vscode.TextEdit[]> | undefined;
+					willSave({
+						document,
+						waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { preparation = Promise.resolve(thenable); },
+					} as vscode.TextDocumentWillSaveEvent);
+					assert.ok(preparation);
+					const outcome = await Promise.race([
+						preparation.then(() => ({ kind: 'applied' as const }), error => ({ kind: 'rejected' as const, error })),
+						new Promise<{ kind: 'timed-out' }>(resolve => {
+							saveDeadline = setTimeout(() => resolve({ kind: 'timed-out' }), 1_000);
+						}),
+					]);
+					assert.strictEqual(outcome.kind, 'rejected', 'native Save must not wait for the thirty-second cold allowance');
+					assert.ok(outcome.kind === 'rejected');
+					assert.match(String(outcome.error), /has not accepted its initial notebook projection/);
+					assert.strictEqual(reloadLeases, 0);
+					assert.strictEqual(posted.some(message => message?.type === 'requestFinalPersist'), false);
+				}
+				await Promise.resolve(receive({ type: 'mainWebviewDispatcherReady', runtimeId: 'native-initial-runtime' }));
+				await request;
+				await waitForCondition(() => projection?.ok === true,
+					'the latest source must obtain one native projection after cold readiness');
+				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 1_000, panel), true);
+				assert.strictEqual(reloadLeases, 1);
+				assert.strictEqual(posted.filter(message => message?.type === 'documentData').length, 1);
+				assert.ok(projection.sourceGeneration > 1, 'a stale byte/version candidate must not activate');
+				assert.strictEqual(projection.state.sections[0].query,
+					transition === 'source version' ? 'print Synthetic=0' : 'print Synthetic=1');
+				assert.strictEqual(document.version, currentVersion);
+				assert.strictEqual(document.getText(), currentText);
+				assert.strictEqual(document.isDirty, true);
+				assert.strictEqual(fs.readFileSync(filePath, 'utf8'), initialText);
+			} finally {
+				if (saveDeadline) clearTimeout(saveDeadline);
+				for (const dispose of disposeHandlers.splice(0)) dispose();
+				await request?.catch(() => undefined);
+				await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+				for (const subscription of subscriptions) subscription.dispose();
+				MainWebviewStartupGateway.prototype.waitForDispatcherReady = originalWait;
+				CompatSidecarSession.prototype.createReloadRequest = originalCreateReload;
+				global.setTimeout = originalSetTimeout;
+				(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+				if (document?.isDirty) await document.save();
+				try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+			}
+		});
+	}
+
+	test('cold readiness rechecks the dispatcher before native reload delivery', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalWait = MainWebviewStartupGateway.prototype.waitForDispatcherReady;
+		const originalCreateReload = CompatSidecarSession.prototype.createReloadRequest;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-cold-start-handoff-'));
+		const filePath = path.join(tmpDir, 'handoff.kqlx');
+		const uri = vscode.Uri.file(filePath);
+		const initialText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_cold', type: 'query', query: 'print Synthetic=0' },
+			] },
+		}, null, 2) + '\n';
+		const posted: any[] = [];
+		const disposeHandlers: Array<() => void> = [];
+		const subscriptions: vscode.Disposable[] = [];
+		let gateway: MainWebviewStartupGateway<unknown> | undefined;
+		let receive: ((message: any) => unknown) | undefined;
+		let projection: any;
+		let request: Promise<unknown> | undefined;
+		let revalidation: Promise<boolean> | undefined;
+		let readinessCalls = 0;
+		let reloadLeases = 0;
+		try {
+			fs.writeFileSync(filePath, initialText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			MainWebviewStartupGateway.prototype.waitForDispatcherReady = function () {
+				gateway = this;
+				readinessCalls++;
+				return originalWait.call(this).then(ready => {
+					if (ready && !revalidation) revalidation = this.beginDispatcherRevalidation();
+					return ready;
+				});
+			};
+			CompatSidecarSession.prototype.createReloadRequest = function (timeoutMs, options) {
+				reloadLeases++;
+				return originalCreateReload.call(this, timeoutMs, options);
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+					extensionMode: vscode.ExtensionMode.Test,
+				} as any,
+				vscode.Uri.file(path.resolve(__dirname, '../../..')), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = await vscode.workspace.openTextDocument(uri);
+			assert.strictEqual(liveDocuments.register(document), false);
+			const initialVersion = document.version;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') projection = message;
+						if (message?.reloadRequestId) {
+							await Promise.resolve(receive?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: 0,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receive = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			assert.ok(receive);
+			request = Promise.resolve(receive({ type: 'requestDocument' }));
+			await waitForCondition(() => reloadLeases > 0 || readinessCalls > 1,
+				'native preparation must either expose the stale lease or wait for current dispatcher readiness');
+			assert.ok(gateway);
+			assert.ok(revalidation);
+			assert.strictEqual(gateway.isDispatcherReady, false);
+			assert.strictEqual(reloadLeases, 0, 'a dispatcher lost during preparation must not start the ACK lease');
+			assert.strictEqual(posted.some(message => message?.type === 'documentData'), false);
+			const probe = posted.find(message => message?.type === 'mainWebviewDispatcherProbe');
+			assert.ok(probe);
+			await Promise.resolve(receive({
+				type: 'mainWebviewDispatcherReady', runtimeId: 'native-handoff-runtime', probeId: probe.probeId,
+			}));
+			assert.strictEqual(await revalidation, true);
+			await request;
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), true);
+			assert.strictEqual(reloadLeases, 1);
+			assert.strictEqual(posted.filter(message => message?.type === 'documentData').length, 1);
+			assert.strictEqual(document.version, initialVersion);
+			assert.strictEqual(document.isDirty, false);
+			assert.strictEqual(document.getText(), initialText);
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), initialText);
+		} finally {
+			for (const dispose of disposeHandlers.splice(0)) dispose();
+			await request?.catch(() => undefined);
+			await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+			for (const subscription of subscriptions) subscription.dispose();
+			MainWebviewStartupGateway.prototype.waitForDispatcherReady = originalWait;
+			CompatSidecarSession.prototype.createReloadRequest = originalCreateReload;
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});

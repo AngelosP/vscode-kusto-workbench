@@ -44,6 +44,7 @@ import {
 	compilePortableDashboard,
 	PortableDashboardAdmissionError,
 	type PortableDashboardCompilation,
+	type PortableDashboardDataSource,
 	type PortableDashboardDiagnostic,
 	type PortableDashboardIr,
 } from '../shared/portableDashboardCompiler';
@@ -181,7 +182,7 @@ export function getPowerBiHtmlValidationIssues(htmlCode: string, dataSources?: P
 
 export function getPowerBiHtmlValidationDiagnostics(
 	htmlCode: string,
-	dataSources?: PowerBiDataSource[],
+	dataSources?: readonly PortableDashboardDataSource[],
 ): PortableDashboardDiagnostic[] {
 	return [...compilePortableDashboard({ htmlCode, dataSources }).diagnostics];
 }

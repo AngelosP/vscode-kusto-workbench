@@ -115,12 +115,16 @@ export class SchemaService {
 		forceRefresh: boolean,
 		connectionIdentity: string,
 		cacheKey: string,
+		allowInteractive: boolean,
 	): Promise<PreparedPrimarySchema> {
-		const key = `${forceRefresh ? 'force' : 'normal'}|${connectionIdentity}|${cacheKey || `unresolved|${encodeURIComponent(connection.id)}|${kustoDatabaseKey(connection.clusterUrl, database)}`}`;
+		const key = `${forceRefresh ? 'force' : 'normal'}|${allowInteractive ? 'interactive' : 'automatic'}|${connectionIdentity}|${cacheKey || `unresolved|${encodeURIComponent(connection.id)}|${kustoDatabaseKey(connection.clusterUrl, database)}`}`;
 		const existing = this.primarySchemaLoads.get(key);
 		if (existing) return existing;
 		const load = (async (): Promise<PreparedPrimarySchema> => {
-			const result = await this.host.kustoClient.getDatabaseSchema(connection, database, forceRefresh);
+			const result = await this.host.kustoClient.getDatabaseSchema(connection, database, forceRefresh, {
+				allowInteractive,
+				source: 'primary-schema',
+			});
 			if (!this.isConnectionIdentityCurrent(connection.id, connectionIdentity)) throw new Error('The schema connection changed during preparation.');
 			await scheduler.yield();
 			if (!this.isConnectionIdentityCurrent(connection.id, connectionIdentity)) throw new Error('The schema connection changed during preparation.');
@@ -550,7 +554,7 @@ export class SchemaService {
 			}
 
 			const { result, schema, signature, accountPartition: resolvedAccountPartition } = await this.preparePrimarySchema(
-				connection, database, forceRefresh, connectionIdentity, cacheKey,
+				connection, database, forceRefresh, connectionIdentity, cacheKey, options.reason !== 'automatic',
 			);
 			if (!isConnectionCurrent()) return;
 

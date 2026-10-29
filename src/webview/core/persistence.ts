@@ -5,6 +5,7 @@ export {};
 import { normalizeClusterUrl, isLeaveNoTraceCluster, normalizePersistedResultJson, trySerializeQueryResult } from '../shared/persistence-utils';
 import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
 import { resolveKustoConnection } from '../../shared/kustoAuth.js';
+import { captureToolStateSections } from '../../shared/toolStateSnapshotProtocol.js';
 import { postMessageToHost } from '../shared/webview-messages';
 import {
 	createEmptyQueryEditorPendingAdds,
@@ -101,13 +102,8 @@ import {
 	getHostOwnedPythonSection,
 	getHostOwnedTransformationSection,
 	getHostOwnedUrlSection,
-	isHostOwnedChartDocument,
 	isHostOwnedDevelopmentNoteDocument,
-	isHostOwnedHtmlDocument,
 	isHostOwnedMarkdownDocument,
-	isHostOwnedPythonDocument,
-	isHostOwnedTransformationDocument,
-	isHostOwnedUrlDocument,
 	acknowledgeHostOwnedDocumentOrder,
 	resetHostOwnedMarkdownDocument,
 } from './markdown-document-client.js';
@@ -1672,7 +1668,8 @@ function __kustoBuildPersistSignatureState(value: any): any {
 			return value;
 		}
 		const copy: Record<string, unknown> = {};
-		for (const [key, child] of Object.entries(value)) {
+		for (const key of Object.keys(value).sort()) {
+			const child = value[key];
 			if (__kustoIsImplicitPersistSignatureDefault(key, child)) {
 				continue;
 			}
@@ -1762,7 +1759,7 @@ function __kustoIsAutomaticRestoredResultAdmissionOnly(cleanSignature: string, c
 				&& Object.prototype.hasOwnProperty.call(section, 'resultArtifact')) {
 				const artifact = section.resultArtifact as Record<string, unknown> | undefined;
 				if (!artifact || (source.resultArtifact !== undefined
-					? JSON.stringify(artifact) !== JSON.stringify(source.resultArtifact)
+					? JSON.stringify(artifact) !== JSON.stringify(__kustoBuildPersistSignatureState(source.resultArtifact))
 					: artifact.sourceBoxId !== id)) return false;
 				delete section.resultArtifact;
 			}
@@ -2044,7 +2041,16 @@ function insertHostOwnedDevelopmentNotes(sections: any[]): void {
 	}
 }
 
-export function getKqlxState() {
+export function getKqlxState(strictCapture = false) {
+	const handleCaptureError = (error: unknown = new Error('Missing section state.')): void => {
+		if (strictCapture) throw error;
+		console.error('[kusto]', error);
+	};
+	const readMissingText = (text: string | undefined, pending: unknown): string => {
+		if (typeof pending === 'string') return pending;
+		if (strictCapture && typeof text !== 'string') handleCaptureError();
+		return text || '';
+	};
 	// Compatibility mode (.kql/.csl/.md): only a single section is supported.
 	try {
 		if (pState.compatibilityMode) {
@@ -2059,26 +2065,24 @@ export function getKqlxState() {
 							break;
 						}
 					}
-				} catch (e) { console.error('[kusto]', e); }
-				let text = '';
+				} catch (e) { handleCaptureError(e); }
+				let text: string | undefined;
 				try {
 					text = (firstMarkdownBoxId && markdownEditors && markdownEditors[firstMarkdownBoxId])
-						? (markdownEditors[firstMarkdownBoxId].getValue() || '')
-						: '';
-				} catch (e) { console.error('[kusto]', e); }
+						? markdownEditors[firstMarkdownBoxId].getValue()
+						: undefined;
+				} catch (e) { handleCaptureError(e); }
 				if (!text) {
 					try {
 						const pending = firstMarkdownBoxId
 							? pState.pendingMarkdownTextByBoxId[firstMarkdownBoxId]
 							: undefined;
-						if (typeof pending === 'string') {
-							text = pending;
-						}
-					} catch (e) { console.error('[kusto]', e); }
+						text = readMissingText(text, pending);
+					} catch (e) { handleCaptureError(e); }
 				}
 				return {
 					...legacyDocumentPreferencesForPersistence(),
-					sections: [{ type: 'markdown', ...(firstMarkdownBoxId ? { id: firstMarkdownBoxId } : {}), text }]
+					sections: [{ type: 'markdown', ...(firstMarkdownBoxId ? { id: firstMarkdownBoxId } : {}), text: text || '' }]
 				};
 			}
 
@@ -2087,34 +2091,32 @@ export function getKqlxState() {
 				try {
 					const ids = Array.isArray(sqlBoxes) ? sqlBoxes : [];
 					for (const id of ids) {
-						if (typeof id === 'string' && __kustoGetSqlSectionElement(id)) {
+						if (typeof id === 'string' && (strictCapture || __kustoGetSqlSectionElement(id))) {
 							firstSqlBoxId = id;
 							break;
 						}
 					}
-				} catch (e) { console.error('[kusto]', e); }
-				let query = '';
+				} catch (e) { handleCaptureError(e); }
+				let query: string | undefined;
 				try {
 					if (firstSqlBoxId) {
 						const el = __kustoGetSqlSectionElement(firstSqlBoxId);
 						if (el && typeof el.getQuery === 'function') {
-							query = el.getQuery() || '';
+							query = el.getQuery();
 						}
 					}
-				} catch (e) { console.error('[kusto]', e); }
+				} catch (e) { handleCaptureError(e); }
 				if (!query) {
 					try {
 						const pending = firstSqlBoxId
 							? (pState.pendingSqlQueryByBoxId && pState.pendingSqlQueryByBoxId[firstSqlBoxId])
 							: undefined;
-						if (typeof pending === 'string') {
-							query = pending;
-						}
-					} catch (e) { console.error('[kusto]', e); }
+						query = readMissingText(query, pending);
+					} catch (e) { handleCaptureError(e); }
 				}
 				return {
 					...legacyDocumentPreferencesForPersistence(),
-					sections: [{ type: 'sql', ...(firstSqlBoxId ? { id: firstSqlBoxId } : {}), query }]
+					sections: [{ type: 'sql', ...(firstSqlBoxId ? { id: firstSqlBoxId } : {}), query: query || '' }]
 				};
 			}
 
@@ -2122,18 +2124,18 @@ export function getKqlxState() {
 			try {
 				const ids = Array.isArray(queryBoxes) ? queryBoxes : [];
 				for (const id of ids) {
-					if (typeof id === 'string' && __kustoGetQuerySectionElement(id)) {
+					if (typeof id === 'string' && (strictCapture || __kustoGetQuerySectionElement(id))) {
 						firstQueryBoxId = id;
 						break;
 					}
 				}
-			} catch (e) { console.error('[kusto]', e); }
-			let q = (firstQueryBoxId && queryEditors && queryEditors[firstQueryBoxId])
-				? (queryEditors[firstQueryBoxId].getValue() || '')
-				: '';
-			if (!q && firstQueryBoxId) {
-				const pending = pState.pendingQueryTextByBoxId[firstQueryBoxId];
-				if (typeof pending === 'string') q = pending;
+			} catch (e) { handleCaptureError(e); }
+			let query = (firstQueryBoxId && queryEditors && queryEditors[firstQueryBoxId])
+				? queryEditors[firstQueryBoxId].getValue()
+				: undefined;
+			if (!query) {
+				const pending = firstQueryBoxId ? pState.pendingQueryTextByBoxId[firstQueryBoxId] : undefined;
+				query = readMissingText(query, pending);
 			}
 			let clusterUrl = '';
 			let authorityId = '';
@@ -2154,10 +2156,10 @@ export function getKqlxState() {
 							authorityId = conn ? String(conn.authorityId || '') : '';
 							connectionIdHint = conn ? String(conn.id || '') : '';
 						}
-					} catch (e) { console.error('[kusto]', e); }
+					} catch (e) { handleCaptureError(e); }
 					try {
 						database = __kustoGetDatabase(firstQueryBoxId);
-					} catch (e) { console.error('[kusto]', e); }
+					} catch (e) { handleCaptureError(e); }
 					// Persisted results (in-memory)
 					try {
 						if (pState.queryResultJsonByBoxId[firstQueryBoxId]) {
@@ -2166,22 +2168,22 @@ export function getKqlxState() {
 								|| pState.resultArtifactByBoxId[firstQueryBoxId];
 							kustoResultOwner = pState.kustoResultOwnerByBoxId[firstQueryBoxId];
 						}
-					} catch (e) { console.error('[kusto]', e); }
+					} catch (e) { handleCaptureError(e); }
 					// Favorites picker UI mode
 					try {
 						if (typeof favoritesModeByBoxId === 'object' && favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(favoritesModeByBoxId, firstQueryBoxId)) {
 							favoritesMode = !!favoritesModeByBoxId[firstQueryBoxId];
 						}
-					} catch (e) { console.error('[kusto]', e); }
+					} catch (e) { handleCaptureError(e); }
 				}
-			} catch (e) { console.error('[kusto]', e); }
+			} catch (e) { handleCaptureError(e); }
 			return {
 				...legacyDocumentPreferencesForPersistence(),
 				sections: [
 					{
 						type: 'query',
 						...(firstQueryBoxId ? { id: firstQueryBoxId } : {}),
-						query: q,
+						query,
 						...(clusterUrl ? { clusterUrl } : {}),
 						...(authorityId ? { authorityId } : {}),
 						...(connectionIdHint ? { connectionIdHint } : {}),
@@ -2198,9 +2200,22 @@ export function getKqlxState() {
 				]
 			};
 		}
-	} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { handleCaptureError(e); }
 
-	const sections: any[] = [];
+	let sections: any[] = [];
+	const captureSections = () => {
+		const captured = captureToolStateSections(sections);
+		if (!captured.ok) throw new Error(captured.error);
+		return captured.value;
+	};
+	const ownedSectionGetters = [
+		['chart', getHostOwnedChartSection],
+		['html', getHostOwnedHtmlSection],
+		['markdown', getHostOwnedMarkdownSection],
+		['python', getHostOwnedPythonSection],
+		['transformation', getHostOwnedTransformationSection],
+		['url', getHostOwnedUrlSection],
+	] as const;
 	const container = document.getElementById('queries-container');
 	const children = container ? Array.from(container.children || []) : [];
 	for (const child of children) {
@@ -2209,51 +2224,38 @@ export function getKqlxState() {
 
 		// All section types are Lit components that implement serialize().
 		const el = document.getElementById(id);
-		if (el?.hasAttribute('data-sql-comparison-admission-request-id')) continue;
-		if (isHostOwnedChartDocument() && el?.tagName.toLowerCase() === 'kw-chart-section') {
-			const owned = getHostOwnedChartSection(id);
-			if (owned) sections.push(owned);
-			continue;
-		}
-		if (isHostOwnedHtmlDocument() && el?.tagName.toLowerCase() === 'kw-html-section') {
-			const owned = getHostOwnedHtmlSection(id);
-			if (owned) sections.push(owned);
-			continue;
-		}
-		if (isHostOwnedMarkdownDocument() && el?.tagName.toLowerCase() === 'kw-markdown-section') {
-			const owned = getHostOwnedMarkdownSection(id);
-			if (owned) sections.push(owned);
-			continue;
-		}
-		if (isHostOwnedPythonDocument() && el?.tagName.toLowerCase() === 'kw-python-section') {
-			const owned = getHostOwnedPythonSection(id);
-			if (owned) sections.push(owned);
-			continue;
-		}
-		if (isHostOwnedTransformationDocument() && el?.tagName.toLowerCase() === 'kw-transformation-section') {
-			const owned = getHostOwnedTransformationSection(id);
-			if (owned) sections.push(owned);
-			continue;
-		}
-		if (isHostOwnedUrlDocument() && el?.tagName.toLowerCase() === 'kw-url-section') {
-			const owned = getHostOwnedUrlSection(id);
+		const kind = el?.tagName.toLowerCase().match(/^kw-(.+)-section$/)?.[1];
+		if (el?.hasAttribute('data-sql-comparison-admission-request-id') && (!strictCapture || kind === 'sql')) continue;
+		const ownedGetter = isHostOwnedMarkdownDocument() ? ownedSectionGetters.find(([ownedKind]) => ownedKind === kind)?.[1] : undefined;
+		if (ownedGetter) {
+			const owned = ownedGetter(id);
+			if (strictCapture && !owned) handleCaptureError();
 			if (owned) sections.push(owned);
 			continue;
 		}
 		if (el && typeof (el as any).serialize === 'function') {
-			try { sections.push((el as any).serialize()); } catch (e) { console.error('[kusto]', e); }
+			try { sections.push((el as any).serialize()); } catch (e) { handleCaptureError(e); }
+		} else if (strictCapture && canonicalSectionKind(kind) && kind !== 'devnotes') {
+			handleCaptureError();
 		}
 	}
+
+	if (strictCapture) sections = [...captureSections()];
 
 	try {
 		if (isHostOwnedDevelopmentNoteDocument()) {
 			insertHostOwnedDevelopmentNotes(sections);
 		} else {
-			for (const dn of pState.metadataFreeDevelopmentNoteSections) {
+			const capturedNotes = strictCapture ? captureToolStateSections(pState.metadataFreeDevelopmentNoteSections) : undefined;
+			if (capturedNotes && !capturedNotes.ok) throw new Error(capturedNotes.error);
+			const notes = capturedNotes?.ok ? capturedNotes.value : pState.metadataFreeDevelopmentNoteSections;
+			for (const dn of notes) {
 				if (dn && dn.type === 'devnotes') sections.push(dn);
 			}
 		}
-	} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { handleCaptureError(e); }
+
+	if (strictCapture) sections = captureSections();
 
 	return {
 		...legacyDocumentPreferencesForPersistence(),

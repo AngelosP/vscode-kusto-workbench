@@ -1112,6 +1112,186 @@ describe('persistence round-trip', () => {
 		expect(state.sections.map((s) => s.type)).toEqual(['query', 'markdown', 'html', 'sql']);
 	});
 
+	it.each(['kql', 'csl', 'sql', 'md'].flatMap(documentKind =>
+		['missing primary', 'missing element', 'missing reader', 'undefined reader'].map(sourceState => ({ documentKind, sourceState })),
+	))('rejects an unavailable compatibility primary in $documentKind ($sourceState) while retaining authored blank text', ({ documentKind, sourceState }) => {
+		const kind = documentKind === 'md' ? 'markdown' : documentKind === 'sql' ? 'sql' : 'query';
+		const field = kind === 'markdown' ? 'text' : 'query';
+		const sectionId = `${kind}_compat_primary`;
+		const boxes = kind === 'markdown' ? testState.markdownBoxes : kind === 'sql' ? testState.sqlBoxes : testState.queryBoxes;
+		const pending = kind === 'markdown' ? pState.pendingMarkdownTextByBoxId : kind === 'sql' ? pState.pendingSqlQueryByBoxId : pState.pendingQueryTextByBoxId;
+		const querySectionGetter = vi.mocked(__kustoGetQuerySectionElement);
+		const priorQuerySectionGetter = querySectionGetter.getMockImplementation();
+		const databaseGetter = vi.mocked(__kustoGetDatabase);
+		const priorDatabaseGetter = databaseGetter.getMockImplementation();
+		querySectionGetter.mockImplementation(id => document.getElementById(id) as any);
+		databaseGetter.mockReturnValue('');
+		pState.compatibilityMode = true;
+		pState.compatibilitySingleKind = kind;
+		pState.documentKind = documentKind;
+		let unownedGetterCalls = 0;
+		Object.defineProperty(pending, 'unowned', {
+			enumerable: true, configurable: true,
+			get() { unownedGetterCalls++; return ''; },
+		});
+		const createPrimary = () => kind === 'markdown'
+			? testState.addMarkdownBox({ id: sectionId })
+			: kind === 'sql' ? testState.addSqlBox({ id: sectionId }) : testState.addQueryBox({ id: sectionId });
+		try {
+			if (sourceState === 'missing element') boxes.push(sectionId);
+			else if (sourceState !== 'missing primary') {
+				createPrimary();
+				if (kind === 'markdown') delete testState.markdownEditors[sectionId];
+				else if (kind === 'query') delete testState.queryEditors[sectionId];
+				else (testState.sqlElements[sectionId] as any).getQuery = undefined;
+				if (sourceState === 'undefined reader') {
+					const getValue = vi.fn(() => undefined as unknown as string);
+					if (kind === 'markdown') testState.markdownEditors[sectionId] = { getValue };
+					else if (kind === 'query') testState.queryEditors[sectionId] = { getValue };
+					else testState.sqlElements[sectionId].getQuery = getValue;
+				}
+			}
+			const legacyHasId = sourceState !== 'missing primary' && (kind === 'markdown' || sourceState !== 'missing element');
+			expect(getKqlxState(false).sections).toEqual([{ type: kind, ...(legacyHasId ? { id: sectionId } : {}), [field]: '' }]);
+			expect(() => getKqlxState(true)).toThrow('Missing section state.');
+			if (!boxes.includes(sectionId)) boxes.push(sectionId);
+			pending[sectionId] = '';
+			expect(getKqlxState(true).sections).toEqual([{ type: kind, id: sectionId, [field]: '' }]);
+			pending[sectionId] = '  RetainedCase  ';
+			expect(getKqlxState(true).sections).toEqual([{ type: kind, id: sectionId, [field]: '  RetainedCase  ' }]);
+			delete pending[sectionId];
+			if (!document.getElementById(sectionId)) {
+				boxes.splice(boxes.indexOf(sectionId), 1);
+				createPrimary();
+			}
+			if (kind === 'markdown') testState.markdownEditors[sectionId] = { getValue: () => '' };
+			else if (kind === 'query') testState.queryEditors[sectionId] = { getValue: () => '' };
+			else testState.sqlElements[sectionId].getQuery = () => '';
+			expect(getKqlxState(true).sections).toEqual([{ type: kind, id: sectionId, [field]: '' }]);
+			expect(unownedGetterCalls).toBe(0);
+			expect(postMessageToHost).not.toHaveBeenCalled();
+			expect(testState.beginKustoPreparation).not.toHaveBeenCalled();
+		} finally {
+			querySectionGetter.mockImplementation(priorQuerySectionGetter || (() => null));
+			databaseGetter.mockImplementation(priorDatabaseGetter || (() => ''));
+		}
+	});
+
+	it('keeps default persistence tolerant while strict tool capture rejects a later serializer failure', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		testState.addQueryBox({ id: 'query_valid' });
+		const sqlId = testState.addSqlBox({ id: 'sql_failed' });
+		const sql = document.getElementById(sqlId) as HTMLElement & { serialize: () => unknown };
+		const failure = new Error('Retained SQL serializer failed.');
+		sql.serialize = () => { throw failure; };
+		pState.metadataFreeDevelopmentNoteSections = [{ id: 'notes_legacy', type: 'devnotes', entries: [] }];
+		const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			expect(getKqlxState().sections).toEqual([
+				{ id: 'query_valid', type: 'query', query: '' },
+				{ id: 'notes_legacy', type: 'devnotes', entries: [] },
+			]);
+			expect(() => getKqlxState(true)).toThrow(failure);
+		} finally {
+			errorLog.mockRestore();
+		}
+	});
+
+	it.each(['query', 'sql', 'markdown', 'chart', 'transformation', 'python', 'url', 'html'])(
+		'rejects a missing known %s serializer only during strict tool capture', (kind) => {
+			const container = document.createElement('div');
+			container.id = 'queries-container';
+			document.body.appendChild(container);
+			const section = document.createElement(`kw-${kind}-section`);
+			section.id = `${kind}_missing_serializer`;
+			container.appendChild(section);
+
+			expect(getKqlxState().sections).toEqual([]);
+			expect(() => getKqlxState(true)).toThrow();
+			expect(postMessageToHost).not.toHaveBeenCalled();
+			expect(testState.beginKustoPreparation).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(['markdown', 'chart', 'transformation', 'python', 'url', 'html'].flatMap(kind => [
+		[kind, 'missing record'], [kind, 'missing graph'],
+	]))('rejects missing native owned %s state with a %s only during strict capture', (kind, graphKind) => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const section = document.createElement(`kw-${kind}-section`) as HTMLElement & { serialize: ReturnType<typeof vi.fn> };
+		section.id = `${kind}_missing_owned`;
+		section.serialize = vi.fn(() => ({ id: section.id, type: kind }));
+		container.appendChild(section);
+		pState.documentKind = 'kqlx';
+		pState.documentRuntimeActive = true;
+		pState.hostOwnedMarkdownActive = true;
+		pState.markdownDocumentRevision = 5;
+		const stateKey = `hostOwned${kind[0].toUpperCase()}${kind.slice(1)}Sections`;
+		Object.assign(pState, { [stateKey]: graphKind === 'missing graph' ? undefined : {} });
+
+		if (graphKind === 'missing graph') expect(() => getKqlxState()).toThrow();
+		else expect(getKqlxState().sections).toEqual([]);
+		expect(() => getKqlxState(true)).toThrow();
+		expect(section.serialize).not.toHaveBeenCalled();
+		expect(postMessageToHost).not.toHaveBeenCalled();
+	});
+
+	it('excludes only known provisional SQL and unknown decoration from strict missing-state checks', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const provisional = document.createElement('kw-sql-section');
+		provisional.id = 'sql_provisional_missing';
+		provisional.setAttribute('data-sql-comparison-admission-request-id', 'provisional-request');
+		const decoration = document.createElement('div');
+		decoration.id = 'query_decoration';
+		container.append(provisional, decoration);
+
+		expect(getKqlxState(true).sections).toEqual([]);
+		const query = document.createElement('kw-query-section');
+		query.id = 'query_missing_not_provisional';
+		query.setAttribute('data-sql-comparison-admission-request-id', 'not-a-sql-comparison');
+		container.appendChild(query);
+		expect(getKqlxState().sections).toEqual([]);
+		expect(() => getKqlxState(true)).toThrow();
+	});
+
+	it('preserves legacy SQL values and opaque arrays in frozen strict tool capture', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const sqlId = testState.addSqlBox({ id: 'sql_exact' });
+		const sql = document.getElementById(sqlId) as HTMLElement & { serialize: () => unknown };
+		const serialized = {
+			id: sqlId, type: 'sql', query: '', database: '  MixedCase  ',
+			futureSettings: { label: '  exact value  ', values: [0, false, null, undefined, ['A', 'b']] },
+		};
+		sql.serialize = () => serialized;
+
+		expect(getKqlxState().sections[0]).toBe(serialized);
+		const captured = getKqlxState(true).sections;
+		expect(captured).toEqual([serialized]);
+		expect(captured[0]).not.toBe(serialized);
+		expect(Object.isFrozen(captured)).toBe(true);
+		expect(Object.isFrozen(captured[0].futureSettings)).toBe(true);
+		expect(Object.isFrozen(captured[0].futureSettings.values)).toBe(true);
+		serialized.futureSettings.label = 'changed after capture';
+		expect(captured[0].futureSettings.label).toBe('  exact value  ');
+	});
+
+	it('accepts an authoritative empty native strict tool capture without stale passthrough notes', () => {
+		pState.hostOwnedMarkdownActive = true;
+		pState.documentRuntimeActive = true;
+		pState.metadataFreeDevelopmentNoteSections = [{ id: 'notes_stale', type: 'devnotes', entries: [] }];
+
+		const captured = getKqlxState(true).sections;
+		expect(captured).toEqual([]);
+		expect(Object.isFrozen(captured)).toBe(true);
+	});
+
 	it('uses host-owned Markdown projection without consulting component serialize()', () => {
 		const container = document.createElement('div');
 		container.id = 'queries-container';
@@ -1245,10 +1425,10 @@ describe('persistence round-trip', () => {
 		container.id = 'queries-container';
 		document.body.appendChild(container);
 
-		const source = document.createElement('div') as HTMLElement & { serialize: () => unknown };
+		const source = document.createElement('kw-sql-section') as HTMLElement & { serialize: () => unknown };
 		source.id = 'sql_source';
 		source.serialize = () => ({ id: source.id, type: 'sql', query: 'SELECT 1' });
-		const comparison = document.createElement('div') as HTMLElement & { serialize: () => unknown };
+		const comparison = document.createElement('kw-sql-section') as HTMLElement & { serialize: () => unknown };
 		comparison.id = 'sql_comparison';
 		comparison.setAttribute('data-sql-comparison-admission-request-id', 'request-1');
 		comparison.serialize = () => ({
@@ -1257,6 +1437,9 @@ describe('persistence round-trip', () => {
 		container.append(source, comparison);
 
 		expect(getKqlxState().sections).toEqual([
+			{ id: 'sql_source', type: 'sql', query: 'SELECT 1' },
+		]);
+		expect(getKqlxState(true).sections).toEqual([
 			{ id: 'sql_source', type: 'sql', query: 'SELECT 1' },
 		]);
 	});
@@ -3702,6 +3885,59 @@ describe('persistence round-trip', () => {
 		expect(postMessageToHost).toHaveBeenCalledTimes(2);
 	});
 
+	it('does not persist or advance revision when fourteen hydrated sections only reorder object keys', () => {
+		document.body.innerHTML = '<div id="queries-container"></div>';
+		const container = document.getElementById('queries-container')!;
+		let sections: Array<Record<string, unknown>> = [
+			...Array.from({ length: 5 }, (_, index) => ({
+				id: `markdown_order_${index}`, type: 'markdown', title: `Notes ${index}`,
+				text: `Synthetic notes ${index}`, mode: 'preview', expanded: false,
+				future: { second: 2, first: 1 },
+			})),
+			...Array.from({ length: 5 }, (_, index) => ({
+				id: `query_order_${index}`, type: 'query', clusterUrl: '', database: '',
+				query: `print Synthetic=${index}`, expanded: true, resultsVisible: false,
+			})),
+			...Array.from({ length: 4 }, (_, index) => ({
+				id: `chart_order_${index}`, type: 'chart', dataSourceId: 'query_order_0',
+				chartType: 'bar', xColumn: 'Category', yColumn: 'Value', yColumns: ['Value', 'Count'],
+				editorHeightPx: 182, expanded: false,
+			})),
+		];
+		for (let index = 0; index < sections.length; index++) {
+			const element = document.createElement(`kw-${sections[index].type}-section`) as HTMLElement & { serialize: () => unknown };
+			element.id = String(sections[index].id);
+			element.serialize = () => sections[index];
+			container.appendChild(element);
+		}
+		pState.documentKind = 'kqlx';
+		pState.documentUri = 'file:///tmp/ordering-only-hydration.kqlx';
+		pState.compatibilityMode = false;
+		pState.documentRuntimeActive = true;
+		adoptCurrentStateAsCleanForTest();
+		const initialRevision = pState.documentEditRevision;
+		const initialState = getKqlxState();
+		expect(initialState.sections).toHaveLength(14);
+		sections = sections.map(section => Object.fromEntries(
+			Object.keys(section).reverse().map(key => [key, section[key]]),
+		));
+		expect(getKqlxState()).toEqual(initialState);
+		vi.mocked(postMessageToHost).mockClear();
+		schedulePersist(undefined, true);
+		expect(postMessageToHost).not.toHaveBeenCalled();
+		expect(pState.documentEditRevision).toBe(initialRevision);
+
+		sections[5].query = 'print Synthetic=99';
+		schedulePersist('typing', true);
+		expect(postMessageToHost).toHaveBeenCalledOnce();
+		expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'persistDocument', editRevision: initialRevision + 1,
+			state: expect.objectContaining({ sections: expect.arrayContaining([
+				expect.objectContaining({ id: 'query_order_0', query: 'print Synthetic=99' }),
+			]) }),
+		}));
+	});
+
 	it('resends unchanged rich-document state until the exact snapshot is acknowledged', () => {
 		handleDocumentDataMessage({
 			type: 'documentData', ok: true, forceReload: true,
@@ -4876,6 +5112,72 @@ describe('persistence round-trip', () => {
 				sections: [expect.objectContaining({ query: 'print Value=2' })],
 			}),
 		}));
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('does not persist reordered saved descriptors during deferred result settlement', () => {
+		vi.useFakeTimers();
+		const clusterUrl = 'https://descriptor-restored.kusto.windows.net';
+		testState.kustoConnections.push(ownedKustoConnection({ id: 'descriptor-restored', clusterUrl }));
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		try {
+			const resultJson = JSON.stringify({ columns: [{ name: 'Value', type: 'int' }], rows: [[1]], metadata: {} });
+			const resultArtifact = {
+				version: 1, artifactId: 'result:query_descriptor_restored:1',
+				sourceBoxId: 'query_descriptor_restored', revision: 1, createdAt: 1,
+				policy: { exportToCsv: true, exposeToActiveContent: false },
+			};
+			const pendingSource = {
+				id: 'query_descriptor_pending', type: 'query', query: 'print Pending=1',
+				clusterUrl: 'https://descriptor-pending.kusto.windows.net', database: 'Db',
+				resultJson, ...kustoResultOwner,
+			};
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentUri: 'file:///tmp/descriptor-restored.kqlx',
+				state: { sections: [{
+					id: 'query_descriptor_restored', type: 'query', query: 'print Value=1',
+					clusterUrl, database: 'Db', resultJson, resultArtifact, ...kustoResultOwner,
+				}, pendingSource] },
+			});
+			const restored = document.getElementById('query_descriptor_restored') as HTMLElement & { serialize: () => unknown };
+			const pending = document.getElementById('query_descriptor_pending') as HTMLElement & { serialize: () => unknown };
+			let admitted = false;
+			let query = 'print Value=1';
+			restored.serialize = () => ({
+				id: 'query_descriptor_restored', type: 'query', query, clusterUrl, database: 'Db',
+				...(admitted ? { resultJson, resultArtifact, ...kustoResultOwner } : {}),
+			});
+			pending.serialize = () => ({
+				id: pendingSource.id, type: pendingSource.type, query: pendingSource.query,
+				clusterUrl: pendingSource.clusterUrl, database: pendingSource.database,
+				resultJson: pendingSource.resultJson, ...kustoResultOwner,
+			});
+			container.append(restored, pending);
+			adoptCurrentStateAsCleanForTest();
+			flushDeferredRestoreTimers();
+			admitted = true;
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(1);
+			vi.mocked(postMessageToHost).mockClear();
+
+			schedulePersist(undefined, true);
+
+			expect(postMessageToHost).not.toHaveBeenCalled();
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+			query = 'print Value=2';
+			schedulePersist('query-edit', true);
+			expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'persistDocument', state: expect.objectContaining({
+					sections: [
+						expect.objectContaining({ query: 'print Value=2', resultJson, resultArtifact }),
+						expect.objectContaining({ id: pendingSource.id, resultJson }),
+					],
+				}),
+			}));
 		} finally {
 			vi.useRealTimers();
 		}
@@ -7150,6 +7452,7 @@ describe('persistence round-trip', () => {
 		expect(state.sections[1]).toEqual({
 			id: 'devnotes_owner', type: 'devnotes', entries: [authoritativeEntry],
 		});
+		expect(getKqlxState(true).sections).toEqual(state.sections);
 	});
 
 	it.each([

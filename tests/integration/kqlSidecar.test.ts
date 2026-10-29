@@ -4,11 +4,13 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { types as utilTypes } from 'node:util';
 
 import { KqlCompatEditorProvider } from '../../src/host/kqlCompatEditorProvider';
 import { KqlxEditorProvider, OwnedDocumentEditTracker } from '../../src/host/kqlxEditorProvider';
 import { MdCompatEditorProvider } from '../../src/host/mdCompatEditorProvider';
 import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
+import { MainWebviewStartupGateway } from '../../src/host/mainWebviewStartupGateway';
 import { KustoResultPersistenceRegistry } from '../../src/host/kustoResultPersistenceOwner';
 import { KustoAuthPreferenceService } from '../../src/host/kustoAuthPreferenceService';
 import { parseKqlxText, stringifyKqlxFile } from '../../src/host/kqlxFormat';
@@ -18,7 +20,10 @@ import { CompatSidecarSession } from '../../src/host/compatSidecarSession';
 import { CompatSidecarCloseCoordinator } from '../../src/host/compatSidecarCloseCoordinator';
 import { CompatSidecarProjectionCoordinator } from '../../src/host/compatSidecarProjectionCoordinator';
 import { CompatSidecarPersistCoordinator } from '../../src/host/compatSidecarPersistCoordinator';
+import { KustoWorkbenchToolOrchestrator } from '../../src/host/kustoWorkbenchTools';
 import { parseCompatibilityPersistenceWebviewMessage } from '../../src/shared/compatibilityPersistenceProtocol';
+import { parseDocumentViewHostMessage, parseDocumentViewWebviewMessage } from '../../src/shared/documentViewProtocol';
+import { createToolStateResponseMessage } from '../../src/shared/toolStateSnapshotProtocol';
 import { normalizeWorkbenchUriKey } from '../../src/host/workbenchFileTypes';
 import {
 	adaptCompatibilityPersistenceTestPanel,
@@ -214,6 +219,135 @@ async function waitForCondition(
 	}
 }
 
+const createNativeSaveParticipantTrace = (enabled: boolean) => {
+	if (!enabled) return undefined;
+	type Listener = { listenerId: number; creatorTest: string; start: number; retired: boolean; pending: number };
+	type Pending = { kind: string; listenerId: number; invocationId: number; waitId?: number; creatorTest: string; start: number; uriId?: number };
+	type Entry = { seq: number; tMs: number; kind: string; creatorTest: string; currentTest: string; listenerId?: number; invocationId?: number; waitId?: number; uriId?: number; status?: string | boolean };
+	const limit = 1024, clock = performance.now.bind(performance), intrinsicThen = Promise.prototype.then;
+	const intrinsicFunctionToString = Function.prototype.toString;
+	const nativePromiseSource = Reflect.apply(intrinsicFunctionToString, Promise, []);
+	const nativeSpeciesSource = Reflect.apply(intrinsicFunctionToString, Object.getOwnPropertyDescriptor(Promise, Symbol.species)!.get!, []);
+	const listeners = new Map<number, Listener>(), pending = new Map<string, Pending>();
+	const subscriptions = new WeakMap<object, number>(), uris = new WeakMap<object, number>(), waitMethods = new WeakMap<Function, Function>();
+	const baselineGaps = { preWrapperUnknown: 1, manualDisposeUnknown: 1, timerUnobserved: 1 };
+	const cumulativeGaps: Record<string, number> = { ...baselineGaps };
+	let listenerId = 0, invocationId = 0, waitId = 0, uriId = 0, seq = 0, testId = 0, testName = '', dropped = 0, cumulativeDropped = 0;
+	let entries: Entry[] = [], gaps: Record<string, number> = { ...baselineGaps };
+	const gap = (name: string) => { gaps[name] = (gaps[name] ?? 0) + 1; cumulativeGaps[name] = (cumulativeGaps[name] ?? 0) + 1; };
+	const safe = (action: () => void) => { try { action(); } catch { gap('observerError'); } };
+	const emit = (kind: string, detail: Partial<Entry> = {}) => {
+		const entry = { seq: ++seq, tMs: clock(), kind, creatorTest: testName, currentTest: testName, ...detail };
+		if (entries.length < limit) entries.push(entry); else { dropped++; cumulativeDropped++; }
+	};
+	const prune = (listener: Listener) => { if (listener.retired && !listener.pending) listeners.delete(listener.listenerId); };
+	const retain = (key: string, value: Pending, listener: Listener) => {
+		if (pending.size >= limit) { gap('pendingCapacity'); return false; }
+		pending.set(key, value); listener.pending++; return true;
+	};
+	const release = (key: string, listener: Listener) => { if (pending.delete(key)) listener.pending--; prune(listener); };
+	const isNativePromiseConstructor = (value: unknown) => {
+		if (typeof value !== 'function' || utilTypes.isProxy(value)
+			|| Reflect.apply(intrinsicFunctionToString, value, []) !== nativePromiseSource) return false;
+		const prototype = Object.getOwnPropertyDescriptor(value, 'prototype');
+		return !!prototype && 'value' in prototype && prototype.writable === false && prototype.configurable === false
+			&& prototype.enumerable === false && prototype.value !== null && typeof prototype.value === 'object' && !utilTypes.isProxy(prototype.value);
+	};
+	const observe = (value: unknown, listener: Listener, invocation: number, uri: number | undefined) => {
+		if (!utilTypes.isPromise(value)) { gap('unknownThenable'); return; }
+		const prototype = !utilTypes.isProxy(value) && !Object.getOwnPropertyDescriptor(value, 'constructor') ? Object.getPrototypeOf(value) : undefined;
+		const constructor = prototype && !utilTypes.isProxy(prototype) ? Object.getOwnPropertyDescriptor(prototype, 'constructor') : undefined;
+		const nativeConstructor = constructor && 'value' in constructor && isNativePromiseConstructor(constructor.value)
+			&& Object.getOwnPropertyDescriptor(constructor.value, 'prototype')!.value === prototype ? constructor.value : undefined;
+		const species = nativeConstructor ? Object.getOwnPropertyDescriptor(nativeConstructor, Symbol.species) : undefined;
+		const supported = species && ('value' in species
+			? species.value === null || species.value === undefined || isNativePromiseConstructor(species.value)
+			: typeof species.get === 'function' && !utilTypes.isProxy(species.get) && species.set === undefined
+				&& Reflect.apply(intrinsicFunctionToString, species.get, []) === nativeSpeciesSource);
+		if (!supported) { gap('unsupportedPromise'); return; }
+		const wait = ++waitId, key = `wait:${wait}`;
+		const detail = { listenerId: listener.listenerId, invocationId: invocation, waitId: wait, creatorTest: listener.creatorTest, uriId: uri };
+		if (!retain(key, { kind: 'waitUntil', ...detail, start: clock() }, listener)) return;
+		const settled = (status: string) => safe(() => { emit('waitUntil.settled', { ...detail, status }); release(key, listener); });
+		try {
+			Reflect.apply(intrinsicThen, value, [() => settled('fulfilled'), () => settled('rejected')]);
+			emit('waitUntil.accepted', detail);
+		} catch { release(key, listener); gap('promiseObservationFailed'); }
+	};
+	return {
+		beginTest(name: string) { safe(() => { testId++; testName = name; }); },
+		record(kind: string, status?: boolean) { safe(() => emit(kind, { status: typeof status === 'boolean' ? status : undefined })); },
+		wrap(register: (...args: any[]) => vscode.Disposable, kind: 'willSave' | 'didSave') {
+			return function (this: unknown, ...args: any[]) {
+				const handler = args[0];
+				let listener: Listener | undefined;
+				safe(() => {
+					if (typeof handler !== 'function') { gap('callbackShape'); return; }
+					if (listeners.size >= limit) { gap('listenerCapacity'); return; }
+					listener = { listenerId: ++listenerId, creatorTest: testName, start: clock(), retired: false, pending: 0 };
+					listeners.set(listener.listenerId, listener);
+				});
+				if (!listener) return Reflect.apply(register, this, args);
+				const owner = listener;
+				const callback = function (this: unknown, ...callbackArgs: any[]) {
+					const invocation = ++invocationId, key = `callback:${invocation}`;
+					let restore: (() => void) | undefined, status = 'threw';
+					const detail = { listenerId: owner.listenerId, invocationId: invocation, creatorTest: owner.creatorTest, uriId: undefined as number | undefined };
+					safe(() => {
+						const event = callbackArgs[0], uri = kind === 'willSave' ? event?.document?.uri : event?.uri;
+						if (uri && typeof uri === 'object') { if (!uris.has(uri)) uris.set(uri, ++uriId); detail.uriId = uris.get(uri); }
+						retain(key, { kind, ...detail, start: clock() }, owner);
+						emit('callback.enter', detail);
+						if (kind !== 'willSave') return;
+						const descriptor = Object.getOwnPropertyDescriptor(event, 'waitUntil');
+						if (!descriptor || !('value' in descriptor) || typeof descriptor.value !== 'function'
+							|| !(descriptor.writable || descriptor.configurable)) { gap('waitUntilDescriptor'); return; }
+						const original = waitMethods.get(descriptor.value) ?? descriptor.value;
+						const wait = function (this: unknown, ...waitArgs: any[]) {
+							const result = Reflect.apply(original, this, waitArgs);
+							safe(() => observe(waitArgs[0], owner, invocation, detail.uriId));
+							return result;
+						};
+						waitMethods.set(wait, original);
+						const installedDescriptor = { ...descriptor, value: wait };
+						Object.defineProperty(event, 'waitUntil', installedDescriptor);
+						restore = () => {
+							const current = Object.getOwnPropertyDescriptor(event, 'waitUntil');
+							if (current && (['configurable', 'enumerable', 'writable', 'value', 'get', 'set'] as const).every(field =>
+								Object.hasOwn(current, field) === Object.hasOwn(installedDescriptor, field) && current[field] === installedDescriptor[field])) {
+								Object.defineProperty(event, 'waitUntil', descriptor);
+							}
+							else gap('waitUntilReplaced');
+						};
+					});
+					try { const result = Reflect.apply(handler, this, callbackArgs); status = 'returned'; return result; }
+					finally {
+						safe(() => restore?.());
+						safe(() => { emit('callback.exit', { ...detail, status }); release(key, owner); });
+					}
+				};
+				try {
+					const subscription = Reflect.apply(register, this, [callback, ...args.slice(1)]);
+					safe(() => { subscriptions.set(subscription, owner.listenerId); emit('listener.registered', { listenerId: owner.listenerId, creatorTest: owner.creatorTest }); });
+					return subscription;
+				} catch (error) { safe(() => { owner.retired = true; prune(owner); }); throw error; }
+			};
+		},
+		retire(subscription: vscode.Disposable) {
+			safe(() => {
+				const listener = listeners.get(subscriptions.get(subscription)!);
+				if (listener) { listener.retired = true; emit('listener.retired', { listenerId: listener.listenerId, creatorTest: listener.creatorTest }); prune(listener); }
+			});
+		},
+		flush() {
+			const batch = { version: 1, testId, testName, entries, outstanding: [...pending.values()].map(value => ({ ...value, retired: listeners.get(value.listenerId)?.retired ?? true })),
+				dropped, gaps: { ...gaps }, cumulativeDropped, cumulativeGaps: { ...cumulativeGaps } };
+			entries = []; dropped = 0; testName = ''; gaps = { ...baselineGaps };
+			return batch;
+		},
+	};
+};
+
 suite('Sidecar .kql.json strategy', () => {
 	const originalInitializeWebviewPanel = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 	const originalResolveKqlxEditor = (KqlxEditorProvider as any).prototype.resolveCustomTextEditor;
@@ -226,11 +360,17 @@ suite('Sidecar .kql.json strategy', () => {
 	const originalOnDidSaveTextDocument = vscode.workspace.onDidSaveTextDocument;
 	const workspaceSubscriptions: vscode.Disposable[] = [];
 	const liveDocuments = createLiveTextDocumentTestFacade();
-	const trackWorkspaceEvent = (register: (...args: any[]) => vscode.Disposable) => (...args: any[]) => {
-		const subscription = register.apply(vscode.workspace, args);
-		workspaceSubscriptions.push(subscription);
-		return subscription;
+	const nativeSaveTrace = createNativeSaveParticipantTrace(process.env.KW_NATIVE_SAVE_PARTICIPANT_TRACE === '1');
+	const trackWorkspaceEvent = (register: (...args: any[]) => vscode.Disposable, kind?: 'willSave' | 'didSave') => {
+		const observed = kind ? nativeSaveTrace?.wrap(register, kind) ?? register : register;
+		return (...args: any[]) => {
+			const subscription = observed.apply(vscode.workspace, args);
+			workspaceSubscriptions.push(subscription);
+			return subscription;
+		};
 	};
+
+	setup(function () { nativeSaveTrace?.beginTest(this.currentTest?.fullTitle() ?? ''); });
 
 	suiteSetup(() => {
 		liveDocuments.install();
@@ -279,15 +419,18 @@ suite('Sidecar .kql.json strategy', () => {
 		};
 		(QueryEditorProvider as any).prototype.inferClusterDatabaseForKqlQuery = async () => undefined;
 		(vscode.workspace as any).onDidChangeTextDocument = trackWorkspaceEvent(originalOnDidChangeTextDocument as any);
-		(vscode.workspace as any).onWillSaveTextDocument = trackWorkspaceEvent(originalOnWillSaveTextDocument as any);
-		(vscode.workspace as any).onDidSaveTextDocument = trackWorkspaceEvent(originalOnDidSaveTextDocument as any);
+		(vscode.workspace as any).onWillSaveTextDocument = trackWorkspaceEvent(originalOnWillSaveTextDocument as any, 'willSave');
+		(vscode.workspace as any).onDidSaveTextDocument = trackWorkspaceEvent(originalOnDidSaveTextDocument as any, 'didSave');
 	});
 
 	teardown(() => {
 		for (const subscription of workspaceSubscriptions.splice(0)) {
-			try { subscription.dispose(); } catch { /* ignore */ }
+			try { subscription.dispose(); nativeSaveTrace?.retire(subscription); } catch { /* ignore */ }
 		}
 		liveDocuments.clear();
+		if (nativeSaveTrace) {
+			try { console.log('[kw-native-save-participants]' + JSON.stringify(nativeSaveTrace.flush())); } catch { /* diagnostic only */ }
+		}
 	});
 
 	suiteTeardown(() => {
@@ -3598,7 +3741,8 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
-	test('abandoned linked Save restores disk without overwriting a newer buffer', async () => {
+	test('abandoned linked Save restores disk without overwriting a newer buffer', async function () {
+		this.timeout(15000);
 		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
 		const originalOnDidSave = vscode.workspace.onDidSaveTextDocument;
 		const originalOpenTextDocument = vscode.workspace.openTextDocument;
@@ -4039,6 +4183,7 @@ suite('Sidecar .kql.json strategy', () => {
 	});
 
 	test('native save final snapshot bypasses an active persistence decision', async () => {
+		const originalOnDidChange = vscode.workspace.onDidChangeTextDocument;
 		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
 		const originalOnDidSave = vscode.workspace.onDidSaveTextDocument;
 		const originalApplyEdit = vscode.workspace.applyEdit;
@@ -4183,6 +4328,7 @@ suite('Sidecar .kql.json strategy', () => {
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceState = originalSanitizeSync;
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+			(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChange;
 			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
 			(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSave;
 			(vscode.workspace as any).applyEdit = originalApplyEdit;
@@ -6181,6 +6327,1503 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	async function checkFirstPublicCompatibilityActivation(
+		sourceText: string,
+		holdAcknowledgement: boolean,
+		ownedEditLanguage?: 'KQL' | 'SQL',
+		overlappingOwnedEdits: boolean | 'external-between-writes' | 'metadata-only-B' = false,
+	): Promise<void> {
+		const prototype = (QueryEditorProvider as any).prototype;
+		const scopedInitialize = prototype.initializeWebviewPanel;
+		const scopedHandle = prototype.handleWebviewMessage;
+		const originalExecuteCommand = vscode.commands.executeCommand;
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const scopedDidChange = vscode.workspace.onDidChangeTextDocument;
+		const sourceChanges = new vscode.EventEmitter<vscode.TextDocumentChangeEvent>();
+		const isKql = ownedEditLanguage === 'KQL';
+		const providerClass = isKql ? KqlCompatEditorProvider : SqlCompatEditorProvider;
+		const primaryType = isKql ? 'query' : 'sql';
+		const primaryId = isKql ? 'compat_primary_query' : 'compat_primary_sql';
+		let sourceVersion = 1;
+		let sourceDirty = false;
+		const extensionModule = require('../../src/host/extension');
+		const originalOrchestratorExport = Object.getOwnPropertyDescriptor(extensionModule, 'toolOrchestrator')!;
+		const originalSingleton = Object.getOwnPropertyDescriptor(KustoWorkbenchToolOrchestrator, 'instance')!;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-first-public-compat-activation-'));
+		const sourcePath = path.join(tmpDir, isKql ? 'first.kql' : 'first.sql');
+		const sourceUri = vscode.Uri.file(sourcePath);
+		const extensionUri = vscode.Uri.file(path.resolve(__dirname, '../../..'));
+		const subscriptions: vscode.Disposable[] = [];
+		const secretChanges = new vscode.EventEmitter<vscode.SecretStorageChangeEvent>();
+		const cancellation = new vscode.CancellationTokenSource();
+		const createMemento = () => {
+			const values = new Map<string, unknown>();
+			return {
+				get: (key: string, fallback?: unknown) => values.has(key) ? values.get(key) : fallback,
+				update: async (key: string, value: unknown) => { values.set(key, value); },
+				keys: () => [...values.keys()], setKeysForSync: () => undefined,
+			};
+		};
+		const context = {
+			subscriptions, extensionUri, extensionPath: extensionUri.fsPath,
+			extensionMode: overlappingOwnedEdits ? vscode.ExtensionMode.Production : vscode.ExtensionMode.Test,
+			extension: { packageJSON: JSON.parse(fs.readFileSync(path.join(extensionUri.fsPath, 'package.json'), 'utf8')) },
+			globalState: createMemento(), workspaceState: createMemento(),
+			globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global')),
+			storageUri: vscode.Uri.file(path.join(tmpDir, 'storage')),
+			logUri: vscode.Uri.file(path.join(tmpDir, 'logs')),
+			asAbsolutePath: (relative: string) => path.join(extensionUri.fsPath, relative),
+			secrets: {
+				get: async () => undefined, store: async () => undefined, delete: async () => undefined,
+				onDidChange: secretChanges.event,
+			},
+		} as unknown as vscode.ExtensionContext;
+		let document = {
+			uri: sourceUri, getText: () => sourceText, isClosed: false,
+			get version() { return sourceVersion; }, get isDirty() { return sourceDirty; },
+			eol: vscode.EndOfLine.LF, get lineCount() { return sourceText.split('\n').length; },
+			lineAt: (line: number) => ({ text: sourceText.split('\n')[line] ?? '' }),
+			positionAt: (offset: number) => {
+				const lines = sourceText.slice(0, offset).split('\n');
+				return new vscode.Position(lines.length - 1, lines.at(-1)!.length);
+			},
+		} as vscode.TextDocument;
+		const posted: any[] = [];
+		const received: any[] = [];
+		const projections: any[] = [];
+		const acknowledged = new Set<string>();
+		const inboundWork = new Set<Promise<unknown>>();
+		const transportErrors: unknown[] = [];
+		const openCalls: Array<{ uri: vscode.Uri; editorId: string }> = [];
+		const snapshots: Array<{ requestId: string; applied: boolean; error?: string }> = [];
+		const reconciliations: Array<{ applied: boolean; sections: unknown[]; fromToolSnapshot: boolean }> = [];
+		const pendingStateReplies: any[] = [];
+		const projectionSettlements: Array<{ generation: number; applied: boolean }> = [];
+		const disposalHandlers = new Set<() => unknown>();
+		const viewHandlers = new Set<() => unknown>();
+		const runtimeId = 'first-public-compatibility-runtime';
+		const loadingError = 'This document is still loading and has no executable sections yet.';
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let queryEditor: QueryEditorProvider | undefined;
+		let coordinator: CompatSidecarProjectionCoordinator | undefined;
+		let closeCoordinator: CompatSidecarCloseCoordinator | undefined;
+		let session: CompatSidecarSession | undefined;
+		let runtimeProjection: any;
+		let runtimeApplied = false;
+		let holdProjection = holdAcknowledgement;
+		let panelDisposed = false;
+		let initialRequest: Promise<unknown> | undefined;
+		let activation: ReturnType<KustoWorkbenchToolOrchestrator['activateWorkbenchFile']> | undefined;
+		let firstResult: Awaited<NonNullable<typeof activation>> | undefined;
+		let firstSettledAt: number | undefined;
+		let initialConnection: any;
+		let coordinatorCreations = 0;
+		let settlingToolSnapshot = false;
+		let holdStateReply = false;
+		let capturedReadiness: unknown;
+		let capturedSnapshotIdentity: unknown;
+		const sourceWrites: Array<{ previousText: string; nextText: string; version: number }> = [];
+		let releaseFirstOwnedWrite!: () => void;
+		const firstOwnedWrite = new Promise<void>(resolve => { releaseFirstOwnedWrite = resolve; });
+		const send = (message: any): Promise<unknown> => {
+			assert.ok(receiveHandler, 'setup: the actual startup gateway must install its receiver');
+			received.push(message);
+			const work = Promise.resolve(receiveHandler(message));
+			inboundWork.add(work);
+			void work.then(() => inboundWork.delete(work), error => {
+				transportErrors.push(error);
+				inboundWork.delete(work);
+			});
+			return work;
+		};
+		const acknowledge = async (projection: any): Promise<void> => {
+			if (acknowledged.has(projection.reloadRequestId)) return;
+			runtimeProjection = projection;
+			runtimeApplied = true;
+			const response = parseCompatibilityPersistenceWebviewMessage({
+				protocolVersion: projection.protocolVersion, channel: projection.channel,
+				viewSessionId: projection.viewSessionId, type: 'documentReloadResult',
+				requestId: projection.reloadRequestId, applied: true, editRevision: projection.editRevision,
+			}, isKql ? 'kql' : 'sql');
+			assert.ok(response.ok, 'setup: the current projection ACK must pass canonical compatibility admission');
+			acknowledged.add(projection.reloadRequestId);
+			await send(response.value);
+		};
+		const panel = {
+			viewType: providerClass.viewType, visible: true, active: true, reveal: () => undefined,
+			webview: {
+				options: {}, html: '', cspSource: 'vscode-webview://first-public-compatibility',
+				asWebviewUri: (uri: vscode.Uri) => uri,
+				postMessage: async (message: any) => {
+					posted.push(message);
+					if (message.type === 'documentData' && message.ok === true) {
+						projections.push(message);
+						if (!holdProjection) await acknowledge(message);
+					} else if (message.type === 'mainWebviewDispatcherProbe') {
+						assert.ok(message.probeId, 'setup: dispatcher probes must carry their actual ID');
+						if (!runtimeApplied) {
+							const bootstrap = getCompatibilityPersistenceTestBootstrap(panel)!;
+							void send({
+								...bootstrap, type: 'requestDocument',
+								requestId: `dispatcher-document-${message.probeId}`, expectedEditRevision: 0,
+							});
+							}
+						void send({ type: 'mainWebviewDispatcherReady', runtimeId, probeId: message.probeId });
+					} else if (message.type === 'requestToolState') {
+						const error = runtimeApplied ? undefined : loadingError;
+						const response = createToolStateResponseMessage(
+							message.requestId, runtimeApplied ? runtimeProjection.state.sections : [], error,
+						);
+						assert.ok(response.ok, 'setup: the real state waiter must receive a canonical response');
+						snapshots.push({ requestId: message.requestId, applied: runtimeApplied, error });
+						if (holdStateReply) pendingStateReplies.push(response.value);
+						else void send(response.value);
+					}
+					return true;
+				},
+				onDidReceiveMessage: (handler: (message: any) => unknown) => {
+					receiveHandler = handler;
+					return new vscode.Disposable(() => { if (receiveHandler === handler) receiveHandler = undefined; });
+				},
+			},
+			onDidDispose: (handler: () => unknown) => {
+				disposalHandlers.add(handler);
+				return new vscode.Disposable(() => { disposalHandlers.delete(handler); });
+			},
+			onDidChangeViewState: (handler: () => unknown) => {
+				viewHandlers.add(handler);
+				return new vscode.Disposable(() => { viewHandlers.delete(handler); });
+			},
+			dispose: () => {
+				if (panelDisposed) return;
+				panelDisposed = true;
+				for (const handler of [...disposalHandlers]) handler();
+			},
+		} as unknown as vscode.WebviewPanel;
+
+		try {
+			fs.writeFileSync(sourcePath, sourceText, 'utf8');
+			const sourceBytes = fs.readFileSync(sourcePath);
+			if (overlappingOwnedEdits) {
+				document = await vscode.workspace.openTextDocument(sourceUri);
+				sourceText = document.getText();
+				sourceVersion = document.version;
+				sourceDirty = document.isDirty;
+				subscriptions.push(scopedDidChange(event => {
+					if (event.document.uri.toString() !== sourceUri.toString()) return;
+					sourceText = event.document.getText();
+					sourceVersion = event.document.version;
+					sourceDirty = event.document.isDirty;
+					sourceChanges.fire(event);
+				}));
+			}
+			const initialSourceVersion = document.version;
+			if (ownedEditLanguage) {
+				(vscode.workspace as any).onDidChangeTextDocument = sourceChanges.event;
+				(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+					const entries = edit.entries().filter(([uri]) => uri.toString() === sourceUri.toString());
+					if (entries.length === 0) return originalApplyEdit(edit);
+					assert.strictEqual(entries.length, 1);
+					assert.strictEqual(entries[0][1].length, 1);
+					const replacement = entries[0][1][0];
+					assert.ok(replacement.range.start.isEqual(new vscode.Position(0, 0)));
+					assert.ok(replacement.range.end.isEqual(document.positionAt(sourceText.length)),
+						'the actual owned edit must replace the current source range');
+					const previousText = sourceText;
+					if (overlappingOwnedEdits) {
+						assert.strictEqual(await originalApplyEdit(edit), true, 'setup: the actual SDK must physically apply the owned WorkspaceEdit');
+						sourceText = document.getText();
+						sourceVersion = document.version;
+						sourceDirty = document.isDirty;
+					} else {
+						sourceText = replacement.newText;
+						sourceVersion++;
+						sourceDirty = true;
+						sourceChanges.fire({ document, contentChanges: [{ range: replacement.range,
+							rangeOffset: 0, rangeLength: replacement.range.end.character, text: sourceText }], reason: undefined });
+					}
+					sourceWrites.push({ previousText, nextText: sourceText, version: sourceVersion });
+					if (overlappingOwnedEdits && sourceWrites.length === 1) await firstOwnedWrite;
+					return true;
+				};
+			}
+			const connections = connectionManagerStub();
+			const sqlWorkbench = sqlWorkbenchStub();
+			(KustoWorkbenchToolOrchestrator as any).instance = undefined;
+			const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+				context, connections, () => sqlWorkbench.connectionManager, {} as any,
+			);
+			extensionModule.toolOrchestrator = orchestrator;
+			prototype.handleWebviewMessage = originalHandle;
+			prototype.initializeWebviewPanel = async function (this: QueryEditorProvider, targetPanel: vscode.WebviewPanel, options: any) {
+				assert.strictEqual(targetPanel, panel);
+				queryEditor = this;
+				capturedReadiness = (this as any).workbenchToolMutationReadiness;
+				capturedSnapshotIdentity = (this as any).workbenchToolSnapshotIdentity;
+				registerCompatibilityPersistenceTestBootstrap(targetPanel, options.compatibilityPersistence);
+				const toolSession = (this as any).workbenchToolSessionApplication;
+				const settleStateRequest = toolSession.settleStateRequest;
+				toolSession.settleStateRequest = function (...args: any[]) {
+					const previous = settlingToolSnapshot;
+					settlingToolSnapshot = true;
+					try { return settleStateRequest.apply(this, args); }
+					finally { settlingToolSnapshot = previous; }
+				};
+				const lifecycle = (this as any).sqlLifecycle;
+				const reconcile = lifecycle.reconcileComparisonOwners;
+				lifecycle.reconcileComparisonOwners = (...args: any[]) => {
+					reconciliations.push({ applied: runtimeApplied, sections: args[0], fromToolSnapshot: settlingToolSnapshot });
+					return reconcile.apply(lifecycle, args);
+				};
+				await originalInitializeWebviewPanel.call(this, targetPanel, options);
+			};
+			deferMainWebviewReadyForTest(panel);
+			const provider = new (providerClass as any)(
+				context, extensionUri, connections, sqlWorkbench, undefined,
+				(options: any) => {
+					session = options.session;
+					closeCoordinator = new CompatSidecarCloseCoordinator(options);
+					return closeCoordinator;
+				},
+				(options: any) => {
+					coordinatorCreations++;
+					assert.strictEqual(options.session, session);
+					coordinator = new CompatSidecarProjectionCoordinator({
+						...options,
+						onProjectionSettled: async (attempt, applied) => {
+							const result = await options.onProjectionSettled?.(attempt, applied);
+							projectionSettlements.push({ generation: attempt.generation, applied });
+							return result;
+						},
+					});
+					return coordinator;
+				},
+			) as SqlCompatEditorProvider | KqlCompatEditorProvider;
+			(vscode.commands as any).executeCommand = async (command: string, ...args: any[]) => {
+				if (command !== 'vscode.openWith') return originalExecuteCommand(command, ...args);
+				assert.strictEqual(args[0].toString(), sourceUri.toString());
+				assert.strictEqual(args[1], providerClass.viewType);
+				if (ownedEditLanguage && openCalls.length > 0) {
+					assert.strictEqual((queryEditor as any).panel, panel);
+					assert.strictEqual((orchestrator as any).liveConnections.get(initialConnection.token), initialConnection);
+					assert.strictEqual(panelDisposed, false);
+					openCalls.push({ uri: args[0], editorId: args[1] });
+					return;
+				}
+				assert.strictEqual(openCalls.length, 0, 'the first public activation must open this fixture exactly once');
+				openCalls.push({ uri: args[0], editorId: args[1] });
+				await provider.resolveCustomTextEditor(document, panel, cancellation.token);
+				assert.ok(panel.webview.html.includes('data-kusto-document-loading="true"'),
+					'setup: real asset-backed initialization must begin in the production loading state');
+				const bootstrap = getCompatibilityPersistenceTestBootstrap(panel)!;
+				assert.ok(bootstrap?.viewSessionId, 'setup: real initialization must expose the panel session identity');
+				initialConnection = [...(orchestrator as any).liveConnections.values()][0];
+				assert.strictEqual(initialConnection.documentUri, sourceUri.toString());
+				initialRequest = send({ ...bootstrap, type: 'requestDocument', requestId: 'first-public-compatibility-document', expectedEditRevision: 0 });
+				await send({ type: 'mainWebviewDispatcherReady', runtimeId });
+				await waitForCondition(() => projections.length > 0, 'setup: the real provider must physically post documentData', 750);
+				if (!holdAcknowledgement) await initialRequest;
+			};
+			const startedAt = Date.now();
+			activation = orchestrator.activateWorkbenchFile({ targetFileUri: sourceUri.toString() }).then(result => {
+				firstResult = result;
+				firstSettledAt = Date.now();
+				return result;
+			});
+			try {
+				await waitForCondition(() => projections.length > 0 || firstSettledAt !== undefined,
+					'setup: the first URI-only public call must reach its compatibility projection', 750);
+			} catch (error) {
+				if (overlappingOwnedEdits) console.log('[overlapping owned source compatibility parent]', JSON.stringify({
+					phase: 'first-public-before-projection', language: ownedEditLanguage,
+					activationSettled: firstSettledAt !== undefined, firstResult: firstResult ?? null,
+					coordinatorCreations, initialized: coordinator?.isInitialized ?? null,
+					activeGeneration: coordinator?.activeSourceGeneration ?? null, sourceWrites: sourceWrites.length,
+					postedTypes: posted.map(message => message.type), receivedTypes: received.map(message => message.type),
+					stateRequests: snapshots.length, pendingIngress: inboundWork.size,
+				}));
+				throw error;
+			}
+			assert.ok(projections.length > 0, `setup: activation did not project: ${JSON.stringify(firstResult)}`);
+			for (let turn = 0; turn < 32; turn++) await new Promise<void>(resolve => setImmediate(resolve));
+			await new Promise<void>(resolve => setTimeout(resolve, 25));
+			const beforeAck = {
+				settled: firstSettledAt !== undefined, result: firstResult,
+				elapsedMs: firstSettledAt === undefined ? undefined : firstSettledAt - startedAt,
+				initialized: coordinator!.isInitialized, activeGeneration: coordinator!.activeSourceGeneration,
+				snapshots: [...snapshots], reconciliations: reconciliations.filter(entry => entry.fromToolSnapshot).length,
+			};
+			assert.strictEqual(coordinatorCreations, 1);
+			assert.strictEqual((queryEditor as any).panel, panel);
+			assert.strictEqual((queryEditor!.workbenchToolSessionApplication as any).connectionToken, initialConnection.token);
+			assert.strictEqual((orchestrator as any).liveConnections.get(initialConnection.token), initialConnection);
+			assert.strictEqual(openCalls.length, 1);
+			assert.strictEqual(openCalls[0].uri.toString(), sourceUri.toString());
+			for (const projection of projections) {
+				assert.strictEqual(projection.documentUri, sourceUri.toString());
+				assert.strictEqual(projection.viewSessionId, getCompatibilityPersistenceTestBootstrap(panel)!.viewSessionId);
+				assert.strictEqual(projection.state.sections[0].type, primaryType);
+				assert.strictEqual(projection.state.sections[0].id, primaryId);
+				assert.strictEqual(projection.state.sections[0].query, sourceText);
+			}
+			const probes = posted.filter(message => message.type === 'mainWebviewDispatcherProbe');
+			assert.ok(probes.length > 0, 'setup: activation must use real dispatcher revalidation');
+			for (const probe of probes) {
+				assert.ok(received.some(message => message.type === 'mainWebviewDispatcherReady'
+					&& message.probeId === probe.probeId && message.runtimeId === runtimeId));
+				if (holdAcknowledgement) assert.ok(received.some(message => message.type === 'requestDocument'
+					&& message.requestId === `dispatcher-document-${probe.probeId}`));
+			}
+			if (holdAcknowledgement) {
+				assert.strictEqual(beforeAck.initialized, false);
+				assert.strictEqual(beforeAck.activeGeneration, 0);
+				assert.strictEqual(acknowledged.size, 0);
+				assert.strictEqual(projectionSettlements.length, 0);
+			}
+			assert.deepStrictEqual(fs.readFileSync(sourcePath), sourceBytes);
+			assert.strictEqual(document.getText(), sourceText);
+			assert.strictEqual(document.version, initialSourceVersion);
+			assert.strictEqual(document.isDirty, false);
+			assert.strictEqual(fs.existsSync(`${sourcePath}.json`), false);
+			holdProjection = false;
+			await acknowledge(projections.at(-1));
+			await initialRequest;
+			await waitForCondition(() => coordinator!.isInitialized && firstSettledAt !== undefined,
+				'the current projection and the same first activation must settle after canonical ACK', 750);
+			const result = await activation;
+			assert.strictEqual(coordinator!.activeSourceGeneration, projections.at(-1).sourceGeneration);
+			assert.ok(projectionSettlements.some(value => value.applied && value.generation === coordinator!.activeSourceGeneration));
+			assert.strictEqual(session!.currentEditRevision, projections.at(-1).editRevision);
+			assert.deepStrictEqual(transportErrors, []);
+			assert.deepStrictEqual(fs.readFileSync(sourcePath), sourceBytes);
+			assert.strictEqual(document.version, initialSourceVersion);
+			assert.strictEqual(document.isDirty, false);
+			console.log('[first public compatibility activation]', JSON.stringify({
+				sourceText, holdAcknowledgement, beforeAck, result,
+				postedTypes: posted.map(message => message.type), acceptedGeneration: coordinator!.activeSourceGeneration,
+			}));
+			if (holdAcknowledgement) {
+				if (beforeAck.settled) assert.ok(beforeAck.elapsedMs! < 1_000, 'the observed failure must be loading, not a tool timeout');
+				assert.strictEqual(beforeAck.settled, false,
+					`first public activation must await accepted current projection and canonical commit; observed ${JSON.stringify(beforeAck)}`);
+				assert.deepStrictEqual(beforeAck.snapshots, [], 'no tool snapshot may precede the current projection ACK');
+				assert.strictEqual(beforeAck.reconciliations, 0, 'SQL reconciliation must not precede the current projection ACK');
+			}
+			assert.strictEqual(result.success, true, `the same first activation must succeed after ACK: ${JSON.stringify(result)}`);
+			assert.ok(snapshots.length > 0);
+			assert.ok(snapshots.every(snapshot => snapshot.applied && snapshot.error === undefined));
+			assert.ok(reconciliations.some(entry => entry.fromToolSnapshot));
+			if (overlappingOwnedEdits) {
+				const originalText = sourceText;
+				const acceptedGeneration = coordinator!.activeSourceGeneration;
+				const initialProjectionCount = projections.length;
+				const identity = () => (queryEditor as any).workbenchToolSnapshotIdentity();
+				const beforeEditIdentity = identity();
+				const ownedTexts = isKql ? ['print Value=2;\n', 'print Value=3;\n'] : ['SELECT 2 AS Value;\n', 'SELECT 3 AS Value;\n'];
+				if (overlappingOwnedEdits === 'metadata-only-B') ownedTexts[1] = ownedTexts[0];
+				const nativeTexts = ownedTexts.map(text => document.eol === vscode.EndOfLine.CRLF
+					? text.replace(/\n/g, '\r\n') : text);
+				const nodeMetadata = { opaqueText: ' \t\r\n ', nested: { empty: '', enabled: false, values: [null, 0, 'opaque'] } };
+				holdStateReply = true;
+				let oldSnapshotSettled = false;
+				const oldSnapshot = initialConnection.stateGetter().then((value: unknown) => { oldSnapshotSettled = true; return value; });
+				await waitForCondition(() => pendingStateReplies.length === 1,
+					'the actual tool getter must hold the original source-version snapshot before A', 750);
+				const rejectOldSnapshot = async (): Promise<void> => {
+					assert.strictEqual(oldSnapshotSettled, false, 'the old snapshot must remain live until its late reply, not expire first');
+					const previousReconciliations = reconciliations.filter(entry => entry.fromToolSnapshot).length;
+					holdStateReply = false;
+					await send(pendingStateReplies.shift());
+					assert.strictEqual(await oldSnapshot, undefined, 'the changed source version must reject the old reply even under the same projection generation');
+					assert.strictEqual(reconciliations.filter(entry => entry.fromToolSnapshot).length, previousReconciliations,
+						'the old reply must be fenced before SQL owner reconciliation');
+				};
+				const persist = (text: string, editRevision: number, snapshotId?: string): Promise<unknown> => {
+					const state = { ...runtimeProjection.state, sections: runtimeProjection.state.sections.map((section: any, index: number) =>
+						index === 0 ? { ...section, query: text,
+							nodeMetadata: overlappingOwnedEdits === 'metadata-only-B' ? { ...nodeMetadata, editRevision } : nodeMetadata } : section) };
+					runtimeProjection = { ...runtimeProjection, state, editRevision };
+					const parsed = parseCompatibilityPersistenceWebviewMessage({
+						...getCompatibilityPersistenceTestBootstrap(panel), type: 'persistDocument',
+						sourceGeneration: acceptedGeneration, editRevision, state,
+						...(snapshotId === undefined ? {} : { snapshotId }),
+					}, isKql ? 'kql' : 'sql');
+					assert.ok(parsed.ok, 'both overlapping snapshots must enter through canonical compatibility admission');
+					return send(parsed.value);
+				};
+				const firstPersist = persist(ownedTexts[0], 1, 'overlapping-owned-source-first');
+				await waitForCondition(() => sourceWrites.length === 1, 'the actual first applyEdit must physically write A and remain pending', 750);
+				const firstPersistGeneration = session!.generation;
+				const secondPersist = persist(ownedTexts[1], 2, 'overlapping-owned-source-latest');
+				await waitForCondition(() => session!.generation > firstPersistGeneration,
+					'B must supersede A through the actual session while A applyEdit is pending', 750);
+				assert.strictEqual(sourceWrites.length, 1, 'B must not unlock the physical source queue while A is pending');
+				await send({ ...getCompatibilityPersistenceTestBootstrap(panel), type: 'documentReloadResult',
+					requestId: projections[0].reloadRequestId, applied: true, editRevision: 1 });
+				assert.strictEqual(sourceWrites.length, 1, 'a late old projection ACK must not unlock A or run B early');
+				assert.strictEqual((orchestrator as any).liveConnections.get(initialConnection.token), initialConnection);
+				if (overlappingOwnedEdits === 'external-between-writes') {
+					holdProjection = true;
+					const externalText = isKql ? 'print ExternalValue=4;\n' : 'SELECT 4 AS ExternalValue;\n';
+					const externalEdit = new vscode.WorkspaceEdit();
+					externalEdit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), externalText);
+					assert.strictEqual(await originalApplyEdit(externalEdit), true, 'setup: the SDK must physically apply external E between A and B');
+					const exactExternalText = document.getText();
+					await waitForCondition(() => projections.length > initialProjectionCount,
+						'the real external source event must retire the old projection owner', 750);
+					releaseFirstOwnedWrite();
+					await Promise.all([firstPersist, secondPersist]);
+					assert.deepStrictEqual(sourceWrites, [{ previousText: originalText, nextText: nativeTexts[0], version: initialSourceVersion + 1 }]);
+					assert.strictEqual(document.getText(), exactExternalText, 'neither the superseded A nor queued B may overwrite external E');
+					assert.strictEqual(document.version, initialSourceVersion + 2);
+					assert.deepStrictEqual(posted.filter(message => message.type === 'persistDocumentAck'), []);
+					await rejectOldSnapshot();
+					const stateRequestsBeforeRejectedRead = snapshots.length;
+					assert.strictEqual(await (capturedReadiness as () => Promise<boolean>)(), false);
+					assert.strictEqual(await initialConnection.stateGetter(), undefined);
+					assert.strictEqual(snapshots.length, stateRequestsBeforeRejectedRead, 'external drift must be rejected before a tool snapshot can reconcile owners');
+					assert.strictEqual(await coordinator!.adoptOwnedSourceText(acceptedGeneration, originalText, exactExternalText), false);
+					assert.strictEqual((orchestrator as any).liveConnections.get(initialConnection.token), initialConnection);
+					assert.strictEqual(coordinatorCreations, 1);
+					assert.deepStrictEqual(fs.readFileSync(sourcePath), sourceBytes);
+					assert.strictEqual(fs.existsSync(`${sourcePath}.json`), false);
+					assert.deepStrictEqual(transportErrors, []);
+					console.log('[overlapping owned source compatibility negative]', JSON.stringify({
+						language: ownedEditLanguage, sourceWrites, externalText: exactExternalText,
+						version: document.version, readiness: false, retainedOwner: true, acknowledgedSnapshots: [],
+					}));
+					return;
+				}
+				releaseFirstOwnedWrite();
+				await Promise.all([firstPersist, secondPersist]);
+				const expectedWrites = [{ previousText: originalText, nextText: nativeTexts[0], version: initialSourceVersion + 1 }];
+				if (overlappingOwnedEdits !== 'metadata-only-B') {
+					expectedWrites.push({ previousText: nativeTexts[0], nextText: nativeTexts[1], version: initialSourceVersion + 2 });
+				}
+				assert.deepStrictEqual(sourceWrites, expectedWrites, 'every exact source-only owned write must be verified before the readiness oracle');
+				assert.strictEqual(document.getText(), nativeTexts[1]);
+				assert.strictEqual(session!.currentStateEditRevision, 2);
+				assert.deepStrictEqual(posted.filter(message => message.type === 'persistDocumentAck'), [
+					{ ...getCompatibilityPersistenceTestBootstrap(panel), type: 'persistDocumentAck',
+						snapshotId: 'overlapping-owned-source-latest', editRevision: 2 },
+				]);
+				assert.strictEqual(coordinator!.activeSourceGeneration, acceptedGeneration);
+				assert.strictEqual(projections.length, initialProjectionCount);
+				assert.notStrictEqual(identity(), beforeEditIdentity, 'the source-version snapshot fence must advance for B');
+				assert.strictEqual((queryEditor as any).workbenchToolMutationReadiness, capturedReadiness);
+				assert.strictEqual((queryEditor as any).workbenchToolSnapshotIdentity, capturedSnapshotIdentity);
+				assert.strictEqual((orchestrator as any).liveConnections.get(initialConnection.token), initialConnection);
+				assert.deepStrictEqual(fs.readFileSync(sourcePath), sourceBytes);
+				assert.strictEqual(fs.existsSync(`${sourcePath}.json`), false);
+				await rejectOldSnapshot();
+				const ready = await (capturedReadiness as () => Promise<boolean>)();
+				console.log('[overlapping owned source compatibility]', JSON.stringify({
+					language: ownedEditLanguage, sourceWrites, readiness: ready,
+					acknowledgedSnapshots: posted.filter(message => message.type === 'persistDocumentAck'),
+					activeGeneration: coordinator!.activeSourceGeneration, projectionGeneration: coordinator!.currentProjectionGeneration,
+					stateEditRevision: session!.currentStateEditRevision,
+				}));
+				assert.strictEqual(ready, true, `${ownedEditLanguage} readiness must accept B after its verified overlapping owned source commit`);
+				const latestSections = await initialConnection.stateGetter();
+				assert.strictEqual(latestSections?.[0]?.query, ownedTexts[1]);
+				assert.deepStrictEqual(JSON.parse(JSON.stringify(latestSections?.[0]?.nodeMetadata)),
+					overlappingOwnedEdits === 'metadata-only-B' ? { ...nodeMetadata, editRevision: 2 } : nodeMetadata);
+				const reactivated = await orchestrator.activateWorkbenchFile({ targetFileUri: sourceUri.toString() });
+				assert.strictEqual(reactivated.success, true, `latest overlapping owned source must remain usable: ${JSON.stringify(reactivated)}`);
+				assert.strictEqual(coordinatorCreations, 1);
+				assert.strictEqual((orchestrator as any).liveConnections.get(initialConnection.token), initialConnection);
+				assert.deepStrictEqual(transportErrors, []);
+			}
+			if (ownedEditLanguage && !overlappingOwnedEdits) {
+				const acceptedGeneration = coordinator!.activeSourceGeneration;
+				const initialProjectionCount = projections.length;
+				const ownedTexts = isKql ? ['print Value=2;\n', 'print Value=3;\n'] : ['SELECT 2 AS Value;\n', 'SELECT 3 AS Value;\n'];
+				const identity = () => (queryEditor as any).workbenchToolSnapshotIdentity();
+				for (const [index, text] of ownedTexts.entries()) {
+					const beforeEditIdentity = identity();
+					const generationBeforeStateEffects = coordinator!.activeSourceGeneration;
+					const state = { ...runtimeProjection.state, sections: runtimeProjection.state.sections.map((section: any, sectionIndex: number) =>
+						sectionIndex === 0 ? { ...section, query: text } : section) };
+					runtimeProjection = { ...runtimeProjection, state, editRevision: index + 1 };
+					await send({ ...getCompatibilityPersistenceTestBootstrap(panel), type: 'persistDocument',
+						snapshotId: `owned-source-${index + 1}`, sourceGeneration: generationBeforeStateEffects,
+						editRevision: index + 1, state });
+					assert.strictEqual(document.getText(), text);
+					assert.strictEqual(document.version, initialSourceVersion + index + 1);
+					assert.strictEqual(document.isDirty, true);
+					assert.strictEqual(session!.currentStateEditRevision, index + 1);
+					assert.ok(posted.some(message => message.type === 'persistDocumentAck'
+						&& message.snapshotId === `owned-source-${index + 1}` && message.editRevision === index + 1));
+					assert.strictEqual(coordinator!.activeSourceGeneration, acceptedGeneration);
+					assert.strictEqual(projections.length, initialProjectionCount, 'owned edits must not manufacture another projection');
+					assert.notStrictEqual(identity(), beforeEditIdentity, 'the captured source-version fence must advance');
+					assert.strictEqual((queryEditor as any).workbenchToolMutationReadiness, capturedReadiness);
+					assert.strictEqual((queryEditor as any).workbenchToolSnapshotIdentity, capturedSnapshotIdentity);
+					const sections = await initialConnection.stateGetter();
+					assert.strictEqual(sections?.[0]?.query, text, 'the current actual state getter must accept the owned text');
+					const reactivated = await orchestrator.activateWorkbenchFile({ targetFileUri: sourceUri.toString() });
+					assert.strictEqual(reactivated.success, true, `owned-edit public reactivation failed: ${JSON.stringify(reactivated)}`);
+					assert.strictEqual(openCalls.length, index + 2, 'each explicit public activation must issue one exact SDK reveal');
+					assert.strictEqual(coordinatorCreations, 1, 'explicit reactivation must retain the original coordinator');
+					assert.strictEqual((orchestrator as any).liveConnections.get(initialConnection.token), initialConnection);
+					assert.deepStrictEqual(fs.readFileSync(sourcePath), sourceBytes, 'buffer persistence must not rewrite the original durable baseline');
+				}
+				holdStateReply = true;
+				const staleRead = initialConnection.stateGetter();
+				await waitForCondition(() => pendingStateReplies.length === 1, 'the actual getter must capture the pre-drift snapshot', 750);
+				const reconciliationsBeforeDrift = reconciliations.filter(entry => entry.fromToolSnapshot).length;
+				const previousSourceIdentity = identity();
+				holdProjection = true;
+				sourceText = isKql ? 'print ExternalValue=4;\n' : 'SELECT 4 AS ExternalValue;\n';
+				sourceVersion++;
+				sourceChanges.fire({ document, contentChanges: [{ range: new vscode.Range(0, 0, 0, 0),
+					rangeOffset: 0, rangeLength: 0, text: sourceText }], reason: undefined });
+				assert.notStrictEqual(identity(), previousSourceIdentity);
+				await send(pendingStateReplies.shift());
+				assert.strictEqual(await staleRead, undefined, 'external drift must reject the old captured snapshot');
+				assert.strictEqual(reconciliations.filter(entry => entry.fromToolSnapshot).length, reconciliationsBeforeDrift,
+					'the stale snapshot must be fenced before SQL state effects');
+				await waitForCondition(() => projections.length > initialProjectionCount, 'external drift must request a current projection', 750);
+				assert.strictEqual(coordinator!.activeSourceGeneration, acceptedGeneration);
+				assert.ok(coordinator!.currentProjectionGeneration > acceptedGeneration);
+				assert.strictEqual(await coordinator!.adoptOwnedSourceText(acceptedGeneration, ownedTexts[1], sourceText), false,
+					'external drift must not be adopted as an owned commit');
+				holdStateReply = false;
+				holdProjection = false;
+				await acknowledge(projections.at(-1));
+				await waitForCondition(() => coordinator!.activeSourceGeneration === projections.at(-1).sourceGeneration,
+					'only the new external projection ACK may replace the accepted owner', 750);
+				assert.strictEqual((await initialConnection.stateGetter())?.[0]?.query, sourceText);
+				assert.deepStrictEqual(transportErrors, []);
+				assert.deepStrictEqual(fs.readFileSync(sourcePath), sourceBytes);
+			}
+		} finally {
+			releaseFirstOwnedWrite();
+			holdStateReply = false;
+			holdProjection = false;
+			if (receiveHandler) for (const projection of projections) await acknowledge(projection);
+			panel.dispose();
+			queryEditor?.disposePanel(panel);
+			await closeCoordinator?.disposePanel();
+			await Promise.all([...inboundWork]);
+			await activation;
+			for (const subscription of subscriptions) subscription.dispose();
+			secretChanges.dispose();
+			sourceChanges.dispose();
+			cancellation.dispose();
+			liveDocuments.retire(document);
+			prototype.initializeWebviewPanel = scopedInitialize;
+			prototype.handleWebviewMessage = scopedHandle;
+			(vscode.commands as any).executeCommand = originalExecuteCommand;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(vscode.workspace as any).onDidChangeTextDocument = scopedDidChange;
+			Object.defineProperty(extensionModule, 'toolOrchestrator', originalOrchestratorExport);
+			Object.defineProperty(KustoWorkbenchToolOrchestrator, 'instance', originalSingleton);
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	}
+
+	test('first public compatibility activation succeeds for an already-applied blank SQL projection', async () => {
+		await checkFirstPublicCompatibilityActivation('', false);
+	});
+
+	for (const [label, sourceText] of [
+		['blank', ''], ['whitespace', ' \t\n '], ['nonblank', 'SELECT 1 AS Value;\n'],
+	]) {
+		test(`first public compatibility activation waits for the current ${label} SQL projection ACK and commit`, async () => {
+			await checkFirstPublicCompatibilityActivation(sourceText, true);
+		});
+	}
+
+	for (const language of ['KQL', 'SQL'] as const) {
+		test(`overlapping owned source compatibility preserves latest readiness for ${language}`, async () => {
+			await checkFirstPublicCompatibilityActivation('original source\n', false, language, true);
+		});
+		for (const [label, text] of [['blank', ''], ['whitespace', ' \t\r\n ']]) {
+			test(`overlapping owned source compatibility preserves latest readiness for ${label} ${language}`, async () => {
+				await checkFirstPublicCompatibilityActivation(text, false, language, true);
+			});
+		}
+		test(`overlapping owned source compatibility rejects external drift between writes for ${language}`, async function () {
+			this.timeout(15_000);
+			await checkFirstPublicCompatibilityActivation('original source\n', false, language, 'external-between-writes');
+		});
+		test(`overlapping owned source compatibility preserves readiness for metadata-only B ${language}`, async () => {
+			await checkFirstPublicCompatibilityActivation('original source\n', false, language, 'metadata-only-B');
+		});
+		for (const [label, text] of [['blank', ''], ['whitespace', ' \t\n '], ['nonblank', 'original source\n']]) {
+			test(`owned source compatibility lifecycle preserves getters and public reactivation for ${label} ${language}`, async () => {
+				await checkFirstPublicCompatibilityActivation(text, false, language);
+			});
+		}
+	}
+
+	async function checkFirstPublicNativeActivation(
+		queueRecovery: boolean,
+		readinessBoundary?: 'held delivery' | 'deadline' | 'elapsed deadline' | 'disposed' | 'construction disposal',
+		diagnosticMode?: 'throwing sink' | 'bounded transitions',
+		sourceEnding: '' | '\n' | '\r\n' = '',
+		heldAdmission: boolean | 'activation tail' = false,
+		admissionBoundary?: 'coalesced deadline',
+	): Promise<void> {
+		const heldActivationTail = heldAdmission === 'activation tail';
+		const prototype = (QueryEditorProvider as any).prototype;
+		const scopedInitialize = prototype.initializeWebviewPanel;
+		const scopedHandle = prototype.handleWebviewMessage;
+		const originalExecuteCommand = vscode.commands.executeCommand;
+		const extensionModule = require('../../src/host/extension');
+		const originalOrchestratorExport = Object.getOwnPropertyDescriptor(extensionModule, 'toolOrchestrator')!;
+		const originalSingleton = Object.getOwnPropertyDescriptor(KustoWorkbenchToolOrchestrator, 'instance')!;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-first-public-native-activation-'));
+		const sourcePath = path.join(tmpDir, 'first.kqlx');
+		const sourceUri = vscode.Uri.file(sourcePath);
+		const extensionUri = vscode.Uri.file(path.resolve(__dirname, '../../..'));
+		const subscriptions: vscode.Disposable[] = [];
+		const restorations: Array<() => void> = [];
+		const secretChanges = new vscode.EventEmitter<vscode.SecretStorageChangeEvent>();
+		const cancellation = new vscode.CancellationTokenSource();
+		const createMemento = () => {
+			const values = new Map<string, unknown>();
+			return {
+				get: (key: string, fallback?: unknown) => values.has(key) ? values.get(key) : fallback,
+				update: async (key: string, value: unknown) => { values.set(key, value); },
+				keys: () => [...values.keys()], setKeysForSync: () => undefined,
+			};
+		};
+		const context = {
+			subscriptions, extensionUri, extensionPath: extensionUri.fsPath,
+			extensionMode: vscode.ExtensionMode.Test,
+			extension: { packageJSON: JSON.parse(fs.readFileSync(path.join(extensionUri.fsPath, 'package.json'), 'utf8')) },
+			globalState: createMemento(), workspaceState: createMemento(),
+			globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global')),
+			storageUri: vscode.Uri.file(path.join(tmpDir, 'storage')),
+			logUri: vscode.Uri.file(path.join(tmpDir, 'logs')),
+			asAbsolutePath: (relative: string) => path.join(extensionUri.fsPath, relative),
+			secrets: {
+				get: async () => undefined, store: async () => undefined, delete: async () => undefined,
+				onDidChange: secretChanges.event,
+			},
+		} as unknown as vscode.ExtensionContext;
+		const sourceText = JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [
+			{ id: 'query_native_activation', type: 'query', query: 'print Value=1' },
+			{ id: 'markdown_native_activation', type: 'markdown', text: 'Synthetic native activation fixture.' },
+		] } }, null, 2) + sourceEnding;
+		const document = {
+			uri: sourceUri, getText: () => sourceText, version: 1, isDirty: false, isClosed: false,
+			eol: vscode.EndOfLine.LF, lineCount: sourceText.split('\n').length,
+			lineAt: (line: number) => ({ text: sourceText.split('\n')[line] ?? '' }),
+			positionAt: (offset: number) => {
+				const lines = sourceText.slice(0, offset).split('\n');
+				return new vscode.Position(lines.length - 1, lines.at(-1)!.length);
+			},
+		} as vscode.TextDocument;
+		const posted: any[] = [];
+		const received: any[] = [];
+		const projections: any[] = [];
+		const acknowledged = new Set<string>();
+		const inboundWork = new Set<Promise<unknown>>();
+		const transportErrors: unknown[] = [];
+		const openCalls: Array<{ uri: vscode.Uri; editorId: string }> = [];
+		const recoveryRequests: string[] = [];
+		const pendingStateReplies: any[] = [];
+		const snapshots: Array<{ requestId: string; applied: boolean; sourceGeneration?: number; error?: string }> = [];
+		const admissions: Array<{ captured: unknown; current: unknown; accepted: boolean }> = [];
+		const reconciliations: Array<{ sourceGeneration?: number; fromToolSnapshot: boolean }> = [];
+		const disposalHandlers = new Set<() => unknown>();
+		const viewHandlers = new Set<() => unknown>();
+		const runtimeId = 'first-public-native-runtime';
+		const loadingError = 'This document is still loading and has no executable sections yet.';
+		const startedAt = Date.now();
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let queryEditor: QueryEditorProvider | undefined;
+		let initialConnection: any;
+		let runtimeProjection: any;
+		let runtimeApplied = false;
+		let holdProjection = true;
+		let holdStateReply = queueRecovery;
+		let panelDisposed = false;
+		let settlingToolSnapshot = false;
+		let initialRequest: Promise<unknown> | undefined;
+		let activation: ReturnType<KustoWorkbenchToolOrchestrator['activateWorkbenchFile']> | undefined;
+		let firstResult: Awaited<NonNullable<typeof activation>> | undefined;
+		let firstSettledAt: number | undefined;
+		let reactivationResult: boolean | undefined;
+		let capturedReadiness: (() => Promise<boolean>) | undefined;
+		let capturedReadinessWork: Promise<boolean> | undefined;
+		let capturedReadinessResult: boolean | undefined;
+		let capturedReadinessSettlements = 0;
+		const readinessErrors: unknown[] = [];
+		const originalReadinessPromises: Promise<boolean>[] = [];
+		const diagnosticEvents: Array<{ event: string; detail: Record<string, number | boolean> }> = [];
+		let diagnosticFaultsThrown = 0;
+		let captureReadinessDeadline = false;
+		const readinessTimers: Array<{
+			handle: ReturnType<typeof setTimeout>; delay: number; expire: () => void; cleared: boolean;
+		}> = [];
+		let releaseSdkDelivery!: () => void;
+		const sdkDelivery = new Promise<void>(resolve => { releaseSdkDelivery = resolve; });
+		let releaseConstruction!: () => void;
+		const construction = new Promise<void>(resolve => { releaseConstruction = resolve; });
+		let constructionEntered = false;
+		let actualInitialization: Promise<void> | undefined;
+		let admissionEnteredAt: number | undefined;
+		let secondAdmissionEnteredAt: number | undefined;
+		let admissionInvocationCount = 0;
+		let heldAckWork: Promise<void> | undefined;
+		let secondAckWork: Promise<void> | undefined;
+		let replacementRequest: Promise<unknown> | undefined;
+		let cleanupStarted = false;
+		const sourceAdmissionResults: boolean[] = [];
+		const reloadReservations: Array<{
+			session: CompatSidecarSession; requestId: string; deadline: number; createdAt: number; settled?: boolean;
+		}> = [];
+		const reloadClaims: Array<{ requestId: string; claimedAt: number; accepted: boolean }> = [];
+		const admittedRequestClocks: Array<{ requestId: string; admittedAt: number }> = [];
+		let ownerClock = 0;
+		let releaseAdmission!: () => void;
+		const admissionGate = new Promise<void>(resolve => { releaseAdmission = resolve; });
+		let releaseSecondAdmission!: () => void;
+		const secondAdmissionGate = new Promise<void>(resolve => { releaseSecondAdmission = resolve; });
+		const identity = () => (queryEditor as any)?.workbenchToolSnapshotIdentity?.();
+		const stage = (name: string, detail: Record<string, unknown> = {}) => {
+			console.log('[tests/integration/kqlSidecar.test.ts:first public native activation]', JSON.stringify({
+				stage: name, queueRecovery, readinessBoundary, elapsedMs: Date.now() - startedAt, fixtureUri: sourceUri.toString(),
+				documentVersion: document.version, panelCurrent: (queryEditor as any)?.panel === panel,
+				connectionToken: (queryEditor?.workbenchToolSessionApplication as any)?.connectionToken,
+				transportIdentity: (queryEditor as any)?.messageTransportIdentity?.(),
+				projectionObservationIdentity: identity(), runtimeApplied,
+				runtimeSourceGeneration: runtimeProjection?.sourceGeneration,
+				projectionGenerations: projections.map(message => message.sourceGeneration),
+				acknowledged: [...acknowledged], ...detail,
+			}));
+		};
+		const admissionObservation = () => Object.freeze({
+			projectionCount: projections.length, recoveryCount: recoveryRequests.length,
+			snapshotCount: snapshots.length, toolRequestCount: posted.filter(message => message.type === 'requestToolState').length,
+			ackCount: acknowledged.size, admissionResults: Object.freeze([...sourceAdmissionResults]),
+			firstSettled: firstSettledAt !== undefined, firstSuccess: firstResult?.success ?? null,
+			panelCurrent: (queryEditor as any)?.panel === panel,
+			connectionToken: (queryEditor?.workbenchToolSessionApplication as any)?.connectionToken,
+			documentVersion: document.version, sourceCurrent: document.getText() === sourceText,
+			runtimeId, runtimeSourceGeneration: runtimeProjection?.sourceGeneration,
+		});
+		const observe = async (name: string, detail: Record<string, unknown> = {}) => {
+			const initialized = await KqlxEditorProvider.waitForOpenEditorInitialized(sourceUri, 0, panel);
+			stage(name, { initialized, settled: firstSettledAt !== undefined, result: firstResult, ...detail });
+			return { initialized, settled: firstSettledAt !== undefined, result: firstResult, identity: identity(),
+				snapshots: [...snapshots], admissions: [...admissions],
+				toolRequests: posted.filter(message => message.type === 'requestToolState'),
+				toolReconciliations: reconciliations.filter(entry => entry.fromToolSnapshot) };
+		};
+		const wrapLocal = (owner: any, key: string, wrapper: (original: any) => any) => {
+			const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+			assert.strictEqual(typeof owner[key], 'function', `setup: actual ${key} must be accessible for passive tracing`);
+			owner[key] = wrapper(owner[key]);
+			restorations.push(() => {
+				if (descriptor) Object.defineProperty(owner, key, descriptor);
+				else delete owner[key];
+			});
+		};
+		const assertReadinessDiagnostics = (observed: boolean): void => {
+			assert.ok(diagnosticEvents.some(entry => entry.event === 'readiness.start' && entry.detail.stateAvailable === false),
+				'construction-entry diagnostics must not read owner variables before initialization');
+			assert.ok(diagnosticEvents.some(entry => entry.event === 'readiness.settled' && entry.detail.observed === observed),
+				'diagnostics must observe the actual boolean returned by the native waiter');
+			assert.ok(diagnosticEvents.length <= 128);
+			const allowedFields = new Set(['panelDisposed', 'stateAvailable', 'activeProjectionGeneration', 'postDocumentGeneration',
+				'admittedDocumentRequests', 'pendingDocumentProjections', 'pendingProjectionActivationSize', 'initialRecovery',
+				'pendingRecovery', 'sourceObservationSequence', 'elapsedMs', 'observed', 'diagnosticRecordCount',
+				'diagnosticRecordLimit', 'diagnosticTerminalReserve', 'diagnosticTruncated', 'diagnosticSuppressedCount',
+				'matchingActivation', 'applied', 'generation', 'accepted', 'completed', 'sourceAdmissionThrew',
+				'ownerCommitConflict', 'retryEligible', 'retrySourceCurrent', 'remainingAttempts']);
+			for (const [index, entry] of diagnosticEvents.entries()) {
+				assert.strictEqual(entry.detail.diagnosticRecordCount, index + 1);
+				assert.strictEqual(entry.detail.diagnosticRecordLimit, 128);
+				assert.strictEqual(entry.detail.diagnosticTerminalReserve, 2);
+				for (const [key, value] of Object.entries(entry.detail)) {
+					assert.ok(allowedFields.has(key), `unexpected diagnostic field: ${key}`);
+					assert.ok(typeof value === 'number' || typeof value === 'boolean', `non-scalar diagnostic field: ${key}`);
+				}
+			}
+			if (diagnosticMode === 'throwing sink') assert.strictEqual(diagnosticFaultsThrown, diagnosticEvents.length);
+		};
+		const send = (message: any): Promise<unknown> => {
+			assert.ok(receiveHandler, 'setup: the actual native startup gateway must install its receiver');
+			if (admissionBoundary === 'coalesced deadline' && message.type === 'requestDocument') {
+				if (String(message.requestId).startsWith('dispatcher-document-')) ownerClock = 2_000;
+				admittedRequestClocks.push({ requestId: message.requestId, admittedAt: performance.now() });
+			}
+			received.push(message);
+			const work = Promise.resolve(receiveHandler(message));
+			inboundWork.add(work);
+			void work.then(() => inboundWork.delete(work), error => {
+				transportErrors.push(error);
+				inboundWork.delete(work);
+			});
+			return work;
+		};
+		const acknowledge = async (projection: any): Promise<void> => {
+			if (acknowledged.has(projection.reloadRequestId)) return;
+			runtimeProjection = projection;
+			runtimeApplied = true;
+			const response = parseDocumentViewWebviewMessage({
+				protocolVersion: projection.protocolVersion, channel: projection.channel,
+				viewSessionId: projection.viewSessionId, type: 'documentReloadResult',
+				requestId: projection.reloadRequestId, applied: true, editRevision: Number(projection.editRevision || 0),
+			});
+			assert.ok(response.ok, 'setup: native ACK must pass the canonical document-view parser');
+			acknowledged.add(projection.reloadRequestId);
+			stage('runtime.ACK.sent', { sourceGeneration: projection.sourceGeneration, reloadRequestId: projection.reloadRequestId });
+			await send(response.value);
+			stage('host.ACK.handler.completed', { sourceGeneration: projection.sourceGeneration });
+		};
+		const panel = {
+			viewType: KqlxEditorProvider.viewType, visible: true, active: true,
+			webview: {
+				options: {}, html: '', cspSource: 'vscode-webview://first-public-native',
+				asWebviewUri: (uri: vscode.Uri) => uri,
+				postMessage: async (message: any) => {
+					posted.push(message);
+					if (message.type === 'documentData') {
+						const parsed = parseDocumentViewHostMessage(message);
+						assert.ok(parsed.ok, 'setup: the native provider must emit a canonical document-view projection');
+						assert.strictEqual(message.ok, true, `setup: native fixture projection failed: ${JSON.stringify(message)}`);
+						projections.push(message);
+						stage('host.documentData.delivered', { sourceGeneration: message.sourceGeneration, requestId: message.requestId,
+							viewSessionId: message.viewSessionId, sectionIds: message.state.sections.map((section: any) => section.id) });
+						if (!holdProjection) await acknowledge(message);
+						if (readinessBoundary && readinessBoundary !== 'construction disposal' && projections.length === 2) {
+							await sdkDelivery;
+						}
+						if (admissionBoundary === 'coalesced deadline' && projections.length === 1) await sdkDelivery;
+					} else if (message.type === 'mainWebviewDispatcherProbe') {
+						assert.ok(message.probeId, 'setup: native dispatcher probes must carry their actual ID');
+						if (queueRecovery && !runtimeApplied && recoveryRequests.length === 0) {
+							const projection = projections[0];
+							assert.ok(projection?.viewSessionId, 'setup: recovery must use the actual native panel session');
+							const requestId = `dispatcher-document-${message.probeId}`;
+							recoveryRequests.push(requestId);
+							void send({ type: 'requestDocument', requestId, protocolVersion: projection.protocolVersion,
+								channel: projection.channel, viewSessionId: projection.viewSessionId });
+						}
+						stage('runtime.dispatcher.READY', { probeId: message.probeId, runtimeId });
+						void send({ type: 'mainWebviewDispatcherReady', runtimeId, probeId: message.probeId });
+					} else if (message.type === 'requestToolState') {
+						const error = runtimeApplied ? undefined : loadingError;
+						const response = createToolStateResponseMessage(
+							message.requestId, runtimeApplied ? runtimeProjection.state.sections : [], error,
+						);
+						assert.ok(response.ok, 'setup: the real native state waiter must receive a canonical response');
+						snapshots.push({ requestId: message.requestId, applied: runtimeApplied,
+							sourceGeneration: runtimeProjection?.sourceGeneration, error });
+						stage('runtime.state.captured', { snapshot: snapshots.at(-1), held: holdStateReply });
+						if (holdStateReply) pendingStateReplies.push(response.value);
+						else void send(response.value);
+					}
+					return true;
+				},
+				onDidReceiveMessage: (handler: (message: any) => unknown) => {
+					receiveHandler = handler;
+					return new vscode.Disposable(() => { if (receiveHandler === handler) receiveHandler = undefined; });
+				},
+			},
+			onDidDispose: (handler: () => unknown) => {
+				disposalHandlers.add(handler);
+				return new vscode.Disposable(() => { disposalHandlers.delete(handler); });
+			},
+			onDidChangeViewState: (handler: () => unknown) => {
+				viewHandlers.add(handler);
+				return new vscode.Disposable(() => { viewHandlers.delete(handler); });
+			},
+			dispose: () => {
+				if (panelDisposed) return;
+				panelDisposed = true;
+				for (const handler of [...disposalHandlers]) handler();
+			},
+		} as unknown as vscode.WebviewPanel;
+
+		try {
+			fs.writeFileSync(sourcePath, sourceText, 'utf8');
+			const sourceBytes = fs.readFileSync(sourcePath);
+			if (admissionBoundary === 'coalesced deadline') wrapLocal(performance, 'now', () => () => ownerClock);
+			if (heldAdmission || admissionBoundary === 'coalesced deadline') {
+				wrapLocal(CompatSidecarSession.prototype, 'createReloadRequest', original => function (this: CompatSidecarSession,
+					...args: Parameters<CompatSidecarSession['createReloadRequest']>) {
+					const reload = original.apply(this, args);
+					if (args[1]) {
+						const reservation = { session: this, requestId: reload.requestId,
+							deadline: args[1].absoluteCommitDeadline, createdAt: performance.now(), settled: undefined as boolean | undefined };
+						reloadReservations.push(reservation);
+						void reload.result.then((value: boolean) => { reservation.settled = value; });
+						stage('host.reload.ownerDeadline', { requestId: reservation.requestId,
+							operationStartedAt: reservation.deadline - 30_000, absoluteCommitDeadline: reservation.deadline,
+							createdAt: reservation.createdAt, remainingMs: reservation.deadline - reservation.createdAt });
+					}
+					return reload;
+				});
+				wrapLocal(CompatSidecarSession.prototype, 'claimReloadRequest', original => function (this: CompatSidecarSession, requestId: string) {
+					const accepted = original.call(this, requestId);
+					reloadClaims.push({ requestId, claimedAt: performance.now(), accepted });
+					stage('host.ACK.claimed', reloadClaims.at(-1)!);
+					return accepted;
+				});
+			}
+			if (readinessBoundary) {
+				wrapLocal(globalThis, 'setTimeout', original => function (this: unknown,
+					callback: (...args: any[]) => void, delay?: number, ...args: any[]) {
+					const handle = original.call(this, callback, delay, ...args);
+					if (captureReadinessDeadline) {
+						assert.ok(typeof delay === 'number' && delay > 0 && delay <= 30_000,
+							'the native logical waiter must use its original absolute 30-second deadline');
+						readinessTimers.push({ handle, delay, expire: () => callback(...args), cleared: false });
+					}
+					return handle;
+				});
+				wrapLocal(globalThis, 'clearTimeout', original => function (this: unknown, handle: ReturnType<typeof setTimeout>) {
+					const timer = readinessTimers.find(entry => entry.handle === handle);
+					if (timer) timer.cleared = true;
+					return original.call(this, handle);
+				});
+				wrapLocal(KqlxEditorProvider, 'waitForOpenEditorInitialized', original => function (this: unknown, ...args: any[]) {
+					const previous = captureReadinessDeadline;
+					captureReadinessDeadline = args[0]?.toString() === sourceUri.toString() && args[1] === 30_000;
+					try {
+						const work = original.apply(this, args);
+						if (captureReadinessDeadline) originalReadinessPromises.push(work);
+						return work;
+					}
+					finally { captureReadinessDeadline = previous; }
+				});
+			}
+			const connections = connectionManagerStub();
+			const sqlWorkbench = sqlWorkbenchStub();
+			(KustoWorkbenchToolOrchestrator as any).instance = undefined;
+			const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+				context, connections, () => sqlWorkbench.connectionManager, {} as any,
+			);
+			extensionModule.toolOrchestrator = orchestrator;
+			prototype.handleWebviewMessage = originalHandle;
+			prototype.initializeWebviewPanel = async function (this: QueryEditorProvider, targetPanel: vscode.WebviewPanel, options: any) {
+				assert.strictEqual(targetPanel, panel);
+				queryEditor = this;
+				if (heldAdmission) {
+					wrapLocal(this, 'commitKustoSourceAdmissionFresh', original => async function (this: QueryEditorProvider,
+						...args: Parameters<QueryEditorProvider['commitKustoSourceAdmissionFresh']>) {
+						const invocation = ++admissionInvocationCount;
+						if (admissionEnteredAt === undefined) {
+							admissionEnteredAt = Date.now();
+							stage('host.ACK.admission.held', { observation: admissionObservation() });
+						}
+						if (heldActivationTail && invocation === 2) {
+							secondAdmissionEnteredAt = Date.now();
+							stage('host.B.ACK.admission.held', { observation: admissionObservation() });
+							await secondAdmissionGate;
+						} else await admissionGate;
+						stage('host.ACK.admission.original.entered', { invocation, heldMs: Date.now() - admissionEnteredAt });
+						const accepted = await original.apply(this, args);
+						sourceAdmissionResults.push(accepted);
+						stage('host.ACK.admission.original.returned', { accepted, observation: admissionObservation() });
+						return accepted;
+					});
+				}
+				if (diagnosticMode) {
+					wrapLocal(this.fileOpenTrace, 'mark', original => function (this: unknown, ...args: any[]) {
+						if (args[0] === 'readiness.start' || args[0] === 'readiness.settled' || args[0] === 'notify.transitions'
+							|| ['reload.acknowledgment', 'reload.admission', 'reload.settled', 'reload.failure'].includes(args[0])) {
+							diagnosticEvents.push({ event: args[0], detail: args[1] });
+							if (diagnosticMode === 'throwing sink') {
+								diagnosticFaultsThrown++;
+								throw new Error('native diagnostic sink fault');
+							}
+						}
+						return original.apply(this, args);
+					});
+				}
+				capturedReadiness = (this as any).workbenchToolMutationReadiness;
+				assert.strictEqual(typeof capturedReadiness, 'function', 'the stable native readiness hook must exist before initialization');
+				if (readinessBoundary || diagnosticMode) {
+					capturedReadinessWork = capturedReadiness!();
+					void capturedReadinessWork.then(value => {
+						capturedReadinessResult = value;
+						capturedReadinessSettlements++;
+					}, error => { readinessErrors.push(error); });
+				}
+				wrapLocal(this, 'messageTransport', original => function (this: unknown, ...args: any[]) {
+					const delivery = original.apply(this, args);
+					if (args[0]?.type === 'requestToolState') void Promise.resolve(delivery).then(value => {
+						stage('host.messageTransport.returned', { requestId: args[0].requestId, returned: value });
+					}, error => { stage('host.messageTransport.rejected', { error: String(error) }); });
+					return delivery;
+				});
+				wrapLocal(this, 'reactivateWorkbenchToolSession', original => function (this: unknown, ...args: any[]) {
+					stage('host.reactivate.entered');
+					const work = original.apply(this, args);
+					void work.then((value: boolean) => {
+						reactivationResult = value;
+						stage('host.reactivate.returned', { returned: value });
+					}, (error: unknown) => { stage('host.reactivate.rejected', { error: String(error) }); });
+					return work;
+				});
+				const toolSession = this.workbenchToolSessionApplication as any;
+				wrapLocal(toolSession.options, 'captureStateAdmission', original => function (this: unknown, ...args: any[]) {
+					const admission = original.apply(this, args);
+					const captured = identity();
+					stage('host.captureStateAdmission.captured', { captured });
+					return function (this: unknown, ...checks: any[]) {
+						const accepted = admission.apply(this, checks);
+						admissions.push({ captured, current: identity(), accepted });
+						stage('host.captureStateAdmission.returned', admissions.at(-1)!);
+						return accepted;
+					};
+				});
+				wrapLocal(toolSession, 'settleStateRequest', original => function (this: unknown, ...args: any[]) {
+					const previous = settlingToolSnapshot;
+					settlingToolSnapshot = true;
+					try { return original.apply(this, args); }
+					finally { settlingToolSnapshot = previous; }
+				});
+				wrapLocal((this as any).sqlLifecycle, 'reconcileComparisonOwners', original => function (this: unknown, ...args: any[]) {
+					reconciliations.push({ sourceGeneration: runtimeProjection?.sourceGeneration, fromToolSnapshot: settlingToolSnapshot });
+					return original.apply(this, args);
+				});
+				actualInitialization = originalInitializeWebviewPanel.call(this, targetPanel, options);
+				if (readinessBoundary === 'construction disposal') {
+					constructionEntered = true;
+					await construction;
+				}
+				return actualInitialization;
+			};
+			deferMainWebviewReadyForTest(panel);
+			const provider = new (KqlxEditorProvider as any)(context, extensionUri, connections, sqlWorkbench) as KqlxEditorProvider;
+			(vscode.commands as any).executeCommand = async (command: string, ...args: any[]) => {
+				if (command !== 'vscode.openWith') return originalExecuteCommand(command, ...args);
+				assert.strictEqual(args[0].toString(), sourceUri.toString());
+				assert.strictEqual(args[1], KqlxEditorProvider.viewType);
+				assert.strictEqual(openCalls.length, 0, 'the first public native activation must open this fixture exactly once');
+				openCalls.push({ uri: args[0], editorId: args[1] });
+				await provider.resolveCustomTextEditor(document, panel, cancellation.token);
+				if (readinessBoundary === 'construction disposal') return;
+				assert.ok(panel.webview.html.includes('data-kusto-document-loading="true"'),
+					'setup: native asset-backed initialization must begin in the production loading state');
+				initialConnection = [...(orchestrator as any).liveConnections.values()][0];
+				assert.strictEqual(initialConnection.documentUri, sourceUri.toString());
+				initialRequest = send({ type: 'requestDocument', requestId: 'first-public-native-document' });
+				await send({ type: 'mainWebviewDispatcherReady', runtimeId });
+				await waitForCondition(() => projections.length === 1, 'setup: the real native provider must physically post projection A', 750);
+			};
+			stage('fixture.authored', { fixture: 'result-free Query and Markdown; SDK open stub, real host composition' });
+			activation = orchestrator.activateWorkbenchFile({ targetFileUri: sourceUri.toString() }).then(result => {
+				firstResult = result;
+				firstSettledAt = Date.now();
+				stage('public.activation.returned', { result, cleanupStarted });
+				return result;
+			});
+			if (readinessBoundary === 'construction disposal') {
+				await waitForCondition(() => constructionEntered && capturedReadinessWork !== undefined,
+					'setup: initialization must capture the actual native hook before the owner is constructed', 750);
+				await new Promise<void>(resolve => setImmediate(resolve));
+				assert.strictEqual(capturedReadinessResult, undefined, 'construction must not default to healthy readiness');
+				assert.strictEqual(readinessTimers.length, 1);
+				assert.ok(readinessTimers[0].delay >= 29_990);
+				panel.dispose();
+				assert.strictEqual(await capturedReadinessWork, false, 'construction disposal must settle the captured hook false');
+				const result = await activation;
+				assert.strictEqual(result.isLiveWorkbench, false);
+				assert.strictEqual(result.isReadOnlyFallback, true);
+				releaseConstruction();
+				await actualInitialization;
+				assert.strictEqual(capturedReadinessSettlements, 1);
+				assert.strictEqual(readinessTimers[0].cleared, true);
+				assert.deepStrictEqual(readinessErrors, [], 'construction readiness must not read uninitialized owner variables');
+				assert.deepStrictEqual(projections, []);
+				assert.deepStrictEqual(snapshots, []);
+				assert.deepStrictEqual(admissions, []);
+				assert.deepStrictEqual(reconciliations.filter(entry => entry.fromToolSnapshot), []);
+				assert.strictEqual(posted.filter(message => message.type === 'requestToolState').length, 0);
+				assert.deepStrictEqual(fs.readFileSync(sourcePath), sourceBytes);
+				assert.strictEqual(document.getText(), sourceText);
+				assert.strictEqual(document.version, 1);
+				assert.strictEqual(document.isDirty, false);
+				assert.strictEqual(openCalls.length, 1);
+				assert.strictEqual(capturedReadinessWork, originalReadinessPromises[0], 'diagnostics must return the original native promise');
+				if (diagnosticMode) {
+					assertReadinessDiagnostics(false);
+					assert.ok(diagnosticEvents.some(entry => entry.event === 'readiness.settled' && entry.detail.panelDisposed === true));
+					assert.ok(diagnosticEvents.every(entry => entry.detail.stateAvailable === false));
+				}
+				return;
+			}
+			await waitForCondition(() => posted.some(message => message.type === 'mainWebviewDispatcherProbe') || firstSettledAt !== undefined,
+				'setup: first URI-only native activation must reach actual dispatcher revalidation', 750);
+			assert.strictEqual(projections.length, 1, `setup: first activation did not reach A: ${JSON.stringify(firstResult)}`);
+			const beforeA = await observe('A.beforeACK', { snapshots: [...snapshots] });
+			assert.strictEqual(recoveryRequests.length, queueRecovery ? 1 : 0);
+			if (heldAdmission) {
+				assert.strictEqual(queueRecovery, false);
+				heldAckWork = acknowledge(projections[0]);
+				await waitForCondition(() => admissionEnteredAt !== undefined,
+					'setup: the on-time canonical A ACK must reach the actual source-admission owner', 750);
+				assert.ok(admissionEnteredAt! - startedAt < 5_000, 'setup: canonical ACK admission must precede the five-second lease expiry');
+				if (heldActivationTail) {
+					const projectionA = projections[0];
+					const probe = posted.find(message => message.type === 'mainWebviewDispatcherProbe');
+					assert.ok(probe?.probeId, 'setup: B must use a physically issued dispatcher probe correlation');
+					const replacement = {
+						type: 'requestDocument', requestId: `dispatcher-document-${probe.probeId}`, expectedEditRevision: 0,
+						protocolVersion: projectionA.protocolVersion, channel: projectionA.channel, viewSessionId: projectionA.viewSessionId,
+					};
+					const replacementAdmittedAt = performance.now();
+					replacementRequest = send(replacement);
+					await waitForCondition(() => projections.length === 2, 'setup: the real provider must physically deliver B while A commit is held', 750);
+					const projectionB = projections[1];
+					assert.strictEqual(projectionB.requestId, replacement.requestId, 'B must belong to the separately admitted correlated request');
+					secondAckWork = acknowledge(projectionB);
+					await waitForCondition(() => reloadClaims.some(claim => claim.requestId === projectionB.reloadRequestId && claim.accepted),
+						'the canonical B ACK must reserve before the prior A activation tail settles', 750);
+					assert.strictEqual(admissionInvocationCount, 1, 'B source admission must still be behind the physical A activation');
+					const reservationB = reloadReservations.find(reservation => reservation.requestId === projectionB.reloadRequestId)!;
+					assert.ok(reservationB.deadline >= replacementAdmittedAt + 30_000);
+					assert.ok(reservationB.deadline - replacementAdmittedAt < 30_250);
+					await new Promise<void>(resolve => setTimeout(resolve, 5_200));
+					stage('host.B.ACK.behindActivationTail.afterFiveSeconds', { observation: admissionObservation(),
+						pending: reservationB.session.hasPendingReloadRequest(reservationB.requestId), deadline: reservationB.deadline });
+					assert.strictEqual(reservationB.settled, undefined, 'B must remain reserved past its arrival window behind A');
+					assert.strictEqual(reservationB.session.hasPendingReloadRequest(reservationB.requestId), true);
+					assert.strictEqual(projections.length, 2, 'a claimed B ACK must not generate projection C while behind A');
+					assert.strictEqual(admissionInvocationCount, 1);
+					assert.strictEqual(snapshots.length, 0);
+					assert.strictEqual(firstSettledAt, undefined);
+					releaseAdmission();
+					await heldAckWork;
+					await waitForCondition(() => secondAdmissionEnteredAt !== undefined, 'B must enter its own actual commit after A physically settles', 750);
+					assert.deepStrictEqual(sourceAdmissionResults, [false], 'superseded A must not commit when its physical admission resumes');
+					await new Promise<void>(resolve => setTimeout(resolve, 5_200));
+					stage('host.B.ACK.ownAdmission.afterFiveSeconds', { observation: admissionObservation(),
+						pending: reservationB.session.hasPendingReloadRequest(reservationB.requestId), deadline: reservationB.deadline });
+					assert.strictEqual(reservationB.settled, undefined);
+					assert.strictEqual(reservationB.session.hasPendingReloadRequest(reservationB.requestId), true);
+					assert.strictEqual(projections.length, 2);
+					assert.strictEqual(admissionInvocationCount, 2);
+					assert.strictEqual(snapshots.length, 0);
+					assert.strictEqual(posted.filter(message => message.type === 'requestToolState').length, 0);
+					assert.strictEqual(firstSettledAt, undefined);
+					releaseSecondAdmission();
+					await secondAckWork;
+					await replacementRequest;
+					assert.deepStrictEqual(sourceAdmissionResults, [false, true]);
+					assert.strictEqual(reservationB.settled, true);
+					assert.strictEqual(reloadClaims.filter(claim => claim.requestId === projectionB.reloadRequestId && claim.accepted).length, 1);
+				} else {
+				const held = admissionObservation();
+				await new Promise<void>(resolve => setTimeout(resolve, 5_200));
+				const afterDeadline = admissionObservation();
+				stage('host.ACK.admission.afterFiveSeconds', { heldMs: Date.now() - admissionEnteredAt!, held, afterDeadline });
+				releaseAdmission();
+				await heldAckWork;
+				stage('host.ACK.admission.released.beforeCleanup', { observation: admissionObservation() });
+				assert.strictEqual(held.projectionCount, 1, 'setup: only the physically delivered A projection may enter admission');
+				assert.strictEqual(held.ackCount, 1, 'setup: the actual canonical A ACK must already have arrived');
+				assert.strictEqual(afterDeadline.projectionCount, held.projectionCount,
+					'an on-time ACK must not cause a new projection while canonical host admission is held');
+				assert.strictEqual(afterDeadline.recoveryCount, held.recoveryCount,
+					'an on-time ACK must not cause recovery while canonical host admission is held');
+				assert.strictEqual(afterDeadline.snapshotCount, 0, 'no snapshot may precede canonical admission');
+				assert.strictEqual(afterDeadline.toolRequestCount, 0, 'no tool request may precede canonical admission');
+				assert.strictEqual(afterDeadline.firstSettled, false, 'the same first activation must remain pending during host admission');
+				assert.strictEqual(afterDeadline.panelCurrent, true);
+				assert.strictEqual(afterDeadline.connectionToken, held.connectionToken);
+				assert.strictEqual(afterDeadline.documentVersion, held.documentVersion);
+				assert.strictEqual(afterDeadline.sourceCurrent, true);
+				assert.strictEqual(afterDeadline.runtimeId, held.runtimeId);
+				assert.strictEqual(afterDeadline.runtimeSourceGeneration, held.runtimeSourceGeneration);
+				assert.deepStrictEqual(sourceAdmissionResults, [true],
+					'the original canonical admission must commit the same on-time A ACK exactly once after release');
+				assert.strictEqual(acknowledged.size, 1);
+				}
+			} else await acknowledge(projections[0]);
+			if (admissionBoundary === 'coalesced deadline') {
+				assert.strictEqual(admittedRequestClocks.length, 2, 'the correlated B request must already have joined initial A');
+				assert.strictEqual(projections.length, 1, 'B must remain queued behind the actual A SDK promise');
+				assert.strictEqual(firstSettledAt, undefined);
+				assert.strictEqual(snapshots.length, 0);
+				ownerClock = 20_000;
+				releaseSdkDelivery();
+			}
+			await initialRequest;
+			await observe('A.afterACK');
+			let beforeB: Awaited<ReturnType<typeof observe>> | undefined;
+			if (queueRecovery) {
+				await waitForCondition(() => projections.length === 2, 'setup: the actual coalesced recovery must deliver projection B', 750);
+				if (admissionBoundary === 'coalesced deadline') {
+					assert.strictEqual(reloadReservations.length, 2);
+					assert.strictEqual(reloadReservations[0].deadline, admittedRequestClocks[0].admittedAt + 30_000);
+					assert.strictEqual(reloadReservations[1].deadline, admittedRequestClocks[1].admittedAt + 30_000,
+						'joining initial A must not renew the separately admitted B operation deadline');
+					assert.strictEqual(reloadReservations[1].deadline, 32_000);
+					assert.strictEqual(reloadReservations[1].createdAt, 20_000);
+					assert.strictEqual(reloadReservations[1].deadline - reloadReservations[1].createdAt, 12_000);
+				}
+				for (let turn = 0; turn < 32; turn++) await new Promise<void>(resolve => setImmediate(resolve));
+				holdStateReply = false;
+				for (const response of pendingStateReplies.splice(0)) await send(response);
+				for (let turn = 0; turn < 32; turn++) await new Promise<void>(resolve => setImmediate(resolve));
+				await new Promise<void>(resolve => setTimeout(resolve, 25));
+				beforeB = await observe('B.beforeACK', { snapshots: [...snapshots], admissions: [...admissions], reactivationResult });
+			}
+			if (readinessBoundary) {
+				assert.strictEqual(queueRecovery, true);
+				assert.strictEqual(projections.length, 2);
+				assert.strictEqual((orchestrator as any).liveConnections.get(initialConnection.token), initialConnection);
+				assert.strictEqual(capturedReadiness, (queryEditor as any).workbenchToolMutationReadiness,
+					'the same hook captured before initialization must own current readiness');
+				assert.strictEqual(capturedReadinessResult, undefined);
+				assert.strictEqual(readinessTimers[0].cleared, false,
+					'the construction-entry deadline must remain live across all owner rechecks');
+				assert.ok(readinessTimers[0].delay >= 29_990);
+				const timersBeforeAck = readinessTimers.length;
+				if (readinessBoundary !== 'disposed') {
+					await acknowledge(projections[1]);
+					assert.strictEqual(identity(), `${projections[1].sourceGeneration}:2`,
+						'the reentrant canonical B ACK must finish while SDK delivery remains held');
+					const held = await observe('B.heldSDK.afterACK');
+					assert.strictEqual(held.initialized, false, 'a full projection must settle before advertising readiness');
+					assert.strictEqual(held.settled, false);
+					assert.deepStrictEqual(held.snapshots, []);
+					assert.deepStrictEqual(held.toolRequests, []);
+					assert.deepStrictEqual(held.admissions, []);
+					assert.deepStrictEqual(held.toolReconciliations, []);
+					assert.strictEqual(capturedReadinessResult, undefined);
+					assert.strictEqual(readinessTimers.length, timersBeforeAck, 'currentness rechecks must not rearm any logical deadline');
+				}
+				if (readinessBoundary === 'held delivery') {
+					releaseSdkDelivery();
+					assert.strictEqual(await capturedReadinessWork, true);
+				} else {
+					if (readinessBoundary === 'elapsed deadline') {
+						wrapLocal(Date, 'now', () => () => startedAt + 31_000);
+						releaseSdkDelivery();
+					} else if (readinessBoundary === 'disposed') panel.dispose();
+					else for (const timer of readinessTimers) if (!timer.cleared) timer.expire();
+					assert.strictEqual(await capturedReadinessWork, false,
+						'logical deadline or disposal must settle false without cancelling held physical delivery');
+					const result = await activation;
+					assert.strictEqual(result.success, false);
+					assert.strictEqual(reactivationResult, false);
+					releaseSdkDelivery();
+					await Promise.allSettled([...inboundWork]);
+					await acknowledge(projections[1]);
+					await new Promise<void>(resolve => setImmediate(resolve));
+					assert.strictEqual(capturedReadinessSettlements, 1, 'late physical settlement must not reopen the logical waiter');
+					assert.strictEqual(capturedReadinessResult, false);
+					assert.ok(readinessTimers.every(timer => timer.cleared));
+					assert.deepStrictEqual(readinessErrors, []);
+					assert.deepStrictEqual(snapshots, [], 'late delivery or ACK must not post a snapshot after logical failure');
+					assert.deepStrictEqual(admissions, []);
+					assert.deepStrictEqual(reconciliations.filter(entry => entry.fromToolSnapshot), []);
+					assert.strictEqual(posted.filter(message => message.type === 'requestToolState').length, 0);
+					assert.strictEqual(projections.length, 2, 'logical retirement must not duplicate or cancel canonical projection work');
+					assert.strictEqual(received.filter(message => message.type === 'requestDocument').length, 2);
+					assert.deepStrictEqual(transportErrors, []);
+					assert.deepStrictEqual(fs.readFileSync(sourcePath), sourceBytes);
+					assert.strictEqual(document.getText(), sourceText);
+					assert.strictEqual(document.version, 1);
+					assert.strictEqual(document.isDirty, false);
+					assert.strictEqual(fs.existsSync(`${sourcePath}.json`), false);
+					assert.strictEqual(openCalls.length, 1);
+					return;
+				}
+			}
+			if (!heldAdmission) {
+				holdProjection = false;
+				await acknowledge(projections.at(-1));
+			}
+			await waitForCondition(() => firstSettledAt !== undefined,
+				'the same first public native activation must settle after the latest canonical ACK and commit', 750);
+			const result = await activation;
+			await observe('latest.afterACK', { result, reactivationResult, snapshots, admissions,
+				toolReconciliations: reconciliations.filter(entry => entry.fromToolSnapshot), postedTypes: posted.map(message => message.type) });
+			assert.strictEqual((queryEditor as any).panel, panel);
+			assert.strictEqual((queryEditor!.workbenchToolSessionApplication as any).connectionToken, initialConnection.token);
+			assert.strictEqual((orchestrator as any).liveConnections.get(initialConnection.token), initialConnection);
+			assert.strictEqual(openCalls.length, 1);
+			assert.strictEqual(received.filter(message => message.type === 'requestDocument').length, queueRecovery || heldActivationTail ? 2 : 1);
+			assert.strictEqual(new Set(projections.map(message => message.reloadRequestId)).size, projections.length);
+			for (const projection of projections) {
+				assert.strictEqual(projection.documentUri, sourceUri.toString());
+				assert.strictEqual(projection.viewSessionId, projections[0].viewSessionId);
+				assert.deepStrictEqual(projection.state.sections.map((section: any) => [section.id, section.type]),
+					[['query_native_activation', 'query'], ['markdown_native_activation', 'markdown']]);
+				assert.strictEqual(projection.state.sections[0].query, 'print Value=1');
+			}
+			for (const probe of posted.filter(message => message.type === 'mainWebviewDispatcherProbe')) {
+				assert.strictEqual(received.filter(message => message.type === 'mainWebviewDispatcherReady'
+					&& message.probeId === probe.probeId && message.runtimeId === runtimeId).length, 1);
+			}
+			if (queueRecovery) {
+				assert.strictEqual(projections[1].requestId, recoveryRequests[0]);
+				assert.ok(projections[1].sourceGeneration > projections[0].sourceGeneration);
+				assert.notStrictEqual(beforeB!.identity, beforeA.identity);
+			}
+			assert.deepStrictEqual(transportErrors, []);
+			assert.deepStrictEqual(fs.readFileSync(sourcePath), sourceBytes);
+			assert.strictEqual(document.getText(), sourceText);
+			assert.strictEqual(document.version, 1);
+			assert.strictEqual(document.isDirty, false);
+			assert.strictEqual(fs.existsSync(`${sourcePath}.json`), false);
+			assert.strictEqual(beforeA.initialized, false);
+			assert.strictEqual(beforeA.settled, false, `first public native activation must await A: ${JSON.stringify(beforeA)}`);
+			for (const observation of [beforeA, ...(beforeB ? [beforeB] : [])]) {
+				assert.strictEqual(observation.initialized, false,
+					'no unresolved owned projection may advertise tool readiness');
+				assert.strictEqual(observation.settled, false,
+					`first public native activation must await the latest owned projection ACK and canonical commit: ${JSON.stringify(observation)}`);
+				assert.deepStrictEqual(observation.snapshots, [], 'no tool snapshot may precede the latest owned projection ACK');
+				assert.deepStrictEqual(observation.toolRequests, [], 'no tool request may precede the latest owned projection ACK');
+				assert.deepStrictEqual(observation.admissions, [], 'no state admission may capture the old A owner before B settles');
+				assert.deepStrictEqual(observation.toolReconciliations, [], 'SQL reconciliation must not precede the latest owned projection ACK');
+			}
+			assert.strictEqual(result.success, true, `the same first public native activation must succeed: ${JSON.stringify(result)}`);
+			assert.strictEqual(result.isLiveWorkbench, true);
+			assert.strictEqual(result.isReadOnlyFallback, false);
+			assert.strictEqual(result.uri, sourceUri.toString());
+			assert.strictEqual(reactivationResult, true);
+			if (heldAdmission) {
+				assert.ok(firstSettledAt! - startedAt < 30_000, 'the same first activation must succeed before its original deadline');
+				assert.strictEqual(snapshots.length, 1, 'the admitted current owner must supply exactly one current snapshot');
+				assert.deepStrictEqual(sourceAdmissionResults, heldActivationTail ? [false, true] : [true]);
+				assert.strictEqual(received.filter(message => message.type === 'documentReloadResult').length, heldActivationTail ? 2 : 1);
+			}
+			assert.ok(snapshots.length > 0);
+			assert.strictEqual(snapshots[0].sourceGeneration, projections.at(-1).sourceGeneration,
+				'the first snapshot must capture the exact latest B projection, not an applied old A');
+			assert.ok(admissions.length > 0);
+			assert.strictEqual(Number(String(admissions[0].captured).split(':')[0]), projections.at(-1).sourceGeneration,
+				'the first admission must capture the current native source generation');
+			assert.ok(admissions.every(entry => entry.captured === identity() && entry.current === identity() && entry.accepted),
+				'tool capture and settlement must retain the exact current native owner identity');
+			assert.ok(snapshots.every(snapshot => snapshot.applied && snapshot.error === undefined));
+			assert.ok(reconciliations.some(entry => entry.fromToolSnapshot));
+			if (readinessBoundary) {
+				assert.strictEqual(capturedReadinessSettlements, 1);
+				assert.strictEqual(readinessTimers[0].cleared, true);
+				assert.deepStrictEqual(readinessErrors, []);
+				assert.strictEqual(capturedReadinessWork, originalReadinessPromises[0], 'diagnostics must not return an observer chain');
+			}
+			if (diagnosticMode === 'bounded transitions') {
+				const originalSnapshotCount = snapshots.length;
+				let initializedMarks = 0;
+				wrapLocal(KqlxEditorProvider, 'markOpenEditorInitialized', original => function (this: unknown, ...args: any[]) {
+					if (args[0]?.toString() === sourceUri.toString() && args[1] === panel) initializedMarks++;
+					return original.apply(this, args);
+				});
+				const repeatSignal = (index: number) => send({ type: 'requestDocument', requestId: `native-diagnostic-${index}`,
+					protocolVersion: projections[0].protocolVersion, channel: projections[0].channel,
+					viewSessionId: projections[0].viewSessionId });
+				for (let index = 0; index < 80; index++) await repeatSignal(index);
+				assert.deepStrictEqual(await Promise.all([capturedReadiness!(), capturedReadiness!()]), [true, true]);
+				assert.strictEqual(diagnosticEvents.length, 128, 'two terminal records must remain available after transition truncation');
+				for (const terminal of diagnosticEvents.slice(-2)) {
+					assert.strictEqual(terminal.event, 'readiness.settled');
+					assert.strictEqual(terminal.detail.observed, true);
+					assert.strictEqual(terminal.detail.diagnosticTruncated, true);
+					assert.ok(typeof terminal.detail.diagnosticSuppressedCount === 'number' && terminal.detail.diagnosticSuppressedCount > 0);
+				}
+				await repeatSignal(80);
+				assert.strictEqual(await capturedReadiness!(), true);
+				assert.strictEqual(diagnosticEvents.length, 128);
+				assert.ok(initializedMarks >= 81, 'logging exhaustion must never skip native initialization or notification');
+				assert.strictEqual(snapshots.length, originalSnapshotCount);
+				assert.deepStrictEqual(transportErrors, []);
+				assert.deepStrictEqual(fs.readFileSync(sourcePath), sourceBytes);
+				assert.strictEqual(document.getText(), sourceText);
+				assert.strictEqual(document.version, 1);
+				assert.strictEqual(document.isDirty, false);
+				assert.strictEqual(fs.existsSync(`${sourcePath}.json`), false);
+				assert.strictEqual(openCalls.length, 1);
+			}
+			if (diagnosticMode) assertReadinessDiagnostics(true);
+		} finally {
+			if (heldAdmission) stage('host.ACK.admission.beforeCleanup', { observation: admissionObservation() });
+			cleanupStarted = true;
+			releaseAdmission();
+			releaseSecondAdmission();
+			holdProjection = false;
+			holdStateReply = false;
+			releaseSdkDelivery();
+			releaseConstruction();
+			try {
+				await heldAckWork;
+				await secondAckWork;
+				if (receiveHandler) {
+					for (const projection of projections) await acknowledge(projection);
+					for (const response of pendingStateReplies.splice(0)) await send(response);
+				}
+				panel.dispose();
+				queryEditor?.disposePanel(panel);
+				await Promise.allSettled([...inboundWork]);
+				await capturedReadinessWork;
+				await actualInitialization;
+				await activation;
+				const closed = await KqlxEditorProvider.waitForOpenEditorsClosed(sourceUri, 1_000);
+				stage('cleanup.native.closed', { closed });
+			} finally {
+				for (const restore of restorations.reverse()) restore();
+				for (const subscription of subscriptions) subscription.dispose();
+				secretChanges.dispose();
+				cancellation.dispose();
+				liveDocuments.retire(document);
+				prototype.initializeWebviewPanel = scopedInitialize;
+				prototype.handleWebviewMessage = scopedHandle;
+				(vscode.commands as any).executeCommand = originalExecuteCommand;
+				Object.defineProperty(extensionModule, 'toolOrchestrator', originalOrchestratorExport);
+				Object.defineProperty(KustoWorkbenchToolOrchestrator, 'instance', originalSingleton);
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		}
+	}
+
+	test('first public native activation succeeds with a stable READY and accepted projection A', async () => {
+		await checkFirstPublicNativeActivation(false);
+	});
+
+	test('first public native activation keeps an on-time ACK current through host admission', async function () {
+		this.timeout(30_000);
+		await checkFirstPublicNativeActivation(false, undefined, undefined, '', true);
+	});
+
+	test('first public native activation reserves an on-time ACK before the prior activation tail', async function () {
+		this.timeout(30_000);
+		await checkFirstPublicNativeActivation(false, undefined, undefined, '', 'activation tail');
+	});
+
+	test('first public native activation retains the deadline captured before a correlated initial join', async () => {
+		await checkFirstPublicNativeActivation(true, undefined, undefined, '', false, 'coalesced deadline');
+	});
+
+	test('first public native activation waits for the latest projection after coalesced dispatcher recovery', async () => {
+		await checkFirstPublicNativeActivation(true);
+	});
+
+	for (const boundary of ['held delivery', 'deadline', 'elapsed deadline', 'disposed', 'construction disposal'] as const) {
+		test(`native tool readiness lifetime handles ${boundary} without a late snapshot`, async function () {
+			this.timeout(10_000);
+			await checkFirstPublicNativeActivation(boundary !== 'construction disposal', boundary);
+		});
+	}
+
+	for (const boundary of ['held delivery', 'construction disposal'] as const) {
+		test(`native tool readiness diagnostics contain throwing sink faults during ${boundary}`, async function () {
+			this.timeout(10_000);
+			await checkFirstPublicNativeActivation(boundary !== 'construction disposal', boundary, 'throwing sink');
+		});
+	}
+	for (const [label, ending] of [['no final newline', ''], ['LF', '\n'], ['CRLF', '\r\n']] as const) {
+		test(`native tool readiness diagnostics bound actual owner signals and preserve ${label} source`, async function () {
+			this.timeout(10_000);
+			await checkFirstPublicNativeActivation(false, undefined, 'bounded transitions', ending);
+		});
+	}
+
 	test('shared compatibility persist coordinator gates final snapshot application before effects', async () => {
 		const originalApplyEdit = vscode.workspace.applyEdit;
 		const originalWillSave = vscode.workspace.onWillSaveTextDocument;
@@ -6599,6 +8242,648 @@ suite('Sidecar .kql.json strategy', () => {
 			else console.error(`Preserved failed real-range fixture: ${tmpDir}`);
 		}
 	});
+
+	for (const scenario of ['overlap', 'serial control', 'unleased overlap', 'sibling target', 'sibling publication failure', 'direct lifecycle', 'webview user-save', 'post-commit source edit', 'post-commit source ABA', 'result-free serial control', 'retired publication', 'retired publication failure', 'sibling drained preparation failure', 'passive readback after sibling recovery'] as const) {
+	test(`public Save joins the actual native commit after preparation (${scenario})`, async function () {
+		this.timeout(15_000);
+		const drainedFailure = scenario === 'sibling drained preparation failure';
+		const passiveRecovery = scenario === 'passive readback after sibling recovery';
+		const overlap = !scenario.endsWith('serial control') && !drainedFailure && !passiveRecovery;
+		const sourceEdit = scenario.startsWith('post-commit source');
+		const resultFree = sourceEdit || scenario === 'result-free serial control' || passiveRecovery;
+		const retired = scenario.startsWith('retired');
+		const sibling = retired || scenario.startsWith('sibling');
+		const publicationFailure = scenario.endsWith('publication failure');
+		const prototype = (QueryEditorProvider as any).prototype;
+		const originalSetLifecycle = prototype.setWorkbenchFileCloseLifecycle;
+		const originalAttachResultSession = prototype.attachKustoResultPersistenceSession;
+		const originalPublish = prototype.publishSqlLeaveNoTraceStateFresh;
+		const originalOpenFile = fs.promises.open;
+		const originalRealpath = fs.promises.realpath;
+		const originalShowError = vscode.window.showErrorMessage;
+		const originalSingleton = Object.getOwnPropertyDescriptor(KustoWorkbenchToolOrchestrator, 'instance')!;
+		const originalWillSave = vscode.workspace.onWillSaveTextDocument;
+		const originalDidSave = vscode.workspace.onDidSaveTextDocument;
+		const originalTextDocuments = Object.getOwnPropertyDescriptor(vscode.workspace, 'textDocuments')!;
+		const originalSetTimeout = globalThis.setTimeout;
+		const originalClearTimeout = globalThis.clearTimeout;
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-native-commit-join-'));
+		const uri = vscode.Uri.file(path.join(root, 'probe.kqlx'));
+		const events: Array<Record<string, string | number | boolean | undefined>> = [];
+		let droppedEvents = 0;
+		let recordErrors = 0;
+		let recordingError: unknown;
+		const record = (event: string, detail: () => Record<string, number | boolean | undefined> = () => ({}), status?: boolean) => {
+			if (nativeSaveTrace) { nativeSaveTrace.record(event, status); return; }
+			if (events.length >= 128) { droppedEvents++; return; }
+			try { events.push({ event, at: new Date().toISOString(), tMs: performance.now(), ...detail() }); }
+			catch (error) { if (recordErrors++ === 0) recordingError = error; }
+		};
+		const subscriptions: vscode.Disposable[] = [];
+		let disposals: Array<() => void> = [];
+		let lifecycle: { inspectDirty(): Promise<boolean>; save(): Promise<void> } | undefined;
+		let document: vscode.TextDocument | undefined;
+		let saveDocument: vscode.TextDocument | undefined;
+		let reopened = false;
+		let receive: ((message: any) => unknown) | undefined;
+		let projection: any;
+		type SaveView = { receive?: typeof receive; projection?: any; lifecycle?: typeof lifecycle; disposals: Array<() => void>; willSave?: (event: any) => void };
+		const views: SaveView[] = [];
+		const tokens: number[] = [];
+		let currentView: SaveView | undefined;
+		let heldView: SaveView | undefined;
+		let didSaveView: SaveView | undefined;
+		let passiveView: SaveView | undefined;
+		let finalPersistView: SaveView | undefined;
+		let failFinalSnapshot = false;
+		let captureTimers = false;
+		const timers: Array<{ handle: ReturnType<typeof setTimeout>; expire(): void; cleared: boolean }> = [];
+		let expiredPreparation: Promise<vscode.TextEdit[]> | undefined;
+		const expiredWaiters: Array<Promise<unknown>> = [];
+		const preparationReplies = new Set<Promise<void>>();
+		const fixtureFailures: unknown[] = [];
+		let restoreDocumentSave: (() => void) | undefined;
+		let state: any = { sections: [{
+			id: 'query_probe', type: 'query', query: 'print Probe1=1',
+			clusterUrl: 'https://cluster.kusto.windows.net', authorityId: 'authority',
+			connectionIdHint: 'connection-1', database: 'Db', futureSection: { keep: true },
+		}] };
+		let holdPreparation = false;
+		let holdCommit = false;
+		let releasePreparation!: () => void;
+		let preparationReached!: () => void;
+		const preparationGate = new Promise<void>(resolve => { releasePreparation = resolve; });
+		const preparationStarted = new Promise<void>(resolve => { preparationReached = resolve; });
+		let releaseCommit!: () => void;
+		let commitReached!: () => void;
+		const commitGate = new Promise<void>(resolve => { releaseCommit = resolve; });
+		const commitStarted = new Promise<void>(resolve => { commitReached = resolve; });
+		let releasePublication!: () => void;
+		let publicationReached!: () => void;
+		const publicationGate = new Promise<void>(resolve => { releasePublication = resolve; });
+		const publicationStarted = new Promise<void>(resolve => { publicationReached = resolve; });
+		let finishPublication!: () => void;
+		const publicationFinished = new Promise<void>(resolve => { finishPublication = resolve; });
+		let publicationHeld = false;
+		let retiredPublicationStarted = false;
+		let returnedBeforePublication = false;
+		let returnSnapshot: { result?: unknown; dirty: boolean; buffer: string; disk: string; commits: number; delegatedNativeSaves?: number } | undefined;
+		let userDraft: string | undefined;
+		let userDraftDirty = false;
+		let nativeSave: Promise<boolean> | undefined;
+		let publicSave: ReturnType<KustoWorkbenchToolOrchestrator['saveWorkbenchFile']> | undefined;
+		let directSave: Promise<void> | undefined;
+		let token: number | undefined;
+		let orchestrator: KustoWorkbenchToolOrchestrator | undefined;
+		let remainingPanelRegistrations: (() => number) | undefined;
+		let completed = false;
+		let bodyFailed = false;
+		let commits = 0;
+		let failedPublications = 0;
+		let editRevision = 2;
+		const saveErrors: string[] = [];
+		const registry = new KustoResultPersistenceRegistry();
+		const resultLease = registry.acquire(normalizeWorkbenchUriKey(uri));
+		let resultSession: ReturnType<typeof resultLease.owner.openPanel> | undefined;
+		const context = {
+			subscriptions,
+			workspaceState: { get: () => undefined, update: async () => undefined },
+			globalState: { get: () => undefined, update: async () => undefined },
+			globalStorageUri: vscode.Uri.file(path.join(root, 'global')),
+		} as any;
+		try {
+			prototype.setWorkbenchFileCloseLifecycle = function (this: QueryEditorProvider, value: typeof lifecycle) {
+				lifecycle = value;
+				return originalSetLifecycle.call(this, value);
+			};
+			prototype.attachKustoResultPersistenceSession = function (this: QueryEditorProvider, value: typeof resultSession) {
+				resultSession = value;
+				return originalAttachResultSession.call(this, value);
+			};
+			prototype.publishSqlLeaveNoTraceStateFresh = async (value: unknown, publish: (value: unknown) => Promise<unknown>) => {
+				if (!retired || commits === 0 || publicationHeld) return publish(value);
+				publicationHeld = true;
+				retiredPublicationStarted = true;
+				record('publication.held');
+				publicationReached();
+				await publicationGate;
+				try { return await publish(value); }
+				finally { finishPublication(); }
+			};
+			(fs.promises as any).realpath = async (...args: any[]) => {
+				const readbackView = didSaveView;
+				const resolved = await (originalRealpath as any).apply(fs.promises, args);
+				if (!publicationHeld && String(args[0]) === uri.fsPath
+					&& ((sourceEdit && commits > 0) || (passiveRecovery && passiveView && readbackView === passiveView))) {
+					publicationHeld = true;
+					record('postCommit.readbackIdentityHeld', () => ({ passivePanel: !!passiveView && readbackView === passiveView }), !!passiveView && readbackView === passiveView);
+					publicationReached();
+					await publicationGate;
+				}
+				return resolved;
+			};
+			if (drainedFailure) {
+				Object.defineProperty(vscode.workspace, 'textDocuments', { ...originalTextDocuments, get: () => {
+					const documents = originalTextDocuments.get!.call(vscode.workspace) as vscode.TextDocument[];
+					return saveDocument ? [...documents.filter(candidate => candidate.uri.toString() !== uri.toString()), saveDocument] : documents;
+				} });
+			}
+			if (passiveRecovery) {
+				(vscode.workspace as any).onWillSaveTextDocument = (handler: (event: any) => void, ...args: any[]) => {
+					if (currentView && !currentView.willSave) currentView.willSave = handler;
+					return (originalWillSave as any).call(vscode.workspace, handler, ...args);
+				};
+				(vscode.workspace as any).onDidSaveTextDocument = (handler: (saved: vscode.TextDocument) => unknown, ...args: any[]) => {
+					const view = currentView;
+					return (originalDidSave as any).call(vscode.workspace, (saved: vscode.TextDocument) => {
+						const previousView = didSaveView;
+						didSaveView = view;
+						try { return handler(saved); }
+						finally { didSaveView = previousView; }
+					}, ...args);
+				};
+				(globalThis as any).setTimeout = (callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+					const handle = originalSetTimeout(callback, delay, ...args);
+					if (captureTimers && delay === 5_000) timers.push({ handle, expire: () => callback(...args), cleared: false });
+					return handle;
+				};
+				(globalThis as any).clearTimeout = (handle: ReturnType<typeof setTimeout>) => {
+					const timer = timers.find(candidate => candidate.handle === handle);
+					if (timer) timer.cleared = true;
+					return originalClearTimeout(handle);
+				};
+			}
+			if (scenario === 'webview user-save') {
+				(vscode.window as any).showErrorMessage = (message: string) => { saveErrors.push(message); return Promise.resolve(undefined); };
+			}
+			if (publicationFailure) {
+				(fs.promises as any).open = (target: fs.PathLike, flags: any, ...args: any[]) => {
+					if (commits > 0 && failedPublications === 0 && flags === 'r+' && String(target) === uri.fsPath) {
+						failedPublications++;
+						return Promise.reject(Object.assign(new Error('Native commit publication denied by fixture'), { code: 'EACCES' }));
+					}
+					return (originalOpenFile as any).call(fs.promises, target, flags, ...args);
+				};
+			}
+			const connections = connectionManagerStub();
+			const sqlWorkbench = sqlWorkbenchStub();
+			(KustoWorkbenchToolOrchestrator as any).instance = undefined;
+			orchestrator = KustoWorkbenchToolOrchestrator.getInstance(context, connections, () => sqlWorkbench.connectionManager, {} as any);
+			const provider = new (KqlxEditorProvider as any)(context, vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
+				connections, sqlWorkbench, undefined, registry) as KqlxEditorProvider;
+			remainingPanelRegistrations = () => (provider as any).markdownPanelOwners.get(normalizeWorkbenchUriKey(uri))?.size ?? 0;
+			fs.writeFileSync(uri.fsPath, JSON.stringify({ kind: 'kqlx', version: 1, futureRoot: { keep: true }, state }, null, 2));
+			const open = async () => {
+				await vscode.commands.executeCommand('vscode.openWith', uri, 'default', { preview: false });
+				document = await vscode.workspace.openTextDocument(uri);
+				if (drainedFailure && reopened) saveDocument ??= Object.create(document) as vscode.TextDocument;
+				const view: SaveView = { disposals: [] };
+				currentView = view;
+				const panel = {
+					webview: {
+						options: {},
+						postMessage: async (message: any) => {
+							if (message.type === 'documentData' && message.ok) {
+								view.projection = message;
+								if (currentView === view) projection = message;
+							}
+							if (message.reloadRequestId) {
+								await Promise.resolve(view.receive!({
+									type: 'documentReloadResult', requestId: message.reloadRequestId, applied: true,
+									editRevision: Number(message.editRevision || 0), markdownCommandBarrierSupported: scenario !== 'unleased overlap',
+								}));
+							}
+							if (message.type === 'requestMarkdownCommandBarrier') {
+								record('barrier.accepted', () => ({ sourceGeneration: message.sourceGeneration }));
+								void Promise.resolve(view.receive!({
+									type: 'markdownDocumentCommandBarrierResult', requestId: message.requestId,
+									sourceGeneration: message.sourceGeneration, documentRevision: 0, accepted: true,
+								}));
+							}
+							if (message.type === 'requestFinalPersist') {
+								finalPersistView = view;
+								if (failFinalSnapshot) {
+									record('finalSnapshot.unavailable');
+									return true;
+								}
+								const preparationReply = (async () => {
+									if (holdPreparation) {
+										heldView = view;
+										record('preparation.held');
+										preparationReached();
+										await preparationGate;
+									}
+									await view.receive!({
+										type: 'persistDocument', state, flush: true, reason: 'save', editRevision,
+										snapshotId: `native-commit-${message.requestId}`, sourceGeneration: view.projection.sourceGeneration,
+										flushRequestId: message.requestId,
+									});
+								})();
+								const trackedPreparationReply = preparationReply.then(undefined, error => {
+									try { fixtureFailures.push(error); }
+									catch (recordError) { if (recordErrors++ === 0) recordingError = recordError; }
+								}).finally(() => preparationReplies.delete(trackedPreparationReply));
+								preparationReplies.add(trackedPreparationReply);
+							}
+							return true;
+						},
+						onDidReceiveMessage: (handler: any) => { view.receive = handler; return { dispose() {} }; },
+					},
+					onDidDispose: (handler: () => void) => {
+						disposals.push(handler);
+						view.disposals.push(handler);
+						return { dispose() {} };
+					},
+				} as any;
+				await provider.resolveCustomTextEditor(saveDocument ?? document, panel, {} as any);
+				receive = view.receive;
+				view.lifecycle = lifecycle;
+				await Promise.resolve(receive!({ type: 'requestDocument' }));
+				assert.ok(lifecycle);
+				assert.ok(resultSession);
+				assert.strictEqual(resultSession.openSection('query_probe', 'native-commit-instance'), true);
+				assert.strictEqual(resultSession.adoptTarget({ boxId: 'query_probe', sectionInstanceId: 'native-commit-instance',
+					targetGeneration: 1, connectionId: 'connection-1', database: 'Db' }), true);
+				token = orchestrator!.connect(() => true, async () => state.sections, async () => ({ schemas: [] }),
+					uri.toString(), undefined, undefined, lifecycle);
+				tokens.push(token);
+				views.push(view);
+			};
+			await open();
+			const publish = async (revision: number) => {
+				if (resultFree) {
+					state = { sections: [{ ...state.sections[0], name: `revision-${revision}` }] };
+					await Promise.resolve(receive!({ type: 'persistDocument', state, editRevision: revision,
+						snapshotId: `publish-${revision}`, sourceGeneration: projection.sourceGeneration }));
+					assert.strictEqual(document!.isDirty, true);
+					return;
+				}
+				const terminal = {
+					type: 'queryResult' as const, engine: 'kusto' as const,
+					boxId: 'query_probe', sectionInstanceId: 'native-commit-instance', targetGeneration: 1,
+					executionId: `native-commit-${revision}`, connectionId: 'connection-1', database: 'Db',
+					producer: 'manual' as const, query: 'print Probe1=1', reservationSequence: revision,
+					dispatch: {
+						dispatchAttempt: 1, connectionRevision: 1, leaveNoTraceRevision: 0,
+						connectionIdentityKey: 'https://cluster.kusto.windows.net|authority',
+						clusterEndpoint: 'https://cluster.kusto.windows.net', authorityId: 'authority',
+						accountPartition: 'partition-a', authSessionGeneration: 1, clientActivityId: `native-commit-${revision}`,
+					},
+					result: { columns: ['Probe1'], rows: [[1]], metadata: {} },
+				};
+				assert.strictEqual(resultSession!.beginExecution(terminal), true);
+				const assigned = resultSession!.stagePublication(`publication-${revision}`, terminal);
+				assert.ok(assigned);
+				assert.strictEqual(resultSession!.commitPublication(`publication-${revision}`), true);
+				state = { sections: [{ ...state.sections[0], resultJson: JSON.stringify(assigned.result),
+					resultArtifact: assigned.resultArtifactAssignment, kustoAccountPartition: 'partition-a', kustoLeaveNoTraceRevision: 0 }] };
+				await Promise.resolve(receive!({ type: 'persistDocument', state, editRevision: revision,
+					snapshotId: `publish-${revision}`, sourceGeneration: projection.sourceGeneration }));
+				assert.strictEqual(document!.isDirty, true);
+				assert.strictEqual(JSON.parse(document!.getText()).state.sections[0].resultArtifact.producer.executionId, terminal.executionId);
+			};
+			await publish(1);
+			nativeSaveTrace?.record('initialNative.started');
+			await lifecycle!.save();
+			nativeSaveTrace?.record('initialNative.returned');
+			assert.strictEqual(document!.isDirty, false);
+			const oldText = fs.readFileSync(uri.fsPath, 'utf8');
+			assert.strictEqual(document!.getText(), oldText);
+			if (resultFree) assert.strictEqual(JSON.parse(oldText).state.sections[0].resultJson, undefined);
+			else assert.strictEqual(JSON.parse(oldText).state.sections[0].resultArtifact.producer.executionId, 'native-commit-1');
+			if (!nativeSaveTrace) fs.writeFileSync(path.join(root, 'old1-saved.json'), oldText);
+			orchestrator.disconnectIfOwner(token!);
+			for (const dispose of disposals.splice(0)) dispose();
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000), true);
+			views.length = 0;
+			const initialTabs = vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab =>
+				tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === uri.toString());
+			assert.strictEqual(await vscode.window.tabGroups.close(initialTabs), true);
+			reopened = true;
+			await open();
+			assert.strictEqual(document!.getText(), oldText);
+			record('old1.reopened');
+			await publish(2);
+			assert.strictEqual(fs.readFileSync(uri.fsPath, 'utf8'), oldText);
+			let newText = document!.getText();
+			let newSection = JSON.parse(newText).state.sections[0];
+			if (resultFree) assert.strictEqual(newSection.resultJson, undefined);
+			else assert.notDeepStrictEqual(newSection.resultArtifact, JSON.parse(oldText).state.sections[0].resultArtifact);
+			if (passiveRecovery) {
+				passiveView = views[0];
+				assert.ok(passiveView.willSave);
+				captureTimers = true;
+				passiveView.willSave!({ document, waitUntil: (work: Thenable<vscode.TextEdit[]>) => { expiredPreparation = Promise.resolve(work); } });
+				await expiredPreparation!;
+				captureTimers = false;
+				const activeTimers = timers.filter(timer => !timer.cleared);
+				assert.strictEqual(activeTimers.length, 1, 'A must retain the real five-second native commit lease');
+				for (let index = 0; index < 2; index++) {
+					expiredWaiters.push(passiveView.lifecycle!.inspectDirty().then(() => undefined, error => error));
+				}
+				await new Promise<void>(resolve => setImmediate(resolve));
+				activeTimers[0].expire();
+				const failures = await Promise.all(expiredWaiters);
+				for (const failure of failures) {
+					assert.ok(failure instanceof Error, 'Both original joiners must reject A\'s expired attempt');
+					assert.match(failure.message, /native notebook Save/);
+				}
+				record('coordinatorA.expired', () => ({ originalWaiterErrors: failures.length }));
+				assert.strictEqual(fs.readFileSync(uri.fsPath, 'utf8'), oldText);
+				await open();
+				await publish(3);
+				editRevision = 3;
+				newText = document!.getText();
+				newSection = JSON.parse(newText).state.sections[0];
+			}
+			if (sibling) await open();
+			subscriptions.push(vscode.workspace.onDidSaveTextDocument(saved => {
+				if (saved.uri.toString() === uri.toString()) { commits++; record('native.committed', () => ({ commits })); }
+			}));
+			subscriptions.push(vscode.workspace.onWillSaveTextDocument(event => {
+				if (event.document.uri.toString() !== uri.toString() || !holdCommit) return;
+				event.waitUntil(commitGate);
+				record('commit.held', () => ({ version: event.document.version, dirty: event.document.isDirty, commits }));
+				commitReached();
+			}));
+			if (drainedFailure) {
+				const initiatingView = views[0];
+				const coordinatorView = views[1];
+				token = orchestrator.connect(() => true, async () => state.sections, async () => ({ schemas: [] }),
+					uri.toString(), undefined, undefined, initiatingView.lifecycle);
+				tokens.push(token);
+				const originalSave = document!.save;
+				const descriptor = Object.getOwnPropertyDescriptor(saveDocument!, 'save');
+				restoreDocumentSave = () => {
+					if (descriptor) Object.defineProperty(saveDocument!, 'save', descriptor);
+					else delete (saveDocument as any).save;
+				};
+				let delegatedNativeSaves = 0;
+				Object.defineProperty(saveDocument!, 'save', { configurable: true, value: async () => {
+					delegatedNativeSaves++;
+					nativeSaveTrace?.record('native.started');
+					nativeSave = Promise.resolve(originalSave.call(document));
+					const saved = await nativeSave;
+					record('native.returnHeld', () => ({ saved, delegatedNativeSaves }), saved);
+					assert.strictEqual(saved, true, 'The original native Save must genuinely commit the fail-closed fallback');
+					assert.strictEqual(finalPersistView, coordinatorView, 'B must prepare the native Save initiated through A');
+					const registrations = [...(provider as any).markdownPanelOwners.get(normalizeWorkbenchUriKey(uri)).values()] as Array<{ waitForNativeSaveCompletion(reportFailure: boolean): Promise<void> }>;
+					await Promise.all(registrations.map(registration => registration.waitForNativeSaveCompletion(false).catch(() => undefined)));
+					await Promise.all(registrations.map(registration => registration.waitForNativeSaveCompletion(false)));
+					assert.strictEqual(document!.isDirty, false);
+					assert.strictEqual(document!.getText(), fs.readFileSync(uri.fsPath, 'utf8'));
+					assert.deepStrictEqual(JSON.parse(document!.getText()).state.sections[0], JSON.parse(oldText).state.sections[0]);
+					record('failedAttempt.bookkeepingDrained', () => ({ version: document!.version, dirty: document!.isDirty, commits }));
+					for (const dispose of coordinatorView.disposals.splice(0)) {
+						disposals = disposals.filter(candidate => candidate !== dispose);
+						dispose();
+					}
+					await waitForCondition(() => remainingPanelRegistrations!() === 1, 'The failed sibling registration must retire before native Save returns');
+					record('native.returnReleased', () => ({ saved, failedSiblingRetired: true }), saved);
+					return saved;
+				} });
+				failFinalSnapshot = true;
+				publicSave = orchestrator.saveWorkbenchFile({ targetFileUri: uri.toString() });
+				const result = await publicSave;
+				const atReturn = { result, dirty: document!.isDirty, buffer: document!.getText(), disk: fs.readFileSync(uri.fsPath, 'utf8'), commits, delegatedNativeSaves };
+				returnSnapshot = atReturn;
+				record('public.returned', () => ({ success: result.success, saved: result.saved, dirty: atReturn.dirty, commits, delegatedNativeSaves }), result.success);
+				assert.strictEqual(delegatedNativeSaves, 1, 'The wrapper must delegate exactly one actual native Save');
+				assert.strictEqual(commits, 1);
+				assert.strictEqual(result.success, false, 'Public Save must report the drained sibling preparation failure despite a true native Save return');
+				assert.match(result.error ?? '', /native notebook Save/);
+				assert.strictEqual(atReturn.dirty, false);
+				assert.strictEqual(atReturn.buffer, atReturn.disk);
+				assert.deepStrictEqual(JSON.parse(atReturn.disk).futureRoot, { keep: true });
+				restoreDocumentSave();
+				restoreDocumentSave = undefined;
+				failFinalSnapshot = false;
+				await Promise.resolve(initiatingView.receive!({ type: 'persistDocument', state, editRevision: 3,
+					snapshotId: 'retry-drained-failure', sourceGeneration: initiatingView.projection.sourceGeneration }));
+				const retry = await orchestrator.saveWorkbenchFile({ targetFileUri: uri.toString() });
+				record('freshSave.returned', () => ({ success: retry.success, saved: retry.saved, dirty: document!.isDirty, commits }), retry.success);
+				assert.strictEqual(retry.success, true, 'A fresh Save must still retry NEW2 successfully');
+				assert.strictEqual(document!.isDirty, false);
+				assert.strictEqual(document!.getText(), fs.readFileSync(uri.fsPath, 'utf8'));
+				assert.deepStrictEqual(JSON.parse(document!.getText()).state.sections[0], newSection);
+				completed = true;
+				return;
+			}
+			holdPreparation = overlap;
+			holdCommit = overlap;
+			nativeSaveTrace?.record('native.started');
+			nativeSave = Promise.resolve(document!.save());
+			if (overlap) await preparationStarted;
+			else if (passiveRecovery) {
+				assert.strictEqual(await nativeSave, true);
+				await publicationStarted;
+				assert.strictEqual(finalPersistView, views[1], 'B must coordinate the successful native Save');
+				assert.strictEqual(document!.isDirty, false);
+				assert.strictEqual(document!.getText(), newText);
+				assert.strictEqual(fs.readFileSync(uri.fsPath, 'utf8'), newText);
+				record('coordinatorB.saved', () => ({ commits, passiveReadbackHeld: publicationHeld }));
+			} else { assert.strictEqual(await nativeSave, true); await lifecycle!.inspectDirty(); }
+			if (sibling) {
+				assert.ok(heldView);
+				const targetView = views.find(view => view !== heldView);
+				assert.ok(targetView?.lifecycle);
+				token = orchestrator.connect(() => true, async () => state.sections, async () => ({ schemas: [] }),
+					uri.toString(), undefined, undefined, targetView.lifecycle);
+				tokens.push(token);
+				record('public.targetedSibling', () => ({ targetDiffersFromNativeCoordinator: targetView !== heldView }));
+			}
+			if (retired) {
+				nativeSaveTrace?.record('preparation.released');
+				releasePreparation();
+				await commitStarted;
+				releaseCommit();
+				assert.strictEqual(await nativeSave, true);
+				await publicationStarted;
+				assert.strictEqual(document!.isDirty, false);
+				assert.strictEqual(document!.getText(), oldText);
+				assert.strictEqual(fs.readFileSync(uri.fsPath, 'utf8'), oldText);
+				for (const dispose of heldView!.disposals.splice(0)) {
+					disposals = disposals.filter(candidate => candidate !== dispose);
+					dispose();
+				}
+				record('coordinator.retired');
+			}
+			let atReturn: { dirty: boolean; buffer: string; disk: string; commits: number } | undefined;
+			const captureReturn = (result?: unknown) => {
+				atReturn = { dirty: document!.isDirty, buffer: document!.getText(), disk: fs.readFileSync(uri.fsPath, 'utf8'), commits };
+				returnSnapshot = { result, ...atReturn };
+				const returnResult = result as { success?: boolean; saved?: boolean } | undefined;
+				record(scenario === 'direct lifecycle' ? 'lifecycle.returned' : scenario === 'webview user-save'
+					? 'userSave.returned' : 'public.returned', () => ({ success: returnResult?.success, saved: returnResult?.saved, dirty: atReturn!.dirty, commits }), returnResult?.success);
+			};
+			nativeSaveTrace?.record('public.started');
+			if (scenario === 'direct lifecycle') directSave = lifecycle!.save().then(() => captureReturn());
+			else if (scenario === 'webview user-save') {
+				editRevision = 3;
+				directSave = Promise.resolve(receive!({ type: 'persistDocument', state, flush: true, reason: 'user-save',
+					editRevision, snapshotId: 'native-overlap-user-save', sourceGeneration: projection.sourceGeneration,
+				})).then(() => captureReturn());
+			} else {
+				publicSave = orchestrator.saveWorkbenchFile({ targetFileUri: uri.toString() }).then(result => {
+					captureReturn(result);
+					return result;
+				});
+			}
+			if (passiveRecovery) {
+				await new Promise<void>(resolve => setImmediate(resolve));
+				assert.strictEqual(atReturn, undefined, 'Fresh public Save must join A\'s passive readback');
+				record('passiveReadback.released');
+				releasePublication();
+			} else if (retired) {
+				nativeSaveTrace?.record('setContext.enter');
+				await vscode.commands.executeCommand('setContext', 'kusto.nativeCommitJoinTest', undefined);
+				nativeSaveTrace?.record('setContext.return');
+				returnedBeforePublication = !!atReturn;
+				record('publication.released', () => ({ returnedBeforePublication }));
+				releasePublication();
+			} else if (overlap) {
+				await new Promise<void>(resolve => setImmediate(resolve));
+				assert.strictEqual(atReturn, undefined, 'Public Save must first join native preparation');
+				nativeSaveTrace?.record('preparation.released');
+				releasePreparation();
+				await commitStarted;
+				nativeSaveTrace?.record('setContext.enter');
+				await vscode.commands.executeCommand('setContext', 'kusto.nativeCommitJoinTest', undefined);
+				nativeSaveTrace?.record('setContext.return');
+				record('commit.released');
+				releaseCommit();
+			}
+			if (sourceEdit) {
+				assert.strictEqual(await nativeSave, true);
+				nativeSaveTrace?.record('native.returned', true);
+				await publicationStarted;
+				assert.strictEqual(document!.isDirty, false);
+				assert.strictEqual(document!.getText(), newText);
+				const committedVersion = document!.version;
+				userDraft = document!.getText().replace('print Probe1=1', 'print UserDraft=3');
+				const edit = new vscode.WorkspaceEdit();
+				edit.replace(uri, new vscode.Range(document!.positionAt(0), document!.positionAt(document!.getText().length)), userDraft);
+				assert.strictEqual(await vscode.workspace.applyEdit(edit), true);
+				if (scenario === 'post-commit source ABA') {
+					userDraft = newText;
+					const revert = new vscode.WorkspaceEdit();
+					revert.replace(uri, new vscode.Range(document!.positionAt(0), document!.positionAt(document!.getText().length)), userDraft);
+					assert.strictEqual(await vscode.workspace.applyEdit(revert), true);
+					assert.ok(document!.version > committedVersion + 1, 'ABA must change the source version despite identical final bytes');
+				}
+				state = JSON.parse(userDraft).state;
+				userDraftDirty = document!.isDirty;
+				if (scenario !== 'post-commit source ABA') assert.strictEqual(userDraftDirty, true);
+				assert.strictEqual(fs.readFileSync(uri.fsPath, 'utf8'), newText);
+				if (!nativeSaveTrace) fs.writeFileSync(path.join(root, 'user-draft.json'), userDraft);
+				record('source.userEdited', () => ({ version: document!.version, dirty: document!.isDirty }), document!.isDirty);
+				releasePublication();
+			}
+			const result = await publicSave;
+			await directSave;
+			assert.strictEqual(await nativeSave, true, 'The original native Save must still succeed');
+			if (retired) {
+				await publicationFinished;
+				if (publicationFailure) assert.strictEqual(failedPublications, 1, 'Retired publication must reach the actual backend failure');
+				assert.strictEqual(returnedBeforePublication, false, 'A surviving panel must wait for the retired coordinator publication');
+			}
+			if (sourceEdit) {
+				assert.strictEqual(result?.success, false, 'The waiting public Save must not save a newer user draft');
+				assert.match(result?.error ?? '', /notebook changed while waiting for Save/);
+				assert.ok(atReturn);
+				assert.strictEqual(atReturn.dirty, userDraftDirty, 'The waiting Save must not change the newer draft dirty state');
+				assert.strictEqual(atReturn.buffer, userDraft, 'The newer user draft must remain intact');
+				assert.strictEqual(atReturn.disk, newText, 'The waiting Save must not publish the newer user draft');
+				assert.strictEqual(atReturn.commits, 1, 'Joining must not save the newer draft');
+				completed = true;
+				return;
+			}
+			if (publicationFailure) {
+				assert.strictEqual(failedPublications, 1, 'The actual canonical publication must reach the file-open failure');
+				assert.strictEqual(result?.success, false, 'The other panel must not conceal a failed native result publication');
+				assert.match(result?.error ?? '', /could not confirm the final saved query results/);
+			} else if (result) assert.strictEqual(result.success, true, `Public Save must join the existing native commit: ${JSON.stringify(result)}`);
+			if (passiveRecovery) assert.strictEqual(result?.saved, false, 'Joining the already-clean successful Save needs no extra commit');
+			assert.ok(atReturn);
+			assert.strictEqual(atReturn.dirty, false, 'The native buffer must be clean at public return');
+			assert.strictEqual(atReturn.buffer, atReturn.disk, 'Buffer and disk must agree at public return');
+			assert.deepStrictEqual(JSON.parse(atReturn.disk).state.sections[0], publicationFailure
+				? JSON.parse(oldText).state.sections[0] : newSection, 'Public return must contain NEW2 on success and retain OLD1 on failed publication');
+			assert.deepStrictEqual(JSON.parse(atReturn.disk).futureRoot, { keep: true });
+			assert.strictEqual(atReturn.commits, 1, 'Joining must not issue a second native Save');
+			assert.deepStrictEqual(saveErrors, [], 'The explicit user-save handler must not hide a recursive Save error');
+			completed = true;
+		} catch (error) {
+			bodyFailed = true;
+			throw error;
+		} finally {
+			captureTimers = false;
+			releasePreparation();
+			releaseCommit();
+			releasePublication();
+			try {
+				for (const timer of timers.filter(candidate => !candidate.cleared)) {
+					try { timer.expire(); } catch (error) { fixtureFailures.push(error); }
+				}
+				const settled = await Promise.allSettled([expiredPreparation, ...expiredWaiters, nativeSave, publicSave, directSave]);
+				for (const result of settled) if (result.status === 'rejected') fixtureFailures.push(result.reason);
+				while (preparationReplies.size) await Promise.allSettled([...preparationReplies]);
+				if (retiredPublicationStarted) await publicationFinished;
+				for (const connectionToken of tokens) {
+					try { orchestrator?.disconnectIfOwner(connectionToken); } catch (error) { fixtureFailures.push(error); }
+				}
+				for (const dispose of disposals.splice(0)) {
+					try { dispose(); } catch (error) { fixtureFailures.push(error); }
+				}
+				const closed = await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
+				record('cleanup.drained', () => ({ closed, remainingPanelRegistrations: remainingPanelRegistrations?.() }), closed);
+				assert.strictEqual(closed, true, 'Native Save work must drain before panel cleanup completes');
+				assert.strictEqual(remainingPanelRegistrations?.(), 0, 'Retired panel registrations must not remain after draining');
+			} catch (error) { fixtureFailures.push(error); }
+			finally {
+				for (const restore of [
+					() => restoreDocumentSave?.(),
+					() => { if (saveDocument) liveDocuments.retire(saveDocument); },
+					...subscriptions.map(subscription => () => subscription.dispose()),
+					() => resultSession?.dispose(), () => resultLease.release(),
+					() => { (fs.promises as any).open = originalOpenFile; },
+					() => { (fs.promises as any).realpath = originalRealpath; },
+					() => { (vscode.window as any).showErrorMessage = originalShowError; },
+					() => { prototype.setWorkbenchFileCloseLifecycle = originalSetLifecycle; },
+					() => { prototype.attachKustoResultPersistenceSession = originalAttachResultSession; },
+					() => { prototype.publishSqlLeaveNoTraceStateFresh = originalPublish; },
+					() => { (vscode.workspace as any).onWillSaveTextDocument = originalWillSave; },
+					() => { (vscode.workspace as any).onDidSaveTextDocument = originalDidSave; },
+					() => Object.defineProperty(vscode.workspace, 'textDocuments', originalTextDocuments),
+					() => { (globalThis as any).setTimeout = originalSetTimeout; },
+					() => { (globalThis as any).clearTimeout = originalClearTimeout; },
+					() => Object.defineProperty(KustoWorkbenchToolOrchestrator, 'instance', originalSingleton),
+				]) { try { restore(); } catch (error) { fixtureFailures.push(error); } }
+			}
+			try {
+				const tabs = vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => !tab.isDirty
+					&& tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === uri.toString());
+				if (tabs.length) assert.strictEqual(await vscode.window.tabGroups.close(tabs), true);
+			} catch (error) { fixtureFailures.push(error); }
+			if (recordErrors) fixtureFailures.push(recordingError);
+			if (!nativeSaveTrace) {
+				try { if (document) fs.writeFileSync(path.join(root, 'final-buffer.json'), document.getText()); }
+				catch (error) { fixtureFailures.push(error); }
+				try {
+					fs.writeFileSync(path.join(root, 'events.jsonl'), [...events, { event: 'diagnostic.receipt', droppedEvents, recordErrors, failures: fixtureFailures.length,
+						completed, bodyFailed, crashBeforeFinallyMayLoseEvents: true }].map(entry => JSON.stringify(entry)).join('\n') + '\n');
+				} catch (error) { fixtureFailures.push(error); }
+			}
+			try { console.log(`Retained ${completed && !fixtureFailures.length ? 'passed' : 'failed'} native commit fixture for local history: ${root}; events=${events.length}; dropped=${droppedEvents}; errors=${recordErrors}; cleanupFailures=${fixtureFailures.length}`); }
+			catch (error) { fixtureFailures.push(error); }
+			if (!nativeSaveTrace && (!completed || fixtureFailures.length) && returnSnapshot) {
+				try { fs.writeFileSync(path.join(root, 'public-return.json'), JSON.stringify(returnSnapshot, null, 2)); }
+				catch (error) { fixtureFailures.push(error); }
+			}
+			if (!bodyFailed && fixtureFailures.length) throw fixtureFailures[0];
+		}
+	});
+	}
 
 	const nativeSingleSaveTitle = 'native Save publishes new results without a post-commit buffer edit or second Save';
 	const nativeSingleSaveRows = (label: string) => Array.from({ length: 17_000 }, (_, index) =>
@@ -10117,6 +12402,7 @@ suite('Sidecar .kql.json strategy', () => {
 	test('canonical public-row restoration keeps a Transformation command queued until restore completes', async () => {
 		const originalOnWillSaveTextDocument = vscode.workspace.onWillSaveTextDocument;
 		const originalOnDidSaveTextDocument = vscode.workspace.onDidSaveTextDocument;
+		const scopedOnDidChangeTextDocument = vscode.workspace.onDidChangeTextDocument;
 		const originalApplyEdit = vscode.workspace.applyEdit;
 		const originalFailClosed = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFailClosed;
 		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
@@ -10368,7 +12654,7 @@ suite('Sidecar .kql.json strategy', () => {
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
 			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSaveTextDocument;
 			(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSaveTextDocument;
-			(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChangeTextDocument;
+			(vscode.workspace as any).onDidChangeTextDocument = scopedOnDidChangeTextDocument;
 			(vscode.workspace as any).applyEdit = originalApplyEdit;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
@@ -10581,6 +12867,108 @@ suite('Sidecar .kql.json strategy', () => {
 				(QueryEditorProvider as any).prototype.initializeWebviewPanel = previousInitialize;
 				(QueryEditorProvider as any).prototype.handleWebviewMessage = previousHandle;
 				try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+			}
+		});
+
+		if (variant.compatibilityMode) test(`${variant.name} forwards queued tool delivery guards through the initialized provider`, async () => {
+			let receiveHandler: ((message: any) => unknown) | undefined;
+			let queryEditor: QueryEditorProvider | undefined;
+			let releaseHead!: (delivered: boolean) => void;
+			let markHeadEntered!: () => void;
+			const heldHead = new Promise<boolean>(resolve => { releaseHead = resolve; });
+			const headEntered = new Promise<void>(resolve => { markHeadEntered = resolve; });
+			const posted: any[] = [];
+			const disposeHandlers: Array<() => unknown> = [];
+			const previousInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+			const previousGatewayPost = MainWebviewStartupGateway.prototype.postMessage;
+			let startupGateway: MainWebviewStartupGateway<unknown> | undefined;
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-compat-delivery-guard-'));
+			const filePath = path.join(tmpDir, `guard${variant.extension}`);
+			let head: Thenable<boolean> | undefined;
+			try {
+				fs.writeFileSync(filePath, variant.text, 'utf8');
+				MainWebviewStartupGateway.prototype.postMessage = function (message, signal, isCurrent) {
+					startupGateway = this;
+					return previousGatewayPost.call(this, message, signal, isCurrent);
+				};
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async function (panel: vscode.WebviewPanel, options: any) {
+					queryEditor = this;
+					(this as any).panel = panel;
+					(this as any)._panelDisposed = false;
+					await previousInitialize.call(this, panel, options);
+				};
+				const context = {
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+					extensionMode: vscode.ExtensionMode.Test,
+				} as unknown as vscode.ExtensionContext;
+				const provider = new (variant.Provider as any)(context,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub());
+				const document = {
+					uri: vscode.Uri.file(filePath), version: 1, isClosed: false,
+					getText: () => variant.text, lineCount: 1,
+					lineAt: () => ({ text: variant.text }), eol: vscode.EndOfLine.LF,
+				} as unknown as vscode.TextDocument;
+				const postMessage = reloadAwarePostMessage(() => receiveHandler, posted);
+				const panel = {
+					visible: true, active: true,
+					webview: {
+						options: {},
+						postMessage,
+						onDidReceiveMessage: (handler: typeof receiveHandler) => {
+							receiveHandler = handler;
+							return { dispose() {} };
+						},
+					},
+					onDidDispose: (handler: () => unknown) => {
+						disposeHandlers.push(handler);
+						return { dispose() {} };
+					},
+					onDidChangeViewState: () => ({ dispose() {} }),
+				} as unknown as vscode.WebviewPanel;
+				await provider.resolveCustomTextEditor(document, panel, {} as vscode.CancellationToken);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const projections = posted.filter(message => message.type === 'documentData' && message.ok);
+				assert.strictEqual(projections.length, 1);
+				const primaryId = projections[0].state.sections[0].id;
+				assert.ok(primaryId, 'the real provider must project its pinned primary');
+				const snapshotIdentity = Reflect.get(queryEditor!, 'workbenchToolSnapshotIdentity') as () => unknown;
+				const originalIdentity = snapshotIdentity();
+				const gateway = startupGateway as MainWebviewStartupGateway<unknown> | undefined;
+				assert.ok(gateway, 'the actual provider must use its startup gateway');
+				head = gateway.postDocumentProjection({
+					preflight: () => { markHeadEntered(); return heldHead; },
+					prepare: () => ({ message: { type: 'settingsUpdate', alternatingRowColor: 'held-guard-head' } }),
+				});
+				await headEntered;
+				let current = true;
+				const request = { type: 'toolConfigureQuerySection', requestId: 'guarded-compat-tool', input: { sectionId: primaryId, execute: true } };
+				const guarded = queryEditor!.postMessage(request, undefined, () => current);
+				const follower = queryEditor!.postMessage({ type: 'settingsUpdate', alternatingRowColor: 'unguarded-follower' });
+				assert.ok(!posted.some(message => message.requestId === request.requestId), 'the physical queue must still hold the tool message');
+				current = false;
+				releaseHead(true);
+				await head;
+				assert.strictEqual(await guarded, false, 'invalidated queued tool delivery must return false');
+				assert.strictEqual(posted.filter(message => message.requestId === request.requestId).length, 0, 'invalidated tool messages must never reach the SDK');
+				assert.strictEqual(await follower, true);
+				assert.strictEqual(posted.filter(message => message.alternatingRowColor === 'unguarded-follower').length, 1);
+				current = true;
+				const positive = { ...request, requestId: 'current-compat-tool' };
+				assert.strictEqual(await queryEditor!.postMessage(positive, undefined, () => current), true);
+				assert.strictEqual(posted.filter(message => message.requestId === positive.requestId).length, 1);
+				assert.strictEqual(snapshotIdentity(), originalIdentity, 'transport admission must not advance source or projection generations');
+				assert.strictEqual(projections[0].state.sections[0].id, primaryId);
+				assert.strictEqual(posted.filter(message => message.type === 'documentData' && message.ok).length, 1);
+				assert.strictEqual(fs.readFileSync(filePath, 'utf8'), variant.text);
+			} finally {
+				releaseHead(true);
+				await head;
+				for (const dispose of disposeHandlers) await dispose();
+				(QueryEditorProvider as any).prototype.initializeWebviewPanel = previousInitialize;
+				MainWebviewStartupGateway.prototype.postMessage = previousGatewayPost;
+				try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
 			}
 		});
 	}

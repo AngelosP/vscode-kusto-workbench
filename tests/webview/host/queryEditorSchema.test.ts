@@ -61,6 +61,7 @@ function createService(connection: KustoConnection) {
 		accountPartition: 'test-partition',
 	}));
 	const getDatabases = vi.fn(async () => ['TelemetryDb']);
+	const getAccountPartition = vi.fn<() => string | undefined>(() => 'test-partition');
 	let currentConnection = connection;
 	const service = new SchemaService({
 		context: {
@@ -70,7 +71,7 @@ function createService(connection: KustoConnection) {
 				update: vi.fn(async () => undefined),
 			},
 		} as any,
-		kustoClient: { getDatabases, getDatabaseSchema, getAccountPartition: vi.fn(() => 'test-partition'), isAuthenticationError: isAuthError } as any,
+		kustoClient: { getDatabases, getDatabaseSchema, getAccountPartition, isAuthenticationError: isAuthError } as any,
 		connectionManager: { getConnections: vi.fn(() => currentConnection ? [currentConnection] : []) } as any,
 		output: { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() } as any,
 		postMessage: (message: unknown) => { messages.push(message); },
@@ -78,7 +79,7 @@ function createService(connection: KustoConnection) {
 		findConnection: vi.fn(() => currentConnection),
 	});
 	return {
-		service, messages, getDatabases, getDatabaseSchema, globalStorageUri,
+		service, messages, getDatabases, getDatabaseSchema, getAccountPartition, globalStorageUri,
 		setConnection: (next: KustoConnection) => { currentConnection = next; },
 	};
 }
@@ -451,6 +452,84 @@ describe('SchemaService primary schema preparation', () => {
 		name: 'Primary',
 		clusterUrl: 'https://primary.kusto.windows.net',
 	};
+
+	describe('primary auth mode', () => {
+		it.each([
+			{ resolved: true, automaticFirst: true },
+			{ resolved: true, automaticFirst: false },
+			{ resolved: false, automaticFirst: true },
+			{ resolved: false, automaticFirst: false },
+		])('isolates mixed modes and preserves same-mode joins through failure/retry: resolved=$resolved automaticFirst=$automaticFirst', async ({ resolved, automaticFirst }) => {
+			const { service, messages, getDatabaseSchema, getAccountPartition } = createService(connection);
+			getAccountPartition.mockReturnValue(resolved ? 'test-partition' : undefined);
+			vi.spyOn(service as unknown as { getCachedSchemaFromDiskByCluster: () => Promise<undefined> }, 'getCachedSchemaFromDiskByCluster').mockResolvedValue(undefined);
+			const write = vi.spyOn(service, 'saveCachedSchemaToDisk').mockResolvedValue(undefined);
+			const firstFetch = Promise.withResolvers<Awaited<ReturnType<typeof getDatabaseSchema>>>();
+			const secondFetch = Promise.withResolvers<Awaited<ReturnType<typeof getDatabaseSchema>>>();
+			const retryFetch = Promise.withResolvers<Awaited<ReturnType<typeof getDatabaseSchema>>>();
+			getDatabaseSchema.mockReturnValueOnce(firstFetch.promise).mockReturnValueOnce(secondFetch.promise).mockReturnValueOnce(retryFetch.promise);
+			const firstReason = automaticFirst ? 'automatic' : 'autocomplete';
+			const secondReason = automaticFirst ? 'autocomplete' : 'automatic';
+			const work: Promise<void>[] = [];
+			const request = (reason: string, token: string) => {
+				const pending = service.prefetchSchema(connection.id, 'TelemetryDb', token, false, token, { reason });
+				work.push(pending);
+				return pending;
+			};
+			const result = {
+				schema: { tables: ['Events'], columnTypesByTable: { Events: { TIMESTAMP: 'datetime', EventName: 'string' } }, rawSchemaJson: makeRawSchema('TelemetryDb') },
+				fromCache: false, accountPartition: 'test-partition',
+			};
+			try {
+				const first = [request(firstReason, 'first_1'), request(firstReason, 'first_2')];
+				request(secondReason, 'second_1');
+				request(secondReason, 'second_2');
+				await vi.waitFor(() => expect(getDatabaseSchema).toHaveBeenCalledTimes(2));
+				expect(getDatabaseSchema).toHaveBeenNthCalledWith(1, connection, 'TelemetryDb', false, {
+					allowInteractive: !automaticFirst, source: 'primary-schema',
+				});
+				expect(getDatabaseSchema).toHaveBeenNthCalledWith(2, connection, 'TelemetryDb', false, {
+					allowInteractive: automaticFirst, source: 'primary-schema',
+				});
+				firstFetch.reject(new Error('late first-mode failure'));
+				await Promise.all(first);
+				expect(messages.filter(message => message.type === 'schemaError').map(message => message.requestToken)).toEqual(['first_1', 'first_2']);
+				request(secondReason, 'second_join');
+				request(firstReason, 'retry_1');
+				request(firstReason, 'retry_2');
+				await vi.waitFor(() => expect(getDatabaseSchema).toHaveBeenCalledTimes(3));
+				expect(getDatabaseSchema).toHaveBeenNthCalledWith(3, connection, 'TelemetryDb', false, {
+					allowInteractive: !automaticFirst, source: 'primary-schema',
+				});
+				secondFetch.resolve(result);
+				retryFetch.resolve(result);
+				await Promise.all(work);
+				expect(getDatabaseSchema).toHaveBeenCalledTimes(3);
+				expect(write).toHaveBeenCalledTimes(2);
+				expect(messages.filter(message => message.type === 'schemaData').map(message => message.requestToken).sort())
+					.toEqual(['retry_1', 'retry_2', 'second_1', 'second_2', 'second_join']);
+				for (const message of messages.filter(message => message.type === 'schemaData')) {
+					expect(message).toMatchObject({ accountPartition: 'test-partition', schemaMeta: { deliveryKind: 'fresh' } });
+				}
+			} finally {
+				firstFetch.resolve(result);
+				secondFetch.resolve(result);
+				retryFetch.resolve(result);
+				await Promise.all(work);
+			}
+		});
+
+		it.each([undefined, 'unrecognized-origin', 'automatic '])('keeps unspecified or unknown reason %s interactive', async reason => {
+			const { service, messages, getDatabaseSchema } = createService(connection);
+			vi.spyOn(service as unknown as { getCachedSchemaFromDiskByCluster: () => Promise<undefined> }, 'getCachedSchemaFromDiskByCluster').mockResolvedValue(undefined);
+			vi.spyOn(service, 'saveCachedSchemaToDisk').mockResolvedValue(undefined);
+			await service.prefetchSchema(connection.id, 'TelemetryDb', 'legacy', false, 'legacy', { reason });
+			expect(getDatabaseSchema).toHaveBeenCalledExactlyOnceWith(connection, 'TelemetryDb', false, {
+				allowInteractive: true, source: 'primary-schema',
+			});
+			expect(messages).toEqual([expect.objectContaining({ type: 'schemaData', requestToken: 'legacy' })]);
+		});
+	});
 
 	it('posts a terminal background-refresh error with usable fallback capability', async () => {
 		const { service, messages, getDatabaseSchema } = createService(connection);

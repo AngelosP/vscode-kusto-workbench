@@ -17,6 +17,62 @@ function deferred<T>() {
 }
 
 describe('SqlWorkbenchService global privacy recovery', () => {
+	it.each(['protected', 'disposed during installation'])(
+		'keeps %s tool preparation inside lifecycle admission without acquiring an ordinary process', async mode => {
+			const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-workbench-tool-installation-'));
+			const connection = { id: 'sql-a', name: 'A', dialect: 'mssql', serverUrl: 'a.example',
+				authType: 'sql', username: 'fixture-user' };
+			const values = new Map<string, unknown>([['sql.connections', [connection]]]);
+			const context = {
+				globalStorageUri: vscode.Uri.file(directory), logUri: vscode.Uri.file(path.join(directory, 'logs')),
+				globalState: {
+					get: vi.fn((key: string) => values.get(key)),
+					update: vi.fn(async (key: string, value: unknown) => { values.set(key, value); }),
+				},
+				secrets: { get: vi.fn(async () => undefined), store: vi.fn(async () => undefined), delete: vi.fn(async () => undefined) },
+			} as never;
+			const service = new SqlWorkbenchService(context,
+				{ trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
+				async () => undefined);
+			const installation = deferred<string | null>();
+			const dependencies = { ensureSts: vi.fn(() => installation.promise),
+				invalidateStsCache: vi.fn(), createProcessManager: vi.fn() };
+			Reflect.set(service.runtime, 'dependencies', dependencies);
+			const acquireManager = vi.spyOn(service.runtime, 'getProcessManager');
+			const lifecycle = vi.spyOn(service, 'runLifecycleOperation');
+			let preparation: Promise<unknown> | undefined;
+			try {
+				await service.ready();
+				if (mode === 'protected') {
+					await service.setLeaveNoTraceConnection(connection.id, true);
+					expect(service.isLeaveNoTraceConnection(connection.id)).toBe(true);
+				}
+				preparation = service.prepareToolExecution().catch(error => error);
+				await vi.waitFor(() => expect(dependencies.ensureSts).toHaveBeenCalledOnce());
+				expect(lifecycle).toHaveBeenCalledOnce();
+				let disposed = false;
+				const disposal = mode === 'disposed during installation'
+					? service.dispose().then(() => { disposed = true; }) : undefined;
+				await Promise.resolve();
+				expect(disposed).toBe(false);
+				installation.resolve('verified-binary');
+				if (disposal) {
+					await expect(preparation).resolves.toMatchObject({ message: 'SQL workbench service is disposed.' });
+					await disposal;
+					await expect(service.prepareToolExecution()).rejects.toThrow('disposed');
+				} else await expect(preparation).resolves.toBeUndefined();
+				expect(acquireManager).not.toHaveBeenCalled();
+				expect(dependencies.createProcessManager).not.toHaveBeenCalled();
+				expect(dependencies.ensureSts).toHaveBeenCalledOnce();
+			} finally {
+				installation.resolve('verified-binary');
+				await preparation;
+				await service.dispose();
+				fs.rmSync(directory, { recursive: true, force: true });
+			}
+		},
+	);
+
 	it('waits for startup sandbox cleanup before disposal completes', async () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-workbench-startup-cleanup-'));
 		const values = new Map<string, unknown>();

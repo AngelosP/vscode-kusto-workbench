@@ -57,6 +57,8 @@ import {
 } from './compatSidecarCloseCoordinator';
 import {
 	CompatSidecarProjectionCoordinator,
+	createCompatSidecarProjectionReadiness,
+	type CompatSidecarProjectionCoordinatorContract,
 	type CompatSidecarProjectionCoordinatorFactory,
 	type CompatSidecarProjectionRequest,
 } from './compatSidecarProjectionCoordinator';
@@ -250,19 +252,33 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			},
 		});
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.sqlWorkbench, this.editorCursorStatusBar);
+		let projectionCoordinator!: CompatSidecarProjectionCoordinatorContract;
+		let completeProjectionConstruction!: (coordinator: CompatSidecarProjectionCoordinatorContract | undefined) => void;
+		const projectionConstruction = new Promise<CompatSidecarProjectionCoordinatorContract | undefined>(resolve => {
+			completeProjectionConstruction = resolve;
+		});
 		queryEditor.setWorkbenchFileCloseLifecycle({
 			inspectDirty: () => closeCoordinator.inspectToolDirty(),
 			save: () => closeCoordinator.saveToolChanges(),
 		});
+		queryEditor.setWorkbenchToolMutationReadiness(createCompatSidecarProjectionReadiness(
+			projectionConstruction, outerDisposalSignal, () => outerDisposed,
+		));
+		queryEditor.setWorkbenchToolSnapshotIdentity(() =>
+			`${projectionCoordinator?.currentProjectionGeneration ?? 0}:${projectionCoordinator?.activeSourceGeneration ?? 0}:${document.version}`);
 		queryEditor.fileOpenTrace = fileOpenTrace;
 		queryEditor.documentUri = document.uri.toString();
 		queryEditor.setMessageTransport(
-			message => startupGateway.postMessage(message),
+			(message, signal, isCurrent) => startupGateway.postMessage(message, signal, isCurrent),
 			() => startupGateway.beginDispatcherRevalidation(),
+			() => startupGateway.readinessIdentity,
+			() => startupGateway.waitForReadDispatcherReady(),
+			() => startupGateway.runtimeIdentity,
 		);
 		const outerDisposalSubscription = webviewPanel.onDidDispose(() => {
 			outerDisposed = true;
 			signalOuterDisposal();
+			completeProjectionConstruction(undefined);
 			void closeCoordinator.disposePanel();
 		});
 		const subscriptions: vscode.Disposable[] = [startupGateway, outerDisposalSubscription];
@@ -509,10 +525,12 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		type SqlProjectionRequest = CompatSidecarProjectionRequest & Readonly<{
 			sidecarFileOverride?: KqlxFileV1;
 		}>;
-		const projectionCoordinator = this.projectionCoordinatorFactory({
+		projectionCoordinator = this.projectionCoordinatorFactory({
 			session: sidecarSession,
 			readSourceText: () => document.getText(),
+			readSourceVersion: () => document.version,
 			isDisposed: () => outerDisposed,
+			disposalSignal: outerDisposalSignal,
 			postProjection: async projection => {
 				const requestContext = projection.context as Readonly<{ sidecarFileOverride?: KqlxFileV1 }> | undefined;
 				const forceReload = projection.forceReload;
@@ -579,6 +597,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				return delivered;
 			},
 		});
+		completeProjectionConstruction(projectionCoordinator);
 		const postDocument = (options?: SqlProjectionRequest): Promise<boolean> => {
 			const request: CompatSidecarProjectionRequest = {
 				forceReload: options?.forceReload,
@@ -670,6 +689,15 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		subscriptions.push(queryEditor.onDidInvalidateKustoPersistence(reconcileInvalidatedPersistence));
 		const ownedDocumentEdits = new OwnedDocumentEditTracker(text => text.replace(/\r\n?/g, '\n'));
 		let activeSourceMutations = 0;
+		let ownedSourceCommit: Readonly<{
+			sourceGeneration: number;
+			projectionGeneration: number;
+			persistGeneration: number;
+			previousText: string;
+			requestedText: string;
+			nextText: string;
+			version: number;
+		}> | undefined;
 		const applyOwnedSourceEdit = async (edit: vscode.WorkspaceEdit, expectedText: string): Promise<boolean> => {
 			activeSourceMutations++;
 			ownedDocumentEdits.begin(expectedText);
@@ -728,6 +756,13 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				},
 				readSourceText: () => document.getText(),
 				applySourceText: async text => {
+					ownedSourceCommit = undefined;
+					const sourceGeneration = projectionCoordinator.activeSourceGeneration;
+					const projectionGeneration = projectionCoordinator.currentProjectionGeneration;
+					const persistGeneration = sidecarSession.generation;
+					const previousText = document.getText();
+					const nextText = document.eol === vscode.EndOfLine.CRLF
+						? text.replace(/\r\n?|\n/g, '\r\n') : text.replace(/\r\n?/g, '\n');
 					const lineCount = Math.max(1, document.lineCount || 1);
 					const edit = new vscode.WorkspaceEdit();
 					edit.replace(document.uri, new vscode.Range(
@@ -736,7 +771,24 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						lineCount - 1,
 						document.lineAt(lineCount - 1).text.length,
 					), text);
-					return applyOwnedSourceEdit(edit, text);
+					const sourceEdit = projectionCoordinator.registerOwnedSourceEdit(
+						sourceGeneration, previousText, nextText, document.version,
+					);
+					let applied: boolean;
+					try {
+						applied = await applyOwnedSourceEdit(edit, text);
+					} catch (error) {
+						sourceEdit?.cancel();
+						throw error;
+					}
+					if (!applied) sourceEdit?.cancel();
+					if (applied && sourceEdit && sourceEdit.complete(document.version) && !outerDisposed
+						&& projectionCoordinator.activeSourceGeneration === sourceGeneration
+						&& projectionCoordinator.currentProjectionGeneration === projectionGeneration) {
+						ownedSourceCommit = { sourceGeneration, projectionGeneration, persistGeneration,
+							previousText: sourceEdit.previousText, requestedText: text, nextText, version: document.version };
+					}
+					return applied;
 				},
 				requestSourceReload: () => { void postDocument({ forceReload: true, retirePersists: true }); },
 				setKnownState: state => { lastKnownSidecarState = state; },
@@ -1019,7 +1071,29 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					}
 				}
 				case 'persistDocument': {
-					await persistCoordinator.persist(message as CompatSidecarPersistMessage);
+					const persist = (async () => {
+						return await persistCoordinator.persist(message as CompatSidecarPersistMessage);
+					})();
+					const persistGeneration = sidecarSession.generation;
+					const result = await persist;
+					const sourceCommit = ownedSourceCommit;
+					if (result.terminal === 'applied' && sourceCommit && !outerDisposed
+						&& 'editRevision' in message
+						&& message.sourceGeneration === sourceCommit.sourceGeneration
+						&& sidecarSession.generation === persistGeneration && sourceCommit.persistGeneration <= persistGeneration
+						&& sidecarSession.currentStateEditRevision === message.editRevision
+						&& projectionCoordinator.currentProjectionGeneration === sourceCommit.projectionGeneration
+						&& document.version === sourceCommit.version
+						&& (lastKnownSidecarState?.sections[0] as { query?: unknown } | undefined)?.query === sourceCommit.requestedText) {
+						const persistOwner = sourceCommit.persistGeneration === persistGeneration ? [] : [{
+							persistGeneration, editRevision: sidecarSession.currentStateEditRevision,
+						}];
+						const adopted = await projectionCoordinator.adoptOwnedSourceText(
+							sourceCommit.sourceGeneration, sourceCommit.previousText, sourceCommit.nextText,
+							...persistOwner,
+						);
+						if (adopted && ownedSourceCommit === sourceCommit) ownedSourceCommit = undefined;
+					}
 					return;
 				}
 				case 'showSectionDiff': {
@@ -1119,6 +1193,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		closeCoordinator.configure(closeFinalization);
 		await startupGateway.setInboundHandler(handleIncomingWebviewMessage);
 		} catch (error) {
+			completeProjectionConstruction(undefined);
 			try { queryEditor.disposePanel(webviewPanel); } catch { /* continue compatibility cleanup */ }
 			await closeCoordinator.failInitialization({
 				gateway: startupGateway,

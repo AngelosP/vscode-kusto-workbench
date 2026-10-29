@@ -506,17 +506,28 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private readonly kustoConnectionLifecycle: KustoConnectionLifecycle;
 	private embeddedTutorialHost?: EmbeddedTutorialWebviewHost;
 	private embeddedTutorialRegistration?: vscode.Disposable;
-	private messageTransport?: (message: unknown) => Thenable<boolean>;
-	private messageTransportRevalidator?: () => void;
+	private messageTransport?: (message: unknown, signal?: AbortSignal, isCurrent?: () => boolean) => Thenable<boolean>;
+	private messageTransportRevalidator?: () => void | Promise<boolean>;
+	private messageTransportIdentity?: () => unknown;
+	private messageTransportReadValidator?: () => Promise<boolean>;
+	private messageTransportRuntimeIdentity?: () => string;
+	private workbenchToolSnapshotIdentity?: () => unknown;
+	private workbenchToolReadiness?: Promise<boolean>;
 	private panelVisible: boolean | undefined;
 	fileOpenTrace?: FileOpenTrace;
 
 	setMessageTransport(
-		transport: ((message: unknown) => Thenable<boolean>) | undefined,
-		revalidate?: () => void,
+		transport: ((message: unknown, signal?: AbortSignal, isCurrent?: () => boolean) => Thenable<boolean>) | undefined,
+		revalidate?: () => void | Promise<boolean>,
+		getIdentity?: () => unknown,
+		revalidateRead?: () => Promise<boolean>,
+		getRuntimeIdentity?: () => string,
 	): void {
 		this.messageTransport = transport;
 		this.messageTransportRevalidator = revalidate;
+		this.messageTransportIdentity = getIdentity;
+		this.messageTransportReadValidator = revalidateRead;
+		this.messageTransportRuntimeIdentity = getRuntimeIdentity;
 	}
 
 	getErrorMessage(error: unknown): string {
@@ -830,11 +841,35 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.workbenchToolSessionApplication = workbenchToolSessionApplication
 			?? new HostWorkbenchToolSessionApplicationHandler({
 				getOrchestrator: () => toolOrchestrator,
-				postMessage: message => this.postMessage(message),
-				isAvailable: () => !!this.panel,
+				postMessage: (message, signal, isCurrent) => isCurrent
+					? this.postMessage(message, signal, isCurrent) : this.postMessage(message, signal),
+				isAvailable: () => !!this.panel && !this._panelDisposed,
 				getDocumentUri: () => this.documentUri,
 				getCloseLifecycle: () => this.workbenchFileCloseLifecycle,
 				getMutationReadiness: () => this.workbenchToolMutationReadiness,
+				reactivate: () => this.reactivateWorkbenchToolSession(),
+				waitForReadReady: () => this.waitForWorkbenchToolReadiness(),
+				captureStateAdmission: () => {
+					const panel = this.panel;
+					const runtime = this.messageTransportIdentity?.();
+					const projection = this.workbenchToolSnapshotIdentity?.();
+					return () => !this._panelDisposed && this.panel === panel
+						&& Object.is(runtime, this.messageTransportIdentity?.())
+						&& Object.is(projection, this.workbenchToolSnapshotIdentity?.());
+				},
+				prepareKustoExecution: async onReady => {
+					const panel = this.panel;
+					if (!panel || this._panelDisposed) return false;
+					let runtime = this.messageTransportRuntimeIdentity?.();
+					const isCurrent = () => !this._panelDisposed && this.panel === panel
+						&& (!runtime || runtime === this.messageTransportRuntimeIdentity?.());
+					if (!await this.waitForWorkbenchToolReadiness() || !isCurrent()) return false;
+					runtime ||= this.messageTransportRuntimeIdentity?.();
+					if (!await onReady(isCurrent)) return false;
+					await this.kustoConnectionsProjectionApplication.refresh();
+					return isCurrent();
+				},
+				prepareSqlExecution: () => this.sqlWorkbench.prepareToolExecution(),
 				connectionManager: this.connectionManager,
 				schema: this.schema,
 				sqlLifecycle: this.sqlLifecycle,
@@ -1039,6 +1074,41 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	setWorkbenchToolMutationReadiness(waitForReady: () => Promise<boolean>): void {
 		this.workbenchToolMutationReadiness = waitForReady;
+	}
+
+	setWorkbenchToolSnapshotIdentity(getIdentity: () => unknown): void {
+		this.workbenchToolSnapshotIdentity = getIdentity;
+	}
+
+	private waitForWorkbenchToolReadiness(): Promise<boolean> {
+		if (this.workbenchToolReadiness) return this.workbenchToolReadiness;
+		const panel = this.panel;
+		if (!panel || this._panelDisposed) return Promise.resolve(false);
+		const readiness = Promise.resolve().then(async () => {
+			const revalidate = this.messageTransportReadValidator ?? this.messageTransportRevalidator;
+			if (await revalidate?.() === false) return false;
+			if (this._panelDisposed || this.panel !== panel) return false;
+			if (this.workbenchToolMutationReadiness && !await this.workbenchToolMutationReadiness()) return false;
+			return !this._panelDisposed && this.panel === panel;
+		}).catch(() => false);
+		this.workbenchToolReadiness = readiness;
+		void readiness.then(() => {
+			if (this.workbenchToolReadiness === readiness) this.workbenchToolReadiness = undefined;
+		});
+		return readiness;
+	}
+
+	private async reactivateWorkbenchToolSession(): Promise<boolean> {
+		const panel = this.panel;
+		if (!panel || this._panelDisposed) return false;
+		if (await this.messageTransportRevalidator?.() === false) return false;
+		if (this._panelDisposed || this.panel !== panel) return false;
+		if (this.workbenchToolMutationReadiness && !await this.workbenchToolMutationReadiness()) return false;
+		if (this._panelDisposed || this.panel !== panel) return false;
+		const sections = await this.requestSectionsFromWebview();
+		if (!Array.isArray(sections) || this._panelDisposed || this.panel !== panel) return false;
+		if (this.workbenchToolMutationReadiness && !await this.workbenchToolMutationReadiness()) return false;
+		return !this._panelDisposed && this.panel === panel;
 	}
 
 	async requestSectionsFromWebview(purpose?: 'schema-refresh', targetConnectionId?: string): Promise<unknown[] | undefined> {
@@ -1473,8 +1543,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.queryRuns.cancelAll();
 	}
 
-	postMessage(message: unknown): Thenable<boolean> {
-		if (this._panelDisposed) return Promise.resolve(false);
+	postMessage(message: unknown, signal?: AbortSignal, isCurrent?: () => boolean): Thenable<boolean> {
+		if (signal?.aborted || this._panelDisposed) return Promise.resolve(false);
 		const executionStartAdmission = admitKustoExecutionStartHostMessage(message);
 		if (executionStartAdmission.recognized) {
 			if (!executionStartAdmission.parsed.ok) return Promise.resolve(false);
@@ -1491,8 +1561,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			message = powerBiPublishAdmission.parsed.value;
 		}
 		try {
+			if (signal?.aborted || isCurrent?.() === false) return Promise.resolve(false);
 			if (this.messageTransport) {
-				return Promise.resolve(this.messageTransport(message)).catch(error => {
+				const delivery = isCurrent ? this.messageTransport(message, signal, isCurrent)
+					: signal ? this.messageTransport(message, signal) : this.messageTransport(message);
+				return Promise.resolve(delivery).catch(error => {
 					if (!this._panelDisposed) {
 						this.output.warn(`[webview] postMessage failed: ${sanitizeStsLogText(error instanceof Error ? error.message : error)}`);
 					}

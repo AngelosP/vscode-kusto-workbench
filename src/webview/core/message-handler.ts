@@ -85,8 +85,11 @@ import {
 } from '../../shared/developmentNoteMutationProtocol.js';
 import {
 	admitToolStateSnapshotHostMessageFromEnvelope,
+	captureExpectedKustoTarget,
 	createToolStateResponseMessage,
+	type ExpectedKustoTarget,
 } from '../../shared/toolStateSnapshotProtocol.js';
+import { kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
 import {
 	admitKustoExecutionStartHostMessageFromEnvelope,
 	createKustoExecutionStartedAckMessage,
@@ -277,6 +280,8 @@ import {
 	SQL_COPILOT_START_RETIREMENT_TTL_MS,
 } from '../../shared/copilotExecutionStart.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
+import type { KustoEditorSchemaRequestPlan } from './kusto-editor-schema-coordinator.js';
+import type { KustoEditorLifecycleIdentity, KustoEditorSchemaTarget } from '../../shared/kustoSchemaLifecycle.js';
 import {
 	ADMITTED_KUSTO_COPILOT_EVENT,
 	APPLIED_KUSTO_COPILOT_DONE_EVENT,
@@ -733,6 +738,16 @@ type ToolOperationalState = Readonly<{
 	query: string;
 	runMode: string;
 }>;
+
+function isExpectedKustoTargetCurrent(expected: ExpectedKustoTarget): boolean {
+	const owner = __kustoGetQuerySectionElement(expected.sectionId);
+	const identity = kustoEditorSchemaCoordinator.getIdentity(expected.sectionId);
+	return !!owner && identity?.sectionInstanceId === expected.sectionInstanceId
+		&& identity.targetGeneration === expected.targetGeneration
+		&& String(owner.getConnectionId?.() || '').trim() === expected.connectionId.trim()
+		&& kustoDatabaseKey(owner.getClusterUrl?.(), owner.getDatabase?.())
+			=== kustoDatabaseKey(expected.clusterUrl, expected.database);
+}
 
 function captureKustoToolOperationalState(sectionId: string): ToolOperationalState | undefined {
 	const owner = __kustoGetQuerySectionElement(sectionId);
@@ -4825,17 +4840,28 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		
 		case 'mainWebviewDispatcherProbe':
 			if (typeof message.probeId === 'string' && message.probeId.trim()) {
-				publishMainWebviewDispatcherReady(message.probeId.trim());
+				const probeId = message.probeId.trim();
+				if (!pState.documentRuntimeActive && lastDispatcherDocumentRecoveryProbeId !== probeId) {
+					lastDispatcherDocumentRecoveryProbeId = probeId;
+					postMessageToHost({ type: 'requestDocument', requestId: `dispatcher-document-${probeId}` });
+				}
+				publishMainWebviewDispatcherReady(probeId);
 			}
 			break;
 
-		case 'requestToolState':
+		case 'requestToolState': {
 			// Extension is requesting the current sections state
+			const captureError = 'The current tool state could not be captured.';
+			const stateOwner = kustoEditorSchemaCoordinator;
 			try {
 				const requestId = message.requestId;
 				if (requestId) {
-					const state = getKqlxState();
-					const sections = (state && state.sections) ? state.sections.map((section: any) => {
+					const state = getKqlxState(true);
+					const base = createToolStateResponseMessage(requestId, state?.sections);
+					if (!base.ok) throw new Error(base.error);
+					type SchemaRefreshPlan = KustoEditorSchemaRequestPlan & { section: Record<string, unknown> };
+					const schemaRefreshes: SchemaRefreshPlan[] = [];
+					const sections = base.value.sections.map((section) => {
 						if (section?.type === 'sql') {
 							const sqlEl = __kustoGetSqlSectionElement(String(section.id || ''));
 							return {
@@ -4847,59 +4873,72 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						}
 						if (canonicalSectionKind(section?.type) !== 'query') return section;
 						const boxId = String(section.id || '').trim();
+						const queryEl = boxId ? __kustoGetQuerySectionElement(boxId) : undefined;
 						const connectionId = boxId ? String(__kustoGetConnectionId(boxId) || '').trim() : '';
-						const database = boxId ? String(__kustoGetDatabase(boxId) || section.database || '').trim() : '';
-						let requestToken = boxId ? String(schemaRequestTokenByBoxId[boxId] || '') : '';
-						if (message.purpose === 'schema-refresh'
-							&& connectionId === (message.targetConnectionId || '').trim()
-							&& boxId && database) {
-							const lease = kustoEditorSchemaCoordinator.getLease(boxId);
-							if (lease) {
-								const currentTarget = kustoEditorSchemaCoordinator.getTarget(boxId);
-								kustoEditorSchemaCoordinator.setTarget(lease, connectionId, database, {
-									connectionRevision: currentTarget?.connectionRevision,
-									connectionIdentityKey: currentTarget?.connectionIdentityKey,
-								});
-								requestToken = `schema_tool_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-								const request = kustoEditorSchemaCoordinator.beginSchemaRequest(lease, requestToken);
-								if (request) {
-									schemaRequestTokenByBoxId[boxId] = requestToken;
-									schemaFetchInFlightByBoxId[boxId] = false;
-									lastSchemaRequestAtByBoxId[boxId] = 0;
-									setKustoPreparationIdle(boxId);
-								}
-								else requestToken = '';
-							}
-						}
-						const lifecycle = boxId ? kustoEditorSchemaCoordinator.getIdentity(boxId) : undefined;
-						return connectionId ? {
+						const database = boxId ? String(queryEl?.getDatabase?.() ?? __kustoGetDatabase(boxId) ?? '').trim() : '';
+						const clusterUrl = queryEl?.getClusterUrl?.();
+						const requestToken = boxId ? String(schemaRequestTokenByBoxId[boxId] || '') : '';
+						const lifecycle = boxId ? stateOwner.getIdentity(boxId) : undefined;
+						const candidate = connectionId ? {
 							...section,
 							connectionId,
-							...(database ? { database } : {}),
+							database,
+							...(clusterUrl !== undefined ? { clusterUrl } : {}),
 							...(requestToken ? { schemaRequestToken: requestToken } : {}),
 							...(lifecycle || {}),
 						} : section;
-					}) : [];
-					const response = createToolStateResponseMessage(requestId, sections);
-					if (response.ok) {
-						postMessageToHost(response.value);
-					} else {
-						const unavailable = createToolStateResponseMessage(
-							requestId,
-							[],
-							'The current tool state could not be captured.',
-						);
-						if (unavailable.ok) postMessageToHost(unavailable.value);
+						if (message.purpose === 'schema-refresh'
+							&& connectionId === (message.targetConnectionId || '').trim()
+							&& boxId && database) {
+							const lease = stateOwner.getLease(boxId);
+							if (lease && lifecycle) {
+								const currentTarget = stateOwner.getTarget(boxId);
+								const target = Object.freeze({ ...currentTarget, connectionId, database });
+								schemaRefreshes.push(Object.freeze({
+									lease, identity: lifecycle, targetBefore: currentTarget, target, section: candidate,
+									modelLease: stateOwner.getModelLease(boxId),
+									requestToken: `schema_tool_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+									previousRequestToken: stateOwner.getSchemaRequestToken(boxId),
+								}));
+							}
+						}
+						return candidate;
+					});
+					let response: ReturnType<typeof createToolStateResponseMessage> = base;
+					const requests = stateOwner.beginSchemaRequests(schemaRefreshes, (candidates) => {
+						candidates.forEach(({ sectionInstanceId, targetGeneration, requestToken }, index) => {
+							Object.assign(schemaRefreshes[index].section, { sectionInstanceId, targetGeneration, schemaRequestToken: requestToken });
+						});
+						response = createToolStateResponseMessage(requestId, sections);
+						return response.ok;
+					});
+					if (!requests || !response.ok) throw new Error(captureError);
+					const assertCurrent = () => {
+						if (!schemaRefreshes.every((refresh, index) => stateOwner.isCurrent(
+							refresh.lease.boxId, requests[index], refresh.target, requests[index].requestToken,
+						) && (!refresh.modelLease || stateOwner.isModelLeaseCurrent(refresh.modelLease)))) throw new Error(captureError);
+					};
+					assertCurrent();
+					for (const { lease, requestToken } of schemaRefreshes) {
+						schemaRequestTokenByBoxId[lease.boxId] = requestToken;
+						schemaFetchInFlightByBoxId[lease.boxId] = false;
+						lastSchemaRequestAtByBoxId[lease.boxId] = 0;
+						setKustoPreparationIdle(lease.boxId);
+						assertCurrent();
 					}
+					postMessageToHost(response.value);
 				}
 			} catch (err: any) {
 				console.error('[Kusto Tools] Error getting state:', err);
 				try {
-					const response = createToolStateResponseMessage(message.requestId, []);
+					const response = createToolStateResponseMessage(
+						message.requestId, [], captureError,
+					);
 					if (response.ok) postMessageToHost(response.value);
 				} catch (e) { console.error('[kusto]', e); }
 			}
 			break;
+		}
 		
 		case 'toolAddSection':
 			// Add a new section via tool orchestrator
@@ -5075,7 +5114,14 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					console.error('[Kusto Tools] Error removing section:', err);
 				}
 				
-				if (success) {
+				if (success && (removedSectionType === 'query' || removedSectionType === 'sql')
+					&& isHostOwnedMarkdownDocument()) {
+					const documentSessionId = pState.documentViewSessionId;
+					success = await persistDocumentAndWaitForAck('tool-remove-section')
+						&& isHostOwnedMarkdownDocument() && pState.documentRuntimeActive === true
+						&& pState.documentViewSessionId === documentSessionId;
+					if (!success) removalError = 'Document persistence after section removal was not confirmed.';
+				} else if (success) {
 					try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				}
 				if (success && (removedSectionType === 'chart' || removedSectionType === 'html'
@@ -5200,6 +5246,18 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			const requestId = String(message.requestId || '');
 			const input = message.input || {};
 			const sectionId = String(input.sectionId || '');
+			const expectedTarget = Object.prototype.hasOwnProperty.call(message, 'expectedKustoTarget')
+				? captureExpectedKustoTarget(message.expectedKustoTarget) : undefined;
+			const assertExpectedTarget = () => {
+				if (expectedTarget && !expectedTarget.ok) throw new Error(`Invalid expected Kusto target: ${expectedTarget.error}`);
+				if (input.execute === true && !(input.connectionId || input.clusterUrl || input.database) && !expectedTarget) {
+					throw new Error('An expected Kusto target is required before executing the current query target.');
+				}
+				if (expectedTarget?.ok && (expectedTarget.value.sectionId !== sectionId
+					|| !isExpectedKustoTargetCurrent(expectedTarget.value))) {
+					throw new Error('The query section changed before execution could start.');
+				}
+			};
 			const configureRuntimeEpoch = kustoToolConfigureRuntimeEpoch;
 			const configureLease = reserveKustoToolConfigureLease(sectionId);
 			let success = false;
@@ -5226,6 +5284,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				expectedSignature: string,
 			): Promise<'accepted' | 'reconciled' | undefined> => {
 				const persisted = await persistDocumentAndWaitForAck('tool-configure-query');
+				assertExpectedTarget();
 				if (!runtimeIsCurrent()) return undefined;
 				if (persisted) {
 					return sectionIsCurrent() && getSectionSerializedSignature(sectionId) === expectedSignature
@@ -5235,6 +5294,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const rejectedRevision = pState.documentEditRevision;
 				if (!sectionIsCurrent() || getSectionSerializedSignature(sectionId) !== expectedSignature) return undefined;
 				const reconciled = await reconcileDocumentWithHost(10000, rejectedRevision);
+				assertExpectedTarget();
 				if (!runtimeIsCurrent()) return undefined;
 				if (!reconciled) {
 					if (pState.documentEditRevision === rejectedRevision
@@ -5271,6 +5331,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						}
 					}
 					if (!sectionOwner) throw new Error(`Query section "${sectionId}" was not found.`);
+					assertExpectedTarget();
 					if (optimizationMetadataByBoxId[sectionId]?.isComparison
 						&& (input.clusterUrl || input.connectionId || input.database)) {
 						throw new Error('A Kusto comparison target is owned by its source section and cannot be retargeted independently.');
@@ -5286,12 +5347,14 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					let editor = queryEditors?.[sectionId];
 					if (input.query !== undefined) {
 						if (!editor?.setValue) editor = await waitForQueryEditorReady(sectionId, 10000, sectionOwner);
+						assertExpectedTarget();
 						if (!runtimeIsCurrent()) throw new Error('The document runtime changed while the query editor was becoming ready.');
 						throwIfCancelled();
 						if (!sectionIsCurrent()) throw new Error(`Query section "${sectionId}" changed before its editor became ready.`);
 						if (!editor?.setValue) throw new Error(`Query section "${sectionId}" editor is not ready.`);
 					}
 					throwIfCancelled();
+					assertExpectedTarget();
 					if (!sectionIsCurrent()) throw new Error(`Query section "${sectionId}" changed before configuration could apply.`);
 					if (input.name !== undefined) { __kustoSetSectionName(sectionId, input.name); success = true; }
 					if (input.query !== undefined) {
@@ -5313,6 +5376,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							if (!ownership) throw new Error('The configured query was not accepted by the document host.');
 							if (ownership === 'reconciled') {
 								editor = await waitForQueryEditorReady(sectionId, 10000, sectionOwner);
+								assertExpectedTarget();
 								if (!editor) throw new Error('The reconciled query editor is not ready.');
 							}
 						}
@@ -5376,6 +5440,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						});
 						window.addEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, resultHandler as EventListener);
 						try {
+							assertExpectedTarget();
 							executionId = executeQuery(
 								sectionId, undefined, 'tool', undefined, 'all', requestId,
 							) || '';
@@ -5782,8 +5847,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				let result: any = { success: false, sectionId, error: 'HTML section not found or does not support dashboard context.' };
 				try {
 					const el = document.getElementById(sectionId) as any;
-					if (el && typeof el.getDashboardExportContext === 'function') {
-						result = { success: true, ...el.getDashboardExportContext() };
+					if (el && typeof el.getDashboardValidationContext === 'function') {
+						result = { success: true, ...el.getDashboardValidationContext() };
 					}
 				} catch (err: any) {
 					result = { success: false, sectionId, error: err?.message || String(err) };
@@ -6739,6 +6804,7 @@ export async function drainBufferedHostMessages(): Promise<void> {
 let mainWebviewMessageDispatcherStarted = false;
 const mainWebviewRuntimeId = globalThis.crypto?.randomUUID?.()
 	?? `main_webview_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+let lastDispatcherDocumentRecoveryProbeId = '';
 let lastBackgroundInteractionSessionId = '';
 
 export function notifyBackgroundWorkbenchUserInteraction(event: Pick<Event, 'isTrusted'>): void {

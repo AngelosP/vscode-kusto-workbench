@@ -724,6 +724,31 @@ describe('kw-sql-section loading states', () => {
 		}
 	});
 
+	it('keeps late default connection and cached database adoption runtime-only', async () => {
+		const el = createSection();
+		el.id = el.boxId;
+		await el.updateComplete;
+		const persistence = await import('../../src/webview/core/persistence.js');
+		const persist = vi.spyOn(persistence, 'schedulePersist');
+		const previousRestore = pState.restoreInProgress;
+		pState.restoreInProgress = false;
+		try {
+			const connection = {
+				id: 'sql-passive', name: 'SQL', serverUrl: 'sql.example', dialect: 'mssql', authType: 'aad',
+			};
+			el.setConnections([connection], {
+				lastConnectionId: connection.id, lastDatabase: 'Warehouse',
+				cachedDatabases: { [connection.id]: ['master', 'Warehouse'] },
+			});
+			expect(el.getConnectionId()).toBe(connection.id);
+			expect(el.getDatabase()).toBe('Warehouse');
+			expect(persist).not.toHaveBeenCalled();
+		} finally {
+			pState.restoreInProgress = previousRestore;
+			persist.mockRestore();
+		}
+	});
+
 	it('applies the canonical cached databases for the resolved connection', () => {
 		const el = createSection();
 		const connection = {
@@ -1617,6 +1642,57 @@ describe('kw-sql-section loading states', () => {
 		expect(el.acceptsQueryTerminal('execution-a')).toBe(false);
 		expect(el.acceptsQueryTerminal('execution-b')).toBe(false);
 		expect(el.acceptsQueryTerminal()).toBe(false);
+	});
+
+	it.each([undefined, 182])('does not author result height during automatic fitting (saved=%s)', async savedHeight => {
+		const el = createSection();
+		await el.updateComplete;
+		vi.useFakeTimers();
+		const persistence = await import('../../src/webview/core/persistence.js');
+		const persist = vi.spyOn(persistence, 'schedulePersist');
+		try {
+			const wrapper = document.getElementById('sql_test1_sql_results_wrapper')!;
+			if (savedHeight !== undefined) {
+				wrapper.style.height = `${savedHeight}px`;
+				wrapper.dataset.kustoUserResized = 'true';
+			}
+			expect(el.displayResult({ columns: [{ name: 'Value', type: 'string' }], rows: [['saved']], metadata: {} })).toBe(true);
+			const table = wrapper.querySelector('kw-data-table') as any;
+			vi.spyOn(table, 'getContentHeight').mockReturnValue(193);
+			persist.mockClear();
+			(el as any)._fitResultsToContents(false);
+			await vi.advanceTimersByTimeAsync(300);
+			expect(wrapper.style.height).toBe(savedHeight === undefined ? '213px' : '182px');
+			expect(el.serialize().resultsHeightPx).toBe(savedHeight);
+			expect(wrapper.dataset.kustoUserResized).toBe(savedHeight === undefined ? undefined : 'true');
+			expect(persist).not.toHaveBeenCalled();
+		} finally {
+			persist.mockRestore();
+			vi.restoreAllMocks();
+			vi.useRealTimers();
+		}
+	});
+
+	it('authors SQL result height only through the real explicit Fit control', async () => {
+		const el = createSection();
+		await el.updateComplete;
+		const persistence = await import('../../src/webview/core/persistence.js');
+		const persist = vi.spyOn(persistence, 'schedulePersist');
+		try {
+			expect(el.displayResult({ columns: [{ name: 'Value', type: 'string' }], rows: [['saved']], metadata: {} })).toBe(true);
+			const wrapper = document.getElementById('sql_test1_sql_results_wrapper')!;
+			vi.spyOn(wrapper.querySelector('kw-data-table') as any, 'getContentHeight').mockReturnValue(193);
+			persist.mockClear();
+			const resizer = document.getElementById('sql_test1_sql_results_resizer')!;
+			resizer.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+			expect(wrapper.style.height).toBe('213px');
+			expect(wrapper.dataset.kustoUserResized).toBe('true');
+			expect(el.serialize().resultsHeightPx).toBe(213);
+			expect(persist).toHaveBeenCalledOnce();
+		} finally {
+			persist.mockRestore();
+			vi.restoreAllMocks();
+		}
 	});
 
 	it('preserves the visible results viewport height across a same-section rerun', async () => {

@@ -133,6 +133,7 @@ function createHarness(options: Partial<HarnessBehavior & {
 
 	const projection: CompatSidecarProjectionCoordinatorContract = {
 		get isInitialized() { return true; },
+		get currentProjectionGeneration() { return 1; },
 		get activeSourceGeneration() { return 1; },
 		get sourceRollbackFailed() { return false; },
 		project: async () => true,
@@ -140,7 +141,10 @@ function createHarness(options: Partial<HarnessBehavior & {
 		requestSourceReload: async () => true,
 		ensureInitialProjection: async () => true,
 		completeReload: () => true,
+		waitForCurrentProjection: async () => true,
 		waitForAcknowledgedProjection: async () => undefined,
+		registerOwnedSourceEdit: () => undefined,
+		adoptOwnedSourceText: async () => true,
 		admitPersist: admission => {
 			calls.push(`admit:${String(admission.sourceGeneration)}:${String(admission.editRevision)}`);
 			return behavior.admitPersist;

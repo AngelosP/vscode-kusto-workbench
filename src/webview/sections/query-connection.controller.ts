@@ -4,7 +4,7 @@
 import type { ReactiveController, ReactiveControllerHost } from 'lit';
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
-import { schedulePersist } from '../core/persistence';
+import { captureKustoLeaveNoTracePolicyRuntime, schedulePersist } from '../core/persistence';
 import {
 	cachedDatabases,
 	connections,
@@ -84,7 +84,7 @@ export interface QuerySectionHost extends ReactiveControllerHost, HTMLElement {
 	getDatabase(): string;
 	getDesiredDatabase?(): string;
 	getClusterUrl(): string;
-	setDatabases(databases: string[], desiredDb?: string): void;
+	setDatabases(databases: string[], desiredDb?: string, allowInteractive?: boolean): void;
 	setRefreshLoading(loading: boolean): void;
 	setDatabasesLoading(loading: boolean): void;
 	setSchemaInfo(info: any): void;
@@ -97,7 +97,7 @@ export interface QuerySectionHost extends ReactiveControllerHost, HTMLElement {
 	setConnections(conns: any[], opts?: any): void;
 	setSchemaLifecycleTarget(connectionId: string, database?: string): KustoEditorLifecycleIdentity | undefined;
 	invalidateSchemaLifecycleTarget(): KustoEditorLifecycleIdentity | undefined;
-	beginDatabaseLifecycleRequest(requestToken: string): (KustoEditorLifecycleIdentity & { requestToken: string }) | undefined;
+	beginDatabaseLifecycleRequest(requestToken: string, allowInteractive?: boolean): (KustoEditorLifecycleIdentity & { requestToken: string }) | undefined;
 	beginSchemaLifecycleRequest(requestToken: string): (KustoEditorLifecycleIdentity & { requestToken: string }) | undefined;
 }
 
@@ -136,10 +136,50 @@ function syntheticConnectionOwner(connectionId: string): { accountPartition: str
  */
 export class QueryConnectionController implements ReactiveController {
 	host: QuerySectionHost;
+	private databaseRequestOrigin?: KustoEditorLifecycleIdentity & {
+		requestToken: string;
+		connectionId: string;
+		pendingDatabase: string;
+		accountPartition: string;
+		leaveNoTraceRevision?: number;
+		allowInteractive: boolean;
+	};
+	private schemaRequestOrigin?: KustoEditorLifecycleIdentity & {
+		requestToken: string;
+		allowInteractive: boolean;
+		forceRefresh: boolean;
+	};
 
 	constructor(host: QuerySectionHost) {
 		this.host = host;
 		host.addController(this);
+	}
+
+	captureDatabaseRequestOrigin(request: (KustoEditorLifecycleIdentity & { requestToken: string }) | undefined, allowInteractive: boolean): void {
+		const connectionId = this.host.getConnectionId();
+		this.databaseRequestOrigin = request ? {
+			...request,
+			connectionId,
+			pendingDatabase: this.host.getDesiredDatabase?.() || '',
+			accountPartition: syntheticConnectionOwner(connectionId)?.accountPartition || '',
+			leaveNoTraceRevision: this.getDatabasePolicyRevision(),
+			allowInteractive,
+		} : undefined;
+	}
+
+	private getDatabasePolicyRevision(): number | undefined {
+		return captureKustoLeaveNoTracePolicyRuntime().revocationGenerations[canonicalKustoClusterKey(this.host.getClusterUrl())];
+	}
+
+	private consumeDatabaseRequestOrigin(requestToken: string): boolean {
+		const origin = this.databaseRequestOrigin;
+		if (!origin || origin.requestToken !== requestToken) return false;
+		this.databaseRequestOrigin = undefined;
+		return origin.allowInteractive
+			&& origin.pendingDatabase === (this.host.getDesiredDatabase?.() || '')
+			&& origin.accountPartition === (syntheticConnectionOwner(this.host.getConnectionId())?.accountPartition || '')
+			&& origin.leaveNoTraceRevision === this.getDatabasePolicyRevision()
+			&& kustoEditorSchemaCoordinator.isDatabaseRequestCurrent(this.host.boxId, origin, origin.connectionId, requestToken);
 	}
 
 	private beginDatabasePreparation(connectionId: string): KustoPreparationToken | undefined {
@@ -152,6 +192,7 @@ export class QueryConnectionController implements ReactiveController {
 
 	private retireDatabaseRequestToken(responseRequestToken?: any): void {
 		const receivedRequestToken = String(responseRequestToken || '');
+		if (this.databaseRequestOrigin?.requestToken === receivedRequestToken) this.databaseRequestOrigin = undefined;
 		if (receivedRequestToken && databaseRequestTokenByBoxId[this.host.boxId] === receivedRequestToken) {
 			delete databaseRequestTokenByBoxId[this.host.boxId];
 		}
@@ -480,7 +521,7 @@ export class QueryConnectionController implements ReactiveController {
 		if (!connectionId) return;
 		const requestToken = 'databases_' + Date.now() + '_' + Math.random().toString(16).slice(2);
 		databaseRequestTokenByBoxId[this.host.boxId] = requestToken;
-		const lifecycle = this.host.beginDatabaseLifecycleRequest(requestToken);
+		const lifecycle = this.host.beginDatabaseLifecycleRequest(requestToken, true);
 		if (!this.host.getDatabase()) {
 			this.beginDatabasePreparation(connectionId);
 		}
@@ -615,7 +656,8 @@ export class QueryConnectionController implements ReactiveController {
 		if (connectionId) {
 			cachedDatabases[String(connectionId).trim()] = list;
 		}
-		this.host.setDatabases(list, lastDatabase || '');
+		const allowInteractive = this.consumeDatabaseRequestOrigin(receivedRequestToken);
+		this.host.setDatabases(list, lastDatabase || '', allowInteractive);
 		this.host.setRefreshLoading(false);
 		const preparation = getKustoPreparationState(boxId);
 		if (preparation.status === 'preparing' && preparation.blockers.includes('databases')) {
@@ -643,7 +685,7 @@ export class QueryConnectionController implements ReactiveController {
 
 	// ── Schema ────────────────────────────────────────────────────────────────
 
-	ensureSchema(forceRefresh?: boolean): void {
+	ensureSchema(forceRefresh?: boolean, allowInteractive = true): void {
 		const boxId = this.host.boxId;
 		if (!boxId) return;
 		let ownerId = boxId;
@@ -692,10 +734,16 @@ export class QueryConnectionController implements ReactiveController {
 				});
 			}
 		}
-		if (schemaFetchInFlightByBoxId[boxId]) return;
+		const pending = this.schemaRequestOrigin;
+		const pendingCurrent = pending && kustoEditorSchemaCoordinator.isSchemaRequestCurrent(
+			boxId, pending, { connectionId, database }, pending.requestToken,
+		);
+		const supersedes = allowInteractive && schemaFetchInFlightByBoxId[boxId]
+			&& ((pendingCurrent && !pending.allowInteractive) || (forceRefresh && (!pendingCurrent || !pending.forceRefresh)));
+		if (schemaFetchInFlightByBoxId[boxId] && !supersedes) return;
 		const now = Date.now();
 		const last = lastSchemaRequestAtByBoxId[boxId] || 0;
-		if (!forceRefresh && now - last < 1500) return;
+		if (!forceRefresh && !supersedes && now - last < 1500) return;
 		lastSchemaRequestAtByBoxId[boxId] = now;
 
 		try {
@@ -735,6 +783,7 @@ export class QueryConnectionController implements ReactiveController {
 			requestToken = 'schema_' + Date.now() + '_' + Math.random().toString(16).slice(2);
 			schemaRequestTokenByBoxId[boxId] = requestToken;
 			lifecycle = this.host.beginSchemaLifecycleRequest(requestToken);
+			this.schemaRequestOrigin = lifecycle ? { ...lifecycle, requestToken, allowInteractive, forceRefresh: !!forceRefresh } : undefined;
 			if (preparationToken) {
 				updateKustoPreparation(preparationToken, { target: { requestToken } });
 			}
@@ -746,6 +795,7 @@ export class QueryConnectionController implements ReactiveController {
 			boxId,
 			forceRefresh: !!forceRefresh,
 			requestToken,
+			...(!allowInteractive ? { reason: 'automatic' } : {}),
 			...(lifecycle ? {
 				sectionInstanceId: lifecycle.sectionInstanceId,
 				targetGeneration: lifecycle.targetGeneration,
@@ -753,7 +803,7 @@ export class QueryConnectionController implements ReactiveController {
 		});
 	}
 
-	onDatabaseChanged(source: string = ''): void {
+	onDatabaseChanged(source: string = '', allowInteractive = source === 'user' || source === 'tool'): void {
 		const boxId = this.host.boxId;
 		const diagnosticsTrusted = schemaDiagnosticsTrustedByBoxId[boxId] !== false;
 		const connectionId = this.host.getConnectionId();
@@ -792,7 +842,7 @@ export class QueryConnectionController implements ReactiveController {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 		if (!pState.restoreInProgress && diagnosticsTrusted) {
-			this.ensureSchema(false);
+			this.ensureSchema(false, allowInteractive);
 		}
 		// Only set the database-in-context when the user actually interacts.
 		// During restore every section fires onDatabaseChanged sequentially;
@@ -1026,10 +1076,10 @@ export function ensureSchemaForBox(boxId: string, forceRefresh?: boolean): void 
 	}
 }
 
-export function onDatabaseChanged(boxId: string, source: string = ''): void {
+export function onDatabaseChanged(boxId: string, source: string = '', allowInteractive?: boolean): void {
 	const el = __kustoGetQuerySectionElement(boxId);
 	if (el?.connectionCtrl) {
-		el.connectionCtrl.onDatabaseChanged(source);
+		el.connectionCtrl.onDatabaseChanged(source, allowInteractive);
 	}
 }
 

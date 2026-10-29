@@ -116,6 +116,28 @@ describe('SqlSectionSessionController', () => {
 		}
 	});
 
+	it('keeps the default tool readiness deadline at exactly thirty seconds', async () => {
+		vi.useFakeTimers();
+		try {
+			const { controller } = createController();
+			let settled = false;
+			const run = controller.beginToolRun('default-tool-deadline').catch(error => {
+				settled = true;
+				return error;
+			});
+			await vi.advanceTimersByTimeAsync(29_999);
+			expect(settled).toBe(false);
+			expect(controller.hasPendingToolRun).toBe(true);
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(run).resolves.toMatchObject({ message: 'SQL Tools Service did not become ready for tool execution.' });
+			expect(settled).toBe(true);
+			expect(controller.hasPendingToolRun).toBe(false);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('retains a terminal watchdog after tool ownership is captured', async () => {
 		vi.useFakeTimers();
 		try {
@@ -157,13 +179,26 @@ describe('SqlSectionSessionController', () => {
 		});
 	});
 
-	it('persists explicit target transitions as authored changes', () => {
+	it('keeps passive connection and database discovery from scheduling document persistence', () => {
+		const { controller } = createController();
+		const effects = createLifecycleEffects({ restore: false });
+		controller.configureLifecycleEffects(effects);
+		controller.handleConnectionChanged({ connectionId: 'sql-a' });
+		controller.handleDatabaseChanged({ database: 'Db' });
+		expect(effects.persist).not.toHaveBeenCalled();
+		expect(effects.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'saveSqlLastSelection' }));
+		expect(effects.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'getSqlDatabases' }));
+		expect(effects.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'prefetchSqlSchema' }));
+		expect(controller.targetGeneration).toBe(2);
+	});
+
+	it.each(['user', 'tool'])('persists explicit %s target transitions as authored changes', source => {
 		const { controller } = createController();
 		const effects = createLifecycleEffects();
 		controller.configureLifecycleEffects(effects);
 
-		controller.handleConnectionChanged({ connectionId: 'sql-a', source: 'user' });
-		controller.handleDatabaseChanged({ database: 'Db', source: 'user' });
+		controller.handleConnectionChanged({ connectionId: 'sql-a', source });
+		controller.handleDatabaseChanged({ database: 'Db', source });
 
 		expect(effects.persist).toHaveBeenNthCalledWith(1, 'sql-target-selection', true);
 		expect(effects.persist).toHaveBeenNthCalledWith(2, 'sql-target-selection', true);

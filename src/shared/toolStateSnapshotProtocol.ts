@@ -4,6 +4,7 @@ import {
 	isRuntimeProxy,
 	type RuntimeMessageEnvelopeDescriptorSnapshot,
 } from './runtimeMessageEnvelope';
+import type { KustoEditorLifecycleIdentity } from './kustoSchemaLifecycle';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -15,7 +16,21 @@ export type ToolStateSnapshotAdmissionResult<T> =
 	| Readonly<{ recognized: false }>
 	| Readonly<{ recognized: true; parsed: ToolStateSnapshotParseResult<T> }>;
 
-export type ToolStateSection = UnknownRecord & { type: string };
+export type ToolStateSection = UnknownRecord & {
+	type: string;
+	sectionInstanceId?: string;
+	targetGeneration?: number;
+	connectionId?: string;
+	clusterUrl?: string;
+	database?: string;
+};
+
+export type ExpectedKustoTarget = KustoEditorLifecycleIdentity & Readonly<{
+	sectionId: string;
+	connectionId: string;
+	clusterUrl: string;
+	database: string;
+}>;
 
 export type RequestToolStateMessage = {
 	type: 'requestToolState';
@@ -46,6 +61,7 @@ const maximumSnapshotDepth = 64;
 const maximumSnapshotValues = 250_000;
 const maximumContainerEntries = 10_000;
 const maximumSnapshotStringCharacters = 16 * 1024 * 1024;
+const snapshotStringLimitError = 'Tool state exceeds the snapshot string limit.';
 const hostAdmissionCache = new WeakMap<object, ToolStateSnapshotAdmissionResult<ToolStateSnapshotHostMessage>>();
 const webviewAdmissionCache = new WeakMap<object, ToolStateSnapshotAdmissionResult<ToolStateSnapshotWebviewMessage>>();
 
@@ -53,10 +69,22 @@ function failure<T>(error: string): ToolStateSnapshotParseResult<T> {
 	return { ok: false, error };
 }
 
+function canonicalFailure<T>(label: string): ToolStateSnapshotParseResult<T> {
+	return failure(`${label} must use a canonical object prototype.`);
+}
+
+function dataPropertyFailure(key: string): ToolStateSnapshotParseResult<never> {
+	return failure(`${key} must be an own enumerable data property.`);
+}
+
 function descriptorValue(descriptor: PropertyDescriptor | undefined): unknown {
 	return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value')
 		? descriptor.value
 		: undefined;
+}
+
+function isEnumerableDataDescriptor(descriptor: PropertyDescriptor | undefined): descriptor is PropertyDescriptor {
+	return !!descriptor && !!descriptor.enumerable && Object.prototype.hasOwnProperty.call(descriptor, 'value');
 }
 
 function isCanonicalRecordPrototype(prototype: object | null): boolean {
@@ -94,33 +122,30 @@ function getSnapshot(
 	return captured.ok ? { ok: true, value: captured.descriptorSnapshot } : captured;
 }
 
-function readRequiredString(
+function readString(
 	descriptors: PropertyDescriptorMap,
 	key: string,
-	allowBlank = true,
-): ToolStateSnapshotParseResult<string> {
-	const descriptor = Reflect.get(descriptors, key) as PropertyDescriptor | undefined;
-	if (!descriptor || !descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
-		return failure(`${key} must be an own enumerable data property.`);
-	}
-	if (typeof descriptor.value !== 'string' || (!allowBlank && !descriptor.value.trim())) {
-		return failure(`${key} must be ${allowBlank ? 'a string' : 'a nonblank string'}.`);
-	}
-	return { ok: true, value: descriptor.value };
-}
-
-function readOptionalString(
+	required: true,
+): ToolStateSnapshotParseResult<string>;
+function readString(
 	descriptors: PropertyDescriptorMap,
 	key: string,
+	required?: false,
+): ToolStateSnapshotParseResult<string | undefined>;
+function readString(
+	descriptors: PropertyDescriptorMap,
+	key: string,
+	required = false,
 ): ToolStateSnapshotParseResult<string | undefined> {
 	const descriptor = Reflect.get(descriptors, key) as PropertyDescriptor | undefined;
-	if (!descriptor) return { ok: true, value: undefined };
-	if (!descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
-		return failure(`${key} must be an own enumerable data property.`);
+	if (!descriptor && !required) return { ok: true, value: undefined };
+	if (!isEnumerableDataDescriptor(descriptor)) {
+		return dataPropertyFailure(key);
 	}
-	return descriptor.value === undefined || typeof descriptor.value === 'string'
-		? { ok: true, value: descriptor.value }
-		: failure(`${key} must be a string when provided.`);
+	const value = descriptor.value;
+	return (value === undefined && !required) || (typeof value === 'string' && (!required || value.trim()))
+		? { ok: true, value }
+		: failure(`${key} must be ${required ? 'a nonblank string' : 'a string when provided'}.`);
 }
 
 function validateExactFields(
@@ -131,7 +156,7 @@ function validateExactFields(
 	for (const key of Reflect.ownKeys(descriptors)) {
 		if (typeof key !== 'string' || !allowed.has(key)) return `${label} contains an unsupported field.`;
 		const descriptor = Reflect.get(descriptors, key) as PropertyDescriptor;
-		if (!descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+		if (!isEnumerableDataDescriptor(descriptor)) {
 			return `${label} fields must be own enumerable data properties.`;
 		}
 	}
@@ -151,7 +176,7 @@ function captureSnapshotValue(
 		context.stringCharacters += input.length;
 		return context.stringCharacters <= maximumSnapshotStringCharacters
 			? { ok: true, value: input }
-			: failure('Tool state exceeds the snapshot string limit.');
+			: failure(snapshotStringLimitError);
 	}
 	if (input === null || input === undefined || typeof input === 'boolean') {
 		return { ok: true, value: input };
@@ -189,8 +214,7 @@ function captureSnapshotValue(
 				const key = String(index);
 				allowedKeys.add(key);
 				const descriptor = Reflect.get(descriptors, key) as PropertyDescriptor | undefined;
-				if (!descriptor || !descriptor.enumerable
-					|| !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+				if (!isEnumerableDataDescriptor(descriptor)) {
 					return failure(`${path} must be dense and contain only data entries.`);
 				}
 				const item = captureSnapshotValue(descriptor.value, `${path}[${index}]`, context, depth + 1);
@@ -204,7 +228,7 @@ function captureSnapshotValue(
 		}
 
 		if (!isCanonicalRecordPrototype(prototype)) {
-			return failure(`${path} must use a canonical object prototype.`);
+			return canonicalFailure(path);
 		}
 		const keys = Reflect.ownKeys(descriptors);
 		if (keys.length > maximumContainerEntries) {
@@ -215,20 +239,15 @@ function captureSnapshotValue(
 			if (typeof key !== 'string') return failure(`${path} contains a symbol field.`);
 			context.stringCharacters += key.length;
 			if (context.stringCharacters > maximumSnapshotStringCharacters) {
-				return failure('Tool state exceeds the snapshot string limit.');
+				return failure(snapshotStringLimitError);
 			}
 			const descriptor = Reflect.get(descriptors, key) as PropertyDescriptor;
-			if (!descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
-				return failure(`${path}.${key} must be an own enumerable data property.`);
+			if (!isEnumerableDataDescriptor(descriptor)) {
+				return dataPropertyFailure(`${path}.${key}`);
 			}
 			const value = captureSnapshotValue(descriptor.value, `${path}.${key}`, context, depth + 1);
 			if (!value.ok) return value;
-			Object.defineProperty(captured, key, {
-				value: value.value,
-				enumerable: true,
-				configurable: true,
-				writable: true,
-			});
+			captured[key] = value.value;
 		}
 		return { ok: true, value: Object.freeze(captured) };
 	} catch {
@@ -238,7 +257,7 @@ function captureSnapshotValue(
 	}
 }
 
-function captureSections(input: unknown): ToolStateSnapshotParseResult<ToolStateSection[]> {
+export function captureToolStateSections(input: unknown): ToolStateSnapshotParseResult<ToolStateSection[]> {
 	const captured = captureSnapshotValue(
 		input,
 		'sections',
@@ -258,32 +277,83 @@ function captureSections(input: unknown): ToolStateSnapshotParseResult<ToolState
 		if (id !== undefined && typeof id !== 'string') {
 			return failure(`sections[${index}].id must be a string when provided.`);
 		}
+		for (const key of ['sectionInstanceId', 'connectionId', 'clusterUrl', 'database']) {
+			const value = Reflect.get(section, key);
+			if (value !== undefined && typeof value !== 'string') {
+				return failure(`sections[${index}].${key} must be a string when provided.`);
+			}
+		}
+		const generation = Reflect.get(section, 'targetGeneration');
+		if (generation !== undefined && (!Number.isSafeInteger(generation) || generation < 0)) {
+			return failure(`sections[${index}].targetGeneration must be a non-negative safe integer when provided.`);
+		}
 	}
 	return { ok: true, value: captured.value as ToolStateSection[] };
+}
+
+export function captureExpectedKustoTarget(input: unknown): ToolStateSnapshotParseResult<ExpectedKustoTarget> {
+	const captured = captureSnapshotValue(
+		input, 'Expected Kusto target', { active: new Set(), values: 0, stringCharacters: 0 }, 0,
+	);
+	if (!captured.ok) return captured;
+	if (!captured.value || typeof captured.value !== 'object' || Array.isArray(captured.value)) {
+		return canonicalFailure('Expected Kusto target');
+	}
+	const snapshot = { descriptors: Object.getOwnPropertyDescriptors(captured.value) };
+	const error = validateExactFields(snapshot.descriptors, new Set([
+		'sectionId', 'sectionInstanceId', 'targetGeneration', 'connectionId', 'clusterUrl', 'database',
+	]), 'Expected Kusto target');
+	if (error) return failure(error);
+	const sectionId = readString(snapshot.descriptors, 'sectionId', true);
+	if (!sectionId.ok) return sectionId;
+	const sectionInstanceId = readString(snapshot.descriptors, 'sectionInstanceId', true);
+	if (!sectionInstanceId.ok) return sectionInstanceId;
+	const connectionId = readString(snapshot.descriptors, 'connectionId', true);
+	if (!connectionId.ok) return connectionId;
+	const clusterUrl = readString(snapshot.descriptors, 'clusterUrl', true);
+	if (!clusterUrl.ok) return clusterUrl;
+	const database = readString(snapshot.descriptors, 'database', true);
+	if (!database.ok) return database;
+	const generation = Reflect.get(snapshot.descriptors, 'targetGeneration') as PropertyDescriptor | undefined;
+	if (!isEnumerableDataDescriptor(generation)) return dataPropertyFailure('targetGeneration');
+	const targetGeneration: unknown = generation.value;
+	if (typeof targetGeneration !== 'number' || !Number.isSafeInteger(targetGeneration) || targetGeneration < 0) {
+		return failure('targetGeneration must be a non-negative safe integer.');
+	}
+	return { ok: true, value: Object.freeze({
+		sectionId: sectionId.value, sectionInstanceId: sectionInstanceId.value, targetGeneration,
+		connectionId: connectionId.value, clusterUrl: clusterUrl.value, database: database.value,
+	}) };
+}
+
+function parseSnapshotRequestId(
+	snapshot: RuntimeMessageEnvelopeDescriptorSnapshot,
+	expectedType: string,
+	allowed: ReadonlySet<string>,
+	label: string,
+): ToolStateSnapshotParseResult<string> {
+	if (isRuntimeProxy(snapshot.input) || !isCanonicalRecordPrototype(snapshot.prototype)) {
+		return canonicalFailure(label);
+	}
+	const fieldsError = validateExactFields(snapshot.descriptors, allowed, label);
+	if (fieldsError) return failure(fieldsError);
+	const type = readString(snapshot.descriptors, 'type', true);
+	if (!type.ok || type.value !== expectedType) return failure(`Unknown ${label.toLowerCase()} type.`);
+	return readString(snapshot.descriptors, 'requestId', true);
 }
 
 function parseHostSnapshot(
 	snapshot: RuntimeMessageEnvelopeDescriptorSnapshot,
 ): ToolStateSnapshotParseResult<ToolStateSnapshotHostMessage> {
-	if (!isCanonicalRecordPrototype(snapshot.prototype)) {
-		return failure('Tool-state request must use a canonical object prototype.');
-	}
-	const fieldsError = validateExactFields(
-		snapshot.descriptors,
-		new Set(['type', 'requestId', 'purpose', 'targetConnectionId']),
-		'Tool-state request',
-	);
-	if (fieldsError) return failure(fieldsError);
-	const type = readRequiredString(snapshot.descriptors, 'type');
-	if (!type.ok || type.value !== 'requestToolState') return failure('Unknown tool-state request type.');
-	const requestId = readRequiredString(snapshot.descriptors, 'requestId', false);
+	const requestId = parseSnapshotRequestId(snapshot, 'requestToolState',
+		new Set(['type', 'requestId', 'purpose', 'targetConnectionId']), 'Tool-state request');
 	if (!requestId.ok) return requestId;
-	const purpose = readOptionalString(snapshot.descriptors, 'purpose');
+	const purpose = readString(snapshot.descriptors, 'purpose');
 	if (!purpose.ok) return purpose;
 	if (purpose.value !== undefined && purpose.value !== 'schema-refresh') {
 		return failure('purpose must be schema-refresh when provided.');
 	}
-	const targetConnectionId = readOptionalString(snapshot.descriptors, 'targetConnectionId');
+	const targetConnectionId = readString(snapshot.descriptors, 'targetConnectionId');
 	if (!targetConnectionId.ok) return targetConnectionId;
 	return {
 		ok: true,
@@ -299,27 +369,16 @@ function parseHostSnapshot(
 function parseWebviewSnapshot(
 	snapshot: RuntimeMessageEnvelopeDescriptorSnapshot,
 ): ToolStateSnapshotParseResult<ToolStateSnapshotWebviewMessage> {
-	if (!isCanonicalRecordPrototype(snapshot.prototype)) {
-		return failure('Tool-state response must use a canonical object prototype.');
-	}
-	const fieldsError = validateExactFields(
-		snapshot.descriptors,
-		new Set(['type', 'requestId', 'sections', 'error']),
-		'Tool-state response',
-	);
-	if (fieldsError) return failure(fieldsError);
-	const type = readRequiredString(snapshot.descriptors, 'type');
-	if (!type.ok || type.value !== 'toolStateResponse') return failure('Unknown tool-state response type.');
-	const requestId = readRequiredString(snapshot.descriptors, 'requestId', false);
+	const requestId = parseSnapshotRequestId(snapshot, 'toolStateResponse',
+		new Set(['type', 'requestId', 'sections', 'error']), 'Tool-state response');
 	if (!requestId.ok) return requestId;
 	const sectionsDescriptor = Reflect.get(snapshot.descriptors, 'sections') as PropertyDescriptor | undefined;
-	if (!sectionsDescriptor || !sectionsDescriptor.enumerable
-		|| !Object.prototype.hasOwnProperty.call(sectionsDescriptor, 'value')) {
-		return failure('sections must be an own enumerable data property.');
+	if (!isEnumerableDataDescriptor(sectionsDescriptor)) {
+		return dataPropertyFailure('sections');
 	}
-	const sections = captureSections(sectionsDescriptor.value);
+	const sections = captureToolStateSections(sectionsDescriptor.value);
 	if (!sections.ok) return sections;
-	const error = readOptionalString(snapshot.descriptors, 'error');
+	const error = readString(snapshot.descriptors, 'error');
 	if (!error.ok) return error;
 	return {
 		ok: true,
@@ -370,9 +429,7 @@ function admitFromEnvelope<T>(
 	return cacheAdmission(
 		cache,
 		snapshot.input,
-		type === undefined || typeof type === 'string'
-			? { recognized: true, parsed: typeof type === 'string' ? parser(snapshot) : failure('type must be a string.') }
-			: { recognized: true, parsed: failure('type must be a string.') },
+		{ recognized: true, parsed: typeof type === 'string' ? parser(snapshot) : failure('type must be a string.') },
 	);
 }
 

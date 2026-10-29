@@ -386,12 +386,19 @@ export function addQueryBox( options?: any) {
 			const boxId = detail.boxId || id;
 			if (!isExplicitKustoTargetSelectionSource(detail.source)) return;
 			schemaDiagnosticsTrustedByBoxId[boxId] = true;
-			try { ensureSchemaForBox(String(boxId), false); } catch (error) { console.error('[kusto]', error); }
+			const sameTarget = detail.kind === 'connection'
+				? detail.connectionId === kwEl.getConnectionId()
+					&& (detail.database === undefined || detail.database === kwEl.getDatabase())
+				: detail.kind === 'database' && detail.database === kwEl.getDatabase();
+			if (sameTarget) {
+				try { ensureSchemaForBox(String(boxId), false); } catch (error) { console.error('[kusto]', error); }
+			}
 		});
 		kwEl.addEventListener('connection-changed', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
-			if (isExplicitKustoTargetSelectionSource(detail.source)) {
+			const allowInteractive = isExplicitKustoTargetSelectionSource(detail.source);
+			if (allowInteractive) {
 				schemaDiagnosticsTrustedByBoxId[boxId] = true;
 			}
 			kwEl.setSchemaLifecycleTarget?.(
@@ -438,7 +445,7 @@ export function addQueryBox( options?: any) {
 					const cached = cachedDatabases && cachedDatabases[cid];
 					const hasCachedDatabases = Array.isArray(cached) && cached.length > 0;
 					if (hasCachedDatabases) {
-						if (typeof kwEl.setDatabases === 'function') kwEl.setDatabases(cached);
+						if (typeof kwEl.setDatabases === 'function') kwEl.setDatabases(cached, undefined, allowInteractive);
 						if (!kwEl.getDatabase?.() && !kwEl.getDesiredDatabase?.()) setKustoPreparationIdle(boxId);
 						try { if (typeof kwEl.setRefreshLoading === 'function') kwEl.setRefreshLoading(true); } catch (e) { console.error('[kusto]', e); }
 					} else if (typeof kwEl.setDatabasesLoading === 'function') {
@@ -447,7 +454,7 @@ export function addQueryBox( options?: any) {
 					const requestToken = 'databases_' + Date.now() + '_' + Math.random().toString(16).slice(2);
 					const requiredDatabase = String(kwEl.getDesiredDatabase?.() || kwEl.getDatabase?.() || detail.database || '').trim();
 					databaseRequestTokenByBoxId[boxId] = requestToken;
-					const lifecycle = kwEl.beginDatabaseLifecycleRequest?.(requestToken);
+					const lifecycle = kwEl.beginDatabaseLifecycleRequest?.(requestToken, allowInteractive);
 					postMessageToHost({
 						type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId, requestToken, requiredDatabase,
 						...(lifecycle ? { sectionInstanceId: lifecycle.sectionInstanceId, targetGeneration: lifecycle.targetGeneration } : {}),
@@ -470,7 +477,7 @@ export function addQueryBox( options?: any) {
 					schemaDiagnosticsTrustedByBoxId[boxId] = true;
 				}
 			} catch (e) { console.error('[kusto]', e); }
-			try { onDatabaseChanged(boxId, String(detail.source || '')); } catch (e) { console.error('[kusto]', e); }
+			try { onDatabaseChanged(boxId, String(detail.source || ''), detail.allowInteractive); } catch (e) { console.error('[kusto]', e); }
 			try {
 				const authored = detail.source === 'user' || detail.source === 'tool';
 				schedulePersist(authored ? 'kusto-target-selection' : undefined, authored);

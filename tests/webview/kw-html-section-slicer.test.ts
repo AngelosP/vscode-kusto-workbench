@@ -748,6 +748,121 @@ describe('HTML dashboard artifact bridge ownership', () => {
 		clearResultsState(sourceId);
 	});
 
+	it.each(['profile-connection', ''])('validates already-saved dashboard rows when the current connection differs (%s) without granting Power BI readiness', currentConnectionId => {
+		const sourceId = 'saved_dashboard_fact';
+		const query = document.createElement('kw-query-section') as any;
+		query.id = sourceId;
+		query.getClusterUrl = vi.fn(() => currentConnectionId ? 'https://cluster.kusto.windows.net' : '');
+		query.getConnectionId = vi.fn(() => currentConnectionId);
+		query.getDatabase = vi.fn(() => currentConnectionId ? 'SavedDb' : '');
+		document.body.appendChild(query);
+		const savedColumns = [{ name: 'Value', type: 'long' }];
+		setResultsState(sourceId, { columns: savedColumns, rows: [[7], [11]], metadata: {} }, {
+			persistedIdentity: createPrimaryResultArtifactIdentity(sourceId, 3, 1234),
+			producer: { engine: 'kusto', boxId: sourceId, connectionId: 'saved-connection', database: 'SavedDb', query: 'SavedFact', producer: 'restored' },
+			policy: { exposeToActiveContent: true },
+		});
+		const artifact = getCurrentResultArtifact(sourceId)!;
+		const descriptorBefore = toPersistedResultArtifact(artifact);
+		const section = new KwHtmlSection() as BridgeSection;
+		section.boxId = 'html_saved_dashboard_validation';
+		section.setCode(makeFactHtml(sourceId));
+		try {
+			expect(section._buildDataBridgeScript()).toContain('"rows":[[7],[11]]');
+			expect(getBoundResultArtifact(htmlDashboardFactArtifactConsumerId(section.boxId), sourceId)).toBe(artifact);
+			expect(section.getDashboardExportContext().dataSources).toEqual([]);
+			query.getClusterUrl.mockClear();
+			query.getConnectionId.mockClear();
+			query.getDatabase.mockClear();
+			const context = section.getDashboardValidationContext();
+			expect(context.dataSources).toEqual([{ sectionId: sourceId, columns: savedColumns }]);
+			expect(context.factColumns).toEqual(savedColumns);
+			expect(query.getClusterUrl).not.toHaveBeenCalled();
+			expect(query.getConnectionId).not.toHaveBeenCalled();
+			expect(query.getDatabase).not.toHaveBeenCalled();
+			setResultsState(sourceId, { columns: savedColumns, rows: [[70], [110]], metadata: {} }, {
+				producer: artifact.producer, policy: artifact.policy,
+			});
+			expect(getCurrentResultArtifact(sourceId)?.artifactId).not.toBe(artifact.artifactId);
+			expect(section.getDashboardValidationContext().dataSources).toEqual(context.dataSources);
+			expect(section._buildDataBridgeScript()).toContain('"rows":[[7],[11]]');
+			expect(getBoundResultArtifact(htmlDashboardFactArtifactConsumerId(section.boxId), sourceId)).toBe(artifact);
+			expect(toPersistedResultArtifact(artifact)).toEqual(descriptorBefore);
+			expect(artifact.policy?.sendToModel).not.toBe(true);
+			expect(artifact.policy?.shareToClipboard).not.toBe(true);
+			expect(artifact.policy?.exportToCsv).not.toBe(true);
+		} finally {
+			query.remove();
+			clearResultsState(sourceId);
+		}
+	});
+
+	it.each(['zero-row', 'secondary'])('validates the saved %s fact without current connection metadata', kind => {
+		const sourceId = `saved_dashboard_${kind}`;
+		const query = document.createElement('kw-query-section');
+		query.id = sourceId;
+		document.body.appendChild(query);
+		const savedColumns = [{ name: 'Value', type: 'long' }];
+		const resultIndex = kind === 'secondary' ? 1 : 0;
+		setResultsBatchState(sourceId, kind === 'secondary' ? [
+			{ columns: [{ name: 'PrimaryOnly', type: 'string' }], rows: [['primary']], metadata: {} },
+			{ columns: savedColumns, rows: [[17]], metadata: {} },
+		] : [{ columns: savedColumns, rows: [], metadata: {} }], {
+			persistedIdentity: createPrimaryResultArtifactIdentity(sourceId, 3, 1234),
+			producer: { engine: 'kusto', boxId: sourceId, connectionId: 'saved-connection', database: 'SavedDb', query: 'SavedFact', producer: 'restored' },
+			policy: { exposeToActiveContent: true },
+		});
+		const section = new KwHtmlSection() as BridgeSection;
+		section.boxId = `html_${sourceId}`;
+		section.setCode(makeFactHtml(sourceId, resultIndex));
+		try {
+			const artifact = getBoundResultArtifact(htmlDashboardFactArtifactConsumerId(section.boxId), sourceId)!;
+			const descriptorBefore = toPersistedResultArtifact(artifact);
+			expect(section.getDashboardValidationContext().dataSources).toEqual([{
+				sectionId: sourceId, ...(resultIndex ? { resultIndex } : {}), columns: savedColumns,
+			}]);
+			expect(artifact.resultIndex).toBe(resultIndex);
+			expect(section._buildDataBridgeScript()).toContain(kind === 'secondary' ? '"rows":[[17]]' : '"rows":[]');
+			expect(getBoundResultArtifact(htmlDashboardFactArtifactConsumerId(section.boxId), sourceId)).toBe(artifact);
+			expect(toPersistedResultArtifact(artifact)).toEqual(descriptorBefore);
+		} finally {
+			query.remove();
+			clearResultsState(sourceId);
+		}
+	});
+
+	it.each([
+		'missing permission', 'denied permission', 'missing artifact', 'missing result',
+		'missing columns', 'non-Kusto producer', 'missing query section',
+	])('rejects local dashboard validation for %s without granting or replacing saved data', condition => {
+		const sourceId = `saved_dashboard_denied_${condition.replaceAll(' ', '_')}`;
+		const query = document.createElement('kw-query-section');
+		query.id = sourceId;
+		if (condition !== 'missing query section') document.body.appendChild(query);
+		if (condition !== 'missing artifact') setResultsState(sourceId, {
+			columns: condition === 'missing columns' ? [] : [{ name: 'Value', type: 'long' }],
+			rows: [[7]], metadata: {},
+		}, {
+			persistedIdentity: createPrimaryResultArtifactIdentity(sourceId, 3, 1234),
+			producer: { engine: condition === 'non-Kusto producer' ? 'sql' : 'kusto', boxId: sourceId, connectionId: 'saved-connection', database: 'SavedDb', query: 'SavedFact', producer: 'restored' },
+			policy: condition === 'missing permission' ? undefined : { exposeToActiveContent: condition !== 'denied permission' },
+		});
+		const section = new KwHtmlSection();
+		section.boxId = `html_${sourceId}`;
+		section.setCode(makeFactHtml(sourceId, condition === 'missing result' ? 1 : 0));
+		const artifactBefore = getCurrentResultArtifact(sourceId);
+		const bindingBefore = getBoundResultArtifact(htmlDashboardFactArtifactConsumerId(section.boxId), sourceId);
+		try {
+			expect(section.getDashboardValidationContext().dataSources).toEqual([]);
+			expect(section.getDashboardValidationContext().factColumns).toEqual([]);
+			expect(getCurrentResultArtifact(sourceId)).toBe(artifactBefore);
+			expect(getBoundResultArtifact(htmlDashboardFactArtifactConsumerId(section.boxId), sourceId)).toBe(bindingBefore);
+		} finally {
+			query.remove();
+			clearResultsState(sourceId);
+		}
+	});
+
 	it('fails closed when the bound artifact lacks active-content exposure permission', () => {
 		const sourceId = 'query_html_artifact_denied';
 		setResultsState(sourceId, { columns: ['Secret'], rows: [['classified']] });

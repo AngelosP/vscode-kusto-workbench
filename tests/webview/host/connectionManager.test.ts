@@ -118,6 +118,33 @@ describe('normalizeClusterUrl', () => {
 });
 
 describe('ConnectionManager authority identity', () => {
+	it('restores an isolated saved connection with its original ID without changing authority or privacy policy', async () => {
+		const savedConnection = {
+			id: 'conn_1765825441854_gi5ey0lar',
+			name: 'Wave4 isolated starting state',
+			clusterUrl: 'https://ddtelinsights.kusto.windows.net',
+			database: 'DDTelInsights',
+		};
+		const test = connectionManagerHarness([savedConnection]);
+
+		expect(test.manager.getConnections()).toEqual([savedConnection]);
+		expect(test.manager.getConnectionIncarnation(savedConnection.id)).toBe(1);
+		expect(test.manager.getLeaveNoTraceRevision(savedConnection.clusterUrl)).toBe(0);
+		expect(test.manager.isLeaveNoTrace(savedConnection.clusterUrl)).toBe(false);
+		expect([...test.values.keys()]).toEqual(['kusto.connections']);
+
+		await test.manager.addConnection({ name: 'Independent', clusterUrl: 'https://other.kusto.windows.net' });
+		const persisted = structuredClone(test.values.get('kusto.connections')) as unknown[];
+		expect(persisted[0]).toEqual(savedConnection);
+		test.manager.dispose();
+
+		const restored = connectionManagerHarness(persisted);
+		expect(restored.manager.getConnections()[0]).toEqual(savedConnection);
+		expect(restored.manager.getConnectionIncarnation(savedConnection.id)).toBe(1);
+		expect(restored.manager.getLeaveNoTraceRevision(savedConnection.clusterUrl)).toBe(0);
+		restored.manager.dispose();
+	});
+
 	it('waits for an accepted connection write and rejects writes after disposal', async () => {
 		const values = new Map<string, unknown>([['kusto.connections', []]]);
 		let releaseWrite!: () => void;

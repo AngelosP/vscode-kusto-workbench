@@ -1002,9 +1002,19 @@ export const tutorialViewerStyles = css`
 	}
 
 	.compact-utility-strip {
+		position: relative;
 		justify-content: flex-end;
 		gap: 6px;
 		margin-left: auto;
+	}
+
+	.compact-utility-strip .mute-wrap {
+		position: static;
+	}
+
+	.compact-utility-strip .mute-menu {
+		left: auto;
+		min-width: min(280px, calc(100vw - 42px));
 	}
 
 	.compact-nav {
@@ -1239,17 +1249,8 @@ export const tutorialViewerStyles = css`
 			max-height: calc(100vh - 16px);
 		}
 
-		.compact-utility-strip {
-			align-items: stretch;
-			flex-direction: column;
-		}
-
 		.compact-nav {
 			justify-content: space-between;
-		}
-
-		.compact-utility-strip > * {
-			width: 100%;
 		}
 
 		.standard-filter-row {
@@ -1258,11 +1259,6 @@ export const tutorialViewerStyles = css`
 
 		.category-dropdown {
 			flex-basis: min(220px, calc(100% - 38px));
-		}
-
-		.mute-wrap,
-		.mute-wrap > .compact-link {
-			width: 100%;
 		}
 
 		.standard-mute-wrap {

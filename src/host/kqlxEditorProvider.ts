@@ -90,13 +90,17 @@ const MAX_PROJECTION_RETRIES = 2;
 const LINKED_NATIVE_SAVE_RECONCILE_MS = 1_000;
 const PLAIN_LINKED_QUERY_EXTENSIONS = ['.kql', '.csl'] as const;
 
-export type KqlxProjectionAttemptBudget = { remainingAttempts: number };
+export type KqlxProjectionAttemptBudget = { remainingAttempts: number; absoluteCommitDeadline?: number; generation?: number };
 
-export function createKqlxProjectionAttemptBudget(): KqlxProjectionAttemptBudget {
-	return { remainingAttempts: MAX_PROJECTION_RETRIES + 1 };
+export function createKqlxProjectionAttemptBudget(
+	absoluteCommitDeadline = performance.now() + 30_000,
+): KqlxProjectionAttemptBudget {
+	return { remainingAttempts: MAX_PROJECTION_RETRIES + 1, absoluteCommitDeadline };
 }
 
 export function consumeKqlxProjectionAttempt(budget: KqlxProjectionAttemptBudget): boolean {
+	if (budget.absoluteCommitDeadline !== undefined && (!Number.isFinite(budget.absoluteCommitDeadline)
+		|| performance.now() >= budget.absoluteCommitDeadline)) return false;
 	if (!Number.isSafeInteger(budget.remainingAttempts) || budget.remainingAttempts <= 0) return false;
 	budget.remainingAttempts--;
 	return true;
@@ -875,6 +879,8 @@ type MarkdownPanelOwnerRegistration = {
 	owner?: MarkdownDocumentOwnerEntry;
 	requestProjection(): void;
 	acceptSavedPublication?(text: string, identity: LocalFileIdentity): void;
+	nativeSaveFailureGeneration?(): number;
+	waitForNativeSaveCompletion?(reportFailure: boolean, failureGeneration?: number): Promise<void>;
 };
 
 type MarkdownSaveLease = {
@@ -1085,10 +1091,18 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		});
 	}
 
-	public static async waitForOpenEditorInitialized(uri: vscode.Uri, timeoutMs = 30_000, panel?: vscode.WebviewPanel): Promise<boolean> {
+	public static async waitForOpenEditorInitialized(
+		uri: vscode.Uri,
+		timeoutMs = 30_000,
+		panel?: vscode.WebviewPanel,
+		isCurrent?: () => boolean,
+		disposalSignal?: Promise<void>,
+	): Promise<boolean> {
+		const deadline = Date.now() + timeoutMs;
 		const key = KqlxEditorProvider.panelKey(uri);
 		const hasInitializedEditor = () => [...(KqlxEditorProvider.openPanelsByUri.get(key) ?? [])]
-			.some(candidate => (!panel || candidate === panel) && KqlxEditorProvider.initializedPanels.has(candidate));
+			.some(candidate => (!panel || candidate === panel) && KqlxEditorProvider.initializedPanels.has(candidate))
+			&& (!isCurrent || isCurrent());
 		if (hasInitializedEditor()) return true;
 		if (panel && !KqlxEditorProvider.openPanelsByUri.get(key)?.has(panel)) return false;
 		if (timeoutMs <= 0) return false;
@@ -1104,12 +1118,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				resolve(initialized);
 			};
 			const onChange = () => {
-				if (hasInitializedEditor()) finish(true);
+				if (Date.now() >= deadline) finish(false);
+				else if (hasInitializedEditor()) finish(true);
 				else if (panel && !KqlxEditorProvider.openPanelsByUri.get(key)?.has(panel)) finish(false);
 			};
 			listeners.add(onChange);
 			KqlxEditorProvider.panelChangeListenersByUri.set(key, listeners);
-			const timer = setTimeout(() => finish(false), timeoutMs);
+			const timer = setTimeout(() => finish(false), Math.max(0, deadline - Date.now()));
+			void disposalSignal?.then(() => finish(false));
 			onChange();
 		});
 	}
@@ -1314,6 +1330,12 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		webviewPanel: vscode.WebviewPanel,
 		_token: vscode.CancellationToken
 	): Promise<void> {
+		const documentKindForPerf = KqlxEditorProvider.getDocumentKind(document);
+		let uriHash: string | undefined;
+		try { uriHash = createHash('sha256').update(normalizeWorkbenchUriKey(document.uri)).digest('hex'); } catch {}
+		const fileOpenTrace = createFileOpenTrace('kqlx', {
+			documentKind: documentKindForPerf, uriHash, visible: webviewPanel.visible, active: webviewPanel.active,
+		});
 		if (document.uri.scheme !== 'untitled' && vscode.workspace.fs.isWritableFileSystem(document.uri.scheme) === true) {
 			const key = normalizeWorkbenchUriKey(document.uri);
 			const existing = this.nativeDocumentWatches.get(key);
@@ -1326,14 +1348,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				this.nativeDocumentWatches.set(key, { document, watcher });
 			}
 		}
-		const documentKindForPerf = KqlxEditorProvider.getDocumentKind(document);
-		const fileOpenTrace = createFileOpenTrace('kqlx', {
-			documentKind: documentKindForPerf,
-			scheme: document.uri.scheme,
-			path: document.uri.path,
-			visible: webviewPanel.visible,
-			active: webviewPanel.active,
-		});
 		perfBegin('host.kqlx.resolve', {
 			documentKind: documentKindForPerf,
 			scheme: document.uri.scheme,
@@ -1388,13 +1402,86 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				),
 			);
 		};
-		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
+		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage, operationDeadline?: number) => Promise<void>) | undefined;
 		const admittedWebviewHandlers = new Set<Promise<void>>();
 		const admittedPersistenceHandlers = new Set<Promise<void>>();
+		let admittedDocumentRequests = 0;
+		let pendingDocumentProjections = 0;
+		let currentDocumentReadiness: (() => boolean) | undefined;
+		let readDocumentReadinessDiagnostic: (() => Readonly<{
+			activeProjectionGeneration: number;
+			postDocumentGeneration: number;
+			admittedDocumentRequests: number;
+			pendingDocumentProjections: number;
+			pendingProjectionActivationSize: number;
+			initialRecovery: boolean;
+			pendingRecovery: boolean;
+			sourceObservationSequence: number;
+		}>) | undefined;
+		const readinessDiagnosticRecordLimit = 128;
+		const readinessDiagnosticTerminalReserve = 2;
+		let readinessDiagnosticRecordCount = 0;
+		let readinessDiagnosticSuppressedCount = 0;
+		let lastReadinessDiagnosticSignature: readonly (number | boolean)[] | undefined;
+		const traceDocumentReadiness = (
+			event: 'readiness.start' | 'readiness.settled' | 'notify.transitions'
+				| 'reload.acknowledgment' | 'reload.admission' | 'reload.settled' | 'reload.failure',
+			detail: Readonly<Record<string, number | boolean>> = {},
+			terminal = false,
+		): void => {
+			try {
+				if (readinessDiagnosticRecordCount >= readinessDiagnosticRecordLimit
+					- (terminal ? 0 : readinessDiagnosticTerminalReserve)) {
+					readinessDiagnosticSuppressedCount++;
+					return;
+				}
+				const state = readDocumentReadinessDiagnostic?.();
+				readinessDiagnosticRecordCount++;
+				fileOpenTrace.mark(event, {
+					panelDisposed: outerDisposed,
+					stateAvailable: state !== undefined,
+					...state,
+					...detail,
+					diagnosticRecordCount: readinessDiagnosticRecordCount,
+					diagnosticRecordLimit: readinessDiagnosticRecordLimit,
+					diagnosticTerminalReserve: readinessDiagnosticTerminalReserve,
+					diagnosticTruncated: readinessDiagnosticSuppressedCount > 0,
+					diagnosticSuppressedCount: readinessDiagnosticSuppressedCount,
+				});
+			} catch {
+				return;
+			}
+		};
+		const traceDocumentReadinessTransition = (): void => {
+			try {
+				const state = readDocumentReadinessDiagnostic?.();
+				if (state) {
+					const signature = [outerDisposed, state.activeProjectionGeneration, state.postDocumentGeneration,
+						state.admittedDocumentRequests, state.pendingDocumentProjections, state.pendingProjectionActivationSize,
+						state.initialRecovery, state.pendingRecovery, state.sourceObservationSequence];
+					if (!lastReadinessDiagnosticSignature
+						|| signature.some((value, index) => value !== lastReadinessDiagnosticSignature![index])) {
+						lastReadinessDiagnosticSignature = signature;
+						traceDocumentReadiness('notify.transitions');
+					}
+				}
+			} catch {
+				return;
+			}
+		};
+		const notifyDocumentReadiness = (): void => {
+			if (currentDocumentReadiness?.() === true) {
+				KqlxEditorProvider.markOpenEditorInitialized(document.uri, webviewPanel);
+			} else {
+				KqlxEditorProvider.initializedPanels.delete(webviewPanel);
+			}
+			KqlxEditorProvider.notifyPanelChange(KqlxEditorProvider.panelKey(document.uri));
+			traceDocumentReadinessTransition();
+		};
 		let closeFinalizationAbandoned = false;
 		let delayedBeforeUnloadAdmissionOpen = true;
 		const finalPersistSession = new CompatSidecarSession(false, 'Kusto Workbench document');
-		let retireMarkdownPanelOwner = () => undefined;
+		let retireMarkdownPanelOwner = (_settled?: boolean): void => undefined;
 		let closeFinalization: (() => void) | undefined;
 		let closeFinalizationStarted = false;
 		const startCloseFinalizationIfReady = (): void => {
@@ -1430,6 +1517,12 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			let settleAdmission!: () => void;
 			const admission = new Promise<void>(resolve => { settleAdmission = resolve; });
 			admittedWebviewHandlers.add(admission);
+			const documentRequest = message.type === 'requestDocument';
+			const operationDeadline = documentRequest ? performance.now() + 30_000 : undefined;
+			if (documentRequest) {
+				admittedDocumentRequests++;
+				notifyDocumentReadiness();
+			}
 			const persistenceCritical = message.type === 'persistDocument'
 				|| message.type === 'requestDocument'
 				|| message.type === 'markdownDocumentCommand'
@@ -1440,7 +1533,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (persistenceCritical) admittedPersistenceHandlers.add(admission);
 			let handling: Promise<void>;
 			try {
-				handling = handler(message);
+				handling = handler(message, operationDeadline);
 			} catch (error) {
 				handling = Promise.reject(error);
 			}
@@ -1451,6 +1544,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				.finally(() => {
 					admittedWebviewHandlers.delete(admission);
 					admittedPersistenceHandlers.delete(admission);
+					if (documentRequest) {
+						admittedDocumentRequests--;
+						notifyDocumentReadiness();
+					}
 					settleAdmission();
 				});
 		};
@@ -1693,11 +1790,12 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		queryEditor.setWorkbenchFileCloseLifecycle({
 			inspectDirty: async () => {
 				if (!nativeSaveLifecycleReady || outerDisposed) throw new Error('The notebook Save lifecycle is not available.');
-				await waitForNativeSaveCompletion(false);
+				await waitForNativeSaves(false);
 				return document.isDirty || !!linkedQueryDocument?.isDirty || !!nativeResultPublicationFailure;
 			},
 			save: async () => {
 				if (!nativeSaveLifecycleReady || outerDisposed) throw new Error('The notebook Save lifecycle is not available.');
+				await waitForNativeSaves(false);
 				if (!document.isDirty && nativeResultPublicationFailure) {
 					const failed = nativeResultPublicationFailure;
 					nativeResultPublicationFailure = undefined;
@@ -1717,8 +1815,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						throw new Error('The linked query could not be saved.');
 					}
 				}
+				const failures = captureNativeSaveFailures();
 				if (!await document.save()) throw new Error('The notebook could not be saved.');
-				await waitForNativeSaveCompletion();
+				await waitForNativeSaves(true, failures);
 				if (document.isDirty || linkedQueryDocument?.isDirty) throw new Error('The notebook or linked query changed while saving.');
 			},
 		});
@@ -1750,11 +1849,27 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 		queryEditor.fileOpenTrace = fileOpenTrace;
 		queryEditor.documentUri = document.uri.toString();
-		queryEditor.setWorkbenchToolMutationReadiness(() =>
-			KqlxEditorProvider.waitForOpenEditorInitialized(document.uri, 30_000, webviewPanel));
+		queryEditor.setWorkbenchToolMutationReadiness(() => {
+			const startedAt = Date.now();
+			const readiness = KqlxEditorProvider.waitForOpenEditorInitialized(
+				document.uri, 30_000, webviewPanel, () => currentDocumentReadiness?.() === true, outerDisposalSignal,
+			);
+			traceDocumentReadiness('readiness.start', { elapsedMs: 0 });
+			void readiness.then(observed => {
+				try {
+					traceDocumentReadiness('readiness.settled', { observed, elapsedMs: Date.now() - startedAt }, true);
+				} catch {
+					return;
+				}
+			}, () => undefined);
+			return readiness;
+		});
 		queryEditor.setMessageTransport(
-			message => startupGateway.postMessage(message),
+			(message, signal, isCurrent) => startupGateway.postMessage(message, signal, isCurrent),
 			() => startupGateway.beginDispatcherRevalidation(),
+			() => startupGateway.readinessIdentity,
+			() => startupGateway.waitForReadDispatcherReady(),
+			() => startupGateway.runtimeIdentity,
 		);
 		const postWebviewMessage = (message: unknown): boolean => {
 			return startupGateway.postMessageFireAndForget(message);
@@ -1933,6 +2048,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		let postDocumentGeneration = 0;
 		let panelSourceObservationSequence = 0;
 		let activeProjectionGeneration = 0;
+		let requiredProjectionGeneration = 0;
+		let activeProjectionPolicyFingerprint = '';
+		let activeProjectionRuntimeIdentity = '';
+		let automaticRefreshSequence = 0;
+		queryEditor.setWorkbenchToolSnapshotIdentity(() => `${activeProjectionGeneration}:${panelSourceObservationSequence}`);
 		let activeProjectionAuthorityToken = 0;
 		let activeProjectionSourceText = document.getText();
 		let linkedQueryDocument: vscode.TextDocument | undefined;
@@ -2804,16 +2924,18 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		panelOwners.set(webviewPanel, panelOwnerRegistration);
 		this.markdownPanelOwners.set(markdownDocumentKey, panelOwners);
 		let panelOwnerRetired = false;
-		retireMarkdownPanelOwner = () => {
-			if (panelOwnerRetired) return;
+		retireMarkdownPanelOwner = (settled = false) => {
+			if (panelOwnerRetired && !settled) return;
 			panelOwnerRetired = true;
 			const current = this.markdownPanelOwners.get(markdownDocumentKey);
 			if (!current || current.get(webviewPanel) !== panelOwnerRegistration) return;
-			current.delete(webviewPanel);
+			if (settled) current.delete(webviewPanel);
 			const canonicalOwner = this.markdownDocuments.get(markdownDocumentKey);
-			if (canonicalOwner && canonicalOwner === panelOwnerRegistration.owner) {
+			const wasCanonicalOwner = canonicalOwner && canonicalOwner === panelOwnerRegistration.owner;
+			panelOwnerRegistration.owner = undefined;
+			if (wasCanonicalOwner) {
 				const replacement = [...current.values()].reverse().find(candidate => !!candidate.owner);
-				const nextPanel = replacement ?? [...current.values()].at(-1);
+				const nextPanel = replacement ?? [...current.values()].filter(candidate => candidate !== panelOwnerRegistration).at(-1);
 				nextPanel?.requestProjection();
 			}
 			if (current.size === 0) this.markdownPanelOwners.delete(markdownDocumentKey);
@@ -3006,6 +3128,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			sourceText: string,
 			owner: MarkdownDocumentOwnerEntry | undefined,
 			authorityToken: number,
+			policyFingerprint: string,
 		): void => {
 			if (generation !== activeProjectionGeneration) {
 				persistRequestGeneration++;
@@ -3023,6 +3146,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				sourceRollbackFailedCandidate = undefined;
 			}
 			activeProjectionGeneration = generation;
+			activeProjectionPolicyFingerprint = policyFingerprint;
+			activeProjectionRuntimeIdentity = startupGateway.runtimeIdentity;
 			activeProjectionAuthorityToken = authorityToken;
 			activeProjectionSourceText = sourceText;
 			const previousPanelOwner = panelOwnerRegistration.owner;
@@ -3032,7 +3157,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			else if (this.markdownDocuments.get(markdownDocumentKey) === previousPanelOwner) {
 				this.markdownDocuments.delete(markdownDocumentKey);
 			}
-			KqlxEditorProvider.markOpenEditorInitialized(document.uri, webviewPanel);
+			notifyDocumentReadiness();
 		};
 		const overlayOwnedMarkdownState = (
 			baseState: KqlxStateV1,
@@ -3369,7 +3494,21 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 		const reprojectInvalidatedPersistence = () => {
 			if (outerDisposed) return;
+			const refreshSequence = ++automaticRefreshSequence;
 			const expectedEditRevision = projectionSession.currentEditRevision;
+			const acceptedGeneration = activeProjectionGeneration;
+			const acceptedRequiredGeneration = requiredProjectionGeneration;
+			const acceptedSource = activeProjectionSourceText;
+			const acceptedVersion = document.version;
+			const acceptedToken = activeProjectionAuthorityToken;
+			const acceptedEpoch = markdownDocumentQueue.sourceObservationSequence;
+			const acceptedOwner = activeMarkdownOwnerEntry;
+			const acceptedOwnerRevision = acceptedOwner?.document.revision;
+			const acceptedPolicy = activeProjectionPolicyFingerprint;
+			const acceptedRuntime = activeProjectionRuntimeIdentity;
+			requiredProjectionGeneration = 0;
+			pendingDocumentProjections++;
+			notifyDocumentReadiness();
 			void runInMarkdownDocumentQueue(async () => {
 				const sourceText = await readProjectionSourceText();
 				const parsed = parseKqlxText(sourceText, {
@@ -3384,11 +3523,97 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					async () => undefined,
 					revokeSanitizedKustoAttachments,
 				);
-				if (!outerDisposed && pendingProjectionActivations.size === 0
+				const activation = [...pendingProjectionActivations.values()].find(candidate => candidate.generation === postDocumentGeneration)
+					?? (deferredProjectionActivation?.generation === postDocumentGeneration ? deferredProjectionActivation : undefined);
+				if (activation) {
+					deferredProjectionActivation = activation;
+					const ownerRevision = activation.owner?.document.revision;
+					void activation.physicalSettlement.then(async () => {
+						const isCurrent = () => !outerDisposed && documentViewSessionActive
+							&& refreshSequence === automaticRefreshSequence && activation.generation === postDocumentGeneration
+							&& performance.now() < activation.retryBudget.absoluteCommitDeadline!;
+						if (!isCurrent()) return;
+						pendingDocumentProjections++;
+						notifyDocumentReadiness();
+						try {
+							const retained = await runInMarkdownDocumentQueue(async () => {
+								const currentSource = await readProjectionSourceText();
+								if (!isCurrent()) return false;
+								const current = parseKqlxText(currentSource, { allowedKinds: [documentKind], defaultKind: documentKind });
+								if (!current.ok) return false;
+								const state = kustoResultOwner.overlaySnapshot(
+									ensureProjectedSectionIds(current.file.state, currentSource), kustoResultPanelSession.panelId,
+								);
+								let policyFingerprint = '';
+								return queryEditor.publishSqlLeaveNoTraceStateFresh(state, async sanitized => {
+									if (!await isProjectionSourceCurrent(currentSource) || !isCurrent()
+										|| isSessionFile || documentKind === 'sqlx' || linkedQueryDocument
+										|| document.isClosed || !vscode.workspace.textDocuments.includes(document)
+										|| document.version !== activation.sourceVersion || document.getText() !== activation.sourceText
+										|| currentSource !== activation.sourceText || requiredProjectionGeneration !== 0
+										|| activeProjectionGeneration !== activation.generation
+										|| activeProjectionSourceText !== currentSource || activeProjectionAuthorityToken !== activation.authorityToken
+										|| markdownDocumentQueue.latestAuthority?.token !== activation.authorityToken
+										|| markdownDocumentQueue.latestAuthority.sourceText !== currentSource
+										|| markdownDocumentQueue.sourceObservationSequence !== activation.authorityEpoch
+										|| !activation.owner || activeMarkdownOwnerEntry !== activation.owner
+										|| activation.owner.document.revision !== ownerRevision || panelOwnerRegistration.owner !== activation.owner
+										|| this.markdownDocuments.get(markdownDocumentKey) !== activation.owner
+										|| startupGateway.runtimeIdentity !== activation.runtimeIdentity || activeProjectionRuntimeIdentity !== activation.runtimeIdentity
+										|| !policyFingerprint || policyFingerprint !== activation.policyFingerprint
+										|| state.sections.some(section => section.type === 'sql' || Object.hasOwn(section, 'linkedQueryPath')
+											|| Object.hasOwn(section, 'comparisonSourceBoxId')
+											|| (section.type === 'query' && (section.resultArtifact as { producer?: { engine?: string } } | undefined)?.producer?.engine === 'sql'))
+										|| JSON.stringify(overlayOwnedMarkdownState(sanitized, activation.owner.document)) !== activation.projectedState) return false;
+									requiredProjectionGeneration = activation.generation;
+									return true;
+								}, (before, after, context) => {
+									revokeSanitizedKustoAttachments(before, after, context);
+									policyFingerprint = kustoLeaveNoTracePolicyFingerprint(context.snapshot);
+								});
+							});
+							if (!retained && isCurrent()) await postDocument({ forceReload: true, retryBudget: activation.retryBudget, expectedEditRevision, sourceChangeFollowUpAvailable: activation.sourceChangeFollowUpAvailable });
+						} finally {
+							pendingDocumentProjections--;
+							notifyDocumentReadiness();
+						}
+					}).catch(() => undefined).finally(() => {
+						if (deferredProjectionActivation === activation && refreshSequence === automaticRefreshSequence) deferredProjectionActivation = undefined;
+					});
+				} else if (!outerDisposed && pendingProjectionActivations.size === 0
 					&& await isProjectionSourceCurrent(sourceText)) {
-					await postDocument({ forceReload: true, expectedEditRevision });
+					const canRetain = !isSessionFile && documentKind !== 'sqlx' && !linkedQueryDocument
+						&& acceptedGeneration > 0 && acceptedRequiredGeneration === acceptedGeneration
+						&& acceptedSource === sourceText && !!acceptedPolicy
+						&& !parsed.file.state.sections.some(section => section.type === 'sql' || Object.hasOwn(section, 'linkedQueryPath'));
+					const retainedViewIsCurrent = (generation: number) => !outerDisposed && documentViewSessionActive
+						&& document.isClosed !== true && vscode.workspace.textDocuments.includes(document)
+						&& document.version === acceptedVersion && document.getText() === acceptedSource
+						&& refreshSequence === automaticRefreshSequence && generation === postDocumentGeneration
+						&& requiredProjectionGeneration === generation && activeProjectionGeneration === acceptedGeneration
+						&& activeProjectionSourceText === acceptedSource && activeProjectionAuthorityToken === acceptedToken
+						&& markdownDocumentQueue.latestAuthority?.token === acceptedToken
+						&& markdownDocumentQueue.latestAuthority.sourceText === acceptedSource
+						&& markdownDocumentQueue.sourceObservationSequence === acceptedEpoch
+						&& activeMarkdownOwnerEntry === acceptedOwner && acceptedOwner?.document.revision === acceptedOwnerRevision
+						&& panelOwnerRegistration.owner === acceptedOwner && this.markdownDocuments.get(markdownDocumentKey) === acceptedOwner
+						&& startupGateway.runtimeIdentity === acceptedRuntime;
+					await postDocument({ forceReload: true, expectedEditRevision,
+						...(canRetain ? { retainAcceptedProjection: async (generation: number, editRevision: number, deadline: number) => {
+							if (performance.now() >= deadline || editRevision <= expectedEditRevision || !retainedViewIsCurrent(generation)
+								|| !await isProjectionSourceCurrent(sourceText)) return false;
+							return queryEditor.commitKustoSourceAdmissionFresh(acceptedPolicy, () => {
+								if (performance.now() >= deadline || !retainedViewIsCurrent(generation)) return false;
+								requiredProjectionGeneration = acceptedGeneration;
+								return true;
+							});
+						} } : {}),
+					});
 				}
-			}).catch(() => undefined);
+			}).catch(() => undefined).finally(() => {
+				pendingDocumentProjections--;
+				notifyDocumentReadiness();
+			});
 		};
 		queryEditor.dashboardApplication.setPowerBiPublishCleanupAdmission(async (
 			publishInfo, cleanup, waitForPendingDocumentApplications,
@@ -3506,9 +3731,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 
 		const projectionSession = new CompatSidecarSession(false, 'Kusto Workbench projection');
-		const pendingProjectionActivations = new Map<string, {
+		type ProjectionActivation = {
 			generation: number;
 			sourceText: string;
+			sourceVersion: number;
+			runtimeIdentity: string | undefined;
+			physicalSettlement: Promise<void>;
+			projectedState?: string;
 			result: Promise<boolean>;
 			owner?: MarkdownDocumentOwnerEntry;
 			authorityToken: number;
@@ -3518,7 +3747,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			policyFingerprint?: string;
 			sourceChangeFollowUpAvailable: boolean;
 			kustoSourceAdmission?: KustoCanonicalSourceAdmission<KqlxStateV1>;
-		}>();
+			retainAcceptedProjection?: (generation: number, editRevision: number, deadline: number) => Promise<boolean>;
+		};
+		const pendingProjectionActivations = new Map<string, ProjectionActivation>();
+		let deferredProjectionActivation: ProjectionActivation | undefined;
 		let projectionActivationTail: Promise<void> = Promise.resolve();
 		let pendingProjectionRecovery: Readonly<{
 			originGeneration: number;
@@ -3528,6 +3760,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const createProjectionReload = (
 			generation: number,
 			sourceText: string,
+			physicalSettlement: Promise<void>,
 			owner?: MarkdownDocumentOwnerEntry,
 			authorityToken = activeProjectionAuthorityToken,
 			authorityEpoch = markdownDocumentQueue.sourceObservationSequence,
@@ -3536,34 +3769,50 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			requestId?: string,
 			policyFingerprint?: string,
 			sourceChangeFollowUpAvailable = true,
+			retainAcceptedProjection?: (generation: number, editRevision: number, deadline: number) => Promise<boolean>,
+			projectedState?: KqlxStateV1,
 		) => {
-			const reload = projectionSession.createReloadRequest();
+			const reload = projectionSession.createReloadRequest(undefined, {
+				absoluteCommitDeadline: retryBudget.absoluteCommitDeadline!,
+			});
 			const activation = {
 				generation, sourceText, result: reload.result, owner, authorityToken, authorityEpoch,
+				sourceVersion: document.version, runtimeIdentity: startupGateway.runtimeIdentity, physicalSettlement,
+				projectedState: projectedState && JSON.stringify(projectedState),
 				retryBudget, requestId, policyFingerprint, sourceChangeFollowUpAvailable,
-				kustoSourceAdmission,
+				kustoSourceAdmission, retainAcceptedProjection,
 			};
 			pendingProjectionActivations.set(reload.requestId, activation);
 			void reload.result.then(applied => {
-				if (!applied) activation.kustoSourceAdmission?.discard();
+				if (!applied) {
+					activation.kustoSourceAdmission?.discard();
+					if (pendingProjectionRecovery?.originGeneration !== activation.generation) {
+						activation.kustoSourceAdmission?.abandonRetry();
+					}
+				}
 				if (pendingProjectionActivations.get(reload.requestId) === activation) {
 					pendingProjectionActivations.delete(reload.requestId);
 				}
 			});
 			return reload;
 		};
-		const postDocument = async (options?: {
+		const postDocumentCore = async (physicalSettlement: Promise<void>, options?: {
 			forceReload?: boolean;
 			retryBudget?: KqlxProjectionAttemptBudget;
 			requestId?: string;
 			expectedEditRevision?: number;
 			sourceChangeFollowUpAvailable?: boolean;
+			retainAcceptedProjection?: (generation: number, editRevision: number, deadline: number) => Promise<boolean>;
 		}): Promise<boolean> => {
 			if (outerDisposed) return false;
 			const retryBudget = options?.retryBudget ?? createKqlxProjectionAttemptBudget();
+			retryBudget.absoluteCommitDeadline ??= performance.now() + 30_000;
 			const sourceChangeFollowUpAvailable = options?.sourceChangeFollowUpAvailable ?? true;
 			if (!consumeKqlxProjectionAttempt(retryBudget)) return false;
 			const generation = ++postDocumentGeneration;
+			requiredProjectionGeneration = generation;
+			retryBudget.generation = generation;
+			for (const requestId of pendingProjectionActivations.keys()) projectionSession.failReload(requestId);
 			const sourceObservation = ++panelSourceObservationSequence;
 			const forceReload = options?.forceReload ?? false;
 			const suppressPersistenceForTest = this.context.extensionMode !== vscode.ExtensionMode.Production
@@ -3571,14 +3820,48 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			perfMark('host.kqlx.postDocument.start', { forceReload });
 			fileOpenTrace.mark('postDocument.start', { forceReload });
 			const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
+			const sourceDocument = document;
+			const sourceVersion = document.version;
 			const rawText = await readProjectionSourceText();
 			if (outerDisposed || generation !== postDocumentGeneration
 				|| sourceObservation !== panelSourceObservationSequence) return false;
+			if (!await startupGateway.waitForDispatcherReady()
+				|| outerDisposed || generation !== postDocumentGeneration
+				|| sourceObservation !== panelSourceObservationSequence
+				|| document.version !== sourceVersion) return false;
 			if (!await isProjectionSourceCurrent(rawText)
 				|| outerDisposed || generation !== postDocumentGeneration
-				|| sourceObservation !== panelSourceObservationSequence) return false;
+				|| sourceObservation !== panelSourceObservationSequence
+				|| document.version !== sourceVersion) return false;
 			const authorityToken = fencePersistenceForProjection(generation, rawText);
 			const authorityEpoch = markdownDocumentQueue.sourceObservationSequence;
+			const isProjectionEligible = (): boolean => !outerDisposed && documentViewSessionActive
+				&& performance.now() < retryBudget.absoluteCommitDeadline!
+				&& sourceDocument.isClosed !== true && vscode.workspace.textDocuments.includes(sourceDocument)
+				&& generation === postDocumentGeneration && sourceObservation === panelSourceObservationSequence
+				&& sourceDocument.version === sourceVersion
+				&& markdownDocumentQueue.latestAuthority?.token === authorityToken
+				&& markdownDocumentQueue.latestAuthority.sourceText === rawText
+				&& markdownDocumentQueue.sourceObservationSequence === authorityEpoch;
+			let projectionPreflightAccepted = false;
+			const preflightDocumentProjection = (): boolean | Promise<boolean> => {
+				if (!isProjectionEligible()) return false;
+				if (!isSessionFile) {
+					projectionPreflightAccepted = sourceDocument.getText() === rawText && isProjectionEligible();
+					return projectionPreflightAccepted;
+				}
+				return isProjectionSourceCurrent(rawText).then(current => {
+					projectionPreflightAccepted = current && isProjectionEligible();
+					return projectionPreflightAccepted;
+				});
+			};
+			const stopRejectedProjectionRetry = (): void => {
+				if (projectionPreflightAccepted && isProjectionEligible()) retryBudget.remainingAttempts = 0;
+			};
+			const waitForProjectionDelivery = async (): Promise<boolean> => {
+				if (!await startupGateway.waitForDispatcherReady()) return false;
+				return await preflightDocumentProjection() && isProjectionEligible();
+			};
 			perfMark('host.kqlx.documentText.read', { length: rawText.length });
 			fileOpenTrace.mark('postDocument.documentText.read', { length: rawText.length });
 			const parsed = parseKqlxText(rawText, {
@@ -3588,26 +3871,39 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			perfMark('host.kqlx.parse.done', { ok: parsed.ok });
 			fileOpenTrace.mark('postDocument.parse.done', { ok: parsed.ok });
 			if (!parsed.ok) {
-				const reload = createProjectionReload(
-					generation, rawText, undefined, authorityToken, authorityEpoch,
-					undefined, retryBudget, options?.requestId, undefined, sourceChangeFollowUpAvailable,
-				);
-				const delivered = await deliverWebviewMessage({
-					type: 'documentData',
-					ok: false,
-					requestId: options?.requestId,
-					...(Number.isSafeInteger(options?.expectedEditRevision)
-						? { expectedEditRevision: options?.expectedEditRevision }
-						: {}),
-					reloadRequestId: reload.requestId,
-					sourceGeneration: generation,
-					forceReload,
-					documentUri: document.uri.toString(),
-					suppressPersistenceForTest,
-					error: parsed.error,
-					htmlPowerBiCompatibilityCheckEnabled,
+				if (!await waitForProjectionDelivery() || !startupGateway.isDispatcherReady) return false;
+				let reload: ReturnType<typeof createProjectionReload> | undefined;
+				const delivered = await startupGateway.postDocumentProjection({
+					preflight: preflightDocumentProjection,
+					onPreparationRejected: stopRejectedProjectionRetry,
+					prepare: () => {
+						if (!isProjectionEligible()) return undefined;
+						reload = createProjectionReload(
+							generation, rawText, physicalSettlement, undefined, authorityToken, authorityEpoch,
+							undefined, retryBudget, options?.requestId, undefined, sourceChangeFollowUpAvailable,
+						);
+						return { message: {
+							type: 'documentData',
+							ok: false,
+							requestId: options?.requestId,
+							...(Number.isSafeInteger(options?.expectedEditRevision)
+								? { expectedEditRevision: options?.expectedEditRevision }
+								: {}),
+							reloadRequestId: reload.requestId,
+							sourceGeneration: generation,
+							forceReload,
+							documentUri: document.uri.toString(),
+							suppressPersistenceForTest,
+							error: parsed.error,
+							htmlPowerBiCompatibilityCheckEnabled,
+						} };
+					},
 				});
 				fileOpenTrace.mark('postDocument.documentData.posted', { ok: false, forceReload });
+				if (!reload) {
+					stopRejectedProjectionRetry();
+					return false;
+				}
 				if (!delivered) {
 					pendingProjectionActivations.delete(reload.requestId);
 					projectionSession.failReload(reload.requestId);
@@ -3642,20 +3938,33 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				linkedQueryDocument = undefined;
 				linkedQueryLoadGeneration = generation;
 				linkedQueryPhysicalIdentity = undefined;
-				const reload = createProjectionReload(
-					generation, rawText, undefined, authorityToken, authorityEpoch,
-					undefined, retryBudget, options?.requestId, undefined, sourceChangeFollowUpAvailable,
-				);
-				const delivered = await deliverWebviewMessage({
-					type: 'documentData', ok: false, forceReload, sourceGeneration: generation,
-					requestId: options?.requestId,
-					...(Number.isSafeInteger(options?.expectedEditRevision)
-						? { expectedEditRevision: options?.expectedEditRevision }
-						: {}),
-					reloadRequestId: reload.requestId,
-					documentUri: document.uri.toString(), suppressPersistenceForTest,
-					error: unsafeReason, htmlPowerBiCompatibilityCheckEnabled,
+				if (!await waitForProjectionDelivery() || !startupGateway.isDispatcherReady) return false;
+				let reload: ReturnType<typeof createProjectionReload> | undefined;
+				const delivered = await startupGateway.postDocumentProjection({
+					preflight: preflightDocumentProjection,
+					onPreparationRejected: stopRejectedProjectionRetry,
+					prepare: () => {
+						if (!isProjectionEligible()) return undefined;
+						reload = createProjectionReload(
+							generation, rawText, physicalSettlement, undefined, authorityToken, authorityEpoch,
+							undefined, retryBudget, options?.requestId, undefined, sourceChangeFollowUpAvailable,
+						);
+						return { message: {
+							type: 'documentData', ok: false, forceReload, sourceGeneration: generation,
+							requestId: options?.requestId,
+							...(Number.isSafeInteger(options?.expectedEditRevision)
+								? { expectedEditRevision: options?.expectedEditRevision }
+								: {}),
+							reloadRequestId: reload.requestId,
+							documentUri: document.uri.toString(), suppressPersistenceForTest,
+							error: unsafeReason, htmlPowerBiCompatibilityCheckEnabled,
+						} };
+					},
 				});
+				if (!reload) {
+					stopRejectedProjectionRetry();
+					return false;
+				}
 				if (!delivered) {
 					pendingProjectionActivations.delete(reload.requestId);
 					projectionSession.failReload(reload.requestId);
@@ -3692,76 +4001,84 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (!hydratedState || outerDisposed || generation !== postDocumentGeneration || !await isProjectionSourceCurrent(rawText)) return false;
 			perfMark('host.kqlx.injectLinkedQuery.done', { sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
 			fileOpenTrace.mark('postDocument.injectLinkedQuery.done', { sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
+			if (!await waitForProjectionDelivery() || !startupGateway.isDispatcherReady) return false;
 			const finalSanitation = await sanitizeKustoStateFreshWithPolicy(hydratedState);
 			const finalSanitizedState = finalSanitation.sanitizedState;
-			if (outerDisposed || generation !== postDocumentGeneration || !await isProjectionSourceCurrent(rawText)) return false;
-			const kustoSourceAdmission = kustoResultOwner.prepareCanonicalSource(
-				createHash('sha256').update(rawText).digest('hex'),
-				finalSanitizedState,
-				String(authorityToken),
-				kustoResultPanelSession.panelId,
-			);
-			if (!kustoSourceAdmission) throw new Error('Kusto result source admission could not be prepared.');
-			const prepareProjection = () => {
-				const sanitizedOutboundState = kustoSourceAdmission.projectedState;
+			if (outerDisposed || generation !== postDocumentGeneration || !await isProjectionSourceCurrent(rawText)
+				|| document.version !== sourceVersion) return false;
+			const prepareProjection = (sourceAdmission: KustoCanonicalSourceAdmission<KqlxStateV1>) => {
+				const sanitizedOutboundState = sourceAdmission.projectedState;
 				assertDocumentSectionKindsAllowed(documentKind, sanitizedOutboundState.sections);
 				const markdownOwner = ensureMarkdownDocumentOwner(rawText, sanitizedOutboundState, false);
 				const outboundState = overlayOwnedMarkdownState(sanitizedOutboundState, markdownOwner.document);
 				const markdownProjection = markdownOwner.document.projection();
 				return { markdownOwner, outboundState, markdownProjection };
 			};
-			let preparedProjection: ReturnType<typeof prepareProjection>;
-			try {
-				preparedProjection = prepareProjection();
-			} catch (error) {
-				kustoSourceAdmission.discard();
-				throw error;
-			}
-			const { markdownOwner, outboundState, markdownProjection } = preparedProjection;
-
-			let reload: ReturnType<typeof createProjectionReload>;
-			try {
-				reload = createProjectionReload(
-					generation, rawText, markdownOwner, authorityToken, authorityEpoch,
-					kustoSourceAdmission,
-					retryBudget,
-					options?.requestId,
-					finalSanitation.policyFingerprint,
-					sourceChangeFollowUpAvailable,
-				);
-			} catch (error) {
-				kustoSourceAdmission.discard();
-				throw error;
-			}
-			let delivered: boolean;
-			try {
-				delivered = await deliverWebviewMessage({
-					type: 'documentData',
-					ok: true,
-					requestId: options?.requestId,
+			let kustoSourceAdmission: KustoCanonicalSourceAdmission<KqlxStateV1> | undefined;
+			let preparedProjection: ReturnType<typeof prepareProjection> | undefined;
+			let reload: ReturnType<typeof createProjectionReload> | undefined;
+			const delivered = await startupGateway.postDocumentProjection({
+				preflight: preflightDocumentProjection,
+				onPreparationRejected: stopRejectedProjectionRetry,
+				prepare: () => {
+					if (!isProjectionEligible()) return undefined;
+					kustoSourceAdmission = kustoResultOwner.prepareCanonicalSource(
+						createHash('sha256').update(rawText).digest('hex'),
+						finalSanitizedState,
+						String(authorityToken),
+						kustoResultPanelSession.panelId,
+					);
+					if (!kustoSourceAdmission) throw new Error('Kusto result source admission could not be prepared.');
+					preparedProjection = prepareProjection(kustoSourceAdmission);
+					const { markdownOwner, outboundState, markdownProjection } = preparedProjection;
+					reload = createProjectionReload(
+						generation, rawText, physicalSettlement, markdownOwner, authorityToken, authorityEpoch,
+						kustoSourceAdmission, retryBudget, options?.requestId,
+						finalSanitation.policyFingerprint, sourceChangeFollowUpAvailable, options?.retainAcceptedProjection,
+						outboundState,
+					);
+					return { message: {
+						type: 'documentData',
+						ok: true,
+						requestId: options?.requestId,
 						...(Number.isSafeInteger(options?.expectedEditRevision)
 							? { expectedEditRevision: options?.expectedEditRevision }
 							: {}),
-					reloadRequestId: reload.requestId,
-					sourceGeneration: generation,
-					forceReload,
-					documentUri: document.uri.toString(),
-					suppressPersistenceForTest,
-					htmlPowerBiCompatibilityCheckEnabled,
-					state: outboundState
-					, documentRevision: markdownProjection.documentRevision
-					, sectionRevisions: markdownProjection.sectionRevisions
-					, markdownSectionRevisions: markdownProjection.markdownSectionRevisions
-				});
-			} catch (error) {
-				pendingProjectionActivations.delete(reload.requestId);
-				kustoSourceAdmission.discard();
-				projectionSession.failReload(reload.requestId);
-				throw error;
+						reloadRequestId: reload.requestId,
+						sourceGeneration: generation,
+						forceReload,
+						documentUri: document.uri.toString(),
+						suppressPersistenceForTest,
+						htmlPowerBiCompatibilityCheckEnabled,
+						state: outboundState
+						, documentRevision: markdownProjection.documentRevision
+						, sectionRevisions: markdownProjection.sectionRevisions
+						, markdownSectionRevisions: markdownProjection.markdownSectionRevisions
+					} };
+				},
+			});
+			if (!reload || !preparedProjection) {
+				stopRejectedProjectionRetry();
+				kustoSourceAdmission?.discard();
+				if (reload) {
+					pendingProjectionActivations.delete(reload.requestId);
+					projectionSession.failReload(reload.requestId);
+				}
+				if (preparedProjection && this.markdownDocuments.get(markdownDocumentKey) === preparedProjection.markdownOwner
+					&& activeMarkdownOwnerEntry && activeMarkdownOwnerEntry !== preparedProjection.markdownOwner) {
+					this.markdownDocuments.set(markdownDocumentKey, activeMarkdownOwnerEntry);
+				}
+				return false;
 			}
+			if (!delivered) {
+				pendingProjectionActivations.delete(reload.requestId);
+				projectionSession.failReload(reload.requestId);
+			}
+			const { markdownOwner, outboundState } = preparedProjection;
 			perfMark('host.kqlx.documentData.posted', { sections: Array.isArray(outboundState.sections) ? outboundState.sections.length : 0 });
 			fileOpenTrace.mark('postDocument.documentData.posted', { ok: true, forceReload, sections: Array.isArray(outboundState.sections) ? outboundState.sections.length : 0 });
 
+			const applied = await reload.result;
 			void (async () => {
 				let connectionsChanged = false;
 				try {
@@ -3782,11 +4099,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					}
 				}
 			})();
-			if (!delivered) {
-				pendingProjectionActivations.delete(reload.requestId);
-				projectionSession.failReload(reload.requestId);
-			}
-			const applied = await reload.result;
 			const accepted = applied && !outerDisposed
 				&& generation === postDocumentGeneration
 				&& markdownDocumentQueue.latestAuthority?.token === authorityToken
@@ -3814,6 +4126,17 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				});
 			}
 			return accepted;
+		};
+		const postDocument = (options?: Parameters<typeof postDocumentCore>[1]): Promise<boolean> => {
+			let settlePhysical!: () => void;
+			const physicalSettlement = new Promise<void>(resolve => { settlePhysical = resolve; });
+			pendingDocumentProjections++;
+			notifyDocumentReadiness();
+			return postDocumentCore(physicalSettlement, options).finally(() => {
+				settlePhysical();
+				pendingDocumentProjections--;
+				notifyDocumentReadiness();
+			});
 		};
 		panelOwnerRegistration.requestProjection = () => {
 			if (!outerDisposed) void postDocument({ forceReload: true });
@@ -3926,20 +4249,24 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const transferredNativeMarkdownSaveLeases = new Set<MarkdownSaveLease>();
 		const unleasedNativeSavePreparations = new Set<AbortController>();
 		const nativeMarkdownSaveLeases: NativeMarkdownSaveLeaseRecord[] = [];
+		let nativeSaveFailureGeneration = 0;
+		let nativeSaveAttemptFailureGeneration = 0;
 		const settleActiveNativeMarkdownSaveLease = (lease: MarkdownSaveLease) => {
 			activeNativeMarkdownSaveLeases.delete(lease);
 			lease.settle();
+			notifyNativeSaveStateChanged();
 		};
-		const settleNativeMarkdownSaveLeaseRecord = (index: number) => {
+		const settleNativeMarkdownSaveLeaseRecord = (index: number, committed = false) => {
 			if (index < 0 || index >= nativeMarkdownSaveLeases.length) return;
 			const record = nativeMarkdownSaveLeases.splice(index, 1)[0];
 			clearTimeout(record.timer);
+			if (!committed) nativeSaveFailureGeneration++;
 			settleActiveNativeMarkdownSaveLease(record.lease);
 		};
 		const settleNativeMarkdownSaveLease = (savedText: string) => {
 			const index = nativeMarkdownSaveLeases.findIndex(record => record.expectedText === savedText);
 			if (index >= 0) {
-				settleNativeMarkdownSaveLeaseRecord(index);
+				settleNativeMarkdownSaveLeaseRecord(index, true);
 				return;
 			}
 			const candidates = [...activeNativeMarkdownSaveLeases]
@@ -3991,17 +4318,48 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (nativeSaveStateVersion !== version || closeFinalizationAbandoned) return Promise.resolve();
 			return new Promise(resolve => nativeSaveStateWaiters.add(resolve));
 		};
-		async function waitForNativeSaveCompletion(reportFailure = true): Promise<void> {
+		async function waitForNativeSaveCompletion(reportFailure = true, failureGeneration?: number): Promise<void> {
+			const observedFailureGeneration = failureGeneration ?? (nativeSavePreparations.size || activeNativeMarkdownSaveLeases.size || linkedSaveTasks.size
+				? nativeSaveAttemptFailureGeneration : nativeSaveFailureGeneration);
 			while (true) {
+				if (closeFinalizationAbandoned) throw new Error('The notebook Save lifecycle is not available.');
+				const observedStateVersion = nativeSaveStateVersion;
 				const observedTail = canonicalResultRestoreTail;
 				await Promise.allSettled([...nativeSavePreparations, ...linkedSaveTasks]);
 				await observedTail;
+				if (nativeSaveFailureGeneration !== observedFailureGeneration || closeFinalizationAbandoned) {
+					throw new Error('The native notebook Save did not commit its prepared snapshot.');
+				}
 				if (observedTail === canonicalResultRestoreTail && !nativeSavePreparations.size && !linkedSaveTasks.size) {
+					if (activeNativeMarkdownSaveLeases.size) {
+						await waitForNativeSaveStateChange(observedStateVersion);
+						continue;
+					}
 					if (reportFailure && nativeResultPublicationFailure) throw new Error(nativeResultPublicationFailure.message);
 					return;
 				}
 			}
 		}
+		panelOwnerRegistration.nativeSaveFailureGeneration = () => nativeSaveFailureGeneration;
+		panelOwnerRegistration.waitForNativeSaveCompletion = waitForNativeSaveCompletion;
+		const captureNativeSaveFailures = () => new Map([...panelOwners.values()]
+			.map(registration => [registration, registration.nativeSaveFailureGeneration?.()] as const));
+		const waitForNativeSaves = async (
+			reportFailure = true,
+			failures = new Map<MarkdownPanelOwnerRegistration, number | undefined>(),
+		): Promise<void> => {
+			const sourceAuthorityToken = markdownDocumentQueue.latestAuthority?.token;
+			for (const registration of panelOwners.values()) {
+				if (!failures.has(registration)) failures.set(registration, undefined);
+			}
+			await Promise.all([...failures].map(([registration, generation]) => registration.waitForNativeSaveCompletion?.(
+				reportFailure || registration !== panelOwnerRegistration, generation,
+			)));
+			if (outerDisposed) throw new Error('The notebook Save lifecycle is not available.');
+			if (sourceAuthorityToken !== markdownDocumentQueue.latestAuthority?.token) {
+				throw new Error('The notebook changed while waiting for Save. Retry Save to include the new edits.');
+			}
+		};
 		nativeSaveLifecycleReady = true;
 		const prepareAtomicSqlSaveText = async (currentText: string): Promise<string> => {
 			return sanitizeSerializedNotebookTextFailClosed(currentText);
@@ -4123,6 +4481,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						}
 					} else {
 						if (!isAuthorityCurrent() || currentDocuments().some(candidate => candidate.isDirty)) {
+							outcome = 'stale';
 							cancelPublicationTracking?.();
 						} else {
 							const message = 'Kusto Workbench saved the query results, but the editor has not reloaded the saved file yet. Reopen it before making further changes.';
@@ -4137,12 +4496,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				}
 			};
 			try {
-				if (pending.candidateText === pending.rowFreeText) return 'nothing-new';
+				if (pending.candidateText === pending.rowFreeText) return outcome = 'nothing-new';
 				if (markdownSaveLease) await restore();
 				else await runInMarkdownDocumentQueue(restore);
 				return outcome;
 			} finally {
 				if (markdownSaveLease) {
+					if (outcome === 'stale') nativeSaveFailureGeneration++;
 					transferredNativeMarkdownSaveLeases.delete(markdownSaveLease);
 					settleActiveNativeMarkdownSaveLease(markdownSaveLease);
 				}
@@ -4157,6 +4517,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					return;
 				}
 				const preparationRetirement = new AbortController();
+				nativeSaveAttemptFailureGeneration = nativeSaveFailureGeneration;
 				nativeResultPublicationFailure = undefined;
 				unleasedNativeSavePreparations.add(preparationRetirement);
 				const preparation = (async () => {
@@ -4188,7 +4549,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								&& !String(record.linkedQueryPath || '').trim();
 						})) return [];
 					const initialProjectionAccepted = !webviewInitialized && sourceHasOwnedSectionsAtSave
-						? await ensureInitialDocument() : true;
+						? startupGateway.isDispatcherReady && await ensureInitialDocument() : true;
 					if (preparationRetirement.signal.aborted) return [];
 					if (!initialProjectionAccepted) {
 						throw Object.assign(
@@ -4390,18 +4751,21 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						}
 						nativeSaveGeneration++;
 						pendingNativeResultRestore = undefined;
+						nativeSaveFailureGeneration++;
 						notifyNativeSaveStateChanged();
 						getWorkbenchLogger().warn(`[sql-persistence] Final snapshot unavailable; saving fail-closed state: ${error instanceof Error ? error.message : String(error)}`);
 						sanitizedText = await sanitizeSerializedNotebookTextFailClosed(document.getText());
 					}
 					if (preparationRetirement.signal.aborted) return [];
-					if (markdownSaveLease) {
-						retainedMarkdownSaveLease = retainNativeMarkdownSaveLease(markdownSaveLease, sanitizedText);
-						if (!retainedMarkdownSaveLease) {
-							throw Object.assign(new Error('Cannot save because the editor closed before Markdown state could commit.'), {
-								markdownBarrierFailed: true,
-							});
-						}
+					if (!markdownSaveLease) {
+						markdownSaveLease = reserveMarkdownSaveLease(saveMarkdownOwner, saveProjectionGeneration);
+						activeNativeMarkdownSaveLeases.add(markdownSaveLease);
+					}
+					retainedMarkdownSaveLease = retainNativeMarkdownSaveLease(markdownSaveLease, sanitizedText);
+					if (!retainedMarkdownSaveLease) {
+						throw Object.assign(new Error('Cannot save because the editor closed before Markdown state could commit.'), {
+							markdownBarrierFailed: true,
+						});
 					}
 					const freshText = document.getText();
 					const edits = sanitizedText === freshText && freshText === currentText
@@ -4426,7 +4790,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						}
 					}
 				})();
-				const trackedPreparation = preparation.then(() => undefined, () => undefined);
+				const trackedPreparation = preparation.then(() => undefined, () => { nativeSaveFailureGeneration++; });
 				nativeSavePreparations.add(trackedPreparation);
 				void trackedPreparation.then(() => {
 					nativeSavePreparations.delete(trackedPreparation);
@@ -4444,6 +4808,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						}
 						return;
 					}
+					if (!isLocalNativeSaveCoordinator() && !nativeSavePreparations.size
+						&& !activeNativeMarkdownSaveLeases.size && !linkedSaveTasks.size) {
+						nativeSaveAttemptFailureGeneration = nativeSaveFailureGeneration;
+					}
 					if (markdownDocumentQueue.pendingOwnedMutation?.text === saved.getText()) {
 						markdownDocumentQueue.pendingOwnedMutation = undefined;
 					}
@@ -4457,6 +4825,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							pending.sourceAuthorityToken, pending.owner, pending.rowFreeText,
 						)) {
 						pendingNativeResultRestore = undefined;
+						nativeSaveFailureGeneration++;
 						if (canonicalRestoreLease) settleActiveNativeMarkdownSaveLease(canonicalRestoreLease);
 						notifyNativeSaveStateChanged();
 						return;
@@ -4553,36 +4922,50 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		let initialProjectionRecoverySourceText: string | undefined;
 		let initialProjectionExhaustedSourceText: string | undefined;
 		let initialProjectionRestartRequested = false;
+		const initialProjectionRecoveryRequestIds = new Set<string>();
 		const postInitialDocument = async (
 			retryBudget: KqlxProjectionAttemptBudget,
 			sourceText: string,
+			requestId?: string,
 		): Promise<boolean> => {
 			for (let attempt = 0; attempt < INITIAL_PROJECTION_MAX_ATTEMPTS && !outerDisposed; attempt++) {
 				if (await readProjectionSourceText() !== sourceText) return false;
-				const delivered = await postDocument({ forceReload: attempt > 0, retryBudget });
+				const delivered = await postDocument({ forceReload: attempt > 0 || requestId !== undefined, retryBudget, requestId });
 				if (delivered) return true;
+				if (retryBudget.generation !== postDocumentGeneration) return false;
 				if (retryBudget.remainingAttempts <= 0) break;
 			}
 			return false;
 		};
-		const ensureInitialDocument = (allowFollowUp = true): Promise<boolean> => {
-			if (webviewInitialized) return Promise.resolve(true);
-			if (initialProjectionRecovery) return initialProjectionRecovery;
+		const ensureInitialDocument = (
+			allowFollowUp = true,
+			requestId?: string,
+			operationDeadline = performance.now() + 30_000,
+		): Promise<boolean> => {
+			if (outerDisposed || performance.now() >= operationDeadline) return Promise.resolve(false);
+			if (webviewInitialized && requestId === undefined) return Promise.resolve(true);
+			if (initialProjectionRecovery) {
+				if (requestId === undefined) return initialProjectionRecovery;
+				return initialProjectionRecovery.then(
+					() => ensureInitialDocument(allowFollowUp, requestId, operationDeadline),
+					() => ensureInitialDocument(allowFollowUp, requestId, operationDeadline),
+				);
+			}
 			const run = (async () => {
 				const sourceText = await readProjectionSourceText();
-				if (initialProjectionExhaustedSourceText !== undefined
+				if (requestId === undefined && initialProjectionExhaustedSourceText !== undefined
 					&& sourceText === initialProjectionExhaustedSourceText) return false;
+				if (requestId !== undefined) initialProjectionExhaustedSourceText = undefined;
 				initialProjectionRecoverySourceText = sourceText;
-				const delivered = await postInitialDocument(createKqlxProjectionAttemptBudget(), sourceText);
+				const delivered = await postInitialDocument(createKqlxProjectionAttemptBudget(operationDeadline), sourceText, requestId);
 				if (delivered) {
 					webviewInitialized = true;
 					initialProjectionExhaustedSourceText = undefined;
 				}
 				return delivered;
 			})();
-			initialProjectionRecovery = run;
 			const settleInitialProjection = async () => {
-				if (initialProjectionRecovery !== run) return;
+				if (initialProjectionRecovery !== recovery) return;
 				let settledSourceText = initialProjectionRecoverySourceText;
 				try {
 					settledSourceText = await readProjectionSourceText();
@@ -4600,18 +4983,44 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					&& allowFollowUp
 					&& !outerDisposed;
 				initialProjectionRestartRequested = false;
-				if (!webviewInitialized) initialProjectionExhaustedSourceText = recoverySourceText;
+				if (!webviewInitialized && recoverySourceText !== undefined) initialProjectionExhaustedSourceText = recoverySourceText;
 				if (restart) {
 					initialProjectionExhaustedSourceText = undefined;
-					void ensureInitialDocument(false);
+					void ensureInitialDocument(false, undefined, operationDeadline);
 				}
+				notifyDocumentReadiness();
 			};
-			void run.then(
-				() => settleInitialProjection(),
-				() => settleInitialProjection(),
+			const recovery = run.then(
+				async delivered => {
+					await settleInitialProjection();
+					return delivered;
+				},
+				async error => {
+					await settleInitialProjection();
+					throw error;
+				},
 			);
-			return initialProjectionRecovery;
+			initialProjectionRecovery = recovery;
+			return recovery;
 		};
+		currentDocumentReadiness = () => !outerDisposed
+			&& activeProjectionGeneration > 0
+			&& activeProjectionGeneration === requiredProjectionGeneration
+			&& admittedDocumentRequests === 0
+			&& pendingDocumentProjections === 0
+			&& pendingProjectionActivations.size === 0
+			&& !initialProjectionRecovery
+			&& !pendingProjectionRecovery;
+		readDocumentReadinessDiagnostic = () => ({
+			activeProjectionGeneration,
+			postDocumentGeneration,
+			admittedDocumentRequests,
+			pendingDocumentProjections,
+			pendingProjectionActivationSize: pendingProjectionActivations.size,
+			initialRecovery: !!initialProjectionRecovery,
+			pendingRecovery: !!pendingProjectionRecovery,
+			sourceObservationSequence: panelSourceObservationSequence,
+		});
 		// Serialization chain: each applyEdit waits for the previous one to finish.
 		// This prevents concurrent applyEdit calls that cause VS Code's
 		// "has changed in the meantime" validation error.
@@ -4865,7 +5274,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				} catch {
 					// The document may already have been closed by VS Code.
 				} finally {
-					retireMarkdownPanelOwner();
+					retireMarkdownPanelOwner(true);
 					queryEditor.disposePanel(webviewPanel);
 					for (const s of subscriptions) {
 						try { s.dispose(); } catch { /* ignore */ }
@@ -4876,7 +5285,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 		startCloseFinalizationIfReady();
 
-		handleIncomingWebviewMessage = async (message: IncomingWebviewMessage) => {
+		handleIncomingWebviewMessage = async (message: IncomingWebviewMessage, operationDeadline?: number) => {
 			const delayedSessionPersistence = message && typeof message.type === 'string'
 				&& outerDisposed && isSessionCloseCriticalShape(message);
 			if ((outerDisposed && !delayedSessionPersistence) || !message || typeof message.type !== 'string') {
@@ -4884,28 +5293,66 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			switch (message.type) {
 				case 'documentReloadResult': {
+						const acknowledgement = message as Extract<DocumentViewWebviewMessage, { type: 'documentReloadResult' }>;
+						const requestId = acknowledgement.requestId;
+						const applied = acknowledgement.applied;
+						const activation = pendingProjectionActivations.get(requestId);
+						traceDocumentReadiness('reload.acknowledgment', {
+							matchingActivation: !!activation, applied, generation: activation?.generation ?? -1,
+						});
+						if (!activation) return;
+						const activationStartedAt = performance.now();
+						const activationHasCurrentOwner = () => !outerDisposed && documentViewSessionActive
+							&& document.isClosed !== true && vscode.workspace.textDocuments.includes(document)
+							&& activation.generation === postDocumentGeneration
+							&& markdownDocumentQueue.latestAuthority?.token === activation.authorityToken
+							&& pendingProjectionActivations.get(requestId) === activation
+							&& projectionSession.hasPendingReloadRequest(requestId);
+						const activationIsCurrent = () => activationHasCurrentOwner()
+							&& markdownDocumentQueue.latestAuthority?.sourceText === activation.sourceText
+							&& markdownDocumentQueue.sourceObservationSequence === activation.authorityEpoch;
+						if (!activationHasCurrentOwner()) {
+							projectionSession.failReload(requestId);
+							activation.kustoSourceAdmission?.discard();
+							activation.kustoSourceAdmission?.abandonRetry();
+							if (pendingProjectionActivations.get(requestId) === activation) pendingProjectionActivations.delete(requestId);
+							return;
+						}
+						if (!applied) {
+							if (projectionSession.completeReload(requestId, false, acknowledgement.editRevision)) {
+								activation.kustoSourceAdmission?.discard();
+								activation.kustoSourceAdmission?.abandonRetry();
+								pendingProjectionActivations.delete(requestId);
+								if (activation.retainAcceptedProjection
+									&& performance.now() < activation.retryBudget.absoluteCommitDeadline!) {
+									pendingDocumentProjections++;
+									notifyDocumentReadiness();
+									try { await activation.retainAcceptedProjection(activation.generation, acknowledgement.editRevision, activation.retryBudget.absoluteCommitDeadline!); }
+									finally { pendingDocumentProjections--; notifyDocumentReadiness(); }
+								}
+							}
+							return;
+						}
+						if (!projectionSession.claimReloadRequest(requestId)) return;
 						const priorActivation = projectionActivationTail;
 						let retryAfterActivation: (() => void) | undefined;
 						const activationOperation = priorActivation.catch(() => undefined).then(async () => {
-							const requestId = String((message as any).requestId || '');
-							const applied = (message as any).applied === true;
-							const activation = pendingProjectionActivations.get(requestId);
-							if (!activation || !projectionSession.hasPendingReloadRequest(requestId)) {
-								activation?.kustoSourceAdmission?.discard();
-								pendingProjectionActivations.delete(requestId);
+							try {
+							traceDocumentReadiness('reload.admission', {
+								generation: activation.generation, elapsedMs: performance.now() - activationStartedAt,
+							});
+							if (!activationHasCurrentOwner()) {
+								projectionSession.failReload(requestId);
+								activation.kustoSourceAdmission?.discard();
+								activation.kustoSourceAdmission?.abandonRetry();
 								return;
 							}
-							const activationIsCurrent = () => !outerDisposed
-								&& activation.generation === postDocumentGeneration
-								&& markdownDocumentQueue.latestAuthority?.token === activation.authorityToken
-								&& markdownDocumentQueue.sourceObservationSequence === activation.authorityEpoch
-								&& pendingProjectionActivations.get(requestId) === activation
-								&& projectionSession.hasPendingReloadRequest(requestId);
 							let accepted = applied
 								&& activationIsCurrent()
 								&& await isProjectionSourceCurrent(activation.sourceText)
 								&& activationIsCurrent();
 							let ownerCommitConflict = false;
+							let sourceAdmissionThrew = false;
 							if (accepted && activation.kustoSourceAdmission) {
 								let sourceAdmissionCommitted = false;
 								try {
@@ -4930,7 +5377,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 													activation.generation,
 													activation.sourceText,
 													activation.owner,
-													activation.authorityToken,
+													activation.authorityToken, activation.policyFingerprint ?? '',
 												);
 												return true;
 											};
@@ -4943,13 +5390,15 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 									);
 								} catch {
 									sourceAdmissionCommitted = false;
+									sourceAdmissionThrew = true;
+									activation.retryBudget.remainingAttempts = 0;
 								}
 								const stillCurrent = activationIsCurrent();
 								accepted = sourceAdmissionCommitted;
 								if (!sourceAdmissionCommitted) activation.kustoSourceAdmission.discard();
-								ownerCommitConflict = !sourceAdmissionCommitted && stillCurrent;
+								ownerCommitConflict = !sourceAdmissionCommitted && stillCurrent && !sourceAdmissionThrew;
 							}
-							const retryEligible = applied
+							const retryEligible = !accepted && applied && !sourceAdmissionThrew
 								&& !outerDisposed
 								&& activation.generation === postDocumentGeneration
 								&& markdownDocumentQueue.latestAuthority?.token === activation.authorityToken
@@ -4966,17 +5415,20 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							if (!accepted && activation.kustoSourceAdmission && !ownerCommitConflict) {
 								activation.kustoSourceAdmission.discard();
 							}
-							const completed = projectionSession.completeReload(
-								requestId,
-								accepted,
-								Number((message as any).editRevision),
-							);
-							pendingProjectionActivations.delete(requestId);
+							const completed = accepted
+								? projectionSession.completeReload(requestId, true, acknowledgement.editRevision)
+								: projectionSession.failReload(requestId);
+							traceDocumentReadiness('reload.settled', {
+								generation: activation.generation, accepted, completed, sourceAdmissionThrew,
+								ownerCommitConflict, retryEligible, retrySourceCurrent,
+								remainingAttempts: activation.retryBudget.remainingAttempts,
+								elapsedMs: performance.now() - activationStartedAt,
+							});
 							if (!completed) {
 								if (ownerCommitConflict) activation.kustoSourceAdmission?.abandonRetry();
 								return;
 							}
-							if ((message as any).markdownCommandBarrierSupported === true) {
+							if (acknowledgement.markdownCommandBarrierSupported === true) {
 								markdownCommandBarrierSupported = true;
 							}
 							if (accepted) {
@@ -5004,6 +5456,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 											void retry.then(settleRetry, () => { settleRetry(false); });
 											void recovery.promise.finally(() => {
 												if (pendingProjectionRecovery === recovery) pendingProjectionRecovery = undefined;
+												notifyDocumentReadiness();
 											});
 										};
 								} else {
@@ -5016,7 +5469,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 										} : undefined)
 										: (activation.sourceChangeFollowUpAvailable ? {
 											forceReload: true,
-											retryBudget: createKqlxProjectionAttemptBudget(),
+											retryBudget: createKqlxProjectionAttemptBudget(activation.retryBudget.absoluteCommitDeadline),
 											sourceChangeFollowUpAvailable: false,
 										} : undefined);
 									if (retryOptions) {
@@ -5028,6 +5481,17 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							} else if (ownerCommitConflict && activation.kustoSourceAdmission) {
 								activation.kustoSourceAdmission.abandonRetry();
 							}
+							} catch {
+								traceDocumentReadiness('reload.failure', {
+									generation: activation.generation, elapsedMs: performance.now() - activationStartedAt,
+								});
+								activation.retryBudget.remainingAttempts = 0;
+								projectionSession.failReload(requestId);
+								activation.kustoSourceAdmission?.discard();
+								activation.kustoSourceAdmission?.abandonRetry();
+							} finally {
+								if (pendingProjectionActivations.get(requestId) === activation) pendingProjectionActivations.delete(requestId);
+							}
 						});
 						projectionActivationTail = activationOperation.then(() => undefined, () => undefined);
 						await activationOperation;
@@ -5035,6 +5499,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					return;
 				}
 				case 'requestDocument':
+					KqlxEditorProvider.initializedPanels.delete(webviewPanel);
+					KqlxEditorProvider.notifyPanelChange(KqlxEditorProvider.panelKey(document.uri));
 					perfMark('host.kqlx.requestDocument.received');
 					fileOpenTrace.mark('requestDocument.received');
 					// Re-send mode/capabilities in response to a request (the webview is guaranteed to be listening).
@@ -5044,13 +5510,22 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const expectedEditRevision = Number((message as any).expectedEditRevision);
 					const hasExpectedEditRevision = Number.isSafeInteger(expectedEditRevision)
 						&& expectedEditRevision >= 0;
-					const delivered = webviewInitialized || hasExpectedEditRevision
-						? await postDocument({
+					let delivered: boolean;
+					if (webviewInitialized || hasExpectedEditRevision) {
+						delivered = await postDocument({
 							forceReload: true,
+							retryBudget: createKqlxProjectionAttemptBudget(operationDeadline),
 							requestId: String((message as any).requestId || '') || undefined,
 							...(hasExpectedEditRevision ? { expectedEditRevision } : {}),
-						})
-						: await ensureInitialDocument();
+						});
+					} else {
+						const requestId = (message as any).requestId;
+						const freshRequestId = typeof requestId === 'string' && requestId.trim()
+							&& !initialProjectionRecoveryRequestIds.has(requestId)
+							&& initialProjectionRecoveryRequestIds.size < 64 ? requestId : undefined;
+						if (freshRequestId !== undefined) initialProjectionRecoveryRequestIds.add(freshRequestId);
+						delivered = await ensureInitialDocument(true, freshRequestId, operationDeadline);
+					}
 					if (outerDisposed) return;
 					webviewInitialized = delivered
 						|| activeProjectionGeneration >= requestGenerationFloor;
@@ -5982,12 +6457,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							markdownPersistenceLease?.settle();
 							if (userSaveRequested && !outerDisposed) {
 								try {
+									await waitForNativeSaves(false);
+									const failures = captureNativeSaveFailures();
 									if (!persistAccepted || acceptedSourceText !== document.getText()
 										|| (linkedSaveOutcome && !await linkedSaveOutcome)
 										|| !await document.save()) {
 										throw new Error('The current editor snapshot was not saved.');
 										}
-									await waitForNativeSaveCompletion();
+									await waitForNativeSaves(true, failures);
 								} catch (error) {
 									getWorkbenchLogger().warn('[kusto] Explicit document Save failed:', error instanceof Error ? error : String(error));
 									void vscode.window.showErrorMessage('Kusto Workbench could not save the current document. Check its state and try again.');

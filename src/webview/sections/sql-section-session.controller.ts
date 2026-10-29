@@ -179,7 +179,7 @@ export class SqlSectionSessionController implements ReactiveController, SqlSecti
 			});
 		}
 		const authored = detail.source === 'user' || detail.source === 'tool';
-		effects.persist(authored ? 'sql-target-selection' : undefined, authored);
+		if (authored) effects.persist('sql-target-selection', true);
 	}
 
 	handleDatabaseChanged(detail: SqlDatabaseChangedDetail): void {
@@ -220,7 +220,7 @@ export class SqlSectionSessionController implements ReactiveController, SqlSecti
 			}
 		}
 		const authored = detail.source === 'user' || detail.source === 'tool';
-		effects.persist(authored ? 'sql-target-selection' : undefined, authored);
+		if (authored) effects.persist('sql-target-selection', true);
 	}
 
 	handleRefreshDatabases(detail: { boxId?: string; connectionId?: string }): void {

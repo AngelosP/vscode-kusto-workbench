@@ -17,13 +17,13 @@ const DIST = join(__dirname, '..', 'dist');
 
 // ── Baselines (KB) — synchronized with the integrated production gate ──
 const BASELINES = {
-	'extension.js':                                        2464,
+	'extension.js':                                        2493,
 	'workbench-mcp-bridge.js':                              431,
 	'mcp-connector/connector.cjs':                           700,
 	'external-mcp-provider.js':                               80,
 	'external-mcp-setup.js':                                  150,
-	'webview/webview.bundle.js':                           3288,
-	'webview/md-editor.bundle.js':                          296,
+	'webview/webview.bundle.js':                           3299,
+	'webview/md-editor.bundle.js':                          306,
 	'webview/tutorial-viewer.bundle.js':                    154,
 	'webview/first-launch-setup.bundle.js':                  41,
 	'queryEditor/vendor/echarts/echarts.webview.js':        646,

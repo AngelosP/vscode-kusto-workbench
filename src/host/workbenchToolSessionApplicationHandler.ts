@@ -37,9 +37,11 @@ export interface WorkbenchFileCloseLifecycle {
 	save(): Promise<void>;
 }
 
+export type KustoExecutionPreparation = (onReady: (isCurrent: () => boolean) => Promise<boolean>) => Promise<boolean>;
+
 export interface WorkbenchToolSessionOrchestrator {
 	connect(
-		poster: (message: unknown) => unknown,
+		poster: (message: unknown, signal?: AbortSignal, isCurrent?: () => boolean) => unknown,
 		stateGetter: () => Promise<WorkbenchToolSection[] | undefined>,
 		schemaRefresher: (clusterUrl: string, connectionId: string) => Promise<WorkbenchToolSchemaRefreshResult>,
 		documentUri?: string,
@@ -47,8 +49,15 @@ export interface WorkbenchToolSessionOrchestrator {
 		sqlOwnerResolver?: (sectionId: string) => SqlReadyToolOwner | undefined,
 		closeLifecycle?: WorkbenchFileCloseLifecycle,
 		waitForMutationReady?: () => Promise<boolean>,
+		reactivate?: () => Promise<boolean>,
+		waitForReadReady?: () => Promise<boolean>,
+		captureStateAdmission?: () => (() => boolean),
+		prepareKustoExecution?: KustoExecutionPreparation,
+		prepareSqlExecution?: () => Promise<void>,
+		captureSqlSectionAdmission?: (sectionId: string) => (() => boolean),
 	): number;
 	activateConnection(token: number): boolean;
+	isConnectionCurrent?(token: number): boolean;
 	disconnectIfOwner(token: number): void;
 	handleKustoExecutionStarted(requestId: string, owner: KustoExecutionRequestIdentity): void;
 	handleDevelopmentNoteMutationResponse(message: unknown): boolean;
@@ -76,15 +85,21 @@ export interface WorkbenchToolSessionApplicationHandler {
 
 export type WorkbenchToolSessionApplicationHandlerOptions = {
 	getOrchestrator(): WorkbenchToolSessionOrchestrator | undefined;
-	postMessage(message: unknown): boolean | PromiseLike<boolean>;
+	postMessage(message: unknown, signal?: AbortSignal, isCurrent?: () => boolean): boolean | PromiseLike<boolean>;
 	isAvailable(): boolean;
 	getDocumentUri(): string | undefined;
 	getCloseLifecycle?(): WorkbenchFileCloseLifecycle | undefined;
 	getMutationReadiness?(): (() => Promise<boolean>) | undefined;
+	reactivate?(): Promise<boolean>;
+	waitForReadReady?(): Promise<boolean>;
+	captureStateAdmission?(): () => boolean;
+	prepareKustoExecution?: KustoExecutionPreparation;
+	prepareSqlExecution?(): Promise<void>;
 	connectionManager: Pick<ConnectionManager, 'getConnections'>;
 	schema: Pick<SchemaService, 'refreshSchemaForTools'>;
 	sqlLifecycle: Pick<SqlEditorLifecycleCoordinator,
-		'getConnectionId' | 'getFirstConnectionId' | 'getReadyToolOwner' | 'reconcileComparisonOwners'>;
+		'getConnectionId' | 'getFirstConnectionId' | 'getReadyToolOwner' | 'reconcileComparisonOwners'
+		| 'getSectionInstanceId' | 'getGeneration'>;
 };
 
 export class HostWorkbenchToolSessionApplicationHandler
@@ -95,6 +110,8 @@ implements WorkbenchToolSessionApplicationHandler {
 	private readonly stateResponseResolvers = new Map<string, {
 		resolve: (sections: unknown[] | undefined) => void;
 		timer: ReturnType<typeof setTimeout>;
+		controller: AbortController;
+		isCurrent: () => boolean;
 	}>();
 
 	constructor(private readonly options: WorkbenchToolSessionApplicationHandlerOptions) {}
@@ -108,7 +125,8 @@ implements WorkbenchToolSessionApplicationHandler {
 		}
 		this.disconnect();
 		const token = orchestrator.connect(
-			message => this.options.postMessage(message),
+			(message, signal, isCurrent) => isCurrent ? this.options.postMessage(message, signal, isCurrent)
+				: signal ? this.options.postMessage(message, signal) : this.options.postMessage(message),
 			async () => {
 				const sections = await this.requestSectionsFromWebview();
 				return sections as WorkbenchToolSection[] | undefined;
@@ -125,6 +143,19 @@ implements WorkbenchToolSessionApplicationHandler {
 			},
 			this.options.getCloseLifecycle?.(),
 			this.options.getMutationReadiness?.(),
+			this.options.reactivate,
+			this.options.waitForReadReady,
+			this.options.captureStateAdmission,
+			this.options.prepareKustoExecution,
+			this.options.prepareSqlExecution,
+			sectionId => {
+				const id = String(sectionId || '').trim();
+				const instance = this.options.sqlLifecycle.getSectionInstanceId(id);
+				const generation = this.options.sqlLifecycle.getGeneration(id);
+				if (!id || !instance || !Number.isSafeInteger(generation) || generation < 0) return () => false;
+				return () => !this.disposed && this.options.sqlLifecycle.getSectionInstanceId(id) === instance
+					&& this.options.sqlLifecycle.getGeneration(id) === generation;
+			},
 		);
 		this.connectedOrchestrator = orchestrator;
 		this.connectionToken = token;
@@ -172,17 +203,33 @@ implements WorkbenchToolSessionApplicationHandler {
 		targetConnectionId?: string,
 	): Promise<unknown[] | undefined> {
 		if (this.disposed || !this.options.isAvailable()) return Promise.resolve(undefined);
+		if (this.options.waitForReadReady) {
+			const token = this.connectionToken;
+			const orchestrator = this.connectedOrchestrator;
+			return this.options.waitForReadReady().then(ready => ready && !this.disposed
+				&& this.options.isAvailable() && token === this.connectionToken && orchestrator === this.connectedOrchestrator
+				? this.postStateRequest(purpose, targetConnectionId) : undefined, () => undefined);
+		}
+		return this.postStateRequest(purpose, targetConnectionId);
+	}
 
+	private postStateRequest(purpose?: 'schema-refresh', targetConnectionId?: string): Promise<unknown[] | undefined> {
 		const requestId = `state_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 		const request = createRequestToolStateMessage(requestId, purpose, targetConnectionId);
 		if (!request.ok) return Promise.resolve(undefined);
 		return new Promise(resolve => {
+			const controller = new AbortController();
+			const token = this.connectionToken;
+			const orchestrator = this.connectedOrchestrator;
+			const admission = this.options.captureStateAdmission?.() ?? (() => true);
+			const isCurrent = () => token === this.connectionToken && orchestrator === this.connectedOrchestrator
+				&& (token === undefined || orchestrator?.isConnectionCurrent?.(token) !== false) && admission();
 			const timer = setTimeout(() => this.settleStateRequest(requestId, undefined), 5000);
-			this.stateResponseResolvers.set(requestId, { resolve, timer });
+			this.stateResponseResolvers.set(requestId, { resolve, timer, controller, isCurrent });
 
 			let delivery: boolean | PromiseLike<boolean>;
 			try {
-				delivery = this.options.postMessage(request.value);
+				delivery = this.options.postMessage(request.value, controller.signal);
 			} catch {
 				this.settleStateRequest(requestId, undefined);
 				return;
@@ -224,6 +271,8 @@ implements WorkbenchToolSessionApplicationHandler {
 		if (!pending) return;
 		this.stateResponseResolvers.delete(requestId);
 		clearTimeout(pending.timer);
+		pending.controller.abort();
+		if (this.disposed || !this.options.isAvailable() || !pending.isCurrent()) sections = undefined;
 		if (sections) this.options.sqlLifecycle.reconcileComparisonOwners(sections);
 		pending.resolve(sections);
 	}
@@ -269,6 +318,9 @@ implements WorkbenchToolSessionApplicationHandler {
 	}
 
 	private disconnect(): void {
+		for (const requestId of [...this.stateResponseResolvers.keys()]) {
+			this.settleStateRequest(requestId, undefined);
+		}
 		if (this.connectedOrchestrator && this.connectionToken !== undefined) {
 			this.connectedOrchestrator.disconnectIfOwner(this.connectionToken);
 		}

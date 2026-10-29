@@ -284,6 +284,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 
 	private _editorApi: ToastEditorApi | null = null;
 	private _viewerApi: ToastViewerApi | null = null;
+	private _sourceText: string | undefined;
 	private _userResized = false;
 	private _resizeObserver: ResizeObserver | null = null;
 	private _isNarrow = false;
@@ -302,6 +303,9 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 	private _removeMarkdownCursorStatusListeners: (() => void) | null = null;
 	private _lastMarkdownCursorStatusKey = '';
 	private _markdownMouseInside = false;
+	private _editorInitRetryCount = 0;
+	private _editorInitRetryGeneration = 0;
+	private _editorInitRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// ── Theme observer singleton ─────────────────────────────────────────────
 
@@ -314,12 +318,15 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 		super.connectedCallback();
 		document.addEventListener('mousedown', this._onDocumentMouseDown);
 		KwMarkdownSection._startThemeObserver();
+		this._resetEditorInitRetryState();
+		if (this.hasUpdated && !this._editorApi) this._initEditor();
 	}
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
 		document.removeEventListener('mousedown', this._onDocumentMouseDown);
 		document.body.classList.remove('kw-md-wysiwyg-mode');
+		this._cancelEditorInitRetry();
 		this._cleanupDropdownScrollDismiss();
 		this._cleanupResizeObserver();
 		this._destroyScrollbars();
@@ -500,6 +507,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 
 	/** Initialize the TOAST UI editor in the slotted light-DOM container. */
 	private _initEditor(): void {
+		if (!this.isConnected || (this.id && document.getElementById(this.id) !== this)) return;
 		const editorContainer = this._getEditorContainer();
 		if (!editorContainer) return;
 
@@ -526,14 +534,11 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 		editorContainer.style.minHeight = '0';
 		editorContainer.style.minWidth = '0';
 
-		// Resolve initial text: prefer pending buffer, then attribute.
-		let initialValue = this.initialText || '';
+		const hadSourceText = this._sourceText !== undefined;
+		const initialValue = this._getSourceText();
+		this._sourceText = initialValue;
 		try {
-			const pending = pState.pendingMarkdownTextByBoxId?.[this.boxId];
-			if (typeof pending === 'string') {
-				initialValue = pending;
-				try { delete pState.pendingMarkdownTextByBoxId[this.boxId]; } catch (e) { console.error('[kusto]', e); }
-			}
+			delete pState.pendingMarkdownTextByBoxId[this.boxId];
 		} catch (e) { console.error('[kusto]', e); }
 
 		// Clean mount point.
@@ -541,14 +546,94 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 
 		const isLikelyDark = KwMarkdownSection._isDarkTheme();
 
+		let toastEditor: any = null;
+		let api: ToastEditorApi | null = null;
+		let initializingEditor = true;
+		let retired = false;
+		let normalizedMarkdown = '';
+		let operation: { baseline: string; event?: Event; finishing: boolean } | null = null;
+		const isCurrentEditor = () => !retired && this.isConnected && this._editorApi === api
+			&& this._getEditorContainer() === editorContainer
+			&& (!this.id || document.getElementById(this.id) === this);
+		const readMarkdown = (): string => {
+			try { return toastEditor?.getMarkdown?.() ?? normalizedMarkdown; }
+			catch { return normalizedMarkdown; }
+		};
+		const beginOperation = (baseline = readMarkdown(), event?: Event) => {
+			if (!isCurrentEditor() || initializingEditor || this._switchingEditorMode
+				|| pState.applyingHostMarkdownProjection) return null;
+			if (operation?.event && operation.event.eventPhase === Event.NONE && operation.event !== event) operation = null;
+			operation ??= { baseline, event, finishing: false };
+			return operation;
+		};
+		const currentOperation = () => {
+			if (operation?.event && operation.event.eventPhase === Event.NONE && !operation.finishing) operation = null;
+			return operation;
+		};
+		const captureAuthoredText = (expected: typeof operation) => {
+			if (!expected || operation !== expected) return;
+			if (!isCurrentEditor() || initializingEditor || this._switchingEditorMode
+				|| pState.applyingHostMarkdownProjection) return;
+			normalizedMarkdown = readMarkdown();
+			if (normalizedMarkdown === expected.baseline) return;
+			expected.baseline = normalizedMarkdown;
+			this._sourceText = normalizedMarkdown;
+			this._schedulePersist();
+			this._scheduleMdAutoExpand();
+		};
+		const finishOperation = (expected: typeof operation) => {
+			if (!expected || operation !== expected) return;
+			captureAuthoredText(expected);
+			if (operation === expected) operation = null;
+		};
+		const queueFinish = (expected: typeof operation) => {
+			if (!expected || operation !== expected || expected.finishing) return;
+			expected.finishing = true;
+			queueMicrotask(() => queueMicrotask(() => finishOperation(expected)));
+		};
+		const runAuthoredOperation = (action: () => void) => {
+			const expected = beginOperation();
+			if (!expected) return;
+			try { action(); }
+			finally { finishOperation(expected); }
+		};
+		const onAuthoringEvent = (event: Event) => {
+			if (!event.isTrusted || !(event.target instanceof Element)) return;
+			const editingSurface = event.target.closest('.ProseMirror, [contenteditable="true"]');
+			const control = event.target.closest('.toastui-editor-defaultUI-toolbar, .toastui-editor-dropdown-toolbar, .toastui-editor-popup, .toastui-context-menu');
+			if (!editingSurface && !control) return;
+			if (event.type === 'pointerdown' || event.type === 'mousedown' || event.type === 'click') {
+				if (!control) return;
+			}
+			if (event instanceof KeyboardEvent) {
+				const key = event.key.toLowerCase();
+				const editingKey = ['enter', 'backspace', 'delete', 'tab'].includes(key)
+					|| (!!control && key === ' ')
+					|| ((event.ctrlKey || event.metaKey) && ['b', 'i', 'u', 'e', 'k', 'l', 'd', 'z', 'y', '[', ']', '1', '2', '3', '4', '5', '6', '7', '8', '9'].includes(key));
+				if (!editingKey) return;
+			}
+			beginOperation(event.type === 'input' ? normalizedMarkdown : readMarkdown(), event);
+		};
+		const onAuthoringEventEnd = (event: Event) => {
+			if (operation?.event === event) queueFinish(operation);
+		};
+		const authoringEvents = ['beforeinput', 'input', 'paste', 'cut', 'drop', 'compositionstart', 'compositionend', 'keydown', 'pointerdown', 'mousedown', 'click', 'change'];
+		for (const event of authoringEvents) editorContainer.addEventListener(event, onAuthoringEvent, true);
+		const removeAuthoringListeners = () => {
+			for (const event of authoringEvents) {
+				editorContainer.removeEventListener(event, onAuthoringEvent, true);
+				editorContainer.removeEventListener(event, onAuthoringEventEnd);
+			}
+		};
+
 		// Build undo/redo buttons.
 		let toastEditorRef: any = null;
 		const undoButton = this._createToolbarButton('Undo', 'Undo (Ctrl+Z)',
 			'<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>',
-			() => { try { toastEditorRef?.getCurrentModeEditor?.()?.commands?.undo?.(); } catch (e) { console.error('[kusto]', e); } });
+			() => runAuthoredOperation(() => { try { toastEditorRef?.getCurrentModeEditor?.()?.commands?.undo?.(); } catch (e) { console.error('[kusto]', e); } }));
 		const redoButton = this._createToolbarButton('Redo', 'Redo (Ctrl+Y)',
 			'<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>',
-			() => { try { toastEditorRef?.getCurrentModeEditor?.()?.commands?.redo?.(); } catch (e) { console.error('[kusto]', e); } });
+			() => runAuthoredOperation(() => { try { toastEditorRef?.getCurrentModeEditor?.()?.commands?.redo?.(); } catch (e) { console.error('[kusto]', e); } }));
 
 		const toolbarItemsConfig: any[] = [];
 		if (undoButton && redoButton) {
@@ -565,8 +650,6 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 			['code', 'codeblock']
 		);
 
-		let toastEditor: any = null;
-		let initializingEditor = true;
 		try {
 			const editorOptions: any = {
 				el: editorContainer,
@@ -582,10 +665,10 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 				plugins: KwMarkdownSection._getToastUiPlugins(ToastEditor),
 				events: {
 					change: () => {
-						if (initializingEditor || this._switchingEditorMode) return;
-						this._schedulePersist();
-						this._scheduleMdAutoExpand();
+						if (initializingEditor || this._switchingEditorMode || !isCurrentEditor()) return;
+						captureAuthoredText(currentOperation());
 					},
+					command: () => finishOperation(currentOperation()),
 					afterPreviewRender: () => {
 						try { KwMarkdownSection._rewriteToastUiImages(editorContainer); } catch (e) { console.error('[kusto]', e); }
 					}
@@ -597,29 +680,38 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 			toastEditor = new ToastEditor(editorOptions);
 			toastEditorRef = toastEditor;
 		} catch (e) {
+			retired = true;
+			removeAuthoringListeners();
 			try { console.error('Failed to initialize TOAST UI Editor.', e); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
+		for (const event of authoringEvents) editorContainer.addEventListener(event, onAuthoringEventEnd);
+
 		// Install keyboard shortcut conflict resolution (same as legacy).
-		this._installKeyboardShortcuts(editorContainer, toastEditor);
+		const removeKeyboardShortcuts = this._installKeyboardShortcuts(editorContainer, toastEditor, runAuthoredOperation);
 
 		// Initial image rewrite pass.
 		try { KwMarkdownSection._rewriteToastUiImages(editorContainer); } catch (e) { console.error('[kusto]', e); }
 
 		// Build and store API.
-		const api: ToastEditorApi = {
-			getValue: () => {
-				try { return toastEditor?.getMarkdown?.() ?? ''; } catch { return ''; }
-			},
+		const capturedApi: ToastEditorApi = {
+			getValue: () => this._getSourceText(),
 			setValue: (value: string) => {
+				if (!isCurrentEditor()) return;
+				operation = null;
+				this._sourceText = value;
+				delete pState.pendingMarkdownTextByBoxId[this.boxId];
 				const wasInitializing = initializingEditor;
 				initializingEditor = true;
 				try {
-					toastEditor?.setMarkdown?.(String(value || ''));
+					toastEditor?.setMarkdown?.(value);
 					KwMarkdownSection._restoreBulletMarkers(toastEditor);
 				} catch (e) { console.error('[kusto]', e); }
-				finally { initializingEditor = wasInitializing; }
+				finally {
+					normalizedMarkdown = readMarkdown();
+					initializingEditor = wasInitializing;
+				}
 			},
 			layout: () => {
 				try {
@@ -631,12 +723,22 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 				} catch (e) { console.error('[kusto]', e); }
 			},
 			dispose: () => {
+				if (retired) return;
+				retired = true;
+				operation = null;
+				removeAuthoringListeners();
+				removeKeyboardShortcuts();
 				try { this._cleanupMarkdownCursorStatus(); } catch (e) { console.error('[kusto]', e); }
 				try { toastEditor?.destroy?.(); } catch (e) { console.error('[kusto]', e); }
 				try { editorContainer.textContent = ''; } catch (e) { console.error('[kusto]', e); }
+				try {
+					const win = window as any;
+					if (win.__kustoMarkdownEditors?.[this.boxId] === capturedApi) delete win.__kustoMarkdownEditors[this.boxId];
+				} catch (e) { console.error('[kusto]', e); }
 			},
 			_toastui: toastEditor
 		};
+		api = capturedApi;
 
 		this._editorApi = api;
 		this._installMarkdownCursorStatus(editorContainer);
@@ -654,13 +756,14 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 		try {
 			const latePending = pState.pendingMarkdownTextByBoxId?.[this.boxId];
 			if (typeof latePending === 'string') {
-				api.setValue(latePending);
+				if (!hadSourceText) api.setValue(latePending);
 				try { delete pState.pendingMarkdownTextByBoxId[this.boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
 		// Apply mode.
 		this._applyEditorMode();
+		normalizedMarkdown = readMarkdown();
 		initializingEditor = false;
 
 		// Apply pending reveal.
@@ -700,13 +803,32 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 		this._ensureWysiwygScrollbar(editorContainer);
 	}
 
-	private _editorInitRetryCount = 0;
+	private _cancelEditorInitRetry(): void {
+		this._editorInitRetryGeneration++;
+		if (!this._editorInitRetryTimer) return;
+		clearTimeout(this._editorInitRetryTimer);
+		this._editorInitRetryTimer = null;
+	}
+
+	private _resetEditorInitRetryState(): void {
+		this._cancelEditorInitRetry();
+		this._editorInitRetryCount = 0;
+	}
+
 	private _retryEditorInit(): void {
+		if (this._editorInitRetryTimer) return;
 		this._editorInitRetryCount++;
 		const delays = [50, 250, 1000, 2000, 4000];
 		if (this._editorInitRetryCount > delays.length) return;
 		const delay = delays[this._editorInitRetryCount - 1];
-		setTimeout(() => { try { this._initEditor(); } catch (e) { console.error('[kusto]', e); } }, delay);
+		const generation = this._editorInitRetryGeneration;
+		this._editorInitRetryTimer = setTimeout(() => {
+			this._editorInitRetryTimer = null;
+			try {
+				if (generation !== this._editorInitRetryGeneration) return;
+				this._initEditor();
+			} catch (e) { console.error('[kusto]', e); }
+		}, delay);
 	}
 
 	// ── TOAST UI Viewer Init ──────────────────────────────────────────────────
@@ -835,7 +957,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 
 	// ── Keyboard shortcuts ────────────────────────────────────────────────────
 
-	private _installKeyboardShortcuts(container: HTMLElement, toastEditor: any): void {
+	private _installKeyboardShortcuts(container: HTMLElement, toastEditor: any, runAuthoredOperation: (action: () => void) => void): () => void {
 		const markdownFormattingKeys = new Set(['b', 'i', 'u', 'e', 'k', 'l', 'd']);
 
 		const isEditorFocused = () => {
@@ -851,7 +973,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 			} catch { return false; }
 		};
 
-		container.addEventListener('keydown', (ev: KeyboardEvent) => {
+		const onKeyDown = (ev: KeyboardEvent) => {
 			try {
 				const key = ev.key.toLowerCase();
 				const hasCtrlOrMeta = ev.ctrlKey || ev.metaKey;
@@ -877,32 +999,35 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 				// Ctrl+Z → undo
 				if (key === 'z' && !ev.shiftKey) {
 					ev.stopPropagation(); ev.stopImmediatePropagation(); ev.preventDefault();
-					try { toastEditor.getCurrentModeEditor?.()?.commands?.undo?.(); } catch (e) { console.error('[kusto]', e); }
+					runAuthoredOperation(() => { try { toastEditor.getCurrentModeEditor?.()?.commands?.undo?.(); } catch (e) { console.error('[kusto]', e); } });
 					return;
 				}
 				// Ctrl+Shift+Z → redo
 				if (key === 'z' && ev.shiftKey) {
 					ev.stopPropagation(); ev.stopImmediatePropagation(); ev.preventDefault();
-					try { toastEditor.getCurrentModeEditor?.()?.commands?.redo?.(); } catch (e) { console.error('[kusto]', e); }
+					runAuthoredOperation(() => { try { toastEditor.getCurrentModeEditor?.()?.commands?.redo?.(); } catch (e) { console.error('[kusto]', e); } });
 					return;
 				}
 				// Ctrl+Y → redo
 				if (key === 'y' && !ev.shiftKey) {
 					ev.stopPropagation(); ev.stopImmediatePropagation(); ev.preventDefault();
-					try { toastEditor.getCurrentModeEditor?.()?.commands?.redo?.(); } catch (e) { console.error('[kusto]', e); }
+					runAuthoredOperation(() => { try { toastEditor.getCurrentModeEditor?.()?.commands?.redo?.(); } catch (e) { console.error('[kusto]', e); } });
 					return;
 				}
 
-				// Formatting shortcuts.
-				if (markdownFormattingKeys.has(key)) {
-					ev.stopPropagation();
-				}
-				// Block cut/paste from reaching VS Code.
-				if (key === 'v' || key === 'x') {
-					ev.stopPropagation();
-				}
 			} catch (e) { console.error('[kusto]', e); }
-		}, true);
+		};
+		const onKeyDownBubble = (event: KeyboardEvent) => {
+			if (!(event.ctrlKey || event.metaKey) || !isEditorFocused()) return;
+			const key = event.key.toLowerCase();
+			if (markdownFormattingKeys.has(key) || key === 'v' || key === 'x') event.stopPropagation();
+		};
+		container.addEventListener('keydown', onKeyDown, true);
+		container.addEventListener('keydown', onKeyDownBubble);
+		return () => {
+			container.removeEventListener('keydown', onKeyDown, true);
+			container.removeEventListener('keydown', onKeyDownBubble);
+		};
 	}
 
 	// ── Toolbar button helper ─────────────────────────────────────────────────
@@ -994,7 +1119,10 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 			this._initViewerScrollbar();
 
 			// Auto-fit on entering Preview mode so user sees full rendered content.
-			const fit = () => { try { this.fitToContents(); } catch (e) { console.error('[kusto]', e); } };
+			const fit = () => {
+				if (!this.isConnected || this._mode !== 'preview') return;
+				try { this._fitToContents(false); } catch (e) { console.error('[kusto]', e); }
+			};
 			fit();
 			setTimeout(fit, 50);
 			setTimeout(fit, 150);
@@ -1637,10 +1765,15 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 	// ── Fit to contents ───────────────────────────────────────────────────────
 
 	public fitToContents(): void {
+		this._fitToContents(true);
+	}
+
+	private _fitToContents(persist: boolean): void {
 		const wrapper = this.shadowRoot?.getElementById('editor-wrapper');
 		if (!wrapper) return;
 
 		if (this._mode === 'preview') {
+			if (!persist && this._userResized) return;
 			// For preview, clear wrapper height and let content auto-size.
 			wrapper.style.height = '';
 			this._userResized = false;
@@ -1653,7 +1786,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 				const md = this._editorApi?.getValue() ?? '';
 				this._initViewer(md);
 			}
-			this._schedulePersist();
+			if (persist) this._schedulePersist();
 			return;
 		}
 
@@ -1911,9 +2044,18 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 
 	private _schedulePersist(): void {
 		try {
-			if (isHostOwnedMarkdownDocument()) requestHostOwnedMarkdownPatch(this._createDocumentState());
-			else _win.schedulePersist?.();
+			if (isHostOwnedMarkdownDocument()) {
+				if (pState.applyingHostMarkdownProjection || pState.restoreInProgress || !this.isConnected
+					|| (this.id && document.getElementById(this.id) !== this)) return;
+				requestHostOwnedMarkdownPatch(this._createDocumentState());
+			} else _win.schedulePersist?.();
 		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	private _getSourceText(): string {
+		if (this._sourceText !== undefined) return this._sourceText;
+		const pending = pState.pendingMarkdownTextByBoxId?.[this.boxId];
+		return typeof pending === 'string' ? pending : this.initialText;
 	}
 
 	/**
@@ -1929,17 +2071,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 	}
 
 	private _createDocumentState(): MarkdownSectionData {
-		let text = '';
-		if (this._editorApi) {
-			text = this._editorApi.getValue();
-		} else {
-			try {
-				const pending = pState.pendingMarkdownTextByBoxId;
-				if (pending && typeof pending[this.boxId] === 'string') {
-					text = pending[this.boxId];
-				}
-			} catch (e) { console.error('[kusto]', e); }
-		}
+		const text = this._editorApi?.getValue() ?? this._getSourceText();
 
 		const tab: 'edit' | 'preview' = this._mode === 'preview' ? 'preview' : 'edit';
 
@@ -1973,6 +2105,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 			window.__kustoMarkdownModeByBoxId = window.__kustoMarkdownModeByBoxId || {};
 			window.__kustoMarkdownModeByBoxId[this.boxId] = mode;
 			const text = section.text ?? '';
+			this._sourceText = text;
 			if (this._editorApi) this._editorApi.setValue(text);
 			else pState.pendingMarkdownTextByBoxId[this.boxId] = text;
 			if (section.editorHeightPx !== undefined) {
@@ -2020,14 +2153,16 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 
 	/** Get the markdown text from the TOAST UI editor. */
 	public getText(): string {
-		return this._editorApi?.getValue() ?? '';
+		return this._editorApi?.getValue() ?? this._getSourceText();
 	}
 
 	/** Set markdown text in the TOAST UI editor. */
 	public setText(text: string): void {
+		this._sourceText = text;
 		if (this._editorApi) {
 			this._editorApi.setValue(text);
 		}
+		if (isHostOwnedMarkdownDocument()) this._schedulePersist();
 	}
 
 	/** Set the title. */

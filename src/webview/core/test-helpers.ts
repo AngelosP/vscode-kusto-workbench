@@ -6883,6 +6883,7 @@ function e2eHtmlDocumentOwnershipSnapshot(sectionId: string, captureBaseline = f
 	}
 	const baseline = e2eHtmlOwnershipBaselines.get(id);
 	return {
+		documentUri: pState.documentUri,
 		config,
 		sourceId: sourceId || null,
 		currentArtifactId: sourceId ? getCurrentResultArtifact(sourceId)?.artifactId ?? null : null,

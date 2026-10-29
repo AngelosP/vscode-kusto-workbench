@@ -6,15 +6,25 @@ import {
 } from '../../../src/host/workbenchToolSessionApplicationHandler';
 import type { KustoConnection } from '../../../src/host/connectionManager';
 import type { IncomingWebviewMessage } from '../../../src/host/queryEditorTypes';
+import {
+	MainWebviewStartupGateway,
+	MAIN_WEBVIEW_DISPATCHER_READY_TYPE,
+} from '../../../src/host/mainWebviewStartupGateway';
 
 type ConnectArgs = Parameters<WorkbenchToolSessionOrchestrator['connect']>;
 
 function createHarness(options?: {
 	connections?: KustoConnection[];
 	isAvailable?: () => boolean;
-	postMessage?: (message: unknown) => boolean | PromiseLike<boolean>;
+	postMessage?: (message: unknown, signal?: AbortSignal, isCurrent?: () => boolean) => boolean | PromiseLike<boolean>;
 	activateConnection?: (token: number) => boolean;
+	isConnectionCurrent?: (token: number) => boolean;
 	closeLifecycle?: { inspectDirty(): Promise<boolean>; save(): Promise<void> };
+	reactivate?: () => Promise<boolean>;
+	waitForReadReady?: () => Promise<boolean>;
+	captureStateAdmission?: () => (() => boolean);
+	prepareKustoExecution?: ConnectArgs[11];
+	prepareSqlExecution?: ConnectArgs[12];
 }) {
 	const postMessage = vi.fn(options?.postMessage ?? (() => true));
 	const connect = vi.fn((..._args: ConnectArgs) => 73);
@@ -27,6 +37,7 @@ function createHarness(options?: {
 		connect,
 		activateConnection,
 		disconnectIfOwner,
+		...(options?.isConnectionCurrent ? { isConnectionCurrent: options.isConnectionCurrent } : {}),
 		handleKustoExecutionStarted,
 		handleDevelopmentNoteMutationResponse,
 		handleWebviewResponse,
@@ -40,6 +51,8 @@ function createHarness(options?: {
 		generation: 9,
 	};
 	const getReadyToolOwner = vi.fn(() => readyOwner);
+	const getSectionInstanceId = vi.fn<(sectionId: string) => string | undefined>(sectionId => `instance:${sectionId}`);
+	const getGeneration = vi.fn(() => readyOwner.generation);
 	const reconcileComparisonOwners = vi.fn();
 	const schemaResult = {
 		schemas: [{
@@ -56,12 +69,19 @@ function createHarness(options?: {
 		isAvailable: options?.isAvailable ?? (() => true),
 		getDocumentUri: () => 'file:///C:/workspace/exact.kqlx',
 		getCloseLifecycle: () => options?.closeLifecycle,
+		...(options?.reactivate ? { reactivate: options.reactivate } : {}),
+		...(options?.waitForReadReady ? { waitForReadReady: options.waitForReadReady } : {}),
+		...(options?.captureStateAdmission ? { captureStateAdmission: options.captureStateAdmission } : {}),
+		...(options?.prepareKustoExecution ? { prepareKustoExecution: options.prepareKustoExecution } : {}),
+		...(options?.prepareSqlExecution ? { prepareSqlExecution: options.prepareSqlExecution } : {}),
 		connectionManager: { getConnections: () => options?.connections ?? [] },
 		schema: { refreshSchemaForTools },
 		sqlLifecycle: {
 			getConnectionId,
 			getFirstConnectionId,
 			getReadyToolOwner,
+			getSectionInstanceId,
+			getGeneration,
 			reconcileComparisonOwners,
 		},
 	});
@@ -78,6 +98,8 @@ function createHarness(options?: {
 		getConnectionId,
 		getFirstConnectionId,
 		getReadyToolOwner,
+		getSectionInstanceId,
+		getGeneration,
 		reconcileComparisonOwners,
 		refreshSchemaForTools,
 		schemaResult,
@@ -114,7 +136,9 @@ describe('HostWorkbenchToolSessionApplicationHandler', () => {
 			inspectDirty: vi.fn(async () => false),
 			save: vi.fn(async () => undefined),
 		};
-		const harness = createHarness({ closeLifecycle });
+		const isCurrent = () => true;
+		const captureStateAdmission = vi.fn(() => isCurrent);
+		const harness = createHarness({ closeLifecycle, captureStateAdmission });
 
 		harness.handler.activate();
 
@@ -126,6 +150,9 @@ describe('HostWorkbenchToolSessionApplicationHandler', () => {
 		expect(poster(outbound)).toBe(true);
 		expect(harness.postMessage).toHaveBeenCalledOnce();
 		expect(harness.postMessage.mock.calls[0][0]).toBe(outbound);
+		expect(getConnectArgs(harness.connect)[10]).toBe(captureStateAdmission);
+		expect(poster(outbound, undefined, isCurrent)).toBe(true);
+		expect(harness.postMessage).toHaveBeenLastCalledWith(outbound, undefined, isCurrent);
 
 		expect(sqlConnectionResolver?.('  sql-section-exact  ')).toBe('connection:sql-section-exact');
 		expect(harness.getConnectionId).toHaveBeenCalledWith('sql-section-exact');
@@ -142,6 +169,105 @@ describe('HostWorkbenchToolSessionApplicationHandler', () => {
 		expect(harness.connect).toHaveBeenCalledOnce();
 		expect(harness.activateConnection).toHaveBeenCalledOnce();
 		expect(harness.activateConnection).toHaveBeenCalledWith(73);
+	});
+
+	it('forwards Kusto preparation lazily as the twelfth connection capability without shifting snapshot admission', async () => {
+		const isCurrent = () => true;
+		const onReady = vi.fn(async () => true);
+		const prepareKustoExecution = vi.fn<NonNullable<ConnectArgs[11]>>(async callback => callback(isCurrent));
+		const captureStateAdmission = vi.fn(() => () => true);
+		const harness = createHarness({ prepareKustoExecution, captureStateAdmission });
+		harness.handler.activate();
+		harness.handler.activate();
+		const args = getConnectArgs(harness.connect);
+		expect(args[10]).toBe(captureStateAdmission);
+		expect(args[11]).toBe(prepareKustoExecution);
+		expect(prepareKustoExecution).not.toHaveBeenCalled();
+		await expect(args[11]!(onReady)).resolves.toBe(true);
+		expect(prepareKustoExecution).toHaveBeenCalledOnce();
+		expect(prepareKustoExecution).toHaveBeenCalledWith(onReady);
+		expect(onReady).toHaveBeenCalledExactlyOnceWith(isCurrent);
+		harness.handler.dispose();
+	});
+
+	it('appends lazy SQL installation as the thirteenth capability without changing previous callbacks', async () => {
+		const captureStateAdmission = vi.fn(() => () => true);
+		const prepareKustoExecution = vi.fn<NonNullable<ConnectArgs[11]>>(async () => true);
+		const prepareSqlExecution = vi.fn(async () => undefined);
+		const harness = createHarness({ captureStateAdmission, prepareKustoExecution, prepareSqlExecution });
+		harness.handler.activate();
+		harness.handler.activate();
+		const args = getConnectArgs(harness.connect);
+		expect(args).toHaveLength(14);
+		expect(args[10]).toBe(captureStateAdmission);
+		expect(args[11]).toBe(prepareKustoExecution);
+		expect(args[12]).toBe(prepareSqlExecution);
+		expect(args[13]).toEqual(expect.any(Function));
+		expect(prepareSqlExecution).not.toHaveBeenCalled();
+		await expect(args[12]!()).resolves.toBeUndefined();
+		expect(prepareSqlExecution).toHaveBeenCalledExactlyOnceWith();
+		expect(prepareKustoExecution).not.toHaveBeenCalled();
+		harness.handler.dispose();
+	});
+
+	it.each([0, 9, Number.MAX_SAFE_INTEGER])('captures SQL section admission at generation %s without a ready-owner dependency', generation => {
+		const harness = createHarness();
+		harness.getGeneration.mockReturnValue(generation);
+		harness.handler.activate();
+		expect(harness.getSectionInstanceId).not.toHaveBeenCalled();
+		expect(harness.getGeneration).not.toHaveBeenCalled();
+		const capture = getConnectArgs(harness.connect)[13]!;
+		const isCurrent = capture('  sql-pending  ');
+		expect(harness.getSectionInstanceId).toHaveBeenCalledExactlyOnceWith('sql-pending');
+		expect(harness.getGeneration).toHaveBeenCalledExactlyOnceWith('sql-pending');
+		expect(isCurrent()).toBe(true);
+		expect(harness.getReadyToolOwner).not.toHaveBeenCalled();
+		harness.getSectionInstanceId.mockReturnValue('replacement-instance');
+		expect(isCurrent()).toBe(false);
+		const replacementCurrent = capture('sql-pending');
+		expect(replacementCurrent()).toBe(true);
+		harness.getGeneration.mockReturnValue(generation === 0 ? 1 : 0);
+		expect(replacementCurrent()).toBe(false);
+		const beforeDisposal = capture('sql-pending');
+		expect(beforeDisposal()).toBe(true);
+		harness.handler.dispose();
+		expect(beforeDisposal()).toBe(false);
+	});
+
+	it.each(['missing instance', 'empty instance', 'blank section', 'negative generation', 'fractional generation',
+		'nonfinite generation', 'unsafe generation'])(
+		'permanently rejects SQL section admission captured with %s', invalid => {
+		const harness = createHarness();
+		if (invalid === 'missing instance') harness.getSectionInstanceId.mockReturnValue(undefined);
+		if (invalid === 'empty instance') harness.getSectionInstanceId.mockReturnValue('');
+		if (invalid === 'negative generation') harness.getGeneration.mockReturnValue(-1);
+		if (invalid === 'fractional generation') harness.getGeneration.mockReturnValue(0.5);
+		if (invalid === 'nonfinite generation') harness.getGeneration.mockReturnValue(Number.NaN);
+		if (invalid === 'unsafe generation') harness.getGeneration.mockReturnValue(Number.MAX_SAFE_INTEGER + 1);
+		harness.handler.activate();
+		const capture = getConnectArgs(harness.connect)[13]!;
+		const isCurrent = capture(invalid === 'blank section' ? '   ' : 'sql-pending');
+		expect(isCurrent()).toBe(false);
+		harness.getSectionInstanceId.mockReturnValue('later-instance');
+		harness.getGeneration.mockReturnValue(0);
+		expect(isCurrent()).toBe(false);
+		expect(harness.getSectionInstanceId).toHaveBeenCalledTimes(1);
+		expect(harness.getGeneration).toHaveBeenCalledTimes(1);
+		expect(capture('sql-pending')()).toBe(true);
+		harness.handler.dispose();
+	});
+
+	it('supplies exact-panel recovery to explicit activation without starting it during visibility activation', async () => {
+		const reactivate = vi.fn(async () => false);
+		const harness = createHarness({ reactivate });
+		harness.handler.activate();
+		harness.handler.activate();
+		expect(reactivate).not.toHaveBeenCalled();
+		const connectedRecovery = (getConnectArgs(harness.connect) as any)[8];
+		expect(connectedRecovery).toBe(reactivate);
+		await expect(connectedRecovery()).resolves.toBe(false);
+		expect(reactivate).toHaveBeenCalledOnce();
+		harness.handler.dispose();
 	});
 
 	it('reconnects when reactivation finds that its cached bridge token was lost', () => {
@@ -331,6 +457,158 @@ describe('HostWorkbenchToolSessionApplicationHandler', () => {
 
 		const rejected = createHarness({ postMessage: () => Promise.reject(new Error('transport failed')) });
 		await expect(rejected.handler.requestSectionsFromWebview()).resolves.toBeUndefined();
+	});
+
+	it('never dispatches an expired snapshot after the cold dispatcher becomes ready', async () => {
+		vi.useFakeTimers();
+		let receive: ((message: unknown) => unknown) | undefined;
+		const posted = vi.fn(() => Promise.resolve(true));
+		const gateway = new MainWebviewStartupGateway<IncomingWebviewMessage>({
+			panel: {
+				webview: {
+					postMessage: posted,
+					onDidReceiveMessage: (handler: (message: unknown) => unknown) => {
+						receive = handler;
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: () => ({ dispose() {} }),
+			} as never,
+			admitInbound: input => input as IncomingWebviewMessage,
+		});
+		const harness = createHarness({ postMessage: (message, signal) => gateway.postMessage(message, signal) });
+		try {
+			const readiness = gateway.waitForDispatcherReady();
+			const pending = harness.handler.requestSectionsFromWebview('schema-refresh', 'connection-expired');
+			const expiredRequest = getLastStateRequest(harness.postMessage);
+			let settled = false;
+			void pending.then(() => { settled = true; });
+
+			await vi.advanceTimersByTimeAsync(4_999);
+			expect(settled).toBe(false);
+			expect(posted).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(pending).resolves.toBeUndefined();
+			expect(harness.reconcileComparisonOwners).not.toHaveBeenCalled();
+
+			await receive?.({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'runtime-after-timeout' });
+			await expect(readiness).resolves.toBe(true);
+			expect(posted).not.toHaveBeenCalledWith(expiredRequest);
+			expect(posted).not.toHaveBeenCalled();
+
+			const fresh = harness.handler.requestSectionsFromWebview();
+			const freshRequest = getLastStateRequest(harness.postMessage);
+			expect(posted).toHaveBeenCalledExactlyOnceWith(freshRequest);
+			await harness.handler.handleMessage({
+				type: 'toolStateResponse', requestId: freshRequest.requestId,
+				sections: [{ id: 'current-section', type: 'query' }],
+			});
+			await expect(fresh).resolves.toEqual([{ id: 'current-section', type: 'query' }]);
+			expect(harness.reconcileComparisonOwners).toHaveBeenCalledOnce();
+		} finally {
+			harness.handler.dispose();
+			gateway.dispose();
+		}
+	});
+
+	it('retires prior snapshot authority before reconnecting its registered token', async () => {
+		const harness = createHarness({ activateConnection: () => false });
+		harness.handler.activate();
+		const pending = harness.handler.requestSectionsFromWebview();
+		const request = getLastStateRequest(harness.postMessage);
+
+		harness.handler.activate();
+		await harness.handler.handleMessage({
+			type: 'toolStateResponse', requestId: request.requestId,
+			sections: [{ id: 'retired-owner', type: 'sql' }],
+		});
+
+		await expect(pending).resolves.toBeUndefined();
+		expect(harness.reconcileComparisonOwners).not.toHaveBeenCalled();
+		expect(harness.connect).toHaveBeenCalledTimes(2);
+		expect(harness.disconnectIfOwner).toHaveBeenCalledWith(73);
+		harness.handler.dispose();
+	});
+
+	it('rejects an unavailable snapshot owner before SQL reconciliation', async () => {
+		let available = true;
+		const harness = createHarness({ isAvailable: () => available });
+		const pending = harness.handler.requestSectionsFromWebview();
+		const request = getLastStateRequest(harness.postMessage);
+		available = false;
+
+		await harness.handler.handleMessage({
+			type: 'toolStateResponse', requestId: request.requestId,
+			sections: [{ id: 'unavailable-owner', type: 'sql' }],
+		});
+
+		await expect(pending).resolves.toBeUndefined();
+		expect(harness.reconcileComparisonOwners).not.toHaveBeenCalled();
+		harness.handler.dispose();
+	});
+
+	it('waits for read readiness before starting the unchanged snapshot deadline', async () => {
+		vi.useFakeTimers();
+		let ready!: (value: boolean) => void;
+		const readiness = new Promise<boolean>(resolve => { ready = resolve; });
+		const waitForReadReady = vi.fn(() => readiness);
+		const harness = createHarness({ waitForReadReady });
+		const pending = harness.handler.requestSectionsFromWebview();
+		try {
+			await vi.advanceTimersByTimeAsync(5_200);
+			expect(waitForReadReady).toHaveBeenCalledOnce();
+			expect(harness.postMessage).not.toHaveBeenCalled();
+			ready(true);
+			await vi.advanceTimersByTimeAsync(0);
+			const request = getLastStateRequest(harness.postMessage);
+			expect(request).toBeTruthy();
+			await vi.advanceTimersByTimeAsync(4_999);
+			expect(harness.reconcileComparisonOwners).not.toHaveBeenCalled();
+			await harness.handler.handleMessage({ type: 'toolStateResponse', requestId: request.requestId, sections: [] });
+			await expect(pending).resolves.toEqual([]);
+			expect(harness.reconcileComparisonOwners).toHaveBeenCalledExactlyOnceWith([]);
+		} finally {
+			ready(false);
+			harness.handler.dispose();
+		}
+	});
+
+	it('checks captured runtime and projection admission before SQL effects', async () => {
+		let epoch = 1;
+		const harness = createHarness({ captureStateAdmission: () => {
+			const captured = epoch;
+			return () => epoch === captured;
+		} });
+		const pending = harness.handler.requestSectionsFromWebview();
+		const request = getLastStateRequest(harness.postMessage);
+		epoch++;
+		await harness.handler.handleMessage({
+			type: 'toolStateResponse', requestId: request.requestId, sections: [{ type: 'sql', id: 'old-runtime' }],
+		});
+		await expect(pending).resolves.toBeUndefined();
+		expect(harness.reconcileComparisonOwners).not.toHaveBeenCalled();
+		harness.handler.dispose();
+	});
+
+	it('rejects a registry-retired snapshot without requiring handler reactivation', async () => {
+		let registered = true;
+		const isConnectionCurrent = vi.fn(() => registered);
+		const harness = createHarness({ isConnectionCurrent });
+		harness.handler.activate();
+		const pending = harness.handler.requestSectionsFromWebview();
+		const request = getLastStateRequest(harness.postMessage);
+		const signal = harness.postMessage.mock.calls[0][1];
+		registered = false;
+
+		await harness.handler.handleMessage({
+			type: 'toolStateResponse', requestId: request.requestId, sections: [{ type: 'sql', id: 'registry-retired' }],
+		});
+
+		await expect(pending).resolves.toBeUndefined();
+		expect(isConnectionCurrent).toHaveBeenCalledWith(73);
+		expect(harness.reconcileComparisonOwners).not.toHaveBeenCalled();
+		expect(signal?.aborted).toBe(true);
+		harness.handler.dispose();
 	});
 
 	it('filters schema refresh targets by query kind and exact Kusto connection resolution', async () => {

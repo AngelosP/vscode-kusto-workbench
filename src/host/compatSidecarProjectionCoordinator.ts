@@ -39,7 +39,9 @@ export type CompatSidecarPersistAdmission = Readonly<{
 export interface CompatSidecarProjectionCoordinatorOptions {
 	readonly session: CompatSidecarSession;
 	readonly readSourceText: () => string;
+	readonly readSourceVersion?: () => number;
 	readonly isDisposed: () => boolean;
+	readonly disposalSignal?: Promise<void>;
 	readonly postProjection: (attempt: CompatSidecarProjectionAttempt) => Promise<boolean>;
 	readonly onProjectionSettled?: (
 		attempt: CompatSidecarProjectionAttempt,
@@ -50,8 +52,20 @@ export interface CompatSidecarProjectionCoordinatorOptions {
 	readonly sameSourceText?: (left: string, right: string) => boolean;
 }
 
+export type CompatSidecarOwnedSourceEditRegistration = Readonly<{
+	previousText: string;
+	complete: (version: number) => boolean;
+	cancel: () => void;
+}>;
+
+export type CompatSidecarOwnedSourcePersistOwner = Readonly<{
+	persistGeneration: number;
+	editRevision: number;
+}>;
+
 export interface CompatSidecarProjectionCoordinatorContract {
 	readonly isInitialized: boolean;
+	readonly currentProjectionGeneration: number;
 	readonly activeSourceGeneration: number;
 	readonly sourceRollbackFailed: boolean;
 	project(request?: CompatSidecarProjectionRequest): Promise<boolean>;
@@ -59,7 +73,15 @@ export interface CompatSidecarProjectionCoordinatorContract {
 	requestSourceReload(): Promise<boolean>;
 	ensureInitialProjection(requestId?: string): Promise<boolean>;
 	completeReload(result: CompatSidecarReloadResult): boolean;
+	waitForCurrentProjection(timeoutMs?: number): Promise<boolean>;
 	waitForAcknowledgedProjection(sourceGeneration: unknown): Promise<void>;
+	registerOwnedSourceEdit(
+		sourceGeneration: number, previousText: string, nextText: string, previousVersion: number,
+	): CompatSidecarOwnedSourceEditRegistration | undefined;
+	adoptOwnedSourceText(
+		sourceGeneration: number, previousText: string, nextText: string,
+		persistOwner?: CompatSidecarOwnedSourcePersistOwner,
+	): Promise<boolean>;
 	admitPersist(admission: CompatSidecarPersistAdmission): boolean;
 	captureSourceReloadEpoch(): number;
 	rollbackSupersededSourceEdit(
@@ -73,19 +95,57 @@ export type CompatSidecarProjectionCoordinatorFactory = (
 	options: CompatSidecarProjectionCoordinatorOptions,
 ) => CompatSidecarProjectionCoordinatorContract;
 
+export function createCompatSidecarProjectionReadiness(
+	constructionPromise: Promise<CompatSidecarProjectionCoordinatorContract | undefined>,
+	outerDisposalSignal: Promise<void>,
+	isDisposed: () => boolean,
+): () => Promise<boolean> {
+	const stopped = outerDisposalSignal.then(() => undefined);
+	return async () => {
+		if (isDisposed()) return false;
+		const deadline = Date.now() + 30_000;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const coordinator = await Promise.race([
+				constructionPromise,
+				stopped,
+				new Promise<undefined>(resolve => {
+					timer = setTimeout(() => resolve(undefined), Math.max(0, deadline - Date.now()));
+				}),
+			]);
+			return !!coordinator && !isDisposed()
+				&& await coordinator.waitForCurrentProjection(Math.max(0, deadline - Date.now()));
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+		}
+	};
+}
+
 type ProjectionIdentity = Readonly<{
 	generation: number;
 	sourceText: string;
 	expectedEditRevision?: number;
 }>;
 
+type OwnedSourceEdit = {
+	readonly sourceGeneration: number;
+	readonly projectionGeneration: number;
+	readonly persistGeneration: number;
+	readonly previousText: string;
+	readonly previousVersion: number;
+	readonly nextText: string;
+	version?: number;
+};
+
 const DEFAULT_INITIAL_PROJECTION_MAX_ATTEMPTS = 3;
+const MAX_INITIAL_PROJECTION_REQUEST_IDS = 64;
 const SOURCE_ROLLBACK_MAX_ATTEMPTS = 3;
 
 export class CompatSidecarProjectionCoordinator implements CompatSidecarProjectionCoordinatorContract {
 	private projectionGeneration = 0;
 	private activeGeneration = 0;
 	private activeSourceText: string;
+	private ownedSourceEdit: OwnedSourceEdit | undefined;
 	private pendingProjection: ProjectionIdentity | undefined;
 	private pendingReloadRequestId: string | undefined;
 	private readonly projectionSettlements = new Map<number, Promise<boolean>>();
@@ -94,6 +154,7 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 	private initialProjectionRecovery: Promise<boolean> | undefined;
 	private initialProjectionRecoverySourceText: string | undefined;
 	private initialProjectionExhaustedSourceText: string | undefined;
+	private readonly initialProjectionRequestIds = new Set<string>();
 	private initialProjectionRestartRequested = false;
 	private sourceReloadEpoch = 0;
 	private sourceReloadAuthority: Readonly<{ epoch: number; text: string }> | undefined;
@@ -118,6 +179,10 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 		return this.initialized;
 	}
 
+	get currentProjectionGeneration(): number {
+		return this.projectionGeneration;
+	}
+
 	get activeSourceGeneration(): number {
 		return this.activeGeneration;
 	}
@@ -128,18 +193,35 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 
 	project(request: CompatSidecarProjectionRequest = {}): Promise<boolean> {
 		if (this.options.isDisposed()) return Promise.resolve(false);
+		const previousGeneration = this.projectionGeneration;
+		const previousProjection = this.projectionSettlements.get(previousGeneration);
+		const previousActiveGeneration = this.activeGeneration;
+		const previousActiveProjection = this.projectionSettlements.get(previousActiveGeneration);
 		const projection = this.runProjection(request);
 		const generation = this.projectionGeneration;
 		this.projectionSettlements.set(generation, projection);
-		const release = () => {
-			if (this.projectionSettlements.get(generation) === projection) {
-				this.projectionSettlements.delete(generation);
+		const release = (settledGeneration: number, settledProjection: Promise<boolean>) => {
+			if (this.projectionGeneration !== settledGeneration
+				&& this.activeGeneration !== settledGeneration
+				&& this.projectionSettlements.get(settledGeneration) === settledProjection) {
+				this.projectionSettlements.delete(settledGeneration);
 			}
-			if (this.acknowledgedProjectionGeneration === generation) {
+			if (this.acknowledgedProjectionGeneration === settledGeneration) {
 				this.acknowledgedProjectionGeneration = undefined;
 			}
 		};
-		void projection.then(release, release);
+		const releaseProjection = () => {
+			release(generation, projection);
+			if (previousActiveProjection) {
+				const releasePreviousActive = () => release(previousActiveGeneration, previousActiveProjection);
+				void previousActiveProjection.then(releasePreviousActive, releasePreviousActive);
+			}
+		};
+		void projection.then(releaseProjection, releaseProjection);
+		if (previousProjection) {
+			const releasePrevious = () => release(previousGeneration, previousProjection);
+			void previousProjection.then(releasePrevious, releasePrevious);
+		}
 		return projection;
 	}
 
@@ -157,6 +239,7 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 		}
 
 		this.retirePendingProjection();
+		this.ownedSourceEdit = undefined;
 		const generation = ++this.projectionGeneration;
 		const expectedEditRevision = this.validRevision(request.expectedEditRevision);
 		const identity: ProjectionIdentity = Object.freeze({
@@ -228,7 +311,14 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 	}
 
 	async requestDocument(requestId: string, expectedEditRevision?: number): Promise<boolean> {
-		if (!this.initialized) return this.ensureInitialProjection(requestId);
+		const freshRequest = requestId.startsWith('dispatcher-document-')
+			&& !this.initialProjectionRequestIds.has(requestId)
+			&& this.initialProjectionRequestIds.size < MAX_INITIAL_PROJECTION_REQUEST_IDS;
+		if (freshRequest) this.initialProjectionRequestIds.add(requestId);
+		if (!this.initialized) {
+			if (freshRequest) this.initialProjectionExhaustedSourceText = undefined;
+			return this.ensureInitialProjection(requestId);
+		}
 		const requestGeneration = this.projectionGeneration + 1;
 		const applied = await this.project({
 			forceReload: true, requestId, expectedEditRevision, retirePersists: true,
@@ -266,11 +356,138 @@ export class CompatSidecarProjectionCoordinator implements CompatSidecarProjecti
 		return completed;
 	}
 
+	async waitForCurrentProjection(timeoutMs = 30_000): Promise<boolean> {
+		const deadline = Date.now() + Math.max(0, timeoutMs);
+		let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+		let probeTimer: ReturnType<typeof setTimeout> | undefined;
+		const expired = new Promise<null>(resolve => {
+			deadlineTimer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
+		});
+		const stopped = this.options.disposalSignal
+			? Promise.race([expired, this.options.disposalSignal.then(() => null, () => null)])
+			: expired;
+		try {
+			while (!this.options.isDisposed()) {
+				const observationGeneration = this.projectionGeneration;
+				const pending = this.pendingProjection;
+				const generation = pending?.generation ?? (this.projectionSettlements.has(observationGeneration)
+					? observationGeneration : this.activeGeneration);
+				const settlement = this.projectionSettlements.get(generation);
+				const sourceText = this.readSourceTextSafely();
+				const remaining = deadline - Date.now();
+				if (remaining <= 0 || generation === 0 || !settlement || this.rollbackFailed
+					|| typeof sourceText !== 'string'
+					|| (pending
+						? pending.generation !== observationGeneration || pending.sourceText !== sourceText
+						: this.activeGeneration !== generation || this.activeSourceText !== sourceText)) return false;
+				if (this.pendingReloadRequestId
+					&& !this.options.session.hasPendingReloadRequest(this.pendingReloadRequestId)
+					&& this.acknowledgedProjectionGeneration !== generation) return false;
+				const physicalSettlements = generation !== observationGeneration && !pending
+					? [...this.projectionSettlements].filter(([retiredGeneration]) =>
+						retiredGeneration > generation && retiredGeneration < observationGeneration)
+						.map(([, retired]) => retired.then(() => true, () => true))
+					: [];
+				const fullSettlement = Promise.all([settlement.catch(() => false), ...physicalSettlements])
+					.then(([applied]) => applied);
+				const applied = await Promise.race([
+					fullSettlement,
+					stopped,
+					new Promise<undefined>(resolve => {
+						probeTimer = setTimeout(() => resolve(undefined), Math.min(250, remaining));
+					}),
+				]);
+				if (probeTimer !== undefined) clearTimeout(probeTimer);
+				probeTimer = undefined;
+				if (applied === null || this.options.isDisposed() || Date.now() >= deadline) return false;
+				if (this.projectionGeneration !== observationGeneration || applied === undefined) continue;
+				return applied && this.activeGeneration === generation && !this.pendingProjection
+					&& !this.rollbackFailed && this.projectionSourceMatches(this.activeSourceText);
+			}
+			return false;
+		} finally {
+			if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+			if (probeTimer !== undefined) clearTimeout(probeTimer);
+		}
+	}
+
 	async waitForAcknowledgedProjection(sourceGeneration: unknown): Promise<void> {
 		const generation = Number(sourceGeneration);
 		if (!Number.isSafeInteger(generation)
 			|| this.acknowledgedProjectionGeneration !== generation) return;
 		await this.projectionSettlements.get(generation)?.catch(() => false);
+	}
+
+	registerOwnedSourceEdit(
+		sourceGeneration: number, previousText: string, nextText: string, previousVersion: number,
+	): CompatSidecarOwnedSourceEditRegistration | undefined {
+		const observationGeneration = this.projectionGeneration;
+		const settlement = this.projectionSettlements.get(sourceGeneration);
+		const ownerIsCurrent = () => !this.options.isDisposed() && !this.rollbackFailed && !this.pendingProjection
+			&& this.projectionGeneration === observationGeneration && this.activeGeneration === sourceGeneration
+			&& this.projectionSettlements.get(sourceGeneration) === settlement
+			&& (observationGeneration === sourceGeneration || !this.projectionSettlements.has(observationGeneration));
+		if (!settlement || !ownerIsCurrent() || !Number.isSafeInteger(previousVersion) || previousVersion < 0
+			|| !this.ownedSourceVersionMatches(previousVersion) || !this.projectionSourceMatches(previousText)) return undefined;
+		const preceding = this.ownedSourceEdit;
+		if (preceding ? preceding.version === undefined || preceding.sourceGeneration !== sourceGeneration
+			|| preceding.projectionGeneration !== observationGeneration || preceding.version !== previousVersion
+			|| preceding.nextText !== previousText : this.activeSourceText !== previousText) return undefined;
+		const edit: OwnedSourceEdit = {
+			sourceGeneration, projectionGeneration: observationGeneration, persistGeneration: this.options.session.generation,
+			previousText: preceding?.previousText ?? previousText, previousVersion, nextText,
+		};
+		this.ownedSourceEdit = edit;
+		return Object.freeze({
+			previousText: edit.previousText,
+			complete: (version: number): boolean => {
+				if (this.ownedSourceEdit !== edit || edit.version !== undefined) return false;
+				if (!ownerIsCurrent() || version !== edit.previousVersion + 1
+					|| this.options.session.generation < edit.persistGeneration
+					|| !this.ownedSourceVersionMatches(version) || !this.projectionSourceMatches(edit.nextText)) {
+					this.ownedSourceEdit = undefined;
+					return false;
+				}
+				edit.version = version;
+				return true;
+			},
+			cancel: (): void => { if (this.ownedSourceEdit === edit) this.ownedSourceEdit = undefined; },
+		});
+	}
+
+	async adoptOwnedSourceText(
+		sourceGeneration: number, previousText: string, nextText: string,
+		persistOwner?: CompatSidecarOwnedSourcePersistOwner,
+	): Promise<boolean> {
+		const observationGeneration = this.projectionGeneration;
+		const settlement = this.projectionSettlements.get(sourceGeneration);
+		const edit = this.ownedSourceEdit;
+		const persistGeneration = persistOwner?.persistGeneration ?? edit?.persistGeneration;
+		const ownsSource = () => !this.options.isDisposed() && !this.rollbackFailed && !this.pendingProjection
+			&& this.projectionGeneration === observationGeneration && this.activeGeneration === sourceGeneration
+			&& this.activeSourceText === previousText && this.projectionSourceMatches(nextText)
+			&& edit !== undefined && this.ownedSourceEdit === edit && edit.version !== undefined
+			&& edit.sourceGeneration === sourceGeneration && edit.projectionGeneration === observationGeneration
+			&& persistGeneration !== undefined && edit.persistGeneration <= persistGeneration
+			&& persistGeneration === this.options.session.generation
+			&& (!persistOwner || Number.isSafeInteger(persistOwner.editRevision) && persistOwner.editRevision >= 0
+				&& this.options.session.currentStateEditRevision === persistOwner.editRevision
+				&& this.options.session.currentEditRevision === persistOwner.editRevision)
+			&& edit.previousText === previousText && edit.nextText === nextText && this.ownedSourceVersionMatches(edit.version)
+			&& this.projectionSettlements.get(sourceGeneration) === settlement
+			&& (observationGeneration === sourceGeneration || !this.projectionSettlements.has(observationGeneration));
+		if (!settlement || !ownsSource() || !await settlement.catch(() => false) || !ownsSource()) return false;
+		this.activeSourceText = nextText;
+		this.ownedSourceEdit = undefined;
+		return true;
+	}
+
+	private ownedSourceVersionMatches(version: number): boolean {
+		try {
+			return !this.options.readSourceVersion || this.options.readSourceVersion() === version;
+		} catch {
+			return false;
+		}
 	}
 
 	admitPersist(admission: CompatSidecarPersistAdmission): boolean {

@@ -58,7 +58,7 @@ import { postMessageToHost } from '../../src/webview/shared/webview-messages.js'
 import { APPLIED_KUSTO_COPILOT_DONE_EVENT } from '../../src/webview/core/kusto-copilot-output-runtime.js';
 import { getKustoSchemaIdentityKey } from '../../src/shared/kustoAuth.js';
 import { createKustoResultBatch } from '../../src/shared/kustoResultBatch.js';
-import { comparisonSourceArtifactConsumerId, createUnverifiedLegacyResultArtifactPublication } from '../../src/shared/resultArtifact.js';
+import { comparisonSourceArtifactConsumerId, createUnverifiedLegacyResultArtifactPublication, toPersistedResultArtifact } from '../../src/shared/resultArtifact.js';
 
 vi.mock('../../src/webview/shared/webview-messages.js', () => ({
 	postMessageToHost: vi.fn(),
@@ -155,6 +155,695 @@ function getDatabaseDropdown(el: KwQuerySection): KwDropdown | null {
 function hasSpinner(el: KwQuerySection): boolean {
 	return el.shadowRoot!.querySelector('.query-spinner') !== null;
 }
+
+describe('native restore schema auth boundary repro', () => {
+	it.each(['automatic reconciliation', 'direct cache-only prewarm', 'explicit refresh'] as const)(
+		'%s preserves its effective interactive permission', async route => {
+			const {
+				handleDocumentDataMessage, captureKustoLeaveNoTracePolicyRuntime, restoreKustoLeaveNoTracePolicyRuntime,
+			} = await import('../../src/webview/core/persistence.js');
+			const { drainBufferedHostMessages } = await import('../../src/webview/core/message-handler.js');
+			const { KwQuerySection } = await import('../../src/webview/sections/kw-query-section.js');
+			const { SchemaService } = await import('../../src/host/queryEditorSchema.js');
+			const { HostKustoSchemaRequestApplicationHandler } = await import('../../src/host/kustoSchemaRequestApplicationHandler.js');
+			const vscode = await import('vscode');
+			const state = await import('../../src/webview/core/state.js');
+			const boxId = 'schema_auth_restore';
+			const connection = {
+				id: 'synthetic-restore', name: 'Synthetic restore',
+				clusterUrl: 'https://synthetic-restore.kusto.windows.net',
+				authorityId: 'organizations', accountPartition: 'synthetic-partition',
+				connectionRevision: 0,
+			};
+			const database = 'SyntheticDb';
+			const cacheKey = getKustoSchemaIdentityKey(connection.id, connection.accountPartition, connection.clusterUrl, database);
+			const originalPersistence = { ...pState };
+			const originalPolicy = captureKustoLeaveNoTracePolicyRuntime();
+			const originalVscode = window.vscode;
+			const originalConnections = state.connections;
+			const originalBuffered = window.__kustoBufferedHostMessages;
+			const transport = vi.mocked(postMessageToHost);
+			const originalTransport = transport.getMockImplementation();
+			const restoreFlags: boolean[] = [];
+			const setDesiredClusterUrl = KwQuerySection.prototype.setDesiredClusterUrl;
+			vi.spyOn(KwQuerySection.prototype, 'setDesiredClusterUrl').mockImplementation(function (url) {
+				if (this.boxId === boxId) restoreFlags.push(pState.restoreInProgress);
+				setDesiredClusterUrl.call(this, url);
+			});
+			const interactiveAttempt = vi.fn();
+			const responses: import('../../src/shared/kustoSchemaProtocol.js').KustoSchemaHostMessage[] = [];
+			const getDatabaseSchema = vi.fn(async (
+				...args: Parameters<import('../../src/host/kustoClient.js').KustoQueryClient['getDatabaseSchema']>
+			) => {
+				if (args[3]?.allowInteractive !== false) interactiveAttempt();
+				return {
+					schema: { tables: ['QueryT'], columnTypesByTable: { QueryT: { Simple: 'string' } } },
+					fromCache: false, accountPartition: connection.accountPartition,
+				};
+			});
+			const service = new SchemaService({
+				context: {
+					globalStorageUri: vscode.Uri.file('C:/synthetic-schema-cache'),
+					globalState: { get: () => true, update: vi.fn() },
+				},
+				kustoClient: { getDatabaseSchema, getAccountPartition: () => connection.accountPartition },
+				connectionManager: { getConnections: () => [connection] },
+				findConnection: (connectionId: string) => connectionId === connection.id ? connection : undefined,
+				postMessage: (message: typeof responses[number]) => responses.push(message),
+				formatQueryExecutionErrorForUser: (error: unknown) => String(error),
+				output: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn() },
+			} as unknown as ConstructorParameters<typeof SchemaService>[0]);
+			const cacheRead = vi.spyOn(service as unknown as {
+				getCachedSchemaFromDiskByCluster: () => Promise<undefined>;
+			}, 'getCachedSchemaFromDiskByCluster').mockResolvedValue(undefined);
+			const cacheWrite = vi.spyOn(service, 'saveCachedSchemaToDisk').mockResolvedValue(undefined);
+			const hostHandler = new HostKustoSchemaRequestApplicationHandler({ schema: service });
+			const prefetch = vi.spyOn(service, 'prefetchSchema');
+			const consoleError = vi.spyOn(console, 'error');
+			const deliverConnections = async () => {
+				window.__kustoBufferedHostMessages = [{
+					type: 'connectionsData', connectionsRevision: 0, connections: [connection], accounts: [],
+					lastConnectionId: null, lastDatabase: null,
+					cachedDatabases: { [connection.id]: [database] }, favorites: [],
+					caretDocsEnabled: true, caretDocsEnabledUserSet: false,
+					autoTriggerAutocompleteEnabled: true, autoTriggerAutocompleteEnabledUserSet: false,
+					copilotInlineCompletionsEnabled: true, copilotInlineCompletionsEnabledUserSet: false,
+					editingPreferencesRevision: 0, copilotChatFirstTimeDismissed: false, devNotesEnabled: false,
+					leaveNoTraceClusters: [], leaveNoTraceGloballyBlocked: false, leaveNoTraceRevisions: {},
+				}];
+				await drainBufferedHostMessages();
+				expect(state.connections).toEqual([connection]);
+				expect(state.cachedDatabases[connection.id]).toEqual([database]);
+			};
+			vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+			try {
+				container.id = 'queries-container';
+				window.vscode = { postMessage: vi.fn(), getState: vi.fn(), setState: vi.fn() };
+				setStateConnections([]);
+				for (const key of Object.keys(state.cachedDatabases)) delete state.cachedDatabases[key];
+				expect(Object.keys(schemaByConnDb)).toEqual([]);
+				expect(getKustoEditorSchema(boxId)).toBeUndefined();
+				transport.mockClear();
+				const nativeSnapshot = {
+					type: 'documentData', ok: true, forceReload: true,
+					documentUri: `file:///synthetic-schema-${route.replaceAll(' ', '-')}.kqlx`,
+					documentKind: 'kqlx', compatibilityMode: false,
+					allowedSectionKinds: ['query'], defaultSectionKind: 'query',
+					documentRevision: 0, sourceGeneration: 1, editRevision: 0,
+					sectionRevisions: {}, markdownSectionRevisions: {},
+					htmlPowerBiCompatibilityCheckEnabled: false,
+					state: { sections: [{
+						id: boxId, type: 'query', query: 'QueryT | project Simple', expanded: true,
+						clusterUrl: connection.clusterUrl, authorityId: connection.authorityId, database,
+					}] },
+				};
+				if (route !== 'automatic reconciliation') {
+					expect(handleDocumentDataMessage({ ...nativeSnapshot, state: { sections: [] } })).toBe(true);
+					expect(pState.documentRuntimeActive).toBe(true);
+					await deliverConnections();
+				}
+				expect(handleDocumentDataMessage(nativeSnapshot)).toBe(true);
+				const section = document.getElementById(boxId) as KwQuerySection;
+				await section.updateComplete;
+				expect(section.tagName).toBe('KW-QUERY-SECTION');
+				expect(pState).toMatchObject({
+					documentKind: 'kqlx', compatibilityMode: false, hostOwnedMarkdownActive: true,
+					documentRuntimeActive: true, restoreInProgress: false,
+				});
+				expect(restoreFlags.length).toBeGreaterThan(0);
+				expect(restoreFlags.every(flag => flag)).toBe(true);
+				const beforeAutoPass = {
+					connectionId: section.getConnectionId(), desiredDatabase: section.getDesiredDatabase(),
+					connections: state.connections.length, restoreInProgress: pState.restoreInProgress,
+					schemaRequests: transport.mock.calls.filter(([message]) => message.type === 'prefetchSchema').length,
+				};
+				expect(beforeAutoPass.schemaRequests).toBe(0);
+				const focusBefore = document.activeElement;
+				if (route === 'automatic reconciliation') {
+					expect(beforeAutoPass).toEqual({
+						connectionId: '', desiredDatabase: database, connections: 0,
+						restoreInProgress: false, schemaRequests: 0,
+					});
+					await deliverConnections();
+				} else if (route === 'direct cache-only prewarm') {
+					vi.spyOn(section, 'getClientRects').mockReturnValue([new DOMRect(0, 0, 500, 200)] as unknown as DOMRectList);
+					await vi.advanceTimersByTimeAsync(80);
+				} else {
+					section.connectionCtrl.refreshSchema();
+				}
+				expect(document.activeElement).toBe(focusBefore);
+				expect(transport.mock.calls.some(([message]) => message.type === 'backgroundWorkbenchUserInteraction')).toBe(false);
+				const requests = transport.mock.calls.map(([message]) => message)
+					.filter(message => message.type === 'prefetchSchema');
+				expect(requests).toHaveLength(1);
+				const request = requests[0];
+				expect(request).toMatchObject({
+					connectionId: connection.id, database, boxId,
+					requestToken: expect.any(String), ...section.getSchemaLifecycleIdentity(),
+					forceRefresh: route === 'explicit refresh',
+				});
+				expect(request.sectionInstanceId).toBeTruthy();
+				expect(kustoEditorSchemaCoordinator.getSchemaRequestToken(boxId)).toBe(request.requestToken);
+				const handling = hostHandler.handleMessage(request);
+				expect(handling).toBeInstanceOf(Promise);
+				await handling;
+				expect(prefetch).toHaveBeenCalledOnce();
+				expect(cacheRead).toHaveBeenCalledOnce();
+				expect(consoleError).not.toHaveBeenCalled();
+				console.info('[native-restore-schema-auth]', JSON.stringify({
+					route, beforeAutoPass, request, hostOptions: prefetch.mock.calls[0][5],
+					clientArgumentCounts: getDatabaseSchema.mock.calls.map(args => args.length),
+					clientOptions: getDatabaseSchema.mock.calls.map(args => args[3] ?? null),
+					interactiveAttempts: interactiveAttempt.mock.calls.length,
+				}));
+				if (route === 'direct cache-only prewarm') {
+					expect(request).toMatchObject({ cacheOnly: true, silent: true, reason: 'document-restore' });
+					expect(getDatabaseSchema).not.toHaveBeenCalled();
+					expect(cacheWrite).not.toHaveBeenCalled();
+				} else {
+					expect(request.cacheOnly).not.toBe(true);
+					expect(getDatabaseSchema).toHaveBeenCalledExactlyOnceWith(connection, database, route === 'explicit refresh', {
+						allowInteractive: route === 'explicit refresh', source: 'primary-schema',
+					});
+					expect(cacheWrite).toHaveBeenCalledOnce();
+					expect(responses).toEqual([expect.objectContaining({
+						type: 'schemaData', boxId, requestToken: request.requestToken,
+						schema: expect.objectContaining({ tables: ['QueryT'], rawSchemaJson: expect.any(Object) }),
+					})]);
+					window.__kustoBufferedHostMessages = responses;
+					await drainBufferedHostMessages();
+					expect(getKustoEditorSchema(boxId)?.tables).toEqual(['QueryT']);
+					expect(schemaFetchInFlightByBoxId[boxId]).toBe(false);
+				}
+				expect(interactiveAttempt, 'automatic restore must not permit interactive authentication').toHaveBeenCalledTimes(
+					route === 'explicit refresh' ? 1 : 0,
+				);
+			} finally {
+				hostHandler.dispose();
+				container.replaceChildren();
+				queryBoxes.splice(queryBoxes.indexOf(boxId), queryBoxes.includes(boxId) ? 1 : 0);
+				delete schemaFetchInFlightByBoxId[boxId];
+				delete lastSchemaRequestAtByBoxId[boxId];
+				delete schemaRequestTokenByBoxId[boxId];
+				delete databaseRequestTokenByBoxId[boxId];
+				delete state.cachedDatabases[connection.id];
+				delete schemaByConnDb[cacheKey];
+				delete schemaMetaByConnDb[cacheKey];
+				Object.assign(pState, originalPersistence);
+				restoreKustoLeaveNoTracePolicyRuntime(originalPolicy);
+				setStateConnections(originalConnections);
+				window.vscode = originalVscode;
+				window.__kustoBufferedHostMessages = originalBuffered;
+				transport.mockImplementation(originalTransport ?? (() => undefined));
+				vi.restoreAllMocks();
+				vi.clearAllTimers();
+				vi.useRealTimers();
+			}
+		},
+	);
+});
+
+describe('primary schema selection intent', () => {
+	const boxId = 'auth_origin_test';
+	const database = 'ChosenDb';
+	const connections = [
+		{ id: 'auth-a', name: 'Origin A', clusterUrl: 'https://auth-a.kusto.windows.net', accountPartition: 'partition-a', connectionRevision: 1, connectionIdentityKey: 'owner-a' },
+		{ id: 'auth-b', name: 'Origin B', clusterUrl: 'https://auth-b.kusto.windows.net', accountPartition: 'partition-b', connectionRevision: 1, connectionIdentityKey: 'owner-b' },
+	];
+	let section: KwQuerySection;
+	let restore: () => void;
+	let state: typeof import('../../src/webview/core/state.js');
+	let drainMessages: typeof import('../../src/webview/core/message-handler.js')['drainBufferedHostMessages'];
+
+	beforeEach(async () => {
+		state = await import('../../src/webview/core/state.js');
+		const { addQueryBox } = await import('../../src/webview/core/section-factory.js');
+		({ drainBufferedHostMessages: drainMessages } = await import('../../src/webview/core/message-handler.js'));
+		const savedPersistence = { ...pState };
+		const savedConnections = state.connections;
+		const savedLastDatabase = state.lastDatabase;
+		const savedBuffered = window.__kustoBufferedHostMessages;
+		restore = () => {
+			section.disposeSchemaLifecycle();
+			container.replaceChildren();
+			const index = queryBoxes.indexOf(boxId);
+			if (index >= 0) queryBoxes.splice(index, 1);
+			for (const connection of connections) delete state.cachedDatabases[connection.id];
+			delete state.schemaDiagnosticsTrustedByBoxId[boxId];
+			delete databaseRequestTokenByBoxId[boxId];
+			delete schemaRequestTokenByBoxId[boxId];
+			delete schemaFetchInFlightByBoxId[boxId];
+			delete lastSchemaRequestAtByBoxId[boxId];
+			Object.assign(pState, savedPersistence);
+			setStateConnections(savedConnections);
+			state.setLastDatabase(savedLastDatabase);
+			window.__kustoBufferedHostMessages = savedBuffered;
+			vi.restoreAllMocks();
+			vi.clearAllTimers();
+		};
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		container.id = 'queries-container';
+		pState.documentRuntimeActive = true;
+		pState.restoreInProgress = true;
+		setStateConnections(connections);
+		state.setLastDatabase(null);
+		addQueryBox({ id: boxId });
+		section = document.getElementById(boxId) as KwQuerySection;
+		section.setConnections(connections);
+		section.setConnectionId('auth-a');
+		section.setDatabase('PreviousDb');
+		section.setSchemaLifecycleTarget('auth-a', 'PreviousDb');
+		section.setDatabases(['PreviousDb', database]);
+		section.setFavoritesMode(false);
+		await section.updateComplete;
+		pState.restoreInProgress = false;
+		vi.mocked(postMessageToHost).mockClear();
+	});
+
+	afterEach(() => restore());
+
+	function schemaRequests() {
+		return vi.mocked(postMessageToHost).mock.calls.map(([message]) => message)
+			.filter(message => message.type === 'prefetchSchema' && message.boxId === boxId);
+	}
+
+	function databaseRequest() {
+		const requests = vi.mocked(postMessageToHost).mock.calls.map(([message]) => message)
+			.filter(message => (message.type === 'getDatabases' || message.type === 'refreshDatabases') && message.boxId === boxId);
+		expect(requests.length).toBeGreaterThan(0);
+		return requests.at(-1)!;
+	}
+
+	async function selectItem(selector: string, id: string) {
+		await section.updateComplete;
+		const dropdown = section.shadowRoot!.querySelector<KwDropdown>(selector)!;
+		expect(dropdown).toBeTruthy();
+		await dropdown.updateComplete;
+		dropdown.shadowRoot!.querySelector<HTMLButtonElement>('.kusto-dropdown-btn')!.click();
+		await dropdown.updateComplete;
+		const item = Array.from(dropdown.shadowRoot!.querySelectorAll<HTMLElement>('[data-dropdown-item-id]'))
+			.find(candidate => candidate.dataset.dropdownItemId === id);
+		expect(item, `rendered dropdown item ${id}`).toBeTruthy();
+		item!.click();
+		await section.updateComplete;
+	}
+
+	async function deliverDatabases(request: ReturnType<typeof databaseRequest>, databases: string[], accepted = true) {
+		if (accepted) expect(kustoEditorSchemaCoordinator.isDatabaseRequestCurrent(boxId, {
+			sectionInstanceId: request.sectionInstanceId!, targetGeneration: request.targetGeneration!,
+		}, request.connectionId, request.requestToken!)).toBe(true);
+		const apply = vi.spyOn(section.connectionCtrl, 'updateDatabaseSelect');
+		window.__kustoBufferedHostMessages = [{
+			type: 'databasesData', boxId, connectionId: request.connectionId,
+			requestToken: request.requestToken, sectionInstanceId: request.sectionInstanceId,
+			targetGeneration: request.targetGeneration, databases, authoritative: true,
+		}];
+		await drainMessages();
+		expect(apply).toHaveBeenCalledTimes(accepted ? 1 : 0);
+		apply.mockRestore();
+		await section.updateComplete;
+	}
+
+	it.each(['desired', 'single', 'global-last'])('fetches and applies one noninteractive primary schema on an automatic %s cache miss', async selection => {
+		const { SchemaService } = await import('../../src/host/queryEditorSchema.js');
+		const { HostKustoSchemaRequestApplicationHandler } = await import('../../src/host/kustoSchemaRequestApplicationHandler.js');
+		const vscode = await import('vscode');
+		const connection = connections[1];
+		const responses: import('../../src/shared/kustoSchemaProtocol.js').KustoSchemaHostMessage[] = [];
+		const getDatabaseSchema = vi.fn(async () => ({
+			schema: { tables: ['Fetched'], columnTypesByTable: { Fetched: { Value: 'long' } } },
+			fromCache: false, accountPartition: connection.accountPartition,
+		}));
+		const service = new SchemaService({
+			context: {
+				globalStorageUri: vscode.Uri.file('C:/synthetic-primary-schema-cache'),
+				globalState: { get: () => true, update: vi.fn() },
+			},
+			kustoClient: { getDatabaseSchema, getAccountPartition: () => connection.accountPartition },
+			connectionManager: { getConnections: () => connections },
+			findConnection: (id: string) => connections.find(candidate => candidate.id === id),
+			postMessage: (message: typeof responses[number]) => responses.push(message),
+			formatQueryExecutionErrorForUser: (error: unknown) => String(error),
+			output: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn() },
+		} as unknown as ConstructorParameters<typeof SchemaService>[0]);
+		vi.spyOn(service as unknown as { getCachedSchemaFromDiskByCluster: () => Promise<undefined> }, 'getCachedSchemaFromDiskByCluster').mockResolvedValue(undefined);
+		const write = vi.spyOn(service, 'saveCachedSchemaToDisk').mockResolvedValue(undefined);
+		const handler = new HostKustoSchemaRequestApplicationHandler({ schema: service });
+		const cacheKey = getKustoSchemaIdentityKey(connection.id, connection.accountPartition, connection.clusterUrl, database);
+		try {
+			section.setDatabase('');
+			section.setDesiredClusterUrl(connection.clusterUrl);
+			if (selection === 'desired') section.setDesiredDatabase(database);
+			if (selection === 'global-last') state.setLastDatabase(database);
+			state.cachedDatabases[connection.id] = selection === 'global-last' ? ['AnotherDb', database] : [database];
+			section.setConnections(connections);
+			if (selection === 'global-last') await deliverDatabases(databaseRequest(), ['AnotherDb', database]);
+			expect(schemaRequests()).toHaveLength(1);
+			const request = schemaRequests()[0];
+			expect(request).toMatchObject({ connectionId: connection.id, database, reason: 'automatic', forceRefresh: false });
+			expect(request.cacheOnly).not.toBe(true);
+			await handler.handleMessage(request);
+			expect(getDatabaseSchema).toHaveBeenCalledExactlyOnceWith(connection, database, false, {
+				allowInteractive: false, source: 'primary-schema',
+			});
+			expect(write).toHaveBeenCalledOnce();
+			expect(responses).toEqual([expect.objectContaining({
+				type: 'schemaData', boxId, requestToken: request.requestToken,
+				schema: expect.objectContaining({ tables: ['Fetched'], rawSchemaJson: expect.any(Object) }),
+			})]);
+			window.__kustoBufferedHostMessages = responses;
+			await drainMessages();
+			expect(getKustoEditorSchema(boxId)?.tables).toEqual(['Fetched']);
+			expect(schemaFetchInFlightByBoxId[boxId]).toBe(false);
+		} finally {
+			handler.dispose();
+			delete schemaByConnDb[cacheKey];
+			delete schemaMetaByConnDb[cacheKey];
+		}
+	});
+
+	it.each([
+		{ selection: 'cluster single', cached: true },
+		{ selection: 'cluster single', cached: false },
+		{ selection: 'cluster global-last', cached: true },
+		{ selection: 'cluster global-last', cached: false },
+		{ selection: 'favorite desired', cached: true },
+		{ selection: 'favorite desired', cached: false },
+	])('keeps $selection interactive through cached=$cached discovery without requesting the old target', async ({ selection, cached }) => {
+		const databases = selection === 'cluster single' ? [database] : ['AnotherDb', database];
+		if (cached) state.cachedDatabases['auth-b'] = databases;
+		if (selection === 'cluster global-last') state.setLastDatabase(database);
+		if (selection === 'favorite desired') {
+			section.setFavorites([{ name: 'Chosen favorite', connectionId: 'auth-b', clusterUrl: connections[1].clusterUrl, database }]);
+			section.setFavoritesMode(true);
+			await selectItem('.kusto-favorites-combo kw-dropdown', '0');
+		} else {
+			await selectItem('[data-testid="cluster-dropdown"]', 'auth-b');
+		}
+		await deliverDatabases(databaseRequest(), databases);
+		expect(section.getConnectionId()).toBe('auth-b');
+		expect(section.getDatabase()).toBe(database);
+		expect(schemaRequests()).toEqual([expect.objectContaining({ connectionId: 'auth-b', database, forceRefresh: false })]);
+		expect(schemaRequests()[0].reason).not.toBe('automatic');
+	});
+
+	it.each(['changed database', 'same database', 'same cluster'])(
+		'keeps %s confirmation interactive and requests only the selected target', async selection => {
+			const expectedDatabase = selection === 'changed database' ? database : 'PreviousDb';
+			await selectItem(selection === 'same cluster' ? '[data-testid="cluster-dropdown"]' : '[data-testid="database-dropdown"]',
+				selection === 'same cluster' ? 'auth-a' : expectedDatabase);
+			expect(schemaRequests()).toEqual([expect.objectContaining({ connectionId: 'auth-a', database: expectedDatabase })]);
+			expect(schemaRequests()[0].reason).not.toBe('automatic');
+		},
+	);
+
+	it.each(['refresh', 'autocomplete'] as const)('supersedes a pending automatic schema request for explicit %s', async action => {
+		section.connectionCtrl.onDatabaseChanged();
+		const automatic = schemaRequests()[0];
+		expect(automatic).toMatchObject({ reason: 'automatic' });
+		if (action === 'refresh') {
+			section.shadowRoot!.querySelector('kw-schema-info')!.dispatchEvent(new CustomEvent('schema-refresh', { bubbles: true, composed: true }));
+		} else {
+			section.connectionCtrl.ensureSchema(false);
+		}
+		const requests = schemaRequests();
+		expect(requests).toHaveLength(2);
+		expect(requests[1].reason).not.toBe('automatic');
+		expect(requests[1].forceRefresh).toBe(action === 'refresh');
+		expect(requests[1].requestToken).not.toBe(automatic.requestToken);
+		expect(kustoEditorSchemaCoordinator.getSchemaRequestToken(boxId)).toBe(requests[1].requestToken);
+		if (action === 'refresh') section.connectionCtrl.refreshSchema();
+		else section.connectionCtrl.ensureSchema(false);
+		expect(schemaRequests()).toHaveLength(2);
+		window.__kustoBufferedHostMessages = [{
+			type: 'schemaError', boxId, connectionId: automatic.connectionId, database: automatic.database,
+			requestToken: automatic.requestToken, sectionInstanceId: automatic.sectionInstanceId,
+			targetGeneration: automatic.targetGeneration, error: 'old automatic failure',
+		}];
+		await drainMessages();
+		expect(schemaFetchInFlightByBoxId[boxId]).toBe(true);
+		expect(kustoEditorSchemaCoordinator.getSchemaRequestToken(boxId)).toBe(requests[1].requestToken);
+	});
+
+	it.each([true, false])('keeps explicit tool selection interactive through cached=%s discovery', async cached => {
+		if (cached) state.cachedDatabases['auth-b'] = [database];
+		section.setConnectionId('auth-b');
+		section.setDatabase('');
+		section.setDesiredDatabase(database);
+		section.dispatchEvent(new CustomEvent('connection-changed', {
+			detail: { boxId, connectionId: 'auth-b', database, source: 'tool' }, bubbles: true, composed: true,
+		}));
+		await deliverDatabases(databaseRequest(), [database]);
+		expect(schemaRequests()).toEqual([expect.objectContaining({ connectionId: 'auth-b', database })]);
+		expect(schemaRequests()[0].reason).not.toBe('automatic');
+	});
+
+	it.each(['same target', 'changed database'])('checks the complete explicit tool target for %s', async selection => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		vi.spyOn(persistence, 'persistDocumentAndWaitForAck').mockResolvedValue(true);
+		pState.documentMutationAllowed = true;
+		const requestedDatabase = selection === 'same target' ? 'PreviousDb' : database;
+		window.__kustoBufferedHostMessages = [{
+			type: 'toolConfigureQuerySection', requestId: 'tool-schema-target',
+			input: { sectionId: boxId, clusterUrl: connections[0].clusterUrl, connectionId: 'auth-a', database: requestedDatabase },
+		}];
+		await drainMessages();
+		expect(vi.mocked(postMessageToHost)).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'tool-schema-target', result: { success: true, resultPreview: '' },
+		}));
+		expect(schemaRequests()).toEqual([expect.objectContaining({ connectionId: 'auth-a', database: requestedDatabase })]);
+		expect(schemaRequests()[0].reason).not.toBe('automatic');
+	});
+
+	it('does not retire a newer explicit request created inside database-selection callbacks', async () => {
+		await selectItem('[data-testid="cluster-dropdown"]', 'auth-b');
+		const first = databaseRequest();
+		let next: ReturnType<typeof databaseRequest> | undefined;
+		section.addEventListener('database-changed', () => {
+			section.setDesiredDatabase('LaterDb');
+			const requestToken = 'database-callback-next';
+			databaseRequestTokenByBoxId[boxId] = requestToken;
+			next = { ...first, ...section.beginDatabaseLifecycleRequest(requestToken, true)!, requestToken };
+		}, { once: true });
+		await deliverDatabases(first, [database]);
+		expect(next).toBeDefined();
+		expect(databaseRequestTokenByBoxId[boxId]).toBe(next!.requestToken);
+		await deliverDatabases(next!, [database, 'LaterDb']);
+		expect(schemaRequests()).toHaveLength(2);
+		expect(schemaRequests()[1]).toMatchObject({ connectionId: 'auth-b', database: 'LaterDb' });
+		expect(schemaRequests().every(request => request.reason !== 'automatic')).toBe(true);
+	});
+
+	it.each(['data', 'error'] as const)('rejects late A-B-A %s without clearing the newer explicit intent', async terminal => {
+		await selectItem('[data-testid="cluster-dropdown"]', 'auth-b');
+		const old = databaseRequest();
+		await selectItem('[data-testid="cluster-dropdown"]', 'auth-a');
+		await selectItem('[data-testid="cluster-dropdown"]', 'auth-b');
+		const current = databaseRequest();
+		expect(current.targetGeneration).toBeGreaterThan(old.targetGeneration!);
+		if (terminal === 'data') {
+			await deliverDatabases(old, ['StaleDb'], false);
+		} else {
+			window.__kustoBufferedHostMessages = [{
+				type: 'databasesError', boxId, connectionId: old.connectionId, requestToken: old.requestToken,
+				sectionInstanceId: old.sectionInstanceId, targetGeneration: old.targetGeneration, error: 'old failure',
+			}];
+			await drainMessages();
+		}
+		expect(databaseRequestTokenByBoxId[boxId]).toBe(current.requestToken);
+		expect(schemaRequests()).toEqual([]);
+		await deliverDatabases(current, [database]);
+		expect(schemaRequests()).toHaveLength(1);
+		expect(schemaRequests()[0]).toMatchObject({ connectionId: 'auth-b', database });
+		expect(schemaRequests()[0].reason).not.toBe('automatic');
+	});
+
+	it('does not inherit explicit intent when automatic reconciliation returns to the same connection', async () => {
+		await selectItem('[data-testid="cluster-dropdown"]', 'auth-b');
+		const old = databaseRequest();
+		await selectItem('[data-testid="cluster-dropdown"]', 'auth-a');
+		section.setDesiredClusterUrl(connections[1].clusterUrl);
+		section.setConnections(connections);
+		const current = databaseRequest();
+		await deliverDatabases(old, ['StaleDb'], false);
+		expect(databaseRequestTokenByBoxId[boxId]).toBe(current.requestToken);
+		await deliverDatabases(current, [database]);
+		expect(schemaRequests()).toEqual([expect.objectContaining({ connectionId: 'auth-b', database, reason: 'automatic' })]);
+	});
+
+	it('does not grant old intent to a changed pending database and consumes it before selection callbacks', async () => {
+		section.setFavorites([{ name: 'Pending', connectionId: 'auth-b', clusterUrl: connections[1].clusterUrl, database }]);
+		section.setFavoritesMode(true);
+		await selectItem('.kusto-favorites-combo kw-dropdown', '0');
+		const request = databaseRequest();
+		section.setDesiredDatabase('ReplacementDb');
+		await deliverDatabases(request, [database, 'ReplacementDb']);
+		expect(schemaRequests()).toEqual([expect.objectContaining({ database: 'ReplacementDb', reason: 'automatic' })]);
+		section.setDatabase('');
+		section.setDatabases([database]);
+		expect(schemaRequests()).toHaveLength(2);
+		expect(schemaRequests()[1]).toMatchObject({ database, reason: 'automatic' });
+	});
+
+	it.each(['same value', 'changed then restored', 'cleared then restored'] as const)(
+		'retires only changed pending database intent: %s', async transition => {
+			section.setFavorites([{ name: 'Pending', connectionId: 'auth-b', clusterUrl: connections[1].clusterUrl, database }]);
+			section.setFavoritesMode(true);
+			await selectItem('.kusto-favorites-combo kw-dropdown', '0');
+			const request = databaseRequest();
+			expect(section.getDesiredDatabase()).toBe(database);
+			if (transition === 'changed then restored') section.setDesiredDatabase('ReplacementDb');
+			if (transition === 'cleared then restored') section.clearDesiredDatabase();
+			section.setDesiredDatabase(database);
+			expect(databaseRequest()).toEqual(request);
+			expect(databaseRequestTokenByBoxId[boxId]).toBe(request.requestToken);
+			await deliverDatabases(request, [database, 'ReplacementDb']);
+			expect(schemaRequests()).toEqual([expect.objectContaining({ connectionId: 'auth-b', database })]);
+			if (transition === 'same value') expect(schemaRequests()[0].reason).not.toBe('automatic');
+			else expect(schemaRequests()[0].reason).toBe('automatic');
+		},
+	);
+
+	it('retires explicit database intent on failure before an automatic retry', async () => {
+		await selectItem('[data-testid="cluster-dropdown"]', 'auth-b');
+		const failed = databaseRequest();
+		window.__kustoBufferedHostMessages = [{
+			type: 'databasesError', boxId, connectionId: failed.connectionId, requestToken: failed.requestToken,
+			sectionInstanceId: failed.sectionInstanceId, targetGeneration: failed.targetGeneration, error: 'discovery failed',
+		}];
+		await drainMessages();
+		expect(databaseRequestTokenByBoxId[boxId]).toBeUndefined();
+		const retryToken = 'automatic-retry';
+		databaseRequestTokenByBoxId[boxId] = retryToken;
+		const retry = section.beginDatabaseLifecycleRequest(retryToken)!;
+		await deliverDatabases({ ...failed, ...retry, requestToken: retryToken }, [database]);
+		expect(schemaRequests()).toEqual([expect.objectContaining({ database, reason: 'automatic' })]);
+	});
+
+	it('preserves explicit discovery intent through a DOM reorder without disposing the section', async () => {
+		await selectItem('[data-testid="cluster-dropdown"]', 'auth-b');
+		const request = databaseRequest();
+		section.remove();
+		container.appendChild(section);
+		await section.updateComplete;
+		expect(section.getSchemaLifecycleIdentity()?.sectionInstanceId).toBe(request.sectionInstanceId);
+		await deliverDatabases(request, [database]);
+		expect(schemaRequests()).toHaveLength(1);
+		expect(schemaRequests()[0].reason).not.toBe('automatic');
+	});
+
+	it('does not transfer explicit discovery intent to a recreated same-ID section', async () => {
+		await selectItem('[data-testid="cluster-dropdown"]', 'auth-b');
+		const old = databaseRequest();
+		section.disposeSchemaLifecycle();
+		section.remove();
+		queryBoxes.splice(queryBoxes.indexOf(boxId), 1);
+		pState.restoreInProgress = true;
+		const { addQueryBox } = await import('../../src/webview/core/section-factory.js');
+		addQueryBox({ id: boxId });
+		section = document.getElementById(boxId) as KwQuerySection;
+		await section.updateComplete;
+		pState.restoreInProgress = false;
+		section.setDesiredClusterUrl(connections[1].clusterUrl);
+		section.setConnections(connections);
+		const current = databaseRequest();
+		expect(current.sectionInstanceId).not.toBe(old.sectionInstanceId);
+		await deliverDatabases(old, ['StaleDb'], false);
+		expect(databaseRequestTokenByBoxId[boxId]).toBe(current.requestToken);
+		await deliverDatabases(current, [database]);
+		expect(schemaRequests()).toEqual([expect.objectContaining({ database, reason: 'automatic' })]);
+	});
+
+	it.each(['account', 'physical generation'] as const)('does not reuse explicit discovery intent after a changed %s', async change => {
+		await selectItem('[data-testid="cluster-dropdown"]', 'auth-b');
+		const old = databaseRequest();
+		const replacement = connections.map(connection => connection.id === 'auth-b' ? {
+			...connection,
+			...(change === 'account' ? { accountPartition: 'partition-new' } : { connectionRevision: 2, connectionIdentityKey: 'owner-new' }),
+		} : connection);
+		setStateConnections(replacement);
+		section.setConnections(replacement);
+		if (change === 'account') {
+			await deliverDatabases(old, [database]);
+		} else {
+			await deliverDatabases(old, ['StaleDb'], false);
+			section.setDatabases([database]);
+		}
+		expect(schemaRequests()).toEqual([expect.objectContaining({ database, reason: 'automatic' })]);
+	});
+
+	it.each(['unchanged protection', 'protection enabled', 'protected revision advanced', 'protection removed', 'protection ABA'] as const)(
+		'fences pending discovery through real policy snapshots: %s', async change => {
+			const { captureKustoLeaveNoTracePolicyRuntime, restoreKustoLeaveNoTracePolicyRuntime } = await import('../../src/webview/core/persistence.js');
+			const savedPolicy = captureKustoLeaveNoTracePolicyRuntime();
+			const connection = connections[1];
+			const savedJson = '{"columns":["Saved"],"rows":[["synthetic-private-row"]],"metadata":{}}';
+			const deliverPolicy = async (revision: number, protectedCluster: boolean) => {
+				window.__kustoBufferedHostMessages = [{
+					type: 'connectionsData', connectionsRevision: 0, connections, accounts: [],
+					lastConnectionId: null, lastDatabase: null, cachedDatabases: {}, favorites: [],
+					caretDocsEnabled: true, caretDocsEnabledUserSet: false,
+					autoTriggerAutocompleteEnabled: true, autoTriggerAutocompleteEnabledUserSet: false,
+					copilotInlineCompletionsEnabled: true, copilotInlineCompletionsEnabledUserSet: false,
+					editingPreferencesRevision: 0, copilotChatFirstTimeDismissed: false, devNotesEnabled: false,
+					leaveNoTraceClusters: protectedCluster ? [connection.clusterUrl] : [],
+					leaveNoTraceGloballyBlocked: false, leaveNoTraceRevisions: { [connection.clusterUrl]: revision },
+					policyRequestId: savedPolicy.requiredPolicyRequestId || undefined,
+				}];
+				await drainMessages();
+				expect(state.connections).toEqual(connections);
+				expect(Object.values(captureKustoLeaveNoTracePolicyRuntime().revocationGenerations)).toEqual([revision]);
+			};
+			try {
+				await deliverPolicy(7, change !== 'protection enabled');
+				await selectItem('[data-testid="cluster-dropdown"]', connection.id);
+				const original = databaseRequest();
+				const target = kustoEditorSchemaCoordinator.getTarget(boxId);
+				pState.queryResultJsonByBoxId[boxId] = savedJson;
+				setResultsState(boxId, { boxId, columns: ['Saved'], rows: [['synthetic-private-row']] });
+				const savedArtifact = toPersistedResultArtifact(getCurrentResultArtifact(boxId));
+				expect(savedArtifact).toBeDefined();
+				pState.resultArtifactByBoxId[boxId] = savedArtifact!;
+				await deliverPolicy(change === 'unchanged protection' ? 7 : 8, change !== 'protection removed' && change !== 'protection ABA');
+				if (change === 'protection ABA') await deliverPolicy(9, true);
+				expect(kustoEditorSchemaCoordinator.getTarget(boxId)).toEqual(target);
+				expect(section.getSchemaLifecycleIdentity()).toEqual({
+					sectionInstanceId: original.sectionInstanceId, targetGeneration: original.targetGeneration,
+				});
+				expect(databaseRequest()).toEqual(original);
+				expect(databaseRequestTokenByBoxId[boxId]).toBe(original.requestToken);
+				expect(pState.queryResultJsonByBoxId[boxId]).toBe(savedJson);
+				expect(pState.resultArtifactByBoxId[boxId]).toEqual(savedArtifact);
+				expect(toPersistedResultArtifact(getCurrentResultArtifact(boxId))).toEqual(savedArtifact);
+				expect(getResultsState(boxId)).toMatchObject({ rows: [['synthetic-private-row']] });
+				let next: ReturnType<typeof databaseRequest> | undefined;
+				section.addEventListener('database-changed', () => {
+					section.setDesiredDatabase('LaterDb');
+					section.connectionCtrl.refreshDatabases();
+					next = databaseRequest();
+				}, { once: true });
+				await deliverDatabases(original, [database]);
+				expect(schemaRequests()).toEqual([expect.objectContaining({ connectionId: connection.id, database })]);
+				if (change === 'unchanged protection') expect(schemaRequests()[0].reason).not.toBe('automatic');
+				else expect(schemaRequests()[0].reason).toBe('automatic');
+				expect(next?.type).toBe('refreshDatabases');
+				expect(next!.requestToken).not.toBe(original.requestToken);
+				window.__kustoBufferedHostMessages = [{
+					type: 'databasesError', boxId, connectionId: original.connectionId, requestToken: original.requestToken,
+					sectionInstanceId: original.sectionInstanceId, targetGeneration: original.targetGeneration, error: 'stale policy discovery',
+				}];
+				await drainMessages();
+				expect(databaseRequestTokenByBoxId[boxId]).toBe(next!.requestToken);
+				await deliverDatabases(next!, [database, 'LaterDb']);
+				expect(schemaRequests()).toHaveLength(2);
+				expect(schemaRequests()[1]).toMatchObject({ connectionId: connection.id, database: 'LaterDb' });
+				expect(schemaRequests()[1].reason).not.toBe('automatic');
+			} finally {
+				restoreKustoLeaveNoTracePolicyRuntime(savedPolicy);
+			}
+		},
+	);
+});
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

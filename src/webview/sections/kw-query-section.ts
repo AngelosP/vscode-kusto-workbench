@@ -413,10 +413,12 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		return next;
 	}
 
-	public beginDatabaseLifecycleRequest(requestToken: string) {
-		return this._schemaSectionLease
+	public beginDatabaseLifecycleRequest(requestToken: string, allowInteractive = false) {
+		const request = this._schemaSectionLease
 			? kustoEditorSchemaCoordinator.beginDatabaseRequest(this._schemaSectionLease, requestToken)
 			: undefined;
+		this.connectionCtrl.captureDatabaseRequestOrigin(request, allowInteractive);
+		return request;
 	}
 
 	public beginSchemaLifecycleRequest(requestToken: string) {
@@ -1203,6 +1205,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 	/** Set the desired database (used during restoration). */
 	public setDesiredDatabase(db: string): void {
+		if (this._desiredDatabase !== db) this.connectionCtrl.captureDatabaseRequestOrigin(undefined, false);
 		this._desiredDatabase = db;
 		if (String(db || '').trim()) {
 			this._markConnectionSelectionForPersistence();
@@ -1210,7 +1213,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	}
 
 	public clearDesiredDatabase(): void {
-		this._desiredDatabase = '';
+		this.setDesiredDatabase('');
 	}
 
 	/** Update available connections. Resolves desired/current/last selection. */
@@ -1317,7 +1320,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	}
 
 	/** Update available databases. Applies desired database if set. */
-	public setDatabases(databases: string[], desiredDb?: string): void {
+	public setDatabases(databases: string[], desiredDb?: string, allowInteractive = false): void {
 		this._databases = databases;
 		this._databasesLoading = false;
 		const findDatabase = (candidate: string): string | undefined => {
@@ -1340,7 +1343,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 				this._desiredDatabase = '';
 				if (prev !== this._database) {
 					this.dispatchEvent(new CustomEvent('database-changed', {
-						detail: { boxId: this.boxId, database: this._database },
+						detail: { boxId: this.boxId, database: this._database, allowInteractive },
 						bubbles: true, composed: true,
 					}));
 				}
@@ -1355,7 +1358,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			this._desiredDatabase = '';
 			if (prev !== this._database) {
 				this.dispatchEvent(new CustomEvent('database-changed', {
-					detail: { boxId: this.boxId, database: this._database, source: 'global-last' },
+					detail: { boxId: this.boxId, database: this._database, source: 'global-last', allowInteractive },
 					bubbles: true, composed: true,
 				}));
 			}
@@ -1367,7 +1370,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			this._desiredDatabase = '';
 			if (prev !== db) {
 				this.dispatchEvent(new CustomEvent('database-changed', {
-					detail: { boxId: this.boxId, database: db, source: 'auto-single' },
+					detail: { boxId: this.boxId, database: db, source: 'auto-single', allowInteractive },
 					bubbles: true, composed: true,
 				}));
 			}
