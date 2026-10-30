@@ -16,6 +16,10 @@ function getChannel(): vscode.LogOutputChannel {
 	return channel;
 }
 
+export function isWorkbenchTraceEnabled(): boolean {
+	try { return getChannel().logLevel === vscode.LogLevel.Trace; } catch { return false; }
+}
+
 export function getWorkbenchLogger(): WorkbenchLogger {
 	const logger = getChannel();
 	return {

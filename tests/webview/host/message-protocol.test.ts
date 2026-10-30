@@ -373,14 +373,14 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/editingPreferencesApplicationHandler.ts::updatePreference::postToAllWebviews::73:10',
 	'src/host/editorCursorStatusApplicationHandler.ts::postMessage::postMessage::83:10',
 	'src/host/kqlLanguageRequestApplicationHandler.ts::postMessage::postMessage::48:3',
-	'src/host/kqlxEditorProvider.ts::deliverCommandResult::deliverWebviewMessage::5636:10',
+	'src/host/kqlxEditorProvider.ts::deliverCommandResult::deliverWebviewMessage::5666:10',
 	'src/host/kustoConnectionOnboardingApplicationHandler.ts::testConnectionFromWebview::postMessage::192:4',
 	'src/host/kustoConnectionsProjectionApplicationHandler.ts::publishSnapshot::postMessage::122:4',
 	'src/host/kustoExecutionCoordinator.ts::deliver::postMessage::500:33',
 	'src/host/kustoSectionExecutionApplicationHandler.ts::claimKustoExecutionInWebview::postMessage::579:27',
 	'src/host/kustoSectionExecutionApplicationHandler.ts::handleMessage::postMessage::140:27',
 	'src/host/kustoSectionExecutionApplicationHandler.ts::postBeforeDeadline::postMessage::257:17',
-	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::798:33',
+	'src/host/mainWebviewStartupGateway.ts::deliver::postMessage::804:33',
 	'src/host/pythonExecutionApplicationHandler.ts::postMessage::postMessage::93:10',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::462:27',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::611:28',
@@ -2262,7 +2262,7 @@ describe('Message Protocol Contract', () => {
 			const extraction = extractPostMessageTypes(relativePath);
 			expect(extraction.types).toContain('requestMarkdownCommandBarrier');
 			expect(extraction.dynamicSites).toEqual([
-				'src/host/kqlxEditorProvider.ts::deliverCommandResult::deliverWebviewMessage::5636:10',
+				'src/host/kqlxEditorProvider.ts::deliverCommandResult::deliverWebviewMessage::5666:10',
 			]);
 			const sourceFile = ts.createSourceFile(relativePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 			const commandResultTypes = new Set<string | undefined>();

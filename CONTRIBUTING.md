@@ -560,7 +560,7 @@ The build produces multiple bundles via esbuild (`esbuild.js`). The formats and 
 
 **Run `npm run bundle-size` before and after any change that touches dependencies, imports, or build config.** If a bundle grows, justify the increase.
 
-The current host cap is 2543 KiB (2604032 bytes: baseline 2493 plus the unchanged 50 KiB buffer), following the user-approved 2 KiB increase from 2541 KiB for deferred native readiness recovery. Only the host baselines in `esbuild.js` and `scripts/bundle-size-gate.mjs` changed; all other limits, including the 3349 KiB main webview cap, remain unchanged. Keep both host baselines synchronized and require explicit approval for any further increase; this checkpoint is not general permission to raise budgets.
+The current host cap is 2545 KiB (2606080 bytes: baseline 2495 plus the unchanged 50 KiB buffer), following the user-approved host-only 2 KiB increase for correlated activation diagnostics. The preceding 2543 KiB cap covered deferred native readiness recovery. Only the host baselines in `esbuild.js` and `scripts/bundle-size-gate.mjs` changed; all other limits, including the 3349 KiB main webview cap, remain unchanged. Keep both host baselines synchronized and require explicit approval for any further increase; this checkpoint is not general permission to raise budgets.
 
 ---
 

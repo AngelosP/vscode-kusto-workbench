@@ -46,7 +46,7 @@ import { isRuntimeProxy } from '../shared/runtimeMessageEnvelope.js';
 import type { KustoExecutionPreparation, WorkbenchFileCloseLifecycle } from './workbenchToolSessionApplicationHandler.js';
 import { withKqlxDocumentWriteLock } from './kqlxEditorProvider.js';
 import { canonicalAddableSectionKind } from '../shared/documentSectionCapabilities.js';
-import { createFileOpenTrace } from './fileOpenTrace';
+import { createFileOpenTrace, observeFileOpenActivation } from './fileOpenTrace';
 
 export type TargetFields = {
 	openFileId?: string;
@@ -4130,26 +4130,36 @@ export class KustoWorkbenchToolOrchestrator {
 		try { uriHash = createHash('sha256').update(effectiveInfo.logicalUriKey).digest('hex'); } catch {}
 		const trace = createFileOpenTrace('activate', { uriHash });
 		let releaseBackgroundLifecycle: (() => void) | undefined;
+		let diagnosticPhase: 'lifecycle' | 'openWith' | 'recovery' | 'release' = 'lifecycle';
+		const observation = observeFileOpenActivation(trace, effectiveInfo.logicalUri, () => ({
+			phase: diagnosticPhase,
+			backgroundOwnerMember: this.hostOwnedBackgroundFiles.has(effectiveInfo.logicalUriKey),
+			backgroundOperationMember: this.backgroundFileOperations.has(effectiveInfo.logicalUriKey),
+			mutationBlockCount: this.backgroundMutationBlocks.get(effectiveInfo.logicalUriKey) ?? 0,
+		}));
 		try {
 			this.clearBackgroundOpeningLease(effectiveInfo.logicalUriKey);
 			trace.mark('lifecycle.start');
 			releaseBackgroundLifecycle = await this.acquireHostOwnedBackgroundLifecycle(effectiveInfo.logicalUriKey);
 			trace.mark('lifecycle.done');
 		} catch (error) {
-			trace.mark('lifecycle.failed');
-			return {
-				success: false,
-				openFileId: effectiveInfo.openFileId,
-				uri: effectiveInfo.uriString,
-				logicalUri: effectiveInfo.logicalUriString,
-				fileKind: effectiveInfo.fileKind,
-				...(effectiveInfo.filePath ? { filePath: effectiveInfo.filePath } : {}),
-				...(effectiveInfo.fileName ? { fileName: effectiveInfo.fileName } : {}),
-				error: error instanceof Error ? error.message : String(error),
-			};
+			try {
+				trace.mark('lifecycle.failed');
+				return {
+					success: false,
+					openFileId: effectiveInfo.openFileId,
+					uri: effectiveInfo.uriString,
+					logicalUri: effectiveInfo.logicalUriString,
+					fileKind: effectiveInfo.fileKind,
+					...(effectiveInfo.filePath ? { filePath: effectiveInfo.filePath } : {}),
+					...(effectiveInfo.fileName ? { fileName: effectiveInfo.fileName } : {}),
+					error: error instanceof Error ? error.message : String(error),
+				};
+			} finally { try { observation.dispose(); } catch {} }
 		}
 		try {
 			try {
+				diagnosticPhase = 'openWith';
 				trace.mark('openWith.start');
 				await vscode.commands.executeCommand('vscode.openWith', effectiveInfo.logicalUri, editorId, {
 					viewColumn: vscode.ViewColumn.Active,
@@ -4177,6 +4187,7 @@ export class KustoWorkbenchToolOrchestrator {
 			if (liveConnection) {
 				this.activateConnection(liveConnection.token);
 				try {
+					diagnosticPhase = 'recovery';
 					trace.mark('recovery.start', { callback: !!liveConnection.reactivate });
 					const ready = liveConnection.reactivate
 						? await liveConnection.reactivate()
@@ -4208,7 +4219,9 @@ export class KustoWorkbenchToolOrchestrator {
 				...(activationError ? { error: activationError } : {}),
 			};
 		} finally {
-			releaseBackgroundLifecycle?.();
+			diagnosticPhase = 'release';
+			try { releaseBackgroundLifecycle?.(); }
+			finally { try { observation.dispose(); } catch {} }
 		}
 	}
 

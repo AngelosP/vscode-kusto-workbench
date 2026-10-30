@@ -2052,6 +2052,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		let activeProjectionPolicyFingerprint = '';
 		let activeProjectionRuntimeIdentity = '';
 		let automaticRefreshSequence = 0;
+		let pendingAutomaticRequiredGeneration = 0;
+		let documentRequestSequence = 0;
 		queryEditor.setWorkbenchToolSnapshotIdentity(() => `${activeProjectionGeneration}:${panelSourceObservationSequence}`);
 		let activeProjectionAuthorityToken = 0;
 		let activeProjectionSourceText = document.getText();
@@ -3497,7 +3499,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			const refreshSequence = ++automaticRefreshSequence;
 			const expectedEditRevision = projectionSession.currentEditRevision;
 			const acceptedGeneration = activeProjectionGeneration;
-			const acceptedRequiredGeneration = requiredProjectionGeneration;
+			const acceptedRequiredGeneration = requiredProjectionGeneration || pendingAutomaticRequiredGeneration;
+			pendingAutomaticRequiredGeneration = acceptedRequiredGeneration;
+			const acceptedRequestSequence = documentRequestSequence;
 			const acceptedSource = activeProjectionSourceText;
 			const acceptedVersion = document.version;
 			const acceptedToken = activeProjectionAuthorityToken;
@@ -3590,6 +3594,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						&& document.isClosed !== true && vscode.workspace.textDocuments.includes(document)
 						&& document.version === acceptedVersion && document.getText() === acceptedSource
 						&& refreshSequence === automaticRefreshSequence && generation === postDocumentGeneration
+						&& acceptedRequestSequence === documentRequestSequence
 						&& requiredProjectionGeneration === generation && activeProjectionGeneration === acceptedGeneration
 						&& activeProjectionSourceText === acceptedSource && activeProjectionAuthorityToken === acceptedToken
 						&& markdownDocumentQueue.latestAuthority?.token === acceptedToken
@@ -3611,6 +3616,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					});
 				}
 			}).catch(() => undefined).finally(() => {
+				if (refreshSequence === automaticRefreshSequence) pendingAutomaticRequiredGeneration = 0;
 				pendingDocumentProjections--;
 				notifyDocumentReadiness();
 			});
@@ -4946,8 +4952,31 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (webviewInitialized && requestId === undefined) return Promise.resolve(true);
 			if (initialProjectionRecovery) {
 				if (requestId === undefined) return initialProjectionRecovery;
+				const admittedRecovery = startupGateway.hasAdmittedRecovery(requestId);
+				const requestSequence = documentRequestSequence;
+				const sourceVersion = document.version;
+				const readinessIdentity = startupGateway.readinessIdentity;
+				const activation = [...pendingProjectionActivations.values()].find(candidate => candidate.generation === postDocumentGeneration);
 				return initialProjectionRecovery.then(
-					() => ensureInitialDocument(allowFollowUp, requestId, operationDeadline),
+					delivered => {
+						if (admittedRecovery && delivered && performance.now() < operationDeadline
+							&& !outerDisposed && documentViewSessionActive && !isSessionFile && !linkedQueryUri
+							&& document.isClosed !== true && vscode.workspace.textDocuments.includes(document)
+							&& document.version === sourceVersion && documentRequestSequence === requestSequence
+							&& startupGateway.readinessIdentity === readinessIdentity
+							&& startupGateway.hasAdmittedRecovery(requestId, true)
+							&& (!activation || activation.runtimeIdentity === startupGateway.runtimeIdentity)
+							&& activeProjectionGeneration > 0 && activeProjectionGeneration === requiredProjectionGeneration
+							&& activeProjectionGeneration === postDocumentGeneration && pendingDocumentProjections === 0
+							&& pendingProjectionActivations.size === 0 && !pendingProjectionRecovery
+							&& activeProjectionSourceText === document.getText()
+							&& activeProjectionRuntimeIdentity === startupGateway.runtimeIdentity
+							&& markdownDocumentQueue.latestAuthority?.token === activeProjectionAuthorityToken
+							&& markdownDocumentQueue.latestAuthority.sourceText === activeProjectionSourceText
+							&& activeMarkdownOwnerEntry && activeMarkdownOwnerEntry === panelOwnerRegistration.owner
+							&& this.markdownDocuments.get(markdownDocumentKey) === activeMarkdownOwnerEntry) return true;
+						return ensureInitialDocument(allowFollowUp, requestId, operationDeadline);
+					},
 					() => ensureInitialDocument(allowFollowUp, requestId, operationDeadline),
 				);
 			}
@@ -5499,6 +5528,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					return;
 				}
 				case 'requestDocument':
+					documentRequestSequence++;
 					KqlxEditorProvider.initializedPanels.delete(webviewPanel);
 					KqlxEditorProvider.notifyPanelChange(KqlxEditorProvider.panelKey(document.uri));
 					perfMark('host.kqlx.requestDocument.received');

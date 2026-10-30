@@ -1945,7 +1945,7 @@ test('TypeSpec guard contract fingerprints the executing local function independ
   const feature = typeSpecFeatureSource();
   const expression = [...feature.matchAll(/"""\r?\n([\s\S]*?)\r?\n\s*"""/g)][0][1].trim();
   const hashes = [];
-  for (const source of [expression, expression.replace('records.length === 128', 'records.length === 127'), expression.replace('metadata.version > 0', 'metadata.version > 1'), expression.replace('bytes.length, 54487', 'bytes.length, 54488')]) {
+  for (const source of [expression, expression.replace('panelRecords.length === 128', 'panelRecords.length === 127'), expression.replace('metadata.version > 0', 'metadata.version > 1'), expression.replace('bytes.length, 54487', 'bytes.length, 54488')]) {
     const expected = createHash('sha256').update(Function.prototype.toString.call(new Script(source.slice(0, -2)).runInNewContext())).digest('hex');
     for (const trial of ['standalone', 'prefix100-103']) {
       let reads = 0;
@@ -1958,7 +1958,7 @@ test('TypeSpec guard contract fingerprints the executing local function independ
       assert.equal(reads, 1);
       assert.equal(outcome.classification, 'SETUP_BLOCKED');
       assert.match(outcome.errors[0].message, /known fingerprint boundary/);
-      assert.deepEqual(JSON.parse(JSON.stringify(outcome.guardContract)), { version: 'typespec-dispatcher-v2', scriptSha256: expected });
+      assert.deepEqual(JSON.parse(JSON.stringify(outcome.guardContract)), { version: 'typespec-dispatcher-v3', scriptSha256: expected });
       hashes.push(outcome.guardContract.scriptSha256);
     }
   }
@@ -2678,6 +2678,254 @@ test('TypeSpec dispatcher observer keeps actual same-URI panels separate, dedupl
   fixture.assertRestored();
 });
 
+for (const panelCount of [1, 5]) test(`TypeSpec dispatcher observer preserves bounded traffic across ${panelCount} panels and cleanup`, async () => {
+  const fixture = dispatcherFixture();
+  const owners = [], expectedLifecycle = [];
+  const metadataKeys = ['type', 'probeId', 'runtimeId', 'requestId', 'reloadRequestId', 'sourceGeneration', 'viewSessionId', 'applied'];
+  const lifecycleRow = (owner, direction, message) => [owner.panelId, owner.referenceIndex, fixture.behavior.phase, direction, ...metadataKeys.map(key => message[key] ?? null)];
+  const routine = [
+    ['receive', 'fileOpenTrace'], ['receive', 'getConnections'], ['post', 'connectionsData'], ['post', 'editingPreferencesData'],
+    ['receive', 'getDatabases'], ['post', 'databasesData'], ['receive', 'getSqlDatabases'], ['post', 'sqlDatabasesLoading'],
+    ['post', 'sqlDatabasesData'], ['receive', 'refreshDatabases'], ['receive', 'refreshSqlDatabases'], ['post', 'sqlDatabasesError'],
+    ['receive', 'prefetchSqlSchema'], ['post', 'sqlSchemaData'], ['receive', 'checkCopilotAvailability'], ['post', 'copilotAvailability'],
+    ['post', 'sqlConnectionsData'], ['receive', 'saveLastSelection'],
+  ];
+  const send = async (owner, direction, message, lifecycle = false) => {
+    const envelope = { ...message, runtimeId: owner.runtimeId };
+    if (lifecycle) expectedLifecycle.push(lifecycleRow(owner, direction, envelope));
+    if (direction === 'receive') fixture.emit(envelope, owner.panel);
+    else {
+      fixture.behavior.postResult = Promise.resolve(true);
+      assert.equal(owner.panel.webview.postMessage(envelope), fixture.behavior.postResult);
+      await fixture.behavior.postResult;
+    }
+  };
+  fixture.observer.install(fixture.facade);
+  fixture.register();
+  try {
+    for (let index = 0; index < panelCount; index++) {
+      const panel = index === 0 ? fixture.panel : fixture.makePanel();
+      if (index > 0) fixture.originals.push({ target: panel.webview, key: 'postMessage', descriptor: Object.getOwnPropertyDescriptor(panel.webview, 'postMessage') });
+      const referenceIndex = panelCount === 1 ? 104 : 100 + index;
+      const uri = `file:///owned/activation-${referenceIndex}.kqlx`;
+      const owner = { panel, panelId: index + 1, referenceIndex, runtimeId: `runtime-${index}` };
+      fixture.references.set(uri, { index: referenceIndex });
+      fixture.behavior.phase = `first-activation-${referenceIndex}`;
+      await fixture.resolve(panel, uri);
+      await send(owner, 'post', { type: 'mainWebviewDispatcherProbe', probeId: `probe-${index}` });
+      const lifecycle = [
+        ['receive', { type: 'mainWebviewDispatcherReady', probeId: `probe-${index}` }],
+        ['receive', { type: 'requestDocument', requestId: `reload-${index}` }],
+        ['post', { type: 'documentData', reloadRequestId: `reload-${index}`, sourceGeneration: 1, viewSessionId: `session-${index}` }],
+        ['receive', { type: 'documentReloadApplied', reloadRequestId: `reload-${index}`, sourceGeneration: 1, viewSessionId: `session-${index}`, applied: true }],
+        ['post', { type: 'requestToolState', requestId: `state-${index}` }],
+        ['receive', { type: 'toolStateResponse', requestId: `state-${index}`, sections: [] }],
+      ];
+      for (const [position, [direction, type]] of routine.entries()) {
+        await send(owner, direction, { type });
+        if (position === 8) for (const previous of owners) for (const [direction, type] of routine.slice(0, 4)) await send(previous, direction, { type });
+        if (position % 3 === 2) {
+          const [direction, message] = lifecycle[Math.floor(position / 3)];
+          await send(owner, direction, message, true);
+          for (let repeat = 0; repeat < 20; repeat++) await send(owner, 'receive', { type: 'fileOpenTrace' });
+        }
+      }
+      owners.push(owner);
+    }
+    fixture.behavior.phase = 'cleanup';
+    for (const owner of owners) {
+      for (const [direction, type] of routine.slice(0, 4)) await send(owner, direction, { type });
+      await send(owner, 'receive', { type: 'requestDocument', requestId: `cleanup-${owner.panelId}` }, true);
+      await send(owner, 'receive', { type: 'documentReloadApplied', reloadRequestId: `cleanup-${owner.panelId}`, sourceGeneration: 2, applied: false }, true);
+    }
+    const result = fixture.observer.restore();
+    const crossPanelPhases = panelCount * (panelCount - 1) / 2;
+    const received = 137 * panelCount + 2 * crossPanelPhases, submissions = 14 * panelCount + 2 * crossPanelPhases;
+    assert.equal(fixture.calls.routed.length, received);
+    assert.equal(fixture.calls.post.length, submissions);
+    assert.equal(fixture.calls.register.length, 1);
+    assert.equal(fixture.calls.resolve.length, panelCount);
+    assert.equal(result.panels.length, panelCount);
+    assert.equal(result.sequence, received + 2 * submissions);
+    for (const key of ['overflow', 'captureFailures', 'boundaryUnavailable', 'boundaryDiagnosticOverflow', 'truncated', 'settlementUnavailable', 'restoreMismatch', 'restoreFailures', 'disposeFailures', 'pendingAtRestore']) assert.equal(result[key], 0, key);
+    for (const key of ['observed', 'freshPanelObserved', 'completeCapture', 'complete', 'restored', 'retired']) assert.equal(result[key], true, key);
+    assert.equal(result.status, 'COMPLETE');
+    assert.equal(result.boundaryDiagnostics.length, 0);
+    assert.equal(result.records.length, 31 * panelCount + 4 * crossPanelPhases);
+    assert.equal(result.records.reduce((total, record) => total + record.count, 0), received + submissions);
+    assert.equal(result.records.reduce((total, record) => total + record.attempts, 0), submissions);
+    assert.equal(result.records.reduce((total, record) => total + record.successTrue, 0), submissions);
+    for (const [index, owner] of owners.entries()) {
+      const panel = result.panels[index], records = result.records.filter(record => record.panelId === owner.panelId);
+      assert.equal(panel.referenceIndex, owner.referenceIndex);
+      assert.equal(panel.received, 137 + 2 * (panelCount - index - 1));
+      assert.equal(panel.submissions, 14 + 2 * (panelCount - index - 1));
+      assert.equal(panel.pending, 0);
+      assert.equal(panel.inboundAttached, true); assert.equal(panel.postWrapped, true);
+      assert.equal(records.length, 31 + 4 * (panelCount - index - 1));
+      assert.ok(records.length <= 128);
+      assert.equal(records.filter(record => record.direction === 'receive').reduce((total, record) => total + record.count, 0), panel.received);
+      assert.equal(records.filter(record => record.direction === 'post').reduce((total, record) => total + record.count, 0), panel.submissions);
+      assert.ok(records.every(record => record.referenceIndex === owner.referenceIndex && record.runtimeId === owner.runtimeId && record.uriClassification === (owner.referenceIndex === 104 ? 'typespec-target' : 'owned-prefix')));
+      assert.equal(fixture.listeners.get(owner.panel).size, 1);
+    }
+    const lifecycle = result.records.filter(record => record.priority === 'lifecycle');
+    assert.deepEqual(Array.from(lifecycle, record => [record.panelId, record.referenceIndex, record.phase, record.direction, ...metadataKeys.map(key => record[key] ?? null)]), expectedLifecycle);
+    assert.ok(lifecycle.every(record => record.count === 1 && record.firstOrder === record.lastOrder));
+    assert.ok(result.records.every((record, index) => index === 0 || record.firstOrder > result.records[index - 1].firstOrder));
+    assert.ok(result.records.every(record => record.pending === 0 && record.successFalse === 0 && record.rejected === 0 && record.thrown === 0 && record.settlementUnavailable === 0));
+  } finally { fixture.observer.restore(); fixture.assertRestored(); }
+});
+
+for (const { priority, type, limit, identities } of [
+  { priority: 'routine', type: 'fileOpenTrace', limit: 32, identities: ['requestId', 'sourceGeneration'] },
+  { priority: 'probe', type: 'mainWebviewDispatcherProbe', limit: 64, identities: ['probeId', 'requestId', 'sourceGeneration'] },
+]) for (const identity of identities) test(`TypeSpec dispatcher observer keeps same-panel phase ${priority} overflow fatal (${identity})`, () => {
+  const fixture = dispatcherFixture();
+  fixture.observer.install(fixture.facade); fixture.register(); fixture.resolve();
+  const message = index => ({ type, [identity]: identity === 'sourceGeneration' ? index : `identity-${index}` });
+  const send = value => priority === 'probe' ? assert.equal(fixture.panel.webview.postMessage(value), true) : fixture.emit(value);
+  try {
+    for (let index = 0; index < limit; index++) send(message(index));
+    const full = fixture.observer.snapshot();
+    assert.equal(full.records.length, limit);
+    assert.equal(full.overflow, 0);
+    assert.equal(full.completeCapture, true);
+    send(message(limit));
+    assert.equal(fixture.observer.snapshot().overflow, 1, 'A distinct identity beyond the phase quota must be lost and reported');
+    send(message(0));
+    const peer = fixture.makePanel();
+    fixture.originals.push({ target: peer.webview, key: 'postMessage', descriptor: Object.getOwnPropertyDescriptor(peer.webview, 'postMessage') });
+    fixture.resolve(peer);
+    assert.equal(peer.webview.postMessage({ type: 'mainWebviewDispatcherProbe', probeId: 'peer' }), true);
+    fixture.emit({ type: 'fileOpenTrace' }, peer);
+    fixture.behavior.phase = 'cleanup';
+    send(message(0));
+    const result = fixture.observer.restore();
+    assert.equal(result.overflow, 1, 'Admitted repeats, another panel and a fresh phase must not reset or add to the original loss');
+    assert.equal(result.records.length, limit + 3);
+    assert.equal(result.records[0].count, 2);
+    assert.equal(result.records.at(-1).panelId, 1);
+    assert.equal(result.records.at(-1).phase, 'cleanup');
+    assert.equal(result.records.at(-1).count, 1);
+    assert.deepEqual(Array.from(result.records.filter(record => record.panelId === 2), record => [record.type, record.count]), [['mainWebviewDispatcherProbe', 1], ['fileOpenTrace', 1]]);
+    assert.equal(result.records.reduce((total, record) => total + record.count, 0), limit + 4);
+    assert.equal(fixture.calls.post.length, priority === 'probe' ? limit + 4 : 1);
+    assert.equal(fixture.calls.routed.length, priority === 'routine' ? limit + 4 : 1);
+    assert.equal(result.panels[0].received, priority === 'routine' ? limit + 3 : 0);
+    assert.equal(result.panels[0].submissions, priority === 'probe' ? limit + 3 : 0);
+    assert.equal(result.records.reduce((total, record) => total + record.successTrue, 0), priority === 'probe' ? limit + 3 : 1);
+    assert.equal(result.complete, false); assert.equal(result.completeCapture, false); assert.equal(result.status, 'INCOMPLETE');
+    assert.equal(result.restored, true);
+    for (const key of ['captureFailures', 'boundaryUnavailable', 'boundaryDiagnosticOverflow', 'truncated', 'settlementUnavailable', 'restoreMismatch', 'restoreFailures', 'disposeFailures', 'pendingAtRestore']) assert.equal(result[key], 0, key);
+  } finally { fixture.observer.restore(); fixture.assertRestored(); }
+});
+
+for (const { priority, type, phaseSize } of [
+  { priority: 'lifecycle', type: 'requestDocument', phaseSize: 129 },
+  { priority: 'routine', type: 'fileOpenTrace', phaseSize: 32 },
+  { priority: 'probe', type: 'mainWebviewDispatcherProbe', phaseSize: 64 },
+]) test(`TypeSpec dispatcher observer enforces the same-panel 128-row pool (${priority})`, () => {
+  const fixture = dispatcherFixture();
+  fixture.observer.install(fixture.facade); fixture.register(); fixture.resolve();
+  const send = index => {
+    fixture.behavior.phase = `phase-${Math.floor(index / phaseSize)}`;
+    const message = { type, requestId: `identity-${index % phaseSize}` };
+    if (priority === 'probe') assert.equal(fixture.panel.webview.postMessage(message), true); else fixture.emit(message);
+  };
+  try {
+    for (let index = 0; index < 128; index++) send(index);
+    const full = fixture.observer.snapshot();
+    assert.equal(full.records.length, 128);
+    assert.equal(full.overflow, 0);
+    assert.equal(full.completeCapture, true);
+    assert.equal(new Set(full.records.map(record => record.phase)).size, Math.ceil(128 / phaseSize));
+    send(128);
+    const result = fixture.observer.restore();
+    assert.equal(result.records.length, 128);
+    assert.equal(result.overflow, 1);
+    assert.equal(result.complete, false); assert.equal(result.completeCapture, false); assert.equal(result.status, 'INCOMPLETE');
+    assert.equal(result.restored, true);
+    assert.ok(result.records.every(record => record.panelId === 1 && record.priority === priority && record.count === 1 && record.pending === 0));
+    assert.equal(result.records.reduce((total, record) => total + record.count, 0), 128);
+    assert.equal(result.panels[0].submissions, priority === 'probe' ? 129 : 0);
+    assert.equal(result.panels[0].received, priority === 'probe' ? 0 : 129);
+    assert.equal(fixture.calls.post.length, priority === 'probe' ? 129 : 0);
+    assert.equal(fixture.calls.routed.length, priority === 'probe' ? 0 : 129);
+    assert.equal(result.records.reduce((total, record) => total + record.successTrue, 0), priority === 'probe' ? 128 : 0);
+    for (const key of ['captureFailures', 'boundaryUnavailable', 'boundaryDiagnosticOverflow', 'truncated', 'settlementUnavailable', 'restoreMismatch', 'restoreFailures', 'disposeFailures', 'pendingAtRestore']) assert.equal(result[key], 0, key);
+  } finally { fixture.observer.restore(); fixture.assertRestored(); }
+});
+
+for (const localRoutine of [false, true]) test(`TypeSpec dispatcher observer confines lifecycle eviction to its own panel (localRoutine=${localRoutine})`, () => {
+  const fixture = dispatcherFixture();
+  fixture.observer.install(fixture.facade); fixture.register(); fixture.resolve();
+  const target = fixture.makePanel();
+  fixture.originals.push({ target: target.webview, key: 'postMessage', descriptor: Object.getOwnPropertyDescriptor(target.webview, 'postMessage') });
+  fixture.resolve(target);
+  try {
+    fixture.emit({ type: 'fileOpenTrace', requestId: 'peer-before' });
+    const peerBefore = fixture.observer.snapshot().records[0];
+    if (localRoutine) fixture.emit({ type: 'fileOpenTrace', requestId: 'target-routine' }, target);
+    for (let index = 0; index < (localRoutine ? 127 : 128); index++) fixture.emit({ type: 'requestDocument', requestId: `target-${index}` }, target);
+    const full = fixture.observer.snapshot();
+    assert.equal(full.records.length, 129);
+    assert.equal(full.overflow, 0);
+    assert.equal(full.completeCapture, true);
+    fixture.emit({ type: 'documentReloadApplied', reloadRequestId: 'target-terminal', sourceGeneration: 2, applied: true }, target);
+    fixture.emit({ type: 'fileOpenTrace', requestId: 'peer-after' });
+    const result = fixture.observer.restore();
+    assert.equal(result.overflow, 1);
+    assert.equal(result.records.length, 130);
+    assert.deepEqual(result.records[0], peerBefore, 'An overflowing panel must not evict or rewrite its peer');
+    const targetRecords = result.records.filter(record => record.panelId === 2);
+    assert.equal(targetRecords.length, 128);
+    assert.ok(targetRecords.every(record => record.priority === 'lifecycle' && record.count === 1));
+    assert.equal(targetRecords.some(record => record.reloadRequestId === 'target-terminal'), localRoutine);
+    assert.deepEqual(Array.from(targetRecords.filter(record => record.type === 'requestDocument'), record => record.requestId), Array.from({ length: localRoutine ? 127 : 128 }, (_, index) => `target-${index}`));
+    assert.deepEqual(Array.from(result.records.filter(record => record.panelId === 1), record => record.requestId), ['peer-before', 'peer-after']);
+    assert.deepEqual(Array.from(result.panels, panel => panel.received), [2, 129]);
+    assert.equal(fixture.calls.routed.length, 131); assert.equal(fixture.calls.post.length, 0);
+    assert.equal(result.complete, false); assert.equal(result.completeCapture, false); assert.equal(result.status, 'INCOMPLETE');
+    assert.equal(result.restored, true);
+    for (const key of ['captureFailures', 'boundaryUnavailable', 'boundaryDiagnosticOverflow', 'truncated', 'settlementUnavailable', 'restoreMismatch', 'restoreFailures', 'disposeFailures', 'pendingAtRestore']) assert.equal(result[key], 0, key);
+  } finally { fixture.observer.restore(); fixture.assertRestored(); }
+});
+
+test('TypeSpec dispatcher observer rejects panel 33 without changing SDK calls or clearing overflow', () => {
+  const fixture = dispatcherFixture();
+  fixture.observer.install(fixture.facade); fixture.register();
+  try {
+    for (let index = 0; index < 33; index++) {
+      const panel = index === 0 ? fixture.panel : fixture.makePanel();
+      const descriptor = Object.getOwnPropertyDescriptor(panel.webview, 'postMessage');
+      if (index > 0) fixture.originals.push({ target: panel.webview, key: 'postMessage', descriptor });
+      assert.equal(fixture.resolve(panel), fixture.behavior.resolveResult);
+      assert.equal(panel.webview.postMessage({ type: 'mainWebviewDispatcherProbe', probeId: `probe-${index}` }), true);
+      fixture.emit({ type: 'mainWebviewDispatcherReady', probeId: `probe-${index}` }, panel);
+      const snapshot = fixture.observer.snapshot();
+      assert.equal(snapshot.panels.length, Math.min(index + 1, 32));
+      assert.equal(snapshot.records.length, 2 * Math.min(index + 1, 32));
+      assert.equal(snapshot.overflow, index === 32 ? 1 : 0);
+      assert.equal(snapshot.completeCapture, index < 32);
+      if (index === 32) {
+        assert.deepEqual(Object.getOwnPropertyDescriptor(panel.webview, 'postMessage'), descriptor);
+        assert.equal(fixture.listeners.get(panel).size, 1);
+      }
+    }
+    const result = fixture.observer.restore();
+    assert.deepEqual(Array.from(result.panels, panel => panel.panelId), Array.from({ length: 32 }, (_, index) => index + 1));
+    assert.ok(result.panels.every(panel => panel.received === 1 && panel.submissions === 1 && panel.pending === 0 && panel.inboundAttached && panel.postWrapped));
+    assert.equal(result.records.reduce((total, record) => total + record.successTrue, 0), 32);
+    assert.equal(fixture.calls.register.length, 1); assert.equal(fixture.calls.resolve.length, 33);
+    assert.equal(fixture.calls.post.length, 33); assert.equal(fixture.calls.routed.length, 33);
+    assert.equal(result.overflow, 1); assert.equal(result.complete, false); assert.equal(result.completeCapture, false);
+    assert.equal(result.status, 'INCOMPLETE'); assert.equal(result.restored, true);
+    for (const key of ['captureFailures', 'boundaryUnavailable', 'boundaryDiagnosticOverflow', 'truncated', 'settlementUnavailable', 'restoreMismatch', 'restoreFailures', 'disposeFailures', 'pendingAtRestore']) assert.equal(result[key], 0, key);
+    assert.ok([...fixture.listeners.values()].every(callbacks => callbacks.size === 1));
+  } finally { fixture.observer.restore(); fixture.assertRestored(); }
+});
+
 test('TypeSpec dispatcher observer aggregates 120 retries and reserves bounded raw lifecycle evidence', async () => {
   const fixture = dispatcherFixture();
   fixture.observer.install(fixture.facade);
@@ -2875,6 +3123,27 @@ test('TypeSpec qualified receipt rejects legacy PASS, incomplete SDK proof and a
   const body = typeSpecSlice('const typeSpecSettings =', 'const sample =', feature);
   const validate = new Script('(() => { ' + body + '; return requireTypeSpecStandaloneReceipt; })()').runInContext(context);
   assert.doesNotThrow(() => validate(structuredClone(current)));
+  for (const panelCount of [1, 32]) {
+    const bounded = dispatcherFixture();
+    bounded.observer.install(bounded.facade); bounded.register();
+    try {
+      for (let index = 0; index < panelCount; index++) {
+        const panel = index === 0 ? bounded.panel : bounded.makePanel();
+        if (index > 0) bounded.originals.push({ target: panel.webview, key: 'postMessage', descriptor: Object.getOwnPropertyDescriptor(panel.webview, 'postMessage') });
+        bounded.resolve(panel);
+        for (let row = 0; row < 128; row++) bounded.emit({ type: 'requestDocument', requestId: `request-${row}` }, panel);
+      }
+      const receipt = structuredClone(current);
+      receipt.dispatcherObservation = JSON.parse(JSON.stringify(bounded.observer.restore()));
+      assert.equal(receipt.dispatcherObservation.complete, true);
+      assert.equal(receipt.dispatcherObservation.overflow, 0);
+      assert.equal(receipt.dispatcherObservation.panels.length, panelCount);
+      assert.equal(receipt.dispatcherObservation.records.length, panelCount * 128);
+      assert.doesNotThrow(() => validate(receipt), `${panelCount} bounded real panels must qualify`);
+      receipt.dispatcherObservation.records.push({ ...receipt.dispatcherObservation.records[0] });
+      assert.throws(() => validate(receipt), panelCount === 1 ? /panel exceeds 128 rows/ : /at most 4096 entries/);
+    } finally { bounded.observer.restore(); bounded.assertRestored(); }
+  }
   const mutations = [
     receipt => { delete receipt.schemaVersion; },
     receipt => { delete receipt.dispatcherObservation; },
@@ -2885,7 +3154,18 @@ test('TypeSpec qualified receipt rejects legacy PASS, incomplete SDK proof and a
     ...['observed', 'freshPanelObserved', 'completeCapture', 'complete', 'restored', 'retired'].map(key => receipt => { receipt.dispatcherObservation[key] = false; }),
     ...['captureFailures', 'boundaryUnavailable', 'boundaryDiagnosticOverflow', 'overflow', 'truncated', 'settlementUnavailable', 'restoreMismatch', 'restoreFailures', 'disposeFailures', 'pendingAtRestore'].map(key => receipt => { receipt.dispatcherObservation[key] = 1; }),
     receipt => { receipt.dispatcherObservation.panels = []; },
-    receipt => { receipt.dispatcherObservation.records = Array.from({ length: 129 }, () => ({})); },
+    receipt => { receipt.dispatcherObservation.panels = {}; },
+    receipt => { delete receipt.dispatcherObservation.panels; },
+    receipt => { receipt.dispatcherObservation.panels.push({ ...receipt.dispatcherObservation.panels[0] }); },
+    receipt => { receipt.dispatcherObservation.panels = Array.from({ length: 33 }, (_, index) => ({ ...receipt.dispatcherObservation.panels[0], panelId: index + 1 })); },
+    ...[undefined, null, 0, -1, 1.5, 33, '1'].map(panelId => receipt => {
+      receipt.dispatcherObservation.panels[0].panelId = panelId;
+      for (const record of receipt.dispatcherObservation.records) record.panelId = panelId;
+    }),
+    receipt => { receipt.dispatcherObservation.records = {}; },
+    receipt => { delete receipt.dispatcherObservation.records; },
+    receipt => { receipt.dispatcherObservation.records[0].panelId = 2; },
+    receipt => { receipt.dispatcherObservation.records = Array.from({ length: 129 }, () => ({ ...receipt.dispatcherObservation.records[0] })); },
     receipt => { receipt.evidenceFailureCount = 1; },
     receipt => { delete receipt.guardContract; },
     receipt => { receipt.guardContract.version = 'typespec-dispatcher-v1'; },
@@ -2916,7 +3196,14 @@ test('TypeSpec qualified receipt rejects legacy PASS, incomplete SDK proof and a
     receipt => { receipt.calls[0].oraclePassed = false; },
   ];
   for (const mutate of mutations) { const receipt = structuredClone(current); mutate(receipt); assert.throws(() => validate(receipt)); }
-  assert.equal(current.guardContract.version, 'typespec-dispatcher-v2');
+  assert.equal(current.guardContract.version, 'typespec-dispatcher-v3');
+  for (const guardContract of [
+    { ...current.guardContract, version: 'typespec-dispatcher-v2' },
+    { version: 'typespec-dispatcher-v3', scriptSha256: '81f0eb71f077387a97aeac1a2d25bc91b29e7894722c3275df1fdbf8ed5fc3e5' },
+  ]) {
+    const receipt = structuredClone(current); receipt.guardContract = guardContract;
+    assert.throws(() => validate(receipt), /Runtime guard version or executing script changed/);
+  }
   const statements = ['outcome.actualCode = readActualCodeIdentity();', 'helperSha256 = hash(fs.readFileSync(helperPath));', 'helper = await import(url.pathToFileURL(helperPath).href);', 'requireTypeSpecStandaloneReceipt(receipt);', 'const selected =', "dispatcherObserver.install(workbenchRequire('vscode'));", 'await extension.activate();'];
   const assertOrder = candidate => {
     const offsets = statements.map(statement => { const offset = candidate.indexOf(statement); assert.ok(offset >= 0, 'Missing actual source guard: ' + statement); return offset; });
@@ -2960,7 +3247,7 @@ const typeSpecTraceHarness = (fault = 'pass') => {
   const modules = { createRequire(location) {
     assert.equal(location, path.join(environment.APPDATA, 'npm/node_modules/vscode-ext-test/package.json'));
     return name => {
-      if (name === './package.json') return { version: fault === 'version' ? 'different' : '0.1.23' };
+      if (name === './package.json') return { version: fault === 'version' ? 'different' : '0.1.24' };
       if (name === './dist/runner/controller-client.js') return { ControllerClient };
       if (name === './dist/runner/cdp-client.js') return { CdpClient: class {
         async connect() { calls.push('renderer-connect'); }
@@ -3027,7 +3314,7 @@ for (const fault of ['available', 'wrong-frame', 'wrong-active-tab', 'ambiguous-
   }
   const context = createContext({ assert, path, performance, references, outcome,
     process: { env: { APPDATA: 'memory-only', KW_TYPESPEC_CDP_PORT: '59584' } },
-    modules: { createRequire: () => name => name === './package.json' ? { version: '0.1.23' } : { CdpClient } },
+    modules: { createRequire: () => name => name === './package.json' ? { version: '0.1.24' } : { CdpClient } },
     tabs: () => [{ isActive: true, input: { uri: { toString: () => fault === 'wrong-active-tab' ? 'file:///other.kqlx' : reference.uri } } }],
     setTimeout: (callback, delay) => { assert.equal(delay, 4000); timers.set(1, callback); return 1; },
     clearTimeout: id => timers.delete(id),
@@ -3077,7 +3364,7 @@ const pendingTypeSpecFixture = (fault = 'available') => {
   const context = createContext({ assert, path, performance, outcome, write, Date, Promise,
     tabs: () => { if (fault === 'tab-error') throw new Error('Tab unavailable'); return [{ isActive: true, input: { uri: { toString: () => reference.uri } } }]; },
     vscode: { workspace: { textDocuments: documents } },
-    modules: { createRequire: () => name => name === './package.json' ? { version: '0.1.23' } : { CdpClient } },
+    modules: { createRequire: () => name => name === './package.json' ? { version: '0.1.24' } : { CdpClient } },
     process: { env: { APPDATA: 'memory-only', KW_TYPESPEC_CDP_PORT: '59584' } },
     setTimeout: (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
     clearTimeout: id => timers.delete(id),

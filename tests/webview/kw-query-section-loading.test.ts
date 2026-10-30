@@ -279,6 +279,7 @@ describe('native restore schema auth boundary repro', () => {
 				};
 				expect(beforeAutoPass.schemaRequests).toBe(0);
 				const focusBefore = document.activeElement;
+				const editRevisionBefore = pState.documentEditRevision;
 				if (route === 'automatic reconciliation') {
 					expect(beforeAutoPass).toEqual({
 						connectionId: '', desiredDatabase: database, connections: 0,
@@ -291,6 +292,7 @@ describe('native restore schema auth boundary repro', () => {
 				} else {
 					section.connectionCtrl.refreshSchema();
 				}
+				expect(pState.documentEditRevision, 'schema preparation must not author a document edit').toBe(editRevisionBefore);
 				expect(document.activeElement).toBe(focusBefore);
 				expect(transport.mock.calls.some(([message]) => message.type === 'backgroundWorkbenchUserInteraction')).toBe(false);
 				const requests = transport.mock.calls.map(([message]) => message)

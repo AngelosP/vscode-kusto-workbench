@@ -7150,7 +7150,7 @@ suite('Sidecar .kql.json strategy', () => {
 		const send = (message: any): Promise<unknown> => {
 			assert.ok(receiveHandler, 'setup: the actual native startup gateway must install its receiver');
 			if (admissionBoundary === 'coalesced deadline' && message.type === 'requestDocument') {
-				if (String(message.requestId).startsWith('dispatcher-document-')) ownerClock = 2_000;
+				if (recoveryRequests.includes(message.requestId)) ownerClock = 2_000;
 				admittedRequestClocks.push({ requestId: message.requestId, admittedAt: performance.now() });
 			}
 			received.push(message);
@@ -7201,7 +7201,7 @@ suite('Sidecar .kql.json strategy', () => {
 						if (queueRecovery && !runtimeApplied && recoveryRequests.length === 0) {
 							const projection = projections[0];
 							assert.ok(projection?.viewSessionId, 'setup: recovery must use the actual native panel session');
-							const requestId = `dispatcher-document-${message.probeId}`;
+							const requestId = 'first-public-native-explicit-document';
 							recoveryRequests.push(requestId);
 							void send({ type: 'requestDocument', requestId, protocolVersion: projection.protocolVersion,
 								channel: projection.channel, viewSessionId: projection.viewSessionId });

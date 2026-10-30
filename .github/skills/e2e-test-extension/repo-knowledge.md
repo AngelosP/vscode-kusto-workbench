@@ -10,7 +10,198 @@ on every `vscode-ext-test init` to stay current with framework updates),
 Read this file before every test session. Update it after every session with
 anything new you learned. Structure it however makes sense for this repo.
 
-## Current Verification Checkpoint: October 29
+## Current Verification Checkpoint: October 30 Readiness And Test Infrastructure
+
+Status: TARGETED FIXES VERIFIED. The targeted activation, real Kusto/SQL
+execution lifecycles, bounded hidden-read scenario and current regression gates
+have passing evidence. The original 109-file, 16-warm-tab, long-duration incident
+has not been fully qualified, and the older SQL profile's dirty-tab inconsistency
+remains preserved. Do not describe every historical behavior as closed.
+
+### Implemented Changes
+
+- Native automatic refreshes retain their starting requirement across queued preparation, with a document-request fence preventing a later explicit rejection from being healed.
+- A successful, still-current initial projection satisfies an already-admitted bootstrap recovery instead of issuing a redundant reload. Failed, explicit, stale-source, unanswered-challenge and replaced-runtime cases retain their independent projection requirements.
+- The transport fixture separates setup, command assertions and cleanup under the existing five-second defaults. Restoration is synchronous, ownership-checked and idempotent before draining; aggregate observations are fixture-scoped. The real session writes/fsync, 500 ms delivery deadline, 50 ms retry intervals and all original assertions remain.
+- The Chart-only Save and Power BI compensation fixtures use exact-title setup/cleanup hooks in their original suite order. Only initialization moved out of their test bodies; all 13 Chart assertions and 12 Power BI assertions and action sequences remain. Cleanup retires hooks before clearing the live-document facade and retains unclosed private fixtures.
+- Seven existing native lifetime tests now issue an ordinary explicit reread where they previously relied on the removed duplicate bootstrap projection. Only two setup expressions changed; their deadline, disposal, latest-projection and late-snapshot assertions remain intact.
+- The TypeSpec SDK recorder uses 32 routine/64 probe keys per panel and phase, a 128-row pool per panel, and the existing 32-panel bound. Lifecycle records remain ordered and unmerged; every loss is still fatal. Qualified receipts validate panel identity, membership and per-panel capacity. Guard v3 rejects older or stale-function receipts.
+
+The separately authorized launcher repair is in the sibling
+`vscode-extension-tester` repository: both child output pipes are resumed before
+waiting for the controller. Previously, startup Trace filled unread pipes and
+could stall native opening and the debugging endpoint. A counts-only diagnostic
+drained 104018 stdout bytes and 1306 stderr bytes; all five original first-call
+oracles then passed, exposing recorder overflow as a separate failure.
+The first validation used CLI 0.1.23 with a local two-line patch: only its
+generated `dist/modes/ci-mode.js` and matching map were replaced after verifying
+the runtime difference. Backups and hashes are in `%TEMP%/kw-launcher-fix-37`.
+During final validation, the sibling repository and installed CLI advanced to
+0.1.24; the sibling is clean at release commit `889ac29`. That external release
+was preserved. The installed launcher implementation still has SHA-256
+`c3084b49de848aba8fb979274cea9cfd6930b7e41531c68e236be472ef7a330b`.
+The acceptance pin and its test fixtures now require 0.1.24. All 103 affected
+TypeSpec tests and a fresh ordinary standalone/prefix pair passed after that
+pin update. No acceptance deadline or retry limit was changed.
+
+### Current Evidence
+
+| Scope | Setup, action and exact oracle | Result |
+| --- | --- | --- |
+| Automatic readiness | Existing native fixture accepts generation 1, overlaps two automatic preparations, negatively acknowledges later revisions, drains all counters, and checks current-view readiness plus unchanged source. Queued policy changes and explicit rejections remain false | Genuine `false !== true` red fixed; a review counterexample that healed a later explicit rejection also reproduced and is fenced. Four new parameter cases |
+| Initial sharing | Real native document and gateway issue recovery while initialization is pending or already posted; assert exact projection/snapshot counts, source preservation and current runtime. Explicit, failed, version-ABA, unanswered-challenge and replacement-runtime controls remain independent | Genuine duplicate `2 !== 1` red fixed; seven new parameter cases. Gateway suite: 95 passed |
+| TypeSpec C1/C2 | Fresh ordinary CLI standalone, then separate fresh prefix 100-104; exact first-call results, all 13 checks, complete SDK capture and unchanged files | Both pass with installed CLI 0.1.24 and the newly pinned v3 recorder. C2 has 229 records across five panels, zero loss, no saves or damage. Earlier locally patched 0.1.23 passes remain retained |
+| Real Kusto execution | Background CREATE -> Save -> LIST actual ID -> configure/execute without replacing the query -> rendered Probe=1 -> Save/close/reopen -> restored result -> execute-only with new producer -> Save | `PASS_DOM_DISK_NOT_VISUAL_OR_INSTALLED_PRODUCTION`; first 1193.9771 ms, second 882.7995 ms. Query `print Probe=1` unchanged, durable models clean, five starting tabs preserved |
+| Real SQL execution | Same composed lifecycle on the existing dedicated `sq-6e42` profile, with exact connection/server/database pins and query `SELECT 1 AS Probe` | Same DOM/disk pass; first 18234.784 ms, second 6617.092 ms. Fresh post-reopen producer, unchanged query, zero starting or surviving task tabs |
+| Hidden access | Exact archived ten-section canary, six bindings and one source; retain mixed prefixes 19 and 32; first notes then dashboard reads while hidden, before inventory | Uninstrumented run: `NOT_REPRODUCED_SHORT_RUN`. All three pairs and eight checks passed, 32 retained prefix activations, no saves or damage. Not full historical-outage qualification |
+| Native regression | Full suite after transport, Chart and Power BI fixture lifetime isolation, with all original behavioral assertions retained | Final `npm test`: 452 passed in 3 minutes, exit 0. Focused transport/guards: 15 passed; ordered Power BI -> Chart -> retained controls: 3 passed. Earlier 447/4, 450/2 and 451/1 failures remain retained; the final pass does not erase them |
+| Protocol inventory | Review unchanged command-result and gateway senders after source movement | 80 passed after coordinate-only updates `5636:10 -> 5666:10` and `798:33 -> 804:33`; the preceding 78/2 result is retained |
+| Recorder regression | One/five-panel traffic, exact counts/order, per-panel overflow, stale guards and retired capture | Five-panel red overflow 478; complete journal file: 518 passed, one existing prerequisite skip. After the final 0.1.24 pin-only update, all 103 affected TypeSpec cases passed again |
+| Launcher regression | Real bounded streams containing 256 KiB each must drain before controller connection without contaminating JSONL | Red inactive streams with four controls passing, then five passing. Full sibling suite: 592 tests / 33 files; both Turbo builds passed |
+| Unit coverage | Official current-code `npm run test:coverage-gate` | 9330 passed, four existing skips; 372 passing files and one skipped file. Statements 53.58% (34812/64971), gate passed; 1061.95 seconds |
+| Complete script regression | Current journal file plus `e2e-full-suite-support.test.mjs` | 518 journal tests passed with one existing prerequisite skip; all 33 support tests passed. Combined: 551 passed, one skip, no failures |
+
+Product host: 2606047 bytes, SHA-256
+`8cba65ba4a0a2b02977d97da79b5f9666b347ba899747ea7916dc83c81e42015`.
+The approved 2545 KiB cap is unchanged, with 33 bytes remaining. The normal
+uninstrumented production build passed three typechecks, lint, all 12 caps and
+bootstrap packaging. Native regression uses Code 1.144.0; acceptance uses the
+authentic pinned Code 1.143.0. No visual or installed-Production qualification
+is claimed.
+
+V3 feature: 74483 bytes, SHA-256
+`576e6694fc054ea955a09e4609591c504219b082367fcda12ac1de5ea4a627c5`.
+Executing function: 65528 bytes, SHA-256
+`c492b3d1e347213dace929dc97c73b40e05f7451ce0a37bc7a0d905e438563f3`.
+Frozen acceptance runtime: `%TEMP%/kw-v324-45/e`, manifest SHA-256
+`066fbc8a2a638f750ea7875ede6d571e15613c04e2a7c77e774bc100d5e22bd8`.
+
+Current acceptance receipts:
+
+- Current 0.1.24 C1: frozen runtime `tests/vscode-extension-tester/runs/20261030-082553`; evidence `%TEMP%/kw-acceptance-dpUyk2/evidence`, first 104 in 2664.9927 ms.
+- Current 0.1.24 C2: frozen runtime run `20261030-082628`; evidence `%TEMP%/kw-acceptance-aWsxKP/evidence`, first calls 100-104 in 4129.6148 / 664.5539 / 3893.2394 / 3127.1858 / 2416.2926 ms.
+- Earlier patched 0.1.23 C1/C2: `%TEMP%/kw-v3-38/e` runs `20261030-044125` and `20261030-044252`, evidence roots `kw-acceptance-wDDFau` and `kw-acceptance-mky1e0`. These do not replace the new receipts.
+- Kusto: workspace run `20261030-060454`; `%TEMP%/kw-first41/evidence/kusto-lifecycle-ep8YyL`.
+- SQL: workspace run `20261030-061429`; `%TEMP%/kw-first41/evidence/sql-lifecycle-BU3vwf`.
+- Hidden: `%TEMP%/kw-v3-38/e` run `20261030-062310`; `%TEMP%/kw-acceptance-QWQPww/evidence`.
+
+### Retained Limits And Failures
+
+The first Kusto execution failed while fetching `/v1/rest/auth/metadata` before
+TLS completed. The user confirmed VPN was connected. Node, PowerShell and the
+isolated extension host subsequently returned HTTP 200 with normal certificate
+validation; the real lifecycle then passed without changing VPN/TLS settings.
+This establishes no VPN root cause; retain run `20261030-055404`.
+
+The older `sql-auth` profile restores a dirty custom-editor tab while its native
+version-1 model and disk bytes are clean. The user authorized saving that exact
+older test file. Native Save returned true while it was clean; Workbench Save
+later reported the tab remained dirty. No discard was performed. That profile
+inconsistency remains unresolved. The successful dedicated profile used the
+same verified SQL server/database, without copying credentials, and does not
+retroactively qualify the older profile.
+
+Hidden run `20261030-051418` failed initial baseline activation, before any
+hidden read. Its mixed SQL-bearing notebook accepted generation 1 and rejected
+an automatic generation 2; no source damage occurred. A temporary scalar-only
+revision probe did not identify that failure's cause and was removed. Its
+passing diagnostic run is not the final evidence; the uninstrumented run above
+is. Neither the short pass nor controlled native readiness regressions prove
+the complete original 109-file/16-warm-tab/24-minute incident fixed.
+
+Transport-fixture diagnostic attempts are also retained: an initial annotation
+compile failure, a setup timeout after hook separation, a late owner assertion
+after retirement, and an unavailable `workspace.fs.readFile` replacement.
+Those temporary probes were removed; failed setup is not a product red. The
+observed roughly four-second setup I/O delay is not explained by the fixture
+isolation repair. The final Chart cleanup retains its private fixture when the
+test has prepared Save without committing it; no synthetic commit was added to
+make cleanup succeed. Do not retry until green or increase deadlines to hide
+these earlier failures.
+
+Final manual follow-ups remain unperformed: type during schema startup and
+switch away/back before Save/reopen; reopen and add another section to check
+single application; visual/installed-Production review; and the full historical
+hidden workload. Use disposable files and preserve first failures. Existing
+automated functional passes above do not substitute for those qualifications.
+
+## Historical Verification Checkpoint: October 29 Correlated Logging
+
+Status: INCOMPLETE. The new activation diagnostics are implemented and captured
+through the existing Output-channel facility. The original three workflows are
+not all verified, and the full native regression gate is not green. No separate
+framework change is an established prerequisite.
+
+| Scope | Current evidence / limit |
+| --- | --- |
+| Focused logging tests | 344 passed, including 17 new observer cases. The initial missing-observer red retained 327 passing controls. Types, lint and targeted editor diagnostics passed |
+| Protocol inventory | All 80 cases in `tests/webview/host/message-protocol.test.ts` passed after the logging and documentation changes; no sender allowlist changes were needed |
+| Production package | Three typechecks, lint, all 12 bundle caps and bootstrap packaging passed. Explicit user approval raised only the host cap to 2545 KiB / 2606080 bytes, baseline 2495 plus unchanged 50. Host measured 2605209 bytes; other limits remain unchanged |
+| Full native regression | Three unchanged `npm test` runs on Code 1.144.0 returned 423 pass / 1 cleanup failure, 437 pass / 3 transport failures, and 436 pass / 4 transport failures. Later isolated successes do not erase these failures |
+| Native diagnostic follow-up | The schema-cache group passed 23 isolated cases; four isolated transport cases passed. A reduced 15-case ordered run failed 12 pass / 3 fail. Optional phase logging reproduced cleanup overlapping the next test after the five-second timeout; the temporary logging was removed and tests recompiled. No assertion or timeout was changed |
+| Normal first activation | Fresh `kw-log25-standalone`, normal CLI 0.1.23, unchanged four-step feature and authentic Code 1.143.0. URI-only call 104 failed after 30215.6237 ms with no live bridge or read-only fallback. Classification `TYPESPEC_FIRST_ACTIVATION_FAILED`; required `firstResponses` is absent, not a thirteenth true check. The other 12 checks passed |
+| Correlated native progress | Activation trace 1: lifecycle finished in 1 ms, `openWith` in 200 ms. The five-second pending snapshot was in recovery, with one active custom tab and clean version-1 document. Background-owner/operation membership was false and mutation count zero. Recovery returned false at 30205 ms, followed by normal observer stop with no suppressed records. Provider trace 2 shared the URI hash |
+| SDK / renderer boundary | Capture was complete and restored, with all quality/loss counters zero. All 118 dispatcher probe posts settled true; no inbound record was observed. Native renderer logged `webview ready`. This differs from the earlier pending-post failure and does not prove application script execution or identify a script failure |
+| Existing Output capture | Normal capture retained 4699 characters from `Kusto Workbench`, including the new observer records. Manifest source was `cdp-fallback`, controller length zero; fallback can read native backing logs and is not proof of a successful CDP connection |
+| Preservation / exclusions | No saves or damage; exact archive, helper, 178 runtime files, loaded Code identity and clean native source checks passed, as did cleanup. Pending and post-failure renderer observations each timed out at four seconds. Failure screenshot capture could not find the target PID; no visual review occurred. The prefix profile remains unused because standalone failed |
+
+The frozen runtime is `%TEMP%/kw-log25/e`. Its host SHA-256 is
+`3b85d393650c14daee5af7fbec2f6b777efdbf4135eccfc5380bf67b13f288d6`;
+`%TEMP%/kw-log25/manifest.json` has SHA-256
+`4898944c4c1bde212e26c8af733281ddf95860b6ee42134dc51180487dfd52e4`.
+The source helper, original feature and parsed acceptance-function fingerprint
+were pinned before launch and remained unchanged. Authentic cached Code was
+copied with its original completion marker. No timestamp-only setup gate,
+authentication-store copy, extra observer, warming call, retry, query or Save
+was added. Native regression Code 1.144.0 and acceptance Code 1.143.0 are
+different builds and must not be conflated.
+
+Normal artifacts: `%TEMP%/kw-log25/e/tests/vscode-extension-tester/runs/20261029-233229`.
+Acceptance receipt: `%TEMP%/kw-acceptance-In03m2/evidence/final-outcome.json`.
+The normal scenario capture includes `_capture-manifest.json`, Workbench,
+controller, extension-host and renderer logs. Preserve this failed first call;
+do not run prefix 100-103 or treat the old standalone pass as current-build
+authorization. The remaining application-startup boundary needs evidence, not
+a speculative readiness fix or a declaration that VS Code is at fault.
+
+### Logging Coverage Ledger
+
+| Owner / transition | Setup, action and exact oracle |
+| --- | --- |
+| Named-channel admission | [Logger tests](../../../tests/webview/host/workbenchLogger.test.ts#L10) set global Trace but named-channel Info, or make channel access throw; starting observation creates zero subscriptions, state reads, timers and observer output |
+| Event bounds / failure containment | The same logger test group sends 64 matching events: 30 initial/event records, then reserved pending and stop produce exactly 32, with `suppressed: 35`. Registration, metadata, sink and cleanup faults stay contained; late callbacks perform no reads or output, and no raw URI, text or private error is emitted |
+| Composed activation phases | [Orchestrator observer test](../../../tests/webview/host/toolOrchestratorConnect.test.ts#L2506) holds lifecycle, open and recovery separately, injects matching and unrelated events, checks correlation, no pending at 4999 ms and exactly one at 5000 ms, unchanged native operation counts, one release, final stop and zero remaining timers |
+| Failed activation branches | [Orchestrator failure cases](../../../tests/webview/host/toolOrchestratorConnect.test.ts#L2626) inject lifecycle, open, recovery, release and registration failures; exact results/error identity and operation counts remain unchanged, with one stop and no late activity |
+| Real composed lifecycle | LOG25 exercises the existing [first-call oracle](../../../tests/vscode-extension-tester/e2e/opt-in/typespec-first-activation/typespec-first-activation.feature#L770): fresh URI-only activation through recovery failure, native version/byte/clean checks and exact cleanup. This is native failed-recovery evidence, not successful activation; other observer branches above remain unit evidence |
+
+The native phase probe found one rejected-command fixture spending 4316 ms in
+`resolveCustomTextEditor`, completing both command deliveries at 4500 ms, and
+starting cleanup at 4501 ms. Cleanup settled and restored process-global mocks
+at 5022 ms, after Mocha had started the next suite. This proves overlap, not the
+cause of the resolve delay. The existing test wrapper also drops optional
+transport arguments, so late restoration can contaminate following guard
+tests. These direct-provider fixtures do not initiate the new activation
+observer. No product attribution or regression clearance follows from that
+fact. The probe's first launch wrapper stopped at package-export resolution
+before tests; the corrected launch supplied the actual 12/3 diagnostic run.
+`@vscode/test-cli` does not export its package metadata: resolve its declared
+binary from the installed metadata file rather than importing that subpath.
+
+Earlier 9312-test coverage and 538-pass script receipts below predate this
+logging change. They are historical evidence, not current full-suite passes.
+Original workflow completion, successful first activation, prefix execution,
+GUI qualification and the native regression gap remain explicitly unverified.
+
+Final post-edit review found no new critical or warning defects in the scoped
+implementation or documentation. Its manual follow-ups are not executed and
+must use separately authorized disposable copies, never retry the retained
+failed first call or proceed to the prefix:
+
+- With global Trace but named Workbench Info, activate once: expect no observer records; any such record is a gate regression.
+- With Workbench Trace, activate a separate copy, then switch unrelated tabs and idle five seconds after settlement: expect one correlation, at most 32 observer records, one stop and no later activity or raw paths/content. Cross-target records or repeated pending/stop activity are regressions.
+- Leave an untouched copy under Auto Save through activation and idle: expect exact bytes and a clean native document. Any unrequested save, dirty transition or changed bytes is a regression.
+
+## Historical Verification Checkpoint: October 29 Before Correlated Logging
 
 Status: INCOMPLETE. The deferred native invalidation mechanism has a controlled
 red/green regression, but the original three workflows are not all verified.
@@ -41,7 +232,15 @@ only on success by a separately isolated prefix 100-103 and first activation
 104. Earlier setup, shutdown, capture, shared-store and activation failures stay
 failed and retained; diagnostic passes cannot replace normal acceptance.
 
-### Framework Fix Request: Correlate Pending Native Open Progress
+### Historical Framework Proposal: Pending Native Open Progress
+
+**Withdrawn as a required dependency.** The proposal below predates the
+correlated logger. Existing normal capture already retained 40253 Workbench
+characters from prefix24, and LOG25 retained the newly emitted phase records.
+Missing emitted progress was not proof that the framework could not capture
+it. Additional native diagnostics may still be useful, but no framework
+modification is currently required or authorized. The observations below remain
+historical failures; LOG25 did not rerun or explain prefix24's call 101.
 
 **What I was trying to do:** Complete the single first-call prefix 100-103,
 then first activation 104, using disposable archived copies on the current
@@ -49,11 +248,11 @@ verified product. Prefix24 is retained under the normal run
 `%TEMP%/kr21-8b9e/tests/vscode-extension-tester/runs/20261029-175320` and the
 attributed private evidence root `%TEMP%/kw-acceptance-Hjxk4u/evidence`.
 
-**What step/capability is missing or broken:** Request-correlated native
+**Observed gap at that checkpoint:** Request-correlated native
 progress from command receipt through text-model resolution to custom-editor
 provider dispatch/return, including the pending await and cancellation reason.
-The current passive logs and CDP connection attempts cannot distinguish these
-stages. This is an observability blocker, not proof of a VS Code defect.
+The then-current emitted logs and CDP attempts did not distinguish these
+stages. This was not proof of a capture-framework or VS Code defect.
 
 **What I observed:** Call 100 returned genuine live success. Call 101 URI hash
 `4c684f844d56cd8597ec23400fed153bdd61649de6712985c7b26f06bd5fe3bd`
@@ -74,7 +273,7 @@ only call 100's panel, so loss counters of zero do not establish call-101
 coverage. Private cleanup and the initial shutdown gap remain failed even
 though later process/listener checks were zero.
 
-**What the framework needs to support:** Add a supported, bounded passive
+**Originally proposed additional instrumentation:** Add a supported, bounded passive
 observer or native trace collector for the actual owned window's command/model
 bridge. Bind one request token and URI hash to command admission, model
 resolution entry/exit, provider dispatch/return, pending stage and terminal
@@ -93,11 +292,11 @@ Given native open progress is observed for the exact task-owned URI
 Then I collect the first native open outcome without retrying it
 ```
 
-**Priority:** blocking for attribution of the pending native-open failure,
+**Original priority:** blocking for attribution of the pending native-open failure,
 not evidence that the earlier product fixes or all original workflows are
 complete. No authorization to edit the separate framework repository is
-assumed. The earlier withdrawn request below remains historical; this request
-records the current bounded prefix24 evidence and its specific missing stage.
+assumed. This withdrawn proposal preserves the bounded prefix24 evidence and
+its then-missing stage; it is not a prerequisite for the current logging work.
 
 ## Historical Verification Checkpoint: October 28
 

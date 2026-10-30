@@ -497,6 +497,12 @@ export class MainWebviewStartupGateway<TInbound> implements vscode.Disposable {
 		return Promise.resolve(this.inboundHandler(message));
 	}
 
+	hasAdmittedRecovery(requestId: string, requireReady = false): boolean {
+		return this.isCurrentDispatcherRecovery(requestId)
+			&& this.dispatcherRecoveryChallenge?.admitted === true
+			&& (!requireReady || (this.isDispatcherReady && !this.dispatcherRevalidationProbeId));
+	}
+
 	private isCurrentDispatcherRecovery(requestId: string): boolean {
 		return !this.retired && !this.disposed && !this.dispatcherRevalidationFailed
 			&& this.dispatcherRecoveryChallenge?.requestId === requestId

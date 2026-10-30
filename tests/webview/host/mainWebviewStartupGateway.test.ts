@@ -833,6 +833,7 @@ describe('MainWebviewStartupGateway', () => {
 			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'original-runtime' });
 			await harness.receive({ type: 'requestDocument', requestId: 'dispatcher-document-unissued' });
 			expect(handled).not.toHaveBeenCalled();
+			expect(gateway.hasAdmittedRecovery('dispatcher-document-unissued')).toBe(false);
 
 			const readiness = gateway.beginDispatcherRevalidation();
 			const probe = harness.posted.at(-1) as { probeId: string };
@@ -840,9 +841,39 @@ describe('MainWebviewStartupGateway', () => {
 			await expect(readiness).resolves.toBe(false);
 			await harness.receive({ type: 'requestDocument', requestId: `dispatcher-document-${probe.probeId}` });
 			expect(handled).not.toHaveBeenCalled();
+			expect(gateway.hasAdmittedRecovery(`dispatcher-document-${probe.probeId}`, true)).toBe(false);
 		} finally {
 			gateway.dispose();
 			vi.useRealTimers();
+		}
+	});
+
+	it('distinguishes admitted recovery from cached READY and retires its exact challenge', async () => {
+		const harness = createPanelHarness();
+		const gateway = new MainWebviewStartupGateway<TestMessage>({ panel: harness.panel, admitInbound: admitTestMessage });
+		try {
+			await gateway.setInboundHandler(() => undefined);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'initial-runtime' });
+			const readiness = gateway.waitForReadDispatcherReady();
+			const probe = harness.posted.at(-1) as { probeId: string };
+			const requestId = `dispatcher-document-${probe.probeId}`;
+			expect(gateway.hasAdmittedRecovery(requestId)).toBe(false);
+			await harness.receive({ type: 'requestDocument', requestId });
+			expect(gateway.isDispatcherReady).toBe(true);
+			expect(gateway.hasAdmittedRecovery(requestId)).toBe(true);
+			expect(gateway.hasAdmittedRecovery(requestId, true)).toBe(false);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'initial-runtime', probeId: 'unissued-probe' });
+			expect(gateway.hasAdmittedRecovery(requestId, true)).toBe(false);
+			await harness.receive({ type: MAIN_WEBVIEW_DISPATCHER_READY_TYPE, runtimeId: 'initial-runtime', probeId: probe.probeId });
+			await expect(readiness).resolves.toBe(true);
+			expect(gateway.hasAdmittedRecovery(requestId, true)).toBe(true);
+			const replacement = gateway.beginDispatcherRevalidation();
+			expect(gateway.hasAdmittedRecovery(requestId)).toBe(false);
+			gateway.dispose();
+			await expect(replacement).resolves.toBe(false);
+			expect(gateway.hasAdmittedRecovery(requestId, true)).toBe(false);
+		} finally {
+			gateway.dispose();
 		}
 	});
 

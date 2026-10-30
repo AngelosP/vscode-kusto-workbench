@@ -31,7 +31,7 @@ Feature: Archived TypeSpec first public activation
         const previous = globalThis.__typespecFirstActivation;
         const outcome = { schemaVersion: 1, trial: process.env.KW_TYPESPEC_TRIAL ?? 'standalone', classification: 'SETUP_BLOCKED', calls: [], models: [], damage: [], saved: [], errors: [], evidenceFailures: [], evidenceFailureCount: 0, checks: { evidenceSink: true }, dispatcherObservation: { schemaVersion: 2, observed: false, complete: false, completeCapture: false, restored: false, boundaryDiagnostics: [], boundaryDiagnosticOverflow: 0, status: 'NOT_INSTALLED' }, limitations: ['Development runtime snapshot, not the incident loaded-memory image or installed Production build', 'No visual review', 'Passive SDK observations do not establish production ACK admission or a timeout cause', 'No auth or data-query requests; no claim of instrumented absence of all physical network activity'] };
         globalThis.__typespecFirstActivation = outcome;
-        outcome.guardContract = { version: 'typespec-dispatcher-v2', scriptSha256: hash(Function.prototype.toString.call(runTypeSpecAcceptance)) };
+        outcome.guardContract = { version: 'typespec-dispatcher-v3', scriptSha256: hash(Function.prototype.toString.call(runTypeSpecAcceptance)) };
         const references = new Map();
         const models = new Map();
         const initialDocumentReferences = new Map();
@@ -73,7 +73,7 @@ Feature: Archived TypeSpec first public activation
           for (const port of [controllerPort, cdpPort]) assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, 'Exact isolated tester ports required');
           assert.notEqual(controllerPort, cdpPort);
           const testerRequire = modules.createRequire(path.join(process.env.APPDATA, 'npm/node_modules/vscode-ext-test/package.json'));
-          assert.equal(testerRequire('./package.json').version, '0.1.23');
+          assert.equal(testerRequire('./package.json').version, '0.1.24');
           const { ControllerClient } = testerRequire('./dist/runner/controller-client.js');
           const { TestRunner } = testerRequire('./dist/runner/test-runner.js');
           const client = new ControllerClient(controllerPort);
@@ -105,7 +105,7 @@ Feature: Archived TypeSpec first public activation
           const inspect = (async () => {
             try {
               const testerRequire = modules.createRequire(path.join(process.env.APPDATA, 'npm/node_modules/vscode-ext-test/package.json'));
-              assert.equal(testerRequire('./package.json').version, '0.1.23');
+              assert.equal(testerRequire('./package.json').version, '0.1.24');
               const port = Number(process.env.KW_TYPESPEC_CDP_PORT);
               assert.ok(Number.isInteger(port) && port > 0 && port <= 65535);
               const { CdpClient } = testerRequire('./dist/runner/cdp-client.js');
@@ -159,7 +159,7 @@ Feature: Archived TypeSpec first public activation
                 native = { activeTabMatches: active.length === 1 && active[0].input?.uri?.toString() === reference.uri,
                   documentPresent: !!document, ...(document ? { version: document.version, dirty: document.isDirty } : {}) };
                 const testerRequire = modules.createRequire(path.join(process.env.APPDATA, 'npm/node_modules/vscode-ext-test/package.json'));
-                assert.equal(testerRequire('./package.json').version, '0.1.23');
+                assert.equal(testerRequire('./package.json').version, '0.1.24');
                 const port = Number(process.env.KW_TYPESPEC_CDP_PORT);
                 assert.ok(Number.isInteger(port) && port > 0 && port <= 65535);
                 const { CdpClient } = testerRequire('./dist/runner/cdp-client.js');
@@ -257,12 +257,13 @@ Feature: Archived TypeSpec first public activation
             if (typeof metadata.type !== 'string') state.captureFailures++;
             const priority = /probe/i.test(metadata.type ?? '') ? 'probe' : /ready|document|reload|projection|toolstate/i.test(metadata.type ?? '') ? 'lifecycle' : 'routine';
             const point = stamp();
-            let entry = priority === 'lifecycle' ? undefined : records.find(candidate => candidate.panelId === panel.panelId && candidate.direction === direction && candidate.phase === point.phase && fields.every(key => candidate[key] === metadata[key]));
+            const panelRecords = records.filter(candidate => candidate.panelId === panel.panelId);
+            let entry = priority === 'lifecycle' ? undefined : panelRecords.find(candidate => candidate.direction === direction && candidate.phase === point.phase && fields.every(key => candidate[key] === metadata[key]));
             if (!entry) {
-              if (priority !== 'lifecycle' && records.filter(candidate => candidate.priority === priority).length >= (priority === 'probe' ? 64 : 32)) { state.overflow++; return; }
-              if (records.length === 128) {
+              if (priority !== 'lifecycle' && panelRecords.filter(candidate => candidate.priority === priority && candidate.phase === point.phase).length >= (priority === 'probe' ? 64 : 32)) { state.overflow++; return; }
+              if (panelRecords.length === 128) {
                 state.overflow++;
-                const replaceable = priority === 'lifecycle' ? records.findIndex(candidate => candidate.priority !== 'lifecycle') : -1;
+                const replaceable = priority === 'lifecycle' ? records.findIndex(candidate => candidate.panelId === panel.panelId && candidate.priority !== 'lifecycle') : -1;
                 if (replaceable < 0) return;
                 records.splice(replaceable, 1);
               }
@@ -552,8 +553,22 @@ Feature: Archived TypeSpec first public activation
           assert.equal(Array.isArray(receipt.dispatcherObservation.boundaryDiagnostics), true);
           assert.equal(receipt.dispatcherObservation.boundaryDiagnostics.length, 0);
           assert.equal(receipt.dispatcherObservation.status, 'COMPLETE');
+          const panels = receipt.dispatcherObservation.panels, records = receipt.dispatcherObservation.records;
+          assert.ok(Array.isArray(panels) && panels.length > 0 && panels.length <= 32, 'Recorded panels must contain 1..32 entries');
+          assert.ok(Array.isArray(records) && records.length <= 4096, 'Recorded rows must be an array of at most 4096 entries');
+          const panelCounts = new Map();
+          for (const panel of panels) {
+            assert.ok(Number.isSafeInteger(panel.panelId) && panel.panelId > 0 && panel.panelId <= 32, 'Invalid recorded panel identity');
+            assert.equal(panelCounts.has(panel.panelId), false, 'Duplicate recorded panel identity');
+            panelCounts.set(panel.panelId, 0);
+          }
+          for (const record of records) {
+            assert.ok(panelCounts.has(record.panelId), 'Recorded row has no matching panel');
+            const count = panelCounts.get(record.panelId) + 1;
+            assert.ok(count <= 128, 'Recorded panel exceeds 128 rows');
+            panelCounts.set(record.panelId, count);
+          }
           assert.ok(receipt.dispatcherObservation.panels.some(panel => panel.referenceIndex === 104 && panel.inboundAttached && panel.postWrapped));
-          assert.ok(receipt.dispatcherObservation.records.length <= 128);
           assert.equal(receipt.evidenceFailureCount, 0);
           assert.equal(receipt.evidenceFailures.length, 0);
           assert.equal(receipt.errors.length, 0);

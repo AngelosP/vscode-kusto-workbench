@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import { AsyncLocalStorage } from 'async_hooks';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -110,6 +111,44 @@ function sqlWorkbenchStub(): any {
 suite('KQLX host-owned Markdown lifecycle', () => {
 	const originalResolveCustomTextEditor = (KqlxEditorProvider as any).prototype.resolveCustomTextEditor;
 	const liveDocuments = createLiveTextDocumentTestFacade();
+	const powerBiTestTitle = 'Power BI compensation cannot mutate a same-ID HTML replacement and cleanup follows host projection';
+	let powerBiFixture: { run(): Promise<void>; cleanup(retain: boolean): Promise<void> } | undefined;
+	const chartTestTitle = 'Chart-only Save waits for projection acknowledgement and preserves owned state';
+	let chartFixture: { run(): Promise<void>; cleanup(retain: boolean): Promise<void> } | undefined;
+
+	function createFixtureHooks() {
+		let active = true;
+		const restorations: Array<() => void> = [];
+		const owners = new WeakSet<object>();
+		return {
+			get active() { return active; },
+			own(owner: object) { assert.ok(active); owners.add(owner); },
+			owns(owner: object) { return active && owners.has(owner); },
+			replace(target: object, key: string, value: unknown): () => void {
+				assert.ok(active);
+				const original = Object.getOwnPropertyDescriptor(target, key);
+				assert.ok(original && 'value' in original);
+				const installed = { ...original, value };
+				Object.defineProperty(target, key, installed);
+				let restored = false;
+				const restore = () => {
+					if (restored) return;
+					restored = true;
+					const current = Object.getOwnPropertyDescriptor(target, key);
+					if (current && 'value' in current && current.value === value
+						&& current.writable === installed.writable && current.enumerable === installed.enumerable
+						&& current.configurable === installed.configurable) Object.defineProperty(target, key, original);
+				};
+				restorations.push(restore);
+				return restore;
+			},
+			retire() {
+				if (!active) return;
+				active = false;
+				for (const restore of restorations.reverse()) restore();
+			},
+		};
+	}
 
 	suiteSetup(() => {
 		liveDocuments.install();
@@ -125,8 +164,14 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		};
 	});
 
-	teardown(() => {
-		liveDocuments.clear();
+	teardown(function () {
+		try {
+			if (this.currentTest?.title === powerBiTestTitle) return powerBiFixture?.cleanup(this.currentTest.state !== 'passed');
+			return this.currentTest?.title === chartTestTitle
+				? chartFixture?.cleanup(this.currentTest.state !== 'passed') : undefined;
+		} finally {
+			liveDocuments.clear();
+		}
 	});
 
 	suiteTeardown(() => {
@@ -1028,240 +1073,361 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		});
 	}
 
-	for (const { accepted, transport, expectedAttempts } of [
-		{ accepted: true, transport: 'false then true', expectedAttempts: 2 },
-		{ accepted: false, transport: 'false then true', expectedAttempts: 2 },
-		{ accepted: true, transport: 'throw then true', expectedAttempts: 2 },
-		{ accepted: false, transport: 'throw then true', expectedAttempts: 2 },
-		{ accepted: true, transport: 'success', expectedAttempts: 1 },
-		{ accepted: true, transport: 'late initial success', expectedAttempts: 1 },
-		{ accepted: true, transport: 'false twice then true', expectedAttempts: 3 },
-		{ accepted: true, transport: 'permanent false', expectedAttempts: 3 },
-		{ accepted: true, transport: 'permanent throw', expectedAttempts: 3 },
-		{ accepted: true, transport: 'dispose after false', expectedAttempts: 1 },
-		{ accepted: true, transport: 'source retirement after false', expectedAttempts: 1 },
-		{ accepted: true, transport: 'deadline', expectedAttempts: 2 },
-	] as const) {
-		test(`command result transport ${transport} preserves the ${accepted ? 'accepted' : 'rejected'} terminal without another mutation`, async () => {
-			const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
-			const originalOpen = fs.promises.open;
-			const originalPostMessage = MainWebviewStartupGateway.prototype.postMessage;
-			const originalTransition = MarkdownDocumentAggregate.prototype.transition;
-			const originalGetLogger = workbenchLogger.getWorkbenchLogger;
-			const originalSetTimeout = global.setTimeout;
-			const originalClearTimeout = global.clearTimeout;
-			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-command-result-transport-'));
-			const filePath = path.join(tmpDir, 'session.kqlx');
-			const uri = vscode.Uri.file(filePath);
-			const initialText = JSON.stringify({
-				kind: 'kqlx', version: 1, state: { sections: [
-					{ id: 'markdown_transport', type: 'markdown', text: 'Retained section' },
-				] },
-			}, null, 2) + '\n';
-			let receiveHandler: ((message: any) => unknown) | undefined;
-			let projection: any;
-			let durableWrites = 0;
-			let transitions = 0;
-			let captureDeliveryTimers = false;
-			let deadlineHandle: ReturnType<typeof setTimeout> | undefined;
-			let deadlineCleared = false;
-			let expireDelivery: (() => void) | undefined;
-			let settleTransport: ((delivered: boolean) => void) | undefined;
-			const terminals: any[] = [];
-			const gatewayTerminals: unknown[] = [];
-			const terminalSnapshots: string[] = [];
-			const transportWarnings: unknown[][] = [];
-			const deliveryDelays: number[] = [];
-			const disposeHandlers: Array<() => void> = [];
+	suite('command result transport fixtures', () => {
+		test('command result transport deferred fixture cleanup cannot alter the next fixture hooks or observations', async () => {
+			const target = { observe: (value: object) => value };
+			const original = Object.getOwnPropertyDescriptor(target, 'observe');
+			const first = createFixtureHooks();
+			const second = createFixtureHooks();
+			const firstOwner = {};
+			const secondOwner = {};
+			first.own(firstOwner);
+			second.own(secondOwner);
+			const observations: string[] = [];
+			const firstDelegate = target.observe;
+			const firstObserver = function (this: typeof target, value: object) {
+				if (first.owns(value)) observations.push('first');
+				return firstDelegate.call(this, value);
+			};
+			first.replace(target, 'observe', firstObserver);
+			let release!: () => void;
+			const pending = new Promise<void>(resolve => { release = resolve; });
+			let drain: Promise<void> | undefined;
+			const cleanup = () => {
+				first.retire();
+				return drain ??= pending.then(() => first.retire());
+			};
 			try {
-				fs.writeFileSync(filePath, initialText, 'utf8');
-				(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
-				MainWebviewStartupGateway.prototype.postMessage = function (message: unknown) {
-					if ((message as any)?.type === 'markdownDocumentCommandResult') gatewayTerminals.push(message);
-					return originalPostMessage.call(this, message);
-				};
-				MarkdownDocumentAggregate.prototype.transition = function (...args: Parameters<typeof originalTransition>) {
-					transitions++;
-					return originalTransition.apply(this, args);
-				};
-				(workbenchLogger as any).getWorkbenchLogger = () => {
-					const logger = originalGetLogger();
-					return {
-						...logger,
-						warn: (message: string, ...args: unknown[]) => {
-							if (message === '[kusto] webview message failed:') transportWarnings.push([message, ...args]);
-							else logger.warn(message, ...args);
-						},
+				const value = firstOwner;
+				assert.strictEqual(target.observe(value), value);
+				const firstCleanup = cleanup();
+				assert.deepStrictEqual(Object.getOwnPropertyDescriptor(target, 'observe'), original);
+				const secondDelegate = target.observe;
+				second.replace(target, 'observe', function (this: typeof target, input: object) {
+					if (second.owns(input)) observations.push('second');
+					return secondDelegate.call(this, input);
+				});
+				const secondDescriptor = Object.getOwnPropertyDescriptor(target, 'observe');
+				release();
+				await firstCleanup;
+				assert.strictEqual(cleanup(), firstCleanup);
+				assert.deepStrictEqual(Object.getOwnPropertyDescriptor(target, 'observe'), secondDescriptor);
+				assert.strictEqual(firstObserver.call(target, value), value);
+				assert.strictEqual(target.observe(value), value);
+				assert.strictEqual(target.observe(secondOwner), secondOwner);
+				assert.deepStrictEqual(observations, ['first', 'second']);
+			} finally {
+				release();
+				await cleanup();
+				second.retire();
+			}
+			assert.deepStrictEqual(Object.getOwnPropertyDescriptor(target, 'observe'), original);
+		});
+
+		for (const { accepted, transport, expectedAttempts } of [
+			{ accepted: true, transport: 'false then true', expectedAttempts: 2 },
+			{ accepted: false, transport: 'false then true', expectedAttempts: 2 },
+			{ accepted: true, transport: 'throw then true', expectedAttempts: 2 },
+			{ accepted: false, transport: 'throw then true', expectedAttempts: 2 },
+			{ accepted: true, transport: 'success', expectedAttempts: 1 },
+			{ accepted: true, transport: 'late initial success', expectedAttempts: 1 },
+			{ accepted: true, transport: 'false twice then true', expectedAttempts: 3 },
+			{ accepted: true, transport: 'permanent false', expectedAttempts: 3 },
+			{ accepted: true, transport: 'permanent throw', expectedAttempts: 3 },
+			{ accepted: true, transport: 'dispose after false', expectedAttempts: 1 },
+			{ accepted: true, transport: 'source retirement after false', expectedAttempts: 1 },
+			{ accepted: true, transport: 'deadline', expectedAttempts: 2 },
+		] as const) {
+			suite(`${accepted ? 'accepted' : 'rejected'} ${transport}`, () => {
+				const fixture = createFixtureHooks();
+				let cleanup: (retain: boolean) => Promise<void> = async () => undefined;
+				let installCommandObservers: () => void;
+				let setupWork: Promise<void> | undefined;
+				let commandWork: Promise<void> | undefined;
+				let filePath: string;
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				let projection: any;
+				let durableWrites = 0;
+				let transitions = 0;
+				let captureCommand = false;
+				let captureDeliveryTimers = false;
+				let deadlineHandle: ReturnType<typeof setTimeout> | undefined;
+				let deadlineCleared = false;
+				let expireDelivery: (() => void) | undefined;
+				let settleTransport: ((delivered: boolean) => void) | undefined;
+				const terminals: any[] = [];
+				const gatewayTerminals: unknown[] = [];
+				const terminalSnapshots: string[] = [];
+				const transportWarnings: unknown[][] = [];
+				const deliveryDelays: number[] = [];
+
+				setup(async () => {
+					const originalInitialize = QueryEditorProvider.prototype.initializeWebviewPanel;
+					const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-command-result-transport-'));
+					filePath = path.join(tmpDir, 'session.kqlx');
+					const uri = vscode.Uri.file(filePath);
+					const initialText = JSON.stringify({
+						kind: 'kqlx', version: 1, state: { sections: [
+							{ id: 'markdown_transport', type: 'markdown', text: 'Retained section' },
+						] },
+					}, null, 2) + '\n';
+					const subscriptions: vscode.Disposable[] = [];
+					const disposeHandlers: Array<() => void> = [];
+					const disposePanel = () => { for (const dispose of disposeHandlers.splice(0)) dispose(); };
+					let cleanupWork: Promise<void> | undefined;
+					cleanup = retain => {
+						captureCommand = false;
+						captureDeliveryTimers = false;
+						fixture.retire();
+						settleTransport?.(false);
+						disposePanel();
+						for (const subscription of subscriptions.splice(0)) subscription.dispose();
+						return cleanupWork ??= (async () => {
+							try {
+								await setupWork;
+								await commandWork;
+							} finally {
+								disposePanel();
+								for (const subscription of subscriptions.splice(0)) subscription.dispose();
+								assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000), true,
+									`native close must finish before fixture deletion; retained at ${tmpDir}`);
+							}
+							if (!retain) fs.rmSync(tmpDir, { recursive: true, force: true });
+						})();
 					};
-				};
-				global.setTimeout = ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
-					const handle = originalSetTimeout(callback, delay, ...args);
-					if (captureDeliveryTimers && (delay === 50 || delay === 500)) {
-						deliveryDelays.push(delay);
-						if (delay === 500 && !expireDelivery) {
-							deadlineHandle = handle;
-							expireDelivery = () => callback(...args);
-						}
-					}
-					return handle;
-				}) as typeof setTimeout;
-				global.clearTimeout = timeout => {
-					if (timeout === deadlineHandle) deadlineCleared = true;
-					originalClearTimeout(timeout);
-				};
-				fs.promises.open = async (...args: Parameters<typeof fs.promises.open>) => {
-					const handle = await originalOpen(...args);
-					if (String(args[0]) === uri.fsPath && args[1] === 'r+') {
-						const originalSync = handle.sync.bind(handle);
-						handle.sync = async () => {
-							await originalSync();
-							durableWrites++;
-						};
-					}
-					return handle;
-				};
-				const provider = new (KqlxEditorProvider as any)(
-					{
-						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
-						globalState: { get: () => undefined, update: async () => undefined },
-						globalStorageUri: vscode.Uri.file(tmpDir), extensionMode: vscode.ExtensionMode.Test,
-					} as any,
-					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
-				) as KqlxEditorProvider;
-				const document = {
-					uri, getText: () => initialText, eol: vscode.EndOfLine.LF,
-					positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: false, version: 1,
-				} as any;
-				const panel = {
-					webview: {
-						options: {},
-						postMessage: async (message: any) => {
-							if (message?.type === 'documentData') projection = message;
-							if (message?.reloadRequestId) {
-								await Promise.resolve(receiveHandler?.({
-									type: 'documentReloadResult', requestId: message.reloadRequestId,
-									applied: true, editRevision: Number(message.editRevision || 0),
-									markdownCommandBarrierSupported: true,
-								}));
+					fs.writeFileSync(filePath, initialText, 'utf8');
+					const restoreInitialize = fixture.replace(QueryEditorProvider.prototype, 'initializeWebviewPanel', function (
+						this: QueryEditorProvider, ...args: Parameters<typeof originalInitialize>
+					) {
+						if (fixture.active && this.documentUri === uri.toString()) return Promise.resolve();
+						return originalInitialize.apply(this, args);
+					});
+					installCommandObservers = () => {
+						const originalOpen = fs.promises.open;
+						const originalPostMessage = MainWebviewStartupGateway.prototype.postMessage;
+						const originalTransition = MarkdownDocumentAggregate.prototype.transition;
+						const originalGetLogger = workbenchLogger.getWorkbenchLogger;
+						const originalSetTimeout = global.setTimeout;
+						const originalClearTimeout = global.clearTimeout;
+						fixture.replace(MainWebviewStartupGateway.prototype, 'postMessage', function (
+							this: InstanceType<typeof MainWebviewStartupGateway>, ...args: Parameters<typeof originalPostMessage>
+						) {
+							const message = args[0] as { type?: unknown; viewSessionId?: unknown };
+							if (fixture.active && captureCommand && message?.type === 'markdownDocumentCommandResult'
+								&& message.viewSessionId === projection?.viewSessionId) gatewayTerminals.push(message);
+							return originalPostMessage.apply(this, args);
+						});
+						fixture.replace(MarkdownDocumentAggregate.prototype, 'transition', function (
+							this: MarkdownDocumentAggregate, ...args: Parameters<typeof originalTransition>
+						) {
+							if (fixture.owns(this) && captureCommand) transitions++;
+							return originalTransition.apply(this, args);
+						});
+						fixture.replace(workbenchLogger, 'getWorkbenchLogger', function (this: unknown, ...args: Parameters<typeof originalGetLogger>) {
+							const logger = originalGetLogger.apply(this, args);
+							return {
+								...logger,
+								warn: function (this: typeof logger, ...warning: Parameters<typeof logger.warn>) {
+									if (fixture.active && captureCommand && warning[0] === '[kusto] webview message failed:') {
+										transportWarnings.push(warning);
+										return;
+									}
+									return logger.warn.apply(this, warning);
+								},
+							};
+						});
+						fixture.replace(global, 'setTimeout', function (this: unknown, ...args: Parameters<typeof originalSetTimeout>) {
+							const handle = originalSetTimeout.apply(this, args);
+							const [callback, delay, ...callbackArgs] = args;
+							if (fixture.active && captureDeliveryTimers && (delay === 50 || delay === 500)) {
+								deliveryDelays.push(delay);
+								if (delay === 500 && !expireDelivery) {
+									deadlineHandle = handle;
+									expireDelivery = () => { if (fixture.active) callback.apply(handle, callbackArgs); };
+								}
 							}
-							if (message?.type === 'markdownDocumentCommandResult') {
-								terminals.push(message);
-								terminalSnapshots.push(JSON.stringify(message));
-								if (transport === 'dispose after false') {
-									captureDeliveryTimers = false;
-									for (const dispose of disposeHandlers) dispose();
-									captureDeliveryTimers = true;
-									return false;
-								}
-								if (transport === 'source retirement after false') {
-									captureDeliveryTimers = false;
-									await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
-									captureDeliveryTimers = true;
-									return false;
-								}
-								if (transport === 'deadline' || transport === 'late initial success') {
-									if (transport === 'deadline' && terminals.length === 1) return false;
-									queueMicrotask(() => {
-										expireDelivery?.();
-										if (transport === 'late initial success') settleTransport?.(true);
-									});
-									return new Promise<boolean>(resolve => { settleTransport = resolve; });
-								}
-								if (transport === 'permanent throw' || (transport === 'throw then true' && terminals.length === 1)) {
-									throw new Error('Transport detail must not appear in the permanent-failure warning.');
-								}
-								return transport !== 'permanent false'
-									&& (transport === 'success' || terminals.length >= expectedAttempts);
+							return handle;
+						});
+						fixture.replace(global, 'clearTimeout', function (this: unknown, ...args: Parameters<typeof originalClearTimeout>) {
+							if (fixture.active && args[0] === deadlineHandle) deadlineCleared = true;
+							return originalClearTimeout.apply(this, args);
+						});
+						fixture.replace(fs.promises, 'open', async function (this: unknown, ...args: Parameters<typeof originalOpen>) {
+							const handle = await originalOpen.apply(this, args);
+							if (fixture.active && String(args[0]) === uri.fsPath && args[1] === 'r+') {
+								const originalSync = handle.sync;
+								handle.sync = async function (this: typeof handle, ...syncArgs: Parameters<typeof originalSync>) {
+									const result = await originalSync.apply(this, syncArgs);
+									if (fixture.active && captureCommand) durableWrites++;
+									return result;
+								};
 							}
-							return true;
+							return handle;
+						});
+					};
+					const provider = new (KqlxEditorProvider as any)(
+						{
+							subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+							globalState: { get: () => undefined, update: async () => undefined },
+							globalStorageUri: vscode.Uri.file(tmpDir), extensionMode: vscode.ExtensionMode.Test,
+						} as any,
+						vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+					) as KqlxEditorProvider;
+					const document = {
+						uri, getText: () => initialText, eol: vscode.EndOfLine.LF,
+						positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: false, version: 1,
+					} as any;
+					const panel = {
+						webview: {
+							options: {},
+							postMessage: async (message: any) => {
+								if (message?.type === 'documentData') projection = message;
+								if (message?.reloadRequestId) {
+									await Promise.resolve(receiveHandler?.({
+										type: 'documentReloadResult', requestId: message.reloadRequestId,
+										applied: true, editRevision: Number(message.editRevision || 0),
+										markdownCommandBarrierSupported: true,
+									}));
+								}
+								if (message?.type === 'markdownDocumentCommandResult') {
+									if (fixture.active) {
+										terminals.push(message);
+										terminalSnapshots.push(JSON.stringify(message));
+									}
+									if (transport === 'dispose after false') {
+										captureDeliveryTimers = false;
+										disposePanel();
+										captureDeliveryTimers = fixture.active;
+										return false;
+									}
+									if (transport === 'source retirement after false') {
+										captureDeliveryTimers = false;
+										await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+										captureDeliveryTimers = fixture.active;
+										return false;
+									}
+									if (transport === 'deadline' || transport === 'late initial success') {
+										if (transport === 'deadline' && terminals.length === 1) return false;
+										queueMicrotask(() => {
+											expireDelivery?.();
+											if (transport === 'late initial success') settleTransport?.(true);
+										});
+										return new Promise<boolean>(resolve => { settleTransport = resolve; });
+									}
+									if (transport === 'permanent throw' || (transport === 'throw then true' && terminals.length === 1)) {
+										throw new Error('Transport detail must not appear in the permanent-failure warning.');
+									}
+									return transport !== 'permanent false'
+										&& (transport === 'success' || terminals.length >= expectedAttempts);
+								}
+								return true;
+							},
+							onDidReceiveMessage: (handler: (message: any) => unknown) => {
+								receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
+								return { dispose() {} };
+							},
 						},
-						onDidReceiveMessage: (handler: (message: any) => unknown) => {
-							receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
+						onDidDispose: (handler: () => void) => {
+							disposeHandlers.push(handler);
 							return { dispose() {} };
 						},
-					},
-					onDidDispose: (handler: () => void) => {
-						disposeHandlers.push(handler);
-						return { dispose() {} };
-					},
-				} as any;
-				await provider.resolveCustomTextEditor(document, panel, {} as any);
-				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
-				const initialRevision = projection.documentRevision;
-				const initialGeneration = projection.sourceGeneration;
-				durableWrites = 0;
-				transitions = 0;
-				captureDeliveryTimers = true;
-				await Promise.resolve(receiveHandler!({
-					type: 'markdownDocumentCommand', commandId: 'python-add-6',
-					sourceGeneration: initialGeneration,
-					expectedDocumentRevision: initialRevision + (accepted ? 0 : 1),
-					command: { type: 'add', section: { id: 'python_transport', type: 'python', code: 'print(6)' } },
-				}));
-				captureDeliveryTimers = false;
-				settleTransport?.(true);
-				await new Promise<void>(resolve => setImmediate(resolve));
-				assert.strictEqual(terminals.length, expectedAttempts, 'only known non-delivery may retry while the owner remains live');
-				assert.strictEqual(gatewayTerminals.length, expectedAttempts);
-				for (const terminal of gatewayTerminals) {
-					assert.strictEqual(terminal, gatewayTerminals[0], 'gateway retries must reuse one result object');
-					assert.strictEqual(Object.isFrozen(terminal), true, 'the admitted result must be immutable');
-				}
-				assert.deepStrictEqual(terminalSnapshots, Array(expectedAttempts).fill(terminalSnapshots[0]));
-				assert.strictEqual(transitions, 1, 'transport retries must never reenter the command transition');
-				assert.strictEqual(terminals[0].commandId, 'python-add-6');
-				assert.strictEqual(terminals[0].ok, accepted);
-				assert.strictEqual(terminals[0].sourceGeneration, initialGeneration);
-				assert.strictEqual(terminals[0].documentRevision, initialRevision + (accepted ? 1 : 0));
-				assert.strictEqual(durableWrites, accepted ? 1 : 0, 'transport retry must not repeat the durable write');
-				const retryUnnecessary = transport === 'success' || transport === 'late initial success'
-					|| transport === 'dispose after false' || transport === 'source retirement after false';
-				if (retryUnnecessary) assert.deepStrictEqual(deliveryDelays, [], 'successful delivery or retirement must not start a retry budget');
-				else assert.strictEqual(deliveryDelays[0], 500, 'the retry deadline must stay below the existing five-second client deadline');
-				assert.ok(deliveryDelays.filter(delay => delay === 50).length <= 2, 'retry delays must total at most 100 ms');
-				if (deadlineHandle) assert.strictEqual(deadlineCleared, true, 'every terminal path must clear its deadline');
-				const permanentFailure = transport === 'permanent false' || transport === 'permanent throw' || transport === 'deadline';
-				assert.strictEqual(transportWarnings.length, permanentFailure ? 1 : 0);
-				if (permanentFailure) {
-					assert.strictEqual(transportWarnings[0].length, 2);
-					assert.ok(transportWarnings[0][1] instanceof Error);
-					assert.strictEqual((transportWarnings[0][1] as Error).message, 'Command result delivery failed (python-add-6).');
-				}
-				if (transport === 'source retirement after false') assert.ok(projection.sourceGeneration > initialGeneration);
-				assert.deepStrictEqual(
-					JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections.map((section: any) => section.id),
-					accepted ? ['markdown_transport', 'python_transport'] : ['markdown_transport'],
-				);
-			} finally {
-				captureDeliveryTimers = false;
-				settleTransport?.(false);
-				for (const dispose of disposeHandlers) dispose();
-				await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
-				(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
-				fs.promises.open = originalOpen;
-				MainWebviewStartupGateway.prototype.postMessage = originalPostMessage;
-				MarkdownDocumentAggregate.prototype.transition = originalTransition;
-				(workbenchLogger as any).getWorkbenchLogger = originalGetLogger;
-				global.setTimeout = originalSetTimeout;
-				global.clearTimeout = originalClearTimeout;
-				fs.rmSync(tmpDir, { recursive: true, force: true });
-			}
-		});
-	}
+					} as any;
+					setupWork = (async () => {
+						try {
+							await provider.resolveCustomTextEditor(document, panel, {} as any);
+						} finally {
+							restoreInitialize();
+						}
+						if (fixture.active) {
+							await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+							if (!fixture.active) return;
+							const owner = (provider as any).markdownDocuments.get(normalizeWorkbenchUriKey(uri))?.document;
+							assert.ok(owner instanceof MarkdownDocumentAggregate, 'the command observer must own the exact fixture aggregate');
+							fixture.own(owner);
+						}
+					})();
+					await setupWork;
+				});
 
-	test('Power BI compensation cannot mutate a same-ID HTML replacement and cleanup follows host projection', async () => {
-		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
-		const originalApplyEdit = vscode.workspace.applyEdit;
-		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-html-publish-cas-'));
-		const filePath = path.join(tmpDir, 'publish-cas.kqlx');
-		let currentText = JSON.stringify({
-			kind: 'kqlx', version: 1, state: { sections: [
-				{ id: 'html_publish', type: 'html', code: '<main>original</main>' },
-			] },
-		}, null, 2) + '\n';
+				test(`command result transport ${transport} preserves the ${accepted ? 'accepted' : 'rejected'} terminal without another mutation`, async () => {
+					installCommandObservers();
+					commandWork = (async () => {
+						const initialRevision = projection.documentRevision;
+						const initialGeneration = projection.sourceGeneration;
+						durableWrites = 0;
+						transitions = 0;
+						captureCommand = true;
+						captureDeliveryTimers = true;
+						await Promise.resolve(receiveHandler!({
+							type: 'markdownDocumentCommand', commandId: 'python-add-6',
+							sourceGeneration: initialGeneration,
+							expectedDocumentRevision: initialRevision + (accepted ? 0 : 1),
+							command: { type: 'add', section: { id: 'python_transport', type: 'python', code: 'print(6)' } },
+						}));
+						captureDeliveryTimers = false;
+						settleTransport?.(true);
+						await new Promise<void>(resolve => setImmediate(resolve));
+						assert.strictEqual(terminals.length, expectedAttempts, 'only known non-delivery may retry while the owner remains live');
+						assert.strictEqual(gatewayTerminals.length, expectedAttempts);
+						for (const terminal of gatewayTerminals) {
+							assert.strictEqual(terminal, gatewayTerminals[0], 'gateway retries must reuse one result object');
+							assert.strictEqual(Object.isFrozen(terminal), true, 'the admitted result must be immutable');
+						}
+						assert.deepStrictEqual(terminalSnapshots, Array(expectedAttempts).fill(terminalSnapshots[0]));
+						assert.strictEqual(transitions, 1, 'transport retries must never reenter the command transition');
+						assert.strictEqual(terminals[0].commandId, 'python-add-6');
+						assert.strictEqual(terminals[0].ok, accepted);
+						assert.strictEqual(terminals[0].sourceGeneration, initialGeneration);
+						assert.strictEqual(terminals[0].documentRevision, initialRevision + (accepted ? 1 : 0));
+						assert.strictEqual(durableWrites, accepted ? 1 : 0, 'transport retry must not repeat the durable write');
+						const retryUnnecessary = transport === 'success' || transport === 'late initial success'
+							|| transport === 'dispose after false' || transport === 'source retirement after false';
+						if (retryUnnecessary) assert.deepStrictEqual(deliveryDelays, [], 'successful delivery or retirement must not start a retry budget');
+						else assert.strictEqual(deliveryDelays[0], 500, 'the retry deadline must stay below the existing five-second client deadline');
+						assert.ok(deliveryDelays.filter(delay => delay === 50).length <= 2, 'retry delays must total at most 100 ms');
+						if (deadlineHandle) assert.strictEqual(deadlineCleared, true, 'every terminal path must clear its deadline');
+						const permanentFailure = transport === 'permanent false' || transport === 'permanent throw' || transport === 'deadline';
+						assert.strictEqual(transportWarnings.length, permanentFailure ? 1 : 0);
+						if (permanentFailure) {
+							assert.strictEqual(transportWarnings[0].length, 2);
+							assert.ok(transportWarnings[0][1] instanceof Error);
+							assert.strictEqual((transportWarnings[0][1] as Error).message, 'Command result delivery failed (python-add-6).');
+						}
+						if (transport === 'source retirement after false') assert.ok(projection.sourceGeneration > initialGeneration);
+						assert.deepStrictEqual(
+							JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections.map((section: any) => section.id),
+							accepted ? ['markdown_transport', 'python_transport'] : ['markdown_transport'],
+						);
+					})().finally(() => {
+						captureCommand = false;
+						captureDeliveryTimers = false;
+					});
+					await commandWork;
+				});
+
+				teardown(function () {
+					fixture.retire();
+					return cleanup(this.currentTest?.state !== 'passed');
+				});
+			});
+		}
+	});
+
+	setup(function () {
+		if (this.currentTest?.title !== powerBiTestTitle) return;
+		const fixture = createFixtureHooks();
+		let tmpDir: string | undefined;
+		let uri: vscode.Uri | undefined;
+		let currentText: string;
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		let projection: any;
 		let queryEditor: any;
+		let setupWork: Promise<void> | undefined;
+		let testWork: Promise<void> | undefined;
+		let cleanupWork: Promise<void> | undefined;
+		const disposers: Array<() => void> = [];
+		const subscriptions: vscode.Disposable[] = [];
+		const disposePanel = () => { for (const dispose of disposers.splice(0)) dispose(); };
 		const posted: any[] = [];
 		const cleanup = async () => { cleanupCalls++; return true; };
 		let cleanupCalls = 0;
@@ -1270,58 +1436,25 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			reportName: 'Created report', reportUrl: 'https://app.powerbi.com/created', dataMode: 'import',
 		} as const;
 
-		try {
-			fs.writeFileSync(filePath, currentText, 'utf8');
-			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async function (panel: vscode.WebviewPanel) {
-				queryEditor = this;
-				queryEditor.panel = panel;
-				queryEditor._panelDisposed = false;
-			};
-			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
-				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
-				if (typeof replacement !== 'string') return false;
-				currentText = replacement;
-				return true;
-			};
-			const provider = new (KqlxEditorProvider as any)(
-				{
-					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
-					globalState: { get: () => undefined, update: async () => undefined },
-					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
-					extensionMode: vscode.ExtensionMode.Test,
-				} as any,
-				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
-			) as KqlxEditorProvider;
-			const document = {
-				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
-				positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: true,
-			} as any;
-			const panel = {
-				webview: {
-					options: {},
-					postMessage: async (message: any) => {
-						posted.push(message);
-						if (message?.type === 'documentData' || message?.type === 'markdownDocumentCommandResult') {
-							projection = message;
-						}
-						if (message?.reloadRequestId) {
-							await Promise.resolve(receiveHandler?.({
-								type: 'documentReloadResult', requestId: message.reloadRequestId,
-								applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
-							}));
-						}
-						return true;
-					},
-					onDidReceiveMessage: (handler: any) => {
-						receiveHandler = wrapDocumentViewTestReceiver(
-							handler, () => latestDocumentViewHostMessage(posted),
-						);
-						return { dispose() {} };
-					},
-				},
-				onDidDispose: () => ({ dispose() {} }),
-			} as any;
-			await provider.resolveCustomTextEditor(document, panel, {} as any);
+		powerBiFixture = {
+			cleanup: retain => {
+				fixture.retire();
+				disposePanel();
+				for (const subscription of subscriptions.splice(0)) subscription.dispose();
+				return cleanupWork ??= (async () => {
+					const work = await Promise.allSettled([setupWork, testWork]);
+					disposePanel();
+					for (const subscription of subscriptions.splice(0)) subscription.dispose();
+					const closed = uri ? await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000) : true;
+					const failure = work.find(result => result.status === 'rejected');
+					if (failure?.status === 'rejected') throw failure.reason;
+					if (!retain && closed && tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+					else if (tmpDir) console.log('[html-publish-cas] retained fixture:', tmpDir);
+				})();
+			},
+			run: () => testWork = run(),
+		};
+		async function run(): Promise<void> {
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 			assert.ok(queryEditor!, 'native provider must create its query editor adapter');
 			const timer = setTimeout(() => undefined, 60_000);
@@ -1401,11 +1534,100 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.strictEqual(finalSection.code, '<main>replacement</main>');
 			assert.strictEqual(finalSection.pbiPublishInfo, undefined);
 			assert.strictEqual(queryEditor!.dashboardApplication.pendingPowerBiPublishAcks.has('publish-cas'), false);
-		} finally {
-			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
-			(vscode.workspace as any).applyEdit = originalApplyEdit;
-			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-html-publish-cas-'));
+		const filePath = path.join(tmpDir, 'publish-cas.kqlx');
+		uri = vscode.Uri.file(filePath);
+		currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'html_publish', type: 'html', code: '<main>original</main>' },
+			] },
+		}, null, 2) + '\n';
+		fs.writeFileSync(filePath, currentText, 'utf8');
+		const provider = new (KqlxEditorProvider as any)(
+			{
+				subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+				globalState: { get: () => undefined, update: async () => undefined },
+				globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				extensionMode: vscode.ExtensionMode.Test,
+			} as any,
+			vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+		) as KqlxEditorProvider;
+		const document = {
+			uri, getText: () => currentText, eol: vscode.EndOfLine.LF,
+			positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: true,
+		} as any;
+		const panel = {
+			webview: {
+				options: {},
+				postMessage: async (message: any) => {
+					if (!fixture.active) return false;
+					posted.push(message);
+					if (message?.type === 'documentData' || message?.type === 'markdownDocumentCommandResult') {
+						projection = message;
+					}
+					if (message?.reloadRequestId) {
+						await Promise.resolve(receiveHandler?.({
+							type: 'documentReloadResult', requestId: message.reloadRequestId,
+							applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+						}));
+					}
+					return true;
+				},
+				onDidReceiveMessage: (handler: any) => {
+					const receive = wrapDocumentViewTestReceiver(
+						handler, () => latestDocumentViewHostMessage(posted),
+					);
+					receiveHandler = async message => {
+						if (!fixture.active) throw new Error('Power BI fixture has retired.');
+						const result = await receive(message);
+						if (!fixture.active) throw new Error('Power BI fixture has retired.');
+						return result;
+					};
+					return { dispose() {} };
+				},
+			},
+			onDidDispose: (handler: () => void) => {
+				if (fixture.active) disposers.push(handler);
+				else handler();
+				return { dispose() {} };
+			},
+		} as any;
+		const originalInitialize = QueryEditorProvider.prototype.initializeWebviewPanel;
+		const restoreInitialize = fixture.replace(QueryEditorProvider.prototype, 'initializeWebviewPanel', function (
+			this: QueryEditorProvider, ...args: Parameters<typeof originalInitialize>
+		) {
+			if (this.documentUri !== uri!.toString() || args[0] !== panel) return originalInitialize.apply(this, args);
+			if (!fixture.active) return Promise.resolve();
+			queryEditor = this;
+			queryEditor.panel = args[0];
+			queryEditor._panelDisposed = false;
+			return Promise.resolve();
+		});
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		fixture.replace(vscode.workspace, 'applyEdit', function (
+			this: unknown, ...args: Parameters<typeof originalApplyEdit>
+		) {
+			const entries = args[0].entries();
+			if (entries.length !== 1 || entries[0][0].toString() !== uri!.toString()) return originalApplyEdit.apply(this, args);
+			if (!fixture.active) return Promise.resolve(false);
+			const replacement = entries[0]?.[1]?.[0]?.newText;
+			if (typeof replacement !== 'string') return Promise.resolve(false);
+			currentText = replacement;
+			return Promise.resolve(true);
+		});
+		setupWork = (async () => {
+			try {
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+			} finally {
+				restoreInitialize();
+			}
+		})();
+		return setupWork;
+	});
+
+	test('Power BI compensation cannot mutate a same-ID HTML replacement and cleanup follows host projection', async () => {
+		await powerBiFixture!.run();
 	});
 
 	test('same-URI reopen during close cleanup preserves owner and queue identity', async () => {
@@ -1700,12 +1922,83 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
-	test('Chart-only Save waits for projection acknowledgement and preserves owned state', async () => {
-		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
-		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
-		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-chart-pre-ack-save-'));
-		const filePath = path.join(tmpDir, 'chart-only.kqlx');
-		const currentText = JSON.stringify({
+	setup(function () {
+		if (this.currentTest?.title !== chartTestTitle) return;
+		const fixture = createFixtureHooks();
+		const registrationScope = new AsyncLocalStorage<boolean>();
+		let tmpDir: string | undefined;
+		let filePath: string;
+		let uri: vscode.Uri | undefined;
+		let currentText: string;
+		let document: vscode.TextDocument;
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let reloadRequestId = '';
+		let projection: any;
+		let finalSnapshotRequests = 0;
+		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+		let setupWork: Promise<void> | undefined;
+		let testWork: Promise<void> | undefined;
+		let request: Promise<unknown> | undefined;
+		let savePreparation: Promise<vscode.TextEdit[]> | undefined;
+		let settled = false;
+		let barrierRequests = 0;
+		const disposers: Array<() => void> = [];
+		const subscriptions: vscode.Disposable[] = [];
+		const disposePanel = () => { for (const dispose of disposers.splice(0)) dispose(); };
+		let cleanupWork: Promise<void> | undefined;
+
+		chartFixture = {
+			cleanup: retain => {
+				fixture.retire();
+				registrationScope.disable();
+				disposePanel();
+				for (const subscription of subscriptions.splice(0)) subscription.dispose();
+				return cleanupWork ??= (async () => {
+					const work = await Promise.allSettled([setupWork, testWork, request, savePreparation]);
+					disposePanel();
+					for (const subscription of subscriptions.splice(0)) subscription.dispose();
+					const closed = uri ? await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000) : true;
+					const failure = work.find(result => result.status === 'rejected');
+					if (failure?.status === 'rejected') throw failure.reason;
+					if (!retain && closed && tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+					else if (tmpDir) console.log('[chart-pre-ack-save] retained fixture:', tmpDir);
+				})();
+			},
+			run: () => testWork = (async () => {
+				request = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				await waitForCondition(() => !!reloadRequestId, 'Chart projection candidate should be posted', 1_000);
+				assert.ok(willSaveHandler);
+				willSaveHandler!({
+					document,
+					waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { savePreparation = Promise.resolve(thenable); void savePreparation.then(() => { settled = true; }, () => { settled = true; }); },
+				} as any);
+				assert.ok(savePreparation);
+				await new Promise<void>(resolve => setImmediate(resolve));
+				assert.strictEqual(settled, false);
+				assert.strictEqual(barrierRequests, 0);
+				assert.strictEqual(finalSnapshotRequests, 0);
+				assert.strictEqual(fs.readFileSync(filePath, 'utf8'), currentText);
+				assert.deepStrictEqual(JSON.parse(currentText).state.sections, JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections);
+
+				await Promise.resolve(receiveHandler!({
+					type: 'documentReloadResult', requestId: reloadRequestId,
+					applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+				}));
+				await request;
+				const edits = await savePreparation;
+				assert.ok(edits.length <= 1);
+				const saved = JSON.parse(edits.at(-1)?.newText ?? currentText);
+				assert.strictEqual(saved.state.sections[0].chartTitle, 'Owned chart');
+				assert.strictEqual(saved.state.sections[0].dataSourceId, 'query_source');
+				assert.strictEqual(saved.futureRoot.keep, true);
+				assert.strictEqual(barrierRequests, 1);
+				assert.strictEqual(finalSnapshotRequests, 1);
+			})(),
+		};
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-chart-pre-ack-save-'));
+		filePath = path.join(tmpDir, 'chart-only.kqlx');
+		uri = vscode.Uri.file(filePath);
+		currentText = JSON.stringify({
 			kind: 'kqlx', version: 1, futureRoot: { keep: true }, state: {
 				sections: [{
 					id: 'chart_only', type: 'chart', name: 'Chart', mode: 'preview', expanded: true,
@@ -1714,106 +2007,82 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				}],
 			},
 		}, null, 2) + '\n';
-		let receiveHandler: ((message: any) => unknown) | undefined;
-		let reloadRequestId = '';
-		let projection: any;
-		let finalSnapshotRequests = 0;
-		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
-		let request: Promise<unknown> | undefined;
-		let savePreparation: Promise<vscode.TextEdit[]> | undefined;
-		let settled = false;
-		let barrierRequests = 0;
-		const disposers: Array<() => void> = [];
-
-		try {
-			fs.writeFileSync(filePath, currentText, 'utf8');
-			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
-			(vscode.workspace as any).onWillSaveTextDocument = (handler: any) => {
-				willSaveHandler = handler;
-				return { dispose() {} };
-			};
-			const provider = new (KqlxEditorProvider as any)(
-				{
-					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
-					globalState: { get: () => undefined, update: async () => undefined },
-					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
-				} as any,
-				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
-			) as KqlxEditorProvider;
-			const document = {
-				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
-				positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: true, version: 1,
-			} as any;
-			const panel = {
-				webview: {
-					options: {},
-					postMessage: async (message: any) => {
-						if (message?.type === 'documentData') {
-							projection = message;
-							reloadRequestId = String(message.reloadRequestId || '');
-						}
-						if (message?.type === 'requestMarkdownCommandBarrier') {
-							barrierRequests++;
-							await Promise.resolve(receiveHandler?.({
-								type: 'markdownDocumentCommandBarrierResult', requestId: message.requestId,
-								sourceGeneration: message.sourceGeneration, documentRevision: projection.documentRevision, accepted: true,
-							}));
-						}
-						if (message?.type === 'requestFinalPersist') {
-							finalSnapshotRequests++;
-							await Promise.resolve(receiveHandler?.({
-								type: 'persistDocument', flushRequestId: message.requestId,
-								sourceGeneration: projection.sourceGeneration,
-								state: { sections: [{ id: 'chart_only', type: 'chart', chartTitle: 'Stale DOM' }] },
-							}));
-						}
-						return true;
-					},
-					onDidReceiveMessage: (handler: any) => {
-						receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
-						return { dispose() {} };
-					},
+		fs.writeFileSync(filePath, currentText, 'utf8');
+		const provider = new (KqlxEditorProvider as any)(
+			{
+				subscriptions, workspaceState: { get: () => undefined, update: async () => undefined },
+				globalState: { get: () => undefined, update: async () => undefined },
+				globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+			} as any,
+			vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+		) as KqlxEditorProvider;
+		document = {
+			uri, getText: () => currentText, eol: vscode.EndOfLine.LF,
+			positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: true, version: 1,
+		} as any;
+		const panel = {
+			webview: {
+				options: {},
+				postMessage: async (message: any) => {
+					if (!fixture.active) return false;
+					if (message?.type === 'documentData') {
+						projection = message;
+						reloadRequestId = String(message.reloadRequestId || '');
+					}
+					if (message?.type === 'requestMarkdownCommandBarrier') {
+						barrierRequests++;
+						await Promise.resolve(receiveHandler?.({
+							type: 'markdownDocumentCommandBarrierResult', requestId: message.requestId,
+							sourceGeneration: message.sourceGeneration, documentRevision: projection.documentRevision, accepted: true,
+						}));
+					}
+					if (message?.type === 'requestFinalPersist') {
+						finalSnapshotRequests++;
+						await Promise.resolve(receiveHandler?.({
+							type: 'persistDocument', flushRequestId: message.requestId,
+							sourceGeneration: projection.sourceGeneration,
+							state: { sections: [{ id: 'chart_only', type: 'chart', chartTitle: 'Stale DOM' }] },
+						}));
+					}
+					return true;
 				},
-				onDidDispose: (handler: () => void) => { disposers.push(handler); return { dispose() {} }; },
-			} as any;
+				onDidReceiveMessage: (handler: any) => {
+					receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
+					return { dispose() {} };
+				},
+			},
+			onDidDispose: (handler: () => void) => { disposers.push(handler); return { dispose() {} }; },
+		} as any;
+		const originalInitialize = QueryEditorProvider.prototype.initializeWebviewPanel;
+		const restoreInitialize = fixture.replace(QueryEditorProvider.prototype, 'initializeWebviewPanel', function (
+			this: QueryEditorProvider, ...args: Parameters<typeof originalInitialize>
+		) {
+			if (fixture.active && this.documentUri === uri!.toString() && args[0] === panel) return Promise.resolve();
+			return originalInitialize.apply(this, args);
+		});
+		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
+		const restoreOnWillSave = fixture.replace(vscode.workspace, 'onWillSaveTextDocument', function (
+			this: unknown, ...args: Parameters<typeof originalOnWillSave>
+		) {
+			if (fixture.active && registrationScope.getStore() === true) {
+				willSaveHandler = args[0];
+				return { dispose() {} };
+			}
+			return originalOnWillSave.apply(this, args);
+		});
+		setupWork = registrationScope.run(true, async () => {
+			try {
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+			} finally {
+				restoreOnWillSave();
+				restoreInitialize();
+			}
+		});
+		return setupWork;
+	});
 
-			await provider.resolveCustomTextEditor(document, panel, {} as any);
-			request = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
-			await waitForCondition(() => !!reloadRequestId, 'Chart projection candidate should be posted', 1_000);
-			assert.ok(willSaveHandler);
-			willSaveHandler!({
-				document,
-				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { savePreparation = Promise.resolve(thenable); void savePreparation.then(() => { settled = true; }, () => { settled = true; }); },
-			} as any);
-			assert.ok(savePreparation);
-			await new Promise<void>(resolve => setImmediate(resolve));
-			assert.strictEqual(settled, false);
-			assert.strictEqual(barrierRequests, 0);
-			assert.strictEqual(finalSnapshotRequests, 0);
-			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), currentText);
-			assert.deepStrictEqual(JSON.parse(currentText).state.sections, JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections);
-
-			await Promise.resolve(receiveHandler!({
-				type: 'documentReloadResult', requestId: reloadRequestId,
-				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
-			}));
-			await request;
-			const edits = await savePreparation;
-			assert.ok(edits.length <= 1);
-			const saved = JSON.parse(edits.at(-1)?.newText ?? currentText);
-			assert.strictEqual(saved.state.sections[0].chartTitle, 'Owned chart');
-			assert.strictEqual(saved.state.sections[0].dataSourceId, 'query_source');
-			assert.strictEqual(saved.futureRoot.keep, true);
-			assert.strictEqual(barrierRequests, 1);
-			assert.strictEqual(finalSnapshotRequests, 1);
-		} finally {
-			for (const dispose of disposers) dispose();
-			await savePreparation?.catch(() => undefined);
-			await request?.catch(() => undefined);
-			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
-			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
-			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
-		}
+	test('Chart-only Save waits for projection acknowledgement and preserves owned state', async () => {
+		await chartFixture!.run();
 	});
 
 	test('initial projection readiness is scoped to the requested editor panel', async () => {
@@ -2623,8 +2892,9 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
-	for (const scenario of ['retained', 'policy changed', 'policy changed before preparation', 'preparation failed', 'runtime replaced', 'explicit rejection first', 'superseded', 'disposed', 'source version ABA', 'local persist'] as const) test(`automatic revision-rejected refresh retains an unchanged accepted native view (${scenario})`, async function () {
+	for (const scenario of ['retained', 'superseded preparation', 'superseded preparation policy changed', 'superseded preparation after explicit rejection', 'superseded preparation then explicit rejection', 'policy changed', 'policy changed before preparation', 'preparation failed', 'runtime replaced', 'explicit rejection first', 'superseded', 'disposed', 'source version ABA', 'local persist'] as const) test(`automatic revision-rejected refresh retains an unchanged accepted native view (${scenario})`, async function () {
 		this.timeout(10_000);
+		const supersededPreparation = scenario.startsWith('superseded preparation');
 		const originalInitialize = QueryEditorProvider.prototype.initializeWebviewPanel;
 		const originalPublish = QueryEditorProvider.prototype.publishSqlLeaveNoTraceStateFresh;
 		const originalCommit = QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh;
@@ -2657,6 +2927,8 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		const recoveryStarted = new Promise<void>(resolve => { beginRecovery = resolve; });
 		const recoveryGate = new Promise<void>(resolve => { releaseRecovery = resolve; });
 		let holdNextPreparation = false;
+		const readinessTransitions: Array<{ pendingDocumentProjections: number; pendingProjectionActivationSize: number; admittedDocumentRequests: number }> = [];
+		let restoreReadinessTrace: (() => void) | undefined;
 		let beginNextPreparation!: () => void;
 		let releaseNextPreparation!: () => void;
 		const nextPreparationStarted = new Promise<void>(resolve => { beginNextPreparation = resolve; });
@@ -2665,7 +2937,19 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		let initialRequest: Promise<unknown> | undefined;
 		try {
 			fs.writeFileSync(filePath, authoredBytes);
-			QueryEditorProvider.prototype.initializeWebviewPanel = async function () { queryEditor = this; };
+			QueryEditorProvider.prototype.initializeWebviewPanel = async function () {
+				queryEditor = this;
+				if (supersededPreparation) {
+					const trace = this.fileOpenTrace;
+					assert.ok(trace);
+					const originalMark = trace.mark;
+					trace.mark = function (event, detail) {
+						originalMark.call(this, event, detail);
+						if (event === 'notify.transitions') readinessTransitions.push(detail as typeof readinessTransitions[number]);
+					};
+					restoreReadinessTrace = () => { trace.mark = originalMark; };
+				}
+			};
 			QueryEditorProvider.prototype.publishSqlLeaveNoTraceStateFresh = async function (state, publish, observer) {
 				if (this === queryEditor && holdNextPreparation) {
 					holdNextPreparation = false;
@@ -2726,14 +3010,15 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				const probe = posted.filter(message => message.type === 'mainWebviewDispatcherProbe').at(-1);
 				if (probe) await Promise.resolve(receive!({ type: 'mainWebviewDispatcherReady', runtimeId: 'replacement-runtime', probeId: probe.probeId }));
 			}
-			if (scenario === 'explicit rejection first') {
+			if (scenario === 'explicit rejection first' || scenario === 'superseded preparation after explicit rejection') {
 				const explicit = Promise.resolve(receive!({ type: 'requestDocument', requestId: 'explicit-rejected-refresh', expectedEditRevision: 0 }));
 				await waitForCondition(() => projections.length === 2, 'explicit conditional request must be posted', 1_000);
 				await acknowledge(projections[1], false, 0);
 				await explicit;
 				assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
 			}
-			const priorProjectionCount = projections.length;
+			let priorProjectionCount = projections.length;
+			let priorIssuedGeneration = projections.at(-1).sourceGeneration;
 			holdRefresh = true;
 			(queryEditor as any).persistedResultSanitizationApplication.invalidateKustoPersistence();
 			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false,
@@ -2741,6 +3026,21 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			await preparationStarted;
 			const localEditRevision = 1;
 			if (scenario === 'policy changed before preparation') policy.version++;
+			if (supersededPreparation) {
+				assert.strictEqual(projections.length, priorProjectionCount, 'the first refresh is still preparing');
+				(queryEditor as any).persistedResultSanitizationApplication.invalidateKustoPersistence();
+				assert.strictEqual(projections.length, priorProjectionCount, 'the newer invalidation precedes either replacement post');
+				if (scenario === 'superseded preparation then explicit rejection') {
+					const explicit = Promise.resolve(receive!({ type: 'requestDocument', requestId: 'explicit-after-queued-invalidations', expectedEditRevision: 0 }));
+					await waitForCondition(() => projections.length === priorProjectionCount + 1, 'the later explicit request must post while automatic preparation is held', 1_000);
+					assert.strictEqual(projections.at(-1).requestId, 'explicit-after-queued-invalidations');
+					await acknowledge(projections.at(-1), false, 0);
+					await explicit;
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), false);
+					priorProjectionCount = projections.length;
+					priorIssuedGeneration = projections.at(-1).sourceGeneration;
+				}
+			}
 			releasePreparation();
 			if (scenario === 'preparation failed') {
 				await new Promise<void>(resolve => setImmediate(resolve));
@@ -2753,13 +3053,25 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				return;
 			}
 			await waitForCondition(() => projections.length === priorProjectionCount + 1, 'automatic conditional refresh must be posted', 1_000);
-			const rejected = projections.at(-1);
+			let rejected = projections.at(-1);
 			assert.strictEqual(rejected.forceReload, true);
 			assert.strictEqual(rejected.expectedEditRevision, 0);
 			assert.ok(rejected.sourceGeneration > accepted.sourceGeneration);
 			assert.strictEqual(rejected.viewSessionId, accepted.viewSessionId);
 			assert.notStrictEqual(rejected.expectedEditRevision, localEditRevision);
-			if (scenario === 'policy changed') policy.version++;
+			if (supersededPreparation) {
+				assert.strictEqual(rejected.sourceGeneration, priorIssuedGeneration + 1);
+				assert.strictEqual(rejected.requestId, undefined, 'the superseded refresh is automatic');
+				await acknowledge(rejected, false, localEditRevision);
+				await waitForCondition(() => projections.length === priorProjectionCount + 2, 'the queued automatic invalidation must post its refresh', 1_000);
+				rejected = projections.at(-1);
+				assert.strictEqual(rejected.sourceGeneration, priorIssuedGeneration + 2);
+				assert.strictEqual(rejected.forceReload, true);
+				assert.strictEqual(rejected.expectedEditRevision, 0);
+				assert.strictEqual(rejected.requestId, undefined, 'the successor refresh is automatic');
+				assert.strictEqual(rejected.viewSessionId, accepted.viewSessionId);
+			}
+			if (scenario === 'policy changed' || scenario === 'superseded preparation policy changed') policy.version++;
 			if (scenario === 'disposed') for (const dispose of disposers) dispose();
 			if (scenario === 'source version ABA') {
 				for (const text of [authoredBytes.toString('utf8') + ' ', authoredBytes.toString('utf8')]) {
@@ -2785,13 +3097,19 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				assert.deepStrictEqual(recoveryResults, [false], 'the old proof itself must fail independently of pending counters');
 			}
 			await new Promise<void>(resolve => setImmediate(resolve));
+			if (supersededPreparation) {
+				await waitForCondition(() => {
+					const latest = readinessTransitions.at(-1);
+					return latest?.pendingDocumentProjections === 0 && latest.pendingProjectionActivationSize === 0 && latest.admittedDocumentRequests === 0;
+				}, 'both rejected automatic refreshes must drain before checking readiness', 1_000);
+			}
 			assert.deepStrictEqual(fs.readFileSync(filePath), authoredBytes);
 			assert.strictEqual(document.getText(), authoredBytes.toString('utf8'));
 			if (scenario !== 'source version ABA') {
 				assert.strictEqual(document.version, version);
 				assert.strictEqual(document.isDirty, false);
 			}
-			const retained = scenario === 'retained' || scenario === 'local persist';
+			const retained = scenario === 'retained' || scenario === 'local persist' || scenario === 'superseded preparation';
 			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), retained,
 				'only a rejected automatic refresh with an unchanged accepted owner may retain readiness');
 			const retainedSnapshotIdentity = (queryEditor as any).workbenchToolSnapshotIdentity();
@@ -2819,6 +3137,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			await initialRequest?.catch(() => undefined);
 			await KqlxEditorProvider.waitForOpenEditorsClosed(uri, 2_000);
 			for (const subscription of subscriptions) subscription.dispose();
+			restoreReadinessTrace?.();
 			QueryEditorProvider.prototype.initializeWebviewPanel = originalInitialize;
 			QueryEditorProvider.prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
 			QueryEditorProvider.prototype.commitKustoSourceAdmissionFresh = originalCommit;
@@ -2963,9 +3282,16 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		});
 	}
 
-	for (const outcome of ['fresh recovery', 'failed request deduplication', 'pending settlement', 'bounded correlations', 'issued challenge', 'regular read'] as const) {
+	for (const outcome of ['fresh recovery', 'failed request deduplication', 'pending settlement', 'pending successful initialization', 'pending explicit initialization', 'pending failed initialization', 'pending source version ABA', 'pending challenge response', 'posted initial projection', 'posted replaced runtime', 'bounded correlations', 'issued challenge', 'regular read'] as const) {
 		test(`native initial recovery handles ${outcome} without changing its source`, async function () {
 			this.timeout(20_000);
+			const postedInitialization = outcome === 'posted initial projection' || outcome === 'posted replaced runtime';
+			const pendingRuntimeReplacement = outcome === 'posted replaced runtime';
+			const pendingInitialization = outcome === 'pending successful initialization' || outcome === 'pending explicit initialization' || outcome === 'pending failed initialization'
+				|| outcome === 'pending source version ABA' || outcome === 'pending challenge response' || postedInitialization;
+			const pendingFailure = outcome === 'pending failed initialization';
+			const pendingExplicit = outcome === 'pending explicit initialization';
+			let deferDispatcherReady = outcome === 'pending challenge response';
 			const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 			const originalRead = (KqlxEditorProvider as any).prototype.readProjectionSourceTextForDocument;
 			const originalSetInbound = MainWebviewStartupGateway.prototype.setInboundHandler;
@@ -2984,7 +3310,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			let receiveHandler: ((message: any) => unknown) | undefined;
 			let nativeMessageHandler: ((message: any) => void | PromiseLike<void>) | undefined;
 			let gateway: MainWebviewStartupGateway<unknown> | undefined;
-			const runtimeId = `native-recovery-runtime-${outcome}`;
+			let runtimeId = `native-recovery-runtime-${outcome}`;
 			const dispatcherProbes: string[] = [];
 			const admittedRequestIds: Array<string | undefined> = [];
 			let documentRecoveryProbeId: string | undefined;
@@ -3010,7 +3336,8 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				return request;
 			};
 			const acknowledge = (projection: any, applied = true) => {
-				if (applied && documentDeliveryAvailable && projection === projections.at(-1)) runtimeProjection = projection;
+				if (applied && documentDeliveryAvailable && projection === projections.at(-1)
+					&& (!pendingRuntimeReplacement || projection !== projections[0])) runtimeProjection = projection;
 				return Promise.resolve(receiveHandler!({
 					protocolVersion: projection.protocolVersion, channel: projection.channel,
 					viewSessionId: projection.viewSessionId, type: 'documentReloadResult',
@@ -3056,6 +3383,8 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				) as KqlxEditorProvider;
 				document = await vscode.workspace.openTextDocument(uri);
 				const originalVersion = document.version;
+				let expectedVersion = originalVersion;
+				let expectedDirty = false;
 				assert.strictEqual(liveDocuments.register(document), false, 'recovery must use a real native TextDocument');
 				const panel = {
 					visible: false, active: false,
@@ -3064,15 +3393,19 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						options: {}, postMessage: async (message: any) => {
 							if (message?.type === 'mainWebviewDispatcherProbe') {
 								dispatcherProbes.push(message.probeId);
+								if (pendingRuntimeReplacement) await Promise.resolve(receiveHandler!({ type: 'mainWebviewDispatcherReady', runtimeId, probeId: message.probeId }));
 								if (!runtimeProjection && documentRecoveryProbeId !== message.probeId) {
 									documentRecoveryProbeId = message.probeId;
 									void requestDocument(`dispatcher-document-${message.probeId}`);
 								}
-								await Promise.resolve(receiveHandler!({ type: 'mainWebviewDispatcherReady', runtimeId, probeId: message.probeId }));
+								if (!deferDispatcherReady && !pendingRuntimeReplacement) await Promise.resolve(receiveHandler!({ type: 'mainWebviewDispatcherReady', runtimeId, probeId: message.probeId }));
 							}
 							if (message?.type === 'documentData') {
 								projections.push(message);
-								if (outcome === 'pending settlement' && projections.length === 3) holdSettlement = true;
+								if ((outcome === 'pending settlement' || pendingFailure) && projections.length === 3) holdSettlement = true;
+								if (pendingInitialization && !pendingRuntimeReplacement && projections.length > (pendingFailure ? 4 : 1)) {
+									queueMicrotask(() => { void acknowledge(message); });
+								}
 								return documentDeliveryAvailable;
 							}
 							if (message?.type === 'requestToolState') {
@@ -3096,8 +3429,8 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 					assert.deepStrictEqual(fs.readFileSync(filePath), authoredBytes);
 					assert.strictEqual(document!.getText(), authoredBytes.toString('utf8'));
 					assert.deepStrictEqual(JSON.parse(document!.getText()), authoredFile);
-					assert.strictEqual(document!.version, originalVersion);
-					assert.strictEqual(document!.isDirty, false);
+					assert.strictEqual(document!.version, expectedVersion);
+					assert.strictEqual(document!.isDirty, expectedDirty);
 					for (const projection of projections) {
 						assert.strictEqual(projection.state.sections[0].query, 'print Canary=10');
 						assert.strictEqual(projection.state.sections[1].text, authoredFile.state.sections[1].text);
@@ -3106,6 +3439,61 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				await Promise.resolve(receiveHandler!({ type: 'mainWebviewDispatcherReady', runtimeId }));
+				if (pendingInitialization) {
+					documentDeliveryAvailable = !pendingFailure;
+					holdSettlement = !pendingFailure && !postedInitialization;
+					const firstRequest = requestDocument();
+					if (postedInitialization) await waitForCondition(() => projections.length === 1, 'the initial projection must be awaiting its first acknowledgement', 1_000);
+					else await waitForCondition(() => settlementHeld, 'the first initial source read must be held before projection', 1_000);
+					assert.strictEqual(projections.length, pendingFailure ? 3 : postedInitialization ? 1 : 0);
+					if (pendingRuntimeReplacement) runtimeId = 'replacement-before-recovery-admission';
+					const joined = pendingExplicit ? requestDocument('ordinary-pending-initialization') : queryEditor!.requestSectionsFromWebview();
+					if (!pendingExplicit) requests.push(joined);
+					if (!pendingExplicit) await waitForCondition(() => admittedRequestIds.length === 2, 'the issued recovery request must join pending initial work', 1_000);
+					assert.strictEqual(admittedRequestIds[0], undefined);
+					if (!pendingExplicit) assert.strictEqual(admittedRequestIds[1], `dispatcher-document-${dispatcherProbes.at(-1)}`);
+					if (outcome === 'pending source version ABA') {
+						for (const text of [authoredBytes.toString('utf8') + ' ', authoredBytes.toString('utf8')]) {
+							const edit = new vscode.WorkspaceEdit();
+							edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), text);
+							assert.strictEqual(await vscode.workspace.applyEdit(edit), true);
+						}
+						expectedVersion = document.version;
+						expectedDirty = document.isDirty;
+						assert.ok(expectedVersion > originalVersion, 'the identical-text source must have a new native version');
+					}
+					documentDeliveryAvailable = true;
+					releaseSettlement();
+					await waitForCondition(() => projections.length > (pendingFailure ? 3 : 0), 'the current projection must be posted after preparation resumes', 1_000);
+					const firstProjection = projections[pendingFailure ? 3 : 0];
+					await acknowledge(firstProjection);
+					await firstRequest;
+					if (pendingRuntimeReplacement) {
+						await waitForCondition(() => projections.length === 2, 'the replacement runtime must receive its own projection', 1_000);
+						assert.strictEqual(projections[1].requestId, `dispatcher-document-${dispatcherProbes.at(-1)}`);
+						assert.strictEqual(snapshotRequests, 0, 'the old runtime acknowledgement must not authorize a replacement snapshot');
+						await acknowledge(projections[1]);
+					}
+					if (deferDispatcherReady) {
+						await waitForCondition(() => projections.length === 2, 'an unanswered challenge must not reuse the historical initial projection', 1_000);
+						assert.strictEqual(snapshotRequests, 0);
+						deferDispatcherReady = false;
+						await Promise.resolve(receiveHandler!({ type: 'mainWebviewDispatcherReady', runtimeId, probeId: dispatcherProbes.at(-1) }));
+					}
+					await joined;
+					if (pendingExplicit) await queryEditor!.requestSectionsFromWebview();
+					await Promise.allSettled(requests);
+					const requiresOwnProjection = pendingExplicit || pendingRuntimeReplacement || outcome === 'pending source version ABA' || outcome === 'pending challenge response';
+					assert.strictEqual(projections.length, pendingFailure ? 4 : requiresOwnProjection ? 2 : 1,
+						'only an issued recovery joining successful current initialization may share its projection');
+					if (pendingExplicit) assert.strictEqual(projections.at(-1).requestId, 'ordinary-pending-initialization');
+					assert.strictEqual(snapshotProjection, projections.at(-1));
+					assert.strictEqual(snapshotRequests, 1);
+					assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorInitialized(uri, 0, panel), true);
+					assert.strictEqual(revealCount, 0);
+					assertSourceUnchanged();
+					return;
+				}
 				const initialRequest = requestDocument();
 				if (outcome === 'pending settlement') {
 					await waitForCondition(() => settlementHeld, 'the old failed run must be held at its settlement read', 1_000);

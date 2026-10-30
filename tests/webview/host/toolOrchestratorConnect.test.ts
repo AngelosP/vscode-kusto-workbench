@@ -14,7 +14,7 @@ import { QueryRunCoordinator } from '../../../src/host/queryRunCoordinator';
 import { SqlEditorLifecycleCoordinator, type SqlEditorLanguageService } from '../../../src/host/sql/sqlEditorLifecycleCoordinator';
 import type { SqlWorkbenchService } from '../../../src/host/sql/sqlWorkbenchService';
 import type { SqlConnection } from '../../../src/host/sqlConnectionManager';
-import type { WorkbenchLogger } from '../../../src/host/workbenchLogger';
+import { registerWorkbenchLogger, type WorkbenchLogger } from '../../../src/host/workbenchLogger';
 import * as editingPreferences from '../../../src/host/editingPreferences';
 import { MainWebviewStartupGateway, MAIN_WEBVIEW_DISPATCHER_READY_TYPE } from '../../../src/host/mainWebviewStartupGateway';
 import { classifyWorkbenchUri } from '../../../src/host/workbenchFileTypes';
@@ -2502,6 +2502,204 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect(result).not.toHaveProperty('notes');
 		expect(stateGetter).toHaveBeenCalledOnce();
 	});
+
+	it('correlates native metadata and one pending snapshot through held activation without extra operations', async () => {
+		vi.useFakeTimers();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const uri = vscode.Uri.file('/work/private-opening-log.kqlx'), unrelated = vscode.Uri.file('/work/unrelated.kqlx');
+		const info = classifyWorkbenchUri(uri)!;
+		setActiveCustomTab(uri, 'kusto.kqlxEditor');
+		const lifecycle = deferred<void>(), native = deferred<unknown>(), recovery = deferred<boolean>();
+		const stateGetter = vi.fn(async () => []), poster = createMessagePoster();
+		const reactivate = vi.fn(() => recovery.promise);
+		orchestrator.connect(poster, stateGetter, vi.fn(), uri.toString(), undefined, undefined, undefined, undefined, reactivate);
+		Reflect.get(orchestrator, 'hostOwnedBackgroundFiles').set(info.logicalUriKey, undefined);
+		Reflect.get(orchestrator, 'backgroundFileOperations').set(info.logicalUriKey, lifecycle.promise);
+		const release = vi.spyOn(orchestrator as any, 'removeBackgroundMutationBlock');
+		const open = vi.spyOn(vscode.commands, 'executeCommand').mockReturnValue(native.promise as any);
+		const publicState = vi.spyOn(orchestrator, 'listSections');
+		const readFile = vi.spyOn(vscode.workspace.fs, 'readFile'), writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile');
+		const openDocument = vi.spyOn(vscode.workspace, 'openTextDocument'), closeTab = vi.spyOn(vscode.window.tabGroups, 'close');
+		const subscriptions: Array<{ dispose(): void }> = [];
+		registerWorkbenchLogger({ subscriptions } as any);
+		subscriptions[0].dispose();
+		const output = vi.fn(), channel = { logLevel: 1, trace: output, dispose: vi.fn() };
+		const createChannel = vi.spyOn(vscode.window, 'createOutputChannel').mockReturnValue(channel as any);
+		const levelDescriptor = Object.getOwnPropertyDescriptor(vscode, 'LogLevel');
+		const closeDescriptor = Object.getOwnPropertyDescriptor(vscode.workspace, 'onDidCloseTextDocument');
+		Object.defineProperty(vscode, 'LogLevel', { configurable: true, value: { Trace: 1, Info: 3 } });
+		let onOpen!: (document: vscode.TextDocument) => void, onClose!: (document: vscode.TextDocument) => void;
+		let onTabs!: (event: vscode.TabChangeEvent) => void;
+		const disposals = [vi.fn(), vi.fn(), vi.fn()];
+		vi.spyOn(vscode.workspace, 'onDidOpenTextDocument').mockImplementation(listener => {
+			onOpen = listener; return { dispose: disposals[0] };
+		});
+		Object.defineProperty(vscode.workspace, 'onDidCloseTextDocument', { configurable: true, value: vi.fn((listener: typeof onClose) => {
+			onClose = listener; return { dispose: disposals[1] };
+		}) });
+		vi.spyOn(vscode.window.tabGroups, 'onDidChangeTabs').mockImplementation(listener => {
+			onTabs = listener; return { dispose: disposals[2] };
+		});
+		const records = () => output.mock.calls.map(([line]) => {
+			const match = /^\[file-open:(\d+)\] \+\d+ms activate\.([\w.]+)(?: (.*))?$/.exec(line)!;
+			return { id: Number(match[1]), event: match[2], ...JSON.parse(match[3] || '{}') };
+		});
+		let settled = false;
+		const activation = orchestrator.activateWorkbenchFile({ targetFileUri: uri.toString() });
+		void activation.then(() => { settled = true; });
+		try {
+			expect(createChannel).toHaveBeenCalledExactlyOnceWith('Kusto Workbench', { log: true });
+			const correlation = { id: records()[0].id, uriHash: createHash('sha256').update(info.logicalUriKey).digest('hex') };
+			expect(records()[0]).toEqual({ ...correlation, event: 'start' });
+			expect(records()).toContainEqual({ ...correlation, event: 'observe.start', phase: 'lifecycle',
+				backgroundOwnerMember: true, backgroundOperationMember: true, mutationBlockCount: 0,
+				document: { present: false }, tabs: { count: 1, active: true, custom: true } });
+			onTabs({ opened: [], closed: [], changed: [vscode.window.tabGroups.activeTabGroup.activeTab!] });
+			expect(records().at(-1)).toMatchObject({ ...correlation, event: 'observe.tabsChanged', phase: 'lifecycle', mutationBlockCount: 1 });
+			expect(open).not.toHaveBeenCalled();
+			lifecycle.resolve();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(open).toHaveBeenCalledExactlyOnceWith('vscode.openWith', uri, 'kusto.kqlxEditor', {
+				viewColumn: vscode.ViewColumn.Active, preserveFocus: false,
+			});
+			const document = { uri, version: 4, isDirty: true, isClosed: false, getText: vi.fn(() => 'private content') };
+			(vscode.workspace as any).textDocuments = [document];
+			const beforeUnrelated = output.mock.calls.length;
+			onOpen({ ...document, uri: unrelated } as any);
+			onClose({ ...document, uri: unrelated } as any);
+			onTabs({ opened: [{ input: new vscode.TabInputCustom(unrelated, 'kusto.kqlxEditor') } as any], changed: [], closed: [] });
+			expect(output).toHaveBeenCalledTimes(beforeUnrelated);
+			onOpen(document as any);
+			expect(records().at(-1)).toMatchObject({ ...correlation, event: 'observe.documentOpen', phase: 'openWith',
+				document: { present: true, version: 4, isDirty: true, isClosed: false } });
+			await vi.advanceTimersByTimeAsync(4999);
+			expect(records().filter(record => record.event === 'observe.pending')).toEqual([]);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(records().filter(record => record.event === 'observe.pending')).toEqual([
+				{ ...correlation, event: 'observe.pending', phase: 'openWith', backgroundOwnerMember: true,
+					backgroundOperationMember: true, mutationBlockCount: 1,
+					document: { present: true, version: 4, isDirty: true, isClosed: false }, tabs: { count: 1, active: true, custom: true } },
+			]);
+			await vi.advanceTimersByTimeAsync(5000);
+			expect(records().filter(record => record.event === 'observe.pending')).toHaveLength(1);
+			expect(settled).toBe(false); expect(reactivate).not.toHaveBeenCalled(); expect(release).not.toHaveBeenCalled();
+			for (const untouched of [publicState, stateGetter, poster, readFile, writeFile, openDocument, closeTab, document.getText]) {
+				expect(untouched).not.toHaveBeenCalled();
+			}
+			expect(open).toHaveBeenCalledOnce();
+			native.resolve({ ignoredNativeResult: true });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reactivate).toHaveBeenCalledOnce(); expect(settled).toBe(false);
+			document.isClosed = true;
+			(vscode.workspace as any).textDocuments = [];
+			onClose(document as any);
+			expect(records().at(-1)).toMatchObject({ ...correlation, event: 'observe.documentClose', phase: 'recovery',
+				document: { present: false, version: 4, isDirty: true, isClosed: true } });
+			recovery.resolve(true);
+			await expect(activation).resolves.toEqual({ success: true, openFileId: info.openFileId, uri: info.uriString,
+				logicalUri: info.logicalUriString, fileKind: info.fileKind, filePath: info.filePath, fileName: info.fileName,
+				isLiveWorkbench: true, isReadOnlyFallback: false });
+			expect(release).toHaveBeenCalledExactlyOnceWith(info.logicalUriKey);
+			expect(records().at(-1)).toMatchObject({ ...correlation, event: 'observe.stop', phase: 'release', mutationBlockCount: 0, suppressed: 0 });
+			for (const dispose of disposals) expect(dispose).toHaveBeenCalledOnce();
+			expect(vi.getTimerCount()).toBe(0);
+			const finalCount = output.mock.calls.length;
+			onOpen(document as any); onClose(document as any); onTabs({ opened: [], closed: [], changed: [] });
+			await vi.advanceTimersByTimeAsync(5000);
+			expect(output).toHaveBeenCalledTimes(finalCount);
+			for (const record of records().filter(record => record.event.startsWith('observe.'))) expect(record).toMatchObject(correlation);
+			for (const privateValue of [uri.toString(), uri.fsPath, info.fileName!, unrelated.toString(), 'private content']) {
+				expect(JSON.stringify(output.mock.calls)).not.toContain(privateValue);
+			}
+		} finally {
+			lifecycle.resolve(); native.resolve(undefined); recovery.resolve(true);
+			await activation;
+			subscriptions[0].dispose();
+			if (levelDescriptor) Object.defineProperty(vscode, 'LogLevel', levelDescriptor);
+			else Reflect.deleteProperty(vscode, 'LogLevel');
+			if (closeDescriptor) Object.defineProperty(vscode.workspace, 'onDidCloseTextDocument', closeDescriptor);
+			else Reflect.deleteProperty(vscode.workspace, 'onDidCloseTextDocument');
+		}
+	});
+
+	it.each(['lifecycle', 'openWith', 'recovery', 'release', 'registration'])(
+		'preserves activation results and lease cleanup with Trace diagnostics (%s)', async phase => {
+			vi.useFakeTimers();
+			const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+			const uri = vscode.Uri.file('/work/private-failure-log.kqlx'), info = classifyWorkbenchUri(uri)!;
+			setActiveCustomTab(uri, 'kusto.kqlxEditor');
+			const failure = new Error('Original activation failure'), diagnosticFailure = new Error('Private diagnostic failure');
+			const release = vi.fn(() => { if (phase === 'release') throw failure; });
+			vi.spyOn(orchestrator as any, 'acquireHostOwnedBackgroundLifecycle').mockImplementation(async () => {
+				if (phase === 'lifecycle') throw failure;
+				return release;
+			});
+			const open = vi.spyOn(vscode.commands, 'executeCommand').mockImplementation(async () => {
+				if (phase === 'openWith') throw failure;
+			});
+			const stateGetter = vi.fn(async () => []), poster = createMessagePoster();
+			orchestrator.connect(poster, stateGetter, vi.fn(), uri.toString(), undefined, undefined, undefined, undefined, async () => {
+				if (phase === 'recovery') throw failure;
+				return true;
+			});
+			const state = vi.spyOn(Reflect.get(orchestrator, 'backgroundFileOperations') as Map<string, Promise<void>>, 'has');
+			if (phase === 'recovery') state.mockImplementation(() => { throw diagnosticFailure; });
+			const subscriptions: Array<{ dispose(): void }> = [];
+			registerWorkbenchLogger({ subscriptions } as any);
+			subscriptions[0].dispose();
+			const output = vi.fn(() => { if (phase === 'openWith') throw diagnosticFailure; });
+			vi.spyOn(vscode.window, 'createOutputChannel').mockReturnValue({ logLevel: 1, trace: output, dispose: vi.fn() } as any);
+			const levelDescriptor = Object.getOwnPropertyDescriptor(vscode, 'LogLevel');
+			const closeDescriptor = Object.getOwnPropertyDescriptor(vscode.workspace, 'onDidCloseTextDocument');
+			Object.defineProperty(vscode, 'LogLevel', { configurable: true, value: { Trace: 1 } });
+			const callbacks: Array<(event: any) => void> = [], disposals = [vi.fn(), vi.fn(), vi.fn()];
+			if (phase === 'release') disposals[0].mockImplementation(() => { throw diagnosticFailure; });
+			vi.spyOn(vscode.workspace, 'onDidOpenTextDocument').mockImplementation(listener => {
+				callbacks[0] = listener; return { dispose: disposals[0] };
+			});
+			Object.defineProperty(vscode.workspace, 'onDidCloseTextDocument', { configurable: true, value: (listener: (event: any) => void) => {
+				callbacks[1] = listener;
+				if (phase === 'registration') throw diagnosticFailure;
+				return { dispose: disposals[1] };
+			} });
+			vi.spyOn(vscode.window.tabGroups, 'onDidChangeTabs').mockImplementation(listener => {
+				callbacks[2] = listener; return { dispose: disposals[2] };
+			});
+			try {
+				const activation = orchestrator.activateWorkbenchFile({ targetFileUri: uri.toString() });
+				if (phase === 'release') await expect(activation).rejects.toBe(failure);
+				else await expect(activation).resolves.toEqual({
+					success: phase === 'registration', openFileId: info.openFileId, uri: info.uriString, logicalUri: info.logicalUriString,
+					fileKind: info.fileKind, filePath: info.filePath, fileName: info.fileName,
+					...(phase === 'registration' ? { isLiveWorkbench: true, isReadOnlyFallback: false } : { error: failure.message }),
+					...(phase === 'recovery' ? { isLiveWorkbench: false, isReadOnlyFallback: false } : {}),
+				});
+				expect(open).toHaveBeenCalledTimes(phase === 'lifecycle' ? 0 : 1);
+				if (phase !== 'lifecycle') expect(open).toHaveBeenCalledWith('vscode.openWith', uri, 'kusto.kqlxEditor', {
+					viewColumn: vscode.ViewColumn.Active, preserveFocus: false,
+				});
+				expect(release).toHaveBeenCalledTimes(phase === 'lifecycle' ? 0 : 1);
+				for (const [index, dispose] of disposals.entries()) expect(dispose).toHaveBeenCalledTimes(phase === 'registration' && index > 0 ? 0 : 1);
+				expect(vi.getTimerCount()).toBe(0); expect(stateGetter).not.toHaveBeenCalled(); expect(poster).not.toHaveBeenCalled();
+				const lines = output.mock.calls.length, reads = state.mock.calls.length;
+				for (const callback of callbacks) callback({ uri, opened: [], closed: [], changed: [] });
+				await vi.advanceTimersByTimeAsync(5000);
+				expect(output).toHaveBeenCalledTimes(lines); expect(state).toHaveBeenCalledTimes(reads);
+				const logs = JSON.stringify(output.mock.calls);
+				expect(logs.match(/activate\.observe\.stop/g)).toHaveLength(1);
+				if (phase === 'recovery') expect(logs).toContain('unavailable');
+				for (const privateValue of [uri.toString(), uri.fsPath, info.fileName!, failure.message, diagnosticFailure.message]) {
+					expect(logs).not.toContain(privateValue);
+				}
+			} finally {
+				subscriptions[0].dispose();
+				if (levelDescriptor) Object.defineProperty(vscode, 'LogLevel', levelDescriptor);
+				else Reflect.deleteProperty(vscode, 'LogLevel');
+				if (closeDescriptor) Object.defineProperty(vscode.workspace, 'onDidCloseTextDocument', closeDescriptor);
+				else Reflect.deleteProperty(vscode.workspace, 'onDidCloseTextDocument');
+			}
+		},
+	);
 
 	it('logs each activation wait before entering it without changing the native call or result', async () => {
 		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);

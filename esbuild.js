@@ -572,7 +572,7 @@ async function main() {
 			}
 		}
 		const BASELINES = {
-			'extension.js':                                        2493,
+			'extension.js':                                        2495,
 			'workbench-mcp-bridge.js':                              431,
 			'mcp-connector/connector.cjs':                           700,
 			'external-mcp-provider.js':                               80,
