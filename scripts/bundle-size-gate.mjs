@@ -17,7 +17,7 @@ const DIST = join(__dirname, '..', 'dist');
 
 // ── Baselines (KB) — synchronized with the integrated production gate ──
 const BASELINES = {
-	'extension.js':                                        2495,
+	'extension.js':                                        2496,
 	'workbench-mcp-bridge.js':                              431,
 	'mcp-connector/connector.cjs':                           700,
 	'external-mcp-provider.js':                               80,

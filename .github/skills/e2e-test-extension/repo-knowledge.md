@@ -10,7 +10,93 @@ on every `vscode-ext-test init` to stay current with framework updates),
 Read this file before every test session. Update it after every session with
 anything new you learned. Structure it however makes sense for this repo.
 
-## Current Verification Checkpoint: Retained-Notebook Renderer OOM
+## Current Verification Checkpoint: Fresh Hidden MDX Mode Update
+
+Status: REPRODUCED AND FIXED. The exact first hidden call and composed
+Save/reopen lifecycle pass in the final production workspace build, with the
+user-approved CDP visual validation. All approved complete core regressions
+and production budgets pass. Stock native screenshot limitations remain
+separate; no installed-release qualification is claimed.
+
+- Use the real public create/list/update path: create an ID-less MDX with
+  `reveal:false`, create the other supported formats, obtain the inactive
+  file's live inventory UUID, and issue a mode-only `wysiwyg` update before
+  activation. Default WYSIWYG does not require adding a saved mode field.
+- The actual-orchestrator test failed with `{success:false}` while four
+  neighboring Markdown controls passed. Real isolated run `20261031-031809`
+  independently returned bare false in 252.0178 ms; the identical call with
+  the same UUID passed in 21.1504 ms after one ordinary activation. Subsequent
+  unmodified-product attempts repeated that API failure.
+- The defect was split authority: inventory used the live native section ID,
+  while the host-owned background mutation parsed ID-less source and searched
+  for `section_0`. Markdown now reuses the existing ready-background ownership
+  handoff and carries its exact connection/source-admission fence into dispatch.
+  It does not activate the file or invent an index/ID mapping.
+- All 334 orchestrator tests pass. The six new cases cover ready/delayed
+  admission, unavailable readiness followed by a valid retry, source-version
+  drift, retirement, and connection replacement before dispatch.
+- The composed public-tool lifecycle passes with foreground-independent CDP
+  captures: a first hidden default no-op, a second fresh hidden Preview change,
+  hidden Save, Preview after reopen, hidden return to WYSIWYG using the current
+  inventory ID, another Save/reopen, and explicit unknown-ID rejection.
+  Content and the first document remain unchanged; exact owned-tab/file cleanup
+  passes. The three mode screenshots were reviewed.
+- Native capture remains a separate limitation in this environment: preserve
+  the initial Shadow DOM selector error, guest-compositor timeout, native
+  moveWindow failure, and lost-foreground-after-synchronization failure. The
+  user explicitly approved CDP main-page screenshots instead. The live adapter
+  executes the same feature assertions and takes CDP images at its screenshot
+  boundaries; do not describe the stock native capture as passing.
+- Query the Markdown component's own shadow root for selected mode tabs.
+  A compound document selector spanning that boundary failed. Cleanup must
+  compare directories with platform-aware `path.relative`, not literal drive
+  letter casing; a composed run passed behavior but initially failed cleanup
+  on `C:` versus `c:`, and that failure remains recorded.
+- The fix added 89 production host bytes, 56 beyond the previous cap. The user
+  approved a host-only 1 KiB increase to 2546 KiB; the two host baselines stay
+  synchronized, with the 50 KiB buffer and every other limit unchanged.
+- Final validation: 452 native tests, 9368 webview/host tests, and 571 script
+  tests pass, with five existing skips across the latter two suites.
+  Production packaging and both synchronized budget checks pass.
+- The final production CDP lifecycle (`mdx-live-oXlngt`) passed every feature
+  API, DOM, durable-field, unknown-ID, and cleanup assertion. Its first hidden
+  WYSIWYG call succeeded in 83.4528 ms with zero activations and byte-stable
+  source; the first hidden Preview mutation succeeded in 77.8123 ms. Preview
+  and then WYSIWYG survived separate Save/reopen cycles, using current
+  inventory identity after reopen. All three exact-window images were reviewed.
+  The final cleanup closed three remaining owned tabs and deleted eleven
+  synthetic files; earlier failed-run synthetic fixtures were also cleaned
+  without altering original dogfood files or prepared-profile state.
+
+## Previous Verification Checkpoint: Retained-Notebook Renderer OOM
+
+### Target 88 Follow-up
+
+The second October 30 failure shares the prior fix's observed red-to-green
+evidence. The exact 27,908-byte, six-section archive file first failed in
+30,736.5833 ms in `20261030-184506` and first opened live in 3,132.5307 ms in
+the full-duration green run. The earlier run had 169 restored tabs, including a
+different copy of the same filename, but not the exact requested URI. Compare
+full URIs when deciding whether an activation is genuinely cold.
+
+The replay now explicitly pins target 88's identity/bytes, rejects warming or
+fallback metadata, and reads its development notes later while hidden without
+another activation. This document has no saved development-note section:
+`success:true, notes:[]` is the correct result, not a snapshot-unavailable error.
+All 20 harness guard tests pass. Separate evaluation of the actual oracle
+rejects the recorded real first-call failure and accepts the recorded success.
+
+Run `20261031-022712` passed all 12 API/preservation checks: target 88 opened
+live in 2,301.1825 ms, its later hidden note read passed in 93.7383 ms, and its
+activation count stayed one. All 109 activations passed and starting/final tab
+counts were zero. No additional product patch was made. The runner still
+exited 1 because the final native cleanup screenshot lost foreground
+qualification; retain that failure. A separate trusted post-oracle CDP image
+showed the live canary and a metadata-superseded notification, not a target-88
+activation failure. This is API/preservation evidence, not a clean full-run
+visual sign-off.
+
+### Retained-notebook Qualification
 
 Status: THE FIRST OCTOBER 30 HANDOFF BUG IS REPRODUCED AND VERIFIED FIXED IN
 THE WORKSPACE BUILD. The unprofiled original workload passes after the complete

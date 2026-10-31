@@ -937,6 +937,120 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect(poster).not.toHaveBeenCalled();
 	});
 
+	it.each(['ready', 'delayed', 'unavailable', 'source-version', 'retired', 'replaced-before-dispatch'] as const)(
+		'routes a fresh hidden MDX mode-only update safely (%s)', async scenario => {
+		(vscode as any).__mockFileSystem.clear();
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+		);
+		const uri = vscode.Uri.file('/work/hidden-mdx-mode-regression.mdx');
+		const otherUri = vscode.Uri.file('/work/hidden-mdx-distractor.kqlx');
+		const content = '## Hidden MDX mode regression';
+		await expect(orchestrator.createFile({
+			fileType: 'mdx', filePath: uri.fsPath, initialContent: content, reveal: false,
+		})).resolves.toMatchObject({ success: true });
+		await expect(orchestrator.createFile({
+			fileType: 'kqlx', filePath: otherUri.fsPath, initialContent: 'print Other = 1', reveal: false,
+		})).resolves.toMatchObject({ success: true });
+		let text: string = (vscode as any).__mockFileSystem.readText(uri);
+		const original = text;
+		const section = JSON.parse(text).state.sections[0];
+		expect(section).toMatchObject({ type: 'markdown', text: content });
+		expect(section.id).toBeUndefined();
+		expect(section.mode).toBeUndefined();
+		const document = { uri, version: 1, isDirty: false, isClosed: false, getText: () => text,
+			positionAt: (offset: number) => new vscode.Position(0, offset) };
+		class TestWorkspaceEdit {
+			replacement = '';
+			replace(_uri: vscode.Uri, _range: vscode.Range, replacement: string) { this.replacement = replacement; }
+		}
+		const applyEdit = vi.fn(async (edit: TestWorkspaceEdit) => {
+			text = edit.replacement;
+			document.version++;
+			document.isDirty = true;
+			return true;
+		});
+		Object.assign(vscode, { WorkspaceEdit: TestWorkspaceEdit });
+		Object.assign(vscode.workspace, { textDocuments: [document], applyEdit });
+		const activeTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(otherUri, 'kusto.kqlxEditor') };
+		const hiddenTab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor') };
+		setTabGroups({ isActive: true, activeTab, tabs: [activeTab, hiddenTab] });
+		const projectedId = 'section_33f9dfba-9d3b-4e74-92c5-e26097e0ac4a';
+		const poster = createMessagePoster();
+		const readReady = deferred<boolean>();
+		const mutationReady = deferred<boolean>();
+		const waitForReadReady = vi.fn(() => scenario === 'ready' || scenario === 'replaced-before-dispatch'
+			? Promise.resolve(true) : readReady.promise);
+		const waitForMutationReady = vi.fn(() => scenario === 'replaced-before-dispatch'
+			? mutationReady.promise : Promise.resolve(true));
+		let replacementToken: number | undefined;
+		poster.mockImplementation(message => {
+			if (!message || typeof message !== 'object' || !('type' in message) || message.type !== 'toolUpdateMarkdownSection'
+				|| !('requestId' in message) || typeof message.requestId !== 'string') throw new Error('Unexpected Markdown request');
+			const requestId = message.requestId;
+			queueMicrotask(() => orchestrator.handleWebviewResponse(requestId, { success: true }));
+			return true;
+		});
+		const token = orchestrator.connect(poster, async () => [{ id: projectedId, type: 'markdown', text: content }],
+			vi.fn(), uri.toString(), undefined, undefined, undefined, waitForMutationReady, undefined, waitForReadReady);
+		try {
+			const inventory = await orchestrator.listSections();
+			const listed = inventory.openFiles?.find(file => file.openFileId === classifyWorkbenchUri(uri)!.openFileId);
+			expect(listed).toMatchObject({ isActive: false, isLiveWorkbench: true, sections: [{ id: projectedId, type: 'markdown' }] });
+			expect(orchestrator.isHostOwnedBackgroundFile(uri)).toBe(true);
+			const commandsBefore = [...(vscode as any).__mockCommandCalls];
+
+			const input = { targetFileUri: uri.toString(), sectionId: listed!.sections![0].id, mode: 'wysiwyg' as const };
+			const update = orchestrator.updateMarkdownSection(input).catch((error: unknown) => error);
+			if (scenario !== 'ready' && scenario !== 'replaced-before-dispatch') {
+				await vi.waitFor(() => expect(waitForReadReady).toHaveBeenCalledOnce());
+				expect(poster).not.toHaveBeenCalled();
+				expect(orchestrator.isHostOwnedBackgroundFile(uri)).toBe(true);
+				if (scenario === 'source-version') document.version++;
+				if (scenario === 'retired') orchestrator.disconnectIfOwner(token);
+				readReady.resolve(scenario !== 'unavailable');
+			}
+			const replacementPoster = createMessagePoster();
+			if (scenario === 'replaced-before-dispatch') {
+				await vi.waitFor(() => expect(waitForMutationReady).toHaveBeenCalledOnce());
+				expect(poster).not.toHaveBeenCalled();
+				orchestrator.disconnectIfOwner(token);
+				replacementToken = orchestrator.connect(replacementPoster,
+					async () => [{ id: projectedId, type: 'markdown', text: content }], vi.fn(), uri.toString(),
+					undefined, undefined, undefined, async () => true);
+				mutationReady.resolve(true);
+			}
+
+			const result = await update;
+			if (scenario === 'ready' || scenario === 'delayed') {
+				expect(result).toEqual({ success: true });
+			} else {
+				expect(result).toBeInstanceOf(Error);
+				expect(result).toMatchObject({ message: expect.stringMatching(scenario === 'unavailable'
+					? /still loading/ : scenario === 'replaced-before-dispatch' ? /closed before the request was dispatched/ : /changed before background ownership could transfer/) });
+				expect(poster).not.toHaveBeenCalled();
+				expect(replacementPoster).not.toHaveBeenCalled();
+			}
+			if (scenario === 'unavailable') {
+				expect(orchestrator.isHostOwnedBackgroundFile(uri)).toBe(true);
+				waitForReadReady.mockResolvedValue(true);
+				await expect(orchestrator.updateMarkdownSection(input)).resolves.toEqual({ success: true });
+			}
+			expect(text).toBe(original);
+			expect((vscode as any).__mockFileSystem.readText(uri)).toBe(original);
+			expect(document.isDirty).toBe(false);
+			expect(applyEdit).not.toHaveBeenCalled();
+			expect((vscode as any).__mockCommandCalls).toEqual(commandsBefore);
+			expect(vscode.window.tabGroups.all[0].activeTab).toBe(activeTab);
+			expect(hiddenTab.isActive).toBe(false);
+		} finally {
+			readReady.resolve(false);
+			mutationReady.resolve(false);
+			if (replacementToken !== undefined) orchestrator.disconnectIfOwner(replacementToken);
+			orchestrator.disconnectIfOwner(token);
+		}
+	});
+
 	it('cancels a live query tool while its projection readiness remains pending', async () => {
 		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
 			fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,

@@ -1,0 +1,6 @@
+{
+  "timeout": 180000,
+  "workspaceSettings": {
+    "workbench.startupEditor": "none"
+  }
+}

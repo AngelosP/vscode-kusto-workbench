@@ -3732,8 +3732,8 @@ export class KustoWorkbenchToolOrchestrator {
 		if (textValue !== undefined) {
 			input = { ...input, text: unescapeLLMText(textValue) };
 		}
-		const resolvedTarget = this.resolveToolTarget(target);
-		const background = resolvedTarget.connection ? undefined : await this.mutateBackgroundFile<{ success: boolean }>(resolvedTarget, file => {
+		const operation = await this.prepareBackgroundLiveOperation(target);
+		const background = operation.connection ? undefined : await this.mutateBackgroundFile<{ success: boolean }>(this.resolveToolTarget(target), file => {
 			const section = this.findBackgroundSection(file, input.sectionId);
 			if (!section || section.type !== 'markdown') return { result: { success: false }, changed: false };
 			let changed = false;
@@ -3744,7 +3744,8 @@ export class KustoWorkbenchToolOrchestrator {
 			return { result: { success: true }, changed };
 		});
 		if (background) return background;
-		return this.sendToWebview('toolUpdateMarkdownSection', { input }, 30000, target);
+		return this.sendToWebview('toolUpdateMarkdownSection', { input }, 30000, target,
+			undefined, operation.connection, undefined, undefined, operation.isCurrent);
 	}
 
 	async configureChart(input: ConfigureChartInput): Promise<{ success: boolean }> {

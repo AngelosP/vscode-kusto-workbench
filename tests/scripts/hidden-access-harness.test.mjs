@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { isDeepStrictEqual } from 'node:util';
 import { runInNewContext } from 'node:vm';
 
 const feature = readFileSync(new URL('../vscode-extension-tester/e2e/opt-in/archive-original-canary-baseline/hidden-short-access.feature', import.meta.url), 'utf8');
@@ -108,4 +109,68 @@ test('still rejects changed durable bytes when the original document remains unc
 
 	assert.equal(state.check('disk-change'), false);
 	assert.equal(state.outcome.damage[0].reason, 'starting-document-changed');
+});
+
+const activationOracleStart = feature.indexOf('const firstNativeActivationOracle =');
+const notesOracleStart = feature.indexOf('const notesOracle =', activationOracleStart);
+const dashboardOracleStart = feature.indexOf('const dashboardOracle =', notesOracleStart);
+assert.ok(activationOracleStart >= 0 && notesOracleStart > activationOracleStart && dashboardOracleStart > notesOracleStart);
+const firstActivationOracle = runInNewContext(`${feature.slice(activationOracleStart, notesOracleStart)}; firstNativeActivationOracle`);
+const expectedCanaryNotes = [{ id: 'original-note', text: 'unchanged' }];
+const notesOracle = runInNewContext(`${feature.slice(notesOracleStart, dashboardOracleStart)}; notesOracle`, {
+	equal: isDeepStrictEqual,
+	expectedNotes: expectedCanaryNotes,
+});
+const targetUri = 'file:///C:/replay/history/past/azure-mcp-vs-tool-calls-investigation.kqlx';
+
+function coldActivation() {
+	return {
+		complete: true,
+		value: { success: true, isLiveWorkbench: true, isReadOnlyFallback: false, fileKind: 'kqlx', uri: targetUri, openFileId: 'opaque-file-id' },
+		tabsBefore: [],
+		tabsAfter: [{ uri: targetUri, viewType: 'kusto.kqlxEditor', active: true, groupActive: true, dirty: false }],
+	};
+}
+
+test('recognizes a first live activation without treating an older copy as the same URI', () => {
+	const record = coldActivation();
+	record.tabsBefore.push({ uri: targetUri.replace('/replay/', '/older-replay/') });
+	assert.equal(firstActivationOracle(record, targetUri), true);
+});
+
+test('rejects the reported target88 bridge failure even though its native tab is active', () => {
+	const record = coldActivation();
+	record.elapsedMs = 30736.5833;
+	record.value.success = false;
+	record.value.isLiveWorkbench = false;
+	record.value.error = 'The targeted Kusto Workbench editor could not restore its live section bridge.';
+	assert.equal(firstActivationOracle(record, targetUri), false);
+});
+
+for (const [name, change] of [
+	['warmed target', record => record.tabsBefore.push({ uri: targetUri })],
+	['non-live metadata', record => { record.value.isLiveWorkbench = false; }],
+	['read-only fallback', record => { record.value.isReadOnlyFallback = true; }],
+	['wrong URI', record => { record.value.uri = 'file:///C:/other.kqlx'; }],
+	['missing file identity', record => { delete record.value.openFileId; }],
+	['missing native tab', record => { record.tabsAfter = []; }],
+	['inactive native tab', record => { record.tabsAfter[0].active = false; }],
+	['dirty native tab', record => { record.tabsAfter[0].dirty = true; }],
+	['transport failure', record => { record.transportError = 'disconnected'; }],
+	['invalid response JSON', record => { record.parseError = 'invalid JSON'; }],
+]) {
+	test(`does not qualify target88 first activation with ${name}`, () => {
+		const record = coldActivation();
+		change(record);
+		assert.equal(firstActivationOracle(record, targetUri), false);
+	});
+}
+
+test('distinguishes successful empty notes from an unavailable snapshot and preserves the canary oracle', () => {
+	assert.equal(notesOracle({ value: { success: true, notes: [] } }, []), true);
+	assert.equal(notesOracle({ value: { success: false } }, []), false);
+	assert.equal(notesOracle({ value: { success: false, notes: [], error: 'snapshot unavailable' } }, []), false);
+	assert.equal(notesOracle({ value: { success: true } }, []), false);
+	assert.equal(notesOracle({ value: { success: true, notes: [] } }), false);
+	assert.equal(notesOracle({ value: { success: true, notes: expectedCanaryNotes } }), true);
 });

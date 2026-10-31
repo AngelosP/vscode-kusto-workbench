@@ -15,6 +15,8 @@
 # KW_HIDDEN_ACCESS_DIAGNOSTIC_SECONDS shortens only a diagnostic run, never the full qualification.
 # KW_HIDDEN_ACCESS_DIAGNOSTIC_TARGETS limits an allocation-profiling run before renderer loss.
 # KW_HIDDEN_ACCESS_DIAGNOSTIC_PAUSE_SECONDS leaves a bounded read-only inspection window after recovery.
+# Prefixes including target88 also require its first cold native activation and a later successful
+# empty-note snapshot while it remains hidden, without an activation retry.
 Feature: Archived canary hidden access
 
   Scenario: Original notes and dashboard survive retained hidden access and ordinary recovery
@@ -44,6 +46,8 @@ Feature: Archived canary hidden access
           : 'f743e4f9be3e2470301a5ef9b0b0961022f5fdf8a3be8355a6f912ab5e82d9b3';
         const canaryPath = 'extension-regression-2026-10-07.kqlx';
         const canarySha256 = 'eeafb29fdb57398dbb6e2a83a7aec0fd5b2cc658f12e156f671fdfee144f51e0';
+        const target88Path = 'past/azure-mcp-vs-tool-calls-investigation.kqlx';
+        const target88Sha256 = '1b15946c4547be92ee55e90053afd9f11442534594df1cd45e37d62b0028a098';
         const htmlId = 'html_1791393873620';
         const noteId = 'dn_1791393497188_yncr7k';
         const tabs = () => vscode.window.tabGroups.all.flatMap(group => group.tabs);
@@ -63,7 +67,7 @@ Feature: Archived canary hidden access
         const models = new Map();
         const subscriptions = [];
         const startingDocuments = [];
-        let phase = 'setup', extension, manifest, main, helper, owner, evidenceRoot, canaryUri, openFileId, expectedNotes, factColumns, hidden = false, hiddenStart, failure, workbenchRequire, measurementStart;
+        let phase = 'setup', extension, manifest, main, helper, owner, evidenceRoot, canaryUri, openFileId, expectedNotes, factColumns, target88Uri, hidden = false, hiddenStart, failure, workbenchRequire, measurementStart;
         const write = (name, value) => {
           if (!evidenceRoot) return;
           helper.assertAcceptanceRoot(owner);
@@ -200,7 +204,16 @@ Feature: Archived canary hidden access
           write('call-' + record.sequence + '-response', record);
           return record;
         };
-        const notesOracle = record => !record.transportError && !record.parseError && record.value?.success === true && equal(record.value.notes, expectedNotes);
+        const firstNativeActivationOracle = (record, uri) => {
+          const value = record.value;
+          return record.complete === true && !record.transportError && !record.parseError
+            && value?.success === true && value.isLiveWorkbench === true && value.isReadOnlyFallback === false
+            && value.uri === uri && value.fileKind === 'kqlx' && typeof value.openFileId === 'string' && value.openFileId.length > 0
+            && Array.isArray(record.tabsBefore) && !record.tabsBefore.some(tab => tab.uri === uri)
+            && Array.isArray(record.tabsAfter) && record.tabsAfter.filter(tab => tab.uri === uri).length === 1
+            && record.tabsAfter.some(tab => tab.uri === uri && tab.viewType === 'kusto.kqlxEditor' && tab.active && tab.groupActive && !tab.dirty);
+        };
+        const notesOracle = (record, notes = expectedNotes) => !record.transportError && !record.parseError && record.value?.success === true && equal(record.value.notes, notes);
         const dashboardOracle = record => {
           const value = record.value;
           return !record.transportError && !record.parseError && value?.success === true && value.valid === true && value.sectionId === htmlId && value.hasProvenance === true && value.bindingCount === 6 && value.dataSourceCount === 1 && equal(value.issues, []) && equal(value.warnings, []) && equal(value.diagnostics, []) && equal(value.factColumns, factColumns) && typeof value.filePath === 'string' && canonical(value.filePath) === canonical(vscode.Uri.parse(canaryUri).fsPath) && value.fileName === canaryPath;
@@ -341,6 +354,17 @@ Feature: Archived canary hidden access
           assert.equal(factColumns.length, 4);
           assert.equal(result.rows.length, 3);
           outcome.original = { uri: canaryUri, sha256: canarySha256, sectionIds: sections.map(section => section.id), expectedNotes, htmlSectionId: htmlId, htmlLength: html.code.length, factSectionId: fact.id, factColumns, bindingIds: Object.keys(provenance.bindings), savedResultHashes: sections.filter(section => typeof section.resultJson === 'string').map(section => ({ id: section.id, sha256: hash(section.resultJson) })) };
+          if (prolonged && prefix.length >= 88) {
+            assert.equal(prefix[87].relativePath, target88Path, 'The reported first-activation target moved in the archived order');
+            target88Uri = vscode.Uri.file(path.join(owner.root, 'history', target88Path)).toString();
+            const target = references.get(target88Uri);
+            assert.equal(target.bytes, 27908);
+            assert.equal(target.sha256, target88Sha256);
+            const targetSections = JSON.parse(target.text).state.sections;
+            assert.equal(targetSections.length, 6);
+            assert.equal(targetSections.some(section => section.type === 'devnotes'), false, 'Target88 has no saved notes; later success must return an empty list, not a snapshot error');
+            outcome.target88 = { uri: target88Uri, sha256: target88Sha256, sectionIds: targetSections.map(section => section.id) };
+          }
           subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(() => sampleTabs('tabs-event')), vscode.window.tabGroups.onDidChangeTabGroups(() => sampleTabs('tab-groups-event')), vscode.workspace.onDidOpenTextDocument(document => sampleDocument(document, 'open')), vscode.workspace.onDidChangeTextDocument(event => sampleDocument(event.document, 'change')), vscode.workspace.onDidCloseTextDocument(document => sampleDocument(document, 'close')), vscode.workspace.onDidSaveTextDocument(document => { if (references.has(document.uri.toString())) outcome.saved.push({ uri: document.uri.toString(), phase }); }));
           outcome.before = preservation('before-open');
           await extension.activate();
@@ -366,6 +390,7 @@ Feature: Archived canary hidden access
             for (const originalPath of baseline.preservedInitialPaths) {
               const relative = safeRelative(path.win32.relative(baseline.workspace, originalPath).replace(/\\/g, '/'));
               assert.equal(inventory.has(relative.toLowerCase()), true, 'Warm file is not archived');
+              if (target88Uri) assert.notEqual(relative, target88Path, 'SETUP_BLOCKED: target88 must not be warmed before its recorded first activation');
               const uri = vscode.Uri.file(path.join(owner.root, 'history', relative)).toString();
               phase = 'warm-' + (outcome.warmActivations.length + 1);
               const record = await invoke('kusto-workbench_activate-workbench-file', { targetFileUri: uri });
@@ -408,8 +433,15 @@ Feature: Archived canary hidden access
               phase = 'prefix-' + entry.index;
               if (!prolonged && performance.now() - measurementStart > 150000) { outcome.classification = 'BOUNDED_SHORT_RUN_INCOMPLETE'; throw new Error('Short-run wall budget reached between natural calls; no forced timeout'); }
               const uri = vscode.Uri.file(path.join(owner.root, 'history', entry.relativePath)).toString();
+              if (uri === target88Uri) assert.equal(tabSnapshot().some(tab => tab.uri === uri), false, 'SETUP_BLOCKED: target88 was already open before its first activation');
               const record = await invoke('kusto-workbench_activate-workbench-file', { targetFileUri: uri });
               outcome.activations.push({ index: entry.index, path: entry.relativePath, sequence: record.sequence });
+              if (uri === target88Uri) {
+                outcome.target88.activationSequence = record.sequence;
+                outcome.target88.firstActivationPassed = firstNativeActivationOracle(record, uri);
+                outcome.checks.target88FirstActivation = outcome.target88.firstActivationPassed;
+                write('target88-first-activation', outcome.target88);
+              }
               const activated = record.value?.success === true && record.value.uri === uri && typeof record.value.openFileId === 'string';
               if (!activated) outcome.activationFailures.push({ index: entry.index, path: entry.relativePath, sequence: record.sequence });
               if (!prolonged) assert.equal(activated, true, 'SETUP_BLOCKED: mixed-prefix activation failed, not a hidden-canary read red');
@@ -445,6 +477,20 @@ Feature: Archived canary hidden access
               outcome.recovery = await pair('first-after-one-activation');
               outcome.recovery.sameTarget = outcome.recoveryActivation.value?.openFileId === openFileId && outcome.recoveryActivation.value?.uri === canaryUri;
               outcome.recovery.activeCanary = tabSnapshot().some(tab => tab.uri === canaryUri && tab.active && tab.groupActive);
+              if (outcome.target88?.activationSequence !== undefined) {
+                phase = 'target88-later-hidden-notes';
+                const notes = await invoke('kusto-workbench_manage-development-notes', { action: 'view', targetFileUri: target88Uri });
+                outcome.target88.notesSequence = notes.sequence;
+                outcome.target88.notesPassed = notesOracle(notes, []);
+                outcome.target88.stayedHidden = [notes.tabsBefore, notes.tabsAfter].every(snapshot => {
+                  const exact = snapshot.filter(tab => tab.uri === target88Uri);
+                  return exact.length === 1 && !exact[0].active && !exact[0].dirty;
+                });
+                outcome.target88.activationCount = outcome.calls.filter(call => call.name === 'kusto-workbench_activate-workbench-file' && call.input.targetFileUri === target88Uri).length;
+                outcome.checks.target88LaterNotes = outcome.target88.notesPassed && outcome.target88.stayedHidden;
+                outcome.checks.target88NoActivationRetry = outcome.target88.activationCount === 1;
+                write('target88-later-hidden-notes', outcome.target88);
+              }
               if (diagnosticPauseSeconds > 0) {
                 write('diagnostic-ready', { atUtc: new Date().toISOString(), canaryUri, pid: process.pid, pauseSeconds: diagnosticPauseSeconds });
                 await new Promise(resolve => setTimeout(resolve, diagnosticPauseSeconds * 1000));
