@@ -409,7 +409,7 @@ export function addQueryBox( options?: any) {
 			try { if (lastSchemaRequestAtByBoxId) lastSchemaRequestAtByBoxId[boxId] = 0; } catch (e) { console.error('[kusto]', e); }
 			try { delete schemaRequestTokenByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 			try { delete databaseRequestTokenByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-			requireSchemaWorkerApply(String(boxId));
+			requireSchemaWorkerApply(String(boxId), allowInteractive ? 'eager' : 'deferred');
 			invalidateLinkedComparisonSchemaForSource(String(boxId));
 			// Persist selection.
 			try {

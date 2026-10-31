@@ -715,13 +715,23 @@ export function isSchemaWorkerReady(boxId: string, schemaKey?: string, modelUri?
 	return true;
 }
 
-export function requireSchemaWorkerApply(boxId: string): void {
+type KustoWorkerApplyRequirement = 'eager' | 'deferred';
+
+export function requireSchemaWorkerApply(boxId: string, mode: KustoWorkerApplyRequirement = 'eager'): void {
 	const id = String(boxId || '').trim();
-	if (id) kustoEditorSchemaCoordinator.setOwnedState(id, 'workerApplyRequired', true);
+	if (!id) return;
+	const current = kustoEditorSchemaCoordinator.getOwnedState<KustoWorkerApplyRequirement>(id, 'workerApplyRequired');
+	// Passive reconciliation must not downgrade an admitted user or tool request.
+	kustoEditorSchemaCoordinator.setOwnedState(id, 'workerApplyRequired', current === 'eager' ? current : mode);
 }
 
 export function isSchemaWorkerApplyRequired(boxId: string): boolean {
-	return kustoEditorSchemaCoordinator.getOwnedState<boolean>(String(boxId || '').trim(), 'workerApplyRequired') === true;
+	const required = kustoEditorSchemaCoordinator.getOwnedState<KustoWorkerApplyRequirement>(String(boxId || '').trim(), 'workerApplyRequired');
+	return required === 'eager' || required === 'deferred';
+}
+
+export function isSchemaWorkerEagerApplyRequired(boxId: string): boolean {
+	return kustoEditorSchemaCoordinator.getOwnedState<KustoWorkerApplyRequirement>(String(boxId || '').trim(), 'workerApplyRequired') === 'eager';
 }
 
 export function waitForSchemaWorkerReady(boxId: string, schemaKey?: string, timeoutMs: number = 900, modelUri?: string, signal?: AbortSignal): Promise<boolean> {

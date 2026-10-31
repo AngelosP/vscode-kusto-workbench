@@ -245,6 +245,7 @@ import {
 	isKustoPreparationCurrent,
 	isSchemaWorkerReady,
 	isSchemaWorkerApplyRequired,
+	isSchemaWorkerEagerApplyRequired,
 	isSchemaEnhancementPending,
 	isSchemaEnhancementReady,
 	invalidateSchemaWorkerReadinessForBox,
@@ -1048,7 +1049,7 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 		return;
 	}
 	const currentModelUri = getQueryEditorModelUri(boxId);
-	const explicitContextSwitch = isSchemaWorkerApplyRequired(boxId);
+	const explicitContextSwitch = isSchemaWorkerEagerApplyRequired(boxId);
 	const canApplyForSoleOpenEditor = !isActiveBox && !activeQueryEditorBoxId && !isForceRefresh && !!currentModelUri && isOnlyQueryEditorBox(boxId);
 	if (!currentModelUri || (!isActiveBox && !canApplyForSoleOpenEditor && !explicitContextSwitch)) {
 		const reason = !currentModelUri ? 'waiting-for-model' : (isForceRefresh ? 'inactive-force-refresh' : 'inactive-box');
@@ -1123,7 +1124,7 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 		if (!isApplyCurrent()) return false;
 		const isActiveAtApply = boxId === activeQueryEditorBoxId;
 		const canApplyAtOpenForSoleEditor = !isActiveAtApply && !activeQueryEditorBoxId && !isForceRefresh && isOnlyQueryEditorBox(boxId);
-		const explicitContextSwitchAtApply = isSchemaWorkerApplyRequired(boxId);
+		const explicitContextSwitchAtApply = isSchemaWorkerEagerApplyRequired(boxId);
 		if (!isActiveAtApply && !canApplyAtOpenForSoleEditor && !explicitContextSwitchAtApply) {
 			queuePendingSchemaWorkerUpdate(message, schemaKey, isForceRefresh, schemaSignature, isForceRefresh ? 'inactive-force-refresh-at-apply' : 'inactive-at-apply', preparationToken);
 			traceFileOpen('schema.worker.apply.skip.inactiveAtApply', { boxId, activeQueryEditorBoxId, schemaKey, forceRefresh: isForceRefresh, explicitContextSwitchAtApply });

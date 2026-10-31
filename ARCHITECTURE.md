@@ -180,6 +180,12 @@ The webview runtime is split into `core/` and `monaco/`:
 - `core/`: cross-cutting infrastructure, global orchestration, and section factory
 - `monaco/`: editor-specific integrations
 
+Monaco workers use a small blob bootstrap in `queryEditor.html`. Fetched AMD sources receive canonical asset `sourceURL` annotations and are packaged as immutable browser-owned Blobs. The first worker message clones Blob handles, not source strings. Native `importScripts` loads each Blob through a temporary worker-local URL, revoked in `finally`; retaining the Blob handles preserves repeated imports without retaining raw text in a worker-side map. Source acquisition is shared only while loading and released after handoff. Schema state and editor/worker lifetimes are unchanged.
+
+Worker invalidation is separate from permission to hydrate an unfocused editor. Passive connection reconciliation retains a deferred rebind requirement for the next interaction; explicit user/tool selection remains eager. Both modes use the coordinator's existing target-owned requirement slot, so retirement and successful worker publication clear the requirement together.
+
+Worker schema registration deduplicates URL spellings by hostname before constructing database symbols. Short and full cluster hosts remain separate aliases, and every new schema transaction updates both; general connection aliases retain their original URL forms.
+
 | Module | Purpose |
 | ------ | ------- |
 | `core/main.ts` | Event handlers and webview-level message orchestration |

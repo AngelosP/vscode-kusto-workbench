@@ -587,6 +587,80 @@ describe('primary schema selection intent', () => {
 		expect(kustoEditorSchemaCoordinator.getSchemaRequestToken(boxId)).toBe(requests[1].requestToken);
 	});
 
+	it.each([
+		['auto-single', false],
+		['global-last', false],
+		['user', true],
+		['tool', true],
+	] as const)('hydrates an unfocused restored model only for explicit %s selection', async (source, eager) => {
+		const previousActive = state.activeQueryEditorBoxId;
+		const previousEditor = queryEditors[boxId];
+		const previousSetter = window.__kustoSetMonacoKustoSchema;
+		const otherBox = 'auth_origin_restore_peer';
+		const modelUri = 'inmemory://model/auth-origin-restored';
+		const setter = vi.fn(async () => true);
+		const schemaKey = getKustoSchemaIdentityKey('auth-b', 'partition-b', connections[1].clusterUrl, database);
+		const previousSchema = schemaByConnDb[schemaKey];
+		const previousMeta = schemaMetaByConnDb[schemaKey];
+		try {
+			delete schemaByConnDb[schemaKey];
+			delete schemaMetaByConnDb[schemaKey];
+			state.setActiveQueryEditorBoxId(null);
+			queryBoxes.push(otherBox);
+			queryEditors[boxId] = { getModel: () => ({ uri: { toString: () => modelUri } }) };
+			const lease = kustoEditorSchemaCoordinator.getLease(boxId);
+			expect(lease).toBeDefined();
+			expect(kustoEditorSchemaCoordinator.attachModel(lease!, modelUri)).toBeDefined();
+			state.schemaDiagnosticsTrustedByBoxId[boxId] = true;
+			window.__kustoSetMonacoKustoSchema = setter;
+
+			section.setConnectionId('auth-b');
+			section.setDatabase('');
+			section.setDesiredDatabase(database);
+			section.dispatchEvent(new CustomEvent('connection-changed', {
+				detail: { boxId, connectionId: 'auth-b', database, source }, bubbles: true, composed: true,
+			}));
+			await deliverDatabases(databaseRequest(), [database]);
+			const request = schemaRequests().at(-1);
+			expect(request).toBeDefined();
+			window.__kustoBufferedHostMessages = [{
+				...request,
+				type: 'schemaData',
+				accountPartition: 'partition-b',
+				clusterUrl: connections[1].clusterUrl,
+				schema: {
+					tables: ['Events'],
+					columnTypesByTable: { Events: { Value: 'long' } },
+					rawSchemaJson: { Databases: { [database]: { Tables: {} } } },
+				},
+				schemaMeta: { schemaSignature: 'restored-signature', workerUpdateNeeded: true, cacheState: 'fresh' },
+			}];
+			await drainMessages();
+			expect(getKustoEditorSchema(boxId)?.tables).toEqual(['Events']);
+			if (eager) {
+				await vi.waitFor(() => expect(setter).toHaveBeenCalledOnce());
+			} else {
+				expect(setter).not.toHaveBeenCalled();
+				expect(isSchemaWorkerApplyRequired(boxId)).toBe(true);
+				expect(getPendingSchemaWorkerUpdate(boxId)).toMatchObject({
+					schemaKey, forceRefresh: true, deliveryOwnership: { request: { requestToken: request!.requestToken } },
+				});
+				expect(getKustoPreparationState(boxId)).toMatchObject({ status: 'deferred', stage: 'waiting-focus' });
+			}
+		} finally {
+			const index = queryBoxes.indexOf(otherBox);
+			if (index >= 0) queryBoxes.splice(index, 1);
+			if (previousEditor) queryEditors[boxId] = previousEditor;
+			else delete queryEditors[boxId];
+			window.__kustoSetMonacoKustoSchema = previousSetter;
+			state.setActiveQueryEditorBoxId(previousActive);
+			if (previousSchema) schemaByConnDb[schemaKey] = previousSchema;
+			else delete schemaByConnDb[schemaKey];
+			if (previousMeta) schemaMetaByConnDb[schemaKey] = previousMeta;
+			else delete schemaMetaByConnDb[schemaKey];
+		}
+	});
+
 	it.each([true, false])('keeps explicit tool selection interactive through cached=%s discovery', async cached => {
 		if (cached) state.cachedDatabases['auth-b'] = [database];
 		section.setConnectionId('auth-b');

@@ -9,9 +9,15 @@
 # Defer: original109 with 16 warm tabs, prepared-profile fidelity, Save/reopen, physical execution and full SDK/ACK proof.
 # SDK tab events do not prove continuous WebviewPanel.visible or renderer visibility. No title-targeted CDP or images.
 # All reads succeeding means NOT_REPRODUCED_SHORT_RUN, never PASS_OUTAGE_FIXED. No profile settings are changed.
-Feature: Short natural hidden access to the unchanged October 20 canary
+# KW_HIDDEN_ACCESS_PROLONGED=1 selects the October 30 archive, its 13 warm files and all 109 targets.
+# That opt-in requires Code 1.144.0 and --timeout 3600000, retains the canary for 2300 seconds,
+# uses exact URI-targeted reads, and always checks one ordinary activation after the full hidden pair.
+# KW_HIDDEN_ACCESS_DIAGNOSTIC_SECONDS shortens only a diagnostic run, never the full qualification.
+# KW_HIDDEN_ACCESS_DIAGNOSTIC_TARGETS limits an allocation-profiling run before renderer loss.
+# KW_HIDDEN_ACCESS_DIAGNOSTIC_PAUSE_SECONDS leaves a bounded read-only inspection window after recovery.
+Feature: Archived canary hidden access
 
-  Scenario: Exact archived notes and dashboard remain available through two bounded mixed prefixes
+  Scenario: Original notes and dashboard survive retained hidden access and ordinary recovery
     Given I collect JSON artifact "hidden-short-access-evidence" from extension host expression:
       """
       (async () => {
@@ -24,8 +30,18 @@ Feature: Short natural hidden access to the unchanged October 20 canary
         const equal = process.getBuiltinModule('node:util').isDeepStrictEqual;
         const hash = bytes => process.getBuiltinModule('node:crypto').createHash('sha256').update(bytes).digest('hex');
         const canonical = value => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
-        const archive = path.join(os.tmpdir(), 'kw-regression-build2-before-2026-10-20-500ddb040c5b4dcf87630e2d488f4112.zip');
-        const archiveSha256 = 'f743e4f9be3e2470301a5ef9b0b0961022f5fdf8a3be8355a6f912ab5e82d9b3';
+        const prolonged = process.env.KW_HIDDEN_ACCESS_PROLONGED === '1';
+        const diagnosticSeconds = process.env.KW_HIDDEN_ACCESS_DIAGNOSTIC_SECONDS === undefined
+          ? undefined : Number(process.env.KW_HIDDEN_ACCESS_DIAGNOSTIC_SECONDS);
+        const diagnosticPauseSeconds = Number(process.env.KW_HIDDEN_ACCESS_DIAGNOSTIC_PAUSE_SECONDS ?? 0);
+        const diagnosticTargets = Number(process.env.KW_HIDDEN_ACCESS_DIAGNOSTIC_TARGETS ?? 109);
+        const hiddenDurationMs = (diagnosticSeconds ?? 2300) * 1000;
+        const archive = path.join(os.tmpdir(), prolonged
+          ? 'kw-regression-before-2026-10-30-6539ac42be5b48c68c183e8aac12e0ac.zip'
+          : 'kw-regression-build2-before-2026-10-20-500ddb040c5b4dcf87630e2d488f4112.zip');
+        const archiveSha256 = prolonged
+          ? 'b1d340688c700060f8368450bd0df94a7fe1db0b192ec8031a2de11d32a8f3a2'
+          : 'f743e4f9be3e2470301a5ef9b0b0961022f5fdf8a3be8355a6f912ab5e82d9b3';
         const canaryPath = 'extension-regression-2026-10-07.kqlx';
         const canarySha256 = 'eeafb29fdb57398dbb6e2a83a7aec0fd5b2cc658f12e156f671fdfee144f51e0';
         const htmlId = 'html_1791393873620';
@@ -34,8 +50,16 @@ Feature: Short natural hidden access to the unchanged October 20 canary
         const tabSnapshot = () => vscode.window.tabGroups.all.flatMap(group => group.tabs.map(tab => ({ uri: tab.input?.uri?.toString() ?? null, viewType: tab.input?.viewType ?? tab.input?.constructor?.name ?? null, dirty: tab.isDirty, active: tab.isActive, groupActive: group.isActive, column: group.viewColumn, preview: tab.isPreview })));
         const previous = globalThis.__hiddenShortAccess;
         const outcome = { classification: 'SETUP_BLOCKED', calls: [], pairs: [], activations: [], tabEvents: [], documentEvents: [], damage: [], saved: [], pinActions: [], checks: {}, errors: [], limits: ['Only prefixes 1-19 and 20-32; not original109 with 16 warm tabs', 'Development runtime copy, not the incident loaded-memory image or installed Production build', 'SDK tab events/active flags do not prove continuous WebviewPanel.visible or renderer visibility', 'Standard startup Trace is not correlated SDK send/receipt/ACK evidence', 'No query/auth tools requested; no claim of instrumented absence of every physical execution or network request', 'No screenshot or image review; no forced Auto Save setting, Save/reopen or authoring coverage'] };
+        outcome.prolonged = prolonged;
+        outcome.diagnosticSeconds = diagnosticSeconds;
+        outcome.diagnosticTargets = diagnosticTargets;
+        outcome.warmActivations = [];
+        outcome.activationFailures = [];
+        outcome.retainedSamples = [];
+        if (prolonged) outcome.limits[0] = 'October 30 exact archived bytes, 13 warm files and original109; isolated profile is not the original dogfood account/session state';
         globalThis.__hiddenShortAccess = outcome;
         const references = new Map();
+        const retainedUris = new Set();
         const models = new Map();
         const subscriptions = [];
         const startingDocuments = [];
@@ -61,6 +85,14 @@ Feature: Short natural hidden access to the unchanged October 20 canary
         const checkStartingDocuments = event => {
           let unchanged = true;
           for (const entry of startingDocuments) {
+            if (entry.frameworkEmptyInput) {
+              const inputs = vscode.workspace.textDocuments.filter(document => document.uri.toString() === entry.uri && !document.isClosed);
+              if (inputs.some(document => document.languageId !== 'plaintext' || document.isDirty || document.getText() !== '')) {
+                unchanged = false;
+                outcome.damage.push({ event, uri: entry.uri, reason: 'framework-input-content-changed' });
+              }
+              continue;
+            }
             const document = entry.document;
             const current = vscode.workspace.textDocuments.includes(document) && document.isClosed !== true
               && document.uri.toString() === entry.uri && document.version === entry.version
@@ -110,7 +142,12 @@ Feature: Short natural hidden access to the unchanged October 20 canary
         const verifyFrozenBuild = () => {
           assert.equal(manifest.runtimeStableDuringCopy, true);
           assert.equal(canonical(extension.extensionPath), canonical(manifest.extensionRoot));
-          assert.notEqual(canonical(extension.extensionPath), canonical(manifest.sourceRoot));
+          if (manifest.runtimeMode === 'verified-workspace') {
+            assert.equal(prolonged, true, 'Workspace runtime is only supported by the opt-in prolonged replay');
+            assert.equal(canonical(extension.extensionPath), canonical(manifest.sourceRoot));
+          } else {
+            assert.notEqual(canonical(extension.extensionPath), canonical(manifest.sourceRoot));
+          }
           for (const file of manifest.files) {
             const target = path.join(extension.extensionPath, safeRelative(file.path));
             const stat = fs.lstatSync(target);
@@ -118,7 +155,7 @@ Feature: Short natural hidden access to the unchanged October 20 canary
             assert.equal(stat.size, file.bytes, 'Frozen runtime size changed: ' + file.path);
             assert.equal(hash(fs.readFileSync(target)), file.sha256, 'Frozen runtime changed: ' + file.path);
           }
-          return { root: extension.extensionPath, mainSha256: hash(fs.readFileSync(main)), fileCount: manifest.files.length };
+          return { root: extension.extensionPath, mainSha256: hash(fs.readFileSync(main)), fileCount: manifest.files.length, runtimeMode: manifest.runtimeMode ?? 'frozen-copy' };
         };
         const readArchive = wanted => new Promise((resolve, reject) => {
           modules.createRequire(path.join(manifest.sourceRoot, 'package.json'))('yauzl').open(archive, { lazyEntries: true }, (error, zip) => {
@@ -147,6 +184,10 @@ Feature: Short natural hidden access to the unchanged October 20 canary
           outcome.calls.push(record);
           write('call-' + record.sequence + '-started', record);
           try {
+            assert.equal(diagnosticSeconds === undefined || prolonged && Number.isInteger(diagnosticSeconds) && diagnosticSeconds >= 0 && diagnosticSeconds < 2300, true, 'Invalid diagnostic duration');
+            assert.equal(Number.isInteger(diagnosticPauseSeconds) && diagnosticPauseSeconds >= 0 && diagnosticPauseSeconds <= 300, true, 'Invalid diagnostic inspection window');
+            assert.equal(Number.isInteger(diagnosticTargets) && diagnosticTargets >= 20 && diagnosticTargets <= 109
+              && (diagnosticTargets === 109 || prolonged && diagnosticSeconds !== undefined), true, 'Limited load is diagnostic only');
             record.raw = await vscode.lm.invokeTool(name, { toolInvocationToken: undefined, input });
             record.textParts = (record.raw.content ?? []).filter(part => typeof part?.value === 'string').map(part => part.value);
             record.allText = record.textParts.join('\n');
@@ -165,10 +206,11 @@ Feature: Short natural hidden access to the unchanged October 20 canary
           return !record.transportError && !record.parseError && value?.success === true && value.valid === true && value.sectionId === htmlId && value.hasProvenance === true && value.bindingCount === 6 && value.dataSourceCount === 1 && equal(value.issues, []) && equal(value.warnings, []) && equal(value.diagnostics, []) && equal(value.factColumns, factColumns) && typeof value.filePath === 'string' && canonical(value.filePath) === canonical(vscode.Uri.parse(canaryUri).fsPath) && value.fileName === canaryPath;
         };
         const pair = async label => {
+          const target = prolonged ? { targetFileUri: canaryUri } : { openFileId };
           phase = label + '-notes';
-          const notes = await invoke('kusto-workbench_manage-development-notes', { action: 'view', openFileId });
+          const notes = await invoke('kusto-workbench_manage-development-notes', { action: 'view', ...target });
           phase = label + '-dashboard';
-          const dashboard = await invoke('kusto-workbench_validate-html-dashboard', { sectionId: htmlId, openFileId });
+          const dashboard = await invoke('kusto-workbench_validate-html-dashboard', { sectionId: htmlId, ...target });
           const result = { label, notesSequence: notes.sequence, dashboardSequence: dashboard.sequence, notesPassed: notesOracle(notes), dashboardPassed: dashboardOracle(dashboard), hidden, noInventoryBeforeReads: true };
           result.passed = result.notesPassed && result.dashboardPassed;
           outcome.pairs.push(result);
@@ -190,29 +232,43 @@ Feature: Short natural hidden access to the unchanged October 20 canary
             await vscode.commands.executeCommand('workbench.action.keepEditor');
             assert.equal(exact[0].isPreview, false, 'Native Keep Open did not retain the target');
           }
+          retainedUris.add(uri);
         };
         try {
           assert.equal(previous, undefined, 'One short trial per fresh launch');
           assert.equal(process.env.KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH, undefined, 'Do not use suite reset dispatch');
-          assert.equal(vscode.version, '1.143.0', 'Wrong Code version is setup failure, not a causal red');
+          assert.equal(vscode.version, prolonged ? '1.144.0' : '1.143.0', 'Wrong Code version is setup failure, not a causal red');
           assert.equal(vscode.env.logLevel, vscode.LogLevel.Trace, 'Enable Trace at startup');
           extension = vscode.extensions.getExtension('angelos-petropoulos.vscode-kusto-workbench');
           assert.ok(extension, 'Workbench extension missing');
           outcome.initialTabs = tabSnapshot();
+          if (process.env.KW_HIDDEN_ACCESS_REQUIRE_EMPTY_PROFILE === '1') {
+            assert.equal(outcome.initialTabs.length, 0, 'SETUP_BLOCKED: allocation profile must have no restored tabs');
+          }
           assert.equal(outcome.initialTabs.some(tab => tab.dirty), false, 'SETUP_BLOCKED: dirty starting tab must remain untouched');
           assert.equal(vscode.workspace.textDocuments.some(document => document.isDirty), false, 'SETUP_BLOCKED: dirty starting document must remain untouched');
           for (const document of vscode.workspace.textDocuments) {
             const file = document.uri.scheme === 'file' ? document.uri.fsPath : undefined;
-            startingDocuments.push({ document, uri: document.uri.toString(), version: document.version, dirty: document.isDirty,
+            const frameworkEmptyInput = document.uri.toString() === 'chatSessionInput:input-0'
+              && document.languageId === 'plaintext' && !document.isDirty && document.getText() === '';
+            startingDocuments.push({ document, uri: document.uri.toString(), version: document.version, dirty: document.isDirty, frameworkEmptyInput,
               bufferSha256: hash(document.getText()), file,
               fileSha256: file && fs.existsSync(file) ? hash(fs.readFileSync(file)) : undefined });
           }
           outcome.startingDocuments = startingDocuments.map(({ document, ...entry }) => entry);
           outcome.extensionAlreadyActive = extension.isActive;
-          assert.equal(vscode.workspace.workspaceFolders?.length ?? 0, 0, 'Use an empty isolated test window');
           const manifestBytes = fs.readFileSync(process.env.KW_HIDDEN_SHORT_MANIFEST);
           assert.equal(hash(manifestBytes), process.env.KW_HIDDEN_SHORT_MANIFEST_SHA, 'Frozen manifest changed');
           manifest = JSON.parse(manifestBytes);
+          const folders = vscode.workspace.workspaceFolders ?? [];
+          if (manifest.workspaceRoot) {
+            assert.equal(folders.length, 1, 'Expected the isolated empty workspace');
+            assert.equal(canonical(folders[0].uri.fsPath), canonical(manifest.workspaceRoot), 'Wrong profiling workspace');
+            assert.deepEqual(fs.readdirSync(manifest.workspaceRoot), [], 'Profiling workspace must start empty');
+          } else {
+            assert.equal(folders.length, 0, 'Use an empty isolated test window');
+          }
+          if (manifest.runtimeMode === 'verified-workspace') outcome.limits[1] = 'Development workspace runtime hashed before and after the replay; not an installed Production build or proof of the incident loaded-memory image';
           main = path.resolve(extension.extensionPath, extension.packageJSON.main);
           workbenchRequire = modules.createRequire(main);
           outcome.build = verifyFrozenBuild();
@@ -225,26 +281,28 @@ Feature: Short natural hidden access to the unchanged October 20 canary
           outcome.evidenceRoot = evidenceRoot;
           write('initial', outcome);
           assert.equal(hash(fs.readFileSync(archive)), archiveSha256, 'Immutable archive hash mismatch');
-          const metadata = await readArchive(new Set(['baseline.json', 'evidence/verified-prequalification-ledger.json']));
+          const orderEntry = prolonged ? 'evidence/prolonged-load-protocol.json' : 'evidence/verified-prequalification-ledger.json';
+          const metadata = await readArchive(new Set(['baseline.json', orderEntry]));
           const baseline = JSON.parse(metadata.get('baseline.json'));
-          const ledger = JSON.parse(metadata.get('evidence/verified-prequalification-ledger.json'));
-          assert.equal(ledger.sweep.length, 109);
+          const order = JSON.parse(metadata.get(orderEntry));
+          const sweep = prolonged ? order.targets : order.sweep;
+          assert.equal(sweep.length, 109);
           const inventory = new Map();
           for (const file of baseline.files) {
             safeRelative(file.path);
             assert.equal(inventory.has(file.path.toLowerCase()), false, 'Duplicate baseline path');
             inventory.set(file.path.toLowerCase(), file);
           }
-          for (const [index, entry] of ledger.sweep.entries()) {
+          for (const [index, entry] of sweep.entries()) {
             assert.equal(entry.index, index + 1, 'Noncontiguous recorded prefix');
-            assert.equal(entry.call.tool, 'kusto-workbench_activate-workbench-file');
+            if (!prolonged) assert.equal(entry.call.tool, 'kusto-workbench_activate-workbench-file');
             assert.equal(inventory.get(safeRelative(entry.relativePath).toLowerCase())?.path, entry.relativePath, 'Ledger path has no exact baseline');
           }
-          const prefix = ledger.sweep.slice(0, 32);
+          const prefix = sweep.slice(0, prolonged ? diagnosticTargets : 32);
           assert.equal(prefix.some(entry => entry.relativePath === canaryPath), false);
           const firstKinds = new Set(prefix.slice(0, 19).map(entry => path.extname(entry.relativePath).toLowerCase()));
           assert.equal(['.kqlx', '.mdx', '.sqlx'].every(kind => firstKinds.has(kind)) && ['.kql', '.csl', '.sql'].some(kind => firstKinds.has(kind)), true, 'Recorded first19 is not the required mixed prefix');
-          outcome.archive = { path: archive, sha256: archiveSha256, baselineSha256: hash(metadata.get('baseline.json')), ledgerSha256: hash(metadata.get('evidence/verified-prequalification-ledger.json')), originalInitialPaths: baseline.preservedInitialPaths, selectedPrefix: prefix.map(entry => ({ index: entry.index, path: entry.relativePath })), baselineCount: baseline.files.length };
+          outcome.archive = { path: archive, sha256: archiveSha256, baselineSha256: hash(metadata.get('baseline.json')), ledgerSha256: hash(metadata.get(orderEntry)), originalInitialPaths: baseline.preservedInitialPaths, selectedPrefix: prefix.map(entry => ({ index: entry.index, path: entry.relativePath })), baselineCount: baseline.files.length };
           const images = await readArchive(new Set(baseline.files.map(file => 'before/' + file.path)));
           for (const reference of baseline.files) {
             const bytes = images.get('before/' + reference.path);
@@ -301,6 +359,21 @@ Feature: Short natural hidden access to the unchanged October 20 canary
             assert.equal(outcome.initialTabs.length, 0, 'Fresh baseline requires no pre-existing tabs; never reset');
             outcome.profile = { mode: 'fresh-framework-profile', storagePath: context.globalStorageUri.fsPath };
           }
+          if (prolonged) {
+            assert.equal(order.minimumHiddenSeconds, 2148.246);
+            assert.deepEqual(order.initialFileIdentitiesPreserved, baseline.preservedInitialPaths);
+            assert.equal(baseline.preservedInitialPaths.length, 13);
+            for (const originalPath of baseline.preservedInitialPaths) {
+              const relative = safeRelative(path.win32.relative(baseline.workspace, originalPath).replace(/\\/g, '/'));
+              assert.equal(inventory.has(relative.toLowerCase()), true, 'Warm file is not archived');
+              const uri = vscode.Uri.file(path.join(owner.root, 'history', relative)).toString();
+              phase = 'warm-' + (outcome.warmActivations.length + 1);
+              const record = await invoke('kusto-workbench_activate-workbench-file', { targetFileUri: uri });
+              outcome.warmActivations.push({ path: relative, sequence: record.sequence });
+              assert.equal(record.value?.success === true && record.value.uri === uri, true, 'SETUP_BLOCKED: warm activation failed');
+              await retainActive(uri);
+            }
+          }
           measurementStart = performance.now();
           phase = 'baseline-activation';
           const activation = await invoke('kusto-workbench_activate-workbench-file', { targetFileUri: canaryUri });
@@ -314,37 +387,77 @@ Feature: Short natural hidden access to the unchanged October 20 canary
           assert.equal(baselinePair.passed, true, 'SETUP_BLOCKED: exact archived note and valid six-binding one-source dashboard required; no seed, retarget or query');
           outcome.checks.validBaseline = true;
           await retainActive(canaryUri);
-          for (const checkpoint of [19, 32]) {
+          if (process.env.KW_HIDDEN_ACCESS_SAMPLE_ALLOCATIONS === '1') {
+            assert.notEqual(diagnosticSeconds, undefined, 'Allocation sampling is diagnostic only');
+            write('sampling-ready', { canaryUri, pid: process.pid, atUtc: new Date().toISOString() });
+            const location = path.join(path.dirname(process.env.KW_HIDDEN_SHORT_MANIFEST), 'sampling-evidence.json');
+            assert.equal(fs.existsSync(location), false, 'Allocation sampling requires a fresh manifest');
+            fs.writeFileSync(location + '.tmp', JSON.stringify({ evidenceRoot, canaryUri, pid: process.pid }), { flag: 'wx' });
+            fs.renameSync(location + '.tmp', location);
+            const receipt = path.join(evidenceRoot, 'sampling-started.json');
+            const deadline = performance.now() + 30000;
+            while (!fs.existsSync(receipt) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+            assert.equal(fs.existsSync(receipt), true, 'Allocation observer did not attach before the workload');
+            const started = JSON.parse(fs.readFileSync(receipt, 'utf8'));
+            assert.equal(started.canaryUri, canaryUri, 'Allocation observer targeted a different canary');
+            assert.equal(started.pid, process.pid, 'Allocation observer targeted a different host');
+          }
+          for (const checkpoint of prolonged ? [19, diagnosticTargets] : [19, 32]) {
             const begin = outcome.activations.length;
             for (const entry of prefix.slice(begin, checkpoint)) {
               phase = 'prefix-' + entry.index;
-              if (performance.now() - measurementStart > 150000) { outcome.classification = 'BOUNDED_SHORT_RUN_INCOMPLETE'; throw new Error('Short-run wall budget reached between natural calls; no forced timeout'); }
+              if (!prolonged && performance.now() - measurementStart > 150000) { outcome.classification = 'BOUNDED_SHORT_RUN_INCOMPLETE'; throw new Error('Short-run wall budget reached between natural calls; no forced timeout'); }
               const uri = vscode.Uri.file(path.join(owner.root, 'history', entry.relativePath)).toString();
               const record = await invoke('kusto-workbench_activate-workbench-file', { targetFileUri: uri });
               outcome.activations.push({ index: entry.index, path: entry.relativePath, sequence: record.sequence });
-              assert.equal(record.value?.success === true && record.value.uri === uri && typeof record.value.openFileId === 'string', true, 'SETUP_BLOCKED: mixed-prefix activation failed, not a hidden-canary read red');
+              const activated = record.value?.success === true && record.value.uri === uri && typeof record.value.openFileId === 'string';
+              if (!activated) outcome.activationFailures.push({ index: entry.index, path: entry.relativePath, sequence: record.sequence });
+              if (!prolonged) assert.equal(activated, true, 'SETUP_BLOCKED: mixed-prefix activation failed, not a hidden-canary read red');
               await retainActive(uri);
               if (!hidden) { hidden = true; hiddenStart = performance.now(); sampleTabs('hidden-arm-start'); }
               assertHidden();
-              assert.equal(tabs().filter(tab => references.has(tab.input?.uri?.toString())).length, outcome.activations.length + 1, 'Mixed-prefix tabs were not retained');
+              assert.equal(tabs().filter(tab => references.has(tab.input?.uri?.toString())).length, retainedUris.size, 'Mixed-prefix tabs were not retained');
+            }
+            if (prolonged && checkpoint === diagnosticTargets) {
+              phase = 'retained-load';
+              outcome.sweepFinishedUtc = new Date().toISOString();
+              while (performance.now() - hiddenStart < hiddenDurationMs) {
+                assertHidden();
+                outcome.retainedSamples.push({ atUtc: new Date().toISOString(), hiddenElapsedMs: performance.now() - hiddenStart, retainedTabs: retainedUris.size, hostMemory: process.memoryUsage() });
+                write('retained-load-progress', outcome.retainedSamples);
+                await new Promise(resolve => setTimeout(resolve, Math.min(60000, hiddenDurationMs - (performance.now() - hiddenStart))));
+              }
+              if (diagnosticSeconds === undefined) outcome.checks.qualifiedHiddenDuration = performance.now() - hiddenStart >= 2300000;
+              else outcome.checks.diagnosticHiddenDuration = performance.now() - hiddenStart >= hiddenDurationMs;
             }
             assertHidden();
             const observed = await pair('hidden-' + checkpoint);
             assertHidden();
-            if (!observed.passed) {
-              failure = { ...observed, firstFailureRetained: true, baselineValid: true, prefixCount: outcome.activations.length, sdkHiddenAtCheckpoints: true, continuousWebviewVisibilityProven: false, phaseProof: 'PUBLIC_BLACK_BOX_ONLY' };
-              outcome.firstFailure = failure;
-              write('first-hidden-failure', failure);
+            if (!observed.passed || prolonged && checkpoint === diagnosticTargets) {
+              if (!observed.passed) {
+                failure = { ...observed, firstFailureRetained: true, baselineValid: true, prefixCount: outcome.activations.length, sdkHiddenAtCheckpoints: true, continuousWebviewVisibilityProven: false, phaseProof: 'PUBLIC_BLACK_BOX_ONLY' };
+                outcome.firstFailure = failure;
+                write('first-hidden-failure', failure);
+              }
               hidden = false;
               phase = 'activation-only-recovery';
-              outcome.recoveryActivation = await invoke('kusto-workbench_activate-workbench-file', { openFileId });
+              outcome.recoveryActivation = await invoke('kusto-workbench_activate-workbench-file', prolonged ? { targetFileUri: canaryUri } : { openFileId });
               outcome.recovery = await pair('first-after-one-activation');
               outcome.recovery.sameTarget = outcome.recoveryActivation.value?.openFileId === openFileId && outcome.recoveryActivation.value?.uri === canaryUri;
+              outcome.recovery.activeCanary = tabSnapshot().some(tab => tab.uri === canaryUri && tab.active && tab.groupActive);
+              if (diagnosticPauseSeconds > 0) {
+                write('diagnostic-ready', { atUtc: new Date().toISOString(), canaryUri, pid: process.pid, pauseSeconds: diagnosticPauseSeconds });
+                await new Promise(resolve => setTimeout(resolve, diagnosticPauseSeconds * 1000));
+              }
               break;
             }
           }
-          outcome.classification = failure ? 'NATURAL_HIDDEN_READ_FAILURE' : 'NOT_REPRODUCED_SHORT_RUN';
-          outcome.checks.sequence = outcome.pairs[0]?.label === 'baseline' && (failure ? outcome.pairs.at(-1)?.label === 'first-after-one-activation' : equal(outcome.pairs.map(result => result.label), ['baseline', 'hidden-19', 'hidden-32']) && outcome.activations.length === 32);
+          outcome.classification = failure ? 'NATURAL_HIDDEN_READ_FAILURE'
+            : diagnosticSeconds !== undefined ? 'NOT_REPRODUCED_DIAGNOSTIC_RUN'
+            : prolonged ? 'NOT_REPRODUCED_QUALIFIED_RUN' : 'NOT_REPRODUCED_SHORT_RUN';
+          outcome.checks.sequence = outcome.pairs[0]?.label === 'baseline' && (failure ? outcome.pairs.at(-1)?.label === 'first-after-one-activation' : prolonged
+            ? equal(outcome.pairs.map(result => result.label), ['baseline', 'hidden-19', `hidden-${diagnosticTargets}`, 'first-after-one-activation']) && outcome.activations.length === diagnosticTargets
+            : equal(outcome.pairs.map(result => result.label), ['baseline', 'hidden-19', 'hidden-32']) && outcome.activations.length === 32);
         } catch (error) {
           outcome.errors.push({ phase, message: String(error?.message ?? error), stack: String(error?.stack ?? '') });
         } finally {
@@ -386,4 +499,6 @@ Feature: Short natural hidden access to the unchanged October 20 canary
         return JSON.parse(JSON.stringify(outcome));
       })()
       """
-    Then I collect JSON artifact "hidden-short-access-assertion" from extension host expression "(() => { const result = globalThis.__hiddenShortAccess; if (result?.classification !== 'NOT_REPRODUCED_SHORT_RUN' || !Object.values(result.checks).every(value => value === true)) throw new Error(JSON.stringify({ classification: result?.classification, evidenceRoot: result?.evidenceRoot, checks: result?.checks, firstFailure: result?.firstFailure, errors: result?.errors })); return { classification: result.classification, baseline: result.pairs[0], checkpoints: result.pairs.slice(1), limitations: result.limits }; })()"
+    Then I collect JSON artifact "hidden-short-access-assertion" from extension host expression "(() => { const result = globalThis.__hiddenShortAccess; const expected = result?.diagnosticSeconds !== undefined ? 'NOT_REPRODUCED_DIAGNOSTIC_RUN' : result?.prolonged ? 'NOT_REPRODUCED_QUALIFIED_RUN' : 'NOT_REPRODUCED_SHORT_RUN'; if (result?.classification !== expected || !Object.values(result.checks).every(value => value === true) || result.prolonged && (!result.recovery?.passed || !result.recovery?.sameTarget || !result.recovery?.activeCanary || result.recoveryActivation?.value?.success !== true || result.recoveryActivation?.value?.isLiveWorkbench !== true)) throw new Error(JSON.stringify({ classification: result?.classification, evidenceRoot: result?.evidenceRoot, checks: result?.checks, firstFailure: result?.firstFailure, recovery: result?.recovery, errors: result?.errors })); return { classification: result.classification, baseline: result.pairs[0], checkpoints: result.pairs.slice(1), limitations: result.limits }; })()"
+    Then the output channel "Kusto Workbench" should contain "[file-open:"
+    And I take a screenshot "hidden-access-cleanup"

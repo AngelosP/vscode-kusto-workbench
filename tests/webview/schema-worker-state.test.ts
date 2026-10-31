@@ -23,6 +23,7 @@ import {
 	markSchemaWorkerReady,
 	failKustoPreparation,
 	isSchemaWorkerApplyRequired,
+	isSchemaWorkerEagerApplyRequired,
 	requireSchemaWorkerApply,
 	registerKustoSchemaApplyRequester,
 	requestKustoSchemaApplyForBox,
@@ -48,6 +49,31 @@ describe('schema worker readiness state', () => {
 		retireQueryEditorReady('query_editor_ready');
 		delete queryEditors.query_editor_ready;
 		(window as any).__kustoSchemaCompletionGeneration = 0;
+	});
+
+	it('retains a deferred rebind requirement without demanding eager hydration', () => {
+		requireSchemaWorkerApply('deferred_rebind', 'deferred');
+
+		expect(isSchemaWorkerApplyRequired('deferred_rebind')).toBe(true);
+		expect(isSchemaWorkerEagerApplyRequired('deferred_rebind')).toBe(false);
+
+		markSchemaWorkerReady('deferred_rebind', 'cluster|db', 'sig', 'inmemory://model/deferred');
+		expect(isSchemaWorkerApplyRequired('deferred_rebind')).toBe(false);
+		expect(isSchemaWorkerEagerApplyRequired('deferred_rebind')).toBe(false);
+	});
+
+	it('promotes explicit intent and never downgrades it within the same target lifetime', () => {
+		requireSchemaWorkerApply('explicit_rebind', 'deferred');
+		requireSchemaWorkerApply('explicit_rebind');
+		requireSchemaWorkerApply('explicit_rebind', 'deferred');
+
+		expect(isSchemaWorkerApplyRequired('explicit_rebind')).toBe(true);
+		expect(isSchemaWorkerEagerApplyRequired('explicit_rebind')).toBe(true);
+
+		disposeKustoPreparation('explicit_rebind');
+		requireSchemaWorkerApply('explicit_rebind', 'deferred');
+		expect(isSchemaWorkerApplyRequired('explicit_rebind')).toBe(true);
+		expect(isSchemaWorkerEagerApplyRequired('explicit_rebind')).toBe(false);
 	});
 
 	it('resolves editor readiness only for the exact section incarnation', async () => {

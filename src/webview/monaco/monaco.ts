@@ -106,7 +106,7 @@ import {
 } from '../shared/kusto-function-output-schema';
 import { filterResolvableCrossClusterMarkers } from '../shared/kusto-diagnostic-marker-filter';
 import { decideKustoSupplementalCompletionPolicy } from '../shared/kusto-supplemental-completion-policy';
-import { getKustoClusterAliases, kustoClusterKey, kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
+import { getKustoClusterAliases, kustoClusterKey, kustoDatabaseKey, parseKustoClusterRef } from '../../shared/kustoClusterUrls.js';
 import { getKustoSchemaIdentityKey, resolveKustoConnection } from '../../shared/kustoAuth.js';
 import type { CopilotInlineCompletion } from '../../shared/copilotInlineCompletionProtocol.js';
 import { handleCopilotInlineCompletionResult } from './copilot-inline-completion-runtime.js';
@@ -2741,7 +2741,8 @@ function __kustoNormalizeCrossClusterClusterName(clusterName: any): string {
 }
 
 function __kustoGetCrossClusterClusterAliases(clusterName: any, clusterUrl?: any): string[] {
-	return getKustoClusterAliases(clusterName, clusterUrl);
+	// The worker keys aliases by host, but short and full hosts must remain distinct.
+	return [...new Set(getKustoClusterAliases(clusterName, clusterUrl).map(alias => parseKustoClusterRef(alias).host))];
 }
 
 async function __kustoAddDatabaseAliasesToWorker(

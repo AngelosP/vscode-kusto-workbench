@@ -10,7 +10,87 @@ on every `vscode-ext-test init` to stay current with framework updates),
 Read this file before every test session. Update it after every session with
 anything new you learned. Structure it however makes sense for this repo.
 
-## Current Verification Checkpoint: October 30 Readiness And Test Infrastructure
+## Current Verification Checkpoint: Retained-Notebook Renderer OOM
+
+Status: THE FIRST OCTOBER 30 HANDOFF BUG IS REPRODUCED AND VERIFIED FIXED IN
+THE WORKSPACE BUILD. The unprofiled original workload passes after the complete
+2300-second hidden interval. Approved core regressions, focused authenticated
+worker recreation, production packaging, and unchanged bundle budgets pass.
+This does not qualify an older installed extension or the deferred broad E2E suite.
+
+- The original 109-target sequence reproduces unavailable development notes
+  and dashboard validation, followed by failed ordinary activation of the
+  same canary. A 2300-second run reproduced both errors, but had 59 restored
+  starting tabs. Subsequent fresh-workspace runs reproduced the failure with
+  exactly zero starting tabs. Preserve that distinction.
+- Reuse the prepared authentication profile with a new empty workspace folder
+  for each replay. Reusing its empty-window layout restored previous test tabs
+  despite successful in-run exact-URI cleanup. Never reset unrelated or dirty
+  tabs to manufacture a clean baseline.
+- Native dumps identify a renderer OOM (`0xe0000008`) on a DedicatedWorker
+  thread. The canary becomes gray and its exact visible iframe has no live CDP
+  target. Successful native `postMessage` delivery does not establish that the
+  webview application received or acknowledged a probe.
+- Direct worker CDP attachment can hang. Browser-level attachment followed by
+  recursive parent-frame auto-attachment reaches the worker isolates. Deduplicate
+  observations by isolate ID, not iframe count; multiple documents can share a
+  renderer heap. Match visible webviews by their iframe `id`, not shared origin.
+- Allocation sampling in run `20261031-000705` observed 87 Kusto workers and
+  all original API/preservation assertions passed. This is diagnostic evidence,
+  not a fix: inspector attachment changes execution conditions, and no full
+  hidden-duration qualification was performed. Allocation totals included
+  collected objects, so they are not retained heap sizes or true peak bounds.
+- The sampled run's post-recovery CDP screenshot shows a live canary. Its later
+  native cleanup screenshot failed foreground validation and the runner exited
+  1; retain both facts instead of relabeling the whole run green.
+- Sampled call stacks exposed repeated database-symbol construction for
+  schemed/unschemed aliases of the same host. Actual-function tests first failed
+  for duplicate registrations; worker-only hostname deduplication makes those
+  tests pass while retaining distinct short/full hosts and later revisions.
+  The unprofiled 109-target candidate still failed at target 92
+  (`20261031-002707`), with all nine preservation/build/cleanup guards true.
+  A subsequent Blob-backed loader removes source strings from worker messages.
+  Its first unprofiled 109-file run (`20261031-005336`) passed all four exact
+  note/dashboard pairs, ordinary same-target activation, all nine guards, and
+  zero starting/final tabs. There were no activation failures. Both the live
+  canary CDP image (captured only after the measured calls) and the exact-target
+  native cleanup image were reviewed. This run used the short diagnostic
+  duration; do not call it full-duration qualification.
+- Full-duration run `20261031-011033` subsequently passed without profiling or
+  a duration override: 109 activations, no activation failures, zero starting
+  and final tabs, all nine guards true. The first hidden notes call began at
+  2300007.4469 ms and completed in 49.2593 ms; dashboard validation began at
+  2300059.3146 ms and completed in 115.1164 ms. Both exact APIs also passed
+  immediately after one ordinary same-target activation. No query execution,
+  file mutation, or cold-reopen recovery was substituted. The observer attached
+  only after those calls; live-canary and exact-target cleanup images were reviewed.
+- Blob loading also passed all six real Ctrl+Space scenarios, including exact
+  remote columns (`20261031-004956`), with a reviewed trustworthy screenshot.
+  The first attempt requested a nonexistent named `default` profile and never
+  launched; the successful unchanged feature used ordinary fresh-profile mode.
+- Current core regression evidence: 452 native tests passed on Code 1.144.0;
+  the full webview suite passed 9362 tests with four existing skips; all three
+  script files produced 558 passes and one existing prerequisite skip.
+  A broader E2E dry-run executed zero tests: its preflight rejected
+  existing `kusto-auth` workspace state and missing `opt-in` profile storage.
+  The user chose focused verification rather than repairing or bypassing those
+  profile guards; preserve the existing state.
+- Production packaging and all unchanged bundle budgets passed after the frozen
+  qualification finished. An earlier budget check used unminified `npm run compile`
+  output and failed the gate's production-output prerequisite; preserve that
+  classification instead of describing it as source growth or raising budgets.
+- The separately corrected passive/eager preparation path passed the real
+  five-section restored-worker completion/Save/reopen scenario
+  (`20261030-220906`), but did not fix the retained-load failure by itself.
+- The final production-build scenario (`20261031-015653`) includes a zero-tab
+  pre-reset guard and a second real third-editor click after Save/close/reopen.
+  Both completion proofs passed with the auxiliary and word-based providers
+  disabled, actual worker context verified, and the four other sections still
+  deferred. Both native screenshots were reviewed; they show the settled
+  completion-probe prefix after the widget was dismissed, while JSON artifacts
+  carry the exact matched-table proof. The fixture and task tabs were cleaned up.
+
+## Previous Verification Checkpoint: October 30 Readiness And Test Infrastructure
 
 Status: TARGETED FIXES VERIFIED. The targeted activation, real Kusto/SQL
 execution lifecycles, bounded hidden-read scenario and current regression gates

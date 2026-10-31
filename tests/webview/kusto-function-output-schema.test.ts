@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
 import ts from 'typescript';
+import { getKustoClusterAliases, parseKustoClusterRef } from '../../src/shared/kustoClusterUrls';
 import {
+	buildKustoFunctionBodyFromOutputColumns,
 	enhanceKustoFunctionBodiesForSchemaChunked,
 	findKustoRawSchemaEntity,
 	prepareKustoSchemaForWorkerFast,
@@ -58,6 +60,130 @@ function freezeSchema(value: unknown): void {
 	for (const child of Object.values(value)) freezeSchema(child);
 	Object.freeze(value);
 }
+
+function workerAliasHarness() {
+	const source = ts.createSourceFile('monaco.ts', readFileSync('src/webview/monaco/monaco.ts', 'utf8'), ts.ScriptTarget.Latest, true);
+	const names = ['__kustoGetCrossClusterClusterAliases', '__kustoAddDatabaseAliasesToWorker'];
+	const declarations = names.map(name => {
+		const declaration = source.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === name);
+		if (!declaration) throw new Error(`Missing actual worker alias function: ${name}`);
+		return declaration.getText(source);
+	});
+	const databases = new Map<string, Record<string, unknown>>();
+	const lease = { active: true };
+	const errors = vi.fn();
+	const worker = {
+		normalizeSchema: vi.fn(async (schema: ReturnType<typeof makeSchema>) => ({
+			database: {
+				name: 'TelemetryDb',
+				tables: [{
+					name: 'Events',
+					columns: schema.Databases.TelemetryDb.Tables.Events.OrderedColumns.map(column => ({
+						name: column.Name, type: column.CslType,
+					})),
+				}],
+				functions: [],
+			},
+		})),
+		addDatabaseToSchema: vi.fn(async (_model: string, alias: string, database: Record<string, unknown>) => {
+			databases.set(parseKustoClusterRef(alias).host, structuredClone(database));
+		}),
+	};
+	const context = createContext({
+		getKustoClusterAliases, parseKustoClusterRef, stampKustoSchemaMajorVersion, buildKustoFunctionBodyFromOutputColumns,
+		__kustoPrepareSchemaForKustoWorker: prepareKustoSchemaForWorkerFast,
+		__kustoGetAutocompleteTraceIdForModel: () => '',
+		__kustoGetCrossClusterSchemaKey: () => 'schema',
+		__kustoCommitWorkerMutation: () => lease.active,
+		recordAutocompleteTrace: vi.fn(),
+		console: { error: errors },
+	});
+	runInContext(ts.transpileModule(declarations.join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
+	return {
+		worker, databases, lease, errors,
+		apply: (schema: ReturnType<typeof makeSchema>, name: string, url: string, revision = 17): Promise<number> =>
+			context.__kustoAddDatabaseAliasesToWorker(worker, 'model', schema, name, url, 'TelemetryDb', {
+				id: revision, isActive: () => lease.active,
+			}),
+	};
+}
+
+describe('Kusto worker alias allocations', () => {
+	it.each([
+		['public', 'help', 'https://help.kusto.windows.net', ['help', 'help.kusto.windows.net']],
+		['regional', 'help.westus', 'https://help.westus.kusto.windows.net', ['help.westus', 'help.westus.kusto.windows.net']],
+		['sovereign', 'https://help.kusto.usgovcloudapi.net', 'https://help.kusto.usgovcloudapi.net', ['help.kusto.usgovcloudapi.net']],
+		['custom endpoint', 'https://events.example.test', 'https://events.example.test', ['events.example.test']],
+		['distinct alias', 'friendly', 'https://events.example.test', ['friendly', 'friendly.kusto.windows.net', 'events.example.test']],
+	] as const)('registers each %s worker host once without losing tables or function columns', async (_label, name, url, hosts) => {
+		const harness = workerAliasHarness();
+		const schema = makeSchema();
+		const original = JSON.stringify(schema);
+		freezeSchema(schema);
+
+		const count = await harness.apply(schema, name, url);
+
+		expect(harness.worker.addDatabaseToSchema.mock.calls.map(call => parseKustoClusterRef(call[1]).host)).toEqual(hosts);
+		expect(count).toBe(hosts.length);
+		expect(harness.worker.normalizeSchema).toHaveBeenCalledOnce();
+		for (const host of hosts) {
+			expect(harness.databases.get(host)).toMatchObject({
+				name: 'TelemetryDb',
+				tables: [{ name: 'Events', columns: [{ name: 'Timestamp', type: 'datetime' }, { name: 'EventName', type: 'string' }] }],
+				functions: [
+					{ name: 'ExplicitFn', outputColumns: [{ name: 'ExplicitColumn', type: 'string' }], body: expect.stringContaining('ExplicitColumn') },
+					{ name: 'InferredFn', body: '{ Events | project EventName }' },
+				],
+			});
+		}
+		expect(JSON.stringify(schema)).toBe(original);
+		expect(harness.errors).not.toHaveBeenCalled();
+	});
+
+	it('updates both host identities again for the next schema revision', async () => {
+		const harness = workerAliasHarness();
+		const schema = makeSchema();
+		await harness.apply(schema, 'help', 'https://help.kusto.windows.net', 17);
+		const next = makeSchema();
+		next.Databases.TelemetryDb.Tables.Events.OrderedColumns.push({ Name: 'NewColumn', CslType: 'long' });
+
+		expect(await harness.apply(next, 'help', 'https://help.kusto.windows.net', 18)).toBe(2);
+
+		expect(harness.worker.addDatabaseToSchema).toHaveBeenCalledTimes(4);
+		for (const database of harness.databases.values()) {
+			expect(database).toMatchObject({ tables: [{ columns: [
+				{ name: 'Timestamp', type: 'datetime' }, { name: 'EventName', type: 'string' }, { name: 'NewColumn', type: 'long' },
+			] }] });
+		}
+	});
+
+	it('does not begin an alias update for a retired transaction', async () => {
+		const harness = workerAliasHarness();
+		harness.lease.active = false;
+
+		expect(await harness.apply(makeSchema(), 'help', 'https://help.kusto.windows.net')).toBe(0);
+		expect(harness.worker.normalizeSchema).not.toHaveBeenCalled();
+		expect(harness.worker.addDatabaseToSchema).not.toHaveBeenCalled();
+	});
+
+	it('does not dispatch another alias after the transaction is retired during its first update', async () => {
+		const harness = workerAliasHarness();
+		harness.worker.addDatabaseToSchema.mockImplementation(async () => { harness.lease.active = false; });
+
+		expect(await harness.apply(makeSchema(), 'help', 'https://help.kusto.windows.net')).toBe(0);
+		expect(harness.worker.addDatabaseToSchema).toHaveBeenCalledOnce();
+	});
+
+	it('reports a failed worker update instead of claiming that aliases were registered', async () => {
+		const harness = workerAliasHarness();
+		const error = new Error('Schema update failed');
+		harness.worker.addDatabaseToSchema.mockRejectedValue(error);
+
+		expect(await harness.apply(makeSchema(), 'help', 'https://help.kusto.windows.net')).toBe(0);
+		expect(harness.worker.addDatabaseToSchema).toHaveBeenCalledOnce();
+		expect(harness.errors).toHaveBeenCalledWith('[kusto] Failed to add database aliases:', error);
+	});
+});
 
 describe('Kusto function output schema preparation', () => {
 	it.each([
