@@ -15,6 +15,7 @@ type PendingFinalPersist = {
 	resolve: (value: unknown) => void;
 	reject: (error: Error) => void;
 	timer: ReturnType<typeof setTimeout>;
+	claimed?: boolean;
 };
 
 type PendingReload = {
@@ -68,6 +69,13 @@ export class CompatSidecarSession {
 	get hasPendingUpgrade(): boolean { return this.pendingUpgradeCount > 0; }
 	hasPendingFinalPersistRequest(requestId: string): boolean {
 		return !!requestId && this.pendingFinalPersists.has(requestId);
+	}
+	claimFinalPersistRequest(requestId: string): boolean {
+		const pending = this.pendingFinalPersists.get(requestId);
+		if (!pending || pending.claimed) return false;
+		clearTimeout(pending.timer);
+		pending.claimed = true;
+		return true;
 	}
 	hasPendingReloadRequest(requestId: string): boolean {
 		const pending = requestId ? this.pendingReloads.get(requestId) : undefined;
@@ -318,8 +326,10 @@ export class CompatSidecarSession {
 			let resolveResponse!: (value: T) => void;
 			let rejectResponse!: (error: Error) => void;
 			const response = new Promise<T>((resolve, reject) => { resolveResponse = resolve; rejectResponse = reject; });
-			const timer = setTimeout(() => this.completeFinalPersist(
-				requestId,
+			const failAwaitingReply = (error: Error): void => {
+				if (!this.pendingFinalPersists.get(requestId)?.claimed) this.completeFinalPersist(requestId, error);
+			};
+			const timer = setTimeout(() => failAwaitingReply(
 				new Error(`Timed out waiting for the final ${this.label} metadata snapshot.`),
 			), timeoutMs);
 			this.pendingFinalPersists.set(requestId, {
@@ -330,12 +340,12 @@ export class CompatSidecarSession {
 			try {
 				void Promise.resolve(postMessage({ type: 'requestFinalPersist', requestId, reason })).then(
 					delivered => {
-						if (!delivered) this.completeFinalPersist(requestId, new Error(`The final ${this.label} metadata snapshot request was not delivered.`));
+						if (!delivered) failAwaitingReply(new Error(`The final ${this.label} metadata snapshot request was not delivered.`));
 					},
-					error => this.completeFinalPersist(requestId, new Error(`The final ${this.label} metadata snapshot request failed: ${this.errorMessage(error)}`)),
+					error => failAwaitingReply(new Error(`The final ${this.label} metadata snapshot request failed: ${this.errorMessage(error)}`)),
 				);
 			} catch (error) {
-				this.completeFinalPersist(requestId, new Error(`The final ${this.label} metadata snapshot request failed: ${this.errorMessage(error)}`));
+				failAwaitingReply(new Error(`The final ${this.label} metadata snapshot request failed: ${this.errorMessage(error)}`));
 			}
 			return await response;
 		});

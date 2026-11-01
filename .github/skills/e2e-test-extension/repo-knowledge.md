@@ -10,7 +10,213 @@ on every `vscode-ext-test init` to stay current with framework updates),
 Read this file before every test session. Update it after every session with
 anything new you learned. Structure it however makes sense for this repo.
 
-## Current Verification Checkpoint: Fresh Hidden MDX Mode Update
+## Current Verification Checkpoint: Superseded Compatibility Metadata Notifications
+
+Status: REPRODUCED AND FIXED in the production-built workspace.
+Both metadata fixes and the retained-notebook opening-load fix pass their
+reproductions, real-worker E2E and complete core regressions. Final verification
+passes 10,436 tests with five existing skips, production types/lint and both
+unchanged bundle gates. No new 2300-second hold, broad prepared-profile suite
+or older installed-release qualification is claimed.
+
+- Automatic hidden-panel persistence can be superseded by an identical newer
+  snapshot at the same edit revision. The old request correctly rejects, but
+  both providers previously showed that expected rejection as a user error.
+- The real-provider native tests first failed on the exact KQL/SQL
+  `metadata snapshot was superseded before admission` notifications, expected
+  `[]`. Before that assertion, the old terminal was `superseded` without an
+  acknowledgement, the newer snapshot was applied and acknowledged, and both
+  source and sidecar bytes were unchanged. The explicit-Save rejection control
+  passed in that same red run.
+- Only the coordinator's canonical `superseded` terminal receives
+  `CompatSidecarPersistSupersededError`, including a verified source rollback.
+  Only automatic hidden callbacks make that rejection Trace-only. Save/close
+  semantics, admission, commits and acknowledgements stay unchanged. Never
+  match the message string: source drift and failed rollback can use the same
+  text. A current invalid snapshot with that identical text still notifies.
+- The focused native cases pass for both languages, the strict Save control
+  passes, and 170 direct coordinator/session/projection/close tests pass.
+  The complete native suite passes 454 tests with the original 5000 ms timeout;
+  the complete webview/host suite passes 9368 tests with four existing skips.
+- Do not trust the framework controller's notification history as the product's
+  history. CLI 0.1.24 retains at most 50 records and instruments its own VS Code
+  API. Run `20261031-181523` passed all 109 activations and 12 preservation/
+  behavior checks, with two real KQL supersession Trace entries, but reported
+  zero controller notifications while its reviewed screenshot showed an
+  informational autocomplete toast. That history is not absence evidence.
+- The replay now observes `workbenchRequire('vscode').window`, where
+  `workbenchRequire` is rooted at the verified executing extension entry point.
+  It records only the two exact superseded error messages and forwards every
+  notification with its original receiver, arguments, return value and errors.
+  Cleanup asserts ownership and restores only its own hook; a replacement
+  hook must fail qualification without being overwritten. All 24 harness
+  guard tests pass, including forwarding, synchronous failure and restoration.
+- Preserve the stock feature's behavior and byte/cleanup assertions. The
+  approved local adapter replaces only its final native screenshot with an
+  exact main-page CDP capture at the same boundary. This notification replay
+  uses the complete original 109-file order but a diagnostic hidden interval;
+  it does not repeat the prior 2300-second renderer-OOM qualification.
+- Production packaging, strict types, lint and both unchanged bundle gates
+  pass. The host is 2,606,527 bytes against the already approved 2,607,104-byte
+  limit; no additional budget increase was needed.
+- Production run `20261031-182646` passed 109 activations and all 15 machine
+  checks, including zero exact superseded errors, capture ownership/restoration,
+  unchanged files and zero starting/final tabs. One real KQL supersession
+  was Trace-only; the Workbench SDK was confirmed distinct from the controller
+  API. SQL's corresponding path passed its deterministic native reproduction.
+- The refreshed script ring passes 575 tests with one existing skip; together
+  with native and webview/host suites this is 10,397 passes and five skips.
+- Preserve the production run's visual failure: its reviewed screenshot shows
+  `Timed out waiting for the final KQL metadata snapshot.` despite those machine
+  assertions. Do not call that a clean E2E run or suppress the different error.
+  The user selected investigation/reproduction of this timeout. The replay
+  now records exact KQL/SQL final-snapshot timeout messages with phase, time and
+  call site; no product deadline or timeout handling has changed.
+- The first timeout-specific run, `20261031-224521`, is a genuine red:
+  `NATURAL_METADATA_TIMEOUT`, with two exact KQL timeout messages during
+  `warm-6`, before the main 109-file sweep. It ran without a concurrent
+  regression suite, on the same pinned production workspace build and
+  VS Code 1.144.0. The captured call site maps to the automatic hidden-panel
+  handler, not explicit Save. It does not yet identify which pending snapshot
+  missed its response or why.
+- All 109 activations and the other 15 checks pass in that red run; files are
+  unchanged, initial/final tab counts are zero, the notification hook is
+  restored, and no superseded-message error recurs. Both CDP and native failure
+  screenshots were reviewed: they show the cleaned empty workbench, with no
+  toast still visible at cleanup. The uncapped extension-bound message records,
+  not the absence of a final visible toast, establish the timeout failure.
+- All 26 capture/harness guard tests pass. They verify the recorder itself,
+  not the product timeout. Leave the replay's new timeout assertion failing
+  until a product fix is implemented; do not raise the two-second deadline or
+  suppress the notification merely to make it green.
+- Timing diagnostic `20261031-231411` reproduced the timeout again with the
+  original warm-up and a 32-target prefix. A matching final snapshot arrived
+  in 34 ms, but its host transaction finished `applied` at 2398 ms; the timer
+  incorrectly reported a missing reply at 2000 ms. The diagnostic request/
+  response/terminal Trace additions were removed after establishing this.
+- The session now claims a matching reply once, stopping only its arrival
+  timer. The coordinator claims before waiting for host admission and settles
+  pre-admission exceptions too. Success/acknowledgement still require actual
+  transaction completion; Save/close remain waiting, duplicate replies are
+  inert, and late transport failures cannot replace an already received reply.
+  Missing replies retain the exact two-second deadline.
+- Focused validation passes 186 owner/session/projection/close tests and the
+  three native KQL/SQL/strict-Save controls. Preserve the first native attempt
+  that exceeded the unchanged 5000 ms runner cap and contaminated the next
+  case; do not count it as a clean two-provider red. The native fixtures now
+  use the existing timeout argument (500 ms, with a 600 ms host gate), while
+  fake-clock owner tests and the real replay exercise the production deadline.
+  Both fixtures then reproduced the exact timeout before the fix and pass
+  after it. No production timeout increase or notification suppression was
+  introduced for this fix.
+- Complete timeout-fix regressions pass: 454 native tests, 9384 webview/host
+  tests and 577 script tests, with five existing skips. Production packaging
+  and the unchanged bundle limits pass. No diagnostic product logging remains.
+
+### Retained-notebook Recurrence
+
+- Preserve production run `20261101-002351` as a failure. Both metadata-error
+  assertions pass, but the original canary's hidden notes/dashboard and its
+  ordinary-activation recovery fail, as do target88's later hidden notes.
+  Each failed read takes about four seconds. All 109 first activations, file
+  preservation, exact owned-tab cleanup and frozen-build checks pass.
+- Do not label this an OOM solely because it resembles the earlier failure.
+  The initial mixed recursive-list output did not establish absence of crash
+  reports. A direct lookup later found matching dumps; no matching Application
+  Error event was found. The initial native screenshot lost foreground
+  qualification and cannot establish the renderer state.
+- The next diagnostic inspects the exact active canary only after the original
+  failing reads and ordinary recovery. Reuse the existing post-oracle inspection
+  window and CDP helper to collect frame targets, DOM state, screenshots and heap
+  usage. Do not attach worker sampling before the decisive calls, reset the
+  prepared profile, close unrelated tabs, or change worker/editor lifetimes.
+- Run `20261101-005125` reproduces the failure again. Trusted post-oracle CDP
+  shows the gray active canary and no target for its exact visible iframe;
+  the VS Code main renderer remains alive. Native dump metadata from this run
+  and `20261101-002351` confirms `0xe0000008`, `process_type=renderer`, and
+  `DedicatedWorker thread`. OOM locations are young-object promotion and
+  memory-chunk allocation during deserialization. The `node.CrUtilityMain`
+  shutdown access violation is a separate dump, not the notebook failure.
+- The worker loader still decoded fetched vendor bodies with `response.text()`
+  and concatenated their full text for the source URL before creating Blobs.
+  New actual-bootstrap tests reproduce eight text decodes and a 600,247-character
+  application-created string part. The candidate fix fetches `response.blob()`
+  and composes it with only the small source-URL suffix. All 20 bootstrap tests
+  pass, including Unicode/import identity, label routing, shared acquisition,
+  body failure/retry, URL revocation and unchanged worker lifetimes.
+- The Blob-only build passed original109 run `20261101-012520` and real worker
+  Save/reopen run `20261101-013643`, plus 454 native, 9387 webview/host and 577
+  script tests. Its stock confirmation `20261101-015600` still lost the
+  renderer. Preserve that failure: fewer temporary strings was an improvement,
+  not a complete OOM fix.
+- Post-oracle profiling after the original warm-up and 64 targets in
+  `20261101-020655` found 47 Kusto worker isolates using 1890 MiB. The largest
+  snapshot contained 65,264 schema columns but 197,974 C# column-symbol
+  backings and three same-name database-symbol backings. Do not print raw heap
+  strings or schemas when investigating; aggregate object shapes instead.
+- The dependency's ordinary `addDatabaseToSchema` bypasses its existing
+  canonical database-symbol cache. The current guarded build patch adds a
+  batch alias API to the copied worker service and proxy. All live additions
+  now reuse that cache and stamp the mutation transaction version. Short/full
+  aliases remain distinct; newer revisions, function enrichment, default
+  context and sibling databases must stay correct. No worker suspension,
+  termination, pooling, memory-limit increase or new cache owner was added.
+- The exact dependency patch and live caller ring passes 89 tests; production
+  packaging/types/lint/budgets pass. Semantic run `20261101-032421` passes
+  remote and short-current alias columns, expression positions, summarize
+  output exclusion and take/top grammar with auxiliary column suggestions
+  disabled. Its table-completion helper verifies effective word suggestions
+  are off. Both target-qualified screenshots show the native columns.
+- Preserve semantic attempt `20261101-032015` as a setup failure:
+  `editor.getRawOptions()` does not expose the effective word-suggestion
+  setting in this Monaco integration. Reuse `assertTableCompletionForSection`,
+  which checks the actual configuration service, rather than weakening that
+  check. The next scenario's zero-tab guard correctly refused leftover test
+  tabs.
+- Real-schema startup `20261101-032722` passed initial native worker
+  assertions but failed native capture after losing foreground. An initial
+  CDP launch also failed before tests (`spawnSync cmd.exe ETIMEDOUT`);
+  `20261101-033455` then exposed an adapter mistake: artifact evaluation has
+  no ambient `require`. Use `process.getBuiltinModule('node:module')` and
+  `createRequire` for the approved local CDP helper. Do not alter behavioral
+  assertions or product deadlines to address these harness failures.
+- Approved CDP run `20261101-033643` passes the full current-build
+  five-section deferred/focus/native-completion/Save/reopen/repeat lifecycle,
+  including owned fixture deletion. Both exact-window images were reviewed;
+  the incomplete table prefix is expected input, not a failed diagnostic.
+- Original109 run `20261101-034121` passes all 16 original behavior,
+  preservation and notification checks, and post-oracle CDP shows the live
+  canary. The run still failed an invalid added visual assertion: counting
+  only query/Markdown/HTML tags produced four, not all ten heterogeneous
+  sections. The next run `20261101-035508` again passed all original checks,
+  but the all-canvas count was nine: the tenth saved section is `devnotes`,
+  which `persistence.ts` restores outside the canvas. Compare the exact ordered
+  IDs from `#queries-container > [id]` with saved non-devnotes section IDs;
+  keep development-note checks separate. Both failed extra assertions remain
+  recorded rather than reclassified as successful runs.
+- Offline heap shape comparison confirms 197,974 to 66,038 ColumnSymbol
+  backings and three to one database instance. The Bridge-owned property
+  names use `Kusto$Language$Symbols$...`, not .NET `k__BackingField` names.
+  The largest sampled Kusto isolate decreased from 126 to 67 MiB, but the
+  census workloads differ (64 versus 109 targets); do not compare their
+  aggregate memory as an identical workload benchmark. Raw schema DTO
+  columns remain cached separately, so this is not elimination of all copies.
+- Final current-build run `20261101-040316` passes all 109 activations and
+  17 checks: the hidden note/dashboard pair after 19 and 109 targets, one
+  ordinary-activation recovery, target88's first cold activation and later
+  hidden notes, exact saved canvas identities, unchanged source/archive bytes,
+  owned cleanup, frozen runtime and no supersession/timeout error messages.
+  Initial/final tab counts are both zero. The exact active-canary and empty
+  cleanup CDP screenshots were reviewed. Inspection occurred only after the
+  decisive calls; no heap profiling ran during this confirmation.
+- The complete final suites pass 454 native tests at the original 5000 ms
+  timeout, 9405 webview/host tests and 577 script tests. Four webview and one
+  script skips are unchanged. The webview runner prints only its final
+  summary and normally takes many minutes; no intermediate per-file output
+  alone is not evidence of a hang. Final production packaging, strict types,
+  lint and both synchronized bundle gates pass without another budget change.
+
+## Previous Verification Checkpoint: Fresh Hidden MDX Mode Update
 
 Status: REPRODUCED AND FIXED. The exact first hidden call and composed
 Save/reopen lifecycle pass in the final production workspace build, with the

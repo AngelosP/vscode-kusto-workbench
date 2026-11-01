@@ -1,6 +1,7 @@
 Feature: Kusto semantic autocomplete with deterministic schemas
 
   Background:
+    Given I collect JSON artifact "semantic-completion-tab-guard" from extension host expression "(() => { const tabs = vscode.window.tabGroups.all.flatMap(group => group.tabs); if (tabs.length !== 0) throw new Error('Refusing to reset pre-existing editor tabs; use a fresh workspace'); return { initialTabCount: 0 }; })()"
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
     When I move the Dev Host to 0, 0
@@ -31,11 +32,14 @@ Feature: Kusto semantic autocomplete with deterministic schemas
     And I wait 1 second
 
     When I evaluate "window.__e2e.kusto.applySemanticCompletionFixture()" in the webview
+    When I evaluate "(() => { if (window.__e2e.kusto.setCustomColumnProviderEnabled(false) !== false) throw new Error('Auxiliary column provider was not disabled'); return 'native worker column provider'; })()" in the webview
+    When I evaluate "window.__e2e.kusto.assertTableCompletionForSection(0, 15000, 'native-remote-primary-table')" in the webview for 20 seconds
 
     When I evaluate "(async () => { window.__e2e.kusto.setSemanticScenario('first-timestamp'); const section = document.querySelector('kw-query-section'); const editor = window.queryEditors?.[section?.boxId || section?.id]; const query = String(editor?.getValue?.() || ''); const marked = query.replace('| where TIMESTAMP >=', '| where TIME⟦caret⟧STAMP >='); if (!query || marked === query) throw new Error('Could not mark first TIMESTAMP scenario'); window.__e2e.kusto.setQueryWithCaretMarkerStrict(marked); window.__e2e.suggest.kusto.hide(); await new Promise(resolve => setTimeout(resolve, 100)); await window.__e2e.suggest.kusto.trigger(); return window.__e2e.suggest.kusto.waitRenderedAllColumnsVisible('first where TIMESTAMP mid-token', 'TIMESTAMP,TIMESTAMP_RemoteOnly', 12000); })()" in the webview for 18 seconds
     When I evaluate "window.__e2e.kusto.assertSemanticCrossClusterTrace()" in the webview
     When I evaluate "window.__e2e.kusto.markAutocompleteTraceSanitized('semantic-autocomplete-trace-sanitized', 'semantic autocomplete trace sanitization')" in the webview
     When I wait for "[data-testid='e2e-proof-semantic-autocomplete-trace-sanitized']" in the webview for 5 seconds
+    Then I take a screenshot "native-remote-alias-columns"
 
     When I evaluate "(async () => { window.__e2e.kusto.setSemanticScenario('inline-and-timestamp'); const section = document.querySelector('kw-query-section'); const editor = window.queryEditors?.[section?.boxId || section?.id]; const query = String(editor?.getValue?.() || ''); const marked = query.replace('and TIMESTAMP <', 'and TIME⟦caret⟧STAMP <'); if (!query || marked === query) throw new Error('Could not mark inline TIMESTAMP scenario'); window.__e2e.kusto.setQueryWithCaretMarkerStrict(marked); window.__e2e.suggest.kusto.hide(); await new Promise(resolve => setTimeout(resolve, 100)); await window.__e2e.suggest.kusto.trigger(); return window.__e2e.suggest.kusto.waitRenderedAllColumnsVisible('inline and TIMESTAMP mid-token', 'TIMESTAMP,TIMESTAMP_RemoteOnly', 12000); })()" in the webview for 18 seconds
 
@@ -71,6 +75,8 @@ Feature: Kusto semantic autocomplete with deterministic schemas
     And I wait 1 second
 
     When I evaluate "window.__e2e.kusto.applyCurrentClusterWorkflowFixture()" in the webview
+    When I evaluate "(() => { if (window.__e2e.kusto.setCustomColumnProviderEnabled(false) !== false) throw new Error('Auxiliary column provider was not disabled'); return 'native worker column provider'; })()" in the webview
+    When I evaluate "window.__e2e.kusto.assertTableCompletionForSection(0, 15000, 'native-current-primary-table')" in the webview for 20 seconds
     When I evaluate "window.__e2e.kusto.setCurrentClusterWorkflowScenario()" in the webview
     When I evaluate "window.__e2e.suggest.kusto.hide()" in the webview
     When I evaluate "window.__e2e.suggest.kusto.trigger()" in the webview
@@ -78,6 +84,7 @@ Feature: Kusto semantic autocomplete with deterministic schemas
     When I evaluate "(() => { const trace = window.__e2e.kusto.compactAutocompleteTrace(); const events = trace?.events || []; const event = name => events.find(e => e.event === name); const context = event('schema-prepare-context'); const refsEvent = event('schema-prepare-refs'); if (!context || !refsEvent || !event('schema-prepare-result') || !event('suggest-triggered')) throw new Error('missing expected autocomplete trace events: ' + JSON.stringify(trace)); const detail = context.detail || {}; if (!/^[a-f0-9]{8}$/.test(String(detail.clusterUrlId || '')) || !/^[a-f0-9]{8}$/.test(String(detail.databaseId || '')) || !/^[a-f0-9]{8}$/.test(String(detail.schemaKeyId || ''))) throw new Error('missing opaque trace context IDs: ' + JSON.stringify(trace)); if (Number(refsEvent.detail?.refsCount || 0) !== 0) throw new Error('current cluster treated as cross-cluster: ' + JSON.stringify(trace)); const text = JSON.stringify(trace).toLowerCase(); if (text.includes('semantic-current') || text.includes('telemetrydb')) throw new Error('trace leaked current cluster identity: ' + JSON.stringify(trace)); return 'current cluster opaque trace verified'; })()" in the webview
     When I evaluate "window.__e2e.kusto.assertAutocompleteTraceEvents('current cluster synthetic function trace', 'trigger-start,schema-prepare-context,schema-prepare-refs,schema-prepare-result,suggest-triggered', 'schema-prepare-cross-cluster-wait')" in the webview
     When I evaluate "window.__e2e.kusto.assertAutocompleteTraceSanitized('current cluster synthetic function trace sanitization')" in the webview
+    Then I take a screenshot "native-current-alias-columns"
 
     When I evaluate "(async () => { window.__e2e.kusto.setSemanticScenario('workflow-function-timestamp'); window.__e2e.suggest.kusto.hide(); await new Promise(resolve => setTimeout(resolve, 100)); await window.__e2e.suggest.kusto.trigger(); return window.__e2e.suggest.kusto.waitRenderedAllColumnsVisible('workflow function TIMESTAMP mid-token', 'TIMESTAMP', 12000); })()" in the webview for 18 seconds
     When I evaluate "(async () => { window.__e2e.kusto.setSemanticScenario('workflow-function-event-name'); window.__e2e.suggest.kusto.hide(); await new Promise(resolve => setTimeout(resolve, 100)); await window.__e2e.suggest.kusto.trigger(); return window.__e2e.suggest.kusto.waitRenderedAllColumnsVisible('workflow function EventName mid-token', 'EventName', 12000); })()" in the webview for 18 seconds

@@ -4,8 +4,17 @@ import { CompatSidecarSession } from '../../../src/host/compatSidecarSession';
 
 function deferred<T>() {
 	let resolve!: (value: T | PromiseLike<T>) => void;
-	const promise = new Promise<T>(res => { resolve = res; });
-	return { promise, resolve };
+	let reject!: (error: Error) => void;
+	const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+	return { promise, resolve, reject };
+}
+
+function finalRequestId(message: unknown): string {
+	if (!message || typeof message !== 'object' || !('requestId' in message)
+		|| typeof message.requestId !== 'string' || !message.requestId) {
+		throw new Error('Expected a correlated final persist request');
+	}
+	return message.requestId;
 }
 
 describe('CompatSidecarSession', () => {
@@ -194,6 +203,160 @@ describe('CompatSidecarSession', () => {
 		expect(session.completeReload(reload.requestId, true, 4)).toBe(true);
 		await expect(reload.result).resolves.toBe(true);
 		expect(session.currentEditRevision).toBe(4);
+	});
+
+	it('claims a final reply once without completing it or releasing the next request early', async () => {
+		vi.useFakeTimers();
+		const session = new CompatSidecarSession(true, 'KQL');
+		const sent: string[] = [];
+		const post = (message: unknown) => { sent.push(finalRequestId(message)); return true; };
+		const firstSettled = vi.fn();
+		const secondSettled = vi.fn();
+		const first = session.requestFinalPersist<number>(post, 'hidden').then(firstSettled, firstSettled);
+		let second: Promise<unknown> | undefined;
+		try {
+			await vi.advanceTimersByTimeAsync(0);
+			expect(session.claimFinalPersistRequest('other-request')).toBe(false);
+			expect(session.claimFinalPersistRequest(sent[0])).toBe(true);
+			expect(session.claimFinalPersistRequest(sent[0])).toBe(false);
+			second = session.requestFinalPersist(post, 'save').then(secondSettled, secondSettled);
+			await vi.advanceTimersByTimeAsync(2_100);
+			expect(sent).toHaveLength(1);
+			expect(firstSettled).not.toHaveBeenCalled();
+			expect(secondSettled).not.toHaveBeenCalled();
+			expect(session.hasPendingFinalPersistRequest(sent[0])).toBe(true);
+
+			expect(session.completeFinalPersist(sent[0], undefined, 17)).toBe(true);
+			await first;
+			await vi.advanceTimersByTimeAsync(0);
+			expect(firstSettled).toHaveBeenCalledExactlyOnceWith(17);
+			expect(sent).toHaveLength(2);
+			expect(session.claimFinalPersistRequest(sent[0])).toBe(false);
+			expect(session.claimFinalPersistRequest(sent[1])).toBe(true);
+			await vi.advanceTimersByTimeAsync(2_100);
+			expect(secondSettled).not.toHaveBeenCalled();
+			const failure = new Error('admission failed after receipt');
+			expect(session.completeFinalPersist(sent[1], failure)).toBe(true);
+			await second;
+			expect(secondSettled).toHaveBeenCalledExactlyOnceWith(failure);
+			expect(session.hasPendingFinalPersist).toBe(false);
+		} finally {
+			session.settleClose();
+			await vi.runAllTimersAsync();
+			await Promise.all([first, second]);
+			vi.useRealTimers();
+		}
+	});
+
+	it.each(['delivered', 'pending'] as const)('keeps the exact two-second reply deadline when delivery is %s', async delivery => {
+		vi.useFakeTimers();
+		const session = new CompatSidecarSession(true, 'SQL');
+		let requestId = '';
+		const settled = vi.fn();
+		const pending = session.requestFinalPersist(message => {
+			requestId = finalRequestId(message);
+			return delivery === 'delivered' ? true : new Promise<boolean>(() => undefined);
+		}, 'save').then(settled, settled);
+		try {
+			await vi.advanceTimersByTimeAsync(0);
+			expect(session.claimFinalPersistRequest('unrelated')).toBe(false);
+			await vi.advanceTimersByTimeAsync(1_999);
+			expect(settled).not.toHaveBeenCalled();
+			expect(session.hasPendingFinalPersistRequest(requestId)).toBe(true);
+			await vi.advanceTimersByTimeAsync(1);
+			await pending;
+			expect(settled).toHaveBeenCalledExactlyOnceWith(new Error('Timed out waiting for the final SQL metadata snapshot.'));
+			expect(session.claimFinalPersistRequest(requestId)).toBe(false);
+			expect(session.completeFinalPersist(requestId)).toBe(false);
+		} finally {
+			session.settleClose();
+			await vi.runAllTimersAsync();
+			await pending;
+			vi.useRealTimers();
+		}
+	});
+
+	it.each(['false', 'reject', 'throw'] as const)('does not replace a claimed reply with a late %s transport result', async mode => {
+		vi.useFakeTimers();
+		const session = new CompatSidecarSession(true, 'KQL');
+		const delivery = deferred<boolean>();
+		let requestId = '';
+		const settled = vi.fn();
+		const pending = session.requestFinalPersist<string>(message => {
+			requestId = finalRequestId(message);
+			if (mode === 'throw') {
+				expect(session.claimFinalPersistRequest(requestId)).toBe(true);
+				throw new Error('late transport failure');
+			}
+			return delivery.promise;
+		}, 'save').then(settled, settled);
+		try {
+			await vi.advanceTimersByTimeAsync(0);
+			if (mode !== 'throw') expect(session.claimFinalPersistRequest(requestId)).toBe(true);
+			if (mode === 'false') delivery.resolve(false);
+			if (mode === 'reject') delivery.reject(new Error('late transport failure'));
+			await vi.advanceTimersByTimeAsync(2_100);
+			expect(settled).not.toHaveBeenCalled();
+			expect(session.hasPendingFinalPersistRequest(requestId)).toBe(true);
+			expect(session.completeFinalPersist(requestId, undefined, 'admitted')).toBe(true);
+			await pending;
+			expect(settled).toHaveBeenCalledExactlyOnceWith('admitted');
+		} finally {
+			session.settleClose();
+			await vi.runAllTimersAsync();
+			await pending;
+			vi.useRealTimers();
+		}
+	});
+
+	it.each(['false', 'reject', 'throw'] as const)('preserves %s delivery failures before any reply arrives', async mode => {
+		vi.useFakeTimers();
+		const session = new CompatSidecarSession(true, 'KQL');
+		const settled = vi.fn();
+		const pending = session.requestFinalPersist(() => {
+			if (mode === 'throw') throw new Error('transport failure');
+			return mode === 'false' ? false : Promise.reject(new Error('transport failure'));
+		}, 'save').then(settled, settled);
+		try {
+			await vi.advanceTimersByTimeAsync(0);
+			await pending;
+			expect(settled).toHaveBeenCalledExactlyOnceWith(new Error(mode === 'false'
+				? 'The final KQL metadata snapshot request was not delivered.'
+				: 'The final KQL metadata snapshot request failed: transport failure'));
+			expect(session.hasPendingFinalPersist).toBe(false);
+		} finally {
+			session.settleClose();
+			await vi.runAllTimersAsync();
+			await pending;
+			vi.useRealTimers();
+		}
+	});
+
+	it('rejects a claimed but unfinished snapshot during close settlement', async () => {
+		vi.useFakeTimers();
+		const session = new CompatSidecarSession(true, 'SQL');
+		let requestId = '';
+		const settled = vi.fn();
+		const pending = session.requestFinalPersist(message => {
+			requestId = finalRequestId(message);
+			return true;
+		}, 'hidden').then(settled, settled);
+		try {
+			await vi.advanceTimersByTimeAsync(0);
+			expect(session.claimFinalPersistRequest(requestId)).toBe(true);
+			session.settleClose();
+			await pending;
+			expect(settled).toHaveBeenCalledExactlyOnceWith(
+				new Error('The SQL metadata editor closed before its final snapshot was confirmed.'),
+			);
+			expect(session.hasPendingFinalPersist).toBe(false);
+			expect(session.claimFinalPersistRequest(requestId)).toBe(false);
+		} finally {
+			session.settleClose();
+			await vi.runAllTimersAsync();
+			await pending;
+			vi.useRealTimers();
+		}
 	});
 
 	it.each([4_999, 5_000])('checks native ACK arrival at %i ms before the timer callback runs', async elapsed => {

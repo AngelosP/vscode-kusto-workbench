@@ -19,7 +19,7 @@ import { CompatSidecarStore, readCompatSidecarSnapshot } from '../../src/host/co
 import { CompatSidecarSession } from '../../src/host/compatSidecarSession';
 import { CompatSidecarCloseCoordinator } from '../../src/host/compatSidecarCloseCoordinator';
 import { CompatSidecarProjectionCoordinator } from '../../src/host/compatSidecarProjectionCoordinator';
-import { CompatSidecarPersistCoordinator } from '../../src/host/compatSidecarPersistCoordinator';
+import { CompatSidecarPersistCoordinator, type CompatSidecarPersistCoordinatorFactory } from '../../src/host/compatSidecarPersistCoordinator';
 import { KustoWorkbenchToolOrchestrator } from '../../src/host/kustoWorkbenchTools';
 import { parseCompatibilityPersistenceWebviewMessage } from '../../src/shared/compatibilityPersistenceProtocol';
 import { parseDocumentViewHostMessage, parseDocumentViewWebviewMessage } from '../../src/shared/documentViewProtocol';
@@ -17664,9 +17664,186 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	for (const variant of [
+		{ extension: '.kql', Provider: KqlCompatEditorProvider, primaryType: 'query', kind: 'kqlx', label: 'KQL' },
+		{ extension: '.sql', Provider: SqlCompatEditorProvider, primaryType: 'sql', kind: 'sqlx', label: 'SQL' },
+	] as const) {
+	test(`${variant.label} automatic hidden metadata supersession does not report a user error`, async () => {
+		const originalShowError = vscode.window.showErrorMessage;
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-hidden-metadata-supersession-'));
+		const sourcePath = path.join(root, `unchanged${variant.extension}`);
+		const sidecarPath = `${sourcePath}.json`;
+		const sourceText = variant.primaryType === 'query' ? 'print Unchanged = 1' : 'SELECT 1 AS Unchanged';
+		const sidecarText = JSON.stringify({
+			kind: variant.kind, version: 1, futureRoot: 'preserved',
+			state: { sections: [
+				{ id: 'primary_1', type: variant.primaryType, linkedQueryPath: path.basename(sourcePath) },
+				{ id: 'markdown_1', type: 'markdown', text: 'UNCHANGED METADATA' },
+			] },
+		}, null, 2) + '\n';
+		const notifications: string[] = [];
+		const posted: any[] = [];
+		const entered: string[] = [];
+		const outcomes: Array<{ snapshotId: string; terminal: string }> = [];
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let viewStateHandler: ((event: { webviewPanel: { visible: boolean } }) => unknown) | undefined;
+		let session: CompatSidecarSession | undefined;
+		const persists: Promise<unknown>[] = [];
+		const cancellation = new vscode.CancellationTokenSource();
+		let validationError: Error | undefined;
+		let oldSanitizationEntered = false;
+		let releaseOld!: () => void;
+		const oldGate = new Promise<void>(resolve => { releaseOld = resolve; });
+		const factory: CompatSidecarPersistCoordinatorFactory = options => {
+			session = options.session;
+			const requestFinalPersist = session.requestFinalPersist.bind(session);
+			// The real two-second boundary is covered by the owner tests and the archived E2E replay.
+			session.requestFinalPersist = <T = void>(
+				postMessage: Parameters<CompatSidecarSession['requestFinalPersist']>[0], reason: string,
+			) => requestFinalPersist<T>(postMessage, reason, 500);
+			const coordinator = new CompatSidecarPersistCoordinator({
+				...options,
+				adapter: {
+					...options.adapter,
+					validateState: (state, allowPendingUpgrade) => {
+						if (validationError) throw validationError;
+						options.adapter.validateState(state, allowPendingUpgrade);
+					},
+					sanitizeState: async state => {
+						if (!oldSanitizationEntered) {
+							oldSanitizationEntered = true;
+							await oldGate;
+						}
+						return options.adapter.sanitizeState(state);
+					},
+				},
+			});
+			return {
+				persist: async message => {
+					const snapshotId = 'snapshotId' in message ? String(message.snapshotId ?? '') : '';
+					entered.push(snapshotId);
+					const result = await coordinator.persist(message);
+					outcomes.push({ snapshotId, terminal: result.terminal });
+					return result;
+				},
+			};
+		};
+		try {
+			fs.writeFileSync(sourcePath, sourceText);
+			fs.writeFileSync(sidecarPath, sidecarText);
+			(vscode.window as any).showErrorMessage = async (message: string) => { notifications.push(message); return undefined; };
+			const provider = new (variant.Provider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+				}, vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				undefined, undefined, undefined, factory,
+			);
+			const document = {
+				uri: vscode.Uri.file(sourcePath), getText: () => sourceText, lineCount: 1,
+				lineAt: () => ({ text: sourceText }), isDirty: false, save: async () => true,
+			};
+			const panel = {
+				visible: true,
+				webview: {
+					options: {},
+					postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+						receiveHandler = handler;
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: () => ({ dispose() {} }),
+				onDidChangeViewState: (handler: typeof viewStateHandler) => {
+					viewStateHandler = handler;
+					return { dispose() {} };
+				},
+			};
+			await provider.resolveCustomTextEditor(document, panel, cancellation.token);
+			assert.ok(receiveHandler && viewStateHandler && session);
+			await Promise.resolve(receiveHandler({ type: 'requestDocument' }));
+			const projection = [...posted].reverse().find(message => message.type === 'documentData' && message.ok === true);
+			assert.ok(projection);
+			notifications.length = 0;
+			Object.assign(panel, { visible: false });
+			viewStateHandler({ webviewPanel: panel });
+			await waitForCondition(
+				() => posted.some(message => message.type === 'requestFinalPersist' && message.reason === 'hidden'),
+				'The hidden event must request its real final snapshot',
+			);
+			const finalRequest = posted.find(message => message.type === 'requestFinalPersist' && message.reason === 'hidden');
+			const message = {
+				type: 'persistDocument', sourceGeneration: projection.sourceGeneration, editRevision: 1,
+				state: JSON.parse(JSON.stringify(projection.state)),
+			};
+			const older = Promise.resolve(receiveHandler(withProjectedCompatPrimary(posted, {
+				...message, snapshotId: 'old-hidden', flushRequestId: finalRequest.requestId,
+			})));
+			persists.push(older);
+			await waitForCondition(() => oldSanitizationEntered, 'The hidden snapshot must enter sanitation');
+			const newer = Promise.resolve(receiveHandler(withProjectedCompatPrimary(posted, {
+				...message, snapshotId: 'newer-current',
+			})));
+			persists.push(newer);
+			await waitForCondition(() => entered.includes('newer-current'), 'The newer snapshot must reserve admission');
+			await new Promise(resolve => setTimeout(resolve, 600));
+			assert.deepStrictEqual(notifications, [], 'A timely snapshot must not time out while its host processing is pending');
+			assert.strictEqual(session.hasPendingFinalPersistRequest(finalRequest.requestId), true, 'A received snapshot must still wait for actual settlement');
+			releaseOld();
+			await Promise.all([older, newer]);
+			await session.waitForFinalPersists();
+			await Promise.resolve();
+
+			assert.deepStrictEqual(outcomes, [
+				{ snapshotId: 'old-hidden', terminal: 'superseded' },
+				{ snapshotId: 'newer-current', terminal: 'applied' },
+			]);
+			assert.ok(!posted.some(message => message.type === 'persistDocumentAck' && message.snapshotId === 'old-hidden'));
+			assert.ok(posted.some(message => message.type === 'persistDocumentAck' && message.snapshotId === 'newer-current'));
+			assert.strictEqual(fs.readFileSync(sourcePath, 'utf8'), sourceText);
+			assert.strictEqual(fs.readFileSync(sidecarPath, 'utf8'), sidecarText);
+			const supersessionNotifications = notifications.splice(0);
+
+			validationError = new Error(`The ${variant.label} metadata snapshot was superseded before admission.`);
+			Object.assign(panel, { visible: true });
+			viewStateHandler({ webviewPanel: panel });
+			Object.assign(panel, { visible: false });
+			viewStateHandler({ webviewPanel: panel });
+			await waitForCondition(
+				() => posted.some(message => message.type === 'requestFinalPersist'
+					&& message.reason === 'hidden' && message.requestId !== finalRequest.requestId),
+				'A new visibility transition must request its own final snapshot',
+			);
+			const invalidRequest = posted.find(message => message.type === 'requestFinalPersist'
+				&& message.reason === 'hidden' && message.requestId !== finalRequest.requestId);
+			await Promise.resolve(receiveHandler(withProjectedCompatPrimary(posted, {
+				...message, editRevision: 2, snapshotId: 'invalid-current', flushRequestId: invalidRequest.requestId,
+			})));
+			await session.waitForFinalPersists();
+			await Promise.resolve();
+			assert.deepStrictEqual(outcomes.at(-1), { snapshotId: 'invalid-current', terminal: 'invalid' });
+			assert.deepStrictEqual(notifications, [validationError.message], 'A real failure with identical text must remain visible');
+			assert.ok(!posted.some(message => message.type === 'persistDocumentAck' && message.snapshotId === 'invalid-current'));
+			assert.strictEqual(fs.readFileSync(sourcePath, 'utf8'), sourceText);
+			assert.strictEqual(fs.readFileSync(sidecarPath, 'utf8'), sidecarText);
+			assert.deepStrictEqual(supersessionNotifications, [], 'Superseded automatic work must not show a failure after its successor is admitted');
+		} finally {
+			releaseOld();
+			await Promise.allSettled(persists);
+			await session?.waitForFinalPersists();
+			cancellation.dispose();
+			(vscode.window as any).showErrorMessage = originalShowError;
+			for (const file of [sourcePath, sidecarPath]) if (fs.existsSync(file)) fs.unlinkSync(file);
+			fs.rmdirSync(root);
+		}
+	});
+	}
+
 	test('failed or superseded correlated snapshots do not acknowledge or satisfy Save', async () => {
 		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
 		const originalOnWillSaveTextDocument = vscode.workspace.onWillSaveTextDocument;
+		const originalShowError = vscode.window.showErrorMessage;
+		const notifications: string[] = [];
 		const variants = [
 			{ extension: '.kql', Provider: KqlCompatEditorProvider, firstType: 'query', kind: 'kqlx' },
 			{ extension: '.sql', Provider: SqlCompatEditorProvider, firstType: 'sql', kind: 'sqlx' },
@@ -17674,6 +17851,7 @@ suite('Sidecar .kql.json strategy', () => {
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-correlated-failure-'));
 
 		try {
+			(vscode.window as any).showErrorMessage = async (message: string) => { notifications.push(message); return undefined; };
 			for (const [index, variant] of variants.entries()) {
 				const sourcePath = path.join(tmpDir, `correlated-failure-${index}${variant.extension}`);
 				fs.writeFileSync(sourcePath, 'select 1', 'utf8');
@@ -17776,16 +17954,21 @@ suite('Sidecar .kql.json strategy', () => {
 
 				await assert.rejects(requestSave(), /correlated sanitation failed/);
 				assert.ok(!posted.some(message => message?.type === 'persistDocumentAck' && message.snapshotId === 'failed-snapshot'));
+				assert.ok(notifications.some(message => message.includes('correlated sanitation failed')));
+				notifications.length = 0;
 
 				requestMode = 'superseded';
 				oldGate = new Promise<void>(resolve => { releaseOld = resolve; });
 				oldEntered = new Promise<void>(resolve => { markOldEntered = resolve; });
 				await assert.rejects(requestSave(), /superseded before admission/);
 				assert.ok(!posted.some(message => message?.type === 'persistDocumentAck' && message.snapshotId === 'old-snapshot'));
+				assert.ok(notifications.some(message => message.includes('superseded before admission')), 'Explicit Save must still report supersession');
+				notifications.length = 0;
 			}
 		} finally {
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
 			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSaveTextDocument;
+			(vscode.window as any).showErrorMessage = originalShowError;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});

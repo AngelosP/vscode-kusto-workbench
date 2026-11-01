@@ -16,6 +16,63 @@ async function patchMonacoKustoCompletionCache(kustoModePath) {
 	await fs.promises.writeFile(kustoModePath, source.replace(original, patched), 'utf8');
 }
 
+async function patchMonacoKustoDatabaseAliases(workerPath) {
+	const source = await fs.promises.readFile(workerPath, 'utf8');
+	const serviceAnchor = '{key:"addDatabaseToSchema",value:function(d,e,t){var n=Kusto.Language.KustoFacts.GetHostName(e),a=this._kustoJsSchemaV2.GetCluster$1(n);a||(a=new mu.ClusterSymbol.$ctor1(n,null,!1));var r=u.convertToDatabaseSymbol(t);return a=a.AddOrUpdateDatabase(r),this._kustoJsSchemaV2=this._kustoJsSchemaV2.AddOrReplaceCluster(a),this._script=Du.CodeScript.From$1(d.getText(),this._kustoJsSchemaV2),Promise.resolve()}}';
+	const proxyAnchor = '{key:"addDatabaseToSchema",value:function(u,d,e){var t=this._getTextDocument(u);return t?this._languageService.addDatabaseToSchema(t,d,e):(console.error("addDatabaseToSchema: document is ".concat(t,". uri is ").concat(u)),Promise.resolve())}}';
+	if (source.includes('key:"addDatabaseAliasesToSchema"')
+		|| source.split(serviceAnchor).length !== 2 || source.split(proxyAnchor).length !== 2) {
+		throw new Error('Expected one unpatched Monaco Kusto database service and worker proxy.');
+	}
+	const serviceMethod = function (document, clusterUrl, aliases, database) {
+		if (typeof clusterUrl !== 'string' || !clusterUrl.trim()
+			|| !Array.isArray(aliases) || aliases.length === 0
+			|| aliases.some(function (alias) { return typeof alias !== 'string' || !alias.trim(); })
+			|| !database || typeof database.name !== 'string' || !database.name
+			|| !Number.isSafeInteger(database.majorVersion) || database.majorVersion < 0) {
+			throw new Error('Invalid Monaco Kusto database alias batch.');
+		}
+		var owns = Object.prototype.hasOwnProperty;
+		var cache = owns.call(this._schemaCache, clusterUrl) ? this._schemaCache[clusterUrl] : Object.create(null);
+		var entry = owns.call(cache, database.name) ? cache[database.name] : undefined;
+		if (!entry || !entry.symbol || entry.database.majorVersion < database.majorVersion || !entry.includesFunctions) {
+			entry = { database: database, symbol: u.convertToDatabaseSymbol(database), includesFunctions: true };
+		}
+		var symbol = entry.symbol;
+		var next = this._kustoJsSchemaV2;
+		var currentCluster = next.Cluster;
+		var currentDatabase = next.Database;
+		for (var i = 0; i < aliases.length; i++) {
+			var host = Kusto.Language.KustoFacts.GetHostName(aliases[i]);
+			var cluster = next.GetCluster$1(host) || new mu.ClusterSymbol.$ctor1(host, null, false);
+			next = next.AddOrReplaceCluster(cluster.AddOrUpdateDatabase(symbol));
+		}
+		if (this._schema && this._schema.cluster
+			&& Kusto.Language.KustoFacts.GetHostName(this._schema.cluster.connectionString)
+				=== Kusto.Language.KustoFacts.GetHostName(clusterUrl)) {
+			var defaultCluster = (next.GetCluster$1(currentCluster.Name) || currentCluster).AddOrUpdateDatabase(symbol);
+			next = next.AddOrReplaceCluster(defaultCluster).WithCluster(defaultCluster)
+				.WithDatabase(defaultCluster.GetDatabase(currentDatabase.Name) || currentDatabase);
+		}
+		var script = Du.CodeScript.From$1(document.getText(), next);
+		Object.defineProperty(cache, database.name, { value: entry, writable: true, enumerable: true, configurable: true });
+		Object.defineProperty(this._schemaCache, clusterUrl, { value: cache, writable: true, enumerable: true, configurable: true });
+		this._kustoJsSchemaV2 = next;
+		this._script = script;
+		this._parsePropertiesV2 = undefined;
+		return Promise.resolve();
+	};
+	const proxyMethod = function (modelUri, clusterUrl, aliases, database) {
+		var document = this._getTextDocument(modelUri);
+		if (!document) return Promise.reject(new Error('Cannot register database aliases for a missing Monaco model.'));
+		return this._languageService.addDatabaseAliasesToSchema(document, clusterUrl, aliases, database);
+	};
+	const patched = source
+		.replace(serviceAnchor, '{key:"addDatabaseAliasesToSchema",value:' + serviceMethod.toString() + '},' + serviceAnchor)
+		.replace(proxyAnchor, '{key:"addDatabaseAliasesToSchema",value:' + proxyMethod.toString() + '},' + proxyAnchor);
+	await fs.promises.writeFile(workerPath, patched, 'utf8');
+}
+
 /**
  * @type {import('esbuild').Plugin}
  */
@@ -187,6 +244,7 @@ async function main() {
 		if (fs.promises.cp) {
 			await fs.promises.cp(monacoKustoSrc, monacoKustoDest, { recursive: true, force: true });
 			await patchMonacoKustoCompletionCache(path.join(monacoKustoDest, 'kustoMode.js'));
+			await patchMonacoKustoDatabaseAliases(path.join(monacoKustoDest, 'kustoWorker.js'));
 		} else {
 			if (production) {
 				throw new Error('fs.promises.cp is required to package Monaco-Kusto assets.');

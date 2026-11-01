@@ -13,7 +13,7 @@ const baseUrl = 'https://resources.test/dist/monaco/';
 const workerMain = 'vs/base/worker/workerMain.js';
 const kustoModule = 'vs/language/kusto/kustoWorker.js';
 
-function createHarness(config: { largeSource?: boolean; failFetch?: boolean; failPost?: boolean; failConstruct?: boolean; failImport?: boolean } = {}) {
+function createHarness(config: { largeSource?: boolean; failFetch?: boolean; failBody?: boolean; failPost?: boolean; failConstruct?: boolean; failImport?: boolean } = {}) {
 	const scripts = new Map<string, string>([
 		[workerMain, `
 			self.onmessage = function (event) {
@@ -33,10 +33,15 @@ function createHarness(config: { largeSource?: boolean; failFetch?: boolean; fai
 	const timers: Array<() => void> = [];
 	const workers: TestWorker[] = [];
 	const nativeImport = vi.fn<(...urls: string[]) => void>();
+	const blobConstructions: Array<{ blob: TestBlob; parts: Array<string | TestBlob> }> = [];
+	const responseBlobs = new Set<TestBlob>();
 	class TestBlob {
 		readonly text!: string;
-		constructor(parts: string[]) {
-			Object.defineProperty(this, 'text', { value: parts.join('') });
+		constructor(parts: Array<string | TestBlob>) {
+			blobConstructions.push({ blob: this, parts: [...parts] });
+			Object.defineProperty(this, 'text', {
+				value: parts.map(part => part instanceof TestBlob ? part.text : part).join(''),
+			});
 			Object.freeze(this);
 		}
 	}
@@ -103,10 +108,21 @@ function createHarness(config: { largeSource?: boolean; failFetch?: boolean; fai
 			});
 		}
 	}
+	const readText = vi.fn(async (url: string) => {
+		if (config.failBody) throw new Error('Worker script body read failed');
+		return scripts.get(url.slice(baseUrl.length).split('?')[0]) ?? '';
+	});
+	const readBlob = vi.fn(async (url: string) => {
+		if (config.failBody) throw new Error('Worker script body read failed');
+		const blob = new TestBlob([scripts.get(url.slice(baseUrl.length).split('?')[0]) ?? '']);
+		responseBlobs.add(blob);
+		return blob;
+	});
 	const fetch = vi.fn(async (url: string) => ({
 		ok: !config.failFetch,
 		status: config.failFetch ? 503 : 200,
-		text: async () => scripts.get(url.slice(baseUrl.length).split('?')[0]) ?? '',
+		text: () => readText(url),
+		blob: () => readBlob(url),
 	}));
 	const window: {
 		MonacoEnvironment?: {
@@ -125,7 +141,10 @@ function createHarness(config: { largeSource?: boolean; failFetch?: boolean; fai
 	});
 	if (!window.MonacoEnvironment) throw new Error('Monaco worker factory was not installed');
 	return {
-		environment: window.MonacoEnvironment, fetch, blobs, workers, nativeImport, revoked, timers,
+		environment: window.MonacoEnvironment, fetch, readText, readBlob, blobs, workers, nativeImport, revoked, timers,
+		largestApplicationStringPart: () => Math.max(0, ...blobConstructions
+			.filter(({ blob }) => !responseBlobs.has(blob))
+			.flatMap(({ parts }) => parts.map(part => typeof part === 'string' ? part.length : 0))),
 		scriptText: (value: unknown) => {
 			if (!(value instanceof TestBlob)) throw new Error('Worker script must be a browser-owned Blob, not copied text');
 			return value.text;
@@ -134,6 +153,23 @@ function createHarness(config: { largeSource?: boolean; failFetch?: boolean; fai
 }
 
 describe('Monaco worker bootstrap memory', () => {
+	it('keeps fetched vendor bodies as browser-owned Blobs without decoding source strings', async () => {
+		const harness = createHarness({ largeSource: true });
+
+		await harness.environment.getWorker('worker-1', 'kusto');
+
+		expect(harness.readText).not.toHaveBeenCalled();
+		expect(harness.readBlob).toHaveBeenCalledTimes(8);
+	});
+
+	it('does not create a large source string while annotating a vendor Blob', async () => {
+		const harness = createHarness({ largeSource: true });
+
+		await harness.environment.getWorker('worker-1', 'kusto');
+
+		expect(harness.largestApplicationStringPart()).toBeLessThan(8 * 1024);
+	});
+
 	it('keeps the first message small instead of cloning vendor text into the worker heap', async () => {
 		const harness = createHarness({ largeSource: true });
 
@@ -150,7 +186,7 @@ describe('Monaco worker bootstrap memory', () => {
 		expect(harness.blobs[Number(worker.url.slice('blob:'.length))].length).toBeLessThan(8 * 1024);
 	});
 
-	it('releases fulfilled source-text fetches after handing scripts to a worker', async () => {
+	it('releases fulfilled script acquisitions after handing scripts to a worker', async () => {
 		const harness = createHarness();
 		await harness.environment.getWorker('worker-1', 'kusto');
 		const fetchedOnce = harness.fetch.mock.calls.length;
@@ -282,6 +318,20 @@ describe('Monaco worker bootstrap memory', () => {
 		await expect(harness.environment.getWorker('worker-1', 'kusto')).rejects.toThrow('HTTP 503');
 
 		options.failFetch = false;
+		await harness.environment.getWorker('worker-2', 'kusto');
+
+		expect(harness.fetch).toHaveBeenCalledTimes(16);
+		expect(harness.workers).toHaveLength(1);
+	});
+
+	it('releases failed body reads without creating a worker and permits a fresh retry', async () => {
+		const options = { failBody: true };
+		const harness = createHarness(options);
+		await expect(harness.environment.getWorker('worker-1', 'kusto')).rejects.toThrow('Worker script body read failed');
+		expect(harness.workers).toHaveLength(0);
+		expect(harness.blobs).toHaveLength(0);
+
+		options.failBody = false;
 		await harness.environment.getWorker('worker-2', 'kusto');
 
 		expect(harness.fetch).toHaveBeenCalledTimes(16);

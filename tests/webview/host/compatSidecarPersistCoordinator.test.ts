@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
 	CompatSidecarPersistCoordinator,
+	CompatSidecarPersistSupersededError,
 	requireAvailableCompatSidecarFinalPersist,
 	type CompatSidecarFinalPersistResult,
 	type CompatSidecarPersistMessage,
@@ -24,6 +25,8 @@ type HarnessBehavior = {
 	loadError?: string;
 	admitPersist: boolean;
 	validationFailureAt?: number;
+	captureError?: Error;
+	beforeSanitize?: () => Promise<void>;
 	sanitizeError?: Error;
 	materializeError?: Error;
 	draftAvailable: boolean;
@@ -183,6 +186,7 @@ function createHarness(options: Partial<HarnessBehavior & {
 		adapter: {
 			captureState: state => {
 				calls.push('capture-state');
+				if (behavior.captureError) throw behavior.captureError;
 				return state as unknown as KqlxStateV1;
 			},
 			validateState: (_state, allowPendingUpgrade) => {
@@ -194,6 +198,7 @@ function createHarness(options: Partial<HarnessBehavior & {
 			},
 			sanitizeState: async state => {
 				calls.push('sanitize');
+				if (behavior.beforeSanitize) await behavior.beforeSanitize();
 				if (behavior.sanitizeError) throw behavior.sanitizeError;
 				return state;
 			},
@@ -264,12 +269,12 @@ function createHarness(options: Partial<HarnessBehavior & {
 	};
 }
 
-async function createPendingFinal(harness: Harness) {
+async function createPendingFinal(harness: Harness, timeoutMs = 10_000) {
 	let requestId = '';
 	const result = harness.session.requestFinalPersist<CompatSidecarFinalPersistResult>(message => {
 		requestId = String((message as { requestId?: unknown }).requestId ?? '');
 		return true;
-	}, 'save', 10_000);
+	}, 'save', timeoutMs);
 	for (let index = 0; index < 5 && !requestId; index++) await Promise.resolve();
 	expect(requestId).not.toBe('');
 	return { requestId, result };
@@ -296,6 +301,101 @@ describe('CompatSidecarPersistCoordinator authority capture ordering', () => {
 });
 
 describe('CompatSidecarPersistCoordinator', () => {
+	it.each([
+		{ blockedAt: 'prior admission', fail: false },
+		{ blockedAt: 'snapshot preparation', fail: false },
+		{ blockedAt: 'snapshot preparation', fail: true },
+	])('keeps a timely final reply pending through slow $blockedAt (failure=$fail)', async ({ blockedAt, fail }) => {
+		vi.useFakeTimers();
+		let release!: () => void;
+		const gate = new Promise<void>(resolve => { release = resolve; });
+		let held = false;
+		const harness = createHarness({
+			sourceText: 'CURRENT',
+			sanitizeError: fail ? new Error('late preparation failure') : undefined,
+			beforeSanitize: async () => {
+				if (held) return;
+				held = true;
+				await gate;
+			},
+		});
+		const work: Promise<unknown>[] = [];
+		let observed: Promise<unknown> | undefined;
+		try {
+			if (blockedAt === 'prior admission') {
+				work.push(harness.coordinator.persist(snapshot('CURRENT', {
+					snapshotId: 'prior-snapshot', editRevision: 0,
+				})));
+				await vi.advanceTimersByTimeAsync(0);
+				expect(held).toBe(true);
+			}
+			const pending = await createPendingFinal(harness, 2_000);
+			const settled = vi.fn();
+			observed = pending.result.then(
+				value => { settled(); return { value }; },
+				error => { settled(error); return { error }; },
+			);
+			await vi.advanceTimersByTimeAsync(34);
+			const application = harness.coordinator.persist(snapshot('CURRENT', {
+				flushRequestId: pending.requestId,
+			}));
+			work.push(application);
+			await vi.advanceTimersByTimeAsync(2_100);
+
+			expect(held).toBe(true);
+			expect(settled).not.toHaveBeenCalled();
+			expect(harness.session.hasPendingFinalPersistRequest(pending.requestId)).toBe(true);
+			expect(harness.acknowledgements).toEqual([]);
+			expect(harness.getKnownState()).toBeUndefined();
+			expect(harness.getSourceText()).toBe('CURRENT');
+
+			release();
+			await expect(application).resolves.toMatchObject({ terminal: fail ? 'prepare-failed' : 'applied' });
+			if (fail) {
+				await expect(observed).resolves.toMatchObject({
+					error: new Error('Failed to prepare KQL companion metadata: late preparation failure'),
+				});
+				expect(harness.acknowledgements).toEqual([]);
+			} else {
+				await expect(observed).resolves.toEqual({ value: { available: true } });
+				expect(harness.acknowledgements).toEqual([
+					{ type: 'persistDocumentAck', snapshotId: 'snapshot-1', editRevision: 1 },
+				]);
+			}
+			expect(settled).toHaveBeenCalledTimes(1);
+			expect(harness.session.hasPendingFinalPersist).toBe(false);
+		} finally {
+			release();
+			await Promise.allSettled(work);
+			harness.session.settleClose();
+			await observed;
+			vi.useRealTimers();
+		}
+	});
+
+	it.each(['capture', 'projection'] as const)('rejects a final reply when %s throws before admission', async stage => {
+		const error = new Error(`${stage} failed`);
+		const harness = createHarness({ captureError: stage === 'capture' ? error : undefined });
+		if (stage === 'projection') {
+			harness.projection.waitForAcknowledgedProjection = async () => { throw error; };
+		}
+		const pending = await createPendingFinal(harness);
+		const observed = pending.result.catch(failure => failure);
+		try {
+			const result = await harness.coordinator.persist(snapshot('CURRENT', { flushRequestId: pending.requestId }));
+			expect(result.terminal).toBe('failed');
+			await expect(observed).resolves.toEqual(
+				new Error(`Failed to admit the final KQL metadata snapshot: ${stage} failed`),
+			);
+			expect(harness.session.hasPendingFinalPersist).toBe(false);
+			expect(harness.acknowledgements).toEqual([]);
+			expect(harness.getKnownState()).toBeUndefined();
+		} finally {
+			harness.session.settleClose();
+			await observed;
+		}
+	});
+
 	it('keeps a canonical-equivalent empty companion clean while retaining raw CAS bytes', async () => {
 		const state = persistenceState('NEXT');
 		const canonicalText = JSON.stringify(fileFor(state));
@@ -350,6 +450,43 @@ describe('CompatSidecarPersistCoordinator', () => {
 		expect(expired.terminal).toBe('ignored-final');
 		expect(harness.calls).toEqual([]);
 		expect(harness.completeFinalPersistSpy).not.toHaveBeenCalled();
+	});
+
+	it('ignores duplicate snapshots and unavailable replies after the final request is claimed', async () => {
+		let release!: () => void;
+		const gate = new Promise<void>(resolve => { release = resolve; });
+		let entered = false;
+		const harness = createHarness({
+			sourceText: 'CURRENT',
+			beforeSanitize: async () => { entered = true; await gate; },
+		});
+		const pending = await createPendingFinal(harness);
+		const observed = pending.result.catch(error => error);
+		const application = harness.coordinator.persist(snapshot('CURRENT', { flushRequestId: pending.requestId }));
+		try {
+			await vi.waitFor(() => expect(entered).toBe(true));
+			const duplicate = await harness.coordinator.persist(snapshot('REPLACEMENT', {
+				flushRequestId: pending.requestId, snapshotId: 'duplicate', editRevision: 2,
+			}));
+			expect(duplicate.terminal).toBe('ignored-final');
+			await expect(harness.coordinator.persist(unavailableFinal(pending.requestId)))
+				.resolves.toEqual({ terminal: 'ignored-final' });
+			expect(harness.completeFinalPersistSpy).not.toHaveBeenCalled();
+			expect(harness.acknowledgements).toEqual([]);
+			expect(harness.getKnownState()).toBeUndefined();
+			release();
+			await expect(application).resolves.toEqual({ terminal: 'applied' });
+			await expect(observed).resolves.toEqual({ available: true });
+			expect(harness.getSourceText()).toBe('CURRENT');
+			expect(harness.acknowledgements).toEqual([
+				{ type: 'persistDocumentAck', snapshotId: 'snapshot-1', editRevision: 1 },
+			]);
+		} finally {
+			release();
+			await application;
+			harness.session.settleClose();
+			await observed;
+		}
 	});
 
 	it('settles load failure and unavailable finals without validation or application', async () => {
@@ -509,6 +646,7 @@ describe('CompatSidecarPersistCoordinator', () => {
 		expect(drifted.calls).toContain('request-source-reload');
 		expect(drifted.getKnownState()).toBeUndefined();
 		expect(drifted.acknowledgements).toEqual([]);
+		expect(driftedResult.error).not.toBeInstanceOf(CompatSidecarPersistSupersededError);
 	});
 
 	it.each(['KQL', 'SQL'] as const)('fails closed on %s source reads before and after writing', async languageLabel => {
@@ -519,6 +657,7 @@ describe('CompatSidecarPersistCoordinator', () => {
 		});
 		const beforeResult = await beforeWrite.coordinator.persist(snapshot('NEXT'));
 		expect(beforeResult.terminal).toBe('failed');
+		expect(beforeResult.error).not.toBeInstanceOf(CompatSidecarPersistSupersededError);
 		expect(beforeResult.error?.message).toContain(`Failed to read the ${languageLabel} source`);
 		expect(beforeWrite.getSourceText()).toBe('CURRENT');
 		expect(beforeWrite.calls.some(call => call.startsWith('apply-source:'))).toBe(false);
@@ -532,6 +671,7 @@ describe('CompatSidecarPersistCoordinator', () => {
 		});
 		const afterResult = await afterWrite.coordinator.persist(snapshot('NEXT'));
 		expect(afterResult.terminal).toBe('failed');
+		expect(afterResult.error).not.toBeInstanceOf(CompatSidecarPersistSupersededError);
 		expect(afterResult.error?.message).toContain('was restored');
 		expect(afterWrite.calls).toContain('apply-source:NEXT');
 		expect(afterWrite.calls).toContain('apply-source:CURRENT');
@@ -548,6 +688,7 @@ describe('CompatSidecarPersistCoordinator', () => {
 		});
 		const replacedResult = await replacedAfterWrite.coordinator.persist(snapshot('NEXT'));
 		expect(replacedResult.terminal).toBe('rollback-failed');
+		expect(replacedResult.error).not.toBeInstanceOf(CompatSidecarPersistSupersededError);
 		expect(replacedResult.error?.message).toContain('no longer owns the document');
 		expect(replacedAfterWrite.calls).toContain('apply-source:NEXT');
 		expect(replacedAfterWrite.calls).not.toContain('apply-source:CURRENT');
@@ -569,6 +710,8 @@ describe('CompatSidecarPersistCoordinator', () => {
 		});
 		const result = await harness.coordinator.persist(snapshot('NEW'));
 		expect(result.terminal).toBe(testCase.terminal);
+		expect(result.error instanceof CompatSidecarPersistSupersededError).toBe(testCase.terminal === 'superseded');
+		expect(result.error?.message).toBe('The KQL metadata snapshot was superseded before admission.');
 		expect(harness.calls).toContain('rollback:7:NEW');
 		expect(harness.getSourceText()).toBe(testCase.expectedSource);
 		expect(harness.getKnownState()).toBeUndefined();

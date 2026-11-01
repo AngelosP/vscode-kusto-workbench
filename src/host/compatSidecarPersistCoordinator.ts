@@ -5,7 +5,7 @@ import type {
 } from '../shared/compatibilityPersistenceProtocol';
 import type { KqlxFileV1, KqlxStateV1 } from './kqlxFormat';
 import type { CompatSidecarProjectionCoordinatorContract } from './compatSidecarProjectionCoordinator';
-import type { CompatSidecarSession } from './compatSidecarSession';
+import type { CompatPersistAdmissionLease, CompatSidecarSession } from './compatSidecarSession';
 
 export type CompatSidecarPersistMessage =
 	| CompatibilityPersistencePersistSnapshot
@@ -33,6 +33,14 @@ export type CompatSidecarPersistResult = Readonly<{
 	terminal: CompatSidecarPersistTerminal;
 	error?: Error;
 }>;
+
+/** Supersession with no committed effect, including a verified source rollback. */
+export class CompatSidecarPersistSupersededError extends Error {
+	constructor(error: Error) {
+		super(error.message, { cause: error });
+		this.name = 'CompatSidecarPersistSupersededError';
+	}
+}
 
 export type CompatSidecarFinalPersistResult =
 	| Readonly<{ available: true }>
@@ -119,9 +127,11 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 			return session.completeFinalPersist(flushRequestId, error, result);
 		};
 
-		if (flushRequestId && !session.hasPendingFinalPersistRequest(flushRequestId)) {
+		if (flushRequestId && !session.claimFinalPersistRequest(flushRequestId)) {
 			return { terminal: 'ignored-final' };
 		}
+		let persistAdmission: CompatPersistAdmissionLease | undefined;
+		try {
 		const loadError = this.options.getLoadError();
 		if (loadError) {
 			const error = new Error(loadError);
@@ -134,8 +144,7 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 			return { terminal: 'unavailable' };
 		}
 
-		const persistAdmission = session.reservePersistAdmission(message.editRevision);
-		try {
+		persistAdmission = session.reservePersistAdmission(message.editRevision);
 		await persistAdmission.waitForTurn();
 		const snapshotId = this.nonEmptyTrimmed(message.snapshotId);
 		await projection.waitForAcknowledgedProjection(message.sourceGeneration);
@@ -290,24 +299,22 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 		});
 		session.markBeforeUnload(message.reason);
 
-		try {
-			const outcome = await run;
-			if (!outcome.ok) {
-				settleFinal(outcome.error);
-				return { terminal: outcome.terminal, error: outcome.error };
-			}
-			this.attemptAcknowledgement(snapshotId, incomingEditRevision);
-			settleFinal();
-			return { terminal: 'applied' };
+		const outcome = await run;
+		if (!outcome.ok) {
+			settleFinal(outcome.error);
+			return { terminal: outcome.terminal, error: outcome.error };
+		}
+		this.attemptAcknowledgement(snapshotId, incomingEditRevision);
+		settleFinal();
+		return { terminal: 'applied' };
 		} catch (error) {
 			const failure = new Error(
 				`Failed to admit the final ${this.options.languageLabel} metadata snapshot: ${this.errorMessage(error)}`,
 			);
 			settleFinal(failure);
 			return { terminal: 'failed', error: failure };
-		}
 		} finally {
-			persistAdmission.settle();
+			persistAdmission?.settle();
 		}
 	}
 
@@ -387,7 +394,11 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 	}
 
 	private failedOutcome(terminal: CompatSidecarPersistTerminal, error: Error): WorkOutcome {
-		return { terminal, ok: false, error };
+		return {
+			terminal,
+			ok: false,
+			error: terminal === 'superseded' ? new CompatSidecarPersistSupersededError(error) : error,
+		};
 	}
 
 	private nonEmptyTrimmed(value: unknown): string {

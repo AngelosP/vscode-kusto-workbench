@@ -18,6 +18,98 @@ const classify = runInNewContext(`document => (${feature.slice(
 )})`);
 const hash = text => createHash('sha256').update(text).digest('hex');
 
+const notificationCaptureStart = feature.indexOf('const observeMetadataNotifications =');
+const notificationCaptureEnd = feature.indexOf('const checkStartingDocuments =', notificationCaptureStart);
+assert.ok(notificationCaptureStart >= 0 && notificationCaptureEnd > notificationCaptureStart);
+const observeMetadataNotifications = runInNewContext(
+	`${feature.slice(notificationCaptureStart, notificationCaptureEnd)}; observeMetadataNotifications`,
+);
+const supersededMessages = [
+	'The KQL metadata snapshot was superseded before admission.',
+	'The SQL metadata snapshot was superseded before admission.',
+];
+
+test('records only exact superseded errors on the extension SDK and forwards every notification unchanged', () => {
+	const forwarded = [];
+	const result = Promise.resolve('selected action');
+	const controllerWindow = { showErrorMessage() { assert.fail('Must not use the controller SDK'); } };
+	const workbenchWindow = {
+		showErrorMessage(...args) {
+			forwarded.push({ receiver: this, args });
+			return result;
+		},
+	};
+	const controllerOriginal = controllerWindow.showErrorMessage;
+	const capture = observeMetadataNotifications(workbenchWindow);
+	const options = { modal: false };
+	const action = { title: 'Retry' };
+
+	for (const message of [...supersededMessages, 'A genuine current failure']) {
+		assert.equal(workbenchWindow.showErrorMessage(message, options, action), result);
+		assert.deepEqual(forwarded.at(-1), { receiver: workbenchWindow, args: [message, options, action] });
+	}
+	assert.deepEqual([...capture.messages], supersededMessages);
+	assert.equal(controllerWindow.showErrorMessage, controllerOriginal);
+	assert.equal(capture.isCurrent(), true);
+	assert.equal(capture.dispose(), true);
+});
+
+test('notification capture preserves synchronous failures from the original SDK', () => {
+	const error = new Error('SDK notification failure');
+	const window = { showErrorMessage() { throw error; } };
+	const capture = observeMetadataNotifications(window);
+
+	assert.throws(() => window.showErrorMessage(supersededMessages[0]), caught => caught === error);
+	assert.deepEqual([...capture.messages], [supersededMessages[0]]);
+	assert.equal(capture.dispose(), true);
+});
+
+for (const language of ['KQL', 'SQL']) {
+	test(`records the ${language} final-snapshot timeout message with phase and time while forwarding it`, () => {
+		const message = `Timed out waiting for the final ${language} metadata snapshot.`;
+		const forwarded = [];
+		const result = Promise.resolve(undefined);
+		const window = { showErrorMessage(value) { forwarded.push(value); return result; } };
+		const capture = observeMetadataNotifications(window, () => 'warm-3');
+
+		assert.equal(window.showErrorMessage(message), result);
+		assert.deepEqual(forwarded, [message]);
+		assert.deepEqual([...capture.messages], []);
+		assert.equal(capture.timeouts.length, 1);
+		assert.equal(capture.timeouts[0].message, message);
+		assert.equal(capture.timeouts[0].phase, 'warm-3');
+		assert.equal(Number.isFinite(Date.parse(capture.timeouts[0].atUtc)), true);
+		assert.match(capture.timeouts[0].stack, /Final metadata snapshot timeout observed/);
+		assert.equal(capture.dispose(), true);
+	});
+}
+
+test('notification capture restores its own hook and stops recording after disposal', () => {
+	const forwarded = [];
+	const window = { showErrorMessage(message) { forwarded.push(message); } };
+	const original = window.showErrorMessage;
+	const capture = observeMetadataNotifications(window);
+	window.showErrorMessage(supersededMessages[0]);
+
+	assert.equal(capture.dispose(), true);
+	assert.equal(window.showErrorMessage, original);
+	assert.equal(capture.isCurrent(), false);
+	window.showErrorMessage(supersededMessages[1]);
+	assert.deepEqual(forwarded, supersededMessages);
+	assert.deepEqual([...capture.messages], [supersededMessages[0]]);
+});
+
+test('notification capture reports lost ownership without overwriting a successor hook', () => {
+	const window = { showErrorMessage() {} };
+	const capture = observeMetadataNotifications(window);
+	const successor = () => 'successor';
+	window.showErrorMessage = successor;
+
+	assert.equal(capture.isCurrent(), false);
+	assert.equal(capture.dispose(), false);
+	assert.equal(window.showErrorMessage, successor);
+});
+
 function document(uri = 'file:///C:/protected.kqlx', text = 'protected') {
 	return {
 		uri: { toString: () => uri },

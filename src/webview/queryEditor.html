@@ -224,7 +224,7 @@
 				],
 				html: ["vs/language/html/htmlWorker.js"]
 			};
-			var workerScriptTextPromises = Object.create(null);
+			var workerScriptBlobPromises = Object.create(null);
 
 			function withCacheBuster(url) {
 				if (!cacheBuster) return url;
@@ -235,13 +235,13 @@
 				return baseUrl + path;
 			}
 
-			function fetchWorkerScript(path) {
+			function fetchWorkerScriptBlob(path) {
 				return fetch(withCacheBuster(toWorkerScriptUrl(path)))
 					.then(function (response) {
 						if (!response.ok) {
 							throw new Error('HTTP ' + response.status + ' while loading Monaco worker script ' + path);
 						}
-						return response.text();
+						return response.blob();
 					});
 			}
 
@@ -254,11 +254,11 @@
 
 			function getWorkerScripts(label) {
 				var normalizedLabel = normalizeWorkerLabel(label);
-				if (!workerScriptTextPromises[normalizedLabel]) {
+				if (!workerScriptBlobPromises[normalizedLabel]) {
 					var paths = [workerMainPath].concat(workerScriptPathsByLabel[normalizedLabel] || []);
-					workerScriptTextPromises[normalizedLabel] = Promise.all(paths.map(function (path) {
-						return fetchWorkerScript(path).then(function (text) {
-							return { path: path, blob: new Blob([text + '\n//# sourceURL=' + toWorkerScriptUrl(path)], { type: 'text/javascript' }) };
+					workerScriptBlobPromises[normalizedLabel] = Promise.all(paths.map(function (path) {
+						return fetchWorkerScriptBlob(path).then(function (blob) {
+							return { path: path, blob: new Blob([blob, '\n//# sourceURL=' + toWorkerScriptUrl(path)], { type: 'text/javascript' }) };
 						});
 					})).then(function (entries) {
 						var scripts = Object.create(null);
@@ -266,7 +266,7 @@
 						return scripts;
 					});
 				}
-				return workerScriptTextPromises[normalizedLabel];
+				return workerScriptBlobPromises[normalizedLabel];
 			}
 
 			function buildWorkerSource(label) {
@@ -346,8 +346,8 @@
 					}, 30000);
 					return worker;
 				}).finally(function () {
-					if (workerScriptTextPromises[normalizedLabel] === scriptsPromise) {
-						delete workerScriptTextPromises[normalizedLabel];
+					if (workerScriptBlobPromises[normalizedLabel] === scriptsPromise) {
+						delete workerScriptBlobPromises[normalizedLabel];
 					}
 				});
 			}

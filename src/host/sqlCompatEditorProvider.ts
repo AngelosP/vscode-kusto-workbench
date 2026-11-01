@@ -64,6 +64,7 @@ import {
 } from './compatSidecarProjectionCoordinator';
 import {
 	CompatSidecarPersistCoordinator,
+	CompatSidecarPersistSupersededError,
 	requireAvailableCompatSidecarFinalPersist,
 	type CompatSidecarFinalPersistResult,
 	type CompatSidecarPersistCoordinatorFactory,
@@ -623,7 +624,12 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				sidecarSession.setPanelVisible(event.webviewPanel.visible);
 				if (!event.webviewPanel.visible) {
 					void requestFinalPersist('hidden').catch(error => {
-						if (!outerDisposed) void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+						if (outerDisposed) return;
+						if (error instanceof CompatSidecarPersistSupersededError) {
+							getWorkbenchLogger().trace('[kusto] Hidden SQL metadata snapshot superseded; no changes were admitted.');
+							return;
+						}
+						void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
 					});
 				}
 			}));

@@ -17,6 +17,9 @@
 # KW_HIDDEN_ACCESS_DIAGNOSTIC_PAUSE_SECONDS leaves a bounded read-only inspection window after recovery.
 # Prefixes including target88 also require its first cold native activation and a later successful
 # empty-note snapshot while it remains hidden, without an activation retry.
+# Record superseded metadata errors through the Workbench-bound SDK, forwarding every notification.
+# The controller's separate SDK notification history is not authoritative for this extension.
+# Capture final-snapshot timeouts with their replay phase and call site; never change the deadline.
 Feature: Archived canary hidden access
 
   Scenario: Original notes and dashboard survive retained hidden access and ordinary recovery
@@ -60,6 +63,8 @@ Feature: Archived canary hidden access
         outcome.warmActivations = [];
         outcome.activationFailures = [];
         outcome.retainedSamples = [];
+        outcome.metadataNotifications = [];
+        outcome.metadataTimeouts = [];
         if (prolonged) outcome.limits[0] = 'October 30 exact archived bytes, 13 warm files and original109; isolated profile is not the original dogfood account/session state';
         globalThis.__hiddenShortAccess = outcome;
         const references = new Map();
@@ -67,7 +72,7 @@ Feature: Archived canary hidden access
         const models = new Map();
         const subscriptions = [];
         const startingDocuments = [];
-        let phase = 'setup', extension, manifest, main, helper, owner, evidenceRoot, canaryUri, openFileId, expectedNotes, factColumns, target88Uri, hidden = false, hiddenStart, failure, workbenchRequire, measurementStart;
+        let phase = 'setup', extension, manifest, main, helper, owner, evidenceRoot, canaryUri, openFileId, expectedNotes, factColumns, target88Uri, hidden = false, hiddenStart, failure, workbenchRequire, measurementStart, notificationCapture;
         const write = (name, value) => {
           if (!evidenceRoot) return;
           helper.assertAcceptanceRoot(owner);
@@ -85,6 +90,37 @@ Feature: Archived canary hidden access
           if (hidden && snapshot.some(tab => tab.uri === canaryUri && tab.active)) outcome.visibilityViolation ??= record;
           for (const tab of snapshot) if (references.has(tab.uri) && tab.dirty) outcome.damage.push({ phase, trigger, uri: tab.uri, reason: 'dirty-tab' });
           return snapshot;
+        };
+        const observeMetadataNotifications = (window, currentPhase = () => '') => {
+          const messages = [];
+          const timeouts = [];
+          const expected = new Set([
+            'The KQL metadata snapshot was superseded before admission.',
+            'The SQL metadata snapshot was superseded before admission.',
+          ]);
+          const timeoutMessages = new Set([
+            'Timed out waiting for the final KQL metadata snapshot.',
+            'Timed out waiting for the final SQL metadata snapshot.',
+          ]);
+          const original = window.showErrorMessage;
+          function capture(...args) {
+            if (expected.has(args[0])) messages.push(args[0]);
+            if (timeoutMessages.has(args[0])) {
+              timeouts.push({ message: args[0], phase: currentPhase(), atUtc: new Date().toISOString(), stack: new Error('Final metadata snapshot timeout observed').stack });
+            }
+            return Reflect.apply(original, this, args);
+          }
+          window.showErrorMessage = capture;
+          return {
+            messages,
+            timeouts,
+            isCurrent: () => window.showErrorMessage === capture,
+            dispose: () => {
+              if (window.showErrorMessage !== capture) return false;
+              window.showErrorMessage = original;
+              return window.showErrorMessage === original;
+            },
+          };
         };
         const checkStartingDocuments = event => {
           let unchanged = true;
@@ -367,6 +403,12 @@ Feature: Archived canary hidden access
           }
           subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(() => sampleTabs('tabs-event')), vscode.window.tabGroups.onDidChangeTabGroups(() => sampleTabs('tab-groups-event')), vscode.workspace.onDidOpenTextDocument(document => sampleDocument(document, 'open')), vscode.workspace.onDidChangeTextDocument(event => sampleDocument(event.document, 'change')), vscode.workspace.onDidCloseTextDocument(document => sampleDocument(document, 'close')), vscode.workspace.onDidSaveTextDocument(document => { if (references.has(document.uri.toString())) outcome.saved.push({ uri: document.uri.toString(), phase }); }));
           outcome.before = preservation('before-open');
+          const workbenchWindow = workbenchRequire('vscode').window;
+          notificationCapture = observeMetadataNotifications(workbenchWindow, () => phase);
+          outcome.metadataNotifications = notificationCapture.messages;
+          outcome.metadataTimeouts = notificationCapture.timeouts;
+          outcome.notificationCaptureUsesControllerApi = workbenchWindow === vscode.window;
+          assert.equal(notificationCapture.isCurrent(), true, 'Workbench notification capture was not installed');
           await extension.activate();
           const loaded = Object.values(workbenchRequire.cache).find(candidate => candidate?.filename && canonical(candidate.filename) === canonical(main));
           const context = loaded?.exports?.toolOrchestrator?.context;
@@ -537,14 +579,20 @@ Feature: Archived canary hidden access
               write('startup-trace', outcome.startupTrace);
             }
           } catch (error) { outcome.errors.push({ phase: 'evidence', message: String(error?.message ?? error) }); }
+          outcome.checks.metadataNotificationCaptureOwned = notificationCapture?.isCurrent() === true;
+          outcome.checks.metadataNotificationCaptureRestored = notificationCapture?.dispose() === true;
+          outcome.checks.noSupersededMetadataNotification = outcome.metadataNotifications.length === 0;
+          outcome.checks.noFinalMetadataTimeout = outcome.metadataTimeouts.length === 0;
         }
         if (outcome.damage.length || outcome.saved.length) outcome.classification = 'PRESERVATION_FAILED';
+        else if (outcome.metadataNotifications.length) outcome.classification = 'NATURAL_METADATA_NOTIFICATION_FAILURE';
+        else if (outcome.metadataTimeouts.length) outcome.classification = 'NATURAL_METADATA_TIMEOUT';
         else if (outcome.errors.length || !Object.values(outcome.checks).every(value => value === true)) outcome.classification = outcome.classification === 'BOUNDED_SHORT_RUN_INCOMPLETE' ? outcome.classification : 'SETUP_BLOCKED';
         outcome.fourSecondResponses = outcome.calls.filter(call => call.phase.startsWith('hidden-') && call.elapsedMs >= 3500 && call.elapsedMs <= 7000 && !(call.name === 'kusto-workbench_manage-development-notes' ? notesOracle(call) : dashboardOracle(call))).map(call => ({ sequence: call.sequence, phase: call.phase, elapsedMs: call.elapsedMs, allText: call.allText, parseError: call.parseError, transportError: call.transportError, phaseProof: 'PUBLIC_BLACK_BOX_ONLY' }));
         write('final-outcome', outcome);
         return JSON.parse(JSON.stringify(outcome));
       })()
       """
-    Then I collect JSON artifact "hidden-short-access-assertion" from extension host expression "(() => { const result = globalThis.__hiddenShortAccess; const expected = result?.diagnosticSeconds !== undefined ? 'NOT_REPRODUCED_DIAGNOSTIC_RUN' : result?.prolonged ? 'NOT_REPRODUCED_QUALIFIED_RUN' : 'NOT_REPRODUCED_SHORT_RUN'; if (result?.classification !== expected || !Object.values(result.checks).every(value => value === true) || result.prolonged && (!result.recovery?.passed || !result.recovery?.sameTarget || !result.recovery?.activeCanary || result.recoveryActivation?.value?.success !== true || result.recoveryActivation?.value?.isLiveWorkbench !== true)) throw new Error(JSON.stringify({ classification: result?.classification, evidenceRoot: result?.evidenceRoot, checks: result?.checks, firstFailure: result?.firstFailure, recovery: result?.recovery, errors: result?.errors })); return { classification: result.classification, baseline: result.pairs[0], checkpoints: result.pairs.slice(1), limitations: result.limits }; })()"
+    Then I collect JSON artifact "hidden-short-access-assertion" from extension host expression "(() => { const result = globalThis.__hiddenShortAccess; const expected = result?.diagnosticSeconds !== undefined ? 'NOT_REPRODUCED_DIAGNOSTIC_RUN' : result?.prolonged ? 'NOT_REPRODUCED_QUALIFIED_RUN' : 'NOT_REPRODUCED_SHORT_RUN'; if (result?.classification !== expected || !Object.values(result.checks).every(value => value === true) || result.prolonged && (!result.recovery?.passed || !result.recovery?.sameTarget || !result.recovery?.activeCanary || result.recoveryActivation?.value?.success !== true || result.recoveryActivation?.value?.isLiveWorkbench !== true)) throw new Error(JSON.stringify({ classification: result?.classification, evidenceRoot: result?.evidenceRoot, checks: result?.checks, firstFailure: result?.firstFailure, recovery: result?.recovery, metadataNotifications: result?.metadataNotifications, metadataTimeouts: result?.metadataTimeouts, errors: result?.errors })); return { classification: result.classification, baseline: result.pairs[0], checkpoints: result.pairs.slice(1), metadataNotifications: result.metadataNotifications, metadataTimeouts: result.metadataTimeouts, limitations: result.limits }; })()"
     Then the output channel "Kusto Workbench" should contain "[file-open:"
     And I take a screenshot "hidden-access-cleanup"

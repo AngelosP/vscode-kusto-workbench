@@ -990,7 +990,7 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 			}
 			return;
 		}
-		if (!args.worker || typeof args.worker.normalizeSchema !== 'function' || typeof args.worker.addDatabaseToSchema !== 'function') {
+		if (!args.worker || typeof args.worker.normalizeSchema !== 'function' || typeof args.worker.addDatabaseAliasesToSchema !== 'function') {
 			if (!clearOwnedPending()) return;
 			traceFileOpen('monaco.schema.enhance.skip.workerMissingApis', { schemaKey: args.schemaKey, modelKey: args.modelKey });
 			if (preparationToken && isKustoPreparationCurrent(preparationToken)) {
@@ -1025,7 +1025,8 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 					return false;
 				}
 				traceFileOpen('monaco.schema.enhance.addDatabase.start', { schemaKey: args.schemaKey, modelKey: args.modelKey });
-				await args.worker.addDatabaseToSchema(args.modelKey, args.clusterUrl, databaseSchema);
+				databaseSchema.majorVersion = transaction.id;
+				await args.worker.addDatabaseAliasesToSchema(args.modelKey, args.clusterUrl, [args.clusterUrl], databaseSchema);
 				if (!canMutate()) {
 					cancelOwned();
 					return false;
@@ -2757,8 +2758,11 @@ async function __kustoAddDatabaseAliasesToWorker(
 ): Promise<number> {
 	try {
 		const canMutate = () => transaction.isActive() && isCurrent();
-		if (!worker || typeof worker.addDatabaseToSchema !== 'function' || !modelUri || !schemaObj || !database || !canMutate()) {
+		if (!worker || !modelUri || !schemaObj || !database || !canMutate()) {
 			return 0;
+		}
+		if (typeof worker.addDatabaseAliasesToSchema !== 'function') {
+			throw new Error('The Monaco Kusto worker does not support batched database aliases.');
 		}
 		recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelUri), 'worker-add-aliases-start', {
 			modelUri,
@@ -2785,11 +2789,15 @@ async function __kustoAddDatabaseAliasesToWorker(
 		const rawDbSchema = schemaObj.Databases?.[database]
 			|| Object.entries(schemaObj.Databases || {}).find(([name]) => name.toLowerCase() === String(database).toLowerCase())?.[1];
 		let databaseSchema: any = null;
+		let normalizedClusterUrl = String(clusterUrl || '');
 		if (typeof worker.normalizeSchema === 'function') {
 			try {
 				if (!canMutate()) return 0;
 				const engineSchema = await worker.normalizeSchema(schemaObj, clusterUrl, database);
 				if (!canMutate()) return 0;
+				if (typeof engineSchema?.cluster?.connectionString === 'string') {
+					normalizedClusterUrl = engineSchema.cluster.connectionString;
+				}
 				databaseSchema = engineSchema?.database;
 				if (!databaseSchema && engineSchema?.cluster?.databases) {
 					databaseSchema = engineSchema.cluster.databases.find((db: any) => db.name.toLowerCase() === String(database).toLowerCase());
@@ -2869,14 +2877,12 @@ async function __kustoAddDatabaseAliasesToWorker(
 		if (!databaseSchema) {
 			return 0;
 		}
-		let count = 0;
-		for (const alias of __kustoGetCrossClusterClusterAliases(clusterName, clusterUrl)) {
-			if (!canMutate()) return 0;
-			await worker.addDatabaseToSchema(modelUri, alias, databaseSchema);
-			if (!__kustoCommitWorkerMutation(transaction)) return 0;
-			if (!canMutate()) return 0;
-			count++;
-		}
+		const aliases = __kustoGetCrossClusterClusterAliases(clusterName, clusterUrl);
+		if (!canMutate() || aliases.length === 0) return 0;
+		databaseSchema.majorVersion = transaction.id;
+		await worker.addDatabaseAliasesToSchema(modelUri, normalizedClusterUrl, aliases, databaseSchema);
+		if (!__kustoCommitWorkerMutation(transaction) || !canMutate()) return 0;
+		const count = aliases.length;
 		recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelUri), 'worker-add-aliases-finish', {
 			modelUri,
 			schemaKey: __kustoGetCrossClusterSchemaKey(clusterName, database),
@@ -4409,7 +4415,8 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 															}
 															if (databaseSchema) {
 																if (!isOperationCurrent()) return false;
-																await worker.addDatabaseToSchema(modelKey, cached.clusterUrl, databaseSchema);
+																databaseSchema.majorVersion = transaction.id;
+																await worker.addDatabaseAliasesToSchema(modelKey, cached.clusterUrl, [cached.clusterUrl], databaseSchema);
 																if (!__kustoCommitWorkerMutation(transaction)) return false;
 															}
 														} catch (readdError) { console.error('[kusto]', readdError); }
@@ -4456,10 +4463,10 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 												}
 											}
 										}
-										if (!alreadyLoadedGlobally && typeof worker.normalizeSchema === 'function' && typeof worker.addDatabaseToSchema === 'function') {
+										if (!alreadyLoadedGlobally && typeof worker.normalizeSchema === 'function' && typeof worker.addDatabaseAliasesToSchema === 'function') {
 											try {
 												traceFileOpen('monaco.schema.worker.normalizeSchema.start', { schemaKey });
-												const engineSchema = await worker.normalizeSchema(__kustoPrepareSchemaForKustoWorker(schemaObj), clusterUrl, databaseInContext);
+												const engineSchema = await worker.normalizeSchema(stampKustoSchemaMajorVersion(__kustoPrepareSchemaForKustoWorker(schemaObj), transaction.id), clusterUrl, databaseInContext);
 												traceFileOpen('monaco.schema.worker.normalizeSchema.done', { schemaKey });
 												let databaseSchema = engineSchema?.database;
 												if (!databaseSchema && engineSchema?.cluster?.databases) {
@@ -4468,7 +4475,8 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 												if (databaseSchema) {
 													if (!isOperationCurrent()) return false;
 													traceFileOpen('monaco.schema.worker.addDatabaseToSchema.start', { schemaKey });
-													await worker.addDatabaseToSchema(modelKey, clusterUrl, databaseSchema);
+													databaseSchema.majorVersion = transaction.id;
+													await worker.addDatabaseAliasesToSchema(modelKey, clusterUrl, [clusterUrl], databaseSchema);
 													if (!__kustoCommitWorkerMutation(transaction)) return false;
 													if (!isOperationCurrent()) return false;
 													traceFileOpen('monaco.schema.worker.addDatabaseToSchema.done', { schemaKey });
@@ -5268,7 +5276,7 @@ __kustoApplyCrossClusterSchemaInternal = async function (
 										if (!isCurrent()) return;
 										schemaWorkerProxy = await workerAccessor(schemaModel.uri);
 										if (!isCurrent()) return;
-										if (schemaWorkerProxy && typeof schemaWorkerProxy.addDatabaseToSchema === 'function') {
+										if (schemaWorkerProxy && typeof schemaWorkerProxy.addDatabaseAliasesToSchema === 'function') {
 											for (const model of modelCandidates) {
 												try {
 													if (!model || !model.uri) continue;

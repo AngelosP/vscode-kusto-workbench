@@ -88,6 +88,10 @@ function workerAliasHarness() {
 		addDatabaseToSchema: vi.fn(async (_model: string, alias: string, database: Record<string, unknown>) => {
 			databases.set(parseKustoClusterRef(alias).host, structuredClone(database));
 		}),
+		addDatabaseAliasesToSchema: vi.fn(async (_model: string, _clusterUrl: string, aliases: readonly string[], database: Record<string, unknown>) => {
+			const sharedDatabase = structuredClone(database);
+			for (const alias of aliases) databases.set(parseKustoClusterRef(alias).host, sharedDatabase);
+		}),
 	};
 	const context = createContext({
 		getKustoClusterAliases, parseKustoClusterRef, stampKustoSchemaMajorVersion, buildKustoFunctionBodyFromOutputColumns,
@@ -109,6 +113,16 @@ function workerAliasHarness() {
 }
 
 describe('Kusto worker alias allocations', () => {
+	it('registers one database batch without constructing a separate copy for each alias', async () => {
+		const harness = workerAliasHarness();
+
+		expect(await harness.apply(makeSchema(), 'help', 'https://help.kusto.windows.net')).toBe(2);
+
+		expect(harness.worker.addDatabaseAliasesToSchema).toHaveBeenCalledOnce();
+		expect(harness.worker.addDatabaseToSchema).not.toHaveBeenCalled();
+		expect(harness.databases.get('help')).toBe(harness.databases.get('help.kusto.windows.net'));
+	});
+
 	it.each([
 		['public', 'help', 'https://help.kusto.windows.net', ['help', 'help.kusto.windows.net']],
 		['regional', 'help.westus', 'https://help.westus.kusto.windows.net', ['help.westus', 'help.westus.kusto.windows.net']],
@@ -123,12 +137,15 @@ describe('Kusto worker alias allocations', () => {
 
 		const count = await harness.apply(schema, name, url);
 
-		expect(harness.worker.addDatabaseToSchema.mock.calls.map(call => parseKustoClusterRef(call[1]).host)).toEqual(hosts);
+		expect(harness.worker.addDatabaseAliasesToSchema.mock.calls.flatMap(call => call[2].map(alias => parseKustoClusterRef(alias).host))).toEqual(hosts);
+		expect(harness.worker.addDatabaseAliasesToSchema).toHaveBeenCalledOnce();
+		expect(harness.worker.addDatabaseToSchema).not.toHaveBeenCalled();
 		expect(count).toBe(hosts.length);
 		expect(harness.worker.normalizeSchema).toHaveBeenCalledOnce();
 		for (const host of hosts) {
 			expect(harness.databases.get(host)).toMatchObject({
 				name: 'TelemetryDb',
+				majorVersion: 17,
 				tables: [{ name: 'Events', columns: [{ name: 'Timestamp', type: 'datetime' }, { name: 'EventName', type: 'string' }] }],
 				functions: [
 					{ name: 'ExplicitFn', outputColumns: [{ name: 'ExplicitColumn', type: 'string' }], body: expect.stringContaining('ExplicitColumn') },
@@ -149,9 +166,10 @@ describe('Kusto worker alias allocations', () => {
 
 		expect(await harness.apply(next, 'help', 'https://help.kusto.windows.net', 18)).toBe(2);
 
-		expect(harness.worker.addDatabaseToSchema).toHaveBeenCalledTimes(4);
+		expect(harness.worker.addDatabaseAliasesToSchema).toHaveBeenCalledTimes(2);
+		expect(harness.worker.addDatabaseToSchema).not.toHaveBeenCalled();
 		for (const database of harness.databases.values()) {
-			expect(database).toMatchObject({ tables: [{ columns: [
+			expect(database).toMatchObject({ majorVersion: 18, tables: [{ columns: [
 				{ name: 'Timestamp', type: 'datetime' }, { name: 'EventName', type: 'string' }, { name: 'NewColumn', type: 'long' },
 			] }] });
 		}
@@ -163,25 +181,44 @@ describe('Kusto worker alias allocations', () => {
 
 		expect(await harness.apply(makeSchema(), 'help', 'https://help.kusto.windows.net')).toBe(0);
 		expect(harness.worker.normalizeSchema).not.toHaveBeenCalled();
+		expect(harness.worker.addDatabaseAliasesToSchema).not.toHaveBeenCalled();
 		expect(harness.worker.addDatabaseToSchema).not.toHaveBeenCalled();
 	});
 
-	it('does not dispatch another alias after the transaction is retired during its first update', async () => {
+	it('does not claim the batch after its transaction is retired during the update', async () => {
 		const harness = workerAliasHarness();
-		harness.worker.addDatabaseToSchema.mockImplementation(async () => { harness.lease.active = false; });
+		harness.worker.addDatabaseAliasesToSchema.mockImplementation(async () => { harness.lease.active = false; });
 
 		expect(await harness.apply(makeSchema(), 'help', 'https://help.kusto.windows.net')).toBe(0);
-		expect(harness.worker.addDatabaseToSchema).toHaveBeenCalledOnce();
+		expect(harness.worker.addDatabaseAliasesToSchema).toHaveBeenCalledOnce();
+		expect(harness.worker.addDatabaseToSchema).not.toHaveBeenCalled();
 	});
 
 	it('reports a failed worker update instead of claiming that aliases were registered', async () => {
 		const harness = workerAliasHarness();
 		const error = new Error('Schema update failed');
-		harness.worker.addDatabaseToSchema.mockRejectedValue(error);
+		harness.worker.addDatabaseAliasesToSchema.mockRejectedValue(error);
 
 		expect(await harness.apply(makeSchema(), 'help', 'https://help.kusto.windows.net')).toBe(0);
-		expect(harness.worker.addDatabaseToSchema).toHaveBeenCalledOnce();
+		expect(harness.worker.addDatabaseAliasesToSchema).toHaveBeenCalledOnce();
 		expect(harness.errors).toHaveBeenCalledWith('[kusto] Failed to add database aliases:', error);
+	});
+
+	it('stamps the fallback database with the current transaction revision', async () => {
+		const harness = workerAliasHarness();
+		Object.defineProperty(harness.worker, 'normalizeSchema', { value: undefined });
+
+		expect(await harness.apply(makeSchema(), 'help', 'https://help.kusto.windows.net', 42)).toBe(2);
+		expect(harness.worker.addDatabaseAliasesToSchema.mock.calls[0][3].majorVersion).toBe(42);
+	});
+
+	it('reports a missing batch API instead of silently using per-alias copies', async () => {
+		const harness = workerAliasHarness();
+		Object.defineProperty(harness.worker, 'addDatabaseAliasesToSchema', { value: undefined });
+
+		expect(await harness.apply(makeSchema(), 'help', 'https://help.kusto.windows.net')).toBe(0);
+		expect(harness.worker.addDatabaseToSchema).not.toHaveBeenCalled();
+		expect(harness.errors.mock.calls[0][1].message).toContain('does not support batched database aliases');
 	});
 });
 
@@ -241,7 +278,9 @@ describe('Kusto function output schema preparation', () => {
 		runInContext(code, context);
 		const worker = {
 			normalizeSchema: vi.fn(async () => ({ database: { name: 'TelemetryDb' } })),
-			addDatabaseToSchema: vi.fn(async () => undefined),
+			addDatabaseAliasesToSchema: vi.fn(async (
+				_model: string, _clusterUrl: string, _aliases: readonly string[], _database: Record<string, unknown>,
+			) => undefined),
 		};
 		expect(context.__kustoScheduleEnhancedSchemaApply({
 			schemaObj: original, worker, modelKey: 'model', schemaKey: 'schema',
@@ -252,7 +291,9 @@ describe('Kusto function output schema preparation', () => {
 		await vi.waitFor(() => expect(ready).toHaveBeenCalledOnce());
 		expect(failed).not.toHaveBeenCalled();
 		expect(pending.size).toBe(0);
-		expect(worker.addDatabaseToSchema).toHaveBeenCalledOnce();
+		expect(worker.addDatabaseAliasesToSchema).toHaveBeenCalledOnce();
+		expect(worker.addDatabaseAliasesToSchema.mock.calls[0][2]).toEqual(['https://cluster.kusto.windows.net']);
+		expect(worker.addDatabaseAliasesToSchema.mock.calls[0][3].majorVersion).toBe(23);
 		const normalized = worker.normalizeSchema.mock.calls[0][0] as any;
 		expect(normalized.Databases.TelemetryDb.Functions.InferredFn.OutputColumns.map((column: any) => column.Name)).toEqual(['EventName']);
 		const cached = tracker.schemaCache.schema.rawSchemaJson;
