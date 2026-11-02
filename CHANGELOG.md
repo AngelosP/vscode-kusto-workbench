@@ -7,6 +7,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 * Added a native External Tools Integration walkthrough covering setup, Copilot CLI, Vera, Scout, Microsoft Copilot Local Code, other MCP clients, verification, and cleanup.
 * Better search experience for Kusto and SQL schemas.
+* Reduced Kusto language-worker memory usage by avoiding large decoded source copies and sharing cached database symbols across cluster/database aliases.
 * Better default settings for the chart axis (less overlapping text by default, etc.).
 * Added opt-in external MCP integration for local Windows x64 clients. A stable STDIO connector discovers and explicitly routes to Kusto Workbench VS Code windows over secured named pipes and loopback Streamable HTTP MCP.
 * External MCP clients now see only `list-tools` and `execute-tool`; a compact Scout/Code skill lists every operation, while the connector validates arguments against the current schema and supplies it on demand. The native VS Code agent retains its existing tools.
@@ -25,6 +26,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Bugs
     * Microsoft Copilot setup now directs users to Local Code sessions and normal MCP approvals instead of promising that local plugins appear in Customize.
     * Microsoft Copilot (Code) setup now accepts a UTF-8 byte-order mark in its runtime manifest instead of incorrectly reporting that the manifest is invalid.
+    * Notebooks retain development-note and dashboard access after prolonged hidden-tab use with many historical files open, including after an ordinary switch back. First activation of large historical notebooks is also more reliable.
+    * Fresh hidden MDX files accept their first Markdown-mode update using inventory-provided section IDs without requiring activation.
+    * Reports created in the background hand ownership back to real user input without letting stale projections overwrite newer edits or interfere with native Save.
+    * KQL/CSL and SQL compatibility editors coalesce tab-hide metadata captures, avoiding false timeout errors for delayed background replies. Obsolete replies cannot invalidate newer edits or overwrite later Save results.
+    * Timely metadata replies no longer time out while waiting for host-side processing, and harmless background snapshot supersession no longer produces error notifications.
+    * Requested metadata snapshots report section-capture failures instead of accepting partial content. Close still offers Save, Discard, or recovery for the latest acknowledged dirty draft when final capture fails.
+    * Removed a premature Kusto connection request that could produce policy-snapshot-not-applied warnings during startup.
     * Search results for columns deep link to the table correctly now.
     * Exported Power BI Import models now disable Kusto result truncation, preventing refresh failures when datasets exceed the default 64 MB or 500,000-row limits.
     * A malformed same-document reload keeps the last good view while locking editing and saving.
