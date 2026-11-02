@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import * as vscode from 'vscode';
@@ -175,6 +175,7 @@ describe('external MCP setup', () => {
 			mkdirSync(bin);
 			mkdirSync(join(copilotHomeDirectory, 'agents'), { recursive: true });
 			copyFileSync(join(process.env.SystemRoot!, 'System32', 'where.exe'), join(bin, 'copilot.exe'));
+			const executable = realpathSync.native(join(bin, 'copilot.exe'));
 			writeFileSync(join(bin, 'code.cmd'), '@echo off\r\necho angelos-petropoulos.vscode-kusto-workbench@5.2.0\r\necho angelos-petropoulos.kusto-workbench-mcp-bootstrap@0.0.0\r\n');
 			const legacyContent = createManagedCopilotCliAgentContent('---\nname: Kusto Workbench\n---\nLegacy agent.\n');
 			if (legacy !== 'fresh') writeFileSync(agentPath, legacy === 'unowned' ? 'user-owned agent\n' : legacy === 'edited' ? `${legacyContent}User edit.\n` : legacyContent);
@@ -192,7 +193,7 @@ describe('external MCP setup', () => {
 				withProgress: async (_options: unknown, action: () => Promise<unknown>) => action() });
 			const rollback = vi.fn(async () => undefined);
 			const registration = vi.spyOn(clientProvisioning, 'reconcileCopilotCliRegistration').mockResolvedValue({
-				changed: false, reloadRequired: false, executable: join(bin, 'copilot.exe'), rollback,
+				changed: false, reloadRequired: false, executable, rollback,
 			});
 			const configuration = vi.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({
 				inspect: () => ({ defaultValue: false }),
@@ -213,7 +214,7 @@ describe('external MCP setup', () => {
 					return;
 				}
 				const result = await runExternalMcpSetup(context, logger);
-				expect(registration).toHaveBeenCalledWith({ executable: join(bin, 'copilot.exe'), connector });
+				expect(registration).toHaveBeenCalledWith({ executable, connector });
 				expect(result).toEqual({ client: 'copilot-cli', integrationEnabled: true, fullyConfigured: true, requiresClientReload: legacy === 'managed' });
 				expect(existsSync(agentPath)).toBe(legacy === 'edited' || legacy === 'unowned');
 				if (legacy === 'edited' || legacy === 'unowned') {
