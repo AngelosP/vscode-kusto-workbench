@@ -72,6 +72,7 @@ describe('external MCP setup', () => {
 			expect(preparation).toBeGreaterThanOrEqual(0);
 			expect(preparation).toBeLessThan(verification);
 			expect(preparation).toBeLessThan(coldLaunch);
+			expect(windows.slice(verification, coldLaunch)).toContain('tests/webview/host/externalMcpConnectorCore.test.ts');
 			const script = windows.slice(preparation, verification).match(/^\s+node -e "(.+)"\r?$/m)?.[1];
 			if (!script) throw new Error('Windows CI does not contain its executable portable CLI setup.');
 			const root = mkdtempSync(join(tmpdir(), 'kw-ci-vscode-cli-'));
@@ -351,6 +352,9 @@ describe('external MCP setup', () => {
 	});
 
 	it('cancels Code account selection before any selected cleanup changes state', async () => {
+		const localAppData = mkdtempSync(join(tmpdir(), 'kw-cancel-code-cleanup-'));
+		const previousLocalAppData = process.env.LOCALAPPDATA;
+		process.env.LOCALAPPDATA = localAppData;
 		const originalPick = Object.getOwnPropertyDescriptor(vscode.window, 'showQuickPick');
 		const pick = vi.fn().mockResolvedValueOnce([{ id: 'provider' }, { id: 'copilot-code' }]).mockResolvedValueOnce(undefined);
 		Object.assign(vscode.window, { showQuickPick: pick });
@@ -363,8 +367,11 @@ describe('external MCP setup', () => {
 			expect(update).not.toHaveBeenCalled();
 			expect(lock).not.toHaveBeenCalled();
 		} finally {
+			if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+			else process.env.LOCALAPPDATA = previousLocalAppData;
 			configuration.mockRestore(); discover.mockRestore(); lock.mockRestore();
 			if (originalPick) Object.defineProperty(vscode.window, 'showQuickPick', originalPick); else Reflect.deleteProperty(vscode.window, 'showQuickPick');
+			rmSync(localAppData, { recursive: true, force: true });
 		}
 	});
 
@@ -473,11 +480,15 @@ if (args.includes('--list-extensions')) {
 	}, 60_000);
 
 	it('does not preselect optional client cleanup when disabling the provider', async () => {
+		const localAppData = mkdtempSync(join(tmpdir(), 'kw-cleanup-selection-'));
+		const previousLocalAppData = process.env.LOCALAPPDATA;
+		process.env.LOCALAPPDATA = localAppData;
 		const showQuickPick = vi.fn().mockResolvedValue([{ id: 'provider' }]);
 		Object.assign(vscode.window, { showQuickPick });
 		const update = vi.fn().mockResolvedValue(undefined);
 		const getConfiguration = vi.spyOn(vscode.workspace, 'getConfiguration')
 			.mockReturnValue({ inspect: () => ({ defaultValue: false }), update } as never);
+		const lock = vi.spyOn(connectorInstaller, 'acquireExternalMcpConnectorLock').mockResolvedValue(async () => undefined);
 		try {
 			await disableExternalMcpIntegration();
 			const choices = showQuickPick.mock.calls[0][0] as Array<{ id: string; picked: boolean }>;
@@ -486,8 +497,12 @@ if (args.includes('--list-extensions')) {
 			expect(choices.find(choice => choice.id === 'connector')?.picked).toBe(false);
 			expect(update).toHaveBeenCalledWith('externalTools.enabled', false, vscode.ConfigurationTarget.Global);
 		} finally {
+			if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+			else process.env.LOCALAPPDATA = previousLocalAppData;
 			delete (vscode.window as Partial<typeof vscode.window> & { showQuickPick?: unknown }).showQuickPick;
 			getConfiguration.mockRestore();
+			lock.mockRestore();
+			rmSync(localAppData, { recursive: true, force: true });
 		}
 	});
 
@@ -561,7 +576,10 @@ if (args.includes('--list-extensions')) {
 		}
 	});
 
-	it('does not partially disable integration when the shared security lock is unavailable', async () => {
+	it.runIf(process.platform === 'win32')('does not partially disable integration when the Windows security lock is unavailable', async () => {
+		const localAppData = mkdtempSync(join(tmpdir(), 'kw-cleanup-unavailable-lock-'));
+		const previousLocalAppData = process.env.LOCALAPPDATA;
+		process.env.LOCALAPPDATA = localAppData;
 		const showQuickPick = vi.fn().mockResolvedValue([{ id: 'provider' }, { id: 'copilot' }]);
 		Object.assign(vscode.window, { showQuickPick });
 		const update = vi.fn().mockResolvedValue(undefined);
@@ -573,10 +591,13 @@ if (args.includes('--list-extensions')) {
 			await expect(disableExternalMcpIntegration()).rejects.toThrow('Windows system directory is unavailable');
 			expect(update).not.toHaveBeenCalled();
 		} finally {
+			if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+			else process.env.LOCALAPPDATA = previousLocalAppData;
 			if (systemRoot === undefined) delete process.env.SystemRoot;
 			else process.env.SystemRoot = systemRoot;
 			delete (vscode.window as Partial<typeof vscode.window> & { showQuickPick?: unknown }).showQuickPick;
 			getConfiguration.mockRestore();
+			rmSync(localAppData, { recursive: true, force: true });
 		}
 	});
 
@@ -608,7 +629,7 @@ if (args.includes('--list-extensions')) {
 		}
 	});
 
-	it('continues provider and managed-agent cleanup when Copilot CLI is unavailable', async () => {
+	it.runIf(process.platform === 'win32')('continues provider and managed-agent cleanup when Copilot CLI is unavailable', async () => {
 		const localAppData = mkdtempSync(join(tmpdir(), 'kw-cleanup-no-copilot-'));
 		const copilotHomeDirectory = join(localAppData, 'copilot-home');
 		const agentPath = join(copilotHomeDirectory, 'agents', 'kusto-workbench.agent.md');

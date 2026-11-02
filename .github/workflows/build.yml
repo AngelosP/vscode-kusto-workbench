@@ -171,7 +171,7 @@ jobs:
 
       - name: Verify packaged Windows connector
         run: |
-          npx vitest run tests/webview/host/externalMcpRuntime.test.ts tests/webview/host/externalMcpConnectorInstaller.test.ts tests/webview/host/externalMcpDiscovery.test.ts tests/webview/host/externalCopilotCodeIntegration.test.ts tests/webview/host/externalMcpSetup.test.ts --maxWorkers=1 --no-file-parallelism
+          npx vitest run tests/webview/host/externalMcpRuntime.test.ts tests/webview/host/externalMcpConnectorCore.test.ts tests/webview/host/externalMcpConnectorInstaller.test.ts tests/webview/host/externalMcpDiscovery.test.ts tests/webview/host/externalCopilotCodeIntegration.test.ts tests/webview/host/externalMcpSetup.test.ts --maxWorkers=1 --no-file-parallelism
 
       - name: Compile extension-host tests
         run: npm run compile-tests

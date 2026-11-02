@@ -226,7 +226,7 @@ describe('ExternalMcpConnectorCore', () => {
 			.toBe('forwarded');
 	});
 
-	it('removes launch correlation state when the VS Code process exits unsuccessfully', async () => {
+	it.runIf(process.platform === 'win32')('removes launch correlation state when the VS Code process exits unsuccessfully', async () => {
 		const root = mkdtempSync(join(tmpdir(), 'kw-launch-failure-'));
 		const workspaceFolder = join(root, 'workspace');
 		const launchDirectory = join(root, 'launches');
@@ -249,7 +249,7 @@ describe('ExternalMcpConnectorCore', () => {
 		}
 	});
 
-	it('preserves ambiguous launch correlation state for delayed startup until explicit cleanup', async () => {
+	it.runIf(process.platform === 'win32')('preserves ambiguous launch correlation state for delayed startup until explicit cleanup', async () => {
 		const root = mkdtempSync(join(tmpdir(), 'kw-launch-ambiguous-'));
 		const workspaceFolder = join(root, 'workspace');
 		const launchDirectory = join(root, 'launches');
@@ -283,7 +283,8 @@ describe('ExternalMcpConnectorCore', () => {
 		'//server/share/workspace',
 		'//?/C:/workspace',
 		'//./C:/workspace',
-	])('rejects non-local workspace path %s before filesystem access', async workspaceFolder => {
+		'/tmp/kusto-workbench',
+	])('rejects unsupported workspace path %s before filesystem access', async workspaceFolder => {
 		await expect(launchVsCodeWorkbench({
 			schemaVersion: 1,
 			connectorVersion: '5.2.0',
