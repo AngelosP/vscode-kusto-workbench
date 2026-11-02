@@ -29,7 +29,7 @@ const supersededMessages = [
 	'The SQL metadata snapshot was superseded before admission.',
 ];
 
-test('records only exact superseded errors on the extension SDK and forwards every notification unchanged', () => {
+test('records targeted metadata errors on the extension SDK and forwards every notification unchanged', () => {
 	const forwarded = [];
 	const result = Promise.resolve('selected action');
 	const controllerWindow = { showErrorMessage() { assert.fail('Must not use the controller SDK'); } };
@@ -82,7 +82,81 @@ for (const language of ['KQL', 'SQL']) {
 		assert.match(capture.timeouts[0].stack, /Final metadata snapshot timeout observed/);
 		assert.equal(capture.dispose(), true);
 	});
+
+	test(`records a prefixed ${language} close timeout rather than treating it as unrelated`, () => {
+		const message = `Failed to save companion metadata: Timed out waiting for the final ${language} metadata snapshot.`;
+		const forwarded = [];
+		const result = Promise.resolve(undefined);
+		const window = { showErrorMessage(value) { forwarded.push(value); return result; } };
+		const capture = observeMetadataNotifications(window, () => 'cleanup');
+
+		assert.equal(window.showErrorMessage(message), result);
+		assert.deepEqual(forwarded, [message]);
+		assert.equal(capture.timeouts.length, 1);
+		assert.equal(capture.timeouts[0].message, message);
+		assert.equal(capture.timeouts[0].phase, 'cleanup');
+		assert.equal(capture.dispose(), true);
+	});
+
+	for (const prefix of ['', 'Failed to save companion metadata: ']) {
+		test(`records ${prefix ? 'close' : 'background'} ${language} capture failure without hiding it`, () => {
+			const message = `${prefix}Failed to capture the ${language} metadata snapshot.`;
+			const result = Promise.resolve(undefined);
+			const window = { showErrorMessage(value) { assert.equal(value, message); return result; } };
+			const capture = observeMetadataNotifications(window);
+
+			assert.equal(window.showErrorMessage(message), result);
+			assert.deepEqual([...capture.messages], [message]);
+			assert.equal(capture.timeouts.length, 0);
+			assert.equal(capture.dispose(), true);
+		});
+	}
 }
+
+test('records genuine companion close errors beyond snapshot capture failures', () => {
+	const message = 'Failed to save companion metadata: permission denied';
+	const result = Promise.resolve(undefined);
+	const window = { showErrorMessage(value) { assert.equal(value, message); return result; } };
+	const capture = observeMetadataNotifications(window);
+
+	assert.equal(window.showErrorMessage(message), result);
+	assert.deepEqual([...capture.messages], [message]);
+	assert.equal(capture.timeouts.length, 0);
+	assert.equal(capture.dispose(), true);
+});
+
+test('keeps notification capture live through the promoted close arrival deadline', async () => {
+	let finish;
+	const observe = runInNewContext(
+		`${feature.slice(notificationCaptureStart, notificationCaptureEnd)}; observeMetadataNotifications`,
+		{ setTimeout: (callback, delay) => { assert.equal(delay, 3000); finish = callback; } },
+	);
+	const forwarded = [];
+	const window = { showErrorMessage(message) { forwarded.push(message); } };
+	const capture = observe(window, () => 'cleanup');
+	let observed = false;
+	const pending = capture.observeCloseReplyDeadline().then(() => { observed = true; });
+	await Promise.resolve();
+	assert.equal(observed, false);
+	const message = 'Failed to save companion metadata: Timed out waiting for the final KQL metadata snapshot.';
+	window.showErrorMessage(message);
+	assert.deepEqual(forwarded, [message]);
+	assert.equal(capture.timeouts[0].message, message);
+	assert.equal(capture.timeouts[0].phase, 'cleanup');
+	assert.equal(capture.isCurrent(), true);
+	finish();
+	await pending;
+	assert.equal(observed, true);
+	assert.equal(capture.dispose(), true);
+});
+
+test('observes delayed close replies before preservation and observer restoration', () => {
+	const close = feature.indexOf('await helper.closeAcceptanceTabs(vscode, owner, [...references.keys()])');
+	const wait = feature.indexOf('await notificationCapture?.observeCloseReplyDeadline()', close);
+	const preserve = feature.indexOf("preservation('after-cleanup')", close);
+	const restore = feature.indexOf('notificationCapture?.dispose()', close);
+	assert.ok(close >= 0 && wait > close && preserve > wait && restore > preserve);
+});
 
 test('notification capture restores its own hook and stops recording after disposal', () => {
 	const forwarded = [];

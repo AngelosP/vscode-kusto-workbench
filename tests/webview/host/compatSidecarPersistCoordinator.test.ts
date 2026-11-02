@@ -2,7 +2,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { describe, expect, it, vi } from 'vitest';
+import { Uri } from 'vscode';
 
+import { CompatSidecarCloseCoordinator } from '../../../src/host/compatSidecarCloseCoordinator';
 import {
 	CompatSidecarPersistCoordinator,
 	CompatSidecarPersistSupersededError,
@@ -29,10 +31,12 @@ type HarnessBehavior = {
 	beforeSanitize?: () => Promise<void>;
 	sanitizeError?: Error;
 	materializeError?: Error;
+	publishError?: Error;
 	draftAvailable: boolean;
 	materializedAvailable: boolean;
 	applyResult: boolean;
 	applyMutatesSource: boolean;
+	afterApplySource?: (text: string) => Promise<void>;
 	retireDuringApply: boolean;
 	rollbackResult: boolean;
 	rollbackRestoresSource: boolean;
@@ -231,6 +235,7 @@ function createHarness(options: Partial<HarnessBehavior & {
 			applySourceText: async text => {
 				calls.push(`apply-source:${text}`);
 				if (behavior.applyResult && behavior.applyMutatesSource) sourceText = text;
+				if (behavior.afterApplySource) await behavior.afterApplySource(text);
 				if (behavior.retireDuringApply) session.retirePersists();
 				return behavior.applyResult;
 			},
@@ -243,7 +248,10 @@ function createHarness(options: Partial<HarnessBehavior & {
 				calls.push('set-materialized-sidecar');
 				materializedSidecar = file;
 			},
-			publishChanges: () => { calls.push('publish-changes'); },
+			publishChanges: () => {
+				calls.push('publish-changes');
+				if (behavior.publishError) throw behavior.publishError;
+			},
 			notifyPreparationFailure: error => {
 				calls.push(`notify:${error instanceof Error ? error.message : String(error)}`);
 			},
@@ -301,6 +309,260 @@ describe('CompatSidecarPersistCoordinator authority capture ordering', () => {
 });
 
 describe('CompatSidecarPersistCoordinator', () => {
+	it.each([
+		{ pausedAt: 'sanitation', promoted: false },
+		{ pausedAt: 'prior admission', promoted: false },
+		{ pausedAt: 'sanitation', promoted: true },
+		{ pausedAt: 'prior admission', promoted: true },
+	] as const)(
+		'preserves newer $pausedAt against an old live background reply (promoted=$promoted)',
+		async ({ pausedAt, promoted }) => {
+			vi.useFakeTimers();
+			let release!: () => void;
+			const gate = new Promise<void>(resolve => { release = resolve; });
+			const harness = createHarness({ beforeSanitize: () => gate });
+			harness.session.setPanelVisible(false);
+			harness.session.adoptRevision(1);
+			const report = vi.fn();
+			let requestId = '';
+			harness.session.requestBackgroundPersist(message => {
+				requestId = String((message as { requestId: string }).requestId);
+				return true;
+			}, report);
+			await vi.advanceTimersByTimeAsync(3_000);
+			if (promoted) harness.session.freezeBackgroundPersists();
+			const prior = pausedAt === 'prior admission' ? harness.session.reservePersistAdmission(1) : undefined;
+			const current = harness.coordinator.persist(snapshot('NEWER', {
+				snapshotId: 'newer', editRevision: 2, ...(promoted ? { reason: 'beforeunload' } : {}),
+			}));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(harness.session.currentEditRevision).toBe(pausedAt === 'sanitation' ? 2 : 1);
+			const generation = harness.session.generation;
+			const calls = [...harness.calls];
+			const old = harness.coordinator.persist(snapshot('OLDER', {
+				flushRequestId: requestId, snapshotId: 'older', editRevision: 1,
+			}));
+			try {
+				await vi.advanceTimersByTimeAsync(0);
+				const generationAfterOldReply = harness.session.generation;
+				const callsAfterOldReply = [...harness.calls];
+				prior?.settle();
+				release();
+				await expect(current).resolves.toEqual({ terminal: 'applied' });
+				await expect(old).resolves.toMatchObject({ terminal: promoted ? 'stale' : 'ignored-final' });
+				if (promoted) expect(await harness.session.getBackgroundCloseError()).toBeInstanceOf(Error);
+				expect(generationAfterOldReply).toBe(generation);
+				expect(callsAfterOldReply).toEqual(calls);
+				expect(report).not.toHaveBeenCalled();
+				expect(harness.getKnownState()).toEqual(persistenceState('NEWER'));
+				expect(harness.getSourceText()).toBe('NEWER');
+				expect(harness.acknowledgements).toEqual([
+					{ type: 'persistDocumentAck', snapshotId: 'newer', editRevision: 2 },
+				]);
+			} finally {
+				prior?.settle();
+				release();
+				await Promise.allSettled([current, old]);
+				harness.session.settleClose();
+				vi.useRealTimers();
+			}
+		},
+	);
+
+	it.each([
+		'applied', 'sanitation failed', 'publication failed', 'source rejected', 'stale', 'retired', 'capture failed',
+	] as const)('composes promoted close capture with actual %s unload publication', async mode => {
+		vi.useFakeTimers();
+		const harness = createHarness();
+		await harness.coordinator.persist(snapshot('CURRENT', { snapshotId: 'baseline', editRevision: 1 }));
+		harness.acknowledgements.length = 0;
+		harness.session.setPanelVisible(false);
+		let requestId = '';
+		const report = vi.fn();
+		harness.session.requestBackgroundPersist(message => {
+			requestId = String((message as { requestId: string }).requestId);
+			return true;
+		}, report);
+		let releaseDrain!: () => void;
+		let releaseSanitation!: () => void;
+		const drain = new Promise<void>(resolve => { releaseDrain = resolve; });
+		const sanitation = new Promise<void>(resolve => { releaseSanitation = resolve; });
+		const events: string[] = [];
+		const savedStates: KqlxStateV1[] = [];
+		const failures: unknown[] = [];
+		const close = new CompatSidecarCloseCoordinator({ session: harness.session, yieldTurn: async () => undefined });
+		const uri = Uri.file('C:\\fixture\\unload.kql.json');
+		close.configure({
+			gateway: { closeRetiredInboundAdmission: async () => undefined },
+			subscriptions: [],
+			inspectToolDirty: async () => harness.session.isDirty,
+			saveToolChanges: async () => undefined,
+			drainRetiredInbound: () => drain,
+			captureDraft: () => {
+				const state = harness.getKnownState();
+				if (!state) throw new Error('Expected the acknowledged baseline or successfully retained unload draft');
+				return { uri, state, displayName: 'unload.kql.json' };
+			},
+			promptSave: async () => { events.push('prompt'); return 'Save'; },
+			saveDraft: async draft => { events.push('save'); savedStates.push(draft.state); },
+			recoverDraft: async () => { throw new Error('Successful Save must not recover'); },
+			notifyRecovered: () => { throw new Error('Unexpected recovery notification'); },
+			notifySaveFailed: error => { events.push('error'); failures.push(error); },
+			repair: async () => { events.push('repair'); },
+			drainStore: async () => { events.push('store'); },
+		});
+		const closing = close.disposePanel();
+		let unloading: Promise<unknown> | undefined;
+		try {
+			if (mode === 'capture failed') {
+				await expect(harness.coordinator.persist({
+					...unavailableFinal(requestId), flushUnavailableReason: 'snapshot-capture-failed',
+				})).resolves.toMatchObject({ terminal: 'prepare-failed' });
+			}
+			await vi.advanceTimersByTimeAsync(2_000);
+			expect(events).toEqual([]);
+			harness.behavior.beforeSanitize = () => sanitation;
+			if (mode === 'sanitation failed') harness.behavior.sanitizeError = new Error('unload sanitation failed');
+			if (mode === 'publication failed') harness.behavior.publishError = new Error('unload publication failed');
+			if (mode === 'source rejected') harness.behavior.applyResult = false;
+			const message = snapshot('UNLOAD', {
+				reason: 'beforeunload', snapshotId: 'unload', editRevision: mode === 'stale' ? 0 : 2,
+			});
+			expect(close.allowRetiredInbound(message)).toBe(true);
+			unloading = harness.coordinator.persist(message);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(harness.markBeforeUnloadSpy).toHaveBeenCalledWith('beforeunload');
+			expect(await harness.session.getBackgroundCloseError()).toBeInstanceOf(Error);
+			expect(events).toEqual([]);
+			releaseSanitation();
+			const result = await unloading;
+			const terminal = mode === 'stale' ? 'stale'
+				: mode === 'sanitation failed' ? 'prepare-failed'
+					: mode === 'publication failed' ? 'failed'
+						: mode === 'source rejected' ? 'source-rejected' : 'applied';
+			expect(result).toMatchObject({ terminal });
+			if (mode === 'retired') harness.session.retirePersists();
+			releaseDrain();
+			await closing;
+			const appliedState = !['sanitation failed', 'source rejected', 'stale'].includes(mode);
+			expect(savedStates).toEqual([persistenceState(appliedState ? 'UNLOAD' : 'CURRENT')]);
+			expect(events).toEqual(['prompt', 'save', ...(mode === 'applied' ? [] : ['error']), 'repair', 'store']);
+			expect(failures).toEqual(mode === 'applied' ? [] : [new Error(mode === 'capture failed'
+				? 'Failed to capture the KQL metadata snapshot.'
+				: 'Timed out waiting for the final KQL metadata snapshot.')]);
+			expect(harness.acknowledgements).toEqual(terminal === 'applied'
+				? [{ type: 'persistDocumentAck', snapshotId: 'unload', editRevision: 2 }] : []);
+			expect(report).not.toHaveBeenCalled();
+		} finally {
+			releaseSanitation();
+			releaseDrain();
+			await unloading;
+			await closing;
+			harness.session.settleClose();
+			vi.useRealTimers();
+		}
+	});
+
+	it('drains and rolls back an already-claimed background source edit before applying foreground Save', async () => {
+		let release!: () => void;
+		let entered!: () => void;
+		const gate = new Promise<void>(resolve => { release = resolve; });
+		const applying = new Promise<void>(resolve => { entered = resolve; });
+		const harness = createHarness({
+			afterApplySource: async text => {
+				if (text === 'OLDER') { entered(); await gate; }
+			},
+		});
+		const report = vi.fn();
+		let backgroundId = '';
+		harness.session.setPanelVisible(false);
+		harness.session.requestBackgroundPersist(message => {
+			backgroundId = String((message as { requestId: string }).requestId);
+			return true;
+		}, report);
+		const background = harness.coordinator.persist(snapshot('OLDER', {
+			flushRequestId: backgroundId, snapshotId: 'background', editRevision: 1,
+		}));
+		await applying;
+		const final = await createPendingFinal(harness);
+		const current = harness.coordinator.persist(snapshot('NEWER', {
+			flushRequestId: final.requestId, snapshotId: 'foreground', editRevision: 2,
+		}));
+		try {
+			expect(harness.getSourceText()).toBe('OLDER');
+			expect(harness.calls).not.toContain('apply-source:NEWER');
+			expect(harness.acknowledgements).toEqual([]);
+			release();
+			await expect(background).resolves.toMatchObject({ terminal: 'superseded' });
+			await expect(current).resolves.toEqual({ terminal: 'applied' });
+			await expect(final.result).resolves.toEqual({ available: true });
+			expect(harness.calls.filter(call => call.startsWith('apply-source:') || call.startsWith('rollback:'))).toEqual([
+				'apply-source:OLDER', 'rollback:7:OLDER', 'apply-source:AUTHORITATIVE', 'apply-source:NEWER',
+			]);
+			expect(harness.getSourceText()).toBe('NEWER');
+			expect(harness.getKnownState()).toEqual(persistenceState('NEWER'));
+			expect(harness.acknowledgements).toEqual([
+				{ type: 'persistDocumentAck', snapshotId: 'foreground', editRevision: 2 },
+			]);
+			expect(report).toHaveBeenCalledExactlyOnceWith(expect.any(CompatSidecarPersistSupersededError));
+		} finally {
+			release();
+			await Promise.allSettled([background, current, final.result]);
+			harness.session.settleClose();
+		}
+	});
+
+	it('ignores a retired background reply before it can supersede current admission', async () => {
+		let requestId = '';
+		let release!: () => void;
+		const gate = new Promise<void>(resolve => { release = resolve; });
+		let entered = false;
+		const harness = createHarness({
+			beforeSanitize: async () => { entered = true; await gate; },
+		});
+		harness.session.setPanelVisible(false);
+		const errors = vi.fn();
+		harness.session.requestBackgroundPersist(message => {
+			requestId = String((message as { requestId: string }).requestId);
+			return true;
+		}, errors);
+		harness.session.retirePersists();
+		const current = harness.coordinator.persist(snapshot('CURRENT', { snapshotId: 'current', editRevision: 2 }));
+		try {
+			await vi.waitFor(() => expect(entered).toBe(true));
+			const generation = harness.session.generation;
+			const calls = [...harness.calls];
+			await expect(harness.coordinator.persist(snapshot('OBSOLETE', {
+				flushRequestId: requestId, snapshotId: 'obsolete', sourceGeneration: 0,
+			}))).resolves.toEqual({ terminal: 'ignored-final' });
+			expect(harness.session.generation).toBe(generation);
+			expect(harness.calls).toEqual(calls);
+			release();
+			await expect(current).resolves.toEqual({ terminal: 'applied' });
+			expect(harness.acknowledgements).toEqual([
+				{ type: 'persistDocumentAck', snapshotId: 'current', editRevision: 2 },
+			]);
+			expect(errors).not.toHaveBeenCalled();
+		} finally {
+			release();
+			await current;
+			harness.session.settleClose();
+		}
+	});
+
+	it('rejects a correlated capture failure instead of treating it as unavailable metadata', async () => {
+		const harness = createHarness();
+		const pending = await createPendingFinal(harness);
+		const observed = pending.result.catch(error => error);
+		const reply = { ...unavailableFinal(pending.requestId), flushUnavailableReason: 'snapshot-capture-failed' };
+		await expect(harness.coordinator.persist(reply)).resolves.toMatchObject({ terminal: 'prepare-failed' });
+		await expect(observed).resolves.toEqual(new Error('Failed to capture the KQL metadata snapshot.'));
+		expect(harness.calls).not.toContain('warn-unavailable');
+		expect(harness.acknowledgements).toEqual([]);
+		expect(harness.getKnownState()).toBeUndefined();
+		expect(harness.session.hasPendingFinalPersist).toBe(false);
+	});
+
 	it.each([
 		{ blockedAt: 'prior admission', fail: false },
 		{ blockedAt: 'snapshot preparation', fail: false },

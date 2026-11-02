@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CompatSidecarSession } from '../../../src/host/compatSidecarSession';
 
@@ -16,6 +16,264 @@ function finalRequestId(message: unknown): string {
 	}
 	return message.requestId;
 }
+
+describe('CompatSidecarSession background captures', () => {
+	const sessions: CompatSidecarSession[] = [];
+	const create = () => {
+		const session = new CompatSidecarSession(false, 'KQL');
+		sessions.push(session);
+		const sent: string[] = [];
+		const post = vi.fn((message: unknown) => { sent.push(finalRequestId(message)); return true; });
+		const report = vi.fn();
+		return { session, sent, post, report };
+	};
+	beforeEach(() => { vi.useFakeTimers(); });
+	afterEach(async () => {
+		for (const session of sessions.splice(0)) session.settleClose();
+		await vi.runAllTimersAsync();
+		vi.useRealTimers();
+	});
+
+	it('accepts a delayed background reply without adding it to the final-request tail', async () => {
+		const { session, sent, post, report } = create();
+		session.requestBackgroundPersist(post, report);
+		await vi.advanceTimersByTimeAsync(5_000);
+		await session.waitForFinalPersists();
+		expect(sent).toHaveLength(1);
+		expect(report).not.toHaveBeenCalled();
+		expect(session.hasPendingFinalPersist).toBe(false);
+		expect(session.claimFinalPersistRequest(sent[0])).toBe(true);
+		expect(session.claimFinalPersistRequest(sent[0])).toBe(false);
+		await vi.advanceTimersByTimeAsync(5_000);
+		expect(session.completeFinalPersist(sent[0], undefined, { available: true })).toBe(true);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(report).not.toHaveBeenCalled();
+	});
+
+	it('coalesces a thousand visibility changes into one capture and one follow-up', async () => {
+		const { session, sent, post, report } = create();
+		session.requestBackgroundPersist(post, report);
+		for (let index = 0; index < 1_000; index++) {
+			session.setPanelVisible(true);
+			session.setPanelVisible(false);
+			session.requestBackgroundPersist(post, report);
+		}
+		expect(sent).toHaveLength(1);
+		session.claimFinalPersistRequest(sent[0]);
+		session.completeFinalPersist(sent[0]);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sent).toHaveLength(2);
+		session.claimFinalPersistRequest(sent[1]);
+		session.completeFinalPersist(sent[1]);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sent).toHaveLength(2);
+		expect(report).not.toHaveBeenCalled();
+	});
+
+	it('preserves one coalesced follow-up when an obsolete live background reply arrives', async () => {
+		const { session, sent, post, report } = create();
+		session.requestBackgroundPersist(post, report);
+		session.requestBackgroundPersist(post, report);
+		const admission = session.reservePersistAdmission(2);
+		const generation = session.generation;
+		expect(session.currentEditRevision).toBe(0);
+		expect(session.claimFinalPersistRequest(sent[0], 1)).toBe(false);
+		expect(session.generation).toBe(generation);
+		expect(sent).toHaveLength(2);
+		admission.settle();
+		expect(session.claimFinalPersistRequest(sent[1], 2)).toBe(true);
+		session.completeFinalPersist(sent[1]);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sent).toHaveLength(2);
+		expect(report).not.toHaveBeenCalled();
+	});
+
+	it.each(['false', 'reject'] as const)('ignores a late %s delivery result after a background reply is claimed', async failure => {
+		const { session, sent, report } = create();
+		const delivery = deferred<boolean>();
+		session.requestBackgroundPersist(message => {
+			sent.push(finalRequestId(message));
+			return delivery.promise;
+		}, report);
+		expect(session.claimFinalPersistRequest(sent[0])).toBe(true);
+		if (failure === 'false') delivery.resolve(false);
+		else delivery.reject(new Error('late delivery failure'));
+		await vi.advanceTimersByTimeAsync(5_000);
+		expect(session.hasPendingFinalPersistRequest(sent[0])).toBe(true);
+		expect(report).not.toHaveBeenCalled();
+		expect(session.completeFinalPersist(sent[0], undefined, { available: true })).toBe(true);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(report).not.toHaveBeenCalled();
+	});
+
+	it('reserves queued Save priority synchronously and rejects an obsolete background reply', async () => {
+		const { session, sent, post, report } = create();
+		session.requestBackgroundPersist(post, report);
+		const backgroundId = sent[0];
+		const saved = session.requestFinalPersist<number>(post, 'save');
+		session.requestBackgroundPersist(post, report);
+		const nextSave = session.requestFinalPersist<number>(post, 'save');
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sent).toHaveLength(2);
+		expect(session.claimFinalPersistRequest(backgroundId)).toBe(false);
+		expect(session.completeFinalPersist(backgroundId)).toBe(false);
+		session.claimFinalPersistRequest(sent[1]);
+		session.completeFinalPersist(sent[1], undefined, 1);
+		await expect(saved).resolves.toBe(1);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sent).toHaveLength(3);
+		session.claimFinalPersistRequest(sent[2]);
+		session.completeFinalPersist(sent[2], undefined, 2);
+		await expect(nextSave).resolves.toBe(2);
+		expect(report).not.toHaveBeenCalled();
+	});
+
+	it.each(['reload', 'upgrade'] as const)('retires unclaimed background ownership before %s changes admission', async transition => {
+		const { session, sent, post, report } = create();
+		session.requestBackgroundPersist(post, report);
+		const requestId = sent[0];
+		if (transition === 'reload') session.retirePersists();
+		else (await session.beginUpgrade(7))?.finish();
+		const generation = session.generation;
+		const revision = session.currentEditRevision;
+		expect(session.claimFinalPersistRequest(requestId)).toBe(false);
+		expect(session.generation).toBe(generation);
+		expect(session.currentEditRevision).toBe(revision);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(report).not.toHaveBeenCalled();
+	});
+
+	it('retains one possibly-sent token until a final roundtrip releases it', async () => {
+		const { session, sent, report } = create();
+		const delivery = deferred<boolean>();
+		const post = vi.fn((message: unknown) => {
+			sent.push(finalRequestId(message));
+			return sent.length === 1 ? delivery.promise : true;
+		});
+		session.requestBackgroundPersist(post, report, 'runtime-A');
+		session.retirePersists();
+		for (let index = 0; index < 1_000; index++) session.requestBackgroundPersist(post, report, 'runtime-A');
+		expect(sent).toHaveLength(1);
+		const saved = session.requestFinalPersist(post, 'save');
+		await vi.advanceTimersByTimeAsync(0);
+		session.requestBackgroundPersist(post, report, 'runtime-A');
+		expect(sent).toHaveLength(2);
+		session.claimFinalPersistRequest(sent[1]);
+		session.completeFinalPersist(sent[1]);
+		await saved;
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sent).toHaveLength(3);
+		delivery.reject(new Error('late obsolete transport failure'));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(session.hasPendingFinalPersistRequest(sent[2])).toBe(true);
+		expect(report).not.toHaveBeenCalled();
+	});
+
+	it('releases obsolete transport only for an actual runtime replacement', async () => {
+		const { session, sent, post, report } = create();
+		session.requestBackgroundPersist(post, report, 'runtime-A');
+		session.retirePersists();
+		session.requestBackgroundPersist(post, report, 'runtime-A');
+		expect(sent).toHaveLength(1);
+		session.requestBackgroundPersist(post, report, 'runtime-B');
+		expect(sent).toHaveLength(2);
+		expect(session.claimFinalPersistRequest(sent[0])).toBe(false);
+		expect(session.hasPendingFinalPersistRequest(sent[1])).toBe(true);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(report).not.toHaveBeenCalled();
+	});
+
+	it('keeps the existing native custom final deadline after background preemption', async () => {
+		const { session, sent, post, report } = create();
+		session.requestBackgroundPersist(post, report);
+		const settled = vi.fn();
+		const saved = session.requestFinalPersist(post, 'save', 1_000).then(settled, settled);
+		await vi.advanceTimersByTimeAsync(999);
+		expect(settled).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(1);
+		await saved;
+		expect(settled).toHaveBeenCalledExactlyOnceWith(new Error('Timed out waiting for the final KQL metadata snapshot.'));
+		expect(session.claimFinalPersistRequest(sent[0])).toBe(false);
+		expect(report).not.toHaveBeenCalled();
+	});
+
+	it('reports a genuine capture failure once and allows a later user-triggered attempt', async () => {
+		const { session, sent, post, report } = create();
+		session.requestBackgroundPersist(post, report);
+		session.claimFinalPersistRequest(sent[0]);
+		const error = new Error('capture failed');
+		session.completeFinalPersist(sent[0], error);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(report).toHaveBeenCalledExactlyOnceWith(error);
+		expect(sent).toHaveLength(1);
+		session.requestBackgroundPersist(post, report);
+		expect(sent).toHaveLength(2);
+	});
+
+	it.each(['none', 'observed', 'applied', 'applied then retired'] as const)(
+		'defers close timeout reporting until the final unload state is %s',
+		async unload => {
+			const { session, sent, post, report } = create();
+			session.requestBackgroundPersist(post, report);
+			session.freezeBackgroundPersists();
+			let closed = false;
+			const closing = session.waitForFinalPersists().then(() => { closed = true; });
+			await vi.advanceTimersByTimeAsync(1_999);
+			expect(closed).toBe(false);
+			await vi.advanceTimersByTimeAsync(1);
+			await closing;
+			expect(report).not.toHaveBeenCalled();
+			if (unload !== 'none') session.markBeforeUnload('beforeunload');
+			if (unload.startsWith('applied')) session.markAppliedBeforeUnload('beforeunload', session.generation);
+			if (unload === 'applied then retired') session.retirePersists();
+			expect((await session.getBackgroundCloseError())?.message).toBe(unload === 'applied'
+				? undefined : 'Timed out waiting for the final KQL metadata snapshot.');
+			session.requestBackgroundPersist(post, report);
+			expect(sent).toHaveLength(1);
+		},
+	);
+
+	it('joins a claimed capture on close without arming another arrival deadline', async () => {
+		const { session, sent, post, report } = create();
+		session.requestBackgroundPersist(post, report);
+		session.claimFinalPersistRequest(sent[0]);
+		session.freezeBackgroundPersists();
+		await vi.advanceTimersByTimeAsync(5_000);
+		expect(session.hasPendingFinalPersistRequest(sent[0])).toBe(true);
+		session.completeFinalPersist(sent[0]);
+		await session.waitForFinalPersists();
+		expect(await session.getBackgroundCloseError()).toBeUndefined();
+		expect(report).not.toHaveBeenCalled();
+	});
+
+	it('does not hide a genuine capture failure behind a successfully applied unload', async () => {
+		const { session, sent, post, report } = create();
+		const error = new Error('Failed to capture the KQL metadata snapshot.');
+		session.requestBackgroundPersist(post, report);
+		expect(session.claimFinalPersistRequest(sent[0])).toBe(true);
+		session.freezeBackgroundPersists();
+		session.markAppliedBeforeUnload('beforeunload', session.generation);
+		session.completeFinalPersist(sent[0], error);
+		await session.waitForFinalPersists();
+		expect(await session.getBackgroundCloseError()).toBe(error);
+		expect(report).not.toHaveBeenCalled();
+	});
+
+	it('does not resurrect a retired background token during close', async () => {
+		const { session, sent, post, report } = create();
+		session.requestBackgroundPersist(post, report);
+		session.retirePersists();
+		session.freezeBackgroundPersists();
+		await session.waitForFinalPersists();
+		expect(await session.getBackgroundCloseError()).toBeUndefined();
+		expect(session.claimFinalPersistRequest(sent[0])).toBe(false);
+		session.settleClose();
+		session.requestBackgroundPersist(post, report);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sent).toHaveLength(1);
+		expect(report).not.toHaveBeenCalled();
+	});
+});
 
 describe('CompatSidecarSession', () => {
 	it('admits only the newest queued revision after an older persist pauses', async () => {

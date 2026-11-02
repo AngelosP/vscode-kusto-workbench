@@ -14,8 +14,25 @@ export type CompatPersistAdmissionLease = Readonly<{
 type PendingFinalPersist = {
 	resolve: (value: unknown) => void;
 	reject: (error: Error) => void;
-	timer: ReturnType<typeof setTimeout>;
+	timer?: ReturnType<typeof setTimeout>;
 	claimed?: boolean;
+	background?: boolean;
+	timedOut?: boolean;
+};
+
+type PersistPoster = (
+	message: unknown, signal?: AbortSignal, isCurrent?: () => boolean,
+) => boolean | PromiseLike<boolean>;
+
+type BackgroundPersist = {
+	requestId: string;
+	result: Promise<unknown>;
+	pending: PendingFinalPersist;
+	controller: AbortController;
+	runtimeId: string;
+	retired: boolean;
+	promoted: boolean;
+	reported: boolean;
 };
 
 type PendingReload = {
@@ -34,7 +51,7 @@ export class CompatSidecarSession {
 	private draftGeneration = 0;
 	private persistSequence = 0;
 	private persistEpoch = 0;
-	private readonly latestPersistSequenceByEpoch = new Map<number, number>();
+	private readonly latestPersistSequenceByEpoch = new Map<number, { sequence: number; revision: number }>();
 	private pendingPersistAdmissionCount = 0;
 	private persistOperationTail: Promise<void> = Promise.resolve();
 	private persistTail: Promise<void> = Promise.resolve();
@@ -44,6 +61,14 @@ export class CompatSidecarSession {
 	private editRevision = 0;
 	private stateEditRevision = 0;
 	private finalPersistTail: Promise<void> = Promise.resolve();
+	private finalPersistReservations = 0;
+	private backgroundPersist?: BackgroundPersist;
+	private backgroundRequest?: { post: PersistPoster; report: (error: Error) => void; runtimeId: string };
+	private backgroundFollowUp = false;
+	private backgroundFrozen = false;
+	private capturesClosed = false;
+	private backgroundCloseResult?: Promise<{ error?: Error; timedOut?: boolean }>;
+	private appliedUnload?: { epoch: number; generation: number };
 	private panelVisible: boolean;
 	private beforeUnloadObserved = false;
 	private resolveBeforeUnload!: () => void;
@@ -65,14 +90,28 @@ export class CompatSidecarSession {
 	get currentStateEditRevision(): number { return this.stateEditRevision; }
 	get isClosing(): boolean { return this.closing; }
 	get isPanelVisible(): boolean { return this.panelVisible; }
-	get hasPendingFinalPersist(): boolean { return this.pendingFinalPersists.size > 0; }
+	get hasPendingFinalPersist(): boolean {
+		return [...this.pendingFinalPersists.values()].some(pending => !pending.background);
+	}
 	get hasPendingUpgrade(): boolean { return this.pendingUpgradeCount > 0; }
 	hasPendingFinalPersistRequest(requestId: string): boolean {
 		return !!requestId && this.pendingFinalPersists.has(requestId);
 	}
-	claimFinalPersistRequest(requestId: string): boolean {
+	claimFinalPersistRequest(requestId: string, incomingRevision?: number): boolean {
 		const pending = this.pendingFinalPersists.get(requestId);
+		const background = this.backgroundPersist;
+		if (!pending && background?.retired && background.requestId === requestId) {
+			this.releaseBackgroundPersist(background);
+		}
 		if (!pending || pending.claimed) return false;
+		if (pending.background && background && background.requestId === requestId
+			&& incomingRevision !== undefined && this.isStalePersistRevision(incomingRevision)) {
+			const followUp = this.backgroundFollowUp;
+			this.retireBackgroundPersist();
+			this.backgroundFollowUp = followUp;
+			this.releaseBackgroundPersist(background);
+			return false;
+		}
 		clearTimeout(pending.timer);
 		pending.claimed = true;
 		return true;
@@ -107,6 +146,12 @@ export class CompatSidecarSession {
 		return Number.isSafeInteger(revision) && revision >= 0 && revision < this.editRevision;
 	}
 
+	isStalePersistRevision(revision: number): boolean {
+		const queuedRevision = this.latestPersistSequenceByEpoch.get(this.persistEpoch)?.revision;
+		return this.isStaleRevision(revision) || (Number.isSafeInteger(revision) && revision >= 0
+			&& queuedRevision !== undefined && revision < queuedRevision);
+	}
+
 	adoptRevision(revision: number, mode: 'max' | 'replace' = 'max'): number {
 		if (!Number.isSafeInteger(revision) || revision < 0) return this.editRevision;
 		this.editRevision = mode === 'replace' ? revision : Math.max(this.editRevision, revision);
@@ -118,6 +163,7 @@ export class CompatSidecarSession {
 	}
 
 	retirePersists(): void {
+		this.retireBackgroundPersist();
 		this.persistEpoch += 1;
 		this.latestPersistSequenceByEpoch.clear();
 		this.draftGeneration += 1;
@@ -267,16 +313,16 @@ export class CompatSidecarSession {
 	}> {
 		const epoch = this.persistEpoch;
 		const sequence = ++this.persistSequence;
-		this.latestPersistSequenceByEpoch.set(epoch, sequence);
+		this.latestPersistSequenceByEpoch.set(epoch, { sequence, revision: incomingRevision });
 		this.draftGeneration += 1;
 		let settled = false;
 		return Object.freeze({
-			isCurrent: () => this.latestPersistSequenceByEpoch.get(epoch) === sequence
+			isCurrent: () => this.latestPersistSequenceByEpoch.get(epoch)?.sequence === sequence
 				&& incomingRevision >= this.editRevision,
 			settle: () => {
 				if (settled) return;
 				settled = true;
-				if (this.latestPersistSequenceByEpoch.get(epoch) === sequence) {
+				if (this.latestPersistSequenceByEpoch.get(epoch)?.sequence === sequence) {
 					this.latestPersistSequenceByEpoch.delete(epoch);
 				}
 			},
@@ -285,6 +331,7 @@ export class CompatSidecarSession {
 
 	async beginUpgrade(revision: number): Promise<CompatUpgradeLease | undefined> {
 		if (this.closing) return undefined;
+		this.retireBackgroundPersist();
 		this.persistEpoch += 1;
 		this.pendingUpgradeCount += 1;
 		const priorOperations = this.persistOperationTail;
@@ -317,40 +364,158 @@ export class CompatSidecarSession {
 	}
 
 	requestFinalPersist<T = void>(
-		postMessage: (message: unknown) => boolean | PromiseLike<boolean>,
+		postMessage: PersistPoster,
 		reason: string,
 		timeoutMs = 2_000,
 	): Promise<T> {
+		this.finalPersistReservations++;
+		this.retireBackgroundPersist();
 		const request = this.finalPersistTail.catch(() => undefined).then(async () => {
-			const requestId = `final-persist-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-			let resolveResponse!: (value: T) => void;
-			let rejectResponse!: (error: Error) => void;
-			const response = new Promise<T>((resolve, reject) => { resolveResponse = resolve; rejectResponse = reject; });
-			const failAwaitingReply = (error: Error): void => {
-				if (!this.pendingFinalPersists.get(requestId)?.claimed) this.completeFinalPersist(requestId, error);
-			};
-			const timer = setTimeout(() => failAwaitingReply(
-				new Error(`Timed out waiting for the final ${this.label} metadata snapshot.`),
-			), timeoutMs);
-			this.pendingFinalPersists.set(requestId, {
-				resolve: value => resolveResponse(value as T),
-				reject: rejectResponse,
-				timer,
-			});
 			try {
-				void Promise.resolve(postMessage({ type: 'requestFinalPersist', requestId, reason })).then(
-					delivered => {
-						if (!delivered) failAwaitingReply(new Error(`The final ${this.label} metadata snapshot request was not delivered.`));
-					},
-					error => failAwaitingReply(new Error(`The final ${this.label} metadata snapshot request failed: ${this.errorMessage(error)}`)),
-				);
-			} catch (error) {
-				failAwaitingReply(new Error(`The final ${this.label} metadata snapshot request failed: ${this.errorMessage(error)}`));
+				if (this.capturesClosed) throw new Error(`The ${this.label} metadata editor is closed.`);
+				const capture = this.reserveFinalPersist(false);
+				this.armFinalPersistDeadline(capture.requestId, capture.pending, timeoutMs);
+				this.sendPersistRequest(capture.requestId, postMessage, reason);
+				return await capture.result as T;
+			} finally {
+				this.finalPersistReservations--;
+				this.startBackgroundPersist();
 			}
-			return await response;
 		});
 		this.finalPersistTail = request.then(() => undefined, () => undefined);
-		return request as Promise<T>;
+		return request;
+	}
+
+	requestBackgroundPersist(post: PersistPoster, report: (error: Error) => void, runtimeId = ''): void {
+		if (this.backgroundFrozen || this.capturesClosed || this.closing) return;
+		const previous = this.backgroundPersist;
+		if (previous && runtimeId && previous.runtimeId && previous.runtimeId !== runtimeId
+			&& !previous.pending.claimed) {
+			this.retireBackgroundPersist();
+			this.releaseBackgroundPersist(previous);
+		} else if (previous && !previous.runtimeId) {
+			previous.runtimeId = runtimeId;
+		}
+		this.backgroundRequest = { post, report, runtimeId };
+		this.backgroundFollowUp = true;
+		this.startBackgroundPersist();
+	}
+
+	private startBackgroundPersist(): void {
+		const request = this.backgroundRequest;
+		if (!request || !this.backgroundFollowUp || this.backgroundPersist || this.finalPersistReservations
+			|| this.backgroundFrozen || this.capturesClosed || this.closing || this.panelVisible) return;
+		this.backgroundFollowUp = false;
+		const capture = this.reserveFinalPersist(true);
+		const background: BackgroundPersist = {
+			...capture, controller: new AbortController(), runtimeId: request.runtimeId,
+			retired: false, promoted: false, reported: false,
+		};
+		this.backgroundPersist = background;
+		const finish = (error?: unknown) => {
+			try {
+				if (error && !background.retired && !background.promoted && !this.capturesClosed) {
+					background.reported = true;
+					request.report(error instanceof Error ? error : new Error(String(error)));
+				}
+			} finally {
+				if (!background.retired) this.releaseBackgroundPersist(background);
+			}
+		};
+		void capture.result.then(() => finish(), finish)
+			.catch(error => console.error('[kusto] Background snapshot reporting failed:', error));
+		this.sendPersistRequest(capture.requestId, request.post, 'hidden', background);
+	}
+
+	private releaseBackgroundPersist(background: BackgroundPersist): void {
+		if (this.backgroundPersist !== background) return;
+		this.backgroundPersist = undefined;
+		this.startBackgroundPersist();
+	}
+
+	private retireBackgroundPersist(): void {
+		this.backgroundFollowUp = false;
+		const background = this.backgroundPersist;
+		if (!background || background.retired || background.promoted || background.pending.claimed
+			|| !this.pendingFinalPersists.has(background.requestId)) return;
+		background.retired = true;
+		background.controller.abort();
+		this.completeFinalPersist(background.requestId, new Error('Background metadata capture was superseded.'));
+	}
+
+	freezeBackgroundPersists(): void {
+		if (this.backgroundFrozen) return;
+		this.backgroundFrozen = true;
+		this.backgroundFollowUp = false;
+		const background = this.backgroundPersist;
+		if (!background || background.retired) return;
+		background.promoted = true;
+		background.pending.background = false;
+		if (!background.pending.claimed && this.pendingFinalPersists.has(background.requestId)) {
+			this.armFinalPersistDeadline(background.requestId, background.pending, 2_000);
+		}
+		this.backgroundCloseResult = background.result.then(
+			() => ({}),
+			error => background.reported ? {} : {
+				error: error instanceof Error ? error : new Error(String(error)),
+				timedOut: background.pending.timedOut,
+			},
+		);
+		this.finalPersistTail = Promise.all([this.finalPersistTail, this.backgroundCloseResult]).then(() => undefined);
+	}
+
+	async getBackgroundCloseError(): Promise<Error | undefined> {
+		const result = await this.backgroundCloseResult;
+		if (result?.timedOut && this.appliedUnload?.epoch === this.persistEpoch
+			&& this.appliedUnload.generation === this.draftGeneration) return undefined;
+		return result?.error;
+	}
+
+	markAppliedBeforeUnload(reason: unknown, generation: number): void {
+		if (reason === 'beforeunload' && generation === this.draftGeneration) {
+			this.appliedUnload = { epoch: this.persistEpoch, generation };
+		}
+	}
+
+	private reserveFinalPersist(background: boolean): {
+		requestId: string; result: Promise<unknown>; pending: PendingFinalPersist;
+	} {
+		const requestId = `final-persist-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+		let resolve!: (value: unknown) => void;
+		let reject!: (error: Error) => void;
+		const result = new Promise<unknown>((accept, fail) => { resolve = accept; reject = fail; });
+		const pending = { resolve, reject, background };
+		this.pendingFinalPersists.set(requestId, pending);
+		return { requestId, result, pending };
+	}
+
+	private armFinalPersistDeadline(requestId: string, pending: PendingFinalPersist, timeoutMs: number): void {
+		pending.timer = setTimeout(() => {
+			if (pending.claimed) return;
+			pending.timedOut = true;
+			this.completeFinalPersist(requestId, new Error(`Timed out waiting for the final ${this.label} metadata snapshot.`));
+		}, timeoutMs);
+	}
+
+	private sendPersistRequest(requestId: string, post: PersistPoster, reason: string, background?: BackgroundPersist): void {
+		const fail = (error: Error) => {
+			if (!this.pendingFinalPersists.get(requestId)?.claimed) this.completeFinalPersist(requestId, error);
+			if (background?.retired) this.releaseBackgroundPersist(background);
+		};
+		try {
+			void Promise.resolve(post(
+				{ type: 'requestFinalPersist', requestId, reason },
+				background?.controller.signal,
+				background ? () => !background.retired && !this.capturesClosed : undefined,
+			)).then(
+				delivered => {
+					if (!delivered) fail(new Error(`The final ${this.label} metadata snapshot request was not delivered.`));
+				},
+				error => fail(new Error(`The final ${this.label} metadata snapshot request failed: ${this.errorMessage(error)}`)),
+			);
+		} catch (error) {
+			fail(new Error(`The final ${this.label} metadata snapshot request failed: ${this.errorMessage(error)}`));
+		}
 	}
 
 	completeFinalPersist<T = void>(requestId: string, error?: Error, value?: T): boolean {
@@ -358,6 +523,9 @@ export class CompatSidecarSession {
 		if (!pending) return false;
 		clearTimeout(pending.timer);
 		this.pendingFinalPersists.delete(requestId);
+		if (!pending.background && !error && this.backgroundPersist?.retired) {
+			this.releaseBackgroundPersist(this.backgroundPersist);
+		}
 		if (error) pending.reject(error);
 		else pending.resolve(value);
 		return true;
@@ -433,6 +601,12 @@ export class CompatSidecarSession {
 	}
 
 	settleClose(): void {
+		this.capturesClosed = true;
+		this.backgroundFrozen = true;
+		this.backgroundFollowUp = false;
+		this.backgroundRequest = undefined;
+		this.backgroundPersist?.controller.abort();
+		this.backgroundPersist = undefined;
 		for (const requestId of [...this.pendingFinalPersists.keys()]) {
 			this.completeFinalPersist(requestId, new Error(`The ${this.label} metadata editor closed before its final snapshot was confirmed.`));
 		}

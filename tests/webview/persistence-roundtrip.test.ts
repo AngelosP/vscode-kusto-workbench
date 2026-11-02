@@ -4493,6 +4493,69 @@ describe('persistence round-trip', () => {
 		expect((vi.mocked(postMessageToHost).mock.calls[0][0] as any).snapshotId).toMatch(/^compat-snapshot-/);
 	});
 
+	it.each(['throwing section', 'duplicate ID', 'missing serializer'] as const)(
+		'reports a correlated capture failure instead of publishing %s state',
+		failure => {
+			pState.documentKind = 'sql';
+			pState.compatibilityMode = false;
+			pState.compatibilityPersistenceViewSessionId = 'capture-failure-session';
+			document.body.innerHTML = '<div id="queries-container"></div>';
+			const container = document.getElementById('queries-container')!;
+			const primary = Object.assign(document.createElement('kw-sql-section'), {
+				id: 'sql_capture', serialize: () => ({ id: 'sql_capture', type: 'sql', query: 'SELECT 1' }),
+			});
+			const secondary = document.createElement('kw-markdown-section');
+			secondary.id = 'markdown_capture';
+			if (failure !== 'missing serializer') Object.assign(secondary, {
+				serialize: () => {
+					if (failure === 'throwing section') throw new Error('section capture failed');
+					return { id: primary.id, type: 'markdown', text: 'MUST NOT BE LOST' };
+				},
+			});
+			container.append(primary, secondary);
+			vi.mocked(postMessageToHost).mockClear();
+			const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+			try {
+				flushCompatibilityPersist('capture-failure-request', 'hidden');
+
+				expect(postMessageToHost).toHaveBeenCalledExactlyOnceWith({
+					type: 'persistDocument', state: { sections: [] }, sourceGeneration: pState.sourceGeneration,
+					flushRequestId: 'capture-failure-request', flushUnavailableReason: 'snapshot-capture-failed',
+				});
+				expect(logged).toHaveBeenCalled();
+			} finally {
+				logged.mockRestore();
+			}
+		},
+	);
+
+	it('keeps persistence capture independent of tool-snapshot size limits', () => {
+		pState.documentKind = 'sql';
+		pState.compatibilityMode = false;
+		pState.compatibilityPersistenceViewSessionId = 'large-persistence-session';
+		document.body.innerHTML = '<div id="queries-container"></div>';
+		const container = document.getElementById('queries-container')!;
+		const largeText = 'x'.repeat(9 * 1024 * 1024);
+		container.append(
+			Object.assign(document.createElement('kw-sql-section'), {
+				id: 'sql_large', serialize: () => ({ id: 'sql_large', type: 'sql', query: 'SELECT 1' }),
+			}),
+			...['one', 'two'].map(id => Object.assign(document.createElement('kw-markdown-section'), {
+				id, serialize: () => ({ id, type: 'markdown', text: largeText }),
+			})),
+		);
+		vi.mocked(postMessageToHost).mockClear();
+		flushCompatibilityPersist('large-persistence-request', 'hidden');
+
+		expect(postMessageToHost).toHaveBeenCalledOnce();
+		const message = vi.mocked(postMessageToHost).mock.calls[0][0] as {
+			flushUnavailableReason?: string; state: { sections: Array<{ text?: string }> };
+		};
+		expect(message.flushUnavailableReason).toBeUndefined();
+		expect(message.state.sections).toHaveLength(3);
+		expect(message.state.sections[1].text?.length).toBe(largeText.length);
+	});
+
 	it('answers a rich-document save request with the current correlated state', () => {
 		pState.documentKind = 'sqlx';
 		const container = document.createElement('div');
@@ -5630,6 +5693,12 @@ describe('persistence round-trip', () => {
 			});
 			const secondPolicyRequestId = getPendingKustoLeaveNoTracePolicyRequestIdForTest();
 			expect(secondPolicyRequestId).not.toBe(firstPolicyRequestId);
+			expect(vi.mocked(postMessageToHost).mock.calls.map(([message]) => message)
+				.filter(message => message.type === 'getConnections')).toEqual([
+				{ type: 'getConnections', policyRequestId: firstPolicyRequestId },
+				{ type: 'getConnections', policyRequestId: secondPolicyRequestId },
+			]);
+			expect(pState.documentRuntimeActive).toBe(true);
 
 			applyKustoLeaveNoTracePolicyRaw(['https://stale.kusto.windows.net'], true, firstPolicyRequestId);
 			applyKustoLeaveNoTracePolicyRaw(['https://uncorrelated.kusto.windows.net'], true);

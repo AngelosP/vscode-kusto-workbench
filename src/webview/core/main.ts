@@ -46,13 +46,11 @@ kustoEditorSchemaCoordinator.subscribeLifecycle(event => {
 	});
 });
 
-// Request connections on load (only in the query editor webview, not side-panel webviews
-// like cached-values or connection-manager that also load the bundle).
+// Kusto connections come from document restore's correlated policy request;
+// an earlier publication can be rejected while the document runtime is inactive.
 if (window.vscode) {
 	perfMark('webview.main.start');
 	traceFileOpen('main.start', { readyState: document.readyState });
-	traceFileOpen('main.requestConnections.send');
-	postMessageToHost({ type: 'getConnections' });
 	postMessageToHost({ type: 'getSqlConnections' });
 	// Global Copilot capability check (for add-controls Copilot button)
 	try { postMessageToHost({ type: 'checkCopilotAvailability', boxId: '__kusto_global__' }); } catch (e) { console.error('[kusto]', e); }

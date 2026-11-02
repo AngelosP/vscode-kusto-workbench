@@ -296,4 +296,106 @@ describe('CompatSidecarCloseCoordinator', () => {
 		expect(closeSource).not.toContain('CompatSidecarProjectionCoordinator');
 		expect(closeSource).not.toContain('sourceGeneration');
 	});
+
+	it.each([
+		{ unload: 'applied', choice: 'Save' },
+		{ unload: 'observed', choice: 'Save' },
+		{ unload: 'missing', choice: 'Save' },
+		{ unload: 'missing', choice: 'Discard' },
+		{ unload: 'missing', choice: undefined },
+	] as const)('drains promoted capture failure without abandoning a known draft ($unload, $choice)', async ({ unload, choice }) => {
+		vi.useFakeTimers();
+		const session = new CompatSidecarSession(false, 'KQL');
+		const post = vi.fn(() => true);
+		const report = vi.fn();
+		const latestDraft = draft('latest-known');
+		const draining = deferred<void>();
+		const coordinator = new CompatSidecarCloseCoordinator({ session, yieldTurn: async () => undefined });
+		const options = finalization(latestDraft, {
+			drainRetiredInbound: () => draining.promise,
+			promptSave: vi.fn(async () => choice),
+		});
+		session.markDirty('baseline');
+		session.requestBackgroundPersist(post, report);
+		coordinator.configure(options);
+		const closing = coordinator.disposePanel();
+		try {
+			await vi.advanceTimersByTimeAsync(2_000);
+			expect(options.captureDraft).not.toHaveBeenCalled();
+			expect(options.notifySaveFailed).not.toHaveBeenCalled();
+			if (unload !== 'missing') session.markBeforeUnload('beforeunload');
+			if (unload === 'applied') session.markAppliedBeforeUnload('beforeunload', session.generation);
+			draining.resolve();
+			await closing;
+			expect(options.captureDraft).toHaveBeenCalledOnce();
+			expect(options.saveDraft).toHaveBeenCalledTimes(choice === 'Save' ? 1 : 0);
+			expect(options.recoverDraft).toHaveBeenCalledTimes(choice === undefined ? 1 : 0);
+			if (choice === 'Save') expect(options.saveDraft).toHaveBeenCalledWith(latestDraft);
+			if (choice === undefined) expect(options.recoverDraft).toHaveBeenCalledWith(latestDraft);
+			expect(options.notifySaveFailed).toHaveBeenCalledTimes(unload === 'applied' ? 0 : 1);
+			expect(report).not.toHaveBeenCalled();
+			expect(post).toHaveBeenCalledOnce();
+		} finally {
+			draining.resolve();
+			session.settleClose();
+			await closing;
+			vi.useRealTimers();
+		}
+	});
+
+	it('freezes background admission before early close is configured', async () => {
+		vi.useFakeTimers();
+		const session = new CompatSidecarSession(false, 'SQL');
+		const post = vi.fn(() => true);
+		const report = vi.fn();
+		const coordinator = new CompatSidecarCloseCoordinator({ session, yieldTurn: async () => undefined });
+		session.requestBackgroundPersist(post, report);
+		const closed = coordinator.disposePanel();
+		session.requestBackgroundPersist(post, report);
+		await vi.advanceTimersByTimeAsync(2_000);
+		const options = finalization(undefined);
+		coordinator.configure(options);
+		try {
+			await closed;
+			expect(post).toHaveBeenCalledOnce();
+			expect(options.notifySaveFailed).toHaveBeenCalledOnce();
+			expect(report).not.toHaveBeenCalled();
+		} finally {
+			session.settleClose();
+			vi.useRealTimers();
+		}
+	});
+
+	it('recovers the exact dismissed draft and finishes cleanup even when capture-error notification throws', async () => {
+		vi.useFakeTimers();
+		const session = new CompatSidecarSession(false, 'KQL');
+		const coordinator = new CompatSidecarCloseCoordinator({ session, yieldTurn: async () => undefined });
+		const latestDraft = draft('known-before-capture-failure');
+		const notificationFailure = new Error('notification failed');
+		const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const options = finalization(latestDraft, {
+			promptSave: vi.fn(async () => undefined),
+			notifySaveFailed: vi.fn(() => { throw notificationFailure; }),
+		});
+		session.markDirty('baseline');
+		session.requestBackgroundPersist(() => true, vi.fn());
+		coordinator.configure(options);
+		const closing = coordinator.disposePanel();
+		try {
+			await vi.advanceTimersByTimeAsync(2_000);
+			await closing;
+			expect(options.saveDraft).not.toHaveBeenCalled();
+			expect(options.recoverDraft).toHaveBeenCalledExactlyOnceWith(latestDraft);
+			expect(options.notifyRecovered).toHaveBeenCalledExactlyOnceWith(latestDraft.uri);
+			expect(options.notifySaveFailed).toHaveBeenCalledOnce();
+			expect(options.repair).toHaveBeenCalledOnce();
+			expect(options.drainStore).toHaveBeenCalledOnce();
+			expect(log).toHaveBeenCalledExactlyOnceWith('[kusto] Metadata close notification failed:', notificationFailure);
+		} finally {
+			session.settleClose();
+			await closing;
+			log.mockRestore();
+			vi.useRealTimers();
+		}
+	});
 });

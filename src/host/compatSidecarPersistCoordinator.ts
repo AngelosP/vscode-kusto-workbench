@@ -127,7 +127,8 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 			return session.completeFinalPersist(flushRequestId, error, result);
 		};
 
-		if (flushRequestId && !session.claimFinalPersistRequest(flushRequestId)) {
+		const incomingRevision = 'flushUnavailableReason' in message ? undefined : message.editRevision;
+		if (flushRequestId && !session.claimFinalPersistRequest(flushRequestId, incomingRevision)) {
 			return { terminal: 'ignored-final' };
 		}
 		let persistAdmission: CompatPersistAdmissionLease | undefined;
@@ -139,12 +140,24 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 			return { terminal: 'load-error', error };
 		}
 		if ('flushUnavailableReason' in message) {
+			if (message.flushUnavailableReason === 'snapshot-capture-failed') {
+				const error = new Error(`Failed to capture the ${this.options.languageLabel} metadata snapshot.`);
+				settleFinal(error);
+				return { terminal: 'prepare-failed', error };
+			}
 			this.options.warnUnavailable();
 			settleFinal(undefined, { available: false, reason: message.flushUnavailableReason });
 			return { terminal: 'unavailable' };
 		}
 
+		if (session.isStalePersistRevision(message.editRevision)) {
+			const error = this.staleError();
+			settleFinal(error);
+			session.markBeforeUnload(message.reason);
+			return { terminal: 'stale', error };
+		}
 		persistAdmission = session.reservePersistAdmission(message.editRevision);
+		const persistGeneration = session.generation;
 		await persistAdmission.waitForTurn();
 		const snapshotId = this.nonEmptyTrimmed(message.snapshotId);
 		await projection.waitForAcknowledgedProjection(message.sourceGeneration);
@@ -295,6 +308,7 @@ export class CompatSidecarPersistCoordinator implements CompatSidecarPersistCoor
 				);
 			}
 			adapter.publishChanges(state);
+			session.markAppliedBeforeUnload(message.reason, persistGeneration);
 			return { terminal: 'applied', ok: true } as const;
 		});
 		session.markBeforeUnload(message.reason);

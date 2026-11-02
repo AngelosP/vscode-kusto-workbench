@@ -610,6 +610,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			return projectionCoordinator.project(request);
 		};
 		const requestFinalPersist = (reason: string, timeoutMs = 2_000): Promise<CompatSidecarFinalPersistResult> => {
+			if (outerDisposed) return Promise.reject(new Error('The SQL metadata editor is closed.'));
 			return sidecarSession.requestFinalPersist<CompatSidecarFinalPersistResult>(message => startupGateway.postMessage(message), reason, timeoutMs);
 		};
 		const requireAvailableFinalPersist = async (reason: string): Promise<void> => {
@@ -623,14 +624,16 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			subscriptions.push((webviewPanel as any).onDidChangeViewState((event: { webviewPanel: vscode.WebviewPanel }) => {
 				sidecarSession.setPanelVisible(event.webviewPanel.visible);
 				if (!event.webviewPanel.visible) {
-					void requestFinalPersist('hidden').catch(error => {
+					sidecarSession.requestBackgroundPersist(
+						(message, signal, isCurrent) => startupGateway.postMessage(message, signal, isCurrent),
+						error => {
 						if (outerDisposed) return;
 						if (error instanceof CompatSidecarPersistSupersededError) {
 							getWorkbenchLogger().trace('[kusto] Hidden SQL metadata snapshot superseded; no changes were admitted.');
 							return;
 						}
 						void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
-					});
+						}, startupGateway.runtimeIdentity);
 				}
 			}));
 		}
@@ -725,7 +728,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			isLive: () => !outerDisposed,
 			postMessage: message => startupGateway.postMessage(message),
 			warnUnavailable: () => {
-				getWorkbenchLogger().warn('[kusto] SQL metadata snapshot unavailable during save; saving primary text only.');
+				getWorkbenchLogger().warn('[kusto] SQL metadata snapshot unavailable; no metadata changes were admitted.');
 			},
 			adapter: {
 				captureState: state => ({

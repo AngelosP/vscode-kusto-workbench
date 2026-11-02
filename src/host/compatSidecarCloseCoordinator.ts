@@ -103,6 +103,7 @@ export class CompatSidecarCloseCoordinator implements CompatSidecarCloseCoordina
 	}
 
 	disposePanel(): Promise<void> {
+		this.options.session.freezeBackgroundPersists();
 		this.panelDisposed = true;
 		this.startCloseIfReady();
 		return this.closeResult;
@@ -110,6 +111,7 @@ export class CompatSidecarCloseCoordinator implements CompatSidecarCloseCoordina
 
 	failInitialization(cleanup: CompatSidecarCloseFailureCleanup): Promise<void> {
 		if (this.closeStarted) return this.closeResult;
+		this.options.session.freezeBackgroundPersists();
 		this.closeStarted = true;
 		this.retiredAdmissionOpen = false;
 		void this.runInitializationFailure(cleanup).then(this.resolveClose, this.resolveClose);
@@ -124,6 +126,7 @@ export class CompatSidecarCloseCoordinator implements CompatSidecarCloseCoordina
 
 	private async runClose(finalization: CompatSidecarCloseFinalization): Promise<void> {
 		let attemptedDraft: CompatSidecarCloseDraft | undefined;
+		let captureError: Error | undefined;
 		try {
 			await this.options.session.waitForFinalPersists();
 			if (this.options.session.isPanelVisible) {
@@ -137,6 +140,7 @@ export class CompatSidecarCloseCoordinator implements CompatSidecarCloseCoordina
 			this.disposeSubscriptions(finalization.subscriptions);
 			await this.options.session.waitForPersists();
 			this.options.session.beginClose();
+			captureError = await this.options.session.getBackgroundCloseError();
 
 			const draft = this.options.session.isDirty ? finalization.captureDraft() : undefined;
 			if (draft) {
@@ -166,6 +170,10 @@ export class CompatSidecarCloseCoordinator implements CompatSidecarCloseCoordina
 			}
 		}
 
+		if (captureError) {
+			try { finalization.notifySaveFailed(captureError); }
+			catch (error) { console.error('[kusto] Metadata close notification failed:', error); }
+		}
 		try {
 			await finalization.repair();
 		} catch {

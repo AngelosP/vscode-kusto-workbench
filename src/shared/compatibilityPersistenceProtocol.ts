@@ -182,7 +182,7 @@ function parseEnvelope(input: UnknownRecord): string | undefined {
 	return undefined;
 }
 
-function parseState(
+export function parseCompatibilityPersistenceState(
 	input: unknown,
 	documentKind?: CompatibilityPersistenceDocumentKind,
 	requirePrimary = false,
@@ -262,7 +262,7 @@ export function parseCompatibilityPersistenceWebviewMessage(
 	}
 	if (input.type === 'persistDocument') {
 		const unavailableFinal = input.flushUnavailableReason !== undefined;
-		const state = parseState(input.state, documentKind, !unavailableFinal);
+		const state = parseCompatibilityPersistenceState(input.state, documentKind, !unavailableFinal);
 		if (!state.ok) return state;
 		if (!isRevision(input.sourceGeneration)) {
 			return failure('Persist sourceGeneration must be a non-negative safe integer.');
@@ -346,7 +346,7 @@ export function parseCompatibilityPersistenceHostMessage(
 			if (!nonEmptyString(input.error)) return failure('Failed documentData.error must be a non-empty string.');
 			return { ok: true, value: input as unknown as CompatibilityPersistenceDocumentDataFailure };
 		}
-		const state = parseState(input.state, input.documentKind, true);
+		const state = parseCompatibilityPersistenceState(input.state, input.documentKind, true);
 		if (!state.ok) return state;
 		if (!isRevision(input.editRevision)) {
 			return failure('documentData.editRevision must be a non-negative safe integer.');

@@ -10,14 +10,142 @@ on every `vscode-ext-test init` to stay current with framework updates),
 Read this file before every test session. Update it after every session with
 anything new you learned. Structure it however makes sense for this repo.
 
-## Current Verification Checkpoint: Superseded Compatibility Metadata Notifications
+## Current Verification Checkpoint: Bounded Background Captures
 
-Status: REPRODUCED AND FIXED in the production-built workspace.
-Both metadata fixes and the retained-notebook opening-load fix pass their
-reproductions, real-worker E2E and complete core regressions. Final verification
-passes 10,436 tests with five existing skips, production types/lint and both
-unchanged bundle gates. No new 2300-second hold, broad prepared-profile suite
-or older installed-release qualification is claimed.
+Status: the initial metadata/allocation fixes were committed locally as
+`38b7688`. A premature startup-policy request has also been reproduced and
+fixed. The separate late-renderer timeout now has a bounded background-capture
+implementation with focused/native UI coverage. Qualification treats complete
+regressions, original109 opening load, the full-duration replay and post-edit
+review as separate gates; an opening-load pass is not retention proof. Save
+deadlines and worker lifetimes have not changed. No disk autosave or
+error-suppression workaround was introduced.
+
+### Background Capture Verification And Learnings
+
+- Only hide uses untimed, coalesced capture. Save reserves foreground priority
+  before queuing; stale background replies cannot reserve application work.
+  Close promotes existing interest, never posts after disposal, and preserves
+  the known dirty draft before reporting a genuine capture failure.
+- The new real-provider delayed KQL/SQL tests failed before the product change.
+  Missing/throwing serializers and duplicate section IDs separately reproduced
+  partial requested snapshots. Failure propagation is separate from strict
+  tool capture; an 18 MiB persistence control must remain accepted.
+- `compat-background-persistence` uses real Markdown/Monaco typing, native
+  Manual/FocusOut Save, the original held reply, exact source/companion bytes,
+  close/reopen, later edits and actual close Save/Discard. Run with a fresh
+  temporary `kw-background-ui-*` workspace and `KW_BACKGROUND_CDP_PORT`.
+  Auto Save changes are workspace-only, checked for the fixture resource,
+  and restored before close-prompt testing.
+- CLI 0.1.24 does not interpolate Scenario Outline values inside docstrings.
+  Store expanded inline parameters in a fixture object instead. Run
+  `20261101-220909` failed setup on a literal `background.<extension>` filename.
+  Scenario artifact directory names are also truncated: put distinguishing
+  mode/trigger/choice columns first, rather than after long queries.
+- The incoming diagnostic listener can observe a request after the synchronous
+  outgoing reply has already been produced (`20261101-221020`). Gate the actual
+  outgoing correlated `reason: hidden` reply, then independently verify its
+  matching incoming request; forward a clone unchanged when releasing it.
+- Every untitled webview expression that installs a hook must first identify
+  the exact fixture DOM. After reopen, the first available frame may belong
+  to the other notebook. `bg-live-n9WYUB` and `bg-live-kRXigP` installed the
+  close hook in the wrong frame; the source-ID guard fixed the setup failure.
+- Clicking a Monaco wrapper is not sufficient focus proof. The first SQL
+  attempt in `20261101-221522` typed into Markdown. Wait for the primary
+  Monaco DOM, scroll it into view, and focus/assert its actual textarea or
+  contenteditable before native typing; do not use model setters.
+- `Ctrl+Tab` can leave the MRU picker open in this driver (`20261101-223326`).
+  `Ctrl+PageDown` exercises the real next-tab control without that picker.
+  Wait for the exact native dirty buffer before both initial and post-reopen
+  focus-change Save. `20261101-223700` moved focus before the second edit
+  reached that buffer: no native Save event occurred. Instant focus change
+  before native-buffer synchronization is not qualified by these scenarios.
+- Native hidden disposal need not deliver `beforeunload`. `bg-live-yBccaS`
+  and `bg-live-2fCKuw` held every snapshot of a new edit; the host correctly
+  reported capture timeout and preserved the old disk state, with no dirty
+  draft to prompt for. Do not turn this into a guarantee of recovering
+  never-received edits. The close fault scenario instead first proves the
+  exact dirty draft was acknowledged, then drops background and unload
+  captures and verifies the real prompt, bytes, reopened UI and exactly one
+  expected capture error after the choice.
+- Run `20261101-224048` passes all six composed KQL/SQL/manual/focus-change
+  cases. All twelve exact-window CDP images and their JSON receipts were
+  reviewed: query revision 3 and the expected Markdown restore correctly.
+  Error toasts in the close images are deliberate capture faults; some
+  pre-close images still show the preceding case's deliberate toast.
+  Cleanup now clears those isolated-test notifications only after checking
+  the exact expected error and restoring the forwarding observers.
+- The archived replay's extension-bound observer now catches prefixed close
+  timeouts, explicit capture failures and other companion close errors too.
+  Six new guard tests failed before that harness change. It also stays
+  installed for a three-second observation tail after native tab closure,
+  before preservation checks and restoration, to cover the unchanged promoted
+  two-second arrival deadline. This is observation, not proof that arbitrary
+  physical work has drained. All 35 observer/harness tests pass.
+  Never let matching only the old bare timeout hide a new close error.
+- Final core regressions pass 456 native tests at the unchanged 5000 ms cap,
+  9452 webview/host tests and 586 script tests: 10,494 passes and five existing
+  skips. Strict types, lint, production packaging and both size gates pass.
+  Run `20261101-230455` passes all 109 activations, the exact hidden notes/
+  dashboard and ordinary recovery, target88, nine canvas IDs, unchanged files,
+  zero errors and zero starting/final tabs. Both CDP images were reviewed;
+  the old "HOLD RELEASE" text is the unchanged historical document content,
+  not this run's verdict. This diagnostic did not run the 2300-second hold.
+- Native Save's shared budget is independently exercised in the extended
+  `compat-background-persistence` lifecycle. Hold a real foreground reply
+  beyond two seconds: native query revision 4 commits about 500 ms before the
+  visible final-capture error. Type revision 5, release the expired reply
+  unchanged, verify no ACK or dirty-buffer/disk overwrite, then use real
+  Ctrl+S and reopen revision 5. `bg-live-LJRqpj` and all six cases in
+  `20261101-232519` pass these exact checks. Do not claim that a rejected
+  `waitUntil` prevents VS Code from saving primary text.
+- The instant-focus issue is independently reproduced, not silently waived:
+  private run `20261101-225735` on a fresh build of commit `38b7688` and
+  current-build run `20261101-225910` both hold only actual primary-edit
+  snapshots until the other tab is active, then release them unchanged.
+  Both leave native buffer 3 dirty, disk at 2 and no second native Save event;
+  the first FocusOut Save passed. The first baseline attempt `225621` had
+  only one tab and is an invalid setup, not a bug reproduction. This separate
+  pre-existing Auto Save race is not fixed by background capture coalescing.
+- The user approved only a 5 KiB host budget increase: baseline 2501 KiB plus
+  the unchanged 50 KiB buffer, limit 2551 KiB. Other bundle limits are unchanged.
+- Post-edit review caught a still-live old background reply reserving admission
+  before its stale-revision check, invalidating a newer ordinary snapshot.
+  Four exact tests failed with newer `superseded` instead of `applied`: pause
+  sanitation or prior admission, each with automatic or close-promoted capture.
+  The correction checks both adopted and queued revisions before admission;
+  obsolete automatic interest retires quietly with its follow-up preserved,
+  while promoted/foreground stale capture still rejects without poisoning
+  newer work. The three-owner ring now passes 120 tests.
+- Applied-unload coverage now composes the real persist/session/close owners,
+  rather than manufacturing a stamp in a close test. Seven cases cover actual
+  success, blocked/failed sanitation, publication failure, rejected source
+  edit, stale unload, subsequently retired success and genuine capture
+  failure followed by successful unload. The tests verify exact draft handling,
+  ACKs, notification ordering and cleanup without calling the stamp directly.
+- The corrected production workspace build passes the complete six-case UI
+  run `20261102-000741`, including real Manual/FocusOut Save, close Save/Discard,
+  foreground failure and revision-5 recovery. All twelve CDP images were
+  reviewed. Its host bundle is 2550.6 KiB against the approved 2551 KiB cap;
+  the review correction required no additional budget change.
+- Always use a new temporary workspace for each prepared-profile replay, even
+  when the runtime bytes are unchanged. Full attempt `20261102-002319` was
+  blocked before product activation because VS Code restored 105 clean,
+  task-owned tabs from the reused diagnostic workspace, despite its prior
+  live zero-tab cleanup. It is not a product red or a pass. Do not bypass the
+  empty-workspace guard or reset authentication/profile state to address this.
+- Final frozen-runtime qualification `20261102-002746` passes all 18 checks,
+  the original 13 warm files and 109 activations with no retries. The final
+  hidden notes/dashboard calls began after 2300015/2300058 ms respectively,
+  before ordinary activation; exact notes, dashboard validation, recovery,
+  target88 and nine canvas IDs pass. Source/archive bytes are unchanged,
+  no source Save or metadata/capture/policy error occurs, initial/final tabs
+  are zero, and the post-close observer remains installed for 3004.6 ms.
+  Both exact-window CDP images were reviewed. No profiler, concurrent suite,
+  rebuild or shortened hidden interval was used. This verifies the current
+  production workspace build in VS Code 1.144.0, not an older installed VSIX.
+
+### Completed Metadata And Allocation Fixes
 
 - Automatic hidden-panel persistence can be superseded by an identical newer
   snapshot at the same edit revision. The old request correctly rejects, but
@@ -215,6 +343,70 @@ or older installed-release qualification is claimed.
   summary and normally takes many minutes; no intermediate per-file output
   alone is not evidence of a hang. Final production packaging, strict types,
   lint and both synchronized bundle gates pass without another budget change.
+
+### Startup Policy And Remaining Native Delay
+
+- Full-duration committed-build run `20261101-044746` passes the exact
+  hidden/recovery APIs, all 109 first activations, target88, renderer and
+  preservation checks. It still fails with one final KQL snapshot timeout
+  during prefix32. Do not promote its successful retention checks into a
+  clean overall result.
+- The green opening-load logs also retained `Kusto policy snapshot was not
+  applied by the webview` warnings. `main.ts` sent an uncorrelated
+  `getConnections` while the document runtime was inactive; the publication
+  gate correctly rejected an early reply. Actual-main tests failed for both
+  early-document-request variants. Removing only that redundant request
+  leaves the correlated request in document restore/reload, all policy gates,
+  genuine failure reporting, and SQL/Copilot startup unchanged.
+- The focused startup/restore/dispatcher/policy ring passes 704 tests.
+  Observer runs `20261101-063915` and `20261101-064218` execute and pass the
+  strict no-policy-warning assertion after 64 and 109 targets respectively.
+  Full clean-source regressions pass 454 native, 9408 webview/host and 577
+  script tests (10,439 passes, five existing skips). Production types, lint
+  and both unchanged bundle gates pass. Clean native-worker run
+  `20261101-082426` also passes deferred startup, real third-section focus,
+  exact native completion, Save/close/reopen and repeated completion, with
+  reviewed CDP screenshots and owned fixture cleanup.
+- Temporary timing diagnostic `20261101-053445` distinguishes the remaining
+  timeout from the earlier host-admission bug: a KQL request posts successfully
+  in 58 ms, but the renderer handles it about 4.2 seconds after the request;
+  snapshot creation then takes about 0.5 ms. The expired reply is correctly
+  ignored. The diagnostic also reproduces SQL's corresponding timeout.
+- CPU run `20261101-054911` reproduces the delay and collects three usable
+  iframe-isolate profiles. One profiler-stop and one runtime-enable operation
+  time out; preserve those collection limitations. JavaScript profiles alone
+  do not establish the native scheduling or wait cause.
+- Browser-root `Tracing` with `ReturnAsStream` failed to complete in
+  `20261101-063021`, causing a post-oracle diagnostic wait failure. Use
+  `ReportEvents` instead. A page-scoped trace (`20261101-064959`) omits the
+  separate webview processes; browser-root `ReportEvents`
+  (`20261101-065651`) captures all five renderer UI threads.
+- Compare trace `dur` with `tdur`, not wall time alone. The latter trace
+  contains 1.3-1.9-second native UI tasks with only 0.15-20 ms of thread CPU,
+  including a VS Code webview focus-poll callback. It is a green diagnostic
+  run: these near-deadline waits do not prove the cause of an earlier missed
+  reply. Low-overhead long-task observers also passed without reproducing the
+  timeout; do not treat those observational greens as a stall fix.
+- Clean production run `20261101-075957`, with all temporary product traces
+  and observers removed, reproduces a final KQL timeout again after ordinary
+  recovery. All other original109 checks pass and the policy warning is
+  absent, but the final assertion correctly fails. Both the live-canary CDP
+  image and target-qualified native failure image show the remaining timeout.
+- The user chose keeping all deadlines unchanged, then preparing a native
+  Windows scheduling/wait capture for explicit operator authorization. Do not
+  start an elevated or system-wide capture merely because WPR is available.
+  The prepared profile uses only process/module, context-switch, ready-thread
+  and priority events, plus context-switch/ready-thread stacks. These kernel
+  events are system-wide in this profile; PID filtering is an analysis step,
+  not a collection privacy boundary. Raw ETLs can contain unrelated process
+  metadata and must remain private/local.
+- Use a unique WPR `-instancename` on every recording-control command, as its
+  final argument. Never use an unqualified `wpr -cancel`, change process
+  priorities, enable global performance settings, or elevate the VS Code
+  replay. `wpr -profiledetails` validates the custom profile without recording.
+  The operator recorder stops after a timeout tail or a 60-second limit;
+  forced terminal closure still requires its printed instance-specific
+  recovery command.
 
 ## Previous Verification Checkpoint: Fresh Hidden MDX Mode Update
 

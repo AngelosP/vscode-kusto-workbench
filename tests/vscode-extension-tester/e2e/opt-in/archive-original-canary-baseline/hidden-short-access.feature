@@ -97,6 +97,8 @@ Feature: Archived canary hidden access
           const expected = new Set([
             'The KQL metadata snapshot was superseded before admission.',
             'The SQL metadata snapshot was superseded before admission.',
+            'Failed to capture the KQL metadata snapshot.',
+            'Failed to capture the SQL metadata snapshot.',
           ]);
           const timeoutMessages = new Set([
             'Timed out waiting for the final KQL metadata snapshot.',
@@ -104,9 +106,13 @@ Feature: Archived canary hidden access
           ]);
           const original = window.showErrorMessage;
           function capture(...args) {
-            if (expected.has(args[0])) messages.push(args[0]);
-            if (timeoutMessages.has(args[0])) {
+            const closePrefix = 'Failed to save companion metadata: ';
+            const closing = typeof args[0] === 'string' && args[0].startsWith(closePrefix);
+            const message = closing ? args[0].slice(closePrefix.length) : args[0];
+            if (timeoutMessages.has(message)) {
               timeouts.push({ message: args[0], phase: currentPhase(), atUtc: new Date().toISOString(), stack: new Error('Final metadata snapshot timeout observed').stack });
+            } else if (expected.has(args[0]) || closing) {
+              messages.push(args[0]);
             }
             return Reflect.apply(original, this, args);
           }
@@ -114,6 +120,7 @@ Feature: Archived canary hidden access
           return {
             messages,
             timeouts,
+            observeCloseReplyDeadline: () => new Promise(resolve => setTimeout(resolve, 3000)),
             isCurrent: () => window.showErrorMessage === capture,
             dispose: () => {
               if (window.showErrorMessage !== capture) return false;
@@ -555,6 +562,10 @@ Feature: Archived canary hidden access
           if (owner) {
             try { outcome.beforeCleanup = preservation('before-cleanup'); } catch (error) { outcome.errors.push({ phase, message: String(error?.message ?? error) }); }
             try { outcome.cleanup = await helper.closeAcceptanceTabs(vscode, owner, [...references.keys()]); } catch (error) { outcome.errors.push({ phase, message: String(error?.message ?? error) }); }
+            const closeObservationStarted = performance.now();
+            await notificationCapture?.observeCloseReplyDeadline();
+            outcome.closeReplyObservationMs = performance.now() - closeObservationStarted;
+            outcome.checks.closeReplyDeadlineObserved = outcome.closeReplyObservationMs >= 2000;
             try { outcome.afterCleanup = preservation('after-cleanup'); } catch (error) { outcome.errors.push({ phase, message: String(error?.message ?? error) }); }
           }
           for (const subscription of subscriptions) subscription.dispose();
@@ -595,4 +606,5 @@ Feature: Archived canary hidden access
       """
     Then I collect JSON artifact "hidden-short-access-assertion" from extension host expression "(() => { const result = globalThis.__hiddenShortAccess; const expected = result?.diagnosticSeconds !== undefined ? 'NOT_REPRODUCED_DIAGNOSTIC_RUN' : result?.prolonged ? 'NOT_REPRODUCED_QUALIFIED_RUN' : 'NOT_REPRODUCED_SHORT_RUN'; if (result?.classification !== expected || !Object.values(result.checks).every(value => value === true) || result.prolonged && (!result.recovery?.passed || !result.recovery?.sameTarget || !result.recovery?.activeCanary || result.recoveryActivation?.value?.success !== true || result.recoveryActivation?.value?.isLiveWorkbench !== true)) throw new Error(JSON.stringify({ classification: result?.classification, evidenceRoot: result?.evidenceRoot, checks: result?.checks, firstFailure: result?.firstFailure, recovery: result?.recovery, metadataNotifications: result?.metadataNotifications, metadataTimeouts: result?.metadataTimeouts, errors: result?.errors })); return { classification: result.classification, baseline: result.pairs[0], checkpoints: result.pairs.slice(1), metadataNotifications: result.metadataNotifications, metadataTimeouts: result.metadataTimeouts, limitations: result.limits }; })()"
     Then the output channel "Kusto Workbench" should contain "[file-open:"
+    And the output channel "Kusto Workbench" should not contain "Kusto policy snapshot was not applied by the webview."
     And I take a screenshot "hidden-access-cleanup"

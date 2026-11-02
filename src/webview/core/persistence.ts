@@ -6,6 +6,7 @@ import { normalizeClusterUrl, isLeaveNoTraceCluster, normalizePersistedResultJso
 import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
 import { resolveKustoConnection } from '../../shared/kustoAuth.js';
 import { captureToolStateSections } from '../../shared/toolStateSnapshotProtocol.js';
+import { parseCompatibilityPersistenceState } from '../../shared/compatibilityPersistenceProtocol.js';
 import { postMessageToHost } from '../shared/webview-messages';
 import {
 	createEmptyQueryEditorPendingAdds,
@@ -2041,14 +2042,15 @@ function insertHostOwnedDevelopmentNotes(sections: any[]): void {
 	}
 }
 
-export function getKqlxState(strictCapture = false) {
+export function getKqlxState(strictCapture = false, failCapture = false) {
+	const requireCapture = strictCapture || failCapture;
 	const handleCaptureError = (error: unknown = new Error('Missing section state.')): void => {
-		if (strictCapture) throw error;
+		if (requireCapture) throw error;
 		console.error('[kusto]', error);
 	};
 	const readMissingText = (text: string | undefined, pending: unknown): string => {
 		if (typeof pending === 'string') return pending;
-		if (strictCapture && typeof text !== 'string') handleCaptureError();
+		if (requireCapture && typeof text !== 'string') handleCaptureError();
 		return text || '';
 	};
 	// Compatibility mode (.kql/.csl/.md): only a single section is supported.
@@ -2091,7 +2093,7 @@ export function getKqlxState(strictCapture = false) {
 				try {
 					const ids = Array.isArray(sqlBoxes) ? sqlBoxes : [];
 					for (const id of ids) {
-						if (typeof id === 'string' && (strictCapture || __kustoGetSqlSectionElement(id))) {
+						if (typeof id === 'string' && (requireCapture || __kustoGetSqlSectionElement(id))) {
 							firstSqlBoxId = id;
 							break;
 						}
@@ -2124,7 +2126,7 @@ export function getKqlxState(strictCapture = false) {
 			try {
 				const ids = Array.isArray(queryBoxes) ? queryBoxes : [];
 				for (const id of ids) {
-					if (typeof id === 'string' && (strictCapture || __kustoGetQuerySectionElement(id))) {
+					if (typeof id === 'string' && (requireCapture || __kustoGetQuerySectionElement(id))) {
 						firstQueryBoxId = id;
 						break;
 					}
@@ -2229,13 +2231,13 @@ export function getKqlxState(strictCapture = false) {
 		const ownedGetter = isHostOwnedMarkdownDocument() ? ownedSectionGetters.find(([ownedKind]) => ownedKind === kind)?.[1] : undefined;
 		if (ownedGetter) {
 			const owned = ownedGetter(id);
-			if (strictCapture && !owned) handleCaptureError();
+			if (requireCapture && !owned) handleCaptureError();
 			if (owned) sections.push(owned);
 			continue;
 		}
 		if (el && typeof (el as any).serialize === 'function') {
 			try { sections.push((el as any).serialize()); } catch (e) { handleCaptureError(e); }
-		} else if (strictCapture && canonicalSectionKind(kind) && kind !== 'devnotes') {
+		} else if (requireCapture && canonicalSectionKind(kind) && kind !== 'devnotes') {
 			handleCaptureError();
 		}
 	}
@@ -2388,8 +2390,8 @@ function __kustoPendingSqlRestoreConfigurationMatches(
 	return __kustoResolveSqlOwnerRestore(ownerElement, job.persistedOwner).state !== 'invalid';
 }
 
-function __kustoGetPersistenceSnapshotState(): ReturnType<typeof getKqlxState> {
-	const state = getKqlxState();
+function __kustoGetPersistenceSnapshotState(failCapture = false): ReturnType<typeof getKqlxState> {
+	const state = getKqlxState(false, failCapture);
 	const sections = Array.isArray(state.sections) ? state.sections : [];
 	const currentById = __kustoPersistenceSectionsById(state);
 	let changed = false;
@@ -2918,7 +2920,11 @@ export function flushCompatibilityPersist(requestId?: string, reason = 'flush'):
 		if (__kustoHasPendingRestoredResultsForCurrentDocument()) {
 			__kustoReconcilePendingRestoredResultsForPersist();
 		}
-		const state = __kustoGetPersistenceSnapshotState();
+		const state = __kustoGetPersistenceSnapshotState(true);
+		if (pState.documentKind === 'kql' || pState.documentKind === 'sql') {
+			const captured = parseCompatibilityPersistenceState(state, pState.documentKind, true);
+			if (!captured.ok) throw new Error(captured.error);
+		}
 		if (pState.documentKind !== 'kql' && pState.documentKind !== 'sql') {
 			__kustoAdvancePersistenceEpoch();
 			postMessageToHost({
@@ -2951,7 +2957,15 @@ export function flushCompatibilityPersist(requestId?: string, reason = 'flush'):
 			sourceGeneration: pState.sourceGeneration, editRevision, snapshotId,
 			...(requestId ? { flushRequestId: requestId } : {}),
 		});
-	} catch (e) { console.error('[kusto]', e); }
+	} catch (e) {
+		console.error('[kusto]', e);
+		if (requestId) {
+			postMessageToHost({
+				type: 'persistDocument', state: { sections: [] }, sourceGeneration: pState.sourceGeneration,
+				flushRequestId: requestId, flushUnavailableReason: 'snapshot-capture-failed',
+			});
+		}
+	}
 }
 
 export function acknowledgePersistDocument(
@@ -4497,4 +4511,3 @@ export function finalizeDocumentDefaultsAfterAcknowledgement(state: unknown): vo
 // Window bridge: expose globals for remaining legacy callers
 // ======================================================================
 _win.schedulePersist = schedulePersist; // inline HTML onclick consumers
-

@@ -17668,6 +17668,102 @@ suite('Sidecar .kql.json strategy', () => {
 		{ extension: '.kql', Provider: KqlCompatEditorProvider, primaryType: 'query', kind: 'kqlx', label: 'KQL' },
 		{ extension: '.sql', Provider: SqlCompatEditorProvider, primaryType: 'sql', kind: 'sqlx', label: 'SQL' },
 	] as const) {
+	test(`${variant.label} hidden snapshots can arrive after the final-save reply deadline`, async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-delayed-hidden-snapshot-'));
+		const sourcePath = path.join(root, `unchanged${variant.extension}`);
+		const sidecarPath = `${sourcePath}.json`;
+		const sourceText = variant.primaryType === 'query' ? 'print Unchanged = 1' : 'SELECT 1 AS Unchanged';
+		const sidecarText = JSON.stringify({
+			kind: variant.kind, version: 1,
+			state: { sections: [
+				{ id: 'primary_1', type: variant.primaryType, linkedQueryPath: path.basename(sourcePath) },
+				{ id: 'markdown_1', type: 'markdown', text: 'BASELINE' },
+			] },
+		});
+		const originalShowError = vscode.window.showErrorMessage;
+		const errors: string[] = [];
+		const posted: any[] = [];
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let changeViewState: ((event: { webviewPanel: { visible: boolean } }) => unknown) | undefined;
+		let session: CompatSidecarSession | undefined;
+		const factory: CompatSidecarPersistCoordinatorFactory = options => {
+			session = options.session;
+			const requestFinalPersist = session.requestFinalPersist.bind(session);
+			session.requestFinalPersist = <T = void>(
+				postMessage: Parameters<CompatSidecarSession['requestFinalPersist']>[0], reason: string,
+			) => requestFinalPersist<T>(postMessage, reason, 500);
+			return new CompatSidecarPersistCoordinator(options);
+		};
+		const cancellation = new vscode.CancellationTokenSource();
+		try {
+			fs.writeFileSync(sourcePath, sourceText);
+			fs.writeFileSync(sidecarPath, sidecarText);
+			(vscode.window as any).showErrorMessage = async (message: string) => { errors.push(message); return undefined; };
+			const provider = new (variant.Provider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+				}, vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				undefined, undefined, undefined, factory,
+			);
+			const document = {
+				uri: vscode.Uri.file(sourcePath), getText: () => sourceText, lineCount: 1,
+				lineAt: () => ({ text: sourceText }), isDirty: false, save: async () => true,
+			};
+			const panel = {
+				visible: true,
+				webview: {
+					options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+						receiveHandler = handler;
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: () => ({ dispose() {} }),
+				onDidChangeViewState: (handler: typeof changeViewState) => {
+					changeViewState = handler;
+					return { dispose() {} };
+				},
+			};
+			await provider.resolveCustomTextEditor(document, panel, cancellation.token);
+			assert.ok(receiveHandler && changeViewState && session);
+			await Promise.resolve(receiveHandler({ type: 'requestDocument' }));
+			const projection = posted.find(message => message.type === 'documentData' && message.ok === true);
+			assert.ok(projection);
+			errors.length = 0;
+			panel.visible = false;
+			changeViewState({ webviewPanel: panel });
+			await waitForCondition(() => posted.some(message => message.type === 'requestFinalPersist'), 'Hidden snapshot request');
+			const request = posted.find(message => message.type === 'requestFinalPersist');
+			await new Promise(resolve => setTimeout(resolve, 600));
+			assert.deepStrictEqual(errors, [], 'Automatic hidden synchronization must not use the final-Save reply deadline');
+
+			const state = JSON.parse(JSON.stringify(projection.state));
+			state.sections[1].text = 'LATE HIDDEN METADATA';
+			await Promise.resolve(receiveHandler(withProjectedCompatPrimary(posted, {
+				type: 'persistDocument', sourceGeneration: projection.sourceGeneration,
+				editRevision: 1, snapshotId: 'late-hidden', flushRequestId: request.requestId,
+				state, reason: 'hidden',
+			})));
+			await session.waitForPersists();
+			assert.ok(posted.some(message => message.type === 'persistDocumentAck' && message.snapshotId === 'late-hidden'));
+			assert.strictEqual(session.isDirty, true);
+			assert.strictEqual(fs.readFileSync(sourcePath, 'utf8'), sourceText);
+			assert.strictEqual(fs.readFileSync(sidecarPath, 'utf8'), sidecarText, 'Hiding must not introduce a durable metadata autosave');
+		} finally {
+			session?.settleClose();
+			cancellation.dispose();
+			(vscode.window as any).showErrorMessage = originalShowError;
+			for (const file of [sourcePath, sidecarPath]) if (fs.existsSync(file)) fs.unlinkSync(file);
+			fs.rmdirSync(root);
+		}
+	});
+	}
+
+	for (const variant of [
+		{ extension: '.kql', Provider: KqlCompatEditorProvider, primaryType: 'query', kind: 'kqlx', label: 'KQL' },
+		{ extension: '.sql', Provider: SqlCompatEditorProvider, primaryType: 'sql', kind: 'sqlx', label: 'SQL' },
+	] as const) {
 	test(`${variant.label} automatic hidden metadata supersession does not report a user error`, async () => {
 		const originalShowError = vscode.window.showErrorMessage;
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-hidden-metadata-supersession-'));
