@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import * as vscode from 'vscode';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -61,6 +62,64 @@ function findVsCodeCli(): string | undefined {
 const vsCodeCli = findVsCodeCli();
 
 describe('external MCP setup', () => {
+	it.each(['available', 'missing', 'directory', 'download-failed'] as const)(
+		'prepares the isolated VS Code CLI before Windows CI verification (%s)', async scenario => {
+			const workflow = readFileSync(resolve('.github/workflows/build.yml'), 'utf8');
+			const windows = workflow.slice(workflow.indexOf('  connector-runtime-windows:'));
+			const preparation = windows.indexOf('      - name: Prepare isolated VS Code CLI');
+			const verification = windows.indexOf('      - name: Verify packaged Windows connector');
+			const coldLaunch = windows.indexOf('      - name: Verify packaged cold launch and report lifecycle');
+			expect(preparation).toBeGreaterThanOrEqual(0);
+			expect(preparation).toBeLessThan(verification);
+			expect(preparation).toBeLessThan(coldLaunch);
+			const script = windows.slice(preparation, verification).match(/^\s+node -e "(.+)"\r?$/m)?.[1];
+			if (!script) throw new Error('Windows CI does not contain its executable portable CLI setup.');
+			const root = mkdtempSync(join(tmpdir(), 'kw-ci-vscode-cli-'));
+			const executable = join(root, 'Code.exe');
+			const cli = join(root, 'bin', 'code.cmd');
+			const githubPath = join(root, 'github-path');
+			const download = vi.fn().mockResolvedValue(executable);
+			if (scenario === 'download-failed') download.mockRejectedValue(new Error('Download unavailable'));
+			const resolveCli = vi.fn().mockReturnValue(cli);
+			const output = { log: vi.fn(), error: vi.fn() };
+			const processState: { env: { GITHUB_PATH: string }; exitCode?: number } = { env: { GITHUB_PATH: githubPath } };
+			mkdirSync(dirname(cli));
+			if (scenario === 'available') writeFileSync(cli, '@echo off\r\n');
+			if (scenario === 'directory') mkdirSync(cli);
+			const dependencies: Record<string, unknown> = {
+				'node:fs': { appendFileSync, statSync },
+				'node:path': { dirname },
+				'@vscode/test-electron': { downloadAndUnzipVSCode: download, resolveCliPathFromVSCodeExecutablePath: resolveCli },
+			};
+			try {
+				await runInNewContext(script, {
+					require: (name: string) => {
+						if (!Object.hasOwn(dependencies, name)) throw new Error(`Unexpected CI setup dependency: ${name}`);
+						return dependencies[name];
+					},
+					process: processState,
+					console: output,
+				});
+				expect(download).toHaveBeenCalledOnce();
+				if (scenario === 'available') {
+					expect(resolveCli).toHaveBeenCalledExactlyOnceWith(executable);
+					expect(readFileSync(githubPath, 'utf8')).toBe(`${dirname(cli)}\n`);
+					expect(processState.exitCode).toBeUndefined();
+					expect(output.error).not.toHaveBeenCalled();
+					expect(output.log).toHaveBeenCalledOnce();
+				} else {
+					expect(existsSync(githubPath)).toBe(false);
+					expect(processState.exitCode).toBe(1);
+					expect(output.error).toHaveBeenCalledOnce();
+					expect(output.log).not.toHaveBeenCalled();
+					if (scenario === 'download-failed') expect(resolveCli).not.toHaveBeenCalled();
+				}
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
+
 	it('requires the current configuration registry before setup mutates integration state', () => {
 		expect(() => assertExternalToolsConfigurationRegistered(undefined))
 			.toThrow('Developer: Reload Window');

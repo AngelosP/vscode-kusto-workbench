@@ -165,6 +165,10 @@ jobs:
           node scripts/stage-mcp-connector-runtime.mjs
           node scripts/package-external-mcp-bootstrap.mjs
 
+      - name: Prepare isolated VS Code CLI
+        run: |
+          node -e "const fs = require('node:fs'); const path = require('node:path'); const vscodeTest = require('@vscode/test-electron'); vscodeTest.downloadAndUnzipVSCode().then(executable => { const cli = vscodeTest.resolveCliPathFromVSCodeExecutablePath(executable); if (!fs.statSync(cli).isFile()) throw new Error('Downloaded VS Code CLI is unavailable.'); fs.appendFileSync(process.env.GITHUB_PATH, path.dirname(cli) + '\n'); console.log('Prepared VS Code CLI: ' + cli); }).catch(error => { console.error(error); process.exitCode = 1; });"
+
       - name: Verify packaged Windows connector
         run: |
           npx vitest run tests/webview/host/externalMcpRuntime.test.ts tests/webview/host/externalMcpConnectorInstaller.test.ts tests/webview/host/externalMcpDiscovery.test.ts tests/webview/host/externalCopilotCodeIntegration.test.ts tests/webview/host/externalMcpSetup.test.ts --maxWorkers=1 --no-file-parallelism

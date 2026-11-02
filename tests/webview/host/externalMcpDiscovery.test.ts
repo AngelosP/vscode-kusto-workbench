@@ -34,6 +34,7 @@ describe.runIf(process.platform === 'win32')('external MCP discovery', () => {
 		await closed;
 	}
 
+	// Real startup and shutdown retain their separate 10s and 5s production deadlines.
 	it('returns credentials only through a current-user pipe and cleans its public announcement', async () => {
 		const root = mkdtempSync(join(tmpdir(), 'kw-discovery-'));
 		roots.push(root);
@@ -71,7 +72,7 @@ describe.runIf(process.platform === 'win32')('external MCP discovery', () => {
 			await server.close();
 		}
 		expect(() => readFileSync(server.announcementPath, 'utf8')).toThrow();
-	});
+	}, 30_000);
 
 	it('rejects non-local pipe and provider endpoint announcements', () => {
 		expect(() => parseDiscoveryAnnouncement({
