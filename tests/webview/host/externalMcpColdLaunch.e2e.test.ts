@@ -6,6 +6,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	readdirSync,
 	rmSync,
 	writeFileSync,
@@ -231,7 +232,7 @@ $needle = $env:KW_TEST_USER_DATA
 
 describe.runIf(enabled)('external MCP cold launch', () => {
 	it('launches two explicit instances and keeps background file operations isolated', async () => {
-		const root = mkdtempSync(join(tmpdir(), 'kw-cold-mcp-e2e-'));
+		const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'kw-cold-mcp-e2e-')));
 		const localAppData = join(root, 'local app data');
 		const userDataDirectory = join(root, 'user data');
 		const extensionsDirectory = join(root, 'extensions');
