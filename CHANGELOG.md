@@ -29,6 +29,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
     * Notebooks retain development-note and dashboard access after prolonged hidden-tab use with many historical files open, including after an ordinary switch back. First activation of large historical notebooks is also more reliable.
     * Fresh hidden MDX files accept their first Markdown-mode update using inventory-provided section IDs without requiring activation.
     * Reports created in the background hand ownership back to real user input without letting stale projections overwrite newer edits or interfere with native Save.
+    * Markdown sections added to background reports remain editable before their hidden editor has initialized, without activating the report.
     * KQL/CSL and SQL compatibility editors coalesce tab-hide metadata captures, avoiding false timeout errors for delayed background replies. Obsolete replies cannot invalidate newer edits or overwrite later Save results.
     * Timely metadata replies no longer time out while waiting for host-side processing, and harmless background snapshot supersession no longer produces error notifications.
     * Requested metadata snapshots report section-capture failures instead of accepting partial content. Close still offers Save, Discard, or recovery for the latest acknowledged dirty draft when final capture fails.

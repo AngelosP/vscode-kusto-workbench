@@ -3732,10 +3732,16 @@ export class KustoWorkbenchToolOrchestrator {
 		if (textValue !== undefined) {
 			input = { ...input, text: unescapeLLMText(textValue) };
 		}
-		const operation = await this.prepareBackgroundLiveOperation(target);
-		const background = operation.connection ? undefined : await this.mutateBackgroundFile<{ success: boolean }>(this.resolveToolTarget(target), file => {
+		const resolvedTarget = this.resolveToolTarget(target);
+		// Keep source-backed IDs on the host path; runtime-only IDs need a live handoff.
+		let backgroundSectionMissing = false;
+		const background = resolvedTarget.connection ? undefined : await this.mutateBackgroundFile<{ success: boolean } | undefined>(resolvedTarget, file => {
 			const section = this.findBackgroundSection(file, input.sectionId);
-			if (!section || section.type !== 'markdown') return { result: { success: false }, changed: false };
+			if (!section) {
+				backgroundSectionMissing = true;
+				return { result: undefined, changed: false };
+			}
+			if (section.type !== 'markdown') return { result: { success: false }, changed: false };
 			let changed = false;
 			changed = this.setBackgroundSectionField(section, 'title', input.name) || changed;
 			changed = this.setBackgroundSectionField(section, 'text', input.text) || changed;
@@ -3744,6 +3750,9 @@ export class KustoWorkbenchToolOrchestrator {
 			return { result: { success: true }, changed };
 		});
 		if (background) return background;
+		const operation = resolvedTarget.connection ? { connection: resolvedTarget.connection }
+			: await this.prepareBackgroundLiveOperation(target);
+		if (!operation.connection && backgroundSectionMissing) return { success: false };
 		return this.sendToWebview('toolUpdateMarkdownSection', { input }, 30000, target,
 			undefined, operation.connection, undefined, undefined, operation.isCurrent);
 	}

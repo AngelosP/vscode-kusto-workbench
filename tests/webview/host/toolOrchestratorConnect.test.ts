@@ -937,6 +937,73 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect(poster).not.toHaveBeenCalled();
 	});
 
+	it.each(['kqlx', 'mdx', 'sqlx'] as const)(
+		'keeps source-backed Markdown updates host-owned while a hidden %s editor is unready', async fileType => {
+			(vscode as any).__mockFileSystem.clear();
+			const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+				fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient,
+			);
+			const uri = vscode.Uri.file(`/work/source-backed-hidden.${fileType}`);
+			const otherUri = vscode.Uri.file('/work/source-backed-distractor.kqlx');
+			await expect(orchestrator.createFile({
+				fileType, filePath: uri.fsPath, initialContent: 'Original source', reveal: false,
+			})).resolves.toMatchObject({ success: true });
+			const original = (vscode as any).__mockFileSystem.readText(uri) as string;
+			let text = original;
+			const originalSection = JSON.parse(original).state.sections[0];
+			const document = { uri, version: 1, isDirty: false, isClosed: false, getText: () => text,
+				positionAt: (offset: number) => new vscode.Position(0, offset) };
+			class TestWorkspaceEdit {
+				replacement = '';
+				replace(_uri: vscode.Uri, _range: vscode.Range, replacement: string) { this.replacement = replacement; }
+			}
+			const applyEdit = vi.fn(async (edit: TestWorkspaceEdit) => {
+				text = edit.replacement;
+				document.version++;
+				document.isDirty = true;
+				return true;
+			});
+			Object.assign(vscode, { WorkspaceEdit: TestWorkspaceEdit });
+			Object.assign(vscode.workspace, { textDocuments: [document], applyEdit });
+			const activeTab = { isActive: true, isDirty: false, input: new vscode.TabInputCustom(otherUri, 'kusto.kqlxEditor') };
+			const hiddenTab = { isActive: false, isDirty: false, input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor') };
+			setTabGroups({ isActive: true, activeTab, tabs: [activeTab, hiddenTab] });
+			const added = await orchestrator.addSection({
+				targetFileUri: uri.toString(), type: 'markdown', name: 'Summary', text: 'Before',
+			});
+			expect(added.success).toBe(true);
+			expect(added.sectionId).toBeTruthy();
+			const poster = createMessagePoster();
+			const getState = vi.fn(async () => undefined);
+			const readiness = vi.fn(async () => false);
+			const token = orchestrator.connect(poster, getState, vi.fn(), uri.toString(),
+				undefined, undefined, undefined, readiness, undefined, readiness);
+			try {
+				const commandsBefore = [...(vscode as any).__mockCommandCalls];
+				for (const [mode, content] of [['preview', 'First edit'], ['wysiwyg', 'Second edit']] as const) {
+					await expect(orchestrator.updateMarkdownSection({
+						targetFileUri: uri.toString(), sectionId: added.sectionId, text: content, mode,
+					})).resolves.toEqual({ success: true });
+					expect(JSON.parse(text).state.sections).toEqual([
+						originalSection,
+						expect.objectContaining({ id: added.sectionId, type: 'markdown', title: 'Summary', text: content, mode }),
+					]);
+					expect(orchestrator.isHostOwnedBackgroundFile(uri)).toBe(true);
+				}
+				expect(readiness).not.toHaveBeenCalled();
+				expect(getState).not.toHaveBeenCalled();
+				expect(poster).not.toHaveBeenCalled();
+				expect(applyEdit).toHaveBeenCalledTimes(3);
+				expect(document.isDirty).toBe(true);
+				expect((vscode as any).__mockFileSystem.readText(uri)).toBe(original);
+				expect((vscode as any).__mockCommandCalls).toEqual(commandsBefore);
+				expect(vscode.window.tabGroups.all[0].activeTab).toBe(activeTab);
+			} finally {
+				orchestrator.disconnectIfOwner(token);
+			}
+		},
+	);
+
 	it.each(['ready', 'delayed', 'unavailable', 'source-version', 'retired', 'replaced-before-dispatch'] as const)(
 		'routes a fresh hidden MDX mode-only update safely (%s)', async scenario => {
 		(vscode as any).__mockFileSystem.clear();

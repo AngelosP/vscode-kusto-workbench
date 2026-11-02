@@ -18,7 +18,7 @@ import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import extractZip from 'extract-zip';
 import * as vscode from 'vscode';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { installExternalMcpConnector } from '../../../src/host/externalMcpConnectorInstaller';
 import { acquireExternalMcpRuntimeArchive } from '../../../src/host/externalMcpRuntime';
 import { executeVsCodeCli } from '../../../src/host/externalMcpSetup';
@@ -64,6 +64,89 @@ function jsonResult<T>(result: { content: readonly unknown[] }): T {
 		throw new Error(`Expected a JSON MCP result, received: ${text}`, { cause: error });
 	}
 }
+
+type OperationRequest = { name: string; arguments: Record<string, unknown> };
+type ExecuteOperation = (
+	request: OperationRequest, options: { timeout: number },
+) => Promise<{ content: readonly unknown[] }>;
+
+async function executeAfterExplicitLoading<T>(
+	executeOperation: ExecuteOperation, request: OperationRequest, marker: string,
+): Promise<T> {
+	const deadline = Date.now() + 30_000;
+	while (true) {
+		const response = await executeOperation(request, { timeout: 60_000 });
+		if (textResult(response) !== 'Error: This document is still loading and cannot accept mutations yet.') {
+			return jsonResult<T>(response);
+		}
+		if (Date.now() >= deadline) throw new Error(`${marker}: ${request.name} never became ready.`);
+		await new Promise(resolvePromise => setTimeout(resolvePromise, 250));
+	}
+}
+
+describe('cold-launch explicit-loading retries', () => {
+	const request: OperationRequest = {
+		name: 'updateMarkdownSection',
+		arguments: { instanceId: 'instance-a', openFileId: 'report-a', sectionId: 'markdown-a', text: 'Updated' },
+	};
+	const reply = (text: string) => ({ content: [{ type: 'text', text }] });
+	const loading = 'Error: This document is still loading and cannot accept mutations yet.';
+
+	it('retries only the explicitly rejected operation on the same instance and file', async () => {
+		vi.useFakeTimers();
+		const execute = vi.fn().mockResolvedValueOnce(reply(loading)).mockResolvedValueOnce(reply('{"success":true}'));
+		try {
+			const pending = executeAfterExplicitLoading<{ success: boolean }>(execute, request, 'report-a');
+			await vi.advanceTimersByTimeAsync(250);
+			await expect(pending).resolves.toEqual({ success: true });
+			expect(execute).toHaveBeenCalledTimes(2);
+			for (const call of execute.mock.calls) {
+				expect(call[0]).toBe(request);
+				expect(call[1]).toEqual({ timeout: 60_000 });
+			}
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
+		'Error: Request timed out',
+		'Error: This document is invalid and its retained sections are read-only.',
+		'Error: The targeted Kusto Workbench editor closed before the request was dispatched.',
+		`${loading} Additional detail.`,
+	])('does not replay a different or ambiguous failure: %s', async error => {
+		const execute = vi.fn().mockResolvedValue(reply(error));
+		await expect(executeAfterExplicitLoading(execute, request, 'report-a')).rejects.toThrow('Expected a JSON MCP result');
+		expect(execute).toHaveBeenCalledOnce();
+	});
+
+	it('does not replay an operation whose response was lost', async () => {
+		const error = new Error('Connection closed before the response arrived');
+		const execute = vi.fn().mockRejectedValue(error);
+		await expect(executeAfterExplicitLoading(execute, request, 'report-a')).rejects.toBe(error);
+		expect(execute).toHaveBeenCalledOnce();
+	});
+
+	it('keeps an explicit unsuccessful result for the caller to assert without retrying', async () => {
+		const execute = vi.fn().mockResolvedValue(reply('{"success":false,"error":"Mutation failed"}'));
+		await expect(executeAfterExplicitLoading(execute, request, 'report-a'))
+			.resolves.toEqual({ success: false, error: 'Mutation failed' });
+		expect(execute).toHaveBeenCalledOnce();
+	});
+
+	it('fails when the existing readiness deadline expires', async () => {
+		vi.useFakeTimers();
+		const execute = vi.fn().mockResolvedValue(reply(loading));
+		try {
+			const result = executeAfterExplicitLoading(execute, request, 'report-a').catch(error => error);
+			await vi.advanceTimersByTimeAsync(30_000);
+			await expect(result).resolves.toEqual(new Error('report-a: updateMarkdownSection never became ready.'));
+			expect(execute).toHaveBeenCalledTimes(121);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
 
 function collectVsCodeDiagnostics(userDataDirectory: string): string {
 	const logsDirectory = join(userDataDirectory, 'logs');
@@ -375,7 +458,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 				}
 			}
 
-			const configuredQuery = jsonResult<{ success: boolean }>(await executeOperation({
+			const configuredQuery = await executeAfterExplicitLoading<{ success: boolean }>(executeOperation, {
 				name: 'configureKustoQuerySection',
 				arguments: {
 					instanceId: first.instanceId,
@@ -385,10 +468,10 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 					query: 'datatable(Category:string, Value:long)["Alpha", 3, "Beta", 5]',
 					execute: false,
 				},
-			}, { timeout: 60_000 }));
+			}, firstPath.filePath);
 			expect(configuredQuery.success).toBe(true);
 
-			const markdown = jsonResult<{ success: boolean; sectionId: string }>(await executeOperation({
+			const markdown = await executeAfterExplicitLoading<{ success: boolean; sectionId: string }>(executeOperation, {
 				name: 'addSection',
 				arguments: {
 					instanceId: first.instanceId,
@@ -397,9 +480,9 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 					name: 'Summary',
 					text: '# Routed report\n\nCreated through the external MCP connector.',
 				},
-			}, { timeout: 60_000 }));
+			}, firstPath.filePath);
 			expect(markdown.success).toBe(true);
-			const updatedMarkdown = jsonResult<{ success: boolean }>(await executeOperation({
+			const updatedMarkdown = await executeAfterExplicitLoading<{ success: boolean }>(executeOperation, {
 				name: 'updateMarkdownSection',
 				arguments: {
 					instanceId: first.instanceId,
@@ -409,10 +492,10 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 					text: '# Routed report\n\nThis report survived save, close, and reopen.',
 					mode: 'preview',
 				},
-			}, { timeout: 60_000 }));
+			}, firstPath.filePath);
 			expect(updatedMarkdown.success).toBe(true);
 
-			const chart = jsonResult<{ success: boolean; sectionId: string }>(await executeOperation({
+			const chart = await executeAfterExplicitLoading<{ success: boolean; sectionId: string }>(executeOperation, {
 				name: 'addSection',
 				arguments: {
 					instanceId: first.instanceId,
@@ -422,9 +505,9 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 					dataSourceId: querySection!.id,
 					chartType: 'bar',
 				},
-			}, { timeout: 60_000 }));
+			}, firstPath.filePath);
 			expect(chart.success).toBe(true);
-			const configuredChart = jsonResult<{ success: boolean }>(await executeOperation({
+			const configuredChart = await executeAfterExplicitLoading<{ success: boolean }>(executeOperation, {
 				name: 'configureChart',
 				arguments: {
 					instanceId: first.instanceId,
@@ -437,13 +520,13 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 					yColumns: ['Value'],
 					showDataLabels: true,
 				},
-			}, { timeout: 60_000 }));
+			}, firstPath.filePath);
 			expect(configuredChart.success).toBe(true);
 
-			const saved = jsonResult<{ success: boolean; saved: boolean }>(await executeOperation({
+			const saved = await executeAfterExplicitLoading<{ success: boolean; saved: boolean }>(executeOperation, {
 				name: 'saveWorkbenchFile',
 				arguments: { instanceId: first.instanceId, openFileId: firstOpenFile!.openFileId },
-			}, { timeout: 60_000 }));
+			}, firstPath.filePath);
 			expect(saved.success).toBe(true);
 			expect(saved.saved).toBe(true);
 			const persisted = JSON.parse(readFileSync(firstPath.filePath, 'utf8')) as {
@@ -461,6 +544,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 					type: 'markdown',
 					title: 'Summary',
 					text: '# Routed report\n\nThis report survived save, close, and reopen.',
+					mode: 'preview',
 				}),
 				expect.objectContaining({
 					id: chart.sectionId,
@@ -473,13 +557,13 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 				}),
 			]));
 
-			const closed = jsonResult<{ success: boolean; closed: boolean }>(await executeOperation({
+			const closed = await executeAfterExplicitLoading<{ success: boolean; closed: boolean }>(executeOperation, {
 				name: 'closeWorkbenchFile',
 				arguments: {
 					instanceId: first.instanceId,
 					openFileId: firstOpenFile!.openFileId,
 				},
-			}, { timeout: 60_000 }));
+			}, firstPath.filePath);
 			expect(closed).toMatchObject({ success: true, closed: true });
 			const reopened = jsonResult<{ success: boolean }>(await executeOperation({
 				name: 'activateWorkbenchFile',
@@ -501,6 +585,24 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 			}
 			expect(restored?.sections?.map(section => section.type)).toEqual(['query', 'markdown', 'chart']);
 
+			const revisedMarkdown = '# Routed report\n\nEdited again after reopening.';
+			const editedAfterReopen = await executeAfterExplicitLoading<{ success: boolean }>(executeOperation, {
+				name: 'updateMarkdownSection',
+				arguments: { instanceId: first.instanceId, targetFileUri: firstPath.filePath,
+					sectionId: markdown.sectionId, text: revisedMarkdown },
+			}, firstPath.filePath);
+			expect(editedAfterReopen.success).toBe(true);
+			const resaved = await executeAfterExplicitLoading<{ success: boolean; saved: boolean }>(executeOperation, {
+				name: 'saveWorkbenchFile',
+				arguments: { instanceId: first.instanceId, targetFileUri: firstPath.filePath },
+			}, firstPath.filePath);
+			expect(resaved).toMatchObject({ success: true, saved: true });
+			expect(JSON.parse(readFileSync(firstPath.filePath, 'utf8')).state.sections).toEqual([
+				expect.objectContaining(persisted.state.sections[0]),
+				expect.objectContaining({ id: markdown.sectionId, type: 'markdown', title: 'Summary', text: revisedMarkdown, mode: 'preview' }),
+				expect.objectContaining(persisted.state.sections[2]),
+			]);
+
 			const crossSave = jsonResult<{ success: boolean; error?: string }>(await executeOperation({
 				name: 'saveWorkbenchFile',
 				arguments: { instanceId: second.instanceId, targetFileUri: firstPath.filePath },
@@ -520,19 +622,6 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 						await new Promise(resolvePromise => setTimeout(resolvePromise, 250));
 					}
 					throw new Error(`Workbench did not expose the isolated report ${filePath}.`);
-				};
-				const executeAfterExplicitLoading = async <T>(
-					request: { name: string; arguments: Record<string, unknown> }, marker: string,
-				): Promise<T> => {
-					const deadline = Date.now() + 30_000;
-					while (true) {
-						const response = await executeOperation(request, { timeout: 60_000 });
-						if (textResult(response) !== 'Error: This document is still loading and cannot accept mutations yet.') {
-							return jsonResult<T>(response);
-						}
-						if (Date.now() >= deadline) throw new Error(`${marker}: ${request.name} never became ready.`);
-						await new Promise(resolvePromise => setTimeout(resolvePromise, 250));
-					}
 				};
 				const stressCycles = Number(process.env.KUSTO_WORKBENCH_MCP_STRESS_CYCLES ?? 10);
 				expect(Number.isSafeInteger(stressCycles) && stressCycles >= 1 && stressCycles <= 10).toBe(true);
@@ -557,21 +646,21 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 						const openFile = await findOpenFile(instance.instanceId, created.filePath);
 						const source = openFile.sections!.find(section => section.type === 'query');
 						expect(source).toBeDefined();
-						const configured = await executeAfterExplicitLoading<{ success: boolean }>({
+						const configured = await executeAfterExplicitLoading<{ success: boolean }>(executeOperation, {
 							name: 'configureKustoQuerySection', arguments: {
 								instanceId: instance.instanceId, openFileId: openFile.openFileId,
 								sectionId: source!.id, name: marker, query, execute: false,
 							},
 						}, marker);
 						expect(configured.success).toBe(true);
-						const added = await executeAfterExplicitLoading<{ success: boolean; sectionId: string }>({
+						const added = await executeAfterExplicitLoading<{ success: boolean; sectionId: string }>(executeOperation, {
 							name: 'addSection', arguments: {
 								instanceId: instance.instanceId, openFileId: openFile.openFileId,
 								type: 'markdown', name: marker, text: markdownText,
 							},
 						}, marker);
 						expect(added, `${marker}: ${JSON.stringify(added)}`).toMatchObject({ success: true });
-						const saved = await executeAfterExplicitLoading<{ success: boolean; saved: boolean }>({
+						const saved = await executeAfterExplicitLoading<{ success: boolean; saved: boolean }>(executeOperation, {
 							name: 'saveWorkbenchFile', arguments: { instanceId: instance.instanceId, openFileId: openFile.openFileId },
 						}, marker);
 						expect(saved).toMatchObject({ success: true, saved: true });
@@ -581,7 +670,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 							expect.objectContaining({ id: source!.id, type: 'query', name: marker, query }),
 							expect.objectContaining({ id: added.sectionId, type: 'markdown', title: marker, text: markdownText }),
 						]));
-						const closed = await executeAfterExplicitLoading<{ success: boolean; closed: boolean }>({
+						const closed = await executeAfterExplicitLoading<{ success: boolean; closed: boolean }>(executeOperation, {
 							name: 'closeWorkbenchFile', arguments: { instanceId: instance.instanceId, openFileId: openFile.openFileId },
 						}, marker);
 						expect(closed).toMatchObject({ success: true, closed: true });
@@ -592,14 +681,14 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 						const reopened = await findOpenFile(instance.instanceId, created.filePath);
 						expect(reopened.sections?.map(section => section.id)).toEqual([source!.id, added.sectionId]);
 						expect(readFileSync(created.filePath, 'utf8')).toBe(savedText);
-						const edited = await executeAfterExplicitLoading<{ success: boolean }>({
+						const edited = await executeAfterExplicitLoading<{ success: boolean }>(executeOperation, {
 							name: 'updateMarkdownSection', arguments: {
 								instanceId: instance.instanceId, openFileId: reopened.openFileId,
 								sectionId: added.sectionId, text: `${markdownText}\n\nEdited after reopen.`,
 							},
 						}, marker);
 						expect(edited.success).toBe(true);
-						const resaved = await executeAfterExplicitLoading<{ success: boolean; saved: boolean }>({
+						const resaved = await executeAfterExplicitLoading<{ success: boolean; saved: boolean }>(executeOperation, {
 							name: 'saveWorkbenchFile', arguments: { instanceId: instance.instanceId, openFileId: reopened.openFileId },
 						}, marker);
 						expect(resaved).toMatchObject({ success: true, saved: true });
@@ -609,7 +698,7 @@ describe.runIf(enabled)('external MCP cold launch', () => {
 						expect(revised).toEqual(expect.arrayContaining([
 							expect.objectContaining({ id: added.sectionId, title: marker, text: `${markdownText}\n\nEdited after reopen.` }),
 						]));
-						const finished = await executeAfterExplicitLoading<{ success: boolean; closed: boolean }>({
+						const finished = await executeAfterExplicitLoading<{ success: boolean; closed: boolean }>(executeOperation, {
 							name: 'closeWorkbenchFile', arguments: { instanceId: instance.instanceId, openFileId: reopened.openFileId },
 						}, marker);
 						expect(finished).toMatchObject({ success: true, closed: true });
